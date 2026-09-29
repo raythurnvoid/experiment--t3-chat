@@ -112,6 +112,7 @@ import {
 	public_api_visibility_user_id,
 } from "./public_api_http_auth.ts";
 import { plugins_db_get_live_service_account } from "./plugins_service_accounts.ts";
+import { plugins_scheduled_access_db_authorize_assignment } from "./plugins_scheduled_access.ts";
 import { public_api_service_uploads_db_validate_node_target } from "./public_api_service_uploads.ts";
 import {
 	plugins_external_files_db_check_write,
@@ -240,6 +241,8 @@ const plugin_run_scopes_validator = v.array(
 		v.literal("files:read" satisfies public_api_Scope),
 		v.literal("files:write" satisfies public_api_Scope),
 		v.literal("files:download" satisfies public_api_Scope),
+		v.literal("volumes:write" satisfies public_api_Scope),
+		v.literal("runs:follow_up" satisfies public_api_Scope),
 		v.literal("secrets:read" satisfies public_api_Scope),
 		v.literal("outbound:fetch" satisfies public_api_Scope),
 		v.literal("activities:write" satisfies public_api_Scope),
@@ -1514,6 +1517,11 @@ export const resolve_principal = internalQuery({
 			if (!actor || actor.deletedAt != null || !membership || membership.pendingOrganizationRemoval) {
 				return Result({ _nay: { message: "Unauthenticated" } });
 			}
+			const scheduledAssignment =
+				pluginRun.event === "schedule.interval.elapsed"
+					? await plugins_scheduled_access_db_authorize_assignment(ctx, { installation, run: pluginRun })
+					: null;
+			if (scheduledAssignment?._nay) return Result({ _nay: { message: "Unauthenticated" } });
 			const acceptedCapabilities = pluginRun.acceptedCapabilities.filter((capability) =>
 				installation.acceptedCapabilities.includes(capability),
 			);
@@ -1543,9 +1551,12 @@ export const resolve_principal = internalQuery({
 			// opt into the workspace activity feed (self-disclosure, so no extra consent).
 			// A run that fired on no file gets neither file door: it has nothing to download, and no
 			// place a sibling write could land.
-			const scopes: Infer<typeof plugin_run_scopes_validator> = sourceFileNode
-				? ["files:download", "files:write", "activities:write"]
-				: ["activities:write"];
+			// Scheduled runs start with no baseline scopes. Their user's grant supplies consent below.
+			const scopes: Infer<typeof plugin_run_scopes_validator> = scheduledAssignment
+				? []
+				: sourceFileNode
+					? ["files:download", "files:write", "activities:write"]
+					: ["activities:write"];
 			if (acceptedCapabilities.includes("plugin.secrets.read")) {
 				scopes.push("secrets:read");
 			}
@@ -1560,6 +1571,23 @@ export const resolve_principal = internalQuery({
 			}
 			if (acceptedCapabilities.includes("plugin.data.write")) {
 				scopes.push("plugin_data:write");
+			}
+			if (acceptedCapabilities.includes("workspace.volumes.write")) {
+				const organization = await ctx.db.get("organizations", pluginRun.organizationId);
+				if (
+					organization?.defaultWorkspaceId &&
+					(await access_control_db_has_permission(ctx, {
+						organizationId: organization._id,
+						workspaceId: workspace._id,
+						defaultWorkspaceId: organization.defaultWorkspaceId,
+						organizationOwnerUserId: organization.ownerUserId,
+						userId: actor._id,
+						resource: { kind: "plugin_installation", id: installation._id },
+						permission: "workspace.plugins.manage",
+					}))
+				) {
+					scopes.push("volumes:write");
+				}
 			}
 			// Any run may read files under the same consent a frame reads with. The backend runs the
 			// same publisher code either way, the run reads with its actor's eyes, and without this an
@@ -1578,6 +1606,10 @@ export const resolve_principal = internalQuery({
 				scopes.push("files:write");
 			}
 
+			const consentScopes: readonly public_api_Scope[] = scheduledAssignment?._yay?.grant.runAs?.scopes ?? [];
+			const effectiveScopes: Infer<typeof plugin_run_scopes_validator> = scheduledAssignment
+				? [...scopes.filter((scope) => consentScopes.includes(scope)), "runs:follow_up"]
+				: scopes;
 			return Result({
 				_yay: {
 					kind: "plugin_run" as const,
@@ -1594,7 +1626,7 @@ export const resolve_principal = internalQuery({
 					outputParentPath,
 					// The HTTP layer checks this clock after cache retrieval. Never cache a live-time verdict.
 					apiTokenExpiresAt: Math.min(pluginRun.apiTokenExpiresAt, activity.deadlineAt),
-					scopes,
+					scopes: effectiveScopes,
 					principalKey: `plugin_run:${pluginRun._id}`,
 					pathPrefix: null,
 				},
@@ -2244,11 +2276,13 @@ export async function public_api_db_revalidate_live_plugin_run(
 		workspaceId: Id<"organizations_workspaces">;
 		runId: Id<"plugins_event_runs">;
 		now: number;
+		requiredScope?: public_api_Scope;
 	},
 ) {
 	const pluginRun = await ctx.db.get("plugins_event_runs", args.runId);
 	if (
 		!pluginRun ||
+		!pluginRun.apiTokenHash ||
 		!pluginRun.apiTokenExpiresAt ||
 		pluginRun.apiTokenExpiresAt <= args.now ||
 		pluginRun.organizationId !== args.organizationId ||
@@ -2281,9 +2315,113 @@ export async function public_api_db_revalidate_live_plugin_run(
 	) {
 		return Result({ _nay: { message: "Unauthenticated" } });
 	}
+	if (pluginRun.event === "schedule.interval.elapsed") {
+		const requiredScope = args.requiredScope;
+		if (
+			requiredScope &&
+			requiredScope !== "runs:follow_up" &&
+			requiredScope !== "files:list" &&
+			requiredScope !== "files:read" &&
+			requiredScope !== "plugin_data:read" &&
+			requiredScope !== "plugin_data:write" &&
+			requiredScope !== "volumes:write" &&
+			requiredScope !== "secrets:read" &&
+			requiredScope !== "outbound:fetch"
+		)
+			return Result({ _nay: { message: "Permission denied" } });
+		const assignment = await plugins_scheduled_access_db_authorize_assignment(ctx, {
+			installation,
+			run: pluginRun,
+			requiredScope: requiredScope === "runs:follow_up" ? undefined : requiredScope,
+		});
+		if (assignment._nay)
+			return Result({
+				_nay: { message: assignment._nay.message === "Permission denied" ? "Permission denied" : "Unauthenticated" },
+			});
+	}
 
 	return Result({ _yay: { pluginRun, installation } });
 }
+
+// File I/O runs outside a transaction. Check the exact response and settle its call together.
+export const validate_and_finish_scheduled_file_read = internalMutation({
+	args: {
+		runId: v.id("plugins_event_runs"),
+		callId: v.id("plugins_event_run_calls"),
+		tokenHash: v.string(),
+		requiredScope: v.union(v.literal("files:read"), v.literal("files:list")),
+		nodes: v.array(v.object({ nodeId: v.id("files_nodes"), path: v.string() })),
+		responseBytes: v.optional(v.number()),
+	},
+	returns: v_result({ _yay: v.boolean() }),
+	handler: async (ctx, args) => {
+		const run = await ctx.db.get("plugins_event_runs", args.runId);
+		if (!run) return Result({ _nay: { message: "File unavailable" } });
+		if (run.event !== "schedule.interval.elapsed") return Result({ _yay: false });
+		if (run.apiTokenHash !== args.tokenHash || args.nodes.length > 100)
+			return Result({ _nay: { message: "File unavailable" } });
+		const live = await public_api_db_revalidate_live_plugin_run(ctx, {
+			organizationId: run.organizationId,
+			workspaceId: run.workspaceId,
+			runId: run._id,
+			now: Date.now(),
+			requiredScope: args.requiredScope,
+		});
+		if (live._nay) return Result({ _nay: { message: "File unavailable" } });
+		const call = await ctx.db.get("plugins_event_run_calls", args.callId);
+		if (
+			!call ||
+			call.status !== "started" ||
+			call.kind !== "api_request" ||
+			call.runId !== run._id ||
+			call.organizationId !== run.organizationId ||
+			call.workspaceId !== run.workspaceId ||
+			call.installationId !== run.installationId ||
+			call.pluginVersionId !== run.pluginVersionId ||
+			call.route !== (args.requiredScope === "files:list" ? "/api/v1/files/list" : "/api/v1/files/read")
+		)
+			return Result({ _nay: { message: "File unavailable" } });
+		for (const item of args.nodes) {
+			const node = await ctx.db.get("files_nodes", item.nodeId);
+			if (
+				!node ||
+				node.organizationId !== run.organizationId ||
+				node.workspaceId !== run.workspaceId ||
+				node.archiveOperationId !== null ||
+				node.path !== item.path ||
+				!(await access_control_db_can_act_on_file_node(ctx, {
+					organizationId: run.organizationId,
+					workspaceId: run.workspaceId,
+					userId: run.actorUserId,
+					serviceAccountId: run.serviceAccountId,
+					fileNode: node,
+					permission: "content.read",
+				}))
+			)
+				return Result({ _nay: { message: "File unavailable" } });
+		}
+		const now = Date.now();
+		await ctx.db.patch("plugins_event_run_calls", call._id, {
+			status: "succeeded",
+			responseStatus: 200,
+			...(args.responseBytes === undefined ? {} : { responseBytes: args.responseBytes }),
+			errorMessage: null,
+			finishedAt: now,
+			elapsedMs: now - call.startedAt,
+			updatedAt: now,
+		});
+		return Result({ _yay: true });
+	},
+});
+
+export type public_api_validate_and_finish_scheduled_file_read_Result =
+	typeof validate_and_finish_scheduled_file_read extends RegisteredMutation<
+		infer _Visibility,
+		infer _Args,
+		infer ReturnValue
+	>
+		? Awaited<ReturnValue>
+		: never;
 
 /**
  * Shared revalidation for the prepare and publish mutations: the same live-principal and
@@ -2336,6 +2474,7 @@ export async function public_api_db_revalidate_file_write_principal(
 			workspaceId: args.workspaceId,
 			runId: args.principalRef.runId,
 			now: args.now,
+			requiredScope: "files:write",
 		});
 		if (liveRun._nay) {
 			return liveRun;
@@ -5396,18 +5535,41 @@ export async function public_api_http_read_file(ctx: ActionCtx, request: Request
 	}
 
 	const bytes = TEXT_ENCODER.encode(content.content).length;
+	let callSettled = false;
+	if (principal.kind === "plugin_run" && pluginCallId) {
+		if (content.target.kind !== "saved")
+			return {
+				status: 404,
+				body: await fail({ status: 404, message: "File unavailable", errorCode: "not_found" }),
+			} as const;
+		const checked = (await ctx.runMutation(internal.public_api.validate_and_finish_scheduled_file_read, {
+			runId: principal.runId,
+			callId: pluginCallId,
+			tokenHash: await crypto_sha256_hex(auth._yay.presentedToken),
+			requiredScope: "files:read",
+			nodes: [{ nodeId: content.target.id, path: requestedPath }],
+			responseBytes: bytes,
+		})) as public_api_validate_and_finish_scheduled_file_read_Result;
+		if (checked._nay)
+			return {
+				status: 404,
+				body: await fail({ status: 404, message: "File unavailable", errorCode: "not_found" }),
+			} as const;
+		callSettled = checked._yay;
+	}
 	console.info("Public API file read", {
 		principalKind: principal.kind,
 		principalKey: principal.principalKey,
 		bytes,
 	});
 
-	await public_api_settle_plugin_call_best_effort(ctx, {
-		callId: pluginCallId,
-		status: "succeeded",
-		responseStatus: 200,
-		responseBytes: bytes,
-	});
+	if (!callSettled)
+		await public_api_settle_plugin_call_best_effort(ctx, {
+			callId: pluginCallId,
+			status: "succeeded",
+			responseStatus: 200,
+			responseBytes: bytes,
+		});
 
 	return {
 		status: 200,

@@ -101,6 +101,9 @@ Activity deadline; its consumer checks the clock after reading the cache.
 
 The existing plugin run-history query still returns `queued`, `running`, `succeeded`, or `failed`.
 It derives that response from Activity; canceled and timed-out outcomes map to failed there.
+The paged `plugins.list_run_history` query reports the full status and original actor/chain pins.
+Scheduled runs stay hidden and cannot opt into the feed. Their history has no automatic expiry;
+terminal paths still clear tokens and temporary state. Ordinary plugin retention stays thirty days.
 See the [plugin runtime spec](../plugin-system/SKILL.md).
 
 # Recovery and deletion
@@ -141,7 +144,7 @@ See the [plugin runtime spec](../plugin-system/SKILL.md).
   active units every five minutes. It retries planning at most three times and checks the Activity
   deadline before resuming work. It does not scan finished history.
 - `activities.cleanup_history` owns retention: seven days after transfer, review, Bash job, protection job, archive job, or move or scope job finish and thirty days
-  after plugin finish. A move or scope op is already deleted when its walk ends, so cleanup deletes only its Activity. A Bash job row can hold a 700 KiB result, so a pass reads at most eight job rows and reschedules for the rest; the job row is deleted with its Activity, while the foreground Bash call row beside it stays until thread purge. It stops a pass after a bounded child cleanup page. Each producer deletes
+  after ordinary plugin finish. Scheduled plugin history has no automatic expiry. A move or scope op is already deleted when its walk ends, so cleanup deletes only its Activity. A Bash job row can hold a 700 KiB result, so a pass reads at most eight job rows and reschedules for the rest; the job row is deleted with its Activity, while the foreground Bash call row beside it stays until thread purge. It stops a pass after a bounded child cleanup page. Each producer deletes
   its own receipts. Transfer and review producers also release their proposal holds first. Dismissal docs drain first. The Activity and its producer are then deleted together.
 - Deleting history does not delete saved files or pending proposals. Asset deletion jobs retain
   exact R2 keys and late-upload deadlines independently of Activity history.

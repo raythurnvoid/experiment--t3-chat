@@ -256,9 +256,8 @@ export function bash_tree_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			};
 		}
 
-		// The `/.mounts` root spans one commit-keyed indexed tree per synced mount. Fan out one
-		// subtree listing per mount, in name order, under a composite cursor.
-		if (pathResolution.kind === "external_mounts_root") {
+		// Root and group listings share a cursor over their pinned leaves.
+		if (pathResolution.kind === "external_mounts_root" || pathResolution.kind === "external_mount_group") {
 			if (dbFilesRoots.externalMounts.mounts.size === 0) {
 				return {
 					stdout: "",
@@ -289,25 +288,27 @@ export function bash_tree_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 				mountsCursor = resolvedCursor._yay;
 			}
 
-			// Each mount page includes its commit-root folder doc, which renders as the
-			// `/.mounts/<name>/` branch line, so no synthetic entries are needed.
-			const fanOut = await bash_external_mounts_fan_out_paginate({
+			// Leaf queries include their root folder. Plugin groups need one synthetic folder too.
+			const fanOut = await bash_external_mounts_fan_out_paginate<{ path: string; kind: "folder" | "file" }>({
 				command: "tree",
 				externalMounts: dbFilesRoots.externalMounts,
+				basePath: pathResolution.basePath,
+				groupItems: (mountName) => [{ path: `/${mountName}`, kind: "folder" as const }],
 				cursor: mountsCursor,
 				limit: bash_clamp_listing_page_limit(parsed._yay.limit),
 				runPage: async (pageArgs) => {
 					const pageResult = (await ctx.runQuery(internal.files_nodes.list_subtree, {
+						agentSource: pageArgs.mount.fs.ctxData.agentSource,
 						organizationId: pageArgs.mount.fs.ctxData.organizationId,
 						workspaceId: pageArgs.mount.fs.ctxData.workspaceId,
 						visibilityUserId: pageArgs.mount.fs.ctxData.userId,
-						folderPath: `/${pageArgs.mount.name}/${pageArgs.mount.commitSha}`,
+						folderPath: pageArgs.mount.fs.dbFilesRootPath,
 						numItems: pageArgs.numItems,
 						cursor: pageArgs.innerCursor,
 					})) as files_nodes_list_subtree_Result;
 					return {
 						items: pageResult.page.map((item) => ({
-							path: bash_external_mounts_fan_out_db_files_path(pageArgs.mount, item.path),
+							path: bash_external_mounts_fan_out_db_files_path(pageArgs.mount, item.path, pathResolution.basePath),
 							kind: item.kind,
 						})),
 						continueCursor: pageResult.continueCursor,

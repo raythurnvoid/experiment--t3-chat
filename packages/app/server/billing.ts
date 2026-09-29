@@ -1,4 +1,5 @@
 import { PolarCore } from "@polar-sh/sdk/core.js";
+import type { HTTPClient } from "@polar-sh/sdk/lib/http.js";
 import type { FunctionArgs } from "convex/server";
 import type { internal } from "../convex/_generated/api.js";
 
@@ -16,7 +17,24 @@ const POLAR_ORGANIZATION_TOKEN = process.env.POLAR_ORGANIZATION_TOKEN;
 
 let billing_polar_client_cached: PolarCore | null = null;
 
-export function billing_polar_client() {
+export function billing_polar_client(inspection?: {
+	httpClient: HTTPClient;
+	expectedServer: "sandbox" | "production";
+}) {
+	if (inspection) {
+		if (POLAR_SERVER !== inspection.expectedServer) {
+			throw new Error("Polar server does not match");
+		}
+
+		return new PolarCore({
+			accessToken: POLAR_ORGANIZATION_TOKEN,
+			server: POLAR_SERVER,
+			httpClient: inspection.httpClient,
+			// POLAR_DEBUG can log request credentials unless a logger is supplied.
+			debugLogger: { group() {}, groupEnd() {}, log() {} },
+		});
+	}
+
 	return (billing_polar_client_cached ??= new PolarCore({
 		accessToken: POLAR_ORGANIZATION_TOKEN,
 		server: POLAR_SERVER,

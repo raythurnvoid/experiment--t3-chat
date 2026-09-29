@@ -10,5 +10,6 @@ First-party workspace plugins live here as Git submodules. Each submodule is the
 - `bonobo-plugin-council` -> https://github.com/raythurnvoid/bonobo-plugin-council
 - `bonobo-plugin-chitchat` -> https://github.com/raythurnvoid/bonobo-plugin-chitchat
 - `bonobo-plugin-data-probe` -> https://github.com/raythurnvoid/bonobo-plugin-data-probe (QA fixture: backend replies, plugin documents, and since 0.3.0 an MCP server and a skill)
+- `bonobo-plugin-github-sources` -> https://github.com/raythurnvoid/bonobo-plugin-github-sources
 
 The app imports plugin versions from GitHub, reading each version's single `dist/bonobo.plugin.json` manifest, stores the verified dist files in R2, and executes the stored backend worker through the plugin runner.

@@ -929,11 +929,11 @@ export type BonoboConvexApi = {
 					key: string;
 					collection: string;
 				};
-				collections: string[];
 				principals: {
 					userId: import("convex/values").GenericId<"users">;
 					level: "member" | "manage";
 				}[];
+				collections: string[];
 			} | {
 				kind: "set_principal";
 				userId: import("convex/values").GenericId<"users">;

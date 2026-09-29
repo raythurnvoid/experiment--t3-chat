@@ -7,6 +7,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { internalMutation, mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server.js";
 import { access_control_db_has_permission } from "./access_control.ts";
 import { access_control_changes_db_record } from "./access_control_changes.ts";
+import { plugins_schedules_db_cancel } from "./plugins_schedules_db.ts";
 import { plugins_mcp_destination_fingerprint } from "./plugins_mcp.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import app_convex_schema from "./schema.ts";
@@ -233,6 +234,7 @@ async function db_disable_blocked_installations(
 				continue;
 			}
 
+			await plugins_schedules_db_cancel(ctx, { installationId: installation._id });
 			await ctx.db.patch("plugins_workspace_installations", installation._id, {
 				status: "disabled",
 				updatedAt: now,

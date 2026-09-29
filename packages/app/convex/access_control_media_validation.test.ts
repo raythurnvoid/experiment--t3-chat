@@ -263,8 +263,16 @@ describe("media access clocks", () => {
 		await expect_clocks(f, repeated, []);
 	});
 
-	test("explicit ownership handoff advances the organization clock without a feed", async () => {
+	test("explicit ownership handoff advances organization and new membership clocks without a feed", async () => {
 		const f = await fixture();
+		expect(
+			await f.t.run((ctx) =>
+				ctx.db
+					.query("organizations_workspaces_users")
+					.withIndex("by_workspace_user_active", (q) => q.eq("workspaceId", f.siblingId).eq("userId", f.member.userId))
+					.unique(),
+			),
+		).toBeNull();
 		const before = await read_clocks(f);
 		expect(
 			await f.asOwner.mutation(api.access_control.transfer_organization_ownership, {
@@ -275,7 +283,24 @@ describe("media access clocks", () => {
 		expect(await f.t.run((ctx) => ctx.db.get("organizations", f.owner.organizationId))).toMatchObject({
 			ownerUserId: f.member.userId,
 		});
-		await expect_clocks(f, before, [null]);
+		const [membership, lifetime] = await f.t.run((ctx) =>
+			Promise.all([
+				ctx.db
+					.query("organizations_workspaces_users")
+					.withIndex("by_workspace_user_active", (q) => q.eq("workspaceId", f.siblingId).eq("userId", f.member.userId))
+					.unique(),
+				ctx.db
+					.query("organizations_membership_lifetimes")
+					.withIndex("by_workspace_user", (q) => q.eq("workspaceId", f.siblingId).eq("userId", f.member.userId))
+					.unique(),
+			]),
+		);
+		expect(membership).toMatchObject({ active: true });
+		expect(lifetime).toMatchObject({ membershipId: membership!._id, active: true, lifetime: 1 });
+		await expect_clocks(f, before, [null, f.siblingId]);
+		expect((await read_clocks(f)).versions.find((doc) => doc.workspaceId === f.siblingId)?.revision).toBe(
+			before.versions.find((doc) => doc.workspaceId === f.siblingId)!.revision + 1,
+		);
 	});
 });
 
@@ -307,6 +332,7 @@ describe("media sharing clocks", () => {
 				manifestR2Key: "plugins/clock-notes/manifest.json",
 				backendEntrypointFile: null,
 				configuration: null,
+				mounts: [],
 				events: [],
 				capabilities,
 				pages: [],
@@ -333,6 +359,7 @@ describe("media sharing clocks", () => {
 				pluginVersionId,
 				pluginName: "clock-notes",
 				status: "enabled",
+				managementAccess: "selected",
 				configurationYaml: null,
 				acceptedCapabilities: capabilities,
 				capabilitiesAcceptedAt: Date.now(),
@@ -1003,8 +1030,16 @@ describe("media tenancy clocks", () => {
 		expect(await f.t.run((ctx) => ctx.db.get("files_media_validation_versions", oldW._id))).toBeNull();
 	});
 
-	test("automatic owner handoff advances the organization clock", async () => {
+	test("automatic owner handoff advances organization and new membership clocks", async () => {
 		const f = await fixture();
+		expect(
+			await f.t.run((ctx) =>
+				ctx.db
+					.query("organizations_workspaces_users")
+					.withIndex("by_workspace_user_active", (q) => q.eq("workspaceId", f.siblingId).eq("userId", f.member.userId))
+					.unique(),
+			),
+		).toBeNull();
 		await f.t.mutation(internal.data_deletion.prepare_user_for_hard_deletion, { userId: f.owner.userId });
 		const before = await read_clocks(f);
 		for (let pass = 0; pass < 30; pass++) {
@@ -1019,6 +1054,23 @@ describe("media tenancy clocks", () => {
 			ownerUserId: f.member.userId,
 			billingMode: "user",
 		});
-		await expect_clocks(f, before, [null]);
+		const [membership, lifetime] = await f.t.run((ctx) =>
+			Promise.all([
+				ctx.db
+					.query("organizations_workspaces_users")
+					.withIndex("by_workspace_user_active", (q) => q.eq("workspaceId", f.siblingId).eq("userId", f.member.userId))
+					.unique(),
+				ctx.db
+					.query("organizations_membership_lifetimes")
+					.withIndex("by_workspace_user", (q) => q.eq("workspaceId", f.siblingId).eq("userId", f.member.userId))
+					.unique(),
+			]),
+		);
+		expect(membership).toMatchObject({ active: true });
+		expect(lifetime).toMatchObject({ membershipId: membership!._id, active: true, lifetime: 1 });
+		await expect_clocks(f, before, [null, f.siblingId]);
+		expect((await read_clocks(f)).versions.find((doc) => doc.workspaceId === f.siblingId)?.revision).toBe(
+			before.versions.find((doc) => doc.workspaceId === f.siblingId)!.revision + 1,
+		);
 	});
 });

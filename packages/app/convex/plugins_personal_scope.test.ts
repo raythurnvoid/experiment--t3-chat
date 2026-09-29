@@ -85,6 +85,7 @@ async function fixture() {
 			manifestR2Key: "plugins/private-notes/manifest.json",
 			backendEntrypointFile: null,
 			configuration: null,
+			mounts: [],
 			events: [],
 			capabilities,
 			pages: [{ id: "notes", title: "Notes", entry: "index.html", navItem: null }],

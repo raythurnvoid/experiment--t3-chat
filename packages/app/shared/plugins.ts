@@ -21,10 +21,10 @@ export const plugins_RUNTIME_VERSION = "1";
  * Keep one value through a multi-step rollout, or invalidate every verdict produced by the interim
  * steps before any of them can authorize a publish.
  */
-export const plugins_REVIEW_POLICY_VERSION = "16";
+export const plugins_REVIEW_POLICY_VERSION = "17";
 
 const MANIFEST_SCHEMA_VERSION = 1;
-const EVENT_TYPES = ["files.upload.completed", "users.account.deleted"] as const;
+const EVENT_TYPES = ["files.upload.completed", "users.account.deleted", "schedule.interval.elapsed"] as const;
 
 /**
  * The event that fires when a member's account is deleted, so a plugin holding that user's id in its
@@ -36,6 +36,7 @@ const EVENT_TYPES = ["files.upload.completed", "users.account.deleted"] as const
  * only when the event never arrived.
  */
 const ACCOUNT_DELETED_EVENT_TYPE = "users.account.deleted";
+const SCHEDULE_EVENT_TYPE = "schedule.interval.elapsed";
 
 export const plugins_CAPABILITIES = [
 	"plugin.secrets.read",
@@ -57,6 +58,9 @@ export const plugins_CAPABILITIES = [
 	// Consent line: the plugin may set locks and readers on matching files and folders. Members
 	// with manage permission may change them. A real manual sharing change stops reader syncing.
 	"workspace.files.own-access",
+	// Consent line: backend runs may add read-only external data through this installation's mounts.
+	// Members with workspace read access may read it through the chat agent. The owner pays for stored files.
+	"workspace.volumes.write",
 	"plugin.data.read",
 	"plugin.data.write",
 	// Consent line: the plugin's UI pages and file views may store and change this plugin's data as
@@ -69,6 +73,9 @@ export const plugins_CAPABILITIES = [
 	// backend already gets, because "a member's click runs publisher code that can write" is a
 	// different consent from "an upload runs it".
 	"plugin.backend.invoke",
+	// Consent line: the backend may run on a schedule as a member who granted it that access.
+	// Each run uses only that member's live permissions and the permissions granted to the plugin.
+	"plugin.schedule.run",
 	"plugin.service.connect",
 	// The plugin's UI pages and file views, running in the browser, may call the origins in
 	// `uiOutboundOrigins`. Kept apart from `outbound.fetch`, which is the plugin's backend calling out
@@ -100,6 +107,9 @@ const NEWLINE_REGEX = /\r?\n/u;
 const MAX_CONFIGURATION_BYTES = 16 * 1024;
 const MAX_CONFIGURATION_PATH_VALUES = 32;
 const MAX_CONFIGURATION_PATH_VALUE_LENGTH = 512;
+const MOUNT_NAME_REGEX = /^[a-z0-9][a-z0-9._-]{0,62}$/u;
+const MIN_SCHEDULE_INTERVAL_MINUTES = 15;
+const MAX_SCHEDULE_INTERVAL_MINUTES = 10_080;
 
 export type plugins_ConfigurationValue =
 	| null
@@ -211,9 +221,37 @@ function validate_event_filter_values(args: {
 	return Result({ _yay: [...paths] });
 }
 
+function validate_mount_name(args: { configuration: plugins_ConfigurationValue; mount: plugins_Mount }) {
+	const value = configuration_value_at_path(args.configuration, args.mount.configurationPath);
+	if (typeof value !== "string" || !MOUNT_NAME_REGEX.test(value) || value === "tmp") {
+		return Result({
+			_nay: { message: `Plugin configuration "${args.mount.configurationPath.join(".")}" must be a valid mount name` },
+		});
+	}
+	return Result({ _yay: value });
+}
+
+function validate_schedule_interval(args: { configuration: plugins_ConfigurationValue; configurationPath: string[] }) {
+	const value = configuration_value_at_path(args.configuration, args.configurationPath);
+	if (
+		typeof value !== "number" ||
+		!Number.isInteger(value) ||
+		value < MIN_SCHEDULE_INTERVAL_MINUTES ||
+		value > MAX_SCHEDULE_INTERVAL_MINUTES
+	) {
+		return Result({
+			_nay: {
+				message: `Plugin configuration "${args.configurationPath.join(".")}" must be an integer from 15 to 10080 minutes`,
+			},
+		});
+	}
+	return Result({ _yay: value });
+}
+
 export function plugins_parse_installation_configuration_yaml(args: {
 	configurationYaml: string;
 	events: plugins_Event[];
+	mounts: plugins_Mount[];
 }) {
 	if (!args.configurationYaml.trim()) {
 		return Result({ _nay: { message: "Plugin configuration cannot be blank" } });
@@ -250,6 +288,7 @@ export function plugins_parse_installation_configuration_yaml(args: {
 		return Result({ _nay: { message: "Plugin configuration must be a YAML object" } });
 	}
 
+	let scheduleIntervalMinutes: number | null = null;
 	for (const event of args.events) {
 		for (const filter of event.filters) {
 			const values = validate_event_filter_values({ configuration: parsed.data, filter });
@@ -257,12 +296,41 @@ export function plugins_parse_installation_configuration_yaml(args: {
 				return values;
 			}
 		}
+		if (event.type === SCHEDULE_EVENT_TYPE) {
+			if (!event.schedule) {
+				return Result({ _nay: { message: "Schedule events require a schedule declaration" } });
+			}
+			const interval = validate_schedule_interval({
+				configuration: parsed.data,
+				configurationPath: event.schedule.configurationPath,
+			});
+			if (interval._nay) {
+				return interval;
+			}
+			scheduleIntervalMinutes = interval._yay;
+		}
+	}
+
+	const mountNames: Record<string, string> = {};
+	const names = new Set<string>();
+	for (const mount of args.mounts) {
+		const name = validate_mount_name({ configuration: parsed.data, mount });
+		if (name._nay) {
+			return name;
+		}
+		if (names.has(name._yay)) {
+			return Result({ _nay: { message: `Plugin configuration has duplicate mount name "${name._yay}"` } });
+		}
+		names.add(name._yay);
+		mountNames[mount.id] = name._yay;
 	}
 
 	return Result({
 		_yay: {
 			configurationYaml: args.configurationYaml,
 			configuration: parsed.data,
+			mountNames,
+			scheduleIntervalMinutes,
 		},
 	});
 }
@@ -473,6 +541,8 @@ export function plugins_consent_diff(args: {
 		uiOutboundOrigins: string[];
 		mcpServers: plugins_McpServer[];
 		skills: Array<{ name: string }>;
+		mounts: plugins_Mount[];
+		events: Array<{ type: plugins_Event["type"] }>;
 	} | null;
 	target: {
 		capabilities: plugins_Capability[];
@@ -480,6 +550,8 @@ export function plugins_consent_diff(args: {
 		uiOutboundOrigins: string[];
 		mcpServers: plugins_McpServer[];
 		skills: Array<{ name: string }>;
+		mounts: plugins_Mount[];
+		events: Array<{ type: plugins_Event["type"] }>;
 	};
 }) {
 	const currentCapabilities = new Set(args.current?.capabilities ?? []);
@@ -503,6 +575,8 @@ export function plugins_consent_diff(args: {
 		(args.current?.mcpServers ?? []).map((server) => [server.id, mcpServerKey(server)]),
 	);
 	const currentSkillNames = new Set(args.current?.skills.map((skill) => skill.name) ?? []);
+	const currentMountIds = new Set(args.current?.mounts.map((mount) => mount.id) ?? []);
+	const targetMountIds = new Set(args.target.mounts.map((mount) => mount.id));
 	return {
 		newCapabilities: args.target.capabilities.filter((capability) => !currentCapabilities.has(capability)),
 		newOutboundOrigins: args.target.outboundOrigins.filter((origin) => !currentOrigins.has(origin)),
@@ -512,6 +586,11 @@ export function plugins_consent_diff(args: {
 			.filter((server) => currentMcpServerKeys.get(server.id) !== mcpServerKey(server))
 			.map((server) => server.id),
 		newSkillNames: args.target.skills.filter((skill) => !currentSkillNames.has(skill.name)).map((skill) => skill.name),
+		newMounts: args.target.mounts.filter((mount) => !currentMountIds.has(mount.id)),
+		droppedMounts: (args.current?.mounts ?? []).filter((mount) => !targetMountIds.has(mount.id)),
+		scheduleAdded:
+			args.target.events.some((event) => event.type === SCHEDULE_EVENT_TYPE) &&
+			!args.current?.events.some((event) => event.type === SCHEDULE_EVENT_TYPE),
 	};
 }
 
@@ -754,6 +833,7 @@ const SEMVER_REGEX = /^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$/u;
 const MODULE_PATH_REGEX = /^[A-Za-z0-9._/-]+$/u;
 const COMPATIBILITY_DATE_REGEX = /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/u;
 const MCP_SERVER_ID_REGEX = /^[a-z][a-z0-9-]{0,19}$/u;
+const MOUNT_ID_REGEX = /^[a-z][a-z0-9-]{0,31}$/u;
 // Stricter than the Agent Skills spec, which also allows Unicode lowercase. ASCII keeps paths and tool text simple.
 const SKILL_NAME_REGEX = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
 // RFC 9110 token characters.
@@ -767,6 +847,8 @@ const MAX_NAV_ITEMS = 8;
 const MAX_FILE_VIEWS = 8;
 const MAX_EVENTS = 8;
 const MAX_EVENT_FILTERS = 8;
+const MAX_MOUNTS = 4;
+const MAX_MOUNT_DESCRIPTION_LENGTH = 300;
 const MAX_DISPLAY_NAME_LENGTH = 80;
 const MAX_DESCRIPTION_LENGTH = 2_000;
 const MAX_VERSION_LENGTH = 100;
@@ -812,14 +894,16 @@ export const plugins_module_path_schema = z
 		"Path must be a normalized relative path",
 	);
 
+const configuration_path_schema = z
+	.array(z.string().min(1).max(MAX_CONFIGURATION_PATH_SEGMENT_LENGTH))
+	.min(1)
+	.max(MAX_CONFIGURATION_PATH_SEGMENTS);
+
 const event_filter_schema = z
 	.object({
 		field: z.literal("source.path"),
 		operator: z.literal("pathIsUnderAny"),
-		configurationPath: z
-			.array(z.string().min(1).max(MAX_CONFIGURATION_PATH_SEGMENT_LENGTH))
-			.min(1)
-			.max(MAX_CONFIGURATION_PATH_SEGMENTS),
+		configurationPath: configuration_path_schema,
 	})
 	.strict();
 
@@ -839,11 +923,39 @@ const event_schema = z
 			)
 			.default([]),
 		filters: z.array(event_filter_schema).max(MAX_EVENT_FILTERS).default([]),
+		schedule: z.object({ configurationPath: configuration_path_schema }).strict().optional(),
 	})
 	.strict()
 	// The list stays a plain array so every reader keeps one type. Which events may fill it is a rule
 	// about this event vocabulary, not about the field, so it lives here.
 	.superRefine((event, ctx) => {
+		if (event.type !== SCHEDULE_EVENT_TYPE && event.schedule) {
+			ctx.addIssue({
+				code: "custom",
+				path: ["schedule"],
+				message: "Only schedule.interval.elapsed may declare a schedule",
+			});
+		}
+		if (event.type === SCHEDULE_EVENT_TYPE) {
+			if (!event.schedule) {
+				ctx.addIssue({ code: "custom", path: ["schedule"], message: "Schedule events require a schedule declaration" });
+			}
+			if (event.contentTypes.length > 0) {
+				ctx.addIssue({
+					code: "custom",
+					path: ["contentTypes"],
+					message: "schedule.interval.elapsed carries no file, so it cannot declare content types",
+				});
+			}
+			if (event.filters.length > 0) {
+				ctx.addIssue({
+					code: "custom",
+					path: ["filters"],
+					message: "schedule.interval.elapsed cannot declare file filters",
+				});
+			}
+			return;
+		}
 		if (event.type === ACCOUNT_DELETED_EVENT_TYPE) {
 			if (event.contentTypes.length > 0) {
 				ctx.addIssue({
@@ -880,8 +992,23 @@ const plugin_configuration_schema = z
 	})
 	.strict();
 
+const mount_schema = z
+	.object({
+		id: z.string().regex(MOUNT_ID_REGEX, "Mount ids must use lowercase letters, digits, and dashes"),
+		description: z
+			.string()
+			.min(1)
+			.max(
+				MAX_MOUNT_DESCRIPTION_LENGTH,
+				`Mount descriptions must be at most ${MAX_MOUNT_DESCRIPTION_LENGTH} characters`,
+			),
+		configurationPath: configuration_path_schema,
+	})
+	.strict();
+
 type plugins_EventFilter = z.infer<typeof event_filter_schema>;
 type plugins_Event = z.infer<typeof event_schema>;
+type plugins_Mount = z.infer<typeof mount_schema>;
 
 const manifest_file_schema = z
 	.object({
@@ -1090,6 +1217,10 @@ const manifest_schema = z
 			.strict()
 			.optional(),
 		configuration: plugin_configuration_schema.nullable().default(null),
+		mounts: z
+			.array(mount_schema)
+			.max(MAX_MOUNTS, `Plugin manifests can declare at most ${MAX_MOUNTS} mounts`)
+			.default([]),
 		events: z.array(event_schema).max(MAX_EVENTS, `Plugin manifests can declare at most ${MAX_EVENTS} events`),
 		pages: z.array(page_schema).max(MAX_PAGES).optional(),
 		fileViews: z
@@ -1154,6 +1285,33 @@ export function plugins_validate_manifest(input: unknown) {
 	if (name._yay !== parsed.data.name) {
 		return Result({ _nay: { message: "Plugin name must already be normalized" } });
 	}
+	const mountIds = new Set<string>();
+	const mountPaths = new Set<string>();
+	for (const mount of parsed.data.mounts) {
+		if (mountIds.has(mount.id)) {
+			return Result({ _nay: { message: `Plugin manifest has duplicate mount id "${mount.id}"` } });
+		}
+		mountIds.add(mount.id);
+		// This text appears in consent. Hidden characters can hide what the user accepts.
+		if (/[\p{Cc}\p{Cf}]/u.test(mount.description)) {
+			return Result({ _nay: { message: `Mount "${mount.id}" description must not contain control characters` } });
+		}
+		const path = JSON.stringify(mount.configurationPath);
+		if (mountPaths.has(path)) {
+			return Result({ _nay: { message: "Plugin mounts must use distinct configuration paths" } });
+		}
+		mountPaths.add(path);
+	}
+	const hasSchedule = parsed.data.events.some((event) => event.type === SCHEDULE_EVENT_TYPE);
+	if (parsed.data.mounts.length > 0 && parsed.data.configuration === null) {
+		return Result({ _nay: { message: "Plugin mounts require a configuration declaration" } });
+	}
+	if (hasSchedule && parsed.data.configuration === null) {
+		return Result({ _nay: { message: "Plugin schedules require a configuration declaration" } });
+	}
+	if (hasSchedule && !parsed.data.backend) {
+		return Result({ _nay: { message: "Plugin schedules require a plugin backend" } });
+	}
 	if (parsed.data.configuration === null && parsed.data.events.some((event) => event.filters.length > 0)) {
 		return Result({ _nay: { message: "Plugin event filters require a configuration declaration" } });
 	}
@@ -1161,6 +1319,7 @@ export function plugins_validate_manifest(input: unknown) {
 		const defaultConfiguration = plugins_parse_installation_configuration_yaml({
 			configurationYaml: parsed.data.configuration.defaultYaml,
 			events: parsed.data.events,
+			mounts: parsed.data.mounts,
 		});
 		if (defaultConfiguration._nay) {
 			return Result({
@@ -1171,7 +1330,7 @@ export function plugins_validate_manifest(input: unknown) {
 	const eventSubscriptions = new Set<string>();
 	let expandedEventSubscriptionCount = 0;
 	for (const event of parsed.data.events) {
-		if (event.type === ACCOUNT_DELETED_EVENT_TYPE) {
+		if (event.type === ACCOUNT_DELETED_EVENT_TYPE || event.type === SCHEDULE_EVENT_TYPE) {
 			if (eventSubscriptions.has(event.type)) {
 				return Result({ _nay: { message: `Plugin manifest has duplicate ${event.type} subscriptions` } });
 			}
@@ -1539,6 +1698,21 @@ export function plugins_validate_manifest(input: unknown) {
 	}
 	if (parsed.data.uiOutboundOrigins.length > 0 && !capabilities.has("ui.outbound.fetch" satisfies plugins_Capability)) {
 		return Result({ _nay: { message: "UI outbound origins require the ui.outbound.fetch capability" } });
+	}
+	// Mount and schedule declarations must agree with their consent capabilities in both directions.
+	if (capabilities.has("workspace.volumes.write" satisfies plugins_Capability) && mountIds.size === 0) {
+		return Result({ _nay: { message: "The workspace.volumes.write capability requires at least one mount" } });
+	}
+	if (mountIds.size > 0 && !capabilities.has("workspace.volumes.write" satisfies plugins_Capability)) {
+		return Result({ _nay: { message: "Plugin mounts require the workspace.volumes.write capability" } });
+	}
+	if (capabilities.has("plugin.schedule.run" satisfies plugins_Capability) && !hasSchedule) {
+		return Result({
+			_nay: { message: "The plugin.schedule.run capability requires a schedule.interval.elapsed event" },
+		});
+	}
+	if (hasSchedule && !capabilities.has("plugin.schedule.run" satisfies plugins_Capability)) {
+		return Result({ _nay: { message: "Plugin schedules require the plugin.schedule.run capability" } });
 	}
 	// Like ui.outbound.fetch, the MCP and skill capabilities agree with their lists in both directions.
 	// A capability with an empty list consents to nothing, and a list without the capability would

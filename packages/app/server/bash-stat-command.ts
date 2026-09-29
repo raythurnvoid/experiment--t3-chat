@@ -230,6 +230,24 @@ export function bash_stat_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 					? await bash_get_db_file_byte_size({ ctx, ctxData: pathResolution.ctxData, dbFilesDoc })
 					: null;
 
+			if (dbFilesDoc.kind === "file") {
+				// The size query is separate I/O. Recheck the exact target before releasing metadata.
+				const liveEntry = await pathResolution.fs.getEntry(dbFilesPath);
+				if (
+					!liveEntry ||
+					liveEntry.target?.kind !== dbFilesDoc.target?.kind ||
+					(liveEntry.target?.kind !== "root" &&
+						liveEntry.target?.id !== (dbFilesDoc.target?.kind === "root" ? undefined : dbFilesDoc.target?.id)) ||
+					liveEntry.assetId !== dbFilesDoc.assetId ||
+					liveEntry.updatedAt !== dbFilesDoc.updatedAt ||
+					liveEntry.contentSize !== dbFilesDoc.contentSize
+				) {
+					stderr += `stat: cannot stat '${file}': No such file or directory\n`;
+					hasError = true;
+					continue;
+				}
+			}
+
 			stdout += render_output(
 				parsed._yay.format,
 				file,

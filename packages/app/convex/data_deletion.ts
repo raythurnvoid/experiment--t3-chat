@@ -2,7 +2,9 @@ import { v } from "convex/values";
 import { Workpool } from "@convex-dev/workpool";
 import type { RegisteredMutation } from "convex/server";
 import { components, internal } from "./_generated/api.js";
+import { access_control_db_ensure_owner_memberships } from "./access_control.ts";
 import { access_control_changes_db_record } from "./access_control_changes.ts";
+import { plugins_scheduled_runs_workpool } from "./plugins_schedules_db.ts";
 import { activities_db_delete, activities_db_require_by_source_id } from "./activities_db.ts";
 import { ai_chat_files_db_delete_job_batch, ai_chat_files_db_request_job_stop } from "./ai_chat_files.ts";
 import { organizations_membership_lifetimes_db_record } from "./organizations_membership_lifetimes.ts";
@@ -31,6 +33,7 @@ import {
 	plugins_data_db_get_scope_cleanup_pairs,
 } from "./plugins_data.ts";
 import { plugins_db_delete_anonymized_review_if_unlinked } from "./plugins.ts";
+import { plugins_volumes_db_drain_batch } from "./plugins_volumes.ts";
 import { plugins_mcp_db_delete_user_batch, plugins_mcp_db_revoke_grant } from "./plugins_mcp.ts";
 import { files_nodes_db_handoff_yjs_cleanup_task } from "./files_nodes.ts";
 import { files_pending_update_db_release_replacement_asset } from "./files_pending_updates.ts";
@@ -156,6 +159,7 @@ async function db_create_default_organization_and_workspace_for_user(
 		name: organizations_DEFAULT_WORKSPACE_NAME,
 		description: "",
 		default: true,
+		pluginInstallAccess: "owner",
 		updatedAt: args.now,
 	});
 
@@ -812,7 +816,10 @@ async function db_purge_organization_workspace_content_batch(
 		)
 		.first();
 	if (pluginRun) {
-		if (pluginRun.workId) await plugins_runtime_workpool.cancel(ctx, pluginRun.workId);
+		if (pluginRun.workId)
+			await (
+				pluginRun.event === "schedule.interval.elapsed" ? plugins_scheduled_runs_workpool : plugins_runtime_workpool
+			).cancel(ctx, pluginRun.workId);
 		const activity = await activities_db_require_by_source_id(ctx, pluginRun._id);
 		const deleted = await activities_db_delete(ctx, activity._id);
 		if (!deleted.done) return { done: false, deletedCount: deleted.deletedCount };
@@ -917,6 +924,14 @@ async function db_purge_organization_workspace_content_batch(
 	if (!pluginData.done) {
 		return { done: false, deletedCount: pluginData.deletedCount };
 	}
+	const pluginVolumes = await plugins_volumes_db_drain_batch(ctx, {
+		organizationId,
+		workspaceId,
+		installationId: null,
+		volumeId: null,
+		batchSize: 200,
+	});
+	if (!pluginVolumes.done) return pluginVolumes;
 
 	const pluginInstallation = await ctx.db
 		.query("plugins_workspace_installations")
@@ -935,6 +950,30 @@ async function db_purge_organization_workspace_content_batch(
 		if (pluginUiSessions.length > 0) {
 			await Promise.all(pluginUiSessions.map((doc) => ctx.db.delete("plugins_ui_sessions", doc._id)));
 			return { done: false, deletedCount: pluginUiSessions.length };
+		}
+		const mounts = await ctx.db
+			.query("plugins_mounts")
+			.withIndex("by_organization_workspace_installation", (q) =>
+				q
+					.eq("organizationId", organizationId)
+					.eq("workspaceId", workspaceId)
+					.eq("installationId", pluginInstallation._id),
+			)
+			.take(batchSize);
+		for (const mount of mounts) await ctx.db.delete("plugins_mounts", mount._id);
+		if (mounts.length > 0) return { done: false, deletedCount: mounts.length };
+		const volumeUsage = await ctx.db
+			.query("plugins_volume_usage")
+			.withIndex("by_organization_workspace_installation", (q) =>
+				q
+					.eq("organizationId", organizationId)
+					.eq("workspaceId", workspaceId)
+					.eq("installationId", pluginInstallation._id),
+			)
+			.unique();
+		if (volumeUsage) {
+			await ctx.db.delete("plugins_volume_usage", volumeUsage._id);
+			return { done: false, deletedCount: 1 };
 		}
 		await ctx.db.delete("plugins_workspace_installations", pluginInstallation._id);
 		return { done: false, deletedCount: 1 };
@@ -2119,7 +2158,8 @@ async function db_drain_user_memberships_batch(
 
 		if (!organization.default && organization.ownerUserId === args.userId) {
 			// An owner has no role row. The six-workspace cap in `shared/quotas.ts` bounds this collect,
-			// so remove every chosen-successor role and transfer ownership in the same transaction.
+			// so remove every chosen-successor role, transfer ownership, and add the successor's missing
+			// workspace memberships in the same transaction.
 			const [nextOwnerAssignments, nextOwnerQuota] = await Promise.all([
 				ctx.db
 					.query("access_control_role_assignments")
@@ -2145,6 +2185,11 @@ async function db_drain_user_memberships_batch(
 					updatedAt: args.now,
 				}),
 			]);
+			await access_control_db_ensure_owner_memberships(ctx, {
+				organizationId: organization._id,
+				ownerUserId: remainingMembership.userId,
+				now: args.now,
+			});
 			await files_media_validation_db_advance_version(ctx, { organizationId: organization._id, workspaceId: null });
 			await access_control_changes_db_record(ctx, [
 				{

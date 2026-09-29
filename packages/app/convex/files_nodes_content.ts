@@ -80,7 +80,6 @@ import { composite_id, should_never_happen } from "../shared/shared-utils.ts";
 import { path_extract_segments_from } from "../shared/paths.ts";
 import {
 	organizations_is_global_organization_id,
-	organizations_is_reserved_workspace_id,
 	organizations_GLOBAL_ORGANIZATION_ID,
 	organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 	organizations_GLOBAL_PLUGINS_WORKSPACE_ID,
@@ -206,6 +205,7 @@ import {
 import { files_private_storage_db_release, files_private_storage_db_reserve } from "./files_private_storage.ts";
 import { files_visible_db_create_reader } from "./files_visible.ts";
 import { ai_chat_workspaces_db_authorize_file_scope } from "./ai_chat_workspaces.ts";
+import { files_db_resolve_scope } from "./files_scopes.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
@@ -266,50 +266,53 @@ async function db_insert_committed_text_chunks(
 		}>;
 	},
 ) {
-	// An empty chunk list naturally performs no inserts.
-	const textChunkIds = await Promise.all(
-		args.chunks.map(async (chunk) => {
-			const shared = {
-				organizationId: args.organizationId,
-				workspaceId: args.workspaceId,
-				fileNodeId: args.nodeId,
-				sourceKind: "committed" as const,
-				...(args.yjsSequence === undefined ? {} : { yjsSequence: args.yjsSequence }),
-				chunkIndex: chunk.chunkIndex,
-				startIndex: chunk.startIndex,
-				endIndex: chunk.endIndex,
-				lineStart: chunk.lineStart,
-				lineEnd: chunk.lineEnd,
-				chunkFlags: chunk.chunkFlags,
-			};
-			return await ctx.db.insert("files_text_chunks", { ...shared, textChunk: chunk.textChunk });
-		}),
-	);
-
-	await Promise.all(
-		args.chunks.map((chunk, index) =>
-			ctx.db.insert("files_plain_text_chunks", {
-				organizationId: args.organizationId,
-				workspaceId: args.workspaceId,
-				fileNodeId: args.nodeId,
-				sourceKind: "committed",
-				...(args.yjsSequence === undefined ? {} : { yjsSequence: args.yjsSequence }),
-				textChunkId: textChunkIds[index]!,
-				chunkIndex: chunk.chunkIndex,
-				path: args.path,
-				archiveOperationId: args.archiveOperationId ?? undefined,
-				plainTextChunk: chunk.plainTextChunk,
-				textChunk: chunk.textChunk,
-				startIndex: chunk.startIndex,
-				endIndex: chunk.endIndex,
-				lineStart: chunk.lineStart,
-				lineEnd: chunk.lineEnd,
-				chunkFlags: chunk.chunkFlags,
-				hasChunkAbove: index > 0,
-				hasChunkBelow: index < args.chunks.length - 1,
+	// Large plain text can have more chunks than Convex allows in one I/O batch.
+	for (let start = 0; start < args.chunks.length; start += 100) {
+		const chunks = args.chunks.slice(start, start + 100);
+		const textChunkIds = await Promise.all(
+			chunks.map(async (chunk) => {
+				const shared = {
+					organizationId: args.organizationId,
+					workspaceId: args.workspaceId,
+					fileNodeId: args.nodeId,
+					sourceKind: "committed" as const,
+					...(args.yjsSequence === undefined ? {} : { yjsSequence: args.yjsSequence }),
+					chunkIndex: chunk.chunkIndex,
+					startIndex: chunk.startIndex,
+					endIndex: chunk.endIndex,
+					lineStart: chunk.lineStart,
+					lineEnd: chunk.lineEnd,
+					chunkFlags: chunk.chunkFlags,
+				};
+				return await ctx.db.insert("files_text_chunks", { ...shared, textChunk: chunk.textChunk });
 			}),
-		),
-	);
+		);
+
+		await Promise.all(
+			chunks.map((chunk, index) =>
+				ctx.db.insert("files_plain_text_chunks", {
+					organizationId: args.organizationId,
+					workspaceId: args.workspaceId,
+					fileNodeId: args.nodeId,
+					sourceKind: "committed",
+					...(args.yjsSequence === undefined ? {} : { yjsSequence: args.yjsSequence }),
+					textChunkId: textChunkIds[index]!,
+					chunkIndex: chunk.chunkIndex,
+					path: args.path,
+					archiveOperationId: args.archiveOperationId ?? undefined,
+					plainTextChunk: chunk.plainTextChunk,
+					textChunk: chunk.textChunk,
+					startIndex: chunk.startIndex,
+					endIndex: chunk.endIndex,
+					lineStart: chunk.lineStart,
+					lineEnd: chunk.lineEnd,
+					chunkFlags: chunk.chunkFlags,
+					hasChunkAbove: start + index > 0,
+					hasChunkBelow: start + index < args.chunks.length - 1,
+				}),
+			),
+		);
+	}
 }
 
 export async function db_insert_file_text_content(
@@ -563,16 +566,15 @@ export async function files_nodes_db_insert_file_content_docs(
 		return;
 	}
 
-	// Writable files need editable Yjs docs, so they cannot live in the reserved global organization.
-	// Reserved external resources are identified by organizationId; SYSTEM and the reserved workspace id are
-	// valid only inside that global organization.
+	// Editable files need a real tenant. External content stays read-only and has no Yjs state.
 	if (organizations_is_global_organization_id(args.organizationId)) {
 		const errorMessage = "Editable text content requires a real organizationId";
 		const errorData = { organizationId: args.organizationId, workspaceId: args.workspaceId, nodeId: args.nodeId };
 		console.error(errorMessage, errorData);
 		throw should_never_happen(errorMessage, errorData);
 	}
-	if (organizations_is_reserved_workspace_id(args.workspaceId)) {
+	const scope = files_db_resolve_scope(ctx, args.workspaceId);
+	if (scope.kind !== "workspace") {
 		const errorMessage = "Editable text content requires a real workspaceId";
 		const errorData = { organizationId: args.organizationId, workspaceId: args.workspaceId, nodeId: args.nodeId };
 		console.error(errorMessage, errorData);
@@ -584,6 +586,7 @@ export async function files_nodes_db_insert_file_content_docs(
 		console.error(errorMessage, errorData);
 		throw should_never_happen(errorMessage, errorData);
 	}
+	const workspaceId = scope.workspaceId;
 
 	// A non-collaborative file gets committed chunks and nothing else: no Yjs snapshot, no sequence
 	// doc, no update log. It still stores `textKind`, so it chunks under its real shape and a
@@ -632,7 +635,7 @@ export async function files_nodes_db_insert_file_content_docs(
 	const [yjs_snapshot_id, yjs_last_sequence_id] = await Promise.all([
 		ctx.db.insert("files_yjs_snapshots", {
 			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
+			workspaceId,
 			fileNodeId: args.nodeId,
 			sequence: 0,
 			assetId: yjsSnapshotAssetId,
@@ -642,7 +645,7 @@ export async function files_nodes_db_insert_file_content_docs(
 		}),
 		ctx.db.insert("files_yjs_docs_last_sequences", {
 			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
+			workspaceId,
 			fileNodeId: args.nodeId,
 			lastSequence: initialYjsSequence,
 			unmaterializedUpdateCount: 0,
@@ -4327,13 +4330,14 @@ export const get_file_text_content_db_state_by_path = internalQuery({
 			};
 		}
 		const fileNode = entry.node;
+		const scope = files_db_resolve_scope(ctx, args.workspaceId);
 
-		// External (reserved) scope: no Yjs/pending/materialization. Read the linked R2 content asset
+		// External scope: no Yjs/pending/materialization. Read the linked R2 content asset
 		// directly and leave `content` undefined so `get_file_last_available_text_content_by_path`
 		// falls into its raw-R2 `.text()` branch.
 		if (
 			organizations_is_global_organization_id(args.organizationId) ||
-			organizations_is_reserved_workspace_id(args.workspaceId)
+			scope.kind !== "workspace"
 		) {
 			const asset = fileNode.assetId
 				? await ctx.db
@@ -4356,7 +4360,7 @@ export const get_file_text_content_db_state_by_path = internalQuery({
 		// Tenant scope (the guards above narrowed both ids to real ids): bind them so the narrowing
 		// also reaches the `withIndex` callbacks — TS drops property narrowing at closure boundaries.
 		const organizationId = args.organizationId;
-		const workspaceId = args.workspaceId;
+		const workspaceId = scope.workspaceId;
 
 		const pendingUpdateById =
 			args.includePending === false
@@ -4583,7 +4587,6 @@ async function files_can_finish_agent_read(
 	},
 	target: files_PendingTarget,
 ) {
-	if (!args.agentSource) return true;
 	const entry = (await ctx.runQuery(internal.files_nodes.get_visible_entry_by_path, {
 		agentSource: args.agentSource,
 		organizationId: args.organizationId,
@@ -9057,15 +9060,16 @@ async function db_delete_superseded_yjs_asset(
 	if (referencingSnapshot) return;
 
 	if (asset.r2Key) {
+		const scope = files_db_resolve_scope(ctx, asset.workspaceId);
 		if (
 			organizations_is_global_organization_id(asset.organizationId) ||
-			organizations_is_reserved_workspace_id(asset.workspaceId)
+			scope.kind !== "workspace"
 		) {
 			await r2.deleteObject(ctx, asset.r2Key);
 		} else {
 			await r2_enqueue_object_deletion_job(ctx, {
 				organizationId: asset.organizationId,
-				workspaceId: asset.workspaceId,
+				workspaceId: scope.workspaceId,
 				r2Key: asset.r2Key,
 				reason: "untracked_asset_event",
 				putMayArriveUntil: args.putMayArriveUntil,
@@ -9204,15 +9208,16 @@ export const delete_unfinalized_repair_assets = internalMutation({
 						workspaceId: asset.workspaceId,
 						assetId: asset._id,
 					});
+					const scope = files_db_resolve_scope(ctx, asset.workspaceId);
 					if (
 						organizations_is_global_organization_id(asset.organizationId) ||
-						organizations_is_reserved_workspace_id(asset.workspaceId)
+						scope.kind !== "workspace"
 					) {
 						await r2.deleteObject(ctx, r2Key);
 					} else {
 						await r2_enqueue_object_deletion_job(ctx, {
 							organizationId: asset.organizationId,
-							workspaceId: asset.workspaceId,
+							workspaceId: scope.workspaceId,
 							r2Key,
 							reason: "failed_create",
 						});

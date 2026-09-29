@@ -1,0 +1,46 @@
+@layer components {
+	.PluginsManagementAccess {
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+		padding-block: 24px;
+		min-width: 0;
+
+		& > h2,
+		& > p {
+			margin: 0;
+		}
+
+		& > h2 {
+			font-size: 16px;
+		}
+
+		& > p {
+			font-size: 13px;
+			line-height: 1.5;
+		}
+	}
+
+	.PluginsManagementAccess-controls,
+	.PluginsManagementAccess-entry {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 8px;
+	}
+
+	.PluginsManagementAccess-entry {
+		justify-content: space-between;
+		padding-block: 4px;
+	}
+
+	.PluginsManagementAccess-list {
+		margin: 0;
+		padding: 0;
+		list-style: none;
+	}
+
+	.PluginsManagementAccess-feedback[role="alert"] {
+		color: var(--color-red-09);
+	}
+}

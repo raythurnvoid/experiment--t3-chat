@@ -1,10 +1,15 @@
 import { R2 } from "@convex-dev/r2";
 import { Workpool, type WorkId } from "@convex-dev/workpool";
-import { afterEach, beforeEach, describe, expect, test as baseTest, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test as baseTest, vi, type MockInstance } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
-import { test_convex, test_mocks_cancel_pending_home_file_seeds, test_mocks_fill_db_with } from "./setup.test.ts";
+import {
+	test_convex,
+	test_mocks,
+	test_mocks_cancel_pending_home_file_seeds,
+	test_mocks_fill_db_with,
+} from "./setup.test.ts";
 import { data_deletion_db_request } from "./data_deletion_requests.ts";
 import { files_pending_nodes_db_create } from "./files_pending_nodes.ts";
 import { files_private_storage_db_reserve } from "./files_private_storage.ts";
@@ -18,12 +23,14 @@ import { quotas_db_ensure, quotas_db_get } from "./quotas.ts";
 import { files_get_utf8_byte_size } from "../shared/files.ts";
 import { r2_confirmed_object_delete, r2_PUT_MAY_ARRIVE_MARGIN_MS, r2_create_asset_key } from "./r2_client.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
+import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
 
 const test = baseTest.sequential;
+let volumeDeleteObjectSpy: MockInstance;
 
 beforeEach(() => {
 	vi.useFakeTimers();
-	vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
+	volumeDeleteObjectSpy = vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
 	vi.spyOn(r2_confirmed_object_delete, "delete_object").mockResolvedValue(undefined);
 	vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("Review tests block network calls"));
 });
@@ -175,6 +182,7 @@ async function data_deletion_test_seed_plugin_ui_sessions(
 		manifestR2Key: "plugins/gallery/manifest.json",
 		backendEntrypointFile: null,
 		configuration: null,
+		mounts: [],
 		events: [],
 		capabilities: ["workspace.files.read"],
 		pages: [],
@@ -201,6 +209,7 @@ async function data_deletion_test_seed_plugin_ui_sessions(
 		pluginVersionId,
 		pluginName: "gallery",
 		status: "enabled",
+		managementAccess: "selected",
 		configurationYaml: null,
 		acceptedCapabilities: ["workspace.files.read"],
 		capabilitiesAcceptedAt: now,
@@ -680,6 +689,10 @@ const review_workspace_tables = [
 	"plugins_mcp_oauth_grants",
 	"plugins_mcp_oauth_pending",
 	"plugins_mcp_calls",
+	"plugins_mounts",
+	"plugins_volume_generations",
+	"plugins_volumes",
+	"plugins_volume_usage",
 	"plugins_workspace_installations",
 	"activities",
 	"activities_user_states",
@@ -846,6 +859,106 @@ async function review_seed_all_workspace_content(
 				compatibilityFlags: [],
 			},
 		});
+		await ctx.db.insert("plugins_mounts", { ...pluginTenant, mountId: "records", name: `records-${i}` });
+		const volumeId = await ctx.db.insert("plugins_volumes", {
+			...tenant,
+			installationId,
+			mountId: "records",
+			volumeKey: "sample",
+			publishedGenerationId: null,
+			createdAt: now,
+			deleteRequestedAt: null,
+			drainScheduledUntil: null,
+		});
+		const generationId = await ctx.db.insert("plugins_volume_generations", {
+			...tenant,
+			installationId,
+			volumeId,
+			status: "published",
+			revision: "review",
+			fileCount: 1,
+			bytes: 2,
+			createdAt: now,
+			lastWriteAt: now,
+			publishedAt: now,
+			expiresAt: null,
+			drainScheduledUntil: null,
+		});
+		await ctx.db.patch("plugins_volumes", volumeId, { publishedGenerationId: generationId });
+		await ctx.db.insert("plugins_volume_usage", { ...tenant, installationId, fileCount: 1, bytes: 2 });
+		const volumeScope = { organizationId: args.organizationId, workspaceId: volumeId };
+		const folderId = await ctx.db.insert("files_nodes", {
+			...test_mocks.files.base(),
+			...volumeScope,
+			createdBy: users_SYSTEM_AUTHOR,
+			updatedBy: users_SYSTEM_AUTHOR,
+			parentId: "root",
+			name: generationId,
+			path: `/${generationId}`,
+			treePath: `/${generationId}/`,
+			pathDepth: 1,
+		});
+		const assetId = await ctx.db.insert("files_r2_assets", {
+			...volumeScope,
+			kind: "content",
+			r2Bucket: "test-files",
+			r2Key: `volumes/review-${args.tag}/${i}`,
+			size: 2,
+			createdBy: users_SYSTEM_AUTHOR,
+			updatedAt: now,
+		});
+		const path = `/${generationId}/record.json`;
+		const fileNodeId = await ctx.db.insert("files_nodes", {
+			...test_mocks.files.base(),
+			...volumeScope,
+			createdBy: users_SYSTEM_AUTHOR,
+			updatedBy: users_SYSTEM_AUTHOR,
+			kind: "file",
+			parentId: folderId,
+			name: "record.json",
+			path,
+			treePath: `${path}/`,
+			pathDepth: 2,
+			lowercaseExtension: "json",
+			contentType: "application/json",
+			assetId,
+			contentByteSize: 2,
+			textKind: "plain_text",
+			collaborationEnabled: false,
+		});
+		const chunk = {
+			...volumeScope,
+			sourceKind: "committed" as const,
+			fileNodeId,
+			chunkIndex: 0,
+			textChunk: "{}",
+			startIndex: 0,
+			endIndex: 2,
+			lineStart: 1,
+			lineEnd: 1,
+			chunkFlags: 0,
+		};
+		const textChunkId = await ctx.db.insert("files_text_chunks", chunk);
+		await ctx.db.insert("files_plain_text_chunks", {
+			...chunk,
+			textChunkId,
+			path,
+			plainTextChunk: "{}",
+			hasChunkAbove: false,
+			hasChunkBelow: false,
+		});
+		await ctx.db.insert("files_metadata_docs", {
+			...volumeScope,
+			sourceKind: "committed",
+			fileNodeId,
+			path,
+			treePath: `${path}/`,
+			fieldPath: "metadata.source",
+			docKind: "value",
+			valueKind: "string",
+			stringValue: "records",
+		});
+		await ctx.db.insert("file_stats", { ...volumeScope, fileNodeId, lineCount: 0, wordCount: 1, charCount: 2 });
 		await ctx.db.insert("plugins_workspace_installation_secrets", {
 			...pluginTenant,
 			name: "REVIEW_KEY",
@@ -1290,6 +1403,11 @@ async function review_capture_workspace_rows(
 			.filter((activity) => activity.organizationId === organizationId && activity.workspaceId === workspaceId)
 			.map((activity) => activity._id),
 	);
+	const volumeIds = new Set<string>(
+		(await ctx.db.query("plugins_volumes").collect())
+			.filter((volume) => volume.organizationId === organizationId && volume.workspaceId === workspaceId)
+			.map((volume) => volume._id),
+	);
 	return await Promise.all(
 		review_workspace_tables.map(async (table) => {
 			const rows = await ctx.db.query(table).collect();
@@ -1300,7 +1418,7 @@ async function review_capture_workspace_rows(
 						: "organizationId" in row &&
 							"workspaceId" in row &&
 							row.organizationId === organizationId &&
-							row.workspaceId === workspaceId,
+							(row.workspaceId === workspaceId || volumeIds.has(row.workspaceId)),
 				)
 				.map((row) => row._id);
 			return { table, ids };
@@ -1637,9 +1755,14 @@ for (const path of ["workspace", "organization", "reset"] as const) {
 		}
 		expect(done).toBe(true);
 		expect(passes).toBeGreaterThan(25);
+		const remaining = await t.run((ctx) => review_count_original_rows(ctx, seeded.inventory));
 		expect(
-			(await t.run((ctx) => review_count_original_rows(ctx, seeded.inventory))).filter((row) => row.count > 0),
-		).toEqual([]);
+			remaining.find((row) => row.table === "plugins_volume_usage")?.count,
+			"purge must remove plugin volume usage",
+		).toBe(0);
+		expect(remaining.filter((row) => row.count > 0)).toEqual([]);
+		for (const index of [0, 1])
+			expect(volumeDeleteObjectSpy).toHaveBeenCalledWith(expect.anything(), `volumes/review-${path}/${index}`);
 		const quotaRows = await t.run(async (ctx) =>
 			(
 				await ctx.db

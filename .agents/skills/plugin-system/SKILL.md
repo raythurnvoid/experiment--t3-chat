@@ -25,6 +25,8 @@ Validation lives in `plugins_validate_manifest` (`packages/app/shared/plugins.ts
 | Content types per file view                              | 32           | `file_view_schema.contentTypes`                     |
 | Expanded file-view content types per manifest            | 64           | `plugins_validate_manifest` loop                    |
 | Events                                                   | 8            | `manifest_schema.events`                            |
+| Mounts / mount description length                        | 4/300        | `mount_schema`, `manifest_schema.mounts`             |
+| Schedule events / interval minutes                       | 1/15–10,080  | schedule declaration and YAML validation             |
 | Filters per event                                        | 8            | `event_schema.filters`                              |
 | Configuration path segments                              | 16           | `event_filter_schema.configurationPath`             |
 | Configuration path segment length                        | 128          | `event_filter_schema.configurationPath`             |
@@ -146,7 +148,7 @@ screen's copy, change the other in the same edit.
 
 Every installation has a required `serviceAccountId`. `plugins_service_account_bindings` keeps that account attached to one exact trusted tuple: organization, workspace, plugin name, publisher user, and source repository URL. Display labels and editable file metadata never establish that tuple.
 
-`install_version` accepts optional `serviceAccountId` and `serviceAccountGrants: [{resource, level}]`. A resource is `{kind:"workspace"}` or `{kind:"file",nodeId}`; a level is `read`, `write`, or `manage`. A new tuple creates an empty account unless an active same-tenant account is chosen. Creating or choosing the account and adding grants require `workspace.service_accounts.manage`, alongside normal plugin management. Each explicit grant also requires the actor's manage permission and every granted permission at that resource. A file-only grant needs no workspace content grant. All grant writes use `access_control_db_set_service_account_grant`, shared with account controls and Files sharing. At most 20 distinct resources may be granted in one install.
+`install_version` accepts optional `serviceAccountId` and `serviceAccountGrants: [{resource, level}]`. A resource is `{kind:"workspace"}` or `{kind:"file",nodeId}`; a level is `read`, `write`, or `manage`. A new tuple creates an empty account unless an active same-tenant account is chosen. A first empty install with no retained binding, account choice, or grants needs only plugin setup access; choosing an account or adding grants also needs `workspace.service_accounts.manage`. Each explicit grant also requires the actor's manage permission and every granted permission at that resource. A file-only grant needs no workspace content grant. All grant writes use `access_control_db_set_service_account_grant`, shared with account controls and Files sharing. At most 20 distinct resources may be granted in one install.
 
 An ordinary update or reinstall reuses the exact tuple's account without adding grants. Reinstall creates a new installation, so it still needs `workspace.service_accounts.manage` even when the binding survived uninstall. An update with the same binding and no account or grant input does not need that extra permission. No ensure, mint, retry, or update recreates removed grants or revives a revoked account. A revoked binding requires an explicit active replacement. `set_installation_service_account` checks plugin and account management, updates the trusted binding and installation pin, and changes no runs, sessions, grants, file policies, or installation settings. Account and binding docs survive uninstall; bounded workspace deletion removes them after dependent file and grant state.
 
@@ -170,7 +172,7 @@ Scope deletion and account/org teardown remove attached mirrored grants and bind
 
 ## Plugin run lifecycle
 
-Every upload, manual, account-deletion, and invoke run creates one hidden Activity in the same
+Every upload, manual, account-deletion, invoke, and scheduled run creates one hidden Activity in the same
 transaction. `activities.by_source_id` is the only link. Activity owns status, deadlines, errors,
 start/finish times, update time, and history expiry. `plugins_event_runs` keeps the plugin inputs,
 identity pins, token, work ID, API-call counts, output counts, and runner metrics. Never add common
@@ -192,7 +194,8 @@ checks the clock. Final mutations check the Activity status and time again. A re
 timeout ends as `timed_out`, clears the token, settles unfinished calls, and schedules staged-write
 cleanup in the same transaction. A late completion cannot change the outcome.
 
-Plugin history expires thirty days after finish. Cleanup drains calls and Activity dismissal docs
+Ordinary plugin history expires thirty days after finish. Scheduled history has no automatic expiry.
+Cleanup drains calls and Activity dismissal docs
 before deleting the Activity and run together. It keeps published files and plugin documents.
 Registry deletion uses the same pair rule. Dismissal cleanup may need several bounded passes.
 
@@ -202,6 +205,53 @@ exports `plugins_runtime_db_timeout_run` and `plugins_runtime_db_delete_run_hist
 transactions. There are no separate plugin expiry or retention batch entrypoints. Timeout fences
 API writes and cancels Workpool before finishing. History returns an exact deleted-document count,
 including calls and dismissal docs; it keeps the Activity/run pair while another dismissal page remains.
+
+## Scheduled runs (`schedule.interval.elapsed`)
+
+Settings live in the installation's YAML. The manifest names the interval path; its value is a whole
+number from 15 to 10,080 minutes. YAML never chooses a user, consent, scope, or chain state.
+
+The installation pins a user and their direct `plugin.run_as` grant. Human doors in `plugins_access.ts`
+create or revoke only the caller's own grant. First install needs explicit Me consent in the same
+transaction as setup. Other users grant after install, then a manager selects their grant. A manager
+can replace an invalid assignment, disable the plugin, or uninstall it without fixing the old grant.
+
+Consent pins the real membership lifetime counter. Removal and rejoin never restore old consent.
+Scopes are `files:list`, `files:read`, `plugin_data:read`, `plugin_data:write`, `volumes:write`,
+`secrets:read`, and `outbound:fetch`. They also need the accepted live capability. Users can grant only
+access they hold. Files consent accepts workspace read or one saved readable file/folder as proof;
+the proof creates no new Files grant. Each later operation checks the actual target again. KV read
+needs workspace read access. KV write also needs workspace write access and a KV read grant. The
+consent form follows these live limits. A readable shared file does not grant KV access. Private
+stores keep their own checks. Mount writes, secret reads, and outbound calls require exact
+installation management. Scheduled runs get no baseline Files writes, downloads, or Activity opt-in.
+
+The minute dispatcher reads at most 20 due handlers. It admits four live chains globally and one per
+organization. Scheduled work uses its own Workpool with parallelism two. A live chain delays another
+run in that organization by one minute. A full deployment leaves the oldest due handler unchanged.
+Disabled or invalid assignments move a full configured interval ahead; invalid YAML retries in
+15 minutes. Save and Run now move the handler due time without canceling a valid chain.
+
+`POST /api/v1/plugin-runs/follow-up` needs `runs:follow_up` and a stored scheduled event. A run can save
+one outgoing JSON state string, at most 16 KiB. A successful finish queues its child in the same
+transaction. Incoming and outgoing state stay separate. Root input is null. Children keep the root
+clock; a chain has at most 20 runs and 30 minutes. Each run keeps the existing 20-call limit.
+
+`plugins_scheduled_access.ts` holds live grant and assignment checks. Dispatch, start, API claims,
+KV transactions, Mount write fences, secret/outbound host calls, and child enqueue use them. Files
+responses check consent, token, call, and the returned targets again after I/O. Secret plaintext has
+a final check after decryption. Scheduled Mount writes bill the current live organization owner.
+
+Authority-changing transactions call the lean `plugins_schedules_db_cancel` helper. It finds only
+active scheduled Activities through the deadline index. It clears tokens and both state fields,
+fails started calls, finishes as canceled, and cancels work on the scheduled pool. Disable, policy,
+assignment, consent, version/account changes, removal, deletion, and purge cannot revive old chains.
+
+Scheduled finish omits `expiresAt` but always clears credentials and temporary state. History and
+calls remain. `list_run_history` pages 25 runs and reports full Activity status, original user/grant,
+and chain IDs. It exposes no token or state. Deleted actors show as Deleted user. File metadata still
+needs current target read access. `get_installation_schedule` reports due time, actor, payer, errors,
+and the latest scheduled result to exact managers. Members can view only their own run permissions.
 
 ## Invoke runs (`plugin.backend.invoke`)
 
@@ -330,7 +380,7 @@ Admin registry deletion is name-scoped and requires publishing to be quiescent. 
 - A policy bump changes fresh review cache lookup, storage, registration, and finalization. It does not re-review existing ready versions or change their install/runtime gates. Publishing an exact ready artifact returns the immutable stored version before review. An unpublished artifact gets a fresh review under the new policy without a registry reset. Replacing existing ready history is a separate data-scope decision for the user.
 - The dev deployment completed an explicitly scoped policy-6 registry reset on 2026-08-15. That historical reset is not a requirement for later policy changes.
 - Historical policy 8 added the invoke-door manifest surface and the runner route `/__bonobo_senate/run`. The later removal of the manifest `service` block and current review rules supersede that old rollout plan. Registry erasure is never implied by a policy bump.
-- `raythurnvoid/bonobo-plugin-data-probe` is the fixture plugin for the plugin data store: a backend that writes one document per completed upload and a page that lists the same collection. It is the only published plugin declaring `plugin.data.read`/`plugin.data.write`. Use it to exercise a write-then-read round trip or an uninstall drain. Trigger it with a **stored blob** upload such as a PNG — a `.txt` upload is converted into an editable document, and `r2.ts` suppresses the plugin event on that path, so a text upload starts no run. Its page ships a hand-vendored pre-0.8.0 bridge (no build step, `fetchJson` reads only), so it survived the data-bridge removal and the 0.13.0 wrapper removal alike: the handshake and the `plugin_ui`-allowed `/api/v1/plugin-data/list` route are all it needs (verified live 2026-08-18 on 0.1.0). Upgrading it to the real SDK would require adding a bundler, because `frontend.js` imports `convex/react` (since 0.13.0; `convex/browser` from 0.9.0).
+- `raythurnvoid/bonobo-plugin-data-probe` is the QA fixture for backend replies and the plugin store. Its page uses the bundled SDK and can save and read small test documents. PNG uploads write one document; editable text uploads start no stored-blob event. Version 0.3.0 added the MCP fixture and `mcp-echo` skill. Version 0.4.0 adds scheduled KV, Files and revocation checks through public APIs. Its default is weekly `idle`, with no API calls. It has no secrets or backend outbound origins. Select a user's real self-grant through the host controls; YAML cannot choose the actor or token. The fixture README and [backend QA recipe](../app-playwriter-harness/references/plugin-backend-execution.md) define the checks and their limits. Uninstall deletes the store, so never use it to clean up a preserved installation.
 
 Repository claims intentionally remain normalized URL reservations without proof of repository control. This is an accepted provenance/name-reservation risk; do not describe the claim as verified ownership.
 
@@ -611,14 +661,70 @@ Configuration is manifest-driven. `plugins_versions.configuration` stores the pl
 - A manifest may omit `configuration`; validation normalizes it to `null`. Event `filters` may be omitted and normalize to `[]`. A filter requires a configuration declaration, and the declared default YAML must validate before publish.
 - The YAML root is a plugin-owned object. It is at most 16 KiB and rejects blank or multi-document YAML, aliases, tags, duplicate keys, and non-JSON values. Unreferenced plugin settings are allowed.
 - The current generic filter is `source.path` + `pathIsUnderAny`. Its `configurationPath` points to an array of at most 32 unique canonical absolute folder paths, each at most 512 characters. `/` matches every folder; other entries match the exact path and descendants, case-sensitively; an empty array disables that automatic event.
-- New installations use the version's `defaultYaml`; upgrades preserve valid existing YAML. A version without configuration stores `null` and rejects configuration edits.
-- The public save mutation resolves auth, applies the plugin-management rate limit, checks plugin-management permission and tenancy, loads the installed version, validates against its manifest events, then patches only `configurationYaml`.
-- `workspace.plugins.manage` is not `content.read`. A custom role can hold either without the other, so a query that returns plugin state plus file details needs both. `list_recent_runs` is the worked example: it authorizes on plugin management, then drops each run's file name, path, content type and size to `null` unless the caller also holds `content.read`. Run status, errors and timings stay visible — an operator has to see failures.
+- New installations use explicit reviewed YAML or the version's default. Upgrades keep valid saved
+  YAML unless the caller supplies a new value. No-configuration versions store `null` and reject edits.
+- The save mutation checks the exact installation's management permission and tenant, validates
+  every event and mount value, and checks names before any write. It updates YAML and mount claims
+  together. A conflicting name leaves the whole installation unchanged.
+- Plugin management is separate from `content.read`. `list_recent_runs` checks exact installation
+  management, then hides each file's name, path, type and size unless the caller can read it. Run
+  status, errors and timings remain visible.
 - Automatic dispatch loads the matching manifest event and applies its generic filters before dedupe and run creation. Invalid stored YAML is an unreachable invariant, but dispatch logs and isolates that installation so it cannot block upload finalization or other plugins. Manual runs bypass automatic event filters. Every run receives the parsed value as `event.configuration`, or `null` for a plugin without configuration.
 - Upload dispatch rule: every upload that settles as a stored blob dispatches `files.upload.completed` — including an editable-text upload whose host conversion failed deterministically and fell back to the stored blob (`settle_upload_conversion_fallback` in `convex/r2.ts`). Only a successful host conversion suppresses the event. Service uploads are the other exception: `plugins_runtime_db_enqueue_upload_completed_runs` refuses any asset a `plugin_service_storage_targets` row owns, fallback blobs included — a plugin's stored artifact must not fan out into other plugins' backends.
 - TODO: a copy, move, archive, or restore does not dispatch `files.upload.completed`. Add separate plugin events for those subtree operations later. Do not reuse the upload event for them.
 - Service-upload targets require the sealed destination path plus its stable folder node id. The dev rollout audit found no target missing either field before the schema was tightened. Council deletion archives that exact folder even after a member renames it. Releasing a pending upload deletes its placeholder but keeps the target as a released identity record for the archive step. The archive route bounds active and archived descendant reads together at 256 docs.
 - Settlement bills money too: when the R2 event commits a target, `db_settle_canonicalized_target` emits one `file_save` (1¢) to the workspace payer through `billing_db_emit_file_save`, once per target — the stored bytes still charge the storage quota separately. See `../billing-system/SKILL.md`.
+
+# Mount and schedule declarations
+
+`mounts` declares up to four `{id, description, configurationPath}` values. IDs use lowercase
+letters, digits and dashes, start with a letter, and have 1–32 characters. Paths are unique and
+point to distinct YAML names. Each name uses lowercase letters, digits, dots, underscores and dashes, starts with a
+letter or digit, has 1–63 characters and is not `tmp`. A mount requires configuration and the
+`workspace.volumes.write` capability. That capability requires at least one mount too.
+
+`schedule.interval.elapsed` declares `schedule.configurationPath`. It requires a
+backend, configuration and `plugin.schedule.run`; the capability also requires the event. Only
+one schedule event is allowed. It has no file content types or filters. Its YAML value is an
+integer from 15 to 10,080 minutes. Default YAML passes all these checks before publish.
+
+Mount claims belong to the exact workspace and installation. Names cannot collide with another
+plugin or any legacy GitHub mount, including an unsynced one. Renaming keeps the same claim id.
+Dropping a declaration removes its claim and schedules its volume drains. Consent differences
+list added/dropped mounts and a new schedule. Only file events with a backend show the upload
+baseline; a schedule-only plugin does not receive source-download or sibling-write consent.
+
+New workspaces start Owner only for plugin setup. New installations use Selected and grant an
+allowed non-owner installer management of that installation. The owner always manages it. Access
+settings support Owner only, Selected users/roles, and Everybody. Use `plugins_access.ts` and the
+access-control spec. Public catalog flags gate actions; role display cannot decide exact access.
+
+The Plugins catalog shows the workspace's Plugin setup access panel to its owner. This includes
+the default workspace. An installed plugin's detail page shows its separate management panel.
+
+YAML, secrets, health, calls, history and storage queries check the exact installation's live
+management grant. Public version facts remain available to active workspace members. Account
+choice, retained account reuse, rebind and explicit grants keep their account permission checks.
+A fresh empty account needs only the plugin setup permission and starts with no file access.
+
+Mount data cleanup lives in `convex/plugins_volumes.ts`. A deleted volume is hidden at once.
+Its job drains at most 200 docs per step and schedules the next step until all six file scope
+tables are empty. It deletes each stored R2 key before the asset doc, then generations and the
+volume. The volume doc stays as the cleanup owner. Jobs log no file paths.
+
+Retirement releases staging or published usage exactly once. It keeps the old files for ten
+minutes before cleanup. Expired staging copies drain after 26 hours without another wait.
+Jobs carry an exact ten-minute lease and renew it as they work. The five-minute GC selects
+expired leases through indexes and reserves 20 volume, 15 staging, and 15 retired slots.
+Repeated ticks do not start another loop while its lease is live.
+
+Uninstall removes mount claims and usage in its transaction and marks every volume for cleanup.
+Pending deletion leases use `0`; live leases stay unchanged. The stage door caps all installation
+volume rows at 128, including deletion tails, so this marker pass is bounded. GC can recover an
+interrupted uninstall. The data job drains exact management and run-as grants before its store
+and volume scopes. Ordinary uninstall keeps run, call, and Activity history. Disable keeps the
+hidden published trees. Workspace purge and registry hard delete remove all mount data and
+usage. See the [data deletion spec](../data-deletion/SKILL.md) for cleanup order.
 
 # Manifest secrets declaration and installation health
 
@@ -644,7 +750,7 @@ Health is computed on read by the public query `plugins.get_installation_health`
 - `missing_secret`: a declared non-optional secret with no installation-tier row and no valid publisher-tier row. The publisher check replicates the runtime re-claim guard (`repository.ownerUserId === version.createdBy`), so health never says "configured" where `get_secret_for_runtime` would return null.
 - `secrets_capability_unconfigured`: only for versions that declare NO `secrets[]` but accepted `plugin.secrets.read`, computed from installation-tier rows only. Checking the publisher tier here would leak whether the publisher keeps secrets on the repo — an existence oracle no manager-reachable surface exposes. Accepted residual: a plugin running fine on publisher defaults shows this notice.
 - `recent_runs_failing`: the last 5 finished runs all failed. The query reads a bounded slice (20 rows) and keeps the first 5 with status succeeded/failed, so queued and running rows never count. Accepted residual: a backlog of 16+ queued/running rows can temporarily hide the flag. Payload is the count plus the latest plugin-authored `errorMessage` — same audience and gate as `list_recent_runs`, with no file details.
-- `disabled` is not a health issue. It is a short operator-owned state during registry hard delete, not a normal user control. The health query has no status gate, while plugin pages, data doors, service grants, public API calls, and queued event-run starts all require an enabled installation. The Hero may show its "Disabled" badge during that destructive drain.
+- `disabled` is not a health issue. Plugin managers can disable an installation through its page. Registry deletion also uses this state. The health query has no status gate. Plugin pages, data doors, service grants, public API calls, queued runs and Mount reads require an enabled installation. Disabling keeps the stored Mount copy and finished run history. The Hero shows its "Disabled" badge until the installation is enabled again.
 
 The details-page Health section (`RoutePluginsPluginHealth` in `$pluginName.tsx`, between Hero and Secrets):
 
@@ -709,7 +815,26 @@ Live QA must use the installed frame and read back stored chat and raw transcrip
 
 # Releases
 
-SDK 0.20.6 remains unmirrored. Its generated HTTP types now include the Files
+GitHub Sources 0.1.1 was published and installed in `personal/home` on 2026-09-28.
+Plugin commit: `ce962bc62ef968c5628b1fac0bacae5ff2d155bb`. Reviewed Press
+implementation: `d2db5016fd4601f25eceb9b5678324cf8729c5a1`.
+It uses SDK 0.21.0 at `973457877210fec8908f26fe17c8d727572aa54d`.
+Its public native-popovers Mount is `/.mounts/github/native-popovers`.
+The first copy has 70 text files and 686,577 bytes at revision `b46c59d3`.
+The daily interval is 1440 minutes. Live Bash reads, disabled refusal, restored
+reads and write refusal passed. The stored copy and finished history stayed intact.
+This patch marks `GITHUB_TOKEN` optional. Public repos need no token. Health is
+healthy after the update. Worker bytes, SDK pin and permissions are unchanged.
+TypeScript, ESLint, 110 tests and two stable builds passed. The old shared t3-chat
+mirror still needs its separate workspace choice and cutover.
+
+SDK 0.21.0 was mirrored on 2026-09-28 at
+`973457877210fec8908f26fe17c8d727572aa54d`. All 12 SDK files match the reviewed
+Press tree at `2a154f8459438ef3cbaf5b323b72f07ece686dad`. It adds the Mounts API,
+scheduled-run envelopes and follow-up types. Typecheck and 48 SDK tests pass.
+The GitHub Sources plugin uses this exact commit.
+
+SDK 0.20.6 was not mirrored. SDK 0.21.0 includes its generated Files
 `File unavailable` response when an agent loses its original chat access during
 a read. Plugin tokens keep their existing workspace scope. No plugin release or
 installation change is part of the private-files change.
@@ -1042,7 +1167,8 @@ races between route authorization and the durable write.
 - Council 0.2.2 is the recording-warning patch. It ships the dashboard sentence for a ready meeting whose video was refused as over the host upload cap. Bump, rebuild, push the plugin repo, update the parent gitlink, and publish that SHA. Apply D1 `0009` and deploy the Worker before or with this publish. Do not re-apply `0006`–`0008`.
 - Council 0.2.3 is the custom-domain patch (plugin commit `7496551eacff664d1a9ee832cba42c24f8078498`). The Worker gained the custom domain `https://council.bonobo-senate.com` (`routes` + `workers_dev: true` in `wrangler.jsonc`; the workers.dev host stays up for the provider webhook target). The plugin's `COUNCIL_SERVICE_ORIGIN` and manifest `uiOutboundOrigins` move to that domain, so updating an installation asks to re-accept the UI outbound origin, and the upgrade revokes outstanding service grants as usual. No D1 migration and no Convex change ride along.
 - Council naming convention: the **Council app** is the submodule at `packages/council` (repo `raythurnvoid/bonobo-senate-council`) and the deployed Worker — room UI, page and room APIs, D1, pipeline. The **Council plugin** is `plugins/bonobo-plugin-council`, the dashboard page installed in the host. The word "service" in contract names is frozen host vocabulary: `plugin.service.connect`, service grants, the Worker-side `COUNCIL_SERVICE_EXCHANGE_SECRET` secret, the `/api/v1/plugins/service-grants/*` routes, and `packages/app/convex/plugins_service.ts` keep their names whatever the app is called. The plugin name `council` is a host contract value too (the service registration and initial `plugin-name` metadata use it).
-- Always run pnpm with `--ignore-workspace` inside `plugins/*` and inside `packages/bonobo-plugin-sdk` — installing through the root workspace pollutes the parent lockfile and produces stale git-dep pins. The two folders need the flag for different reasons. Normally no glob in `pnpm-workspace.yaml` matches `plugins/*`, so a plugin install reaches the root workspace only by walking up to the root `pnpm-workspace.yaml`. **Read that file rather than assuming**: linking the SDK into one plugin for development adds a glob for it, and while that link exists the flag must be dropped for that plugin, because `--ignore-workspace` together with a `workspace:*` dependency is a hard pnpm error. Put the link back to a `github:` pin when the SDK work is done. The SDK is a different case: `packages/*` matches `packages/bonobo-plugin-sdk`, so it really is a member of the root workspace and `pnpm-lock.yaml` carries an importer entry for it. The flag is what keeps an SDK install out of that shared lockfile.
+- By default, run pnpm with `--ignore-workspace` inside `plugins/*` and inside `packages/bonobo-plugin-sdk` — installing through the root workspace pollutes the parent lockfile and produces stale git-dep pins. The two folders need the flag for different reasons. Normally no glob in `pnpm-workspace.yaml` matches `plugins/*`, so a plugin install reaches the root workspace only by walking up to the root `pnpm-workspace.yaml`. **Read that file rather than assuming**: linking the SDK into one plugin for development adds a glob for it, and while that link exists the flag must be dropped for that plugin, because `--ignore-workspace` together with a `workspace:*` dependency is a hard pnpm error. Put the link back to a `github:` pin when the SDK work is done. The SDK is a different case: `packages/*` matches `packages/bonobo-plugin-sdk`, so it really is a member of the root workspace and `pnpm-lock.yaml` carries an importer entry for it. The flag is what keeps an SDK install out of that shared lockfile.
+- GitHub Sources has its own `pnpm-workspace.yaml`, with only `.` and a pinned Workers types override. Its frozen install needs that local workspace: use `vp env exec pnpm install --frozen-lockfile` from the plugin folder. Keep `--ignore-workspace` on check, test and build commands. Verify that the parent lockfile stays unchanged.
 - Published plugin versions are immutable — never rewrite one; bump to the first unused patch version.
 - Comments in `src/` reach `dist/`, so even a comment-only source change alters the dist hashes and the manifest. Batch cosmetic source fixes with the next real release instead of shipping a version bump for them.
 - A release must reconcile six touchpoints: SDK remote SHA, Gallery `package.json` SDK pin, Gallery lockfile resolution, Gallery plugin version (`package.json` + `bonobo.plugin.json`), Gallery remote commit = checked-out submodule HEAD, and the parent gitlink. **The user asked on 2026-09-01 to be left out of the gitlink step: stage and commit it yourself and do not ask.** That replaces the older "staged only by the user, never by agents" rule. Section 7a of the user's global rules still holds for everything else — stage the files you touched, by name, never `git add -A/-u/.`. One check is not optional before a gitlink commit: confirm the submodule commit is on its remote (`git ls-remote origin HEAD` equals the local HEAD), because a gitlink pointing at an unpushed commit is unresolvable in every other clone. `packages/council` is a PRIVATE repo, so a plain `ls-remote` answers `Repository not found` whenever the active `gh` account is the other one — use the pinned `raythurnvoid` credential helper for that read too, not just for the push.

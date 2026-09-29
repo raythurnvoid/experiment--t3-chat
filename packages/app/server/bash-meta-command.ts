@@ -481,11 +481,11 @@ export function bash_meta_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			// meta get reads one item; classify its path to pick the workspace or mount scope.
 			const target = bash_resolve_db_files_shell_path(parsed._yay.pathShell, dbFilesRoots);
 
-			if (target.kind === "external_mounts_root") {
+			if (target.kind === "external_mounts_root" || target.kind === "external_mount_group") {
 				return {
 					stdout: "",
 					stderr:
-						`meta get: ${bash_normalize_path(parsed._yay.pathShell)} is the mounts root; pick a file or folder under /.mounts/<name>.\n` +
+						`meta get: ${bash_normalize_path(parsed._yay.pathShell)} ${target.kind === "external_mounts_root" ? "is the mounts root" : "spans mount leaves"}; pick a file or folder inside one leaf.\n` +
 						"Run 'ls /.mounts' to list the available mounts.\n",
 					exitCode: bash_COMMAND_EXIT_USAGE,
 				};
@@ -592,11 +592,11 @@ export function bash_meta_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			scope = bash_resolve_db_files_shell_path(currentWorkspacePath, dbFilesRoots);
 		}
 
-		if (scope.kind === "external_mounts_root") {
+		if (scope.kind === "external_mounts_root" || scope.kind === "external_mount_group") {
 			return {
 				stdout: "",
 				stderr:
-					"meta search: choose a single mount to search; cd into a mount or pass --path /.mounts/<name> --where '<json>'.\n" +
+					"meta search: choose a single mount leaf to search; cd into a mount or pass --path /.mounts/<mountName>/<volumeKey> --where '<json>'.\n" +
 					"Run 'ls /.mounts' to list the available mounts.\n",
 				exitCode: bash_COMMAND_EXIT_USAGE,
 			};

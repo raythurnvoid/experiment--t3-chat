@@ -32,7 +32,7 @@ type PluginsPublishSessionProvider_ClassNames =
 
 type PluginsPublishSessionPhase = "check_failed" | "checking" | "review" | "publishing";
 
-type PluginManagementActionKind = "claim_repository" | "install" | "remove_repository" | "uninstall";
+type PluginManagementActionKind = "claim_repository" | "install" | "disable" | "remove_repository" | "uninstall";
 
 type PluginManagementAction = {
 	version: number;

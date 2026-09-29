@@ -167,6 +167,13 @@ Plugin-session JWT store doors also check that saved account pin before applying
 
 Personal API keys store `serviceAccountId: null`. Bound API keys store an active account in the same workspace and retain their human sponsor. Binding is fixed when the key is created and survives rotation. Bound keys allow only file scopes, including the separate `files:permissions` scope; that scope permits a policy request but grants no file authority. See `../access-control/SKILL.md` and `../public-api/SKILL.md` for the account controls and final per-resource checks.
 
+Scheduled plugin runs also pin the chosen human's direct consent grant, membership ID, and lifetime
+counter. A plugin-session JWT cannot create that consent: the human grant doors use the current-user
+classifier above. Tokens keep their normal stored hash and expiry. Scheduled resolution and final
+responses check the live assignment and required scope again. Revocation, replacement, removal,
+deletion, disable, and purge clear the old chain's token and temporary state. Rejoin never revives it.
+See the [scheduled runtime spec](../plugin-system/SKILL.md#scheduled-runs-scheduleintervalelapsed).
+
 ### `GET /.well-known/jwks.json`
 
 Exposes public JWK(s) for the shared ES256 signing key so JWT verifiers can validate anonymous and plugin-session tokens.

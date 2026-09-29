@@ -17,8 +17,7 @@
 		padding: 24px;
 	}
 
-	.RoutePlugins-loading,
-	.RoutePlugins-blocked {
+	.RoutePlugins-loading {
 		display: flex;
 		align-items: center;
 		justify-content: center;

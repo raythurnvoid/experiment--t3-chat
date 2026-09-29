@@ -49,10 +49,21 @@ const access_control_permission_validator = v.union(
 	v.literal("content.read"),
 	v.literal("content.write"),
 	v.literal("content.permissions.manage"),
-	v.literal("workspace.plugins.manage"),
 	v.literal("workspace.service_accounts.manage"),
 	v.literal("workspace.browser.use"),
 	v.literal("workspace.mcp.use"),
+);
+
+const access_control_grant_permission_validator = v.union(
+	access_control_permission_validator,
+	v.literal("workspace.plugins.manage"),
+	v.literal("plugin.run_as"),
+);
+
+const plugins_management_access_validator = v.union(
+	v.literal("owner"),
+	v.literal("selected"),
+	v.literal("workspace"),
 );
 
 /**
@@ -345,6 +356,7 @@ const files_committed_index_fields = {
 	organizationId: v.union(v.id("organizations"), v.literal(organizations_GLOBAL_ORGANIZATION_ID)),
 	workspaceId: v.union(
 		v.id("organizations_workspaces"),
+		v.id("plugins_volumes"),
 		v.literal(organizations_GLOBAL_GITHUB_WORKSPACE_ID),
 		v.literal(organizations_GLOBAL_PLUGINS_WORKSPACE_ID),
 	),
@@ -1905,6 +1917,7 @@ const app_convex_schema = defineSchema({
 		organizationId: v.union(v.id("organizations"), v.literal(organizations_GLOBAL_ORGANIZATION_ID)),
 		workspaceId: v.union(
 			v.id("organizations_workspaces"),
+			v.id("plugins_volumes"),
 			v.literal(organizations_GLOBAL_GITHUB_WORKSPACE_ID),
 			v.literal(organizations_GLOBAL_PLUGINS_WORKSPACE_ID),
 		),
@@ -2057,9 +2070,13 @@ const app_convex_schema = defineSchema({
 		 * Archive operation UUID, or null for an active node.
 		 */
 		archiveOperationId: v.union(v.string(), v.null()),
-		/** Created by user ID. SYSTEM is the pseudo user ID for reserved global-organization content. */
+		/**
+		 * Created by user ID. SYSTEM writes read-only external content.
+		 */
 		createdBy: v.union(v.id("users"), v.literal(users_SYSTEM_AUTHOR)),
-		/** Updated by user ID. SYSTEM is the pseudo user ID for reserved global-organization content. */
+		/**
+		 * Updated by user ID. SYSTEM writes read-only external content.
+		 */
 		updatedBy: v.union(v.id("users"), v.literal(users_SYSTEM_AUTHOR)),
 		/** timestamp in milliseconds when document was last updated */
 		updatedAt: v.number(),
@@ -2158,11 +2175,7 @@ const app_convex_schema = defineSchema({
 			"path",
 			"archiveOperationId",
 		])
-		.index("by_organization_workspace_archiveOperation", [
-			"organizationId",
-			"workspaceId",
-			"archiveOperationId",
-		])
+		.index("by_organization_workspace_archiveOperation", ["organizationId", "workspaceId", "archiveOperationId"])
 		.index("by_organization_workspace_treePath", ["organizationId", "workspaceId", "treePath"])
 		// A move finds the restricted folders inside the folder it moves, without reading the rest.
 		.index("by_organization_workspace_isRestrictedScopeRoot_treePath", [
@@ -2219,6 +2232,7 @@ const app_convex_schema = defineSchema({
 		organizationId: v.union(v.id("organizations"), v.literal(organizations_GLOBAL_ORGANIZATION_ID)),
 		workspaceId: v.union(
 			v.id("organizations_workspaces"),
+			v.id("plugins_volumes"),
 			v.literal(organizations_GLOBAL_GITHUB_WORKSPACE_ID),
 			v.literal(organizations_GLOBAL_PLUGINS_WORKSPACE_ID),
 		),
@@ -2691,13 +2705,15 @@ const app_convex_schema = defineSchema({
 		organizationId: v.union(v.id("organizations"), v.literal(organizations_GLOBAL_ORGANIZATION_ID)),
 		workspaceId: v.union(
 			v.id("organizations_workspaces"),
+			v.id("plugins_volumes"),
 			v.literal(organizations_GLOBAL_GITHUB_WORKSPACE_ID),
 			v.literal(organizations_GLOBAL_PLUGINS_WORKSPACE_ID),
 		),
 		kind: v.union(v.literal("upload"), v.literal("content"), v.literal("yjs_snapshot"), v.literal("content_snapshot")),
 		r2Bucket: v.string(),
 		/**
-		 * The final R2 key. It is set after R2 confirms that the file exists there.
+		 * The final R2 key. Usually set after R2 confirms the file exists.
+		 * Volume writes set it before PUT; their unfinalized deadline still guards unfinished writes.
 		 **/
 		r2Key: v.optional(v.string()),
 		size: v.number(),
@@ -2724,7 +2740,9 @@ const app_convex_schema = defineSchema({
 		 * Cleanup has retired this pending attempt. A late event cannot publish it.
 		 */
 		uploadRetiredAt: v.optional(v.number()),
-		/** Created by user ID. SYSTEM is the pseudo user ID for reserved global-organization content. */
+		/**
+		 * Created by user ID. SYSTEM writes read-only external content.
+		 */
 		createdBy: v.union(v.id("users"), v.literal(users_SYSTEM_AUTHOR)),
 		updatedAt: v.number(),
 	})
@@ -3362,6 +3380,16 @@ const app_convex_schema = defineSchema({
 			v.null(),
 		),
 		/**
+		 * Mount folders declared by this version.
+		 */
+		mounts: v.array(
+			v.object({
+				id: v.string(),
+				description: v.string(),
+				configurationPath: v.array(v.string()),
+			}),
+		),
+		/**
 		 * Secret names the manifest declares, so the details page can report which required
 		 * secrets are still missing. Optional because versions published before this field
 		 * exist without it; read as `version.secrets ?? []`.
@@ -3377,7 +3405,11 @@ const app_convex_schema = defineSchema({
 		),
 		events: v.array(
 			v.object({
-				type: v.union(v.literal("files.upload.completed"), v.literal("users.account.deleted")),
+				type: v.union(
+					v.literal("files.upload.completed"),
+					v.literal("users.account.deleted"),
+					v.literal("schedule.interval.elapsed"),
+				),
 				// Empty for an event that carries no file. The manifest validator decides which events
 				// may leave it empty.
 				contentTypes: v.array(v.string()),
@@ -3388,6 +3420,7 @@ const app_convex_schema = defineSchema({
 						configurationPath: v.array(v.string()),
 					}),
 				),
+				schedule: v.optional(v.object({ configurationPath: v.array(v.string()) })),
 			}),
 		),
 		/**
@@ -3629,6 +3662,10 @@ const app_convex_schema = defineSchema({
 		pluginVersionId: v.id("plugins_versions"),
 		pluginName: v.string(),
 		status: v.union(v.literal("enabled"), v.literal("disabled")),
+		managementAccess: plugins_management_access_validator,
+		// Only scheduled installations have an assigned user and their direct consent.
+		scheduledRunUserId: v.optional(v.id("users")),
+		scheduledRunGrantId: v.optional(v.id("access_control_permission_grants")),
 		/**
 		 * User-edited installation settings shown in the plugin configuration editor.
 		 * Null means the installed version does not declare configuration.
@@ -3664,6 +3701,62 @@ const app_convex_schema = defineSchema({
 		.index("by_pluginVersion", ["pluginVersionId"])
 		.index("by_pluginName_status", ["pluginName", "status"])
 		.index("by_pluginName", ["pluginName"]),
+
+	plugins_mounts: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		installationId: v.id("plugins_workspace_installations"),
+		pluginName: v.string(),
+		mountId: v.string(),
+		name: v.string(),
+	})
+		.index("by_organization_workspace_name", ["organizationId", "workspaceId", "name"])
+		.index("by_organization_workspace_installation", ["organizationId", "workspaceId", "installationId"])
+		.index("by_installation_mountId", ["installationId", "mountId"]),
+
+	// File storage uses the volume id as its scope. Its owner is always a real workspace.
+	plugins_volumes: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		installationId: v.id("plugins_workspace_installations"),
+		mountId: v.string(),
+		volumeKey: v.string(),
+		publishedGenerationId: v.union(v.id("plugins_volume_generations"), v.null()),
+		createdAt: v.number(),
+		deleteRequestedAt: v.union(v.number(), v.null()),
+		drainScheduledUntil: v.union(v.number(), v.null()),
+	})
+		.index("by_installation_mountId_volumeKey", ["installationId", "mountId", "volumeKey"])
+		.index("by_organization_workspace_installation", ["organizationId", "workspaceId", "installationId"])
+		.index("by_drainScheduledUntil", ["drainScheduledUntil"]),
+
+	plugins_volume_generations: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		installationId: v.id("plugins_workspace_installations"),
+		volumeId: v.id("plugins_volumes"),
+		status: v.union(v.literal("staging"), v.literal("published"), v.literal("retired")),
+		revision: v.string(),
+		fileCount: v.number(),
+		bytes: v.number(),
+		createdAt: v.number(),
+		lastWriteAt: v.number(),
+		publishedAt: v.union(v.number(), v.null()),
+		expiresAt: v.union(v.number(), v.null()),
+		drainScheduledUntil: v.union(v.number(), v.null()),
+	})
+		.index("by_volume_status", ["volumeId", "status"])
+		.index("by_status_expiresAt", ["status", "expiresAt"])
+		.index("by_status_drainScheduledUntil", ["status", "drainScheduledUntil"])
+		.index("by_organization_workspace_installation", ["organizationId", "workspaceId", "installationId"]),
+
+	plugins_volume_usage: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		installationId: v.id("plugins_workspace_installations"),
+		fileCount: v.number(),
+		bytes: v.number(),
+	}).index("by_organization_workspace_installation", ["organizationId", "workspaceId", "installationId"]),
 
 	plugins_workspace_installation_secrets: defineTable({
 		organizationId: v.id("organizations"),
@@ -3714,7 +3807,11 @@ const app_convex_schema = defineSchema({
 		installationId: v.id("plugins_workspace_installations"),
 		pluginVersionId: v.id("plugins_versions"),
 		pluginName: v.string(),
-		event: v.union(v.literal("files.upload.completed"), v.literal("users.account.deleted")),
+		event: v.union(
+			v.literal("files.upload.completed"),
+			v.literal("users.account.deleted"),
+			v.literal("schedule.interval.elapsed"),
+		),
 		/**
 		 * Absent for an event that carries no file. It stays an equality component of the dispatch
 		 * index: Convex indexes a missing field as `undefined`, so such an event is dispatched with
@@ -3724,6 +3821,8 @@ const app_convex_schema = defineSchema({
 		/** The owning installation's `_creationTime`, denormalized for dispatch order in the scope index. */
 		installationCreatedAt: v.number(),
 		updatedAt: v.number(),
+		// Only the schedule handler has a due time.
+		nextRunAt: v.optional(v.number()),
 	})
 		.index("by_scope_event_contentType_createdAt_name", [
 			"organizationId",
@@ -3733,6 +3832,7 @@ const app_convex_schema = defineSchema({
 			"installationCreatedAt",
 			"pluginName",
 		])
+		.index("by_event_nextRunAt", ["event", "nextRunAt"])
 		.index("by_installation", ["installationId"])
 		.index("by_organization_workspace_installation", ["organizationId", "workspaceId", "installationId"]),
 
@@ -3745,9 +3845,13 @@ const app_convex_schema = defineSchema({
 		assetId: v.optional(v.id("files_r2_assets")),
 		fileNodeId: v.optional(v.id("files_nodes")),
 		/**
-		 * Whoever the event is about: the uploader, the admin who asked for a run, or the deleted user.
+		 * The uploader, invoke caller, assigned scheduled user, or deleted user.
 		 */
 		actorUserId: v.id("users"),
+		// Scheduled runs keep the original consent and membership lifetime.
+		runAsGrantId: v.optional(v.id("access_control_permission_grants")),
+		runAsMembershipId: v.optional(v.id("organizations_workspaces_users")),
+		runAsMembershipLifetime: v.optional(v.number()),
 		installationId: v.id("plugins_workspace_installations"),
 		pluginVersionId: v.id("plugins_versions"),
 		event: v.union(
@@ -3755,6 +3859,7 @@ const app_convex_schema = defineSchema({
 			v.literal("files.run.requested"),
 			v.literal("users.account.deleted"),
 			v.literal("ui.invoke.requested"),
+			v.literal("schedule.interval.elapsed"),
 		),
 		eventId: v.string(),
 		/**
@@ -3765,6 +3870,14 @@ const app_convex_schema = defineSchema({
 		 * The execution key is also stored on the Activity for its indexed busy check.
 		 */
 		serializationKey: v.optional(v.string()),
+		scheduleIntervalMinutes: v.optional(v.number()),
+		scheduleDueAt: v.optional(v.number()),
+		chainRootRunId: v.optional(v.id("plugins_event_runs")),
+		chainIndex: v.optional(v.number()),
+		chainStartedAt: v.optional(v.number()),
+		// Incoming state never requests another run. Only followUpState does that.
+		chainInputState: v.optional(v.union(v.string(), v.null())),
+		followUpState: v.optional(v.union(v.string(), v.null())),
 		workId: v.optional(vWorkId),
 		apiTokenHash: v.optional(v.string()),
 		apiTokenExpiresAt: v.optional(v.number()),
@@ -4938,6 +5051,7 @@ const app_convex_schema = defineSchema({
 					v.literal("files.run.requested"),
 					v.literal("users.account.deleted"),
 					v.literal("ui.invoke.requested"),
+					v.literal("schedule.interval.elapsed"),
 				),
 				serializationKey: v.optional(v.string()),
 			}),
@@ -5055,10 +5169,18 @@ const app_convex_schema = defineSchema({
 			"updatedAt",
 		])
 		.index("by_source_installation_updatedAt", ["source.installationId", "updatedAt"])
+		.index("by_source_installation_event_updatedAt", ["source.installationId", "source.event", "updatedAt"])
 		.index("by_source_installation_serializationKey_status", [
 			"source.installationId",
 			"source.serializationKey",
 			"status",
+		])
+		.index("by_source_kind_event_status_deadline_organization", [
+			"source.kind",
+			"source.event",
+			"status",
+			"deadlineAt",
+			"organizationId",
 		])
 		// Bash job doors resolve a job number through this index, so the user and thread are
 		// fenced by the index itself. Rows of other source kinds have no `source.jobNumber`.
@@ -5275,6 +5397,7 @@ const app_convex_schema = defineSchema({
 			v.literal("file"),
 			v.literal("thread"),
 			v.literal("plugin_scope"),
+			v.literal("plugin_installation"),
 		),
 		/**
 		 * The id of the thing this grant is about, written as a string.
@@ -5292,7 +5415,27 @@ const app_convex_schema = defineSchema({
 		externalPluginMembershipLifetime: v.optional(v.number()),
 		role: v.optional(access_control_role_ref_validator),
 		serviceAccountId: v.optional(v.id("access_control_service_accounts")),
-		permission: access_control_permission_validator,
+		permission: access_control_grant_permission_validator,
+		/**
+		 * A user's own consent to scheduled runs. Other grants never carry this field.
+		 */
+		runAs: v.optional(
+			v.object({
+				membershipId: v.id("organizations_workspaces_users"),
+				membershipLifetime: v.number(),
+				scopes: v.array(
+					v.union(
+						v.literal("files:list"),
+						v.literal("files:read"),
+						v.literal("plugin_data:read"),
+						v.literal("plugin_data:write"),
+						v.literal("volumes:write"),
+						v.literal("secrets:read"),
+						v.literal("outbound:fetch"),
+					),
+				),
+			}),
+		),
 		createdAt: v.number(),
 		updatedAt: v.number(),
 	})
@@ -5314,6 +5457,7 @@ const app_convex_schema = defineSchema({
 			"principalKind",
 			"permission",
 		])
+		.index("by_resource_permission", ["organizationId", "workspaceId", "resourceKind", "resourceId", "permission"])
 		// Count one `content.read` row per private scope without reading every permission row.
 		.index("by_user_org_workspace_kind_principal_permission_resource", [
 			"userId",
@@ -5400,6 +5544,7 @@ const app_convex_schema = defineSchema({
 		name: v.string(),
 		description: v.string(),
 		default: v.boolean(),
+		pluginInstallAccess: plugins_management_access_validator,
 		/**
 		 * Keep every plugin authority door closed across delayed or bounded workspace purge.
 		 */

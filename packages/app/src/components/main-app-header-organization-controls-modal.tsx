@@ -1471,7 +1471,6 @@ export const MainAppHeaderOrganizationSwitcherModalEditModal = memo(
 		props: MainAppHeaderOrganizationSwitcherModalEditModal_Props,
 	) {
 		const { target, editOrganization, editWorkspace, setTarget, onAfterEdit } = props;
-
 		const editFormDomId = `MainAppHeaderOrganizationSwitcherModalEditModal-form-${useId().replace(/:/g, "")}`;
 
 		const nameFieldRef = useRef<MainAppHeaderOrganizationNameField_Ref>(null);
@@ -2139,6 +2138,7 @@ const MainAppHeaderOrganizationSwitcherModalIntegrationPolicyModal = memo(
 									>
 										Allow every plugin and its MCP servers
 									</MyCheckboxButton>
+									<p>This includes plugins that run on a schedule and bill the owner for new Mount files.</p>
 									{plugins.mode === "allowlist" ? (
 										<>
 											<ul

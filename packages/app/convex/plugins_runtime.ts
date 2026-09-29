@@ -24,7 +24,7 @@ import { type pluginRunnerApiSchema } from "common/api-schemas.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import { composite_id, should_never_happen } from "../shared/shared-utils.ts";
 import { v_result } from "../server/convex-utils.ts";
-import { files_node_has_editable_text_content } from "../server/files.ts";
+import { files_get_utf8_byte_size, files_node_has_editable_text_content } from "../server/files.ts";
 import { server_request_json_parse_and_validate } from "../server/server-utils.ts";
 import { crypto_random_hex, crypto_sha256_hex, crypto_timing_safe_equal } from "../server/crypto-utils.ts";
 import {
@@ -35,6 +35,9 @@ import {
 	activities_is_active,
 } from "./activities_db.ts";
 import { plugins_db_get_live_service_account } from "./plugins_service_accounts.ts";
+import { plugins_scheduled_access_db_authorize_assignment } from "./plugins_scheduled_access.ts";
+import { plugins_scheduled_runs_workpool } from "./plugins_schedules_db.ts";
+import type { public_api_Scope } from "../shared/public-api.ts";
 import type { plugins_decrypt_secret_for_runtime_Result } from "./plugins.ts";
 // Type-only import: public_api.ts value-imports this module, so a value import here would be a
 // runtime cycle.
@@ -45,11 +48,9 @@ import {
 	plugins_parse_installation_configuration_yaml,
 	plugins_validate_secret_name,
 } from "../shared/plugins.ts";
-import {
-	organizations_GLOBAL_ORGANIZATION_ID,
-	organizations_is_reserved_workspace_id,
-} from "../shared/organizations.ts";
+import { organizations_GLOBAL_ORGANIZATION_ID } from "../shared/organizations.ts";
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
+import { files_db_resolve_scope } from "./files_scopes.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
 // Does NOT work for http actions (see http.ts). Do not keep request state in module-level values.
@@ -75,12 +76,20 @@ const RUNNER_METADATA_MAX_BYTES = 2 * 1024;
 const RUNNER_RESPONSE_BLOCK_BYTES = 64 * 1024;
 // One shared transactional quota across every plugin-consuming call, whatever the route.
 const MAX_API_CALLS = 20;
+const MAX_CHAIN_RUNS = 20;
+const CHAIN_TTL_MS = 30 * 60 * 1000;
+const FOLLOW_UP_STATE_MAX_BYTES = 16 * 1024;
 const RUNNER_ERROR_MESSAGE_MAX_CHARS = 500;
 
 const UPLOAD_COMPLETED_EVENT_TYPE = "files.upload.completed" as const;
 const RUN_REQUESTED_EVENT_TYPE = "files.run.requested" as const;
 const ACCOUNT_DELETED_EVENT_TYPE = "users.account.deleted" as const;
 const UI_INVOKE_EVENT_TYPE = "ui.invoke.requested" as const;
+const SCHEDULE_EVENT_TYPE = "schedule.interval.elapsed" as const;
+const FILELESS_EVENTS: ReadonlySet<Doc<"plugins_event_runs">["event"]> = new Set([
+	ACCOUNT_DELETED_EVENT_TYPE,
+	SCHEDULE_EVENT_TYPE,
+]);
 
 async function db_plugin_workspace_is_live(
 	ctx: MutationCtx,
@@ -191,16 +200,17 @@ export async function plugins_runtime_db_enqueue_upload_completed_runs(
 		throw should_never_happen(errorMessage, { assetId: args.asset._id });
 	}
 
-	// Plugin runs fire only for real tenant uploads: assets in the global organization, in a
-	// reserved workspace (e.g. plugin source mounts), or created by the system are not user uploads.
-	const { organizationId, workspaceId, createdBy } = args.asset;
+	// Global, mount, and system assets are not user uploads.
+	const { organizationId, createdBy } = args.asset;
+	const scope = files_db_resolve_scope(ctx, args.asset.workspaceId);
 	if (
 		organizationId === organizations_GLOBAL_ORGANIZATION_ID ||
-		organizations_is_reserved_workspace_id(workspaceId) ||
+		scope.kind !== "workspace" ||
 		createdBy === users_SYSTEM_AUTHOR
 	) {
 		return { enqueued: 0 };
 	}
+	const workspaceId = scope.workspaceId;
 	if (!(await db_plugin_workspace_is_live(ctx, { organizationId, workspaceId }))) {
 		return { enqueued: 0 };
 	}
@@ -266,6 +276,7 @@ export async function plugins_runtime_db_enqueue_upload_completed_runs(
 			const parsed = plugins_parse_installation_configuration_yaml({
 				configurationYaml: installation.configurationYaml,
 				events: version.events,
+				mounts: version.mounts,
 			});
 			// Supported writes validate this YAML against the immutable version. Keep an unreachable
 			// bad installation isolated so it cannot block upload finalization or other plugins.
@@ -580,6 +591,170 @@ export const enqueue_account_deleted_runs = internalMutation({
 	},
 });
 
+async function db_enqueue_scheduled_run(
+	ctx: MutationCtx,
+	args: {
+		installation: Doc<"plugins_workspace_installations">;
+		version: Doc<"plugins_versions">;
+		membership: Doc<"organizations_workspaces_users">;
+		grant: Doc<"access_control_permission_grants">;
+		intervalMinutes: number;
+		dueAt: number;
+		now: number;
+		parent?: Doc<"plugins_event_runs">;
+	},
+) {
+	const { installation, version, membership, grant, parent, now } = args;
+	const runId = await ctx.db.insert("plugins_event_runs", {
+		organizationId: installation.organizationId,
+		workspaceId: installation.workspaceId,
+		actorUserId: membership.userId,
+		installationId: installation._id,
+		serviceAccountId: installation.serviceAccountId,
+		pluginVersionId: version._id,
+		event: SCHEDULE_EVENT_TYPE,
+		eventId: parent ? `follow_up:${parent._id}` : `schedule:${installation._id}:${args.dueAt}`,
+		serializationKey: "schedule",
+		acceptedCapabilities: parent?.acceptedCapabilities ?? installation.acceptedCapabilities,
+		runAsGrantId: grant._id,
+		runAsMembershipId: membership._id,
+		runAsMembershipLifetime: grant.runAs!.membershipLifetime,
+		scheduleIntervalMinutes: args.intervalMinutes,
+		scheduleDueAt: args.dueAt,
+		chainRootRunId: parent?.chainRootRunId,
+		chainIndex: parent ? parent.chainIndex! + 1 : 0,
+		chainStartedAt: parent?.chainStartedAt,
+		chainInputState: parent ? parent.followUpState : null,
+		apiCallCount: 0,
+		outputWriteCount: 0,
+	});
+	if (!parent) await ctx.db.patch("plugins_event_runs", runId, { chainRootRunId: runId });
+	await activities_db_start(ctx, {
+		organizationId: installation.organizationId,
+		workspaceId: installation.workspaceId,
+		userId: membership.userId,
+		membershipId: membership._id,
+		membershipLifetime: grant.runAs!.membershipLifetime,
+		source: {
+			kind: "plugin_run",
+			id: runId,
+			installationId: installation._id,
+			pluginName: version.name,
+			event: SCHEDULE_EVENT_TYPE,
+			serializationKey: "schedule",
+		},
+		title: version.displayName,
+		targets: [],
+		visibility: "requester",
+		feedVisible: false,
+		status: "queued",
+		resultKind: "plugin_result",
+		deadlineAt: Math.min(now + RUN_TTL_MS, parent ? parent.chainStartedAt! + CHAIN_TTL_MS : Infinity),
+		now,
+	});
+	const workId = await plugins_scheduled_runs_workpool.enqueueAction(
+		ctx,
+		internal.plugins_runtime.execute_upload_completed_event_run,
+		{ runId },
+	);
+	await ctx.db.patch("plugins_event_runs", runId, { workId });
+	return runId;
+}
+
+export const dispatch_due_schedules = internalMutation({
+	args: {},
+	returns: v.null(),
+	handler: async (ctx) => {
+		const now = Date.now();
+		const [handlers, livePages] = await Promise.all([
+			ctx.db
+				.query("plugins_workspace_event_handlers")
+				.withIndex("by_event_nextRunAt", (q) =>
+					q.eq("event", SCHEDULE_EVENT_TYPE).gt("nextRunAt", undefined).lte("nextRunAt", now),
+				)
+				.take(20),
+			Promise.all(
+				(["queued", "running", "stopping"] as const).map((status) =>
+					ctx.db
+						.query("activities")
+						.withIndex("by_source_kind_event_status_deadline_organization", (q) =>
+							q
+								.eq("source.kind", "plugin_run")
+								.eq("source.event", SCHEDULE_EVENT_TYPE)
+								.eq("status", status)
+								.gt("deadlineAt", now),
+						)
+						.take(5),
+				),
+			),
+		]);
+		const liveActivities = livePages.flat();
+		let liveCount = liveActivities.length;
+		const busyOrganizations = new Set(liveActivities.map((activity) => activity.organizationId));
+		const busyInstallations = new Set(
+			liveActivities.map((activity) =>
+				activity.source.kind === "plugin_run" ? activity.source.installationId : undefined,
+			),
+		);
+		for (const handler of handlers) {
+			const [installation, version] = await Promise.all([
+				ctx.db.get("plugins_workspace_installations", handler.installationId),
+				ctx.db.get("plugins_versions", handler.pluginVersionId),
+			]);
+			const configuration =
+				version && installation?.configurationYaml
+					? plugins_parse_installation_configuration_yaml({
+							configurationYaml: installation.configurationYaml,
+							events: version.events,
+							mounts: version.mounts,
+						})
+					: null;
+			// Invalid or removed settings still leave the due page for the next tick.
+			const intervalMinutes = configuration?._yay?.scheduleIntervalMinutes ?? 15;
+			const assignment =
+				installation &&
+				version?.backendEntrypointFile &&
+				configuration?._yay?.scheduleIntervalMinutes &&
+				installation.pluginVersionId === version._id &&
+				installation.organizationId === handler.organizationId &&
+				installation.workspaceId === handler.workspaceId
+					? await plugins_scheduled_access_db_authorize_assignment(ctx, { installation })
+					: null;
+			if (!assignment?._yay) {
+				await ctx.db.patch("plugins_workspace_event_handlers", handler._id, {
+					nextRunAt: now + intervalMinutes * 60_000,
+				});
+				continue;
+			}
+			if (busyInstallations.has(installation!._id)) {
+				await ctx.db.patch("plugins_workspace_event_handlers", handler._id, { nextRunAt: now + 60_000 });
+				continue;
+			}
+			// A full deployment keeps the oldest valid due handler first in the queue.
+			if (liveCount >= 4) break;
+			if (busyOrganizations.has(handler.organizationId)) {
+				await ctx.db.patch("plugins_workspace_event_handlers", handler._id, { nextRunAt: now + 60_000 });
+				continue;
+			}
+			await db_enqueue_scheduled_run(ctx, {
+				installation: installation!,
+				...assignment._yay,
+				intervalMinutes,
+				dueAt: handler.nextRunAt!,
+				now,
+			});
+			const jitter = Math.floor(Math.random() * Math.min(intervalMinutes * 6_000, 5 * 60_000));
+			await ctx.db.patch("plugins_workspace_event_handlers", handler._id, {
+				nextRunAt: now + intervalMinutes * 60_000 + jitter,
+			});
+			liveCount += 1;
+			busyOrganizations.add(handler.organizationId);
+			busyInstallations.add(installation!._id);
+		}
+		return null;
+	},
+});
+
 export const start_event_run = internalMutation({
 	args: {
 		runId: v.id("plugins_event_runs"),
@@ -634,7 +809,7 @@ export const start_event_run = internalMutation({
 		}
 		// A file event whose file is gone has nothing to run on. An event that never named a file is
 		// not missing anything.
-		if (pluginRun.event !== ACCOUNT_DELETED_EVENT_TYPE && (!asset || !fileNode)) {
+		if (!FILELESS_EVENTS.has(pluginRun.event) && (!asset || !fileNode)) {
 			return Result({ _nay: { message: "Not found" } });
 		}
 		if (
@@ -644,15 +819,27 @@ export const start_event_run = internalMutation({
 		}
 
 		const now = Date.now();
+		let deadlineAt = activity.deadlineAt;
+		let chainStartedAt = pluginRun.chainStartedAt;
+		if (pluginRun.event === SCHEDULE_EVENT_TYPE) {
+			const assignment = await plugins_scheduled_access_db_authorize_assignment(ctx, { installation, run: pluginRun });
+			if (assignment._nay) return assignment;
+			chainStartedAt ??= now;
+			if (pluginRun.chainIndex! >= MAX_CHAIN_RUNS || chainStartedAt + CHAIN_TTL_MS <= now)
+				return Result({ _nay: { message: "Plugin run chain limit exceeded" } });
+			deadlineAt = Math.min(deadlineAt, chainStartedAt + CHAIN_TTL_MS);
+		}
 		await ctx.db.patch("plugins_event_runs", pluginRun._id, {
 			apiTokenHash: args.apiTokenHash,
 			// The API token stays valid for the life of the run; a shorter TTL would silently cut
 			// off API access mid-run for plugins that outlive it.
-			apiTokenExpiresAt: activity.deadlineAt,
+			apiTokenExpiresAt: deadlineAt,
+			...(pluginRun.event === SCHEDULE_EVENT_TYPE ? { chainStartedAt } : {}),
 		});
 		await ctx.db.patch("activities", activity._id, {
 			status: "running",
 			startedAt: now,
+			deadlineAt,
 			updatedAt: now,
 		});
 
@@ -996,6 +1183,29 @@ export const finish_event_run = internalMutation({
 						: `Plugin returned status ${outcome.pluginStatus}`;
 		}
 
+		if (succeeded && pluginRun.event === SCHEDULE_EVENT_TYPE && pluginRun.followUpState != null) {
+			const installation = await ctx.db.get("plugins_workspace_installations", pluginRun.installationId);
+			const assignment = installation
+				? await plugins_scheduled_access_db_authorize_assignment(ctx, { installation, run: pluginRun })
+				: null;
+			if (!assignment?._yay) {
+				succeeded = false;
+				errorMessage = assignment?._nay?.message ?? "The scheduled assignment changed";
+			} else if (pluginRun.chainIndex! + 1 >= MAX_CHAIN_RUNS || pluginRun.chainStartedAt! + CHAIN_TTL_MS <= now) {
+				succeeded = false;
+				errorMessage = "Plugin run chain limit exceeded";
+			} else {
+				await db_enqueue_scheduled_run(ctx, {
+					installation: installation!,
+					...assignment._yay,
+					intervalMinutes: pluginRun.scheduleIntervalMinutes!,
+					dueAt: pluginRun.scheduleDueAt!,
+					now,
+					parent: pluginRun,
+				});
+			}
+		}
+
 		if (!succeeded) {
 			console.error("Plugin event run failed", { runId: pluginRun._id, errorMessage });
 		}
@@ -1006,6 +1216,8 @@ export const finish_event_run = internalMutation({
 				// Terminal runs must not authenticate: explicit undefined unsets both token fields.
 				apiTokenHash: undefined,
 				apiTokenExpiresAt: undefined,
+				chainInputState: undefined,
+				followUpState: undefined,
 				...(outcome.kind === "runner_response"
 					? {
 							runnerHttpStatus: outcome.runnerHttpStatus,
@@ -1054,8 +1266,14 @@ export async function plugins_runtime_db_timeout_run(
 	await ctx.db.patch("plugins_event_runs", pluginRun._id, {
 		apiTokenHash: undefined,
 		apiTokenExpiresAt: undefined,
+		chainInputState: undefined,
+		followUpState: undefined,
 	});
-	if (pluginRun.workId) await plugin_event_execution_workpool.cancel(ctx, pluginRun.workId);
+	if (pluginRun.workId) {
+		const pool =
+			pluginRun.event === SCHEDULE_EVENT_TYPE ? plugins_scheduled_runs_workpool : plugin_event_execution_workpool;
+		await pool.cancel(ctx, pluginRun.workId);
+	}
 	await db_terminalize_run_leftovers(ctx, args);
 	await activities_db_finish(ctx, {
 		sourceId: pluginRun._id,
@@ -1446,6 +1664,7 @@ export const execute_upload_completed_event_run = internalAction({
 			const parsed = plugins_parse_installation_configuration_yaml({
 				configurationYaml: startResult._yay.installation.configurationYaml,
 				events: startResult._yay.version.events,
+				mounts: startResult._yay.version.mounts,
 			});
 			if (parsed._nay) {
 				await ctx.runMutation(internal.plugins_runtime.finish_event_run, {
@@ -1476,6 +1695,19 @@ export const execute_upload_completed_event_run = internalAction({
 					workspaceId: String(startResult._yay.pluginRun.workspaceId),
 					actorUserId: String(startResult._yay.pluginRun.actorUserId),
 					configuration,
+					...(startResult._yay.pluginRun.event === SCHEDULE_EVENT_TYPE
+						? {
+								schedule: {
+									intervalMinutes: startResult._yay.pluginRun.scheduleIntervalMinutes,
+									dueAt: startResult._yay.pluginRun.scheduleDueAt,
+								},
+								chain: {
+									rootRunId: startResult._yay.pluginRun.chainRootRunId,
+									index: startResult._yay.pluginRun.chainIndex,
+									state: JSON.parse(startResult._yay.pluginRun.chainInputState ?? "null") as unknown,
+								},
+							}
+						: {}),
 					source:
 						startResult._yay.fileNode && startResult._yay.asset
 							? {
@@ -1565,6 +1797,23 @@ export const consume_run_api_call = internalMutation({
 		kind: doc(app_convex_schema, "plugins_event_run_calls").fields.kind,
 		route: v.string(),
 		requestBytes: v.optional(v.number()),
+		requiredScope: v.optional(
+			v.union(
+				v.literal("files:list" satisfies public_api_Scope),
+				v.literal("files:read" satisfies public_api_Scope),
+				v.literal("files:write" satisfies public_api_Scope),
+				v.literal("files:download" satisfies public_api_Scope),
+				v.literal("files:permissions" satisfies public_api_Scope),
+				v.literal("volumes:write" satisfies public_api_Scope),
+				v.literal("runs:follow_up" satisfies public_api_Scope),
+				v.literal("secrets:read" satisfies public_api_Scope),
+				v.literal("outbound:fetch" satisfies public_api_Scope),
+				v.literal("activities:write" satisfies public_api_Scope),
+				v.literal("plugin_data:read" satisfies public_api_Scope),
+				v.literal("plugin_data:write" satisfies public_api_Scope),
+				v.literal("backend:invoke" satisfies public_api_Scope),
+			),
+		),
 	},
 	returns: v_result({
 		_yay: v.object({
@@ -1598,6 +1847,27 @@ export const consume_run_api_call = internalMutation({
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 
+		if (pluginRun.event === SCHEDULE_EVENT_TYPE) {
+			const requiredScope = args.requiredScope;
+			if (
+				requiredScope !== "runs:follow_up" &&
+				requiredScope !== "files:list" &&
+				requiredScope !== "files:read" &&
+				requiredScope !== "plugin_data:read" &&
+				requiredScope !== "plugin_data:write" &&
+				requiredScope !== "volumes:write" &&
+				requiredScope !== "secrets:read" &&
+				requiredScope !== "outbound:fetch"
+			)
+				return Result({ _nay: { message: "Permission denied" } });
+			const assignment = await plugins_scheduled_access_db_authorize_assignment(ctx, {
+				installation,
+				run: pluginRun,
+				requiredScope: requiredScope === "runs:follow_up" ? undefined : requiredScope,
+			});
+			if (assignment._nay) return assignment;
+		}
+
 		if (pluginRun.apiCallCount >= MAX_API_CALLS) {
 			return Result({ _nay: { message: "Plugin API call limit exceeded" } });
 		}
@@ -1629,6 +1899,121 @@ export const consume_run_api_call = internalMutation({
 
 export type plugins_runtime_consume_run_api_call_Result =
 	typeof consume_run_api_call extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
+export const request_follow_up = internalMutation({
+	args: {
+		runId: v.id("plugins_event_runs"),
+		callId: v.id("plugins_event_run_calls"),
+		apiTokenHash: v.string(),
+		state: v.string(),
+	},
+	returns: v_result({ _yay: v.null() }),
+	handler: async (ctx, args) => {
+		const now = Date.now();
+		const [run, call] = await Promise.all([
+			ctx.db.get("plugins_event_runs", args.runId),
+			ctx.db.get("plugins_event_run_calls", args.callId),
+		]);
+		if (!run || run.apiTokenHash !== args.apiTokenHash || !run.apiTokenExpiresAt || run.apiTokenExpiresAt <= now)
+			return Result({ _nay: { message: "Unauthenticated" } });
+		if (run.event !== SCHEDULE_EVENT_TYPE) return Result({ _nay: { message: "Permission denied" } });
+		const activity = await activities_db_require_by_source_id(ctx, run._id);
+		if (
+			activity.status !== "running" ||
+			activity.deadlineAt <= now ||
+			!call ||
+			call.runId !== run._id ||
+			call.status !== "started" ||
+			call.kind !== "api_request" ||
+			call.route !== "/api/v1/plugin-runs/follow-up"
+		)
+			return Result({ _nay: { message: "Unauthenticated" } });
+		const installation = await ctx.db.get("plugins_workspace_installations", run.installationId);
+		if (!installation) return Result({ _nay: { message: "Unauthenticated" } });
+		const assignment = await plugins_scheduled_access_db_authorize_assignment(ctx, { installation, run });
+		if (assignment._nay) return assignment;
+		if (run.chainIndex! + 1 >= MAX_CHAIN_RUNS || run.chainStartedAt! + CHAIN_TTL_MS <= now)
+			return Result({ _nay: { message: "Plugin run chain limit exceeded" } });
+		if (run.followUpState != null) return Result({ _nay: { message: "A follow-up is already requested" } });
+		if (files_get_utf8_byte_size(args.state) > FOLLOW_UP_STATE_MAX_BYTES)
+			return Result({ _nay: { message: "Follow-up state must be at most 16 KiB" } });
+		try {
+			JSON.parse(args.state);
+		} catch {
+			return Result({ _nay: { message: "Follow-up state must be valid JSON" } });
+		}
+		await ctx.db.patch("plugins_event_runs", run._id, { followUpState: args.state });
+		await ctx.db.patch("plugins_event_run_calls", call._id, {
+			status: "succeeded",
+			responseStatus: 200,
+			errorMessage: null,
+			finishedAt: now,
+			elapsedMs: now - call.startedAt,
+			updatedAt: now,
+		});
+		return Result({ _yay: null });
+	},
+});
+
+export type plugins_runtime_request_follow_up_Result =
+	typeof request_follow_up extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
+// The runner checks again after I/O. Secret success settles in this same transaction.
+export const validate_runner_host_call = internalMutation({
+	args: {
+		runId: v.id("plugins_event_runs"),
+		callId: v.id("plugins_event_run_calls"),
+		apiTokenHash: v.string(),
+		requiredScope: v.union(v.literal("secrets:read"), v.literal("outbound:fetch")),
+		finish: v.boolean(),
+	},
+	returns: v_result({ _yay: v.null() }),
+	handler: async (ctx, args) => {
+		const now = Date.now();
+		const [run, call] = await Promise.all([
+			ctx.db.get("plugins_event_runs", args.runId),
+			ctx.db.get("plugins_event_run_calls", args.callId),
+		]);
+		if (!run || !call || call.runId !== run._id || call.status !== "started")
+			return Result({ _nay: { message: "Unauthenticated" } });
+		if (run.event === SCHEDULE_EVENT_TYPE) {
+			const activity = await activities_db_require_by_source_id(ctx, run._id);
+			if (
+				run.apiTokenHash !== args.apiTokenHash ||
+				!run.apiTokenExpiresAt ||
+				run.apiTokenExpiresAt <= now ||
+				activity.status !== "running" ||
+				activity.deadlineAt <= now
+			)
+				return Result({ _nay: { message: "Unauthenticated" } });
+			const installation = await ctx.db.get("plugins_workspace_installations", run.installationId);
+			if (!installation) return Result({ _nay: { message: "Unauthenticated" } });
+			const assignment = await plugins_scheduled_access_db_authorize_assignment(ctx, {
+				installation,
+				run,
+				requiredScope: args.requiredScope,
+			});
+			if (assignment._nay) return assignment;
+		}
+		if (args.finish)
+			await ctx.db.patch("plugins_event_run_calls", call._id, {
+				status: "succeeded",
+				responseStatus: 200,
+				errorMessage: null,
+				finishedAt: now,
+				elapsedMs: now - call.startedAt,
+				updatedAt: now,
+			});
+		return Result({ _yay: null });
+	},
+});
+
+type validate_runner_host_call_Result =
+	typeof validate_runner_host_call extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
 		: never;
 
@@ -1805,12 +2190,15 @@ export async function plugins_runtime_http_claim_runner_call(ctx: ActionCtx, req
 			kind: "outbound_fetch",
 			route: OUTBOUND_CALL_ROUTE,
 			requestBytes: auth._yay.body.requestBytes,
+			requiredScope: "outbound:fetch",
 		},
 	);
 	if (consumed._nay) {
 		if (consumed._nay.message === "Plugin API call limit exceeded") {
 			return { status: 429, body: { message: consumed._nay.message } } as const;
 		}
+		if (consumed._nay.message === "Permission denied")
+			return { status: 403, body: { message: consumed._nay.message } } as const;
 		return { status: 401, body: { message: consumed._nay.message } } as const;
 	}
 
@@ -1825,6 +2213,23 @@ export async function plugins_runtime_http_claim_runner_call(ctx: ActionCtx, req
 		return { status: 403, body: { message: "Permission denied" } } as const;
 	}
 
+	const checked = (await ctx.runMutation(internal.plugins_runtime.validate_runner_host_call, {
+		runId: auth._yay.principal.runId,
+		callId: consumed._yay.callId,
+		apiTokenHash: await crypto_sha256_hex(get_bearer_token(request)!),
+		requiredScope: "outbound:fetch",
+		finish: false,
+	})) as validate_runner_host_call_Result;
+	if (checked._nay) {
+		await ctx.runMutation(internal.plugins_runtime.finish_run_call, {
+			callId: consumed._yay.callId,
+			status: "failed",
+			responseStatus: 403,
+			errorCode: "permission_denied",
+			errorMessage: "Permission denied",
+		});
+		return { status: 403, body: { message: "Permission denied" } } as const;
+	}
 	return { status: 200, body: { callId: String(consumed._yay.callId) } } as const;
 }
 
@@ -1894,12 +2299,15 @@ export async function plugins_runtime_http_get_secret(
 			runId: auth._yay.principal.runId,
 			kind: "api_request",
 			route: path,
+			requiredScope: "secrets:read",
 		},
 	);
 	if (consumed._nay) {
 		if (consumed._nay.message === "Plugin API call limit exceeded") {
 			return { status: 429, body: { message: consumed._nay.message } } as const;
 		}
+		if (consumed._nay.message === "Permission denied")
+			return { status: 403, body: { message: consumed._nay.message } } as const;
 		return { status: 401, body: { message: consumed._nay.message } } as const;
 	}
 
@@ -1944,29 +2352,45 @@ export async function plugins_runtime_http_get_secret(
 		workspaceId: auth._yay.principal.workspaceId,
 		installationId: auth._yay.principal.installationId,
 		name: name._yay,
+		runId: auth._yay.principal.runId,
+		callId: consumed._yay.callId,
+		tokenHash: await crypto_sha256_hex(get_bearer_token(request)!),
 	});
-	if (!resolved) {
-		// A missing secret is a successful lookup, not a failure.
-		await finish({ status: "succeeded", responseStatus: 200, errorMessage: null });
-		return { status: 200, body: { value: null } } as const;
+	let value: string | null = null;
+	if (resolved) {
+		const decrypted = (await ctx.runAction(internal.plugins.decrypt_secret_for_runtime, {
+			resolved,
+		})) as plugins_decrypt_secret_for_runtime_Result;
+		if (decrypted._nay) {
+			// Raw decrypt errors never reach the call or the plugin.
+			await finish({
+				status: "failed",
+				responseStatus: 500,
+				errorCode: "storage_failure",
+				errorMessage: "Failed to read secret",
+			});
+			return { status: 500, body: { message: "Failed to read secret" } } as const;
+		}
+		value = decrypted._yay;
 	}
 
-	const decrypted = (await ctx.runAction(internal.plugins.decrypt_secret_for_runtime, {
-		resolved,
-	})) as plugins_decrypt_secret_for_runtime_Result;
-	if (decrypted._nay) {
-		// Curated literal: raw decrypt errors never reach the call or the plugin.
+	const checked = (await ctx.runMutation(internal.plugins_runtime.validate_runner_host_call, {
+		runId: auth._yay.principal.runId,
+		callId: consumed._yay.callId,
+		apiTokenHash: await crypto_sha256_hex(get_bearer_token(request)!),
+		requiredScope: "secrets:read",
+		finish: true,
+	})) as validate_runner_host_call_Result;
+	if (checked._nay) {
 		await finish({
 			status: "failed",
-			responseStatus: 500,
-			errorCode: "storage_failure",
-			errorMessage: "Failed to read secret",
+			responseStatus: 403,
+			errorCode: "permission_denied",
+			errorMessage: "Permission denied",
 		});
-		return { status: 500, body: { message: "Failed to read secret" } } as const;
+		return { status: 403, body: { message: "Permission denied" } } as const;
 	}
-
-	await finish({ status: "succeeded", responseStatus: 200, errorMessage: null });
-	return { status: 200, body: { value: decrypted._yay } } as const;
+	return { status: 200, body: { value } } as const;
 }
 
 // #endregion runner host routes

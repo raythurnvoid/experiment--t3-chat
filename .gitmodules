@@ -197,3 +197,6 @@
 [submodule "plugins/bonobo-plugin-data-probe"]
 	path = plugins/bonobo-plugin-data-probe
 	url = https://github.com/raythurnvoid/bonobo-plugin-data-probe.git
+[submodule "plugins/bonobo-plugin-github-sources"]
+	path = plugins/bonobo-plugin-github-sources
+	url = https://github.com/raythurnvoid/bonobo-plugin-github-sources.git

@@ -25,6 +25,31 @@ These in-script waits exceed the CLI's default 10s execute timeout. Size the CLI
 
 Read install state from the page text: the detail page shows `Installed` plus a `Version x.y.z` line, and the action button is `Install`, `Update`, or `Uninstall`.
 
+## Plugin setup and management access
+
+The Plugins catalog has a `Plugin setup access` region for the organization owner. This includes
+the default personal/home workspace, which has no Edit workspace action. Use the visible
+`Who can install plugins` control. Its choices are `Owner only`, `Selected people and roles`, and
+`Everybody in this workspace`. `Save plugin access` stays disabled until the draft changes.
+
+An installed plugin's detail page has a separate `Plugin management access` region for its
+managers. Its control is `Who can manage this plugin`. The owner always keeps access. Workspace
+setup access and one installation's management access are separate settings.
+
+For an ordinary member, check the real catalog and detail page in a separate seeded-account
+browser. The owner bypasses these checks. The public catalog can stay visible while Install,
+configuration, secrets, and history remain hidden. `get_workspace_install_access` returns only
+that member's install result; its private mode is null and its principal list is empty.
+
+Locate the catalog with `.RoutePlugins`, its search by `Search plugins`, and the setup panel with
+`getByRole("region", { name: "Plugin setup access", exact: true })`. Check the visible owner and
+member states, then run the route accessibility screen. Read stored settings after a save; a DOM
+change alone does not prove it saved. Use an existing fixture and record its original settings.
+
+Install dialogs can also contain configuration YAML, Mount folders, and Run as controls. Read the
+current version's visible consent fields. The older simple-dialog recipe below is not a control
+count for every plugin.
+
 ## Install / update / uninstall
 
 - **Read the installed version before you QA anything.** Publishing a version does not upgrade an

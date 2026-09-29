@@ -110,8 +110,8 @@ export async function billing_db_check_paid_plan(
  * Call it inside the same mutation as the write, after the write succeeded, so a rolled-back
  * write emits nothing and a committed write emits exactly once.
  *
- * The one-cent amount lives here on purpose: this helper is the call site for every public-API
- * write door, so a new door bills the same as the old ones without repeating the number. The four
+ * The one-cent amount lives here on purpose: public workspace-file write doors use this helper.
+ * Mount writes use their own event and price. The five
  * app save doors keep their own inline literal (see the billing-system skill).
  */
 export async function billing_db_emit_file_save(
@@ -159,6 +159,45 @@ export async function billing_db_emit_file_save(
 	await billing_ingest_events(ctx, {
 		billedUserEvents: [{ billedUser: args.billedUser, event }],
 	});
+}
+
+export async function billing_db_emit_plugin_volume_file_writes(
+	ctx: MutationCtx,
+	args: {
+		billedUser: Doc<"users">;
+		actorUserId: Id<"users">;
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		assetIds: Id<"files_r2_assets">[];
+	},
+) {
+	// New asset ids make retries unique without sending private paths to Polar.
+	const billedUserEvents = args.assetIds.map((assetId) => {
+		const event: billing_Event = {
+			name: "plugin_volume_file_write",
+			externalCustomerId: args.billedUser._id,
+			externalMemberId: args.actorUserId,
+			externalId: composite_id(
+				"billing",
+				"plugin_volume_file_write",
+				args.billedUser._id,
+				args.actorUserId,
+				args.organizationId,
+				args.workspaceId,
+				assetId,
+			),
+			metadata: {
+				amount: 0.5,
+				actorUserId: args.actorUserId,
+				billedUserId: args.billedUser._id,
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				assetId,
+			},
+		};
+		return { billedUser: args.billedUser, event };
+	});
+	await billing_ingest_events(ctx, { billedUserEvents });
 }
 
 /** Route app-owned billing events by billed user row: Polar for signed-in payers, local snapshot updates for anonymous payers. */

@@ -11,7 +11,8 @@ Membership says where you are. Access control says what you may do there.
   permission check never proves membership, so every caller proves it first.
 - Authority comes from three places, checked in this order:
   1. **Owner** — `organizations.ownerUserId`. The owner may do everything, and every check answers
-     ownership before it reads any assignment. There is no `owner` role, and owners hold **no
+     ordinary ACL ownership before it reads any assignment. Plugin run-as consent has no owner
+     shortcut. There is no `owner` role, and owners hold **no
      assignment doc** — you may rely on that. Both writers enforce it:
      `invite_user_to_organization_workspace` skips the assignment when the invitee is the owner, and
      ownership transfer deletes the new owner's assignments everywhere. The invite guard is
@@ -19,7 +20,8 @@ Membership says where you are. Access control says what you may do there.
      write is not, so inviting the owner into a workspace they are not in would otherwise leave a
      stray `member` row on the default workspace and quietly falsify this invariant.
   2. **Role** — one `access_control_role_assignments` doc per `(organizationId, workspaceId, userId)`.
-  3. **Direct grant** — an `access_control_permission_grants` doc for per-file sharing.
+  3. **Direct grant** — an `access_control_permission_grants` doc for file sharing, private plugin
+     scopes, or an exact plugin setup/management list.
 - Grants are allow-only. There are no deny grants.
 - A file's write policy is separate from ACL. Check the actor and any service account first.
   Then apply that node's own `writePolicy`. Owners do not bypass a
@@ -125,9 +127,9 @@ owner rights, billing rights, public fallback, or private plugin-data scope righ
   authorization refuses the revoked account. There is no restore or delete door. Tenant purge
   drains grants, bindings, then accounts through the existing bounded cleanup passes.
 
-Plugin setup may create an empty identity for a new trusted tuple only after account management
-passes. A new installation also needs account management when it reuses a retained binding after
-uninstall. Install/update grants are explicit input, with at most 20 resources and the same actor
+An allowed plugin installer may create an empty identity for a fresh trusted tuple. It gives no
+file grants. Choosing an account, adding grants, or reusing a retained binding after uninstall
+still needs account management. Install/update grants are explicit input, with at most 20 resources and the same actor
 ceiling. Omitted grants stay unchanged. Updates, ensure calls, and reinstall never recreate grants
 or reactivate an account. Explicit installation rebind changes only its trusted tuple binding and
 installation pin. It does not move policies, copy grants, or rewrite old run/session/grant pins.
@@ -157,7 +159,8 @@ Two names, used everywhere in this subsystem. Nothing else should be called "ext
 - **System roles** are `admin`, `member`, `viewer`. They live in code in
   `access_control_SYSTEM_ROLE_MATRIX`, not in the database. No seeding, no migration when the matrix
   changes, and nobody can edit them.
-  - `admin` — everything except `organization.billing.manage`, because it charges the owner.
+  - `admin` — all catalog permissions except `organization.billing.manage` and
+    `organization.integrations_policy.manage`. Plugin setup and management use exact access lists.
   - `member` — `workspace.create`, `workspace.update`, `content.read`, `content.write`,
     `workspace.browser.use`, `workspace.mcp.use`.
   - `viewer` — `content.read` only.
@@ -194,13 +197,16 @@ Indexes:
 ## `access_control_permission_grants`
 
 Fields: `organizationId`, `workspaceId`, `resourceKind` (`organization` | `workspace` | `file` |
-`thread` | `plugin_scope`), `resourceId` (stringified id), `principalKind` (`role` | `user` |
-`public`), optional `userId`, optional `role`, `permission`, `createdAt`, `updatedAt`.
+`thread` | `plugin_scope` | `plugin_installation`), `resourceId` (stringified id), `principalKind`
+(`role` | `user` | `public` | `service_account`), optional `userId`, optional `role`, optional
+`serviceAccountId`, `permission`, `createdAt`, `updatedAt`. A run-as grant also pins the user's
+membership id, lifetime and API scopes in `runAs`.
 
-**Two writers: `files_sharing.ts` and `plugins_data.ts`.** System role
-permissions moved into code, so the old seeded organization and workspace grants are gone. Every
-other grant doc is a file share: one doc per permission per principal, with the **restricted scope
-node** as `resourceId`. Nothing writes a `public` grant, and the share validator has no `public` arm.
+`files_sharing.ts`, `plugins_data.ts`, service account doors, and `plugins_access.ts` write grants.
+System role permissions live in code. File shares use one doc per permission per principal, with
+the **restricted scope node** as `resourceId`. Plugin setup uses the exact workspace; plugin
+management uses the exact installation. Nothing writes a `public` grant, and the share validator
+has no `public` arm.
 
 The declarative access bindings (`plugins_file_access_bindings` in `plugins_data.ts`) are the
 host-maintained file-grant mirror: a plugin binds one of its owned nodes to one of its private scopes
@@ -233,13 +239,10 @@ back into one level per scope, with `manage` winning. It is the only listing, an
 rather than the workspace: the organization owner may read every scope through the owner short-circuit,
 but an owner who holds no grant is listed nothing.
 
-**Those grants only ever name a user, never a role.** A role principal would hand the private channel
-to everybody holding that role, and it would also make the role undeletable: `delete_role` takes the
-first role grant of **any** kind with no `resourceKind` filter and answers *"This role is still used to
-share a file or folder"*, pointing an admin at a file-share dialog that cannot reach a plugin scope.
-The same unfiltered walk runs from `update_role`, `set_user_role` and organization membership
-management, so plugin scopes accumulating in it would slow all of them down. `plugins_data.test.ts` and
-`access_control.test.ts` both pin this.
+**Private plugin-scope grants name users, never roles.** A role would give its private data to
+everyone holding that role. Plugin management lists may name roles. Role deletion refuses while
+any grant still names the role and tells the user whether it is used by Files or a plugin list.
+Role assignment, editing and invitations check both kinds of grant before giving new access.
 
 Pick the index that matches the principal kind:
 
@@ -251,10 +254,52 @@ Pick the index that matches the principal kind:
 - `by_user_org_workspace_kind_principal_permission_resource` — count one `content.read` doc per private scope for the member cap.
 - `by_organization_role_workspace_resource` — every grant that names one role (`delete_role`).
 
+## Plugin setup and management
+
+`plugins_access.ts` owns access settings. New workspaces start Owner only. New installations use
+Selected; a non-owner installer gets a direct grant to that installation. The owner always manages
+it without a redundant grant. `installedBy` is history and gives no access.
+
+- Owner only (`owner`): clear management grants; only the organization owner manages.
+- Selected (`selected`): the owner plus named active users and roles manage.
+- Everybody (`workspace`): every active workspace member manages. Removing a name from its
+  retained list does not exclude that person.
+
+Only the owner changes workspace setup access. An exact installation manager changes that
+installation's management list. Both doors prove a live user, owned membership, real tenant and
+no workspace purge fence. Validate the whole list before writes. Cap each list at 50 principals
+and each role at 50 distinct plugin lists in the organization.
+
+Adding or assigning a role cannot give more file or plugin access than the caller has. Everybody
+lists add no extra authority to a current member. Files counts filter file grants before applying
+their read bound, so plugin grants do not use file-sharing slots. Management edits preserve
+independent run-as grants.
+
+The public catalog returns safe version facts to active members and separate `canInstall` and
+`canManage` flags. `canInstall` means a fresh install is allowed. `list_installations` returns only
+exactly managed installations. YAML, secrets, health, storage and run details stay behind that
+installation's management check. `organizations.list` is role display data and must not gate
+these plugin lists.
+
 # Permission catalog
 
-`packages/app/shared/access-control.ts` holds every permission with its `label`, `description`,
-`group` and `scope`. It is the single source of truth for both the checker and the role editor.
+Plugin setup and management use `workspace.plugins.manage` as a grant-only permission. It is absent
+from the role editor. Exact plugin access modes and grants decide it. Broad roles cannot bypass them.
+
+`plugin.run_as` is a grant-only permission. It is absent from the role editor. The checker accepts
+only the exact user's direct installation grant with its live membership id and lifetime. An owner
+or role cannot grant another person's consent.
+
+`plugins_access.grant_run_as_me` validates all proposed scopes before replacing the caller's grant.
+Files scope consent needs a readable workspace or saved file/folder; the proof grants no extra Files
+access. Other scopes check the caller's live workspace or exact installation rights. Selection uses
+only a live direct grant. Every scheduled operation intersects that consent with accepted capabilities
+and the user's current access. A membership removal or authority change cancels active chains in the
+same transaction, even before the external change feed starts. Rejoin needs fresh consent.
+
+`packages/app/shared/access-control.ts` holds ordinary role permissions with their `label`, `description`,
+`group` and `scope`. The checker and role editor use it for role permissions. Grant-only consent
+uses the separate check above.
 
 | Permission | Scope |
 | --- | --- |
@@ -270,7 +315,6 @@ Pick the index that matches the principal kind:
 | `content.read` | workspace |
 | `content.write` | workspace |
 | `content.permissions.manage` | workspace |
-| `workspace.plugins.manage` | workspace |
 | `workspace.browser.use` | workspace |
 | `workspace.mcp.use` | workspace |
 
@@ -455,6 +499,10 @@ membership.
 
 Order, short-circuiting on the first pass:
 
+Before this ordinary ACL order, service accounts use their own grants. Plugin management uses
+the exact workspace/installation mode and live membership. Run-as consent uses the direct human
+grant and its membership pin. These branches never fall through to ordinary role permissions.
+
 1. owner
 2. restricted-file branch — for a `file` resource with a live restricted scope, and it **never falls
    through** to workspace access
@@ -565,11 +613,6 @@ product decision, so record the answer here before changing the behaviour. An en
   the self-grant for them on purpose — and `transfer_organization_ownership` gives them the `member`
   role. A role gives nothing inside a restricted scope, so the moment they hand the organization over
   they lose every folder they restricted, and only the new owner can let them back in.
-- **A workspace can outlive its only member.** `organizations_db_create_workspace` writes a membership
-  for the creator alone, and `organizations.list` enumerates workspaces through the caller's
-  memberships. When that creator leaves the organization the workspace appears in nobody's list, while
-  still holding its `extra_workspaces` quota slot. The owner may delete it — `delete_workspace` exempts
-  them — but no screen offers them the id.
 - **Decided: archiving a restricted folder stays at `content.write`.** A `write` grantee can archive
   the restricted folder itself, not only what is inside it, and that is intentional. They could
   already archive every child one by one — `archive_nodes` checks `content.write` per node on purpose
@@ -647,7 +690,9 @@ product decision, so record the answer here before changing the behaviour. An en
   never the default `personal` organization; the new owner must be an active member of the default
   workspace and have an `extra_organizations` quota slot. It patches `ownerUserId`, moves one quota
   unit, deletes **all** of the new owner's assignments in that organization, and gives the old owner
-  `member`.
+  `member`. It also gives the new owner a membership in every workspace they were not in, through
+  `access_control_db_ensure_owner_memberships`. The owner must be a member of every workspace (see
+  `../organizations-tenancy/SKILL.md#owner-is-a-member-of-every-workspace`).
 
 ## Display and gating queries
 
@@ -804,8 +849,8 @@ Five rules that look like details and are not:
 
 # Write paths that create an assignment
 
-After seeded grants were removed, the assignment doc is the only source of member authority for a
-non-owner. Production writers are few on purpose:
+An assignment supplies a non-owner's role permissions. Direct file and plugin grants can add
+exact access too. Assignment writers are few on purpose:
 
 - `organizations.invite_user_to_organization_workspace` — one `member` assignment on the default
   workspace. That one doc is the organization role, so no second doc for the invited workspace.
@@ -910,8 +955,8 @@ Be explicit about this when planning work; do not assume the subsystem is comple
   comes back from `listRoom` as online — verified on the wire. The flag does gate per-file presence
   (`FileEditorPresenceSupplier`), which disconnects properly; only the global room is unconditional.
 - **Plugin runs still expose one content field.** `plugins.list_recent_runs` now drops a run's file
-  name, path, content type and size unless the caller also holds `content.read`, so a custom role
-  carrying only `workspace.plugins.manage` sees run status without file identity. The plugin document store is the other
+  name, path, content type and size unless the caller also holds `content.read`, so a member with
+  exact plugin management access can see run status without file identity. The plugin document store is the other
   content-checked plugin surface: `db_authorize` in `plugins_data.ts` asks for `content.read` or
   `content.write` on the workspace for the acting member, on every principal kind including
   `plugin_run` and the `plugin_service` grant, in the same transaction as the read or write. The

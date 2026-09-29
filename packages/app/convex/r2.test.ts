@@ -10,11 +10,13 @@ import {
 	test_mocks_fill_db_with,
 } from "./setup.test.ts";
 import {
+	r2,
 	r2_confirmed_object_delete,
 	r2_enqueue_object_deletion_job,
 	r2_PUT_MAY_ARRIVE_MARGIN_MS,
 	r2_server_side_copy,
 } from "./r2_client.ts";
+import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
 import {
 	organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 	organizations_GLOBAL_ORGANIZATION_ID,
@@ -107,7 +109,7 @@ function key_from_r2_url(url: string) {
 
 function expected_asset_key(args: {
 	organizationId: Id<"organizations">;
-	workspaceId: Id<"organizations_workspaces">;
+	workspaceId: Id<"organizations_workspaces"> | Id<"plugins_volumes">;
 	assetId: string;
 }) {
 	return `organizations/${args.organizationId}/workspaces/${args.workspaceId}/assets/${args.assetId}`;
@@ -359,6 +361,7 @@ async function install_upload_plugin(
 			description: "Choose which upload folders start this plugin.",
 			defaultYaml: "triggers:\n  files.upload.completed:\n    folders:\n      - /\n",
 		},
+		mounts: [],
 		events: [
 			{
 				type: "files.upload.completed",
@@ -415,6 +418,37 @@ async function install_upload_plugin(
 		throw new Error(installed._nay.message);
 	}
 	return installed._yay.installationId;
+}
+
+async function create_volume_fixture(
+	t: ReturnType<typeof test_convex>,
+	db: {
+		userId: Id<"users">;
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		membershipId: Id<"organizations_workspaces_users">;
+	},
+) {
+	const installationId = await install_upload_plugin(t, {
+		...db,
+		name: "pdf",
+		displayName: "PDF",
+		description: "Test mount owner",
+		contentTypes: ["application/pdf"],
+	});
+	return await t.run(async (ctx) =>
+		ctx.db.insert("plugins_volumes", {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			installationId,
+			mountId: "source",
+			volumeKey: "repo",
+			publishedGenerationId: null,
+			createdAt: Date.now(),
+			deleteRequestedAt: null,
+			drainScheduledUntil: null,
+		}),
+	);
 }
 
 async function post_r2_put_event(
@@ -3120,6 +3154,34 @@ describe("cleanup_expired_unfinalized_assets", () => {
 		expect(await t.run(async (ctx) => ctx.db.query("files_r2_object_deletion_jobs").collect())).toHaveLength(0);
 	});
 
+	test("deletes unused mount assets inline without tenant deletion jobs", async () => {
+		const deleteObjectSpy = vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const volumeId = await create_volume_fixture(t, db);
+		const now = Date.now();
+		const assetId = await t.run(async (ctx) =>
+			ctx.db.insert("files_r2_assets", {
+				organizationId: db.organizationId,
+				workspaceId: volumeId,
+				kind: "content",
+				r2Bucket: r2.config.bucket,
+				size: 64,
+				createdBy: users_SYSTEM_AUTHOR,
+				unfinalizedExpiresAt: now - 1,
+				updatedAt: now,
+			}),
+		);
+		const key = expected_asset_key({ organizationId: db.organizationId, workspaceId: volumeId, assetId });
+
+		const swept = await t.mutation(internal.r2.cleanup_expired_unfinalized_assets, { _test_now: now });
+
+		expect(swept.deletedCount).toBe(1);
+		expect(await t.run(async (ctx) => ctx.db.get("files_r2_assets", assetId))).toBeNull();
+		expect(deleteObjectSpy).toHaveBeenCalledWith(expect.anything(), key);
+		expect(await get_deletion_job_by_key(t, key)).toBeNull();
+	});
+
 	test("insert_asset sets the deadline and the r2Key patch clears it", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
@@ -5065,6 +5127,69 @@ describe("r2_http_event authentication", () => {
 });
 
 describe("record_untracked_asset_event", () => {
+	test("deletes the exact late PUT key after the mount and asset docs are gone", async () => {
+		const deleteObjectSpy = vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const volumeId = await create_volume_fixture(t, db);
+		const assetId = await t.run(async (ctx) => {
+			const assetId = await ctx.db.insert("files_r2_assets", {
+				organizationId: db.organizationId,
+				workspaceId: volumeId,
+				kind: "content",
+				r2Bucket: r2.config.bucket,
+				size: 8,
+				createdBy: users_SYSTEM_AUTHOR,
+				updatedAt: Date.now(),
+			});
+			await ctx.db.delete("files_r2_assets", assetId);
+			await ctx.db.delete("plugins_volumes", volumeId);
+			return assetId;
+		});
+		const key = expected_asset_key({ organizationId: db.organizationId, workspaceId: volumeId, assetId });
+
+		const response = await post_r2_put_event(t, {
+			bucket: r2.config.bucket,
+			key,
+			size: 8,
+			messageId: "message_late_mount_put",
+		});
+
+		expect(response.status).toBe(204);
+		expect(deleteObjectSpy).toHaveBeenCalledExactlyOnceWith(expect.anything(), key);
+		expect(await get_deletion_job_by_key(t, key)).toBeNull();
+	});
+
+	test("keeps live and cross-scope assets when an untracked mount event arrives", async () => {
+		const deleteObjectSpy = vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const volumeId = await create_volume_fixture(t, db);
+		const assetId = await t.run(async (ctx) =>
+			ctx.db.insert("files_r2_assets", {
+				organizationId: db.organizationId,
+				workspaceId: volumeId,
+				kind: "content",
+				r2Bucket: r2.config.bucket,
+				size: 8,
+				createdBy: users_SYSTEM_AUTHOR,
+				r2Key: "kept/published-object",
+				updatedAt: Date.now(),
+			}),
+		);
+		const key = expected_asset_key({ organizationId: db.organizationId, workspaceId: volumeId, assetId });
+		const event = { bucket: r2.config.bucket, key, size: 8, eventId: "message_live_mount_put" };
+
+		expect(await t.mutation(internal.r2.record_untracked_asset_event, event)).toBe("ignored");
+		await t.run(async (ctx) =>
+			ctx.db.patch("files_r2_assets", assetId, { workspaceId: db.workspaceId, uploadRetiredAt: Date.now() }),
+		);
+		expect(await t.mutation(internal.r2.record_untracked_asset_event, event)).toBe("ignored");
+		expect(deleteObjectSpy).not.toHaveBeenCalled();
+		expect((await t.run(async (ctx) => ctx.db.get("files_r2_assets", assetId)))?.r2Key).toBe("kept/published-object");
+		expect(await get_deletion_job_by_key(t, key)).toBeNull();
+	});
+
 	test("hands a valid tenant key without an asset doc to the ledger and keeps 404 for garbage keys", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
@@ -5124,6 +5249,50 @@ describe("record_untracked_asset_event", () => {
 			messageId: "message_garbage_put",
 		});
 		expect(garbageResponse.status).toBe(404);
+	});
+});
+
+describe("files_media_validation_db_advance_version", () => {
+	test("keeps organization clocks and excludes mount storage", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const volumeId = await create_volume_fixture(t, db);
+		const versions = await t.run(async (ctx) => {
+			await files_media_validation_db_advance_version(ctx, { organizationId: db.organizationId, workspaceId: null });
+			await files_media_validation_db_advance_version(ctx, { organizationId: db.organizationId, workspaceId: null });
+			await files_media_validation_db_advance_version(ctx, {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+			});
+			await files_media_validation_db_advance_version(ctx, { organizationId: db.organizationId, workspaceId: volumeId });
+			return await ctx.db.query("files_media_validation_versions").collect();
+		});
+
+		expect(versions).toHaveLength(2);
+		expect(versions).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ organizationId: db.organizationId, workspaceId: null, revision: 2 }),
+				expect.objectContaining({ organizationId: db.organizationId, workspaceId: db.workspaceId, revision: 1 }),
+			]),
+		);
+	});
+});
+
+describe("get_data_for_public_download_url", () => {
+	test("rejects a mount storage id before reading a file", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const volumeId = await create_volume_fixture(t, db);
+
+		await expect(
+			t.query(internal.r2.get_data_for_public_download_url, {
+				organizationId: db.organizationId,
+				// @ts-expect-error Test the runtime guard for a wrong table id.
+				workspaceId: volumeId,
+				fileNodeId: "invalid",
+				visibilityUserId: db.userId,
+			}),
+		).rejects.toThrow(/Expected ID for table "organizations_workspaces"/);
 	});
 });
 

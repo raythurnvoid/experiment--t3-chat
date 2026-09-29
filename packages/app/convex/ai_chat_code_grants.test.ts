@@ -428,8 +428,10 @@ describe("two-root code grants", () => {
 					isDone: true,
 				});
 			} else {
-				expect(result.status).toBe(404);
-				expect(await result.json()).toEqual({ message: "File unavailable" });
+				expect(result.status, "list must reject changed code-source authority after settlement").toBe(404);
+				expect(await result.json(), "lost code source must release no file details").toEqual({
+					message: "File unavailable",
+				});
 			}
 		},
 	);

@@ -30,6 +30,7 @@ async function notifications_test_seed_target(ctx: MutationCtx) {
 		name: "home",
 		description: "",
 		default: true,
+		pluginInstallAccess: "owner",
 		updatedAt: now,
 	});
 	await ctx.db.patch("organizations", organizationId, { defaultWorkspaceId: workspaceId });
@@ -119,6 +120,7 @@ describe("list_current_notifications", () => {
 				name: "home",
 				description: "",
 				default: true,
+				pluginInstallAccess: "owner",
 				updatedAt: now,
 			});
 
@@ -148,6 +150,7 @@ describe("list_current_notifications", () => {
 				name: "roadmap",
 				description: "",
 				default: false,
+				pluginInstallAccess: "owner",
 				updatedAt: Date.now(),
 			});
 			const notificationId = await notifications_test_insert(ctx, {

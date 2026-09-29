@@ -319,6 +319,7 @@ async function organizations_test_seed_live_plugin_authority(
 		manifestR2Key: `plugins/deletion-authority/${args.tag}/manifest.json`,
 		backendEntrypointFile: null,
 		configuration: null,
+		mounts: [],
 		events: [],
 		pages: [],
 		fileViews: [],
@@ -345,6 +346,7 @@ async function organizations_test_seed_live_plugin_authority(
 		pluginVersionId,
 		pluginName: "deletion-authority",
 		status: "enabled",
+		managementAccess: "selected",
 		configurationYaml: null,
 		acceptedCapabilities: [],
 		capabilitiesAcceptedAt: now,
@@ -1173,6 +1175,162 @@ describe("create_workspace", () => {
 		expect(membership?.organizationQuota?.usedCount).toBe(1);
 	});
 
+	test("adds the owner to a workspace a member creates, so it stays listed after the member leaves", async () => {
+		const t = test_convex();
+		const [ownerId, memberId] = await t.run(async (ctx) =>
+			Promise.all([
+				ctx.db.insert("users", { clerkUserId: "clerk-user-member-ws-owner" }),
+				ctx.db.insert("users", { clerkUserId: "clerk-user-member-ws-member" }),
+			]),
+		);
+		await organizations_test_bootstrap_users(t, { userIds: [ownerId, memberId] });
+		const asOwner = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: ownerId,
+			name: "Owner",
+			email: "organizations-test-user@test.local",
+		});
+		const asMember = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: memberId,
+			name: "Member",
+			email: "organizations-test-user@test.local",
+		});
+
+		const organization = await asOwner.mutation(api.organizations.create_organization, {
+			description: "",
+			name: "member-ws-org",
+		});
+		const organizationId = organization._yay!.organizationId;
+		const invited = await asOwner.mutation(api.organizations.invite_user_to_organization_workspace, {
+			organizationId,
+			workspaceId: organization._yay!.defaultWorkspaceId,
+			userIdToAdd: memberId,
+		});
+		expect(invited._nay).toBeUndefined();
+
+		const created = await asMember.mutation(api.organizations.create_workspace, {
+			description: "",
+			organizationId,
+			name: "member-made",
+		});
+		const workspaceId = created._yay!.workspaceId;
+
+		const listedBeforeLeave = await asOwner.query(api.organizations.list, {});
+		expect(listedBeforeLeave.organizationIdsWorkspacesDict[organizationId]?.map((workspace) => workspace._id)).toContain(
+			workspaceId,
+		);
+
+		const left = await asMember.mutation(api.organizations.remove_user_from_organization, {
+			organizationId,
+			userIdToRemove: memberId,
+		});
+		expect(left._nay).toBeUndefined();
+
+		const [listedAfterLeave, workspaceMemberships, ownerApiCredentialQuota] = await Promise.all([
+			asOwner.query(api.organizations.list, {}),
+			t.run((ctx) =>
+				ctx.db
+					.query("organizations_workspaces_users")
+					.withIndex("by_workspace_user_active", (q) => q.eq("workspaceId", workspaceId))
+					.collect(),
+			),
+			t.run((ctx) =>
+				ctx.db
+					.query("quotas")
+					.withIndex("by_user_organization_workspace_quotaName", (q) =>
+						q
+							.eq("userId", ownerId)
+							.eq("organizationId", organizationId)
+							.eq("workspaceId", workspaceId)
+							.eq("quotaName", "active_api_credentials"),
+					)
+					.first(),
+			),
+		]);
+		expect(listedAfterLeave.organizationIdsWorkspacesDict[organizationId]?.map((workspace) => workspace._id)).toContain(
+			workspaceId,
+		);
+		expect(workspaceMemberships.map((membership) => [membership.userId, membership.active])).toEqual([
+			[ownerId, true],
+		]);
+		// Creating an API key in this workspace reads this quota doc and throws when it is missing.
+		expect(ownerApiCredentialQuota).not.toBeNull();
+	});
+
+	test("adds an inactive owner membership while the owner's account waits for deletion", async () => {
+		const t = test_convex();
+		const [ownerId, memberId] = await t.run(async (ctx) =>
+			Promise.all([
+				ctx.db.insert("users", { clerkUserId: "clerk-user-deleted-owner-ws-owner" }),
+				ctx.db.insert("users", { clerkUserId: "clerk-user-deleted-owner-ws-member" }),
+			]),
+		);
+		await organizations_test_bootstrap_users(t, { userIds: [ownerId, memberId] });
+		const organization = await t.run(async (ctx) => {
+			const now = Date.now();
+			const created = await organizations_db_create(ctx, {
+				userId: ownerId,
+				name: "deleted-owner-ws",
+				description: "",
+				now,
+			});
+			if (created._nay) {
+				throw new Error(created._nay.message);
+			}
+			await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: created._yay.organizationId,
+				workspaceId: created._yay.defaultWorkspaceId,
+				userId: memberId,
+				active: true,
+				updatedAt: now,
+			});
+			await access_control_db_ensure_role_assignment(ctx, {
+				organizationId: created._yay.organizationId,
+				workspaceId: created._yay.defaultWorkspaceId,
+				userId: memberId,
+				role: "member",
+				now,
+			});
+			return created._yay;
+		});
+
+		// An admin hard delete tombstones the owner first and moves the organization to the next owner
+		// in a later pass. This is the state in between.
+		await t.run(async (ctx) => {
+			const ownerMemberships = await ctx.db
+				.query("organizations_workspaces_users")
+				.withIndex("by_user_organization_workspace_active", (q) => q.eq("userId", ownerId))
+				.collect();
+			await Promise.all(
+				ownerMemberships.map((membership) =>
+					ctx.db.patch("organizations_workspaces_users", membership._id, { active: false }),
+				),
+			);
+			await ctx.db.patch("users", ownerId, { deletedAt: Date.now() });
+		});
+
+		const created = await t.run((ctx) =>
+			organizations_db_create_workspace(ctx, {
+				userId: memberId,
+				organizationId: organization.organizationId,
+				name: "while-deleting",
+				description: "",
+				now: Date.now(),
+			}),
+		);
+
+		const ownerMembership = await t.run((ctx) =>
+			ctx.db
+				.query("organizations_workspaces_users")
+				.withIndex("by_workspace_user_active", (q) =>
+					q.eq("workspaceId", created._yay!.workspaceId).eq("userId", ownerId),
+				)
+				.unique(),
+		);
+		expect(ownerMembership?.active).toBe(false);
+	});
+
 	test("stores trimmed workspace description", async () => {
 		const t = test_convex();
 		const userId = await t.run(async (ctx) =>
@@ -1934,7 +2092,7 @@ describe("invite_user_to_organization_workspace", () => {
 		expect(assignments).toHaveLength(0);
 	});
 
-	test("rejects an invite that would activate a role stronger than the inviter's", async () => {
+	test("rejects an invite that activates a plugin access list the inviter cannot manage", async () => {
 		const t = test_convex();
 		const [ownerId, managerId, invitedUserId] = await t.run(async (ctx) =>
 			Promise.all([
@@ -1978,13 +2136,13 @@ describe("invite_user_to_organization_workspace", () => {
 				updatedAt: now,
 			});
 
-			// The invited user's organization role can manage plugins. The inviter's role cannot.
+			// This role will be on the side workspace's plugin setup list.
 			const operatorRoleId = await ctx.db.insert("access_control_roles", {
 				organizationId: created._yay!.organizationId,
 				name: "Plugin operator",
 				normalizedName: "plugin operator",
 				description: "",
-				permissions: ["content.read", "workspace.plugins.manage"],
+				permissions: ["content.read"],
 				createdBy: ownerId,
 				createdAt: now,
 				updatedAt: now,
@@ -2020,6 +2178,18 @@ describe("invite_user_to_organization_workspace", () => {
 			if (workspace._nay) {
 				throw new Error(workspace._nay.message);
 			}
+			await ctx.db.patch("organizations_workspaces", workspace._yay.workspaceId, { pluginInstallAccess: "selected" });
+			await ctx.db.insert("access_control_permission_grants", {
+				organizationId: created._yay!.organizationId,
+				workspaceId: workspace._yay.workspaceId,
+				resourceKind: "workspace",
+				resourceId: workspace._yay.workspaceId,
+				principalKind: "role",
+				role: operatorRoleId,
+				permission: "workspace.plugins.manage",
+				createdAt: now,
+				updatedAt: now,
+			});
 			await test_mocks_cancel_pending_home_file_seeds(ctx);
 			return { sideWorkspaceId: workspace._yay.workspaceId, managerRoleId };
 		});
@@ -2031,15 +2201,16 @@ describe("invite_user_to_organization_workspace", () => {
 			email: "invite-activation-manager@test.local",
 		});
 
-		// A workspace-scoped permission works only where its holder is a member. So the membership this
-		// invite would write is exactly what turns "Manage plugins" on for the invited user in the side
-		// workspace — a power the inviter cannot give with `set_user_role`.
+		// Joining would activate the invited user's existing role grant.
+		// The inviter cannot manage that plugin setup list.
 		const blocked = await manager.mutation(api.organizations.invite_user_to_organization_workspace, {
 			organizationId: created._yay!.organizationId,
 			workspaceId: sideWorkspaceId,
 			userIdToAdd: invitedUserId,
 		});
-		expect(blocked._nay?.message).toBe('You cannot invite this member, because their role grants "Manage plugins"');
+		expect(blocked._nay?.message).toBe(
+			"You cannot invite this member: a role they already have is on a plugin access list you cannot manage",
+		);
 
 		const noMembership = await t.run((ctx) =>
 			ctx.db
@@ -2055,12 +2226,18 @@ describe("invite_user_to_organization_workspace", () => {
 		);
 		expect(noMembership).toBeNull();
 
-		// Give the inviter the same permission, then send the same invite again. It now succeeds, which
-		// proves the refusal came from this rule and not from something else.
+		// Give the inviter access to the same list. The same invite must then pass.
 		await t.run(async (ctx) => {
-			const role = await ctx.db.get("access_control_roles", managerRoleId);
-			await ctx.db.patch("access_control_roles", managerRoleId, {
-				permissions: [...role!.permissions, "workspace.plugins.manage"],
+			await ctx.db.insert("access_control_permission_grants", {
+				organizationId: created._yay!.organizationId,
+				workspaceId: sideWorkspaceId,
+				resourceKind: "workspace",
+				resourceId: sideWorkspaceId,
+				principalKind: "role",
+				role: managerRoleId,
+				permission: "workspace.plugins.manage",
+				createdAt: Date.now(),
+				updatedAt: Date.now(),
 			});
 			await ctx.runMutation(components.rate_limiter.lib.resetRateLimit, {
 				name: "organizations_write",
@@ -2767,6 +2944,7 @@ describe("remove_user_from_organization", () => {
 				manifestR2Key: "plugins/removal-test/manifest.json",
 				backendEntrypointFile: null,
 				configuration: null,
+				mounts: [],
 				events: [],
 				pages: [],
 				fileViews: [],
@@ -2794,6 +2972,7 @@ describe("remove_user_from_organization", () => {
 					pluginVersionId,
 					pluginName: "removal-test",
 					status: "enabled",
+					managementAccess: "selected",
 					configurationYaml: null,
 					acceptedCapabilities: [],
 					capabilitiesAcceptedAt: now,
@@ -2817,6 +2996,7 @@ describe("remove_user_from_organization", () => {
 					pluginVersionId,
 					pluginName: "removal-test",
 					status: "enabled",
+					managementAccess: "selected",
 					configurationYaml: null,
 					acceptedCapabilities: [],
 					capabilitiesAcceptedAt: now,
@@ -2840,6 +3020,7 @@ describe("remove_user_from_organization", () => {
 					pluginVersionId,
 					pluginName: "removal-test",
 					status: "enabled",
+					managementAccess: "selected",
 					configurationYaml: null,
 					acceptedCapabilities: [],
 					capabilitiesAcceptedAt: now,
@@ -3305,6 +3486,7 @@ describe("remove_user_from_organization", () => {
 				manifestR2Key: "plugins/organization-scope-cleanup/manifest.json",
 				backendEntrypointFile: null,
 				configuration: null,
+				mounts: [],
 				events: [],
 				pages: [],
 				fileViews: [],
@@ -3331,6 +3513,7 @@ describe("remove_user_from_organization", () => {
 				pluginVersionId,
 				pluginName: "organization-scope-cleanup",
 				status: "enabled",
+				managementAccess: "selected",
 				configurationYaml: null,
 				acceptedCapabilities: [],
 				capabilitiesAcceptedAt: now,
@@ -4138,6 +4321,7 @@ describe("access_control", () => {
 					name: "role-a",
 					description: "",
 					default: false,
+					pluginInstallAccess: "owner",
 					updatedAt: now,
 				}),
 				ctx.db.insert("organizations_workspaces", {
@@ -4145,6 +4329,7 @@ describe("access_control", () => {
 					name: "role-b",
 					description: "",
 					default: false,
+					pluginInstallAccess: "owner",
 					updatedAt: now,
 				}),
 			]);
@@ -4250,6 +4435,7 @@ describe("access_control", () => {
 					name: "access-a",
 					description: "",
 					default: false,
+					pluginInstallAccess: "owner",
 					updatedAt: now,
 				}),
 				ctx.db.insert("organizations_workspaces", {
@@ -4257,6 +4443,7 @@ describe("access_control", () => {
 					name: "access-b",
 					description: "",
 					default: false,
+					pluginInstallAccess: "owner",
 					updatedAt: now,
 				}),
 			]);
@@ -6874,6 +7061,7 @@ describe("quotas.get", () => {
 				name: "home",
 				description: "",
 				default: true,
+				pluginInstallAccess: "owner",
 				updatedAt: now,
 			});
 			await ctx.db.insert("organizations_workspaces_users", {

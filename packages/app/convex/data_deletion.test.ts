@@ -460,6 +460,7 @@ async function data_deletion_test_seed_plugin_ui_sessions(
 		manifestR2Key: "plugins/gallery/manifest.json",
 		backendEntrypointFile: null,
 		configuration: null,
+		mounts: [],
 		events: [],
 		capabilities: ["workspace.files.read"],
 		pages: [],
@@ -486,6 +487,7 @@ async function data_deletion_test_seed_plugin_ui_sessions(
 		pluginVersionId,
 		pluginName: "gallery",
 		status: "enabled",
+		managementAccess: "selected",
 		configurationYaml: null,
 		acceptedCapabilities: ["workspace.files.read"],
 		capabilitiesAcceptedAt: now,
@@ -1730,7 +1732,7 @@ describe("init_user_deletion", () => {
 		expect(after.organizationRequests).toHaveLength(0);
 	});
 
-	test("queues remaining owned organization deletion and removes memberships immediately", async () => {
+	test("queues remaining owned organization deletion and restores a member's default tenant", async () => {
 		const t = test_convex();
 		const owner = await t.run((ctx) =>
 			data_deletion_test_bootstrap_user(ctx, {
@@ -1762,6 +1764,11 @@ describe("init_user_deletion", () => {
 				workspaceId: created._yay.defaultWorkspaceId,
 				userId: collaborator.userId,
 				active: true,
+			});
+			// Clear the saved tenant pointers to test cleanup recovery.
+			await ctx.db.patch("users", collaborator.userId, {
+				defaultOrganizationId: undefined,
+				defaultWorkspaceId: undefined,
 			});
 
 			return created._yay;
@@ -1822,6 +1829,13 @@ describe("init_user_deletion", () => {
 		expect(after.memberships).toHaveLength(0);
 		expect(after.requests).toHaveLength(1);
 		expect(after.ownerQuota?.usedCount).toBe(0);
+
+		const restoredWorkspace = await t.run(async (ctx) => {
+			const user = await ctx.db.get("users", collaborator.userId);
+			return user?.defaultWorkspaceId ? await ctx.db.get("organizations_workspaces", user.defaultWorkspaceId) : null;
+		});
+		expect(restoredWorkspace?._id).not.toBe(collaborator.defaultWorkspaceId);
+		expect(restoredWorkspace?.pluginInstallAccess).toBe("owner");
 	});
 });
 
@@ -2175,6 +2189,7 @@ describe("process_user_deletion_request", () => {
 				manifestR2Key: "plugins/gallery/manifest.json",
 				backendEntrypointFile: null,
 				configuration: null,
+				mounts: [],
 				events: [],
 				capabilities: ["workspace.files.read"],
 				pages: [],
@@ -2201,6 +2216,7 @@ describe("process_user_deletion_request", () => {
 				pluginVersionId,
 				pluginName: "gallery",
 				status: "enabled",
+				managementAccess: "selected",
 				configurationYaml: null,
 				acceptedCapabilities: ["workspace.files.read"],
 				capabilitiesAcceptedAt: now,
@@ -2625,6 +2641,7 @@ describe("process_user_deletion_request", () => {
 				manifestR2Key: "plugins/grant-drain/manifest.json",
 				backendEntrypointFile: null,
 				configuration: null,
+				mounts: [],
 				events: [],
 				capabilities: ["plugin.data.read", "plugin.data.write"],
 				pages: [],
@@ -2656,6 +2673,7 @@ describe("process_user_deletion_request", () => {
 					name: "home",
 					description: "",
 					default: true,
+					pluginInstallAccess: "owner",
 					updatedAt: now,
 				});
 				await ctx.db.patch("organizations", organizationId, { defaultWorkspaceId: workspaceId });
@@ -2670,6 +2688,7 @@ describe("process_user_deletion_request", () => {
 					pluginVersionId,
 					pluginName: "grant-drain",
 					status: "enabled",
+					managementAccess: "selected",
 					configurationYaml: null,
 					acceptedCapabilities: ["plugin.data.read", "plugin.data.write"],
 					capabilitiesAcceptedAt: now,
@@ -2836,6 +2855,7 @@ describe("process_user_deletion_request", () => {
 				manifestR2Key: "plugins/missing-user-grant-drain/manifest.json",
 				backendEntrypointFile: null,
 				configuration: null,
+				mounts: [],
 				events: [],
 				capabilities: [],
 				pages: [],
@@ -2862,6 +2882,7 @@ describe("process_user_deletion_request", () => {
 				pluginVersionId,
 				pluginName: "missing-user-grant-drain",
 				status: "enabled",
+				managementAccess: "selected",
 				configurationYaml: null,
 				acceptedCapabilities: [],
 				capabilitiesAcceptedAt: now,
@@ -3089,7 +3110,7 @@ describe("process_user_deletion_request", () => {
 		expect(afterTenantCleanup.request).toBeNull();
 	});
 
-	test("keeps shared orphaned workspaces after retention when the organization still has active users", async () => {
+	test("keeps a shared workspace the deleted member created after retention when the organization still has active users", async () => {
 		const t = test_convex();
 		const deletedUser = await t.run((ctx) =>
 			data_deletion_test_bootstrap_user(ctx, {
@@ -4514,6 +4535,7 @@ describe("process_workspace_deletion_request", () => {
 					compatibilityFlags: ["nodejs_compat"],
 				},
 				configuration: null,
+				mounts: [],
 				events: [{ type: "files.upload.completed", contentTypes: ["image/png"], filters: [] }],
 				capabilities: ["plugin.secrets.read", "outbound.fetch"],
 				pages: [],
@@ -4540,6 +4562,7 @@ describe("process_workspace_deletion_request", () => {
 				pluginVersionId,
 				pluginName: "media",
 				status: "enabled",
+				managementAccess: "selected",
 				configurationYaml: null,
 				acceptedCapabilities: ["plugin.secrets.read", "outbound.fetch"],
 				capabilitiesAcceptedAt: now,
@@ -5179,6 +5202,7 @@ describe("process_workspace_deletion_request", () => {
 					compatibilityFlags: ["nodejs_compat"],
 				},
 				configuration: null,
+				mounts: [],
 				events: [{ type: "files.upload.completed", contentTypes: ["image/png"], filters: [] }],
 				capabilities: ["plugin.secrets.read", "outbound.fetch"],
 				pages: [],
@@ -5205,6 +5229,7 @@ describe("process_workspace_deletion_request", () => {
 				pluginVersionId,
 				pluginName: "media",
 				status: "enabled",
+				managementAccess: "selected",
 				configurationYaml: null,
 				acceptedCapabilities: ["plugin.secrets.read", "outbound.fetch"],
 				capabilitiesAcceptedAt: now,
@@ -8174,6 +8199,85 @@ describe("finalize_user_deletion_data", () => {
 		expect(after.futureWorkspaceFiles).toHaveLength(0);
 	});
 
+	test("gives the next owner a membership in every workspace of the organization", async () => {
+		const t = test_convex();
+		const owner = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: null,
+				displayName: "Anonymous Owner With Extra Workspace",
+			}),
+		);
+		const collaborator = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-next-owner-all-workspaces",
+				displayName: "Next Owner",
+			}),
+		);
+
+		// The collaborator is a member of the default workspace only.
+		const shared = await t.run(async (ctx) => {
+			const now = Date.now();
+			const created = await organizations_db_create(ctx, {
+				userId: owner.userId,
+				name: "next-owner-ws",
+				description: "",
+				now,
+				default: false,
+			});
+			if (created._nay) {
+				throw new Error(created._nay.message);
+			}
+			const extraWorkspace = await organizations_db_create_workspace(ctx, {
+				userId: owner.userId,
+				organizationId: created._yay.organizationId,
+				name: "owner-only",
+				description: "",
+				now,
+			});
+			if (extraWorkspace._nay) {
+				throw new Error(extraWorkspace._nay.message);
+			}
+			await Promise.all([
+				ctx.db.insert("organizations_workspaces_users", {
+					organizationId: created._yay.organizationId,
+					workspaceId: created._yay.defaultWorkspaceId,
+					userId: collaborator.userId,
+					active: true,
+					updatedAt: now,
+				}),
+				ctx.db.insert("access_control_role_assignments", {
+					organizationId: created._yay.organizationId,
+					workspaceId: created._yay.defaultWorkspaceId,
+					userId: collaborator.userId,
+					role: "member",
+					createdAt: now,
+					updatedAt: now,
+				}),
+			]);
+			return { ...created._yay, extraWorkspaceId: extraWorkspace._yay.workspaceId };
+		});
+
+		await t.action(internal.users.hard_delete_user_now, {
+			userId: owner.userId,
+			purgeUserMod: "data_auth_and_user_record",
+			_test_disableReschedule: true,
+		});
+		await data_deletion_test_run_worker_until_idle(t);
+
+		const after = await t.run(async (ctx) => ({
+			organization: await ctx.db.get("organizations", shared.organizationId),
+			extraWorkspaceMemberships: await ctx.db
+				.query("organizations_workspaces_users")
+				.withIndex("by_workspace_user_active", (q) => q.eq("workspaceId", shared.extraWorkspaceId))
+				.collect(),
+		}));
+
+		expect(after.organization?.ownerUserId).toBe(collaborator.userId);
+		expect(after.extraWorkspaceMemberships.map((membership) => [membership.userId, membership.active])).toEqual([
+			[collaborator.userId, true],
+		]);
+	});
+
 	test("directly purges local data and only clears matching request rows", async () => {
 		const t = test_convex();
 		const deletedUser = await t.run((ctx) =>
@@ -8733,7 +8837,7 @@ describe("finalize_user_deletion_data", () => {
 		expect(after.anonymousToken?.token).toBe("hard-delete-data-preserved-token");
 	});
 
-	test("keeps shared orphaned workspaces while deleting the user data directly", async () => {
+	test("keeps a shared workspace the deleted member created while deleting the user data directly", async () => {
 		const t = test_convex();
 		const deletedUser = await t.run((ctx) =>
 			data_deletion_test_bootstrap_user(ctx, {
@@ -9048,6 +9152,7 @@ describe("enqueue_deletion_requests_processing", () => {
 					name: `fair-ws-${i}`,
 					description: "",
 					default: false,
+					pluginInstallAccess: "owner",
 					updatedAt: eligibleAt,
 				});
 				await ctx.db.insert("files_r2_assets", {
@@ -9079,6 +9184,7 @@ describe("enqueue_deletion_requests_processing", () => {
 				name: "fair-ws-success",
 				description: "",
 				default: false,
+				pluginInstallAccess: "owner",
 				updatedAt: eligibleAt,
 			});
 			const successRequestId = await ctx.db.insert("data_deletion_requests", {
@@ -9173,6 +9279,7 @@ describe("enqueue_deletion_requests_processing", () => {
 					name: `fair-org-ws-${i}`,
 					description: "",
 					default: true,
+					pluginInstallAccess: "owner",
 					updatedAt: eligibleAt,
 				});
 				await ctx.db.insert("files_r2_assets", {
@@ -9404,6 +9511,7 @@ describe("enqueue_deletion_requests_processing", () => {
 					name: `quota-ws-${i}`,
 					description: "",
 					default: false,
+					pluginInstallAccess: "owner",
 					updatedAt: now,
 				});
 				await ctx.db.insert("data_deletion_requests", {
@@ -9453,6 +9561,7 @@ describe("enqueue_deletion_requests_processing", () => {
 					name: `ws-only-budget-ws-${i}`,
 					description: "",
 					default: false,
+					pluginInstallAccess: "owner",
 					updatedAt: now,
 				});
 				await ctx.db.insert("data_deletion_requests", {
@@ -10342,6 +10451,7 @@ describe("prepare_user_for_hard_deletion", () => {
 				manifestR2Key: "plugins/cached-media/manifest.json",
 				backendEntrypointFile: null,
 				configuration: null,
+				mounts: [],
 				events: [],
 				capabilities: [],
 				pages: [],
@@ -10485,6 +10595,7 @@ describe("prepare_user_for_hard_deletion", () => {
 				manifestR2Key: "plugins/media/manifest.json",
 				backendEntrypointFile: null,
 				configuration: null,
+				mounts: [],
 				events: [],
 				pages: [],
 				fileViews: [],
@@ -10562,6 +10673,7 @@ describe("prepare_user_for_hard_deletion", () => {
 				manifestR2Key: "plugins/cached-attempt/manifest.json",
 				backendEntrypointFile: null,
 				configuration: null,
+				mounts: [],
 				events: [],
 				pages: [],
 				fileViews: [],

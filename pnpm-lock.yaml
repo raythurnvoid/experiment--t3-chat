@@ -63,6 +63,9 @@ importers:
       '@atlaskit/pragmatic-drag-and-drop':
         specifier: ^1.8.1
         version: 1.8.1
+      '@aws-sdk/client-s3':
+        specifier: 3.1043.0
+        version: 3.1043.0
       '@chenglou/pretext':
         specifier: ^0.0.9
         version: 0.0.9

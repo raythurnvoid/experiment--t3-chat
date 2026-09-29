@@ -252,7 +252,8 @@ export function bash_cat_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFil
 				// the action path after chunks say they cannot serve it.
 				const cacheKey = `${pathResolution.ctxData.organizationId}:${pathResolution.ctxData.workspaceId}:${target.dbFilesPath}`;
 				const cached = fileContentCache.get(cacheKey);
-				if (cached != null) {
+				// Volume access can change during the size lookup. Read it through Convex again.
+				if (cached != null && pathResolution.fs.readOnlySource !== "volume") {
 					appendContent(cached, parsed._yay.showLineNumbers);
 					continue;
 				}

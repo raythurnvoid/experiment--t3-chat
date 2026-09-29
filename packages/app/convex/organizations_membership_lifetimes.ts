@@ -3,6 +3,7 @@ import type { MutationCtx, QueryCtx } from "./_generated/server.js";
 import { access_control_db_has_permission } from "./access_control.ts";
 import { access_control_changes_db_record } from "./access_control_changes.ts";
 import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
+import { plugins_schedules_db_cancel } from "./plugins_schedules_db.ts";
 
 export async function organizations_membership_lifetimes_db_get(
 	ctx: QueryCtx | MutationCtx,
@@ -144,6 +145,8 @@ export async function organizations_membership_lifetimes_db_record(
 		}
 
 		// Local jobs also use this lifetime, before an external service starts the change feed.
+		if (!active)
+			await plugins_schedules_db_cancel(ctx, { workspaceId: membership.workspaceId, userId: membership.userId });
 		if (!state) continue;
 		const organization = active ? await ctx.db.get("organizations", membership.organizationId) : null;
 		const member = organization?.defaultWorkspaceId

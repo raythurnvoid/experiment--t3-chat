@@ -2,7 +2,7 @@ import "./index.css";
 
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery } from "convex/react";
-import { Puzzle, Search, Server, Store } from "lucide-react";
+import { Search, Server, Store } from "lucide-react";
 import { memo, useState } from "react";
 
 import {
@@ -16,14 +16,11 @@ import {
 import { MyLink, MyLinkIcon } from "@/components/my-link.tsx";
 import { PluginsGalleryCard } from "@/components/plugins-gallery-card.tsx";
 import { PluginsHeaderBreadcrumb } from "@/components/plugins-header-breadcrumb.tsx";
-import { app_convex_api, type app_convex_FunctionReturnType, type app_convex_Id } from "@/lib/app-convex-client.ts";
+import { PluginsManagementAccess } from "@/components/plugins-management-access.tsx";
+import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import type { AppClassName } from "@/lib/dom-utils.ts";
 import { cn } from "@/lib/utils.ts";
-
-type RoutePlugins_Installation = app_convex_FunctionReturnType<
-	typeof app_convex_api.plugins.list_installations
->[number];
 
 // #region gallery
 type RoutePluginsGallery_ClassNames =
@@ -34,11 +31,10 @@ type RoutePluginsGallery_ClassNames =
 
 type RoutePluginsGallery_Props = {
 	membershipId: app_convex_Id<"organizations_workspaces_users">;
-	installations: Array<RoutePlugins_Installation>;
 };
 
 const RoutePluginsGallery = memo(function RoutePluginsGallery(props: RoutePluginsGallery_Props) {
-	const { membershipId, installations } = props;
+	const { membershipId } = props;
 	const plugins = useQuery(app_convex_api.plugins.list_published_plugins, { membershipId });
 	const [search, setSearch] = useState("");
 
@@ -61,6 +57,7 @@ const RoutePluginsGallery = memo(function RoutePluginsGallery(props: RoutePlugin
 					</MyInputIcon>
 					<MyInputControl
 						type="search"
+						aria-label="Search plugins"
 						placeholder="Search plugins"
 						value={search}
 						onChange={(event) => setSearch(event.currentTarget.value)}
@@ -80,9 +77,7 @@ const RoutePluginsGallery = memo(function RoutePluginsGallery(props: RoutePlugin
 			) : (
 				<div className={"RoutePluginsGallery-grid" satisfies RoutePluginsGallery_ClassNames}>
 					{filtered.map((plugin) => {
-						const installedVersion = installations.find(
-							(item) => item.installation.pluginName === plugin.name,
-						)?.version;
+						const installed = plugin.installationId !== null;
 						return (
 							<PluginsGalleryCard
 								key={plugin.pluginVersionId}
@@ -92,7 +87,7 @@ const RoutePluginsGallery = memo(function RoutePluginsGallery(props: RoutePlugin
 								description={plugin.description}
 								version={plugin.version}
 								reviewStatus={plugin.reviewStatus}
-								installed={installedVersion !== undefined}
+								installed={installed}
 							/>
 						);
 					})}
@@ -108,44 +103,15 @@ type RoutePlugins_ClassNames =
 	| "RoutePlugins"
 	| "RoutePlugins-content"
 	| "RoutePlugins-loading"
-	| "RoutePlugins-blocked"
 	| "RoutePluginsHeader"
 	| "RoutePluginsHeader-title"
 	| "RoutePluginsHeader-description"
 	| "RoutePluginsHeader-actions";
 
 function RoutePlugins() {
-	const { membershipId, organizationName, workspaceId, workspaceName } = AppTenantProvider.useContext();
-	const organizationList = useQuery(app_convex_api.organizations.list);
-	const workspacePermissions = organizationList?.workspaceIdsPermissionsDict[workspaceId];
-	const canManagePlugins =
-		organizationList === undefined
-			? undefined
-			: workspacePermissions === "all" || workspacePermissions?.includes("workspace.plugins.manage") === true;
-	const installations = useQuery(
-		app_convex_api.plugins.list_installations,
-		canManagePlugins === true ? { membershipId } : "skip",
-	);
+	const { membershipId, organizationId, workspaceId, organizationName, workspaceName } = AppTenantProvider.useContext();
 
 	const breadcrumb = <PluginsHeaderBreadcrumb current="Plugins" />;
-
-	if (canManagePlugins === undefined || (canManagePlugins && installations === undefined)) {
-		return (
-			<main
-				className={cn("RoutePlugins" satisfies RoutePlugins_ClassNames, "app-scrollable" satisfies AppClassName)}
-				role="status"
-				aria-live="polite"
-			>
-				<div className={"RoutePlugins-content" satisfies RoutePlugins_ClassNames}>
-					{breadcrumb}
-					<div className={"RoutePlugins-loading" satisfies RoutePlugins_ClassNames}>
-						<Puzzle aria-hidden />
-						Loading plugins...
-					</div>
-				</div>
-			</main>
-		);
-	}
 
 	return (
 		<main className={cn("RoutePlugins" satisfies RoutePlugins_ClassNames, "app-scrollable" satisfies AppClassName)}>
@@ -155,12 +121,9 @@ function RoutePlugins() {
 				<header className={"RoutePluginsHeader" satisfies RoutePlugins_ClassNames}>
 					<div>
 						<h1 className={"RoutePluginsHeader-title" satisfies RoutePlugins_ClassNames}>Plugins</h1>
-						{/* The blocked state explains itself in the alert below, so skip the description there. */}
-						{canManagePlugins && (
-							<p className={"RoutePluginsHeader-description" satisfies RoutePlugins_ClassNames}>
-								Browse published plugins and open a plugin page to install and manage it.
-							</p>
-						)}
+						<p className={"RoutePluginsHeader-description" satisfies RoutePlugins_ClassNames}>
+							Browse published plugins. Your permissions control installation and settings.
+						</p>
 					</div>
 					<div className={"RoutePluginsHeader-actions" satisfies RoutePlugins_ClassNames}>
 						<MyLink
@@ -186,14 +149,14 @@ function RoutePlugins() {
 					</div>
 				</header>
 
-				{canManagePlugins && installations ? (
-					<RoutePluginsGallery membershipId={membershipId} installations={installations} />
-				) : (
-					<div className={"RoutePlugins-blocked" satisfies RoutePlugins_ClassNames} role="alert">
-						<Puzzle aria-hidden />
-						{"You don't have permission to manage plugins in this workspace."}
-					</div>
-				)}
+				<PluginsManagementAccess
+					key={membershipId}
+					membershipId={membershipId}
+					organizationId={organizationId}
+					workspaceId={workspaceId}
+				/>
+
+				<RoutePluginsGallery membershipId={membershipId} />
 			</div>
 		</main>
 	);

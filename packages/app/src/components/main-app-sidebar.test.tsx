@@ -223,7 +223,6 @@ function createTenantContext() {
 
 function createOrganizationList(args: {
 	organizationIsDefault: boolean;
-	canManagePlugins: boolean;
 	canUseBrowser: boolean;
 }) {
 	return {
@@ -235,7 +234,7 @@ function createOrganizationList(args: {
 		],
 		workspaceIdsPermissionsDict: {
 			workspace_1: [
-				args.canManagePlugins ? "workspace.plugins.manage" : "content.read",
+				"content.read",
 				...(args.canUseBrowser ? ["workspace.browser.use"] : []),
 			],
 		},
@@ -263,7 +262,6 @@ function createPluginPages() {
 function mockQueries(args: {
 	organizationIsDefault: boolean;
 	pluginPages?: ReturnType<typeof createPluginPages>;
-	canManagePlugins?: boolean;
 	canUseBrowser?: boolean;
 	webBrowserEnabled?: boolean;
 	mcpAvailable?: { canUse: boolean; hasSavedData: boolean };
@@ -272,7 +270,6 @@ function mockQueries(args: {
 		if (query === "organizations.list") {
 			return createOrganizationList({
 				organizationIsDefault: args.organizationIsDefault,
-				canManagePlugins: args.canManagePlugins ?? true,
 				canUseBrowser: args.canUseBrowser ?? false,
 			});
 		}
@@ -352,37 +349,34 @@ describe("MainAppSidebar", () => {
 		expect(screen.queryByText("Browser")).toBeNull();
 	});
 
-	test("shows MCP servers and not Plugins to a member without plugin management", () => {
+	test("shows Plugins and MCP servers without a broad plugin role permission", () => {
 		mockQueries({
 			organizationIsDefault: false,
-			canManagePlugins: false,
 			mcpAvailable: { canUse: true, hasSavedData: false },
 		});
 
 		render(<MainAppSidebar />);
 
-		expect(screen.queryByText("Plugins")).toBeNull();
+		expect(screen.getByText("Plugins").closest("a")?.getAttribute("href")).toBe("/w/team/home/plugins");
 		expect(screen.getByText("MCP servers").closest("a")?.getAttribute("href")).toBe("/w/team/home/mcp-servers");
 		expect(useQueryMock).toHaveBeenCalledWith("plugins_mcp.mcp_available", { membershipId: "membership_1" });
 	});
 
-	test("hides MCP servers and Plugins from a viewer", () => {
+	test("keeps Plugins available to a viewer without MCP access", () => {
 		mockQueries({
 			organizationIsDefault: false,
-			canManagePlugins: false,
 			mcpAvailable: { canUse: false, hasSavedData: false },
 		});
 
 		render(<MainAppSidebar />);
 
-		expect(screen.queryByText("Plugins")).toBeNull();
+		expect(screen.getByText("Plugins")).not.toBeNull();
 		expect(screen.queryByText("MCP servers")).toBeNull();
 	});
 
 	test("shows MCP servers without the permission only while the member has saved data", () => {
 		mockQueries({
 			organizationIsDefault: false,
-			canManagePlugins: false,
 			mcpAvailable: { canUse: false, hasSavedData: true },
 		});
 		const { unmount } = render(<MainAppSidebar />);
@@ -391,7 +385,6 @@ describe("MainAppSidebar", () => {
 
 		mockQueries({
 			organizationIsDefault: false,
-			canManagePlugins: false,
 			mcpAvailable: { canUse: false, hasSavedData: false },
 		});
 		render(<MainAppSidebar />);
@@ -407,16 +400,15 @@ describe("MainAppSidebar", () => {
 		expect(pageLink?.getAttribute("href")).toBe("/w/team/home/plugins/gallery/pages/gallery");
 	});
 
-	test("hides plugin management without permission but keeps installed plugin pages", () => {
+	test("keeps the catalog and installed plugin pages without broad management", () => {
 		mockQueries({
 			organizationIsDefault: false,
 			pluginPages: createPluginPages(),
-			canManagePlugins: false,
 		});
 
 		render(<MainAppSidebar />);
 
-		expect(screen.queryByText("Plugins")).toBeNull();
+		expect(screen.getByText("Plugins")).not.toBeNull();
 		expect(screen.getByText("Gallery").closest("a")?.getAttribute("href")).toBe(
 			"/w/team/home/plugins/gallery/pages/gallery",
 		);

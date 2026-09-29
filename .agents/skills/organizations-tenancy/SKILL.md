@@ -47,6 +47,8 @@ description: Organizations, workspaces, default personal/home tenant, membership
 # Every new organization gets a Home workspace
 
 - `organizations_db_create` always inserts a default workspace named `home` (`default: true`) and links `organizations.defaultWorkspaceId`.
+- Every new Home or ordinary workspace sets `pluginInstallAccess: "owner"`. Plugin setup access
+  is a separate setting. It does not come from the creator's role.
 - **`create_organization`** (public) calls `organizations_db_create` **without** `default: true`, so it creates a **non-default** organization plus its `home` workspace. That organization is not the user’s `personal` default. It is **signed-in only**: an anonymous caller, and a caller whose `users` doc is missing or tombstoned, are both refused with `Unauthenticated`. The create dialog maps that one signal to "Sign in to create an organization.", the same way it maps `Organization quota reached` — the backend sends the signal, the dialog owns the wording. Anonymous sessions still get their `personal` organization from bootstrap.
 - `organizations_db_create` stores `organizations.ownerUserId = userId` and `billingMode: "user"`. It writes **no** role assignment and **no** permission grant — ownership alone grants the creator everything. This applies to both default and non-default organizations, but only non-default ownership consumes the user’s `extra_organizations` quota.
 
@@ -56,10 +58,23 @@ Canonical access-control details live in `../access-control/SKILL.md`.
 
 - System roles are `admin`, `member`, `viewer`, defined in code in `access_control_SYSTEM_ROLE_MATRIX`. Custom roles are `access_control_roles` docs. There is **no** `owner` role — the schema validator rejects `"owner"`.
 - `organizations.ownerUserId` is the only source of ownership, and owners hold **no** assignment doc. `get_current_user_role` answers `{ kind: "owner" }` from `ownerUserId` before reading any assignment, so the owner never renders as Member.
-- System-role authority lives in code in that matrix, never in the database. Tightening a role is a matrix edit with no data migration. `packages/app/convex/files_sharing.ts` and `packages/app/convex/plugins_data.ts` write `access_control_permission_grants` docs today: per-file grants with `user` and `role` principals, plus the `plugin_scope` grants `plugins_data.ts` writes for private scopes. Nothing writes organization, workspace, thread, or `public` grants.
+- System-role authority lives in code in that matrix. Files sharing, plugin private scopes,
+  service accounts and plugin access settings write exact grants. Plugin setup lists use a
+  workspace resource; plugin management lists use an installation resource. Nothing writes
+  organization, thread or `public` grants. Plugin management is grant-only; it is absent from broad
+  role permissions. See the access-control spec for the three plugin access modes.
 - An assignment on `organization.defaultWorkspaceId` is the organization role. An assignment on any other workspace is allow-only workspace role there. How far a permission reaches is decided by its `scope` in the catalog: `organization`-scoped permissions bind **only** from the default-workspace assignment, so that is the only binding site rather than a fallback.
-- ACL grants support `principalKind: "role"`, `"user"`, and `"public"` for resource kinds `organization`, `workspace`, `file`, and `plugin_scope`. The schema also accepts `thread`, but nothing writes or reads a thread grant and `access_control_Resource` cannot build one. Agent chats require their creator plus active workspace membership and the relevant `content.read`/`content.write` permission; organization ownership does not bypass creator privacy. `resourceId` is stored as a stringified Convex id; owning mutations/actions load the resource first and derive the access-control scope from that doc. For a file grant `resourceId` is always the restricted scope node, never the opened file.
-- Permission check order: owner; **restricted-file branch** (for a `file` resource with a live restricted scope, which never falls through to workspace access); **plugin-scope branch** (a `plugin_scope` resource answers from its own grant alone and never falls through to the role checks, because a private scope closes a door instead of opening one); direct user grant; public grant when explicitly allowed; role at the target workspace; role from the default workspace. The restricted branch is the one the file-sharing milestone turns on — see `../access-control/SKILL.md` "The raw checker" for the full rule.
+- ACL grants support role, user, public and service-account principals. Resource kinds include
+  `organization`, `workspace`, `file`, `plugin_scope` and `plugin_installation`. Run-as consent
+  accepts only a direct human grant. The schema also accepts `thread`, but nothing writes or
+  reads a thread grant and `access_control_Resource` cannot build one. Agent chats require their
+  creator, active membership and content permission; ownership does not bypass creator privacy.
+  Writers load the resource and derive its tenant. A file grant names its restricted scope node.
+- Plugin setup and management check their exact access mode before ordinary role permissions.
+  Run-as consent checks the person's direct grant and saved membership lifetime, with no owner
+  shortcut. Service accounts use their own grants. Ordinary ACL order remains owner, restricted
+  file, private plugin scope, direct user, optional public, target-workspace role, default role.
+  The restricted and private-scope branches never fall through. See the access-control spec.
 - Use `access_control.get_current_user_role({ organizationId, workspaceId })` for current-user UI role display at the requested scope, and `access_control.get_organization_workspace_user_role({ organizationId, workspaceId, userId })` when a UI needs one listed user's role at that same scope. The default/home workspace role view is the organization role view. A non-default workspace shows the workspace role when one exists, and otherwise falls back to the organization role from the default workspace — it does not show "no role". `get_organization_workspace_user_role` answers only about users who are active members of the workspace being asked about — it proves the caller's membership *and* the target's. `get_current_user_role` proves neither: it answers about the caller's own role and will still name one for a workspace the caller no longer belongs to, if the assignment outlived the membership. It is a display query. Do not build an authorization decision on it — use `get_current_user_workspace_permission` or the checker. `organizations.list` returns `workspaceIdsPermissionsDict` so the tenant switcher can gate every row without one query per row; keep per-user *role* display on the scoped role queries above.
 
 # Edit and delete rules
@@ -92,6 +107,7 @@ Canonical access-control details live in `../access-control/SKILL.md`.
 - The new owner must be an active member of the organization `home` workspace.
 - The new owner must have an available `extra_organizations` quota slot. Transfer releases one old-owner quota unit and consumes one new-owner quota unit.
 - The old owner remains a regular member through existing memberships and a default-workspace `member` assignment unless a separate flow removes them.
+- The new owner gets a membership in every workspace they were not yet in (see "Owner is a member of every workspace" below).
 - Owner-billed organizations automatically bill the new owner for operations started after transfer because billing resolves `organizations.ownerUserId` at operation start.
 
 # Active memberships
@@ -103,6 +119,10 @@ External plugin backends may mirror current workspace members through the public
 Keep lifetime changes even when the workspace has no external access-change feed yet. Files jobs
 also pin this lifetime. Removing and restoring the same membership doc must not revive an old job.
 Only external event recording depends on an existing change feed.
+
+Scheduled plugin consent also pins this lifetime. Membership removal cancels its active chains
+in the same transaction, even without an external feed. Rejoin or account restoration needs fresh
+run-as consent; it cannot restore an old grant or run.
 
 Membership lifetime changes also advance the workspace media-validation version in the same
 transaction, even without an external feed. Role or owner changes advance the organization
@@ -117,6 +137,16 @@ does not revive a check from a previous membership lifetime.
 # Creating extra workspaces
 
 - **`create_workspace`** is allowed in the **default** organization as well as others. Two gates, in order: the caller must already hold a membership in that organization, and must hold `workspace.create`, checked at the default workspace because the permission is organization-scoped. A custom role without `workspace.create` is refused, so the membership check is not the whole gate. Extra workspaces are **not** the primary workspace unless created by `organizations_db_create`.
+- The creator gets a membership, and so does the organization owner when the creator is someone else.
+
+# Owner is a member of every workspace
+
+The owner passes every permission check, but `organizations.list` and most doors start from a membership. So the owner must hold a membership in every workspace of their organization. Otherwise they cannot see or open a workspace a member created, and when that member leaves, the workspace belongs to nobody while it still uses an `extra_workspaces` slot.
+
+- `access_control_db_ensure_owner_memberships` adds each missing owner membership with its `active_api_credentials` quota doc and, when the owner is active, records the new membership lifetime. It runs in `organizations_db_create_workspace`, `transfer_organization_ownership`, and the ownership handoff in `data_deletion.ts`. Nothing removes the owner from one workspace: there is no per-workspace removal, and `remove_user_from_organization` refuses the owner.
+- An owner whose account waits for deletion gets an **inactive** membership, like their other memberships. Account recovery turns it on. The purge hands the organization to the next owner, who then gets their own memberships.
+- After a transfer, the old owner keeps all these memberships with the `member` role, so they can still read and write every workspace. The new owner can remove them from the organization. There is no way to remove them from one workspace only.
+- The workspace switcher counts workspaces from the `extra_workspaces` quota (`1 + usedCount`), not from the caller's list, so members who are not in every workspace see the same total the Create button uses.
 
 # Plugins and MCP servers policy
 

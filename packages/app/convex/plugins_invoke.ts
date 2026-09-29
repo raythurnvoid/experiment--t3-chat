@@ -177,6 +177,7 @@ export async function plugins_invoke_http_invoke(
 		const parsed = plugins_parse_installation_configuration_yaml({
 			configurationYaml: started._yay.installation.configurationYaml,
 			events: started._yay.version.events,
+			mounts: started._yay.version.mounts,
 		});
 		if (parsed._nay) {
 			await ctx.runMutation(internal.plugins_runtime.finish_event_run, {

@@ -1,6 +1,6 @@
-import { HOUR, MINUTE, RateLimiter } from "@convex-dev/rate-limiter";
+import { DAY, HOUR, MINUTE, RateLimiter, calculateRateLimit } from "@convex-dev/rate-limiter";
 import { components } from "./_generated/api.js";
-import type { ActionCtx, MutationCtx } from "./_generated/server.js";
+import type { ActionCtx, MutationCtx, QueryCtx } from "./_generated/server.js";
 
 export const rate_limiter_RATE_LIMIT_EXCEEDED_MESSAGE = "Rate limit exceeded";
 
@@ -130,6 +130,24 @@ const rate_limiter_CONFIG = {
 		rate: 30,
 		period: MINUTE,
 		capacity: 10,
+	},
+	plugins_volume_write_bulk: {
+		kind: "token bucket",
+		rate: 1_200,
+		period: MINUTE,
+		capacity: 1_200,
+	},
+	plugins_volume_control: {
+		kind: "token bucket",
+		rate: 60,
+		period: MINUTE,
+		capacity: 30,
+	},
+	plugins_volume_daily_files: {
+		kind: "fixed window",
+		rate: 10_000,
+		period: DAY,
+		start: 0,
 	},
 	// A chat agent calling an MCP server's tool. One reply can have 25 steps with about 5 parallel MCP
 	// calls each, and one busy reply must not hit the limit. The key is still one member on one server.
@@ -303,6 +321,16 @@ export async function rate_limiter_check_by_key(
 		message: rate_limiter_RATE_LIMIT_EXCEEDED_MESSAGE,
 		retryAfterMs: limit.retryAfter,
 	} as const;
+}
+
+export async function rate_limiter_get_plugin_volume_daily_files_left(
+	ctx: QueryCtx | MutationCtx,
+	args: { key: string; now: number },
+) {
+	const stored = await rate_limiter.getValue(ctx, "plugins_volume_daily_files", { key: args.key });
+	// getValue may return cached state from the previous UTC day.
+	const current = calculateRateLimit(stored, stored.config, args.now);
+	return Math.max(0, Math.floor(current.value));
 }
 
 export function rate_limiter_http_client_key(request: Request) {

@@ -72,10 +72,7 @@ import {
 import { path_name_of } from "../shared/paths.ts";
 import { Result, Result_all } from "common/errors-as-values-utils.ts";
 import { composite_id, should_never_happen } from "../shared/shared-utils.ts";
-import {
-	organizations_is_global_organization_id,
-	organizations_is_reserved_workspace_id,
-} from "../shared/organizations.ts";
+import { organizations_is_global_organization_id } from "../shared/organizations.ts";
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
 import app_convex_schema, {
 	ai_chat_workspaces_source_validator,
@@ -96,6 +93,8 @@ import { billing_event } from "../server/billing.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { organizations_db_get_membership } from "./organizations.ts";
 import { ai_chat_workspaces_db_authorize_file_scope } from "./ai_chat_workspaces.ts";
+import { files_db_resolve_scope } from "./files_scopes.ts";
+import { files_db_authorize_file_read } from "./files_volume_access.ts";
 import {
 	access_control_db_authorize_membership,
 	access_control_db_authorize_node,
@@ -392,24 +391,20 @@ export const get_by_path = internalQuery({
 	},
 	returns: v.union(doc(app_convex_schema, "files_nodes"), v.null()),
 	handler: async (ctx, args) => {
-		if (args.agentSource) {
-			const authorized = await ai_chat_workspaces_db_authorize_file_scope(ctx, {
-				...args,
-				agentSource: args.agentSource,
-				userId: args.visibilityUserId,
-			});
-			if (authorized._nay) return null;
-		}
+		const authorized = await files_db_authorize_file_read(ctx, { ...args, userId: args.visibilityUserId });
+		if (authorized._nay) return null;
+		const scope = files_db_resolve_scope(ctx, args.workspaceId);
+		if (scope.kind === "volume") return await files_db_get_visible_node_by_path(ctx, args);
 		if (
 			args.overlayUserId &&
 			!args.serviceAccountId &&
 			!organizations_is_global_organization_id(args.organizationId) &&
-			!organizations_is_reserved_workspace_id(args.workspaceId)
+			scope.kind === "workspace"
 		) {
 			if (args.overlayUserId !== args.visibilityUserId) return null;
 			const reader = await files_visible_db_create_reader(ctx, {
 				organizationId: args.organizationId,
-				workspaceId: args.workspaceId,
+				workspaceId: scope.workspaceId,
 				userId: args.visibilityUserId,
 				readLimit: 2048,
 			});
@@ -464,24 +459,19 @@ export const get_visible_entry_by_path = internalQuery({
 		v.null(),
 	),
 	handler: async (ctx, args): Promise<files_VisibleEntry | null> => {
-		if (args.agentSource) {
-			const authorized = await ai_chat_workspaces_db_authorize_file_scope(ctx, {
-				...args,
-				agentSource: args.agentSource,
-				userId: args.visibilityUserId,
-			});
-			if (authorized._nay) return null;
-		}
+		const authorized = await files_db_authorize_file_read(ctx, { ...args, userId: args.visibilityUserId });
+		if (authorized._nay) return null;
+		const scope = files_db_resolve_scope(ctx, args.workspaceId);
 		if (
 			organizations_is_global_organization_id(args.organizationId) ||
-			organizations_is_reserved_workspace_id(args.workspaceId)
+			scope.kind !== "workspace"
 		) {
 			const node = await files_db_get_visible_node_by_path(ctx, args);
 			return node ? { kind: "saved" as const, node, pendingUpdate: null, path: args.path } : null;
 		}
 
 		const organizationId = args.organizationId;
-		const workspaceId = args.workspaceId;
+		const workspaceId = scope.workspaceId;
 		const membership = await ctx.db
 			.query("organizations_workspaces_users")
 			.withIndex("by_user_organization_workspace_active", (q) =>
@@ -644,15 +634,16 @@ export const resolve_new_node_path = internalQuery({
 	returns: v.string(),
 	handler: async (ctx, args) => {
 		if (args.path === args.normalizedPath) return args.path;
+		const scope = files_db_resolve_scope(ctx, args.workspaceId);
 		// Hidden targets still occupy their names. Write doors check access after choosing the path.
 		if (
 			args.overlayUserId &&
 			!organizations_is_global_organization_id(args.organizationId) &&
-			!organizations_is_reserved_workspace_id(args.workspaceId)
+			scope.kind === "workspace"
 		) {
 			const reader = await files_visible_db_create_reader(ctx, {
 				organizationId: args.organizationId,
-				workspaceId: args.workspaceId,
+				workspaceId: scope.workspaceId,
 				userId: args.overlayUserId,
 				readLimit: 2048,
 			});
@@ -7823,6 +7814,7 @@ export const get_folder_readme = query({
 async function db_list_children(
 	ctx: QueryCtx,
 	args: {
+		agentSource?: Infer<typeof ai_chat_workspaces_source_validator>;
 		organizationId: Doc<"files_nodes">["organizationId"];
 		workspaceId: Doc<"files_nodes">["workspaceId"];
 		visibilityUserId: Id<"users">;
@@ -7834,16 +7826,21 @@ async function db_list_children(
 		order?: "asc" | "desc";
 	},
 ) {
+	const allowed = await files_db_authorize_file_read(ctx, { ...args, userId: args.visibilityUserId });
+	if (allowed._nay) return { items: [], continueCursor: args.cursor ?? "", isDone: true };
+	const scope = files_db_resolve_scope(ctx, args.workspaceId);
 	// A page can come back shorter than `numItems` once restricted nodes are dropped. The cursor still
 	// points at the right place, so paging keeps working; only the page size varies.
 	const filter_readable = (nodes: Doc<"files_nodes">[]) =>
-		access_control_db_filter_readable_file_nodes(ctx, {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			userId: args.visibilityUserId,
-			serviceAccountId: args.serviceAccountId,
-			nodes,
-		});
+		scope.kind === "volume"
+			? nodes
+			: access_control_db_filter_readable_file_nodes(ctx, {
+					organizationId: args.organizationId,
+					workspaceId: args.workspaceId,
+					userId: args.visibilityUserId,
+					serviceAccountId: args.serviceAccountId,
+					nodes,
+				});
 
 	if (args.parentId == null) {
 		if (args.orderBy === "name") {
@@ -7935,6 +7932,7 @@ async function db_list_children(
 
 export const list_children = internalQuery({
 	args: {
+		agentSource: v.optional(ai_chat_workspaces_source_validator),
 		organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
 		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
 		/** Who is looking. Required so a new caller cannot forget it and list restricted nodes. */
@@ -7991,14 +7989,9 @@ export const list_subtree = internalQuery({
 	},
 	returns: paginationResultValidator(doc(app_convex_schema, "files_nodes")),
 	handler: async (ctx, args) => {
-		if (args.agentSource) {
-			const authorized = await ai_chat_workspaces_db_authorize_file_scope(ctx, {
-				...args,
-				agentSource: args.agentSource,
-				userId: args.visibilityUserId,
-			});
-			if (authorized._nay) return { page: [], continueCursor: args.cursor ?? "", isDone: true };
-		}
+		const authorized = await files_db_authorize_file_read(ctx, { ...args, userId: args.visibilityUserId });
+		if (authorized._nay) return { page: [], continueCursor: args.cursor ?? "", isDone: true };
+		const scope = files_db_resolve_scope(ctx, args.workspaceId);
 		const lowercaseExtension = args.lowercaseExtension;
 		const kind = args.kind;
 
@@ -8096,13 +8089,16 @@ export const list_subtree = internalQuery({
 		// the whole subtree; only the page size varies.
 		return {
 			...result,
-			page: await access_control_db_filter_readable_file_nodes(ctx, {
-				organizationId: args.organizationId,
-				workspaceId: args.workspaceId,
-				userId: args.visibilityUserId,
-				serviceAccountId: args.serviceAccountId,
-				nodes: result.page,
-			}),
+			page:
+				scope.kind === "volume"
+					? result.page
+					: await access_control_db_filter_readable_file_nodes(ctx, {
+							organizationId: args.organizationId,
+							workspaceId: args.workspaceId,
+							userId: args.visibilityUserId,
+							serviceAccountId: args.serviceAccountId,
+							nodes: result.page,
+						}),
 		};
 	},
 });
@@ -8142,14 +8138,9 @@ export const search_paths = internalQuery({
 		isDone: v.boolean(),
 	}),
 	handler: async (ctx, args) => {
-		if (args.agentSource) {
-			const authorized = await ai_chat_workspaces_db_authorize_file_scope(ctx, {
-				...args,
-				agentSource: args.agentSource,
-				userId: args.visibilityUserId,
-			});
-			if (authorized._nay) return { items: [], continueCursor: args.cursor ?? "", isDone: true };
-		}
+		const authorized = await files_db_authorize_file_read(ctx, { ...args, userId: args.visibilityUserId });
+		if (authorized._nay) return { items: [], continueCursor: args.cursor ?? "", isDone: true };
+		const scope = files_db_resolve_scope(ctx, args.workspaceId);
 		if (args.parentId != null && args.parentId !== files_ROOT_ID) {
 			const parent = await ctx.db.get("files_nodes", args.parentId);
 			if (
@@ -8210,13 +8201,16 @@ export const search_paths = internalQuery({
 			numItems: args.numItems,
 		});
 
-		const readable = await access_control_db_filter_readable_file_nodes(ctx, {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			userId: args.visibilityUserId,
-			serviceAccountId: args.serviceAccountId,
-			nodes: result.page,
-		});
+		const readable =
+			scope.kind === "volume"
+				? result.page
+				: await access_control_db_filter_readable_file_nodes(ctx, {
+						organizationId: args.organizationId,
+						workspaceId: args.workspaceId,
+						userId: args.visibilityUserId,
+						serviceAccountId: args.serviceAccountId,
+						nodes: result.page,
+					});
 
 		return {
 			items: readable.map((fileNode) => ({
@@ -8654,17 +8648,18 @@ async function db_resolve_committed_chunk_source(
 } | null> {
 	// An explicit pending view is requested → committed chunks are not what the caller wants.
 	if (args.pendingUpdateId || args.path === "/") return null;
+	const scope = files_db_resolve_scope(ctx, args.workspaceId);
 
 	let fileNode: Doc<"files_nodes"> | null;
 	if (
 		args.overlayUserId &&
 		!organizations_is_global_organization_id(args.organizationId) &&
-		!organizations_is_reserved_workspace_id(args.workspaceId)
+		scope.kind === "workspace"
 	) {
 		if (args.overlayUserId !== args.userId) return null;
 		const reader = await files_visible_db_create_reader(ctx, {
 			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
+			workspaceId: scope.workspaceId,
 			userId: args.userId,
 			readLimit: 2048,
 		});
@@ -8683,13 +8678,15 @@ async function db_resolve_committed_chunk_source(
 
 	// This reader hands out no text, but `wc` reports exact line, word and byte counts, which is
 	// plenty to learn from a file somebody was not given.
-	const readable = await access_control_db_can_act_on_file_node(ctx, {
-		organizationId: args.organizationId,
-		workspaceId: args.workspaceId,
-		userId: args.userId,
-		fileNode,
-		permission: "content.read",
-	});
+	const readable =
+		scope.kind === "volume" ||
+		(await access_control_db_can_act_on_file_node(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			userId: args.userId,
+			fileNode,
+			permission: "content.read",
+		}));
 	if (!readable) return null;
 
 	// Exact wc counts from the linked file_stats doc (read O(1) by id — the back-ref the node holds).
@@ -8706,7 +8703,7 @@ async function db_resolve_committed_chunk_source(
 	// node id alone; byte size comes from the linked R2 content asset.
 	if (
 		organizations_is_global_organization_id(args.organizationId) ||
-		organizations_is_reserved_workspace_id(args.workspaceId)
+		scope.kind !== "workspace"
 	) {
 		const asset = fileNode.assetId ? await ctx.db.get("files_r2_assets", fileNode.assetId) : null;
 		const byteSize =
@@ -8724,7 +8721,7 @@ async function db_resolve_committed_chunk_source(
 	// Tenant scope (the guards above narrowed both ids): bind them so the narrowing reaches the
 	// `withIndex` callback — TS drops property narrowing at closure boundaries.
 	const organizationId = args.organizationId;
-	const workspaceId = args.workspaceId;
+	const workspaceId = scope.workspaceId;
 
 	// The user's unstaged branch is not materialized into chunks; read it via the in-memory path.
 	// This holds in both editable modes: a file with collaboration off carries proposals too. A
@@ -8933,13 +8930,8 @@ export const read_committed_file_chunks_line_range = internalQuery({
 		}),
 	),
 	handler: async (ctx, args) => {
-		if (args.agentSource) {
-			const authorized = await ai_chat_workspaces_db_authorize_file_scope(ctx, {
-				...args,
-				agentSource: args.agentSource,
-			});
-			if (authorized._nay) return { usable: false as const };
-		}
+		const authorized = await files_db_authorize_file_read(ctx, args);
+		if (authorized._nay) return { usable: false as const };
 		const source = await db_resolve_committed_chunk_source(ctx, args);
 		if (!source) return { usable: false as const };
 		const maxLines = Math.max(1, Math.min(files_READ_RANGE_MAX_LINES, Math.trunc(args.maxLines)));
@@ -9093,16 +9085,10 @@ export const read_file_content_from_chunks = internalQuery({
 		v.null(),
 	),
 	handler: async (ctx, args) => {
-		if (args.agentSource) {
-			const authorized = await ai_chat_workspaces_db_authorize_file_scope(ctx, {
-				...args,
-				agentSource: args.agentSource,
-			});
-			if (authorized._nay) return null;
-		}
 		// Translate the path through the overlay first; the per-user pending-content logic
 		// below then runs on the resolved node, so content-plus-move docs compose.
 		const entry = (await ctx.runQuery(internal.files_nodes.get_visible_entry_by_path, {
+			agentSource: args.agentSource,
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			path: args.path,
@@ -9124,13 +9110,14 @@ export const read_file_content_from_chunks = internalQuery({
 
 		const requestedOrganizationId = args.organizationId;
 		const requestedWorkspaceId = args.workspaceId;
+		const scope = files_db_resolve_scope(ctx, requestedWorkspaceId);
 		const realTenantScope =
 			organizations_is_global_organization_id(requestedOrganizationId) ||
-			organizations_is_reserved_workspace_id(requestedWorkspaceId)
+			scope.kind !== "workspace"
 				? null
 				: {
 						organizationId: requestedOrganizationId,
-						workspaceId: requestedWorkspaceId,
+						workspaceId: scope.workspaceId,
 					};
 		const isEditableTextFile = fileNode !== null && files_node_has_editable_yjs_state(fileNode);
 		// A non-collaborative file is editable text with no Yjs document. Its pending proposals
@@ -9442,13 +9429,8 @@ export const read_committed_file_chunk_stats = internalQuery({
 		}),
 	),
 	handler: async (ctx, args) => {
-		if (args.agentSource) {
-			const authorized = await ai_chat_workspaces_db_authorize_file_scope(ctx, {
-				...args,
-				agentSource: args.agentSource,
-			});
-			if (authorized._nay) return { usable: false as const };
-		}
+		const authorized = await files_db_authorize_file_read(ctx, args);
+		if (authorized._nay) return { usable: false as const };
 		const source = await db_resolve_committed_chunk_source(ctx, args);
 		// Counts are persisted on the node at materialization; if absent (older file), fall back.
 		if (!source || !source.counts) return { usable: false as const };
@@ -9946,10 +9928,11 @@ async function db_get_text_match_source(
 		pendingUpdateId?: Id<"files_pending_updates">;
 	},
 ) {
+	const scope = files_db_resolve_scope(ctx, args.workspaceId);
 	const tenantScope =
 		!organizations_is_global_organization_id(args.organizationId) &&
-		!organizations_is_reserved_workspace_id(args.workspaceId)
-			? { organizationId: args.organizationId, workspaceId: args.workspaceId, userId: args.userId }
+		scope.kind === "workspace"
+			? { organizationId: args.organizationId, workspaceId: scope.workspaceId, userId: args.userId }
 			: null;
 
 	let fileNode: Doc<"files_nodes"> | null = null;
@@ -9995,7 +9978,7 @@ async function db_get_text_match_source(
 			return null;
 
 		if (
-			!(await access_control_db_can_act_on_file_node(ctx, {
+			scope.kind !== "volume" && !(await access_control_db_can_act_on_file_node(ctx, {
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
 				userId: args.userId,
@@ -10072,13 +10055,9 @@ export const match_text_file_lines = internalQuery({
 		}),
 	),
 	handler: async (ctx, args) => {
-		if (args.agentSource) {
-			const authorized = await ai_chat_workspaces_db_authorize_file_scope(ctx, {
-				...args,
-				agentSource: args.agentSource,
-			});
-			if (authorized._nay) return null;
-		}
+		const authorized = await files_db_authorize_file_read(ctx, args);
+		if (authorized._nay) return null;
+		const scope = files_db_resolve_scope(ctx, args.workspaceId);
 		const source = await db_get_text_match_source(ctx, args);
 		if (!source) return null;
 		const { fileNode, pendingUpdateId } = source;
@@ -10138,12 +10117,12 @@ export const match_text_file_lines = internalQuery({
 		// non-collaborative file has no Yjs sequence either, so its committed chunks are always current.
 		if (
 			!organizations_is_global_organization_id(args.organizationId) &&
-			!organizations_is_reserved_workspace_id(args.workspaceId) &&
+			scope.kind === "workspace" &&
 			files_node_has_editable_yjs_state(fileNode)
 		) {
 			const materializationState = await db_get_file_content_materialization_db_state(ctx, {
 				organizationId: args.organizationId,
-				workspaceId: args.workspaceId,
+				workspaceId: scope.workspaceId,
 				nodeId: fileNode._id,
 			});
 			if (
@@ -10247,13 +10226,9 @@ export const match_plain_text_file_lines = internalQuery({
 		}),
 	),
 	handler: async (ctx, args) => {
-		if (args.agentSource) {
-			const authorized = await ai_chat_workspaces_db_authorize_file_scope(ctx, {
-				...args,
-				agentSource: args.agentSource,
-			});
-			if (authorized._nay) return null;
-		}
+		const authorized = await files_db_authorize_file_read(ctx, args);
+		if (authorized._nay) return null;
+		const scope = files_db_resolve_scope(ctx, args.workspaceId);
 		const source = await db_get_text_match_source(ctx, args);
 		if (!source) return null;
 		const { fileNode, pendingUpdateId } = source;
@@ -10279,12 +10254,12 @@ export const match_plain_text_file_lines = internalQuery({
 		// non-collaborative file has no Yjs sequence either, so its committed chunks are always current.
 		if (
 			!organizations_is_global_organization_id(args.organizationId) &&
-			!organizations_is_reserved_workspace_id(args.workspaceId) &&
+			scope.kind === "workspace" &&
 			files_node_has_editable_yjs_state(fileNode)
 		) {
 			const materializationState = await db_get_file_content_materialization_db_state(ctx, {
 				organizationId: args.organizationId,
-				workspaceId: args.workspaceId,
+				workspaceId: scope.workspaceId,
 				nodeId: fileNode._id,
 			});
 			if (
@@ -10500,19 +10475,20 @@ export const text_search_files = internalQuery({
 		continueCursor: string;
 		isDone: boolean;
 	}> => {
-		if (args.agentSource) {
+		if (args.agentSource && files_db_resolve_scope(ctx, args.workspaceId).kind !== "volume") {
 			const authorized = await ai_chat_workspaces_db_authorize_file_scope(ctx, {
 				...args,
 				agentSource: args.agentSource,
 			});
 			if (authorized._nay) return { items: [], continueCursor: args.cursor ?? "", isDone: true };
 		}
+		const reader = await files_search_db_create_reader(ctx, args);
+		if (!reader.active) return { items: [], continueCursor: args.cursor ?? "", isDone: true };
 		const result = await db_text_search_filtered_query(ctx, args).paginate({
 			cursor: args.cursor,
 			numItems: Math.max(1, Math.min(100, args.numItems)),
 		});
 
-		const reader = await files_search_db_create_reader(ctx, args);
 		const items = [];
 		const rawPrefix = args.pathPrefix?.trim();
 		const pathPrefix = rawPrefix && rawPrefix !== "/" ? `/${rawPrefix.replace(/^\/+|\/+$/gu, "")}/` : null;

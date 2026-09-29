@@ -140,6 +140,7 @@ async function register_gallery_plugin(
 		manifestR2Key: `plugins/gallery/${version}/manifest.json`,
 		backendEntrypointFile: null,
 		configuration: null,
+		mounts: [],
 		events: [],
 		pages: args.pages ?? [
 			{

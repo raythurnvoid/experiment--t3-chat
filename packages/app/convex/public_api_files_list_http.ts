@@ -14,6 +14,8 @@ import {
 } from "./public_api_http_auth.ts";
 import { server_path_normalize, server_request_json_parse_and_validate } from "../server/server-utils.ts";
 import type { r2_get_assets_ready_states_Result } from "./r2.ts";
+import type { public_api_validate_and_finish_scheduled_file_read_Result } from "./public_api.ts";
+import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 
 const FILES_LIST_MAX_ITEMS = 100;
 // Public clients may scan more source docs than AI tools. The internal query still owns the hard cap.
@@ -116,12 +118,32 @@ export function public_api_files_list_http_routes(router: { route: HttpRouter["r
 									? await ctx.runQuery(internal.r2.get_assets_ready_states, { assetIds: pageAssetIds })
 									: {};
 
-							await public_api_settle_plugin_call_best_effort(ctx, {
-								callId: pluginCallId,
-								status: "succeeded",
-								responseStatus: 200,
-							});
-							// The page and asset reads can outlive the source membership or grant.
+							let callSettled = false;
+							if (principal.kind === "plugin_run" && pluginCallId) {
+								const checked: public_api_validate_and_finish_scheduled_file_read_Result = await ctx.runMutation(
+									internal.public_api.validate_and_finish_scheduled_file_read,
+									{
+										runId: principal.runId,
+										callId: pluginCallId,
+										tokenHash: await crypto_sha256_hex(auth._yay.presentedToken),
+										requiredScope: "files:list",
+										nodes: result.page.map((item) => ({ nodeId: item._id, path: item.path })),
+									},
+								);
+								if (checked._nay)
+									return {
+										status: 404,
+										body: await fail({ status: 404, message: "File unavailable", errorCode: "not_found" }),
+									} as const;
+								callSettled = checked._yay;
+							}
+							if (!callSettled)
+								await public_api_settle_plugin_call_best_effort(ctx, {
+									callId: pluginCallId,
+									status: "succeeded",
+									responseStatus: 200,
+								});
+							// Check code grants after all awaited response work.
 							if (principal.kind === "public_api_grant" && principal.agentSource !== null) {
 								const current = await public_api_resolve_live_principal(ctx, {
 									presented: auth._yay.presentedToken,

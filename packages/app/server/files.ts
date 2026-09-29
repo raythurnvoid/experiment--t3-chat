@@ -18,10 +18,7 @@ import {
 	files_MAX_YJS_WIRE_BYTES,
 	files_ROOT_ID,
 } from "../shared/files.ts";
-import {
-	organizations_is_global_organization_id,
-	organizations_is_reserved_workspace_id,
-} from "../shared/organizations.ts";
+import { organizations_is_global_organization_id } from "../shared/organizations.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import { should_never_happen } from "./server-utils.ts";
 import {
@@ -29,6 +26,7 @@ import {
 	files_private_storage_db_release_deleted_resource,
 } from "../convex/files_private_storage.ts";
 import { files_media_dependencies_db_retire } from "../convex/files_media_dependencies.ts";
+import { files_db_resolve_scope } from "../convex/files_scopes.ts";
 
 export * from "../shared/files.ts";
 
@@ -315,16 +313,17 @@ export async function files_db_get_visible_node_by_path(
 	}
 
 	const { organizationId, workspaceId } = args;
+	const scope = files_db_resolve_scope(ctx, workspaceId);
 	// While a move op rewrites stored paths, an item inside the moved folder can still carry its old
 	// `path`. Then find the item by name from the root, like the tree does. Without a move op, one
-	// index read is enough. Global and reserved scopes never have ops.
+	// index read is enough. Global and mount scopes never have ops.
 	const moveOp =
-		organizations_is_global_organization_id(organizationId) || organizations_is_reserved_workspace_id(workspaceId)
+		organizations_is_global_organization_id(organizationId) || scope.kind !== "workspace"
 			? null
 			: await ctx.db
 					.query("files_subtree_ops")
 					.withIndex("by_organization_workspace_kind", (q) =>
-						q.eq("organizationId", organizationId).eq("workspaceId", workspaceId).eq("kind", "move"),
+						q.eq("organizationId", organizationId).eq("workspaceId", scope.workspaceId).eq("kind", "move"),
 					)
 					.first();
 	if (moveOp) {

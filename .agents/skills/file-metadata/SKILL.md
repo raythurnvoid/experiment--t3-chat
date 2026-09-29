@@ -67,7 +67,8 @@ Save publishes that map with the new saved node. Discard removes the private map
 
 The table has strict committed and pending variants. Committed docs use a real `fileNodeId`.
 Pending frontmatter and private metadata docs use a saved/private `target`, owner, proposal ID, and proposal revision.
-They always belong to a real organization and workspace. Saved move and cleanup paths query both
+Pending docs always belong to a real organization and workspace. Committed Mount files use their
+volume id as the storage scope and keep the real owning organization. Saved move and cleanup paths query both
 the committed file index and the pending target index. Marking content for rebase hides its old
 frontmatter until preparation rebuilds it.
 
@@ -236,6 +237,7 @@ stay on the leaf.
 | Plugin invoke or upload-run write / touch, service write, folder ensure | `public_api.ts`, `public_api_plugin_files.ts` | `source: plugin`, `plugin-name` on every new node |
 | Operator data import | `data_import.create_upload_targets` | `source: import`, `original-name` |
 | GitHub mount file | `files_nodes_content.create_file_node_internal`, GITHUB scope | `source: github-mount`, `repo-path` |
+| Plugin Mount file | `public_api_volumes.finalize_write`, volume scope | `source: plugin-volume`, `volume-path` inside that volume |
 | Plugin source mirror | `files_nodes_content.create_file_node_internal`, PLUGINS scope | `source: plugin-source` |
 
 `repo-path` is the path inside the repository. The stored path starts with the mount name and the

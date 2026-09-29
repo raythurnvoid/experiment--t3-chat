@@ -25,14 +25,36 @@ API key `lastUsedAt` is display data. `mark_credential_used` updates it on first
 
 - `user_api_key` (`pk_<keyId>.<secret>`): key minted on the API keys page by a signed-in Clerk user. `serviceAccountId: null` is a personal key. A bound key uses the account's file grants and writer identity, intersected with its sponsor's current rights. Bound keys accept only `files:list`, `files:read`, `files:write`, `files:download`, and `files:permissions`. Personal keys also accept `plugin_data:read` and `plugin_data:write`. Binding requires current account-management permission and an active account in the same workspace. Rotation preserves that binding and revokes the original credential ID; a new token cannot revive a staged write from the old key.
 - `public_api_grant` (64-hex, short-lived): accepts `files:list`, `files:read`, and `files:download`. Download scope allows the bounded byte route, never signed download URLs. An ordinary byte-enabled grant has its own 8 MiB read budget; other ordinary grants have zero. Code grants share one invocation budget across current and personal/home. Organization removal deletes the member's destination grants. Code grants also check their original chat membership lifetime, so re-invitation cannot revive a token for either root.
-- `plugin_run` (`plr_...`) and `plugin_ui` (`plu_...`): plugin runtime tokens with their own constraints (a backend plugin run writes editable text only — next to its triggering file for an upload run, on nodes selected by matching editable `plugin-name` metadata for an invoke run, see "Plugin file doors" below — and can only download its own source upload). Both require their workspace doc to still exist with no `pluginDataPurgeStartedAt` fence, so phase-one tenant deletion and data reset revoke them before delayed plugin rows drain. Organization removal also deletes that member's plugin UI sessions. A `plu_` token is minted together with a plugin-session JWT that runs live Convex queries against the plugin-facing doors — the first step toward exposing Convex reactivity as a public API; both expire with the session. `POST /plugins-ui/session-jwt` (outside `/api/v1/*`, no `api_schemas_Main` entry) stays as a fallback that exchanges a live `plu_` token for that same JWT. The public API itself never verifies a JWT: `resolve_principal` reads the `plu_` bearer only. Contract: `../plugin-system/SKILL.md`; identity model: `../auth-system/SKILL.md`. Read "page" as "page or file view" everywhere this skill talks about a `plugin_ui` token: a plugin page and a plugin file view get their `plu_` token from the same table, `resolve_principal` looks a token up by its hash alone, and the principal it returns carries no frame kind at all. So every `plugin_ui` rule here is a rule for both frame kinds.
+- `plugin_run` (`plr_...`) and `plugin_ui` (`plu_...`): plugin runtime tokens with their own constraints. A run writes editable workspace text next to its triggering upload, or on nodes with matching editable `plugin-name` metadata for an invoke run. It can download only its source upload. A run with the Mounts capability can also write its own staging trees through the separate Mounts API below. Both token kinds require their workspace doc to still exist with no `pluginDataPurgeStartedAt` fence, so phase-one tenant deletion and data reset revoke them before delayed plugin rows drain. Organization removal also deletes that member's plugin UI sessions. A `plu_` token is minted together with a plugin-session JWT that runs live Convex queries against the plugin-facing doors — the first step toward exposing Convex reactivity as a public API; both expire with the session. `POST /plugins-ui/session-jwt` (outside `/api/v1/*`, no `api_schemas_Main` entry) stays as a fallback that exchanges a live `plu_` token for that same JWT. The public API itself never verifies a JWT: `resolve_principal` reads the `plu_` bearer only. Contract: `../plugin-system/SKILL.md`; identity model: `../auth-system/SKILL.md`. Read "page" as "page or file view" everywhere this skill talks about a `plugin_ui` token: a plugin page and a plugin file view get their `plu_` token from the same table, `resolve_principal` looks a token up by its hash alone, and the principal it returns carries no frame kind at all. So every `plugin_ui` rule here is a rule for both frame kinds.
 - `plugin_service` (`psg_...`, stored hashed in `plugin_service_grants`): a grant for an external service that acts for one installation. An outside server gets one by presenting a member's plugin frame token to `/api/v1/plugins/service-grants/exchange` together with the plugin's registered exchange secret (a publisher-managed row in `plugins_service_registrations`, compared by hash in constant time), and keeps it alive through the sibling `renew` route; both live in `packages/app/convex/plugins_service.ts` (see `../plugin-system/SKILL.md#service-grant-exchange`). It is bound to the installation rather than to a user session, so a worker can finish work the member started. Its `principalKey` is stable across token rotation, which is what makes it a durable producer identity for versioned documents and reservations. Grants come in two phases. An `interactive` grant is what the exchange mints: one working day, renewable, carrying the registration's scopes minus `files:write` (a file scope only means anything sealed). A `processing` grant comes only from `/api/v1/plugins/service-grants/seal-processing`, which trades a live interactive grant for a new grant sealed to one exact destination path prefix, carrying exactly the registered scopes, expiring six days after the seal; renewal rotates its token but never moves that deadline, and a processing grant cannot seal again. Both phases still need the actor's live membership and permissions on every call today. Every call also rechecks that the installation is enabled, its workspace exists without the purge fence, and the installation still accepts the matching capabilities, so uninstalling, tenant deletion, or removing a capability revokes it. `resolve_principal` narrows scopes by the installation's live capabilities and drops `files:write` whenever `destinationPathPrefix` is null.
 
-Scope names: `files:list`, `files:read`, `files:write`, `files:download`, `files:permissions`, `secrets:read`, `outbound:fetch`, `activities:write`, `plugin_data:read`, `plugin_data:write`, `backend:invoke`. The five file scopes and two plugin-data scopes are available for personal keys. The remaining scopes belong to plugin tokens only; `backend:invoke` exists only on a `plugin_ui` token whose installation accepted `plugin.backend.invoke`.
+Scope names: `files:list`, `files:read`, `files:write`, `files:download`, `files:permissions`, `volumes:write`, `secrets:read`, `outbound:fetch`, `activities:write`, `plugin_data:read`, `plugin_data:write`, `backend:invoke`. The five file scopes and two plugin-data scopes are available for personal keys. The remaining scopes belong to plugin tokens only; `backend:invoke` exists only on a `plugin_ui` token whose installation accepted `plugin.backend.invoke`.
+
+`volumes:write` belongs only to a plugin run. It requires both saved and current acceptance of
+`workspace.volumes.write`, plus the actor's current management of that exact installation.
+The generic scope map uses `null`; every volume transaction repeats the exact installation check.
+Ordinary API keys, frame tokens and service grants cannot use the Mounts write routes.
 
 Plugin runs, service grants, and UI sessions pin their account when minted. Each use requires that active account to still match the installation and its trusted publisher/source binding. Rebinding refuses old credentials instead of moving them to the new account. File reads, lists, and downloads intersect account grants with actor visibility. Downloads repeat both checks after signing, before returning URLs. File grants never grant private plugin-data access. Plugin-session JWT store calls validate the same live pin and keep the existing member/store rules; they are not file-write credentials.
 
 Routes restrict kinds with `allowedKinds`; a valid token of a disallowed kind gets 403. `write-many` and `upload-urls` are `user_api_key` only. `write` and `touch` also allow `plugin_run`, and `write` also allows a `plugin_service` grant: the route refuses any grant that is not sealed (`processing` phase) or whose path is not strictly inside its `destinationPathPrefix`, with 403 `Path is outside this grant's destination`. `read` and `list` allow `plugin_run` too — the scopes come from the installation's accepted `workspace.files.read`, and a run always reads with its actor's eyes (`public_api_visibility_user_id`), so it can never see inside a restricted folder that member cannot open. `download-urls` allows the plugin kinds too. Ordinary service grants reach write, single-file archive, and sealed uploads. Registered writer requests also reach the folder/access/inspection/generation/undo contracts below with a current service secret. A `plugin_ui` token may read and list plugin documents but never write them — a page that needs to write goes through its own backend or a service grant. Three separate checks enforce that, and they are not redundant: `resolve_principal`'s `returns` validator makes `plugin_data:write` unrepresentable for a page token, every write route leaves `plugin_ui` out of `allowedKinds`, and `refuse_page_principal` refuses the kind inside the mutation itself. The in-transaction one is what a caller reaching the mutation directly, or one wrong edit to an `allowedKinds` list, still runs into. A page session can belong to an anonymous identity and is the first thing a scripting bug in a plugin reaches, so a write door there would turn one such bug into stored data that plugin backends later act on with their own secrets.
+
+# Scheduled plugin API calls
+
+A stored scheduled event uses its pinned user, direct consent grant, and membership lifetime.
+Effective scopes intersect that grant with live accepted capabilities and current user access.
+Scheduled runs get no baseline Files write/download or Activity opt-in. Files read/list responses
+repeat consent, token, call, and actual target checks after I/O in
+`public_api.validate_and_finish_scheduled_file_read`. That same transaction settles success.
+KV operations keep their private-store checks. Mount writers repeat assignment checks before upload
+and final publication and bill the current live owner. Secret/outbound calls also need exact
+installation management; secret plaintext is checked after decrypt. See the scheduled plugin spec.
+
+`POST /api/v1/plugin-runs/follow-up` needs `runs:follow_up` and a scheduled `plugin_run` token.
+The body is `{ state: string }`: valid JSON text, at most 16 KiB. One outgoing state per run is allowed.
+Only successful finish queues the child. A chain has at most 20 runs and 30 minutes. An authenticated
+request past the run count returns 409 `chain_limit`. At the root deadline the token expires, so late
+API requests return 401. Auth runs before chain-limit checks. Normal per-run call and token rules still apply.
 
 # Routes
 
@@ -294,6 +316,55 @@ feed opt-in returns 409. Real execution expiry is `timed_out` and prevents later
 - The run's `actorUserId` is the member behind the `plu_` session, host-verified — never page-supplied. The backend reads identity from the event envelope only.
 - Serialization: at most one live invoke run per `(installationId, lockKey)`; the default lock key is the whole installation, and an endpoint declared `serialization: "caller-key"` requires the request's `serializationKey`. A second concurrent invoke answers 409 `busy` with `retryAfterMs`.
 - Honest limit (say it in SDK docs too): the plugin store and the file system are two systems, one API call and one transaction each, so a backend writing both can crash in between. The run record ends `failed`, the store is the source of truth, and the plugin rebuilds the file on its next run. The host adds no fallback logic to hide this.
+
+# Plugin Mounts API
+
+`public_api_volumes.ts` owns the five POST routes below. `public_api_volumes_http_routes.ts`
+registers each with one lazy import. All responses use `Cache-Control: no-store`.
+
+| Route under `/api/v1/volumes` | Body | Result |
+| --- | --- | --- |
+| `/list` | optional `mountId` | configured mounts, volume states and installation usage/limits |
+| `/stage` | `mountId`, `volumeKey`, `revision` | new `stagingId` and abandoned staging id, if any |
+| `/write-many` | `stagingId`, `files: [{path, content}]` | written paths/bytes and per-item errors |
+| `/publish` | `stagingId` | published key, revision, counts and time |
+| `/delete` | `mountId`, `volumeKey` | `deleted: true`; files drain later |
+
+The stored run supplies tenant, installation, actor, account and payer. Its claimed API call must
+still be started for the exact route and run. Check live Activity/deadline, token, actor, membership,
+source when present, account binding, installation/version, capability and management again at
+each durable step. Scheduled calls stay closed until the full pinned self-grant checks are added.
+Foreign or malformed staging ids return 404. List reports deleting volumes; other doors return
+409 `volume_deleting` until the row is drained. A disabled installation cannot use these routes.
+
+The whole request refuses bad shape, duplicate paths, folder/file overlaps, unknown mounts,
+invalid keys/revisions, over 100 files or over 8,000,000 body bytes. A bad item path or content
+is an item error. Paths stay exact and absolute within the volume: no empty, dot, parent,
+backslash or control segments; at most 255 characters per segment, 1,024 total and depth 32.
+Content is valid Unicode text at most 900,000 UTF-8 bytes. Empty files are allowed.
+
+Limits are separate: `copy_cap_reached` (5,000 files / 30,000,000 bytes),
+`installation_cap_reached` (20,000 / 200,000,000) and `daily_cap_reached` (10,000 new paths per
+UTC day). Deleting docs still use the 32-volumes-per-mount and 128-volume-per-installation caps,
+including old mount IDs dropped by upgrades. Installation counters include
+published and staging copies. The daily key uses tenant and plugin name and survives reinstall.
+Read tokens before upload; consume them in the final file transaction. Replacing a path in the
+same staging copy uses no new token or billing event. Other item errors include `invalid_path`,
+`invalid_content`, `path_conflict` and `storage_failure`.
+
+R2 PUTs run in groups of 16. Prepared SYSTEM assets have their canonical volume key before PUT
+and retain their unfinalized deadline until the file node commits. Final file transactions have at most
+25 files / 2,000,000 new bytes and also budget old replacement content and chunk counts.
+Each repeats authority, generation state, current credit, capacity and daily checks before writes.
+Refused chunks create no node, charge or daily debit; unused uploaded assets are cleaned up.
+Metadata is `source: plugin-volume` plus `volume-path`. Stored files are plain read-only text.
+
+Staging expires 26 hours after its last stage/write. Publish refuses empty or expired copies,
+then moves the pointer in one transaction. Replaced published copies and abandoned staging copies
+retire for ten minutes. Retirement releases their usage once. Delete hides the volume at once
+and starts its bounded drain. Every authorized exit settles the API call, including parsing,
+limits, credit, storage and final authority failures. One batch still uses one of the run's 20 calls.
+Mount writes bill 0.5 cents per new path; see the billing and quotas specs.
 
 # Rate buckets and quota
 

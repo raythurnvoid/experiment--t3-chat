@@ -298,6 +298,7 @@ async function register_media_plugin(
 						description: "Choose which upload folders start this plugin.",
 						defaultYaml: media_configuration_yaml,
 					},
+		mounts: [],
 		events: args.events ?? [
 			{
 				type: "files.upload.completed",
@@ -500,7 +501,7 @@ describe("install_version service accounts", () => {
 		expect(await t.run((ctx) => ctx.db.query("access_control_permission_grants").collect())).toEqual([]);
 	});
 
-	test("plugin management alone cannot create accounts or grants but can update an existing binding", async () => {
+	test("plugin management alone cannot manage accounts or grants but can update an existing binding", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const version = await register_media_plugin(t, membership.userId, { events: [] });
@@ -512,19 +513,26 @@ describe("install_version service accounts", () => {
 				userId,
 				active: true,
 			});
-			await ctx.db.insert("access_control_permission_grants", {
-				organizationId: membership.organizationId,
-				workspaceId: membership.workspaceId,
-				resourceKind: "workspace",
-				resourceId: membership.workspaceId,
-				principalKind: "user",
-				userId,
-				permission: "workspace.plugins.manage",
-				createdAt: 1,
-				updatedAt: 1,
-			});
 			return { userId, membershipId };
 		});
+		const asOwner = t.withIdentity(user_identity(membership.userId));
+		const folder = await asOwner.mutation(api.files_nodes.create_folder_node, {
+			membershipId: membership.membershipId,
+			parentId: files_ROOT_ID,
+			path: "shared",
+		});
+		if (folder._nay) {
+			throw new Error(folder._nay.message);
+		}
+		expect(
+			(
+				await asOwner.mutation(api.plugins_access.update_workspace_install_access, {
+					membershipId: membership.membershipId,
+					mode: "selected",
+					principals: [{ kind: "user", userId: operator.userId }],
+				})
+			)._nay,
+		).toBeUndefined();
 		const asOperator = t.withIdentity(user_identity(operator.userId));
 		const args = {
 			membershipId: operator.membershipId,
@@ -533,18 +541,39 @@ describe("install_version service accounts", () => {
 			serviceAccountGrants: [],
 		};
 
-		expect((await asOperator.mutation(api.plugins.install_version, args))._nay?.message).toBe("Permission denied");
+		expect(
+			(
+				await asOperator.mutation(api.access_control.create_service_account, {
+					membershipId: operator.membershipId,
+					name: "General account",
+				})
+			)._nay?.message,
+		).toBe("Permission denied");
 		expect(await t.run((ctx) => ctx.db.query("access_control_service_accounts").collect())).toEqual([]);
 		expect(await t.run((ctx) => ctx.db.query("plugins_service_account_bindings").collect())).toEqual([]);
 
 		const installed = await t.withIdentity(user_identity(membership.userId)).mutation(api.plugins.install_version, {
 			...args,
 			membershipId: membership.membershipId,
-			serviceAccountGrants: [{ resource: { kind: "workspace" }, level: "write" }],
+			serviceAccountGrants: [
+				{ resource: { kind: "workspace" }, level: "write" },
+				{ resource: { kind: "file", nodeId: folder._yay.nodeId }, level: "read" },
+			],
 		});
 		if (installed._nay) {
 			throw new Error(installed._nay.message);
 		}
+		vi.advanceTimersByTime(60_000);
+		expect(
+			(
+				await asOwner.mutation(api.plugins_access.update_installation_access, {
+					membershipId: membership.membershipId,
+					installationId: installed._yay.installationId,
+					mode: "selected",
+					principals: [{ kind: "user", userId: operator.userId }],
+				})
+			)._nay,
+		).toBeUndefined();
 		expect(await asOperator.mutation(api.plugins.install_version, args)).toEqual(installed);
 
 		vi.advanceTimersByTime(60_000);
@@ -570,18 +599,43 @@ describe("install_version service accounts", () => {
 			before,
 		);
 
-		const asOwner = t.withIdentity(user_identity(membership.userId));
+		const beforeUninstall = await t.run(async (ctx) => ({
+			accounts: await ctx.db.query("access_control_service_accounts").collect(),
+			bindings: await ctx.db.query("plugins_service_account_bindings").collect(),
+			grants: await ctx.db.query("access_control_permission_grants").collect(),
+		}));
+		expect(beforeUninstall.grants).toContainEqual(
+			expect.objectContaining({
+				resourceKind: "plugin_installation",
+				resourceId: installed._yay.installationId,
+				principalKind: "user",
+				userId: operator.userId,
+				permission: "workspace.plugins.manage",
+			}),
+		);
+		expect(beforeUninstall.grants).toContainEqual(
+			expect.objectContaining({
+				resourceKind: "file",
+				resourceId: folder._yay.nodeId,
+				principalKind: "service_account",
+				serviceAccountId: before!.serviceAccountId,
+				permission: "content.read",
+			}),
+		);
+		// Uninstall removes this installation's access; account and Files grants stay.
+		const retained = {
+			...beforeUninstall,
+			grants: beforeUninstall.grants.filter(
+				(grant) => grant.resourceKind !== "plugin_installation" || grant.resourceId !== installed._yay.installationId,
+			),
+		};
 		expect(
 			await asOwner.mutation(api.plugins.uninstall_version, {
 				membershipId: membership.membershipId,
 				installationId: installed._yay.installationId,
 			}),
 		).toEqual({ _yay: null });
-		const retained = await t.run(async (ctx) => ({
-			accounts: await ctx.db.query("access_control_service_accounts").collect(),
-			bindings: await ctx.db.query("plugins_service_account_bindings").collect(),
-			grants: await ctx.db.query("access_control_permission_grants").collect(),
-		}));
+		await t.finishAllScheduledFunctions(() => vi.runAllTimers());
 
 		vi.advanceTimersByTime(60_000);
 		expect((await asOperator.mutation(api.plugins.install_version, args))._nay?.message).toBe("Permission denied");
@@ -630,7 +684,6 @@ describe("install_version service accounts", () => {
 				active: true,
 			});
 			for (const permission of [
-				"workspace.plugins.manage",
 				"workspace.service_accounts.manage",
 				"content.read",
 				"content.permissions.manage",
@@ -650,6 +703,15 @@ describe("install_version service accounts", () => {
 			}
 			return { userId, membershipId };
 		});
+		expect(
+			(
+				await asOwner.mutation(api.plugins_access.update_workspace_install_access, {
+					membershipId: membership.membershipId,
+					mode: "selected",
+					principals: [{ kind: "user", userId: operator.userId }],
+				})
+			)._nay,
+		).toBeUndefined();
 		const asOperator = t.withIdentity(user_identity(operator.userId));
 		const args = {
 			membershipId: operator.membershipId,
@@ -4904,8 +4966,7 @@ describe("plugins Phase 0", () => {
 			expiresAt: Date.now() + 30 * 60 * 1000,
 		});
 
-		// `workspace.plugins.manage` and `content.read` are two different permissions, so a custom role
-		// can give the first one without the second.
+		// Installation management grants do not give content.read.
 		async function seed_plugin_manager(args: { clerkUserId: string; permissions: access_control_Permission[] }) {
 			const userId = await t.run(async (ctx) => {
 				const now = Date.now();
@@ -4954,12 +5015,27 @@ describe("plugins Phase 0", () => {
 
 		const operator = await seed_plugin_manager({
 			clerkUserId: "plugin-operator",
-			permissions: ["workspace.plugins.manage"],
+			permissions: ["workspace.members.manage"],
 		});
 		const reader = await seed_plugin_manager({
 			clerkUserId: "plugin-reader",
-			permissions: ["workspace.plugins.manage", "content.read"],
+			permissions: ["workspace.members.manage", "content.read"],
 		});
+		expect(
+			(
+				await t
+					.withIdentity(user_identity(fixture.membership.userId))
+					.mutation(api.plugins_access.update_installation_access, {
+						membershipId: fixture.membership.membershipId,
+						installationId: fixture.installationId,
+						mode: "selected",
+						principals: [
+							{ kind: "user", userId: operator.userId },
+							{ kind: "user", userId: reader.userId },
+						],
+					})
+			)._nay,
+		).toBeUndefined();
 
 		const operatorRuns = await t.withIdentity(user_identity(operator.userId)).query(api.plugins.list_recent_runs, {
 			membershipId: operator.membershipId,
@@ -6132,7 +6208,7 @@ describe("plugins get_installation_health", () => {
 			return member._id;
 		});
 
-		// A member without workspace.plugins.manage gets nothing.
+		// A member without installation management access gets nothing.
 		const asMember = t.withIdentity(user_identity(memberUserId));
 		expect(
 			await asMember.query(api.plugins.get_installation_health, {
@@ -6149,13 +6225,13 @@ describe("plugins get_installation_health", () => {
 			}),
 		).toBeNull();
 
-		// Signed out gets nothing.
-		expect(
-			await t.query(api.plugins.get_installation_health, {
+		// Signed-out callers get the normal auth refusal.
+		await expect(
+			t.query(api.plugins.get_installation_health, {
 				membershipId: fixture.membership.membershipId,
 				pluginName: "media",
 			}),
-		).toBeNull();
+		).rejects.toThrow("Unauthenticated");
 
 		// A plugin that is not installed in this workspace gets nothing.
 		expect(
@@ -6168,9 +6244,7 @@ describe("plugins get_installation_health", () => {
 });
 
 describe("plugins get_installation_storage_usage", () => {
-	// Every caller below is a seeded custom-role member, never `organizations.ownerUserId`. The
-	// permission check answers "yes" for an owner before it looks at the resource, so an owner-only
-	// run would pass even if this query asked for the wrong permission or the wrong workspace.
+	// These callers are not owners. Exact management grants must let them read the totals.
 	async function seed_member_with_role(
 		t: ReturnType<typeof test_convex>,
 		args: {
@@ -6249,8 +6323,18 @@ describe("plugins get_installation_storage_usage", () => {
 			workspaceId: membership.workspaceId,
 			creatorUserId: membership.userId,
 			clerkUserId: "storage-manager",
-			permissions: ["workspace.plugins.manage"],
+			permissions: ["workspace.members.manage"],
 		});
+		expect(
+			(
+				await t.withIdentity(user_identity(membership.userId)).mutation(api.plugins_access.update_installation_access, {
+					membershipId: membership.membershipId,
+					installationId: installed._yay.installationId,
+					mode: "selected",
+					principals: [{ kind: "user", userId: manager.userId }],
+				})
+			)._nay,
+		).toBeUndefined();
 		expect(
 			await t.withIdentity(user_identity(manager.userId)).query(api.plugins.get_installation_storage_usage, {
 				membershipId: manager.membershipId,
@@ -6264,7 +6348,7 @@ describe("plugins get_installation_storage_usage", () => {
 			collectionNames: ["meetings", "notes"],
 		});
 
-		// Reading a workspace is not managing its plugins. The share rows carry user ids, and the
+		// Reading a workspace is not managing its plugins. The share docs carry user ids, and the
 		// counters say how much each installation is holding, so this stays behind the manage gate.
 		const reader = await seed_member_with_role(t, {
 			organizationId: membership.organizationId,
@@ -6280,9 +6364,8 @@ describe("plugins get_installation_storage_usage", () => {
 			}),
 		).toBeNull();
 
-		// A manager of a different workspace passes their own permission check. The installation id is
-		// resolved by id alone, so without the tenant comparison this caller would read the first
-		// workspace's byte totals.
+		// A manager of another installation cannot read this workspace's totals.
+		// The positive control below proves that person's own management grant is live.
 		const foreign = await t.run((ctx) =>
 			test_mocks_fill_db_with.membership(ctx, {
 				organizationName: "other-organization",
@@ -6294,8 +6377,31 @@ describe("plugins get_installation_storage_usage", () => {
 			workspaceId: foreign.workspaceId,
 			creatorUserId: foreign.userId,
 			clerkUserId: "storage-foreign-manager",
-			permissions: ["workspace.plugins.manage"],
+			permissions: ["workspace.members.manage"],
 		});
+		const asForeignOwner = t.withIdentity(user_identity(foreign.userId));
+		const foreignInstalled = await asForeignOwner.mutation(api.plugins.install_version, {
+			membershipId: foreign.membershipId,
+			pluginVersionId: registered.pluginVersionId,
+			...media_plugin_consent,
+		});
+		if (foreignInstalled._nay) throw new Error(foreignInstalled._nay.message);
+		expect(
+			(
+				await asForeignOwner.mutation(api.plugins_access.update_installation_access, {
+					membershipId: foreign.membershipId,
+					installationId: foreignInstalled._yay.installationId,
+					mode: "selected",
+					principals: [{ kind: "user", userId: foreignManager.userId }],
+				})
+			)._nay,
+		).toBeUndefined();
+		expect(
+			await t.withIdentity(user_identity(foreignManager.userId)).query(api.plugins.get_installation_storage_usage, {
+				membershipId: foreignManager.membershipId,
+				installationId: foreignInstalled._yay.installationId,
+			}),
+		).not.toBeNull();
 		expect(
 			await t.withIdentity(user_identity(foreignManager.userId)).query(api.plugins.get_installation_storage_usage, {
 				membershipId: foreignManager.membershipId,
@@ -7321,6 +7427,7 @@ describe("plugins publish_version", () => {
 				manifestR2Key: args.manifestR2Key ?? `plugins/${args.name}/manifest.json`,
 				backendEntrypointFile: args.backendEntrypointFile ?? null,
 				configuration: null,
+				mounts: [],
 				events: args.events ?? [{ type: "files.upload.completed", contentTypes: ["image/png"], filters: [] }],
 				pages: args.pages ?? [],
 				fileViews: args.fileViews ?? [],
@@ -7635,6 +7742,7 @@ describe("plugins publish_version", () => {
 			manifestR2Key: "plugins/claim-race/manifest.json",
 			backendEntrypointFile: null,
 			configuration: null,
+			mounts: [],
 			events: [],
 			pages: [],
 			fileViews: [],
@@ -7714,6 +7822,7 @@ describe("plugins publish_version", () => {
 			manifestR2Key: "plugins/account-delete-race/manifest.json",
 			backendEntrypointFile: null,
 			configuration: null,
+			mounts: [],
 			secrets: [],
 			events: [],
 			pages: [],
@@ -7754,6 +7863,7 @@ describe("plugins publish_version", () => {
 			manifestR2Key: "plugins/account-delete-finalize-race/manifest.json",
 			backendEntrypointFile: null,
 			configuration: null,
+			mounts: [],
 			secrets: [],
 			events: [],
 			pages: [],
@@ -7868,6 +7978,7 @@ describe("plugins publish_version", () => {
 			manifestR2Key: `plugins/${pluginName}/manifest.json`,
 			backendEntrypointFile: null,
 			configuration: null,
+			mounts: [],
 			secrets: [],
 			events: [],
 			pages: [],
@@ -16178,6 +16289,7 @@ describe("plugins admin hard delete", () => {
 				manifestR2Key: "plugins/r2-retry/manifest.json",
 				backendEntrypointFile: null,
 				configuration: null,
+				mounts: [],
 				events: [],
 				pages: [],
 				fileViews: [],
@@ -16262,6 +16374,7 @@ describe("plugins admin hard delete", () => {
 				manifestR2Key: "plugins/secret-batch/manifest.json",
 				backendEntrypointFile: null,
 				configuration: null,
+				mounts: [],
 				events: [],
 				pages: [],
 				fileViews: [],
@@ -16321,6 +16434,7 @@ describe("plugins admin hard delete", () => {
 						manifestR2Key: `plugins/large-delete/${index}/manifest.json`,
 						backendEntrypointFile: null,
 						configuration: null,
+						mounts: [],
 						events: [],
 						pages: [],
 						fileViews: [],
@@ -16351,6 +16465,7 @@ describe("plugins admin hard delete", () => {
 						pluginVersionId,
 						pluginName: "large-delete",
 						status: "enabled",
+						managementAccess: "selected",
 						configurationYaml: null,
 						acceptedCapabilities: [],
 						capabilitiesAcceptedAt: Date.now(),
@@ -17151,6 +17266,13 @@ describe("plugins admin hard delete", () => {
 			mcpServers: 1,
 			mcpOAuthGrants: 1,
 			uiSessions: 1,
+			pluginMounts: 0,
+			pluginVolumes: 0,
+			pluginVolumeGenerations: 0,
+			pluginVolumeUsageDocs: 0,
+			volumeFileNodes: 0,
+			volumeR2Assets: 0,
+			pluginInstallationGrants: 0,
 			pluginDataUsageDocs: 1,
 			pluginDataDocuments: 1,
 			pluginDataLiveReservations: 1,
@@ -17206,6 +17328,13 @@ describe("plugins admin hard delete", () => {
 			mcpServers: 0,
 			mcpOAuthGrants: 0,
 			uiSessions: 0,
+			pluginMounts: 0,
+			pluginVolumes: 0,
+			pluginVolumeGenerations: 0,
+			pluginVolumeUsageDocs: 0,
+			volumeFileNodes: 0,
+			volumeR2Assets: 0,
+			pluginInstallationGrants: 0,
 			pluginDataUsageDocs: 0,
 			pluginDataDocuments: 0,
 			pluginDataLiveReservations: 0,

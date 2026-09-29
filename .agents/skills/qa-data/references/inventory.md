@@ -21,14 +21,15 @@ means look but do not change anything.
 | `chitchat-qa/copy-qa-0922` | QA Edge profile | reuse | Copy checks. Almost empty. MCP and plugin-skill checks: Data Probe 0.3.0 is installed here with its `fixture` MCP server and `mcp-echo` skill, so every chat here gets the fixture tools. The `chitchat-qa` plugin policy allows `data-probe`. |
 | `chitchat-qa/metadata-qa-0906` | QA Edge profile | reuse | Metadata checks. Chitchat and Council installed. |
 | `chitchat-qa/home` | QA Edge profile; `qa.perm.member` is a member | reuse | Chitchat page and its transcript files. Uploads here run no plugin. |
-| `qa-browser/home` | `qa.perm.owner` (owner), `qa.perm.viewer` (member) in a scratch browser | reuse | Permission refusals, second-user checks, search, web browser QA. Chitchat installed. The QA Edge profile is **not** a member. |
-| `qa-tmp-share/home` | `qa.perm.member` (owner) | reuse | Cross-org share checks. Empty. |
+| `qa-browser/home` | `qa.perm.owner` (owner), `qa.perm.viewer` (member) in a scratch browser | reuse | Permission refusals, second-user checks, search, web browser QA. Chitchat installed. Empty Video Player account `rd7nt1qt9segqprsarrwc7jnr58f9qkh` remains without file grants after its test uninstall. Its retained binding makes reinstall need service-account management. The QA Edge profile is **not** a member. |
+| `qa-tmp-share/home` | `qa.perm.member` (owner) | reuse | Cross-org share checks. No plugin installations. Empty reusable Data Probe and GitHub Sources service accounts remain without file grants. |
 | `personal/home` of each `qa.perm.*` account | that account | reuse | Almost empty. |
 | `personal/home` (Ray) | QA Edge profile | reuse for QA folders only | Ray's main workspace. **Every upload here runs the image, pdf, video, and data-probe plugins**, so upload here only to test those plugins. Ray's own notes (`/tasks`, `/inbox`, `/todo.md`, `/README.md`) are read-only. |
+| `personal/plugin-access-qa` | QA Edge profile | reuse | Plugin access settings. Created through the workspace dialog to check the Owner only default. Saved all three setup modes, then returned it to Owner only. No plugins; only the automatic `/README.md`. |
 | `sybill-demo/demo` | QA Edge profile | read-only | Large realistic import: `/people` (about 9,700 files), `/companies` (1,000+ in one folder), `/emails`, `/meetings`, `/email-attachments` (Office files). About 10 GB stored. Use it for load, paging, and search on big data. |
 | `sybill-demo/home` | QA Edge profile | reuse | Empty. |
 
-Plugin source trees and GitHub mounts live in the `GLOBAL` scope. They are not test data.
+Installed plugin source trees live in `GLOBAL`/`PLUGINS`. Plugin-owned Mounts belong to their installation's workspace. The old t3-chat mirror still uses `GLOBAL`/`GITHUB` until its reviewed cutover. These trees are read-only data.
 
 ## Accounts
 
@@ -54,6 +55,7 @@ Sign-in steps for the `qa.perm.*` accounts are in
 | Need | Use |
 | --- | --- |
 | Markdown, collaboration on | `chitchat-qa/xfer-qa-0914:/u18/dest.md`, `chitchat-qa/copy-qa-0922:/README.md`, `personal/home:/documents/notes.md` |
+| Small Files permission check | `qa-browser/home:/qa-search-0905/tasks/public-task.md` and `/qa-search-0905/private/secret-task.md`. Saved API text is 52 bytes; the Yjs rich-text read is 53 bytes with final LF. The private folder stays restricted. Use the [scheduled Files recipe](../../app-playwriter-harness/references/plugin-backend-execution.md#scheduled-permission-checks) and restore shares after testing. |
 | Markdown, collaboration off | `personal/home:/qa-noncollab/notes.md`, `chitchat-qa/xfer-qa-0914:/u23p/my-file.md` (and the rest of `/u23p`) |
 | Long Markdown (scrolling) | `chitchat-qa/home:/qa-long-scroll.md` (about 50 KB). Read-only 97 KB files: `chitchat-qa/home:/chitchat-ad04c6c85ea7daf62a10960d/qa-rollover-1012299.md` |
 | Markdown with frontmatter | `personal/home:/frontmatter-demo.md` |
@@ -111,6 +113,7 @@ Sign-in steps for the `qa.perm.*` accounts are in
 | --- | --- |
 | Meeting recordings with transcript and summary | `personal/home:/meetings` (about 44 files) |
 | Chitchat transcripts | `chitchat-qa/home:/chitchat-ad04c6c85ea7daf62a10960d`, `qa-browser/home:/chitchat` ([chitchat.md](../../app-playwriter-harness/references/chitchat.md)) |
+| External repo Mount | `personal/home:/.mounts/github/native-popovers`. GitHub Sources copies the public `raythurnvoid/react-native-popovers` repo. Its first copy has 70 text files. Use Bash to read it; it stays out of the Files sidebar. |
 
 ### Repo files for uploads
 
@@ -124,7 +127,18 @@ to a `chitchat-qa` workspace unless the check is about the upload plugins.
 `personal/home` already has about 410 chats. For an agent check where chat history does not
 matter, continue a chat you already made for the same task instead of starting a new one.
 
+Reuse `QA native-popovers mount 0928` in `personal/home` (`n17e1df2cqn1p6m8kkac9nq8d58f8674`) for this Mount's Bash checks. The saved first turn lists the Mount and reads its README without changing files.
+
+Reuse `qa-browser/home` chat `n1708wzk8n9hnt2r9qm87jd1118f9g6z` as `qa.perm.owner` for
+Mount isolation checks. Its saved Bash call found both plugin Mount paths absent.
+Only the original Chitchat installation was present.
+
 ## Change Log
 
 - 2026-09-24: first catalog from a full refresh.
 - 2026-09-28: Data Probe 0.3.0 (MCP fixture) installed in `chitchat-qa/copy-qa-0922`.
+- 2026-09-28: added `personal/plugin-access-qa` for plugin access settings. Keep it at Owner only after checks.
+- 2026-09-28: added the native-popovers Mount and its saved read-only QA chat in `personal/home`.
+- 2026-09-28: reused the two saved Files permission fixtures. Original files, shares, roles, policy and Chitchat installation are restored. Temporary Data Probe is uninstalled; its empty service account remains without grants.
+- 2026-09-28: added the QA owner's reusable no-plugin Mount isolation chat in `qa-browser/home`.
+- 2026-09-28: install-access check restored the original setup, policy, roles, accounts and Chitchat. Video Player is uninstalled; its empty account and binding remain.

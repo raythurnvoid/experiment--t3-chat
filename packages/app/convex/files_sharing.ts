@@ -44,6 +44,7 @@ import {
 	access_control_is_system_role,
 	type access_control_FileShareLevel,
 	type access_control_Permission,
+	type access_control_GrantPermission,
 	type access_control_RoleRef,
 } from "../shared/access-control.ts";
 
@@ -313,7 +314,7 @@ function read_grant_principal(grant: Doc<"access_control_permission_grants">): F
 function group_grants_into_entries(grants: Doc<"access_control_permission_grants">[]) {
 	const permissionsByKey = new Map<
 		string,
-		{ principal: FileSharePrincipal; permissions: Set<access_control_Permission> }
+		{ principal: FileSharePrincipal; permissions: Set<access_control_GrantPermission> }
 	>();
 
 	for (const grant of grants) {
@@ -371,7 +372,7 @@ async function db_set_principal_level(
 		args.level ? access_control_FILE_SHARE_LEVELS[args.level].permissions : [],
 	);
 	const key = share_principal_key(args.principal);
-	const existingByPermission = new Map<access_control_Permission, Doc<"access_control_permission_grants">>();
+	const existingByPermission = new Map<access_control_GrantPermission, Doc<"access_control_permission_grants">>();
 	for (const grant of args.grants) {
 		const principal = read_grant_principal(grant);
 		if (principal && share_principal_key(principal) === key) {
@@ -860,6 +861,7 @@ export const set_node_share_grant = mutation({
 				.withIndex("by_organization_role_workspace_resource", (q) =>
 					q.eq("organizationId", membership.organizationId).eq("principalKind", "role").eq("role", role),
 				)
+				.filter((q) => q.eq(q.field("resourceKind"), "file"))
 				.take(MAX_ROLE_SHARE_GRANT_DOCS);
 
 			// Count shares, not docs: one share writes up to three docs for the same node.

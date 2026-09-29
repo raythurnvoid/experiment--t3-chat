@@ -2,7 +2,7 @@ import "./plugin.css";
 
 import { Editor, type EditorProps } from "@monaco-editor/react";
 import { createFileRoute } from "@tanstack/react-router";
-import { useQuery } from "convex/react";
+import { usePaginatedQuery, useQuery } from "convex/react";
 import {
 	ChevronRight,
 	CircleCheck,
@@ -49,6 +49,7 @@ import {
 	MyInputBox,
 	MyInputControl,
 	MyInputLabel,
+	MyInputTextAreaControl,
 } from "@/components/my-input.tsx";
 import {
 	MyMenu,
@@ -73,6 +74,12 @@ import { MyTabs, MyTabsList, MyTabsPanel, MyTabsPanels, MyTabsTab } from "@/comp
 import { PluginsHeaderBreadcrumb } from "@/components/plugins-header-breadcrumb.tsx";
 import { PluginsPublishButton } from "@/components/plugins-publish-button.tsx";
 import { PluginsPublishSessionProvider } from "@/components/plugins-publish-session.tsx";
+import { PluginsManagementAccess } from "@/components/plugins-management-access.tsx";
+import {
+	PluginsMyRunPermissions,
+	PluginsRunConsent,
+	type PluginsRunConsent_Value,
+} from "@/components/plugins-run-consent.tsx";
 import { useFn, useLiveRef } from "@/hooks/utils-hooks.ts";
 import {
 	app_convex,
@@ -1069,6 +1076,7 @@ type RoutePluginsPluginConfiguration_Props = {
 	configurationYaml: string;
 	description: string;
 	events: RoutePlugins_Installation["version"]["events"];
+	mounts: RoutePlugins_Installation["version"]["mounts"];
 };
 
 type RoutePluginsPluginConfiguration_State = {
@@ -1080,7 +1088,7 @@ type RoutePluginsPluginConfiguration_State = {
 const RoutePluginsPluginConfiguration = memo(function RoutePluginsPluginConfiguration(
 	props: RoutePluginsPluginConfiguration_Props,
 ) {
-	const { membershipId, installationId, configurationYaml, description, events } = props;
+	const { membershipId, installationId, configurationYaml, description, events, mounts } = props;
 	const [configuration, setConfiguration] = useState<RoutePluginsPluginConfiguration_State>(() => ({
 		draftYaml: configurationYaml,
 		serverYaml: configurationYaml,
@@ -1106,6 +1114,8 @@ const RoutePluginsPluginConfiguration = memo(function RoutePluginsPluginConfigur
 			overflowWidgetsDomNode: hoistingContainer ?? undefined,
 			fixedOverflowWidgets: true,
 			ariaLabel: "Plugin configuration YAML",
+			// Let Tab reach the next control instead of changing YAML.
+			tabFocusMode: true,
 			automaticLayout: true,
 			fontSize: 14,
 			lineHeight: 20,
@@ -1160,6 +1170,7 @@ const RoutePluginsPluginConfiguration = memo(function RoutePluginsPluginConfigur
 		const parsed = plugins_parse_installation_configuration_yaml({
 			configurationYaml: configuration.draftYaml,
 			events,
+			mounts,
 		});
 		if (parsed._nay) {
 			setConfiguration((current) => ({
@@ -1337,6 +1348,341 @@ const RoutePluginsPluginConfiguration = memo(function RoutePluginsPluginConfigur
 });
 // #endregion configuration
 
+// #region scheduled runs
+type EligibleRunUser = app_convex_FunctionReturnType<
+	typeof app_convex_api.plugins_access.list_eligible_run_users
+>["page"][number];
+
+const RoutePluginsScheduledUserSelect = memo(function RoutePluginsScheduledUserSelect(props: {
+	membershipId: app_convex_Id<"organizations_workspaces_users">;
+	installationId: app_convex_Id<"plugins_workspace_installations">;
+	value: string;
+	includeMe?: boolean;
+	disabled?: boolean;
+	onChange: (user: EligibleRunUser | null) => void;
+	onSelectionValidChange: (valid: boolean) => void;
+}) {
+	const { membershipId, installationId, value, includeMe, disabled, onChange, onSelectionValidChange } = props;
+	const users = usePaginatedQuery(
+		app_convex_api.plugins_access.list_eligible_run_users,
+		{ membershipId, installationId },
+		{ initialNumItems: 50 },
+	);
+	const selected = users.results.find((user) => user.grantId === value);
+	const selectionValid = (includeMe && value === "me") || selected !== undefined;
+	const triggerRef = useRef<HTMLButtonElement | null>(null);
+	const [focusAfterLoad, setFocusAfterLoad] = useState(false);
+	useEffect(() => {
+		if (users.status === "LoadingFirstPage") return;
+		onSelectionValidChange(selectionValid);
+	}, [users.status, value, selectionValid, onSelectionValidChange]);
+	useEffect(() => {
+		if (!focusAfterLoad || users.status !== "Exhausted") return;
+		setFocusAfterLoad(false);
+		if (document.activeElement === document.body) triggerRef.current?.focus();
+	}, [focusAfterLoad, users.status]);
+	return (
+		<div>
+			<MySelect
+				value={value}
+				setValue={(next) => {
+					if (disabled) return;
+					if (includeMe && next === "me") onChange(null);
+					else {
+						const user = users.results.find((candidate) => candidate.grantId === next);
+						if (user) onChange(user);
+					}
+				}}
+			>
+				<MySelectLabel>Run as</MySelectLabel>
+				<MySelectTrigger disabled={disabled || users.status === "LoadingFirstPage"}>
+					<MyButton ref={triggerRef} variant="outline">
+						{includeMe && value === "me" ? "Me" : (selected?.displayName ?? "Choose a user who granted access")}
+						<MySelectOpenIndicator />
+					</MyButton>
+				</MySelectTrigger>
+				<MySelectPopover>
+					<MySelectPopoverContent>
+						{includeMe ? <MySelectItem value="me">Me</MySelectItem> : null}
+						{users.results.map((user) => (
+							<MySelectItem key={user.grantId} value={user.grantId}>
+								{user.displayName}
+							</MySelectItem>
+						))}
+					</MySelectPopoverContent>
+				</MySelectPopover>
+			</MySelect>
+			{value && value !== "me" && !selected && users.status !== "LoadingFirstPage" ? (
+				<p role="alert">The selected user's permission is no longer available. Choose a user again.</p>
+			) : null}
+			{users.status === "CanLoadMore" || users.status === "LoadingMore" ? (
+				<MyButton
+					variant="ghost"
+					disabled={disabled}
+					aria-disabled={users.status === "LoadingMore" || undefined}
+					aria-busy={users.status === "LoadingMore" || undefined}
+					onClick={(event) => {
+						if (disabled || users.status !== "CanLoadMore") return;
+						setFocusAfterLoad(document.activeElement === event.currentTarget);
+						users.loadMore(50);
+					}}
+				>
+					{users.status === "LoadingMore" ? "Loading users…" : "Load more users"}
+				</MyButton>
+			) : null}
+			<p>Other people must grant their own permission in My run permissions before they appear here.</p>
+		</div>
+	);
+});
+
+type RoutePluginsSchedule_ClassNames =
+	| "RoutePluginsSchedule"
+	| "RoutePluginsSchedule-facts"
+	| "RoutePluginsSchedule-actions"
+	| "RoutePluginsSchedule-error";
+
+const RoutePluginsSchedule = memo(function RoutePluginsSchedule(props: {
+	membershipId: app_convex_Id<"organizations_workspaces_users">;
+	installationId: app_convex_Id<"plugins_workspace_installations">;
+	disabled: boolean;
+}) {
+	const { membershipId, installationId, disabled } = props;
+	const schedule = useQuery(app_convex_api.plugins.get_installation_schedule, { membershipId, installationId });
+	const [selectedUser, setSelectedUser] = useState<EligibleRunUser | null>(null);
+	const [selectedUserValid, setSelectedUserValid] = useState(false);
+	const [pending, setPending] = useState<"assign" | "run" | null>(null);
+	const [feedback, setFeedback] = useState<{ error: boolean; message: string } | null>(null);
+	const [focusFeedback, setFocusFeedback] = useState(false);
+	const assignButtonRef = useRef<HTMLButtonElement | null>(null);
+	const feedbackRef = useRef<HTMLParagraphElement | null>(null);
+	useEffect(() => {
+		// A saved assignment change replaces this form's old choice.
+		setSelectedUser(null);
+		setSelectedUserValid(false);
+	}, [schedule?.userId, schedule?.grantId]);
+
+	const handleAssign = useFn(() => {
+		if (!selectedUser || !selectedUserValid || disabled || pending) return;
+		setPending("assign");
+		setFeedback(null);
+		app_convex
+			.mutation(app_convex_api.plugins_access.set_scheduled_run_user, {
+				membershipId,
+				installationId,
+				userId: selectedUser.userId,
+				grantId: selectedUser.grantId,
+			})
+			.then((result) => {
+				// Read focus before the cleared choice disables this button.
+				if (!result._nay && document.activeElement === assignButtonRef.current) {
+					setFocusFeedback(true);
+				}
+				setFeedback(
+					result._nay
+						? { error: true, message: result._nay.message }
+						: { error: false, message: "Scheduled user changed. Work under the old assignment was stopped." },
+				);
+			})
+			.catch((error: unknown) => {
+				console.error("[RoutePluginsSchedule] Could not change scheduled user", { error });
+				setFeedback({ error: true, message: "Could not change the scheduled user." });
+			})
+			.finally(() => setPending(null));
+	});
+	const handleRun = useFn(() => {
+		if (!schedule || schedule.status !== "enabled" || schedule.assignmentError || disabled || pending) return;
+		setPending("run");
+		setFeedback(null);
+		app_convex
+			.mutation(app_convex_api.plugins.run_schedule_now, { membershipId, installationId })
+			.then((result) =>
+				setFeedback(
+					result._nay
+						? { error: true, message: result._nay.message }
+						: { error: false, message: "Scheduled run queued." },
+				),
+			)
+			.catch((error: unknown) => {
+				console.error("[RoutePluginsSchedule] Could not queue scheduled run", { error });
+				setFeedback({ error: true, message: "Could not queue the scheduled run." });
+			})
+			.finally(() => setPending(null));
+	});
+
+	useEffect(() => {
+		if (!focusFeedback) return;
+		setFocusFeedback(false);
+		feedbackRef.current?.focus();
+	}, [focusFeedback]);
+
+	if (schedule === undefined) return <p role="status">Loading schedule…</p>;
+	if (schedule === null) return null;
+	return (
+		<section className={"RoutePluginsSchedule" satisfies RoutePluginsSchedule_ClassNames} aria-label="Schedule">
+			<h2>Schedule</h2>
+			<dl className={"RoutePluginsSchedule-facts" satisfies RoutePluginsSchedule_ClassNames}>
+				<dt>Status</dt>
+				<dd>{schedule.status === "enabled" ? "Enabled" : "Disabled"}</dd>
+				<dt>Interval</dt>
+				<dd>
+					{schedule.intervalMinutes === null ? "Invalid configuration" : `Every ${schedule.intervalMinutes} minutes`}
+				</dd>
+				<dt>Run user</dt>
+				<dd>{schedule.userName ?? "Choose a user"}</dd>
+				<dt>Scheduled Mount writes billed to</dt>
+				<dd>{schedule.payerName}</dd>
+				<dt>Next run</dt>
+				<dd>
+					{schedule.status === "disabled"
+						? "Paused while disabled"
+						: schedule.nextRunAt === null
+							? "Not scheduled"
+							: format_datetime(schedule.nextRunAt)}
+				</dd>
+				<dt>Last result</dt>
+				<dd>
+					{schedule.lastRun
+						? `${schedule.lastRun.status} · ${format_datetime(schedule.lastRun.updatedAt)}`
+						: "No runs yet"}
+				</dd>
+			</dl>
+			{schedule.assignmentError ? (
+				<p role="alert" className={"RoutePluginsSchedule-error" satisfies RoutePluginsSchedule_ClassNames}>
+					{schedule.assignmentError}. Choose a user with a current grant below.
+				</p>
+			) : null}
+			{schedule.lastRun?.errorMessage ? (
+				<p className={"RoutePluginsSchedule-error" satisfies RoutePluginsSchedule_ClassNames}>
+					{schedule.lastRun.errorMessage}
+				</p>
+			) : null}
+			<RoutePluginsScheduledUserSelect
+				membershipId={membershipId}
+				installationId={installationId}
+				value={selectedUser?.grantId ?? ""}
+				disabled={disabled || pending !== null}
+				onChange={setSelectedUser}
+				onSelectionValidChange={setSelectedUserValid}
+			/>
+			<p>
+				The run user and payer are separate. Mount writes cost half a cent (0.5 cents) per new file. Up to 10,000 files
+				can be billed per day.
+			</p>
+			{feedback ? (
+				<p role={feedback.error ? "alert" : "status"} ref={feedbackRef} tabIndex={-1}>
+					{feedback.message}
+				</p>
+			) : null}
+			<div className={"RoutePluginsSchedule-actions" satisfies RoutePluginsSchedule_ClassNames}>
+				<MyButton
+					ref={assignButtonRef}
+					disabled={(!selectedUser || !selectedUserValid || disabled) && pending !== "assign"}
+					aria-disabled={pending !== null || undefined}
+					aria-busy={pending === "assign" || undefined}
+					onClick={handleAssign}
+				>
+					{pending === "assign" ? "Changing…" : "Change scheduled user"}
+				</MyButton>
+				<MyButton
+					variant="outline"
+					disabled={
+						(disabled || schedule.status !== "enabled" || schedule.assignmentError !== null) && pending !== "run"
+					}
+					aria-disabled={pending !== null || undefined}
+					aria-busy={pending === "run" || undefined}
+					onClick={handleRun}
+				>
+					{pending === "run" ? "Queuing…" : "Run now"}
+				</MyButton>
+			</div>
+		</section>
+	);
+});
+// #endregion scheduled runs
+
+// #region mounts
+type RoutePluginsMounts_ClassNames =
+	| "RoutePluginsMounts"
+	| "RoutePluginsMounts-list"
+	| "RoutePluginsMounts-volume"
+	| "RoutePluginsMounts-usage";
+
+const RoutePluginsMounts = memo(function RoutePluginsMounts(props: RoutePluginsInstalledRuns_Props) {
+	const { membershipId, installationId } = props;
+	const mounts = useQuery(app_convex_api.plugins.get_installation_mounts, { membershipId, installationId });
+	if (mounts === undefined) return <p role="status">Loading Mounts…</p>;
+	if (mounts === null || (mounts.mounts.length === 0 && mounts.volumes.length === 0)) return null;
+	return (
+		<section className={"RoutePluginsMounts" satisfies RoutePluginsMounts_ClassNames} aria-label="Mounts">
+			<h2>Mounts</h2>
+			<p>
+				Read-only outside content for the chat agent. Everyone who can read workspace files can read these mounts.
+				Folder sharing limits do not apply. Mounts do not appear in the Files sidebar.
+			</p>
+			<ul className={"RoutePluginsMounts-list" satisfies RoutePluginsMounts_ClassNames}>
+				{mounts.mounts.map((mount) => (
+					<li key={mount.mountId}>
+						<code>/.mounts/{mount.name}</code>
+						{!mounts.volumes.some((volume) => volume.mountId === mount.mountId) ? " · No published files yet" : ""}
+					</li>
+				))}
+				{mounts.volumes.map((volume) => (
+					<li
+						key={volume.volumeId}
+						className={"RoutePluginsMounts-volume" satisfies RoutePluginsMounts_ClassNames}
+						data-mount-copy-status={volume.deleting ? "deleting" : volume.published ? "published" : "staging"}
+					>
+						<strong>
+							{volume.mountName
+								? `/.mounts/${volume.mountName}/${volume.volumeKey}`
+								: `${volume.volumeKey} (removed mount)`}
+						</strong>
+						{volume.deleting ? <p>Deleting</p> : null}
+						{volume.published ? (
+							<p>
+								Published · Revision: {volume.published.revision ?? "Hidden or not provided"} ·{" "}
+								{volume.published.fileCount.toLocaleString()} files · {volume.published.bytes.toLocaleString()} bytes ·{" "}
+								{volume.published.publishedAt === null
+									? "Publish time not recorded"
+									: format_datetime(volume.published.publishedAt)}
+							</p>
+						) : (
+							<p>No published copy</p>
+						)}
+						{volume.staging ? (
+							<p>
+								Open staging copy · Revision: {volume.staging.revision ?? "Hidden or not provided"} ·{" "}
+								{volume.staging.fileCount.toLocaleString()} files · {volume.staging.bytes.toLocaleString()} bytes ·{" "}
+								{volume.staging.expiresAt === null
+									? "Expiry not recorded"
+									: `Expires ${format_datetime(volume.staging.expiresAt)}`}
+							</p>
+						) : null}
+					</li>
+				))}
+			</ul>
+			<div className={"RoutePluginsMounts-usage" satisfies RoutePluginsMounts_ClassNames}>
+				<p>
+					Storage in use: {mounts.usage.fileCount.toLocaleString()} of{" "}
+					{mounts.limits.installationFiles.toLocaleString()} files · {mounts.usage.bytes.toLocaleString()} of{" "}
+					{mounts.limits.installationBytes.toLocaleString()} bytes.
+				</p>
+				<p>
+					{mounts.usage.dailyFilesLeft.toLocaleString()} of {mounts.limits.dailyFiles.toLocaleString()} new files left
+					today. Half a cent (0.5 cents) per new file. Scheduled writes are billed to the organization owner. Other
+					writes use this installation's billing settings.
+				</p>
+				<p>
+					Each copy: {mounts.limits.copyFiles.toLocaleString()} files and {mounts.limits.copyBytes.toLocaleString()}{" "}
+					bytes. Up to {mounts.limits.volumesPerMount} file trees per mount and {mounts.limits.volumesPerInstallation}{" "}
+					per installation. Staging and retained copies count toward storage.
+				</p>
+			</div>
+		</section>
+	);
+});
+// #endregion mounts
+
 // #region installed runs
 type RoutePluginsInstalledRuns_ClassNames =
 	| "RoutePluginsInstalledRuns"
@@ -1364,14 +1710,33 @@ type RoutePluginsInstalledRuns_Props = {
 
 const RoutePluginsInstalledRuns = memo(function RoutePluginsInstalledRuns(props: RoutePluginsInstalledRuns_Props) {
 	const { membershipId, installationId } = props;
-	const runs = useQuery(app_convex_api.plugins.list_recent_runs, { membershipId, installationId });
+	const runs = usePaginatedQuery(
+		app_convex_api.plugins.list_run_history,
+		{ membershipId, installationId },
+		{ initialNumItems: 25 },
+	);
+	const [expandedRunId, setExpandedRunId] = useState<app_convex_Id<"plugins_event_runs"> | null>(null);
+	const summaryRef = useRef<HTMLElement | null>(null);
+	const [focusAfterLoad, setFocusAfterLoad] = useState(false);
+	const calls = useQuery(
+		app_convex_api.plugins.list_run_calls,
+		expandedRunId ? { membershipId, installationId, runId: expandedRunId } : "skip",
+	);
+	useEffect(() => {
+		if (!focusAfterLoad || runs.status !== "Exhausted") return;
+		setFocusAfterLoad(false);
+		if (document.activeElement === document.body) summaryRef.current?.focus();
+	}, [focusAfterLoad, runs.status]);
 
 	return (
 		<details
 			id={"app_plugin_activity_section" satisfies AppElementId}
 			className={"RoutePluginsInstalledRuns" satisfies RoutePluginsInstalledRuns_ClassNames}
 		>
-			<summary className={"RoutePluginsInstalledRuns-summary" satisfies RoutePluginsInstalledRuns_ClassNames}>
+			<summary
+				ref={summaryRef}
+				className={"RoutePluginsInstalledRuns-summary" satisfies RoutePluginsInstalledRuns_ClassNames}
+			>
 				<ChevronRight
 					className={"RoutePluginsInstalledRuns-chevron" satisfies RoutePluginsInstalledRuns_ClassNames}
 					aria-hidden
@@ -1382,20 +1747,20 @@ const RoutePluginsInstalledRuns = memo(function RoutePluginsInstalledRuns(props:
 				</h2>
 			</summary>
 			<p className={"RoutePluginsInstalledRuns-description" satisfies RoutePluginsInstalledRuns_ClassNames}>
-				Latest executions in this workspace.
+				Run history is kept without a time limit.
 			</p>
 
-			{runs === undefined ? (
+			{runs.status === "LoadingFirstPage" ? (
 				<div className={"RoutePluginsInstalledRuns-empty" satisfies RoutePluginsInstalledRuns_ClassNames} role="status">
 					Loading runs...
 				</div>
-			) : runs.length === 0 ? (
+			) : runs.results.length === 0 ? (
 				<div className={"RoutePluginsInstalledRuns-empty" satisfies RoutePluginsInstalledRuns_ClassNames}>
 					No activity yet.
 				</div>
 			) : (
 				<div className={"RoutePluginsInstalledRuns-list" satisfies RoutePluginsInstalledRuns_ClassNames}>
-					{runs.map((run) => (
+					{runs.results.map((run) => (
 						<div
 							key={run._id}
 							className={"RoutePluginsInstalledRunItem" satisfies RoutePluginsInstalledRuns_ClassNames}
@@ -1413,19 +1778,75 @@ const RoutePluginsInstalledRuns = memo(function RoutePluginsInstalledRuns(props:
 								</span>
 							</div>
 							<div className={"RoutePluginsInstalledRunItem-meta" satisfies RoutePluginsInstalledRuns_ClassNames}>
-								{format_datetime(run.updatedAt)} · {format_run_duration(run.runnerElapsedMs)} · {run.apiCallCount} API
-								call{run.apiCallCount === 1 ? "" : "s"} · {run.outputWriteCount} file
+								{format_datetime(run.updatedAt)} ·{" "}
+								{format_run_duration(
+									run.startedAt !== null && run.finishedAt !== null ? run.finishedAt - run.startedAt : undefined,
+								)}{" "}
+								· {run.apiCallCount} API call{run.apiCallCount === 1 ? "" : "s"} · {run.outputWriteCount} file
 								{run.outputWriteCount === 1 ? "" : "s"} written
 							</div>
-							{run.errorMessage ? (
+							<div className={"RoutePluginsInstalledRunItem-meta" satisfies RoutePluginsInstalledRuns_ClassNames}>
+								Run as {run.actorName}
+								{run.chainRootRunId ? (
+									<>
+										{" "}
+										· Chain <code>{run.chainRootRunId}</code> · Step {(run.chainIndex ?? 0) + 1}
+									</>
+								) : null}
+							</div>
+							{run.errorMessage || run.errorCode ? (
 								<div className={"RoutePluginsInstalledRunItem-error" satisfies RoutePluginsInstalledRuns_ClassNames}>
+									{run.errorCode ? `${run.errorCode}: ` : ""}
 									{run.errorMessage}
 								</div>
+							) : null}
+							<MyButton
+								variant="ghost"
+								aria-expanded={expandedRunId === run._id}
+								onClick={() => setExpandedRunId(expandedRunId === run._id ? null : run._id)}
+							>
+								{expandedRunId === run._id ? "Hide API calls" : "Show API calls"}
+							</MyButton>
+							{expandedRunId === run._id ? (
+								calls === undefined ? (
+									<p role="status">Loading API calls…</p>
+								) : calls.length === 0 ? (
+									<p>No API calls recorded.</p>
+								) : (
+									<ul>
+										{calls.map((call) => (
+											<li key={call._id}>
+												<strong>
+													{call.sequence}. {call.route}
+												</strong>{" "}
+												· {call.kind} · {call.status} · {format_datetime(call.startedAt)}
+												{call.responseStatus !== undefined ? ` · HTTP ${call.responseStatus}` : ""} ·{" "}
+												{format_run_duration(call.elapsedMs)} · {call.requestBytes ?? 0} request bytes ·{" "}
+												{call.responseBytes ?? 0} response bytes
+												{call.errorMessage ? <p role="alert">{call.errorMessage}</p> : null}
+											</li>
+										))}
+									</ul>
+								)
 							) : null}
 						</div>
 					))}
 				</div>
 			)}
+			{runs.status === "CanLoadMore" || runs.status === "LoadingMore" ? (
+				<MyButton
+					variant="ghost"
+					aria-disabled={runs.status === "LoadingMore" || undefined}
+					aria-busy={runs.status === "LoadingMore" || undefined}
+					onClick={(event) => {
+						if (runs.status !== "CanLoadMore") return;
+						setFocusAfterLoad(document.activeElement === event.currentTarget);
+						runs.loadMore(25);
+					}}
+				>
+					{runs.status === "LoadingMore" ? "Loading runs…" : "Load more runs"}
+				</MyButton>
+			) : null}
 		</details>
 	);
 });
@@ -1450,9 +1871,11 @@ type RoutePluginsPluginAccess_ClassNames =
 
 type RoutePluginsPluginAccess_Props = {
 	plugin: RoutePlugins_PublishedPlugin;
+	payerName: string;
 	handlers: RoutePlugins_Installation["handlers"] | null;
 	configurationYaml: string | null;
 	events: RoutePlugins_Installation["version"]["events"] | null;
+	mounts: RoutePlugins_Installation["version"]["mounts"];
 	/**
 	 * Null when the plugin is not installed.
 	 */
@@ -1490,7 +1913,13 @@ function format_access_label(value: string) {
  * here instead of inside `format_access_label`. Keeping the overrides out of the shared rule means
  * it carries no capability spellings and event types keep using it unchanged.
  */
-function format_capability_label(value: string) {
+function format_capability_label(value: string, payerName = "the workspace owner") {
+	if (value === "workspace.volumes.write") {
+		return `Add read-only mount folders to this workspace. Everyone who can read workspace files can read them through the chat agent. Folder sharing limits do not apply to these folders. The content comes from outside sources. Each new stored file costs half a cent (0.5 cents), at most 10,000 files per day. Scheduled writes are billed to ${payerName}. Other writes use this installation's billing settings.`;
+	}
+	if (value === "plugin.schedule.run") {
+		return "Run its backend on a schedule as the selected workspace user. It can use only that user's current access and the permissions granted to this plugin. It can run while that user is signed out. Choose another user if they leave the workspace.";
+	}
 	// The plain rule writes "Workspace Files Create Read Only", which reads as create-and-read
 	// access. That is the opposite of what this capability does, because it lets a plugin lock the
 	// file it creates so nobody in the workspace can edit it.
@@ -1575,9 +2004,11 @@ function format_mcp_server_auth(server: plugins_McpServer) {
 const RoutePluginsPluginAccess = memo(function RoutePluginsPluginAccess(props: RoutePluginsPluginAccess_Props) {
 	const {
 		plugin,
+		payerName,
 		handlers,
 		configurationYaml,
 		events,
+		mounts,
 		mcpServerStatuses,
 		installationId,
 		installationEnabled,
@@ -1585,7 +2016,7 @@ const RoutePluginsPluginAccess = memo(function RoutePluginsPluginAccess(props: R
 	} = props;
 	const parsedConfiguration =
 		configurationYaml !== null && events !== null
-			? plugins_parse_installation_configuration_yaml({ configurationYaml, events })
+			? plugins_parse_installation_configuration_yaml({ configurationYaml, events, mounts })
 			: null;
 	const activeEvents =
 		handlers && events
@@ -1596,7 +2027,7 @@ const RoutePluginsPluginAccess = memo(function RoutePluginsPluginAccess(props: R
 					if (
 						contentTypes.length === 0 &&
 						!(
-							event.type === "users.account.deleted" &&
+							(event.type === "users.account.deleted" || event.type === "schedule.interval.elapsed") &&
 							handlers.some((handler) => handler.event === event.type && handler.contentType === undefined)
 						)
 					) {
@@ -1647,12 +2078,30 @@ const RoutePluginsPluginAccess = memo(function RoutePluginsPluginAccess(props: R
 								className={"RoutePluginsPluginAccess-item" satisfies RoutePluginsPluginAccess_ClassNames}
 								title={capability}
 							>
-								{format_capability_label(capability)}
+								{format_capability_label(capability, payerName)}
 							</li>
 						))}
 					</ul>
 				)}
 			</section>
+
+			{mounts.length > 0 ? (
+				<section className={"RoutePluginsPluginAccess-group" satisfies RoutePluginsPluginAccess_ClassNames}>
+					<h3 className={"RoutePluginsPluginAccess-group-title" satisfies RoutePluginsPluginAccess_ClassNames}>
+						Mount folders
+					</h3>
+					<ul className={"RoutePluginsPluginAccess-list" satisfies RoutePluginsPluginAccess_ClassNames}>
+						{mounts.map((mount) => (
+							<li
+								key={mount.id}
+								className={"RoutePluginsPluginAccess-item" satisfies RoutePluginsPluginAccess_ClassNames}
+							>
+								{parsedConfiguration?._yay?.mountNames[mount.id] ?? mount.id} · {mount.description}
+							</li>
+						))}
+					</ul>
+				</section>
+			) : null}
 
 			<section className={"RoutePluginsPluginAccess-group" satisfies RoutePluginsPluginAccess_ClassNames}>
 				<h3 className={"RoutePluginsPluginAccess-group-title" satisfies RoutePluginsPluginAccess_ClassNames}>Pages</h3>
@@ -1880,7 +2329,7 @@ const RoutePluginsPluginAccess = memo(function RoutePluginsPluginAccess(props: R
 									<span
 										className={"RoutePluginsPluginAccess-trigger-name" satisfies RoutePluginsPluginAccess_ClassNames}
 									>
-										{format_access_label(event.type)}
+										{event.type === "schedule.interval.elapsed" ? "Schedule" : format_access_label(event.type)}
 									</span>
 									{event.contentTypes.length > 0 && (
 										<span
@@ -2160,27 +2609,7 @@ type RoutePluginsPlugin_CustomAttributes = {
 	"data-organization-policy": RoutePlugins_PublishedPlugin["organizationPolicy"];
 };
 
-/**
- * Let workspace managers open any plugin and publishers open their own plugin.
- * Deny only after both live permission sources have loaded; a manager is allowed as soon as the
- * workspace permission answers.
- */
-function can_open_plugin_detail(args: {
-	canManagePlugins: boolean | undefined;
-	publisherPlugin: RoutePlugins_PublisherPlugin | null | undefined;
-}) {
-	if (args.canManagePlugins === undefined) {
-		return undefined;
-	}
-	if (args.canManagePlugins) {
-		return true;
-	}
-	if (args.publisherPlugin === undefined) {
-		return undefined;
-	}
-	return args.publisherPlugin !== null;
-}
-
+// Publishers can inspect a version before it appears in the public catalog.
 function get_publisher_version(publisherPlugin: RoutePlugins_PublisherPlugin): RoutePlugins_PublishedPlugin | null {
 	const version = publisherPlugin.versions.at(0);
 	if (!version) {
@@ -2195,8 +2624,15 @@ function get_publisher_version(publisherPlugin: RoutePlugins_PublisherPlugin): R
 		version: version.version,
 		publisherDisplayName: "You",
 		reviewStatus: version.reviewStatus,
-		// Mirror list_published_plugins: a run needs both a backend entrypoint and declared events.
-		canProcessFiles: version.backendEntrypointFile !== null && version.events.length > 0,
+		// Mirror list_published_plugins: the file baseline needs a backend and a file event.
+		canProcessFiles:
+			version.backendEntrypointFile !== null && version.events.some((event) => event.type === "files.upload.completed"),
+		canInstall: false,
+		canManage: false,
+		installationId: null,
+		configuration: version.configuration,
+		mounts: version.mounts,
+		events: version.events,
 		capabilities: version.capabilities,
 		outboundOrigins: version.outboundOrigins,
 		uiOutboundOrigins: version.uiOutboundOrigins,
@@ -2205,8 +2641,7 @@ function get_publisher_version(publisherPlugin: RoutePlugins_PublisherPlugin): R
 		mcpServers: version.mcpServers,
 		mcpServersFingerprint: version.mcpServersFingerprint,
 		skills: version.skills,
-		// This view is for a publisher who cannot manage plugins, so it never offers Install. The
-		// server checks the organization policy at install anyway.
+		// Install rights come from the catalog. This publisher fallback never offers Install.
 		organizationPolicy: "allowed",
 	};
 }
@@ -2386,31 +2821,30 @@ const RoutePluginsServiceAccountGrants = memo(function RoutePluginsServiceAccoun
 
 function RoutePluginsPlugin() {
 	const { pluginName } = Route.useParams();
-	const { membershipId, workspaceId } = AppTenantProvider.useContext();
+	const { membershipId, organizationId, workspaceId } = AppTenantProvider.useContext();
 	const publishSessionManager = PluginsPublishSessionProvider.useContext();
-	const organizationList = useQuery(app_convex_api.organizations.list);
-	const workspacePermissions = organizationList?.workspaceIdsPermissionsDict[workspaceId];
-	const canManagePlugins =
-		organizationList === undefined
-			? undefined
-			: workspacePermissions === "all" || workspacePermissions?.includes("workspace.plugins.manage") === true;
-	const plugins = useQuery(
-		app_convex_api.plugins.list_published_plugins,
-		canManagePlugins === true ? { membershipId } : "skip",
-	);
-	const installations = useQuery(
-		app_convex_api.plugins.list_installations,
-		canManagePlugins === true ? { membershipId } : "skip",
-	);
+	const plugins = useQuery(app_convex_api.plugins.list_published_plugins, { membershipId });
+	// Private settings come only from installations this member may manage.
+	const installations = useQuery(app_convex_api.plugins.list_installations, { membershipId });
 	// Non-null only when the signed-in user owns this plugin's repository claim.
 	const publisherPlugin = useQuery(app_convex_api.plugins.get_publisher_plugin, {
 		pluginName,
 	});
-	const canOpenPluginDetail = can_open_plugin_detail({
-		canManagePlugins,
-		publisherPlugin,
-	});
 	const [consenting, setConsenting] = useState(false);
+	const setupAccess = useQuery(app_convex_api.plugins_access.get_workspace_install_access, { membershipId });
+	const owner = useQuery(
+		app_convex_api.users.get_anagraphic,
+		setupAccess ? { userId: setupAccess.organizationOwnerUserId } : "skip",
+	);
+	const payerName = owner?.displayName ?? "the workspace owner";
+	const [installYaml, setInstallYaml] = useState("");
+	const [installConsent, setInstallConsent] = useState<PluginsRunConsent_Value | null>(null);
+	const [installConsentSession, setInstallConsentSession] = useState(0);
+	const [installRunUser, setInstallRunUser] = useState<EligibleRunUser | null>(null);
+	const [installRunUserValid, setInstallRunUserValid] = useState(false);
+	const [installError, setInstallError] = useState<string | null>(null);
+	const [disabling, setDisabling] = useState(false);
+	const [disableError, setDisableError] = useState<string | null>(null);
 	const canManageAccounts = useQuery(app_convex_api.access_control.get_current_user_workspace_permission, {
 		membershipId,
 		permission: "workspace.service_accounts.manage",
@@ -2430,22 +2864,36 @@ function RoutePluginsPlugin() {
 	// A focus target for a finished uninstall: the Uninstall button unmounts with its row, and the
 	// focus a removed element held falls to the page body. Send it to the plugin title instead.
 	const heroTitleRef = useRef<HTMLHeadingElement | null>(null);
-	// A publisher without workspace.plugins.manage who removes their claim loses the whole detail
-	// view, hero h1 included: the permission-denied block is the only landmark left, so the
-	// stable management-action owner falls back to it.
-	const permissionDeniedRef = useRef<HTMLDivElement | null>(null);
+	// Keep a focus target if the plugin leaves both the catalog and publisher view.
+	const missingPluginRef = useRef<HTMLDivElement | null>(null);
 	const publishBusy = publishSessionManager.session !== null;
-	const managementBusy = publishSessionManager.managementAction !== null || rebinding;
+	const managementBusy = publishSessionManager.managementAction !== null || rebinding || disabling;
 
 	// Computed before the early returns because the install landing effect below reads
 	// `showInstall`; every input is null-safe while the queries are still loading.
-	const plugin = canManagePlugins
-		? (plugins?.find((item) => item.name === pluginName) ?? null)
-		: publisherPlugin
-			? get_publisher_version(publisherPlugin)
-			: null;
+	const plugin =
+		plugins?.find((item) => item.name === pluginName) ??
+		(publisherPlugin ? get_publisher_version(publisherPlugin) : null);
 	const installedItem = installations?.find((item) => item.installation.pluginName === plugin?.name) ?? null;
 	const installedVersion = installedItem?.version;
+	const installationId = plugin?.installationId ?? installedItem?.installation._id ?? null;
+	const hasSchedule = plugin?.events.some((event) => event.type === "schedule.interval.elapsed") ?? false;
+	const installConfiguration = plugin?.configuration
+		? plugins_parse_installation_configuration_yaml({
+				configurationYaml: installYaml,
+				events: plugin.events,
+				mounts: plugin.mounts,
+			})
+		: null;
+	// Removed folders use the accepted YAML, rather than the new draft's names.
+	const installedConfiguration =
+		installedItem?.installation.configurationYaml && installedVersion
+			? plugins_parse_installation_configuration_yaml({
+					configurationYaml: installedItem.installation.configurationYaml,
+					events: installedVersion.events,
+					mounts: installedVersion.mounts,
+				})
+			: null;
 	// An organization policy change can disable the installation. Enable reinstalls the same version,
 	// so `install_version` stays the only place that turns an installation on.
 	const enablesInstalledVersion =
@@ -2461,6 +2909,10 @@ function RoutePluginsPlugin() {
 			: "skip",
 	);
 
+	const handleInstallConsentChange = useFn((value: PluginsRunConsent_Value | null) => {
+		setInstallConsent(value);
+		setInstallError(null);
+	});
 	const handleRebind = useFn(() => {
 		if (
 			!installedItem ||
@@ -2499,8 +2951,45 @@ function RoutePluginsPlugin() {
 
 	const showInstall =
 		plugin !== null &&
-		canManagePlugins === true &&
+		(installationId ? plugin.canManage : plugin.canInstall) &&
 		(!installedVersion || installedVersion.version !== plugin.version || enablesInstalledVersion);
+
+	const handleDisable = useFn(() => {
+		if (
+			!installedItem ||
+			installedItem.installation.status !== "enabled" ||
+			publishBusy ||
+			managementBusy ||
+			installing ||
+			uninstalling ||
+			removing
+		)
+			return;
+		const actionVersion = publishSessionManager.beginManagementAction("disable");
+		if (actionVersion === null) return;
+		setDisabling(true);
+		setDisableError(null);
+		app_convex
+			.mutation(app_convex_api.plugins.disable_installation, {
+				membershipId,
+				installationId: installedItem.installation._id,
+			})
+			.then((result) => {
+				if (result._nay) setDisableError(result._nay.message);
+				else {
+					heroTitleRef.current?.focus();
+					toast.success("Plugin disabled. Running work was stopped.");
+				}
+			})
+			.catch((error: unknown) => {
+				console.error("[RoutePluginsPlugin] Could not disable plugin", { error });
+				setDisableError("Could not disable this plugin.");
+			})
+			.finally(() => {
+				setDisabling(false);
+				publishSessionManager.finishManagementAction(actionVersion);
+			});
+	});
 
 	const handleUninstall = useFn(
 		(installation: RoutePlugins_Installation["installation"], button: HTMLButtonElement) => {
@@ -2606,6 +3095,7 @@ function RoutePluginsPlugin() {
 	const handleAcceptAndInstall = useFn((plugin: RoutePlugins_PublishedPlugin) => {
 		// Keep this guard because a mock or programmatic event can still call a disabled handler.
 		if (
+			!showInstall ||
 			publishBusy ||
 			installing ||
 			uninstalling ||
@@ -2613,7 +3103,11 @@ function RoutePluginsPlugin() {
 			rebinding ||
 			plugin.reviewStatus === "rejected" ||
 			plugin.reviewStatus === "flagged" ||
-			plugin.organizationPolicy !== "allowed"
+			plugin.organizationPolicy !== "allowed" ||
+			(hasSchedule && !installRunUser && !installConsent) ||
+			(hasSchedule && installRunUser && !installRunUserValid) ||
+			installConfiguration?._nay ||
+			(canManageAccounts !== true && (installAccountId !== undefined || installGrants.length > 0))
 		) {
 			return;
 		}
@@ -2623,6 +3117,7 @@ function RoutePluginsPlugin() {
 		}
 
 		setInstalling(true);
+		setInstallError(null);
 		app_convex
 			.mutation(app_convex_api.plugins.install_version, {
 				membershipId,
@@ -2632,11 +3127,20 @@ function RoutePluginsPlugin() {
 				acceptedUiOutboundOrigins: plugin.uiOutboundOrigins,
 				acceptedMcpServersFingerprint: plugin.mcpServersFingerprint,
 				acceptedSkillNames: plugin.skills.map((skill) => skill.name),
+				...(plugin.configuration ? { configurationYaml: installYaml } : {}),
+				...(hasSchedule
+					? {
+							scheduledRun: installRunUser
+								? { kind: "user" as const, userId: installRunUser.userId, grantId: installRunUser.grantId }
+								: { kind: "me" as const, ...installConsent! },
+						}
+					: {}),
 				...(installAccountId ? { serviceAccountId: installAccountId } : {}),
 				...(installGrants.length > 0 ? { serviceAccountGrants: installGrants } : {}),
 			})
 			.then((result) => {
 				if (result._nay) {
+					setInstallError(result._nay.message);
 					toast.error(result._nay.message);
 					return;
 				}
@@ -2654,6 +3158,7 @@ function RoutePluginsPlugin() {
 					pluginVersionId: plugin.pluginVersionId,
 				});
 				toast.error("Failed to install plugin");
+				setInstallError("Failed to install plugin");
 			})
 			.finally(() => {
 				setInstalling(false);
@@ -2678,16 +3183,13 @@ function RoutePluginsPlugin() {
 	useEffect(() => {
 		// Let the stable publish owner repair focus after a route change removes A's trigger.
 		const routeKey = `${workspaceId}/plugins/${pluginName}`;
-		publishSessionManager.setRouteFocusTarget(heroTitleRef.current ?? permissionDeniedRef.current, routeKey);
+		publishSessionManager.setRouteFocusTarget(heroTitleRef.current ?? missingPluginRef.current, routeKey);
 		return () => publishSessionManager.setRouteFocusTarget(null, routeKey);
 	});
 
 	const breadcrumb = <PluginsHeaderBreadcrumb trail={["plugins"]} current={pluginName} />;
 
-	if (
-		canOpenPluginDetail === undefined ||
-		(canManagePlugins === true && (plugins === undefined || installations === undefined))
-	) {
+	if (plugins === undefined || installations === undefined || (plugin === null && publisherPlugin === undefined)) {
 		return (
 			<main
 				className={cn(
@@ -2708,31 +3210,6 @@ function RoutePluginsPlugin() {
 		);
 	}
 
-	if (!canOpenPluginDetail) {
-		return (
-			<main
-				className={cn(
-					"RoutePluginsPlugin" satisfies RoutePluginsPlugin_ClassNames,
-					"app-scrollable" satisfies AppClassName,
-				)}
-			>
-				<div className={"RoutePluginsPlugin-content" satisfies RoutePluginsPlugin_ClassNames}>
-					{breadcrumb}
-					<div
-						ref={permissionDeniedRef}
-						// A focus landing for a publisher whose claim removal took the whole detail view
-						// away (see the remove-claim landing effect above).
-						tabIndex={-1}
-						className={"RoutePluginsPlugin-missing" satisfies RoutePluginsPlugin_ClassNames}
-						role="alert"
-					>
-						You don't have permission to manage plugins in this workspace.
-					</div>
-				</div>
-			</main>
-		);
-	}
-
 	if (plugin === null) {
 		return (
 			<main
@@ -2743,7 +3220,12 @@ function RoutePluginsPlugin() {
 			>
 				<div className={"RoutePluginsPlugin-content" satisfies RoutePluginsPlugin_ClassNames}>
 					{breadcrumb}
-					<div className={"RoutePluginsPlugin-missing" satisfies RoutePluginsPlugin_ClassNames}>
+					<div
+						ref={missingPluginRef}
+						tabIndex={-1}
+						className={"RoutePluginsPlugin-missing" satisfies RoutePluginsPlugin_ClassNames}
+						role="alert"
+					>
 						No published plugin is named "{pluginName}".
 					</div>
 				</div>
@@ -2759,6 +3241,8 @@ function RoutePluginsPlugin() {
 					uiOutboundOrigins: installedVersion.uiOutboundOrigins,
 					mcpServers: installedVersion.mcpServers,
 					skills: installedVersion.skills,
+					mounts: installedVersion.mounts,
+					events: installedVersion.events,
 				}
 			: null,
 		target: {
@@ -2767,10 +3251,11 @@ function RoutePluginsPlugin() {
 			uiOutboundOrigins: plugin.uiOutboundOrigins,
 			mcpServers: plugin.mcpServers,
 			skills: plugin.skills,
+			mounts: plugin.mounts,
+			events: plugin.events,
 		},
 	});
-	// Installed-and-current shows only Uninstall, or Enable when it is disabled; reinstalling means
-	// uninstalling and installing again.
+	// A current installation can be disabled or uninstalled. Enable asks for consent again.
 	const installAction = enablesInstalledVersion ? "Enable" : installedVersion ? "Update" : "Install";
 	const installProgress =
 		installAction === "Enable" ? "Enabling..." : installAction === "Update" ? "Updating..." : "Installing...";
@@ -2785,6 +3270,7 @@ function RoutePluginsPlugin() {
 	const handleOpenConsent = () => {
 		// Keep this guard because a mock or programmatic event can still call a disabled handler.
 		if (
+			!showInstall ||
 			publishBusy ||
 			managementBusy ||
 			installing ||
@@ -2798,6 +3284,12 @@ function RoutePluginsPlugin() {
 
 		setInstallAccountId(undefined);
 		setInstallGrants([]);
+		setInstallYaml(installedItem?.installation.configurationYaml ?? plugin.configuration?.defaultYaml ?? "");
+		setInstallConsent(null);
+		setInstallConsentSession((session) => session + 1);
+		setInstallRunUser(null);
+		setInstallRunUserValid(false);
+		setInstallError(null);
 		setConsenting(true);
 	};
 	const handleConsentOpenChange = (open: boolean) => {
@@ -2824,6 +3316,8 @@ function RoutePluginsPlugin() {
 				fileViews: installedVersion.fileViews,
 				mcpServers: installedVersion.mcpServers,
 				skills: installedVersion.skills,
+				mounts: installedVersion.mounts,
+				events: installedVersion.events,
 			}
 		: plugin;
 
@@ -2853,7 +3347,7 @@ function RoutePluginsPlugin() {
 							>
 								{plugin.displayName}
 							</h1>
-							{plugin.reviewStatus !== "passed" || installedItem ? (
+							{plugin.reviewStatus !== "passed" || installationId ? (
 								<div className={"RoutePluginsPluginHero-statuses" satisfies RoutePluginsPlugin_ClassNames}>
 									{plugin.reviewStatus !== "passed" ? (
 										<MyBadge variant={plugin.reviewStatus === "rejected" ? "destructive" : "outline"}>
@@ -2865,6 +3359,7 @@ function RoutePluginsPlugin() {
 											{installedItem.installation.status === "enabled" ? "Installed" : "Disabled"}
 										</MyBadge>
 									) : null}
+									{installationId && !installedItem ? <MyBadge variant="secondary">Installed</MyBadge> : null}
 								</div>
 							) : null}
 						</div>
@@ -2921,6 +3416,18 @@ function RoutePluginsPlugin() {
 								</MyButton>
 							) : null}
 							{installedItem ? (
+								installedItem.installation.status === "enabled" ? (
+									<MyButton
+										variant="outline"
+										disabled={publishBusy || installing || removing || (managementBusy && !disabling)}
+										aria-busy={disabling || undefined}
+										onClick={handleDisable}
+									>
+										{disabling ? "Disabling…" : "Disable"}
+									</MyButton>
+								) : null
+							) : null}
+							{installedItem ? (
 								<MyButton
 									variant="ghost_destructive"
 									disabled={publishBusy || installing || removing || (managementBusy && !uninstalling)}
@@ -2975,9 +3482,39 @@ function RoutePluginsPlugin() {
 								{policyNote}
 							</p>
 						) : null}
+						{disableError ? <p role="alert">{disableError}</p> : null}
 					</div>
 				</header>
 
+				{installedItem ? (
+					<PluginsManagementAccess
+						key={`management:${installedItem.installation._id}`}
+						membershipId={membershipId}
+						organizationId={organizationId}
+						workspaceId={workspaceId}
+						installationId={installedItem.installation._id}
+						onSaved={() => heroTitleRef.current?.focus()}
+					/>
+				) : null}
+				{installationId ? (
+					<PluginsMyRunPermissions
+						key={`permissions:${installationId}`}
+						membershipId={membershipId}
+						installationId={installationId}
+						canManage={installedItem !== null}
+					/>
+				) : null}
+				{installedItem ? (
+					<RoutePluginsSchedule
+						key={`schedule:${installedItem.installation._id}`}
+						membershipId={membershipId}
+						installationId={installedItem.installation._id}
+						disabled={publishBusy || managementBusy || installing}
+					/>
+				) : null}
+				{installedItem ? (
+					<RoutePluginsMounts membershipId={membershipId} installationId={installedItem.installation._id} />
+				) : null}
 				{/* Health renders only for an installed plugin: the query returns null otherwise. */}
 				{installedItem ? (
 					<RoutePluginsPluginHealth
@@ -3039,13 +3576,16 @@ function RoutePluginsPlugin() {
 						configurationYaml={installedItem.installation.configurationYaml}
 						description={pluginConfiguration.description}
 						events={installedItem.version.events}
+						mounts={installedItem.version.mounts}
 					/>
 				) : null}
 				<RoutePluginsPluginAccess
 					plugin={accessPlugin}
+					payerName={payerName}
 					handlers={installedItem?.handlers ?? null}
 					configurationYaml={installedItem?.installation.configurationYaml ?? null}
 					events={installedItem?.version.events ?? null}
+					mounts={installedItem?.version.mounts ?? plugin.mounts}
 					mcpServerStatuses={mcpServerStatuses ?? null}
 					installationId={installedItem?.installation._id ?? null}
 					installationEnabled={installedItem?.installation.status === "enabled"}
@@ -3074,6 +3614,102 @@ function RoutePluginsPlugin() {
 								{plugin.name}@{plugin.version} · {plugin.publisherDisplayName ?? "unknown publisher"}
 							</MyModalDescription>
 						</MyModalHeader>
+						{plugin.configuration ? (
+							<div className={"RoutePluginsPluginConsentModal-accountFields" satisfies RoutePluginsPlugin_ClassNames}>
+								<MyInput displayValidationMessage={installConfiguration?._nay?.message}>
+									<MyInputLabel>Configuration YAML</MyInputLabel>
+									<MyInputArea>
+										<MyInputBox />
+										<MyInputTextAreaControl
+											value={installYaml}
+											rows={10}
+											readOnly={installing}
+											validationMessage={installConfiguration?._nay?.message}
+											onChange={(event) => {
+												setInstallYaml(event.currentTarget.value);
+												setInstallError(null);
+											}}
+										/>
+									</MyInputArea>
+								</MyInput>
+								{installConfiguration?._nay ? <p role="alert">{installConfiguration._nay.message}</p> : null}
+								<p>{plugin.configuration.description}</p>
+							</div>
+						) : null}
+						{plugin.mounts.length > 0 ? (
+							<div className={"RoutePluginsPluginConsentModal-accountFields" satisfies RoutePluginsPlugin_ClassNames}>
+								<h3>Mount folders</h3>
+								<ul>
+									{plugin.mounts.map((mount) => (
+										<li key={mount.id}>
+											<strong>{installConfiguration?._yay?.mountNames[mount.id] ?? mount.id}</strong> ·{" "}
+											{mount.description}
+											{installedVersion && consentDiff.newMounts.some((added) => added.id === mount.id) ? (
+												<MyBadge variant="secondary">new</MyBadge>
+											) : null}
+										</li>
+									))}
+								</ul>
+							</div>
+						) : null}
+						{consentDiff.droppedMounts.length > 0 ? (
+							<p
+								role="alert"
+								className={"RoutePluginsPluginConsentModal-baseline" satisfies RoutePluginsPlugin_ClassNames}
+							>
+								This update removes mount folders and deletes all their stored files:{" "}
+								{installedConfiguration?._yay
+									? consentDiff.droppedMounts
+											.map((mount) => `/.mounts/${installedConfiguration._yay.mountNames[mount.id]}`)
+											.join(", ")
+									: "Folder names are unavailable in the saved configuration"}
+								.
+							</p>
+						) : null}
+						{hasSchedule ? (
+							<div className={"RoutePluginsPluginConsentModal-accountFields" satisfies RoutePluginsPlugin_ClassNames}>
+								<h3>
+									Schedule
+									{installedVersion && consentDiff.scheduleAdded ? <MyBadge variant="secondary">new</MyBadge> : null}
+								</h3>
+								<p>
+									{installConfiguration?._yay?.scheduleIntervalMinutes
+										? `Runs every ${installConfiguration._yay.scheduleIntervalMinutes} minutes`
+										: "Choose a valid schedule interval in the YAML above."}
+								</p>
+								{installedItem ? (
+									<RoutePluginsScheduledUserSelect
+										membershipId={membershipId}
+										installationId={installedItem.installation._id}
+										value={installRunUser?.grantId ?? "me"}
+										includeMe
+										disabled={installing}
+										onChange={(user) => {
+											setInstallRunUser(user);
+											setInstallError(null);
+										}}
+										onSelectionValidChange={setInstallRunUserValid}
+									/>
+								) : (
+									<p>Run as: Me. Other people can be selected after they grant access to this installation.</p>
+								)}
+								{installRunUser === null ? (
+									<PluginsRunConsent
+										key={installConsentSession}
+										membershipId={membershipId}
+										capabilities={plugin.capabilities}
+										canManage
+										disabled={installing}
+										onChange={handleInstallConsentChange}
+									/>
+								) : (
+									<p>{installRunUser.displayName}'s own grant will be checked before installation.</p>
+								)}
+								<p>
+									Scheduled Mount writes are billed to {payerName}. The selected user's access is checked each time.
+								</p>
+							</div>
+						) : null}
 
 						{/* Platform baseline a run receives, so it is only true for a plugin that can get one. A
 						    page-only plugin never starts a run, and its page token carries no write scope at
@@ -3084,7 +3720,7 @@ function RoutePluginsPlugin() {
 								emptyLabel={installedItem ? "Keep current account" : "Create an empty account"}
 								disabled={installing || canManageAccounts !== true}
 								onChange={(value) => {
-									if (!installing) {
+									if (!installing && canManageAccounts === true) {
 										setInstallAccountId(value ?? undefined);
 										setInstallGrants([]);
 									}
@@ -3096,7 +3732,10 @@ function RoutePluginsPlugin() {
 									: "New accounts start without file access. Choose an existing account to review its grants here."}
 							</p>
 							{!installedItem && canManageAccounts !== true ? (
-								<p>You need permission to manage service accounts for a new installation.</p>
+								<p>
+									You can install with a new empty account. Choosing an existing account or adding file grants needs
+									permission to manage service accounts.
+								</p>
 							) : null}
 							{canManageAccounts === true && (installAccountId ?? installedItem?.installation.serviceAccountId) ? (
 								<RoutePluginsServiceAccountGrants
@@ -3127,7 +3766,7 @@ function RoutePluginsPlugin() {
 									// an admin grants elevated access, so it must map back to the id the manifest declares.
 									title={capability}
 								>
-									{format_capability_label(capability)}
+									{format_capability_label(capability, payerName)}
 									{installedVersion && consentDiff.newCapabilities.includes(capability) ? (
 										<MyBadge variant="secondary">new</MyBadge>
 									) : null}
@@ -3294,7 +3933,14 @@ function RoutePluginsPlugin() {
 							</MyButton>
 							<MyButton
 								disabled={
-									publishBusy || (managementBusy && !installing) || (!installedItem && canManageAccounts !== true)
+									publishBusy ||
+									(managementBusy && !installing) ||
+									(!showInstall && !installing) ||
+									(!installing &&
+										((hasSchedule && !installRunUser && !installConsent) ||
+											(hasSchedule && !!installRunUser && !installRunUserValid) ||
+											!!installConfiguration?._nay)) ||
+									(canManageAccounts !== true && (installAccountId !== undefined || installGrants.length > 0))
 								}
 								aria-busy={installing}
 								onClick={() => handleAcceptAndInstall(plugin)}
@@ -3303,6 +3949,7 @@ function RoutePluginsPlugin() {
 								{installing ? installProgress : `Accept and ${installAction.toLowerCase()}`}
 							</MyButton>
 						</div>
+						{installError ? <p role="alert">{installError}</p> : null}
 						<MyModalCloseTrigger />
 					</MyModalPopover>
 				</MyModal>
@@ -3457,9 +4104,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 	});
 
 	describe("get_publisher_version", () => {
-		test("sets canProcessFiles only with both a backend entrypoint and declared events", () => {
+		test("sets canProcessFiles only for a backend with a file event", () => {
 			// A publisher who cannot manage workspace plugins reads the consent copy from this object
-			// instead of `list_published_plugins`, which derives the same flag from the same two fields.
+			// instead of `list_published_plugins`, which uses the same backend and file-event rule.
 			// This test pins this producer only. The route imports the generated API, never
 			// `convex/plugins.ts`, so nothing in the `src` project can see the Convex copy of the rule.
 			// Keeping the two in step is manual: change one and nothing here turns red.
@@ -3477,11 +4124,20 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				fileViews: [],
 				backendEntrypointFile: null,
 				events: [],
+				mounts: [],
 			} as unknown as RoutePlugins_PublisherPlugin["versions"][number];
 			const publisher_plugin = (versionOverrides: Partial<RoutePlugins_PublisherPlugin["versions"][number]>) =>
 				({ versions: [{ ...version, ...versionOverrides }] }) as RoutePlugins_PublisherPlugin;
 			const uploadEvents: RoutePlugins_PublisherPlugin["versions"][number]["events"] = [
 				{ type: "files.upload.completed", contentTypes: ["image/png"], filters: [] },
+			];
+			const scheduleEvents: RoutePlugins_PublisherPlugin["versions"][number]["events"] = [
+				{
+					type: "schedule.interval.elapsed",
+					contentTypes: [],
+					filters: [],
+					schedule: { configurationPath: ["schedule", "everyMinutes"] },
+				},
 			];
 			const backendEntrypointFile = {
 				entry: "dist/backend/worker.js",
@@ -3502,21 +4158,31 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				canProcessFiles: false,
 			});
 			expect(get_publisher_version(publisher_plugin({}))).toMatchObject({ canProcessFiles: false });
-		});
-	});
-
-	describe("can_open_plugin_detail", () => {
-		test("allows a publisher without workspace plugin management", () => {
-			const publisherPlugin = {} as RoutePlugins_PublisherPlugin;
-
-			expect(can_open_plugin_detail({ canManagePlugins: false, publisherPlugin })).toBe(true);
-			expect(can_open_plugin_detail({ canManagePlugins: false, publisherPlugin: null })).toBe(false);
-			expect(can_open_plugin_detail({ canManagePlugins: true, publisherPlugin: undefined })).toBe(true);
-		});
-
-		test("waits for both permission sources before denying access", () => {
-			expect(can_open_plugin_detail({ canManagePlugins: undefined, publisherPlugin: null })).toBe(undefined);
-			expect(can_open_plugin_detail({ canManagePlugins: false, publisherPlugin: undefined })).toBe(undefined);
+			expect(get_publisher_version(publisher_plugin({ backendEntrypointFile, events: scheduleEvents }))).toMatchObject({
+				canProcessFiles: false,
+			});
+			expect(
+				get_publisher_version(
+					publisher_plugin({ backendEntrypointFile, events: [...uploadEvents, ...scheduleEvents] }),
+				),
+			).toMatchObject({ canProcessFiles: true });
+			expect(
+				get_publisher_version(
+					publisher_plugin({
+						backendEntrypointFile,
+						events: [{ type: "users.account.deleted", contentTypes: [], filters: [] }],
+					}),
+				),
+			).toMatchObject({ canProcessFiles: false });
+			const mounts = [{ id: "repos", description: "External repositories.", configurationPath: ["mount", "name"] }];
+			expect(
+				get_publisher_version(publisher_plugin({ backendEntrypointFile, mounts, events: scheduleEvents })),
+			).toMatchObject({
+				mounts,
+				events: scheduleEvents,
+				canInstall: false,
+				canManage: false,
+			});
 		});
 	});
 }

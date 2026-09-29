@@ -178,6 +178,22 @@ The per-member share in `plugins_data_member_usage` is the same kind of thing: a
 
 Ordinary chat traffic moves no `quotas` counter at all. Nothing in the plugin document store touches the `quotas` table, so a workspace can write plugin documents all day and its quota docs never change.
 
+## Plugin Mount storage limits
+
+Mount storage uses `plugins_volume_usage`, one doc per installation, rather than `quotas`.
+It counts published and staging generations: at most 20,000 files and 200,000,000 bytes per
+installation. Each staging copy has a 5,000-file and 30,000,000-byte cap. Retiring a copy releases
+its counts once; deletion later removes its files. At most 32 volumes belong to each mount and
+128 volume docs belong to each installation. Deleting docs still count, including old mount IDs
+dropped by an upgrade. This keeps uninstall marking and list reads bounded.
+
+The daily limit is 10,000 new stored paths per UTC day. `plugins_volume_daily_files` is a fixed
+window bucket with `start: 0`, keyed by organization, workspace and plugin name. Reinstalling
+does not reset it. A replacement within the same staging copy uses no daily token. The writer
+checks the count before R2 upload and consumes tokens in the final file transaction.
+List reads recalculate saved bucket state using the request clock, so midnight resets cached state.
+These limits are storage and cost brakes. They are not plan allowances.
+
 ## Cloud browser brakes
 
 The cloud browser has daily brakes. They are safety limits against start and stop loops, not allowances. They never touch the `quotas` table, and the user cannot buy more. The daily-brake constants live in `packages/app/convex/files_browser.ts`.

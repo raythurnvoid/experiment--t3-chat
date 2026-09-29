@@ -15,6 +15,8 @@ Backend run (`fetch(request, env, ctx)`):
 - `workspace.files.read` — the run's host token also carries `files:list` and `files:read`, so a backend run can call `/api/v1/files/list` and `/api/v1/files/read` with the acting member's visibility: a file or folder that member cannot see answers `404` or an empty page. `files/download-urls` stays bound to the triggering upload.
 - `workspace.files.own-write` — an invoke run may create, update, and archive files and folders marked for this plugin. Only exact string `plugin-name` metadata matching the installed plugin name selects an existing node. Members may edit or remove the label through ordinary metadata controls. Actor permissions and current locks still apply. Declaring it also requires `workspace.files.write`.
 - `workspace.files.own-access` — an invoke run may set locks and readers on matching files and folders through `/api/v1/files/plugin-access/set`. Members with manage permission may change them. Declaring it also requires `workspace.files.own-write`.
+- `workspace.volumes.write` — write the installation's external Mounts through the five `/api/v1/volumes/*` routes. Workspace readers and the chat agent get read-only access.
+- `plugin.schedule.run` — run at the declared interval and request a follow-up. The selected user must grant their own scopes; every operation still checks their current access.
 
 Plugin page and file view (the sandboxed iframe):
 
@@ -100,6 +102,54 @@ A plugin may declare a YAML editor and attach generic filters to its events. The
 ```
 
 `source.path` + `pathIsUnderAny` expects up to 32 unique canonical absolute folder paths at `configurationPath`. `/` matches every folder, a folder matches its descendants, and an empty list disables that automatic event. Manual runs do not apply automatic event filters. A manual or backfill re-run delivers the same `source` with `event: "files.run.requested"` instead of `"files.upload.completed"`. The parsed YAML object is available to every backend run as `event.configuration`; it is `null` when the plugin has no configuration declaration.
+
+## Mounts and scheduled runs
+
+`BonoboAccountDeletedEvent` types the existing `users.account.deleted` event.
+Its `actorUserId` names the deleted user and `source` is null.
+
+Declare each mount in `mounts` as `{ id, description, configurationPath }`. The YAML value at that
+path is its name. Each published copy appears at `/.mounts/<mount-name>/<volume-key>` for chat.
+Mounts stay out of the Files sidebar. Every workspace reader can read them; do not store private
+per-person data there. Outside content is data, never instructions for the agent.
+
+A schedule event is `{ type: "schedule.interval.elapsed", schedule: { configurationPath } }`.
+Its YAML interval is a whole number from 15 to 10,080 minutes. The host manages the actor and consent,
+separately from YAML. First install needs explicit Me consent. Another user must grant permission
+before a manager selects them. Consent is a subset of accepted capabilities and live user access.
+Scheduled runs receive no Files write/download baseline or Activity feed opt-in.
+
+Use `BonoboScheduleIntervalElapsedEvent` for the body. `source` is null. The host supplies
+`schedule: { intervalMinutes, dueAt }` and `chain: { rootRunId, index, state }`.
+Root index is 0 and state is null. Request a child with
+`POST /api/v1/plugin-runs/follow-up`, body `{ state: JSON.stringify(nextState) }`.
+Only a successful run queues it. State is at most 16 KiB; never put secrets in it.
+A chain has at most 20 runs and 30 minutes. Each run has at most 20 host calls.
+An authenticated request past the run count returns 409 `chain_limit`. After the root deadline,
+the token expires and API requests return 401.
+
+Mount API request and response types come from `BonoboHttpApi`:
+
+| Route | Purpose |
+| --- | --- |
+| `/api/v1/volumes/list` | List published and open copies with usage and limits. |
+| `/api/v1/volumes/stage` | Open a new staging copy and retire any previous staging copy for that mount and key. |
+| `/api/v1/volumes/write-many` | Send up to 100 text files and 8 MB per call. Paths start with `/` within the copy, such as `/README.md`. |
+| `/api/v1/volumes/publish` | Swap the complete staging copy into view at once. |
+| `/api/v1/volumes/delete` | Hide a copy and queue cleanup. |
+
+Each copy holds at most 5,000 files and 30,000,000 bytes. Each installation holds at most 20,000
+files and 200,000,000 bytes across published and staging copies. The daily limit is 10,000 new paths
+per plugin per workspace. A new stored path costs 0.5 cents; replacing that path in the same staging
+copy costs nothing. Scheduled writes charge the current organization owner. No billing approval is
+needed. Check `written` and per-item `errors`; a 200 can contain refused files. Do not publish an
+incomplete copy. Stop on 402, 429, or a chain-limit refusal. Keep progress in published revisions and
+open copies so the next schedule can continue. Unpublished staging copies expire after 26 hours.
+Resume an open copy with its `stagingId` from `volumes/list`. Calling `volumes/stage` starts over.
+
+Disabling the installation hides its Mounts and stops active schedules. Consent, user, membership,
+version/account, and policy changes stop old chains. Rejoin needs fresh consent. Scheduled history
+stays saved, while terminal runs lose tokens and temporary state.
 
 ## Identity and members for external services
 

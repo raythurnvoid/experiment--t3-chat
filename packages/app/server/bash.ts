@@ -63,7 +63,10 @@ import type {
 } from "../convex/ai_chat_files.ts";
 import { files_TRANSFER_SELECTION_PAGE_SIZE, type files_PendingTarget } from "../shared/files.ts";
 import type { ai_chat_ModelId } from "../shared/ai-chat.ts";
-import type { plugins_list_bash_source_mounts_Result } from "../convex/plugins.ts";
+import type {
+	plugins_list_bash_source_mounts_Result,
+	plugins_list_bash_volume_mounts_Result,
+} from "../convex/plugins.ts";
 import {
 	organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 	organizations_GLOBAL_ORGANIZATION_ID,
@@ -135,6 +138,7 @@ import {
 	bash_value_well_formed,
 	bash_well_formed_ctx,
 	type bash_DbFilesRoots,
+	type bash_ExternalSourceMount,
 } from "./bash-utils.ts";
 import { bash_ALLOWED_COMMANDS, bash_delegate_native_just_bash_tmp_command } from "./bash-delegate.ts";
 import { bash_which_command_create } from "./bash-which-command.ts";
@@ -1016,6 +1020,7 @@ async function bash_fs_create(args: {
 	allowDbFilesMkdir: boolean;
 	githubMounts: Doc<"github_mounts">[];
 	pluginSourceMounts: plugins_list_bash_source_mounts_Result;
+	volumeMounts: plugins_list_bash_volume_mounts_Result;
 	transferContext: bash_TransferContext;
 	jobContext: bash_JobContext;
 	shells: { _id: Id<"ai_chat_bash_shells">; name: string }[];
@@ -1093,10 +1098,9 @@ async function bash_fs_create(args: {
 	// Each synced GitHub mount doc gets its own read-only mount at `/.mounts/<name>`, backed by the
 	// commit-keyed tree `/<name>/<commitSha>/...` in the reserved `GLOBAL`/`GITHUB` scope. Only
 	// mounts with a finished sync (`lastCommitSha` set) are visible, and the sha is pinned for
-	// this run, so a pointer flip mid-run never tears reads. `MountableFs` synthesizes the
-	// `/.mounts` parent listing from these mount points, so with zero synced mounts `/.mounts`
-	// does not exist at all.
-	const externalMounts = new Map(
+	// this run, so a pointer flip mid-run never tears reads. `MountableFs` builds the
+	// `/.mounts` parent listing from all mounted leaves.
+	const externalMounts = new Map<string, bash_ExternalSourceMount>(
 		args.githubMounts.flatMap((mount) => {
 			const commitSha = mount.lastCommitSha;
 			if (commitSha == null) {
@@ -1131,6 +1135,34 @@ async function bash_fs_create(args: {
 			];
 		}),
 	);
+	// Unsynced legacy claims also reserve their flat names. Skip before building any plugin group.
+	const legacyNames = new Set(args.githubMounts.map((mount) => mount.name));
+	for (const mount of args.volumeMounts) {
+		if (legacyNames.has(mount.mountName)) continue;
+		const name = `${mount.mountName}/${mount.volumeKey}`;
+		const mountFs = new bash_DbFilesFs({
+			ctx: args.ctx,
+			ctxData: {
+				organizationId: args.organizationId,
+				workspaceId: mount.volumeId,
+				organizationName: args.organizationName,
+				workspaceName: args.workspaceName,
+				userId: args.userId,
+				threadId: args.threadId,
+				agentSource,
+			},
+			currentWorkspacePath: `${bash_EXTERNAL_MOUNTS_ROOT}/${name}`,
+			allowDbFilesMkdir: false,
+			dbFilesPathPrefix: `/${mount.publishedGenerationId}`,
+			readOnlySource: "volume",
+		});
+		externalMounts.set(name, {
+			name,
+			mountName: mount.mountName,
+			publishedGenerationId: mount.publishedGenerationId,
+			fs: mountFs,
+		});
+	}
 
 	// Each enabled plugin installation gets its own read-only mount at `/.plugins/<pluginName>`,
 	// backed by the version-keyed tree `/<pluginVersionId>/...` in the reserved `GLOBAL`/`PLUGINS`
@@ -1205,8 +1237,8 @@ async function bash_fs_create(args: {
 		for (const filesystem of appFileSystems) {
 			const directory = await args.ctx.runQuery(internal.files_visible.internal_get_directory_path, {
 				agentSource,
-				organizationId: filesystem.ctxData.organizationId as Id<"organizations">,
-				workspaceId: filesystem.ctxData.workspaceId as Id<"organizations_workspaces">,
+				organizationId: filesystem.writeScope!.organizationId,
+				workspaceId: filesystem.writeScope!.workspaceId,
 				userId: args.userId,
 				target,
 			});
@@ -1738,14 +1770,17 @@ export async function bash_run_command(
 	let endSnapshot: InterpreterStateSnapshot | undefined;
 	try {
 		// Mount visibility is decided per run: only plugins with an enabled installation in this
-		// workspace appear under `/.plugins`, and only GitHub mounts with a finished sync appear
-		// under `/.mounts` (their commit sha is pinned for the whole run).
-		const [githubMounts, pluginSourceMounts] = await Promise.all([
+		// workspace appear under `/.plugins`. Mounts pin synced GitHub commits and published volumes.
+		const [githubMounts, pluginSourceMounts, volumeMounts] = await Promise.all([
 			ctx.runQuery(internal.github_mounts.list_mounts, {}) as Promise<Doc<"github_mounts">[]>,
 			ctx.runQuery(internal.plugins.list_bash_source_mounts, {
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
 			}) as Promise<plugins_list_bash_source_mounts_Result>,
+			ctx.runQuery(internal.plugins.list_bash_volume_mounts, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+			}) as Promise<plugins_list_bash_volume_mounts_Result>,
 		]);
 
 		const jobContext: bash_JobContext = {
@@ -1782,6 +1817,7 @@ export async function bash_run_command(
 			allowDbFilesMkdir: args.allowDbFilesMkdir,
 			githubMounts,
 			pluginSourceMounts,
+			volumeMounts,
 			transferContext: {
 				invocationId: invocation.invocationId,
 				membershipId: invocation.membershipId,
@@ -2374,12 +2410,16 @@ export async function bash_run_job(
 	try {
 		// The same mount visibility as the launching call: without these queries `/.mounts` and
 		// `/.plugins` would be empty inside a job.
-		const [githubMounts, pluginSourceMounts] = await Promise.all([
+		const [githubMounts, pluginSourceMounts, volumeMounts] = await Promise.all([
 			ctx.runQuery(internal.github_mounts.list_mounts, {}) as Promise<Doc<"github_mounts">[]>,
 			ctx.runQuery(internal.plugins.list_bash_source_mounts, {
 				organizationId: row.organizationId,
 				workspaceId: row.workspaceId,
 			}) as Promise<plugins_list_bash_source_mounts_Result>,
+			ctx.runQuery(internal.plugins.list_bash_volume_mounts, {
+				organizationId: row.organizationId,
+				workspaceId: row.workspaceId,
+			}) as Promise<plugins_list_bash_volume_mounts_Result>,
 		]);
 
 		const bashFs = await bash_fs_create({
@@ -2397,6 +2437,7 @@ export async function bash_run_job(
 			allowDbFilesMkdir: job.allowDbFilesMkdir,
 			githubMounts,
 			pluginSourceMounts,
+			volumeMounts,
 			transferContext: {
 				invocationId: row._id,
 				membershipId: row.membershipId,

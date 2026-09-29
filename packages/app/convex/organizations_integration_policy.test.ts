@@ -100,6 +100,7 @@ async function register_version(
 		manifestR2Key: `plugins/${name}/${args.version}/manifest.json`,
 		backendEntrypointFile: null,
 		configuration: null,
+		mounts: [],
 		events: [],
 		pages: [
 			{

@@ -432,9 +432,6 @@ export const MainAppSidebar = memo(function MainAppSidebar(props: MainAppSidebar
 	const organization = organizationList?.organizations.find((organization) => organization._id === organizationId);
 	const showUsersNavigation = organization?.default === false;
 	const workspacePermissions = organizationList?.workspaceIdsPermissionsDict[workspaceId];
-	// Installed plugin pages have their own access checks and stay visible below.
-	const showPluginsManagementNavigation =
-		workspacePermissions === "all" || workspacePermissions?.includes("workspace.plugins.manage") === true;
 	const canUseBrowser =
 		workspacePermissions === "all" || workspacePermissions?.includes("workspace.browser.use") === true;
 	// The query also checks the feature flag. Free plans still see the item, so they can find the feature.
@@ -539,15 +536,13 @@ export const MainAppSidebar = memo(function MainAppSidebar(props: MainAppSidebar
 						icon={KeyRound}
 						tooltip={mainAppSidebarCollapsed ? "API keys" : undefined}
 					/>
-					{showPluginsManagementNavigation ? (
-						<MainAppSidebarItem
-							to={pluginsPath}
-							label="Plugins"
-							icon={Puzzle}
-							tooltip={mainAppSidebarCollapsed ? "Plugins" : undefined}
-							subpathExcludePattern={PLUGIN_PAGE_SUBPATH_REGEX}
-						/>
-					) : null}
+					<MainAppSidebarItem
+						to={pluginsPath}
+						label="Plugins"
+						icon={Puzzle}
+						tooltip={mainAppSidebarCollapsed ? "Plugins" : undefined}
+						subpathExcludePattern={PLUGIN_PAGE_SUBPATH_REGEX}
+					/>
 					{mcpAvailable?.canUse || mcpAvailable?.hasSavedData ? (
 						<MainAppSidebarItem
 							to={mcpServersPath}

@@ -619,7 +619,7 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 				};
 			}
 
-			// --extension only matches files; -maxdepth 0 keeps only the synthetic root itself.
+			// Extensions only match files. Synthetic roots have no stored node at depth zero.
 			if ((parsed._yay.extension != null && parsed._yay.type === "d") || parsed._yay.maxDepth === 0) {
 				return {
 					stdout: "0 matches.\n",
@@ -738,9 +738,11 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			};
 		}
 
-		// The `/.mounts` root spans one commit-keyed indexed tree per synced mount. Fan out one
-		// indexed query per mount, in name order, under a composite cursor.
-		if (parsed._yay.prefix == null && pathResolution.kind === "external_mounts_root") {
+		// Root and group listings share a cursor over their pinned leaves.
+		if (
+			parsed._yay.prefix == null &&
+			(pathResolution.kind === "external_mounts_root" || pathResolution.kind === "external_mount_group")
+		) {
 			if (dbFilesRoots.externalMounts.mounts.size === 0) {
 				return {
 					stdout: "",
@@ -776,7 +778,7 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 					exitCode: bash_COMMAND_EXIT_USAGE,
 				};
 			}
-			// --extension only matches files; -maxdepth 0 keeps only the synthetic root itself.
+			// Extensions only match files. Synthetic roots have no stored node at depth zero.
 			if ((parsed._yay.extension != null && parsed._yay.type === "d") || parsed._yay.maxDepth === 0) {
 				return {
 					stdout: "0 matches.\n",
@@ -798,20 +800,32 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 				mountsCursor = resolvedCursor._yay;
 			}
 
-			// Depth predicates are relative to `/.mounts`; each mount's commit root renders
-			// as the depth-1 entry `/.mounts/<name>/`, so per-mount depths shift by 1.
-			const perMountMinDepth =
-				parsed._yay.minDepth == null || parsed._yay.minDepth <= 1 ? null : parsed._yay.minDepth - 1;
-			const perMountMaxDepth = parsed._yay.maxDepth == null ? null : parsed._yay.maxDepth - 1;
-
-			const fanOut = await bash_external_mounts_fan_out_paginate({
+			const fanOut = await bash_external_mounts_fan_out_paginate<{ path: string; kind: "folder" | "file" }>({
 				command: "find",
 				externalMounts: dbFilesRoots.externalMounts,
+				basePath: pathResolution.basePath,
+				groupItems: (mountName) =>
+					parsed._yay.type !== "f" &&
+					parsed._yay.extension == null &&
+					(parsed._yay.minDepth == null || parsed._yay.minDepth <= 1) &&
+					(parsed._yay.maxDepth == null || parsed._yay.maxDepth >= 1) &&
+					(pathQuery == null || mountName.toLowerCase().includes(pathQuery.toLowerCase()))
+						? [{ path: `/${mountName}`, kind: "folder" as const }]
+						: [],
 				cursor: mountsCursor,
 				limit: bash_clamp_listing_page_limit(parsed._yay.limit),
 				runPage: async (pageArgs) => {
+					const depthShift = pathResolution.kind === "external_mount_group" || pageArgs.mount.mountName == null ? 1 : 2;
+					if (parsed._yay.maxDepth != null && parsed._yay.maxDepth < depthShift)
+						return { items: [], continueCursor: "", isDone: true };
+					const perMountMinDepth =
+						parsed._yay.minDepth == null || parsed._yay.minDepth <= depthShift
+							? null
+							: parsed._yay.minDepth - depthShift;
+					const perMountMaxDepth = parsed._yay.maxDepth == null ? null : parsed._yay.maxDepth - depthShift;
 					if (pathQuery != null) {
 						const pageResult = (await ctx.runQuery(internal.files_nodes.search_paths, {
+							agentSource: pageArgs.mount.fs.ctxData.agentSource,
 							organizationId: pageArgs.mount.fs.ctxData.organizationId,
 							workspaceId: pageArgs.mount.fs.ctxData.workspaceId,
 							visibilityUserId: pageArgs.mount.fs.ctxData.userId,
@@ -823,11 +837,11 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 								: parsed._yay.type === "d"
 									? { kind: "folder" as const }
 									: {}),
-							pathPrefix: `/${pageArgs.mount.name}/${pageArgs.mount.commitSha}`,
+							pathPrefix: pageArgs.mount.fs.dbFilesRootPath,
 						})) as files_nodes_search_paths_Result;
 						return {
 							items: pageResult.items.map((item) => ({
-								path: bash_external_mounts_fan_out_db_files_path(pageArgs.mount, item.path),
+								path: bash_external_mounts_fan_out_db_files_path(pageArgs.mount, item.path, pathResolution.basePath),
 								kind: item.kind,
 							})),
 							continueCursor: pageResult.continueCursor,
@@ -836,10 +850,11 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 					}
 
 					const pageResult = (await ctx.runQuery(internal.files_nodes.list_subtree, {
+						agentSource: pageArgs.mount.fs.ctxData.agentSource,
 						organizationId: pageArgs.mount.fs.ctxData.organizationId,
 						workspaceId: pageArgs.mount.fs.ctxData.workspaceId,
 						visibilityUserId: pageArgs.mount.fs.ctxData.userId,
-						folderPath: `/${pageArgs.mount.name}/${pageArgs.mount.commitSha}`,
+						folderPath: pageArgs.mount.fs.dbFilesRootPath,
 						numItems: pageArgs.numItems,
 						cursor: pageArgs.innerCursor,
 						...(parsed._yay.extension != null
@@ -854,7 +869,7 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 					})) as files_nodes_list_subtree_Result;
 					return {
 						items: pageResult.page.map((item) => ({
-							path: bash_external_mounts_fan_out_db_files_path(pageArgs.mount, item.path),
+							path: bash_external_mounts_fan_out_db_files_path(pageArgs.mount, item.path, pathResolution.basePath),
 							kind: item.kind,
 						})),
 						continueCursor: pageResult.continueCursor,
@@ -1000,7 +1015,7 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 				};
 			}
 			// The `/.mounts` root has no single stored tree to prefix-scan either; scope to one mount.
-			if (prefixResolution.kind === "external_mounts_root") {
+			if (prefixResolution.kind === "external_mounts_root" || prefixResolution.kind === "external_mount_group") {
 				return {
 					stdout: "",
 					stderr:

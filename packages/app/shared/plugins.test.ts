@@ -32,6 +32,18 @@ const uploadEvents = [
 	},
 ];
 
+const mountDeclarations = [
+	{ id: "repos", description: "Read-only repository copies.", configurationPath: ["mount", "name"] },
+];
+const scheduleEvents = [
+	{
+		type: "schedule.interval.elapsed" as const,
+		contentTypes: [],
+		filters: [],
+		schedule: { configurationPath: ["schedule", "everyMinutes"] },
+	},
+];
+
 describe("plugins_parse_installation_configuration_yaml", () => {
 	test("parses plugin-owned settings and the values selected by event filters", () => {
 		const selectedFolders = [
@@ -47,6 +59,7 @@ describe("plugins_parse_installation_configuration_yaml", () => {
 			plugins_parse_installation_configuration_yaml({
 				configurationYaml: selectedFolders,
 				events: uploadEvents,
+				mounts: [],
 			}),
 		).toEqual({
 			_yay: {
@@ -55,6 +68,8 @@ describe("plugins_parse_installation_configuration_yaml", () => {
 					triggers: { "files.upload.completed": { folders: ["/meetings", "/meetings/customer-calls"] } },
 					summary: { language: "en" },
 				},
+				mountNames: {},
+				scheduleIntervalMinutes: null,
 			},
 		});
 
@@ -62,6 +77,7 @@ describe("plugins_parse_installation_configuration_yaml", () => {
 			plugins_parse_installation_configuration_yaml({
 				configurationYaml: ["triggers:", "  files.upload.completed:", "    folders: []"].join("\n"),
 				events: uploadEvents,
+				mounts: [],
 			}),
 		).toMatchObject({ _yay: { configuration: { triggers: { "files.upload.completed": { folders: [] } } } } });
 	});
@@ -76,6 +92,7 @@ describe("plugins_parse_installation_configuration_yaml", () => {
 					filters: [{ ...uploadEvents[0]!.filters[0]!, configurationPath: ["routing", "allowedFolders"] }],
 				},
 			],
+			mounts: [],
 		});
 		expect(parsed).toMatchObject({
 			_yay: { configuration: { routing: { allowedFolders: ["/documents"] }, format: "markdown" } },
@@ -94,7 +111,7 @@ describe("plugins_parse_installation_configuration_yaml", () => {
 			["triggers:", "  files.upload.completed:", "    folders:", "      - 42"].join("\n"),
 		]) {
 			expect(
-				plugins_parse_installation_configuration_yaml({ configurationYaml: yaml, events: uploadEvents }),
+				plugins_parse_installation_configuration_yaml({ configurationYaml: yaml, events: uploadEvents, mounts: [] }),
 			).toMatchObject({
 				_nay: { message: expect.any(String) },
 			});
@@ -106,6 +123,7 @@ describe("plugins_parse_installation_configuration_yaml", () => {
 			plugins_parse_installation_configuration_yaml({
 				configurationYaml: `# ${"é".repeat(8_192)}`,
 				events: uploadEvents,
+				mounts: [],
 			}),
 		).toEqual({
 			_nay: { message: "Plugin configuration must be at most 16 KiB" },
@@ -118,7 +136,11 @@ describe("plugins_parse_installation_configuration_yaml", () => {
 			...Array.from({ length: 33 }, (_, index) => `      - /folder-${index}`),
 		].join("\n");
 		expect(
-			plugins_parse_installation_configuration_yaml({ configurationYaml: tooManyFolders, events: uploadEvents }),
+			plugins_parse_installation_configuration_yaml({
+				configurationYaml: tooManyFolders,
+				events: uploadEvents,
+				mounts: [],
+			}),
 		).toEqual({
 			_nay: { message: 'Plugin configuration "triggers.files.upload.completed.folders" can include at most 32 paths' },
 		});
@@ -130,6 +152,7 @@ describe("plugins_parse_installation_configuration_yaml", () => {
 					"\n",
 				),
 				events: uploadEvents,
+				mounts: [],
 			}),
 		).toEqual({ _nay: { message: "Plugin configuration paths must be at most 512 characters" } });
 	});
@@ -150,10 +173,103 @@ describe("plugins_parse_installation_configuration_yaml", () => {
 				...folders.map((folder) => `      - ${folder}`),
 			].join("\n");
 			expect(
-				plugins_parse_installation_configuration_yaml({ configurationYaml: yaml, events: uploadEvents }),
+				plugins_parse_installation_configuration_yaml({ configurationYaml: yaml, events: uploadEvents, mounts: [] }),
 			).toMatchObject({
 				_nay: { message: expect.any(String) },
 			});
+		}
+	});
+
+	test("reads mount names and the schedule interval from plugin-defined settings", () => {
+		const configurationYaml = "mount:\n  name: github\nschedule:\n  everyMinutes: 1440\nrepositories: []";
+		expect(
+			plugins_parse_installation_configuration_yaml({
+				configurationYaml,
+				events: scheduleEvents,
+				mounts: mountDeclarations,
+			}),
+		).toEqual({
+			_yay: {
+				configurationYaml,
+				configuration: { mount: { name: "github" }, schedule: { everyMinutes: 1440 }, repositories: [] },
+				mountNames: { repos: "github" },
+				scheduleIntervalMinutes: 1440,
+			},
+		});
+	});
+
+	test("requires valid mount names at every declared location", () => {
+		for (const name of [null, false, 12, [], "", ".", "..", "tmp", "GitHub", "_github", "repo/name", "a".repeat(64)]) {
+			expect(
+				plugins_parse_installation_configuration_yaml({
+					configurationYaml: `mount:\n  name: ${JSON.stringify(name)}`,
+					events: [],
+					mounts: mountDeclarations,
+				}),
+			).toEqual({ _nay: { message: 'Plugin configuration "mount.name" must be a valid mount name' } });
+		}
+		expect(
+			plugins_parse_installation_configuration_yaml({
+				configurationYaml: "mount: {}",
+				events: [],
+				mounts: mountDeclarations,
+			}),
+		).toEqual({ _nay: { message: 'Plugin configuration "mount.name" must be a valid mount name' } });
+
+		for (const name of ["a", "0", "repo.name_1-2", "a".repeat(63)]) {
+			expect(
+				plugins_parse_installation_configuration_yaml({
+					configurationYaml: `mount:\n  name: ${JSON.stringify(name)}`,
+					events: [],
+					mounts: mountDeclarations,
+				}),
+			).toMatchObject({ _yay: { mountNames: { repos: name }, scheduleIntervalMinutes: null } });
+		}
+	});
+
+	test("refuses duplicate mount names within one installation", () => {
+		const mounts = [
+			...mountDeclarations,
+			{ id: "notes", description: "External notes.", configurationPath: ["notes", "name"] },
+		];
+		expect(
+			plugins_parse_installation_configuration_yaml({
+				configurationYaml: "mount:\n  name: github\nnotes:\n  name: github",
+				events: [],
+				mounts,
+			}),
+		).toEqual({ _nay: { message: 'Plugin configuration has duplicate mount name "github"' } });
+	});
+
+	test("requires a schedule interval between 15 minutes and one week", () => {
+		for (const interval of [14, 10_081, 15.5, "15", null, false, []]) {
+			expect(
+				plugins_parse_installation_configuration_yaml({
+					configurationYaml: `schedule:\n  everyMinutes: ${JSON.stringify(interval)}`,
+					events: scheduleEvents,
+					mounts: [],
+				}),
+			).toEqual({
+				_nay: { message: 'Plugin configuration "schedule.everyMinutes" must be an integer from 15 to 10080 minutes' },
+			});
+		}
+		expect(
+			plugins_parse_installation_configuration_yaml({
+				configurationYaml: "schedule: {}",
+				events: scheduleEvents,
+				mounts: [],
+			}),
+		).toEqual({
+			_nay: { message: 'Plugin configuration "schedule.everyMinutes" must be an integer from 15 to 10080 minutes' },
+		});
+		for (const interval of [15, 1440, 10_080]) {
+			expect(
+				plugins_parse_installation_configuration_yaml({
+					configurationYaml: `schedule:\n  everyMinutes: ${interval}`,
+					events: scheduleEvents,
+					mounts: [],
+				}),
+			).toMatchObject({ _yay: { mountNames: {}, scheduleIntervalMinutes: interval } });
 		}
 	});
 });
@@ -323,8 +439,9 @@ describe("plugins_validate_manifest", () => {
 		args: {
 			configuration?: { description: string; defaultYaml: string } | null;
 			events?: Array<{
-				type: "files.upload.completed" | "users.account.deleted";
+				type: "files.upload.completed" | "users.account.deleted" | "schedule.interval.elapsed";
 				contentTypes?: string[];
+				schedule?: { configurationPath: string[] };
 				filters?: Array<{
 					field: "source.path";
 					operator: "pathIsUnderAny";
@@ -382,6 +499,7 @@ describe("plugins_validate_manifest", () => {
 			throw new Error(withoutConfiguration._nay.message);
 		}
 		expect(withoutConfiguration._yay.configuration).toBeNull();
+		expect(withoutConfiguration._yay.mounts).toEqual([]);
 		expect(withoutConfiguration._yay.events[0]!.filters).toEqual([]);
 
 		const withConfiguration = plugins_validate_manifest(
@@ -411,6 +529,195 @@ describe("plugins_validate_manifest", () => {
 				events: [{ filters: [{ configurationPath: ["routing", "allowedFolders"] }] }],
 			},
 		});
+	});
+
+	test("accepts mounts with distinct ids, setting paths, and default names", () => {
+		const mounts = [
+			...mountDeclarations,
+			{ id: "notes", description: "External notes.", configurationPath: ["mount.name"] },
+		];
+		expect(
+			plugins_validate_manifest({
+				...manifest_json({
+					events: [],
+					capabilities: ["workspace.volumes.write"],
+					configuration: {
+						description: "Choose mount names.",
+						defaultYaml: "mount:\n  name: github\nmount.name: notes",
+					},
+				}),
+				mounts,
+			}),
+		).toMatchObject({ _yay: { mounts } });
+	});
+
+	test("bounds mount declarations and rejects bad ids, descriptions, and paths", () => {
+		const manifest = {
+			...manifest_json({
+				events: [],
+				capabilities: ["workspace.volumes.write"],
+				configuration: { description: "Choose mount names.", defaultYaml: "mount:\n  name: github" },
+			}),
+			mounts: mountDeclarations,
+		};
+		expect(
+			plugins_validate_manifest({ ...manifest, mounts: Array.from({ length: 5 }, () => mountDeclarations[0]!) }),
+		).toEqual({
+			_nay: { message: "Plugin manifests can declare at most 4 mounts" },
+		});
+		for (const id of ["", "1repo", "Repo", "repo_name", "a".repeat(33)]) {
+			expect(plugins_validate_manifest({ ...manifest, mounts: [{ ...mountDeclarations[0]!, id }] })).toEqual({
+				_nay: { message: "Mount ids must use lowercase letters, digits, and dashes" },
+			});
+		}
+		expect(
+			plugins_validate_manifest({ ...manifest, mounts: [{ ...mountDeclarations[0]!, description: "x".repeat(301) }] }),
+		).toEqual({
+			_nay: { message: "Mount descriptions must be at most 300 characters" },
+		});
+		for (const description of ["", "line\nbreak", "hidden\u200btext"]) {
+			expect(
+				plugins_validate_manifest({ ...manifest, mounts: [{ ...mountDeclarations[0]!, description }] }),
+			).toMatchObject({
+				_nay: { message: expect.any(String) },
+			});
+		}
+		for (const configurationPath of [[], [""], ["a".repeat(129)], Array.from({ length: 17 }, () => "a")]) {
+			expect(
+				plugins_validate_manifest({ ...manifest, mounts: [{ ...mountDeclarations[0]!, configurationPath }] }),
+			).toMatchObject({
+				_nay: { message: expect.any(String) },
+			});
+		}
+		expect(plugins_validate_manifest({ ...manifest, mounts: [mountDeclarations[0]!, mountDeclarations[0]!] })).toEqual({
+			_nay: { message: 'Plugin manifest has duplicate mount id "repos"' },
+		});
+		expect(
+			plugins_validate_manifest({
+				...manifest,
+				mounts: [mountDeclarations[0]!, { ...mountDeclarations[0]!, id: "notes" }],
+			}),
+		).toEqual({ _nay: { message: "Plugin mounts must use distinct configuration paths" } });
+	});
+
+	test("requires mount settings and capability in both directions", () => {
+		const manifest = {
+			...manifest_json({ events: [], capabilities: ["workspace.volumes.write"] }),
+			mounts: mountDeclarations,
+		};
+		expect(plugins_validate_manifest(manifest)).toEqual({
+			_nay: { message: "Plugin mounts require a configuration declaration" },
+		});
+		expect(plugins_validate_manifest({ ...manifest, mounts: [] })).toEqual({
+			_nay: { message: "The workspace.volumes.write capability requires at least one mount" },
+		});
+		expect(
+			plugins_validate_manifest({
+				...manifest,
+				capabilities: [],
+				configuration: { description: "Choose mount names.", defaultYaml: "mount:\n  name: github" },
+			}),
+		).toEqual({ _nay: { message: "Plugin mounts require the workspace.volumes.write capability" } });
+		expect(
+			plugins_validate_manifest({
+				...manifest,
+				configuration: { description: "Choose mount names.", defaultYaml: "mount:\n  name: tmp" },
+			}),
+		).toEqual({
+			_nay: {
+				message:
+					'Plugin default configuration is invalid: Plugin configuration "mount.name" must be a valid mount name',
+			},
+		});
+		expect(
+			plugins_validate_manifest({
+				...manifest,
+				mounts: [
+					...mountDeclarations,
+					{ id: "notes", description: "External notes.", configurationPath: ["notes", "name"] },
+				],
+				configuration: {
+					description: "Choose mount names.",
+					defaultYaml: "mount:\n  name: github\nnotes:\n  name: github",
+				},
+			}),
+		).toEqual({
+			_nay: {
+				message: 'Plugin default configuration is invalid: Plugin configuration has duplicate mount name "github"',
+			},
+		});
+	});
+
+	test("requires schedule settings, a backend, and capability in both directions", () => {
+		const manifest = {
+			...manifest_json({
+				events: scheduleEvents,
+				capabilities: ["plugin.schedule.run"],
+				configuration: { description: "Choose the interval.", defaultYaml: "schedule:\n  everyMinutes: 1440" },
+			}),
+			backend: {
+				entry: "dist/backend/worker.js",
+				moduleName: "dist/backend/worker.js",
+				compatibilityDate: "2026-09-28",
+				compatibilityFlags: [],
+			},
+		};
+		expect(plugins_validate_manifest(manifest)).toMatchObject({ _yay: { events: scheduleEvents, mounts: [] } });
+		expect(plugins_validate_manifest({ ...manifest, configuration: null })).toEqual({
+			_nay: { message: "Plugin schedules require a configuration declaration" },
+		});
+		expect(plugins_validate_manifest({ ...manifest, backend: undefined })).toEqual({
+			_nay: { message: "Plugin schedules require a plugin backend" },
+		});
+		expect(plugins_validate_manifest({ ...manifest, events: [] })).toEqual({
+			_nay: { message: "The plugin.schedule.run capability requires a schedule.interval.elapsed event" },
+		});
+		expect(plugins_validate_manifest({ ...manifest, capabilities: [] })).toEqual({
+			_nay: { message: "Plugin schedules require the plugin.schedule.run capability" },
+		});
+		expect(plugins_validate_manifest({ ...manifest, events: [scheduleEvents[0]!, scheduleEvents[0]!] })).toEqual({
+			_nay: { message: "Plugin manifest has duplicate schedule.interval.elapsed subscriptions" },
+		});
+		expect(
+			plugins_validate_manifest({
+				...manifest,
+				configuration: { description: "Choose the interval.", defaultYaml: "schedule:\n  everyMinutes: 14" },
+			}),
+		).toEqual({
+			_nay: {
+				message:
+					'Plugin default configuration is invalid: Plugin configuration "schedule.everyMinutes" must be an integer from 15 to 10080 minutes',
+			},
+		});
+	});
+
+	test("keeps schedules apart from file event content types and filters", () => {
+		expect(plugins_validate_manifest(manifest_json({ events: [{ type: "schedule.interval.elapsed" }] }))).toEqual({
+			_nay: { message: "Schedule events require a schedule declaration" },
+		});
+		expect(
+			plugins_validate_manifest(manifest_json({ events: [{ ...scheduleEvents[0]!, contentTypes: ["image/png"] }] })),
+		).toEqual({ _nay: { message: "schedule.interval.elapsed carries no file, so it cannot declare content types" } });
+		expect(
+			plugins_validate_manifest(
+				manifest_json({ events: [{ ...scheduleEvents[0]!, filters: uploadEvents[0]!.filters }] }),
+			),
+		).toEqual({ _nay: { message: "schedule.interval.elapsed cannot declare file filters" } });
+		for (const event of [
+			{ type: "users.account.deleted" as const },
+			{ type: "files.upload.completed" as const, contentTypes: ["image/png"] },
+		]) {
+			expect(
+				plugins_validate_manifest(manifest_json({ events: [{ ...event, schedule: scheduleEvents[0]!.schedule }] })),
+			).toEqual({ _nay: { message: "Only schedule.interval.elapsed may declare a schedule" } });
+		}
+		for (const configurationPath of [[], [""], ["a".repeat(129)], Array.from({ length: 17 }, () => "a")]) {
+			expect(
+				plugins_validate_manifest(
+					manifest_json({ events: [{ ...scheduleEvents[0]!, schedule: { configurationPath } }] }),
+				),
+			).toMatchObject({ _nay: { message: expect.any(String) } });
+		}
 	});
 
 	test("bounds manifest text that is copied into every stored version", () => {
@@ -1606,6 +1913,30 @@ describe("plugins_validate_manifest", () => {
 	});
 });
 
+describe("plugin event schema", () => {
+	test("keeps manifest event types in versions, handlers, runs, and activities", () => {
+		const eventTypes = ["files.upload.completed", "users.account.deleted", "schedule.interval.elapsed"];
+		const versionTypes =
+			app_convex_schema.tables.plugins_versions.validator.fields.events.element.fields.type.members.map(
+				(member) => member.value,
+			);
+		const handlerTypes = app_convex_schema.tables.plugins_workspace_event_handlers.validator.fields.event.members.map(
+			(member) => member.value,
+		);
+		const runTypes = app_convex_schema.tables.plugins_event_runs.validator.fields.event.members.map(
+			(member) => member.value,
+		);
+		const activityTypes =
+			app_convex_schema.tables.activities.validator.fields.source.members[0].fields.event.members.map(
+				(member) => member.value,
+			);
+		expect(versionTypes).toEqual(eventTypes);
+		expect(handlerTypes).toEqual(eventTypes);
+		expect(runTypes).toEqual(expect.arrayContaining(eventTypes));
+		expect(activityTypes).toEqual(expect.arrayContaining(eventTypes));
+	});
+});
+
 describe("plugins_Capability", () => {
 	const capabilities = plugins_CAPABILITIES;
 
@@ -1674,6 +2005,67 @@ describe("plugins_Capability", () => {
 });
 
 describe("plugins_consent_diff", () => {
+	test("shows mount declarations and a schedule for a fresh install", () => {
+		expect(
+			plugins_consent_diff({
+				current: null,
+				target: {
+					capabilities: ["workspace.volumes.write", "plugin.schedule.run"],
+					outboundOrigins: [],
+					uiOutboundOrigins: [],
+					mcpServers: [],
+					skills: [],
+					mounts: mountDeclarations,
+					events: scheduleEvents,
+				},
+			}),
+		).toMatchObject({ newMounts: mountDeclarations, droppedMounts: [], scheduleAdded: true });
+	});
+
+	test("lists added and dropped mounts by id during an upgrade", () => {
+		const droppedMount = { id: "notes", description: "External notes.", configurationPath: ["notes", "name"] };
+		const newMount = { id: "docs", description: "External docs.", configurationPath: ["docs", "name"] };
+		expect(
+			plugins_consent_diff({
+				current: {
+					capabilities: ["workspace.volumes.write"],
+					outboundOrigins: [],
+					uiOutboundOrigins: [],
+					mcpServers: [],
+					skills: [],
+					mounts: [...mountDeclarations, droppedMount],
+					events: [],
+				},
+				target: {
+					capabilities: ["workspace.volumes.write", "plugin.schedule.run"],
+					outboundOrigins: [],
+					uiOutboundOrigins: [],
+					mcpServers: [],
+					skills: [],
+					mounts: [
+						{ ...mountDeclarations[0]!, description: "Updated description.", configurationPath: ["repos", "name"] },
+						newMount,
+					],
+					events: scheduleEvents,
+				},
+			}),
+		).toMatchObject({ newMounts: [newMount], droppedMounts: [droppedMount], scheduleAdded: true });
+	});
+
+	test("does not mark an existing or removed schedule as added", () => {
+		const current = {
+			capabilities: ["plugin.schedule.run" as const],
+			outboundOrigins: [],
+			uiOutboundOrigins: [],
+			mcpServers: [],
+			skills: [],
+			mounts: [],
+			events: scheduleEvents,
+		};
+		expect(plugins_consent_diff({ current, target: current }).scheduleAdded).toBe(false);
+		expect(plugins_consent_diff({ current, target: { ...current, events: [] } }).scheduleAdded).toBe(false);
+	});
+
 	test("marks everything as new for a fresh install", () => {
 		expect(
 			plugins_consent_diff({
@@ -1684,6 +2076,8 @@ describe("plugins_consent_diff", () => {
 					uiOutboundOrigins: ["https://council.example.com"],
 					mcpServers: [],
 					skills: [],
+					mounts: [],
+					events: [],
 				},
 			}),
 		).toEqual({
@@ -1692,6 +2086,9 @@ describe("plugins_consent_diff", () => {
 			newUiOutboundOrigins: ["https://council.example.com"],
 			newOrChangedMcpServerIds: [],
 			newSkillNames: [],
+			newMounts: [],
+			droppedMounts: [],
+			scheduleAdded: false,
 		});
 	});
 
@@ -1704,6 +2101,8 @@ describe("plugins_consent_diff", () => {
 					uiOutboundOrigins: ["https://council.example.com"],
 					mcpServers: [],
 					skills: [],
+					mounts: [],
+					events: [],
 				},
 				target: {
 					capabilities: ["plugin.secrets.read"],
@@ -1711,6 +2110,8 @@ describe("plugins_consent_diff", () => {
 					uiOutboundOrigins: ["https://council.example.com"],
 					mcpServers: [],
 					skills: [],
+					mounts: [],
+					events: [],
 				},
 			}),
 		).toEqual({
@@ -1719,6 +2120,9 @@ describe("plugins_consent_diff", () => {
 			newUiOutboundOrigins: [],
 			newOrChangedMcpServerIds: [],
 			newSkillNames: [],
+			newMounts: [],
+			droppedMounts: [],
+			scheduleAdded: false,
 		});
 	});
 
@@ -1731,6 +2135,8 @@ describe("plugins_consent_diff", () => {
 					uiOutboundOrigins: [],
 					mcpServers: [],
 					skills: [],
+					mounts: [],
+					events: [],
 				},
 				target: {
 					capabilities: ["plugin.secrets.read", "outbound.fetch"],
@@ -1738,6 +2144,8 @@ describe("plugins_consent_diff", () => {
 					uiOutboundOrigins: ["https://council.example.com"],
 					mcpServers: [],
 					skills: [],
+					mounts: [],
+					events: [],
 				},
 			}),
 		).toEqual({
@@ -1746,6 +2154,9 @@ describe("plugins_consent_diff", () => {
 			newUiOutboundOrigins: ["https://council.example.com"],
 			newOrChangedMcpServerIds: [],
 			newSkillNames: [],
+			newMounts: [],
+			droppedMounts: [],
+			scheduleAdded: false,
 		});
 	});
 
@@ -1758,6 +2169,8 @@ describe("plugins_consent_diff", () => {
 					uiOutboundOrigins: [],
 					mcpServers: [],
 					skills: [],
+					mounts: [],
+					events: [],
 				},
 				target: {
 					capabilities: ["outbound.fetch", "ui.outbound.fetch"],
@@ -1765,6 +2178,8 @@ describe("plugins_consent_diff", () => {
 					uiOutboundOrigins: ["https://council.example.com"],
 					mcpServers: [],
 					skills: [],
+					mounts: [],
+					events: [],
 				},
 			}),
 		).toEqual({
@@ -1773,6 +2188,9 @@ describe("plugins_consent_diff", () => {
 			newUiOutboundOrigins: ["https://council.example.com"],
 			newOrChangedMcpServerIds: [],
 			newSkillNames: [],
+			newMounts: [],
+			droppedMounts: [],
+			scheduleAdded: false,
 		});
 	});
 
@@ -1795,6 +2213,8 @@ describe("plugins_consent_diff", () => {
 					uiOutboundOrigins: [],
 					mcpServers: [server, other],
 					skills: [{ name: "triage" }],
+					mounts: [],
+					events: [],
 				},
 				target: {
 					capabilities: ["agent.mcp.connect", "agent.skills.contribute"],
@@ -1815,6 +2235,8 @@ describe("plugins_consent_diff", () => {
 						{ ...server, id: "wiki", url: "https://wiki.example.com/mcp" },
 					],
 					skills: [{ name: "triage" }, { name: "release-notes" }],
+					mounts: [],
+					events: [],
 				},
 			}),
 		).toEqual({
@@ -1823,6 +2245,9 @@ describe("plugins_consent_diff", () => {
 			newUiOutboundOrigins: [],
 			newOrChangedMcpServerIds: ["tracker", "wiki"],
 			newSkillNames: ["release-notes"],
+			newMounts: [],
+			droppedMounts: [],
+			scheduleAdded: false,
 		});
 	});
 });

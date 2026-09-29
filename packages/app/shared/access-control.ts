@@ -9,7 +9,8 @@ export type access_control_RoleRef = Doc<"access_control_role_assignments">["rol
  **/
 export type access_control_SystemRole = Exclude<access_control_RoleRef, Id<"access_control_roles">>;
 
-export type access_control_Permission = Doc<"access_control_permission_grants">["permission"];
+export type access_control_Permission = Doc<"access_control_roles">["permissions"][number];
+export type access_control_GrantPermission = Doc<"access_control_permission_grants">["permission"];
 export type access_control_ResourceKind = Doc<"access_control_permission_grants">["resourceKind"];
 
 /**
@@ -138,12 +139,6 @@ export const access_control_PERMISSION_CATALOG = {
 		group: "Content",
 		scope: "workspace",
 	},
-	"workspace.plugins.manage": {
-		label: "Manage plugins",
-		description: "Install, configure, and remove plugins.",
-		group: "Integrations",
-		scope: "workspace",
-	},
 	"workspace.service_accounts.manage": {
 		label: "Manage service accounts",
 		description: "Create service accounts and manage their access.",
@@ -245,7 +240,7 @@ export const access_control_FILE_SHARE_PERMISSIONS = access_control_FILE_SHARE_L
  * alone, and treating it as "can edit" would report power the reader does not have.
  */
 export function access_control_file_share_level_from_permissions(
-	permissions: ReadonlySet<access_control_Permission>,
+	permissions: ReadonlySet<access_control_GrantPermission>,
 ): access_control_FileShareLevel | null {
 	for (const level of [...access_control_FILE_SHARE_LEVEL_KEYS].reverse()) {
 		if (access_control_FILE_SHARE_LEVELS[level].permissions.every((permission) => permissions.has(permission))) {
@@ -269,9 +264,8 @@ export function access_control_file_share_level_from_permissions(
 export const access_control_SYSTEM_ROLE_MATRIX = {
 	admin: {
 		label: "Admin",
-		// Everything except billing and the plugin and MCP policy. Changing the billing mode costs the
-		// owner money, and the policy decides where agent chats may send the organization's data. So
-		// the owner has to give those permissions out on purpose.
+		// Billing and the plugin and MCP policy need an explicit role permission from the owner.
+		// Plugin setup and management use exact access lists instead of broad role permissions.
 		permissions: [
 			"organization.update",
 			"organization.members.manage",
@@ -283,7 +277,6 @@ export const access_control_SYSTEM_ROLE_MATRIX = {
 			"content.read",
 			"content.write",
 			"content.permissions.manage",
-			"workspace.plugins.manage",
 			"workspace.service_accounts.manage",
 			"workspace.browser.use",
 			"workspace.mcp.use",

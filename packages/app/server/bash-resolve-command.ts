@@ -2,10 +2,6 @@ import { defineCommand, type Command } from "just-bash/browser";
 import { Result } from "common/errors-as-values-utils.ts";
 import { internal } from "../convex/_generated/api.js";
 import type { ActionCtx } from "../convex/_generated/server.js";
-import {
-	organizations_is_global_organization_id,
-	organizations_is_reserved_workspace_id,
-} from "../shared/organizations.ts";
 import { path_extract_segments_from } from "../shared/paths.ts";
 import {
 	bash_COMMAND_EXIT_FAILURE,
@@ -93,14 +89,10 @@ export function bash_resolve_command_create(ctx: ActionCtx, dbFilesRoots: bash_D
 		for (const root of [dbFilesRoots.app, dbFilesRoots.personal]) {
 			if (!root) continue;
 			const { fs, currentWorkspacePath } = root;
-			const { organizationId, workspaceId, userId } = fs.ctxData;
 			// The shared shell also runs plugin reviews, which have no tenant file scope.
-			if (
-				fs.readOnlySource != null ||
-				organizations_is_global_organization_id(organizationId) ||
-				organizations_is_reserved_workspace_id(workspaceId)
-			)
-				continue;
+			if (!fs.writeScope) continue;
+			const { organizationId, workspaceId } = fs.writeScope;
+			const { userId } = fs.ctxData;
 			if (
 				"workspace" in parsed._yay &&
 				parsed._yay.workspace &&

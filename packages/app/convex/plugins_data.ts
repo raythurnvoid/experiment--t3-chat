@@ -19,6 +19,8 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { access_control_db_has_permission } from "./access_control.ts";
 import { activities_db_require_by_source_id } from "./activities_db.ts";
 import { plugins_db_get_live_service_account } from "./plugins_service_accounts.ts";
+import { plugins_scheduled_access_db_authorize_assignment } from "./plugins_scheduled_access.ts";
+import { plugins_volumes_db_drain_batch } from "./plugins_volumes.ts";
 import { files_nodes_db_set_restricted_scope } from "./files_nodes.ts";
 import { files_subtree_ops_db_start_rebuild, files_subtree_ops_STEP_MAX_NODES } from "./files_subtree_ops.ts";
 import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
@@ -487,6 +489,17 @@ async function db_authorize(
 		const activity = await activities_db_require_by_source_id(ctx, run._id);
 		if (activity.status !== "running" || activity.deadlineAt <= now) {
 			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+		if (run.event === "schedule.interval.elapsed") {
+			const assignment = await plugins_scheduled_access_db_authorize_assignment(ctx, {
+				installation,
+				run,
+				requiredScope: scope,
+			});
+			if (assignment._nay)
+				return Result({
+					_nay: { message: assignment._nay.message === "Permission denied" ? "Permission denied" : "Unauthenticated" },
+				});
 		}
 
 		if (run.fileNodeId) {
@@ -6497,6 +6510,22 @@ export async function plugins_data_db_drain_batch(
 		}
 	}
 
+	// Setup and run-as grants name this installation. Remove role slots with the deleted resource.
+	const installationGrants = await ctx.db
+		.query("access_control_permission_grants")
+		.withIndex("by_resource_permission", (q) => {
+			const tenant = q
+				.eq("organizationId", args.organizationId)
+				.eq("workspaceId", args.workspaceId)
+				.eq("resourceKind", "plugin_installation");
+			return args.installationId ? tenant.eq("resourceId", args.installationId) : tenant;
+		})
+		.take(args.batchSize);
+	if (installationGrants.length > 0) {
+		for (const grant of installationGrants) await ctx.db.delete("access_control_permission_grants", grant._id);
+		return { done: false, deletedCount: installationGrants.length };
+	}
+
 	// Every store table below carries the same three tenant fields in the same index, so each pass
 	// narrows to the workspace and, when the caller named one, to the single installation.
 	const reservations = await ctx.db
@@ -6663,12 +6692,22 @@ export const drain_uninstalled_installation = internalMutation({
 	},
 	returns: v.object({ done: v.boolean(), deletedCount: v.number() }),
 	handler: async (ctx, args) => {
-		const drained = await plugins_data_db_drain_batch(ctx, {
+		let drained = await plugins_data_db_drain_batch(ctx, {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			installationId: args.installationId,
 			batchSize: DELETION_BATCH_SIZE,
 		});
+		if (drained.done) {
+			const volumes = await plugins_volumes_db_drain_batch(ctx, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				installationId: args.installationId,
+				volumeId: null,
+				batchSize: 200,
+			});
+			drained = volumes;
+		}
 		if (!drained.done && !args._test_disableReschedule) {
 			await ctx.scheduler.runAfter(0, internal.plugins_data.drain_uninstalled_installation, {
 				organizationId: args.organizationId,

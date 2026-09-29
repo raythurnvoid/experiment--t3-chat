@@ -37,6 +37,12 @@ Adding HTML support does not convert old files. An older `.html` file stored as 
 
 `files_nodes.textKind` (`packages/app/convex/schema.ts`) stores the shape when the node is created. Null means the node is not editable text: folders, stored blobs, and read-only mounts have no Yjs document. There is no default. Never read null as `rich_text` — that would send non-text nodes into the Markdown chunker and frontmatter indexer. `files_node_has_editable_text_content` requires a file with a non-null asset and text kind. Live Yjs pointers are a separate check, so text remains editable while collaboration is off.
 
+Plugin volumes use a real organization and a `plugins_volumes` id as the storage scope. SYSTEM content stays read-only and chunks as plain text. `files_nodes_db_insert_file_content_docs` refuses a volume scope before either editable mode. It creates no Yjs or pending docs. Media validation versions and upload events skip volumes. Volume assets are deleted inline; real-workspace deletion jobs never receive a volume id.
+
+Committed chunk inserts run in groups of 100. A valid large plain-text file can have more than
+1,000 chunks, so one Promise.all over the whole file would exceed Convex's concurrent I/O limit.
+Chunk links and above/below flags still cover the whole file, including group boundaries.
+
 Reads never re-derive the shape from the name. Every read, write, chunker dispatch, and guard passes `node.textKind` through directly, narrowed by the `files_node_has_editable_text_content` type guard. There is no accessor helper wrapping the field, so do not look for one.
 
 The stored type and shape are set once, when the node is created. The agent's create and shell write doors, the public write routes, upload conversion in `r2.ts`, and the sidebar's upload prepare all resolve them there, from the caller's explicit type or the name's hint (`files_default_text_shape_for_name`, `files_guess_content_type_from_name`). The sidebar's New file button is the one door that picks no type: it creates a Markdown file with a default name (`create_text_node`), and the user renames it afterwards. After creation the stored fields are the answer. A rename keeps the content and the type: `notes.md` renamed to `notes.txt` is still a Markdown file that opens in the rich text editor, and `data.json` renamed to `data.yaml` still opens as JSON. There is no rename class rule and no name classifier for a stored node.

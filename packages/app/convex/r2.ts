@@ -12,6 +12,7 @@ import {
 	query,
 	type ActionCtx,
 	type MutationCtx,
+	type QueryCtx,
 } from "./_generated/server.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import {
@@ -33,12 +34,7 @@ import {
 } from "./r2_client.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
-import {
-	organizations_GLOBAL_ORGANIZATION_ID,
-	organizations_GLOBAL_GITHUB_WORKSPACE_ID,
-	organizations_GLOBAL_PLUGINS_WORKSPACE_ID,
-	organizations_is_reserved_workspace_id,
-} from "../shared/organizations.ts";
+import { organizations_GLOBAL_ORGANIZATION_ID } from "../shared/organizations.ts";
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
 import { files_media_parse_src } from "../shared/files-media.ts";
 import { organizations_db_get_membership } from "./organizations.ts";
@@ -73,6 +69,7 @@ import { db_get_file_content_materialization_db_state, files_nodes_db_hard_delet
 import { db_insert_file_text_content } from "./files_nodes_content.ts";
 import { files_pending_nodes_db_resolve_read_target } from "./files_pending_nodes.ts";
 import { files_visible_db_create_reader } from "./files_visible.ts";
+import { files_db_resolve_scope } from "./files_scopes.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
 // Does NOT work for http actions (see http.ts). Do not keep request state in module-level values.
@@ -86,24 +83,21 @@ const CLOUDFLARE_EVENTS_SECRET = process.env.CLOUDFLARE_EVENTS_SECRET;
 const ASSET_KEY_REGEX = /^organizations\/([^/]+)\/workspaces\/([^/]+)\/assets\/([^/]+)$/;
 
 /**
- * Narrow file content-storage scope to a real organization/workspace at a sink that cannot accept the
- * reserved external-mount scope. Upload/media processing only ever runs on real user files, so the
- * reserved literals are unreachable here.
+ * Upload and media processing only accept real tenant file storage.
  */
 function r2_require_real_scope(
-	organizationId: Id<"organizations"> | typeof organizations_GLOBAL_ORGANIZATION_ID,
-	workspaceId:
-		| Id<"organizations_workspaces">
-		| typeof organizations_GLOBAL_GITHUB_WORKSPACE_ID
-		| typeof organizations_GLOBAL_PLUGINS_WORKSPACE_ID,
+	ctx: QueryCtx | MutationCtx,
+	organizationId: Doc<"files_nodes">["organizationId"],
+	workspaceId: Doc<"files_nodes">["workspaceId"],
 ): { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces"> } {
-	if (organizationId === organizations_GLOBAL_ORGANIZATION_ID || organizations_is_reserved_workspace_id(workspaceId)) {
-		const errorMessage = "Reserved external-mount scope reached a sink that requires a real organization/workspace id";
+	const scope = files_db_resolve_scope(ctx, workspaceId);
+	if (organizationId === organizations_GLOBAL_ORGANIZATION_ID || scope.kind !== "workspace") {
+		const errorMessage = "Mount scope reached a sink that requires real tenant ids";
 		const errorData = { organizationId, workspaceId };
 		console.error(errorMessage, errorData);
 		throw should_never_happen(errorMessage, errorData);
 	}
-	return { organizationId, workspaceId };
+	return { organizationId, workspaceId: scope.workspaceId };
 }
 
 /**
@@ -288,6 +282,7 @@ export const get_data_for_create_signed_download_url = internalQuery({
 		v.object({
 			fileNode: doc(app_convex_schema, "files_nodes"),
 			asset: doc(app_convex_schema, "files_r2_assets"),
+			scope: v.object({ organizationId: v.id("organizations"), workspaceId: v.id("organizations_workspaces") }),
 			materializationState: v.union(
 				v.object({
 					fileNode: doc(app_convex_schema, "files_nodes"),
@@ -348,6 +343,7 @@ export const get_data_for_create_signed_download_url = internalQuery({
 		return {
 			fileNode,
 			asset,
+			scope: { organizationId: membership.organizationId, workspaceId: membership.workspaceId },
 			materializationState: files_node_has_editable_yjs_state(fileNode)
 				? await db_get_file_content_materialization_db_state(ctx, {
 						organizationId: membership.organizationId,
@@ -377,8 +373,8 @@ type get_data_for_create_signed_download_url_Result =
 export const get_data_for_public_download_url = internalQuery({
 	args: {
 		serviceAccountId: v.optional(v.id("access_control_service_accounts")),
-		organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
-		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
 		fileNodeId: v.string(),
 		/**
 		 * Who is asking. Required, not optional, so a new caller cannot forget it and hand out a signed
@@ -451,7 +447,7 @@ export const get_data_for_public_download_url = internalQuery({
 			return { fileNode, asset, materializationState: null };
 		}
 
-		const materializeScope = r2_require_real_scope(fileNode.organizationId, fileNode.workspaceId);
+		const materializeScope = r2_require_real_scope(ctx, fileNode.organizationId, fileNode.workspaceId);
 		return {
 			fileNode,
 			asset,
@@ -513,11 +509,10 @@ export async function r2_action_create_signed_download_url(
 			materializationState.yjsLastSequenceDoc.lastSequence > materializationState.yjsSnapshotDoc.sequence ||
 			!asset.r2Key
 		) {
-			const downloadScope = r2_require_real_scope(fileNode.organizationId, fileNode.workspaceId);
 			// Try to store a fresh version snapshot, but still allow downloading the older one if this fails.
 			const materialized = await ctx.runAction(internal.files_nodes_content.materialize_file_content, {
-				organizationId: downloadScope.organizationId,
-				workspaceId: downloadScope.workspaceId,
+				organizationId: data.scope.organizationId,
+				workspaceId: data.scope.workspaceId,
 				nodeId: fileNode._id,
 				userId: args.userId,
 				targetSequence: materializationState.yjsLastSequenceDoc.lastSequence,
@@ -1010,7 +1005,7 @@ export const finalize_text_file_node_from_r2_assets = internalMutation({
 	returns: v.null(),
 	handler: async (ctx, args) => {
 		const now = Date.now();
-		const finalizeScope = r2_require_real_scope(args.organizationId, args.workspaceId);
+		const finalizeScope = r2_require_real_scope(ctx, args.organizationId, args.workspaceId);
 
 		// A member can archive or move the node while the calling action runs its R2 work, so the
 		// node state that action read at enqueue time can be stale. Read the node here instead: this
@@ -1051,11 +1046,16 @@ export const finalize_text_file_node_from_r2_assets = internalMutation({
 	},
 });
 
-export async function get_billed_user_for_media_processing(ctx: ActionCtx, fileNode: Doc<"files_nodes">) {
-	const scope = r2_require_real_scope(fileNode.organizationId, fileNode.workspaceId);
+export async function get_billed_user_for_media_processing(
+	ctx: ActionCtx,
+	fileNode: Doc<"files_nodes"> & {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+	},
+) {
 	const creditCheck = await ctx.runQuery(internal.billing.check_credits, {
 		userId: r2_require_real_author(fileNode.createdBy),
-		organizationId: scope.organizationId,
+		organizationId: fileNode.organizationId,
 		minimumRequiredCents: 1,
 	});
 	if (!creditCheck.hasCredits || !creditCheck.billedUser) {
@@ -1336,7 +1336,7 @@ export const process_uploaded_asset_event = internalMutation({
 		const now = Date.now();
 		const serviceTarget = await public_api_service_uploads_db_get_target_by_asset(ctx, asset._id);
 		if (!fileNode || (serviceTarget && (serviceTarget.assetId !== asset._id || serviceTarget.state !== "pending"))) {
-			const scope = r2_require_real_scope(asset.organizationId, asset.workspaceId);
+			const scope = r2_require_real_scope(ctx, asset.organizationId, asset.workspaceId);
 			await public_api_service_uploads_db_record_untracked_asset_bytes(ctx, {
 				...scope,
 				assetId: asset._id,
@@ -1509,8 +1509,8 @@ export const recover_unfinalized_upload_publication = internalAction({
 const UPLOAD_SIGNED_URL_TTL_MS = 15 * 60 * 1000;
 
 /**
- * Handle an R2 event that arrives after its asset doc was deleted. Create a job to delete the R2
- * object that arrived late. Ignore keys from another app or bucket.
+ * Delete bytes from a late R2 event. Workspace keys use deletion jobs. Volume keys delete inline.
+ * Ignore keys from another app or bucket.
  */
 async function db_record_untracked_asset_event(
 	ctx: MutationCtx,
@@ -1531,7 +1531,9 @@ async function db_record_untracked_asset_event(
 		return "ignored";
 	}
 	const organizationId = ctx.db.normalizeId("organizations", organizationIdRaw);
-	const workspaceId = ctx.db.normalizeId("organizations_workspaces", workspaceIdRaw);
+	const realWorkspaceId = ctx.db.normalizeId("organizations_workspaces", workspaceIdRaw);
+	const volumeId = ctx.db.normalizeId("plugins_volumes", workspaceIdRaw);
+	const workspaceId = realWorkspaceId ?? volumeId;
 	const assetId = ctx.db.normalizeId("files_r2_assets", assetIdRaw);
 	if (!organizationId || !workspaceId || !assetId) {
 		return "ignored";
@@ -1548,19 +1550,25 @@ async function db_record_untracked_asset_event(
 		return "ignored";
 	}
 
+	if (!realWorkspaceId) {
+		// The volume doc may already be gone. Delete only the key carried by this event.
+		await r2.deleteObject(ctx, args.key);
+		return "recorded";
+	}
+
 	const now = Date.now();
 	// The deleted asset may have held the URL expiry. Keep a full window when it is unknown.
 	const putMayArriveUntil = (asset?.uploadUrlExpiresAt ?? now + UPLOAD_SIGNED_URL_TTL_MS) + r2_PUT_MAY_ARRIVE_MARGIN_MS;
 	await public_api_service_uploads_db_record_untracked_asset_bytes(ctx, {
 		organizationId,
-		workspaceId,
+		workspaceId: realWorkspaceId,
 		assetId,
 		observedBytes: args.size,
 		now,
 	});
 	await r2_enqueue_object_deletion_job(ctx, {
 		organizationId,
-		workspaceId,
+		workspaceId: realWorkspaceId,
 		r2Key: args.key,
 		reason: "untracked_asset_event",
 		assetId: asset?._id,
@@ -1628,7 +1636,7 @@ export const retire_missing_upload = internalMutation({
 			return null;
 		}
 
-		const scope = r2_require_real_scope(asset.organizationId, asset.workspaceId);
+		const scope = r2_require_real_scope(ctx, asset.organizationId, asset.workspaceId);
 		const node = await ctx.db
 			.query("files_nodes")
 			.withIndex("by_organization_workspace_asset", (q) =>
@@ -1729,7 +1737,7 @@ export const cleanup_expired_unfinalized_assets = internalMutation({
 					}
 					const recoveryStartedAt =
 						(asset.uploadUrlExpiresAt ?? asset._creationTime + UPLOAD_SIGNED_URL_TTL_MS) - UPLOAD_SIGNED_URL_TTL_MS;
-					const recoveryScope = r2_require_real_scope(asset.organizationId, asset.workspaceId);
+					const recoveryScope = r2_require_real_scope(ctx, asset.organizationId, asset.workspaceId);
 					await ctx.scheduler.runAfter(0, internal.r2.recover_unfinalized_upload_publication, {
 						...recoveryScope,
 						assetId: asset._id,
@@ -1758,18 +1766,14 @@ export const cleanup_expired_unfinalized_assets = internalMutation({
 				continue;
 			}
 
-			// Nothing uses this asset. Create deletion jobs before deleting its doc because its R2
-			// objects may still exist. Reserved workspaces use the old delete helper because jobs need real
-			// organization and workspace ids.
-			if (
-				asset.organizationId === organizations_GLOBAL_ORGANIZATION_ID ||
-				organizations_is_reserved_workspace_id(asset.workspaceId)
-			) {
+			// Mount storage deletes inline. Tenant deletion jobs need real workspace ids.
+			const scope = files_db_resolve_scope(ctx, asset.workspaceId);
+			if (asset.organizationId === organizations_GLOBAL_ORGANIZATION_ID || scope.kind !== "workspace") {
 				await r2.deleteObject(ctx, asset.r2Key ?? deterministicKey);
 			} else {
 				await r2_enqueue_object_deletion_job(ctx, {
 					organizationId: asset.organizationId,
-					workspaceId: asset.workspaceId,
+					workspaceId: scope.workspaceId,
 					r2Key: asset.r2Key ?? deterministicKey,
 					reason: "untracked_asset_event",
 					putMayArriveUntil:

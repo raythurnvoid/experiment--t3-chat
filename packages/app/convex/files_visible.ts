@@ -12,6 +12,8 @@ import app_convex_schema, {
 	ai_chat_workspaces_source_validator,
 } from "./schema.ts";
 import { ai_chat_workspaces_db_authorize_file_scope } from "./ai_chat_workspaces.ts";
+import { files_db_resolve_scope } from "./files_scopes.ts";
+import { files_db_authorize_file_read } from "./files_volume_access.ts";
 import {
 	access_control_db_authorize_membership,
 	access_control_db_filter_readable_file_nodes,
@@ -21,10 +23,7 @@ import { files_db_get_visible_node_by_path } from "../server/files.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { server_convex_get_user_fallback_to_anonymous, server_path_normalize } from "../server/server-utils.ts";
 import type { files_PendingTarget, files_PendingParent, files_VisibleEntry } from "../shared/files.ts";
-import {
-	organizations_is_global_organization_id,
-	organizations_is_reserved_workspace_id,
-} from "../shared/organizations.ts";
+import { organizations_is_global_organization_id } from "../shared/organizations.ts";
 import { path_name_of } from "../shared/paths.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 
@@ -45,6 +44,7 @@ const listing_args = {
 
 const internal_listing_args = v.object({
 	...listing_args,
+	agentSource: v.optional(ai_chat_workspaces_source_validator),
 	organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
 	workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
 	visibilityUserId: v.id("users"),
@@ -404,19 +404,23 @@ const listing_result = v_result({
 });
 
 async function db_list(ctx: QueryCtx, args: Infer<typeof internal_listing_args>) {
+	const organizationId = args.organizationId;
+	const fileScope = files_db_resolve_scope(ctx, args.workspaceId);
+	const authorized = await files_db_authorize_file_read(ctx, { ...args, userId: args.visibilityUserId });
+	if (authorized._nay) return Result({ _yay: { items: [], continueCursor: null, isDone: true } });
 	const folderPath = server_path_normalize(args.folderPath);
 	const limit = Math.max(1, Math.min(50, Math.floor(args.numItems)));
 
 	const ownerScope =
 		args.overlayUserId === args.visibilityUserId &&
 		args.serviceAccountId === undefined &&
-		!organizations_is_global_organization_id(args.organizationId) &&
-		!organizations_is_reserved_workspace_id(args.workspaceId);
+		!organizations_is_global_organization_id(organizationId) &&
+		fileScope.kind === "workspace";
 
 	const reader = ownerScope
 		? await files_visible_db_create_reader(ctx, {
-				organizationId: args.organizationId as Id<"organizations">,
-				workspaceId: args.workspaceId as Id<"organizations_workspaces">,
+				organizationId,
+				workspaceId: fileScope.workspaceId,
 				userId: args.visibilityUserId,
 			})
 		: null;
@@ -581,6 +585,7 @@ async function db_list(ctx: QueryCtx, args: Infer<typeof internal_listing_args>)
 		while (!stream.done && scanned < 100 && !reader?.exhausted) {
 			scanned++;
 			const page = (await ctx.runQuery(internal.files_visible.internal_page, {
+				agentSource: args.agentSource,
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
 				visibilityUserId: args.visibilityUserId,
@@ -688,6 +693,7 @@ async function db_list(ctx: QueryCtx, args: Infer<typeof internal_listing_args>)
 
 export const internal_page = internalQuery({
 	args: {
+		agentSource: v.optional(ai_chat_workspaces_source_validator),
 		organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
 		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
 		visibilityUserId: v.id("users"),
@@ -704,6 +710,18 @@ export const internal_page = internalQuery({
 		done: v.boolean(),
 	}),
 	handler: async (ctx, args) => {
+		const fileScope = files_db_resolve_scope(ctx, args.workspaceId);
+		const tenantScope =
+			!organizations_is_global_organization_id(args.organizationId) && fileScope.kind === "workspace"
+				? { organizationId: args.organizationId, workspaceId: fileScope.workspaceId }
+				: null;
+		if (fileScope.kind === "volume") {
+			// A volume has saved entries only, even if a cursor asks for a private stream.
+			if (args.kind !== "saved" || args.parent.kind === "private")
+				return { target: null, savedNode: null, cursor: args.cursor ?? "", done: true };
+			const authorized = await files_db_authorize_file_read(ctx, { ...args, userId: args.visibilityUserId });
+			if (authorized._nay) return { target: null, savedNode: null, cursor: args.cursor ?? "", done: true };
+		}
 		const stream = args;
 		const timeOrder = args.timeOrder;
 		const order = args.order;
@@ -741,14 +759,15 @@ export const internal_page = internalQuery({
 			cursor = page.continueCursor;
 			done = page.isDone;
 		} else if (stream.kind === "private" && !timeOrder) {
+			if (!tenantScope) return { target: null, savedNode: null, cursor: args.cursor ?? "", done: true };
 			const parent = stream.parent;
 
 			const page = await ctx.db
 				.query("files_pending_nodes")
 				.withIndex("by_organization_workspace_user_parent_state_name", (q) =>
 					q
-						.eq("organizationId", args.organizationId as Id<"organizations">)
-						.eq("workspaceId", args.workspaceId as Id<"organizations_workspaces">)
+						.eq("organizationId", tenantScope.organizationId)
+						.eq("workspaceId", tenantScope.workspaceId)
 						.eq("userId", args.visibilityUserId)
 						.eq("parent.kind", parent.kind)
 						.eq("parent.id", parent.kind === "root" ? undefined : parent.id)
@@ -761,13 +780,14 @@ export const internal_page = internalQuery({
 			cursor = page.continueCursor;
 			done = page.isDone;
 		} else {
+			if (!tenantScope) return { target: null, savedNode: null, cursor: args.cursor ?? "", done: true };
 			const parent = stream.parent;
 
 			const pendingQuery = timeOrder
 				? ctx.db.query("files_pending_updates").withIndex("by_organization_workspace_user_targetKind_updatedAt", (q) =>
 						q
-							.eq("organizationId", args.organizationId as Id<"organizations">)
-							.eq("workspaceId", args.workspaceId as Id<"organizations_workspaces">)
+							.eq("organizationId", tenantScope.organizationId)
+							.eq("workspaceId", tenantScope.workspaceId)
 							.eq("userId", args.visibilityUserId)
 							.eq("target.kind", "private"),
 					)
@@ -914,18 +934,9 @@ export const internal_get_directory_path = internalQuery({
 export const internal_list = internalQuery({
 	args: {
 		...internal_listing_args.fields,
-		agentSource: v.optional(ai_chat_workspaces_source_validator),
 	},
 	returns: listing_result,
 	handler: async (ctx, args) => {
-		if (args.agentSource) {
-			const authorized = await ai_chat_workspaces_db_authorize_file_scope(ctx, {
-				...args,
-				agentSource: args.agentSource,
-				userId: args.visibilityUserId,
-			});
-			if (authorized._nay) return Result({ _yay: { items: [], continueCursor: null, isDone: true } });
-		}
 		return await db_list(ctx, args);
 	},
 });

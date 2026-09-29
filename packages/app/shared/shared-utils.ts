@@ -180,6 +180,14 @@ export type AppCompositeIds = {
 				version: string,
 		  ]
 		| [
+				kind: "plugin_volume_file_write",
+				billedUserId: string,
+				actorUserId: string,
+				organizationId: string,
+				workspaceId: string,
+				assetId: string,
+		  ]
+		| [
 				kind: "monthly_credit",
 				userId: string,
 				subscriptionId: string,

@@ -19,18 +19,22 @@ import {
 	access_control_SYSTEM_ROLE_MATRIX,
 	type access_control_DisplayRole,
 	type access_control_FileShareLevel,
+	type access_control_GrantPermission,
 	type access_control_Permission,
 	type access_control_ResourceKind,
 	type access_control_RoleRef,
 } from "../shared/access-control.ts";
 import { Result } from "common/errors-as-values-utils.ts";
-import { quotas_db_get } from "./quotas.ts";
+import { quotas_db_ensure, quotas_db_get } from "./quotas.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { access_control_changes_db_record } from "./access_control_changes.ts";
 import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
-import { organizations_membership_lifetimes_db_get } from "./organizations_membership_lifetimes.ts";
+import {
+	organizations_membership_lifetimes_db_get,
+	organizations_membership_lifetimes_db_record,
+} from "./organizations_membership_lifetimes.ts";
 import { plugins_db_get_live_service_account } from "./plugins_service_accounts.ts";
 import app_convex_schema from "./schema.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
@@ -72,7 +76,8 @@ export type access_control_Resource =
 	| { kind: "organization"; id: string }
 	| { kind: "workspace"; id: string }
 	| { kind: "file"; id: string; restrictedScopeNodeId: Id<"files_nodes"> | null }
-	| { kind: "plugin_scope"; id: string };
+	| { kind: "plugin_scope"; id: string }
+	| { kind: "plugin_installation"; id: string };
 
 const display_role_validator = v.union(
 	v.null(),
@@ -89,7 +94,7 @@ const display_role_validator = v.union(
 	}),
 );
 
-const permission_validator = doc(app_convex_schema, "access_control_permission_grants").fields.permission;
+const permission_validator = doc(app_convex_schema, "access_control_roles").fields.permissions.element;
 
 // #region Role resolution
 
@@ -131,7 +136,7 @@ async function resolve_role_permissions(
 }
 
 /**
- * The first file grant carried by a role that the caller could not hand out on its own.
+ * The first file or plugin management grant the caller cannot hand out.
  *
  * A role is not only its permission list. A share list can name a role, and from then on holding
  * that role opens the restricted node. `resolve_role_permissions` never sees those grants, so the
@@ -159,10 +164,8 @@ async function resolve_role_permissions(
  * caller whose own role is on the share list would be judged able to open a file in a workspace they
  * cannot enter, and would then be allowed to hand it to somebody who can.
  *
- * The scan below has no page limit, and it does not need one: `files_sharing.set_node_share_grant`
- * refuses the share that would put a role on more than `MAX_FILE_SHARES_PER_ROLE` lists, and it is
- * the only place that writes these grants. The bound is kept where the count grows, so the refusal
- * reaches somebody who can act on it instead of an inviter who can fix nothing.
+ * The writers cap one role at 50 Files lists and 50 plugin lists. The full authorization walk must
+ * not truncate either set. Run-as consent is user-only and gives no authority through a role.
  */
 export async function access_control_db_role_file_grant_caller_cannot_give(
 	ctx: QueryCtx | MutationCtx,
@@ -213,15 +216,28 @@ export async function access_control_db_role_file_grant_caller_cannot_give(
 	>();
 
 	for (const grant of grants) {
-		if (grant.resourceKind !== "file") {
+		if (grant.permission === "plugin.run_as") {
 			continue;
 		}
 
-		// `resourceId` on a file grant is always the restricted scope node's own id, so it is both the
-		// resource and its scope. A node that is gone, or open again, makes the grant give nothing, and
-		// `access_control_db_has_permission` already answers that by falling back to workspace access.
-		const scopeNodeId = ctx.db.normalizeId("files_nodes", grant.resourceId);
-		if (!scopeNodeId) {
+		let resource: access_control_Resource;
+		if (grant.resourceKind === "file") {
+			const scopeNodeId = ctx.db.normalizeId("files_nodes", grant.resourceId);
+			if (!scopeNodeId) continue;
+			resource = { kind: "file", id: grant.resourceId, restrictedScopeNodeId: scopeNodeId };
+		} else if (
+			grant.permission === "workspace.plugins.manage" &&
+			(grant.resourceKind === "workspace" || grant.resourceKind === "plugin_installation")
+		) {
+			resource = { kind: grant.resourceKind, id: grant.resourceId };
+			const mode = await db_get_plugin_management_mode(ctx, {
+				organizationId: args.organization._id,
+				workspaceId: grant.workspaceId,
+				resource: { kind: grant.resourceKind, id: grant.resourceId },
+			});
+			// A role grant adds access only in Selected mode.
+			if (mode !== "selected") continue;
+		} else {
 			continue;
 		}
 
@@ -235,7 +251,7 @@ export async function access_control_db_role_file_grant_caller_cannot_give(
 			membershipByWorkspaceId.set(grant.workspaceId, callerMembership);
 		}
 		if (!callerMembership) {
-			return grant;
+			return { ...grant, permission: grant.permission };
 		}
 
 		const allowed = await access_control_db_has_permission(ctx, {
@@ -243,12 +259,12 @@ export async function access_control_db_role_file_grant_caller_cannot_give(
 			workspaceId: grant.workspaceId,
 			defaultWorkspaceId: args.defaultWorkspaceId,
 			organizationOwnerUserId: args.organization.ownerUserId,
-			resource: { kind: "file", id: grant.resourceId, restrictedScopeNodeId: scopeNodeId },
+			resource,
 			permission: grant.permission,
 			userId: args.userId,
 		});
 		if (!allowed) {
-			return grant;
+			return { ...grant, permission: grant.permission };
 		}
 	}
 
@@ -474,7 +490,7 @@ async function db_get_user_permission_grant(
 		resourceKind: access_control_ResourceKind;
 		resourceId: string;
 		userId: Id<"users">;
-		permission: access_control_Permission;
+		permission: access_control_GrantPermission;
 	},
 ) {
 	const grant = await ctx.db
@@ -506,7 +522,7 @@ function db_get_public_permission_grant(
 		workspaceId: Id<"organizations_workspaces">;
 		resourceKind: access_control_ResourceKind;
 		resourceId: string;
-		permission: access_control_Permission;
+		permission: access_control_GrantPermission;
 	},
 ) {
 	return ctx.db
@@ -531,7 +547,7 @@ function db_get_role_permission_grant(
 		resourceKind: access_control_ResourceKind;
 		resourceId: string;
 		role: access_control_RoleRef;
-		permission: access_control_Permission;
+		permission: access_control_GrantPermission;
 	},
 ) {
 	return ctx.db
@@ -644,7 +660,7 @@ export async function access_control_db_set_service_account_grant(
 		}
 	}
 
-	const wanted = new Set<access_control_Permission>(
+	const wanted = new Set<access_control_GrantPermission>(
 		args.level === null ? [] : access_control_FILE_SHARE_LEVELS[args.level].permissions,
 	);
 	const now = Date.now();
@@ -764,6 +780,74 @@ export async function access_control_db_ensure_organization_member_role(
 	});
 }
 
+/**
+ * Give the organization owner a membership in every workspace of the organization.
+ *
+ * The owner passes every permission check, but `organizations.list` and most doors start from a
+ * membership. Without one, the owner cannot see or open a workspace that a member created. And when
+ * that member leaves, the workspace belongs to nobody while it still uses an `extra_workspaces` slot.
+ * So every flow that creates a workspace or picks a new owner calls this.
+ *
+ * An owner whose account is waiting for deletion gets an inactive membership, like the rest of their
+ * memberships. Account recovery turns it on again, and the purge picks the next owner.
+ */
+export async function access_control_db_ensure_owner_memberships(
+	ctx: MutationCtx,
+	args: { organizationId: Id<"organizations">; ownerUserId: Id<"users">; now: number },
+) {
+	const [owner, workspaces, ownerMemberships] = await Promise.all([
+		ctx.db.get("users", args.ownerUserId),
+		// The six-workspace cap in `shared/quotas.ts` bounds this collect.
+		ctx.db
+			.query("organizations_workspaces")
+			.withIndex("by_organization_default", (q) => q.eq("organizationId", args.organizationId))
+			.collect(),
+		ctx.db
+			.query("organizations_workspaces_users")
+			.withIndex("by_user_organization_workspace_active", (q) =>
+				q.eq("userId", args.ownerUserId).eq("organizationId", args.organizationId),
+			)
+			.collect(),
+	]);
+	const active = owner?.deletedAt == null;
+
+	const addedMembershipIds: Id<"organizations_workspaces_users">[] = [];
+	for (const workspace of workspaces) {
+		if (ownerMemberships.some((membership) => membership.workspaceId === workspace._id)) {
+			continue;
+		}
+
+		addedMembershipIds.push(
+			await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: args.organizationId,
+				workspaceId: workspace._id,
+				userId: args.ownerUserId,
+				active,
+				updatedAt: args.now,
+			}),
+		);
+		await quotas_db_ensure(ctx, {
+			quotaName: "active_api_credentials",
+			userId: args.ownerUserId,
+			organizationId: args.organizationId,
+			workspaceId: workspace._id,
+			now: args.now,
+		});
+	}
+
+	// Start a membership lifetime for each new active membership, like the invite does. Account
+	// recovery records an inactive membership when it turns it on.
+	if (active) {
+		const addedMemberships = await Promise.all(
+			addedMembershipIds.map((membershipId) => ctx.db.get("organizations_workspaces_users", membershipId)),
+		);
+		await organizations_membership_lifetimes_db_record(
+			ctx,
+			addedMemberships.flatMap((membership) => (membership ? [{ membership, active: true }] : [])),
+		);
+	}
+}
+
 /** Set a user's role at one workspace, replacing any role they already have there. */
 async function db_set_role_assignment(
 	ctx: MutationCtx,
@@ -820,7 +904,7 @@ async function has_restricted_file_permission(
 		workspaceId: Id<"organizations_workspaces">;
 		defaultWorkspaceId: Id<"organizations_workspaces">;
 		scopeNodeId: Id<"files_nodes">;
-		permission: access_control_Permission;
+		permission: access_control_GrantPermission;
 		userId?: Id<"users">;
 		allowPublic?: boolean;
 	},
@@ -1149,18 +1233,37 @@ export async function access_control_db_can_act_on_file_node(
 	});
 }
 
+// Null means the exact resource is unavailable.
+async function db_get_plugin_management_mode(
+	ctx: QueryCtx | MutationCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		resource: { kind: "workspace" | "plugin_installation"; id: string };
+	},
+) {
+	const workspace = await ctx.db.get("organizations_workspaces", args.workspaceId);
+	if (!workspace || workspace.organizationId !== args.organizationId || workspace.pluginDataPurgeStartedAt != null)
+		return null;
+	if (args.resource.kind === "workspace")
+		return args.resource.id === String(workspace._id) ? workspace.pluginInstallAccess : null;
+	const installationId = ctx.db.normalizeId("plugins_workspace_installations", args.resource.id);
+	const installation = installationId ? await ctx.db.get("plugins_workspace_installations", installationId) : null;
+	if (
+		!installation ||
+		installation.organizationId !== args.organizationId ||
+		installation.workspaceId !== workspace._id
+	)
+		return null;
+	return installation.managementAccess;
+}
+
 /**
- * Answer whether a user, service account, or the public has one permission on one resource.
+ * Answer one permission on one resource. The caller loads the organization first.
  *
- * The caller must load the file, workspace, or organization first and pass the ids taken from it.
- * This helper does not load the organization, and it checks workspace membership in one case only: a
- * workspace-scoped permission that arrives from the organization role, which otherwise would
- * reach workspaces the user does not belong to. In every other case the handler that calls this must
- * check membership itself.
- *
- * Pass `userId` to check a logged-in user. Leave it out and pass `allowPublic: true` only for public
- * or link access, which is meant to accept grants given to everyone.
- * Pass `serviceAccountId` to check account grants; callers check the human actor separately.
+ * Plugin management checks the exact mode and live member. Run-as checks the exact consent and
+ * membership lifetime before any owner shortcut. Ordinary checks still need caller membership.
+ * Pass a service account separately from the human actor. Public access needs `allowPublic`.
  */
 export async function access_control_db_has_permission(
 	ctx: QueryCtx | MutationCtx,
@@ -1170,7 +1273,7 @@ export async function access_control_db_has_permission(
 		defaultWorkspaceId: Id<"organizations_workspaces">;
 		organizationOwnerUserId: Id<"users">;
 		resource: access_control_Resource;
-		permission: access_control_Permission;
+		permission: access_control_GrantPermission;
 	} & (
 		| { userId?: Id<"users">; allowPublic?: boolean; serviceAccountId?: never }
 		| { serviceAccountId: Id<"access_control_service_accounts">; userId?: never; allowPublic?: never }
@@ -1235,17 +1338,74 @@ export async function access_control_db_has_permission(
 	}
 
 	const userId = args.userId;
+	// Consent is an exact user grant. Owner and role authority cannot create it.
+	if (args.permission === "plugin.run_as") {
+		if (!userId || args.resource.kind !== "plugin_installation") return false;
+		if ((await db_get_plugin_management_mode(ctx, { ...args, resource: args.resource })) === null) return false;
+		const grant = await db_get_user_permission_grant(ctx, {
+			...args,
+			resourceKind: "plugin_installation",
+			resourceId: args.resource.id,
+			permission: "plugin.run_as",
+			userId,
+		});
+		if (!grant?.runAs) return false;
+		const [user, membership, lifetime] = await Promise.all([
+			ctx.db.get("users", userId),
+			ctx.db.get("organizations_workspaces_users", grant.runAs.membershipId),
+			organizations_membership_lifetimes_db_get(ctx, { workspaceId: args.workspaceId, userId }),
+		]);
+		return Boolean(
+			user &&
+			user.deletedAt == null &&
+			membership?.active &&
+			membership.userId === userId &&
+			membership.organizationId === args.organizationId &&
+			membership.workspaceId === args.workspaceId &&
+			lifetime?.active &&
+			lifetime.membershipId === membership._id &&
+			lifetime.lifetime === grant.runAs.membershipLifetime,
+		);
+	}
+
+	const resource = args.resource;
+	if (args.permission === "workspace.plugins.manage") {
+		if (resource.kind !== "workspace" && resource.kind !== "plugin_installation") return false;
+		const mode = await db_get_plugin_management_mode(ctx, { ...args, resource });
+		if (mode === null) return false;
+		if (!userId) return false;
+		const user = await ctx.db.get("users", userId);
+		if (!user || user.deletedAt != null) return false;
+		if (userId === args.organizationOwnerUserId) return true;
+		if (mode === "owner") return false;
+		const membership = await db_get_active_membership(ctx, { ...args, userId });
+		if (!membership) return false;
+		if (mode === "workspace") return true;
+		const grantKey = {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			resourceKind: resource.kind,
+			resourceId: resource.id,
+			permission: "workspace.plugins.manage" as const,
+		};
+		if (await db_get_user_permission_grant(ctx, { ...grantKey, userId })) return true;
+		const roles = await access_control_db_resolve_role_refs(ctx, { ...args, userId });
+		const grants = await Promise.all(roles.map((role) => db_get_role_permission_grant(ctx, { ...grantKey, role })));
+		return grants.some(Boolean);
+	} else if (resource.kind === "plugin_installation") {
+		return false;
+	}
 
 	// The owner is only the user stored in `organizations.ownerUserId`. Owners have no assignment doc.
 	if (userId && userId === args.organizationOwnerUserId) {
 		return true;
 	}
 
-	if (args.resource.kind === "file") {
+	if (resource.kind === "file") {
 		const scopeNodeId = await db_resolve_live_restricted_scope(ctx, {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			restrictedScopeNodeId: args.resource.restrictedScopeNodeId,
+			restrictedScopeNodeId: resource.restrictedScopeNodeId,
 		});
 		if (scopeNodeId) {
 			return await has_restricted_file_permission(ctx, {
@@ -1267,7 +1427,7 @@ export async function access_control_db_has_permission(
 	//
 	// The owner short-circuit above still applies. The organization owner reads every scope, which
 	// is a deliberate product decision — see the access-control skill.
-	if (args.resource.kind === "plugin_scope") {
+	if (resource.kind === "plugin_scope") {
 		// User principals only. A role grant would put the scope back in reach of everyone holding
 		// that role, and a public grant would open it to anyone with the link. Both are the door this
 		// branch exists to close, so neither is looked up here at all.
@@ -1279,7 +1439,7 @@ export async function access_control_db_has_permission(
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			resourceKind: "plugin_scope",
-			resourceId: args.resource.id,
+			resourceId: resource.id,
 			permission: args.permission,
 			userId,
 		});
@@ -1289,8 +1449,8 @@ export async function access_control_db_has_permission(
 	const grantKey = {
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
-		resourceKind: args.resource.kind,
-		resourceId: args.resource.id,
+		resourceKind: resource.kind,
+		resourceId: resource.id,
 		permission: args.permission,
 	} as const;
 
@@ -1381,7 +1541,7 @@ export async function access_control_db_authorize_membership(
 	args: {
 		userAuth: { id: Id<"users"> };
 		membership: Doc<"organizations_workspaces_users">;
-		permission: access_control_Permission;
+		permission: access_control_GrantPermission;
 		fileNode?: Pick<Doc<"files_nodes">, "_id" | "organizationId" | "workspaceId" | "restrictedScopeNodeId">;
 	},
 ) {
@@ -2615,7 +2775,10 @@ export const update_role = mutation({
 				// The node is not named, for the same reason `set_user_role` does not name it.
 				return Result({
 					_nay: {
-						message: `You cannot edit this role: it is shared on a file you do not have "${access_control_PERMISSION_CATALOG[blockingGrant.permission].label}" on`,
+						message:
+							blockingGrant.permission !== "workspace.plugins.manage"
+								? `You cannot edit this role: it is shared on a file you do not have "${access_control_PERMISSION_CATALOG[blockingGrant.permission].label}" on`
+								: "You cannot edit this role: it is on a plugin access list you cannot manage",
 					},
 				});
 			}
@@ -2765,11 +2928,15 @@ export const delete_role = mutation({
 			return Result({ _nay: { message: "Give this role's members another role first" } });
 		}
 		if (grant) {
-			// Reachable: `db_set_principal_level` writes `principalKind: "role"` grants from the share
-			// dialog. The way out is `files_sharing.remove_node_share_grant` — take the role off every
-			// share list, then delete it. Without that the role could never be deleted by anyone, not
-			// even the owner.
-			return Result({ _nay: { message: "This role is still used to share a file or folder" } });
+			// Remove the role from its Files and plugin access lists before deleting it.
+			return Result({
+				_nay: {
+					message:
+						grant.resourceKind === "workspace" || grant.resourceKind === "plugin_installation"
+							? "This role is still on a plugin access list"
+							: "This role is still used to share a file or folder",
+				},
+			});
 		}
 
 		// Every user left here has no active membership in the workspace of their assignment, so
@@ -2818,7 +2985,10 @@ export const delete_role = mutation({
 			if (blockingGrant) {
 				return Result({
 					_nay: {
-						message: `You cannot delete this role: its members would fall back to ${access_control_SYSTEM_ROLE_MATRIX.viewer.label}, which is shared on a file you do not have "${access_control_PERMISSION_CATALOG[blockingGrant.permission].label}" on`,
+						message:
+							blockingGrant.permission !== "workspace.plugins.manage"
+								? `You cannot delete this role: its members would fall back to ${access_control_SYSTEM_ROLE_MATRIX.viewer.label}, which is shared on a file you do not have "${access_control_PERMISSION_CATALOG[blockingGrant.permission].label}" on`
+								: `You cannot delete this role: its members would fall back to ${access_control_SYSTEM_ROLE_MATRIX.viewer.label}, which is on a plugin access list you cannot manage`,
 					},
 				});
 			}
@@ -3014,9 +3184,8 @@ export const set_user_role = mutation({
 			}
 
 			// The same rule, for the half of a role that lives outside its permission list. A share list
-			// can name a role, so assigning one also hands over every restricted file shared with it.
-			// The list above cannot see those, and a caller who may manage members is not thereby
-			// somebody who may open a restricted folder.
+			// can name a role, so assigning one also hands over its Files and plugin grants.
+			// Managing members alone does not permit handing out those grants.
 			let joinedWorkspaceIds = [args.workspaceId];
 			// The organization role reaches every workspace the target has joined. The workspace quota
 			// bounds this complete membership list.
@@ -3041,7 +3210,10 @@ export const set_user_role = mutation({
 				// from a refusal, and the role name is enough to act on.
 				return Result({
 					_nay: {
-						message: `You cannot assign this role: it is shared on a file you do not have "${access_control_PERMISSION_CATALOG[blockingGrant.permission].label}" on`,
+						message:
+							blockingGrant.permission !== "workspace.plugins.manage"
+								? `You cannot assign this role: it is shared on a file you do not have "${access_control_PERMISSION_CATALOG[blockingGrant.permission].label}" on`
+								: "You cannot assign this role: it is on a plugin access list you cannot manage",
 					},
 				});
 			}
@@ -3090,7 +3262,36 @@ export const set_user_role = mutation({
 							.eq("resourceKind", "file"),
 					)
 					.first();
+				let addsPluginAccess = false;
 				if (!fileGrant) {
+					// Like Files shares, a live Selected plugin share can give the role extra access.
+					const pluginGrants = await ctx.db
+						.query("access_control_permission_grants")
+						.withIndex("by_organization_role_workspace_resource", (q) =>
+							q
+								.eq("organizationId", organization._id)
+								.eq("principalKind", "role")
+								.eq("role", role)
+								.eq("workspaceId", args.workspaceId),
+						)
+						.filter((q) =>
+							q.and(
+								q.eq(q.field("permission"), "workspace.plugins.manage"),
+								q.or(q.eq(q.field("resourceKind"), "workspace"), q.eq(q.field("resourceKind"), "plugin_installation")),
+							),
+						)
+						.collect();
+					for (const grant of pluginGrants) {
+						if (grant.resourceKind !== "workspace" && grant.resourceKind !== "plugin_installation") continue;
+						const resource = { kind: grant.resourceKind, id: grant.resourceId };
+						const mode = await db_get_plugin_management_mode(ctx, { ...grant, resource });
+						if (mode === "selected") {
+							addsPluginAccess = true;
+							break;
+						}
+					}
+				}
+				if (!fileGrant && !addsPluginAccess) {
 					return Result({
 						_nay: {
 							message: "This role adds nothing to the member's organization role",
@@ -3236,6 +3437,11 @@ export const transfer_organization_ownership = mutation({
 				now,
 			}),
 		]);
+		await access_control_db_ensure_owner_memberships(ctx, {
+			organizationId: organization._id,
+			ownerUserId: args.newOwnerUserId,
+			now,
+		});
 
 		await files_media_validation_db_advance_version(ctx, { organizationId: organization._id, workspaceId: null });
 		await access_control_changes_db_record(ctx, [

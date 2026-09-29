@@ -1,9 +1,7 @@
 import type { Doc, Id } from "./_generated/dataModel.js";
 import type { MutationCtx, QueryCtx } from "./_generated/server.js";
-import {
-	organizations_is_global_organization_id,
-	organizations_is_reserved_workspace_id,
-} from "../shared/organizations.ts";
+import { organizations_is_global_organization_id } from "../shared/organizations.ts";
+import { files_db_resolve_scope } from "./files_scopes.ts";
 
 // Writers advance this in the same transaction as the file or access change.
 export async function files_media_validation_db_advance_version(
@@ -13,9 +11,15 @@ export async function files_media_validation_db_advance_version(
 		workspaceId: Doc<"files_nodes">["workspaceId"] | null;
 	},
 ) {
-	const { organizationId, workspaceId } = args;
-	if (organizations_is_global_organization_id(organizationId) || organizations_is_reserved_workspace_id(workspaceId))
-		return;
+	const { organizationId } = args;
+	if (organizations_is_global_organization_id(organizationId)) return;
+	// Null tracks organization-wide access changes. Mount storage has no tenant media clock.
+	let workspaceId: Id<"organizations_workspaces"> | null = null;
+	if (args.workspaceId !== null) {
+		const scope = files_db_resolve_scope(ctx, args.workspaceId);
+		if (scope.kind !== "workspace") return;
+		workspaceId = scope.workspaceId;
+	}
 	const version = await ctx.db
 		.query("files_media_validation_versions")
 		.withIndex("by_organization_workspace", (q) =>

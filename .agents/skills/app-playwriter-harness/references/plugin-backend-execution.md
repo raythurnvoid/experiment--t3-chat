@@ -1,8 +1,9 @@
 # Plugin backend execution checks
 
-Use the published `raythurnvoid/bonobo-plugin-data-probe` fixture. Version 0.2.1 contains
-backend response cases and two PNG upload cases. Publish through the normal reviewed-SHA
-flow, then update the installation. Keep existing service accounts, grants, settings, and store docs.
+Use the published `raythurnvoid/bonobo-plugin-data-probe` fixture. Version 0.4.0 keeps
+the response and PNG cases and adds scheduled permission checks. Version 0.3.0 added
+the MCP fixture and skill. Publish through the normal reviewed-SHA flow. Keep existing
+service accounts, grants, upload settings, and store docs when updating an installation.
 
 ## Page checks
 
@@ -31,6 +32,54 @@ the token fields themselves. A successful HTTP status alone does not prove the w
 The real 16 MiB check must cross both Cloudflare and Convex. Local Node tests cannot
 prove deployed memory capacity. A successful request is capacity evidence, not a peak
 heap measurement.
+
+## Scheduled permission checks
+
+Use the exact installed source and [fixture README](../../../../plugins/bonobo-plugin-data-probe/README.md).
+Keep the weekly interval of 10080 minutes and existing upload filters. The default `idle`
+makes no API calls. The checks use public APIs and the selected user's real self-grant.
+
+1. Seed one `write-500` document through the page and confirm it with Refresh. Use that
+   saved `qa-<runId>` key in `kv-read-only` or `revoke-hold`.
+2. For `kv-read-only`, first use a KV write grant as the control. Confirm read and write
+   both return 200 and the diagnostic fails. Select a real read-only grant. Require a
+   successful run with one KV read. Source checks require write and Files read to return
+   403. A missing file path proves the scope check, not an existing file's access rule.
+3. Check the user's actual role; a test account's name does not define it. A Viewer write
+   grant request must refuse without changing consent. Restore any temporary role.
+4. For `files-read`, reuse two small saved QA files. The installation account must read
+   both; the selected user must read only the allowed folder. Run the owner control first,
+   then require the same check to pass as the folder-only user. The file proof adds no access.
+   Check the role and both root and leaf shares. A Member may have workspace-wide read
+   access; use a temporary role without it when needed. Grant the account read access to
+   both folders, and the user read access only to the allowed folder. Use that user's own
+   consent form and file proof before assignment.
+   Hash the bytes returned by the saved-file API. Rich-text Yjs reads can add a final LF
+   that the saved bytes do not have. Compare privately; do not change the file to fix the hash.
+   The owner control must reach the denied-file read with 200, then fail the named success
+   check. With the same YAML, the user run must succeed with four finished calls: list 200,
+   allowed read 200 with the expected bytes, denied read 404 `not_found`, and list 200.
+   The reviewed fixture checks that the last list is empty. Save or assignment makes the
+   schedule due now; select the fresh root created after that action, not an older result.
+5. For `revoke-hold`, start the private, bounded runner log watch before saving settings.
+   Confirm the new run is running and its `scheduled-waiting` KV marker exists. The selected
+   user revokes their own grant during the real 30-second wait. Require the exact run's
+   completed runner status 204, which the reviewed source returns only after both old-token
+   requests return 401. Canceled history or a waiting marker alone does not prove those calls.
+6. Compare complete history and call pages before and after assignment, revocation and
+   rejoin. Old actor and grant IDs must stay. Restore `idle` and only owned QA changes.
+
+Save full, safe JSON receipts outside the repo. Large console output can hide rows.
+Use a new receipt name and keep failed checks. Never log tokens, raw provider data or
+unrelated runner logs. Keep provider credentials on Convex, per `convex-admin-ops`.
+
+After the Files check, disable the temporary installation and revoke each user's own
+consent. Restore the original role before deleting a temporary role. Remove only owned
+account grants and user shares, then undo only the restriction the check added. Compare
+both roots and leaves with the saved baseline, plus file hashes and Yjs sequence IDs.
+Restore the original policy entries. Uninstall only a disposable installation; normal
+uninstall keeps finished history and its reusable service account. A retained account
+must have no leftover QA grants. Leave existing plugin installations and data alone.
 
 ## Upload checks
 

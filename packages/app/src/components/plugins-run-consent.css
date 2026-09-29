@@ -1,0 +1,52 @@
+@layer components {
+	.PluginsRunConsent,
+	.PluginsRunConsent-proof {
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+		min-width: 0;
+	}
+
+	.PluginsRunConsent-scopes,
+	.PluginsMyRunPermissions-actions {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 8px;
+	}
+
+	.PluginsRunConsent-note {
+		margin: 0;
+		font-size: 13px;
+		line-height: 1.5;
+		color: var(--color-fg-08);
+	}
+
+	.PluginsRunConsent-error {
+		color: var(--color-red-09);
+	}
+
+	.PluginsMyRunPermissions {
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+		padding-block: 24px;
+		border-block-end: 1px solid var(--color-base-1-06);
+
+		& > h2,
+		& > p {
+			margin: 0;
+		}
+
+		& > h2 {
+			font-size: 16px;
+		}
+	}
+
+	.PluginsMyRunPermissions-feedback {
+		font-size: 13px;
+
+		&[role="alert"] {
+			color: var(--color-red-09);
+		}
+	}
+}

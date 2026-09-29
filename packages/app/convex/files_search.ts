@@ -1,13 +1,14 @@
 import type { Doc, Id } from "./_generated/dataModel.js";
 import type { QueryCtx } from "./_generated/server.js";
+import type { Infer } from "convex/values";
+import type { ai_chat_workspaces_source_validator } from "./schema.ts";
 import { access_control_db_filter_readable_file_nodes } from "./access_control.ts";
 import { files_visible_db_create_reader } from "./files_visible.ts";
+import { files_db_resolve_scope } from "./files_scopes.ts";
+import { files_db_authorize_volume_read } from "./files_volume_access.ts";
 import { files_pending_update_has_pending_chunks } from "../server/files.ts";
 import { files_pending_update_content_is_stale, files_ROOT_ID, type files_VisibleEntry } from "../shared/files.ts";
-import {
-	organizations_is_global_organization_id,
-	organizations_is_reserved_workspace_id,
-} from "../shared/organizations.ts";
+import { organizations_is_global_organization_id } from "../shared/organizations.ts";
 
 /**
  * Reuse access and ancestor reads across one page of indexed results.
@@ -18,23 +19,39 @@ export async function files_search_db_create_reader(
 		organizationId: Doc<"files_nodes">["organizationId"];
 		workspaceId: Doc<"files_nodes">["workspaceId"];
 		userId: Id<"users">;
+		agentSource?: Infer<typeof ai_chat_workspaces_source_validator>;
 		serviceAccountId?: Id<"access_control_service_accounts">;
 		hasWorkspaceRead?: boolean;
 	},
 ) {
+	const scope = files_db_resolve_scope(ctx, args.workspaceId);
+	let active = true;
+	if (scope.kind === "volume") {
+		if (organizations_is_global_organization_id(args.organizationId)) active = false;
+		else {
+			const authorized = await files_db_authorize_volume_read(ctx, {
+				organizationId: args.organizationId,
+				volumeId: scope.volumeId,
+				readerUserId: args.userId,
+				agentSource: args.agentSource,
+			});
+			active = !authorized._nay;
+		}
+	}
 	const ownerReader =
 		args.serviceAccountId === undefined &&
 		!organizations_is_global_organization_id(args.organizationId) &&
-		!organizations_is_reserved_workspace_id(args.workspaceId)
+		scope.kind === "workspace"
 			? await files_visible_db_create_reader(ctx, {
 					organizationId: args.organizationId,
-					workspaceId: args.workspaceId,
+					workspaceId: scope.workspaceId,
 					userId: args.userId,
 				})
 			: null;
 	const entries = new Map<string, files_VisibleEntry | null>();
 
 	async function resolveDocument(document: Doc<"files_metadata_docs"> | Doc<"files_plain_text_chunks">) {
+		if (!active) return null;
 		// A pending index doc belongs to one owner. Hide it from every other member, and from callers
 		// that read without an owner overlay, such as service accounts and reserved scopes.
 		if (document.sourceKind === "pending" && (document.userId !== args.userId || !ownerReader)) return null;
@@ -68,7 +85,9 @@ export async function files_search_db_create_reader(
 				if (target.kind === "private") return null;
 				const node = await ctx.db.get("files_nodes", target.id);
 				const readable =
-					node?.archiveOperationId === null
+					node?.archiveOperationId === null &&
+					node.organizationId === args.organizationId &&
+					node.workspaceId === args.workspaceId
 						? await access_control_db_filter_readable_file_nodes(ctx, {
 								organizationId: args.organizationId,
 								workspaceId: args.workspaceId,
@@ -119,6 +138,7 @@ export async function files_search_db_create_reader(
 	}
 
 	return {
+		active,
 		resolveDocument,
 		get exhausted() {
 			return ownerReader?.exhausted ?? false;

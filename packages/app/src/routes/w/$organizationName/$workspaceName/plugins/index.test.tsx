@@ -5,7 +5,8 @@ import { cleanup, render, screen } from "@testing-library/react";
 import type { ComponentProps, ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
-const { tenantContextMock, useQueryMock } = vi.hoisted(() => ({
+const { managementAccessMock, tenantContextMock, useQueryMock } = vi.hoisted(() => ({
+	managementAccessMock: vi.fn(),
 	tenantContextMock: vi.fn(),
 	useQueryMock: vi.fn(),
 }));
@@ -40,6 +41,10 @@ vi.mock("@/components/plugins-header-breadcrumb.tsx", () => ({
 	},
 }));
 
+vi.mock("@/components/plugins-management-access.tsx", () => ({
+	PluginsManagementAccess: managementAccessMock,
+}));
+
 vi.mock("@/components/my-link.tsx", () => ({
 	MyLink: function MyLink(props: { children?: ReactNode }) {
 		return <a href="/publisher">{props.children}</a>;
@@ -71,8 +76,13 @@ vi.mock("@/components/my-input.tsx", () => ({
 }));
 
 vi.mock("@/components/plugins-gallery-card.tsx", () => ({
-	PluginsGalleryCard: function PluginsGalleryCard() {
-		return <div>Plugin card</div>;
+	PluginsGalleryCard: function PluginsGalleryCard(props: { displayName: string; installed: boolean }) {
+		return (
+			<div>
+				{props.displayName}
+				{props.installed ? " — Installed" : ""}
+			</div>
+		);
 	},
 }));
 
@@ -80,15 +90,9 @@ import { Route } from "./index.tsx";
 
 const PageComponent = Route.options.component as () => JSX.Element;
 
-function setQueries(canManagePlugins: boolean) {
+function setQueries() {
 	useQueryMock.mockImplementation((query: string) => {
 		switch (query) {
-			case "organizations.list":
-				return {
-					workspaceIdsPermissionsDict: {
-						workspace_1: canManagePlugins ? ["workspace.plugins.manage"] : ["content.read"],
-					},
-				};
 			case "plugins.list_installations":
 			case "plugins.list_published_plugins":
 				return [];
@@ -100,8 +104,10 @@ function setQueries(canManagePlugins: boolean) {
 
 describe("RoutePlugins", () => {
 	beforeEach(() => {
+		managementAccessMock.mockReturnValue(null);
 		tenantContextMock.mockReturnValue({
 			membershipId: "membership_1",
+			organizationId: "organization_1",
 			organizationName: "team",
 			workspaceId: "workspace_1",
 			workspaceName: "home",
@@ -113,25 +119,67 @@ describe("RoutePlugins", () => {
 		vi.clearAllMocks();
 	});
 
-	test("shows the permission message without plugin management", () => {
-		setQueries(false);
-
-		render(<PageComponent />);
-
-		expect(screen.getByRole("alert").textContent).toContain(
-			"You don't have permission to manage plugins in this workspace.",
-		);
-		expect(screen.queryByText("No plugins published yet.")).toBeNull();
-		expect(screen.getByText("Publisher")).not.toBeNull();
-		expect(useQueryMock).toHaveBeenCalledWith("plugins.list_installations", "skip");
-	});
-
-	test("shows the empty catalog with plugin management", () => {
-		setQueries(true);
+	test("shows the catalog without a broad plugin role permission", () => {
+		setQueries();
 
 		render(<PageComponent />);
 
 		expect(screen.getByText("No plugins published yet.")).not.toBeNull();
 		expect(screen.queryByRole("alert")).toBeNull();
+		expect(screen.getByText("Publisher")).not.toBeNull();
+		expect(useQueryMock).not.toHaveBeenCalledWith("plugins.list_installations", { membershipId: "membership_1" });
+		expect(useQueryMock).toHaveBeenCalledWith("plugins.list_published_plugins", { membershipId: "membership_1" });
+	});
+
+	test("shows setup access in the default workspace", () => {
+		setQueries();
+		tenantContextMock.mockReturnValue({
+			membershipId: "membership_1",
+			organizationId: "organization_1",
+			organizationName: "personal",
+			workspaceId: "workspace_1",
+			workspaceName: "home",
+		});
+		managementAccessMock.mockImplementation(() => (
+			<section aria-label="Plugin setup access">
+				<h2>Plugin setup access</h2>
+			</section>
+		));
+
+		render(<PageComponent />);
+
+		expect(
+			screen.queryByRole("region", { name: "Plugin setup access" }),
+			"primary workspace must expose plugin setup settings",
+		).not.toBeNull();
+		expect(managementAccessMock.mock.calls[0]?.[0]).toEqual({
+			membershipId: "membership_1",
+			organizationId: "organization_1",
+			workspaceId: "workspace_1",
+		});
+	});
+
+	test("shows installed state from the public catalog for a member without management", () => {
+		useQueryMock.mockImplementation((query: string) =>
+			query === "plugins.list_published_plugins"
+				? [
+						{
+							pluginVersionId: "version_1",
+							name: "importer",
+							displayName: "Importer",
+							description: "Outside files",
+							version: "1.0.0",
+							publisherDisplayName: "Publisher",
+							reviewStatus: "passed",
+							installationId: "installation_1",
+							canInstall: false,
+							canManage: false,
+						},
+					]
+				: undefined,
+		);
+		render(<PageComponent />);
+		expect(screen.getByText("Importer — Installed")).not.toBeNull();
+		expect(useQueryMock.mock.calls.some((call) => call[0] === "plugins.list_installations")).toBe(false);
 	});
 });

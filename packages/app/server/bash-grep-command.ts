@@ -855,8 +855,9 @@ export function bash_grep_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 		if (parsed._yay.pattern) {
 			const firstAppOperand = parsed._yay.operands.find((operand) => {
 				if (operand === "-" || bash_GLOB_METACHARACTER_REGEX.test(operand)) return false;
+				const target = bash_resolve_db_files_shell_path(bash_resolve_path(commandCtx.cwd, operand), dbFilesRoots);
 				return (
-					bash_resolve_db_files_shell_path(bash_resolve_path(commandCtx.cwd, operand), dbFilesRoots).dbFilesPath != null
+					target.dbFilesPath != null || target.kind === "external_mounts_root" || target.kind === "external_mount_group"
 				);
 			});
 
@@ -875,7 +876,12 @@ export function bash_grep_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 						? null
 						: await pathResolution.fs.getEntry(target.dbFilesPath);
 
-				if (target.dbFilesPath === "/" || dbFilesDoc?.kind === "folder") {
+				if (
+					target.dbFilesPath === "/" ||
+					dbFilesDoc?.kind === "folder" ||
+					target.pathResolution.kind === "external_mounts_root" ||
+					target.pathResolution.kind === "external_mount_group"
+				) {
 					suggestedCommand = `search --path ${bash_shell_arg_quote(target.absoluteShellPath)} --limit 20 ${bash_shell_arg_quote(parsed._yay.pattern)}`;
 				}
 			}

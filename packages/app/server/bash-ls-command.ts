@@ -2,13 +2,17 @@ import { defineCommand, type Command } from "just-bash/browser";
 import { internal } from "../convex/_generated/api.js";
 import type { ActionCtx } from "../convex/_generated/server.js";
 import type { files_visible_internal_list_Result } from "../convex/files_visible.ts";
+import type { files_nodes_list_subtree_Result } from "../convex/files_nodes.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import {
 	bash_APP_MOUNT_PATH,
+	bash_EXTERNAL_MOUNTS_ROOT,
 	bash_clamp_listing_page_limit,
 	bash_create_glob_syntax_unsupported_message,
 	bash_cursor_id_create,
 	bash_cursor_id_resolve,
+	bash_external_mounts_fan_out_paginate,
+	bash_external_mounts_fan_out_db_files_path,
 	bash_GLOB_METACHARACTER_REGEX,
 	bash_LISTING_DEFAULT_LIMIT,
 	bash_LISTING_MAX_LIMIT,
@@ -273,9 +277,13 @@ export function bash_ls_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 			};
 		});
 
-		// App-aware = a db file listing target: a workspace/mount db-files path, including the reserved
-		// `/.mounts` root which maps to `"/"` in the reserved scope.
-		const hasDbFilesPathTarget = targets.some((target) => target.dbFilesPath != null);
+		// Root and group listings also use bounded db pages.
+		const hasDbFilesPathTarget = targets.some(
+			(target) =>
+				target.dbFilesPath != null ||
+				target.pathResolution.kind === "external_mounts_root" ||
+				target.pathResolution.kind === "external_mount_group",
+		);
 
 		if (hasDbFilesPathTarget && parsed._yay.unsupportedDbFilesOption != null) {
 			const opt = parsed._yay.unsupportedDbFilesOption;
@@ -371,10 +379,109 @@ export function bash_ls_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 		for (let targetIndex = 0; targetIndex < targets.length; targetIndex++) {
 			const target = targets[targetIndex];
 			const dbFilesPath = target.dbFilesPath;
+			if (
+				!parsed._yay.directory &&
+				(target.pathResolution.kind === "external_mounts_root" || target.pathResolution.kind === "external_mount_group")
+			) {
+				if (dbFilesRoots.externalMounts.mounts.size === 0) {
+					stderr += `ls: cannot access '${target.absoluteShellPath}': No such file or directory\n`;
+					exitCode = bash_COMMAND_EXIT_FAILURE;
+					continue;
+				}
+				const basePath = target.pathResolution.basePath;
+				if (parsed._yay.time) {
+					stderr += "ls: time order needs one mount leaf; choose a folder under /.mounts/<mountName>/<volumeKey>\n";
+					exitCode = bash_COMMAND_EXIT_USAGE;
+					continue;
+				}
+				const fanOut = await bash_external_mounts_fan_out_paginate<{
+					path: string;
+					kind: "folder" | "file";
+					updatedAt: number;
+					updatedBy?: string;
+					contentType?: string | null;
+				}>({
+					command: "ls",
+					externalMounts: dbFilesRoots.externalMounts,
+					basePath,
+					order: parsed._yay.reverse ? "desc" : "asc",
+					cursor,
+					limit: parsed._yay.limit,
+					groupItems: (mountName) => [{ path: `/${mountName}`, kind: "folder" as const, updatedAt: 0 }],
+					runPage: async ({ mount, innerCursor, numItems }) => {
+						if (!parsed._yay.recursive) {
+							return {
+								items:
+									basePath === bash_EXTERNAL_MOUNTS_ROOT && mount.mountName != null
+										? []
+										: [
+												{
+													path: bash_external_mounts_fan_out_db_files_path(mount, mount.fs.dbFilesRootPath, basePath),
+													kind: "folder" as const,
+													updatedAt: 0,
+												},
+											],
+								continueCursor: "",
+								isDone: true,
+							};
+						}
+						const result = (await ctx.runQuery(internal.files_nodes.list_subtree, {
+							agentSource: mount.fs.ctxData.agentSource,
+							organizationId: mount.fs.ctxData.organizationId,
+							workspaceId: mount.fs.ctxData.workspaceId,
+							visibilityUserId: mount.fs.ctxData.userId,
+							folderPath: mount.fs.dbFilesRootPath,
+							numItems,
+							cursor: innerCursor,
+							order: parsed._yay.reverse ? "desc" : "asc",
+						})) as files_nodes_list_subtree_Result;
+						return {
+							items: result.page.map((item) => ({
+								...item,
+								path: bash_external_mounts_fan_out_db_files_path(mount, item.path, basePath),
+							})),
+							continueCursor: result.continueCursor,
+							isDone: result.isDone,
+						};
+					},
+				});
+				if (fanOut._nay) {
+					stderr += `${fanOut._nay.message}\n`;
+					exitCode = bash_COMMAND_EXIT_FAILURE;
+					continue;
+				}
+				const lines = fanOut._yay.items.map((item) =>
+					!parsed._yay.long && !parsed._yay.recursive
+						? item.path.slice(1)
+						: format_item({
+								...item,
+								display: parsed._yay.recursive ? target.pathResolution.renderShellPath(item.path) : item.path.slice(1),
+								long: parsed._yay.long,
+							}),
+				);
+				if (!fanOut._yay.isDone && fanOut._yay.continueCursor)
+					lines.push(
+						"",
+						build_continuation({
+							parsed: parsed._yay,
+							absoluteShellPath: target.absoluteShellPath,
+							cursor: await bash_cursor_id_create(ctx, fanOut._yay.continueCursor),
+						}),
+					);
+				if (targets.length > 1) lines.unshift(`${target.absoluteShellPath}:`);
+				sections.push(lines.join("\n"));
+				continue;
+			}
 
 			if (dbFilesPath == null) {
 				const builtinTargets = [target];
-				while (targetIndex + 1 < targets.length && targets[targetIndex + 1].dbFilesPath == null) {
+				while (
+					targetIndex + 1 < targets.length &&
+					targets[targetIndex + 1].dbFilesPath == null &&
+					(parsed._yay.directory ||
+						(targets[targetIndex + 1].pathResolution.kind !== "external_mounts_root" &&
+							targets[targetIndex + 1].pathResolution.kind !== "external_mount_group"))
+				) {
 					targetIndex++;
 					builtinTargets.push(targets[targetIndex]);
 				}

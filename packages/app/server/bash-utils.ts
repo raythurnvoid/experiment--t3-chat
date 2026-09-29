@@ -42,10 +42,6 @@ import {
 } from "../shared/files.ts";
 import { math_clamp, should_never_happen } from "../shared/shared-utils.ts";
 import { path_name_of } from "../shared/paths.ts";
-import {
-	organizations_is_reserved_workspace_id,
-	organizations_is_global_organization_id,
-} from "../shared/organizations.ts";
 import { pagination_fan_out_paginate } from "../shared/pagination.ts";
 
 // #region bash constants and path helpers
@@ -84,8 +80,7 @@ declare const bash_shell_state_matches_snapshot: [
 ];
 
 /**
- * Shell mount point for read-only reserved-scope external mounts (e.g. the GitHub mirror of the
- * app's own codebase). Single source of truth for the shell-visible prefix; stored `files_nodes`
+ * Shell mount point for read-only external mounts. Single source of truth for the shell-visible prefix; stored `files_nodes`
  * paths never contain it.
  */
 export const bash_EXTERNAL_MOUNTS_ROOT = "/.mounts";
@@ -428,21 +423,22 @@ type DbFilesCacheEntry = {
 	preparing?: boolean;
 };
 
+type DbFilesContext = {
+	organizationId: Doc<"files_nodes">["organizationId"];
+	workspaceId: Doc<"files_nodes">["workspaceId"];
+	organizationName: string;
+	workspaceName: string;
+	userId: Id<"users">;
+	/** Chat thread running this bash call; stamped on the pending updates mv/cp create. */
+	threadId: Id<"ai_chat_threads"> | null;
+	/**
+	 * Original chat scope and membership used by live file checks.
+	 */
+	agentSource?: Infer<typeof ai_chat_workspaces_source_validator>;
+};
+
 export type bash_DbFilesFsOptions = {
 	ctx: ActionCtx;
-	ctxData: {
-		organizationId: Doc<"files_nodes">["organizationId"];
-		workspaceId: Doc<"files_nodes">["workspaceId"];
-		organizationName: string;
-		workspaceName: string;
-		userId: Id<"users">;
-		/** Chat thread running this bash call; stamped on the pending updates mv/cp create. */
-		threadId: Id<"ai_chat_threads"> | null;
-		/**
-		 * Read-only source mounts have no file-writing authority.
-		 */
-		agentSource?: Infer<typeof ai_chat_workspaces_source_validator>;
-	};
 	currentWorkspacePath: string;
 	allowDbFilesMkdir: boolean;
 	/**
@@ -452,18 +448,23 @@ export type bash_DbFilesFsOptions = {
 	 * `GLOBAL`/`PLUGINS` scope while the shell sees `/.plugins/<pluginName>/...`, so the fs maps
 	 * `"/dist"` to `"/<pluginVersionId>/dist"` at the query boundary and strips the prefix again
 	 * when rendering shell paths. Empty (the default) keeps stored and mount-relative paths equal.
+	 * Volume mounts use a `/<generationId>` prefix with the same mapping.
 	 */
 	dbFilesPathPrefix?: string;
-	/**
-	 * Which read-only mounted source family this fs backs; omit for the tenant app tree.
-	 *
-	 * `codebase` is the GitHub mirror of the app's own repository (`/.mounts`), kept so the
-	 * agent can read its own source when helping users use the app or build plugins.
-	 * Every path a mounted fs sees is inside its own mount by construction, so the mount
-	 * identity (not shell-path sniffing) decides the EROFS message for rejected writes.
-	 */
-	readOnlySource?: "codebase" | "plugins";
-};
+} & (
+	| {
+			readOnlySource?: undefined;
+			ctxData: DbFilesContext & {
+				organizationId: Id<"organizations">;
+				workspaceId: Id<"organizations_workspaces">;
+			};
+	  }
+	| {
+			/** The mount identity decides the message for blocked writes. */
+			readOnlySource: "codebase" | "plugins" | "volume";
+			ctxData: DbFilesContext;
+	  }
+);
 
 /**
  * Means a db file exists, but bash cannot read its body as text.
@@ -504,7 +505,7 @@ class ReadOnlyFileSystemError extends Error {
 		// can edit read-only mounted sources. The tenant branch is only reachable from
 		// still-unsupported operations (rm, fs-level cp/mv, chmod, symlink, link).
 		const message =
-			readOnlySource === "codebase"
+			readOnlySource === "codebase" || readOnlySource === "volume"
 				? `EROFS: read-only file system, '${normalizedPath}'. '${bash_EXTERNAL_MOUNTS_ROOT}' is a read-only mount of an external source.`
 				: readOnlySource === "plugins"
 					? `EROFS: read-only file system, '${normalizedPath}'. '${bash_PLUGINS_MOUNT_ROOT}' is a read-only mount of installed plugin sources.`
@@ -566,6 +567,10 @@ export class bash_DbFilesFs implements IFileSystem {
 	readonly allowDbFilesMkdir: boolean;
 	readonly dbFilesPathPrefix: string;
 	readonly readOnlySource: bash_DbFilesFsOptions["readOnlySource"];
+	/**
+	 * Mounted sources have no tenant write scope.
+	 */
+	readonly writeScope: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces"> } | null;
 	/** Stored path of this mount's root (`"/"`, or the prefix itself for prefixed mounts). */
 	readonly dbFilesRootPath: string;
 	/**
@@ -590,6 +595,7 @@ export class bash_DbFilesFs implements IFileSystem {
 		this.currentWorkspacePath = options.currentWorkspacePath;
 		this.allowDbFilesMkdir = options.allowDbFilesMkdir;
 		this.readOnlySource = options.readOnlySource;
+		this.writeScope = options.readOnlySource == null ? options.ctxData : null;
 		this.overlayUserId = options.readOnlySource == null ? options.ctxData.userId : undefined;
 		this.dbFilesPathPrefix = options.dbFilesPathPrefix == null ? "" : bash_normalize_path(options.dbFilesPathPrefix);
 		this.dbFilesRootPath =
@@ -857,16 +863,11 @@ export class bash_DbFilesFs implements IFileSystem {
 			);
 		}
 
-		// Writes only run for the tenant app db-files root: the mounted sources threw above,
-		// so the scope here is never reserved. Narrow the union for the workspace-only functions.
-		const { organizationId, workspaceId, userId, threadId, agentSource } = this.ctxData;
+		// Only tenant roots carry a typed workspace write scope.
+		const { userId, threadId, agentSource } = this.ctxData;
 		if (!agentSource) throw new Error("An active chat is required for file writes");
-		if (
-			organizations_is_global_organization_id(organizationId) ||
-			organizations_is_reserved_workspace_id(workspaceId)
-		) {
-			throw should_never_happen("app file write reached the reserved mount scope", { organizationId, workspaceId });
-		}
+		if (!this.writeScope) throw should_never_happen("app file write reached a mounted source");
+		const { organizationId, workspaceId } = this.writeScope;
 
 		let target: files_PendingTarget;
 		if (entry?.target && entry.target.kind !== "root") {
@@ -1016,6 +1017,7 @@ export class bash_DbFilesFs implements IFileSystem {
 
 	async mkdir(path: string, options?: MkdirOptions) {
 		const normalizedPath = bash_normalize_path(path);
+		if (this.readOnlySource != null) throw this.readOnlyFileSystemError(normalizedPath);
 		const requestedDbFilesPath = this.toDbFilesPath(normalizedPath);
 		let dbFilesPath = requestedDbFilesPath;
 		if (bash_GLOB_METACHARACTER_REGEX.test(dbFilesPath)) {
@@ -1043,9 +1045,6 @@ export class bash_DbFilesFs implements IFileSystem {
 			throw new Error(`EEXIST: file already exists, mkdir '${this.shellPathOf(dbFilesPath)}'`);
 		}
 		if (!this.allowDbFilesMkdir) {
-			if (this.readOnlySource != null) {
-				throw this.readOnlyFileSystemError(normalizedPath);
-			}
 			throw new Error(
 				"Creating folders in the app file tree is available in Agent mode. Scratch space does not create durable folders.",
 			);
@@ -1065,17 +1064,10 @@ export class bash_DbFilesFs implements IFileSystem {
 			}
 		}
 
-		// mkdir only runs for the tenant app db-files root: the external mount and plugin
-		// source roots pass allowDbFilesMkdir=false and threw above, so the scope here is never
-		// reserved. Narrow the union before the workspace-only mutation, which declares strict ids.
-		const { organizationId, workspaceId, userId, agentSource } = this.ctxData;
+		const { userId, agentSource } = this.ctxData;
 		if (!agentSource) throw new Error("An active chat is required for file writes");
-		if (
-			organizations_is_global_organization_id(organizationId) ||
-			organizations_is_reserved_workspace_id(workspaceId)
-		) {
-			throw should_never_happen("mkdir reached the reserved mount scope", { organizationId, workspaceId });
-		}
+		if (!this.writeScope) throw should_never_happen("mkdir reached a mounted source");
+		const { organizationId, workspaceId } = this.writeScope;
 		const created = (await this.ctx.runMutation(internal.files_nodes.create_private_node_by_path, {
 			organizationId,
 			workspaceId,
@@ -1356,15 +1348,16 @@ export type bash_PluginSourceMount = {
 };
 
 /**
- * One synced GitHub source exposed as a read-only mount at `/.mounts/<name>`, backed by the
- * commit-keyed tree `/<name>/<commitSha>/...` in the reserved `GLOBAL`/`GITHUB` scope. The sha
- * is pinned once per bash run and never appears in shell paths.
+ * One external leaf. Legacy GitHub trees use a commit prefix in `GLOBAL`/`GITHUB`.
+ * Plugin leaves use a generation prefix in their volume. Each copy is pinned for this run.
  */
 export type bash_ExternalSourceMount = {
 	name: string;
-	commitSha: string;
 	fs: bash_DbFilesFs;
-};
+} & (
+	| { commitSha: string; mountName?: never; publishedGenerationId?: never }
+	| { commitSha?: never; mountName: string; publishedGenerationId: Id<"plugins_volume_generations"> }
+);
 
 /**
  * The app file tree, per-external-source mount, and per-plugin source mount
@@ -1378,7 +1371,7 @@ export type bash_DbFilesRoots = {
 	personal: bash_DbFilesRoot | null;
 	externalMounts: {
 		currentWorkspacePath: string;
-		/** Synced sources keyed by mount name; empty when nothing has finished a sync. */
+		/** Legacy names and plugin `<mountName>/<volumeKey>` leaves. */
 		mounts: Map<string, bash_ExternalSourceMount>;
 	};
 	plugins: {
@@ -1396,13 +1389,14 @@ export type bash_DbFilesShellPathKind =
 	| "outside_db_files"
 	| "external_mount"
 	| "external_mounts_root"
+	| "external_mount_group"
 	| "plugins_root";
 
 export type bash_DbFilesShellPathResolution = {
 	kind: bash_DbFilesShellPathKind;
 	fs: bash_DbFilesFs;
 	ctxData: bash_DbFilesFsOptions["ctxData"];
-	/** Tenant or reserved-scope `files_nodes.path`, or `null` for paths outside db files trees. */
+	/** Stored `files_nodes.path`, or `null` outside a single db tree. */
 	dbFilesPath: string | null;
 	/** Shell prefix used when rendering db-files paths back to users. */
 	basePath: string;
@@ -1422,12 +1416,12 @@ export function bash_resolve_db_files_shell_path(
 	if (bash_is_path_under(bash_EXTERNAL_MOUNTS_ROOT, normalized)) {
 		const mountsRootPath = dbFilesRoots.externalMounts.currentWorkspacePath;
 		const mountsRelativePath = bash_current_workspace_path_to_db_files_path(mountsRootPath, normalized);
-		const mountName = mountsRelativePath?.split("/").filter(Boolean)[0];
-		const mount = mountName == null ? undefined : dbFilesRoots.externalMounts.mounts.get(mountName);
+		const segments = mountsRelativePath?.split("/").filter(Boolean) ?? [];
+		const mountName = segments[0];
+		const legacyMount = mountName == null ? undefined : dbFilesRoots.externalMounts.mounts.get(mountName);
+		const mount = legacyMount ?? dbFilesRoots.externalMounts.mounts.get(`${mountName}/${segments[1]}`);
 
-		// `/.mounts` itself has no single stored tree: each synced source is its own commit-keyed
-		// mount. Commands that need a listing fall through to `MountableFs` (dbFilesPath stays
-		// null); indexed commands guard this kind and fan out or print scoping guidance.
+		// The root and plugin groups span separate pinned trees. Listings fan out over the leaves.
 		if (mountsRelativePath === "/" || mountsRelativePath == null) {
 			return {
 				kind: "external_mounts_root",
@@ -1437,6 +1431,21 @@ export function bash_resolve_db_files_shell_path(
 				basePath: mountsRootPath,
 				renderShellPath: (dbFilesPath: string) =>
 					bash_db_files_path_to_current_workspace_path(mountsRootPath, dbFilesPath),
+			};
+		}
+
+		if (
+			segments.length === 1 &&
+			[...dbFilesRoots.externalMounts.mounts.values()].some((leaf) => leaf.mountName === mountName)
+		) {
+			const basePath = `${mountsRootPath}/${mountName}`;
+			return {
+				kind: "external_mount_group",
+				fs: dbFilesRoots.app.fs,
+				ctxData: dbFilesRoots.app.fs.ctxData,
+				dbFilesPath: null,
+				basePath,
+				renderShellPath: (dbFilesPath) => bash_db_files_path_to_current_workspace_path(basePath, dbFilesPath),
 			};
 		}
 
@@ -1454,19 +1463,18 @@ export function bash_resolve_db_files_shell_path(
 			};
 		}
 
-		// `/.mounts/<name>/rest` maps to the commit-keyed stored tree `/<name>/<commitSha>/rest`
-		// in the reserved `GLOBAL`/`GITHUB` scope; the renderer strips the commit prefix back off.
-		const basePath = `${mountsRootPath}/${mountName}`;
-		const commitRootPath = `/${mount.name}/${mount.commitSha}`;
+		// Strip the pinned storage prefix when rendering shell paths.
+		const basePath = `${mountsRootPath}/${mount.name}`;
+		const copyRootPath = mount.fs.dbFilesRootPath;
 		const mountRelativePath = bash_current_workspace_path_to_db_files_path(basePath, normalized) ?? "/";
-		const dbFilesPath = mountRelativePath === "/" ? commitRootPath : `${commitRootPath}${mountRelativePath}`;
+		const dbFilesPath = mountRelativePath === "/" ? copyRootPath : `${copyRootPath}${mountRelativePath}`;
 		const renderShellPath = (renderDbFilesPath: string) => {
 			const normalizedDbFilesPath = bash_normalize_path(renderDbFilesPath);
 			const relativePath =
-				normalizedDbFilesPath === commitRootPath
+				normalizedDbFilesPath === copyRootPath
 					? "/"
-					: normalizedDbFilesPath.startsWith(`${commitRootPath}/`)
-						? normalizedDbFilesPath.slice(commitRootPath.length)
+					: normalizedDbFilesPath.startsWith(`${copyRootPath}/`)
+						? normalizedDbFilesPath.slice(copyRootPath.length)
 						: normalizedDbFilesPath;
 			return bash_db_files_path_to_current_workspace_path(basePath, relativePath);
 		};
@@ -2461,15 +2469,20 @@ export function bash_plugins_fan_out_db_files_path(mount: bash_PluginSourceMount
 }
 
 /**
- * Paginate one indexed query per synced external mount, in mount-name order, as a
- * single continuous page stream rooted at `/.mounts`.
+ * Paginate one indexed query per external leaf, in name order, at the root or one group.
  *
  * Sibling of `bash_plugins_fan_out_paginate`: mounts become the fan-out sources
- * (name key + commit-sha fingerprint, so a resync invalidates in-flight cursors).
+ * (name key + commit or generation fingerprint, so a new copy invalidates cursors).
  */
 export async function bash_external_mounts_fan_out_paginate<TItem>(args: {
 	command: string;
 	externalMounts: bash_DbFilesRoots["externalMounts"];
+	/**
+	 * Root or plugin group whose paths this listing renders.
+	 */
+	basePath?: string;
+	groupItems?: (mountName: string) => TItem[];
+	order?: "asc" | "desc";
 	/** Resolved raw cursor payload from `bash_cursor_id_resolve`, or null for the first page. */
 	cursor: string | null;
 	limit: number;
@@ -2479,16 +2492,39 @@ export async function bash_external_mounts_fan_out_paginate<TItem>(args: {
 		numItems: number;
 	}) => Promise<{ items: TItem[]; continueCursor: string; isDone: boolean }>;
 }) {
+	const basePath = args.basePath ?? args.externalMounts.currentWorkspacePath;
+	const groupName = basePath === args.externalMounts.currentWorkspacePath ? null : path_name_of(basePath);
+	const mounts = [...args.externalMounts.mounts.values()].filter(
+		(mount) => groupName === null || mount.mountName === groupName,
+	);
+	const sources: Array<{
+		key: string;
+		fingerprint: string;
+		source: { kind: "group"; mountName: string } | { kind: "leaf"; mount: bash_ExternalSourceMount };
+	}> = mounts.map((mount) => ({
+		key: mount.name,
+		fingerprint: mount.mountName == null ? mount.commitSha : mount.publishedGenerationId,
+		source: { kind: "leaf", mount },
+	}));
+	if (groupName === null && args.groupItems) {
+		for (const mountName of new Set(mounts.flatMap((mount) => (mount.mountName == null ? [] : [mount.mountName])))) {
+			sources.push({ key: mountName, fingerprint: "group", source: { kind: "group", mountName } });
+		}
+	}
 	const fanOut = await pagination_fan_out_paginate({
-		// Scoping by command rejects cursors created by a different fan-out command.
-		scope: `mounts:${args.command}`,
-		sources: [...args.externalMounts.mounts.values()]
-			.sort((a, b) => (a.name < b.name ? -1 : 1))
-			.map((mount) => ({ key: mount.name, fingerprint: mount.commitSha, source: mount })),
+		// A root cursor must not resume inside a plugin group.
+		scope: `mounts:${args.command}:${basePath}`,
+		sources: sources.sort((a, b) => (a.key < b.key ? -1 : 1) * (args.order === "desc" ? -1 : 1)),
 		cursor: args.cursor,
 		limit: args.limit,
 		runPage: (pageArgs) =>
-			args.runPage({ mount: pageArgs.source, innerCursor: pageArgs.innerCursor, numItems: pageArgs.numItems }),
+			pageArgs.source.kind === "group"
+				? Promise.resolve({ items: args.groupItems!(pageArgs.source.mountName), continueCursor: "", isDone: true })
+				: args.runPage({
+						mount: pageArgs.source.mount,
+						innerCursor: pageArgs.innerCursor,
+						numItems: pageArgs.numItems,
+					}),
 	});
 	if (fanOut._nay) {
 		return Result({
@@ -2497,7 +2533,7 @@ export async function bash_external_mounts_fan_out_paginate<TItem>(args: {
 					fanOut._nay.message === "listing changed"
 						? `${args.command}: the mount listing changed since this cursor was created; ` +
 							"rerun the command without --cursor to restart from a consistent listing."
-						: `${args.command}: --cursor does not belong to a ${bash_EXTERNAL_MOUNTS_ROOT} listing.\n` +
+						: `${args.command}: --cursor does not belong to a ${basePath} listing.\n` +
 							"Copy the exact Next page command from the previous output, or rerun without --cursor.",
 			},
 		});
@@ -2506,19 +2542,23 @@ export async function bash_external_mounts_fan_out_paginate<TItem>(args: {
 }
 
 /**
- * Map a stored mount-tree path `/<name>/<commitSha>/rest` to the fan-out
- * db-files shape `/<name>/rest`, which the `external_mounts_root` resolution's
- * `renderShellPath` turns into `/.mounts/<name>/rest`.
+ * Strip the pinned copy prefix and return the path relative to the Mounts root or group.
+ * The path resolution adds the shell root when rendering the result.
  */
-export function bash_external_mounts_fan_out_db_files_path(mount: bash_ExternalSourceMount, storedPath: string) {
-	const commitRootPath = `/${mount.name}/${mount.commitSha}`;
+export function bash_external_mounts_fan_out_db_files_path(
+	mount: bash_ExternalSourceMount,
+	storedPath: string,
+	basePath = bash_EXTERNAL_MOUNTS_ROOT,
+) {
+	const copyRootPath = mount.fs.dbFilesRootPath;
 	const relativePath =
-		storedPath === commitRootPath
+		storedPath === copyRootPath
 			? ""
-			: storedPath.startsWith(`${commitRootPath}/`)
-				? storedPath.slice(commitRootPath.length)
+			: storedPath.startsWith(`${copyRootPath}/`)
+				? storedPath.slice(copyRootPath.length)
 				: storedPath;
-	return `/${mount.name}${relativePath}`;
+	const shellPath = `${bash_EXTERNAL_MOUNTS_ROOT}/${mount.name}${relativePath}`;
+	return bash_current_workspace_path_to_db_files_path(basePath, shellPath) ?? shellPath;
 }
 
 // #endregion shared command helpers

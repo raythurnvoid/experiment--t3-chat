@@ -4,7 +4,12 @@ import { Workpool, type WorkId } from "@convex-dev/workpool";
 import { api, components, internal } from "./_generated/api.js";
 import { billing_db_ensure_anonymous_user_usage_snapshot } from "./billing.ts";
 import { billing_polar } from "./billing_polar.ts";
-import { billing_db_check_credits, billing_db_emit_file_save, billing_ingest_events } from "./billing_db.ts";
+import {
+	billing_db_check_credits,
+	billing_db_emit_file_save,
+	billing_db_emit_plugin_volume_file_writes,
+	billing_ingest_events,
+} from "./billing_db.ts";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { customersCreate } from "@polar-sh/sdk/funcs/customersCreate.js";
@@ -4826,6 +4831,59 @@ describe("ingest_events", () => {
 				},
 			],
 		});
+	});
+});
+
+describe("billing_db_emit_plugin_volume_file_writes", () => {
+	test("queues one private-path-free half-cent event per asset in one batch", async () => {
+		const t = test_convex();
+		const owner = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx, { organizationName: "volume-billing" }));
+		const actorUserId = await seed_signed_in_user_id(t);
+		const { captured, enqueueActionSpy } = mock_billing_ingest_enqueue("work_volume_files");
+		const assetIds = await t.run(async (ctx) => {
+			await ctx.db.patch("users", owner.userId, { clerkUserId: "clerk_volume_billing" });
+			const billedUser = await ctx.db.get("users", owner.userId);
+			if (!billedUser) throw new Error("Expected billed user");
+			const assetIds = [];
+			for (let index = 0; index < 2; index += 1) {
+				assetIds.push(
+					await ctx.db.insert("files_r2_assets", {
+						organizationId: owner.organizationId,
+						workspaceId: owner.workspaceId,
+						kind: "content",
+						r2Bucket: "billing-test",
+						size: 20,
+						createdBy: actorUserId,
+						updatedAt: Date.now(),
+					}),
+				);
+			}
+			await billing_db_emit_plugin_volume_file_writes(ctx, {
+				billedUser,
+				actorUserId,
+				organizationId: owner.organizationId,
+				workspaceId: owner.workspaceId,
+				assetIds,
+			});
+			return assetIds;
+		});
+		expect(enqueueActionSpy).toHaveBeenCalledTimes(1);
+		expect(captured.ingestPayload?.events).toEqual(
+			assetIds.map((assetId) => ({
+				name: "plugin_volume_file_write",
+				externalCustomerId: owner.userId,
+				externalMemberId: actorUserId,
+				externalId: `plugin_volume_file_write::${owner.userId}::${actorUserId}::${owner.organizationId}::${owner.workspaceId}::${assetId}`,
+				metadata: {
+					amount: 0.5,
+					actorUserId,
+					billedUserId: owner.userId,
+					organizationId: owner.organizationId,
+					workspaceId: owner.workspaceId,
+					assetId,
+				},
+			})),
+		);
 	});
 });
 

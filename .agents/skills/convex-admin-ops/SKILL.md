@@ -179,7 +179,9 @@ vp env exec node node_modules/convex/bin/main.js run --typecheck disable --codeg
 Pop-Location
 ```
 
-The delete command performs one bounded pass. Repeat the same command until it returns `done: true`, then run the preview again. If it returns `{ done: false, deleted: 0 }`, an active plugin run is finishing; wait and retry. The preview returns per-table counts (including `publishCleanupAttempts` and `sourceFileNodes`) plus the distinct known R2 keys; expect those reported counts to be zero after deletion. It does not currently report `activities`, so a zero preview is not proof of complete cleanup. Claim/secret counts include only claims this name cleanup can delete: claims shared with another plugin name or reclaimed by another user stay for their rightful owner or the later reset-wide repository-id step. An R2 deletion failure aborts the mutation and leaves the owning version or cleanup attempt retryable.
+The delete command performs one bounded pass. Repeat it until `done: true`, then read the preview again. `{ done: false, deleted: 0 }` can mean an active run or publish lease is finishing; wait and retry. The preview reports per-table counts and known R2 keys. Mount counts include claims, volumes, generations, usage, volume nodes and assets, and exact installation grants. Every count is exact only while `previewTruncated` is false. A truncated preview gives lower bounds, so continue bounded delete passes and read again. Expect zero after deletion.
+
+The preview also counts `runActivities`, but it finds them through run docs. Read the Activity table too; a zero preview alone cannot prove there are no orphan Activities. Claim and secret counts cover only claims this name may delete. Shared claims and another user's reclaimed claim stay. An R2 deletion failure leaves its owner row retryable. Volumes from a prior ordinary uninstall follow their marked GC jobs; the name preview follows current installations. Ordinary uninstall keeps run history. Registry deletion removes it.
 
 A claim can exist before its manifest reveals a plugin name. After all name-scoped previews are zero, delete each remaining exported claim id with:
 
@@ -294,7 +296,15 @@ Interpret readback carefully:
 
 For bulk operations, track successes and failures explicitly, then perform a separate readback pass. Treat already-missing docs as idempotent only if the source function does so.
 
+# R2 Object Readback
+
+For an actual bucket inventory, use a bounded internal Node action with the configured `r2.client`. Keep credentials on Convex. Fix the deployment, bucket and prefix in the action. The caller supplies only a continuation token. Return only needed keys, sizes and safe target ids. Follow every page until `IsTruncated` is false. Separate page reads are not an atomic snapshot or a recovery backup.
+
+The SDK's browser XML parser needs `DOMParser`, which the default Convex runtime does not provide. Put XML-reading SDK actions in a separate `"use node"` module, like `plugins_review.ts`. Keep queries and mutations in the default runtime. Tests that mock `send` miss this parser. Also check real SDK parsing with fake credentials and a stubbed transport, then use a native dev readback.
+
 # Environment And Logs
+
+For a provider billing audit, use `billing:inspect_polar_billing_page`. Supply the checked app `userId`, mapped `expectedCustomerId`, exact `expectedCloudUrl` and `expectedSiteUrl`, and `expectedPolarServer`. Omit `events` for a customer-only read, or supply `{ page, metadata? }` for one event page. Metadata filters accept an app event name, organization id, workspace id or asset id. Page is 1–5; the fixed page size is 100. Follow the returned provider pagination in the outside runner; a short or empty page alone does not prove completion. The action keeps the Polar token on Convex and returns only checked billing fields and safe target/HTTP values. It does not write or refresh billing state. Check the selected payer, event links and any task-specific counts in the runner. Separate calls are not an atomic snapshot or proof of a meter, invoice or payment.
 
 Read only the needed non-secret deployment URLs and ids from `packages/app/.env.local`; never dump the whole file. Use `convex env list --names-only` only when the task must confirm that an exact remote variable exists. Never use `convex env get` for a secret, and never copy a secret value into a command, captured output, or report. Confirm required secret values through an approved operator channel without retrieving them from Convex, a browser page, or logs.
 

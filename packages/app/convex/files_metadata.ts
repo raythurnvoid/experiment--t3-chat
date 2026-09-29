@@ -12,6 +12,8 @@ import app_convex_schema, {
 import { ai_chat_workspaces_db_authorize_file_scope } from "./ai_chat_workspaces.ts";
 import { files_search_db_create_reader } from "./files_search.ts";
 import { files_visible_db_create_reader } from "./files_visible.ts";
+import { files_db_resolve_scope } from "./files_scopes.ts";
+import { files_db_authorize_file_read } from "./files_volume_access.ts";
 import { files_pending_update_db_update_index_revision } from "./files_pending_updates.ts";
 import {
 	access_control_db_authorize_membership,
@@ -47,10 +49,7 @@ import {
 	files_search_query_FIELD_PATH_MAX_LENGTH,
 } from "../shared/files-search-query.ts";
 import { files_sort_text_key, files_sort_value_of } from "../shared/files-sort.ts";
-import {
-	organizations_is_reserved_workspace_id,
-	organizations_is_global_organization_id,
-} from "../shared/organizations.ts";
+import { organizations_is_global_organization_id } from "../shared/organizations.ts";
 import {
 	files_db_get_visible_node_by_path,
 	files_db_patch_pending_update,
@@ -629,7 +628,7 @@ const search_plan_validator = v.union(
 export const search = internalQuery({
 	args: {
 		agentSource: v.optional(ai_chat_workspaces_source_validator),
-		// Scope accepts the reserved `/.mounts` literals so the mount-backed db-files FS can search mount metadata.
+		// External scopes read committed metadata without a pending overlay.
 		organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
 		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
 		userId: v.id("users"),
@@ -663,19 +662,21 @@ export const search = internalQuery({
 		isDone: v.boolean(),
 	}),
 	handler: async (ctx, args) => {
-		if (args.agentSource) {
+		const scope = files_db_resolve_scope(ctx, args.workspaceId);
+		if (scope.kind !== "volume" && args.agentSource) {
 			const authorized = await ai_chat_workspaces_db_authorize_file_scope(ctx, {
 				...args,
 				agentSource: args.agentSource,
 			});
 			if (authorized._nay) return { items: [], continueCursor: args.cursor ?? "", isDone: true };
 		}
+		const reader = await files_search_db_create_reader(ctx, args);
+		if (!reader.active) return { items: [], continueCursor: args.cursor ?? "", isDone: true };
 		const treePathPrefix = args.pathPrefix == null ? undefined : tree_path_from_path(args.pathPrefix);
 		const result = await search_query(ctx, args).paginate({
 			cursor: args.cursor,
 			numItems: Math.max(1, Math.min(100, args.numItems)),
 		});
-		const reader = await files_search_db_create_reader(ctx, args);
 		const items = [];
 		for (const metadataDoc of result.page) {
 			const entry = await reader.resolveDocument(metadataDoc);
@@ -1109,7 +1110,7 @@ function format_get_by_path_value(doc: Doc<"files_metadata_docs">) {
 export const get_by_path = internalQuery({
 	args: {
 		agentSource: v.optional(ai_chat_workspaces_source_validator),
-		// Scope accepts the reserved `/.mounts` literals so the mount-backed db-files FS can read mount metadata.
+		// External scopes read committed metadata without a pending overlay.
 		organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
 		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
 		userId: v.id("users"),
@@ -1137,22 +1138,18 @@ export const get_by_path = internalQuery({
 		v.null(),
 	),
 	handler: async (ctx, args) => {
-		if (args.agentSource) {
-			const authorized = await ai_chat_workspaces_db_authorize_file_scope(ctx, {
-				...args,
-				agentSource: args.agentSource,
-			});
-			if (authorized._nay) return null;
-		}
+		const scope = files_db_resolve_scope(ctx, args.workspaceId);
+		const authorized = await files_db_authorize_file_read(ctx, args);
+		if (authorized._nay) return null;
 		let entry: files_VisibleEntry | null;
 		if (
 			args.serviceAccountId === undefined &&
 			!organizations_is_global_organization_id(args.organizationId) &&
-			!organizations_is_reserved_workspace_id(args.workspaceId)
+			scope.kind === "workspace"
 		) {
 			const reader = await files_visible_db_create_reader(ctx, {
 				organizationId: args.organizationId,
-				workspaceId: args.workspaceId,
+				workspaceId: scope.workspaceId,
 				userId: args.userId,
 			});
 			entry = await reader.resolvePath(args.path);

@@ -35,6 +35,7 @@ import { files_u8_to_array_buffer } from "../server/files.ts";
 import { files_chunk_markdown } from "../server/files-markdown-chunking-mastra.ts";
 import { Doc as YDoc, encodeStateAsUpdate } from "yjs";
 import { files_sort_text_key } from "../shared/files-sort.ts";
+import { organizations_membership_lifetimes_db_ensure } from "./organizations_membership_lifetimes.ts";
 
 type TestConvex = ReturnType<typeof test_convex>;
 
@@ -69,6 +70,7 @@ async function access_control_test_reset_write_rate_limit(t: TestConvex, userId:
 			"ai_chat_message_write",
 			"files_tree_write",
 			"files_sharing_write",
+			"plugins_manage",
 		];
 		for (const name of names) {
 			await ctx.runMutation(components.rate_limiter.lib.resetRateLimit, { name, key: userId });
@@ -209,6 +211,7 @@ async function access_control_test_seed_activity(
 			manifestR2Key: "manifest",
 			backendEntrypointFile: null,
 			configuration: null,
+			mounts: [],
 			events: [],
 			pages: [],
 			fileViews: [],
@@ -239,6 +242,7 @@ async function access_control_test_seed_activity(
 			pluginVersionId,
 			pluginName: "media",
 			status: "enabled",
+			managementAccess: "selected",
 			configurationYaml: null,
 			acceptedCapabilities: [],
 			capabilitiesAcceptedAt: now,
@@ -290,6 +294,75 @@ async function access_control_test_seed_activity(
 			deadlineAt: now,
 			finishedAt: now,
 			expiresAt: now + 30 * 24 * 60 * 60 * 1000,
+			updatedAt: now,
+		});
+	});
+}
+
+async function access_control_test_seed_plugin_installation(
+	t: TestConvex,
+	fixture: Awaited<ReturnType<typeof access_control_test_seed_enforcement_fixture>>,
+	args: { name?: string; workspaceId?: Id<"organizations_workspaces"> } = {},
+) {
+	return await t.run(async (ctx) => {
+		const now = Date.now();
+		const name = args.name ?? "access-plugin";
+		const workspaceId = args.workspaceId ?? fixture.defaultWorkspaceId;
+		const pluginVersionId = await ctx.db.insert("plugins_versions", {
+			name,
+			displayName: name,
+			version: "1.0.0",
+			description: "",
+			reviewStatus: "passed",
+			reviewId: null,
+			isLatest: true,
+			artifactHash: "hash",
+			sourceRepositoryUrl: `https://github.com/example/${name}`,
+			sourceOwner: "example",
+			sourceRepo: name,
+			sourceCommitSha: "sha",
+			manifestR2Key: "manifest",
+			backendEntrypointFile: null,
+			configuration: null,
+			mounts: [],
+			events: [],
+			capabilities: [],
+			pages: [],
+			fileViews: [],
+			outboundOrigins: [],
+			uiOutboundOrigins: [],
+			mcpServers: [],
+			mcpServersFingerprint: "access-mcp",
+			skills: [],
+			files: [],
+			sourceStatus: "ready",
+			sourceLastError: null,
+			createdBy: fixture.ownerId,
+			updatedAt: now,
+		});
+		const serviceAccountId = await test_mocks_fill_db_with.plugin_service_account(ctx, {
+			organizationId: fixture.organizationId,
+			workspaceId,
+			pluginVersionId,
+		});
+		return await ctx.db.insert("plugins_workspace_installations", {
+			organizationId: fixture.organizationId,
+			workspaceId,
+			pluginVersionId,
+			serviceAccountId,
+			pluginName: name,
+			status: "enabled",
+			managementAccess: "selected",
+			configurationYaml: null,
+			acceptedCapabilities: [],
+			capabilitiesAcceptedAt: now,
+			acceptedOutboundOrigins: [],
+			outboundOriginsAcceptedAt: now,
+			acceptedUiOutboundOrigins: [],
+			acceptedMcpServersFingerprint: "access-mcp",
+			acceptedSkillNames: [],
+			installedBy: fixture.ownerId,
+			updatedBy: fixture.ownerId,
 			updatedAt: now,
 		});
 	});
@@ -400,6 +473,7 @@ describe("access_control_db_set_service_account_grant", () => {
 				name: "foreign",
 				description: "",
 				default: false,
+				pluginInstallAccess: "owner",
 				updatedAt: 1,
 			});
 			const serviceAccountId = await ctx.db.insert("access_control_service_accounts", {
@@ -1006,6 +1080,569 @@ describe("set_node_share_grant service accounts", () => {
 						.collect(),
 			),
 		).toEqual([]);
+	});
+});
+
+describe("access_control_db_has_permission plugin management", () => {
+	test("exact grants decide access and a broad admin role cannot bypass the mode", async () => {
+		const t = test_convex();
+		const fixture = await access_control_test_seed_enforcement_fixture(t, {
+			name: "plugin-exact",
+			suffix: "plugin-exact",
+		});
+		const installationId = await access_control_test_seed_plugin_installation(t, fixture);
+		const otherInstallationId = await access_control_test_seed_plugin_installation(t, fixture, {
+			name: "other-access-plugin",
+		});
+		expect(
+			(
+				await fixture.asOwner.mutation(api.access_control.set_user_role, {
+					organizationId: fixture.organizationId,
+					workspaceId: fixture.defaultWorkspaceId,
+					userId: fixture.memberId,
+					role: "admin",
+				})
+			)._nay,
+		).toBeUndefined();
+		expect(
+			(
+				await fixture.asOwner.mutation(api.plugins_access.update_workspace_install_access, {
+					membershipId: fixture.ownerMembershipId,
+					mode: "selected",
+					principals: [],
+				})
+			)._nay,
+		).toBeUndefined();
+		const args = { membershipId: fixture.memberMembershipId, installationId };
+		expect(await fixture.asMember.query(api.plugins_access.get_installation_access, args)).toBeNull();
+		expect(
+			(
+				await fixture.asMember.query(api.plugins_access.get_workspace_install_access, {
+					membershipId: fixture.memberMembershipId,
+				})
+			)?.canInstall,
+		).toBe(false);
+		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
+		expect(
+			(
+				await fixture.asOwner.mutation(api.plugins_access.update_workspace_install_access, {
+					membershipId: fixture.ownerMembershipId,
+					mode: "selected",
+					principals: [{ kind: "role", role: "admin" }],
+				})
+			)._nay,
+		).toBeUndefined();
+		expect(
+			(
+				await fixture.asMember.query(api.plugins_access.get_workspace_install_access, {
+					membershipId: fixture.memberMembershipId,
+				})
+			)?.canInstall,
+		).toBe(true);
+		expect(await fixture.asMember.query(api.plugins_access.get_installation_access, args)).toBeNull();
+		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
+		expect(
+			(
+				await fixture.asOwner.mutation(api.plugins_access.update_installation_access, {
+					membershipId: fixture.ownerMembershipId,
+					installationId,
+					mode: "selected",
+					principals: [{ kind: "user", userId: fixture.memberId }],
+				})
+			)._nay,
+		).toBeUndefined();
+		expect(await fixture.asMember.query(api.plugins_access.get_installation_access, args)).not.toBeNull();
+		expect(
+			await fixture.asMember.query(api.plugins_access.get_installation_access, {
+				...args,
+				installationId: otherInstallationId,
+			}),
+		).toBeNull();
+		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
+		expect(
+			(
+				await fixture.asOwner.mutation(api.plugins_access.update_installation_access, {
+					membershipId: fixture.ownerMembershipId,
+					installationId,
+					mode: "owner",
+					principals: [],
+				})
+			)._nay,
+		).toBeUndefined();
+		expect(await fixture.asMember.query(api.plugins_access.get_installation_access, args)).toBeNull();
+		expect(
+			await fixture.asOwner.query(api.plugins_access.get_installation_access, {
+				...args,
+				membershipId: fixture.ownerMembershipId,
+			}),
+		).not.toBeNull();
+	});
+
+	test("workspace mode still requires a live member", async () => {
+		const t = test_convex();
+		const fixture = await access_control_test_seed_enforcement_fixture(t, {
+			name: "plugin-everybody",
+			suffix: "plugin-everybody",
+		});
+		const installationId = await access_control_test_seed_plugin_installation(t, fixture);
+		expect(
+			(
+				await fixture.asOwner.mutation(api.plugins_access.update_installation_access, {
+					membershipId: fixture.ownerMembershipId,
+					installationId,
+					mode: "workspace",
+					principals: [],
+				})
+			)._nay,
+		).toBeUndefined();
+		const scope = {
+			organizationId: fixture.organizationId,
+			workspaceId: fixture.defaultWorkspaceId,
+			defaultWorkspaceId: fixture.defaultWorkspaceId,
+			organizationOwnerUserId: fixture.ownerId,
+			resource: { kind: "plugin_installation" as const, id: installationId },
+			permission: "workspace.plugins.manage" as const,
+			userId: fixture.memberId,
+		};
+		expect(await t.run((ctx) => access_control_db_has_permission(ctx, scope))).toBe(true);
+		await t.run((ctx) => ctx.db.patch("organizations_workspaces_users", fixture.memberMembershipId, { active: false }));
+		expect(await t.run((ctx) => access_control_db_has_permission(ctx, scope))).toBe(false);
+	});
+});
+
+describe("access_control_db_has_permission run-as consent", () => {
+	test("owner and role grants cannot replace direct consent with a live membership lifetime", async () => {
+		const t = test_convex();
+		const fixture = await access_control_test_seed_enforcement_fixture(t, {
+			name: "run-consent",
+			suffix: "run-consent",
+		});
+		const installationId = await access_control_test_seed_plugin_installation(t, fixture);
+		const scope = {
+			organizationId: fixture.organizationId,
+			workspaceId: fixture.defaultWorkspaceId,
+			defaultWorkspaceId: fixture.defaultWorkspaceId,
+			organizationOwnerUserId: fixture.ownerId,
+			resource: { kind: "plugin_installation" as const, id: installationId },
+			permission: "plugin.run_as" as const,
+		};
+		expect(await t.run((ctx) => access_control_db_has_permission(ctx, { ...scope, userId: fixture.ownerId }))).toBe(
+			false,
+		);
+		const membershipLifetime = await t.run(async (ctx) =>
+			organizations_membership_lifetimes_db_ensure(
+				ctx,
+				(await ctx.db.get("organizations_workspaces_users", fixture.ownerMembershipId))!,
+			),
+		);
+		const fields = {
+			organizationId: fixture.organizationId,
+			workspaceId: fixture.defaultWorkspaceId,
+			resourceKind: "plugin_installation" as const,
+			resourceId: installationId,
+			permission: "plugin.run_as" as const,
+			runAs: { membershipId: fixture.ownerMembershipId, membershipLifetime, scopes: ["files:read" as const] },
+			createdAt: Date.now(),
+			updatedAt: Date.now(),
+		};
+		await t.run((ctx) =>
+			ctx.db.insert("access_control_permission_grants", { ...fields, principalKind: "role", role: "member" }),
+		);
+		expect(await t.run((ctx) => access_control_db_has_permission(ctx, { ...scope, userId: fixture.ownerId }))).toBe(
+			false,
+		);
+		expect(await t.run((ctx) => access_control_db_has_permission(ctx, { ...scope, userId: fixture.memberId }))).toBe(
+			false,
+		);
+		const grantId = await t.run((ctx) =>
+			ctx.db.insert("access_control_permission_grants", {
+				...fields,
+				principalKind: "user",
+				userId: fixture.ownerId,
+			}),
+		);
+		expect(await t.run((ctx) => access_control_db_has_permission(ctx, { ...scope, userId: fixture.ownerId }))).toBe(
+			true,
+		);
+		expect(await t.run((ctx) => access_control_db_has_permission(ctx, { ...scope, userId: fixture.memberId }))).toBe(
+			false,
+		);
+		await t.run((ctx) =>
+			ctx.db.patch("access_control_permission_grants", grantId, {
+				runAs: { ...fields.runAs, membershipLifetime: membershipLifetime + 1 },
+			}),
+		);
+		expect(await t.run((ctx) => access_control_db_has_permission(ctx, { ...scope, userId: fixture.ownerId }))).toBe(
+			false,
+		);
+		await t.run(async (ctx) => {
+			await ctx.db.patch("access_control_permission_grants", grantId, { runAs: fields.runAs });
+			await ctx.db.patch("organizations_workspaces_users", fixture.ownerMembershipId, { active: false });
+		});
+		expect(await t.run((ctx) => access_control_db_has_permission(ctx, { ...scope, userId: fixture.ownerId }))).toBe(
+			false,
+		);
+	});
+});
+
+describe("plugin role grant ceilings", () => {
+	test.each(["workspace", "plugin_installation"] as const)(
+		"assignment and edits cannot hand out a %s access list the caller cannot manage",
+		async (kind) => {
+			const t = test_convex();
+			const fixture = await access_control_test_seed_enforcement_fixture(t, {
+				name: `ceiling-${kind === "workspace" ? "workspace" : "install"}`,
+				suffix: `plugin-ceiling-${kind}`,
+			});
+			const installationId = await access_control_test_seed_plugin_installation(t, fixture);
+			const role = await fixture.asOwner.mutation(api.access_control.create_role, {
+				organizationId: fixture.organizationId,
+				name: "Plugin operator",
+				description: "",
+				permissions: ["content.read"],
+			});
+			expect(role._nay).toBeUndefined();
+			expect(
+				(
+					await fixture.asOwner.mutation(api.access_control.set_user_role, {
+						organizationId: fixture.organizationId,
+						workspaceId: fixture.defaultWorkspaceId,
+						userId: fixture.memberId,
+						role: "admin",
+					})
+				)._nay,
+			).toBeUndefined();
+			const principals = [{ kind: "role" as const, role: role._yay!.roleId }];
+			const settings = { membershipId: fixture.ownerMembershipId, mode: "selected" as const, principals };
+			expect(
+				(kind === "workspace"
+					? await fixture.asOwner.mutation(api.plugins_access.update_workspace_install_access, settings)
+					: await fixture.asOwner.mutation(api.plugins_access.update_installation_access, {
+							...settings,
+							installationId,
+						})
+				)._nay,
+			).toBeUndefined();
+			const guestId = await access_control_test_bootstrap_user(t, { clerkUserId: `plugin-ceiling-${kind}-guest` });
+			expect(
+				(
+					await fixture.asOwner.mutation(api.organizations.invite_user_to_organization_workspace, {
+						organizationId: fixture.organizationId,
+						workspaceId: fixture.defaultWorkspaceId,
+						userIdToAdd: guestId,
+					})
+				)._nay,
+			).toBeUndefined();
+			const assigned = await fixture.asMember.mutation(api.access_control.set_user_role, {
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.defaultWorkspaceId,
+				userId: guestId,
+				role: role._yay!.roleId,
+			});
+			expect(assigned._nay?.message).toContain("plugin access list");
+			const edited = await fixture.asMember.mutation(api.access_control.update_role, {
+				roleId: role._yay!.roleId,
+				name: "Renamed operator",
+			});
+			expect(edited._nay?.message).toContain("plugin access list");
+			const deleted = await fixture.asOwner.mutation(api.access_control.delete_role, { roleId: role._yay!.roleId });
+			expect(deleted._nay?.message).toBe("This role is still on a plugin access list");
+		},
+	);
+
+	test("an invite cannot hand out the member role's plugin list", async () => {
+		const t = test_convex();
+		const fixture = await access_control_test_seed_enforcement_fixture(t, {
+			name: "plugin-invite",
+			suffix: "plugin-invite",
+		});
+		const installationId = await access_control_test_seed_plugin_installation(t, fixture);
+		expect(
+			(
+				await fixture.asOwner.mutation(api.access_control.set_user_role, {
+					organizationId: fixture.organizationId,
+					workspaceId: fixture.defaultWorkspaceId,
+					userId: fixture.memberId,
+					role: "admin",
+				})
+			)._nay,
+		).toBeUndefined();
+		expect(
+			(
+				await fixture.asOwner.mutation(api.plugins_access.update_installation_access, {
+					membershipId: fixture.ownerMembershipId,
+					installationId,
+					mode: "selected",
+					principals: [{ kind: "role", role: "member" }],
+				})
+			)._nay,
+		).toBeUndefined();
+		const guestId = await access_control_test_bootstrap_user(t, { clerkUserId: "plugin-invite-guest" });
+		const invited = await fixture.asMember.mutation(api.organizations.invite_user_to_organization_workspace, {
+			organizationId: fixture.organizationId,
+			workspaceId: fixture.defaultWorkspaceId,
+			userIdToAdd: guestId,
+		});
+		expect(invited._nay?.message).toContain("plugin access list");
+	});
+
+	test("a workspace role that adds only an exact plugin grant is assignable", async () => {
+		const t = test_convex();
+		const fixture = await access_control_test_seed_enforcement_fixture(t, {
+			name: "plugin-role-extra",
+			suffix: "plugin-role-extra",
+		});
+		const side = await t.run((ctx) =>
+			organizations_db_create_workspace(ctx, {
+				userId: fixture.ownerId,
+				organizationId: fixture.organizationId,
+				name: "side",
+				description: "",
+				now: Date.now(),
+			}),
+		);
+		expect(side._nay).toBeUndefined();
+		const workspaceId = side._yay!.workspaceId;
+		expect(
+			(
+				await fixture.asOwner.mutation(api.organizations.invite_user_to_organization_workspace, {
+					organizationId: fixture.organizationId,
+					workspaceId,
+					userIdToAdd: fixture.memberId,
+				})
+			)._nay,
+		).toBeUndefined();
+		const ownerMembershipId = await access_control_test_read_membership_id(t, {
+			organizationId: fixture.organizationId,
+			workspaceId,
+			userId: fixture.ownerId,
+		});
+		const memberMembershipId = await access_control_test_read_membership_id(t, {
+			organizationId: fixture.organizationId,
+			workspaceId,
+			userId: fixture.memberId,
+		});
+		const installationId = await access_control_test_seed_plugin_installation(t, fixture, { workspaceId });
+		const role = await fixture.asOwner.mutation(api.access_control.create_role, {
+			organizationId: fixture.organizationId,
+			name: "Side operator",
+			description: "",
+			permissions: ["content.read"],
+		});
+		expect(role._nay).toBeUndefined();
+		expect(
+			(
+				await fixture.asOwner.mutation(api.plugins_access.update_installation_access, {
+					membershipId: ownerMembershipId,
+					installationId,
+					mode: "selected",
+					principals: [{ kind: "role", role: role._yay!.roleId }],
+				})
+			)._nay,
+		).toBeUndefined();
+		expect(
+			(
+				await fixture.asOwner.mutation(api.access_control.set_user_role, {
+					organizationId: fixture.organizationId,
+					workspaceId,
+					userId: fixture.memberId,
+					role: role._yay!.roleId,
+				})
+			)._nay,
+		).toBeUndefined();
+		expect(
+			await fixture.asMember.query(api.plugins_access.get_installation_access, {
+				membershipId: memberMembershipId,
+				installationId,
+			}),
+		).not.toBeNull();
+		const replacement = await fixture.asOwner.mutation(api.access_control.create_role, {
+			organizationId: fixture.organizationId,
+			name: "Side replacement",
+			description: "",
+			permissions: ["content.read"],
+		});
+		expect(replacement._nay).toBeUndefined();
+		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
+		const principals = [
+			{ kind: "role" as const, role: role._yay!.roleId },
+			{ kind: "role" as const, role: replacement._yay!.roleId },
+		];
+		expect(
+			(
+				await fixture.asOwner.mutation(api.plugins_access.update_installation_access, {
+					membershipId: ownerMembershipId,
+					installationId,
+					mode: "selected",
+					principals,
+				})
+			)._nay,
+		).toBeUndefined();
+		const swapped = await fixture.asOwner.mutation(api.access_control.set_user_role, {
+			organizationId: fixture.organizationId,
+			workspaceId,
+			userId: fixture.memberId,
+			role: replacement._yay!.roleId,
+		});
+		expect(swapped._nay).toBeUndefined();
+		const otherInstallationId = await access_control_test_seed_plugin_installation(t, fixture, {
+			name: "default-role-plugin",
+			workspaceId,
+		});
+		expect(
+			(
+				await fixture.asOwner.mutation(api.plugins_access.update_installation_access, {
+					membershipId: ownerMembershipId,
+					installationId: otherInstallationId,
+					mode: "selected",
+					principals: [{ kind: "role", role: "member" }],
+				})
+			)._nay,
+		).toBeUndefined();
+		expect(
+			await fixture.asMember.query(api.plugins_access.get_installation_access, {
+				membershipId: memberMembershipId,
+				installationId: otherInstallationId,
+			}),
+		).not.toBeNull();
+		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
+		expect(
+			(
+				await fixture.asOwner.mutation(api.plugins_access.update_installation_access, {
+					membershipId: ownerMembershipId,
+					installationId,
+					mode: "workspace",
+					principals,
+				})
+			)._nay,
+		).toBeUndefined();
+		const addsNothing = await fixture.asOwner.mutation(api.access_control.set_user_role, {
+			organizationId: fixture.organizationId,
+			workspaceId,
+			userId: fixture.memberId,
+			role: role._yay!.roleId,
+		});
+		expect(addsNothing._nay?.message).toContain("adds nothing");
+	});
+
+	test("role deletion cannot give the viewer fallback a hidden plugin list", async () => {
+		const t = test_convex();
+		const fixture = await access_control_test_seed_enforcement_fixture(t, {
+			name: "plugin-fallback",
+			suffix: "plugin-fallback",
+		});
+		const installationId = await access_control_test_seed_plugin_installation(t, fixture);
+		expect(
+			(
+				await fixture.asOwner.mutation(api.access_control.set_user_role, {
+					organizationId: fixture.organizationId,
+					workspaceId: fixture.defaultWorkspaceId,
+					userId: fixture.memberId,
+					role: "admin",
+				})
+			)._nay,
+		).toBeUndefined();
+		expect(
+			(
+				await fixture.asOwner.mutation(api.plugins_access.update_installation_access, {
+					membershipId: fixture.ownerMembershipId,
+					installationId,
+					mode: "selected",
+					principals: [{ kind: "role", role: "viewer" }],
+				})
+			)._nay,
+		).toBeUndefined();
+		const role = await fixture.asOwner.mutation(api.access_control.create_role, {
+			organizationId: fixture.organizationId,
+			name: "Leaving",
+			description: "",
+			permissions: ["content.read"],
+		});
+		expect(role._nay).toBeUndefined();
+		const guestId = await access_control_test_bootstrap_user(t, { clerkUserId: "plugin-fallback-guest" });
+		await t.run(async (ctx) => {
+			await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.defaultWorkspaceId,
+				userId: guestId,
+				active: false,
+				updatedAt: Date.now(),
+			});
+			await access_control_db_ensure_role_assignment(ctx, {
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.defaultWorkspaceId,
+				userId: guestId,
+				role: role._yay!.roleId,
+				now: Date.now(),
+			});
+		});
+		const deleted = await fixture.asMember.mutation(api.access_control.delete_role, { roleId: role._yay!.roleId });
+		expect(deleted._nay?.message).toContain("fall back to Viewer");
+		expect(deleted._nay?.message).toContain("plugin access list");
+		expect(await t.run((ctx) => ctx.db.get("access_control_roles", role._yay!.roleId))).not.toBeNull();
+	});
+
+	test("the role limit counts both plugin resource kinds and keeps Files separate", async () => {
+		const t = test_convex();
+		const fixture = await access_control_test_seed_enforcement_fixture(t, {
+			name: "plugin-role-cap",
+			suffix: "plugin-role-cap",
+		});
+		const installationId = await access_control_test_seed_plugin_installation(t, fixture);
+		// Fill counts directly, like the existing Files cap test. The writer is the boundary under test.
+		await t.run(async (ctx) => {
+			for (let index = 0; index < 50; index++) {
+				for (const permission of ["content.read", "content.write", "content.permissions.manage"] as const) {
+					await ctx.db.insert("access_control_permission_grants", {
+						organizationId: fixture.organizationId,
+						workspaceId: fixture.defaultWorkspaceId,
+						resourceKind: "file",
+						resourceId: `filled-file-${index}`,
+						principalKind: "role",
+						role: "member",
+						permission,
+						createdAt: Date.now(),
+						updatedAt: Date.now(),
+					});
+				}
+			}
+		});
+		const settings = {
+			membershipId: fixture.ownerMembershipId,
+			mode: "selected" as const,
+			principals: [{ kind: "role" as const, role: "member" as const }],
+		};
+		expect(
+			(await fixture.asOwner.mutation(api.plugins_access.update_installation_access, { ...settings, installationId }))
+				._nay,
+		).toBeUndefined();
+		await t.run(async (ctx) => {
+			for (let index = 0; index < 49; index++) {
+				await ctx.db.insert("access_control_permission_grants", {
+					organizationId: fixture.organizationId,
+					workspaceId: fixture.defaultWorkspaceId,
+					resourceKind: index % 2 === 0 ? "workspace" : "plugin_installation",
+					resourceId: `filled-plugin-${index}`,
+					principalKind: "role",
+					role: "member",
+					permission: "workspace.plugins.manage",
+					createdAt: Date.now(),
+					updatedAt: Date.now(),
+				});
+			}
+		});
+		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
+		expect(
+			(
+				await fixture.asOwner.mutation(api.plugins_access.update_installation_access, {
+					...settings,
+					installationId,
+					mode: "workspace",
+				})
+			)._nay,
+		).toBeUndefined();
+		const capped = await fixture.asOwner.mutation(api.plugins_access.update_workspace_install_access, settings);
+		expect(capped._nay?.message).toBe("This role is already on 50 plugin access lists. Choose people instead.");
 	});
 });
 
@@ -2462,8 +3099,7 @@ describe("system roles", () => {
 	});
 
 	test("the system role matrix holds exactly the documented permissions", async () => {
-		// Now that no grant docs exist, this matrix is the whole definition of the system roles. A quiet
-		// change here would change everyone's access, and nothing else would catch it.
+		// Exact grants add access separately. This matrix defines each role's broad permissions.
 		expect([...access_control_SYSTEM_ROLE_MATRIX.admin.permissions].sort()).toEqual(
 			[
 				"content.permissions.manage",
@@ -2475,7 +3111,6 @@ describe("system roles", () => {
 				"workspace.create",
 				"workspace.delete",
 				"workspace.members.manage",
-				"workspace.plugins.manage",
 				"workspace.browser.use",
 				"workspace.mcp.use",
 				"workspace.service_accounts.manage",
@@ -3336,6 +3971,44 @@ describe("custom roles", () => {
 		}));
 		expect(after.organization?.ownerUserId).toBe(ownerId);
 		expect(after.quota?.usedCount).toBe(memberQuota.maxCount);
+	});
+
+	test("transferring ownership gives the new owner a membership in every workspace", async () => {
+		const t = test_convex();
+		const ownerId = await access_control_test_bootstrap_user(t, { clerkUserId: "clerk-transfer-ws-owner" });
+		const memberId = await access_control_test_bootstrap_user(t, { clerkUserId: "clerk-transfer-ws-member" });
+		const organization = await access_control_test_seed_organization(t, {
+			ownerId,
+			memberId,
+			name: "transfer-ws-org",
+		});
+
+		// Only the old owner is a member of this workspace.
+		const extraWorkspaceId = await t.run(async (ctx) => {
+			const workspace = await organizations_db_create_workspace(ctx, {
+				userId: ownerId,
+				organizationId: organization.organizationId,
+				name: "owner-only",
+				description: "",
+				now: Date.now(),
+			});
+			if (workspace._nay) {
+				throw new Error(workspace._nay.message);
+			}
+			await test_mocks_cancel_pending_home_file_seeds(ctx);
+			return workspace._yay.workspaceId;
+		});
+
+		const transferred = await access_control_test_identity(t, ownerId).mutation(
+			api.access_control.transfer_organization_ownership,
+			{ organizationId: organization.organizationId, newOwnerUserId: memberId },
+		);
+		expect(transferred._nay).toBeUndefined();
+
+		const listed = await access_control_test_identity(t, memberId).query(api.organizations.list, {});
+		expect(listed.organizationIdsWorkspacesDict[organization.organizationId]?.map((workspace) => workspace._id)).toEqual(
+			expect.arrayContaining([organization.defaultWorkspaceId, extraWorkspaceId]),
+		);
 	});
 
 	test("you cannot edit a role to grant a permission you do not have", async () => {
@@ -8227,6 +8900,66 @@ describe("file sharing", () => {
 			level: "read",
 		});
 		expect(person._nay).toBeUndefined();
+	});
+
+	test("plugin grants do not consume or hide the Files role limit", async () => {
+		const t = test_convex();
+		const fixture = await access_control_test_seed_enforcement_fixture(t, {
+			name: "file-plugin-cap",
+			suffix: "file-plugin-cap",
+		});
+		const { folderId } = await seed_restricted_folder(t, fixture, { name: "closed" });
+		await t.run(async (ctx) => {
+			for (let index = 0; index < 49; index++) {
+				for (const permission of ["content.read", "content.write", "content.permissions.manage"] as const) {
+					await ctx.db.insert("access_control_permission_grants", {
+						organizationId: fixture.organizationId,
+						workspaceId: fixture.defaultWorkspaceId,
+						resourceKind: "file",
+						resourceId: `filled-file-${index}`,
+						principalKind: "role",
+						role: "member",
+						permission,
+						createdAt: Date.now(),
+						updatedAt: Date.now(),
+					});
+				}
+			}
+			for (let index = 0; index < 50; index++) {
+				await ctx.db.insert("access_control_permission_grants", {
+					organizationId: fixture.organizationId,
+					workspaceId: fixture.defaultWorkspaceId,
+					resourceKind: "plugin_installation",
+					resourceId: `filled-plugin-${index}`,
+					principalKind: "role",
+					role: "member",
+					permission: "workspace.plugins.manage",
+					createdAt: Date.now(),
+					updatedAt: Date.now(),
+				});
+			}
+		});
+		const args = {
+			membershipId: fixture.ownerMembershipId,
+			nodeId: folderId,
+			principal: { kind: "role" as const, role: "member" as const },
+		};
+		expect(
+			(await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, { ...args, level: "read" }))._nay,
+		).toBeUndefined();
+		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
+		expect(
+			(await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, { ...args, level: "manage" }))._nay,
+		).toBeUndefined();
+		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
+		const other = await seed_restricted_folder(t, fixture, { name: "other" });
+		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
+		const capped = await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, {
+			...args,
+			nodeId: other.folderId,
+			level: "read",
+		});
+		expect(capped._nay?.message).toContain("This role is already on 50 share lists");
 	});
 
 	test("moving a node out of a restricted folder needs manage, not write", async () => {

@@ -1,9 +1,12 @@
 import { Workpool, vWorkId } from "@convex-dev/workpool";
 import { customersCreate } from "@polar-sh/sdk/funcs/customersCreate.js";
 import { customersDelete } from "@polar-sh/sdk/funcs/customersDelete.js";
+import { customersGet } from "@polar-sh/sdk/funcs/customersGet.js";
 import { customerSessionsCreate } from "@polar-sh/sdk/funcs/customerSessionsCreate.js";
 import { customersList } from "@polar-sh/sdk/funcs/customersList.js";
 import { eventsIngest } from "@polar-sh/sdk/funcs/eventsIngest.js";
+import { eventsList } from "@polar-sh/sdk/funcs/eventsList.js";
+import { HTTPClient } from "@polar-sh/sdk/lib/http.js";
 import { subscriptionsCreate } from "@polar-sh/sdk/funcs/subscriptionsCreate.js";
 import { subscriptionsList } from "@polar-sh/sdk/funcs/subscriptionsList.js";
 import { subscriptionsRevoke } from "@polar-sh/sdk/funcs/subscriptionsRevoke.js";
@@ -14,6 +17,7 @@ import { PaymentFailed } from "@polar-sh/sdk/models/errors/paymentfailed.js";
 import { ResourceNotFound } from "@polar-sh/sdk/models/errors/resourcenotfound.js";
 import { SubscriptionLocked } from "@polar-sh/sdk/models/errors/subscriptionlocked.js";
 import { v } from "convex/values";
+import { z } from "zod";
 import { doc } from "convex-helpers/validators";
 import { components, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
@@ -44,6 +48,13 @@ import { convertToDatabaseSubscription } from "../vendor/polar/src/component/uti
 import app_convex_schema from "./schema.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { billing_polar } from "./billing_polar.ts";
+
+const CONVEX_CLOUD_URL = process.env.CONVEX_CLOUD_URL;
+const CONVEX_SITE_URL = process.env.CONVEX_SITE_URL;
+const INSPECTION_TIMEOUT_MS = 10_000;
+const INSPECTION_MAX_BYTES = 256_000;
+const INSPECTION_PAGE_SIZE = 100;
+const INSPECTION_MAX_PAGE = 5;
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
 // Does NOT work for http actions (see http.ts). No mutable module-level state allowed here.
@@ -1812,6 +1823,20 @@ const billing_event_validator = v.union(
 		}),
 	}),
 	v.object({
+		name: v.literal("plugin_volume_file_write"),
+		externalCustomerId: v.id("users"),
+		externalMemberId: v.optional(v.id("users")),
+		externalId: v.string(),
+		metadata: v.object({
+			amount: v.number(),
+			actorUserId: v.id("users"),
+			billedUserId: v.id("users"),
+			organizationId: v.id("organizations"),
+			workspaceId: v.id("organizations_workspaces"),
+			assetId: v.id("files_r2_assets"),
+		}),
+	}),
+	v.object({
 		name: v.literal("monthly_credit"),
 		externalCustomerId: v.id("users"),
 		externalId: v.string(),
@@ -1999,6 +2024,291 @@ export const refresh_from_polar_customer_state = internalAction({
 	returns: v.null(),
 	handler: async (ctx, args) => {
 		return await action_refresh_from_polar_customer_state(ctx, args);
+	},
+});
+
+/**
+ * Read one mapped customer and, when requested, one app usage-event page. This operator action stores nothing.
+ */
+export const inspect_polar_billing_page = internalAction({
+	args: {
+		userId: v.id("users"),
+		expectedCustomerId: v.string(),
+		expectedCloudUrl: v.string(),
+		expectedSiteUrl: v.string(),
+		expectedPolarServer: v.union(v.literal("sandbox"), v.literal("production")),
+		events: v.optional(
+			v.object({
+				page: v.number(),
+				metadata: v.optional(
+					v.object({
+						name: v.optional(
+							v.union(
+								v.literal("manual_credit"),
+								v.literal("file_save"),
+								v.literal("plugin_volume_file_write"),
+								v.literal("monthly_credit"),
+								v.literal("ai_usage"),
+								v.literal("browser_usage"),
+							),
+						),
+						organizationId: v.optional(v.id("organizations")),
+						workspaceId: v.optional(v.id("organizations_workspaces")),
+						assetId: v.optional(v.id("files_r2_assets")),
+					}),
+				),
+			}),
+		),
+	},
+	returns: v_result({
+		_yay: v.object({
+			cloudUrl: v.string(),
+			siteUrl: v.string(),
+			polarServer: v.union(v.literal("sandbox"), v.literal("production")),
+			customer: v.object({
+				id: v.string(),
+				externalId: v.string(),
+				organizationId: v.string(),
+				deletedAt: v.null(),
+			}),
+			customerHttp: v.object({ status: v.literal(200), apiVersion: v.union(v.string(), v.null()) }),
+			events: v.union(
+				v.null(),
+				v.object({
+					page: v.number(),
+					http: v.object({ status: v.literal(200), apiVersion: v.union(v.string(), v.null()) }),
+					items: v.array(
+						v.object({
+							id: v.string(),
+							timestamp: v.string(),
+							organizationId: v.string(),
+							customerId: v.union(v.string(), v.null()),
+							externalCustomerId: v.string(),
+							externalMemberId: v.optional(v.union(v.string(), v.null())),
+							name: v.literal(billing_POLAR_METER_EVENT),
+							source: v.literal("user"),
+							metadata: v.object({
+								name: v.string(),
+								amount: v.number(),
+								actorUserId: v.optional(v.string()),
+								billedUserId: v.optional(v.string()),
+								organizationId: v.optional(v.string()),
+								workspaceId: v.optional(v.string()),
+								assetId: v.optional(v.string()),
+							}),
+						}),
+					),
+					pagination: v.union(
+						v.object({ totalCount: v.number(), maxPage: v.number() }),
+						v.object({ hasNextPage: v.boolean() }),
+					),
+				}),
+			),
+		}),
+	}),
+	handler: async (ctx, args) => {
+		if (args.expectedCloudUrl !== CONVEX_CLOUD_URL || args.expectedSiteUrl !== CONVEX_SITE_URL) {
+			return Result({ _nay: { message: "Billing inspection deployment does not match" } });
+		}
+		if (
+			!z.uuid().safeParse(args.expectedCustomerId).success ||
+			(args.events && !z.number().int().min(1).max(INSPECTION_MAX_PAGE).safeParse(args.events.page).success)
+		) {
+			return Result({ _nay: { message: "Invalid billing inspection request" } });
+		}
+
+		const isLiveUser: boolean = await ctx.runQuery(internal.billing.is_live_signed_in_user, { userId: args.userId });
+		if (!isLiveUser) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+		const mappedCustomer = await billing_polar.getCustomerByUserId(ctx, args.userId);
+		if (!mappedCustomer || mappedCustomer.id !== args.expectedCustomerId) {
+			return Result({ _nay: { message: "Billing inspection customer does not match" } });
+		}
+
+		try {
+			const origin = args.expectedPolarServer === "sandbox" ? "https://sandbox-api.polar.sh" : "https://api.polar.sh";
+			const httpInfo: Array<{ status: 200; apiVersion: string | null }> = [];
+			const httpClient = new HTTPClient({
+				fetcher: async (input, init) => {
+					const request = new Request(input, init);
+					const url = new URL(request.url);
+					if (
+						request.method !== "GET" ||
+						url.origin !== origin ||
+						!(
+							(url.pathname === `/v1/customers/${args.expectedCustomerId}` && !url.search) ||
+							(url.pathname === "/v1/events/" && args.events)
+						)
+					) {
+						throw new Error("Billing inspection request refused");
+					}
+
+					const signal = AbortSignal.timeout(INSPECTION_TIMEOUT_MS);
+					const response = await fetch(new Request(request, { signal, redirect: "error" }));
+					const apiVersion = z
+						.string()
+						.regex(/^20\d\d-\d\d$/)
+						.nullable()
+						.safeParse(response.headers.get("polar-version"));
+					if (
+						response.status !== 200 ||
+						!/^application\/json(?:\s*;|$)/i.test(response.headers.get("content-type") ?? "") ||
+						!apiVersion.success ||
+						!response.body
+					) {
+						await response.body?.cancel();
+						throw new Error("Billing inspection response refused");
+					}
+
+					const reader = response.body.getReader();
+					const cancel = () => {
+						void reader.cancel().catch(() => {});
+					};
+					signal.addEventListener("abort", cancel, { once: true });
+					const chunks: Uint8Array[] = [];
+					let size = 0;
+					try {
+						while (true) {
+							signal.throwIfAborted();
+							const { done, value } = await reader.read();
+							if (done) break;
+							size += value.byteLength;
+							if (size > INSPECTION_MAX_BYTES) {
+								await reader.cancel();
+								throw new Error("Billing inspection response is too large");
+							}
+							chunks.push(value);
+						}
+						signal.throwIfAborted();
+					} finally {
+						signal.removeEventListener("abort", cancel);
+						reader.releaseLock();
+					}
+					const bytes = new Uint8Array(size);
+					let offset = 0;
+					for (const chunk of chunks) {
+						bytes.set(chunk, offset);
+						offset += chunk.byteLength;
+					}
+					httpInfo.push({ status: 200, apiVersion: apiVersion.data });
+					return new Response(bytes, { status: 200, headers: { "content-type": "application/json" } });
+				},
+			});
+			const client = billing_polar_client({ httpClient, expectedServer: args.expectedPolarServer });
+			const options = { retries: { strategy: "none" as const } };
+			const customerResult = await customersGet(client, { id: args.expectedCustomerId }, options);
+			if (!customerResult.ok) {
+				return Result({ _nay: { message: "Could not inspect Polar billing" } });
+			}
+			const customer = z
+				.object({
+					id: z.uuid(),
+					externalId: z.string(),
+					organizationId: z.uuid(),
+					deletedAt: z.null(),
+				})
+				.safeParse(customerResult.value);
+			if (
+				!customer.success ||
+				customer.data.id !== args.expectedCustomerId ||
+				customer.data.externalId !== args.userId
+			) {
+				return Result({ _nay: { message: "Billing inspection customer does not match" } });
+			}
+
+			let events = null;
+			if (args.events) {
+				// Filter by external payer so events with a null customerId remain visible.
+				const pageResult = await eventsList(
+					client,
+					{
+						organizationId: customer.data.organizationId,
+						externalCustomerId: args.userId,
+						name: billing_POLAR_METER_EVENT,
+						source: "user",
+						page: args.events.page,
+						limit: INSPECTION_PAGE_SIZE,
+						metadata: args.events.metadata,
+					},
+					options,
+				);
+				if (!pageResult.ok) {
+					return Result({ _nay: { message: "Could not inspect Polar billing" } });
+				}
+				const page = z
+					.object({
+						items: z
+							.array(
+								z.object({
+									id: z.uuid(),
+									timestamp: z.date().transform((date) => date.toISOString()),
+									organizationId: z.uuid(),
+									customerId: z.uuid().nullable(),
+									externalCustomerId: z.string(),
+									externalMemberId: z.string().min(1).max(128).nullable().optional(),
+									name: z.literal(billing_POLAR_METER_EVENT),
+									source: z.literal("user"),
+									metadata: z.object({
+										name: z.enum([
+											"manual_credit",
+											"file_save",
+											"plugin_volume_file_write",
+											"monthly_credit",
+											"ai_usage",
+											"browser_usage",
+										]),
+										amount: z.number().finite(),
+										actorUserId: z.string().min(1).max(128).optional(),
+										billedUserId: z.string().min(1).max(128).optional(),
+										organizationId: z.string().min(1).max(128).optional(),
+										workspaceId: z.string().min(1).max(128).optional(),
+										assetId: z.string().min(1).max(128).optional(),
+									}),
+								}),
+							)
+							.max(INSPECTION_PAGE_SIZE),
+						pagination: z.union([
+							z.object({
+								totalCount: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+								maxPage: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+							}),
+							z.object({ hasNextPage: z.boolean() }),
+						]),
+					})
+					.safeParse(pageResult.value);
+				if (!page.success) {
+					return Result({ _nay: { message: "Invalid billing inspection page" } });
+				}
+				for (const event of page.data.items) {
+					if (
+						event.externalCustomerId !== args.userId ||
+						(event.metadata.billedUserId !== undefined && event.metadata.billedUserId !== args.userId) ||
+						event.organizationId !== customer.data.organizationId ||
+						(event.customerId !== null && event.customerId !== customer.data.id) ||
+						Object.entries(args.events.metadata ?? {}).some(
+							([key, value]) => event.metadata[key as keyof typeof event.metadata] !== value,
+						)
+					) {
+						return Result({ _nay: { message: "Billing inspection event does not match" } });
+					}
+				}
+				// Preserve Polar's page state; a short or empty page does not prove completion.
+				events = { page: args.events.page, http: httpInfo[1], ...page.data };
+			}
+			return Result({
+				_yay: {
+					cloudUrl: args.expectedCloudUrl,
+					siteUrl: args.expectedSiteUrl,
+					polarServer: args.expectedPolarServer,
+					customer: customer.data,
+					customerHttp: httpInfo[0],
+					events,
+				},
+			});
+		} catch {
+			return Result({ _nay: { message: "Could not inspect Polar billing" } });
+		}
 	},
 });
 

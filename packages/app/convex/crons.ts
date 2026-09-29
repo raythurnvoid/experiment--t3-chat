@@ -9,6 +9,9 @@ crons.cron("reset due anonymous billing credits", "0 0 * * *", internal.billing.
 // Once daily at 03:00 UTC — refresh read-only GitHub repo mounts (real work only on commit movement).
 crons.cron("sync github mounts", "0 3 * * *", internal.github_mounts.sync_all_mounts, {});
 
+// Every minute — take the oldest due plugin schedules in one bounded pass.
+crons.cron("dispatch due plugin schedules", "* * * * *", internal.plugins_runtime.dispatch_due_schedules, {});
+
 // Once daily at 04:00 UTC.
 crons.cron("cleanup extra notifications", "0 4 * * *", internal.notifications.cleanup_extra_notifications, {});
 
@@ -103,6 +106,9 @@ crons.cron("cleanup expired mcp sign-ins", "0 7 * * *", internal.plugins_mcp_oau
 // Hourly, not daily: a retry record only becomes deletable 24 hours after its release, so a daily
 // pass would often miss the rows that just became eligible and hold their slots for another day.
 crons.cron("cleanup expired plugin data", "20 * * * *", internal.plugins_data.cleanup_expired_plugin_data, {});
+
+// Every 5 minutes — resume volume and generation cleanup after an expired drain lease.
+crons.cron("cleanup plugin volumes", "*/5 * * * *", internal.plugins_volumes.gc_expired, {});
 
 // Once hourly — clean up files uploaded by interrupted publishes whose scheduled cleanup run never happened (crash, failed retry).
 crons.cron(

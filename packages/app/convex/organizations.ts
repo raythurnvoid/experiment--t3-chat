@@ -27,6 +27,7 @@ import {
 } from "../shared/organizations.ts";
 import app_convex_schema from "./schema.ts";
 import {
+	access_control_db_ensure_owner_memberships,
 	access_control_db_ensure_role_assignment,
 	access_control_db_has_permission,
 	access_control_db_resolve_effective_permissions,
@@ -198,6 +199,7 @@ export async function organizations_db_create(
 		name: organizations_DEFAULT_WORKSPACE_NAME,
 		description: "",
 		default: true,
+		pluginInstallAccess: "owner",
 		updatedAt: args.now,
 	});
 
@@ -371,6 +373,7 @@ export async function organizations_db_create_workspace(
 		name,
 		description: args.description,
 		default: false,
+		pluginInstallAccess: "owner",
 		updatedAt: args.now,
 	});
 
@@ -392,6 +395,12 @@ export async function organizations_db_create_workspace(
 	// We write no role assignment here. The creator's organization role already works in this
 	// workspace through the membership we just created. Also, always giving `member` would let someone
 	// whose role only has `workspace.create` write files in the workspace they just made.
+
+	await access_control_db_ensure_owner_memberships(ctx, {
+		organizationId: args.organizationId,
+		ownerUserId: organization.ownerUserId,
+		now: args.now,
+	});
 
 	// Seeding the README needs an action (R2 writes), so it runs right after this mutation.
 	await ctx.scheduler.runAfter(0, internal.files_nodes_content.create_home_file, {
@@ -1146,20 +1155,18 @@ export const invite_user_to_organization_workspace = mutation({
 				if (blockingGrant) {
 					return Result({
 						_nay: {
-							message: `You cannot invite someone as ${access_control_SYSTEM_ROLE_MATRIX.member.label}: that role is shared on a file you do not have "${access_control_PERMISSION_CATALOG[blockingGrant.permission].label}" on`,
+							message:
+								blockingGrant.permission !== "workspace.plugins.manage"
+									? `You cannot invite someone as ${access_control_SYSTEM_ROLE_MATRIX.member.label}: that role is shared on a file you do not have "${access_control_PERMISSION_CATALOG[blockingGrant.permission].label}" on`
+									: `You cannot invite someone as ${access_control_SYSTEM_ROLE_MATRIX.member.label}: that role is on a plugin access list you cannot manage`,
 						},
 					});
 				}
 			}
 
-			// The role this invite gives is not the only role the invitee ends up holding here. A file
-			// grant only works for a member of the workspace it lives in, so writing the membership below
-			// is what switches on every grant naming a role they already have. The permission comparison
-			// above cannot see those: a role carries files its permission list says nothing about.
-			//
-			// Each distinct role is weighed once, over every workspace this invite joins. The scan is the
-			// most expensive read in this mutation, and asking the same role a second time cannot return
-			// a different answer.
+			// Joining a workspace also enables grants for roles this person already has.
+			// Check file shares and plugin access lists before adding the membership.
+			// Check each role once across all workspaces this invite joins.
 			const heldRoles = new Set<access_control_RoleRef>();
 			for (const joinedWorkspaceId of joinedWorkspaceIds) {
 				for (const heldRole of await access_control_db_resolve_role_refs(ctx, {
@@ -1188,7 +1195,10 @@ export const invite_user_to_organization_workspace = mutation({
 				if (blockingGrant) {
 					return Result({
 						_nay: {
-							message: `You cannot invite this member: a role they already have is shared on a file you do not have "${access_control_PERMISSION_CATALOG[blockingGrant.permission].label}" on`,
+							message:
+								blockingGrant.permission !== "workspace.plugins.manage"
+									? `You cannot invite this member: a role they already have is shared on a file you do not have "${access_control_PERMISSION_CATALOG[blockingGrant.permission].label}" on`
+									: "You cannot invite this member: a role they already have is on a plugin access list you cannot manage",
 						},
 					});
 				}

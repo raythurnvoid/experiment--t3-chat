@@ -2,10 +2,6 @@ import { defineCommand, type Command } from "just-bash/browser";
 import { internal } from "../convex/_generated/api.js";
 import type { ActionCtx } from "../convex/_generated/server.js";
 import type { upsert_file_pending_archive_in_db_Result } from "../convex/files_pending_updates.ts";
-import {
-	organizations_is_global_organization_id,
-	organizations_is_reserved_workspace_id,
-} from "../shared/organizations.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import {
 	bash_create_glob_syntax_unsupported_message,
@@ -194,14 +190,10 @@ export function bash_rm_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 				continue;
 			}
 
-			const { organizationId, workspaceId, userId, threadId, agentSource } = target.ctxData;
-			if (
-				organizations_is_global_organization_id(organizationId) ||
-				organizations_is_reserved_workspace_id(workspaceId) ||
-				!agentSource
-			) {
-				throw should_never_happen("rm reached a scope without agent write access", { organizationId, workspaceId });
-			}
+			const { userId, threadId, agentSource } = target.ctxData;
+			if (!target.fs.writeScope || !agentSource)
+				throw should_never_happen("rm reached a scope without agent write access");
+			const { organizationId, workspaceId } = target.fs.writeScope;
 			const proposed = (await ctx.runMutation(internal.files_pending_updates.upsert_file_pending_archive_in_db, {
 				organizationId,
 				workspaceId,

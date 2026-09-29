@@ -148,7 +148,11 @@ export async function activities_db_finish(
 		errorMessage: args.errorMessage,
 		errorCode: args.errorCode,
 		finishedAt: args.now,
-		expiresAt: args.now + (activity.source.kind === "plugin_run" ? 30 : 7) * 24 * 60 * 60 * 1000,
+		// Scheduled history has no time limit. Other jobs keep their normal retention.
+		expiresAt:
+			activity.source.kind === "plugin_run" && activity.source.event === "schedule.interval.elapsed"
+				? undefined
+				: args.now + (activity.source.kind === "plugin_run" ? 30 : 7) * 24 * 60 * 60 * 1000,
 		updatedAt: args.now,
 	});
 }

@@ -30,6 +30,9 @@ const REQUIRED_APP_PERMISSION_BY_SCOPE = {
 	"files:download": CONTENT_READ_PERMISSION,
 	// Policy management is checked on the actual file, including restricted folders.
 	"files:permissions": null,
+	// Volume writes check the exact installation in their transaction.
+	"volumes:write": null,
+	"runs:follow_up": null,
 	"secrets:read": null,
 	"outbound:fetch": null,
 	"activities:write": null,
@@ -105,12 +108,10 @@ export function public_api_is_path_inside_prefix(filePath: string, pathPrefix: s
 }
 
 /**
- * Whose eyes a public API call reads files with, and the human a billed call is charged as.
+ * The person whose file permissions a public API call uses.
  *
- * A plugin run has no user of its own, so it reads as the person whose upload started it. Without
- * that rule, installing a plugin would be a way around a restricted folder. The billing gates and
- * emits use the same identity: the actor's organization then decides the payer through
- * `billing_pick_billed_user_id`, exactly like an app save.
+ * A plugin run reads as its uploader, invoke caller, or assigned scheduled user.
+ * The read doors also check the installation account. Billing doors choose the payer separately.
  */
 export function public_api_visibility_user_id(principal: { actorUserId: Id<"users"> } | { userId: Id<"users"> }) {
 	return "actorUserId" in principal ? principal.actorUserId : principal.userId;
@@ -348,7 +349,7 @@ export async function public_api_authorize_request<K extends PrincipalKind>(
 		} as const;
 	}
 
-	// Consume the slot before the kind and scope checks. A rejected plugin call must still cost a slot.
+	// Claim the call before the route's kind and cached scope checks.
 	let pluginCallId: Id<"plugins_event_run_calls"> | null = null;
 	if (principal.kind === "plugin_run") {
 		const consumed: plugins_runtime_consume_run_api_call_Result = await ctx.runMutation(
@@ -357,12 +358,18 @@ export async function public_api_authorize_request<K extends PrincipalKind>(
 				runId: principal.runId,
 				kind: "api_request",
 				route: args.route,
+				requiredScope: args.requiredScope,
 			},
 		);
 		if (consumed._nay) {
 			return {
 				_nay: {
-					status: consumed._nay.message === "Plugin API call limit exceeded" ? 429 : 401,
+					status:
+						consumed._nay.message === "Plugin API call limit exceeded"
+							? 429
+							: consumed._nay.message === "Permission denied"
+								? 403
+								: 401,
 					body: { message: consumed._nay.message },
 				},
 			} as const;

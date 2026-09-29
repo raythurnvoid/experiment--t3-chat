@@ -207,7 +207,8 @@ export function bash_search_command_create(ctx: ActionCtx, dbFilesRoots: bash_Db
 			parsed._yay.pathShell != null &&
 			scope.dbFilesPath == null &&
 			scope.kind !== "plugins_root" &&
-			scope.kind !== "external_mounts_root"
+			scope.kind !== "external_mounts_root" &&
+			scope.kind !== "external_mount_group"
 		) {
 			const normalizedScopeShellPath = bash_normalize_path(scopeShellPath);
 			const mountHint = normalizedScopeShellPath.startsWith("/.mounts")
@@ -246,34 +247,38 @@ export function bash_search_command_create(ctx: ActionCtx, dbFilesRoots: bash_Db
 		const path = scope.dbFilesPath != null && scope.dbFilesPath !== "/" ? scope.dbFilesPath : undefined;
 		// The `/.plugins` and `/.mounts` root scopes print and continue as `--path <root>` even
 		// though the fan-out has no single stored tree path.
-		const scopePath = scope.kind === "plugins_root" || scope.kind === "external_mounts_root" ? "/" : path;
+		const scopePath =
+			scope.kind === "plugins_root" || scope.kind === "external_mounts_root" || scope.kind === "external_mount_group"
+				? "/"
+				: path;
 
 		let res: files_nodes_text_search_files_Result;
 
-		if (scope.kind === "external_mounts_root") {
-			// One text search per synced mount, each scoped to its commit-keyed tree.
+		if (scope.kind === "external_mounts_root" || scope.kind === "external_mount_group") {
+			// Each leaf keeps the copy pinned for this Bash call.
 			const fanOut = await bash_external_mounts_fan_out_paginate({
 				command: "search",
 				externalMounts: dbFilesRoots.externalMounts,
+				basePath: scope.basePath,
 				cursor,
 				limit: bash_clamp_listing_page_limit(parsed._yay.limit),
 				runPage: async (pageArgs) => {
 					const pageResult = (await ctx.runQuery(internal.files_nodes.text_search_files, {
+						agentSource: pageArgs.mount.fs.ctxData.agentSource,
 						organizationId: pageArgs.mount.fs.ctxData.organizationId,
 						workspaceId: pageArgs.mount.fs.ctxData.workspaceId,
 						userId: pageArgs.mount.fs.ctxData.userId,
-						// Mount trees live under the reserved global organization, where no node can be
-						// restricted, so workspace read holds by construction.
+						// Volume reads check the original user's live access at the query boundary.
 						hasWorkspaceRead: true,
 						query: parsed._yay.query,
 						numItems: pageArgs.numItems,
 						cursor: pageArgs.innerCursor,
-						pathPrefix: `/${pageArgs.mount.name}/${pageArgs.mount.commitSha}`,
+						pathPrefix: pageArgs.mount.fs.dbFilesRootPath,
 					})) as files_nodes_text_search_files_Result;
 					return {
 						items: pageResult.items.map((item) => ({
 							...item,
-							path: bash_external_mounts_fan_out_db_files_path(pageArgs.mount, item.path),
+							path: bash_external_mounts_fan_out_db_files_path(pageArgs.mount, item.path, scope.basePath),
 						})),
 						continueCursor: pageResult.continueCursor,
 						isDone: pageResult.isDone,

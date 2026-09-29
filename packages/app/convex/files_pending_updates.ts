@@ -62,11 +62,9 @@ import {
 } from "./files_pending_nodes.ts";
 import { files_pending_holds_db_check_expiry } from "./files_pending_holds.ts";
 import { files_visible_db_create_reader } from "./files_visible.ts";
+import { files_db_resolve_scope } from "./files_scopes.ts";
 import { path_extract_segments_from } from "../shared/paths.ts";
-import {
-	organizations_is_global_organization_id,
-	organizations_is_reserved_workspace_id,
-} from "../shared/organizations.ts";
+import { organizations_is_global_organization_id } from "../shared/organizations.ts";
 import {
 	files_pending_media_action_validate,
 	files_pending_media_db_require_validation,
@@ -6990,16 +6988,13 @@ async function db_redact_pending_copy_source(ctx: QueryCtx, pendingUpdate: app_c
 		copiedFrom.target.kind === "saved"
 			? await ctx.db.get("files_nodes", copiedFrom.target.id)
 			: await ctx.db.get("files_pending_nodes", copiedFrom.target.id);
-	if (
-		source &&
-		!organizations_is_global_organization_id(source.organizationId) &&
-		!organizations_is_reserved_workspace_id(source.workspaceId)
-	) {
-		const workspace = await ctx.db.get("organizations_workspaces", source.workspaceId);
+	const sourceScope = source ? files_db_resolve_scope(ctx, source.workspaceId) : null;
+	if (source && !organizations_is_global_organization_id(source.organizationId) && sourceScope?.kind === "workspace") {
+		const workspace = await ctx.db.get("organizations_workspaces", sourceScope.workspaceId);
 		if (workspace && workspace.pluginDataPurgeStartedAt === undefined) {
 			const scope = {
 				organizationId: source.organizationId,
-				workspaceId: source.workspaceId,
+				workspaceId: sourceScope.workspaceId,
 				userId: pendingUpdate.userId,
 			};
 			const reader = await files_visible_db_create_reader(ctx, scope);

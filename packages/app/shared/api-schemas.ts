@@ -93,8 +93,10 @@ import type { public_api_plugin_files_http_routes } from "../convex/public_api_p
 import type { public_api_plugin_writers_http_routes } from "../convex/public_api_plugin_writers_http_routes.ts";
 import type { public_api_http_routes } from "../convex/public_api_http_routes.ts";
 import type { public_api_service_uploads_http_routes } from "../convex/public_api_service_uploads_http_routes.ts";
+import type { public_api_volumes_http_routes } from "../convex/public_api_volumes_http_routes.ts";
 import type { r2_http_routes } from "../convex/r2_http_routes.ts";
 import type { plugins_runtime_http_routes } from "../convex/plugins_runtime_http_routes.ts";
+import type { plugins_follow_up_http_routes } from "../convex/plugins_follow_up_http_routes.ts";
 import type { plugins_service_http_routes } from "../convex/plugins_service_http_routes.ts";
 import type { plugins_service_access_http_routes } from "../convex/plugins_service_access_http_routes.ts";
 import type { plugins_ui_http_routes } from "../convex/plugins_ui_http_routes.ts";
@@ -206,6 +208,18 @@ export interface api_schemas_Main {
 	"/api/v1/files/service-uploads/archive-destination": ReturnType<
 		typeof public_api_service_uploads_http_routes
 	>["/api/v1/files/service-uploads/archive-destination"];
+
+	"/api/v1/volumes/list": ReturnType<typeof public_api_volumes_http_routes>["/api/v1/volumes/list"];
+
+	"/api/v1/volumes/stage": ReturnType<typeof public_api_volumes_http_routes>["/api/v1/volumes/stage"];
+
+	"/api/v1/volumes/write-many": ReturnType<typeof public_api_volumes_http_routes>["/api/v1/volumes/write-many"];
+
+	"/api/v1/volumes/publish": ReturnType<typeof public_api_volumes_http_routes>["/api/v1/volumes/publish"];
+
+	"/api/v1/volumes/delete": ReturnType<typeof public_api_volumes_http_routes>["/api/v1/volumes/delete"];
+
+	"/api/v1/plugin-runs/follow-up": ReturnType<typeof plugins_follow_up_http_routes>["/api/v1/plugin-runs/follow-up"];
 
 	"/api/v1/auth/verify": ReturnType<typeof public_api_http_routes>["/api/v1/auth/verify"];
 

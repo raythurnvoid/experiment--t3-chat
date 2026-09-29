@@ -13,14 +13,15 @@ import {
 import type { bash_ReviewScratch } from "../convex/bash.ts";
 import { access_control_db_ensure_role_assignment } from "../convex/access_control.ts";
 import { organizations_membership_lifetimes_db_ensure } from "../convex/organizations_membership_lifetimes.ts";
-import { files_db_yjs_push_update } from "../convex/files_nodes.ts";
-import { db_insert_file_text_content } from "../convex/files_nodes_content.ts";
+import { files_db_yjs_push_update, files_nodes_db_create_node_recursively_at_path } from "../convex/files_nodes.ts";
+import { db_insert_file_text_content, files_nodes_db_insert_file_content_docs } from "../convex/files_nodes_content.ts";
 import { files_PENDING_REPLACEMENT_BASE_CHANGED_MESSAGE } from "../convex/files_pending_updates.ts";
-import { r2_confirmed_object_delete, r2_server_side_copy } from "../convex/r2_client.ts";
+import { r2, r2_confirmed_object_delete, r2_server_side_copy } from "../convex/r2_client.ts";
 import { test_convex, test_mocks, test_mocks_fill_db_with } from "../convex/setup.test.ts";
 import type { ai_chat_ModelId } from "../shared/ai-chat.ts";
 import { delay } from "../shared/async-utils.ts";
 import { files_yjs_doc_create_from_text } from "../shared/files-tiptap.ts";
+import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
 import {
 	type files_PendingTarget,
 	files_ROOT_ID,
@@ -12373,6 +12374,740 @@ describe("bash_run_command", () => {
 		expect(result.stdout).toContain("[truncated after 131072 characters]");
 	});
 
+	describe("plugin volume mounts", () => {
+		const VOLUME_TEXT = "# unfinished [markdown\nMountneedle marker.\nUnicode: café 🐒\nLast line\n";
+		const VOLUME_PATH = "/.mounts/research/repo/notes.md";
+
+		async function seed_generation(
+			runner: Awaited<ReturnType<typeof create_bash_runner>>,
+			installationId: Id<"plugins_workspace_installations">,
+			volumeId: Id<"plugins_volumes">,
+			files: { path: string; text: string }[],
+			opts: { status?: "published" | "staging"; revision?: string; chunks?: boolean } = {},
+		) {
+			return await runner.t.run(async (ctx) => {
+				const now = Date.now();
+				const tenant = { organizationId: runner.seeded.organizationId, workspaceId: runner.seeded.workspaceId };
+				const generationId = await ctx.db.insert("plugins_volume_generations", {
+					...tenant,
+					installationId,
+					volumeId,
+					status: opts.status ?? "published",
+					revision: opts.revision ?? "copy-1",
+					fileCount: files.length,
+					bytes: files.reduce((sum, file) => sum + new TextEncoder().encode(file.text).byteLength, 0),
+					createdAt: now,
+					lastWriteAt: now,
+					publishedAt: opts.status === "staging" ? null : now,
+					expiresAt: null,
+					drainScheduledUntil: null,
+				});
+				const scope = { organizationId: tenant.organizationId, workspaceId: volumeId };
+				const nodes: { nodeId: Id<"files_nodes">; assetId: Id<"files_r2_assets">; r2Key: string }[] = [];
+				// This is the trusted SYSTEM materialization path. Reads use the real Bash doors below.
+				for (const file of files) {
+					const path = `/${generationId}${file.path}`;
+					const contentType = files_guess_content_type_from_name(file.path);
+					const bytes = new TextEncoder().encode(file.text);
+					const assetId = await ctx.db.insert("files_r2_assets", {
+						...scope,
+						kind: "content",
+						r2Bucket: r2.config.bucket,
+						size: bytes.byteLength,
+						createdBy: users_SYSTEM_AUTHOR,
+						updatedAt: now,
+					});
+					const r2Key = `bash-volume/${assetId}`;
+					await ctx.db.patch("files_r2_assets", assetId, { r2Key });
+					test_r2_objects.set(r2Key, bytes);
+					const created = await files_nodes_db_create_node_recursively_at_path(ctx, {
+						...scope,
+						userId: users_SYSTEM_AUTHOR,
+						parentId: files_ROOT_ID,
+						path,
+						kind: "file",
+						contentType,
+						assetId,
+						expectsTextContent: true,
+						now,
+					});
+					if (created._nay) throw new Error(created._nay.message);
+					const nodeId = created._yay;
+					await ctx.db.patch("files_nodes", nodeId, { contentByteSize: bytes.byteLength });
+					if (opts.chunks !== false)
+						await files_nodes_db_insert_file_content_docs(ctx, {
+							...scope,
+							nodeId,
+							path,
+							contentType,
+							rootKind: "plain_text",
+							textContent: file.text,
+							readOnly: true,
+							userId: users_SYSTEM_AUTHOR,
+							now,
+						});
+					nodes.push({ nodeId, assetId, r2Key });
+				}
+				return { generationId, nodes };
+			});
+		}
+
+		async function create_volume_runner(opts: { reader?: boolean; large?: boolean; chunks?: boolean } = {}) {
+			const t = test_convex();
+			const owner = await t.run((ctx) =>
+				test_mocks_fill_db_with.membership(ctx, { organizationName: "mount-team", workspaceName: "home" }),
+			);
+			const asOwner = t.withIdentity({ issuer: "https://clerk.test", external_id: owner.userId });
+			let seeded = owner;
+			if (opts.reader) {
+				const reader = await t.run((ctx) =>
+					test_mocks_fill_db_with.membership(ctx, { organizationName: "personal", workspaceName: "home" }),
+				);
+				expect(
+					await asOwner.mutation(api.organizations.invite_user_to_organization_workspace, {
+						organizationId: owner.organizationId,
+						workspaceId: owner.workspaceId,
+						userIdToAdd: reader.userId,
+					}),
+				).toEqual({ _yay: null });
+				const membership = await t.run((ctx) =>
+					ctx.db
+						.query("organizations_workspaces_users")
+						.withIndex("by_workspace_user_active", (q) =>
+							q.eq("workspaceId", owner.workspaceId).eq("userId", reader.userId).eq("active", true),
+						)
+						.unique(),
+				);
+				if (!membership) throw new Error("Expected reader membership");
+				seeded = { ...owner, userId: reader.userId, membershipId: membership._id };
+			}
+			const runner = await create_bash_runner({ shared: { t, seeded } });
+			const capabilities = ["workspace.volumes.write", "plugin.backend.invoke"] as const;
+			const pluginVersionId = await t.run((ctx) =>
+				ctx.db.insert("plugins_versions", {
+					name: "research",
+					displayName: "Research",
+					version: "0.1.0",
+					description: "External records",
+					reviewStatus: "passed",
+					reviewId: null,
+					isLatest: true,
+					artifactHash: `sha256:${"a".repeat(64)}`,
+					sourceRepositoryUrl: "https://github.com/example/research",
+					sourceOwner: "example",
+					sourceRepo: "research",
+					sourceCommitSha: "a".repeat(40),
+					manifestR2Key: "research/manifest.json",
+					backendEntrypointFile: {
+						entry: "backend.js",
+						moduleName: "backend",
+						r2Key: "research/backend.js",
+						sha256: "a".repeat(64),
+						compatibilityDate: "2026-01-01",
+						compatibilityFlags: [],
+					},
+					configuration: { description: "Mount name", defaultYaml: "mount:\n  name: research\n" },
+					mounts: [{ id: "sources", description: "External records", configurationPath: ["mount", "name"] }],
+					events: [],
+					capabilities: [...capabilities],
+					endpoints: [{ id: "refresh", path: "/refresh", serialization: "installation" }],
+					pages: [],
+					fileViews: [],
+					outboundOrigins: [],
+					uiOutboundOrigins: [],
+					mcpServers: [],
+					mcpServersFingerprint: "research-mcp",
+					skills: [],
+					files: [],
+					sourceStatus: "ready",
+					sourceLastError: null,
+					createdBy: owner.userId,
+					updatedAt: Date.now(),
+				}),
+			);
+			const installed = await asOwner.mutation(api.plugins.install_version, {
+				membershipId: owner.membershipId,
+				pluginVersionId,
+				acceptedCapabilities: [...capabilities],
+				acceptedOutboundOrigins: [],
+				acceptedUiOutboundOrigins: [],
+				acceptedMcpServersFingerprint: "research-mcp",
+				acceptedSkillNames: [],
+			});
+			if (installed._nay) throw new Error(installed._nay.message);
+			const installationId = installed._yay.installationId;
+			const claim = await t.run((ctx) =>
+				ctx.db
+					.query("plugins_mounts")
+					.withIndex("by_organization_workspace_installation", (q) =>
+						q
+							.eq("organizationId", owner.organizationId)
+							.eq("workspaceId", owner.workspaceId)
+							.eq("installationId", installationId),
+					)
+					.unique(),
+			);
+			if (!claim) throw new Error("Expected mount claim");
+			const volumeId = await t.run((ctx) =>
+				ctx.db.insert("plugins_volumes", {
+					organizationId: owner.organizationId,
+					workspaceId: owner.workspaceId,
+					installationId,
+					mountId: "sources",
+					volumeKey: "repo",
+					publishedGenerationId: null,
+					createdAt: Date.now(),
+					deleteRequestedAt: null,
+					drainScheduledUntil: null,
+				}),
+			);
+			const text = opts.large ? `${"Mountneedle line\n".repeat(6000)}END\n` : VOLUME_TEXT;
+			const copy = await seed_generation(
+				runner,
+				installationId,
+				volumeId,
+				[
+					{ path: "/notes.md", text },
+					{ path: "/guide.md", text: "Mountneedle guide\n" },
+					{ path: "/records/sample/item-1.json", text: '{"name":"Mountneedle"}\n' },
+				],
+				{ chunks: opts.chunks },
+			);
+			await t.run((ctx) => ctx.db.patch("plugins_volumes", volumeId, { publishedGenerationId: copy.generationId }));
+			return { runner, owner, asOwner, installationId, claimId: claim._id, volumeId, ...copy, text };
+		}
+
+		async function seed_legacy_mount(
+			runner: Awaited<ReturnType<typeof create_bash_runner>>,
+			name: string,
+			synced = true,
+		) {
+			const inserted = await runner.t.mutation(internal.github_mounts.upsert_mount, {
+				name,
+				owner: "example",
+				repo: "legacy",
+				ref: "main",
+			});
+			if (inserted._nay) throw new Error(inserted._nay.message);
+			if (synced) {
+				const sha = "a".repeat(40);
+				await runner.t.run((ctx) => ctx.db.patch("github_mounts", inserted._yay.mountId, { lastCommitSha: sha }));
+				const created = await runner.t.action(internal.files_nodes_content.create_file_node_internal, {
+					workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
+					path: `/${name}/${sha}/old.md`,
+					rawText: "Mountneedle legacy\n",
+				});
+				if (created._nay) throw new Error(created._nay.message);
+			}
+			return inserted._yay.mountId;
+		}
+
+		test("reads published copies through every reader and forwards the original source", async () => {
+			const f = await create_volume_runner();
+			for (const [command, text] of [
+				[`cat ${VOLUME_PATH}`, VOLUME_TEXT],
+				[`head -n 1 ${VOLUME_PATH}`, "# unfinished [markdown\n"],
+				[`tail -n 1 ${VOLUME_PATH}`, "Last line\n"],
+				[`sed -n '2p' ${VOLUME_PATH}`, "Mountneedle marker.\n"],
+				[`grep Mountneedle ${VOLUME_PATH}`, "Mountneedle marker.\n"],
+				[`wc -l ${VOLUME_PATH}`, "4"],
+				[`textgrep Mountneedle ${VOLUME_PATH}`, "Mountneedle"],
+				[`stat -c %s ${VOLUME_PATH}`, String(new TextEncoder().encode(VOLUME_TEXT).byteLength)],
+				["cat /.mounts/research/repo/records/sample/item-1.json", '{"name":"Mountneedle"}\n'],
+			] as const) {
+				const result = await f.runner.run(command);
+				expect(result.metadata.exitCode, `${command}: ${result.stderr}`).toBe(0);
+				expect(result.stdout, command).toContain(text);
+			}
+			for (const command of [
+				"ls /.mounts/research/repo",
+				"tree /.mounts/research/repo --limit 20",
+				"find /.mounts/research/repo --limit 20",
+				"search --path /.mounts/research/repo Mountneedle",
+				`meta get ${VOLUME_PATH}`,
+			]) {
+				const result = await f.runner.run(command);
+				expect(result.metadata.exitCode, `${command}: ${result.stderr}`).toBe(0);
+			}
+			const volumeReads = [...f.runner.runQuery.mock.calls, ...f.runner.runAction.mock.calls].filter(
+				([ref, args]) => args.workspaceId === f.volumeId && function_name_of(ref)?.startsWith("files_"),
+			);
+			expect(volumeReads.length).toBeGreaterThan(8);
+			for (const [, args] of volumeReads)
+				expect(args.agentSource).toEqual({
+					organizationId: f.runner.ctxData.organizationId,
+					workspaceId: f.runner.ctxData.workspaceId,
+					userId: f.runner.ctxData.userId,
+					threadId: f.runner.ctxData.threadId,
+					membershipId: f.runner.ctxData.membershipId,
+					membershipLifetime: f.runner.ctxData.membershipLifetime,
+				});
+			expect((await f.runner.run(`resolve ${f.nodes[0].nodeId}`)).metadata.exitCode).not.toBe(0);
+		});
+
+		test.each([
+			`printf changed > ${VOLUME_PATH}`,
+			`printf changed >> ${VOLUME_PATH}`,
+			`printf changed | tee ${VOLUME_PATH}`,
+			`touch ${VOLUME_PATH}`,
+			`rm ${VOLUME_PATH}`,
+			`mv ${VOLUME_PATH} /tmp/moved.md`,
+			`cp /tmp/new.md ${VOLUME_PATH}`,
+			"mkdir /.mounts/research/repo/new-folder",
+			"mkdir -p /.mounts/research/repo/records",
+			`chmod 777 ${VOLUME_PATH}`,
+			`ln -s ${VOLUME_PATH} /.mounts/research/repo/link`,
+			"mkdir /.mounts/research/new-leaf",
+			"printf changed > /.mounts/research/new-leaf",
+			"rm -r /.mounts/research",
+		])("refuses writes through %s", async (command) => {
+			const f = await create_volume_runner();
+			await f.runner.run("printf new > /tmp/new.md");
+			const result = await f.runner.run(command);
+			expect(result.metadata.exitCode, command).not.toBe(0);
+			expect((await f.runner.run(`cat ${VOLUME_PATH}`)).stdout).toBe(VOLUME_TEXT);
+			expect(await f.runner.t.run((ctx) => ctx.db.query("files_pending_updates").collect())).toEqual([]);
+		});
+
+		test("copies data to scratch and never executes mounted code", async () => {
+			const f = await create_volume_runner();
+			expect((await f.runner.run(`cp ${VOLUME_PATH} /tmp/notes.md && cat /tmp/notes.md`)).stdout).toBe(VOLUME_TEXT);
+			for (const command of [`bash ${VOLUME_PATH}`, `source ${VOLUME_PATH}`, `eval "$(cat ${VOLUME_PATH})"`])
+				expect((await f.runner.run(command)).metadata.exitCode).not.toBe(0);
+		});
+
+		test("reads large published text through bounded reader modes", async () => {
+			const f = await create_volume_runner({ large: true });
+			for (const command of [
+				`cat ${VOLUME_PATH}`,
+				`head -n 1 ${VOLUME_PATH}`,
+				`tail -n 1 ${VOLUME_PATH}`,
+				`sed -n '2p' ${VOLUME_PATH}`,
+				`wc -l ${VOLUME_PATH}`,
+				`grep -c Mountneedle ${VOLUME_PATH}`,
+				`textgrep -c Mountneedle ${VOLUME_PATH}`,
+			]) {
+				const result = await f.runner.run(command);
+				expect(result.metadata.exitCode, `${command}: ${result.stderr}`).toBe(0);
+				expect(result.stdout.length, command).toBeGreaterThan(0);
+				expect(result.stdout.length, command).toBeLessThan(20_000);
+			}
+		});
+
+		test.each([
+			`cat ${VOLUME_PATH}`,
+			`head -n 1 ${VOLUME_PATH}`,
+			`tail -n 1 ${VOLUME_PATH}`,
+			`wc ${VOLUME_PATH}`,
+			`sed -n '2p' ${VOLUME_PATH}`,
+			`grep Mountneedle ${VOLUME_PATH}`,
+			`textgrep Mountneedle ${VOLUME_PATH}`,
+			`stat ${VOLUME_PATH}`,
+			`meta get ${VOLUME_PATH}`,
+			"ls /.mounts/research/repo",
+			"tree /.mounts/research/repo",
+			"find /.mounts/research/repo",
+			"search --path /.mounts/research/repo Mountneedle",
+		])("refuses pinned readers after installation disable: %s", async (command) => {
+			const f = await create_volume_runner();
+			const baseQuery = f.runner.runQuery.getMockImplementation()!;
+			let disabled = false;
+			f.runner.runQuery.mockImplementation(async (ref, args) => {
+				const result = await baseQuery(ref, args);
+				if (!disabled && function_name_of(ref) === "plugins:list_bash_volume_mounts") {
+					disabled = true;
+					await f.runner.t.run((ctx) =>
+						ctx.db.patch("plugins_workspace_installations", f.installationId, { status: "disabled" }),
+					);
+				}
+				return result;
+			});
+			const result = await f.runner.run(command);
+			expect(disabled).toBe(true);
+			expect(result.stdout, command).not.toContain("Mountneedle");
+			expect(result.stdout, command).not.toContain("notes.md");
+			expect(result.metadata.exitCode, command).not.toBe(0);
+		});
+
+		test("lists mixed trees with correct root and group depths", async () => {
+			const f = await create_volume_runner();
+			await seed_legacy_mount(f.runner, "legacy");
+			expect((await f.runner.run("ls /.mounts")).stdout).toBe("legacy\nresearch\n");
+			expect((await f.runner.run("ls /.mounts/research")).stdout).toBe("repo\n");
+			const mixedListing = await f.runner.run("ls /tmp /.mounts/research --limit 1");
+			expect(mixedListing.metadata.exitCode, mixedListing.stderr).toBe(0);
+			expect(mixedListing.stdout).toContain("repo");
+			const rootOne = await f.runner.run("find /.mounts -maxdepth 1 --limit 20");
+			expect(rootOne.stdout).toContain("/.mounts/legacy/");
+			expect(rootOne.stdout).toContain("/.mounts/research/");
+			expect(rootOne.stdout).not.toContain("repo");
+			const rootTwo = await f.runner.run("find /.mounts -maxdepth 2 --limit 20");
+			expect(rootTwo.stdout).toContain("/.mounts/legacy/old.md");
+			expect(rootTwo.stdout).toContain("/.mounts/research/repo/");
+			expect(rootTwo.stdout).not.toContain("notes.md");
+			const groupOne = await f.runner.run("find /.mounts/research -maxdepth 1 --limit 20");
+			expect(groupOne.stdout).toContain("/.mounts/research/repo/");
+			expect(groupOne.stdout).not.toContain("notes.md");
+			const folders = await f.runner.run("find /.mounts -type d --limit 20");
+			expect(folders.stdout).toContain("/.mounts/research/");
+			expect(folders.stdout).toContain("/.mounts/research/repo/records/sample/");
+			for (const base of ["/.mounts", "/.mounts/research"]) {
+				for (const command of [
+					`ls -R ${base} --limit 20`,
+					`tree ${base} --limit 20`,
+					`find ${base} -type f --limit 20`,
+					`search --path ${base} Mountneedle`,
+				]) {
+					const result = await f.runner.run(command);
+					expect(result.metadata.exitCode, `${command}: ${result.stderr}`).toBe(0);
+					expect(result.stdout, command).toContain("notes.md");
+					if (base !== "/.mounts") expect(result.stdout, command).not.toContain("legacy");
+				}
+			}
+			expect((await f.runner.run("meta search --path /.mounts/research name=Mountneedle")).metadata.exitCode).not.toBe(
+				0,
+			);
+			expect((await f.runner.run("grep -R Mountneedle /.mounts/research")).stdout).toContain(
+				"search --path /.mounts/research",
+			);
+			expect((await f.runner.run("textgrep -R Mountneedle /.mounts/research")).stderr).toContain(
+				"search --path /.mounts/research",
+			);
+		});
+
+		test.each([false, true])("skips a whole plugin group after a later legacy claim (synced %s)", async (synced) => {
+			const f = await create_volume_runner();
+			await seed_legacy_mount(f.runner, "research", synced);
+			const result = await f.runner.run(`cat ${VOLUME_PATH}`);
+			expect(result.stdout, "collision must hide the plugin copy").toBe("");
+			expect(result.metadata.exitCode).not.toBe(0);
+			for (const command of [
+				"find /.mounts --limit 20",
+				"tree /.mounts --limit 20",
+				"search --path /.mounts Mountneedle",
+			]) {
+				const listed = await f.runner.run(command);
+				expect(listed.stdout).not.toContain("repo");
+				expect(listed.stdout).not.toContain("notes.md");
+			}
+		});
+
+		test("hides staging copies and unpublished leaves", async () => {
+			const f = await create_volume_runner();
+			await seed_generation(
+				f.runner,
+				f.installationId,
+				f.volumeId,
+				[{ path: "/staging.md", text: "Stagingneedle\n" }],
+				{ status: "staging", revision: "copy-2" },
+			);
+			expect((await f.runner.run("find /.mounts --limit 20")).stdout).not.toContain("staging.md");
+			expect((await f.runner.run("search --path /.mounts Stagingneedle")).stdout).toContain("No content matches");
+			await f.runner.t.run((ctx) => ctx.db.patch("plugins_volumes", f.volumeId, { publishedGenerationId: null }));
+			expect((await f.runner.run("ls /.mounts/research")).metadata.exitCode).not.toBe(0);
+		});
+
+		test.each(["find", "ls -R", "tree", "search"] as const)(
+			"keeps %s cursors scoped to a root or group and rejects changed copies",
+			async (command) => {
+				const f = await create_volume_runner();
+				const build = (base: string) =>
+					command === "search" ? `search --path ${base} Mountneedle --limit 1` : `${command} ${base} --limit 1`;
+				const rootPage = await f.runner.run(build("/.mounts"));
+				const rootNext = rootPage.stdout.split("Next page: ")[1]?.split("\n")[0].trim();
+				expect(rootNext, rootPage.stdout).toBeTruthy();
+				const wrongGroup = await f.runner.run(rootNext!.replace("/.mounts", "/.mounts/research"));
+				expect(wrongGroup.metadata.exitCode).not.toBe(0);
+				expect(wrongGroup.stderr).toContain("does not belong");
+				const groupPage = await f.runner.run(build("/.mounts/research"));
+				const groupNext = groupPage.stdout.split("Next page: ")[1]?.split("\n")[0].trim();
+				expect(groupNext, groupPage.stdout).toBeTruthy();
+				expect((await f.runner.run(groupNext!)).metadata.exitCode).toBe(0);
+				const next = await seed_generation(
+					f.runner,
+					f.installationId,
+					f.volumeId,
+					[{ path: "/notes.md", text: "Mountneedle replacement\n" }],
+					{ revision: "copy-2" },
+				);
+				await f.runner.t.run((ctx) =>
+					ctx.db.patch("plugins_volumes", f.volumeId, { publishedGenerationId: next.generationId }),
+				);
+				const changed = await f.runner.run(groupNext!);
+				expect(changed.metadata.exitCode).not.toBe(0);
+				expect(changed.stderr).toContain("listing changed");
+			},
+		);
+
+		test("rejects renamed root cursors and climbs cwd after rename or deletion", async () => {
+			const f = await create_volume_runner();
+			const page = await f.runner.run("find /.mounts --limit 1");
+			const next = page.stdout.split("Next page: ")[1]?.split("\n")[0].trim();
+			expect(next).toBeTruthy();
+			expect((await f.runner.run("cd /.mounts/research/repo/records/sample")).metadata.exitCode).toBe(0);
+			await f.runner.t.run((ctx) => ctx.db.patch("plugins_mounts", f.claimId, { name: "renamed" }));
+			expect((await f.runner.run("pwd")).stdout).toBe("/.mounts\n");
+			expect((await f.runner.run(next!)).stderr).toContain("listing changed");
+			expect((await f.runner.run("cd /.mounts/renamed/repo/records/sample")).metadata.exitCode).toBe(0);
+			await f.runner.t.run((ctx) => ctx.db.patch("plugins_volumes", f.volumeId, { deleteRequestedAt: Date.now() }));
+			expect((await f.runner.run("pwd")).stdout).toBe("/\n");
+		});
+
+		test.each(["disabled", "uninstalled", "purging", "deleting", "foreign workspace"] as const)(
+			"refuses a volume after %s",
+			async (state) => {
+				const f = await create_volume_runner();
+				expect((await f.runner.run(`cat ${VOLUME_PATH}`)).stdout).toBe(VOLUME_TEXT);
+				await f.runner.t.run(async (ctx) => {
+					if (state === "disabled")
+						await ctx.db.patch("plugins_workspace_installations", f.installationId, { status: "disabled" });
+					else if (state === "uninstalled") await ctx.db.delete("plugins_workspace_installations", f.installationId);
+					else if (state === "purging")
+						await ctx.db.patch("organizations_workspaces", f.owner.workspaceId, {
+							pluginDataPurgeStartedAt: Date.now(),
+						});
+					else if (state === "deleting")
+						await ctx.db.patch("plugins_volumes", f.volumeId, { deleteRequestedAt: Date.now() });
+					else {
+						const other = await test_mocks_fill_db_with.membership(ctx, {
+							organizationName: "other-team",
+							workspaceName: "home",
+						});
+						await ctx.db.patch("plugins_volumes", f.volumeId, { workspaceId: other.workspaceId });
+					}
+				});
+				if (state === "purging") {
+					await expect(f.runner.run(`cat ${VOLUME_PATH}`)).rejects.toThrow("Unauthorized");
+					return;
+				}
+				const refused = await f.runner.run(`cat ${VOLUME_PATH}`);
+				expect(refused.stdout).toBe("");
+				expect(refused.metadata.exitCode).not.toBe(0);
+			},
+		);
+
+		test.each(["disabled", "uninstalled", "purging", "left and rejoined", "role loss"] as const)(
+			"rechecks access after paused R2 reads (%s)",
+			async (state) => {
+				const f = await create_volume_runner({ reader: true, large: true, chunks: false });
+				let arrive = () => {};
+				let resume = () => {};
+				const started = new Promise<void>((resolve) => {
+					arrive = resolve;
+				});
+				const paused = new Promise<void>((resolve) => {
+					resume = resolve;
+				});
+				const baseFetch = vi.mocked(fetch).getMockImplementation()!;
+				const baseAction = f.runner.runAction.getMockImplementation()!;
+				const readResults: unknown[] = [];
+				f.runner.runAction.mockImplementation(async (ref, args) => {
+					const result = await baseAction(ref, args);
+					if (function_name_of(ref) === "files_nodes_content:read_file_line_range") readResults.push(result);
+					return result;
+				});
+				let intercepted = false;
+				vi.mocked(fetch).mockImplementation(async (input, init) => {
+					const response = await baseFetch(input, init);
+					const href = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+					if (!intercepted && href.endsWith(encodeURIComponent(f.nodes[0].r2Key))) {
+						intercepted = true;
+						arrive();
+						await paused;
+					}
+					return response;
+				});
+				const reading = Promise.allSettled([f.runner.run(`head -n 1 ${VOLUME_PATH}`)]);
+				await started;
+				if (state === "left and rejoined") {
+					const asReader = f.runner.t.withIdentity({
+						issuer: "https://clerk.test",
+						external_id: f.runner.seeded.userId,
+					});
+					expect(
+						await asReader.mutation(api.organizations.remove_user_from_organization, {
+							organizationId: f.owner.organizationId,
+							userIdToRemove: f.runner.seeded.userId,
+						}),
+					).toEqual({ _yay: null });
+					expect(
+						await f.asOwner.mutation(api.organizations.invite_user_to_organization_workspace, {
+							organizationId: f.owner.organizationId,
+							workspaceId: f.owner.workspaceId,
+							userIdToAdd: f.runner.seeded.userId,
+						}),
+					).toEqual({ _yay: null });
+				} else if (state === "role loss") {
+					const role = await f.asOwner.mutation(api.access_control.create_role, {
+						organizationId: f.owner.organizationId,
+						name: "Workspace maker",
+						description: "",
+						permissions: ["workspace.create"],
+					});
+					if (role._nay) throw new Error(role._nay.message);
+					expect(
+						await f.asOwner.mutation(api.access_control.set_user_role, {
+							organizationId: f.owner.organizationId,
+							workspaceId: f.owner.workspaceId,
+							userId: f.runner.seeded.userId,
+							role: role._yay.roleId,
+						}),
+					).toEqual({ _yay: null });
+				} else
+					await f.runner.t.run(async (ctx) => {
+						if (state === "disabled")
+							await ctx.db.patch("plugins_workspace_installations", f.installationId, { status: "disabled" });
+						else if (state === "uninstalled") await ctx.db.delete("plugins_workspace_installations", f.installationId);
+						else
+							await ctx.db.patch("organizations_workspaces", f.owner.workspaceId, {
+								pluginDataPurgeStartedAt: Date.now(),
+							});
+					});
+				resume();
+				const [settled] = await reading;
+				expect(intercepted).toBe(true);
+				expect(readResults, "the paused read must not release old text").toEqual([null]);
+				if (state === "purging" || state === "left and rejoined" || state === "role loss") {
+					expect(settled.status).toBe("rejected");
+					if (settled.status === "rejected") expect(String(settled.reason)).toContain("Unauthorized");
+				} else {
+					expect(settled.status).toBe("fulfilled");
+					if (settled.status === "fulfilled") {
+						expect(settled.value.stdout).toBe("");
+						expect(settled.value.metadata.exitCode).not.toBe(0);
+					}
+				}
+			},
+		);
+
+		test("refuses cached cat text after access changes during its second size lookup", async () => {
+			const f = await create_volume_runner();
+			const baseQuery = f.runner.runQuery.getMockImplementation()!;
+			let sizeReads = 0;
+			f.runner.runQuery.mockImplementation(async (ref, args) => {
+				const result = await baseQuery(ref, args);
+				if (function_name_of(ref) === "r2:get_asset_by_id" && args.assetId === f.nodes[0].assetId) {
+					sizeReads += 1;
+					if (sizeReads === 2)
+						await f.runner.t.run((ctx) =>
+							ctx.db.patch("plugins_workspace_installations", f.installationId, { status: "disabled" }),
+						);
+				}
+				return result;
+			});
+			const result = await f.runner.run(`cat ${VOLUME_PATH}; cat ${VOLUME_PATH}`);
+			expect(sizeReads).toBe(2);
+			expect(result.stdout, "cached content must not be released after the volume becomes unreadable").toBe(
+				VOLUME_TEXT,
+			);
+			expect(result.metadata.exitCode).not.toBe(0);
+		});
+
+		test.each(["disabled", "replacement"] as const)(
+			"rechecks exact file metadata after the size lookup (%s)",
+			async (state) => {
+				const f = await create_volume_runner();
+				let arrive = () => {};
+				let resume = () => {};
+				const started = new Promise<void>((resolve) => {
+					arrive = resolve;
+				});
+				const paused = new Promise<void>((resolve) => {
+					resume = resolve;
+				});
+				const baseQuery = f.runner.runQuery.getMockImplementation()!;
+				let intercepted = false;
+				f.runner.runQuery.mockImplementation(async (ref, args) => {
+					const result = await baseQuery(ref, args);
+					if (!intercepted && function_name_of(ref) === "r2:get_asset_by_id" && args.assetId === f.nodes[0].assetId) {
+						intercepted = true;
+						arrive();
+						await paused;
+					}
+					return result;
+				});
+				const reading = f.runner.run(`stat -c %s ${VOLUME_PATH}`);
+				await started;
+				await f.runner.t.run(async (ctx) => {
+					if (state === "disabled")
+						await ctx.db.patch("plugins_workspace_installations", f.installationId, { status: "disabled" });
+					else {
+						const old = await ctx.db.get("files_nodes", f.nodes[0].nodeId);
+						if (!old) throw new Error("Expected the original node");
+						const { _id, _creationTime, ...fields } = old;
+						await ctx.db.delete("files_nodes", _id);
+						await ctx.db.insert("files_nodes", fields);
+					}
+				});
+				resume();
+				const result = await reading;
+				expect(intercepted).toBe(true);
+				expect(result.stdout, "the final target check must withhold stale metadata").toBe("");
+				expect(result.metadata.exitCode).not.toBe(0);
+			},
+		);
+
+		test("reads the pinned retired copy during publication until its files are removed", async () => {
+			const f = await create_volume_runner({ large: true, chunks: false });
+			const next = await seed_generation(
+				f.runner,
+				f.installationId,
+				f.volumeId,
+				[{ path: "/notes.md", text: "Replacement text\n" }],
+				{ revision: "copy-2" },
+			);
+			const baseFetch = vi.mocked(fetch).getMockImplementation()!;
+			let changed = false;
+			vi.mocked(fetch).mockImplementation(async (input, init) => {
+				const response = await baseFetch(input, init);
+				if (!changed) {
+					changed = true;
+					await f.runner.t.run(async (ctx) => {
+						await ctx.db.patch("plugins_volume_generations", f.generationId, {
+							status: "retired",
+							expiresAt: Date.now() + 600_000,
+						});
+						await ctx.db.patch("plugins_volumes", f.volumeId, { publishedGenerationId: next.generationId });
+					});
+				}
+				return response;
+			});
+			const oldRead = await f.runner.run(`head -n 1 ${VOLUME_PATH}`);
+			expect(changed).toBe(true);
+			expect(oldRead.stdout).toBe("Mountneedle line\n");
+			expect(oldRead.metadata.exitCode).toBe(0);
+			expect((await f.runner.run(`cat ${VOLUME_PATH}`)).stdout).toBe("Replacement text\n");
+			await f.runner.t.run((ctx) => ctx.db.delete("files_nodes", f.nodes[0].nodeId));
+			const oldTarget = await f.runner.t.action(internal.files_nodes_content.read_file_line_range, {
+				agentSource: {
+					organizationId: f.runner.ctxData.organizationId,
+					workspaceId: f.runner.ctxData.workspaceId,
+					userId: f.runner.ctxData.userId,
+					threadId: f.runner.threadId,
+					membershipId: f.runner.ctxData.membershipId,
+					membershipLifetime: f.runner.ctxData.membershipLifetime,
+				},
+				organizationId: f.owner.organizationId,
+				workspaceId: f.volumeId,
+				userId: f.runner.seeded.userId,
+				path: `/${f.generationId}/notes.md`,
+				startLine: 1,
+				maxLines: 1,
+			});
+			expect(oldTarget).toBeNull();
+		});
+
+		test("keeps published volume mounts inside background jobs", async () => {
+			const f = await create_volume_runner();
+			expect((await f.runner.run(`{ cat ${VOLUME_PATH}; } &`)).metadata.exitCode).toBe(0);
+			const row = await job_row(f.runner, 1);
+			await bash_run_job(f.runner.ctx, { invocationId: row._id, workerGeneration: row.job!.workerGeneration });
+			const finished = await job_row(f.runner, 1);
+			expect(finished.result?.metadata.exitCode, finished.result?.stderr).toBe(0);
+			expect(finished.result?.stdout).toBe(VOLUME_TEXT);
+		});
+	});
+
 	describe("github mounts (Phase F7)", () => {
 		// README content is markdown-hostile on purpose and small enough to read inline from the
 		// committed plain-text chunks (no R2 round-trip), matching how the sync materializes external mount content.
@@ -12993,6 +13728,7 @@ describe("bash_run_command", () => {
 						compatibilityFlags: ["nodejs_compat"],
 					},
 					configuration: null,
+					mounts: [],
 					events: [{ type: "files.upload.completed", contentTypes: ["image/png"], filters: [] }],
 					pages: [],
 					fileViews: [],
@@ -13046,6 +13782,7 @@ describe("bash_run_command", () => {
 						pluginVersionId,
 						pluginName,
 						status: "enabled",
+						managementAccess: "selected",
 						configurationYaml: null,
 						acceptedCapabilities: [],
 						capabilitiesAcceptedAt: now,

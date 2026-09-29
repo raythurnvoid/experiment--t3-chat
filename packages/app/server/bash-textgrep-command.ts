@@ -18,6 +18,7 @@ import {
 	bash_search_command_exact_query_filter,
 	bash_search_command_exact_query_note,
 	bash_search_command_exact_query_summary,
+	bash_shell_arg_quote,
 	bash_resolve_db_files_shell_path,
 	bash_COMMAND_EXIT_FAILURE,
 	bash_COMMAND_EXIT_USAGE,
@@ -255,6 +256,13 @@ export function bash_textgrep_command_create(ctx: ActionCtx, dbFilesRoots: bash_
 			const absoluteShellPath = bash_resolve_path(commandCtx.cwd, operands[0]);
 			const pathResolution = bash_resolve_db_files_shell_path(absoluteShellPath, dbFilesRoots);
 			const dbFilesPath = pathResolution.dbFilesPath;
+			if (pathResolution.kind === "external_mounts_root" || pathResolution.kind === "external_mount_group") {
+				return {
+					stdout: "",
+					stderr: `textgrep: this folder spans mount leaves. Use search --path ${bash_shell_arg_quote(absoluteShellPath)} ${bash_shell_arg_quote(pattern)}\n`,
+					exitCode: bash_COMMAND_EXIT_USAGE,
+				};
+			}
 			const folderNode =
 				dbFilesPath == null || dbFilesPath === "/" ? null : await pathResolution.fs.getEntry(dbFilesPath);
 

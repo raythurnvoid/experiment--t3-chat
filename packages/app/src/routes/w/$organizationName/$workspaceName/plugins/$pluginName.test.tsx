@@ -12,22 +12,33 @@ import { join } from "node:path";
 import { useSyncExternalStore, type ComponentProps, type ReactElement, type ReactNode, type Ref } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
-const { paramsMock, tenantContextMock, useQueryMock, mutationMock, actionMock, toastErrorMock, routeStore } =
-	vi.hoisted(() => ({
-		paramsMock: vi.fn(),
-		tenantContextMock: vi.fn(),
-		useQueryMock: vi.fn(),
-		mutationMock: vi.fn(),
-		actionMock: vi.fn(),
-		toastErrorMock: vi.fn(),
-		// The remount key and mocked hooks subscribe here. Like a real router or Convex update, a
-		// change re-renders the component that read the snapshot. A parent rerender does not, because
-		// the React Compiler keeps its output when props are unchanged.
-		routeStore: {
-			revision: 0,
-			listeners: new Set<() => void>(),
-		},
-	}));
+const {
+	paramsMock,
+	tenantContextMock,
+	useQueryMock,
+	usePaginatedQueryMock,
+	mutationMock,
+	actionMock,
+	toastErrorMock,
+	routeStore,
+	modalOptions,
+} = vi.hoisted(() => ({
+	paramsMock: vi.fn(),
+	tenantContextMock: vi.fn(),
+	useQueryMock: vi.fn(),
+	usePaginatedQueryMock: vi.fn(),
+	mutationMock: vi.fn(),
+	actionMock: vi.fn(),
+	toastErrorMock: vi.fn(),
+	modalOptions: { keepMounted: false },
+	// The remount key and mocked hooks subscribe here. Like a real router or Convex update, a
+	// change re-renders the component that read the snapshot. A parent rerender does not, because
+	// the React Compiler keeps its output when props are unchanged.
+	routeStore: {
+		revision: 0,
+		listeners: new Set<() => void>(),
+	},
+}));
 
 /**
  * Tell every subscribed hook that params or query data changed.
@@ -81,9 +92,6 @@ vi.mock("convex/react", async () => {
 				() => routeStore.revision,
 			);
 			const result = useQueryMock(query, ...args);
-			if (query === "account_permission") {
-				return revision < 0 ? undefined : true;
-			}
 			if (query === "get_account") {
 				return revision < 0 ? undefined : { _id: "account_1", name: "Media worker", revokedAt: null };
 			}
@@ -100,11 +108,24 @@ vi.mock("convex/react", async () => {
 			}
 			return revision < 0 ? undefined : result;
 		},
-		usePaginatedQuery: () => ({
-			results: [{ _id: "account_1", name: "Media worker", revokedAt: null }],
-			status: "Exhausted",
-			loadMore: vi.fn(),
-		}),
+		useQueries: () => ({}),
+		usePaginatedQuery: (query: string, ...args: unknown[]) => {
+			const revision = useSyncExternalStore(
+				(listener) => {
+					routeStore.listeners.add(listener);
+					return () => {
+						routeStore.listeners.delete(listener);
+					};
+				},
+				() => routeStore.revision,
+			);
+			const result = usePaginatedQueryMock(query, ...args) ?? {
+				results: query === "list_accounts" ? [{ _id: "account_1", name: "Media worker", revokedAt: null }] : [],
+				status: "Exhausted",
+				loadMore: vi.fn(),
+			};
+			return revision < 0 ? undefined : result;
+		},
 	};
 });
 
@@ -121,8 +142,21 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 			get_service_account: "get_account",
 			get_service_account_grant_management_state: "grant_management",
 		},
-		files_nodes: { get_authorized_by_path: "get_authorized_by_path" },
+		files_nodes: {
+			get_authorized_by_path: "get_authorized_by_path",
+			get_visible_target_by_path: "get_visible_target_by_path",
+		},
+		users: { get_anagraphic: "get_anagraphic" },
 		organizations: { list: "organizations.list" },
+		plugins_access: {
+			get_workspace_install_access: "plugins_access.get_workspace_install_access",
+			get_installation_access: "plugins_access.get_installation_access",
+			get_my_run_as_grant: "plugins_access.get_my_run_as_grant",
+			grant_run_as_me: "plugins_access.grant_run_as_me",
+			revoke_run_as_me: "plugins_access.revoke_run_as_me",
+			list_eligible_run_users: "plugins_access.list_eligible_run_users",
+			set_scheduled_run_user: "plugins_access.set_scheduled_run_user",
+		},
 		plugins: {
 			list_installations: "plugins.list_installations",
 			list_published_plugins: "plugins.list_published_plugins",
@@ -131,6 +165,12 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 			set_plugin_service_registration: "plugins.set_plugin_service_registration",
 			get_installation_health: "plugins.get_installation_health",
 			list_recent_runs: "plugins.list_recent_runs",
+			list_run_history: "plugins.list_run_history",
+			list_run_calls: "plugins.list_run_calls",
+			get_installation_schedule: "plugins.get_installation_schedule",
+			get_installation_mounts: "plugins.get_installation_mounts",
+			disable_installation: "plugins.disable_installation",
+			run_schedule_now: "plugins.run_schedule_now",
 			list_installation_secrets: "plugins.list_installation_secrets",
 			list_publisher_repository_secrets: "plugins.list_publisher_repository_secrets",
 			upsert_publisher_repository_secrets: "plugins.upsert_publisher_repository_secrets",
@@ -206,8 +246,8 @@ vi.mock("@/components/my-badge.tsx", () => ({
 // drive the same open-state callback that Escape uses in the real app.
 vi.mock("@/components/my-modal.tsx", () => ({
 	MyModal: function MyModal(props: { open?: boolean; setOpen?: (open: boolean) => void; children?: ReactNode }) {
-		return props.open ? (
-			<div>
+		return props.open || modalOptions.keepMounted ? (
+			<div hidden={!props.open}>
 				<button type="button" onClick={() => props.setOpen?.(false)}>
 					Close modal
 				</button>
@@ -295,6 +335,11 @@ vi.mock("@/components/my-menu.tsx", () => ({
 
 import { Route } from "./$pluginName.tsx";
 import { PluginsPublishSessionProvider } from "@/components/plugins-publish-session.tsx";
+import { app_convex_api, type app_convex_FunctionReturnType } from "@/lib/app-convex-client.ts";
+
+type PublishedPlugin = app_convex_FunctionReturnType<typeof app_convex_api.plugins.list_published_plugins>[number];
+
+afterEach(() => usePaginatedQueryMock.mockReset());
 
 const PageComponent = Route.options.component as () => JSX.Element;
 
@@ -336,6 +381,12 @@ function RemountingPageComponent() {
 function published_plugin(overrides: {
 	name: string;
 	canProcessFiles: boolean;
+	canInstall?: boolean;
+	canManage?: boolean;
+	installationId?: string | null;
+	configuration?: { description: string; defaultYaml: string } | null;
+	mounts?: NonNullable<PublishedPlugin["mounts"]>;
+	events?: PublishedPlugin["events"];
 	capabilities?: string[];
 	pages?: Array<{ id: string; title: string; entry: string; navItem: { label: string; icon: string | null } | null }>;
 	fileViews?: Array<{ id: string; title: string; entry: string; contentTypes: string[] }>;
@@ -364,6 +415,12 @@ function published_plugin(overrides: {
 		publisherDisplayName: "Ray Publisher",
 		reviewStatus: "passed",
 		canProcessFiles: overrides.canProcessFiles,
+		canInstall: overrides.canInstall ?? true,
+		canManage: overrides.canManage ?? false,
+		installationId: overrides.installationId ?? null,
+		configuration: overrides.configuration ?? null,
+		mounts: overrides.mounts ?? [],
+		events: overrides.events ?? [],
 		capabilities: overrides.capabilities ?? ["plugin.data.read"],
 		outboundOrigins: [],
 		uiOutboundOrigins: overrides.uiOutboundOrigins ?? [],
@@ -395,7 +452,8 @@ function installed_item(plugin: ReturnType<typeof published_plugin>) {
 			mcpServers: plugin.mcpServers,
 			mcpServersFingerprint: plugin.mcpServersFingerprint,
 			skills: plugin.skills,
-			events: [],
+			events: plugin.events,
+			mounts: plugin.mounts,
 			configuration: { description: "Where this plugin runs.", defaultYaml: "note: server\n" },
 		},
 		handlers: [],
@@ -431,6 +489,7 @@ function publisher_version_fixture(name: string) {
 		reviewStatus: "passed",
 		reviewId: null,
 		backendEntrypointFile: null,
+		mounts: [],
 		events: [],
 		capabilities: ["plugin.data.read"],
 		outboundOrigins: [],
@@ -466,22 +525,88 @@ const mcp_plugin_parts = {
 const mcp_warning =
 	"MCP servers are outside services. When the agent calls a tool, the chat sends that call's data to the server without asking.";
 
+function scheduled_plugin() {
+	return published_plugin({
+		name: "importer",
+		canProcessFiles: false,
+		capabilities: ["plugin.schedule.run", "workspace.volumes.write"],
+		configuration: {
+			description: "Choose the mount name and interval.",
+			defaultYaml: "mount:\n  name: sources\nschedule:\n  everyMinutes: 30\n",
+		},
+		mounts: [{ id: "source", description: "Outside source files", configurationPath: ["mount", "name"] }],
+		events: [
+			{
+				type: "schedule.interval.elapsed",
+				contentTypes: [],
+				filters: [],
+				schedule: { configurationPath: ["schedule", "everyMinutes"] },
+			},
+		],
+	});
+}
+
+function setQueryResult(query: string, result: unknown) {
+	const previous = useQueryMock.getMockImplementation();
+	useQueryMock.mockImplementation((candidate: string, ...args: unknown[]) =>
+		candidate === query ? result : previous?.(candidate, ...args),
+	);
+}
+
+const SCHEDULE = {
+	status: "enabled",
+	intervalMinutes: 30,
+	nextRunAt: 1_700_000_000_000,
+	userId: "user_2",
+	grantId: "grant_2",
+	userName: "Ada",
+	payerUserId: "owner_1",
+	payerName: "Owner Ray",
+	assignmentError: null,
+	lastRun: { runId: "run_1", status: "failed", updatedAt: 1_700_000_000_000, errorMessage: "Source was unavailable" },
+};
+
 function setQueries(
 	plugin: ReturnType<typeof published_plugin>,
 	installations: unknown[] = [],
 	publisherPlugin: unknown = null,
+	canManageAccounts = true,
 ) {
 	paramsMock.mockReturnValue({ organizationName: "team", workspaceName: "home", pluginName: plugin.name });
 	useQueryMock.mockImplementation((query: string) => {
 		switch (query) {
 			case "organizations.list":
-				return { workspaceIdsPermissionsDict: { workspace_1: ["workspace.plugins.manage"] } };
+				return { workspaceIdsPermissionsDict: { workspace_1: ["content.read"] } };
 			case "plugins.list_published_plugins":
-				return [plugin];
+				return [
+					{
+						...plugin,
+						canInstall: installations.length === 0 && plugin.canInstall,
+						canManage: installations.length > 0 || plugin.canManage,
+						installationId: installations.length > 0 ? "installation_1" : plugin.installationId,
+					},
+				];
 			case "plugins.list_installations":
 				return installations;
 			case "plugins.get_publisher_plugin":
 				return publisherPlugin;
+			case "account_permission":
+				return canManageAccounts;
+			case "plugins_access.get_workspace_install_access":
+				return {
+					canInstall: true,
+					canManageSettings: false,
+					mode: null,
+					principals: [],
+					organizationOwnerUserId: "owner_1",
+				};
+			case "get_anagraphic":
+				return { displayName: "Owner Ray" };
+			case "plugins_access.get_my_run_as_grant":
+			case "plugins_access.get_installation_access":
+			case "plugins.get_installation_schedule":
+			case "plugins.get_installation_mounts":
+				return null;
 			default:
 				return undefined;
 		}
@@ -511,6 +636,48 @@ describe("RoutePluginsPluginConsentModal", () => {
 		fireEvent.click(screen.getByRole("button", { name: "Install" }));
 
 		expect(screen.getByRole("dialog").textContent).toContain("triggering upload");
+	});
+
+	test("installs a fresh empty account without account management permission", async () => {
+		const plugin = published_plugin({ name: "media", canProcessFiles: true });
+		setQueries(plugin, [], null, false);
+		mutationMock.mockResolvedValue({ _yay: { installationId: "installation_1" } });
+
+		render(<PageComponent />);
+		fireEvent.click(screen.getByRole("button", { name: "Install" }));
+
+		const accept = screen.getByRole("button", { name: "Accept and install" }) as HTMLButtonElement;
+		expect(accept.disabled, "fresh empty account install must stay available").toBe(false);
+		expect(screen.getByRole("combobox", { name: "Service account" })).toHaveProperty("disabled", true);
+		expect(screen.queryByRole("button", { name: "Add reviewed grant" })).toBeNull();
+		expect(screen.getByRole("dialog").textContent).toContain("You can install with a new empty account.");
+		fireEvent.click(accept);
+
+		await waitFor(() => expect(mutationMock).toHaveBeenCalledTimes(1));
+		expect(mutationMock).toHaveBeenCalledWith(
+			"plugins.install_version",
+			expect.objectContaining({ membershipId: "membership_1", pluginVersionId: "version_1" }),
+		);
+		const args = mutationMock.mock.calls[0]![1];
+		expect(args).not.toHaveProperty("serviceAccountId");
+		expect(args).not.toHaveProperty("serviceAccountGrants");
+	});
+
+	test("updates an exact managed installation without account or install permission", async () => {
+		const plugin = published_plugin({ name: "media", canProcessFiles: true, canInstall: false });
+		const installed = installed_item(plugin);
+		installed.version.version = "0.1.0";
+		setQueries(plugin, [installed], null, false);
+		mutationMock.mockResolvedValue({ _yay: { installationId: "installation_1" } });
+
+		render(<PageComponent />);
+		fireEvent.click(screen.getByRole("button", { name: "Update" }));
+		fireEvent.click(screen.getByRole("button", { name: "Accept and update" }));
+
+		await waitFor(() => expect(mutationMock).toHaveBeenCalledTimes(1));
+		expect(mutationMock.mock.calls[0]![1]).not.toHaveProperty("serviceAccountId");
+		expect(mutationMock.mock.calls[0]![1]).not.toHaveProperty("serviceAccountGrants");
+		expect(screen.queryByRole("combobox", { name: "Replacement service account" })).toBeNull();
 	});
 
 	test("does not submit inferred grants during an ordinary update", async () => {
@@ -669,6 +836,579 @@ describe("RoutePluginsPluginConsentModal", () => {
 		expect(dialog.textContent).toContain("Tracker — mcp.example.com — each member signs in at auth.example.com");
 		expect(dialog.textContent).toContain("triage — Sort new issues.");
 		expect(dialog.textContent).toContain(mcp_warning);
+	});
+});
+
+describe("RoutePluginsPlugin scheduled runs", () => {
+	beforeEach(() => {
+		modalOptions.keepMounted = false;
+		tenantContextMock.mockReturnValue({
+			membershipId: "membership_1",
+			organizationId: "organization_1",
+			organizationName: "team",
+			workspaceId: "workspace_1",
+			workspaceName: "home",
+		});
+		mutationMock.mockReset().mockResolvedValue({ _yay: null });
+	});
+
+	afterEach(() => {
+		cleanup();
+		modalOptions.keepMounted = false;
+		vi.clearAllMocks();
+	});
+
+	test("requires explicit Me consent and submits the edited first-install YAML", async () => {
+		setQueries(scheduled_plugin());
+		render(<PageComponent />);
+		fireEvent.click(screen.getByRole("button", { name: "Install" }));
+		const dialog = screen.getByRole("dialog");
+		const accept = within(dialog).getByRole("button", { name: "Accept and install" });
+		expect(accept, "a scheduled install must wait for direct Me consent").toHaveProperty("disabled", true);
+		expect(dialog.textContent).toContain("Runs every 30 minutes");
+		expect(dialog.textContent).toContain("Folder sharing limits do not apply");
+		expect(dialog.textContent).toContain("Scheduled writes are billed to Owner Ray");
+		expect(dialog.textContent).toContain("Other writes use this installation's billing settings");
+		expect(dialog.textContent).not.toContain("triggering upload");
+		fireEvent.change(within(dialog).getByRole("textbox", { name: "Configuration YAML" }), {
+			target: { value: "mount:\n  name: fresh\nschedule:\n  everyMinutes: 45\n" },
+		});
+		expect(dialog.textContent).toContain("Runs every 45 minutes");
+		fireEvent.click(
+			within(dialog).getByRole("checkbox", { name: "Allow this plugin to run as me while I am signed out." }),
+		);
+		await waitFor(() => expect(accept).toHaveProperty("disabled", false));
+		fireEvent.click(accept);
+		await waitFor(() =>
+			expect(mutationMock).toHaveBeenCalledWith(
+				"plugins.install_version",
+				expect.objectContaining({
+					configurationYaml: "mount:\n  name: fresh\nschedule:\n  everyMinutes: 45\n",
+					scheduledRun: { kind: "me", scopes: ["volumes:write"], filesReadProof: undefined },
+				}),
+			),
+		);
+	});
+
+	test("requires fresh Me consent after cancel and reopen with mounted dialog children", async () => {
+		modalOptions.keepMounted = true;
+		setQueries(scheduled_plugin());
+		render(<PageComponent />);
+		fireEvent.click(screen.getByRole("button", { name: "Install" }));
+		fireEvent.click(screen.getByRole("checkbox", { name: "Allow this plugin to run as me while I am signed out." }));
+		await waitFor(() =>
+			expect(screen.getByRole("button", { name: "Accept and install" })).toHaveProperty("disabled", false),
+		);
+		fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Cancel" }));
+		fireEvent.click(screen.getByRole("button", { name: "Install" }));
+		const confirmation = screen.getByRole("checkbox", {
+			name: "Allow this plugin to run as me while I am signed out.",
+		});
+		expect(confirmation, "reopening consent must start with Me unchecked").toHaveProperty("checked", false);
+		expect(screen.getByRole("button", { name: "Accept and install" })).toHaveProperty("disabled", true);
+		fireEvent.click(confirmation);
+		await waitFor(() =>
+			expect(screen.getByRole("button", { name: "Accept and install" })).toHaveProperty("disabled", false),
+		);
+		expect(mutationMock).not.toHaveBeenCalled();
+	});
+
+	test.each(["repair", "enable"] as const)(
+		"blocks %s when a selected grant from a later page is removed",
+		async (form) => {
+			modalOptions.keepMounted = true;
+			const plugin = scheduled_plugin();
+			const installation = installed_item(plugin);
+			installation.installation.configurationYaml = plugin.configuration!.defaultYaml;
+			if (form === "enable") installation.installation.status = "disabled";
+			setQueries(plugin, [installation]);
+			setQueryResult("plugins.get_installation_schedule", { ...SCHEDULE, status: installation.installation.status });
+			let eligibleUsers: Array<{ userId: string; grantId: string; displayName: string; scopes: string[] }> = [];
+			let status = "CanLoadMore";
+			usePaginatedQueryMock.mockImplementation((query: string) =>
+				query === "plugins_access.list_eligible_run_users"
+					? {
+							results: eligibleUsers,
+							status,
+							loadMore: () => {
+								eligibleUsers = [{ userId: "user_3", grantId: "grant_3", displayName: "Grace", scopes: [] }];
+								status = "Exhausted";
+								notify_route_store();
+							},
+						}
+					: undefined,
+			);
+			render(<PageComponent />);
+			if (form === "enable") fireEvent.click(screen.getByRole("button", { name: "Enable" }));
+			const formElement =
+				form === "enable" ? screen.getByRole("dialog") : screen.getByRole("region", { name: "Schedule" });
+			fireEvent.click(within(formElement).getByRole("button", { name: "Load more users" }));
+			fireEvent.click(within(formElement).getByRole("combobox", { name: "Run as" }));
+			fireEvent.click(await screen.findByRole("option", { name: "Grace" }));
+			const submit = within(formElement).getByRole("button", {
+				name: form === "enable" ? "Accept and enable" : "Change scheduled user",
+			});
+			await waitFor(() => expect(submit).toHaveProperty("disabled", false));
+			status = "LoadingFirstPage";
+			notify_route_store();
+			expect(within(formElement).queryByText(/selected user's permission is no longer available/)).toBeNull();
+			eligibleUsers = [];
+			status = "Exhausted";
+			notify_route_store();
+			await waitFor(() =>
+				expect(submit, "a removed live grant must block submission").toHaveProperty("disabled", true),
+			);
+			expect(within(formElement).getByText(/selected user's permission is no longer available/)).not.toBeNull();
+			if (form === "enable") {
+				expect(
+					within(formElement).queryByRole("checkbox", {
+						name: "Allow this plugin to run as me while I am signed out.",
+					}),
+				).toBeNull();
+			}
+			fireEvent.click(submit);
+			expect(mutationMock).not.toHaveBeenCalled();
+		},
+	);
+
+	test("names the configured old folder when an update drops its mount", () => {
+		const oldPlugin = scheduled_plugin();
+		const installation = installed_item(oldPlugin);
+		installation.installation.configurationYaml = "mount:\n  name: customer-records\nschedule:\n  everyMinutes: 30\n";
+		const plugin = {
+			...oldPlugin,
+			version: "0.3.0",
+			mounts: [],
+		};
+		setQueries(plugin, [installation]);
+		render(<PageComponent />);
+		fireEvent.click(screen.getByRole("button", { name: "Update" }));
+		const warning = within(screen.getByRole("dialog")).getByRole("alert");
+		expect(warning.textContent, "the dropped folder warning must use its old configured path").toContain(
+			"/.mounts/customer-records",
+		);
+	});
+
+	test("explains ordinary billing for a mount-only plugin", () => {
+		setQueries({ ...scheduled_plugin(), capabilities: ["workspace.volumes.write"], events: [] });
+		render(<PageComponent />);
+		fireEvent.click(screen.getByRole("button", { name: "Install" }));
+		const dialog = screen.getByRole("dialog");
+		expect(dialog.textContent).toContain("Other writes use this installation's billing settings");
+		expect(within(dialog).queryByRole("checkbox", { name: /Allow this plugin to run as me/ })).toBeNull();
+		expect(within(dialog).getByRole("button", { name: "Accept and install" })).toHaveProperty("disabled", false);
+	});
+
+	test("keeps invalid schedule YAML out of the install request", async () => {
+		setQueries(scheduled_plugin());
+		render(<PageComponent />);
+		fireEvent.click(screen.getByRole("button", { name: "Install" }));
+		const dialog = screen.getByRole("dialog");
+		fireEvent.change(within(dialog).getByRole("textbox", { name: "Configuration YAML" }), {
+			target: { value: "mount:\n  name: sources\nschedule:\n  everyMinutes: 1\n" },
+		});
+		fireEvent.click(
+			within(dialog).getByRole("checkbox", { name: "Allow this plugin to run as me while I am signed out." }),
+		);
+		await waitFor(() =>
+			expect(within(dialog).getByRole("button", { name: "Accept and install" })).toHaveProperty("disabled", true),
+		);
+		expect(within(dialog).getByRole("textbox", { name: "Configuration YAML" })).toHaveProperty("validity.valid", false);
+		expect(mutationMock).not.toHaveBeenCalled();
+	});
+
+	test("shows an install permission refusal inline and keeps consent open", async () => {
+		setQueries(scheduled_plugin());
+		mutationMock.mockResolvedValue({ _nay: { message: "Permission denied" } });
+		render(<PageComponent />);
+		fireEvent.click(screen.getByRole("button", { name: "Install" }));
+		fireEvent.click(screen.getByRole("checkbox", { name: "Allow this plugin to run as me while I am signed out." }));
+		await waitFor(() =>
+			expect(screen.getByRole("button", { name: "Accept and install" })).toHaveProperty("disabled", false),
+		);
+		fireEvent.click(screen.getByRole("button", { name: "Accept and install" }));
+		expect(await within(screen.getByRole("dialog")).findByRole("alert")).toHaveProperty(
+			"textContent",
+			"Permission denied",
+		);
+	});
+
+	test("lets a member reach only their run permissions through the public installation ID", async () => {
+		const plugin = { ...scheduled_plugin(), installationId: "installation_1", canInstall: false, canManage: false };
+		setQueries(plugin);
+		setQueryResult("plugins_access.get_my_run_as_grant", {
+			pluginName: "importer",
+			displayName: "Importer",
+			capabilities: ["plugin.schedule.run"],
+			isAssigned: true,
+			grant: { grantId: "grant_me", scopes: [], valid: true },
+		});
+		render(<PageComponent />);
+		expect(screen.getByRole("region", { name: "My run permissions" })).not.toBeNull();
+		expect(screen.getByText("Installed")).not.toBeNull();
+		expect(screen.queryByRole("button", { name: "Install" })).toBeNull();
+		expect(screen.queryByRole("textbox", { name: "Plugin configuration YAML" })).toBeNull();
+		expect(screen.queryByRole("region", { name: "Schedule" })).toBeNull();
+		expect(screen.queryByRole("region", { name: "Plugin management access" })).toBeNull();
+		expect(screen.queryByText("Service account")).toBeNull();
+		fireEvent.click(screen.getByRole("button", { name: "Revoke my run permissions" }));
+		await waitFor(() =>
+			expect(mutationMock).toHaveBeenCalledWith("plugins_access.revoke_run_as_me", {
+				membershipId: "membership_1",
+				installationId: "installation_1",
+			}),
+		);
+		expect(useQueryMock.mock.calls.some((call) => call[0] === "plugins.get_installation_schedule")).toBe(false);
+	});
+
+	test("repairs an invalid actor with another person's own grant and separates the payer", async () => {
+		const plugin = scheduled_plugin();
+		setQueries(plugin, [installed_item(plugin)]);
+		setQueryResult("plugins.get_installation_schedule", {
+			...SCHEDULE,
+			assignmentError: "The scheduled user must grant access again",
+		});
+		usePaginatedQueryMock.mockImplementation((query: string) =>
+			query === "plugins_access.list_eligible_run_users"
+				? {
+						results: [{ userId: "user_3", grantId: "grant_3", displayName: "Grace", scopes: [] }],
+						status: "Exhausted",
+						loadMore: vi.fn(),
+					}
+				: undefined,
+		);
+		render(<PageComponent />);
+		const schedule = screen.getByRole("region", { name: "Schedule" });
+		expect(schedule.textContent).toContain("Ada");
+		expect(schedule.textContent).toContain("Owner Ray");
+		expect(within(schedule).getByRole("button", { name: "Run now" })).toHaveProperty("disabled", true);
+		fireEvent.click(within(schedule).getByRole("combobox", { name: "Run as" }));
+		fireEvent.click(await screen.findByRole("option", { name: "Grace" }));
+		fireEvent.click(within(schedule).getByRole("button", { name: "Change scheduled user" }));
+		await waitFor(() =>
+			expect(mutationMock).toHaveBeenCalledWith("plugins_access.set_scheduled_run_user", {
+				membershipId: "membership_1",
+				installationId: "installation_1",
+				userId: "user_3",
+				grantId: "grant_3",
+			}),
+		);
+		expect(mutationMock.mock.calls[0]![1]).not.toHaveProperty("payerUserId");
+	});
+
+	test.each([true, false])("moves assignment focus to feedback only when still on submit (%s)", async (keepsFocus) => {
+		const plugin = scheduled_plugin();
+		const installation = installed_item(plugin);
+		installation.installation.configurationYaml = plugin.configuration!.defaultYaml;
+		setQueries(plugin, [installation]);
+		setQueryResult("plugins.get_installation_schedule", SCHEDULE);
+		usePaginatedQueryMock.mockImplementation((query: string) =>
+			query === "plugins_access.list_eligible_run_users"
+				? {
+						results: [{ userId: "user_3", grantId: "grant_3", displayName: "Grace", scopes: [] }],
+						status: "Exhausted",
+						loadMore: vi.fn(),
+					}
+				: undefined,
+		);
+		let resolveAssignment!: (value: unknown) => void;
+		mutationMock.mockReturnValue(
+			new Promise((resolve) => {
+				resolveAssignment = resolve;
+			}),
+		);
+		render(<PageComponent />);
+		const schedule = screen.getByRole("region", { name: "Schedule" });
+		fireEvent.click(within(schedule).getByRole("combobox", { name: "Run as" }));
+		fireEvent.click(await screen.findByRole("option", { name: "Grace" }));
+		const assign = within(schedule).getByRole("button", { name: "Change scheduled user" });
+		act(() => assign.focus());
+		fireEvent.click(assign);
+		setQueryResult("plugins.get_installation_schedule", {
+			...SCHEDULE,
+			userId: "user_3",
+			grantId: "grant_3",
+			userName: "Grace",
+		});
+		notify_route_store();
+		expect(assign).toHaveProperty("disabled", false);
+		expect(document.activeElement).toBe(assign);
+		const run = within(schedule).getByRole("button", { name: "Run now" });
+		if (!keepsFocus) act(() => run.focus());
+		await act(async () => resolveAssignment({ _yay: null }));
+		const feedback = within(schedule).getByRole("status");
+		expect(assign).toHaveProperty("disabled", true);
+		expect(
+			document.activeElement,
+			keepsFocus ? "focused_assignment_lands_on_feedback" : "assignment_does_not_steal_later_focus",
+		).toBe(keepsFocus ? feedback : run);
+	});
+
+	test("queues Run now once and displays a live permission refusal", async () => {
+		const plugin = scheduled_plugin();
+		setQueries(plugin, [installed_item(plugin)]);
+		setQueryResult("plugins.get_installation_schedule", SCHEDULE);
+		let finish: ((value: { _nay: { message: string } }) => void) | undefined;
+		mutationMock.mockImplementation(
+			() =>
+				new Promise((resolve) => {
+					finish = resolve;
+				}),
+		);
+		render(<PageComponent />);
+		const run = screen.getByRole("button", { name: "Run now" });
+		fireEvent.click(run);
+		fireEvent.click(run);
+		expect(mutationMock).toHaveBeenCalledTimes(1);
+		expect(run.getAttribute("aria-busy")).toBe("true");
+		await act(async () => finish?.({ _nay: { message: "The scheduled assignment changed" } }));
+		expect(await screen.findByRole("alert")).toHaveProperty("textContent", "The scheduled assignment changed");
+	});
+
+	test("disables through the public door and keeps Enable consent explicit", async () => {
+		const plugin = scheduled_plugin();
+		const installation = installed_item(plugin);
+		installation.installation.configurationYaml = plugin.configuration!.defaultYaml;
+		setQueries(plugin, [installation]);
+		render(<PageComponent />);
+		fireEvent.click(screen.getByRole("button", { name: "Disable" }));
+		await waitFor(() =>
+			expect(mutationMock).toHaveBeenCalledWith("plugins.disable_installation", {
+				membershipId: "membership_1",
+				installationId: "installation_1",
+			}),
+		);
+		installation.installation.status = "disabled";
+		setQueries(plugin, [installation]);
+		fireEvent.click(screen.getByRole("button", { name: "Enable" }));
+		expect(screen.getByRole("button", { name: "Accept and enable" })).toHaveProperty("disabled", true);
+		expect(screen.getByRole("textbox", { name: "Configuration YAML" })).toHaveProperty(
+			"value",
+			plugin.configuration!.defaultYaml,
+		);
+	});
+
+	test("clears the old Schedule choice after Enable as Me", async () => {
+		modalOptions.keepMounted = true;
+		const plugin = scheduled_plugin();
+		const installation = installed_item(plugin);
+		installation.installation.configurationYaml = plugin.configuration!.defaultYaml;
+		setQueries(plugin, [installation]);
+		setQueryResult("plugins.get_installation_schedule", SCHEDULE);
+		let eligibleUsers = [{ userId: "user_3", grantId: "grant_3", displayName: "Grace", scopes: [] }];
+		usePaginatedQueryMock.mockImplementation((query: string) =>
+			query === "plugins_access.list_eligible_run_users"
+				? { results: eligibleUsers, status: "Exhausted", loadMore: vi.fn() }
+				: undefined,
+		);
+		render(<PageComponent />);
+		const schedule = screen.getByRole("region", { name: "Schedule" });
+		fireEvent.click(within(schedule).getByRole("combobox", { name: "Run as" }));
+		fireEvent.click(await screen.findByRole("option", { name: "Grace" }));
+		fireEvent.click(within(schedule).getByRole("button", { name: "Change scheduled user" }));
+		await waitFor(() =>
+			expect(mutationMock).toHaveBeenCalledWith("plugins_access.set_scheduled_run_user", {
+				membershipId: "membership_1",
+				installationId: "installation_1",
+				userId: "user_3",
+				grantId: "grant_3",
+			}),
+		);
+		setQueryResult("plugins.get_installation_schedule", {
+			...SCHEDULE,
+			userId: "user_3",
+			grantId: "grant_3",
+			userName: "Grace",
+		});
+		notify_route_store();
+		eligibleUsers = [];
+		const revokedSchedule = {
+			...SCHEDULE,
+			userId: "user_3",
+			grantId: null,
+			userName: "Grace",
+			assignmentError: "The scheduled user must grant access again",
+		};
+		setQueryResult("plugins.get_installation_schedule", revokedSchedule);
+		notify_route_store();
+		fireEvent.click(screen.getByRole("button", { name: "Disable" }));
+		await waitFor(() => expect(mutationMock).toHaveBeenCalledWith("plugins.disable_installation", expect.anything()));
+		setQueryResult("plugins.list_installations", [
+			{ ...installation, installation: { ...installation.installation, status: "disabled" } },
+		]);
+		setQueryResult("plugins.get_installation_schedule", { ...revokedSchedule, status: "disabled" });
+		notify_route_store();
+		fireEvent.click(screen.getByRole("button", { name: "Enable" }));
+		const dialog = screen.getByRole("dialog");
+		fireEvent.click(
+			within(dialog).getByRole("checkbox", { name: "Allow this plugin to run as me while I am signed out." }),
+		);
+		const accept = within(dialog).getByRole("button", { name: "Accept and enable" });
+		await waitFor(() => expect(accept).toHaveProperty("disabled", false));
+		fireEvent.click(accept);
+		await waitFor(() =>
+			expect(mutationMock).toHaveBeenCalledWith(
+				"plugins.install_version",
+				expect.objectContaining({
+					scheduledRun: { kind: "me", scopes: ["volumes:write"], filesReadProof: undefined },
+				}),
+			),
+		);
+		eligibleUsers = [{ userId: "user_2", grantId: "grant_me_new", displayName: "Ada", scopes: [] }];
+		setQueryResult("plugins.list_installations", [installation]);
+		setQueryResult("plugins.get_installation_schedule", { ...SCHEDULE, grantId: "grant_me_new" });
+		notify_route_store();
+		expect(screen.getByRole("region", { name: "Schedule" })).toBe(schedule);
+		expect(schedule.textContent).toContain("Ada");
+		expect(
+			within(schedule).queryByText(/selected user's permission is no longer available/),
+			"enable_as_me_clears_stale_schedule_warning",
+		).toBeNull();
+		expect(within(schedule).getByRole("button", { name: "Change scheduled user" })).toHaveProperty("disabled", true);
+		expect(within(schedule).getByRole("button", { name: "Run now" })).toHaveProperty("disabled", false);
+	});
+
+	test("keeps a draft during schedule refresh but clears it when the saved grant changes", async () => {
+		const plugin = scheduled_plugin();
+		setQueries(plugin, [installed_item(plugin)]);
+		setQueryResult("plugins.get_installation_schedule", SCHEDULE);
+		usePaginatedQueryMock.mockImplementation((query: string) =>
+			query === "plugins_access.list_eligible_run_users"
+				? {
+						results: [{ userId: "user_3", grantId: "grant_3", displayName: "Grace", scopes: [] }],
+						status: "Exhausted",
+						loadMore: vi.fn(),
+					}
+				: undefined,
+		);
+		render(<PageComponent />);
+		const schedule = screen.getByRole("region", { name: "Schedule" });
+		fireEvent.click(within(schedule).getByRole("combobox", { name: "Run as" }));
+		fireEvent.click(await screen.findByRole("option", { name: "Grace" }));
+		const assign = within(schedule).getByRole("button", { name: "Change scheduled user" });
+		await waitFor(() => expect(assign).toHaveProperty("disabled", false));
+		setQueryResult("plugins.get_installation_schedule", { ...SCHEDULE, nextRunAt: SCHEDULE.nextRunAt + 60_000 });
+		notify_route_store();
+		expect(assign, "a due-time refresh must keep the unsaved choice").toHaveProperty("disabled", false);
+		setQueryResult("plugins.get_installation_schedule", { ...SCHEDULE, grantId: "grant_2_new" });
+		notify_route_store();
+		expect(assign, "a new saved grant must clear the old choice").toHaveProperty("disabled", true);
+		expect(within(schedule).getByRole("combobox", { name: "Run as" }).textContent).toContain(
+			"Choose a user who granted access",
+		);
+		expect(mutationMock).not.toHaveBeenCalled();
+	});
+
+	test("renders mount copies, deletion, shared visibility, and storage limits", () => {
+		const plugin = scheduled_plugin();
+		setQueries(plugin, [installed_item(plugin)]);
+		setQueryResult("plugins.get_installation_mounts", {
+			mounts: [{ mountId: "source", name: "sources" }],
+			volumes: [
+				{
+					volumeId: "volume_1",
+					mountId: "source",
+					mountName: "sources",
+					volumeKey: "repo",
+					deleting: false,
+					published: { revision: null, publishedAt: 1_700_000_000_000, fileCount: 8, bytes: 1200 },
+					staging: { stagingId: "staging_1", revision: null, expiresAt: 1_700_000_100_000, fileCount: 3, bytes: 800 },
+				},
+				{
+					volumeId: "volume_2",
+					mountId: "removed",
+					mountName: null,
+					volumeKey: "old",
+					deleting: true,
+					published: null,
+					staging: null,
+				},
+			],
+			usage: { fileCount: 11, bytes: 2000, dailyFilesLeft: 9989 },
+			limits: {
+				copyFiles: 5000,
+				copyBytes: 30_000_000,
+				installationFiles: 20_000,
+				installationBytes: 200_000_000,
+				dailyFiles: 10_000,
+				volumesPerMount: 32,
+				volumesPerInstallation: 128,
+			},
+		});
+		render(<PageComponent />);
+		const mounts = screen.getByRole("region", { name: "Mounts" });
+		expect(mounts.textContent).toContain("/.mounts/sources/repo");
+		expect(mounts.textContent).toContain("Open staging copy");
+		expect(mounts.textContent).toContain("Deleting");
+		expect(mounts.textContent).toContain("9,989");
+		expect(mounts.textContent).toContain("Folder sharing limits do not apply");
+		expect(mounts.textContent).toContain("Hidden or not provided");
+	});
+
+	test("pages retained history and loads bounded API calls only on expansion", async () => {
+		const plugin = scheduled_plugin();
+		setQueries(plugin, [installed_item(plugin)]);
+		const loadMore = vi.fn();
+		usePaginatedQueryMock.mockImplementation((query: string) =>
+			query === "plugins.list_run_history"
+				? {
+						results: [
+							{
+								_id: "run_1",
+								event: "schedule.interval.elapsed",
+								status: "succeeded",
+								actorUserId: "user_2",
+								actorName: "Ada",
+								runAsGrantId: "grant_2",
+								chainRootRunId: "run_root",
+								chainIndex: 1,
+								apiCallCount: 1,
+								outputWriteCount: 2,
+								errorMessage: null,
+								errorCode: null,
+								createdAt: 1_700_000_000_000,
+								updatedAt: 1_700_000_000_100,
+								startedAt: 1_700_000_000_000,
+								finishedAt: 1_700_000_000_100,
+								file: null,
+							},
+						],
+						status: "CanLoadMore",
+						loadMore,
+					}
+				: undefined,
+		);
+		setQueryResult("plugins.list_run_calls", [
+			{
+				_id: "call_1",
+				runId: "run_1",
+				sequence: 1,
+				kind: "http",
+				route: "/api/v1/volumes/publish",
+				status: "succeeded",
+				responseStatus: 200,
+				requestBytes: 44,
+				responseBytes: 12,
+				errorMessage: null,
+				startedAt: 1_700_000_000_000,
+				finishedAt: 1_700_000_000_100,
+				elapsedMs: 100,
+			},
+		]);
+		render(<PageComponent />);
+		fireEvent.click(screen.getByText("Activity"));
+		expect(screen.getByText("Run history is kept without a time limit.")).not.toBeNull();
+		expect(screen.getByText(/Run as Ada/).textContent).toContain("Step 2");
+		expect(useQueryMock).toHaveBeenCalledWith("plugins.list_run_calls", "skip");
+		fireEvent.click(screen.getByRole("button", { name: "Show API calls" }));
+		expect(screen.getByText("1. /api/v1/volumes/publish")).not.toBeNull();
+		expect(useQueryMock).toHaveBeenCalledWith("plugins.list_run_calls", {
+			membershipId: "membership_1",
+			installationId: "installation_1",
+			runId: "run_1",
+		});
+		fireEvent.click(screen.getByRole("button", { name: "Load more runs" }));
+		expect(loadMore).toHaveBeenCalledWith(25);
 	});
 });
 
@@ -1075,6 +1815,30 @@ describe("RoutePluginsPlugin", () => {
 		vi.clearAllMocks();
 	});
 
+	test("shows public details without exposing an unmanaged installation", () => {
+		const plugin = published_plugin({
+			name: "media",
+			canProcessFiles: true,
+			canInstall: false,
+			canManage: false,
+			capabilities: ["plugin.secrets.read"],
+		});
+		setQueries(plugin);
+
+		render(<PageComponent />);
+
+		expect(useQueryMock, "members must query the public plugin catalog").toHaveBeenCalledWith(
+			"plugins.list_published_plugins",
+			{ membershipId: "membership_1" },
+		);
+		expect(screen.getByRole("heading", { level: 1, name: "media" })).not.toBeNull();
+		expect(useQueryMock).toHaveBeenCalledWith("plugins.list_installations", { membershipId: "membership_1" });
+		expect(screen.queryByRole("button", { name: "Install" })).toBeNull();
+		expect(screen.queryByRole("button", { name: "Uninstall" })).toBeNull();
+		expect(screen.queryByRole("button", { name: "Manage secrets" })).toBeNull();
+		expect(screen.queryByRole("textbox", { name: "Plugin configuration YAML" })).toBeNull();
+	});
+
 	test("says why the organization policy blocks an install and disables Install", () => {
 		setQueries(published_plugin({ name: "media", canProcessFiles: true, organizationPolicy: "needs_approval" }));
 
@@ -1307,7 +2071,7 @@ describe("RoutePluginsPlugin", () => {
 		expect(screen.getByRole("button", { name: "Publish fork/bonobo-plugin-media-b" })).toBeTruthy();
 	});
 
-	test("shows current permission loss below the repository publish dialog", async () => {
+	test("keeps public details when publisher access is lost below the publish dialog", async () => {
 		const headSha = "fedcba9876543210fedcba9876543210fedcba98";
 		const plugin = published_plugin({ name: "media", canProcessFiles: true });
 		let finishHead!: (result: { _yay: { sourceCommitSha: string } }) => void;
@@ -1322,8 +2086,10 @@ describe("RoutePluginsPlugin", () => {
 		fireEvent.click(screen.getByRole("button", { name: "Publish ray/bonobo-plugin-media" }));
 		useQueryMock.mockImplementation((query: string) => {
 			switch (query) {
-				case "organizations.list":
-					return { workspaceIdsPermissionsDict: { workspace_1: [] } };
+				case "plugins.list_published_plugins":
+					return [{ ...plugin, canInstall: false, canManage: false }];
+				case "plugins.list_installations":
+					return [];
 				case "plugins.get_publisher_plugin":
 					return null;
 				default:
@@ -1334,16 +2100,16 @@ describe("RoutePluginsPlugin", () => {
 		view.rerender(<PageComponent />);
 
 		expect(screen.queryByText("Loading plugin...")).toBeNull();
-		expect(screen.getByText("You don't have permission to manage plugins in this workspace.")).toBeTruthy();
+		expect(screen.getByRole("heading", { level: 1, name: "media" })).toBeTruthy();
+		expect(screen.queryByRole("button", { name: "Install" })).toBeNull();
 		expect(screen.getByRole("dialog").textContent).toContain("Checking repository commit...");
 
 		await act(async () => finishHead({ _yay: { sourceCommitSha: headSha } }));
 		await screen.findByRole("dialog");
 		fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
 
-		const denied = await screen.findByRole("alert");
-		expect(denied.textContent).toContain("You don't have permission");
-		await waitFor(() => expect(document.activeElement).toBe(denied));
+		const title = screen.getByRole("heading", { level: 1, name: "media" });
+		await waitFor(() => expect(document.activeElement).toBe(title));
 	});
 
 	test("keeps a thrown A publish error visible after navigation and releases B on Cancel", async () => {
@@ -1550,17 +2316,15 @@ describe("RoutePluginsPlugin", () => {
 		await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("heading", { level: 1, name: "media" })));
 	});
 
-	test("a publisher without manage who removes their claim lands the focus on the denied notice", async () => {
-		// A publisher without workspace.plugins.manage is a supported visitor: the page derives the
-		// whole detail view from get_publisher_plugin. Removing the claim takes that away, so the
-		// next render shows the permission-denied block instead of the hero — the landing must
-		// reach that block, because no hero h1 exists any more.
+	test("a publisher fallback that loses its claim lands focus on the missing notice", async () => {
+		// The public catalog has no version here. The publisher query is the only detail source.
 		const setPublisherOnlyQueries = (publisherPlugin: unknown) => {
 			paramsMock.mockReturnValue({ pluginName: "media" });
 			useQueryMock.mockImplementation((query: string) => {
 				switch (query) {
-					case "organizations.list":
-						return { workspaceIdsPermissionsDict: { workspace_1: [] } };
+					case "plugins.list_published_plugins":
+					case "plugins.list_installations":
+						return [];
 					case "plugins.get_publisher_plugin":
 						return publisherPlugin;
 					default:
@@ -1591,9 +2355,9 @@ describe("RoutePluginsPlugin", () => {
 		setPublisherOnlyQueries(null);
 		rerender(<PageComponent />);
 
-		const denied = screen.getByRole("alert");
-		expect(denied.textContent).toContain("You don't have permission");
-		await waitFor(() => expect(document.activeElement).toBe(denied));
+		const missing = screen.getByRole("alert");
+		expect(missing.textContent).toContain('No published plugin is named "media".');
+		await waitFor(() => expect(document.activeElement).toBe(missing));
 	});
 
 	test("an install the backend refuses keeps the consent modal open while the request runs", async () => {

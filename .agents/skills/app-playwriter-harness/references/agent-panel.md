@@ -147,6 +147,11 @@ await state.page.waitForFunction(() => {
 await state.page.locator('[data-testid="ai-chat-send-button"]').click();
 ```
 
+DOM `innerText()` can add extra blank lines between ProseMirror paragraphs. For a
+shell prompt, compare the command paragraphs before Send. After Send, compare the
+saved user text from `ai_chat.thread_messages_list` with the original prompt.
+Do not require DOM text to match the prompt byte for byte.
+
 The composer can briefly unmount during the optimistic→persisted thread swap right after `New chat`; always wait for the selector before typing.
 
 ## Attaching images to the composer
