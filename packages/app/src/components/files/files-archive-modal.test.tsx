@@ -115,6 +115,18 @@ describe("FilesArchiveModal", () => {
 		expect(openArchiveRunMock).toHaveBeenCalledWith("run_1");
 	});
 
+	test("warns about a refusal the request found while the job goes on in the background", async () => {
+		mutationMock.mockResolvedValue({
+			_yay: { runId: "run_1", activityId: "activity_1", isDone: false, notArchivedNodeIds: [REPORTS._id] },
+		});
+		const { onArchived } = renderModal([NOTE, REPORTS]);
+		fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Archive" }));
+
+		await waitFor(() => expect(onArchived).toHaveBeenCalledWith([NOTE._id]));
+		expect(toastInfoMock).not.toHaveBeenCalled();
+		expect(toastWarningMock.mock.calls[0]?.[0]).toBe("Some items could not be archived. See Activity.");
+	});
+
 	test("archives inline without a toast", async () => {
 		const { onArchived } = renderModal([NOTE]);
 		fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Archive" }));
@@ -256,7 +268,7 @@ describe("FilesArchiveRunModal", () => {
 				title: "Archive files",
 				errorMessage: null,
 				finishedAt: 1,
-				progress: { completed: 4, skipped: 0, blocked: 2, total: 4 },
+				progress: { completed: 4, skipped: 0, blocked: 2, total: 6 },
 			},
 			controls: { canStop: false, canRetry: false, canDismiss: true },
 			conflict: null,
@@ -267,7 +279,7 @@ describe("FilesArchiveRunModal", () => {
 		});
 		renderRunModal();
 		const dialog = await screen.findByRole("dialog", { name: "Archive files" });
-		expect(within(dialog).getByText("4 archived, 0 skipped, 2 not archived. Total: 4.")).toBeTruthy();
+		expect(within(dialog).getByText("4 archived, 0 skipped, 2 not archived. Total: 6.")).toBeTruthy();
 		const list = within(dialog).getByRole("region", { name: "Not archived" });
 		expect(
 			within(list)

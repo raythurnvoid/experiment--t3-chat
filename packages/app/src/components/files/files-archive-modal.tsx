@@ -109,8 +109,9 @@ export const FilesArchiveModal = memo(function FilesArchiveModal(props: FilesArc
 				// A big archive continues as a background job. Its items leave the tree as the job runs.
 				const { runId, isDone, notArchivedNodeIds } = result._yay;
 				const action = { label: "View", onClick: () => openArchiveRun(runId) };
-				// A job that ended in the request is kept only because it refused items the person cannot change.
-				if (isDone) {
+				// Warn as soon as a refusal is known. A job that ended in the request is kept only because it
+				// refused items, and a job still running can already have refused some.
+				if (isDone || notArchivedNodeIds.length > 0) {
 					toast.warning("Some items could not be archived. See Activity.", { action });
 				} else {
 					toast.info("Archiving in the background. See Activity.", { action });

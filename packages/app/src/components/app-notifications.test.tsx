@@ -403,8 +403,8 @@ describe("AppNotifications", () => {
 								targets: [],
 								progress: {
 									unit: "items",
-									discovered: 40,
-									total: 40,
+									discovered: 46,
+									total: 46,
 									completed: 40,
 									blocked: 6,
 									failed: 0,
@@ -418,7 +418,7 @@ describe("AppNotifications", () => {
 			loadMore: vi.fn(),
 		}));
 		render(<TestNotifications />);
-		expect(screen.getByText("40 archived, 0 skipped, 6 not archived. Total: 40.")).toBeTruthy();
+		expect(screen.getByText("40 archived, 0 skipped, 6 not archived. Total: 46.")).toBeTruthy();
 	});
 
 	// Only a finished walk sets `total`.

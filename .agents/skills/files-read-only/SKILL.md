@@ -259,10 +259,11 @@ of never showing hidden items.
     When the check refuses every named item, one item gets its own refusal, and several items get
     "None of these items can be archived. …". If the request's own check did it, the request answers
     with that error and makes no job. If a later check step did it, the job fails with it as
-    `errorMessage`. Otherwise only a lost membership ends the whole job. Every check step asks for
-    it first, even a step that only drops the rows of a refused item, so the apply never starts for
-    somebody who left. An agent's delete names one
-    item, so the same rule refuses the whole delete.
+    `errorMessage`. Otherwise, during the check, only a lost membership ends the whole job. Every
+    check step asks for it first, even a step that only drops the rows of a refused item, so the
+    apply never starts for somebody who left. Once the apply has started, the stamp walk finishes
+    even without the person: stopping it would leave active items inside an archived folder. An
+    agent's delete names one item, so the same rule refuses the whole delete.
     `archive_nodes` answers the named ids not found and the named ids refused so far as
     `notArchivedNodeIds`, with the named ids inside the refused ones. `get` lists them as
     `notArchived`. It names only items of the run's workspace that the person can still read. An
