@@ -339,12 +339,17 @@ folder (`FileNodeViewPrivateFolder`) still lists its children through `useFilesV
   Copy node id keep their existing behavior. When a folder and its children are selected, all
   menu and keyboard entry points keep only the top-level selected items in the clipboard. Collapsing
   a folder keeps its selected children available to those clipboard actions.
-- Folder row menus offer Paste into that folder. The top `More options` menu pastes into the root
-  folder. File rows never act as folders. There is no Paste button in the sidebar or the folder
-  toolbar, and no line that says how many files are ready to copy or move. The selection count
-  already shows how many rows are selected.
+- Folder row menus offer Paste into that folder. No menu pastes into the root folder. Like the VS
+  Code explorer, a click on empty tree space focuses the `role="tree"` element itself (it has
+  `tabIndex={-1}`, so it stays out of the Tab order), and Mod+V there pastes into the root. The
+  scroll box draws a thin focus ring while the tree element has focus. File rows never act as
+  folders. There is no Paste button in the sidebar or the folder toolbar, and no line that says
+  how many files are ready to copy or move. The selection count already shows how many rows are
+  selected.
 - `FilesClipboardProvider.useHotkeys` scopes Mod+C, Mod+X, Mod+V, and Escape to file navigation.
-  Sidebar Paste uses the focused folder, or the focused file's parent. Folder-table shortcuts use
+  Sidebar Paste uses the focused folder, or the focused file's parent. When the key comes from the
+  tree element itself (no row has DOM focus), it uses the root. Headless Tree still keeps a
+  `focusedItem` then, so check the event target, not `getFocusedItem()`. Folder-table shortcuts use
   the focused row. The folder toolbar's New file and New folder group also accepts Mod+V for the
   open folder. That group refuses when the folder cannot take children, or while a create is still
   running. The table does not add multi-selection. Search, rename, editors, chat, and other

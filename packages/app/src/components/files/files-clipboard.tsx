@@ -32,7 +32,7 @@ import {
 	type app_convex_FunctionReturnType,
 	type app_convex_Id,
 } from "@/lib/app-convex-client.ts";
-import { files_ROOT_ID, files_TRANSFER_SELECTION_PAGE_SIZE } from "@/lib/files.ts";
+import { files_TRANSFER_SELECTION_PAGE_SIZE } from "@/lib/files.ts";
 
 // #region provider
 type FilesClipboard = {
@@ -353,9 +353,7 @@ export const FilesClipboardMenuItems = memo(function FilesClipboardMenuItems(pro
 						<MyMenuItemContentIcon>
 							<ClipboardPaste />
 						</MyMenuItemContentIcon>
-						<MyMenuItemContentPrimary>
-							{targetParentId === files_ROOT_ID ? "Paste into root folder" : "Paste"}
-						</MyMenuItemContentPrimary>
+						<MyMenuItemContentPrimary>Paste</MyMenuItemContentPrimary>
 					</MyMenuItemContent>
 				</MyMenuItem>
 			) : null}

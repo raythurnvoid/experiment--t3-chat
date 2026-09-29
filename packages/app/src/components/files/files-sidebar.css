@@ -30,6 +30,13 @@
 		   when rendering many items inside the tree */
 		contain: strict;
 	}
+
+	/* A click on empty tree space focuses the tree element itself, and Mod+V then pastes into the root.
+	   The tree can be taller than the panel, so draw that focus ring on the scroll box instead. */
+	.FilesSidebar-content:has(> .FilesSidebarTree:focus) {
+		outline: 1px solid var(--color-fg-09);
+		outline-offset: -1px;
+	}
 	/* #endregion root */
 
 	/* #region top section more action */
@@ -225,6 +232,9 @@
 		/* Column flex so the drop zone indicator can push itself to the panel bottom. */
 		display: flex;
 		flex-direction: column;
+
+		/* The scroll box paints the focus ring. */
+		outline: none;
 	}
 
 	.FilesSidebarTree-row {

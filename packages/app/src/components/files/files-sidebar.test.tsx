@@ -286,9 +286,13 @@ describe("FilesSidebar", () => {
 		await view.findByRole("treeitem", { name: "bravo" });
 		fireEvent.click(view.getByRole("button", { name: "More actions for bravo" }));
 		fireEvent.click(await view.findByRole("menuitem", { name: /^Copy$/ }));
+		await waitFor(() => expect(view.queryByRole("menu")).toBeNull());
 		view.rerender(<CreateSidebar router={router} selectedNodeId={files_ROOT_ID} />);
-		fireEvent.click(view.getByRole("button", { name: "More options" }));
-		fireEvent.click(await view.findByRole("menuitem", { name: "Paste into root folder" }));
+		// A click on empty tree space focuses the tree itself. Paste then goes into the root.
+		const tree = view.getByRole("tree", { name: "Files" });
+		tree.focus();
+		fireEvent.keyDown(tree, { key: "v", code: "KeyV", ctrlKey: true });
+		fireEvent.keyUp(tree, { key: "v", code: "KeyV", ctrlKey: true });
 		expect(createNode.mock.calls[0]![1]).toMatchObject({ sourceIds: ["bravo"], targetParentId: files_ROOT_ID });
 		// A one-source paste opens no dialog. The paste would open it right after the start call.
 		await act(async () => {
@@ -334,12 +338,21 @@ describe("FilesSidebar", () => {
 			fireEvent.keyUp(delta, { key, code, ctrlKey: true });
 		} else {
 			fireEvent.click(view.getByRole("button", { name: "More options" }));
-			fireEvent.click(await view.findByRole("menuitem", { name: new RegExp(`^${mode}$`) }));
+			const modeItem = await view.findByRole("menuitem", { name: new RegExp(`^${mode}$`) });
+			// The selection menu has no Paste item: paste into the root uses the focused tree.
+			expect(view.queryByRole("menuitem", { name: /Paste/ })).toBeNull();
+			fireEvent.click(modeItem);
+			await waitFor(() => expect(view.queryByRole("menu")).toBeNull());
 		}
 		view.rerender(<CreateSidebar router={router} selectedNodeId={files_ROOT_ID} />);
-		fireEvent.click(view.getByRole("button", { name: "More options" }));
-		fireEvent.click(await view.findByRole("menuitem", { name: "Paste into root folder" }));
-		expect(createNode.mock.calls[0]![1]).toMatchObject({ sourceIds: ["bravo", "charlie", "delta"] });
+		const tree = view.getByRole("tree", { name: "Files" });
+		tree.focus();
+		fireEvent.keyDown(tree, { key: "v", code: "KeyV", ctrlKey: true });
+		fireEvent.keyUp(tree, { key: "v", code: "KeyV", ctrlKey: true });
+		expect(createNode.mock.calls[0]![1]).toMatchObject({
+			sourceIds: ["bravo", "charlie", "delta"],
+			targetParentId: files_ROOT_ID,
+		});
 		await waitFor(() => expect(view.queryByRole("dialog")).not.toBeNull());
 	});
 

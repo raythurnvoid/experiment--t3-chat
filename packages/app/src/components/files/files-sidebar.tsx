@@ -3081,6 +3081,9 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 						("FilesSidebarTree-folder-actions-expanded" satisfies FilesSidebarTree_ClassNames),
 				)}
 				{...treeContainerRest}
+				// Let a click on empty tree space focus the tree itself, with no row focused, like the VS Code
+				// explorer. Mod+V then pastes into the root. It stays out of the Tab order: rows own the tab stop.
+				tabIndex={-1}
 				style={{ ...treeContainerProps.style, height: virtualizer.getTotalSize() }}
 				onDragStartCapture={handleDragStartCapture}
 				onDragEnterCapture={handleDragEnterCapture}
@@ -5669,8 +5672,16 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 				return [];
 			return get_clipboard_source_ids(selectedSourceItems);
 		},
-		getTargetParentId: () => {
+		getTargetParentId: (event) => {
 			if (is_tree_context_menu_open()) return null;
+			// The tree element itself has focus after a click on empty tree space. Headless Tree still
+			// keeps a focused item then, but no row has DOM focus, so paste into the root.
+			if (
+				event.target instanceof Element &&
+				event.target.classList.contains("FilesSidebarTree" satisfies FilesSidebarTree_ClassNames)
+			) {
+				return canWriteParentId(files_ROOT_ID) ? files_ROOT_ID : null;
+			}
 			const item = tree().getFocusedItem()?.getItemData();
 			if (!item || item.archiveOperationId !== null) return null;
 			const parentId = item.kind === "folder" ? item._id : item.parentId;
@@ -6593,9 +6604,10 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 						sourceIds={get_clipboard_source_ids(selectedSourceItems)}
 						canCut={canCutSelection}
 						canCopy={canCopySelection}
-						targetParentId={files_ROOT_ID}
-						targetName="root folder"
-						canPaste={canWriteRoot && !isBusy}
+						// Paste into the root has no menu item. Click empty tree space, then press Mod+V.
+						targetParentId={null}
+						targetName={null}
+						canPaste={false}
 					/>
 				}
 				onClose={onClose}
