@@ -3188,7 +3188,12 @@ const FileNodeViewToolbar = memo(function FileNodeViewToolbar(props: FileNodeVie
 	const { editorActionsRef, viewSelectRef, showEditorActions, folderActionsSlot, fileActionsSlot } = props;
 
 	return (
-		<div className={"FileNodeViewToolbar" satisfies FileNodeViewToolbar_ClassNames}>
+		<div
+			className={cn(
+				"FileNodeViewToolbar" satisfies FileNodeViewToolbar_ClassNames,
+				"app-scrollable" satisfies AppClassName,
+			)}
+		>
 			<div
 				role="toolbar"
 				aria-label="File actions"

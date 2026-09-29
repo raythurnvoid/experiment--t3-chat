@@ -690,9 +690,14 @@
 		   actions portal in separately. */
 		overflow: auto hidden;
 		scrollbar-width: initial;
-		/* Keep the thumb dim when the editor area is hovered or focused.
-		   Paint the track only when the scrollbar appears, so text cannot show through it. */
+		/* Paint the track only when the scrollbar appears, so text cannot show through it. The shared
+		   `app-scrollable` rules in app.css use a transparent track, so repeat them here with this
+		   track. This rule is in a later layer, so it wins over them. */
 		scrollbar-color: var(--app-scrollbar-thumb) var(--color-base-1-03);
+
+		&:is(:hover, :focus-within):not(.app-scrollable-fits) {
+			scrollbar-color: var(--app-scrollbar-thumb-active) var(--color-base-1-03);
+		}
 	}
 
 	.FileNodeViewToolbar-surface {
