@@ -125,7 +125,6 @@
 		"react-markdown": "^10.1.0",
 		"react-resizable-panels": "^2.1.9",
 		"remark-breaks": "^4.0.0",
-		"remark-gfm": "^4.0.1",
 		"sonner": "^2.0.8",
 		"streamdown": "^2.6.0",
 		"string-byte-length": "3.0.1",
