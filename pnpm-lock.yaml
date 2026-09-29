@@ -108,9 +108,6 @@ importers:
       '@hello-pangea/dnd':
         specifier: ^18.0.0
         version: 18.0.1(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
-      '@hono/node-server':
-        specifier: ^1.19.5
-        version: 1.19.7(hono@4.11.3)
       '@liveblocks/core':
         specifier: 3.24.2
         version: 3.24.2(@types/json-schema@7.0.15)
@@ -26046,10 +26043,6 @@ snapshots:
   '@hono/node-server@1.19.17(hono@4.12.3)':
     dependencies:
       hono: 4.12.3
-
-  '@hono/node-server@1.19.7(hono@4.11.3)':
-    dependencies:
-      hono: 4.11.3
 
   '@hono/node-server@1.19.7(hono@4.12.3)':
     dependencies:
