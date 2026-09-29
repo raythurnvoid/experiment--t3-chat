@@ -1345,7 +1345,7 @@ A package upgrade has the same problem on the frontend side. Vite pre-bundles de
 
 # Git push on this machine
 
-Use `main` directly in this repository. Do not create or push a feature branch unless the user asks for one.
+Commit and push directly to `main` in this repository. Do not open pull requests. Do not create or push a feature branch unless the user asks for one.
 
 The `gh` CLI holds two accounts. Another agent works on a different repository as `dloreto` and switches the active account whenever it needs to, so the active account can flip at any moment — this is expected and will not change. A plain `git push` from this repo then fails with `403 ... denied to dloreto`. Do not "fix" the active account with `gh auth switch` (it can flip back mid-session and it disturbs the other agent); always push with the command below, which pins the account per invocation. It reads the token into an environment variable so the token is never printed; keep it that way.
 
@@ -1357,7 +1357,7 @@ git -c credential.helper= -c "credential.helper=!f() { echo username=raythurnvoi
 Remove-Item Env:GH_TOKEN_RV
 ```
 
-The account flip also affects `gh` write commands (`gh issue create`, `gh pr create`, comments): they run as whatever account is active at that moment. Pin those per invocation too, in one shell call, without printing the token:
+The account flip also affects `gh` write commands (`gh issue create`, comments): they run as whatever account is active at that moment. Pin those per invocation too, in one shell call, without printing the token:
 
 ```powershell
 $env:GH_TOKEN = (gh auth token --user raythurnvoid)
@@ -1374,7 +1374,6 @@ A commit message must start with one short, clear, lowercase line using simple w
 - Use only that line by default.
 - Do not use tags, type prefixes such as `feat:`, `fix:`, or `style:`, or scopes in parentheses. Do not use Conventional Commits.
 - When a commit includes several changes, an optional bullet list may follow after one blank line. Keep each bullet short, clear, and lowercase, using simple words.
-- Pull request titles must follow the same rule as the first line of a commit message.
 
 Example with an optional list:
 

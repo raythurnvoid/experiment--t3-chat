@@ -20,16 +20,16 @@ means look but do not change anything.
 | `chitchat-qa/xfer-qa-0914` | QA Edge profile (Ray) | reuse | Files UI, editors, copy and move, tree, many files, deep folders, shares. The main place for new Files test data. |
 | `chitchat-qa/copy-qa-0922` | QA Edge profile | reuse | Copy checks. Almost empty. MCP and plugin-skill checks: Data Probe 0.3.0 is installed here with its `fixture` MCP server and `mcp-echo` skill, so every chat here gets the fixture tools. The `chitchat-qa` plugin policy allows `data-probe`. |
 | `chitchat-qa/metadata-qa-0906` | QA Edge profile | reuse | Metadata checks. Chitchat and Council installed. |
-| `chitchat-qa/home` | QA Edge profile; `qa.perm.member` is a member | reuse | Chitchat page and its transcript files. Uploads here run no plugin. |
+| `chitchat-qa/home` | QA Edge profile; `qa.perm.member` is a member | reuse | Chitchat page and its transcript files. Uploads here run no plugin. Empty GitHub Sources service account `rd7tqp8qb5vkfa0jvnp8kgjj398fbctd` remains without grants after both test uninstalls. Reinstall needs permission to manage this account. |
 | `qa-browser/home` | `qa.perm.owner` (owner), `qa.perm.viewer` (member) in a scratch browser | reuse | Permission refusals, second-user checks, search, web browser QA. Chitchat installed. Empty Video Player account `rd7nt1qt9segqprsarrwc7jnr58f9qkh` remains without file grants after its test uninstall. Its retained binding makes reinstall need service-account management. The QA Edge profile is **not** a member. |
 | `qa-tmp-share/home` | `qa.perm.member` (owner) | reuse | Cross-org share checks. No plugin installations. Empty reusable Data Probe and GitHub Sources service accounts remain without file grants. |
 | `personal/home` of each `qa.perm.*` account | that account | reuse | Almost empty. |
 | `personal/home` (Ray) | QA Edge profile | reuse for QA folders only | Ray's main workspace. **Every upload here runs the image, pdf, video, and data-probe plugins**, so upload here only to test those plugins. Ray's own notes (`/tasks`, `/inbox`, `/todo.md`, `/README.md`) are read-only. |
-| `personal/plugin-access-qa` | QA Edge profile | reuse | Plugin access settings. Created through the workspace dialog to check the Owner only default. Saved all three setup modes, then returned it to Owner only. No plugins; only the automatic `/README.md`. |
+| `personal/plugin-access-qa` | QA Edge profile | reuse | Plugin access settings; setup stays Owner only. Private GitHub Mount check is complete. The sample repo `raythurnvoid/bonobo-mounts-private-qa-20260929` stays private for reuse. Its test installation, copied files and token are removed; three runs and 18 API call records remain. Empty GitHub Sources account `rd7zqff8p0vvqc155ehk9n4s4x8fa15s` remains for reuse. Reinstall needs service-account management. Files still has only the automatic `/README.md`. |
 | `sybill-demo/demo` | QA Edge profile | read-only | Large realistic import: `/people` (about 9,700 files), `/companies` (1,000+ in one folder), `/emails`, `/meetings`, `/email-attachments` (Office files). About 10 GB stored. Use it for load, paging, and search on big data. |
 | `sybill-demo/home` | QA Edge profile | reuse | Empty. |
 
-Installed plugin source trees live in `GLOBAL`/`PLUGINS`. Plugin-owned Mounts belong to their installation's workspace. The old t3-chat mirror still uses `GLOBAL`/`GITHUB` until its reviewed cutover. These trees are read-only data.
+Installed plugin source trees live in `GLOBAL`/`PLUGINS`. Plugin-owned Mounts belong to their installation's workspace. The required app system source stays at `/.mounts/t3-chat` in `GLOBAL`/`GITHUB`, with daily system sync and normal chat read checks. These trees are read-only data.
 
 ## Accounts
 
@@ -131,6 +131,10 @@ matter, continue a chat you already made for the same task instead of starting a
 
 Reuse `QA native-popovers mount 0928` in `personal/home` (`n17e1df2cqn1p6m8kkac9nq8d58f8674`) for this Mount's Bash checks. The saved first turn lists the Mount and reads its README without changing files.
 
+Use saved chat `n174jx56n9dhr2eahg93prek198fba90` in `personal/home` as evidence for natural Mount discovery and later web search. It used GPT-6 Luna in Agent mode. Its first turn had no chat history or supplied path. Stored Bash calls read the README and `AGENTS.md`; the next turn used web search.
+
+Reuse `personal/plugin-access-qa` chat `n17a115vdg1jsty4ey0r4v6vrx8fbv27` for private Mount checks. It read both sample files exactly, 148 bytes in total. After uninstall, the same read in the same shell failed with `No such file or directory`; `/.mounts/t3-chat/README.md` still read successfully.
+
 Reuse `qa-browser/home` chat `n1708wzk8n9hnt2r9qm87jd1118f9g6z` as `qa.perm.owner` for
 Mount isolation checks. Its saved Bash call found both plugin Mount paths absent.
 Only the original Chitchat installation was present.
@@ -146,3 +150,6 @@ Only the original Chitchat installation was present.
 - 2026-09-28: install-access check restored the original setup, policy, roles, accounts and Chitchat. Video Player is uninstalled; its empty account and binding remain.
 - 2026-09-29: checked the search, folder-sort and 203-child cap fixtures, their archive state and grants, and both QA memberships. Sampled three readable `metadata.source` values in `/people`; changed no live data.
 - 2026-09-29: reused both folder-sort fixtures for owner saves and reader local arrays. Reset to Name, removed saved-sort docs, and archived both roots and all 64 children again. Exact ids, parents, paths and grants match the backup. The 203-child cap fixture stayed archived and untouched.
+- 2026-09-29: both Mounts test copies and their QA policy entry are removed. All five runs and 29 API call records remain. The empty GitHub Sources account stays for reuse.
+- 2026-09-29: added the private GitHub fixture in `personal/plugin-access-qa`. Settings and self-grant survived reload. The main native-popovers Mount stayed fixed.
+- 2026-09-29: private sync and exact two-file agent read passed. Test installation, copies, workspace secret and repo-only token are removed. Three runs and 18 API call records remain, with no history expiry, run tokens or temporary state. Added the saved private QA chat; the required app system source still reads after cleanup.

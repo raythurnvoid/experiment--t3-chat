@@ -825,8 +825,10 @@ The daily interval is 1440 minutes. Live Bash reads, disabled refusal, restored
 reads and write refusal passed. The stored copy and finished history stayed intact.
 This patch marks `GITHUB_TOKEN` optional. Public repos need no token. Health is
 healthy after the update. Worker bytes, SDK pin and permissions are unchanged.
-TypeScript, ESLint, 110 tests and two stable builds passed. The old shared t3-chat
-mirror still needs its separate workspace choice and cutover.
+TypeScript, ESLint, 110 tests and two stable builds passed. The app repo stays
+as a required system source at `/.mounts/t3-chat`, with daily system sync and
+normal chat read checks. It needs no workspace plugin or run-as grant.
+Ordinary external repos keep the workspace plugin permission model.
 
 SDK 0.21.0 was mirrored on 2026-09-28 at
 `973457877210fec8908f26fe17c8d727572aa54d`. All 12 SDK files match the reviewed
