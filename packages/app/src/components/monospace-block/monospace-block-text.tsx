@@ -107,8 +107,9 @@ export const TextMonospaceBlock = memo(function TextMonospaceBlock(props: TextMo
 			tabIndex={tabIndex ?? 0}
 			className={cn(
 				"TextMonospaceBlock" satisfies TextMonospaceBlock_ClassNames,
-				// Not app-scrollable on purpose: this is a small nested preview, so its scrollbar
-				// follows the color of the card or panel that contains it.
+				// Tagged so the block scrollbar brightens only while the pointer is over the block.
+				// An untagged block would follow the color of the panel that contains it.
+				"app-scrollable" satisfies AppClassName,
 				"app-font-monospace" satisfies AppClassName,
 				className,
 			)}
