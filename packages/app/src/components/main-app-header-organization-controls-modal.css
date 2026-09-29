@@ -321,9 +321,12 @@
 		display: inline-flex;
 		flex-shrink: 0;
 		align-items: center;
-		gap: 2px;
 
 		color: var(--color-fg-07);
+
+		/* Keep the space after the count. This row is a flex box, so a normal space at the
+		   end of the line is removed unless white-space keeps it. */
+		white-space: pre;
 
 		text-box-trim: trim-both;
 		text-box-edge: cap alphabetic;

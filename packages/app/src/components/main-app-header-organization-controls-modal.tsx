@@ -492,7 +492,7 @@ export const MainAppHeaderOrganizationSwitcherModalSelectHead = memo(
 											"MainAppHeaderOrganizationSwitcherModalSelectHead-quota" satisfies MainAppHeaderOrganizationSwitcherModalSelectHead_ClassNames,
 										)}
 									>
-										{quotaFraction}
+										{quotaFraction}{" "}
 										<MyIcon
 											className={cn(
 												"MainAppHeaderOrganizationSwitcherModalSelectHead-help" satisfies MainAppHeaderOrganizationSwitcherModalSelectHead_ClassNames,
