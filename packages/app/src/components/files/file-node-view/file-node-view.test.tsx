@@ -24,6 +24,7 @@ import { global_custom_event_dispatch, global_custom_event_listen } from "@/lib/
 const {
 	tenantContextMock,
 	queryMock,
+	querySetsMock,
 	mutationMock,
 	actionMock,
 	queryPushListeners,
@@ -35,6 +36,7 @@ const {
 } = vi.hoisted(() => ({
 	tenantContextMock: vi.fn(),
 	queryMock: vi.fn(),
+	querySetsMock: vi.fn<(id: string, queries: Record<string, { query: never; args: unknown }>) => void>(),
 	mutationMock: vi.fn(),
 	actionMock: vi.fn(),
 	queryPushListeners: new Set<() => void>(),
@@ -52,7 +54,7 @@ vi.mock("convex-helpers/react", async () => ({
 
 // Push query changes into memoized children, as the live Convex subscriptions do.
 vi.mock("convex/react", async () => {
-	const { useEffect, useState } = await import("react");
+	const { useEffect, useId, useState } = await import("react");
 	return {
 		useConvex: () => ({
 			query: (...args: unknown[]) => Promise.resolve(queryMock(...args)),
@@ -75,6 +77,7 @@ vi.mock("convex/react", async () => {
 				: { results: result ?? [], status: pendingListStatus, loadMore: loadMorePendingMock };
 		},
 		useQueries: (queries: Record<string, { query: never; args: unknown }>) => {
+			querySetsMock(useId(), queries);
 			const [, forceRender] = useState(0);
 			useEffect(() => {
 				const listener = () => forceRender((revision) => revision + 1);
@@ -254,6 +257,7 @@ const NODE = {
 	path: "/page.html",
 	kind: "file",
 	contentType: "text/html",
+	contentByteSize: null as number | null,
 	assetId: "asset_1",
 	textKind: "plain_text" as string | null,
 	collaborationEnabled: false,
@@ -385,6 +389,7 @@ beforeEach(() => {
 		workspaceName: "home",
 	});
 	queryMock.mockReset();
+	querySetsMock.mockClear();
 	queryMock.mockImplementation((reference: never, args: unknown) => {
 		if (args === "skip") return undefined;
 		switch (getFunctionName(reference)) {
@@ -442,11 +447,25 @@ beforeEach(() => {
 						: (treeNodes ?? [])
 								.filter((item) => item.parentId === parentId && item.kind === kind && item.archiveOperationId === null)
 								.sort((a, b) => (a.name < b.name ? -1 : 1))
-								.map((item) => ({ ...item, sortKey: [item.name], sortFieldValue: null }));
+								.map((item) => ({ ...item, sortKey: [item.name] }));
 				return paginationOpts ? { page, isDone: true, continueCursor: "" } : page;
 			}
 			case "files_metadata:list_search_fields":
 				return [{ fieldPath: "metadata.status", valueKinds: ["string"] }];
+			case "files_metadata:list_folder_fields":
+				return { fields: ["metadata.status"], afterField: "metadata.status", isDone: true };
+			case "files_metadata:list_node_fields":
+				return { fields: [], continueCursor: "", isDone: true, sourceToken: "committed" };
+			case "files_metadata:get_field_values": {
+				const { fields } = args as { fields: string[] };
+				return {
+					preparing: false,
+					values: fields.map((field) => ({ field, value: field === "metadata.status" ? "Open" : null })),
+					afterField: fields.at(-1),
+					isDone: true,
+					sourceToken: "committed",
+				};
+			}
 			case "files_nodes:list_tree_children_sort_side_rows":
 				return sideRows ?? { rows: [], nameClaims: [], tooManyShared: false, tooManyPending: false };
 			case "files_visible:list":
@@ -497,6 +516,7 @@ beforeEach(() => {
 	vi.mocked(toast.info).mockClear();
 	vi.mocked(toast.error).mockClear();
 	localStorage.clear();
+	app_local_storage_set_value("app_state::files_folder_columns::scope::membership_1", {});
 	header = document.createElement("div");
 	header.id = "app_main_header_content";
 	document.body.append(header);
@@ -1444,13 +1464,14 @@ describe("FileNodeView folder clipboard", () => {
 			name,
 			kind: "file",
 			updatedAt: 1,
+			createdAt: 1,
 			updatedBy: "user_1",
 			contentType: "text/html",
+			contentByteSize: 52,
 			preparing: false,
 			treeRow: null,
 			segment: "value",
 			sortKey: [name],
-			sortFieldValue: null,
 		});
 		sideRows = {
 			rows: [draftRow("bb.html"), draftRow("z.html")],
@@ -1464,7 +1485,7 @@ describe("FileNodeView folder clipboard", () => {
 			if (getFunctionName(reference) !== "files_nodes:list_tree_children_sorted" || args.kind !== "file") {
 				return query(reference, args);
 			}
-			const page = children.map((child) => ({ ...child, sortKey: [child.name], sortFieldValue: null }));
+			const page = children.map((child) => ({ ...child, sortKey: [child.name] }));
 			return secondPageReady
 				? { results: page, status: "Exhausted" }
 				: { results: page.slice(0, 3), status: "CanLoadMore" };
@@ -1602,7 +1623,7 @@ describe("FileNodeView folder sort", () => {
 		expect(within(table).getByRole("columnheader", { name: /^Name/ }).getAttribute("aria-sort")).toBe("descending");
 		expect(mutationMock.mock.calls.length).toBe(0);
 
-		// The menu lists the built-in fields, then the workspace keys it reads when it opens.
+		// The menu lists the built-in fields, then the readable folder keys it loads on open.
 		fireEvent.click(screen.getByRole("combobox", { name: "Sort: Name, Z to A" }));
 		expect(await screen.findByText("Only people who can edit this folder can save its sort.")).toBeTruthy();
 		expect(await screen.findByRole("option", { name: "status (metadata)" })).toBeTruthy();
@@ -1614,9 +1635,16 @@ describe("FileNodeView folder sort", () => {
 		expect(mutationMock.mock.calls.length).toBe(0);
 	});
 
-	test("shows a column for the sorted field, with a dash where a row has no value", async () => {
+	test("sorting does not add a hidden column, and a chosen Size column reads row facts", async () => {
 		node = { ...NODE, _id: "folder_1", name: "Docs", path: "/Docs", kind: "folder" };
-		const file = { ...NODE, _id: "a.html", name: "a.html", path: "/Docs/a.html", parentId: node._id };
+		const file = {
+			...NODE,
+			_id: "a.html",
+			name: "a.html",
+			path: "/Docs/a.html",
+			parentId: node._id,
+			contentByteSize: 2048,
+		};
 		const folder = { ...NODE, _id: "sub", name: "Sub", path: "/Docs/Sub", kind: "folder", parentId: node._id };
 		treeNodes = [node, file, folder];
 		folderSort = { sort: { field: "size", direction: "desc" }, canSave: true };
@@ -1625,13 +1653,15 @@ describe("FileNodeView folder sort", () => {
 			if (getFunctionName(reference) !== "files_nodes:list_tree_children_sorted" || args.segment !== "value") {
 				return query(reference, args);
 			}
-			return args.kind === "file"
-				? [{ ...file, sortKey: [2048, "a.html"], sortFieldValue: null }]
-				: [{ ...folder, sortKey: ["sub", "Sub"], sortFieldValue: null }];
+			return args.kind === "file" ? [{ ...file, sortKey: [2048, "a.html"] }] : [{ ...folder, sortKey: ["sub", "Sub"] }];
 		});
 		renderFileView({ nodeId: node._id });
 
 		const table = await screen.findByRole("table", { name: "Folder contents" });
+		expect(within(table).queryByRole("columnheader", { name: /^Size/ })).toBeNull();
+		fireEvent.click(screen.getByRole("button", { name: "Columns" }));
+		fireEvent.click(await screen.findByRole("checkbox", { name: "Size" }));
+		fireEvent.click(screen.getByRole("button", { name: "Done" }));
 		expect(within(table).getByRole("columnheader", { name: /^Size/ }).getAttribute("aria-sort")).toBe("descending");
 		const [folderRow, fileRow] = within(table).getAllByRole("row").slice(1);
 		expect(
@@ -1659,13 +1689,16 @@ describe("FileNodeView folder sort", () => {
 			}
 			// Folders have no type, so they are all in the missing segment, keyed by name.
 			if (args.kind === "folder") {
-				return args.segment === "missing" ? [{ ...folder, sortKey: ["sub", "Sub"], sortFieldValue: null }] : [];
+				return args.segment === "missing" ? [{ ...folder, sortKey: ["sub", "Sub"] }] : [];
 			}
-			return args.segment === "value" ? [{ ...file, sortKey: ["html", "a.html", "a.html"], sortFieldValue: null }] : [];
+			return args.segment === "value" ? [{ ...file, sortKey: ["html", "a.html", "a.html"] }] : [];
 		});
 		renderFileView({ nodeId: node._id });
 
 		const table = await screen.findByRole("table", { name: "Folder contents" });
+		fireEvent.click(screen.getByRole("button", { name: "Columns" }));
+		fireEvent.click(await screen.findByRole("checkbox", { name: "Type" }));
+		fireEvent.click(screen.getByRole("button", { name: "Done" }));
 		expect(within(table).getByRole("columnheader", { name: /^Type/ })).toBeTruthy();
 		await waitFor(() => expect(within(table).getAllByRole("row")).toHaveLength(3));
 		const [folderRow, fileRow] = within(table).getAllByRole("row").slice(1);
@@ -1690,6 +1723,476 @@ describe("FileNodeView folder sort", () => {
 		expect(await screen.findByText("Too many shared items here to sort. Some are not shown.")).toBeTruthy();
 		expect(screen.getByText("Too many pending changes here. Review them in the Pending panel.")).toBeTruthy();
 	});
+});
+
+describe("FileNodeView folder columns", () => {
+	let observers: FolderObserver[];
+	let visibleNodeId: string | null;
+
+	class FolderObserver implements IntersectionObserver {
+		root: Element | Document | null;
+		rootMargin: string;
+		scrollMargin = "0px";
+		thresholds = [0];
+		targets = new Set<Element>();
+		observe = vi.fn((target: Element) => this.targets.add(target));
+		unobserve = vi.fn((target: Element) => this.targets.delete(target));
+		disconnect = vi.fn(() => this.targets.clear());
+		takeRecords = () => [];
+
+		constructor(
+			readonly callback: IntersectionObserverCallback,
+			options?: IntersectionObserverInit,
+		) {
+			this.root = options?.root ?? null;
+			this.rootMargin = options?.rootMargin ?? "0px";
+			observers.push(this);
+		}
+
+		emit() {
+			this.callback(
+				[...this.targets].map((target) => ({ target, isIntersecting: true }) as IntersectionObserverEntry),
+				this,
+			);
+		}
+	}
+
+	beforeEach(() => {
+		observers = [];
+		visibleNodeId = null;
+		vi.stubGlobal("IntersectionObserver", FolderObserver);
+		vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(function (this: HTMLElement) {
+			return this.classList.contains("FileNodeView-editor-area") ? 600 : 0;
+		});
+		vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(function (this: HTMLElement) {
+			return this.classList.contains("FileNodeView-editor-area") ? 600 : 0;
+		});
+		vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+			if (this.classList.contains("FileNodeViewFolderExplorer-row")) {
+				return new DOMRect(0, this.getAttribute("data-file-node-id") === visibleNodeId ? 0 : 650, 400, 20);
+			}
+			return this.classList.contains("FileNodeView-editor-area") ? new DOMRect(0, 0, 600, 600) : new DOMRect();
+		});
+	});
+
+	afterEach(() => {
+		vi.restoreAllMocks();
+		vi.unstubAllGlobals();
+	});
+
+	test("keeps the empty table and chooser, saves fixed column order, and restores defaults", async () => {
+		node = { ...NODE, _id: "folder_1", name: "Docs", path: "/Docs", kind: "folder" };
+		treeNodes = [node];
+		const previousQuery = queryMock.getMockImplementation()!;
+		queryMock.mockImplementation((reference, args) =>
+			getFunctionName(reference) === "files_metadata:list_folder_fields"
+				? { fields: ["metadata.alpha", "metadata.beta", "metadata.zeta"], afterField: "metadata.zeta", isDone: true }
+				: previousQuery(reference, args),
+		);
+		const view = renderFileView({ nodeId: node._id });
+		const table = await screen.findByRole("table", { name: "Folder contents" });
+		expect(screen.getByText("This folder is empty")).toBeTruthy();
+		expect(
+			queryMock.mock.calls.some(([reference]) => getFunctionName(reference) === "files_metadata:list_folder_fields"),
+		).toBe(false);
+		const trigger = screen.getByRole("button", { name: "Columns" });
+		fireEvent.click(trigger);
+		const chooser = await screen.findByRole("dialog", { name: "Columns" });
+		expect(within(chooser).getByRole("checkbox", { name: "Name" })).toHaveProperty("disabled", true);
+		expect(within(chooser).getByRole("checkbox", { name: "Name" })).toHaveProperty("checked", true);
+		expect(within(chooser).getByText("Actions is always shown")).toBeTruthy();
+		for (const field of ["zeta (metadata)", "Size", "alpha (metadata)", "Type", "Date created"]) {
+			fireEvent.click(within(chooser).getByRole("checkbox", { name: field }));
+		}
+		expect(within(chooser).getByText("Show up to 8 columns. Hide one to add another.")).toBeTruthy();
+		expect(within(chooser).getByRole("checkbox", { name: "beta (metadata)" })).toHaveProperty("disabled", true);
+		expect(
+			within(table)
+				.getAllByRole("columnheader")
+				.map((cell) => cell.getAttribute("data-column-field")),
+		).toEqual([
+			"name",
+			"updated_by",
+			"updated",
+			"created",
+			"type",
+			"size",
+			"metadata.alpha",
+			"metadata.zeta",
+			"actions",
+		]);
+		fireEvent.click(within(chooser).getByRole("button", { name: "Done" }));
+		await waitFor(() => expect(document.activeElement).toBe(trigger));
+		view.unmount();
+		renderFileView({ nodeId: node._id });
+		const restored = await screen.findByRole("table", { name: "Folder contents" });
+		expect(
+			within(restored)
+				.getAllByRole("columnheader")
+				.map((cell) => cell.getAttribute("data-column-field")),
+		).toEqual([
+			"name",
+			"updated_by",
+			"updated",
+			"created",
+			"type",
+			"size",
+			"metadata.alpha",
+			"metadata.zeta",
+			"actions",
+		]);
+		fireEvent.click(screen.getByRole("button", { name: "Columns" }));
+		fireEvent.click(await screen.findByRole("button", { name: "Reset columns" }));
+		expect(
+			within(restored)
+				.getAllByRole("columnheader")
+				.map((cell) => cell.getAttribute("data-column-field")),
+		).toEqual(["name", "updated_by", "updated", "actions"]);
+		expect(mutationMock).not.toHaveBeenCalled();
+	});
+
+	test("keeps a hidden selected field focusable and closes with Escape", async () => {
+		node = { ...NODE, _id: "folder_1", name: "Docs", path: "/Docs", kind: "folder" };
+		treeNodes = [node];
+		app_local_storage_set_value("app_state::files_folder_columns::scope::membership_1", {
+			folder_1: ["name", "metadata.old"],
+		});
+		const previousQuery = queryMock.getMockImplementation()!;
+		queryMock.mockImplementation((reference, args) =>
+			getFunctionName(reference) === "files_metadata:list_folder_fields"
+				? { fields: [], afterField: null, isDone: true }
+				: previousQuery(reference, args),
+		);
+		renderFileView({ nodeId: node._id });
+		const trigger = await screen.findByRole("button", { name: "Columns" });
+		fireEvent.click(trigger);
+		const chooser = await screen.findByRole("dialog", { name: "Columns" });
+		const field = within(chooser).getByRole("checkbox", { name: "old (metadata)" });
+		field.focus();
+		fireEvent.click(field);
+		expect(field).toHaveProperty("checked", false);
+		expect(field.isConnected).toBe(true);
+		expect(document.activeElement).toBe(field);
+		fireEvent.keyDown(field, { key: "Escape", code: "Escape" });
+		await waitFor(() => expect(screen.queryByRole("dialog", { name: "Columns" })).toBeNull());
+		expect(document.activeElement).toBe(trigger);
+	});
+
+	test("loads another catalog page only on Show more fields and retries a failed page from the start", async () => {
+		node = { ...NODE, _id: "folder_1", name: "Docs", path: "/Docs", kind: "folder" };
+		treeNodes = [node];
+		let failed = true;
+		const previousQuery = queryMock.getMockImplementation()!;
+		queryMock.mockImplementation((reference, args) => {
+			if (getFunctionName(reference) !== "files_metadata:list_folder_fields") return previousQuery(reference, args);
+			if (args.afterField === null) return { fields: ["metadata.alpha"], afterField: "metadata.alpha", isDone: false };
+			return failed
+				? new Error("Read failed")
+				: { fields: ["metadata.beta"], afterField: "metadata.beta", isDone: true };
+		});
+		renderFileView({ nodeId: node._id });
+		fireEvent.click(await screen.findByRole("button", { name: "Columns" }));
+		const chooser = await screen.findByRole("dialog", { name: "Columns" });
+		expect(within(chooser).getByRole("checkbox", { name: "alpha (metadata)" })).toBeTruthy();
+		expect(
+			queryMock.mock.calls.some(
+				([reference, args]) =>
+					getFunctionName(reference) === "files_metadata:list_folder_fields" && args.afterField !== null,
+			),
+		).toBe(false);
+		fireEvent.change(within(chooser).getByRole("textbox", { name: "Search columns" }), { target: { value: "beta" } });
+		expect(within(chooser).getByText("No loaded fields match")).toBeTruthy();
+		fireEvent.change(within(chooser).getByRole("textbox", { name: "Search columns" }), { target: { value: "" } });
+		fireEvent.click(within(chooser).getByRole("button", { name: "Show more fields" }));
+		expect(await within(chooser).findByText("Fields could not be loaded")).toBeTruthy();
+		expect(within(chooser).queryByRole("checkbox", { name: "alpha (metadata)" })).toBeNull();
+		const callsAtFailure = queryMock.mock.calls.filter(
+			([reference]) => getFunctionName(reference) === "files_metadata:list_folder_fields",
+		).length;
+		await act(async () => {});
+		expect(
+			queryMock.mock.calls.filter(([reference]) => getFunctionName(reference) === "files_metadata:list_folder_fields"),
+		).toHaveLength(callsAtFailure);
+		const hookId = querySetsMock.mock.calls.findLast(([, queries]) =>
+			Object.values(queries).some((query) => getFunctionName(query.query) === "files_metadata:list_folder_fields"),
+		)![0];
+		querySetsMock.mockClear();
+		failed = false;
+		fireEvent.click(within(chooser).getByRole("button", { name: "Retry" }));
+		expect(await within(chooser).findByRole("checkbox", { name: "beta (metadata)" })).toBeTruthy();
+		expect(querySetsMock.mock.calls.some(([id, queries]) => id === hookId && Object.keys(queries).length === 0)).toBe(
+			true,
+		);
+		expect(within(chooser).queryByText("Fields could not be loaded")).toBeNull();
+	});
+
+	test("clears private catalog pages when a newer proposal arrives before its first page", async () => {
+		node = { ...NODE, _id: "folder_1", name: "Docs", path: "/Docs", kind: "folder" };
+		treeNodes = [node];
+		sideRows = {
+			rows: [
+				{
+					target: { kind: "private", id: "draft_1" },
+					name: "draft.html",
+					kind: "file",
+					updatedAt: 1,
+					createdAt: 1,
+					updatedBy: "user_1",
+					contentByteSize: 52,
+					preparing: false,
+					segment: "value",
+					sortKey: ["draft.html"],
+				},
+			],
+			nameClaims: [],
+			tooManyShared: false,
+			tooManyPending: false,
+		};
+		let firstToken = "proposal:1";
+		let secondToken = "proposal:1";
+		const previousQuery = queryMock.getMockImplementation()!;
+		queryMock.mockImplementation((reference, args) => {
+			if (getFunctionName(reference) === "files_metadata:list_folder_fields")
+				return { fields: [], afterField: null, isDone: true };
+			if (getFunctionName(reference) !== "files_metadata:list_node_fields") return previousQuery(reference, args);
+			return args.cursor === null
+				? {
+						fields: [firstToken === "proposal:1" ? "metadata.old" : "metadata.new"],
+						continueCursor: "next",
+						isDone: false,
+						sourceToken: firstToken,
+					}
+				: {
+						fields: [secondToken === "proposal:1" ? "metadata.old_more" : "metadata.new_more"],
+						continueCursor: "done",
+						isDone: true,
+						sourceToken: secondToken,
+					};
+		});
+		renderFileView({ nodeId: node._id });
+		fireEvent.click(await screen.findByRole("button", { name: "Columns" }));
+		const chooser = await screen.findByRole("dialog", { name: "Columns" });
+		fireEvent.click(within(chooser).getByRole("button", { name: "Show more fields" }));
+		expect(await within(chooser).findByRole("checkbox", { name: "old_more (metadata)" })).toBeTruthy();
+		secondToken = "proposal:2";
+		pushQueryChanges();
+		await waitFor(() => expect(within(chooser).queryByRole("checkbox", { name: /^old/ })).toBeNull());
+		expect(within(chooser).queryByRole("checkbox", { name: /^new/ })).toBeNull();
+		expect(within(chooser).getByText("Loading fields…")).toBeTruthy();
+		firstToken = "proposal:2";
+		pushQueryChanges();
+		expect(await within(chooser).findByRole("checkbox", { name: "new_more (metadata)" })).toBeTruthy();
+		expect(within(chooser).queryByRole("checkbox", { name: /^old/ })).toBeNull();
+	});
+
+	test("loads real scalar cells through the editor observer and puts Retry values in Actions", async () => {
+		node = { ...NODE, _id: "folder_1", name: "Docs", path: "/Docs", kind: "folder" };
+		treeNodes = [node, { ...NODE, _id: "a.html", name: "a.html", parentId: node._id }];
+		const fields = ["metadata.empty", "metadata.flag", "metadata.missing", "metadata.number"];
+		app_local_storage_set_value("app_state::files_folder_columns::scope::membership_1", {
+			folder_1: ["name", ...fields],
+		});
+		let response: unknown;
+		const ready = {
+			preparing: false,
+			values: [
+				{ field: "metadata.empty", value: "" },
+				{ field: "metadata.flag", value: false },
+				{ field: "metadata.missing", value: null },
+				{ field: "metadata.number", value: 0 },
+			],
+			afterField: "metadata.number",
+			isDone: true,
+			sourceToken: "committed",
+		};
+		const previousQuery = queryMock.getMockImplementation()!;
+		queryMock.mockImplementation((reference, args) =>
+			getFunctionName(reference) === "files_metadata:get_field_values" ? response : previousQuery(reference, args),
+		);
+		renderFileView({ nodeId: node._id });
+		const table = await screen.findByRole("table", { name: "Folder contents" });
+		const row = within(table).getAllByRole("row")[1]!;
+		expect(row.querySelector('[data-column-field="metadata.number"]')).toHaveProperty(
+			"textContent",
+			"Loads when row is visible",
+		);
+		expect(
+			queryMock.mock.calls.some(([reference]) => getFunctionName(reference) === "files_metadata:get_field_values"),
+		).toBe(false);
+		const observer = observers[0]!;
+		expect(observer.root).toBe(table.closest(".FileNodeView-editor-area"));
+		expect(observer.rootMargin).toBe("400px 0px");
+		act(() => observer.emit());
+		expect(row.querySelector('[data-column-field="metadata.number"]')).toHaveProperty("textContent", "Loading…");
+		response = ready;
+		pushQueryChanges();
+		expect(row.querySelector('[data-column-field="metadata.number"]')).toHaveProperty("textContent", "0");
+		expect(row.querySelector('[data-column-field="metadata.flag"]')).toHaveProperty("textContent", "false");
+		expect(row.querySelector('[data-column-field="metadata.empty"]')).toHaveProperty("textContent", "");
+		expect(row.querySelector('[data-column-field="metadata.empty"]')?.getAttribute("data-value-state")).toBe("ready");
+		expect(row.querySelector('[data-column-field="metadata.missing"]')).toHaveProperty("textContent", "—");
+		response = new Error("Read failed");
+		pushQueryChanges();
+		expect(row.querySelector('[data-column-field="metadata.number"]')).toHaveProperty("textContent", "Could not load");
+		const actions = row.querySelector<HTMLElement>('[data-column-field="actions"]')!;
+		const retry = within(actions).getByRole("button", { name: "Retry values" });
+		const hookId = querySetsMock.mock.calls.findLast(([, queries]) =>
+			Object.values(queries).some((query) => getFunctionName(query.query) === "files_metadata:get_field_values"),
+		)![0];
+		querySetsMock.mockClear();
+		response = ready;
+		fireEvent.click(retry);
+		await waitFor(() =>
+			expect(row.querySelector('[data-column-field="metadata.number"]')).toHaveProperty("textContent", "0"),
+		);
+		expect(querySetsMock.mock.calls.some(([id, queries]) => id === hookId && Object.keys(queries).length === 0)).toBe(
+			true,
+		);
+		response = null;
+		pushQueryChanges();
+		expect(row.querySelector('[data-column-field="metadata.number"]')).toHaveProperty("textContent", "Unavailable");
+		expect(within(actions).queryByRole("button", { name: "Retry values" })).toBeNull();
+	});
+
+	test("clears private cell pages on a new proposal and drops the suffix after a failed value page", async () => {
+		node = { ...NODE, _id: "folder_1", name: "Docs", path: "/Docs", kind: "folder" };
+		treeNodes = [node];
+		sideRows = {
+			rows: [
+				{
+					target: { kind: "private", id: "draft_1" },
+					name: "draft.html",
+					kind: "file",
+					updatedAt: 1,
+					createdAt: 1,
+					updatedBy: "user_1",
+					contentByteSize: 52,
+					preparing: false,
+					segment: "value",
+					sortKey: ["draft.html"],
+				},
+			],
+			nameClaims: [],
+			tooManyShared: false,
+			tooManyPending: false,
+		};
+		const fields = ["metadata.alpha", "metadata.beta", "metadata.gamma"];
+		app_local_storage_set_value("app_state::files_folder_columns::scope::membership_1", {
+			folder_1: ["name", ...fields],
+		});
+		let firstToken = "proposal:1";
+		let laterToken = "proposal:1";
+		let failed = false;
+		const previousQuery = queryMock.getMockImplementation()!;
+		queryMock.mockImplementation((reference, args) => {
+			if (getFunctionName(reference) !== "files_metadata:get_field_values") return previousQuery(reference, args);
+			const index = args.afterField === null ? 0 : fields.indexOf(args.afterField) + 1;
+			if (failed && index === 1) return new Error("Read failed");
+			const token = index === 0 ? firstToken : laterToken;
+			return {
+				preparing: false,
+				values: [{ field: fields[index], value: `${token}:${index}` }],
+				afterField: fields[index],
+				isDone: index === 2,
+				sourceToken: token,
+			};
+		});
+		renderFileView({ nodeId: node._id });
+		const table = await screen.findByRole("table", { name: "Folder contents" });
+		const row = within(table).getAllByRole("row")[1]!;
+		act(() => observers[0]!.emit());
+		await waitFor(() =>
+			expect(row.querySelector('[data-column-field="metadata.gamma"]')).toHaveProperty("textContent", "proposal:1:2"),
+		);
+		laterToken = "proposal:2";
+		pushQueryChanges();
+		await waitFor(() => expect(table.getAttribute("data-value-page-count")).toBe("1"));
+		for (const field of fields)
+			expect(row.querySelector(`[data-column-field="${field}"]`)).toHaveProperty("textContent", "Loading…");
+		firstToken = "proposal:2";
+		pushQueryChanges();
+		await waitFor(() =>
+			expect(row.querySelector('[data-column-field="metadata.gamma"]')).toHaveProperty("textContent", "proposal:2:2"),
+		);
+		failed = true;
+		pushQueryChanges();
+		await waitFor(() => expect(table.getAttribute("data-value-page-count")).toBe("2"));
+		for (const field of fields)
+			expect(row.querySelector(`[data-column-field="${field}"]`)).toHaveProperty("textContent", "Could not load");
+		failed = false;
+		fireEvent.click(within(row).getByRole("button", { name: "Retry values" }));
+		await waitFor(() =>
+			expect(row.querySelector('[data-column-field="metadata.gamma"]')).toHaveProperty("textContent", "proposal:2:2"),
+		);
+	});
+
+	test("caps 1,000 rendered rows at 100 targets and 700 pages and updates visible and focused priority", async () => {
+		node = { ...NODE, _id: "folder_1", name: "Docs", path: "/Docs", kind: "folder" };
+		const children = Array.from({ length: 1000 }, (_, index) => ({
+			...NODE,
+			_id: `file_${index}`,
+			name: `${String(index).padStart(4, "0")}.html`,
+			parentId: node._id,
+		}));
+		treeNodes = [node, ...children];
+		const fields = Array.from({ length: 7 }, (_, index) => `metadata.field${index}`);
+		app_local_storage_set_value("app_state::files_folder_columns::scope::membership_1", {
+			folder_1: ["name", ...fields],
+		});
+		const previousQuery = queryMock.getMockImplementation()!;
+		queryMock.mockImplementation((reference, args) => {
+			if (getFunctionName(reference) !== "files_metadata:get_field_values") return previousQuery(reference, args);
+			const index = args.afterField === null ? 0 : fields.indexOf(args.afterField) + 1;
+			return {
+				preparing: false,
+				values: [{ field: fields[index], value: index }],
+				afterField: fields[index],
+				isDone: index === 6,
+				sourceToken: "committed",
+			};
+		});
+		const view = renderFileView({ nodeId: node._id });
+		const table = await screen.findByRole("table", { name: "Folder contents" });
+		fireEvent.click(screen.getByRole("button", { name: "Show more" }));
+		expect(table.querySelectorAll(".FileNodeViewFolderExplorer-row")).toHaveLength(1000);
+		const observer = observers[0]!;
+		act(() => observer.emit());
+		await waitFor(() => expect(table.getAttribute("data-value-target-count")).toBe("100"));
+		await waitFor(() => expect(table.getAttribute("data-value-page-count")).toBe("700"));
+		const deferred = table.querySelector<HTMLElement>('[data-file-node-id="file_500"]')!;
+		expect(deferred.querySelector('[data-column-field="metadata.field0"]')?.getAttribute("data-value-state")).toBe(
+			"deferred",
+		);
+		visibleNodeId = "file_500";
+		fireEvent.scroll(observer.root!);
+		await waitFor(() =>
+			expect(deferred.querySelector('[data-column-field="metadata.field6"]')).toHaveProperty("textContent", "6"),
+		);
+		expect(
+			table
+				.querySelector('[data-file-node-id="file_99"] [data-column-field="metadata.field0"]')
+				?.getAttribute("data-value-state"),
+		).toBe("deferred");
+		const focused = table.querySelector<HTMLElement>('[data-file-node-id="file_900"]')!;
+		act(() => within(focused).getByRole("link").focus());
+		await waitFor(() =>
+			expect(focused.querySelector('[data-column-field="metadata.field6"]')).toHaveProperty("textContent", "6"),
+		);
+		expect(table.getAttribute("data-value-target-count")).toBe("100");
+		expect(table.getAttribute("data-value-page-count")).toBe("700");
+		for (const [, queries] of querySetsMock.mock.calls) {
+			const values = Object.values(queries).filter(
+				(query) => getFunctionName(query.query) === "files_metadata:get_field_values",
+			);
+			expect(values.length).toBeLessThanOrEqual(700);
+			expect(
+				new Set(values.map((query) => JSON.stringify((query.args as { target: unknown }).target))).size,
+			).toBeLessThanOrEqual(100);
+		}
+		view.unmount();
+		expect(observer.disconnect).toHaveBeenCalledTimes(1);
+		expect(observer.targets.size).toBe(0);
+	}, 60_000);
 });
 
 describe("FileNodeView file views", () => {

@@ -756,7 +756,8 @@ function search_field_path_is_valid(fieldPath: string) {
  */
 async function db_get_search_caller(ctx: QueryCtx, args: { membershipId: Id<"organizations_workspaces_users"> }) {
 	const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-	if (!userAuth) {
+	const user = userAuth ? await ctx.db.get("users", userAuth.id) : null;
+	if (!userAuth || !user || (userAuth.kind === "anonymous" && user.deletedAt !== undefined)) {
 		throw convex_error({ message: "Unauthenticated" });
 	}
 

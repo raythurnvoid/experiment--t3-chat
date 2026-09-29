@@ -129,6 +129,78 @@ async function fixture(options: Parameters<typeof test_convex>[0] = { transactio
 	};
 }
 
+describe("table metadata caller", () => {
+	test.each([true, false])(
+		"each new table metadata door throws Unauthenticated for a stale missing caller (membership active=%s)",
+		async (active) => {
+			const { t, scope, asOwner, parentId } = await fixture();
+			await t.run(async (ctx) => {
+				await ctx.db.patch("organizations_workspaces_users", scope.membershipId, { active });
+				await ctx.db.delete("users", scope.userId);
+			});
+			const asAnonymous = t.withIdentity({ issuer: process.env.VITE_CONVEX_HTTP_URL!, subject: scope.userId });
+			for (const asCaller of [asOwner, asAnonymous]) {
+				await expect(
+					asCaller.query(api.files_metadata.list_folder_fields, {
+						membershipId: scope.membershipId,
+						parentId,
+						afterField: null,
+					}),
+				).rejects.toThrow("Unauthenticated");
+				await expect(
+					asCaller.query(api.files_metadata.list_node_fields, {
+						membershipId: scope.membershipId,
+						target: { kind: "saved", id: parentId },
+						cursor: null,
+					}),
+				).rejects.toThrow("Unauthenticated");
+				await expect(
+					asCaller.query(api.files_metadata.get_field_values, {
+						membershipId: scope.membershipId,
+						target: { kind: "saved", id: parentId },
+						fields: ["metadata.status"],
+						afterField: null,
+					}),
+				).rejects.toThrow("Unauthenticated");
+			}
+		},
+	);
+
+	test.each([true, false])(
+		"each new table metadata door throws Unauthenticated for an anonymous tombstone (membership active=%s)",
+		async (active) => {
+			const { t, scope, parentId } = await fixture();
+			await t.run(async (ctx) => {
+				await ctx.db.patch("organizations_workspaces_users", scope.membershipId, { active });
+				await ctx.db.patch("users", scope.userId, { clerkUserId: null, deletedAt: Date.now() });
+			});
+			const asAnonymous = t.withIdentity({ issuer: process.env.VITE_CONVEX_HTTP_URL!, subject: scope.userId });
+			await expect(
+				asAnonymous.query(api.files_metadata.list_folder_fields, {
+					membershipId: scope.membershipId,
+					parentId,
+					afterField: null,
+				}),
+			).rejects.toThrow("Unauthenticated");
+			await expect(
+				asAnonymous.query(api.files_metadata.list_node_fields, {
+					membershipId: scope.membershipId,
+					target: { kind: "saved", id: parentId },
+					cursor: null,
+				}),
+			).rejects.toThrow("Unauthenticated");
+			await expect(
+				asAnonymous.query(api.files_metadata.get_field_values, {
+					membershipId: scope.membershipId,
+					target: { kind: "saved", id: parentId },
+					fields: ["metadata.status"],
+					afterField: null,
+				}),
+			).rejects.toThrow("Unauthenticated");
+		},
+	);
+});
+
 describe("list_folder_fields", () => {
 	test("lists direct children beyond row 50 and excludes a sibling and descendants", async () => {
 		const { t, owner, parentId, child, catalog } = await fixture();
