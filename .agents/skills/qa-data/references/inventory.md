@@ -25,11 +25,11 @@ means look but do not change anything.
 | `qa-tmp-share/home` | `qa.perm.member` (owner) | reuse | Cross-org share checks. No plugin installations. Empty reusable Data Probe and GitHub Sources service accounts remain without file grants. |
 | `personal/home` of each `qa.perm.*` account | that account | reuse | Almost empty. |
 | `personal/home` (Ray) | QA Edge profile | reuse for QA folders only | Ray's main workspace. **Every upload here runs the image, pdf, video, and data-probe plugins**, so upload here only to test those plugins. Ray's own notes (`/tasks`, `/inbox`, `/todo.md`, `/README.md`) are read-only. |
-| `personal/plugin-access-qa` | QA Edge profile | reuse | Plugin access settings. Created through the workspace dialog to check the Owner only default. Saved all three setup modes, then returned it to Owner only. No plugins; only the automatic `/README.md`. |
+| `personal/plugin-access-qa` | QA Edge profile | reuse | Plugin access settings; setup stays Owner only. GitHub Sources 0.1.1 is installed for the private two-file fixture `raythurnvoid/bonobo-mounts-private-qa-20260929`, with mount `private-qa`, key `private-sample` and daily runs. The repo-limited token and publication check are pending. Files still has only the automatic `/README.md`. |
 | `sybill-demo/demo` | QA Edge profile | read-only | Large realistic import: `/people` (about 9,700 files), `/companies` (1,000+ in one folder), `/emails`, `/meetings`, `/email-attachments` (Office files). About 10 GB stored. Use it for load, paging, and search on big data. |
 | `sybill-demo/home` | QA Edge profile | reuse | Empty. |
 
-Installed plugin source trees live in `GLOBAL`/`PLUGINS`. Plugin-owned Mounts belong to their installation's workspace. The old t3-chat mirror still uses `GLOBAL`/`GITHUB` until its reviewed cutover. These trees are read-only data.
+Installed plugin source trees live in `GLOBAL`/`PLUGINS`. Plugin-owned Mounts belong to their installation's workspace. The required app system source stays at `/.mounts/t3-chat` in `GLOBAL`/`GITHUB`, with daily system sync and normal chat read checks. These trees are read-only data.
 
 ## Accounts
 
@@ -145,3 +145,4 @@ Only the original Chitchat installation was present.
 - 2026-09-28: added the QA owner's reusable no-plugin Mount isolation chat in `qa-browser/home`.
 - 2026-09-28: install-access check restored the original setup, policy, roles, accounts and Chitchat. Video Player is uninstalled; its empty account and binding remain.
 - 2026-09-29: both Mounts test copies and their QA policy entry are removed. All five runs and 29 API call records remain. The empty GitHub Sources account stays for reuse.
+- 2026-09-29: added the private GitHub fixture in `personal/plugin-access-qa`. Settings and self-grant survived reload. No files are published yet; the repo-limited token is pending. Keep the main native-popovers Mount fixed.

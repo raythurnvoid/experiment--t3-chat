@@ -59,6 +59,14 @@ Manual runs are a separate action and intentionally ignore this automatic-upload
 
 Reuse the public native-popovers Mount and chat listed in the [QA data catalog](../../qa-data/references/inventory.md). Mounts stay out of the Files sidebar.
 
+## Private GitHub source
+
+1. Use a small fake private repo and a separate QA installation. Keep the public native-popovers settings fixed. Choose a distinct mount name and pin the sample commit in `ref`.
+2. Ask the user to save a fine-grained token with Contents read for only that repo. In `Manage secrets`, use `Workspace secrets`, name `GITHUB_TOKEN`, and the normal Save action. Never copy the broad GitHub CLI credential into the plugin or inspect the token value.
+3. After reload, read `configurationYaml` through `plugins.list_installations` for the exact QA membership. The details editor is Monaco, so its textbox does not support `inputValue()`.
+4. Check the run calls and published Mount, not only the run's success label. A denied head request can return 404 and be skipped in a successful scan. That does not prove a private download. Require the pinned revision, exact fake file bytes, and an agent read. Check that the archive's codeload request has no token, using safe request metadata only.
+5. After the check, uninstall only the recorded QA installation through its normal UI. Keep finished history and confirm the required `/.mounts/t3-chat` system source is still readable.
+
 ## Run permissions and assignment
 
 An ordinary member can open `My run permissions` without plugin management access.
