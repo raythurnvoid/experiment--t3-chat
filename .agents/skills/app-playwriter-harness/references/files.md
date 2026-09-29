@@ -740,6 +740,77 @@ column choices need to change. Do not write file metadata or shared sorts for th
   query counts. Restore viewport and media overrides. For screenshots, bring only your owned tab to the front
   if background capture times out; do not raise the timeout.
 
+### Folder Table Filter
+
+Verified 2026-09-29 on a read-only `/people` folder. Use its current bounded field catalog and readable
+scalar sample. Do not assume a Status field exists. No new fixture is needed for the normal flow.
+
+- **Controls.** `Filter` opens a dialog named `Filter`. Field is a combobox named `Field: <label>`.
+  Its picker is `Filter fields`; the search input has role `combobox` and name `Search filter fields`.
+  Operation is a combobox named `Operation`. The value label is `Value`, `Bytes` or `Day`.
+  Use the label to find Value; the dialog also contains a picker input. Apply changes the local filter.
+  Cancel and Escape drop draft edits and return focus to Filter. Reopening starts from the applied choice.
+  Field and operation changes clear the draft value and its old error. Clear filter keeps sort and columns.
+- **Draft proof.** Save shown row ids and the active main query arguments before typing. They must stay
+  unchanged until Apply. A CDP sent-frame listener can count new main-query Adds without keeping payloads.
+  Filter choices must send no Files mutations or actions. Use `getCDPSession({ page })` in Playwriter;
+  `page.context().newCDPSession(page)` does not work through the extension. Keep each capture owned and
+  remove its listeners before detaching. Presence heartbeats are expected and are not Files writes.
+- **Native validation.** Text uses `minLength=1` and `maxLength=1024`. Bytes uses native number input,
+  `min=0` and `step=1`. Empty, negative and fractional bytes cannot Apply; zero can. Day is a native date
+  input. Invalid Apply keeps the dialog open, shows its real error, and focuses the labelled value input.
+  Check `input.validity`, not only its border. At 320px, edit a valid Value to empty and click Apply once.
+  That first mouse click must reach submit and focus Value. Repeat with Cancel; its first click must close
+  without applying. Showing a blur error must not move the footer before the button click.
+- **Native fields.** Compare shown rows with their actual cached row facts. Name folds case and accents.
+  Type submits lowercase and keeps a typed dot literal. `Has no value` for Type or Size includes folders
+  and shows no value input. Size compares whole byte counts. Date uses local midnight and the next calendar
+  day; its chip shows the day and browser time zone. Test On, Before and After. In Europe/London, the 2026
+  spring and fall change days have 23 and 25 hours. No matching timestamp is needed to check those bounds.
+- **Hidden metadata.** Pick a qualified field that exists now. Is and Starts with use its plain scalar;
+  Has value and Has no value need no input. Lists use the first plain value. Leave that field hidden as a
+  column. Check at most a few shown targets with independent `get_field_values` reads. After those reads
+  settle, require zero displayed-value subscriptions and unchanged columns. Count real active descriptors
+  as in the Columns recipe. A hidden filter must not add displayed-value queries.
+- **State and work.** The explorer has `data-filter-state`: `applying`, `searching`, `refreshing`, `ready`,
+  `paused` or `failed`. It is absent on a normal unfiltered table. The active chip has `data-filter-field`.
+  Read the real empty and status text. Empty non-final pages must keep searching, with a cursor boundary.
+  A paused prefix cannot say `No rows match this filter`. Read settled page results through
+  `watchQuery(...).localQueryResult()` without adding a subscription. Check each `workCount` against its
+  request's `workLimit`. Apply and each forward action get at most 1,000 work. Retained pages span several
+  actions after Keep searching or Show more; do not call their total one action's cost.
+- **Preview and reset.** Apply shows five matches. First Show more requests 50; later Show more requests
+  50 beyond the loaded count. Show less returns to five and must add no scan. From a paused prefix, Keep
+  searching must keep settled pages and continue their cursors with one new work allowance. The verified
+  zero-match run kept 21 pages, added 20 pages and 1,000 work, then paused again. A browser reload clears
+  the local filter and restores five rows. The `Reload table` recovery button keeps the filter and resets
+  the scan to five matches. Folder and membership changes clear the filter; use unit coverage for a
+  membership switch when live QA must keep the current sign-in.
+- **Held label.** During a new uncached Apply, old rows keep their old filter and sort label in `Showing:`.
+  Apply a 1,024-character Name value first. A passive MutationObserver can capture that real old notice
+  during the next Apply. Require that it was seen and that `scrollWidth <= clientWidth + 1` with
+  `overflow-wrap:anywhere`. A missed transient is a setup limit, not a pass. Do not insert fake notices.
+- **Keyboard and fit.** Field gets focus on open. Enter opens its picker; wait for search results before
+  Arrow and Enter. Tab reaches Operation, Value, Cancel and Apply. Enter submits Value; Escape cancels.
+  Check Clear's focus return. At 320px, the dialog, picker and long field label must fit the actual
+  `documentElement.clientWidth`; Tab must reach both footer buttons. Repeat the 640×450 reflow check.
+  This does not prove actual browser zoom. Record whole-page overflow separately. The existing Files
+  layout overflowed at 320px while the filter fit. If a visible correct control stalls on stability,
+  inspect it, bring only the owned tab to front, and rerun; do not force-click or raise the timeout.
+- **Named source proof.** Choose a readable target beyond the first 50 ordinary Name rows. Apply its Name
+  value and first assert that exact target appears. Name this check `server_filter_beyond_first_page`.
+  Then require matching rows, an empty non-final page, checked boundaries and bounded work. For the red
+  proof, coordinate a switch only in `files-search-hooks.ts`: main query args in `filteredRequests` pass
+  `filter:null` instead of the chosen filter. Reload the owned tab and fetch its exact loaded hook URL.
+  Prove the switch is served and the active main query uses null. The same target assertion must fail
+  after the prefix settles. Restore the full source hash, prove the fresh module and rerun green.
+- **Limits and cleanup.** Keep private name claims, preparing values, access changes, refresh rebuilds,
+  side caps and intrinsic byte/call limits in registered tests unless existing data supplies a live case.
+  Do not write files, metadata, grants or shared sorts to manufacture it. Clear and reload after QA.
+  Restore only column entries changed by QA; if none changed, verify the backed-up entries instead.
+  Preserve unrelated preferences. Require original sort/columns, five rows, zero value targets/pages and
+  zero Files writes. Remove owned capture/observer hooks and restore the viewport and media overrides.
+
 ### Sidebar Drop Zone Visuals
 
 - Use a nested tree such as `new-folder/drop-child/drop-grandchild/test.md`.
