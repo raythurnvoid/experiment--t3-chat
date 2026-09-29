@@ -3315,46 +3315,52 @@ const FilesSidebarTopSectionMoreAction = memo(function FilesSidebarTopSectionMor
 				unmountOnHide
 			>
 				<MyMenuPopoverContent>
-					{clipboardSlot}
-					{isMultiSelectionActive ? (
-						<MyMenuItem
-							variant="destructive"
-							disabled={isBusy || !canArchiveSelection}
-							hideOnClick
-							onClick={handleArchiveSelectionClick}
-						>
-							<MyMenuItemContent>
-								<MyMenuItemContentIcon>
-									<Archive />
-								</MyMenuItemContentIcon>
-								<MyMenuItemContentPrimary>{selectedItemsArchiveLabel}</MyMenuItemContentPrimary>
-							</MyMenuItemContent>
-						</MyMenuItem>
-					) : (
-						<>
+					<MyMenuItemsGroup>
+						{clipboardSlot}
+						{isMultiSelectionActive ? (
+							<MyMenuItem
+								variant="destructive"
+								disabled={isBusy || !canArchiveSelection}
+								hideOnClick
+								onClick={handleArchiveSelectionClick}
+							>
+								<MyMenuItemContent>
+									<MyMenuItemContentIcon>
+										<Archive />
+									</MyMenuItemContentIcon>
+									<MyMenuItemContentPrimary>{selectedItemsArchiveLabel}</MyMenuItemContentPrimary>
+								</MyMenuItemContent>
+							</MyMenuItem>
+						) : (
+							<>
+								<MyMenuItem disabled={isBusy || isUploadingFile || !canWriteUploadTarget} onClick={onUploadFileClick}>
+									<MyMenuItemContent>
+										<MyMenuItemContentIcon>
+											<Upload />
+										</MyMenuItemContentIcon>
+										<MyMenuItemContentPrimary>Upload file</MyMenuItemContentPrimary>
+									</MyMenuItemContent>
+								</MyMenuItem>
+								<MyMenuItem disabled={isBusy || isUploadingFile || !canWriteUploadTarget} onClick={onImportFolderClick}>
+									<MyMenuItemContent>
+										<MyMenuItemContentIcon>
+											<FolderUp />
+										</MyMenuItemContentIcon>
+										<MyMenuItemContentPrimary>Import folder</MyMenuItemContentPrimary>
+									</MyMenuItemContent>
+								</MyMenuItem>
+							</>
+						)}
+					</MyMenuItemsGroup>
+					{isMultiSelectionActive ? null : (
+						<MyMenuItemsGroup separator>
 							<MyMenuCheckboxItem checked={showArchived} disabled={isBusy} onClick={handleArchiveToggleClick}>
 								<MyMenuItemContent>
 									<MyMenuCheckboxItemControl checked={showArchived} disabled={isBusy} />
 									<MyMenuItemContentPrimary>{archivedItemsLabel}</MyMenuItemContentPrimary>
 								</MyMenuItemContent>
 							</MyMenuCheckboxItem>
-							<MyMenuItem disabled={isBusy || isUploadingFile || !canWriteUploadTarget} onClick={onUploadFileClick}>
-								<MyMenuItemContent>
-									<MyMenuItemContentIcon>
-										<Upload />
-									</MyMenuItemContentIcon>
-									<MyMenuItemContentPrimary>Upload file</MyMenuItemContentPrimary>
-								</MyMenuItemContent>
-							</MyMenuItem>
-							<MyMenuItem disabled={isBusy || isUploadingFile || !canWriteUploadTarget} onClick={onImportFolderClick}>
-								<MyMenuItemContent>
-									<MyMenuItemContentIcon>
-										<FolderUp />
-									</MyMenuItemContentIcon>
-									<MyMenuItemContentPrimary>Import folder</MyMenuItemContentPrimary>
-								</MyMenuItemContent>
-							</MyMenuItem>
-						</>
+						</MyMenuItemsGroup>
 					)}
 				</MyMenuPopoverContent>
 			</MyMenuPopover>

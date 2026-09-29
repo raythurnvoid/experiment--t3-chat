@@ -560,7 +560,8 @@ downloadThroughput: -1, uploadThroughput: -1 }`. This affects only the owned QA 
   and scope unchanged. Give the member `write` on the restricted child and repeat: the move must
   succeed and keep that child's scope. Unit tests also cover read-only grants and archived children.
 - **Where `Upload file` actually is** (verified 2026-09-15): the sidebar toolbar's `More options`
-  button, whose menu is `Cut`, `Copy`, `Paste into root folder`, `Upload file`, `Import folder`. It
+  button, whose menu is `Cut`, `Copy`, `Paste into root folder`, `Upload file`, `Import folder`,
+  then a separator group with `Show archived items`. It
   uploads into the **currently selected** folder, so select the target node first (open
   `/files?nodeId=<folder id>`) even though the Paste entry says "root folder". Drive it with
   `state.page.waitForEvent("filechooser")` started before the click, then
