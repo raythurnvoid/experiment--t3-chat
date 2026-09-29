@@ -257,6 +257,10 @@
 	--app-scrollbar-thumb: var(--color-base-1-07);
 	--app-scrollbar-thumb-active: var(--color-base-1-10);
 
+	/* Read-only text block focus standard: a dim ring on any focus, mouse or keyboard. The ring keeps the standard 2px size. It shows
+	   that Select All will stay inside the block, but it does not look like an editable input. */
+	--app-readonly-focus-ring: var(--color-fg-06);
+
 	/* FileEditorRichText text colors */
 	--FileEditorRichText-text-color-fg-default: inherit;
 	--FileEditorRichText-text-color-fg-purple: #9333ea;

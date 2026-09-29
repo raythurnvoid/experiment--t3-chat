@@ -1007,6 +1007,10 @@ The app has one scrollbar standard: every scrollbar is dim by default, and a tag
 - A tagged container only takes the highlight while it really overflows. `app_scrollbar_install` in `packages/app/src/lib/app-scrollbar.ts` adds `app-scrollable-fits` to a hovered or focused container whose content fits, and the app.css guards skip marked containers. So a bar-less card in the chat no longer dims the chat panel scrollbar under the pointer. Keep that class out of component code; only the install writes it.
 - An untagged scroll container follows the current color of its nearest tagged ancestor: dim by default, bright while that ancestor is highlighted. This is intended — the chat composer's own scrollbar brightens together with the chat panel while typing there. Pin a bar with `scrollbar-color: var(--app-scrollbar-thumb) transparent` when it must stay dim even then (see `.FileNodeViewToolbar`). Do not write any other per-component `scrollbar-color` value; `scrollbar-width: none` stays the opt-out for a surface that must hide its scrollbar.
 
+### Read-only text blocks
+
+A read-only block that takes focus (`role="textbox"`, `aria-readonly`, for example `TextMonospaceBlock` and `DiffMonospaceBlock`) shows a dim focus ring on any focus, mouse or keyboard. The ring tells the user that Select All stays inside the block. Keep the standard 2px ring size and only set `outline-color: var(--app-readonly-focus-ring)` (token in `packages/app/src/app.css`). Do not use the bright editable-input ring, because it makes the block look editable. When the block scrolls inside a wrapper, put the ring on the wrapper.
+
 ### Component CSS variables
 
 Model component-owned custom properties with `<ComponentName>_CssVars`. Merge defaults before the caller's `style` so the caller can override them. Match the custom-property spelling already used by the component.

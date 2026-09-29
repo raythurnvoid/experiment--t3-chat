@@ -432,7 +432,7 @@
 		border-radius: 6px;
 
 		&:has(.AiChatMessagePartToolTextAreaSection-textarea:focus) {
-			outline-color: var(--color-fg-12);
+			outline-color: var(--app-readonly-focus-ring);
 		}
 	}
 
@@ -477,7 +477,8 @@
 		background: transparent;
 		white-space: pre;
 
-		/* Keep the section wrapper focus ring, matching MyInput's control/box split. */
+		/* Show the dim read-only focus ring on the section wrapper. The block scrolls inside it, so a ring on
+		   the block itself would scroll away. */
 		outline: none;
 	}
 	/* #endregion tool textarea section */
