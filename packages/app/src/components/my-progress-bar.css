@@ -1,0 +1,59 @@
+@layer common_components {
+	/* #region root */
+	.MyProgressBar {
+		--MyProgressBar-value: 0;
+
+		position: relative;
+
+		width: 100%;
+		height: 4px;
+		border-radius: 999px;
+		overflow: hidden;
+
+		background: var(--color-fg-03);
+	}
+
+	.MyProgressBar-fill {
+		width: 100%;
+		height: 100%;
+		border-radius: inherit;
+
+		background: var(--color-accent-07);
+
+		/* Scale instead of width, so a change only repaints the bar. */
+		transform: scaleX(var(--MyProgressBar-value));
+		transform-origin: left;
+
+		transition: transform 0.3s ease-out;
+	}
+
+	.MyProgressBar-indeterminate > .MyProgressBar-fill {
+		width: 30%;
+
+		transform: none;
+
+		animation: MyProgressBar-slide 1.4s ease-in-out infinite;
+	}
+
+	@keyframes MyProgressBar-slide {
+		from {
+			translate: -100% 0;
+		}
+
+		to {
+			translate: 340% 0;
+		}
+	}
+
+	/* Without motion, a still segment still says that the work goes on. */
+	@media (prefers-reduced-motion: reduce) {
+		.MyProgressBar-fill {
+			transition: none;
+		}
+
+		.MyProgressBar-indeterminate > .MyProgressBar-fill {
+			animation: none;
+		}
+	}
+	/* #endregion root */
+}
