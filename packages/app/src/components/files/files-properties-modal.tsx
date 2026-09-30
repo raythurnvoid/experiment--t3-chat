@@ -11,7 +11,7 @@ import { MyButton } from "@/components/my-button.tsx";
 import { MyChipOverflowRow } from "@/components/my-chip.tsx";
 import { MyCheckboxButton } from "@/components/my-checkbox-button.tsx";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
-import { MyRadio } from "@/components/my-radio.tsx";
+import { MyRadioButton, MyRadioButtonDescription, MyRadioButtonLabel } from "@/components/my-radio-button.tsx";
 import {
 	MyModal,
 	MyModalCloseTrigger,
@@ -217,11 +217,6 @@ type FilesPropertiesModalWritePolicy_ClassNames =
 	| "FilesPropertiesModalWritePolicy"
 	| "FilesPropertiesModalWritePolicy-heading"
 	| "FilesPropertiesModalWritePolicy-choices"
-	| "FilesPropertiesModalWritePolicy-option"
-	| "FilesPropertiesModalWritePolicy-option-choice"
-	| "FilesPropertiesModalWritePolicy-option-text"
-	| "FilesPropertiesModalWritePolicy-option-label"
-	| "FilesPropertiesModalWritePolicy-option-description"
 	| "FilesPropertiesModalWritePolicy-option-picker"
 	| "FilesPropertiesModalWritePolicy-description"
 	| "FilesPropertiesModalWritePolicy-actions"
@@ -390,15 +385,15 @@ const POLICY_COPY = {
 		title: "Who can edit",
 		helper: "Choose who can change this file.",
 		editable: "Anyone with edit access can change this file.",
-		read_only: "The file can be read, but not changed. Owners and admins can unlock it.",
-		writer: "Only the people and plugins you choose can edit. This does not give them access.",
+		read_only: "The file can be read, but not changed.",
+		writer: "Only the people and plugins you choose can edit.",
 	},
 	folder: {
 		title: "Who can change this folder",
 		helper: "Controls adding, removing, and renaming items in this folder. Each item keeps its own protection.",
 		editable: "Anyone with edit access can change this folder.",
-		read_only: "The folder can be read, but not changed. Owners and admins can unlock it.",
-		writer: "Only the people and plugins you choose can edit. This does not give them access.",
+		read_only: "The folder can be read, but not changed.",
+		writer: "Only the people and plugins you choose can edit.",
 	},
 	default: {
 		title: "Rule for new items",
@@ -628,63 +623,33 @@ const FilesPropertiesModalWritePolicy = memo(function FilesPropertiesModalWriteP
 						const optionDescriptionId = `${groupId}-${mode}-description`;
 
 						return (
-							<div
-								key={mode}
-								className={
-									"FilesPropertiesModalWritePolicy-option" satisfies FilesPropertiesModalWritePolicy_ClassNames
-								}
-							>
-								<label
-									className={
-										"FilesPropertiesModalWritePolicy-option-choice" satisfies FilesPropertiesModalWritePolicy_ClassNames
-									}
-								>
-									<MyRadio
-										name={groupId}
-										checked={choiceValue.mode === mode}
-										disabled={!canManage}
-										aria-busy={running || undefined}
-										aria-labelledby={labelId}
-										aria-describedby={optionDescriptionId}
-										onChange={() => {
-											if (!running) {
-												onChoice({ ...choiceValue, mode });
-												// Choosing Custom with nobody chosen opens the dialog, so the next step is clear.
-												if (mode === "writer" && choiceValue.writers.length === 0) {
-													setWritersDialog(groupKind);
-												}
-												if (groupKind === "policy") {
-													setError(null);
-												} else {
-													setDefaultError(null);
-												}
+							<div key={mode}>
+								<MyRadioButton
+									name={groupId}
+									checked={choiceValue.mode === mode}
+									disabled={!canManage}
+									aria-busy={running || undefined}
+									aria-labelledby={labelId}
+									aria-describedby={optionDescriptionId}
+									onChange={() => {
+										if (!running) {
+											onChoice({ ...choiceValue, mode });
+											// Choosing Custom with nobody chosen opens the dialog, so the next step is clear.
+											if (mode === "writer" && choiceValue.writers.length === 0) {
+												setWritersDialog(groupKind);
 											}
-										}}
-									/>
-									<span
-										className={
-											"FilesPropertiesModalWritePolicy-option-text" satisfies FilesPropertiesModalWritePolicy_ClassNames
+											if (groupKind === "policy") {
+												setError(null);
+											} else {
+												setDefaultError(null);
+											}
 										}
-									>
-										<span
-											id={labelId}
-											className={
-												"FilesPropertiesModalWritePolicy-option-label" satisfies FilesPropertiesModalWritePolicy_ClassNames
-											}
-										>
-											{POLICY_LABELS[mode]}
-										</span>
-										<span
-											id={optionDescriptionId}
-											className={
-												"FilesPropertiesModalWritePolicy-option-description" satisfies FilesPropertiesModalWritePolicy_ClassNames
-											}
-										>
-											{copy[mode]}
-										</span>
-									</span>
-								</label>
-								{/* Show the picker inside the Custom option, so it is clear who it belongs to. */}
+									}}
+								>
+									<MyRadioButtonLabel id={labelId}>{POLICY_LABELS[mode]}</MyRadioButtonLabel>
+									<MyRadioButtonDescription id={optionDescriptionId}>{copy[mode]}</MyRadioButtonDescription>
+								</MyRadioButton>
+								{/* The radio button is one click target, so the picker sits right under the Custom button. */}
 								{mode === "writer" && choiceValue.mode === "writer" ? (
 									<div
 										className={
@@ -875,8 +840,8 @@ type FilesPropertiesModalCollaboration_Props = {
  * stay attached to the words they were written on. Off means the file is one saved text: an editor
  * replaces the whole file when it saves. The last save wins.
  *
- * Turning it off cannot be undone, so the box does not write straight away. It opens the confirm
- * step below, which names what the file loses.
+ * Turning it on is safe, so the box writes straight away. Turning it off cannot be undone, so the
+ * box does not write. It opens the confirm step below, which names what the file loses.
  *
  * This section owns its `<section>` element, unlike the other sections. Only a text file can be
  * collaborative, and whether this file is one is known only after the node query answers. A wrapper
@@ -895,7 +860,7 @@ const FilesPropertiesModalCollaboration = memo(function FilesPropertiesModalColl
 	const confirmButtonRef = useRef<HTMLButtonElement>(null);
 	const [isRunning, setIsRunning] = useState(false);
 	const [error, setError] = useState<string | null>(null);
-	const [pendingCollaborativeMode, setPendingCollaborativeMode] = useState<boolean | null>(null);
+	const [isConfirmingOff, setIsConfirmingOff] = useState(false);
 
 	const node = useQuery(app_convex_api.files_nodes.get_file_node_for_membership, { membershipId, fileNodeId: nodeId });
 	const canWrite = useQuery(app_convex_api.files_nodes.get_current_user_file_write_permission, {
@@ -936,7 +901,7 @@ const FilesPropertiesModalCollaboration = memo(function FilesPropertiesModalColl
 				}
 
 				checkboxRef.current?.focus();
-				setPendingCollaborativeMode(null);
+				setIsConfirmingOff(false);
 			})
 			.catch((caughtError: unknown) => {
 				console.error("[FilesPropertiesModalCollaboration.runToggle] Failed to change collaboration", {
@@ -955,29 +920,35 @@ const FilesPropertiesModalCollaboration = memo(function FilesPropertiesModalColl
 			return;
 		}
 
-		// An open editor can still hold text that has not reached the server.
 		setError(null);
-		setPendingCollaborativeMode(checked);
+
+		// Turning it on loses nothing, so it needs no confirm step. Turning it off deletes the shared
+		// edit history and the text comments, so it asks first.
+		if (checked) {
+			runToggle(true);
+		} else {
+			setIsConfirmingOff(true);
+		}
 	});
 
-	const handleConfirmToggle = useFn(() => {
-		if (isRunning || pendingCollaborativeMode === null) {
+	const handleConfirmOff = useFn(() => {
+		if (isRunning) {
 			return;
 		}
 
-		runToggle(pendingCollaborativeMode);
+		runToggle(false);
 	});
 
-	const handleCancelToggle = useFn(() => {
+	const handleCancelOff = useFn(() => {
 		checkboxRef.current?.focus();
-		setPendingCollaborativeMode(null);
+		setIsConfirmingOff(false);
 	});
 
 	useEffect(() => {
-		if (pendingCollaborativeMode !== null) {
+		if (isConfirmingOff) {
 			confirmButtonRef.current?.focus();
 		}
-	}, [pendingCollaborativeMode]);
+	}, [isConfirmingOff]);
 
 	// The node is still loading, is gone, or this member may not read it. The policy section above
 	// already reports that, so render nothing here.
@@ -992,8 +963,8 @@ const FilesPropertiesModalCollaboration = memo(function FilesPropertiesModalColl
 	}
 
 	const description = isCollaborative
-		? "Everybody can type in this file at the same time. The edits are merged, and comments stay attached to the text they were written on."
-		: "Saving replaces the whole file. The last save wins. Earlier saves stay in File Snapshots.";
+		? "Changes show up in real time, and your edits are saved as you type. You can see what your teammates are editing."
+		: "Turn this on to see changes in real time and what your teammates are editing.";
 
 	return (
 		<section
@@ -1013,8 +984,8 @@ const FilesPropertiesModalCollaboration = memo(function FilesPropertiesModalColl
 				// press instead.
 				disabled={!canToggle}
 				aria-describedby={descriptionId}
-				aria-controls={pendingCollaborativeMode !== null ? confirmId : undefined}
-				aria-expanded={pendingCollaborativeMode !== null}
+				aria-controls={isConfirmingOff ? confirmId : undefined}
+				aria-expanded={isConfirmingOff}
 				aria-busy={isRunning || undefined}
 				onCheckedChange={handleCheckedChange}
 			>
@@ -1049,7 +1020,7 @@ const FilesPropertiesModalCollaboration = memo(function FilesPropertiesModalColl
 				</p>
 			) : null}
 
-			{pendingCollaborativeMode !== null ? (
+			{isConfirmingOff ? (
 				<div
 					className={"FilesPropertiesModalCollaboration-confirm" satisfies FilesPropertiesModalCollaboration_ClassNames}
 				>
@@ -1059,9 +1030,8 @@ const FilesPropertiesModalCollaboration = memo(function FilesPropertiesModalColl
 							"FilesPropertiesModalCollaboration-confirm-text" satisfies FilesPropertiesModalCollaboration_ClassNames
 						}
 					>
-						{pendingCollaborativeMode
-							? "Turn collaboration on for this file? Text changes waiting for review are kept. Review them again before accepting. Only the last saved text is used. Markdown formatting may change. Save open editor changes first."
-							: "Turn collaboration off for this file? The shared edit history is deleted. Comments attached to text disappear from the file for everyone. Saved versions are kept. Text changes waiting for review are kept. Review them again before accepting. Only the last saved text is used. Save open editor changes first."}
+						Turn collaboration off? The edit history and the comments on text are deleted for everyone. Saved versions
+						are kept.
 					</p>
 					<div
 						className={
@@ -1070,20 +1040,14 @@ const FilesPropertiesModalCollaboration = memo(function FilesPropertiesModalColl
 					>
 						<MyButton
 							ref={confirmButtonRef}
-							variant={pendingCollaborativeMode ? "default" : "destructive"}
+							variant="destructive"
 							disabled={isRunning}
 							aria-describedby={confirmId}
-							onClick={handleConfirmToggle}
+							onClick={handleConfirmOff}
 						>
-							{isRunning
-								? pendingCollaborativeMode
-									? "Turning on..."
-									: "Turning off..."
-								: pendingCollaborativeMode
-									? "Turn collaboration on"
-									: "Turn collaboration off"}
+							{isRunning ? "Turning off..." : "Turn collaboration off"}
 						</MyButton>
-						<MyButton variant="ghost" disabled={isRunning} onClick={handleCancelToggle}>
+						<MyButton variant="ghost" disabled={isRunning} onClick={handleCancelOff}>
 							Cancel
 						</MyButton>
 					</div>

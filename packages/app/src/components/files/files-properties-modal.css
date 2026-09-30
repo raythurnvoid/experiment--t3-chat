@@ -132,61 +132,10 @@
 		border: 0;
 	}
 
-	/* One card per choice. The card of the checked radio gets the accent border and tint. */
-	.FilesPropertiesModalWritePolicy-option {
-		display: flex;
-		flex-direction: column;
-		gap: 10px;
-
-		padding: 12px 14px;
-
-		border: 1px solid var(--color-base-1-07);
-		border-radius: 8px;
-
-		&:has(input:checked) {
-			border-color: var(--color-accent-07);
-			background: color-mix(in oklab, var(--color-accent-07) 8%, transparent);
-		}
-	}
-
-	/* The whole card is the label, so a click anywhere on it picks the choice. */
-	.FilesPropertiesModalWritePolicy-option-choice {
-		display: flex;
-		align-items: start;
-		gap: 12px;
-
-		cursor: pointer;
-
-		&:has(input:disabled) {
-			cursor: default;
-		}
-	}
-
-	.FilesPropertiesModalWritePolicy-option-text {
-		display: flex;
-		flex-direction: column;
-		gap: 2px;
-
-		min-width: 0;
-	}
-
-	.FilesPropertiesModalWritePolicy-option-label {
-		font-size: 13px;
-		font-weight: 500;
-		color: var(--color-fg-11);
-	}
-
-	.FilesPropertiesModalWritePolicy-option-description {
-		font-size: 12px;
-		line-height: 1.4;
-		color: var(--color-fg-08);
-
-		text-wrap: pretty;
-	}
-
-	/* Line the pickers up with the option text, past the radio button. */
+	/* Sit under the Custom button, lined up with its text: button padding 12px, circle 18px, gap 10px. */
 	.FilesPropertiesModalWritePolicy-option-picker {
-		margin-inline-start: 28px;
+		margin-block-start: 8px;
+		margin-inline-start: 40px;
 	}
 
 	.FilesPropertiesModalWritePolicy-description {

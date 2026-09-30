@@ -1,0 +1,93 @@
+@layer common_components {
+	/* #region label */
+	.MyRadioButtonLabel {
+		font-size: 13px;
+		font-weight: 500;
+		color: var(--color-fg-11);
+	}
+	/* #endregion label */
+
+	/* #region description */
+	.MyRadioButtonDescription {
+		font-size: 12px;
+		font-weight: 400;
+		line-height: 1.4;
+		color: var(--color-fg-08);
+
+		text-wrap: pretty;
+	}
+	/* #endregion description */
+
+	/* #region root */
+	/* Keep the look in sync with `my-checkbox-button.css`. A radio button and a checkbox button sit side by
+	   side, so they must look the same. */
+	/* `.MyButton` expects a short centered label. A radio choice carries a sentence, so let it wrap. */
+	.MyRadioButton.MyButton {
+		justify-content: start;
+		align-items: start;
+		gap: 10px;
+
+		width: 100%;
+		height: auto;
+		padding: 12px;
+
+		white-space: normal;
+		text-align: start;
+	}
+
+	.MyRadioButton.MyButton:where(:has(> .MyRadioButton-control:focus-visible), .MyRadioButton-state-focus-visible) {
+		outline: 2px solid var(--color-fg-12);
+	}
+
+	/* Keep the real radio in the page but invisible, the same way the checkbox button does. */
+	.MyRadioButton-control {
+		position: absolute;
+		inset: 0 auto auto 0;
+
+		margin: 0;
+		width: 1px;
+		height: 1px;
+
+		filter: opacity(0);
+		pointer-events: none;
+	}
+
+	/* Line the circle up with the first line of text. */
+	.MyRadioButton > .MyRadioSurface {
+		margin-top: 1px;
+	}
+
+	.MyRadioButton-content {
+		display: grid;
+		gap: 4px;
+
+		min-width: 0;
+	}
+
+	/* The checked button gets the accent ring and a light tint. The selectors are as strong as the
+	   outline button hover rule, and they come later, so the checked look stays under the pointer too. */
+	.MyRadioButton.MyButton-variant-outline:is(:has(> .MyRadioButton-control:checked), .MyRadioButton-state-checked) {
+		background: linear-gradient(
+			color-mix(in oklch, var(--color-accent-07) 10%, var(--color-base-1-04)),
+			color-mix(in oklch, var(--color-accent-07) 10%, var(--color-base-1-03))
+		);
+		box-shadow:
+			inset 0 0 0 2px var(--color-accent-06),
+			inset 0 1px 0 color-mix(in oklch, var(--color-fg-11) 8%, transparent),
+			inset 0 -1px 0 color-mix(in oklch, var(--color-base-1-02) 50%, transparent),
+			0 2px 4px black;
+
+		/* Clicking a checked radio changes nothing, so it does not look clickable. */
+		cursor: default;
+
+		& > .MyRadioSurface {
+			border-color: var(--color-accent-06);
+			background: color-mix(in oklch, var(--color-accent-01) 45%, var(--color-base-1-03));
+		}
+
+		& > .MyRadioSurface > .MyRadioSurface-dot {
+			transform: scale(1);
+		}
+	}
+	/* #endregion root */
+}

@@ -607,7 +607,7 @@ describe("FilesPropertiesModalCollaboration", () => {
 		mockQueries({ node: TEXT_NODE, entries: [], canWrite: true });
 		const { unmount } = renderModal();
 		expect(collaborationCheckbox().checked).toBe(true);
-		expect(screen.getByText("Everybody can type in this file at the same time.", { exact: false })).toBeTruthy();
+		expect(screen.getByText("Changes show up in real time", { exact: false })).toBeTruthy();
 		unmount();
 
 		mockQueries({ entries: [], canWrite: true });
@@ -616,15 +616,13 @@ describe("FilesPropertiesModalCollaboration", () => {
 		expect(document.querySelector(".FilesPropertiesModalCollaboration")).toBeNull();
 	});
 
-	test("explains last write wins when collaboration is already off", () => {
+	test("explains what collaboration gives when it is off", () => {
 		mockQueries({ node: { ...TEXT_NODE, collaborationEnabled: false }, entries: [], canWrite: true });
 
 		renderModal();
 
 		expect(collaborationCheckbox().checked).toBe(false);
-		expect(
-			screen.getByText("The last save wins. Earlier saves stay in File Snapshots.", { exact: false }),
-		).toBeTruthy();
+		expect(screen.getByText("Turn this on to see changes in real time", { exact: false })).toBeTruthy();
 	});
 
 	// Turning it off cannot be undone, so one click must not write. The warning has to name every
@@ -636,13 +634,9 @@ describe("FilesPropertiesModalCollaboration", () => {
 		fireEvent.click(collaborationCheckbox());
 
 		expect(mutationMock).not.toHaveBeenCalled();
-		const warning = screen.getByText("Turn collaboration off for this file?", { exact: false }).textContent ?? "";
+		const warning = screen.getByText("Turn collaboration off?", { exact: false }).textContent ?? "";
 		expect(warning).toContain("edit history");
-		expect(warning).toContain("Comments attached to text disappear from the file for everyone.");
-		expect(warning).toContain("Text changes waiting for review are kept.");
-		expect(warning).toContain("Review them again before accepting.");
-		expect(warning).toContain("last saved text");
-		expect(warning).toContain("open editor changes");
+		expect(warning).toContain("comments on text are deleted for everyone");
 		// The box still shows the state the server has, not the one the click asked for.
 		expect(collaborationCheckbox().checked).toBe(true);
 		expect(document.activeElement).toBe(screen.getByRole("button", { name: "Turn collaboration off" }));
@@ -663,27 +657,22 @@ describe("FilesPropertiesModalCollaboration", () => {
 		fireEvent.click(collaborationCheckbox());
 		fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
 
-		expect(screen.queryByText("Turn collaboration off for this file?", { exact: false })).toBeNull();
+		expect(screen.queryByText("Turn collaboration off?", { exact: false })).toBeNull();
 		expect(mutationMock).not.toHaveBeenCalled();
 		expect(document.activeElement).toBe(collaborationCheckbox());
 	});
 
-	test("warns about unsaved editor text before turning collaboration on", () => {
+	test("turns collaboration on straight away, with no confirm step", () => {
 		mockQueries({ node: { ...TEXT_NODE, collaborationEnabled: false }, entries: [], canWrite: true });
 
 		renderModal();
 		fireEvent.click(collaborationCheckbox());
 
-		expect(actionMock).not.toHaveBeenCalled();
-		expect(screen.getByText("Only the last saved text is used.", { exact: false })).toBeTruthy();
-		expect(screen.getByText("Text changes waiting for review are kept.", { exact: false })).toBeTruthy();
-		expect(screen.getByText("Markdown formatting may change.", { exact: false })).toBeTruthy();
-		expect(document.activeElement).toBe(screen.getByRole("button", { name: "Turn collaboration on" }));
-		fireEvent.click(screen.getByRole("button", { name: "Turn collaboration on" }));
 		expect(actionMock).toHaveBeenCalledWith("set_file_collaborative", {
 			membershipId: MEMBERSHIP_ID,
 			nodeId: NODE_ID,
 		});
+		expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull();
 	});
 
 	test("shows the cleanup refusal and keeps collaboration off", async () => {
@@ -694,7 +683,6 @@ describe("FilesPropertiesModalCollaboration", () => {
 
 		renderModal();
 		fireEvent.click(collaborationCheckbox());
-		fireEvent.click(screen.getByRole("button", { name: "Turn collaboration on" }));
 
 		await waitFor(() => {
 			expect(screen.getByRole("alert").textContent).toContain("old collaboration history is still being removed");

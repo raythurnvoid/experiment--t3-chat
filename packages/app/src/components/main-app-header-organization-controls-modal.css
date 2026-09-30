@@ -150,10 +150,6 @@
 		gap: 8px;
 	}
 
-	.MainAppHeaderOrganizationSwitcherModalBillingModal-option {
-		width: 100%;
-	}
-
 	.MainAppHeaderOrganizationSwitcherModalBillingModal-option-title {
 		color: var(--color-fg-10);
 

@@ -66,6 +66,13 @@ export type MyCheckboxButton_Props = Omit<
 	onCheckedChange?: (checked: boolean) => void;
 };
 
+/**
+ * One checkbox drawn as a button.
+ *
+ * Keep this in sync with `MyRadioButton` in `my-radio-button.tsx`. They sit side by side in the same
+ * forms, so they must look the same: same outline button, border, padding, hover, focus, and disabled
+ * look. When you change one, change the other.
+ */
 export const MyCheckboxButton = memo(function MyCheckboxButton(props: MyCheckboxButton_Props) {
 	const {
 		ref,

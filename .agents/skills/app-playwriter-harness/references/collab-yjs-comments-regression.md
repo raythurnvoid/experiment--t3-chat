@@ -147,7 +147,7 @@ must build a new provider, and every push must name the document it was built fo
    `getByRole("button", { name: "Turn collaboration off" })`. Wait until
    `.FilesPropertiesModalCollaboration-description` no longer starts with `Everybody can type`.
    Now `window.__qa.filesYjs()` answers `[]` and `.FileEditorRichTextNonCollabToolbarActions` is mounted.
-4. Click the same label again, then `Turn collaboration on` (both directions confirm inline). Wait for
+4. Click the same label again, then click it again (turning on has no confirm step, only turning off asks inline). Wait for
    the description to start with `Everybody can type` again and for `window.__qa.filesYjs()` to answer
    one provider with `status: "synchronized"`. Read the document id again: **B** must differ from **A**.
    This step legitimately waits for the `set_file_collaborative` action plus the new provider's first

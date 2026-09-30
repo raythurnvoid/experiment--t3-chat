@@ -7,6 +7,8 @@
 	/* #endregion icon */
 
 	/* #region root */
+	/* Keep the look in sync with `my-radio-button.css`. A checkbox button and a radio button sit side by
+	   side, so they must look the same. */
 	.MyCheckboxButton:where(:has(> .MyCheckboxButton-control:focus-visible), .MyCheckboxButton-state-focus-visible) {
 		outline-color: var(--color-fg-12);
 	}

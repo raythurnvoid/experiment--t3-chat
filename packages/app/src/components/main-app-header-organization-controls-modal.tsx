@@ -66,7 +66,7 @@ import {
 	MyModalPopover,
 	MyModalScrollableArea,
 } from "@/components/my-modal.tsx";
-import { MyRadioCard, MyRadioCardDescription, MyRadioCardLabel } from "@/components/my-radio-card.tsx";
+import { MyRadioButton, MyRadioButtonDescription, MyRadioButtonLabel } from "@/components/my-radio-button.tsx";
 import { MyTooltip, MyTooltipContent, MyTooltipInfoTrigger, MyTooltipTrigger } from "@/components/my-tooltip.tsx";
 import { app_convex, app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import type { AppClassName } from "@/lib/dom-utils.ts";
@@ -1726,7 +1726,6 @@ type MainAppHeaderOrganizationSwitcherModalBillingModal_ClassNames =
 	| "MainAppHeaderOrganizationSwitcherModalBillingModal"
 	| "MainAppHeaderOrganizationSwitcherModalBillingModal-body"
 	| "MainAppHeaderOrganizationSwitcherModalBillingModal-options"
-	| "MainAppHeaderOrganizationSwitcherModalBillingModal-option"
 	| "MainAppHeaderOrganizationSwitcherModalBillingModal-option-title"
 	| "MainAppHeaderOrganizationSwitcherModalBillingModal-option-description"
 	| "MainAppHeaderOrganizationSwitcherModalBillingModal-note"
@@ -1752,39 +1751,36 @@ const MainAppHeaderOrganizationSwitcherModalBillingModalOption = memo(
 		const { name, value, checked, disabled, title, description, onChange } = props;
 
 		const optionId = `${name}-option-${useId()}`;
-		const radioId = `${optionId}-radio`;
+		const labelId = `${optionId}-label`;
 		const descriptionId = `${optionId}-description`;
 
 		return (
-			<MyRadioCard
-				className={cn(
-					"MainAppHeaderOrganizationSwitcherModalBillingModal-option" satisfies MainAppHeaderOrganizationSwitcherModalBillingModal_ClassNames,
-				)}
-				id={radioId}
+			<MyRadioButton
 				name={name}
 				value={value}
 				checked={checked}
 				disabled={disabled}
+				aria-labelledby={labelId}
 				aria-describedby={descriptionId}
 				onChange={onChange}
 			>
-				<MyRadioCardLabel
-					htmlFor={radioId}
+				<MyRadioButtonLabel
+					id={labelId}
 					className={cn(
 						"MainAppHeaderOrganizationSwitcherModalBillingModal-option-title" satisfies MainAppHeaderOrganizationSwitcherModalBillingModal_ClassNames,
 					)}
 				>
 					{title}
-				</MyRadioCardLabel>
-				<MyRadioCardDescription
+				</MyRadioButtonLabel>
+				<MyRadioButtonDescription
 					id={descriptionId}
 					className={cn(
 						"MainAppHeaderOrganizationSwitcherModalBillingModal-option-description" satisfies MainAppHeaderOrganizationSwitcherModalBillingModal_ClassNames,
 					)}
 				>
 					{description}
-				</MyRadioCardDescription>
-			</MyRadioCard>
+				</MyRadioButtonDescription>
+			</MyRadioButton>
 		);
 	},
 );
