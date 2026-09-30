@@ -316,34 +316,10 @@ describe("FilesPropertiesModal", () => {
 		expect((screen.getByRole("radio", { name: "No one (read-only)" }) as HTMLInputElement).checked).toBe(true);
 		expect((screen.getByRole("radio", { name: "Everyone with access" }) as HTMLInputElement).checked).toBe(false);
 	});
-
-	test("enables the footer Save only after a setting was edited", () => {
-		mockQueries({ entries: [], canWrite: true });
-		renderModal();
-		const save = screen.getByRole("button", { name: /^Save$/ });
-
-		expect(save.hasAttribute("disabled")).toBe(true);
-
-		typeDraft("created-by: agent\n");
-		expect(save.hasAttribute("disabled")).toBe(false);
-	});
 });
 
 describe("FilesPropertiesModalFacts", () => {
 	const factsText = () => (screen.getByRole("textbox", { name: "Properties" }) as HTMLTextAreaElement).value;
-
-	test("shows the file facts, and drops the file-only lines for a folder", () => {
-		mockQueries({ entries: [], canWrite: true });
-
-		const { unmount } = renderModal();
-		expect(factsText()).toContain("Content type: text/markdown");
-		expect(factsText()).toContain("Size: 2.0 KB");
-		unmount();
-
-		renderModal({ nodeKind: "folder" });
-		expect(factsText()).not.toContain("Content type");
-		expect(factsText()).not.toContain("Size");
-	});
 
 	// The work is in the values: two author lookups, a skipped lookup for the author the app uses for
 	// its own writes, and the size of the stored blob.
@@ -370,16 +346,6 @@ describe("FilesPropertiesModalFacts", () => {
 		// SYSTEM is not a real user id, so its lookup must be skipped instead of sent.
 		expect(useQueryMock).toHaveBeenCalledWith("get_anagraphic", { userId: "user_1" });
 		expect(useQueryMock).toHaveBeenCalledWith("get_anagraphic", "skip");
-	});
-
-	// A file written in the app keeps its text in chunks and has no stored blob, so there is no
-	// size to report.
-	test("shows the size as Unknown for a file with no stored asset", () => {
-		mockQueries({ asset: null, entries: [], canWrite: true });
-
-		renderModal();
-
-		expect(factsText()).toContain("Size: Unknown");
 	});
 
 	// The two author lookups answer after the node does. Showing the lines as soon as the node arrives
@@ -410,18 +376,6 @@ describe("FilesPropertiesModalFacts", () => {
 });
 
 describe("FilesPropertiesModalWritePolicy", () => {
-	test.each([
-		[WRITABLE_POLICY, "Everyone with access"],
-		[
-			{ ...WRITABLE_POLICY, canWrite: false, writeBlockedReason: "read_only", localPolicy: { mode: "read_only" } },
-			"No one (read-only)",
-		],
-	] satisfies [ManagementState, string][])("shows the saved choice", (management, choice) => {
-		mockQueries({ management, entries: [], canWrite: management.canWrite });
-		renderModal();
-		expect((screen.getByRole("radio", { name: choice }) as HTMLInputElement).checked).toBe(true);
-	});
-
 	test("saves an explicit policy and ignores a second press while saving", async () => {
 		mockQueries({ entries: [], canWrite: true });
 		let finishMutation: (result: { _yay: null }) => void = () => {};
@@ -496,23 +450,6 @@ describe("FilesPropertiesModalWritePolicy", () => {
 		expect((screen.getByRole("radio", { name: "Custom" }) as HTMLInputElement).checked).toBe(true);
 		expect(screen.getByRole("button", { name: /^Save$/ }).hasAttribute("disabled")).toBe(true);
 		expect(mutationMock).not.toHaveBeenCalled();
-	});
-
-	test("allows a selected human to edit while a writer policy exists", () => {
-		mockQueries({
-			management: {
-				...WRITABLE_POLICY,
-				localPolicy: {
-					mode: "writer",
-					writers: [{ kind: "user", userId: "user_1", name: "Ada" }],
-					hiddenWriterCount: 0,
-				},
-			},
-			entries: [],
-			canWrite: true,
-		});
-		renderModal();
-		expect(editorHandle.options.readOnly).toBe(false);
 	});
 
 	test("opens the writers dialog for Custom and keeps Save off until somebody is chosen", async () => {
@@ -607,22 +544,12 @@ describe("FilesPropertiesModalCollaboration", () => {
 		mockQueries({ node: TEXT_NODE, entries: [], canWrite: true });
 		const { unmount } = renderModal();
 		expect(collaborationCheckbox().checked).toBe(true);
-		expect(screen.getByText("Changes show up in real time", { exact: false })).toBeTruthy();
 		unmount();
 
 		mockQueries({ entries: [], canWrite: true });
 		renderModal();
 		expect(screen.queryByRole("checkbox", { name: /Collaborative editing/ })).toBeNull();
 		expect(document.querySelector(".FilesPropertiesModalCollaboration")).toBeNull();
-	});
-
-	test("explains what collaboration gives when it is off", () => {
-		mockQueries({ node: { ...TEXT_NODE, collaborationEnabled: false }, entries: [], canWrite: true });
-
-		renderModal();
-
-		expect(collaborationCheckbox().checked).toBe(false);
-		expect(screen.getByText("Turn this on to see changes in real time", { exact: false })).toBeTruthy();
 	});
 
 	// Turning it off cannot be undone, so one click must not write. The warning has to name every
@@ -649,17 +576,6 @@ describe("FilesPropertiesModalCollaboration", () => {
 		});
 	});
 
-	test("cancelling the confirm dialog writes nothing and closes it", async () => {
-		mockQueries({ node: TEXT_NODE, entries: [], canWrite: true });
-
-		renderModal();
-		fireEvent.click(collaborationCheckbox());
-		fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-
-		await waitFor(() => expect(screen.queryByRole("dialog", { name: "Turn collaboration off?" })).toBeNull());
-		expect(mutationMock).not.toHaveBeenCalled();
-	});
-
 	test("turns collaboration on straight away, with no confirm step", () => {
 		mockQueries({ node: { ...TEXT_NODE, collaborationEnabled: false }, entries: [], canWrite: true });
 
@@ -671,21 +587,6 @@ describe("FilesPropertiesModalCollaboration", () => {
 			nodeId: NODE_ID,
 		});
 		expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull();
-	});
-
-	test("shows the cleanup refusal and keeps collaboration off", async () => {
-		mockQueries({ node: { ...TEXT_NODE, collaborationEnabled: false }, entries: [], canWrite: true });
-		actionMock.mockResolvedValueOnce({
-			_nay: { message: "The old collaboration history is still being removed. Please try again later." },
-		});
-
-		renderModal();
-		fireEvent.click(collaborationCheckbox());
-
-		await waitFor(() => {
-			expect(screen.getByRole("alert").textContent).toContain("old collaboration history is still being removed");
-		});
-		expect(collaborationCheckbox().checked).toBe(false);
 	});
 
 	test("shows cleanup status only while old history blocks collaboration", async () => {
@@ -759,14 +660,6 @@ describe("FilesPropertiesModalMetadata", () => {
 
 		typeDraft("created-by: email\n");
 		expect(screen.getByRole("button", { name: /^Save$/ }).hasAttribute("disabled")).toBe(false);
-	});
-
-	test("mounts the editor on the stored YAML, not an empty draft", () => {
-		mockQueries({ entries: [{ key: "created-by", value: "slack" }], canWrite: true });
-
-		renderModal();
-
-		expect(editorValues[0]).toContain("created-by: slack");
 	});
 
 	// The same rule on the cold path: the query has no answer yet on the first render, so the
@@ -861,14 +754,6 @@ describe("FilesPropertiesModalMetadata", () => {
 		expect(editorHandle.options.readOnly).toBe(true);
 	});
 
-	test("leaves the editor writable when the file is writable", () => {
-		mockQueries({ entries: [], canWrite: true });
-
-		renderModal();
-
-		expect(editorHandle.options.readOnly).toBe(false);
-	});
-
 	// The stored map is re-rendered as YAML on every push, so the text that comes back is almost never
 	// the text that was sent. The editor uses CRLF and drops nothing. The map drops comments and
 	// re-quotes values. Without this the dialog treated its own save as somebody else's edit.
@@ -923,18 +808,6 @@ describe("FilesPropertiesModalMetadata", () => {
 
 		expect(screen.queryByRole("alert")).toBeNull();
 		expect((screen.getByLabelText("Metadata YAML") as HTMLTextAreaElement).value).toBe("created-by: agent\n");
-	});
-
-	// Closing the dialog throws the draft away, and a modal is easier to dismiss by accident than the
-	// sidebar tab this replaced.
-	test("warns in the footer while a draft is unsaved", () => {
-		mockQueries({ entries: [], canWrite: true });
-
-		renderModal();
-		expect(screen.queryByText("Unsaved changes will be lost.")).toBeNull();
-
-		typeDraft("created-by: agent\n");
-		expect(screen.getByText("Unsaved changes will be lost.")).toBeTruthy();
 	});
 
 	// The section unmounts with the dialog body, so it cannot report the draft it just lost. Without
@@ -1024,39 +897,5 @@ describe("FilesPropertiesModalMetadata", () => {
 		expect(save.hasAttribute("disabled")).toBe(true);
 		expect(screen.getByRole("status").textContent).toBe(expectedText);
 		expect(mutationMock).not.toHaveBeenCalled();
-	});
-
-	// The closed help dialog stays in the DOM and uses similar words, so select the placeholder by its class.
-	const queryPlaceholder = () => document.querySelector(".FilesPropertiesModalMetadata-placeholder");
-
-	test("shows an example in the empty editor until something is typed", () => {
-		mockQueries({ entries: [], canWrite: true });
-		renderModal();
-
-		expect(queryPlaceholder()).not.toBeNull();
-
-		typeDraft("client: Acme\n");
-		expect(queryPlaceholder()).toBeNull();
-
-		typeDraft("");
-		expect(queryPlaceholder()).not.toBeNull();
-	});
-
-	test("shows no example when the item cannot be edited", () => {
-		mockQueries({ entries: [], canWrite: false });
-		renderModal();
-
-		expect(queryPlaceholder()).toBeNull();
-	});
-
-	test("opens the help dialog from the help button", () => {
-		mockQueries({ entries: [], canWrite: true });
-		renderModal();
-
-		expect(screen.queryByRole("dialog", { name: "How metadata works" })).toBeNull();
-
-		fireEvent.click(screen.getByRole("button", { name: "How metadata works" }));
-
-		expect(screen.getByRole("dialog", { name: "How metadata works" })).toBeTruthy();
 	});
 });

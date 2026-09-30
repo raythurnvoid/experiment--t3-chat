@@ -360,6 +360,7 @@ Add a test only when it protects behavior that can break silently. Every new tes
 - Do not add one for text, labels, layout, class names, or a prop that is only passed through and shown.
 - Add at most one test per new behavior. Do not test each branch of a simple condition.
 - When a change renames or moves UI, update the existing tests that break. Do not add new ones for the same thing.
+- When you edit a test file, delete the tests that fail these rules: text, label, or layout checks, repeats of another test, and tests that only exercise a mock.
 - If you are unsure, do not add the test, and say in the final answer what you left untested.
 
 ## Test design
