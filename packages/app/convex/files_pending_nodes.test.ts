@@ -770,7 +770,7 @@ describe("files_pending_nodes_db_publish", () => {
 					await asOwner.mutation(api.files_nodes.set_node_write_policy, {
 						membershipId: owner.membershipId,
 						nodeId: saved._yay.target.id,
-						writePolicy: { mode: "writer", writer: { kind: "user", userId: owner.userId } },
+						writePolicy: { mode: "writer", writers: [{ kind: "user", userId: owner.userId }] },
 					}),
 				).toEqual({ _yay: null });
 			if (change === "ancestor_path")

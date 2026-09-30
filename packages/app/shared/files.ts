@@ -229,6 +229,11 @@ export type files_YjsRootKind = "rich_text" | "plain_text";
 
 export type files_SpecialFileName = "README.md" | "AGENTS.md" | "SKILL.md";
 
+/**
+ * Refusal for a writer rule that lists no writer or the same writer twice.
+ */
+export const files_WRITE_POLICY_INVALID_WRITERS_MESSAGE = "Choose at least one writer, and each writer only once.";
+
 export const files_MAX_TEXT_CONTENT_BYTES = 900_000;
 
 /**

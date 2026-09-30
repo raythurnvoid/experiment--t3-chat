@@ -822,6 +822,59 @@ describe("file write policy API", () => {
 		expect((await request()).status).toBe(404);
 		expect(await t.run((ctx) => ctx.db.get("files_nodes", nodeId))).toEqual(before);
 	});
+
+	test("a listed writer can replace a file whose rule also lists a writer who left", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-policy-replace" });
+		const asOwner = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const key = await asOwner.mutation(api.public_api.api_credential_create, {
+			membershipId: db.membershipId,
+			serviceAccountId: null,
+			name: "Writer",
+			scopes: ["files:read", "files:write"],
+		});
+		if (key._nay) {
+			throw new Error(key._nay.message);
+		}
+		// A stored (non-editable) file keeps the write on the archive-and-recreate door.
+		const occupant = await asOwner.mutation(api.files_nodes.create_upload_node, {
+			membershipId: db.membershipId,
+			parentId: "root",
+			filename: "notes.md",
+			contentType: "text/markdown;charset=utf-8",
+			size: 3,
+		});
+		if (occupant._nay) {
+			throw new Error(occupant._nay.message);
+		}
+		const nodeId = occupant._yay.nodeId;
+
+		// The second writer has no membership here, like a person who left the workspace.
+		const writePolicy = await t.run(async (ctx) => {
+			const departedUserId = await ctx.db.insert("users", { clerkUserId: "clerk-policy-departed" });
+			const policy = {
+				mode: "writer" as const,
+				writers: [
+					{ kind: "user" as const, userId: db.userId },
+					{ kind: "user" as const, userId: departedUserId },
+				],
+			};
+			await ctx.db.patch("files_nodes", nodeId, { writePolicy: policy });
+			return policy;
+		});
+
+		const replaced = await t.fetch("/api/v1/files/write", {
+			method: "POST",
+			headers: auth_headers(key._yay.credential),
+			body: JSON.stringify({ path: "/notes.md", content: "# Notes\n", overwrite: "replace" }),
+		});
+		expect(await replaced.clone().json()).not.toHaveProperty("message");
+		expect(replaced.status).toBe(200);
+		const replacedBody = (await replaced.json()) as { nodeId: Id<"files_nodes"> };
+		expect(replacedBody.nodeId).not.toBe(nodeId);
+		expect(await t.run((ctx) => ctx.db.get("files_nodes", replacedBody.nodeId))).toMatchObject({ writePolicy });
+	});
 });
 
 describe("service-bound API credentials", () => {
@@ -870,7 +923,7 @@ describe("service-bound API credentials", () => {
 			throw new Error(key._nay.message);
 		}
 		const headers = auth_headers(key._yay.credential);
-		const writePolicy = { mode: "writer", writer: { kind: "service_account", serviceAccountId } };
+		const writePolicy = { mode: "writer", writers: [{ kind: "service_account", serviceAccountId }] };
 
 		const policy = await t.fetch("/api/v1/files/write-policy/set", {
 			method: "POST",
@@ -7300,7 +7353,7 @@ describe("service file writes", () => {
 		expect(node).toMatchObject({
 			writePolicy: {
 				mode: "writer",
-				writer: { kind: "service_account", serviceAccountId: installation?.serviceAccountId },
+				writers: [{ kind: "service_account", serviceAccountId: installation?.serviceAccountId }],
 			},
 		});
 
@@ -7581,7 +7634,7 @@ describe("service file writes", () => {
 		enqueueActionSpy.mockRestore();
 		const storedNode = await find_active_node({ t, db, path: "/meetings/meeting-1/notes.md" });
 		expect(storedNode).toMatchObject({
-			writePolicy: { mode: "writer", writer: { kind: "service_account", serviceAccountId: service.serviceAccountId } },
+			writePolicy: { mode: "writer", writers: [{ kind: "service_account", serviceAccountId: service.serviceAccountId }] },
 		});
 
 		// The created file has the plugin label, and the live upload target lets this service pass its lock.
@@ -7627,7 +7680,7 @@ describe("service file writes", () => {
 					nodeId: replacedNode!._id,
 					writePolicy: {
 						mode: "writer",
-						writer: { kind: "service_account", serviceAccountId: other._yay.serviceAccountId },
+						writers: [{ kind: "service_account", serviceAccountId: other._yay.serviceAccountId }],
 					},
 				})
 			)._nay,

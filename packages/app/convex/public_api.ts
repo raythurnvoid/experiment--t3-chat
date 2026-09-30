@@ -40,6 +40,7 @@ import {
 	files_normalize_name,
 	files_normalize_special_node_path,
 	files_normalize_upload_file_name,
+	files_WRITE_POLICY_INVALID_WRITERS_MESSAGE,
 } from "../shared/files.ts";
 import {
 	files_INVALID_CONTENT_TYPE_MESSAGE,
@@ -2204,9 +2205,11 @@ export const set_file_write_policy = internalMutation({
 			v.object({ mode: v.literal("read_only") }),
 			v.object({
 				mode: v.literal("writer"),
-				writer: v.union(
-					v.object({ kind: v.literal("user"), userId: v.string() }),
-					v.object({ kind: v.literal("service_account"), serviceAccountId: v.string() }),
+				writers: v.array(
+					v.union(
+						v.object({ kind: v.literal("user"), userId: v.string() }),
+						v.object({ kind: v.literal("service_account"), serviceAccountId: v.string() }),
+					),
 				),
 			}),
 		),
@@ -2220,20 +2223,23 @@ export const set_file_write_policy = internalMutation({
 
 		let writePolicy: Doc<"files_nodes">["writePolicy"];
 		if (args.writePolicy?.mode === "writer") {
-			const writer = args.writePolicy.writer;
-			if (writer.kind === "user") {
-				const userId = ctx.db.normalizeId("users", writer.userId);
-				if (!userId) {
-					return Result({ _nay: { message: "Writer is not available" } });
+			const writers: files_nodes_WriteContext["writer"][] = [];
+			for (const writer of args.writePolicy.writers) {
+				if (writer.kind === "user") {
+					const userId = ctx.db.normalizeId("users", writer.userId);
+					if (!userId) {
+						return Result({ _nay: { message: "Writer is not available" } });
+					}
+					writers.push({ kind: "user", userId });
+				} else {
+					const serviceAccountId = ctx.db.normalizeId("access_control_service_accounts", writer.serviceAccountId);
+					if (!serviceAccountId) {
+						return Result({ _nay: { message: "Writer is not available" } });
+					}
+					writers.push({ kind: "service_account", serviceAccountId });
 				}
-				writePolicy = { mode: "writer", writer: { kind: "user", userId } };
-			} else {
-				const serviceAccountId = ctx.db.normalizeId("access_control_service_accounts", writer.serviceAccountId);
-				if (!serviceAccountId) {
-					return Result({ _nay: { message: "Writer is not available" } });
-				}
-				writePolicy = { mode: "writer", writer: { kind: "service_account", serviceAccountId } };
 			}
+			writePolicy = { mode: "writer", writers };
 		} else {
 			writePolicy = args.writePolicy;
 		}
@@ -3393,6 +3399,9 @@ export const publish_file_write = internalMutation({
 			return canCreate;
 		}
 		let writePolicy = activeNode?.writePolicy ?? undefined;
+		// A replace keeps the old file's rule. Check only the manage permission for it, not its writers:
+		// a writer who left since the rule was set must not stop the others.
+		let keepsReplacedPolicy = writePolicy !== undefined;
 		if (args.requestReadOnly === true) {
 			const installation = revalidated._yay.installation;
 			if (!installation || writeContext.writer.kind !== "service_account") {
@@ -3405,7 +3414,8 @@ export const publish_file_write = internalMutation({
 			if (!canSelectWriter) {
 				return Result({ _nay: { message: "Permission denied" } });
 			}
-			writePolicy = { mode: "writer", writer: writeContext.writer };
+			writePolicy = { mode: "writer", writers: [writeContext.writer] };
+			keepsReplacedPolicy = false;
 		}
 		if (writePolicy !== undefined) {
 			const managed = await files_nodes_db_require_write_policy_management(ctx, {
@@ -3413,7 +3423,7 @@ export const publish_file_write = internalMutation({
 				workspaceId: stage.workspaceId,
 				writeContext: createContext,
 				target: createTarget,
-				writePolicy,
+				writePolicy: keepsReplacedPolicy ? null : writePolicy,
 			});
 			if (managed._nay) {
 				return managed;
@@ -3436,6 +3446,7 @@ export const publish_file_write = internalMutation({
 			expectsTextContent: true,
 			writeContext: createContext,
 			writePolicy,
+			...(keepsReplacedPolicy ? { keepsReplacedPolicy: true as const } : {}),
 			...(pluginName
 				? {
 						createdNodesMetadata: [
@@ -4539,13 +4550,15 @@ export const create_file_upload_targets = internalMutation({
 			if (writable._nay) {
 				return { ...writable, _nay: { ...writable._nay, data: { path: item.path } } };
 			}
+			// A replace keeps the old file's rule. Check only the manage permission for it, not its writers:
+			// a writer who left since the rule was set must not stop the others.
 			if (item.writePolicy !== undefined) {
 				const managed = await files_nodes_db_require_write_policy_management(ctx, {
 					organizationId: args.organizationId,
 					workspaceId: args.workspaceId,
 					writeContext,
 					target,
-					writePolicy: item.writePolicy,
+					writePolicy: null,
 				});
 				if (managed._nay) {
 					return Result({ _nay: { ...managed._nay, data: { path: item.path } } });
@@ -4618,6 +4631,7 @@ export const create_file_upload_targets = internalMutation({
 				metadata: [{ key: "source", value: "api" }],
 				writeContext,
 				writePolicy: item.writePolicy,
+				...(item.writePolicy !== undefined ? { keepsReplacedPolicy: true as const } : {}),
 				now,
 			});
 			// The validation pass cleared every failure this helper can hit (collisions, ancestor
@@ -5923,10 +5937,12 @@ const set_file_write_policy_body_validator = z.object({
 		z.object({ mode: z.literal("read_only") }),
 		z.object({
 			mode: z.literal("writer"),
-			writer: z.union([
-				z.object({ kind: z.literal("user"), userId: z.string() }),
-				z.object({ kind: z.literal("service_account"), serviceAccountId: z.string() }),
-			]),
+			writers: z.array(
+				z.union([
+					z.object({ kind: z.literal("user"), userId: z.string() }),
+					z.object({ kind: z.literal("service_account"), serviceAccountId: z.string() }),
+				]),
+			),
 		}),
 	]),
 });
@@ -5967,7 +5983,8 @@ export async function public_api_http_set_file_write_policy(
 					? 401
 					: result._nay.message === "Not found"
 						? 404
-						: result._nay.message === "Writer is not available"
+						: result._nay.message === "Writer is not available" ||
+								result._nay.message === files_WRITE_POLICY_INVALID_WRITERS_MESSAGE
 							? 400
 							: 403,
 			body: { message: result._nay.message },

@@ -1132,7 +1132,7 @@ describe("service upload targets", () => {
 		expect(await t.run(async (ctx) => ctx.db.get("files_nodes", target.nodeId))).toMatchObject({
 			writePolicy: {
 				mode: "writer",
-				writer: { kind: "service_account", serviceAccountId: installation?.serviceAccountId },
+				writers: [{ kind: "service_account", serviceAccountId: installation?.serviceAccountId }],
 			},
 		});
 		expect((await call(t, CREATE_TARGET_PATH, sealed, body)).status).toBe(200);
@@ -1186,7 +1186,7 @@ describe("service upload targets", () => {
 		const target = (await read_targets(t))[0]!;
 		expect(await t.run((ctx) => ctx.db.get("files_nodes", target.nodeId))).toMatchObject({
 			restrictedScopeNodeId: destinationId,
-			writePolicy: { mode: "writer", writer: { kind: "service_account", serviceAccountId: fixture.serviceAccountId } },
+			writePolicy: { mode: "writer", writers: [{ kind: "service_account", serviceAccountId: fixture.serviceAccountId }] },
 		});
 
 		expect((await call(t, ARCHIVE_PATH, sealed, {})).status).toBe(200);
@@ -1262,7 +1262,7 @@ describe("service upload targets", () => {
 				...args,
 				writePolicy: {
 					mode: "writer",
-					writer: { kind: "service_account", serviceAccountId: fixture.serviceAccountId },
+					writers: [{ kind: "service_account", serviceAccountId: fixture.serviceAccountId }],
 				},
 			}),
 		).toEqual({ _yay: null });
@@ -1417,7 +1417,7 @@ describe("service upload targets", () => {
 		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: fixture.userId });
 		const selectedAccount = {
 			mode: "writer" as const,
-			writer: { kind: "service_account" as const, serviceAccountId: fixture.serviceAccountId },
+			writers: [{ kind: "service_account" as const, serviceAccountId: fixture.serviceAccountId }],
 		};
 		// destinationNodeId is the sealed /meetings folder. The new file's parent is
 		// /meetings/meeting-1, so this ancestor lock does not block create.
@@ -2064,7 +2064,7 @@ describe("service upload delete", () => {
 				...args,
 				writePolicy: {
 					mode: "writer",
-					writer: { kind: "service_account", serviceAccountId: fixture.serviceAccountId },
+					writers: [{ kind: "service_account", serviceAccountId: fixture.serviceAccountId }],
 				},
 			}),
 		).toEqual({ _yay: null });
@@ -2289,7 +2289,7 @@ describe("service upload delete", () => {
 			await asUser.mutation(api.files_nodes.set_node_write_policy, {
 				writePolicy: {
 					mode: "writer",
-					writer: { kind: "service_account", serviceAccountId: fixture.serviceAccountId },
+					writers: [{ kind: "service_account", serviceAccountId: fixture.serviceAccountId }],
 				},
 				membershipId: fixture.membershipId,
 				nodeId: target.nodeId,

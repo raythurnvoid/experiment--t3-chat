@@ -19,6 +19,7 @@ import {
 	type files_nodes_WriteContext,
 	files_nodes_db_archive_nodes,
 	files_nodes_db_create_node_recursively_at_path,
+	files_nodes_writer_matches_policy,
 } from "./files_nodes.ts";
 import { files_metadata_db_read_entry } from "./files_metadata.ts";
 import { files_nodes_reconstruct_latest_file_content_from_materialization_state } from "./files_nodes_reconstruct_content.ts";
@@ -96,9 +97,17 @@ async function db_prepare_plugin_access(
 		args.readOnly === undefined
 			? undefined
 			: args.readOnly
-				? { mode: "writer", writer: args.writeContext.writer }
+				? { mode: "writer", writers: [args.writeContext.writer] }
 				: null;
-	if (args.node && JSON.stringify(writePolicy) === JSON.stringify(args.node.writePolicy)) {
+	// Keep a writer rule that already lists this plugin. A manager may have added more writers
+	// to it, and a repeated ensure must not remove them.
+	if (
+		args.node &&
+		(JSON.stringify(writePolicy) === JSON.stringify(args.node.writePolicy) ||
+			(args.readOnly === true &&
+				args.node.writePolicy !== null &&
+				files_nodes_writer_matches_policy({ policy: args.node.writePolicy, writer: args.writeContext.writer })))
+	) {
 		writePolicy = undefined;
 	}
 
@@ -118,6 +127,7 @@ async function db_prepare_plugin_access(
 
 	// Existing nodes already passed target management. Check again for a create or a real change, so a new
 	// lock's writer is checked too. A nested restricted folder keeps its own rule and scope, so it needs no check.
+	// A kept rule checks only the manage permission: a writer who left must not block a readers change.
 	if (!args.node || writePolicy !== undefined || (binding && binding.readScopeId !== null)) {
 		const parentNode = args.parentId === files_ROOT_ID ? null : await ctx.db.get("files_nodes", args.parentId);
 		const managed = await files_nodes_db_require_write_policy_management(ctx, {
@@ -125,7 +135,7 @@ async function db_prepare_plugin_access(
 			workspaceId: args.installation.workspaceId,
 			writeContext: args.writeContext,
 			target: args.node ? { kind: "node", node: args.node } : { kind: "create", parentNode, path: args.path },
-			writePolicy: writePolicy === undefined ? (args.node?.writePolicy ?? null) : writePolicy,
+			writePolicy: writePolicy ?? null,
 		});
 		if (managed._nay) {
 			return managed;

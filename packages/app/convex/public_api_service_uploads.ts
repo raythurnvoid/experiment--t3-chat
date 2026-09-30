@@ -1069,7 +1069,7 @@ export const create_upload_target = internalMutation({
 		if (writable._nay) {
 			return writable;
 		}
-		const writePolicy = args.readOnly ? { mode: "writer" as const, writer: writeContext.writer } : undefined;
+		const writePolicy = args.readOnly ? { mode: "writer" as const, writers: [writeContext.writer] } : undefined;
 
 		if (args.readOnly && !installation.acceptedCapabilities.includes("workspace.files.create-read-only")) {
 			return Result({ _nay: { message: "Permission denied" } });

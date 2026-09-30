@@ -9,7 +9,8 @@ File access and write policy are separate checks. Access control decides whether
 and any bound service account have the requested permission. A write policy then limits which writer
 may change the node. Selecting a writer grants no file access.
 
-The writer is either a human user or a service account. Ordinary app, agent, and Bash operations use
+A writer rule lists one or more writers. Each writer is a human user or a service account, and any
+listed writer may edit. Ordinary app, agent, and Bash operations use
 the human. A service-bound key or plugin backend uses its bound account, with the current human actor
 as a separate permission ceiling. Plugin names, labels, run IDs, and upload targets do not identify a
 writer. They remain separate integration constraints.
@@ -40,7 +41,10 @@ See [Files transfer runs](../files-explorer-tree/references/transfer.md#conflict
 
 - `writePolicy`: `null` means the item is writable (subject to ACL);
   `{ mode: "read_only" }` blocks content writes;
-  `{ mode: "writer", writer }` selects one human or service account.
+  `{ mode: "writer", writers }` lists the humans and service accounts that may edit. Every write
+  door keeps at least one entry with no duplicates, and refuses anything else with
+  `files_WRITE_POLICY_INVALID_WRITERS_MESSAGE` (`shared/files.ts`). There is no max count: every
+  writer must be an active member or account, so the workspace size limits the list.
 - `newChildWritePolicy`: same union. Folders copy this onto a brand-new child once. Files store
   `null`.
 
@@ -50,7 +54,8 @@ even when it is a lock. A different current value refuses the child; a value res
 what the run wrote allows it again. Pending proposals keep no receipt: Save and Accept check
 the live lock. Uploads keep no receipt: an accepted upload always finishes.
 
-The writer value is `{ kind: "user", userId }` or `{ kind: "service_account", serviceAccountId }`.
+Each writer entry is `{ kind: "user", userId }` or `{ kind: "service_account", serviceAccountId }`.
+Transfer and pending receipts compare whole policy values, so the list order counts there.
 Moving or restoring a node keeps that node's own policy. Policy writes do not change `updatedAt`
 or `updatedBy`.
 
@@ -138,9 +143,15 @@ rename and move-out of its direct children (see above). Each restricted child ke
 `content.permissions.manage` for its own rule.
 
 The setter requires current actor and optional account `content.permissions.manage` on the actual
-target. Apply to contents never runs from Save. New selected users must be active workspace members;
-new selected accounts must be active in the same workspace. A stored revoked writer remains visible
-as a redacted choice that a manager can replace.
+target. Apply to contents never runs from Save. Every listed user must be an active workspace
+member, and every listed account must be active in the same workspace, or the save refuses with
+"Writer is not available". A stored writer who left or was revoked stays in the stored rule and
+still counts for the write check. The management state hides it (see UI Capability Model), so a
+manager who saves the rule again drops or replaces it. Only a new or changed rule checks its
+writers. A rule that stays as it is checks only `content.permissions.manage`, so a writer who left
+cannot block the others. This covers a public API replace that copies the old file's rule to the
+new node (`keepsReplacedPolicy` on the create helper), a plugin access call that keeps the stored
+rule, and each item in Apply to contents (the run checks the writers once per step, on the folder).
 
 Creation copies the destination folder's `newChildWritePolicy` once when the caller omits a policy.
 An explicit `writePolicy` or `newChildWritePolicy` override needs a management check. Intermediate
@@ -348,7 +359,9 @@ of never showing hidden items.
 - If an external write already happened before a final refusal, queue every exact key for durable
   cleanup before removing its temporary docs. Do not treat starting a vendor retry as final deletion.
 - Plugin policy changes use common management checks. A requested `readOnly: true` maps to a local
-  selected-account policy, including below a matching account parent. Ensure keeps existing folders'
+  selected-account policy (`writers: [account]`), including below a matching account parent. On an
+  existing folder, plugin `ensure` keeps a writer rule that already lists the account, so a repeated
+  ensure never removes writers a manager added. Ensure keeps existing folders'
   access unchanged. Policy changes never restore removed account grants.
   External ensure may recover only the IDs of an exact empty, attached private setup while its account
   awaits a file grant. Live credentials, pinned scope, labels, and sponsor read access still apply.
@@ -479,8 +492,9 @@ children has no lock. Policy and restricted-sharing indicators stay separate.
 
 Files Properties offers Editable, Read-only, and Selected writer. Folders also have a New items
 default. There is no inherited text and no Open parent policy. The shared management state returns
-`canManage`, safe `localPolicy`, `localDefault`, and write access. A hidden or revoked writer is
-redacted to null while the local mode stays `writer`. Apply to contents uses the saved folder policy,
+`canManage`, safe `localPolicy`, `localDefault`, and write access. A writer policy there is
+`{ mode: "writer", writers, hiddenWriterCount }`: `writers` holds only the writers the caller may see,
+with names, and `hiddenWriterCount` counts the hidden or revoked ones without their ids. Apply to contents uses the saved folder policy,
 confirms first, never runs from Save, and then says the job runs in the background. Its progress and
 result show in Activity: "Updated N items so far", "Updated N items, M already set, K not allowed",
 "Stopped. N items were updated.", or "No items could be changed. K are not allowed."

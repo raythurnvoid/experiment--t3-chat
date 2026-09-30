@@ -12983,7 +12983,7 @@ describe("files_sharing.set_node_share_grant", () => {
 			await ctx.db.patch("files_nodes", nodeId, {
 				writePolicy: {
 					mode: "writer",
-					writer: { kind: "service_account", serviceAccountId: fixture.serviceAccountId },
+					writers: [{ kind: "service_account", serviceAccountId: fixture.serviceAccountId }],
 				},
 			});
 		});

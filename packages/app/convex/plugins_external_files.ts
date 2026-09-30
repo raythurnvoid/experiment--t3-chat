@@ -224,7 +224,7 @@ export const ensure_writer = internalMutation({
 				target: facts._yay.node
 					? { kind: "node", node: facts._yay.node }
 					: { kind: "create", parentNode: facts._yay.parentNode, path: args.path },
-				writePolicy: args.readOnly ? { mode: "writer", writer: writeContext.writer } : null,
+				writePolicy: args.readOnly ? { mode: "writer", writers: [writeContext.writer] } : null,
 			});
 			if (managed._nay) return managed;
 		}
@@ -259,7 +259,7 @@ export const ensure_writer = internalMutation({
 				path: args.path,
 				kind: "folder",
 				writeContext,
-				writePolicy: args.readOnly ? { mode: "writer", writer: writeContext.writer } : undefined,
+				writePolicy: args.readOnly ? { mode: "writer", writers: [writeContext.writer] } : undefined,
 				createdNodesMetadata: [
 					{ key: "source", value: "plugin" },
 					{ key: "plugin-name", value: installation.pluginName },

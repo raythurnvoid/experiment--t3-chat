@@ -2045,7 +2045,7 @@ describe("rollback_readers", () => {
 						await owner.mutation(api.files_nodes.set_node_write_policy, {
 							membershipId: fixture.membershipId,
 							nodeId: folder.folderNodeId,
-							writePolicy: { mode: "writer", writer: { kind: "user", userId: fixture.userId } },
+							writePolicy: { mode: "writer", writers: [{ kind: "user", userId: fixture.userId }] },
 						})
 					)._nay,
 				).toBeUndefined();
@@ -2308,7 +2308,7 @@ describe("rollback_readers", () => {
 						await owner.mutation(api.files_nodes.set_node_write_policy, {
 							membershipId: fixture.membershipId,
 							nodeId: ensured._yay.folderNodeId,
-							writePolicy: { mode: "writer", writer: { kind: "user", userId: fixture.userId } },
+							writePolicy: { mode: "writer", writers: [{ kind: "user", userId: fixture.userId }] },
 						})
 					)._nay,
 				).toBeUndefined();
@@ -2325,7 +2325,7 @@ describe("rollback_readers", () => {
 							nodeId: ensured._yay.folderNodeId,
 							writePolicy: {
 								mode: "writer",
-								writer: { kind: "service_account", serviceAccountId: fixture.serviceAccountId },
+								writers: [{ kind: "service_account", serviceAccountId: fixture.serviceAccountId }],
 							},
 						})
 					)._nay,
@@ -2491,7 +2491,7 @@ describe("rollback_readers", () => {
 					await owner.mutation(api.files_nodes.set_node_write_policy, {
 						membershipId: fixture.membershipId,
 						nodeId: change === "target-policy" ? nodeId : ensured._yay.rootNodeId,
-						writePolicy: { mode: "writer", writer: { kind: "user", userId: fixture.userId } },
+						writePolicy: { mode: "writer", writers: [{ kind: "user", userId: fixture.userId }] },
 					})
 				)._nay,
 			).toBeUndefined();

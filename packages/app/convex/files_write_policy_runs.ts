@@ -200,7 +200,7 @@ export const start = mutation({
 			return Result({ _nay: { message: "Permission denied" } });
 		}
 
-		// The new rule itself needs one writer check, on the folder being confirmed.
+		// The new rule's writers need one check, on the folder being confirmed.
 		const writerAllowed = await files_nodes_db_require_write_policy_management(ctx, {
 			organizationId: folder.organizationId,
 			workspaceId: folder.workspaceId,
@@ -382,12 +382,14 @@ export const advance = internalMutation({
 				checkedCount += 1;
 				cursor = { treePath: node.treePath, inclusive: false };
 
+				// The folder check above already checked the rule's writers. Check only the manage permission
+				// here, so a step does not read every writer again for each item.
 				const managed = await files_nodes_db_require_write_policy_management(ctx, {
 					organizationId: run.organizationId,
 					workspaceId: run.workspaceId,
 					writeContext,
 					target: { kind: "node", node },
-					writePolicy: run.writePolicy,
+					writePolicy: null,
 				});
 				// An item the person can manage but not read is still updated, like any managed item.
 				if (!managed._nay) {

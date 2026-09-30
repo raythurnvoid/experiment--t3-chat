@@ -800,7 +800,7 @@ describe("start_for_agent", () => {
 			const fixture = await create_folder_fixture(["/source"]);
 			const { t, db, asUser, folders } = fixture;
 			const member = await add_member(fixture);
-			const writePolicy = { mode: "writer" as const, writer: { kind: "user" as const, userId: member.userId } };
+			const writePolicy = { mode: "writer" as const, writers: [{ kind: "user" as const, userId: member.userId }] };
 			const policyResult =
 				field === "writePolicy"
 					? await asUser.mutation(api.files_nodes.set_node_write_policy, {
@@ -1267,7 +1267,7 @@ describe("advance", () => {
 				await asUser.mutation(api.files_nodes.set_node_write_policy, {
 					membershipId: db.membershipId,
 					nodeId: copiedParent!._id,
-					writePolicy: { mode: "writer", writer: { kind: "user", userId: member.userId } },
+					writePolicy: { mode: "writer", writers: [{ kind: "user", userId: member.userId }] },
 				})
 			)._nay,
 		).toBeUndefined();

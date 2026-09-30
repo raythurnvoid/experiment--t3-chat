@@ -133,6 +133,7 @@ import {
 	files_normalize_special_node_path,
 	files_normalize_upload_file_name,
 	files_pending_update_content_is_stale,
+	files_WRITE_POLICY_INVALID_WRITERS_MESSAGE,
 	type files_VisibleEntry,
 } from "../shared/files.ts";
 import { files_metadata_db_patch_file_scope, files_metadata_db_write_entries } from "./files_metadata.ts";
@@ -730,7 +731,7 @@ export async function files_nodes_db_set_restricted_scope(
 // #region write-policy
 
 export type files_nodes_WriteContext = {
-	writer: Extract<NonNullable<Doc<"files_nodes">["writePolicy"]>, { mode: "writer" }>["writer"];
+	writer: Extract<NonNullable<Doc<"files_nodes">["writePolicy"]>, { mode: "writer" }>["writers"][number];
 	actorUserId: Id<"users">;
 	resourceScope:
 		| { kind: "workspace" }
@@ -783,14 +784,20 @@ async function db_is_within_write_scope(
 	return false;
 }
 
-function db_writer_matches_policy(args: {
+/**
+ * Check whether a writer rule lists this writer. A read-only rule lists nobody.
+ */
+export function files_nodes_writer_matches_policy(args: {
 	policy: NonNullable<Doc<"files_nodes">["writePolicy"]>;
 	writer: files_nodes_WriteContext["writer"];
 }) {
+	const writer = args.writer;
 	return args.policy.mode === "writer"
-		? args.policy.writer.kind === "user"
-			? args.writer.kind === "user" && args.policy.writer.userId === args.writer.userId
-			: args.writer.kind === "service_account" && args.policy.writer.serviceAccountId === args.writer.serviceAccountId
+		? args.policy.writers.some((policyWriter) =>
+				policyWriter.kind === "user"
+					? writer.kind === "user" && policyWriter.userId === writer.userId
+					: writer.kind === "service_account" && policyWriter.serviceAccountId === writer.serviceAccountId,
+			)
 		: false;
 }
 
@@ -808,7 +815,7 @@ async function db_get_blocking_write_policy(
 		if (policy.mode === "read_only") {
 			return args.target.node;
 		}
-		return db_writer_matches_policy({ policy, writer: args.writeContext.writer }) ? null : args.target.node;
+		return files_nodes_writer_matches_policy({ policy, writer: args.writeContext.writer }) ? null : args.target.node;
 	}
 
 	// A create checks the destination folder's own rule. A matching writer rule still refuses a
@@ -824,7 +831,7 @@ async function db_get_blocking_write_policy(
 	if (policy.mode === "read_only") {
 		return parent;
 	}
-	return db_writer_matches_policy({ policy, writer: args.writeContext.writer }) &&
+	return files_nodes_writer_matches_policy({ policy, writer: args.writeContext.writer }) &&
 		args.writeContext.policyReach === "ancestors"
 		? null
 		: parent;
@@ -1234,8 +1241,8 @@ async function db_get_visible_policy_writer(
 }
 
 /**
- * Check that a copied protection rule still names somebody who can edit the destination.
- * Copies keep access grants separate, so a writer rule must name an active destination
+ * Check that a copied protection rule still names only writers who can edit the destination.
+ * Copies keep access grants separate, so every writer in the rule must be an active destination
  * member or account. Refuse clearly instead of silently clearing the rule.
  */
 export async function files_nodes_db_require_copiable_write_policy(
@@ -1247,12 +1254,16 @@ export async function files_nodes_db_require_copiable_write_policy(
 	},
 ) {
 	if (args.writePolicy?.mode === "writer") {
-		const visible = await db_get_visible_policy_writer(ctx, {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			writer: args.writePolicy.writer,
-		});
-		if (!visible) {
+		const visibleWriters = await Promise.all(
+			args.writePolicy.writers.map((writer) =>
+				db_get_visible_policy_writer(ctx, {
+					organizationId: args.organizationId,
+					workspaceId: args.workspaceId,
+					writer,
+				}),
+			),
+		);
+		if (visibleWriters.includes(null)) {
 			return Result({
 				_nay: {
 					message:
@@ -1320,11 +1331,25 @@ export async function files_nodes_db_require_write_policy_management(
 		return Result({ _nay: { message: "Permission denied" } });
 	}
 
-	if (
-		args.writePolicy?.mode === "writer" &&
-		!(await db_get_visible_policy_writer(ctx, { ...args, writer: args.writePolicy.writer }))
-	) {
-		return Result({ _nay: { message: "Writer is not available" } });
+	if (args.writePolicy?.mode === "writer") {
+		const writers = args.writePolicy.writers;
+		const writerIds = new Set(
+			writers.map((writer) => (writer.kind === "user" ? writer.userId : writer.serviceAccountId)),
+		);
+		// There is no max count. Every writer must be an active member or account (checked below),
+		// so the workspace size already limits the list.
+		if (writers.length === 0 || writerIds.size !== writers.length) {
+			return Result({ _nay: { message: files_WRITE_POLICY_INVALID_WRITERS_MESSAGE } });
+		}
+
+		// Every listed writer must be an active member or account now. The management state hides a
+		// stored writer who left, so a manager who saves the rule again has to drop or replace them.
+		const visibleWriters = await Promise.all(
+			writers.map((writer) => db_get_visible_policy_writer(ctx, { ...args, writer })),
+		);
+		if (visibleWriters.includes(null)) {
+			return Result({ _nay: { message: "Writer is not available" } });
+		}
 	}
 
 	// Check only the target. A folder's rule limits rename and move-out of its direct children, restricted
@@ -1390,13 +1415,21 @@ export async function files_nodes_db_get_write_policy_management_state(
 	]);
 	const inScope = await db_is_within_write_scope(ctx, { ...permissionArgs, target: { kind: "node", node } });
 
+	// Return only the writers the caller may see, plus how many were hidden or revoked.
 	async function visible_policy(policy: Doc<"files_nodes">["writePolicy"] | Doc<"files_nodes">["newChildWritePolicy"]) {
-		return policy?.mode === "writer"
-			? {
-					mode: "writer" as const,
-					writer: await db_get_visible_policy_writer(ctx, { ...permissionArgs, writer: policy.writer }),
-				}
-			: (policy ?? null);
+		if (policy?.mode !== "writer") {
+			return policy ?? null;
+		}
+
+		const writers = await Promise.all(
+			policy.writers.map((writer) => db_get_visible_policy_writer(ctx, { ...permissionArgs, writer })),
+		);
+		const visibleWriters = writers.filter((writer) => writer !== null);
+		return {
+			mode: "writer" as const,
+			writers: visibleWriters,
+			hiddenWriterCount: writers.length - visibleWriters.length,
+		};
 	}
 
 	const writeBlockedReason =
@@ -1417,15 +1450,21 @@ const files_nodes_visible_policy_validator = v.union(
 	v.object({ mode: v.literal("read_only") }),
 	v.object({
 		mode: v.literal("writer"),
-		writer: v.union(
-			v.null(),
-			v.object({ kind: v.literal("user"), userId: v.id("users"), name: v.string() }),
-			v.object({
-				kind: v.literal("service_account"),
-				serviceAccountId: v.id("access_control_service_accounts"),
-				name: v.string(),
-			}),
+		writers: v.array(
+			v.union(
+				v.object({ kind: v.literal("user"), userId: v.id("users"), name: v.string() }),
+				v.object({
+					kind: v.literal("service_account"),
+					serviceAccountId: v.id("access_control_service_accounts"),
+					name: v.string(),
+				}),
+			),
 		),
+		/**
+		 * Writers the caller cannot see: people who left the workspace and revoked or foreign accounts.
+		 * Their ids stay hidden. Saving the rule again drops them.
+		 */
+		hiddenWriterCount: v.number(),
 	}),
 );
 
@@ -1960,6 +1999,12 @@ export async function files_nodes_db_create_node_recursively_at_path(
 		 */
 		trustPolicySource?: true;
 		/**
+		 * Set only when a replace copies `writePolicy` from the file it replaces. It keeps the manage
+		 * check but skips the writer check. Those writers were checked when the rule was set, and a
+		 * writer who left since then must not stop the others from replacing the file.
+		 */
+		keepsReplacedPolicy?: true;
+		/**
 		 * Set only by a copy run that produced `parentId` itself. The create may proceed while
 		 * the parent's current policy still equals this value, even when the value is a lock.
 		 * Never set this from client input.
@@ -2111,7 +2156,8 @@ export async function files_nodes_db_create_node_recursively_at_path(
 						workspaceId: args.workspaceId,
 						writeContext,
 						target,
-						writePolicy: policy,
+						// A null rule checks only the manage permission.
+						writePolicy: args.keepsReplacedPolicy ? null : policy,
 					});
 					if (managed._nay) {
 						return managed;
@@ -4942,7 +4988,7 @@ export async function files_nodes_db_preflight_move(
 		if (policy.mode === "read_only") {
 			return false;
 		}
-		return db_writer_matches_policy({ policy, writer });
+		return files_nodes_writer_matches_policy({ policy, writer });
 	}
 
 	function readOnlyRefusal() {
@@ -4973,7 +5019,7 @@ export async function files_nodes_db_preflight_move(
 		if (missingParentNames.length > 1 && destParentDefault !== null) {
 			const nestedBlocked =
 				destParentDefault.mode === "read_only" ||
-				!db_writer_matches_policy({ policy: destParentDefault, writer: args.writer }) ||
+				!files_nodes_writer_matches_policy({ policy: destParentDefault, writer: args.writer }) ||
 				args.policyReach !== "ancestors";
 			if (nestedBlocked) {
 				return readOnlyRefusal();

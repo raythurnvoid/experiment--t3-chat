@@ -4120,7 +4120,7 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 				assetId: upload.assetId,
 			});
 			await ctx.db.patch("files_nodes", upload.nodeId, {
-				writePolicy: { mode: "writer", writer: { kind: "service_account", serviceAccountId } },
+				writePolicy: { mode: "writer", writers: [{ kind: "service_account", serviceAccountId }] },
 			});
 			return { targetId, serviceAccountId };
 		});
@@ -4234,7 +4234,7 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 		expect(published.node).toMatchObject({
 			collaborationEnabled: false,
 			textKind: "rich_text",
-			writePolicy: { mode: "writer", writer: { kind: "service_account", serviceAccountId } },
+			writePolicy: { mode: "writer", writers: [{ kind: "service_account", serviceAccountId }] },
 		});
 		expect(published.target).toMatchObject({ _id: targetId, nodeId: upload.nodeId, state: "committed" });
 		expect(published.node?.yjsSnapshotId).toBeNull();
@@ -4286,7 +4286,7 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 		}));
 		expect(settled.node).toMatchObject({
 			assetId: upload.assetId,
-			writePolicy: { mode: "writer", writer: { kind: "service_account", serviceAccountId } },
+			writePolicy: { mode: "writer", writers: [{ kind: "service_account", serviceAccountId }] },
 		});
 		expect(settled.target).toMatchObject({ _id: targetId, nodeId: upload.nodeId, state: "committed" });
 		expect(settled.node?.collaborationEnabled).toBeNull();

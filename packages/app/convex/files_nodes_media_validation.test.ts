@@ -543,7 +543,7 @@ describe("saved file media validation clocks", () => {
 				).toEqual({ _yay: null });
 			const policies: Array<Doc<"files_nodes">["writePolicy"]> = [
 				{ mode: "read_only" },
-				{ mode: "writer", writer: { kind: "user", userId: f.db.userId } },
+				{ mode: "writer", writers: [{ kind: "user", userId: f.db.userId }] },
 				null,
 			];
 			for (const writePolicy of policies) {

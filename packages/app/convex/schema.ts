@@ -14,22 +14,25 @@ import { plugins_CAPABILITIES } from "../shared/plugins.ts";
 
 const plugins_capability_validator = v.union(...plugins_CAPABILITIES.map((capability) => v.literal(capability)));
 
+const files_nodes_write_policy_writer_validator = v.union(
+	v.object({ kind: v.literal("user"), userId: v.id("users") }),
+	v.object({
+		kind: v.literal("service_account"),
+		serviceAccountId: v.id("access_control_service_accounts"),
+	}),
+);
+
 /**
  * One node's local write protection. Null means editable. Copied once as a folder default;
- * never merged with a parent rule.
+ * never merged with a parent rule. A writer rule lists every person or plugin account that may
+ * edit. The write doors keep at least one entry in the list, with no duplicates.
  */
 const files_nodes_write_policy_validator = v.union(
 	v.null(),
 	v.object({ mode: v.literal("read_only") }),
 	v.object({
 		mode: v.literal("writer"),
-		writer: v.union(
-			v.object({ kind: v.literal("user"), userId: v.id("users") }),
-			v.object({
-				kind: v.literal("service_account"),
-				serviceAccountId: v.id("access_control_service_accounts"),
-			}),
-		),
+		writers: v.array(files_nodes_write_policy_writer_validator),
 	}),
 );
 

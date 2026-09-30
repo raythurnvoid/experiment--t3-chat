@@ -14348,11 +14348,11 @@ describe("plugins metadata file doors", () => {
 		expect(rootNode).toMatchObject({
 			writePolicy: {
 				mode: "writer",
-				writer: { kind: "service_account", serviceAccountId: installation?.serviceAccountId },
+				writers: [{ kind: "service_account", serviceAccountId: installation?.serviceAccountId }],
 			},
 		});
 		expect(scopedNode).toMatchObject({
-			writePolicy: { mode: "writer", writer: { kind: "service_account", serviceAccountId: fixture.serviceAccountId } },
+			writePolicy: { mode: "writer", writers: [{ kind: "service_account", serviceAccountId: fixture.serviceAccountId }] },
 		});
 		const binding = await t.run((ctx) => ctx.db.query("plugins_file_access_bindings").first());
 		expect(binding).toMatchObject({ nodeId: scopedNode?._id, scopeId: "scope-a" });
@@ -14606,7 +14606,7 @@ describe("plugins metadata file doors", () => {
 		expect(locked.status).toBe(200);
 		const lockedNode = await find_active_node(t, fixture, "/probe/locked.md");
 		expect(lockedNode).toMatchObject({
-			writePolicy: { mode: "writer", writer: { kind: "service_account", serviceAccountId: fixture.serviceAccountId } },
+			writePolicy: { mode: "writer", writers: [{ kind: "service_account", serviceAccountId: fixture.serviceAccountId }] },
 		});
 	});
 
@@ -14630,7 +14630,7 @@ describe("plugins metadata file doors", () => {
 		}
 		const lockedNode = await find_active_node(t, fixture, "/probe/a/one.md");
 		expect(lockedNode).toMatchObject({
-			writePolicy: { mode: "writer", writer: { kind: "service_account", serviceAccountId: fixture.serviceAccountId } },
+			writePolicy: { mode: "writer", writers: [{ kind: "service_account", serviceAccountId: fixture.serviceAccountId }] },
 		});
 
 		const archived = await door_call(t, "/api/v1/files/plugin-archive", run.apiToken, { path: "/probe/a" });
@@ -14729,7 +14729,7 @@ describe("plugins metadata file doors", () => {
 		expect(await find_active_node(t, fixture, "/probe/report.md")).toMatchObject({
 			writePolicy: {
 				mode: "writer",
-				writer: { kind: "service_account", serviceAccountId: installation?.serviceAccountId },
+				writers: [{ kind: "service_account", serviceAccountId: installation?.serviceAccountId }],
 			},
 		});
 
@@ -14760,9 +14760,31 @@ describe("plugins metadata file doors", () => {
 		expect(await find_active_node(t, fixture, "/probe")).toMatchObject({
 			writePolicy: {
 				mode: "writer",
-				writer: { kind: "service_account", serviceAccountId: installation?.serviceAccountId },
+				writers: [{ kind: "service_account", serviceAccountId: installation?.serviceAccountId }],
 			},
 		});
+
+		// A manager adds a second writer. Locking again keeps it, because the plugin is already listed.
+		const sharedFolderPolicy = {
+			mode: "writer" as const,
+			writers: [
+				{ kind: "service_account" as const, serviceAccountId: installation!.serviceAccountId },
+				{ kind: "user" as const, userId: fixture.membership.userId },
+			],
+		};
+		expect(
+			await fixture.asOwner.mutation(api.files_nodes.set_node_write_policy, {
+				writePolicy: sharedFolderPolicy,
+				membershipId: fixture.membership.membershipId,
+				nodeId: (await find_active_node(t, fixture, "/probe"))!._id,
+			}),
+		).toEqual({ _yay: null });
+		const folderRelock = await door_call(t, "/api/v1/files/plugin-access/set", run.apiToken, {
+			path: "/probe",
+			access: { readOnly: true },
+		});
+		expect(folderRelock.status).toBe(200);
+		expect(await find_active_node(t, fixture, "/probe")).toMatchObject({ writePolicy: sharedFolderPolicy });
 		expect(await find_active_node(t, fixture, "/probe/report.md")).toMatchObject({
 			writePolicy: null,
 		});
@@ -14795,6 +14817,7 @@ describe("plugins metadata file doors", () => {
 				.collect(),
 		);
 		expect(calls.map((call) => call.status)).toEqual([
+			"succeeded",
 			"succeeded",
 			"succeeded",
 			"succeeded",
@@ -14893,7 +14916,7 @@ describe("plugins metadata file doors", () => {
 		expect(vault.status).toBe(200);
 		const vaultNode = await find_active_node(t, fixture, "/probe/vault");
 		expect(vaultNode).toMatchObject({
-			writePolicy: { mode: "writer", writer: { kind: "service_account", serviceAccountId: fixture.serviceAccountId } },
+			writePolicy: { mode: "writer", writers: [{ kind: "service_account", serviceAccountId: fixture.serviceAccountId }] },
 			restrictedScopeNodeId: vaultNode!._id,
 		});
 		expect(await read_binding_rows()).toMatchObject([{ nodeId: vaultNode!._id }]);
@@ -15050,7 +15073,7 @@ describe("plugins metadata file doors", () => {
 				expect(await t.run((ctx) => ctx.db.get("files_nodes", nodeId))).toMatchObject({
 					writePolicy: {
 						mode: "writer",
-						writer: { kind: "service_account", serviceAccountId: fixture.serviceAccountId },
+						writers: [{ kind: "service_account", serviceAccountId: fixture.serviceAccountId }],
 					},
 				});
 			} else {

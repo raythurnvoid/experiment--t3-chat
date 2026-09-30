@@ -92,7 +92,11 @@ import {
 	organizations_GLOBAL_PLUGINS_WORKSPACE_ID,
 } from "../shared/organizations.ts";
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
-import type { files_PendingParent, files_PendingTarget } from "../shared/files.ts";
+import {
+	files_WRITE_POLICY_INVALID_WRITERS_MESSAGE,
+	type files_PendingParent,
+	type files_PendingTarget,
+} from "../shared/files.ts";
 import { files_sort_text_key, files_sort_key_of, type files_sort_Sort } from "../shared/files-sort.ts";
 import type { files_table_Filter } from "../shared/files-table.ts";
 import { files_subtree_ops_STEP_MAX_NODES } from "./files_subtree_ops.ts";
@@ -2132,7 +2136,7 @@ describe("files_nodes_db_preflight_move", () => {
 		await t.run(async (ctx) => {
 			await ctx.db.patch("files_nodes", target._id, {
 				restrictedScopeNodeId: target._id,
-				writePolicy: { mode: "writer", writer: { kind: "user", userId: db.userId } },
+				writePolicy: { mode: "writer", writers: [{ kind: "user", userId: db.userId }] },
 			});
 			await ctx.db.patch("files_nodes", archivedChild._id, { archiveOperationId: "old-archive" });
 			const membership = (await ctx.db.get("organizations_workspaces_users", db.membershipId))!;
@@ -2262,7 +2266,7 @@ describe("files_nodes_db_preflight_move", () => {
 		await t.run(async (ctx) => {
 			await ctx.db.patch("files_nodes", second._id, {
 				restrictedScopeNodeId: second._id,
-				writePolicy: { mode: "writer", writer: { kind: "user", userId: db.userId } },
+				writePolicy: { mode: "writer", writers: [{ kind: "user", userId: db.userId }] },
 			});
 			const membership = (await ctx.db.get("organizations_workspaces_users", db.membershipId))!;
 			const result = await files_nodes_db_preflight_move(ctx, {
@@ -2901,7 +2905,7 @@ describe("files_nodes_db_preflight_move policy reach", () => {
 			const policyNode = lockedParent === "current" ? db.files.file_root_1 : target;
 			const result = await t.run(async (ctx) => {
 				await ctx.db.patch("files_nodes", policyNode._id, {
-					writePolicy: { mode: "writer", writer: { kind: "service_account", serviceAccountId } },
+					writePolicy: { mode: "writer", writers: [{ kind: "service_account", serviceAccountId }] },
 				});
 				const membership = (await ctx.db.get("organizations_workspaces_users", db.membershipId))!;
 				const before = await ctx.db.query("files_nodes").collect();
@@ -21697,7 +21701,7 @@ describe("files_nodes.get_folder_new_child_write_policy_state", () => {
 				await asUser.mutation(api.files_nodes.set_node_new_child_write_policy, {
 					membershipId: db.membershipId,
 					nodeId: innerId,
-					newChildWritePolicy: { mode: "writer", writer: { kind: "user", userId: db.userId } },
+					newChildWritePolicy: { mode: "writer", writers: [{ kind: "user", userId: db.userId }] },
 				})
 			)._nay,
 		).toBeUndefined();
@@ -21919,7 +21923,7 @@ describe("selected file writers", () => {
 			return { userId, membershipId };
 		});
 		const asMember = t.withIdentity({ issuer: "https://clerk.test", external_id: member.userId });
-		const selected = { mode: "writer", writer: { kind: "user", userId: member.userId } } as const;
+		const selected = { mode: "writer" as const, writers: [{ kind: "user" as const, userId: member.userId }] };
 
 		expect(
 			(
@@ -21979,7 +21983,7 @@ describe("selected file writers", () => {
 				await asUser.mutation(api.files_nodes.set_node_write_policy, {
 					membershipId: db.membershipId,
 					nodeId: outerId,
-					writePolicy: { mode: "writer", writer: { kind: "user", userId: db.userId } },
+					writePolicy: { mode: "writer", writers: [{ kind: "user", userId: db.userId }] },
 				})
 			)._nay,
 		).toBeUndefined();
@@ -22023,7 +22027,7 @@ describe("selected file writers", () => {
 				await fixture.asUser.mutation(api.files_nodes.set_node_write_policy, {
 					membershipId: fixture.db.membershipId,
 					nodeId: fixture.outerId,
-					writePolicy: { mode: "writer", writer: fixture.writeContext.writer },
+					writePolicy: { mode: "writer", writers: [fixture.writeContext.writer] },
 				})
 			)._nay,
 		).toBeUndefined();
@@ -22065,7 +22069,7 @@ describe("selected file writers", () => {
 	test("exact folder management changes the folder even with a nested restricted scope", async () => {
 		const t = test_convex();
 		const fixture = await seed_account(t);
-		const policy = { mode: "writer", writer: fixture.writeContext.writer } as const;
+		const policy = { mode: "writer" as const, writers: [fixture.writeContext.writer] };
 
 		expect(
 			(
@@ -22108,7 +22112,7 @@ describe("selected file writers", () => {
 	test("exact folder management ignores a restricted scope two levels down", async () => {
 		const t = test_convex();
 		const fixture = await seed_account(t);
-		const policy = { mode: "writer", writer: fixture.writeContext.writer } as const;
+		const policy = { mode: "writer" as const, writers: [fixture.writeContext.writer] };
 
 		expect(
 			(
@@ -22175,7 +22179,7 @@ describe("selected file writers", () => {
 							...fixture.writeContext,
 							resourceScope: { kind: "create", parentNodeId: fixture.outerId, path: "/outer/new/deep" },
 						},
-						writePolicy: { mode: "writer", writer: fixture.writeContext.writer },
+						writePolicy: { mode: "writer", writers: [fixture.writeContext.writer] },
 					}),
 			);
 
@@ -22219,7 +22223,7 @@ describe("selected file writers", () => {
 		});
 
 		expect(result.node).toMatchObject({
-			writePolicy: { mode: "writer", writer: fixture.writeContext.writer },
+			writePolicy: { mode: "writer", writers: [fixture.writeContext.writer] },
 		});
 		expect(result.grants.every((grant) => grant.resourceId === fixture.outerId)).toBe(true);
 		expect(result.state).toMatchObject({ canWrite: false, canManage: false, writeBlockedReason: "permission" });
@@ -22255,7 +22259,7 @@ describe("selected file writers", () => {
 						...fixture.writeContext,
 						resourceScope: { kind: "create", parentNodeId: fixture.outerId, path: "/outer/default-only" },
 					},
-					newChildWritePolicy: { mode: "writer", writer: { kind: "user", userId: strangerId } },
+					newChildWritePolicy: { mode: "writer", writers: [{ kind: "user", userId: strangerId }] },
 				}),
 		);
 		expect(refused._nay?.message).toBe("Writer is not available");
@@ -22297,7 +22301,65 @@ describe("selected file writers", () => {
 		expect((await check())._nay?.message).toBe("Permission denied");
 	});
 
-	test("a revoked selected writer is redacted and a manager can replace it", async () => {
+	test("every listed writer can edit, and a writer left out cannot", async () => {
+		const t = test_convex();
+		const fixture = await seed_account(t);
+		const owner = { kind: "user", userId: fixture.db.userId } as const;
+		const set_writers = async (writers: Array<files_nodes_WriteContext["writer"]>) =>
+			(
+				await fixture.asUser.mutation(api.files_nodes.set_node_write_policy, {
+					membershipId: fixture.db.membershipId,
+					nodeId: fixture.deepId,
+					writePolicy: { mode: "writer", writers },
+				})
+			)._nay;
+		const account_can_write = async () =>
+			await t.run(async (ctx) => {
+				const node = (await ctx.db.get("files_nodes", fixture.deepId))!;
+				return !(
+					await files_nodes_db_require_writable(ctx, {
+						organizationId: fixture.db.organizationId,
+						workspaceId: fixture.db.workspaceId,
+						writeContext: fixture.writeContext,
+						target: { kind: "node", node },
+					})
+				)._nay;
+			});
+		const owner_can_write = async () =>
+			await fixture.asUser.query(api.files_nodes.get_current_user_file_write_permission, {
+				membershipId: fixture.db.membershipId,
+				nodeId: fixture.deepId,
+			});
+
+		expect(await set_writers([owner, fixture.writeContext.writer])).toBeUndefined();
+		expect(await owner_can_write()).toBe(true);
+		expect(await account_can_write()).toBe(true);
+
+		expect(await set_writers([fixture.writeContext.writer])).toBeUndefined();
+		expect(await owner_can_write()).toBe(false);
+		expect(await account_can_write()).toBe(true);
+	});
+
+	test("a writer list must hold at least one writer and no duplicates", async () => {
+		const t = test_convex();
+		const fixture = await seed_account(t);
+		const owner = { kind: "user", userId: fixture.db.userId } as const;
+
+		for (const writers of [[], [owner, owner]]) {
+			expect(
+				(
+					await fixture.asUser.mutation(api.files_nodes.set_node_write_policy, {
+						membershipId: fixture.db.membershipId,
+						nodeId: fixture.deepId,
+						writePolicy: { mode: "writer", writers },
+					})
+				)._nay?.message,
+			).toBe(files_WRITE_POLICY_INVALID_WRITERS_MESSAGE);
+		}
+		expect(await read_lock_node(t, fixture.deepId)).toMatchObject({ writePolicy: null });
+	});
+
+	test("a revoked writer is hidden and a manager can replace it", async () => {
 		const t = test_convex();
 		const fixture = await seed_account(t);
 		const args = { membershipId: fixture.db.membershipId, nodeId: fixture.innerId };
@@ -22306,7 +22368,10 @@ describe("selected file writers", () => {
 			(
 				await fixture.asUser.mutation(api.files_nodes.set_node_write_policy, {
 					...args,
-					writePolicy: { mode: "writer", writer: fixture.writeContext.writer },
+					writePolicy: {
+						mode: "writer",
+						writers: [{ kind: "user", userId: fixture.db.userId }, fixture.writeContext.writer],
+					},
 				})
 			)._nay,
 		).toBeUndefined();
@@ -22321,8 +22386,12 @@ describe("selected file writers", () => {
 		).toBeUndefined();
 		expect(await fixture.asUser.query(api.files_nodes.get_node_write_policy_management_state, args)).toMatchObject({
 			canManage: true,
-			canWrite: false,
-			localPolicy: { mode: "writer", writer: null },
+			canWrite: true,
+			localPolicy: {
+				mode: "writer",
+				writers: [{ kind: "user", userId: fixture.db.userId }],
+				hiddenWriterCount: 1,
+			},
 		});
 
 		expect(
@@ -24432,7 +24501,7 @@ describe("member controls on plugin-labeled nodes", () => {
 		const t = test_convex();
 		const f = await seed_labeled_folders(t);
 		const args = { membershipId: f.db.membershipId, nodeId: f.folderId };
-		const writePolicy = { mode: "writer", writer: { kind: "user", userId: f.member.userId } } as const;
+		const writePolicy = { mode: "writer" as const, writers: [{ kind: "user" as const, userId: f.member.userId }] };
 		// Stamp the same writer twice: the repeat must leave the metadata map untouched.
 		for (let i = 0; i < 2; i += 1) {
 			expect(
@@ -24463,7 +24532,7 @@ describe("member controls on plugin-labeled nodes", () => {
 	test("removing a local writer leaves the child unlocked", async () => {
 		const t = test_convex();
 		const f = await seed_labeled_folders(t);
-		const outerPolicy = { mode: "writer", writer: { kind: "user", userId: f.db.userId } } as const;
+		const outerPolicy = { mode: "writer" as const, writers: [{ kind: "user" as const, userId: f.db.userId }] };
 		expect(
 			(
 				await f.asOwner.mutation(api.files_nodes.set_node_write_policy, {
@@ -24474,7 +24543,7 @@ describe("member controls on plugin-labeled nodes", () => {
 			)._nay,
 		).toBeUndefined();
 		const args = { membershipId: f.db.membershipId, nodeId: f.childId };
-		const innerPolicy = { mode: "writer", writer: { kind: "user", userId: f.member.userId } } as const;
+		const innerPolicy = { mode: "writer" as const, writers: [{ kind: "user" as const, userId: f.member.userId }] };
 		expect(
 			(await f.asOwner.mutation(api.files_nodes.set_node_write_policy, { ...args, writePolicy: innerPolicy }))._nay,
 		).toBeUndefined();
@@ -24493,7 +24562,7 @@ describe("member controls on plugin-labeled nodes", () => {
 	test("changing the outer policy preserves a nested selected writer", async () => {
 		const t = test_convex();
 		const f = await seed_labeled_folders(t);
-		const writePolicy = { mode: "writer", writer: { kind: "user", userId: f.member.userId } } as const;
+		const writePolicy = { mode: "writer" as const, writers: [{ kind: "user" as const, userId: f.member.userId }] };
 		expect(
 			(
 				await f.asOwner.mutation(api.files_nodes.set_node_write_policy, {
