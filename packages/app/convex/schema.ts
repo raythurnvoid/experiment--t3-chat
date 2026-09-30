@@ -267,6 +267,7 @@ export const ai_model_call_purpose_validator = v.union(
 	v.literal("chat_step"),
 	v.literal("title"),
 	v.literal("inline_ai"),
+	v.literal("compaction"),
 );
 
 /**
@@ -957,12 +958,31 @@ const app_convex_schema = defineSchema({
 		invocationId: v.id("ai_chat_bash_invocations"),
 		text: v.string(),
 		state: v.union(v.literal("waiting"), v.literal("claimed")),
-		claim: v.union(
-			v.object({ runId: v.id("ai_chat_runs"), generation: v.number(), stepIndex: v.number() }),
-			v.null(),
-		),
+		claim: v.union(v.object({ runId: v.id("ai_chat_runs"), generation: v.number(), stepIndex: v.number() }), v.null()),
 	})
 		.index("by_thread_state", ["threadId", "state"])
+		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
+
+	/**
+	 * A model-written summary of a chat branch up to `tailNodeId`. The history walk for the model
+	 * shows the summary in place of that node and everything older, so a long chat fits the model.
+	 * The summary covers the older summary it read too, so the walk stops there. The messages the UI
+	 * shows do not change. Thread deletion deletes these docs.
+	 */
+	ai_chat_compactions: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		threadId: v.id("ai_chat_threads"),
+		runId: v.id("ai_chat_runs"),
+		/**
+		 * The oldest message the summary call read. Kept for audits only.
+		 */
+		headNodeId: v.id("ai_chat_threads_messages_aisdk_5"),
+		tailNodeId: v.id("ai_chat_threads_messages_aisdk_5"),
+		summary: v.string(),
+		bytes: v.number(),
+	})
+		.index("by_thread_tailNode", ["threadId", "tailNodeId"])
 		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
 
 	/**

@@ -720,6 +720,17 @@ async function db_purge_organization_workspace_content_batch(
 		return { done: false, deletedCount: toolReceipts.length };
 	}
 
+	const compactions = await ctx.db
+		.query("ai_chat_compactions")
+		.withIndex("by_organization_workspace", (q) =>
+			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
+		)
+		.take(batchSize);
+	if (compactions.length > 0) {
+		await Promise.all(compactions.map((doc) => ctx.db.delete("ai_chat_compactions", doc._id)));
+		return { done: false, deletedCount: compactions.length };
+	}
+
 	// AI thread messages, shells and transcripts are children of the thread docs, so they are
 	// removed before deleting the thread docs themselves.
 	const aiChatMessages = await ctx.db
@@ -2172,6 +2183,15 @@ async function db_drain_thread_batch(
 	if (toolReceipts.length > 0) {
 		await Promise.all(toolReceipts.map((doc) => ctx.db.delete("ai_chat_tool_receipts", doc._id)));
 		return { done: false, deletedCount: toolReceipts.length };
+	}
+
+	const compactions = await ctx.db
+		.query("ai_chat_compactions")
+		.withIndex("by_thread_tailNode", (q) => q.eq("threadId", thread._id))
+		.take(args.batchSize);
+	if (compactions.length > 0) {
+		await Promise.all(compactions.map((doc) => ctx.db.delete("ai_chat_compactions", doc._id)));
+		return { done: false, deletedCount: compactions.length };
 	}
 
 	const messages = await ctx.db

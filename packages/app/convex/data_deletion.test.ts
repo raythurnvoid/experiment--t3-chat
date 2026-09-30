@@ -297,6 +297,14 @@ async function data_deletion_test_seed_private_chat(
 			status: "finished",
 			result: null,
 		}),
+		ctx.db.insert("ai_chat_compactions", {
+			...scope,
+			runId,
+			headNodeId: messageIds[0]!,
+			tailNodeId: messageIds[1]!,
+			summary: "Private summary",
+			bytes: 15,
+		}),
 		ctx.db.insert("public_api_grants", {
 			...scope,
 			userId: args.userId,
@@ -981,6 +989,16 @@ async function data_deletion_test_seed_workspace_content_bulk(
 				status: "finished",
 				result: null,
 			}),
+			ctx.db.insert("ai_chat_compactions", {
+				organizationId: apiOrganizationId,
+				workspaceId: apiWorkspaceId,
+				threadId,
+				runId,
+				headNodeId: messageId,
+				tailNodeId: messageId,
+				summary: "summary",
+				bytes: 7,
+			}),
 			ctx.db.insert("ai_chat_files_content", {
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
@@ -1083,6 +1101,7 @@ async function data_deletion_test_count_workspace_content(
 		aiRuns,
 		aiRunSteps,
 		aiToolReceipts,
+		aiCompactions,
 		aiMessages,
 		aiFiles,
 		aiFileContents,
@@ -1114,6 +1133,7 @@ async function data_deletion_test_count_workspace_content(
 		ctx.db.query("ai_chat_runs").collect(),
 		ctx.db.query("ai_chat_run_steps").collect(),
 		ctx.db.query("ai_chat_tool_receipts").collect(),
+		ctx.db.query("ai_chat_compactions").collect(),
 		ctx.db.query("ai_chat_threads_messages_aisdk_5").collect(),
 		ctx.db.query("ai_chat_files").collect(),
 		ctx.db.query("ai_chat_files_content").collect(),
@@ -1152,6 +1172,7 @@ async function data_deletion_test_count_workspace_content(
 			aiRuns,
 			aiRunSteps,
 			aiToolReceipts,
+			aiCompactions,
 			aiMessages,
 			aiFiles,
 			aiFileContents,
@@ -2287,6 +2308,7 @@ describe("drain_deleting_thread", () => {
 				"ai_chat_run_steps",
 				"ai_chat_run_inbox",
 				"ai_chat_tool_receipts",
+				"ai_chat_compactions",
 				"public_api_grants",
 				"plugins_mcp_calls",
 			] as const;
@@ -2339,7 +2361,7 @@ describe("drain_deleting_thread", () => {
 		}
 		expect(done).toBe(true);
 		expect(Object.values(await data_deletion_test_count_thread_docs(f.t, f.deletedThreadId))).toEqual(
-			Array(14).fill(0),
+			Array(15).fill(0),
 		);
 		expect(await data_deletion_test_count_thread_docs(f.t, f.keptThreadId)).toEqual(keptBefore);
 	});

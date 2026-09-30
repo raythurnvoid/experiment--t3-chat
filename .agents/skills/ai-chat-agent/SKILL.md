@@ -193,7 +193,45 @@ older page starts in `historyFromIds`; the chat shows "Load older messages" whil
 null. The model reads the internal `ai_chat_runs.history_page`, which walks up from the trigger
 within about 1 MiB and always keeps the newest user message. One page walks at most 256 nodes.
 `load_branch_ui_messages` asks for more pages (passing `usedBytes` and `hasUserMessage` on) until it
-reaches the root, or until the budget is `full` and the newest user message is in.
+reaches the root, or until the budget is `full` and the newest user message is in. A node that is
+the tail of an `ai_chat_compactions` doc ends the walk: the page returns the doc's `summary`, and the
+loader puts it first as a system message (see "Context manager"). The walk looks for a summary only
+from the newest user message on. Regenerate can start the walk at a tail; when that tail is the
+newest user message, the page keeps it and then stops at the summary.
+
+**Context manager.** Three parts keep a long run inside the model's context. The UI and the saved
+steps never change; only the model input does.
+
+- **Clearing.** In `prepareStep`, once the last step's measured input (`usage.inputTokens`, or
+  bytes/4 before the first step, with pictures not counted) passes 100k tokens, every tool result
+  except the newest 3 joins a set of cleared call ids. Results of the last step never join it,
+  because the model has not read them yet (a step can make many parallel calls). Each later step
+  clears the whole set again, because the SDK rebuilds the step input from the original messages. The set only grows, so the
+  input start stays the same between two clears and the provider cache keeps working. A cleared
+  output becomes a short note. The note names the `/tool-output/<id>.txt` path when the old output
+  had one (taken from the `Full output stored at` line), so the model can read it again with Bash.
+- **Compaction.** Before the first step, `compact_history` checks the loaded history: cut by the
+  1 MiB budget, over 85% of it, or over 85% of the model's `contextTokens` (in `ai_chat_MODELS`).
+  Then the newest part stays word for word: about 80 KiB, and always from the newest user message
+  on. One model call (receipt purpose `compaction`, at most 4000 output tokens, low reasoning
+  effort) summarizes the older part. Only a summary with finish reason `stop` is saved; one cut by
+  the output limit or a stream error counts as a failure. The call reads the older part as a
+  plain-text transcript, so it needs no tool definitions and sends no stored provider item ids. `ai_chat_runs.save_compaction` saves the summary only for
+  the live run at its generation (at most 64 KiB), with `headNodeId` (audit only) and `tailNodeId`
+  (the node just before the kept part). The history is then loaded again. A failed summary logs
+  `AI chat compaction failed` (a warning with ids and the error name) and the run goes on with the
+  cut history. Every later walk through the tail reuses the summary, on every branch that passes
+  it. The next summary reads the older summary too, so it covers everything older. Branch copies
+  do not copy summaries: the copy has new node ids, so its first long run makes its own.
+- **Loop warnings.** `prepareStep` counts the tool calls of the run by tool name, input and
+  result. A changed result (a file changed, a job moved on) is a new key, so polling that sees
+  progress is not a loop. Bash commands that start with `wait` or `jobs` never count. From the 3rd
+  match the next step gets a system warning. A step that follows a warning and makes no new call is
+  stale. After 3 stale steps in a row, the next step is the last step (no tools). Steps stay at 25.
+
+Tests: `convex/ai_chat_context_manager.test.ts` (clearing, last-step results kept, compaction with
+its receipt, a cut summary not saved, loop warnings) and the `history_page` and `save_compaction`
+cases in `convex/ai_chat_runs.test.ts`.
 
 **Stored tool output.** A Bash or MCP result that is larger than 24 KiB is stored in full. The model
 sees a preview: the first 16 KiB and the last 2 KiB, with a line that names the stored path.
@@ -266,8 +304,8 @@ For `POST /api/chat`:
    7a. Load the turn's MCP tools (see "MCP tools" below). This runs after the credit check and after the message checks in steps 1 to 6, because each server costs an outside call. Ask mode and a member without `workspace.mcp.use` load none.
 8. Create the thread if needed. The request may carry only `user` messages (else 400 `Only user messages can be sent`): the server is the only writer of replies.
    8a. `thread_run_begin` saves the request messages and begins the run in one transaction. The last request message is the trigger; a regenerate sends none, so its parent is the trigger. A retried request finds its messages by their client ids and answers them again. While another run is live, nothing is saved and the route returns 409 with `retryAfterMs` = min(lease left, 5 seconds). `ai_chat_fetch` in the controller waits (at most 30 seconds per wait) and sends the same request again, and Stop aborts that wait. When the stream never started, the route's catch ends the run through `finish`.
-9. Load the branch for the model (`history_page` from the trigger), turn saved `data-job-finish` parts back into system messages, convert to model messages, then decode image data URLs into bytes. Steps 9 to 14 are `create_agent_turn_stream`, shared with `run_job_wakeup`. The AI SDK routes URL-shaped file parts through its download step and Convex `fetch` cannot request `data:` URLs, so without the decode the model call fails with "Failed to download data:...".
-10. Run `streamText(...)` with the current tools and `activeTools`. When workspace instructions are enabled, add root AGENTS.md and the skill catalog to the initial system prompt. File tool results add newly read ancestor rules. A reply has at most 25 model steps (`AI_CHAT_MAX_STEPS`; each step is a paid model call). `prepareStep` reserves the last step for an answer and disables tools when the response budget is exhausted, and it ends the turn the same way (no tools, a system line asking for a short status) once the Bash tool reports that `wait` stopped polling for a job whose finish wakes the agent (`metadata.waitingForJobs`, flipped into the configuration's `jobWait.requested`).
+9. Load the branch for the model (`history_page` from the trigger; a compaction summary stands in for the older part), turn saved `data-job-finish` parts back into system messages, convert to model messages, then decode image data URLs into bytes. Steps 9 to 14 are `create_agent_turn_stream`, shared with `run_job_wakeup`. The AI SDK routes URL-shaped file parts through its download step and Convex `fetch` cannot request `data:` URLs, so without the decode the model call fails with "Failed to download data:...".
+10. Run `streamText(...)` with the current tools and `activeTools`. When workspace instructions are enabled, add root AGENTS.md and the skill catalog to the initial system prompt. File tool results add newly read ancestor rules. A reply has at most 25 model steps (`AI_CHAT_MAX_STEPS`; each step is a paid model call). `prepareStep` reserves the last step for an answer and disables tools when the response budget is exhausted, and it ends the turn the same way (no tools, a system line asking for a short status) once the Bash tool reports that `wait` stopped polling for a job whose finish wakes the agent (`metadata.waitingForJobs`, flipped into the configuration's `jobWait.requested`). Before the first step, a long branch is compacted; each step may clear older tool outputs and add loop warnings, and a loop with 3 stale steps after warnings also gets the last-step prompt (see "Context manager").
 11. Stream UI message chunks back through `createUIMessageStreamResponse(...)`.
 12. Save each finished step in `onStepFinish` (`step_complete`). `onFinish` saves the unfinished step and ends the run through `finish` with `done`, `stopped` or `failed`. The stream starts with a `message-metadata` chunk that names the reply node (`convexId`) and its trigger, and the stream's message id is the reply node's client id, so the live message and the saved node are one message.
 13. If the thread has no title yet, generate a short title with `gpt-6-luna` (`reasoningEffort: "none"`) and persist it.

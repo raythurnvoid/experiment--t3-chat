@@ -108,7 +108,13 @@ async function setup(viewer = false) {
 		throw new Error("Expected image preparation");
 	const prepareStep = call.prepareStep;
 	async function prepare(choices: Array<Array<"current" | "personal">>, stepNumber = choices.length) {
-		const steps: Array<{ toolResults: Array<{ toolName: string; output: unknown }> }> = [];
+		// The context manager also reads `content`, `toolCalls` and `usage`. Real steps always have them.
+		const steps: Array<{
+			toolResults: Array<{ toolName: string; output: unknown }>;
+			content: unknown[];
+			toolCalls: unknown[];
+			usage: { inputTokens: number };
+		}> = [];
 		for (const [index, workspaces] of choices.entries()) {
 			const toolResults = [];
 			for (const workspace of workspaces) {
@@ -118,7 +124,7 @@ async function setup(viewer = false) {
 				);
 				toolResults.push({ toolName: "prepare_image_generation", output });
 			}
-			steps.push({ toolResults });
+			steps.push({ toolResults, content: [], toolCalls: [], usage: { inputTokens: 0 } });
 		}
 		let selected: Awaited<ReturnType<typeof prepareStep>>;
 		await t.run(async () => {

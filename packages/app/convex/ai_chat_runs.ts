@@ -88,6 +88,12 @@ const BRANCH_PAGE_MAX_BYTES = 2 * 1024 * 1024;
  */
 const BRANCH_SIBLINGS_MAX = 20;
 
+/**
+ * A compaction summary is short (the summary call writes at most a few thousand tokens). This caps
+ * what a wrong model answer can add to every later history walk.
+ */
+const COMPACTION_SUMMARY_MAX_BYTES = 64 * 1024;
+
 const encoder = new TextEncoder();
 
 function json_bytes(value: unknown) {
@@ -1229,12 +1235,17 @@ export const history_page = internalQuery({
 		 * The byte budget stopped the walk. Older messages were left out.
 		 */
 		full: v.boolean(),
+		/**
+		 * The summary that stands in for the older part of the branch. The walk ends at it.
+		 */
+		summary: v.union(v.string(), v.null()),
 	}),
 	handler: async (ctx, args) => {
 		const messages = [];
 		let usedBytes = args.usedBytes;
 		let hasUserMessage = args.hasUserMessage;
 		let full = false;
+		let summary: string | null = null;
 		let nodeId: Id<"ai_chat_threads_messages_aisdk_5"> | null = args.fromId;
 		for (let step = 0; nodeId !== null && step < BRANCH_WALK_MAX; step++) {
 			const node: Doc<"ai_chat_threads_messages_aisdk_5"> | null = await ctx.db.get(
@@ -1246,6 +1257,24 @@ export const history_page = internalQuery({
 				break;
 			}
 			const isUserMessage = node.content.role === "user";
+			// A compaction ends at this node, so its summary replaces the node and everything older.
+			// Every branch through this node reuses it. The newest summary also covers older ones.
+			// The model must still see the newest user message. Regenerate can start the walk at a
+			// tail, so look for a summary only from that message on, and keep a tail that is that message.
+			const compaction =
+				hasUserMessage || isUserMessage
+					? await ctx.db
+							.query("ai_chat_compactions")
+							.withIndex("by_thread_tailNode", (q) => q.eq("threadId", args.threadId).eq("tailNodeId", node._id))
+							.order("desc")
+							.first()
+					: null;
+			if (compaction && hasUserMessage) {
+				summary = compaction.summary;
+				usedBytes += compaction.bytes;
+				nodeId = null;
+				break;
+			}
 			if (usedBytes > 0 && usedBytes + node.bytes > args.maxBytes) {
 				full = true;
 				if (hasUserMessage) break;
@@ -1265,8 +1294,55 @@ export const history_page = internalQuery({
 			});
 			usedBytes += node.bytes;
 			nodeId = node.parentId;
+			if (compaction) {
+				summary = compaction.summary;
+				usedBytes += compaction.bytes;
+				nodeId = null;
+				break;
+			}
 		}
-		return { messages, nextId: nodeId, usedBytes, hasUserMessage, full };
+		return { messages, nextId: nodeId, usedBytes, hasUserMessage, full, summary };
+	},
+});
+
+/**
+ * Save a summary of the branch up to `tailNodeId`. Only the live run of the chat may save one, so a
+ * stopped or old run cannot change the history of the next run. Returns false when it was refused.
+ */
+export const save_compaction = internalMutation({
+	args: {
+		runId: v.id("ai_chat_runs"),
+		generation: v.number(),
+		headNodeId: v.id("ai_chat_threads_messages_aisdk_5"),
+		tailNodeId: v.id("ai_chat_threads_messages_aisdk_5"),
+		summary: v.string(),
+	},
+	returns: v.boolean(),
+	handler: async (ctx, args) => {
+		const run = await ctx.db.get("ai_chat_runs", args.runId);
+		if (!run || run.status !== "running" || run.generation !== args.generation) return false;
+		const thread = await ctx.db.get("ai_chat_threads", run.threadId);
+		if (!thread || thread.deletingAt !== undefined || thread.copyingAt !== undefined) return false;
+		const [head, tail] = await Promise.all([
+			ctx.db.get("ai_chat_threads_messages_aisdk_5", args.headNodeId),
+			ctx.db.get("ai_chat_threads_messages_aisdk_5", args.tailNodeId),
+		]);
+		if (head?.threadId !== thread._id || tail?.threadId !== thread._id) return false;
+
+		const bytes = encoder.encode(args.summary).byteLength;
+		if (bytes > COMPACTION_SUMMARY_MAX_BYTES) return false;
+
+		await ctx.db.insert("ai_chat_compactions", {
+			organizationId: run.organizationId,
+			workspaceId: run.workspaceId,
+			threadId: thread._id,
+			runId: run._id,
+			headNodeId: args.headNodeId,
+			tailNodeId: args.tailNodeId,
+			summary: args.summary,
+			bytes,
+		});
+		return true;
 	},
 });
 

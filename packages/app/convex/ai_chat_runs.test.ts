@@ -416,6 +416,89 @@ describe("history_page", () => {
 		expect(small.messages).toHaveLength(3);
 		expect(small.full).toBe(true);
 	});
+
+	test("stops at a compaction and returns its summary instead of the older nodes", async () => {
+		const fx = await fixture();
+		const turn1 = await begin_turn(fx, { messageId: "user-1", parentId: null });
+		await answer_turn(fx, turn1, "answer-1");
+		const turn2 = await begin_turn(fx, { messageId: "user-2", parentId: turn1.replyId });
+		expect(
+			await fx.t.mutation(internal.ai_chat_runs.save_compaction, {
+				runId: turn2.runId,
+				generation: turn2.generation,
+				headNodeId: turn1.triggerId,
+				tailNodeId: turn1.replyId,
+				summary: "Turn 1 in short",
+			}),
+		).toBe(true);
+
+		const page = await fx.t.query(internal.ai_chat_runs.history_page, {
+			threadId: fx.source.threadId,
+			fromId: turn2.triggerId,
+			usedBytes: 0,
+			maxBytes: 1024 * 1024,
+			hasUserMessage: false,
+		});
+		expect(page.messages.map((message) => message.id)).toEqual([turn2.triggerId]);
+		expect(page).toMatchObject({ summary: "Turn 1 in short", nextId: null });
+	});
+
+	test("keeps the newest user message when the walk starts at a compaction tail", async () => {
+		const fx = await fixture();
+		const turn1 = await begin_turn(fx, { messageId: "user-1", parentId: null });
+		await answer_turn(fx, turn1, "answer-1");
+		const turn2 = await begin_turn(fx, { messageId: "user-2", parentId: turn1.replyId });
+		expect(
+			await fx.t.mutation(internal.ai_chat_runs.save_compaction, {
+				runId: turn2.runId,
+				generation: turn2.generation,
+				headNodeId: turn1.triggerId,
+				tailNodeId: turn1.triggerId,
+				summary: "Up to user 1",
+			}),
+		).toBe(true);
+
+		// Regenerate the first answer: the walk starts at user-1, where the summary ends.
+		const page = await fx.t.query(internal.ai_chat_runs.history_page, {
+			threadId: fx.source.threadId,
+			fromId: turn1.triggerId,
+			usedBytes: 0,
+			maxBytes: 1024 * 1024,
+			hasUserMessage: false,
+		});
+		expect(page.messages.map((message) => message.id)).toEqual([turn1.triggerId]);
+		expect(page).toMatchObject({ summary: "Up to user 1", hasUserMessage: true, nextId: null });
+	});
+});
+
+describe("save_compaction", () => {
+	test("saves only for the live run of the chat, and refuses a summary that is too large", async () => {
+		const fx = await fixture();
+		const turn1 = await begin_turn(fx, { messageId: "user-1", parentId: null });
+		await answer_turn(fx, turn1, "answer-1");
+		const turn2 = await begin_turn(fx, { messageId: "user-2", parentId: turn1.replyId });
+		const save = (run: { runId: Id<"ai_chat_runs">; generation: number }, summary: string) =>
+			fx.t.mutation(internal.ai_chat_runs.save_compaction, {
+				runId: run.runId,
+				generation: run.generation,
+				headNodeId: turn1.triggerId,
+				tailNodeId: turn1.replyId,
+				summary,
+			});
+
+		// An ended run, and a summary over 64 KiB.
+		expect(await save(turn1, "old run")).toBe(false);
+		expect(await save(turn2, "x".repeat(64 * 1024 + 1))).toBe(false);
+
+		// Stop raises the generation, so the old generation cannot save.
+		await fx.asUser.mutation(api.ai_chat_runs.stop, {
+			membershipId: fx.db.membershipId,
+			threadId: fx.source.threadId,
+			replyId: turn2.replyId,
+		});
+		expect(await save(turn2, "stopped run")).toBe(false);
+		expect(await fx.t.run((ctx) => ctx.db.query("ai_chat_compactions").collect())).toEqual([]);
+	});
 });
 
 describe("end_expired_runs", () => {

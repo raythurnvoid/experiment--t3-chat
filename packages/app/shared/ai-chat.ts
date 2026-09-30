@@ -37,6 +37,10 @@ type AiChatModelMetadata = {
 	 * The field is required, so adding a model id is a decision instead of a silent default.
 	 */
 	supportsImageGeneration: boolean;
+	/**
+	 * The model's input window in tokens. A run compacts older chat history before it gets close.
+	 */
+	contextTokens: number;
 };
 
 export const ai_chat_DEFAULT_MODEL_ID = "gpt-6-luna" as const satisfies ai_chat_ModelId;
@@ -45,10 +49,12 @@ export const ai_chat_MODELS = {
 	"gpt-6-luna": {
 		label: "GPT-6 Luna",
 		supportsImageGeneration: true,
+		contextTokens: 1_050_000,
 	},
 	"deepseek-v4.1-flash": {
 		label: "DeepSeek V4.1 Flash",
 		supportsImageGeneration: false,
+		contextTokens: 1_000_000,
 	},
 } as const satisfies Record<ai_chat_ModelId, AiChatModelMetadata>;
 
