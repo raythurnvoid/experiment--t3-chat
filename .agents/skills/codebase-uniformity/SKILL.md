@@ -147,7 +147,7 @@ Auth bootstrap code often coordinates two authorities, such as Clerk token claim
 
 # Sub-Agent Style Audit
 
-Use sub-agents when a change is large enough that style drift is likely, or when the user asks for a native-codebase pass. For large backend changes, treat the three-auditor pass as standard before final verification when sub-agents are available. If sub-agents are unavailable, perform the same three passes yourself.
+Use sub-agents when a change is large enough that style drift is likely, or when the user asks for a native-codebase pass. If sub-agents are unavailable, perform the audit passes yourself.
 
 Give each sub-agent:
 

@@ -5,7 +5,7 @@ description: How to run a multi-round, multi-reviewer adversarial review loop ov
 
 # Adversarial Review Loop
 
-One master agent runs rounds of: review (N independent reviewer subagents) → triage (master verifies every
+One master agent runs rounds of: review (independent reviewer subagents) → triage (master verifies every
 claim) → fix (fixer subagents with disjoint file ownership) → re-verify (gates) → loop. The loop ends only
 when a round comes back clean, or when every remaining report is individually adjudicated with written
 evidence.
@@ -14,7 +14,7 @@ evidence.
 
 - **Master** owns the ledger, the briefs, all triage verdicts, gate runs, server lifecycle, and the final
   report. The master never trusts a reviewer or fixer claim without checking it against the code.
-- **Reviewers** (six lenses worked well: product/UI/accessibility; browser/media/lifecycle;
+- **Reviewers** (pick the lenses the feature needs, for example: product/UI/accessibility; browser/media/lifecycle;
   backend/security/concurrency; plugin/SDK/build/release; pipeline/migrations/tests/recovery; code
   uniformity and prose truth) are read-only in the shared tree. Probes and mutants go in a package copy
   under the personal `+ai` folder, never the tree.
