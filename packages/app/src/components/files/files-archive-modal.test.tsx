@@ -66,12 +66,7 @@ describe("FilesArchiveModal", () => {
 	test("archives the given nodes and reports them", async () => {
 		const { onClose, onArchived } = renderModal([NOTE, REPORTS]);
 		const dialog = await screen.findByRole("dialog", { name: "Archive 2 items?" });
-		const list = within(dialog).getByRole("list");
-		expect(
-			within(list)
-				.getAllByRole("listitem")
-				.map((item) => item.textContent),
-		).toEqual(["note.md", "Reports"]);
+		expect(within(dialog).getByRole("textbox", { name: "Items to archive" }).textContent).toBe("note.md\nReports");
 
 		fireEvent.click(within(dialog).getByRole("button", { name: "Archive" }));
 
@@ -135,14 +130,52 @@ describe("FilesArchiveModal", () => {
 		expect(toastInfoMock).not.toHaveBeenCalled();
 	});
 
+	test("starts on Cancel", async () => {
+		renderModal([NOTE, REPORTS]);
+		const dialog = await screen.findByRole("dialog", { name: "Archive 2 items?" });
+		const cancel = within(dialog).getByRole("button", { name: "Cancel" });
+		await waitFor(() => expect(document.activeElement).toBe(cancel));
+	});
+
+	test("grows the name list only from Show more", async () => {
+		const nodes = Array.from({ length: 7 }, (_, index) => ({
+			...NOTE,
+			_id: `node_${index}` as app_convex_Id<"files_nodes">,
+			name: `note-${index}.md`,
+		}));
+		renderModal(nodes);
+		const dialog = await screen.findByRole("dialog", { name: "Archive 7 items?" });
+		const list = within(dialog).getByRole("textbox", { name: "Items to archive" });
+		const maxHeight = () => list.style.getPropertyValue("--TextMonospaceBlock-max-height");
+		expect(maxHeight()).toBe("6lh");
+
+		// A click in the list must not move the text under a selection.
+		fireEvent.mouseDown(list);
+		expect(maxHeight()).toBe("6lh");
+
+		const toggle = within(dialog).getByRole("button", { name: "Show more" });
+		expect(toggle.getAttribute("aria-expanded")).toBe("false");
+		fireEvent.click(toggle);
+		expect(maxHeight()).toBe("16lh");
+		expect(toggle.getAttribute("aria-expanded")).toBe("true");
+		expect(toggle.textContent).toBe("Show less");
+		cleanup();
+
+		// A list that fits needs no toggle.
+		renderModal([NOTE, REPORTS]);
+		expect(within(await screen.findByRole("dialog")).queryByRole("button", { name: "Show more" })).toBeNull();
+	});
+
 	test("names one item in the heading", async () => {
 		renderModal([NOTE]);
 		const dialog = await screen.findByRole("dialog", { name: "Archive “note.md”?" });
-		expect(within(dialog).queryByRole("list")).toBeNull();
+		expect(within(dialog).queryByRole("textbox", { name: "Items to archive" })).toBeNull();
+		// Nothing to list, so the dialog has no empty body between the header and the buttons.
+		expect(dialog.querySelector(".MyModalScrollableArea")).toBeNull();
 	});
 
 	test("warns when a folder is in the list", async () => {
-		const folderSentence = /A folder is archived with everything inside it\./;
+		const folderSentence = /Folders are archived with everything inside\./;
 		renderModal([NOTE, REPORTS]);
 		expect(within(await screen.findByRole("dialog")).getByText(folderSentence)).toBeTruthy();
 		cleanup();

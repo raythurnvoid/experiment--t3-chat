@@ -792,7 +792,7 @@ describe("FilesSidebar", () => {
 		fireEvent.click(view.getByRole("button", { name: "More actions for bravo" }));
 		fireEvent.click(await view.findByRole("menuitem", { name: "Archive" }));
 		const dialog = await view.findByRole("dialog", { name: "Archive 2 items?" });
-		expect(within(dialog).getAllByRole("listitem").map((item) => item.textContent)).toEqual(["alpha", "bravo"]);
+		expect(within(dialog).getByRole("textbox", { name: "Items to archive" }).textContent).toBe("alpha\nbravo");
 
 		// The request had 2 items, so the selection clears even though only bravo was archived.
 		vi.spyOn(app_convex, "mutation").mockResolvedValue({
@@ -830,7 +830,7 @@ describe("FilesSidebar", () => {
 		fireEvent.click(view.getByRole("button", { name: "More options" }));
 		fireEvent.click(await view.findByRole("menuitem", { name: /^Archive 2 selected/ }));
 		const dialog = await view.findByRole("dialog", { name: "Archive 2 items?" });
-		expect(within(dialog).getAllByRole("listitem").map((item) => item.textContent)).toEqual(["bravo", "locked.md"]);
+		expect(within(dialog).getByRole("textbox", { name: "Items to archive" }).textContent).toBe("bravo\nlocked.md");
 	});
 
 	test("the menu of a read-only row in a selection still archives the selection", async () => {
@@ -860,7 +860,7 @@ describe("FilesSidebar", () => {
 		fireEvent.click(view.getByRole("button", { name: /^More actions for locked\.md/ }));
 		fireEvent.click(await view.findByRole("menuitem", { name: "Archive" }));
 		const dialog = await view.findByRole("dialog", { name: "Archive 2 items?" });
-		expect(within(dialog).getAllByRole("listitem").map((item) => item.textContent)).toEqual(["bravo", "locked.md"]);
+		expect(within(dialog).getByRole("textbox", { name: "Items to archive" }).textContent).toBe("bravo\nlocked.md");
 	});
 
 	test("a reveal event during a search keeps the folder expanded once the search closes", async () => {

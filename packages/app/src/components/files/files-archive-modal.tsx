@@ -1,9 +1,10 @@
 import "./files-archive-modal.css";
 
-import { memo, useId, useState, type RefObject } from "react";
+import { memo, useId, useRef, useState, type RefObject } from "react";
 import { useConvex, useQuery } from "convex/react";
 import { toast } from "sonner";
 
+import { TextMonospaceBlock } from "@/components/monospace-block/monospace-block-text.tsx";
 import { MyButton } from "@/components/my-button.tsx";
 import { MyRadio } from "@/components/my-radio.tsx";
 import {
@@ -30,7 +31,7 @@ import type { files_VisibleTreeNode } from "@/lib/files.ts";
 type FilesArchiveModal_ClassNames =
 	| "FilesArchiveModal"
 	| "FilesArchiveModal-content"
-	| "FilesArchiveModal-list"
+	| "FilesArchiveModal-list-toggle"
 	| "FilesArchiveModal-error";
 
 /**
@@ -65,9 +66,15 @@ export const FilesArchiveModal = memo(function FilesArchiveModal(props: FilesArc
 
 	const [pending, setPending] = useState(false);
 	const [error, setError] = useState<string | null>(null);
+	const cancelRef = useRef<HTMLButtonElement>(null);
+	// Tie Show more to the nodes it was clicked for, so the next dialog opens small again.
+	const [expandedNodes, setExpandedNodes] = useState<FilesArchiveModal_Node[] | null>(null);
+	const isListExpanded = nodes !== null && expandedNodes === nodes;
 
 	const hasFolder = nodes?.some((node) => node.kind === "folder") ?? false;
-	const heading = nodes && nodes.length > 1 ? `Archive ${nodes.length} items?` : `Archive “${nodes?.[0]?.name ?? ""}”?`;
+	// One item is named in the heading, so it gets no list.
+	const hasList = nodes !== null && nodes.length > 1;
+	const heading = hasList ? `Archive ${nodes.length} items?` : `Archive “${nodes?.[0]?.name ?? ""}”?`;
 
 	const handleClose = useFn(() => {
 		// Clear the refusal here and in `handleConfirm`, so a second open does not start with old text.
@@ -129,33 +136,49 @@ export const FilesArchiveModal = memo(function FilesArchiveModal(props: FilesArc
 
 	return (
 		<MyModal open={nodes !== null} setOpen={handleOpenChange}>
-			<MyModalPopover className={"FilesArchiveModal" satisfies FilesArchiveModal_ClassNames}>
+			{/* Start on Cancel, the safe choice. Otherwise the name list would take focus first. */}
+			<MyModalPopover className={"FilesArchiveModal" satisfies FilesArchiveModal_ClassNames} initialFocus={cancelRef}>
 				<MyModalHeader>
 					<MyModalHeading>{heading}</MyModalHeading>
 					<MyModalDescription>
-						Archived items are hidden from the tree. Show them from the sidebar's More options menu, and bring one back
-						with Restore in its row menu.
-						{hasFolder ? " A folder is archived with everything inside it." : null}
+						Archived items are hidden. You can restore them later.
+						{hasFolder ? " Folders are archived with everything inside." : null}
 					</MyModalDescription>
 				</MyModalHeader>
-				<MyModalScrollableArea>
-					<div className={"FilesArchiveModal-content" satisfies FilesArchiveModal_ClassNames}>
-						{nodes && nodes.length > 1 ? (
-							<ul className={"FilesArchiveModal-list" satisfies FilesArchiveModal_ClassNames}>
-								{nodes.map((node) => (
-									<li key={node._id}>{node.name}</li>
-								))}
-							</ul>
-						) : null}
-						{error ? (
-							<p role="alert" className={"FilesArchiveModal-error" satisfies FilesArchiveModal_ClassNames}>
-								{error}
-							</p>
-						) : null}
-					</div>
-				</MyModalScrollableArea>
+				{/* Leave out the empty body when there is no list and no refusal to show. */}
+				{hasList || error ? (
+					<MyModalScrollableArea>
+						<div className={"FilesArchiveModal-content" satisfies FilesArchiveModal_ClassNames}>
+							{/* One name per line in a read-only text block, so Ctrl+A selects only the names to copy
+							    them. It grows only from Show more: growing on click would move the text under a
+							    selection the person is making. */}
+							{hasList ? (
+								<TextMonospaceBlock
+									aria-label="Items to archive"
+									text={nodes.map((node) => node.name).join("\n")}
+									maxHeight={isListExpanded ? "16lh" : "6lh"}
+								/>
+							) : null}
+							{nodes && nodes.length > 6 ? (
+								<MyButton
+									className={"FilesArchiveModal-list-toggle" satisfies FilesArchiveModal_ClassNames}
+									variant="ghost"
+									aria-expanded={isListExpanded}
+									onClick={() => setExpandedNodes(isListExpanded ? null : nodes)}
+								>
+									{isListExpanded ? "Show less" : "Show more"}
+								</MyButton>
+							) : null}
+							{error ? (
+								<p role="alert" className={"FilesArchiveModal-error" satisfies FilesArchiveModal_ClassNames}>
+									{error}
+								</p>
+							) : null}
+						</div>
+					</MyModalScrollableArea>
+				) : null}
 				<MyModalFooter>
-					<MyButton variant="ghost" disabled={pending} onClick={handleClose}>
+					<MyButton ref={cancelRef} variant="ghost" disabled={pending} onClick={handleClose}>
 						Cancel
 					</MyButton>
 					<MyButton variant="destructive" disabled={pending} aria-busy={pending} onClick={handleConfirm}>

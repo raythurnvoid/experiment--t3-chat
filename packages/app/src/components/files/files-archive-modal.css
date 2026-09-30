@@ -8,12 +8,8 @@
 		gap: 12px;
 	}
 
-	.FilesArchiveModal-list {
-		display: grid;
-		gap: 4px;
-
-		margin: 0;
-		padding-inline-start: 20px;
+	.FilesArchiveModal-list-toggle {
+		justify-self: start;
 	}
 
 	.FilesArchiveModal-error {
