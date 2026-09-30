@@ -8,8 +8,8 @@
   "devDependencies": {
     "@types/node": "^25.9.8",
     "eslint-plugin-react-hooks": "^7.1.1",
-    "oxfmt": "^0.70.0",
-    "oxlint": "^1.85.0",
+    "oxfmt": "^0.71.0",
+    "oxlint": "^1.86.0",
     "oxlint-tsgolint": "^7.0.2003",
     "tsc-silent": "^1.2.2",
     "typescript": "~6.0.3",
