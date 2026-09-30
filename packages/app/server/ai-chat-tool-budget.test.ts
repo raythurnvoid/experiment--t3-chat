@@ -1,4 +1,5 @@
-import { convertToModelMessages, tool } from "ai";
+import { convertToModelMessages, stepCountIs, streamText, tool, wrapLanguageModel } from "ai";
+import { MockLanguageModelV3 } from "ai/test";
 import { describe, expect, test, vi } from "vitest";
 import z from "zod";
 import {
@@ -199,6 +200,82 @@ describe("ai_chat_tool_budget_apply", () => {
 		const result = await tools.echo.execute!({}, { toolCallId: "mcp", messages: [] });
 		expect(result).toMatchObject({ metadata: { kind: "mcp_result", truncated: true } });
 		expect(result).toHaveProperty("output", expect.stringContaining("Output preview truncated"));
+	});
+
+	test("never runs a tool body after Stop while the finish is held for the usage save", async () => {
+		let releaseFinish!: () => void;
+		const finishHeld = new Promise<void>((resolve) => {
+			releaseFinish = resolve;
+		});
+		let reachFinish!: () => void;
+		const finishReached = new Promise<void>((resolve) => {
+			reachFinish = resolve;
+		});
+		// Like the receipt middleware: hold the finish part until the usage save ends.
+		const model = wrapLanguageModel({
+			model: new MockLanguageModelV3({
+				doStream: async () => ({
+					stream: new ReadableStream({
+						start(controller) {
+							controller.enqueue({ type: "stream-start", warnings: [] });
+							controller.enqueue({ type: "tool-call", toolCallId: "write-1", toolName: "write", input: "{}" });
+							controller.enqueue({
+								type: "finish",
+								finishReason: { unified: "tool-calls", raw: undefined },
+								usage: {
+									inputTokens: { total: 100, noCache: 100, cacheRead: undefined, cacheWrite: undefined },
+									outputTokens: { total: 30, text: 30, reasoning: undefined },
+								},
+							});
+							controller.close();
+						},
+					}),
+				}),
+			}),
+			middleware: {
+				specificationVersion: "v3",
+				wrapStream: async ({ doStream }) => {
+					const { stream, ...rest } = await doStream();
+					return {
+						...rest,
+						stream: stream.pipeThrough(
+							new TransformStream({
+								transform: async (part, controller) => {
+									if (part.type === "finish") {
+										reachFinish();
+										await finishHeld;
+									}
+									controller.enqueue(part);
+								},
+							}),
+						),
+					};
+				},
+			},
+		});
+		const write = vi.fn(async () => ({ title: "Write", output: "written", metadata: {} }));
+		const tools = ai_chat_tool_budget_apply(
+			{ write: tool({ inputSchema: z.object({}), execute: write }) },
+			ai_chat_tool_budget_create(),
+			{ resultReservedBytes: 128 * 1024 },
+		);
+		const stop = new AbortController();
+		const result = streamText({
+			model,
+			prompt: "Write it.",
+			maxRetries: 0,
+			stopWhen: stepCountIs(2),
+			abortSignal: stop.signal,
+			tools,
+		});
+		const drained = result.consumeStream();
+
+		await finishReached;
+		stop.abort();
+		releaseFinish();
+		await drained;
+
+		expect(write).not.toHaveBeenCalled();
 	});
 });
 

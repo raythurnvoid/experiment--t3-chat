@@ -1,4 +1,4 @@
-import { composite_id, omit_properties, should_never_happen } from "../shared/shared-utils.ts";
+import { omit_properties, should_never_happen } from "../shared/shared-utils.ts";
 import {
 	ai_chat_DEFAULT_MODEL_ID,
 	ai_chat_GENERATED_IMAGE_FORMAT,
@@ -109,8 +109,7 @@ import app_convex_schema, {
 	files_pending_target_validator,
 } from "./schema.ts";
 import { Result } from "common/errors-as-values-utils.ts";
-import { billing_event } from "../server/billing.ts";
-import { billing_ingest_events } from "./billing_db.ts";
+import { ai_model_call_receipts_create } from "./ai_model_call_receipts.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import type { Doc, Id } from "./_generated/dataModel";
 import { ai_chat_context_ENABLED } from "./ai_chat_context.ts";
@@ -149,7 +148,15 @@ export {
  */
 const THREAD_PERMISSION = "content.read" as const satisfies access_control_Permission;
 
-const TITLE_MODEL_ID = "gpt-4.1-nano" as const;
+/**
+ * Every billed model must come from the chat model list, which is priced.
+ */
+const TITLE_MODEL_ID = "gpt-6-luna" as const satisfies ai_chat_ModelId;
+
+/**
+ * A title is a few words, so skip reasoning: it would spend the small output limit.
+ */
+const TITLE_PROVIDER_OPTIONS = { openai: { reasoningEffort: "none" } } as const;
 
 const TITLE_SYSTEM_PROMPT = [
 	"Generate a concise, descriptive title (max 6 words) for this conversation.",
@@ -280,67 +287,6 @@ function resolve_parent_message_context(input: {
 			resolvedParentClientGeneratedId: parentMessage?.clientGeneratedMessageId ?? null,
 		},
 	});
-}
-
-/**
- * What one generated picture costs, in cents. OpenAI charges per image, not per token, so this is
- * added to the token cost of the turn that drew it.
- */
-const GENERATED_IMAGE_COST_CENTS = 4;
-
-function compute_token_usage_cost_cents(args: {
-	modelId: string;
-	inputTokens: number;
-	outputTokens: number;
-	reportedCostUsd?: number | null;
-}) {
-	// Keep thread titles on the gpt-4.1-nano rate.
-	if (args.modelId === "gpt-4.1-nano") {
-		return args.inputTokens * 0.00001 + args.outputTokens * 0.00004;
-	}
-
-	// OpenRouter picks the host for each DeepSeek step, so bill the dollar cost it reports.
-	// If that cost is missing, use the DeepSeek host list price: $0.30 input and $1.20 output per 1M tokens.
-	if (args.modelId === "deepseek-v4.1-flash") {
-		const reportedCostUsd = args.reportedCostUsd;
-		if (typeof reportedCostUsd === "number" && Number.isFinite(reportedCostUsd) && reportedCostUsd >= 0) {
-			return reportedCostUsd * 100;
-		}
-
-		return args.inputTokens * 0.00003 + args.outputTokens * 0.00012;
-	}
-
-	// GPT-6 Luna standard price is $0.10 input and $0.50 output per 1M tokens.
-	// A prompt over 272k input tokens costs 2x input and 1.5x output for the whole request.
-	const longPrompt = args.inputTokens > 272_000;
-	return args.inputTokens * (longPrompt ? 0.00002 : 0.00001) + args.outputTokens * (longPrompt ? 0.000075 : 0.00005);
-}
-
-/**
- * Read the dollar cost OpenRouter put on one step. A missing or bad value means the caller
- * should use the list price instead.
- */
-function openrouter_reported_cost_usd(providerMetadata: unknown): number | null {
-	if (providerMetadata === null || typeof providerMetadata !== "object" || !("openrouter" in providerMetadata)) {
-		return null;
-	}
-
-	const openrouterMetadata = providerMetadata.openrouter;
-	if (openrouterMetadata === null || typeof openrouterMetadata !== "object" || !("usage" in openrouterMetadata)) {
-		return null;
-	}
-
-	const usage = openrouterMetadata.usage;
-	if (usage === null || typeof usage !== "object" || !("cost" in usage)) {
-		return null;
-	}
-
-	const cost = usage.cost;
-	if (typeof cost !== "number" || !Number.isFinite(cost) || cost < 0) {
-		return null;
-	}
-
-	return cost;
 }
 
 /**
@@ -2826,11 +2772,14 @@ async function create_agent_turn_stream(args: {
 		);
 	};
 
-	// Captured by `streamText.onFinish` below so `createUIMessageStream.onFinish`
-	// can emit one direct Polar usage event with the actual token cost.
-	let capturedUsage: { inputTokens: number; outputTokens: number } | null = null;
-	let capturedActualCents = 0;
-	let capturedGeneratedImages = 0;
+	// Every provider request of this turn bills through its own receipt, including the title.
+	const receipts = ai_model_call_receipts_create(ctx, {
+		threadId,
+		billedUserId: billedUser._id,
+		actorUserId: args.userId,
+		organizationId: membership.organizationId,
+		workspaceId: membership.workspaceId,
+	});
 
 	const stream = createUIMessageStream<ai_chat_UiMessage>({
 		generateId: get_id_generator("ai_message"),
@@ -2864,7 +2813,10 @@ async function create_agent_turn_stream(args: {
 			const result1 = streamText({
 				model: wrapLanguageModel({
 					model: chat_language_model(args.modelId),
-					middleware: create_image_generation_middleware(null),
+					middleware: [
+						receipts.middleware({ purpose: "chat_step", modelId: args.modelId }),
+						create_image_generation_middleware(null),
+					],
 				}),
 				system: `${systemPrompt}\n${workspaceSystem}`,
 				// SDK retries reuse private observations without running prepareStep's access checks again.
@@ -2948,11 +2900,15 @@ async function create_agent_turn_stream(args: {
 							toolChoice: { type: "tool", toolName: "image_generation" },
 							model: wrapLanguageModel({
 								model: openai(args.modelId),
-								middleware: create_image_generation_middleware((toolCallId) => {
-									const bound = args.agent.imageDestinations.get(toolCallId);
-									if (bound && bound !== workspace) throw new Error("Image call already has a destination.");
-									args.agent.imageDestinations.set(toolCallId, workspace);
-								}),
+								// The receipt middleware comes first, so it sees results after the previews are dropped.
+								middleware: [
+									receipts.middleware({ purpose: "chat_step", modelId: args.modelId }),
+									create_image_generation_middleware((toolCallId) => {
+										const bound = args.agent.imageDestinations.get(toolCallId);
+										if (bound && bound !== workspace) throw new Error("Image call already has a destination.");
+										args.agent.imageDestinations.set(toolCallId, workspace);
+									}),
+								],
 							}),
 							...withFilteredMessages,
 						};
@@ -3003,45 +2959,6 @@ async function create_agent_turn_stream(args: {
 						requestSignalAborted: args.abortSignal?.aborted ?? false,
 					});
 				},
-				onFinish: async ({ totalUsage, steps }) => {
-					// Aggregated across all steps; read by createUIMessageStream.onFinish
-					// to emit one response-usage event.
-					capturedUsage = {
-						inputTokens: totalUsage.inputTokens ?? 0,
-						outputTokens: totalUsage.outputTokens ?? 0,
-					};
-					// DeepSeek's price depends on which OpenRouter host answered. Bill each step's
-					// reported cost. Other models keep one rate for the whole turn.
-					if (args.modelId === "deepseek-v4.1-flash" && steps.length > 0) {
-						for (const step of steps) {
-							capturedActualCents += compute_token_usage_cost_cents({
-								modelId: args.modelId,
-								inputTokens: step.usage.inputTokens ?? 0,
-								outputTokens: step.usage.outputTokens ?? 0,
-								reportedCostUsd: openrouter_reported_cost_usd(step.providerMetadata),
-							});
-						}
-					} else {
-						capturedActualCents += compute_token_usage_cost_cents({
-							modelId: args.modelId,
-							inputTokens: capturedUsage.inputTokens,
-							outputTokens: capturedUsage.outputTokens,
-						});
-					}
-
-					// A picture costs per image, not per token. Count the results here rather than in the
-					// upload transform, because a step result holds one entry per finished picture once
-					// The image middleware has removed the previews.
-					capturedGeneratedImages = steps.reduce(
-						(count, step) =>
-							count +
-							step.toolResults.filter(
-								(toolResult) => toolResult?.toolName === ("image_generation" satisfies keyof ai_chat_UiTools),
-							).length,
-						0,
-					);
-					capturedActualCents += capturedGeneratedImages * GENERATED_IMAGE_COST_CENTS;
-				},
 			});
 
 			// The AI SDK hides the real error behind a constant "An error occurred." by default,
@@ -3081,11 +2998,18 @@ async function create_agent_turn_stream(args: {
 					return;
 				}
 
-				const titleMessages = sanitize_observation_title_messages([...modelMessages, ...response1.messages]);
-				let titleInputTokens = 0;
-				let titleOutputTokens = 0;
+				// End with a user turn that asks for the title. GPT-6 Luna answers the last user message
+				// of a chat that ends on an assistant turn instead of writing a title.
+				const titleMessages: ModelMessage[] = [
+					...sanitize_observation_title_messages([...modelMessages, ...response1.messages]),
+					{ role: "user", content: "Write the title for the conversation above." },
+				];
 				const titleResult = streamText({
-					model: openai(TITLE_MODEL_ID),
+					model: wrapLanguageModel({
+						model: openai(TITLE_MODEL_ID),
+						middleware: receipts.middleware({ purpose: "title", modelId: TITLE_MODEL_ID }),
+					}),
+					providerOptions: TITLE_PROVIDER_OPTIONS,
 					maxRetries: 0,
 					prepareStep: async () => {
 						const allowed = await ctx.runQuery(internal.ai_chat_workspaces.resolve, {
@@ -3097,16 +3021,10 @@ async function create_agent_turn_stream(args: {
 					system: TITLE_SYSTEM_PROMPT,
 					messages: titleMessages,
 					stopWhen: stepCountIs(1),
-					temperature: 0.3,
 					maxOutputTokens: 50,
 					abortSignal: args.abortSignal,
 					onError: () => {
 						console.error("AI chat title provider error", { threadId });
-					},
-					onFinish: async ({ totalUsage }) => {
-						// Keep title usage separate from the response event
-						titleInputTokens = totalUsage.inputTokens ?? 0;
-						titleOutputTokens = totalUsage.outputTokens ?? 0;
 					},
 				});
 
@@ -3142,50 +3060,6 @@ async function create_agent_turn_stream(args: {
 						});
 					}
 				}
-
-				if (titleInputTokens + titleOutputTokens > 0) {
-					await billing_ingest_events(ctx, {
-						billedUserEvents: [
-							{
-								billedUser,
-								event: billing_event({
-									name: "ai_usage",
-									externalCustomerId: billedUser._id,
-									externalMemberId: args.userId,
-									externalId: composite_id(
-										"billing",
-										"ai_usage",
-										billedUser._id,
-										args.userId,
-										membership.organizationId,
-										membership.workspaceId,
-										String(threadId ?? ""),
-										// TODO: Evaluate if this is a good idea to pass "title" as messageId
-										"title",
-									),
-									metadata: {
-										amount: compute_token_usage_cost_cents({
-											modelId: TITLE_MODEL_ID,
-											inputTokens: titleInputTokens,
-											outputTokens: titleOutputTokens,
-										}),
-										actorUserId: args.userId,
-										billedUserId: billedUser._id,
-										organizationId: membership.organizationId,
-										workspaceId: membership.workspaceId,
-										modelId: TITLE_MODEL_ID,
-										inputTokens: titleInputTokens,
-										outputTokens: titleOutputTokens,
-										// The title model has no tools, so a title turn never draws.
-										generatedImages: 0,
-										threadId: String(threadId ?? ""),
-										messageId: "title",
-									},
-								}),
-							},
-						],
-					});
-				}
 			}
 		},
 		onError: (error: unknown) => {
@@ -3212,52 +3086,9 @@ async function create_agent_turn_stream(args: {
 							limit: ai_chat_MESSAGE_MAX_BYTES,
 						});
 					} else {
-						const capturedInputTokens = capturedUsage?.inputTokens ?? 0;
-						const capturedOutputTokens = capturedUsage?.outputTokens ?? 0;
-						const capturedTotalTokens = capturedInputTokens + capturedOutputTokens;
-						// Pictures are billed per image, so a turn that drew one is billed even if the model
-						// reported no token usage. An abort still stores the partial reply so a mid-run
-						// finish stays on the shown branch, but it does not bill.
-						if (!result.isAborted && (capturedTotalTokens > 0 || capturedGeneratedImages > 0)) {
-							await billing_ingest_events(ctx, {
-								billedUserEvents: [
-									{
-										billedUser,
-										event: billing_event({
-											name: "ai_usage",
-											externalCustomerId: billedUser._id,
-											externalMemberId: args.userId,
-											externalId: composite_id(
-												"billing",
-												"ai_usage",
-												billedUser._id,
-												args.userId,
-												membership.organizationId,
-												membership.workspaceId,
-												String(threadId ?? ""),
-												String(result.responseMessage.id ?? ""),
-											),
-											metadata: {
-												amount: capturedActualCents,
-												actorUserId: args.userId,
-												billedUserId: billedUser._id,
-												organizationId: membership.organizationId,
-												workspaceId: membership.workspaceId,
-												modelId: args.modelId,
-												inputTokens: capturedInputTokens,
-												outputTokens: capturedOutputTokens,
-												generatedImages: capturedGeneratedImages,
-												threadId: String(threadId ?? ""),
-												messageId: String(result.responseMessage.id ?? ""),
-											},
-										}),
-									},
-								],
-							});
-						}
-
 						// Persist the assistant reply, including a Stop, below the last persisted request
-						// message. A mid-run finish re-parents through `get_chat_reply_parent`.
+						// message. A mid-run finish re-parents through `get_chat_reply_parent`. Billing is
+						// already saved per provider request by the receipt middleware.
 						try {
 							await args.storeReply(result.responseMessage);
 						} catch (error) {
@@ -3299,6 +3130,9 @@ async function create_agent_turn_stream(args: {
 					caughtUninjected = true;
 				}
 			} finally {
+				// Let the response id saves finish before the run ends, so the recovery cron can find
+				// the usage of a request that was stopped before its finish.
+				await receipts.settle();
 				await args.releaseRun();
 			}
 
@@ -4481,8 +4315,7 @@ export async function ai_chat_http_run_stream(ctx: ActionCtx, request: Request) 
 			membershipLifetime: workspaces._yay.membershipLifetime,
 		};
 
-		// Check credits before title generation. One title per thread; the literal
-		// "title" discriminator keeps the usage event id stable across HTTP retries.
+		// Check credits before title generation. Each provider request bills once through its receipt.
 		const creditCheck = await ctx.runQuery(internal.billing.check_credits, {
 			userId: user._id,
 			organizationId: membership.organizationId,
@@ -4502,12 +4335,21 @@ export async function ai_chat_http_run_stream(ctx: ActionCtx, request: Request) 
 			});
 		}
 
-		let titleInputTokens = 0;
-		let titleOutputTokens = 0;
+		const receipts = ai_model_call_receipts_create(ctx, {
+			threadId: thread._id,
+			billedUserId: billedUser._id,
+			actorUserId: user._id,
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+		});
 
 		// Generate title using AI with streaming
 		const result = streamText({
-			model: openai(TITLE_MODEL_ID),
+			model: wrapLanguageModel({
+				model: openai(TITLE_MODEL_ID),
+				middleware: receipts.middleware({ purpose: "title", modelId: TITLE_MODEL_ID }),
+			}),
+			providerOptions: TITLE_PROVIDER_OPTIONS,
 			maxRetries: 0,
 			prepareStep: async () => {
 				const allowed = await ctx.runQuery(internal.ai_chat_workspaces.resolve, { source, workspace: "current" });
@@ -4521,17 +4363,12 @@ export async function ai_chat_http_run_stream(ctx: ActionCtx, request: Request) 
 				},
 			],
 			stopWhen: stepCountIs(1),
-			temperature: 0.3,
 			maxOutputTokens: 50,
 			experimental_transform: smoothStream({
 				delayInMs: 100,
 			}),
 			onError: () => {
 				console.error("AI chat title provider error", { threadId: thread_id });
-			},
-			onFinish: async ({ totalUsage }) => {
-				titleInputTokens = totalUsage.inputTokens ?? 0;
-				titleOutputTokens = totalUsage.outputTokens ?? 0;
 			},
 		});
 
@@ -4545,51 +4382,7 @@ export async function ai_chat_http_run_stream(ctx: ActionCtx, request: Request) 
 				controller.enqueue(chunk);
 			},
 			flush: async () => {
-				const capturedTotalTokens = titleInputTokens + titleOutputTokens;
-				if (capturedTotalTokens > 0) {
-					const titleCostCents = compute_token_usage_cost_cents({
-						modelId: TITLE_MODEL_ID,
-						inputTokens: titleInputTokens,
-						outputTokens: titleOutputTokens,
-					});
-					await billing_ingest_events(ctx, {
-						billedUserEvents: [
-							{
-								billedUser,
-								event: billing_event({
-									name: "ai_usage",
-									externalCustomerId: billedUser._id,
-									externalMemberId: user._id,
-									externalId: composite_id(
-										"billing",
-										"ai_usage",
-										billedUser._id,
-										user._id,
-										membership.organizationId,
-										membership.workspaceId,
-										thread_id,
-										// TODO: Evaluate if this is a good idea to pass "title" as messageId
-										"title",
-									),
-									metadata: {
-										amount: titleCostCents,
-										actorUserId: user._id,
-										billedUserId: billedUser._id,
-										organizationId: membership.organizationId,
-										workspaceId: membership.workspaceId,
-										modelId: TITLE_MODEL_ID,
-										inputTokens: titleInputTokens,
-										outputTokens: titleOutputTokens,
-										// The title model has no tools, so a title turn never draws.
-										generatedImages: 0,
-										threadId: thread_id,
-										messageId: "title",
-									},
-								}),
-							},
-						],
-					});
-				}
+				await receipts.settle();
 
 				const trimmedTitle = title.trim();
 				if (!trimmedTitle) {
@@ -4638,78 +4431,6 @@ export async function ai_chat_http_run_stream(ctx: ActionCtx, request: Request) 
 // so keep that check first to let esbuild erase `import.meta.vitest` before analysis.
 if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 	const { describe, test, expect, vi } = import.meta.vitest;
-
-	describe("compute_token_usage_cost_cents", () => {
-		test("bills GPT-6 Luna at $0.10 input and $0.50 output per 1M tokens", () => {
-			expect(
-				compute_token_usage_cost_cents({
-					modelId: "gpt-6-luna",
-					inputTokens: 100_000,
-					outputTokens: 100_000,
-				}),
-			).toBeCloseTo(6);
-		});
-
-		test("keeps the standard GPT-6 Luna rate at exactly 272k input tokens", () => {
-			expect(
-				compute_token_usage_cost_cents({
-					modelId: "gpt-6-luna",
-					inputTokens: 272_000,
-					outputTokens: 0,
-				}),
-			).toBeCloseTo(2.72);
-		});
-
-		test("bills a GPT-6 Luna prompt over 272k input tokens at the higher rate", () => {
-			expect(
-				compute_token_usage_cost_cents({
-					modelId: "gpt-6-luna",
-					inputTokens: 272_001,
-					outputTokens: 1_000_000,
-				}),
-			).toBeCloseTo(272_001 * 0.00002 + 75);
-		});
-
-		test("keeps thread titles on the gpt-4.1-nano rate", () => {
-			expect(
-				compute_token_usage_cost_cents({
-					modelId: "gpt-4.1-nano",
-					inputTokens: 1_000_000,
-					outputTokens: 1_000_000,
-				}),
-			).toBe(50);
-		});
-
-		test("bills DeepSeek V4.1 Flash at the dollar cost OpenRouter reports", () => {
-			expect(
-				compute_token_usage_cost_cents({
-					modelId: "deepseek-v4.1-flash",
-					inputTokens: 100_000,
-					outputTokens: 100_000,
-					reportedCostUsd: 0.15,
-				}),
-			).toBe(15);
-		});
-
-		test("bills DeepSeek V4.1 Flash at $0.30 input and $1.20 output when OpenRouter omits the cost", () => {
-			expect(
-				compute_token_usage_cost_cents({
-					modelId: "deepseek-v4.1-flash",
-					inputTokens: 100_000,
-					outputTokens: 100_000,
-					reportedCostUsd: null,
-				}),
-			).toBeCloseTo(15);
-		});
-
-		test("reads a non-negative OpenRouter cost and ignores anything else", () => {
-			expect(openrouter_reported_cost_usd({ openrouter: { usage: { cost: 0.15 } } })).toBe(0.15);
-			expect(openrouter_reported_cost_usd({ openrouter: { usage: { cost: 0 } } })).toBe(0);
-			expect(openrouter_reported_cost_usd({ openrouter: { usage: {} } })).toBeNull();
-			expect(openrouter_reported_cost_usd({ openrouter: { usage: { cost: -1 } } })).toBeNull();
-			expect(openrouter_reported_cost_usd(undefined)).toBeNull();
-		});
-	});
 
 	type build_agent_configuration_test_user_identity = NonNullable<
 		Awaited<ReturnType<ActionCtx["auth"]["getUserIdentity"]>>

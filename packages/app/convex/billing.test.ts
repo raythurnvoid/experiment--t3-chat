@@ -4663,6 +4663,75 @@ describe("ingest_events", () => {
 		});
 	});
 
+	test("sends an ai_usage event to Polar without its null metadata fields", async () => {
+		const t = test_convex();
+		const billedUserId = await seed_user_id(t);
+		const originalNodeEnv = process.env.NODE_ENV;
+		process.env.NODE_ENV = "production";
+		eventsIngestMock.mockResolvedValue({ ok: true } as never);
+
+		try {
+			await t.action(internal.billing.ingest_events, {
+				events: [
+					{
+						name: "ai_usage",
+						externalCustomerId: billedUserId,
+						externalMemberId: billedUserId,
+						externalId: `ai_model_call::${billedUserId}::${billedUserId}::organization_1::workspace_1::call_1`,
+						metadata: {
+							amount: 0.4,
+							actorUserId: billedUserId,
+							billedUserId,
+							organizationId: "organization_1",
+							workspaceId: "workspace_1",
+							modelId: "gpt-6-luna",
+							modelCallId: "call_1",
+							purpose: "inline_ai",
+							component: "tokens",
+							imageCallId: null,
+							responseId: null,
+							providerModelId: null,
+							inputTokens: 100,
+							outputTokens: 20,
+							generatedImages: 0,
+							threadId: null,
+						},
+					},
+				],
+			});
+		} finally {
+			if (originalNodeEnv === undefined) {
+				delete process.env.NODE_ENV;
+			} else {
+				process.env.NODE_ENV = originalNodeEnv;
+			}
+		}
+
+		// Polar refuses null metadata values, so the empty fields must not reach it.
+		expect(eventsIngestMock).toHaveBeenCalledWith(expect.anything(), {
+			events: [
+				expect.objectContaining({
+					name: billing_POLAR_METER_EVENT,
+					metadata: {
+						name: "ai_usage",
+						amount: 0.4,
+						actorUserId: billedUserId,
+						billedUserId,
+						organizationId: "organization_1",
+						workspaceId: "workspace_1",
+						modelId: "gpt-6-luna",
+						modelCallId: "call_1",
+						purpose: "inline_ai",
+						component: "tokens",
+						inputTokens: 100,
+						outputTokens: 20,
+						generatedImages: 0,
+					},
+				}),
+			],
+		});
+	});
+
 	test("billing_ingest_events splits signed-in and anonymous billedUserEvents", async () => {
 		const t = test_convex();
 		const anonymousUserId = await seed_user_id(t);

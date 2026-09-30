@@ -17,6 +17,7 @@ import type * as ai_chat_context from "../ai_chat_context.js";
 import type * as ai_chat_files from "../ai_chat_files.js";
 import type * as ai_chat_http_routes from "../ai_chat_http_routes.js";
 import type * as ai_chat_workspaces from "../ai_chat_workspaces.js";
+import type * as ai_model_call_receipts from "../ai_model_call_receipts.js";
 import type * as bash from "../bash.js";
 import type * as billing from "../billing.js";
 import type * as billing_db from "../billing_db.js";
@@ -132,6 +133,7 @@ declare const fullApi: ApiFromModules<{
   ai_chat_files: typeof ai_chat_files;
   ai_chat_http_routes: typeof ai_chat_http_routes;
   ai_chat_workspaces: typeof ai_chat_workspaces;
+  ai_model_call_receipts: typeof ai_model_call_receipts;
   bash: typeof bash;
   billing: typeof billing;
   billing_db: typeof billing_db;

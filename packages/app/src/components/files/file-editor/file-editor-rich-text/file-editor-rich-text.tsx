@@ -860,7 +860,7 @@ function FileEditorRichTextInner(props: FileEditorRichTextInner_Props) {
 			name: AI_NAME,
 			resolveContextualPrompt: async ({ prompt, context, previous, signal }: any) => {
 				const result = await app_fetch_ai_docs_contextual_prompt({
-					input: { prompt, context, previous, membershipId, requestId: crypto.randomUUID() },
+					input: { prompt, context, previous, membershipId },
 					signal,
 				});
 

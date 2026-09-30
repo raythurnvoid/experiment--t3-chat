@@ -77,13 +77,12 @@ describe("billing_event", () => {
 			externalMemberId: "actor_user_1" as Id<"users">,
 			externalId: composite_id(
 				"billing",
-				"ai_usage",
+				"ai_model_call",
 				"billed_user_1" as Id<"users">,
 				"actor_user_1" as Id<"users">,
 				"organization_1",
 				"workspace_1",
-				"thread_1",
-				"message_1",
+				"model_call_1",
 			),
 			metadata: {
 				amount: 12.5,
@@ -92,15 +91,24 @@ describe("billing_event", () => {
 				organizationId: "organization_1",
 				workspaceId: "workspace_1",
 				modelId: "gpt-6-luna",
+				modelCallId: "model_call_1",
+				purpose: "chat_step",
+				component: "tokens",
+				imageCallId: null,
+				responseId: "resp_1",
+				providerModelId: "gpt-6-luna-2026-09-01",
 				inputTokens: 1000,
 				outputTokens: 250,
-				generatedImages: 1,
+				generatedImages: 0,
 				threadId: "thread_1",
-				messageId: "message_1",
 			},
 		} satisfies billing_Event;
 
 		expect(billing_event(event)).toEqual(event);
+		// One provider request is one event: the id ends with the model call id.
+		expect(event.externalId).toBe(
+			"ai_model_call::billed_user_1::actor_user_1::organization_1::workspace_1::model_call_1",
+		);
 	});
 
 	test("builds the canonical browser_usage usage event payload", () => {

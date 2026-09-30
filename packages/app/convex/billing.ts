@@ -45,7 +45,7 @@ import {
 	should_never_happen,
 } from "../server/server-utils.ts";
 import { convertToDatabaseSubscription } from "../vendor/polar/src/component/util.ts";
-import app_convex_schema from "./schema.ts";
+import app_convex_schema, { ai_model_call_purpose_validator } from "./schema.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { billing_polar } from "./billing_polar.ts";
 
@@ -1860,15 +1860,31 @@ const billing_event_validator = v.union(
 			organizationId: v.string(),
 			workspaceId: v.string(),
 			modelId: v.string(),
-			inputTokens: v.number(),
-			outputTokens: v.number(),
 			/**
-			 * How many pictures the chat agent drew in this turn, `0` when it drew none. A picture is
-			 * charged per image, so `amount` is more than the token cost whenever this is above zero.
+			 * The provider request this charge belongs to (`ai_model_call_receipts`).
+			 */
+			modelCallId: v.string(),
+			purpose: ai_model_call_purpose_validator,
+			/**
+			 * `tokens` bills the request's tokens. `image` bills one finished picture.
+			 */
+			component: v.union(v.literal("tokens"), v.literal("image")),
+			imageCallId: v.union(v.string(), v.null()),
+			responseId: v.union(v.string(), v.null()),
+			providerModelId: v.union(v.string(), v.null()),
+			/**
+			 * Null on an image charge. A tokens charge always has the reported numbers.
+			 */
+			inputTokens: v.union(v.number(), v.null()),
+			outputTokens: v.union(v.number(), v.null()),
+			/**
+			 * `1` on an image charge, `0` on a tokens charge.
 			 */
 			generatedImages: v.number(),
-			threadId: v.string(),
-			messageId: v.string(),
+			/**
+			 * Null for inline AI, which has no chat thread.
+			 */
+			threadId: v.union(v.string(), v.null()),
 		}),
 	}),
 	v.object({
@@ -1911,7 +1927,8 @@ export const ingest_events = internalAction({
 					...polarEvent,
 					name: billing_POLAR_METER_EVENT,
 					metadata: {
-						...metadata,
+						// Polar metadata values cannot be null, so leave the empty fields out.
+						...Object.fromEntries(Object.entries(metadata).filter(([, value]) => value !== null)),
 						name,
 					},
 				};

@@ -197,13 +197,27 @@ export type AppCompositeIds = {
 				periodStart: string,
 		  ]
 		| [
-				kind: "ai_usage",
+				kind: "ai_model_call",
 				billedUserId: string,
 				actorUserId: string,
 				organizationId: string,
 				workspaceId: string,
-				threadId: string,
-				messageId: string,
+				/**
+				 * One provider request. An SDK retry is a new request with a new id.
+				 */
+				modelCallId: string,
+		  ]
+		| [
+				kind: "ai_model_call_image",
+				billedUserId: string,
+				actorUserId: string,
+				organizationId: string,
+				workspaceId: string,
+				modelCallId: string,
+				/**
+				 * The provider's id for one finished picture. One request can draw several.
+				 */
+				imageCallId: string,
 		  ]
 		| [
 				kind: "browser_usage",

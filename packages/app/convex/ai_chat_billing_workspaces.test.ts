@@ -1,20 +1,23 @@
 import { Workpool } from "@convex-dev/workpool";
 import { R2 } from "@convex-dev/r2";
-import type { streamText } from "ai";
 import { MockLanguageModelV3 } from "ai/test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api.js";
-import * as billing_db from "./billing_db.ts";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 
-const model = vi.hoisted(() => ({ streamText: vi.fn() }));
-vi.mock("ai", async (importOriginal) => ({
-	...(await importOriginal<typeof import("ai")>()),
-	streamText: model.streamText,
-}));
+// Replace only the OpenAI provider model. The receipt middleware that wraps it stays real, so the
+// test sees the same billing path as production.
+const provider = vi.hoisted(() => ({ model: null as MockLanguageModelV3 | null }));
+vi.mock("@ai-sdk/openai", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("@ai-sdk/openai")>();
+	return {
+		...actual,
+		openai: Object.assign(() => provider.model, actual.openai),
+	};
+});
 
 beforeEach(() => {
-	model.streamText.mockReset();
+	provider.model = null;
 	vi.spyOn(Workpool.prototype, "enqueueAction").mockResolvedValue("billing-workspaces-test-work" as never);
 	vi.spyOn(R2.prototype, "generateUploadUrl").mockImplementation(async (key) => ({
 		key: key ?? "test",
@@ -108,9 +111,6 @@ describe("/api/chat billing across workspaces", () => {
 						.unique())!.meter!,
 				}));
 			const before = await meters();
-			// Observe the real ingest call; do not replace it or create test billing events.
-			const ingest = vi.spyOn(billing_db, "billing_ingest_events");
-			const actualAi = await vi.importActual<typeof import("ai")>("ai");
 			const outputTokens = inputTokens / 4;
 			let step = 0;
 			const languageModel = new MockLanguageModelV3({
@@ -156,10 +156,7 @@ describe("/api/chat billing across workspaces", () => {
 					}),
 				}),
 			});
-			// Only replace the provider. The SDK, route, tool, and finish callbacks stay real.
-			model.streamText.mockImplementation((options: Parameters<typeof streamText>[0]) =>
-				actualAi.streamText({ ...options, model: languageModel }),
-			);
+			provider.model = languageModel;
 
 			const response = await asUser.fetch("/api/chat", {
 				method: "POST",
@@ -180,7 +177,6 @@ describe("/api/chat billing across workspaces", () => {
 			const body = await response.text();
 			expect(response.status, body).toBe(200);
 			expect(body).not.toContain('"type":"error"');
-			expect(model.streamText).toHaveBeenCalledTimes(1);
 			expect(languageModel.doStreamCalls).toHaveLength(2);
 			const results = languageModel.doStreamCalls[1]!.prompt.flatMap((message) =>
 				message.role === "tool" ? message.content.filter((part) => part.type === "tool-result") : [],
@@ -231,36 +227,35 @@ describe("/api/chat billing across workspaces", () => {
 			const messages = await t.run((ctx) => ctx.db.query("ai_chat_threads_messages_aisdk_5").collect());
 			expect(messages.map((message) => message.content.role)).toEqual(["user", "assistant"]);
 			const after = await meters();
-			if (inputTokens === 0) {
-				expect(ingest).not.toHaveBeenCalled();
-				expect(after).toEqual(before);
-				return;
-			}
-			expect(ingest).toHaveBeenCalledTimes(1);
-			const billedUserEvents = ingest.mock.calls[0]![1].billedUserEvents;
 			const payer = billingMode === "organization_owner" ? "owner" : "user";
 			const other = payer === "owner" ? "user" : "owner";
 			const payerId = payer === "owner" ? owner.userId : home.userId;
-			expect(billedUserEvents).toEqual([
+			// One receipt per provider request: the tool step and the answer step.
+			const receipts = await t.run((ctx) => ctx.db.query("ai_model_call_receipts").collect());
+			expect(receipts).toEqual([
 				expect.objectContaining({
-					billedUser: expect.objectContaining({ _id: payerId }),
-					event: expect.objectContaining({
-						name: "ai_usage",
-						externalCustomerId: payerId,
-						externalMemberId: home.userId,
-						metadata: expect.objectContaining({
-							actorUserId: home.userId,
-							billedUserId: payerId,
-							organizationId: owner.organizationId,
-							workspaceId: owner.workspaceId,
-							threadId,
-							inputTokens: inputTokens * 2,
-							outputTokens: outputTokens * 2,
-						}),
-					}),
+					purpose: "chat_step",
+					modelId: "gpt-6-luna",
+					threadId,
+					billedUserId: payerId,
+					actorUserId: home.userId,
+					organizationId: owner.organizationId,
+					workspaceId: owner.workspaceId,
+					usage: expect.objectContaining({ state: "reported", inputTokens, outputTokens }),
+					nextRecoveryAt: null,
+					tokens: expect.objectContaining({ state: inputTokens === 0 ? "skipped_zero" : "debited" }),
+					images: [],
+				}),
+				expect.objectContaining({
+					usage: expect.objectContaining({ state: "reported", inputTokens, outputTokens }),
+					tokens: expect.objectContaining({ state: inputTokens === 0 ? "skipped_zero" : "debited" }),
 				}),
 			]);
-			const amount = billedUserEvents[0]!.event.metadata.amount;
+			if (inputTokens === 0) {
+				expect(after).toEqual(before);
+				return;
+			}
+			const amount = receipts[0]!.tokens!.amountCents + receipts[1]!.tokens!.amountCents;
 			expect(amount).toBeGreaterThan(0);
 			expect(after[payer].balance).toBeLessThan(before[payer].balance);
 			expect(before[payer].balance - after[payer].balance).toBeCloseTo(amount, 8);

@@ -1,5 +1,4 @@
-// Inline AI writing assistance for /files: the heavy /api/files/contextual-prompt implementation
-// and its private billing helpers.
+// Inline AI writing assistance for /files: the heavy /api/files/contextual-prompt implementation.
 //
 // Lives in its own module so the hot file-tree module `files_nodes.ts` never pays the AI SDK
 // ("ai", "@ai-sdk/openai", "zod") module evaluation cost.
@@ -7,92 +6,29 @@
 // No `export const experimental_reuseContext = true;` here: the flag does not work for http
 // actions (see http.ts), and the thin route module loads this implementation only on demand.
 
-import { type ActionCtx, type MutationCtx } from "./_generated/server.js";
-import type { Doc, Id } from "./_generated/dataModel";
-import { generateText, streamText, smoothStream } from "ai";
+import { type ActionCtx } from "./_generated/server.js";
+import { generateText, streamText, smoothStream, wrapLanguageModel } from "ai";
 import { openai } from "@ai-sdk/openai";
 import {
 	server_convex_get_user_fallback_to_anonymous,
 	server_request_json_parse_and_validate,
 } from "../server/server-utils.ts";
-import { type files_InlineAiModelId } from "../server/files.ts";
-import { composite_id, should_never_happen } from "../shared/shared-utils.ts";
+import type { ai_chat_ModelId } from "../shared/ai-chat.ts";
+import { should_never_happen } from "../shared/shared-utils.ts";
 import { api, internal } from "./_generated/api.js";
 import { z } from "zod";
-import { billing_event } from "../server/billing.ts";
-import { billing_ingest_events } from "./billing_db.ts";
+import { ai_model_call_receipts_create } from "./ai_model_call_receipts.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 
-function files_compute_token_usage_cost_cents(args: { modelId: string; inputTokens: number; outputTokens: number }) {
-	switch (args.modelId) {
-		case "gpt-5.4-nano":
-		case "gpt-4.1-nano":
-			return args.inputTokens * 0.00001 + args.outputTokens * 0.00004;
-		case "gpt-5.4-mini":
-		case "gpt-5-mini" satisfies files_InlineAiModelId:
-		default:
-			return args.inputTokens * 0.00003 + args.outputTokens * 0.00015;
-	}
-}
+/**
+ * Every billed model must come from the chat model list, which is priced.
+ */
+const INLINE_AI_MODEL_ID = "gpt-6-luna" as const satisfies ai_chat_ModelId;
 
-async function files_ingest_inline_ai_usage_event(
-	ctx: ActionCtx | MutationCtx,
-	args: {
-		actorUserId: Id<"users">;
-		billedUser: Doc<"users">;
-		organizationId: Id<"organizations">;
-		workspaceId: Id<"organizations_workspaces">;
-		requestId: string;
-		usageEventId: string;
-		inputTokens: number;
-		outputTokens: number;
-	},
-) {
-	if (args.inputTokens + args.outputTokens === 0) {
-		return;
-	}
-
-	await billing_ingest_events(ctx, {
-		billedUserEvents: [
-			{
-				billedUser: args.billedUser,
-				event: billing_event({
-					name: "ai_usage",
-					externalCustomerId: args.billedUser._id,
-					externalMemberId: args.actorUserId,
-					externalId: composite_id(
-						"billing",
-						"ai_usage",
-						args.billedUser._id,
-						args.actorUserId,
-						args.organizationId,
-						args.workspaceId,
-						"inline_ai",
-						args.usageEventId,
-					),
-					metadata: {
-						amount: files_compute_token_usage_cost_cents({
-							modelId: "gpt-5-mini" satisfies files_InlineAiModelId,
-							inputTokens: args.inputTokens,
-							outputTokens: args.outputTokens,
-						}),
-						actorUserId: args.actorUserId,
-						billedUserId: args.billedUser._id,
-						organizationId: args.organizationId,
-						workspaceId: args.workspaceId,
-						modelId: "gpt-5-mini" satisfies files_InlineAiModelId,
-						inputTokens: args.inputTokens,
-						outputTokens: args.outputTokens,
-						// Inline AI edits text and has no picture tool.
-						generatedImages: 0,
-						threadId: "inline_ai",
-						messageId: args.requestId,
-					},
-				}),
-			},
-		],
-	});
-}
+/**
+ * Inline AI writes short text, so skip reasoning: it would spend the small output limit.
+ */
+const INLINE_AI_PROVIDER_OPTIONS = { openai: { reasoningEffort: "none" } } as const;
 
 const contextual_prompt_body_validator = z.object({
 	prompt: z.string(),
@@ -115,7 +51,6 @@ const contextual_prompt_body_validator = z.object({
 		})
 		.optional(),
 	membershipId: z.string(),
-	requestId: z.string(),
 });
 
 export type files_nodes_ai_http_contextual_prompt_Body = z.infer<typeof contextual_prompt_body_validator>;
@@ -154,7 +89,7 @@ export async function files_nodes_ai_http_contextual_prompt(ctx: ActionCtx, requ
 			} as const;
 		}
 
-		const { prompt, option, command, context, previous, membershipId, requestId } = body._yay;
+		const { prompt, option, command, context, previous, membershipId } = body._yay;
 
 		if (!prompt || typeof prompt !== "string") {
 			return {
@@ -296,10 +231,22 @@ export async function files_nodes_ai_http_contextual_prompt(ctx: ActionCtx, requ
 			}
 		}
 
-		const usageEventId = crypto.randomUUID();
+		const receipts = ai_model_call_receipts_create(ctx, {
+			threadId: null,
+			billedUserId: billedUser._id,
+			actorUserId: user._id,
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+		});
+		const model = wrapLanguageModel({
+			model: openai(INLINE_AI_MODEL_ID),
+			middleware: receipts.middleware({ purpose: "inline_ai", modelId: INLINE_AI_MODEL_ID }),
+		});
+
 		if (context) {
 			const result = await generateText({
-				model: openai("gpt-5-mini" satisfies files_InlineAiModelId),
+				model,
+				providerOptions: INLINE_AI_PROVIDER_OPTIONS,
 				system: systemPrompt,
 				messages: [
 					{
@@ -307,21 +254,10 @@ export async function files_nodes_ai_http_contextual_prompt(ctx: ActionCtx, requ
 						content: userPrompt,
 					},
 				],
-				temperature: 0.7,
 				maxOutputTokens: 500,
 				abortSignal: request.signal,
 			});
-
-			await files_ingest_inline_ai_usage_event(ctx, {
-				actorUserId: user._id,
-				billedUser,
-				organizationId: membership.organizationId,
-				workspaceId: membership.workspaceId,
-				requestId,
-				usageEventId,
-				inputTokens: result.totalUsage.inputTokens ?? 0,
-				outputTokens: result.totalUsage.outputTokens ?? 0,
-			});
+			await receipts.settle();
 
 			return {
 				status: 200,
@@ -333,7 +269,8 @@ export async function files_nodes_ai_http_contextual_prompt(ctx: ActionCtx, requ
 		}
 
 		const result = streamText({
-			model: openai("gpt-5-mini" satisfies files_InlineAiModelId),
+			model,
+			providerOptions: INLINE_AI_PROVIDER_OPTIONS,
 			system: systemPrompt,
 			messages: [
 				{
@@ -341,23 +278,14 @@ export async function files_nodes_ai_http_contextual_prompt(ctx: ActionCtx, requ
 					content: userPrompt,
 				},
 			],
-			temperature: 0.7,
 			maxOutputTokens: 500,
 			experimental_transform: smoothStream({
 				delayInMs: 100,
 			}),
 			abortSignal: request.signal,
-			onFinish: async ({ totalUsage }) => {
-				await files_ingest_inline_ai_usage_event(ctx, {
-					actorUserId: user._id,
-					billedUser,
-					organizationId: membership.organizationId,
-					workspaceId: membership.workspaceId,
-					requestId,
-					usageEventId,
-					inputTokens: totalUsage.inputTokens ?? 0,
-					outputTokens: totalUsage.outputTokens ?? 0,
-				});
+			// A Stop before the finish leaves the receipt without usage. The recovery cron looks it up.
+			onFinish: async () => {
+				await receipts.settle();
 			},
 		});
 

@@ -245,17 +245,27 @@ describe("image destination steps", () => {
 			const selectedModel = selected?.model;
 			if (!selectedModel || typeof selectedModel === "string" || selectedModel.specificationVersion !== "v3")
 				throw new Error("Expected an image model");
-			const streamed = await selectedModel.doStream({
-				prompt: [{ role: "user", content: [{ type: "text", text: "Draw." }] }],
-				tools: [{ type: "provider", id: "openai.image_generation", name: "image_generation", args: {} }],
-				toolChoice: { type: "tool", toolName: "image_generation" },
+			// The receipt middleware saves through the chat action's ctx, which convex-test serves only
+			// inside an action.
+			const partTypes = await f.t.action(async () => {
+				const streamed = await selectedModel.doStream({
+					prompt: [{ role: "user", content: [{ type: "text", text: "Draw." }] }],
+					tools: [{ type: "provider", id: "openai.image_generation", name: "image_generation", args: {} }],
+					toolChoice: { type: "tool", toolName: "image_generation" },
+				});
+				return (await Array.fromAsync(streamed.stream)).map((part) => part.type);
 			});
-			const parts = await Array.fromAsync(streamed.stream);
-			expect(parts.filter((part) => part.type === "tool-call")).toHaveLength(1);
-			expect(parts.filter((part) => part.type === "tool-result")).toHaveLength(1);
+			expect(partTypes.filter((type) => type === "tool-call")).toHaveLength(1);
+			expect(partTypes.filter((type) => type === "tool-result")).toHaveLength(1);
 		}
 		expect(requests).toHaveLength(2);
 		expect(requests[0]).toMatchObject({ tool_choice: { type: "image_generation" } });
+		// Each provider request charges its one final picture, not the preview.
+		const modelCalls = await f.t.run((ctx) => ctx.db.query("ai_model_call_receipts").collect());
+		expect(modelCalls.map((receipt) => receipt.images.map((image) => image.imageCallId))).toEqual([
+			["personal-image"],
+			["current-image"],
+		]);
 		const convert = f.call.tools!.image_generation!.toModelOutput!;
 		// Save in reverse order after both steps have run. Neither result may use the latest choice.
 		// The save uploads the bytes with `fetch`, like the chat HTTP action does. convex-test refuses

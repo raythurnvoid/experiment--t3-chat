@@ -241,13 +241,56 @@ export async function billing_ingest_events(
 }
 
 /**
+ * Send one signed-in usage event to Polar through the usage pool. `onComplete` learns when the
+ * pool gives up or finishes, so the caller can record the delivery.
+ */
+export async function billing_db_enqueue_signed_in_event(
+	ctx: MutationCtx,
+	args: {
+		event: billing_Event;
+		options: Parameters<typeof billing_workpool_usage_event.enqueueAction>[3];
+	},
+) {
+	await billing_workpool_usage_event.enqueueAction(
+		ctx,
+		internal.billing.ingest_events,
+		{ events: [args.event] },
+		args.options,
+	);
+}
+
+/**
+ * Debit an anonymous user's local credit snapshot. Returns `false` when the user has no snapshot
+ * with a meter, for example after sign-in deleted it.
+ */
+export async function billing_db_debit_anonymous_snapshot(
+	ctx: MutationCtx,
+	args: { userId: Id<"users">; amount: number },
+) {
+	const usageSnapshot = await ctx.db
+		.query("billing_usage_snapshots")
+		.withIndex("by_user", (q) => q.eq("userId", args.userId))
+		.first();
+	if (!usageSnapshot || usageSnapshot.meter === null) return false;
+
+	await ctx.db.patch("billing_usage_snapshots", usageSnapshot._id, {
+		meter: {
+			...usageSnapshot.meter,
+			consumedUnits: usageSnapshot.meter.consumedUnits + args.amount,
+			balance: usageSnapshot.meter.balance - args.amount,
+		},
+		lastSyncedAt: Date.now(),
+	});
+	return true;
+}
+
+/**
  * Use the caller's DB context so a mixed Save counts these writes in its budget.
  */
 export async function billing_db_ingest_anonymous_user_events(
 	ctx: MutationCtx,
 	args: { billedUserEvents: Array<{ event: billing_Event; billedUser: Doc<"users"> }> },
 ) {
-	const now = Date.now();
 	// Several files can bill the same payer in one transaction. Each debit sees the last one.
 	for (const { event, billedUser } of args.billedUserEvents) {
 		if (billedUser.clerkUserId != null) {
@@ -255,24 +298,15 @@ export async function billing_db_ingest_anonymous_user_events(
 			continue;
 		}
 		if (event.metadata.amount === 0) continue;
-		const usageSnapshot = await ctx.db
-			.query("billing_usage_snapshots")
-			.withIndex("by_user", (q) => q.eq("userId", billedUser._id))
-			.first();
-		if (!usageSnapshot || usageSnapshot.meter === null) {
+		const debited = await billing_db_debit_anonymous_snapshot(ctx, {
+			userId: billedUser._id,
+			amount: event.metadata.amount,
+		});
+		if (!debited) {
 			throw should_never_happen("Anonymous user usage snapshot not found or has no meter", {
 				userId: billedUser._id,
 				event,
-				usageSnapshot,
 			});
 		}
-		await ctx.db.patch("billing_usage_snapshots", usageSnapshot._id, {
-			meter: {
-				...usageSnapshot.meter,
-				consumedUnits: usageSnapshot.meter.consumedUnits + event.metadata.amount,
-				balance: usageSnapshot.meter.balance - event.metadata.amount,
-			},
-			lastSyncedAt: now,
-		});
 	}
 }

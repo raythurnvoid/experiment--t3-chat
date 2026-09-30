@@ -112,7 +112,11 @@ Manual boundary replay is useful when a queue or webhook should have called a Co
 
 Search captured logs for the unique marker instead of pasting whole files into chat or reports. The normal path prints only matching file paths and line numbers. If line content is needed, extract only known safe fields or a narrow excerpt after redaction; do not print the whole `MatchInfo.Line`. The bounded-tail helper above catches common credential shapes when startup fails or no marker appears; it is not a complete privacy filter. Review those 20 lines and remove signed URLs, private user content, and unrelated terminal commands before sharing any excerpt.
 
-To find chat data that was not saved, use `Chat data not saved` as the marker. Each line has a `reason` (for example `reply_too_large`, `reply_save_failed` or `reply_save_refused`) and ids and sizes only. A failed function, including one that hits a Convex limit, also shows on the dashboard Logs page. In production the client sees only "Server Error", but the log keeps the details. Convex adds warning lines with a `system_code` field when a function gets close to a limit. No log stream or alert is set up yet; that needs the Convex Pro plan.
+To find chat data that was not saved, use `Chat data not saved` as the marker. Each line has a `reason` (for example `reply_too_large`, `reply_save_failed`, `reply_save_refused` or `usage_save_failed`) and ids and sizes only. `usage_save_failed` means a model call receipt could not save its usage or a picture charge after 3 tries. The recovery cron may still find the token usage by the response id. It does not recover a picture charge.
+
+AI usage billing has its own markers. `AI usage not billed` means a charge had no target (an admin full purge deleted the payer or its billing snapshot); the receipt keeps the charge as `target_gone`. `AI usage delivery failed` means the Polar usage pool gave up on an event; the receipt keeps `delivery_failed`. `AI usage lookup failed` means the recovery cron could not reach the provider for one receipt. Read the `ai_model_call_receipts` doc by `modelCallId` to see its usage and charge states.
+
+A failed function, including one that hits a Convex limit, also shows on the dashboard Logs page. In production the client sees only "Server Error", but the log keeps the details. Convex adds warning lines with a `system_code` field when a function gets close to a limit. No log stream or alert is set up yet; that needs the Convex Pro plan.
 
 # Convex HTTP Action Latency
 

@@ -229,8 +229,6 @@ export type files_YjsRootKind = "rich_text" | "plain_text";
 
 export type files_SpecialFileName = "README.md" | "AGENTS.md" | "SKILL.md";
 
-export type files_InlineAiModelId = "gpt-5-mini";
-
 export const files_MAX_TEXT_CONTENT_BYTES = 900_000;
 
 /**

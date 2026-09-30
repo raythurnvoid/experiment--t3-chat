@@ -2,6 +2,7 @@ import { Workpool } from "@convex-dev/workpool";
 import { R2 } from "@convex-dev/r2";
 import { RateLimiter } from "@convex-dev/rate-limiter";
 import type { FunctionReturnType } from "convex/server";
+import { MockLanguageModelV3 } from "ai/test";
 import { afterEach, beforeEach, describe, expect, test as baseTest, vi, type MockInstance } from "vitest";
 import {
 	applyUpdate,
@@ -108,6 +109,16 @@ vi.mock("ai", async (importOriginal) => {
 	};
 });
 
+// Tests that run the real SDK set this fake provider model. The receipt middleware stays real.
+const inlineAiProvider = vi.hoisted(() => ({ model: null as MockLanguageModelV3 | null }));
+vi.mock("@ai-sdk/openai", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("@ai-sdk/openai")>();
+	return {
+		...actual,
+		openai: Object.assign(() => inlineAiProvider.model, actual.openai),
+	};
+});
+
 let enqueueActionSpy: MockInstance;
 let generateUploadUrlSpy: ReturnType<typeof vi.fn<(customKey?: string) => Promise<{ key: string; url: string }>>>;
 const test = baseTest;
@@ -115,6 +126,7 @@ const test = baseTest;
 beforeEach(() => {
 	generateTextMock.mockReset();
 	streamTextMock.mockReset();
+	inlineAiProvider.model = null;
 	// Keep file tests focused on file behavior; billing event enqueue behavior is
 	// covered in billing tests.
 	enqueueActionSpy = vi
@@ -18691,7 +18703,6 @@ test("/api/files/contextual-prompt returns 429 before body validation and model 
 			body: JSON.stringify({
 				prompt: "Continue this sentence",
 				membershipId: db.membershipId,
-				requestId: `inline_ai_rate_${i}`,
 			}),
 		});
 		expect(response.status).toBe(402);
@@ -18711,7 +18722,7 @@ test("/api/files/contextual-prompt returns 429 before body validation and model 
 	expect(typeof blockedBody.retryAfterMs).toBe("number");
 });
 
-test("/api/files/contextual-prompt gives every executed model call a server-owned usage id", async () => {
+test("/api/files/contextual-prompt bills every provider request through its own receipt", async () => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 	await t.run(async (ctx) => {
@@ -18724,34 +18735,34 @@ test("/api/files/contextual-prompt gives every executed model call a server-owne
 		name: "Inline AI Billing User",
 		email: "inline-ai-billing-user@example.com",
 	});
-	generateTextMock.mockResolvedValue({
-		text: "Generated text",
-		totalUsage: {
-			inputTokens: 100,
-			outputTokens: 20,
-		},
-	} as never);
-	streamTextMock.mockImplementation(
-		(options: {
-			onFinish?: (event: { totalUsage: { inputTokens: number; outputTokens: number } }) => PromiseLike<void> | void;
-		}) =>
-			({
-				toUIMessageStreamResponse: async () => {
-					await options.onFinish?.({
-						totalUsage: {
-							inputTokens: 100,
-							outputTokens: 20,
-						},
-					});
-					return new Response(null, { status: 200 });
+	const usage = {
+		inputTokens: { total: 100, noCache: 100, cacheRead: undefined, cacheWrite: undefined },
+		outputTokens: { total: 20, text: 20, reasoning: undefined },
+	};
+	// Keep the SDK and the receipt middleware real. Only the provider model is fake.
+	inlineAiProvider.model = new MockLanguageModelV3({
+		doGenerate: async () => ({
+			content: [{ type: "text", text: "Generated text" }],
+			finishReason: { unified: "stop", raw: undefined },
+			usage,
+			warnings: [],
+		}),
+		doStream: async () => ({
+			stream: new ReadableStream({
+				start(controller) {
+					controller.enqueue({ type: "stream-start", warnings: [] });
+					controller.enqueue({ type: "text-start", id: "text" });
+					controller.enqueue({ type: "text-delta", id: "text", delta: "Generated text" });
+					controller.enqueue({ type: "text-end", id: "text" });
+					controller.enqueue({ type: "finish", finishReason: { unified: "stop", raw: undefined }, usage });
+					controller.close();
 				},
-			}) as never,
-	);
-	vi.spyOn(crypto, "randomUUID")
-		.mockReturnValueOnce("11111111-1111-4111-8111-111111111111")
-		.mockReturnValueOnce("22222222-2222-4222-8222-222222222222")
-		.mockReturnValueOnce("33333333-3333-4333-8333-333333333333")
-		.mockReturnValueOnce("44444444-4444-4444-8444-444444444444");
+			}),
+		}),
+	});
+	const actualAi = await vi.importActual<typeof import("ai")>("ai");
+	generateTextMock.mockImplementation(actualAi.generateText);
+	streamTextMock.mockImplementation(actualAi.streamText);
 	const requestBody = JSON.stringify({
 		prompt: "Improve this text",
 		context: {
@@ -18760,80 +18771,59 @@ test("/api/files/contextual-prompt gives every executed model call a server-owne
 			afterSelection: "After",
 		},
 		membershipId: db.membershipId,
-		requestId: "client_reused_request_id",
 	});
 	const streamRequestBody = JSON.stringify({
 		prompt: "Continue this text",
 		membershipId: db.membershipId,
-		requestId: "client_reused_request_id",
 	});
 
-	const firstResponse = await asUser.fetch("/api/files/contextual-prompt", {
-		method: "POST",
-		headers: {
-			"Content-Type": "application/json",
-		},
-		body: requestBody,
-	});
-	await t.mutation(components.rate_limiter.lib.resetRateLimit, {
-		name: "ai_inline_http",
-		key: db.userId,
-	});
-	const secondResponse = await asUser.fetch("/api/files/contextual-prompt", {
-		method: "POST",
-		headers: {
-			"Content-Type": "application/json",
-		},
-		body: requestBody,
-	});
-	await t.mutation(components.rate_limiter.lib.resetRateLimit, {
-		name: "ai_inline_http",
-		key: db.userId,
-	});
-	const thirdResponse = await asUser.fetch("/api/files/contextual-prompt", {
-		method: "POST",
-		headers: {
-			"Content-Type": "application/json",
-		},
-		body: streamRequestBody,
-	});
-	await t.mutation(components.rate_limiter.lib.resetRateLimit, {
-		name: "ai_inline_http",
-		key: db.userId,
-	});
-	const fourthResponse = await asUser.fetch("/api/files/contextual-prompt", {
-		method: "POST",
-		headers: {
-			"Content-Type": "application/json",
-		},
-		body: streamRequestBody,
-	});
+	// The same body twice per path: a repeated client request is still a new provider request.
+	for (const body of [requestBody, requestBody, streamRequestBody, streamRequestBody]) {
+		await t.mutation(components.rate_limiter.lib.resetRateLimit, {
+			name: "ai_inline_http",
+			key: db.userId,
+		});
+		const response = await asUser.fetch("/api/files/contextual-prompt", {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+			},
+			body,
+		});
+		expect(response.status).toBe(200);
+		await response.text();
+	}
 
-	expect(firstResponse.status).toBe(200);
-	expect(secondResponse.status).toBe(200);
-	expect(thirdResponse.status).toBe(200);
-	expect(fourthResponse.status).toBe(200);
+	const receipts = await t.run((ctx) => ctx.db.query("ai_model_call_receipts").collect());
+	expect(receipts).toHaveLength(4);
+	for (const receipt of receipts) {
+		expect(receipt).toMatchObject({
+			purpose: "inline_ai",
+			modelId: "gpt-6-luna",
+			threadId: null,
+			billedUserId: db.userId,
+			actorUserId: db.userId,
+			usage: { state: "reported", inputTokens: 100, outputTokens: 20 },
+			tokens: { state: "queued" },
+		});
+	}
 	const usageEvents = enqueueActionSpy.mock.calls.map((call) => {
 		const args = call[2] as {
 			events: Array<{
 				externalId: string;
-				metadata: { messageId: string };
+				metadata: { modelCallId: string; purpose: string };
 			}>;
 		};
 		return args.events[0]!;
 	});
-	expect(usageEvents.map((event) => event.externalId)).toEqual([
-		`ai_usage::${db.userId}::${db.userId}::${db.organizationId}::${db.workspaceId}::inline_ai::11111111-1111-4111-8111-111111111111`,
-		`ai_usage::${db.userId}::${db.userId}::${db.organizationId}::${db.workspaceId}::inline_ai::22222222-2222-4222-8222-222222222222`,
-		`ai_usage::${db.userId}::${db.userId}::${db.organizationId}::${db.workspaceId}::inline_ai::33333333-3333-4333-8333-333333333333`,
-		`ai_usage::${db.userId}::${db.userId}::${db.organizationId}::${db.workspaceId}::inline_ai::44444444-4444-4444-8444-444444444444`,
-	]);
-	expect(usageEvents.map((event) => event.metadata.messageId)).toEqual([
-		"client_reused_request_id",
-		"client_reused_request_id",
-		"client_reused_request_id",
-		"client_reused_request_id",
-	]);
+	expect(usageEvents.map((event) => event.externalId)).toEqual(
+		receipts.map(
+			(receipt) =>
+				`ai_model_call::${db.userId}::${db.userId}::${db.organizationId}::${db.workspaceId}::${receipt.modelCallId}`,
+		),
+	);
+	expect(new Set(receipts.map((receipt) => receipt.modelCallId)).size).toBe(4);
+	expect(usageEvents.map((event) => event.metadata.purpose)).toEqual(Array(4).fill("inline_ai"));
 });
 
 test("restore_snapshot emits file_save usage for the restored Yjs sequence", async () => {

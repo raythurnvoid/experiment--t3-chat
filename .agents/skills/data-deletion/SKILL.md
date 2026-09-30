@@ -50,6 +50,7 @@ Load each companion skill that owns the affected boundary:
 - `plugins_mcp_oauth_clients` is not deleted on any path. Each doc is a client that one sign-in
   server registered for Press (DCR), keyed by issuer. It holds no member data, and every member
   reuses it.
+- `ai_model_call_receipts` are billing records. No user, organization, workspace, or thread deletion path touches them. Their only deletion path is the daily retention cron, which deletes a receipt 396 days after admission once its usage is final and no charge is `queued`. A deleted user's id stays in those docs until then.
 
 # Primary Files
 
@@ -58,7 +59,7 @@ Load each companion skill that owns the affected boundary:
 - `packages/app/convex/users.ts`: `delete_current_user_account`, deleted-user recovery in `resolve_user`, `hard_delete_user_now`, `purge_deleted_user_tombstone`.
 - `packages/app/convex/organizations.ts`: `delete_workspace` and `delete_organization` phase-1 behavior.
 - `packages/app/convex/schema.ts`: `data_deletion_requests` and indexes.
-- `packages/app/convex/crons.ts`: daily enqueue of `data_deletion.enqueue_deletion_requests_processing`; hourly `cleanup expired browser docs`; 5-minute `settle browser usage` and `process browser profile wipes`.
+- `packages/app/convex/crons.ts`: daily enqueue of `data_deletion.enqueue_deletion_requests_processing`; hourly `cleanup expired browser docs`; 5-minute `settle browser usage` and `process browser profile wipes`; daily `cleanup old model call receipts`.
 - `packages/app/convex/data_deletion.test.ts`: main behavioral coverage.
 
 # Function Map

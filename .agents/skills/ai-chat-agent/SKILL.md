@@ -141,8 +141,8 @@ For `POST /api/chat`:
 10. Run `streamText(...)` with the current tools and `activeTools`. When workspace instructions are enabled, add root AGENTS.md and the skill catalog to the initial system prompt. File tool results add newly read ancestor rules. A reply has at most 25 model steps (`AI_CHAT_MAX_STEPS`; each step is a paid model call). `prepareStep` reserves the last step for an answer and disables tools when the response budget is exhausted, and it ends the turn the same way (no tools, a system line asking for a short status) once the Bash tool reports that `wait` stopped polling for a job whose finish wakes the agent (`metadata.waitingForJobs`, flipped into the configuration's `jobWait.requested`).
 11. Stream UI message chunks back through `createUIMessageStreamResponse(...)`.
 12. Persist the assistant response in `onFinish`.
-13. If the thread has no title yet, generate a short title and persist it.
-14. Emit `ai_usage` billing events from captured token usage after successful generation.
+13. If the thread has no title yet, generate a short title with `gpt-6-luna` (`reasoningEffort: "none"`) and persist it.
+14. Bill every provider request through the receipt middleware (`ai_model_call_receipts_create`, see the billing-system skill). The middleware wraps the chat model, the picture step model, and the title model. The middleware holds each `finish` part until usage is saved. A Stop can land during that hold, so the tool budget wrapper checks the abort signal before any tool runs. `onFinish` awaits `receipts.settle()` before it releases the run.
 
 Non-obvious runtime details:
 
@@ -461,7 +461,7 @@ The provider stream binds each image call ID to that step's fixed workspace befo
 - Chat stores a neutral status and Files target. It has no separate image asset store or image download door. Generated images appear as text links and chips; opening them uses Files.
 - OpenAI replays provider results by item ID. A separate safe text summary makes the Files target visible on the next step and after history conversion. Native provider IDs are preserved.
 - The model middleware drops preliminary image results before the SDK loses their preliminary flag. This prevents duplicate files, charges, and provider items.
-- Billing adds `GENERATED_IMAGE_COST_CENTS` per completed provider image to token charges.
+- Billing saves each completed provider image as its own `GENERATED_IMAGE_COST_CENTS` (4 cents) charge on the model call receipt, apart from the token charge.
 
 ## MCP tools
 
@@ -607,6 +607,9 @@ threadId, messageId, bytes })`. The reasons are:
   `errorName`, and the error is then rethrown as before.
 - `reply_save_refused`: `store_job_wakeup_reply` returns `false`, because the user lost access
   during a wake run. Nothing throws.
+- `usage_save_failed`: a model call receipt could not save its usage or a picture charge after 3
+  tries. The line has `modelCallId` and `errorName` instead of the thread and message ids. It also
+  fires for inline AI and titles.
 
 Log only ids and sizes, never reply text. A Convex validation error can quote the value, so the
 error message is not logged. Keep the message stable, because alerts will match it. It names chat

@@ -1020,6 +1020,14 @@ hot update loads a second copy of the module, and that copy has no auth. A fresh
 route, then a 15-25 s wait, fixed it every time. When another agent may edit source during your
 run, do a fresh `goto` before any step whose result you will trust.
 
+Do not read the auth token through `await import("/src/components/app-auth.tsx")`. Even right after
+a fresh `goto`, that call gave a copy of the module that the app never set up:
+`AppAuthProvider.getToken_sync()` returned `undefined` and `getToken()` never settled, so the run
+hung until the CLI timeout. Read the token from Clerk instead:
+`await state.page.evaluate(() => window.Clerk.session.getToken({ template: "convex" }))`. Then send
+the HTTP call from the sandbox with `Authorization: Bearer <token>`. Verified 2026-09-30 against
+`/api/files/contextual-prompt`.
+
 ## A long-lived dev server can serve ONE file's old transform, and the app crashes on code you already fixed
 
 Observed 2026-09-04. The editor route rendered `Editor failed to load.` with `ReferenceError: disabledReason is not defined` pointing at `file-editor-rich-text-tools-comment.tsx`. That name had been renamed to `commentCommit` hours earlier, the type check passed, and the whole test suite passed. A page reload did not help.

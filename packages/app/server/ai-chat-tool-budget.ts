@@ -34,6 +34,13 @@ export function ai_chat_tool_budget_apply<T extends ToolSet>(
 		if (!execute) continue;
 
 		value.execute = async (input, options) => {
+			// Stop can land while the receipt middleware holds the finish part to save usage. The SDK
+			// still starts the tool calls of that step afterwards, and some tools ignore the signal.
+			// So check Stop here, before any tool body runs.
+			if (options.abortSignal?.aborted) {
+				throw new Error("Stopped. This call was not run.");
+			}
+
 			const inputBytes = serialized_bytes(input);
 			// Reserve before awaiting: parallel calls cannot spend another call's result space.
 			// A file result repeats its path in both the title and metadata.

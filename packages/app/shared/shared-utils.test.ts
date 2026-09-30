@@ -54,19 +54,21 @@ describe("composite_id", () => {
 		expect(id).toBe("monthly_credit::user_1::sub_1::2026-01-01");
 	});
 
-	test("joins AI usage ids with double colons", () => {
+	test("joins model call ids with double colons", () => {
 		const id = composite_id(
 			"billing",
-			"ai_usage",
+			"ai_model_call_image",
 			"billed_user_1",
 			"actor_user_1",
 			"organization_1",
 			"workspace_1",
-			"thread_1",
-			"message_1",
+			"model_call_1",
+			"image_call_1",
 		);
 
-		expect(id).toBe("ai_usage::billed_user_1::actor_user_1::organization_1::workspace_1::thread_1::message_1");
+		expect(id).toBe(
+			"ai_model_call_image::billed_user_1::actor_user_1::organization_1::workspace_1::model_call_1::image_call_1",
+		);
 	});
 });
 

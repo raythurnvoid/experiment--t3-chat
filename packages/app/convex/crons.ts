@@ -40,6 +40,9 @@ crons.cron(
 // Every 5 minutes — stop expired jobs through their producer's publication fences.
 crons.cron("recover expired activities", "*/5 * * * *", internal.activities.recover_expired, {});
 
+// Every 5 minutes — look up the usage of model calls whose request ended without saving it.
+crons.cron("recover model call usage", "*/5 * * * *", internal.ai_model_call_receipts.recover_due, {});
+
 // Once hourly — reap staged file writes that were never published (crashed action, dead caller).
 crons.cron(
 	"cleanup expired file write stages",
@@ -85,6 +88,9 @@ crons.cron("cleanup activity history", "30 6 * * *", internal.activities.cleanup
 crons.cron("cleanup expired bash results", "35 6 * * *", internal.ai_chat_files.cleanup_expired_bash_results, {});
 // Once daily — remove browser results after their 24-hour retention.
 crons.cron("cleanup expired browser results", "36 6 * * *", internal.ai_chat_files.cleanup_expired_browser_results, {});
+
+// Once daily at 06:37 UTC — delete final model call receipts older than 396 days.
+crons.cron("cleanup old model call receipts", "37 6 * * *", internal.ai_model_call_receipts.cleanup_old_receipts, {});
 
 // Once daily — remove old private publication links after their last caller releases them.
 crons.cron(

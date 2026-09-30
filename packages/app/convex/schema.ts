@@ -222,6 +222,33 @@ export const ai_chat_bash_result_validator = v.object({
 export const ai_chat_model_id_validator = v.union(...ai_chat_MODEL_IDS.map((modelId) => v.literal(modelId)));
 
 /**
+ * What a billed provider request was for.
+ */
+export const ai_model_call_purpose_validator = v.union(
+	v.literal("chat_step"),
+	v.literal("title"),
+	v.literal("inline_ai"),
+);
+
+/**
+ * One charge of a provider request. `queued` waits for the Polar pool; the other states are final.
+ * `target_gone` means the payer's user doc or anonymous snapshot no longer existed, so nothing was
+ * billed.
+ */
+const ai_model_call_charge_validator = v.object({
+	amountCents: v.number(),
+	externalId: v.string(),
+	state: v.union(
+		v.literal("skipped_zero"),
+		v.literal("queued"),
+		v.literal("delivered"),
+		v.literal("delivery_failed"),
+		v.literal("debited"),
+		v.literal("target_gone"),
+	),
+});
+
+/**
  * The agent run in progress on a thread: a `/api/chat` request streaming, or a `run_job_wakeup`
  * action. A finished job wakes the agent only while this is absent or expired. The run clears it
  * at its end; `expiresAt` covers a run whose action was killed.
@@ -5976,6 +6003,63 @@ const app_convex_schema = defineSchema({
 		jobId: vWorkId,
 		updatedAt: v.number(),
 	}).index("by_user", ["userId"]),
+
+	/**
+	 * One receipt per billed provider request: chat steps, titles and inline AI. A receipt is saved
+	 * before the request is sent, so no request runs without one. Usage only moves forward. Each
+	 * charge has its own Polar event id, and its state stops a second charge.
+	 *
+	 * Thread, workspace and account deletion keep receipts: they hold ids and token counts only.
+	 * The daily cleanup deletes final receipts after 396 days.
+	 */
+	ai_model_call_receipts: defineTable({
+		modelCallId: v.string(),
+		purpose: ai_model_call_purpose_validator,
+		modelId: ai_chat_model_id_validator,
+		/**
+		 * The model name the provider reported. For audits only; the price uses `modelId`.
+		 */
+		providerModelId: v.union(v.string(), v.null()),
+		/**
+		 * The provider's id for the request. The recovery cron uses it to look up missing usage.
+		 */
+		responseId: v.union(v.string(), v.null()),
+		threadId: v.union(v.id("ai_chat_threads"), v.null()),
+		billedUserId: v.id("users"),
+		actorUserId: v.id("users"),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		admittedAt: v.number(),
+		usage: v.union(
+			v.object({ state: v.literal("pending") }),
+			v.object({
+				state: v.literal("reported"),
+				inputTokens: v.number(),
+				outputTokens: v.number(),
+				cachedInputTokens: v.union(v.number(), v.null()),
+				reasoningTokens: v.union(v.number(), v.null()),
+				reportedCostUsd: v.union(v.number(), v.null()),
+			}),
+			v.object({
+				/**
+				 * `missing` still waits for recovery lookups. `missing_final` ends them. A later
+				 * reported save is still billed.
+				 */
+				state: v.union(v.literal("missing"), v.literal("missing_final")),
+				reason: v.union(v.literal("no_usage"), v.literal("provider_error"), v.literal("no_finish")),
+			}),
+		),
+		recoveryAttempts: v.number(),
+		/**
+		 * When the recovery cron looks at this receipt next. Null once usage is reported or final.
+		 */
+		nextRecoveryAt: v.union(v.number(), v.null()),
+		tokens: v.union(ai_model_call_charge_validator, v.null()),
+		images: v.array(v.object({ imageCallId: v.string(), charge: ai_model_call_charge_validator })),
+	})
+		.index("by_modelCallId", ["modelCallId"])
+		.index("by_nextRecoveryAt", ["nextRecoveryAt"])
+		.index("by_admittedAt", ["admittedAt"]),
 	// #endregion billing
 
 	// #region users

@@ -395,7 +395,6 @@ export function FileEditorRichTextToolsInlineAi(props: FileEditorRichTextToolsIn
 					option: args.option,
 					command: args.command,
 					membershipId,
-					requestId: crypto.randomUUID(),
 				},
 			})
 			.catch((e) => {
@@ -418,7 +417,6 @@ export function FileEditorRichTextToolsInlineAi(props: FileEditorRichTextToolsIn
 						option: "zap",
 						command: inputValue,
 						membershipId,
-						requestId: crypto.randomUUID(),
 					},
 				})
 				.catch((error) => {
