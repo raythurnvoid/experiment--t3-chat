@@ -711,6 +711,11 @@
 	/* #endregion tree item more action */
 
 	/* #region tree item menu popover */
+	/* The shared menu stops at 300px. This one has many actions, so let it grow with the window. */
+	.FilesSidebarTreeItemMenuPopover.MyMenuPopover {
+		max-height: calc(100dvh - 32px);
+	}
+
 	.FilesSidebarTreeItemMenuPopover-create-action {
 		display: none;
 	}
