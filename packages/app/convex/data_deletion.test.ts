@@ -235,6 +235,16 @@ async function data_deletion_test_seed_private_chat(
 	}
 	await Promise.all([
 		ctx.db.insert("ai_chat_bash_job_notice_cursors", { ...scope, userId: args.userId, noticeAt: now }),
+		ctx.db.insert("ai_chat_runs", {
+			...scope,
+			userId: args.userId,
+			membershipId: args.membershipId,
+			membershipLifetime: 0,
+			kind: "chat",
+			status: "ended",
+			leaseExpiresAt: now,
+			endedAt: now,
+		}),
 		ctx.db.insert("public_api_grants", {
 			...scope,
 			userId: args.userId,
@@ -533,6 +543,11 @@ async function data_deletion_test_seed_workspace_content_bulk(
 	if (!apiOrganizationId || !apiWorkspaceId) {
 		throw new Error("Expected real organization and workspace ids for API credential fixtures");
 	}
+	const membership = await ctx.db
+		.query("organizations_workspaces_users")
+		.withIndex("by_workspace_user_active", (q) => q.eq("workspaceId", apiWorkspaceId).eq("userId", args.userId))
+		.first();
+	if (!membership) throw new Error("Expected workspace membership");
 
 	for (let i = 0; i < args.count; i += 1) {
 		const fileNodeId = await ctx.db.insert("files_nodes", {
@@ -850,6 +865,18 @@ async function data_deletion_test_seed_workspace_content_bulk(
 				userId: args.userId,
 				noticeAt: Date.now(),
 			}),
+			ctx.db.insert("ai_chat_runs", {
+				organizationId: apiOrganizationId,
+				workspaceId: apiWorkspaceId,
+				threadId,
+				userId: args.userId,
+				membershipId: membership._id,
+				membershipLifetime: 0,
+				kind: "chat",
+				status: "running",
+				leaseExpiresAt: Date.now(),
+				endedAt: null,
+			}),
 			ctx.db.insert("ai_chat_threads_messages_aisdk_5", {
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
@@ -907,6 +934,19 @@ async function data_deletion_test_seed_workspace_content_bulk(
 				expiresAt: Date.now() + 10 * 60 * 1000,
 			}),
 		]);
+		// An aborted branch copy of this chat, with one page of message ids.
+		const copyId = await ctx.db.insert("ai_chat_thread_copies", {
+			organizationId: apiOrganizationId,
+			workspaceId: apiWorkspaceId,
+			sourceThreadId: threadId,
+			targetThreadId: threadId,
+			userId: args.userId,
+			membershipId: membership._id,
+			membershipLifetime: 0,
+			state: { kind: "aborted" },
+			expiresAt: Date.now(),
+		});
+		await ctx.db.insert("ai_chat_thread_copy_pages", { copyId, page: 0, messageIds: [] });
 	}
 
 	const quota = await quotas_db_get(ctx, {
@@ -946,9 +986,12 @@ async function data_deletion_test_count_workspace_content(
 		aiShells,
 		aiShellTranscripts,
 		aiJobNoticeCursors,
+		aiRuns,
 		aiMessages,
 		aiFiles,
 		aiFileContents,
+		aiThreadCopies,
+		aiThreadCopyPages,
 		apiCredentials,
 		publicApiGrants,
 		permissionGrants,
@@ -972,9 +1015,12 @@ async function data_deletion_test_count_workspace_content(
 		ctx.db.query("ai_chat_bash_shells").collect(),
 		ctx.db.query("ai_chat_bash_shell_transcripts").collect(),
 		ctx.db.query("ai_chat_bash_job_notice_cursors").collect(),
+		ctx.db.query("ai_chat_runs").collect(),
 		ctx.db.query("ai_chat_threads_messages_aisdk_5").collect(),
 		ctx.db.query("ai_chat_files").collect(),
 		ctx.db.query("ai_chat_files_content").collect(),
+		ctx.db.query("ai_chat_thread_copies").collect(),
+		ctx.db.query("ai_chat_thread_copy_pages").collect(),
 		ctx.db.query("api_credentials").collect(),
 		ctx.db.query("public_api_grants").collect(),
 		ctx.db.query("access_control_permission_grants").collect(),
@@ -982,33 +1028,40 @@ async function data_deletion_test_count_workspace_content(
 	]);
 	const inWorkspace = (row: { organizationId: string; workspaceId: string }) =>
 		row.organizationId === args.organizationId && row.workspaceId === args.workspaceId;
-	return [
-		files,
-		fileStats,
-		assets,
-		textChunks,
-		plainTextChunks,
-		metadataDocs,
-		yjsSnapshots,
-		yjsUpdates,
-		yjsLastSequences,
-		snapshots,
-		pendingUpdates,
-		pendingUpdateExpiryChecks,
-		lastSequenceSaved,
-		materializationJobs,
-		aiThreads,
-		aiShells,
-		aiShellTranscripts,
-		aiJobNoticeCursors,
-		aiMessages,
-		aiFiles,
-		aiFileContents,
-		apiCredentials,
-		publicApiGrants,
-		permissionGrants,
-		chatMessages,
-	].reduce((total, rows) => total + rows.filter(inWorkspace).length, 0);
+	// Pages have no workspace fields. Count the pages of this workspace's copies.
+	const copyIdsInWorkspace = new Set(aiThreadCopies.filter(inWorkspace).map((copy) => copy._id));
+	return (
+		aiThreadCopyPages.filter((page) => copyIdsInWorkspace.has(page.copyId)).length +
+		[
+			files,
+			fileStats,
+			assets,
+			textChunks,
+			plainTextChunks,
+			metadataDocs,
+			yjsSnapshots,
+			yjsUpdates,
+			yjsLastSequences,
+			snapshots,
+			pendingUpdates,
+			pendingUpdateExpiryChecks,
+			lastSequenceSaved,
+			materializationJobs,
+			aiThreads,
+			aiShells,
+			aiShellTranscripts,
+			aiJobNoticeCursors,
+			aiRuns,
+			aiMessages,
+			aiFiles,
+			aiFileContents,
+			aiThreadCopies,
+			apiCredentials,
+			publicApiGrants,
+			permissionGrants,
+			chatMessages,
+		].reduce((total, rows) => total + rows.filter(inWorkspace).length, 0)
+	);
 }
 
 async function data_deletion_test_process_workspace_request_until_done(
@@ -1992,6 +2045,7 @@ describe("creator-owned private chat deletion", () => {
 									"ai_chat_bash_shell_transcripts",
 									"ai_chat_bash_shells",
 									"ai_chat_bash_job_notice_cursors",
+									"ai_chat_runs",
 									"public_api_grants",
 								] as const
 							).map((table) => ctx.db.query(table).collect()),
@@ -2086,6 +2140,152 @@ describe("creator-owned private chat deletion", () => {
 			if (mode !== "missing user") expect(after.user?.deletionFinalizationStartedAt).toBeUndefined();
 		},
 	);
+});
+
+describe("drain_deleting_thread", () => {
+	async function data_deletion_test_delete_chat_fixture() {
+		const t = test_convex();
+		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const { deletedThreadId, keptThreadId } = await t.run(async (ctx) => {
+			const deletedThreadId = await data_deletion_test_seed_private_chat(ctx, { ...db, archived: false, count: 10 });
+			const keptThreadId = await data_deletion_test_seed_private_chat(ctx, { ...db, archived: false, count: 2 });
+			const customServerId = await test_mocks_fill_db_with.mcp_custom_server(ctx, db);
+			for (const threadId of [deletedThreadId, keptThreadId]) {
+				await test_mocks_fill_db_with.mcp_call(ctx, {
+					...db,
+					threadId,
+					target: { kind: "custom", customServerId },
+				});
+			}
+			return { deletedThreadId, keptThreadId };
+		});
+		return { t, db, asUser, deletedThreadId, keptThreadId };
+	}
+
+	/**
+	 * Count every chat-owned doc of one thread.
+	 */
+	async function data_deletion_test_count_thread_docs(
+		t: ReturnType<typeof test_convex>,
+		threadId: Id<"ai_chat_threads">,
+	) {
+		return await t.run(async (ctx) => {
+			const tables = [
+				"ai_chat_threads_messages_aisdk_5",
+				"ai_chat_bash_shells",
+				"ai_chat_bash_shell_transcripts",
+				"ai_chat_bash_invocations",
+				"ai_chat_bash_job_notice_cursors",
+				"ai_chat_files",
+				"ai_chat_files_content",
+				"ai_chat_runs",
+				"public_api_grants",
+				"plugins_mcp_calls",
+			] as const;
+			const counts: Record<string, number> = {};
+			for (const table of tables) {
+				counts[table] = (await ctx.db.query(table).collect()).filter((doc) => doc.threadId === threadId).length;
+			}
+			counts.thread = (await ctx.db.get("ai_chat_threads", threadId)) ? 1 : 0;
+			return counts;
+		});
+	}
+
+	test("hides the chat at once and the drain deletes only its data", async () => {
+		const f = await data_deletion_test_delete_chat_fixture();
+		const keptBefore = await data_deletion_test_count_thread_docs(f.t, f.keptThreadId);
+
+		const deleted = await f.asUser.mutation(api.ai_chat.thread_delete, {
+			membershipId: f.db.membershipId,
+			threadId: f.deletedThreadId,
+		});
+		expect(deleted).toEqual({ _yay: null });
+
+		// Every door treats the chat as gone before any data is deleted.
+		expect(
+			await f.asUser.query(api.ai_chat.thread_get, { membershipId: f.db.membershipId, threadId: f.deletedThreadId }),
+		).toBeNull();
+		const listed = await f.asUser.query(api.ai_chat.threads_list, {
+			membershipId: f.db.membershipId,
+			paginationOpts: { numItems: 10, cursor: null },
+		});
+		expect(listed?.page.map((thread) => thread._id)).toEqual([f.keptThreadId]);
+		expect(
+			await f.asUser.mutation(api.ai_chat.thread_delete, {
+				membershipId: f.db.membershipId,
+				threadId: f.deletedThreadId,
+			}),
+		).toMatchObject({ _nay: { message: "Not found" } });
+		const scheduled = await f.t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect());
+		expect(scheduled.map((job) => job.name)).toContain("data_deletion:drain_deleting_thread");
+
+		let done = false;
+		for (let pass = 0; pass < 200 && !done; pass += 1) {
+			const step = await f.t.mutation(internal.data_deletion.drain_deleting_thread, {
+				threadId: f.deletedThreadId,
+				_test_disableReschedule: true,
+			});
+			// Nothing here is live, so every pass deletes something.
+			expect(step.deletedCount).toBeGreaterThan(0);
+			done = step.done;
+		}
+		expect(done).toBe(true);
+		expect(Object.values(await data_deletion_test_count_thread_docs(f.t, f.deletedThreadId))).toEqual(
+			Array(11).fill(0),
+		);
+		expect(await data_deletion_test_count_thread_docs(f.t, f.keptThreadId)).toEqual(keptBefore);
+	});
+
+	test("waits for a live run before deleting anything", async () => {
+		const f = await data_deletion_test_delete_chat_fixture();
+		const captured = await f.t.mutation(internal.ai_chat_workspaces.capture, {
+			userId: f.db.userId,
+			membershipId: f.db.membershipId,
+		});
+		if (captured._nay) throw new Error(captured._nay.message);
+		const runId = await f.t.mutation(internal.ai_chat.thread_run_begin, {
+			source: {
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				threadId: f.deletedThreadId,
+				userId: f.db.userId,
+				membershipId: f.db.membershipId,
+				membershipLifetime: captured._yay.membershipLifetime,
+			},
+		});
+		if (!runId) throw new Error("Expected the run to begin");
+		const run = await f.t.run((ctx) => ctx.db.get("ai_chat_runs", runId));
+		await f.asUser.mutation(api.ai_chat.thread_delete, {
+			membershipId: f.db.membershipId,
+			threadId: f.deletedThreadId,
+		});
+		const before = await data_deletion_test_count_thread_docs(f.t, f.deletedThreadId);
+
+		expect(
+			await f.t.mutation(internal.data_deletion.drain_deleting_thread, {
+				threadId: f.deletedThreadId,
+				_test_now: run!.leaseExpiresAt - 1,
+				_test_disableReschedule: true,
+			}),
+		).toEqual({ done: false, deletedCount: 0 });
+		expect(await data_deletion_test_count_thread_docs(f.t, f.deletedThreadId)).toEqual(before);
+
+		// A deleting chat admits no new run.
+		expect(
+			await f.t.mutation(internal.ai_chat.thread_run_begin_wakeup, {
+				threadId: f.deletedThreadId,
+				invocationId: (await f.t.run((ctx) => ctx.db.query("ai_chat_bash_invocations").first()))!._id,
+			}),
+		).toBeNull();
+
+		const step = await f.t.mutation(internal.data_deletion.drain_deleting_thread, {
+			threadId: f.deletedThreadId,
+			_test_now: run!.leaseExpiresAt + 1,
+			_test_disableReschedule: true,
+		});
+		expect(step.deletedCount).toBeGreaterThan(0);
+	});
 });
 
 describe("process_user_deletion_request", () => {

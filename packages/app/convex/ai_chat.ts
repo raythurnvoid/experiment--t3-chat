@@ -1,4 +1,4 @@
-import { omit_properties, should_never_happen } from "../shared/shared-utils.ts";
+import { should_never_happen } from "../shared/shared-utils.ts";
 import {
 	ai_chat_DEFAULT_MODEL_ID,
 	ai_chat_GENERATED_IMAGE_FORMAT,
@@ -18,6 +18,7 @@ import { get_id_generator } from "../shared/generated-ids.ts";
 import {
 	query,
 	mutation,
+	action,
 	internalAction,
 	internalMutation,
 	internalQuery,
@@ -77,6 +78,7 @@ import {
 	type ai_chat_tool_BrowserBinding,
 	type ai_chat_tool_McpServer,
 } from "../server/server-ai-tools.ts";
+import { ai_chat_tool_output_INLINE_MAX_BYTES } from "../server/ai-chat-tool-output.ts";
 import {
 	ai_chat_tool_create_browser_management,
 	ai_chat_tool_browser_check_bindings,
@@ -102,7 +104,6 @@ import {
 } from "../server/ai-chat-file-tools.ts";
 import { files_ingestion_decode_base64 } from "../server/files-ingestion.ts";
 import app_convex_schema, {
-	ai_chat_thread_active_run_validator,
 	ai_chat_workspaces_source_validator,
 	browser_intent_validator,
 	bash_shell_state_validator,
@@ -110,6 +111,12 @@ import app_convex_schema, {
 } from "./schema.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import { ai_model_call_receipts_create } from "./ai_model_call_receipts.ts";
+import { ai_chat_outputs_db_commit_owners, ai_chat_outputs_db_prepare_reply } from "./ai_chat_outputs.ts";
+import {
+	ai_chat_thread_copies_db_abort,
+	type ai_chat_thread_copies_begin_Result,
+	type ai_chat_thread_copies_step_Result,
+} from "./ai_chat_thread_copies.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import type { Doc, Id } from "./_generated/dataModel";
 import { ai_chat_context_ENABLED } from "./ai_chat_context.ts";
@@ -119,6 +126,7 @@ import {
 	ai_chat_files_db_get_invocation_membership,
 	bash_job_is_finish_message,
 } from "./ai_chat_files.ts";
+import { ai_chat_runs_db_end, ai_chat_runs_db_insert } from "./ai_chat_runs.ts";
 import { ai_chat_context_create, type ai_chat_context_Context } from "../server/ai-chat-context.ts";
 import { ai_chat_workspaces_db_resolve, ai_chat_workspaces_SELECTORS } from "./ai_chat_workspaces.ts";
 import { browser_intent_schema, type browser_Intent } from "../shared/browser-intent.ts";
@@ -147,6 +155,12 @@ export {
  * workspace removes access to its chats. File writes check their own permissions.
  */
 const THREAD_PERMISSION = "content.read" as const satisfies access_control_Permission;
+
+/**
+ * `thread_delete` aborts at most this many branch copies of the chat at once. A copy it misses
+ * aborts at its next step, because every step checks the source chat.
+ */
+const THREAD_DELETE_COPIES_MAX = 50;
 
 /**
  * Every billed model must come from the chat model list, which is priced.
@@ -1203,6 +1217,11 @@ function build_agent_configuration(input: {
 		modeId: (typeof ai_chat_MODE_IDS)[number];
 	};
 	getThreadId: () => Id<"ai_chat_threads"> | null;
+	getRunId: () => Id<"ai_chat_runs"> | null;
+	/**
+	 * The provider request of each tool call, keyed by tool call id. The receipt middleware fills it.
+	 */
+	modelCallIds: Map<string, string>;
 	getWorkspaceContext?: () => ai_chat_context_Context | null;
 	membershipId: Id<"organizations_workspaces_users">;
 	browserIntent?: browser_Intent | null;
@@ -1238,6 +1257,8 @@ function build_agent_configuration(input: {
 	const toolCtxData = {
 		...ctxData,
 		getThreadId,
+		getRunId: input.getRunId,
+		getModelCallId: (toolCallId: string) => input.modelCallIds.get(toolCallId) ?? null,
 		getWorkspaceContext,
 		membershipId: input.membershipId,
 		...(browserIntent ? { browserIntent } : {}),
@@ -1302,10 +1323,17 @@ function build_agent_configuration(input: {
 		...(browserToolsEnabled && browserContext ? ai_chat_tool_create_browser_management(ctx, browserContext) : {}),
 	};
 	// App tools can return a full 64 KiB file page, so each call keeps 128 KiB of result space.
-	ai_chat_tool_budget_apply(appTools, toolBudget, { resultReservedBytes: 128 * 1024 });
-	// An MCP result is cut to 64 KiB, so about 5 MCP calls fit at once. MCP tools stay out of
-	// `appTools`: their stored parts are checked by their own schema, not by `validationTools`.
-	ai_chat_tool_budget_apply(mcpTools, toolBudget, { resultReservedBytes: 72 * 1024 });
+	// Bash stores a bigger output and returns at most the inline size plus its marker line.
+	const { bash, ...pageTools } = appTools;
+	ai_chat_tool_budget_apply(pageTools, toolBudget, { resultReservedBytes: 128 * 1024 });
+	ai_chat_tool_budget_apply({ bash }, toolBudget, {
+		resultReservedBytes: ai_chat_tool_output_INLINE_MAX_BYTES + 1024,
+	});
+	// An MCP result over the inline size is stored too. MCP tools stay out of `appTools`: their
+	// stored parts are checked by their own schema, not by `validationTools`.
+	ai_chat_tool_budget_apply(mcpTools, toolBudget, {
+		resultReservedBytes: ai_chat_tool_output_INLINE_MAX_BYTES + 1024,
+	});
 
 	// Keep current stored outputs valid across mode and model changes. Every file tool stores the
 	// same safe shape, so an old part still validates in either mode, and also while the browser
@@ -1413,6 +1441,7 @@ function build_agent_configuration(input: {
 		jobWait,
 		saveGeneratedImage,
 		imageDestinations,
+		modelCallIds: input.modelCallIds,
 	};
 }
 
@@ -1441,7 +1470,7 @@ export const save_shell = internalMutation({
 	returns: v.null(),
 	handler: async (ctx, args) => {
 		const thread = await ctx.db.get("ai_chat_threads", args.threadId);
-		if (!thread) {
+		if (!thread || thread.deletingAt !== undefined || thread.copyingAt !== undefined) {
 			throw convex_error({ message: "Not found" });
 		}
 		if (
@@ -1487,101 +1516,124 @@ export const save_shell = internalMutation({
 const CHAT_RUN_LEASE_MS = 10 * 60 * 1000;
 
 /**
- * Take the thread's run lease for a `/api/chat` request (see `activeRun` in the schema). Refuse
- * while a job wakeup runs: the wakeup writes the reply under the job finish message, and a chat reply at
- * the same time would fork the branch. A second chat request is still allowed, as before: two
- * tabs or a retry must not lock each other out.
+ * Take the thread's run lease for a `/api/chat` request (see `activeRun` in the schema) and insert
+ * the run doc. Refuse while a job wakeup runs: the wakeup writes the reply under the job finish
+ * message, and a chat reply at the same time would fork the branch. A second chat request is still
+ * allowed, as before: two tabs or a retry must not lock each other out. Returns the run id, or null
+ * when refused.
  */
 export const thread_run_begin = internalMutation({
-	args: { threadId: v.id("ai_chat_threads") },
-	returns: v.boolean(),
+	args: { source: ai_chat_workspaces_source_validator },
+	returns: v.union(v.id("ai_chat_runs"), v.null()),
 	handler: async (ctx, args) => {
-		const thread = await ctx.db.get("ai_chat_threads", args.threadId);
-		if (!thread) throw should_never_happen("Chat thread not found", { threadId: args.threadId });
+		const thread = await ctx.db.get("ai_chat_threads", args.source.threadId);
+		// Delete chat can start, or finish, while a request or a job finish is on its way here. A
+		// branch copy in progress is hidden the same way.
+		if (!thread || thread.deletingAt !== undefined || thread.copyingAt !== undefined) return null;
 		const now = Date.now();
-		if (thread.activeRun?.kind === "job_wakeup" && thread.activeRun.expiresAt > now) return false;
-		await ctx.db.patch("ai_chat_threads", thread._id, {
-			activeRun: { kind: "chat", expiresAt: now + CHAT_RUN_LEASE_MS },
-		});
-		return true;
+		if (thread.activeRun?.kind === "job_wakeup" && thread.activeRun.expiresAt > now) return null;
+		const leaseExpiresAt = now + CHAT_RUN_LEASE_MS;
+		await ctx.db.patch("ai_chat_threads", thread._id, { activeRun: { kind: "chat", expiresAt: leaseExpiresAt } });
+		return await ai_chat_runs_db_insert(ctx, { kind: "chat", leaseExpiresAt, source: args.source });
 	},
 });
 
 /**
- * Give the run lease back. Only the lease of the same kind is cleared, so a chat run that ends
- * late never clears the lease of the wakeup that started after it.
+ * End one run and give the thread lease back when no other live run of the same kind holds it.
  */
 export const thread_run_end = internalMutation({
-	args: { threadId: v.id("ai_chat_threads"), kind: ai_chat_thread_active_run_validator.fields.kind },
+	args: { runId: v.id("ai_chat_runs") },
 	returns: v.null(),
 	handler: async (ctx, args) => {
-		const thread = await ctx.db.get("ai_chat_threads", args.threadId);
-		if (thread?.activeRun?.kind === args.kind) {
-			await ctx.db.patch("ai_chat_threads", thread._id, { activeRun: undefined });
-		}
+		await ai_chat_runs_db_end(ctx, { runId: args.runId, now: Date.now() });
 		return null;
 	},
 });
 
 /**
- * Turn-end catch: flip a `chat` lease to `job_wakeup` in one transaction so a
- * wake run can follow this turn. Returns false when another tab already handed
- * the lease over, or no chat lease is held. May convert a concurrent tab's
- * fresh chat lease; that tab keeps streaming and its release turns into a
- * no-op through the kind guard, the same way a second chat tab's late release
- * is a no-op.
+ * The run doc of the wake run that answers the job of `invocationId`. The wake run acts for the
+ * job's own membership, the same one `get_job_wakeup_context` checks.
+ */
+async function db_insert_wake_run(
+	ctx: MutationCtx,
+	args: { invocationId: Id<"ai_chat_bash_invocations">; leaseExpiresAt: number },
+) {
+	const invocation = await ctx.db.get("ai_chat_bash_invocations", args.invocationId);
+	if (!invocation) throw should_never_happen("Job invocation not found", { invocationId: args.invocationId });
+	return await ai_chat_runs_db_insert(ctx, {
+		kind: "job_wakeup",
+		leaseExpiresAt: args.leaseExpiresAt,
+		source: invocation,
+	});
+}
+
+/**
+ * Turn-end catch: flip a `chat` lease to `job_wakeup` in one transaction and insert the run doc
+ * of the wake run that follows this turn. Returns null when another tab already handed the lease
+ * over, or no chat lease is held. May convert a concurrent tab's fresh chat lease; that tab keeps
+ * streaming, and its run end keeps the wake lease because the wake run doc is running.
  */
 export const thread_run_handover_to_wakeup = internalMutation({
-	args: { threadId: v.id("ai_chat_threads") },
-	returns: v.boolean(),
+	args: { threadId: v.id("ai_chat_threads"), invocationId: v.id("ai_chat_bash_invocations") },
+	returns: v.union(v.id("ai_chat_runs"), v.null()),
 	handler: async (ctx, args) => {
 		const thread = await ctx.db.get("ai_chat_threads", args.threadId);
-		if (!thread) throw should_never_happen("Chat thread not found", { threadId: args.threadId });
-		if (thread.activeRun?.kind !== "chat") return false;
+		// Delete chat can start, or finish, while a request or a job finish is on its way here. A
+		// branch copy in progress is hidden the same way.
+		if (!thread || thread.deletingAt !== undefined || thread.copyingAt !== undefined) return null;
+		if (thread.activeRun?.kind !== "chat") return null;
+		const leaseExpiresAt = Date.now() + BASH_JOB_WAKEUP_RUN_MS;
 		await ctx.db.patch("ai_chat_threads", thread._id, {
-			activeRun: { kind: "job_wakeup", expiresAt: Date.now() + BASH_JOB_WAKEUP_RUN_MS },
+			activeRun: { kind: "job_wakeup", expiresAt: leaseExpiresAt },
 		});
-		return true;
+		return await db_insert_wake_run(ctx, { invocationId: args.invocationId, leaseExpiresAt });
 	},
 });
 
 /**
  * Turn-end catch, wake side: extend the held `job_wakeup` lease so the follow-up run owns a
- * full window. Returns false when the lease is gone or another kind took over; the caller
- * then tries `thread_run_begin_wakeup`.
+ * full window, and insert that run's doc. The current wake run still ends its own doc. Returns
+ * null when the lease is gone or another kind took over; the caller then tries
+ * `thread_run_begin_wakeup`.
  */
 export const thread_run_extend_wakeup = internalMutation({
-	args: { threadId: v.id("ai_chat_threads") },
-	returns: v.boolean(),
+	args: { threadId: v.id("ai_chat_threads"), invocationId: v.id("ai_chat_bash_invocations") },
+	returns: v.union(v.id("ai_chat_runs"), v.null()),
 	handler: async (ctx, args) => {
 		const thread = await ctx.db.get("ai_chat_threads", args.threadId);
-		if (!thread) throw should_never_happen("Chat thread not found", { threadId: args.threadId });
+		// Delete chat can start, or finish, while a request or a job finish is on its way here. A
+		// branch copy in progress is hidden the same way.
+		if (!thread || thread.deletingAt !== undefined || thread.copyingAt !== undefined) return null;
 		const activeRun = thread.activeRun;
-		if (activeRun?.kind !== "job_wakeup" || activeRun.expiresAt <= Date.now()) return false;
+		if (activeRun?.kind !== "job_wakeup" || activeRun.expiresAt <= Date.now()) return null;
+		const leaseExpiresAt = Date.now() + BASH_JOB_WAKEUP_RUN_MS;
 		await ctx.db.patch("ai_chat_threads", thread._id, {
-			activeRun: { kind: "job_wakeup", expiresAt: Date.now() + BASH_JOB_WAKEUP_RUN_MS },
+			activeRun: { kind: "job_wakeup", expiresAt: leaseExpiresAt },
 		});
-		return true;
+		return await db_insert_wake_run(ctx, { invocationId: args.invocationId, leaseExpiresAt });
 	},
 });
 
 /**
- * Take a free thread lease for a wake run after the chat lease is gone. Returns
- * false when any live run still holds it, so two leftover catches cannot both
+ * Take a free thread lease for a wake run after the chat lease is gone, and insert its run doc.
+ * Returns null when any live run still holds the lease, so two leftover catches cannot both
  * schedule.
  */
 export const thread_run_begin_wakeup = internalMutation({
-	args: { threadId: v.id("ai_chat_threads") },
-	returns: v.boolean(),
+	args: { threadId: v.id("ai_chat_threads"), invocationId: v.id("ai_chat_bash_invocations") },
+	returns: v.union(v.id("ai_chat_runs"), v.null()),
 	handler: async (ctx, args) => {
 		const thread = await ctx.db.get("ai_chat_threads", args.threadId);
-		if (!thread) throw should_never_happen("Chat thread not found", { threadId: args.threadId });
+		// Delete chat can start, or finish, while a request or a job finish is on its way here. A
+		// branch copy in progress is hidden the same way.
+		if (!thread || thread.deletingAt !== undefined || thread.copyingAt !== undefined) return null;
 		const now = Date.now();
-		if (thread.activeRun !== undefined && thread.activeRun.expiresAt > now) return false;
+		if (thread.activeRun !== undefined && thread.activeRun.expiresAt > now) return null;
+		const leaseExpiresAt = now + BASH_JOB_WAKEUP_RUN_MS;
 		await ctx.db.patch("ai_chat_threads", thread._id, {
-			activeRun: { kind: "job_wakeup", expiresAt: now + BASH_JOB_WAKEUP_RUN_MS },
+			activeRun: { kind: "job_wakeup", expiresAt: leaseExpiresAt },
 		});
-		return true;
+		return await db_insert_wake_run(ctx, { invocationId: args.invocationId, leaseExpiresAt });
 	},
 });
 
@@ -1656,7 +1708,12 @@ export const threads_list = query({
 			numItems,
 		});
 
-		return result;
+		// A chat being deleted is gone for the user. The drain removes it within minutes, so a page
+		// can be one item short only for that time. A branch copy stays hidden until it is published.
+		return {
+			...result,
+			page: result.page.filter((thread) => thread.deletingAt === undefined && thread.copyingAt === undefined),
+		};
 	},
 });
 
@@ -1704,6 +1761,8 @@ export const thread_get = query({
 
 		if (
 			!thread ||
+			thread.deletingAt !== undefined ||
+			thread.copyingAt !== undefined ||
 			thread.organizationId !== membership.organizationId ||
 			thread.workspaceId !== membership.workspaceId ||
 			thread.createdBy !== userAuth.id
@@ -1787,13 +1846,15 @@ export const thread_create = mutation({
 });
 
 /**
- * Branch a thread by creating a new thread with the same source thread as parent.
+ * Branch a thread: copy the branch that ends at `messageId` (or at the newest message) into a
+ * new chat. The copy runs in small steps and the new chat stays hidden until the last step
+ * publishes it, so this returns only when the chat is ready.
  *
  * @param args.membershipId
  * @param args.threadId
  * @param args.messageId - The ID of the message to start the new thread from. Must be a convex generated ID of a persisted message.
  */
-export const thread_branch = mutation({
+export const thread_branch = action({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
 		threadId: v.string(),
@@ -1810,232 +1871,30 @@ export const thread_branch = mutation({
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 
-		const membership = await organizations_db_get_membership(ctx, {
-			userId: userAuth.id,
-			membershipId: args.membershipId,
-		});
-		if (!membership) {
-			return Result({ _nay: { message: "Unauthorized" } });
-		}
-
 		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "ai_chat_thread_write", key: userAuth.id });
 		if (rateLimit) {
 			return Result({ _nay: { message: rateLimit.message } });
 		}
 
-		const authorized = await access_control_db_authorize_membership(ctx, {
-			userAuth,
-			membership,
-			permission: THREAD_PERMISSION,
-		});
-		if (authorized._nay) {
-			return authorized;
-		}
-
-		const threadId = ctx.db.normalizeId("ai_chat_threads", args.threadId);
-		if (!threadId) {
-			return Result({ _nay: { message: "Not found" } });
-		}
-
-		const thread = await ctx.db.get("ai_chat_threads", threadId);
-		if (!thread) {
-			return Result({ _nay: { message: "Not found" } });
-		}
-		if (
-			thread.organizationId !== membership.organizationId ||
-			thread.workspaceId !== membership.workspaceId ||
-			thread.createdBy !== userAuth.id
-		) {
-			return Result({ _nay: { message: "Unauthorized" } });
-		}
-
-		const now = Date.now();
-		const organizationId = membership.organizationId;
-		const workspaceId = membership.workspaceId;
-
-		const allMessages = await ctx.db
-			.query("ai_chat_threads_messages_aisdk_5")
-			.withIndex("by_organization_workspace_thread", (q) =>
-				q.eq("organizationId", thread.organizationId).eq("workspaceId", thread.workspaceId).eq("threadId", threadId),
-			)
-			.collect();
-
-		const byId = new Map<string, Doc<"ai_chat_threads_messages_aisdk_5">>(allMessages.map((m) => [m._id, m]));
-
-		let newestMessage = undefined;
-		if (args.messageId) {
-			const messageId = ctx.db.normalizeId("ai_chat_threads_messages_aisdk_5", args.messageId);
-			const message = messageId ? byId.get(messageId) : undefined;
-			if (!message) {
-				return Result({ _nay: { message: "Message not found" } });
-			}
-			newestMessage = message;
-		}
-
-		const unarchivedThreads = await ctx.db
-			.query("ai_chat_threads")
-			.withIndex("by_organization_workspace_createdBy_archived_lastMessageAt", (q) =>
-				q
-					.eq("organizationId", organizationId)
-					.eq("workspaceId", workspaceId)
-					.eq("createdBy", userAuth.id)
-					.eq("archived", false),
-			)
-			.collect();
-
-		const archivedThreads = await ctx.db
-			.query("ai_chat_threads")
-			.withIndex("by_organization_workspace_createdBy_archived_lastMessageAt", (q) =>
-				q
-					.eq("organizationId", organizationId)
-					.eq("workspaceId", workspaceId)
-					.eq("createdBy", userAuth.id)
-					.eq("archived", true),
-			)
-			.collect();
-
-		const sourceTitle = (thread.title || "New Chat").trim() || "New Chat";
-		const baseTitle = sourceTitle.replace(/ \(\d+\)$/, "");
-
-		let maxSuffix = 0;
-		for (const thread of [...unarchivedThreads, ...archivedThreads]) {
-			const title = (thread.title || "New Chat").trim() || "New Chat";
-			const normalized = title.replace(/ \(\d+\)$/, "");
-			if (normalized !== baseTitle) {
-				continue;
-			}
-
-			const match = title.match(/ \((\d+)\)$/);
-			if (!match) {
-				continue;
-			}
-
-			const n = Number(match[1]);
-			if (Number.isFinite(n) && n > maxSuffix) {
-				maxSuffix = n;
-			}
-		}
-
-		if (!newestMessage) {
-			let newest: Doc<"ai_chat_threads_messages_aisdk_5"> | null = null;
-
-			for (const message of allMessages) {
-				if (!newest || message._creationTime > newest._creationTime) {
-					newest = message;
-				}
-			}
-
-			newestMessage = newest;
-		}
-
-		const title = `${baseTitle} (${maxSuffix + 1})`;
-		const clientGeneratedId = get_id_generator("ai_thread")();
-
-		const newThreadId = await ctx.db.insert("ai_chat_threads", {
-			organizationId,
-			workspaceId,
-			clientGeneratedId,
-			title,
-			lastMessageAt: now,
-			readAt: now,
-			archived: false,
-			runtime: "aisdk_5",
-			createdBy: userAuth.id,
-			updatedBy: userAuth.id,
-			updatedAt: now,
-			starred: false,
-		});
-		// Copy the creator's scratch and shells, but not transcripts or running jobs.
-		const sourceShells = await ctx.db
-			.query("ai_chat_bash_shells")
-			.withIndex("by_thread_name", (q) => q.eq("threadId", threadId))
-			.collect();
-		for (const sourceShell of sourceShells) {
-			await ctx.db.insert("ai_chat_bash_shells", {
-				organizationId,
-				workspaceId,
-				threadId: newThreadId,
-				name: sourceShell.name,
-				cwd: sourceShell.cwd,
-				cwdTarget: sourceShell.cwdTarget,
-				state: sourceShell.state,
-				transcriptBytes: 0,
-				transcriptEntries: 0,
-				transcriptSeq: 0,
-				updatedBy: userAuth.id,
-				updatedAt: now,
-			});
-		}
-		await ctx.runMutation(internal.ai_chat_files.copy_thread_tmp_files, {
-			organizationId,
-			workspaceId,
+		const begun = (await ctx.runMutation(internal.ai_chat_thread_copies.begin, {
+			...args,
 			userId: userAuth.id,
-			sourceThreadId: threadId,
-			targetThreadId: newThreadId,
-		});
-
-		if (!newestMessage) {
-			return Result({ _yay: { threadId: newThreadId } });
+		})) as ai_chat_thread_copies_begin_Result;
+		if (begun._nay) {
+			return Result({ _nay: begun._nay });
 		}
 
-		const chain: Array<Doc<"ai_chat_threads_messages_aisdk_5">> = [];
-
-		let current: Doc<"ai_chat_threads_messages_aisdk_5"> | undefined = newestMessage;
-		while (current) {
-			chain.push(current);
-			current = current.parentId ? byId.get(current.parentId) : undefined;
+		for (;;) {
+			const step = (await ctx.runMutation(internal.ai_chat_thread_copies.step, {
+				copyId: begun._yay.copyId,
+			})) as ai_chat_thread_copies_step_Result;
+			if (step === "published") {
+				return Result({ _yay: { threadId: begun._yay.threadId } });
+			}
+			if (step === "aborted") {
+				return Result({ _nay: { message: "The chat changed while it was copied. Try again." } });
+			}
 		}
-
-		const messages: Array<{
-			clientGeneratedMessageId: string;
-			content: Record<string, unknown>;
-		}> = [];
-
-		for (let i = chain.length - 1; i >= 0; i--) {
-			const msg = chain[i];
-			const content = msg.content as unknown as ai_chat_UiMessage;
-			const nextId = get_id_generator("ai_message")();
-			const metadata = content.metadata
-				? omit_properties(content.metadata, ["convexParentId", "convexId", "parentClientGeneratedId"])
-				: undefined;
-
-			messages.push({
-				clientGeneratedMessageId: nextId,
-				content: {
-					...content,
-					id: nextId,
-					...(metadata ? { metadata } : {}),
-				},
-			});
-		}
-
-		let nextParentId: Id<"ai_chat_threads_messages_aisdk_5"> | null = null;
-		for (const message of messages) {
-			const insertedId: Id<"ai_chat_threads_messages_aisdk_5"> = await ctx.db.insert(
-				"ai_chat_threads_messages_aisdk_5",
-				{
-					organizationId,
-					workspaceId,
-					parentId: nextParentId,
-					threadId: newThreadId,
-					createdBy: userAuth.id,
-					updatedAt: now,
-					clientGeneratedMessageId: message.clientGeneratedMessageId,
-					content: message.content,
-				},
-			);
-
-			nextParentId = insertedId;
-		}
-
-		await ctx.db.patch("ai_chat_threads", newThreadId, {
-			lastMessageAt: now,
-			readAt: now,
-			updatedAt: now,
-			updatedBy: userAuth.id,
-		});
-
-		return Result({ _yay: { threadId: newThreadId } });
 	},
 });
 
@@ -2085,7 +1944,7 @@ export const thread_update = mutation({
 		}
 
 		const thread = await ctx.db.get("ai_chat_threads", threadId);
-		if (!thread) {
+		if (!thread || thread.deletingAt !== undefined || thread.copyingAt !== undefined) {
 			return Result({ _nay: { message: "Not found" } });
 		}
 		if (
@@ -2194,7 +2053,7 @@ export const thread_mark_read = mutation({
 		}
 
 		const thread = await ctx.db.get("ai_chat_threads", threadId);
-		if (!thread) {
+		if (!thread || thread.deletingAt !== undefined || thread.copyingAt !== undefined) {
 			return Result({ _nay: { message: "Not found" } });
 		}
 		if (
@@ -2253,7 +2112,7 @@ export const thread_archive = mutation({
 		}
 
 		const thread = await ctx.db.get("ai_chat_threads", args.threadId);
-		if (!thread) {
+		if (!thread || thread.deletingAt !== undefined || thread.copyingAt !== undefined) {
 			return Result({ _nay: { message: "Not found" } });
 		}
 
@@ -2272,6 +2131,74 @@ export const thread_archive = mutation({
 			updatedBy: userAuth.id,
 			updatedAt: now,
 		});
+
+		return Result({ _yay: null });
+	},
+});
+
+/**
+ * Delete chat. The chat is gone for the user at once: every thread door treats a chat with
+ * `deletingAt` as not found. A scheduled drain then waits for live work and deletes the chat's data
+ * in small passes. Unlike Archive, this frees the chat's storage.
+ */
+export const thread_delete = mutation({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		threadId: v.id("ai_chat_threads"),
+	},
+	returns: v_result({ _yay: v.null() }),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+
+		const membership = await organizations_db_get_membership(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return Result({ _nay: { message: "Unauthorized" } });
+		}
+
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "ai_chat_thread_write", key: userAuth.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth,
+			membership,
+			permission: THREAD_PERMISSION,
+		});
+		if (authorized._nay) {
+			return authorized;
+		}
+
+		const thread = await ctx.db.get("ai_chat_threads", args.threadId);
+		if (!thread || thread.deletingAt !== undefined || thread.copyingAt !== undefined) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+
+		if (
+			thread.organizationId !== membership.organizationId ||
+			thread.workspaceId !== membership.workspaceId ||
+			thread.createdBy !== userAuth.id
+		) {
+			return Result({ _nay: { message: "Unauthorized" } });
+		}
+
+		await ctx.db.patch("ai_chat_threads", args.threadId, { deletingAt: Date.now() });
+		await ctx.scheduler.runAfter(0, internal.data_deletion.drain_deleting_thread, { threadId: args.threadId });
+		// A branch copy of this chat in progress aborts at its next step anyway, because the step checks
+		// the source chat. Abort the copies now, so their targets start draining at once.
+		const copies = await ctx.db
+			.query("ai_chat_thread_copies")
+			.withIndex("by_source", (q) => q.eq("sourceThreadId", args.threadId))
+			.take(THREAD_DELETE_COPIES_MAX);
+		for (const copy of copies) {
+			await ai_chat_thread_copies_db_abort(ctx, copy);
+		}
 
 		return Result({ _yay: null });
 	},
@@ -2322,6 +2249,8 @@ export const thread_messages_list = query({
 		const thread = await ctx.db.get("ai_chat_threads", threadId);
 		if (
 			!thread ||
+			thread.deletingAt !== undefined ||
+			thread.copyingAt !== undefined ||
 			thread.organizationId !== membership.organizationId ||
 			thread.workspaceId !== membership.workspaceId ||
 			thread.createdBy !== userAuth.id
@@ -2387,7 +2316,7 @@ async function thread_messages_db_add(
 	}
 
 	const thread = await ctx.db.get("ai_chat_threads", args.threadId);
-	if (!thread) {
+	if (!thread || thread.deletingAt !== undefined || thread.copyingAt !== undefined) {
 		return Result({ _nay: { message: "Not found" } });
 	}
 	if (
@@ -2578,18 +2507,41 @@ export const thread_run_messages_add = internalMutation({
 		 * True only for the reply the route streamed itself. False for the request messages.
 		 */
 		allowMcpParts: v.boolean(),
+		/**
+		 * The run that streamed the reply. It commits the stored outputs the reply points at. Null
+		 * for the request messages, which are saved before the run starts and point at none.
+		 */
+		runId: v.union(v.id("ai_chat_runs"), v.null()),
 	},
 	returns: v_result({ _yay: v.object({ ids: v.array(v.id("ai_chat_threads_messages_aisdk_5")) }) }),
 	handler: async (ctx, args) => {
 		const allowed = await ai_chat_workspaces_db_resolve(ctx, { source: args.source, workspace: "current" });
 		if (allowed._nay) return Result({ _nay: { message: "Unauthorized" } });
-		return await thread_messages_db_add(ctx, {
+
+		const runId = args.runId;
+		const prepared = runId
+			? await Promise.all(
+					args.messages.map((message) =>
+						ai_chat_outputs_db_prepare_reply(ctx, { runId, threadId: args.source.threadId, content: message.content }),
+					),
+				)
+			: null;
+		const saved = await thread_messages_db_add(ctx, {
 			membershipId: args.source.membershipId,
 			threadId: args.source.threadId,
 			parentId: args.parentId,
-			messages: args.messages,
+			messages: prepared
+				? args.messages.map((message, index) => ({ ...message, content: prepared[index]!.content }))
+				: args.messages,
 			allowMcpParts: args.allowMcpParts,
 		});
+		if (saved._yay && prepared) {
+			await ai_chat_outputs_db_commit_owners(
+				ctx,
+				prepared.flatMap((message) => message.ownerIds),
+			);
+		}
+		return saved;
 	},
 });
 
@@ -2773,13 +2725,17 @@ async function create_agent_turn_stream(args: {
 	};
 
 	// Every provider request of this turn bills through its own receipt, including the title.
-	const receipts = ai_model_call_receipts_create(ctx, {
-		threadId,
-		billedUserId: billedUser._id,
-		actorUserId: args.userId,
-		organizationId: membership.organizationId,
-		workspaceId: membership.workspaceId,
-	});
+	const receipts = ai_model_call_receipts_create(
+		ctx,
+		{
+			threadId,
+			billedUserId: billedUser._id,
+			actorUserId: args.userId,
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+		},
+		args.agent.modelCallIds,
+	);
 
 	const stream = createUIMessageStream<ai_chat_UiMessage>({
 		generateId: get_id_generator("ai_message"),
@@ -3160,10 +3116,10 @@ async function create_agent_turn_stream(args: {
 }
 
 export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
-	// The thread's run lease, taken right before the stream and given back when the stream ends.
-	// The catch below gives it back when the stream never started.
+	// The run and the thread's run lease, taken right before the stream and ended when the stream
+	// ends. The catch below ends the run when the stream never started.
 	let threadId: Id<"ai_chat_threads"> | null = null;
-	let runLeaseHeld = false;
+	let runId: Id<"ai_chat_runs"> | null = null;
 	try {
 		const requestParseResult = await server_request_json_parse_and_validate(request, chat_body_validator);
 
@@ -3361,6 +3317,8 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 			});
 		}
 
+		const modelCallIds = new Map<string, string>();
+
 		// Load MCP tools only after the credit check and the message checks above, because each server
 		// costs an outside call. The schema check below needs the built agent, so it runs later.
 		// Ask mode never offers MCP tools, because it must not act outside Press.
@@ -3378,6 +3336,8 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 							membershipId: membership._id,
 							membershipLifetime: workspaces._yay.membershipLifetime,
 							getThreadId: () => threadId,
+							getRunId: () => runId,
+							getModelCallId: (toolCallId) => modelCallIds.get(toolCallId) ?? null,
 							// The lease starts a little after `now`, so this deadline is on the safe side.
 							runDeadline: now + CHAT_RUN_LEASE_MS,
 						},
@@ -3405,6 +3365,9 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 				modeId: body.mode,
 			},
 			getThreadId: () => threadId,
+			// The run starts right before the stream, so every tool call sees it.
+			getRunId: () => runId,
+			modelCallIds,
 			getWorkspaceContext: () => workspaceContext,
 			membershipId: membership._id,
 			browserIntent: body.browserIntent,
@@ -3543,6 +3506,7 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 					content: message,
 				})),
 				allowMcpParts: false,
+				runId: null,
 			});
 
 			if (persistedRequestMessages._nay) {
@@ -3586,17 +3550,17 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 
 		// The lease tells a finishing job that a run is streaming; `thread_run_begin` refuses while
 		// a job wakeup runs, so two runs never write the same branch at once.
-		let begun = await ctx.runMutation(internal.ai_chat.thread_run_begin, { threadId: runThreadId });
-		if (!begun) {
+		runId = await ctx.runMutation(internal.ai_chat.thread_run_begin, { source });
+		if (!runId) {
 			const retryAfterMs = await ctx.runQuery(internal.ai_chat.get_wake_retry_after_ms, {
 				threadId: runThreadId,
 			});
 			// The wake can end between the refused begin and this read. Try the lease once more
 			// so a saved user message still starts a turn instead of showing an error.
 			if (retryAfterMs === null) {
-				begun = await ctx.runMutation(internal.ai_chat.thread_run_begin, { threadId: runThreadId });
+				runId = await ctx.runMutation(internal.ai_chat.thread_run_begin, { source });
 			}
-			if (!begun) {
+			if (!runId) {
 				const waitMs =
 					retryAfterMs ??
 					(await ctx.runQuery(internal.ai_chat.get_wake_retry_after_ms, {
@@ -3613,7 +3577,7 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 				} as const;
 			}
 		}
-		runLeaseHeld = true;
+		const chatRunId = runId;
 
 		const stream = await create_agent_turn_stream({
 			ctx,
@@ -3644,14 +3608,15 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 					parentId,
 					messages: [{ clientGeneratedMessageId: message.id, content: message }],
 					allowMcpParts: true,
+					runId: chatRunId,
 				});
 				if (stored._nay) {
 					throw new Error("Failed to persist assistant message", { cause: stored._nay });
 				}
 			},
 			releaseRun: async () => {
-				runLeaseHeld = false;
-				await ctx.runMutation(internal.ai_chat.thread_run_end, { threadId: runThreadId, kind: "chat" });
+				runId = null;
+				await ctx.runMutation(internal.ai_chat.thread_run_end, { runId: chatRunId });
 			},
 			mcpAuthNeeded: mcp.authNeeded,
 			onUninjectedFinishedMessages: async (finishedMessages) => {
@@ -3659,21 +3624,23 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 				// newer ones at its own step boundaries, so one run covers the whole backlog.
 				const oldest = finishedMessages.find((finish) => finish.invocationId !== null);
 				if (!oldest?.invocationId) return;
-				const handed = await ctx.runMutation(internal.ai_chat.thread_run_handover_to_wakeup, {
-					threadId: runThreadId,
-				});
-				if (!handed) {
-					// The leftover catch runs after this run dropped the lease, so there is no
-					// chat lease to hand over. Take a free wake lease instead.
-					const begunWake = await ctx.runMutation(internal.ai_chat.thread_run_begin_wakeup, {
+				// The leftover catch runs after this run dropped the lease, so there may be no chat
+				// lease to hand over. Take a free wake lease instead.
+				const wakeRunId =
+					(await ctx.runMutation(internal.ai_chat.thread_run_handover_to_wakeup, {
 						threadId: runThreadId,
-					});
-					if (!begunWake) return;
-				}
+						invocationId: oldest.invocationId,
+					})) ??
+					(await ctx.runMutation(internal.ai_chat.thread_run_begin_wakeup, {
+						threadId: runThreadId,
+						invocationId: oldest.invocationId,
+					}));
+				if (!wakeRunId) return;
 				await ctx.scheduler.runAfter(0, internal.ai_chat.run_job_wakeup, {
 					invocationId: oldest.invocationId,
 					threadId: runThreadId,
 					finishMessageId: oldest.messageId,
+					runId: wakeRunId,
 				});
 			},
 		});
@@ -3682,8 +3649,8 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 	} catch (error) {
 		const errorMessage = "AI chat stream error";
 		console.error(errorMessage, { threadId });
-		if (runLeaseHeld && threadId) {
-			await ctx.runMutation(internal.ai_chat.thread_run_end, { threadId, kind: "chat" });
+		if (runId) {
+			await ctx.runMutation(internal.ai_chat.thread_run_end, { runId });
 		}
 
 		return {
@@ -3751,6 +3718,8 @@ export const get_job_wakeup_context = internalQuery({
 		const thread = await ctx.db.get("ai_chat_threads", invocation.threadId);
 		if (
 			!thread ||
+			thread.deletingAt !== undefined ||
+			thread.copyingAt !== undefined ||
 			thread.organizationId !== membership.organizationId ||
 			thread.workspaceId !== membership.workspaceId ||
 			thread.createdBy !== invocation.userId
@@ -3802,6 +3771,10 @@ export const store_job_wakeup_reply = internalMutation({
 		clientGeneratedMessageId:
 			app_convex_schema.tables.ai_chat_threads_messages_aisdk_5.validator.fields.clientGeneratedMessageId,
 		content: app_convex_schema.tables.ai_chat_threads_messages_aisdk_5.validator.fields.content,
+		/**
+		 * The wake run that streamed the reply. It commits the stored outputs the reply points at.
+		 */
+		runId: v.id("ai_chat_runs"),
 	},
 	returns: v.boolean(),
 	handler: async (ctx, args) => {
@@ -3852,6 +3825,11 @@ export const store_job_wakeup_reply = internalMutation({
 			}
 		}
 
+		const prepared = await ai_chat_outputs_db_prepare_reply(ctx, {
+			runId: args.runId,
+			threadId: thread._id,
+			content: args.content,
+		});
 		const now = Date.now();
 		await ctx.db.insert("ai_chat_threads_messages_aisdk_5", {
 			organizationId: thread.organizationId,
@@ -3861,8 +3839,9 @@ export const store_job_wakeup_reply = internalMutation({
 			createdBy: args.userId,
 			updatedAt: now,
 			clientGeneratedMessageId: args.clientGeneratedMessageId,
-			content: args.content,
+			content: prepared.content,
 		});
+		await ai_chat_outputs_db_commit_owners(ctx, prepared.ownerIds);
 		await ctx.db.patch("ai_chat_threads", thread._id, { lastMessageAt: now, updatedAt: now, updatedBy: args.userId });
 		return true;
 	},
@@ -3992,12 +3971,10 @@ export const run_job_wakeup = internalAction({
 		invocationId: v.id("ai_chat_bash_invocations"),
 		threadId: v.id("ai_chat_threads"),
 		finishMessageId: v.id("ai_chat_threads_messages_aisdk_5"),
+		runId: v.id("ai_chat_runs"),
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
-		// The turn-end catch can schedule a follow-up wake run; the release below must
-		// see that decision, so the flag lives outside the try block.
-		let followupScheduled = false;
 		try {
 			const context = (await ctx.runQuery(internal.ai_chat.get_job_wakeup_context, {
 				invocationId: args.invocationId,
@@ -4038,6 +4015,8 @@ export const run_job_wakeup = internalAction({
 				},
 				args: { modelId, modeId },
 				getThreadId: () => thread._id,
+				getRunId: () => args.runId,
+				modelCallIds: new Map(),
 				getWorkspaceContext: () => workspaceContext,
 				membershipId: membership._id,
 				browserIntent: sourceMessageId ? browserIntent : null,
@@ -4122,6 +4101,7 @@ export const run_job_wakeup = internalAction({
 						finishMessageId: args.finishMessageId,
 						clientGeneratedMessageId: message.id,
 						content: message,
+						runId: args.runId,
 					});
 					// The door refuses the reply when the user lost access during the run. The refusal does
 					// not throw, so log the lost reply here. Log ids and sizes only, never the reply text.
@@ -4135,35 +4115,31 @@ export const run_job_wakeup = internalAction({
 					}
 				},
 				releaseRun: async () => {
-					if (followupScheduled) return;
-					await ctx.runMutation(internal.ai_chat.thread_run_end, { threadId: thread._id, kind: "job_wakeup" });
+					await ctx.runMutation(internal.ai_chat.thread_run_end, { runId: args.runId });
 				},
 				mcpAuthNeeded: [],
 				onUninjectedFinishedMessages: async (finishedMessages) => {
 					// Oldest first: this run already holds the `job_wakeup` lease, so extend it
 					// across the follow-up instead of taking it again. After the lease is gone,
-					// take a free wake lease the same way the chat leftover catch does.
+					// take a free wake lease the same way the chat leftover catch does. The
+					// follow-up's run doc keeps the lease when this run ends its own doc.
 					const oldest = finishedMessages.find((finish) => finish.invocationId !== null);
 					if (!oldest?.invocationId) return;
-					const extended = await ctx.runMutation(internal.ai_chat.thread_run_extend_wakeup, {
-						threadId: thread._id,
-					});
-					if (extended) {
-						followupScheduled = true;
-					} else {
-						const begunWake = await ctx.runMutation(internal.ai_chat.thread_run_begin_wakeup, {
+					const followupRunId =
+						(await ctx.runMutation(internal.ai_chat.thread_run_extend_wakeup, {
 							threadId: thread._id,
-						});
-						if (!begunWake) return;
-						// The leftover catch runs after this run dropped the lease. The new
-						// lease belongs to the follow-up. Keep it, or the finally below would
-						// clear it before that run starts.
-						followupScheduled = true;
-					}
+							invocationId: oldest.invocationId,
+						})) ??
+						(await ctx.runMutation(internal.ai_chat.thread_run_begin_wakeup, {
+							threadId: thread._id,
+							invocationId: oldest.invocationId,
+						}));
+					if (!followupRunId) return;
 					await ctx.scheduler.runAfter(0, internal.ai_chat.run_job_wakeup, {
 						invocationId: oldest.invocationId,
 						threadId: thread._id,
 						finishMessageId: oldest.messageId,
+						runId: followupRunId,
 					});
 				},
 			});
@@ -4172,9 +4148,7 @@ export const run_job_wakeup = internalAction({
 				// The chunks were handled by the stream's own `onFinish`.
 			}
 		} finally {
-			if (!followupScheduled) {
-				await ctx.runMutation(internal.ai_chat.thread_run_end, { threadId: args.threadId, kind: "job_wakeup" });
-			}
+			await ctx.runMutation(internal.ai_chat.thread_run_end, { runId: args.runId });
 		}
 		return null;
 	},
@@ -4335,13 +4309,17 @@ export async function ai_chat_http_run_stream(ctx: ActionCtx, request: Request) 
 			});
 		}
 
-		const receipts = ai_model_call_receipts_create(ctx, {
-			threadId: thread._id,
-			billedUserId: billedUser._id,
-			actorUserId: user._id,
-			organizationId: membership.organizationId,
-			workspaceId: membership.workspaceId,
-		});
+		const receipts = ai_model_call_receipts_create(
+			ctx,
+			{
+				threadId: thread._id,
+				billedUserId: billedUser._id,
+				actorUserId: user._id,
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+			},
+			null,
+		);
 
 		// Generate title using AI with streaming
 		const result = streamText({
@@ -4558,6 +4536,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					modeId: "agent",
 				},
 				getThreadId: () => "thread_1" as Id<"ai_chat_threads">,
+				getRunId: () => null,
+				modelCallIds: new Map(),
 				mcpTools: {},
 				mcpNotes: [],
 			});
@@ -4585,6 +4565,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					modeId: "ask",
 				},
 				getThreadId: () => "thread_1" as Id<"ai_chat_threads">,
+				getRunId: () => null,
+				modelCallIds: new Map(),
 				mcpTools: {},
 				mcpNotes: [],
 			});
@@ -4627,6 +4609,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				membershipId: build_agent_configuration_test_membership_id,
 				args: { modelId: build_agent_configuration_test_model_id, modeId: "agent" },
 				getThreadId: () => "thread_1" as Id<"ai_chat_threads">,
+				getRunId: () => null,
+				modelCallIds: new Map(),
 				mcpTools: {
 					mcp__tracker__echo: dynamicTool({
 						inputSchema: jsonSchema({ type: "object" }),
@@ -4655,6 +4639,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					membershipId: build_agent_configuration_test_membership_id,
 					args: { modelId: build_agent_configuration_test_model_id, modeId },
 					getThreadId: () => "thread_1" as Id<"ai_chat_threads">,
+					getRunId: () => null,
+					modelCallIds: new Map(),
 					mcpTools: {},
 					mcpNotes: [],
 				});
@@ -4681,6 +4667,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 						modeId: "agent",
 					},
 					getThreadId: () => "thread_1" as Id<"ai_chat_threads">,
+					getRunId: () => null,
+					modelCallIds: new Map(),
 					mcpTools: {},
 					mcpNotes: [],
 				});
@@ -4705,6 +4693,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					membershipId: build_agent_configuration_test_membership_id,
 					args: { modelId: build_agent_configuration_test_model_id, modeId: "ask" },
 					getThreadId: () => "thread_1" as Id<"ai_chat_threads">,
+					getRunId: () => null,
+					modelCallIds: new Map(),
 					mcpTools: {},
 					mcpNotes: [],
 				});
@@ -4739,6 +4729,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					modeId: "agent",
 				},
 				getThreadId: () => "thread_1" as Id<"ai_chat_threads">,
+				getRunId: () => null,
+				modelCallIds: new Map(),
 				mcpTools: {},
 				mcpNotes: [],
 			});
@@ -4785,6 +4777,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					modeId: "ask",
 				},
 				getThreadId: () => "thread_1" as Id<"ai_chat_threads">,
+				getRunId: () => null,
+				modelCallIds: new Map(),
 				mcpTools: {},
 				mcpNotes: [],
 			});
@@ -4822,6 +4816,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					modeId: "ask",
 				},
 				getThreadId: () => "thread_1" as Id<"ai_chat_threads">,
+				getRunId: () => null,
+				modelCallIds: new Map(),
 				mcpTools: {},
 				mcpNotes: [],
 			});
@@ -4842,6 +4838,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					modeId: "ask",
 				},
 				getThreadId: () => "thread_1" as Id<"ai_chat_threads">,
+				getRunId: () => null,
+				modelCallIds: new Map(),
 				mcpTools: {},
 				mcpNotes: [],
 			});
@@ -4861,6 +4859,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					modeId: "agent",
 				},
 				getThreadId: () => "thread_1" as Id<"ai_chat_threads">,
+				getRunId: () => null,
+				modelCallIds: new Map(),
 				mcpTools: {},
 				mcpNotes: [],
 			});
@@ -4885,6 +4885,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				membershipId: build_agent_configuration_test_membership_id,
 				args: { modelId: build_agent_configuration_test_model_id, modeId },
 				getThreadId: () => "thread_1" as Id<"ai_chat_threads">,
+				getRunId: () => null,
+				modelCallIds: new Map(),
 				mcpTools: {},
 				mcpNotes: [],
 			});
@@ -4917,6 +4919,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					modeId: "agent",
 				},
 				getThreadId: () => "thread_1" as Id<"ai_chat_threads">,
+				getRunId: () => null,
+				modelCallIds: new Map(),
 				mcpTools: {},
 				mcpNotes: [],
 			});
@@ -5127,6 +5131,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					modeId: "agent",
 				},
 				getThreadId: () => "thread_1" as Id<"ai_chat_threads">,
+				getRunId: () => null,
+				modelCallIds: new Map(),
 				mcpTools: {},
 				mcpNotes: [],
 			});
@@ -5283,6 +5289,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 						membershipId: build_agent_configuration_test_membership_id,
 						args: { modelId: build_agent_configuration_test_model_id, modeId: "ask" },
 						getThreadId: () => "thread-1" as Id<"ai_chat_threads">,
+						getRunId: () => null,
+						modelCallIds: new Map(),
 						mcpTools: {},
 						mcpNotes: [],
 					});
@@ -5584,6 +5592,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				membershipId: build_agent_configuration_test_membership_id,
 				args: { modelId: build_agent_configuration_test_model_id, modeId: "agent" },
 				getThreadId: () => null,
+				getRunId: () => null,
+				modelCallIds: new Map(),
 				browserIntent: { webChoice: { provider: "cloud" }, selectionRevision: 0, policyRevision: 0 },
 				mcpTools: {},
 				mcpNotes: [],
@@ -5601,6 +5611,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				membershipId: build_agent_configuration_test_membership_id,
 				args: { modelId: build_agent_configuration_test_model_id, modeId: "agent" },
 				getThreadId: () => null,
+				getRunId: () => null,
+				modelCallIds: new Map(),
 				mcpTools: {},
 				mcpNotes: [],
 			});
@@ -5617,6 +5629,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				membershipId: build_agent_configuration_test_membership_id,
 				args: { modelId: build_agent_configuration_test_model_id, modeId: "ask" },
 				getThreadId: () => null,
+				getRunId: () => null,
+				modelCallIds: new Map(),
 				browserIntent: { webChoice: { provider: "cloud" }, selectionRevision: 0, policyRevision: 0 },
 				mcpTools: {},
 				mcpNotes: [],

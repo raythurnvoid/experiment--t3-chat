@@ -221,7 +221,7 @@ describe("save_image", () => {
 describe("ai_model_call_receipts_create", () => {
 	// The middleware only needs `runMutation`, so drive the real mutations through convex-test.
 	const middlewareFor = (t: ReturnType<typeof test_convex>, payer: Awaited<ReturnType<typeof setup>>["payer"]) =>
-		ai_model_call_receipts_create({ runMutation: t.mutation } as unknown as ActionCtx, payer);
+		ai_model_call_receipts_create({ runMutation: t.mutation } as unknown as ActionCtx, payer, null);
 
 	const modelCallIds = (t: ReturnType<typeof test_convex>) =>
 		t.run(async (ctx) =>
@@ -296,6 +296,7 @@ describe("ai_model_call_receipts_create", () => {
 				},
 			} as unknown as ActionCtx,
 			payer,
+			null,
 		);
 		// OpenRouter sends the id on every chunk and the model name in a part of its own.
 		const model = wrapLanguageModel({

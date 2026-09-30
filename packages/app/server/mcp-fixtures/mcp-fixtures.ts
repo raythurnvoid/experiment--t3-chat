@@ -289,6 +289,16 @@ export function mcp_fixtures_create() {
 				method: "tools/call",
 				handle: (body) => rpc_result(body.id, { content: [{ type: "text", text: "x".repeat(100 * 1024) }] }),
 			},
+			// Text over the 24 KiB inline limit, so the result is stored, and about 540 KiB of small nested
+			// rows. Indented JSON of the rows would pass the 2 MiB reservation.
+			"deep-structured": {
+				method: "tools/call",
+				handle: (body) =>
+					rpc_result(body.id, {
+						content: [{ type: "text", text: "x".repeat(30 * 1024) }],
+						structuredContent: { echoed: "rows", rows: Array.from({ length: 45_000 }, () => ({ v: [[1]] })) },
+					}),
+			},
 			// Half of a character, then emoji past the 64 KiB cut. Convex refuses a string with half a character.
 			"broken-text": {
 				method: "tools/call",

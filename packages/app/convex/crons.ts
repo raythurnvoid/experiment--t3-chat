@@ -43,6 +43,15 @@ crons.cron("recover expired activities", "*/5 * * * *", internal.activities.reco
 // Every 5 minutes — look up the usage of model calls whose request ended without saving it.
 crons.cron("recover model call usage", "*/5 * * * *", internal.ai_model_call_receipts.recover_due, {});
 
+// Every 5 minutes — end chat runs whose lease passed without a run end, for example a killed action.
+crons.cron("end expired chat runs", "*/5 * * * *", internal.ai_chat_runs.end_expired_runs, {});
+
+// Every 5 minutes — delete stored tool output uploads whose action died before attach.
+crons.cron("fail expired chat output uploads", "*/5 * * * *", internal.ai_chat_outputs.fail_expired_uploads, {});
+
+// Every 5 minutes — abort branch copies whose action stopped before it published them.
+crons.cron("abort expired chat branch copies", "*/5 * * * *", internal.ai_chat_thread_copies.abort_expired_copies, {});
+
 // Once hourly — reap staged file writes that were never published (crashed action, dead caller).
 crons.cron(
 	"cleanup expired file write stages",

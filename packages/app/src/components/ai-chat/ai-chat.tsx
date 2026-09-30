@@ -1179,6 +1179,7 @@ const AiChatContent = memo(function AiChatContent(props: AiChat_Props) {
 				onToggleFavouriteThread={controller.setThreadStarred}
 				onBranchThread={controller.branchChat}
 				onArchiveThread={controller.archiveThread}
+				onDeleteThread={controller.deleteThread}
 				onRemoveOptimisticThread={controller.removeOptimisticThread}
 				onNewChat={handleNewChat}
 			/>

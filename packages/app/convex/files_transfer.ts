@@ -210,6 +210,8 @@ async function db_get_run_memberships(
 		const thread = await ctx.db.get("ai_chat_threads", run.origin.threadId);
 		if (
 			!thread ||
+			thread.deletingAt !== undefined ||
+			thread.copyingAt !== undefined ||
 			thread.archived ||
 			thread.createdBy !== run.userId ||
 			thread.organizationId !== run.organizationId ||
@@ -1845,6 +1847,8 @@ export const start_for_agent = internalMutation({
 		if (
 			!membership?.active ||
 			!thread ||
+			thread.deletingAt !== undefined ||
+			thread.copyingAt !== undefined ||
 			thread.createdBy !== membership.userId ||
 			thread.organizationId !== membership.organizationId ||
 			thread.workspaceId !== membership.workspaceId
@@ -1989,6 +1993,8 @@ async function db_get_agent_run(
 	if (
 		!membership?.active ||
 		!thread ||
+		thread.deletingAt !== undefined ||
+		thread.copyingAt !== undefined ||
 		!run ||
 		thread.createdBy !== membership.userId ||
 		thread.organizationId !== membership.organizationId ||
@@ -2231,6 +2237,8 @@ export const get_current_activity_for_agent = internalQuery({
 		if (
 			!membership?.active ||
 			!thread ||
+			thread.deletingAt !== undefined ||
+			thread.copyingAt !== undefined ||
 			thread.createdBy !== membership.userId ||
 			thread.organizationId !== membership.organizationId ||
 			thread.workspaceId !== membership.workspaceId

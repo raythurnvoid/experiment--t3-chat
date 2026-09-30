@@ -7411,7 +7411,13 @@ export const get_pending_source_summary = query({
 		});
 		if (!destination) return null;
 		const thread = await ctx.db.get("ai_chat_threads", args.threadId);
-		if (!thread || thread.createdBy !== userAuth.id) return null;
+		if (
+			!thread ||
+			thread.deletingAt !== undefined ||
+			thread.copyingAt !== undefined ||
+			thread.createdBy !== userAuth.id
+		)
+			return null;
 		const organizationId = ctx.db.normalizeId("organizations", thread.organizationId);
 		const workspaceId = ctx.db.normalizeId("organizations_workspaces", thread.workspaceId);
 		if (!organizationId || !workspaceId) return null;
@@ -7508,6 +7514,8 @@ export const get_chat_pending_updates_summary = query({
 		const thread = await ctx.db.get("ai_chat_threads", threadId);
 		if (
 			!thread ||
+			thread.deletingAt !== undefined ||
+			thread.copyingAt !== undefined ||
 			thread.createdBy !== userAuth.id ||
 			thread.organizationId !== current.organizationId ||
 			thread.workspaceId !== current.workspaceId

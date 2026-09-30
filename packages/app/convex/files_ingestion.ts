@@ -227,6 +227,17 @@ export async function files_ingestion_db_delete_receipt(ctx: MutationCtx, receip
 	await ctx.db.delete("files_ingestion_receipts", receipt._id);
 }
 
+/**
+ * Close a preparing receipt. The receipt stays for its TTL, so a late reply still finds it.
+ */
+export async function files_ingestion_db_abort_receipt(ctx: MutationCtx, receipt: Doc<"files_ingestion_receipts">) {
+	await retire_preparation(ctx, receipt);
+	await ctx.db.patch("files_ingestion_receipts", receipt._id, {
+		state: { kind: "aborted" },
+		expiresAt: Date.now() + RECEIPT_TTL_MS,
+	});
+}
+
 function prepared_result(receipt: Doc<"files_ingestion_receipts">) {
 	if (receipt.state.kind !== "preparing")
 		throw should_never_happen("Ingestion receipt is not preparing", { receiptId: receipt._id });
@@ -611,11 +622,7 @@ export const abort_file = internalMutation({
 			receipt.state.attemptId !== args.attemptId
 		)
 			return null;
-		await retire_preparation(ctx, receipt);
-		await ctx.db.patch("files_ingestion_receipts", receipt._id, {
-			state: { kind: "aborted" },
-			expiresAt: Date.now() + RECEIPT_TTL_MS,
-		});
+		await files_ingestion_db_abort_receipt(ctx, receipt);
 		return null;
 	},
 });
@@ -630,11 +637,7 @@ export const cleanup_expired_receipts = internalMutation({
 			.take(CLEANUP_BATCH_SIZE);
 		for (const receipt of expired) {
 			if (receipt.state.kind === "preparing") {
-				await retire_preparation(ctx, receipt);
-				await ctx.db.patch("files_ingestion_receipts", receipt._id, {
-					state: { kind: "aborted" },
-					expiresAt: Date.now() + RECEIPT_TTL_MS,
-				});
+				await files_ingestion_db_abort_receipt(ctx, receipt);
 			} else {
 				await ctx.db.delete("files_ingestion_receipts", receipt._id);
 			}

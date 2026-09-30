@@ -50,6 +50,7 @@ import {
 	files_ingestion_MAX_BASE64_CHARS,
 } from "./files-ingestion.ts";
 import type { ai_chat_Observation } from "./ai-chat-file-tools.ts";
+import { ai_chat_tool_output_keep, ai_chat_tool_output_reserve } from "./ai-chat-tool-output.ts";
 import { files_normalize_ai_edit_content, files_normalize_lf_newlines } from "./files.ts";
 import {
 	files_get_normalized_node_path_segments,
@@ -581,6 +582,11 @@ export function ai_chat_tool_create_bash(
 		membershipId: Id<"organizations_workspaces_users">;
 		membershipLifetime: number;
 		getThreadId: () => Id<"ai_chat_threads"> | null;
+		getRunId: () => Id<"ai_chat_runs"> | null;
+		/**
+		 * The provider request that asked for a tool call. A stored output is keyed by it.
+		 */
+		getModelCallId: (toolCallId: string) => string | null;
 		getSourceMessageId?: () => Id<"ai_chat_threads_messages_aisdk_5"> | null;
 		browserIntent?: browser_Intent | null;
 		getWorkspaceContext?: () => ai_chat_context_Context | null;
@@ -610,6 +616,7 @@ export function ai_chat_tool_create_bash(
 			cwd, variables, options and functions persist per shell across tool calls in the same chat. If the previous Bash output already shows the desired cwd, use bare or relative commands instead of repeating cd.
 			Shells: the shell field picks a named shell (lowercase letters, digits, - and _, at most 32 characters; omit it for default). A new name creates the shell; a chat has at most 10 shells and none can be deleted. Each shell keeps its own cwd, variables, functions and options between calls, in Ask mode too, and each new shell starts in the current workspace path.
 			Transcripts: every call and every finished background job appends its full output to /shells/<name>/transcript, a read-only rolling 1 MiB log per shell. Read it with tail, head -c or grep, not cat; ls -l, stat and find on it load the whole file. The transcript is for output; jobs is for status.
+			Large results: a Bash or MCP result over 24 KiB is stored in full, and you get its first 16 KiB, its last 2 KiB and a line naming /tool-output/<id>.txt. That folder is read-only and lists the newest 100 stored results of this chat. Page through one with sed -n, head -c, tail or grep; their output is cut like any other.
 			Large Copy: use a plain background command, cp -R src dest &, or a plain top-level cp in { first; cp -R src dest; next; } &. Copy has no total root, item, or linked-media count limit. It works in small pages and may release its shell worker while waiting. The next statement waits for Copy's real result. Exit 0 means ready for review, not saved. Only verified Copy waiting time is excluded from the job's 24-hour age; repeated Copy waits do not reset its ordinary allowance. Loops, functions, logical chains, pipelines, redirects, nested shells, and foreground copies do not use this paged Copy: their Copy must finish within the current call's or job run's time limit, or it is stopped and reports 124. Select linked app images and videos explicitly, either by naming them or their containing folder. Full-folder Copy refuses an unreadable included saved child; it does not silently skip it. Copy is a paged scan, not a snapshot of the whole tree at one instant. Completed output stays if later work fails or stops.
 			Background jobs: cmd & starts a background job and is the only way to start one; cmd1 && cmd2 is not a background job, and the shell never backgrounds a command by itself. & binds to the last statement only, so echo a; sleep 1 & backgrounds sleep 1 and runs echo a in the foreground; to put several commands in one job write { cmd1; cmd2; } & or cmd1 && cmd2 &. A job starts in the cwd at the &, so cd docs; ls & lists docs. The launch line goes to stderr, stdout stays empty, $? is 0, and $! is the job number in that call only (0 in the next call; use jobs to find a job later). A job gets a copy of the shell state and cannot change the shell (cd or x=1 inside a job does not reach the shell); extra file descriptors are closed with a warning. A job runs a script and ends: no servers, no ports, no curl localhost. A job's /tmp is a private copy that is dropped at a pause and at the end; see the /tmp rules above for where a job's files and output go. A job runs one top-level statement at a time, and each run of it has an 8-minute budget and 2000 commands: the run is stopped 30 seconds before the end of the budget so the result can be stored, and a minute before that the job pauses after the current statement and continues in a new run with its variables, functions, cwd and $!, so a script of several statements is not bound by that budget, but one statement is (a single loop or command must finish within 6 minutes 30 seconds, or it is cut off at 7 minutes 30 seconds and the job reports 124). A job has at most 24 hours of ordinary compute, sleep, and other waiting; verified durable Copy waits are excluded; past that it stops at the next statement and reports 124 too. The 2000 commands count every command the run executes, loop bodies included, and a run that reaches the cap ends with an error. The statements of a job written as { cmd1; cmd2; } & count as top-level. A top-level sleep N with a literal N of 5 seconds or more pauses the job for N seconds (at most one hour) without holding a worker; a shorter sleep, sleep $var, a sleep with a redirection or with an assignment in front of it, ! sleep N, time sleep N, a sleep joined by && or ||, and a sleep inside a loop, a pipeline or a function all run normally and hold the worker for that time. A paused job shows as queued in jobs and in Notifications, the transcript gets one entry per run of the job, and jobs -o N shows the head of the whole job's output. At most 10 of your own jobs in this workspace can be queued, running or stopping at once; a refused launch prints a line starting with "bash: cannot start a job: " on stderr, $? is 1, and set -e stops the call. After 3 refused launches in a row the call stops asking and refuses the rest locally, until a launch works or a wait that found a job live and then saw it end starts the count again. Waiting for a job that had already ended does not start the count again, and neither does waiting for a job of another chat, which wait cannot name at all: start those jobs in a later call instead. A wait does not make a refused script, state, or stopping launch succeed; those still fail at the door. Only the 10-jobs refusal is worth waiting out; a script over 64 KiB, a shell state over 128 KiB, and a launch from a job that is already stopping are refused every time. Two jobs copying at once share one copy lane, so put sequential cp or mv commands in one job. While the lane is busy, a plain background cp keeps waiting for up to about 10 minutes, then its whole job ends; other cp and mv forms in a job wait up to 60 s, then fail with exit 1. A job may start jobs; they are independent, and stopping a job does not stop the jobs it started. jobs lists the live jobs of this chat and jobs -a the newest 8; both print status words and both exit 3 while any listed job is live. jobs -o N prints the stored stdout then stderr of job N, then one final [job N exit C] line on stderr that is the job's exit code, the same code wait reports, and not part of its own output (32k characters each with a [truncated] line, at most two reads per call; the read itself exits 0, or 1 when the job is unknown or has no stored output, then read the transcript). While job N runs, jobs -o N prints the output it has produced so far (updated every 5 seconds, the same 32k characters per stream) with a final [job N running] line instead, and exits 3; a job waiting to continue after a pause prints [job N queued] and a job asked to stop prints [job N stopping], and the line is printed even when the job has produced nothing yet; the transcript gets the full output when the job ends. wait waits up to 30 s for the jobs this call started (0 at once when it started none); wait N waits for the named jobs, which may be any of your jobs in this chat, at most 12 at a time; wait -t SECONDS changes the bound. wait is a shell builtin, so which wait finds nothing even though wait works. wait normally returns 3 (still running) because a job may take minutes; run jobs in a later call instead of waiting again. Otherwise wait returns the worst exit code of the waited jobs. A job's own script can exit 3, 124 or 143 too. A 3 stays the script's own code, so ask jobs for the status word instead of looping on 3. A script's own 124 or 143 becomes the job's outcome everywhere: jobs then says timed out or stopped, and nothing can tell that apart from a real timeout or stop. The exit line jobs -o prints comes from the same rule, so a job settled as timed out prints 124 even when its script ended with another code. Every finished job already posts a system message and wakes you. In Agent mode, set wakeOnJobFinish: true only when wait should end this turn instead of polling. In that call it prints bash: waiting for job N on stderr, exits 3, and you must end the turn with a short status; the job's finish starts your next run once your turn has ended, and a job that finishes before that leaves only the chat message. kill N asks a job to stop; a stopped job reports 143 (status stopped), a job that used its whole budget reports 124 (timed out). When a job finishes, its result lands in the chat as a system message with its number, shell, exit code and output head, so you learn the outcome without polling. Stopping the chat leaves jobs running; the Notifications panel lists every job with its Stop button. fg, bg, disown and suspend are unavailable (127).
 			App-mount limitations apply only to paths under ${currentWorkspacePath} or ${appMountPath}. Do not describe them as global Bash limitations. If a command touches only /tmp or stdin, use normal scratch commands; if it touches the app mount, use the app-aware command forms below.
@@ -677,24 +684,45 @@ export function ai_chat_tool_create_bash(
 				throw new Error("Cannot run bash before the chat thread has been created.");
 			}
 
-			const result = await ctx.runAction(internal.bash.run, {
-				organizationId: ctxData.organizationId,
-				workspaceId: ctxData.workspaceId,
-				threadId,
+			// Reserve space for the full output before the command runs. Refused space stops the call
+			// here, before the command can change anything.
+			const reservation = await ai_chat_tool_output_reserve(ctx, {
+				source: {
+					organizationId: ctxData.organizationId,
+					workspaceId: ctxData.workspaceId,
+					userId: ctxData.userId,
+					threadId,
+					membershipId: ctxData.membershipId,
+					membershipLifetime: ctxData.membershipLifetime,
+				},
+				getRunId: ctxData.getRunId,
+				getModelCallId: ctxData.getModelCallId,
 				toolCallId: execution.toolCallId,
-				userId: ctxData.userId,
-				membershipId: ctxData.membershipId,
-				membershipLifetime: ctxData.membershipLifetime,
-				command: args.command,
-				organizationName: ctxData.organizationName,
-				workspaceName: ctxData.workspaceName,
-				allowDbFilesMkdir: options.allowDbFilesMkdir,
-				shellName: args.shell ?? "default",
-				...(ctxData.browserIntent && ctxData.getSourceMessageId?.()
-					? { browserIntent: ctxData.browserIntent, sourceMessageId: ctxData.getSourceMessageId()! }
-					: {}),
-				wakeAgent: options.jobWakeup && args.wakeOnJobFinish ? { modelId: options.jobWakeup.modelId } : null,
+				tool: "bash",
 			});
+			const result = await ctx
+				.runAction(internal.bash.run, {
+					organizationId: ctxData.organizationId,
+					workspaceId: ctxData.workspaceId,
+					threadId,
+					toolCallId: execution.toolCallId,
+					userId: ctxData.userId,
+					membershipId: ctxData.membershipId,
+					membershipLifetime: ctxData.membershipLifetime,
+					command: args.command,
+					organizationName: ctxData.organizationName,
+					workspaceName: ctxData.workspaceName,
+					allowDbFilesMkdir: options.allowDbFilesMkdir,
+					shellName: args.shell ?? "default",
+					...(ctxData.browserIntent && ctxData.getSourceMessageId?.()
+						? { browserIntent: ctxData.browserIntent, sourceMessageId: ctxData.getSourceMessageId()! }
+						: {}),
+					wakeAgent: options.jobWakeup && args.wakeOnJobFinish ? { modelId: options.jobWakeup.modelId } : null,
+					output: reservation,
+				})
+				.finally(() =>
+					ctx.runMutation(internal.ai_chat_outputs.release_reservation, { objectId: reservation.objectId }),
+				);
 			// `wait` stopped polling for a job whose finish wakes the agent: the chat run ends the turn.
 			if (result.metadata.waitingForJobs) options.jobWakeup?.onWaiting();
 
@@ -1681,7 +1709,6 @@ export const ai_chat_tool_MCP_TOOL_NAME_MAX_LENGTH = 64;
 const MCP_CALL_TIMEOUT_MS = 60_000;
 const MCP_SIGN_IN_BUSY_MESSAGE = "Press is renewing the sign-in of this MCP server. Try again.";
 const MCP_NO_TIME_MESSAGE = "This chat run has no time left for an MCP call.";
-const MCP_OUTPUT_MAX_BYTES = 64 * 1024;
 const MCP_TEXT_ENCODER = new TextEncoder();
 
 /**
@@ -1761,40 +1788,85 @@ function mcp_clean_text(text: string, secrets: string[]) {
 }
 
 /**
- * The text the model reads for one MCP result, cleaned by `mcp_clean_text` and cut to fit.
+ * The text the model reads for one MCP result, cleaned by `mcp_clean_text`. It is not cut: a result
+ * over the inline size is stored, and the model reads a preview of it.
  */
-function mcp_result_output(result: mcp_client_NormalizedResult, secrets: string[]) {
+function mcp_result_text(result: mcp_client_NormalizedResult, secrets: string[]) {
 	const lines: string[] = [];
 	if (result.isError) {
 		lines.push("The tool reported an error:");
 	}
 	for (const block of result.blocks) {
-		lines.push(block.kind === "text" ? block.text : `[${block.type} omitted: ${block.mimeType}, ${block.bytes} bytes]`);
+		switch (block.kind) {
+			case "text":
+				lines.push(block.text);
+				break;
+			case "resource_link":
+				lines.push(
+					`resource link: ${block.uri} (${block.name}, ${block.mimeType ?? "unknown type"}, ${block.size ?? "unknown size"})`,
+				);
+				break;
+			case "resource":
+				lines.push(`resource ${block.uri}:\n${block.text}`);
+				break;
+			case "omitted":
+				lines.push(`[${block.type} omitted: ${block.mimeType}, ${block.bytes} bytes]`);
+				break;
+		}
 	}
 	if (result.structuredNote) {
 		lines.push(`[${result.structuredNote}]`);
 	}
-	if (result.structured !== null && !result.blocks.some((block) => block.kind === "text")) {
+	// Many servers also put the same JSON in a text block. Send structured output only without text.
+	if (result.structured !== null && result.blocks.every((block) => block.kind === "omitted")) {
 		lines.push(JSON.stringify(result.structured));
 	}
 
-	const output = mcp_clean_text(lines.join("\n"), secrets);
+	return mcp_clean_text(lines.join("\n"), secrets);
+}
 
-	// Cut to 64 KiB of JSON-escaped text, so the result fits the 72 KiB each call reserves.
-	const fullBytes = mcp_json_bytes(output);
-	if (fullBytes <= MCP_OUTPUT_MAX_BYTES) {
-		return { output, truncated: false };
-	}
-	let start = 0;
-	let end = output.length;
-	while (start < end) {
-		const middle = Math.ceil((start + end) / 2);
-		if (mcp_json_bytes(output.slice(0, middle)) <= MCP_OUTPUT_MAX_BYTES - 128) start = middle;
-		else end = middle - 1;
-	}
-	// The cut never splits a character: JSON escapes half of one as 6 bytes, more than the whole one.
-	const cut = output.slice(0, start);
-	return { output: `${cut}\n[output cut from ${fullBytes} to ${mcp_json_bytes(cut)} bytes]`, truncated: true };
+/**
+ * The full MCP result as stored JSON (`mcp_result_v1`). Clean every string and key before
+ * serializing, because JSON escaping could hide a secret from a text search. Then clean the text
+ * again. Keep the JSON compact: indentation can grow a 1 MiB reply past its 2 MiB reservation.
+ */
+function mcp_result_stored_text(result: mcp_client_NormalizedResult, secrets: string[]) {
+	const clean = (value: unknown): unknown => {
+		if (typeof value === "string") return mcp_clean_text(value, secrets);
+		// Numbers can shorten a secret into exponent form. Compare the value too.
+		if (typeof value === "number") {
+			return secrets.some((secret) => secret.length >= 8 && Number(secret) === value) ? "[secret]" : value;
+		}
+		if (Array.isArray(value)) return value.map(clean);
+		if (typeof value === "object" && value !== null) {
+			return Object.fromEntries(
+				Object.entries(value).map(([key, child]) => [mcp_clean_text(key, secrets), clean(child)]),
+			);
+		}
+		return value;
+	};
+
+	const stored = {
+		format: "mcp_result_v1",
+		isError: result.isError,
+		blocks: result.blocks.map((block) => {
+			switch (block.kind) {
+				case "text":
+					return { text: block.text };
+				case "resource_link": {
+					const { kind: _kind, ...resourceLink } = block;
+					return { resourceLink };
+				}
+				case "resource":
+					return { resource: { uri: block.uri, text: block.text } };
+				case "omitted":
+					return { omitted: { type: block.type, mimeType: block.mimeType, bytes: block.bytes } };
+			}
+		}),
+		structured: result.structured,
+		structuredNote: result.structuredNote,
+	};
+	return mcp_clean_text(JSON.stringify(clean(stored)), secrets);
 }
 
 /**
@@ -1813,6 +1885,11 @@ export async function ai_chat_tool_create_mcp_tools(
 		membershipId: Id<"organizations_workspaces_users">;
 		membershipLifetime: number;
 		getThreadId: () => Id<"ai_chat_threads"> | null;
+		getRunId: () => Id<"ai_chat_runs"> | null;
+		/**
+		 * The provider request that asked for a tool call. A stored output is keyed by it.
+		 */
+		getModelCallId: (toolCallId: string) => string | null;
 		/**
 		 * When the chat run lease ends. After that another run can take the thread, so no call may run longer.
 		 */
@@ -1943,118 +2020,147 @@ export async function ai_chat_tool_create_mcp_tools(
 						// another run may already own the thread.
 						if (ctxData.runDeadline <= Date.now()) throw new Error(MCP_NO_TIME_MESSAGE);
 
-						const startedAt = Date.now();
-						let called = await callWith(access?.status === "connected" ? access.accessToken : null);
+						// Reserve space for the full result before the server does any work. Refused space
+						// stops the call here, before it can have an effect.
+						const reservation = await ai_chat_tool_output_reserve(ctx, {
+							source,
+							getRunId: ctxData.getRunId,
+							getModelCallId: ctxData.getModelCallId,
+							toolCallId: options.toolCallId,
+							tool: "mcp",
+						});
+						try {
+							const startedAt = Date.now();
+							let called = await callWith(access?.status === "connected" ? access.accessToken : null);
 
-						const recordCall = async (outcome: string, bytesIn: number, result: ai_chat_McpToolOutput | null) => {
-							await ctx.runMutation(internal.plugins_mcp.record_call, {
-								source,
-								target: server.target,
-								toolName: mcpTool.name,
-								startedAt,
-								durationMs: Date.now() - startedAt,
-								bytesIn,
-								bytesOut: result ? mcp_json_bytes(result) : 0,
-								outcome,
-							});
-						};
+							const recordCall = async (outcome: string, bytesIn: number, result: ai_chat_McpToolOutput | null) => {
+								await ctx.runMutation(internal.plugins_mcp.record_call, {
+									source,
+									target: server.target,
+									toolName: mcpTool.name,
+									startedAt,
+									durationMs: Date.now() - startedAt,
+									bytesIn,
+									bytesOut: result ? mcp_json_bytes(result) : 0,
+									outcome,
+								});
+							};
 
-						// A refused token gets one refresh and one more try. The server refused the first request
-						// before doing any work, so the retry is safe. Check the call again first: the owner may have
-						// blocked the server during the refresh.
-						if (called._nay?.name === "auth_required" && access?.status === "connected" && !access.refreshed) {
-							access = await getAccess({ grantId: access.grantId, version: access.version });
-							if (access.status === "busy" || access.status === "failed") {
+							// A refused token gets one refresh and one more try. The server refused the first request
+							// before doing any work, so the retry is safe. Check the call again first: the owner may have
+							// blocked the server during the refresh.
+							if (called._nay?.name === "auth_required" && access?.status === "connected" && !access.refreshed) {
+								access = await getAccess({ grantId: access.grantId, version: access.version });
+								if (access.status === "busy" || access.status === "failed") {
+									await recordCall(called._nay.name, 0, null);
+									throw new Error(access.status === "busy" ? MCP_SIGN_IN_BUSY_MESSAGE : access.message);
+								}
+								if (access.status === "connected") {
+									const retryRecheck = await recheckCall();
+									if (retryRecheck._nay) {
+										await recordCall(called._nay.name, 0, null);
+										throw new Error(retryRecheck._nay.message);
+									}
+									if (ctxData.runDeadline <= Date.now()) {
+										await recordCall(called._nay.name, 0, null);
+										throw new Error(MCP_NO_TIME_MESSAGE);
+									}
+									called = await callWith(access.accessToken);
+								}
+							}
+							// A token refused right after a refresh will not work again. The member must connect again.
+							if (called._nay?.name === "auth_required" && access?.status === "connected") {
+								await ctx.runMutation(internal.plugins_mcp_oauth.mark_refused, {
+									grantId: access.grantId,
+									version: access.version,
+								});
+							}
+							const stepUpScope = mcp_client_step_up_scope(called._nay);
+							if (stepUpScope !== null && server.auth === "oauth") {
+								await ctx.runMutation(internal.plugins_mcp_oauth.record_step_up, {
+									userId: ctxData.userId,
+									target: server.target,
+									scope: stepUpScope,
+								});
+							}
+
+							// Only a plugin server with OAuth, or a member's own server with no headers (its first
+							// sign-in pins it), can start a sign-in. Any other server that refuses the call has
+							// nothing to connect, so a Connect card would only say it cannot be connected.
+							if (
+								(called._nay?.name === "auth_required" || called._nay?.name === "insufficient_scope") &&
+								server.auth !== "oauth" &&
+								!(server.kind === "custom" && server.auth === "none")
+							) {
 								await recordCall(called._nay.name, 0, null);
-								throw new Error(access.status === "busy" ? MCP_SIGN_IN_BUSY_MESSAGE : access.message);
+								throw new Error(
+									server.kind === "custom"
+										? "This server refused its headers. Check them on the MCP servers page."
+										: "This MCP server refused the plugin's access. Ask an admin to check the plugin and its secrets.",
+								);
 							}
-							if (access.status === "connected") {
-								const retryRecheck = await recheckCall();
-								if (retryRecheck._nay) {
-									await recordCall(called._nay.name, 0, null);
-									throw new Error(retryRecheck._nay.message);
-								}
-								if (ctxData.runDeadline <= Date.now()) {
-									await recordCall(called._nay.name, 0, null);
-									throw new Error(MCP_NO_TIME_MESSAGE);
-								}
-								called = await callWith(access.accessToken);
+
+							// A thrown error reaches the chat as text only. The chat needs the target to show a
+							// Connect card, so a sign-in answer returns a result instead.
+							if (called._nay?.name === "auth_required" || called._nay?.name === "insufficient_scope") {
+								const needsMoreAccess = called._nay.name === "insufficient_scope";
+								const result: ai_chat_McpToolOutput = {
+									title: mcpTool.name,
+									output: needsMoreAccess
+										? "This MCP server needs more access. Ask the user to reconnect it."
+										: "This MCP server needs sign-in. Ask the user to connect it.",
+									metadata: {
+										kind: "mcp_auth_needed",
+										target: server.target,
+										source: server.source,
+										toolName: mcpTool.name,
+										reason: needsMoreAccess ? "needs_more_access" : "needs_sign_in",
+									},
+								};
+								await recordCall("auth_needed", 0, result);
+								return result;
 							}
-						}
-						// A token refused right after a refresh will not work again. The member must connect again.
-						if (called._nay?.name === "auth_required" && access?.status === "connected") {
-							await ctx.runMutation(internal.plugins_mcp_oauth.mark_refused, {
-								grantId: access.grantId,
-								version: access.version,
-							});
-						}
-						const stepUpScope = mcp_client_step_up_scope(called._nay);
-						if (stepUpScope !== null && server.auth === "oauth") {
-							await ctx.runMutation(internal.plugins_mcp_oauth.record_step_up, {
-								userId: ctxData.userId,
-								target: server.target,
-								scope: stepUpScope,
-							});
-						}
+							if (called._nay) {
+								await recordCall(called._nay.name, 0, null);
+								// Fixed Press text only. Text from the server never reaches `_nay.message`.
+								throw new Error(called._nay.message);
+							}
 
-						// Only a plugin server with OAuth, or a member's own server with no headers (its first
-						// sign-in pins it), can start a sign-in. Any other server that refuses the call has
-						// nothing to connect, so a Connect card would only say it cannot be connected.
-						if (
-							(called._nay?.name === "auth_required" || called._nay?.name === "insufficient_scope") &&
-							server.auth !== "oauth" &&
-							!(server.kind === "custom" && server.auth === "none")
-						) {
-							await recordCall(called._nay.name, 0, null);
-							throw new Error(
-								server.kind === "custom"
-									? "This server refused its headers. Check them on the MCP servers page."
-									: "This MCP server refused the plugin's access. Ask an admin to check the plugin and its secrets.",
-							);
-						}
-
-						// A thrown error reaches the chat as text only. The chat needs the target to show a
-						// Connect card, so a sign-in answer returns a result instead.
-						if (called._nay?.name === "auth_required" || called._nay?.name === "insufficient_scope") {
-							const needsMoreAccess = called._nay.name === "insufficient_scope";
+							const inlineText = mcp_result_text(called._yay.result, callSecrets);
+							const kept = await ai_chat_tool_output_keep(ctx, {
+								reservation,
+								source,
+								inlineText,
+								storedText: mcp_result_stored_text(called._yay.result, callSecrets),
+								contentType: "application/json",
+								sourceBytes: called._yay.result.bytesIn,
+								cutBy: [
+									...(called._yay.result.blocks.some((block) => block.kind === "omitted")
+										? (["mcp_binary_omitted"] as const)
+										: []),
+									...(called._yay.result.structuredNote ? (["mcp_structured_dropped"] as const) : []),
+								],
+							});
 							const result: ai_chat_McpToolOutput = {
 								title: mcpTool.name,
-								output: needsMoreAccess
-									? "This MCP server needs more access. Ask the user to reconnect it."
-									: "This MCP server needs sign-in. Ask the user to connect it.",
+								output: kept.output,
 								metadata: {
-									kind: "mcp_auth_needed",
+									kind: "mcp_result",
 									target: server.target,
 									source: server.source,
 									toolName: mcpTool.name,
-									reason: needsMoreAccess ? "needs_more_access" : "needs_sign_in",
+									isError: called._yay.result.isError,
+									// The model got a preview: the stored text, or a note that it could not be stored.
+									truncated: kept.output !== inlineText,
+									bytesIn: called._yay.result.bytesIn,
+									...(kept.ref ? { output: kept.ref } : {}),
 								},
 							};
-							await recordCall("auth_needed", 0, result);
+							await recordCall(called._yay.result.isError ? "tool_error" : "ok", called._yay.result.bytesIn, result);
 							return result;
+						} finally {
+							await ctx.runMutation(internal.ai_chat_outputs.release_reservation, { objectId: reservation.objectId });
 						}
-						if (called._nay) {
-							await recordCall(called._nay.name, 0, null);
-							// Fixed Press text only. Text from the server never reaches `_nay.message`.
-							throw new Error(called._nay.message);
-						}
-
-						const shaped = mcp_result_output(called._yay.result, callSecrets);
-						const result: ai_chat_McpToolOutput = {
-							title: mcpTool.name,
-							output: shaped.output,
-							metadata: {
-								kind: "mcp_result",
-								target: server.target,
-								source: server.source,
-								toolName: mcpTool.name,
-								isError: called._yay.result.isError,
-								truncated: shaped.truncated,
-								bytesIn: called._yay.result.bytesIn,
-							},
-						};
-						await recordCall(called._yay.result.isError ? "tool_error" : "ok", called._yay.result.bytesIn, result);
-						return result;
 					},
 				}),
 				// `dynamicTool` has no `strict` option, so set it on the result. @ai-sdk/openai sends

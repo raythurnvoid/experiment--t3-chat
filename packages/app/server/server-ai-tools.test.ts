@@ -59,6 +59,8 @@ const server_ai_tools_test_ctx_data = {
 	membershipLifetime: 3,
 	canWriteFiles: true,
 	getThreadId: () => server_ai_tools_test_thread_id,
+	getRunId: () => "run_1" as Id<"ai_chat_runs">,
+	getModelCallId: () => "model_call_1",
 } as const;
 const server_ai_tools_test_source = {
 	organizationId: server_ai_tools_test_ctx_data.organizationId,
@@ -106,11 +108,16 @@ const makeCtx = (
 		}
 		return await runQueryImpl(ref, queryArgs);
 	});
-	const runMutation = vi.fn(
+	const runMutationImpl =
 		args?.runMutationImpl ??
-			(async (ref: Parameters<ActionCtx["runMutation"]>[0]) =>
-				getFunctionName(ref) === "public_api:create_code_grants" ? { _yay: { personalIsCurrent: false } } : null),
-	);
+		(async (ref: Parameters<ActionCtx["runMutation"]>[0]) =>
+			getFunctionName(ref) === "public_api:create_code_grants" ? { _yay: { personalIsCurrent: false } } : null);
+	// Storing tools reserve output space before they run and release it after.
+	const runMutation = vi.fn(async (ref: Parameters<ActionCtx["runMutation"]>[0], mutationArgs: unknown) => {
+		if (getFunctionName(ref) === "ai_chat_outputs:reserve") return { _yay: "output_1" };
+		if (getFunctionName(ref) === "ai_chat_outputs:release_reservation") return null;
+		return await runMutationImpl(ref, mutationArgs);
+	});
 	const runAction = vi.fn(args?.runActionImpl ?? runQueryImpl);
 	const getUserIdentity = vi.fn(async () => args?.userIdentity ?? server_ai_tools_test_user_identity_default);
 	const ctx = {
@@ -3490,6 +3497,8 @@ describe("ai_chat_tool_create_mcp_tools", () => {
 				membershipId: "membership" as Id<"organizations_workspaces_users">,
 				membershipLifetime: 1,
 				getThreadId: () => null,
+				getRunId: () => null,
+				getModelCallId: () => null,
 				runDeadline: Date.now() + 60_000,
 			},
 			[server],

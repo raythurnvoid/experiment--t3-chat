@@ -835,6 +835,17 @@ async function call_echo(
 	if (tools._nay) throw new Error(tools._nay.message);
 
 	return await t.action(async (ctx) => {
+		// Each call reserves output space against a running chat run.
+		const runId = await ctx.runMutation(internal.ai_chat.thread_run_begin, {
+			source: {
+				organizationId: member.organizationId,
+				workspaceId: member.workspaceId,
+				userId: member.userId,
+				threadId: thread._yay.threadId,
+				membershipId: member.membershipId,
+				membershipLifetime: captured._yay.membershipLifetime,
+			},
+		});
 		const modelTools = await ai_chat_tool_create_mcp_tools(
 			ctx,
 			{
@@ -844,6 +855,8 @@ async function call_echo(
 				membershipId: member.membershipId,
 				membershipLifetime: captured._yay.membershipLifetime,
 				getThreadId: () => thread._yay.threadId,
+				getRunId: () => runId,
+				getModelCallId: () => "model_call_test",
 				runDeadline: Date.now() + 60_000,
 			},
 			[{ ...server, headers: [], secretValues: [], discover: tools._yay.discover, tools: tools._yay.tools }],

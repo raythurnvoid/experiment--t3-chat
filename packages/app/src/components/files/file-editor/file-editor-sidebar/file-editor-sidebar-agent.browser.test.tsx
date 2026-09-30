@@ -45,6 +45,7 @@ vi.mock("convex/react", async (importOriginal) => {
 			};
 		},
 		useMutation: () => mocks.mutation,
+		useAction: () => mocks.mutation,
 		useQuery: (query: FunctionReference<"query">, args: { threadId?: string } | "skip") => {
 			const messageStatusByThreadId = useSyncExternalStore(
 				(listener) => {

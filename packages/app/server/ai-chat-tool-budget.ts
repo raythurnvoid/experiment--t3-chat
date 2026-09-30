@@ -16,7 +16,75 @@ export function ai_chat_message_fits_storage(message: unknown) {
 }
 
 export function ai_chat_tool_budget_create() {
-	return { remainingBytes: 384 * 1024, reservedInFlightBytes: 0, exhausted: false };
+	return {
+		remainingBytes: 384 * 1024,
+		reservedInFlightBytes: 0,
+		/**
+		 * Set when a call was refused or cut for space. The route then makes the next step the last one.
+		 */
+		exhausted: false,
+		/**
+		 * Calls waiting for space, oldest first. Waiting calls hold no space.
+		 */
+		queue: [] as Array<{ costBytes: number; reservedBytes: number; admit: (admitted: boolean) => void }>,
+	};
+}
+
+/**
+ * Give space to the waiting calls in order. A new call never passes a waiting call.
+ */
+function admit_waiting_calls(budget: ReturnType<typeof ai_chat_tool_budget_create>) {
+	while (budget.queue.length > 0) {
+		const head = budget.queue[0]!;
+		// Reserve for the head before it wakes, so a call that starts later cannot take its space.
+		if (budget.remainingBytes >= head.costBytes) {
+			budget.queue.shift();
+			budget.remainingBytes -= head.costBytes;
+			budget.reservedInFlightBytes += head.reservedBytes;
+			head.admit(true);
+			continue;
+		}
+		// The head cannot fit even after every running call gives its reserve back. Refuse it and
+		// look at the next call, which may be smaller.
+		if (budget.remainingBytes + budget.reservedInFlightBytes < head.costBytes) {
+			budget.queue.shift();
+			budget.exhausted = true;
+			head.admit(false);
+			continue;
+		}
+		return;
+	}
+}
+
+/**
+ * Wait in the queue until the call has space. Resolves `"refused"` when it can never fit and
+ * `"stopped"` when Stop lands while it waits.
+ */
+function wait_for_space(
+	budget: ReturnType<typeof ai_chat_tool_budget_create>,
+	args: { costBytes: number; reservedBytes: number; abortSignal: AbortSignal | undefined },
+) {
+	return new Promise<"admitted" | "refused" | "stopped">((resolve) => {
+		const waiter = {
+			costBytes: args.costBytes,
+			reservedBytes: args.reservedBytes,
+			admit: (admitted: boolean) => {
+				args.abortSignal?.removeEventListener("abort", handleAbort);
+				resolve(admitted ? "admitted" : "refused");
+			},
+		};
+		const handleAbort = () => {
+			const index = budget.queue.indexOf(waiter);
+			if (index === -1) return;
+			budget.queue.splice(index, 1);
+			resolve("stopped");
+			// The next call may fit now that this one left the head.
+			admit_waiting_calls(budget);
+		};
+		args.abortSignal?.addEventListener("abort", handleAbort, { once: true });
+		budget.queue.push(waiter);
+		admit_waiting_calls(budget);
+	});
 }
 
 export function ai_chat_tool_budget_apply<T extends ToolSet>(
@@ -42,28 +110,31 @@ export function ai_chat_tool_budget_apply<T extends ToolSet>(
 			}
 
 			const inputBytes = serialized_bytes(input);
-			// Reserve before awaiting: parallel calls cannot spend another call's result space.
+			// Reserve before running: parallel calls cannot spend another call's result space.
 			// A file result repeats its path in both the title and metadata.
 			const reservedBytes = reserve.resultReservedBytes + 2 * inputBytes;
-			if (
-				budget.exhausted ||
-				inputBytes > TOOL_INPUT_MAX_BYTES ||
-				budget.remainingBytes + budget.reservedInFlightBytes < inputBytes + reservedBytes
-			) {
+			const admission =
+				inputBytes > TOOL_INPUT_MAX_BYTES
+					? "refused"
+					: await wait_for_space(budget, {
+							costBytes: inputBytes + reservedBytes,
+							reservedBytes,
+							abortSignal: options.abortSignal,
+						});
+			if (admission === "stopped") {
+				throw new Error("Stopped. This call was not run.");
+			}
+			if (admission === "refused") {
 				budget.exhausted = true;
 				throw new Error("Tool budget reached. This call was not run. Finish this reply and continue in a new message.");
 			}
-			// The running calls give back the reserve they do not use. So refuse only this call and keep
-			// `exhausted` off: the model can run it again in the next step.
-			if (budget.remainingBytes < inputBytes + reservedBytes) {
-				throw new Error(
-					"Too many tool calls at once. This call was not run. Try it again in the next step; it may still hit the reply's tool budget.",
-				);
-			}
-			budget.remainingBytes -= inputBytes + reservedBytes;
-			budget.reservedInFlightBytes += reservedBytes;
 
 			try {
+				// A queued call can wake after Stop. Check again so no body runs after Stop.
+				if (options.abortSignal?.aborted) {
+					throw new Error("Stopped. This call was not run.");
+				}
+
 				// App tools all return this shape. Provider tools have no local execute function.
 				const result = (await execute(input, options)) as {
 					title: string;
@@ -105,6 +176,7 @@ export function ai_chat_tool_budget_apply<T extends ToolSet>(
 				throw boundedError;
 			} finally {
 				budget.reservedInFlightBytes -= reservedBytes;
+				admit_waiting_calls(budget);
 			}
 		};
 	}

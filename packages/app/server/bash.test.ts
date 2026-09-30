@@ -597,6 +597,7 @@ describe("bash_run_command", () => {
 				allowDbFilesMkdir: opts?.allowDbFilesMkdir ?? true,
 				shellName,
 				wakeAgent: opts?.wakeAgent ?? null,
+				output: null,
 			});
 			cwd = (await get_shell(t, threadId, shellName))?.cwd ?? cwd;
 			return result;

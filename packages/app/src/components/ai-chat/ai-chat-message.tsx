@@ -61,7 +61,7 @@ import {
 	organizations_DEFAULT_WORKSPACE_NAME,
 } from "../../../shared/organizations.ts";
 import { MyButton, MyButtonIcon } from "../my-button.tsx";
-import { app_convex_api } from "@/lib/app-convex-client.ts";
+import { app_convex, app_convex_api } from "@/lib/app-convex-client.ts";
 import { useQuery } from "convex/react";
 import type { z } from "zod";
 import {
@@ -72,6 +72,7 @@ import {
 	ai_chat_mcp_auth_needed_data_schema,
 	ai_chat_mcp_tool_output_schema,
 	type ai_chat_McpSource,
+	type ai_chat_ToolOutputRef,
 } from "../../../shared/ai-chat-files.ts";
 import { McpConnect } from "@/components/mcp-connect.tsx";
 
@@ -344,6 +345,101 @@ const AiChatMessagePartToolTextAreaSection = memo(function AiChatMessagePartTool
 });
 // #endregion tool textarea section
 
+// #region tool output full
+/**
+ * The page size of `ai_chat_outputs.read_page`.
+ */
+const AiChatMessagePartToolOutputFull_PAGE_BYTES = 64 * 1024;
+
+type AiChatMessagePartToolOutputFull_ClassNames =
+	| "AiChatMessagePartToolOutputFull"
+	| "AiChatMessagePartToolOutputFull-text"
+	| "AiChatMessagePartToolOutputFull-status";
+
+type AiChatMessagePartToolOutputFull_Props = {
+	threadId: string | null;
+	outputRef: ai_chat_ToolOutputRef;
+};
+
+/**
+ * Load the full text of a stored tool result, one 64 KiB page at a time. The server checks access
+ * on every page, so a member who lost access gets "not available". The button stays as "Try again":
+ * a result the running turn has not saved yet is not readable until the reply is saved.
+ */
+const AiChatMessagePartToolOutputFull = memo(function AiChatMessagePartToolOutputFull(
+	props: AiChatMessagePartToolOutputFull_Props,
+) {
+	const { threadId, outputRef } = props;
+	const { membershipId } = AppTenantProvider.useContext();
+	const [loaded, setLoaded] = useState<{ text: string; nextOffset: number } | null>(null);
+	const [isLoading, setIsLoading] = useState(false);
+	const [isUnavailable, setIsUnavailable] = useState(false);
+
+	const handleLoad = useFn(() => {
+		if (!threadId || isLoading) {
+			return;
+		}
+
+		setIsLoading(true);
+		setIsUnavailable(false);
+		app_convex
+			.action(app_convex_api.ai_chat_outputs.read_page, {
+				membershipId,
+				threadId,
+				outputId: outputRef.outputId,
+				offset: loaded?.nextOffset ?? 0,
+				limit: AiChatMessagePartToolOutputFull_PAGE_BYTES,
+			})
+			.then((result) => {
+				if (result._nay) {
+					setIsUnavailable(true);
+					return;
+				}
+
+				setLoaded({ text: (loaded?.text ?? "") + result._yay.text, nextOffset: result._yay.nextOffset });
+			})
+			.catch((error: unknown) => {
+				console.error("[AiChatMessagePartToolOutputFull.handleLoad] Unexpected async error", {
+					error,
+					outputId: outputRef.outputId,
+				});
+				setIsUnavailable(true);
+			})
+			.finally(() => {
+				setIsLoading(false);
+			});
+	});
+
+	const hasMore = !loaded || loaded.nextOffset < outputRef.storedBytes;
+
+	return (
+		<div className={"AiChatMessagePartToolOutputFull" satisfies AiChatMessagePartToolOutputFull_ClassNames}>
+			{loaded && (
+				<AiChatMessagePartToolTextAreaSection
+					className={"AiChatMessagePartToolOutputFull-text" satisfies AiChatMessagePartToolOutputFull_ClassNames}
+					label="Full output"
+					code={loaded.text}
+					maxHeight="24lh"
+				/>
+			)}
+			<p
+				role="status"
+				className={"AiChatMessagePartToolOutputFull-status" satisfies AiChatMessagePartToolOutputFull_ClassNames}
+			>
+				{isUnavailable
+					? "Full output not available"
+					: `Showing ${(loaded?.nextOffset ?? 0).toLocaleString()} of ${outputRef.storedBytes.toLocaleString()} bytes of the full output`}
+			</p>
+			{hasMore && (
+				<MyButton variant="outline" disabled={!threadId || isLoading} aria-busy={isLoading} onClick={handleLoad}>
+					{isUnavailable ? "Try again" : loaded ? "Load more" : "Show full output"}
+				</MyButton>
+			)}
+		</div>
+	);
+});
+// #endregion tool output full
+
 // #region tool bash
 type AiChatMessagePartToolBash_ClassNames = "AiChatMessagePartToolBash" | "AiChatMessagePartToolBash-terminal";
 
@@ -354,6 +450,7 @@ type AiChatMessagePartToolBash_Props = {
 	toolState: ToolUIPart["state"];
 	isChatRunning: boolean;
 	liveJobs: AiChatThreadRuntime["liveJobs"];
+	threadId: string | null;
 	errorText?: string;
 };
 
@@ -373,7 +470,7 @@ function ai_chat_message_part_tool_bash_terminal_text(
 }
 
 const AiChatMessagePartToolBash = memo(function AiChatMessagePartToolBash(props: AiChatMessagePartToolBash_Props) {
-	const { className, args, result, toolState, isChatRunning, liveJobs, errorText } = props;
+	const { className, args, result, toolState, isChatRunning, liveJobs, threadId, errorText } = props;
 	const metadata = result?.metadata;
 	const command = metadata?.command ?? args?.command;
 	const terminalText = ai_chat_message_part_tool_bash_terminal_text(args, result, errorText);
@@ -399,6 +496,13 @@ const AiChatMessagePartToolBash = memo(function AiChatMessagePartToolBash(props:
 					maxHeight="24lh"
 					text={terminalText}
 				/>
+				{metadata?.output && (
+					<AiChatMessagePartToolOutputFull
+						key={`${threadId}:${metadata.output.outputId}`}
+						threadId={threadId}
+						outputRef={metadata.output}
+					/>
+				)}
 			</AiChatMessagePartToolBody>
 		</AiChatMessagePartDisclosure>
 	);
@@ -889,10 +993,11 @@ type AiChatMessagePartToolMcp_Props = {
 	className?: string | undefined;
 	part: DynamicToolUIPart;
 	isChatRunning: boolean;
+	threadId: string | null;
 };
 
 const AiChatMessagePartToolMcp = memo(function AiChatMessagePartToolMcp(props: AiChatMessagePartToolMcp_Props) {
-	const { className, part, isChatRunning } = props;
+	const { className, part, isChatRunning, threadId } = props;
 
 	// A stored part is saved data. Use the output only when it matches the MCP output schema.
 	const result = ai_chat_mcp_tool_output_schema.safeParse(part.output);
@@ -939,6 +1044,13 @@ const AiChatMessagePartToolMcp = memo(function AiChatMessagePartToolMcp(props: A
 						code={result.data?.output ?? ""}
 						state={isToolError ? "error" : undefined}
 						maxHeight="16lh"
+					/>
+				)}
+				{metadata?.kind === "mcp_result" && metadata.output && (
+					<AiChatMessagePartToolOutputFull
+						key={`${threadId}:${metadata.output.outputId}`}
+						threadId={threadId}
+						outputRef={metadata.output}
 					/>
 				)}
 			</AiChatMessagePartToolBody>
@@ -1273,6 +1385,7 @@ type AiChatMessagePart_Props = {
 	message: ai_chat_UiMessage;
 	isChatRunning: boolean;
 	liveJobs: AiChatThreadRuntime["liveJobs"];
+	threadId: string | null;
 	onToolOutput: AiChatRuntimeActions["addToolOutput"];
 	onToolResumeStream: AiChatRuntimeActions["resumeStream"];
 	onToolStop: AiChatRuntimeActions["stop"];
@@ -1307,7 +1420,7 @@ const AiChatMessagePart = memo(function AiChatMessagePart(props: AiChatMessagePa
 });
 
 const AiChatMessagePartInner = memo(function AiChatMessagePartInner(props: AiChatMessagePart_Props) {
-	const { role, part, isChatRunning, liveJobs } = props;
+	const { role, part, isChatRunning, liveJobs, threadId } = props;
 
 	if (isToolOrDynamicToolUIPart(part)) {
 		// Handle both SDK tool shapes here so file results never fall through to raw JSON rendering.
@@ -1370,7 +1483,7 @@ const AiChatMessagePartInner = memo(function AiChatMessagePartInner(props: AiCha
 		}
 
 		if (part.type === "dynamic-tool" && toolName.startsWith("mcp__")) {
-			return <AiChatMessagePartToolMcp part={part} isChatRunning={isChatRunning} />;
+			return <AiChatMessagePartToolMcp part={part} isChatRunning={isChatRunning} threadId={threadId} />;
 		}
 
 		if (part.type === "dynamic-tool") {
@@ -1386,6 +1499,7 @@ const AiChatMessagePartInner = memo(function AiChatMessagePartInner(props: AiCha
 						toolState={part.state}
 						isChatRunning={isChatRunning}
 						liveJobs={liveJobs}
+						threadId={threadId}
 						errorText={part.errorText}
 					/>
 				);
@@ -1496,6 +1610,7 @@ type AiChatMessageContent_Props = ComponentPropsWithRef<"div"> & {
 	message: ai_chat_UiMessage;
 	isChatRunning: boolean;
 	liveJobs: AiChatThreadRuntime["liveJobs"];
+	threadId: AiChatMessagePart_Props["threadId"];
 	onToolOutput: AiChatMessagePart_Props["onToolOutput"];
 	onToolResumeStream: AiChatMessagePart_Props["onToolResumeStream"];
 	onToolStop: AiChatMessagePart_Props["onToolStop"];
@@ -1557,6 +1672,7 @@ const AiChatMessageContent = memo(function AiChatMessageContent(props: AiChatMes
 		message,
 		isChatRunning,
 		liveJobs,
+		threadId,
 		onToolOutput,
 		onToolResumeStream,
 		onToolStop,
@@ -1617,6 +1733,7 @@ const AiChatMessageContent = memo(function AiChatMessageContent(props: AiChatMes
 							message={message}
 							isChatRunning={isChatRunning}
 							liveJobs={liveJobs}
+							threadId={threadId}
 							onToolOutput={onToolOutput}
 							onToolResumeStream={onToolResumeStream}
 							onToolStop={onToolStop}
@@ -1954,6 +2071,7 @@ const AiChatMessageUser = memo(function AiChatMessageUser(props: AiChatMessageUs
 						message={message}
 						isChatRunning={isRunning}
 						liveJobs={liveJobs}
+						threadId={selectedThreadId}
 						onToolOutput={onToolOutput}
 						onToolResumeStream={onToolResumeStream}
 						onToolStop={onToolStop}
@@ -2157,6 +2275,7 @@ const AiChatMessageAgent = memo(function AiChatMessageAgent(props: AiChatMessage
 					message={message}
 					isChatRunning={isRunning}
 					liveJobs={liveJobs}
+					threadId={selectedThreadId}
 					onToolOutput={onToolOutput}
 					onToolResumeStream={onToolResumeStream}
 					onToolStop={onToolStop}
@@ -2253,15 +2372,25 @@ type AiChatMessageSystem_Props = ComponentPropsWithRef<"div"> & {
 	selectedThreadId: string | null;
 	isRunning: boolean;
 	liveJobs: AiChatThreadRuntime["liveJobs"];
-	isEditing: boolean;
 	onToolOutput: AiChatMessageContent_Props["onToolOutput"];
 	onToolResumeStream: AiChatMessageContent_Props["onToolResumeStream"];
 	onToolStop: AiChatMessageContent_Props["onToolStop"];
 };
 
 const AiChatMessageSystem = memo(function AiChatMessageSystem(props: AiChatMessageSystem_Props) {
-	const { ref, id, className, message, isRunning, liveJobs, onToolOutput, onToolResumeStream, onToolStop, ...rest } =
-		props;
+	const {
+		ref,
+		id,
+		className,
+		message,
+		selectedThreadId,
+		isRunning,
+		liveJobs,
+		onToolOutput,
+		onToolResumeStream,
+		onToolStop,
+		...rest
+	} = props;
 
 	/**
 	 * The controller stamps the client-generated id on every rendered message. Keying by it
@@ -2282,6 +2411,7 @@ const AiChatMessageSystem = memo(function AiChatMessageSystem(props: AiChatMessa
 					message={message}
 					isChatRunning={isRunning}
 					liveJobs={liveJobs}
+					threadId={selectedThreadId}
 					onToolOutput={onToolOutput}
 					onToolResumeStream={onToolResumeStream}
 					onToolStop={onToolStop}
@@ -2497,7 +2627,6 @@ export const AiChatMessage = memo(function AiChatMessage(props: AiChatMessage_Pr
 			selectedThreadId={selectedThreadId}
 			isRunning={isRunning}
 			liveJobs={liveJobs}
-			isEditing={isEditing}
 			onToolOutput={actions.addToolOutput}
 			onToolResumeStream={actions.resumeStream}
 			onToolStop={actions.stop}

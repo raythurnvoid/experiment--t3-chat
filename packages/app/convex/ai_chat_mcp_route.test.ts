@@ -20,15 +20,38 @@ vi.mock("ai", async (importOriginal) => ({
 	streamText: model.streamText,
 }));
 
+// The route ends its run when the mocked stream ends, and the mocked model never passes the
+// receipt middleware. These tests run the captured tools after that. So each test reserves
+// output space against one chat run it starts itself.
+const outputRun = vi.hoisted(() => ({ runId: null as string | null }));
+vi.mock("../server/ai-chat-tool-output.ts", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../server/ai-chat-tool-output.ts")>();
+	return {
+		...actual,
+		ai_chat_tool_output_reserve: async (...[ctx, args]: Parameters<typeof actual.ai_chat_tool_output_reserve>) => {
+			outputRun.runId ??= await ctx.runMutation(internal.ai_chat.thread_run_begin, { source: args.source });
+			const runId = outputRun.runId as Id<"ai_chat_runs">;
+			return await actual.ai_chat_tool_output_reserve(ctx, {
+				...args,
+				getRunId: () => runId,
+				getModelCallId: () => "model_call_test",
+			});
+		},
+	};
+});
+
 let fixtures: ReturnType<typeof mcp_fixtures_create>;
 let oauthFixtures: ReturnType<typeof mcp_oauth_fixtures_create>;
 // A test sets this to hold every `tools/call` request until it resolves.
 let callGate: Promise<void> | null = null;
+// The bodies of the stored-output uploads, keyed by R2 key.
+let uploads: Map<string, string>;
 
 beforeEach(() => {
 	fixtures = mcp_fixtures_create();
 	oauthFixtures = mcp_oauth_fixtures_create();
 	callGate = null;
+	outputRun.runId = null;
 	model.streamText.mockReset();
 	model.streamText.mockImplementation(() => ({
 		toUIMessageStream: () =>
@@ -48,11 +71,20 @@ beforeEach(() => {
 	vi.spyOn(Workpool.prototype, "enqueueAction").mockResolvedValue("work_mcp_route_test" as never);
 	vi.spyOn(Workpool.prototype, "cancel").mockResolvedValue(undefined as never);
 	vi.spyOn(R2.prototype, "syncMetadata").mockResolvedValue(undefined);
-	// Only the fake MCP servers answer. Any other outside request would be a bug in the test.
+	uploads = new Map();
+	vi.spyOn(R2.prototype, "generateUploadUrl").mockImplementation(async (key) => ({
+		key: key!,
+		url: `https://r2.test/${encodeURIComponent(key!)}`,
+	}));
+	// Only the fake MCP servers and the fake R2 upload answer. Any other outside request would be a bug in the test.
 	vi.stubGlobal(
 		"fetch",
 		vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
 			const request = new Request(input, init);
+			if (new URL(request.url).hostname === "r2.test") {
+				uploads.set(decodeURIComponent(new URL(request.url).pathname.slice(1)), await request.text());
+				return new Response(null, { status: 200 });
+			}
 			if (new URL(request.url).hostname.endsWith(".oauth.test")) {
 				return await oauthFixtures.fetch(request);
 			}
@@ -444,18 +476,46 @@ describe("/api/chat MCP tool calls", () => {
 		expect((await ledger(t)).map((call) => call.outcome)).toEqual(["tool_error"]);
 	});
 
-	test("cuts a long output to 64 KiB and says so", async () => {
+	test("stores a long output in full and gives the model its head and tail", async () => {
 		const { t, asUser, membership, threadId } = await setup();
 		await install_mcp_plugin(t, membership, { url: "https://big.fixtures.test/long-text" });
 		expect((await chat(asUser, { membershipId: membership.membershipId, threadId })).status).toBe(200);
 
 		const result = await run_tool(t, "mcp__tracker__echo", { text: "ok" });
 
-		const output = result.output as { output: string; metadata: { truncated: boolean } };
+		const output = result.output as ai_chat_McpToolOutput;
+		if (output.metadata.kind !== "mcp_result" || !output.metadata.output) throw new Error("Expected a stored result");
+		const ref = output.metadata.output;
 		expect(output.metadata.truncated).toBe(true);
-		// 102448 bytes: the 100 KiB text, its JSON quotes, and the note that echo's structured result is missing.
-		expect(output.output).toMatch(/\n\[output cut from 102448 to \d+ bytes\]$/u);
-		expect(new TextEncoder().encode(JSON.stringify(output.output)).byteLength).toBeLessThanOrEqual(64 * 1024);
+		// Echo has an output schema but sends no structured result, so the stored JSON says so.
+		expect(ref).toMatchObject({ path: `/tool-output/${ref.outputId}.txt`, cutBy: ["mcp_structured_dropped"] });
+		expect(output.output).toContain(`[Full output stored at ${ref.path} (${ref.storedBytes} bytes).`);
+		expect(new TextEncoder().encode(JSON.stringify(output.output)).byteLength).toBeLessThanOrEqual(24 * 1024);
+
+		const object = await t.run((ctx) =>
+			ctx.db.get("ai_chat_output_objects", ref.outputId as Id<"ai_chat_output_objects">),
+		);
+		expect(object).toMatchObject({ state: { kind: "ready" }, byteCount: ref.storedBytes, ownerCount: 1 });
+		const stored = JSON.parse(uploads.get(object!.r2Key!)!);
+		expect(stored).toMatchObject({ format: "mcp_result_v1", isError: false, structured: null });
+		expect(stored.blocks).toEqual([{ text: "x".repeat(100 * 1024) }]);
+	});
+
+	test("stores a deeply nested structured result inside its reservation", async () => {
+		const { t, asUser, membership, threadId } = await setup();
+		await install_mcp_plugin(t, membership, { url: "https://big.fixtures.test/deep-structured" });
+		expect((await chat(asUser, { membershipId: membership.membershipId, threadId })).status).toBe(200);
+
+		const result = await run_tool(t, "mcp__tracker__echo", { text: "ok" });
+
+		const output = result.output as ai_chat_McpToolOutput;
+		if (output.metadata.kind !== "mcp_result" || !output.metadata.output) throw new Error("Expected a stored result");
+		const ref = output.metadata.output;
+		const object = await t.run((ctx) =>
+			ctx.db.get("ai_chat_output_objects", ref.outputId as Id<"ai_chat_output_objects">),
+		);
+		expect(object).toMatchObject({ state: { kind: "ready" } });
+		expect(JSON.parse(uploads.get(object!.r2Key!)!).structured.rows).toHaveLength(45_000);
 	});
 
 	test("repairs half characters from the server and never cuts a character in half", async () => {
@@ -467,7 +527,8 @@ describe("/api/chat MCP tool calls", () => {
 
 		const output = result.output as { output: string; metadata: { truncated: boolean } };
 		expect(output.metadata.truncated).toBe(true);
-		expect(output.output.startsWith("A\ufffdB ")).toBe(true);
+		// The preview is the head of the stored JSON. Its cut lands inside the emoji run.
+		expect(output.output).toContain('"text":"A\ufffdB ');
 		expect(output.output.isWellFormed()).toBe(true);
 	});
 
@@ -652,6 +713,9 @@ describe("/api/chat MCP tool calls", () => {
 					membershipId: membership.membershipId,
 					membershipLifetime: captured._yay.membershipLifetime,
 					getThreadId: () => threadId,
+					// The scope check refuses the call before it reserves output space.
+					getRunId: () => null,
+					getModelCallId: () => null,
 					runDeadline: Date.now() + 60_000,
 				},
 				[
@@ -688,7 +752,7 @@ describe("/api/chat MCP tool calls", () => {
 		expect(await ledger(t)).toEqual([]);
 	});
 
-	test("runs 5 calls at once and refuses a 6th until they finish", async () => {
+	test("runs 5 calls at once and queues a 6th until one finishes", async () => {
 		const { t, asUser, membership, threadId } = await setup();
 		await install_mcp_plugin(t, membership, { url: MODERN_BASIC_URL });
 		expect((await chat(asUser, { membershipId: membership.membershipId, threadId })).status).toBe(200);
@@ -702,18 +766,16 @@ describe("/api/chat MCP tool calls", () => {
 					() => "ran",
 					(error: unknown) => (error instanceof Error ? error.message : String(error)),
 				);
-			// Each call takes its reserve before its first `await`, so all 5 hold one now.
+			// Each call takes its reserve before its first `await`, so all 5 hold one now and the 6th waits.
 			const running = ["a", "b", "c", "d", "e"].map(settle);
-			const sixth = await settle("f");
+			const sixth = settle("f");
 			gate.resolve();
 			const first = await Promise.all(running);
-			const after = await settle("g");
-			return { first, sixth, after };
+			return { first, sixth: await sixth };
 		});
 
 		expect(outcome.first).toEqual(["ran", "ran", "ran", "ran", "ran"]);
-		expect(outcome.sixth).toContain("Too many tool calls at once");
-		expect(outcome.after).toBe("ran");
+		expect(outcome.sixth).toBe("ran");
 	});
 });
 
@@ -1205,6 +1267,7 @@ describe("/api/chat MCP parts in history", () => {
 				parentId: null,
 				messages: [reply("bad", parts)],
 				allowMcpParts: true,
+				runId: null,
 			});
 			expect(refused._nay?.message).toBe("Invalid file tool result parts");
 		}
@@ -1214,6 +1277,7 @@ describe("/api/chat MCP parts in history", () => {
 			parentId: null,
 			messages: [reply("server-reply", [noticePart, mcp_part("gone-installation")])],
 			allowMcpParts: true,
+			runId: null,
 		});
 		expect(stored._yay?.ids).toHaveLength(1);
 	});
@@ -1260,6 +1324,7 @@ describe("/api/chat MCP parts in history", () => {
 				},
 			],
 			allowMcpParts: true,
+			runId: null,
 		});
 		if (stored._nay) throw new Error(stored._nay.message);
 

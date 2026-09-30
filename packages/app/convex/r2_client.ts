@@ -21,6 +21,7 @@ import {
 import app_convex_schema from "./schema.ts";
 import { convex_error } from "../server/convex-utils.ts";
 import { files_private_storage_db_release } from "./files_private_storage.ts";
+import { ai_chat_outputs_storage_db_release } from "./ai_chat_outputs_storage.ts";
 
 const ETAG_WEAK_PREFIX_REGEX = /^W\//;
 const ETAG_QUOTES_REGEX = /^"|"$/g;
@@ -401,6 +402,10 @@ export async function r2_enqueue_object_deletion_job(
 		 */
 		assetId?: Id<"files_r2_assets">;
 		/**
+		 * Set for a stored tool output. The final delete releases its quota hold and deletes its doc.
+		 */
+		chatOutputObjectId?: Id<"ai_chat_output_objects">;
+		/**
 		 * The last time another upload may reach this key. Before this time, keep the job after a
 		 * successful delete and delete again later. Leave it empty when no later upload can arrive.
 		 */
@@ -432,6 +437,7 @@ export async function r2_enqueue_object_deletion_job(
 			reason: args.reason,
 			assetId: args.assetId,
 			privateStorageReservationId,
+			chatOutputObjectId: args.chatOutputObjectId,
 			generation: 1,
 			lastR2EventId: args.r2EventId,
 			putMayArriveUntil: args.putMayArriveUntil,
@@ -581,6 +587,14 @@ export const settle_object_deletion_job = internalMutation({
 			});
 		}
 		await ctx.db.delete("files_r2_object_deletion_jobs", job._id);
+
+		// The stored tool output held its quota until R2 confirmed that its bytes are gone.
+		if (job.chatOutputObjectId) {
+			const object = await ctx.db.get("ai_chat_output_objects", job.chatOutputObjectId);
+			if (object) {
+				await ai_chat_outputs_storage_db_release(ctx, object);
+			}
+		}
 
 		// Keep the target and its attempt receipts for late events and replayed service calls.
 		// Deleting a superseded attempt must not release the current target.

@@ -1,7 +1,7 @@
 import "./ai-chat-threads.css";
 
 import type { ChangeEvent, ComponentPropsWithRef, Ref } from "react";
-import { memo, useEffect, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 
 import { useFn } from "@/hooks/utils-hooks.ts";
 import {
@@ -30,6 +30,15 @@ import {
 	MyInputIcon,
 } from "@/components/my-input.tsx";
 import { MyLabel } from "@/components/my-label.tsx";
+import {
+	MyModal,
+	MyModalCloseTrigger,
+	MyModalDescription,
+	MyModalFooter,
+	MyModalHeader,
+	MyModalHeading,
+	MyModalPopover,
+} from "@/components/my-modal.tsx";
 import {
 	MyMenu,
 	MyMenuItem,
@@ -237,6 +246,56 @@ const AiChatThreadsNewButton = memo(function AiChatThreadsNewButton(props: AiCha
 });
 // #endregion new button
 
+// #region delete modal
+type AiChatThreadsDeleteModal_ClassNames = "AiChatThreadsDeleteModal";
+
+type AiChatThreadsDeleteModal_Props = {
+	open: boolean;
+	threadTitle: string;
+	onClose: () => void;
+	onConfirm: () => void;
+};
+
+const AiChatThreadsDeleteModal = memo(function AiChatThreadsDeleteModal(props: AiChatThreadsDeleteModal_Props) {
+	const { open, threadTitle, onClose, onConfirm } = props;
+	const cancelRef = useRef<HTMLButtonElement>(null);
+
+	const handleOpenChange = useFn((nextOpen: boolean) => {
+		if (!nextOpen) {
+			onClose();
+		}
+	});
+
+	return (
+		<MyModal open={open} setOpen={handleOpenChange}>
+			{/* Every row owns one modal, so drop the closed ones from the DOM. */}
+			<MyModalPopover
+				className={"AiChatThreadsDeleteModal" satisfies AiChatThreadsDeleteModal_ClassNames}
+				initialFocus={cancelRef}
+				unmountOnHide
+			>
+				<MyModalHeader>
+					<MyModalHeading>Delete “{threadTitle}”?</MyModalHeading>
+					<MyModalDescription>
+						This deletes the chat, its messages and its tool history. It cannot be undone. Files the agent saved stay in
+						Files.
+					</MyModalDescription>
+				</MyModalHeader>
+				<MyModalFooter>
+					<MyButton ref={cancelRef} variant="ghost" onClick={onClose}>
+						Cancel
+					</MyButton>
+					<MyButton variant="destructive" onClick={onConfirm}>
+						Delete chat
+					</MyButton>
+				</MyModalFooter>
+				<MyModalCloseTrigger />
+			</MyModalPopover>
+		</MyModal>
+	);
+});
+// #endregion delete modal
+
 // #region list item
 type AiChatThreadsListItem_ClassNames =
 	| "AiChatThreadsListItem"
@@ -256,6 +315,7 @@ type AiChatThreadsListItem_Props = {
 	onToggleFavourite: (threadId: app_convex_Id<"ai_chat_threads">, starred: boolean) => void;
 	onBranch: (threadId: string) => void;
 	onArchive: (threadId: string, isArchived: boolean) => void;
+	onDelete: (threadId: app_convex_Id<"ai_chat_threads">) => void;
 };
 
 const AiChatThreadsListItem = memo(function AiChatThreadsListItem(props: AiChatThreadsListItem_Props) {
@@ -268,7 +328,10 @@ const AiChatThreadsListItem = memo(function AiChatThreadsListItem(props: AiChatT
 		onToggleFavourite,
 		onBranch,
 		onArchive,
+		onDelete,
 	} = props;
+
+	const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
 
 	const streamingTitle = streamingTitleByThreadId[thread._id];
 	const isActive = selectedThreadId === thread._id;
@@ -291,6 +354,19 @@ const AiChatThreadsListItem = memo(function AiChatThreadsListItem(props: AiChatT
 
 	const handleArchiveToggle = useFn(() => {
 		onArchive(thread._id, !isArchived);
+	});
+
+	const handleDeleteRequest = useFn(() => {
+		setIsDeleteConfirmOpen(true);
+	});
+
+	const handleDeleteClose = useFn(() => {
+		setIsDeleteConfirmOpen(false);
+	});
+
+	const handleDeleteConfirm = useFn(() => {
+		setIsDeleteConfirmOpen(false);
+		onDelete(thread._id);
 	});
 
 	const isStarred = thread.starred === true;
@@ -368,10 +444,24 @@ const AiChatThreadsListItem = memo(function AiChatThreadsListItem(props: AiChatT
 									<MyMenuItemContentPrimary>{archiveLabel}</MyMenuItemContentPrimary>
 								</MyMenuItemContent>
 							</MyMenuItem>
+							<MyMenuItem variant="destructive" onClick={handleDeleteRequest}>
+								<MyMenuItemContent>
+									<MyMenuItemContentIcon>
+										<Trash2 />
+									</MyMenuItemContentIcon>
+									<MyMenuItemContentPrimary>Delete</MyMenuItemContentPrimary>
+								</MyMenuItemContent>
+							</MyMenuItem>
 						</MyMenuPopoverContent>
 					</MyMenuPopover>
 				</MyMenu>
 			</div>
+			<AiChatThreadsDeleteModal
+				open={isDeleteConfirmOpen}
+				threadTitle={threadTitle}
+				onClose={handleDeleteClose}
+				onConfirm={handleDeleteConfirm}
+			/>
 		</MySidebarListItem>
 	);
 });
@@ -479,6 +569,7 @@ type AiChatThreadsResults_Props = ComponentPropsWithRef<"section"> & {
 	onToggleFavouriteThread: AiChatThreadsListItem_Props["onToggleFavourite"];
 	onBranchThread: AiChatThreadsListItem_Props["onBranch"];
 	onArchiveThread: AiChatThreadsListItem_Props["onArchive"];
+	onDeleteThread: AiChatThreadsListItem_Props["onDelete"];
 	onRemoveOptimisticThread: AiChatThreadsOptimisticListItem_Props["onRemove"];
 };
 
@@ -495,6 +586,7 @@ const AiChatThreadsResults = memo(function AiChatThreadsResults(props: AiChatThr
 		onToggleFavouriteThread,
 		onBranchThread,
 		onArchiveThread,
+		onDeleteThread,
 		onRemoveOptimisticThread,
 		...rest
 	} = props;
@@ -572,6 +664,7 @@ const AiChatThreadsResults = memo(function AiChatThreadsResults(props: AiChatThr
 							onToggleFavourite={onToggleFavouriteThread}
 							onBranch={onBranchThread}
 							onArchive={onArchiveThread}
+							onDelete={onDeleteThread}
 						/>
 					);
 				})}
@@ -602,6 +695,7 @@ export type AiChatThreads_Props = MySidebar_Props & {
 	onToggleFavouriteThread: AiChatThreadsListItem_Props["onToggleFavourite"];
 	onBranchThread: AiChatThreadsListItem_Props["onBranch"];
 	onArchiveThread: AiChatThreadsListItem_Props["onArchive"];
+	onDeleteThread: AiChatThreadsListItem_Props["onDelete"];
 	onRemoveOptimisticThread: (threadId: string) => void;
 	onNewChat: AiChatThreadsTopSection_Props["onNewChat"];
 };
@@ -620,6 +714,7 @@ export const AiChatThreads = memo(function AiChatThreads(props: AiChatThreads_Pr
 		onToggleFavouriteThread,
 		onBranchThread,
 		onArchiveThread,
+		onDeleteThread,
 		onRemoveOptimisticThread,
 		onNewChat,
 		...rest
@@ -667,6 +762,7 @@ export const AiChatThreads = memo(function AiChatThreads(props: AiChatThreads_Pr
 					onToggleFavouriteThread={onToggleFavouriteThread}
 					onBranchThread={onBranchThread}
 					onArchiveThread={onArchiveThread}
+					onDeleteThread={onDeleteThread}
 					onRemoveOptimisticThread={onRemoveOptimisticThread}
 				/>
 			</MySidebarScrollableArea>

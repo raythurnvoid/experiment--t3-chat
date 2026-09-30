@@ -1655,6 +1655,41 @@ describe("job wakeup", () => {
 		}));
 	}
 
+	/**
+	 * The run source of a chat request in the fixture's thread: the creator's membership.
+	 */
+	function chat_source(f: Awaited<ReturnType<typeof fixture>>) {
+		return { ...f.scope, membershipId: f.parent.membershipId, membershipLifetime: f.parent.membershipLifetime };
+	}
+
+	/**
+	 * End every running run of this kind, the way each run ends its own doc when its stream ends.
+	 */
+	async function end_runs(f: Awaited<ReturnType<typeof fixture>>, kind: "chat" | "job_wakeup") {
+		const runs = await f.t.run((ctx) =>
+			ctx.db
+				.query("ai_chat_runs")
+				.withIndex("by_thread_status", (q) => q.eq("threadId", f.scope.threadId).eq("status", "running"))
+				.collect(),
+		);
+		for (const run of runs.filter((run) => run.kind === kind)) {
+			await f.t.mutation(internal.ai_chat.thread_run_end, { runId: run._id });
+		}
+	}
+
+	/**
+	 * The newest wake run of the fixture thread, running or ended. A wake reply names it.
+	 */
+	async function wake_run_id(f: Awaited<ReturnType<typeof fixture>>) {
+		const runs = await f.t.run((ctx) =>
+			ctx.db
+				.query("ai_chat_runs")
+				.withIndex("by_thread_status", (q) => q.eq("threadId", f.scope.threadId))
+				.collect(),
+		);
+		return runs.filter((run) => run.kind === "job_wakeup").sort((a, b) => b._creationTime - a._creationTime)[0]!._id;
+	}
+
 	test("the finish stores a system message under the newest leaf, takes the lease and schedules the run", async () => {
 		const f = await fixture();
 		const { assistantId } = await seed_messages(f);
@@ -1685,10 +1720,27 @@ describe("job wakeup", () => {
 			activeRun: { kind: "job_wakeup", expiresAt: now + 10 * 60 * 1000 },
 			lastMessageAt: now,
 		});
+		// The direct wake inserts the wake run's doc and passes its id to the run.
+		const runs = await f.t.run((ctx) => ctx.db.query("ai_chat_runs").collect());
+		expect(runs).toEqual([
+			expect.objectContaining({
+				kind: "job_wakeup",
+				status: "running",
+				leaseExpiresAt: now + 10 * 60 * 1000,
+				membershipId: f.parent.membershipId,
+			}),
+		]);
 		expect(wakeups).toHaveLength(1);
 		expect(wakeups[0]).toMatchObject({
 			state: { kind: "pending" },
-			args: [{ invocationId: job.invocationId, threadId: f.scope.threadId, finishMessageId: message?._id }],
+			args: [
+				{
+					invocationId: job.invocationId,
+					threadId: f.scope.threadId,
+					finishMessageId: message?._id,
+					runId: runs[0]!._id,
+				},
+			],
 		});
 	});
 
@@ -1819,7 +1871,7 @@ describe("job wakeup", () => {
 		});
 		// No flag, same message. The wake run answers with the default model (see the door test).
 		expect((await read_thread(f)).messages).toHaveLength(3);
-		await f.t.mutation(internal.ai_chat.thread_run_end, { threadId: f.scope.threadId, kind: "job_wakeup" });
+		await end_runs(f, "job_wakeup");
 
 		const start = Date.now();
 		const armed = await f.seed_job({ jobNumber: 2, status: "running", wakeAgent });
@@ -1849,12 +1901,12 @@ describe("job wakeup", () => {
 		// The slow worker then stores the 0 of a script that finished on its own, and the message must
 		// not say the job succeeded while `wait`, `jobs -o` and the feed all say it timed out.
 		vi.setSystemTime(start + PLACEHOLDER_MS);
-		expect(await f.t.mutation(internal.ai_chat.thread_run_begin, { threadId: f.scope.threadId })).toBe(true);
+		expect(await f.t.mutation(internal.ai_chat.thread_run_begin, { source: chat_source(f) })).not.toBeNull();
 		await f.t.mutation(internal.ai_chat_files.timeout_bash_job, {
 			invocationId: job.invocationId,
 			expectedDeadlineAt: start + PLACEHOLDER_MS,
 		});
-		await f.t.mutation(internal.ai_chat.thread_run_end, { threadId: f.scope.threadId, kind: "chat" });
+		await end_runs(f, "chat");
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: job.invocationId,
 			workId: job.workId!,
@@ -1877,7 +1929,7 @@ describe("job wakeup", () => {
 				workId: job.workId!,
 				result: job_result(0),
 			});
-			await f.t.mutation(internal.ai_chat.thread_run_end, { threadId: f.scope.threadId, kind: "job_wakeup" });
+			await end_runs(f, "job_wakeup");
 		};
 		for (const jobNumber of [1, 2, 3, 4, 5, 6, 7]) await wake_once(jobNumber);
 		const chained = await read_thread(f);
@@ -1891,8 +1943,8 @@ describe("job wakeup", () => {
 			messages.slice(0, -1).map((message) => message._id),
 		);
 
-		expect(await f.t.mutation(internal.ai_chat.thread_run_begin, { threadId: f.scope.threadId })).toBe(true);
-		await f.t.mutation(internal.ai_chat.thread_run_end, { threadId: f.scope.threadId, kind: "chat" });
+		expect(await f.t.mutation(internal.ai_chat.thread_run_begin, { source: chat_source(f) })).not.toBeNull();
+		await end_runs(f, "chat");
 		await wake_once(8);
 		expect((await read_thread(f)).wakeups).toHaveLength(8);
 	});
@@ -1949,6 +2001,7 @@ describe("job wakeup", () => {
 		).toBe("agent");
 		await f.t.mutation(internal.ai_chat.store_job_wakeup_reply, {
 			threadId: f.scope.threadId,
+			runId: await wake_run_id(f),
 			userId: f.scope.userId,
 			finishMessageId: afterViewer.messages.at(-1)!._id,
 			clientGeneratedMessageId: "viewer-reply",
@@ -1989,7 +2042,7 @@ describe("job wakeup", () => {
 		// The woken turn ended and gave the lease back, so the message the settle already stored is the
 		// only thing that can stop a second one. The worker was alive after all, and its real output
 		// is still kept.
-		await f.t.mutation(internal.ai_chat.thread_run_end, { threadId: f.scope.threadId, kind: "job_wakeup" });
+		await end_runs(f, "job_wakeup");
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: job.invocationId,
 			workId: job.workId!,
@@ -2031,7 +2084,7 @@ describe("job wakeup", () => {
 
 		// The chat turn ended, and then the slow worker reported. The message is already stored, so
 		// this result only stores its output and schedules nothing.
-		await f.t.mutation(internal.ai_chat.thread_run_end, { threadId: f.scope.threadId, kind: "chat" });
+		await end_runs(f, "chat");
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: job.invocationId,
 			workId: job.workId!,
@@ -2062,24 +2115,36 @@ describe("job wakeup", () => {
 		expect((await f.read(done.invocationId)).row?.job?.wakeAgent).toBeUndefined();
 	});
 
-	test("the run lease refuses a chat request only while a wakeup runs, and each kind clears its own", async () => {
+	test("the run lease refuses a chat request only while a wakeup runs, and stays while another chat run streams", async () => {
 		const f = await fixture();
 		const now = Date.now();
-		expect(await f.t.mutation(internal.ai_chat.thread_run_begin, { threadId: f.scope.threadId })).toBe(true);
+		const firstRunId = await f.t.mutation(internal.ai_chat.thread_run_begin, { source: chat_source(f) });
 		expect((await read_thread(f)).thread?.activeRun).toEqual({ kind: "chat", expiresAt: now + 10 * 60 * 1000 });
 		// A second chat request is allowed, like before the lease existed.
-		expect(await f.t.mutation(internal.ai_chat.thread_run_begin, { threadId: f.scope.threadId })).toBe(true);
-		await f.t.mutation(internal.ai_chat.thread_run_end, { threadId: f.scope.threadId, kind: "job_wakeup" });
+		const secondRunId = await f.t.mutation(internal.ai_chat.thread_run_begin, { source: chat_source(f) });
+		if (!firstRunId || !secondRunId) throw new Error("Expected two chat runs");
+
+		// The first tab ends while the second still streams, so the lease stays with the second.
+		vi.setSystemTime(now + 1000);
+		await f.t.mutation(internal.ai_chat.thread_run_end, { runId: firstRunId });
 		expect((await read_thread(f)).thread?.activeRun?.kind).toBe("chat");
-		await f.t.mutation(internal.ai_chat.thread_run_end, { threadId: f.scope.threadId, kind: "chat" });
+		await f.t.mutation(internal.ai_chat.thread_run_end, { runId: secondRunId });
 		expect((await read_thread(f)).thread?.activeRun).toBeUndefined();
+		const runs = await f.t.run((ctx) => ctx.db.query("ai_chat_runs").collect());
+		expect(runs).toEqual([
+			expect.objectContaining({ _id: firstRunId, kind: "chat", status: "ended", endedAt: now + 1000 }),
+			expect.objectContaining({ _id: secondRunId, kind: "chat", status: "ended", endedAt: now + 1000 }),
+		]);
+		// Ending an ended run changes nothing.
+		await f.t.mutation(internal.ai_chat.thread_run_end, { runId: firstRunId });
+		expect(await f.t.run((ctx) => ctx.db.get("ai_chat_runs", firstRunId))).toMatchObject({ endedAt: now + 1000 });
 
 		await f.t.run((ctx) =>
 			ctx.db.patch("ai_chat_threads", f.scope.threadId, { activeRun: { kind: "job_wakeup", expiresAt: now + 60_000 } }),
 		);
-		expect(await f.t.mutation(internal.ai_chat.thread_run_begin, { threadId: f.scope.threadId })).toBe(false);
+		expect(await f.t.mutation(internal.ai_chat.thread_run_begin, { source: chat_source(f) })).toBeNull();
 		vi.setSystemTime(now + 60_001);
-		expect(await f.t.mutation(internal.ai_chat.thread_run_begin, { threadId: f.scope.threadId })).toBe(true);
+		expect(await f.t.mutation(internal.ai_chat.thread_run_begin, { source: chat_source(f) })).not.toBeNull();
 	});
 
 	test("get_job_wakeup_context reads the thread with the job's user and refuses a lost membership", async () => {
@@ -2288,41 +2353,90 @@ describe("job wakeup", () => {
 
 	test("thread_run_handover_to_wakeup flips one chat lease and refuses the rest", async () => {
 		const f = await fixture();
-		expect(await f.t.mutation(internal.ai_chat.thread_run_handover_to_wakeup, { threadId: f.scope.threadId })).toBe(
-			false,
-		);
-		await f.t.mutation(internal.ai_chat.thread_run_begin, { threadId: f.scope.threadId });
-		expect(await f.t.mutation(internal.ai_chat.thread_run_handover_to_wakeup, { threadId: f.scope.threadId })).toBe(
-			true,
-		);
+		expect(
+			await f.t.mutation(internal.ai_chat.thread_run_handover_to_wakeup, {
+				threadId: f.scope.threadId,
+				invocationId: f.parent._id,
+			}),
+		).toBeNull();
+		await f.t.mutation(internal.ai_chat.thread_run_begin, { source: chat_source(f) });
+		expect(
+			await f.t.mutation(internal.ai_chat.thread_run_handover_to_wakeup, {
+				threadId: f.scope.threadId,
+				invocationId: f.parent._id,
+			}),
+		).not.toBeNull();
 		expect((await read_thread(f)).thread?.activeRun?.kind).toBe("job_wakeup");
 		// The second tab hands over nothing: exactly one wake run follows.
-		expect(await f.t.mutation(internal.ai_chat.thread_run_handover_to_wakeup, { threadId: f.scope.threadId })).toBe(
-			false,
-		);
-		// A chat release no longer clears the woken lease.
-		await f.t.mutation(internal.ai_chat.thread_run_end, { threadId: f.scope.threadId, kind: "chat" });
+		expect(
+			await f.t.mutation(internal.ai_chat.thread_run_handover_to_wakeup, {
+				threadId: f.scope.threadId,
+				invocationId: f.parent._id,
+			}),
+		).toBeNull();
+		// A chat release no longer clears the woken lease, because the wake run doc is running.
+		await end_runs(f, "chat");
 		expect((await read_thread(f)).thread?.activeRun?.kind).toBe("job_wakeup");
+		// The wake run acts for the job's membership and gets its own run doc.
+		const runs = await f.t.run((ctx) => ctx.db.query("ai_chat_runs").collect());
+		expect(runs.map((run) => ({ kind: run.kind, status: run.status }))).toEqual([
+			{ kind: "chat", status: "ended" },
+			{ kind: "job_wakeup", status: "running" },
+		]);
+		expect(runs[1]).toMatchObject({ membershipId: f.parent.membershipId, userId: f.scope.userId });
 	});
 
 	test("thread_run_extend_wakeup stretches a live wake lease and refuses the rest", async () => {
 		const f = await fixture();
-		expect(await f.t.mutation(internal.ai_chat.thread_run_extend_wakeup, { threadId: f.scope.threadId })).toBe(false);
+		expect(
+			await f.t.mutation(internal.ai_chat.thread_run_extend_wakeup, {
+				threadId: f.scope.threadId,
+				invocationId: f.parent._id,
+			}),
+		).toBeNull();
 		const now = Date.now();
-		await f.t.mutation(internal.ai_chat.thread_run_begin, { threadId: f.scope.threadId });
-		expect(await f.t.mutation(internal.ai_chat.thread_run_extend_wakeup, { threadId: f.scope.threadId })).toBe(false);
-		expect(await f.t.mutation(internal.ai_chat.thread_run_handover_to_wakeup, { threadId: f.scope.threadId })).toBe(
-			true,
+		await f.t.mutation(internal.ai_chat.thread_run_begin, { source: chat_source(f) });
+		expect(
+			await f.t.mutation(internal.ai_chat.thread_run_extend_wakeup, {
+				threadId: f.scope.threadId,
+				invocationId: f.parent._id,
+			}),
+		).toBeNull();
+		expect(
+			await f.t.mutation(internal.ai_chat.thread_run_handover_to_wakeup, {
+				threadId: f.scope.threadId,
+				invocationId: f.parent._id,
+			}),
+		).not.toBeNull();
+		const wakeRuns = await f.t.run((ctx) =>
+			ctx.db
+				.query("ai_chat_runs")
+				.filter((q) => q.eq(q.field("kind"), "job_wakeup"))
+				.collect(),
 		);
 		vi.setSystemTime(now + 60_000);
-		expect(await f.t.mutation(internal.ai_chat.thread_run_extend_wakeup, { threadId: f.scope.threadId })).toBe(true);
+		const followupRunId = await f.t.mutation(internal.ai_chat.thread_run_extend_wakeup, {
+			threadId: f.scope.threadId,
+			invocationId: f.parent._id,
+		});
+		expect(followupRunId).not.toBeNull();
 		expect((await read_thread(f)).thread?.activeRun).toEqual({
 			kind: "job_wakeup",
 			expiresAt: now + 60_000 + 10 * 60 * 1000,
 		});
+		// The follow-up gets its own run doc. When the first wake run ends its doc, the lease stays.
+		expect(wakeRuns).toHaveLength(1);
+		await f.t.mutation(internal.ai_chat.thread_run_end, { runId: wakeRuns[0]!._id });
+		expect((await read_thread(f)).thread?.activeRun?.kind).toBe("job_wakeup");
+		expect(await f.t.run((ctx) => ctx.db.get("ai_chat_runs", followupRunId!))).toMatchObject({ status: "running" });
 		// Past the extended expiry the lease is gone again.
 		vi.setSystemTime(now + 60_000 + 10 * 60 * 1000 + 1);
-		expect(await f.t.mutation(internal.ai_chat.thread_run_extend_wakeup, { threadId: f.scope.threadId })).toBe(false);
+		expect(
+			await f.t.mutation(internal.ai_chat.thread_run_extend_wakeup, {
+				threadId: f.scope.threadId,
+				invocationId: f.parent._id,
+			}),
+		).toBeNull();
 	});
 
 	test("get_wake_retry_after_ms names the wake lease end and null otherwise", async () => {
@@ -2339,12 +2453,27 @@ describe("job wakeup", () => {
 
 	test("thread_run_begin_wakeup takes a free lease and refuses a live run", async () => {
 		const f = await fixture();
-		expect(await f.t.mutation(internal.ai_chat.thread_run_begin_wakeup, { threadId: f.scope.threadId })).toBe(true);
+		expect(
+			await f.t.mutation(internal.ai_chat.thread_run_begin_wakeup, {
+				threadId: f.scope.threadId,
+				invocationId: f.parent._id,
+			}),
+		).not.toBeNull();
 		expect((await read_thread(f)).thread?.activeRun?.kind).toBe("job_wakeup");
-		expect(await f.t.mutation(internal.ai_chat.thread_run_begin_wakeup, { threadId: f.scope.threadId })).toBe(false);
-		await f.t.mutation(internal.ai_chat.thread_run_end, { threadId: f.scope.threadId, kind: "job_wakeup" });
-		await f.t.mutation(internal.ai_chat.thread_run_begin, { threadId: f.scope.threadId });
-		expect(await f.t.mutation(internal.ai_chat.thread_run_begin_wakeup, { threadId: f.scope.threadId })).toBe(false);
+		expect(
+			await f.t.mutation(internal.ai_chat.thread_run_begin_wakeup, {
+				threadId: f.scope.threadId,
+				invocationId: f.parent._id,
+			}),
+		).toBeNull();
+		await end_runs(f, "job_wakeup");
+		await f.t.mutation(internal.ai_chat.thread_run_begin, { source: chat_source(f) });
+		expect(
+			await f.t.mutation(internal.ai_chat.thread_run_begin_wakeup, {
+				threadId: f.scope.threadId,
+				invocationId: f.parent._id,
+			}),
+		).toBeNull();
 	});
 
 	test.each(["membership", "lifetime", "creator"])(
@@ -2361,6 +2490,7 @@ describe("job wakeup", () => {
 			const finishMessageId = (await read_thread(f)).messages.at(-1)!._id;
 			const reply = {
 				threadId: f.scope.threadId,
+				runId: await wake_run_id(f),
 				userId: f.scope.userId,
 				finishMessageId,
 				clientGeneratedMessageId: "wake-before-revocation",
@@ -2418,6 +2548,7 @@ describe("job wakeup", () => {
 		};
 		const reply = {
 			threadId: f.scope.threadId,
+			runId: await wake_run_id(f),
 			userId: f.scope.userId,
 			finishMessageId,
 			clientGeneratedMessageId: "image-reply",
@@ -2444,7 +2575,7 @@ describe("job wakeup", () => {
 			workId: first.workId!,
 			result: job_result(0),
 		});
-		await f.t.mutation(internal.ai_chat.thread_run_end, { threadId: f.scope.threadId, kind: "job_wakeup" });
+		await end_runs(f, "job_wakeup");
 		const job1FinishId = (await read_thread(f)).messages.at(-1)!._id;
 		const second = await f.seed_job({ jobNumber: 2, status: "running" });
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
@@ -2452,11 +2583,12 @@ describe("job wakeup", () => {
 			workId: second.workId!,
 			result: job_result(0),
 		});
-		await f.t.mutation(internal.ai_chat.thread_run_end, { threadId: f.scope.threadId, kind: "job_wakeup" });
+		await end_runs(f, "job_wakeup");
 		const job2FinishId = (await read_thread(f)).messages.at(-1)!._id;
 
 		await f.t.mutation(internal.ai_chat.store_job_wakeup_reply, {
 			threadId: f.scope.threadId,
+			runId: await wake_run_id(f),
 			userId: f.scope.userId,
 			finishMessageId: job1FinishId,
 			clientGeneratedMessageId: "wake-1",
@@ -2475,7 +2607,7 @@ describe("job wakeup", () => {
 			workId: job.workId!,
 			result: job_result(0),
 		});
-		await f.t.mutation(internal.ai_chat.thread_run_end, { threadId: f.scope.threadId, kind: "job_wakeup" });
+		await end_runs(f, "job_wakeup");
 		const finishId = (await read_thread(f)).messages.at(-1)!._id;
 		const stored = await f.asUser.mutation(api.ai_chat.thread_messages_add, {
 			membershipId: f.db.membershipId,
@@ -2492,6 +2624,7 @@ describe("job wakeup", () => {
 
 		await f.t.mutation(internal.ai_chat.store_job_wakeup_reply, {
 			threadId: f.scope.threadId,
+			runId: await wake_run_id(f),
 			userId: f.scope.userId,
 			finishMessageId: finishId,
 			clientGeneratedMessageId: "wake-1",
@@ -2510,7 +2643,7 @@ describe("job wakeup", () => {
 			workId: job.workId!,
 			result: job_result(0),
 		});
-		await f.t.mutation(internal.ai_chat.thread_run_end, { threadId: f.scope.threadId, kind: "job_wakeup" });
+		await end_runs(f, "job_wakeup");
 		const finishId = (await read_thread(f)).messages.at(-1)!._id;
 		vi.setSystemTime(Date.now() + 1000);
 		const otherRoot = await f.asUser.mutation(api.ai_chat.thread_messages_add, {
@@ -2528,6 +2661,7 @@ describe("job wakeup", () => {
 
 		await f.t.mutation(internal.ai_chat.store_job_wakeup_reply, {
 			threadId: f.scope.threadId,
+			runId: await wake_run_id(f),
 			userId: f.scope.userId,
 			finishMessageId: finishId,
 			clientGeneratedMessageId: "wake-1",

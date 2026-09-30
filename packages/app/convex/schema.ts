@@ -185,6 +185,27 @@ const plugins_mcp_oauth_token_endpoint_auth_method_validator = v.union(
 
 const organizations_integration_policy_mode_validator = v.union(v.literal("allow_all"), v.literal("allowlist"));
 
+/**
+ * A tool result too large to keep inline points at its stored full text. `ai_chat_tool_output_ref_schema`
+ * in `shared/ai-chat-files.ts` is the Zod twin. The ref grants nothing: reads check an owner doc.
+ */
+const ai_chat_tool_output_ref_validator = v.object({
+	outputId: v.id("ai_chat_output_objects"),
+	/**
+	 * Where Bash reads the full text: `/tool-output/<outputId>.txt`.
+	 */
+	path: v.string(),
+	storedBytes: v.number(),
+	/**
+	 * The bytes the producer returned, before the cuts named in `cutBy`.
+	 */
+	sourceBytes: v.number(),
+	/**
+	 * Cuts that ran before the store saw the text. Those bytes are not in the stored text.
+	 */
+	cutBy: v.array(v.union(v.literal("mcp_binary_omitted"), v.literal("mcp_structured_dropped"))),
+});
+
 export const ai_chat_bash_result_validator = v.object({
 	title: v.string(),
 	output: v.string(),
@@ -213,6 +234,10 @@ export const ai_chat_bash_result_validator = v.object({
 		 * The jobs this call launched. The chat keeps the call's tool card loading until they end.
 		 */
 		launchedJobNumbers: v.optional(v.array(v.number())),
+		/**
+		 * Set when the full output was stored. `output` then holds only its head and tail.
+		 */
+		output: v.optional(ai_chat_tool_output_ref_validator),
 	}),
 });
 
@@ -767,6 +792,20 @@ const app_convex_schema = defineSchema({
 		 **/
 		bashJobWakeupCount: v.optional(v.number()),
 		activeRun: v.optional(ai_chat_thread_active_run_validator),
+		/**
+		 * Set by Delete chat. From then on every thread door treats the chat as not found, and a
+		 * scheduled drain deletes its data in small passes. The thread doc is deleted last.
+		 **/
+		deletingAt: v.optional(v.number()),
+		/**
+		 * Set on a branch copy until its messages are copied. Every thread door treats the chat as
+		 * not found meanwhile, like `deletingAt`.
+		 **/
+		copyingAt: v.optional(v.number()),
+		/**
+		 * Owner docs of stored tool outputs in this thread. A new stored output is refused at 10,000.
+		 **/
+		outputOwnerCount: v.optional(v.number()),
 	})
 		.index("by_organization_workspace_archived_lastMessageAt", [
 			"organizationId",
@@ -782,6 +821,169 @@ const app_convex_schema = defineSchema({
 			"lastMessageAt",
 		])
 		.index("by_createdBy", ["createdBy"]),
+
+	/**
+	 * One agent run execution on a thread: a `/api/chat` request or one `run_job_wakeup` action.
+	 * The doc id is the run id. Each run ends its own doc. The `end expired chat runs` cron ends a
+	 * doc whose lease passed without a run end. Thread deletion deletes these docs.
+	 */
+	ai_chat_runs: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		threadId: v.id("ai_chat_threads"),
+		userId: v.id("users"),
+		membershipId: v.id("organizations_workspaces_users"),
+		membershipLifetime: v.number(),
+		kind: ai_chat_thread_active_run_validator.fields.kind,
+		status: v.union(v.literal("running"), v.literal("ended")),
+		leaseExpiresAt: v.number(),
+		endedAt: v.union(v.number(), v.null()),
+	})
+		.index("by_thread_status", ["threadId", "status"])
+		.index("by_status_leaseExpiresAt", ["status", "leaseExpiresAt"])
+		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
+
+	/**
+	 * The full text of one tool result that was too large to keep inline, stored in R2. The doc is
+	 * also the quota hold: it holds its bytes and one object on the three chat output counters from
+	 * the reservation until its R2 deletion job settles. Owner docs decide who may read it.
+	 */
+	ai_chat_output_objects: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		/**
+		 * The thread whose run reserved it. Delete chat releases its reservation or upload.
+		 */
+		threadId: v.id("ai_chat_threads"),
+		/**
+		 * `chat-outputs/<organizationId>/<workspaceId>/<objectId>`. Null while reserved.
+		 */
+		r2Key: v.union(v.string(), v.null()),
+		/**
+		 * The stored size and the bytes held after the reservation. Null while reserved.
+		 */
+		byteCount: v.union(v.number(), v.null()),
+		sha256: v.union(v.string(), v.null()),
+		contentType: v.union(v.literal("text/plain; charset=utf-8"), v.literal("application/json"), v.null()),
+		ownerCount: v.number(),
+		quotaIds: v.object({
+			workspaceBytes: v.id("quotas"),
+			userBytes: v.id("quotas"),
+			workspaceObjects: v.id("quotas"),
+		}),
+		state: v.union(
+			v.object({
+				kind: v.literal("reserved"),
+				runId: v.id("ai_chat_runs"),
+				opKey: v.string(),
+				/**
+				 * The largest size the tool can store. Held until the upload shrinks it to the real size.
+				 */
+				reservedBytes: v.number(),
+			}),
+			v.object({
+				kind: v.literal("uploading"),
+				runId: v.id("ai_chat_runs"),
+				opKey: v.string(),
+				attemptId: v.string(),
+				/**
+				 * The signed PUT can still land until then, so a failed upload deletes again after it.
+				 */
+				putMayArriveUntil: v.number(),
+			}),
+			v.object({ kind: v.literal("ready") }),
+			v.object({ kind: v.literal("deleting") }),
+		),
+		createdAt: v.number(),
+	})
+		.index("by_organization_workspace_state", ["organizationId", "workspaceId", "state.kind"])
+		.index("by_thread_state", ["threadId", "state.kind"])
+		.index("by_run_state", ["state.runId", "state.kind"])
+		.index("by_state_putMayArriveUntil", ["state.kind", "state.putMayArriveUntil"])
+		.index("by_workspaceBytesQuota", ["quotaIds.workspaceBytes"])
+		.index("by_userBytesQuota", ["quotaIds.userBytes"])
+		.index("by_workspaceObjectsQuota", ["quotaIds.workspaceObjects"]),
+
+	/**
+	 * One thread's right to read one stored output. A running tool attaches a `pending` owner; the
+	 * reply save of the same run commits it. Run end removes the pending owners it left. Removing
+	 * the last owner starts the object's deletion.
+	 */
+	ai_chat_output_owners: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		threadId: v.id("ai_chat_threads"),
+		objectId: v.id("ai_chat_output_objects"),
+		/**
+		 * `sha256(runId:modelCallId:toolCallId)`: one tool call of one provider request of one run.
+		 */
+		opKey: v.string(),
+		runId: v.id("ai_chat_runs"),
+		state: v.union(v.literal("pending"), v.literal("committed")),
+	})
+		.index("by_thread_object", ["threadId", "objectId"])
+		.index("by_thread", ["threadId"])
+		.index("by_run_state", ["runId", "state"])
+		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
+
+	/**
+	 * One branch copy in progress. `thread_branch` creates the hidden target thread and this doc.
+	 * Small steps first write the message ids from the anchor up to the root into pages, then copy
+	 * the messages root first with their committed output owners, then publish the target. Publish
+	 * deletes this doc. An aborted copy stays until the target's drain deletes it.
+	 */
+	ai_chat_thread_copies: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		sourceThreadId: v.id("ai_chat_threads"),
+		targetThreadId: v.id("ai_chat_threads"),
+		/**
+		 * The creator and membership captured at the start. Every step checks them again.
+		 */
+		userId: v.id("users"),
+		membershipId: v.id("organizations_workspaces_users"),
+		membershipLifetime: v.number(),
+		state: v.union(
+			v.object({
+				kind: v.literal("building"),
+				/**
+				 * The next message to add while walking up. null when the root was added.
+				 */
+				nextMessageId: v.union(v.id("ai_chat_threads_messages_aisdk_5"), v.null()),
+				pageCount: v.number(),
+			}),
+			v.object({
+				kind: v.literal("copying"),
+				/**
+				 * Pages hold anchor-first ids, so copying walks from the last id of the last page down.
+				 */
+				page: v.number(),
+				index: v.number(),
+				/**
+				 * The copy of the last copied message: the parent of the next copy.
+				 */
+				parentId: v.union(v.id("ai_chat_threads_messages_aisdk_5"), v.null()),
+			}),
+			v.object({ kind: v.literal("aborted") }),
+		),
+		expiresAt: v.number(),
+	})
+		.index("by_source", ["sourceThreadId"])
+		.index("by_target", ["targetThreadId"])
+		.index("by_state_expiresAt", ["state.kind", "expiresAt"])
+		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
+
+	/**
+	 * Message ids of one branch copy, anchor first, at most 1,000 per page. Convex caps arrays at
+	 * 8,192 items, so one list cannot hold a long chat.
+	 */
+	ai_chat_thread_copy_pages: defineTable({
+		copyId: v.id("ai_chat_thread_copies"),
+		page: v.number(),
+		messageIds: v.array(v.id("ai_chat_threads_messages_aisdk_5")),
+	}).index("by_copy_page", ["copyId", "page"]),
 
 	/**
 	 * One named Bash shell of a creator-private thread.
@@ -1151,7 +1353,8 @@ const app_convex_schema = defineSchema({
 		.index("by_expiresAt", ["expiresAt"])
 		.index("by_organization_workspace", ["organizationId", "workspaceId"])
 		.index("by_organization_workspace_user", ["organizationId", "workspaceId", "userId"])
-		.index("by_user", ["userId"]),
+		.index("by_user", ["userId"])
+		.index("by_thread", ["threadId"]),
 
 	api_credentials: defineTable({
 		organizationId: v.id("organizations"),
@@ -1540,7 +1743,8 @@ const app_convex_schema = defineSchema({
 		.index("by_organization_workspace_user_request", ["organizationId", "workspaceId", "userId", "requestId"])
 		.index("by_expiresAt", ["expiresAt"])
 		.index("by_user", ["userId"])
-		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
+		.index("by_organization_workspace", ["organizationId", "workspaceId"])
+		.index("by_thread_state", ["threadId", "state.kind"]),
 
 	files_pending_nodes: defineTable({
 		organizationId: v.id("organizations"),
@@ -1923,7 +2127,8 @@ const app_convex_schema = defineSchema({
 			"target.id",
 		])
 		.index("by_user", ["userId"])
-		.index("by_expiresAt", ["expiresAt"]),
+		.index("by_expiresAt", ["expiresAt"])
+		.index("by_agentThread_expiresAt", ["agentSource.threadId", "expiresAt"]),
 
 	/**
 	 * One staged text value (staged or unstaged content) for a pending-state operation batch, so
@@ -3045,9 +3250,14 @@ const app_convex_schema = defineSchema({
 			v.literal("read_only_yjs_repair"),
 			v.literal("untracked_asset_event"),
 			v.literal("discarded_replacement"),
+			v.literal("chat_output"),
 		),
 		assetId: v.optional(v.id("files_r2_assets")),
 		privateStorageReservationId: v.optional(v.id("files_private_storage_reservations")),
+		/**
+		 * The stored tool output this job deletes. The final delete releases its quota hold.
+		 */
+		chatOutputObjectId: v.optional(v.id("ai_chat_output_objects")),
 		generation: v.number(),
 		lastR2EventId: v.optional(v.string()),
 		/**
@@ -5304,7 +5514,8 @@ const app_convex_schema = defineSchema({
 		.index("by_targetCustomServer", ["target.customServerId"])
 		.index("by_organization_workspace_user", ["organizationId", "workspaceId", "userId"])
 		.index("by_user", ["userId"])
-		.index("by_startedAt", ["startedAt"]),
+		.index("by_startedAt", ["startedAt"])
+		.index("by_thread", ["threadId"]),
 	// #endregion plugins mcp
 
 	// #region activities
@@ -5893,6 +6104,9 @@ const app_convex_schema = defineSchema({
 			v.literal("files_private_user_bytes"),
 			v.literal("files_private_workspace_bytes"),
 			v.literal("files_private_nodes"),
+			v.literal("ai_chat_output_workspace_bytes"),
+			v.literal("ai_chat_output_user_bytes"),
+			v.literal("ai_chat_output_workspace_objects"),
 		),
 		userId: v.optional(v.id("users")),
 		organizationId: v.optional(v.id("organizations")),

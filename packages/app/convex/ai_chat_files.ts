@@ -57,6 +57,7 @@ import {
 	organizations_membership_lifetimes_db_get,
 } from "./organizations_membership_lifetimes.ts";
 import { ai_chat_workspaces_db_authorize_file_scope, ai_chat_workspaces_db_resolve } from "./ai_chat_workspaces.ts";
+import { ai_chat_runs_db_insert } from "./ai_chat_runs.ts";
 import { billing_db_check_paid_plan, billing_pick_billed_user_id } from "./billing_db.ts";
 import { files_browser_db_check_agent_intent } from "./files_browser.ts";
 import {
@@ -288,6 +289,8 @@ export async function ai_chat_files_db_get_invocation_membership(
 	const thread = await ctx.db.get("ai_chat_threads", invocation.threadId);
 	if (
 		!thread ||
+		thread.deletingAt !== undefined ||
+		thread.copyingAt !== undefined ||
 		thread.createdBy !== invocation.userId ||
 		thread.organizationId !== invocation.organizationId ||
 		thread.workspaceId !== invocation.workspaceId
@@ -1094,9 +1097,15 @@ export const expire_browser_invocation_result = internalMutation({
 	},
 });
 
+/**
+ * Delete finished browser calls and move the others toward an end. `cloudCommands: "wait"` is for
+ * Delete chat: the user's cloud session stays open, and interrupting a run command would close it.
+ * So a running command in a claimed cloud session is left to end through its normal path.
+ */
 export async function ai_chat_files_db_delete_browser_invocations(
 	ctx: MutationCtx,
 	invocations: Doc<"ai_chat_browser_invocations">[],
+	options: { cloudCommands: "interrupt" | "wait" },
 ) {
 	let deletedCount = 0;
 	for (const invocation of invocations) {
@@ -1112,6 +1121,11 @@ export async function ai_chat_files_db_delete_browser_invocations(
 				await ctx.db.delete("ai_chat_browser_invocations", invocation._id);
 				deletedCount++;
 			}
+		}
+		// An interrupted call is already resolving. A claimed session's command ends by itself, or
+		// its scheduled interrupt runs at the deadline.
+		else if (options.cloudCommands === "wait" && (invocation.status === "interrupted" || invocation.resource)) {
+			continue;
 		} else {
 			if (invocation.status === "running")
 				await ctx.db.patch("ai_chat_browser_invocations", invocation._id, {
@@ -2047,6 +2061,8 @@ async function db_get_door_membership(
 	const thread = await ctx.db.get("ai_chat_threads", args.threadId);
 	if (
 		!thread ||
+		thread.deletingAt !== undefined ||
+		thread.copyingAt !== undefined ||
 		thread.createdBy !== args.userId ||
 		thread.organizationId !== membership.organizationId ||
 		thread.workspaceId !== membership.workspaceId
@@ -2229,16 +2245,20 @@ async function db_wake_agent_for_job(
 		});
 		return;
 	}
+	const leaseExpiresAt = args.now + BASH_JOB_WAKEUP_RUN_MS;
 	await ctx.db.patch("ai_chat_threads", thread._id, {
 		lastMessageAt: args.now,
 		updatedAt: args.now,
 		updatedBy: invocation.userId,
-		activeRun: { kind: "job_wakeup", expiresAt: args.now + BASH_JOB_WAKEUP_RUN_MS },
+		activeRun: { kind: "job_wakeup", expiresAt: leaseExpiresAt },
 	});
+	// The wake run acts for the job's own membership, the same one `get_job_wakeup_context` checks.
+	const runId = await ai_chat_runs_db_insert(ctx, { kind: "job_wakeup", leaseExpiresAt, source: invocation });
 	await ctx.scheduler.runAfter(0, internal.ai_chat.run_job_wakeup, {
 		invocationId: invocation._id,
 		threadId: thread._id,
 		finishMessageId,
+		runId,
 	});
 }
 
@@ -3229,6 +3249,8 @@ export const list_live_thread_jobs = query({
 		const thread = await ctx.db.get("ai_chat_threads", threadId);
 		if (
 			!thread ||
+			thread.deletingAt !== undefined ||
+			thread.copyingAt !== undefined ||
 			thread.createdBy !== userAuth.id ||
 			thread.organizationId !== membership.organizationId ||
 			thread.workspaceId !== membership.workspaceId
@@ -3666,6 +3688,8 @@ export const copy_thread_tmp_files = internalMutation({
 		const targetThread = await ctx.db.get("ai_chat_threads", args.targetThreadId);
 		if (
 			!targetThread ||
+			// The target is the hidden branch copy that `ai_chat_thread_copies.begin` just created.
+			targetThread.deletingAt !== undefined ||
 			targetThread.createdBy !== args.userId ||
 			targetThread.organizationId !== membership._yay.organizationId ||
 			targetThread.workspaceId !== membership._yay.workspaceId

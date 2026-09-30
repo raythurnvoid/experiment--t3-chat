@@ -483,6 +483,27 @@
 	}
 	/* #endregion tool textarea section */
 
+	/* #region tool output full */
+	.AiChatMessagePartToolOutputFull {
+		display: grid;
+		justify-items: start;
+		gap: 8px;
+
+		margin: 0 0 16px 16px;
+	}
+
+	.AiChatMessagePartToolOutputFull-text {
+		justify-self: stretch;
+
+		margin: 0;
+	}
+
+	.AiChatMessagePartToolOutputFull-status {
+		font-size: 0.8125rem;
+		color: var(--color-fg-07);
+	}
+	/* #endregion tool output full */
+
 	/* #region tool bash */
 	.AiChatMessagePartToolBash-terminal {
 		width: calc(100% - 16px);

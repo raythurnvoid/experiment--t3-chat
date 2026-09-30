@@ -49,6 +49,7 @@ import {
 	type MkdirOptions,
 	type RmOptions,
 } from "just-bash/browser";
+import type { FunctionArgs, FunctionReturnType } from "convex/server";
 import { internal } from "../convex/_generated/api.js";
 import type { ActionCtx } from "../convex/_generated/server.js";
 import type { Doc, Id } from "../convex/_generated/dataModel";
@@ -73,6 +74,8 @@ import {
 	organizations_GLOBAL_PLUGINS_WORKSPACE_ID,
 } from "../shared/organizations.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
+import { ai_chat_tool_output_keep } from "./ai-chat-tool-output.ts";
+import { r2_fetch_object_range_from_bucket } from "../convex/r2_client.ts";
 import { bash_cat_command_create } from "./bash-cat-command.ts";
 import { bash_cp_command_create } from "./bash-cp-command.ts";
 import { bash_find_command_create } from "./bash-find-command.ts";
@@ -122,6 +125,7 @@ import {
 	bash_disallowed_shell_code_error,
 	bash_TMP_MOUNT,
 	bash_SHELLS_MOUNT,
+	bash_TOOL_OUTPUT_MOUNT,
 	bash_DbFilesFs,
 	bash_ABORT_REASON_STOPPED,
 	bash_COMMAND_EXIT_FAILURE,
@@ -1003,6 +1007,72 @@ class ReadOnlyInMemoryFs implements IFileSystem {
 }
 
 /**
+ * The `/tool-output` mount. It lists the stored tool outputs of the chat, and reports their sizes
+ * without loading them, so `ls -l` and `find` read nothing from R2. A file loads on its first
+ * read. The access check runs again after the R2 read, so access lost during the read returns
+ * nothing.
+ */
+class BashToolOutputFs extends ReadOnlyInMemoryFs {
+	readonly outputs = new Map<string, { outputId: Id<"ai_chat_output_objects">; byteCount: number; loaded: boolean }>();
+
+	constructor(
+		readonly ctx: ActionCtx,
+		readonly reader: FunctionArgs<typeof internal.ai_chat_outputs.list_tool_readable_objects>,
+		listed: FunctionReturnType<typeof internal.ai_chat_outputs.list_tool_readable_objects>,
+	) {
+		const inner = new InMemoryFs();
+		for (const output of listed) {
+			inner.writeFileSync(`/${output.outputId}.txt`, "");
+		}
+		super(inner);
+		for (const output of listed) {
+			this.outputs.set(`/${output.outputId}.txt`, { ...output, loaded: false });
+		}
+	}
+
+	private async load(path: string) {
+		const output = this.outputs.get(bash_normalize_path(path));
+		if (!output || output.loaded) return;
+
+		const readable = { ...this.reader, outputId: output.outputId };
+		const object = await this.ctx.runQuery(internal.ai_chat_outputs.get_tool_readable_object, readable);
+		const response = object
+			? await r2_fetch_object_range_from_bucket({ key: object.r2Key, start: 0, endInclusive: object.byteCount - 1 })
+			: null;
+		const bytes = response ? new Uint8Array(await response.arrayBuffer()) : null;
+		if (!bytes || !(await this.ctx.runQuery(internal.ai_chat_outputs.get_tool_readable_object, readable))) {
+			throw new Error(
+				`ENOENT: no such file or directory, open '${bash_TOOL_OUTPUT_MOUNT}${bash_normalize_path(path)}'`,
+			);
+		}
+		await this.fs.writeFile(path, bytes);
+		output.loaded = true;
+	}
+
+	override async readFile(path: string, options?: Parameters<IFileSystem["readFile"]>[1]) {
+		await this.load(path);
+		return await super.readFile(path, options);
+	}
+
+	override async readFileBuffer(path: string) {
+		await this.load(path);
+		return await super.readFileBuffer(path);
+	}
+
+	override async stat(path: string) {
+		const output = this.outputs.get(bash_normalize_path(path));
+		const stat = await super.stat(path);
+		return output && !output.loaded ? { ...stat, size: output.byteCount } : stat;
+	}
+
+	override async lstat(path: string) {
+		const output = this.outputs.get(bash_normalize_path(path));
+		const stat = await super.lstat(path);
+		return output && !output.loaded ? { ...stat, size: output.byteCount } : stat;
+	}
+}
+
+/**
  * Create the app-shell filesystem and Bash runtime for an agent thread.
  */
 async function bash_fs_create(args: {
@@ -1024,6 +1094,11 @@ async function bash_fs_create(args: {
 	transferContext: bash_TransferContext;
 	jobContext: bash_JobContext;
 	shells: { _id: Id<"ai_chat_bash_shells">; name: string }[];
+	/**
+	 * The chat run of a chat call. It can also read the outputs its run stored so far. A job
+	 * passes null and reads only outputs of saved replies.
+	 */
+	toolOutputRunId: Id<"ai_chat_runs"> | null;
 	restoreState: InterpreterStateSnapshot | undefined;
 	onExecEnd?: (snapshot: InterpreterStateSnapshot) => void;
 	onOutput?: NonNullable<BashOptions["onOutput"]>;
@@ -1069,6 +1144,13 @@ async function bash_fs_create(args: {
 			return entries.map((entry) => entry.text).join("\n");
 		});
 	}
+
+	const toolOutputReader = { source: agentSource, runId: args.toolOutputRunId };
+	const toolOutputFs = new BashToolOutputFs(
+		args.ctx,
+		toolOutputReader,
+		await args.ctx.runQuery(internal.ai_chat_outputs.list_tool_readable_objects, toolOutputReader),
+	);
 
 	const appDbFilesFs = new bash_DbFilesFs({
 		ctx: args.ctx,
@@ -1211,6 +1293,7 @@ async function bash_fs_create(args: {
 			})),
 			{ mountPoint: bash_TMP_MOUNT, filesystem: tmpFs },
 			{ mountPoint: bash_SHELLS_MOUNT, filesystem: new ReadOnlyInMemoryFs(shellsFs) },
+			{ mountPoint: bash_TOOL_OUTPUT_MOUNT, filesystem: toolOutputFs },
 		],
 	});
 
@@ -1684,6 +1767,7 @@ export async function bash_run_command(
 		 * Set when the call's jobs must wake the agent when they end (the tool's `wakeOnJobFinish`).
 		 */
 		wakeAgent: { modelId: ai_chat_ModelId } | null;
+		output: { objectId: Id<"ai_chat_output_objects">; runId: Id<"ai_chat_runs"> } | null;
 	},
 ): Promise<NonNullable<Doc<"ai_chat_bash_invocations">["result"]>> {
 	const ctx = bash_well_formed_ctx(actionCtx);
@@ -1833,6 +1917,7 @@ export async function bash_run_command(
 			},
 			jobContext,
 			shells: invocation.shells,
+			toolOutputRunId: args.output?.runId ?? null,
 			// `null` is a fresh shell: nothing to seed.
 			restoreState: invocation.shell.state ?? undefined,
 			onExecEnd: (snapshot) => {
@@ -1906,7 +1991,7 @@ export async function bash_run_command(
 
 		await Promise.all(pendingMutations);
 
-		const response = bash_response({
+		let response = bash_response({
 			bashFs,
 			command: args.command,
 			result,
@@ -1916,6 +2001,40 @@ export async function bash_run_command(
 			waitingForJobs: jobContext.waitingJobNumbers,
 			launchedJobNumbers: jobContext.launchedJobNumbers,
 		});
+		// A transcript over the inline size is stored before the 128K cut, and the model reads its
+		// preview. The row keeps the cut stdout and stderr as before.
+		if (args.output) {
+			const storedText = bashFs.format_output({
+				command: args.command,
+				cwd: bashFs.cwd,
+				nextCwd,
+				exitCode: result.exitCode,
+				stdout: result.stdout,
+				stderr: result.stderr,
+			});
+			const kept = await ai_chat_tool_output_keep(ctx, {
+				reservation: args.output,
+				source: {
+					organizationId: args.organizationId,
+					workspaceId: args.workspaceId,
+					userId: args.userId,
+					threadId: args.threadId,
+					membershipId: args.membershipId,
+					membershipLifetime: args.membershipLifetime,
+				},
+				inlineText: response.output,
+				storedText,
+				contentType: "text/plain; charset=utf-8",
+				sourceBytes: new TextEncoder().encode(storedText).byteLength,
+				cutBy: [],
+			});
+			// The preview is decoded from UTF-8 bytes, so it holds no half character.
+			response = {
+				...response,
+				output: kept.output,
+				metadata: { ...response.metadata, ...(kept.ref ? { output: kept.ref } : {}) },
+			};
+		}
 		console.debug("Bash command completed", {
 			threadId: args.threadId,
 			shellName: args.shellName,
@@ -2033,9 +2152,10 @@ async function run_command_and_diagnose(args: {
 		result.stderr += `bash: ${diagnostic.name} exited ${diagnostic.exitCode} and its stderr was discarded; it said:\n${guidance}\n`;
 	}
 
-	// Only paths under HOME, `/tmp`, `/shells`, and the read-only `/.mounts` and `/.plugins` trees
-	// survive between runs (`/tmp` is restored from the db; `/shells` and the mounts are rebuilt
-	// from the db and the reserved scopes; everything else is synthetic mount scaffolding). A
+	// Only paths under HOME, `/tmp`, `/shells`, `/tool-output`, and the read-only `/.mounts` and
+	// `/.plugins` trees survive between runs (`/tmp` is restored from the db; `/shells`,
+	// `/tool-output` and the mounts are rebuilt from the db and the reserved scopes; everything else
+	// is synthetic mount scaffolding). A
 	// `/.plugins` cwd can still vanish when the plugin is uninstalled; the nearest-existing-dir
 	// climb above already handles that.
 	if (
@@ -2045,6 +2165,8 @@ async function run_command_and_diagnose(args: {
 		!nextCwd.startsWith(`${bash_TMP_MOUNT}/`) &&
 		nextCwd !== bash_SHELLS_MOUNT &&
 		!nextCwd.startsWith(`${bash_SHELLS_MOUNT}/`) &&
+		nextCwd !== bash_TOOL_OUTPUT_MOUNT &&
+		!nextCwd.startsWith(`${bash_TOOL_OUTPUT_MOUNT}/`) &&
 		nextCwd !== bash_EXTERNAL_MOUNTS_ROOT &&
 		!nextCwd.startsWith(`${bash_EXTERNAL_MOUNTS_ROOT}/`) &&
 		nextCwd !== bash_PLUGINS_MOUNT_ROOT &&
@@ -2471,6 +2593,7 @@ export async function bash_run_job(
 				waitingJobNumbers: [],
 			},
 			shells,
+			toolOutputRunId: null,
 			restoreState: job.shellState,
 			onOutput,
 			onStatementBoundary,

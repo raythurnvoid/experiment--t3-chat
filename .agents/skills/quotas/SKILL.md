@@ -15,6 +15,7 @@ description: Persisted per-user, per-organization, and per-workspace quota count
 	- `organizationId` plus `workspaceId` plus `quotaName: "plugin_service_storage_bytes"` for the workspace's plugin service upload storage
 	- `userId`, `organizationId`, and `workspaceId` for `files_private_user_bytes` and `files_private_nodes`
 	- `organizationId` plus `workspaceId` for `files_private_workspace_bytes`
+	- `userId`, `organizationId`, and `workspaceId` for `ai_chat_output_user_bytes`; `organizationId` plus `workspaceId` for `ai_chat_output_workspace_bytes` and `ai_chat_output_workspace_objects`
 - The product rule is still:
 	- each user gets `personal` plus at most **2** extra organizations (**3** total organizations)
 	- each organization gets `home` plus at most **5** extra workspaces (**6** total workspaces)
@@ -125,6 +126,14 @@ description: Persisted per-user, per-organization, and per-workspace quota count
 - A recovered account or preserved reset workspace may use the same scope again. `quotas_db_ensure` reuses and reactivates its retained quota, including bytes still awaiting deletion. It never starts a second zero counter while the old hold remains.
 - Byte counts cover payloads, not database encoding or index overhead. Private storage limits are separate from usage billing and the monotonic public/service upload quotas.
 
+## Chat stored tool output
+
+- Three live capacity counters hold stored tool outputs (see the ai-chat-agent skill): `ai_chat_output_workspace_bytes` (5 GiB per workspace), `ai_chat_output_user_bytes` (2 GiB per user in a workspace), and `ai_chat_output_workspace_objects` (50,000 per workspace). Archiving a chat does not give space back. Deleting it does.
+- `ai_chat_outputs_storage_db_reserve` (`convex/ai_chat_outputs_storage.ts`) seeds the counters on first use with `quotas_db_ensure`. All three must fit before any of them changes; otherwise it returns `storage_full` with the definition's `disabledReason`, and the tool does not run.
+- The reservation holds the largest size the tool can store (Bash 1 MiB, MCP 2 MiB). A small result releases it. A stored result shrinks it to the real size. The hold stays until the R2 deletion job of the object settles, so a late PUT can never be stored without a charge.
+- Each object doc keeps the three quota ids it charged. `quotas_db_delete` retires a chat output counter that still has an object with its id (indexes `by_workspaceBytesQuota`, `by_userBytesQuota`, `by_workspaceObjectsQuota`), and the last settle deletes the retired counter.
+- The per-chat cap of 10,000 stored results is `outputOwnerCount` on the thread, not a quota doc.
+
 ## Delete flows
 
 - `delete_workspace` reads the organization extra-workspace quota and decrements `usedCount` directly when deleting a non-default workspace.
@@ -149,7 +158,7 @@ description: Persisted per-user, per-organization, and per-workspace quota count
 - Use `api.quotas.get({ quotaName: "active_api_credentials", membershipId })` for the current user's active API credential quota in that membership's workspace.
 - Use `api.quotas.get({ quotaName: "public_api_upload_bytes", membershipId })` for that membership workspace's declared upload-byte budget; it returns `null` until the first mint seeds the doc.
 - Use `api.quotas.get({ quotaName: "plugin_service_storage_bytes", membershipId })` for that membership workspace's plugin service storage; it returns `null` until the first upload target seeds the doc.
-- The three `files_private_*` quotas also take `membershipId` and return `null` before first use. User quotas always resolve the authenticated user; workspace bytes require the caller's active membership. Passing another user's membership cannot reveal that user's counter.
+- The three `files_private_*` quotas and the three `ai_chat_output_*` quotas also take `membershipId` and return `null` before first use. User quotas always resolve the authenticated user; workspace bytes require the caller's active membership. Passing another user's membership cannot reveal that user's counter.
 - Returned objects are the persisted quota docs. Frontend callers derive remaining capacity from `usedCount` and `maxCount`, and use `packages/app/shared/quotas.ts` for quota-specific display copy.
 
 # Tests

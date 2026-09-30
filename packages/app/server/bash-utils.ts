@@ -56,6 +56,11 @@ export const bash_TMP_MOUNT = "/tmp";
 export const bash_SHELLS_MOUNT = "/shells";
 
 /**
+ * Read-only mount with the full text of this chat's large tool results: `/tool-output/<outputId>.txt`.
+ */
+export const bash_TOOL_OUTPUT_MOUNT = "/tool-output";
+
+/**
  * Keep the stored shell state and the engine snapshot in step. A field that one side has and the
  * other does not fails one of the four lines below, and the message names the field. The declaration
  * is ambient, so it needs no value and no suppression. Do not turn it into the unused `type _Name`

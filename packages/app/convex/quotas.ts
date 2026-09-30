@@ -22,13 +22,22 @@ type QuotaScope =
 			organizationId: Id<"organizations">;
 	  }
 	| {
-			quotaName: "active_api_credentials" | "files_private_user_bytes" | "files_private_nodes";
+			quotaName:
+				| "active_api_credentials"
+				| "files_private_user_bytes"
+				| "files_private_nodes"
+				| "ai_chat_output_user_bytes";
 			userId: Id<"users">;
 			organizationId: Id<"organizations">;
 			workspaceId: Id<"organizations_workspaces">;
 	  }
 	| {
-			quotaName: "public_api_upload_bytes" | "plugin_service_storage_bytes" | "files_private_workspace_bytes";
+			quotaName:
+				| "public_api_upload_bytes"
+				| "plugin_service_storage_bytes"
+				| "files_private_workspace_bytes"
+				| "ai_chat_output_workspace_bytes"
+				| "ai_chat_output_workspace_objects";
 			organizationId: Id<"organizations">;
 			workspaceId: Id<"organizations_workspaces">;
 	  };
@@ -124,12 +133,39 @@ export async function quotas_db_ensure(
 }
 
 /**
- * Retire private counters that cleanup still needs. The deletion indexes skip retired docs,
- * so an R2 outage cannot block account or tenant deletion. Settlement removes the final counter.
+ * A chat output object holds all three chat output counters until its R2 deletion settles.
+ */
+async function db_find_chat_output_hold(ctx: MutationCtx, quota: Doc<"quotas">) {
+	if (quota.quotaName === "ai_chat_output_workspace_bytes") {
+		return await ctx.db
+			.query("ai_chat_output_objects")
+			.withIndex("by_workspaceBytesQuota", (q) => q.eq("quotaIds.workspaceBytes", quota._id))
+			.first();
+	}
+	if (quota.quotaName === "ai_chat_output_user_bytes") {
+		return await ctx.db
+			.query("ai_chat_output_objects")
+			.withIndex("by_userBytesQuota", (q) => q.eq("quotaIds.userBytes", quota._id))
+			.first();
+	}
+	if (quota.quotaName === "ai_chat_output_workspace_objects") {
+		return await ctx.db
+			.query("ai_chat_output_objects")
+			.withIndex("by_workspaceObjectsQuota", (q) => q.eq("quotaIds.workspaceObjects", quota._id))
+			.first();
+	}
+	return null;
+}
+
+/**
+ * Retire private and chat output counters that cleanup still needs. The deletion indexes skip
+ * retired docs, so an R2 outage cannot block account or tenant deletion. Settlement removes the
+ * final counter.
  */
 export async function quotas_db_delete(ctx: MutationCtx, quota: Doc<"quotas">) {
 	const held =
-		quota.quotaName === "files_private_workspace_bytes"
+		(await db_find_chat_output_hold(ctx, quota)) ??
+		(quota.quotaName === "files_private_workspace_bytes"
 			? await ctx.db
 					.query("files_private_storage_reservations")
 					.withIndex("by_workspaceQuota_settlement", (q) =>
@@ -141,7 +177,7 @@ export async function quotas_db_delete(ctx: MutationCtx, quota: Doc<"quotas">) {
 						.query("files_private_storage_reservations")
 						.withIndex("by_userQuota_settlement", (q) => q.eq("userQuotaId", quota._id).eq("settlement.kind", "held"))
 						.first()
-				: null;
+				: null);
 	if (held) {
 		await ctx.db.patch("quotas", quota._id, { retiredAt: Date.now() });
 	} else {
@@ -222,11 +258,13 @@ export const get = query({
 			return null;
 		}
 
-		// Upload and private storage counters start at their first use.
+		// Upload, private storage and chat output counters start at their first use.
 		if (
 			args.quotaName === "public_api_upload_bytes" ||
 			args.quotaName === "plugin_service_storage_bytes" ||
-			args.quotaName === "files_private_workspace_bytes"
+			args.quotaName === "files_private_workspace_bytes" ||
+			args.quotaName === "ai_chat_output_workspace_bytes" ||
+			args.quotaName === "ai_chat_output_workspace_objects"
 		) {
 			return await db_find_quota(ctx, {
 				quotaName: args.quotaName,
@@ -235,7 +273,11 @@ export const get = query({
 			});
 		}
 
-		if (args.quotaName === "files_private_user_bytes" || args.quotaName === "files_private_nodes") {
+		if (
+			args.quotaName === "files_private_user_bytes" ||
+			args.quotaName === "files_private_nodes" ||
+			args.quotaName === "ai_chat_output_user_bytes"
+		) {
 			return await db_find_quota(ctx, {
 				quotaName: args.quotaName,
 				userId: userAuth.id,

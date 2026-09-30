@@ -193,7 +193,7 @@ describe("ai_chat thread state", () => {
 		});
 		if (launched._nay) throw new Error(launched._nay.message);
 
-		const branched = await asUser.mutation(api.ai_chat.thread_branch, {
+		const branched = await asUser.action(api.ai_chat.thread_branch, {
 			membershipId: seeded.membershipId,
 			threadId: sourceThreadId,
 		});
@@ -1052,7 +1052,7 @@ describe("ai_chat thread read cursor", () => {
 			messages: [makeMessage("client_message_read_cursor_branch")],
 		});
 
-		const branched = await asUser.mutation(api.ai_chat.thread_branch, {
+		const branched = await asUser.action(api.ai_chat.thread_branch, {
 			membershipId: seeded.membershipId,
 			threadId: sourceThreadId,
 		});
@@ -1195,6 +1195,7 @@ describe("chat run writes", () => {
 						{ clientGeneratedMessageId: id, content: { id, role: "assistant", parts: [{ type: "text", text: id }] } },
 					],
 					allowMcpParts: true,
+					runId: null,
 				});
 			expect((await writeReply("before"))._yay?.ids).toHaveLength(1);
 			expect(await asUser.mutation(internal.ai_chat.thread_run_set_title, { source, title: "Before" })).toEqual({

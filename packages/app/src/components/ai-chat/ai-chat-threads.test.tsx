@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 import type { app_convex_Doc } from "@/lib/app-convex-client.ts";
@@ -46,7 +46,11 @@ function makeThread(args: {
 	} as unknown as app_convex_Doc<"ai_chat_threads">;
 }
 
-function renderThreads(args: { threads: Array<app_convex_Doc<"ai_chat_threads">>; selectedThreadId?: string | null }) {
+function renderThreads(args: {
+	threads: Array<app_convex_Doc<"ai_chat_threads">>;
+	selectedThreadId?: string | null;
+	onDeleteThread?: (threadId: string) => void;
+}) {
 	return render(
 		<AiChatThreads
 			state="expanded"
@@ -60,6 +64,7 @@ function renderThreads(args: { threads: Array<app_convex_Doc<"ai_chat_threads">>
 			onToggleFavouriteThread={() => {}}
 			onBranchThread={() => {}}
 			onArchiveThread={() => {}}
+			onDeleteThread={args.onDeleteThread ?? (() => {})}
 			onRemoveOptimisticThread={() => {}}
 			onNewChat={() => {}}
 		/>,
@@ -122,5 +127,43 @@ describe("AiChatThreads unread dot", () => {
 		// Sorted newest first by the component, so the fresh thread comes first.
 		expect(delays[0]).toBe(`${ai_chat_UNREAD_DOT_GRACE_MS - 2_000}ms`);
 		expect(delays[1]).toBe("0ms");
+	});
+});
+
+describe("AiChatThreads delete", () => {
+	afterEach(() => {
+		cleanup();
+	});
+
+	test("asks for confirmation before deleting the chat", async () => {
+		const onDeleteThread = vi.fn();
+		renderThreads({
+			threads: [makeThread({ id: "thread_delete", title: "Old plans" })],
+			onDeleteThread,
+		});
+
+		fireEvent.click(screen.getByRole("button", { name: "More actions" }));
+		fireEvent.click(await screen.findByRole("menuitem", { name: /^Delete$/ }));
+		const dialog = await screen.findByRole("dialog", { name: "Delete “Old plans”?" });
+		expect(onDeleteThread).not.toHaveBeenCalled();
+
+		fireEvent.click(within(dialog).getByRole("button", { name: "Delete chat" }));
+		expect(onDeleteThread).toHaveBeenCalledWith("thread_delete");
+	});
+
+	test("does not delete when the user cancels", async () => {
+		const onDeleteThread = vi.fn();
+		renderThreads({
+			threads: [makeThread({ id: "thread_keep", title: "Keep me" })],
+			onDeleteThread,
+		});
+
+		fireEvent.click(screen.getByRole("button", { name: "More actions" }));
+		fireEvent.click(await screen.findByRole("menuitem", { name: /^Delete$/ }));
+		const dialog = await screen.findByRole("dialog", { name: "Delete “Keep me”?" });
+		fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+
+		await waitFor(() => expect(screen.queryByRole("dialog", { name: "Delete “Keep me”?" })).toBeNull());
+		expect(onDeleteThread).not.toHaveBeenCalled();
 	});
 });

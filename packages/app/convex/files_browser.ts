@@ -6672,7 +6672,8 @@ export async function files_browser_db_delete_user_batch(
 		.query("ai_chat_browser_invocations")
 		.withIndex("by_user", (q) => q.eq("userId", args.userId))
 		.take(args.batchSize);
-	if (invocations.length > 0) return ai_chat_files_db_delete_browser_invocations(ctx, invocations);
+	if (invocations.length > 0)
+		return ai_chat_files_db_delete_browser_invocations(ctx, invocations, { cloudCommands: "interrupt" });
 	const preferences = await ctx.db
 		.query("files_browser_preferences")
 		.withIndex("by_owner", (q) => q.eq("ownerId", args.userId))

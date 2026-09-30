@@ -204,6 +204,9 @@ async function save_with_retries(args: { modelCallId: string; logLoss: boolean; 
  * Bill every provider request of one caller through receipts. Wrap each model with
  * `middleware(...)`, and await `settle()` before the action ends, so the response id saves that
  * do not block the stream still finish.
+ *
+ * `modelCallIds` receives the provider request of each tool call, keyed by tool call id. A tool
+ * that stores output builds its operation key from it. Callers without tools pass null.
  */
 export function ai_model_call_receipts_create(
 	ctx: ActionCtx,
@@ -214,6 +217,7 @@ export function ai_model_call_receipts_create(
 		organizationId: Id<"organizations">;
 		workspaceId: Id<"organizations_workspaces">;
 	},
+	modelCallIds: Map<string, string> | null,
 ) {
 	const pending = new Set<Promise<unknown>>();
 
@@ -335,6 +339,12 @@ export function ai_model_call_receipts_create(
 													}),
 											}),
 										).catch(() => {});
+									}
+
+									// The SDK starts a local tool only after this request's finish, so the entry is
+									// always there before the tool reads it.
+									if (part.type === "tool-call") {
+										modelCallIds?.set(part.toolCallId, modelCallId);
 									}
 
 									// Charge each finished picture from the provider stream, not from the Files

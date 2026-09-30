@@ -97,6 +97,16 @@ export type mcp_client_NormalizedTool = {
 
 type NormalizedBlock =
 	| { kind: "text"; text: string }
+	| {
+			kind: "resource_link";
+			uri: string;
+			name: string;
+			title: string | null;
+			mimeType: string | null;
+			size: number | null;
+			description: string | null;
+	  }
+	| { kind: "resource"; uri: string; text: string }
 	| { kind: "omitted"; type: "image" | "audio" | "blob"; mimeType: string; bytes: number };
 
 export type mcp_client_NormalizedResult = {
@@ -523,13 +533,18 @@ function normalize_result(result: CallToolResult, tool: mcp_client_NormalizedToo
 				break;
 			case "resource_link":
 				blocks.push({
-					kind: "text",
-					text: `resource link: ${block.uri} (${block.name}, ${block.mimeType ?? "unknown type"}, ${block.size ?? "unknown size"})`,
+					kind: "resource_link",
+					uri: block.uri,
+					name: block.name,
+					title: block.title ?? null,
+					mimeType: block.mimeType ?? null,
+					size: block.size ?? null,
+					description: block.description ?? null,
 				});
 				break;
 			case "resource":
 				if ("text" in block.resource) {
-					blocks.push({ kind: "text", text: `resource ${block.resource.uri}:\n${block.resource.text}` });
+					blocks.push({ kind: "resource", uri: block.resource.uri, text: block.resource.text });
 				} else {
 					blocks.push({
 						kind: "omitted",
@@ -554,20 +569,6 @@ function normalize_result(result: CallToolResult, tool: mcp_client_NormalizedToo
 			structured = null;
 			structuredNote = "structured result did not match its schema";
 		}
-	}
-
-	// Many servers also put the same JSON in a text block. Send it only once.
-	if (structured !== null) {
-		const structuredJson = JSON.stringify(structured);
-		const sameAsText = blocks.some((block) => {
-			if (block.kind !== "text") return false;
-			try {
-				return JSON.stringify(JSON.parse(block.text)) === structuredJson;
-			} catch {
-				return false;
-			}
-		});
-		if (sameAsText) structured = null;
 	}
 
 	return {

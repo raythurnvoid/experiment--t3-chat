@@ -485,6 +485,96 @@ describe("AiChatMessage", () => {
 		expect(screen.queryByRole("region", { name: "Stdout" })).toBeNull();
 	});
 
+	describe("AiChatMessagePartToolOutputFull", () => {
+		function renderStoredBash() {
+			renderMessage({
+				message: {
+					id: "msg_assistant_bash_stored",
+					role: "assistant",
+					parts: [
+						{
+							type: "tool-bash",
+							toolCallId: "call_bash_stored",
+							state: "output-available",
+							input: { command: "seq 1 9000" },
+							output: {
+								title: "exit 0",
+								output: "$ seq 1 9000\n\n1\n\n[Full output stored at /tool-output/output_1.txt]",
+								metadata: {
+									command: "seq 1 9000",
+									cwd: bashWorkspaceMount,
+									nextCwd: bashWorkspaceMount,
+									exitCode: 0,
+									stdoutTruncated: false,
+									stderrTruncated: false,
+									stdoutLength: 43_893,
+									stderrLength: 0,
+									pathIndexTruncated: false,
+									output: {
+										outputId: "output_1" as app_convex_Id<"ai_chat_output_objects">,
+										path: "/tool-output/output_1.txt",
+										storedBytes: 10,
+										sourceBytes: 10,
+										cutBy: [],
+									},
+								},
+							},
+						},
+					],
+					metadata: {
+						convexParentId: "msg_user_failed",
+						parentClientGeneratedId: null,
+					},
+				} satisfies ai_chat_UiMessage,
+			});
+			fireEvent.click(screen.getByText("Bash:"));
+		}
+
+		test("loads the stored output one page at a time", async () => {
+			const action = vi
+				.spyOn(app_convex, "action")
+				.mockResolvedValueOnce({ _yay: { text: "line 1\n", offset: 0, nextOffset: 7, totalBytes: 10 } } as never)
+				.mockResolvedValueOnce({ _yay: { text: "2\n\n", offset: 7, nextOffset: 10, totalBytes: 10 } } as never);
+			renderStoredBash();
+
+			fireEvent.click(screen.getByRole("button", { name: "Show full output" }));
+			await waitFor(() => expect(screen.getByRole("textbox", { name: "Full output" }).textContent).toContain("line 1"));
+			// Read only the args. The first argument is a Convex function reference.
+			expect(action.mock.calls[0]?.[1]).toEqual({
+				membershipId: "membership-1",
+				threadId: "thread_1",
+				outputId: "output_1",
+				offset: 0,
+				limit: 64 * 1024,
+			});
+			expect(screen.getByRole("status").textContent).toBe("Showing 7 of 10 bytes of the full output");
+
+			fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+			await waitFor(() =>
+				expect(screen.getByRole("status").textContent).toBe("Showing 10 of 10 bytes of the full output"),
+			);
+			expect(action.mock.calls[1]?.[1]).toMatchObject({ offset: 7 });
+			expect(screen.getByRole("textbox", { name: "Full output" }).textContent).toContain("line 1\n2\n");
+			expect(screen.queryByRole("button", { name: "Load more" })).toBeNull();
+			action.mockRestore();
+		});
+
+		test("says the output is not available when the server refuses, and loads it on a retry", async () => {
+			const action = vi.spyOn(app_convex, "action").mockResolvedValue({ _nay: { message: "Not found" } } as never);
+			renderStoredBash();
+
+			fireEvent.click(screen.getByRole("button", { name: "Show full output" }));
+			await waitFor(() => expect(screen.getByRole("status").textContent).toBe("Full output not available"));
+			expect(screen.queryByRole("textbox", { name: "Full output" })).toBeNull();
+
+			// A running turn saves its reply later. Then the same button reads the output.
+			action.mockResolvedValue({ _yay: { text: "line 1\n", offset: 0, nextOffset: 7, totalBytes: 7 } } as never);
+			fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+			await waitFor(() => expect(screen.getByRole("status").textContent).toContain("Showing 7 of"));
+			action.mockRestore();
+		});
+	});
+
 	test("spins a finished bash tool while its jobs run, and stops when they end", () => {
 		const bashMessage = {
 			id: "msg_assistant_bash_jobs",

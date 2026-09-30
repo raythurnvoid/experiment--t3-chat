@@ -49,6 +49,24 @@ export const quotas = {
 		tooltip_explanation:
 			"Counts your new private files and folders until they are saved or fully removed. Changes to saved files do not use these slots.",
 	},
+	ai_chat_output_workspace_bytes: {
+		disabledReason: "Chat storage is full for this workspace. Delete chats or ask for a higher limit.",
+		maxCount: 5 * 1024 * 1024 * 1024,
+		tooltip_explanation:
+			"Counts the full text of large tool results that chats in this workspace keep. Deleting a chat gives its space back. Archiving does not.",
+	},
+	ai_chat_output_user_bytes: {
+		disabledReason: "Your chat storage is full in this workspace. Delete chats or ask for a higher limit.",
+		maxCount: 2 * 1024 * 1024 * 1024,
+		tooltip_explanation:
+			"Counts the full text of large tool results that your chats in this workspace keep. Deleting a chat gives its space back. Archiving does not.",
+	},
+	ai_chat_output_workspace_objects: {
+		disabledReason: "Chat storage is full for this workspace. Delete chats or ask for a higher limit.",
+		maxCount: 50_000,
+		tooltip_explanation:
+			"Counts the large tool results that chats in this workspace keep. Deleting a chat gives them back. Archiving does not.",
+	},
 } as const satisfies Record<
 	Doc<"quotas">["quotaName"],
 	{ maxCount: number; disabledReason: string; tooltip_explanation: string }

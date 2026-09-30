@@ -2255,7 +2255,7 @@ describe("enforcement", () => {
 			expect.soft(archived._nay?.message).toBe("Unauthorized");
 			await access_control_test_reset_write_rate_limit(t, callerId);
 			const marked = await asCaller.mutation(api.ai_chat.thread_mark_read, { membershipId, threadId });
-			const branched = await asCaller.mutation(api.ai_chat.thread_branch, { membershipId, threadId });
+			const branched = await asCaller.action(api.ai_chat.thread_branch, { membershipId, threadId });
 			expect.soft(marked._nay?.message).toBe("Unauthorized");
 			expect.soft(branched._nay?.message).toBe("Unauthorized");
 			const planted = await asCaller.mutation(api.ai_chat.thread_messages_add, {
@@ -2388,7 +2388,7 @@ describe("enforcement", () => {
 			membershipId: fixture.memberMembershipId,
 			threadId: ownThreadId,
 		});
-		const branchedOwn = await fixture.asMember.mutation(api.ai_chat.thread_branch, {
+		const branchedOwn = await fixture.asMember.action(api.ai_chat.thread_branch, {
 			membershipId: fixture.memberMembershipId,
 			threadId: ownThreadId,
 		});
@@ -2478,7 +2478,7 @@ describe("enforcement", () => {
 			lastMessageAt: 1,
 		});
 		expect(source._nay).toBeUndefined();
-		const first = await fixture.asMember.mutation(api.ai_chat.thread_branch, {
+		const first = await fixture.asMember.action(api.ai_chat.thread_branch, {
 			membershipId: fixture.memberMembershipId,
 			threadId: source._yay!.threadId,
 		});
@@ -2522,7 +2522,7 @@ describe("enforcement", () => {
 				})
 			)._nay,
 		).toBeUndefined();
-		const second = await fixture.asMember.mutation(api.ai_chat.thread_branch, {
+		const second = await fixture.asMember.action(api.ai_chat.thread_branch, {
 			membershipId: fixture.memberMembershipId,
 			threadId: source._yay!.threadId,
 		});
@@ -2596,7 +2596,7 @@ describe("enforcement", () => {
 			shells: await ctx.db.query("ai_chat_bash_shells").collect(),
 			messages: await ctx.db.query("ai_chat_threads_messages_aisdk_5").collect(),
 		}));
-		const branched = await fixture.asMember.mutation(api.ai_chat.thread_branch, {
+		const branched = await fixture.asMember.action(api.ai_chat.thread_branch, {
 			membershipId: fixture.memberMembershipId,
 			threadId: sourceThreadId,
 		});
@@ -2689,7 +2689,7 @@ describe("enforcement", () => {
 		const archived = await fixture.asMember.mutation(api.ai_chat.thread_archive, { membershipId, threadId });
 		await access_control_test_reset_write_rate_limit(t, fixture.memberId);
 		const marked = await fixture.asMember.mutation(api.ai_chat.thread_mark_read, { membershipId, threadId });
-		const branched = await fixture.asMember.mutation(api.ai_chat.thread_branch, { membershipId, threadId });
+		const branched = await fixture.asMember.action(api.ai_chat.thread_branch, { membershipId, threadId });
 		const replied = await fixture.asMember.mutation(api.ai_chat.thread_messages_add, {
 			membershipId,
 			threadId,

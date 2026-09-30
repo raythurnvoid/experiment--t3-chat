@@ -724,8 +724,16 @@ describe("mcp_client_call_tool", () => {
 
 		expect(result._yay?.result.blocks).toEqual([
 			{ kind: "omitted", type: "audio", mimeType: "audio/wav", bytes: 6 },
-			{ kind: "text", text: "resource link: file:///etc/passwd (passwd, unknown type, unknown size)" },
-			{ kind: "text", text: "resource file:///a.txt:\nhello" },
+			{
+				kind: "resource_link",
+				uri: "file:///etc/passwd",
+				name: "passwd",
+				title: null,
+				mimeType: null,
+				size: null,
+				description: null,
+			},
+			{ kind: "resource", uri: "file:///a.txt", text: "hello" },
 			{ kind: "omitted", type: "blob", mimeType: "application/zip", bytes: 3 },
 		]);
 		expect(fixtures.wire).toHaveLength(1);
@@ -738,10 +746,12 @@ describe("mcp_client_call_tool", () => {
 		expect(result._nay?.name).toBe("bad_response");
 	});
 
-	test("sends structured output once when a text block has the same JSON", async () => {
+	test("keeps structured output when a text block has the same JSON", async () => {
 		const result = await call("bad-output", "same-json");
 
-		expect(result._yay?.result).toMatchObject({ structured: null, structuredNote: null });
+		// The stored full output keeps both. The model text shows structured output only without text.
+		expect(result._yay?.result.structured).not.toBeNull();
+		expect(result._yay?.result.structuredNote).toBeNull();
 	});
 
 	test.each(["mismatch", "missing-structured"])(

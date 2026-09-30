@@ -21,6 +21,7 @@ import {
 	bash_DEV_ZERO_BYTE_COUNT,
 	bash_DEV_ZERO_PATH,
 	bash_TMP_MOUNT,
+	bash_TOOL_OUTPUT_MOUNT,
 	bash_current_workspace_path_to_db_files_path,
 	bash_is_path_under_current_workspace_path,
 	bash_normalize_path,
@@ -156,7 +157,11 @@ export async function bash_delegate_builtin_command(args: {
 
 /**
  * Returns whether a path is in the direct-access surface for Native Just Bash
- * commands: `/`, `/dev`, `/dev/null`, `/dev/zero`, `/tmp`, or a descendant of `/tmp`.
+ * commands: `/`, `/dev`, `/dev/null`, `/dev/zero`, `/tmp`, `/tool-output`, or a descendant of
+ * `/tmp` or `/tool-output`.
+ *
+ * `/tool-output` holds plain stored text, not app files, so `sed -n` and `awk` can read it. Its
+ * mount refuses every write.
  *
  * Synthetic command lookup paths are handled separately.
  */
@@ -168,7 +173,9 @@ function is_native_just_bash_tmp_path(path: string) {
 		normalizedPath === bash_DEV_NULL_PATH ||
 		normalizedPath === bash_DEV_ZERO_PATH ||
 		normalizedPath === bash_TMP_MOUNT ||
-		normalizedPath.startsWith(`${bash_TMP_MOUNT}/`)
+		normalizedPath.startsWith(`${bash_TMP_MOUNT}/`) ||
+		normalizedPath === bash_TOOL_OUTPUT_MOUNT ||
+		normalizedPath.startsWith(`${bash_TOOL_OUTPUT_MOUNT}/`)
 	);
 }
 

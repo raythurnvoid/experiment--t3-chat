@@ -60,6 +60,7 @@ vi.mock("convex/react", async (importOriginal) => ({
 		};
 	},
 	useMutation: () => queryMocks.mutation,
+	useAction: () => queryMocks.mutation,
 }));
 
 vi.mock("@/components/app-auth.tsx", () => ({

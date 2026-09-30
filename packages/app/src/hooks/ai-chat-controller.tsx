@@ -10,7 +10,7 @@ import {
 	useState,
 	type ReactNode,
 } from "react";
-import { useMutation, usePaginatedQuery, useQuery } from "convex/react";
+import { useAction, useMutation, usePaginatedQuery, useQuery } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
 import { create } from "zustand";
 
@@ -1205,7 +1205,8 @@ const useThreadList = (props?: useThreadList_Props) => {
 	);
 
 	const updateThread = useMutation(app_convex_api.ai_chat.thread_update);
-	const branchThread = useMutation(app_convex_api.ai_chat.thread_branch);
+	const deleteThreadMutation = useMutation(app_convex_api.ai_chat.thread_delete);
+	const branchThread = useAction(app_convex_api.ai_chat.thread_branch);
 	const addThreadMessages = useMutation(app_convex_api.ai_chat.thread_messages_add);
 	const markThreadReadMutation = useMutation(app_convex_api.ai_chat.thread_mark_read);
 
@@ -1598,6 +1599,34 @@ const useThreadList = (props?: useThreadList_Props) => {
 			});
 	});
 
+	const deleteThread = useFn((threadId: app_convex_Id<"ai_chat_threads">) => {
+		// Block sends and queue draining like Archive does, until the mutation answers.
+		set_thread_archive_pending(threadId, true);
+		void deleteThreadMutation({ membershipId, threadId })
+			.then((result) => {
+				if (result._nay) {
+					set_thread_archive_pending(threadId, false);
+					console.error("[AiChatController.useThreadList.deleteThread] Failed to delete the chat", {
+						result,
+						threadId,
+					});
+					return;
+				}
+
+				setSelectedThreadId((currentThreadId) => (currentThreadId === threadId ? null : currentThreadId), {
+					persist: false,
+				});
+				stop_and_delete_thread_session(threadId);
+			})
+			.catch((error: unknown) => {
+				set_thread_archive_pending(threadId, false);
+				console.error("[AiChatController.useThreadList.deleteThread] Unexpected error deleting the chat", {
+					error,
+					threadId,
+				});
+			});
+	});
+
 	const removeOptimisticThread = useFn((threadId: string) => {
 		if (!ai_chat_is_optimistic_thread_id(threadId)) {
 			return;
@@ -1730,6 +1759,7 @@ const useThreadList = (props?: useThreadList_Props) => {
 		clearSelectedThread,
 		setThreadStarred,
 		archiveThread,
+		deleteThread,
 		removeOptimisticThread,
 	};
 };
@@ -1751,7 +1781,7 @@ const useThreadRuntimeController = () => {
 	const draftSelectedModeId = useStore((state) => state.draftSelectedModeId);
 
 	const updateThread = useMutation(app_convex_api.ai_chat.thread_update);
-	const branchThread = useMutation(app_convex_api.ai_chat.thread_branch);
+	const branchThread = useAction(app_convex_api.ai_chat.thread_branch);
 	const addThreadMessages = useMutation(app_convex_api.ai_chat.thread_messages_add);
 	const markThreadReadMutation = useMutation(app_convex_api.ai_chat.thread_mark_read);
 

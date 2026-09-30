@@ -63,6 +63,7 @@ async function fixture() {
 			allowDbFilesMkdir: agent,
 			shellName,
 			wakeAgent: null,
+			output: null,
 		});
 	const run = (script: string, agent = true) =>
 		t.action(async (ctx) => {

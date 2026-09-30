@@ -51,6 +51,7 @@ vi.mock("convex/react", async (importOriginal) => {
 			};
 		},
 		useMutation: () => hookMocks.mutation,
+		useAction: () => hookMocks.mutation,
 		useQuery: (query: never, args: unknown) => {
 			const messagesDenied = useSyncExternalStore(
 				(listener) => {

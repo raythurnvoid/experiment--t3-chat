@@ -418,3 +418,96 @@ describe("resolve_cloud_browser_invocation", () => {
 		).toMatchObject({ status: "finished", result: { status: "unknown", reason: "outcome_unknown" } });
 	});
 });
+
+describe("Delete chat browser calls", () => {
+	async function delete_chat(f: Awaited<ReturnType<typeof fixture>>) {
+		const deleted = await f.asUser.mutation(api.ai_chat.thread_delete, {
+			membershipId: f.db.membershipId,
+			threadId: f.source.threadId,
+		});
+		if (deleted._nay) throw new Error(deleted._nay.message);
+	}
+
+	test("leaves a running command in a kept cloud session to finish by itself", async () => {
+		const f = await fixture();
+		const sessionId = await f.t.run((ctx) =>
+			ctx.db.insert("files_browser_sessions", {
+				mode: "web",
+				ownerId: f.db.userId,
+				billedUserId: f.db.userId,
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				navigationGeneration: 1,
+				loadGen: 0,
+				controlGen: 1,
+				control: "ready",
+				billing: { state: "pending" },
+				runnerSessionId: "runner-1",
+				agentAccess: true,
+				tabId: "tab-1",
+				tabGen: 1,
+				viewedTabId: "tab-1",
+				viewGen: 1,
+				tabCount: 1,
+				tabs: [{ tabId: "tab-1", tabGen: 1, navGen: 1 }],
+				policyRevision: 0,
+				selectionRevision: 0,
+				createdAt: Date.now(),
+				updatedAt: Date.now(),
+			}),
+		);
+		const claim = await f.t.mutation(internal.ai_chat_files.begin_browser_invocation, {
+			...f.identity,
+			resource: {
+				provider: "cloud",
+				mode: "web",
+				sessionId,
+				navGen: 1,
+				loadGen: 0,
+				controlGen: 1,
+				tabId: "tab-1",
+				tabGen: 1,
+			},
+			timeoutMs: 30_000,
+		});
+		if (claim._nay) throw new Error(claim._nay.message);
+		await delete_chat(f);
+
+		const drain = () =>
+			f.t.mutation(internal.data_deletion.drain_deleting_thread, {
+				threadId: f.source.threadId,
+				_test_disableReschedule: true,
+			});
+		// Interrupting a run command would make the runner close the user's session.
+		expect(await drain()).toEqual({ done: false, deletedCount: 0 });
+		expect(await f.t.run((ctx) => ctx.db.get("ai_chat_browser_invocations", claim._yay.invocationId))).toMatchObject({
+			status: "running",
+		});
+
+		await f.t.mutation(internal.ai_chat_files.finish_browser_invocation, {
+			invocationId: claim._yay.invocationId,
+			operationHash: f.identity.operationHash,
+			commandId: claim._yay.commandId,
+			result: { status: "succeeded", reason: null },
+		});
+		expect(await drain()).toEqual({ done: false, deletedCount: 1 });
+		expect(await f.t.run((ctx) => ctx.db.get("files_browser_sessions", sessionId))).toMatchObject({ control: "ready" });
+	});
+
+	test("sends an open that claimed no session through the interrupted-open path", async () => {
+		const f = await fixture();
+		const open = await f.begin();
+		if (open._nay) throw new Error(open._nay.message);
+		await delete_chat(f);
+
+		await f.t.mutation(internal.data_deletion.drain_deleting_thread, {
+			threadId: f.source.threadId,
+			_test_disableReschedule: true,
+		});
+		expect(await f.t.run((ctx) => ctx.db.get("ai_chat_browser_invocations", open._yay.invocationId))).toMatchObject({
+			status: "interrupted",
+		});
+		const scheduled = await f.t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect());
+		expect(scheduled.map((job) => job.name)).toContain("ai_chat_files:resolve_cloud_browser_invocation");
+	});
+});

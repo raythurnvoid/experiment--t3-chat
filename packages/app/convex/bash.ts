@@ -43,6 +43,10 @@ export const run = internalAction({
 		allowDbFilesMkdir: v.boolean(),
 		shellName: v.string(),
 		wakeAgent: v.union(v.object({ modelId: ai_chat_model_id_validator }), v.null()),
+		/**
+		 * The space the chat tool reserved for the full output. Null only in tests that run no chat.
+		 */
+		output: v.union(v.object({ objectId: v.id("ai_chat_output_objects"), runId: v.id("ai_chat_runs") }), v.null()),
 	},
 	returns: ai_chat_bash_result_validator,
 	handler: async (ctx, args) => {

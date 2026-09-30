@@ -5,6 +5,7 @@ import { APICallError, type streamText } from "ai";
 import { MockLanguageModelV3 } from "ai/test";
 import { getFunctionAddress, getFunctionName } from "convex/server";
 import { api, internal } from "./_generated/api.js";
+import type { Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
 import { test_convex, test_create_saved_text_file, test_mocks_fill_db_with } from "./setup.test.ts";
 import { organizations_GLOBAL_PLUGINS_WORKSPACE_ID } from "../shared/organizations.ts";
@@ -19,7 +20,28 @@ vi.mock("ai", async (importOriginal) => ({
 	streamText: model.streamText,
 }));
 
+// The route ends its run when the mocked stream ends, and the mocked model never passes the
+// receipt middleware. These tests run the captured tools after that. So each test reserves
+// output space against one chat run it starts itself.
+const outputRun = vi.hoisted(() => ({ runId: null as string | null }));
+vi.mock("../server/ai-chat-tool-output.ts", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../server/ai-chat-tool-output.ts")>();
+	return {
+		...actual,
+		ai_chat_tool_output_reserve: async (...[ctx, args]: Parameters<typeof actual.ai_chat_tool_output_reserve>) => {
+			outputRun.runId ??= await ctx.runMutation(internal.ai_chat.thread_run_begin, { source: args.source });
+			const runId = outputRun.runId as Id<"ai_chat_runs">;
+			return await actual.ai_chat_tool_output_reserve(ctx, {
+				...args,
+				getRunId: () => runId,
+				getModelCallId: () => "model_call_test",
+			});
+		},
+	};
+});
+
 beforeEach(() => {
+	outputRun.runId = null;
 	model.streamText.mockReset();
 	model.streamText.mockImplementation(() => ({
 		toUIMessageStream: () =>

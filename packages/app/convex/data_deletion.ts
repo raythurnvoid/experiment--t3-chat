@@ -5,7 +5,11 @@ import { components, internal } from "./_generated/api.js";
 import { access_control_db_ensure_owner_memberships } from "./access_control.ts";
 import { access_control_changes_db_record } from "./access_control_changes.ts";
 import { plugins_scheduled_runs_workpool } from "./plugins_schedules_db.ts";
-import { activities_db_delete, activities_db_require_by_source_id } from "./activities_db.ts";
+import {
+	activities_db_delete,
+	activities_db_get_by_source_id,
+	activities_db_require_by_source_id,
+} from "./activities_db.ts";
 import {
 	ai_chat_files_db_delete_browser_invocations,
 	ai_chat_files_db_delete_job_batch,
@@ -42,8 +46,9 @@ import { plugins_mcp_db_delete_user_batch, plugins_mcp_db_revoke_grant } from ".
 import { files_nodes_db_handoff_yjs_cleanup_task } from "./files_nodes.ts";
 import { files_pending_update_db_release_replacement_asset } from "./files_pending_updates.ts";
 import { files_private_storage_db_release_purged_resources } from "./files_private_storage.ts";
-import { files_ingestion_db_delete_receipt } from "./files_ingestion.ts";
-import { files_transfer_db_delete_run_batch } from "./files_transfer.ts";
+import { files_ingestion_db_abort_receipt, files_ingestion_db_delete_receipt } from "./files_ingestion.ts";
+import { ai_chat_outputs_db_drop_unattached_object, ai_chat_outputs_db_remove_owner } from "./ai_chat_outputs.ts";
+import { files_transfer_db_delete_run_batch, files_transfer_db_request_stop } from "./files_transfer.ts";
 import {
 	files_browser_db_delete_user_batch,
 	files_browser_db_purge_workspace_batch,
@@ -53,7 +58,7 @@ import { files_pending_update_runs_db_delete_run_batch } from "./files_pending_u
 import { files_write_policy_runs_db_delete_run_batch } from "./files_write_policy_runs.ts";
 import { files_archive_runs_db_delete_run_batch } from "./files_archive_runs.ts";
 import { files_subtree_ops_db_delete } from "./files_subtree_ops.ts";
-import { files_db_delete_pending_update } from "../server/files.ts";
+import { files_db_delete_pending_update, files_db_expire_pending_update_operation_batch } from "../server/files.ts";
 import { data_deletion_db_request } from "./data_deletion_requests.ts";
 import { users_db_delete_auth_billing_and_activity_docs } from "./users.ts";
 import { r2_PUT_MAY_ARRIVE_MARGIN_MS, r2_create_asset_key, r2_enqueue_object_deletion_job } from "./r2_client.ts";
@@ -65,6 +70,16 @@ export const experimental_reuseContext = true;
 const WORKSPACE_CONTENT_PURGE_BATCH_SIZE = 100;
 // Pages and staged text can each approach 1 MiB. Leave room for the rest of the purge pass.
 const PENDING_PAYLOAD_PURGE_BATCH_SIZE = 8;
+
+/**
+ * Delete chat reads at most this many live-work docs per wait check.
+ */
+const DELETE_CHAT_WAIT_BATCH_SIZE = 20;
+
+/**
+ * Delete chat looks at live work again after this long when a pass deleted nothing.
+ */
+const DELETE_CHAT_WAIT_MS = 30 * 1000;
 
 /**
  * Workpool handle for file content-materialization jobs.
@@ -615,7 +630,8 @@ async function db_purge_organization_workspace_content_batch(
 			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
 		)
 		.take(batchSize);
-	if (browserInvocations.length > 0) return ai_chat_files_db_delete_browser_invocations(ctx, browserInvocations);
+	if (browserInvocations.length > 0)
+		return ai_chat_files_db_delete_browser_invocations(ctx, browserInvocations, { cloudCommands: "interrupt" });
 
 	// Bash command links and terminal receipts live until their owning threads are purged.
 	const bashTransferLinks = await ctx.db
@@ -707,7 +723,57 @@ async function db_purge_organization_workspace_content_batch(
 		return { done: false, deletedCount: shells.length };
 	}
 
-	// There is no per-thread delete, so the per-user notice cursors of a thread die here too.
+	// Stored tool outputs go before the runs. Their R2 deletion jobs outlive this purge and give
+	// the quota back; the quota step below retires counters that still have holds.
+	const outputOwners = await ctx.db
+		.query("ai_chat_output_owners")
+		.withIndex("by_organization_workspace", (q) =>
+			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
+		)
+		.take(Math.min(batchSize, 32));
+	if (outputOwners.length > 0) {
+		// Remove in sequence: owners of one object update the same object doc.
+		for (const owner of outputOwners) {
+			await ai_chat_outputs_db_remove_owner(ctx, owner);
+		}
+		return { done: false, deletedCount: outputOwners.length };
+	}
+	// "reserved" and "uploading" sort after "ready"; "deleting" sorts before it and is left to its job.
+	const unattachedOutputs = await ctx.db
+		.query("ai_chat_output_objects")
+		.withIndex("by_organization_workspace_state", (q) =>
+			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId).gt("state.kind", "ready"),
+		)
+		.take(Math.min(batchSize, 32));
+	if (unattachedOutputs.length > 0) {
+		for (const object of unattachedOutputs) {
+			await ai_chat_outputs_db_drop_unattached_object(ctx, object);
+		}
+		return { done: false, deletedCount: unattachedOutputs.length };
+	}
+
+	const threadCopy = await ctx.db
+		.query("ai_chat_thread_copies")
+		.withIndex("by_organization_workspace", (q) =>
+			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
+		)
+		.first();
+	if (threadCopy) {
+		return { done: false, deletedCount: await db_delete_thread_copy_batch(ctx, { copy: threadCopy, batchSize }) };
+	}
+
+	const chatRuns = await ctx.db
+		.query("ai_chat_runs")
+		.withIndex("by_organization_workspace", (q) =>
+			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
+		)
+		.take(batchSize);
+	if (chatRuns.length > 0) {
+		await Promise.all(chatRuns.map((doc) => ctx.db.delete("ai_chat_runs", doc._id)));
+		return { done: false, deletedCount: chatRuns.length };
+	}
+
+	// Delete chat removes the notice cursors of one chat. The workspace purge removes all of them.
 	const jobNoticeCursors = await ctx.db
 		.query("ai_chat_bash_job_notice_cursors")
 		.withIndex("by_organization_workspace_thread", (q) =>
@@ -1876,20 +1942,50 @@ async function db_user_has_subtree_ops(ctx: MutationCtx, args: { userId: Id<"use
 }
 
 /**
- * Drain one creator-owned thread, children first, even when its workspace survives or membership is gone.
- * User finalization stops its writers and removes grants before reaching this pass.
+ * Delete a batch of one branch copy's pages, then the copy doc. Returns how many docs it deleted.
  */
-async function db_drain_user_chat_threads_batch(ctx: MutationCtx, args: { userId: Id<"users">; batchSize: number }) {
-	const thread = await ctx.db
-		.query("ai_chat_threads")
-		.withIndex("by_createdBy", (q) => q.eq("createdBy", args.userId))
-		.first();
-	if (!thread) return 0;
+async function db_delete_thread_copy_batch(
+	ctx: MutationCtx,
+	args: { copy: Doc<"ai_chat_thread_copies">; batchSize: number },
+) {
+	const pages = await ctx.db
+		.query("ai_chat_thread_copy_pages")
+		.withIndex("by_copy_page", (q) => q.eq("copyId", args.copy._id))
+		.take(args.batchSize);
+	if (pages.length > 0) {
+		await Promise.all(pages.map((doc) => ctx.db.delete("ai_chat_thread_copy_pages", doc._id)));
+		return pages.length;
+	}
+	await ctx.db.delete("ai_chat_thread_copies", args.copy._id);
+	return 1;
+}
+
+/**
+ * Delete one bounded step of one thread, children first, even when its workspace survives or
+ * membership is gone. Delete chat and account deletion both call this until the thread is gone.
+ * Callers stop or wait for live work first: account deletion drains the user's runs, jobs and
+ * browser calls before this pass, and Delete chat waits in `db_wait_deleting_thread`.
+ * Returns `done: true` on the pass that deletes the thread doc.
+ */
+async function db_drain_thread_batch(
+	ctx: MutationCtx,
+	args: { thread: Doc<"ai_chat_threads">; batchSize: number; now: number },
+) {
+	const { thread } = args;
 
 	const invocation = await ctx.db
 		.query("ai_chat_bash_invocations")
 		.withIndex("by_thread_toolCall", (q) => q.eq("threadId", thread._id))
 		.first();
+	if (invocation?.job) {
+		if (invocation.status === "running")
+			await ai_chat_files_db_request_job_stop(ctx, { invocationId: invocation._id, reason: "user", now: args.now });
+		const deleted = await ai_chat_files_db_delete_job_batch(ctx, {
+			invocationId: invocation._id,
+			batchSize: args.batchSize,
+		});
+		return { done: false, deletedCount: deleted.deletedCount };
+	}
 	if (invocation) {
 		const transfers = await ctx.db
 			.query("ai_chat_bash_invocation_transfers")
@@ -1897,11 +1993,50 @@ async function db_drain_user_chat_threads_batch(ctx: MutationCtx, args: { userId
 			.take(args.batchSize);
 		if (transfers.length > 0) {
 			await Promise.all(transfers.map((transfer) => ctx.db.delete("ai_chat_bash_invocation_transfers", transfer._id)));
-			return transfers.length;
+			return { done: false, deletedCount: transfers.length };
 		}
-		// Background jobs and their Activities already left through the user-owned job drain.
 		await ctx.db.delete("ai_chat_bash_invocations", invocation._id);
-		return 1;
+		return { done: false, deletedCount: 1 };
+	}
+
+	// Chat-bound Files read grants go before the read budget they spend.
+	const grants = await ctx.db
+		.query("public_api_grants")
+		.withIndex("by_thread", (q) => q.eq("threadId", thread._id))
+		.take(args.batchSize);
+	if (grants.length > 0) {
+		await Promise.all(grants.map((doc) => ctx.db.delete("public_api_grants", doc._id)));
+		return { done: false, deletedCount: grants.length };
+	}
+
+	const codeReadBudgets = await ctx.db
+		.query("ai_chat_code_read_budgets")
+		.withIndex("by_thread", (q) => q.eq("threadId", thread._id))
+		.take(args.batchSize);
+	if (codeReadBudgets.length > 0) {
+		await Promise.all(codeReadBudgets.map((doc) => ctx.db.delete("ai_chat_code_read_budgets", doc._id)));
+		return { done: false, deletedCount: codeReadBudgets.length };
+	}
+
+	// Close Files work the chat was still preparing. Without the thread it would fail its source
+	// check later anyway. Completed proposals and their source fields stay.
+	const preparingIngestions = await ctx.db
+		.query("files_ingestion_receipts")
+		.withIndex("by_thread_state", (q) => q.eq("threadId", thread._id).eq("state.kind", "preparing"))
+		.take(Math.min(args.batchSize, 8));
+	if (preparingIngestions.length > 0) {
+		for (const receipt of preparingIngestions) await files_ingestion_db_abort_receipt(ctx, receipt);
+		return { done: false, deletedCount: preparingIngestions.length };
+	}
+
+	const preparingBatches = await ctx.db
+		.query("files_pending_update_operation_batches")
+		.withIndex("by_agentThread_expiresAt", (q) => q.eq("agentSource.threadId", thread._id).gt("expiresAt", args.now))
+		.take(Math.min(args.batchSize, 8));
+	if (preparingBatches.length > 0) {
+		for (const batch of preparingBatches)
+			await files_db_expire_pending_update_operation_batch(ctx, { operationBatchId: batch._id });
+		return { done: false, deletedCount: preparingBatches.length };
 	}
 
 	// Scratch bytes and messages can each approach 1 MiB.
@@ -1911,7 +2046,7 @@ async function db_drain_user_chat_threads_batch(ctx: MutationCtx, args: { userId
 		.take(Math.min(args.batchSize, 8));
 	if (contents.length > 0) {
 		await Promise.all(contents.map((doc) => ctx.db.delete("ai_chat_files_content", doc._id)));
-		return contents.length;
+		return { done: false, deletedCount: contents.length };
 	}
 
 	const files = await ctx.db
@@ -1920,7 +2055,61 @@ async function db_drain_user_chat_threads_batch(ctx: MutationCtx, args: { userId
 		.take(args.batchSize);
 	if (files.length > 0) {
 		await Promise.all(files.map((doc) => ctx.db.delete("ai_chat_files", doc._id)));
-		return files.length;
+		return { done: false, deletedCount: files.length };
+	}
+
+	// Stored tool outputs go before the runs. Removing an object's last owner queues its R2
+	// deletion, and that job gives the quota back.
+	const outputOwners = await ctx.db
+		.query("ai_chat_output_owners")
+		.withIndex("by_thread", (q) => q.eq("threadId", thread._id))
+		.take(Math.min(args.batchSize, 32));
+	if (outputOwners.length > 0) {
+		// Remove in sequence: owners of one object update the same object doc.
+		for (const owner of outputOwners) {
+			await ai_chat_outputs_db_remove_owner(ctx, owner);
+		}
+		return { done: false, deletedCount: outputOwners.length };
+	}
+	// "reserved" and "uploading" sort after "ready"; "deleting" sorts before it and is left to its job.
+	const unattachedOutputs = await ctx.db
+		.query("ai_chat_output_objects")
+		.withIndex("by_thread_state", (q) => q.eq("threadId", thread._id).gt("state.kind", "ready"))
+		.take(Math.min(args.batchSize, 32));
+	if (unattachedOutputs.length > 0) {
+		for (const object of unattachedOutputs) {
+			await ai_chat_outputs_db_drop_unattached_object(ctx, object);
+		}
+		return { done: false, deletedCount: unattachedOutputs.length };
+	}
+
+	const runs = await ctx.db
+		.query("ai_chat_runs")
+		.withIndex("by_thread_status", (q) => q.eq("threadId", thread._id))
+		.take(args.batchSize);
+	if (runs.length > 0) {
+		await Promise.all(runs.map((doc) => ctx.db.delete("ai_chat_runs", doc._id)));
+		return { done: false, deletedCount: runs.length };
+	}
+
+	// An aborted branch copy leaves its copy doc and pages on the target chat.
+	const copy = await ctx.db
+		.query("ai_chat_thread_copies")
+		.withIndex("by_target", (q) => q.eq("targetThreadId", thread._id))
+		.first();
+	if (copy) {
+		const deletedCount = await db_delete_thread_copy_batch(ctx, { copy, batchSize: args.batchSize });
+		return { done: false, deletedCount };
+	}
+
+	// The MCP call log is part of the chat, so it goes with it.
+	const mcpCalls = await ctx.db
+		.query("plugins_mcp_calls")
+		.withIndex("by_thread", (q) => q.eq("threadId", thread._id))
+		.take(args.batchSize);
+	if (mcpCalls.length > 0) {
+		await Promise.all(mcpCalls.map((doc) => ctx.db.delete("plugins_mcp_calls", doc._id)));
+		return { done: false, deletedCount: mcpCalls.length };
 	}
 
 	const messages = await ctx.db
@@ -1931,7 +2120,7 @@ async function db_drain_user_chat_threads_batch(ctx: MutationCtx, args: { userId
 		.take(Math.min(args.batchSize, 8));
 	if (messages.length > 0) {
 		await Promise.all(messages.map((doc) => ctx.db.delete("ai_chat_threads_messages_aisdk_5", doc._id)));
-		return messages.length;
+		return { done: false, deletedCount: messages.length };
 	}
 
 	const transcripts = await ctx.db
@@ -1942,7 +2131,7 @@ async function db_drain_user_chat_threads_batch(ctx: MutationCtx, args: { userId
 		.take(Math.min(args.batchSize, 8));
 	if (transcripts.length > 0) {
 		await Promise.all(transcripts.map((doc) => ctx.db.delete("ai_chat_bash_shell_transcripts", doc._id)));
-		return transcripts.length;
+		return { done: false, deletedCount: transcripts.length };
 	}
 
 	const shells = await ctx.db
@@ -1951,7 +2140,7 @@ async function db_drain_user_chat_threads_batch(ctx: MutationCtx, args: { userId
 		.take(Math.min(args.batchSize, 32));
 	if (shells.length > 0) {
 		await Promise.all(shells.map((doc) => ctx.db.delete("ai_chat_bash_shells", doc._id)));
-		return shells.length;
+		return { done: false, deletedCount: shells.length };
 	}
 
 	const cursors = await ctx.db
@@ -1962,12 +2151,113 @@ async function db_drain_user_chat_threads_batch(ctx: MutationCtx, args: { userId
 		.take(args.batchSize);
 	if (cursors.length > 0) {
 		await Promise.all(cursors.map((doc) => ctx.db.delete("ai_chat_bash_job_notice_cursors", doc._id)));
-		return cursors.length;
+		return { done: false, deletedCount: cursors.length };
 	}
 
 	await ctx.db.delete("ai_chat_threads", thread._id);
-	return 1;
+	return { done: true, deletedCount: 1 };
 }
+
+/**
+ * Wait until live work of a chat that Delete chat marked has ended. Returns `null` when nothing is
+ * live, so the drain can delete the next step. The chat's doors already refuse new work, so each
+ * wait here ends by itself.
+ */
+async function db_wait_deleting_thread(ctx: MutationCtx, args: { thread: Doc<"ai_chat_threads">; now: number }) {
+	const { thread } = args;
+
+	// A run whose lease passed without a run end is ended by the `end expired chat runs` cron.
+	const runs = await ctx.db
+		.query("ai_chat_runs")
+		.withIndex("by_thread_status", (q) => q.eq("threadId", thread._id).eq("status", "running"))
+		.take(DELETE_CHAT_WAIT_BATCH_SIZE);
+	if (runs.some((run) => run.leaseExpiresAt > args.now)) return { done: false, deletedCount: 0 };
+
+	// Stop the Files transfers the chat's commands started, and their retries, and wait until each
+	// one ends. The transfers stay in Activity; only their links to the chat are deleted later.
+	const organizationId = ctx.db.normalizeId("organizations", thread.organizationId);
+	const workspaceId = ctx.db.normalizeId("organizations_workspaces", thread.workspaceId);
+	if (!organizationId || !workspaceId) {
+		throw should_never_happen("Chat thread has invalid tenant ids", { threadId: thread._id });
+	}
+	const transferLinks = await ctx.db
+		.query("ai_chat_bash_invocation_transfers")
+		.withIndex("by_organization_workspace_thread", (q) =>
+			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId).eq("threadId", thread._id),
+		)
+		.take(DELETE_CHAT_WAIT_BATCH_SIZE);
+	let transferRunning = false;
+	const runIds = transferLinks.map((link) => link.runId);
+	for (let index = 0; index < runIds.length && index < DELETE_CHAT_WAIT_BATCH_SIZE; index++) {
+		const runId = runIds[index]!;
+		const activity = await activities_db_get_by_source_id(ctx, runId);
+		if (
+			activity &&
+			(activity.status === "queued" ||
+				activity.status === "running" ||
+				activity.status === "awaiting_input" ||
+				activity.status === "stopping")
+		) {
+			transferRunning = true;
+			await files_transfer_db_request_stop(ctx, { runId, reason: "user", now: args.now });
+		}
+		const retries = await ctx.db
+			.query("files_transfer_runs")
+			.withIndex("by_retryOf", (q) => q.eq("retryOf", runId))
+			.take(DELETE_CHAT_WAIT_BATCH_SIZE);
+		runIds.push(...retries.map((retry) => retry._id));
+	}
+	if (transferRunning) return { done: false, deletedCount: 0 };
+
+	// The drain deletes invocations in this order. A foreground command ends by itself, or its
+	// scheduled interrupt ends it at the deadline.
+	const invocation = await ctx.db
+		.query("ai_chat_bash_invocations")
+		.withIndex("by_thread_toolCall", (q) => q.eq("threadId", thread._id))
+		.first();
+	if (invocation && !invocation.job && invocation.status === "running" && invocation.deadlineAt > args.now)
+		return { done: false, deletedCount: 0 };
+
+	const browserInvocations = await ctx.db
+		.query("ai_chat_browser_invocations")
+		.withIndex("by_thread_toolCall", (q) => q.eq("threadId", thread._id))
+		.take(DELETE_CHAT_WAIT_BATCH_SIZE);
+	if (browserInvocations.length > 0)
+		return await ai_chat_files_db_delete_browser_invocations(ctx, browserInvocations, { cloudCommands: "wait" });
+
+	return null;
+}
+
+/**
+ * Delete chat's drain. Each run does one wait check or one bounded delete step, then schedules
+ * the next run until the thread doc is gone.
+ */
+export const drain_deleting_thread = internalMutation({
+	args: {
+		threadId: v.id("ai_chat_threads"),
+		_test_now: v.optional(v.number()),
+		_test_disableReschedule: v.optional(v.boolean()),
+	},
+	returns: v.object({ done: v.boolean(), deletedCount: v.number() }),
+	handler: async (ctx, args) => {
+		const thread = await ctx.db.get("ai_chat_threads", args.threadId);
+		if (!thread || thread.deletingAt === undefined) return { done: true, deletedCount: 0 };
+		const now = args._test_now ?? Date.now();
+
+		const step =
+			(await db_wait_deleting_thread(ctx, { thread, now })) ??
+			(await db_drain_thread_batch(ctx, { thread, batchSize: batch_size({}), now }));
+		if (!step.done && !args._test_disableReschedule) {
+			// A pass that deleted nothing is waiting for live work, so look again a little later.
+			await ctx.scheduler.runAfter(
+				step.deletedCount > 0 ? 0 : DELETE_CHAT_WAIT_MS,
+				internal.data_deletion.drain_deleting_thread,
+				{ threadId: thread._id },
+			);
+		}
+		return step;
+	},
+});
 
 /**
  * Deletes one batch of a user's plugin UI page sessions. Both user-deletion paths call this until
@@ -2508,8 +2798,14 @@ async function db_drain_user_finalization_batch(
 	await Promise.all(codeReadBudgets.map((doc) => ctx.db.delete("ai_chat_code_read_budgets", doc._id)));
 	if (codeReadBudgets.length > 0) return { done: false, deletedCount: codeReadBudgets.length };
 
-	const deletedCount = await db_drain_user_chat_threads_batch(ctx, args);
-	return { done: deletedCount === 0, deletedCount };
+	// User finalization stopped this user's writers and removed their grants before this pass.
+	const thread = await ctx.db
+		.query("ai_chat_threads")
+		.withIndex("by_createdBy", (q) => q.eq("createdBy", args.userId))
+		.first();
+	if (!thread) return { done: true, deletedCount: 0 };
+	const drained = await db_drain_thread_batch(ctx, { thread, batchSize: args.batchSize, now: args.now });
+	return { done: false, deletedCount: drained.deletedCount };
 }
 
 /**

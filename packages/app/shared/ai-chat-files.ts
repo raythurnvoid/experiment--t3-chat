@@ -121,6 +121,23 @@ export const ai_chat_execute_code_result_schema = z
 	.strict();
 
 /**
+ * A tool result too large to keep inline points at its stored full text. The ref grants nothing:
+ * every read checks an owner doc in the chat. `ai_chat_tool_output_ref_validator` in
+ * `convex/schema.ts` is the Convex twin.
+ */
+export const ai_chat_tool_output_ref_schema = z
+	.object({
+		outputId: z.string().min(1).max(128),
+		path: z.string().max(200),
+		storedBytes: z.number().int().nonnegative(),
+		sourceBytes: z.number().int().nonnegative(),
+		cutBy: z.array(z.enum(["mcp_binary_omitted", "mcp_structured_dropped"])).max(2),
+	})
+	.strict();
+
+export type ai_chat_ToolOutputRef = z.infer<typeof ai_chat_tool_output_ref_schema>;
+
+/**
  * Which MCP server a stored part is about. Convex ids are plain strings in stored parts. The check
  * is on shape only: history must still load after the server is gone. `plugins_mcp_target_validator`
  * in `convex/schema.ts` is the Convex twin.
@@ -168,6 +185,8 @@ export const ai_chat_mcp_tool_output_schema = z
 					isError: z.boolean(),
 					truncated: z.boolean(),
 					bytesIn: z.number().int().nonnegative(),
+					// Set when the full result was stored. `output` then holds only its head and tail.
+					output: ai_chat_tool_output_ref_schema.optional(),
 				})
 				.strict(),
 			z
