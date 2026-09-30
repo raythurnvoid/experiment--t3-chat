@@ -46,8 +46,6 @@
 		"@headless-tree/react": "workspace:*",
 		"@hello-pangea/dnd": "^18.0.0",
 		"@liveblocks/core": "3.24.2",
-		"@mantine/core": "^8.3.4",
-		"@mantine/hooks": "^8.3.4",
 		"@mastra/core": "^1.8.0",
 		"@mastra/rag": "workspace:*",
 		"@modelcontextprotocol/client": "2.1.0",
