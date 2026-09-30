@@ -699,8 +699,8 @@ export type BonoboHttpApi = {
 							_creationTime: number;
 							organizationId: import("convex/values").GenericId<"organizations">;
 							workspaceId: import("convex/values").GenericId<"organizations_workspaces">;
-							path: string;
 							createdAt: number;
+							path: string;
 							writerId: import("convex/values").GenericId<"plugins_external_file_writers">;
 							writerGeneration: number;
 							operationId: string;
@@ -1192,8 +1192,8 @@ export type BonoboHttpApi = {
 							_creationTime: number;
 							organizationId: import("convex/values").GenericId<"organizations">;
 							workspaceId: import("convex/values").GenericId<"organizations_workspaces">;
-							path: string;
 							createdAt: number;
+							path: string;
 							writerId: import("convex/values").GenericId<"plugins_external_file_writers">;
 							writerGeneration: number;
 							operationId: string;
@@ -1303,8 +1303,8 @@ export type BonoboHttpApi = {
 							_creationTime: number;
 							organizationId: import("convex/values").GenericId<"organizations">;
 							workspaceId: import("convex/values").GenericId<"organizations_workspaces">;
-							path: string;
 							createdAt: number;
+							path: string;
 							writerId: import("convex/values").GenericId<"plugins_external_file_writers">;
 							writerGeneration: number;
 							operationId: string;
@@ -1570,8 +1570,8 @@ export type BonoboHttpApi = {
 						_creationTime: number;
 						organizationId: import("convex/values").GenericId<"organizations">;
 						workspaceId: import("convex/values").GenericId<"organizations_workspaces">;
-						path: string;
 						createdAt: number;
+						path: string;
 						writerId: import("convex/values").GenericId<"plugins_external_file_writers">;
 						writerGeneration: number;
 						operationId: string;

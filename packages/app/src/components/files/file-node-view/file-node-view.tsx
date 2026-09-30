@@ -6353,7 +6353,8 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 	 * The sidebar keeps its filter when a result is opened, so the URL
 	 * has to keep matching the search box instead of silently dropping the query.
 	 * The current URL editor mode and file view are NOT carried to the next node: the URL gets
-	 * only `nextEditorMode`, and the next node opens on its default file view.
+	 * only `nextEditorMode`, and the next node opens on its default file view. The view effect
+	 * writes that default into the URL once the node's type is known.
 	 */
 	const navigateToNode = useFn((nodeId?: string, nextEditorMode: files_EditorView = "rich_text_editor") => {
 		const view = nextEditorMode === "rich_text_editor" ? undefined : nextEditorMode;
@@ -6988,8 +6989,6 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 								node={resolvedNode ?? null}
 								isPrivate={!!searchPrivateNodeId}
 								commentsContainerRef={setCommentsPortalHost}
-								browserNodeId={searchPrivateNodeId ?? resolvedNode?._id ?? null}
-								browserNodeKind={searchPrivateNodeId ? "private" : resolvedNode ? "saved" : null}
 							/>
 						</MyPanel>
 					</MyPanelGroup>

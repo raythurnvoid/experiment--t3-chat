@@ -582,8 +582,10 @@ beforeEach(() => {
 				return plugins;
 			case "r2:get_asset_by_file_node_id":
 				return null;
-			case "files_browser:current_browser_session":
-				return browserSession ?? null;
+			case "files_browser:current_browser_session": {
+				const { mode } = args as { mode: "file" | "web" };
+				return browserSession && (browserSession as { mode: "file" | "web" }).mode === mode ? browserSession : null;
+			}
 			default:
 				return true;
 		}
@@ -616,7 +618,8 @@ afterEach(() => {
 });
 
 function renderFileView(searchParams: FileNodeView_SearchParams = { nodeId: NODE._id }) {
-	// Follow navigation like the router does, including the first write of the shown view.
+	// Follow navigation like the router does, so views kept in the URL render after a pick. A
+	// navigation during the first render is applied right after that render.
 	let rerender: ((ui: ReactNode) => void) | undefined;
 	let firstRenderSearch: FileNodeView_SearchParams | undefined;
 	let currentSearch = searchParams;
@@ -3579,7 +3582,9 @@ describe("FileNodeView file views", () => {
 		const { onNavigateSearch } = renderFileView({ nodeId: NODE._id, q: "page" });
 		await screen.findByRole("combobox", { name: /^View: / });
 		await act(async () => {});
-		expect(onNavigateSearch.mock.calls).toEqual([[{ nodeId: NODE._id, q: "page", ...fixture.search }, { replace: true }]]);
+		expect(onNavigateSearch.mock.calls).toEqual([
+			[{ nodeId: NODE._id, q: "page", ...fixture.search }, { replace: true }],
+		]);
 	});
 
 	test("writes nothing when the URL already names the shown view", async () => {
@@ -4098,7 +4103,13 @@ describe("FileNodeView browser views", () => {
 		};
 		pushQueryChanges();
 		await selectView("Browser");
-		expect(await screen.findByText("A web browser is open.")).toBeTruthy();
+		expect(await screen.findByRole("button", { name: "Start shared browser" })).toBeTruthy();
+		const browserQueries = queryMock.mock.calls.filter(
+			([reference]) => getFunctionName(reference) === "files_browser:current_browser_session",
+		);
+		expect(browserQueries.map(([, args]) => args)).toEqual(
+			browserQueries.map(() => ({ membershipId: "membership_1", mode: "file" })),
+		);
 		await selectView("Code");
 		node = { ...NODE, _id: "node_next", name: "notes.txt", contentType: "text/plain" };
 		rerender(<FileNodeView searchParams={{ nodeId: node._id }} onNavigateSearch={onNavigateSearch} />);
@@ -4275,6 +4286,7 @@ describe("FileNodeView header breadcrumb", () => {
 	});
 
 	test("Archive asks first, then archives the open file and returns Home", async () => {
+		mutationMock.mockResolvedValue({ _yay: null });
 		const { onNavigateSearch } = renderFileView();
 		await screen.findByRole("textbox", { name: "Code draft" });
 		const menu = await openCurrentCrumbMenu("page.html");
@@ -4306,6 +4318,7 @@ describe("FileNodeView header breadcrumb", () => {
 	});
 
 	test("the folder explorer row menu archives that row through the same dialog", async () => {
+		mutationMock.mockResolvedValue({ _yay: null });
 		node = DOCS;
 		treeNodes = [DOCS, PAGE_IN_DOCS];
 		const { onNavigateSearch } = renderFileView({ nodeId: node._id });

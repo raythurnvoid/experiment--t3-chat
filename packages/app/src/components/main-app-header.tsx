@@ -10,6 +10,7 @@ import { AppNotifications } from "@/components/app-notifications.tsx";
 import { AppAuthProvider } from "@/components/app-auth.tsx";
 import { FilesSearchPalette } from "@/components/files/files-search-palette.tsx";
 import { MainAppHeaderBillingIndicator } from "@/components/main-app-header-billing-indicator.tsx";
+import { MainAppHeaderBrowserControl } from "@/components/main-app-header-browser-control.tsx";
 import {
 	MainAppHeaderOrganizationSwitcherModal,
 	type MainAppHeaderOrganizationSwitcherModal_ListItem,
@@ -252,9 +253,12 @@ const MainAppHeaderOrganizationControls = memo(function MainAppHeaderOrganizatio
 			? `${organizations.length}/${1 + createOrganizationQuota.maxCount}`
 			: "…/…"
 		: undefined;
+	// Count from the quota, not from the list. The list has only the workspaces this user is a member of,
+	// while the quota counts every workspace in the organization, like the Create button does.
+	const draftWorkspaceCount = draftWorkspaceCreateQuota ? 1 + draftWorkspaceCreateQuota.usedCount : undefined;
 	const workspaceQuotaFraction = auth.userId
-		? draftWorkspaces && draftWorkspaceCreateQuota
-			? `${draftWorkspaces.length}/${1 + draftWorkspaceCreateQuota.maxCount}`
+		? draftWorkspaceCreateQuota
+			? `${draftWorkspaceCount}/${1 + draftWorkspaceCreateQuota.maxCount}`
 			: "…/…"
 		: undefined;
 	const organizationQuotaTooltip = auth.userId
@@ -267,7 +271,7 @@ const MainAppHeaderOrganizationControls = memo(function MainAppHeaderOrganizatio
 	const workspaceQuotaTooltip = auth.userId
 		? main_app_header_organization_controls_quota_tooltip({
 				kind: "workspace",
-				currentCount: draftWorkspaces?.length,
+				currentCount: draftWorkspaceCount,
 				maxCount: draftWorkspaceCreateQuota?.maxCount,
 			})
 		: undefined;
@@ -809,6 +813,7 @@ export const MainAppHeader = memo(function MainAppHeader(props: MainAppHeader_Pr
 			<div className={"MainAppHeader-actions" satisfies MainAppHeader_ClassNames}>
 				<FilesSearchPalette />
 				<AppNotifications />
+				<MainAppHeaderBrowserControl />
 				{!isFilesRoute && <MainAppHeaderBillingIndicator />}
 			</div>
 		</header>

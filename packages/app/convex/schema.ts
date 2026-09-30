@@ -60,11 +60,7 @@ const access_control_grant_permission_validator = v.union(
 	v.literal("plugin.run_as"),
 );
 
-const plugins_management_access_validator = v.union(
-	v.literal("owner"),
-	v.literal("selected"),
-	v.literal("workspace"),
-);
+const plugins_management_access_validator = v.union(v.literal("owner"), v.literal("selected"), v.literal("workspace"));
 
 /**
  * A role you can give to someone: the name of a system role, or the id of a custom role.
@@ -86,6 +82,70 @@ export const ai_chat_workspaces_source_validator = v.object({
 	threadId: v.id("ai_chat_threads"),
 	membershipId: v.id("organizations_workspaces_users"),
 	membershipLifetime: v.number(),
+});
+
+export const browser_choice_validator = v.union(
+	v.object({ provider: v.literal("none") }),
+	v.object({ provider: v.literal("cloud") }),
+	v.object({
+		provider: v.literal("playwriter"),
+		connectionId: v.string(),
+		confirmedTargetHandle: v.string(),
+	}),
+);
+
+export const browser_intent_validator = v.object({
+	webChoice: browser_choice_validator,
+	selectionRevision: v.number(),
+	policyRevision: v.number(),
+});
+
+export const ai_chat_browser_source_validator = v.object({
+	...ai_chat_workspaces_source_validator.fields,
+	sourceMessageId: v.id("ai_chat_threads_messages_aisdk_5"),
+});
+
+export const ai_chat_browser_resource_validator = v.union(
+	v.object({
+		provider: v.literal("cloud"),
+		mode: v.union(v.literal("file"), v.literal("web")),
+		sessionId: v.id("files_browser_sessions"),
+		controlGen: v.number(),
+		loadGen: v.number(),
+		navGen: v.number(),
+		tabId: v.union(v.string(), v.null()),
+		tabGen: v.union(v.number(), v.null()),
+	}),
+	v.object({
+		provider: v.literal("playwriter"),
+		connectionId: v.id("playwriter_connections"),
+		connectionGeneration: v.number(),
+		targetRevision: v.number(),
+		controlRevision: v.number(),
+		navRevision: v.number(),
+		confirmedTargetHandle: v.string(),
+	}),
+);
+
+export const ai_chat_browser_result_validator = v.object({
+	status: v.union(
+		v.literal("succeeded"),
+		v.literal("errored"),
+		v.literal("cancelled"),
+		v.literal("unknown"),
+		v.literal("not_started"),
+	),
+	reason: v.union(v.string(), v.null()),
+});
+
+const playwriter_command_identity_validator = v.object({
+	generation: v.number(),
+	commandId: v.string(),
+	operationHash: v.string(),
+	source: v.object({ chatId: v.string(), sourceMessageId: v.string(), toolCallId: v.string() }),
+	deadline: v.number(),
+	receiptResolutionDeadline: v.number(),
+	invocationId: v.id("ai_chat_browser_invocations"),
 });
 
 /**
@@ -743,6 +803,37 @@ const app_convex_schema = defineSchema({
 		.index("by_shell_seq", ["shellId", "seq"])
 		.index("by_organization_workspace_thread", ["organizationId", "workspaceId", "threadId"]),
 
+	/**
+	 * Exact browser calls keep a safe receipt. Page data stays in the current turn.
+	 */
+	ai_chat_browser_invocations: defineTable({
+		...ai_chat_browser_source_validator.fields,
+		toolCallId: v.string(),
+		operationHash: v.string(),
+		mode: v.union(v.literal("file"), v.literal("web")),
+		operationKind: v.union(v.literal("run"), v.literal("management")),
+		runnerSessionId: v.union(v.string(), v.null()),
+		openingSessionId: v.union(v.id("files_browser_sessions"), v.null()),
+		browserIntent: browser_intent_validator,
+		resource: v.union(ai_chat_browser_resource_validator, v.null()),
+		commandId: v.string(),
+		status: v.union(v.literal("running"), v.literal("interrupted"), v.literal("finished")),
+		deadlineAt: v.number(),
+		receiptResolutionDeadline: v.number(),
+		createdAt: v.number(),
+		finishedAt: v.optional(v.number()),
+		resultExpiresAt: v.optional(v.number()),
+		result: v.optional(ai_chat_browser_result_validator),
+	})
+		.index("by_thread_toolCall", ["threadId", "toolCallId"])
+		.index("by_commandId", ["commandId"])
+		.index("by_openingSession", ["openingSessionId"])
+		.index("by_deadlineAt", ["deadlineAt"])
+		.index("by_status_deadlineAt", ["status", "deadlineAt"])
+		.index("by_resultExpiresAt", ["resultExpiresAt"])
+		.index("by_organization_workspace", ["organizationId", "workspaceId"])
+		.index("by_user", ["userId"]),
+
 	ai_chat_bash_invocations: defineTable({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
@@ -752,6 +843,8 @@ const app_convex_schema = defineSchema({
 		commandHash: v.string(),
 		membershipId: v.id("organizations_workspaces_users"),
 		membershipLifetime: v.number(),
+		browserIntent: v.optional(browser_intent_validator),
+		sourceMessageId: v.optional(v.id("ai_chat_threads_messages_aisdk_5")),
 		status: v.union(v.literal("running"), v.literal("interrupted"), v.literal("finished")),
 		deadlineAt: v.number(),
 		transferDeadlineAt: v.number(),
@@ -2594,8 +2687,8 @@ const app_convex_schema = defineSchema({
 		]),
 
 	/**
-	 * One shared cloud browser. At most one live session per owner/organization/workspace, in
-	 * either mode. `file` shows one HTML file from Files; `web` is an open web browser with no
+	 * One shared cloud browser per mode and owner/organization/workspace.
+	 * `file` shows one HTML file from Files; `web` is an open web browser with no
 	 * file. The runner owns control, leases, and deadlines, and this doc mirrors what the UI may
 	 * show. `runnerSessionId` stays server-only: links carry this doc id. A `starting` doc that
 	 * never commits expires fast. Closed docs are swept 7 days after their browser time is billed.
@@ -2615,12 +2708,20 @@ const app_convex_schema = defineSchema({
 			}),
 			v.object({
 				...files_browser_session_shared_fields,
-				// A web session always has `navigationGeneration` 1, and its `loadGen` never changes.
+				// Each web tab has its own navigation generation.
 				mode: v.literal("web"),
 				/**
 				 * The "Agent can use this browser" switch. The runner owns it; this mirrors it.
 				 */
 				agentAccess: v.boolean(),
+				tabId: v.union(v.string(), v.null()),
+				tabGen: v.number(),
+				viewedTabId: v.union(v.string(), v.null()),
+				viewGen: v.number(),
+				tabCount: v.number(),
+				tabs: v.array(v.object({ tabId: v.string(), tabGen: v.number(), navGen: v.number() })),
+				policyRevision: v.number(),
+				selectionRevision: v.number(),
 			}),
 		),
 	)
@@ -2629,6 +2730,111 @@ const app_convex_schema = defineSchema({
 		.index("by_organization_workspace", ["organizationId", "workspaceId"])
 		.index("by_billing_state_updatedAt", ["billing.state", "updatedAt"])
 		.index("by_startingExpiresAt", ["startingExpiresAt"]),
+
+	/**
+	 * Saved web choice and policy survive browser and cookie cleanup.
+	 */
+	files_browser_preferences: defineTable({
+		ownerId: v.id("users"),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		webChoice: browser_choice_validator,
+		selectionRevision: v.number(),
+		webAgentAccess: v.boolean(),
+		policyRevision: v.number(),
+		agentBlockedHosts: v.array(v.string()),
+		syncPending: v.boolean(),
+		updatedAt: v.number(),
+	})
+		.index("by_owner_organization_workspace", ["ownerId", "organizationId", "workspaceId"])
+		.index("by_owner", ["ownerId"])
+		.index("by_organization_workspace", ["organizationId", "workspaceId"])
+		.index("by_syncPending_updatedAt", ["syncPending", "updatedAt"]),
+
+	/**
+	 * One shared browser connection for an owner and workspace.
+	 * Only encrypted share credentials and bounded state are saved. Active and state indexes
+	 * find live capacity and saved links due for expiry without scanning closed connections.
+	 */
+	playwriter_connections: defineTable({
+		ownerId: v.id("users"),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		membershipId: v.id("organizations_workspaces_users"),
+		membershipLifetime: v.number(),
+		encryptedShareId: v.union(v.bytes(), v.null()),
+		shareNonce: v.union(v.bytes(), v.null()),
+		linkFingerprint: v.union(v.string(), v.null()),
+		state: v.union(
+			v.literal("connecting"),
+			v.literal("needs_confirmation"),
+			v.literal("ready"),
+			v.literal("running"),
+			v.literal("paused"),
+			v.literal("recovering"),
+			v.literal("offline"),
+			v.literal("closing"),
+			v.literal("closed"),
+			v.literal("limit_reached"),
+			v.literal("needs_human"),
+		),
+		connectionGeneration: v.number(),
+		controlRevision: v.number(),
+		targetRevision: v.number(),
+		navRevision: v.number(),
+		inventoryRevision: v.number(),
+		confirmedTargetId: v.union(v.string(), v.null()),
+		confirmedTargetHandle: v.union(v.string(), v.null()),
+		targets: v.array(v.object({ targetId: v.string(), handle: v.string(), title: v.string(), url: v.string() })),
+		pauseReason: v.union(v.string(), v.null()),
+		connectAttemptId: v.string(),
+		sessionId: v.string(),
+		operations: v.number(),
+		idleExpiresAt: v.number(),
+		totalExpiresAt: v.union(v.number(), v.null()),
+		unresolvedCommand: v.union(playwriter_command_identity_validator, v.null()),
+		pendingAcknowledgement: v.union(playwriter_command_identity_validator, v.null()),
+		createdAt: v.number(),
+		updatedAt: v.number(),
+		active: v.boolean(),
+	})
+		.index("by_owner_organization_workspace", ["ownerId", "organizationId", "workspaceId"])
+		.index("by_linkFingerprint", ["linkFingerprint"])
+		.index("by_active", ["active"])
+		.index("by_active_state_idleExpiresAt", ["active", "state", "idleExpiresAt"])
+		.index("by_owner_organization_state", ["ownerId", "organizationId", "state"])
+		.index("by_owner_organization_workspace_active", ["ownerId", "organizationId", "workspaceId", "active"])
+		.index("by_owner", ["ownerId"])
+		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
+
+	/**
+	 * Retry an exact socket close or credential Forget after its source is removed.
+	 * Due-time and connection indexes keep retries bounded and prevent early slot release.
+	 */
+	playwriter_connection_cleanups: defineTable({
+		ownerId: v.id("users"),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		// The copied ID survives deletion of its connection doc.
+		connectionId: v.string(),
+		generation: v.number(),
+		forgetCredential: v.boolean(),
+		attempts: v.number(),
+		nextAttemptAt: v.number(),
+	})
+		.index("by_nextAttemptAt", ["nextAttemptAt"])
+		.index("by_connectionId", ["connectionId"]),
+
+	/**
+	 * Count one user's connection starts by UTC date. The date index removes old counters.
+	 */
+	playwriter_user_daily_use: defineTable({
+		userId: v.id("users"),
+		day: v.string(),
+		starts: v.number(),
+	})
+		.index("by_user_day", ["userId", "day"])
+		.index("by_day", ["day"]),
 
 	/**
 	 * One explicit editor-draft capture: unsaved Monaco/Diff bytes uploaded for a browser load.
@@ -2695,10 +2901,6 @@ const app_convex_schema = defineSchema({
 		 * 32 random bytes.
 		 */
 		profileKey: v.bytes(),
-		/**
-		 * Canonical hosts the agent may not use, at most 50. The runner gets them at the next start.
-		 */
-		agentBlockedHosts: v.array(v.string()),
 		createdAt: v.number(),
 		/**
 		 * The last web browser start. The hourly sweep deletes profiles unused for 90 days.

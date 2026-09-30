@@ -124,6 +124,15 @@ await state.page.waitForFunction(() => window.Clerk?.user != null, { timeout: 15
   follow-up read answered `qa.perm.owner+clerk_test@example.com`. Read `window.Clerk.user` before
   retrying a sign-in, or the retry opens a modal on an already signed-in session.
 
+- **Deleting the minted anonymous user reloads the tab.** After `users.delete_current_user_account`,
+  the next call can fail with `Cannot read properties of undefined (reading 'user')`, because
+  `window.Clerk` is gone while the page reloads. Wait for `window.Clerk?.loaded === true` before the
+  sign-in. Verified 2026-09-27.
+- **The first Convex call after sign-in can answer `Unauthenticated`.** On 2026-09-27 the page also
+  logged `useAppAuth must be used within AppAuthProvider`. A `page.reload` followed by waiting for
+  `window.Clerk.user` fixed it, and every call after that worked. That error message kept showing
+  after the reload, but it did not break any call.
+
 ## Verify who you are
 
 - `window.Clerk.user.primaryEmailAddress.emailAddress` is the signed-in email.
