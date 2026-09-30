@@ -534,7 +534,7 @@ Use this when changing tree focus, context menus, selection, or route sync.
   fieldset names. Click the visible radio label for `Keep both` or `Skip`.
   `Apply to remaining name conflicts` starts at `Ask each time`. Continue stays disabled until
   every visible conflict has a choice or a valid apply-to-remaining choice.
-- Hide the dialog and reopen it from Activity with `Review conflicts` or `View progress`. Reload
+- Hide the dialog and reopen it from Activity with `Resolve` or `View progress`. Reload
   while a run is waiting: local clipboard marks disappear, but Activity must still reopen it.
   A changed source offers Skip or Stop and must not expose Keep both.
 - After opening from Activity, scope choices and Stop to `.FilesTransferRunModal`: the Activity
@@ -548,7 +548,7 @@ Use this when changing tree focus, context menus, selection, or route sync.
   `Network.enable`, then `Network.emulateNetworkConditions` with `{ offline: true, latency: 0,
 downloadThroughput: -1, uploadThroughput: -1 }`. This affects only the owned QA tab.
   Click Cancel in Activity. It must say `Stop requested. Waiting for the server…` and disable Cancel.
-  Open Review conflicts for the first time while offline: the dialog must keep that message even
+  Open Resolve for the first time while offline: the dialog must keep that message even
   before its run query loads. Hide and reopen both views; the message must stay. Restore the same
   network settings with `offline: false`, then verify the saved result and final status. Do not
   treat a click as server confirmation or use browser-context offline mode on a shared profile.
@@ -1255,12 +1255,15 @@ One dialog holding the file's facts, its write policy, and the flat key-value ma
   not land. `page.mouse.click` at the button's bounding-box center opened the menu, and `End` + `Enter`
   picked `Restore`. `Show archived items` is React state, so closing the tab resets it. An archive job
   returns `{ runId, activityId, isDone, notArchivedNodeIds }` (a restore returns `{ runId, activityId }`).
-  The Activity card reads `N archived, M skipped. Total: T.` (`restored` for a restore), plus
-  `K not archived` when the archive refused named items (listed under `Not archived` in the job
-  dialog), with `View progress`
-  and `Stop`. To test Stop, click `Stop Archive files` in `Notifications` within about 3 s of starting
+  The Activity card shows a bar and `Archiving 12 of 46 items…` while it runs, then one line:
+  `Archived 46 items.`, or `Archived 45 of 46 items.` when the archive refused named items. A
+  refusal alone still reads `Completed`. The button is `View progress` while it runs and `Open` after.
+  The job dialog lists the archived names in the read-only `textbox` `Archived items` and the refused
+  ones under `Not archived (N)`. The `Open` button can sit below the visible part of the popover list:
+  call `scrollIntoView` on it before the mouse click, or the click lands outside and closes the popover. To test Stop, click `Stop Archive files` in `Notifications` within about 3 s of starting
   a 1,000+ node archive. To test a name clash, archive a folder, create an empty folder with the same
-  name, then Restore: the card says `Waiting for your choice` and `Review conflicts` opens a dialog with
+  name, then Restore: the card says `Action needed` and `1 name conflict needs your choice.`, the bell
+  count goes up by one, and `Resolve` opens a dialog with
   a group named by the path (`/seed`) holding `Keep both`, `Replace empty folder` (`Replace` for a
   file), and `Skip`, then `Continue`. Replace shows only when `files_archive_runs.get` returns
   `conflict.canReplace: true`; put an item inside the folder in the way and it disappears. Scope radio
@@ -1538,7 +1541,7 @@ Read the result back from the server, not from the modal text alone:
 folder with `files_visible:list` and remember the `_yay.items` shape.
 
 A run that ends blocked stays reachable. Reopen it from the notifications bell (focus + Enter; the
-Playwriter toolbar covers it) and click "Review conflicts" inside `.AppNotifications-popover`.
+Playwriter toolbar covers it) and click "Resolve" inside `.AppNotifications-popover`.
 Pasting the same sources again is the way to check that duplicate names keep a stable order: the
 counter must continue past the existing siblings, in source order.
 
