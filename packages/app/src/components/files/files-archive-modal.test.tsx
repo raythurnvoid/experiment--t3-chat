@@ -236,7 +236,7 @@ describe("FilesArchiveRunModal", () => {
 			status: "awaiting_input",
 			title: "Restore files",
 			errorMessage: null,
-			progress: { completed: 10, skipped: 0, blocked: 0, total: 20 },
+			progress: { completed: 10, skipped: 0, failed: 0, blocked: 0, canceled: 0, total: 20 },
 		},
 		controls: { canStop: true, canRetry: false, canDismiss: false },
 		conflict: {
@@ -246,6 +246,7 @@ describe("FilesArchiveRunModal", () => {
 			occupantPath: "/Reports/a.md",
 			canReplace,
 		},
+		archived: [],
 		notArchived: [],
 	});
 
@@ -263,7 +264,7 @@ describe("FilesArchiveRunModal", () => {
 		useQueryMock.mockReturnValue(pausedRestore(true));
 		renderRunModal();
 		const dialog = await screen.findByRole("dialog", { name: "Restore files" });
-		expect(within(dialog).getByText("10 restored, 0 skipped. Total: 20.")).toBeTruthy();
+		expect(within(dialog).getByText("Restoring 10 of 20 items…")).toBeTruthy();
 		const continueButton = within(dialog).getByRole("button", { name: "Continue" });
 		expect(continueButton).toHaveProperty("disabled", true);
 
@@ -301,10 +302,15 @@ describe("FilesArchiveRunModal", () => {
 				title: "Archive files",
 				errorMessage: null,
 				finishedAt: 1,
-				progress: { completed: 4, skipped: 0, blocked: 2, total: 6 },
+				progress: { completed: 4, skipped: 0, failed: 0, blocked: 2, canceled: 0, total: 6 },
 			},
 			controls: { canStop: false, canRetry: false, canDismiss: true },
 			conflict: null,
+			archived: [
+				{ nodeId: "node_1", name: "note.md" },
+				{ nodeId: "node_4", name: null },
+				{ nodeId: "node_5", name: "Plans" },
+			],
 			notArchived: [
 				{ nodeId: "node_2", name: "Reports", message: "An item inside it is read-only." },
 				{ nodeId: "node_3", name: null, message: "Permission denied" },
@@ -312,8 +318,12 @@ describe("FilesArchiveRunModal", () => {
 		});
 		renderRunModal();
 		const dialog = await screen.findByRole("dialog", { name: "Archive files" });
-		expect(within(dialog).getByText("4 archived, 0 skipped, 2 not archived. Total: 6.")).toBeTruthy();
-		const list = within(dialog).getByRole("region", { name: "Not archived" });
+		// A refused read-only item is expected, so the job reads as completed, not partly completed.
+		expect(within(dialog).getByText("Completed.")).toBeTruthy();
+		expect(within(dialog).getByText("Archived 4 of 6 items.")).toBeTruthy();
+		// A name the person can no longer read is left out.
+		expect(within(dialog).getByRole("textbox", { name: "Archived items" }).textContent).toBe("note.md\nPlans");
+		const list = within(dialog).getByRole("region", { name: "Not archived (2)" });
 		expect(
 			within(list)
 				.getAllByRole("listitem")

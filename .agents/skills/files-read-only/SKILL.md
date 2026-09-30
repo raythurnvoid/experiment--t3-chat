@@ -253,7 +253,8 @@ of never showing hidden items.
     ends as `skipped`.
     A refused named item counts once in `total` and in `progress.blocked`. Nothing inside it counts,
     so the counts add up to `total`. The Activity is then `partial`, or `failed` when nothing is
-    archived. A job that archives nothing without refusing every named item (for example, some were
+    archived. The card and the job dialog show a `partial` archive with only refused items as
+    Completed, because a refusal is expected (see `../activities/SKILL.md` Feed cards). A job that archives nothing without refusing every named item (for example, some were
     skipped and the rest refused) keeps `errorMessage` null, like the protection job: the card counts
     and the job dialog list say what was not archived.
     When the check refuses every named item, one item gets its own refusal, and several items get

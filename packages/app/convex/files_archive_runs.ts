@@ -1695,8 +1695,8 @@ export async function files_archive_runs_db_request_stop(
 /**
  * The job the person owns, with its progress and the clash it waits on. The clash name and paths are
  * shown only when the person may read the node.
- * `notArchived` lists the named items the archive refused. It names only nodes of the run's workspace
- * that the person can still read.
+ * `archived` lists the other named items of an archive, and `notArchived` the named items it refused.
+ * Both name only nodes of the run's workspace that the person can still read.
  */
 export const get = query({
 	args: {
@@ -1719,6 +1719,7 @@ export const get = query({
 				}),
 				v.null(),
 			),
+			archived: v.array(v.object({ nodeId: v.id("files_nodes"), name: v.union(v.string(), v.null()) })),
 			notArchived: v.array(
 				v.object({
 					nodeId: v.id("files_nodes"),
@@ -1734,9 +1735,15 @@ export const get = query({
 		if (owned._nay) return null;
 		const { userAuth, run, activity, membership } = owned._yay;
 
+		const refusedNodeIds = new Set(run.refusedItems.map((refusedItem) => refusedItem.nodeId));
+		// Restore's `rootNodeIds` are not the items the person named, so only an archive lists them.
+		const archivedNodeIds =
+			run.kind === "archive" ? run.rootNodeIds.filter((nodeId) => !refusedNodeIds.has(nodeId)) : [];
 		// A named id that was not found can belong to another workspace. Never name it.
-		const refusedNodes = (
-			await Promise.all(run.refusedItems.map((refusedItem) => ctx.db.get("files_nodes", refusedItem.nodeId)))
+		const namedNodes = (
+			await Promise.all(
+				[...refusedNodeIds, ...archivedNodeIds].map((nodeId) => ctx.db.get("files_nodes", nodeId)),
+			)
 		).flatMap((node) => (node && node.workspaceId === run.workspaceId ? [node] : []));
 		// Name an item only while the person may still read it.
 		const workspaceRead = await access_control_db_authorize_membership(ctx, {
@@ -1748,7 +1755,7 @@ export const get = query({
 			organizationId: run.organizationId,
 			workspaceId: run.workspaceId,
 			userId: userAuth.id,
-			nodes: refusedNodes,
+			nodes: namedNodes,
 			hasWorkspaceRead: !workspaceRead._nay,
 		});
 		const nameByNodeId = new Map(readableNodes.map((node) => [node._id, node.name]));
@@ -1757,6 +1764,7 @@ export const get = query({
 			name: nameByNodeId.get(refusedItem.nodeId) ?? null,
 			message: refusedItem.refusal.message,
 		}));
+		const archived = archivedNodeIds.map((nodeId) => ({ nodeId, name: nameByNodeId.get(nodeId) ?? null }));
 
 		let conflict = null;
 		// A job stopped while it waited keeps its last clash. Show it only while the job waits.
@@ -1792,6 +1800,7 @@ export const get = query({
 			activity,
 			controls: activities_get_controls(activity, userAuth.id),
 			conflict,
+			archived,
 			notArchived,
 		};
 	},

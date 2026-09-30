@@ -6,6 +6,7 @@ import { toast } from "sonner";
 
 import { TextMonospaceBlock } from "@/components/monospace-block/monospace-block-text.tsx";
 import { MyButton } from "@/components/my-button.tsx";
+import { MyProgressBar } from "@/components/my-progress-bar.tsx";
 import { MyRadio } from "@/components/my-radio.tsx";
 import {
 	MyModal,
@@ -198,6 +199,7 @@ type FilesArchiveRunModal_ResolveArgs = app_convex_FunctionArgs<
 type FilesArchiveRunModal_ClassNames =
 	| "FilesArchiveRunModal"
 	| "FilesArchiveRunModal-content"
+	| "FilesArchiveRunModal-line"
 	| "FilesArchiveRunModal-conflict"
 	| "FilesArchiveRunModal-path"
 	| "FilesArchiveRunModal-heading"
@@ -243,6 +245,16 @@ export const FilesArchiveRunModal = memo(function FilesArchiveRunModal(props: Fi
 	const isActive = run?.activity.finishedAt === undefined;
 	const isStopPending = pendingStopSourceIds.has(runId);
 	const conflict = run?.conflict ?? null;
+	const archivedNames = (run?.archived ?? []).flatMap((item) => (item.name === null ? [] : [item.name]));
+	// Match the Activity card: a refused item, like a read-only file, is expected and does not make the
+	// archive look partly failed. The "Not archived" section below names each refused item.
+	const isRefusalOnly =
+		run?.kind === "archive" && status === "partial" && progress?.failed === 0 && progress.canceled === 0;
+	const handledCount = progress
+		? progress.completed + progress.skipped + progress.failed + progress.blocked + progress.canceled
+		: 0;
+	const missedCount = progress ? progress.failed + progress.blocked : 0;
+	const verbs = run?.kind === "restore" ? ["Restoring", "Restored"] : ["Archiving", "Archived"];
 
 	const statusLabel =
 		run === undefined
@@ -261,7 +273,7 @@ export const FilesArchiveRunModal = memo(function FilesArchiveRunModal(props: Fi
 							failed: "Failed.",
 							canceled: "Stopped.",
 							timed_out: "Timed out.",
-						}[run.activity.status];
+						}[isRefusalOnly ? "succeeded" : run.activity.status];
 
 	const handleStop = useFn(() => {
 		if (!run?.controls.canStop || isSaving || isStopPending) return;
@@ -314,12 +326,30 @@ export const FilesArchiveRunModal = memo(function FilesArchiveRunModal(props: Fi
 				</MyModalHeader>
 				<MyModalScrollableArea>
 					<div className={"FilesArchiveRunModal-content" satisfies FilesArchiveRunModal_ClassNames}>
+						{/* The same bar and line as the Activity card. `total` stays null until the check has found
+						    every item. */}
+						{progress && isActive && status !== "awaiting_input" ? (
+							<MyProgressBar aria-label="Progress" value={handledCount} max={progress.total} />
+						) : null}
 						{progress ? (
-							<p role="status">
-								{progress.completed} {run?.kind === "restore" ? "restored" : "archived"}, {progress.skipped} skipped
-								{progress.blocked > 0 ? `, ${progress.blocked} not archived` : null}.
-								{progress.total !== null ? ` Total: ${progress.total}.` : isActive ? " Checking items…" : null}
+							<p className={"FilesArchiveRunModal-line" satisfies FilesArchiveRunModal_ClassNames}>
+								{isActive
+									? progress.total === null
+										? `${verbs[0]}…`
+										: `${verbs[0]} ${handledCount} of ${progress.total} items…`
+									: missedCount > 0
+										? `${verbs[1]} ${progress.completed} of ${progress.completed + missedCount} items.`
+										: `${verbs[1]} ${progress.completed} ${progress.completed === 1 ? "item" : "items"}.`}
 							</p>
+						) : null}
+						{/* The names the person picked. A folder counts with everything inside, so the line above can
+						    count more items than this list names. */}
+						{archivedNames.length > 0 ? (
+							<TextMonospaceBlock
+								aria-label={isActive ? "Items to archive" : "Archived items"}
+								text={archivedNames.join("\n")}
+								maxHeight="8lh"
+							/>
 						) : null}
 						{/* The archive refuses each selected item it cannot change, with everything inside it. */}
 						{run && run.notArchived.length > 0 ? (
@@ -328,7 +358,7 @@ export const FilesArchiveRunModal = memo(function FilesArchiveRunModal(props: Fi
 									id={notArchivedHeadingId}
 									className={"FilesArchiveRunModal-heading" satisfies FilesArchiveRunModal_ClassNames}
 								>
-									Not archived
+									Not archived ({run.notArchived.length})
 								</h3>
 								<ul className={"FilesArchiveRunModal-list" satisfies FilesArchiveRunModal_ClassNames}>
 									{run.notArchived.map((item) => (

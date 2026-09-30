@@ -611,6 +611,8 @@ describe("archive_nodes", () => {
 		expect(run?.notArchived).toEqual([
 			{ nodeId: refused.topId, name: "refused", message: "An item inside it is read-only." },
 		]);
+		// The job dialog lists the named items that were archived. The file inside the refused folder is not one.
+		expect(run?.archived).toEqual([{ nodeId: kept.topId, name: "kept" }]);
 	});
 
 	test("a refusal found in a later check step counts the refused item once", async () => {
