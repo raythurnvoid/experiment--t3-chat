@@ -69,9 +69,6 @@ importers:
       '@clerk/clerk-react':
         specifier: ^5.61.3
         version: 5.61.3(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
-      '@clerk/themes':
-        specifier: ^2.4.57
-        version: 2.4.57(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
       '@convex-dev/migrations':
         specifier: ^0.3.6
         version: 0.3.6(convex-helpers@0.1.124(@standard-schema/spec@1.1.0)(convex@1.46.0(@clerk/clerk-react@5.61.3(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(react@19.3.0))(hono@4.11.3)(react@19.3.0)(typescript@6.0.3)(zod@4.6.5))(convex@1.46.0(@clerk/clerk-react@5.61.3(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(react@19.3.0))
@@ -4357,10 +4354,6 @@ packages:
         optional: true
       react-dom:
         optional: true
-
-  '@clerk/themes@2.4.57':
-    resolution: {integrity: sha512-Nb3bO79rMTU/MPVTC/dde6LG27/IgOMKIYi5KSvAmO4ZUHlj0OWufu6CMvz5OYVZ0YdyMnTBU2aPGRUiRzO+2w==}
-    engines: {node: '>=18.17.0'}
 
   '@cloudflare/kv-asset-handler@0.4.2':
     resolution: {integrity: sha512-SIOD2DxrRRwQ+jgzlXCqoEFiKOFqaPjhnNTGKXSRLvp1HiOvapLaFG2kEr9dYQTYe8rKrd9uvDUzmAITeNyaHQ==}
@@ -23441,14 +23434,6 @@ snapshots:
     optionalDependencies:
       react: 19.3.0
       react-dom: 19.3.0(react@19.3.0)
-
-  '@clerk/themes@2.4.57(react-dom@19.3.0(react@19.3.0))(react@19.3.0)':
-    dependencies:
-      '@clerk/shared': 3.47.3(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
-      tslib: 2.8.1
-    transitivePeerDependencies:
-      - react
-      - react-dom
 
   '@cloudflare/kv-asset-handler@0.4.2': {}
 
