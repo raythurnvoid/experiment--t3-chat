@@ -833,6 +833,36 @@ describe("FilesSidebar", () => {
 		expect(within(dialog).getAllByRole("listitem").map((item) => item.textContent)).toEqual(["bravo", "locked.md"]);
 	});
 
+	test("the menu of a read-only row in a selection still archives the selection", async () => {
+		treeState.nodes = [
+			...treeState.nodes,
+			{
+				...treeState.nodes[0],
+				_id: "locked" as app_convex_Id<"files_nodes">,
+				kind: "file",
+				name: "locked.md",
+				path: "/locked.md",
+				treePath: "/locked.md/",
+				canWrite: false,
+				writeBlockedReason: "read_only",
+				writePolicyState: "read_only",
+			},
+		];
+		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
+		const view = render(<CreateSidebar router={router} selectedNodeId="bravo" />);
+		const bravo = await view.findByRole("treeitem", { name: "bravo" });
+		await waitFor(() => expect(bravo.getAttribute("aria-selected")).toBe("true"));
+		const locked = view.getByRole("treeitem", { name: /^locked\.md/ });
+		fireEvent.click(locked.querySelector(".FilesSidebarTreeItemPrimaryAction")!, { ctrlKey: true });
+		expect(locked.getAttribute("aria-selected")).toBe("true");
+
+		// Bravo can be archived, so the read-only row's menu archives the selection like the header action.
+		fireEvent.click(view.getByRole("button", { name: /^More actions for locked\.md/ }));
+		fireEvent.click(await view.findByRole("menuitem", { name: "Archive" }));
+		const dialog = await view.findByRole("dialog", { name: "Archive 2 items?" });
+		expect(within(dialog).getAllByRole("listitem").map((item) => item.textContent)).toEqual(["bravo", "locked.md"]);
+	});
+
 	test("a reveal event during a search keeps the folder expanded once the search closes", async () => {
 		treeState.nodes = treeState.nodes.map((node) =>
 			node._id === "bravo"

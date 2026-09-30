@@ -2051,6 +2051,7 @@ const FilesSidebarTreeRow = memo(
 			canUnarchive,
 			canWriteRoot,
 			hasVisibleProtectedDescendant,
+			protectedDescendantIds,
 			isFolderLoading,
 			onCreateNode,
 			onStartRename,
@@ -2133,6 +2134,11 @@ const FilesSidebarTreeRow = memo(
 				// A parent outside the loaded tree is checked by the server on drop.
 				return !selectedParent || !files_is_node(selectedParent) || selectedParent.canWrite;
 			});
+		// One row the person can archive is enough, like the header "Archive N selected" action. The
+		// archive refuses the other rows and lists them on its Activity.
+		const canArchiveItems = sourceItems.some(
+			(selected) => files_is_node(selected) && selected.canWrite && !protectedDescendantIds.has(selected._id),
+		);
 
 		useEffect(() => {
 			if (isRenaming && !canRename) {
@@ -2411,7 +2417,7 @@ const FilesSidebarTreeRow = memo(
 						canCreate={capabilities.canReceiveChildren}
 						canRename={canRename}
 						canShare={canShare}
-						canArchive={capabilities.canArchiveOrRestore && (isArchived ? canUnarchive : true)}
+						canArchive={isArchived ? capabilities.canArchiveOrRestore && canUnarchive : canArchiveItems}
 						canExpandSubtree={canExpandSubtree}
 						canCollapseSubtree={canCollapseSubtree}
 						expandedFolderActionsVisible={expandedFolderActionsVisible}
