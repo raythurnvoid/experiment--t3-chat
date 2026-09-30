@@ -304,7 +304,45 @@ describe("AppNotifications", () => {
 		expect(mutationMock).not.toHaveBeenCalled();
 	});
 
-	test("reopens review progress and shows saved, blocked, and failed counts", async () => {
+	test("shows a running job as a bar and a count", () => {
+		usePaginatedQueryMock.mockImplementation((_query: unknown, args: { section: string }) => ({
+			results:
+				args.section !== "active"
+					? []
+					: [
+							{
+								_id: "copy_activity",
+								_creationTime: 1,
+								status: "running",
+								resultKind: "saved",
+								source: { kind: "files_transfer_run", id: "copy_run", transferKind: "copy" },
+								title: "Copy files",
+								errorMessage: null,
+								targets: [],
+								progress: {
+									unit: "files",
+									discovered: 10,
+									total: 10,
+									completed: 3,
+									blocked: 0,
+									failed: 0,
+									skipped: 1,
+									canceled: 0,
+								},
+								controls: { canStop: true, canRetry: false, canDismiss: false },
+							},
+						],
+			status: "Exhausted",
+			loadMore: vi.fn(),
+		}));
+		render(<TestNotifications />);
+		expect(screen.getByText("Copying 4 of 10 files…")).toBeTruthy();
+		expect(screen.getByRole("progressbar", { name: "Copy files progress" }).getAttribute("aria-valuenow")).toBe("40");
+		fireEvent.click(screen.getByRole("button", { name: "View progress" }));
+		expect(openRunMock).toHaveBeenCalledWith("copy_run");
+	});
+
+	test("reopens review progress and shows the saved count", async () => {
 		usePaginatedQueryMock.mockImplementation((_query: unknown, args: { section: string }) => ({
 			results:
 				args.section === "active"
@@ -336,12 +374,14 @@ describe("AppNotifications", () => {
 			loadMore: vi.fn(),
 		}));
 		render(<TestNotifications />);
-		expect(screen.getByText(/2 saved, 1 need review, 1 failed, 0 skipped, 1 stopped/)).toBeTruthy();
+		expect(screen.getByText("Saved 2 of 4 items.")).toBeTruthy();
+		expect(screen.getByRole("status").textContent).toMatch(/^Partly completed/);
+		expect(screen.queryByRole("progressbar")).toBeNull();
 		expect(screen.queryByRole("button", { name: "Stop and keep completed changes" })).toBeNull();
-		fireEvent.click(screen.getByRole("button", { name: "View review progress" }));
+		fireEvent.click(screen.getByRole("button", { name: "Open" }));
 		expect(screen.getByRole("dialog", { name: "Review review_1" })).toBeTruthy();
 		fireEvent.click(screen.getByRole("button", { name: "Hide review" }));
-		fireEvent.click(screen.getByRole("button", { name: "View review progress" }));
+		fireEvent.click(screen.getByRole("button", { name: "Open" }));
 		expect(screen.getByRole("dialog", { name: "Review review_1" })).toBeTruthy();
 		expect(mutationMock).not.toHaveBeenCalled();
 	});
@@ -378,8 +418,12 @@ describe("AppNotifications", () => {
 			loadMore: vi.fn(),
 		}));
 		render(<TestNotifications />);
-		expect(screen.getByText(/150 restored, 2 skipped. Total: 700./)).toBeTruthy();
-		fireEvent.click(screen.getByRole("button", { name: "Review conflicts" }));
+		expect(screen.getByText("1 name conflict needs your choice.")).toBeTruthy();
+		expect(screen.getByRole("status").textContent).toMatch(/^Action needed/);
+		// The waiting job counts on the bell until the person answers it.
+		expect(screen.getByRole("button", { name: "Notifications" }).textContent).toBe("1");
+		expect(screen.queryByRole("progressbar")).toBeNull();
+		fireEvent.click(screen.getByRole("button", { name: "Resolve" }));
 		expect(screen.getByRole("dialog", { name: "Archive job archive_1" })).toBeTruthy();
 		fireEvent.click(screen.getByRole("button", { name: "Hide archive job" }));
 		expect(screen.queryByRole("dialog", { name: "Archive job archive_1" })).toBeNull();
@@ -418,19 +462,25 @@ describe("AppNotifications", () => {
 			loadMore: vi.fn(),
 		}));
 		render(<TestNotifications />);
-		expect(screen.getByText("40 archived, 0 skipped, 6 not archived. Total: 46.")).toBeTruthy();
+		expect(screen.getByText("Archived 40 of 46 items.")).toBeTruthy();
+		// A refused read-only item is expected, so the card reads as completed, not partly completed.
+		expect(screen.getByRole("status").textContent).toMatch(/^Completed/);
+		expect(screen.getByRole("button", { name: "Notifications" }).textContent).toBe("");
+		fireEvent.click(screen.getByRole("button", { name: "Open" }));
+		expect(screen.getByRole("dialog", { name: "Archive job archive_1" })).toBeTruthy();
 	});
 
-	// Only a finished walk sets `total`.
+	// Only a finished walk sets `total`. Skipped items were already set, so the line leaves them out.
 	test.each([
-		{ status: "running", completed: 1, skipped: 0, blocked: 0, isDone: false, line: "Updated 1 item so far." },
+		{ status: "running", completed: 1, skipped: 0, blocked: 0, isDone: false, line: "Updating…", label: "Running" },
 		{
 			status: "partial",
 			completed: 3,
 			skipped: 2,
 			blocked: 1,
 			isDone: true,
-			line: "Updated 3 items, 2 already set, 1 not allowed.",
+			line: "Updated 3 of 4 items.",
+			label: "Completed",
 		},
 		{
 			status: "canceled",
@@ -438,21 +488,30 @@ describe("AppNotifications", () => {
 			skipped: 0,
 			blocked: 0,
 			isDone: false,
-			line: "Stopped. 50 items were updated.",
+			line: "Updated 50 items.",
+			label: "Stopped",
 		},
-		{ status: "timed_out", completed: 1, skipped: 0, blocked: 0, isDone: false, line: "Stopped. 1 item was updated." },
-		{ status: "failed", completed: 50, skipped: 0, blocked: 0, isDone: false, line: "Stopped. 50 items were updated." },
+		{
+			status: "timed_out",
+			completed: 1,
+			skipped: 0,
+			blocked: 0,
+			isDone: false,
+			line: "Updated 1 item.",
+			label: "Timed out",
+		},
 		{
 			status: "failed",
 			completed: 0,
 			skipped: 0,
 			blocked: 2,
 			isDone: true,
-			line: "No items could be changed. 2 are not allowed.",
+			line: "Updated 0 of 2 items.",
+			label: "Failed",
 		},
 	])(
 		"shows the protection job line when $status after $completed",
-		({ status, completed, skipped, blocked, isDone, line }) => {
+		({ status, completed, skipped, blocked, isDone, line, label }) => {
 			const isActive = status === "running";
 			usePaginatedQueryMock.mockImplementation((_query: unknown, args: { section: string }) => ({
 				results:
@@ -487,7 +546,11 @@ describe("AppNotifications", () => {
 			}));
 			render(<TestNotifications />);
 			expect(screen.getByText(line)).toBeTruthy();
-			expect(screen.queryByText(/need a choice|Finding files/)).toBeNull();
+			expect(screen.getByRole("status").textContent).toMatch(new RegExp(`^${label}`));
+			// The walk has no total yet, so the bar has no value.
+			expect(screen.queryByRole("progressbar")?.hasAttribute("aria-valuenow") ?? null).toBe(isActive ? false : null);
+			// A protection job has no dialog to open.
+			expect(screen.queryByRole("button", { name: /^(Open|View progress)$/ })).toBeNull();
 		},
 	);
 
@@ -527,7 +590,7 @@ describe("AppNotifications", () => {
 		const response = Promise.withResolvers<{ _yay: null }>();
 		mutationMock.mockReturnValue(response.promise);
 		const view = render(<TestNotifications />);
-		fireEvent.click(screen.getByRole("button", { name: "Review conflicts" }));
+		fireEvent.click(screen.getByRole("button", { name: "Resolve" }));
 		expect(openRunMock).toHaveBeenCalledWith("copy_run");
 		expect(screen.queryByRole("button", { name: "Dismiss Copy files" })).toBeNull();
 		fireEvent.click(screen.getByRole("button", { name: "Stop and keep completed copies" }));
@@ -545,7 +608,8 @@ describe("AppNotifications", () => {
 		expect(screen.getByRole("status").textContent).toMatch(/^Stopping/);
 		status = "succeeded";
 		view.rerender(<TestNotifications notificationKey="completed" />);
-		expect(screen.getByRole("status").textContent).toMatch(/^Saved/);
+		expect(screen.getByRole("status").textContent).toMatch(/^Completed/);
+		expect(screen.getByText("Copied 3 files.")).toBeTruthy();
 		expect(screen.queryByRole("button", { name: "Stop and keep completed copies" })).toBeNull();
 		await act(async () => response.resolve({ _yay: null }));
 	});

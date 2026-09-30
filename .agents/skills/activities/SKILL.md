@@ -55,7 +55,7 @@ natural completion, with counts from their item receipts:
 
 Progress has one unit and counts discovered, completed, skipped, failed, blocked, and canceled
 items. A retry does not add another item. `total` stays null while discovery is incomplete. A
-terminal job stopped during discovery keeps that null and says it stopped while finding files.
+terminal job stopped during discovery keeps that null.
 Such a job offers no Retry (`canRetry` needs a known total), because its item list is incomplete.
 The user starts a new Copy instead.
 When the total is known, terminal outcome counts sum to it. Conflict choices move items out of
@@ -93,6 +93,28 @@ continuation and follow `isDone`; an empty visible page does not prove the feed 
 
 The bell can load older active and history pages. File badges share only the first page of each,
 through [activities.ts](../../../packages/app/src/lib/activities.ts).
+
+# Feed cards
+
+[app-notifications.tsx](../../../packages/app/src/components/app-notifications.tsx) shows every job with
+progress (transfer, review, protection, archive, and restore) the same way:
+
+- While it runs: a `MyProgressBar` and `Copying 4 of 10 files…`. The bar counts every finished outcome.
+  While `total` is null, the bar has no value and moves, and the line is only `Copying…`.
+- When it ends: one line, `Copied 12 files.`. Failed and blocked items make it `Copied 10 of 12 files.`.
+  Skipped items are left out: they were already in place, or the person chose Skip. The meta line says
+  `Completed`, `Partly completed`, `Failed`, `Stopped`, or `Timed out`.
+- A refused item, like a read-only file, is expected. So an archive (not a restore) or a protection
+  job that is `partial` only because of blocked items shows as `Completed` with a green icon. The
+  "N of M" count still includes the refused items, and the archive job dialog lists them under
+  `Not archived (N)`. The job dialog also lists the named items it archived (`files_archive_runs.get`
+  returns `archived`).
+- `awaiting_input` (only a transfer or a restore name clash) shows `Action needed`, the line
+  `N name conflicts need your choice.`, and a `Resolve` button. It shows no bar.
+- The button is `View progress` while the job runs and `Open` when it ends, both `ghost-highlightable`.
+  A protection job has no dialog, so it has no button.
+- The bell count adds each active Activity in `awaiting_input` to the unread notifications. It drops
+  when the person answers the clash or the job ends.
 
 # Plugin opt-in and clocks
 

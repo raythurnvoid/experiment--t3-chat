@@ -191,17 +191,30 @@
 		overflow-wrap: anywhere;
 	}
 
-	.AppNotificationsActivityItem-transfer {
-		display: flex;
-		flex-wrap: wrap;
+	.AppNotificationsActivityItem-job {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) auto;
+		align-items: center;
 		gap: 8px;
-		padding: 0 12px 12px;
-		font-size: 0.75rem;
+
+		padding: 0 8px 8px 12px;
 	}
 
-	.AppNotificationsActivityItem-transfer > p {
-		width: 100%;
+	.AppNotificationsActivityItem-job-bar {
+		grid-column: 1 / -1;
+	}
+
+	.AppNotificationsActivityItem-job-line {
 		margin: 0;
+
+		font-size: 0.8125rem;
+		line-height: 1.25rem;
+		color: var(--color-fg-09);
+
+		&.AppNotificationsActivityItem-job-line-action-needed {
+			color: var(--color-accent-09);
+			font-weight: 500;
+		}
 	}
 
 	.AppNotificationsActivityItem-targets {

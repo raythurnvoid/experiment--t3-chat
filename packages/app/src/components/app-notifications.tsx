@@ -11,6 +11,7 @@ import { MyButton } from "@/components/my-button.tsx";
 import { MyIcon } from "@/components/my-icon.tsx";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
 import { MyPopover, MyPopoverContent, MyPopoverTrigger } from "@/components/my-popover.tsx";
+import { MyProgressBar } from "@/components/my-progress-bar.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
 import { AppActivitiesProvider } from "@/lib/app-activities-context.tsx";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
@@ -246,7 +247,10 @@ type AppNotificationsActivityItem_ClassNames =
 	| "AppNotificationsActivityItem-meta"
 	| "AppNotificationsActivityItem-dismiss"
 	| "AppNotificationsActivityItem-error"
-	| "AppNotificationsActivityItem-transfer"
+	| "AppNotificationsActivityItem-job"
+	| "AppNotificationsActivityItem-job-bar"
+	| "AppNotificationsActivityItem-job-line"
+	| "AppNotificationsActivityItem-job-line-action-needed"
 	| "AppNotificationsActivityItem-targets"
 	| "AppNotificationsActivityItem-target"
 	| "AppNotificationsActivityItem-target-icon"
@@ -258,8 +262,8 @@ type AppNotificationsActivityItem_Props = {
 	onArchive: (activityId: app_convex_Id<"activities">) => void;
 };
 
-function items_label(count: number) {
-	return `${count} ${count === 1 ? "item" : "items"}`;
+function count_label(count: number, unit: "files" | "items") {
+	return `${count} ${count === 1 ? unit.slice(0, -1) : unit}`;
 }
 
 const AppNotificationsActivityItem = memo(function AppNotificationsActivityItem(
@@ -296,31 +300,82 @@ const AppNotificationsActivityItem = memo(function AppNotificationsActivityItem(
 			});
 	});
 
+	// A job with counts shows one block: a bar while it runs, and one result line when it ends.
+	const job = transferRun
+		? {
+				verbs: transferRun.transferKind === "move" ? ["Moving", "Moved"] : ["Copying", "Copied"],
+				onOpen: () => openRun(transferRun.id),
+			}
+		: reviewRun
+			? {
+					verbs: reviewRun.operationKind === "accept" ? ["Saving", "Saved"] : ["Discarding", "Discarded"],
+					onOpen: () => openReviewRun(reviewRun.id),
+				}
+			: archiveRun
+				? {
+						verbs: archiveRun.archiveKind === "restore" ? ["Restoring", "Restored"] : ["Archiving", "Archived"],
+						onOpen: () => openArchiveRun(archiveRun.id),
+					}
+				: writePolicyRun
+					? { verbs: ["Updating", "Updated"], onOpen: null }
+					: null;
+	// An archive or a protection job refuses the items the person may not change, like a read-only file.
+	// That is expected, so a job that changed everything else still shows as completed. The result line
+	// keeps the refused items in its "N of M" count, and the job dialog names them.
+	const isRefusalOnly =
+		(archiveRun?.archiveKind === "archive" || writePolicyRun !== null) &&
+		activity.status === "partial" &&
+		progress?.failed === 0 &&
+		progress.canceled === 0;
+	const displayStatus = isRefusalOnly ? "succeeded" : activity.status;
+
 	const statusLabel =
 		isStopPending && isActive && activity.status !== "stopping"
 			? "Stop requested. Waiting for the server…"
 			: {
 					queued: "Queued",
 					running: activity.expectedFinishAt !== undefined && activity.expectedFinishAt < now ? "Overdue" : "Running",
-					awaiting_input: "Waiting for your choice",
+					awaiting_input: "Action needed",
 					stopping: "Stopping",
-					succeeded: {
-						saved: "Saved",
-						ready_for_review: "Ready for review",
-						discarded: "Discarded",
-						plugin_result: "Completed",
-						bash_result: "Command finished",
-					}[activity.resultKind],
+					succeeded: job
+						? "Completed"
+						: {
+								saved: "Saved",
+								ready_for_review: "Ready for review",
+								discarded: "Discarded",
+								plugin_result: "Completed",
+								bash_result: "Command finished",
+							}[activity.resultKind],
 					partial: "Partly completed",
 					failed: "Failed",
 					canceled: "Stopped",
 					timed_out: "Timed out",
-				}[activity.status];
+				}[displayStatus];
 	const stopLabel = reviewRun
 		? "Stop and keep completed changes"
 		: transferRun && (progress?.completed ?? 0) > 0 && transferRun.transferKind === "copy"
 			? "Stop and keep completed copies"
 			: "Stop";
+
+	const isAwaitingInput = activity.status === "awaiting_input";
+	const handledCount = progress
+		? progress.completed + progress.skipped + progress.failed + progress.blocked + progress.canceled
+		: 0;
+	// Skipped items were already in place or the person chose Skip, so the result line leaves them out.
+	const missedCount = progress ? progress.failed + progress.blocked : 0;
+	const jobLine =
+		!job || !progress
+			? null
+			: isAwaitingInput
+				? // Only name clashes pause a job. A restore asks about one clash at a time and counts none.
+					`${Math.max(1, progress.blocked)} name ${progress.blocked > 1 ? "conflicts need" : "conflict needs"} your choice.`
+				: isActive
+					? progress.total === null
+						? `${job.verbs[0]}…`
+						: `${job.verbs[0]} ${handledCount} of ${count_label(progress.total, progress.unit)}…`
+					: missedCount > 0
+						? `${job.verbs[1]} ${progress.completed} of ${count_label(progress.completed + missedCount, progress.unit)}.`
+						: `${job.verbs[1]} ${count_label(progress.completed, progress.unit)}.`;
 
 	return (
 		<article className={"AppNotificationsActivityItem" satisfies AppNotificationsActivityItem_ClassNames}>
@@ -328,13 +383,15 @@ const AppNotificationsActivityItem = memo(function AppNotificationsActivityItem(
 				<span
 					className={cn(
 						"AppNotificationsActivityItem-icon" satisfies AppNotificationsActivityItem_ClassNames,
-						`AppNotificationsActivityItem-icon-status-${activity.status}` satisfies AppNotificationsActivityItem_ClassNames,
+						`AppNotificationsActivityItem-icon-status-${displayStatus}` satisfies AppNotificationsActivityItem_ClassNames,
 					)}
 					aria-hidden
 				>
-					{isActive ? (
+					{isAwaitingInput ? (
+						<CircleAlert />
+					) : isActive ? (
 						<LoaderCircle />
-					) : activity.status === "succeeded" ? (
+					) : displayStatus === "succeeded" ? (
 						<CircleCheck />
 					) : activity.status === "canceled" ? (
 						<X />
@@ -375,61 +432,31 @@ const AppNotificationsActivityItem = memo(function AppNotificationsActivityItem(
 					{activity.errorMessage}
 				</p>
 			) : null}
-			{transferRun && progress ? (
-				<div className={"AppNotificationsActivityItem-transfer" satisfies AppNotificationsActivityItem_ClassNames}>
-					<p>
-						{progress.completed} {transferRun.transferKind === "move" ? "moved" : "copied"}, {progress.skipped} skipped,{" "}
-						{progress.failed} failed, {progress.blocked} need a choice, {progress.canceled} stopped.
-						{progress.total === null
-							? isActive
-								? ` Finding files (${progress.discovered} found).`
-								: " Stopped while finding files."
-							: ` Total: ${progress.total}.`}
+			{job && progress ? (
+				<div className={"AppNotificationsActivityItem-job" satisfies AppNotificationsActivityItem_ClassNames}>
+					{/* `total` stays null until the job has found every item, so the bar moves without a value. */}
+					{isActive && !isAwaitingInput ? (
+						<MyProgressBar
+							className={"AppNotificationsActivityItem-job-bar" satisfies AppNotificationsActivityItem_ClassNames}
+							aria-label={`${activity.title} progress`}
+							value={handledCount}
+							max={progress.total}
+						/>
+					) : null}
+					<p
+						className={cn(
+							"AppNotificationsActivityItem-job-line" satisfies AppNotificationsActivityItem_ClassNames,
+							isAwaitingInput &&
+								("AppNotificationsActivityItem-job-line-action-needed" satisfies AppNotificationsActivityItem_ClassNames),
+						)}
+					>
+						{jobLine}
 					</p>
-					<MyButton variant="secondary" onClick={() => openRun(transferRun.id)}>
-						{activity.status === "awaiting_input" ? "Review conflicts" : "View progress"}
-					</MyButton>
-				</div>
-			) : null}
-			{reviewRun && progress ? (
-				<div className={"AppNotificationsActivityItem-transfer" satisfies AppNotificationsActivityItem_ClassNames}>
-					<p>
-						{progress.completed} {reviewRun.operationKind === "accept" ? "saved" : "discarded"}, {progress.blocked} need
-						review, {progress.failed} failed, {progress.skipped} skipped, {progress.canceled} stopped.
-					</p>
-					<MyButton variant="secondary" onClick={() => openReviewRun(reviewRun.id)}>
-						View review progress
-					</MyButton>
-				</div>
-			) : null}
-			{writePolicyRun && progress ? (
-				<div className={"AppNotificationsActivityItem-transfer" satisfies AppNotificationsActivityItem_ClassNames}>
-					{/* Blocked items are the ones the person can see but not manage. Hidden items are never counted. */}
-					<p>
-						{/* Only a finished walk sets `total`. A job without it stopped partway, after a Stop, a
-						    timeout, or a failed access check. */}
-						{isActive
-							? `Updated ${items_label(progress.completed)} so far.`
-							: progress.total === null
-								? `Stopped. ${items_label(progress.completed)} ${progress.completed === 1 ? "was" : "were"} updated.`
-								: activity.status === "failed"
-									? `No items could be changed. ${progress.blocked} ${progress.blocked === 1 ? "is" : "are"} not allowed.`
-									: `Updated ${items_label(progress.completed)}, ${progress.skipped} already set, ${progress.blocked} not allowed.`}
-					</p>
-				</div>
-			) : null}
-			{archiveRun && progress ? (
-				<div className={"AppNotificationsActivityItem-transfer" satisfies AppNotificationsActivityItem_ClassNames}>
-					<p>
-						{progress.completed} {archiveRun.archiveKind === "restore" ? "restored" : "archived"}, {progress.skipped}{" "}
-						skipped
-						{/* An archive refuses each selected item it cannot change. `progress.blocked` counts them. */}
-						{progress.blocked > 0 ? `, ${progress.blocked} not archived` : null}.
-						{progress.total !== null ? ` Total: ${progress.total}.` : isActive ? " Checking items…" : null}
-					</p>
-					<MyButton variant="secondary" onClick={() => openArchiveRun(archiveRun.id)}>
-						{activity.status === "awaiting_input" ? "Review conflicts" : "View progress"}
-					</MyButton>
+					{job.onOpen ? (
+						<MyButton variant={isAwaitingInput ? "secondary" : "ghost-highlightable"} onClick={job.onOpen}>
+							{isAwaitingInput ? "Resolve" : isActive ? "View progress" : "Open"}
+						</MyButton>
+					) : null}
 				</div>
 			) : null}
 			{activity.controls.canStop ? (
@@ -511,6 +538,9 @@ export const AppNotifications = memo(function AppNotifications() {
 	const notificationItems = notifications ?? [];
 	// Only unarchived notifications are fetched, so every listed one counts toward the badge.
 	const notificationCount = notificationItems.length;
+	// A job that waits on a name clash also counts, until the person answers it or the job ends.
+	const badgeCount =
+		notificationCount + activeActivities.results.filter((activity) => activity.status === "awaiting_input").length;
 	const dismissableActivityCount = activities.filter((activity) => activity.controls.canDismiss).length;
 
 	const onArchiveNotification = useFn((notificationId: app_convex_Id<"notifications">) => {
@@ -625,9 +655,9 @@ export const AppNotifications = memo(function AppNotifications() {
 					<MyIconButtonIcon>
 						<Bell />
 					</MyIconButtonIcon>
-					{notificationCount > 0 ? (
+					{badgeCount > 0 ? (
 						<span className={"AppNotifications-badge" satisfies AppNotifications_ClassNames}>
-							{notificationCount > 99 ? "99+" : notificationCount}
+							{badgeCount > 99 ? "99+" : badgeCount}
 						</span>
 					) : null}
 				</MyIconButton>
