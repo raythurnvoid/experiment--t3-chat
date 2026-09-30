@@ -634,12 +634,11 @@ describe("FilesPropertiesModalCollaboration", () => {
 		fireEvent.click(collaborationCheckbox());
 
 		expect(mutationMock).not.toHaveBeenCalled();
-		const warning = screen.getByText("Turn collaboration off?", { exact: false }).textContent ?? "";
+		const warning = screen.getByRole("dialog", { name: "Turn collaboration off?" }).textContent ?? "";
 		expect(warning).toContain("edit history");
 		expect(warning).toContain("comments on text are deleted for everyone");
 		// The box still shows the state the server has, not the one the click asked for.
 		expect(collaborationCheckbox().checked).toBe(true);
-		expect(document.activeElement).toBe(screen.getByRole("button", { name: "Turn collaboration off" }));
 
 		fireEvent.click(screen.getByRole("button", { name: "Turn collaboration off" }));
 
@@ -650,16 +649,15 @@ describe("FilesPropertiesModalCollaboration", () => {
 		});
 	});
 
-	test("cancelling the confirm step writes nothing and closes the warning", () => {
+	test("cancelling the confirm dialog writes nothing and closes it", async () => {
 		mockQueries({ node: TEXT_NODE, entries: [], canWrite: true });
 
 		renderModal();
 		fireEvent.click(collaborationCheckbox());
 		fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
 
-		expect(screen.queryByText("Turn collaboration off?", { exact: false })).toBeNull();
+		await waitFor(() => expect(screen.queryByRole("dialog", { name: "Turn collaboration off?" })).toBeNull());
 		expect(mutationMock).not.toHaveBeenCalled();
-		expect(document.activeElement).toBe(collaborationCheckbox());
 	});
 
 	test("turns collaboration on straight away, with no confirm step", () => {

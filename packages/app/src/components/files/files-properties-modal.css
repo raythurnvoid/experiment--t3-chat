@@ -264,33 +264,23 @@
 		text-wrap: pretty;
 	}
 
-	/* Mark the confirm step as dangerous with a red edge, so it does not read like one more row of
-	   settings. */
-	.FilesPropertiesModalCollaboration-confirm {
-		display: flex;
-		flex-direction: column;
-		gap: 10px;
+	.FilesPropertiesModalCollaboration-confirm-modal {
+		width: min(92vw, 440px);
+	}
 
-		padding: 12px;
-
-		border: 1px solid var(--color-red-07);
-		border-radius: 8px;
+	.FilesPropertiesModalCollaboration-confirm-body {
+		display: grid;
+		gap: 12px;
 	}
 
 	.FilesPropertiesModalCollaboration-confirm-text {
 		margin: 0;
 
-		font-size: 12px;
-		line-height: 1.45;
+		font-size: 14px;
+		line-height: 1.5;
 		color: var(--color-fg-11);
 
 		text-wrap: pretty;
-	}
-
-	.FilesPropertiesModalCollaboration-actions {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 8px;
 	}
 
 	.FilesPropertiesModalCollaboration-error {

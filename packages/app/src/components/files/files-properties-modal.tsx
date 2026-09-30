@@ -824,9 +824,9 @@ type FilesPropertiesModalCollaboration_ClassNames =
 	| "FilesPropertiesModalCollaboration-text"
 	| "FilesPropertiesModalCollaboration-label"
 	| "FilesPropertiesModalCollaboration-description"
-	| "FilesPropertiesModalCollaboration-confirm"
+	| "FilesPropertiesModalCollaboration-confirm-modal"
+	| "FilesPropertiesModalCollaboration-confirm-body"
 	| "FilesPropertiesModalCollaboration-confirm-text"
-	| "FilesPropertiesModalCollaboration-actions"
 	| "FilesPropertiesModalCollaboration-error";
 
 type FilesPropertiesModalCollaboration_Props = {
@@ -855,9 +855,9 @@ const FilesPropertiesModalCollaboration = memo(function FilesPropertiesModalColl
 
 	const { membershipId } = AppTenantProvider.useContext();
 	const descriptionId = useId();
-	const confirmId = useId();
+	const confirmTextId = useId();
 	const checkboxRef = useRef<HTMLInputElement>(null);
-	const confirmButtonRef = useRef<HTMLButtonElement>(null);
+	const cancelOffRef = useRef<HTMLButtonElement>(null);
 	const [isRunning, setIsRunning] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const [isConfirmingOff, setIsConfirmingOff] = useState(false);
@@ -939,16 +939,12 @@ const FilesPropertiesModalCollaboration = memo(function FilesPropertiesModalColl
 		runToggle(false);
 	});
 
-	const handleCancelOff = useFn(() => {
-		checkboxRef.current?.focus();
-		setIsConfirmingOff(false);
-	});
-
-	useEffect(() => {
-		if (isConfirmingOff) {
-			confirmButtonRef.current?.focus();
+	const handleOffOpenChange = useFn((open: boolean) => {
+		// Escape and the backdrop cannot close the dialog while the change is being written.
+		if (!open && !isRunning) {
+			setIsConfirmingOff(false);
 		}
-	}, [isConfirmingOff]);
+	});
 
 	// The node is still loading, is gone, or this member may not read it. The policy section above
 	// already reports that, so render nothing here.
@@ -984,8 +980,6 @@ const FilesPropertiesModalCollaboration = memo(function FilesPropertiesModalColl
 				// press instead.
 				disabled={!canToggle}
 				aria-describedby={descriptionId}
-				aria-controls={isConfirmingOff ? confirmId : undefined}
-				aria-expanded={isConfirmingOff}
 				aria-busy={isRunning || undefined}
 				onCheckedChange={handleCheckedChange}
 			>
@@ -1020,41 +1014,64 @@ const FilesPropertiesModalCollaboration = memo(function FilesPropertiesModalColl
 				</p>
 			) : null}
 
-			{isConfirmingOff ? (
-				<div
-					className={"FilesPropertiesModalCollaboration-confirm" satisfies FilesPropertiesModalCollaboration_ClassNames}
+			{/* Turning collaboration off deletes data, so it asks in its own dialog. Start on Cancel, the safe
+			    choice. */}
+			<MyModal open={isConfirmingOff} setOpen={handleOffOpenChange}>
+				<MyModalPopover
+					className={
+						"FilesPropertiesModalCollaboration-confirm-modal" satisfies FilesPropertiesModalCollaboration_ClassNames
+					}
+					initialFocus={cancelOffRef}
+					aria-describedby={confirmTextId}
 				>
-					<p
-						id={confirmId}
-						className={
-							"FilesPropertiesModalCollaboration-confirm-text" satisfies FilesPropertiesModalCollaboration_ClassNames
-						}
-					>
-						Turn collaboration off? The edit history and the comments on text are deleted for everyone. Saved versions
-						are kept.
-					</p>
-					<div
-						className={
-							"FilesPropertiesModalCollaboration-actions" satisfies FilesPropertiesModalCollaboration_ClassNames
-						}
-					>
+					<MyModalHeader>
+						<MyModalHeading>Turn collaboration off?</MyModalHeading>
+					</MyModalHeader>
+					<MyModalScrollableArea>
+						<div
+							className={
+								"FilesPropertiesModalCollaboration-confirm-body" satisfies FilesPropertiesModalCollaboration_ClassNames
+							}
+						>
+							<p
+								id={confirmTextId}
+								className={
+									"FilesPropertiesModalCollaboration-confirm-text" satisfies FilesPropertiesModalCollaboration_ClassNames
+								}
+							>
+								The edit history and the comments on text are deleted for everyone. Saved versions are kept.
+							</p>
+							{/* A failed write keeps this dialog open, so show the error here, not behind it. */}
+							{error ? (
+								<p
+									className={
+										"FilesPropertiesModalCollaboration-error" satisfies FilesPropertiesModalCollaboration_ClassNames
+									}
+									role="alert"
+								>
+									{error}
+								</p>
+							) : null}
+						</div>
+					</MyModalScrollableArea>
+					<MyModalFooter>
+						<MyButton ref={cancelOffRef} variant="ghost" disabled={isRunning} onClick={() => setIsConfirmingOff(false)}>
+							Cancel
+						</MyButton>
 						<MyButton
-							ref={confirmButtonRef}
 							variant="destructive"
 							disabled={isRunning}
-							aria-describedby={confirmId}
+							aria-busy={isRunning || undefined}
 							onClick={handleConfirmOff}
 						>
 							{isRunning ? "Turning off..." : "Turn collaboration off"}
 						</MyButton>
-						<MyButton variant="ghost" disabled={isRunning} onClick={handleCancelOff}>
-							Cancel
-						</MyButton>
-					</div>
-				</div>
-			) : null}
+					</MyModalFooter>
+					<MyModalCloseTrigger disabled={isRunning} />
+				</MyModalPopover>
+			</MyModal>
 
-			{error ? (
+			{error && !isConfirmingOff ? (
 				<p
 					className={"FilesPropertiesModalCollaboration-error" satisfies FilesPropertiesModalCollaboration_ClassNames}
 					role="alert"

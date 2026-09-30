@@ -1214,13 +1214,14 @@ One dialog holding the file's facts, its write policy, and the flat key-value ma
   and no empty strip.
 - The `Collaboration` checkbox is a `MyCheckboxButton` with a covered 1px input:
   click its label, `.FilesPropertiesModalCollaboration-checkbox`.
-  Turning it ON writes at once. Turning it OFF opens an inline confirm step inside the same
-  section — `getByRole("button", { name: "Turn collaboration off" })` next to `Cancel` — and nothing
-  is written until that button is clicked. Focus moves to the confirm button, and the tick keeps its old
+  Turning it ON writes at once. Turning it OFF opens a confirm dialog
+  (`getByRole("dialog", { name: "Turn collaboration off?" })`) with `Cancel` and
+  `getByRole("button", { name: "Turn collaboration off" })`. Nothing is written until that button is
+  clicked. Focus starts on Cancel and returns to the checkbox when the dialog closes. The tick keeps its old
   state until the write lands, so do not read "still checked" as a missed click. The confirm's
   `locator.click()` can also land nowhere: on 2026-09-05 the description stayed unchanged and no
   toast appeared after it, while `confirm.focus()` + `keyboard.press("Enter")` toggled both
-  directions every time. Use the keyboard for the confirm step. Read the state from
+  directions every time. Use the keyboard for the confirm button. Read the state from
   `.FilesPropertiesModalCollaboration-description`, not from the tick: the Metadata section repeats
   the same "read-only" and "no permission" sentences, so `getByText` finds several matches.
 - Scope policy controls to `.FilesPropertiesModalWritePolicy`. The radios are `Editable`,
