@@ -1,14 +1,15 @@
 import "./files-properties-modal.css";
 
 import { Editor, type EditorProps } from "@monaco-editor/react";
-import { Save } from "lucide-react";
+import { Check, CircleHelp, Save, X } from "lucide-react";
 import { useQueries, useQuery } from "convex/react";
-import type { editor as monaco_editor } from "monaco-editor";
-import { memo, useEffect, useId, useMemo, useRef, useState, type RefObject } from "react";
+import { editor as monaco_editor } from "monaco-editor";
+import { Fragment, memo, useEffect, useId, useMemo, useRef, useState, type RefObject } from "react";
 import { toast } from "sonner";
 
 import { MyButton, type MyButton_ClassNames } from "@/components/my-button.tsx";
 import { MyCheckboxButton } from "@/components/my-checkbox-button.tsx";
+import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
 import { MyRadio } from "@/components/my-radio.tsx";
 import { ServiceAccountSelect } from "@/components/service-account-select.tsx";
 import {
@@ -1074,9 +1075,11 @@ const FilesPropertiesModalCollaboration = memo(function FilesPropertiesModalColl
 // #region metadata
 type FilesPropertiesModalMetadata_ClassNames =
 	| "FilesPropertiesModalMetadata"
+	| "FilesPropertiesModalMetadata-header"
 	| "FilesPropertiesModalMetadata-description"
 	| "FilesPropertiesModalMetadata-editor"
 	| "FilesPropertiesModalMetadata-skeleton"
+	| "FilesPropertiesModalMetadata-placeholder"
 	| "FilesPropertiesModalMetadata-actions"
 	| "FilesPropertiesModalMetadata-status"
 	| "FilesPropertiesModalMetadata-status-error";
@@ -1089,6 +1092,13 @@ type FilesPropertiesModalMetadata_Props = {
 	 */
 	onDirtyChange: (dirty: boolean) => void;
 };
+
+/**
+ * Example lines shown in the empty editor. Monaco has no placeholder option, so the section draws
+ * this text over the editor while the draft is empty.
+ */
+const METADATA_PLACEHOLDER =
+	"Write one field per line, like this:\nowner: Jane Doe\nbudget: 5000\ndue-date: 2026-03-05\napproved: true";
 
 type FilesPropertiesModalMetadata_State = {
 	draftYaml: string;
@@ -1130,6 +1140,8 @@ const FilesPropertiesModalMetadata = memo(function FilesPropertiesModalMetadata(
 		feedback: null,
 	}));
 	const [saving, setSaving] = useState(false);
+	// The placeholder waits for this. Until Monaco is ready, the editor's loading skeleton is on screen.
+	const [editorMounted, setEditorMounted] = useState(false);
 	const editorRef = useRef<monaco_editor.IStandaloneCodeEditor | null>(null);
 	// The exact text of the last draft this section sent. The server stores a map, not text, so what
 	// comes back is the map rendered again. It rarely matches character for character. The editor
@@ -1183,6 +1195,7 @@ const FilesPropertiesModalMetadata = memo(function FilesPropertiesModalMetadata(
 	const handleOnMount = useFn<EditorProps["onMount"]>((editor) => {
 		editorRef.current = editor;
 		editor.updateOptions({ readOnly: saving || !editable });
+		setEditorMounted(true);
 	});
 
 	const handleChange = useFn<EditorProps["onChange"]>((value) => {
@@ -1340,10 +1353,13 @@ const FilesPropertiesModalMetadata = memo(function FilesPropertiesModalMetadata(
 
 	return (
 		<div className={"FilesPropertiesModalMetadata" satisfies FilesPropertiesModalMetadata_ClassNames}>
-			<p className={"FilesPropertiesModalMetadata-description" satisfies FilesPropertiesModalMetadata_ClassNames}>
-				Keys and values stored next to this item. A value is text, a number, or true/false. Lists and nested values are
-				not allowed.
-			</p>
+			{/* Put the help button at the end of this line, above the editor's right edge. */}
+			<div className={"FilesPropertiesModalMetadata-header" satisfies FilesPropertiesModalMetadata_ClassNames}>
+				<p className={"FilesPropertiesModalMetadata-description" satisfies FilesPropertiesModalMetadata_ClassNames}>
+					Add your own fields to this item. Select the help button to see how.
+				</p>
+				<FilesPropertiesModalMetadataHelp />
+			</div>
 
 			<div className={"FilesPropertiesModalMetadata-editor" satisfies FilesPropertiesModalMetadata_ClassNames}>
 				{metadata.loaded ? (
@@ -1368,6 +1384,16 @@ const FilesPropertiesModalMetadata = memo(function FilesPropertiesModalMetadata(
 						className={"FilesPropertiesModalMetadata-skeleton" satisfies FilesPropertiesModalMetadata_ClassNames}
 					/>
 				)}
+
+				{/* A read-only item cannot be typed in, so an example would only mislead. */}
+				{editorMounted && editable && metadata.draftYaml === "" ? (
+					<div
+						className={"FilesPropertiesModalMetadata-placeholder" satisfies FilesPropertiesModalMetadata_ClassNames}
+						aria-hidden
+					>
+						{METADATA_PLACEHOLDER}
+					</div>
+				) : null}
 			</div>
 
 			<div className={"FilesPropertiesModalMetadata-actions" satisfies FilesPropertiesModalMetadata_ClassNames}>
@@ -1401,6 +1427,243 @@ const FilesPropertiesModalMetadata = memo(function FilesPropertiesModalMetadata(
 	);
 });
 // #endregion metadata
+
+// #region metadata help
+type FilesPropertiesModalMetadataHelp_ClassNames =
+	| "FilesPropertiesModalMetadataHelp"
+	| "FilesPropertiesModalMetadataHelp-text"
+	| "FilesPropertiesModalMetadataHelp-heading"
+	| "FilesPropertiesModalMetadataHelp-table"
+	| "FilesPropertiesModalMetadataHelp-example"
+	| "FilesPropertiesModalMetadataHelp-list"
+	| "FilesPropertiesModalMetadataHelp-rule"
+	| "FilesPropertiesModalMetadataHelp-rule-do"
+	| "FilesPropertiesModalMetadataHelp-rule-dont";
+
+/**
+ * The YAML samples the help dialog shows, colored like the metadata editor.
+ */
+const METADATA_HELP_SAMPLES = {
+	template: "key: value",
+	text: "owner: Jane Doe",
+	number: "budget: 5000",
+	date: "due-date: 2026-03-05",
+	boolean: "approved: true",
+	example: "owner: Jane Doe\nbudget: 5000\ndue-date: 2026-03-05\napproved: true",
+	keyDo: "task-status: in progress",
+	keyDont: "task status: in progress",
+	dateDo: "due-date: 2026-03-05",
+	dateDontDigits: "due-date: 2026-3-5",
+	dateDontSlashes: "due-date: 05/03/2026",
+};
+
+/**
+ * One row per value type, each with its sample from `METADATA_HELP_SAMPLES`.
+ */
+const METADATA_HELP_TYPES = [
+	["Text", "text"],
+	["Number", "number"],
+	["Date", "date"],
+	["True/false", "boolean"],
+] as const;
+
+/**
+ * Search box filters that work on metadata. See `shared/files-search-query.ts` for the language.
+ */
+const METADATA_HELP_SEARCHES = [
+	["status:done", "Status is done"],
+	['owner:"Jane Doe"', "Quote a value with spaces"],
+	["due-date:<2026-11-01", "Due before November 2026"],
+	["owner:*", "Has an owner"],
+] as const;
+
+/**
+ * A help button that opens a second dialog on top of the Properties dialog. It explains the metadata
+ * format with short examples, so the section itself can keep one short line.
+ *
+ * Keep the rules here in step with `shared/files-metadata.ts`: the key characters, the value types,
+ * and the date format that search can compare.
+ */
+const FilesPropertiesModalMetadataHelp = memo(function FilesPropertiesModalMetadataHelp() {
+	const [open, setOpen] = useState(false);
+	const [samplesHtml, setSamplesHtml] = useState<Record<keyof typeof METADATA_HELP_SAMPLES, string> | null>(null);
+
+	// Show each sample as its own `code` element. Use Monaco's colored HTML once it is ready, and the
+	// plain text before that.
+	const sample = (name: keyof typeof METADATA_HELP_SAMPLES) =>
+		samplesHtml ? (
+			// The HTML comes from Monaco, which escapes the text. The text is the constant above.
+			<code dangerouslySetInnerHTML={{ __html: samplesHtml[name] }} />
+		) : (
+			<code>{METADATA_HELP_SAMPLES[name]}</code>
+		);
+
+	const rule = (doName: keyof typeof METADATA_HELP_SAMPLES, ...dontNames: (keyof typeof METADATA_HELP_SAMPLES)[]) => (
+		<>
+			<span
+				className={cn(
+					"FilesPropertiesModalMetadataHelp-rule" satisfies FilesPropertiesModalMetadataHelp_ClassNames,
+					"FilesPropertiesModalMetadataHelp-rule-do" satisfies FilesPropertiesModalMetadataHelp_ClassNames,
+				)}
+			>
+				<Check role="img" aria-label="Correct" />
+				{sample(doName)}
+			</span>
+			{dontNames.map((dontName) => (
+				<span
+					key={dontName}
+					className={cn(
+						"FilesPropertiesModalMetadataHelp-rule" satisfies FilesPropertiesModalMetadataHelp_ClassNames,
+						"FilesPropertiesModalMetadataHelp-rule-dont" satisfies FilesPropertiesModalMetadataHelp_ClassNames,
+					)}
+				>
+					<X role="img" aria-label="Wrong" />
+					{sample(dontName)}
+				</span>
+			))}
+		</>
+	);
+
+	// Color the samples with Monaco's own YAML tokenizer and the app theme, so they match the editor.
+	// Start while the dialog is still closed, so the samples are already colored when it opens.
+	useEffect(() => {
+		let cancelled = false;
+
+		Promise.all(
+			Object.entries(METADATA_HELP_SAMPLES).map(([name, text]) =>
+				// Monaco ends every line with `<br/>`. Drop the last one, or an inline sample breaks the line.
+				monaco_editor.colorize(text, "yaml", {}).then((html) => [name, html.replace(/<br\/>$/, "")] as const),
+			),
+		)
+			.then((entries) => {
+				if (!cancelled) {
+					setSamplesHtml(Object.fromEntries(entries) as Record<keyof typeof METADATA_HELP_SAMPLES, string>);
+				}
+			})
+			.catch((error: unknown) => {
+				console.error("[FilesPropertiesModalMetadataHelp] Failed to color the samples", { error });
+			});
+
+		return () => {
+			cancelled = true;
+		};
+	}, []);
+
+	return (
+		<>
+			<MyIconButton variant="ghost" tooltip="How metadata works" aria-haspopup="dialog" onClick={() => setOpen(true)}>
+				<MyIconButtonIcon>
+					<CircleHelp />
+				</MyIconButtonIcon>
+			</MyIconButton>
+
+			<MyModal open={open} setOpen={setOpen}>
+				<MyModalPopover
+					className={"FilesPropertiesModalMetadataHelp" satisfies FilesPropertiesModalMetadataHelp_ClassNames}
+				>
+					<MyModalHeader>
+						<MyModalHeading>How metadata works</MyModalHeading>
+					</MyModalHeader>
+
+					<MyModalScrollableArea>
+						<p
+							className={"FilesPropertiesModalMetadataHelp-text" satisfies FilesPropertiesModalMetadataHelp_ClassNames}
+						>
+							Metadata is a set of key-value fields on a file or folder. Write one field per line, as{" "}
+							{sample("template")}. Saving replaces all fields, so a deleted line is removed.
+						</p>
+
+						<h3
+							className={
+								"FilesPropertiesModalMetadataHelp-heading" satisfies FilesPropertiesModalMetadataHelp_ClassNames
+							}
+						>
+							Values
+						</h3>
+						<dl
+							className={"FilesPropertiesModalMetadataHelp-table" satisfies FilesPropertiesModalMetadataHelp_ClassNames}
+						>
+							{METADATA_HELP_TYPES.map(([label, name]) => (
+								<Fragment key={name}>
+									<dt>{label}</dt>
+									<dd>{sample(name)}</dd>
+								</Fragment>
+							))}
+						</dl>
+						<h3
+							className={
+								"FilesPropertiesModalMetadataHelp-heading" satisfies FilesPropertiesModalMetadataHelp_ClassNames
+							}
+						>
+							Example
+						</h3>
+						<pre
+							className={
+								"FilesPropertiesModalMetadataHelp-example" satisfies FilesPropertiesModalMetadataHelp_ClassNames
+							}
+						>
+							{sample("example")}
+						</pre>
+
+						<h3
+							className={
+								"FilesPropertiesModalMetadataHelp-heading" satisfies FilesPropertiesModalMetadataHelp_ClassNames
+							}
+						>
+							Rules
+						</h3>
+						<ul
+							className={"FilesPropertiesModalMetadataHelp-list" satisfies FilesPropertiesModalMetadataHelp_ClassNames}
+						>
+							<li>
+								Keys have no spaces.
+								{rule("keyDo", "keyDont")}
+							</li>
+							<li>
+								Write dates as <code>YYYY-MM-DD</code> (year, month, day). Search can only compare dates written this
+								way.
+								{rule("dateDo", "dateDontDigits", "dateDontSlashes")}
+							</li>
+						</ul>
+
+						<h3
+							className={
+								"FilesPropertiesModalMetadataHelp-heading" satisfies FilesPropertiesModalMetadataHelp_ClassNames
+							}
+						>
+							Search
+						</h3>
+						<p
+							className={"FilesPropertiesModalMetadataHelp-text" satisfies FilesPropertiesModalMetadataHelp_ClassNames}
+						>
+							Find items by their fields in the Files search box:
+						</p>
+						<dl
+							className={"FilesPropertiesModalMetadataHelp-table" satisfies FilesPropertiesModalMetadataHelp_ClassNames}
+						>
+							{METADATA_HELP_SEARCHES.map(([query, meaning]) => (
+								<Fragment key={query}>
+									<dt>
+										<code>{query}</code>
+									</dt>
+									<dd>{meaning}</dd>
+								</Fragment>
+							))}
+						</dl>
+					</MyModalScrollableArea>
+
+					<MyModalFooter>
+						<MyButton variant="ghost" onClick={() => setOpen(false)}>
+							Done
+						</MyButton>
+					</MyModalFooter>
+					<MyModalCloseTrigger />
+				</MyModalPopover>
+			</MyModal>
+		</>
+	);
+});
+// #endregion metadata help
 
 // #region skeleton
 type FilesPropertiesModalSkeleton_ClassNames =

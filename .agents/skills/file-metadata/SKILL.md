@@ -270,7 +270,13 @@ The map holds member-defined labels and details recorded by creation flows.
 - **Properties modal**: `packages/app/src/components/files/files-properties-modal.tsx`.
   One dialog per node, opened from the sidebar row menu (`Properties`) or the breadcrumb button. It
   holds the node's facts, the local write-policy control, and a Monaco YAML editor for the map. The editor
-  section renders for files and folders. Its editor name is `Metadata YAML`. Collaboration controls stay file-only. It replaced the sidebar
+  section renders for files and folders. Its editor name is `Metadata YAML`. Collaboration controls stay file-only.
+  The section keeps one short description. A help button (`How metadata works`) next to the heading
+  opens a second dialog that explains the format with short examples for non-technical users. The
+  examples are colored by `monaco.editor.colorize`, so they match the editor. It also lists a few search box filters. Keep all of it in step with the key
+  grammar, the `maybe_date` format, and the search box language below. While the draft is empty and the item is editable,
+  example lines are drawn over the editor as a placeholder, because Monaco has no placeholder
+  option. It replaced the sidebar
   `Metadata` tab and the separate `Read-only settings` modal; both are gone.
 - **Agent tool**: `set_file_metadata` in `packages/app/server/server-ai-tools.ts`. It is in
   `ai_chat_WRITE_TOOL_NAMES`, so Ask mode drops it from the tool record, not only from `activeTools`.

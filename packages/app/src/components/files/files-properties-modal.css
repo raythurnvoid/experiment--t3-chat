@@ -250,6 +250,13 @@
 		gap: 10px;
 	}
 
+	.FilesPropertiesModalMetadata-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 12px;
+	}
+
 	.FilesPropertiesModalMetadata-description {
 		margin: 0;
 
@@ -261,6 +268,7 @@
 	}
 
 	.FilesPropertiesModalMetadata-editor {
+		position: relative;
 		overflow: hidden;
 
 		border: 1px solid var(--color-base-1-07);
@@ -274,6 +282,21 @@
 	.FilesPropertiesModalMetadata-skeleton {
 		height: 160px;
 		width: 100%;
+	}
+
+	/* Sit on top of the editor, but let every click and key reach Monaco. The offsets match the editor's
+	   10px top padding and its 19px line height, so the text lines up with what the user will type. */
+	.FilesPropertiesModalMetadata-placeholder {
+		position: absolute;
+		inset: 10px 14px auto 14px;
+
+		pointer-events: none;
+		white-space: pre;
+
+		font-family: var(--app-font-monospace);
+		font-size: 13px;
+		line-height: 19px;
+		color: var(--color-fg-06);
 	}
 
 	.FilesPropertiesModalMetadata-actions {
@@ -295,4 +318,116 @@
 		color: var(--color-red-11);
 	}
 	/* #endregion metadata */
+
+	/* #region metadata help */
+	.FilesPropertiesModalMetadataHelp {
+		width: min(32rem, calc(100vw - 2rem));
+
+		/* Give every sample the editor background, so it reads as a piece of the editor. The token colors
+		   come from Monaco classes inside the sample. */
+		code {
+			padding: 1px 4px;
+
+			border-radius: 4px;
+
+			background: var(--color-base-1-02);
+
+			font-family: var(--app-font-monospace);
+			font-size: 12px;
+			color: var(--color-fg-11);
+		}
+	}
+
+	.FilesPropertiesModalMetadataHelp-text {
+		margin: 0 0 10px;
+
+		font-size: 13px;
+		line-height: 1.6;
+		color: var(--color-fg-09);
+	}
+
+	.FilesPropertiesModalMetadataHelp-heading {
+		margin: 20px 0 8px;
+
+		font-size: 13px;
+		font-weight: 600;
+		color: var(--color-fg-11);
+	}
+
+	/* A label column and a sample column. Used for the value types and for the search filters. */
+	.FilesPropertiesModalMetadataHelp-table {
+		display: grid;
+		grid-template-columns: max-content minmax(0, 1fr);
+		gap: 8px 16px;
+		align-items: baseline;
+
+		margin: 0;
+
+		font-size: 13px;
+		color: var(--color-fg-09);
+
+		dd {
+			margin: 0;
+		}
+	}
+
+	/* A block the user can copy into the editor as it is. */
+	.FilesPropertiesModalMetadataHelp-example {
+		margin: 0;
+		padding: 10px 14px;
+
+		border: 1px solid var(--color-base-1-07);
+		border-radius: 8px;
+
+		background: var(--color-base-1-02);
+
+		line-height: 19px;
+
+		code {
+			padding: 0;
+
+			font-size: 13px;
+		}
+	}
+
+	.FilesPropertiesModalMetadataHelp-list {
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
+
+		margin: 0;
+		padding-inline-start: 18px;
+
+		list-style: disc;
+
+		font-size: 13px;
+		line-height: 1.6;
+		color: var(--color-fg-09);
+	}
+
+	/* Put each do and don't sample on its own line, so the right and the wrong format sit one above the
+	   other. */
+	.FilesPropertiesModalMetadataHelp-rule {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+
+		margin-top: 4px;
+
+		svg {
+			flex: none;
+
+			width: 14px;
+			height: 14px;
+		}
+	}
+
+	.FilesPropertiesModalMetadataHelp-rule-do svg {
+		color: var(--color-green-10);
+	}
+
+	.FilesPropertiesModalMetadataHelp-rule-dont svg {
+		color: var(--color-red-10);
+	}
+	/* #endregion metadata help */
 }

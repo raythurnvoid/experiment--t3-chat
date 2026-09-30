@@ -133,6 +133,14 @@ vi.mock("@monaco-editor/react", async () => {
 	};
 });
 
+// The help dialog colors its samples with Monaco's tokenizer. Real Monaco does not load in jsdom, so
+// return the text as it is.
+vi.mock("monaco-editor", () => ({
+	editor: {
+		colorize: (text: string) => Promise.resolve(text),
+	},
+}));
+
 vi.mock("@/lib/app-monaco-config.ts", () => ({
 	app_monaco_THEME_NAME_DARK: "app-files-monaco-theme-dark",
 }));
@@ -1026,5 +1034,39 @@ describe("FilesPropertiesModalMetadata", () => {
 		expect(save.getAttribute("aria-describedby")).toBe(screen.getByRole("status").id);
 		expect(screen.getByRole("status").textContent).toBe(expectedText);
 		expect(mutationMock).not.toHaveBeenCalled();
+	});
+
+	// The closed help dialog stays in the DOM and uses similar words, so select the placeholder by its class.
+	const queryPlaceholder = () => document.querySelector(".FilesPropertiesModalMetadata-placeholder");
+
+	test("shows an example in the empty editor until something is typed", () => {
+		mockQueries({ entries: [], canWrite: true });
+		renderModal();
+
+		expect(queryPlaceholder()).not.toBeNull();
+
+		typeDraft("client: Acme\n");
+		expect(queryPlaceholder()).toBeNull();
+
+		typeDraft("");
+		expect(queryPlaceholder()).not.toBeNull();
+	});
+
+	test("shows no example when the item cannot be edited", () => {
+		mockQueries({ entries: [], canWrite: false });
+		renderModal();
+
+		expect(queryPlaceholder()).toBeNull();
+	});
+
+	test("opens the help dialog from the help button", () => {
+		mockQueries({ entries: [], canWrite: true });
+		renderModal();
+
+		expect(screen.queryByRole("dialog", { name: "How metadata works" })).toBeNull();
+
+		fireEvent.click(screen.getByRole("button", { name: "How metadata works" }));
+
+		expect(screen.getByRole("dialog", { name: "How metadata works" })).toBeTruthy();
 	});
 });
