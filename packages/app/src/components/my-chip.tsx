@@ -1,8 +1,19 @@
 import "./my-chip.css";
-import { memo, useEffect, type ComponentPropsWithRef, type Ref } from "react";
+import {
+	memo,
+	useEffect,
+	useLayoutEffect,
+	useRef,
+	useState,
+	type ComponentPropsWithRef,
+	type ReactNode,
+	type Ref,
+} from "react";
 import * as Ariakit from "@ariakit/react";
+import { measureNaturalWidth, prepareWithSegments } from "@chenglou/pretext";
 
 import { MyIconButton } from "@/components/my-icon-button.tsx";
+import { APP_FONT_FAMILY } from "@/lib/ui.tsx";
 import { cn } from "@/lib/utils.ts";
 
 // #region root
@@ -276,3 +287,150 @@ export const MyChipRow = memo(function MyChipRow(props: MyChipRow_Props) {
 	);
 });
 // #endregion row
+
+// #region overflow row
+export type MyChipOverflowRow_ClassNames = "MyChipOverflowRow" | "MyChipOverflowRow-list" | "MyChipOverflowRow-leading";
+
+export type MyChipOverflowRow_Item = {
+	id: string;
+	label: string;
+	media: ReactNode;
+};
+
+export type MyChipOverflowRow_Props = {
+	items: MyChipOverflowRow_Item[];
+	/**
+	 * Sits before the chips on the same line, for example a "Manage" button. The chips make room for it.
+	 */
+	leading: ReactNode;
+};
+
+// Pretext measures the chips with these values, so a resize never calls `getComputedStyle`. Keep them in
+// sync with the compact rules in my-chip.css: the label font (500 0.8125rem), the label max width,
+// the chip padding, border, and gap, the media slot, and the row gaps.
+const OVERFLOW_ROW_FONT = `500 13px ${APP_FONT_FAMILY}`;
+const OVERFLOW_ROW_LABEL_MAX_WIDTH = 140;
+// Border (1px x 2) + padding start 6 + padding end 8.
+const OVERFLOW_ROW_CHIP_FRAME_WIDTH = 16;
+// Media slot 16px + the 6px chip gap.
+const OVERFLOW_ROW_MEDIA_WIDTH = 22;
+const OVERFLOW_ROW_CHIP_GAP = 6;
+const OVERFLOW_ROW_LEADING_GAP = 8;
+
+/**
+ * A leading slot, then compact chips on one line. When every chip does not fit, the last ones
+ * collapse into one "+N" chip. The chips are measured with Pretext and the leading slot with the
+ * DOM, because the caller owns its size.
+ */
+export const MyChipOverflowRow = memo(function MyChipOverflowRow(props: MyChipOverflowRow_Props) {
+	const { items, leading } = props;
+
+	const rootRef = useRef<HTMLDivElement>(null);
+	const leadingRef = useRef<HTMLDivElement>(null);
+	// How many chips show. It starts at "all", and the layout effect lowers it before paint.
+	const [shownCount, setShownCount] = useState(items.length);
+
+	// One string, so the effect depends on a primitive. It changes when a label is added or removed.
+	const labelsKey = items.map((item) => item.label).join("\n");
+	const visibleCount = Math.min(shownCount, items.length);
+	const hiddenItems = items.slice(visibleCount);
+
+	useLayoutEffect(() => {
+		const rootElement = rootRef.current;
+		const leadingElement = leadingRef.current;
+		if (!rootElement || !leadingElement) {
+			return;
+		}
+
+		const labels = labelsKey.length > 0 ? labelsKey.split("\n") : [];
+
+		const update = () => {
+			// Skip the measurement while the row is not laid out (hidden, or the jsdom tests).
+			if (rootElement.clientWidth === 0) {
+				setShownCount(labels.length);
+				return;
+			}
+
+			const measureLabelWidth = (label: string) =>
+				Math.min(
+					measureNaturalWidth(
+						prepareWithSegments(label, OVERFLOW_ROW_FONT, { letterSpacing: 0, whiteSpace: "normal" }),
+					),
+					OVERFLOW_ROW_LABEL_MAX_WIDTH,
+				);
+			const chipWidths = labels.map(
+				(label) => measureLabelWidth(label) + OVERFLOW_ROW_CHIP_FRAME_WIDTH + OVERFLOW_ROW_MEDIA_WIDTH,
+			);
+
+			// `clientWidth` is an integer while Pretext widths are fractional. Erring small only hides
+			// one chip early.
+			const available =
+				rootElement.clientWidth - leadingElement.getBoundingClientRect().width - OVERFLOW_ROW_LEADING_GAP - 1;
+
+			// Try to show every chip, then one fewer, and so on. From the second try on, the "+N" chip
+			// takes room too. Show at least the "+N" chip when even that does not fit.
+			let count = 0;
+			for (let candidate = labels.length; candidate >= 0; candidate -= 1) {
+				let used = 0;
+				for (let index = 0; index < candidate; index += 1) {
+					used += chipWidths[index] + (index > 0 ? OVERFLOW_ROW_CHIP_GAP : 0);
+				}
+				if (candidate < labels.length) {
+					used +=
+						(candidate > 0 ? OVERFLOW_ROW_CHIP_GAP : 0) +
+						measureLabelWidth(`+${labels.length - candidate}`) +
+						OVERFLOW_ROW_CHIP_FRAME_WIDTH;
+				}
+				if (used <= available) {
+					count = candidate;
+					break;
+				}
+			}
+
+			setShownCount(count);
+		};
+
+		update();
+
+		// The row changes width with the dialog. The leading slot changes when its text changes, so
+		// watch it too. Never observe the chips: they follow the count and would re-fire on their own output.
+		const resizeObserver = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => update());
+		resizeObserver?.observe(rootElement);
+		resizeObserver?.observe(leadingElement);
+		void document.fonts?.ready.then(() => update());
+
+		return () => {
+			resizeObserver?.disconnect();
+		};
+	}, [labelsKey]);
+
+	return (
+		<div ref={rootRef} className={cn("MyChipOverflowRow" satisfies MyChipOverflowRow_ClassNames)}>
+			<div ref={leadingRef} className={cn("MyChipOverflowRow-leading" satisfies MyChipOverflowRow_ClassNames)}>
+				{leading}
+			</div>
+			<ul className={cn("MyChipOverflowRow-list" satisfies MyChipOverflowRow_ClassNames)}>
+				{items.slice(0, visibleCount).map((item) => (
+					<li key={item.id}>
+						<MyChip size="compact">
+							<MyChipMedia>{item.media}</MyChipMedia>
+							<MyChipLabel>{item.label}</MyChipLabel>
+						</MyChip>
+					</li>
+				))}
+				{hiddenItems.length > 0 ? (
+					<li>
+						<MyChip
+							size="compact"
+							title={hiddenItems.map((item) => item.label).join(", ")}
+							aria-label={`${hiddenItems.length} more: ${hiddenItems.map((item) => item.label).join(", ")}`}
+						>
+							<MyChipLabel>+{hiddenItems.length}</MyChipLabel>
+						</MyChip>
+					</li>
+				) : null}
+			</ul>
+		</div>
+	);
+});
+// #endregion overflow row

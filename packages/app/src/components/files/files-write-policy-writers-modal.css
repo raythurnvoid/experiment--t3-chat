@@ -1,0 +1,142 @@
+@layer components {
+	/* #region root */
+	.FilesWritePolicyWritersModal {
+		width: min(34rem, calc(100vw - 2rem));
+	}
+	/* #endregion root */
+
+	/* #region content */
+	.FilesWritePolicyWritersModalContent {
+		display: flex;
+		flex-direction: column;
+		gap: 16px;
+
+		/* Leave room for the menu, so it does not cover the lists on a short dialog. */
+		min-height: 320px;
+	}
+
+	.FilesWritePolicyWritersModalContent-popover {
+		display: flex;
+		flex-direction: column;
+
+		max-height: 320px;
+	}
+
+	.FilesWritePolicyWritersModalContent-popover-scrollable-area {
+		display: flex;
+		flex-direction: column;
+		min-height: 0;
+
+		.MyComboboxList {
+			min-height: 0;
+		}
+	}
+
+	.FilesWritePolicyWritersModalContent-suggestion {
+		gap: 12px;
+		min-height: 36px;
+	}
+
+	.FilesWritePolicyWritersModalContent-suggestion-hint {
+		flex: none;
+
+		font-size: 12px;
+		color: var(--color-fg-08);
+	}
+
+	.FilesWritePolicyWritersModalContent-limit,
+	.FilesWritePolicyWritersModalContent-note,
+	.FilesWritePolicyWritersModalContent-empty {
+		margin: 0;
+
+		font-size: 12px;
+		line-height: 1.4;
+		color: var(--color-fg-08);
+
+		text-wrap: pretty;
+	}
+
+	.FilesWritePolicyWritersModalContent-empty {
+		padding: 8px 12px;
+	}
+
+	.FilesWritePolicyWritersModalContent-group {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+
+		/* An empty group is a single dim line, so keep it close to its heading. */
+		.FilesWritePolicyWritersModalContent-empty {
+			padding: 0;
+		}
+	}
+
+	.FilesWritePolicyWritersModalContent-group-heading {
+		margin: 0;
+
+		font-size: 13px;
+		font-weight: 600;
+		color: var(--color-fg-11);
+	}
+
+	.FilesWritePolicyWritersModalContent-list {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+
+		margin: 0;
+		padding: 0;
+
+		list-style: none;
+	}
+
+	.FilesWritePolicyWritersModalContent-row {
+		display: flex;
+		align-items: center;
+		gap: 12px;
+
+		min-height: 40px;
+		padding: 4px 8px;
+		border: 1px solid transparent;
+		border-radius: 10px;
+
+		/* Same hover as the rows in the share dialog, so it is clear which row the button removes. */
+		&:hover {
+			border-color: var(--color-base-1-07);
+			background: var(--color-base-1-03);
+		}
+	}
+
+	.FilesWritePolicyWritersModalContent-row-icon {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		flex: none;
+
+		width: 28px;
+		height: 28px;
+
+		border: 1px solid var(--color-base-1-07);
+		border-radius: 6px;
+
+		color: var(--color-fg-09);
+
+		svg {
+			width: 16px;
+			height: 16px;
+		}
+	}
+
+	.FilesWritePolicyWritersModalContent-row-name {
+		flex: 1;
+		min-width: 0;
+
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+
+		font-size: 13px;
+		color: var(--color-fg-11);
+	}
+	/* #endregion content */
+}

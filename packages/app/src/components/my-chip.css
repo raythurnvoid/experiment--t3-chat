@@ -29,6 +29,15 @@
 		gap: 6px;
 		padding: 0 0 0 6px;
 	}
+
+	/* A chip without a remove button has no button to close its right end, so pad it. */
+	.MyChip-size-default:not(:has(.MyChipRemove)) {
+		padding-inline-end: 10px;
+	}
+
+	.MyChip-size-compact:not(:has(.MyChipRemove)) {
+		padding-inline-end: 8px;
+	}
 	/* #endregion root */
 
 	/* #region media */
@@ -160,4 +169,35 @@
 		}
 	}
 	/* #endregion row */
+
+	/* #region overflow row */
+	.MyChipOverflowRow {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+
+		min-width: 0;
+	}
+
+	.MyChipOverflowRow-list {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+
+		min-width: 0;
+		margin: 0;
+		padding: 0;
+
+		list-style: none;
+
+		& > li {
+			display: flex;
+			flex-shrink: 0;
+		}
+	}
+
+	.MyChipOverflowRow-leading {
+		flex-shrink: 0;
+	}
+	/* #endregion overflow row */
 }

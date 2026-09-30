@@ -187,11 +187,11 @@ type ManagementState = {
 	localPolicy:
 		| null
 		| { mode: "read_only" }
-		| { mode: "writer"; writer: null | { kind: "user"; userId: string; name: string } };
+		| { mode: "writer"; writers: { kind: "user"; userId: string; name: string }[]; hiddenWriterCount: number };
 	localDefault:
 		| null
 		| { mode: "read_only" }
-		| { mode: "writer"; writer: null | { kind: "user"; userId: string; name: string } };
+		| { mode: "writer"; writers: { kind: "user"; userId: string; name: string }[]; hiddenWriterCount: number };
 };
 
 const WRITABLE_POLICY: ManagementState = {
@@ -313,8 +313,8 @@ describe("FilesPropertiesModal", () => {
 		view.rerender(<FilesPropertiesModal nodeId={NODE_ID} nodeName="notes.md" nodeKind="file" onClose={() => {}} />);
 
 		expect(document.querySelector(".FilesPropertiesModalSkeleton-protection")).toBeNull();
-		expect((screen.getByRole("radio", { name: "Read-only" }) as HTMLInputElement).checked).toBe(true);
-		expect((screen.getByRole("radio", { name: "Editable" }) as HTMLInputElement).checked).toBe(false);
+		expect((screen.getByRole("radio", { name: "No one (read-only)" }) as HTMLInputElement).checked).toBe(true);
+		expect((screen.getByRole("radio", { name: "Everyone with access" }) as HTMLInputElement).checked).toBe(false);
 	});
 
 	test("enables the footer Save only after a setting was edited", () => {
@@ -411,21 +411,16 @@ describe("FilesPropertiesModalFacts", () => {
 
 describe("FilesPropertiesModalWritePolicy", () => {
 	test.each([
-		[WRITABLE_POLICY, "Editable", "You can edit this file."],
+		[WRITABLE_POLICY, "Everyone with access"],
 		[
 			{ ...WRITABLE_POLICY, canWrite: false, writeBlockedReason: "read_only", localPolicy: { mode: "read_only" } },
-			"Read-only",
-			"This file is read-only.",
+			"No one (read-only)",
 		],
-	] satisfies [ManagementState, string, string][])(
-		"shows the local choice and effective result",
-		(management, choice, description) => {
-			mockQueries({ management, entries: [], canWrite: management.canWrite });
-			renderModal();
-			expect((screen.getByRole("radio", { name: choice }) as HTMLInputElement).checked).toBe(true);
-			expect(screen.getByText(description, { exact: false })).toBeTruthy();
-		},
-	);
+	] satisfies [ManagementState, string][])("shows the saved choice", (management, choice) => {
+		mockQueries({ management, entries: [], canWrite: management.canWrite });
+		renderModal();
+		expect((screen.getByRole("radio", { name: choice }) as HTMLInputElement).checked).toBe(true);
+	});
 
 	test("saves an explicit policy and ignores a second press while saving", async () => {
 		mockQueries({ entries: [], canWrite: true });
@@ -436,7 +431,7 @@ describe("FilesPropertiesModalWritePolicy", () => {
 			}),
 		);
 		renderModal();
-		fireEvent.click(screen.getByRole("radio", { name: "Read-only" }));
+		fireEvent.click(screen.getByRole("radio", { name: "No one (read-only)" }));
 		expect(mutationMock).not.toHaveBeenCalled();
 		const save = screen.getByRole("button", { name: /^Save$/ });
 		fireEvent.click(save);
@@ -466,7 +461,7 @@ describe("FilesPropertiesModalWritePolicy", () => {
 			canWrite: false,
 		});
 		renderModal();
-		fireEvent.click(screen.getByRole("radio", { name: "Editable" }));
+		fireEvent.click(screen.getByRole("radio", { name: "Everyone with access" }));
 		fireEvent.click(screen.getByRole("button", { name: /^Save$/ }));
 		expect(mutationMock).toHaveBeenCalledWith("set_node_write_policy", {
 			membershipId: MEMBERSHIP_ID,
@@ -487,19 +482,18 @@ describe("FilesPropertiesModalWritePolicy", () => {
 			canWrite: false,
 		});
 		renderModal();
-		expect((screen.getByRole("radio", { name: "Read-only" }) as HTMLInputElement).disabled).toBe(false);
+		expect((screen.getByRole("radio", { name: "No one (read-only)" }) as HTMLInputElement).disabled).toBe(false);
 		expect(screen.queryByRole("button", { name: "Open parent policy" })).toBeNull();
 	});
 
 	test("keeps a hidden writer protected without making a write", () => {
 		mockQueries({
-			management: { ...WRITABLE_POLICY, localPolicy: { mode: "writer", writer: null } },
+			management: { ...WRITABLE_POLICY, localPolicy: { mode: "writer", writers: [], hiddenWriterCount: 1 } },
 			entries: [],
 			canWrite: true,
 		});
 		renderModal();
-		expect(screen.getByText("Only the selected writer can edit.", { exact: false })).toBeTruthy();
-		expect((screen.getByRole("radio", { name: "Selected writer" }) as HTMLInputElement).checked).toBe(true);
+		expect((screen.getByRole("radio", { name: "Custom" }) as HTMLInputElement).checked).toBe(true);
 		expect(screen.getByRole("button", { name: /^Save$/ }).hasAttribute("disabled")).toBe(true);
 		expect(mutationMock).not.toHaveBeenCalled();
 	});
@@ -508,21 +502,33 @@ describe("FilesPropertiesModalWritePolicy", () => {
 		mockQueries({
 			management: {
 				...WRITABLE_POLICY,
-				localPolicy: { mode: "writer", writer: { kind: "user", userId: "user_1", name: "Ada" } },
+				localPolicy: {
+					mode: "writer",
+					writers: [{ kind: "user", userId: "user_1", name: "Ada" }],
+					hiddenWriterCount: 0,
+				},
 			},
 			entries: [],
 			canWrite: true,
 		});
 		renderModal();
-		expect(screen.getByText("You can edit this file.", { exact: false })).toBeTruthy();
 		expect(editorHandle.options.readOnly).toBe(false);
+	});
+
+	test("opens the writers dialog for Custom and keeps Save off until somebody is chosen", async () => {
+		mockQueries({ entries: [], canWrite: true });
+		renderModal();
+		fireEvent.click(screen.getByRole("radio", { name: "Custom" }));
+		expect(await screen.findByRole("combobox", { name: "Add a person or plugin" })).toBeTruthy();
+		expect(screen.getByRole("button", { name: /^Save$/ }).hasAttribute("disabled")).toBe(true);
+		expect(mutationMock).not.toHaveBeenCalled();
 	});
 
 	test("separates policy management from content write permission", () => {
 		mockQueries({ management: { ...WRITABLE_POLICY, canManage: false }, entries: [], canWrite: true });
 		renderModal();
-		expect((screen.getByRole("radio", { name: "Read-only" }) as HTMLInputElement).disabled).toBe(true);
-		expect(screen.getByText("You cannot change this protection.", { exact: false })).toBeTruthy();
+		expect((screen.getByRole("radio", { name: "No one (read-only)" }) as HTMLInputElement).disabled).toBe(true);
+		expect(screen.getByText("You cannot change this setting.", { exact: false })).toBeTruthy();
 		expect(editorHandle.options.readOnly).toBe(false);
 	});
 
@@ -531,7 +537,7 @@ describe("FilesPropertiesModalWritePolicy", () => {
 		mutationMock.mockResolvedValue({ _nay: { message: "The policy changed in another tab" } });
 		const onClose = vi.fn();
 		renderModal({ onClose });
-		fireEvent.click(screen.getByRole("radio", { name: "Read-only" }));
+		fireEvent.click(screen.getByRole("radio", { name: "No one (read-only)" }));
 		fireEvent.click(screen.getByRole("button", { name: /^Save$/ }));
 		expect((await screen.findByRole("alert")).textContent).toBe("The policy changed in another tab");
 		expect(onClose).not.toHaveBeenCalled();

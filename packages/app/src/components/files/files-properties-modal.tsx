@@ -1,27 +1,17 @@
 import "./files-properties-modal.css";
 
 import { Editor, type EditorProps } from "@monaco-editor/react";
-import { Check, CircleHelp, X } from "lucide-react";
-import { useQueries, useQuery } from "convex/react";
+import { Check, CircleAlert, CircleHelp, Plug, User, X } from "lucide-react";
+import { useQuery } from "convex/react";
 import { editor as monaco_editor } from "monaco-editor";
-import { Fragment, memo, useEffect, useId, useMemo, useRef, useState, type RefObject } from "react";
+import { Fragment, memo, useEffect, useId, useRef, useState, type ReactNode, type RefObject } from "react";
 import { toast } from "sonner";
 
 import { MyButton } from "@/components/my-button.tsx";
+import { MyChipOverflowRow } from "@/components/my-chip.tsx";
 import { MyCheckboxButton } from "@/components/my-checkbox-button.tsx";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
 import { MyRadio } from "@/components/my-radio.tsx";
-import { ServiceAccountSelect } from "@/components/service-account-select.tsx";
-import {
-	MySelect,
-	MySelectItem,
-	MySelectLabel,
-	MySelectOpenIndicator,
-	MySelectPopover,
-	MySelectPopoverContent,
-	MySelectPopoverScrollableArea,
-	MySelectTrigger,
-} from "@/components/my-select.tsx";
 import {
 	MyModal,
 	MyModalCloseTrigger,
@@ -44,6 +34,7 @@ import {
 	files_metadata_stringify_entries_yaml,
 } from "../../../shared/files-metadata.ts";
 import { files_node_has_editable_text_content } from "../../../shared/files.ts";
+import { FilesWritePolicyWritersModal, type FilesWritePolicyWriter } from "./files-write-policy-writers-modal.tsx";
 import { users_SYSTEM_AUTHOR } from "../../../shared/users.ts";
 
 /**
@@ -224,42 +215,61 @@ const FilesPropertiesModalFacts = memo(function FilesPropertiesModalFacts(props:
 // #region write policy
 type FilesPropertiesModalWritePolicy_ClassNames =
 	| "FilesPropertiesModalWritePolicy"
+	| "FilesPropertiesModalWritePolicy-heading"
 	| "FilesPropertiesModalWritePolicy-choices"
+	| "FilesPropertiesModalWritePolicy-option"
+	| "FilesPropertiesModalWritePolicy-option-choice"
+	| "FilesPropertiesModalWritePolicy-option-text"
+	| "FilesPropertiesModalWritePolicy-option-label"
+	| "FilesPropertiesModalWritePolicy-option-description"
+	| "FilesPropertiesModalWritePolicy-option-picker"
 	| "FilesPropertiesModalWritePolicy-description"
 	| "FilesPropertiesModalWritePolicy-actions"
-	| "FilesPropertiesModalWritePolicy-error";
+	| "FilesPropertiesModalWritePolicy-error"
+	| "FilesPropertiesModalWritePolicy-confirm"
+	| "FilesPropertiesModalWritePolicy-confirm-text"
+	| "FilesPropertiesModalWritePolicy-new-items";
 
 type PolicyDraft = {
 	mode: "editable" | "read_only" | "writer";
-	writerKind: "user" | "service_account";
-	userId: app_convex_Id<"users"> | null;
-	serviceAccountId: app_convex_Id<"access_control_service_accounts"> | null;
+	writers: FilesWritePolicyWriter[];
 };
 
+/**
+ * The rule as the save calls take it: ids only, no names.
+ */
 type SavedPolicy =
 	| {
 			mode: "read_only";
 	  }
 	| {
 			mode: "writer";
-			writer:
+			writers: (
 				| { kind: "user"; userId: app_convex_Id<"users"> }
-				| { kind: "service_account"; serviceAccountId: app_convex_Id<"access_control_service_accounts"> };
+				| { kind: "service_account"; serviceAccountId: app_convex_Id<"access_control_service_accounts"> }
+			)[];
 	  }
 	| null;
 
-function policy_draft_from_saved(
-	policy: { mode: "read_only" } | { mode: "writer"; writer: unknown } | null | undefined,
-): PolicyDraft {
+/**
+ * The rule as the query returns it: names for the writers this person can see, and how many they cannot.
+ */
+type VisiblePolicy =
+	| {
+			mode: "read_only";
+	  }
+	| {
+			mode: "writer";
+			writers: FilesWritePolicyWriter[];
+			hiddenWriterCount: number;
+	  }
+	| null;
+
+function policy_draft_from_visible(policy: VisiblePolicy): PolicyDraft {
 	if (policy?.mode === "writer") {
-		return { mode: "writer", writerKind: "user", userId: null, serviceAccountId: null };
+		return { mode: "writer", writers: policy.writers };
 	}
-	return {
-		mode: policy?.mode === "read_only" ? "read_only" : "editable",
-		writerKind: "user",
-		userId: null,
-		serviceAccountId: null,
-	};
+	return { mode: policy?.mode === "read_only" ? "read_only" : "editable", writers: [] };
 }
 
 function saved_policy_from_draft(draft: PolicyDraft): SavedPolicy {
@@ -267,145 +277,93 @@ function saved_policy_from_draft(draft: PolicyDraft): SavedPolicy {
 		return { mode: "read_only" };
 	}
 	if (draft.mode === "writer") {
-		if (draft.writerKind === "user" && draft.userId) {
-			return { mode: "writer", writer: { kind: "user", userId: draft.userId } };
-		}
-		if (draft.writerKind === "service_account" && draft.serviceAccountId) {
-			return { mode: "writer", writer: { kind: "service_account", serviceAccountId: draft.serviceAccountId } };
-		}
-		return null;
+		return {
+			mode: "writer",
+			writers: draft.writers.map((writer) =>
+				writer.kind === "user"
+					? { kind: "user", userId: writer.userId }
+					: { kind: "service_account", serviceAccountId: writer.serviceAccountId },
+			),
+		};
 	}
 	return null;
 }
 
+/**
+ * Compare two rules without caring about the order of the writers.
+ */
+function policy_fingerprint(policy: SavedPolicy) {
+	if (policy?.mode === "writer") {
+		return `writer:${policy.writers.map(FilesWritePolicyWritersModal.writerKey).sort().join(",")}`;
+	}
+	return policy?.mode ?? "editable";
+}
+
 function policy_choice_label(policy: SavedPolicy) {
 	if (!policy) {
-		return "Editable";
+		return POLICY_LABELS.editable;
 	}
-	if (policy.mode === "read_only") {
-		return "Read-only";
-	}
-	return "Selected writer";
+	return policy.mode === "read_only" ? POLICY_LABELS.read_only : POLICY_LABELS.writer;
 }
 
-/**
- * Strip the display name off a queried rule so it fits the mutation validator.
- * A redacted writer (null) cannot be sent back: there is no identity to keep.
- */
-function mutation_policy_from_visible(
-	policy: { mode: "read_only" } | { mode: "writer"; writer: unknown } | null | undefined,
-): { policy: SavedPolicy; writerKnown: boolean } {
-	if (policy?.mode === "writer") {
-		const writer = policy.writer as
-			| { kind: "user"; userId: app_convex_Id<"users"> }
-			| { kind: "service_account"; serviceAccountId: app_convex_Id<"access_control_service_accounts"> }
-			| null
-			| undefined;
-		if (writer && typeof writer === "object" && "kind" in writer) {
-			return {
-				policy:
-					writer.kind === "user"
-						? { mode: "writer", writer: { kind: "user", userId: writer.userId } }
-						: { mode: "writer", writer: { kind: "service_account", serviceAccountId: writer.serviceAccountId } },
-				writerKnown: true,
-			};
-		}
-		return { policy: null, writerKnown: false };
-	}
-	return { policy: policy?.mode === "read_only" ? { mode: "read_only" } : null, writerKnown: true };
+function policy_hidden_writer_count(policy: VisiblePolicy) {
+	return policy?.mode === "writer" ? policy.hiddenWriterCount : 0;
 }
 
-type PolicyWriterPicker_Props = {
-	choice: PolicyDraft;
-	onChoice: (choice: PolicyDraft) => void;
-	canManage: boolean;
-	isRunning: boolean;
-	userIds: app_convex_Id<"users">[] | undefined;
-	users: Record<string, { displayName?: string } | Error | undefined>;
-	currentWriterName: string | null;
+type FilesPropertiesModalWriterSummary_ClassNames =
+	| "FilesPropertiesModalWriterSummary"
+	| "FilesPropertiesModalWriterSummary-note";
+
+type FilesPropertiesModalWriterSummary_Props = {
+	writers: FilesWritePolicyWriter[];
+	hiddenWriterCount: number;
+	disabled: boolean;
+	onManage: () => void;
 };
 
-const PolicyWriterPicker = memo(function PolicyWriterPicker(props: PolicyWriterPicker_Props) {
-	const { choice, onChoice, canManage, isRunning, userIds, users, currentWriterName } = props;
+/**
+ * Show who can edit as chips, and one button that opens the dialog where the writers change.
+ */
+const FilesPropertiesModalWriterSummary = memo(function FilesPropertiesModalWriterSummary(
+	props: FilesPropertiesModalWriterSummary_Props,
+) {
+	const { writers, hiddenWriterCount, disabled, onManage } = props;
+
+	const manageButton = (
+		<MyButton variant="outline" disabled={disabled} onClick={onManage}>
+			{writers.length === 0 ? "Add writers" : `Manage writers (${writers.length})`}
+		</MyButton>
+	);
 
 	return (
-		<>
-			<MySelect
-				value={choice.writerKind}
-				setValue={(value) => {
-					if (!isRunning && (value === "user" || value === "service_account")) {
-						onChoice({ ...choice, writerKind: value });
-					}
-				}}
-			>
-				<MySelectLabel>Writer type</MySelectLabel>
-				<MySelectTrigger disabled={!canManage}>
-					<MyButton variant="outline">
-						{choice.writerKind === "user" ? "Person" : "Service account"}
-						<MySelectOpenIndicator />
-					</MyButton>
-				</MySelectTrigger>
-				<MySelectPopover>
-					<MySelectPopoverContent>
-						<MySelectItem value="user">Person</MySelectItem>
-						<MySelectItem value="service_account">Service account</MySelectItem>
-					</MySelectPopoverContent>
-				</MySelectPopover>
-			</MySelect>
-			{choice.writerKind === "service_account" ? (
-				<ServiceAccountSelect
-					value={choice.serviceAccountId}
-					disabled={!canManage}
-					onChange={(serviceAccountId) => {
-						if (!isRunning) {
-							onChoice({ ...choice, serviceAccountId });
-						}
-					}}
+		<div className={"FilesPropertiesModalWriterSummary" satisfies FilesPropertiesModalWriterSummary_ClassNames}>
+			{writers.length > 0 ? (
+				<MyChipOverflowRow
+					items={writers.map((writer) => ({
+						id: FilesWritePolicyWritersModal.writerKey(writer),
+						label: writer.name,
+						media: writer.kind === "user" ? <User /> : <Plug />,
+					}))}
+					leading={manageButton}
 				/>
 			) : (
-				<MySelect
-					value={choice.userId ?? ""}
-					setValue={(value) => {
-						const userId = userIds?.find((id) => id === value);
-						if (!isRunning && userId) {
-							onChoice({ ...choice, userId });
-						}
-					}}
-				>
-					<MySelectLabel>Person</MySelectLabel>
-					<MySelectTrigger disabled={!canManage || userIds === undefined}>
-						<MyButton variant="outline">
-							{choice.userId
-								? (() => {
-										const user = users[choice.userId];
-										return user && !(user instanceof Error)
-											? (user.displayName ?? "Person")
-											: (currentWriterName ?? "Person unavailable");
-									})()
-								: "Choose a person"}
-							<MySelectOpenIndicator />
-						</MyButton>
-					</MySelectTrigger>
-					<MySelectPopover>
-						<MySelectPopoverScrollableArea>
-							<MySelectPopoverContent>
-								{(userIds ?? []).map((userId) => {
-									const user = users[userId];
-									return user && !(user instanceof Error) ? (
-										<MySelectItem key={userId} value={userId}>
-											{user.displayName ?? "Person"}
-										</MySelectItem>
-									) : null;
-								})}
-							</MySelectPopoverContent>
-						</MySelectPopoverScrollableArea>
-					</MySelectPopover>
-				</MySelect>
+				<>
+					<p
+						className={"FilesPropertiesModalWriterSummary-note" satisfies FilesPropertiesModalWriterSummary_ClassNames}
+					>
+						Nobody is chosen yet. Add at least one person or plugin.
+					</p>
+					{manageButton}
+				</>
 			)}
-			<p className={"FilesPropertiesModalWritePolicy-description" satisfies FilesPropertiesModalWritePolicy_ClassNames}>
-				Only the selected writer can edit. Each item&apos;s content has its own protection.
-			</p>
-		</>
+			{hiddenWriterCount > 0 ? (
+				<p className={"FilesPropertiesModalWriterSummary-note" satisfies FilesPropertiesModalWriterSummary_ClassNames}>
+					{hiddenWriterCount === 1
+						? "1 more writer is no longer available."
+						: `${hiddenWriterCount} more writers are no longer available.`}
+				</p>
+			) : null}
+		</div>
 	);
 });
 
@@ -415,11 +373,41 @@ type FilesPropertiesModalWritePolicy_Props = {
 	onSaveStateChange: (state: SaveState | null) => void;
 };
 
-const RADIO_MODES = [
-	["editable", "Editable"],
-	["read_only", "Read-only"],
-	["writer", "Selected writer"],
-] as const;
+const POLICY_MODES = ["editable", "read_only", "writer"] as const;
+
+const POLICY_LABELS = {
+	editable: "Everyone with access",
+	read_only: "No one (read-only)",
+	writer: "Custom",
+} satisfies Record<(typeof POLICY_MODES)[number], string>;
+
+/**
+ * Words for the three blocks: the item's own rule, and, for a folder, the rule for new items. A person
+ * sees a plugin where the code says service account, because "service account" means nothing to them.
+ */
+const POLICY_COPY = {
+	file: {
+		title: "Who can edit",
+		helper: "Choose who can change this file.",
+		editable: "Anyone with edit access can change this file.",
+		read_only: "The file can be read, but not changed. Owners and admins can unlock it.",
+		writer: "Only the people and plugins you choose can edit. This does not give them access.",
+	},
+	folder: {
+		title: "Who can change this folder",
+		helper: "Controls adding, removing, and renaming items in this folder. Each item keeps its own protection.",
+		editable: "Anyone with edit access can change this folder.",
+		read_only: "The folder can be read, but not changed. Owners and admins can unlock it.",
+		writer: "Only the people and plugins you choose can edit. This does not give them access.",
+	},
+	default: {
+		title: "Rule for new items",
+		helper: "Copied once onto each new file and subfolder. Existing items are not changed.",
+		editable: "New items can be changed by anyone with edit access.",
+		read_only: "New items start read-only.",
+		writer: "New items start with only the people and plugins you choose as editors.",
+	},
+} satisfies Record<string, { title: string; helper: string } & Record<(typeof POLICY_MODES)[number], string>>;
 
 /**
  * Edit this item's own rule and, for folders, the starting rule for new items.
@@ -430,9 +418,9 @@ const FilesPropertiesModalWritePolicy = memo(function FilesPropertiesModalWriteP
 ) {
 	const { nodeId, nodeKind, onSaveStateChange } = props;
 
-	const { membershipId, organizationId, workspaceId } = AppTenantProvider.useContext();
-	const descriptionId = `FilesPropertiesModalWritePolicy-${useId()}-description`;
-	const defaultDescriptionId = `FilesPropertiesModalWritePolicy-default-${useId()}-description`;
+	const { membershipId } = AppTenantProvider.useContext();
+	const policyGroupId = `FilesPropertiesModalWritePolicy-${useId()}`;
+	const defaultGroupId = `FilesPropertiesModalWritePolicy-default-${useId()}`;
 	const applyCancelRef = useRef<HTMLButtonElement>(null);
 	const [isRunning, setIsRunning] = useState(false);
 	const [isDefaultRunning, setIsDefaultRunning] = useState(false);
@@ -444,64 +432,28 @@ const FilesPropertiesModalWritePolicy = memo(function FilesPropertiesModalWriteP
 	const [applyConfirm, setApplyConfirm] = useState<SavedPolicy | undefined>(undefined);
 	const [draft, setDraft] = useState<PolicyDraft | null>(null);
 	const [defaultDraft, setDefaultDraft] = useState<PolicyDraft | null>(null);
+	// Which rule the writers dialog edits, or `null` while it is closed.
+	const [writersDialog, setWritersDialog] = useState<"policy" | "default" | null>(null);
 
 	const managementState = useQuery(app_convex_api.files_nodes.get_node_write_policy_management_state, {
 		membershipId,
 		nodeId,
 	});
-	const userIds = useQuery(app_convex_api.organizations.list_organization_workspace_users, {
-		organizationId,
-		workspaceId,
-	});
-	const users = useQueries(
-		useMemo(
-			() =>
-				Object.fromEntries(
-					(userIds ?? []).map((userId) => [
-						userId,
-						{
-							query: app_convex_api.users.get_anagraphic,
-							args: { userId },
-						},
-					]),
-				),
-			[userIds],
-		),
-	);
-
-	const savedPolicy = (managementState?.localPolicy ?? null) as SavedPolicy;
-	const savedDefault = (managementState?.localDefault ?? null) as SavedPolicy;
-	const choice = draft ?? policy_draft_from_saved(savedPolicy);
-	const defaultChoice = defaultDraft ?? policy_draft_from_saved(savedDefault);
+	const savedPolicy: VisiblePolicy = managementState?.localPolicy ?? null;
+	const savedDefault: VisiblePolicy = managementState?.localDefault ?? null;
+	const choice = draft ?? policy_draft_from_visible(savedPolicy);
+	const defaultChoice = defaultDraft ?? policy_draft_from_visible(savedDefault);
 	const canManage = managementState?.canManage === true;
-	const savedWriterName = (() => {
-		const writer = (managementState?.localPolicy as { writer?: { name?: string } | null } | undefined)?.writer;
-		return writer && typeof writer === "object" && "name" in writer ? (writer.name ?? null) : null;
-	})();
-	const writerSelected = choice.writerKind === "user" ? choice.userId !== null : choice.serviceAccountId !== null;
-	const defaultWriterSelected =
-		defaultChoice.writerKind === "user" ? defaultChoice.userId !== null : defaultChoice.serviceAccountId !== null;
 	const policyUnsaved =
-		draft !== null && JSON.stringify(saved_policy_from_draft(draft)) !== JSON.stringify(savedPolicy);
+		draft !== null && policy_fingerprint(saved_policy_from_draft(draft)) !== policy_fingerprint(savedPolicy);
 	const defaultUnsaved =
-		defaultDraft !== null && JSON.stringify(saved_policy_from_draft(defaultDraft)) !== JSON.stringify(savedDefault);
-	// Selected writer without a writer cannot be saved yet.
-	const policyInvalid = policyUnsaved && choice.mode === "writer" && !writerSelected;
-	const defaultInvalid = defaultUnsaved && defaultChoice.mode === "writer" && !defaultWriterSelected;
-	const applySource = mutation_policy_from_visible(savedPolicy);
-	const applyUnavailable = savedPolicy?.mode === "writer" && !applySource.writerKnown;
-	const description =
-		managementState === undefined
-			? "Loading protection…"
-			: managementState === null
-				? "Protection is unavailable."
-				: managementState.canWrite
-					? `You can edit this ${nodeKind}.`
-					: managementState.writeBlockedReason === "permission"
-						? `You don't have permission to edit this ${nodeKind}.`
-						: nodeKind === "file"
-							? "This file is read-only."
-							: "This folder is read-only. Items keep their own protection.";
+		defaultDraft !== null &&
+		policy_fingerprint(saved_policy_from_draft(defaultDraft)) !== policy_fingerprint(savedDefault);
+	// A Custom rule with nobody chosen cannot be saved yet.
+	const policyInvalid = policyUnsaved && choice.mode === "writer" && choice.writers.length === 0;
+	const defaultInvalid = defaultUnsaved && defaultChoice.mode === "writer" && defaultChoice.writers.length === 0;
+	// Bulk apply copies the saved rule. It cannot copy writers that are hidden from this person.
+	const applyUnavailable = policy_hidden_writer_count(savedPolicy) > 0;
 
 	const savePolicy = () => {
 		const writePolicy = saved_policy_from_draft(choice);
@@ -589,7 +541,7 @@ const FilesPropertiesModalWritePolicy = memo(function FilesPropertiesModalWriteP
 		// Capture the saved rule now. A rule saved elsewhere while confirming does not leak in.
 		setApplyError(null);
 		setApplyResult(null);
-		setApplyConfirm(applySource.policy);
+		setApplyConfirm(saved_policy_from_draft(policy_draft_from_visible(savedPolicy)));
 	};
 
 	const handleApplyToContents = () => {
@@ -638,74 +590,133 @@ const FilesPropertiesModalWritePolicy = memo(function FilesPropertiesModalWriteP
 		});
 	}, [policyUnsaved, defaultUnsaved, policyInvalid, defaultInvalid, save, onSaveStateChange]);
 
-	const choiceFieldset = (
+	const renderChoices = (
 		choiceValue: PolicyDraft,
 		onChoice: (choice: PolicyDraft) => void,
-		groupName: string,
-		describedBy: string,
+		groupId: string,
 		running: boolean,
 		groupKind: "policy" | "default",
-	) => (
-		<fieldset
-			className={"FilesPropertiesModalWritePolicy-choices" satisfies FilesPropertiesModalWritePolicy_ClassNames}
-			aria-describedby={describedBy}
-		>
-			{RADIO_MODES.map(([mode, label]) => (
-				<label key={mode}>
-					<MyRadio
-						name={groupName}
-						checked={choiceValue.mode === mode}
-						disabled={!canManage}
-						aria-busy={running || undefined}
-						onChange={() => {
-							if (!running) {
-								onChoice({ ...choiceValue, mode });
-								if (groupKind === "policy") {
-									setError(null);
-								} else {
-									setDefaultError(null);
+		writerPicker: ReactNode,
+	) => {
+		const copy = POLICY_COPY[groupKind === "default" ? "default" : nodeKind];
+		const headingId = `${groupId}-heading`;
+		const helperId = `${groupId}-helper`;
+
+		return (
+			<>
+				<h3
+					id={headingId}
+					className={"FilesPropertiesModalWritePolicy-heading" satisfies FilesPropertiesModalWritePolicy_ClassNames}
+				>
+					{copy.title}
+				</h3>
+				<p
+					id={helperId}
+					className={"FilesPropertiesModalWritePolicy-description" satisfies FilesPropertiesModalWritePolicy_ClassNames}
+				>
+					{copy.helper}
+					{managementState === null ? " This setting is not available for this item." : null}
+					{managementState?.canManage === false ? " You cannot change this setting." : null}
+				</p>
+				<fieldset
+					className={"FilesPropertiesModalWritePolicy-choices" satisfies FilesPropertiesModalWritePolicy_ClassNames}
+					aria-labelledby={headingId}
+					aria-describedby={helperId}
+				>
+					{POLICY_MODES.map((mode) => {
+						const labelId = `${groupId}-${mode}-label`;
+						const optionDescriptionId = `${groupId}-${mode}-description`;
+
+						return (
+							<div
+								key={mode}
+								className={
+									"FilesPropertiesModalWritePolicy-option" satisfies FilesPropertiesModalWritePolicy_ClassNames
 								}
-							}
-						}}
-					/>
-					{label}
-				</label>
-			))}
-		</fieldset>
-	);
+							>
+								<label
+									className={
+										"FilesPropertiesModalWritePolicy-option-choice" satisfies FilesPropertiesModalWritePolicy_ClassNames
+									}
+								>
+									<MyRadio
+										name={groupId}
+										checked={choiceValue.mode === mode}
+										disabled={!canManage}
+										aria-busy={running || undefined}
+										aria-labelledby={labelId}
+										aria-describedby={optionDescriptionId}
+										onChange={() => {
+											if (!running) {
+												onChoice({ ...choiceValue, mode });
+												// Choosing Custom with nobody chosen opens the dialog, so the next step is clear.
+												if (mode === "writer" && choiceValue.writers.length === 0) {
+													setWritersDialog(groupKind);
+												}
+												if (groupKind === "policy") {
+													setError(null);
+												} else {
+													setDefaultError(null);
+												}
+											}
+										}}
+									/>
+									<span
+										className={
+											"FilesPropertiesModalWritePolicy-option-text" satisfies FilesPropertiesModalWritePolicy_ClassNames
+										}
+									>
+										<span
+											id={labelId}
+											className={
+												"FilesPropertiesModalWritePolicy-option-label" satisfies FilesPropertiesModalWritePolicy_ClassNames
+											}
+										>
+											{POLICY_LABELS[mode]}
+										</span>
+										<span
+											id={optionDescriptionId}
+											className={
+												"FilesPropertiesModalWritePolicy-option-description" satisfies FilesPropertiesModalWritePolicy_ClassNames
+											}
+										>
+											{copy[mode]}
+										</span>
+									</span>
+								</label>
+								{/* Show the picker inside the Custom option, so it is clear who it belongs to. */}
+								{mode === "writer" && choiceValue.mode === "writer" ? (
+									<div
+										className={
+											"FilesPropertiesModalWritePolicy-option-picker" satisfies FilesPropertiesModalWritePolicy_ClassNames
+										}
+									>
+										{writerPicker}
+									</div>
+								) : null}
+							</div>
+						);
+					})}
+				</fieldset>
+			</>
+		);
+	};
 
 	return (
 		<div className={"FilesPropertiesModalWritePolicy" satisfies FilesPropertiesModalWritePolicy_ClassNames}>
-			<h3>{nodeKind === "folder" ? "This folder" : "Protection"}</h3>
-			{choiceFieldset(
+			{renderChoices(
 				choice,
 				(choiceValue) => setDraft(choiceValue),
-				`${descriptionId}-group`,
-				descriptionId,
+				policyGroupId,
 				isRunning,
 				"policy",
+				<FilesPropertiesModalWriterSummary
+					writers={choice.writers}
+					hiddenWriterCount={policy_hidden_writer_count(savedPolicy)}
+					disabled={!canManage || isRunning}
+					onManage={() => setWritersDialog("policy")}
+				/>,
 			)}
-			{choice.mode === "writer" ? (
-				<PolicyWriterPicker
-					choice={choice}
-					onChoice={(choiceValue) => setDraft(choiceValue)}
-					canManage={canManage}
-					isRunning={isRunning}
-					userIds={userIds ?? undefined}
-					users={users}
-					currentWriterName={savedWriterName}
-				/>
-			) : null}
-			<p
-				id={descriptionId}
-				className={"FilesPropertiesModalWritePolicy-description" satisfies FilesPropertiesModalWritePolicy_ClassNames}
-			>
-				{description}
-				{nodeKind === "folder"
-					? " Controls adding, removing, and renaming items in this folder. Each item's content has its own protection."
-					: null}{" "}
-				{managementState?.canManage === false ? "You cannot change this protection." : null}
-			</p>
 			{/* The rule itself is saved by the Save button in the dialog footer. Applying it to the contents is
 			    a separate action, so it keeps its own button here. */}
 			{nodeKind === "folder" ? (
@@ -724,35 +735,41 @@ const FilesPropertiesModalWritePolicy = memo(function FilesPropertiesModalWriteP
 				<p
 					className={"FilesPropertiesModalWritePolicy-description" satisfies FilesPropertiesModalWritePolicy_ClassNames}
 				>
-					The selected writer is unavailable, so bulk apply is off. Pick a writer with access first.
+					Some chosen writers are no longer available, so bulk apply is off. Change the writers and save first.
 				</p>
 			) : null}
+			{/* Mark this step as dangerous with a red edge, because it replaces the protection of many items. */}
 			{applyConfirm !== undefined && nodeKind === "folder" ? (
-				<div
-					className={"FilesPropertiesModalWritePolicy-description" satisfies FilesPropertiesModalWritePolicy_ClassNames}
-				>
-					<p>
-						Set all non-archived files and subfolders you can manage inside this folder to{" "}
-						{policy_choice_label(applyConfirm)}? This replaces their current protection, including selected writers.
-						New-item defaults stay unchanged.
-					</p>
-					<div
-						className={"FilesPropertiesModalWritePolicy-actions" satisfies FilesPropertiesModalWritePolicy_ClassNames}
-					>
-						<MyButton variant="outline" disabled={isApplying} onClick={handleApplyToContents}>
-							{isApplying ? "Applying…" : "Apply"}
-						</MyButton>
-						<MyButton
-							variant="ghost"
-							ref={applyCancelRef}
-							disabled={isApplying}
-							onClick={() => {
-								setApplyConfirm(undefined);
-								setApplyError(null);
-							}}
+				<div className={"FilesPropertiesModalWritePolicy-confirm" satisfies FilesPropertiesModalWritePolicy_ClassNames}>
+					<CircleAlert aria-hidden />
+					<div>
+						<p
+							className={
+								"FilesPropertiesModalWritePolicy-confirm-text" satisfies FilesPropertiesModalWritePolicy_ClassNames
+							}
 						>
-							Cancel
-						</MyButton>
+							Set all non-archived files and subfolders you can manage inside this folder to “
+							{policy_choice_label(applyConfirm)}”? This replaces their current protection, including chosen writers.
+							New-item defaults stay unchanged.
+						</p>
+						<div
+							className={"FilesPropertiesModalWritePolicy-actions" satisfies FilesPropertiesModalWritePolicy_ClassNames}
+						>
+							<MyButton variant="outline" disabled={isApplying} onClick={handleApplyToContents}>
+								{isApplying ? "Applying…" : "Apply"}
+							</MyButton>
+							<MyButton
+								variant="ghost"
+								ref={applyCancelRef}
+								disabled={isApplying}
+								onClick={() => {
+									setApplyConfirm(undefined);
+									setApplyError(null);
+								}}
+							>
+								Cancel
+							</MyButton>
+						</div>
 					</div>
 				</div>
 			) : null}
@@ -782,40 +799,22 @@ const FilesPropertiesModalWritePolicy = memo(function FilesPropertiesModalWriteP
 			) : null}
 
 			{nodeKind === "folder" ? (
-				<>
-					<h3>New items</h3>
-					{choiceFieldset(
+				<div
+					className={"FilesPropertiesModalWritePolicy-new-items" satisfies FilesPropertiesModalWritePolicy_ClassNames}
+				>
+					{renderChoices(
 						defaultChoice,
 						(choiceValue) => setDefaultDraft(choiceValue),
-						`${defaultDescriptionId}-group`,
-						defaultDescriptionId,
+						defaultGroupId,
 						isDefaultRunning,
 						"default",
+						<FilesPropertiesModalWriterSummary
+							writers={defaultChoice.writers}
+							hiddenWriterCount={policy_hidden_writer_count(savedDefault)}
+							disabled={!canManage || isDefaultRunning}
+							onManage={() => setWritersDialog("default")}
+						/>,
 					)}
-					{defaultChoice.mode === "writer" ? (
-						<PolicyWriterPicker
-							choice={defaultChoice}
-							onChoice={(choiceValue) => setDefaultDraft(choiceValue)}
-							canManage={canManage}
-							isRunning={isDefaultRunning}
-							userIds={userIds ?? undefined}
-							users={users}
-							currentWriterName={(() => {
-								const writer = (managementState?.localDefault as { writer?: { name?: string } | null } | undefined)
-									?.writer;
-								return writer && typeof writer === "object" && "name" in writer ? (writer.name ?? null) : null;
-							})()}
-						/>
-					) : null}
-					<p
-						id={defaultDescriptionId}
-						className={
-							"FilesPropertiesModalWritePolicy-description" satisfies FilesPropertiesModalWritePolicy_ClassNames
-						}
-					>
-						Copied once to new files and subfolders. Existing items keep their settings. New subfolders copy this
-						default too, but later changes do not cascade. Copies keep their source settings.
-					</p>
 					{defaultError ? (
 						<p
 							className={"FilesPropertiesModalWritePolicy-error" satisfies FilesPropertiesModalWritePolicy_ClassNames}
@@ -824,8 +823,30 @@ const FilesPropertiesModalWritePolicy = memo(function FilesPropertiesModalWriteP
 							{defaultError}
 						</p>
 					) : null}
-				</>
+				</div>
 			) : null}
+
+			<FilesWritePolicyWritersModal
+				open={writersDialog !== null}
+				setOpen={(open) => {
+					if (!open) {
+						setWritersDialog(null);
+					}
+				}}
+				title={writersDialog === "default" ? "Writers for new items" : "Writers"}
+				subtitle={POLICY_COPY[writersDialog === "default" ? "default" : nodeKind].writer}
+				writers={writersDialog === "default" ? defaultChoice.writers : choice.writers}
+				hiddenWriterCount={policy_hidden_writer_count(writersDialog === "default" ? savedDefault : savedPolicy)}
+				onWritersChange={(writers) => {
+					if (writersDialog === "default") {
+						setDefaultDraft({ ...defaultChoice, writers });
+						setDefaultError(null);
+					} else {
+						setDraft({ ...choice, writers });
+						setError(null);
+					}
+				}}
+			/>
 		</div>
 	);
 });
@@ -1774,7 +1795,7 @@ export const FilesPropertiesModal = memo(function FilesPropertiesModal(props: Fi
 
 		setSaving(true);
 
-		Promise.all(saveStates.map((saveState) => (saveState?.dirty ? saveState.save() : true)))
+		Promise.all(saveStates.map((saveState) => (saveState?.dirty ? saveState.save() : Promise.resolve(true))))
 			.then((results) => {
 				if (results.every(Boolean)) {
 					toast.success("Properties saved");

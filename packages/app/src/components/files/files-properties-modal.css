@@ -112,27 +112,81 @@
 		gap: 10px;
 	}
 
+	.FilesPropertiesModalWritePolicy-heading {
+		margin: 0;
+
+		font-size: 13px;
+		font-weight: 600;
+		letter-spacing: 0.01em;
+		color: var(--color-fg-11);
+	}
+
 	.FilesPropertiesModalWritePolicy-choices {
 		display: flex;
-		flex-wrap: wrap;
-		gap: 12px;
+		flex-direction: column;
+		gap: 8px;
+
 		margin: 0;
 		padding: 0;
+
 		border: 0;
+	}
 
-		legend {
-			margin-bottom: 8px;
-			font-size: 13px;
-			font-weight: 500;
-		}
+	/* One card per choice. The card of the checked radio gets the accent border and tint. */
+	.FilesPropertiesModalWritePolicy-option {
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
 
-		label {
-			display: flex;
-			align-items: center;
-			gap: 6px;
-			min-height: 32px;
-			font-size: 13px;
+		padding: 12px 14px;
+
+		border: 1px solid var(--color-base-1-07);
+		border-radius: 8px;
+
+		&:has(input:checked) {
+			border-color: var(--color-accent-07);
+			background: color-mix(in oklab, var(--color-accent-07) 8%, transparent);
 		}
+	}
+
+	/* The whole card is the label, so a click anywhere on it picks the choice. */
+	.FilesPropertiesModalWritePolicy-option-choice {
+		display: flex;
+		align-items: start;
+		gap: 12px;
+
+		cursor: pointer;
+
+		&:has(input:disabled) {
+			cursor: default;
+		}
+	}
+
+	.FilesPropertiesModalWritePolicy-option-text {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+
+		min-width: 0;
+	}
+
+	.FilesPropertiesModalWritePolicy-option-label {
+		font-size: 13px;
+		font-weight: 500;
+		color: var(--color-fg-11);
+	}
+
+	.FilesPropertiesModalWritePolicy-option-description {
+		font-size: 12px;
+		line-height: 1.4;
+		color: var(--color-fg-08);
+
+		text-wrap: pretty;
+	}
+
+	/* Line the pickers up with the option text, past the radio button. */
+	.FilesPropertiesModalWritePolicy-option-picker {
+		margin-inline-start: 28px;
 	}
 
 	.FilesPropertiesModalWritePolicy-description {
@@ -155,6 +209,67 @@
 
 		font-size: 13px;
 		color: var(--color-red-11);
+	}
+	/* Mark the apply step as dangerous with a red edge, so it does not read like one more option. */
+	.FilesPropertiesModalWritePolicy-confirm {
+		display: flex;
+		align-items: start;
+		gap: 12px;
+
+		padding: 12px;
+
+		border: 1px solid var(--color-red-07);
+		border-radius: 8px;
+
+		& > svg {
+			flex: none;
+
+			width: 18px;
+			height: 18px;
+
+			color: var(--color-red-10);
+		}
+	}
+
+	.FilesPropertiesModalWritePolicy-confirm-text {
+		margin: 0 0 10px;
+
+		font-size: 12px;
+		line-height: 1.45;
+		color: var(--color-fg-11);
+
+		text-wrap: pretty;
+	}
+
+	/* Split the two blocks of a folder with the same thin line as the dialog sections. */
+	.FilesPropertiesModalWritePolicy-new-items {
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
+
+		padding-top: 14px;
+
+		border-top: 1px solid var(--color-base-1-05);
+	}
+
+	.FilesPropertiesModalWriterSummary {
+		display: flex;
+		flex-direction: column;
+		align-items: start;
+		gap: 8px;
+
+		/* The chips need the full width to know how many fit. */
+		& > .MyChipOverflowRow {
+			align-self: stretch;
+		}
+	}
+
+	.FilesPropertiesModalWriterSummary-note {
+		margin: 0;
+
+		font-size: 12px;
+		line-height: 1.4;
+		color: var(--color-fg-08);
 	}
 	/* #endregion write policy */
 

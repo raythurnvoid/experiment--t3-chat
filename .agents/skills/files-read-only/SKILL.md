@@ -490,17 +490,22 @@ Delete and archive also look at visible protected descendants. The server checks
 again. Rows stay readable, selectable, searchable, and expandable. A folder that only holds protected
 children has no lock. Policy and restricted-sharing indicators stay separate.
 
-Files Properties offers Editable, Read-only, and Selected writer. Folders also have a New items
-default. There is no inherited text and no Open parent policy. The shared management state returns
-`canManage`, safe `localPolicy`, `localDefault`, and write access. A writer policy there is
+Files Properties shows three option cards under "Who can edit": Everyone with access (`editable`), No one
+(read-only) (`read_only`), and Custom (`writer`). Custom picks one or more people and plugins; the UI
+says "plugin" where the code says service account. Custom shows the chosen writers as chips and a
+"Manage writers" button. The button opens the writers dialog (`files-write-policy-writers-modal.tsx`):
+one search field, no type menu, and People and Plugins lists. The field menu opens on focus and Ctrl+Space,
+lists everyone who is not added yet, and `people:` or `plugin:` in the text narrows it. Choosing Custom
+with nobody chosen opens the dialog. The dialog only changes the draft; the footer Save writes it. Folders also have a "Rule for new items" block with
+the same cards. There is no inherited text and no Open parent policy. The shared management state
+returns `canManage`, safe `localPolicy`, `localDefault`, and write access. A writer policy there is
 `{ mode: "writer", writers, hiddenWriterCount }`: `writers` holds only the writers the caller may see,
 with names, and `hiddenWriterCount` counts the hidden or revoked ones without their ids. Apply to contents uses the saved folder policy,
 confirms first, never runs from Save, and then says the job runs in the background. Its progress and
 result show in Activity: "Updated N items so far", "Updated N items, M already set, K not allowed",
 "Stopped. N items were updated.", or "No items could be changed. K are not allowed."
 
-Status copy: a read-only file says `This file is read-only.`; a read-only folder says
-`Folder is read-only. Items keep their own protection.` Sidebar create of a protected default asks
+Status copy: the checked card is the state, so there is no separate status sentence. Sidebar create of a protected default asks
 for the name first. Cancel creates nothing. The sidebar learns the default from
 `files_nodes.get_folder_new_child_write_policy_state`, which reads only the folder's own
 `newChildWritePolicy` and returns `none`, `read_only`, or `writer` (no account names). Do not use the
