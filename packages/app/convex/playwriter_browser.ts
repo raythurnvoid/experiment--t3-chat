@@ -18,6 +18,7 @@ import {
 } from "./_generated/server.js";
 import app_schema, {
 	ai_chat_browser_source_validator,
+	ai_chat_run_fence_validator,
 	ai_chat_browser_resource_validator,
 	ai_chat_browser_result_validator,
 	browser_intent_validator,
@@ -1401,6 +1402,7 @@ export const reserve_command = internalMutation({
 		resource: remote_resource_validator,
 		toolCallId: v.string(),
 		operationHash: v.string(),
+		run: v.optional(v.union(ai_chat_run_fence_validator, v.null())),
 	},
 	returns: v_result({
 		_yay: v.object({

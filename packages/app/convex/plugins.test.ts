@@ -11861,6 +11861,7 @@ describe("plugins uninstall_version", () => {
 				updatedBy: membership.userId,
 				updatedAt: Date.now(),
 				lastMessageAt: Date.now(),
+				newestNodeId: null,
 			});
 			await test_mocks_fill_db_with.mcp_call(ctx, { ...scope, threadId });
 		});

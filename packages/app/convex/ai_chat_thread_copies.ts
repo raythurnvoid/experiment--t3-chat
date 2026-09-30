@@ -36,15 +36,11 @@ const COPY_LEASE_MS = 15 * 60 * 1000;
 const PAGE_MAX_IDS = 1000;
 const COPY_MAX_MESSAGES = 100;
 /**
- * The most message content one step reads, counted in JSON characters. A character can take 3
- * bytes, so this keeps a step well below the transaction limits.
+ * The most message content one step reads, counted in stored bytes. A reply's bytes include its
+ * steps. This keeps a step well below the transaction limits.
  */
-const STEP_MAX_CHARS = 2 * 1024 * 1024;
+const STEP_MAX_BYTES = 2 * 1024 * 1024;
 const EXPIRED_BATCH_SIZE = 50;
-
-function content_chars(message: Doc<"ai_chat_threads_messages_aisdk_5">) {
-	return JSON.stringify(message.content).length;
-}
 
 /**
  * Stop a copy and delete its target through the Delete chat drain. The drain deletes the copy doc
@@ -191,6 +187,7 @@ export const begin = internalMutation({
 			updatedAt: now,
 			starred: false,
 			copyingAt: now,
+			newestNodeId: null,
 		});
 		// Copy the creator's scratch and shells, but not transcripts or running jobs.
 		const sourceShells = await ctx.db
@@ -243,8 +240,8 @@ export type ai_chat_thread_copies_begin_Result =
 		: never;
 
 /**
- * Copy one message into the target under `parentId`, with the output owners it needs. Returns
- * the copy's id.
+ * Copy one message into the target under `parentId`, with its steps and the output owners it
+ * needs. Returns the copy's id. The copy has no run, and it never wakes an agent.
  */
 async function db_copy_message(
 	ctx: MutationCtx,
@@ -270,12 +267,39 @@ async function db_copy_message(
 		updatedAt: args.now,
 		clientGeneratedMessageId: nextId,
 		content: { ...content, id: nextId, ...(metadata ? { metadata } : {}) },
+		// A reply copied while its run streams keeps the steps its run saved so far.
+		status: args.message.status === "streaming" ? "stopped" : args.message.status,
+		runId: null,
+		version: 0,
+		wakePending: false,
+		bytes: args.message.bytes,
 	});
 	await ai_chat_outputs_db_copy_owners(ctx, {
 		sourceThreadId: args.copy.sourceThreadId,
 		targetThreadId: args.copy.targetThreadId,
 		parts: content.parts,
 	});
+
+	const steps = await ctx.db
+		.query("ai_chat_run_steps")
+		.withIndex("by_message_stepIndex", (q) => q.eq("messageId", args.message._id))
+		.collect();
+	for (const { _id, _creationTime, ...step } of steps) {
+		await ctx.db.insert("ai_chat_run_steps", {
+			...step,
+			threadId: args.copy.targetThreadId,
+			messageId: copiedId,
+			status: step.status === "tools_running" ? "partial" : step.status,
+		});
+		await ai_chat_outputs_db_copy_owners(ctx, {
+			sourceThreadId: args.copy.sourceThreadId,
+			targetThreadId: args.copy.targetThreadId,
+			parts: step.parts,
+		});
+	}
+
+	// Messages are copied root first, so the last copy is the anchor: the node the chat opens on.
+	await ctx.db.patch("ai_chat_threads", args.copy.targetThreadId, { newestNodeId: copiedId });
 	return copiedId;
 }
 
@@ -329,15 +353,15 @@ export const step = internalMutation({
 		if (copy.state.kind === "building") {
 			const messageIds: Array<Id<"ai_chat_threads_messages_aisdk_5">> = [];
 			let nextMessageId = copy.state.nextMessageId;
-			let chars = 0;
-			while (nextMessageId && messageIds.length < PAGE_MAX_IDS && chars < STEP_MAX_CHARS) {
+			let bytes = 0;
+			while (nextMessageId && messageIds.length < PAGE_MAX_IDS && bytes < STEP_MAX_BYTES) {
 				const message = await ctx.db.get("ai_chat_threads_messages_aisdk_5", nextMessageId);
 				// A message is deleted only with its chat, and the check above proved the chat exists.
 				if (!message) {
 					throw should_never_happen("Branch copy parent message missing", { copyId: copy._id, nextMessageId });
 				}
 				messageIds.push(message._id);
-				chars += content_chars(message);
+				bytes += message.bytes;
 				nextMessageId = message.parentId;
 			}
 
@@ -373,14 +397,14 @@ export const step = internalMutation({
 		}
 
 		let copied = 0;
-		let chars = 0;
-		while (index >= 0 && copied < COPY_MAX_MESSAGES && chars < STEP_MAX_CHARS) {
+		let bytes = 0;
+		while (index >= 0 && copied < COPY_MAX_MESSAGES && bytes < STEP_MAX_BYTES) {
 			const message = await ctx.db.get("ai_chat_threads_messages_aisdk_5", pageDoc.messageIds[index]!);
 			if (!message) {
 				throw should_never_happen("Branch copy message missing", { copyId: copy._id, page, index });
 			}
 			parentId = await db_copy_message(ctx, { copy, message, parentId, now });
-			chars += content_chars(message);
+			bytes += message.bytes;
 			copied += 1;
 			index -= 1;
 		}

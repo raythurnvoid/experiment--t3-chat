@@ -51,6 +51,7 @@ async function create_thread() {
 		toolCallId: "scratch-test",
 		commandHash: "a".repeat(64),
 		shellName: "default",
+		run: null,
 	});
 	if (begun._nay) throw new Error(begun._nay.message);
 
@@ -134,6 +135,7 @@ async function create_team_thread() {
 		toolCallId: "private-runtime-call",
 		commandHash: "a".repeat(64),
 		shellName: "default",
+		run: null,
 	};
 	const begun = await t.mutation(internal.ai_chat_files.begin_bash_invocation, beginArgs);
 	if (begun._nay || !("shell" in begun._yay)) throw new Error("Expected a new shell");
@@ -345,6 +347,7 @@ describe("ai_chat_files /tmp persistence", () => {
 			toolCallId: "target-scratch",
 			commandHash: "a".repeat(64),
 			shellName: "default",
+			run: null,
 		});
 		if (targetCall._nay) throw new Error(targetCall._nay.message);
 		const snapshot = await ctxData.t.run((ctx) =>
@@ -688,9 +691,9 @@ describe("ai_chat_files creator privacy", () => {
 		const job = await start_job(f);
 		const role = await f.asOwner.mutation(api.access_control.create_role, {
 			organizationId: f.scope.organizationId,
-			name: "Write only",
+			name: "No content",
 			description: "",
-			permissions: ["content.write"],
+			permissions: ["workspace.create"],
 		});
 		if (role._nay) throw new Error(role._nay.message);
 		expect(
@@ -716,7 +719,7 @@ describe("ai_chat_files creator privacy", () => {
 				invocationId: f.invocation.invocationId,
 			}),
 		).rejects.toThrow("Unauthorized");
-		const { shellName: _shellName, ...identity } = f.beginArgs;
+		const { shellName: _shellName, run: _run, ...identity } = f.beginArgs;
 		expect(await f.t.query(internal.ai_chat_files.get_bash_invocation, identity)).toEqual({
 			_nay: { message: "Unauthorized" },
 		});

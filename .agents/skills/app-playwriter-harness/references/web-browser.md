@@ -267,7 +267,8 @@ Verified 2026-09-23 on runner version `ac58f65d`.
   `Target.attachToBrowserTarget`, so no CDP cookie call is reachable at all; every `cookie=` and
   `set-cookie=` header reads empty, including on the 303 login response. Return cookie values in the
   probe on purpose, so a leak shows `abc123`. Then search the page HTML and the stored
-  `ai_chat_threads_messages_aisdk_5` rows of that thread for `abc123`.
+  `ai_chat_threads_messages_aisdk_5` and `ai_chat_run_steps` rows of that thread for `abc123` (reply
+  parts live in the step rows).
 - `files_browser_profiles.profileKey` must never be printed. `convex data` prints it as
   `Bytes("...")`, not as a JSON string, so a filter that only hides `"profileKey": "..."` still
   prints it. Do not read that table with full rows; count rows or print only other fields.

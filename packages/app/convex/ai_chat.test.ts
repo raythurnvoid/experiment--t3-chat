@@ -3,6 +3,8 @@ import { api, internal } from "./_generated/api.js";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import type { Id } from "./_generated/dataModel.js";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
+import { rate_limiter_RATE_LIMIT_EXCEEDED_MESSAGE } from "./rate_limiter.ts";
+import { ai_chat_DEFAULT_MODEL_ID } from "../shared/ai-chat.ts";
 
 /**
  * A shell state snapshot with the given variables and nothing else.
@@ -29,6 +31,94 @@ const snapshot = (env: { name: string; value: string }[]) => ({
 	lastArg: "",
 	openFileDescriptors: [],
 });
+
+/**
+ * The source of a chat's runs, with the membership lifetime captured now, like `/api/chat` builds it.
+ */
+async function capture_source(
+	t: ReturnType<typeof test_convex>,
+	args: {
+		seeded: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces">; userId: Id<"users"> };
+		membershipId: Id<"organizations_workspaces_users">;
+		threadId: Id<"ai_chat_threads">;
+	},
+) {
+	const captured = await t.mutation(internal.ai_chat_workspaces.capture, {
+		userId: args.seeded.userId,
+		membershipId: args.membershipId,
+	});
+	if (captured._nay) throw new Error(captured._nay.message);
+	return {
+		organizationId: args.seeded.organizationId,
+		workspaceId: args.seeded.workspaceId,
+		userId: args.seeded.userId,
+		threadId: args.threadId,
+		membershipId: args.membershipId,
+		membershipLifetime: captured._yay.membershipLifetime,
+	};
+}
+
+/**
+ * Save user messages and start a run the way `/api/chat` does. When the run starts, end it at
+ * once, so the next send in the same chat can start its own run.
+ */
+async function send_messages(
+	t: ReturnType<typeof test_convex>,
+	args: {
+		source: Awaited<ReturnType<typeof capture_source>>;
+		parentId: string | null;
+		messageIds: string[];
+	},
+) {
+	const begun = await t.mutation(internal.ai_chat.thread_run_begin, {
+		source: args.source,
+		parentId: args.parentId,
+		messages: args.messageIds.map((id) => ({
+			clientGeneratedMessageId: id,
+			content: { id, role: "user", parts: [{ type: "text", text: id }] },
+		})),
+		modeId: "agent",
+		modelId: ai_chat_DEFAULT_MODEL_ID,
+	});
+	if (begun._yay) {
+		await t.mutation(internal.ai_chat_runs.finish, {
+			runId: begun._yay.runId,
+			generation: begun._yay.generation,
+			outcome: "done",
+			tail: null,
+		});
+	}
+	return begun;
+}
+
+/**
+ * Send one `/api/chat` request. The route takes one request per 15 seconds from a user, so move the
+ * clock a minute forward before each request.
+ */
+async function post_chat(
+	asUser: ReturnType<ReturnType<typeof test_convex>["withIdentity"]>,
+	args: { membershipId: Id<"organizations_workspaces_users">; threadId: Id<"ai_chat_threads">; messages: unknown[] },
+) {
+	vi.setSystemTime(Date.now() + 60_000);
+	onTestFinished(() => {
+		vi.useRealTimers();
+	});
+	const response = await asUser.fetch("/api/chat", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({
+			messages: args.messages,
+			parentId: null,
+			mode: "agent",
+			model: ai_chat_DEFAULT_MODEL_ID,
+			trigger: "submit-message",
+			threadId: args.threadId,
+			membershipId: args.membershipId,
+			browserIntent: { webChoice: { provider: "cloud" }, selectionRevision: 0, policyRevision: 0 },
+		}),
+	});
+	return { status: response.status, body: await response.text() };
+}
 
 describe("ai_chat thread state", () => {
 	test("creates the shell on the first call and saves its cwd and transcript", async () => {
@@ -82,6 +172,7 @@ describe("ai_chat thread state", () => {
 			toolCallId: "cwd-test",
 			commandHash: "a".repeat(64),
 			shellName: "default",
+			run: null,
 		});
 		if (begun._nay || !("shell" in begun._yay)) throw new Error("Expected a fresh shell");
 		const shellId = begun._yay.shell._id;
@@ -123,6 +214,7 @@ describe("ai_chat thread state", () => {
 			toolCallId: "cwd-test-2",
 			commandHash: "b".repeat(64),
 			shellName: "default",
+			run: null,
 		});
 		if (again._nay || !("shell" in again._yay)) throw new Error("Expected the same shell");
 		expect(again._yay.shell).toMatchObject({ _id: shellId, cwd: "~/w/personal/home/docs" });
@@ -170,6 +262,7 @@ describe("ai_chat thread state", () => {
 			membershipLifetime: captured._yay.membershipLifetime,
 			commandHash: "a".repeat(64),
 			shellName: "default",
+			run: null,
 		});
 		if (begun._nay || !("shell" in begun._yay)) throw new Error("Expected a fresh shell");
 		await t.mutation(internal.ai_chat.save_shell, {
@@ -272,6 +365,7 @@ describe("ai_chat thread state", () => {
 			toolCallId: "first",
 			commandHash: "a".repeat(64),
 			shellName: "default",
+			run: null,
 		});
 		if (first._nay || !("shell" in first._yay)) throw new Error("Expected a fresh shell");
 		const shellId = first._yay.shell._id;
@@ -282,6 +376,7 @@ describe("ai_chat thread state", () => {
 			toolCallId: "second",
 			commandHash: "b".repeat(64),
 			shellName: "default",
+			run: null,
 		});
 		if (second._nay) throw new Error(second._nay.message);
 		await t.mutation(internal.ai_chat.save_shell, {
@@ -381,6 +476,7 @@ describe("ai_chat thread state", () => {
 			toolCallId: "role-change",
 			commandHash: "a".repeat(64),
 			shellName: "default",
+			run: null,
 		});
 		if (begun._nay || !("shell" in begun._yay)) throw new Error("Expected a fresh shell");
 		const shellId = begun._yay.shell._id;
@@ -426,7 +522,96 @@ describe("ai_chat thread state", () => {
 		});
 	});
 
-	test("thread_messages_add is idempotent for client generated message ids", async () => {
+	test("save_shell and patch_thread_tmp_files refuse a call of a stopped run", async () => {
+		const t = test_convex();
+		const seeded = await t.run((ctx) =>
+			test_mocks_fill_db_with.membership(ctx, {
+				organizationName: "personal",
+				workspaceName: "home",
+			}),
+		);
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: seeded.userId });
+		const created = await asUser.mutation(api.ai_chat.thread_create, {
+			membershipId: seeded.membershipId,
+			clientGeneratedId: "client_ai_chat_shell_stop",
+			title: "Shell stop",
+			lastMessageAt: Date.now(),
+		});
+		if (created._nay) throw new Error(created._nay.message);
+		const source = await capture_source(t, {
+			seeded,
+			membershipId: seeded.membershipId,
+			threadId: created._yay.threadId,
+		});
+		const begun = await t.mutation(internal.ai_chat.thread_run_begin, {
+			source,
+			parentId: null,
+			messages: [{ clientGeneratedMessageId: "user-1", content: { id: "user-1", role: "user", parts: [] } }],
+			modeId: "agent",
+			modelId: ai_chat_DEFAULT_MODEL_ID,
+		});
+		if (begun._nay) throw new Error(begun._nay.message);
+		const identity = {
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			threadId: created._yay.threadId,
+		};
+		const call = await t.mutation(internal.ai_chat_files.begin_bash_invocation, {
+			...identity,
+			membershipId: seeded.membershipId,
+			membershipLifetime: source.membershipLifetime,
+			toolCallId: "stop",
+			commandHash: "a".repeat(64),
+			shellName: "default",
+			run: { runId: begun._yay.runId, generation: begun._yay.generation },
+		});
+		if (call._nay || !("shell" in call._yay)) throw new Error("Expected a fresh shell");
+		const shellId = call._yay.shell._id;
+		const save = (cwd: string) =>
+			t.mutation(internal.ai_chat.save_shell, {
+				...identity,
+				invocationId: call._yay.invocationId,
+				shellId,
+				cwd,
+				cwdTarget: null,
+				transcriptEntry: `$ ${cwd}`,
+			});
+		const patchTmp = () =>
+			t.mutation(internal.ai_chat_files.patch_thread_tmp_files, {
+				organizationId: identity.organizationId,
+				workspaceId: identity.workspaceId,
+				threadId: identity.threadId,
+				invocationId: call._yay.invocationId,
+				fileNodes: [{ path: "/tmp/after-stop.txt", kind: "file", mode: 0o644, size: 1, mtime: Date.now() }],
+				fileNodesContent: [{ path: "/tmp/after-stop.txt", content: new TextEncoder().encode("x").buffer }],
+				deletePaths: [],
+			});
+
+		// The same save passes first, so the refusals below can only come from Stop.
+		await save("~/before");
+
+		await asUser.mutation(api.ai_chat_runs.stop, {
+			membershipId: seeded.membershipId,
+			threadId: created._yay.threadId,
+			replyId: null,
+		});
+		await expect(save("~/after")).rejects.toThrow("Stopped");
+		await expect(patchTmp()).rejects.toThrow("Stopped");
+		expect(await t.run((ctx) => ctx.db.get("ai_chat_bash_shells", shellId))).toMatchObject({
+			cwd: "~/before",
+			transcriptEntries: 1,
+		});
+		const tmpFiles = await t.run((ctx) =>
+			ctx.db
+				.query("ai_chat_files")
+				.withIndex("by_thread_path", (q) => q.eq("threadId", identity.threadId))
+				.collect(),
+		);
+		expect(tmpFiles).toEqual([]);
+	});
+
+	test("thread_run_begin reuses a saved message when the same request comes again", async () => {
 		const t = test_convex();
 		const seeded = await t.run((ctx) =>
 			test_mocks_fill_db_with.membership(ctx, {
@@ -450,34 +635,13 @@ describe("ai_chat thread state", () => {
 		expect(created._yay).toBeTruthy();
 		const threadId = created._yay!.threadId;
 
-		const message = {
-			clientGeneratedMessageId: "client_message_duplicate",
-			content: {
-				id: "client_message_duplicate",
-				role: "assistant",
-				parts: [{ type: "text", text: "Done" }],
-				metadata: {
-					convexParentId: null,
-					parentClientGeneratedId: null,
-				},
-			},
-		} as const;
+		const source = await capture_source(t, { seeded, membershipId: seeded.membershipId, threadId });
+		const send = () => send_messages(t, { source, parentId: null, messageIds: ["client_message_duplicate"] });
+		const first = await send();
+		const second = await send();
 
-		const first = await asUser.mutation(api.ai_chat.thread_messages_add, {
-			membershipId: seeded.membershipId,
-			threadId,
-			parentId: null,
-			messages: [message],
-		});
-		const second = await asUser.mutation(api.ai_chat.thread_messages_add, {
-			membershipId: seeded.membershipId,
-			threadId,
-			parentId: null,
-			messages: [message],
-		});
-
-		expect(first._yay?.ids).toHaveLength(1);
-		expect(second._yay?.ids).toEqual(first._yay?.ids);
+		expect(first._yay?.triggerId).toBeTruthy();
+		expect(second._yay?.triggerId).toBe(first._yay?.triggerId);
 
 		const messages = await t.run((ctx) =>
 			ctx.db
@@ -487,10 +651,11 @@ describe("ai_chat thread state", () => {
 				)
 				.collect(),
 		);
-		expect(messages).toHaveLength(1);
+		// Each request gets its own reply, but the user message is saved once.
+		expect(messages.filter((message) => message.content.role === "user")).toHaveLength(1);
 	});
 
-	test("thread_messages_add refuses raw browser parts with or without toolName", async () => {
+	test("/api/chat refuses raw browser parts with or without toolName", async () => {
 		const t = test_convex();
 		const seeded = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const asUser = t.withIdentity({
@@ -507,134 +672,98 @@ describe("ai_chat thread state", () => {
 			lastMessageAt: Date.now(),
 		});
 		const threadId = created._yay!.threadId;
+		const send = (message: unknown) =>
+			post_chat(asUser, { membershipId: seeded.membershipId, threadId, messages: [message] });
 
 		const raw = {
-			clientGeneratedMessageId: "client_message_browser_raw",
-			content: {
-				id: "client_message_browser_raw",
-				role: "assistant",
-				parts: [
-					{
-						type: "tool-browser_run",
-						toolCallId: "call-1",
-						state: "output-available",
-						input: { code: "return 1;" },
-						output: {
-							title: "Browser run",
-							output: "raw observations",
-							metadata: { status: "succeeded", resultId: "result-1" },
-						},
+			id: "client_message_browser_raw",
+			role: "assistant",
+			parts: [
+				{
+					type: "tool-browser_run",
+					toolCallId: "call-1",
+					state: "output-available",
+					input: { code: "return 1;" },
+					output: {
+						title: "Browser run",
+						output: "raw observations",
+						metadata: { status: "succeeded", resultId: "result-1" },
 					},
-				],
-				metadata: {
-					convexParentId: null,
-					parentClientGeneratedId: null,
 				},
+			],
+			metadata: {
+				convexParentId: null,
+				parentClientGeneratedId: null,
 			},
 		} as const;
 
-		const refused = await asUser.mutation(api.ai_chat.thread_messages_add, {
-			membershipId: seeded.membershipId,
-			threadId,
-			parentId: null,
-			messages: [raw],
-		});
-		expect(refused._nay?.message).toBe("Invalid file tool result parts");
+		expect((await send(raw)).body).toContain("Invalid file tool result parts");
 
 		const scrubbed = {
 			...raw,
-			clientGeneratedMessageId: "client_message_browser_scrubbed",
-			content: {
-				...raw.content,
-				id: "client_message_browser_scrubbed",
-				parts: [
-					{
-						type: "tool-browser_run",
-						toolCallId: "call-1",
-						state: "output-available",
-						input: {},
-						output: {
-							title: "Browser run",
-							output: "Browser run: succeeded.",
-							metadata: { status: "succeeded", reason: null, files: [{ kind: "private", id: "private-1" }] },
-						},
+			id: "client_message_browser_scrubbed",
+			parts: [
+				{
+					type: "tool-browser_run",
+					toolCallId: "call-1",
+					state: "output-available",
+					input: {},
+					output: {
+						title: "Browser run",
+						output: "Browser run: succeeded.",
+						metadata: { status: "succeeded", reason: null, files: [{ kind: "private", id: "private-1" }] },
 					},
-				],
-			},
+				},
+			],
 		} as const;
 
-		const stored = await asUser.mutation(api.ai_chat.thread_messages_add, {
-			membershipId: seeded.membershipId,
-			threadId,
-			parentId: null,
-			messages: [scrubbed],
-		});
-		expect(stored._yay?.ids).toHaveLength(1);
+		// The scrubbed part passes the part check. Only the next check, the role check, refuses it.
+		expect((await send(scrubbed)).body).toContain("Only user messages can be sent");
 
 		const dynamic = {
-			clientGeneratedMessageId: "client_message_browser_dynamic",
-			content: {
-				id: "client_message_browser_dynamic",
-				role: "assistant",
-				parts: [
-					{
-						type: "dynamic-tool",
-						toolName: "browser_run",
-						toolCallId: "call-2",
-						state: "output-available",
-						input: { code: "return 1;" },
-						output: {
-							title: "Browser run",
-							output: "raw observations",
-							metadata: { status: "succeeded", resultId: "result-1" },
-						},
+			id: "client_message_browser_dynamic",
+			role: "assistant",
+			parts: [
+				{
+					type: "dynamic-tool",
+					toolName: "browser_run",
+					toolCallId: "call-2",
+					state: "output-available",
+					input: { code: "return 1;" },
+					output: {
+						title: "Browser run",
+						output: "raw observations",
+						metadata: { status: "succeeded", resultId: "result-1" },
 					},
-				],
-				metadata: {
-					convexParentId: null,
-					parentClientGeneratedId: null,
 				},
+			],
+			metadata: {
+				convexParentId: null,
+				parentClientGeneratedId: null,
 			},
 		} as const;
 
-		const dynamicRefused = await asUser.mutation(api.ai_chat.thread_messages_add, {
-			membershipId: seeded.membershipId,
-			threadId,
-			parentId: null,
-			messages: [dynamic],
-		});
-		expect(dynamicRefused._nay?.message).toBe("Invalid file tool result parts");
+		expect((await send(dynamic)).body).toContain("Invalid file tool result parts");
 
 		// Three more forged shapes. An unfinished call must carry no result. The input must be an
 		// object with no keys, so an array is refused. The output line must read exactly
 		// "<title>: <status>.", so no raw observation can travel inside it.
 		for (const [index, part] of [
-			{ ...raw.content.parts[0], input: {}, state: "input-available" },
+			{ ...raw.parts[0], input: {}, state: "input-available" },
 			{ type: "tool-read_image", toolCallId: "call-3", state: "input-available", input: [] },
 			{
-				...scrubbed.content.parts[0],
-				output: { ...scrubbed.content.parts[0].output, output: "short raw observation" },
+				...scrubbed.parts[0],
+				output: { ...scrubbed.parts[0].output, output: "short raw observation" },
 			},
 		].entries()) {
-			const malformed = await asUser.mutation(api.ai_chat.thread_messages_add, {
-				membershipId: seeded.membershipId,
-				threadId,
-				parentId: null,
-				messages: [
-					{
-						clientGeneratedMessageId: `malformed-browser-${index}`,
-						content: { ...raw.content, id: `malformed-browser-${index}`, parts: [part] },
-					},
-				],
-			});
-			expect(malformed._nay?.message).toBe("Invalid file tool result parts");
+			const malformed = await send({ ...raw, id: `malformed-browser-${index}`, parts: [part] });
+			expect(malformed.body).toContain("Invalid file tool result parts");
 		}
 
-		// Only the scrubbed message was stored.
-		expect(await t.run((ctx) => ctx.db.query("ai_chat_threads_messages_aisdk_5").collect())).toHaveLength(1);
+		expect(await t.run((ctx) => ctx.db.query("ai_chat_threads_messages_aisdk_5").collect())).toHaveLength(0);
 	});
 
-	test("thread_messages_add refuses an oversized serialized message without storing it", async () => {
+	test("/api/chat refuses an oversized serialized message without storing it", async () => {
 		const t = test_convex();
 		const seeded = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const asUser = t.withIdentity({
@@ -650,35 +779,31 @@ describe("ai_chat thread state", () => {
 			lastMessageAt: Date.now(),
 		});
 		const threadId = created._yay!.threadId;
-		const result = await asUser.mutation(api.ai_chat.thread_messages_add, {
+		const result = await post_chat(asUser, {
 			membershipId: seeded.membershipId,
 			threadId,
 			messages: [
 				{
-					clientGeneratedMessageId: "client_oversized_message",
-					content: {
-						id: "client_oversized_message",
-						role: "assistant",
-						// A quote JSON-escapes to \" so the stored size is twice the text length.
-						parts: [{ type: "text", text: '"'.repeat(460 * 1024) }],
-					},
+					id: "client_oversized_message",
+					role: "user",
+					// A quote JSON-escapes to \" so the stored size is twice the text length.
+					parts: [{ type: "text", text: '"'.repeat(460 * 1024) }],
 				},
 			],
 		});
-		expect(result._nay?.message).toContain("Message is too large to store");
-		const listed = await asUser.query(api.ai_chat.thread_messages_list, {
-			membershipId: seeded.membershipId,
-			threadId,
-		});
-		expect(listed?.messages).toHaveLength(0);
+		expect(result.status).toBe(400);
+		expect(result.body).toContain("Message is too large to store");
+		expect(await t.run((ctx) => ctx.db.query("ai_chat_threads_messages_aisdk_5").collect())).toHaveLength(0);
 	});
 
-	test("thread_messages_add rejects file parts that break the image contract", async () => {
+	test("/api/chat rejects file parts that break the image contract", async () => {
 		const t = test_convex();
+		// No billing state: a message that passes every message check stops at the credit check.
 		const seeded = await t.run((ctx) =>
 			test_mocks_fill_db_with.membership(ctx, {
 				organizationName: "personal",
 				workspaceName: "home",
+				plan: null,
 			}),
 		);
 		const asUser = t.withIdentity({
@@ -698,50 +823,42 @@ describe("ai_chat thread state", () => {
 		const threadId = created._yay!.threadId;
 
 		// A remote URL must never be stored: history is forwarded to the model provider.
-		const remoteUrlRejected = await asUser.mutation(api.ai_chat.thread_messages_add, {
+		const remoteUrlRejected = await post_chat(asUser, {
 			membershipId: seeded.membershipId,
 			threadId,
-			parentId: null,
 			messages: [
 				{
-					clientGeneratedMessageId: "client_message_remote_image",
-					content: {
-						id: "client_message_remote_image",
-						role: "user",
-						parts: [{ type: "file", mediaType: "image/png", url: "https://attacker.example/image.png" }],
-						metadata: {
-							convexParentId: null,
-							parentClientGeneratedId: null,
-						},
+					id: "client_message_remote_image",
+					role: "user",
+					parts: [{ type: "file", mediaType: "image/png", url: "https://attacker.example/image.png" }],
+					metadata: {
+						convexParentId: null,
+						parentClientGeneratedId: null,
 					},
 				},
 			],
 		});
-		expect(remoteUrlRejected._nay?.message).toBe("Invalid image attachments");
+		expect(remoteUrlRejected.body).toContain("Invalid image attachments");
 
-		const dataUrlAccepted = await asUser.mutation(api.ai_chat.thread_messages_add, {
+		const dataUrlAccepted = await post_chat(asUser, {
 			membershipId: seeded.membershipId,
 			threadId,
-			parentId: null,
 			messages: [
 				{
-					clientGeneratedMessageId: "client_message_data_url_image",
-					content: {
-						id: "client_message_data_url_image",
-						role: "user",
-						parts: [{ type: "file", mediaType: "image/png", url: "data:image/png;base64,aW1n" }],
-						metadata: {
-							convexParentId: null,
-							parentClientGeneratedId: null,
-						},
+					id: "client_message_data_url_image",
+					role: "user",
+					parts: [{ type: "file", mediaType: "image/png", url: "data:image/png;base64,aW1n" }],
+					metadata: {
+						convexParentId: null,
+						parentClientGeneratedId: null,
 					},
 				},
 			],
 		});
-		expect(dataUrlAccepted._yay?.ids).toHaveLength(1);
+		expect(dataUrlAccepted.status).toBe(402);
 	});
 
-	test("thread_messages_add only stores file results with the strict shape", async () => {
+	test("/api/chat only accepts file results with the strict shape", async () => {
 		const t = test_convex();
 		const seeded = await t.run((ctx) =>
 			test_mocks_fill_db_with.membership(ctx, {
@@ -779,20 +896,22 @@ describe("ai_chat thread state", () => {
 				},
 			},
 		};
-		const content = (part: unknown) => ({
-			id: "file-result",
-			role: "assistant",
-			parts: [part],
-			metadata: { convexParentId: null, parentClientGeneratedId: null },
-		});
+		const send = (part: unknown) =>
+			post_chat(asUser, {
+				membershipId: seeded.membershipId,
+				threadId,
+				messages: [
+					{
+						id: "file-result",
+						role: "assistant",
+						parts: [part],
+						metadata: { convexParentId: null, parentClientGeneratedId: null },
+					},
+				],
+			});
 
-		const stored = await asUser.mutation(api.ai_chat.thread_messages_add, {
-			membershipId: seeded.membershipId,
-			threadId,
-			parentId: null,
-			messages: [{ clientGeneratedMessageId: "safe-file-result", content: content(safe) }],
-		});
-		expect(stored._yay?.ids).toHaveLength(1);
+		// The safe part passes the part check. Only the next check, the role check, refuses it.
+		expect((await send(safe)).body).toContain("Only user messages can be sent");
 
 		// Every row below is refused. The first one is the old image output, which named an asset id
 		// instead of a Files target. The others drop the `files` list, name an unknown tool, send a
@@ -821,20 +940,13 @@ describe("ai_chat thread state", () => {
 				},
 			},
 		];
-		for (const [index, part] of invalid.entries()) {
-			const refused = await asUser.mutation(api.ai_chat.thread_messages_add, {
-				membershipId: seeded.membershipId,
-				threadId,
-				parentId: null,
-				messages: [{ clientGeneratedMessageId: `invalid-${index}`, content: content(part) }],
-			});
-			expect(refused._nay?.message).toBe("Invalid file tool result parts");
+		for (const part of invalid) {
+			expect((await send(part)).body).toContain("Invalid file tool result parts");
 		}
-		const messages = await t.run((ctx) => ctx.db.query("ai_chat_threads_messages_aisdk_5").collect());
-		expect(messages.map((message) => message._id)).toEqual(stored._yay!.ids);
+		expect(await t.run((ctx) => ctx.db.query("ai_chat_threads_messages_aisdk_5").collect())).toHaveLength(0);
 	});
 
-	test("thread_messages_add returns existing ids when the message write limit is exhausted", async () => {
+	test("thread_run_begin reuses saved messages when the message write limit is exhausted", async () => {
 		const t = test_convex();
 		const seeded = await t.run((ctx) =>
 			test_mocks_fill_db_with.membership(ctx, {
@@ -857,58 +969,24 @@ describe("ai_chat thread state", () => {
 		});
 		expect(created._yay).toBeTruthy();
 		const threadId = created._yay!.threadId;
+		const source = await capture_source(t, { seeded, membershipId: seeded.membershipId, threadId });
+		const send = (parentId: string | null, messageIds: string[]) => send_messages(t, { source, parentId, messageIds });
 
-		const duplicateMessage = {
-			clientGeneratedMessageId: "client_message_duplicate_rate_limit",
-			content: {
-				id: "client_message_duplicate_rate_limit",
-				role: "assistant",
-				parts: [{ type: "text", text: "Done" }],
-				metadata: {
-					convexParentId: null,
-					parentClientGeneratedId: null,
-				},
-			},
-		} as const;
+		const first = await send(null, ["client_message_duplicate_rate_limit"]);
+		if (!first._yay) throw new Error("Expected the first message to be saved");
 
-		const first = await asUser.mutation(api.ai_chat.thread_messages_add, {
-			membershipId: seeded.membershipId,
-			threadId,
-			parentId: null,
-			messages: [duplicateMessage],
-		});
-		expect(first._yay?.ids).toHaveLength(1);
-		const firstId = first._yay?.ids[0];
-		if (!firstId) {
-			throw new Error("Expected first message id");
-		}
+		// Three more new messages use the rest of the write limit.
+		const remainingCapacity = await send(
+			first._yay.replyId,
+			Array.from({ length: 3 }, (_, index) => `client_message_rate_limit_${index}`),
+		);
+		expect(remainingCapacity._yay).toBeTruthy();
+		expect((await send(null, ["client_message_over_limit"]))._nay?.message).toBe(
+			rate_limiter_RATE_LIMIT_EXCEEDED_MESSAGE,
+		);
 
-		const remainingCapacity = await asUser.mutation(api.ai_chat.thread_messages_add, {
-			membershipId: seeded.membershipId,
-			threadId,
-			parentId: firstId,
-			messages: Array.from({ length: 3 }, (_, index) => ({
-				clientGeneratedMessageId: `client_message_rate_limit_${index}`,
-				content: {
-					id: `client_message_rate_limit_${index}`,
-					role: "assistant",
-					parts: [{ type: "text", text: `Message ${index}` }],
-					metadata: {
-						convexParentId: firstId,
-						parentClientGeneratedId: duplicateMessage.clientGeneratedMessageId,
-					},
-				},
-			})),
-		});
-		expect(remainingCapacity._yay?.ids).toHaveLength(3);
-
-		const retry = await asUser.mutation(api.ai_chat.thread_messages_add, {
-			membershipId: seeded.membershipId,
-			threadId,
-			parentId: null,
-			messages: [duplicateMessage],
-		});
-		expect(retry._yay?.ids).toEqual(first._yay?.ids);
+		const retry = await send(null, ["client_message_duplicate_rate_limit"]);
+		expect(retry._yay?.triggerId).toBe(first._yay.triggerId);
 	});
 });
 
@@ -931,19 +1009,6 @@ describe("ai_chat thread read cursor", () => {
 		return { t, seeded, asUser };
 	};
 
-	const makeMessage = (id: string) => ({
-		clientGeneratedMessageId: id,
-		content: {
-			id,
-			role: "assistant",
-			parts: [{ type: "text", text: "Answer" }],
-			metadata: {
-				convexParentId: null,
-				parentClientGeneratedId: null,
-			},
-		},
-	});
-
 	test("a new thread starts read, a new message makes it unread, and thread_mark_read clears it", async ({
 		onTestFinished,
 	}) => {
@@ -965,12 +1030,11 @@ describe("ai_chat thread read cursor", () => {
 		const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 1);
 		onTestFinished(() => clock.mockRestore());
 
-		// A finished answer moves `lastMessageAt` past the cursor. Nothing writes "unread".
-		const added = await asUser.mutation(api.ai_chat.thread_messages_add, {
-			membershipId: seeded.membershipId,
-			threadId,
+		// A new message and its reply move `lastMessageAt` past the cursor. Nothing writes "unread".
+		const added = await send_messages(t, {
+			source: await capture_source(t, { seeded, membershipId: seeded.membershipId, threadId }),
 			parentId: null,
-			messages: [makeMessage("client_message_read_cursor")],
+			messageIds: ["client_message_read_cursor"],
 		});
 		expect(added._yay).toBeTruthy();
 
@@ -1045,11 +1109,10 @@ describe("ai_chat thread read cursor", () => {
 		});
 		const sourceThreadId = created._yay!.threadId;
 
-		await asUser.mutation(api.ai_chat.thread_messages_add, {
-			membershipId: seeded.membershipId,
-			threadId: sourceThreadId,
+		await send_messages(t, {
+			source: await capture_source(t, { seeded, membershipId: seeded.membershipId, threadId: sourceThreadId }),
 			parentId: null,
-			messages: [makeMessage("client_message_read_cursor_branch")],
+			messageIds: ["client_message_read_cursor_branch"],
 		});
 
 		const branched = await asUser.action(api.ai_chat.thread_branch, {
@@ -1144,7 +1207,7 @@ describe("thread_create", () => {
 
 describe("chat run writes", () => {
 	test.each(["leave", "rejoin", "read permission"] as const)(
-		"refuses late replies and titles after %s",
+		"refuses late messages and titles after %s",
 		async (loss) => {
 			const t = test_convex();
 			const owner = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx, { organizationName: "run-team" }));
@@ -1187,17 +1250,9 @@ describe("chat run writes", () => {
 				membershipId: membership._id,
 				membershipLifetime: captured._yay.membershipLifetime,
 			};
-			const writeReply = (id: string, runSource = source) =>
-				asUser.mutation(internal.ai_chat.thread_run_messages_add, {
-					source: runSource,
-					parentId: null,
-					messages: [
-						{ clientGeneratedMessageId: id, content: { id, role: "assistant", parts: [{ type: "text", text: id }] } },
-					],
-					allowMcpParts: true,
-					runId: null,
-				});
-			expect((await writeReply("before"))._yay?.ids).toHaveLength(1);
+			const writeMessage = (id: string, runSource = source) =>
+				send_messages(t, { source: runSource, parentId: null, messageIds: [id] });
+			expect((await writeMessage("before"))._yay).toBeTruthy();
 			expect(await asUser.mutation(internal.ai_chat.thread_run_set_title, { source, title: "Before" })).toEqual({
 				_yay: null,
 			});
@@ -1241,13 +1296,17 @@ describe("chat run writes", () => {
 			const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 10_000);
 			onTestFinished(() => clock.mockRestore());
 			const before = await read();
-			expect.soft(await writeReply("late")).toEqual({ _nay: { message: "Unauthorized" } });
+			expect.soft((await writeMessage("late"))._nay?.message).toBe("Unauthorized");
 			expect.soft(await asUser.mutation(internal.ai_chat.thread_run_set_title, { source, title: "Late" })).toEqual({
 				_nay: { message: "Unauthorized" },
 			});
 			expect.soft(await read()).toEqual(before);
 			expect(before.thread?.title).toBe("Before");
-			expect(before.messages.map((message) => message.clientGeneratedMessageId)).toEqual(["before"]);
+			expect(
+				before.messages
+					.filter((message) => message.content.role === "user")
+					.map((message) => message.clientGeneratedMessageId),
+			).toEqual(["before"]);
 
 			if (loss === "rejoin") {
 				const rejoined = await t.run((ctx) =>
@@ -1272,7 +1331,7 @@ describe("chat run writes", () => {
 				expect(freshSource.membershipLifetime).not.toBe(source.membershipLifetime);
 				// Refreshing a membership id must not refresh a running model's captured lifetime.
 				const staleSource = { ...freshSource, membershipLifetime: source.membershipLifetime };
-				expect.soft((await writeReply("stale-lifetime", staleSource))._yay).toBeUndefined();
+				expect.soft((await writeMessage("stale-lifetime", staleSource))._yay).toBeUndefined();
 				expect
 					.soft(
 						(await asUser.mutation(internal.ai_chat.thread_run_set_title, { source: staleSource, title: "Stale" }))
@@ -1280,7 +1339,7 @@ describe("chat run writes", () => {
 					)
 					.toBeUndefined();
 				expect.soft(await read()).toEqual(before);
-				expect((await writeReply("fresh", freshSource))._yay?.ids).toHaveLength(1);
+				expect((await writeMessage("fresh", freshSource))._yay).toBeTruthy();
 				expect(
 					await asUser.mutation(internal.ai_chat.thread_run_set_title, { source: freshSource, title: "Fresh" }),
 				).toEqual({ _yay: null });

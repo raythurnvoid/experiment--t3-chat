@@ -528,6 +528,7 @@ async function data_deletion_test_seed_workspace_content_bulk(
 			updatedBy: args.userId,
 			updatedAt: Date.now(),
 			lastMessageAt: Date.now(),
+			newestNodeId: null,
 		});
 		const [shellId, aiFileNodeId] = await Promise.all([
 			ctx.db.insert("ai_chat_bash_shells", {
@@ -581,6 +582,11 @@ async function data_deletion_test_seed_workspace_content_bulk(
 				content: {},
 				createdBy: args.userId,
 				updatedAt: Date.now(),
+				status: "done",
+				runId: null,
+				version: 0,
+				wakePending: false,
+				bytes: 0,
 			}),
 			ctx.db.insert("ai_chat_files_content", {
 				organizationId: args.organizationId,
@@ -2695,6 +2701,7 @@ describe("review: account event producer during workspace purge", () => {
 					updatedBy: user.userId,
 					updatedAt: Date.now(),
 					lastMessageAt: Date.now(),
+					newestNodeId: null,
 				});
 			});
 			await t.mutation(internal.data_deletion.init_user_deletion, { userId: user.userId });

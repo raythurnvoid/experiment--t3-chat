@@ -203,6 +203,11 @@ export type ai_chat_UiDataParts = {
 	 * Persisted, not transient: a reload shows it too. The model never sees data parts.
 	 */
 	"mcp-auth-needed": ai_chat_McpAuthNeededData;
+	/**
+	 * A background job's finish message that reached a running reply. The step that showed it to the
+	 * model saves it at the start of its parts.
+	 */
+	"job-finish": { text: string };
 };
 
 export type ai_chat_UiDataPart = DataUIPart<ai_chat_UiDataParts>;

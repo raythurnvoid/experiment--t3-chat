@@ -10,6 +10,7 @@ import {
 	ai_chat_files_db_delete_job_batch,
 	type ai_chat_files_patch_thread_tmp_files_Args,
 } from "../convex/ai_chat_files.ts";
+import { ai_chat_runs_db_begin, ai_chat_runs_db_insert_node } from "../convex/ai_chat_runs.ts";
 import type { bash_ReviewScratch } from "../convex/bash.ts";
 import { access_control_db_ensure_role_assignment } from "../convex/access_control.ts";
 import { organizations_membership_lifetimes_db_ensure } from "../convex/organizations_membership_lifetimes.ts";
@@ -18,7 +19,7 @@ import { db_insert_file_text_content, files_nodes_db_insert_file_content_docs } 
 import { files_PENDING_REPLACEMENT_BASE_CHANGED_MESSAGE } from "../convex/files_pending_updates.ts";
 import { r2, r2_confirmed_object_delete, r2_server_side_copy } from "../convex/r2_client.ts";
 import { test_convex, test_mocks, test_mocks_fill_db_with } from "../convex/setup.test.ts";
-import type { ai_chat_ModelId } from "../shared/ai-chat.ts";
+import { ai_chat_DEFAULT_MODEL_ID, type ai_chat_ModelId } from "../shared/ai-chat.ts";
 import { delay } from "../shared/async-utils.ts";
 import { files_yjs_doc_create_from_text } from "../shared/files-tiptap.ts";
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
@@ -496,6 +497,50 @@ describe("bash_run_command", () => {
 			return await organizations_membership_lifetimes_db_ensure(ctx, membership);
 		});
 
+		// A chat tool call runs inside a chat run. Start one, so the calls pass its fence and a job
+		// finish has a reply branch to go to. A runner on a shared thread joins the run that is live there.
+		const start_chat_run = () =>
+			t.run(async (ctx) => {
+				const thread = await ctx.db.get("ai_chat_threads", threadId);
+				if (!thread) throw new Error("Expected the bash test thread");
+				if (thread.activeRun && thread.activeRun.expiresAt > Date.now()) {
+					return { runId: thread.activeRun.runId, generation: thread.activeRun.generation };
+				}
+
+				const messageId = `bash-runner-message-${runnerIndex}-${thread.newestNodeId ?? "root"}`;
+				const triggerId = await ai_chat_runs_db_insert_node(ctx, {
+					thread,
+					parentId: thread.newestNodeId,
+					createdBy: actingUserId,
+					clientGeneratedMessageId: messageId,
+					content: { id: messageId, role: "user", parts: [{ type: "text", text: "Run the commands." }] },
+					status: "done",
+					runId: null,
+					wakePending: false,
+					jobFinishInvocationId: null,
+					newest: "set",
+					now: Date.now(),
+				});
+				const begun = await ai_chat_runs_db_begin(ctx, {
+					thread: (await ctx.db.get("ai_chat_threads", threadId))!,
+					kind: "chat",
+					source: {
+						organizationId: seeded.organizationId,
+						workspaceId: seeded.workspaceId,
+						userId: actingUserId,
+						membershipId: seeded.membershipId,
+						membershipLifetime,
+					},
+					triggerId,
+					modeId: "agent",
+					modelId: ai_chat_DEFAULT_MODEL_ID,
+					now: Date.now(),
+				});
+				if (!begun) throw new Error("Expected the bash test run to start");
+				return { runId: begun.runId, generation: begun.generation };
+			});
+		const chatRun = await start_chat_run();
+
 		let cwd = "~";
 		if (opts?.initialCwd != null && opts.initialCwd !== "~") {
 			// The first call creates the shell row, so seed it here to start somewhere else.
@@ -589,6 +634,9 @@ describe("bash_run_command", () => {
 			toolCallId = `bash-${runnerIndex}-${toolCallNumber++}`,
 			shellName = "default",
 		) => {
+			// A job end can start a wake that takes over an expired run, and the wake can end too. Like the
+			// next turn in the app, the call runs in the live run, or in a new one.
+			const liveRun = await start_chat_run();
 			const result = await bash_run_command(ctx, {
 				...ctxData,
 				threadId,
@@ -598,12 +646,13 @@ describe("bash_run_command", () => {
 				shellName,
 				wakeAgent: opts?.wakeAgent ?? null,
 				output: null,
+				run: liveRun,
 			});
 			cwd = (await get_shell(t, threadId, shellName))?.cwd ?? cwd;
 			return result;
 		};
 
-		return { run, runQuery, runMutation, runAction, getCwd: () => cwd, t, seeded, threadId, ctxData, ctx };
+		return { run, runQuery, runMutation, runAction, getCwd: () => cwd, t, seeded, threadId, chatRun, ctxData, ctx };
 	}
 
 	/**
@@ -3493,6 +3542,7 @@ describe("bash_run_command", () => {
 		const tool = ai_chat_tool_create_set_file_metadata(runner.ctx, {
 			...runner.ctxData,
 			getThreadId: () => runner.threadId,
+			getRun: () => runner.chatRun,
 		});
 		const written = await tool.execute?.(
 			{
@@ -8696,6 +8746,7 @@ describe("bash_run_command", () => {
 		const tool = ai_chat_tool_create_set_file_metadata(runner.ctx, {
 			...runner.ctxData,
 			getThreadId: () => runner.threadId,
+			getRun: () => runner.chatRun,
 		});
 		for (const path of ["/private-meta", "/private-meta/note.md"]) {
 			expect(
@@ -8880,6 +8931,7 @@ describe("bash_run_command", () => {
 				const edit = ai_chat_tool_create_edit_file(runner.ctx, {
 					...runner.ctxData,
 					getThreadId: () => runner.threadId,
+					getRun: () => runner.chatRun,
 				});
 				await expect(
 					edit.execute?.(
@@ -8967,7 +9019,11 @@ describe("bash_run_command", () => {
 				? "first: proposal\nsecond: member\nthird: old\n"
 				: "first: replacement\nsecond: old\nthird: old\n";
 		if (operation === "edit_file") {
-			const edit = ai_chat_tool_create_edit_file(runner.ctx, { ...runner.ctxData, getThreadId: () => runner.threadId });
+			const edit = ai_chat_tool_create_edit_file(runner.ctx, {
+				...runner.ctxData,
+				getThreadId: () => runner.threadId,
+				getRun: () => runner.chatRun,
+			});
 			await expect(
 				edit.execute?.(
 					{
@@ -9036,6 +9092,7 @@ describe("bash_run_command", () => {
 				const edit = ai_chat_tool_create_edit_file(runner.ctx, {
 					...runner.ctxData,
 					getThreadId: () => runner.threadId,
+					getRun: () => runner.chatRun,
 				});
 				await expect(
 					edit.execute?.(
@@ -9170,6 +9227,7 @@ describe("bash_run_command", () => {
 				const tool = ai_chat_tool_create_edit_file(runner.ctx, {
 					...runner.ctxData,
 					getThreadId: () => runner.threadId,
+					getRun: () => runner.chatRun,
 				});
 				await expect(
 					tool.execute?.(
@@ -12642,6 +12700,7 @@ describe("bash_run_command", () => {
 					threadId: f.runner.ctxData.threadId,
 					membershipId: f.runner.ctxData.membershipId,
 					membershipLifetime: f.runner.ctxData.membershipLifetime,
+					run: f.runner.chatRun,
 				});
 			expect((await f.runner.run(`resolve ${f.nodes[0].nodeId}`)).metadata.exitCode).not.toBe(0);
 		});

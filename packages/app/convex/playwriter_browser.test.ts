@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import type { Doc } from "./_generated/dataModel.js";
+import { ai_chat_runs_db_insert_node } from "./ai_chat_runs.ts";
 import { playwriter_browser_db_disconnect } from "./playwriter_browser.ts";
 import { files_browser_db_purge_workspace_batch } from "./files_browser.ts";
 import { crypto_encrypt_secret_value } from "../server/crypto-utils.ts";
@@ -50,21 +51,27 @@ async function fixture() {
 		membershipId: db.membershipId,
 	});
 	if (captured._nay) throw new Error(captured._nay.message);
-	const message = await asUser.mutation(api.ai_chat.thread_messages_add, {
-		membershipId: db.membershipId,
-		threadId: created._yay.threadId,
-		messages: [
-			{
-				clientGeneratedMessageId: "browser-source",
-				content: { id: "browser-source", role: "user", parts: [{ type: "text", text: "Read the browser" }] },
-			},
-		],
+	const sourceMessageId = await t.run(async (ctx) => {
+		const thread = await ctx.db.get("ai_chat_threads", created._yay.threadId);
+		if (!thread) throw new Error("Expected the thread");
+		return await ai_chat_runs_db_insert_node(ctx, {
+			thread,
+			parentId: null,
+			createdBy: db.userId,
+			clientGeneratedMessageId: "browser-source",
+			content: { id: "browser-source", role: "user", parts: [{ type: "text", text: "Read the browser" }] },
+			status: "done",
+			runId: null,
+			wakePending: false,
+			jobFinishInvocationId: null,
+			newest: "set",
+			now: Date.now(),
+		});
 	});
-	if (message._nay) throw new Error(message._nay.message);
 	const source = {
 		...db,
 		threadId: created._yay.threadId,
-		sourceMessageId: message._yay.ids[0]!,
+		sourceMessageId,
 		membershipLifetime: captured._yay.membershipLifetime,
 	};
 	return { t, db, asUser, source };

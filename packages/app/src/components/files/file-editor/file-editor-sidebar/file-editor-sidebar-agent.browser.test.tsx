@@ -20,7 +20,7 @@ const mocks = vi.hoisted(() => ({
 	threads: [] as ai_chat_Thread[],
 	listeners: new Set<() => void>(),
 	requestBodies: [] as Array<{ clientGeneratedThreadId: string }>,
-	threadMessages: { messages: [] },
+	branchPage: { nodes: [], nextId: null },
 	messageStatusByThreadId: {} as Record<string, "loaded" | "loading" | "denied">,
 	mutation: vi.fn(() => Promise.resolve({ _yay: {} })),
 }));
@@ -46,6 +46,8 @@ vi.mock("convex/react", async (importOriginal) => {
 		},
 		useMutation: () => mocks.mutation,
 		useAction: () => mocks.mutation,
+		// These tests never load older pages of a branch.
+		useQueries: () => ({}),
 		useQuery: (query: FunctionReference<"query">, args: { threadId?: string } | "skip") => {
 			const messageStatusByThreadId = useSyncExternalStore(
 				(listener) => {
@@ -58,10 +60,10 @@ vi.mock("convex/react", async (importOriginal) => {
 			switch (getFunctionName(query)) {
 				case "files_browser:current_browser_preferences":
 					return { webChoice: { provider: "cloud" }, selectionRevision: 0, policyRevision: 0 };
-				case "ai_chat:thread_messages_list":
+				case "ai_chat_runs:branch_page":
 					if (messageStatusByThreadId[args.threadId!] === "denied") return null;
 					if (messageStatusByThreadId[args.threadId!] === "loading") return undefined;
-					return mocks.threadMessages;
+					return mocks.branchPage;
 				case "files_pending_updates:get_files_pending_updates_summary":
 					return { count: 0, truncated: false };
 				default:
@@ -151,6 +153,7 @@ describe("FileEditorSidebarAgent thread upgrade", () => {
 					createdBy: "user_test" as app_convex_Id<"users">,
 					updatedBy: "user_test" as app_convex_Id<"users">,
 					updatedAt: 1,
+					newestNodeId: null,
 				}) satisfies ai_chat_Thread,
 		);
 		app_local_storage_set_value(openTabsKey, tabs);
@@ -271,6 +274,7 @@ describe("FileEditorSidebarAgent thread upgrade", () => {
 				createdBy: "user_test" as app_convex_Id<"users">,
 				updatedBy: "user_test" as app_convex_Id<"users">,
 				updatedAt: 1,
+				newestNodeId: null,
 			},
 		];
 		mocks.listeners.forEach((listener) => listener());

@@ -1377,7 +1377,8 @@ type AiChatMessagePart_ClassNames =
 	| "AiChatMessagePart-text-user"
 	| "AiChatMessagePart-image"
 	| "AiChatMessagePart-file"
-	| "AiChatMessagePart-source";
+	| "AiChatMessagePart-source"
+	| "AiChatMessagePart-job-finish";
 
 type AiChatMessagePart_Props = {
 	role: "assistant" | "user" | "system";
@@ -1406,6 +1407,7 @@ const AiChatMessagePart = memo(function AiChatMessagePart(props: AiChatMessagePa
 				: ("AiChatMessagePart-file" satisfies AiChatMessagePart_ClassNames);
 		if (part.type === "source-url" || part.type === "source-document")
 			return "AiChatMessagePart-source" satisfies AiChatMessagePart_ClassNames;
+		if (part.type === "data-job-finish") return "AiChatMessagePart-job-finish" satisfies AiChatMessagePart_ClassNames;
 		return undefined;
 	})() satisfies AiChatMessagePart_ClassNames | undefined;
 
@@ -1530,6 +1532,11 @@ const AiChatMessagePartInner = memo(function AiChatMessagePartInner(props: AiCha
 
 	if (isReasoningUIPart(part)) {
 		return <AiChatMessagePartThinking text={part.text} isStreaming={isChatRunning} defaultOpen={isChatRunning} />;
+	}
+
+	// A background job finished while this reply ran. The reply shows the finish where the model saw it.
+	if (part.type === "data-job-finish") {
+		return <AiChatMessagePartTextUser text={part.data.text} />;
 	}
 
 	if (isDataUIPart(part)) {
@@ -1689,7 +1696,9 @@ const AiChatMessageContent = memo(function AiChatMessageContent(props: AiChatMes
 		? []
 		: ai_chat_message_content_get_display_items(
 				message,
-				parts.filter((part) => !part.type.startsWith("data-") && part.type !== "step-start"),
+				parts.filter(
+					(part) => part.type === "data-job-finish" || (!part.type.startsWith("data-") && part.type !== "step-start"),
+				),
 				isChatRunning,
 			);
 	if (message.role === "assistant" && isChatRunning && displayItems.length === 0) {
@@ -2014,9 +2023,6 @@ const AiChatMessageUser = memo(function AiChatMessageUser(props: AiChatMessageUs
 	});
 
 	const handleBranchSwitch = (direction: "prev" | "next") => {
-		if (isRunning) {
-			return;
-		}
 		if (!selectedThreadId) {
 			return;
 		}
@@ -2130,7 +2136,6 @@ const AiChatMessageUser = memo(function AiChatMessageUser(props: AiChatMessageUs
 									className={"AiChatMessageUser-action-button" satisfies AiChatMessageUser_ClassNames}
 									variant="ghost-highlightable"
 									tooltip="Previous branch"
-									disabled={isRunning}
 									onClick={handleBranchPrev}
 								>
 									<ChevronLeft className={"AiChatMessageUser-action-icon" satisfies AiChatMessageUser_ClassNames} />
@@ -2142,7 +2147,6 @@ const AiChatMessageUser = memo(function AiChatMessageUser(props: AiChatMessageUs
 									className={"AiChatMessageUser-action-button" satisfies AiChatMessageUser_ClassNames}
 									variant="ghost-highlightable"
 									tooltip="Next branch"
-									disabled={isRunning}
 									onClick={handleBranchNext}
 								>
 									<ChevronRight className={"AiChatMessageUser-action-icon" satisfies AiChatMessageUser_ClassNames} />
@@ -2225,17 +2229,15 @@ const AiChatMessageAgent = memo(function AiChatMessageAgent(props: AiChatMessage
 		onMessageRegenerate({ threadId: selectedThreadId, messageId: message.id });
 	});
 
+	// A branch copy of a running reply keeps the steps it finished so far.
 	const handleBranchChat = useFn(() => {
-		if (!selectedThreadId || isRunning) {
+		if (!selectedThreadId) {
 			return;
 		}
 		onMessageBranchChat({ threadId: selectedThreadId, messageId: message.id });
 	});
 
 	const handleBranchSwitch = (direction: "prev" | "next") => {
-		if (isRunning) {
-			return;
-		}
 		if (!selectedThreadId) {
 			return;
 		}
@@ -2295,7 +2297,7 @@ const AiChatMessageAgent = memo(function AiChatMessageAgent(props: AiChatMessage
 						className={"AiChatMessageAgent-action-button" satisfies AiChatMessageAgent_ClassNames}
 						variant="ghost-highlightable"
 						tooltip="Branch chat here"
-						disabled={!selectedThreadId || isRunning}
+						disabled={!selectedThreadId}
 						onClick={handleBranchChat}
 					>
 						<GitBranch className={"AiChatMessageAgent-action-icon" satisfies AiChatMessageAgent_ClassNames} />
@@ -2306,7 +2308,6 @@ const AiChatMessageAgent = memo(function AiChatMessageAgent(props: AiChatMessage
 								className={"AiChatMessageAgent-action-button" satisfies AiChatMessageAgent_ClassNames}
 								variant="ghost-highlightable"
 								tooltip="Previous branch"
-								disabled={isRunning}
 								onClick={handleBranchPrev}
 							>
 								<ChevronLeft className={"AiChatMessageAgent-action-icon" satisfies AiChatMessageAgent_ClassNames} />
@@ -2318,7 +2319,6 @@ const AiChatMessageAgent = memo(function AiChatMessageAgent(props: AiChatMessage
 								className={"AiChatMessageAgent-action-button" satisfies AiChatMessageAgent_ClassNames}
 								variant="ghost-highlightable"
 								tooltip="Next branch"
-								disabled={isRunning}
 								onClick={handleBranchNext}
 							>
 								<ChevronRight className={"AiChatMessageAgent-action-icon" satisfies AiChatMessageAgent_ClassNames} />

@@ -926,6 +926,7 @@ describe("transfers of a background job", () => {
 			toolCallId: "job-parent",
 			commandHash: "a".repeat(64),
 			shellName: "default",
+			run: null,
 		});
 		if (begun._nay || !("shell" in begun._yay)) throw new Error("Expected a fresh call");
 		const started = await t.mutation(internal.ai_chat_files.start_bash_job, {

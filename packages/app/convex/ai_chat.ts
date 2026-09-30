@@ -1,6 +1,5 @@
 import { should_never_happen } from "../shared/shared-utils.ts";
 import {
-	ai_chat_DEFAULT_MODEL_ID,
 	ai_chat_GENERATED_IMAGE_FORMAT,
 	ai_chat_GENERATED_IMAGE_MEDIA_TYPE,
 	ai_chat_MESSAGE_IMAGE_MAX_COUNT,
@@ -24,12 +23,12 @@ import {
 	internalQuery,
 	type ActionCtx,
 	type MutationCtx,
-	type QueryCtx,
 } from "./_generated/server.js";
 import { api, internal } from "./_generated/api.js";
 import {
 	paginationOptsValidator,
 	paginationResultValidator,
+	type FunctionReturnType,
 	type RegisteredMutation,
 	type RegisteredQuery,
 } from "convex/server";
@@ -51,6 +50,7 @@ import {
 	type InferUIMessageChunk,
 	type LanguageModelMiddleware,
 	type ModelMessage,
+	type ToolSet,
 } from "ai";
 import { z } from "zod";
 import {
@@ -94,7 +94,7 @@ import {
 	type ai_chat_McpAuthNeededData,
 } from "../shared/ai-chat-files.ts";
 import { mcp_client_list_tools, type mcp_client_ErrorCode } from "../server/mcp-client.ts";
-import { crypto_decrypt_secret_value } from "../server/crypto-utils.ts";
+import { crypto_decrypt_secret_value, crypto_sha256_hex } from "../server/crypto-utils.ts";
 import { plugins_mcp_custom_header_values, plugins_mcp_decrypt_custom_secrets } from "./plugins_mcp.ts";
 import { plugins_mcp_oauth_get_access_token } from "./plugins_mcp_oauth.ts";
 import {
@@ -111,7 +111,6 @@ import app_convex_schema, {
 } from "./schema.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import { ai_model_call_receipts_create } from "./ai_model_call_receipts.ts";
-import { ai_chat_outputs_db_commit_owners, ai_chat_outputs_db_prepare_reply } from "./ai_chat_outputs.ts";
 import {
 	ai_chat_thread_copies_db_abort,
 	type ai_chat_thread_copies_begin_Result,
@@ -121,12 +120,17 @@ import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import type { Doc, Id } from "./_generated/dataModel";
 import { ai_chat_context_ENABLED } from "./ai_chat_context.ts";
 import {
-	BASH_JOB_WAKEUP_RUN_MS,
 	ai_chat_files_db_append_shell_transcript,
 	ai_chat_files_db_get_invocation_membership,
-	bash_job_is_finish_message,
 } from "./ai_chat_files.ts";
-import { ai_chat_runs_db_end, ai_chat_runs_db_insert } from "./ai_chat_runs.ts";
+import {
+	ai_chat_runs_db_begin,
+	ai_chat_runs_db_insert_node,
+	ai_chat_runs_db_is_current,
+	ai_chat_runs_db_stop,
+	ai_chat_runs_LEASE_MS,
+	ai_chat_runs_op_key,
+} from "./ai_chat_runs.ts";
 import { ai_chat_context_create, type ai_chat_context_Context } from "../server/ai-chat-context.ts";
 import { ai_chat_workspaces_db_resolve, ai_chat_workspaces_SELECTORS } from "./ai_chat_workspaces.ts";
 import { browser_intent_schema, type browser_Intent } from "../shared/browser-intent.ts";
@@ -247,59 +251,33 @@ const ASK_MODE_SYSTEM_PROMPT_SUFFIX =
 	"Ask mode is for reading, searching, and answering. Durable folder and file changes are handled in Agent mode; /tmp scratch is durable per chat thread but is not app file storage.";
 
 /**
- * Resolve the persisted context for a client-provided parent message id.
- *
- * The client can send either a Convex message `_id` or an optimistic
- * `clientGeneratedMessageId`, depending on whether the live query has caught up.
- * Return a bad result when the parent id cannot be resolved so callers cannot
- * accidentally use a partial parent chain and create a new root branch.
+ * A job finish that reached a running reply is saved as a `data-job-finish` part at the start of
+ * its step. The model saw it as a system message at that step boundary. So later turns rebuild that
+ * message: split the reply around each finish part.
  */
-function resolve_parent_message_context(input: {
-	messages: Doc<"ai_chat_threads_messages_aisdk_5">[];
-	parentId: string | null | undefined;
-}) {
-	// Index both persisted and optimistic ids so parent resolution works before
-	// the client has received the server-created message ids.
-	const messagesMap = new Map<string, Doc<"ai_chat_threads_messages_aisdk_5">>();
-	for (const msg of input.messages) {
-		messagesMap.set(msg._id, msg);
-		if (msg.clientGeneratedMessageId) {
-			messagesMap.set(msg.clientGeneratedMessageId, msg);
+function split_job_finish_parts(uiMessages: ai_chat_UiMessage[]) {
+	return uiMessages.flatMap((message) => {
+		if (message.role !== "assistant" || !message.parts.some((part) => part.type === "data-job-finish")) {
+			return [message];
 		}
-	}
 
-	// Walk from the requested parent id back to the root.
-	const reconstructedMessages: Doc<"ai_chat_threads_messages_aisdk_5">[] = [];
-	let nextParentId = input.parentId;
-	while (nextParentId) {
-		const message = messagesMap.get(nextParentId);
-		if (!message) {
-			return Result({
-				_nay: {
-					message: "Message not found.",
-					data: {
-						unresolvedParentId: nextParentId,
-					},
-				},
+		const split: ai_chat_UiMessage[] = [];
+		let parts: ai_chat_UiMessage["parts"] = [];
+		for (const part of message.parts) {
+			if (part.type !== "data-job-finish") {
+				parts.push(part);
+				continue;
+			}
+			if (parts.length > 0) split.push({ ...message, parts });
+			parts = [];
+			split.push({
+				id: `${message.id}-finish-${split.length}`,
+				role: "system",
+				parts: [{ type: "text", text: part.data.text }],
 			});
 		}
-
-		reconstructedMessages.push(message);
-		nextParentId = message.parentId as string | null;
-	}
-
-	// Resolve the immediate parent separately; this is the id persisted on newly
-	// submitted messages and the optimistic id echoed back to the client.
-	const parentMessage = input.parentId ? (messagesMap.get(input.parentId) ?? null) : null;
-
-	// Keep all parent-resolution outputs together so the stream and persistence
-	// code cannot accidentally derive them from different lookup paths.
-	return Result({
-		_yay: {
-			reconstructedMessages,
-			resolvedParentId: parentMessage?._id ?? null,
-			resolvedParentClientGeneratedId: parentMessage?.clientGeneratedMessageId ?? null,
-		},
+		if (parts.length > 0) split.push({ ...message, parts });
+		return split;
 	});
 }
 
@@ -1202,6 +1180,55 @@ async function load_turn_mcp_tools(
 	return { tools: await ai_chat_tool_create_mcp_tools(ctx, ctxData, servers), notes, authNeeded };
 }
 
+/**
+ * Wrap each tool so every call runs inside one `ai_chat_tool_receipts` receipt. Calls outside a
+ * chat run (tests) run without one.
+ */
+function apply_tool_receipts(
+	ctx: ActionCtx,
+	tools: ToolSet,
+	args: {
+		getThreadId: () => Id<"ai_chat_threads"> | null;
+		getRun: () => { runId: Id<"ai_chat_runs">; generation: number } | null;
+		getModelCallId: (toolCallId: string) => string | null;
+	},
+) {
+	for (const [toolName, value] of Object.entries(tools)) {
+		const execute = value.execute;
+		if (!execute) continue;
+
+		value.execute = async (input, options) => {
+			const run = args.getRun();
+			const threadId = args.getThreadId();
+			const modelCallId = args.getModelCallId(options.toolCallId);
+			if (!run || !threadId || !modelCallId) return await execute(input, options);
+
+			const opKey = await ai_chat_runs_op_key({ runId: run.runId, modelCallId, toolCallId: options.toolCallId });
+			const begun = await ctx.runMutation(internal.ai_chat_runs.tool_receipt_begin, {
+				...run,
+				opKey,
+				toolName,
+				inputHash: await crypto_sha256_hex(JSON.stringify([toolName, input])),
+			});
+			if (begun.kind === "refused") throw new Error(begun.message);
+			if (begun.kind === "replay") return begun.result;
+
+			const result = await execute(input, options);
+			await ctx
+				.runMutation(internal.ai_chat_runs.tool_receipt_finish, { threadId, opKey, result })
+				.catch((error: unknown) => {
+					// The write already happened. Only a replay of this call loses its saved result.
+					console.error("Failed to save the tool receipt", {
+						threadId,
+						toolName,
+						errorName: error instanceof Error ? error.name : "Error",
+					});
+				});
+			return result;
+		};
+	}
+}
+
 function build_agent_configuration(input: {
 	ctx: ActionCtx;
 	ctxData: {
@@ -1217,7 +1244,7 @@ function build_agent_configuration(input: {
 		modeId: (typeof ai_chat_MODE_IDS)[number];
 	};
 	getThreadId: () => Id<"ai_chat_threads"> | null;
-	getRunId: () => Id<"ai_chat_runs"> | null;
+	getRun: () => { runId: Id<"ai_chat_runs">; generation: number } | null;
 	/**
 	 * The provider request of each tool call, keyed by tool call id. The receipt middleware fills it.
 	 */
@@ -1257,7 +1284,7 @@ function build_agent_configuration(input: {
 	const toolCtxData = {
 		...ctxData,
 		getThreadId,
-		getRunId: input.getRunId,
+		getRun: input.getRun,
 		getModelCallId: (toolCallId: string) => input.modelCallIds.get(toolCallId) ?? null,
 		getWorkspaceContext,
 		membershipId: input.membershipId,
@@ -1334,6 +1361,17 @@ function build_agent_configuration(input: {
 	ai_chat_tool_budget_apply(mcpTools, toolBudget, {
 		resultReservedBytes: ai_chat_tool_output_INLINE_MAX_BYTES + 1024,
 	});
+	// These tools change Files or run code. A receipt per call refuses a call of a stopped run and
+	// lets a replayed call find its result instead of running twice.
+	apply_tool_receipts(
+		ctx,
+		{
+			edit_file: appTools.edit_file,
+			set_file_metadata: appTools.set_file_metadata,
+			execute_code: appTools.execute_code,
+		},
+		{ getThreadId, getRun: input.getRun, getModelCallId: toolCtxData.getModelCallId },
+	);
 
 	// Keep current stored outputs valid across mode and model changes. Every file tool stores the
 	// same safe shape, so an old part still validates in either mode, and also while the browser
@@ -1486,6 +1524,9 @@ export const save_shell = internalMutation({
 		const membership = invocation ? await ai_chat_files_db_get_invocation_membership(ctx, invocation) : null;
 		if (!invocation || invocation.threadId !== thread._id || invocation.userId !== args.userId || !membership)
 			throw convex_error({ message: "Unauthorized" });
+		// A call of a stopped run keeps its shell as it was.
+		if (invocation.run && !(await ai_chat_runs_db_is_current(ctx, invocation.run)))
+			throw convex_error({ message: "Stopped" });
 
 		// A role change during the call must stop writes to the creator's shell and transcript.
 		const authorized = await access_control_db_authorize_membership(ctx, {
@@ -1509,146 +1550,6 @@ export const save_shell = internalMutation({
 		await ai_chat_files_db_append_shell_transcript(ctx, shell, args.transcriptEntry);
 
 		return null;
-	},
-});
-
-// A chat run holds the thread's run lease this long at most. A Convex action cannot run longer.
-const CHAT_RUN_LEASE_MS = 10 * 60 * 1000;
-
-/**
- * Take the thread's run lease for a `/api/chat` request (see `activeRun` in the schema) and insert
- * the run doc. Refuse while a job wakeup runs: the wakeup writes the reply under the job finish
- * message, and a chat reply at the same time would fork the branch. A second chat request is still
- * allowed, as before: two tabs or a retry must not lock each other out. Returns the run id, or null
- * when refused.
- */
-export const thread_run_begin = internalMutation({
-	args: { source: ai_chat_workspaces_source_validator },
-	returns: v.union(v.id("ai_chat_runs"), v.null()),
-	handler: async (ctx, args) => {
-		const thread = await ctx.db.get("ai_chat_threads", args.source.threadId);
-		// Delete chat can start, or finish, while a request or a job finish is on its way here. A
-		// branch copy in progress is hidden the same way.
-		if (!thread || thread.deletingAt !== undefined || thread.copyingAt !== undefined) return null;
-		const now = Date.now();
-		if (thread.activeRun?.kind === "job_wakeup" && thread.activeRun.expiresAt > now) return null;
-		const leaseExpiresAt = now + CHAT_RUN_LEASE_MS;
-		await ctx.db.patch("ai_chat_threads", thread._id, { activeRun: { kind: "chat", expiresAt: leaseExpiresAt } });
-		return await ai_chat_runs_db_insert(ctx, { kind: "chat", leaseExpiresAt, source: args.source });
-	},
-});
-
-/**
- * End one run and give the thread lease back when no other live run of the same kind holds it.
- */
-export const thread_run_end = internalMutation({
-	args: { runId: v.id("ai_chat_runs") },
-	returns: v.null(),
-	handler: async (ctx, args) => {
-		await ai_chat_runs_db_end(ctx, { runId: args.runId, now: Date.now() });
-		return null;
-	},
-});
-
-/**
- * The run doc of the wake run that answers the job of `invocationId`. The wake run acts for the
- * job's own membership, the same one `get_job_wakeup_context` checks.
- */
-async function db_insert_wake_run(
-	ctx: MutationCtx,
-	args: { invocationId: Id<"ai_chat_bash_invocations">; leaseExpiresAt: number },
-) {
-	const invocation = await ctx.db.get("ai_chat_bash_invocations", args.invocationId);
-	if (!invocation) throw should_never_happen("Job invocation not found", { invocationId: args.invocationId });
-	return await ai_chat_runs_db_insert(ctx, {
-		kind: "job_wakeup",
-		leaseExpiresAt: args.leaseExpiresAt,
-		source: invocation,
-	});
-}
-
-/**
- * Turn-end catch: flip a `chat` lease to `job_wakeup` in one transaction and insert the run doc
- * of the wake run that follows this turn. Returns null when another tab already handed the lease
- * over, or no chat lease is held. May convert a concurrent tab's fresh chat lease; that tab keeps
- * streaming, and its run end keeps the wake lease because the wake run doc is running.
- */
-export const thread_run_handover_to_wakeup = internalMutation({
-	args: { threadId: v.id("ai_chat_threads"), invocationId: v.id("ai_chat_bash_invocations") },
-	returns: v.union(v.id("ai_chat_runs"), v.null()),
-	handler: async (ctx, args) => {
-		const thread = await ctx.db.get("ai_chat_threads", args.threadId);
-		// Delete chat can start, or finish, while a request or a job finish is on its way here. A
-		// branch copy in progress is hidden the same way.
-		if (!thread || thread.deletingAt !== undefined || thread.copyingAt !== undefined) return null;
-		if (thread.activeRun?.kind !== "chat") return null;
-		const leaseExpiresAt = Date.now() + BASH_JOB_WAKEUP_RUN_MS;
-		await ctx.db.patch("ai_chat_threads", thread._id, {
-			activeRun: { kind: "job_wakeup", expiresAt: leaseExpiresAt },
-		});
-		return await db_insert_wake_run(ctx, { invocationId: args.invocationId, leaseExpiresAt });
-	},
-});
-
-/**
- * Turn-end catch, wake side: extend the held `job_wakeup` lease so the follow-up run owns a
- * full window, and insert that run's doc. The current wake run still ends its own doc. Returns
- * null when the lease is gone or another kind took over; the caller then tries
- * `thread_run_begin_wakeup`.
- */
-export const thread_run_extend_wakeup = internalMutation({
-	args: { threadId: v.id("ai_chat_threads"), invocationId: v.id("ai_chat_bash_invocations") },
-	returns: v.union(v.id("ai_chat_runs"), v.null()),
-	handler: async (ctx, args) => {
-		const thread = await ctx.db.get("ai_chat_threads", args.threadId);
-		// Delete chat can start, or finish, while a request or a job finish is on its way here. A
-		// branch copy in progress is hidden the same way.
-		if (!thread || thread.deletingAt !== undefined || thread.copyingAt !== undefined) return null;
-		const activeRun = thread.activeRun;
-		if (activeRun?.kind !== "job_wakeup" || activeRun.expiresAt <= Date.now()) return null;
-		const leaseExpiresAt = Date.now() + BASH_JOB_WAKEUP_RUN_MS;
-		await ctx.db.patch("ai_chat_threads", thread._id, {
-			activeRun: { kind: "job_wakeup", expiresAt: leaseExpiresAt },
-		});
-		return await db_insert_wake_run(ctx, { invocationId: args.invocationId, leaseExpiresAt });
-	},
-});
-
-/**
- * Take a free thread lease for a wake run after the chat lease is gone, and insert its run doc.
- * Returns null when any live run still holds the lease, so two leftover catches cannot both
- * schedule.
- */
-export const thread_run_begin_wakeup = internalMutation({
-	args: { threadId: v.id("ai_chat_threads"), invocationId: v.id("ai_chat_bash_invocations") },
-	returns: v.union(v.id("ai_chat_runs"), v.null()),
-	handler: async (ctx, args) => {
-		const thread = await ctx.db.get("ai_chat_threads", args.threadId);
-		// Delete chat can start, or finish, while a request or a job finish is on its way here. A
-		// branch copy in progress is hidden the same way.
-		if (!thread || thread.deletingAt !== undefined || thread.copyingAt !== undefined) return null;
-		const now = Date.now();
-		if (thread.activeRun !== undefined && thread.activeRun.expiresAt > now) return null;
-		const leaseExpiresAt = now + BASH_JOB_WAKEUP_RUN_MS;
-		await ctx.db.patch("ai_chat_threads", thread._id, {
-			activeRun: { kind: "job_wakeup", expiresAt: leaseExpiresAt },
-		});
-		return await db_insert_wake_run(ctx, { invocationId: args.invocationId, leaseExpiresAt });
-	},
-});
-
-/**
- * Milliseconds until the wake lease ends, plus one second of margin, for the
- * 409 answer. Null when no wakeup holds the lease: the 409 was already stale.
- */
-export const get_wake_retry_after_ms = internalQuery({
-	args: { threadId: v.id("ai_chat_threads") },
-	returns: v.union(v.number(), v.null()),
-	handler: async (ctx, args) => {
-		const thread = await ctx.db.get("ai_chat_threads", args.threadId);
-		const expiresAt = thread?.activeRun?.kind === "job_wakeup" ? thread.activeRun.expiresAt : null;
-		if (expiresAt === null) return null;
-		return Math.max(0, expiresAt - Date.now()) + 1000;
 	},
 });
 
@@ -1837,6 +1738,7 @@ export const thread_create = mutation({
 			runtime: "aisdk_5",
 			createdBy: userAuth.id,
 			updatedBy: userAuth.id,
+			newestNodeId: null,
 			updatedAt: now,
 			starred: false,
 		});
@@ -2188,7 +2090,11 @@ export const thread_delete = mutation({
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
 
-		await ctx.db.patch("ai_chat_threads", args.threadId, { deletingAt: Date.now() });
+		const now = Date.now();
+		await ctx.db.patch("ai_chat_threads", args.threadId, { deletingAt: now });
+		// Stop the live run, so its action ends soon and the drain does not wait for its whole lease.
+		const run = thread.activeRun ? await ctx.db.get("ai_chat_runs", thread.activeRun.runId) : null;
+		if (run) await ai_chat_runs_db_stop(ctx, { run, now });
 		await ctx.scheduler.runAfter(0, internal.data_deletion.drain_deleting_thread, { threadId: args.threadId });
 		// A branch copy of this chat in progress aborts at its next step anyway, because the step checks
 		// the source chat. Abort the copies now, so their targets start draining at once.
@@ -2205,345 +2111,194 @@ export const thread_delete = mutation({
 });
 
 /**
- * Query to list messages in a thread
- */
-export const thread_messages_list = query({
-	args: {
-		membershipId: v.id("organizations_workspaces_users"),
-		threadId: v.string(),
-		order: v.optional(v.union(v.literal("asc"), v.literal("desc"))),
-	},
-	returns: v.union(
-		v.object({
-			messages: v.array(doc(app_convex_schema, "ai_chat_threads_messages_aisdk_5")),
-		}),
-		v.null(),
-	),
-	handler: async (ctx, args) => {
-		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!userAuth) {
-			throw convex_error({ message: "Unauthenticated" });
-		}
-		const membership = await organizations_db_get_membership(ctx, {
-			userId: userAuth.id,
-			membershipId: args.membershipId,
-		});
-		if (!membership) {
-			return null;
-		}
-
-		const authorized = await access_control_db_authorize_membership(ctx, {
-			userAuth,
-			membership,
-			permission: THREAD_PERMISSION,
-		});
-		if (authorized._nay) {
-			return null;
-		}
-
-		const threadId = ctx.db.normalizeId("ai_chat_threads", args.threadId);
-		if (!threadId) {
-			return null;
-		}
-
-		const thread = await ctx.db.get("ai_chat_threads", threadId);
-		if (
-			!thread ||
-			thread.deletingAt !== undefined ||
-			thread.copyingAt !== undefined ||
-			thread.organizationId !== membership.organizationId ||
-			thread.workspaceId !== membership.workspaceId ||
-			thread.createdBy !== userAuth.id
-		) {
-			return null;
-		}
-
-		const messages = await ctx.db
-			.query("ai_chat_threads_messages_aisdk_5")
-			.withIndex("by_organization_workspace_thread", (q) =>
-				q.eq("organizationId", thread.organizationId).eq("workspaceId", thread.workspaceId).eq("threadId", threadId),
-			)
-			.order(args.order ?? "desc")
-			.collect();
-
-		return { messages };
-	},
-});
-
-const thread_messages_validator = v.array(
-	v.object({
-		clientGeneratedMessageId:
-			app_convex_schema.tables.ai_chat_threads_messages_aisdk_5.validator.fields.clientGeneratedMessageId,
-		content: app_convex_schema.tables.ai_chat_threads_messages_aisdk_5.validator.fields.content,
-	}),
-);
-
-/**
- * Add one or more messages to a thread, with the checks of the public `thread_messages_add`.
+ * Save the request messages of a `/api/chat` request and start its run, in one transaction. The
+ * last request message is the run's trigger. A regenerate sends no message, so its parent is the
+ * trigger. While another run streams in this chat, nothing is saved: a thread runs one agent at a
+ * time, and the browser sends again after `retryAfterMs`.
  *
- * `allowMcpParts` is true only when the chat route stores the reply it streamed itself. A browser
- * never sends MCP parts, so the public door and the stored request refuse them.
+ * The route already checked the message contents (size, images, tool parts, role).
  */
-async function thread_messages_db_add(
-	ctx: MutationCtx,
+export const thread_run_begin = internalMutation({
 	args: {
-		membershipId: Id<"organizations_workspaces_users">;
-		threadId: Id<"ai_chat_threads">;
-		parentId?: string | null;
-		messages: Infer<typeof thread_messages_validator>;
-		allowMcpParts: boolean;
-	},
-) {
-	const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-	if (!userAuth) {
-		return Result({ _nay: { message: "Unauthenticated" } });
-	}
-	const membership = await organizations_db_get_membership(ctx, {
-		userId: userAuth.id,
-		membershipId: args.membershipId,
-	});
-	if (!membership) {
-		return Result({ _nay: { message: "Unauthorized" } });
-	}
-
-	const authorized = await access_control_db_authorize_membership(ctx, {
-		userAuth,
-		membership,
-		permission: THREAD_PERMISSION,
-	});
-	if (authorized._nay) {
-		return authorized;
-	}
-
-	const thread = await ctx.db.get("ai_chat_threads", args.threadId);
-	if (!thread || thread.deletingAt !== undefined || thread.copyingAt !== undefined) {
-		return Result({ _nay: { message: "Not found" } });
-	}
-	if (
-		thread.organizationId !== membership.organizationId ||
-		thread.workspaceId !== membership.workspaceId ||
-		thread.createdBy !== userAuth.id
-	) {
-		return Result({ _nay: { message: "Unauthorized" } });
-	}
-
-	// The `content` validator is loose (`v.any()` fields), but stored file parts
-	// are forwarded to the model provider on later turns. Enforce the same image
-	// contract as the chat route, so a direct call to this public mutation cannot
-	// store a remote URL or an oversized image.
-	for (const message of args.messages) {
-		if (!ai_chat_message_fits_storage(message.content)) {
-			return Result({ _nay: { message: "Message is too large to store. Start a new message with less content." } });
-		}
-		const parts: unknown[] = Array.isArray(message.content.parts) ? message.content.parts : [];
-		let filePartCount = 0;
-		let totalUrlChars = 0;
-		for (const part of parts) {
-			if (!part || typeof part !== "object" || (part as { type?: unknown }).type !== "file") {
-				continue;
-			}
-
-			filePartCount += 1;
-			const filePart = part as { mediaType?: unknown; url?: unknown };
-			if (
-				typeof filePart.mediaType !== "string" ||
-				typeof filePart.url !== "string" ||
-				!ai_chat_is_message_image_media_type(filePart.mediaType) ||
-				!filePart.url.startsWith(`data:${filePart.mediaType};base64,`)
-			) {
-				return Result({ _nay: { message: "Invalid image attachments" } });
-			}
-			totalUrlChars += filePart.url.length;
-		}
-
-		if (filePartCount > ai_chat_MESSAGE_IMAGE_MAX_COUNT || totalUrlChars > ai_chat_MESSAGE_IMAGE_MAX_TOTAL_URL_CHARS) {
-			return Result({ _nay: { message: "Invalid image attachments" } });
-		}
-
-		// Both doors land here, including direct calls to the public mutation. A tool part may only carry
-		// the safe status and the Files links that the live stream scrubbed.
-		if (!has_valid_file_tool_parts(message.content, { allowMcpParts: args.allowMcpParts })) {
-			return Result({ _nay: { message: "Invalid file tool result parts" } });
-		}
-	}
-
-	const parentId = args.parentId ? ctx.db.normalizeId("ai_chat_threads_messages_aisdk_5", args.parentId) : null;
-	if (args.parentId) {
-		const parent = parentId ? await ctx.db.get("ai_chat_threads_messages_aisdk_5", parentId) : null;
-		if (!parent || parent.threadId !== thread._id) {
-			return Result({ _nay: { message: "Message not found" } });
-		}
-	}
-
-	const existingIdsByClientGeneratedMessageId = new Map<string, Id<"ai_chat_threads_messages_aisdk_5">>();
-	const newClientGeneratedMessageIds = new Set<string>();
-	const existingMessages = await Promise.all(
-		args.messages.map(async (message) => ({
-			clientGeneratedMessageId: message.clientGeneratedMessageId,
-			existingMessage: await ctx.db
-				.query("ai_chat_threads_messages_aisdk_5")
-				.withIndex("by_organization_workspace_thread_clientGeneratedMessageId", (q) =>
-					q
-						.eq("organizationId", thread.organizationId)
-						.eq("workspaceId", thread.workspaceId)
-						.eq("threadId", args.threadId)
-						.eq("clientGeneratedMessageId", message.clientGeneratedMessageId),
-				)
-				.first(),
-		})),
-	);
-	for (const { clientGeneratedMessageId, existingMessage } of existingMessages) {
-		if (existingMessage) {
-			existingIdsByClientGeneratedMessageId.set(clientGeneratedMessageId, existingMessage._id);
-		} else if (!existingIdsByClientGeneratedMessageId.has(clientGeneratedMessageId)) {
-			newClientGeneratedMessageIds.add(clientGeneratedMessageId);
-		}
-	}
-
-	// Here the rate limit runs after the permission check, unlike the other handlers in this file.
-	// The limit costs one token per new message, and we only know how many messages are new after
-	// we have looked up the ones already stored.
-	if (newClientGeneratedMessageIds.size > 0) {
-		const rateLimit = await rate_limiter_limit_by_key(ctx, {
-			name: "ai_chat_message_write",
-			key: userAuth.id,
-			count: newClientGeneratedMessageIds.size,
-		});
-		if (rateLimit) {
-			return Result({ _nay: { message: rateLimit.message } });
-		}
-	}
-
-	const now = Date.now();
-	const ids: Array<Id<"ai_chat_threads_messages_aisdk_5">> = [];
-	let nextParentId = parentId;
-	for (const message of args.messages) {
-		const existingMessageId = existingIdsByClientGeneratedMessageId.get(message.clientGeneratedMessageId);
-		if (existingMessageId) {
-			ids.push(existingMessageId);
-			nextParentId = existingMessageId;
-			continue;
-		}
-
-		// An abort persist uses the captured parent. A job can finish mid-run and
-		// hang its message under that parent; store the assistant under the finish
-		// so Stop does not hide it as a sibling. Walk finish messages only, so a
-		// later finish further down the thread does not steal a regenerate.
-		// Re-read newest after earlier inserts in this same call, so a
-		// user-then-assistant batch still chains.
-		let insertParentId = nextParentId;
-		if (message.content.role === "assistant") {
-			const newest = await ctx.db
-				.query("ai_chat_threads_messages_aisdk_5")
-				.withIndex("by_organization_workspace_thread", (q) =>
-					q
-						.eq("organizationId", thread.organizationId)
-						.eq("workspaceId", thread.workspaceId)
-						.eq("threadId", args.threadId),
-				)
-				.order("desc")
-				.first();
-			insertParentId = await chat_reply_parent_if_newest_is_finish(ctx, newest, nextParentId);
-		}
-
-		const messageId = await ctx.db.insert("ai_chat_threads_messages_aisdk_5", {
-			organizationId: thread.organizationId,
-			workspaceId: thread.workspaceId,
-			parentId: insertParentId,
-			threadId: args.threadId,
-			createdBy: userAuth.id,
-			updatedAt: now,
-			clientGeneratedMessageId: message.clientGeneratedMessageId,
-			content: message.content,
-		});
-
-		existingIdsByClientGeneratedMessageId.set(message.clientGeneratedMessageId, messageId);
-		ids.push(messageId);
-		nextParentId = messageId;
-	}
-
-	if (ids.length > 0) {
-		await ctx.db.patch("ai_chat_threads", args.threadId, {
-			lastMessageAt: now,
-			updatedAt: now,
-			updatedBy: userAuth.id,
-		});
-	}
-
-	return Result({ _yay: { ids } });
-}
-
-/**
- * Mutation to add one or more messages to a thread.
- *
- * Repeated client-generated ids return the existing message ids.
- */
-export const thread_messages_add = mutation({
-	args: {
-		membershipId: v.id("organizations_workspaces_users"),
-		threadId: v.id("ai_chat_threads"),
-		parentId: v.optional(v.union(v.string(), v.null())),
-		messages: thread_messages_validator,
+		source: ai_chat_workspaces_source_validator,
+		/**
+		 * A stored message id or a client-generated id. Null starts a new root.
+		 */
+		parentId: v.union(v.string(), v.null()),
+		messages: v.array(
+			v.object({
+				clientGeneratedMessageId:
+					app_convex_schema.tables.ai_chat_threads_messages_aisdk_5.validator.fields.clientGeneratedMessageId,
+				content: app_convex_schema.tables.ai_chat_threads_messages_aisdk_5.validator.fields.content,
+			}),
+		),
+		modeId: v.union(...ai_chat_MODE_IDS.map((modeId) => v.literal(modeId))),
+		modelId: v.union(...ai_chat_MODEL_IDS.map((modelId) => v.literal(modelId))),
 	},
 	returns: v_result({
 		_yay: v.object({
-			ids: v.array(v.id("ai_chat_threads_messages_aisdk_5")),
+			runId: v.id("ai_chat_runs"),
+			generation: v.number(),
+			replyId: v.id("ai_chat_threads_messages_aisdk_5"),
+			replyClientGeneratedId: v.string(),
+			triggerId: v.id("ai_chat_threads_messages_aisdk_5"),
+			triggerClientGeneratedId: v.string(),
 		}),
+		_nay: {
+			data: v.object({
+				status: v.union(v.literal(400), v.literal(403), v.literal(409)),
+				/**
+				 * How long the browser waits before it sends the same request again.
+				 */
+				retryAfterMs: v.optional(v.number()),
+			}),
+		},
 	}),
 	handler: async (ctx, args) => {
-		return await thread_messages_db_add(ctx, { ...args, allowMcpParts: false });
+		const allowed = await ai_chat_workspaces_db_resolve(ctx, { source: args.source, workspace: "current" });
+		if (allowed._nay) return Result({ _nay: { message: "Unauthorized", data: { status: 403 as const } } });
+
+		const thread = await ctx.db.get("ai_chat_threads", args.source.threadId);
+		// Delete chat can start, or finish, while a request is on its way here. A branch copy in
+		// progress is hidden the same way.
+		if (!thread || thread.deletingAt !== undefined || thread.copyingAt !== undefined) {
+			return Result({ _nay: { message: "Not found", data: { status: 400 as const } } });
+		}
+
+		const now = Date.now();
+		if (thread.activeRun && thread.activeRun.expiresAt > now) {
+			return Result({
+				_nay: {
+					message: "The agent is still answering in this chat. Stop it or wait for it, then send again.",
+					// Check again after a few seconds, not at the lease end: most runs end long before it.
+					data: { status: 409 as const, retryAfterMs: Math.min(thread.activeRun.expiresAt - now, 5_000) },
+				},
+			});
+		}
+
+		// The client sends a stored id, or its own id before the live query caught up.
+		let parentId: Id<"ai_chat_threads_messages_aisdk_5"> | null = null;
+		if (args.parentId !== null) {
+			const normalizedId = ctx.db.normalizeId("ai_chat_threads_messages_aisdk_5", args.parentId);
+			const parent = normalizedId
+				? await ctx.db.get("ai_chat_threads_messages_aisdk_5", normalizedId)
+				: await db_get_message_by_client_id(ctx, thread, args.parentId);
+			if (!parent || parent.threadId !== thread._id) {
+				return Result({ _nay: { message: "Message not found.", data: { status: 409 as const } } });
+			}
+			parentId = parent._id;
+		}
+
+		const existingMessages = await Promise.all(
+			args.messages.map((message) => db_get_message_by_client_id(ctx, thread, message.clientGeneratedMessageId)),
+		);
+		const newMessageCount = existingMessages.filter((message) => message === null).length;
+		if (newMessageCount > 0) {
+			const rateLimit = await rate_limiter_limit_by_key(ctx, {
+				name: "ai_chat_message_write",
+				key: args.source.userId,
+				count: newMessageCount,
+			});
+			if (rateLimit) return Result({ _nay: { message: rateLimit.message, data: { status: 400 as const } } });
+		}
+
+		// A retried request finds its messages saved already and answers them again.
+		let triggerId = parentId;
+		for (const [index, message] of args.messages.entries()) {
+			triggerId =
+				existingMessages[index]?._id ??
+				(await ai_chat_runs_db_insert_node(ctx, {
+					thread,
+					parentId: triggerId,
+					createdBy: args.source.userId,
+					clientGeneratedMessageId: message.clientGeneratedMessageId,
+					content: message.content,
+					status: "done",
+					runId: null,
+					wakePending: false,
+					jobFinishInvocationId: null,
+					newest: "set",
+					now,
+				}));
+		}
+		if (!triggerId) return Result({ _nay: { message: "Nothing to answer", data: { status: 400 as const } } });
+		const trigger = await ctx.db.get("ai_chat_threads_messages_aisdk_5", triggerId);
+		if (!trigger) throw should_never_happen("Trigger message not found", { triggerId });
+
+		const begun = await ai_chat_runs_db_begin(ctx, {
+			thread,
+			kind: "chat",
+			source: args.source,
+			triggerId,
+			modeId: args.modeId,
+			modelId: args.modelId,
+			now,
+		});
+		if (!begun) throw should_never_happen("Run lease taken inside the begin transaction", { threadId: thread._id });
+
+		return Result({
+			_yay: {
+				runId: begun.runId,
+				generation: begun.generation,
+				replyId: begun.replyId,
+				replyClientGeneratedId: begun.replyClientGeneratedId,
+				triggerId,
+				triggerClientGeneratedId: trigger.clientGeneratedMessageId,
+			},
+		});
 	},
 });
+
+async function db_get_message_by_client_id(
+	ctx: MutationCtx,
+	thread: Doc<"ai_chat_threads">,
+	clientGeneratedMessageId: string,
+) {
+	return await ctx.db
+		.query("ai_chat_threads_messages_aisdk_5")
+		.withIndex("by_organization_workspace_thread_clientGeneratedMessageId", (q) =>
+			q
+				.eq("organizationId", thread.organizationId)
+				.eq("workspaceId", thread.workspaceId)
+				.eq("threadId", thread._id)
+				.eq("clientGeneratedMessageId", clientGeneratedMessageId),
+		)
+		.first();
+}
+
+const HISTORY_MAX_BYTES = 1024 * 1024;
 
 /**
- * Check the run and write its messages in the same transaction.
+ * The branch above `fromId` as UI messages, root first, for the model. Older messages that do not
+ * fit about 1 MiB are left out; the newest user message is always in.
  */
-export const thread_run_messages_add = internalMutation({
-	args: {
-		source: ai_chat_workspaces_source_validator,
-		parentId: v.optional(v.union(v.string(), v.null())),
-		messages: thread_messages_validator,
-		/**
-		 * True only for the reply the route streamed itself. False for the request messages.
-		 */
-		allowMcpParts: v.boolean(),
-		/**
-		 * The run that streamed the reply. It commits the stored outputs the reply points at. Null
-		 * for the request messages, which are saved before the run starts and point at none.
-		 */
-		runId: v.union(v.id("ai_chat_runs"), v.null()),
-	},
-	returns: v_result({ _yay: v.object({ ids: v.array(v.id("ai_chat_threads_messages_aisdk_5")) }) }),
-	handler: async (ctx, args) => {
-		const allowed = await ai_chat_workspaces_db_resolve(ctx, { source: args.source, workspace: "current" });
-		if (allowed._nay) return Result({ _nay: { message: "Unauthorized" } });
-
-		const runId = args.runId;
-		const prepared = runId
-			? await Promise.all(
-					args.messages.map((message) =>
-						ai_chat_outputs_db_prepare_reply(ctx, { runId, threadId: args.source.threadId, content: message.content }),
-					),
-				)
-			: null;
-		const saved = await thread_messages_db_add(ctx, {
-			membershipId: args.source.membershipId,
-			threadId: args.source.threadId,
-			parentId: args.parentId,
-			messages: prepared
-				? args.messages.map((message, index) => ({ ...message, content: prepared[index]!.content }))
-				: args.messages,
-			allowMcpParts: args.allowMcpParts,
-		});
-		if (saved._yay && prepared) {
-			await ai_chat_outputs_db_commit_owners(
-				ctx,
-				prepared.flatMap((message) => message.ownerIds),
-			);
-		}
-		return saved;
-	},
-});
+async function load_branch_ui_messages(
+	ctx: ActionCtx,
+	args: { threadId: Id<"ai_chat_threads">; fromId: Id<"ai_chat_threads_messages_aisdk_5"> },
+) {
+	const messages = [];
+	let nextId: Id<"ai_chat_threads_messages_aisdk_5"> | null = args.fromId;
+	let usedBytes = 0;
+	let hasUserMessage = false;
+	let full = false;
+	// One page walks at most 256 nodes, so a long chat of short messages needs more pages. A full
+	// budget ends the walk once the newest user message is in.
+	while (nextId !== null && !(full && hasUserMessage)) {
+		const page: FunctionReturnType<typeof internal.ai_chat_runs.history_page> = await ctx.runQuery(
+			internal.ai_chat_runs.history_page,
+			{
+				threadId: args.threadId,
+				fromId: nextId,
+				usedBytes,
+				maxBytes: HISTORY_MAX_BYTES,
+				hasUserMessage,
+			},
+		);
+		messages.push(...page.messages);
+		({ nextId, usedBytes, hasUserMessage, full } = page);
+	}
+	return messages.toReversed().map((message) => ({ ...(message.content as ai_chat_UiMessage), id: message.id }));
+}
 
 /**
  * Keep this in sync with the AI SDK `PrepareSendMessagesRequest` shape used by
@@ -2597,13 +2352,17 @@ export type ai_chat_http_chat_Body = z.infer<typeof chat_body_validator>;
 const AI_CHAT_MAX_STEPS = 25;
 
 /**
+ * The run's action checks its run doc this often, so Stop reaches it within about 2 seconds.
+ */
+const RUN_STOP_POLL_MS = 2000;
+
+/**
  * One agent turn: the model stream with the tools, the title of a new thread, billing and the
- * stored reply.
+ * saved reply steps.
  *
  * `/api/chat` returns the stream to the browser; `run_job_wakeup` reads it to the end on the server.
- *
- * The reply is stored through a callback because the two callers use
- * different doors: the public `thread_messages_add` needs the request's auth, a wakeup has none.
+ * The reply node exists before the stream starts. Each step saves itself when it ends, and
+ * `finish` saves the unfinished step and ends the run, however the stream ends.
  */
 async function create_agent_turn_stream(args: {
 	ctx: ActionCtx;
@@ -2611,18 +2370,28 @@ async function create_agent_turn_stream(args: {
 	agent: ReturnType<typeof build_agent_configuration>;
 	workspaceSystem: string;
 	/**
-	 * The branch the turn continues, root first.
+	 * The branch the turn continues, root first. It ends with the run's trigger.
 	 */
 	uiMessages: ai_chat_UiMessage[];
 	threadId: Id<"ai_chat_threads">;
 	source: Infer<typeof ai_chat_workspaces_source_validator>;
+	run: {
+		runId: Id<"ai_chat_runs">;
+		generation: number;
+		replyId: Id<"ai_chat_threads_messages_aisdk_5">;
+		replyClientGeneratedId: string;
+		triggerId: Id<"ai_chat_threads_messages_aisdk_5">;
+		triggerClientGeneratedId: string;
+	};
 	/**
 	 * Set when the request created the thread: the stream tells the browser the new id.
 	 */
 	createdThreadId: Id<"ai_chat_threads"> | null;
-	parentId: string | null | undefined;
-	parentClientGeneratedId: string | null;
-	abortSignal: AbortSignal | undefined;
+	/**
+	 * Aborts the model and the tools. Stop aborts it through the run poll below, and `/api/chat`
+	 * also aborts it when the browser drops the request.
+	 */
+	abortController: AbortController;
 	membership: Doc<"organizations_workspaces_users">;
 	userId: Id<"users">;
 	billedUser: Doc<"users">;
@@ -2631,60 +2400,23 @@ async function create_agent_turn_stream(args: {
 	 */
 	generateTitle: boolean;
 	/**
-	 * Cutoff for finish-message injection: finishes written at or after this time. Callers
-	 * pass a time before their lease grant, so anything older saw a free lease and scheduled
-	 * its own wake run.
-	 */
-	runStartedAt: number;
-	/**
-	 * One finish message the turn already answers, never injected again. The wake run passes
-	 * its own finish message; the chat route passes null.
-	 */
-	excludeFinishMessageId: Id<"ai_chat_threads_messages_aisdk_5"> | null;
-	/**
-	 * Finish messages the turn never injected, oldest first. The caller schedules one
-	 * wake run for the oldest, or nothing when empty. Also run after abort or error, and
-	 * once more after the lease is released, so a finish that landed during the last write
-	 * is not left without a wake.
-	 */
-	onUninjectedFinishedMessages: (
-		finishedMessages: Array<{
-			messageId: Id<"ai_chat_threads_messages_aisdk_5">;
-			invocationId: Id<"ai_chat_bash_invocations"> | null;
-		}>,
-	) => Promise<void>;
-	storeReply: (message: ai_chat_UiMessage) => Promise<void>;
-	/**
-	 * Called once when the stream ends, however it ends: the thread's run lease goes back.
-	 */
-	releaseRun: () => Promise<void>;
-	/**
 	 * Sign-in servers left out of this turn because even their tool list needs sign-in. The reply
 	 * starts with a notice for them. A wakeup passes an empty list, because it loads no MCP tools.
 	 */
 	mcpAuthNeeded: ai_chat_McpAuthNeededData["servers"];
 }) {
-	const {
-		ctx,
-		workspaceSystem,
-		uiMessages,
-		threadId,
-		createdThreadId,
-		membership,
-		billedUser,
-		parentId: resolvedParentId,
-		parentClientGeneratedId: resolvedParentClientGeneratedId,
-	} = args;
+	const { ctx, workspaceSystem, uiMessages, threadId, createdThreadId, membership, billedUser, run } = args;
 	const { systemPrompt, tools, validationTools, activeTools, toolBudget, jobWait, observations } = args.agent;
+	const abortSignal = args.abortController.signal;
 
-	// The two callers build this history through different doors, so check it once more right where
+	// The history comes from stored steps and request messages, so check it once more right where
 	// it turns into model input. A forged tool part must never reach the model.
 	if (uiMessages.some((message) => !has_valid_file_tool_parts(message, { allowMcpParts: true }))) {
 		throw new Error("Invalid file tool result parts");
 	}
 
 	const modelMessages = add_generated_file_summaries(
-		await convertToModelMessages(uiMessages, {
+		await convertToModelMessages(split_job_finish_parts(uiMessages), {
 			ignoreIncompleteToolCalls: true,
 			tools: validationTools,
 		}),
@@ -2707,22 +2439,51 @@ async function create_agent_turn_stream(args: {
 	}
 
 	let didStreamError = false;
-	let responseStorageError: string | null = null;
-	// Finishes injected into this turn, oldest first. The SDK rebuilds each step's input from
-	// the initial plus response messages, so the step override below re-appends the whole list
-	// at every boundary; without that a finish would vanish after one step.
-	const injectedFinishedMessages: Array<{ messageId: Id<"ai_chat_threads_messages_aisdk_5">; text: string }> = [];
-	const read_uninjected_finished_messages = async () => {
-		const finishedMessagesSinceStart = await ctx.runQuery(internal.ai_chat.list_finish_messages_since, {
-			source: args.source,
-			sinceMs: args.runStartedAt,
-		});
-		return finishedMessagesSinceStart.filter(
-			(finish) =>
-				finish.messageId !== args.excludeFinishMessageId &&
-				!injectedFinishedMessages.some((injected) => injected.messageId === finish.messageId),
-		);
+	let stepStorageError: string | null = null;
+	// The model's current step, which the receipt middleware plans. The browser stream reaches each
+	// step's end later, so saving counts its own steps and the reply parts it already saved.
+	let modelStepIndex = 0;
+	let savedStepCount = 0;
+	let savedPartCount = 0;
+	// Job finishes shown to this turn, oldest first. The SDK rebuilds each step's input from the
+	// initial plus response messages, so the step override below re-appends the whole list at every
+	// boundary; without that a finish would vanish after one step.
+	const injectedFinishTexts: string[] = [];
+
+	/**
+	 * Abort the model stream. An abort listener can throw: the dev logs once showed "The stream is not
+	 * in a state that permits close" thrown at this abort call. Uncaught, it ends this action before
+	 * `finish`. So catch it here. The Stop grace end in `ai_chat_runs.ts` covers the other cases.
+	 */
+	const stop_stream = () => {
+		try {
+			args.abortController.abort();
+		} catch (error) {
+			console.warn("AI chat abort listener failed", {
+				threadId,
+				runId: run.runId,
+				errorName: error instanceof Error ? error.name : "Error",
+			});
+		}
 	};
+
+	// Stop reaches this action only through the run doc: the Stop mutation raises its generation.
+	const stopPoll = setInterval(() => {
+		ctx
+			.runQuery(internal.ai_chat_runs.get_state, { runId: run.runId })
+			.then((state) => {
+				if (!state || state.status !== "running" || state.generation !== run.generation) {
+					stop_stream();
+				}
+			})
+			.catch((error: unknown) => {
+				console.error("AI chat stop check failed", {
+					threadId,
+					runId: run.runId,
+					errorName: error instanceof Error ? error.name : "Error",
+				});
+			});
+	}, RUN_STOP_POLL_MS);
 
 	// Every provider request of this turn bills through its own receipt, including the title.
 	const receipts = ai_model_call_receipts_create(
@@ -2735,14 +2496,43 @@ async function create_agent_turn_stream(args: {
 			workspaceId: membership.workspaceId,
 		},
 		args.agent.modelCallIds,
+		{
+			runId: run.runId,
+			generation: run.generation,
+			getStepIndex: () => modelStepIndex,
+			stoppedToolCallIds: toolBudget.stoppedToolCallIds,
+		},
 	);
 
+	/**
+	 * Check the parts of one step before they are saved. The step saves the same safe shape as the
+	 * other doors, and one step must fit one Convex document.
+	 */
+	const check_step_parts = (parts: ai_chat_UiMessage["parts"]) => {
+		if (!has_valid_file_tool_parts({ parts }, { allowMcpParts: true })) {
+			throw new Error("Invalid file tool result parts");
+		}
+		if (!ai_chat_message_fits_storage({ parts })) {
+			stepStorageError =
+				"This reply is too large and was not saved. Start a new message and ask for a shorter result or smaller file pages. Any file changes already made still need review.";
+			// Only the browser sees the refusal above. Log the lost step so the team can see it too.
+			// Log ids and sizes only, never the reply text.
+			console.error("Chat data not saved", {
+				reason: "reply_too_large",
+				threadId,
+				runId: run.runId,
+				messageId: run.replyId,
+				bytes: new TextEncoder().encode(JSON.stringify(parts)).byteLength,
+				limit: ai_chat_MESSAGE_MAX_BYTES,
+			});
+			throw new Error(stepStorageError);
+		}
+	};
+
 	const stream = createUIMessageStream<ai_chat_UiMessage>({
-		generateId: get_id_generator("ai_message"),
+		// The reply node's own client id, so the live message and the saved node are one message.
+		generateId: () => run.replyClientGeneratedId,
 		execute: async ({ writer }) => {
-			// TODO(ai-chat): If we allocate Convex message docs up front, emit a transient `data-message-ids`
-			// part here (while `writer` is available) so the client can swap optimistic UIMessage ids to
-			// Convex ids and/or drop optimistic messages immediately, without persisting client ids in db.
 			if (createdThreadId) {
 				writer.write({
 					type: "data-thread-id",
@@ -2756,8 +2546,9 @@ async function create_agent_turn_stream(args: {
 			writer.write({
 				type: "message-metadata",
 				messageMetadata: {
-					convexParentId: uiMessages.at(-1)?.id,
-					parentClientGeneratedId: resolvedParentClientGeneratedId,
+					convexId: run.replyId,
+					convexParentId: run.triggerId,
+					parentClientGeneratedId: run.triggerClientGeneratedId,
 				},
 			});
 
@@ -2778,18 +2569,23 @@ async function create_agent_turn_stream(args: {
 				// SDK retries reuse private observations without running prepareStep's access checks again.
 				maxRetries: 0,
 				prepareStep: async ({ stepNumber, messages, steps }) => {
-					// Read first: even the branches below that end the turn answer with the latest
+					modelStepIndex = stepNumber;
+					// Claim first: even the branches below that end the turn answer with the latest
 					// finishes. A job can finish mid-run; the model reads its message like any
 					// earlier turn output and decides what to say about it. Like Claude Code
 					// (code.claude.com/docs/en/sub-agents), never break streaming text: a finish
-					// waits for a step boundary.
-					const added = await read_uninjected_finished_messages();
-					for (const finish of added) {
-						injectedFinishedMessages.push({ messageId: finish.messageId, text: finish.text });
+					// waits for a step boundary. The step's save deletes the claims it shows.
+					const claimed = await ctx.runMutation(internal.ai_chat_runs.claim_inbox, {
+						runId: run.runId,
+						generation: run.generation,
+						stepIndex: stepNumber,
+					});
+					for (const finish of claimed) {
+						injectedFinishTexts.push(finish.text);
 					}
-					const injectedMessages = injectedFinishedMessages.map((finish) => ({
+					const injectedMessages = injectedFinishTexts.map((text) => ({
 						role: "system" as const,
-						content: finish.text,
+						content: text,
 					}));
 					let browserUnavailable: string | null = null;
 					if (args.agent.browserContext && !(await ai_chat_tool_browser_check_bindings(ctx, args.agent.browserContext)))
@@ -2814,7 +2610,7 @@ async function create_agent_turn_stream(args: {
 							workspace,
 						});
 						if (destination._nay) throw new Error(destination._nay.message);
-						args.abortSignal?.throwIfAborted();
+						abortSignal.throwIfAborted();
 						imageWorkspace = workspace;
 					}
 
@@ -2884,7 +2680,7 @@ async function create_agent_turn_stream(args: {
 				},
 				messages: modelMessages,
 				maxOutputTokens: 2000,
-				abortSignal: args.abortSignal,
+				abortSignal,
 				activeTools,
 				experimental_repairToolCall: async (failed) => {
 					const lowerToolName = failed.toolCall.toolName.toLowerCase();
@@ -2909,11 +2705,7 @@ async function create_agent_turn_stream(args: {
 					console.error("AI chat provider error", { threadId, modelId: args.modelId });
 				},
 				onAbort: async () => {
-					console.info("streamText.onAbort", {
-						threadId,
-						parentId: resolvedParentId,
-						requestSignalAborted: args.abortSignal?.aborted ?? false,
-					});
+					console.info("streamText.onAbort", { threadId, runId: run.runId });
 				},
 			});
 
@@ -2931,13 +2723,13 @@ async function create_agent_turn_stream(args: {
 					.pipeThrough(create_file_result_scrub_transform()),
 			);
 
-			if (args.abortSignal?.aborted) {
+			if (abortSignal.aborted) {
 				return;
 			}
 
 			const response1 = await result1.response;
 
-			if (args.abortSignal?.aborted) {
+			if (abortSignal.aborted) {
 				return;
 			}
 
@@ -2950,7 +2742,7 @@ async function create_agent_turn_stream(args: {
 				: null;
 			const existingTitle = typeof thread?.title === "string" ? thread.title.trim() : "";
 			if (thread && !existingTitle) {
-				if (args.abortSignal?.aborted) {
+				if (abortSignal.aborted) {
 					return;
 				}
 
@@ -2978,7 +2770,7 @@ async function create_agent_turn_stream(args: {
 					messages: titleMessages,
 					stopWhen: stepCountIs(1),
 					maxOutputTokens: 50,
-					abortSignal: args.abortSignal,
+					abortSignal,
 					onError: () => {
 						console.error("AI chat title provider error", { threadId });
 					},
@@ -3023,93 +2815,66 @@ async function create_agent_turn_stream(args: {
 			console.error("AI chat stream error", { threadId });
 			return error instanceof Error ? error.message : String(error);
 		},
-		onFinish: async (result) => {
-			let caughtUninjected = false;
-			try {
-				if (result.responseMessage && !didStreamError) {
-					// TODO(ai-chat-reply-size): The tool budget caps tool bytes only. Text and reasoning over
-					// many steps can still push a reply past the storage limit, and then it is not saved.
-					if (!ai_chat_message_fits_storage(result.responseMessage)) {
-						responseStorageError =
-							"This reply is too large and was not saved. Start a new message and ask for a shorter result or smaller file pages. Any file changes already made still need review.";
-						// Only the browser sees the refusal above. Log the lost reply so the team can see it too.
-						// Log ids and sizes only, never the reply text.
-						console.error("Chat data not saved", {
-							reason: "reply_too_large",
-							threadId,
-							messageId: result.responseMessage.id,
-							bytes: new TextEncoder().encode(JSON.stringify(result.responseMessage)).byteLength,
-							limit: ai_chat_MESSAGE_MAX_BYTES,
-						});
-					} else {
-						// Persist the assistant reply, including a Stop, below the last persisted request
-						// message. A mid-run finish re-parents through `get_chat_reply_parent`. Billing is
-						// already saved per provider request by the receipt middleware.
-						try {
-							await args.storeReply(result.responseMessage);
-						} catch (error) {
-							// A refused save and a Convex limit error both lose the reply. Log only the error
-							// name, because a Convex validation error can quote the reply text. A mutation that
-							// throws writes its own log line with the details.
-							console.error("Chat data not saved", {
-								reason: "reply_save_failed",
-								threadId,
-								messageId: result.responseMessage.id,
-								bytes: new TextEncoder().encode(JSON.stringify(result.responseMessage)).byteLength,
-								errorName: error instanceof Error ? error.name : "Error",
-							});
-							throw error;
-						}
-					}
-				} else if (result.isAborted) {
-					console.info("onFinish aborted", {
-						threadId,
-						parentId: resolvedParentId,
-						isAborted: result.isAborted,
-						didStreamError,
-						hasResponseMessage: Boolean(result.responseMessage),
-					});
-				} else if (didStreamError) {
-					console.info("onFinish stream error", {
-						threadId,
-						parentId: resolvedParentId,
-						hasResponseMessage: Boolean(result.responseMessage),
-					});
-				}
-
-				// A finish can land after the last step boundary, including during abort or error.
-				const uninjected = await read_uninjected_finished_messages();
-				if (uninjected.length > 0) {
-					await args.onUninjectedFinishedMessages(
-						uninjected.map((finish) => ({ messageId: finish.messageId, invocationId: finish.invocationId })),
-					);
-					caughtUninjected = true;
-				}
-			} finally {
-				// Let the response id saves finish before the run ends, so the recovery cron can find
-				// the usage of a request that was stopped before its finish.
-				await receipts.settle();
-				await args.releaseRun();
+		// Runs at each step end, before the step's end reaches the browser.
+		onStepFinish: async ({ responseMessage }) => {
+			const parts = responseMessage.parts.slice(savedPartCount);
+			check_step_parts(parts);
+			const saved = await ctx.runMutation(internal.ai_chat_runs.step_complete, {
+				runId: run.runId,
+				generation: run.generation,
+				stepIndex: savedStepCount,
+				parts,
+				finishReason: null,
+			});
+			// Stop raised the generation. `finish` below saves this step as the stopped one.
+			if (!saved.saved) {
+				stop_stream();
+				return;
 			}
+			savedStepCount += 1;
+			savedPartCount = responseMessage.parts.length;
+		},
+		onFinish: async ({ responseMessage, isAborted }) => {
+			clearInterval(stopPoll);
+			// Let the response id saves finish before the run ends, so the recovery cron can find
+			// the usage of a request that was stopped before its finish.
+			await receipts.settle();
 
-			// A finish can commit after the read above and before the lease drops. Read once more
-			// only when that first catch was empty, so a successful handover is not scheduled twice.
-			if (!caughtUninjected) {
-				const leftover = await read_uninjected_finished_messages();
-				if (leftover.length > 0) {
-					await args.onUninjectedFinishedMessages(
-						leftover.map((finish) => ({ messageId: finish.messageId, invocationId: finish.invocationId })),
-					);
-				}
+			// A step refused as too large is the tail too, and it is already logged. Do not check it twice.
+			let tailParts: ai_chat_UiMessage["parts"] | null = stepStorageError
+				? null
+				: responseMessage.parts.slice(savedPartCount);
+			try {
+				if (tailParts) check_step_parts(tailParts);
+			} catch {
+				tailParts = null;
+			}
+			try {
+				await ctx.runMutation(internal.ai_chat_runs.finish, {
+					runId: run.runId,
+					generation: run.generation,
+					outcome: didStreamError ? "failed" : isAborted || abortSignal.aborted ? "stopped" : "done",
+					tail: tailParts && tailParts.length > 0 ? { stepIndex: savedStepCount, parts: tailParts } : null,
+				});
+			} catch (error) {
+				// The watchdog ends the run when its lease passes. The unsaved step is lost. Log only
+				// the error name, because a Convex validation error can quote the reply text.
+				console.error("Chat data not saved", {
+					reason: "run_finish_failed",
+					threadId,
+					runId: run.runId,
+					messageId: run.replyId,
+					errorName: error instanceof Error ? error.name : "Error",
+				});
 			}
 		},
 	});
 
 	return stream.pipeThrough(
 		new TransformStream<InferUIMessageChunk<ai_chat_UiMessage>, InferUIMessageChunk<ai_chat_UiMessage>>({
-			// SDK onFinish runs during flush. Send its storage refusal before the stream closes.
+			// A step save runs while the stream flows. Send its storage refusal before the stream closes.
 			flush(controller) {
-				if (responseStorageError) controller.enqueue({ type: "error", errorText: responseStorageError });
+				if (stepStorageError) controller.enqueue({ type: "error", errorText: stepStorageError });
 			},
 		}),
 	);
@@ -3120,6 +2885,10 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 	// ends. The catch below ends the run when the stream never started.
 	let threadId: Id<"ai_chat_threads"> | null = null;
 	let runId: Id<"ai_chat_runs"> | null = null;
+	let runGeneration: number | null = null;
+	// A dropped request stops the run like Stop does.
+	const runAbort = new AbortController();
+	request.signal.addEventListener("abort", () => runAbort.abort(), { once: true });
 	try {
 		const requestParseResult = await server_request_json_parse_and_validate(request, chat_body_validator);
 
@@ -3213,8 +2982,6 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 
 		let sourceMessageId: Id<"ai_chat_threads_messages_aisdk_5"> | null = null;
 
-		const uiMessages: ai_chat_UiMessage[] = [];
-
 		if (body.threadId) {
 			const existingThread = await ctx.runQuery(api.ai_chat.thread_get, {
 				membershipId: membership._id,
@@ -3266,6 +3033,10 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 			// forged tool parts before this turn runs or stores them.
 			if (!has_valid_file_tool_parts(requestMessage, { allowMcpParts: false })) {
 				return { status: 400, body: { message: "Invalid file tool result parts" } } as const;
+			}
+			// Only the server writes replies. The browser sends user messages only.
+			if (requestMessage.role !== "user") {
+				return { status: 400, body: { message: "Only user messages can be sent" } } as const;
 			}
 
 			if (!ai_chat_message_fits_storage(requestMessage)) {
@@ -3336,10 +3107,10 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 							membershipId: membership._id,
 							membershipLifetime: workspaces._yay.membershipLifetime,
 							getThreadId: () => threadId,
-							getRunId: () => runId,
+							getRun: () => (runId && runGeneration !== null ? { runId, generation: runGeneration } : null),
 							getModelCallId: (toolCallId) => modelCallIds.get(toolCallId) ?? null,
 							// The lease starts a little after `now`, so this deadline is on the safe side.
-							runDeadline: now + CHAT_RUN_LEASE_MS,
+							runDeadline: now + ai_chat_runs_LEASE_MS,
 						},
 						reachOrganizationIds: [
 							...new Set(ai_chat_workspaces_SELECTORS.map((selector) => workspaces._yay[selector].organizationId)),
@@ -3366,13 +3137,13 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 			},
 			getThreadId: () => threadId,
 			// The run starts right before the stream, so every tool call sees it.
-			getRunId: () => runId,
+			getRun: () => (runId && runGeneration !== null ? { runId, generation: runGeneration } : null),
 			modelCallIds,
 			getWorkspaceContext: () => workspaceContext,
 			membershipId: membership._id,
 			browserIntent: body.browserIntent,
 			getSourceMessageId: () => sourceMessageId,
-			abortSignal: request.signal,
+			abortSignal: runAbort.signal,
 			mcpTools: mcp.tools,
 			mcpNotes: mcp.notes,
 		});
@@ -3446,138 +3217,32 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 			workspaceSystem = initialized._yay.system;
 		}
 
-		// FIX(parentId-race-condition): Track the resolved Convex doc ID for `onFinish` persistence.
-		let resolvedParentId: string | null | undefined = body.parentId;
-		let resolvedParentClientGeneratedId: string | null = null;
-
-		if (threadId) {
-			do {
-				const threadMessagesResult = await ctx.runQuery(api.ai_chat.thread_messages_list, {
-					threadId: threadId as Id<"ai_chat_threads">,
-					membershipId: membership._id,
-					order: "asc",
-				});
-
-				if (!threadMessagesResult) {
-					break;
-				}
-
-				// Resolve both Convex ids and client-generated ids. Reject unresolved parents
-				// so the UI can wait for sync instead of creating an accidental root branch.
-				const parentContext = resolve_parent_message_context({
-					messages: threadMessagesResult.messages,
-					parentId: body.parentId,
-				});
-				if (parentContext._nay) {
-					console.warn("AI chat parent message id unresolved; rejecting request", {
-						threadId,
-						parentId: body.parentId,
-						unresolvedParentId: parentContext._nay.data.unresolvedParentId,
-					});
-					return {
-						status: 409,
-						body: {
-							message: parentContext._nay.message,
-						},
-					} as const;
-				}
-
-				resolvedParentId = parentContext._yay.resolvedParentId;
-				resolvedParentClientGeneratedId = parentContext._yay.resolvedParentClientGeneratedId;
-
-				for (let i = parentContext._yay.reconstructedMessages.length - 1; i >= 0; i--) {
-					const msg = parentContext._yay.reconstructedMessages[i];
-					uiMessages.push({
-						...(msg.content as any),
-						id: msg._id,
-					});
-				}
-			} while (0);
-		}
-
-		// Persist user-submitted messages before starting assistant streaming.
-		// This keeps edits durable even when the user stops generation.
-		if (requestMessages.length > 0) {
-			const persistedRequestMessages = await ctx.runMutation(internal.ai_chat.thread_run_messages_add, {
-				source,
-				parentId: resolvedParentId,
-				messages: requestMessages.map((message) => ({
-					clientGeneratedMessageId: message.id,
-					content: message,
-				})),
-				allowMcpParts: false,
-				runId: null,
-			});
-
-			if (persistedRequestMessages._nay) {
-				return {
-					status: 403,
-					body: {
-						message: persistedRequestMessages._nay.message,
-					},
-				} as const;
-			}
-
-			for (let i = 0; i < requestMessages.length; i++) {
-				const requestMessage = requestMessages[i];
-				const persistedMessageId = persistedRequestMessages._yay.ids[i];
-				if (!persistedMessageId) {
-					throw should_never_happen("Failed to map request message to persisted message ID", {
-						threadId,
-						requestMessageId: requestMessage.id,
-						index: i,
-					});
-				}
-
-				uiMessages.push({
-					...requestMessage,
-					id: persistedMessageId,
-				} satisfies ai_chat_UiMessage);
-				if (requestMessage.role === "user") sourceMessageId = persistedMessageId;
-			}
-
-			resolvedParentId = persistedRequestMessages._yay.ids.at(-1) ?? resolvedParentId;
-			resolvedParentClientGeneratedId = requestMessages.at(-1)?.id ?? resolvedParentClientGeneratedId;
-		}
-		// Regenerate reuses the last persisted user source, while capturing fresh intent.
-		if (!sourceMessageId) {
-			const userMessage = uiMessages.findLast((message) => message.role === "user");
-			sourceMessageId = userMessage ? (userMessage.id as Id<"ai_chat_threads_messages_aisdk_5">) : null;
-		}
-
 		// Both branches above set the thread id.
 		const runThreadId = threadId as Id<"ai_chat_threads">;
 
-		// The lease tells a finishing job that a run is streaming; `thread_run_begin` refuses while
-		// a job wakeup runs, so two runs never write the same branch at once.
-		runId = await ctx.runMutation(internal.ai_chat.thread_run_begin, { source });
-		if (!runId) {
-			const retryAfterMs = await ctx.runQuery(internal.ai_chat.get_wake_retry_after_ms, {
-				threadId: runThreadId,
-			});
-			// The wake can end between the refused begin and this read. Try the lease once more
-			// so a saved user message still starts a turn instead of showing an error.
-			if (retryAfterMs === null) {
-				runId = await ctx.runMutation(internal.ai_chat.thread_run_begin, { source });
-			}
-			if (!runId) {
-				const waitMs =
-					retryAfterMs ??
-					(await ctx.runQuery(internal.ai_chat.get_wake_retry_after_ms, {
-						threadId: runThreadId,
-					})) ??
-					0;
-				return {
-					status: 409,
-					body: {
-						message:
-							"The agent is reporting a finished background job. Your message is saved and will be answered next.",
-						retryAfterMs: waitMs,
-					},
-				} as const;
-			}
+		const begun = await ctx.runMutation(internal.ai_chat.thread_run_begin, {
+			source,
+			parentId: body.parentId ?? null,
+			messages: requestMessages.map((message) => ({ clientGeneratedMessageId: message.id, content: message })),
+			modeId: body.mode,
+			modelId: body.model,
+		});
+		if (begun._nay) {
+			return {
+				status: begun._nay.data?.status ?? 400,
+				body: {
+					message: begun._nay.message,
+					retryAfterMs: begun._nay.data && "retryAfterMs" in begun._nay.data ? begun._nay.data.retryAfterMs : undefined,
+				},
+			} as const;
 		}
-		const chatRunId = runId;
+		runId = begun._yay.runId;
+		runGeneration = begun._yay.generation;
+
+		const uiMessages = await load_branch_ui_messages(ctx, { threadId: runThreadId, fromId: begun._yay.triggerId });
+		// The browser intent and the file tools belong to the newest user message of the branch.
+		const sourceMessage = uiMessages.findLast((message) => message.role === "user");
+		sourceMessageId = sourceMessage ? (sourceMessage.id as Id<"ai_chat_threads_messages_aisdk_5">) : null;
 
 		const stream = await create_agent_turn_stream({
 			ctx,
@@ -3587,70 +3252,28 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 			uiMessages,
 			threadId: runThreadId,
 			source,
+			run: begun._yay,
 			createdThreadId,
-			parentId: resolvedParentId,
-			parentClientGeneratedId: resolvedParentClientGeneratedId,
-			abortSignal: request.signal,
+			abortController: runAbort,
 			membership,
 			userId: user._id,
 			billedUser,
 			generateTitle: true,
-			runStartedAt: now,
-			excludeFinishMessageId: null,
-			storeReply: async (message) => {
-				// A job can finish mid-run; `get_chat_reply_parent` chains under its message.
-				const parentId = await ctx.runQuery(internal.ai_chat.get_chat_reply_parent, {
-					threadId: runThreadId,
-					fallbackParentId: resolvedParentId,
-				});
-				const stored = await ctx.runMutation(internal.ai_chat.thread_run_messages_add, {
-					source,
-					parentId,
-					messages: [{ clientGeneratedMessageId: message.id, content: message }],
-					allowMcpParts: true,
-					runId: chatRunId,
-				});
-				if (stored._nay) {
-					throw new Error("Failed to persist assistant message", { cause: stored._nay });
-				}
-			},
-			releaseRun: async () => {
-				runId = null;
-				await ctx.runMutation(internal.ai_chat.thread_run_end, { runId: chatRunId });
-			},
 			mcpAuthNeeded: mcp.authNeeded,
-			onUninjectedFinishedMessages: async (finishedMessages) => {
-				// Oldest first: the wake run answers it as its parent branch and injects the
-				// newer ones at its own step boundaries, so one run covers the whole backlog.
-				const oldest = finishedMessages.find((finish) => finish.invocationId !== null);
-				if (!oldest?.invocationId) return;
-				// The leftover catch runs after this run dropped the lease, so there may be no chat
-				// lease to hand over. Take a free wake lease instead.
-				const wakeRunId =
-					(await ctx.runMutation(internal.ai_chat.thread_run_handover_to_wakeup, {
-						threadId: runThreadId,
-						invocationId: oldest.invocationId,
-					})) ??
-					(await ctx.runMutation(internal.ai_chat.thread_run_begin_wakeup, {
-						threadId: runThreadId,
-						invocationId: oldest.invocationId,
-					}));
-				if (!wakeRunId) return;
-				await ctx.scheduler.runAfter(0, internal.ai_chat.run_job_wakeup, {
-					invocationId: oldest.invocationId,
-					threadId: runThreadId,
-					finishMessageId: oldest.messageId,
-					runId: wakeRunId,
-				});
-			},
 		});
 
 		return { status: 200, body: stream } as const;
 	} catch (error) {
 		const errorMessage = "AI chat stream error";
 		console.error(errorMessage, { threadId });
-		if (runId) {
-			await ctx.runMutation(internal.ai_chat.thread_run_end, { runId });
+		// The stream never started, so its `finish` never runs. End the run here.
+		if (runId && runGeneration !== null) {
+			await ctx.runMutation(internal.ai_chat_runs.finish, {
+				runId,
+				generation: runGeneration,
+				outcome: "failed",
+				tail: null,
+			});
 		}
 
 		return {
@@ -3681,17 +3304,24 @@ export async function ai_chat_http_chat_response(ctx: ActionCtx, request: Reques
 /**
  * The wake context query of `run_job_wakeup`: what `/api/chat` reads with the request's auth, read with the
  * user who launched the job instead. Refuse when that user lost the membership, the workspace
- * read permission, or ownership of the thread since the launch. The mode is the
- * one of the launching call: `allowDbFilesMkdir` is set only in Agent mode.
+ * read permission, or ownership of the thread since the launch. The run doc holds the mode and
+ * model that the wake select in `ai_chat_runs.ts` took from the job.
  */
 export const get_job_wakeup_context = internalQuery({
-	args: { invocationId: v.id("ai_chat_bash_invocations") },
+	args: { runId: v.id("ai_chat_runs") },
 	returns: v_result({
 		_yay: v.object({
 			membership: doc(app_convex_schema, "organizations_workspaces_users"),
 			membershipLifetime: v.number(),
 			thread: doc(app_convex_schema, "ai_chat_threads"),
-			messages: v.array(doc(app_convex_schema, "ai_chat_threads_messages_aisdk_5")),
+			run: v.object({
+				runId: v.id("ai_chat_runs"),
+				generation: v.number(),
+				replyId: v.id("ai_chat_threads_messages_aisdk_5"),
+				replyClientGeneratedId: v.string(),
+				triggerId: v.id("ai_chat_threads_messages_aisdk_5"),
+				triggerClientGeneratedId: v.string(),
+			}),
 			modelId: v.union(...ai_chat_MODEL_IDS.map((modelId) => v.literal(modelId))),
 			modeId: v.union(...ai_chat_MODE_IDS.map((modeId) => v.literal(modeId))),
 			browserIntent: v.union(browser_intent_validator, v.null()),
@@ -3699,15 +3329,20 @@ export const get_job_wakeup_context = internalQuery({
 		}),
 	}),
 	handler: async (ctx, args) => {
-		const invocation = await ctx.db.get("ai_chat_bash_invocations", args.invocationId);
-		if (!invocation?.job) return Result({ _nay: { message: "Not found" } });
+		const run = await ctx.db.get("ai_chat_runs", args.runId);
+		if (!run || run.status !== "running") return Result({ _nay: { message: "Not found" } });
+		const trigger = await ctx.db.get("ai_chat_threads_messages_aisdk_5", run.triggerId);
+		const reply = await ctx.db.get("ai_chat_threads_messages_aisdk_5", run.replyId);
+		const invocation = trigger?.jobFinishInvocationId
+			? await ctx.db.get("ai_chat_bash_invocations", trigger.jobFinishInvocationId)
+			: null;
+		if (!trigger || !reply || !invocation?.job) return Result({ _nay: { message: "Not found" } });
 		const userAuth = { id: invocation.userId };
 		// The same fence as every other job door: it also checks the membership lifetime, so a
 		// member who was removed and invited again cannot be woken by the older membership.
 		const membership = await ai_chat_files_db_get_invocation_membership(ctx, invocation);
 		if (!membership) return Result({ _nay: { message: "Unauthorized" } });
 
-		const modeId = invocation.job.allowDbFilesMkdir ? "agent" : "ask";
 		const authorized = await access_control_db_authorize_membership(ctx, {
 			userAuth,
 			membership,
@@ -3726,21 +3361,21 @@ export const get_job_wakeup_context = internalQuery({
 		)
 			return Result({ _nay: { message: "Not found" } });
 
-		const messages = await ctx.db
-			.query("ai_chat_threads_messages_aisdk_5")
-			.withIndex("by_organization_workspace_thread", (q) =>
-				q.eq("organizationId", thread.organizationId).eq("workspaceId", thread.workspaceId).eq("threadId", thread._id),
-			)
-			.order("asc")
-			.collect();
 		return Result({
 			_yay: {
 				membership,
 				membershipLifetime: invocation.membershipLifetime,
 				thread,
-				messages,
-				modelId: invocation.job.wakeAgent?.modelId ?? ai_chat_DEFAULT_MODEL_ID,
-				modeId,
+				run: {
+					runId: run._id,
+					generation: run.generation,
+					replyId: reply._id,
+					replyClientGeneratedId: reply.clientGeneratedMessageId,
+					triggerId: trigger._id,
+					triggerClientGeneratedId: trigger.clientGeneratedMessageId,
+				},
+				modelId: run.modelId,
+				modeId: run.modeId,
 				browserIntent: invocation.browserIntent ?? null,
 				sourceMessageId: invocation.sourceMessageId ?? null,
 			},
@@ -3754,237 +3389,28 @@ type get_job_wakeup_context_Result =
 		: never;
 
 /**
- * Store the reply of a wakeup run on the finish's current branch. `thread_messages_add` is the
- * public door and needs the request's auth; a wakeup has none, so this one takes the user who
- * launched the job.
- *
- * A later finish or the chat reply can land under the finish while this run
- * streams; parenting on that newest descendant keeps one line.
- *
- * Returns `false` when it refuses the reply, so the caller can log the lost reply.
- */
-export const store_job_wakeup_reply = internalMutation({
-	args: {
-		threadId: v.id("ai_chat_threads"),
-		userId: v.id("users"),
-		finishMessageId: v.id("ai_chat_threads_messages_aisdk_5"),
-		clientGeneratedMessageId:
-			app_convex_schema.tables.ai_chat_threads_messages_aisdk_5.validator.fields.clientGeneratedMessageId,
-		content: app_convex_schema.tables.ai_chat_threads_messages_aisdk_5.validator.fields.content,
-		/**
-		 * The wake run that streamed the reply. It commits the stored outputs the reply points at.
-		 */
-		runId: v.id("ai_chat_runs"),
-	},
-	returns: v.boolean(),
-	handler: async (ctx, args) => {
-		const thread = await ctx.db.get("ai_chat_threads", args.threadId);
-		if (!thread || thread.createdBy !== args.userId) return false;
-		const finish = await ctx.db.get("ai_chat_threads_messages_aisdk_5", args.finishMessageId);
-		if (!finish || finish.threadId !== thread._id || !finish.jobFinishInvocationId) return false;
-		const invocation = await ctx.db.get("ai_chat_bash_invocations", finish.jobFinishInvocationId);
-		if (!invocation?.job || invocation.threadId !== thread._id || invocation.userId !== args.userId) return false;
-
-		// A stream can finish after access was removed. Rejoining must not revive that run.
-		const membership = await ai_chat_files_db_get_invocation_membership(ctx, invocation);
-		if (!membership) return false;
-		const authorized = await access_control_db_authorize_membership(ctx, {
-			userAuth: { id: args.userId },
-			membership,
-			permission: "content.read",
-		});
-		if (authorized._nay) return false;
-
-		// A wakeup reply skips `thread_messages_add`, so the size and tool part rules are applied here
-		// instead. Both doors must store the same safe shape. The server wrote this reply, so MCP parts
-		// pass as in `storeReply`, although a wakeup loads no MCP tools today.
-		if (
-			!ai_chat_message_fits_storage(args.content) ||
-			!has_valid_file_tool_parts(args.content, { allowMcpParts: true })
-		) {
-			throw new Error("Invalid file tool result parts");
-		}
-
-		let insertParentId = args.finishMessageId;
-		const newest = await ctx.db
-			.query("ai_chat_threads_messages_aisdk_5")
-			.withIndex("by_organization_workspace_thread", (q) =>
-				q.eq("organizationId", thread.organizationId).eq("workspaceId", thread.workspaceId).eq("threadId", thread._id),
-			)
-			.order("desc")
-			.first();
-		if (newest && newest._id !== args.finishMessageId) {
-			let current: typeof newest | null = newest;
-			while (current) {
-				if (current._id === args.finishMessageId) {
-					insertParentId = newest._id;
-					break;
-				}
-				if (current.parentId === null) break;
-				current = await ctx.db.get("ai_chat_threads_messages_aisdk_5", current.parentId);
-			}
-		}
-
-		const prepared = await ai_chat_outputs_db_prepare_reply(ctx, {
-			runId: args.runId,
-			threadId: thread._id,
-			content: args.content,
-		});
-		const now = Date.now();
-		await ctx.db.insert("ai_chat_threads_messages_aisdk_5", {
-			organizationId: thread.organizationId,
-			workspaceId: thread.workspaceId,
-			parentId: insertParentId,
-			threadId: thread._id,
-			createdBy: args.userId,
-			updatedAt: now,
-			clientGeneratedMessageId: args.clientGeneratedMessageId,
-			content: prepared.content,
-		});
-		await ai_chat_outputs_db_commit_owners(ctx, prepared.ownerIds);
-		await ctx.db.patch("ai_chat_threads", thread._id, { lastMessageAt: now, updatedAt: now, updatedBy: args.userId });
-		return true;
-	},
-});
-
-/**
- * The first text part of a stored message, for finish-message matching. Stored
- * content is schemaless, so a message without text parts reads as no text.
- */
-function message_first_text(content: Doc<"ai_chat_threads_messages_aisdk_5">["content"]) {
-	for (const part of content.parts ?? []) {
-		if (part?.type === "text" && typeof part.text === "string") return part.text;
-	}
-	return "";
-}
-
-/**
- * Parent for a chat reply or an abort persist when a finish landed mid-run.
- * Walk up through finish messages only. If that chain hangs off the captured
- * parent, store under the newest finish so Stop does not hide it. A later
- * finish after another user or assistant message must not steal a regenerate.
- * Tab-vs-tab forks keep the captured parent, as before.
- */
-async function chat_reply_parent_if_newest_is_finish(
-	ctx: QueryCtx | MutationCtx,
-	newest: Doc<"ai_chat_threads_messages_aisdk_5"> | null,
-	fallback: Id<"ai_chat_threads_messages_aisdk_5"> | null,
-) {
-	if (!newest || newest._id === fallback) return fallback;
-	let current: typeof newest | null = newest;
-	while (current && bash_job_is_finish_message(current.content.role, message_first_text(current.content))) {
-		if (current.parentId === fallback) return newest._id;
-		if (current.parentId === null) break;
-		current = await ctx.db.get("ai_chat_threads_messages_aisdk_5", current.parentId);
-	}
-	return fallback;
-}
-
-/**
- * The parent for a chat-route reply stored after a long stream. A job can
- * finish mid-run and hang its finish message under the captured parent; store
- * under the newest finish in that chain, or the reply forks a hidden sibling
- * branch. Only a finish chain that hangs off the captured parent re-parents.
- * A later finish further down the thread keeps the captured parent, so
- * regenerate of an older answer stays on its branch. Tab-vs-tab forks behave
- * as before. The in-flight `message-metadata` part still names the captured
- * parent; stored docs carry the true parent and the client reconciles from
- * them reactively. Abort persist uses the same rule through
- * `thread_messages_add`.
- */
-export const get_chat_reply_parent = internalQuery({
-	args: {
-		threadId: v.id("ai_chat_threads"),
-		fallbackParentId: v.optional(v.union(v.string(), v.null())),
-	},
-	returns: v.union(v.id("ai_chat_threads_messages_aisdk_5"), v.null()),
-	handler: async (ctx, args) => {
-		const fallback = args.fallbackParentId
-			? ctx.db.normalizeId("ai_chat_threads_messages_aisdk_5", args.fallbackParentId)
-			: null;
-		const thread = await ctx.db.get("ai_chat_threads", args.threadId);
-		if (!thread) return fallback;
-		const newest = await ctx.db
-			.query("ai_chat_threads_messages_aisdk_5")
-			.withIndex("by_organization_workspace_thread", (q) =>
-				q.eq("organizationId", thread.organizationId).eq("workspaceId", thread.workspaceId).eq("threadId", thread._id),
-			)
-			.order("desc")
-			.first();
-		return await chat_reply_parent_if_newest_is_finish(ctx, newest, fallback);
-	},
-});
-
-/**
- * Finish messages written since `sinceMs`, oldest first, for step-boundary
- * injection. Matches role plus the fixed finish head, so user quotes never
- * match. Reads the newest fifty docs: finishes land at the tail, so a turn
- * only ever needs a small window there. `invocationId` is null only for docs
- * written before the link existed.
- */
-export const list_finish_messages_since = internalQuery({
-	args: { source: ai_chat_workspaces_source_validator, sinceMs: v.number() },
-	returns: v.array(
-		v.object({
-			messageId: v.id("ai_chat_threads_messages_aisdk_5"),
-			text: v.string(),
-			invocationId: v.union(v.id("ai_chat_bash_invocations"), v.null()),
-		}),
-	),
-	handler: async (ctx, args) => {
-		const allowed = await ai_chat_workspaces_db_resolve(ctx, { source: args.source, workspace: "current" });
-		if (allowed._nay) return [];
-		const newest = await ctx.db
-			.query("ai_chat_threads_messages_aisdk_5")
-			.withIndex("by_organization_workspace_thread", (q) =>
-				q
-					.eq("organizationId", args.source.organizationId)
-					.eq("workspaceId", args.source.workspaceId)
-					.eq("threadId", args.source.threadId),
-			)
-			.order("desc")
-			.take(50);
-		const finishedMessages = [];
-		for (const message of newest.reverse()) {
-			if (message.updatedAt < args.sinceMs) continue;
-			const text = message_first_text(message.content);
-			if (!bash_job_is_finish_message(message.content.role, text)) continue;
-			finishedMessages.push({
-				messageId: message._id,
-				text,
-				invocationId: message.jobFinishInvocationId ?? null,
-			});
-		}
-		return finishedMessages;
-	},
-});
-
-/**
- * The agent run a finished job starts (`db_wake_agent_for_job` in `ai_chat_files.ts` stored the
- * job finish message and took the `job_wakeup` run lease). Same door and same turn as `/api/chat`, with the
- * job's stored user, mode and model, and the reply stored on the newest message of that finish's branch. Nobody reads the
- * stream, so the action reads it to the end itself. A run this action cannot start (a refused
- * door, no credits) leaves the message in the thread and only gives the lease back.
+ * The agent run that answers a job finish message. The wake select in `ai_chat_runs.ts` picked the
+ * finish, inserted the run with its reply node and took the lease. Same door and same turn as
+ * `/api/chat`, with the job's stored user, mode and model. Nobody reads the stream, so the action
+ * reads it to the end itself. A run this action cannot start (a refused door, no credits) leaves
+ * the finish message in the thread and only ends the run.
  */
 export const run_job_wakeup = internalAction({
-	args: {
-		invocationId: v.id("ai_chat_bash_invocations"),
-		threadId: v.id("ai_chat_threads"),
-		finishMessageId: v.id("ai_chat_threads_messages_aisdk_5"),
-		runId: v.id("ai_chat_runs"),
-	},
+	args: { runId: v.id("ai_chat_runs") },
 	returns: v.null(),
 	handler: async (ctx, args) => {
+		let generation: number | null = null;
 		try {
 			const context = (await ctx.runQuery(internal.ai_chat.get_job_wakeup_context, {
-				invocationId: args.invocationId,
+				runId: args.runId,
 			})) as get_job_wakeup_context_Result;
 			if (context._nay) {
-				console.warn("Job wakeup refused", { invocationId: args.invocationId, message: context._nay.message });
+				console.warn("Job wakeup refused", { runId: args.runId, message: context._nay.message });
 				return null;
 			}
-			const { membership, membershipLifetime, thread, messages, modelId, modeId, browserIntent, sourceMessageId } =
+			const { membership, membershipLifetime, thread, run, modelId, modeId, browserIntent, sourceMessageId } =
 				context._yay;
+			generation = run.generation;
 
 			// Quota: a wakeup run is billed like a chat turn, so it needs credits like one.
 			const creditCheck = await ctx.runQuery(internal.billing.check_credits, {
@@ -3993,14 +3419,23 @@ export const run_job_wakeup = internalAction({
 				minimumRequiredCents: 1,
 			});
 			if (!creditCheck.hasCredits || !creditCheck.billedUser) {
-				console.warn("Job wakeup skipped: insufficient funds", { invocationId: args.invocationId });
+				console.warn("Job wakeup skipped: insufficient funds", { runId: args.runId });
 				return null;
 			}
 
+			const source = {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				userId: membership.userId,
+				threadId: thread._id,
+				membershipId: membership._id,
+				membershipLifetime,
+			};
 			const tenant = await ctx.runQuery(internal.organizations.get_tenant, {
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
 			});
+			const runAbort = new AbortController();
 			let workspaceContext: ai_chat_context_Context | null = null;
 			let workspaceSystem = "";
 			const agent = build_agent_configuration({
@@ -4015,30 +3450,22 @@ export const run_job_wakeup = internalAction({
 				},
 				args: { modelId, modeId },
 				getThreadId: () => thread._id,
-				getRunId: () => args.runId,
+				getRun: () => ({ runId: args.runId, generation: run.generation }),
 				modelCallIds: new Map(),
 				getWorkspaceContext: () => workspaceContext,
 				membershipId: membership._id,
 				browserIntent: sourceMessageId ? browserIntent : null,
 				getSourceMessageId: () => sourceMessageId,
+				abortSignal: runAbort.signal,
 				// A wakeup answers a finished job with no member waiting, so it loads no MCP tools.
 				mcpTools: {},
 				mcpNotes: [],
 			});
 			if (ai_chat_context_ENABLED) {
-				const initialized = await ai_chat_context_create(ctx, {
-					source: {
-						organizationId: membership.organizationId,
-						workspaceId: membership.workspaceId,
-						userId: membership.userId,
-						threadId: thread._id,
-						membershipId: membership._id,
-						membershipLifetime,
-					},
-				});
+				const initialized = await ai_chat_context_create(ctx, { source });
 				if (initialized._nay) {
 					console.warn("Job wakeup skipped: workspace context", {
-						invocationId: args.invocationId,
+						runId: args.runId,
 						message: initialized._nay.message,
 					});
 					return null;
@@ -4048,26 +3475,7 @@ export const run_job_wakeup = internalAction({
 			}
 
 			// The turn continues the branch that ends with the job finish message.
-			const parentContext = resolve_parent_message_context({ messages, parentId: args.finishMessageId });
-			if (parentContext._nay) {
-				throw should_never_happen("Job finish message not found", {
-					threadId: thread._id,
-					finishMessageId: args.finishMessageId,
-				});
-			}
-			const uiMessages: ai_chat_UiMessage[] = [];
-			for (let i = parentContext._yay.reconstructedMessages.length - 1; i >= 0; i--) {
-				const msg = parentContext._yay.reconstructedMessages[i];
-				uiMessages.push({
-					...(msg.content as any),
-					id: msg._id,
-				});
-			}
-
-			// The turn already answers its own finish message through the parent branch; step boundaries
-			// inject only finishes written after it.
-			const finishMessageUpdatedAt =
-				messages.find((message) => message._id === args.finishMessageId)?.updatedAt ?? Date.now();
+			const uiMessages = await load_branch_ui_messages(ctx, { threadId: thread._id, fromId: run.triggerId });
 
 			const stream = await create_agent_turn_stream({
 				ctx,
@@ -4076,79 +3484,30 @@ export const run_job_wakeup = internalAction({
 				workspaceSystem,
 				uiMessages,
 				threadId: thread._id,
-				source: {
-					organizationId: membership.organizationId,
-					workspaceId: membership.workspaceId,
-					userId: membership.userId,
-					threadId: thread._id,
-					membershipId: membership._id,
-					membershipLifetime,
-				},
+				source,
+				run,
 				createdThreadId: null,
-				parentId: args.finishMessageId,
-				parentClientGeneratedId: parentContext._yay.resolvedParentClientGeneratedId,
-				abortSignal: undefined,
+				abortController: runAbort,
 				membership,
 				userId: membership.userId,
 				billedUser: creditCheck.billedUser,
 				generateTitle: false,
-				runStartedAt: finishMessageUpdatedAt,
-				excludeFinishMessageId: args.finishMessageId,
-				storeReply: async (message) => {
-					const stored = await ctx.runMutation(internal.ai_chat.store_job_wakeup_reply, {
-						threadId: thread._id,
-						userId: membership.userId,
-						finishMessageId: args.finishMessageId,
-						clientGeneratedMessageId: message.id,
-						content: message,
-						runId: args.runId,
-					});
-					// The door refuses the reply when the user lost access during the run. The refusal does
-					// not throw, so log the lost reply here. Log ids and sizes only, never the reply text.
-					if (!stored) {
-						console.error("Chat data not saved", {
-							reason: "reply_save_refused",
-							threadId: thread._id,
-							messageId: message.id,
-							bytes: new TextEncoder().encode(JSON.stringify(message)).byteLength,
-						});
-					}
-				},
-				releaseRun: async () => {
-					await ctx.runMutation(internal.ai_chat.thread_run_end, { runId: args.runId });
-				},
 				mcpAuthNeeded: [],
-				onUninjectedFinishedMessages: async (finishedMessages) => {
-					// Oldest first: this run already holds the `job_wakeup` lease, so extend it
-					// across the follow-up instead of taking it again. After the lease is gone,
-					// take a free wake lease the same way the chat leftover catch does. The
-					// follow-up's run doc keeps the lease when this run ends its own doc.
-					const oldest = finishedMessages.find((finish) => finish.invocationId !== null);
-					if (!oldest?.invocationId) return;
-					const followupRunId =
-						(await ctx.runMutation(internal.ai_chat.thread_run_extend_wakeup, {
-							threadId: thread._id,
-							invocationId: oldest.invocationId,
-						})) ??
-						(await ctx.runMutation(internal.ai_chat.thread_run_begin_wakeup, {
-							threadId: thread._id,
-							invocationId: oldest.invocationId,
-						}));
-					if (!followupRunId) return;
-					await ctx.scheduler.runAfter(0, internal.ai_chat.run_job_wakeup, {
-						invocationId: oldest.invocationId,
-						threadId: thread._id,
-						finishMessageId: oldest.messageId,
-						runId: followupRunId,
-					});
-				},
 			});
 			const reader = stream.getReader();
 			while (!(await reader.read()).done) {
-				// The chunks were handled by the stream's own `onFinish`.
+				// The chunks were handled by the stream's own step and finish callbacks.
 			}
 		} finally {
-			await ctx.runMutation(internal.ai_chat.thread_run_end, { runId: args.runId });
+			// The stream's own `finish` already ended the run, so this does nothing then. It ends a
+			// run that never started its stream.
+			await ctx.runMutation(internal.ai_chat_runs.finish, {
+				runId: args.runId,
+				// `finish` reads the generation only to save a tail, and this call has none.
+				generation: generation ?? 1,
+				outcome: "failed",
+				tail: null,
+			});
 		}
 		return null;
 	},
@@ -4319,6 +3678,7 @@ export async function ai_chat_http_run_stream(ctx: ActionCtx, request: Request) 
 				workspaceId: membership.workspaceId,
 			},
 			null,
+			null,
 		);
 
 		// Generate title using AI with streaming
@@ -4473,57 +3833,6 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		};
 	};
 
-	const makeUserMessage = () =>
-		({
-			id: "message_1",
-			role: "user",
-			parts: [{ type: "text", text: "stored message" }],
-		}) as ai_chat_UiMessage;
-
-	const makeDbMessage = (args: { id: string; parentId?: string | null; clientGeneratedMessageId?: string }) =>
-		({
-			_id: args.id,
-			parentId: args.parentId ?? null,
-			clientGeneratedMessageId: args.clientGeneratedMessageId,
-			content: makeUserMessage(),
-		}) as unknown as Doc<"ai_chat_threads_messages_aisdk_5">;
-
-	describe("resolve_parent_message_context", () => {
-		test("resolves client-generated parent ids and reconstructs the parent chain", () => {
-			const root = makeDbMessage({ id: "msg_root", clientGeneratedMessageId: "client_root" });
-			const child = makeDbMessage({
-				id: "msg_child",
-				parentId: "msg_root",
-				clientGeneratedMessageId: "client_child",
-			});
-
-			const result = resolve_parent_message_context({
-				messages: [root, child],
-				parentId: "client_child",
-			});
-
-			expect(result._nay).toBeUndefined();
-			const resolved = result._yay;
-			expect(resolved).toBeDefined();
-			expect(resolved!.reconstructedMessages.map((message) => message._id)).toEqual(["msg_child", "msg_root"]);
-			expect(resolved!.resolvedParentId).toBe("msg_child");
-			expect(resolved!.resolvedParentClientGeneratedId).toBe("client_child");
-		});
-
-		test("returns a bad result for a missing parent id", () => {
-			const result = resolve_parent_message_context({
-				messages: [makeDbMessage({ id: "msg_root" })],
-				parentId: "stale_parent",
-			});
-
-			expect(result._yay).toBeUndefined();
-			const error = result._nay;
-			expect(error).toBeDefined();
-			expect(error!.message).toBe("Message not found.");
-			expect(error!.data.unresolvedParentId).toBe("stale_parent");
-		});
-	});
-
 	describe("build_agent_configuration", () => {
 		test("returns the tool registry and keeps edit_file active in Agent mode", () => {
 			const { ctx } = makeCtx();
@@ -4536,7 +3845,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					modeId: "agent",
 				},
 				getThreadId: () => "thread_1" as Id<"ai_chat_threads">,
-				getRunId: () => null,
+				getRun: () => null,
 				modelCallIds: new Map(),
 				mcpTools: {},
 				mcpNotes: [],
@@ -4565,7 +3874,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					modeId: "ask",
 				},
 				getThreadId: () => "thread_1" as Id<"ai_chat_threads">,
-				getRunId: () => null,
+				getRun: () => null,
 				modelCallIds: new Map(),
 				mcpTools: {},
 				mcpNotes: [],
@@ -4609,7 +3918,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				membershipId: build_agent_configuration_test_membership_id,
 				args: { modelId: build_agent_configuration_test_model_id, modeId: "agent" },
 				getThreadId: () => "thread_1" as Id<"ai_chat_threads">,
-				getRunId: () => null,
+				getRun: () => null,
 				modelCallIds: new Map(),
 				mcpTools: {
 					mcp__tracker__echo: dynamicTool({
@@ -4639,7 +3948,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					membershipId: build_agent_configuration_test_membership_id,
 					args: { modelId: build_agent_configuration_test_model_id, modeId },
 					getThreadId: () => "thread_1" as Id<"ai_chat_threads">,
-					getRunId: () => null,
+					getRun: () => null,
 					modelCallIds: new Map(),
 					mcpTools: {},
 					mcpNotes: [],
@@ -4667,7 +3976,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 						modeId: "agent",
 					},
 					getThreadId: () => "thread_1" as Id<"ai_chat_threads">,
-					getRunId: () => null,
+					getRun: () => null,
 					modelCallIds: new Map(),
 					mcpTools: {},
 					mcpNotes: [],
@@ -4693,7 +4002,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					membershipId: build_agent_configuration_test_membership_id,
 					args: { modelId: build_agent_configuration_test_model_id, modeId: "ask" },
 					getThreadId: () => "thread_1" as Id<"ai_chat_threads">,
-					getRunId: () => null,
+					getRun: () => null,
 					modelCallIds: new Map(),
 					mcpTools: {},
 					mcpNotes: [],
@@ -4729,7 +4038,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					modeId: "agent",
 				},
 				getThreadId: () => "thread_1" as Id<"ai_chat_threads">,
-				getRunId: () => null,
+				getRun: () => null,
 				modelCallIds: new Map(),
 				mcpTools: {},
 				mcpNotes: [],
@@ -4777,7 +4086,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					modeId: "ask",
 				},
 				getThreadId: () => "thread_1" as Id<"ai_chat_threads">,
-				getRunId: () => null,
+				getRun: () => null,
 				modelCallIds: new Map(),
 				mcpTools: {},
 				mcpNotes: [],
@@ -4816,7 +4125,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					modeId: "ask",
 				},
 				getThreadId: () => "thread_1" as Id<"ai_chat_threads">,
-				getRunId: () => null,
+				getRun: () => null,
 				modelCallIds: new Map(),
 				mcpTools: {},
 				mcpNotes: [],
@@ -4838,7 +4147,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					modeId: "ask",
 				},
 				getThreadId: () => "thread_1" as Id<"ai_chat_threads">,
-				getRunId: () => null,
+				getRun: () => null,
 				modelCallIds: new Map(),
 				mcpTools: {},
 				mcpNotes: [],
@@ -4859,7 +4168,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					modeId: "agent",
 				},
 				getThreadId: () => "thread_1" as Id<"ai_chat_threads">,
-				getRunId: () => null,
+				getRun: () => null,
 				modelCallIds: new Map(),
 				mcpTools: {},
 				mcpNotes: [],
@@ -4885,7 +4194,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				membershipId: build_agent_configuration_test_membership_id,
 				args: { modelId: build_agent_configuration_test_model_id, modeId },
 				getThreadId: () => "thread_1" as Id<"ai_chat_threads">,
-				getRunId: () => null,
+				getRun: () => null,
 				modelCallIds: new Map(),
 				mcpTools: {},
 				mcpNotes: [],
@@ -4919,7 +4228,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					modeId: "agent",
 				},
 				getThreadId: () => "thread_1" as Id<"ai_chat_threads">,
-				getRunId: () => null,
+				getRun: () => null,
 				modelCallIds: new Map(),
 				mcpTools: {},
 				mcpNotes: [],
@@ -5131,7 +4440,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					modeId: "agent",
 				},
 				getThreadId: () => "thread_1" as Id<"ai_chat_threads">,
-				getRunId: () => null,
+				getRun: () => null,
 				modelCallIds: new Map(),
 				mcpTools: {},
 				mcpNotes: [],
@@ -5289,7 +4598,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 						membershipId: build_agent_configuration_test_membership_id,
 						args: { modelId: build_agent_configuration_test_model_id, modeId: "ask" },
 						getThreadId: () => "thread-1" as Id<"ai_chat_threads">,
-						getRunId: () => null,
+						getRun: () => null,
 						modelCallIds: new Map(),
 						mcpTools: {},
 						mcpNotes: [],
@@ -5592,7 +4901,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				membershipId: build_agent_configuration_test_membership_id,
 				args: { modelId: build_agent_configuration_test_model_id, modeId: "agent" },
 				getThreadId: () => null,
-				getRunId: () => null,
+				getRun: () => null,
 				modelCallIds: new Map(),
 				browserIntent: { webChoice: { provider: "cloud" }, selectionRevision: 0, policyRevision: 0 },
 				mcpTools: {},
@@ -5611,7 +4920,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				membershipId: build_agent_configuration_test_membership_id,
 				args: { modelId: build_agent_configuration_test_model_id, modeId: "agent" },
 				getThreadId: () => null,
-				getRunId: () => null,
+				getRun: () => null,
 				modelCallIds: new Map(),
 				mcpTools: {},
 				mcpNotes: [],
@@ -5629,7 +4938,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				membershipId: build_agent_configuration_test_membership_id,
 				args: { modelId: build_agent_configuration_test_model_id, modeId: "ask" },
 				getThreadId: () => null,
-				getRunId: () => null,
+				getRun: () => null,
 				modelCallIds: new Map(),
 				browserIntent: { webChoice: { provider: "cloud" }, selectionRevision: 0, policyRevision: 0 },
 				mcpTools: {},

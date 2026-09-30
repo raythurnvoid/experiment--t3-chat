@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
+import { ai_chat_DEFAULT_MODEL_ID } from "../shared/ai-chat.ts";
 
 beforeEach(() => vi.useFakeTimers());
 afterEach(() => {
@@ -36,6 +37,11 @@ async function fixture() {
 			content: { role: "user", parts: [] },
 			createdBy: db.userId,
 			updatedAt: Date.now(),
+			status: "done",
+			runId: null,
+			version: 0,
+			wakePending: false,
+			bytes: 0,
 		}),
 	);
 	const source = {
@@ -65,6 +71,46 @@ describe("begin_browser_invocation", () => {
 		expect(duplicate._yay).toEqual({ ...first._yay, isNew: false });
 		expect((await f.begin({ operationHash: "b".repeat(64) }))._nay?.name).toBe("invocation_changed");
 		expect(await f.t.run((ctx) => ctx.db.query("ai_chat_browser_invocations").collect())).toHaveLength(1);
+	});
+
+	test("refuses a new call of a stopped run, and still replays a call that started before Stop", async () => {
+		const f = await fixture();
+		const begun = await f.t.mutation(internal.ai_chat.thread_run_begin, {
+			source: {
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				userId: f.db.userId,
+				threadId: f.source.threadId,
+				membershipId: f.db.membershipId,
+				membershipLifetime: f.source.membershipLifetime,
+			},
+			parentId: null,
+			messages: [
+				{ clientGeneratedMessageId: "run-user", content: { id: "run-user", role: "user", parts: [] } },
+			],
+			modeId: "agent",
+			modelId: ai_chat_DEFAULT_MODEL_ID,
+		});
+		if (begun._nay) throw new Error(begun._nay.message);
+		const run = { runId: begun._yay.runId, generation: begun._yay.generation };
+		const begin_in_run = (toolCallId: string) =>
+			f.t.mutation(internal.ai_chat_files.begin_browser_invocation, {
+				...f.identity,
+				toolCallId,
+				timeoutMs: 30_000,
+				run,
+			});
+
+		expect((await begin_in_run("open-1"))._yay?.isNew).toBe(true);
+		await f.asUser.mutation(api.ai_chat_runs.stop, {
+			membershipId: f.db.membershipId,
+			threadId: f.source.threadId,
+			replyId: null,
+		});
+
+		expect((await begin_in_run("open-2"))._nay?.message).toBe("Stopped. This call was not run.");
+		// The call that started before Stop keeps its saved status for its readback.
+		expect((await begin_in_run("open-1"))._yay?.isNew).toBe(false);
 	});
 
 	test("retains the no-replay identity after its deadline and result expiry", async () => {

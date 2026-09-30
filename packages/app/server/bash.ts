@@ -1095,6 +1095,11 @@ async function bash_fs_create(args: {
 	jobContext: bash_JobContext;
 	shells: { _id: Id<"ai_chat_bash_shells">; name: string }[];
 	/**
+	 * The run fence of a chat call: its file writes are refused after Stop. A job passes null,
+	 * because a job keeps running after its launching run ends.
+	 */
+	run: { runId: Id<"ai_chat_runs">; generation: number } | null;
+	/**
 	 * The chat run of a chat call. It can also read the outputs its run stored so far. A job
 	 * passes null and reads only outputs of saved replies.
 	 */
@@ -1119,6 +1124,7 @@ async function bash_fs_create(args: {
 		threadId: args.threadId,
 		membershipId: args.membershipId,
 		membershipLifetime: args.membershipLifetime,
+		run: args.run,
 	};
 	const personal = await args.ctx.runQuery(internal.ai_chat_workspaces.resolve, {
 		source: agentSource,
@@ -1768,6 +1774,7 @@ export async function bash_run_command(
 		 */
 		wakeAgent: { modelId: ai_chat_ModelId } | null;
 		output: { objectId: Id<"ai_chat_output_objects">; runId: Id<"ai_chat_runs"> } | null;
+		run: { runId: Id<"ai_chat_runs">; generation: number } | null;
 	},
 ): Promise<NonNullable<Doc<"ai_chat_bash_invocations">["result"]>> {
 	const ctx = bash_well_formed_ctx(actionCtx);
@@ -1795,7 +1802,11 @@ export async function bash_run_command(
 
 	// A lost begin reply may already own this call. Read it back instead of running it a second time.
 	const begun = await ctx
-		.runMutation(internal.ai_chat_files.begin_bash_invocation, { ...identity, shellName: args.shellName })
+		.runMutation(internal.ai_chat_files.begin_bash_invocation, {
+			...identity,
+			shellName: args.shellName,
+			run: args.run,
+		})
 		.catch(() => ctx.runQuery(internal.ai_chat_files.get_bash_invocation, identity));
 	if (begun._nay) throw new Error(begun._nay.message);
 
@@ -1917,6 +1928,7 @@ export async function bash_run_command(
 			},
 			jobContext,
 			shells: invocation.shells,
+			run: args.run,
 			toolOutputRunId: args.output?.runId ?? null,
 			// `null` is a fresh shell: nothing to seed.
 			restoreState: invocation.shell.state ?? undefined,
@@ -2593,6 +2605,7 @@ export async function bash_run_job(
 				waitingJobNumbers: [],
 			},
 			shells,
+			run: null,
 			toolOutputRunId: null,
 			restoreState: job.shellState,
 			onOutput,

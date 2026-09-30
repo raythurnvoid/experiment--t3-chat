@@ -97,21 +97,24 @@ async function send_text_reply(args: {
 		(error: unknown) => ({ text: null, error }),
 	);
 	const messages = await t.run((ctx) => ctx.db.query("ai_chat_threads_messages_aisdk_5").collect());
-	return { threadId, response, body, messages };
+	const steps = await t.run((ctx) => ctx.db.query("ai_chat_run_steps").collect());
+	return { t, threadId, response, body, messages, steps };
 }
 
 describe("/api/chat reply storage", () => {
 	test("logs a reply that is too large to save, without its text", async () => {
 		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
 
-		const { threadId, response, body, messages } = await send_text_reply({
+		const { threadId, response, body, messages, steps } = await send_text_reply({
 			text: "x".repeat(950 * 1024),
 		});
 
 		expect(response.status, body.text ?? "").toBe(200);
 		expect(body.error).toBeNull();
 		expect(body.text).toContain("This reply is too large and was not saved.");
-		expect(messages.map((message) => message.content.role)).toEqual(["user"]);
+		// The reply node exists from the start. The step with the reply text is not saved.
+		expect(messages.map((message) => message.content.role)).toEqual(["user", "assistant"]);
+		expect(steps).toEqual([]);
 		const lostReplyLogs = consoleError.mock.calls.filter((call) => call[0] === "Chat data not saved");
 		expect(lostReplyLogs).toEqual([
 			[
@@ -119,6 +122,7 @@ describe("/api/chat reply storage", () => {
 				{
 					reason: "reply_too_large",
 					threadId,
+					runId: expect.any(String),
 					messageId: expect.any(String),
 					bytes: expect.any(Number),
 					limit: 900 * 1024,
@@ -132,7 +136,7 @@ describe("/api/chat reply storage", () => {
 	test("logs a refused reply save, without its text", async () => {
 		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
 
-		const { threadId, body, messages } = await send_text_reply({
+		const { t, threadId, body, messages, steps } = await send_text_reply({
 			text: "PRIVATE_REPLY_TEXT",
 			// The membership ends during the model call, so the reply save is refused.
 			duringModelCall: async (t, membershipId) => {
@@ -140,21 +144,25 @@ describe("/api/chat reply storage", () => {
 			},
 		});
 
-		expect(body.error).toMatchObject({ message: "Failed to persist assistant message" });
-		expect(messages.map((message) => message.content.role)).toEqual(["user"]);
+		// The step save stops the run instead of failing the stream.
+		expect(body.error).toBeNull();
+		// The reply node exists from the start. The step with the reply text is not saved.
+		expect(messages.map((message) => message.content.role)).toEqual(["user", "assistant"]);
+		expect(steps).toEqual([]);
 		const lostReplyLogs = consoleError.mock.calls.filter((call) => call[0] === "Chat data not saved");
 		expect(lostReplyLogs).toEqual([
 			[
 				"Chat data not saved",
 				{
-					reason: "reply_save_failed",
+					reason: "access_lost",
 					threadId,
+					runId: expect.any(String),
 					messageId: expect.any(String),
-					bytes: expect.any(Number),
-					errorName: "Error",
 				},
 			],
 		]);
 		expect(JSON.stringify(lostReplyLogs)).not.toContain("PRIVATE_REPLY_TEXT");
+		const run = await t.run((ctx) => ctx.db.query("ai_chat_runs").first());
+		expect(run?.status).toBe("ended");
 	});
 });

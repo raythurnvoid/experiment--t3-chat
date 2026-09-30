@@ -27,6 +27,10 @@ export function ai_chat_tool_budget_create() {
 		 * Calls waiting for space, oldest first. Waiting calls hold no space.
 		 */
 		queue: [] as Array<{ costBytes: number; reservedBytes: number; admit: (admitted: boolean) => void }>,
+		/**
+		 * Tool calls of a step that Stop reached before its step doc was planned. None of them may start.
+		 */
+		stoppedToolCallIds: new Set<string>(),
 	};
 }
 
@@ -105,7 +109,7 @@ export function ai_chat_tool_budget_apply<T extends ToolSet>(
 			// Stop can land while the receipt middleware holds the finish part to save usage. The SDK
 			// still starts the tool calls of that step afterwards, and some tools ignore the signal.
 			// So check Stop here, before any tool body runs.
-			if (options.abortSignal?.aborted) {
+			if (options.abortSignal?.aborted || budget.stoppedToolCallIds.has(options.toolCallId)) {
 				throw new Error("Stopped. This call was not run.");
 			}
 

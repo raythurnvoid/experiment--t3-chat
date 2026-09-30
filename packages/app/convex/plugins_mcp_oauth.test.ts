@@ -11,6 +11,7 @@ import { mcp_client_list_tools } from "../server/mcp-client.ts";
 import { mcp_oauth_fixtures_create } from "../server/mcp-fixtures/mcp-oauth-fixtures.ts";
 import { ai_chat_tool_create_mcp_tools } from "../server/server-ai-tools.ts";
 import type { ai_chat_McpToolOutput } from "../shared/ai-chat-files.ts";
+import { ai_chat_DEFAULT_MODEL_ID } from "../shared/ai-chat.ts";
 
 const APP_BASE_URL = "https://app.press.test";
 const CLIENT_DOCUMENT_URL = `${APP_BASE_URL}/oauth/mcp/client.json`;
@@ -836,7 +837,7 @@ async function call_echo(
 
 	return await t.action(async (ctx) => {
 		// Each call reserves output space against a running chat run.
-		const runId = await ctx.runMutation(internal.ai_chat.thread_run_begin, {
+		const begun = await ctx.runMutation(internal.ai_chat.thread_run_begin, {
 			source: {
 				organizationId: member.organizationId,
 				workspaceId: member.workspaceId,
@@ -845,7 +846,17 @@ async function call_echo(
 				membershipId: member.membershipId,
 				membershipLifetime: captured._yay.membershipLifetime,
 			},
+			parentId: null,
+			messages: [
+				{
+					clientGeneratedMessageId: "mcp-echo",
+					content: { id: "mcp-echo", role: "user", parts: [{ type: "text", text: "echo" }] },
+				},
+			],
+			modeId: "agent",
+			modelId: ai_chat_DEFAULT_MODEL_ID,
 		});
+		if (begun._nay) throw new Error(begun._nay.message);
 		const modelTools = await ai_chat_tool_create_mcp_tools(
 			ctx,
 			{
@@ -855,7 +866,7 @@ async function call_echo(
 				membershipId: member.membershipId,
 				membershipLifetime: captured._yay.membershipLifetime,
 				getThreadId: () => thread._yay.threadId,
-				getRunId: () => runId,
+				getRun: () => ({ runId: begun._yay.runId, generation: begun._yay.generation }),
 				getModelCallId: () => "model_call_test",
 				runDeadline: Date.now() + 60_000,
 			},

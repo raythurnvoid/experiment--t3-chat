@@ -724,6 +724,10 @@
 	.AiChatMessagePart-text-user {
 		contain: content;
 	}
+
+	.AiChatMessagePart-job-finish {
+		color: var(--color-fg-06);
+	}
 	/* #endregion part */
 
 	/* #region part image */

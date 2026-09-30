@@ -4,6 +4,7 @@ import type { Doc, Id } from "./_generated/dataModel.js";
 import { internalMutation, internalQuery, type MutationCtx, type QueryCtx } from "./_generated/server.js";
 import { access_control_db_authorize_membership } from "./access_control.ts";
 import { ai_chat_files_db_get_invocation_membership } from "./ai_chat_files.ts";
+import { ai_chat_runs_db_is_current } from "./ai_chat_runs.ts";
 import { organizations_db_get_membership } from "./organizations.ts";
 import { organizations_membership_lifetimes_db_ensure } from "./organizations_membership_lifetimes.ts";
 import { ai_chat_workspaces_source_validator } from "./schema.ts";
@@ -97,6 +98,10 @@ export async function ai_chat_workspaces_db_resolve(
 		workspace: (typeof ai_chat_workspaces_SELECTORS)[number];
 	},
 ) {
+	// A tool call of a stopped run must not reach Files. Stop raised the run's generation, so the
+	// call's own generation is no longer current.
+	if (args.source.run && !(await ai_chat_runs_db_is_current(ctx, args.source.run)))
+		return Result({ _nay: { message: "Stopped. This call was not run." } });
 	const membership = await ai_chat_files_db_get_invocation_membership(ctx, args.source);
 	if (!membership) return Result({ _nay: { message: "Chat is no longer available" } });
 	const thread = (await ctx.db.get("ai_chat_threads", args.source.threadId))!;

@@ -314,6 +314,7 @@ async function start_agent_copy(
 			createdBy: db.userId,
 			updatedBy: db.userId,
 			updatedAt: Date.now(),
+			newestNodeId: null,
 		}),
 	);
 	const started = await t.mutation(internal.files_transfer.start_for_agent, {

@@ -551,7 +551,8 @@ of a restricted folder has to be able to share what the grant gave them and noth
 
 - Rate limit first, permission second, in new handlers. A denied call still costs a token, so
   permission probing is not free. Two sets of exceptions exist, both deliberate:
-  `ai_chat.thread_messages_add`, whose cost depends on a prior read; and the older
+  the internal `ai_chat.thread_run_begin`, which charges only for request messages it has not
+  saved yet, so its cost depends on a prior read; and the older
   `organizations.ts` handlers (`remove_user_from_organization`, `edit_organization`,
   `edit_workspace`, `delete_workspace`, `delete_organization`), which resolve authorization first.
   Match the local order when editing those; do not reorder them for tidiness.

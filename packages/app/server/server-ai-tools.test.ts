@@ -59,7 +59,7 @@ const server_ai_tools_test_ctx_data = {
 	membershipLifetime: 3,
 	canWriteFiles: true,
 	getThreadId: () => server_ai_tools_test_thread_id,
-	getRunId: () => "run_1" as Id<"ai_chat_runs">,
+	getRun: () => ({ runId: "run_1" as Id<"ai_chat_runs">, generation: 1 }),
 	getModelCallId: () => "model_call_1",
 } as const;
 const server_ai_tools_test_source = {
@@ -69,6 +69,13 @@ const server_ai_tools_test_source = {
 	threadId: server_ai_tools_test_thread_id,
 	membershipId: server_ai_tools_test_ctx_data.membershipId,
 	membershipLifetime: server_ai_tools_test_ctx_data.membershipLifetime,
+};
+/**
+ * The source that the fenced file tools send. It names the run, so a stopped run cannot write.
+ */
+const server_ai_tools_test_run_source = {
+	...server_ai_tools_test_source,
+	run: server_ai_tools_test_ctx_data.getRun(),
 };
 const server_ai_tools_test_db_files_mount = "/home/cloud-usr/w/personal/home";
 
@@ -95,7 +102,8 @@ const makeCtx = (
 } => {
 	const runQuery = vi.fn(async (ref: Parameters<ActionCtx["runQuery"]>[0], queryArgs: unknown) => {
 		if (getFunctionName(ref) === "ai_chat_workspaces:resolve") {
-			expect(queryArgs).toEqual({ source: server_ai_tools_test_source, workspace: "current" });
+			// Only the fenced file tools name the run in this source.
+			expect(queryArgs).toMatchObject({ source: server_ai_tools_test_source, workspace: "current" });
 			return {
 				_yay: {
 					organizationId: server_ai_tools_test_ctx_data.organizationId,
@@ -1146,11 +1154,11 @@ test("edit_file tool stores pending unstaged branch updates from the agent", asy
 
 	expect(runAction).toHaveBeenCalledTimes(3);
 	expect(runQuery).toHaveBeenNthCalledWith(1, expect.anything(), {
-		source: server_ai_tools_test_source,
+		source: server_ai_tools_test_run_source,
 		workspace: "current",
 	});
 	expect(runQuery).toHaveBeenNthCalledWith(2, expect.anything(), {
-		agentSource: server_ai_tools_test_source,
+		agentSource: server_ai_tools_test_run_source,
 		organizationId: server_ai_tools_test_ctx_data.organizationId,
 		workspaceId: server_ai_tools_test_ctx_data.workspaceId,
 		visibilityUserId: server_ai_tools_test_user_id,
@@ -1158,14 +1166,14 @@ test("edit_file tool stores pending unstaged branch updates from the agent", asy
 		path: "/docs/hello.md",
 	});
 	expect(runAction).toHaveBeenNthCalledWith(1, expect.anything(), {
-		agentSource: server_ai_tools_test_source,
+		agentSource: server_ai_tools_test_run_source,
 		organizationId: server_ai_tools_test_ctx_data.organizationId,
 		workspaceId: server_ai_tools_test_ctx_data.workspaceId,
 		userId: server_ai_tools_test_user_id,
 		target: { kind: "saved", id: nodeId },
 	});
 	expect(runMutation).toHaveBeenNthCalledWith(1, expect.anything(), {
-		agentSource: server_ai_tools_test_source,
+		agentSource: server_ai_tools_test_run_source,
 		organizationId: server_ai_tools_test_ctx_data.organizationId,
 		workspaceId: server_ai_tools_test_ctx_data.workspaceId,
 		userId: server_ai_tools_test_user_id,
@@ -1173,7 +1181,7 @@ test("edit_file tool stores pending unstaged branch updates from the agent", asy
 	});
 	const [, firstQueryArgs] = runAction.mock.calls[1]!;
 	expect(firstQueryArgs).toEqual({
-		agentSource: server_ai_tools_test_source,
+		agentSource: server_ai_tools_test_run_source,
 		organizationId: test_mocks_hardcoded.organization_id.organization_1,
 		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
 		userId: server_ai_tools_test_user_id,
@@ -1453,7 +1461,7 @@ test("edit_file tool preserves the baseline trailing newline shape", async () =>
 
 	const [, firstQueryArgs] = runAction.mock.calls[1]!;
 	expect(firstQueryArgs).toEqual({
-		agentSource: server_ai_tools_test_source,
+		agentSource: server_ai_tools_test_run_source,
 		organizationId: test_mocks_hardcoded.organization_id.organization_1,
 		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
 		userId: server_ai_tools_test_user_id,
@@ -1707,7 +1715,7 @@ describe("ai_chat_tool_create_set_file_metadata", () => {
 
 			const [, mutationArgs] = runMutation.mock.calls[0]!;
 			expect(mutationArgs).toMatchObject({
-				agentSource: server_ai_tools_test_source,
+				agentSource: server_ai_tools_test_run_source,
 				organizationId: server_ai_tools_test_ctx_data.organizationId,
 				workspaceId: server_ai_tools_test_ctx_data.workspaceId,
 				userId: server_ai_tools_test_user_id,
@@ -1993,7 +2001,7 @@ test("execute_code tool: posts to the runner and formats a succeeded result with
 			});
 			expect(runMutation).toHaveBeenCalledTimes(1);
 			expect(runMutation.mock.calls[0]?.[1]).toEqual({
-				source: server_ai_tools_test_source,
+				source: server_ai_tools_test_run_source,
 				principalKey: runnerBody.executionId,
 				tokenHashes: {
 					current: await crypto_sha256_hex(runnerBody.app.tokens.current),
@@ -2152,7 +2160,7 @@ describe("ai_chat_tool_create_execute_code", () => {
 				expect(runMutation).toHaveBeenCalledTimes(1);
 				expect(getFunctionName(runMutation.mock.calls[0]?.[0])).toBe("public_api:create_code_grants");
 				expect(runMutation.mock.calls[0]?.[1]).toMatchObject({
-					source: server_ai_tools_test_source,
+					source: server_ai_tools_test_run_source,
 				});
 			},
 		);
@@ -3140,7 +3148,11 @@ describe("browser tools", () => {
 
 	test("agent downloads become pending files in /.system/downloads, and a bad one is dropped alone", async () => {
 		const { runMutation, tool } = web_ctx(true);
-		const paths = ["/reports/output.bin", "/.system/downloads/quarterly-report.pdf", "/.system/downloads/agents-download.md"];
+		const paths = [
+			"/reports/output.bin",
+			"/.system/downloads/quarterly-report.pdf",
+			"/.system/downloads/agents-download.md",
+		];
 		for (const [index, path] of paths.entries()) {
 			runMutation.mockResolvedValueOnce({
 				_yay: {
@@ -3497,7 +3509,7 @@ describe("ai_chat_tool_create_mcp_tools", () => {
 				membershipId: "membership" as Id<"organizations_workspaces_users">,
 				membershipLifetime: 1,
 				getThreadId: () => null,
-				getRunId: () => null,
+				getRun: () => null,
 				getModelCallId: () => null,
 				runDeadline: Date.now() + 60_000,
 			},

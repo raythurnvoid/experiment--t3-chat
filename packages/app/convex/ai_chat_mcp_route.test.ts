@@ -6,6 +6,7 @@ import type { streamText } from "ai";
 import { MockLanguageModelV3 } from "ai/test";
 import { api, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
+import { ai_chat_runs_db_insert_node } from "./ai_chat_runs.ts";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import { crypto_encrypt_secret_value } from "../server/crypto-utils.ts";
 import { mcp_client_list_tools } from "../server/mcp-client.ts";
@@ -20,23 +21,14 @@ vi.mock("ai", async (importOriginal) => ({
 	streamText: model.streamText,
 }));
 
-// The route ends its run when the mocked stream ends, and the mocked model never passes the
-// receipt middleware. These tests run the captured tools after that. So each test reserves
-// output space against one chat run it starts itself.
-const outputRun = vi.hoisted(() => ({ runId: null as string | null }));
+// The mocked model never passes the receipt middleware, so no tool call gets a model call id.
+// Give each call a fixed one, so it can reserve output space against the route's run.
 vi.mock("../server/ai-chat-tool-output.ts", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("../server/ai-chat-tool-output.ts")>();
 	return {
 		...actual,
-		ai_chat_tool_output_reserve: async (...[ctx, args]: Parameters<typeof actual.ai_chat_tool_output_reserve>) => {
-			outputRun.runId ??= await ctx.runMutation(internal.ai_chat.thread_run_begin, { source: args.source });
-			const runId = outputRun.runId as Id<"ai_chat_runs">;
-			return await actual.ai_chat_tool_output_reserve(ctx, {
-				...args,
-				getRunId: () => runId,
-				getModelCallId: () => "model_call_test",
-			});
-		},
+		ai_chat_tool_output_reserve: async (...[ctx, args]: Parameters<typeof actual.ai_chat_tool_output_reserve>) =>
+			await actual.ai_chat_tool_output_reserve(ctx, { ...args, getModelCallId: () => "model_call_test" }),
 	};
 });
 
@@ -51,7 +43,6 @@ beforeEach(() => {
 	fixtures = mcp_fixtures_create();
 	oauthFixtures = mcp_oauth_fixtures_create();
 	callGate = null;
-	outputRun.runId = null;
 	model.streamText.mockReset();
 	model.streamText.mockImplementation(() => ({
 		toUIMessageStream: () =>
@@ -296,12 +287,25 @@ function last_call() {
 }
 
 /**
+ * The route ends its run when the mocked stream ends, but some tests run the captured tools after
+ * that. Mark the route's runs as running again, so the tools' run checks let their calls through.
+ */
+async function reopen_route_runs(t: TestConvex) {
+	await t.run(async (ctx) => {
+		for (const run of await ctx.db.query("ai_chat_runs").collect()) {
+			await ctx.db.patch("ai_chat_runs", run._id, { status: "running", endedAt: null });
+		}
+	});
+}
+
+/**
  * Run one captured tool the way the SDK does. MCP calls use timers, which convex-test allows only
  * inside an action.
  */
 async function run_tool(t: TestConvex, name: string, input: unknown) {
 	const execute = last_call().tools?.[name]?.execute;
 	if (!execute) throw new Error(`Expected tool ${name}`);
+	await reopen_route_runs(t);
 	return await t.action(async () =>
 		Promise.resolve(execute(input, { toolCallId: `call-${Math.random()}`, messages: [] })).then(
 			(output) => ({ output, error: null }),
@@ -312,6 +316,24 @@ async function run_tool(t: TestConvex, name: string, input: unknown) {
 
 async function ledger(t: TestConvex) {
 	return await t.run((ctx) => ctx.db.query("plugins_mcp_calls").collect());
+}
+
+/**
+ * The saved reply as the model's history reads it. A reply keeps its parts in its step docs.
+ */
+async function reply_message(t: TestConvex) {
+	const reply = await t.run(async (ctx) => {
+		const messages = await ctx.db.query("ai_chat_threads_messages_aisdk_5").collect();
+		return messages.find((message) => message.content.role === "assistant")!;
+	});
+	const page = await t.query(internal.ai_chat_runs.history_page, {
+		threadId: reply.threadId,
+		fromId: reply._id,
+		usedBytes: 0,
+		maxBytes: 1,
+		hasUserMessage: false,
+	});
+	return page.messages[0]!.content as { parts: Array<{ type: string }> };
 }
 
 function tools_calls() {
@@ -714,7 +736,7 @@ describe("/api/chat MCP tool calls", () => {
 					membershipLifetime: captured._yay.membershipLifetime,
 					getThreadId: () => threadId,
 					// The scope check refuses the call before it reserves output space.
-					getRunId: () => null,
+					getRun: () => null,
 					getModelCallId: () => null,
 					runDeadline: Date.now() + 60_000,
 				},
@@ -757,6 +779,7 @@ describe("/api/chat MCP tool calls", () => {
 		await install_mcp_plugin(t, membership, { url: MODERN_BASIC_URL });
 		expect((await chat(asUser, { membershipId: membership.membershipId, threadId })).status).toBe(200);
 		const execute = last_call().tools!.mcp__tracker__echo!.execute!;
+		await reopen_route_runs(t);
 		const gate = Promise.withResolvers<void>();
 		callGate = gate.promise;
 
@@ -1236,52 +1259,6 @@ describe("/api/chat MCP parts in history", () => {
 		},
 	};
 
-	test("refuses MCP parts at the public door, and stores the server's own reply with them", async () => {
-		const { t, asUser, membership, threadId } = await setup();
-		const captured = await t.mutation(internal.ai_chat_workspaces.capture, {
-			userId: membership.userId,
-			membershipId: membership.membershipId,
-		});
-		if (captured._nay) throw new Error(captured._nay.message);
-		const source = { ...membership, threadId, membershipLifetime: captured._yay.membershipLifetime };
-		const reply = (id: string, parts: unknown[]) => ({
-			clientGeneratedMessageId: id,
-			content: { id, role: "assistant", parts },
-		});
-
-		for (const parts of [[mcp_part("gone-installation")], [noticePart]]) {
-			const refused = await asUser.mutation(api.ai_chat.thread_messages_add, {
-				membershipId: membership.membershipId,
-				threadId,
-				parentId: null,
-				messages: [reply("forged", parts)],
-			});
-			expect(refused._nay?.message).toBe("Invalid file tool result parts");
-		}
-
-		const badNotice = { ...noticePart, data: { servers: [{ ...noticePart.data.servers[0], reason: "anything" }] } };
-		const badOutput = mcp_part("gone-installation", { title: "echo", output: "hi", metadata: { kind: "other" } });
-		for (const parts of [[badNotice], [badOutput]]) {
-			const refused = await asUser.mutation(internal.ai_chat.thread_run_messages_add, {
-				source,
-				parentId: null,
-				messages: [reply("bad", parts)],
-				allowMcpParts: true,
-				runId: null,
-			});
-			expect(refused._nay?.message).toBe("Invalid file tool result parts");
-		}
-
-		const stored = await asUser.mutation(internal.ai_chat.thread_run_messages_add, {
-			source,
-			parentId: null,
-			messages: [reply("server-reply", [noticePart, mcp_part("gone-installation")])],
-			allowMcpParts: true,
-			runId: null,
-		});
-		expect(stored._yay?.ids).toHaveLength(1);
-	});
-
 	test.each(["dynamic-tool", "data-mcp-auth-needed"])(
 		"refuses a request message with a %s MCP part before the model runs or any server is called",
 		async (partType) => {
@@ -1309,30 +1286,28 @@ describe("/api/chat MCP parts in history", () => {
 
 	test("loads a stored MCP result after its server is gone", async () => {
 		const { t, asUser, membership, threadId } = await setup();
-		const captured = await t.mutation(internal.ai_chat_workspaces.capture, {
-			userId: membership.userId,
-			membershipId: membership.membershipId,
-		});
-		if (captured._nay) throw new Error(captured._nay.message);
-		const stored = await asUser.mutation(internal.ai_chat.thread_run_messages_add, {
-			source: { ...membership, threadId, membershipLifetime: captured._yay.membershipLifetime },
-			parentId: null,
-			messages: [
-				{
-					clientGeneratedMessageId: "old-reply",
-					content: { id: "old-reply", role: "assistant", parts: [mcp_part("gone-installation")] },
-				},
-			],
-			allowMcpParts: true,
-			runId: null,
-		});
-		if (stored._nay) throw new Error(stored._nay.message);
+		// Seed the reply the way a run step stores it: the route checked its parts before the save.
+		const oldReplyId = await t.run(async (ctx) =>
+			ai_chat_runs_db_insert_node(ctx, {
+				thread: (await ctx.db.get("ai_chat_threads", threadId))!,
+				parentId: null,
+				createdBy: membership.userId,
+				clientGeneratedMessageId: "old-reply",
+				content: { id: "old-reply", role: "assistant", parts: [mcp_part("gone-installation")] },
+				status: "done",
+				runId: null,
+				wakePending: false,
+				jobFinishInvocationId: null,
+				newest: "set",
+				now: Date.now(),
+			}),
+		);
 
 		const response = await chat(asUser, {
 			membershipId: membership.membershipId,
 			threadId,
 			messages: [{ id: "next", role: "user", parts: [{ type: "text", text: "Again." }] }],
-			parentId: stored._yay.ids[0],
+			parentId: oldReplyId,
 		});
 
 		expect(response.status, response.body).toBe(200);
@@ -1384,9 +1359,8 @@ describe("/api/chat MCP parts in history", () => {
 		// The route saw the stop, so the reply below is the one the abort path saved.
 		expect(stopped.body).toContain('"type":"abort"');
 
-		const messages = await t.run((ctx) => ctx.db.query("ai_chat_threads_messages_aisdk_5").collect());
-		const assistant = messages.find((message) => message.content.role === "assistant");
-		expect(assistant?.content.parts).toEqual(
+		const assistant = await reply_message(t);
+		expect(assistant.parts).toEqual(
 			expect.arrayContaining([
 				expect.objectContaining({
 					type: "dynamic-tool",
@@ -1440,8 +1414,7 @@ describe("/api/chat MCP sign-in notice", () => {
 	});
 
 	async function reply_parts(t: TestConvex) {
-		const messages = await t.run((ctx) => ctx.db.query("ai_chat_threads_messages_aisdk_5").collect());
-		return messages.find((message) => message.content.role === "assistant")!.content.parts;
+		return (await reply_message(t)).parts;
 	}
 
 	test("a server whose tool list needs sign-in starts the reply with a notice, and the model hears why", async () => {

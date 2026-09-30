@@ -686,6 +686,40 @@ async function db_purge_organization_workspace_content_batch(
 		return { done: false, deletedCount: aiFiles.length };
 	}
 
+	// A reply step can be close to 1 MiB, so delete a few per pass.
+	const runSteps = await ctx.db
+		.query("ai_chat_run_steps")
+		.withIndex("by_organization_workspace", (q) =>
+			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
+		)
+		.take(Math.min(batchSize, 8));
+	if (runSteps.length > 0) {
+		await Promise.all(runSteps.map((doc) => ctx.db.delete("ai_chat_run_steps", doc._id)));
+		return { done: false, deletedCount: runSteps.length };
+	}
+
+	const runInbox = await ctx.db
+		.query("ai_chat_run_inbox")
+		.withIndex("by_organization_workspace", (q) =>
+			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
+		)
+		.take(batchSize);
+	if (runInbox.length > 0) {
+		await Promise.all(runInbox.map((doc) => ctx.db.delete("ai_chat_run_inbox", doc._id)));
+		return { done: false, deletedCount: runInbox.length };
+	}
+
+	const toolReceipts = await ctx.db
+		.query("ai_chat_tool_receipts")
+		.withIndex("by_organization_workspace", (q) =>
+			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
+		)
+		.take(batchSize);
+	if (toolReceipts.length > 0) {
+		await Promise.all(toolReceipts.map((doc) => ctx.db.delete("ai_chat_tool_receipts", doc._id)));
+		return { done: false, deletedCount: toolReceipts.length };
+	}
+
 	// AI thread messages, shells and transcripts are children of the thread docs, so they are
 	// removed before deleting the thread docs themselves.
 	const aiChatMessages = await ctx.db
@@ -2112,6 +2146,34 @@ async function db_drain_thread_batch(
 		return { done: false, deletedCount: mcpCalls.length };
 	}
 
+	// A reply step can be close to 1 MiB, so delete a few per pass.
+	const steps = await ctx.db
+		.query("ai_chat_run_steps")
+		.withIndex("by_thread", (q) => q.eq("threadId", thread._id))
+		.take(Math.min(args.batchSize, 8));
+	if (steps.length > 0) {
+		await Promise.all(steps.map((doc) => ctx.db.delete("ai_chat_run_steps", doc._id)));
+		return { done: false, deletedCount: steps.length };
+	}
+
+	const inbox = await ctx.db
+		.query("ai_chat_run_inbox")
+		.withIndex("by_thread_state", (q) => q.eq("threadId", thread._id))
+		.take(args.batchSize);
+	if (inbox.length > 0) {
+		await Promise.all(inbox.map((doc) => ctx.db.delete("ai_chat_run_inbox", doc._id)));
+		return { done: false, deletedCount: inbox.length };
+	}
+
+	const toolReceipts = await ctx.db
+		.query("ai_chat_tool_receipts")
+		.withIndex("by_thread_opKey", (q) => q.eq("threadId", thread._id))
+		.take(args.batchSize);
+	if (toolReceipts.length > 0) {
+		await Promise.all(toolReceipts.map((doc) => ctx.db.delete("ai_chat_tool_receipts", doc._id)));
+		return { done: false, deletedCount: toolReceipts.length };
+	}
+
 	const messages = await ctx.db
 		.query("ai_chat_threads_messages_aisdk_5")
 		.withIndex("by_organization_workspace_thread", (q) =>
@@ -2166,12 +2228,15 @@ async function db_drain_thread_batch(
 async function db_wait_deleting_thread(ctx: MutationCtx, args: { thread: Doc<"ai_chat_threads">; now: number }) {
 	const { thread } = args;
 
-	// A run whose lease passed without a run end is ended by the `end expired chat runs` cron.
-	const runs = await ctx.db
-		.query("ai_chat_runs")
-		.withIndex("by_thread_status", (q) => q.eq("threadId", thread._id).eq("status", "running"))
-		.take(DELETE_CHAT_WAIT_BATCH_SIZE);
-	if (runs.some((run) => run.leaseExpiresAt > args.now)) return { done: false, deletedCount: 0 };
+	// Delete chat stopped the live run. Its action saves its last step and ends it. A run whose
+	// lease passed without a run end is ended by the `end expired chat runs` cron.
+	for (const status of ["running", "stopping"] as const) {
+		const runs = await ctx.db
+			.query("ai_chat_runs")
+			.withIndex("by_thread_status", (q) => q.eq("threadId", thread._id).eq("status", status))
+			.take(DELETE_CHAT_WAIT_BATCH_SIZE);
+		if (runs.some((run) => run.leaseExpiresAt > args.now)) return { done: false, deletedCount: 0 };
+	}
 
 	// Stop the Files transfers the chat's commands started, and their retries, and wait until each
 	// one ends. The transfers stay in Activity; only their links to the chat are deleted later.

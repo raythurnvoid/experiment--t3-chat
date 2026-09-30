@@ -66,13 +66,14 @@ Require a non-zero control count before treating its result as evidence.
 ## Private chat and access-loss check
 
 Use a fresh anonymous member invited into a non-default QA organization, plus its owner in a
-separate browser session. See `second-user-fixtures.md`. Create a named fixture chat and message
-through `ai_chat.thread_create` and `thread_messages_add` as the member. Read their current args
-before calling them. These public doors need no model call for an access check.
+separate browser session. See `second-user-fixtures.md`. Create a named fixture chat through
+`ai_chat.thread_create` as the member. Read its current args before calling it. No public door
+saves a message without a run any more, so send one short message in the member's browser
+(`Reply with OK. Do not call any tools.`). That costs one cheap model call.
 
 - Open `/chat?threadId=<id>` as the member and confirm the fixture text. Read back the stored title
-  and messages through the same member's public queries.
-- As the owner, `threads_list` must omit that chat; `thread_get` and `thread_messages_list` must
+  and messages through the same member's public queries (`thread_get`, `ai_chat_runs.branch_page`).
+- As the owner, `threads_list` must omit that chat; `thread_get` and `ai_chat_runs.branch_page` must
   return null. A direct route must clear the inaccessible ID without showing its title or text.
   An attempted `thread_update` must refuse. Re-read as the creator to prove the title stayed put.
 - In the member's Files Agent panel, open the fixture chat and type an unsent draft. As the owner,
@@ -84,11 +85,15 @@ before calling them. These public doors need no model call for an access check.
   private draft does not. Delete the temporary role. Keep account cleanup limited to the fixture.
 
 For a real Bash smoke check, use an empty persisted fixture chat and request one `printf` command.
-`thread_messages_list` returns `{ messages }` or `null`, not an array. Read each message's
-`content.parts`. A saved user message alone does not prove the run finished.
-Stored `tool-bash` output is `{ metadata, output, title }`, not `{ stdout, stderr }`. Check the exact
-terminal text in `output` plus `metadata.exitCode`, `stdoutLength`, and truncation flags. Also
-check the stored assistant text and that the thread's `activeRun` cleared.
+Read the chat with `ai_chat_runs.branch_page({ membershipId, threadId, anchorId: null, fromId: null,
+stopId: null })`. It returns `{ nodes, nextId }` or `null`, not an array. Nodes come newest first,
+at most 50 per page; pass `nextId` as `fromId` for the next older page. Read each node's
+`content.parts`: for a reply, the query builds them from its step rows. A saved user message alone
+does not prove the run finished: the reply node exists from the start and keeps
+`status: "streaming"` until the run ends. Require `done`, and check that the thread's `activeRun`
+cleared. Stored `tool-bash` output is `{ metadata, output, title }`, not `{ stdout, stderr }`. Check
+the exact terminal text in `output` plus `metadata.exitCode`, `stdoutLength`, and truncation flags.
+Also check the stored assistant text.
 
 Put an exact shell command in its own paragraph or code block, without trailing prose punctuation.
 A period beside a command can become a real operand. Check the stored command and exit code before
@@ -149,7 +154,7 @@ await state.page.locator('[data-testid="ai-chat-send-button"]').click();
 
 DOM `innerText()` can add extra blank lines between ProseMirror paragraphs. For a
 shell prompt, compare the command paragraphs before Send. After Send, compare the
-saved user text from `ai_chat.thread_messages_list` with the original prompt.
+saved user text from `ai_chat_runs.branch_page` with the original prompt.
 Do not require DOM text to match the prompt byte for byte.
 
 The composer can briefly unmount during the optimistic→persisted thread swap right after `New chat`; always wait for the selector before typing.
@@ -195,43 +200,48 @@ Always write `Use the shell name <name> for BOTH calls` into the prompt. To conf
 
 ## A finished job always posts and wakes, with no flag needed
 
-Every job the agent started posts one `system` finish message (`Background job <n> finished`) when it
-ends, whether or not the Bash call set `wakeOnJobFinish`. The old flag-gated wake and the stderr
+Every job the agent started posts one finish text (`Background job <n> finished`) when it ends,
+whether or not the Bash call set `wakeOnJobFinish`. The old flag-gated wake and the stderr
 notes are gone (removed 2026-09-18): do not write `Set wakeOnJobFinish to true` into prompts, and do
 not expect `bash: job N done` in later Bash output — its absence is the point.
 
 Two more ways a wake check comes back empty without a defect:
 
-- A job that finishes **while a run is active** still stores its message at once. The running turn
-  injects it at the next step. A wake run starts only for finishes that turn never injected. The
-  message can appear before the turn ends; do not require "end the turn first, then let the job
-  finish" for the system line to show. A leftover wake after the turn still needs the turn to end.
-- The finish is a `system` message. It renders as its own `.AiChatMessage`, so read roles, not only
-  assistant text.
+- A job that finishes **while the run on its branch is live** does not get its own message. It waits
+  in `ai_chat_run_inbox`, and the run shows it **inside the reply** at the next step, as a
+  `data-job-finish` part (`.AiChatMessagePart-job-finish`) at the start of that step. No wake run
+  starts for it. A finish still waiting when the run ends becomes a finish message under that reply.
+- With no live run on its branch, the finish is a `system` message under the leaf of the job's
+  branch. It renders as its own `.AiChatMessage`, so read roles, not only assistant text. A wake run
+  then answers it.
+- The finish goes to the branch of the reply that started the job, not to the branch on screen. If
+  you switched branch meanwhile, look on the job's branch.
 
 A good wake check therefore looks like: one turn that launches the job and replies at once (tell it
 not to wait), then poll the message list with no further sends, then assert that new messages
 appeared, that none of them is a `user` message, and that one holds `Background job <n> finished`.
+To check the in-reply case, launch a job that ends in about 10 seconds and ask the same turn for
+several slow steps (not verified live yet).
 
-## Forcing the 409 wait path without a race
+## Forcing the 409 wait path
 
-A message sent while a wake run holds the lease gets 409; the client waits and re-sends the same
-request, so exactly one user message is stored. Do not race a real wake run — hold the lease with
-the doors instead (verified 2026-09-18):
+A thread has one live run. A send while any run is live (a turn from another tab, or a job wake
+run) gets 409 with `retryAfterMs` (at most 5 s). The server saves nothing; the client waits and
+sends the same request again, so exactly one user message is stored.
+
+Use two tabs on the same chat. In tab A, send a slow prompt (for example three `execute_code`
+steps that each wait 5 seconds). While tab A's reply is `streaming`, send a short message in tab B.
+Tab B shows no error UI and stays running. After tab A's run ends (or you press Stop in either tab),
+tab B's turn starts by itself. Not verified live yet (phase C, 2026-09-30).
+
+To end a held run from the CLI instead, read `runId` and `generation` from the thread's
+`activeRun` and call the run's own last write:
 
 ```powershell
-vp env exec pnpm --dir packages/app exec convex run ai_chat:thread_run_begin '{"threadId": "<id>"}'
-vp env exec pnpm --dir packages/app exec convex run ai_chat:thread_run_handover_to_wakeup '{"threadId": "<id>"}'
+vp env exec pnpm --dir packages/app exec convex run ai_chat_runs:finish '{"runId": "<runId>", "generation": <generation>, "outcome": "stopped", "tail": null}'
 ```
 
-Send in the browser, wait ~12 s, assert no error UI and still running, then release and assert the
-turn completes with one stored copy:
-
-```powershell
-vp env exec pnpm --dir packages/app exec convex run ai_chat:thread_run_end '{"threadId": "<id>", "kind": "job_wakeup"}'
-```
-
-Read back with `ai_chat.thread_messages_list`: exactly one `user` message holds the sent text.
+Read back with `ai_chat_runs.branch_page`: exactly one `user` node holds tab B's text.
 
 ## Read a finished job's own output with `jobs -o N`, not a transcript tail
 
@@ -248,19 +258,33 @@ lost job. Read `convex data ai_chat_bash_shell_transcripts --limit 6 --order des
 
 ## Stop cancels the turn, not the Bash call already running on the server
 
-Clicking `Stop generating` while a Bash tool call is in flight aborts the AI SDK request in the browser. The Convex side keeps running the command to the end. The tool card is then left with only its command line and no output section, because the tool result never streamed back — but the shell transcript holds the whole run, with its real exit code.
+The Stop button's accessible name is `Stop generating` (`[aria-label="Stop generating"]`). Stop is a
+server mutation (`ai_chat_runs.stop`), so Stop in any tab of the chat stops the run. It names the
+streaming reply the tab shows, so a late Stop never stops the next run (a job wake run). It raises the
+run's generation. The run's action notices within about 2 seconds, saves the unfinished step as
+`partial`, and ends the reply as `stopped`. Sometimes the action dies before it can do that (a
+stream error at the abort, or a closed tab). Then the Stop grace end ends the run exactly 30 seconds
+after Stop and logs `Chat data not saved` with `reason: "finish_missing"`. So after Stop, wait up
+to about 35 seconds for the reply to leave `streaming` before calling the run stuck. Verified 2026-09-30.
 
-So do not read an empty card as "the command was killed", and do not use Stop to exercise the engine's abort path. Check the transcript for the truth (`convex data ai_chat_bash_shell_transcripts --limit 6 --order desc`). To drive a real in-engine abort, use the `timeout` command instead: `printf 'kept\n'; timeout 1 sleep 5; printf 'code=%s\n' "$?"` keeps `kept`, reports `code=124`, and drops the timed-out command's own output. Verified 2026-09-16.
+A Bash command already running in its own action still runs to the end, but none of its writes
+land: app-file writes, `/tmp` changes, the shell state and its transcript entry are all refused,
+because the run's generation changed (`save_shell` and `patch_thread_tmp_files` answer "Stopped").
+The tool card is then left with only its command line and no output section.
 
-## Count a reply's steps and bytes from the stored message
+So do not read an empty card as "the command was killed", and do not use Stop to exercise the engine's abort path. The transcript does not show the stopped command either. To drive a real in-engine abort, use the `timeout` command instead: `printf 'kept\n'; timeout 1 sleep 5; printf 'code=%s\n' "$?"` keeps `kept`, reports `code=124`, and drops the timed-out command's own output. Verified 2026-09-16.
+
+## Count a reply's steps and bytes from the stored steps
 
 A reply can have up to 25 model steps. To prove how many steps ran, or how big a reply got, read the
-stored message, not the cards. Chat replies live in `ai_chat_threads_messages_aisdk_5`; the table
-`chat_messages` holds file comments. Export a few recent rows to the task folder, then count
-`step-start` parts and the tool parts in each reply's `content`:
+stored steps, not the cards. A reply node in `ai_chat_threads_messages_aisdk_5` holds no parts: each
+model step is one row in `ai_chat_run_steps` (`messageId` = the reply node, `stepIndex`, `status`
+`done` or `partial`, `parts`, `bytes`). The reply node's own `bytes` counts its content plus its
+steps. The table `chat_messages` holds file comments. Export a few recent rows to the task folder,
+then count the rows per `messageId` and the tool parts in each row's `parts`:
 
 ```powershell
-vp env exec pnpm --dir packages/app exec convex data ai_chat_threads_messages_aisdk_5 --format jsonArray --limit 10 --order desc > "$d/messages.json"
+vp env exec pnpm --dir packages/app exec convex data ai_chat_run_steps --format jsonArray --limit 30 --order desc > "$d/steps.json"
 ```
 
 To make a reply run many steps, ask for `execute_code` N times, one call per step (`return { call: K };`).
@@ -278,7 +302,7 @@ The Stop button blinks out between agent steps (tool-exec gaps), so a single "no
 
 QA tabs using one account share this limit. Tabs in one browser profile also share the selected chat. Run one chat QA lane at a time and leave its peer tabs idle. Check the selected thread and saved prompt before scoring a result.
 
-Rapid fresh-chat checks can also log `ai_chat:thread_mark_read` rate limits and `Failed to move the read cursor`. A turn may still finish and save all tool results. Check that exact thread with a fresh `ai_chat.thread_messages_list` query before resubmitting the prompt.
+Rapid fresh-chat checks can also log `ai_chat:thread_mark_read` rate limits and `Failed to move the read cursor`. A turn may still finish and save all tool results. Check that exact thread with a fresh `ai_chat_runs.branch_page` query before resubmitting the prompt.
 
 When later messages are queued, any other failed active turn pauses the queue. The failed user stays in the transcript with `Message failed to send.` and its normal Retry action. Every later queued row must keep its stable id, text, and order. This also applies when the thread is still optimistic, an empty assistant placeholder exists, or Convex persisted the failed user before the assistant stream failed. Resume retries the visible failed turn before the queue continues. The message Retry action follows the same path. If that retry fails, the queue pauses again without claiming a follower.
 
@@ -374,6 +398,7 @@ When the app tab is not foregrounded:
 
 - `snapshot()`, `screenshot()`, and `innerText` are unreliable — read via `evaluate()` with `textContent`, `getComputedStyle`, `getBoundingClientRect`.
 - Playwright `locator.click()` can hang at `performing click action` on a background trigger. Read its current bounds, use the harness hit test to confirm the target is clear, then use a normal `page.mouse.click` at that observed point. Re-read the resulting state. Do not use forced or DOM clicks, or foreground the user's profile to work around it.
+- The send and Stop buttons hit this too. To send, focus the composer and press Enter instead of clicking the send button. To stop, read the Stop button's box in page context (`document.querySelector('[aria-label="Stop generating"]').getBoundingClientRect()`) and call `page.mouse.click` at its center. `locator.click` on `Stop generating` can hang while the run keeps streaming.
 
 ## External links in chat
 
@@ -441,7 +466,7 @@ The chat card is titled `Generate image`. It shows a safe status and `Open in Fi
 }
 ```
 
-Read the owned thread through `ai_chat.thread_messages_list({ membershipId, threadId })`. It returns `{ messages }`, and each doc holds its UI message in `content`. Check the tool's `input` is `{}` and its output has only the safe fields above. There must be no image bytes, signed URL, or old `{ assetId, mediaType, size }` output. One successful image output must produce one Files target. Preview copies must not create extra files. Reload chat and confirm the same link still works.
+Read the owned thread through `ai_chat_runs.branch_page({ membershipId, threadId, anchorId: null, fromId: null, stopId: null })`. It returns `{ nodes, nextId }`, newest node first, and each node holds its UI message in `content`. Check the tool's `input` is `{}` and its output has only the safe fields above. There must be no image bytes, signed URL, or old `{ assetId, mediaType, size }` output. One successful image output must produce one Files target. Preview copies must not create extra files. Reload chat and confirm the same link still works.
 
 File results use `succeeded`, `partial`, `errored`, `cancelled`, or `timed_out`. The `reason` field is always present. It is null or a fixed code such as `agent_required`, `unavailable`, `storage`, or `limit`. Check both fields. For `execute_code`, check `metadata.fileResult` separately from the runner's `metadata.status`. A calculation can succeed while file output fails. A later failure or Stop must keep earlier completed files and report `partial`.
 
@@ -557,7 +582,7 @@ For a long skill-read fixture, use `seq 1 620 | awk '{ print "Reference note " $
 2. Prove the live check can fail: temporarily turn that dev gate off and run the browser assertion that expects an enabled catalog with the fixtures. Read its failed assertion and exit code. Restore the gate and run the same assertion unchanged. Do not break a shared source file while another task is doing live QA.
 3. In a new chat, confirm the composer has no Instructions and skills control or skill chips. Ask the agent to use plan-and-review. Check that it reads the real SKILL.md path with Bash.
 4. Ask the agent to read its checks reference, run the suitable JavaScript from total.js with values `[7, 11, 13]` through execute_code, and propose `reports/result.md`. The total is 31. Require `Workspace check: ready`, `SKILL_REFERENCE_0908`, and `SKILL_SCRIPT_0908`. Nested report rules should appear only after the agent touches that path. Inspect the proposal before accepting it.
-5. After the run is idle, read `ai_chat.thread_messages_list` through the public query. A saved doc's UI message is in `content`. Check that Bash output contains the read skill text and that execute_code keeps its result. Reload and continue the chat. No dedicated skill tool should appear. Use a SKILL.md larger than 40 lines with a marker at its end to prove the old preview limit is gone.
+5. After the run is idle, read `ai_chat_runs.branch_page` through the public query. A node's UI message is in `content`. Check that Bash output contains the read skill text and that execute_code keeps its result. Reload and continue the chat. No dedicated skill tool should appear. Use a SKILL.md larger than 40 lines with a marker at its end to prove the old preview limit is gone.
 6. Check both the Files Agent panel and full chat route. Keep a reference to the composer DOM node during a real optimistic thread ID upgrade. It must remain connected. Edit a queued message and check its text, images, focus, and model/mode after persistence. Repeat with a pending edit to SKILL.md; a fresh read must see that pending text.
 7. Follow [second-user-fixtures.md](second-user-fixtures.md). Prove a member can read a skill, then restrict its folder or remove content.read and prove a fresh read fails. Earlier tool output must remain in chat history. Also cover a pending rename and delete. Clean up only owned fixtures.
 8. Run the quick accessibility screen on the composer. Check keyboard access, image chip removal, focus, narrow layout, and zoom. Save results and any skipped checks in the task report.

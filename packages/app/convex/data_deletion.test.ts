@@ -25,6 +25,7 @@ import { files_private_storage_db_reserve } from "./files_private_storage.ts";
 import { files_db_insert_pending_update } from "../server/files.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import { files_subtree_ops_db_start_rebuild } from "./files_subtree_ops.ts";
+import { ai_chat_DEFAULT_MODEL_ID } from "../shared/ai-chat.ts";
 
 const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -175,6 +176,7 @@ async function data_deletion_test_seed_private_chat(
 		createdBy: args.userId,
 		updatedBy: args.userId,
 		updatedAt: now,
+		newestNodeId: null,
 	});
 	const scope = { organizationId: args.organizationId, workspaceId: args.workspaceId, threadId };
 	const shellId = await ctx.db.insert("ai_chat_bash_shells", {
@@ -189,6 +191,8 @@ async function data_deletion_test_seed_private_chat(
 		updatedBy: args.userId,
 		updatedAt: now,
 	});
+	const messageIds: Id<"ai_chat_threads_messages_aisdk_5">[] = [];
+	const invocationIds: Id<"ai_chat_bash_invocations">[] = [];
 	for (let index = 0; index < args.count; index += 1) {
 		const fileNodeId = await ctx.db.insert("ai_chat_files", {
 			...scope,
@@ -198,7 +202,7 @@ async function data_deletion_test_seed_private_chat(
 			size: 7,
 			mtime: now,
 		});
-		await Promise.all([
+		const [, messageId, , invocationId] = await Promise.all([
 			ctx.db.insert("ai_chat_files_content", {
 				...scope,
 				fileNodeId,
@@ -211,6 +215,11 @@ async function data_deletion_test_seed_private_chat(
 				content: { role: "user", parts: [{ type: "text", text: "Private note" }] },
 				createdBy: args.userId,
 				updatedAt: now,
+				status: "done",
+				runId: null,
+				version: 0,
+				wakePending: false,
+				bytes: 0,
 			}),
 			ctx.db.insert("ai_chat_bash_shell_transcripts", {
 				...scope,
@@ -226,24 +235,67 @@ async function data_deletion_test_seed_private_chat(
 				membershipLifetime: 0,
 				toolCallId: `private-${index}`,
 				commandHash: "a".repeat(64),
+				run: null,
+				originReplyId: null,
 				status: "interrupted",
 				deadlineAt: now,
 				transferDeadlineAt: now,
 				finishedAt: now,
 			}),
 		]);
+		messageIds.push(messageId);
+		invocationIds.push(invocationId);
 	}
+	// The seed only needs valid ids here, so the ended run answers the first message with the second.
+	const runId = await ctx.db.insert("ai_chat_runs", {
+		...scope,
+		userId: args.userId,
+		membershipId: args.membershipId,
+		membershipLifetime: 0,
+		kind: "chat",
+		status: "ended",
+		generation: 1,
+		triggerId: messageIds[0]!,
+		replyId: messageIds[1]!,
+		modeId: "agent",
+		modelId: ai_chat_DEFAULT_MODEL_ID,
+		heartbeatAt: now,
+		stopRequestedAt: null,
+		completedSteps: 1,
+		leaseExpiresAt: now,
+		endedAt: now,
+	});
 	await Promise.all([
 		ctx.db.insert("ai_chat_bash_job_notice_cursors", { ...scope, userId: args.userId, noticeAt: now }),
-		ctx.db.insert("ai_chat_runs", {
+		ctx.db.insert("ai_chat_run_steps", {
 			...scope,
-			userId: args.userId,
-			membershipId: args.membershipId,
-			membershipLifetime: 0,
-			kind: "chat",
-			status: "ended",
-			leaseExpiresAt: now,
-			endedAt: now,
+			messageId: messageIds[1]!,
+			runId,
+			generation: 1,
+			stepIndex: 0,
+			modelCallId: "private-model-call",
+			status: "done",
+			toolCalls: [],
+			parts: [{ type: "text", text: "Private reply" }],
+			finishReason: "stop",
+			bytes: 0,
+		}),
+		ctx.db.insert("ai_chat_run_inbox", {
+			...scope,
+			invocationId: invocationIds[0]!,
+			text: "Private job finish",
+			state: "waiting",
+			claim: null,
+		}),
+		ctx.db.insert("ai_chat_tool_receipts", {
+			...scope,
+			opKey: "private-op",
+			runId,
+			generation: 1,
+			toolName: "edit_file",
+			inputHash: "b".repeat(64),
+			status: "finished",
+			result: null,
 		}),
 		ctx.db.insert("public_api_grants", {
 			...scope,
@@ -821,6 +873,43 @@ async function data_deletion_test_seed_workspace_content_bulk(
 			updatedBy: args.userId,
 			updatedAt: Date.now(),
 			lastMessageAt: Date.now(),
+			newestNodeId: null,
+		});
+		const messageId = await ctx.db.insert("ai_chat_threads_messages_aisdk_5", {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			parentId: null,
+			threadId,
+			clientGeneratedMessageId: `${args.tag}-message-${i}`,
+			content: {},
+			createdBy: args.userId,
+			updatedAt: Date.now(),
+			status: "done",
+			runId: null,
+			version: 0,
+			wakePending: false,
+			bytes: 0,
+		});
+		// The seed only needs valid ids, so the run answers its own reply node.
+		const runId = await ctx.db.insert("ai_chat_runs", {
+			organizationId: apiOrganizationId,
+			workspaceId: apiWorkspaceId,
+			threadId,
+			userId: args.userId,
+			membershipId: membership._id,
+			membershipLifetime: 0,
+			kind: "chat",
+			status: "running",
+			generation: 1,
+			triggerId: messageId,
+			replyId: messageId,
+			modeId: "agent",
+			modelId: ai_chat_DEFAULT_MODEL_ID,
+			heartbeatAt: Date.now(),
+			stopRequestedAt: null,
+			completedSteps: 0,
+			leaseExpiresAt: Date.now(),
+			endedAt: null,
 		});
 		const [shellId, aiFileNodeId] = await Promise.all([
 			ctx.db.insert("ai_chat_bash_shells", {
@@ -865,27 +954,32 @@ async function data_deletion_test_seed_workspace_content_bulk(
 				userId: args.userId,
 				noticeAt: Date.now(),
 			}),
-			ctx.db.insert("ai_chat_runs", {
+			ctx.db.insert("ai_chat_run_steps", {
 				organizationId: apiOrganizationId,
 				workspaceId: apiWorkspaceId,
 				threadId,
-				userId: args.userId,
-				membershipId: membership._id,
-				membershipLifetime: 0,
-				kind: "chat",
-				status: "running",
-				leaseExpiresAt: Date.now(),
-				endedAt: null,
+				messageId,
+				runId,
+				generation: 1,
+				stepIndex: 0,
+				modelCallId: `${args.tag}-model-call-${i}`,
+				status: "done",
+				toolCalls: [],
+				parts: [],
+				finishReason: "stop",
+				bytes: 0,
 			}),
-			ctx.db.insert("ai_chat_threads_messages_aisdk_5", {
-				organizationId: args.organizationId,
-				workspaceId: args.workspaceId,
-				parentId: null,
+			ctx.db.insert("ai_chat_tool_receipts", {
+				organizationId: apiOrganizationId,
+				workspaceId: apiWorkspaceId,
 				threadId,
-				clientGeneratedMessageId: `${args.tag}-message-${i}`,
-				content: {},
-				createdBy: args.userId,
-				updatedAt: Date.now(),
+				opKey: `${args.tag}-op-${i}`,
+				runId,
+				generation: 1,
+				toolName: "edit_file",
+				inputHash: "b".repeat(64),
+				status: "finished",
+				result: null,
 			}),
 			ctx.db.insert("ai_chat_files_content", {
 				organizationId: args.organizationId,
@@ -987,6 +1081,8 @@ async function data_deletion_test_count_workspace_content(
 		aiShellTranscripts,
 		aiJobNoticeCursors,
 		aiRuns,
+		aiRunSteps,
+		aiToolReceipts,
 		aiMessages,
 		aiFiles,
 		aiFileContents,
@@ -1016,6 +1112,8 @@ async function data_deletion_test_count_workspace_content(
 		ctx.db.query("ai_chat_bash_shell_transcripts").collect(),
 		ctx.db.query("ai_chat_bash_job_notice_cursors").collect(),
 		ctx.db.query("ai_chat_runs").collect(),
+		ctx.db.query("ai_chat_run_steps").collect(),
+		ctx.db.query("ai_chat_tool_receipts").collect(),
 		ctx.db.query("ai_chat_threads_messages_aisdk_5").collect(),
 		ctx.db.query("ai_chat_files").collect(),
 		ctx.db.query("ai_chat_files_content").collect(),
@@ -1052,6 +1150,8 @@ async function data_deletion_test_count_workspace_content(
 			aiShellTranscripts,
 			aiJobNoticeCursors,
 			aiRuns,
+			aiRunSteps,
+			aiToolReceipts,
 			aiMessages,
 			aiFiles,
 			aiFileContents,
@@ -1139,6 +1239,8 @@ async function data_deletion_test_seed_bash_job(
 		commandHash: "b".repeat(64),
 		membershipId: args.parent.membershipId,
 		membershipLifetime: args.parent.membershipLifetime,
+		run: null,
+		originReplyId: null,
 		status: "running",
 		deadlineAt: now + 600_000,
 		transferDeadlineAt: now + 600_000,
@@ -2046,6 +2148,8 @@ describe("creator-owned private chat deletion", () => {
 									"ai_chat_bash_shells",
 									"ai_chat_bash_job_notice_cursors",
 									"ai_chat_runs",
+									"ai_chat_run_steps",
+									"ai_chat_tool_receipts",
 									"public_api_grants",
 								] as const
 							).map((table) => ctx.db.query(table).collect()),
@@ -2180,6 +2284,9 @@ describe("drain_deleting_thread", () => {
 				"ai_chat_files",
 				"ai_chat_files_content",
 				"ai_chat_runs",
+				"ai_chat_run_steps",
+				"ai_chat_run_inbox",
+				"ai_chat_tool_receipts",
 				"public_api_grants",
 				"plugins_mcp_calls",
 			] as const;
@@ -2232,7 +2339,7 @@ describe("drain_deleting_thread", () => {
 		}
 		expect(done).toBe(true);
 		expect(Object.values(await data_deletion_test_count_thread_docs(f.t, f.deletedThreadId))).toEqual(
-			Array(11).fill(0),
+			Array(14).fill(0),
 		);
 		expect(await data_deletion_test_count_thread_docs(f.t, f.keptThreadId)).toEqual(keptBefore);
 	});
@@ -2244,18 +2351,30 @@ describe("drain_deleting_thread", () => {
 			membershipId: f.db.membershipId,
 		});
 		if (captured._nay) throw new Error(captured._nay.message);
-		const runId = await f.t.mutation(internal.ai_chat.thread_run_begin, {
-			source: {
-				organizationId: f.db.organizationId,
-				workspaceId: f.db.workspaceId,
-				threadId: f.deletedThreadId,
-				userId: f.db.userId,
-				membershipId: f.db.membershipId,
-				membershipLifetime: captured._yay.membershipLifetime,
-			},
-		});
-		if (!runId) throw new Error("Expected the run to begin");
-		const run = await f.t.run((ctx) => ctx.db.get("ai_chat_runs", runId));
+		const source = {
+			organizationId: f.db.organizationId,
+			workspaceId: f.db.workspaceId,
+			threadId: f.deletedThreadId,
+			userId: f.db.userId,
+			membershipId: f.db.membershipId,
+			membershipLifetime: captured._yay.membershipLifetime,
+		};
+		const send = (messageId: string) =>
+			f.t.mutation(internal.ai_chat.thread_run_begin, {
+				source,
+				parentId: null,
+				messages: [
+					{
+						clientGeneratedMessageId: messageId,
+						content: { id: messageId, role: "user", parts: [{ type: "text", text: messageId }] },
+					},
+				],
+				modeId: "agent",
+				modelId: ai_chat_DEFAULT_MODEL_ID,
+			});
+		const begun = await send("live-run");
+		if (begun._nay) throw new Error(begun._nay.message);
+		const run = await f.t.run((ctx) => ctx.db.get("ai_chat_runs", begun._yay.runId));
 		await f.asUser.mutation(api.ai_chat.thread_delete, {
 			membershipId: f.db.membershipId,
 			threadId: f.deletedThreadId,
@@ -2271,13 +2390,9 @@ describe("drain_deleting_thread", () => {
 		).toEqual({ done: false, deletedCount: 0 });
 		expect(await data_deletion_test_count_thread_docs(f.t, f.deletedThreadId)).toEqual(before);
 
-		// A deleting chat admits no new run.
-		expect(
-			await f.t.mutation(internal.ai_chat.thread_run_begin_wakeup, {
-				threadId: f.deletedThreadId,
-				invocationId: (await f.t.run((ctx) => ctx.db.query("ai_chat_bash_invocations").first()))!._id,
-			}),
-		).toBeNull();
+		// A deleting chat admits no new run. The chat check refuses it before the live lease would
+		// answer 409.
+		expect(await send("after-delete")).toMatchObject({ _nay: { message: "Unauthorized", data: { status: 403 } } });
 
 		const step = await f.t.mutation(internal.data_deletion.drain_deleting_thread, {
 			threadId: f.deletedThreadId,
@@ -3812,6 +3927,7 @@ describe("process_workspace_deletion_request", () => {
 			toolCallId: "purge-bash-call",
 			commandHash: "a".repeat(64),
 			shellName: "default",
+			run: null,
 		});
 		if (invocation._nay) throw new Error(invocation._nay.message);
 		await t.mutation(internal.ai_chat_files.interrupt_bash_invocation, { invocationId: invocation._yay.invocationId });
@@ -3931,6 +4047,7 @@ describe("process_workspace_deletion_request", () => {
 				toolCallId,
 				commandHash: "a".repeat(64),
 				shellName: "default",
+				run: null,
 			});
 		const first = await begin("purge-job-call-1");
 		if (first._nay || !("shell" in first._yay)) throw new Error("Expected a fresh call");
@@ -7591,6 +7708,7 @@ describe("finalize_user_deletion_data", () => {
 			toolCallId: "drain-job-call",
 			commandHash: "a".repeat(64),
 			shellName: "default",
+			run: null,
 		});
 		if (begun._nay || !("shell" in begun._yay)) throw new Error("Expected a fresh call");
 		const shellId = begun._yay.shell._id;
@@ -11238,6 +11356,7 @@ describe("mcp docs", () => {
 				updatedBy: user.userId,
 				updatedAt: now,
 				lastMessageAt: now,
+				newestNodeId: null,
 			});
 			for (const userId of [user.userId, owner.userId]) {
 				const customServerId = await test_mocks_fill_db_with.mcp_custom_server(ctx, {

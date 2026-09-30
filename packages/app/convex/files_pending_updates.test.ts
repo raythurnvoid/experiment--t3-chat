@@ -863,6 +863,7 @@ async function seed_chat_thread(args: {
 		createdBy: args.userId,
 		updatedBy: args.userId,
 		updatedAt: Date.now(),
+		newestNodeId: null,
 	});
 }
 

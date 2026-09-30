@@ -64,6 +64,7 @@ async function fixture() {
 			shellName,
 			wakeAgent: null,
 			output: null,
+			run: null,
 		});
 	const run = (script: string, agent = true) =>
 		t.action(async (ctx) => {

@@ -321,6 +321,11 @@
 		flex-direction: column;
 	}
 
+	.AiChatMessageList-older {
+		align-self: center;
+		margin-block: 8px;
+	}
+
 	.AiChatMessageList-error {
 		/* TODO: I'm not sure if we need this if we show the error in the assistant message. */
 		display: none;

@@ -33,6 +33,7 @@ function fixture() {
 		membershipLifetime: 1,
 		getThreadId: () => "chat" as Id<"ai_chat_threads">,
 		getSourceMessageId: () => "user-message" as Id<"ai_chat_threads_messages_aisdk_5">,
+		getRun: () => null,
 		browserIntent: {
 			webChoice: { provider: "playwriter", connectionId: "connection", confirmedTargetHandle: "opaque-tab" },
 			selectionRevision: 1,

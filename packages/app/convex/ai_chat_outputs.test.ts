@@ -1,11 +1,14 @@
 import { R2 } from "@convex-dev/r2";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import type { FunctionArgs } from "convex/server";
 import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
+import { ai_chat_runs_db_insert_node } from "./ai_chat_runs.ts";
 import { quotas_db_delete } from "./quotas.ts";
 import { ai_chat_tool_output_keep, ai_chat_tool_output_reserve } from "../server/ai-chat-tool-output.ts";
+import { ai_chat_DEFAULT_MODEL_ID } from "../shared/ai-chat.ts";
 import type { ai_chat_ToolOutputRef } from "../shared/ai-chat-files.ts";
 
 // The bodies of the uploads, keyed by R2 key. The fake R2 serves them back for page reads.
@@ -65,9 +68,34 @@ async function fixture() {
 		membershipId: db.membershipId,
 		membershipLifetime: captured._yay.membershipLifetime,
 	};
-	const runId = await t.mutation(internal.ai_chat.thread_run_begin, { source });
-	if (!runId) throw new Error("Expected the run to begin");
+	const runId = await begin_run(t, source, "request");
 	return { t, db, asUser, source, runId };
+}
+
+/**
+ * Send one user message the way `/api/chat` does, and return the run it starts.
+ */
+async function begin_run(
+	t: ReturnType<typeof test_convex>,
+	source: FunctionArgs<typeof internal.ai_chat.thread_run_begin>["source"],
+	messageId: string,
+) {
+	const begun = await t.mutation(internal.ai_chat.thread_run_begin, {
+		source,
+		parentId: null,
+		messages: [{ clientGeneratedMessageId: messageId, content: { id: messageId, role: "user", parts: [] } }],
+		modeId: "agent",
+		modelId: ai_chat_DEFAULT_MODEL_ID,
+	});
+	if (begun._nay) throw new Error(begun._nay.message);
+	return begun._yay.runId;
+}
+
+/**
+ * End a run the way its action does after the last step.
+ */
+async function end_run(f: Fixture, runId: Id<"ai_chat_runs">) {
+	await f.t.mutation(internal.ai_chat_runs.finish, { runId, generation: 1, outcome: "done", tail: null });
 }
 
 type Fixture = Awaited<ReturnType<typeof fixture>>;
@@ -79,7 +107,7 @@ async function keep(f: Fixture, text: string) {
 	return await f.t.action(async (ctx) => {
 		const reservation = await ai_chat_tool_output_reserve(ctx, {
 			source: f.source,
-			getRunId: () => f.runId,
+			getRun: () => ({ runId: f.runId, generation: 1 }),
 			getModelCallId: () => "model_call_test",
 			toolCallId: `call-${Math.random()}`,
 			tool: "bash",
@@ -99,37 +127,30 @@ async function keep(f: Fixture, text: string) {
 }
 
 /**
- * Save a reply with one Bash part that points at `ref`.
+ * Save the first reply step of `runId` with one Bash part that points at `ref`.
  */
-async function save_reply(f: Fixture, args: { id: string; output: string; ref: ai_chat_ToolOutputRef }) {
-	// The route saves the reply with the member's identity.
-	return await f.asUser.mutation(internal.ai_chat.thread_run_messages_add, {
-		source: f.source,
-		parentId: null,
-		messages: [
+async function save_reply(
+	f: Fixture,
+	args: { runId: Id<"ai_chat_runs">; id: string; output: string; ref: ai_chat_ToolOutputRef },
+) {
+	return await f.t.mutation(internal.ai_chat_runs.step_complete, {
+		runId: args.runId,
+		generation: 1,
+		stepIndex: 0,
+		parts: [
 			{
-				clientGeneratedMessageId: args.id,
-				content: {
-					id: args.id,
-					role: "assistant",
-					parts: [
-						{
-							type: "tool-bash",
-							toolCallId: `${args.id}-call`,
-							state: "output-available",
-							input: { command: "seq 1 20000" },
-							output: {
-								title: "exit 0 · /",
-								output: args.output,
-								metadata: { command: "seq 1 20000", exitCode: 0, output: args.ref },
-							},
-						},
-					],
+				type: "tool-bash",
+				toolCallId: `${args.id}-call`,
+				state: "output-available",
+				input: { command: "seq 1 20000" },
+				output: {
+					title: "exit 0 · /",
+					output: args.output,
+					metadata: { command: "seq 1 20000", exitCode: 0, output: args.ref },
 				},
 			},
 		],
-		allowMcpParts: false,
-		runId: f.runId,
+		finishReason: "tool-calls",
 	});
 }
 
@@ -197,9 +218,7 @@ describe("ai_chat_tool_output_keep", () => {
 		// The hold shrank from the reservation to the real size.
 		expect((await read_tables(f.t)).quotas.map((quota) => quota.usedCount).sort()).toEqual([1, bytes, bytes].sort());
 
-		expect(await save_reply(f, { id: "reply", output: kept.output, ref })).toMatchObject({
-			_yay: {},
-		});
+		expect(await save_reply(f, { runId: f.runId, id: "reply", output: kept.output, ref })).toEqual({ saved: true });
 		const read = await read_tables(f.t);
 		expect(read.owners).toMatchObject([{ state: "committed", runId: f.runId }]);
 
@@ -249,19 +268,23 @@ describe("ai_chat_tool_output_keep", () => {
 		const kept = await keep(f, BIG_TEXT);
 
 		// The run ends before the reply is saved, so its pending owner goes away with it.
-		await f.t.mutation(internal.ai_chat.thread_run_end, { runId: f.runId });
+		await end_run(f, f.runId);
 		const afterEnd = await read_tables(f.t);
 		expect(afterEnd.owners).toEqual([]);
 		expect(afterEnd.objects).toMatchObject([{ state: { kind: "deleting" }, ownerCount: 0 }]);
 		expect(afterEnd.jobs).toMatchObject([{ reason: "chat_output", chatOutputObjectId: kept.ref!.outputId }]);
 
-		expect(await save_reply(f, { id: "late", output: kept.output, ref: kept.ref! })).toMatchObject({ _yay: {} });
+		// An ended run saves no more steps. A later run that names the old ref keeps only its preview.
+		const laterRunId = await begin_run(f.t, f.source, "later-request");
+		expect(await save_reply(f, { runId: laterRunId, id: "late", output: kept.output, ref: kept.ref! })).toEqual({
+			saved: true,
+		});
 		expect(error).toHaveBeenCalledWith(
 			"Chat data not saved",
 			expect.objectContaining({ reason: "output_ref_dropped", objectId: kept.ref!.outputId }),
 		);
-		const saved = await f.t.run((ctx) => ctx.db.query("ai_chat_threads_messages_aisdk_5").collect());
-		const part = (saved.at(-1)!.content.parts as Array<{ output: { output: string; metadata: object } }>)[0]!;
+		const saved = await f.t.run((ctx) => ctx.db.query("ai_chat_run_steps").collect());
+		const part = (saved.at(-1)!.parts as Array<{ output: { output: string; metadata: object } }>)[0]!;
 		expect(part.output.output.endsWith("\n[Full output not saved.]")).toBe(true);
 		expect(part.output.metadata).not.toHaveProperty("output");
 
@@ -292,7 +315,7 @@ describe("BashToolOutputFs", () => {
 				const toolCallId = `bash-${callNumber++}`;
 				const reservation = await ai_chat_tool_output_reserve(ctx, {
 					source: f.source,
-					getRunId: () => f.runId,
+					getRun: () => ({ runId: f.runId, generation: 1 }),
 					getModelCallId: () => "model_call_test",
 					toolCallId,
 					tool: "bash",
@@ -307,6 +330,7 @@ describe("BashToolOutputFs", () => {
 						shellName: "default",
 						wakeAgent: null,
 						output: reservation,
+						run: { runId: f.runId, generation: 1 },
 					})
 					.finally(() =>
 						ctx.runMutation(internal.ai_chat_outputs.release_reservation, { objectId: reservation.objectId }),
@@ -339,8 +363,8 @@ describe("drain_deleting_thread", () => {
 	test("Delete chat removes its outputs and the R2 delete gives the storage back", async () => {
 		const f = await fixture();
 		const kept = await keep(f, BIG_TEXT);
-		await save_reply(f, { id: "reply", output: kept.output, ref: kept.ref! });
-		await f.t.mutation(internal.ai_chat.thread_run_end, { runId: f.runId });
+		await save_reply(f, { runId: f.runId, id: "reply", output: kept.output, ref: kept.ref! });
+		await end_run(f, f.runId);
 
 		await f.asUser.mutation(api.ai_chat.thread_delete, {
 			membershipId: f.db.membershipId,
@@ -376,8 +400,8 @@ describe("ai_chat_outputs_db_copy_owners", () => {
 	test("a branch copy keeps the output readable after the source is deleted, and the last owner frees it", async () => {
 		const f = await fixture();
 		const kept = await keep(f, BIG_TEXT);
-		await save_reply(f, { id: "reply", output: kept.output, ref: kept.ref! });
-		await f.t.mutation(internal.ai_chat.thread_run_end, { runId: f.runId });
+		await save_reply(f, { runId: f.runId, id: "reply", output: kept.output, ref: kept.ref! });
+		await end_run(f, f.runId);
 
 		const branched = await f.asUser.action(api.ai_chat.thread_branch, {
 			membershipId: f.db.membershipId,
@@ -420,23 +444,26 @@ describe("ai_chat_outputs_db_copy_owners", () => {
 	test("a ref pasted from another chat grants the copy nothing", async () => {
 		const f = await fixture();
 		const kept = await keep(f, BIG_TEXT);
-		await save_reply(f, { id: "reply", output: kept.output, ref: kept.ref! });
-		await f.t.mutation(internal.ai_chat.thread_run_end, { runId: f.runId });
+		await save_reply(f, { runId: f.runId, id: "reply", output: kept.output, ref: kept.ref! });
+		await end_run(f, f.runId);
 		// A second chat whose message names the first chat's output. It has no owner doc for it.
 		const otherThreadId = await f.t.run(async (ctx) => {
 			const source = (await ctx.db.get("ai_chat_threads", f.source.threadId))!;
 			const { _id, _creationTime, ...fields } = source;
-			const threadId = await ctx.db.insert("ai_chat_threads", { ...fields, outputOwnerCount: 0 });
-			const reply = (await ctx.db.query("ai_chat_threads_messages_aisdk_5").first())!;
-			await ctx.db.insert("ai_chat_threads_messages_aisdk_5", {
-				organizationId: reply.organizationId,
-				workspaceId: reply.workspaceId,
+			const threadId = await ctx.db.insert("ai_chat_threads", { ...fields, outputOwnerCount: 0, newestNodeId: null });
+			const step = (await ctx.db.query("ai_chat_run_steps").first())!;
+			await ai_chat_runs_db_insert_node(ctx, {
+				thread: (await ctx.db.get("ai_chat_threads", threadId))!,
 				parentId: null,
-				threadId,
+				createdBy: f.db.userId,
 				clientGeneratedMessageId: "pasted",
-				content: { ...reply.content, id: "pasted" },
-				createdBy: reply.createdBy,
-				updatedAt: Date.now(),
+				content: { id: "pasted", role: "assistant", parts: step.parts },
+				status: "done",
+				runId: null,
+				wakePending: false,
+				jobFinishInvocationId: null,
+				newest: "set",
+				now: Date.now(),
 			});
 			return threadId;
 		});
@@ -464,7 +491,7 @@ describe("quotas_db_delete", () => {
 	test("retires the counters while an output still holds them, and the last settle deletes them", async () => {
 		const f = await fixture();
 		const kept = await keep(f, BIG_TEXT);
-		await f.t.mutation(internal.ai_chat.thread_run_end, { runId: f.runId });
+		await end_run(f, f.runId);
 		const job = (await read_tables(f.t)).jobs[0]!;
 		expect(job.chatOutputObjectId).toBe(kept.ref!.outputId);
 

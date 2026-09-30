@@ -255,6 +255,7 @@ async function organizations_test_seed_workspace_scoped_rows(
 		updatedBy: args.userId,
 		updatedAt: Date.now(),
 		lastMessageAt: Date.now(),
+		newestNodeId: null,
 	});
 	await ctx.db.insert("ai_chat_bash_shells", {
 		organizationId: args.organizationId,
@@ -279,6 +280,11 @@ async function organizations_test_seed_workspace_scoped_rows(
 		content: {},
 		createdBy: args.userId,
 		updatedAt: Date.now(),
+		status: "done",
+		runId: null,
+		version: 0,
+		wakePending: false,
+		bytes: 0,
 	});
 
 	await ctx.db.insert("chat_messages", {
@@ -3836,6 +3842,7 @@ describe("remove_user_from_organization", () => {
 					updatedBy: ownerId,
 					updatedAt: now,
 					lastMessageAt: now,
+					newestNodeId: null,
 				});
 				for (const userId of [memberId, otherMemberId]) {
 					await ctx.db.insert("organizations_workspaces_users", { organizationId, workspaceId, userId, active: true });

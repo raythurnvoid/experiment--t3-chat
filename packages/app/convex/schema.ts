@@ -3,7 +3,7 @@ import { v } from "convex/values";
 import { doc } from "convex-helpers/validators";
 import { vWorkId } from "@convex-dev/workpool";
 import type { ai_chat_UiMessage } from "../src/lib/ai-chat.ts";
-import { ai_chat_MODEL_IDS } from "../shared/ai-chat.ts";
+import { ai_chat_MODE_IDS, ai_chat_MODEL_IDS } from "../shared/ai-chat.ts";
 import {
 	organizations_GLOBAL_ORGANIZATION_ID,
 	organizations_GLOBAL_GITHUB_WORKSPACE_ID,
@@ -75,6 +75,15 @@ const access_control_role_ref_validator = v.union(
 	v.id("access_control_roles"),
 );
 
+/**
+ * The run generation a write belongs to. Stop raises the run's generation, so every door that
+ * checks this refuses the old generation inside the write's own transaction.
+ */
+export const ai_chat_run_fence_validator = v.object({
+	runId: v.id("ai_chat_runs"),
+	generation: v.number(),
+});
+
 export const ai_chat_workspaces_source_validator = v.object({
 	organizationId: v.id("organizations"),
 	workspaceId: v.id("organizations_workspaces"),
@@ -82,6 +91,11 @@ export const ai_chat_workspaces_source_validator = v.object({
 	threadId: v.id("ai_chat_threads"),
 	membershipId: v.id("organizations_workspaces_users"),
 	membershipLifetime: v.number(),
+	/**
+	 * Set on the source of a tool call in a run. Missing for work that no run owns, such as a
+	 * background job or a human read.
+	 */
+	run: v.optional(v.union(ai_chat_run_fence_validator, v.null())),
 });
 
 export const browser_choice_validator = v.union(
@@ -274,13 +288,15 @@ const ai_model_call_charge_validator = v.object({
 });
 
 /**
- * The agent run in progress on a thread: a `/api/chat` request streaming, or a `run_job_wakeup`
- * action. A finished job wakes the agent only while this is absent or expired. The run clears it
- * at its end; `expiresAt` covers a run whose action was killed.
+ * The one agent run in progress on a thread: a `/api/chat` request streaming, or a
+ * `run_job_wakeup` action. A thread has at most one. The run clears it at its end; `expiresAt`
+ * covers a run whose action was killed.
  */
 export const ai_chat_thread_active_run_validator = v.object({
 	kind: v.union(v.literal("chat"), v.literal("job_wakeup")),
 	expiresAt: v.number(),
+	runId: v.id("ai_chat_runs"),
+	generation: v.number(),
 });
 
 /**
@@ -806,6 +822,10 @@ const app_convex_schema = defineSchema({
 		 * Owner docs of stored tool outputs in this thread. A new stored output is refused at 10,000.
 		 **/
 		outputOwnerCount: v.optional(v.number()),
+		/**
+		 * The newest message node. The chat shows the branch that ends below it when no branch is picked.
+		 **/
+		newestNodeId: v.union(v.id("ai_chat_threads_messages_aisdk_5"), v.null()),
 	})
 		.index("by_organization_workspace_archived_lastMessageAt", [
 			"organizationId",
@@ -824,8 +844,9 @@ const app_convex_schema = defineSchema({
 
 	/**
 	 * One agent run execution on a thread: a `/api/chat` request or one `run_job_wakeup` action.
-	 * The doc id is the run id. Each run ends its own doc. The `end expired chat runs` cron ends a
-	 * doc whose lease passed without a run end. Thread deletion deletes these docs.
+	 * The doc id is the run id. Each run answers one trigger node with one reply node. Each run ends
+	 * its own doc. The `end expired chat runs` cron ends a doc whose lease passed without a run end.
+	 * Thread deletion deletes these docs.
 	 */
 	ai_chat_runs: defineTable({
 		organizationId: v.id("organizations"),
@@ -835,12 +856,139 @@ const app_convex_schema = defineSchema({
 		membershipId: v.id("organizations_workspaces_users"),
 		membershipLifetime: v.number(),
 		kind: ai_chat_thread_active_run_validator.fields.kind,
-		status: v.union(v.literal("running"), v.literal("ended")),
+		/**
+		 * `stopping` after Stop: only the run's `finish` may still write for the old generation.
+		 */
+		status: v.union(v.literal("running"), v.literal("stopping"), v.literal("ended")),
+		/**
+		 * Stop raises it. Fenced doors refuse a write that carries an older generation.
+		 */
+		generation: v.number(),
+		/**
+		 * The node the run answers: a user message or a job finish message.
+		 */
+		triggerId: v.id("ai_chat_threads_messages_aisdk_5"),
+		/**
+		 * The run's reply node. Its parent is the trigger and never changes.
+		 */
+		replyId: v.id("ai_chat_threads_messages_aisdk_5"),
+		modeId: v.union(...ai_chat_MODE_IDS.map((modeId) => v.literal(modeId))),
+		modelId: ai_chat_model_id_validator,
+		/**
+		 * The last step save. The durable runs of phase F watch it.
+		 */
+		heartbeatAt: v.number(),
+		/**
+		 * When Stop was asked, for audits.
+		 */
+		stopRequestedAt: v.union(v.number(), v.null()),
+		/**
+		 * Steps saved so far. A resumed run of phase F reads it once as its step offset. Today each
+		 * run is one model stream that starts at step 0.
+		 */
+		completedSteps: v.number(),
 		leaseExpiresAt: v.number(),
 		endedAt: v.union(v.number(), v.null()),
 	})
 		.index("by_thread_status", ["threadId", "status"])
 		.index("by_status_leaseExpiresAt", ["status", "leaseExpiresAt"])
+		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
+
+	/**
+	 * One model call of a run, saved as its own doc, so a long reply never has to fit in one
+	 * message doc. The step's usage save plans the doc before any tool of the step runs. The step's
+	 * end completes it. Thread deletion deletes these docs.
+	 */
+	ai_chat_run_steps: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		threadId: v.id("ai_chat_threads"),
+		/**
+		 * The reply node the step belongs to.
+		 */
+		messageId: v.id("ai_chat_threads_messages_aisdk_5"),
+		runId: v.id("ai_chat_runs"),
+		generation: v.number(),
+		stepIndex: v.number(),
+		/**
+		 * The provider request of the step. Null for a step saved at Stop before its request finished.
+		 */
+		modelCallId: v.union(v.string(), v.null()),
+		/**
+		 * `partial`: Stop or an error ended the step early, and it keeps what arrived.
+		 */
+		status: v.union(v.literal("tools_running"), v.literal("done"), v.literal("partial")),
+		/**
+		 * The tool calls of the step, saved before the tools start. `opKey` names one operation for
+		 * receipts and stored outputs. A large input keeps only its size and hash here; the finished
+		 * step's parts hold it in full.
+		 */
+		toolCalls: v.array(
+			v.object({
+				providerToolCallId: v.string(),
+				opKey: v.string(),
+				toolName: v.string(),
+				input: v.union(
+					v.object({ kind: v.literal("inline"), value: v.any() }),
+					v.object({ kind: v.literal("omitted"), bytes: v.number(), sha256: v.string() }),
+				),
+			}),
+		),
+		/**
+		 * The step's UI message parts, starting with its `step-start` part. Empty while tools run.
+		 */
+		parts: v.array(v.any()),
+		finishReason: v.union(v.string(), v.null()),
+		bytes: v.number(),
+	})
+		.index("by_message_stepIndex", ["messageId", "stepIndex"])
+		.index("by_thread", ["threadId"])
+		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
+
+	/**
+	 * A job finish waiting for the run that streams on its branch. The run claims it at a step
+	 * boundary and shows it inside that step. The step commit deletes the doc. A doc still waiting
+	 * when the run ends becomes a finish message under the run's reply.
+	 */
+	ai_chat_run_inbox: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		threadId: v.id("ai_chat_threads"),
+		invocationId: v.id("ai_chat_bash_invocations"),
+		text: v.string(),
+		state: v.union(v.literal("waiting"), v.literal("claimed")),
+		claim: v.union(
+			v.object({ runId: v.id("ai_chat_runs"), generation: v.number(), stepIndex: v.number() }),
+			v.null(),
+		),
+	})
+		.index("by_thread_state", ["threadId", "state"])
+		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
+
+	/**
+	 * One tool operation with an effect but no receipt of its own (`edit_file`, metadata writes,
+	 * `execute_code`). The same `opKey` never applies twice.
+	 */
+	ai_chat_tool_receipts: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		threadId: v.id("ai_chat_threads"),
+		opKey: v.string(),
+		runId: v.id("ai_chat_runs"),
+		generation: v.number(),
+		toolName: v.string(),
+		/**
+		 * SHA-256 of the canonical JSON of the tool name and its input. A different input under the
+		 * same `opKey` is refused.
+		 */
+		inputHash: v.string(),
+		status: v.union(v.literal("started"), v.literal("finished")),
+		/**
+		 * The saved result of a finished operation. Null while started.
+		 */
+		result: v.any(),
+	})
+		.index("by_thread_opKey", ["threadId", "opKey"])
 		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
 
 	/**
@@ -1074,6 +1222,16 @@ const app_convex_schema = defineSchema({
 		membershipLifetime: v.number(),
 		browserIntent: v.optional(browser_intent_validator),
 		sourceMessageId: v.optional(v.id("ai_chat_threads_messages_aisdk_5")),
+		/**
+		 * The run and generation of a foreground call. Its writes are refused after Stop. Null on a
+		 * background job: a job keeps running after its launching run ends.
+		 */
+		run: v.union(ai_chat_run_fence_validator, v.null()),
+		/**
+		 * The reply node whose tool call started this job, or its parent job's origin. The job's
+		 * finish belongs to that branch. Null on a foreground call.
+		 */
+		originReplyId: v.union(v.id("ai_chat_threads_messages_aisdk_5"), v.null()),
 		status: v.union(v.literal("running"), v.literal("interrupted"), v.literal("finished")),
 		deadlineAt: v.number(),
 		transferDeadlineAt: v.number(),
@@ -1269,12 +1427,36 @@ const app_convex_schema = defineSchema({
 		/** timestamp in milliseconds */
 		updatedAt: v.number(),
 		/**
-		 * Set only on job finish messages: the invocation whose finish wrote this doc. The
-		 * turn-end catch reads it back to schedule the wake run for the right job.
+		 * Set only on job finish messages: the invocation whose finish wrote this doc.
 		 **/
 		jobFinishInvocationId: v.optional(v.id("ai_chat_bash_invocations")),
+		/**
+		 * `streaming` while the reply node's run writes its steps. User and finish messages are
+		 * `done` from the start.
+		 */
+		status: v.union(v.literal("streaming"), v.literal("done"), v.literal("stopped"), v.literal("failed")),
+		/**
+		 * The run of a reply node. A reply node keeps its parts in `ai_chat_run_steps`, and its
+		 * `content` holds only the id, role and metadata. Null on user and finish messages.
+		 */
+		runId: v.union(v.id("ai_chat_runs"), v.null()),
+		/**
+		 * Raised by every step or status write of a reply node, so a client cache can tell a stale copy.
+		 */
+		version: v.number(),
+		/**
+		 * True on a job finish message that no run answered yet. The wake picks it later.
+		 */
+		wakePending: v.boolean(),
+		/**
+		 * The stored size of the node: its content, plus its steps for a reply node. History pages
+		 * use it to stay within the model context and memory.
+		 */
+		bytes: v.number(),
 	})
 		.index("by_organization_workspace_thread", ["organizationId", "workspaceId", "threadId"])
+		.index("by_thread_parent", ["threadId", "parentId"])
+		.index("by_thread_wakePending", ["threadId", "wakePending"])
 		.index("by_organization_workspace_thread_clientGeneratedMessageId", [
 			"organizationId",
 			"workspaceId",
@@ -6239,6 +6421,10 @@ const app_convex_schema = defineSchema({
 		 */
 		responseId: v.union(v.string(), v.null()),
 		threadId: v.union(v.id("ai_chat_threads"), v.null()),
+		/**
+		 * The run that made the request. Null for inline AI and the title route.
+		 */
+		runId: v.union(v.id("ai_chat_runs"), v.null()),
 		billedUserId: v.id("users"),
 		actorUserId: v.id("users"),
 		organizationId: v.id("organizations"),

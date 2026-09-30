@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
+import { ai_chat_DEFAULT_MODEL_ID } from "../shared/ai-chat.ts";
 
 async function fixture() {
 	const t = test_convex();
@@ -27,6 +28,7 @@ async function fixture() {
 			createdBy: seeded.userId,
 			updatedBy: seeded.userId,
 			updatedAt: Date.now(),
+			newestNodeId: null,
 		}),
 	);
 	return { t, seeded, asUser, sourceThreadId };
@@ -40,6 +42,11 @@ async function seed_chain(f: Awaited<ReturnType<typeof fixture>>, count: number)
 	return await f.t.run(async (ctx) => {
 		const ids: Array<Id<"ai_chat_threads_messages_aisdk_5">> = [];
 		for (let index = 0; index < count; index++) {
+			const content = {
+				id: `m${index}`,
+				role: index % 2 === 0 ? "user" : "assistant",
+				parts: [{ type: "text", text: `m${index}` }],
+			};
 			ids.push(
 				await ctx.db.insert("ai_chat_threads_messages_aisdk_5", {
 					organizationId: f.seeded.organizationId,
@@ -47,16 +54,18 @@ async function seed_chain(f: Awaited<ReturnType<typeof fixture>>, count: number)
 					parentId: ids.at(-1) ?? null,
 					threadId: f.sourceThreadId,
 					clientGeneratedMessageId: `m${index}`,
-					content: {
-						id: `m${index}`,
-						role: index % 2 === 0 ? "user" : "assistant",
-						parts: [{ type: "text", text: `m${index}` }],
-					},
+					content,
 					createdBy: f.seeded.userId,
 					updatedAt: Date.now(),
+					status: "done",
+					runId: null,
+					version: 0,
+					wakePending: false,
+					bytes: JSON.stringify(content).length,
 				}),
 			);
 		}
+		await ctx.db.patch("ai_chat_threads", f.sourceThreadId, { newestNodeId: ids.at(-1) ?? null });
 		return ids;
 	});
 }
@@ -142,16 +151,32 @@ describe("step", () => {
 		const target = { membershipId: f.seeded.membershipId, threadId };
 
 		expect(await f.asUser.query(api.ai_chat.thread_get, target)).toBeNull();
-		expect(await f.asUser.query(api.ai_chat.thread_messages_list, target)).toBeNull();
+		expect(
+			await f.asUser.query(api.ai_chat_runs.branch_page, { ...target, anchorId: null, fromId: null, stopId: null }),
+		).toBeNull();
 		const listed = await f.asUser.query(api.ai_chat.threads_list, {
 			membershipId: f.seeded.membershipId,
 			paginationOpts: { numItems: 20, cursor: null },
 		});
 		expect(listed.page.map((thread) => thread._id)).toEqual([f.sourceThreadId]);
-		const sent = await f.asUser.mutation(api.ai_chat.thread_messages_add, {
-			...target,
+		const captured = await f.t.mutation(internal.ai_chat_workspaces.capture, {
+			userId: f.seeded.userId,
+			membershipId: f.seeded.membershipId,
+		});
+		if (captured._nay) throw new Error(captured._nay.message);
+		const sent = await f.t.mutation(internal.ai_chat.thread_run_begin, {
+			source: {
+				organizationId: f.seeded.organizationId,
+				workspaceId: f.seeded.workspaceId,
+				userId: f.seeded.userId,
+				threadId,
+				membershipId: f.seeded.membershipId,
+				membershipLifetime: captured._yay.membershipLifetime,
+			},
 			parentId: null,
 			messages: [{ clientGeneratedMessageId: "sent", content: { id: "sent", role: "user", parts: [] } }],
+			modeId: "agent",
+			modelId: ai_chat_DEFAULT_MODEL_ID,
 		});
 		expect(sent._nay).toBeTruthy();
 

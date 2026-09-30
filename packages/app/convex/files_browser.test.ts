@@ -27,6 +27,7 @@ import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { files_nodes_db_create_private_node_by_path } from "./files_nodes.ts";
 import { files_private_storage_db_reserve } from "./files_private_storage.ts";
 import { r2_create_asset_key } from "./r2_client.ts";
+import { ai_chat_runs_db_insert_node } from "./ai_chat_runs.ts";
 
 const runnerQueue: Array<unknown> = [];
 const runnerCalls: Array<{ route: string; body: Record<string, unknown> }> = [];
@@ -225,17 +226,21 @@ async function seed_browser_chat_source(t: ReturnType<typeof test_convex>, fixtu
 		lastMessageAt: Date.now(),
 	});
 	if (thread._nay) throw new Error(thread._nay.message);
-	const message = await asUser.mutation(api.ai_chat.thread_messages_add, {
-		membershipId: fixture.membershipId,
-		threadId: thread._yay.threadId,
-		messages: [
-			{
-				clientGeneratedMessageId: "browser-control-request",
-				content: { role: "user", parts: [{ type: "text", text: "Open the browser." }] },
-			},
-		],
-	});
-	if (message._nay) throw new Error(message._nay.message);
+	const sourceMessageId = await t.run(async (ctx) =>
+		ai_chat_runs_db_insert_node(ctx, {
+			thread: (await ctx.db.get("ai_chat_threads", thread._yay.threadId))!,
+			parentId: null,
+			createdBy: fixture.userId,
+			clientGeneratedMessageId: "browser-control-request",
+			content: { role: "user", parts: [{ type: "text", text: "Open the browser." }] },
+			status: "done",
+			runId: null,
+			wakePending: false,
+			jobFinishInvocationId: null,
+			newest: "set",
+			now: Date.now(),
+		}),
+	);
 	const captured = await t.mutation(internal.ai_chat_workspaces.capture, {
 		userId: fixture.userId,
 		membershipId: fixture.membershipId,
@@ -342,6 +347,7 @@ async function seed_browser_file_scope(t: ReturnType<typeof test_convex>) {
 			createdBy: fixture.userId,
 			updatedBy: fixture.userId,
 			updatedAt: Date.now(),
+			newestNodeId: null,
 		}),
 	);
 
@@ -1691,6 +1697,7 @@ describe("sync_browser_tab_identities", () => {
 			membershipLifetime: source.membershipLifetime,
 			getThreadId: () => source.threadId,
 			getSourceMessageId: () => source.sourceMessageId,
+			getRun: () => null,
 			browserIntent: { webChoice: { provider: "cloud" }, selectionRevision: 0, policyRevision: 0 },
 			browsers: new Map(),
 			observations: new Map(),

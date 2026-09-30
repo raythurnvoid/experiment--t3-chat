@@ -212,7 +212,7 @@ const AiChatThreadError = memo(function AiChatThreadError(props: AiChatThreadErr
 // #endregion thread error
 
 // #region message list
-type AiChatMessagesList_ClassNames = "AiChatMessageList" | "AiChatMessageList-error";
+type AiChatMessagesList_ClassNames = "AiChatMessageList" | "AiChatMessageList-older" | "AiChatMessageList-error";
 
 type AiChatMessagesList_Props = ComponentPropsWithRef<"div"> & {
 	ref?: Ref<HTMLDivElement>;
@@ -225,11 +225,13 @@ type AiChatMessagesList_Props = ComponentPropsWithRef<"div"> & {
 	messages: AiChatThreadRuntime["activeBranchMessages"]["list"];
 	status: AiChatThreadRuntime["status"];
 	isRunning: AiChatThreadRuntime["isRunning"];
+	hasOlderMessages: AiChatThreadRuntime["hasOlderMessages"];
 	liveJobs: AiChatThreadRuntime["liveJobs"];
 	streamErrorText: string | null;
 	activeBranchAnchorId: string | null | undefined;
 	actions: AiChatRuntimeActions;
 	onClickSuggestion: (action: string) => void;
+	onLoadOlderMessages: () => void;
 };
 
 const AiChatMessagesList = memo(function AiChatMessagesList(props: AiChatMessagesList_Props) {
@@ -243,11 +245,13 @@ const AiChatMessagesList = memo(function AiChatMessagesList(props: AiChatMessage
 		messages,
 		status,
 		isRunning,
+		hasOlderMessages,
 		liveJobs,
 		streamErrorText,
 		activeBranchAnchorId,
 		actions,
 		onClickSuggestion,
+		onLoadOlderMessages,
 		...rest
 	} = props;
 
@@ -278,6 +282,15 @@ const AiChatMessagesList = memo(function AiChatMessagesList(props: AiChatMessage
 			className={cn("AiChatMessageList" satisfies AiChatMessagesList_ClassNames, className)}
 			{...rest}
 		>
+			{!shouldShowSkeleton && hasOlderMessages && (
+				<MyButton
+					className={"AiChatMessageList-older" satisfies AiChatMessagesList_ClassNames}
+					variant="ghost"
+					onClick={onLoadOlderMessages}
+				>
+					Load older messages
+				</MyButton>
+			)}
 			{shouldShowSkeleton ? (
 				<AiChatSkeleton />
 			) : messageCount === 0 ? (
@@ -465,16 +478,11 @@ export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props
 				}
 				controllerRef.current.regenerate(threadId, messageId);
 			},
+			// A run keeps streaming on its own branch, so a branch switch or a branch copy may happen while it runs.
 			branchChat: (threadId, messageId) => {
-				if (isThreadRunning(threadId)) {
-					return;
-				}
 				controllerRef.current.branchChat(threadId, messageId);
 			},
 			selectBranchAnchor: (threadId, anchorId) => {
-				if (isThreadRunning(threadId)) {
-					return;
-				}
 				controllerRef.current.selectBranchAnchor(threadId, anchorId);
 			},
 			setEditingMessageId: (threadId, messageId) => {
@@ -916,11 +924,13 @@ export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props
 						messages={controller.activeBranchMessages.list}
 						status={controller.status}
 						isRunning={controller.isRunning}
+						hasOlderMessages={controller.hasOlderMessages}
 						liveJobs={controller.liveJobs}
 						streamErrorText={controller.error ? "An error occurred during the generation" : null}
 						activeBranchAnchorId={controller.activeBranchMessages.anchorId}
 						actions={runtimeActions}
 						onClickSuggestion={handleClickSuggestion}
+						onLoadOlderMessages={controller.loadOlderMessages}
 					/>
 				</div>
 				<div className={"AiChatThread-composer" satisfies AiChatThread_ClassNames}>

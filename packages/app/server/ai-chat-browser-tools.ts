@@ -29,6 +29,7 @@ export type ai_chat_tool_BrowserTurnContext = {
 	membershipLifetime: number;
 	getThreadId: () => Id<"ai_chat_threads"> | null;
 	getSourceMessageId: () => Id<"ai_chat_threads_messages_aisdk_5"> | null;
+	getRun: () => { runId: Id<"ai_chat_runs">; generation: number } | null;
 	browserIntent: browser_Intent;
 	browsers: Map<string, ai_chat_tool_BrowserBinding>;
 	pendingPlaywriterCommands: Map<
@@ -424,6 +425,7 @@ export function ai_chat_tool_create_browser_management(ctx: ActionCtx, turn: ai_
 			toolCallId: options.toolCallId,
 			operationHash,
 			resource: binding ? browser_resource(binding) : null,
+			run: turn.getRun(),
 			// Runs must fit the runner's short command deadline.
 			timeoutMs: binding?.provider === "playwriter" || name === "browser_run" ? 30_000 : 120_000,
 			...(name === "browser_run" ? { operationKind: "run" as const } : {}),
@@ -896,6 +898,7 @@ export function ai_chat_tool_create_browser_management(ctx: ActionCtx, turn: ai_
 			resource: browser_resource(binding) as Extract<BrowserResource, { provider: "playwriter" }>,
 			toolCallId: options.toolCallId,
 			operationHash,
+			run: turn.getRun(),
 		});
 		if (reserved._nay) return ai_chat_file_result(title, "errored", [], safe_reason(reserved._nay.name));
 		const { connection, invocation, allowedVersions } = reserved._yay;

@@ -36,6 +36,26 @@ const hookMocks = vi.hoisted(() => ({
 vi.mock("convex/react", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("convex/react")>();
 	const { useSyncExternalStore } = await import("react");
+	// Answer `branch_page` like the server: start at the anchor or the newest node, walk down to
+	// the newest leaf, then up to the root. Newer nodes come later in `threadMessages`.
+	const branch_page = (args: { anchorId: string | null }) => {
+		const messages = hookMocks.threadMessages;
+		const children = (parentId: string | null) => messages.filter((message) => message.parentId === parentId);
+		let node = messages.find((message) => message._id === args.anchorId) ?? messages.at(-1);
+		while (node && children(node._id).length > 0) node = children(node._id).at(-1);
+		const nodes = [];
+		while (node) {
+			nodes.push({
+				...node,
+				status: "done",
+				version: 1,
+				siblingIds: children(node.parentId).map((message) => message._id),
+			});
+			const parentId = node.parentId;
+			node = messages.find((message) => message._id === parentId);
+		}
+		return { nodes, nextId: null };
+	};
 
 	return {
 		...actual,
@@ -52,6 +72,7 @@ vi.mock("convex/react", async (importOriginal) => {
 		},
 		useMutation: () => hookMocks.mutation,
 		useAction: () => hookMocks.mutation,
+		useQueries: () => ({}),
 		useQuery: (query: never, args: unknown) => {
 			const messagesDenied = useSyncExternalStore(
 				(listener) => {
@@ -65,7 +86,10 @@ vi.mock("convex/react", async (importOriginal) => {
 
 			if (getFunctionName(query) === "files_browser:current_browser_preferences")
 				return { webChoice: { provider: "cloud" }, selectionRevision: 0, policyRevision: 0 };
-			return args !== "skip" && messagesDenied ? null : { messages: hookMocks.threadMessages };
+			if (args !== "skip" && messagesDenied) return null;
+			return getFunctionName(query) === "ai_chat_runs:branch_page"
+				? branch_page(args as { anchorId: string | null })
+				: undefined;
 		},
 	};
 });

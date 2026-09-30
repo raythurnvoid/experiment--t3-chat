@@ -582,7 +582,7 @@ export function ai_chat_tool_create_bash(
 		membershipId: Id<"organizations_workspaces_users">;
 		membershipLifetime: number;
 		getThreadId: () => Id<"ai_chat_threads"> | null;
-		getRunId: () => Id<"ai_chat_runs"> | null;
+		getRun: () => { runId: Id<"ai_chat_runs">; generation: number } | null;
 		/**
 		 * The provider request that asked for a tool call. A stored output is keyed by it.
 		 */
@@ -695,7 +695,7 @@ export function ai_chat_tool_create_bash(
 					membershipId: ctxData.membershipId,
 					membershipLifetime: ctxData.membershipLifetime,
 				},
-				getRunId: ctxData.getRunId,
+				getRun: ctxData.getRun,
 				getModelCallId: ctxData.getModelCallId,
 				toolCallId: execution.toolCallId,
 				tool: "bash",
@@ -719,6 +719,7 @@ export function ai_chat_tool_create_bash(
 						: {}),
 					wakeAgent: options.jobWakeup && args.wakeOnJobFinish ? { modelId: options.jobWakeup.modelId } : null,
 					output: reservation,
+					run: ctxData.getRun(),
 				})
 				.finally(() =>
 					ctx.runMutation(internal.ai_chat_outputs.release_reservation, { objectId: reservation.objectId }),
@@ -805,6 +806,7 @@ export function ai_chat_tool_create_edit_file(
 		membershipId: Id<"organizations_workspaces_users">;
 		membershipLifetime: number;
 		getThreadId: () => Id<"ai_chat_threads"> | null;
+		getRun: () => { runId: Id<"ai_chat_runs">; generation: number } | null;
 		getWorkspaceContext?: () => ai_chat_context_Context | null;
 	},
 ) {
@@ -867,6 +869,7 @@ export function ai_chat_tool_create_edit_file(
 				threadId,
 				membershipId: ctxData.membershipId,
 				membershipLifetime: ctxData.membershipLifetime,
+				run: ctxData.getRun(),
 			};
 			const resolved = await ctx.runQuery(internal.ai_chat_workspaces.resolve, {
 				source: agentSource,
@@ -1048,6 +1051,7 @@ export function ai_chat_tool_create_set_file_metadata(
 		membershipId: Id<"organizations_workspaces_users">;
 		membershipLifetime: number;
 		getThreadId: () => Id<"ai_chat_threads"> | null;
+		getRun: () => { runId: Id<"ai_chat_runs">; generation: number } | null;
 		getWorkspaceContext?: () => ai_chat_context_Context | null;
 	},
 ) {
@@ -1112,6 +1116,7 @@ export function ai_chat_tool_create_set_file_metadata(
 				threadId,
 				membershipId: ctxData.membershipId,
 				membershipLifetime: ctxData.membershipLifetime,
+				run: ctxData.getRun(),
 			};
 			const resolved = await ctx.runQuery(internal.ai_chat_workspaces.resolve, {
 				source: agentSource,
@@ -1496,6 +1501,7 @@ async function execute_code(
 		membershipId: Id<"organizations_workspaces_users">;
 		membershipLifetime: number;
 		getThreadId: () => Id<"ai_chat_threads"> | null;
+		getRun: () => { runId: Id<"ai_chat_runs">; generation: number } | null;
 	},
 	args: { code: string; input?: unknown },
 	abortSignal: AbortSignal | undefined,
@@ -1532,6 +1538,7 @@ async function execute_code(
 			membershipId: ctxData.membershipId,
 			membershipLifetime: ctxData.membershipLifetime,
 			threadId,
+			run: ctxData.getRun(),
 		},
 		principalKey: executionId,
 		tokenHashes: {
@@ -1616,6 +1623,7 @@ export function ai_chat_tool_create_execute_code(
 		canWriteFiles: boolean;
 		membershipLifetime: number;
 		getThreadId: () => Id<"ai_chat_threads"> | null;
+		getRun: () => { runId: Id<"ai_chat_runs">; generation: number } | null;
 	},
 ) {
 	return tool({
@@ -1667,6 +1675,7 @@ export function ai_chat_tool_create_execute_code(
 						threadId,
 						organizationId: ctxData.organizationId,
 						workspaceId: ctxData.workspaceId,
+						run: ctxData.getRun(),
 					},
 					result.files,
 					{
@@ -1885,7 +1894,7 @@ export async function ai_chat_tool_create_mcp_tools(
 		membershipId: Id<"organizations_workspaces_users">;
 		membershipLifetime: number;
 		getThreadId: () => Id<"ai_chat_threads"> | null;
-		getRunId: () => Id<"ai_chat_runs"> | null;
+		getRun: () => { runId: Id<"ai_chat_runs">; generation: number } | null;
 		/**
 		 * The provider request that asked for a tool call. A stored output is keyed by it.
 		 */
@@ -1954,6 +1963,7 @@ export async function ai_chat_tool_create_mcp_tools(
 							threadId,
 							membershipId: ctxData.membershipId,
 							membershipLifetime: ctxData.membershipLifetime,
+							run: ctxData.getRun(),
 						};
 
 						const recheckCall = () =>
@@ -2024,7 +2034,7 @@ export async function ai_chat_tool_create_mcp_tools(
 						// stops the call here, before it can have an effect.
 						const reservation = await ai_chat_tool_output_reserve(ctx, {
 							source,
-							getRunId: ctxData.getRunId,
+							getRun: ctxData.getRun,
 							getModelCallId: ctxData.getModelCallId,
 							toolCallId: options.toolCallId,
 							tool: "mcp",

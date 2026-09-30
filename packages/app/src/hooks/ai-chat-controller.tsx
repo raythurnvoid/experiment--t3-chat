@@ -10,14 +10,14 @@ import {
 	useState,
 	type ReactNode,
 } from "react";
-import { useAction, useMutation, usePaginatedQuery, useQuery } from "convex/react";
+import { useAction, useMutation, usePaginatedQuery, useQueries, useQuery } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
 import { create } from "zustand";
 
 import type { api_schemas_Main } from "@/lib/api-schemas.ts";
 import { AppAuthProvider } from "@/components/app-auth.tsx";
 import { app_fetch_main_api_url } from "@/lib/fetch.ts";
-import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
+import { app_convex, app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { objects_equal_deep } from "@/lib/object.ts";
 import { app_local_storage_get_value, app_local_storage_set_value, type storage_local_Key } from "@/lib/storage.ts";
@@ -78,6 +78,11 @@ type ThreadSession = {
 	 * - `null`: use the root branch
 	 */
 	anchorId: string | null | undefined;
+	/**
+	 * Where each loaded older page of the shown branch starts, oldest last. Empty shows only the
+	 * newest page.
+	 */
+	historyFromIds: readonly string[];
 	streamingTitle?: string;
 };
 
@@ -109,11 +114,20 @@ const EMPTY_QUEUED_USER_MESSAGES: readonly AiChatQueuedUserMessage[] = [];
 type AiChatLiveThreadJob = FunctionReturnType<typeof app_convex_api.ai_chat_files.list_live_thread_jobs>[number];
 const EMPTY_LIVE_THREAD_JOBS: readonly AiChatLiveThreadJob[] = [];
 
+type BranchPage = FunctionReturnType<typeof app_convex_api.ai_chat_runs.branch_page>;
+const EMPTY_HISTORY_FROM_IDS: readonly string[] = [];
+
 /**
- * Cache persisted Convex messages by their final message id so query refreshes do not recreate old UIMessage objects.
- * Persisted chat messages are append-only today: editing creates a new branch message, and streaming lives in pending state.
+ * After Stop, the server ends the stream itself once it saved the partial reply. The browser
+ * aborts the request only if the stream is still open after this long.
  */
-const persistedUiMessageById = new Map<string, ai_chat_UiMessage>();
+const STOP_ABORT_AFTER_MS = 8_000;
+
+/**
+ * Cache persisted Convex messages by their message id so query refreshes do not recreate old UIMessage objects.
+ * A reply node changes while its run saves steps, and every change raises its `version`.
+ */
+const persistedUiMessageById = new Map<string, { version: number; uiMessage: ai_chat_UiMessage }>();
 // `chat.id` changes as soon as the stream returns the persisted thread id. Keep
 // Zustand's current thread id separate because the session moves after Convex syncs.
 const threadIdByChat = new WeakMap<Chat<ai_chat_UiMessage>, string>();
@@ -130,12 +144,12 @@ async function ai_chat_fetch(input: RequestInfo | URL, init?: RequestInit) {
 		if (typeof retryAfterMs !== "number" || !Number.isFinite(retryAfterMs) || retryAfterMs < 0) {
 			return response;
 		}
-		// A 409 means a wake run holds the lease. Cap each wait so a long wake re-checks
-		// instead of sleeping past its end; the same request re-sends and its stored ids dedupe.
+		// A 409 means another run holds the chat (another tab, or a job wake run). The server saved
+		// nothing, so the same request can go again. Cap each wait so a long run re-checks.
 		const waitMs = response.status === 409 ? Math.min(retryAfterMs, 30_000) : retryAfterMs;
 
 		// Keep the same AI SDK request active while the server asks us to wait: the chat
-		// bucket refills on 429, the wake lease ends on 409.
+		// bucket refills on 429, the other run ends on 409.
 		// Stop aborts this wait through the request signal.
 		await new Promise<void>((resolve, reject) => {
 			const signal = init?.signal;
@@ -409,6 +423,7 @@ function create_optimistic_thread(tenant: {
 		updatedAt: now,
 		lastMessageAt: now,
 		readAt: now,
+		newestNodeId: null,
 	};
 }
 
@@ -428,20 +443,6 @@ function get_optimistic_thread_list_item(tenant: {
 	return optimisticThread;
 }
 
-function strip_provider_metadata_from_message_parts(message: ai_chat_UiMessage) {
-	return {
-		...message,
-		parts: message.parts?.map((part) => {
-			if (!("providerMetadata" in part)) {
-				return part;
-			}
-
-			const { providerMetadata: _providerMetadata, ...partWithoutProviderMetadata } = part;
-			return partWithoutProviderMetadata;
-		}) as ai_chat_UiMessage["parts"],
-	} satisfies ai_chat_UiMessage;
-}
-
 function message_has_visible_parts(message: ai_chat_UiMessage) {
 	return message.parts.some((part) => {
 		if (part.type.startsWith("data-") || part.type === "step-start") {
@@ -454,18 +455,6 @@ function message_has_visible_parts(message: ai_chat_UiMessage) {
 
 		return true;
 	});
-}
-
-/**
- * Whether a message holds a part only the server may store: an MCP tool call or an MCP sign-in notice.
- * The public save refuses these parts, and the server already stores an aborted reply itself.
- */
-function message_has_mcp_parts(message: ai_chat_UiMessage) {
-	return message.parts.some(
-		(part) =>
-			part.type === "data-mcp-auth-needed" ||
-			(part.type === "dynamic-tool" && part.toolName.toLowerCase().startsWith("mcp__")),
-	);
 }
 
 function get_message_selected_model_id(message?: ai_chat_UiMessage | null) {
@@ -508,9 +497,33 @@ const thread_session_create = (args?: {
 		activeRequestToken: null,
 		isArchivePending: false,
 		anchorId: undefined,
+		historyFromIds: [],
 		streamingTitle: undefined,
 	} satisfies ThreadSession;
 };
+
+/**
+ * The `branch_page` args of each loaded page of the shown branch, newest page first. The newest
+ * page ends where the first older page starts, so a new message never opens a gap between them.
+ */
+function get_branch_page_args(args: {
+	membershipId: app_convex_Id<"organizations_workspaces_users">;
+	threadId: string;
+	anchorId: string | null;
+	historyFromIds: readonly string[];
+}) {
+	const { membershipId, threadId, anchorId, historyFromIds } = args;
+	return [
+		{ membershipId, threadId, anchorId, fromId: null, stopId: historyFromIds[0] ?? null },
+		...historyFromIds.map((fromId, index) => ({
+			membershipId,
+			threadId,
+			anchorId: null,
+			fromId,
+			stopId: historyFromIds[index + 1] ?? null,
+		})),
+	] as const;
+}
 
 function create_chat_instance(args: ThreadChatArgs) {
 	const chat = new Chat<ai_chat_UiMessage>({
@@ -537,12 +550,6 @@ function create_chat_instance(args: ThreadChatArgs) {
 				return;
 			}
 
-			// TODO(ai-chat): Handle a server-emitted "persist-first" mapping part (e.g. `data-message-ids`).
-			// Goal: when the backend persists the user message up front + allocates the assistant message doc,
-			// it can emit a transient mapping from client UIMessage ids -> Convex message ids.
-			// The client can then:
-			// - rewrite/remove optimistic `chat.messages` entries deterministically (no DB `client_generated_message_id`)
-			// - optionally treat a `persisted` barrier as the signal to drop all optimistic messages for this request.
 			switch (part.type) {
 				case "data-thread-id": {
 					// The server emits `data-thread-id` *during the stream* when it created a new thread.
@@ -579,7 +586,7 @@ function create_chat_instance(args: ThreadChatArgs) {
 			}
 		},
 		onFinish: (options) => {
-			// A privacy cleanup must not persist the aborted private reply.
+			// A privacy cleanup drops the local messages of the aborted private reply.
 			if (!threadIdByChat.has(chat)) {
 				chat.messages = [];
 				return;
@@ -1207,7 +1214,6 @@ const useThreadList = (props?: useThreadList_Props) => {
 	const updateThread = useMutation(app_convex_api.ai_chat.thread_update);
 	const deleteThreadMutation = useMutation(app_convex_api.ai_chat.thread_delete);
 	const branchThread = useAction(app_convex_api.ai_chat.thread_branch);
-	const addThreadMessages = useMutation(app_convex_api.ai_chat.thread_messages_add);
 	const markThreadReadMutation = useMutation(app_convex_api.ai_chat.thread_mark_read);
 
 	const selectedModelId = selectedThreadId ? (session?.selectedModelId ?? draftSelectedModelId) : draftSelectedModelId;
@@ -1362,62 +1368,6 @@ const useThreadList = (props?: useThreadList_Props) => {
 		if (options.chatId === selectedThreadId && document.visibilityState === "visible") {
 			markThreadRead(options.chatId);
 		}
-
-		if (!options.isAbort) {
-			return;
-		}
-
-		if (options.message.role !== "assistant") {
-			return;
-		}
-
-		if (options.message.metadata?.convexId || !message_has_visible_parts(options.message)) {
-			return;
-		}
-
-		// Leave a reply with MCP parts to the server's own abort save, so no refused save is logged here.
-		if (message_has_mcp_parts(options.message)) {
-			return;
-		}
-
-		const threadId = ai_chat_is_optimistic_thread_id(options.chatId)
-			? null
-			: (options.chatId as app_convex_Id<"ai_chat_threads">);
-
-		if (!threadId) {
-			return;
-		}
-
-		addThreadMessages({
-			membershipId,
-			threadId,
-			parentId: options.message.metadata?.convexParentId ?? null,
-			messages: [
-				{
-					clientGeneratedMessageId: options.message.id,
-					content: strip_provider_metadata_from_message_parts(options.message),
-				},
-			],
-		})
-			.then((result) => {
-				if (result._nay) {
-					console.error(
-						"[AiChatController.useThreadList.handleChatFinish] Failed to persist aborted assistant message",
-						{
-							result,
-							threadId,
-							messageId: options.message.id,
-						},
-					);
-				}
-			})
-			.catch((error) => {
-				console.error("[AiChatController.useThreadList.handleChatFinish] Failed to persist aborted assistant message", {
-					error,
-					threadId,
-					messageId: options.message.id,
-				});
-			});
 	});
 
 	/** Skips the write when there is nothing to clear, so entering/leaving read chats is free. */
@@ -1782,20 +1732,43 @@ const useThreadRuntimeController = () => {
 
 	const updateThread = useMutation(app_convex_api.ai_chat.thread_update);
 	const branchThread = useAction(app_convex_api.ai_chat.thread_branch);
-	const addThreadMessages = useMutation(app_convex_api.ai_chat.thread_messages_add);
 	const markThreadReadMutation = useMutation(app_convex_api.ai_chat.thread_mark_read);
+	const stopRun = useMutation(app_convex_api.ai_chat_runs.stop);
 
-	const persistedThreadMessages = useQuery(
-		app_convex_api.ai_chat.thread_messages_list,
+	const branchAnchorId = useStore((state) =>
+		requestedThreadId ? (state.threadById.get(requestedThreadId)?.anchorId ?? null) : null,
+	);
+	const historyFromIds = useStore((state) =>
+		requestedThreadId
+			? (state.threadById.get(requestedThreadId)?.historyFromIds ?? EMPTY_HISTORY_FROM_IDS)
+			: EMPTY_HISTORY_FROM_IDS,
+	);
+	const branchPage = useQuery(
+		app_convex_api.ai_chat_runs.branch_page,
 		requestedThreadId && !selectedThreadIsOptimistic
-			? {
-					membershipId,
-					threadId: requestedThreadId,
-					order: "desc",
-				}
+			? get_branch_page_args({ membershipId, threadId: requestedThreadId, anchorId: branchAnchorId, historyFromIds })[0]
 			: "skip",
 	);
-	const isThreadDenied = Boolean(requestedThreadId && !selectedThreadIsOptimistic && persistedThreadMessages === null);
+	const olderBranchPages: Record<string, BranchPage | Error | undefined> = useQueries(
+		// Memoized because useQueries re-subscribes with a render-phase setState whenever the
+		// queries object identity changes; an inline object here re-render-loops the component.
+		useMemo(() => {
+			if (!requestedThreadId || selectedThreadIsOptimistic) {
+				return {};
+			}
+
+			const [, ...olderPageArgs] = get_branch_page_args({
+				membershipId,
+				threadId: requestedThreadId,
+				anchorId: null,
+				historyFromIds,
+			});
+			return Object.fromEntries(
+				olderPageArgs.map((args) => [args.fromId, { query: app_convex_api.ai_chat_runs.branch_page, args }] as const),
+			);
+		}, [historyFromIds, membershipId, requestedThreadId, selectedThreadIsOptimistic]),
+	);
+	const isThreadDenied = Boolean(requestedThreadId && !selectedThreadIsOptimistic && branchPage === null);
 	const selectedThreadId = isCurrentMembership && !isThreadDenied ? requestedThreadId : null;
 	const session = useStore((state) => (selectedThreadId ? (state.threadById.get(selectedThreadId) ?? null) : null));
 	const selectedThreadFailedSendUserMessageId = useStore((state) =>
@@ -1813,17 +1786,39 @@ const useThreadRuntimeController = () => {
 				: "skip",
 		) ?? EMPTY_LIVE_THREAD_JOBS;
 
+	/**
+	 * The loaded nodes of the shown branch, newest first. An older page counts only while it starts
+	 * where the page before it ends. After the view jumps to another branch, the older pages drop.
+	 */
+	const branchNodes = ((/* iife */) => {
+		if (!branchPage) return undefined;
+
+		const nodes = [...branchPage.nodes];
+		let nextId = branchPage.nextId;
+		let olderPageCount = 0;
+		for (const fromId of historyFromIds) {
+			const page = olderBranchPages[fromId];
+			if (nextId !== fromId || !page || page instanceof Error) break;
+			nodes.push(...page.nodes);
+			nextId = page.nextId;
+			olderPageCount += 1;
+		}
+		return { nodes, nextId, olderPageCount };
+	})();
+
 	const persistedMessagesLookup = ((/* iife */) => {
-		if (!selectedThreadId || !persistedThreadMessages) return undefined;
+		if (!selectedThreadId || !branchNodes) return undefined;
 
 		const result = {
 			mapById: new Map<string, ai_chat_UiMessage>(),
 			mapByClientGeneratedId: new Map<string, ai_chat_UiMessage>(),
 			childrenByParentId: new Map<string | null, ai_chat_UiMessage[]>(),
+			siblingIdsByParentId: new Map<string | null, readonly string[]>(),
+			streamingIds: new Set<string>(),
 			list: [] as ai_chat_UiMessage[],
 		};
 
-		for (const message of persistedThreadMessages.messages) {
+		for (const message of branchNodes.nodes) {
 			// Convert DB message to AI SDK UI message
 			const dbMessageContent = message.content as ai_chat_UiMessage;
 			const metadata = {
@@ -1833,27 +1828,36 @@ const useThreadRuntimeController = () => {
 			};
 			const cachedUiMessage = persistedUiMessageById.get(message._id);
 			const uiMessage =
-				cachedUiMessage ??
-				({
-					id: message._id,
-					role: dbMessageContent.role,
-					parts: dbMessageContent.parts,
-					metadata: {
-						...(dbMessageContent.metadata ?? {}),
-						...metadata,
-						// Keep the row's client-generated id on the UI message. The message UI keys
-						// content by it, so an open tool output does not remount and close when this
-						// persisted row replaces the streamed message that used the client id as its id.
-						clientGeneratedId: message.clientGeneratedMessageId,
-					} satisfies NonNullable<ai_chat_UiMessage["metadata"]>,
-				} satisfies ai_chat_UiMessage);
+				cachedUiMessage?.version === message.version
+					? cachedUiMessage.uiMessage
+					: ({
+							id: message._id,
+							role: dbMessageContent.role,
+							parts: dbMessageContent.parts,
+							metadata: {
+								...(dbMessageContent.metadata ?? {}),
+								...metadata,
+								// Keep the row's client-generated id on the UI message. The message UI keys
+								// content by it, so an open tool output does not remount and close when this
+								// persisted row replaces the streamed message that used the client id as its id.
+								clientGeneratedId: message.clientGeneratedMessageId,
+								...(message.status === "failed"
+									? { status: "errored" as const }
+									: message.status === "stopped"
+										? { status: "aborted" as const }
+										: {}),
+							} satisfies NonNullable<ai_chat_UiMessage["metadata"]>,
+						} satisfies ai_chat_UiMessage);
 			mutate_message_metadata(uiMessage, metadata);
 
-			// Persisted AI messages are append-only today; editing creates a new branch message.
-			// If persisted rows become stream-updated later, replace this id-only cache with a versioned key.
-			if (!cachedUiMessage) {
-				persistedUiMessageById.set(message._id, uiMessage);
+			if (cachedUiMessage?.uiMessage !== uiMessage) {
+				persistedUiMessageById.set(message._id, { version: message.version, uiMessage });
 			}
+
+			if (message.status === "streaming") {
+				result.streamingIds.add(message._id);
+			}
+			result.siblingIdsByParentId.set(message.parentId, message.siblingIds);
 
 			result.mapById.set(message._id, uiMessage);
 
@@ -2011,65 +2015,6 @@ const useThreadRuntimeController = () => {
 		if (options.chatId === selectedThreadId && document.visibilityState === "visible") {
 			markThreadRead(options.chatId);
 		}
-
-		if (!options.isAbort) {
-			return;
-		}
-
-		if (options.message.role !== "assistant") {
-			return;
-		}
-
-		if (options.message.metadata?.convexId || !message_has_visible_parts(options.message)) {
-			return;
-		}
-
-		// Leave a reply with MCP parts to the server's own abort save, so no refused save is logged here.
-		if (message_has_mcp_parts(options.message)) {
-			return;
-		}
-
-		const threadId = ai_chat_is_optimistic_thread_id(options.chatId)
-			? null
-			: (options.chatId as app_convex_Id<"ai_chat_threads">);
-
-		if (!threadId) {
-			return;
-		}
-
-		addThreadMessages({
-			membershipId,
-			threadId,
-			parentId: options.message.metadata?.convexParentId ?? null,
-			messages: [
-				{
-					clientGeneratedMessageId: options.message.id,
-					content: strip_provider_metadata_from_message_parts(options.message),
-				},
-			],
-		})
-			.then((result) => {
-				if (result._nay) {
-					console.error(
-						"[AiChatController.useThreadRuntime.handleChatFinish] Failed to persist aborted assistant message",
-						{
-							result,
-							threadId,
-							messageId: options.message.id,
-						},
-					);
-				}
-			})
-			.catch((error) => {
-				console.error(
-					"[AiChatController.useThreadRuntime.handleChatFinish] Failed to persist aborted assistant message",
-					{
-						error,
-						threadId,
-						messageId: options.message.id,
-					},
-				);
-			});
 	});
 
 	// Keep this as a direct expression: React Compiler memoizes the Chat instance for stable deps,
@@ -2093,8 +2038,6 @@ const useThreadRuntimeController = () => {
 		: unselectedChatInstance;
 
 	const chat = useChat<ai_chat_UiMessage>({ chat: activeChatInstance });
-	const chatRef = useLiveRef(chat);
-	const activeChatInstanceIdRef = useLiveRef(activeChatInstance.id);
 
 	const pendingMessagesLookup = ((/* iife */) => {
 		const result = {
@@ -2104,6 +2047,10 @@ const useThreadRuntimeController = () => {
 			 * The key can be either a convex id or a client-generated id.
 			 */
 			childrenByParentId: new Map<string | null, ai_chat_UiMessage[]>(),
+			/**
+			 * This tab's live stream of a saved reply whose run still streams, by the reply's Convex id.
+			 */
+			liveReplyByConvexId: new Map<string, ai_chat_UiMessage>(),
 		};
 
 		// Read messages from the newest to the oldest.
@@ -2118,6 +2065,11 @@ const useThreadRuntimeController = () => {
 					convexParentId: persistedMessage.metadata.convexParentId ?? null,
 					parentClientGeneratedId: persistedMessage.metadata.parentClientGeneratedId ?? null,
 				});
+				// While the run streams, the saved reply holds only its finished steps. Show this tab's
+				// live stream in its place until the run ends.
+				if (persistedMessagesLookup?.streamingIds.has(persistedMessage.metadata.convexId)) {
+					result.liveReplyByConvexId.set(persistedMessage.metadata.convexId, message);
+				}
 				continue;
 			}
 
@@ -2226,7 +2178,11 @@ const useThreadRuntimeController = () => {
 		}
 
 		return {
-			list: [...tail.toReversed(), ...head],
+			// The live stream keeps the saved reply's id, so branch actions on a running reply send an id the server knows.
+			list: [...tail.toReversed(), ...head].map((message) => {
+				const liveReply = pendingMessagesLookup.liveReplyByConvexId.get(message.id);
+				return liveReply ? { ...liveReply, id: message.id } : message;
+			}),
 			mapById,
 			anchorId: session ? session.anchorId : undefined,
 		};
@@ -2236,11 +2192,8 @@ const useThreadRuntimeController = () => {
 		const result = new Map<string | null, string[]>();
 
 		if (persistedMessagesLookup) {
-			for (const [parentId, children] of persistedMessagesLookup.childrenByParentId.entries()) {
-				result.set(
-					parentId,
-					children.toReversed().map((child) => child.id),
-				);
+			for (const [parentId, siblingIds] of persistedMessagesLookup.siblingIdsByParentId.entries()) {
+				result.set(parentId, [...siblingIds]);
 			}
 		}
 
@@ -2351,8 +2304,45 @@ const useThreadRuntimeController = () => {
 		useStore.actions.setSession(threadId, (prev) => {
 			const base = prev ?? thread_session_create();
 
-			return { ...base, anchorId };
+			return { ...base, anchorId, historyFromIds: [] };
 		});
+	});
+
+	const loadOlderMessages = useFn(() => {
+		const fromId = branchNodes?.nextId;
+		if (!selectedThreadId || selectedThreadIsOptimistic || !branchNodes || !fromId) {
+			return;
+		}
+
+		const threadId = selectedThreadId;
+		const anchorId = branchAnchorId;
+		const nextHistoryFromIds = [...historyFromIds.slice(0, branchNodes.olderPageCount), fromId];
+		const pageArgs = get_branch_page_args({ membershipId, threadId, anchorId, historyFromIds: nextHistoryFromIds });
+
+		// Load the new pages before the view asks for them. Changed query args would otherwise show a
+		// loading state for a moment, and the whole list would flash.
+		Promise.all(
+			pageArgs.map((args) => {
+				app_convex.prewarmQuery({ query: app_convex_api.ai_chat_runs.branch_page, args, extendSubscriptionFor: 10_000 });
+				return app_convex.query(app_convex_api.ai_chat_runs.branch_page, args);
+			}),
+		)
+			.then(() => {
+				useStore.actions.setSession(threadId, (prev) => {
+					// The user switched branch meanwhile. These pages belong to the old branch.
+					if (!prev || (prev.anchorId ?? null) !== anchorId) {
+						return;
+					}
+
+					return { ...prev, historyFromIds: nextHistoryFromIds };
+				});
+			})
+			.catch((error: unknown) => {
+				console.error("[AiChatController.useThreadRuntime.loadOlderMessages] Failed to load older messages", {
+					error,
+					threadId,
+				});
+			});
 	});
 
 	const setThreadStarred = useFn((threadId: string, starred: boolean) => {
@@ -2608,8 +2598,8 @@ const useThreadRuntimeController = () => {
 				return false;
 			}
 
-			// Stop can leave a client-only assistant. Drop it before the next turn
-			// so it does not stay beside the new request.
+			// A request that ends before the server saves its reply leaves a client-only assistant.
+			// Drop it before the next turn so it does not stay beside the new request.
 			const shouldDropOptimisticAssistant = Boolean(
 				!targetMessage && latestMessage?.role === "assistant" && !latestMessage.metadata?.convexId,
 			);
@@ -2720,9 +2710,11 @@ const useThreadRuntimeController = () => {
 					return;
 				}
 
+				// Keep the branch anchor. The new turn goes below the shown branch, and the server follows
+				// the newest children from the anchor, so the same anchor still shows it. A changed anchor
+				// would load the branch again and flash an empty list.
 				return {
 					...prev,
-					anchorId: null,
 					// Retrying the failed turn resumes its followers. Another failure pauses them again.
 					queuePauseReason: targetMessageIsFailedUserMessage ? null : prev.queuePauseReason,
 				};
@@ -2949,20 +2941,74 @@ const useThreadRuntimeController = () => {
 		}
 	});
 
+	const abortChatRequest = (stoppingChat: Chat<ai_chat_UiMessage>) => {
+		stoppingChat.stop().catch((error) => {
+			console.error("[AiChatController.useThreadRuntime.stop] Failed to stop chat", {
+				error,
+				chatId: stoppingChat.id,
+			});
+		});
+	};
+
 	const stop = useFn(() => {
 		if (selectedThreadId) {
 			// Stop the active turn, but keep later messages until the user resumes the queue.
 			useStore.actions.pauseQueuedUserMessages(selectedThreadId);
 		}
-		chatRef.current.stop().catch((error) => {
-			console.error("[AiChatController.useThreadRuntime.stop] Failed to stop chat", {
-				error,
-				chatId: activeChatInstanceIdRef.current,
+
+		const stoppingChat = activeChatInstance;
+		// A request that has not started streaming has saved nothing yet, so abort it at once.
+		if (chat.status === "submitted") {
+			abortChatRequest(stoppingChat);
+		}
+		// Before the stream names the saved thread, only the request itself can stop the run.
+		if (ai_chat_is_optimistic_thread_id(stoppingChat.id)) {
+			abortChatRequest(stoppingChat);
+			return;
+		}
+
+		// Stop the run on the server, from this tab or any other. The run saves its partial reply and
+		// ends its own stream.
+		const threadId = stoppingChat.id as app_convex_Id<"ai_chat_threads">;
+		// Name the reply the user sees streaming, so a late Stop never stops a later run. Before the
+		// reply node shows, any live run is this request's.
+		const replyId = branchNodes?.nodes[0]?.status === "streaming" ? branchNodes.nodes[0]._id : null;
+		stopRun({ membershipId, threadId, replyId })
+			.then((result) => {
+				if (result._nay) {
+					console.error("[AiChatController.useThreadRuntime.stop] Failed to stop the run", { result, threadId });
+				}
+			})
+			.catch((error: unknown) => {
+				console.error("[AiChatController.useThreadRuntime.stop] Unexpected error stopping the run", {
+					error,
+					threadId,
+				});
 			});
-		});
+
+		if (chat.status !== "streaming") {
+			return;
+		}
+
+		// Abort the request only if the same stream is still open after the wait.
+		const sessionThreadId = threadIdByChat.get(stoppingChat);
+		const requestToken = sessionThreadId ? useStore.actions.getSession(sessionThreadId)?.activeRequestToken : null;
+		setTimeout(() => {
+			const currentThreadId = threadIdByChat.get(stoppingChat);
+			if (
+				requestToken &&
+				currentThreadId &&
+				useStore.actions.getSession(currentThreadId)?.activeRequestToken === requestToken
+			) {
+				abortChatRequest(stoppingChat);
+			}
+		}, STOP_ABORT_AFTER_MS);
 	});
 
-	const isRunning = chat.status === "submitted" || chat.status === "streaming";
+	// A run can stream without this tab's request: a job wake run, or a turn sent from another tab.
+	// Its reply node stays "streaming" until the run ends.
+	const isBranchLeafStreaming = branchNodes?.nodes[0]?.status === "streaming";
+	const isRunning = chat.status === "submitted" || chat.status === "streaming" || isBranchLeafStreaming;
 
 	const canSendUserText = ((/* iife */) => {
 		if (!browserIntent) return false;
@@ -2995,9 +3041,9 @@ const useThreadRuntimeController = () => {
 
 		if (latestMessage.role === "assistant") {
 			const parentMessage = activeBranchMessages.list.at(-2);
-			// A stopped assistant can remain client-only when the stream is aborted before
-			// persistence finishes. Let the next send drop it only after the previous
-			// parent has refreshed from Convex with a persisted id.
+			// An assistant stays client-only when the request ends before the server saves
+			// its reply. Let the next send drop it only after the previous parent has
+			// refreshed from Convex with a persisted id.
 			return Boolean(parentMessage?.metadata?.convexId);
 		}
 
@@ -3027,7 +3073,7 @@ const useThreadRuntimeController = () => {
 		if (selectedThreadIsOptimistic) {
 			return "loaded" as const;
 		}
-		if (persistedThreadMessages === undefined) {
+		if (branchPage === undefined) {
 			return "loading" as const;
 		}
 		return "loaded" as const;
@@ -3094,8 +3140,8 @@ const useThreadRuntimeController = () => {
 	useEffect(() => {
 		const latestMessage = activeBranchMessages.list.at(-1);
 		const latestMessageParent = activeBranchMessages.list.at(-2);
-		// Stop can leave an empty assistant that onFinish intentionally does not persist.
-		// Drop it only after its parent is persisted, so the queued follower has a safe anchor.
+		// A request that ends before the server saves its reply leaves an empty client-only
+		// assistant. Drop it only after its parent is persisted, so the queued follower has a safe anchor.
 		const canDropClientOnlyAssistant = Boolean(
 			latestMessage?.role === "assistant" &&
 			!latestMessage.metadata?.convexId &&
@@ -3116,7 +3162,7 @@ const useThreadRuntimeController = () => {
 			session.isArchivePending ||
 			session.queuedUserMessages.length === 0 ||
 			isRunning ||
-			(persistedThreadMessages === undefined && !failedSendUserMessage) ||
+			(branchPage === undefined && !failedSendUserMessage) ||
 			(latestMessage && !latestMessage.metadata?.convexId && !failedSendUserMessage && !canDropClientOnlyAssistant)
 		) {
 			return;
@@ -3168,7 +3214,7 @@ const useThreadRuntimeController = () => {
 		activeChatInstance,
 		failedSendUserMessage,
 		isRunning,
-		persistedThreadMessages,
+		branchPage,
 		selectedThreadId,
 		selectedThreadIsOptimistic,
 		sendUserTextNow,
@@ -3242,12 +3288,14 @@ const useThreadRuntimeController = () => {
 		error: chat.error,
 		activeBranchMessages,
 		messageChildIdsByParentId,
+		hasOlderMessages: Boolean(branchNodes?.nextId),
 		liveJobs,
 
 		startNewChat,
 		branchChat,
 		selectThread,
 		selectBranchAnchor,
+		loadOlderMessages,
 		setThreadStarred,
 		archiveThread,
 		removeOptimisticThread,

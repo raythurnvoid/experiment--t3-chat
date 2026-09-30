@@ -335,7 +335,11 @@ describe("agent file write source", () => {
 			}),
 		).toEqual({ _yay: null });
 		await f.t.action(async (ctx) => {
-			const edit = ai_chat_tool_create_edit_file(ctx, { ...f.agentSource, getThreadId: () => f.agentSource.threadId });
+			const edit = ai_chat_tool_create_edit_file(ctx, {
+				...f.agentSource,
+				getThreadId: () => f.agentSource.threadId,
+				getRun: () => null,
+			});
 			await edit.execute!(
 				{
 					workspace: "personal",
@@ -415,6 +419,7 @@ describe("agent file write source", () => {
 				const tool = ai_chat_tool_create_edit_file(ctx, {
 					...f.agentSource,
 					getThreadId: () => f.agentSource.threadId,
+					getRun: () => null,
 				});
 				return await tool.execute!(
 					{ workspace, path: "/notes.txt", oldString: "original", newString: "private", replaceAll: false },
@@ -480,7 +485,7 @@ describe("agent file write source", () => {
 							return result;
 						},
 					},
-					{ ...f.agentSource, getThreadId: () => f.agentSource.threadId },
+					{ ...f.agentSource, getThreadId: () => f.agentSource.threadId, getRun: () => null },
 				);
 				return await tool.execute!(
 					{ workspace: "personal", path: "/notes", set: [{ key: "private-note", value: true }], remove: [] },

@@ -36,8 +36,9 @@ async function fixture() {
 		toolCallId: "tool-call-1",
 		commandHash: "a".repeat(64),
 	};
-	// Only begin takes the shell name; the lost-reply readback keeps the bare identity.
-	const beginArgs = { ...args, shellName: "default" };
+	// Only begin takes the shell name and the run fence; the lost-reply readback keeps the bare identity.
+	// These tests start no chat run, so they pass no fence.
+	const beginArgs = { ...args, shellName: "default", run: null };
 	return { t, db, asUser, args, beginArgs };
 }
 

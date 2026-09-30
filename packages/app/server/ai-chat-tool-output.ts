@@ -174,13 +174,13 @@ export async function ai_chat_tool_output_reserve(
 	ctx: ActionCtx,
 	args: {
 		source: FunctionArgs<typeof internal.ai_chat_outputs.reserve>["source"];
-		getRunId: () => Id<"ai_chat_runs"> | null;
+		getRun: () => { runId: Id<"ai_chat_runs">; generation: number } | null;
 		getModelCallId: (toolCallId: string) => string | null;
 		toolCallId: string;
 		tool: keyof typeof RESERVE_BYTES;
 	},
 ) {
-	const runId = args.getRunId();
+	const runId = args.getRun()?.runId ?? null;
 	// The chat run starts before the stream, and the receipt middleware sees each tool call before
 	// the SDK runs it. So both ids are always set here.
 	const modelCallId = args.getModelCallId(args.toolCallId);

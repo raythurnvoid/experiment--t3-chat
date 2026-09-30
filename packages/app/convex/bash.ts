@@ -2,7 +2,12 @@
 
 import { v, type Infer } from "convex/values";
 import { internalAction } from "./_generated/server.js";
-import { ai_chat_bash_result_validator, ai_chat_model_id_validator, browser_intent_validator } from "./schema.ts";
+import {
+	ai_chat_bash_result_validator,
+	ai_chat_model_id_validator,
+	ai_chat_run_fence_validator,
+	browser_intent_validator,
+} from "./schema.ts";
 
 // Shell diagnostics live with `bash_run_command`, so the Convex action imports
 // only the runner and does not need the lower-level shell constants.
@@ -47,6 +52,11 @@ export const run = internalAction({
 		 * The space the chat tool reserved for the full output. Null only in tests that run no chat.
 		 */
 		output: v.union(v.object({ objectId: v.id("ai_chat_output_objects"), runId: v.id("ai_chat_runs") }), v.null()),
+		/**
+		 * The chat run of this call. Its writes are refused once Stop raises the run's generation.
+		 * Null only in tests that run no chat.
+		 */
+		run: v.union(ai_chat_run_fence_validator, v.null()),
 	},
 	returns: ai_chat_bash_result_validator,
 	handler: async (ctx, args) => {

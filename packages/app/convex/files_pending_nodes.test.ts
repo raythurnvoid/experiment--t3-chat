@@ -583,6 +583,7 @@ describe("cleanup_published_nodes", () => {
 			toolCallId: "select-folder",
 			commandHash: "a".repeat(64),
 			shellName: "default",
+			run: null,
 		});
 		if (begin._nay || !("shell" in begin._yay)) throw new Error("Expected a fresh shell");
 		await t.mutation(internal.ai_chat.save_shell, {
@@ -624,6 +625,7 @@ describe("cleanup_published_nodes", () => {
 			toolCallId: "leave-folder",
 			commandHash: "b".repeat(64),
 			shellName: "default",
+			run: null,
 		});
 		if (next._nay) throw new Error(next._nay.message);
 		await t.mutation(internal.ai_chat.save_shell, {

@@ -15,7 +15,7 @@ const queryMocks = vi.hoisted(() => ({
 	threads: [] as ai_chat_Thread[],
 	loadingThreadIds: new Set<string>(),
 	listeners: new Set<() => void>(),
-	messages: { messages: [] },
+	branchPage: { nodes: [], nextId: null },
 	jobs: [],
 	mutation: vi.fn(() => Promise.resolve({ _yay: null })),
 }));
@@ -39,8 +39,8 @@ vi.mock("convex/react", async (importOriginal) => ({
 				return queryMocks.loadingThreadIds.has(args.threadId)
 					? undefined
 					: (threads.find((thread) => thread._id === args.threadId) ?? null);
-			case "ai_chat:thread_messages_list":
-				return queryMocks.messages;
+			case "ai_chat_runs:branch_page":
+				return queryMocks.branchPage;
 			default:
 				return queryMocks.jobs;
 		}
@@ -61,6 +61,8 @@ vi.mock("convex/react", async (importOriginal) => ({
 	},
 	useMutation: () => queryMocks.mutation,
 	useAction: () => queryMocks.mutation,
+	// These tests never load older pages of a branch.
+	useQueries: () => ({}),
 }));
 
 vi.mock("@/components/app-auth.tsx", () => ({
@@ -135,6 +137,7 @@ function createThread(id: string, clientGeneratedId: string | null = null) {
 		updatedBy: "user_navigation",
 		updatedAt: 1,
 		lastMessageAt: 1,
+		newestNodeId: null,
 	} as ai_chat_Thread;
 }
 

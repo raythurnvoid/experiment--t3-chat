@@ -30,6 +30,7 @@ async function create_fixture() {
 			createdBy: db.userId,
 			updatedBy: db.userId,
 			updatedAt: Date.now(),
+			newestNodeId: null,
 		}),
 	);
 	const captured = await t.mutation(internal.ai_chat_workspaces.capture, {

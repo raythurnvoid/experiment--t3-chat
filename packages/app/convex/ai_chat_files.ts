@@ -24,6 +24,7 @@ import app_convex_schema, {
 	ai_chat_bash_job_live_output_validator,
 	ai_chat_bash_result_validator,
 	ai_chat_model_id_validator,
+	ai_chat_run_fence_validator,
 	ai_chat_workspaces_source_validator,
 	ai_chat_browser_source_validator,
 	ai_chat_browser_resource_validator,
@@ -57,7 +58,7 @@ import {
 	organizations_membership_lifetimes_db_get,
 } from "./organizations_membership_lifetimes.ts";
 import { ai_chat_workspaces_db_authorize_file_scope, ai_chat_workspaces_db_resolve } from "./ai_chat_workspaces.ts";
-import { ai_chat_runs_db_insert } from "./ai_chat_runs.ts";
+import { ai_chat_runs_db_add_job_finish, ai_chat_runs_db_is_current } from "./ai_chat_runs.ts";
 import { billing_db_check_paid_plan, billing_pick_billed_user_id } from "./billing_db.ts";
 import { files_browser_db_check_agent_intent } from "./files_browser.ts";
 import {
@@ -81,7 +82,6 @@ import {
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
-import { get_id_generator } from "../shared/generated-ids.ts";
 import { ai_chat_GENERATED_IMAGE_FORMAT } from "../shared/ai-chat.ts";
 import { files_TRANSFER_SELECTION_PAGE_SIZE } from "../shared/files.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
@@ -134,23 +134,9 @@ const BASH_JOB_COPY_CLEANUP_BATCH_COUNT = 8;
 // in UTF-16 code units, so `bash_text_head` keeps the cut off the middle of a character.
 const BASH_JOB_WAKEUP_HEAD_CHARS = 4 * 1024;
 
-// A wakeup run holds the thread's run lease this long at most. A Convex action cannot run longer.
-export const BASH_JOB_WAKEUP_RUN_MS = 10 * 60 * 1000;
-
-// The fixed head of the finish message, split around the job number. `bash_job_is_finish_message`
-// matches these two halves; the text built below uses them so the two cannot drift apart.
+// The fixed head of the finish message, split around the job number.
 const BASH_JOB_FINISH_MESSAGE_START = "Background job ";
 const BASH_JOB_FINISH_MESSAGE_MIDDLE = " finished in shell ";
-
-/**
- * Whether a stored message is a job finish message. The role check keeps user
- * quotes of the same words out: user text lands as role `user`, never `system`.
- */
-export function bash_job_is_finish_message(role: string, text: string) {
-	return (
-		role === "system" && text.startsWith(BASH_JOB_FINISH_MESSAGE_START) && text.includes(BASH_JOB_FINISH_MESSAGE_MIDDLE)
-	);
-}
 
 const ai_chat_bash_jobs_workpool = new Workpool(components.ai_chat_bash_jobs_workpool, {
 	// Above the live-job cap, so one user cannot fill every slot.
@@ -355,9 +341,16 @@ function invocation_result(
 export const begin_bash_invocation = internalMutation({
 	// `shellName` is not part of the call identity shared with `get_bash_invocation`; keep it off
 	// the identity object because the handler spreads that object into the invocation row.
-	args: { ...bash_invocation_identity, shellName: v.string() },
+	args: {
+		...bash_invocation_identity,
+		shellName: v.string(),
+		/**
+		 * The chat run that makes this call. Null only in tests that run no chat.
+		 */
+		run: v.union(ai_chat_run_fence_validator, v.null()),
+	},
 	returns: v_result({ _yay: bash_begin_result }),
-	handler: async (ctx, { shellName, ...args }) => {
+	handler: async (ctx, { shellName, run, ...args }) => {
 		// `job:` ids belong to `start_bash_job`. Refuse one here, before the lookup: the index is
 		// not unique, so a second row with that key would shadow the job for every `.first()` reader.
 		if (
@@ -392,6 +385,11 @@ export const begin_bash_invocation = internalMutation({
 				await ctx.db.patch("ai_chat_bash_invocations", existing._id, { status: "interrupted", finishedAt: Date.now() });
 			return Result({ _yay: invocation_result(existing) });
 		}
+
+		// A call of a stopped run must not start. The row keeps the run fence, so the call's later
+		// writes can check that Stop did not raise the run's generation.
+		if (run && !(await ai_chat_runs_db_is_current(ctx, run)))
+			return Result({ _nay: { message: "Stopped. This call was not run." } });
 
 		const now = Date.now();
 
@@ -433,6 +431,8 @@ export const begin_bash_invocation = internalMutation({
 
 		const invocation = {
 			...args,
+			run,
+			originReplyId: null,
 			status: "running" as const,
 			deadlineAt: now + 120_000,
 			transferDeadlineAt: now + 90_000,
@@ -686,6 +686,10 @@ export async function ai_chat_files_db_begin_browser_invocation(
 	const found = await ai_chat_files_db_get_browser_invocation(ctx, args);
 	if (found._nay) return found;
 	if (found._yay) return Result({ _yay: browser_invocation_output(found._yay) });
+	// A call of a stopped run must not start. Only the start is fenced: the readback and cleanup doors
+	// share the source check and must still work after Stop.
+	if (args.run && !(await ai_chat_runs_db_is_current(ctx, args.run)))
+		return Result({ _nay: { message: "Stopped. This call was not run." } });
 	const resource = args.resource;
 	if (resource?.provider === "cloud") {
 		const session = await ctx.db.get("files_browser_sessions", resource.sessionId);
@@ -759,7 +763,7 @@ export async function ai_chat_files_db_begin_browser_invocation(
 }
 
 export const begin_browser_invocation = internalMutation({
-	args: { ...browser_invocation_identity, timeoutMs: v.number() },
+	args: { ...browser_invocation_identity, timeoutMs: v.number(), run: v.optional(v.union(ai_chat_run_fence_validator, v.null())) },
 	returns: v_result({ _yay: browser_invocation_result }),
 	handler: async (ctx, args): Promise<BrowserInvocationResult<Infer<typeof browser_invocation_result>>> =>
 		ai_chat_files_db_begin_browser_invocation(ctx, args),
@@ -2154,14 +2158,10 @@ async function db_append_job_finish_entry(
 }
 
 /**
- * The message a finished job owes the thread. Store a system message with the
- * job's outcome under the newest leaf of the thread. When no run holds the
- * thread's lease, also take the `job_wakeup` lease and schedule
- * `run_job_wakeup`, which answers that message. When a chat request or another
- * wakeup holds the lease, only the message is stored: the running turn reads it
- * at its next step boundary, and the turn-end catch schedules a wake run for
- * anything it never injected. `wakeNotifiedAt` keeps a job to one message, so
- * the settle and a late worker result can both try: only the first writes.
+ * The message a finished job owes the thread. `ai_chat_runs_db_add_job_finish` delivers it to the
+ * branch of the reply that started the job: into the live run's next step, or as a finish message
+ * that a wake run answers. `wakeNotifiedAt` keeps a job to one message, so the settle and a late
+ * worker result can both try: only the first writes.
  * Shape borrowed from opencode background tasks (`task.ts`: `background`,
  * `jobId` in metadata, `notify` then `inject` as a fresh prompt), read at pin
  * `3dd1b305`.
@@ -2172,93 +2172,30 @@ async function db_wake_agent_for_job(
 	args: { exitCode: number; stdout: string; stderr: string; now: number },
 ) {
 	if (invocation.wakeNotifiedAt !== undefined) return;
-	// A job whose member lost access must not write into the thread or hold its run lease. The claim
+	// A job whose member lost access must not write into the thread or start a run. The claim
 	// settles exactly such a job, and that settle would otherwise wake the agent for a member who is
-	// no longer there. Check the same permissions `get_job_wakeup_context` checks a moment later. A
-	// role change keeps the membership. Without these checks the message would land in a thread the
-	// member may no longer read, and the run it starts would be refused anyway.
+	// no longer there. `get_job_wakeup_context` checks the same permissions again later. A role
+	// change keeps the membership.
 	const membership = await ai_chat_files_db_get_invocation_membership(ctx, invocation);
 	if (!membership) return;
-	const thread = await ctx.db.get("ai_chat_threads", invocation.threadId);
-	if (!thread) throw should_never_happen("Job thread not found", { threadId: invocation.threadId });
-	// Read the lease once. A re-read later in this mutation would see the same snapshot, so it
-	// cannot catch a release that lands mid-write. Convex serializes the two mutations and retries
-	// this one with fresh state instead, which then takes the freed lease.
-	const runActive = thread.activeRun !== undefined && thread.activeRun.expiresAt > args.now;
 	const shell = await ctx.db.get("ai_chat_bash_shells", invocation.job.shellId);
 	if (!shell) throw should_never_happen("Job shell not found", { shellId: invocation.job.shellId });
-
-	// The newest message of the thread. That is the leaf of the branch the chat shows: with no branch
-	// picked the client starts from the newest message and walks up to its root. A thread can have
-	// more than one root, because editing the first user message stores the new one with no parent,
-	// so walking down from the newest root instead would put the message on a branch the chat does not
-	// render and give the woken run the wrong conversation to answer.
-	const newestMessage = await ctx.db
-		.query("ai_chat_threads_messages_aisdk_5")
-		.withIndex("by_organization_workspace_thread", (q) =>
-			q.eq("organizationId", thread.organizationId).eq("workspaceId", thread.workspaceId).eq("threadId", thread._id),
-		)
-		.order("desc")
-		.first();
-	const leafId = newestMessage?._id ?? null;
 
 	const head = (text: string) =>
 		text.length > BASH_JOB_WAKEUP_HEAD_CHARS
 			? `${bash_text_head(text, BASH_JOB_WAKEUP_HEAD_CHARS)}\n[truncated]`
 			: text;
 	const jobNumber = invocation.job.jobNumber;
-	const messageId = get_id_generator("ai_message")();
-	const finishMessageId = await ctx.db.insert("ai_chat_threads_messages_aisdk_5", {
-		organizationId: thread.organizationId,
-		workspaceId: thread.workspaceId,
-		parentId: leafId,
-		threadId: thread._id,
-		createdBy: invocation.userId,
-		updatedAt: args.now,
-		jobFinishInvocationId: invocation._id,
-		clientGeneratedMessageId: messageId,
-		content: {
-			id: messageId,
-			role: "system",
-			parts: [
-				{
-					type: "text",
-					text:
-						`${BASH_JOB_FINISH_MESSAGE_START}${jobNumber}${BASH_JOB_FINISH_MESSAGE_MIDDLE}${shell.name} with exit ${args.exitCode}.\n` +
-						`stdout:\n${head(args.stdout)}\nstderr:\n${head(args.stderr)}\n` +
-						`Full output: jobs -o ${jobNumber} or /shells/${shell.name}/transcript.`,
-				},
-			],
-		},
-	});
 	// Mark the message before anything can try again: the settle and a late worker result both call
 	// this, and only one of them may write.
 	await ctx.db.patch("ai_chat_bash_invocations", invocation._id, { wakeNotifiedAt: args.now });
-	// A run is still writing under this leaf, so take no lease and schedule
-	// nothing. The running turn injects this message at its next step
-	// boundary, and its turn-end catch schedules a wake run for anything left.
-	if (runActive) {
-		await ctx.db.patch("ai_chat_threads", thread._id, {
-			lastMessageAt: args.now,
-			updatedAt: args.now,
-			updatedBy: invocation.userId,
-		});
-		return;
-	}
-	const leaseExpiresAt = args.now + BASH_JOB_WAKEUP_RUN_MS;
-	await ctx.db.patch("ai_chat_threads", thread._id, {
-		lastMessageAt: args.now,
-		updatedAt: args.now,
-		updatedBy: invocation.userId,
-		activeRun: { kind: "job_wakeup", expiresAt: leaseExpiresAt },
-	});
-	// The wake run acts for the job's own membership, the same one `get_job_wakeup_context` checks.
-	const runId = await ai_chat_runs_db_insert(ctx, { kind: "job_wakeup", leaseExpiresAt, source: invocation });
-	await ctx.scheduler.runAfter(0, internal.ai_chat.run_job_wakeup, {
-		invocationId: invocation._id,
-		threadId: thread._id,
-		finishMessageId,
-		runId,
+	await ai_chat_runs_db_add_job_finish(ctx, {
+		invocation,
+		text:
+			`${BASH_JOB_FINISH_MESSAGE_START}${jobNumber}${BASH_JOB_FINISH_MESSAGE_MIDDLE}${shell.name} with exit ${args.exitCode}.\n` +
+			`stdout:\n${head(args.stdout)}\nstderr:\n${head(args.stderr)}\n` +
+			`Full output: jobs -o ${jobNumber} or /shells/${shell.name}/transcript.`,
+		now: args.now,
 	});
 }
 
@@ -2370,6 +2307,9 @@ export const start_bash_job = internalMutation({
 		if (!shell || shell.threadId !== parent.threadId) return Result({ _nay: { message: "Unauthorized" } });
 		if (!Number.isSafeInteger(args.commandNumber) || args.commandNumber < 0)
 			return Result({ _nay: { message: "Invalid Bash command number." } });
+		// A chat call may start jobs only while its run still runs. Stop ends the call's launches.
+		if (!parent.job && parent.run && !(await ai_chat_runs_db_is_current(ctx, parent.run)))
+			return Result({ _nay: { message: "Stopped. This job was not started." } });
 
 		// A lost reply replays the launch; the synthetic id finds the row it already made.
 		const toolCallId = `job:${parent._id}:${args.commandNumber}`;
@@ -2450,6 +2390,13 @@ export const start_bash_job = internalMutation({
 			membershipLifetime: parent.membershipLifetime,
 			...(parent.browserIntent ? { browserIntent: parent.browserIntent } : {}),
 			...(parent.sourceMessageId ? { sourceMessageId: parent.sourceMessageId } : {}),
+			run: null,
+			// The finish goes to the branch of the reply that started the job, also for nested jobs.
+			originReplyId: parent.job
+				? parent.originReplyId
+				: parent.run
+					? ((await ctx.db.get("ai_chat_runs", parent.run.runId))?.replyId ?? null)
+					: null,
 			status: "running",
 			deadlineAt,
 			transferDeadlineAt: deadlineAt,
@@ -3582,6 +3529,10 @@ export const patch_thread_tmp_files = internalMutation({
 			!(await ai_chat_files_db_get_invocation_membership(ctx, invocation))
 		) {
 			throw convex_error({ message: "The Bash thread is no longer available." });
+		}
+		// A call of a stopped run keeps the thread's `/tmp` as it was.
+		if (!invocation.job && invocation.run && !(await ai_chat_runs_db_is_current(ctx, invocation.run))) {
+			throw convex_error({ message: "Stopped" });
 		}
 
 		// Rejoining does not let an old call write into the creator's thread scratch.

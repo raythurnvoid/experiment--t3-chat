@@ -53,6 +53,7 @@ async function setup() {
 			purpose: "chat_step",
 			modelId: "gpt-6-luna",
 			...payer,
+			runId: null,
 		});
 	const receipt = (modelCallId: string) =>
 		t.run((ctx) =>
@@ -84,6 +85,7 @@ describe("save_usage", () => {
 				responseId: "resp_1",
 				providerModelId: null,
 				usage: REPORTED,
+				step: null,
 			});
 		}
 
@@ -108,6 +110,7 @@ describe("save_usage", () => {
 			responseId: "resp_1",
 			providerModelId: null,
 			usage: REPORTED,
+			step: null,
 		});
 
 		expect(enqueueActionSpy).toHaveBeenCalledWith(
@@ -148,6 +151,7 @@ describe("save_usage", () => {
 			responseId: null,
 			providerModelId: null,
 			usage: REPORTED,
+			step: null,
 		});
 
 		expect(await receipt("call_1")).toMatchObject({ tokens: { state: "target_gone" } });
@@ -165,6 +169,7 @@ describe("save_usage", () => {
 			responseId: null,
 			providerModelId: null,
 			usage: REPORTED,
+			step: null,
 		});
 
 		await t.mutation(internal.ai_model_call_receipts.save_usage, {
@@ -172,6 +177,7 @@ describe("save_usage", () => {
 			responseId: null,
 			providerModelId: null,
 			usage: { state: "missing", reason: "no_usage" },
+			step: null,
 		});
 
 		expect(await receipt("call_1")).toMatchObject({ usage: REPORTED, tokens: { state: "debited" } });
@@ -193,6 +199,7 @@ describe("save_usage", () => {
 			responseId: null,
 			providerModelId: null,
 			usage: REPORTED,
+			step: null,
 		});
 
 		expect(await receipt("call_1")).toMatchObject({ usage: REPORTED, tokens: { state: "debited" } });
@@ -221,7 +228,7 @@ describe("save_image", () => {
 describe("ai_model_call_receipts_create", () => {
 	// The middleware only needs `runMutation`, so drive the real mutations through convex-test.
 	const middlewareFor = (t: ReturnType<typeof test_convex>, payer: Awaited<ReturnType<typeof setup>>["payer"]) =>
-		ai_model_call_receipts_create({ runMutation: t.mutation } as unknown as ActionCtx, payer, null);
+		ai_model_call_receipts_create({ runMutation: t.mutation } as unknown as ActionCtx, payer, null, null);
 
 	const modelCallIds = (t: ReturnType<typeof test_convex>) =>
 		t.run(async (ctx) =>
@@ -296,6 +303,7 @@ describe("ai_model_call_receipts_create", () => {
 				},
 			} as unknown as ActionCtx,
 			payer,
+			null,
 			null,
 		);
 		// OpenRouter sends the id on every chunk and the model name in a part of its own.

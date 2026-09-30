@@ -162,7 +162,7 @@ function read_output_ref(part: unknown) {
 }
 
 /**
- * Check every output ref of a reply before the reply is saved. A ref whose run, object or pending
+ * Check every output ref of a reply step before the step is saved. A ref whose run, object or pending
  * owner is gone is dropped: its part keeps only its inline preview and says so. Returns the
  * content to save and the owners to commit after the save.
  *
@@ -177,7 +177,8 @@ export async function ai_chat_outputs_db_prepare_reply<T extends { id?: unknown;
 	},
 ) {
 	const run = await ctx.db.get("ai_chat_runs", args.runId);
-	const runIsLive = run?.status === "running" && run.threadId === args.threadId;
+	// A stopping run still saves its last step through `finish`, so its refs stay valid until it ends.
+	const runIsLive = run !== null && run.status !== "ended" && run.threadId === args.threadId;
 	const parts: unknown[] = Array.isArray(args.content.parts) ? args.content.parts : [];
 	const ownerIds: Array<Id<"ai_chat_output_owners">> = [];
 	let changed = false;

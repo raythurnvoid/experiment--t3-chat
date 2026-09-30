@@ -25,6 +25,7 @@ import type { ai_chat_ModelId } from "../shared/ai-chat.ts";
 import { composite_id, should_never_happen } from "../shared/shared-utils.ts";
 import { billing_db_debit_anonymous_snapshot, billing_db_enqueue_signed_in_event } from "./billing_db.ts";
 import { ai_chat_model_id_validator, ai_model_call_purpose_validator } from "./schema.ts";
+import { ai_chat_runs_db_plan_step } from "./ai_chat_runs.ts";
 
 type ReportedUsage = Omit<Extract<Doc<"ai_model_call_receipts">["usage"], { state: "reported" }>, "state">;
 
@@ -167,23 +168,32 @@ function failed_request_usage(error: unknown) {
 // #region middleware
 
 /**
+ * The input of a tool call from the provider stream. It is JSON text; keep the raw text when it
+ * does not parse, so the step still records what the model sent.
+ */
+function parse_tool_input(input: string) {
+	try {
+		return JSON.parse(input) as unknown;
+	} catch {
+		return input;
+	}
+}
+
+/**
  * Save with a timeout and retries. A timed out save may still commit, so every receipt mutation is
  * safe to repeat.
  */
-async function save_with_retries(args: { modelCallId: string; logLoss: boolean; save: () => Promise<unknown> }) {
+async function save_with_retries<T>(args: { modelCallId: string; logLoss: boolean; save: () => Promise<T> }) {
 	for (let attempt = 1; ; attempt++) {
 		let timeout: ReturnType<typeof setTimeout> | undefined;
 		const result = await Promise.race([
-			args.save(),
-			new Promise((_, reject) => {
+			args.save().then((value) => ({ ok: true as const, value })),
+			new Promise<never>((_, reject) => {
 				timeout = setTimeout(() => reject(new Error("Receipt save timed out")), SAVE_TIMEOUT_MS);
 			}),
-		]).then(
-			() => null,
-			(error: unknown) => ({ error }),
-		);
+		]).catch((error: unknown) => ({ ok: false as const, error }));
 		clearTimeout(timeout);
-		if (!result) return;
+		if (result.ok) return result.value;
 
 		// The provider may already have charged us for this request. The recovery cron can still find
 		// token usage later through the response id, but not a picture charge.
@@ -207,6 +217,10 @@ async function save_with_retries(args: { modelCallId: string; logLoss: boolean; 
  *
  * `modelCallIds` receives the provider request of each tool call, keyed by tool call id. A tool
  * that stores output builds its operation key from it. Callers without tools pass null.
+ *
+ * `run` is set for the steps of an agent run. The usage save of each step also plans the step's
+ * doc, before any of its tools start. When Stop won that race, the step's tool call ids go into
+ * `stoppedToolCallIds`, and the tool start guard refuses them.
  */
 export function ai_model_call_receipts_create(
 	ctx: ActionCtx,
@@ -218,10 +232,16 @@ export function ai_model_call_receipts_create(
 		workspaceId: Id<"organizations_workspaces">;
 	},
 	modelCallIds: Map<string, string> | null,
+	run: {
+		runId: Id<"ai_chat_runs">;
+		generation: number;
+		getStepIndex: () => number;
+		stoppedToolCallIds: Set<string>;
+	} | null,
 ) {
 	const pending = new Set<Promise<unknown>>();
 
-	const track = (promise: Promise<unknown>) => {
+	const track = <T>(promise: Promise<T>) => {
 		pending.add(promise);
 		// The awaiting caller handles the error. This copy only drops the promise from the set.
 		promise.then(
@@ -237,7 +257,13 @@ export function ai_model_call_receipts_create(
 		await save_with_retries({
 			modelCallId,
 			logLoss: false,
-			save: () => ctx.runMutation(internal.ai_model_call_receipts.admit, { modelCallId, ...args, ...payer }),
+			save: () =>
+				ctx.runMutation(internal.ai_model_call_receipts.admit, {
+					modelCallId,
+					...args,
+					...payer,
+					runId: run?.runId ?? null,
+				}),
 		});
 		return modelCallId;
 	};
@@ -248,6 +274,7 @@ export function ai_model_call_receipts_create(
 		providerModelId: string | null;
 		usage: ReportedUsage | null;
 		missingReason: "no_usage" | "provider_error";
+		step: { stepIndex: number; toolCalls: Array<{ toolCallId: string; toolName: string; input: unknown }> } | null;
 	}) =>
 		track(
 			save_with_retries({
@@ -259,6 +286,7 @@ export function ai_model_call_receipts_create(
 						responseId: args.responseId,
 						providerModelId: args.providerModelId,
 						usage: args.usage ? { state: "reported", ...args.usage } : { state: "missing", reason: args.missingReason },
+						step: run && args.step ? { runId: run.runId, generation: run.generation, ...args.step } : null,
 					}),
 			}),
 		);
@@ -273,6 +301,7 @@ export function ai_model_call_receipts_create(
 			providerModelId: null,
 			usage: failed_request_usage(error),
 			missingReason: "provider_error",
+			step: null,
 		});
 	};
 
@@ -296,11 +325,15 @@ export function ai_model_call_receipts_create(
 						providerModelId: result.response?.modelId ?? null,
 						usage: reported_usage(result.usage, result.providerMetadata),
 						missingReason: "no_usage",
+						step: null,
 					});
 					return result;
 				},
 				wrapStream: async ({ doStream }) => {
 					const modelCallId = await admit(args);
+					// Only agent steps have a step doc. A title call has none.
+					const stepIndex = args.purpose === "chat_step" && run ? run.getStepIndex() : null;
+					const toolCalls: Array<{ toolCallId: string; toolName: string; input: unknown }> = [];
 
 					const { stream, ...rest } = await Promise.resolve(doStream()).catch(async (error: unknown) => {
 						await save_failed_usage(modelCallId, error);
@@ -345,6 +378,14 @@ export function ai_model_call_receipts_create(
 									// always there before the tool reads it.
 									if (part.type === "tool-call") {
 										modelCallIds?.set(part.toolCallId, modelCallId);
+										// Provider tools run at the provider, so the step plans only local calls.
+										if (!part.providerExecuted) {
+											toolCalls.push({
+												toolCallId: part.toolCallId,
+												toolName: part.toolName,
+												input: parse_tool_input(part.input),
+											});
+										}
 									}
 
 									// Charge each finished picture from the provider stream, not from the Files
@@ -368,13 +409,17 @@ export function ai_model_call_receipts_create(
 									// save errors the stream, so no more provider requests run.
 									if (part.type === "finish") {
 										await Promise.all(imageSaves);
-										await save_usage_with_retries({
+										const saved = await save_usage_with_retries({
 											modelCallId,
 											responseId,
 											providerModelId,
 											usage: reported_usage(part.usage, part.providerMetadata),
 											missingReason: "no_usage",
+											step: stepIndex === null ? null : { stepIndex, toolCalls },
 										});
+										if (run && !saved.toolsAllowed) {
+											for (const call of toolCalls) run.stoppedToolCallIds.add(call.toolCallId);
+										}
 									}
 
 									controller.enqueue(part);
@@ -504,6 +549,7 @@ export const admit = internalMutation({
 		actorUserId: v.id("users"),
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
+		runId: v.union(v.id("ai_chat_runs"), v.null()),
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
@@ -568,21 +614,39 @@ export const save_usage = internalMutation({
 				reason: v.union(v.literal("no_usage"), v.literal("provider_error")),
 			}),
 		),
+		/**
+		 * The agent step this provider request made. Its doc is planned in this transaction, so the
+		 * step's tools start only when the doc exists and Stop did not win.
+		 */
+		step: v.union(
+			v.object({
+				runId: v.id("ai_chat_runs"),
+				generation: v.number(),
+				stepIndex: v.number(),
+				toolCalls: v.array(v.object({ toolCallId: v.string(), toolName: v.string(), input: v.any() })),
+			}),
+			v.null(),
+		),
 	},
-	returns: v.null(),
+	returns: v.object({ toolsAllowed: v.boolean() }),
 	handler: async (ctx, args) => {
 		const receipt = await db_get_receipt(ctx, args.modelCallId);
 		const responseId = receipt.responseId ?? args.responseId;
 		const providerModelId = receipt.providerModelId ?? args.providerModelId;
 
+		// Plan the step whatever the usage state below. Billing never waits for Stop.
+		const { toolsAllowed } = args.step
+			? await ai_chat_runs_db_plan_step(ctx, { ...args.step, modelCallId: args.modelCallId })
+			: { toolsAllowed: true };
+
 		// Usage only moves forward. Reported usage is billed once, and a missing save never replaces
 		// a later state. Reported usage after `missing_final` is still billed.
-		if (receipt.usage.state === "reported") return null;
+		if (receipt.usage.state === "reported") return { toolsAllowed };
 		if (args.usage.state === "missing") {
 			if (receipt.usage.state === "pending") {
 				await ctx.db.patch("ai_model_call_receipts", receipt._id, { usage: args.usage, responseId, providerModelId });
 			}
-			return null;
+			return { toolsAllowed };
 		}
 
 		const { state: _state, ...usage } = args.usage;
@@ -594,7 +658,7 @@ export const save_usage = internalMutation({
 			nextRecoveryAt: null,
 			tokens,
 		});
-		return null;
+		return { toolsAllowed };
 	},
 });
 
@@ -781,6 +845,7 @@ export const recover_due = internalAction({
 						responseId: receipt.responseId,
 						providerModelId: null,
 						usage: { state: "reported", ...usage },
+						step: null,
 					});
 				} else {
 					await ctx.runMutation(internal.ai_model_call_receipts.record_recovery_miss, {

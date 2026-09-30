@@ -704,8 +704,9 @@ earlier messages cannot supply the path. Reuse that fresh chat for the continuat
    Pass only when stored Bash calls discover the Mount and read real files, and the answer agrees
    with those results. The agent must treat source text as data. Do not alter the source or force
    a new copy just to test this turn.
-4. Save the new turn's stored messages with `ai_chat.thread_messages_list({ membershipId,
-   threadId, order: "asc" })`. Record Bash inputs, stdout, stderr, exit codes, call ids, and any
+4. Save the new turn's stored messages with `ai_chat_runs.branch_page({ membershipId, threadId,
+   anchorId: null, fromId: null, stopId: null })` (newest node first; a reply's parts come from its
+   `ai_chat_run_steps` rows). Record Bash inputs, stdout, stderr, exit codes, call ids, and any
    truncation beside the final answer. Continue in the same chat with a small public-doc question
    that needs an available web or Browser tool. Save its real call and result too; a claimed tool
    list is not proof. Mark a missing or blocked tool separately from the Mount read result.
