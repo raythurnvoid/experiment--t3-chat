@@ -45,14 +45,16 @@ if (!process.env.PLUGIN_SECRETS_ENCRYPTION_KEY) {
 }
 
 /**
- * The Convex env var that holds the key. Plugin secrets and MCP secrets use different keys.
+ * Each secret type uses its own key.
  */
-type SecretKeyName = "PLUGIN_SECRETS_ENCRYPTION_KEY" | "MCP_SECRETS_ENCRYPTION_KEY";
+type SecretKeyName =
+	| "PLUGIN_SECRETS_ENCRYPTION_KEY"
+	| "MCP_SECRETS_ENCRYPTION_KEY"
+	| "BROWSER_REMOTE_SECRETS_ENCRYPTION_KEY";
 
 const secret_crypto_key = ((/* iife */) => {
 	async function value(keyName: SecretKeyName) {
-		// Read the key at call time. A missing MCP key must break only MCP secrets, not every module
-		// that imports this file.
+		// Missing optional keys must affect only their own feature.
 		const key = process.env[keyName];
 		if (!key) {
 			throw convex_error({ message: `${keyName} is not set in Convex env` });
@@ -79,11 +81,7 @@ const secret_crypto_key = ((/* iife */) => {
  * AES-GCM additional data binds a ciphertext to its owning scope and name, so a
  * row copied onto another installation/publisher or renamed fails to decrypt.
  */
-export async function crypto_encrypt_secret_value(
-	value: string,
-	additionalData: string,
-	keyName: SecretKeyName,
-) {
+export async function crypto_encrypt_secret_value(value: string, additionalData: string, keyName: SecretKeyName) {
 	const nonce = crypto.getRandomValues(new Uint8Array(12));
 	const ciphertext = await crypto.subtle.encrypt(
 		{ name: "AES-GCM", iv: nonce, additionalData: text_encoder.encode(additionalData) },
@@ -107,4 +105,20 @@ export async function crypto_decrypt_secret_value(
 		secret.ciphertext,
 	);
 	return text_decoder.decode(plaintext);
+}
+
+/**
+ * Keep link fingerprints separate from encryption and other HMAC uses.
+ */
+export async function crypto_hmac_sha256_hex(value: string, purpose: string, keyName: SecretKeyName) {
+	const secret = process.env[keyName];
+	if (!secret) {
+		throw convex_error({ message: `${keyName} is not set in Convex env` });
+	}
+	const digest = await crypto.subtle.digest("SHA-256", text_encoder.encode(`${purpose}\0${secret}`));
+	const key = await crypto.subtle.importKey("raw", digest, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+	const signature = await crypto.subtle.sign("HMAC", key, text_encoder.encode(value));
+	return Array.from(new Uint8Array(signature))
+		.map((byte) => byte.toString(16).padStart(2, "0"))
+		.join("");
 }

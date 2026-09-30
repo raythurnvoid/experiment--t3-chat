@@ -64,6 +64,7 @@ import type * as notifications from "../notifications.js";
 import type * as organizations from "../organizations.js";
 import type * as organizations_integration_policy from "../organizations_integration_policy.js";
 import type * as organizations_membership_lifetimes from "../organizations_membership_lifetimes.js";
+import type * as playwriter_browser from "../playwriter_browser.js";
 import type * as plugins from "../plugins.js";
 import type * as plugins_access from "../plugins_access.js";
 import type * as plugins_data from "../plugins_data.js";
@@ -178,6 +179,7 @@ declare const fullApi: ApiFromModules<{
   organizations: typeof organizations;
   organizations_integration_policy: typeof organizations_integration_policy;
   organizations_membership_lifetimes: typeof organizations_membership_lifetimes;
+  playwriter_browser: typeof playwriter_browser;
   plugins: typeof plugins;
   plugins_access: typeof plugins_access;
   plugins_data: typeof plugins_data;

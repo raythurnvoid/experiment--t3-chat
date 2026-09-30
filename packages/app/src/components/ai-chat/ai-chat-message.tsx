@@ -545,7 +545,19 @@ type AiChatMessagePartToolBrowser_ClassNames = "AiChatMessagePartToolBrowser" | 
 
 type AiChatMessagePartToolBrowser_Props = {
 	className?: string | undefined;
-	toolName: "browser_run" | "browser_reload" | "browser_close";
+	toolName:
+		| "browser_status"
+		| "browser_open"
+		| "browser_tabs"
+		| "browser_new_tab"
+		| "browser_close_tab"
+		| "browser_run"
+		| "browser_reload"
+		| "browser_close"
+		| "playwriter_read"
+		| "playwriter_act"
+		| "playwriter_navigate"
+		| "playwriter_capture";
 	result: unknown;
 	toolState: ToolUIPart["state"];
 	isChatRunning: boolean;
@@ -573,9 +585,18 @@ const AiChatMessagePartToolBrowser = memo(function AiChatMessagePartToolBrowser(
 
 	const parsed = ai_chat_file_result_schema.safeParse(result);
 	const title = {
+		browser_status: "Browser status",
+		browser_open: "Browser open",
+		browser_tabs: "Browser tabs",
+		browser_new_tab: "Browser new tab",
+		browser_close_tab: "Browser close tab",
 		browser_run: "Browser run",
 		browser_reload: "Browser reload",
 		browser_close: "Browser close",
+		playwriter_read: "Shared browser read",
+		playwriter_act: "Shared browser action",
+		playwriter_navigate: "Shared browser navigate",
+		playwriter_capture: "Shared browser capture",
 	}[toolName];
 	const expected = parsed.success
 		? ai_chat_file_result(
@@ -587,21 +608,22 @@ const AiChatMessagePartToolBrowser = memo(function AiChatMessagePartToolBrowser(
 			)
 		: null;
 
-	// Reload and close carry no files and no observation sections. A result with
-	// files, or with code/result/console/page text, is not a valid reload/close.
+	// Only a run may carry files or page text. Management cards keep safe status only.
 	const debug = parsed.success ? (parsed.data.metadata.debug ?? {}) : null;
 	const debugAllowed =
 		debug !== null &&
 		(toolName === "browser_run" ||
-			(debug.code === undefined &&
+			((toolName === "browser_reload" || toolName === "browser_close") &&
+				debug.code === undefined &&
 				debug.resultText === undefined &&
 				debug.consoleText === undefined &&
-				debug.pageErrorsText === undefined));
+				debug.pageErrorsText === undefined) ||
+			(parsed.success && parsed.data.metadata.debug === undefined));
 	const output =
 		parsed.success &&
 		parsed.data.title === expected?.title &&
 		parsed.data.output === expected?.output &&
-		((toolName !== "browser_reload" && toolName !== "browser_close") || parsed.data.metadata.files.length === 0) &&
+		(toolName === "browser_run" || parsed.data.metadata.files.length === 0) &&
 		debugAllowed
 			? parsed.data
 			: null;
@@ -703,6 +725,13 @@ function file_result_status_text(metadata: z.infer<typeof ai_chat_file_result_sc
 					busy: "Another chat is using the browser. Try again later.",
 					agent_access_off: "The user turned off agent access to this browser.",
 					agent_blocked_site: "This site is on the list of sites the agent may not use.",
+					unknown: "The browser could not confirm the result. Check the page before you retry.",
+					not_started: "Start or connect a browser first.",
+					offline: "The browser is offline. Reconnect it.",
+					paused: "Resume the browser to continue.",
+					iframe_unsupported: "This frame is not supported by the browser.",
+					needs_human: "The browser needs your help.",
+					sensitive_input: "Type this value in your browser.",
 				}[metadata.reason];
 	return reason ? `${outcome} ${reason}` : outcome;
 }
@@ -1284,7 +1313,20 @@ const AiChatMessagePartInner = memo(function AiChatMessagePartInner(props: AiCha
 		// Handle both SDK tool shapes here so file results never fall through to raw JSON rendering.
 		const toolName = (part.type === "dynamic-tool" ? part.toolName : part.type.slice("tool-".length)).toLowerCase();
 
-		if (toolName === "browser_run" || toolName === "browser_reload" || toolName === "browser_close") {
+		if (
+			toolName === "browser_status" ||
+			toolName === "browser_open" ||
+			toolName === "browser_tabs" ||
+			toolName === "browser_new_tab" ||
+			toolName === "browser_close_tab" ||
+			toolName === "browser_run" ||
+			toolName === "browser_reload" ||
+			toolName === "browser_close" ||
+			toolName === "playwriter_read" ||
+			toolName === "playwriter_act" ||
+			toolName === "playwriter_navigate" ||
+			toolName === "playwriter_capture"
+		) {
 			return (
 				<AiChatMessagePartToolBrowser
 					toolName={toolName}

@@ -44,6 +44,9 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 		files_browser: {
 			web_browser_available: "files_browser.web_browser_available",
 		},
+		playwriter_browser: {
+			remote_browser_available: "playwriter_browser.remote_browser_available",
+		},
 		plugins_mcp: {
 			mcp_available: "plugins_mcp.mcp_available",
 		},
@@ -221,10 +224,7 @@ function createTenantContext() {
 	} satisfies AppTenantContextValue;
 }
 
-function createOrganizationList(args: {
-	organizationIsDefault: boolean;
-	canUseBrowser: boolean;
-}) {
+function createOrganizationList(args: { organizationIsDefault: boolean; canUseBrowser: boolean }) {
 	return {
 		organizations: [
 			{
@@ -233,10 +233,7 @@ function createOrganizationList(args: {
 			},
 		],
 		workspaceIdsPermissionsDict: {
-			workspace_1: [
-				"content.read",
-				...(args.canUseBrowser ? ["workspace.browser.use"] : []),
-			],
+			workspace_1: ["content.read", ...(args.canUseBrowser ? ["workspace.browser.use"] : [])],
 		},
 	};
 }
@@ -264,6 +261,7 @@ function mockQueries(args: {
 	pluginPages?: ReturnType<typeof createPluginPages>;
 	canUseBrowser?: boolean;
 	webBrowserEnabled?: boolean;
+	remoteBrowser?: { enabled: boolean; hasSavedConnection: boolean };
 	mcpAvailable?: { canUse: boolean; hasSavedData: boolean };
 }) {
 	useQueryMock.mockImplementation((query: unknown, queryArgs: unknown) => {
@@ -282,6 +280,8 @@ function mockQueries(args: {
 		if (query === "plugins_mcp.mcp_available") {
 			return args.mcpAvailable;
 		}
+		if (query === "playwriter_browser.remote_browser_available")
+			return args.remoteBrowser ?? { enabled: false, hasSavedConnection: false };
 		return undefined;
 	});
 }
@@ -347,6 +347,24 @@ describe("MainAppSidebar", () => {
 		mockQueries({ organizationIsDefault: false, canUseBrowser: true, webBrowserEnabled: false });
 		render(<MainAppSidebar />);
 		expect(screen.queryByText("Browser")).toBeNull();
+	});
+
+	test("shows Browser for remote access on a Free plan and for cleanup while off", () => {
+		mockQueries({
+			organizationIsDefault: false,
+			canUseBrowser: false,
+			remoteBrowser: { enabled: true, hasSavedConnection: false },
+		});
+		const first = render(<MainAppSidebar />);
+		expect(screen.getByText("Browser")).toBeTruthy();
+		first.unmount();
+		mockQueries({
+			organizationIsDefault: false,
+			canUseBrowser: false,
+			remoteBrowser: { enabled: false, hasSavedConnection: true },
+		});
+		render(<MainAppSidebar />);
+		expect(screen.getByText("Browser")).toBeTruthy();
 	});
 
 	test("shows Plugins and MCP servers without a broad plugin role permission", () => {

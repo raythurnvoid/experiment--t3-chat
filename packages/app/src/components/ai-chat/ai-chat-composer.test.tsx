@@ -114,6 +114,64 @@ describe("AiChatComposer", () => {
 		expect(screen.getByRole<HTMLButtonElement>("button", { name: "Send message" }).disabled).toBe(true);
 	});
 
+	test.each([
+		"https://playwriter.dev/remote-control#abcdef0123456789abcdef0123456789",
+		"playwriter --remote abcdef0123456789abcdef0123456789",
+	])("keeps a copied browser share out of chat: %s", (share) => {
+		const onSubmit = vi.fn();
+		render(
+			<AiChatComposer
+				canCancel={false}
+				canQueue
+				canSend
+				isQueueing={false}
+				isRunning={false}
+				initialValue={`Inspect it ${share}`}
+				selectedModelId="gpt-6-luna"
+				selectedModeId="agent"
+				onSelectedModelIdChange={vi.fn()}
+				onSelectedModeIdChange={vi.fn()}
+				onSubmit={onSubmit}
+			/>,
+		);
+		fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+		expect(onSubmit).not.toHaveBeenCalled();
+		expect(screen.getByText(/Keep the browser share ID out of chat/)).toBeTruthy();
+		expect(screen.queryByRole("button", { name: "This is another ID" })).toBeNull();
+		fireEvent.click(screen.getByRole("button", { name: "Remove share ID" }));
+		expect(screen.getByRole("textbox", { name: "Send a message..." }).textContent).not.toContain(
+			"abcdef0123456789abcdef0123456789",
+		);
+		fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+		expect(onSubmit).toHaveBeenCalledWith(share.startsWith("playwriter") ? "Inspect it playwriter" : "Inspect it", []);
+	});
+
+	test("a bare ID needs a local choice before it can be sent", () => {
+		const onSubmit = vi.fn();
+		const value = "Build abcdef0123456789abcdef0123456789";
+		render(
+			<AiChatComposer
+				canCancel={false}
+				canQueue
+				canSend
+				isQueueing={false}
+				isRunning={false}
+				initialValue={value}
+				selectedModelId="gpt-6-luna"
+				selectedModeId="agent"
+				onSelectedModelIdChange={vi.fn()}
+				onSelectedModeIdChange={vi.fn()}
+				onSubmit={onSubmit}
+			/>,
+		);
+		fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+		expect(onSubmit).not.toHaveBeenCalled();
+		fireEvent.click(screen.getByRole("button", { name: "This is another ID" }));
+		expect(onSubmit).not.toHaveBeenCalled();
+		fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+		expect(onSubmit).toHaveBeenCalledWith(value, []);
+	});
+
 	test("keeps the draft when onSubmit returns false", () => {
 		const onSubmit = vi.fn(() => false);
 		render(

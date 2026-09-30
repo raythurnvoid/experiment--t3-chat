@@ -1,6 +1,6 @@
 import { v, type Infer } from "convex/values";
 import { z } from "zod";
-import { type RegisteredMutation, type RegisteredQuery } from "convex/server";
+import { type FunctionArgs, type RegisteredMutation, type RegisteredQuery } from "convex/server";
 import { doc } from "convex-helpers/validators";
 import type { Doc, Id } from "./_generated/dataModel";
 import { api, internal } from "./_generated/api.js";
@@ -41,12 +41,18 @@ import {
 	files_ingestion_file_validator,
 } from "./files_ingestion.ts";
 import { ai_chat_files_db_authorize_file_output } from "./ai_chat_files.ts";
+import { ai_chat_files_db_delete_browser_invocations } from "./ai_chat_files.ts";
+import { playwriter_browser_db_disconnect } from "./playwriter_browser.ts";
 import app_convex_schema, {
 	ai_chat_workspaces_source_validator,
+	ai_chat_browser_source_validator,
+	ai_chat_browser_resource_validator,
+	browser_choice_validator,
+	browser_intent_validator,
 	files_browser_session_control_validator,
 	files_browser_session_source_kind_validator,
 } from "./schema.ts";
-import { ai_chat_workspaces_db_authorize_file_scope } from "./ai_chat_workspaces.ts";
+import { ai_chat_workspaces_db_authorize_file_scope, ai_chat_workspaces_db_resolve } from "./ai_chat_workspaces.ts";
 import {
 	files_ROOT_ID,
 	files_guess_content_type_from_name,
@@ -66,12 +72,7 @@ import {
 	files_browser_runner_usage_schema,
 	files_browser_runner_viewer_url,
 } from "../server/files-browser.ts";
-import {
-	r2,
-	r2_create_asset_key,
-	r2_fetch_object_from_bucket,
-	r2_UNFINALIZED_ASSET_TTL_MS,
-} from "./r2_client.ts";
+import { r2, r2_create_asset_key, r2_fetch_object_from_bucket, r2_UNFINALIZED_ASSET_TTL_MS } from "./r2_client.ts";
 import { r2_action_create_signed_download_url } from "./r2.ts";
 import { files_nodes_reconstruct_latest_file_content_from_materialization_state } from "./files_nodes_reconstruct_content.ts";
 import type { files_nodes_get_file_text_content_db_state_by_path_Result } from "./files_nodes_content.ts";
@@ -90,6 +91,19 @@ import type { files_nodes_get_file_text_content_db_state_by_path_Result } from "
 // is billed per started minute from the runner's own start and end times, once per session.
 
 const BROWSER_HTML_MAX_BYTES = 900_000;
+
+type BrowserActionResult<Value, ErrorData = never> =
+	| { _yay: Value; _nay?: undefined }
+	| { _yay?: undefined; _nay: { message: string; name?: string; data?: ErrorData } };
+
+const browser_preferences_public_validator = v.object({
+	webChoice: browser_choice_validator,
+	selectionRevision: v.number(),
+	policyRevision: v.number(),
+	webAgentAccess: v.boolean(),
+	agentBlockedHosts: v.array(v.string()),
+	syncPending: v.boolean(),
+});
 
 const BROWSER_SESSION_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -152,6 +166,10 @@ const browser_agent_lease_validator = v.object({
 	controlGen: v.number(),
 	loadGen: v.number(),
 	navGen: v.number(),
+	tabId: v.optional(v.string()),
+	tabGen: v.optional(v.number()),
+	policyRevision: v.optional(v.number()),
+	selectionRevision: v.optional(v.number()),
 });
 
 type FileBrowserSession = Extract<Doc<"files_browser_sessions">, { mode: "file" }>;
@@ -183,6 +201,13 @@ const browser_runner_session_validator = v.union(
 		controlGen: v.number(),
 		control: v.union(v.literal("agent"), files_browser_session_control_validator),
 		agentAccess: v.boolean(),
+		tabId: v.string(),
+		tabGen: v.number(),
+		viewedTabId: v.union(v.string(), v.null()),
+		viewGen: v.number(),
+		tabCount: v.number(),
+		policyRevision: v.number(),
+		selectionRevision: v.number(),
 		idleUntil: v.number(),
 		totalUntil: v.number(),
 	}),
@@ -213,6 +238,13 @@ const browser_web_session_public_validator = v.object({
 	controlGen: v.number(),
 	control: v.string(),
 	agentAccess: v.boolean(),
+	tabId: v.union(v.string(), v.null()),
+	tabGen: v.number(),
+	viewedTabId: v.union(v.string(), v.null()),
+	viewGen: v.number(),
+	tabCount: v.number(),
+	policyRevision: v.number(),
+	selectionRevision: v.number(),
 	idleUntil: v.union(v.number(), v.null()),
 	totalUntil: v.union(v.number(), v.null()),
 });
@@ -235,6 +267,12 @@ const files_browser_runner_open_schema = z.object({
 const files_browser_runner_close_schema = z.object({
 	ok: z.literal(true),
 	usage: files_browser_runner_usage_schema.nullable(),
+});
+
+const browser_management_ack_schema = z.object({
+	ok: z.literal(true),
+	status: z.enum(["completed", "refused", "in_progress", "unknown"]),
+	result: z.object({ reason: z.string().nullable() }),
 });
 
 /**
@@ -597,6 +635,104 @@ async function browser_db_authorize_web_use(
 	});
 }
 
+export async function files_browser_db_get_preferences(
+	ctx: QueryCtx | MutationCtx,
+	args: { userId: Id<"users">; organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces"> },
+) {
+	const saved = await ctx.db
+		.query("files_browser_preferences")
+		.withIndex("by_owner_organization_workspace", (q) =>
+			q.eq("ownerId", args.userId).eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId),
+		)
+		.first();
+	return (
+		saved ?? {
+			ownerId: args.userId,
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			webChoice: { provider: "cloud" as const },
+			selectionRevision: 0,
+			webAgentAccess: true,
+			policyRevision: 0,
+			agentBlockedHosts: [],
+			syncPending: false,
+			updatedAt: 0,
+		}
+	);
+}
+
+function browser_choice_matches(
+	left: Infer<typeof browser_choice_validator>,
+	right: Infer<typeof browser_choice_validator>,
+) {
+	return (
+		left.provider === right.provider &&
+		(left.provider !== "playwriter" ||
+			(right.provider === "playwriter" &&
+				left.connectionId === right.connectionId &&
+				left.confirmedTargetHandle === right.confirmedTargetHandle))
+	);
+}
+
+/**
+ * Recheck the original chat and the user's saved choice, never the mounted view.
+ */
+export async function files_browser_db_check_agent_intent(
+	ctx: QueryCtx | MutationCtx,
+	args: {
+		source: Infer<typeof ai_chat_browser_source_validator>;
+		browserIntent: Infer<typeof browser_intent_validator>;
+		mode?: "file" | "web";
+	},
+) {
+	const resolved = await ai_chat_workspaces_db_resolve(ctx, { source: args.source, workspace: "current" });
+	if (resolved._nay) return resolved;
+	const message = await ctx.db.get("ai_chat_threads_messages_aisdk_5", args.source.sourceMessageId);
+	if (
+		!message ||
+		message.threadId !== args.source.threadId ||
+		message.createdBy !== args.source.userId ||
+		message.organizationId !== args.source.organizationId ||
+		message.workspaceId !== args.source.workspaceId ||
+		message.content.role !== "user"
+	)
+		return Result({ _nay: { message: "Chat source is no longer available" } });
+	const preference = await files_browser_db_get_preferences(ctx, args.source);
+	if (args.mode === "file") return Result({ _yay: preference });
+	if (
+		preference.selectionRevision !== args.browserIntent.selectionRevision ||
+		preference.policyRevision !== args.browserIntent.policyRevision ||
+		!browser_choice_matches(preference.webChoice, args.browserIntent.webChoice)
+	)
+		return Result({ _nay: { name: "browser_intent_changed", message: "Browser choice or policy changed" } });
+	if (!preference.webAgentAccess)
+		return Result({ _nay: { name: "agent_access_off", message: "Agent browser access is off" } });
+	if (preference.syncPending)
+		return Result({ _nay: { name: "policy_sync_pending", message: "Browser policy is still updating" } });
+	const membership = await ctx.db.get("organizations_workspaces_users", args.source.membershipId);
+	if (!membership) return Result({ _nay: { message: "Unauthorized" } });
+	const permission = await access_control_db_authorize_membership(ctx, {
+		userAuth: { id: args.source.userId },
+		membership,
+		permission: "workspace.browser.use",
+	});
+	if (permission._nay) return permission;
+	return Result({ _yay: preference });
+}
+
+export const check_browser_source = internalQuery({
+	args: {
+		source: ai_chat_browser_source_validator,
+		browserIntent: browser_intent_validator,
+		mode: v.optional(v.union(v.literal("file"), v.literal("web"))),
+	},
+	returns: v_result({ _yay: v.null() }),
+	handler: async (ctx, args) => {
+		const checked = await files_browser_db_check_agent_intent(ctx, args);
+		return checked._nay ? checked : Result({ _yay: null });
+	},
+});
+
 /**
  * Count one daily browser use (a fresh start or a draft capture) for the workspace. Returns
  * false at the cap. Reattached starts and refusals before admission are free. A start that
@@ -644,7 +780,10 @@ async function browser_daily_use_count(
  * The payer is the organization owner in an owner-billed organization, so a member's own plan
  * does not matter there.
  */
-async function browser_db_check_payer(ctx: MutationCtx, args: { userId: Id<"users">; organization: Doc<"organizations"> }) {
+async function browser_db_check_payer(
+	ctx: MutationCtx,
+	args: { userId: Id<"users">; organization: Doc<"organizations"> },
+) {
 	const billedUserId = billing_pick_billed_user_id({ userId: args.userId, organization: args.organization });
 	const { hasPaidPlan } = await billing_db_check_paid_plan(ctx, { userId: billedUserId });
 	if (!hasPaidPlan) {
@@ -714,15 +853,23 @@ export const create_starting_browser_session = internalMutation({
 			)
 			.collect();
 		for (const session of existing) {
+			if (session.mode !== "file") continue;
+			if (session.control === "closing") return Result({ _nay: { message: BROWSER_CLOSING_MESSAGE } });
 			if (!live_session_control(session.control)) {
 				continue;
 			}
 			if (session.control === "starting" && (session.startingExpiresAt ?? 0) <= now) {
+				const opening = await ctx.db
+					.query("ai_chat_browser_invocations")
+					.withIndex("by_openingSession", (q) => q.eq("openingSessionId", session._id))
+					.first();
+				if (opening && opening.status !== "finished") return Result({ _nay: { message: "Browser is starting" } });
 				await browser_db_delete_session(ctx, session._id);
 				continue;
 			}
+			if (session.control === "starting") return Result({ _nay: { message: "Browser is starting" } });
 			// Repeated starts for the same live file and source reattach after fresh checks.
-			// Anything else, including a live web browser, needs an explicit End first.
+			// Another file needs an explicit End first.
 			if (
 				session.mode === "file" &&
 				session.targetKind === args.targetKind &&
@@ -816,6 +963,9 @@ export const create_starting_web_browser_session = internalMutation({
 					profileId: v.id("files_browser_profiles"),
 					profileKey: v.bytes(),
 					agentBlockedHosts: v.array(v.string()),
+					agentAccess: v.boolean(),
+					policyRevision: v.number(),
+					selectionRevision: v.number(),
 				}),
 			}),
 		),
@@ -857,21 +1007,28 @@ export const create_starting_web_browser_session = internalMutation({
 			)
 			.collect();
 		for (const session of existing) {
+			if (session.mode !== "web") continue;
+			if (session.control === "closing") return Result({ _nay: { message: BROWSER_CLOSING_MESSAGE } });
 			if (!live_session_control(session.control)) {
 				continue;
 			}
 			if (session.control === "starting" && (session.startingExpiresAt ?? 0) <= now) {
+				const opening = await ctx.db
+					.query("ai_chat_browser_invocations")
+					.withIndex("by_openingSession", (q) => q.eq("openingSessionId", session._id))
+					.first();
+				if (opening && opening.status !== "finished") return Result({ _nay: { message: "Browser is starting" } });
 				await browser_db_delete_session(ctx, session._id);
 				continue;
 			}
-			// A live web session reattaches for free. A live file session needs an explicit End first.
-			if (session.mode === "web") {
-				return Result({ _yay: { sessionId: session._id, reattached: true as const } });
-			}
-			return Result({ _nay: { message: "Browser busy", data: { mode: session.mode } } });
+			if (session.control === "starting") return Result({ _nay: { message: "Browser is starting" } });
+			return Result({ _yay: { sessionId: session._id, reattached: true as const } });
 		}
 
-		const payer = await browser_db_check_payer(ctx, { userId: args.userId, organization: authorized._yay.organization });
+		const payer = await browser_db_check_payer(ctx, {
+			userId: args.userId,
+			organization: authorized._yay.organization,
+		});
 		if (payer._nay) {
 			return payer;
 		}
@@ -885,6 +1042,8 @@ export const create_starting_web_browser_session = internalMutation({
 			return Result({ _nay: { message: "Daily limit reached" } });
 		}
 
+		const preference = await files_browser_db_get_preferences(ctx, args);
+		if (preference.syncPending) return Result({ _nay: { message: "Browser policy is still updating" } });
 		const profile = await ctx.db
 			.query("files_browser_profiles")
 			.withIndex("by_organization_workspace_user", (q) =>
@@ -904,7 +1063,6 @@ export const create_starting_web_browser_session = internalMutation({
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
 				profileKey,
-				agentBlockedHosts: [],
 				createdAt: now,
 				lastUsedAt: now,
 			});
@@ -917,8 +1075,16 @@ export const create_starting_web_browser_session = internalMutation({
 			workspaceId: args.workspaceId,
 			billedUserId: payer._yay,
 			billing: { state: "pending" },
-			agentAccess: true,
-			// A web session never changes its page source, so its navigation generation stays 1.
+			agentAccess: preference.webAgentAccess && preference.webChoice.provider === "cloud",
+			tabId: null,
+			tabGen: 0,
+			viewedTabId: null,
+			viewGen: 0,
+			tabCount: 0,
+			tabs: [],
+			policyRevision: preference.policyRevision,
+			selectionRevision: preference.selectionRevision,
+			// Open starts at generation 1. The runner may advance it during navigation.
 			navigationGeneration: 1,
 			loadGen: 0,
 			controlGen: 0,
@@ -931,7 +1097,14 @@ export const create_starting_web_browser_session = internalMutation({
 			_yay: {
 				sessionId,
 				reattached: false as const,
-				profile: { profileId, profileKey, agentBlockedHosts: profile?.agentBlockedHosts ?? [] },
+				profile: {
+					profileId,
+					profileKey,
+					agentBlockedHosts: preference.agentBlockedHosts,
+					agentAccess: preference.webAgentAccess && preference.webChoice.provider === "cloud",
+					policyRevision: preference.policyRevision,
+					selectionRevision: preference.selectionRevision,
+				},
 			},
 		});
 	},
@@ -1002,8 +1175,40 @@ export const commit_live_browser_session = internalMutation({
 			});
 			return Result({ _yay: null });
 		}
+		const preference = await files_browser_db_get_preferences(ctx, {
+			userId: session.ownerId,
+			organizationId: session.organizationId,
+			workspaceId: session.workspaceId,
+		});
+		if (
+			preference.syncPending ||
+			runner.policyRevision !== preference.policyRevision ||
+			runner.selectionRevision !== preference.selectionRevision ||
+			runner.agentAccess !== (preference.webAgentAccess && preference.webChoice.provider === "cloud")
+		) {
+			await ctx.db.patch("files_browser_sessions", session._id, {
+				runnerSessionId: runner.sessionId,
+				control: "closing",
+				startingExpiresAt: undefined,
+				updatedAt: now,
+			});
+			return Result({ _nay: { message: "Browser policy changed while opening" } });
+		}
 
-		await ctx.db.patch("files_browser_sessions", args.sessionId, { ...shared, agentAccess: runner.agentAccess });
+		// The initial navigation may advance before Open finishes.
+		await ctx.db.patch("files_browser_sessions", args.sessionId, {
+			...shared,
+			agentAccess: runner.agentAccess,
+			navigationGeneration: runner.navGen,
+			tabId: runner.tabId,
+			tabGen: runner.tabGen,
+			viewedTabId: runner.viewedTabId,
+			viewGen: runner.viewGen,
+			tabCount: runner.tabCount,
+			tabs: [{ tabId: runner.tabId, tabGen: runner.tabGen, navGen: runner.navGen }],
+			policyRevision: runner.policyRevision,
+			selectionRevision: runner.selectionRevision,
+		});
 		const day = new Date(now).toISOString().slice(0, 10);
 		const dailyUse = await ctx.db
 			.query("files_browser_user_daily_use")
@@ -1060,6 +1265,7 @@ export const load_browser_session = internalQuery({
 		userId: v.id("users"),
 		membershipId: v.id("organizations_workspaces_users"),
 		sessionId: v.optional(v.string()),
+		mode: v.optional(v.union(v.literal("file"), v.literal("web"))),
 	},
 	returns: v_result({ _yay: doc(app_convex_schema, "files_browser_sessions") }),
 	handler: async (ctx, args) => {
@@ -1078,16 +1284,19 @@ export const load_browser_session = internalQuery({
 		const sessionId = args.sessionId ? ctx.db.normalizeId("files_browser_sessions", args.sessionId) : null;
 		let session = sessionId ? await ctx.db.get("files_browser_sessions", sessionId) : null;
 		if (args.sessionId === undefined) {
+			if (args.mode === undefined) return Result({ _nay: { message: "Browser mode is required" } });
 			const sessions = await ctx.db
 				.query("files_browser_sessions")
 				.withIndex("by_owner_organization_workspace", (q) =>
 					q.eq("ownerId", args.userId).eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId),
 				)
 				.collect();
-			session = sessions.find((candidate) => live_session_control(candidate.control)) ?? null;
+			session =
+				sessions.find((candidate) => candidate.mode === args.mode && live_session_control(candidate.control)) ?? null;
 		}
 		if (
 			!session ||
+			(args.mode !== undefined && session.mode !== args.mode) ||
 			session.ownerId !== args.userId ||
 			session.organizationId !== args.organizationId ||
 			session.workspaceId !== args.workspaceId ||
@@ -1117,6 +1326,7 @@ export const check_browser_session_access = internalQuery({
 		userId: v.id("users"),
 		membershipId: v.id("organizations_workspaces_users"),
 		sessionId: v.id("files_browser_sessions"),
+		tabId: v.optional(v.string()),
 	},
 	returns: v.union(
 		v.object({
@@ -1141,107 +1351,125 @@ export const check_browser_session_access = internalQuery({
 			loadGen: v.number(),
 			navGen: v.number(),
 			runnerSessionId: v.string(),
+			tabId: v.union(v.string(), v.null()),
+			tabGen: v.number(),
+			policyRevision: v.number(),
+			selectionRevision: v.number(),
 		}),
 		v.object({ ok: v.literal(false), reason: v.string() }),
 	),
-	handler: async (ctx, args) => {
-		const membership = await organizations_db_get_membership(ctx, {
-			userId: args.userId,
-			membershipId: args.membershipId,
-		});
-		if (
-			!membership ||
-			membership.organizationId !== args.organizationId ||
-			membership.workspaceId !== args.workspaceId
-		) {
-			return { ok: false as const, reason: "Unauthorized" };
-		}
+	handler: check_browser_session_access_db,
+});
 
-		const session = await ctx.db.get("files_browser_sessions", args.sessionId);
-		if (
-			!session ||
-			session.ownerId !== args.userId ||
-			session.organizationId !== args.organizationId ||
-			session.workspaceId !== args.workspaceId ||
-			session.control === "closed" ||
-			session.control === "closing" ||
-			!session.runnerSessionId
-		) {
-			return { ok: false as const, reason: "closed" };
-		}
+async function check_browser_session_access_db(
+	ctx: QueryCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		userId: Id<"users">;
+		membershipId: Id<"organizations_workspaces_users">;
+		sessionId: Id<"files_browser_sessions">;
+		tabId?: string;
+	},
+) {
+	const membership = await organizations_db_get_membership(ctx, {
+		userId: args.userId,
+		membershipId: args.membershipId,
+	});
+	if (!membership || membership.organizationId !== args.organizationId || membership.workspaceId !== args.workspaceId) {
+		return { ok: false as const, reason: "Unauthorized" };
+	}
 
-		// A web session has no file. The agent may use it only while the owner still has the
-		// permission and has not turned agent access off.
-		if (session.mode === "web") {
-			const authorized = await browser_db_authorize_web_use(ctx, { userId: args.userId, membership });
-			if (authorized._nay) {
-				return { ok: false as const, reason: "denied" };
-			}
-			if (!session.agentAccess) {
-				return { ok: false as const, reason: "agent_access_off" };
-			}
-			return {
-				ok: true as const,
-				mode: "web" as const,
-				control: session.control,
-				controlGen: session.controlGen,
-				loadGen: session.loadGen,
-				navGen: session.navigationGeneration,
-				runnerSessionId: session.runnerSessionId,
-			};
-		}
+	const session = await ctx.db.get("files_browser_sessions", args.sessionId);
+	if (
+		!session ||
+		session.ownerId !== args.userId ||
+		session.organizationId !== args.organizationId ||
+		session.workspaceId !== args.workspaceId ||
+		session.control === "closed" ||
+		session.control === "closing" ||
+		!session.runnerSessionId
+	) {
+		return { ok: false as const, reason: "closed" };
+	}
 
-		// A saved source has its own node to authorize. A private draft has none, so the reader
-		// answers only for the user's own active drafts and `canRead` checks the nearest saved
-		// parent folder.
-		if (session.targetKind === "saved") {
-			const nodeId = ctx.db.normalizeId("files_nodes", session.nodeId);
-			if (!nodeId) {
-				return { ok: false as const, reason: "Not found" };
-			}
-			const authorized = await access_control_db_authorize_node(ctx, {
-				userAuth: { id: args.userId },
-				membership,
-				nodeId,
-				permission: "content.read",
-			});
-			if (authorized._nay) {
-				return { ok: false as const, reason: "denied" };
-			}
-			const node = await ctx.db.get("files_nodes", nodeId);
-			if (
-				!node ||
-				node.archiveOperationId !== null ||
-				node.textKind !== "plain_text" ||
-				files_editable_text_content_type_of(node.contentType) !== "text/html;charset=utf-8"
-			) {
-				return { ok: false as const, reason: "denied" };
-			}
-		} else {
-			const pendingNodeId = ctx.db.normalizeId("files_pending_nodes", session.nodeId);
-			const reader = await files_visible_db_create_reader(ctx, { ...args, readLimit: 2048 });
-			const source = pendingNodeId ? await reader.resolve({ kind: "private", id: pendingNodeId }) : null;
-			if (!source || source.entry.kind !== "private" || !(await reader.canRead(source.accessNode))) {
-				return { ok: false as const, reason: "denied" };
-			}
+	// A web session has no file. The agent may use it only while the owner still has the
+	// permission and has not turned agent access off.
+	if (session.mode === "web") {
+		const authorized = await browser_db_authorize_web_use(ctx, { userId: args.userId, membership });
+		if (authorized._nay) {
+			return { ok: false as const, reason: "denied" };
 		}
-
+		if (!session.agentAccess) {
+			return { ok: false as const, reason: "agent_access_off" };
+		}
+		const tab = session.tabs.find((candidate) => candidate.tabId === (args.tabId ?? session.tabId));
+		if (!tab) return { ok: false as const, reason: "tab_closed" };
 		return {
 			ok: true as const,
-			mode: "file" as const,
+			mode: "web" as const,
 			control: session.control,
 			controlGen: session.controlGen,
 			loadGen: session.loadGen,
-			navGen: session.navigationGeneration,
+			navGen: tab.navGen,
 			runnerSessionId: session.runnerSessionId,
-			targetKind: session.targetKind,
-			nodeId: session.nodeId,
-			sourceKind: session.sourceKind,
-			sourceVersion: session.sourceVersion,
-			sourceHash: session.sourceHash,
+			tabId: tab.tabId,
+			tabGen: tab.tabGen,
+			policyRevision: session.policyRevision,
+			selectionRevision: session.selectionRevision,
 		};
-	},
-});
+	}
+
+	// A saved source has its own node to authorize. A private draft has none, so the reader
+	// answers only for the user's own active drafts and `canRead` checks the nearest saved
+	// parent folder.
+	if (session.targetKind === "saved") {
+		const nodeId = ctx.db.normalizeId("files_nodes", session.nodeId);
+		if (!nodeId) {
+			return { ok: false as const, reason: "Not found" };
+		}
+		const authorized = await access_control_db_authorize_node(ctx, {
+			userAuth: { id: args.userId },
+			membership,
+			nodeId,
+			permission: "content.read",
+		});
+		if (authorized._nay) {
+			return { ok: false as const, reason: "denied" };
+		}
+		const node = await ctx.db.get("files_nodes", nodeId);
+		if (
+			!node ||
+			node.archiveOperationId !== null ||
+			node.textKind !== "plain_text" ||
+			files_editable_text_content_type_of(node.contentType) !== "text/html;charset=utf-8"
+		) {
+			return { ok: false as const, reason: "denied" };
+		}
+	} else {
+		const pendingNodeId = ctx.db.normalizeId("files_pending_nodes", session.nodeId);
+		const reader = await files_visible_db_create_reader(ctx, { ...args, readLimit: 2048 });
+		const source = pendingNodeId ? await reader.resolve({ kind: "private", id: pendingNodeId }) : null;
+		if (!source || source.entry.kind !== "private" || !(await reader.canRead(source.accessNode))) {
+			return { ok: false as const, reason: "denied" };
+		}
+	}
+
+	return {
+		ok: true as const,
+		mode: "file" as const,
+		control: session.control,
+		controlGen: session.controlGen,
+		loadGen: session.loadGen,
+		navGen: session.navigationGeneration,
+		runnerSessionId: session.runnerSessionId,
+		targetKind: session.targetKind,
+		nodeId: session.nodeId,
+		sourceKind: session.sourceKind,
+		sourceVersion: session.sourceVersion,
+		sourceHash: session.sourceHash,
+	};
+}
 
 function web_session_public_meta(session: WebBrowserSession) {
 	return {
@@ -1252,10 +1480,305 @@ function web_session_public_meta(session: WebBrowserSession) {
 		controlGen: session.controlGen,
 		control: session.control,
 		agentAccess: session.agentAccess,
+		tabId: session.tabId,
+		tabGen: session.tabGen,
+		viewedTabId: session.viewedTabId,
+		viewGen: session.viewGen,
+		tabCount: session.tabCount,
+		policyRevision: session.policyRevision,
+		selectionRevision: session.selectionRevision,
 		idleUntil: session.idleUntil ?? null,
 		totalUntil: session.totalUntil ?? null,
 	};
 }
+
+const browser_tab_validator = v.object({
+	tabId: v.string(),
+	tabGen: v.number(),
+	navGen: v.number(),
+	title: v.string(),
+	url: v.string(),
+});
+const browser_tabs_result_validator = v.object({
+	session: v.union(browser_web_session_public_validator, v.null()),
+	tabs: v.array(browser_tab_validator),
+	viewedTabId: v.union(v.string(), v.null()),
+	viewGen: v.number(),
+	status: v.union(v.literal("completed"), v.literal("refused"), v.literal("in_progress"), v.literal("unknown")),
+	result: v.object({ tabId: v.union(v.string(), v.null()), reason: v.union(v.string(), v.null()) }),
+});
+const browser_tabs_response_schema = z.object({
+	ok: z.literal(true),
+	session: files_browser_runner_session_schema.nullable(),
+	tabs: z
+		.array(
+			z.object({
+				tabId: z.string().max(256),
+				tabGen: z.number().int().nonnegative(),
+				navGen: z.number().int().nonnegative(),
+				title: z.string().max(512),
+				url: z.string().max(2048),
+			}),
+		)
+		.max(8),
+	status: z.enum(["completed", "refused", "in_progress", "unknown"]).optional(),
+	result: z.object({ tabId: z.string().nullable(), reason: z.string().nullable() }).optional(),
+	usage: files_browser_runner_usage_schema.nullable().optional(),
+});
+
+async function browser_tabs_for_owner(
+	ctx: ActionCtx,
+	args: {
+		userId: Id<"users">;
+		membership: Doc<"organizations_workspaces_users">;
+		sessionId: Id<"files_browser_sessions">;
+		route: "tabs" | "tab-new" | "tab-close" | "tab-select";
+		tabId?: string;
+		viewerId?: string;
+		url?: string | null;
+		operationId?: string;
+		operationDeadline?: number;
+		toolCallId?: string;
+		expectedAgentLease?: Infer<typeof browser_agent_lease_validator>;
+		source?: Infer<typeof ai_chat_browser_source_validator>;
+		browserIntent?: Infer<typeof browser_intent_validator>;
+	},
+): Promise<BrowserActionResult<Infer<typeof browser_tabs_result_validator>>> {
+	const loaded = (await ctx.runQuery(internal.files_browser.load_browser_session, {
+		userId: args.userId,
+		organizationId: args.membership.organizationId,
+		workspaceId: args.membership.workspaceId,
+		membershipId: args.membership._id,
+		sessionId: args.sessionId,
+		mode: "web",
+	})) as load_browser_session_Result;
+	if (loaded._nay) return loaded;
+	if (loaded._yay.mode !== "web" || !loaded._yay.runnerSessionId)
+		return Result({ _nay: { message: "Browser is not ready" } });
+	const sourceAccess = await authorize_live_browser_session(ctx, {
+		userId: args.userId,
+		membership: args.membership,
+		session: loaded._yay,
+	});
+	if (!sourceAccess.ok) return Result({ _nay: { message: sourceAccess.message } });
+	if (args.source && args.browserIntent) {
+		const checked = await ctx.runQuery(internal.files_browser.check_browser_source, {
+			source: args.source,
+			browserIntent: args.browserIntent,
+		});
+		if (checked._nay) return checked;
+	}
+	const preference = await ctx.runQuery(internal.files_browser.get_browser_preferences, {
+		userId: args.userId,
+		organizationId: args.membership.organizationId,
+		workspaceId: args.membership.workspaceId,
+	});
+	const response = await files_browser_runner_call({
+		route: args.route,
+		body: {
+			mode: "web",
+			sessionId: loaded._yay.runnerSessionId,
+			ownerId: args.userId,
+			organizationId: args.membership.organizationId,
+			workspaceId: args.membership.workspaceId,
+			tabId: args.tabId,
+			viewerId: args.viewerId,
+			url: args.url ?? null,
+			operationId: args.operationId ?? crypto.randomUUID(),
+			operationDeadline: args.operationDeadline ?? Date.now() + 120_000,
+			source: args.source
+				? { chatId: args.source.threadId, sourceMessageId: args.source.sourceMessageId, toolCallId: args.toolCallId }
+				: undefined,
+			expectedAgentLease: args.expectedAgentLease,
+			policyRevision: preference.policyRevision,
+			selectionRevision: preference.selectionRevision,
+		},
+	});
+	if (response._nay)
+		return response._nay.name
+			? response
+			: Result({ _nay: { name: "outcome_unknown", message: "Browser reply was not received" } });
+	const parsed = browser_tabs_response_schema.safeParse(response._yay);
+	if (!parsed.success || (parsed.data.session && parsed.data.session.mode !== "web"))
+		return Result({ _nay: { name: "outcome_unknown", message: "Browser reply was not valid" } });
+	if (parsed.data.session) {
+		const synced = (await ctx.runMutation(internal.files_browser.sync_browser_session, {
+			sessionId: args.sessionId,
+			runner: parsed.data.session,
+		})) as files_browser_sync_browser_session_Result;
+		if (synced._nay) return synced;
+		if (parsed.data.session.mode === "web")
+			await ctx.runMutation(internal.files_browser.sync_browser_tab_identities, {
+				sessionId: args.sessionId,
+				controlGen: parsed.data.session.controlGen,
+				policyRevision: parsed.data.session.policyRevision,
+				selectionRevision: parsed.data.session.selectionRevision,
+				tabs: parsed.data.tabs.map(({ tabId, tabGen, navGen }) => ({ tabId, tabGen, navGen })),
+			});
+	} else if (args.route === "tab-close" && parsed.data.status === "completed") {
+		// Settle the completed last-tab Close without live session metadata.
+		await ctx.runMutation(internal.files_browser.settle_browser_usage, {
+			sessionId: args.sessionId,
+			usage: parsed.data.usage ?? null,
+		});
+	}
+	if (args.source && args.browserIntent) {
+		const checked = await ctx.runQuery(internal.files_browser.check_browser_source, {
+			source: args.source,
+			browserIntent: args.browserIntent,
+		});
+		if (checked._nay) return checked;
+	}
+	const latest = (await ctx.runQuery(internal.files_browser.load_browser_session, {
+		userId: args.userId,
+		organizationId: args.membership.organizationId,
+		workspaceId: args.membership.workspaceId,
+		membershipId: args.membership._id,
+		sessionId: args.sessionId,
+		mode: "web",
+	})) as load_browser_session_Result;
+	if (latest._nay && !(args.route === "tab-close" && parsed.data.status === "completed" && !parsed.data.session))
+		return latest;
+	const session = latest._yay?.mode === "web" ? web_session_public_meta(latest._yay) : null;
+	return Result({
+		_yay: {
+			session,
+			tabs: parsed.data.tabs,
+			viewedTabId: session?.viewedTabId ?? null,
+			viewGen: session?.viewGen ?? 0,
+			status: parsed.data.status ?? ("completed" as const),
+			result: parsed.data.result ?? { tabId: null, reason: null },
+		},
+	});
+}
+
+async function browser_tabs_from_user(
+	ctx: ActionCtx,
+	args: {
+		membershipId: Id<"organizations_workspaces_users">;
+		sessionId: Id<"files_browser_sessions">;
+		tabId?: string;
+		viewerId?: string;
+		url?: string;
+	},
+	route: "tabs" | "tab-new" | "tab-close" | "tab-select",
+): Promise<BrowserActionResult<Infer<typeof browser_tabs_result_validator>>> {
+	const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+	const user = userAuth ? await ctx.runQuery(internal.users.get, { userId: userAuth.id }) : null;
+	if (!user || user.deletedAt !== undefined) return Result({ _nay: { message: "Unauthenticated" } });
+	const membership = await ctx.runQuery(api.organizations.get_membership, { membershipId: args.membershipId });
+	if (!membership || membership.userId !== user._id) return Result({ _nay: { message: "Unauthorized" } });
+	return browser_tabs_for_owner(ctx, { ...args, userId: user._id, membership, route });
+}
+
+export const list_browser_tabs = action({
+	args: { membershipId: v.id("organizations_workspaces_users"), sessionId: v.id("files_browser_sessions") },
+	returns: v_result({ _yay: browser_tabs_result_validator }),
+	handler: async (ctx, args) => browser_tabs_from_user(ctx, args, "tabs"),
+});
+export const new_browser_tab = action({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		sessionId: v.id("files_browser_sessions"),
+		viewerId: v.string(),
+		url: v.optional(v.string()),
+	},
+	returns: v_result({ _yay: browser_tabs_result_validator }),
+	handler: async (ctx, args) => browser_tabs_from_user(ctx, args, "tab-new"),
+});
+export const close_browser_tab = action({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		sessionId: v.id("files_browser_sessions"),
+		tabId: v.string(),
+		viewerId: v.string(),
+	},
+	returns: v_result({ _yay: browser_tabs_result_validator }),
+	handler: async (ctx, args) => browser_tabs_from_user(ctx, args, "tab-close"),
+});
+export const select_browser_tab = action({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		sessionId: v.id("files_browser_sessions"),
+		tabId: v.string(),
+		viewerId: v.string(),
+	},
+	returns: v_result({ _yay: browser_tabs_result_validator }),
+	handler: async (ctx, args) => browser_tabs_from_user(ctx, args, "tab-select"),
+});
+
+export const get_browser_preferences = internalQuery({
+	args: { userId: v.id("users"), organizationId: v.id("organizations"), workspaceId: v.id("organizations_workspaces") },
+	returns: browser_preferences_public_validator,
+	handler: async (ctx, args) => browser_preferences_public(await files_browser_db_get_preferences(ctx, args)),
+});
+
+export const sync_browser_tab_identities = internalMutation({
+	args: {
+		sessionId: v.id("files_browser_sessions"),
+		controlGen: v.number(),
+		policyRevision: v.number(),
+		selectionRevision: v.number(),
+		tabs: v.array(v.object({ tabId: v.string(), tabGen: v.number(), navGen: v.number() })),
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const session = await ctx.db.get("files_browser_sessions", args.sessionId);
+		if (
+			!session ||
+			session.mode !== "web" ||
+			session.control === "closed" ||
+			session.control === "closing" ||
+			args.controlGen !== session.controlGen ||
+			args.policyRevision !== session.policyRevision ||
+			args.selectionRevision !== session.selectionRevision ||
+			args.tabs.length > 8
+		)
+			return null;
+		// A late catalog must keep newer completed navigation on every matching tab.
+		const tabs = args.tabs.map((tab) => {
+			const current = session.tabs.find((saved) => saved.tabId === tab.tabId);
+			return current && (tab.navGen < current.navGen || tab.tabGen < current.tabGen) ? current : tab;
+		});
+		await ctx.db.patch("files_browser_sessions", session._id, { tabs, tabCount: tabs.length });
+		return null;
+	},
+});
+
+export const get_browser_membership = internalQuery({
+	args: { userId: v.id("users"), membershipId: v.id("organizations_workspaces_users") },
+	returns: v.union(doc(app_convex_schema, "organizations_workspaces_users"), v.null()),
+	handler: organizations_db_get_membership,
+});
+
+export const agent_browser_tabs = internalAction({
+	args: {
+		source: ai_chat_browser_source_validator,
+		browserIntent: browser_intent_validator,
+		sessionId: v.id("files_browser_sessions"),
+		expectedAgentLease: browser_agent_lease_validator,
+		operationId: v.string(),
+		operationDeadline: v.number(),
+		toolCallId: v.string(),
+		operation: v.union(v.literal("tabs"), v.literal("tab-new"), v.literal("tab-close")),
+		tabId: v.optional(v.string()),
+		url: v.optional(v.string()),
+	},
+	returns: v_result({ _yay: browser_tabs_result_validator }),
+	handler: async (ctx, args): Promise<BrowserActionResult<Infer<typeof browser_tabs_result_validator>>> => {
+		const checked = await ctx.runQuery(internal.files_browser.check_browser_source, {
+			source: args.source,
+			browserIntent: args.browserIntent,
+		});
+		if (checked._nay) return checked;
+		const membership = await ctx.runQuery(internal.files_browser.get_browser_membership, {
+			userId: args.source.userId,
+			membershipId: args.source.membershipId,
+		});
+		if (!membership) return Result({ _nay: { message: "Unauthorized" } });
+		return browser_tabs_for_owner(ctx, { ...args, userId: args.source.userId, membership, route: args.operation });
+	},
+});
 
 function file_session_public_meta(session: FileBrowserSession) {
 	return {
@@ -1585,7 +2108,15 @@ export const start_browser = action({
 		_yay: browser_file_session_public_validator,
 		_nay: { data: browser_start_refusal_data_validator },
 	}),
-	handler: async (ctx, args) => {
+	handler: async (
+		ctx,
+		args,
+	): Promise<
+		BrowserActionResult<
+			Infer<typeof browser_file_session_public_validator>,
+			Infer<typeof browser_start_refusal_data_validator>
+		>
+	> => {
 		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
 		const user = userAuth ? await ctx.runQuery(internal.users.get, { userId: userAuth.id }) : null;
 		// Anonymous users cannot start a browser in either mode, even in an organization whose paid
@@ -1600,222 +2131,108 @@ export const start_browser = action({
 		if (!membership || membership.userId !== user._id) {
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
+		return start_file_browser_for_member(ctx, args, user, membership);
+	},
+});
 
-		if (args.sourceKind === "draft" && (!args.draftCaptureId || !args.draftStorageId)) {
-			return Result({ _nay: { message: "Choose an available source." } });
-		}
-
-		const existing = (await ctx.runQuery(internal.files_browser.load_browser_session, {
-			organizationId: membership.organizationId,
-			workspaceId: membership.workspaceId,
-			userId: user._id,
-			membershipId: args.membershipId,
-		})) as load_browser_session_Result;
-		if (existing._yay?.runnerSessionId) {
-			const checked = await files_browser_refresh_session(ctx, existing._yay);
-			if (checked._nay) {
-				if (checked._nay.message === "Browser is closing") {
-					return Result({ _nay: { message: BROWSER_CLOSING_MESSAGE } });
-				}
-				return checked;
+async function start_file_browser_for_member(
+	ctx: ActionCtx,
+	args: {
+		membershipId: Id<"organizations_workspaces_users">;
+		targetKind: "saved" | "private";
+		nodeId: string;
+		path: string;
+		sourceKind: "saved" | "proposed" | "draft";
+		navigationGeneration: number;
+		navigationClientId: string;
+		viewport: { width: number; height: number };
+		draftCaptureId?: Id<"files_browser_draft_captures">;
+		draftStorageId?: string;
+		draftRevisionAfter?: number;
+		operationId?: string;
+		operationDeadline?: number;
+		toolCallId?: string;
+		admittedAgentControl?: { sessionId: Id<"files_browser_sessions">; controlGen: number };
+		source?: Infer<typeof ai_chat_browser_source_validator>;
+		browserIntent?: Infer<typeof browser_intent_validator>;
+	},
+	user: Doc<"users">,
+	membership: Doc<"organizations_workspaces_users">,
+): Promise<
+	BrowserActionResult<
+		Infer<typeof browser_file_session_public_validator>,
+		Infer<typeof browser_start_refusal_data_validator>
+	>
+> {
+	const existing = (await ctx.runQuery(internal.files_browser.load_browser_session, {
+		organizationId: membership.organizationId,
+		workspaceId: membership.workspaceId,
+		userId: user._id,
+		membershipId: args.membershipId,
+		mode: "file",
+	})) as load_browser_session_Result;
+	if (existing._yay?.runnerSessionId) {
+		const checked = await files_browser_refresh_session(ctx, existing._yay);
+		if (checked._nay) {
+			if (checked._nay.message === "Browser is closing") {
+				return Result({ _nay: { message: BROWSER_CLOSING_MESSAGE } });
 			}
-
-			// A file browser keeps running after the user opens another file. When the user can no
-			// longer open its file (archived, deleted, or access removed), the Files panel does not
-			// show it, so nothing on screen can end it. The check below ends it in that case, and
-			// this start then takes the browser slot. A session the user can still open stays live.
-			if (checked._yay?.mode === "file") {
-				await authorize_live_browser_session(ctx, { membership, userId: user._id, session: checked._yay });
-			}
+			return checked;
 		}
 
-		const created = (await ctx.runMutation(internal.files_browser.create_starting_browser_session, {
-			organizationId: membership.organizationId,
-			workspaceId: membership.workspaceId,
-			userId: user._id,
-			membershipId: args.membershipId,
-			targetKind: args.targetKind,
-			nodeId: args.nodeId,
-			path: args.path,
-			sourceKind: args.sourceKind,
-			navigationGeneration: args.navigationGeneration,
-			navigationClientId: args.navigationClientId,
-			viewportWidth: args.viewport.width,
-			viewportHeight: args.viewport.height,
-		})) as create_starting_browser_session_Result;
-		if (created._nay) {
-			return created;
+		// A file browser keeps running after the user opens another file. When the user can no
+		// longer open its file (archived, deleted, or access removed), the Files panel does not
+		// show it, so nothing on screen can end it. The check below ends it in that case, and
+		// this start then takes the browser slot. A session the user can still open stays live.
+		if (checked._yay?.mode === "file") {
+			await authorize_live_browser_session(ctx, { membership, userId: user._id, session: checked._yay });
 		}
+	}
 
-		const discardStarting = async () => {
-			await ctx.runMutation(internal.files_browser.delete_starting_browser_session, {
-				sessionId: created._yay.sessionId,
-			});
-		};
+	const created = (await ctx.runMutation(internal.files_browser.create_starting_browser_session, {
+		organizationId: membership.organizationId,
+		workspaceId: membership.workspaceId,
+		userId: user._id,
+		membershipId: args.membershipId,
+		targetKind: args.targetKind,
+		nodeId: args.nodeId,
+		path: args.path,
+		sourceKind: args.sourceKind,
+		navigationGeneration: args.navigationGeneration,
+		navigationClientId: args.navigationClientId,
+		viewportWidth: args.viewport.width,
+		viewportHeight: args.viewport.height,
+	})) as create_starting_browser_session_Result;
+	if (created._nay) {
+		return created;
+	}
 
-		const authorized = (await ctx.runQuery(internal.files_browser.authorize_browser_source, {
-			organizationId: membership.organizationId,
-			workspaceId: membership.workspaceId,
-			userId: user._id,
-			membershipId: args.membershipId,
-			nodeId: args.nodeId,
-			path: args.path,
-			sourceKind: args.sourceKind,
-			includeText: true,
-		})) as authorize_browser_source_Result;
-		if (authorized._nay) {
-			if (!created._yay.reattached) {
-				await discardStarting();
-			}
-			return authorized;
-		}
-
-		// Reattach keeps the loaded page after fresh access checks. The UI compares its
-		// loaded version with the source to offer Reload when edits are available.
-		if (created._yay.reattached) {
-			const live = (await ctx.runQuery(internal.files_browser.load_browser_session, {
-				organizationId: membership.organizationId,
-				workspaceId: membership.workspaceId,
-				userId: user._id,
-				membershipId: args.membershipId,
-				sessionId: created._yay.sessionId,
-			})) as load_browser_session_Result;
-			if (live._nay) {
-				return live;
-			}
-			if (live._yay.mode !== "file") {
-				return Result({ _nay: { message: "Not found" } });
-			}
-			return Result({ _yay: file_session_public_meta(live._yay) });
-		}
-
-		let html: string;
-		if (authorized._yay.text !== undefined) {
-			html = authorized._yay.text;
-		} else if (args.sourceKind === "draft") {
-			const draftCaptureId = args.draftCaptureId;
-			const draftStorageId = args.draftStorageId;
-			if (!draftCaptureId || !draftStorageId) {
-				await discardStarting();
-				return Result({ _nay: { message: "Choose an available source." } });
-			}
-			const draft = await read_draft_capture_blob(ctx, {
-				captureId: draftCaptureId,
-				storageId: draftStorageId,
-				revisionAfter: args.draftRevisionAfter,
-				organizationId: membership.organizationId,
-				workspaceId: membership.workspaceId,
-				userId: user._id,
-				nodeId: args.nodeId,
-				navigationGeneration: args.navigationGeneration,
-			});
-			if (draft._nay) {
-				await discardStarting();
-				return draft;
-			}
-			html = draft._yay.text;
-		} else {
-			const saved = await read_saved_snapshot_text(ctx, {
-				organizationId: membership.organizationId,
-				workspaceId: membership.workspaceId,
-				userId: user._id,
-				path: args.path,
-			});
-			if (saved._nay) {
-				await discardStarting();
-				return saved;
-			}
-			html = saved._yay;
-		}
-
-		if (files_get_utf8_byte_size(html) > BROWSER_HTML_MAX_BYTES) {
-			await discardStarting();
-			return Result({ _nay: { message: "HTML exceeds the 900,000-byte preview limit." } });
-		}
-
-		// Re-verify identity after the slow read: bytes and label must match at load time.
-		const rechecked = (await ctx.runQuery(internal.files_browser.authorize_browser_source, {
-			organizationId: membership.organizationId,
-			workspaceId: membership.workspaceId,
-			userId: user._id,
-			membershipId: args.membershipId,
-			nodeId: args.nodeId,
-			path: args.path,
-			sourceKind: args.sourceKind,
-		})) as authorize_browser_source_Result;
-		if (
-			rechecked._nay ||
-			rechecked._yay.version !== authorized._yay.version ||
-			rechecked._yay.snapshotKey !== authorized._yay.snapshotKey
-		) {
-			await discardStarting();
-			return Result({ _nay: { message: "The source changed while loading. Refresh to try again." } });
-		}
-
-		const hash = await crypto_sha256_hex(html);
-		const opened = await files_browser_runner_call({
-			route: "open",
-			body: {
-				mode: "file",
-				attemptId: crypto.randomUUID(),
-				ownerId: user._id,
-				organizationId: membership.organizationId,
-				workspaceId: membership.workspaceId,
-				nodeId: args.nodeId,
-				navGen: args.navigationGeneration,
-				sourceKind: args.sourceKind,
-				sourceVersion: authorized._yay.version,
-				sourceHash: hash,
-				html,
-				viewport: args.viewport,
-			},
-		});
-		if (opened._nay) {
-			await discardStarting();
-			console.error("Browser open failed", { code: opened._nay.name ?? null });
-			return Result({ _nay: { message: browser_open_refusal_message(opened._nay.name) } });
-		}
-		const parsed = files_browser_runner_open_schema.safeParse(opened._yay);
-		if (!parsed.success || parsed.data.session.mode !== "file") {
-			await discardStarting();
-			console.error("Browser open returned an invalid response", {});
-			return Result({ _nay: { message: "Browser did not start" } });
-		}
-
-		const committed = (await ctx.runMutation(internal.files_browser.commit_live_browser_session, {
+	const discardStarting = async () => {
+		await ctx.runMutation(internal.files_browser.delete_starting_browser_session, {
 			sessionId: created._yay.sessionId,
-			navigationGeneration: args.navigationGeneration,
-			runner: parsed.data.session,
-		})) as commit_live_browser_session_Result;
-		if (committed._nay) {
-			// End ran while the runner was opening and closed the doc. Close the orphan at once and bill
-			// its time. Do not discard the doc: it is no longer starting, and it must stay until it is billed.
-			const closed = await files_browser_runner_call({
-				route: "close",
-				body: {
-					sessionId: parsed.data.session.sessionId,
-					ownerId: user._id,
-					organizationId: membership.organizationId,
-					workspaceId: membership.workspaceId,
-					reason: "start_orphan",
-				},
-			});
-			const usage = closed._nay ? null : files_browser_runner_close_schema.safeParse(closed._yay);
-			await ctx.runMutation(internal.files_browser.settle_browser_usage, {
-				sessionId: created._yay.sessionId,
-				usage: usage?.success ? usage.data.usage : null,
-			});
-			return Result({ _nay: { message: "Browser did not start" } });
-		}
+		});
+	};
 
-		// Draft bytes are one-shot: the open consumed them.
-		if (args.sourceKind === "draft" && args.draftCaptureId && args.draftStorageId) {
-			await ctx.runMutation(internal.files_browser.delete_draft_capture, {
-				captureId: args.draftCaptureId,
-				storageId: args.draftStorageId,
-			});
+	const authorized = (await ctx.runQuery(internal.files_browser.authorize_browser_source, {
+		organizationId: membership.organizationId,
+		workspaceId: membership.workspaceId,
+		userId: user._id,
+		membershipId: args.membershipId,
+		nodeId: args.nodeId,
+		path: args.path,
+		sourceKind: args.sourceKind,
+		includeText: true,
+	})) as authorize_browser_source_Result;
+	if (authorized._nay) {
+		if (!created._yay.reattached) {
+			await discardStarting();
 		}
+		return authorized;
+	}
 
+	// Reattach keeps the loaded page after fresh access checks. The UI compares its
+	// loaded version with the source to offer Reload when edits are available.
+	if (created._yay.reattached) {
 		const live = (await ctx.runQuery(internal.files_browser.load_browser_session, {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
@@ -1829,9 +2246,204 @@ export const start_browser = action({
 		if (live._yay.mode !== "file") {
 			return Result({ _nay: { message: "Not found" } });
 		}
+		if (
+			args.source &&
+			(live._yay.control !== "ready" ||
+				live._yay._id !== args.admittedAgentControl?.sessionId ||
+				live._yay.controlGen !== args.admittedAgentControl.controlGen)
+		)
+			return Result({ _nay: { name: "stale", message: "Browser control changed" } });
 		return Result({ _yay: file_session_public_meta(live._yay) });
-	},
-});
+	}
+	if (args.sourceKind === "draft" && (!args.draftCaptureId || !args.draftStorageId)) {
+		await discardStarting();
+		return Result({ _nay: { name: "needs_capture", message: "Capture the current editor draft first." } });
+	}
+
+	let html: string;
+	if (authorized._yay.text !== undefined) {
+		html = authorized._yay.text;
+	} else if (args.sourceKind === "draft") {
+		const draftCaptureId = args.draftCaptureId;
+		const draftStorageId = args.draftStorageId;
+		if (!draftCaptureId || !draftStorageId) {
+			await discardStarting();
+			return Result({ _nay: { message: "Choose an available source." } });
+		}
+		const draft = await read_draft_capture_blob(ctx, {
+			captureId: draftCaptureId,
+			storageId: draftStorageId,
+			revisionAfter: args.draftRevisionAfter,
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			userId: user._id,
+			nodeId: args.nodeId,
+			navigationGeneration: args.navigationGeneration,
+		});
+		if (draft._nay) {
+			await discardStarting();
+			return draft;
+		}
+		html = draft._yay.text;
+	} else {
+		const saved = await read_saved_snapshot_text(ctx, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			userId: user._id,
+			path: args.path,
+		});
+		if (saved._nay) {
+			await discardStarting();
+			return saved;
+		}
+		html = saved._yay;
+	}
+
+	if (files_get_utf8_byte_size(html) > BROWSER_HTML_MAX_BYTES) {
+		await discardStarting();
+		return Result({ _nay: { message: "HTML exceeds the 900,000-byte preview limit." } });
+	}
+
+	// Re-verify identity after the slow read: bytes and label must match at load time.
+	const rechecked = (await ctx.runQuery(internal.files_browser.authorize_browser_source, {
+		organizationId: membership.organizationId,
+		workspaceId: membership.workspaceId,
+		userId: user._id,
+		membershipId: args.membershipId,
+		nodeId: args.nodeId,
+		path: args.path,
+		sourceKind: args.sourceKind,
+	})) as authorize_browser_source_Result;
+	if (
+		rechecked._nay ||
+		rechecked._yay.version !== authorized._yay.version ||
+		rechecked._yay.snapshotKey !== authorized._yay.snapshotKey
+	) {
+		await discardStarting();
+		return Result({ _nay: { message: "The source changed while loading. Refresh to try again." } });
+	}
+
+	const hash = await crypto_sha256_hex(html);
+	if (args.source && args.browserIntent) {
+		const allowed = await ctx.runQuery(internal.files_browser.check_browser_source, {
+			source: args.source,
+			browserIntent: args.browserIntent,
+			mode: "file",
+		});
+		if (allowed._nay) {
+			await discardStarting();
+			return allowed;
+		}
+	}
+	if (args.source && args.operationId) {
+		const bound = await ctx.runMutation(internal.ai_chat_files.bind_browser_open_invocation, {
+			commandId: args.operationId,
+			source: args.source,
+			sessionId: created._yay.sessionId,
+		});
+		if (bound._nay) {
+			await discardStarting();
+			return bound;
+		}
+	}
+	const opened = await files_browser_runner_call({
+		route: "open",
+		body: {
+			mode: "file",
+			attemptId: args.operationId ?? crypto.randomUUID(),
+			operationId: args.operationId,
+			operationDeadline: args.operationDeadline,
+			source: args.source
+				? { chatId: args.source.threadId, sourceMessageId: args.source.sourceMessageId, toolCallId: args.toolCallId }
+				: undefined,
+			ownerId: user._id,
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			nodeId: args.nodeId,
+			navGen: args.navigationGeneration,
+			sourceKind: args.sourceKind,
+			sourceVersion: authorized._yay.version,
+			sourceHash: hash,
+			html,
+			viewport: args.viewport,
+		},
+	});
+	if (opened._nay) {
+		const refused = [
+			"address_blocked",
+			"user_limit",
+			"organization_limit",
+			"workspace_limit",
+			"deployment_limit",
+		].includes(opened._nay.name ?? "");
+		if (!args.operationId || refused) await discardStarting();
+		console.error("Browser open failed", { code: opened._nay.name ?? null });
+		return Result({
+			_nay: {
+				...(args.operationId ? { name: refused ? "operation_refused" : "outcome_unknown" } : {}),
+				message: browser_open_refusal_message(opened._nay.name),
+			},
+		});
+	}
+	const parsed = files_browser_runner_open_schema.safeParse(opened._yay);
+	if (!parsed.success || parsed.data.session.mode !== "file") {
+		if (!args.operationId) await discardStarting();
+		console.error("Browser open returned an invalid response", {});
+		return Result({ _nay: { name: "outcome_unknown", message: "Browser did not start" } });
+	}
+
+	const committed = (await ctx.runMutation(internal.files_browser.commit_live_browser_session, {
+		sessionId: created._yay.sessionId,
+		navigationGeneration: args.navigationGeneration,
+		runner: parsed.data.session,
+	})) as commit_live_browser_session_Result;
+	if (committed._nay) {
+		// End ran while the runner was opening and closed the doc. Close the orphan at once and bill
+		// its time. Do not discard the doc: it is no longer starting, and it must stay until it is billed.
+		const closed = await files_browser_runner_call({
+			route: "close",
+			body: {
+				mode: "file",
+				sessionId: parsed.data.session.sessionId,
+				ownerId: user._id,
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				reason: "start_orphan",
+			},
+		});
+		const usage = closed._nay ? null : files_browser_runner_close_schema.safeParse(closed._yay);
+		await ctx.runMutation(internal.files_browser.settle_browser_usage, {
+			sessionId: created._yay.sessionId,
+			usage: usage?.success ? usage.data.usage : null,
+		});
+		return Result({ _nay: { message: "Browser did not start" } });
+	}
+
+	// Draft bytes are one-shot: the open consumed them.
+	if (args.sourceKind === "draft" && args.draftCaptureId && args.draftStorageId) {
+		await ctx.runMutation(internal.files_browser.delete_draft_capture, {
+			captureId: args.draftCaptureId,
+			storageId: args.draftStorageId,
+		});
+	}
+
+	const live = (await ctx.runQuery(internal.files_browser.load_browser_session, {
+		organizationId: membership.organizationId,
+		workspaceId: membership.workspaceId,
+		userId: user._id,
+		membershipId: args.membershipId,
+		sessionId: created._yay.sessionId,
+	})) as load_browser_session_Result;
+	if (live._nay) {
+		return live;
+	}
+	if (live._yay.mode !== "file") {
+		return Result({ _nay: { message: "Not found" } });
+	}
+	if (args.source && (live._yay.control !== "ready" || live._yay.controlGen !== parsed.data.session.controlGen))
+		return Result({ _nay: { name: "stale", message: "Browser control changed" } });
+	return Result({ _yay: file_session_public_meta(live._yay) });
+}
 
 /**
  * Start one shared cloud web browser, with no file. Only paid plans may start one, and the
@@ -1848,7 +2460,15 @@ export const start_web_browser = action({
 		_yay: v.object({ session: browser_web_session_public_validator }),
 		_nay: { data: browser_start_refusal_data_validator },
 	}),
-	handler: async (ctx, args) => {
+	handler: async (
+		ctx,
+		args,
+	): Promise<
+		BrowserActionResult<
+			{ session: Infer<typeof browser_web_session_public_validator> },
+			Infer<typeof browser_start_refusal_data_validator>
+		>
+	> => {
 		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
 		const user = userAuth ? await ctx.runQuery(internal.users.get, { userId: userAuth.id }) : null;
 		if (!user || userAuth?.kind === "anonymous") {
@@ -1861,139 +2481,439 @@ export const start_web_browser = action({
 		if (!membership || membership.userId !== user._id) {
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
+		return await start_web_browser_for_member(ctx, args, user, membership);
+	},
+});
 
-		if (process.env.AI_CHAT_BROWSER_ENABLED !== "true") {
-			return Result({ _nay: { message: "Browser unavailable" } });
+async function start_web_browser_for_member(
+	ctx: ActionCtx,
+	args: {
+		membershipId: Id<"organizations_workspaces_users">;
+		viewport: { width: number; height: number };
+		startUrl: string | null;
+		operationId?: string;
+		operationDeadline?: number;
+		admittedAgentControl?: { sessionId: Id<"files_browser_sessions">; controlGen: number };
+		toolCallId?: string;
+		source?: Infer<typeof ai_chat_browser_source_validator>;
+		browserIntent?: Infer<typeof browser_intent_validator>;
+	},
+	user: Doc<"users">,
+	membership: Doc<"organizations_workspaces_users">,
+): Promise<
+	BrowserActionResult<
+		{ session: Infer<typeof browser_web_session_public_validator> },
+		Infer<typeof browser_start_refusal_data_validator>
+	>
+> {
+	if (process.env.AI_CHAT_BROWSER_ENABLED !== "true") {
+		return Result({ _nay: { message: "Browser unavailable" } });
+	}
+
+	// The runner checks the address again with its deny list. This check only catches bad input early.
+	let startUrl: string | null = null;
+	if (args.startUrl !== null) {
+		const normalized = browser_web_normalize_url(args.startUrl, []);
+		if (!normalized.ok) {
+			return Result({ _nay: { message: "Address blocked" } });
 		}
+		startUrl = normalized.url;
+	}
 
-		// The runner checks the address again with its deny list. This check only catches bad input early.
-		let startUrl: string | null = null;
-		if (args.startUrl !== null) {
-			const normalized = browser_web_normalize_url(args.startUrl, []);
-			if (!normalized.ok) {
-				return Result({ _nay: { message: "Address blocked" } });
+	const existing = (await ctx.runQuery(internal.files_browser.load_browser_session, {
+		organizationId: membership.organizationId,
+		workspaceId: membership.workspaceId,
+		userId: user._id,
+		membershipId: args.membershipId,
+		mode: "web",
+	})) as load_browser_session_Result;
+	if (existing._yay?.runnerSessionId) {
+		const checked = await files_browser_refresh_session(ctx, existing._yay);
+		if (checked._nay) {
+			if (checked._nay.message === "Browser is closing") {
+				return Result({ _nay: { message: BROWSER_CLOSING_MESSAGE } });
 			}
-			startUrl = normalized.url;
+			return checked;
 		}
+	}
 
-		const existing = (await ctx.runQuery(internal.files_browser.load_browser_session, {
+	const created = (await ctx.runMutation(internal.files_browser.create_starting_web_browser_session, {
+		organizationId: membership.organizationId,
+		workspaceId: membership.workspaceId,
+		userId: user._id,
+		membershipId: args.membershipId,
+		viewportWidth: args.viewport.width,
+		viewportHeight: args.viewport.height,
+	})) as create_starting_web_browser_session_Result;
+	if (created._nay) {
+		return created;
+	}
+
+	const loadLive = async (admittedControlGen: number | undefined) => {
+		const live = (await ctx.runQuery(internal.files_browser.load_browser_session, {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
 			userId: user._id,
 			membershipId: args.membershipId,
+			sessionId: created._yay.sessionId,
 		})) as load_browser_session_Result;
-		if (existing._yay?.runnerSessionId) {
-			const checked = await files_browser_refresh_session(ctx, existing._yay);
-			if (checked._nay) {
-				if (checked._nay.message === "Browser is closing") {
-					return Result({ _nay: { message: BROWSER_CLOSING_MESSAGE } });
-				}
-				return checked;
-			}
+		if (live._nay) {
+			return live;
 		}
+		if (live._yay.mode !== "web") {
+			return Result({ _nay: { message: "Not found" } });
+		}
+		// Open keeps its admitted control. Take and Resume must not rebind an older turn.
+		if (
+			args.source &&
+			(live._yay.control !== "ready" ||
+				live._yay.controlGen !== admittedControlGen ||
+				(created._yay.reattached && live._yay._id !== args.admittedAgentControl?.sessionId))
+		)
+			return Result({ _nay: { name: "stale", message: "Browser control changed" } });
+		return Result({ _yay: { session: web_session_public_meta(live._yay) } });
+	};
 
-		const created = (await ctx.runMutation(internal.files_browser.create_starting_web_browser_session, {
+	// Reattach keeps the page the user left. `startUrl` applies only to a new session.
+	if (created._yay.reattached) {
+		return await loadLive(args.admittedAgentControl?.controlGen);
+	}
+
+	const discardStarting = async () => {
+		await ctx.runMutation(internal.files_browser.delete_starting_browser_session, {
+			sessionId: created._yay.sessionId,
+		});
+	};
+
+	if (args.source && args.browserIntent) {
+		const checked = await ctx.runQuery(internal.files_browser.check_browser_source, {
+			source: args.source,
+			browserIntent: args.browserIntent,
+		});
+		if (checked._nay) {
+			await discardStarting();
+			return checked;
+		}
+	}
+	if (args.source && args.operationId) {
+		const bound = await ctx.runMutation(internal.ai_chat_files.bind_browser_open_invocation, {
+			commandId: args.operationId,
+			source: args.source,
+			sessionId: created._yay.sessionId,
+		});
+		if (bound._nay) {
+			await discardStarting();
+			return bound;
+		}
+	}
+
+	const opened = await files_browser_runner_call({
+		route: "open",
+		body: {
+			mode: "web",
+			attemptId: args.operationId ?? crypto.randomUUID(),
+			operationId: args.operationId,
+			operationDeadline: args.operationDeadline,
+			source: args.source
+				? { chatId: args.source.threadId, sourceMessageId: args.source.sourceMessageId, toolCallId: args.toolCallId }
+				: undefined,
+			ownerId: user._id,
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
-			userId: user._id,
-			membershipId: args.membershipId,
-			viewportWidth: args.viewport.width,
-			viewportHeight: args.viewport.height,
-		})) as create_starting_web_browser_session_Result;
-		if (created._nay) {
-			return created;
+			navGen: 1,
+			startUrl,
+			viewport: args.viewport,
+			agentAccess: created._yay.profile.agentAccess,
+			policyRevision: created._yay.profile.policyRevision,
+			selectionRevision: created._yay.profile.selectionRevision,
+			// The runner keeps the key only in memory, to unlock and save this profile's cookies.
+			profileId: created._yay.profile.profileId,
+			profileKey: browser_profile_key_base64(created._yay.profile.profileKey),
+			agentBlockedHosts: created._yay.profile.agentBlockedHosts,
+		},
+	});
+	if (opened._nay) {
+		const refused = [
+			"address_blocked",
+			"user_limit",
+			"organization_limit",
+			"workspace_limit",
+			"deployment_limit",
+		].includes(opened._nay.name ?? "");
+		if (!args.operationId || refused) await discardStarting();
+		if (opened._nay.name === "address_blocked") {
+			return Result({ _nay: { message: "Address blocked" } });
 		}
+		console.error("Browser open failed", { code: opened._nay.name ?? null });
+		return Result({
+			_nay: {
+				...(args.operationId ? { name: refused ? "operation_refused" : "outcome_unknown" } : {}),
+				message: browser_open_refusal_message(opened._nay.name),
+			},
+		});
+	}
+	const parsed = files_browser_runner_open_schema.safeParse(opened._yay);
+	if (!parsed.success || parsed.data.session.mode !== "web") {
+		if (!args.operationId) await discardStarting();
+		console.error("Browser open returned an invalid response", {});
+		return Result({ _nay: { name: "outcome_unknown", message: "Browser did not start" } });
+	}
 
-		const loadLive = async () => {
-			const live = (await ctx.runQuery(internal.files_browser.load_browser_session, {
-				organizationId: membership.organizationId,
-				workspaceId: membership.workspaceId,
-				userId: user._id,
-				membershipId: args.membershipId,
-				sessionId: created._yay.sessionId,
-			})) as load_browser_session_Result;
-			if (live._nay) {
-				return live;
-			}
-			if (live._yay.mode !== "web") {
-				return Result({ _nay: { message: "Not found" } });
-			}
-			return Result({ _yay: { session: web_session_public_meta(live._yay) } });
-		};
-
-		// Reattach keeps the page the user left. `startUrl` applies only to a new session.
-		if (created._yay.reattached) {
-			return await loadLive();
-		}
-
-		const discardStarting = async () => {
-			await ctx.runMutation(internal.files_browser.delete_starting_browser_session, {
-				sessionId: created._yay.sessionId,
-			});
-		};
-
-		const opened = await files_browser_runner_call({
-			route: "open",
+	const committed = (await ctx.runMutation(internal.files_browser.commit_live_browser_session, {
+		sessionId: created._yay.sessionId,
+		navigationGeneration: 1,
+		runner: parsed.data.session,
+	})) as commit_live_browser_session_Result;
+	if (committed._nay) {
+		// End ran while the runner was opening. Close the orphan at once and bill its time, so
+		// ending during Start is not free browser time. Do not discard the doc: it is no longer
+		// starting, and it must stay until it is billed.
+		const closed = await files_browser_runner_call({
+			route: "close",
 			body: {
 				mode: "web",
-				attemptId: crypto.randomUUID(),
+				sessionId: parsed.data.session.sessionId,
 				ownerId: user._id,
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
-				navGen: 1,
-				startUrl,
-				viewport: args.viewport,
-				agentAccess: true,
-				// The runner keeps the key only in memory, to unlock and save this profile's cookies.
-				profileId: created._yay.profile.profileId,
-				profileKey: browser_profile_key_base64(created._yay.profile.profileKey),
-				agentBlockedHosts: created._yay.profile.agentBlockedHosts,
+				saveProfile: false,
+				reason: "start_orphan",
 			},
 		});
-		if (opened._nay) {
-			await discardStarting();
-			if (opened._nay.name === "address_blocked") {
-				return Result({ _nay: { message: "Address blocked" } });
-			}
-			console.error("Browser open failed", { code: opened._nay.name ?? null });
-			return Result({ _nay: { message: browser_open_refusal_message(opened._nay.name) } });
-		}
-		const parsed = files_browser_runner_open_schema.safeParse(opened._yay);
-		if (!parsed.success || parsed.data.session.mode !== "web") {
-			await discardStarting();
-			console.error("Browser open returned an invalid response", {});
-			return Result({ _nay: { message: "Browser did not start" } });
-		}
-
-		const committed = (await ctx.runMutation(internal.files_browser.commit_live_browser_session, {
+		const usage = closed._nay ? null : files_browser_runner_close_schema.safeParse(closed._yay);
+		await ctx.runMutation(internal.files_browser.settle_browser_usage, {
 			sessionId: created._yay.sessionId,
-			navigationGeneration: 1,
-			runner: parsed.data.session,
-		})) as commit_live_browser_session_Result;
-		if (committed._nay) {
-			// End ran while the runner was opening. Close the orphan at once and bill its time, so
-			// ending during Start is not free browser time. Do not discard the doc: it is no longer
-			// starting, and it must stay until it is billed.
-			const closed = await files_browser_runner_call({
-				route: "close",
-				body: {
-					sessionId: parsed.data.session.sessionId,
-					ownerId: user._id,
-					organizationId: membership.organizationId,
-					workspaceId: membership.workspaceId,
-					saveProfile: false,
-					reason: "start_orphan",
+			usage: usage?.success ? usage.data.usage : null,
+		});
+		return Result({ _nay: { message: "Browser did not start" } });
+	}
+
+	return await loadLive(parsed.data.session.controlGen);
+}
+
+export const agent_open_browser = internalAction({
+	args: {
+		source: ai_chat_browser_source_validator,
+		browserIntent: browser_intent_validator,
+		operationId: v.string(),
+		operationDeadline: v.number(),
+		toolCallId: v.string(),
+		startUrl: v.optional(v.string()),
+	},
+	returns: v_result({ _yay: v.object({ session: browser_web_session_public_validator }) }),
+	handler: async (
+		ctx,
+		args,
+	): Promise<BrowserActionResult<{ session: Infer<typeof browser_web_session_public_validator> }>> => {
+		const checked = await ctx.runQuery(internal.files_browser.check_browser_source, {
+			source: args.source,
+			browserIntent: args.browserIntent,
+		});
+		if (checked._nay) return checked;
+		if (args.browserIntent.webChoice.provider !== "cloud")
+			return Result({ _nay: { message: "Cloud browser is not selected" } });
+		const user = await ctx.runQuery(internal.users.get, { userId: args.source.userId });
+		const membership = await ctx.runQuery(internal.files_browser.get_browser_membership, {
+			userId: args.source.userId,
+			membershipId: args.source.membershipId,
+		});
+		if (!user || !membership || !user.clerkUserId)
+			return Result({ _nay: { message: "Cloud browser needs a signed-in account" } });
+		const previous = (await ctx.runQuery(internal.files_browser.load_browser_session, {
+			userId: args.source.userId,
+			organizationId: args.source.organizationId,
+			workspaceId: args.source.workspaceId,
+			membershipId: args.source.membershipId,
+			mode: "web",
+		})) as load_browser_session_Result;
+		if (previous._yay && previous._yay.control !== "ready")
+			return Result({ _nay: { message: "Browser is paused or busy" } });
+		const opened = await start_web_browser_for_member(
+			ctx,
+			{
+				membershipId: membership._id,
+				viewport: { width: 1280, height: 720 },
+				startUrl: args.startUrl ?? null,
+				operationId: args.operationId,
+				operationDeadline: args.operationDeadline,
+				admittedAgentControl: previous._yay
+					? { sessionId: previous._yay._id, controlGen: previous._yay.controlGen }
+					: undefined,
+				source: args.source,
+				browserIntent: args.browserIntent,
+				toolCallId: args.toolCallId,
+			},
+			user,
+			membership,
+		);
+		if (opened._nay) return Result({ _nay: { name: opened._nay.name, message: opened._nay.message } });
+		const stillAllowed = await ctx.runQuery(internal.files_browser.check_browser_source, {
+			source: args.source,
+			browserIntent: args.browserIntent,
+		});
+		if (stillAllowed._nay) {
+			// A revoked start owns only its new session. Never end a browser it reused.
+			if (previous._yay?._id !== opened._yay.session.sessionId)
+				await ctx.runAction(internal.files_browser.end_browser_session_internal, {
+					sessionId: opened._yay.session.sessionId,
+					reason: "source_revoked",
+				});
+			return stillAllowed;
+		}
+		return Result({ _yay: opened._yay });
+	},
+});
+
+export const agent_open_file_browser = internalAction({
+	args: {
+		source: ai_chat_browser_source_validator,
+		browserIntent: browser_intent_validator,
+		operationId: v.string(),
+		operationDeadline: v.number(),
+		toolCallId: v.string(),
+		path: v.string(),
+		sourceKind: files_browser_session_source_kind_validator,
+	},
+	returns: v_result({ _yay: v.object({ session: browser_file_session_public_validator }) }),
+	handler: async (
+		ctx,
+		args,
+	): Promise<BrowserActionResult<{ session: Infer<typeof browser_file_session_public_validator> }>> => {
+		const allowed = await ctx.runQuery(internal.files_browser.check_browser_source, {
+			source: args.source,
+			browserIntent: args.browserIntent,
+			mode: "file",
+		});
+		if (allowed._nay) return allowed;
+		const user = await ctx.runQuery(internal.users.get, { userId: args.source.userId });
+		const membership = await ctx.runQuery(internal.files_browser.get_browser_membership, {
+			userId: args.source.userId,
+			membershipId: args.source.membershipId,
+		});
+		if (!user || !membership || !user.clerkUserId)
+			return Result({ _nay: { message: "Cloud browser needs a signed-in account" } });
+		const entry = (await ctx.runQuery(internal.files_nodes.get_visible_entry_by_path, {
+			organizationId: args.source.organizationId,
+			workspaceId: args.source.workspaceId,
+			path: args.path,
+			visibilityUserId: args.source.userId,
+			overlayUserId: args.source.userId,
+		})) as files_nodes_get_visible_entry_by_path_Result;
+		if (!entry || entry.node.kind !== "file") return Result({ _nay: { message: "Not found" } });
+		const previous = (await ctx.runQuery(internal.files_browser.load_browser_session, {
+			userId: args.source.userId,
+			organizationId: args.source.organizationId,
+			workspaceId: args.source.workspaceId,
+			membershipId: args.source.membershipId,
+			mode: "file",
+		})) as load_browser_session_Result;
+		if (previous._yay && previous._yay.control !== "ready")
+			return Result({ _nay: { message: "Browser is paused or busy" } });
+		const exact =
+			previous._yay?.mode === "file" &&
+			previous._yay.nodeId === String(entry.node._id) &&
+			previous._yay.targetKind === entry.kind &&
+			previous._yay.sourceKind === args.sourceKind
+				? previous._yay
+				: null;
+		if (args.sourceKind === "draft" && !exact)
+			return Result({ _nay: { name: "needs_capture", message: "Capture the current editor draft first." } });
+		const opened = await start_file_browser_for_member(
+			ctx,
+			{
+				membershipId: membership._id,
+				targetKind: entry.kind,
+				nodeId: String(entry.node._id),
+				path: args.path,
+				sourceKind: args.sourceKind,
+				navigationGeneration: exact?.navigationGeneration ?? 1,
+				navigationClientId: exact?.navigationClientId ?? args.operationId,
+				viewport: { width: 1280, height: 720 },
+				operationId: args.operationId,
+				operationDeadline: args.operationDeadline,
+				admittedAgentControl: previous._yay
+					? { sessionId: previous._yay._id, controlGen: previous._yay.controlGen }
+					: undefined,
+				source: args.source,
+				browserIntent: args.browserIntent,
+				toolCallId: args.toolCallId,
+			},
+			user,
+			membership,
+		);
+		if (opened._nay) return Result({ _nay: { name: opened._nay.name, message: opened._nay.message } });
+		const stillAllowed = await ctx.runQuery(internal.files_browser.check_browser_source, {
+			source: args.source,
+			browserIntent: args.browserIntent,
+			mode: "file",
+		});
+		if (stillAllowed._nay) {
+			if (previous._yay?._id !== opened._yay.sessionId)
+				await ctx.runAction(internal.files_browser.end_browser_session_internal, {
+					sessionId: opened._yay.sessionId,
+					reason: "source_revoked",
+				});
+			return stillAllowed;
+		}
+		return Result({ _yay: { session: opened._yay } });
+	},
+});
+
+export const get_agent_browser_catalog = internalQuery({
+	args: { source: ai_chat_browser_source_validator, browserIntent: browser_intent_validator },
+	returns: v_result({
+		_yay: v.object({
+			browsers: v.array(v.object({ browserRef: v.string(), resource: ai_chat_browser_resource_validator })),
+		}),
+	}),
+	handler: async (ctx, args) => {
+		const checked = await files_browser_db_check_agent_intent(ctx, { ...args, mode: "file" });
+		if (checked._nay) return checked;
+		const webAllowed = await files_browser_db_check_agent_intent(ctx, args);
+		const sessions = await ctx.db
+			.query("files_browser_sessions")
+			.withIndex("by_owner_organization_workspace", (q) =>
+				q
+					.eq("ownerId", args.source.userId)
+					.eq("organizationId", args.source.organizationId)
+					.eq("workspaceId", args.source.workspaceId),
+			)
+			.collect();
+		const browsers: Array<{ browserRef: string; resource: Infer<typeof ai_chat_browser_resource_validator> }> = [];
+		for (const session of sessions) {
+			if (session.control !== "ready" || !session.runnerSessionId) continue;
+			if (
+				session.mode === "web" &&
+				(webAllowed._nay ||
+					args.browserIntent.webChoice.provider !== "cloud" ||
+					!session.agentAccess ||
+					session.policyRevision !== args.browserIntent.policyRevision ||
+					session.selectionRevision !== args.browserIntent.selectionRevision)
+			)
+				continue;
+			const access = await check_browser_session_access_db(ctx, {
+				userId: args.source.userId,
+				organizationId: args.source.organizationId,
+				workspaceId: args.source.workspaceId,
+				membershipId: args.source.membershipId,
+				sessionId: session._id,
+			});
+			if (!access.ok) continue;
+			browsers.push({
+				browserRef: session._id,
+				resource: {
+					provider: "cloud",
+					mode: session.mode,
+					sessionId: session._id,
+					controlGen: session.controlGen,
+					loadGen: session.loadGen,
+					navGen: session.navigationGeneration,
+					tabId: session.mode === "web" ? session.tabId : null,
+					tabGen: session.mode === "web" ? session.tabGen : null,
 				},
 			});
-			const usage = closed._nay ? null : files_browser_runner_close_schema.safeParse(closed._yay);
-			await ctx.runMutation(internal.files_browser.settle_browser_usage, {
-				sessionId: created._yay.sessionId,
-				usage: usage?.success ? usage.data.usage : null,
-			});
-			return Result({ _nay: { message: "Browser did not start" } });
 		}
-
-		return await loadLive();
+		return Result({ _yay: { browsers } });
 	},
 });
 
@@ -2013,6 +2933,7 @@ export const begin_close_browser_session = internalMutation({
 	returns: v_result({
 		_yay: v.object({
 			runnerSessionId: v.union(v.string(), v.null()),
+			mode: v.union(v.literal("file"), v.literal("web")),
 			ownerId: v.id("users"),
 			organizationId: v.id("organizations"),
 			workspaceId: v.id("organizations_workspaces"),
@@ -2044,6 +2965,7 @@ export const begin_close_browser_session = internalMutation({
 			return Result({
 				_yay: {
 					runnerSessionId: null,
+					mode: session.mode,
 					ownerId: session.ownerId,
 					organizationId: session.organizationId,
 					workspaceId: session.workspaceId,
@@ -2052,17 +2974,44 @@ export const begin_close_browser_session = internalMutation({
 		}
 
 		const expectedAgentLease = args.expectedAgentLease;
+		const expectedTab =
+			session.mode === "web" ? session.tabs.find((tab) => tab.tabId === expectedAgentLease?.tabId) : null;
 		if (
 			expectedAgentLease &&
 			(session.control !== "ready" ||
 				session.controlGen !== expectedAgentLease.controlGen ||
 				session.loadGen !== expectedAgentLease.loadGen ||
-				session.navigationGeneration !== expectedAgentLease.navGen)
+				(session.mode === "file"
+					? session.navigationGeneration !== expectedAgentLease.navGen
+					: !expectedTab ||
+						expectedTab.navGen !== expectedAgentLease.navGen ||
+						expectedTab.tabGen !== expectedAgentLease.tabGen ||
+						session.policyRevision !== expectedAgentLease.policyRevision ||
+						session.selectionRevision !== expectedAgentLease.selectionRevision))
 		) {
 			return Result({ _nay: { message: "Browser control changed" } });
 		}
 		// Agent close must win its runner lease check before changing the app session.
 		if (!expectedAgentLease) {
+			if (session.mode === "web") {
+				const preference = await files_browser_db_get_preferences(ctx, membership);
+				const next = {
+					ownerId: args.userId,
+					organizationId: args.organizationId,
+					workspaceId: args.workspaceId,
+					...browser_preferences_public(preference),
+					policyRevision: preference.policyRevision + 1,
+					syncPending: true,
+					updatedAt: Date.now(),
+				};
+				const preferenceId =
+					"_id" in preference ? preference._id : await ctx.db.insert("files_browser_preferences", next);
+				if ("_id" in preference) await ctx.db.patch("files_browser_preferences", preferenceId, next);
+				await ctx.scheduler.runAfter(0, internal.files_browser.sync_browser_preferences_for_member, {
+					preferenceId,
+					membershipId: membership._id,
+				});
+			}
 			await ctx.db.patch("files_browser_sessions", args.sessionId, {
 				control: "closing",
 				updatedAt: Date.now(),
@@ -2071,6 +3020,7 @@ export const begin_close_browser_session = internalMutation({
 		return Result({
 			_yay: {
 				runnerSessionId: session.runnerSessionId ?? null,
+				mode: session.mode,
 				ownerId: session.ownerId,
 				organizationId: session.organizationId,
 				workspaceId: session.workspaceId,
@@ -2115,7 +3065,7 @@ export const end_browser = action({
 		expectedAgentLease: v.optional(browser_agent_lease_validator),
 	},
 	returns: v_result({ _yay: v.null() }),
-	handler: async (ctx, args) => {
+	handler: async (ctx, args): Promise<BrowserActionResult<null>> => {
 		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
 		const user = userAuth ? await ctx.runQuery(internal.users.get, { userId: userAuth.id }) : null;
 		if (!user || (userAuth?.kind === "anonymous" && user.deletedAt !== undefined)) {
@@ -2129,51 +3079,123 @@ export const end_browser = action({
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
 
-		const begun = (await ctx.runMutation(internal.files_browser.begin_close_browser_session, {
+		return end_browser_for_member(ctx, args, user, membership);
+	},
+});
+
+async function end_browser_for_member(
+	ctx: ActionCtx,
+	args: {
+		membershipId: Id<"organizations_workspaces_users">;
+		sessionId: Id<"files_browser_sessions">;
+		expectedAgentLease?: Infer<typeof browser_agent_lease_validator>;
+		source?: Infer<typeof ai_chat_browser_source_validator>;
+		browserIntent?: Infer<typeof browser_intent_validator>;
+		operationId?: string;
+		operationDeadline?: number;
+		toolCallId?: string;
+	},
+	user: Doc<"users">,
+	membership: Doc<"organizations_workspaces_users">,
+): Promise<BrowserActionResult<null>> {
+	if (args.source && args.browserIntent) {
+		const loaded = (await ctx.runQuery(internal.files_browser.load_browser_session, {
+			userId: user._id,
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
-			userId: user._id,
-			membershipId: args.membershipId,
+			membershipId: membership._id,
 			sessionId: args.sessionId,
-			expectedAgentLease: args.expectedAgentLease,
-		})) as begin_close_browser_session_Result;
-		if (begun._nay) {
-			return begun;
-		}
-
-		if (begun._yay.runnerSessionId) {
-			const closed = await files_browser_runner_call({
-				route: "close",
-				body: {
-					sessionId: begun._yay.runnerSessionId,
-					ownerId: begun._yay.ownerId,
-					organizationId: begun._yay.organizationId,
-					workspaceId: begun._yay.workspaceId,
-					expectedAgentLease: args.expectedAgentLease,
-					// Only a human End saves the web profile. The agent's close never does.
-					saveProfile: !args.expectedAgentLease,
-					reason: args.expectedAgentLease ? "agent_close" : "human_end",
-				},
-			});
-			if (closed._nay) {
-				if (args.expectedAgentLease) {
-					return closed;
-				}
-				console.error("Browser close failed", { message: closed._nay.message });
-			} else {
-				const usage = files_browser_runner_close_schema.safeParse(closed._yay);
-				await ctx.runMutation(internal.files_browser.settle_browser_usage, {
-					sessionId: args.sessionId,
-					usage: usage.success ? usage.data.usage : null,
-				});
-				return Result({ _yay: null });
-			}
-		}
-
-		await ctx.runMutation(internal.files_browser.finish_close_browser_session, {
-			sessionId: args.sessionId,
+		})) as load_browser_session_Result;
+		if (loaded._nay) return loaded;
+		const allowed = await ctx.runQuery(internal.files_browser.check_browser_source, {
+			source: args.source,
+			browserIntent: args.browserIntent,
+			mode: loaded._yay.mode,
 		});
-		return Result({ _yay: null });
+		if (allowed._nay) return allowed;
+	}
+	const begun = (await ctx.runMutation(internal.files_browser.begin_close_browser_session, {
+		organizationId: membership.organizationId,
+		workspaceId: membership.workspaceId,
+		userId: user._id,
+		membershipId: args.membershipId,
+		sessionId: args.sessionId,
+		expectedAgentLease: args.expectedAgentLease,
+	})) as begin_close_browser_session_Result;
+	if (begun._nay) {
+		return begun;
+	}
+
+	if (begun._yay.runnerSessionId) {
+		const closed = await files_browser_runner_call({
+			route: "close",
+			body: {
+				mode: begun._yay.mode,
+				sessionId: begun._yay.runnerSessionId,
+				ownerId: begun._yay.ownerId,
+				organizationId: begun._yay.organizationId,
+				workspaceId: begun._yay.workspaceId,
+				expectedAgentLease: args.expectedAgentLease,
+				// Only a human End saves the web profile. The agent's close never does.
+				operationId: args.operationId,
+				operationDeadline: args.operationDeadline,
+				source: args.source
+					? { chatId: args.source.threadId, sourceMessageId: args.source.sourceMessageId, toolCallId: args.toolCallId }
+					: undefined,
+				saveProfile: !args.expectedAgentLease,
+				reason: args.expectedAgentLease ? "agent_close" : "human_end",
+			},
+		});
+		if (closed._nay) {
+			if (args.expectedAgentLease) {
+				return closed;
+			}
+			console.error("Browser close failed", { message: closed._nay.message });
+		} else {
+			if (args.operationId) {
+				const ack = browser_management_ack_schema.safeParse(closed._yay);
+				if (!ack.success || ack.data.status !== "completed")
+					return Result({
+						_nay: {
+							name: ack.success && ack.data.status === "refused" ? "operation_refused" : "outcome_unknown",
+							message: "Browser close did not complete",
+						},
+					});
+			}
+			const usage = files_browser_runner_close_schema.safeParse(closed._yay);
+			await ctx.runMutation(internal.files_browser.settle_browser_usage, {
+				sessionId: args.sessionId,
+				usage: usage.success ? usage.data.usage : null,
+			});
+			return Result({ _yay: null });
+		}
+	}
+
+	await ctx.runMutation(internal.files_browser.finish_close_browser_session, {
+		sessionId: args.sessionId,
+	});
+	return Result({ _yay: null });
+}
+
+export const agent_close_browser = internalAction({
+	args: {
+		source: ai_chat_browser_source_validator,
+		browserIntent: browser_intent_validator,
+		sessionId: v.id("files_browser_sessions"),
+		expectedAgentLease: browser_agent_lease_validator,
+		operationId: v.string(),
+		operationDeadline: v.number(),
+		toolCallId: v.string(),
+	},
+	returns: v_result({ _yay: v.null() }),
+	handler: async (ctx, args): Promise<BrowserActionResult<null>> => {
+		const user = await ctx.runQuery(internal.users.get, { userId: args.source.userId });
+		const membership = await ctx.runQuery(internal.files_browser.get_browser_membership, {
+			userId: args.source.userId,
+			membershipId: args.source.membershipId,
+		});
+		if (!user || !membership) return Result({ _nay: { message: "Unauthorized" } });
+		return end_browser_for_member(ctx, { ...args, membershipId: membership._id }, user, membership);
 	},
 });
 
@@ -2188,6 +3210,7 @@ export const begin_close_browser_session_internal = internalMutation({
 	returns: v.union(
 		v.object({
 			runnerSessionId: v.string(),
+			mode: v.union(v.literal("file"), v.literal("web")),
 			ownerId: v.id("users"),
 			organizationId: v.id("organizations"),
 			workspaceId: v.id("organizations_workspaces"),
@@ -2201,12 +3224,17 @@ export const begin_close_browser_session_internal = internalMutation({
 		}
 		const now = Date.now();
 		if (!session.runnerSessionId) {
-			await ctx.db.patch("files_browser_sessions", args.sessionId, { control: "closed", closedAt: now, updatedAt: now });
+			await ctx.db.patch("files_browser_sessions", args.sessionId, {
+				control: "closed",
+				closedAt: now,
+				updatedAt: now,
+			});
 			return null;
 		}
 		await ctx.db.patch("files_browser_sessions", args.sessionId, { control: "closing", updatedAt: now });
 		return {
 			runnerSessionId: session.runnerSessionId,
+			mode: session.mode,
 			ownerId: session.ownerId,
 			organizationId: session.organizationId,
 			workspaceId: session.workspaceId,
@@ -2236,6 +3264,7 @@ export const end_browser_session_internal = internalAction({
 		const closed = await files_browser_runner_call({
 			route: "close",
 			body: {
+				mode: begun.mode,
 				sessionId: begun.runnerSessionId,
 				ownerId: begun.ownerId,
 				organizationId: begun.organizationId,
@@ -2286,6 +3315,13 @@ export const settle_browser_usage = internalMutation({
 		const session = await ctx.db.get("files_browser_sessions", args.sessionId);
 		if (!session || session.billing.state === "settled") {
 			return null;
+		}
+		if (!args.usage && !session.runnerSessionId) {
+			const opening = await ctx.db
+				.query("ai_chat_browser_invocations")
+				.withIndex("by_openingSession", (q) => q.eq("openingSessionId", session._id))
+				.first();
+			if (opening && opening.status !== "finished") return null;
 		}
 
 		const now = Date.now();
@@ -2356,6 +3392,7 @@ export const list_browser_sessions_to_settle = internalQuery({
 		v.object({
 			sessionId: v.id("files_browser_sessions"),
 			runnerSessionId: v.union(v.string(), v.null()),
+			mode: v.union(v.literal("file"), v.literal("web")),
 			ownerId: v.id("users"),
 			organizationId: v.id("organizations"),
 			workspaceId: v.id("organizations_workspaces"),
@@ -2375,6 +3412,7 @@ export const list_browser_sessions_to_settle = internalQuery({
 			.take(BROWSER_SETTLE_BATCH_SIZE);
 		return sessions.map((session) => ({
 			sessionId: session._id,
+			mode: session.mode,
 			runnerSessionId: session.runnerSessionId ?? null,
 			ownerId: session.ownerId,
 			organizationId: session.organizationId,
@@ -2494,6 +3532,7 @@ export const settle_pending_browser_usage = internalAction({
 				const checked = await files_browser_runner_call({
 					route: "status",
 					body: {
+						mode: session.mode,
 						sessionId: session.runnerSessionId,
 						ownerId: session.ownerId,
 						organizationId: session.organizationId,
@@ -2584,6 +3623,25 @@ export const get_browser_session_live_path = internalQuery({
 	},
 });
 
+const browser_reload_result_validator = v.union(
+	v.object({
+		mode: v.literal("file"),
+		loadGen: v.number(),
+		sourceVersion: v.string(),
+		sourceHash: v.string(),
+		controlGen: v.number(),
+		navGen: v.number(),
+	}),
+	v.object({
+		mode: v.literal("web"),
+		loadGen: v.number(),
+		controlGen: v.number(),
+		navGen: v.number(),
+		tabId: v.string(),
+		tabGen: v.number(),
+	}),
+);
+
 /**
  * Reload the live page from a newer snapshot of the same file and source kind. Drafts always
  * need a fresh capture; switching kinds is a user Start choice, never an agent reload.
@@ -2600,25 +3658,8 @@ export const reload_browser = action({
 		draftStorageId: v.optional(v.string()),
 		draftRevisionAfter: v.optional(v.number()),
 	},
-	returns: v_result({
-		_yay: v.union(
-			v.object({
-				mode: v.literal("file"),
-				loadGen: v.number(),
-				sourceVersion: v.string(),
-				sourceHash: v.string(),
-				controlGen: v.number(),
-				navGen: v.number(),
-			}),
-			v.object({
-				mode: v.literal("web"),
-				loadGen: v.number(),
-				controlGen: v.number(),
-				navGen: v.number(),
-			}),
-		),
-	}),
-	handler: async (ctx, args) => {
+	returns: v_result({ _yay: browser_reload_result_validator }),
+	handler: async (ctx, args): Promise<BrowserActionResult<Infer<typeof browser_reload_result_validator>>> => {
 		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
 		const user = userAuth ? await ctx.runQuery(internal.users.get, { userId: userAuth.id }) : null;
 		if (!user || (userAuth?.kind === "anonymous" && user.deletedAt !== undefined)) {
@@ -2631,146 +3672,58 @@ export const reload_browser = action({
 		if (!membership || membership.userId !== user._id) {
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
+		return reload_browser_for_member(ctx, args, user, membership);
+	},
+});
 
-		const loaded = (await ctx.runQuery(internal.files_browser.load_browser_session, {
-			organizationId: membership.organizationId,
-			workspaceId: membership.workspaceId,
-			userId: user._id,
-			membershipId: args.membershipId,
-			sessionId: args.sessionId,
-		})) as load_browser_session_Result;
-		if (loaded._nay) {
-			return loaded;
+async function reload_browser_for_member(
+	ctx: ActionCtx,
+	args: {
+		membershipId: Id<"organizations_workspaces_users">;
+		sessionId: Id<"files_browser_sessions">;
+		path: string;
+		expectedAgentLease?: Infer<typeof browser_agent_lease_validator>;
+		draftCaptureId?: Id<"files_browser_draft_captures">;
+		draftStorageId?: string;
+		draftRevisionAfter?: number;
+		source?: Infer<typeof ai_chat_browser_source_validator>;
+		browserIntent?: Infer<typeof browser_intent_validator>;
+		operationId?: string;
+		operationDeadline?: number;
+		toolCallId?: string;
+	},
+	user: Doc<"users">,
+	membership: Doc<"organizations_workspaces_users">,
+): Promise<BrowserActionResult<Infer<typeof browser_reload_result_validator>>> {
+	const loaded = (await ctx.runQuery(internal.files_browser.load_browser_session, {
+		organizationId: membership.organizationId,
+		workspaceId: membership.workspaceId,
+		userId: user._id,
+		membershipId: args.membershipId,
+		sessionId: args.sessionId,
+	})) as load_browser_session_Result;
+	if (loaded._nay) {
+		return loaded;
+	}
+	const session = loaded._yay;
+	const runnerSessionId = session.runnerSessionId;
+	if (!runnerSessionId) {
+		return Result({ _nay: { message: "Not found" } });
+	}
+	if (args.source && args.browserIntent) {
+		const allowed = await ctx.runQuery(internal.files_browser.check_browser_source, {
+			source: args.source,
+			browserIntent: args.browserIntent,
+			mode: session.mode,
+		});
+		if (allowed._nay) return allowed;
+	}
+
+	if (session.mode === "web") {
+		const source = await authorize_live_browser_session(ctx, { membership, userId: user._id, session });
+		if (!source.ok) {
+			return Result({ _nay: { message: source.message } });
 		}
-		const session = loaded._yay;
-		const runnerSessionId = session.runnerSessionId;
-		if (!runnerSessionId) {
-			return Result({ _nay: { message: "Not found" } });
-		}
-
-		if (session.mode === "web") {
-			const source = await authorize_live_browser_session(ctx, { membership, userId: user._id, session });
-			if (!source.ok) {
-				return Result({ _nay: { message: source.message } });
-			}
-			const reloaded = await files_browser_runner_call({
-				route: "reload",
-				body: {
-					sessionId: runnerSessionId,
-					ownerId: user._id,
-					organizationId: membership.organizationId,
-					workspaceId: membership.workspaceId,
-					navGen: session.navigationGeneration,
-					mode: "web",
-					expectedAgentLease: args.expectedAgentLease,
-				},
-			});
-			if (reloaded._nay) {
-				console.error("Browser reload failed", { message: reloaded._nay.message });
-				return Result({ _nay: { message: "Browser did not reload" } });
-			}
-			const parsed = files_browser_runner_open_schema.safeParse(reloaded._yay);
-			if (!parsed.success || parsed.data.session.mode !== "web") {
-				return Result({ _nay: { message: "Browser did not reload" } });
-			}
-			const updated = (await ctx.runMutation(internal.files_browser.sync_browser_session, {
-				sessionId: args.sessionId,
-				runner: parsed.data.session,
-			})) as files_browser_sync_browser_session_Result;
-			if (updated._nay) {
-				return updated;
-			}
-			if (!updated._yay) return Result({ _nay: { message: "Not found" } });
-			return Result({
-				_yay: {
-					mode: "web" as const,
-					loadGen: parsed.data.session.loadGen,
-					controlGen: parsed.data.session.controlGen,
-					navGen: parsed.data.session.navGen,
-				},
-			});
-		}
-
-		// Resolve the live path from the node id: a rename since Start must not break reload.
-		const path = (await ctx.runQuery(internal.files_browser.get_browser_session_live_path, {
-			targetKind: session.targetKind,
-			nodeId: session.nodeId,
-			fallbackPath: args.path,
-		})) as string;
-
-		const authorized = (await ctx.runQuery(internal.files_browser.authorize_browser_source, {
-			organizationId: membership.organizationId,
-			workspaceId: membership.workspaceId,
-			userId: user._id,
-			membershipId: args.membershipId,
-			nodeId: session.nodeId,
-			path,
-			sourceKind: session.sourceKind,
-			includeText: true,
-		})) as authorize_browser_source_Result;
-		if (authorized._nay) {
-			return authorized;
-		}
-
-		let html: string;
-		if (authorized._yay.text !== undefined) {
-			html = authorized._yay.text;
-		} else if (session.sourceKind === "draft") {
-			const draftCaptureId = args.draftCaptureId;
-			const draftStorageId = args.draftStorageId;
-			if (!draftCaptureId || !draftStorageId) {
-				return Result({ _nay: { message: "Choose an available source." } });
-			}
-			const draft = await read_draft_capture_blob(ctx, {
-				captureId: draftCaptureId,
-				storageId: draftStorageId,
-				revisionAfter: args.draftRevisionAfter,
-				organizationId: membership.organizationId,
-				workspaceId: membership.workspaceId,
-				userId: user._id,
-				nodeId: session.nodeId,
-				navigationGeneration: session.navigationGeneration,
-			});
-			if (draft._nay) {
-				return draft;
-			}
-			html = draft._yay.text;
-		} else {
-			const saved = await read_saved_snapshot_text(ctx, {
-				organizationId: membership.organizationId,
-				workspaceId: membership.workspaceId,
-				userId: user._id,
-				path,
-			});
-			if (saved._nay) {
-				return saved;
-			}
-			html = saved._yay;
-		}
-
-		if (files_get_utf8_byte_size(html) > BROWSER_HTML_MAX_BYTES) {
-			return Result({ _nay: { message: "HTML exceeds the 900,000-byte preview limit." } });
-		}
-
-		// Re-verify identity after the slow read, like Start does: bytes and label must match
-		// at load time, so a mid-read edit cannot land under a fresh version.
-		const rechecked = (await ctx.runQuery(internal.files_browser.authorize_browser_source, {
-			organizationId: membership.organizationId,
-			workspaceId: membership.workspaceId,
-			userId: user._id,
-			membershipId: args.membershipId,
-			nodeId: session.nodeId,
-			path,
-			sourceKind: session.sourceKind,
-		})) as authorize_browser_source_Result;
-		if (
-			rechecked._nay ||
-			rechecked._yay.version !== authorized._yay.version ||
-			rechecked._yay.snapshotKey !== authorized._yay.snapshotKey
-		) {
-			return Result({ _nay: { message: "The source changed while loading. Refresh to try again." } });
-		}
-
 		const reloaded = await files_browser_runner_call({
 			route: "reload",
 			body: {
@@ -2778,22 +3731,43 @@ export const reload_browser = action({
 				ownerId: user._id,
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
-				navGen: session.navigationGeneration,
+				navGen: args.expectedAgentLease?.navGen ?? session.navigationGeneration,
+				mode: "web",
 				expectedAgentLease: args.expectedAgentLease,
-				sourceKind: session.sourceKind,
-				sourceVersion: authorized._yay.version,
-				sourceHash: await crypto_sha256_hex(html),
-				html,
+				tabId: args.expectedAgentLease?.tabId,
+				tabGen: args.expectedAgentLease?.tabGen,
+				operationId: args.operationId,
+				operationDeadline: args.operationDeadline,
+				source: args.source
+					? { chatId: args.source.threadId, sourceMessageId: args.source.sourceMessageId, toolCallId: args.toolCallId }
+					: undefined,
 			},
 		});
 		if (reloaded._nay) {
 			console.error("Browser reload failed", { message: reloaded._nay.message });
 			return Result({ _nay: { message: "Browser did not reload" } });
 		}
-
+		if (args.operationId) {
+			const ack = browser_management_ack_schema.safeParse(reloaded._yay);
+			if (!ack.success || ack.data.status !== "completed")
+				return Result({
+					_nay: {
+						name: ack.success && ack.data.status === "refused" ? "operation_refused" : "outcome_unknown",
+						message: "Browser reload did not complete",
+					},
+				});
+		}
 		const parsed = files_browser_runner_open_schema.safeParse(reloaded._yay);
-		if (!parsed.success || parsed.data.session.mode !== "file") {
+		if (!parsed.success || parsed.data.session.mode !== "web") {
 			return Result({ _nay: { message: "Browser did not reload" } });
+		}
+		// Reload cannot adopt another tab or newer human control.
+		if (
+			args.expectedAgentLease &&
+			(parsed.data.session.tabId !== args.expectedAgentLease.tabId ||
+				parsed.data.session.controlGen !== args.expectedAgentLease.controlGen)
+		) {
+			return Result({ _nay: { name: "stale", message: "Browser control changed" } });
 		}
 		const updated = (await ctx.runMutation(internal.files_browser.sync_browser_session, {
 			sessionId: args.sessionId,
@@ -2803,24 +3777,205 @@ export const reload_browser = action({
 			return updated;
 		}
 		if (!updated._yay) return Result({ _nay: { message: "Not found" } });
-
-		if (session.sourceKind === "draft" && args.draftCaptureId && args.draftStorageId) {
-			await ctx.runMutation(internal.files_browser.delete_draft_capture, {
-				captureId: args.draftCaptureId,
-				storageId: args.draftStorageId,
-			});
-		}
-
 		return Result({
 			_yay: {
-				mode: "file" as const,
+				mode: "web" as const,
 				loadGen: parsed.data.session.loadGen,
 				controlGen: parsed.data.session.controlGen,
 				navGen: parsed.data.session.navGen,
-				sourceVersion: parsed.data.session.sourceVersion,
-				sourceHash: parsed.data.session.sourceHash,
+				tabId: parsed.data.session.tabId,
+				tabGen: parsed.data.session.tabGen,
 			},
 		});
+	}
+
+	// Resolve the live path from the node id: a rename since Start must not break reload.
+	const path = (await ctx.runQuery(internal.files_browser.get_browser_session_live_path, {
+		targetKind: session.targetKind,
+		nodeId: session.nodeId,
+		fallbackPath: args.path,
+	})) as string;
+
+	const authorized = (await ctx.runQuery(internal.files_browser.authorize_browser_source, {
+		organizationId: membership.organizationId,
+		workspaceId: membership.workspaceId,
+		userId: user._id,
+		membershipId: args.membershipId,
+		nodeId: session.nodeId,
+		path,
+		sourceKind: session.sourceKind,
+		includeText: true,
+	})) as authorize_browser_source_Result;
+	if (authorized._nay) {
+		return authorized;
+	}
+
+	let html: string;
+	if (authorized._yay.text !== undefined) {
+		html = authorized._yay.text;
+	} else if (session.sourceKind === "draft") {
+		const draftCaptureId = args.draftCaptureId;
+		const draftStorageId = args.draftStorageId;
+		if (!draftCaptureId || !draftStorageId) {
+			return Result({ _nay: { name: "needs_capture", message: "Capture the current editor draft first." } });
+		}
+		const draft = await read_draft_capture_blob(ctx, {
+			captureId: draftCaptureId,
+			storageId: draftStorageId,
+			revisionAfter: args.draftRevisionAfter,
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			userId: user._id,
+			nodeId: session.nodeId,
+			navigationGeneration: session.navigationGeneration,
+		});
+		if (draft._nay) {
+			return draft;
+		}
+		html = draft._yay.text;
+	} else {
+		const saved = await read_saved_snapshot_text(ctx, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			userId: user._id,
+			path,
+		});
+		if (saved._nay) {
+			return saved;
+		}
+		html = saved._yay;
+	}
+
+	if (files_get_utf8_byte_size(html) > BROWSER_HTML_MAX_BYTES) {
+		return Result({ _nay: { message: "HTML exceeds the 900,000-byte preview limit." } });
+	}
+
+	// Re-verify identity after the slow read, like Start does: bytes and label must match
+	// at load time, so a mid-read edit cannot land under a fresh version.
+	const rechecked = (await ctx.runQuery(internal.files_browser.authorize_browser_source, {
+		organizationId: membership.organizationId,
+		workspaceId: membership.workspaceId,
+		userId: user._id,
+		membershipId: args.membershipId,
+		nodeId: session.nodeId,
+		path,
+		sourceKind: session.sourceKind,
+	})) as authorize_browser_source_Result;
+	if (
+		rechecked._nay ||
+		rechecked._yay.version !== authorized._yay.version ||
+		rechecked._yay.snapshotKey !== authorized._yay.snapshotKey
+	) {
+		return Result({ _nay: { message: "The source changed while loading. Refresh to try again." } });
+	}
+
+	if (args.source && args.browserIntent) {
+		const allowed = await ctx.runQuery(internal.files_browser.check_browser_source, {
+			source: args.source,
+			browserIntent: args.browserIntent,
+			mode: "file",
+		});
+		if (allowed._nay) return allowed;
+	}
+	const reloaded = await files_browser_runner_call({
+		route: "reload",
+		body: {
+			mode: "file",
+			sessionId: runnerSessionId,
+			ownerId: user._id,
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			navGen: session.navigationGeneration,
+			expectedAgentLease: args.expectedAgentLease,
+			operationId: args.operationId,
+			operationDeadline: args.operationDeadline,
+			source: args.source
+				? { chatId: args.source.threadId, sourceMessageId: args.source.sourceMessageId, toolCallId: args.toolCallId }
+				: undefined,
+			sourceKind: session.sourceKind,
+			sourceVersion: authorized._yay.version,
+			sourceHash: await crypto_sha256_hex(html),
+			html,
+		},
+	});
+	if (reloaded._nay) {
+		console.error("Browser reload failed", { message: reloaded._nay.message });
+		return Result({ _nay: { message: "Browser did not reload" } });
+	}
+	if (args.operationId) {
+		const ack = browser_management_ack_schema.safeParse(reloaded._yay);
+		if (!ack.success || ack.data.status !== "completed")
+			return Result({
+				_nay: {
+					name: ack.success && ack.data.status === "refused" ? "operation_refused" : "outcome_unknown",
+					message: "Browser reload did not complete",
+				},
+			});
+	}
+
+	const parsed = files_browser_runner_open_schema.safeParse(reloaded._yay);
+	if (!parsed.success || parsed.data.session.mode !== "file") {
+		return Result({ _nay: { message: "Browser did not reload" } });
+	}
+	const updated = (await ctx.runMutation(internal.files_browser.sync_browser_session, {
+		sessionId: args.sessionId,
+		runner: parsed.data.session,
+	})) as files_browser_sync_browser_session_Result;
+	if (updated._nay) {
+		return updated;
+	}
+	if (!updated._yay) return Result({ _nay: { message: "Not found" } });
+
+	if (session.sourceKind === "draft" && args.draftCaptureId && args.draftStorageId) {
+		await ctx.runMutation(internal.files_browser.delete_draft_capture, {
+			captureId: args.draftCaptureId,
+			storageId: args.draftStorageId,
+		});
+	}
+
+	return Result({
+		_yay: {
+			mode: "file" as const,
+			loadGen: parsed.data.session.loadGen,
+			controlGen: parsed.data.session.controlGen,
+			navGen: parsed.data.session.navGen,
+			sourceVersion: parsed.data.session.sourceVersion,
+			sourceHash: parsed.data.session.sourceHash,
+		},
+	});
+}
+
+export const agent_reload_browser = internalAction({
+	args: {
+		source: ai_chat_browser_source_validator,
+		browserIntent: browser_intent_validator,
+		sessionId: v.id("files_browser_sessions"),
+		expectedAgentLease: browser_agent_lease_validator,
+		operationId: v.string(),
+		operationDeadline: v.number(),
+		toolCallId: v.string(),
+	},
+	returns: v_result({ _yay: browser_reload_result_validator }),
+	handler: async (ctx, args): Promise<BrowserActionResult<Infer<typeof browser_reload_result_validator>>> => {
+		const user = await ctx.runQuery(internal.users.get, { userId: args.source.userId });
+		const membership = await ctx.runQuery(internal.files_browser.get_browser_membership, {
+			userId: args.source.userId,
+			membershipId: args.source.membershipId,
+		});
+		if (!user || !membership) return Result({ _nay: { message: "Unauthorized" } });
+		const result = await reload_browser_for_member(
+			ctx,
+			{ ...args, membershipId: membership._id, path: "" },
+			user,
+			membership,
+		);
+		if (result._nay) return result;
+		const allowed = await ctx.runQuery(internal.files_browser.check_browser_source, {
+			source: args.source,
+			browserIntent: args.browserIntent,
+			mode: result._yay.mode,
+		});
+		return allowed._nay ? allowed : result;
 	},
 });
 
@@ -2851,7 +4006,7 @@ export const sync_browser_session = internalMutation({
 		if (
 			runner.mode !== session.mode ||
 			runner.sessionId !== session.runnerSessionId ||
-			runner.navGen !== session.navigationGeneration ||
+			(runner.mode === "file" && runner.navGen !== session.navigationGeneration) ||
 			(runner.mode === "file" &&
 				session.mode === "file" &&
 				(runner.nodeId !== session.nodeId || runner.sourceKind !== session.sourceKind)) ||
@@ -2871,6 +4026,15 @@ export const sync_browser_session = internalMutation({
 			idleUntil?: number;
 			totalUntil?: number;
 			updatedAt?: number;
+			navigationGeneration?: number;
+			tabId?: string;
+			tabGen?: number;
+			viewedTabId?: string | null;
+			viewGen?: number;
+			tabCount?: number;
+			policyRevision?: number;
+			selectionRevision?: number;
+			tabs?: WebBrowserSession["tabs"];
 		} = {};
 		// Source and control advance separately. A late reload must not undo a newer take.
 		// A web reload keeps `loadGen`, so only a file reload lands here.
@@ -2895,9 +4059,29 @@ export const sync_browser_session = internalMutation({
 			runner.mode === "web" &&
 			session.mode === "web" &&
 			runner.controlGen >= session.controlGen &&
-			runner.agentAccess !== session.agentAccess
+			runner.policyRevision >= session.policyRevision &&
+			runner.selectionRevision >= session.selectionRevision
 		) {
 			patch.agentAccess = runner.agentAccess;
+			const currentTab = session.tabs.find((current) => current.tabId === runner.tabId);
+			const tab =
+				currentTab && (runner.navGen < currentTab.navGen || runner.tabGen < currentTab.tabGen)
+					? currentTab
+					: { tabId: runner.tabId, tabGen: runner.tabGen, navGen: runner.navGen };
+			// A delayed viewer reply must keep the tab's newer completed navigation.
+			patch.tabId = tab.tabId;
+			patch.tabGen = tab.tabGen;
+			patch.tabCount = runner.tabCount;
+			patch.navigationGeneration = tab.navGen;
+			patch.tabs = currentTab
+				? session.tabs.map((current) => (current.tabId === tab.tabId ? tab : current))
+				: [...session.tabs, tab].slice(0, 8);
+			patch.policyRevision = runner.policyRevision;
+			patch.selectionRevision = runner.selectionRevision;
+			if (runner.viewGen >= session.viewGen) {
+				patch.viewedTabId = runner.viewedTabId;
+				patch.viewGen = runner.viewGen;
+			}
 		}
 		if (runner.idleUntil > (session.idleUntil ?? 0)) patch.idleUntil = runner.idleUntil;
 		if (session.totalUntil !== runner.totalUntil) patch.totalUntil = runner.totalUntil;
@@ -3051,6 +4235,7 @@ export const keep_open_browser = action({
 		const kept = await files_browser_runner_call({
 			route: "keep-open",
 			body: {
+				mode: loaded._yay.mode,
 				sessionId: loaded._yay.runnerSessionId,
 				ownerId: user._id,
 				organizationId: membership.organizationId,
@@ -3134,7 +4319,8 @@ export const grant_browser_viewer = action({
 			return Result({ _nay: { message: "Not found" } });
 		}
 
-		const viewerUrl = files_browser_runner_viewer_url();
+		const viewerBaseUrl = files_browser_runner_viewer_url();
+		const viewerUrl = viewerBaseUrl ? `${viewerBaseUrl}?mode=${loaded._yay.mode}` : null;
 		if (!viewerUrl) {
 			return Result({ _nay: { message: "Browser unavailable" } });
 		}
@@ -3151,6 +4337,7 @@ export const grant_browser_viewer = action({
 		const granted = await files_browser_runner_call({
 			route: "viewer-grant",
 			body: {
+				mode: loaded._yay.mode,
 				sessionId: loaded._yay.runnerSessionId,
 				ownerId: user._id,
 				organizationId: membership.organizationId,
@@ -3234,6 +4421,7 @@ export const renew_browser_viewer = action({
 		const renewed = await files_browser_runner_call({
 			route: "viewer-renew",
 			body: {
+				mode: loaded._yay.mode,
 				sessionId: loaded._yay.runnerSessionId,
 				ownerId: user._id,
 				organizationId: membership.organizationId,
@@ -3352,6 +4540,7 @@ export const take_browser_control = action({
 		const taken = await files_browser_runner_call({
 			route: "control-take",
 			body: {
+				mode: loaded._yay.mode,
 				sessionId: loaded._yay.runnerSessionId,
 				ownerId: user._id,
 				organizationId: membership.organizationId,
@@ -3379,14 +4568,13 @@ export const take_browser_control = action({
 });
 
 /**
- * Hand control back to the agent side for the exact paused thread. The caller proves the thread;
- * the runner atomically ends human input and readies a fresh request lease.
+ * End human control for this browser. The runner checks the paused control generation.
  */
 export const resume_browser_agent = action({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
 		sessionId: v.id("files_browser_sessions"),
-		threadId: v.id("ai_chat_threads"),
+		controlGen: v.number(),
 	},
 	returns: v_result({ _yay: v.object({ control: v.string(), controlGen: v.number() }) }),
 	handler: async (ctx, args) => {
@@ -3414,16 +4602,11 @@ export const resume_browser_agent = action({
 			return loaded;
 		}
 
-		const thread = await ctx.runQuery(api.ai_chat.thread_get, {
-			membershipId: args.membershipId,
-			threadId: args.threadId,
-		});
-		if (!thread) {
-			return Result({ _nay: { message: "Not found" } });
-		}
 		if (!loaded._yay.runnerSessionId) {
 			return Result({ _nay: { message: "Not found" } });
 		}
+		if (loaded._yay.controlGen !== args.controlGen)
+			return Result({ _nay: { name: "stale", message: "Browser control changed" } });
 
 		const source = await authorize_live_browser_session(ctx, {
 			membership,
@@ -3437,6 +4620,8 @@ export const resume_browser_agent = action({
 		const resumed = await files_browser_runner_call({
 			route: "control-resume",
 			body: {
+				mode: loaded._yay.mode,
+				controlGen: args.controlGen,
 				sessionId: loaded._yay.runnerSessionId,
 				ownerId: user._id,
 				organizationId: membership.organizationId,
@@ -3464,81 +4649,297 @@ export const resume_browser_agent = action({
 	},
 });
 
-/**
- * Turn the agent's access to the owner's live web browser on or off. Off stops a running agent
- * command, like Take does. The runner owns the switch; the doc mirrors it.
- */
-export const set_browser_agent_access = action({
-	args: {
-		membershipId: v.id("organizations_workspaces_users"),
-		sessionId: v.id("files_browser_sessions"),
-		on: v.boolean(),
-	},
-	returns: v_result({ _yay: v.object({ agentAccess: v.boolean(), controlGen: v.number() }) }),
+function browser_preferences_public(preference: Awaited<ReturnType<typeof files_browser_db_get_preferences>>) {
+	return {
+		webChoice: preference.webChoice,
+		selectionRevision: preference.selectionRevision,
+		policyRevision: preference.policyRevision,
+		webAgentAccess: preference.webAgentAccess,
+		agentBlockedHosts: preference.agentBlockedHosts,
+		syncPending: preference.syncPending,
+	};
+}
+
+export const current_browser_preferences = query({
+	args: { membershipId: v.id("organizations_workspaces_users") },
+	returns: v.union(browser_preferences_public_validator, v.null()),
 	handler: async (ctx, args) => {
 		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-		const user = userAuth ? await ctx.runQuery(internal.users.get, { userId: userAuth.id }) : null;
-		if (!user || (userAuth?.kind === "anonymous" && user.deletedAt !== undefined)) {
-			return Result({ _nay: { message: "Unauthenticated" } });
-		}
-
-		const membership = (await ctx.runQuery(api.organizations.get_membership, {
+		const user = userAuth ? await ctx.db.get("users", userAuth.id) : null;
+		if (!user || user.deletedAt !== undefined) throw convex_error({ message: "Unauthenticated" });
+		const membership = await organizations_db_get_membership(ctx, {
+			userId: user._id,
 			membershipId: args.membershipId,
-		})) as Doc<"organizations_workspaces_users"> | null;
-		if (!membership || membership.userId !== user._id) {
-			return Result({ _nay: { message: "Unauthorized" } });
-		}
+		});
+		if (!membership) return null;
+		return browser_preferences_public(await files_browser_db_get_preferences(ctx, membership));
+	},
+});
 
-		const loaded = (await ctx.runQuery(internal.files_browser.load_browser_session, {
+export const change_browser_preferences = internalMutation({
+	args: {
+		userId: v.id("users"),
+		membershipId: v.id("organizations_workspaces_users"),
+		change: v.union(
+			v.object({ kind: v.literal("choice"), webChoice: browser_choice_validator }),
+			v.object({ kind: v.literal("access"), enabled: v.boolean() }),
+			v.object({ kind: v.literal("hosts"), hosts: v.array(v.string()) }),
+			v.object({ kind: v.literal("end") }),
+		),
+	},
+	returns: v_result({ _yay: doc(app_convex_schema, "files_browser_preferences") }),
+	handler: async (ctx, args) => {
+		const membership = await organizations_db_get_membership(ctx, args);
+		if (!membership) return Result({ _nay: { message: "Unauthorized" } });
+		const permission = await access_control_db_authorize_membership(ctx, {
+			userAuth: { id: args.userId },
+			membership,
+			permission: "workspace.browser.use",
+		});
+		if (permission._nay) return permission;
+		const current = await files_browser_db_get_preferences(ctx, membership);
+		const { change } = args;
+		if (change.kind === "choice" && change.webChoice.provider === "playwriter") {
+			const id = ctx.db.normalizeId("playwriter_connections", change.webChoice.connectionId);
+			const connection = id ? await ctx.db.get("playwriter_connections", id) : null;
+			if (
+				!connection ||
+				connection.ownerId !== args.userId ||
+				connection.organizationId !== membership.organizationId ||
+				connection.workspaceId !== membership.workspaceId ||
+				connection.confirmedTargetHandle !== change.webChoice.confirmedTargetHandle ||
+				!connection.encryptedShareId ||
+				connection.idleExpiresAt <= Date.now()
+			)
+				return Result({ _nay: { message: "Shared browser is not available" } });
+		}
+		let hosts = current.agentBlockedHosts;
+		if (change.kind === "hosts") {
+			if (change.hosts.length > BROWSER_PROFILE_BLOCKED_HOSTS_MAX)
+				return Result({ _nay: { message: "Too many sites" } });
+			const canonical = change.hosts.map(browser_site_host);
+			if (canonical.some((host) => !host)) return Result({ _nay: { message: "Invalid site" } });
+			hosts = [...new Set(canonical as string[])].sort();
+		}
+		const changed =
+			change.kind === "end" ||
+			(change.kind === "choice" && !browser_choice_matches(change.webChoice, current.webChoice)) ||
+			(change.kind === "access" && change.enabled !== current.webAgentAccess) ||
+			(change.kind === "hosts" && JSON.stringify(hosts) !== JSON.stringify(current.agentBlockedHosts));
+		const next = {
+			ownerId: args.userId,
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
-			userId: user._id,
-			membershipId: args.membershipId,
-			sessionId: args.sessionId,
-		})) as load_browser_session_Result;
-		if (loaded._nay) {
-			return loaded;
-		}
-		if (loaded._yay.mode !== "web" || !loaded._yay.runnerSessionId) {
-			return Result({ _nay: { message: "Not found" } });
-		}
+			webChoice: change.kind === "choice" ? change.webChoice : current.webChoice,
+			selectionRevision: current.selectionRevision + (changed && change.kind === "choice" ? 1 : 0),
+			webAgentAccess: change.kind === "access" ? change.enabled : current.webAgentAccess,
+			policyRevision: current.policyRevision + (changed && change.kind !== "choice" ? 1 : 0),
+			agentBlockedHosts: hosts,
+			syncPending: changed || current.syncPending,
+			updatedAt: Date.now(),
+		};
+		const preferenceId = "_id" in current ? current._id : await ctx.db.insert("files_browser_preferences", next);
+		if ("_id" in current) await ctx.db.patch("files_browser_preferences", preferenceId, next);
+		return Result({ _yay: (await ctx.db.get("files_browser_preferences", preferenceId))! });
+	},
+});
 
-		const source = await authorize_live_browser_session(ctx, {
-			membership,
-			userId: user._id,
-			session: loaded._yay,
+type change_browser_preferences_Result =
+	typeof change_browser_preferences extends RegisteredMutation<infer _V, infer _A, infer R> ? Awaited<R> : never;
+
+export const finish_browser_preferences_sync = internalMutation({
+	args: { preferenceId: v.id("files_browser_preferences"), policyRevision: v.number(), selectionRevision: v.number() },
+	returns: v.boolean(),
+	handler: async (ctx, args) => {
+		const preference = await ctx.db.get("files_browser_preferences", args.preferenceId);
+		if (
+			!preference ||
+			preference.policyRevision !== args.policyRevision ||
+			preference.selectionRevision !== args.selectionRevision
+		)
+			return false;
+		await ctx.db.patch("files_browser_preferences", preference._id, { syncPending: false });
+		return true;
+	},
+});
+
+export const load_browser_preferences_doc = internalQuery({
+	args: { preferenceId: v.id("files_browser_preferences") },
+	returns: v.union(doc(app_convex_schema, "files_browser_preferences"), v.null()),
+	handler: async (ctx, args) => ctx.db.get("files_browser_preferences", args.preferenceId),
+});
+
+export const sync_browser_preferences_for_member = internalAction({
+	args: { preferenceId: v.id("files_browser_preferences"), membershipId: v.id("organizations_workspaces_users") },
+	returns: v_result({ _yay: v.null() }),
+	handler: async (ctx, args): Promise<BrowserActionResult<null>> => {
+		const preference = await ctx.runQuery(internal.files_browser.load_browser_preferences_doc, {
+			preferenceId: args.preferenceId,
 		});
-		if (!source.ok) {
-			return Result({ _nay: { message: source.message } });
+		if (!preference?.syncPending) return Result({ _yay: null });
+		const synced = await sync_browser_preferences(ctx, preference, args.membershipId);
+		if (synced._nay) {
+			console.warn("Browser policy sync failed; the cron will retry", {
+				preferenceId: preference._id,
+				reason: synced._nay.name ?? "sync_failed",
+			});
 		}
+		return synced;
+	},
+});
 
-		const switched = await files_browser_runner_call({
+export const retry_browser_preferences_sync = internalMutation({
+	args: { cursor: v.optional(v.string()) },
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const pending = await ctx.db
+			.query("files_browser_preferences")
+			.withIndex("by_syncPending_updatedAt", (q) => q.eq("syncPending", true).lte("updatedAt", Date.now() - 30_000))
+			.paginate({ cursor: args.cursor ?? null, numItems: 50 });
+		const memberships = await Promise.all(
+			pending.page.map((preference) =>
+				ctx.db
+					.query("organizations_workspaces_users")
+					.withIndex("by_user_organization_workspace_active", (q) =>
+						q
+							.eq("userId", preference.ownerId)
+							.eq("organizationId", preference.organizationId)
+							.eq("workspaceId", preference.workspaceId)
+							.eq("active", true),
+					)
+					.first(),
+			),
+		);
+		for (let index = 0; index < pending.page.length; index++) {
+			const membership = memberships[index];
+			if (membership)
+				await ctx.scheduler.runAfter(0, internal.files_browser.sync_browser_preferences_for_member, {
+					preferenceId: pending.page[index]!._id,
+					membershipId: membership._id,
+				});
+		}
+		if (!pending.isDone)
+			await ctx.scheduler.runAfter(0, internal.files_browser.retry_browser_preferences_sync, {
+				cursor: pending.continueCursor,
+			});
+		return null;
+	},
+});
+
+async function sync_browser_preferences(
+	ctx: ActionCtx,
+	preference: Doc<"files_browser_preferences">,
+	membershipId: Id<"organizations_workspaces_users">,
+): Promise<BrowserActionResult<null>> {
+	const cloud = (await ctx.runQuery(internal.files_browser.load_browser_session, {
+		userId: preference.ownerId,
+		organizationId: preference.organizationId,
+		workspaceId: preference.workspaceId,
+		membershipId,
+		mode: "web",
+	})) as load_browser_session_Result;
+	if (cloud._yay?.runnerSessionId) {
+		const synced = await files_browser_runner_call({
 			route: "agent-access",
 			body: {
-				sessionId: loaded._yay.runnerSessionId,
-				ownerId: user._id,
-				organizationId: membership.organizationId,
-				workspaceId: membership.workspaceId,
-				on: args.on,
+				mode: "web",
+				sessionId: cloud._yay.runnerSessionId,
+				ownerId: preference.ownerId,
+				organizationId: preference.organizationId,
+				workspaceId: preference.workspaceId,
+				on: preference.webAgentAccess && preference.webChoice.provider === "cloud",
+				agentBlockedHosts: preference.agentBlockedHosts,
+				policyRevision: preference.policyRevision,
+				selectionRevision: preference.selectionRevision,
 			},
 		});
-		if (switched._nay) {
-			return switched;
-		}
-		const parsed = files_browser_runner_open_schema.safeParse(switched._yay);
-		if (!parsed.success || parsed.data.session.mode !== "web") {
-			return Result({ _nay: { message: "Browser request failed" } });
-		}
+		if (synced._nay) return synced;
+		const parsed = files_browser_runner_open_schema.safeParse(synced._yay);
+		if (
+			!parsed.success ||
+			parsed.data.session.mode !== "web" ||
+			parsed.data.session.policyRevision !== preference.policyRevision ||
+			parsed.data.session.selectionRevision !== preference.selectionRevision
+		)
+			return Result({ _nay: { message: "Browser policy update failed" } });
 		const updated = (await ctx.runMutation(internal.files_browser.sync_browser_session, {
-			sessionId: args.sessionId,
+			sessionId: cloud._yay._id,
 			runner: parsed.data.session,
 		})) as files_browser_sync_browser_session_Result;
 		if (updated._nay) return updated;
-		if (!updated._yay) return Result({ _nay: { message: "Not found" } });
-		return Result({
-			_yay: { agentAccess: parsed.data.session.agentAccess, controlGen: parsed.data.session.controlGen },
+	}
+	const remote = await ctx.runAction(internal.playwriter_browser.sync_policy, {
+		ownerId: preference.ownerId,
+		organizationId: preference.organizationId,
+		workspaceId: preference.workspaceId,
+		webAgentAccess: preference.webAgentAccess,
+		agentBlockedHosts: preference.agentBlockedHosts,
+		selectionRevision: preference.selectionRevision,
+		policyRevision: preference.policyRevision,
+	});
+	if (remote._nay) return remote;
+	const committed = await ctx.runMutation(internal.files_browser.finish_browser_preferences_sync, {
+		preferenceId: preference._id,
+		policyRevision: preference.policyRevision,
+		selectionRevision: preference.selectionRevision,
+	});
+	return committed ? Result({ _yay: null }) : Result({ _nay: { message: "Browser policy changed again" } });
+}
+
+async function change_browser_preferences_from_user(
+	ctx: ActionCtx,
+	membershipId: Id<"organizations_workspaces_users">,
+	change: FunctionArgs<typeof internal.files_browser.change_browser_preferences>["change"],
+): Promise<BrowserActionResult<Infer<typeof browser_preferences_public_validator>>> {
+	const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+	const user = userAuth ? await ctx.runQuery(internal.users.get, { userId: userAuth.id }) : null;
+	if (!user || user.deletedAt !== undefined) return Result({ _nay: { message: "Unauthenticated" } });
+	const changed = (await ctx.runMutation(internal.files_browser.change_browser_preferences, {
+		userId: user._id,
+		membershipId,
+		change,
+	})) as change_browser_preferences_Result;
+	if (changed._nay) return changed;
+	if (!changed._yay.syncPending) return Result({ _yay: browser_preferences_public(changed._yay) });
+	const synced = await sync_browser_preferences(ctx, changed._yay, membershipId);
+	if (synced._nay) {
+		await ctx.scheduler.runAfter(30_000, internal.files_browser.sync_browser_preferences_for_member, {
+			preferenceId: changed._yay._id,
+			membershipId,
 		});
+		return synced;
+	}
+	return Result({ _yay: { ...browser_preferences_public(changed._yay), syncPending: false } });
+}
+
+export const set_browser_choice = action({
+	args: { membershipId: v.id("organizations_workspaces_users"), webChoice: browser_choice_validator },
+	returns: v_result({ _yay: browser_preferences_public_validator }),
+	handler: files_browser_action_set_choice,
+});
+
+export async function files_browser_action_set_choice(
+	ctx: ActionCtx,
+	args: {
+		membershipId: Id<"organizations_workspaces_users">;
+		webChoice: Infer<typeof browser_choice_validator>;
 	},
+): Promise<BrowserActionResult<Infer<typeof browser_preferences_public_validator>>> {
+	return change_browser_preferences_from_user(ctx, args.membershipId, { kind: "choice", webChoice: args.webChoice });
+}
+
+export const set_browser_agent_access = action({
+	args: { membershipId: v.id("organizations_workspaces_users"), enabled: v.boolean() },
+	returns: v_result({ _yay: browser_preferences_public_validator }),
+	handler: async (ctx, args): Promise<BrowserActionResult<Infer<typeof browser_preferences_public_validator>>> =>
+		change_browser_preferences_from_user(ctx, args.membershipId, { kind: "access", enabled: args.enabled }),
+});
+
+export const set_agent_blocked_hosts = action({
+	args: { membershipId: v.id("organizations_workspaces_users"), hosts: v.array(v.string()) },
+	returns: v_result({ _yay: browser_preferences_public_validator }),
+	handler: async (ctx, args): Promise<BrowserActionResult<Infer<typeof browser_preferences_public_validator>>> =>
+		change_browser_preferences_from_user(ctx, args.membershipId, { kind: "hosts", hosts: args.hosts }),
 });
 
 /**
@@ -3584,6 +4985,7 @@ export const web_browser_available = query({
 export const current_browser_session = query({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
+		mode: v.union(v.literal("file"), v.literal("web")),
 	},
 	returns: v.union(browser_file_session_public_validator, browser_web_session_public_validator, v.null()),
 	handler: async (ctx, args) => {
@@ -3610,11 +5012,14 @@ export const current_browser_session = query({
 					.eq("workspaceId", membership.workspaceId),
 			)
 			.filter((q) =>
-				q.or(
-					q.eq(q.field("control"), "starting"),
-					q.eq(q.field("control"), "ready"),
-					q.eq(q.field("control"), "human"),
-					q.eq(q.field("control"), "pausing"),
+				q.and(
+					q.eq(q.field("mode"), args.mode),
+					q.or(
+						q.eq(q.field("control"), "starting"),
+						q.eq(q.field("control"), "ready"),
+						q.eq(q.field("control"), "human"),
+						q.eq(q.field("control"), "pausing"),
+					),
 				),
 			)
 			.first();
@@ -3738,12 +5143,32 @@ async function authorize_browser_file_source(ctx: MutationCtx, args: Infer<typeo
 		(session.totalUntil !== undefined && session.totalUntil <= Date.now()) ||
 		session.controlGen !== args.expectedAgentLease.controlGen ||
 		session.loadGen !== args.expectedAgentLease.loadGen ||
-		session.navigationGeneration !== args.expectedAgentLease.navGen ||
+		(session.mode === "file"
+			? session.navigationGeneration !== args.expectedAgentLease.navGen
+			: !session.tabs.some(
+					(tab) =>
+						tab.tabId === args.expectedAgentLease.tabId &&
+						tab.tabGen === args.expectedAgentLease.tabGen &&
+						tab.navGen === args.expectedAgentLease.navGen,
+				)) ||
 		session.mode !== args.expectedSource.mode
 	)
 		return Result({ _nay: { message: "Browser session changed. Run the capture again." } });
 
 	if (session.mode === "web") {
+		const preference = await files_browser_db_get_preferences(ctx, {
+			userId: args.userId,
+			organizationId: session.organizationId,
+			workspaceId: session.workspaceId,
+		});
+		if (
+			!preference.webAgentAccess ||
+			preference.webChoice.provider !== "cloud" ||
+			preference.syncPending ||
+			preference.policyRevision !== args.expectedAgentLease.policyRevision ||
+			preference.selectionRevision !== args.expectedAgentLease.selectionRevision
+		)
+			return Result({ _nay: { message: "Browser session changed. Run the capture again." } });
 		const membership = await organizations_db_get_membership(ctx, {
 			userId: args.userId,
 			membershipId: args.agentSource.membershipId,
@@ -3899,6 +5324,7 @@ export async function files_browser_db_delete_profile(ctx: MutationCtx, profile:
  * back; the user signs in to those sites again.
  */
 export async function files_browser_db_schedule_user_deletion(ctx: MutationCtx, args: { userId: Id<"users"> }) {
+	await disconnect_user_connections(ctx, args);
 	// Every live session is still unbilled, and the runner allows only ten live browsers per
 	// deployment, so this read stays small.
 	const liveSessions = await ctx.db
@@ -3924,6 +5350,26 @@ export async function files_browser_db_schedule_user_deletion(ctx: MutationCtx, 
 	}
 	await ctx.scheduler.runAfter(0, internal.files_browser.delete_user_profiles_batch, { userId: args.userId });
 }
+
+async function disconnect_user_connections(ctx: MutationCtx, args: { userId: Id<"users"> }) {
+	const connections = await ctx.db
+		.query("playwriter_connections")
+		.withIndex("by_owner", (q) => q.eq("ownerId", args.userId))
+		.filter((q) => q.or(q.neq(q.field("encryptedShareId"), null), q.eq(q.field("active"), true)))
+		.take(BROWSER_PROFILE_DELETE_BATCH_SIZE);
+	for (const connection of connections) await playwriter_browser_db_disconnect(ctx, connection, "account_deleted");
+	if (connections.length === BROWSER_PROFILE_DELETE_BATCH_SIZE)
+		await ctx.scheduler.runAfter(0, internal.files_browser.disconnect_user_browser_connections, args);
+}
+
+export const disconnect_user_browser_connections = internalMutation({
+	args: { userId: v.id("users") },
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		await disconnect_user_connections(ctx, args);
+		return null;
+	},
+});
 
 /**
  * Delete one batch of a user's saved profiles and continue until none is left.
@@ -3997,6 +5443,7 @@ async function end_live_browser_for_profile(
 		workspaceId: args.membership.workspaceId,
 		userId: args.userId,
 		membershipId: args.membership._id,
+		mode: "web",
 	})) as load_browser_session_Result;
 	if (live._yay) {
 		await ctx.runAction(internal.files_browser.end_browser_session_internal, {
@@ -4047,10 +5494,11 @@ export const current_browser_profile = query({
 					.eq("userId", user._id),
 			)
 			.first();
+		const preference = await files_browser_db_get_preferences(ctx, membership);
 		return {
 			exists: profile !== null,
 			lastUsedAt: profile?.lastUsedAt ?? null,
-			agentBlockedHosts: profile?.agentBlockedHosts ?? [],
+			agentBlockedHosts: preference.agentBlockedHosts,
 		};
 	},
 });
@@ -4102,6 +5550,7 @@ export const list_browser_profile_sites = action({
 		const summary = await files_browser_runner_call({
 			route: "profile-summary",
 			body: {
+				mode: "web",
 				ownerId: userId,
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
@@ -4175,6 +5624,7 @@ export const clear_browser_profile_site = action({
 		const cleared = await files_browser_runner_call({
 			route: "profile-clear",
 			body: {
+				mode: "web",
 				ownerId: userId,
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
@@ -4272,76 +5722,6 @@ export const clear_browser_profile = action({
 });
 
 /**
- * Set the sites the agent may not use in the caller's web browser. Hosts are stored canonical, and
- * a host also blocks every host under it. The runner gets the list at the next start. The runner
- * enforces it on a best-effort basis.
- */
-export const set_browser_agent_blocked_hosts = mutation({
-	args: {
-		membershipId: v.id("organizations_workspaces_users"),
-		hosts: v.array(v.string()),
-	},
-	returns: v_result({ _yay: v.null() }),
-	handler: async (ctx, args) => {
-		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-		const user = userAuth ? await ctx.db.get("users", userAuth.id) : null;
-		if (!user || userAuth?.kind === "anonymous") {
-			return Result({ _nay: { message: "Unauthenticated" } });
-		}
-
-		const membership = await organizations_db_get_membership(ctx, {
-			userId: user._id,
-			membershipId: args.membershipId,
-		});
-		if (!membership) {
-			return Result({ _nay: { message: "Unauthorized" } });
-		}
-		const authorized = await browser_db_authorize_web_use(ctx, { userId: user._id, membership });
-		if (authorized._nay) {
-			return authorized;
-		}
-
-		if (args.hosts.length > BROWSER_PROFILE_BLOCKED_HOSTS_MAX) {
-			return Result({ _nay: { message: "Too many sites" } });
-		}
-		const hosts = new Set<string>();
-		for (const raw of args.hosts) {
-			const host = browser_site_host(raw);
-			if (!host) {
-				return Result({ _nay: { message: "Invalid site" } });
-			}
-			hosts.add(host);
-		}
-
-		const now = Date.now();
-		const profile = await ctx.db
-			.query("files_browser_profiles")
-			.withIndex("by_organization_workspace_user", (q) =>
-				q
-					.eq("organizationId", membership.organizationId)
-					.eq("workspaceId", membership.workspaceId)
-					.eq("userId", user._id),
-			)
-			.first();
-		// A list set before the first start needs a profile to live in. It gets its key now, like a start.
-		if (profile) {
-			await ctx.db.patch("files_browser_profiles", profile._id, { agentBlockedHosts: [...hosts] });
-		} else {
-			await ctx.db.insert("files_browser_profiles", {
-				userId: user._id,
-				organizationId: membership.organizationId,
-				workspaceId: membership.workspaceId,
-				profileKey: crypto.getRandomValues(new Uint8Array(32)).buffer,
-				agentBlockedHosts: [...hosts],
-				createdAt: now,
-				lastUsedAt: now,
-			});
-		}
-		return Result({ _yay: null });
-	},
-});
-
-/**
  * Wipe docs whose next attempt is due, oldest first.
  */
 export const list_due_browser_profile_wipes = internalQuery({
@@ -4410,6 +5790,7 @@ export const process_browser_profile_wipes = internalAction({
 				const deleted = await files_browser_runner_call({
 					route: "profile-delete",
 					body: {
+						mode: "web",
 						ownerId: wipe.ownerId,
 						organizationId: wipe.organizationId,
 						workspaceId: wipe.workspaceId,
@@ -4629,9 +6010,7 @@ export const create_browser_download_node = internalMutation({
 		let path: string | null = null;
 		for (let suffix = 0; suffix < 100; suffix++) {
 			const candidate =
-				suffix === 0
-					? basePath
-					: `${basePath.slice(0, extensionStart)}-${suffix + 1}${basePath.slice(extensionStart)}`;
+				suffix === 0 ? basePath : `${basePath.slice(0, extensionStart)}-${suffix + 1}${basePath.slice(extensionStart)}`;
 			const occupant = await ctx.db
 				.query("files_nodes")
 				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
@@ -4889,6 +6268,9 @@ export const fill_browser_chooser_from_files = action({
 		sessionId: v.id("files_browser_sessions"),
 		chooserId: v.string(),
 		controlGen: v.number(),
+		tabId: v.string(),
+		tabGen: v.number(),
+		viewGen: v.number(),
 		nodeIds: v.array(v.id("files_nodes")),
 	},
 	returns: v_result({ _yay: v.null() }),
@@ -4957,12 +6339,16 @@ export const fill_browser_chooser_from_files = action({
 		const filled = await files_browser_runner_call({
 			route: "upload-fill",
 			body: {
+				mode: loaded._yay.mode,
 				sessionId: loaded._yay.runnerSessionId,
 				ownerId: user._id,
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
 				chooserId: args.chooserId,
 				controlGen: args.controlGen,
+				tabId: args.tabId,
+				tabGen: args.tabGen,
+				viewGen: args.viewGen,
 				files,
 			},
 		});
@@ -4975,8 +6361,8 @@ export const fill_browser_chooser_from_files = action({
 
 /**
  * Mint a single-use grant for one computer file to the page's open file chooser. The app PUTs the
- * file to `url` with its own `name` param added. The grant lasts 2 minutes and is bound to the
- * chooser.
+ * file to `url` with its own `name` param added. This grant lasts 2 minutes.
+ * It is bound to the chooser.
  */
 export const grant_browser_upload = action({
 	args: {
@@ -4984,6 +6370,9 @@ export const grant_browser_upload = action({
 		sessionId: v.id("files_browser_sessions"),
 		chooserId: v.string(),
 		controlGen: v.number(),
+		tabId: v.string(),
+		tabGen: v.number(),
+		viewGen: v.number(),
 	},
 	returns: v_result({ _yay: v.object({ url: v.string(), expiresAt: v.number() }) }),
 	handler: async (ctx, args) => {
@@ -5026,12 +6415,16 @@ export const grant_browser_upload = action({
 		const granted = await files_browser_runner_call({
 			route: "upload-grant",
 			body: {
+				mode: loaded._yay.mode,
 				sessionId: loaded._yay.runnerSessionId,
 				ownerId: user._id,
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
 				chooserId: args.chooserId,
 				controlGen: args.controlGen,
+				tabId: args.tabId,
+				tabGen: args.tabGen,
+				viewGen: args.viewGen,
 			},
 		});
 		if (granted._nay) {
@@ -5043,6 +6436,7 @@ export const grant_browser_upload = action({
 		}
 
 		const url = files_browser_runner_upload_url({
+			mode: loaded._yay.mode,
 			ownerId: user._id,
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
@@ -5105,6 +6499,11 @@ export const cleanup_expired_browser_docs = internalMutation({
 		// Commit clears this deadline. It can remain after End during Start, so those
 		// closing or closed attempts must drain with the unfinished starts too.
 		for (const session of starting) {
+			const opening = await ctx.db
+				.query("ai_chat_browser_invocations")
+				.withIndex("by_openingSession", (q) => q.eq("openingSessionId", session._id))
+				.first();
+			if (opening && opening.status !== "finished") continue;
 			await browser_db_delete_session(ctx, session._id);
 		}
 		if (starting.length === BROWSER_SWEEP_BATCH_SIZE) {
@@ -5133,6 +6532,13 @@ export const cleanup_expired_browser_docs = internalMutation({
 		if (userDailyUseDocs.length === BROWSER_SWEEP_BATCH_SIZE) {
 			reschedule = true;
 		}
+
+		const remoteDailyUseDocs = await ctx.db
+			.query("playwriter_user_daily_use")
+			.withIndex("by_day", (q) => q.lt("day", dayCutoff))
+			.take(BROWSER_SWEEP_BATCH_SIZE);
+		for (const dailyUse of remoteDailyUseDocs) await ctx.db.delete("playwriter_user_daily_use", dailyUse._id);
+		if (remoteDailyUseDocs.length === BROWSER_SWEEP_BATCH_SIZE) reschedule = true;
 
 		// Read settled sessions only. A doc still waiting for its bill must stay, and many of
 		// them must not block the sweep of older settled docs. Settling always closes the doc.
@@ -5172,13 +6578,41 @@ export const cleanup_expired_browser_docs = internalMutation({
 });
 
 /**
- * Purge one workspace batch of browser sessions and saved profiles. Runner sessions orphaned here
- * die on their idle alarm within minutes, and a profile wipe closes a live web session at once.
+ * Purge one workspace batch of shared connections, browser preferences, cloud sessions, and profiles.
+ * Shared connection cleanup finishes first. Orphaned cloud sessions die on their idle alarm.
  */
 export async function files_browser_db_purge_workspace_batch(
 	ctx: MutationCtx,
 	args: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces">; batchSize: number },
 ) {
+	const connections = await ctx.db
+		.query("playwriter_connections")
+		.withIndex("by_organization_workspace", (q) =>
+			q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId),
+		)
+		.take(args.batchSize);
+	if (connections.length > 0) {
+		let deletedCount = 0;
+		for (const connection of connections) {
+			if (connection.state !== "closed" || connection.encryptedShareId)
+				await playwriter_browser_db_disconnect(ctx, connection, "workspace_deleted");
+			else {
+				await ctx.db.delete("playwriter_connections", connection._id);
+				deletedCount++;
+			}
+		}
+		return { done: false, deletedCount };
+	}
+	const preferences = await ctx.db
+		.query("files_browser_preferences")
+		.withIndex("by_organization_workspace", (q) =>
+			q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId),
+		)
+		.take(args.batchSize);
+	if (preferences.length > 0) {
+		await Promise.all(preferences.map((preference) => ctx.db.delete("files_browser_preferences", preference._id)));
+		return { done: false, deletedCount: preferences.length };
+	}
 	const sessions = await ctx.db
 		.query("files_browser_sessions")
 		.withIndex("by_organization_workspace", (q) =>
@@ -5210,14 +6644,51 @@ export async function files_browser_db_purge_workspace_batch(
 }
 
 /**
- * Drain one user's browser sessions, draft captures (with their stored blobs), web start
- * counters, and saved profiles. Account deletion normally deleted the profiles at the request
- * already. A data-only reset reaches the profiles only here.
+ * Drain one user's shared connections, call receipts, preferences, daily-use counters, cloud
+ * sessions, draft captures with their blobs, and profiles. Account deletion normally removes
+ * profiles at the request. A data-only reset reaches the profiles only here.
  */
 export async function files_browser_db_delete_user_batch(
 	ctx: MutationCtx,
 	args: { userId: Id<"users">; batchSize: number },
 ) {
+	const connections = await ctx.db
+		.query("playwriter_connections")
+		.withIndex("by_owner", (q) => q.eq("ownerId", args.userId))
+		.take(args.batchSize);
+	if (connections.length > 0) {
+		let deletedCount = 0;
+		for (const connection of connections) {
+			if (connection.state !== "closed" || connection.encryptedShareId)
+				await playwriter_browser_db_disconnect(ctx, connection, "account_deleted");
+			else {
+				await ctx.db.delete("playwriter_connections", connection._id);
+				deletedCount++;
+			}
+		}
+		return { done: false, deletedCount };
+	}
+	const invocations = await ctx.db
+		.query("ai_chat_browser_invocations")
+		.withIndex("by_user", (q) => q.eq("userId", args.userId))
+		.take(args.batchSize);
+	if (invocations.length > 0) return ai_chat_files_db_delete_browser_invocations(ctx, invocations);
+	const preferences = await ctx.db
+		.query("files_browser_preferences")
+		.withIndex("by_owner", (q) => q.eq("ownerId", args.userId))
+		.take(args.batchSize);
+	if (preferences.length > 0) {
+		await Promise.all(preferences.map((preference) => ctx.db.delete("files_browser_preferences", preference._id)));
+		return { done: false, deletedCount: preferences.length };
+	}
+	const remoteDailyUse = await ctx.db
+		.query("playwriter_user_daily_use")
+		.withIndex("by_user_day", (q) => q.eq("userId", args.userId))
+		.take(args.batchSize);
+	if (remoteDailyUse.length > 0) {
+		await Promise.all(remoteDailyUse.map((use) => ctx.db.delete("playwriter_user_daily_use", use._id)));
+		return { done: false, deletedCount: remoteDailyUse.length };
+	}
 	const sessions = await ctx.db
 		.query("files_browser_sessions")
 		.withIndex("by_owner", (q) => q.eq("ownerId", args.userId))

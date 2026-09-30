@@ -7,6 +7,8 @@ import type {
 	files_browser_StreamNav,
 } from "@/lib/files-browser-stream.ts";
 import { WebBrowser } from "./web-browser.tsx";
+import { BrowserSettings } from "./browser-settings.tsx";
+import type { browser_Intent } from "../../../shared/browser-intent.ts";
 
 const mocks = vi.hoisted(() => ({
 	action: vi.fn(),
@@ -29,6 +31,15 @@ const mocks = vi.hoisted(() => ({
 	},
 	available: { enabled: true, paidPlan: true } as { enabled: boolean; paidPlan: boolean } | undefined,
 	profile: null as { exists: boolean; lastUsedAt: number | null; agentBlockedHosts: string[] } | null,
+	preferences: {
+		webChoice: { provider: "cloud" } as browser_Intent["webChoice"],
+		selectionRevision: 0,
+		policyRevision: 0,
+		webAgentAccess: true,
+		agentBlockedHosts: [] as string[],
+		syncPending: false,
+	},
+	queries: new Set<string>(),
 }));
 
 vi.mock("@/components/app-auth.tsx", () => ({
@@ -63,8 +74,16 @@ vi.mock("convex/react", async () => {
 		useConvex: () => client,
 		useQuery: (reference: never, args: unknown) => {
 			const session = useSyncExternalStore(subscribe, () => mocks.session);
+			const preferences = useSyncExternalStore(subscribe, () => mocks.preferences);
 			if (args === "skip") return undefined;
+			mocks.queries.add(getFunctionName(reference));
 			switch (getFunctionName(reference)) {
+				case "files_browser:current_browser_preferences":
+					return preferences;
+				case "playwriter_browser:remote_browser_available":
+					return { enabled: true, hasSavedConnection: false };
+				case "playwriter_browser:current_connection":
+					return null;
 				case "files_browser:current_browser_session":
 					return session;
 				case "files_browser:current_browser_profile":
@@ -107,15 +126,28 @@ function webSession(control: string) {
 		loadGen: 1,
 		controlGen: 1,
 		control,
+		tabId: "tab_1",
+		tabGen: 1,
+		viewedTabId: "tab_1",
+		viewGen: 1,
+		tabCount: 1,
+		policyRevision: 0,
+		selectionRevision: 0,
 		agentAccess: true,
 		idleUntil: Date.now() + 540_000,
 		totalUntil: Date.now() + 3_000_000,
 	};
 }
 
+const TAB = { tabId: "tab_1", tabGen: 1, viewGen: 1 };
+const TABS = [{ tabId: "tab_1", tabGen: 1, navGen: 1, title: "Start page", url: "https://start.test/" }];
+const VIEWER_REPLY = {
+	_yay: { grantId: "grant_1", viewerUrl: "wss://viewer.test", tabs: TABS, viewedTabId: "tab_1", viewGen: 1 },
+};
+
 beforeEach(() => {
 	mocks.action.mockReset();
-	mocks.action.mockResolvedValue({ _yay: { grantId: "grant_1", viewerUrl: "wss://viewer.test" } });
+	mocks.action.mockResolvedValue(VIEWER_REPLY);
 	mocks.sendInput.mockReset();
 	mocks.sendInput.mockReturnValue(1);
 	mocks.sendNav.mockReset();
@@ -134,6 +166,15 @@ beforeEach(() => {
 	mocks.mutation.mockReset();
 	mocks.mutation.mockResolvedValue({ _yay: null });
 	mocks.profile = { exists: false, lastUsedAt: null, agentBlockedHosts: [] };
+	mocks.preferences = {
+		webChoice: { provider: "cloud" },
+		selectionRevision: 0,
+		policyRevision: 0,
+		webAgentAccess: true,
+		agentBlockedHosts: [],
+		syncPending: false,
+	};
+	mocks.queries.clear();
 });
 
 afterEach(() => {
@@ -145,11 +186,23 @@ afterEach(() => {
 async function connectViewer(control: string) {
 	await waitFor(() => expect(mocks.events).not.toBeNull());
 	act(() =>
-		mocks.events!.onHello({ viewerId: "viewer_1", viewport: { width: 1280, height: 800 }, control, controlGen: 1 }),
+		mocks.events!.onHello({
+			viewerId: "viewer_1",
+			viewport: { width: 1280, height: 800 },
+			control,
+			controlGen: 1,
+			mode: "web",
+			...TAB,
+			viewedTabId: "tab_1",
+			tabs: TABS,
+			policyRevision: 0,
+			selectionRevision: 0,
+		}),
 	);
 	act(() =>
 		mocks.events!.onWebMessage({
 			t: "location",
+			...TAB,
 			url: "https://start.test/",
 			title: "Start page",
 			loading: false,
@@ -254,34 +307,20 @@ describe("WebBrowser", () => {
 		]);
 	});
 
-	test("the agent switch follows agent-access pushes", async () => {
+	test("shows common agent access and changes it in Browser settings", async () => {
 		mocks.session = webSession("ready");
 		render(<WebBrowser />);
 		await connectViewer("ready");
-
-		const agentSwitch = screen.getByRole("switch", { name: "Agent can use this browser" });
-		expect(agentSwitch).toHaveProperty("checked", true);
-		expect(agentSwitch.getAttribute("data-agent-access")).toBe("on");
-
-		act(() => mocks.events!.onWebMessage({ t: "agent-access", on: false }));
-		expect(agentSwitch).toHaveProperty("checked", false);
-		expect(agentSwitch.getAttribute("data-agent-access")).toBe("off");
-	});
-
-	test("turning the switch off calls the agent access door", async () => {
-		mocks.session = webSession("ready");
-		render(<WebBrowser />);
-		await connectViewer("ready");
-		mocks.action.mockResolvedValue({ _yay: { agentAccess: false, controlGen: 2 } });
-
-		fireEvent.click(screen.getByRole("switch", { name: "Agent can use this browser" }));
-
+		expect(screen.getByText("Agent access on").getAttribute("data-agent-access")).toBe("on");
+		fireEvent.click(screen.getByRole("button", { name: "Browser settings" }));
+		const dialog = await screen.findByRole("dialog", { name: "Browser settings" });
+		fireEvent.click(within(dialog).getByRole("switch", { name: "Agent can use web browser" }));
 		await waitFor(() =>
 			expect(
 				mocks.action.mock.calls.find(
 					([reference]) => getFunctionName(reference) === "files_browser:set_browser_agent_access",
 				)?.[1],
-			).toEqual({ membershipId: "membership_1", sessionId: "session_web", on: false }),
+			).toEqual({ membershipId: "membership_1", enabled: false }),
 		);
 	});
 
@@ -290,9 +329,9 @@ describe("WebBrowser", () => {
 		render(<WebBrowser />);
 		await connectViewer("human");
 
-		act(() => mocks.events!.onWebMessage({ t: "notice", code: "upload_unsupported" }));
+		act(() => mocks.events!.onWebMessage({ ...TAB, t: "notice", code: "upload_unsupported" }));
 		expect(screen.getByText("This site uses a file picker the cloud browser does not support.")).toBeTruthy();
-		act(() => mocks.events!.onWebMessage({ t: "nav-ack", seq: 3, ok: false, code: "denied_host" }));
+		act(() => mocks.events!.onWebMessage({ ...TAB, t: "nav-ack", seq: 3, ok: false, code: "denied_host" }));
 		expect(screen.getByText("This address is blocked")).toBeTruthy();
 	});
 
@@ -307,6 +346,21 @@ describe("WebBrowser", () => {
 		expect(screen.getByText("You lost control because the viewer reconnected. Take control again.")).toBeTruthy();
 	});
 
+	test("Resume sends the control generation shown by the viewer", async () => {
+		mocks.session = webSession("human");
+		render(<WebBrowser />);
+		await connectViewer("human");
+		act(() => mocks.events!.onControl({ ...TAB, control: "human", controlGen: 4 }));
+		fireEvent.click(screen.getByRole("button", { name: "Resume agent" }));
+		await waitFor(() =>
+			expect(
+				mocks.action.mock.calls.find(
+					([reference]) => getFunctionName(reference) === "files_browser:resume_browser_agent",
+				)?.[1],
+			).toEqual({ membershipId: "membership_1", sessionId: "session_web", controlGen: 4 }),
+		);
+	});
+
 	test("the Start card asks Free plans to upgrade instead of starting", () => {
 		mocks.available = { enabled: true, paidPlan: false };
 		render(<WebBrowser />);
@@ -315,25 +369,212 @@ describe("WebBrowser", () => {
 		expect(screen.queryByRole("button", { name: "Start web browser" })).toBeNull();
 	});
 
-	test("ends a live file browser before starting here", async () => {
-		mocks.session = { mode: "file", sessionId: "session_file", nodeId: "node_1", targetKind: "saved" };
-		mocks.action.mockResolvedValue({ _yay: {} });
+	test("keeps the viewed tab when a tab action has no selected tab", async () => {
+		mocks.session = webSession("ready");
 		render(<WebBrowser />);
+		await connectViewer("ready");
+		const newTabs = [
+			...TABS,
+			{ tabId: "tab_2", tabGen: 1, navGen: 1, title: "Agent page", url: "https://agent.test/" },
+		];
+		act(() => mocks.events!.onWebMessage({ t: "tabs", tabs: newTabs, viewedTabId: "tab_1", viewGen: 1 }));
+		mocks.action.mockResolvedValueOnce({ _yay: { tabs: newTabs, viewedTabId: null, viewGen: 1 } });
+		fireEvent.click(screen.getByRole("tab", { name: "Agent page" }));
+		await waitFor(() => expect(screen.getByRole("tab", { name: "Agent page" })).toHaveProperty("disabled", false));
+		expect(screen.getByRole("tab", { name: "Start page" }).getAttribute("aria-selected")).toBe("true");
+		expect(screen.getByRole("textbox", { name: "Address" })).toHaveProperty("value", "https://start.test/");
+	});
 
-		expect(screen.getByText("A file browser is open in Files.")).toBeTruthy();
-		fireEvent.change(screen.getByRole("textbox", { name: "Start address (optional)" }), {
-			target: { value: "example.com" },
+	test("agent tabs do not change the viewed tab and a human can select them", async () => {
+		mocks.session = webSession("ready");
+		render(<WebBrowser />);
+		await connectViewer("ready");
+		const newTabs = [
+			...TABS,
+			{ tabId: "tab_2", tabGen: 1, navGen: 1, title: "Agent page", url: "https://agent.test/" },
+		];
+		act(() => mocks.events!.onWebMessage({ t: "tabs", tabs: newTabs, viewedTabId: "tab_1", viewGen: 1 }));
+		expect(screen.getByRole("tab", { name: "Start page" }).getAttribute("aria-selected")).toBe("true");
+		expect(screen.getByRole("tab", { name: "Agent page" }).getAttribute("aria-selected")).toBe("false");
+		expect(
+			mocks.action.mock.calls.some(([reference]) => getFunctionName(reference) === "files_browser:select_browser_tab"),
+		).toBe(false);
+		mocks.action.mockResolvedValueOnce({ _yay: { tabs: newTabs, viewedTabId: "tab_2", viewGen: 2 } });
+		fireEvent.click(screen.getByRole("tab", { name: "Agent page" }));
+		await waitFor(() =>
+			expect(
+				mocks.action.mock.calls.find(
+					([reference]) => getFunctionName(reference) === "files_browser:select_browser_tab",
+				)?.[1],
+			).toEqual({ membershipId: "membership_1", sessionId: "session_web", viewerId: "viewer_1", tabId: "tab_2" }),
+		);
+		await waitFor(() =>
+			expect(screen.getByRole("tab", { name: "Agent page" }).getAttribute("aria-selected")).toBe("true"),
+		);
+		expect(screen.getByRole("textbox", { name: "Address" })).toHaveProperty("value", "");
+	});
+
+	test("New tab sends the viewer identity while holding control", async () => {
+		const newTabs = [...TABS, { tabId: "tab_2", tabGen: 1, navGen: 1, title: "New page", url: "" }];
+		mocks.action.mockImplementation(async (reference) => {
+			if (getFunctionName(reference) === "files_browser:new_browser_tab")
+				return { _yay: { status: "completed", result: { tabId: "tab_2", reason: null } } };
+			if (getFunctionName(reference) === "files_browser:select_browser_tab")
+				return { _yay: { tabs: newTabs, viewedTabId: "tab_2", viewGen: 2 } };
+			return VIEWER_REPLY;
 		});
-		fireEvent.click(screen.getByRole("button", { name: "End it and start here" }));
+		mocks.session = webSession("human");
+		render(<WebBrowser />);
+		await connectViewer("human");
+		fireEvent.click(screen.getByRole("button", { name: "New tab" }));
+		await waitFor(() =>
+			expect(
+				mocks.action.mock.calls.find(
+					([reference]) => getFunctionName(reference) === "files_browser:new_browser_tab",
+				)?.[1],
+			).toEqual({ membershipId: "membership_1", sessionId: "session_web", viewerId: "viewer_1" }),
+		);
+		await waitFor(() =>
+			expect(screen.getByRole("tab", { name: "New page" }).getAttribute("aria-selected")).toBe("true"),
+		);
+	});
 
-		await waitFor(() => expect(mocks.action).toHaveBeenCalledTimes(2));
-		expect(mocks.action.mock.calls.map(([reference, args]) => [getFunctionName(reference), args])).toEqual([
-			["files_browser:end_browser", { membershipId: "membership_1", sessionId: "session_file" }],
-			[
-				"files_browser:start_web_browser",
-				{ membershipId: "membership_1", viewport: { width: 1280, height: 800 }, startUrl: "https://example.com/" },
-			],
-		]);
+	test("Close tab sends the viewer identity while holding control", async () => {
+		mocks.action.mockImplementation(async (reference) =>
+			getFunctionName(reference) === "files_browser:close_browser_tab"
+				? { _yay: { status: "completed", session: webSession("human"), tabs: TABS, viewedTabId: "tab_1", viewGen: 1 } }
+				: VIEWER_REPLY,
+		);
+		mocks.session = webSession("human");
+		render(<WebBrowser />);
+		await connectViewer("human");
+		act(() =>
+			mocks.events!.onWebMessage({
+				t: "tabs",
+				tabs: [...TABS, { tabId: "tab_2", tabGen: 1, navGen: 1, title: "Other page", url: "" }],
+				viewedTabId: "tab_1",
+				viewGen: 1,
+			}),
+		);
+		fireEvent.click(screen.getByRole("button", { name: "Close Other page" }));
+		await waitFor(() =>
+			expect(
+				mocks.action.mock.calls.find(
+					([reference]) => getFunctionName(reference) === "files_browser:close_browser_tab",
+				)?.[1],
+			).toEqual({ membershipId: "membership_1", sessionId: "session_web", tabId: "tab_2", viewerId: "viewer_1" }),
+		);
+		await waitFor(() => expect(screen.queryByRole("tab", { name: "Other page" })).toBeNull());
+	});
+
+	test("remote mode mounts no cloud viewer, profile, or session query", () => {
+		mocks.preferences = {
+			...mocks.preferences,
+			webChoice: { provider: "playwriter", connectionId: "connection_1", confirmedTargetHandle: "target_1" },
+		};
+		render(<WebBrowser />);
+		expect(screen.getByRole("region", { name: "My browser connection" })).toBeTruthy();
+		expect(mocks.events).toBeNull();
+		expect(mocks.action).not.toHaveBeenCalled();
+		expect([...mocks.queries]).not.toContain("files_browser:current_browser_session");
+		expect([...mocks.queries]).not.toContain("files_browser:current_browser_profile");
+		expect([...mocks.queries]).not.toContain("files_browser:web_browser_available");
+	});
+
+	test("a saved none choice mounts no cloud Start card or hooks", () => {
+		mocks.preferences = { ...mocks.preferences, webChoice: { provider: "none" } };
+		render(<WebBrowser />);
+		expect(screen.getByRole("combobox", { name: "Browser provider" }).textContent).toContain("Choose a browser");
+		expect(screen.getByText("No browser selected. Choose a browser to continue.")).toBeTruthy();
+		expect(screen.queryByRole("button", { name: "Start web browser" })).toBeNull();
+		expect(mocks.events).toBeNull();
+		expect(mocks.action).not.toHaveBeenCalled();
+		expect([...mocks.queries]).not.toContain("files_browser:current_browser_session");
+		expect([...mocks.queries]).not.toContain("files_browser:current_browser_profile");
+		expect([...mocks.queries]).not.toContain("files_browser:web_browser_available");
+	});
+
+	test("an explicit Cloud choice restores the Start card after it is saved", async () => {
+		mocks.preferences = { ...mocks.preferences, webChoice: { provider: "none" } };
+		let finishChoice: (result: unknown) => void = () => {};
+		mocks.action.mockImplementation(
+			() =>
+				new Promise((resolve) => {
+					finishChoice = resolve;
+				}),
+		);
+		render(<WebBrowser />);
+		fireEvent.click(screen.getByRole("combobox", { name: "Browser provider" }));
+		fireEvent.click(screen.getByRole("option", { name: "Cloud browser" }));
+		expect(getFunctionName(mocks.action.mock.calls[0]![0])).toBe("files_browser:set_browser_choice");
+		expect(mocks.action.mock.calls[0]![1]).toEqual({ membershipId: "membership_1", webChoice: { provider: "cloud" } });
+		expect(screen.queryByRole("button", { name: "Start web browser" })).toBeNull();
+		await act(async () => {
+			mocks.preferences = { ...mocks.preferences, webChoice: { provider: "cloud" }, selectionRevision: 1 };
+			for (const listener of mocks.sessionListeners) listener();
+			finishChoice({ _yay: mocks.preferences });
+		});
+		expect(screen.getByRole("combobox", { name: "Browser provider" }).textContent).toContain("Cloud browser");
+		expect(screen.getByRole("button", { name: "Start web browser" })).toBeTruthy();
+	});
+
+	test("a saved Disconnect replaces an old provider draft", () => {
+		mocks.preferences = {
+			...mocks.preferences,
+			webChoice: { provider: "playwriter", connectionId: "connection_1", confirmedTargetHandle: "target_1" },
+		};
+		render(<WebBrowser />);
+		fireEvent.click(screen.getByRole("combobox", { name: "Browser provider" }));
+		fireEvent.click(screen.getByRole("option", { name: "My browser (Playwriter)" }));
+		act(() => {
+			mocks.preferences = { ...mocks.preferences, webChoice: { provider: "none" }, selectionRevision: 1 };
+			for (const listener of mocks.sessionListeners) listener();
+		});
+		expect(screen.getByRole("combobox", { name: "Browser provider" }).textContent).toContain("Choose a browser");
+		expect(screen.queryByRole("region", { name: "My browser connection" })).toBeNull();
+		expect(screen.queryByRole("button", { name: "Start web browser" })).toBeNull();
+		expect([...mocks.queries]).not.toContain("files_browser:current_browser_session");
+	});
+});
+
+describe("BrowserSettings", () => {
+	test("a saved none choice does not promise Cloud access", () => {
+		mocks.preferences = { ...mocks.preferences, webChoice: { provider: "none" } };
+		render(<BrowserSettings onClose={vi.fn()} />);
+		expect(screen.getByRole("combobox", { name: "Browser provider" }).textContent).toContain("Choose a browser");
+		expect(screen.getByText("No browser selected. Choose a browser to continue.")).toBeTruthy();
+		expect(screen.queryByText(/Your agent can start and reuse the cloud browser/)).toBeNull();
+	});
+
+	test("an explicit Cloud choice restores the Cloud description", async () => {
+		mocks.preferences = { ...mocks.preferences, webChoice: { provider: "none" } };
+		mocks.action.mockResolvedValueOnce({ _yay: null });
+		render(<BrowserSettings onClose={vi.fn()} />);
+		expect(screen.queryByText(/Your agent can start and reuse the cloud browser/)).toBeNull();
+		fireEvent.click(screen.getByRole("combobox", { name: "Browser provider" }));
+		fireEvent.click(screen.getByRole("option", { name: "Cloud browser" }));
+		act(() => {
+			mocks.preferences = { ...mocks.preferences, webChoice: { provider: "cloud" }, selectionRevision: 1 };
+			for (const listener of mocks.sessionListeners) listener();
+		});
+		await waitFor(() => expect(screen.getByText(/Your agent can start and reuse the cloud browser/)).toBeTruthy());
+		expect(getFunctionName(mocks.action.mock.calls[0]![0])).toBe("files_browser:set_browser_choice");
+	});
+
+	test("a saved Disconnect replaces an old provider draft", () => {
+		mocks.preferences = {
+			...mocks.preferences,
+			webChoice: { provider: "playwriter", connectionId: "connection_1", confirmedTargetHandle: "target_1" },
+		};
+		render(<BrowserSettings onClose={vi.fn()} />);
+		fireEvent.click(screen.getByRole("combobox", { name: "Browser provider" }));
+		fireEvent.click(screen.getByRole("option", { name: "My browser (Playwriter)" }));
+		act(() => {
+			mocks.preferences = { ...mocks.preferences, webChoice: { provider: "none" }, selectionRevision: 1 };
+			for (const listener of mocks.sessionListeners) listener();
+		});
+		expect(screen.getByRole("combobox", { name: "Browser provider" }).textContent).toContain("Choose a browser");
+		expect(screen.queryByRole("region", { name: "My browser connection" })).toBeNull();
 	});
 });
 
@@ -352,7 +593,7 @@ describe("WebBrowserSavedData", () => {
 	// Answer each saved data door by name. Other actions (the viewer grant) keep a working reply.
 	function mockActions(results: Record<string, unknown>) {
 		mocks.action.mockImplementation(async (reference: never) => {
-			return results[getFunctionName(reference)] ?? { _yay: { grantId: "grant_1", viewerUrl: "wss://viewer.test" } };
+			return results[getFunctionName(reference)] ?? VIEWER_REPLY;
 		});
 	}
 
@@ -396,7 +637,7 @@ describe("WebBrowserSavedData", () => {
 		).toBeTruthy();
 		expect(
 			screen.getByText(
-				"Your agent can use the sites you are logged in to. Add sites it must not use, like your bank, under Manage saved data.",
+				"Your agent can use the sites you are logged in to. Add sites it must not use, like your bank, under Browser settings.",
 			),
 		).toBeTruthy();
 		expect(screen.getByText("Reload the page before you type a password if the agent used it.")).toBeTruthy();
@@ -488,7 +729,7 @@ describe("WebBrowserSavedData", () => {
 		fireEvent.click(within(dialog).getByRole("button", { name: "Clear all saved data" }));
 		expect(
 			within(dialog).getByText(
-				"This signs you out of every site in this workspace's browser, for you and your agent chats. This also clears Sites the agent may not use.",
+				"This signs you out of every site in this workspace's cloud browser, for you and your agent chats.",
 			),
 		).toBeTruthy();
 		expect(actionCalls("files_browser:clear_browser_profile")).toEqual([]);
@@ -503,42 +744,27 @@ describe("WebBrowserSavedData", () => {
 		expect(document.activeElement).toBe(within(dialog).getByRole("heading", { name: "Clear all saved data" }));
 	});
 
-	test("adds and removes sites the agent may not use and shows a refusal", async () => {
-		mocks.profile = { exists: true, lastUsedAt: Date.now(), agentBlockedHosts: ["bank.example"] };
+	test("blocked sites are saved in common settings", async () => {
+		mocks.preferences = { ...mocks.preferences, agentBlockedHosts: ["bank.example"] };
 		render(<WebBrowser />);
-		const dialog = await openSavedData();
-
-		expect(within(dialog).getByText("Best effort. Takes effect at the next start.")).toBeTruthy();
-		expect(rowTexts(within(dialog).getByRole("list", { name: "Sites the agent may not use" }))).toEqual([
-			"bank.example",
-		]);
-
+		fireEvent.click(screen.getByRole("button", { name: "Browser settings" }));
+		const dialog = await screen.findByRole("dialog", { name: "Browser settings" });
+		expect(within(dialog).getByText("Best effort. Applies to both browsers.")).toBeTruthy();
 		const input = within(dialog).getByRole("textbox", { name: "Add a site" });
 		fireEvent.change(input, { target: { value: "shop.example" } });
-		const addButton = within(dialog).getByRole("button", { name: "Add" });
-		addButton.focus();
-		fireEvent.click(addButton);
+		fireEvent.click(within(dialog).getByRole("button", { name: "Add" }));
 		await waitFor(() => expect(input).toHaveProperty("value", ""));
-		// Add turns disabled while the list saves. The focus goes back to the input for the next site.
 		expect(document.activeElement).toBe(input);
-
 		fireEvent.click(within(dialog).getByRole("button", { name: "Remove bank.example" }));
-		await waitFor(() => expect(mocks.mutation).toHaveBeenCalledTimes(2));
-
-		expect(mocks.mutation.mock.calls.map(([reference, args]) => [getFunctionName(reference), args])).toEqual([
-			[
-				"files_browser:set_browser_agent_blocked_hosts",
-				{ membershipId: "membership_1", hosts: ["bank.example", "shop.example"] },
-			],
-			["files_browser:set_browser_agent_blocked_hosts", { membershipId: "membership_1", hosts: [] }],
+		await waitFor(() => expect(actionCalls("files_browser:set_agent_blocked_hosts")).toHaveLength(2));
+		expect(actionCalls("files_browser:set_agent_blocked_hosts")).toEqual([
+			{ membershipId: "membership_1", hosts: ["bank.example", "shop.example"] },
+			{ membershipId: "membership_1", hosts: [] },
 		]);
-
-		mocks.mutation.mockResolvedValueOnce({ _nay: { message: "Too many sites" } });
+		mocks.action.mockResolvedValueOnce({ _nay: { message: "You can add at most 50 sites." } });
 		fireEvent.change(input, { target: { value: "more.example" } });
 		fireEvent.click(within(dialog).getByRole("button", { name: "Add" }));
-
 		expect((await within(dialog).findByRole("alert")).textContent).toBe("You can add at most 50 sites.");
-		expect(input).toHaveProperty("value", "more.example");
 	});
 });
 
@@ -553,7 +779,7 @@ describe("WebBrowser downloads and file choosers", () => {
 	// Answer each door by name. Other actions (the viewer grant) keep a working reply.
 	function mockActions(results: Record<string, unknown>) {
 		mocks.action.mockImplementation(async (reference: never) => {
-			return results[getFunctionName(reference)] ?? { _yay: { grantId: "grant_1", viewerUrl: "wss://viewer.test" } };
+			return results[getFunctionName(reference)] ?? VIEWER_REPLY;
 		});
 	}
 
@@ -567,6 +793,7 @@ describe("WebBrowser downloads and file choosers", () => {
 		act(() =>
 			mocks.events!.onWebMessage({
 				t: "download",
+				...TAB,
 				downloadId,
 				name: "report.pdf",
 				size: 10,
@@ -580,10 +807,11 @@ describe("WebBrowser downloads and file choosers", () => {
 		render(<WebBrowser />);
 		await connectViewer(args.control);
 		// A newer control generation than the hello's. The fill must use this one.
-		act(() => mocks.events!.onControl({ control: args.control, controlGen: 4 }));
+		act(() => mocks.events!.onControl({ ...TAB, control: args.control, controlGen: 4 }));
 		act(() =>
 			mocks.events!.onWebMessage({
 				t: "file-chooser",
+				...TAB,
 				chooserId: "chooser_1",
 				multiple: args.multiple,
 				accept: "image/*, .pdf",
@@ -710,7 +938,7 @@ describe("WebBrowser downloads and file choosers", () => {
 		render(<WebBrowser />);
 		await connectViewer("human");
 
-		act(() => mocks.events!.onWebMessage({ t: "notice", code }));
+		act(() => mocks.events!.onWebMessage({ ...TAB, t: "notice", code }));
 
 		expect(screen.getByText(text)).toBeTruthy();
 	});
@@ -733,6 +961,7 @@ describe("WebBrowser downloads and file choosers", () => {
 		await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
 		expect(actionCalls("files_browser:fill_browser_chooser_from_files")).toEqual([
 			{
+				...TAB,
 				membershipId: "membership_1",
 				sessionId: "session_web",
 				chooserId: "chooser_1",
@@ -797,7 +1026,7 @@ describe("WebBrowser downloads and file choosers", () => {
 		await waitFor(() => expect(actionCalls("files_browser:fill_browser_chooser_from_files")).toHaveLength(1));
 
 		// The real runner closes the chooser before `setFiles`. The page then navigated, so the fill failed.
-		act(() => mocks.events!.onWebMessage({ t: "file-chooser-closed", chooserId: "chooser_1" }));
+		act(() => mocks.events!.onWebMessage({ ...TAB, t: "file-chooser-closed", chooserId: "chooser_1" }));
 		expect(screen.queryByRole("dialog")).toBeNull();
 		await act(async () =>
 			finishFill({ _nay: { name: "chooser_gone", message: "The page no longer asks for a file." } }),
@@ -832,6 +1061,57 @@ describe("WebBrowser downloads and file choosers", () => {
 		expect(screen.queryByRole("dialog")).toBeNull();
 	});
 
+	test.each(["Files", "computer"])(
+		"keeps a newer chooser and its picked file after a late %s reply",
+		async (source) => {
+			mocks.treeNodes = TREE_NODES;
+			let finishUpload: (result: unknown) => void = () => {};
+			const reply = new Promise((resolve) => {
+				finishUpload = resolve;
+			});
+			mockActions({
+				"files_browser:fill_browser_chooser_from_files": reply,
+				"files_browser:grant_browser_upload": {
+					_yay: { url: "https://runner.test/viewer/upload?grantId=grant_9", expiresAt: 1 },
+				},
+			});
+			vi.stubGlobal("fetch", mocks.fetch);
+			mocks.fetch.mockReturnValue(reply);
+			const dialog = await openChooser({ control: "human", multiple: false });
+			if (source === "Files") {
+				pickFromFiles(dialog, /report\.pdf/);
+				fireEvent.click(within(dialog).getByRole("button", { name: "Give to the page" }));
+				await waitFor(() => expect(actionCalls("files_browser:fill_browser_chooser_from_files")).toHaveLength(1));
+			} else {
+				fireEvent.change(within(dialog).getByLabelText("File from your computer"), {
+					target: { files: [new File(["hello"], "notes.txt", { type: "text/plain" })] },
+				});
+				await waitFor(() => expect(mocks.fetch).toHaveBeenCalledOnce());
+			}
+
+			// Filling the first input can open the next chooser before the old reply arrives.
+			act(() => {
+				mocks.events!.onWebMessage({ ...TAB, t: "file-chooser-closed", chooserId: "chooser_1" });
+				mocks.events!.onWebMessage({
+					...TAB,
+					t: "file-chooser",
+					chooserId: "chooser_2",
+					multiple: false,
+					accept: "",
+					origin: "https://next.example",
+				});
+			});
+			const nextDialog = await screen.findByRole("dialog", { name: "next.example wants a file" });
+			pickFromFiles(nextDialog, /photo\.png/);
+			await act(async () =>
+				finishUpload(source === "Files" ? { _yay: null } : { ok: true, json: async () => ({ ok: true }) }),
+			);
+
+			expect(screen.queryByRole("dialog", { name: "next.example wants a file" })).toBe(nextDialog);
+			expect(within(nextDialog).getByRole("list", { name: "Chosen files" }).textContent).toContain("/photo.png");
+		},
+	);
+
 	test("From your computer gets a grant, then PUTs the file with its name and type", async () => {
 		vi.stubGlobal("fetch", mocks.fetch);
 		mocks.fetch.mockResolvedValue({ ok: true, json: async () => ({ ok: true }) });
@@ -847,7 +1127,7 @@ describe("WebBrowser downloads and file choosers", () => {
 
 		await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
 		expect(actionCalls("files_browser:grant_browser_upload")).toEqual([
-			{ membershipId: "membership_1", sessionId: "session_web", chooserId: "chooser_1", controlGen: 4 },
+			{ membershipId: "membership_1", sessionId: "session_web", chooserId: "chooser_1", controlGen: 4, ...TAB },
 		]);
 		expect(mocks.fetch.mock.calls).toEqual([
 			[
@@ -911,10 +1191,10 @@ describe("WebBrowser downloads and file choosers", () => {
 	test("file-chooser-closed closes the open dialog, and ignores another chooser", async () => {
 		await openChooser({ control: "human", multiple: false });
 
-		act(() => mocks.events!.onWebMessage({ t: "file-chooser-closed", chooserId: "chooser_other" }));
+		act(() => mocks.events!.onWebMessage({ ...TAB, t: "file-chooser-closed", chooserId: "chooser_other" }));
 		expect(screen.getByRole("dialog", { name: "upload.example wants a file" })).toBeTruthy();
 
-		act(() => mocks.events!.onWebMessage({ t: "file-chooser-closed", chooserId: "chooser_1" }));
+		act(() => mocks.events!.onWebMessage({ ...TAB, t: "file-chooser-closed", chooserId: "chooser_1" }));
 		expect(screen.queryByRole("dialog")).toBeNull();
 		expect(mocks.sendFileChooserCancel).not.toHaveBeenCalled();
 	});
@@ -954,10 +1234,12 @@ describe("WebBrowser downloads and file choosers", () => {
 		const dialog = await openChooser({ control: "human", multiple: false });
 
 		// Control moved on and came back. The runner closed this chooser, but the closed message never came.
-		act(() => mocks.events!.onControl({ control: "ready", controlGen: 5 }));
-		act(() => mocks.events!.onControl({ control: "human", controlGen: 6 }));
+		act(() => mocks.events!.onControl({ ...TAB, control: "ready", controlGen: 5 }));
+		act(() => mocks.events!.onControl({ ...TAB, control: "human", controlGen: 6 }));
 
 		expect(within(dialog).queryByRole("button", { name: "Cancel" })).toBeNull();
-		expect((within(dialog).getByRole("button", { name: "From your computer" }) as HTMLButtonElement).disabled).toBe(true);
+		expect((within(dialog).getByRole("button", { name: "From your computer" }) as HTMLButtonElement).disabled).toBe(
+			true,
+		);
 	});
 });

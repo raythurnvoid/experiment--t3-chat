@@ -17,11 +17,6 @@ import {
 } from "lucide-react";
 import { AiChatThread } from "@/components/ai-chat/ai-chat.tsx";
 import { FileEditorSidebarPendingStrip } from "@/components/files/file-editor/file-editor-sidebar/file-editor-sidebar-pending-strip.tsx";
-import {
-	FilesBrowserBindingWriter,
-	FilesBrowserResumeThreadMirror,
-	type FilesBrowserBindingWriter_Props,
-} from "@/components/files/file-node-view/files-browser.tsx";
 import { MyContextMenu, MyContextMenuPopover, MyContextMenuTrigger } from "@/components/my-context-menu.tsx";
 import { MyIcon } from "@/components/my-icon.tsx";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
@@ -483,6 +478,9 @@ const FileEditorSidebarAgentHeaderActions = memo(function FileEditorSidebarAgent
 
 	const handleNewChat = () => {
 		const threadId = controller.startNewChat();
+		if (!threadId) {
+			return;
+		}
 		onOptimisticThreadCreated(threadId);
 		// The open tab must reach other tabs before the selection does: a peer that
 		// sees selectedTab change while its openTabs snapshot still lacks the id
@@ -586,9 +584,7 @@ const FileEditorSidebarAgentHeaderTabs = memo(function FileEditorSidebarAgentHea
 
 	// Keep the selected chat tab visible when many tabs overflow the header.
 	useEffect(() => {
-		const selectedTab = listRef.current?.querySelector(
-			`[data-ai-chat-thread-id="${CSS.escape(selectedChatTabId)}"]`,
-		);
+		const selectedTab = listRef.current?.querySelector(`[data-ai-chat-thread-id="${CSS.escape(selectedChatTabId)}"]`);
 		selectedTab?.scrollIntoView({ block: "nearest", inline: "start" });
 	}, [selectedChatTabId, openTabs.length]);
 
@@ -614,6 +610,9 @@ const FileEditorSidebarAgentHeaderTabs = memo(function FileEditorSidebarAgentHea
 			}
 
 			const newThreadId = controller.startNewChat();
+			if (!newThreadId) {
+				return;
+			}
 			onOptimisticThreadCreated(newThreadId);
 			app_local_storage_set_value(openTabsStorageKey, [{ id: newThreadId, title: "New chat" }]);
 			app_local_storage_set_value(selectedTabStorageKey, newThreadId);
@@ -885,17 +884,14 @@ export type FileEditorSidebarAgent_Props = {
 	 * True while this agent panel is visible. A new chat starts on its own only while it is active.
 	 */
 	isActive: boolean;
-	browserBinding: FilesBrowserBindingWriter_Props["browserBinding"];
 };
 
 export const FileEditorSidebarAgent = memo(function FileEditorSidebarAgent(props: FileEditorSidebarAgent_Props) {
-	const { browserBinding } = props;
 	const { membershipId } = AppTenantProvider.useContext();
 	const selectedTabStorageKey: AiChatControllerStorageKey = `app_state::file_editor_sidebar_agent_selected_tab::scope::${membershipId}`;
 
 	return (
 		<AiChatController key={selectedTabStorageKey} storageKey={selectedTabStorageKey}>
-			<FilesBrowserBindingWriter browserBinding={browserBinding} />
 			<FileEditorSidebarAgentContent {...props} />
 		</AiChatController>
 	);
@@ -935,21 +931,15 @@ const FileEditorSidebarAgentContent = memo(function FileEditorSidebarAgentConten
 
 	// Start only while Agent is active. Replace the last tab if its chat is refused.
 	useEffect(() => {
-		if (
-			isActive &&
-			(!hasAutoStartedRef.current || openTabs.length === 0) &&
-			!controller.selectedThreadId
-		) {
+		if (isActive && (!hasAutoStartedRef.current || openTabs.length === 0) && !controller.selectedThreadId) {
+			const threadId = controller.startNewChat();
+			if (!threadId) {
+				return;
+			}
 			hasAutoStartedRef.current = true;
-			rememberOptimisticThreadId(controller.startNewChat());
+			rememberOptimisticThreadId(threadId);
 		}
-	}, [
-		isActive,
-		openTabs.length,
-		controller.selectedThreadId,
-		controller,
-		rememberOptimisticThreadId,
-	]);
+	}, [isActive, openTabs.length, controller.selectedThreadId, controller, rememberOptimisticThreadId]);
 
 	// Replace optimistic open-tab ids with their persisted thread ids once the thread is upgraded.
 	useEffect(() => {
@@ -1160,7 +1150,6 @@ const FileEditorSidebarAgentContent = memo(function FileEditorSidebarAgentConten
 
 	return (
 		<div className={cn("FileEditorSidebarAgent" satisfies FileEditorSidebarAgent_ClassNames)}>
-			<FilesBrowserResumeThreadMirror />
 			<MyTabs selectedId={selectedChatTabId} setSelectedId={handleChatTabChange}>
 				<FileEditorSidebarAgentHeader
 					controller={controller}

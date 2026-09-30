@@ -577,8 +577,7 @@ export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props
 		if (selectedThreadId) {
 			return controller.sendUserText(selectedThreadId, value, { attachments });
 		}
-		controller.startNewChat(value, attachments);
-		return true;
+		return controller.startNewChat(value, attachments) !== undefined;
 	});
 
 	const handleComposerCancel = useFn<AiChatComposer_Props["onCancel"]>(() => {
@@ -957,7 +956,7 @@ export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props
 							autoFocus={Boolean(queuedUserMessageEdit)}
 							canCancel={controller.isRunning}
 							canQueue={queuedUserMessageEdit ? true : controller.canQueueUserText}
-							canSend={!selectedThreadId || controller.canSendUserText}
+							canSend={controller.canSendUserText}
 							isQueueing={queuedUserMessageEdit ? true : controller.isQueueingUserText}
 							isQueueEditing={Boolean(queuedUserMessageEdit)}
 							isRunning={controller.isRunning}

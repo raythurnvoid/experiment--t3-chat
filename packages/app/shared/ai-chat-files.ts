@@ -60,6 +60,13 @@ export const ai_chat_file_result_schema = z
 						"busy",
 						"agent_access_off",
 						"agent_blocked_site",
+						"unknown",
+						"not_started",
+						"offline",
+						"paused",
+						"iframe_unsupported",
+						"needs_human",
+						"sensitive_input",
 					])
 					.nullable(),
 				// Both runners and the shared writer stop at eight files per call.

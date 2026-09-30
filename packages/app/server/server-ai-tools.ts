@@ -28,7 +28,8 @@ import {
 import type { prepare_file_pending_update_for_agent_Result } from "../convex/files_pending_updates.ts";
 import { server_path_normalize } from "./server-utils.ts";
 import { crypto_random_hex, crypto_sha256_hex } from "./crypto-utils.ts";
-import { files_browser_runner_call } from "./files-browser.ts";
+import { files_browser_runner_call, files_browser_runner_session_schema } from "./files-browser.ts";
+import type { browser_Intent } from "../shared/browser-intent.ts";
 import {
 	ai_chat_execute_code_result_schema,
 	ai_chat_file_result_schema,
@@ -580,6 +581,8 @@ export function ai_chat_tool_create_bash(
 		membershipId: Id<"organizations_workspaces_users">;
 		membershipLifetime: number;
 		getThreadId: () => Id<"ai_chat_threads"> | null;
+		getSourceMessageId?: () => Id<"ai_chat_threads_messages_aisdk_5"> | null;
+		browserIntent?: browser_Intent | null;
 		getWorkspaceContext?: () => ai_chat_context_Context | null;
 	},
 	options: {
@@ -687,6 +690,9 @@ export function ai_chat_tool_create_bash(
 				workspaceName: ctxData.workspaceName,
 				allowDbFilesMkdir: options.allowDbFilesMkdir,
 				shellName: args.shell ?? "default",
+				...(ctxData.browserIntent && ctxData.getSourceMessageId?.()
+					? { browserIntent: ctxData.browserIntent, sourceMessageId: ctxData.getSourceMessageId()! }
+					: {}),
 				wakeAgent: options.jobWakeup && args.wakeOnJobFinish ? { modelId: options.jobWakeup.modelId } : null,
 			});
 			// `wait` stopped polling for a job whose finish wakes the agent: the chat run ends the turn.
@@ -2146,12 +2152,12 @@ export type ai_chat_tool_create_file_stored_ToolOutput = InferToolOutput<ai_chat
 
 /**
  * The browser lease shared by tools in one turn. It starts from the live session.
- * Only a reload completed by this turn can advance its page and control versions.
+ * Only checked Run and Reload results from this turn can advance its page versions.
  *
  * Model arguments can never select a different file or session; a stale lease is refused
  * instead of rebound.
  */
-export type ai_chat_tool_BrowserBinding = {
+type CloudBrowserBinding = {
 	membershipId: Id<"organizations_workspaces_users">;
 	/**
 	 * `file` shows one HTML file from Files. `web` is an open web browser with no file.
@@ -2161,7 +2167,32 @@ export type ai_chat_tool_BrowserBinding = {
 	navGen: number;
 	loadGen: number;
 	controlGen: number;
+	tabId?: string | null;
+	tabGen?: number | null;
+	selectionRevision?: number;
+	policyRevision?: number;
 };
+
+export type ai_chat_tool_BrowserBinding =
+	| (CloudBrowserBinding & {
+			provider: "cloud";
+			tabId: string | null;
+			tabGen: number | null;
+			selectionRevision: number;
+			policyRevision: number;
+	  })
+	| {
+			provider: "playwriter";
+			membershipId: Id<"organizations_workspaces_users">;
+			connectionId: Id<"playwriter_connections">;
+			connectionGeneration: number;
+			targetRevision: number;
+			controlRevision: number;
+			navRevision: number;
+			confirmedTargetHandle: string;
+			selectionRevision: number;
+			policyRevision: number;
+	  };
 
 type ai_chat_tool_BrowserContext = {
 	organizationId: Id<"organizations">;
@@ -2172,7 +2203,14 @@ type ai_chat_tool_BrowserContext = {
 	membershipId: Id<"organizations_workspaces_users">;
 	membershipLifetime: number;
 	getThreadId?: () => Id<"ai_chat_threads"> | null;
-	browser: ai_chat_tool_BrowserBinding;
+	browser: CloudBrowserBinding;
+	command?: {
+		commandId: string;
+		deadline: number;
+		receiptResolutionDeadline: number;
+		source: { chatId: string; sourceMessageId: string; toolCallId: string };
+	};
+	onRunSession?: (session: z.infer<typeof files_browser_runner_session_schema>) => Promise<boolean>;
 };
 
 const ai_chat_tool_browser_CODE_MAX_BYTES = 20_000;
@@ -2209,6 +2247,7 @@ const ai_chat_tool_browser_run_schema = z.object({
 	logs: z.array(z.string()),
 	logsTruncated: z.boolean(),
 	error: z.unknown(),
+	session: files_browser_runner_session_schema.optional(),
 });
 
 function browser_run_output_text(run: z.infer<typeof ai_chat_tool_browser_run_schema>) {
@@ -2410,6 +2449,7 @@ export function ai_chat_tool_create_browser_run(
 				userId: ctxData.userId,
 				membershipId: binding.membershipId,
 				sessionId: binding.sessionId,
+				...(binding.mode === "web" && binding.tabId ? { tabId: binding.tabId } : {}),
 			};
 			const isCurrent = async () => {
 				const checked = await ctx.runQuery(internal.files_browser.check_browser_session_access, readArgs);
@@ -2449,6 +2489,7 @@ export function ai_chat_tool_create_browser_run(
 				const run = await files_browser_runner_call({
 					route: "run",
 					body: {
+						mode: binding.mode,
 						sessionId: access.runnerSessionId,
 						ownerId: ctxData.userId,
 						organizationId: ctxData.organizationId,
@@ -2456,7 +2497,22 @@ export function ai_chat_tool_create_browser_run(
 						navGen: binding.navGen,
 						loadGen: binding.loadGen,
 						controlGen: binding.controlGen,
-						commandId: options.toolCallId,
+						commandId: ctxData.command?.commandId ?? options.toolCallId,
+						...(ctxData.command
+							? {
+									deadline: ctxData.command.deadline,
+									receiptResolutionDeadline: ctxData.command.receiptResolutionDeadline,
+									source: ctxData.command.source,
+								}
+							: {}),
+						...(binding.mode === "web"
+							? {
+									tabId: binding.tabId,
+									tabGen: binding.tabGen,
+									selectionRevision: binding.selectionRevision,
+									policyRevision: binding.policyRevision,
+								}
+							: {}),
 						code,
 					},
 					signal: options.abortSignal,
@@ -2488,7 +2544,7 @@ export function ai_chat_tool_create_browser_run(
 					);
 				const outcome = parsed.data;
 				if (
-					outcome.commandId !== options.toolCallId ||
+					outcome.commandId !== (ctxData.command?.commandId ?? options.toolCallId) ||
 					outcome.codeHash !== (await crypto_sha256_hex(`browser-v3\n${code}`))
 				)
 					return ai_chat_file_result(
@@ -2506,6 +2562,10 @@ export function ai_chat_tool_create_browser_run(
 						"invalid_result",
 						browser_debug_error_only("The browser returned output that could not be read."),
 					);
+				if (outcome.session && ctxData.onRunSession) {
+					if (!(await ctxData.onRunSession(outcome.session))) return ai_chat_file_result(title, "errored", [], "stale");
+					Object.assign(binding, ctxData.browser);
+				}
 				if (!(await isCurrent())) {
 					// The user can turn agent access off while the command runs. Say so, so the model does not retry.
 					const after = await ctx.runQuery(internal.files_browser.check_browser_session_access, readArgs);
@@ -2620,7 +2680,19 @@ export function ai_chat_tool_create_browser_run(
 							threadId,
 							modeId: "agent" as const,
 							sessionId: binding.sessionId,
-							expectedAgentLease: { controlGen: binding.controlGen, loadGen: binding.loadGen, navGen: binding.navGen },
+							expectedAgentLease: {
+								controlGen: binding.controlGen,
+								loadGen: binding.loadGen,
+								navGen: binding.navGen,
+								...(binding.mode === "web" && binding.tabId && binding.tabGen !== null
+									? {
+											tabId: binding.tabId,
+											tabGen: binding.tabGen,
+											selectionRevision: binding.selectionRevision,
+											policyRevision: binding.policyRevision,
+										}
+									: {}),
+							},
 							expectedSource:
 								access.mode === "web"
 									? { mode: "web" as const }
@@ -2660,6 +2732,7 @@ export function ai_chat_tool_create_browser_run(
 				if (await isCurrent().catch(() => false))
 					ctxData.observations.set(options.toolCallId, {
 						toolName: "browser_run",
+						safeResult: { status: result.metadata.status, reason: result.metadata.reason },
 						isCurrent,
 						output: {
 							type: "content",

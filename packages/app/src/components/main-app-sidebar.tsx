@@ -439,6 +439,8 @@ export const MainAppSidebar = memo(function MainAppSidebar(props: MainAppSidebar
 		app_convex_api.files_browser.web_browser_available,
 		canUseBrowser ? { membershipId } : "skip",
 	);
+	// A saved remote connection keeps Disconnect reachable after access or the flag changes.
+	const remoteBrowserAvailable = useQuery(app_convex_api.playwriter_browser.remote_browser_available, { membershipId });
 	// Ask for every member, not only those with `workspace.mcp.use`: the query checks that permission
 	// itself (`canUse`). A member who lost it but still has a saved server or sign-in
 	// (`hasSavedData`) must reach the page to delete them.
@@ -522,7 +524,9 @@ export const MainAppSidebar = memo(function MainAppSidebar(props: MainAppSidebar
 						icon={FileText}
 						tooltip={mainAppSidebarCollapsed ? "Files" : undefined}
 					/>
-					{canUseBrowser && webBrowserAvailable?.enabled ? (
+					{(canUseBrowser && webBrowserAvailable?.enabled) ||
+					remoteBrowserAvailable?.enabled ||
+					remoteBrowserAvailable?.hasSavedConnection ? (
 						<MainAppSidebarItem
 							to={browserPath}
 							label="Browser"

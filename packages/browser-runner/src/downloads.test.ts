@@ -14,6 +14,7 @@ vi.mock("./agent-connection", () => ({
 
 const OWNERS = { ownerId: "user_1", organizationId: "org_1", workspaceId: "ws_1" };
 const SESSION = { sessionId: "session-1" };
+const TAB = { tabId: "tab-1", tabGen: 1, viewGen: 1 };
 const NativeResponse = Response;
 const MiB = 1_048_576;
 
@@ -65,7 +66,8 @@ class SocketResponse extends NativeResponse {
 }
 
 function messages(socket: Socket) {
-	return socket.received.filter((data): data is string => typeof data === "string")
+	return socket.received
+		.filter((data): data is string => typeof data === "string")
 		.map((data) => JSON.parse(data) as Record<string, unknown>);
 }
 
@@ -78,21 +80,59 @@ type Read = { data: string; base64Encoded: boolean; eof: boolean };
  */
 function make_web() {
 	const now = Date.now();
-	const stored = new Map<string, unknown>([["session", {
-		mode: "web", version: 1, ...OWNERS, ...SESSION, grantId: "admission-1", navGen: 1, loadGen: 1, controlGen: 1, control: "ready",
-		providerSessionId: "provider-1", pageNonce: "nonce-1", viewport: { width: 1280, height: 900 }, command: null, commandCount: 0,
-		createdAt: now, providerAcquiredAt: now, lastActiveAt: now, attemptId: "attempt-1", closeAttempts: 0, inputHolder: null,
-		viewers: {}, viewerGrants: {}, agentAccess: true, pageTargetId: "page-1", profileId: "profile_1", agentBlockedHosts: [],
-	}]]);
+	const stored = new Map<string, unknown>([
+		[
+			"session",
+			{
+				mode: "web",
+				version: 1,
+				...OWNERS,
+				...SESSION,
+				grantId: "admission-1",
+				navGen: 1,
+				loadGen: 1,
+				controlGen: 1,
+				control: "ready",
+				providerSessionId: "provider-1",
+				pageNonce: "nonce-1",
+				viewport: { width: 1280, height: 900 },
+				command: null,
+				commandCount: 0,
+				createdAt: now,
+				providerAcquiredAt: now,
+				lastActiveAt: now,
+				attemptId: "attempt-1",
+				closeAttempts: 0,
+				inputHolder: null,
+				viewers: {},
+				viewerGrants: {},
+				agentAccess: true,
+				tabs: { "tab-1": { targetId: "page-1", tabGen: 1, navGen: 1, viewport: { width: 1280, height: 900 } } },
+				tabId: "tab-1",
+				viewedTabId: "tab-1",
+				viewGen: 1,
+				policyRevision: 0,
+				selectionRevision: 0,
+				profileId: "profile_1",
+				agentBlockedHosts: [],
+			},
+		],
+	]);
 	const body = { reads: [] as string[], read: null as null | (() => Promise<Read>) };
 	const frames = { main: "https://example.com/page", child: "https://ads.test/frame" };
 	const send = vi.fn(async (method: string, _params?: Record<string, unknown>): Promise<Record<string, unknown>> => {
 		if (method === "Target.getTargetInfo") return { targetInfo: { targetId: "page-1" } };
 		if (method === "Target.getBrowserContexts") return { browserContextIds: [] };
 		if (method === "Target.getTargets") return { targetInfos: [{ targetId: "page-1", type: "page" }] };
-		if (method === "Page.getNavigationHistory") return { currentIndex: 0, entries: [{ id: 1, url: frames.main, title: "" }] };
+		if (method === "Page.getNavigationHistory")
+			return { currentIndex: 0, entries: [{ id: 1, url: frames.main, title: "" }] };
 		if (method === "Page.getFrameTree") {
-			return { frameTree: { frame: { id: "page-1", url: frames.main }, childFrames: [{ frame: { id: "child", url: frames.child } }] } };
+			return {
+				frameTree: {
+					frame: { id: "page-1", url: frames.main },
+					childFrames: [{ frame: { id: "child", url: frames.child } }],
+				},
+			};
 		}
 		if (method === "Fetch.takeResponseBodyAsStream") return { stream: "stream-1" };
 		if (method === "IO.read") {
@@ -108,24 +148,43 @@ function make_web() {
 	const context = Object.assign(new EventEmitter(), {
 		newCDPSession: vi.fn(async () => viewerCdp).mockResolvedValueOnce(hostCdp),
 	});
+	const mainFrame = { url: () => frames.main, parentFrame: () => null };
 	const page = Object.assign(new EventEmitter(), {
+		url: () => frames.main,
 		setViewportSize: vi.fn(async () => {}),
 		unroute: vi.fn(async () => {}),
 		evaluate: vi.fn(async () => ({})),
 		context: () => context,
-		mainFrame: () => ({ url: () => frames.main, parentFrame: () => null }),
-		mouse: { move: vi.fn(async () => {}), click: vi.fn(async () => {}), down: vi.fn(async () => {}), up: vi.fn(async () => {}), wheel: vi.fn(async () => {}) },
-		keyboard: { press: vi.fn(async () => {}), down: vi.fn(async () => {}), up: vi.fn(async () => {}), type: vi.fn(async () => {}), insertText: vi.fn(async () => {}) },
+		mainFrame: () => mainFrame,
+		mouse: {
+			move: vi.fn(async () => {}),
+			click: vi.fn(async () => {}),
+			down: vi.fn(async () => {}),
+			up: vi.fn(async () => {}),
+			wheel: vi.fn(async () => {}),
+		},
+		keyboard: {
+			press: vi.fn(async () => {}),
+			down: vi.fn(async () => {}),
+			up: vi.fn(async () => {}),
+			type: vi.fn(async () => {}),
+			insertText: vi.fn(async () => {}),
+		},
 	});
 	Object.assign(context, { pages: () => [page] });
 	const browser = Object.assign(new EventEmitter(), {
-		contexts: () => [context], newBrowserCDPSession: async () => hostCdp, close: vi.fn(async () => {}),
+		contexts: () => [context],
+		newBrowserCDPSession: async () => hostCdp,
+		close: vi.fn(async () => {}),
 	});
 	vi.spyOn(provider, "connect").mockResolvedValue(browser as unknown as Awaited<ReturnType<typeof provider.connect>>);
 	vi.spyOn(provider, "sessions").mockResolvedValue([]);
 
 	const pending = new Set<Promise<unknown>>();
-	const namespace = { idFromName: (name: string) => ({ toString: () => name }), get: () => ({ fetch: async () => Response.json({ ok: true }) }) };
+	const namespace = {
+		idFromName: (name: string) => ({ toString: () => name }),
+		get: () => ({ fetch: async () => Response.json({ ok: true }) }),
+	};
 	const env: Env = {
 		BROWSER: { fetch: vi.fn(async () => new Response(null, { status: 101, webSocket: new WebSocketPair()[0] })) },
 		BROWSER_SESSIONS: namespace,
@@ -133,43 +192,75 @@ function make_web() {
 		BROWSER_RUNNER_SECRET: "test-secret",
 		BROWSER_PROFILE_KEY: Buffer.alloc(32, 1).toString("base64"),
 		BROWSER_WEB_DENIED_HOSTS: "",
-		LOADER: { load: () => { throw new Error("No snippets in download tests"); } },
+		LOADER: {
+			load: () => {
+				throw new Error("No snippets in download tests");
+			},
+		},
 	};
-	const session = new BrowserSession({
-		id: { toString: () => "download-test" },
-		storage: {
-			get: async <T,>(key: string) => structuredClone(stored.get(key)) as T | undefined,
-			list: async <T,>(options: { prefix: string }) =>
-				new Map([...stored].filter(([key]) => key.startsWith(options.prefix)).map(([key, value]) => [key, structuredClone(value)])) as Map<string, T>,
-			put: async (key: string, value: unknown) => { stored.set(key, structuredClone(value)); },
-			delete: async (key: string) => stored.delete(key),
-			setAlarm: async () => {},
-			getAlarm: async () => null,
-			deleteAlarm: async () => {},
+	const session = new BrowserSession(
+		{
+			id: { toString: () => "download-test" },
+			storage: {
+				get: async <T>(key: string) => structuredClone(stored.get(key)) as T | undefined,
+				list: async <T>(options: { prefix: string }) =>
+					new Map(
+						[...stored]
+							.filter(([key]) => key.startsWith(options.prefix))
+							.map(([key, value]) => [key, structuredClone(value)]),
+					) as Map<string, T>,
+				put: async (key: string, value: unknown) => {
+					stored.set(key, structuredClone(value));
+				},
+				delete: async (key: string) => stored.delete(key),
+				setAlarm: async () => {},
+				getAlarm: async () => null,
+				deleteAlarm: async () => {},
+			},
+			waitUntil: (promise) => {
+				pending.add(promise);
+				void promise.then(
+					() => pending.delete(promise),
+					() => pending.delete(promise),
+				);
+			},
 		},
-		waitUntil: (promise) => {
-			pending.add(promise);
-			void promise.then(() => pending.delete(promise), () => pending.delete(promise));
-		},
-	}, env);
+		env,
+	);
 
 	const drain = async () => {
 		while (pending.size) await Promise.all([...pending]);
 	};
 	const post = async (path: string, value: unknown) => {
-		const response = await session.fetch(new Request(`https://object${path}`, { method: "POST", body: JSON.stringify(value) }));
-		return await response.json() as Record<string, unknown>;
+		const defaults =
+			path === "/run/begin"
+				? { tabId: "tab-1", tabGen: 1, policyRevision: 0, selectionRevision: 0 }
+				: path === "/control/to-agent"
+					? { controlGen: (stored.get("session") as { controlGen: number }).controlGen }
+					: {};
+		const response = await session.fetch(
+			new Request(`https://object${path}`, {
+				method: "POST",
+				body: JSON.stringify({ ...defaults, ...(value as object) }),
+			}),
+		);
+		return (await response.json()) as Record<string, unknown>;
 	};
 	const attach = async () => {
 		const grant = await post("/viewer/grant", { ...SESSION, navGen: 1 });
 		const url = new URL("https://object/viewer/stream");
+		url.searchParams.set("mode", "web");
 		for (const [name, value] of Object.entries(OWNERS)) url.searchParams.set(name, value);
 		const response = await session.fetch(new Request(url, { headers: { Upgrade: "websocket" } }));
 		const socket = (response as SocketResponse).webSocket!;
-		socket.send(JSON.stringify({ ...OWNERS, grantId: grant.grantId, host: "docked" }));
+		socket.send(JSON.stringify({ ...OWNERS, mode: "web", grantId: grant.grantId, host: "docked" }));
 		await vi.waitFor(() => expect(messages(socket).some((message) => message.t === "hello")).toBe(true));
 		const viewerId = messages(socket).find((message) => message.t === "hello")!.viewerId as string;
 		await drain();
+		viewerCdp.emit("Page.screencastFrame", {
+			sessionId: 1,
+			data: Buffer.from([255, 216, 255, 224, 0, 255, 217]).toString("base64"),
+		});
 		return { socket, viewerId };
 	};
 	/**
@@ -177,13 +268,31 @@ function make_web() {
 	 */
 	const human = async () => {
 		const viewer = await attach();
-		expect(await post("/control/take-human", { ...SESSION, navGen: 1, viewerId: viewer.viewerId })).toMatchObject({ ok: true, controlGen: 2 });
+		expect(await post("/control/take-human", { ...SESSION, navGen: 1, viewerId: viewer.viewerId })).toMatchObject({
+			ok: true,
+			controlGen: 2,
+		});
 		let seq = 0;
 		const input = async (value: Record<string, unknown>) => {
 			seq += 1;
 			const mine = seq;
-			viewer.socket.send(JSON.stringify({ t: "input", controlGen: 2, loadGen: 1, seq: mine, ...value }));
-			await vi.waitFor(() => expect(messages(viewer.socket).find((message) => message.t === "input-ack" && message.seq === mine)).toMatchObject({ ok: true }));
+			viewer.socket.send(
+				JSON.stringify({
+					t: "input",
+					controlGen: 2,
+					loadGen: 1,
+					tabId: "tab-1",
+					tabGen: 1,
+					viewGen: 1,
+					seq: mine,
+					...value,
+				}),
+			);
+			await vi.waitFor(() =>
+				expect(
+					messages(viewer.socket).find((message) => message.t === "input-ack" && message.seq === mine),
+				).toMatchObject({ ok: true }),
+			);
 		};
 		const click = () => input({ kind: "mouse.click", x: 10, y: 10 });
 		return { ...viewer, input, click };
@@ -191,29 +300,58 @@ function make_web() {
 	/**
 	 * A paused page response, like Chrome sends it at the `Response` stage.
 	 */
-	const pause = async (requestId: string, headers: Record<string, string>, options: {
-		status?: number; frameId?: string; method?: string; url?: string; errorReason?: string;
-	} = {}) => {
+	const pause = async (
+		requestId: string,
+		headers: Record<string, string>,
+		options: {
+			status?: number;
+			frameId?: string;
+			method?: string;
+			url?: string;
+			errorReason?: string;
+		} = {},
+	) => {
 		hostCdp.emit("Fetch.requestPaused", {
-			requestId, frameId: options.frameId ?? "page-1", resourceType: "Document",
+			requestId,
+			frameId: options.frameId ?? "page-1",
+			resourceType: "Document",
 			request: { url: options.url ?? "https://files.example/get/report?id=1", method: options.method ?? "GET" },
-			...(options.errorReason ? { responseErrorReason: options.errorReason } : { responseStatusCode: options.status ?? 200 }),
+			...(options.errorReason
+				? { responseErrorReason: options.errorReason }
+				: { responseStatusCode: options.status ?? 200 }),
 			responseHeaders: Object.entries(headers).map(([name, value]) => ({ name, value })),
 		});
 		await drain();
 	};
-	const answers = (requestId: string) => send.mock.calls.filter(([method, params]) =>
-		(method === "Fetch.continueRequest" || method === "Fetch.failRequest") && params?.requestId === requestId);
-	const notices = (socket: Socket) => messages(socket).filter((message) => message.t === "notice").map((message) => message.code);
+	const answers = (requestId: string) =>
+		send.mock.calls.filter(
+			([method, params]) =>
+				(method === "Fetch.continueRequest" || method === "Fetch.failRequest") && params?.requestId === requestId,
+		);
+	const notices = (socket: Socket) =>
+		messages(socket)
+			.filter((message) => message.t === "notice")
+			.map((message) => message.code);
 	const downloads = (socket: Socket) => messages(socket).filter((message) => message.t === "download");
 	const run_command = async (during: () => Promise<void>) => {
-		expect(await post("/run/begin", { ...SESSION, navGen: 1, loadGen: 1, controlGen: 1, commandId: "command-1" })).toMatchObject({ ok: true });
+		expect(
+			await post("/run/begin", { ...SESSION, navGen: 1, loadGen: 1, controlGen: 1, commandId: "command-1" }),
+		).toMatchObject({ ok: true });
 		const url = new URL("https://object/run/stream");
-		for (const [name, value] of Object.entries({ ...OWNERS, ...SESSION, commandId: "command-1" })) url.searchParams.set(name, value);
+		for (const [name, value] of Object.entries({ ...OWNERS, ...SESSION, commandId: "command-1" }))
+			url.searchParams.set(name, value);
 		expect((await session.fetch(new Request(url, { headers: { Upgrade: "websocket" } }))).status).toBe(101);
 		await during();
 		expect(await post("/run/settle", { ...SESSION, commandId: "command-1" })).toMatchObject({ ok: true });
-		return await post("/run/finish", { ...SESSION, commandId: "command-1", tainted: false, resultBytes: 0, fileCount: 0, fileBytes: 0, viewport: null });
+		return await post("/run/finish", {
+			...SESSION,
+			commandId: "command-1",
+			tainted: false,
+			resultBytes: 0,
+			fileCount: 0,
+			fileBytes: 0,
+			viewport: null,
+		});
 	};
 	/**
 	 * Move time forward. Renew the viewer grant on the way, or the viewer ends after 30 seconds.
@@ -224,22 +362,48 @@ function make_web() {
 			expect(await post("/viewer/renew", { viewerId, ...SESSION })).toMatchObject({ ok: true });
 		}
 	};
-	return { session, stored, body, frames, send, hostCdp, page, browser, drain, post, attach, human, pause, answers, notices, downloads, run_command, wait };
+	return {
+		session,
+		stored,
+		body,
+		frames,
+		send,
+		hostCdp,
+		page,
+		browser,
+		drain,
+		post,
+		attach,
+		human,
+		pause,
+		answers,
+		notices,
+		downloads,
+		run_command,
+		wait,
+	};
 }
 
 /**
  * A Playwright file chooser. `evaluate` runs the page function on a fake input element.
  */
 function make_chooser(options: { multiple?: boolean; accept?: string | null; origin?: string } = {}) {
-	const node = { ownerDocument: { location: { origin: options.origin ?? "https://example.com" } }, dispatchEvent: vi.fn(() => true) };
+	const node = {
+		ownerDocument: { location: { origin: options.origin ?? "https://example.com" } },
+		dispatchEvent: vi.fn(() => true),
+	};
 	const element = {
-		getAttribute: vi.fn(async (name: string) => (name === "accept" ? options.accept ?? null : null)),
+		getAttribute: vi.fn(async (name: string) => (name === "accept" ? (options.accept ?? null) : null)),
 		evaluate: vi.fn(async (fn: (value: typeof node) => unknown) => fn(node)),
 	};
-	return { node, element, chooser: { element: () => element, isMultiple: () => options.multiple ?? false, setFiles: vi.fn(async () => {}) } };
+	return {
+		node,
+		element,
+		chooser: { element: () => element, isMultiple: () => options.multiple ?? false, setFiles: vi.fn(async () => {}) },
+	};
 }
 
-const ATTACHMENT = { "Content-Type": "application/pdf", "Content-Disposition": "attachment; filename=\"report.pdf\"" };
+const ATTACHMENT = { "Content-Type": "application/pdf", "Content-Disposition": 'attachment; filename="report.pdf"' };
 
 let fetchMock: ReturnType<typeof vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>>;
 
@@ -269,15 +433,29 @@ describe("download capture", () => {
 		web.body.reads = ["%PDF", "-1.7"];
 		await web.pause("r1", { ...ATTACHMENT, "Content-Length": "8" });
 
-		expect(web.send.mock.calls.map(([method]) => method).filter((method) => /^(Fetch|IO)\./u.test(method) && method !== "Fetch.enable")).toEqual([
-			"Fetch.takeResponseBodyAsStream", "IO.read", "IO.read", "IO.close", "Fetch.failRequest",
-		]);
+		expect(
+			web.send.mock.calls
+				.map(([method]) => method)
+				.filter((method) => /^(Fetch|IO)\./u.test(method) && method !== "Fetch.enable"),
+		).toEqual(["Fetch.takeResponseBodyAsStream", "IO.read", "IO.read", "IO.close", "Fetch.failRequest"]);
 		expect(web.answers("r1")).toEqual([["Fetch.failRequest", { requestId: "r1", errorReason: "Aborted" }]]);
 		expect(web.send.mock.calls.some(([method]) => method === "Page.navigate")).toBe(false);
 		const [download] = web.downloads(viewer.socket);
-		expect(download).toEqual({ t: "download", downloadId: expect.any(String), name: "report.pdf", size: 8, contentType: "application/pdf" });
-		expect(await web.post("/download/info", { ...SESSION, downloadId: download!.downloadId }))
-			.toEqual({ ok: true, name: "report.pdf", size: 8, contentType: "application/pdf", origin: "https://files.example" });
+		expect(download).toEqual({
+			...TAB,
+			t: "download",
+			downloadId: expect.any(String),
+			name: "report.pdf",
+			size: 8,
+			contentType: "application/pdf",
+		});
+		expect(await web.post("/download/info", { ...SESSION, downloadId: download!.downloadId })).toEqual({
+			ok: true,
+			name: "report.pdf",
+			size: 8,
+			contentType: "application/pdf",
+			origin: "https://files.example",
+		});
 	});
 
 	it.each([
@@ -309,7 +487,14 @@ describe("download capture", () => {
 		await web.pause("r1", ATTACHMENT);
 		const [download] = web.downloads(viewer.socket);
 		expect(download).toMatchObject({ size: 5 });
-		expect(await web.post("/download/push", { ...SESSION, downloadId: download!.downloadId, url: "https://r2.test/a", headers: {} })).toEqual({ ok: true });
+		expect(
+			await web.post("/download/push", {
+				...SESSION,
+				downloadId: download!.downloadId,
+				url: "https://r2.test/a",
+				headers: {},
+			}),
+		).toEqual({ ok: true });
 		const sent = new Uint8Array(await new NativeResponse(fetchMock.mock.calls[0]![1]!.body).arrayBuffer());
 		expect(sent).toEqual(new Uint8Array([0xff, 0x00, 0x80, 0x6f, 0x6b]));
 	});
@@ -350,11 +535,18 @@ describe("download capture", () => {
 		const web = make_web();
 		const viewer = await web.human();
 		// Each chunk takes 9 seconds, and the body never ends.
-		web.body.read = () => new Promise((resolve) => setTimeout(() => resolve({ data: "a", base64Encoded: false, eof: false }), 9_000));
+		web.body.read = () =>
+			new Promise((resolve) => setTimeout(() => resolve({ data: "a", base64Encoded: false, eof: false }), 9_000));
 		await viewer.click();
 		web.hostCdp.emit("Fetch.requestPaused", {
-			requestId: "r1", frameId: "page-1", request: { url: "https://files.example/a", method: "GET" }, responseStatusCode: 200,
-			responseHeaders: [{ name: "Content-Disposition", value: "attachment" }, { name: "Content-Type", value: "application/zip" }],
+			requestId: "r1",
+			frameId: "page-1",
+			request: { url: "https://files.example/a", method: "GET" },
+			responseStatusCode: 200,
+			responseHeaders: [
+				{ name: "Content-Disposition", value: "attachment" },
+				{ name: "Content-Type", value: "application/zip" },
+			],
 		});
 		await web.wait(LIMITS.downloadCaptureMs, viewer.viewerId);
 		expect(web.notices(viewer.socket)).toEqual(["download_failed"]);
@@ -363,8 +555,14 @@ describe("download capture", () => {
 		// The 4th chunk is still on the way, so a new capture must wait for it.
 		await viewer.click();
 		web.hostCdp.emit("Fetch.requestPaused", {
-			requestId: "r2", frameId: "page-1", request: { url: "https://files.example/b", method: "GET" }, responseStatusCode: 200,
-			responseHeaders: [{ name: "Content-Disposition", value: "attachment" }, { name: "Content-Type", value: "application/zip" }],
+			requestId: "r2",
+			frameId: "page-1",
+			request: { url: "https://files.example/b", method: "GET" },
+			responseStatusCode: 200,
+			responseHeaders: [
+				{ name: "Content-Disposition", value: "attachment" },
+				{ name: "Content-Type", value: "application/zip" },
+			],
 		});
 		await vi.waitFor(() => expect(web.answers("r2")).toHaveLength(1));
 		expect(web.notices(viewer.socket)).toEqual(["download_failed", "download_limit"]);
@@ -426,7 +624,9 @@ describe("download capture", () => {
 		// The read fails inside the capture.
 		await web.pause("r1", ATTACHMENT);
 		// No owner: the gesture is used. Its refusal log fails, so the throw reaches the pause handler.
-		vi.mocked(console.log).mockImplementationOnce(() => { throw new Error("log failed"); });
+		vi.mocked(console.log).mockImplementationOnce(() => {
+			throw new Error("log failed");
+		});
 		await web.pause("r2", ATTACHMENT);
 		expect(web.answers("r1")).toEqual([["Fetch.failRequest", { requestId: "r1", errorReason: "Aborted" }]]);
 		expect(web.answers("r2")).toEqual([["Fetch.failRequest", { requestId: "r2", errorReason: "Aborted" }]]);
@@ -446,7 +646,12 @@ describe("download capture", () => {
 		await web.pause("r2", ATTACHMENT);
 		expect(web.downloads(viewer.socket)).toHaveLength(1);
 		// Save the first so the one-unclaimed rule does not decide the next one.
-		await web.post("/download/push", { ...SESSION, downloadId: web.downloads(viewer.socket)[0]!.downloadId, url: "https://r2.test/a", headers: {} });
+		await web.post("/download/push", {
+			...SESSION,
+			downloadId: web.downloads(viewer.socket)[0]!.downloadId,
+			url: "https://r2.test/a",
+			headers: {},
+		});
 		web.body.reads = ["b"];
 		await web.pause("r3", ATTACHMENT);
 		expect(web.downloads(viewer.socket)).toHaveLength(1);
@@ -479,11 +684,31 @@ describe("download capture", () => {
 		await web.pause("r2", ATTACHMENT);
 		expect(web.downloads(viewer.socket)).toHaveLength(1);
 		// Save it, so the one-unclaimed rule does not decide the next one.
-		await web.post("/download/push", { ...SESSION, downloadId: web.downloads(viewer.socket)[0]!.downloadId, url: "https://r2.test/a", headers: {} });
+		await web.post("/download/push", {
+			...SESSION,
+			downloadId: web.downloads(viewer.socket)[0]!.downloadId,
+			url: "https://r2.test/a",
+			headers: {},
+		});
 
 		// The address bar Go goes through the `nav` message, not through input.
-		viewer.socket.send(JSON.stringify({ t: "nav", seq: 1, controlGen: 2, action: "go", url: "https://files.example/get/report" }));
-		await vi.waitFor(() => expect(messages(viewer.socket).find((message) => message.t === "nav-ack" && message.seq === 1)).toMatchObject({ ok: true }));
+		viewer.socket.send(
+			JSON.stringify({
+				t: "nav",
+				seq: 1,
+				controlGen: 2,
+				tabId: "tab-1",
+				tabGen: 1,
+				viewGen: 1,
+				action: "go",
+				url: "https://files.example/get/report",
+			}),
+		);
+		await vi.waitFor(() =>
+			expect(messages(viewer.socket).find((message) => message.t === "nav-ack" && message.seq === 1)).toMatchObject({
+				ok: true,
+			}),
+		);
 		expect(web.send).toHaveBeenCalledWith("Page.navigate", { url: "https://files.example/get/report" });
 		web.body.reads = ["b"];
 		await web.pause("r3", ATTACHMENT);
@@ -491,11 +716,31 @@ describe("download capture", () => {
 	});
 
 	it.each([
-		{ name: "filename* before filename", disposition: "attachment; filename=\"plain.txt\"; filename*=UTF-8''r%C3%A9sum%C3%A9.txt", url: "https://f.test/x/path.bin", expected: "résumé.txt" },
-		{ name: "filename", disposition: "attachment; filename=\"quoted \\\"name\\\".txt\"", url: "https://f.test/x/path.bin", expected: "quoted \"name\".txt" },
-		{ name: "the URL path", disposition: "attachment", url: "https://f.test/x/path%20one.bin?q=1", expected: "path one.bin" },
+		{
+			name: "filename* before filename",
+			disposition: "attachment; filename=\"plain.txt\"; filename*=UTF-8''r%C3%A9sum%C3%A9.txt",
+			url: "https://f.test/x/path.bin",
+			expected: "résumé.txt",
+		},
+		{
+			name: "filename",
+			disposition: 'attachment; filename="quoted \\"name\\".txt"',
+			url: "https://f.test/x/path.bin",
+			expected: 'quoted "name".txt',
+		},
+		{
+			name: "the URL path",
+			disposition: "attachment",
+			url: "https://f.test/x/path%20one.bin?q=1",
+			expected: "path one.bin",
+		},
 		{ name: "download", disposition: "attachment", url: "https://f.test/", expected: "download" },
-		{ name: "a name cut at 255", disposition: `attachment; filename="${"n".repeat(300)}.txt"`, url: "https://f.test/", expected: "n".repeat(255) },
+		{
+			name: "a name cut at 255",
+			disposition: `attachment; filename="${"n".repeat(300)}.txt"`,
+			url: "https://f.test/",
+			expected: "n".repeat(255),
+		},
 	])("names a download from $name", async ({ disposition, url, expected }) => {
 		const web = make_web();
 		const viewer = await web.human();
@@ -524,7 +769,9 @@ describe("download caps", () => {
 		const chunk = "x".repeat(MiB);
 		web.body.read = async () => ({ data: chunk, base64Encoded: false, eof: false });
 		await web.pause("r1", ATTACHMENT);
-		expect(web.send.mock.calls.filter(([method]) => method === "IO.read")).toHaveLength(LIMITS.downloadHumanBytes / MiB + 1);
+		expect(web.send.mock.calls.filter(([method]) => method === "IO.read")).toHaveLength(
+			LIMITS.downloadHumanBytes / MiB + 1,
+		);
 		expect(web.send).toHaveBeenCalledWith("IO.close", { handle: "stream-1" });
 		expect(web.notices(viewer.socket)).toEqual(["download_too_large"]);
 		expect(web.downloads(viewer.socket)).toEqual([]);
@@ -555,8 +802,14 @@ describe("download caps", () => {
 		// A second download with its own gesture: the running capture refuses it.
 		await viewer.click();
 		web.hostCdp.emit("Fetch.requestPaused", {
-			requestId: "r2", frameId: "page-1", request: { url: "https://files.example/b", method: "GET" }, responseStatusCode: 200,
-			responseHeaders: [{ name: "Content-Disposition", value: "attachment" }, { name: "Content-Type", value: "application/zip" }],
+			requestId: "r2",
+			frameId: "page-1",
+			request: { url: "https://files.example/b", method: "GET" },
+			responseStatusCode: 200,
+			responseHeaders: [
+				{ name: "Content-Disposition", value: "attachment" },
+				{ name: "Content-Type", value: "application/zip" },
+			],
 		});
 		await vi.waitFor(() => expect(web.answers("r2")).toHaveLength(1));
 		expect(web.notices(viewer.socket)).toEqual(["download_limit"]);
@@ -578,7 +831,8 @@ describe("download caps", () => {
 			await web.pause("r5", ATTACHMENT);
 		});
 		expect((finished.downloads as unknown[]).length).toBe(4);
-		for (const id of ["r1", "r2", "r3", "r4", "r5"]) expect(web.answers(id)).toEqual([["Fetch.failRequest", { requestId: id, errorReason: "Aborted" }]]);
+		for (const id of ["r1", "r2", "r3", "r4", "r5"])
+			expect(web.answers(id)).toEqual([["Fetch.failRequest", { requestId: id, errorReason: "Aborted" }]]);
 	});
 
 	it("stops at 20 files per session", async () => {
@@ -613,7 +867,14 @@ describe("download caps", () => {
 			await web.pause(`r${index}`, ATTACHMENT);
 			const last = web.downloads(viewer.socket).at(-1)!;
 			expect(last.size).toBe(25 * MiB);
-			expect(await web.post("/download/push", { ...SESSION, downloadId: last.downloadId, url: "https://r2.test/a", headers: {} })).toEqual({ ok: true });
+			expect(
+				await web.post("/download/push", {
+					...SESSION,
+					downloadId: last.downloadId,
+					url: "https://r2.test/a",
+					headers: {},
+				}),
+			).toEqual({ ok: true });
 		}
 		await web.wait(LIMITS.downloadStartWindowMs, viewer.viewerId);
 		await viewer.click();
@@ -632,13 +893,20 @@ describe("agent downloads", () => {
 			for (let index = 0; index < LIMITS.files + 1; index += 1) {
 				if (index % LIMITS.downloadStarts === 0) await web.wait(LIMITS.downloadStartWindowMs, viewer.viewerId);
 				web.body.reads = [`file-${index}`];
-				await web.pause(`r${index}`, { "Content-Type": "text/csv", "Content-Disposition": `attachment; filename="f${index}.csv"` });
+				await web.pause(`r${index}`, {
+					"Content-Type": "text/csv",
+					"Content-Disposition": `attachment; filename="f${index}.csv"`,
+				});
 			}
 		});
 		expect(finished).toMatchObject({ ok: true, state: "ready", downloadsDropped: 1 });
 		const downloads = finished.downloads as Array<{ name: string; contentType: string; dataBase64: string }>;
 		expect(downloads).toHaveLength(LIMITS.files);
-		expect(downloads[0]).toEqual({ name: "f0.csv", contentType: "text/csv", dataBase64: Buffer.from("file-0").toString("base64") });
+		expect(downloads[0]).toEqual({
+			name: "f0.csv",
+			contentType: "text/csv",
+			dataBase64: Buffer.from("file-0").toString("base64"),
+		});
 	});
 
 	it("drops a download that would pass 8 MiB for the command", async () => {
@@ -665,7 +933,12 @@ describe("agent downloads", () => {
 			web.body.reads = ["ab"];
 			await web.pause("r2", { ...ATTACHMENT, "Content-Length": "4" });
 			// A cross-origin link from the safety net.
-			web.hostCdp.emit("Browser.downloadWillBegin", { frameId: "page-1", guid: "g1", url: "https://other.test/file.bin", suggestedFilename: "file.bin" });
+			web.hostCdp.emit("Browser.downloadWillBegin", {
+				frameId: "page-1",
+				guid: "g1",
+				url: "https://other.test/file.bin",
+				suggestedFilename: "file.bin",
+			});
 			await web.drain();
 		});
 		expect(finished).toMatchObject({ ok: true, downloadsDropped: 3 });
@@ -682,19 +955,37 @@ describe("agent downloads", () => {
 			if (method === "Page.createIsolatedWorld") return { executionContextId: 7 };
 			if (method === "Runtime.evaluate") return { result: { objectId: "file-1" } };
 			if (method === "Runtime.callFunctionOn") {
-				return params?.arguments ? { result: { value: "YWJj" } } : { result: { value: { over: false, size: 3, type: "text/csv" } } };
+				return params?.arguments
+					? { result: { value: "YWJj" } }
+					: { result: { value: { over: false, size: 3, type: "text/csv" } } };
 			}
 			return await send(method, params);
 		});
-		expect(await web.post("/run/begin", { ...SESSION, navGen: 1, loadGen: 1, controlGen: 1, commandId: "command-1" })).toMatchObject({ ok: true });
+		expect(
+			await web.post("/run/begin", { ...SESSION, navGen: 1, loadGen: 1, controlGen: 1, commandId: "command-1" }),
+		).toMatchObject({ ok: true });
 		const url = new URL("https://object/run/stream");
-		for (const [name, value] of Object.entries({ ...OWNERS, ...SESSION, commandId: "command-1" })) url.searchParams.set(name, value);
+		for (const [name, value] of Object.entries({ ...OWNERS, ...SESSION, commandId: "command-1" }))
+			url.searchParams.set(name, value);
 		expect((await web.session.fetch(new Request(url, { headers: { Upgrade: "websocket" } }))).status).toBe(101);
 
 		// The last step clicks a same-origin `<a download>`. The frame check is slow.
-		web.hostCdp.emit("Browser.downloadWillBegin", { frameId: "page-1", guid: "g1", url: "https://example.com/export.csv", suggestedFilename: "export.csv" });
+		web.hostCdp.emit("Browser.downloadWillBegin", {
+			frameId: "page-1",
+			guid: "g1",
+			url: "https://example.com/export.csv",
+			suggestedFilename: "export.csv",
+		});
 		expect(await web.post("/run/settle", { ...SESSION, commandId: "command-1" })).toMatchObject({ ok: true });
-		const finishing = web.post("/run/finish", { ...SESSION, commandId: "command-1", tainted: false, resultBytes: 0, fileCount: 0, fileBytes: 0, viewport: null });
+		const finishing = web.post("/run/finish", {
+			...SESSION,
+			commandId: "command-1",
+			tainted: false,
+			resultBytes: 0,
+			fileCount: 0,
+			fileBytes: 0,
+			viewport: null,
+		});
 		// The command has ended before the frame check answers.
 		await vi.waitFor(() => expect(web.stored.get("session")).toMatchObject({ command: null }));
 		frameTree.resolve({ frameTree: { frame: { id: "page-1", url: "https://example.com/page" } } });
@@ -706,10 +997,20 @@ describe("agent downloads", () => {
 		const web = make_web();
 		const viewer = await web.attach();
 		const finished = await web.run_command(async () => {
-			web.hostCdp.emit("Browser.downloadWillBegin", { frameId: "page-1", guid: "g1", url: "data:text/plain;base64,aGk=", suggestedFilename: "hi.txt" });
+			web.hostCdp.emit("Browser.downloadWillBegin", {
+				frameId: "page-1",
+				guid: "g1",
+				url: "data:text/plain;base64,aGk=",
+				suggestedFilename: "hi.txt",
+			});
 			await web.drain();
 			// The URL length is capped at the file cap, before decoding.
-			web.hostCdp.emit("Browser.downloadWillBegin", { frameId: "page-1", guid: "g2", url: `data:,${"a".repeat(LIMITS.downloadAgentBytes)}`, suggestedFilename: "big.txt" });
+			web.hostCdp.emit("Browser.downloadWillBegin", {
+				frameId: "page-1",
+				guid: "g2",
+				url: `data:,${"a".repeat(LIMITS.downloadAgentBytes)}`,
+				suggestedFilename: "big.txt",
+			});
 			await web.drain();
 		});
 		expect(finished.downloads).toEqual([{ name: "hi.txt", contentType: "text/plain", dataBase64: "aGk=" }]);
@@ -724,15 +1025,26 @@ describe("agent downloads", () => {
 			if (method === "Page.createIsolatedWorld") return { executionContextId: 7 };
 			if (method === "Runtime.evaluate") return { result: { objectId: "file-1" } };
 			if (method === "Runtime.callFunctionOn") {
-				return params?.arguments ? { result: { value: "YWJj" } } : { result: { value: { over: false, size: 3, type: "text/csv; charset=utf-8" } } };
+				return params?.arguments
+					? { result: { value: "YWJj" } }
+					: { result: { value: { over: false, size: 3, type: "text/csv; charset=utf-8" } } };
 			}
 			return await send(method, params);
 		});
 		const finished = await web.run_command(async () => {
-			web.hostCdp.emit("Browser.downloadWillBegin", { frameId: "page-1", guid: "g1", url: "https://example.com/export.csv", suggestedFilename: "export.csv" });
+			web.hostCdp.emit("Browser.downloadWillBegin", {
+				frameId: "page-1",
+				guid: "g1",
+				url: "https://example.com/export.csv",
+				suggestedFilename: "export.csv",
+			});
 			await web.drain();
 		});
-		expect(web.send).toHaveBeenCalledWith("Page.createIsolatedWorld", { frameId: "page-1", worldName: "bonobo-download", grantUniveralAccess: false });
+		expect(web.send).toHaveBeenCalledWith("Page.createIsolatedWorld", {
+			frameId: "page-1",
+			worldName: "bonobo-download",
+			grantUniveralAccess: false,
+		});
 		expect(web.send).toHaveBeenCalledWith("Runtime.releaseObject", { objectId: "file-1" });
 		expect(finished.downloads).toEqual([{ name: "export.csv", contentType: "text/csv", dataBase64: "YWJj" }]);
 	});
@@ -741,8 +1053,18 @@ describe("agent downloads", () => {
 		const web = make_web();
 		const viewer = await web.attach();
 		await web.run_command(async () => {
-			web.hostCdp.emit("Browser.downloadWillBegin", { frameId: "page-1", guid: "g1", url: "https://other.test/file.bin", suggestedFilename: "file.bin" });
-			web.hostCdp.emit("Browser.downloadWillBegin", { frameId: "page-1", guid: "g2", url: "blob:https://example.com/1", suggestedFilename: "b.bin" });
+			web.hostCdp.emit("Browser.downloadWillBegin", {
+				frameId: "page-1",
+				guid: "g1",
+				url: "https://other.test/file.bin",
+				suggestedFilename: "file.bin",
+			});
+			web.hostCdp.emit("Browser.downloadWillBegin", {
+				frameId: "page-1",
+				guid: "g2",
+				url: "blob:https://example.com/1",
+				suggestedFilename: "b.bin",
+			});
 			await web.drain();
 		});
 		expect(web.notices(viewer.socket)).toEqual(["download_unsupported", "download_unsupported"]);
@@ -751,18 +1073,28 @@ describe("agent downloads", () => {
 
 	it("keeps the agent blocked-sites filter working next to the download pattern", async () => {
 		const web = make_web();
-		web.stored.set("session", { ...web.stored.get("session") as object, agentBlockedHosts: ["bank.test"] });
+		web.stored.set("session", { ...(web.stored.get("session") as object), agentBlockedHosts: ["bank.test"] });
 		await web.attach();
 		await web.run_command(async () => {
 			const enabled = web.send.mock.calls.filter(([method]) => method === "Fetch.enable").at(-1);
-			expect(enabled?.[1]).toEqual({ patterns: [
-				{ urlPattern: "*", resourceType: "Document", requestStage: "Response" },
-				{ urlPattern: "*", resourceType: "Document", requestStage: "Request" },
-				{ urlPattern: "*", resourceType: "XHR", requestStage: "Request" },
-				{ urlPattern: "*", resourceType: "Fetch", requestStage: "Request" },
-			] });
-			web.hostCdp.emit("Fetch.requestPaused", { requestId: "q1", request: { url: "https://api.bank.test/x", method: "GET" }, resourceType: "XHR" });
-			web.hostCdp.emit("Fetch.requestPaused", { requestId: "q2", request: { url: "https://example.com/x", method: "GET" }, resourceType: "Fetch" });
+			expect(enabled?.[1]).toEqual({
+				patterns: [
+					{ urlPattern: "*", resourceType: "Document", requestStage: "Response" },
+					{ urlPattern: "*", resourceType: "Document", requestStage: "Request" },
+					{ urlPattern: "*", resourceType: "XHR", requestStage: "Request" },
+					{ urlPattern: "*", resourceType: "Fetch", requestStage: "Request" },
+				],
+			});
+			web.hostCdp.emit("Fetch.requestPaused", {
+				requestId: "q1",
+				request: { url: "https://api.bank.test/x", method: "GET" },
+				resourceType: "XHR",
+			});
+			web.hostCdp.emit("Fetch.requestPaused", {
+				requestId: "q2",
+				request: { url: "https://example.com/x", method: "GET" },
+				resourceType: "Fetch",
+			});
 			web.body.reads = ["a"];
 			await web.pause("r1", ATTACHMENT);
 		});
@@ -785,7 +1117,12 @@ describe("download routes", () => {
 
 	it("pushes once with If-None-Match, then answers ok again without a second PUT", async () => {
 		const { web, downloadId } = await held();
-		const push = { ...SESSION, downloadId, url: "https://r2.test/put?sig=1", headers: { "Content-Type": "application/pdf" } };
+		const push = {
+			...SESSION,
+			downloadId,
+			url: "https://r2.test/put?sig=1",
+			headers: { "Content-Type": "application/pdf" },
+		};
 		expect(await web.post("/download/push", push)).toEqual({ ok: true });
 		expect(await web.post("/download/push", push)).toEqual({ ok: true });
 		expect(fetchMock).toHaveBeenCalledOnce();
@@ -794,77 +1131,106 @@ describe("download routes", () => {
 		expect(init?.method).toBe("PUT");
 		expect(new Headers(init?.headers).get("If-None-Match")).toBe("*");
 		expect(new Headers(init?.headers).get("Content-Type")).toBe("application/pdf");
-		expect(await web.post("/download/info", { ...SESSION, downloadId })).toMatchObject({ ok: false, error: { code: "download_gone" } });
+		expect(await web.post("/download/info", { ...SESSION, downloadId })).toMatchObject({
+			ok: false,
+			error: { code: "download_gone" },
+		});
 	});
 
 	it("refuses an unknown id", async () => {
 		const { web } = await held();
-		expect(await web.post("/download/info", { ...SESSION, downloadId: "unknown" })).toMatchObject({ ok: false, error: { code: "download_gone" } });
-		expect(await web.post("/download/push", { ...SESSION, downloadId: "unknown", url: "https://r2.test/a", headers: {} }))
-			.toMatchObject({ ok: false, error: { code: "download_gone" } });
+		expect(await web.post("/download/info", { ...SESSION, downloadId: "unknown" })).toMatchObject({
+			ok: false,
+			error: { code: "download_gone" },
+		});
+		expect(
+			await web.post("/download/push", { ...SESSION, downloadId: "unknown", url: "https://r2.test/a", headers: {} }),
+		).toMatchObject({ ok: false, error: { code: "download_gone" } });
 		expect(fetchMock).not.toHaveBeenCalled();
 	});
 
 	it("counts a 412 as saved", async () => {
 		const { web, downloadId } = await held();
 		fetchMock.mockResolvedValueOnce(new NativeResponse(null, { status: 412 }));
-		expect(await web.post("/download/push", { ...SESSION, downloadId, url: "https://r2.test/a", headers: {} })).toEqual({ ok: true });
+		expect(await web.post("/download/push", { ...SESSION, downloadId, url: "https://r2.test/a", headers: {} })).toEqual(
+			{ ok: true },
+		);
 	});
 
 	it("keeps the bytes after a failed push so a retry works", async () => {
 		const { web, downloadId } = await held();
 		fetchMock.mockResolvedValueOnce(new NativeResponse(null, { status: 500 }));
-		expect(await web.post("/download/push", { ...SESSION, downloadId, url: "https://r2.test/a", headers: {} }))
-			.toMatchObject({ ok: false, error: { code: "download_push_failed" } });
+		expect(
+			await web.post("/download/push", { ...SESSION, downloadId, url: "https://r2.test/a", headers: {} }),
+		).toMatchObject({ ok: false, error: { code: "download_push_failed" } });
 		expect(await web.post("/download/info", { ...SESSION, downloadId })).toMatchObject({ ok: true, size: 4 });
-		expect(await web.post("/download/push", { ...SESSION, downloadId, url: "https://r2.test/a", headers: {} })).toEqual({ ok: true });
-		expect(new Uint8Array(await new NativeResponse(fetchMock.mock.calls[1]![1]!.body).arrayBuffer())).toEqual(new TextEncoder().encode("data"));
+		expect(await web.post("/download/push", { ...SESSION, downloadId, url: "https://r2.test/a", headers: {} })).toEqual(
+			{ ok: true },
+		);
+		expect(new Uint8Array(await new NativeResponse(fetchMock.mock.calls[1]![1]!.body).arrayBuffer())).toEqual(
+			new TextEncoder().encode("data"),
+		);
 	});
 
 	it("drops an unclaimed download after 2 minutes", async () => {
 		const { web, viewer, downloadId } = await held();
 		await web.wait(LIMITS.downloadKeepMs, viewer.viewerId);
 		expect(web.notices(viewer.socket)).toEqual(["download_lost"]);
-		expect(await web.post("/download/info", { ...SESSION, downloadId })).toMatchObject({ ok: false, error: { code: "download_gone" } });
+		expect(await web.post("/download/info", { ...SESSION, downloadId })).toMatchObject({
+			ok: false,
+			error: { code: "download_gone" },
+		});
 	});
 
 	it.each([
 		{ name: "saves", status: 200, reply: { ok: true }, notices: [] },
-		{ name: "fails", status: 500, reply: { ok: false, error: { code: "download_push_failed" } }, notices: ["download_lost"] },
-	])("waits for a push that runs past the 2 minutes, and reports lost only when it $name", async ({ status, reply, notices }) => {
-		const { web, viewer, downloadId } = await held();
-		await web.wait(LIMITS.downloadKeepMs - 10_000, viewer.viewerId);
-		const put = Promise.withResolvers<Response>();
-		fetchMock.mockImplementationOnce(() => put.promise);
-		const pushing = web.post("/download/push", { ...SESSION, downloadId, url: "https://r2.test/a", headers: {} });
-		// The 2 minutes end while the PUT runs.
-		await web.wait(20_000, viewer.viewerId);
-		expect(web.notices(viewer.socket)).toEqual([]);
-		put.resolve(new NativeResponse(null, { status }));
-		expect(await pushing).toMatchObject(reply);
-		await web.drain();
-		expect(web.notices(viewer.socket)).toEqual(notices);
-	});
+		{
+			name: "fails",
+			status: 500,
+			reply: { ok: false, error: { code: "download_push_failed" } },
+			notices: ["download_lost"],
+		},
+	])(
+		"waits for a push that runs past the 2 minutes, and reports lost only when it $name",
+		async ({ status, reply, notices }) => {
+			const { web, viewer, downloadId } = await held();
+			await web.wait(LIMITS.downloadKeepMs - 10_000, viewer.viewerId);
+			const put = Promise.withResolvers<Response>();
+			fetchMock.mockImplementationOnce(() => put.promise);
+			const pushing = web.post("/download/push", { ...SESSION, downloadId, url: "https://r2.test/a", headers: {} });
+			// The 2 minutes end while the PUT runs.
+			await web.wait(20_000, viewer.viewerId);
+			expect(web.notices(viewer.socket)).toEqual([]);
+			put.resolve(new NativeResponse(null, { status }));
+			expect(await pushing).toMatchObject(reply);
+			await web.drain();
+			expect(web.notices(viewer.socket)).toEqual(notices);
+		},
+	);
 
 	it("drops an unclaimed download at close", async () => {
 		const { web, viewer, downloadId } = await held();
 		await web.post("/close", SESSION);
 		expect(web.notices(viewer.socket)).toEqual(["download_lost"]);
-		expect(await web.post("/download/info", { ...SESSION, downloadId })).toMatchObject({ ok: false, error: { code: "download_gone" } });
+		expect(await web.post("/download/info", { ...SESSION, downloadId })).toMatchObject({
+			ok: false,
+			error: { code: "download_gone" },
+		});
 	});
 });
 
 describe("file choosers", () => {
 	const upload_url = (grantId: string, name = "notes.txt") => {
 		const url = new URL("https://object/viewer/upload");
-		for (const [key, value] of Object.entries({ ...OWNERS, grantId, name })) url.searchParams.set(key, value);
+		for (const [key, value] of Object.entries({ ...OWNERS, mode: "web", grantId, name }))
+			url.searchParams.set(key, value);
 		return url;
 	};
 	const put = async (web: ReturnType<typeof make_web>, grantId: string, body: BodyInit) => {
 		// `duplex` lets a stream body through, like a browser upload.
 		const init = { method: "PUT", body, headers: { "Content-Type": "text/plain" }, duplex: "half" } as RequestInit;
 		const response = await web.session.fetch(new Request(upload_url(grantId), init));
-		return { status: response.status, body: await response.json() as Record<string, unknown> };
+		return { status: response.status, body: (await response.json()) as Record<string, unknown> };
 	};
 	const open = async (options: Parameters<typeof make_chooser>[0] = {}) => {
 		const web = make_web();
@@ -876,7 +1242,7 @@ describe("file choosers", () => {
 		return { web, viewer, chooser, chooserId: opened?.chooserId as string, opened };
 	};
 	const fill = (web: ReturnType<typeof make_web>, chooserId: string, files: unknown[], controlGen = 2) =>
-		web.post("/upload/fill", { ...SESSION, chooserId, controlGen, files });
+		web.post("/upload/fill", { ...SESSION, ...TAB, chooserId, controlGen, files });
 	const ONE = [{ name: "a.txt", contentType: "text/plain", url: "https://r2.test/a" }];
 
 	it("opens a chooser only in human control", async () => {
@@ -887,31 +1253,85 @@ describe("file choosers", () => {
 		expect(messages(viewer.socket).some((message) => message.t === "file-chooser")).toBe(false);
 
 		const { opened } = await open({ multiple: true, accept: "image/*,.pdf" });
-		expect(opened).toEqual({ t: "file-chooser", chooserId: expect.any(String), multiple: true, accept: "image/*,.pdf", origin: "https://example.com" });
+		expect(opened).toEqual({
+			...TAB,
+			t: "file-chooser",
+			chooserId: expect.any(String),
+			multiple: true,
+			accept: "image/*,.pdf",
+			origin: "https://example.com",
+		});
 	});
 
 	it("fills the chooser once from signed URLs", async () => {
 		const { web, viewer, chooser, chooserId } = await open();
 		fetchMock.mockResolvedValue(new NativeResponse("hello"));
 		expect(await fill(web, chooserId, ONE)).toEqual({ ok: true });
-		expect(chooser.chooser.setFiles).toHaveBeenCalledWith([{ name: "a.txt", mimeType: "text/plain", buffer: Buffer.from("hello") }]);
-		expect(messages(viewer.socket)).toContainEqual({ t: "file-chooser-closed", chooserId });
+		expect(chooser.chooser.setFiles).toHaveBeenCalledWith([
+			{ name: "a.txt", mimeType: "text/plain", buffer: Buffer.from("hello") },
+		]);
+		expect(messages(viewer.socket)).toContainEqual({ ...TAB, t: "file-chooser-closed", chooserId });
 		expect(await fill(web, chooserId, ONE)).toMatchObject({ ok: false, error: { code: "chooser_gone" } });
 		expect(chooser.chooser.setFiles).toHaveBeenCalledOnce();
 	});
 
+	it.each([
+		{ name: "tabId", changed: { tabId: "another-tab" } },
+		{ name: "tabGen", changed: { tabGen: 2 } },
+		{ name: "viewGen", changed: { viewGen: 2 } },
+	])("refuses a stale upload $name", async ({ changed }) => {
+		const { web, chooser, chooserId } = await open();
+		fetchMock.mockResolvedValue(new NativeResponse("hello"));
+		for (const route of ["/upload/grant", "/upload/fill"]) {
+			expect(
+				await web.post(route, {
+					...SESSION,
+					...TAB,
+					...changed,
+					chooserId,
+					controlGen: 2,
+					...(route === "/upload/fill" ? { files: ONE } : {}),
+				}),
+			).toMatchObject({ ok: false, error: { code: "chooser_gone" } });
+		}
+		expect(fetchMock).not.toHaveBeenCalled();
+		expect(chooser.chooser.setFiles).not.toHaveBeenCalled();
+	});
+
+	it.each(["tab", "view"])("refuses a computer upload when its %s changes during the origin read", async (changed) => {
+		const { web, chooser, chooserId } = await open();
+		const granted = await web.post("/upload/grant", { ...SESSION, ...TAB, chooserId, controlGen: 2 });
+		expect(granted.ok).toBe(true);
+		chooser.element.evaluate.mockImplementationOnce(async (fn) => {
+			const record = web.stored.get("session") as { viewGen: number; tabs: Record<string, { tabGen: number }> };
+			// The shared viewer changed after the upload grant was issued.
+			if (changed === "view") record.viewGen += 1;
+			else record.tabs[TAB.tabId]!.tabGen += 1;
+			web.stored.set("session", record);
+			return fn(chooser.node);
+		});
+		expect(await put(web, granted.grantId as string, "hello")).toEqual({
+			status: 409,
+			body: { ok: false, code: "chooser_gone" },
+		});
+		expect(chooser.chooser.setFiles).not.toHaveBeenCalled();
+	});
+
 	it("gives a single chooser exactly one file", async () => {
 		const { web, chooser, chooserId } = await open({ multiple: false });
-		expect(await fill(web, chooserId, [...ONE, ...ONE])).toMatchObject({ ok: false, error: { code: "too_many_files" } });
+		expect(await fill(web, chooserId, [...ONE, ...ONE])).toMatchObject({
+			ok: false,
+			error: { code: "too_many_files" },
+		});
 		expect(fetchMock).not.toHaveBeenCalled();
 		expect(chooser.chooser.setFiles).not.toHaveBeenCalled();
 	});
 
 	it("refuses a fill after a main-frame navigation", async () => {
 		const { web, viewer, chooser, chooserId } = await open();
-		web.hostCdp.emit("Page.frameNavigated", { frame: { id: "page-1", url: "https://example.com/next" } });
+		web.page.emit("framenavigated", web.page.mainFrame());
 		await web.drain();
-		expect(messages(viewer.socket)).toContainEqual({ t: "file-chooser-closed", chooserId });
+		expect(messages(viewer.socket)).toContainEqual({ ...TAB, t: "file-chooser-closed", chooserId });
 		expect(await fill(web, chooserId, ONE)).toMatchObject({ ok: false, error: { code: "chooser_gone" } });
 		expect(chooser.chooser.setFiles).not.toHaveBeenCalled();
 	});
@@ -940,11 +1360,11 @@ describe("file choosers", () => {
 		fetchMock.mockResolvedValue(new NativeResponse("hello"));
 		// The page navigates while the origin check runs. The origin itself did not change.
 		chooser.element.evaluate.mockImplementationOnce(async (fn) => {
-			web.hostCdp.emit("Page.frameNavigated", { frame: { id: "page-1", url: "https://example.com/next" } });
+			web.page.emit("framenavigated", web.page.mainFrame());
 			return fn(chooser.node);
 		});
 		expect(await fill(web, chooserId, ONE)).toMatchObject({ ok: false, error: { code: "chooser_gone" } });
-		expect(messages(viewer.socket)).toContainEqual({ t: "file-chooser-closed", chooserId });
+		expect(messages(viewer.socket)).toContainEqual({ ...TAB, t: "file-chooser-closed", chooserId });
 		expect(chooser.chooser.setFiles).not.toHaveBeenCalled();
 	});
 
@@ -974,11 +1394,16 @@ describe("file choosers", () => {
 	it("stops a fill whose reads pass the fill budget", async () => {
 		const { web, viewer, chooser, chooserId } = await open();
 		// The signed URL never answers until the fill gives up.
-		fetchMock.mockImplementation((_url, init) => new Promise((_, reject) => {
-			init?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
-		}));
+		fetchMock.mockImplementation(
+			(_url, init) =>
+				new Promise((_, reject) => {
+					init?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+				}),
+		);
 		let reply: Record<string, unknown> | null = null;
-		const filling = fill(web, chooserId, ONE).then((value) => { reply = value; });
+		const filling = fill(web, chooserId, ONE).then((value) => {
+			reply = value;
+		});
 		await web.wait(LIMITS.uploadFillMs - LIMITS.uploadSetFilesMs - 5_000, viewer.viewerId);
 		await vi.waitFor(() => expect(reply).toMatchObject({ ok: false, error: { code: "fetch_failed" } }));
 		await filling;
@@ -988,24 +1413,37 @@ describe("file choosers", () => {
 	it("answers a broken or slow computer upload with a code and stops reading it", async () => {
 		const { web, viewer, chooser, chooserId } = await open();
 		// The connection breaks in the middle of the body.
-		const broken = new ReadableStream({ start(controller) {
-			controller.enqueue(new Uint8Array([1]));
-			controller.error(new Error("reset"));
-		} });
-		const first = await web.post("/upload/grant", { ...SESSION, chooserId, controlGen: 2 });
-		expect(await put(web, first.grantId as string, broken)).toEqual({ status: 400, body: { ok: false, code: "upload_failed" } });
+		const broken = new ReadableStream({
+			start(controller) {
+				controller.enqueue(new Uint8Array([1]));
+				controller.error(new Error("reset"));
+			},
+		});
+		const first = await web.post("/upload/grant", { ...SESSION, ...TAB, chooserId, controlGen: 2 });
+		expect(await put(web, first.grantId as string, broken)).toEqual({
+			status: 400,
+			body: { ok: false, code: "upload_failed" },
+		});
 
 		// The body never ends.
 		let cancelled = false;
-		const slow = new ReadableStream({ pull: () => new Promise(() => {}), cancel: () => { cancelled = true; } });
-		const second = await web.post("/upload/grant", { ...SESSION, chooserId, controlGen: 2 });
+		const slow = new ReadableStream({
+			pull: () => new Promise(() => {}),
+			cancel: () => {
+				cancelled = true;
+			},
+		});
+		const second = await web.post("/upload/grant", { ...SESSION, ...TAB, chooserId, controlGen: 2 });
 		const replied = put(web, second.grantId as string, slow);
 		await web.wait(60_000, viewer.viewerId);
 		expect(await replied).toEqual({ status: 400, body: { ok: false, code: "upload_failed" } });
 		expect(cancelled).toBe(true);
 		expect(chooser.chooser.setFiles).not.toHaveBeenCalled();
 		// Each grant works once, even after a failure.
-		expect(await put(web, second.grantId as string, "hello")).toEqual({ status: 403, body: { ok: false, code: "grant_invalid" } });
+		expect(await put(web, second.grantId as string, "hello")).toEqual({
+			status: 403,
+			body: { ok: false, code: "grant_invalid" },
+		});
 	});
 
 	it("refuses a fill over 20 MiB and a failed fetch", async () => {
@@ -1019,30 +1457,43 @@ describe("file choosers", () => {
 
 	it("uses a grant once for a computer upload, even when the first try fails", async () => {
 		const { web, chooser, chooserId } = await open();
-		const granted = await web.post("/upload/grant", { ...SESSION, chooserId, controlGen: 2 });
+		const granted = await web.post("/upload/grant", { ...SESSION, ...TAB, chooserId, controlGen: 2 });
 		expect(granted).toEqual({ ok: true, grantId: expect.any(String), expiresAt: Date.now() + LIMITS.uploadGrantMs });
 		// A failed try keeps the chooser open, so only the used grant can refuse the retry.
-		expect(await put(web, granted.grantId as string, new Uint8Array(LIMITS.uploadBytes + 1))).toMatchObject({ status: 413 });
-		expect(await put(web, granted.grantId as string, "hello")).toEqual({ status: 403, body: { ok: false, code: "grant_invalid" } });
+		expect(await put(web, granted.grantId as string, new Uint8Array(LIMITS.uploadBytes + 1))).toMatchObject({
+			status: 413,
+		});
+		expect(await put(web, granted.grantId as string, "hello")).toEqual({
+			status: 403,
+			body: { ok: false, code: "grant_invalid" },
+		});
 		expect(chooser.chooser.setFiles).not.toHaveBeenCalled();
 
-		const again = await web.post("/upload/grant", { ...SESSION, chooserId, controlGen: 2 });
+		const again = await web.post("/upload/grant", { ...SESSION, ...TAB, chooserId, controlGen: 2 });
 		expect(await put(web, again.grantId as string, "hello")).toEqual({ status: 200, body: { ok: true } });
-		expect(chooser.chooser.setFiles).toHaveBeenCalledWith([{ name: "notes.txt", mimeType: "text/plain", buffer: Buffer.from("hello") }]);
+		expect(chooser.chooser.setFiles).toHaveBeenCalledWith([
+			{ name: "notes.txt", mimeType: "text/plain", buffer: Buffer.from("hello") },
+		]);
 	});
 
 	it("refuses an expired grant", async () => {
 		const { web, chooser, chooserId } = await open();
-		const granted = await web.post("/upload/grant", { ...SESSION, chooserId, controlGen: 2 });
+		const granted = await web.post("/upload/grant", { ...SESSION, ...TAB, chooserId, controlGen: 2 });
 		vi.setSystemTime(Date.now() + LIMITS.uploadGrantMs);
-		expect(await put(web, granted.grantId as string, "hello")).toEqual({ status: 403, body: { ok: false, code: "grant_invalid" } });
+		expect(await put(web, granted.grantId as string, "hello")).toEqual({
+			status: 403,
+			body: { ok: false, code: "grant_invalid" },
+		});
 		expect(chooser.chooser.setFiles).not.toHaveBeenCalled();
 	});
 
 	it("refuses a computer upload over 20 MiB", async () => {
 		const { web, chooser, chooserId } = await open();
-		const granted = await web.post("/upload/grant", { ...SESSION, chooserId, controlGen: 2 });
-		expect(await put(web, granted.grantId as string, new Uint8Array(LIMITS.uploadBytes + 1))).toEqual({ status: 413, body: { ok: false, code: "too_large" } });
+		const granted = await web.post("/upload/grant", { ...SESSION, ...TAB, chooserId, controlGen: 2 });
+		expect(await put(web, granted.grantId as string, new Uint8Array(LIMITS.uploadBytes + 1))).toEqual({
+			status: 413,
+			body: { ok: false, code: "too_large" },
+		});
 		expect(chooser.chooser.setFiles).not.toHaveBeenCalled();
 	});
 
@@ -1051,15 +1502,18 @@ describe("file choosers", () => {
 		viewer.socket.send(JSON.stringify({ t: "file-chooser-cancel", chooserId }));
 		await web.drain();
 		expect(chooser.node.dispatchEvent).toHaveBeenCalledWith(expect.objectContaining({ type: "cancel" }));
-		expect(messages(viewer.socket)).toContainEqual({ t: "file-chooser-closed", chooserId });
+		expect(messages(viewer.socket)).toContainEqual({ ...TAB, t: "file-chooser-closed", chooserId });
 		expect(await fill(web, chooserId, ONE)).toMatchObject({ ok: false, error: { code: "chooser_gone" } });
 	});
 
 	it("closes the chooser after 5 minutes", async () => {
 		const { web, viewer, chooserId } = await open();
 		await web.wait(LIMITS.chooserMs, viewer.viewerId);
-		expect(messages(viewer.socket)).toContainEqual({ t: "file-chooser-closed", chooserId });
-		expect(await web.post("/upload/grant", { ...SESSION, chooserId, controlGen: 2 })).toMatchObject({ ok: false, error: { code: "chooser_gone" } });
+		expect(messages(viewer.socket)).toContainEqual({ ...TAB, t: "file-chooser-closed", chooserId });
+		expect(await web.post("/upload/grant", { ...SESSION, ...TAB, chooserId, controlGen: 2 })).toMatchObject({
+			ok: false,
+			error: { code: "chooser_gone" },
+		});
 	});
 });
 
@@ -1081,9 +1535,18 @@ describe("viewer reconnect", () => {
 		expect(messages(again.socket).filter((message) => message.t === "file-chooser")).toEqual([opened]);
 
 		// A saved download is not sent again. Close the second viewer first: a session has 2 at most.
-		expect(await web.post("/download/push", { ...SESSION, downloadId: download!.downloadId, url: "https://r2.test/a", headers: {} })).toEqual({ ok: true });
+		expect(
+			await web.post("/download/push", {
+				...SESSION,
+				downloadId: download!.downloadId,
+				url: "https://r2.test/a",
+				headers: {},
+			}),
+		).toEqual({ ok: true });
 		again.socket.close();
-		await vi.waitFor(() => expect(Object.keys((web.stored.get("session") as { viewers: object }).viewers)).toHaveLength(1));
+		await vi.waitFor(() =>
+			expect(Object.keys((web.stored.get("session") as { viewers: object }).viewers)).toHaveLength(1),
+		);
 		const later = await web.attach();
 		expect(web.downloads(later.socket)).toEqual([]);
 	});
@@ -1096,7 +1559,11 @@ describe("download and upload logs", () => {
 		const viewer = await web.human();
 		await viewer.click();
 		web.body.reads = ["a"];
-		await web.pause("r1", { "Content-Type": "application/zip", "Content-Disposition": "attachment; filename=\"secretname.zip\"" }, { url: "https://privatesite.test/x" });
+		await web.pause(
+			"r1",
+			{ "Content-Type": "application/zip", "Content-Disposition": 'attachment; filename="secretname.zip"' },
+			{ url: "https://privatesite.test/x" },
+		);
 		const downloadId = web.downloads(viewer.socket)[0]!.downloadId;
 		await web.post("/download/push", { ...SESSION, downloadId, url: "https://r2.test/privatekey", headers: {} });
 		const lines = log.mock.calls.map((call) => call.map(String).join(" "));

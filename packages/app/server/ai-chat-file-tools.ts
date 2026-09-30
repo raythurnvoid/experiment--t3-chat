@@ -17,10 +17,37 @@ import {
  * Before each model step, check the exact source again. Chat history never rebuilds this map.
  */
 export type ai_chat_Observation = {
-	toolName: "view_image" | "browser_run";
+	toolName:
+		| "view_image"
+		| "browser_run"
+		| "browser_reload"
+		| "browser_status"
+		| "browser_open"
+		| "browser_tabs"
+		| "browser_new_tab"
+		| "browser_close_tab"
+		| "playwriter_read"
+		| "playwriter_act"
+		| "playwriter_navigate"
+		| "playwriter_capture";
 	output: ToolResultPart["output"];
+	safeResult?: Pick<ReturnType<typeof ai_chat_file_result>["metadata"], "status" | "reason">;
 	isCurrent: () => Promise<boolean>;
 };
+
+export function ai_chat_observation_expire(observation: ai_chat_Observation) {
+	if (!observation.safeResult) return null;
+	const { status, reason } = observation.safeResult;
+	return {
+		toolName: observation.toolName,
+		output: {
+			type: "text" as const,
+			value: `${observation.toolName}: ${status}.${reason ? ` Reason: ${reason}.` : ""} (Private observation unavailable. The earlier tool result is unchanged.)`,
+		},
+		safeResult: observation.safeResult,
+		isCurrent: async () => false,
+	};
+}
 
 const IMAGE_MAX_EDGE = 8192;
 const IMAGE_MAX_PIXELS = 16_000_000;
@@ -31,7 +58,7 @@ const IMAGE_MAX_PIXELS = 16_000_000;
  * The provider still validates compressed image data. Names and declared MIME types do not
  * decide whether bytes are an image. Animated formats use their canvas, not all frames.
  */
-function image_header(bytes: Uint8Array) {
+export function ai_chat_image_header(bytes: Uint8Array) {
 	const data = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
 	let width = 0;
 	let height = 0;
@@ -173,7 +200,7 @@ export function ai_chat_tool_create_view_image(
 				const response = await r2_fetch_object_from_bucket({ key: file.r2Key, signal: options.abortSignal });
 				const bytes = await files_ingestion_read_bytes(response, file.size);
 				if (bytes.byteLength !== file.size) return unavailable();
-				const header = image_header(bytes);
+				const header = ai_chat_image_header(bytes);
 				if (!header) return ai_chat_file_result("View image", "errored", [], "unsupported_image");
 
 				const isCurrent = async () => {

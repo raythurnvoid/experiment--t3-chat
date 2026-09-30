@@ -2,14 +2,6 @@ import "./web-browser-saved-data.css";
 
 import { MyButton } from "@/components/my-button.tsx";
 import {
-	MyInput,
-	MyInputArea,
-	MyInputBackground,
-	MyInputBox,
-	MyInputControl,
-	MyInputLabel,
-} from "@/components/my-input.tsx";
-import {
 	MyModal,
 	MyModalCloseTrigger,
 	MyModalDescription,
@@ -24,7 +16,7 @@ import { app_convex_api } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { useConvex } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
-import { memo, useId, useRef, useState, type ChangeEvent, type FormEvent } from "react";
+import { memo, useId, useRef, useState } from "react";
 
 type WebBrowserSavedData_Summary = NonNullable<
 	FunctionReturnType<typeof app_convex_api.files_browser.list_browser_profile_sites>["_yay"]
@@ -45,10 +37,6 @@ function web_browser_saved_data_error(nay: { name?: string; message: string }) {
 			return "You do not have permission to use the browser in this workspace.";
 		case "Browser unavailable":
 			return "The web browser is not available right now.";
-		case "Too many sites":
-			return "You can add at most 50 sites.";
-		case "Invalid site":
-			return "Type a site name like bank.example, with no https:// and no path.";
 		default:
 			return nay.message;
 	}
@@ -63,7 +51,6 @@ type WebBrowserSavedData_ClassNames =
 	| "WebBrowserSavedData-row"
 	| "WebBrowserSavedData-confirm"
 	| "WebBrowserSavedData-actions"
-	| "WebBrowserSavedData-add"
 	| "WebBrowserSavedData-error";
 
 type WebBrowserSavedData_CustomAttributes = {
@@ -76,24 +63,20 @@ type WebBrowserSavedData_Props = {
 	 * first, so the dialog warns before it lists them.
 	 */
 	browserLive: boolean;
-	profile: FunctionReturnType<typeof app_convex_api.files_browser.current_browser_profile> | undefined;
 	onClose: () => void;
 };
 
 /**
- * The Manage saved data dialog of the web browser: saved sites, Clear per site, Clear all, and the
- * sites the agent may not use. The host mounts it only while it is open, so every open starts
- * fresh.
+ * Cloud logins are loaded only while this dialog is open.
  */
 export const WebBrowserSavedData = memo(function WebBrowserSavedData(props: WebBrowserSavedData_Props) {
-	const { browserLive, profile, onClose } = props;
+	const { browserLive, onClose } = props;
 	const { membershipId } = AppTenantProvider.useContext();
 	const convex = useConvex();
 	const idPrefix = useId();
 	// A pressed button that goes away, or turns disabled, drops keyboard focus to the page body.
 	// These get the focus instead, so keyboard and screen reader users stay in place.
 	const sitesHeadingRef = useRef<HTMLHeadingElement>(null);
-	const blockedInputRef = useRef<HTMLInputElement>(null);
 	const clearAllHeadingRef = useRef<HTMLHeadingElement>(null);
 
 	const [sitesState, setSitesState] = useState<WebBrowserSavedData_CustomAttributes["data-sites-state"]>("hidden");
@@ -104,11 +87,6 @@ export const WebBrowserSavedData = memo(function WebBrowserSavedData(props: WebB
 	const [clearAllState, setClearAllState] = useState<"hidden" | "confirm" | "clearing">("hidden");
 	const [clearAllError, setClearAllError] = useState<string | null>(null);
 	const [clearAllNotice, setClearAllNotice] = useState<string | null>(null);
-	const [blockedDraft, setBlockedDraft] = useState("");
-	const [blockedPending, setBlockedPending] = useState(false);
-	const [blockedError, setBlockedError] = useState<string | null>(null);
-
-	const blockedHosts = profile?.agentBlockedHosts ?? [];
 
 	const handleOpenChange = useFn((open: boolean) => {
 		if (!open) {
@@ -210,50 +188,6 @@ export const WebBrowserSavedData = memo(function WebBrowserSavedData(props: WebB
 			});
 	});
 
-	const saveBlockedHosts = (hosts: string[], onSaved: () => void) => {
-		// Add and Remove turn disabled while the list saves, and Remove goes away after it. The input
-		// stays focusable because it is only read-only while saving.
-		blockedInputRef.current?.focus();
-		setBlockedPending(true);
-		setBlockedError(null);
-		convex
-			.mutation(app_convex_api.files_browser.set_browser_agent_blocked_hosts, { membershipId, hosts })
-			.then((result) => {
-				if (result._nay) {
-					setBlockedError(web_browser_saved_data_error(result._nay));
-					return;
-				}
-				onSaved();
-			})
-			.catch((error: unknown) => {
-				setBlockedError("Could not save the list. Try again.");
-				console.error("[WebBrowserSavedData.saveBlockedHosts] Unexpected save error", { error });
-			})
-			.finally(() => {
-				setBlockedPending(false);
-			});
-	};
-
-	const handleBlockedDraftChange = useFn((event: ChangeEvent<HTMLInputElement>) => {
-		setBlockedDraft(event.currentTarget.value);
-	});
-
-	const handleAddBlocked = useFn((event: FormEvent<HTMLFormElement>) => {
-		event.preventDefault();
-		if (blockedDraft.trim() === "") {
-			return;
-		}
-		// The door checks the name and stores it in canonical form.
-		saveBlockedHosts([...blockedHosts, blockedDraft.trim()], () => setBlockedDraft(""));
-	});
-
-	const handleRemoveBlocked = (host: string) => {
-		saveBlockedHosts(
-			blockedHosts.filter((blocked) => blocked !== host),
-			() => {},
-		);
-	};
-
 	return (
 		<MyModal open setOpen={handleOpenChange}>
 			<MyModalPopover
@@ -262,9 +196,7 @@ export const WebBrowserSavedData = memo(function WebBrowserSavedData(props: WebB
 			>
 				<MyModalHeader>
 					<MyModalHeading>Manage saved data</MyModalHeading>
-					<MyModalDescription>
-						Your saved logins and agent limits for the web browser in this workspace.
-					</MyModalDescription>
+					<MyModalDescription>Your saved logins for the cloud browser in this workspace.</MyModalDescription>
 				</MyModalHeader>
 				<MyModalScrollableArea>
 					<section
@@ -365,80 +297,6 @@ export const WebBrowserSavedData = memo(function WebBrowserSavedData(props: WebB
 
 					<section
 						className={"WebBrowserSavedData-section" satisfies WebBrowserSavedData_ClassNames}
-						aria-labelledby={`${idPrefix}-blocked`}
-					>
-						<h3
-							id={`${idPrefix}-blocked`}
-							className={"WebBrowserSavedData-section-title" satisfies WebBrowserSavedData_ClassNames}
-						>
-							Sites the agent may not use
-						</h3>
-						<p className={"WebBrowserSavedData-text" satisfies WebBrowserSavedData_ClassNames}>
-							Best effort. Takes effect at the next start.
-						</p>
-						{blockedHosts.length === 0 ? (
-							<p className={"WebBrowserSavedData-text" satisfies WebBrowserSavedData_ClassNames}>No sites yet.</p>
-						) : (
-							<ul
-								className={"WebBrowserSavedData-list" satisfies WebBrowserSavedData_ClassNames}
-								aria-label="Sites the agent may not use"
-							>
-								{blockedHosts.map((host) => (
-									<li key={host} className={"WebBrowserSavedData-row" satisfies WebBrowserSavedData_ClassNames}>
-										<span>{host}</span>
-										<MyButton
-											variant="ghost"
-											aria-label={`Remove ${host}`}
-											disabled={blockedPending}
-											onClick={() => handleRemoveBlocked(host)}
-										>
-											Remove
-										</MyButton>
-									</li>
-								))}
-							</ul>
-						)}
-						<form
-							className={"WebBrowserSavedData-add" satisfies WebBrowserSavedData_ClassNames}
-							noValidate
-							onSubmit={handleAddBlocked}
-						>
-							<MyInput layout="stacked">
-								<MyInputLabel>Add a site</MyInputLabel>
-								<MyInputBackground />
-								<MyInputArea>
-									<MyInputControl
-										ref={blockedInputRef}
-										type="text"
-										inputMode="url"
-										autoComplete="off"
-										spellCheck={false}
-										placeholder="bank.example"
-										value={blockedDraft}
-										readOnly={blockedPending}
-										onChange={handleBlockedDraftChange}
-									/>
-								</MyInputArea>
-								<MyInputBox />
-							</MyInput>
-							<MyButton
-								type="submit"
-								variant="outline"
-								disabled={blockedPending || blockedDraft.trim() === ""}
-								aria-busy={blockedPending}
-							>
-								Add
-							</MyButton>
-						</form>
-						{blockedError && (
-							<p className={"WebBrowserSavedData-error" satisfies WebBrowserSavedData_ClassNames} role="alert">
-								{blockedError}
-							</p>
-						)}
-					</section>
-
-					<section
-						className={"WebBrowserSavedData-section" satisfies WebBrowserSavedData_ClassNames}
 						aria-labelledby={`${idPrefix}-clear-all`}
 					>
 						<h3
@@ -456,8 +314,7 @@ export const WebBrowserSavedData = memo(function WebBrowserSavedData(props: WebB
 						) : (
 							<div className={"WebBrowserSavedData-confirm" satisfies WebBrowserSavedData_ClassNames}>
 								<p className={"WebBrowserSavedData-text" satisfies WebBrowserSavedData_ClassNames}>
-									This signs you out of every site in this workspace's browser, for you and your agent chats. This also
-									clears Sites the agent may not use.
+									This signs you out of every site in this workspace's cloud browser, for you and your agent chats.
 									{browserLive ? " Your open browser ends first." : null}
 								</p>
 								<div className={"WebBrowserSavedData-actions" satisfies WebBrowserSavedData_ClassNames}>

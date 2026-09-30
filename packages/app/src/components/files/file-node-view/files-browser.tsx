@@ -3,7 +3,6 @@ import "./files-browser.css";
 import { AppAuthProvider } from "@/components/app-auth.tsx";
 import { BrowserViewer, type BrowserViewer_Ref } from "@/components/browser/browser-viewer.tsx";
 import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
-import { MyLink } from "@/components/my-link.tsx";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
 import {
 	MySelect,
@@ -16,8 +15,6 @@ import {
 	MySelectTrigger,
 } from "@/components/my-select.tsx";
 import { MySpinner } from "@/components/my-spinner.tsx";
-import { AiChatController } from "@/hooks/ai-chat-controller.tsx";
-import { ai_chat_is_optimistic_thread_id } from "@/lib/ai-chat.ts";
 import { useFn } from "@/hooks/utils-hooks.ts";
 import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
@@ -104,79 +101,6 @@ const files_browser_nav_store = ((/* iife */) => {
 
 // #endregion navigation generations
 
-// #region resume thread bridge
-
-/**
- * The agent panel's selected chat. Resume authorizes exactly this chat to continue on the
- * shared page; nothing is selected silently. Written by the mirror inside the agent panel's
- * chat provider, read by the Files and web browser panels.
- */
-const useFilesBrowserResumeThreadStore = create<{ threadId: string | null }>(() => ({
-	threadId: null,
-}));
-
-const FilesBrowserResumeThreadMirror = Object.assign(
-	memo(function FilesBrowserResumeThreadMirror() {
-		const controller = AiChatController.useThreadList({ includeArchived: false });
-		const selectedThreadId = controller.selectedThreadId;
-
-		useEffect(() => {
-			useFilesBrowserResumeThreadStore.setState({ threadId: selectedThreadId });
-		}, [selectedThreadId]);
-
-		return null;
-	}),
-	{
-		/**
-		 * Read the agent panel's selected chat from outside its chat provider.
-		 */
-		useThreadId: function useThreadId() {
-			return useFilesBrowserResumeThreadStore((store) => store.threadId);
-		},
-	},
-);
-
-export type FilesBrowserBindingWriter_Props = {
-	/**
-	 * The browser that agent requests from this panel may use. `file` binds the live file browser
-	 * of that exact node (the target kind stops a saved/private id clash). `web` binds the live web browser.
-	 */
-	browserBinding: { mode: "file"; nodeId: string; targetKind: "saved" | "private" } | { mode: "web" } | null;
-};
-
-/**
- * Publishes the live browser session behind the panel's binding for agent requests. Sends
- * freeze the published id into message metadata; leaving the panel clears it so the full chat
- * page never binds. The effect is a deliberate bridge: the send-time reader lives outside
- * this tree and cannot subscribe to the query, and unmount must clear the published id.
- */
-const FilesBrowserBindingWriter = memo(function FilesBrowserBindingWriter(props: FilesBrowserBindingWriter_Props) {
-	const { browserBinding } = props;
-	const { membershipId } = AppTenantProvider.useContext();
-	const session = useQuery(app_convex_api.files_browser.current_browser_session, { membershipId });
-
-	const bound =
-		session &&
-		((browserBinding?.mode === "web" && session.mode === "web") ||
-			(browserBinding?.mode === "file" &&
-				session.mode === "file" &&
-				session.nodeId === browserBinding.nodeId &&
-				session.targetKind === browserBinding.targetKind))
-			? session.sessionId
-			: null;
-
-	useEffect(() => {
-		AiChatController.useStore.setState({ browserSessionId: bound });
-		return () => {
-			AiChatController.useStore.setState({ browserSessionId: null });
-		};
-	}, [bound]);
-
-	return null;
-});
-
-// #endregion resume thread bridge
-
 // #region draft capture
 
 async function sha256_hex(text: string) {
@@ -258,9 +182,7 @@ async function files_browser_capture_draft(
 
 function is_transfer_message(
 	value: unknown,
-): value is
-	| { kind: "browser-takeover" | "browser-dock-request" | "browser-dock-ack"; sessionId: string }
-	| { kind: "browser-thread"; sessionId: string; threadId: string | null } {
+): value is { kind: "browser-takeover" | "browser-dock-request" | "browser-dock-ack"; sessionId: string } {
 	if (!value || typeof value !== "object" || Array.isArray(value)) {
 		return false;
 	}
@@ -268,8 +190,7 @@ function is_transfer_message(
 	return (
 		(record.kind === "browser-takeover" ||
 			record.kind === "browser-dock-request" ||
-			record.kind === "browser-dock-ack" ||
-			(record.kind === "browser-thread" && (record.threadId === null || typeof record.threadId === "string"))) &&
+			record.kind === "browser-dock-ack") &&
 		typeof record.sessionId === "string"
 	);
 }
@@ -331,10 +252,6 @@ const files_browser_listen_to_popouts = ((/* iife */) => {
 			return;
 		}
 		if (event.data.kind === "browser-takeover") {
-			popout.child.postMessage(
-				{ kind: "browser-thread", sessionId, threadId: useFilesBrowserResumeThreadStore.getState().threadId },
-				window.location.origin,
-			);
 			files_browser_set_popout_step(sessionId, "popped_out");
 		} else if (event.data.kind === "browser-dock-request") {
 			files_browser_set_popout_step(sessionId, "docking");
@@ -455,9 +372,7 @@ function files_browser_source_label(sourceKind: string) {
 }
 
 function format_remaining_time(session: FilesBrowser_Session, now: number) {
-	const ends = [session.idleUntil, session.totalUntil].filter(
-		(value): value is number => typeof value === "number",
-	);
+	const ends = [session.idleUntil, session.totalUntil].filter((value): value is number => typeof value === "number");
 	if (ends.length === 0) {
 		return null;
 	}
@@ -471,32 +386,21 @@ function format_remaining_time(session: FilesBrowser_Session, now: number) {
 }
 
 const FilesBrowser = memo(function FilesBrowser(props: FilesBrowser_Props) {
-	const {
-		targetKind,
-		nodeId,
-		path,
-		host,
-		editorRevision,
-		serverSequence,
-		getDraftText,
-		getDraftRevision,
-	} = props;
-	const { membershipId, organizationId, organizationName, workspaceId, workspaceName } =
-		AppTenantProvider.useContext();
+	const { targetKind, nodeId, path, host, editorRevision, serverSequence, getDraftText, getDraftRevision } = props;
+	const { membershipId, organizationId, organizationName, workspaceId, workspaceName } = AppTenantProvider.useContext();
 	const { userId } = AppAuthProvider.useAuthenticated();
 	const convex = useConvex();
 	const viewerRef = useRef<BrowserViewer_Ref | null>(null);
 
-	const session = useQuery(app_convex_api.files_browser.current_browser_session, { membershipId });
+	const session = useQuery(app_convex_api.files_browser.current_browser_session, { membershipId, mode: "file" });
 	// File mode has the same paid-plan rule as web mode. `paidPlan` is the payer's plan.
 	const available = useQuery(app_convex_api.files_browser.web_browser_available, { membershipId });
 	const mine =
-		session && session.mode === "file" && session.nodeId === nodeId && session.targetKind === targetKind ? session : null;
+		session && session.mode === "file" && session.nodeId === nodeId && session.targetKind === targetKind
+			? session
+			: null;
 	const sessionFileName = session?.mode === "file" ? session.path.split("/").at(-1) : null;
 	const sessionId = mine?.sessionId;
-	const selectedThreadId = FilesBrowserResumeThreadMirror.useThreadId();
-	const [openerThreadId, setOpenerThreadId] = useState<string | null>(null);
-	const resumeThreadId = host === "detached" ? openerThreadId : selectedThreadId;
 	const pendingUpdate = useQuery(app_convex_api.files_pending_updates.get_file_pending_update, {
 		membershipId,
 		target:
@@ -506,9 +410,7 @@ const FilesBrowser = memo(function FilesBrowser(props: FilesBrowser_Props) {
 	});
 	const hasProposal = !!pendingUpdate && files_pending_update_has_content(pendingUpdate);
 
-	const [source, setSource] = useState<files_browser_SourceKind>(
-		targetKind === "private" ? "proposed" : "saved",
-	);
+	const [source, setSource] = useState<files_browser_SourceKind>(targetKind === "private" ? "proposed" : "saved");
 	const [starting, setStarting] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const [viewerId, setViewerId] = useState<string | null>(null);
@@ -559,11 +461,13 @@ const FilesBrowser = memo(function FilesBrowser(props: FilesBrowser_Props) {
 	}, []);
 
 	// Query and socket updates arrive separately. Finishing a handoff keeps its generation.
-	const control = mine && (
-		!remoteControl ||
-		mine.controlGen > remoteControl.controlGen ||
-		(mine.controlGen === remoteControl.controlGen && mine.control === "human" && remoteControl.control === "pausing")
-	) ? mine.control : remoteControl?.control ?? null;
+	const control =
+		mine &&
+		(!remoteControl ||
+			mine.controlGen > remoteControl.controlGen ||
+			(mine.controlGen === remoteControl.controlGen && mine.control === "human" && remoteControl.control === "pausing"))
+			? mine.control
+			: (remoteControl?.control ?? null);
 
 	// Renew the viewer grant on a timer. A refusal closes the stream at once instead of waiting
 	// for the runner's grant deadline. A popped-out panel holds no viewer, so it renews nothing.
@@ -598,14 +502,6 @@ const FilesBrowser = memo(function FilesBrowser(props: FilesBrowser_Props) {
 	// down — a failed child never takes the live viewer away. Docking reverses the dance.
 	// `files_browser_listen_to_popouts` receives the child's messages, also while this panel is gone.
 	useEffect(() => {
-		if (!mine || !popout || !poppedOut) return;
-		popout.child.postMessage(
-			{ kind: "browser-thread", sessionId: mine.sessionId, threadId: selectedThreadId },
-			window.location.origin,
-		);
-	}, [mine, popout, poppedOut, selectedThreadId]);
-
-	useEffect(() => {
 		if (!isChild) {
 			return;
 		}
@@ -617,9 +513,7 @@ const FilesBrowser = memo(function FilesBrowser(props: FilesBrowser_Props) {
 				return;
 			}
 			if (event.data.sessionId !== mine?.sessionId) return;
-			if (event.data.kind === "browser-thread") {
-				setOpenerThreadId(event.data.threadId);
-			} else if (event.data.kind === "browser-dock-ack") {
+			if (event.data.kind === "browser-dock-ack") {
 				window.close();
 			}
 		};
@@ -664,9 +558,7 @@ const FilesBrowser = memo(function FilesBrowser(props: FilesBrowser_Props) {
 		mine && mine.control !== "starting" && mine.control !== "closing" && mine.control !== "closed"
 			? mine.sourceKind === "draft"
 				? loadedDraftRevision !== null && editorRevision !== loadedDraftRevision
-				: currentVersion !== undefined &&
-					currentVersion !== null &&
-					currentVersion.version !== mine.sourceVersion
+				: currentVersion !== undefined && currentVersion !== null && currentVersion.version !== mine.sourceVersion
 			: false;
 
 	const handleGrant = useFn(async (): Promise<{ grantId: string; viewerUrl: string } | null> => {
@@ -753,14 +645,14 @@ const FilesBrowser = memo(function FilesBrowser(props: FilesBrowser_Props) {
 	});
 
 	const handleResume = useFn(() => {
-		if (!mine || !resumeThreadId || ai_chat_is_optimistic_thread_id(resumeThreadId)) {
+		if (!mine) {
 			return;
 		}
 		convex
 			.action(app_convex_api.files_browser.resume_browser_agent, {
 				membershipId,
 				sessionId: mine.sessionId,
-				threadId: resumeThreadId as app_convex_Id<"ai_chat_threads">,
+				controlGen: Math.max(mine.controlGen, remoteControl?.controlGen ?? 0),
 			})
 			.then((result) => {
 				if (result._nay) {
@@ -874,10 +766,7 @@ const FilesBrowser = memo(function FilesBrowser(props: FilesBrowser_Props) {
 			}
 			setTakeoverSent(true);
 			const postTakeover = () => {
-				window.opener?.postMessage(
-					{ kind: "browser-takeover", sessionId: mine.sessionId },
-					window.location.origin,
-				);
+				window.opener?.postMessage({ kind: "browser-takeover", sessionId: mine.sessionId }, window.location.origin);
 			};
 			if (control === "human") {
 				takeWithViewer(id).then((moved: boolean) => {
@@ -970,10 +859,7 @@ const FilesBrowser = memo(function FilesBrowser(props: FilesBrowser_Props) {
 			return;
 		}
 		setDocking(true);
-		window.opener.postMessage(
-			{ kind: "browser-dock-request", sessionId: mine.sessionId },
-			window.location.origin,
-		);
+		window.opener.postMessage({ kind: "browser-dock-request", sessionId: mine.sessionId }, window.location.origin);
 	});
 
 	const deadline = mine ? format_remaining_time(mine, now) : null;
@@ -1010,16 +896,7 @@ const FilesBrowser = memo(function FilesBrowser(props: FilesBrowser_Props) {
 								</MyButton>
 							)}
 							{control === "human" && (
-								<MyButton
-									variant="outline"
-									disabled={!resumeThreadId || ai_chat_is_optimistic_thread_id(resumeThreadId)}
-									tooltip={
-										resumeThreadId && !ai_chat_is_optimistic_thread_id(resumeThreadId)
-											? "Resume agent"
-											: "Resume agent (select a chat first)"
-									}
-									onClick={handleResume}
-								>
+								<MyButton variant="outline" onClick={handleResume}>
 									<MyButtonIcon>
 										<Bot aria-hidden />
 									</MyButtonIcon>
@@ -1116,21 +993,6 @@ const FilesBrowser = memo(function FilesBrowser(props: FilesBrowser_Props) {
 				<div className={"FilesBrowser-start" satisfies FilesBrowser_ClassNames}>
 					<span role="status">Loading…</span>
 				</div>
-			) : session?.mode === "web" ? (
-				// One live browser per user and workspace: a web browser blocks a file browser here.
-				<div className={"FilesBrowser-start" satisfies FilesBrowser_ClassNames}>
-					<span>A web browser is open.</span>
-					<MyLink
-						to="/w/$organizationName/$workspaceName/browser"
-						params={{ organizationName, workspaceName }}
-						variant="button-ghost-accent"
-					>
-						Open the web browser
-					</MyLink>
-					<MyButton variant="outline" onClick={() => handleEnd(session.sessionId)}>
-						End it
-					</MyButton>
-				</div>
 			) : session?.mode === "file" ? (
 				// The browser of another file keeps running while the user is here. It holds the one
 				// browser slot, so this file can start only after it ends.
@@ -1187,6 +1049,6 @@ const FilesBrowser = memo(function FilesBrowser(props: FilesBrowser_Props) {
 	);
 });
 
-export { FilesBrowser, FilesBrowserBindingWriter, FilesBrowserResumeThreadMirror };
+export { FilesBrowser };
 
 // #endregion panel

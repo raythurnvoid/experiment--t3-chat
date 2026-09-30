@@ -58,7 +58,10 @@ function screenshot_dimensions(bytes: Uint8Array, format: unknown) {
 		if (length < 2 || offset + length + 2 > bytes.length) return null;
 		if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
 			if (length < 8) return null;
-			return { width: (bytes[offset + 7] << 8) | bytes[offset + 8], height: (bytes[offset + 5] << 8) | bytes[offset + 6] };
+			return {
+				width: (bytes[offset + 7] << 8) | bytes[offset + 8],
+				height: (bytes[offset + 5] << 8) | bytes[offset + 6],
+			};
 		}
 		offset += 2 + length;
 	}
@@ -71,10 +74,17 @@ function check_screenshot(data: string, format: unknown) {
 	if (data.length === 0 || data.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(data)) return "invalid";
 	const binary = atob(data);
 	if (binary.length > MAX_SCREENSHOT_BYTES) return "too_large";
-	const dimensions = screenshot_dimensions(Uint8Array.from(binary, (char) => char.charCodeAt(0)), format);
+	const dimensions = screenshot_dimensions(
+		Uint8Array.from(binary, (char) => char.charCodeAt(0)),
+		format,
+	);
 	if (!dimensions || dimensions.width === 0 || dimensions.height === 0) return "invalid";
-	if (dimensions.width > MAX_SCREENSHOT_EDGE || dimensions.height > MAX_SCREENSHOT_EDGE ||
-		dimensions.width * dimensions.height > MAX_SCREENSHOT_PIXELS) return "too_large";
+	if (
+		dimensions.width > MAX_SCREENSHOT_EDGE ||
+		dimensions.height > MAX_SCREENSHOT_EDGE ||
+		dimensions.width * dimensions.height > MAX_SCREENSHOT_PIXELS
+	)
+		return "too_large";
 	return "ok";
 }
 
@@ -107,8 +117,11 @@ function optional(check: Check): Check {
 }
 
 function shape(value: unknown, fields: Record<string, Check>): value is Params {
-	return is_record(value) && Object.keys(value).every((key) => Object.hasOwn(fields, key)) &&
-		Object.entries(fields).every(([key, check]) => check(value[key]));
+	return (
+		is_record(value) &&
+		Object.keys(value).every((key) => Object.hasOwn(fields, key)) &&
+		Object.entries(fields).every(([key, check]) => check(value[key]))
+	);
 }
 
 function is_rect(value: unknown) {
@@ -117,15 +130,24 @@ function is_rect(value: unknown) {
 
 function is_fonts(value: unknown) {
 	return shape(value, {
-		standard: optional(is_text), fixed: optional(is_text), serif: optional(is_text),
-		sansSerif: optional(is_text), cursive: optional(is_text), fantasy: optional(is_text), math: optional(is_text),
+		standard: optional(is_text),
+		fixed: optional(is_text),
+		serif: optional(is_text),
+		sansSerif: optional(is_text),
+		cursive: optional(is_text),
+		fantasy: optional(is_text),
+		math: optional(is_text),
 	});
 }
 
 function is_drag(value: unknown) {
 	return shape(value, {
-		items: (items) => Array.isArray(items) && items.length <= 32 && items.every((item) =>
-			shape(item, { mimeType: is_text, data: is_text, title: optional(is_text), baseURL: optional(is_text) })),
+		items: (items) =>
+			Array.isArray(items) &&
+			items.length <= 32 &&
+			items.every((item) =>
+				shape(item, { mimeType: is_text, data: is_text, title: optional(is_text), baseURL: optional(is_text) }),
+			),
 		dragOperationsMask: is_integer,
 		// File paths refer to the provider's disk, not files supplied by the user.
 		files: optional((files) => Array.isArray(files) && files.length === 0),
@@ -135,21 +157,24 @@ function is_drag(value: unknown) {
 const PARAMS: Record<string, Record<string, Check>> = {
 	"Browser.getVersion": {},
 	"Browser.setDownloadBehavior": {
-		behavior: (value) => value === "allowAndName" || value === "deny", downloadPath: optional(is_text),
+		behavior: (value) => value === "allowAndName" || value === "deny",
+		downloadPath: optional(is_text),
 		eventsEnabled: optional(is_boolean),
 	},
 	"Browser.getWindowForTarget": { targetId: optional(is_id) },
 	"Browser.getWindowBounds": { windowId: is_integer },
 	"Browser.setWindowBounds": {
 		windowId: is_integer,
-		bounds: (value) => shape(value, {
-			width: (width) => is_integer(width) && width > 0 && width <= 2592,
-			height: (height) => is_integer(height) && height > 0 && height <= 1568,
-		}),
+		bounds: (value) =>
+			shape(value, {
+				width: (width) => is_integer(width) && width > 0 && width <= 2592,
+				height: (height) => is_integer(height) && height > 0 && height <= 1568,
+			}),
 	},
 	"Target.getTargetInfo": { targetId: optional(is_id) },
 	"Target.setAutoAttach": {
-		autoAttach: (value) => value === true, waitForDebuggerOnStart: (value) => value === true,
+		autoAttach: (value) => value === true,
+		waitForDebuggerOnStart: (value) => value === true,
 		flatten: (value) => value === true,
 	},
 	"Page.enable": {},
@@ -158,12 +183,20 @@ const PARAMS: Record<string, Record<string, Check>> = {
 	"Page.bringToFront": {},
 	"Page.setLifecycleEventsEnabled": { enabled: is_boolean },
 	"Page.createIsolatedWorld": { frameId: is_id, worldName: is_id, grantUniveralAccess: optional(is_boolean) },
-	"Page.addScriptToEvaluateOnNewDocument": { source: is_text, worldName: optional(is_text), runImmediately: optional(is_boolean) },
+	"Page.addScriptToEvaluateOnNewDocument": {
+		source: is_text,
+		worldName: optional(is_text),
+		runImmediately: optional(is_boolean),
+	},
 	"Page.removeScriptToEvaluateOnNewDocument": { identifier: is_id },
 	"Page.setFontFamilies": {
 		fontFamilies: is_fonts,
-		forScripts: optional((value) => Array.isArray(value) && value.length <= 32 &&
-			value.every((item) => shape(item, { script: is_id, fontFamilies: is_fonts }))),
+		forScripts: optional(
+			(value) =>
+				Array.isArray(value) &&
+				value.length <= 32 &&
+				value.every((item) => shape(item, { script: is_id, fontFamilies: is_fonts })),
+		),
 	},
 	"Page.setInterceptFileChooserDialog": { enabled: is_boolean },
 	"Page.handleJavaScriptDialog": { accept: is_boolean, promptText: optional(is_text) },
@@ -171,15 +204,20 @@ const PARAMS: Record<string, Record<string, Check>> = {
 		format: (value) => value === "png" || value === "jpeg",
 		quality: optional((value) => is_integer(value) && value <= 100),
 		captureBeyondViewport: optional(is_boolean),
-		clip: optional((value) => shape(value, {
-			x: is_number, y: is_number,
-			width: (width) => is_number(width) && width > 0 && width <= 8192,
-			height: (height) => is_number(height) && height > 0 && height <= 8192,
-			scale: (scale) => is_number(scale) && scale > 0 && scale <= 4,
-		}) && Number(value.width) * Number(value.height) * Number(value.scale) ** 2 <= 16_000_000),
+		clip: optional(
+			(value) =>
+				shape(value, {
+					x: is_number,
+					y: is_number,
+					width: (width) => is_number(width) && width > 0 && width <= 8192,
+					height: (height) => is_number(height) && height > 0 && height <= 8192,
+					scale: (scale) => is_number(scale) && scale > 0 && scale <= 4,
+				}) && Number(value.width) * Number(value.height) * Number(value.scale) ** 2 <= 16_000_000,
+		),
 	},
 	"Page.startScreencast": {
-		format: (value) => value === "jpeg", quality: (value) => is_integer(value) && value <= 100,
+		format: (value) => value === "jpeg",
+		quality: (value) => is_integer(value) && value <= 100,
 		maxWidth: (value) => is_integer(value) && value > 0 && value <= 2560,
 		maxHeight: (value) => is_integer(value) && value > 0 && value <= 1440,
 	},
@@ -190,11 +228,22 @@ const PARAMS: Record<string, Record<string, Check>> = {
 	"Runtime.runIfWaitingForDebugger": {},
 	"Runtime.evaluate": { expression: is_text, contextId: is_integer, returnByValue: optional(is_boolean) },
 	"Runtime.callFunctionOn": {
-		functionDeclaration: is_text, objectId: is_id, returnByValue: optional(is_boolean),
-		awaitPromise: optional(is_boolean), userGesture: optional(is_boolean),
-		arguments: optional((value) => Array.isArray(value) && value.every((item) => shape(item, {
-			value: () => true, objectId: optional(is_id), unserializableValue: optional(is_text),
-		}))),
+		functionDeclaration: is_text,
+		objectId: is_id,
+		returnByValue: optional(is_boolean),
+		awaitPromise: optional(is_boolean),
+		userGesture: optional(is_boolean),
+		arguments: optional(
+			(value) =>
+				Array.isArray(value) &&
+				value.every((item) =>
+					shape(item, {
+						value: () => true,
+						objectId: optional(is_id),
+						unserializableValue: optional(is_text),
+					}),
+				),
+		),
 	},
 	"Runtime.getProperties": { objectId: is_id, ownProperties: optional(is_boolean) },
 	"Runtime.releaseObject": { objectId: is_id },
@@ -210,52 +259,78 @@ const PARAMS: Record<string, Record<string, Check>> = {
 	"Network.getResponseBody": { requestId: is_id },
 	"Emulation.setFocusEmulationEnabled": { enabled: is_boolean },
 	"Emulation.setDefaultBackgroundColorOverride": {
-		color: optional((value) => shape(value, {
-			r: (v) => is_integer(v) && v <= 255, g: (v) => is_integer(v) && v <= 255,
-			b: (v) => is_integer(v) && v <= 255, a: optional((v) => is_number(v) && v >= 0 && v <= 1),
-		})),
+		color: optional((value) =>
+			shape(value, {
+				r: (v) => is_integer(v) && v <= 255,
+				g: (v) => is_integer(v) && v <= 255,
+				b: (v) => is_integer(v) && v <= 255,
+				a: optional((v) => is_number(v) && v >= 0 && v <= 1),
+			}),
+		),
 	},
 	"Emulation.setEmulatedMedia": {
 		media: is_text,
-		features: (value) => Array.isArray(value) && value.length <= 16 &&
-			value.every((item) => shape(item, { name: is_id, value: is_text })),
+		features: (value) =>
+			Array.isArray(value) && value.length <= 16 && value.every((item) => shape(item, { name: is_id, value: is_text })),
 	},
 	"Emulation.setDeviceMetricsOverride": {
 		width: (value) => is_integer(value) && value >= 320 && value <= 2560,
 		height: (value) => is_integer(value) && value >= 320 && value <= 1440,
 		screenWidth: (value) => is_integer(value) && value >= 320 && value <= 2560,
 		screenHeight: (value) => is_integer(value) && value >= 320 && value <= 1440,
-		mobile: is_boolean, deviceScaleFactor: (value) => is_number(value) && value > 0 && value <= 2,
+		mobile: is_boolean,
+		deviceScaleFactor: (value) => is_number(value) && value > 0 && value <= 2,
 		dontSetVisibleSize: optional(is_boolean),
 		screenOrientation: (value) => shape(value, { angle: is_number, type: is_id }),
 	},
 	"Input.dispatchKeyEvent": {
 		type: (value) => ["keyDown", "keyUp", "rawKeyDown", "char"].includes(String(value)),
-		key: optional(is_text), code: optional(is_text), text: optional(is_text), unmodifiedText: optional(is_text),
-		windowsVirtualKeyCode: optional(is_integer), modifiers: optional(is_integer), location: optional(is_integer),
-		autoRepeat: optional(is_boolean), isKeypad: optional(is_boolean),
+		key: optional(is_text),
+		code: optional(is_text),
+		text: optional(is_text),
+		unmodifiedText: optional(is_text),
+		windowsVirtualKeyCode: optional(is_integer),
+		modifiers: optional(is_integer),
+		location: optional(is_integer),
+		autoRepeat: optional(is_boolean),
+		isKeypad: optional(is_boolean),
 		commands: optional((value) => Array.isArray(value) && value.every(is_text)),
 	},
 	"Input.insertText": { text: is_text },
 	"Input.dispatchMouseEvent": {
 		type: (value) => ["mousePressed", "mouseReleased", "mouseMoved", "mouseWheel"].includes(String(value)),
-		x: is_number, y: is_number, modifiers: optional(is_integer), buttons: optional(is_integer),
+		x: is_number,
+		y: is_number,
+		modifiers: optional(is_integer),
+		buttons: optional(is_integer),
 		button: optional((value) => ["none", "left", "middle", "right"].includes(String(value))),
-		clickCount: optional(is_integer), force: optional(is_number), deltaX: optional(is_number), deltaY: optional(is_number),
+		clickCount: optional(is_integer),
+		force: optional(is_number),
+		deltaX: optional(is_number),
+		deltaY: optional(is_number),
 	},
 	"Input.dispatchTouchEvent": {
-		type: (value) => value === "touchStart" || value === "touchEnd", modifiers: optional(is_integer),
-		touchPoints: (value) => Array.isArray(value) && value.length <= 10 && value.every((point) =>
-			shape(point, { x: is_number, y: is_number })),
+		type: (value) => value === "touchStart" || value === "touchEnd",
+		modifiers: optional(is_integer),
+		touchPoints: (value) =>
+			Array.isArray(value) &&
+			value.length <= 10 &&
+			value.every((point) => shape(point, { x: is_number, y: is_number })),
 	},
 	"Input.setInterceptDrags": { enabled: is_boolean },
 	"Input.dispatchDragEvent": {
 		type: (value) => ["dragEnter", "dragOver", "drop", "dragCancel"].includes(String(value)),
-		x: is_number, y: is_number, data: is_drag, modifiers: optional(is_integer),
+		x: is_number,
+		y: is_number,
+		data: is_drag,
+		modifiers: optional(is_integer),
 	},
 	// Web mode only (see WEB_METHODS). The address rules check `url` before it is forwarded.
 	"Page.navigate": {
-		url: is_text, referrer: optional(is_text), frameId: optional(is_id), referrerPolicy: optional(is_text),
+		url: is_text,
+		referrer: optional(is_text),
+		frameId: optional(is_id),
+		referrerPolicy: optional(is_text),
 		transitionType: optional(is_text),
 	},
 	"Page.reload": { ignoreCache: optional(is_boolean) },
@@ -267,7 +342,13 @@ const PARAMS: Record<string, Record<string, Check>> = {
 /**
  * Navigation methods. Web mode allows them. File mode must keep its one controller document.
  */
-const WEB_METHODS = new Set(["Page.navigate", "Page.reload", "Page.getNavigationHistory", "Page.navigateToHistoryEntry", "Page.stopLoading"]);
+const WEB_METHODS = new Set([
+	"Page.navigate",
+	"Page.reload",
+	"Page.getNavigationHistory",
+	"Page.navigateToHistoryEntry",
+	"Page.stopLoading",
+]);
 
 const SECRET_HEADERS = new Set(["cookie", "set-cookie", "authorization", "proxy-authorization"]);
 const COOKIE_FIELDS = new Set(["associatedCookies", "blockedCookies", "exemptedCookies", "cookiePartitionKey"]);
@@ -301,26 +382,71 @@ function sanitize_network_event(value: unknown, depth = 0): void {
 	}
 }
 
-const ROOT_METHODS = new Set(["Browser.getVersion", "Browser.setDownloadBehavior", "Target.getTargetInfo", "Target.setAutoAttach"]);
+const ROOT_METHODS = new Set([
+	"Browser.getVersion",
+	"Browser.setDownloadBehavior",
+	"Target.getTargetInfo",
+	"Target.setAutoAttach",
+]);
 const WORKER_METHODS = new Set([
-	"Target.setAutoAttach", "Runtime.enable", "Runtime.runIfWaitingForDebugger", "Runtime.evaluate", "Runtime.callFunctionOn",
-	"Runtime.getProperties", "Runtime.releaseObject", "Network.enable", "Network.getResponseBody",
+	"Target.setAutoAttach",
+	"Runtime.enable",
+	"Runtime.runIfWaitingForDebugger",
+	"Runtime.evaluate",
+	"Runtime.callFunctionOn",
+	"Runtime.getProperties",
+	"Runtime.releaseObject",
+	"Network.enable",
+	"Network.getResponseBody",
 ]);
 /**
  * Worker targets the child never gets. Chrome attaches service and shared workers to Playwright's
  * browser-wide auto-attach, and real sites run them. The bridge detaches them instead of closing
  * the session. Any other unknown target type still closes it.
  */
-const DETACHED_TARGETS = new Set(["service_worker", "shared_worker", "worklet", "shared_storage_worklet", "auction_worklet"]);
+const DETACHED_TARGETS = new Set([
+	"service_worker",
+	"shared_worker",
+	"worklet",
+	"shared_storage_worklet",
+	"auction_worklet",
+]);
 const EVENTS = new Set([
-	"Page.frameAttached", "Page.frameDetached", "Page.frameNavigated", "Page.frameRequestedNavigation", "Page.navigatedWithinDocument",
-	"Page.javascriptDialogOpening", "Page.javascriptDialogClosed", "Page.lifecycleEvent", "Page.windowOpen", "Page.fileChooserOpened", "Page.screencastFrame",
-	"Runtime.bindingCalled", "Runtime.consoleAPICalled", "Runtime.exceptionThrown", "Runtime.executionContextCreated", "Runtime.executionContextDestroyed", "Runtime.executionContextsCleared",
-	"Log.entryAdded", "Inspector.targetCrashed", "Inspector.workerScriptLoaded", "Input.dragIntercepted",
-	"Network.requestWillBeSent", "Network.requestWillBeSentExtraInfo", "Network.requestServedFromCache", "Network.responseReceived",
-	"Network.responseReceivedExtraInfo", "Network.loadingFinished", "Network.loadingFailed", "Network.webSocketCreated",
-	"Network.webSocketWillSendHandshakeRequest", "Network.webSocketHandshakeResponseReceived", "Network.webSocketFrameSent",
-	"Network.webSocketFrameReceived", "Network.webSocketClosed", "Network.webSocketFrameError",
+	"Page.frameAttached",
+	"Page.frameDetached",
+	"Page.frameNavigated",
+	"Page.frameRequestedNavigation",
+	"Page.navigatedWithinDocument",
+	"Page.javascriptDialogOpening",
+	"Page.javascriptDialogClosed",
+	"Page.lifecycleEvent",
+	"Page.windowOpen",
+	"Page.fileChooserOpened",
+	"Page.screencastFrame",
+	"Runtime.bindingCalled",
+	"Runtime.consoleAPICalled",
+	"Runtime.exceptionThrown",
+	"Runtime.executionContextCreated",
+	"Runtime.executionContextDestroyed",
+	"Runtime.executionContextsCleared",
+	"Log.entryAdded",
+	"Inspector.targetCrashed",
+	"Inspector.workerScriptLoaded",
+	"Input.dragIntercepted",
+	"Network.requestWillBeSent",
+	"Network.requestWillBeSentExtraInfo",
+	"Network.requestServedFromCache",
+	"Network.responseReceived",
+	"Network.responseReceivedExtraInfo",
+	"Network.loadingFinished",
+	"Network.loadingFailed",
+	"Network.webSocketCreated",
+	"Network.webSocketWillSendHandshakeRequest",
+	"Network.webSocketHandshakeResponseReceived",
+	"Network.webSocketFrameSent",
+	"Network.webSocketFrameReceived",
+	"Network.webSocketClosed",
+	"Network.webSocketFrameError",
 ]);
 
 export class AgentConnection {
@@ -337,6 +463,7 @@ export class AgentConnection {
 	 */
 	private detaching = new Set<number>();
 	private sessions = new Map<string, Session>();
+	private detachedSessions = new Set<string>();
 	private frames = new Set<string>();
 	private windows = new Set<number>();
 	private networkRequests = new Set<string>();
@@ -351,30 +478,35 @@ export class AgentConnection {
 	private deadlineTimer: ReturnType<typeof setTimeout>;
 	private settlement: Promise<{ safe: boolean; reason: string | null; blockedPopups: number }> | null = null;
 
-	constructor(private input: {
-		upstream: WebSocket;
-		downstream: WebSocket;
-		targetId: string;
-		mode: "file" | "web";
-		/**
-		 * Web mode: hosts `Page.navigate` may not open.
-		 */
-		deniedHosts: readonly string[];
-		/**
-		 * Web mode: sites the user blocked for the agent. Navigation to them is refused. Best effort:
-		 * the host also fails their requests while the command runs.
-		 */
-		agentBlockedHosts: readonly string[];
-		deadline: number;
-		onPopup: (targetId: string) => Promise<void>;
-		onUnsafe: (reason: string) => void;
-	}) {
+	constructor(
+		private input: {
+			upstream: WebSocket;
+			downstream: WebSocket;
+			targetId: string;
+			peerTargetIds?: readonly string[];
+			mode: "file" | "web";
+			/**
+			 * Web mode: hosts `Page.navigate` may not open.
+			 */
+			deniedHosts: readonly string[];
+			/**
+			 * Web mode: sites the user blocked for the agent. Navigation to them is refused. Best effort:
+			 * the host also fails their requests while the command runs.
+			 */
+			agentBlockedHosts: readonly string[];
+			deadline: number;
+			onPopup: (targetId: string) => Promise<void>;
+			onUnsafe: (reason: string) => void;
+		},
+	) {
 		input.downstream.addEventListener("message", (event) => this.from_child(event.data));
 		input.downstream.addEventListener("close", () => this.revoke());
 		// Child teardown can report an error. Stop input, then prove cleanup on the live upstream.
 		input.downstream.addEventListener("error", () => this.revoke());
 		input.upstream.addEventListener("message", (event) => this.from_provider(event.data));
-		input.upstream.addEventListener("close", () => { if (!this.settled) this.fail("provider_connection"); });
+		input.upstream.addEventListener("close", () => {
+			if (!this.settled) this.fail("provider_connection");
+		});
 		input.upstream.addEventListener("error", () => this.fail("provider_connection"));
 		this.deadlineTimer = setTimeout(() => this.fail("deadline"), Math.max(0, input.deadline - Date.now()));
 	}
@@ -387,7 +519,11 @@ export class AgentConnection {
 	private close_sockets() {
 		clearTimeout(this.deadlineTimer);
 		for (const socket of [this.input.downstream, this.input.upstream]) {
-			try { socket.close(1000, "command ended"); } catch { /* Already closed. */ }
+			try {
+				socket.close(1000, "command ended");
+			} catch {
+				/* Already closed. */
+			}
 		}
 	}
 
@@ -402,7 +538,11 @@ export class AgentConnection {
 
 	private reply(value: Params) {
 		if (this.input.downstream.readyState !== 1) return;
-		try { this.input.downstream.send(JSON.stringify(value)); } catch { this.revoke(); }
+		try {
+			this.input.downstream.send(JSON.stringify(value));
+		} catch {
+			this.revoke();
+		}
 	}
 
 	private parse(data: unknown, maxBytes: number) {
@@ -410,11 +550,16 @@ export class AgentConnection {
 		const bytes = new TextEncoder().encode(data).byteLength;
 		if (bytes > maxBytes) return null;
 		this.trafficBytes += bytes;
-		if (this.trafficBytes > MAX_TRAFFIC_BYTES) { this.fail("traffic_limit"); return null; }
+		if (this.trafficBytes > MAX_TRAFFIC_BYTES) {
+			this.fail("traffic_limit");
+			return null;
+		}
 		try {
 			const value: unknown = JSON.parse(data);
 			return is_record(value) ? value : null;
-		} catch { return null; }
+		} catch {
+			return null;
+		}
 	}
 
 	private from_child(data: unknown) {
@@ -425,24 +570,42 @@ export class AgentConnection {
 			if (this.unsafeReason || this.settled) return;
 			const message = this.parse(data, MAX_MESSAGE_BYTES);
 			if (message && is_integer(message.id)) {
-				this.reply({ id: message.id, ...(is_id(message.sessionId) ? { sessionId: message.sessionId } : {}),
-					error: { code: -32000, message: "Browser access was revoked." } });
+				this.reply({
+					id: message.id,
+					...(is_id(message.sessionId) ? { sessionId: message.sessionId } : {}),
+					error: { code: -32000, message: "Browser access was revoked." },
+				});
 			}
 			return;
 		}
 		if (Date.now() >= this.input.deadline) return this.fail("deadline");
 		const message = this.parse(data, MAX_MESSAGE_BYTES);
-		if (!message || !shape(message, { id: is_integer, method: is_id, params: optional(is_record), sessionId: optional(is_id) }) ||
-			typeof message.id !== "number" || message.id <= 0 || this.pending.has(message.id)) return this.fail("invalid_command");
+		if (
+			!message ||
+			!shape(message, { id: is_integer, method: is_id, params: optional(is_record), sessionId: optional(is_id) }) ||
+			typeof message.id !== "number" ||
+			message.id <= 0 ||
+			this.pending.has(message.id)
+		)
+			return this.fail("invalid_command");
 		if (++this.requests > MAX_REQUESTS || this.pending.size >= MAX_PENDING) return this.fail("command_limit");
 		const method = String(message.method);
 		const sessionId = typeof message.sessionId === "string" ? message.sessionId : undefined;
 		const session = sessionId ? this.sessions.get(sessionId) : undefined;
 		const params = is_record(message.params) ? message.params : {};
-		const fields = Object.hasOwn(PARAMS, method) && (this.input.mode === "web" || !WEB_METHODS.has(method)) ? PARAMS[method] : undefined;
-		const allowedScope = sessionId ? !!session && (session.kind !== "worker" || WORKER_METHODS.has(method)) : ROOT_METHODS.has(method);
+		const fields =
+			Object.hasOwn(PARAMS, method) && (this.input.mode === "web" || !WEB_METHODS.has(method))
+				? PARAMS[method]
+				: undefined;
+		const allowedScope = sessionId
+			? !!session && (session.kind !== "worker" || WORKER_METHODS.has(method))
+			: ROOT_METHODS.has(method);
 		if (!fields || !allowedScope || !shape(params, fields) || !this.allowed_params(method, params, session)) {
-			this.reply({ id: message.id, ...(sessionId ? { sessionId } : {}), error: { code: -32601, message: `Browser command is not allowed: ${method}.` } });
+			this.reply({
+				id: message.id,
+				...(sessionId ? { sessionId } : {}),
+				error: { code: -32601, message: `Browser command is not allowed: ${method}.` },
+			});
 			return;
 		}
 		let forwarded = params;
@@ -455,18 +618,25 @@ export class AgentConnection {
 		if (method === "Browser.setDownloadBehavior") forwarded = { behavior: "deny", eventsEnabled: false };
 		if (method === "Target.getTargetInfo") forwarded = { targetId: this.input.targetId };
 		// Real sites run in web mode. Playwright's utility world must not get universal access.
-		if (this.input.mode === "web" && method === "Page.createIsolatedWorld") forwarded = { ...params, grantUniveralAccess: false };
+		if (this.input.mode === "web" && method === "Page.createIsolatedWorld")
+			forwarded = { ...params, grantUniveralAccess: false };
 		if (method === "Page.navigate") {
 			const normalized = browser_web_normalize_url(String(params.url), this.input.deniedHosts);
 			if (!normalized.ok) {
 				// The reason code only. Echoing the address would put it in logs and tool output.
-				this.reply({ id: message.id, ...(sessionId ? { sessionId } : {}),
-					error: { code: -32000, message: `Browser address is not allowed: ${normalized.reason}.` } });
+				this.reply({
+					id: message.id,
+					...(sessionId ? { sessionId } : {}),
+					error: { code: -32000, message: `Browser address is not allowed: ${normalized.reason}.` },
+				});
 				return;
 			}
 			if (browser_web_url_host_matches(normalized.url, this.input.agentBlockedHosts)) {
-				this.reply({ id: message.id, ...(sessionId ? { sessionId } : {}),
-					error: { code: -32000, message: "Browser address is not allowed: agent_blocked_site." } });
+				this.reply({
+					id: message.id,
+					...(sessionId ? { sessionId } : {}),
+					error: { code: -32000, message: "Browser address is not allowed: agent_blocked_site." },
+				});
 				return;
 			}
 			forwarded = { ...params, url: normalized.url };
@@ -475,8 +645,11 @@ export class AgentConnection {
 		if (method === "Page.navigateToHistoryEntry" && this.input.agentBlockedHosts.length > 0) {
 			const url = this.history.get(Number(params.entryId));
 			if (url === undefined || browser_web_url_host_matches(url, this.input.agentBlockedHosts)) {
-				this.reply({ id: message.id, ...(sessionId ? { sessionId } : {}),
-					error: { code: -32000, message: "Browser address is not allowed: agent_blocked_site." } });
+				this.reply({
+					id: message.id,
+					...(sessionId ? { sessionId } : {}),
+					error: { code: -32000, message: "Browser address is not allowed: agent_blocked_site." },
+				});
 				return;
 			}
 		}
@@ -493,7 +666,8 @@ export class AgentConnection {
 		if (params.frameId !== undefined && !this.frames.has(String(params.frameId))) return false;
 		if (method === "Runtime.evaluate" && !session?.contexts.has(Number(params.contextId))) return false;
 		if (method === "DOM.resolveNode" && !session?.contexts.has(Number(params.executionContextId))) return false;
-		if (method === "Page.removeScriptToEvaluateOnNewDocument" && !session?.scripts.has(String(params.identifier))) return false;
+		if (method === "Page.removeScriptToEvaluateOnNewDocument" && !session?.scripts.has(String(params.identifier)))
+			return false;
 		if (method === "Runtime.removeBinding" && !session?.bindings.has(String(params.name))) return false;
 		if (method === "Page.screencastFrameAck" && !session?.frameAcks.has(Number(params.sessionId))) return false;
 		if (method === "Network.getResponseBody" && !this.networkRequests.has(String(params.requestId))) return false;
@@ -513,21 +687,37 @@ export class AgentConnection {
 		if (session && request.source === "child") this.track_input(request.method, request.params, session);
 		if (this.unsafeReason) return;
 		try {
-			this.input.upstream.send(JSON.stringify({ id, method: request.method, params: request.params,
-				...(request.sessionId ? { sessionId: request.sessionId } : {}) }));
-		} catch { this.fail("provider_send"); }
+			this.input.upstream.send(
+				JSON.stringify({
+					id,
+					method: request.method,
+					params: request.params,
+					...(request.sessionId ? { sessionId: request.sessionId } : {}),
+				}),
+			);
+		} catch {
+			this.fail("provider_send");
+		}
 	}
 
 	private track_input(method: string, params: Params, session: Session) {
 		if (method === "Input.dispatchKeyEvent") {
 			const key = `${String(params.code ?? "")}:${String(params.key ?? "")}`;
 			if (params.type === "keyUp") session.keys.delete(key);
-			else if (params.type !== "char") session.keys.set(key, { type: "keyUp", key: params.key, code: params.code,
-				windowsVirtualKeyCode: params.windowsVirtualKeyCode, location: params.location, modifiers: 0 });
+			else if (params.type !== "char")
+				session.keys.set(key, {
+					type: "keyUp",
+					key: params.key,
+					code: params.code,
+					windowsVirtualKeyCode: params.windowsVirtualKeyCode,
+					location: params.location,
+					modifiers: 0,
+				});
 			if (session.keys.size > 128) this.fail("input_limit");
 		}
 		if (method === "Input.dispatchMouseEvent") {
-			session.x = Number(params.x); session.y = Number(params.y);
+			session.x = Number(params.x);
+			session.y = Number(params.y);
 			if (params.type === "mousePressed" && typeof params.button === "string") session.buttons.add(params.button);
 			if (params.type === "mouseReleased" && typeof params.button === "string") session.buttons.delete(params.button);
 		}
@@ -540,10 +730,19 @@ export class AgentConnection {
 	}
 
 	private remember_frames(value: unknown, depth = 0): boolean {
-		if (!is_record(value) || !is_record(value.frame) || !is_id(value.frame.id) || depth > 64 || this.frames.size >= 2048) return false;
+		if (
+			!is_record(value) ||
+			!is_record(value.frame) ||
+			!is_id(value.frame.id) ||
+			depth > 64 ||
+			this.frames.size >= 2048
+		)
+			return false;
 		this.frames.add(value.frame.id);
 		if (value.childFrames === undefined) return true;
-		return Array.isArray(value.childFrames) && value.childFrames.every((child) => this.remember_frames(child, depth + 1));
+		return (
+			Array.isArray(value.childFrames) && value.childFrames.every((child) => this.remember_frames(child, depth + 1))
+		);
 	}
 
 	private from_provider(data: unknown) {
@@ -560,25 +759,37 @@ export class AgentConnection {
 			const request = this.pending.get(message.id);
 			if (!request || request.sessionId !== sessionId) return this.fail("unknown_provider_reply");
 			if (!is_record(message.result) && !is_record(message.error)) return this.fail("invalid_provider_reply");
-			if (request.method === "Page.captureScreenshot" && is_record(message.error) &&
-				(message.result !== undefined || !Number.isInteger(message.error.code) || !is_text(message.error.message))) {
+			if (
+				request.method === "Page.captureScreenshot" &&
+				is_record(message.error) &&
+				(message.result !== undefined || !Number.isInteger(message.error.code) || !is_text(message.error.message))
+			) {
 				return this.fail("invalid_provider_reply");
 			}
 			if (request.method === "Page.captureScreenshot" && is_record(message.result)) {
-				if (message.error !== undefined || typeof message.result.data !== "string") return this.fail("invalid_provider_reply");
+				if (message.error !== undefined || typeof message.result.data !== "string")
+					return this.fail("invalid_provider_reply");
 				const screenshot = check_screenshot(message.result.data, request.params.format);
 				if (screenshot === "invalid") return this.fail("invalid_provider_reply");
 				// A valid but large capture is a command error, not a lost browser connection.
 				if (screenshot === "too_large") {
 					this.pending.delete(message.id);
-					this.reply({ id: message.id, sessionId, error: { code: -32000, message: "Screenshot exceeds the size limit." } });
+					this.reply({
+						id: message.id,
+						sessionId,
+						error: { code: -32000, message: "Screenshot exceeds the size limit." },
+					});
 					this.wake();
 					return;
 				}
 			}
-			if (is_record(message.error) && (request.source === "cleanup" ||
-				(request.source === "child" && request.method.startsWith("Input.")))) return this.fail("command_failed");
-			if (is_record(message.result) && !this.track_reply(request, message.result)) return this.fail("invalid_provider_reply");
+			if (
+				is_record(message.error) &&
+				(request.source === "cleanup" || (request.source === "child" && request.method.startsWith("Input.")))
+			)
+				return this.fail("command_failed");
+			if (is_record(message.result) && !this.track_reply(request, message.result))
+				return this.fail("invalid_provider_reply");
 			this.pending.delete(message.id);
 			if (request.source === "child") this.reply(message);
 			this.wake();
@@ -588,46 +799,103 @@ export class AgentConnection {
 		const params = message.params;
 		const session = sessionId ? this.sessions.get(sessionId) : undefined;
 		if (message.method === "Target.attachedToTarget") {
-			if (!is_id(params.sessionId) || !is_record(params.targetInfo) || !is_id(params.targetInfo.targetId)) return this.fail("invalid_target");
+			if (!is_id(params.sessionId) || !is_record(params.targetInfo) || !is_id(params.targetInfo.targetId))
+				return this.fail("invalid_target");
 			const targetId = params.targetInfo.targetId;
 			const kind = params.targetInfo.type;
 			const assigned = targetId === this.input.targetId && kind === "page";
 			const child = !!session && (kind === "iframe" || kind === "worker");
 			if (!assigned && !child) {
+				// Other registered tabs stay private and keep running.
+				if (
+					(kind === "page" && this.input.peerTargetIds?.includes(targetId)) ||
+					(sessionId && this.detachedSessions.has(sessionId) && (kind === "iframe" || kind === "worker"))
+				) {
+					if (this.detachedSessions.size >= 64 && !this.detachedSessions.has(params.sessionId))
+						return this.fail("target_limit");
+					this.detachedSessions.add(params.sessionId);
+					if (params.waitingForDebugger === true)
+						this.send(this.cleanupId--, {
+							method: "Runtime.runIfWaitingForDebugger",
+							params: {},
+							sessionId: params.sessionId,
+							source: "detach",
+						});
+					this.send(this.cleanupId--, {
+						method: "Target.detachFromTarget",
+						params: { sessionId: params.sessionId },
+						sessionId,
+						source: "detach",
+					});
+					return;
+				}
 				// Give the child no session for the worker. If Chrome paused it for a debugger, resume it
 				// first, then detach, like Playwright's own `CRSession.detach`. Both modes do this: the
 				// worker runs the same way between commands, when no bridge is attached.
 				if (DETACHED_TARGETS.has(String(kind))) {
+					if (this.detachedSessions.size >= 64 && !this.detachedSessions.has(params.sessionId))
+						return this.fail("target_limit");
+					this.detachedSessions.add(params.sessionId);
 					if (params.waitingForDebugger === true) {
-						this.send(this.cleanupId--, { method: "Runtime.runIfWaitingForDebugger", params: {}, sessionId: params.sessionId, source: "detach" });
+						this.send(this.cleanupId--, {
+							method: "Runtime.runIfWaitingForDebugger",
+							params: {},
+							sessionId: params.sessionId,
+							source: "detach",
+						});
 					}
-					this.send(this.cleanupId--, { method: "Target.detachFromTarget", params: { sessionId: params.sessionId }, sessionId, source: "detach" });
+					this.send(this.cleanupId--, {
+						method: "Target.detachFromTarget",
+						params: { sessionId: params.sessionId },
+						sessionId,
+						source: "detach",
+					});
 					return;
 				}
 				if (kind !== "page") return this.fail("unapproved_target");
 				this.blockedPopups += 1;
-				const closing = Promise.resolve().then(() => this.input.onPopup(targetId)).catch(() => this.fail("popup_cleanup"));
+				const closing = Promise.resolve()
+					.then(() => this.input.onPopup(targetId))
+					.catch(() => this.fail("popup_cleanup"));
 				this.popups.add(closing);
-				void closing.finally(() => { this.popups.delete(closing); this.wake(); });
+				void closing.finally(() => {
+					this.popups.delete(closing);
+					this.wake();
+				});
 				return;
 			}
 			if (this.sessions.has(params.sessionId) || this.sessions.size >= 64) return this.fail("target_limit");
-			this.sessions.set(params.sessionId, { targetId, kind: assigned ? "page" : kind === "iframe" ? "iframe" : "worker",
-				contexts: new Set(), scripts: new Set(), bindings: new Set(), keys: new Map(), buttons: new Set(),
-				x: 0, y: 0, touch: false, drag: false, interceptDrags: false, screencast: false, frameAcks: new Set() });
+			this.sessions.set(params.sessionId, {
+				targetId,
+				kind: assigned ? "page" : kind === "iframe" ? "iframe" : "worker",
+				contexts: new Set(),
+				scripts: new Set(),
+				bindings: new Set(),
+				keys: new Map(),
+				buttons: new Set(),
+				x: 0,
+				y: 0,
+				touch: false,
+				drag: false,
+				interceptDrags: false,
+				screencast: false,
+				frameAcks: new Set(),
+			});
 			this.reply(message);
 			return;
 		}
 		if (message.method === "Target.detachedFromTarget") {
 			if (typeof params.sessionId !== "string" || !this.sessions.has(params.sessionId)) return;
-			if (this.sessions.get(params.sessionId)?.targetId === this.input.targetId) return this.fail("assigned_target_detached");
+			if (this.sessions.get(params.sessionId)?.targetId === this.input.targetId)
+				return this.fail("assigned_target_detached");
 			this.sessions.delete(params.sessionId);
 			this.reply(message);
 			return;
 		}
 		if (!session || !EVENTS.has(message.method)) return;
 		if (message.method === "Runtime.executionContextCreated") {
-			if (!is_record(params.context) || !is_integer(params.context.id) || session.contexts.size >= 1024) return this.fail("invalid_context");
+			if (!is_record(params.context) || !is_integer(params.context.id) || session.contexts.size >= 1024)
+				return this.fail("invalid_context");
 			session.contexts.add(params.context.id);
 		}
 		if (message.method === "Runtime.executionContextDestroyed") {
@@ -636,7 +904,8 @@ export class AgentConnection {
 		}
 		if (message.method === "Runtime.executionContextsCleared") session.contexts.clear();
 		if (message.method === "Page.frameAttached") {
-			if (!is_id(params.frameId) || !is_id(params.parentFrameId) || this.frames.size >= 2048) return this.fail("invalid_frame");
+			if (!is_id(params.frameId) || !is_id(params.parentFrameId) || this.frames.size >= 2048)
+				return this.fail("invalid_frame");
 			if (this.frames.has(params.parentFrameId)) this.frames.add(params.frameId);
 		}
 		if (message.method === "Page.frameDetached") {
@@ -674,7 +943,8 @@ export class AgentConnection {
 			if (!session || !is_id(result.identifier) || session.scripts.size >= 128) return false;
 			session.scripts.add(result.identifier);
 		}
-		if (request.method === "Page.removeScriptToEvaluateOnNewDocument") session?.scripts.delete(String(request.params.identifier));
+		if (request.method === "Page.removeScriptToEvaluateOnNewDocument")
+			session?.scripts.delete(String(request.params.identifier));
 		if (request.method === "Runtime.addBinding") {
 			if (!session || session.bindings.size >= 128) return false;
 			session.bindings.add(String(request.params.name));
@@ -684,7 +954,8 @@ export class AgentConnection {
 			if (!Array.isArray(result.entries) || result.entries.length > 1024) return false;
 			this.history.clear();
 			for (const entry of result.entries) {
-				if (is_record(entry) && is_integer(entry.id) && typeof entry.url === "string") this.history.set(entry.id, entry.url);
+				if (is_record(entry) && is_integer(entry.id) && typeof entry.url === "string")
+					this.history.set(entry.id, entry.url);
 			}
 		}
 		return true;
@@ -692,10 +963,19 @@ export class AgentConnection {
 
 	private async drain(deadline: number) {
 		while (!this.unsafeReason && (this.pending.size > 0 || this.popups.size > 0)) {
-			if (Date.now() >= deadline) { this.fail("drain_timeout"); break; }
+			if (Date.now() >= deadline) {
+				this.fail("drain_timeout");
+				break;
+			}
 			await new Promise<void>((resolve) => {
-				const timer = setTimeout(() => { this.waiters.delete(wake); resolve(); }, deadline - Date.now());
-				const wake = () => { clearTimeout(timer); resolve(); };
+				const timer = setTimeout(() => {
+					this.waiters.delete(wake);
+					resolve();
+				}, deadline - Date.now());
+				const wake = () => {
+					clearTimeout(timer);
+					resolve();
+				};
 				this.waiters.add(wake);
 			});
 		}
@@ -720,9 +1000,24 @@ export class AgentConnection {
 				for (const identifier of session.scripts) cleanup("Page.removeScriptToEvaluateOnNewDocument", { identifier });
 				for (const name of session.bindings) cleanup("Runtime.removeBinding", { name });
 				for (const params of session.keys.values()) cleanup("Input.dispatchKeyEvent", params);
-				for (const button of session.buttons) cleanup("Input.dispatchMouseEvent", { type: "mouseReleased", button, buttons: 0, x: session.x, y: session.y, modifiers: 0, clickCount: 1 });
+				for (const button of session.buttons)
+					cleanup("Input.dispatchMouseEvent", {
+						type: "mouseReleased",
+						button,
+						buttons: 0,
+						x: session.x,
+						y: session.y,
+						modifiers: 0,
+						clickCount: 1,
+					});
 				if (session.touch) cleanup("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
-				if (session.drag) cleanup("Input.dispatchDragEvent", { type: "dragCancel", x: session.x, y: session.y, data: { items: [], dragOperationsMask: 0 } });
+				if (session.drag)
+					cleanup("Input.dispatchDragEvent", {
+						type: "dragCancel",
+						x: session.x,
+						y: session.y,
+						data: { items: [], dragOperationsMask: 0 },
+					});
 				if (session.interceptDrags) cleanup("Input.setInterceptDrags", { enabled: false });
 				if (session.screencast) cleanup("Page.stopScreencast", {});
 				for (const command of commands) {

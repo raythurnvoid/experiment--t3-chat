@@ -4,7 +4,7 @@
 // Cloudflare Browser Run session. The host owns the session, the snapshot, and the
 // network policy. The snippet sees only its assigned session connection.
 //
-// The BrowserSession Durable Object owns one owner/organization/workspace slot:
+// The BrowserSession Durable Object owns one mode slot per owner/organization/workspace:
 // session record, command lock, generations, deadlines, and cleanup. The
 // BrowserRegistry object owns deployment-wide and per-workspace admission slots.
 // Provider calls use acquire() plus the persistent connect URL form so session
@@ -16,7 +16,7 @@
 // - Auth uses `Authorization: Bearer <BROWSER_RUNNER_SECRET>`, checked before any
 //   feature or config detail leaves an internal endpoint.
 // - The snippet binding receives no provider key, R2 binding, or Convex secret.
-//   The snippet module can import only `connect` and `expect`; the connection
+//   The snippet module exports `connect`, `expect`, and the pure host matcher; the connection
 //   gate accepts one command connection through its owning session object.
 //   The trusted bridge checks every protocol method, parameter, and target.
 // - The provider session id never leaves the runner. Callers use the opaque app
@@ -26,10 +26,12 @@
 
 import { WorkerEntrypoint } from "cloudflare:workers";
 import { Buffer } from "node:buffer";
-import { acquire, connect, sessions } from "@cloudflare/playwright";
+import { acquire, connect, errors, sessions } from "@cloudflare/playwright";
 import type { CDPSession, FileChooser, Page } from "@cloudflare/playwright";
 import { CHILD_BUNDLE_JS } from "./child-bundle.gen";
 import { AgentConnection } from "./agent-connection";
+import { handle_playwriter_request, type PlaywriterGatewayProps } from "./playwriter-session";
+export { PlaywriterSession, PlaywriterConnectionGateway } from "./playwriter-session";
 import {
 	browser_web_canonical_host,
 	browser_web_host_matches,
@@ -123,6 +125,7 @@ export type Env = {
 	LOADER: BrowserWorkerLoader;
 	BROWSER_SESSIONS: DurableObjectNamespaceStub;
 	BROWSER_REGISTRY: DurableObjectNamespaceStub;
+	PLAYWRITER_SESSIONS: DurableObjectNamespaceStub;
 	BROWSER_RUNNER_SECRET: string;
 	BROWSER_RUNNER_DISABLED?: string;
 	BROWSER_PREVIEW_URL?: string;
@@ -148,10 +151,12 @@ type Fetcher = {
 type BrowserRunnerContext = ExecutionContext & {
 	readonly exports?: {
 		readonly BrowserConnectionGateway?: (options: { props: BrowserConnectionGatewayProps }) => Fetcher;
+		readonly PlaywriterConnectionGateway?: (options: { props: PlaywriterGatewayProps }) => Fetcher;
 	};
 };
 
 type BrowserConnectionGatewayProps = {
+	mode: SessionMode;
 	sessionId: string;
 	ownerId: string;
 	organizationId: string;
@@ -163,7 +168,39 @@ type BrowserConnectionGatewayProps = {
 
 type SessionControl = "starting" | "ready" | "agent" | "pausing" | "human" | "closing" | "closed";
 
-type AgentLease = { navGen: number; loadGen: number; controlGen: number };
+type AgentLease = {
+	navGen: number;
+	loadGen: number;
+	controlGen: number;
+	tabId?: string;
+	tabGen?: number;
+	policyRevision?: number;
+	selectionRevision?: number;
+};
+
+type BrowserTab = { targetId: string; tabGen: number; navGen: number; viewport: { width: number; height: number } };
+type TabOperationReceipt = {
+	sessionId: string;
+	deadline: number;
+	source?: CommandReceipt["source"];
+	status: "in_progress" | "completed" | "refused" | "unknown";
+	hash: string;
+	session: Record<string, unknown> | null;
+	usage: { providerAcquiredAt: number; endedAt: number; reason: string } | null;
+	result: { tabId: string | null; reason: string | null; cleanup: "complete" | "unknown" };
+};
+type CommandReceipt = {
+	sessionId: string;
+	commandId: string;
+	codeHash: string;
+	source: { chatId: string; sourceMessageId: string; toolCallId: string };
+	deadline: number;
+	receiptResolutionDeadline: number;
+	payloadHash: string | null;
+	status: "in_progress" | "completed" | "refused" | "unknown" | "not_started";
+	result: { cleanup: "complete" | "unknown"; reason: string | null };
+	session: Record<string, unknown> | null;
+};
 
 type SessionRecordBase = {
 	version: 1;
@@ -179,7 +216,13 @@ type SessionRecordBase = {
 	providerSessionId: string | null;
 	pageNonce: string | null;
 	viewport: { width: number; height: number };
-	command: { id: string; startedAt: number; connection?: "available" | "consumed" | "revoked" | "settled" } | null;
+	command: {
+		id: string;
+		startedAt: number;
+		deadline?: number;
+		tabId?: string;
+		connection?: "available" | "consumed" | "revoked" | "settled";
+	} | null;
 	commandCount: number;
 	createdAt: number;
 	providerAcquiredAt: number | null;
@@ -187,7 +230,10 @@ type SessionRecordBase = {
 	attemptId: string;
 	closeAttempts: number;
 	inputHolder: string | null;
-	viewers: Record<string, { host: string; controlGen: number; grantedUntil: number; lastInputAt: number; attachedAt: number }>;
+	viewers: Record<
+		string,
+		{ host: string; controlGen: number; grantedUntil: number; lastInputAt: number; attachedAt: number }
+	>;
 	viewerGrants: Record<string, { navGen: number; expiresAt: number }>;
 };
 
@@ -208,11 +254,12 @@ type SessionRecord = SessionRecordBase &
 		| {
 				mode: "web";
 				agentAccess: boolean;
-				/**
-				 * The one page target this session owns. A reconnect keeps it and closes other pages.
-				 * It never leaves the runner.
-				 */
-				pageTargetId: string | null;
+				tabs: Record<string, BrowserTab>;
+				tabId: string;
+				viewedTabId: string;
+				viewGen: number;
+				policyRevision: number;
+				selectionRevision: number;
 				/**
 				 * The Convex profile doc id. The saved cookies belong to it.
 				 */
@@ -246,13 +293,20 @@ type UsageReceipt = { sessionId: string; providerAcquiredAt: number; endedAt: nu
 type RegistryRecord = {
 	grants: Record<
 		string,
-		{ workspaceKey: string; ownerId: string; organizationId: string; state: "claimed" | "active"; expiresAt: number | null }
+		{
+			workspaceKey: string;
+			ownerId: string;
+			organizationId: string;
+			state: "claimed" | "active";
+			expiresAt: number | null;
+		}
 	>;
 };
 
 // Limits / constants
 
 export const LIMITS = {
+	webTabs: 8,
 	bodyBytes: 6_291_456,
 	htmlBytes: 900_000,
 	htmlBytesTotal: 8_388_608,
@@ -371,6 +425,9 @@ const BROWSER_OPEN_FIELDS = new Set([
 	"sourceHash",
 	"html",
 	"viewport",
+	"operationId",
+	"operationDeadline",
+	"source",
 ]);
 const BROWSER_WEB_OPEN_FIELDS = new Set([
 	"mode",
@@ -385,8 +442,59 @@ const BROWSER_WEB_OPEN_FIELDS = new Set([
 	"profileId",
 	"profileKey",
 	"agentBlockedHosts",
+	"policyRevision",
+	"selectionRevision",
+	"operationId",
+	"operationDeadline",
+	"source",
 ]);
-const BROWSER_RUN_FIELDS = new Set(["sessionId", "ownerId", "organizationId", "workspaceId", "navGen", "loadGen", "controlGen", "commandId", "code"]);
+const BROWSER_RUN_FIELDS = new Set([
+	"mode",
+	"sessionId",
+	"ownerId",
+	"organizationId",
+	"workspaceId",
+	"navGen",
+	"loadGen",
+	"controlGen",
+	"commandId",
+	"code",
+	"tabId",
+	"tabGen",
+	"policyRevision",
+	"selectionRevision",
+	"source",
+	"deadline",
+	"receiptResolutionDeadline",
+]);
+const BROWSER_COMMAND_FIELDS = new Set([
+	"mode",
+	"sessionId",
+	"ownerId",
+	"organizationId",
+	"workspaceId",
+	"commandId",
+	"codeHash",
+	"source",
+	"deadline",
+	"receiptResolutionDeadline",
+]);
+const BROWSER_OPERATION_FIELDS = new Set([
+	"mode",
+	"sessionId",
+	"ownerId",
+	"organizationId",
+	"workspaceId",
+	"operationId",
+	"operationDeadline",
+	"expectedAgentLease",
+	"source",
+	"policyRevision",
+	"selectionRevision",
+	"tabId",
+	"url",
+	"viewerId",
+]);
 const BROWSER_RELOAD_FIELDS = new Set([
 	"sessionId",
 	"ownerId",
@@ -400,7 +508,26 @@ const BROWSER_RELOAD_FIELDS = new Set([
 	"expectedAgentLease",
 	"mode",
 ]);
-const BROWSER_WEB_RELOAD_FIELDS = new Set(["sessionId", "ownerId", "organizationId", "workspaceId", "navGen", "mode", "expectedAgentLease"]);
+const BROWSER_WEB_RELOAD_FIELDS = new Set([
+	"sessionId",
+	"ownerId",
+	"organizationId",
+	"workspaceId",
+	"navGen",
+	"mode",
+	"expectedAgentLease",
+]);
+for (const fields of [BROWSER_RELOAD_FIELDS, BROWSER_WEB_RELOAD_FIELDS])
+	for (const key of [
+		"operationId",
+		"operationDeadline",
+		"source",
+		"policyRevision",
+		"selectionRevision",
+		"tabId",
+		"tabGen",
+	])
+		fields.add(key);
 const BROWSER_CLOSE_FIELDS = new Set([
 	"sessionId",
 	"ownerId",
@@ -410,19 +537,61 @@ const BROWSER_CLOSE_FIELDS = new Set([
 	"expectedAgentLease",
 	"saveProfile",
 ]);
-const BROWSER_AGENT_ACCESS_FIELDS = new Set(["sessionId", "ownerId", "organizationId", "workspaceId", "on"]);
+for (const key of ["operationId", "operationDeadline", "source", "policyRevision", "selectionRevision"])
+	BROWSER_CLOSE_FIELDS.add(key);
+const BROWSER_AGENT_ACCESS_FIELDS = new Set([
+	"sessionId",
+	"ownerId",
+	"organizationId",
+	"workspaceId",
+	"on",
+	"agentBlockedHosts",
+	"policyRevision",
+	"selectionRevision",
+]);
 const BROWSER_STATUS_FIELDS = new Set(["sessionId", "ownerId", "organizationId", "workspaceId"]);
 const BROWSER_KEEP_OPEN_FIELDS = new Set(["sessionId", "ownerId", "organizationId", "workspaceId", "navGen"]);
 const BROWSER_VIEWER_GRANT_FIELDS = new Set(["sessionId", "ownerId", "organizationId", "workspaceId", "navGen"]);
 const BROWSER_VIEWER_RENEW_FIELDS = new Set(["sessionId", "ownerId", "organizationId", "workspaceId", "viewerId"]);
-const BROWSER_CONTROL_TAKE_FIELDS = new Set(["sessionId", "ownerId", "organizationId", "workspaceId", "navGen", "viewerId"]);
-const BROWSER_CONTROL_RESUME_FIELDS = new Set(["sessionId", "ownerId", "organizationId", "workspaceId", "navGen"]);
+const BROWSER_CONTROL_TAKE_FIELDS = new Set([
+	"sessionId",
+	"ownerId",
+	"organizationId",
+	"workspaceId",
+	"navGen",
+	"viewerId",
+]);
+const BROWSER_CONTROL_RESUME_FIELDS = new Set([
+	"sessionId",
+	"ownerId",
+	"organizationId",
+	"workspaceId",
+	"navGen",
+	"controlGen",
+]);
 const BROWSER_PROFILE_SUMMARY_FIELDS = new Set(["ownerId", "organizationId", "workspaceId", "profileId", "profileKey"]);
-const BROWSER_PROFILE_CLEAR_FIELDS = new Set(["ownerId", "organizationId", "workspaceId", "profileId", "profileKey", "domain"]);
+const BROWSER_PROFILE_CLEAR_FIELDS = new Set([
+	"ownerId",
+	"organizationId",
+	"workspaceId",
+	"profileId",
+	"profileKey",
+	"domain",
+]);
 const BROWSER_PROFILE_DELETE_FIELDS = new Set(["ownerId", "organizationId", "workspaceId", "profileId"]);
 const BROWSER_DOWNLOAD_INFO_FIELDS = new Set(["ownerId", "organizationId", "workspaceId", "sessionId", "downloadId"]);
 const BROWSER_DOWNLOAD_PUSH_FIELDS = new Set([...BROWSER_DOWNLOAD_INFO_FIELDS, "url", "headers"]);
-const BROWSER_UPLOAD_GRANT_FIELDS = new Set(["ownerId", "organizationId", "workspaceId", "sessionId", "chooserId", "controlGen"]);
+const BROWSER_UPLOAD_GRANT_FIELDS = new Set([
+	"ownerId",
+	"organizationId",
+	"workspaceId",
+	"sessionId",
+	"chooserId",
+	"controlGen",
+	"tabId",
+	"tabGen",
+	"viewGen",
+]);
 const BROWSER_UPLOAD_FILL_FIELDS = new Set([...BROWSER_UPLOAD_GRANT_FIELDS, "files"]);
 const BROWSER_UPLOAD_FILE_FIELDS = new Set(["name", "contentType", "url"]);
 const SOURCE_KINDS = new Set(["saved", "proposed", "draft"]);
@@ -484,8 +653,27 @@ function is_positive_int(value: unknown): value is number {
 	return typeof value === "number" && Number.isInteger(value) && value > 0;
 }
 
+function is_revision(value: unknown): value is number {
+	return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function is_command_source(value: unknown): value is CommandReceipt["source"] {
+	return (
+		is_record(value) &&
+		Object.keys(value).length === 3 &&
+		[value.chatId, value.sourceMessageId, value.toolCallId].every(
+			(id) => typeof id === "string" && id.length > 0 && id.length <= 256,
+		)
+	);
+}
+
 function is_agent_lease(value: unknown): value is AgentLease {
-	return is_record(value) && is_positive_int(value.navGen) && is_positive_int(value.loadGen) && is_positive_int(value.controlGen);
+	return (
+		is_record(value) &&
+		is_positive_int(value.navGen) &&
+		is_positive_int(value.loadGen) &&
+		is_positive_int(value.controlGen)
+	);
 }
 
 function cap_message(message: string): string {
@@ -763,8 +951,13 @@ async function profile_decrypt(key: CryptoKey, aad: Uint8Array<ArrayBuffer>, blo
 }
 
 function is_profile_cookie(value: unknown): value is ProfileCookie {
-	return is_record(value) && typeof value.name === "string" && typeof value.value === "string" &&
-		typeof value.domain === "string" && typeof value.expires === "number";
+	return (
+		is_record(value) &&
+		typeof value.name === "string" &&
+		typeof value.value === "string" &&
+		typeof value.domain === "string" &&
+		typeof value.expires === "number"
+	);
 }
 
 /**
@@ -783,7 +976,8 @@ function profile_cookies_to_save(value: unknown, deniedHosts: readonly string[])
 		.filter((cookie) => !browser_web_host_matches(cookie_site(cookie), deniedHosts));
 	// Keep the cookies that live longest. A session cookie has no expiry date and is often the
 	// login itself, so it sorts first.
-	const expiry = (cookie: ProfileCookie) => (cookie.session === true || cookie.expires <= 0 ? Number.MAX_VALUE : cookie.expires);
+	const expiry = (cookie: ProfileCookie) =>
+		cookie.session === true || cookie.expires <= 0 ? Number.MAX_VALUE : cookie.expires;
 	cookies.sort((a, b) => expiry(b) - expiry(a));
 
 	let truncated = cookies.length > LIMITS.profileCookies;
@@ -1116,7 +1310,11 @@ function snippet_is_function(code: string) {
 }
 
 export function build_executor_module(user_code: string): string {
-	return EXECUTOR_PREFIX + user_code + EXECUTOR_SUFFIX.replace("__SNIPPET_IS_FUNCTION__", String(snippet_is_function(user_code)));
+	return (
+		EXECUTOR_PREFIX +
+		user_code +
+		EXECUTOR_SUFFIX.replace("__SNIPPET_IS_FUNCTION__", String(snippet_is_function(user_code)))
+	);
 }
 
 // One-session connection gate
@@ -1167,7 +1365,9 @@ export async function handle_gate_request(
 
 	const url = new URL("https://do/run/stream");
 	for (const [name, value] of Object.entries(props)) url.searchParams.set(name, value);
-	const stub = sessions.get(sessions.idFromName(session_object_name(props.ownerId, props.organizationId, props.workspaceId)));
+	const stub = sessions.get(
+		sessions.idFromName(session_object_name(props.ownerId, props.organizationId, props.workspaceId, props.mode)),
+	);
 	return await stub.fetch(new Request(url, { headers: { Upgrade: "websocket" } }));
 }
 
@@ -1187,19 +1387,37 @@ export class BrowserConnectionGateway extends WorkerEntrypoint<Env, BrowserConne
 // and raw byte budget again here. The app owns Files path and MIME rules.
 // The workspace selects a file destination, not a browser session or access grant.
 
-export function validate_snippet_files(files: unknown): (
-	| { ok: true; files: Array<{ workspace: "current" | "personal"; path: string; contentType?: string; dataBase64: string }>; fileBytes: number }
-	| { ok: false; reason: string }
-) {
+export function validate_snippet_files(
+	files: unknown,
+):
+	| {
+			ok: true;
+			files: Array<{ workspace: "current" | "personal"; path: string; contentType?: string; dataBase64: string }>;
+			fileBytes: number;
+	  }
+	| { ok: false; reason: string } {
 	if (!Array.isArray(files)) return { ok: false, reason: "files_shape" };
 	if (files.length > LIMITS.files) return { ok: false, reason: "files_count" };
-	const validated: Array<{ workspace: "current" | "personal"; path: string; contentType?: string; dataBase64: string }> = [];
+	const validated: Array<{
+		workspace: "current" | "personal";
+		path: string;
+		contentType?: string;
+		dataBase64: string;
+	}> = [];
 	let fileBytes = 0;
 	for (const file of files) {
-		if (!is_record(file) || typeof file.path !== "string" || file.path.length < 1 || file.path.length > LIMITS.filePathChars ||
+		if (
+			!is_record(file) ||
+			typeof file.path !== "string" ||
+			file.path.length < 1 ||
+			file.path.length > LIMITS.filePathChars ||
 			(file.workspace !== "current" && file.workspace !== "personal") ||
-			!(file.bytes instanceof Uint8Array) || (file.contentType !== undefined &&
-				(typeof file.contentType !== "string" || file.contentType.length < 1 || file.contentType.length > LIMITS.fileContentTypeChars))) {
+			!(file.bytes instanceof Uint8Array) ||
+			(file.contentType !== undefined &&
+				(typeof file.contentType !== "string" ||
+					file.contentType.length < 1 ||
+					file.contentType.length > LIMITS.fileContentTypeChars))
+		) {
 			return { ok: false, reason: "files_shape" };
 		}
 		fileBytes += file.bytes.byteLength;
@@ -1209,7 +1427,12 @@ export function validate_snippet_files(files: unknown): (
 		for (let offset = 0; offset < file.bytes.byteLength; offset += 3 * 8192) {
 			parts.push(btoa(String.fromCharCode(...file.bytes.subarray(offset, offset + 3 * 8192))));
 		}
-		validated.push({ workspace: file.workspace, path: file.path, ...(file.contentType === undefined ? {} : { contentType: file.contentType }), dataBase64: parts.join("") });
+		validated.push({
+			workspace: file.workspace,
+			path: file.path,
+			...(file.contentType === undefined ? {} : { contentType: file.contentType }),
+			dataBase64: parts.join(""),
+		});
 	}
 	return { ok: true, files: validated, fileBytes };
 }
@@ -1219,12 +1442,18 @@ export function validate_snippet_files(files: unknown): (
 // Pure decisions over the stored record. The object applies them; unit tests
 // cover them without a provider.
 
-function agent_lease_refusal(record: SessionRecord, lease: AgentLease) {
-	if (record.navGen !== lease.navGen) return "stale_nav";
+function agent_lease_refusal(record: SessionRecord, lease: AgentLease, ownedCommandId?: string) {
+	if (record.mode === "web") {
+		const tab = lease.tabId ? record.tabs[lease.tabId] : undefined;
+		if (!tab || tab.tabGen !== lease.tabGen) return "stale_tab";
+		if (tab.navGen !== lease.navGen) return "stale_nav";
+		if (record.policyRevision !== lease.policyRevision || record.selectionRevision !== lease.selectionRevision)
+			return "stale_policy";
+	} else if (record.navGen !== lease.navGen) return "stale_nav";
 	if (record.loadGen !== lease.loadGen) return "stale_load";
 	if (record.controlGen !== lease.controlGen) return "stale_control";
 	if (record.control !== "ready") return "control";
-	if (record.command) return "busy";
+	if (record.command && record.command.id !== ownedCommandId) return "busy";
 	return null;
 }
 
@@ -1247,14 +1476,14 @@ export function session_next_alarm(record: SessionRecord): number | null {
 		deadlines.push(record.createdAt + LIMITS.startingStaleMs);
 	}
 	if (record.command) {
-		deadlines.push(record.command.startedAt + LIMITS.commandTimeoutMs + 10_000);
+		deadlines.push(record.command.deadline ?? record.command.startedAt + LIMITS.commandTimeoutMs + 10_000);
 	}
 	return Math.min(...deadlines);
 }
 
 export function session_can_run(
 	record: SessionRecord,
-	input: { sessionId: string; navGen: number; loadGen: number; controlGen: number },
+	input: { sessionId: string } & AgentLease,
 	now: number,
 ): { ok: true } | { ok: false; reason: string } {
 	if (record.sessionId !== input.sessionId) return { ok: false, reason: "stale_session" };
@@ -1262,7 +1491,13 @@ export function session_can_run(
 	if (session_is_expired(record, now)) return { ok: false, reason: "expired" };
 	// The user turned agent access off for this web session. No new command may start.
 	if (record.mode === "web" && !record.agentAccess) return { ok: false, reason: "agent_access_off" };
-	if (record.navGen !== input.navGen) return { ok: false, reason: "stale_nav" };
+	if (record.mode === "web") {
+		const tab = input.tabId ? record.tabs[input.tabId] : undefined;
+		if (!tab || tab.tabGen !== input.tabGen) return { ok: false, reason: "stale_tab" };
+		if (tab.navGen !== input.navGen) return { ok: false, reason: "stale_nav" };
+		if (record.policyRevision !== input.policyRevision || record.selectionRevision !== input.selectionRevision)
+			return { ok: false, reason: "stale_policy" };
+	} else if (record.navGen !== input.navGen) return { ok: false, reason: "stale_nav" };
 	if (record.loadGen !== input.loadGen) return { ok: false, reason: "stale_load" };
 	// Control state before generations: a caller with a retired lease still
 	// deserves the actionable reason while a human holds the page.
@@ -1294,7 +1529,10 @@ function sweep_registry(record: RegistryRecord, now: number): void {
 	}
 }
 
-function count_registry(record: RegistryRecord, claim: { workspaceKey: string; ownerId: string; organizationId: string }) {
+function count_registry(
+	record: RegistryRecord,
+	claim: { workspaceKey: string; ownerId: string; organizationId: string },
+) {
 	let deployment = 0;
 	let workspace = 0;
 	let organization = 0;
@@ -1411,7 +1649,11 @@ export class BrowserRegistry {
 			typeof body.ownerId === "string" &&
 			typeof body.organizationId === "string"
 		) {
-			return await this.claim({ workspaceKey: body.workspaceKey, ownerId: body.ownerId, organizationId: body.organizationId });
+			return await this.claim({
+				workspaceKey: body.workspaceKey,
+				ownerId: body.ownerId,
+				organizationId: body.organizationId,
+			});
 		}
 		if (url.pathname === "/confirm" && typeof body.grantId === "string") {
 			return await this.confirm(body.grantId);
@@ -1441,9 +1683,7 @@ const BROWSER_EGRESS_HOSTS = ["esm.sh"];
 // non-persistent connect then sees zero contexts. browser_binding resolves
 // this worker's BROWSER binding inside connect(). Proven in the 8D gate.
 function connect_persistent(providerSessionId: string): ReturnType<typeof connect> {
-	return connect(
-		`http://fake.host/v1/devtools/browser/${providerSessionId}?persistent=true&browser_binding=BROWSER`,
-	);
+	return connect(`http://fake.host/v1/devtools/browser/${providerSessionId}?persistent=true&browser_binding=BROWSER`);
 }
 
 type RuntimeAssets = {
@@ -1599,7 +1839,9 @@ async function bootstrap_browser(input: {
 /**
  * Acquire a browser for web mode and return its one page target.
  */
-async function acquire_web_browser(binding: BrowserWorker): Promise<{ providerSessionId: string; pageTargetId: string }> {
+async function acquire_web_browser(
+	binding: BrowserWorker,
+): Promise<{ providerSessionId: string; pageTargetId: string }> {
 	// No guardrails: web mode opens real sites. The provider egress proxy still refuses private
 	// and metadata addresses, and Chrome blocks loopback.
 	const acquired = await acquire(binding, { keep_alive: LIMITS.keepAliveMs, recording: false });
@@ -1702,8 +1944,13 @@ type DownloadRead = { over: true } | { over: false; bytes: Uint8Array<ArrayBuffe
 function cdp_header(headers: unknown, name: string) {
 	if (!Array.isArray(headers)) return null;
 	for (const header of headers) {
-		if (is_record(header) && typeof header.name === "string" && typeof header.value === "string" &&
-			header.name.toLowerCase() === name) return header.value;
+		if (
+			is_record(header) &&
+			typeof header.name === "string" &&
+			typeof header.value === "string" &&
+			header.name.toLowerCase() === name
+		)
+			return header.value;
 	}
 	return null;
 }
@@ -1720,9 +1967,24 @@ function mime_essence(contentType: string | null) {
  * even some `text/*` and `image/*` ones like `text/csv` or `image/tiff`.
  */
 const SHOWN_CONTENT_TYPES = new Set([
-	"text/html", "text/plain", "text/css", "text/javascript", "text/xml",
-	"application/xhtml+xml", "application/xml", "application/json", "application/javascript", "application/pdf",
-	"image/png", "image/jpeg", "image/gif", "image/webp", "image/svg+xml", "image/avif", "image/bmp", "image/x-icon",
+	"text/html",
+	"text/plain",
+	"text/css",
+	"text/javascript",
+	"text/xml",
+	"application/xhtml+xml",
+	"application/xml",
+	"application/json",
+	"application/javascript",
+	"application/pdf",
+	"image/png",
+	"image/jpeg",
+	"image/gif",
+	"image/webp",
+	"image/svg+xml",
+	"image/avif",
+	"image/bmp",
+	"image/x-icon",
 	"image/vnd.microsoft.icon",
 ]);
 
@@ -1746,7 +2008,7 @@ function download_name(disposition: string | null, url: string) {
 	const params = new Map<string, string>();
 	for (const match of (disposition ?? "").matchAll(/;\s*([^\s=;]+)\s*=\s*("(?:[^"\\]|\\.)*"|[^;]*)/gu)) {
 		const value = match[2]!.trim();
-		params.set(match[1]!.toLowerCase(), value.startsWith("\"") ? value.slice(1, -1).replace(/\\(.)/gu, "$1") : value);
+		params.set(match[1]!.toLowerCase(), value.startsWith('"') ? value.slice(1, -1).replace(/\\(.)/gu, "$1") : value);
 	}
 	let name = "";
 	const extended = /^([^']*)'[^']*'(.*)$/u.exec(params.get("filename*") ?? "");
@@ -1755,7 +2017,8 @@ function download_name(disposition: string | null, url: string) {
 		try {
 			if (charset === "utf-8") name = decodeURIComponent(extended[2]!);
 			// Latin-1 maps each byte to the same code point.
-			if (charset === "iso-8859-1") name = extended[2]!.replace(/%([0-9a-f]{2})/giu, (_, hex: string) => String.fromCharCode(parseInt(hex, 16)));
+			if (charset === "iso-8859-1")
+				name = extended[2]!.replace(/%([0-9a-f]{2})/giu, (_, hex: string) => String.fromCharCode(parseInt(hex, 16)));
 		} catch {
 			name = "";
 		}
@@ -1763,7 +2026,11 @@ function download_name(disposition: string | null, url: string) {
 	if (name === "") name = params.get("filename") ?? "";
 	if (name === "" && /^https?:/iu.test(url)) {
 		try {
-			const segment = new URL(url).pathname.split("/").filter((part) => part !== "").at(-1) ?? "";
+			const segment =
+				new URL(url).pathname
+					.split("/")
+					.filter((part) => part !== "")
+					.at(-1) ?? "";
 			try {
 				name = decodeURIComponent(segment);
 			} catch {
@@ -1804,19 +2071,35 @@ function decode_data_url(url: string) {
 	const data = url.slice(comma + 1);
 	const contentType = mime_essence(meta.replace(/;base64$/iu, "")) || "text/plain";
 	if (/;base64$/iu.test(meta)) {
-		const bytes = base64_bytes(data.replace(/%([0-9a-f]{2})/giu, (_, hex: string) => String.fromCharCode(parseInt(hex, 16))).replace(/\s/gu, ""));
+		const bytes = base64_bytes(
+			data.replace(/%([0-9a-f]{2})/giu, (_, hex: string) => String.fromCharCode(parseInt(hex, 16))).replace(/\s/gu, ""),
+		);
 		return bytes ? { contentType, bytes } : null;
 	}
-	const chunks = data.split(/(%[0-9a-fA-F]{2})/u).map((part) =>
-		/^%[0-9a-fA-F]{2}$/u.test(part) ? new Uint8Array([parseInt(part.slice(1), 16)]) : TEXT_ENCODER.encode(part));
-	return { contentType, bytes: append_bytes(chunks, chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0)) };
+	const chunks = data
+		.split(/(%[0-9a-fA-F]{2})/u)
+		.map((part) =>
+			/^%[0-9a-fA-F]{2}$/u.test(part) ? new Uint8Array([parseInt(part.slice(1), 16)]) : TEXT_ENCODER.encode(part),
+		);
+	return {
+		contentType,
+		bytes: append_bytes(
+			chunks,
+			chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0),
+		),
+	};
 }
 
 /**
  * Read a CDP `IO` stream in 1 MiB chunks. Stop as soon as it grows past `maxBytes`, or at the next
  * chunk after `signal` aborts.
  */
-async function read_cdp_stream(cdp: CDPSession, handle: string, maxBytes: number, signal: AbortSignal): Promise<{ over: true } | { over: false; bytes: Uint8Array<ArrayBuffer> }> {
+async function read_cdp_stream(
+	cdp: CDPSession,
+	handle: string,
+	maxBytes: number,
+	signal: AbortSignal,
+): Promise<{ over: true } | { over: false; bytes: Uint8Array<ArrayBuffer> }> {
 	const chunks: Uint8Array[] = [];
 	let size = 0;
 	while (true) {
@@ -1839,7 +2122,7 @@ type ChooserFile = { name: string; mimeType: string; buffer: Buffer };
 /**
  * The one open file chooser of the live web session. It stays in memory: the Playwright handle
  * cannot be stored. It is current only while its host connection, main-frame navigation count,
- * and `controlGen` are unchanged and it is under 5 minutes old.
+ * tab, view, and `controlGen` are unchanged and it is under 5 minutes old.
  */
 type OpenFileChooser = {
 	sessionId: string;
@@ -1851,6 +2134,9 @@ type OpenFileChooser = {
 	origin: string;
 	mainNavCount: number;
 	controlGen: number;
+	tabId: string;
+	tabGen: number;
+	viewGen: number;
 	openedAt: number;
 	timer: ReturnType<typeof setTimeout>;
 	busy: boolean;
@@ -1861,7 +2147,10 @@ type OpenFileChooser = {
  * so page scripts cannot change the answer.
  */
 async function chooser_origin(chooser: FileChooser) {
-	return await with_wall_timeout(chooser.element().evaluate((node) => node.ownerDocument?.location.origin ?? null), 5000);
+	return await with_wall_timeout(
+		chooser.element().evaluate((node) => node.ownerDocument?.location.origin ?? null),
+		5000,
+	);
 }
 
 /**
@@ -1881,7 +2170,11 @@ function app_origins(env: Env) {
  */
 async function set_fetch_patterns(cdp: CDPSession, agentFilter: boolean) {
 	const filter = agentFilter
-		? (["Document", "XHR", "Fetch"] as const).map((resourceType) => ({ urlPattern: "*", resourceType, requestStage: "Request" as const }))
+		? (["Document", "XHR", "Fetch"] as const).map((resourceType) => ({
+				urlPattern: "*",
+				resourceType,
+				requestStage: "Request" as const,
+			}))
 		: [];
 	await with_wall_timeout(cdp.send("Fetch.enable", { patterns: [DOWNLOAD_FETCH_PATTERN, ...filter] }), 5000);
 }
@@ -1892,6 +2185,7 @@ async function set_fetch_patterns(cdp: CDPSession, agentFilter: boolean) {
 // lock, generations, deadlines, and provider cleanup.
 
 type SessionOpenInput = {
+	operationId?: string;
 	grantId: string;
 	attemptId: string;
 	ownerId: string;
@@ -1908,7 +2202,16 @@ type SessionOpenInput = {
 			sourceHash: string;
 			html: string;
 	  }
-	| { mode: "web"; startUrl: string | null; agentAccess: boolean; profileId: string; profileKey: string; agentBlockedHosts: string[] }
+	| {
+			mode: "web";
+			startUrl: string | null;
+			agentAccess: boolean;
+			profileId: string;
+			profileKey: string;
+			agentBlockedHosts: string[];
+			policyRevision: number;
+			selectionRevision: number;
+	  }
 );
 
 type ViewerStream = {
@@ -1922,6 +2225,8 @@ type ViewerStream = {
 
 type HostConnection = {
 	sessionId: string;
+	tabId: string;
+	title: string;
 	browser: Awaited<ReturnType<typeof connect>>;
 	page: Page;
 	cdp: CDPSession;
@@ -1933,9 +2238,11 @@ type HostConnection = {
 	 */
 	loading: boolean;
 	/**
-	 * Web mode: counts cross-document main-frame navigations. A file chooser from an older page is gone.
+	 * Web mode: counts main-frame navigation. A chooser from an older page is gone.
 	 */
 	mainNavCount: number;
+	// Initial URL replies wait for these navigation saves.
+	navigationUpdates: Promise<void>;
 };
 
 export class BrowserSession {
@@ -1949,7 +2256,14 @@ export class BrowserSession {
 	private viewerLifecycle: Promise<void> = Promise.resolve();
 	private viewerCleanup: Promise<void> = Promise.resolve();
 	private viewerProducerGen = 0;
-	private viewerFrame: { seq: number; loadGen: number; bytes: Uint8Array<ArrayBuffer> } | null = null;
+	private viewerFrame: {
+		seq: number;
+		loadGen: number;
+		tabId: string;
+		tabGen: number;
+		viewGen: number;
+		bytes: Uint8Array<ArrayBuffer>;
+	} | null = null;
 	private viewerFrameSeq = 0;
 	private inputQueue: Promise<void> = Promise.resolve();
 	private inputDepth = 0;
@@ -1961,6 +2275,15 @@ export class BrowserSession {
 	private pressedKeys = new Set<string>();
 	private agentConnection: { sessionId: string; commandId: string; bridge: AgentConnection | null } | null = null;
 	private hostConnection: HostConnection | null = null;
+	private hostConnections = new Map<string, HostConnection>();
+	private trustedTabCreation = false;
+	private deferredPages = new Set<Page>();
+	private handledPopups = new WeakSet<Page>();
+	private tabOperations = new Map<string, TabOperationReceipt>();
+	private tabOperationsReady: Promise<void>;
+	private opening: { operationId: string | null; work: Promise<Response> } | null = null;
+	private commandReceipts = new Map<string, CommandReceipt>();
+	private commandReceiptsReady: Promise<void>;
 	private locationSeq = 0;
 	private hostStart: { sessionId: string; promise: Promise<void> } | null = null;
 	/**
@@ -1968,7 +2291,8 @@ export class BrowserSession {
 	 * saves are skipped until the next open. `dirty` means people or the agent used the page since
 	 * the last save.
 	 */
-	private profile: { sessionId: string; profileId: string; key: CryptoKey; dirty: boolean; savedAt: number } | null = null;
+	private profile: { sessionId: string; profileId: string; key: CryptoKey; dirty: boolean; savedAt: number } | null =
+		null;
 	/**
 	 * Counts profile saves. A save only writes when no newer save started after it, so a slow
 	 * periodic save cannot overwrite the End save that read a newer cookie jar.
@@ -1977,7 +2301,7 @@ export class BrowserSession {
 	/**
 	 * Web mode: the last human click or Enter. One human download may start within 10 seconds of it.
 	 */
-	private humanGesture: { sessionId: string; at: number } | null = null;
+	private humanGesture: { sessionId: string; tabId: string; at: number } | null = null;
 	/**
 	 * Web mode: the live session's downloads, only in memory. `held` is the one human download that
 	 * waits for Convex to save it. `agent` collects the running command's downloads for `run/finish`.
@@ -1991,7 +2315,12 @@ export class BrowserSession {
 		capture: Promise<void> | null;
 		held: HeldDownload | null;
 		pushed: Set<string>;
-		agent: { commandId: string; items: Array<{ name: string; contentType: string; bytes: Uint8Array<ArrayBuffer> }>; bytes: number; dropped: number } | null;
+		agent: {
+			commandId: string;
+			items: Array<{ name: string; contentType: string; bytes: Uint8Array<ArrayBuffer> }>;
+			bytes: number;
+			dropped: number;
+		} | null;
 	} | null = null;
 	/**
 	 * Web mode: running safety-net downloads. They check their frame before the capture starts.
@@ -2002,11 +2331,38 @@ export class BrowserSession {
 	/**
 	 * Single-use grants for `PUT /viewer/upload`, each bound to one chooser. Only in memory.
 	 */
-	private uploadGrants = new Map<string, { sessionId: string; chooserId: string; controlGen: number; expiresAt: number }>();
+	private uploadGrants = new Map<
+		string,
+		{
+			sessionId: string;
+			chooserId: string;
+			controlGen: number;
+			tabId: string;
+			tabGen: number;
+			viewGen: number;
+			expiresAt: number;
+		}
+	>();
 
 	constructor(state: DurableObjectStateStub, env: Env) {
 		this.state = state;
 		this.env = env;
+		this.commandReceiptsReady = state.storage
+			.get<Array<[string, CommandReceipt]>>("commandReceipts")
+			.then(async (entries) => {
+				this.commandReceipts = new Map(entries ?? []);
+				for (const receipt of this.commandReceipts.values())
+					if (receipt.status === "in_progress") receipt.status = "unknown";
+				if (entries) await state.storage.put("commandReceipts", [...this.commandReceipts]);
+			});
+		this.tabOperationsReady = state.storage
+			.get<Array<[string, TabOperationReceipt]>>("tabOperations")
+			.then(async (entries) => {
+				this.tabOperations = new Map(entries ?? []);
+				for (const receipt of this.tabOperations.values())
+					if (receipt.status === "in_progress") receipt.status = "unknown";
+				if (entries) await this.state.storage.put("tabOperations", [...this.tabOperations]);
+			});
 	}
 
 	private async load(): Promise<SessionRecord | null> {
@@ -2087,7 +2443,7 @@ export class BrowserSession {
 		}
 	}
 
-	private public_meta(record: SessionRecord) {
+	private public_meta(record: SessionRecord, targetTabId?: string) {
 		const limits = mode_limits(record.mode);
 		const shared = {
 			sessionId: record.sessionId,
@@ -2101,7 +2457,21 @@ export class BrowserSession {
 			totalUntil: record.providerAcquiredAt! + limits.totalMs,
 		};
 		if (record.mode === "web") {
-			return { mode: "web" as const, ...shared, agentAccess: record.agentAccess };
+			const tabId = targetTabId ?? record.command?.tabId ?? record.tabId;
+			const tab = record.tabs[tabId];
+			return {
+				mode: "web" as const,
+				...shared,
+				navGen: tab?.navGen ?? record.navGen,
+				tabId,
+				tabGen: tab?.tabGen ?? 1,
+				viewedTabId: record.viewedTabId,
+				viewGen: record.viewGen,
+				tabCount: Object.keys(record.tabs).length,
+				policyRevision: record.policyRevision,
+				selectionRevision: record.selectionRevision,
+				agentAccess: record.agentAccess,
+			};
 		}
 		return {
 			mode: "file" as const,
@@ -2112,6 +2482,691 @@ export class BrowserSession {
 			sourceHash: record.sourceHash,
 			loadCount: record.loadCount,
 		};
+	}
+
+	private viewed_identity(record: SessionRecord) {
+		return record.mode === "web"
+			? { tabId: record.viewedTabId, tabGen: record.tabs[record.viewedTabId]!.tabGen, viewGen: record.viewGen }
+			: { tabId: record.sessionId, tabGen: record.navGen, viewGen: record.loadGen };
+	}
+
+	private viewer_matches(input: { tabId: string; tabGen: number; viewGen: number }, record: SessionRecord) {
+		const viewed = this.viewed_identity(record);
+		return input.tabId === viewed.tabId && input.tabGen === viewed.tabGen && input.viewGen === viewed.viewGen;
+	}
+
+	private host_live(host: HostConnection) {
+		return this.hostConnections.get(host.tabId) === host;
+	}
+
+	private async command_receipt(path: string, body: Record<string, unknown>): Promise<Response> {
+		await this.commandReceiptsReady;
+		if (
+			!is_non_empty_string(body.sessionId) ||
+			!is_non_empty_string(body.commandId) ||
+			typeof body.codeHash !== "string" ||
+			!/^[a-f0-9]{64}$/.test(body.codeHash) ||
+			!is_command_source(body.source) ||
+			!is_positive_int(body.deadline) ||
+			!is_positive_int(body.receiptResolutionDeadline) ||
+			body.receiptResolutionDeadline < body.deadline ||
+			body.receiptResolutionDeadline > Date.now() + 120_000
+		)
+			return invalid_request("A bounded command identity is required.");
+		const identity = {
+			sessionId: body.sessionId,
+			commandId: body.commandId,
+			codeHash: body.codeHash,
+			source: body.source,
+			deadline: body.deadline,
+			receiptResolutionDeadline: body.receiptResolutionDeadline,
+		};
+		let receipt = this.commandReceipts.get(body.commandId);
+		if (
+			receipt &&
+			JSON.stringify(identity) !==
+				JSON.stringify({
+					sessionId: receipt.sessionId,
+					commandId: receipt.commandId,
+					codeHash: receipt.codeHash,
+					source: receipt.source,
+					deadline: receipt.deadline,
+					receiptResolutionDeadline: receipt.receiptResolutionDeadline,
+				})
+		)
+			return operation_refused("command_mismatch", "The command identity changed.");
+		const reply = (execute = false) =>
+			json_response(
+				{
+					ok: true,
+					execute,
+					status: receipt!.status,
+					commandId: receipt!.commandId,
+					codeHash: receipt!.codeHash,
+					session: receipt!.session,
+					result: receipt!.result,
+				},
+				200,
+			);
+		if (!receipt) {
+			for (const [id, entry] of this.commandReceipts)
+				if (entry.result.cleanup === "complete" && entry.receiptResolutionDeadline < Date.now())
+					this.commandReceipts.delete(id);
+			if (this.commandReceipts.size >= 256 || byte_length(JSON.stringify([...this.commandReceipts])) > 250_000)
+				return operation_refused("receipt_capacity", "Too many retained commands.");
+			const execute = path === "/run/claim" && Date.now() < body.deadline;
+			receipt = {
+				...identity,
+				payloadHash: execute && typeof body.payloadHash === "string" ? body.payloadHash : null,
+				status: execute ? "in_progress" : "not_started",
+				result: { cleanup: execute ? "unknown" : "complete", reason: execute ? null : "not_started" },
+				session: null,
+			};
+			this.commandReceipts.set(body.commandId, receipt);
+			await this.state.storage.put("commandReceipts", [...this.commandReceipts]);
+			return reply(execute);
+		}
+		if (path === "/run/claim")
+			return receipt.payloadHash === body.payloadHash || receipt.payloadHash === null
+				? reply()
+				: operation_refused("command_mismatch", "The command payload changed.");
+		if (path === "/run/complete" && receipt.status === "in_progress") {
+			receipt.status = body.status === "completed" || body.status === "refused" ? body.status : "unknown";
+			receipt.result = {
+				cleanup: body.cleanup === "complete" ? "complete" : "unknown",
+				reason: typeof body.reason === "string" && /^[a-z_]{1,64}$/.test(body.reason) ? body.reason : null,
+			};
+			receipt.session = is_record(body.session) ? body.session : null;
+			await this.state.storage.put("commandReceipts", [...this.commandReceipts]);
+		}
+		if (path === "/command-fence" && receipt.result.cleanup !== "complete") {
+			const record = await this.load();
+			if (record?.sessionId === receipt.sessionId) {
+				// Closing the owned cloud browser also retires a command lost during a restart.
+				const closed = await this.close_record(record, "command_fenced", false);
+				if (closed.verified) receipt.result.cleanup = "complete";
+			} else {
+				const usage = await this.usage(receipt.sessionId);
+				if (usage && usage.reason !== "close_unverified") receipt.result.cleanup = "complete";
+			}
+			receipt.status = "unknown";
+			receipt.result.reason = "command_fenced";
+			receipt.session = null;
+			await this.state.storage.put("commandReceipts", [...this.commandReceipts]);
+		}
+		return reply();
+	}
+
+	private async management_receipt(path: string, body: Record<string, unknown>): Promise<Response> {
+		await this.tabOperationsReady;
+		if (
+			!is_non_empty_string(body.operationId) ||
+			body.operationId.length > 128 ||
+			!is_positive_int(body.operationDeadline) ||
+			body.operationDeadline > Date.now() + 120_000 ||
+			(body.source !== undefined && !is_command_source(body.source))
+		)
+			return invalid_request("A bounded operation identity is required.");
+		const record = await this.load();
+		let receipt = this.tabOperations.get(body.operationId);
+		const reply = (execute = false) =>
+			json_response(
+				{
+					ok: true,
+					execute,
+					status: receipt!.status,
+					session: receipt!.session,
+					usage: receipt!.usage,
+					tabs:
+						record?.mode === "web" &&
+						record.sessionId === receipt!.session?.sessionId &&
+						record.control !== "closed" &&
+						record.control !== "closing"
+							? this.tab_summaries(record)
+							: [],
+					result: receipt!.result,
+				},
+				200,
+			);
+		if (
+			receipt &&
+			((body.sessionId !== undefined && receipt.sessionId !== body.sessionId) ||
+				receipt.deadline !== body.operationDeadline ||
+				JSON.stringify(receipt.source) !== JSON.stringify(body.source))
+		)
+			return operation_refused("operation_mismatch", "The operation identity changed.");
+		if (!receipt) {
+			for (const [id, entry] of this.tabOperations)
+				if (entry.result.cleanup === "complete" && entry.deadline < Date.now()) this.tabOperations.delete(id);
+			if (
+				path === "/operation/claim" &&
+				[...this.tabOperations.values()].some((entry) => entry.result.cleanup === "unknown")
+			)
+				return operation_refused("busy", "A browser operation still needs cleanup.");
+			if (this.tabOperations.size >= 256 || byte_length(JSON.stringify([...this.tabOperations])) > 250_000)
+				return operation_refused("receipt_capacity", "Too many retained operations.");
+			const execute = path === "/operation/claim" && Date.now() < body.operationDeadline;
+			receipt = {
+				sessionId: typeof body.sessionId === "string" ? body.sessionId : `start:${body.operationId}`,
+				deadline: body.operationDeadline,
+				...(is_command_source(body.source) ? { source: body.source } : {}),
+				status: execute ? "in_progress" : "unknown",
+				hash: typeof body.payloadHash === "string" ? body.payloadHash : "reserved",
+				session: null,
+				usage: null,
+				result: { tabId: null, reason: execute ? null : "not_started", cleanup: execute ? "unknown" : "complete" },
+			};
+			this.tabOperations.set(body.operationId, receipt);
+			await this.state.storage.put("tabOperations", [...this.tabOperations]);
+			return reply(execute);
+		}
+		if (path === "/operation/claim" && receipt.hash !== body.payloadHash && receipt.hash !== "reserved")
+			return operation_refused("operation_mismatch", "The operation payload changed.");
+		if (path === "/operation/finish" && receipt.status === "in_progress") {
+			receipt.status = body.status === "completed" || body.status === "refused" ? body.status : "unknown";
+			receipt.session = is_record(body.session) ? body.session : null;
+			receipt.result.cleanup = body.cleanup === "complete" ? "complete" : "unknown";
+			receipt.result.reason =
+				typeof body.reason === "string" && /^[a-z_]{1,64}$/.test(body.reason) ? body.reason : null;
+			await this.state.storage.put("tabOperations", [...this.tabOperations]);
+		}
+		if (path === "/operation-status" && Date.now() >= receipt.deadline && receipt.result.cleanup !== "complete") {
+			receipt.status = "unknown";
+			receipt.result.reason = "operation_fenced";
+			await this.state.storage.put("tabOperations", [...this.tabOperations]);
+			const opening = this.opening;
+			if (opening?.operationId === body.operationId) await with_wall_timeout(opening.work, 5000).catch(() => {});
+			if (this.opening?.operationId !== body.operationId) {
+				const current = await this.load();
+				const receiptSessionId =
+					typeof receipt.session?.sessionId === "string" ? receipt.session.sessionId : receipt.sessionId;
+				if (current && (current.sessionId === receiptSessionId || receipt.sessionId.startsWith("start:"))) {
+					receipt.session = this.public_meta(current);
+					const closed = await this.close_record(current, "operation_fenced", false);
+					if (closed.verified) receipt.result.cleanup = "complete";
+					receipt.usage = await this.usage(current.sessionId);
+				} else {
+					const usage = await this.usage(receiptSessionId);
+					if (usage && usage.reason !== "close_unverified") {
+						receipt.result.cleanup = "complete";
+						receipt.usage = usage;
+					}
+				}
+			}
+			await this.state.storage.put("tabOperations", [...this.tabOperations]);
+		}
+		return reply();
+	}
+
+	private tab_summaries(record: WebSessionRecord) {
+		return Object.entries(record.tabs).map(([tabId, tab]) => {
+			const host = this.hostConnections.get(tabId);
+			return {
+				tabId,
+				tabGen: tab.tabGen,
+				navGen: tab.navGen,
+				title: host?.title ?? "",
+				url: host?.page.url().slice(0, browser_web_URL_MAX_CHARS) ?? "",
+			};
+		});
+	}
+
+	private async tab_operation(path: string, body: Record<string, unknown>, inputReleased = false): Promise<Response> {
+		await this.tabOperationsReady;
+		let record = await this.load();
+		if (
+			!record ||
+			record.mode !== "web" ||
+			record.sessionId !== body.sessionId ||
+			session_is_expired(record, Date.now())
+		)
+			return operation_refused("closed", "The web browser is unavailable.");
+		if (path === "/tabs") {
+			for (const tabId of Object.keys(record.tabs)) await this.connect_host(record, { closeOnFailure: true, tabId });
+			return json_response({ ok: true, session: this.public_meta(record), tabs: this.tab_summaries(record) }, 200);
+		}
+		if (path === "/tab-select") {
+			if (
+				!is_non_empty_string(body.tabId) ||
+				!record.tabs[body.tabId] ||
+				!is_non_empty_string(body.viewerId) ||
+				!record.viewers[body.viewerId] ||
+				record.viewers[body.viewerId]!.grantedUntil <= Date.now()
+			)
+				return operation_refused("viewer", "The viewer is unavailable.");
+			if (
+				record.inputHolder &&
+				record.viewers[record.inputHolder] &&
+				record.viewers[record.inputHolder]!.grantedUntil > Date.now() &&
+				record.inputHolder !== body.viewerId
+			)
+				return operation_refused("control", "Another viewer holds input.");
+			if (!inputReleased) return this.with_input_released(() => this.tab_operation(path, body, true));
+			if (record.viewedTabId !== body.tabId) {
+				this.close_file_chooser();
+				this.stop_viewer_producer();
+				record.viewedTabId = body.tabId;
+				record.viewGen += 1;
+				record.viewport = record.tabs[body.tabId]!.viewport;
+				await this.save(record);
+				this.push_viewers({
+					t: "tabs",
+					...this.viewed_identity(record),
+					viewedTabId: record.viewedTabId,
+					tabs: this.tab_summaries(record),
+				});
+				if (this.viewerStreams.size > 0) await this.start_viewer_producer();
+			}
+			return json_response({ ok: true, session: this.public_meta(record), tabs: this.tab_summaries(record) }, 200);
+		}
+		if (
+			!is_non_empty_string(body.operationId) ||
+			!is_positive_int(body.operationDeadline) ||
+			body.operationDeadline > Date.now() + 120_000
+		)
+			return invalid_request("A bounded operation id and deadline are required.");
+		let receipt = this.tabOperations.get(body.operationId);
+		const reply = () =>
+			json_response(
+				{
+					ok: true,
+					status: receipt!.status,
+					session: receipt!.session,
+					tabs: this.tab_summaries(record as WebSessionRecord),
+					result: receipt!.result,
+				},
+				200,
+			);
+		if (
+			receipt &&
+			(receipt.sessionId !== record.sessionId ||
+				receipt.deadline !== body.operationDeadline ||
+				JSON.stringify(receipt.source) !== JSON.stringify(body.source))
+		)
+			return operation_refused("operation_mismatch", "The operation identity changed.");
+		if (path === "/operation-status")
+			return receipt
+				? reply()
+				: json_response(
+						{
+							ok: true,
+							status: "unknown",
+							session: this.public_meta(record),
+							tabs: this.tab_summaries(record),
+							result: { tabId: null, reason: "unknown_operation" },
+						},
+						200,
+					);
+		const hash = await crypto.subtle
+			.digest(
+				"SHA-256",
+				TEXT_ENCODER.encode(
+					JSON.stringify([
+						path,
+						body.tabId,
+						body.url,
+						body.expectedAgentLease,
+						body.policyRevision,
+						body.selectionRevision,
+					]),
+				),
+			)
+			.then((bytes) => bytes_base64(new Uint8Array(bytes)));
+		receipt = this.tabOperations.get(body.operationId);
+		if (receipt)
+			return receipt.hash === hash
+				? reply()
+				: operation_refused("operation_mismatch", "The operation payload changed.");
+		if (Date.now() >= body.operationDeadline) return operation_refused("expired", "The operation deadline passed.");
+		for (const [id, entry] of this.tabOperations)
+			if (entry.result.cleanup === "complete" && entry.deadline < Date.now()) this.tabOperations.delete(id);
+		if ([...this.tabOperations.values()].some((entry) => entry.result.cleanup === "unknown"))
+			return operation_refused("busy", "A browser operation still needs cleanup.");
+		if (this.tabOperations.size >= 256 || byte_length(JSON.stringify([...this.tabOperations])) > 250_000)
+			return operation_refused("receipt_capacity", "Too many retained operations.");
+		receipt = {
+			sessionId: record.sessionId,
+			deadline: body.operationDeadline,
+			...(is_command_source(body.source) ? { source: body.source } : {}),
+			status: "in_progress",
+			hash,
+			session: null,
+			usage: null,
+			result: { tabId: null, reason: null, cleanup: "unknown" },
+		};
+		this.tabOperations.set(body.operationId, receipt);
+		await this.state.storage.put("tabOperations", [...this.tabOperations]);
+		const refuse = async (reason: string) => {
+			receipt!.status = "refused";
+			receipt!.result.reason = reason;
+			receipt!.result.cleanup = "complete";
+			await this.state.storage.put("tabOperations", [...this.tabOperations]);
+			return reply();
+		};
+		if (record.command || this.trustedTabCreation) return refuse("busy");
+		if (body.expectedAgentLease !== undefined) {
+			if (!is_agent_lease(body.expectedAgentLease)) return refuse("invalid_lease");
+			const reason = agent_lease_refusal(record, body.expectedAgentLease);
+			if (reason || !record.agentAccess) return refuse(reason ?? "agent_access_off");
+		} else if (record.control !== "ready" && (record.control !== "human" || body.viewerId !== record.inputHolder))
+			return refuse("control");
+		if (body.policyRevision !== record.policyRevision || body.selectionRevision !== record.selectionRevision)
+			return refuse("stale_policy");
+		if (!inputReleased) {
+			// The reserved receipt prevents a lost reply from repeating this operation.
+			return this.with_input_released(async () => {
+				const current = await this.load();
+				if (
+					!current ||
+					current.mode !== "web" ||
+					current.sessionId !== record!.sessionId ||
+					current.command ||
+					current.controlGen !== record!.controlGen
+				)
+					return refuse("stale_control");
+				if (session_is_expired(current, Date.now())) return refuse("expired");
+				if (is_agent_lease(body.expectedAgentLease)) {
+					const reason = agent_lease_refusal(current, body.expectedAgentLease);
+					if (reason) return refuse(reason);
+				}
+				if (
+					body.policyRevision !== current.policyRevision ||
+					body.selectionRevision !== current.selectionRevision ||
+					(body.expectedAgentLease && !current.agentAccess)
+				)
+					return refuse("stale_policy");
+				record = current;
+				return this.apply_tab_operation(path, body, current, receipt!);
+			});
+		}
+		return this.apply_tab_operation(path, body, record, receipt);
+	}
+
+	private async apply_tab_operation(
+		path: string,
+		body: Record<string, unknown>,
+		record: WebSessionRecord,
+		receipt: TabOperationReceipt,
+	) {
+		const lock = `tabs:${String(body.operationId)}`;
+		record.command = { id: lock, startedAt: Date.now(), deadline: body.operationDeadline as number };
+		await this.save(record);
+		let preNativeRefusal: string | null = null;
+		let createdPage: Page | null = null;
+		let createdTargetId: string | null = null;
+		let createdTabId: string | null = null;
+		const refuseBeforeNative = (reason: string): never => {
+			preNativeRefusal = reason;
+			throw new Error(reason);
+		};
+		// Provider attach can outlive the user's access or the session deadline.
+		const tab_authority_refusal = (current: SessionRecord | null, afterNew = false) => {
+			if (!current || current.mode !== "web" || current.sessionId !== record.sessionId || current.command?.id !== lock)
+				return "stale_session";
+			if (session_is_expired(current, Date.now()) || Date.now() >= receipt.deadline || receipt.status !== "in_progress")
+				return "expired";
+			if (body.expectedAgentLease !== undefined) {
+				if (!is_agent_lease(body.expectedAgentLease)) return "invalid_lease";
+				if (afterNew && current.controlGen !== record.controlGen) return "stale_control";
+				// New already bumped controlGen for its own tab.
+				const lease = afterNew
+					? { ...body.expectedAgentLease, controlGen: record.controlGen }
+					: body.expectedAgentLease;
+				const reason = agent_lease_refusal(current, lease, lock);
+				if (reason || !current.agentAccess) return reason ?? "agent_access_off";
+			} else {
+				if (
+					current.controlGen !== record.controlGen ||
+					(current.control !== "ready" && (current.control !== "human" || body.viewerId !== current.inputHolder))
+				)
+					return "stale_control";
+				if (
+					current.control === "human" &&
+					(typeof body.viewerId !== "string" ||
+						!current.viewers[body.viewerId] ||
+						current.viewers[body.viewerId]!.grantedUntil <= Date.now())
+				)
+					return "viewer";
+			}
+			if (body.policyRevision !== current.policyRevision || body.selectionRevision !== current.selectionRevision)
+				return "stale_policy";
+			return null;
+		};
+		const check_native_tab_authority = async (afterNew = false) => {
+			const current = await this.load();
+			if (current?.mode !== "web") {
+				if (afterNew) throw new Error("stale_session");
+				return refuseBeforeNative("stale_session");
+			}
+			const reason = tab_authority_refusal(current, afterNew);
+			if (reason) {
+				if (afterNew) throw new Error(reason);
+				return refuseBeforeNative(reason);
+			}
+			return current;
+		};
+		try {
+			if (Date.now() >= receipt.deadline || receipt.status !== "in_progress") throw new Error("operation_fenced");
+			if (path === "/tab-new") {
+				if (Object.keys(record.tabs).length >= LIMITS.webTabs) throw new Error("tab_limit");
+				const address =
+					body.url === null
+						? null
+						: typeof body.url === "string"
+							? browser_web_normalize_url(body.url, [
+									...web_denied_hosts(this.env),
+									...(body.expectedAgentLease ? record.agentBlockedHosts : []),
+								])
+							: { ok: false as const };
+				if (address !== null && !address.ok) throw new Error("address_blocked");
+				await this.connect_host(record);
+				record = await check_native_tab_authority();
+				if (Object.keys(record.tabs).length >= LIMITS.webTabs) return refuseBeforeNative("tab_limit");
+				const host = this.hostConnection;
+				if (!host) throw new Error("not_ready");
+				this.trustedTabCreation = true;
+				const page = await with_wall_timeout(host.page.context().newPage(), 10_000);
+				createdPage = page;
+				const cdp = await page.context().newCDPSession(page);
+				const target: unknown = await cdp.send("Target.getTargetInfo");
+				await cdp.detach();
+				if (!is_record(target) || !is_record(target.targetInfo) || !is_non_empty_string(target.targetInfo.targetId))
+					throw new Error("invalid_target");
+				createdTargetId = target.targetInfo.targetId;
+				const current = await this.load();
+				if (
+					!current ||
+					current.mode !== "web" ||
+					current.sessionId !== record.sessionId ||
+					current.command?.id !== lock ||
+					Date.now() >= receipt.deadline ||
+					receipt.status !== "in_progress"
+				)
+					throw new Error("stale_session");
+				record = current;
+				const tabId = crypto.randomUUID();
+				createdTabId = tabId;
+				record.tabs[tabId] = {
+					targetId: target.targetInfo.targetId,
+					tabGen: 1,
+					navGen: 1,
+					viewport: { width: 1280, height: 900 },
+				};
+				receipt.result.tabId = tabId;
+				record.controlGen += 1;
+				await this.save(record);
+				await this.connect_host(record, { closeOnFailure: true, tabId });
+				record = await check_native_tab_authority(true);
+				const added = this.hostConnections.get(tabId);
+				if (!added) throw new Error("not_ready");
+				if (address?.ok) {
+					const currentAddress = browser_web_normalize_url(body.url as string, [
+						...web_denied_hosts(this.env),
+						...(body.expectedAgentLease ? record.agentBlockedHosts : []),
+					]);
+					if (!currentAddress.ok) throw new Error("address_blocked");
+					await with_wall_timeout(
+						added.page
+							.goto(currentAddress.url, { waitUntil: "commit", timeout: LIMITS.navWallMs })
+							.then(() => added.navigationUpdates),
+						LIMITS.navWallMs,
+					);
+				}
+			} else {
+				if (!is_non_empty_string(body.tabId) || !record.tabs[body.tabId]) throw new Error("stale_tab");
+				const tabId = body.tabId;
+				receipt.result.tabId = tabId;
+				if (Object.keys(record.tabs).length === 1) {
+					record = await check_native_tab_authority();
+					const closed = await this.close_record(
+						record,
+						body.expectedAgentLease ? "agent_end" : "human_end",
+						!body.expectedAgentLease,
+						body.expectedAgentLease ? tab_authority_refusal : undefined,
+					);
+					if (closed.refusal || !closed.existed) return refuseBeforeNative(closed.refusal ?? "stale_session");
+					if (!closed.verified) throw new Error("close_unverified");
+				} else {
+					const targetId = record.tabs[tabId]!.targetId;
+					const tabGen = record.tabs[tabId]!.tabGen;
+					await this.connect_host(record, { closeOnFailure: true, tabId });
+					record = await check_native_tab_authority();
+					if (record.tabs[tabId]?.targetId !== targetId || record.tabs[tabId]?.tabGen !== tabGen)
+						return refuseBeforeNative("stale_tab");
+					const host = this.hostConnections.get(tabId)!;
+					if (this.chooser?.host === host) this.close_file_chooser();
+					if (record.viewedTabId === tabId) this.stop_viewer_producer();
+					await with_wall_timeout(host.page.close(), 10_000);
+					const targets: unknown = await host.browserCdp.send("Target.getTargets");
+					if (
+						!is_record(targets) ||
+						!Array.isArray(targets.targetInfos) ||
+						targets.targetInfos.some((target) => is_record(target) && target.targetId === targetId)
+					)
+						throw new Error("target_not_closed");
+					// Off and End may finish while the native close waits.
+					const current = await this.load();
+					if (
+						!current ||
+						current.mode !== "web" ||
+						current.sessionId !== record.sessionId ||
+						current.command?.id !== lock ||
+						current.control === "closing" ||
+						current.control === "closed" ||
+						current.tabs[tabId]?.targetId !== targetId ||
+						current.tabs[tabId]?.tabGen !== tabGen
+					)
+						throw new Error("stale_session");
+					record = current;
+					delete record.tabs[tabId];
+					this.hostConnections.delete(tabId);
+					const next = Object.keys(record.tabs)[0]!;
+					if (record.tabId === tabId) record.tabId = next;
+					if (record.viewedTabId === tabId) {
+						record.viewedTabId = next;
+						record.viewGen += 1;
+						record.viewport = record.tabs[next]!.viewport;
+					}
+					record.controlGen += 1;
+					await this.save(record);
+				}
+			}
+			if (Date.now() >= receipt.deadline || receipt.status !== "in_progress") throw new Error("operation_fenced");
+			receipt.status = "completed";
+			receipt.result.cleanup = "complete";
+		} catch (error) {
+			receipt.status = "unknown";
+			receipt.result.reason =
+				preNativeRefusal ??
+				(error instanceof Error && ["tab_limit", "address_blocked", "stale_tab"].includes(error.message)
+					? error.message
+					: "outcome_unknown");
+			if (receipt.result.reason !== "outcome_unknown" && !createdPage) {
+				receipt.status = "refused";
+				receipt.result.cleanup = "complete";
+			} else if (createdPage) {
+				receipt.result.reason = "outcome_unknown";
+				// New owns this page, not the browser or its older tabs.
+				try {
+					await with_wall_timeout(createdPage.close(), 10_000);
+					const host = [...this.hostConnections.values()].find((item) => item.sessionId === record.sessionId);
+					const targets: unknown = await host?.browserCdp.send("Target.getTargets");
+					if (
+						!createdPage.isClosed() ||
+						!is_record(targets) ||
+						!Array.isArray(targets.targetInfos) ||
+						(createdTargetId &&
+							targets.targetInfos.some((target) => is_record(target) && target.targetId === createdTargetId))
+					)
+						throw new Error("target_not_closed");
+					if (createdTabId) {
+						const current = await this.load();
+						if (
+							current?.mode !== "web" ||
+							current.sessionId !== record.sessionId ||
+							current.command?.id !== lock ||
+							current.tabs[createdTabId]?.targetId !== createdTargetId
+						)
+							throw new Error("stale_tab");
+						delete current.tabs[createdTabId];
+						this.hostConnections.delete(createdTabId);
+						const next = Object.keys(current.tabs)[0]!;
+						if (current.tabId === createdTabId) current.tabId = next;
+						if (current.viewedTabId === createdTabId) {
+							current.viewedTabId = next;
+							current.viewGen += 1;
+							current.viewport = current.tabs[next]!.viewport;
+						}
+						current.controlGen += 1;
+						await this.save(current);
+						record = current;
+					}
+					if (this.hostConnection?.page === createdPage)
+						this.hostConnection = this.hostConnections.get(record.tabId) ?? null;
+					this.deferredPages.delete(createdPage);
+					receipt.result.tabId = null;
+					receipt.result.cleanup = "complete";
+				} catch {
+					/* Keep the unknown receipt when exact cleanup is unproved. */
+				}
+			} else if ((await this.close_record(record, "tab_operation_failed", false)).verified)
+				receipt.result.cleanup = "complete";
+		} finally {
+			this.trustedTabCreation = false;
+			for (const page of this.deferredPages)
+				if (![...this.hostConnections.values()].some((host) => host.page === page)) await page.close().catch(() => {});
+			this.deferredPages.clear();
+			const current = await this.load();
+			if (current?.mode === "web" && current.sessionId === record.sessionId && current.command?.id === lock) {
+				current.command = null;
+				if (!session_is_expired(current, Date.now())) current.lastActiveAt = Date.now();
+				record = current;
+				await this.save(current);
+				this.push_viewers({
+					t: "tabs",
+					...this.viewed_identity(current),
+					viewedTabId: current.viewedTabId,
+					tabs: this.tab_summaries(current),
+				});
+				if (this.viewerStreams.size > 0) await this.start_viewer_producer().catch(() => {});
+			}
+			const finished = await this.load();
+			receipt.session =
+				finished?.sessionId === record.sessionId && finished.control !== "closing" && finished.control !== "closed"
+					? this.public_meta(finished)
+					: null;
+			await this.state.storage.put("tabOperations", [...this.tabOperations]);
+		}
+		return json_response(
+			{
+				ok: true,
+				status: receipt.status,
+				session: receipt.session,
+				tabs: receipt.session ? this.tab_summaries(record) : [],
+				result: receipt.result,
+			},
+			200,
+		);
 	}
 
 	/**
@@ -2135,7 +3190,8 @@ export class BrowserSession {
 			if (stored?.profileId !== profile.profileId) return;
 			const cookies = await profile_decrypt(profile.key, profile_aad(profile.profileId, record), stored);
 			// Without `browserContextId`: the page lives in the default context (checked live on 2026-09-23).
-			if (cookies.length > 0) await with_wall_timeout(host.browserCdp.send("Storage.setCookies", { cookies }), LIMITS.profileCdpMs);
+			if (cookies.length > 0)
+				await with_wall_timeout(host.browserCdp.send("Storage.setCookies", { cookies }), LIMITS.profileCdpMs);
 			log_browser({ route: "profile_restore", sessionId: record.sessionId, cookies: cookies.length });
 		} catch (error) {
 			log_browser({ route: "profile_restore", sessionId: record.sessionId, error: sanitize_error(error).name });
@@ -2174,7 +3230,10 @@ export class BrowserSession {
 			// Without `browserContextId`: with the page's context id Chromium answers "Failed to find
 			// browser context" (checked live on 2026-09-23).
 			const reply: unknown = await with_wall_timeout(host.browserCdp.send("Storage.getCookies"), LIMITS.profileCdpMs);
-			const { cookies, truncated } = profile_cookies_to_save(is_record(reply) ? reply.cookies : null, web_denied_hosts(this.env));
+			const { cookies, truncated } = profile_cookies_to_save(
+				is_record(reply) ? reply.cookies : null,
+				web_denied_hosts(this.env),
+			);
 			const sealed = await profile_encrypt(profile.key, profile_aad(profile.profileId, record), cookies);
 
 			// A `profile-delete` may have run during the awaits above. Check its tombstone and the
@@ -2184,8 +3243,12 @@ export class BrowserSession {
 				this.state.storage.get<number>(`${PROFILE_DELETED_KEY_PREFIX}${profile.profileId}`),
 				this.state.storage.get<SessionRecord>(SESSION_KEY),
 			]);
-			if (deletedAt !== undefined || current?.sessionId !== record.sessionId || current.mode !== "web" ||
-				current.profileId !== profile.profileId) {
+			if (
+				deletedAt !== undefined ||
+				current?.sessionId !== record.sessionId ||
+				current.mode !== "web" ||
+				current.profileId !== profile.profileId
+			) {
 				log_browser({ route: "profile_save", sessionId: record.sessionId, skipped: "deleted" });
 				return;
 			}
@@ -2208,8 +3271,8 @@ export class BrowserSession {
 	/**
 	 * Web mode: true when the main page is on a site the user's agent may not use.
 	 */
-	private async main_page_blocked(record: WebSessionRecord): Promise<boolean> {
-		await with_wall_timeout(this.connect_host(record), 10_000);
+	private async main_page_blocked(record: WebSessionRecord, tabId?: string): Promise<boolean> {
+		await with_wall_timeout(this.connect_host(record, { closeOnFailure: true, tabId }), 10_000);
 		const host = this.hostConnection;
 		if (!host || host.sessionId !== record.sessionId) throw new Error("Browser session changed.");
 		const history: unknown = await with_wall_timeout(host.cdp.send("Page.getNavigationHistory"), 5000);
@@ -2217,7 +3280,11 @@ export class BrowserSession {
 			throw new Error("Browser history is unavailable.");
 		}
 		const entry: unknown = history.entries[history.currentIndex];
-		return is_record(entry) && typeof entry.url === "string" && browser_web_url_host_matches(entry.url, record.agentBlockedHosts);
+		return (
+			is_record(entry) &&
+			typeof entry.url === "string" &&
+			browser_web_url_host_matches(entry.url, record.agentBlockedHosts)
+		);
 	}
 
 	/**
@@ -2226,9 +3293,56 @@ export class BrowserSession {
 	 * request types and cross-site frames are not covered.
 	 */
 	private async set_agent_site_filter(sessionId: string, on: boolean): Promise<void> {
-		const host = this.hostConnection;
-		if (!host || host.sessionId !== sessionId) throw new Error("Browser session changed.");
-		await set_fetch_patterns(host.cdp, on);
+		const record = await this.load();
+		if (record?.sessionId !== sessionId || record.mode !== "web") throw new Error("Browser session changed.");
+		for (const tabId of Object.keys(record.tabs)) await this.connect_host(record, { closeOnFailure: true, tabId });
+		await Promise.all(
+			[...this.hostConnections.values()]
+				.filter((host) => host.sessionId === sessionId)
+				.map((host) => set_fetch_patterns(host.cdp, on)),
+		);
+	}
+
+	private async open_reserved(input: SessionOpenInput): Promise<Response> {
+		await this.tabOperationsReady;
+		if (this.opening) return operation_refused("busy", "A browser is starting.");
+		const receipt = input.operationId ? this.tabOperations.get(input.operationId) : null;
+		if (input.operationId && (!receipt || receipt.status !== "in_progress" || Date.now() >= receipt.deadline))
+			return operation_refused("operation_fenced", "The open request is retired.");
+		if ([...this.tabOperations.values()].some((entry) => entry !== receipt && entry.result.cleanup === "unknown"))
+			return operation_refused("busy", "A browser operation still needs cleanup.");
+		const work = this.open(input).then(async (response) => {
+			if (!receipt) return response;
+			const result: unknown = await response.clone().json();
+			if (is_record(result) && is_record(result.session)) receipt.session = result.session;
+			if (receipt.status !== "in_progress" || Date.now() >= receipt.deadline) {
+				receipt.status = "unknown";
+				receipt.result.reason = "operation_fenced";
+				const current = await this.load();
+				if (current && current.sessionId === receipt.session?.sessionId) {
+					const closed = await this.close_record(current, "operation_fenced", false);
+					receipt.result.cleanup = closed.verified ? "complete" : "unknown";
+					receipt.usage = await this.usage(current.sessionId);
+				} else if (
+					is_record(result) &&
+					result.ok === false &&
+					result.verified !== false &&
+					(!is_record(result.error) || result.error.code !== "bootstrap_failed")
+				)
+					receipt.result.cleanup = "complete";
+				await this.state.storage.put("tabOperations", [...this.tabOperations]);
+				return operation_refused("operation_fenced", "The open request is retired.");
+			}
+			await this.state.storage.put("tabOperations", [...this.tabOperations]);
+			return response;
+		});
+		const opening = { operationId: input.operationId ?? null, work };
+		this.opening = opening;
+		try {
+			return await work;
+		} finally {
+			if (this.opening === opening) this.opening = null;
+		}
 	}
 
 	private async open(input: SessionOpenInput): Promise<Response> {
@@ -2246,8 +3360,7 @@ export class BrowserSession {
 		const now = Date.now();
 		const existing = await this.load();
 		if (existing && existing.control !== "closed") {
-			const staleStarting =
-				existing.control === "starting" && now - existing.createdAt >= LIMITS.startingStaleMs;
+			const staleStarting = existing.control === "starting" && now - existing.createdAt >= LIMITS.startingStaleMs;
 			if (!staleStarting) {
 				log_browser({ route: "open", refused: "busy", control: existing.control });
 				return operation_refused("busy", "A browser is already active for this workspace.");
@@ -2328,10 +3441,7 @@ export class BrowserSession {
 			// The host releases the admission grant on this failure.
 			const failure = sanitize_error(error);
 			log_browser({ route: "open", refused: "bootstrap_failed", attemptId: input.attemptId });
-			return json_response(
-				{ ok: false, error: { code: "bootstrap_failed", message: failure.message } },
-				200,
-			);
+			return json_response({ ok: false, error: { code: "bootstrap_failed", message: failure.message } }, 200);
 		}
 
 		return json_response({ ok: true, session: this.public_meta(record) }, 200);
@@ -2341,7 +3451,10 @@ export class BrowserSession {
 	 * Open a web session. Acquire first, save the record as `starting`, connect the host,
 	 * open the start address, then mark the session ready.
 	 */
-	private async open_web(input: Extract<SessionOpenInput, { mode: "web" }>, startUrl: string | null): Promise<Response> {
+	private async open_web(
+		input: Extract<SessionOpenInput, { mode: "web" }>,
+		startUrl: string | null,
+	): Promise<Response> {
 		let acquired: { providerSessionId: string; pageTargetId: string };
 		const acquiredAt = Date.now();
 		try {
@@ -2355,6 +3468,7 @@ export class BrowserSession {
 
 		const sessionId = crypto.randomUUID();
 		const now = Date.now();
+		const tabId = crypto.randomUUID();
 		const record: SessionRecord = {
 			mode: "web",
 			version: 1,
@@ -2382,7 +3496,12 @@ export class BrowserSession {
 			viewers: {},
 			viewerGrants: {},
 			agentAccess: input.agentAccess,
-			pageTargetId: acquired.pageTargetId,
+			tabs: { [tabId]: { targetId: acquired.pageTargetId, tabGen: 1, navGen: 1, viewport: input.viewport } },
+			tabId,
+			viewedTabId: tabId,
+			viewGen: 1,
+			policyRevision: input.policyRevision,
+			selectionRevision: input.selectionRevision,
 			profileId: input.profileId,
 			agentBlockedHosts: input.agentBlockedHosts,
 		};
@@ -2407,7 +3526,11 @@ export class BrowserSession {
 			await this.restore_profile(record, host);
 			// A slow or failing site does not fail the open. The user sees Chrome's error page.
 			if (startUrl !== null) {
-				await with_wall_timeout(host.cdp.send("Page.navigate", { url: startUrl }), LIMITS.openNavWallMs).catch(() => {});
+				await with_wall_timeout(
+					host.page.goto(startUrl, { waitUntil: "commit", timeout: LIMITS.openNavWallMs }),
+					LIMITS.openNavWallMs,
+				).catch(() => {});
+				await with_wall_timeout(host.navigationUpdates, LIMITS.navWallMs);
 			}
 			const current = await this.load();
 			if (!current || current.sessionId !== sessionId || current.control !== "starting") {
@@ -2421,7 +3544,8 @@ export class BrowserSession {
 		} catch (error) {
 			const failure = sanitize_error(error);
 			const current = await this.load();
-			if (current?.sessionId === sessionId && current.control !== "closing") await this.close_record(current, "open_failed");
+			if (current?.sessionId === sessionId && current.control !== "closing")
+				await this.close_record(current, "open_failed");
 			log_browser({ route: "open", refused: "bootstrap_failed", attemptId: input.attemptId });
 			return json_response({ ok: false, error: { code: "bootstrap_failed", message: failure.message } }, 200);
 		}
@@ -2431,16 +3555,34 @@ export class BrowserSession {
 	 * `closeOnFailure: false` is for the profile save inside `close_record`: a failed connect there
 	 * must not start a second close.
 	 */
-	private async connect_host(record: SessionRecord, options = { closeOnFailure: true }): Promise<void> {
-		if (this.hostStart?.sessionId === record.sessionId) return this.hostStart.promise;
-		if (this.hostConnection?.sessionId === record.sessionId) return;
+	private async connect_host(
+		record: SessionRecord,
+		options: { closeOnFailure: boolean; tabId?: string } = { closeOnFailure: true },
+	): Promise<void> {
+		const tabId = record.mode === "web" ? (options.tabId ?? record.command?.tabId ?? record.tabId) : record.sessionId;
+		if (this.hostStart?.sessionId === record.sessionId) {
+			await this.hostStart.promise;
+			return this.connect_host(record, options);
+		}
+		const known = this.hostConnections.get(tabId);
+		if (known?.sessionId === record.sessionId) {
+			this.hostConnection = known;
+			return;
+		}
 		const start = (async () => {
 			if (!record.providerSessionId) throw new Error("Browser is unavailable.");
-			const browser = await connect_persistent(record.providerSessionId);
+			const browser =
+				[...this.hostConnections.values()].find((host) => host.sessionId === record.sessionId)?.browser ??
+				(await connect_persistent(record.providerSessionId));
 			let phase = "target";
 			try {
 				const current = await this.load();
-				if (!current || current.sessionId !== record.sessionId || current.control === "closing" || current.control === "closed") {
+				if (
+					!current ||
+					current.sessionId !== record.sessionId ||
+					current.control === "closing" ||
+					current.control === "closed"
+				) {
 					throw new Error("Browser session changed.");
 				}
 				const contexts = browser.contexts();
@@ -2448,17 +3590,22 @@ export class BrowserSession {
 				if (contexts.length !== 1 || (record.mode === "file" && candidates.length !== 1)) {
 					throw new Error("Unexpected browser targets.");
 				}
-				// File mode has exactly one page. Web mode picks the page target chosen at open;
-				// the target check below closes any other page.
-				let picked: { page: Page; cdp: CDPSession; targetId: string; browserContextId: string | undefined } | null = null;
+				// File mode has one page. Web mode picks its registered tab.
+				// The target check below closes unregistered pages.
+				let picked: { page: Page; cdp: CDPSession; targetId: string; browserContextId: string | undefined } | null =
+					null;
 				for (const candidate of candidates) {
 					const candidateCdp = await candidate.context().newCDPSession(candidate);
 					const info: unknown = await candidateCdp.send("Target.getTargetInfo");
-					if (!is_record(info) || !is_record(info.targetInfo) || !is_non_empty_string(info.targetInfo.targetId) ||
-						(info.targetInfo.browserContextId !== undefined && typeof info.targetInfo.browserContextId !== "string")) {
+					if (
+						!is_record(info) ||
+						!is_record(info.targetInfo) ||
+						!is_non_empty_string(info.targetInfo.targetId) ||
+						(info.targetInfo.browserContextId !== undefined && typeof info.targetInfo.browserContextId !== "string")
+					) {
 						throw new Error("Browser target is unavailable.");
 					}
-					if (record.mode === "file" || info.targetInfo.targetId === record.pageTargetId) {
+					if (record.mode === "file" || info.targetInfo.targetId === record.tabs[tabId]?.targetId) {
 						picked = {
 							page: candidate,
 							cdp: candidateCdp,
@@ -2475,23 +3622,37 @@ export class BrowserSession {
 				const browserCdp = await browser.newBrowserCDPSession();
 				phase = "contexts";
 				const inventory: unknown = await browserCdp.send("Target.getBrowserContexts");
-				if (!is_record(inventory) || !Array.isArray(inventory.browserContextIds) ||
-					inventory.browserContextIds.some((id) => typeof id !== "string")) throw new Error("Browser contexts are unavailable.");
+				if (
+					!is_record(inventory) ||
+					!Array.isArray(inventory.browserContextIds) ||
+					inventory.browserContextIds.some((id) => typeof id !== "string")
+				)
+					throw new Error("Browser contexts are unavailable.");
 				// getBrowserContexts lists explicit contexts; omit the default context id.
-				const contextId = inventory.browserContextIds.includes(picked.browserContextId ?? "") ? picked.browserContextId : undefined;
+				const contextId = inventory.browserContextIds.includes(picked.browserContextId ?? "")
+					? picked.browserContextId
+					: undefined;
 				phase = "downloads";
 				// Chrome never saves a file. Web mode turns events on: downloads that skip the network
 				// still report `Browser.downloadWillBegin`, and the safety net below reads them.
 				await browserCdp.send("Browser.setDownloadBehavior", {
-					behavior: "deny", eventsEnabled: record.mode === "web",
+					behavior: "deny",
+					eventsEnabled: record.mode === "web",
 					...(contextId ? { browserContextId: contextId } : {}),
 				});
 				const latest = await this.load();
-				if (!latest || latest.sessionId !== record.sessionId || latest.control === "closing" || latest.control === "closed") {
+				if (
+					!latest ||
+					latest.sessionId !== record.sessionId ||
+					latest.control === "closing" ||
+					latest.control === "closed"
+				) {
 					throw new Error("Browser session changed.");
 				}
 				const host = {
 					sessionId: record.sessionId,
+					tabId,
+					title: "",
 					browser,
 					page,
 					cdp,
@@ -2500,113 +3661,181 @@ export class BrowserSession {
 					contextId,
 					loading: false,
 					mainNavCount: 0,
+					navigationUpdates: Promise.resolve(),
 				};
 				this.hostConnection = host;
+				this.hostConnections.set(tabId, host);
 				// Page timers can outlive a command, so target checks stay on this connection.
 				// Web pages navigate freely, so only file mode closes on a main-frame navigation.
 				if (record.mode === "file") {
 					page.on("framenavigated", (frame) => {
-						if (this.hostConnection !== host || frame !== page.mainFrame()) return;
+						if (!this.host_live(host) || frame !== page.mainFrame()) return;
 						const command = this.viewerRecord?.command;
 						if (command && command.connection === undefined && frame.url() === CONTROLLER_URL) return;
 						this.agentConnection?.bridge?.revoke();
-						this.state.waitUntil(this.load().then(async (current) => {
-							if (current?.sessionId === host.sessionId) await this.close_record(current, "page_navigated");
-						}));
+						this.state.waitUntil(
+							this.load().then(async (current) => {
+								if (current?.sessionId === host.sessionId) await this.close_record(current, "page_navigated");
+							}),
+						);
 					});
 				}
 				page.context().on("page", (popup) => {
-					if (this.hostConnection !== host || popup === page) return;
+					if (!this.host_live(host) || popup === page) return;
+					if ([...this.hostConnections.values()].some((known) => known.page === popup)) return;
+					if (this.trustedTabCreation) {
+						this.deferredPages.add(popup);
+						return;
+					}
 					if (record.mode === "web") {
 						this.state.waitUntil(this.handle_web_popup(host, popup));
 						return;
 					}
-					this.state.waitUntil(popup.close().catch(async () => {
-						if (popup.isClosed()) return;
-						const current = await this.load();
-						if (current?.sessionId === host.sessionId) await this.close_record(current, "popup_cleanup_failed");
-					}));
+					this.state.waitUntil(
+						popup.close().catch(async () => {
+							if (popup.isClosed()) return;
+							const current = await this.load();
+							if (current?.sessionId === host.sessionId) await this.close_record(current, "popup_cleanup_failed");
+						}),
+					);
 				});
 				if (record.mode === "web") {
-					// Cross-document navigations only: `Page.navigatedWithinDocument` is ignored.
 					// Navigation does not touch idle: only people and agent commands keep a session open.
-					cdp.on("Page.frameNavigated", (event: unknown) => {
-						if (this.hostConnection !== host || !is_record(event) || !is_record(event.frame)) return;
-						if (event.frame.parentId !== undefined) return;
+					const navigated = () => {
+						if (!this.host_live(host)) return;
 						// A file chooser belongs to the page that opened it.
 						host.mainNavCount += 1;
+						host.navigationUpdates = host.navigationUpdates.then(async () => {
+							const current = await this.load();
+							if (current?.mode !== "web" || current.sessionId !== host.sessionId || !current.tabs[host.tabId]) return;
+							current.tabs[host.tabId]!.tabGen += 1;
+							current.tabs[host.tabId]!.navGen += 1;
+							await this.save(current);
+							this.push_viewers({ t: "tabs", viewedTabId: current.viewedTabId, tabs: this.tab_summaries(current) });
+							this.push_location(host);
+						});
+						this.state.waitUntil(host.navigationUpdates);
 						if (this.chooser?.host === host) this.close_file_chooser();
-						this.push_location(host);
+					};
+					// goto() and this listener observe the same trusted navigation event.
+					page.on("framenavigated", (frame) => {
+						if (frame === page.mainFrame()) navigated();
 					});
 					cdp.on("Page.frameStartedLoading", (event: unknown) => {
-						if (this.hostConnection !== host || !is_record(event) || event.frameId !== host.targetId) return;
+						if (!this.host_live(host) || !is_record(event) || event.frameId !== host.targetId) return;
 						host.loading = true;
 						this.push_location(host);
 					});
 					cdp.on("Page.frameStoppedLoading", (event: unknown) => {
-						if (this.hostConnection !== host || !is_record(event) || event.frameId !== host.targetId) return;
+						if (!this.host_live(host) || !is_record(event) || event.frameId !== host.targetId) return;
 						host.loading = false;
 						this.push_location(host);
 					});
 					// Playwright's `filechooser` event covers a chooser with an input element. Without one
 					// (for example a picker with no input) there is nothing to fill.
 					cdp.on("Page.fileChooserOpened", (event: unknown) => {
-						if (this.hostConnection !== host || !is_record(event) || event.backendNodeId !== undefined) return;
+						if (!this.host_live(host) || !is_record(event) || event.backendNodeId !== undefined) return;
 						if (!this.viewerRecord?.command) this.push_viewers({ t: "notice", code: "upload_unsupported" });
 					});
 					page.on("filechooser", (chooser: FileChooser) => {
-						if (this.hostConnection !== host) return;
-						this.state.waitUntil(this.open_file_chooser(host, chooser).catch((error: unknown) => {
-							log_browser({ route: "file_chooser", sessionId: host.sessionId, error: sanitize_error(error).name });
-						}));
+						if (!this.host_live(host)) return;
+						this.state.waitUntil(
+							this.open_file_chooser(host, chooser).catch((error: unknown) => {
+								log_browser({ route: "file_chooser", sessionId: host.sessionId, error: sanitize_error(error).name });
+							}),
+						);
 					});
 					// `Fetch` pauses every page load at the response stage to catch downloads. Agent
 					// commands add request-stage pauses so requests to the user's blocked sites fail.
 					cdp.on("Fetch.requestPaused", (event: unknown) => {
 						if (!is_record(event) || !is_non_empty_string(event.requestId)) return;
-						this.state.waitUntil(this.answer_fetch_pause(host, record.agentBlockedHosts, event, event.requestId));
+						this.state.waitUntil(
+							this.answer_fetch_pause(
+								host,
+								this.viewerRecord?.mode === "web" ? this.viewerRecord.agentBlockedHosts : [],
+								event,
+								event.requestId,
+							),
+						);
 					});
 					browserCdp.on("Browser.downloadWillBegin", (event: unknown) => {
-						if (this.hostConnection !== host || !is_record(event)) return;
-						const running: Promise<void> = this.capture_safety_net_download(host, event).catch((error: unknown) => {
-							log_browser({ route: "download", sessionId: host.sessionId, error: sanitize_error(error).name });
-						}).finally(() => this.safetyNetDownloads.delete(running));
+						if (!this.host_live(host) || !is_record(event)) return;
+						const running: Promise<void> = this.capture_safety_net_download(host, event)
+							.catch((error: unknown) => {
+								log_browser({ route: "download", sessionId: host.sessionId, error: sanitize_error(error).name });
+							})
+							.finally(() => this.safetyNetDownloads.delete(running));
 						this.safetyNetDownloads.add(running);
 						this.state.waitUntil(running);
 					});
 					phase = "page_events";
 					await cdp.send("Page.enable");
+					browserCdp.on("Target.targetInfoChanged", (event: unknown) => {
+						if (
+							!this.host_live(host) ||
+							!is_record(event) ||
+							!is_record(event.targetInfo) ||
+							event.targetInfo.targetId !== host.targetId
+						)
+							return;
+						host.title =
+							typeof event.targetInfo.title === "string" ? event.targetInfo.title.slice(0, LIMITS.titleChars) : "";
+						if (this.viewerRecord?.mode === "web")
+							this.push_viewers({
+								t: "tabs",
+								viewedTabId: this.viewerRecord.viewedTabId,
+								tabs: this.tab_summaries(this.viewerRecord),
+							});
+					});
+					await browserCdp.send("Target.setDiscoverTargets", { discover: true });
 					await cdp.send("Page.setInterceptFileChooserDialog", { enabled: true });
 					await set_fetch_patterns(cdp, false);
 				}
 				browser.on("disconnected", () => {
-					if (this.hostConnection !== host) return;
+					if (!this.host_live(host)) return;
 					this.hostConnection = null;
-					this.state.waitUntil(this.load().then(async (current) => {
-						if (current?.sessionId === host.sessionId) await this.close_record(current, "host_disconnected");
-					}));
+					this.state.waitUntil(
+						this.load().then(async (current) => {
+							if (current?.sessionId === host.sessionId) await this.close_record(current, "host_disconnected");
+						}),
+					);
 				});
 				// Reconnect can miss targets created before these listeners were installed.
 				phase = "target_check";
 				const [checkedContexts, checkedTargets] = await Promise.all([
-					browserCdp.send("Target.getBrowserContexts"), browserCdp.send("Target.getTargets"),
+					browserCdp.send("Target.getBrowserContexts"),
+					browserCdp.send("Target.getTargets"),
 				]);
 				const contextIds: unknown = checkedContexts.browserContextIds;
 				const targetInfos: unknown = checkedTargets.targetInfos;
-				if (!Array.isArray(contextIds) || contextIds.some((id) => typeof id !== "string" || id !== contextId) ||
-					!Array.isArray(targetInfos)) throw new Error("Unexpected browser targets.");
+				if (
+					!Array.isArray(contextIds) ||
+					contextIds.some((id) => typeof id !== "string" || id !== contextId) ||
+					!Array.isArray(targetInfos)
+				)
+					throw new Error("Unexpected browser targets.");
 				const pages = targetInfos.filter((target: unknown) => is_record(target) && target.type === "page");
 				if (record.mode === "web") {
-					// A popup can open while no host is connected. Keep the assigned page, close the rest.
-					if (!pages.some((target) => is_record(target) && target.targetId === host.targetId)) {
+					const registered = new Set(Object.values(record.tabs).map((tab) => tab.targetId));
+					if ([...registered].some((id) => !pages.some((target) => is_record(target) && target.targetId === id))) {
 						throw new Error("Unexpected browser targets.");
 					}
 					for (const target of pages) {
-						if (!is_record(target) || !is_non_empty_string(target.targetId) || target.targetId === host.targetId) continue;
+						if (!is_record(target) || !is_non_empty_string(target.targetId))
+							throw new Error("Unexpected browser targets.");
+						if (registered.has(target.targetId)) continue;
 						const closed: unknown = await browserCdp.send("Target.closeTarget", { targetId: target.targetId });
 						if (!is_record(closed) || closed.success !== true) throw new Error("Unexpected browser targets.");
 					}
-					if (pages.length > 1) log_browser({ route: "host_connect", closedPages: pages.length - 1 });
+					const verified: unknown = await browserCdp.send("Target.getTargets");
+					if (!is_record(verified) || !Array.isArray(verified.targetInfos))
+						throw new Error("Unexpected browser targets.");
+					const remaining = verified.targetInfos.filter((target) => is_record(target) && target.type === "page");
+					if (
+						remaining.length !== registered.size ||
+						remaining.some((target) => !registered.has(String(target.targetId)))
+					)
+						throw new Error("Unexpected browser targets.");
 				} else {
 					if (pages.length !== 1 || !is_record(pages[0]) || pages[0].targetId !== host.targetId) {
 						throw new Error("Unexpected browser targets.");
@@ -2618,20 +3847,29 @@ export class BrowserSession {
 					}
 				}
 				const checked = await this.load();
-				if (this.hostConnection !== host || checked?.sessionId !== record.sessionId ||
-					checked.control === "closing" || checked.control === "closed") throw new Error("Browser session changed.");
+				if (
+					!this.host_live(host) ||
+					checked?.sessionId !== record.sessionId ||
+					checked.control === "closing" ||
+					checked.control === "closed"
+				)
+					throw new Error("Browser session changed.");
 			} catch (error) {
 				log_browser({ route: "host_connect", phase, error: sanitize_error(error).name });
 				if (this.hostConnection?.sessionId === record.sessionId) this.hostConnection = null;
 				const current = await this.load();
-				if (options.closeOnFailure && current?.sessionId === record.sessionId) await this.close_record(current, "host_setup_failed");
+				if (options.closeOnFailure && current?.sessionId === record.sessionId)
+					await this.close_record(current, "host_setup_failed");
 				await browser.close().catch(() => {});
 				throw error;
 			}
 		})();
-		const pending = { sessionId: record.sessionId, promise: start.finally(() => {
-			if (this.hostStart === pending) this.hostStart = null;
-		}) };
+		const pending = {
+			sessionId: record.sessionId,
+			promise: start.finally(() => {
+				if (this.hostStart === pending) this.hostStart = null;
+			}),
+		};
 		this.hostStart = pending;
 		return pending.promise;
 	}
@@ -2640,7 +3878,7 @@ export class BrowserSession {
 	 * Send one JSON message to every attached viewer.
 	 */
 	private push_viewers(message: Record<string, unknown>): void {
-		const text = JSON.stringify(message);
+		const text = JSON.stringify({ ...(this.viewerRecord ? this.viewed_identity(this.viewerRecord) : {}), ...message });
 		for (const stream of this.viewerStreams.values()) {
 			try {
 				stream.socket.send(text);
@@ -2655,39 +3893,65 @@ export class BrowserSession {
 	 */
 	private push_location(host: HostConnection): void {
 		if (this.viewerStreams.size === 0) return;
+		if (this.viewerRecord?.mode === "web" && this.viewerRecord.viewedTabId !== host.tabId) return;
 		// Reads can finish out of order. Only the newest read may send.
 		const seq = ++this.locationSeq;
-		this.state.waitUntil((async () => {
-			const history: unknown = await host.cdp.send("Page.getNavigationHistory");
-			if (seq !== this.locationSeq || this.hostConnection !== host || !is_record(history) || !Array.isArray(history.entries) ||
-				typeof history.currentIndex !== "number") return;
-			const index = history.currentIndex;
-			const entry: unknown = history.entries[index];
-			if (!is_record(entry)) return;
-			this.push_viewers({
-				t: "location",
-				url: typeof entry.url === "string" ? entry.url.slice(0, browser_web_URL_MAX_CHARS) : "",
-				title: typeof entry.title === "string" ? entry.title.slice(0, LIMITS.titleChars) : "",
-				loading: host.loading,
-				canGoBack: index > 0,
-				canGoForward: index < history.entries.length - 1,
-			});
-		})().catch(() => {}));
+		this.state.waitUntil(
+			(async () => {
+				const history: unknown = await host.cdp.send("Page.getNavigationHistory");
+				if (
+					seq !== this.locationSeq ||
+					!this.host_live(host) ||
+					!is_record(history) ||
+					!Array.isArray(history.entries) ||
+					typeof history.currentIndex !== "number"
+				)
+					return;
+				const index = history.currentIndex;
+				const entry: unknown = history.entries[index];
+				if (!is_record(entry)) return;
+				this.push_viewers({
+					t: "location",
+					url: typeof entry.url === "string" ? entry.url.slice(0, browser_web_URL_MAX_CHARS) : "",
+					title: typeof entry.title === "string" ? entry.title.slice(0, LIMITS.titleChars) : "",
+					loading: host.loading,
+					canGoBack: index > 0,
+					canGoForward: index < history.entries.length - 1,
+				});
+			})().catch(() => {}),
+		);
 	}
 
 	/**
-	 * Web mode: the viewer shows one tab. Close each popup. When no agent command runs, open the
-	 * popup's address in the main page instead, if the address rules allow it.
+	 * Human popups become registered tabs. Agent popups are closed.
 	 */
 	private async handle_web_popup(host: HostConnection, popup: Page): Promise<void> {
-		const close = () => popup.close().catch(async () => {
-			if (popup.isClosed()) return;
-			const current = await this.load();
-			if (current?.sessionId === host.sessionId) await this.close_record(current, "popup_cleanup_failed");
-		});
+		if (this.handledPopups.has(popup)) return;
+		const opener = await popup.opener().catch(() => null);
+		if (opener !== host.page && [...this.hostConnections.values()].some((item) => item.page === opener)) return;
+		this.handledPopups.add(popup);
+		const close = () =>
+			popup.close().catch(async () => {
+				if (popup.isClosed()) return;
+				const current = await this.load();
+				if (current?.sessionId === host.sessionId) await this.close_record(current, "popup_cleanup_failed");
+			});
+		if (opener !== host.page) {
+			await close();
+			this.push_viewers({ t: "notice", code: "popup_closed" });
+			return;
+		}
 
-		// An agent command owns the page. Do not follow its popups.
-		if (this.viewerRecord?.command) {
+		const gesture = this.humanGesture;
+		if (
+			this.viewerRecord?.command ||
+			this.viewerRecord?.control !== "human" ||
+			this.viewerRecord.mode !== "web" ||
+			this.viewerRecord.viewedTabId !== host.tabId ||
+			!gesture ||
+			gesture.tabId !== host.tabId ||
+			Date.now() - gesture.at > 10_000
+		) {
 			await close();
 			this.push_viewers({ t: "notice", code: "popup_closed" });
 			return;
@@ -2696,23 +3960,90 @@ export class BrowserSession {
 		// `window.open` first shows about:blank. Wait a little for the real address.
 		const blank = (url: string) => url === "" || url === "about:blank";
 		if (blank(popup.url())) {
-			await popup.waitForURL((next) => !blank(next.href), { waitUntil: "commit", timeout: LIMITS.popupUrlWaitMs }).catch(() => {});
+			await popup
+				.waitForURL((next) => !blank(next.href), { waitUntil: "commit", timeout: LIMITS.popupUrlWaitMs })
+				.catch(() => {});
 		}
 		const url = popup.isClosed() ? "" : popup.url();
-		await close();
-		if (this.hostConnection !== host) return;
+		if (!this.host_live(host)) {
+			await close();
+			return;
+		}
 		if (blank(url) || this.viewerRecord?.command) {
+			await close();
 			this.push_viewers({ t: "notice", code: "popup_closed" });
 			return;
 		}
 		const normalized = browser_web_normalize_url(url, web_denied_hosts(this.env));
 		if (!normalized.ok) {
+			await close();
 			log_browser({ route: "popup", refused: normalized.reason });
 			this.push_viewers({ t: "notice", code: "address_blocked" });
 			return;
 		}
-		await with_wall_timeout(host.cdp.send("Page.navigate", { url: normalized.url }), LIMITS.navWallMs).catch(() => {});
-		this.push_viewers({ t: "notice", code: "popup_opened_here" });
+		await this.with_input_released(async () => {
+			const current = await this.load();
+			if (
+				current?.mode !== "web" ||
+				current.sessionId !== host.sessionId ||
+				current.command ||
+				current.control !== "human" ||
+				current.viewedTabId !== host.tabId ||
+				Object.keys(current.tabs).length >= LIMITS.webTabs
+			) {
+				await close();
+				return operation_refused("popup_closed", "The popup is unavailable.");
+			}
+			current.command = { id: `popup:${crypto.randomUUID()}`, startedAt: Date.now() };
+			await this.save(current);
+			try {
+				const cdp = await popup.context().newCDPSession(popup);
+				const target: unknown = await cdp.send("Target.getTargetInfo");
+				await cdp.detach();
+				if (!is_record(target) || !is_record(target.targetInfo) || !is_non_empty_string(target.targetInfo.targetId))
+					throw new Error("invalid_target");
+				const record = await this.load();
+				if (
+					record?.mode !== "web" ||
+					record.sessionId !== current.sessionId ||
+					record.command?.id !== current.command!.id
+				)
+					throw new Error("stale_popup");
+				const tabId = crypto.randomUUID();
+				record.tabs[tabId] = {
+					targetId: target.targetInfo.targetId,
+					tabGen: 1,
+					navGen: 1,
+					viewport: { width: 1280, height: 900 },
+				};
+				record.viewedTabId = tabId;
+				record.viewGen += 1;
+				record.controlGen += 1;
+				record.viewport = record.tabs[tabId]!.viewport;
+				await this.save(record);
+				await this.connect_host(record, { closeOnFailure: true, tabId });
+				const settled = await this.load();
+				if (
+					settled?.mode !== "web" ||
+					settled.sessionId !== record.sessionId ||
+					settled.command?.id !== record.command!.id
+				)
+					throw new Error("stale_popup");
+				settled.command = null;
+				await this.save(settled);
+				this.stop_viewer_producer();
+				this.push_viewers({ t: "tabs", viewedTabId: tabId, tabs: this.tab_summaries(settled) });
+				this.push_viewers({ t: "notice", code: "popup_opened_here" });
+				if (this.viewerStreams.size) await this.start_viewer_producer();
+				return json_response({ ok: true }, 200);
+			} catch {
+				await close();
+				const record = await this.load();
+				if (record?.sessionId === current.sessionId)
+					await this.close_record(record, "popup_registration_failed", false);
+				return operation_refused("closed", "The popup could not be registered.");
+			}
+		});
 	}
 
 	/**
@@ -2720,7 +4051,12 @@ export class BrowserSession {
 	 * download. A request-stage pause comes from the agent's blocked-site filter. Every pause gets
 	 * exactly one answer, even when a step throws, or the page hangs.
 	 */
-	private async answer_fetch_pause(host: HostConnection, blockedHosts: string[], event: Record<string, unknown>, requestId: string) {
+	private async answer_fetch_pause(
+		host: HostConnection,
+		blockedHosts: string[],
+		event: Record<string, unknown>,
+		requestId: string,
+	) {
 		const pause: { answer: "continue" | "abort" | "block" } = { answer: "continue" };
 		try {
 			if (event.responseStatusCode === undefined && event.responseErrorReason === undefined) {
@@ -2734,9 +4070,13 @@ export class BrowserSession {
 		} finally {
 			// After the body was taken, only `failRequest` works (checked live on 2026-09-23). Failing a
 			// navigation keeps the current page.
-			await (pause.answer === "continue"
-				? host.cdp.send("Fetch.continueRequest", { requestId })
-				: host.cdp.send("Fetch.failRequest", { requestId, errorReason: pause.answer === "block" ? "BlockedByClient" : "Aborted" })
+			await (
+				pause.answer === "continue"
+					? host.cdp.send("Fetch.continueRequest", { requestId })
+					: host.cdp.send("Fetch.failRequest", {
+							requestId,
+							errorReason: pause.answer === "block" ? "BlockedByClient" : "Aborted",
+						})
 			).catch(() => {});
 		}
 	}
@@ -2745,11 +4085,23 @@ export class BrowserSession {
 	 * Web mode: read a paused page response when Chrome would save it. Set `pause.answer` to abort
 	 * as soon as it is a download, so a later failure still stops Chrome's own download.
 	 */
-	private async capture_response_download(host: HostConnection, event: Record<string, unknown>, requestId: string, pause: { answer: string }) {
+	private async capture_response_download(
+		host: HostConnection,
+		event: Record<string, unknown>,
+		requestId: string,
+		pause: { answer: string },
+	) {
 		const status = event.responseStatusCode;
 		const request = is_record(event.request) ? event.request : {};
-		if (event.responseErrorReason !== undefined || typeof status !== "number" || (status >= 300 && status < 400) ||
-			status === 204 || status === 205 || request.method === "HEAD") return;
+		if (
+			event.responseErrorReason !== undefined ||
+			typeof status !== "number" ||
+			(status >= 300 && status < 400) ||
+			status === 204 ||
+			status === 205 ||
+			request.method === "HEAD"
+		)
+			return;
 		const disposition = cdp_header(event.responseHeaders, "content-disposition");
 		const contentType = cdp_header(event.responseHeaders, "content-type");
 		if (!is_download_response(disposition, contentType)) return;
@@ -2757,23 +4109,28 @@ export class BrowserSession {
 
 		const url = typeof request.url === "string" ? request.url : "";
 		const lengthHeader = cdp_header(event.responseHeaders, "content-length")?.trim() ?? "";
-		const length = /^\d+$/u.test(lengthHeader) && Number.isSafeInteger(Number(lengthHeader)) ? Number(lengthHeader) : null;
+		const length =
+			/^\d+$/u.test(lengthHeader) && Number.isSafeInteger(Number(lengthHeader)) ? Number(lengthHeader) : null;
 		// The stream gives the decoded body. A compressed body's length cannot be compared with it.
 		const encoding = (cdp_header(event.responseHeaders, "content-encoding") ?? "").trim().toLowerCase();
 		const exactLength = encoding === "" || encoding === "identity" ? length : null;
 		await this.capture_download(host, {
-			owner: this.download_owner(host.sessionId, event.frameId === host.targetId),
+			owner: this.download_owner(host, event.frameId === host.targetId),
 			name: download_name(disposition, url),
 			origin: download_origin(url),
 			sizeHint: length,
 			read: async (maxBytes, signal) => {
-				const { stream } = await with_wall_timeout(host.cdp.send("Fetch.takeResponseBodyAsStream", { requestId }), 10_000);
+				const { stream } = await with_wall_timeout(
+					host.cdp.send("Fetch.takeResponseBodyAsStream", { requestId }),
+					10_000,
+				);
 				try {
 					const read = await read_cdp_stream(host.cdp, stream, maxBytes, signal);
 					if (read.over) return read;
 					// A stream that ends early (the server dropped the connection) still ends with `eof`.
 					// Fewer bytes than the header promised is a broken file, not a small one.
-					if (exactLength !== null && read.bytes.byteLength !== exactLength) throw new Error("Download did not finish.");
+					if (exactLength !== null && read.bytes.byteLength !== exactLength)
+						throw new Error("Download did not finish.");
 					return { ...read, contentType: mime_essence(contentType) || "application/octet-stream" };
 				} finally {
 					await host.cdp.send("IO.close", { handle: stream }).catch(() => {});
@@ -2792,10 +4149,13 @@ export class BrowserSession {
 		const frameId = typeof event.frameId === "string" ? event.frameId : "";
 		const name = cap_download_name(typeof event.suggestedFilename === "string" ? event.suggestedFilename : "");
 		// Decide the owner before any await: the agent command may finish while the frame is checked.
-		const owner = this.download_owner(host.sessionId, frameId === host.targetId);
+		const owner = this.download_owner(host, frameId === host.targetId);
 		if (/^data:/iu.test(url)) {
 			await this.capture_download(host, {
-				owner, name, origin: null, sizeHint: null,
+				owner,
+				name,
+				origin: null,
+				sizeHint: null,
 				read: async (maxBytes) => {
 					// The URL holds the whole file. A URL longer than the cap is too large before decoding.
 					if (url.length > maxBytes) return { over: true };
@@ -2824,14 +4184,18 @@ export class BrowserSession {
 				return null;
 			};
 			const frameUrl = is_record(tree) ? find(tree.frameTree) : null;
-			sameOrigin = frameUrl !== null && download_origin(frameUrl) !== null && download_origin(frameUrl) === download_origin(url);
+			sameOrigin =
+				frameUrl !== null && download_origin(frameUrl) !== null && download_origin(frameUrl) === download_origin(url);
 		}
 		if (!sameOrigin) {
 			this.refuse_download(host.sessionId, owner, "download_unsupported");
 			return;
 		}
 		await this.capture_download(host, {
-			owner, name, origin: download_origin(url), sizeHint: null,
+			owner,
+			name,
+			origin: download_origin(url),
+			sizeHint: null,
 			read: (maxBytes, signal) => this.read_in_page(host, frameId, url, maxBytes, signal),
 		});
 	}
@@ -2840,13 +4204,23 @@ export class BrowserSession {
 	 * Fetch a same-origin file again in an isolated world of its frame, with the page's cookies.
 	 * The bytes stay in that world and come back in 1 MiB base64 chunks, so no CDP message is huge.
 	 */
-	private async read_in_page(host: HostConnection, frameId: string, url: string, maxBytes: number, signal: AbortSignal): Promise<DownloadRead> {
+	private async read_in_page(
+		host: HostConnection,
+		frameId: string,
+		url: string,
+		maxBytes: number,
+		signal: AbortSignal,
+	): Promise<DownloadRead> {
 		const cdp = host.cdp;
-		const world = await with_wall_timeout(cdp.send("Page.createIsolatedWorld", { frameId, worldName: "bonobo-download", grantUniveralAccess: false }), 5000);
-		const fetched = await with_wall_timeout(cdp.send("Runtime.evaluate", {
-			contextId: world.executionContextId,
-			awaitPromise: true,
-			expression: `(async () => {
+		const world = await with_wall_timeout(
+			cdp.send("Page.createIsolatedWorld", { frameId, worldName: "bonobo-download", grantUniveralAccess: false }),
+			5000,
+		);
+		const fetched = await with_wall_timeout(
+			cdp.send("Runtime.evaluate", {
+				contextId: world.executionContextId,
+				awaitPromise: true,
+				expression: `(async () => {
 				const response = await fetch(${JSON.stringify(url)}, { credentials: "include" });
 				if (!response.ok || !response.body) throw new Error("Download failed.");
 				const reader = response.body.getReader();
@@ -2870,31 +4244,52 @@ export class BrowserSession {
 				}
 				return { over: false, size, type: response.headers.get("content-type") || "", bytes };
 			})()`,
-		}), LIMITS.downloadCaptureMs);
+			}),
+			LIMITS.downloadCaptureMs,
+		);
 		const objectId = fetched.result.objectId;
 		if (fetched.exceptionDetails || !objectId) throw new Error("Download failed.");
 		try {
-			const summary = await with_wall_timeout(cdp.send("Runtime.callFunctionOn", {
-				objectId, returnByValue: true, functionDeclaration: "function () { return { over: this.over, size: this.size, type: this.type }; }",
-			}), 5000);
+			const summary = await with_wall_timeout(
+				cdp.send("Runtime.callFunctionOn", {
+					objectId,
+					returnByValue: true,
+					functionDeclaration: "function () { return { over: this.over, size: this.size, type: this.type }; }",
+				}),
+				5000,
+			);
 			const value: unknown = summary.result.value;
-			if (!is_record(value) || typeof value.over !== "boolean" || typeof value.size !== "number" || typeof value.type !== "string") {
+			if (
+				!is_record(value) ||
+				typeof value.over !== "boolean" ||
+				typeof value.size !== "number" ||
+				typeof value.type !== "string"
+			) {
 				throw new Error("Download failed.");
 			}
 			if (value.over || value.size > maxBytes) return { over: true };
 			const chunks: Uint8Array[] = [];
 			for (let offset = 0; offset < value.size; offset += LIMITS.downloadChunkBytes) {
 				signal.throwIfAborted();
-				const part = await with_wall_timeout(cdp.send("Runtime.callFunctionOn", {
-					objectId, returnByValue: true, arguments: [{ value: offset }, { value: LIMITS.downloadChunkBytes }],
-					functionDeclaration: "function (offset, length) { const part = this.bytes.subarray(offset, offset + length); let text = \"\"; " +
-						"for (let i = 0; i < part.length; i += 8192) text += String.fromCharCode.apply(null, part.subarray(i, i + 8192)); return btoa(text); }",
-				}), 10_000);
+				const part = await with_wall_timeout(
+					cdp.send("Runtime.callFunctionOn", {
+						objectId,
+						returnByValue: true,
+						arguments: [{ value: offset }, { value: LIMITS.downloadChunkBytes }],
+						functionDeclaration:
+							'function (offset, length) { const part = this.bytes.subarray(offset, offset + length); let text = ""; ' +
+							"for (let i = 0; i < part.length; i += 8192) text += String.fromCharCode.apply(null, part.subarray(i, i + 8192)); return btoa(text); }",
+					}),
+					10_000,
+				);
 				const bytes = typeof part.result.value === "string" ? base64_bytes(part.result.value) : null;
 				if (!bytes) throw new Error("Download failed.");
 				chunks.push(bytes);
 			}
-			const bytes = append_bytes(chunks, chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0));
+			const bytes = append_bytes(
+				chunks,
+				chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0),
+			);
 			if (bytes.byteLength !== value.size) throw new Error("Download failed.");
 			return { over: false, bytes, contentType: mime_essence(value.type) || "application/octet-stream" };
 		} finally {
@@ -2907,7 +4302,16 @@ export class BrowserSession {
 	 */
 	private session_downloads(sessionId: string) {
 		if (this.downloads?.sessionId !== sessionId) {
-			this.downloads = { sessionId, count: 0, bytes: 0, starts: [], capture: null, held: null, pushed: new Set(), agent: null };
+			this.downloads = {
+				sessionId,
+				count: 0,
+				bytes: 0,
+				starts: [],
+				capture: null,
+				held: null,
+				pushed: new Set(),
+				agent: null,
+			};
 		}
 		return this.downloads;
 	}
@@ -2918,20 +4322,31 @@ export class BrowserSession {
 	 * human download needs human control, the main frame, and a click or Enter in the last 10
 	 * seconds. Each gesture allows one download.
 	 */
-	private download_owner(sessionId: string, mainFrame: boolean): DownloadOwner | null {
+	private download_owner(host: HostConnection, mainFrame: boolean): DownloadOwner | null {
+		const sessionId = host.sessionId;
 		const record = this.viewerRecord;
 		if (record?.sessionId !== sessionId) return null;
 		// A reload holds the command slot too, but with no agent connection.
 		if (record.command && record.command.connection !== undefined) {
+			if (record.mode === "web" && record.command.tabId !== host.tabId) return null;
 			// Make the command's list now. `run/finish` sends it, so a capture that ends near the
 			// command end still has a place to land, or to be counted as dropped.
 			const downloads = this.session_downloads(sessionId);
-			if (downloads.agent?.commandId !== record.command.id) downloads.agent = { commandId: record.command.id, items: [], bytes: 0, dropped: 0 };
+			if (downloads.agent?.commandId !== record.command.id)
+				downloads.agent = { commandId: record.command.id, items: [], bytes: 0, dropped: 0 };
 			return { kind: "agent", commandId: record.command.id };
 		}
 		const gesture = this.humanGesture;
-		if (record.control !== "human" || record.command || !mainFrame || gesture?.sessionId !== sessionId ||
-			Date.now() - gesture.at > LIMITS.downloadGestureMs) return null;
+		if (
+			record.control !== "human" ||
+			record.command ||
+			!mainFrame ||
+			gesture?.sessionId !== sessionId ||
+			gesture.tabId !== host.tabId ||
+			(record.mode === "web" && record.viewedTabId !== host.tabId) ||
+			Date.now() - gesture.at > LIMITS.downloadGestureMs
+		)
+			return null;
 		this.humanGesture = null;
 		return { kind: "human" };
 	}
@@ -2951,13 +4366,16 @@ export class BrowserSession {
 	 * Check the limits, read the file, then keep it. A human download waits in memory for Convex;
 	 * an agent download joins its command's result. Every refusal and failure tells the viewers.
 	 */
-	private async capture_download(host: HostConnection, input: {
-		owner: DownloadOwner | null;
-		name: string;
-		origin: string | null;
-		sizeHint: number | null;
-		read: (maxBytes: number, signal: AbortSignal) => Promise<DownloadRead>;
-	}) {
+	private async capture_download(
+		host: HostConnection,
+		input: {
+			owner: DownloadOwner | null;
+			name: string;
+			origin: string | null;
+			sizeHint: number | null;
+			read: (maxBytes: number, signal: AbortSignal) => Promise<DownloadRead>;
+		},
+	) {
 		const owner = input.owner;
 		if (!owner) {
 			this.refuse_download(host.sessionId, null, "download_blocked");
@@ -2969,10 +4387,16 @@ export class BrowserSession {
 		const fileCap = owner.kind === "human" ? LIMITS.downloadHumanBytes : LIMITS.downloadAgentBytes;
 		// No await between these checks and `capture`, so two pauses cannot both pass.
 		const refusal =
-			owner.kind === "human" && downloads.held ? "download_busy" :
-				downloads.capture || downloads.starts.length >= LIMITS.downloadStarts || downloads.count >= LIMITS.downloadSessionFiles ||
-					downloads.bytes >= LIMITS.downloadSessionBytes ? "download_limit" :
-					input.sizeHint !== null && input.sizeHint > fileCap ? "download_too_large" : null;
+			owner.kind === "human" && downloads.held
+				? "download_busy"
+				: downloads.capture ||
+					  downloads.starts.length >= LIMITS.downloadStarts ||
+					  downloads.count >= LIMITS.downloadSessionFiles ||
+					  downloads.bytes >= LIMITS.downloadSessionBytes
+					? "download_limit"
+					: input.sizeHint !== null && input.sizeHint > fileCap
+						? "download_too_large"
+						: null;
 		if (refusal) {
 			this.refuse_download(host.sessionId, owner, refusal);
 			return;
@@ -3017,8 +4441,13 @@ export class BrowserSession {
 			}
 			const downloadId = crypto.randomUUID();
 			const held: HeldDownload = {
-				downloadId, ...file, size: file.bytes.byteLength, origin: input.origin, expiresAt: Date.now() + LIMITS.downloadKeepMs,
-				timer: setTimeout(() => this.drop_held_download(held), LIMITS.downloadKeepMs), pushing: null,
+				downloadId,
+				...file,
+				size: file.bytes.byteLength,
+				origin: input.origin,
+				expiresAt: Date.now() + LIMITS.downloadKeepMs,
+				timer: setTimeout(() => this.drop_held_download(held), LIMITS.downloadKeepMs),
+				pushing: null,
 			};
 			downloads.held = held;
 			log_browser({ route: "download", sessionId: host.sessionId, owner: "human", bytes: held.size });
@@ -3059,7 +4488,10 @@ export class BrowserSession {
 	 * The held human download with this id, if it is still waiting to be saved.
 	 */
 	private held_download(sessionId: string, downloadId: string) {
-		const held = this.downloads?.sessionId === sessionId && this.downloads.held?.downloadId === downloadId ? this.downloads.held : null;
+		const held =
+			this.downloads?.sessionId === sessionId && this.downloads.held?.downloadId === downloadId
+				? this.downloads.held
+				: null;
 		if (held && held.expiresAt <= Date.now()) {
 			this.drop_held_download(held);
 			return null;
@@ -3070,7 +4502,10 @@ export class BrowserSession {
 	private download_info(sessionId: string, downloadId: string): Response {
 		const held = this.held_download(sessionId, downloadId);
 		if (!held) return operation_refused("download_gone", "The download is gone.");
-		return json_response({ ok: true, name: held.name, size: held.size, contentType: held.contentType, origin: held.origin }, 200);
+		return json_response(
+			{ ok: true, name: held.name, size: held.size, contentType: held.contentType, origin: held.origin },
+			200,
+		);
 	}
 
 	/**
@@ -3078,9 +4513,15 @@ export class BrowserSession {
 	 * of the same id answers ok. `If-None-Match: *` makes R2 refuse to replace an object, so a 412
 	 * means an earlier push already stored it. A failed push keeps the bytes for a retry.
 	 */
-	private async download_push(input: { sessionId: string; downloadId: string; url: string; headers: Record<string, string> }): Promise<Response> {
+	private async download_push(input: {
+		sessionId: string;
+		downloadId: string;
+		url: string;
+		headers: Record<string, string>;
+	}): Promise<Response> {
 		const downloads = this.downloads;
-		if (downloads?.sessionId === input.sessionId && downloads.pushed.has(input.downloadId)) return json_response({ ok: true }, 200);
+		if (downloads?.sessionId === input.sessionId && downloads.pushed.has(input.downloadId))
+			return json_response({ ok: true }, 200);
 		const held = this.held_download(input.sessionId, input.downloadId);
 		if (!downloads || !held) return operation_refused("download_gone", "The download is gone.");
 		held.pushing ??= (async () => {
@@ -3089,18 +4530,20 @@ export class BrowserSession {
 			const response = await with_wall_timeout(fetch(input.url, { method: "PUT", headers, body: held.bytes }), 60_000);
 			await response.body?.cancel().catch(() => {});
 			return response.ok || response.status === 412;
-		})().catch(() => false).then((pushed) => {
-			// Free the file before anyone else sees the push end, so the 2-minute expiry that waits
-			// for this push finds nothing to drop.
-			held.pushing = null;
-			if (!pushed) return false;
-			if (downloads.held === held) {
-				downloads.held = null;
-				clearTimeout(held.timer);
-			}
-			downloads.pushed.add(held.downloadId);
-			return true;
-		});
+		})()
+			.catch(() => false)
+			.then((pushed) => {
+				// Free the file before anyone else sees the push end, so the 2-minute expiry that waits
+				// for this push finds nothing to drop.
+				held.pushing = null;
+				if (!pushed) return false;
+				if (downloads.held === held) {
+					downloads.held = null;
+					clearTimeout(held.timer);
+				}
+				downloads.pushed.add(held.downloadId);
+				return true;
+			});
 		const pushed = await held.pushing;
 		if (!pushed) {
 			log_browser({ route: "download_push", sessionId: input.sessionId, refused: "download_push_failed" });
@@ -3116,22 +4559,47 @@ export class BrowserSession {
 	 */
 	private async open_file_chooser(host: HostConnection, chooser: FileChooser) {
 		const before = this.viewerRecord;
-		if (before?.sessionId !== host.sessionId || before.control !== "human" || before.command) return;
+		if (
+			before?.sessionId !== host.sessionId ||
+			before.control !== "human" ||
+			before.command ||
+			(before.mode === "web" && before.viewedTabId !== host.tabId)
+		)
+			return;
+		const viewed = this.viewed_identity(before);
 		const [accept, origin] = await Promise.all([
 			with_wall_timeout(chooser.element().getAttribute("accept"), 5000),
 			chooser_origin(chooser),
 		]);
 		// The reads above waited for the page. Check that the same human still holds control.
 		const record = this.viewerRecord;
-		if (origin === null || this.hostConnection !== host || record?.sessionId !== host.sessionId || record.control !== "human" || record.command ||
-			record.controlGen !== before.controlGen) return;
+		if (
+			origin === null ||
+			!this.host_live(host) ||
+			record?.sessionId !== host.sessionId ||
+			record.control !== "human" ||
+			record.command ||
+			record.controlGen !== before.controlGen ||
+			!this.viewer_matches(viewed, record) ||
+			(record.mode === "web" && record.viewedTabId !== host.tabId)
+		)
+			return;
 		this.close_file_chooser();
 		const chooserId = crypto.randomUUID();
 		const open: OpenFileChooser = {
-			sessionId: host.sessionId, chooserId, host, chooser, multiple: chooser.isMultiple(),
-			accept: (accept ?? "").slice(0, LIMITS.chooserAcceptChars), origin, mainNavCount: host.mainNavCount,
-			controlGen: record.controlGen, openedAt: Date.now(),
-			timer: setTimeout(() => this.close_file_chooser(open), LIMITS.chooserMs), busy: false,
+			sessionId: host.sessionId,
+			chooserId,
+			host,
+			chooser,
+			multiple: chooser.isMultiple(),
+			accept: (accept ?? "").slice(0, LIMITS.chooserAcceptChars),
+			origin,
+			mainNavCount: host.mainNavCount,
+			controlGen: record.controlGen,
+			...viewed,
+			openedAt: Date.now(),
+			timer: setTimeout(() => this.close_file_chooser(open), LIMITS.chooserMs),
+			busy: false,
 		};
 		this.chooser = open;
 		log_browser({ route: "file_chooser", sessionId: host.sessionId, multiple: open.multiple });
@@ -3155,21 +4623,40 @@ export class BrowserSession {
 	 * The open chooser, when it is still current for this caller. A chooser that is no longer
 	 * current closes here.
 	 */
-	private async current_file_chooser(input: { sessionId: string; chooserId: string; controlGen: number }):
-		Promise<{ ok: true; chooser: OpenFileChooser } | { ok: false; code: string }> {
+	private async current_file_chooser(input: {
+		sessionId: string;
+		chooserId: string;
+		controlGen: number;
+		tabId: string;
+		tabGen: number;
+		viewGen: number;
+	}): Promise<{ ok: true; chooser: OpenFileChooser } | { ok: false; code: string }> {
 		const record = await this.load();
-		if (!record || record.sessionId !== input.sessionId || record.control === "closing" || record.control === "closed") {
+		if (
+			!record ||
+			record.sessionId !== input.sessionId ||
+			record.control === "closing" ||
+			record.control === "closed"
+		) {
 			return { ok: false, code: "chooser_gone" };
 		}
 		if (record.control !== "human" || record.command) return { ok: false, code: "not_human" };
 		const chooser = this.chooser;
-		if (!chooser || chooser.sessionId !== input.sessionId || chooser.chooserId !== input.chooserId) return { ok: false, code: "chooser_gone" };
-		if (this.hostConnection !== chooser.host || chooser.host.mainNavCount !== chooser.mainNavCount ||
-			record.controlGen !== chooser.controlGen || Date.now() - chooser.openedAt >= LIMITS.chooserMs) {
+		if (!chooser || chooser.sessionId !== input.sessionId || chooser.chooserId !== input.chooserId)
+			return { ok: false, code: "chooser_gone" };
+		if (
+			!this.host_live(chooser.host) ||
+			chooser.host.mainNavCount !== chooser.mainNavCount ||
+			!this.viewer_matches(chooser, record) ||
+			(record.mode === "web" && record.viewedTabId !== chooser.host.tabId) ||
+			record.controlGen !== chooser.controlGen ||
+			Date.now() - chooser.openedAt >= LIMITS.chooserMs
+		) {
 			this.close_file_chooser(chooser);
 			return { ok: false, code: "chooser_gone" };
 		}
-		if (input.controlGen !== chooser.controlGen) return { ok: false, code: "chooser_gone" };
+		if (input.controlGen !== chooser.controlGen || !this.viewer_matches(input, record))
+			return { ok: false, code: "chooser_gone" };
 		return { ok: true, chooser };
 	}
 
@@ -3179,7 +4666,7 @@ export class BrowserSession {
 	 * chooser again: the page may have moved while the bytes were on the way.
 	 */
 	private async fill_file_chooser(
-		input: { sessionId: string; chooserId: string; controlGen: number },
+		input: { sessionId: string; chooserId: string; controlGen: number; tabId: string; tabGen: number; viewGen: number },
 		read_files: (chooser: OpenFileChooser) => Promise<{ ok: true; files: ChooserFile[] } | { ok: false; code: string }>,
 	): Promise<{ ok: true } | { ok: false; code: string }> {
 		const claimed = await this.current_file_chooser(input);
@@ -3202,7 +4689,10 @@ export class BrowserSession {
 			if (!again.ok) return again;
 			// One fill per chooser: it is gone after this call, even when the page refuses the files.
 			this.close_file_chooser(chooser);
-			const filled = await with_wall_timeout(chooser.chooser.setFiles(read.files), LIMITS.uploadSetFilesMs).then(() => true, () => false);
+			const filled = await with_wall_timeout(chooser.chooser.setFiles(read.files), LIMITS.uploadSetFilesMs).then(
+				() => true,
+				() => false,
+			);
 			log_browser({ route: "file_chooser_fill", sessionId: input.sessionId, files: read.files.length, ok: filled });
 			return filled ? { ok: true } : { ok: false, code: "chooser_gone" };
 		} finally {
@@ -3217,6 +4707,9 @@ export class BrowserSession {
 		sessionId: string;
 		chooserId: string;
 		controlGen: number;
+		tabId: string;
+		tabGen: number;
+		viewGen: number;
 		files: Array<{ name: string; contentType: string; url: string }>;
 	}): Promise<Response> {
 		const filled = await this.fill_file_chooser(input, async (chooser) => {
@@ -3252,13 +4745,19 @@ export class BrowserSession {
 					await reader?.cancel().catch(() => {});
 				}
 				const bytes = append_bytes(chunks, size);
-				return { name: file.name, mimeType: file.contentType, buffer: Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength) };
+				return {
+					name: file.name,
+					mimeType: file.contentType,
+					buffer: Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength),
+				};
 			};
-			const files = await Promise.all(input.files.map(read_file)).catch(() => {
-				// The first failure stops the other reads.
-				stop.abort();
-				return null;
-			}).finally(() => clearTimeout(timer));
+			const files = await Promise.all(input.files.map(read_file))
+				.catch(() => {
+					// The first failure stops the other reads.
+					stop.abort();
+					return null;
+				})
+				.finally(() => clearTimeout(timer));
 			if (!files) return { ok: false, code: tooLarge ? "too_large" : "fetch_failed" };
 			return { ok: true, files };
 		});
@@ -3269,7 +4768,14 @@ export class BrowserSession {
 	/**
 	 * `upload-grant`: a single-use, 2-minute grant for one computer upload to this chooser.
 	 */
-	private async upload_grant(input: { sessionId: string; chooserId: string; controlGen: number }): Promise<Response> {
+	private async upload_grant(input: {
+		sessionId: string;
+		chooserId: string;
+		controlGen: number;
+		tabId: string;
+		tabGen: number;
+		viewGen: number;
+	}): Promise<Response> {
 		const current = await this.current_file_chooser(input);
 		if (!current.ok) return operation_refused(current.code, "The page no longer asks for a file.");
 		const now = Date.now();
@@ -3280,7 +4786,7 @@ export class BrowserSession {
 		if (this.uploadGrants.size >= 10) this.uploadGrants.delete(this.uploadGrants.keys().next().value!);
 		const grantId = crypto.randomUUID();
 		const expiresAt = now + LIMITS.uploadGrantMs;
-		this.uploadGrants.set(grantId, { sessionId: input.sessionId, chooserId: input.chooserId, controlGen: input.controlGen, expiresAt });
+		this.uploadGrants.set(grantId, { ...input, expiresAt });
 		return json_response({ ok: true, grantId, expiresAt }, 200);
 	}
 
@@ -3298,19 +4804,28 @@ export class BrowserSession {
 		const filled = await this.fill_file_chooser(grant, async () => {
 			// A slow, aborted, or broken body is a refusal. On a timeout, stop reading the body too.
 			const stop = new AbortController();
-			const body = await with_wall_timeout(read_bounded_stream(request.body, LIMITS.uploadBytes, stop.signal), 60_000).catch(() => {
+			const body = await with_wall_timeout(
+				read_bounded_stream(request.body, LIMITS.uploadBytes, stop.signal),
+				60_000,
+			).catch(() => {
 				stop.abort();
 				return null;
 			});
 			if (!body) return { ok: false, code: "upload_failed" };
 			if (body.truncated) return { ok: false, code: "too_large" };
-			return { ok: true, files: [{
-				name: url.searchParams.get("name") ?? "",
-				mimeType: mime_essence(request.headers.get("Content-Type")) || "application/octet-stream",
-				buffer: Buffer.from(body.bytes.buffer, body.bytes.byteOffset, body.bytes.byteLength),
-			}] };
+			return {
+				ok: true,
+				files: [
+					{
+						name: url.searchParams.get("name") ?? "",
+						mimeType: mime_essence(request.headers.get("Content-Type")) || "application/octet-stream",
+						buffer: Buffer.from(body.bytes.buffer, body.bytes.byteOffset, body.bytes.byteLength),
+					},
+				],
+			};
 		});
-		if (!filled.ok) return reply(filled.code === "too_large" ? 413 : filled.code === "upload_failed" ? 400 : 409, filled.code);
+		if (!filled.ok)
+			return reply(filled.code === "too_large" ? 413 : filled.code === "upload_failed" ? 400 : 409, filled.code);
 		return reply(200);
 	}
 
@@ -3322,25 +4837,39 @@ export class BrowserSession {
 		const record = this.viewerRecord;
 		const chooser = this.chooser;
 		if (!record || !chooser || chooser.chooserId !== chooserId || chooser.busy) return;
-		const current = await this.current_file_chooser({ sessionId: record.sessionId, chooserId, controlGen: chooser.controlGen });
+		const current = await this.current_file_chooser(chooser);
 		if (!current.ok) return;
 		this.close_file_chooser(chooser);
-		await with_wall_timeout(chooser.chooser.element().evaluate((node) => node.dispatchEvent(new Event("cancel", { bubbles: true }))), 5000)
-			.catch(() => {});
+		await with_wall_timeout(
+			chooser.chooser.element().evaluate((node) => node.dispatchEvent(new Event("cancel", { bubbles: true }))),
+			5000,
+		).catch(() => {});
 	}
 
 	private async agent_stream(url: URL): Promise<Response> {
 		const record = await this.load();
 		const sessionId = url.searchParams.get("sessionId");
 		const commandId = url.searchParams.get("commandId");
-		if (!record || record.sessionId !== sessionId || record.ownerId !== url.searchParams.get("ownerId") ||
-			record.organizationId !== url.searchParams.get("organizationId") || record.workspaceId !== url.searchParams.get("workspaceId") ||
-			record.command?.id !== commandId || record.command.connection !== "available" || this.agentConnection ||
-			(record.control !== "agent" && record.control !== "pausing") || session_is_expired(record, Date.now())) {
+		if (
+			!record ||
+			record.sessionId !== sessionId ||
+			record.ownerId !== url.searchParams.get("ownerId") ||
+			record.organizationId !== url.searchParams.get("organizationId") ||
+			record.workspaceId !== url.searchParams.get("workspaceId") ||
+			record.command?.id !== commandId ||
+			record.command.connection !== "available" ||
+			this.agentConnection ||
+			(record.control !== "agent" && record.control !== "pausing") ||
+			session_is_expired(record, Date.now())
+		) {
 			return new Response("Browser command is unavailable", { status: 403 });
 		}
 		// Reserve before any provider await. A second upgrade cannot spend this command.
-		const connection = { sessionId: record.sessionId, commandId: record.command.id, bridge: null as AgentConnection | null };
+		const connection = {
+			sessionId: record.sessionId,
+			commandId: record.command.id,
+			bridge: null as AgentConnection | null,
+		};
 		this.agentConnection = connection;
 		record.command.connection = "consumed";
 		await this.save(record);
@@ -3349,53 +4878,86 @@ export class BrowserSession {
 		try {
 			await with_wall_timeout(this.connect_host(record), 10_000);
 			const beforeUpgrade = await this.load();
-			if (this.agentConnection !== connection || beforeUpgrade?.sessionId !== record.sessionId ||
-				beforeUpgrade.command?.id !== connection.commandId || beforeUpgrade.command.connection !== "consumed" ||
-				(beforeUpgrade.control !== "agent" && beforeUpgrade.control !== "pausing")) throw new Error("Browser command changed.");
-			const response = await with_wall_timeout(this.env.BROWSER.fetch(
-				`${GATE_FAKE_HOST}${GATE_UPGRADE_PATH_PREFIX}${record.providerSessionId}?persistent=true`,
-				{ headers: { Upgrade: "websocket" } },
-			).then((response) => {
-				// A timed-out fetch can still return an open provider socket.
-				if (!acceptingUpgrade && response.webSocket) {
-					response.webSocket.accept();
-					close_socket(response.webSocket, 1000, "command ended");
-				}
-				return response;
-			}), 10_000);
+			if (
+				this.agentConnection !== connection ||
+				beforeUpgrade?.sessionId !== record.sessionId ||
+				beforeUpgrade.command?.id !== connection.commandId ||
+				beforeUpgrade.command.connection !== "consumed" ||
+				(beforeUpgrade.control !== "agent" && beforeUpgrade.control !== "pausing")
+			)
+				throw new Error("Browser command changed.");
+			const response = await with_wall_timeout(
+				this.env.BROWSER.fetch(
+					`${GATE_FAKE_HOST}${GATE_UPGRADE_PATH_PREFIX}${record.providerSessionId}?persistent=true`,
+					{ headers: { Upgrade: "websocket" } },
+				).then((response) => {
+					// A timed-out fetch can still return an open provider socket.
+					if (!acceptingUpgrade && response.webSocket) {
+						response.webSocket.accept();
+						close_socket(response.webSocket, 1000, "command ended");
+					}
+					return response;
+				}),
+				10_000,
+			);
 			upstream = response.webSocket ?? null;
 			const current = await this.load();
-			const host = this.hostConnection;
-			if (!upstream || response.status !== 101 || !host || host.sessionId !== record.sessionId ||
-				this.agentConnection !== connection || current?.sessionId !== record.sessionId ||
-				current.command?.id !== connection.commandId || current.command.connection !== "consumed" ||
-				(current.control !== "agent" && current.control !== "pausing") || session_is_expired(current, Date.now())) {
+			const host = this.hostConnections.get(record.mode === "web" ? record.command!.tabId! : record.sessionId);
+			if (
+				!upstream ||
+				response.status !== 101 ||
+				!host ||
+				host.sessionId !== record.sessionId ||
+				this.agentConnection !== connection ||
+				current?.sessionId !== record.sessionId ||
+				current.command?.id !== connection.commandId ||
+				current.command.connection !== "consumed" ||
+				(current.control !== "agent" && current.control !== "pausing") ||
+				session_is_expired(current, Date.now())
+			) {
 				throw new Error("Browser command changed.");
 			}
 			const [client, server] = Object.values(new WebSocketPair());
 			connection.bridge = new AgentConnection({
-				upstream, downstream: server, targetId: host.targetId,
-				mode: record.mode, deniedHosts: web_denied_hosts(this.env),
+				upstream,
+				downstream: server,
+				targetId: host.targetId,
+				peerTargetIds:
+					record.mode === "web"
+						? Object.values(record.tabs)
+								.map((tab) => tab.targetId)
+								.filter((id) => id !== host.targetId)
+						: [],
+				mode: record.mode,
+				deniedHosts: web_denied_hosts(this.env),
 				agentBlockedHosts: record.mode === "web" ? record.agentBlockedHosts : [],
-				deadline: record.command.startedAt + LIMITS.childWallMs,
+				deadline: record.command.deadline ?? record.command.startedAt + LIMITS.childWallMs,
 				onPopup: async (targetId) => {
 					try {
 						const closed: unknown = await host.browserCdp.send("Target.closeTarget", { targetId });
 						if (is_record(closed) && closed.success === true) return;
-					} catch { /* The host page listener may have closed it first. */ }
+					} catch {
+						/* The host page listener may have closed it first. */
+					}
 					const targets: unknown = await host.browserCdp.send("Target.getTargets");
-					if (is_record(targets) && Array.isArray(targets.targetInfos) &&
+					if (
+						is_record(targets) &&
+						Array.isArray(targets.targetInfos) &&
 						targets.targetInfos.every((target) => is_record(target) && is_non_empty_string(target.targetId)) &&
-						!targets.targetInfos.some((target) => target.targetId === targetId)) return;
+						!targets.targetInfos.some((target) => target.targetId === targetId)
+					)
+						return;
 					throw new Error("Popup could not be closed.");
 				},
 				onUnsafe: (reason) => {
 					log_browser({ route: "agent_connection", reason });
-					this.state.waitUntil(this.load().then(async (current) => {
-						if (current?.sessionId === connection.sessionId && current.command?.id === connection.commandId) {
-							await this.close_record(current, "agent_connection_failed");
-						}
-					}));
+					this.state.waitUntil(
+						this.load().then(async (current) => {
+							if (current?.sessionId === connection.sessionId && current.command?.id === connection.commandId) {
+								await this.close_record(current, "agent_connection_failed");
+							}
+						}),
+					);
 				},
 			});
 			// Access may have been turned off after the command began. Refuse its work, but let it settle.
@@ -3419,8 +4981,13 @@ export class BrowserSession {
 		const connection = this.agentConnection;
 		if (connection?.sessionId === sessionId && connection.commandId === commandId) connection.bridge?.revoke();
 		let record = await this.load();
-		if (!record || record.sessionId !== sessionId || record.command?.id !== commandId ||
-			(record.control !== "agent" && record.control !== "pausing")) return operation_refused("closed", "Browser command changed.");
+		if (
+			!record ||
+			record.sessionId !== sessionId ||
+			record.command?.id !== commandId ||
+			(record.control !== "agent" && record.control !== "pausing")
+		)
+			return operation_refused("closed", "Browser command changed.");
 		if (record.command.connection === "settled") return json_response({ ok: true, blockedPopups: 0 }, 200);
 		// A restarted object cannot prove that the old upstream drained.
 		if (!connection?.bridge || connection.sessionId !== sessionId || connection.commandId !== commandId) {
@@ -3432,24 +4999,37 @@ export class BrowserSession {
 		try {
 			const settled = await connection.bridge.settle(5000);
 			if (!settled.safe) throw new Error("Browser command did not settle.");
-			const host = this.hostConnection;
+			const host = this.hostConnections.get(record.mode === "web" ? record.command!.tabId! : record.sessionId);
 			if (!host || host.sessionId !== sessionId) throw new Error("Browser connection was lost.");
 			// Playwright keeps local target caches. Ask Chromium for the full inventory.
-			const check = await with_wall_timeout((async () => {
-				const [contexts, targets] = await Promise.all([
-					host.browserCdp.send("Target.getBrowserContexts"), host.browserCdp.send("Target.getTargets"),
-				]);
-				const contextIds: unknown = contexts.browserContextIds;
-				const targetInfos: unknown = targets.targetInfos;
-				if (!Array.isArray(contextIds) || contextIds.some((id) => typeof id !== "string" || id !== host.contextId) ||
-					!Array.isArray(targetInfos)) return false;
-				const pages = targetInfos.filter((target: unknown) => is_record(target) && target.type === "page");
-				if (pages.length !== 1 || !is_record(pages[0]) || pages[0].targetId !== host.targetId) return false;
-				// Web pages may be on any site. The assigned page target is the whole check.
-				if (record?.mode === "web") return true;
-				const page: unknown = await host.page.evaluate("({url: location.href, nonce: window.__browserNonce})");
-				return is_record(page) && page.url === CONTROLLER_URL && page.nonce === record?.pageNonce;
-			})(), 10_000);
+			const check = await with_wall_timeout(
+				(async () => {
+					const [contexts, targets] = await Promise.all([
+						host.browserCdp.send("Target.getBrowserContexts"),
+						host.browserCdp.send("Target.getTargets"),
+					]);
+					const contextIds: unknown = contexts.browserContextIds;
+					const targetInfos: unknown = targets.targetInfos;
+					if (
+						!Array.isArray(contextIds) ||
+						contextIds.some((id) => typeof id !== "string" || id !== host.contextId) ||
+						!Array.isArray(targetInfos)
+					)
+						return false;
+					const pages = targetInfos.filter((target: unknown) => is_record(target) && target.type === "page");
+					if (record?.mode === "web") {
+						const registered = new Set(Object.values(record.tabs).map((tab) => tab.targetId));
+						return (
+							pages.length === registered.size &&
+							pages.every((target) => is_record(target) && registered.has(String(target.targetId)))
+						);
+					}
+					if (pages.length !== 1 || !is_record(pages[0]) || pages[0].targetId !== host.targetId) return false;
+					const page: unknown = await host.page.evaluate("({url: location.href, nonce: window.__browserNonce})");
+					return is_record(page) && page.url === CONTROLLER_URL && page.nonce === record?.pageNonce;
+				})(),
+				10_000,
+			);
 			if (!check) throw new Error("Browser target changed.");
 			// The command's page work is over. Stop failing requests, then check where the page is.
 			// On a blocked site the command result is refused, but the session stays.
@@ -3459,13 +5039,21 @@ export class BrowserSession {
 				blockedSite = await this.main_page_blocked(record);
 			}
 			record = await this.load();
-			if (!record || record.sessionId !== sessionId || record.command?.id !== commandId || record.command.connection !== "revoked") {
+			if (
+				!record ||
+				record.sessionId !== sessionId ||
+				record.command?.id !== commandId ||
+				record.command.connection !== "revoked"
+			) {
 				return operation_refused("closed", "Browser command changed.");
 			}
 			record.command.connection = "settled";
 			await this.save(record);
 			if (this.agentConnection === connection) this.agentConnection = null;
-			return json_response({ ok: true, blockedPopups: settled.blockedPopups, ...(blockedSite ? { blockedSite: true } : {}) }, 200);
+			return json_response(
+				{ ok: true, blockedPopups: settled.blockedPopups, ...(blockedSite ? { blockedSite: true } : {}) },
+				200,
+			);
 		} catch {
 			const current = await this.load();
 			if (current?.sessionId === sessionId) await this.close_record(current, "agent_settle_failed");
@@ -3473,13 +5061,21 @@ export class BrowserSession {
 		}
 	}
 
-	private async begin_run(input: {
-		sessionId: string;
-		navGen: number;
-		loadGen: number;
-		controlGen: number;
-		commandId: string;
-	}, inputReleased = false): Promise<Response> {
+	private async begin_run(
+		input: {
+			sessionId: string;
+			navGen: number;
+			loadGen: number;
+			controlGen: number;
+			commandId: string;
+			deadline?: number;
+			tabId?: string;
+			tabGen?: number;
+			policyRevision?: number;
+			selectionRevision?: number;
+		},
+		inputReleased = false,
+	): Promise<Response> {
 		let record = await this.load();
 		if (!record || record.control === "closed") {
 			return operation_refused("closed", "The browser session is closed.");
@@ -3506,14 +5102,27 @@ export class BrowserSession {
 		// The user listed sites their agent may not use. Refuse while the page is on one, and fail
 		// requests to them until the command settles. Best effort: the UI says so.
 		if (record.mode === "web" && record.agentBlockedHosts.length > 0) {
-			const blocked = await this.main_page_blocked(record).catch(() => null);
+			const blocked = await Promise.all(
+				Object.keys(record.tabs).map((tabId) => this.main_page_blocked(record as WebSessionRecord, tabId)),
+			)
+				.then((checks) => checks.some(Boolean))
+				.catch(() => null);
 			if (blocked !== false) {
-				log_browser({ route: "run_begin", refused: blocked ? "agent_blocked_site" : "page_check", sessionId: record.sessionId });
+				log_browser({
+					route: "run_begin",
+					refused: blocked ? "agent_blocked_site" : "page_check",
+					sessionId: record.sessionId,
+				});
 				return blocked
 					? operation_refused("agent_blocked_site", "The page is on a site the agent may not use.")
 					: operation_refused("not_ready", "The browser page could not be checked.");
 			}
-			if (!(await this.set_agent_site_filter(record.sessionId, true).then(() => true, () => false))) {
+			if (
+				!(await this.set_agent_site_filter(record.sessionId, true).then(
+					() => true,
+					() => false,
+				))
+			) {
 				return operation_refused("not_ready", "The browser page could not be checked.");
 			}
 			// The checks above waited for the provider. Check the lease again before taking the slot.
@@ -3526,7 +5135,15 @@ export class BrowserSession {
 			record = current;
 		}
 
-		record.command = { id: input.commandId, startedAt: now, connection: "available" };
+		if (input.deadline !== undefined && Date.now() >= input.deadline)
+			return operation_refused("expired", "The command deadline passed.");
+		record.command = {
+			id: input.commandId,
+			startedAt: now,
+			deadline: input.deadline ?? now + LIMITS.childWallMs,
+			connection: "available",
+			...(record.mode === "web" ? { tabId: input.tabId } : {}),
+		};
 		record.control = "agent";
 		record.lastActiveAt = now;
 		await this.save(record);
@@ -3536,7 +5153,7 @@ export class BrowserSession {
 				lease: {
 					sessionId: record.sessionId,
 					mode: record.mode,
-					viewport: record.viewport,
+					viewport: record.mode === "web" ? record.tabs[input.tabId!]!.viewport : record.viewport,
 					timeoutMs: LIMITS.commandTimeoutMs,
 				},
 			},
@@ -3559,11 +5176,15 @@ export class BrowserSession {
 
 		const liveCommand = record.command?.id === input.commandId;
 		if (!liveCommand) return json_response({ ok: true, state: "stale" }, 200);
+		const finishedTabId = record.command?.tabId;
 		if (input.tainted) {
 			log_browser({ route: "run_finish", sessionId: record.sessionId, tainted: true });
 			// A tainted command returns nothing. `close_record` drops its downloads too.
-			await this.close_record(record, "tainted");
-			return json_response({ ok: true, state: "closed", tainted: true }, 200);
+			const closed = await this.close_record(record, "tainted");
+			return json_response(
+				{ ok: true, state: "closed", tainted: true, cleanup: closed.verified ? "complete" : "unknown", session: null },
+				200,
+			);
 		}
 
 		if (record.command?.connection !== "settled") {
@@ -3581,32 +5202,41 @@ export class BrowserSession {
 			input.viewport.width <= LIMITS.viewportMaxWidth &&
 			input.viewport.height <= LIMITS.viewportMaxHeight
 		) {
-			record.viewport = { width: input.viewport.width, height: input.viewport.height };
+			if (record.mode === "web" && record.command?.tabId)
+				record.tabs[record.command.tabId]!.viewport = { width: input.viewport.width, height: input.viewport.height };
+			else record.viewport = { width: input.viewport.width, height: input.viewport.height };
 		}
 		// Agent tracing can replace Chromium's screencast. Restart ours while the
 		// command still blocks input, then check that close or another command did not win.
-		this.stop_viewer_producer();
+		if (record.mode === "file" || record.command?.tabId === record.viewedTabId) this.stop_viewer_producer();
 		await this.save(record);
 		if (this.viewerStreams.size > 0) await this.start_viewer_producer().catch(() => {});
 		// A failed restart may still be removing viewers from the same record.
 		await this.viewerCleanup;
 		const current = await this.load();
-		if (!current || current.control === "closing" || current.control === "closed") return json_response({ ok: true, state: "closed" }, 200);
-		if (current.sessionId !== input.sessionId || current.command?.id !== input.commandId) return json_response({ ok: true, state: "stale" }, 200);
+		if (!current || current.control === "closing" || current.control === "closed")
+			return json_response({ ok: true, state: "closed" }, 200);
+		if (current.sessionId !== input.sessionId || current.command?.id !== input.commandId)
+			return json_response({ ok: true, state: "stale" }, 200);
 		record = current;
 		record.command = null;
 		record.commandCount += 1;
 		record.lastActiveAt = Date.now();
-		// The agent may have logged in or out. The next viewer renew saves the cookies.
+		// Save changed cookies after settlement, even when no viewer is mounted.
 		if (this.profile?.sessionId === record.sessionId) this.profile.dirty = true;
-		// A finished command releases a pausing session to its waiting human. When the
-		// holder detached mid-take, there is no human to hand to: fall back to ready.
+		// Human Take stays paused until Resume, even if its viewer detached.
 		if (record.control === "pausing") {
-			record.control = record.inputHolder ? "human" : "ready";
+			record.control = "human";
 		} else if (record.control === "agent") {
 			record.control = "ready";
 		}
 		await this.save(record);
+		if (
+			this.profile?.sessionId === record.sessionId &&
+			this.profile.dirty &&
+			Date.now() - this.profile.savedAt > LIMITS.profileSaveEveryMs
+		)
+			await this.save_profile(record);
 		// A download the command started may still be reading, or still checking its frame. Let it
 		// land in this command's list.
 		await Promise.all([this.downloads?.capture, ...this.safetyNetDownloads]);
@@ -3620,20 +5250,33 @@ export class BrowserSession {
 			fileBytes: input.fileBytes,
 			downloads: agent?.items.length ?? 0,
 		});
-		return json_response({
-			ok: true,
-			state: record.control,
-			...(agent?.items.length ? {
-				downloads: agent.items.map((item) => ({ name: item.name, contentType: item.contentType, dataBase64: bytes_base64(item.bytes) })),
-			} : {}),
-			...(agent?.dropped ? { downloadsDropped: agent.dropped } : {}),
-		}, 200);
+		return json_response(
+			{
+				ok: true,
+				state: record.control,
+				cleanup: "complete",
+				session: this.public_meta(record, finishedTabId),
+				...(agent?.items.length
+					? {
+							downloads: agent.items.map((item) => ({
+								name: item.name,
+								contentType: item.contentType,
+								dataBase64: bytes_base64(item.bytes),
+							})),
+						}
+					: {}),
+				...(agent?.dropped ? { downloadsDropped: agent.dropped } : {}),
+			},
+			200,
+		);
 	}
 
-	private async reload(input: { sessionId: string; navGen: number; expectedAgentLease?: AgentLease } & (
-		| { mode: "file"; sourceKind: string; sourceVersion: string; sourceHash: string; html: string }
-		| { mode: "web" }
-	)): Promise<Response> {
+	private async reload(
+		input: { sessionId: string; navGen: number; expectedAgentLease?: AgentLease } & (
+			| { mode: "file"; sourceKind: string; sourceVersion: string; sourceHash: string; html: string }
+			| { mode: "web" }
+		),
+	): Promise<Response> {
 		const record = await this.load();
 		if (!record || record.control === "closed") {
 			return operation_refused("closed", "The browser session is closed.");
@@ -3655,7 +5298,7 @@ export class BrowserSession {
 		if (record.control === "closing" || record.control === "starting") {
 			return operation_refused("busy", "The browser session is busy.");
 		}
-		if (record.navGen !== input.navGen) {
+		if (record.mode === "file" && record.navGen !== input.navGen) {
 			return operation_refused("stale_nav", "The browser session moved to another file.");
 		}
 		if (record.command) {
@@ -3700,7 +5343,17 @@ export class BrowserSession {
 			) {
 				return operation_refused("busy", "The browser session changed.");
 			}
-			current.command = { id: reloadId, startedAt: Date.now() };
+			if (input.expectedAgentLease) {
+				const refusal = agent_lease_refusal(current, input.expectedAgentLease);
+				if (refusal) return operation_refused(refusal, "The agent browser lease changed.");
+				if (current.mode === "web" && !current.agentAccess)
+					return operation_refused("agent_access_off", "Agent access to this browser is off.");
+			}
+			current.command = {
+				id: reloadId,
+				startedAt: Date.now(),
+				...(current.mode === "web" ? { tabId: input.expectedAgentLease?.tabId ?? current.viewedTabId } : {}),
+			};
 			if (input.expectedAgentLease) current.control = "agent";
 			await this.save(current);
 			return json_response({ ok: true }, 200);
@@ -3715,14 +5368,19 @@ export class BrowserSession {
 
 		try {
 			// Finish a pending host check before reload changes the page nonce.
-			await this.connect_host(record);
-			const host = this.hostConnection;
+			await this.connect_host(reserved);
+			const host = this.hostConnections.get(reserved.mode === "web" ? reserved.command!.tabId! : reserved.sessionId);
 			if (!host || host.sessionId !== record.sessionId) throw new Error("Browser session changed.");
 			if (input.mode === "web") {
-				// A slow site is not a failure. Only a broken connection closes the session.
-				await with_wall_timeout(host.cdp.send("Page.reload"), LIMITS.navWallMs).catch((error: unknown) => {
-					if (!(error instanceof WallTimeoutError)) throw error;
+				// Slow sites stay usable. A failed navigation save cannot return an old lease.
+				const deadline = Date.now() + LIMITS.navWallMs;
+				await with_wall_timeout(
+					host.page.reload({ waitUntil: "commit", timeout: LIMITS.navWallMs }),
+					LIMITS.navWallMs,
+				).catch((error: unknown) => {
+					if (!(error instanceof WallTimeoutError) && !(error instanceof errors.TimeoutError)) throw error;
 				});
+				await with_wall_timeout(host.navigationUpdates, Math.max(1, deadline - Date.now()));
 			} else {
 				// A full navigation resets page input and scroll by design.
 				reloadedPageNonce = await load_controller_page(host.page, {
@@ -3736,10 +5394,7 @@ export class BrowserSession {
 			log_browser({ route: "reload", refused: "reload_failed", sessionId: record.sessionId });
 			// Reload may have replaced the document before reporting a failure.
 			await this.close_record(record, "reload_failed");
-			return json_response(
-				{ ok: false, error: { code: "reload_failed", message: failure.message } },
-				200,
-			);
+			return json_response({ ok: false, error: { code: "reload_failed", message: failure.message } }, 200);
 		}
 
 		// Re-read before committing: a concurrent close must win over this reload, and the
@@ -3756,8 +5411,9 @@ export class BrowserSession {
 			return operation_refused("busy", "A browser command is running.");
 		}
 
+		const reloadTabId = current.command.tabId;
 		current.command = null;
-		// Web mode keeps loadGen: the page changes all the time, and agent leases must stay valid.
+		// Web reload keeps loadGen. Tab and navigation generations record page changes.
 		if (current.mode === "file" && input.mode === "file") {
 			current.loadGen += 1;
 			current.pageNonce = reloadedPageNonce;
@@ -3770,13 +5426,13 @@ export class BrowserSession {
 		current.lastActiveAt = Date.now();
 		// Input stays blocked until navigation and the source update have both finished.
 		if (current.control === "pausing") {
-			current.control = current.inputHolder ? "human" : "ready";
+			current.control = "human";
 		} else if (current.control === "agent") {
 			current.control = "ready";
 		}
 		await this.save(current);
 		log_browser({ route: "reload", sessionId: current.sessionId, loadGen: current.loadGen });
-		return json_response({ ok: true, session: this.public_meta(current) }, 200);
+		return json_response({ ok: true, session: this.public_meta(current, reloadTabId) }, 200);
 	}
 
 	/**
@@ -3791,7 +5447,12 @@ export class BrowserSession {
 		// Write the receipt before the record goes away. No browser was acquired means nothing to bill.
 		const now = Date.now();
 		if (current.providerAcquiredAt !== null) {
-			const receipt: UsageReceipt = { sessionId: current.sessionId, providerAcquiredAt: current.providerAcquiredAt, endedAt: now, reason };
+			const receipt: UsageReceipt = {
+				sessionId: current.sessionId,
+				providerAcquiredAt: current.providerAcquiredAt,
+				endedAt: now,
+				reason,
+			};
 			await this.state.storage.put(`${USAGE_KEY_PREFIX}${current.sessionId}`, receipt);
 		}
 		await this.state.storage.delete(SESSION_KEY);
@@ -3804,9 +5465,16 @@ export class BrowserSession {
 		}
 	}
 
-	private async close_record(record: SessionRecord, reason: string, saveProfile?: boolean): Promise<{ existed: boolean; verified: boolean }> {
+	private async close_record(
+		record: SessionRecord,
+		reason: string,
+		saveProfile?: boolean,
+		beforeClose?: (current: SessionRecord) => string | null,
+	): Promise<{ existed: boolean; verified: boolean; refusal?: string }> {
 		let current = await this.load();
 		if (current?.sessionId !== record.sessionId) return { existed: false, verified: true };
+		const refusal = beforeClose?.(current);
+		if (refusal) return { existed: true, verified: false, refusal };
 		// Save the cookies while the host connection and the page still exist.
 		if (this.should_save(current, reason, saveProfile)) {
 			await this.save_profile(current);
@@ -3828,9 +5496,11 @@ export class BrowserSession {
 		}
 		this.inputEpoch += 1;
 		this.stop_viewer_producer();
-		const host = this.hostConnection;
+		const hosts = [...this.hostConnections.values()];
 		this.hostConnection = null;
-		if (host) this.state.waitUntil(host.browser.close().catch(() => {}));
+		this.hostConnections.clear();
+		for (const browser of new Set(hosts.map((host) => host.browser)))
+			this.state.waitUntil(browser.close().catch(() => {}));
 		const providerSessionId = record.providerSessionId;
 		record.control = "closing";
 		record.command = null;
@@ -3861,12 +5531,25 @@ export class BrowserSession {
 		return { existed: true, verified };
 	}
 
-	private async close(sessionId: string | null, expectedAgentLease?: AgentLease, saveProfile?: boolean, by: string | null = null): Promise<Response> {
-		log_browser({ route: "close_request", sessionId: sessionId ?? "none", by: by ?? "unknown", saveProfile: saveProfile === true });
+	private async close(
+		sessionId: string | null,
+		expectedAgentLease?: AgentLease,
+		saveProfile?: boolean,
+		by: string | null = null,
+	): Promise<Response> {
+		log_browser({
+			route: "close_request",
+			sessionId: sessionId ?? "none",
+			by: by ?? "unknown",
+			saveProfile: saveProfile === true,
+		});
 		const record = await this.load();
 		// A session closed earlier may still have its receipt.
 		if (!record || (sessionId && record.sessionId !== sessionId) || record.control === "closed") {
-			return json_response({ ok: true, existed: false, verified: true, usage: sessionId ? await this.usage(sessionId) : null }, 200);
+			return json_response(
+				{ ok: true, existed: false, verified: true, usage: sessionId ? await this.usage(sessionId) : null },
+				200,
+			);
 		}
 		if (expectedAgentLease) {
 			const refusal = agent_lease_refusal(record, expectedAgentLease);
@@ -3878,8 +5561,12 @@ export class BrowserSession {
 
 	private async status(sessionId: string): Promise<Response> {
 		const record = await this.load();
-		const alive = !!record && record.sessionId === sessionId &&
-			record.control !== "closed" && record.control !== "closing" && !session_is_expired(record, Date.now());
+		const alive =
+			!!record &&
+			record.sessionId === sessionId &&
+			record.control !== "closed" &&
+			record.control !== "closing" &&
+			!session_is_expired(record, Date.now());
 		// Only whether bytes remain: no profile id and no data. QA and the wipe checks read it.
 		const profileStored = (await this.state.storage.get<ProfileBlob>(PROFILE_BLOB_KEY)) !== undefined;
 		if (alive) return json_response({ ok: true, alive, session: this.public_meta(record), profileStored }, 200);
@@ -3900,7 +5587,13 @@ export class BrowserSession {
 	 * Read the stored profile for these owners. `exists: false` when nothing is stored or the blob
 	 * belongs to another profile id. A blob that does not decrypt is an error, not an empty profile.
 	 */
-	private async read_profile(input: { ownerId: string; organizationId: string; workspaceId: string; profileId: string; profileKey: string }) {
+	private async read_profile(input: {
+		ownerId: string;
+		organizationId: string;
+		workspaceId: string;
+		profileId: string;
+		profileKey: string;
+	}) {
 		const stored = await this.state.storage.get<ProfileBlob>(PROFILE_BLOB_KEY);
 		if (stored?.profileId !== input.profileId) return { ok: true as const, stored: null, cookies: [] };
 		try {
@@ -3916,26 +5609,44 @@ export class BrowserSession {
 	/**
 	 * List the saved sites with a cookie count each. Never cookie names or values.
 	 */
-	private async profile_summary(input: { ownerId: string; organizationId: string; workspaceId: string; profileId: string; profileKey: string }): Promise<Response> {
+	private async profile_summary(input: {
+		ownerId: string;
+		organizationId: string;
+		workspaceId: string;
+		profileId: string;
+		profileKey: string;
+	}): Promise<Response> {
 		if (await this.session_live()) return operation_refused("busy", "End the browser first.");
 		const read = await this.read_profile(input);
 		if (!read.ok) return operation_refused("profile_unreadable", "The saved browser data cannot be read.");
 		const counts = new Map<string, number>();
 		for (const cookie of read.cookies) counts.set(cookie_site(cookie), (counts.get(cookie_site(cookie)) ?? 0) + 1);
-		const sites = [...counts].map(([domain, cookies]) => ({ domain, cookies })).sort((a, b) => (a.domain < b.domain ? -1 : a.domain > b.domain ? 1 : 0));
-		return json_response({
-			ok: true,
-			exists: read.stored !== null,
-			savedAt: read.stored?.savedAt ?? null,
-			truncated: read.stored?.truncated ?? false,
-			sites,
-		}, 200);
+		const sites = [...counts]
+			.map(([domain, cookies]) => ({ domain, cookies }))
+			.sort((a, b) => (a.domain < b.domain ? -1 : a.domain > b.domain ? 1 : 0));
+		return json_response(
+			{
+				ok: true,
+				exists: read.stored !== null,
+				savedAt: read.stored?.savedAt ?? null,
+				truncated: read.stored?.truncated ?? false,
+				sites,
+			},
+			200,
+		);
 	}
 
 	/**
 	 * Remove the cookies of one site and its subdomains, then store the rest again. `savedAt` stays.
 	 */
-	private async profile_clear(input: { ownerId: string; organizationId: string; workspaceId: string; profileId: string; profileKey: string; domain: string }): Promise<Response> {
+	private async profile_clear(input: {
+		ownerId: string;
+		organizationId: string;
+		workspaceId: string;
+		profileId: string;
+		profileKey: string;
+		domain: string;
+	}): Promise<Response> {
 		if (await this.session_live()) return operation_refused("busy", "End the browser first.");
 		const read = await this.read_profile(input);
 		if (!read.ok) return operation_refused("profile_unreadable", "The saved browser data cannot be read.");
@@ -3952,7 +5663,8 @@ export class BrowserSession {
 			this.state.storage.get<number>(`${PROFILE_DELETED_KEY_PREFIX}${input.profileId}`),
 			this.state.storage.get<ProfileBlob>(PROFILE_BLOB_KEY),
 		]);
-		if (deletedAt !== undefined || latest?.iv !== read.stored.iv) return operation_refused("busy", "The saved browser data changed.");
+		if (deletedAt !== undefined || latest?.iv !== read.stored.iv)
+			return operation_refused("busy", "The saved browser data changed.");
 		await this.state.storage.put(PROFILE_BLOB_KEY, { ...read.stored, ...sealed } satisfies ProfileBlob);
 		log_browser({ route: "profile_clear", removed });
 		return json_response({ ok: true, removed }, 200);
@@ -3967,7 +5679,12 @@ export class BrowserSession {
 		// A live session of this profile ends without saving. A session of a newer profile (after a
 		// re-invite or a Clear all) stays.
 		const record = await this.load();
-		if (record?.mode === "web" && record.profileId === profileId && record.control !== "closing" && record.control !== "closed") {
+		if (
+			record?.mode === "web" &&
+			record.profileId === profileId &&
+			record.control !== "closing" &&
+			record.control !== "closed"
+		) {
 			await this.close_record(record, "profile_deleted");
 		}
 		const stored = await this.state.storage.get<ProfileBlob>(PROFILE_BLOB_KEY);
@@ -3988,7 +5705,7 @@ export class BrowserSession {
 		if (record.sessionId !== sessionId) {
 			return operation_refused("stale_session", "The browser session is retired.");
 		}
-		if (record.navGen !== navGen) {
+		if (record.mode === "file" && record.navGen !== navGen) {
 			return operation_refused("stale_nav", "The browser session moved to another file.");
 		}
 		if (session_is_expired(record, Date.now())) {
@@ -3999,10 +5716,7 @@ export class BrowserSession {
 		// Human attention extends the idle deadline, never the total cap.
 		record.lastActiveAt = Date.now();
 		await this.save(record);
-		return json_response(
-			{ ok: true, idleUntil: record.lastActiveAt + mode_limits(record.mode).idleMs },
-			200,
-		);
+		return json_response({ ok: true, idleUntil: record.lastActiveAt + mode_limits(record.mode).idleMs }, 200);
 	}
 
 	private sweep_viewers(record: SessionRecord, now: number): void {
@@ -4034,7 +5748,7 @@ export class BrowserSession {
 		if (record.control === "starting") {
 			return operation_refused("not_ready", "The browser session is starting.");
 		}
-		if (record.navGen !== navGen) {
+		if (record.mode === "file" && record.navGen !== navGen) {
 			return operation_refused("stale_nav", "The browser session moved to another file.");
 		}
 		if (session_is_expired(record, Date.now())) {
@@ -4070,7 +5784,7 @@ export class BrowserSession {
 			}
 			return operation_refused("grant", "The viewer grant is invalid or expired.");
 		}
-		if (record.navGen !== grant.navGen) {
+		if (record.mode === "file" && record.navGen !== grant.navGen) {
 			await this.save(record);
 			return operation_refused("stale_nav", "The browser session moved to another file.");
 		}
@@ -4158,26 +5872,25 @@ export class BrowserSession {
 		);
 	}
 
-
 	private async viewer_detach(viewerId: string): Promise<Response> {
 		const record = await this.load();
 		if (record) {
 			delete record.viewers[viewerId];
 			if (record.inputHolder === viewerId) {
 				record.inputHolder = null;
-				// No viewer holds input anymore: leaving human control set would refuse agent
-				// commands with nobody able to act. Fall back to ready, never to agent work.
-				if (record.control === "human") {
-					record.control = "ready";
-					record.controlGen += 1;
-				}
+				// Human Pause stays set after detach. Only Resume clears it.
 			}
 			await this.save(record);
 		}
 		return json_response({ ok: true }, 200);
 	}
 
-	private async control_take_human(sessionId: string, navGen: number, viewerId: string, inputReleased = false): Promise<Response> {
+	private async control_take_human(
+		sessionId: string,
+		navGen: number,
+		viewerId: string,
+		inputReleased = false,
+	): Promise<Response> {
 		const record = await this.load();
 		if (!record || record.control === "closed" || record.control === "closing") {
 			return operation_refused("closed", "The browser session is closed.");
@@ -4185,7 +5898,7 @@ export class BrowserSession {
 		if (record.sessionId !== sessionId) {
 			return operation_refused("stale_session", "The browser session is retired.");
 		}
-		if (record.navGen !== navGen) {
+		if (record.mode === "file" && record.navGen !== navGen) {
 			return operation_refused("stale_nav", "The browser session moved to another file.");
 		}
 		if (record.viewers[viewerId] === undefined) {
@@ -4203,7 +5916,8 @@ export class BrowserSession {
 			await this.close_record(record, "command_timeout");
 			return operation_refused("expired", "The browser command timed out.");
 		}
-		if (!inputReleased) return this.with_input_released(() => this.control_take_human(sessionId, navGen, viewerId, true));
+		if (!inputReleased)
+			return this.with_input_released(() => this.control_take_human(sessionId, navGen, viewerId, true));
 		// Takeover is allowed: viewers are all authorized members, and a
 		// refused take could strand input on a dead tab until its sweep.
 		record.inputHolder = viewerId;
@@ -4221,7 +5935,12 @@ export class BrowserSession {
 		return json_response({ ok: true, control: record.control, controlGen: record.controlGen }, 200);
 	}
 
-	private async control_to_agent(sessionId: string, navGen: number, inputReleased = false): Promise<Response> {
+	private async control_to_agent(
+		sessionId: string,
+		navGen: number,
+		controlGen: number,
+		inputReleased = false,
+	): Promise<Response> {
 		const record = await this.load();
 		if (!record || record.control === "closed" || record.control === "closing") {
 			return operation_refused("closed", "The browser session is closed.");
@@ -4229,7 +5948,7 @@ export class BrowserSession {
 		if (record.sessionId !== sessionId) {
 			return operation_refused("stale_session", "The browser session is retired.");
 		}
-		if (record.navGen !== navGen) {
+		if (record.mode === "file" && record.navGen !== navGen) {
 			return operation_refused("stale_nav", "The browser session moved to another file.");
 		}
 		if (record.control === "agent") {
@@ -4240,7 +5959,9 @@ export class BrowserSession {
 			return operation_refused("expired", "The browser session expired.");
 		}
 
-		if (!inputReleased) return this.with_input_released(() => this.control_to_agent(sessionId, navGen, true));
+		if (record.controlGen !== controlGen) return operation_refused("stale_control", "The browser control changed.");
+		if (!inputReleased)
+			return this.with_input_released(() => this.control_to_agent(sessionId, navGen, controlGen, true));
 		// Atomically end human input and ready the agent side. The fresh
 		// request lease arrives with the next begin under the new generation.
 		record.control = record.command ? "agent" : "ready";
@@ -4254,7 +5975,13 @@ export class BrowserSession {
 	/**
 	 * Web mode: the user allows or blocks agent commands on this browser.
 	 */
-	private async set_agent_access(sessionId: string, on: boolean): Promise<Response> {
+	private async set_agent_access(
+		sessionId: string,
+		on: boolean,
+		policyRevision: number,
+		selectionRevision: number,
+		blockedHosts: string[],
+	): Promise<Response> {
 		const record = await this.load();
 		if (!record || record.control === "closed" || record.control === "closing") {
 			return operation_refused("closed", "The browser session is closed.");
@@ -4270,21 +5997,40 @@ export class BrowserSession {
 			return operation_refused("expired", "The browser session expired.");
 		}
 
-		if (record.agentAccess !== on) {
+		if (policyRevision < record.policyRevision || selectionRevision < record.selectionRevision)
+			return operation_refused("stale_policy", "The browser policy changed.");
+		if (
+			record.agentAccess !== on ||
+			record.policyRevision !== policyRevision ||
+			record.selectionRevision !== selectionRevision ||
+			JSON.stringify(record.agentBlockedHosts) !== JSON.stringify(blockedHosts)
+		) {
 			record.agentAccess = on;
+			record.policyRevision = policyRevision;
+			record.selectionRevision = selectionRevision;
+			record.agentBlockedHosts = blockedHosts;
 			// Every real change gets a new controlGen. Convex copies `agentAccess` only from a reply
 			// with a controlGen at least as new as its own, so a late reply cannot undo this change.
 			record.controlGen += 1;
 			// Turning access off works like Take: the new controlGen retires every agent lease, and a
 			// running command loses its bridge. Its snippet fails fast and the command settles.
-			if (!on && this.agentConnection?.sessionId === record.sessionId) this.agentConnection.bridge?.revoke();
+			if (this.agentConnection?.sessionId === record.sessionId) this.agentConnection.bridge?.revoke();
 			await this.save(record);
+			if (record.command?.connection) await this.settle_run(record.sessionId, record.command.id);
 			log_browser({ route: "agent_access", sessionId: record.sessionId, on });
 		}
-		return json_response({ ok: true, session: this.public_meta(record) }, 200);
+		const current = await this.load();
+		return current?.mode === "web" && current.sessionId === sessionId
+			? json_response({ ok: true, session: this.public_meta(current) }, 200)
+			: operation_refused("closed", "The browser session is closed.");
 	}
 
-	private async viewer_input(viewerId: string, sessionId: string, controlGen: number, loadGen: number | null): Promise<Response> {
+	private async viewer_input(
+		viewerId: string,
+		sessionId: string,
+		controlGen: number,
+		loadGen: number | null,
+	): Promise<Response> {
 		const record = await this.load();
 		if (!record || record.viewers[viewerId] === undefined) {
 			return operation_refused("viewer", "The viewer is gone.");
@@ -4292,8 +6038,14 @@ export class BrowserSession {
 		if (record.sessionId !== sessionId || record.control === "closed" || record.control === "closing") {
 			return operation_refused("closed", "The browser session is closed.");
 		}
-		if (record.control !== "human" || record.inputHolder !== viewerId || record.command || this.inputTransition ||
-			record.controlGen !== controlGen || (loadGen !== null && record.loadGen !== loadGen)) {
+		if (
+			record.control !== "human" ||
+			record.inputHolder !== viewerId ||
+			record.command ||
+			this.inputTransition ||
+			record.controlGen !== controlGen ||
+			(loadGen !== null && record.loadGen !== loadGen)
+		) {
 			return operation_refused("control", "This viewer does not hold input.");
 		}
 		const viewer = record.viewers[viewerId]!;
@@ -4317,44 +6069,92 @@ export class BrowserSession {
 	private sync_viewers(record: SessionRecord): void {
 		const previous = this.viewerRecord;
 		this.viewerRecord = record;
-		if (previous && (
-			previous.sessionId !== record.sessionId || previous.loadGen !== record.loadGen ||
-			previous.controlGen !== record.controlGen || previous.control !== record.control ||
-			previous.inputHolder !== record.inputHolder || previous.command?.id !== record.command?.id
-		)) {
+		if (
+			previous &&
+			(previous.sessionId !== record.sessionId ||
+				previous.loadGen !== record.loadGen ||
+				previous.controlGen !== record.controlGen ||
+				previous.control !== record.control ||
+				previous.inputHolder !== record.inputHolder ||
+				previous.command?.id !== record.command?.id)
+		) {
 			this.inputEpoch += 1;
 			this.pointerPosition = null;
 		}
-		const viewportChanged = previous && (
-			previous.loadGen !== record.loadGen || previous.viewport.width !== record.viewport.width ||
-			previous.viewport.height !== record.viewport.height
-		);
+		const viewportChanged =
+			previous &&
+			(previous.loadGen !== record.loadGen ||
+				previous.viewport.width !== record.viewport.width ||
+				previous.viewport.height !== record.viewport.height ||
+				(previous.mode === "web" &&
+					record.mode === "web" &&
+					(previous.viewedTabId !== record.viewedTabId ||
+						previous.viewGen !== record.viewGen ||
+						previous.tabs[previous.viewedTabId]?.tabGen !== record.tabs[record.viewedTabId]?.tabGen)));
 		if (viewportChanged) this.stop_viewer_producer();
-		const agentAccessChanged = previous?.mode === "web" && record.mode === "web" && previous.agentAccess !== record.agentAccess;
+		const agentAccessChanged =
+			previous?.mode === "web" && record.mode === "web" && previous.agentAccess !== record.agentAccess;
 		for (const stream of this.viewerStreams.values()) {
 			const viewer = record.viewers[stream.viewerId];
-			if (record.sessionId !== stream.sessionId || !viewer || record.control === "closing" || record.control === "closed") {
+			if (
+				record.sessionId !== stream.sessionId ||
+				!viewer ||
+				record.control === "closing" ||
+				record.control === "closed"
+			) {
 				this.end_viewer(stream, 4404, "session gone");
 				continue;
 			}
 			if (stream.deadlineTimer) clearTimeout(stream.deadlineTimer);
 			const limits = mode_limits(record.mode);
-			const deadline = Math.min(viewer.grantedUntil, record.providerAcquiredAt! + limits.totalMs, record.lastActiveAt + limits.idleMs);
-			stream.deadlineTimer = setTimeout(() => this.end_viewer(stream, 4408, "grant expired"), Math.max(0, deadline - Date.now()));
+			const deadline = Math.min(
+				viewer.grantedUntil,
+				record.providerAcquiredAt! + limits.totalMs,
+				record.lastActiveAt + limits.idleMs,
+			);
+			stream.deadlineTimer = setTimeout(
+				() => this.end_viewer(stream, 4408, "grant expired"),
+				Math.max(0, deadline - Date.now()),
+			);
 			try {
-				if (!previous || previous.control !== record.control || previous.controlGen !== record.controlGen) {
-					stream.socket.send(JSON.stringify({ t: "control", control: record.control, controlGen: record.controlGen }));
+				if (
+					!previous ||
+					previous.control !== record.control ||
+					previous.controlGen !== record.controlGen ||
+					viewportChanged ||
+					this.viewed_identity(previous).tabGen !== this.viewed_identity(record).tabGen
+				) {
+					stream.socket.send(
+						JSON.stringify({
+							t: "control",
+							...this.viewed_identity(record),
+							control: record.control,
+							controlGen: record.controlGen,
+						}),
+					);
 				}
-				if (viewportChanged) stream.socket.send(JSON.stringify({ t: "viewport", viewport: record.viewport }));
-				if (agentAccessChanged) stream.socket.send(JSON.stringify({ t: "agent-access", on: record.agentAccess }));
+				if (viewportChanged)
+					stream.socket.send(
+						JSON.stringify({ t: "viewport", ...this.viewed_identity(record), viewport: record.viewport }),
+					);
+				if (agentAccessChanged)
+					stream.socket.send(
+						JSON.stringify({ t: "agent-access", ...this.viewed_identity(record), on: record.agentAccess }),
+					);
 			} catch {
 				this.end_viewer(stream, 1011, "socket error");
 			}
 		}
 		// A chooser belongs to one human turn. It is gone when control or the session moves on.
 		const chooser = this.chooser;
-		if (chooser && (chooser.sessionId !== record.sessionId || chooser.controlGen !== record.controlGen ||
-			record.control !== "human" || record.command)) {
+		if (
+			chooser &&
+			(chooser.sessionId !== record.sessionId ||
+				chooser.controlGen !== record.controlGen ||
+				record.control !== "human" ||
+				record.command ||
+				!this.viewer_matches(chooser, record))
+		) {
 			this.close_file_chooser(chooser);
 		}
 		if (viewportChanged && this.viewerStreams.size > 0) {
@@ -4369,19 +6169,21 @@ export class BrowserSession {
 		log_browser({ route: "viewer_end", sessionId: stream.sessionId, code, reason });
 		close_socket(stream.socket, code, reason);
 		// Detaches share a record, so each one must read after the previous save.
-		this.viewerCleanup = this.viewerCleanup.then(async () => {
-			await this.inputTransitionDone;
-			const record = await this.load();
-			if (record?.sessionId !== stream.sessionId) return;
-			if (record.inputHolder === stream.viewerId) {
-				await this.with_input_released(() => this.viewer_detach(stream.viewerId));
-			} else {
-				await this.viewer_detach(stream.viewerId);
-			}
-			if (this.viewerStreams.size === 0) this.stop_viewer_producer();
-		}).catch(() => {
-			if (this.viewerRecord?.sessionId === stream.sessionId) this.fail_viewers();
-		});
+		this.viewerCleanup = this.viewerCleanup
+			.then(async () => {
+				await this.inputTransitionDone;
+				const record = await this.load();
+				if (record?.sessionId !== stream.sessionId) return;
+				if (record.inputHolder === stream.viewerId) {
+					await this.with_input_released(() => this.viewer_detach(stream.viewerId));
+				} else {
+					await this.viewer_detach(stream.viewerId);
+				}
+				if (this.viewerStreams.size === 0) this.stop_viewer_producer();
+			})
+			.catch(() => {
+				if (this.viewerRecord?.sessionId === stream.sessionId) this.fail_viewers();
+			});
 		this.state.waitUntil(this.viewerCleanup);
 	}
 
@@ -4400,14 +6202,20 @@ export class BrowserSession {
 		this.viewerProducerGen += 1;
 		this.viewerStart = null;
 		this.viewerFrame = null;
+		for (const stream of this.viewerStreams.values()) {
+			stream.frameSeqs = [];
+			stream.lastFrameSeq = 0;
+		}
 		this.pointerPosition = null;
 		const producer = this.viewerProducer;
 		this.viewerProducer = null;
 		if (producer) {
-			this.viewerLifecycle = this.viewerLifecycle.then(async () => {
-				await producer.cdp.send("Page.stopScreencast").catch(() => {});
-				await producer.cdp.detach().catch(() => {});
-			}).catch(() => {});
+			this.viewerLifecycle = this.viewerLifecycle
+				.then(async () => {
+					await producer.cdp.send("Page.stopScreencast").catch(() => {});
+					await producer.cdp.detach().catch(() => {});
+				})
+				.catch(() => {});
 			this.state.waitUntil(this.viewerLifecycle);
 		}
 	}
@@ -4432,7 +6240,16 @@ export class BrowserSession {
 		try {
 			stream.frameSeqs.push(frame.seq);
 			stream.lastFrameSeq = frame.seq;
-			stream.socket.send(JSON.stringify({ t: "frame", seq: frame.seq, loadGen: frame.loadGen }));
+			stream.socket.send(
+				JSON.stringify({
+					t: "frame",
+					seq: frame.seq,
+					loadGen: frame.loadGen,
+					tabId: frame.tabId,
+					tabGen: frame.tabGen,
+					viewGen: frame.viewGen,
+				}),
+			);
 			stream.socket.send(frame.bytes);
 		} catch {
 			this.end_viewer(stream, 1011, "socket error");
@@ -4454,9 +6271,15 @@ export class BrowserSession {
 			) {
 				return;
 			}
-			await this.connect_host(record);
+			await this.connect_host(record, {
+				closeOnFailure: true,
+				...(record.mode === "web" ? { tabId: record.viewedTabId } : {}),
+			});
 			const host = this.hostConnection;
 			if (!host || host.sessionId !== record.sessionId) return;
+			// A fresh producer must not change the command tab while that command owns it.
+			if (record.mode === "web" && record.command?.tabId === host.tabId && record.command.connection !== "settled")
+				return;
 			const { browser, page } = host;
 			const current = await this.load();
 			if (
@@ -4473,8 +6296,12 @@ export class BrowserSession {
 			await page.setViewportSize(record.viewport);
 			// Another connection can change metrics without updating Playwright's cache.
 			await host.cdp.send("Emulation.setDeviceMetricsOverride", {
-				width: record.viewport.width, height: record.viewport.height, deviceScaleFactor: 1, mobile: false,
-				screenWidth: record.viewport.width, screenHeight: record.viewport.height,
+				width: record.viewport.width,
+				height: record.viewport.height,
+				deviceScaleFactor: 1,
+				mobile: false,
+				screenWidth: record.viewport.width,
+				screenHeight: record.viewport.height,
 			});
 			if (generation !== this.viewerProducerGen) return;
 			const cdp = await page.context().newCDPSession(page);
@@ -4491,18 +6318,31 @@ export class BrowserSession {
 					return;
 				}
 				// Chromium's sessionId is an ACK token, not a unique frame number.
-				this.state.waitUntil(cdp.send("Page.screencastFrameAck", { sessionId: event.sessionId }).catch(() => {
-					if (generation === this.viewerProducerGen) this.fail_viewers();
-				}));
+				this.state.waitUntil(
+					cdp.send("Page.screencastFrameAck", { sessionId: event.sessionId }).catch(() => {
+						if (generation === this.viewerProducerGen) this.fail_viewers();
+					}),
+				);
 				if (generation !== this.viewerProducerGen) return;
-				if (typeof event.data !== "string" || event.data.length === 0 || event.data.length > Math.ceil(LIMITS.viewerFrameBytes * 4 / 3) + 4) {
+				if (
+					typeof event.data !== "string" ||
+					event.data.length === 0 ||
+					event.data.length > Math.ceil((LIMITS.viewerFrameBytes * 4) / 3) + 4
+				) {
 					this.fail_viewers();
 					return;
 				}
 				try {
 					const bytes = Uint8Array.from(atob(event.data), (char) => char.charCodeAt(0));
 					if (bytes.byteLength > LIMITS.viewerFrameBytes) throw new Error("Viewer frame is too large.");
-					this.viewerFrame = { seq: ++this.viewerFrameSeq, loadGen: record.loadGen, bytes };
+					const current = this.viewerRecord;
+					if (!current || (current.mode === "web" && current.viewedTabId !== host.tabId)) return;
+					this.viewerFrame = {
+						seq: ++this.viewerFrameSeq,
+						loadGen: current.loadGen,
+						...this.viewed_identity(current),
+						bytes,
+					};
 					for (const stream of this.viewerStreams.values()) this.send_viewer_frame(stream);
 				} catch {
 					this.fail_viewers();
@@ -4511,20 +6351,28 @@ export class BrowserSession {
 			cdp.on("Inspector.detached", () => {
 				if (generation === this.viewerProducerGen) this.fail_viewers();
 			});
-			await cdp.send("Page.startScreencast", { format: "jpeg", quality: 70, maxWidth: record.viewport.width, maxHeight: record.viewport.height, everyNthFrame: 1 });
+			await cdp.send("Page.startScreencast", {
+				format: "jpeg",
+				quality: 70,
+				maxWidth: record.viewport.width,
+				maxHeight: record.viewport.height,
+				everyNthFrame: 1,
+			});
 			if (generation !== this.viewerProducerGen) return;
 		});
 		this.viewerLifecycle = start.catch(() => {});
-		this.viewerStart = with_wall_timeout(start, 15_000).catch(async (error: unknown) => {
-			if (generation !== this.viewerProducerGen) return;
-			const record = this.viewerRecord;
-			this.fail_viewers();
-			// A timed-out setup may still change the page. End it before another setup.
-			if (error instanceof WallTimeoutError && record) await this.close_record(record, "viewer_start_timeout");
-			throw error;
-		}).finally(() => {
-			if (generation === this.viewerProducerGen) this.viewerStart = null;
-		});
+		this.viewerStart = with_wall_timeout(start, 15_000)
+			.catch(async (error: unknown) => {
+				if (generation !== this.viewerProducerGen) return;
+				const record = this.viewerRecord;
+				this.fail_viewers();
+				// A timed-out setup may still change the page. End it before another setup.
+				if (error instanceof WallTimeoutError && record) await this.close_record(record, "viewer_start_timeout");
+				throw error;
+			})
+			.finally(() => {
+				if (generation === this.viewerProducerGen) this.viewerStart = null;
+			});
 		return this.viewerStart;
 	}
 
@@ -4559,7 +6407,10 @@ export class BrowserSession {
 		return transition;
 	}
 
-	private queue_viewer_input(stream: ViewerStream, parsed: Extract<ReturnType<typeof parse_viewer_input>, { ok: true }>): void {
+	private queue_viewer_input(
+		stream: ViewerStream,
+		parsed: Extract<ReturnType<typeof parse_viewer_input>, { ok: true }>,
+	): void {
 		const receivedAt = Date.now();
 		const timings = { queueMs: 0, authorizeMs: 0, readyMs: 0, applyMs: 0 };
 		const ack = (ok: boolean, code?: string) => {
@@ -4569,6 +6420,10 @@ export class BrowserSession {
 				this.end_viewer(stream, 1011, "socket error");
 			}
 		};
+		if (!this.viewerRecord || !this.viewer_matches(parsed, this.viewerRecord) || stream.lastFrameSeq === 0) {
+			ack(false, "stale_view");
+			return;
+		}
 		if (this.inputDepth >= 50 || this.inputTransition) {
 			ack(false, "busy");
 			return;
@@ -4583,10 +6438,17 @@ export class BrowserSession {
 					ack(false, "control");
 					return;
 				}
-				const checked: unknown = await (await this.viewer_input(stream.viewerId, stream.sessionId, parsed.controlGen, parsed.loadGen)).json();
+				const checked: unknown = await (
+					await this.viewer_input(stream.viewerId, stream.sessionId, parsed.controlGen, parsed.loadGen)
+				).json();
 				timings.authorizeMs = Date.now() - startedAt;
 				if (!is_record(checked) || checked.ok !== true) {
-					ack(false, is_record(checked) && is_record(checked.error) && typeof checked.error.code === "string" ? checked.error.code : "denied");
+					ack(
+						false,
+						is_record(checked) && is_record(checked.error) && typeof checked.error.code === "string"
+							? checked.error.code
+							: "denied",
+					);
 					return;
 				}
 				const readyAt = Date.now();
@@ -4601,7 +6463,9 @@ export class BrowserSession {
 					!this.viewerStreams.has(stream.viewerId) ||
 					current.sessionId !== stream.sessionId ||
 					current.control !== "human" ||
-					current.controlGen !== parsed.controlGen || current.loadGen !== parsed.loadGen ||
+					current.controlGen !== parsed.controlGen ||
+					current.loadGen !== parsed.loadGen ||
+					!this.viewer_matches(parsed, current) ||
 					current.inputHolder !== stream.viewerId ||
 					current.command ||
 					(current.viewers[stream.viewerId]?.grantedUntil ?? 0) <= Date.now() ||
@@ -4619,16 +6483,20 @@ export class BrowserSession {
 				const page = this.viewerProducer.page;
 				// A click or Enter lets the page start one human download in the next 10 s. Record it
 				// before the input runs: the page may start the download while the input is applied.
-				if (input.kind === "mouse.up" || input.kind === "mouse.click" ||
-					((input.kind === "key.down" || input.kind === "key.press") && input.key === "Enter")) {
-					this.humanGesture = { sessionId: stream.sessionId, at: Date.now() };
+				if (
+					input.kind === "mouse.up" ||
+					input.kind === "mouse.click" ||
+					((input.kind === "key.down" || input.kind === "key.press") && input.key === "Enter")
+				) {
+					this.humanGesture = { sessionId: stream.sessionId, tabId: parsed.tabId, at: Date.now() };
 				}
 				const applyAt = Date.now();
 				await with_wall_timeout(apply_viewer_input(page, input), 5000);
 				timings.applyMs = Date.now() - applyAt;
 				// A pending handoff still needs releases, but a replaced page must not inherit them.
 				if (this.viewerProducer?.page === page) {
-					if (input.kind === "mouse.move" || input.kind === "mouse.click" || input.kind === "wheel") this.pointerPosition = { x: input.x, y: input.y };
+					if (input.kind === "mouse.move" || input.kind === "mouse.click" || input.kind === "wheel")
+						this.pointerPosition = { x: input.x, y: input.y };
 					if (input.kind === "mouse.down") this.pressedButtons.add(input.button);
 					if (input.kind === "mouse.up") this.pressedButtons.delete(input.button);
 					if (input.kind === "key.down") this.pressedKeys.add(input.key);
@@ -4643,13 +6511,17 @@ export class BrowserSession {
 				this.inputDepth -= 1;
 			}
 		});
+		this.state.waitUntil(this.inputQueue);
 	}
 
 	/**
 	 * Web mode: run one address bar action (go, back, forward, reload, stop) for the viewer that
 	 * holds control. It uses the same ordered queue and checks as mouse and key input.
 	 */
-	private queue_viewer_nav(stream: ViewerStream, parsed: Extract<ReturnType<typeof parse_viewer_nav>, { ok: true }>): void {
+	private queue_viewer_nav(
+		stream: ViewerStream,
+		parsed: Extract<ReturnType<typeof parse_viewer_nav>, { ok: true }>,
+	): void {
 		const ack = (ok: boolean, code?: string) => {
 			try {
 				stream.socket.send(JSON.stringify({ t: "nav-ack", seq: parsed.seq, ok, ...(code ? { code } : {}) }));
@@ -4659,6 +6531,10 @@ export class BrowserSession {
 		};
 		if (this.viewerRecord?.mode !== "web") {
 			ack(false, "bad_request");
+			return;
+		}
+		if (!this.viewer_matches(parsed, this.viewerRecord) || stream.lastFrameSeq === 0) {
+			ack(false, "stale_view");
 			return;
 		}
 		// Check the address first. A refused address needs no queue slot and no storage write.
@@ -4684,26 +6560,42 @@ export class BrowserSession {
 					return;
 				}
 				// Check human control and set lastActiveAt, like input does.
-				const checked: unknown = await (await this.viewer_input(stream.viewerId, stream.sessionId, parsed.controlGen, null)).json();
+				const checked: unknown = await (
+					await this.viewer_input(stream.viewerId, stream.sessionId, parsed.controlGen, null)
+				).json();
 				if (!is_record(checked) || checked.ok !== true) {
-					const code = is_record(checked) && is_record(checked.error) && typeof checked.error.code === "string" ? checked.error.code : "denied";
+					const code =
+						is_record(checked) && is_record(checked.error) && typeof checked.error.code === "string"
+							? checked.error.code
+							: "denied";
 					ack(false, code === "control" ? "not_controller" : code);
 					return;
 				}
 				await this.start_viewer_producer();
-				const host = this.hostConnection;
 				const current = this.viewerRecord;
-				if (epoch !== this.inputEpoch || this.inputTransition || !host || host.sessionId !== stream.sessionId ||
-					current?.sessionId !== stream.sessionId || current.control !== "human" || current.inputHolder !== stream.viewerId) {
+				const host = current?.mode === "web" ? this.hostConnections.get(current.viewedTabId) : null;
+				if (
+					epoch !== this.inputEpoch ||
+					this.inputTransition ||
+					!host ||
+					host.sessionId !== stream.sessionId ||
+					current?.sessionId !== stream.sessionId ||
+					current.control !== "human" ||
+					current.inputHolder !== stream.viewerId ||
+					!this.viewer_matches(parsed, current) ||
+					current.controlGen !== parsed.controlGen
+				) {
 					ack(false, "not_controller");
 					return;
 				}
 				// Typing an address and pressing Enter is a human gesture too, so a download link works.
-				if (parsed.nav.action === "go") this.humanGesture = { sessionId: stream.sessionId, at: Date.now() };
+				if (parsed.nav.action === "go")
+					this.humanGesture = { sessionId: stream.sessionId, tabId: parsed.tabId, at: Date.now() };
 				// A slow site is still a good nav. A CDP error fails this nav but keeps the session.
-				const code = await with_wall_timeout(apply_viewer_nav(host.cdp, parsed.nav.action, url), LIMITS.navWallMs).catch(
-					(error: unknown) => (error instanceof WallTimeoutError ? null : "apply"),
-				);
+				const code = await with_wall_timeout(
+					apply_viewer_nav(host.cdp, parsed.nav.action, url),
+					LIMITS.navWallMs,
+				).catch((error: unknown) => (error instanceof WallTimeoutError ? null : "apply"));
 				if (code === null) ack(true);
 				else ack(false, code);
 			} catch {
@@ -4714,17 +6606,35 @@ export class BrowserSession {
 		});
 	}
 
-	private async viewer_lifetime(socket: WebSocket, scope: { ownerId: string; organizationId: string; workspaceId: string }): Promise<void> {
+	private async viewer_lifetime(
+		socket: WebSocket,
+		scope: { ownerId: string; organizationId: string; workspaceId: string },
+	): Promise<void> {
 		const first = await new Promise<unknown>((resolve) => {
 			const timer = setTimeout(() => resolve(null), 5000);
-			socket.addEventListener("message", (event) => { clearTimeout(timer); resolve(event.data); }, { once: true });
-			socket.addEventListener("close", () => { clearTimeout(timer); resolve(null); }, { once: true });
+			socket.addEventListener(
+				"message",
+				(event) => {
+					clearTimeout(timer);
+					resolve(event.data);
+				},
+				{ once: true },
+			);
+			socket.addEventListener(
+				"close",
+				() => {
+					clearTimeout(timer);
+					resolve(null);
+				},
+				{ once: true },
+			);
 		});
 		const hello = parse_viewer_hello(first);
 		const record = await this.load();
 		if (
 			!hello.ok ||
 			!record ||
+			hello.hello.mode !== record.mode ||
 			hello.hello.ownerId !== scope.ownerId ||
 			hello.hello.organizationId !== scope.organizationId ||
 			hello.hello.workspaceId !== scope.workspaceId ||
@@ -4747,7 +6657,14 @@ export class BrowserSession {
 			close_socket(socket, 4404, "session gone");
 			return;
 		}
-		const stream: ViewerStream = { socket, viewerId, sessionId: record.sessionId, frameSeqs: [], lastFrameSeq: 0, deadlineTimer: null };
+		const stream: ViewerStream = {
+			socket,
+			viewerId,
+			sessionId: record.sessionId,
+			frameSeqs: [],
+			lastFrameSeq: 0,
+			deadlineTimer: null,
+		};
 		this.viewerStreams.set(viewerId, stream);
 		socket.addEventListener("close", () => this.end_viewer(stream, 1000, "client closed"));
 		socket.addEventListener("error", () => this.end_viewer(stream, 1011, "socket error"));
@@ -4770,13 +6687,25 @@ export class BrowserSession {
 			if (is_record(body) && body.t === "ping") {
 				const now = Date.now();
 				const current = this.viewerRecord;
-				if (!is_positive_int(body.seq) || !Number.isSafeInteger(body.seq) || now - lastPingAt < 1000 ||
-					!current || current.sessionId !== stream.sessionId || !this.viewerStreams.has(viewerId) ||
-					(current.viewers[viewerId]?.grantedUntil ?? 0) <= now || session_is_expired(current, now) ||
-					current.control === "closing" || current.control === "closed") return;
+				if (
+					!is_positive_int(body.seq) ||
+					!Number.isSafeInteger(body.seq) ||
+					now - lastPingAt < 1000 ||
+					!current ||
+					current.sessionId !== stream.sessionId ||
+					!this.viewerStreams.has(viewerId) ||
+					(current.viewers[viewerId]?.grantedUntil ?? 0) <= now ||
+					session_is_expired(current, now) ||
+					current.control === "closing" ||
+					current.control === "closed"
+				)
+					return;
 				lastPingAt = now;
-				try { socket.send(JSON.stringify({ t: "pong", seq: body.seq })); }
-				catch { this.end_viewer(stream, 1011, "socket error"); }
+				try {
+					socket.send(JSON.stringify({ t: "pong", seq: body.seq }));
+				} catch {
+					this.end_viewer(stream, 1011, "socket error");
+				}
 				return;
 			}
 			if (is_record(body) && body.t === "nav") {
@@ -4787,7 +6716,11 @@ export class BrowserSession {
 			if (is_record(body) && body.t === "file-chooser-cancel") {
 				const current = this.viewerRecord;
 				// Only the viewer that holds human control may answer the page's file dialog.
-				if (typeof body.chooserId === "string" && current?.sessionId === stream.sessionId && current.inputHolder === viewerId) {
+				if (
+					typeof body.chooserId === "string" &&
+					current?.sessionId === stream.sessionId &&
+					current.inputHolder === viewerId
+				) {
 					this.state.waitUntil(this.cancel_file_chooser(body.chooserId).catch(() => {}));
 				}
 				return;
@@ -4796,20 +6729,66 @@ export class BrowserSession {
 			if (parsed.ok) this.queue_viewer_input(stream, parsed);
 		});
 		try {
-			socket.send(JSON.stringify({ t: "hello", viewerId, viewport: current.viewport, control: current.control, controlGen: current.controlGen }));
-			if (current.mode === "web") socket.send(JSON.stringify({ t: "agent-access", on: current.agentAccess }));
+			socket.send(
+				JSON.stringify({
+					t: "hello",
+					mode: current.mode,
+					viewerId,
+					viewport: current.viewport,
+					control: current.control,
+					controlGen: current.controlGen,
+					...this.viewed_identity(current),
+					viewedTabId: current.mode === "web" ? current.viewedTabId : current.sessionId,
+					policyRevision: current.mode === "web" ? current.policyRevision : 0,
+					selectionRevision: current.mode === "web" ? current.selectionRevision : 0,
+					tabs:
+						current.mode === "web"
+							? this.tab_summaries(current)
+							: [
+									{
+										tabId: current.sessionId,
+										tabGen: current.navGen,
+										navGen: current.navGen,
+										title: "Preview",
+										url: "",
+									},
+								],
+				}),
+			);
+			if (current.mode === "web")
+				socket.send(JSON.stringify({ t: "agent-access", ...this.viewed_identity(current), on: current.agentAccess }));
 			this.sync_viewers(current);
 			// A viewer that reconnects missed what was pushed while it was away. Send the waiting
 			// download and the open chooser again. The Convex save is idempotent per `downloadId`.
 			const held = this.downloads?.held ? this.held_download(current.sessionId, this.downloads.held.downloadId) : null;
-			if (held) socket.send(JSON.stringify({ t: "download", downloadId: held.downloadId, name: held.name, size: held.size, contentType: held.contentType }));
+			if (held)
+				socket.send(
+					JSON.stringify({
+						t: "download",
+						...this.viewed_identity(current),
+						downloadId: held.downloadId,
+						name: held.name,
+						size: held.size,
+						contentType: held.contentType,
+					}),
+				);
 			const chooser = this.chooser;
 			if (chooser?.sessionId === current.sessionId) {
-				socket.send(JSON.stringify({ t: "file-chooser", chooserId: chooser.chooserId, multiple: chooser.multiple, accept: chooser.accept, origin: chooser.origin }));
+				socket.send(
+					JSON.stringify({
+						t: "file-chooser",
+						...this.viewed_identity(current),
+						chooserId: chooser.chooserId,
+						multiple: chooser.multiple,
+						accept: chooser.accept,
+						origin: chooser.origin,
+					}),
+				);
 			}
 			await this.start_viewer_producer();
 			this.send_viewer_frame(stream);
-			if (current.mode === "web" && this.hostConnection?.sessionId === current.sessionId) this.push_location(this.hostConnection);
+			if (current.mode === "web" && this.hostConnection?.sessionId === current.sessionId)
+				this.push_location(this.hostConnection);
 		} catch {
 			this.end_viewer(stream, 1011, "viewer start failed");
 		}
@@ -4849,10 +6828,7 @@ export class BrowserSession {
 			await this.schedule_alarm(record);
 			return;
 		}
-		if (
-			record.control === "starting" &&
-			now - record.createdAt >= LIMITS.startingStaleMs
-		) {
+		if (record.control === "starting" && now - record.createdAt >= LIMITS.startingStaleMs) {
 			await this.close_record(record, "stale_start");
 			return;
 		}
@@ -4861,7 +6837,10 @@ export class BrowserSession {
 			return;
 		}
 		// A worker crash can leave browser work running after its caller has gone.
-		if (record.command && now - record.command.startedAt >= LIMITS.commandTimeoutMs + 10_000) {
+		if (
+			record.command &&
+			now >= (record.command.deadline ?? record.command.startedAt + LIMITS.commandTimeoutMs + 10_000)
+		) {
 			await this.close_record(record, "command_timeout");
 			return;
 		}
@@ -4871,18 +6850,32 @@ export class BrowserSession {
 	async fetch(request: Request): Promise<Response> {
 		const url = new URL(request.url);
 		if (request.method === "GET" && url.pathname === "/run/stream") {
-			if ((request.headers.get("Upgrade") ?? "").toLowerCase() !== "websocket") return new Response("Upgrade required", { status: 426 });
+			if ((request.headers.get("Upgrade") ?? "").toLowerCase() !== "websocket")
+				return new Response("Upgrade required", { status: 426 });
 			return await this.agent_stream(url);
 		}
 		if (request.method === "GET" && url.pathname === "/viewer/stream") {
-			if ((request.headers.get("Upgrade") ?? "").toLowerCase() !== "websocket") return new Response("Upgrade required", { status: 426 });
-			const scope = parse_owner_tuple({ ownerId: url.searchParams.get("ownerId"), organizationId: url.searchParams.get("organizationId"), workspaceId: url.searchParams.get("workspaceId") });
+			if ((request.headers.get("Upgrade") ?? "").toLowerCase() !== "websocket")
+				return new Response("Upgrade required", { status: 426 });
+			const scope = parse_owner_tuple({
+				ownerId: url.searchParams.get("ownerId"),
+				organizationId: url.searchParams.get("organizationId"),
+				workspaceId: url.searchParams.get("workspaceId"),
+				mode: url.searchParams.get("mode"),
+			});
 			if (!scope.ok) return scope.response;
-			if (this.pendingViewers >= LIMITS.viewersPerSession) return operation_refused("busy", "Too many pending viewers.");
+			if (this.pendingViewers >= LIMITS.viewersPerSession)
+				return operation_refused("busy", "Too many pending viewers.");
 			const [client, server] = Object.values(new WebSocketPair());
 			server.accept();
 			this.pendingViewers += 1;
-			this.state.waitUntil(this.viewer_lifetime(server, scope).catch(() => close_socket(server, 1011, "viewer failed")).finally(() => { this.pendingViewers -= 1; }));
+			this.state.waitUntil(
+				this.viewer_lifetime(server, scope)
+					.catch(() => close_socket(server, 1011, "viewer failed"))
+					.finally(() => {
+						this.pendingViewers -= 1;
+					}),
+			);
 			return new Response(null, { status: 101, webSocket: client });
 		}
 		// The Worker already checked the query, the size, and the CORS origin.
@@ -4896,9 +6889,37 @@ export class BrowserSession {
 			return json_response({ ok: false, error: { code: "invalid_json" } }, 400);
 		}
 		if (!is_record(body)) return json_response({ ok: false, error: { code: "invalid_request" } }, 400);
+		if (["/run/claim", "/run/complete", "/command-status", "/command-fence"].includes(url.pathname))
+			return this.command_receipt(url.pathname, body);
 		if (url.pathname === "/run/settle") {
-			if (!is_non_empty_string(body.sessionId) || !is_non_empty_string(body.commandId)) return invalid_request("Browser command is required.");
+			if (!is_non_empty_string(body.sessionId) || !is_non_empty_string(body.commandId))
+				return invalid_request("Browser command is required.");
 			return await this.settle_run(body.sessionId, body.commandId);
+		}
+		if (["/operation/claim", "/operation/finish", "/operation-status"].includes(url.pathname))
+			return this.management_receipt(url.pathname, body);
+		if (["/tabs", "/tab-new", "/tab-close", "/tab-select"].includes(url.pathname))
+			return this.tab_operation(url.pathname, body);
+		if (url.pathname === "/reuse") {
+			const record = await this.load();
+			if (
+				!record ||
+				record.mode !== "web" ||
+				record.control === "closed" ||
+				record.control === "closing" ||
+				session_is_expired(record, Date.now())
+			)
+				return operation_refused("not_found", "No web browser is open.");
+			if (!is_profile_id(body.profileId) || !is_profile_key(body.profileKey) || body.profileId !== record.profileId)
+				return invalid_request("The browser profile changed.");
+			this.profile = await profile_crypto_key(this.env.BROWSER_PROFILE_KEY, body.profileKey).then((key) => ({
+				sessionId: record.sessionId,
+				profileId: record.profileId,
+				key,
+				dirty: this.profile?.dirty ?? false,
+				savedAt: this.profile?.savedAt ?? Date.now(),
+			}));
+			return json_response({ ok: true, session: this.public_meta(record) }, 200);
 		}
 
 		if (url.pathname === "/open") {
@@ -4913,6 +6934,8 @@ export class BrowserSession {
 					!is_positive_int(body.navGen) ||
 					(body.startUrl !== null && typeof body.startUrl !== "string") ||
 					typeof body.agentAccess !== "boolean" ||
+					!is_revision(body.policyRevision) ||
+					!is_revision(body.selectionRevision) ||
 					typeof body.profileId !== "string" ||
 					typeof body.profileKey !== "string" ||
 					!Array.isArray(body.agentBlockedHosts) ||
@@ -4923,7 +6946,8 @@ export class BrowserSession {
 				) {
 					return json_response({ ok: false, error: { code: "invalid_request" } }, 400);
 				}
-				return await this.open({
+				return await this.open_reserved({
+					...(typeof body.operationId === "string" ? { operationId: body.operationId } : {}),
 					mode: "web",
 					grantId: body.grantId,
 					attemptId: body.attemptId,
@@ -4936,6 +6960,8 @@ export class BrowserSession {
 					profileId: body.profileId,
 					profileKey: body.profileKey,
 					agentBlockedHosts: body.agentBlockedHosts,
+					policyRevision: body.policyRevision,
+					selectionRevision: body.selectionRevision,
 					viewport: { width: viewport.width, height: viewport.height },
 				});
 			}
@@ -4958,7 +6984,8 @@ export class BrowserSession {
 			) {
 				return json_response({ ok: false, error: { code: "invalid_request" } }, 400);
 			}
-			return await this.open({
+			return await this.open_reserved({
+				...(typeof body.operationId === "string" ? { operationId: body.operationId } : {}),
 				mode: "file",
 				grantId: body.grantId,
 				attemptId: body.attemptId,
@@ -4985,7 +7012,25 @@ export class BrowserSession {
 			) {
 				return json_response({ ok: false, error: { code: "invalid_request" } }, 400);
 			}
-			return await this.begin_run({ sessionId: body.sessionId, navGen: body.navGen, loadGen: body.loadGen, controlGen: body.controlGen, commandId: body.commandId });
+			return await this.begin_run({
+				sessionId: body.sessionId,
+				navGen: body.navGen,
+				loadGen: body.loadGen,
+				controlGen: body.controlGen,
+				commandId: body.commandId,
+				...(is_positive_int(body.deadline) ? { deadline: body.deadline } : {}),
+				...(typeof body.tabId === "string" &&
+				is_positive_int(body.tabGen) &&
+				is_revision(body.policyRevision) &&
+				is_revision(body.selectionRevision)
+					? {
+							tabId: body.tabId,
+							tabGen: body.tabGen,
+							policyRevision: body.policyRevision,
+							selectionRevision: body.selectionRevision,
+						}
+					: {}),
+			});
 		}
 		if (url.pathname === "/run/finish") {
 			if (
@@ -5054,7 +7099,8 @@ export class BrowserSession {
 		if (url.pathname === "/close") {
 			if (
 				(body.sessionId !== undefined && typeof body.sessionId !== "string") ||
-				(body.expectedAgentLease !== undefined && (!is_agent_lease(body.expectedAgentLease) || !is_non_empty_string(body.sessionId))) ||
+				(body.expectedAgentLease !== undefined &&
+					(!is_agent_lease(body.expectedAgentLease) || !is_non_empty_string(body.sessionId))) ||
 				(body.saveProfile !== undefined && typeof body.saveProfile !== "boolean") ||
 				(body.by !== undefined && typeof body.by !== "string")
 			) {
@@ -5078,12 +7124,19 @@ export class BrowserSession {
 			) {
 				return json_response({ ok: false, error: { code: "invalid_request" } }, 400);
 			}
-			const input = { ownerId: body.ownerId, organizationId: body.organizationId, workspaceId: body.workspaceId, profileId: body.profileId, profileKey: body.profileKey };
+			const input = {
+				ownerId: body.ownerId,
+				organizationId: body.organizationId,
+				workspaceId: body.workspaceId,
+				profileId: body.profileId,
+				profileKey: body.profileKey,
+			};
 			if (url.pathname === "/profile/summary") return await this.profile_summary(input);
 			return await this.profile_clear({ ...input, domain: String(body.domain) });
 		}
 		if (url.pathname === "/profile/delete") {
-			if (typeof body.profileId !== "string") return json_response({ ok: false, error: { code: "invalid_request" } }, 400);
+			if (typeof body.profileId !== "string")
+				return json_response({ ok: false, error: { code: "invalid_request" } }, 400);
 			return await this.profile_delete(body.profileId);
 		}
 		if (url.pathname === "/download/info" || url.pathname === "/download/push") {
@@ -5091,8 +7144,10 @@ export class BrowserSession {
 			if (
 				typeof body.sessionId !== "string" ||
 				typeof body.downloadId !== "string" ||
-				(url.pathname === "/download/push" && (typeof body.url !== "string" || !is_record(body.headers) ||
-					!headers.every(([, value]) => typeof value === "string")))
+				(url.pathname === "/download/push" &&
+					(typeof body.url !== "string" ||
+						!is_record(body.headers) ||
+						!headers.every(([, value]) => typeof value === "string")))
 			) {
 				return json_response({ ok: false, error: { code: "invalid_request" } }, 400);
 			}
@@ -5107,7 +7162,12 @@ export class BrowserSession {
 		if (url.pathname === "/upload/fill" || url.pathname === "/upload/grant") {
 			const files: Array<{ name: string; contentType: string; url: string }> = [];
 			for (const file of Array.isArray(body.files) ? (body.files as unknown[]) : []) {
-				if (is_record(file) && typeof file.name === "string" && typeof file.contentType === "string" && typeof file.url === "string") {
+				if (
+					is_record(file) &&
+					typeof file.name === "string" &&
+					typeof file.contentType === "string" &&
+					typeof file.url === "string"
+				) {
 					files.push({ name: file.name, contentType: file.contentType, url: file.url });
 				}
 			}
@@ -5115,11 +7175,21 @@ export class BrowserSession {
 				typeof body.sessionId !== "string" ||
 				typeof body.chooserId !== "string" ||
 				!is_positive_int(body.controlGen) ||
+				!is_item_id(body.tabId) ||
+				!is_positive_int(body.tabGen) ||
+				!is_positive_int(body.viewGen) ||
 				(url.pathname === "/upload/fill" && (!Array.isArray(body.files) || files.length !== body.files.length))
 			) {
 				return json_response({ ok: false, error: { code: "invalid_request" } }, 400);
 			}
-			const input = { sessionId: body.sessionId, chooserId: body.chooserId, controlGen: body.controlGen };
+			const input = {
+				sessionId: body.sessionId,
+				chooserId: body.chooserId,
+				controlGen: body.controlGen,
+				tabId: body.tabId,
+				tabGen: body.tabGen,
+				viewGen: body.viewGen,
+			};
 			if (url.pathname === "/upload/grant") return await this.upload_grant(input);
 			return await this.upload_fill({ ...input, files });
 		}
@@ -5146,11 +7216,7 @@ export class BrowserSession {
 			return await this.viewer_renew(body.viewerId, body.sessionId);
 		}
 		if (url.pathname === "/control/take-human") {
-			if (
-				typeof body.sessionId !== "string" ||
-				!is_positive_int(body.navGen) ||
-				typeof body.viewerId !== "string"
-			) {
+			if (typeof body.sessionId !== "string" || !is_positive_int(body.navGen) || typeof body.viewerId !== "string") {
 				return json_response({ ok: false, error: { code: "invalid_request" } }, 400);
 			}
 			return await this.control_take_human(body.sessionId, body.navGen, body.viewerId);
@@ -5159,13 +7225,28 @@ export class BrowserSession {
 			if (typeof body.sessionId !== "string" || !is_positive_int(body.navGen)) {
 				return json_response({ ok: false, error: { code: "invalid_request" } }, 400);
 			}
-			return await this.control_to_agent(body.sessionId, body.navGen);
+			if (!is_positive_int(body.controlGen)) return invalid_request("The control generation is required.");
+			return await this.control_to_agent(body.sessionId, body.navGen, body.controlGen);
 		}
 		if (url.pathname === "/agent-access") {
 			if (typeof body.sessionId !== "string" || typeof body.on !== "boolean") {
 				return json_response({ ok: false, error: { code: "invalid_request" } }, 400);
 			}
-			return await this.set_agent_access(body.sessionId, body.on);
+			if (
+				!is_revision(body.policyRevision) ||
+				!is_revision(body.selectionRevision) ||
+				!Array.isArray(body.agentBlockedHosts) ||
+				body.agentBlockedHosts.length > LIMITS.agentBlockedHosts ||
+				!body.agentBlockedHosts.every((host) => typeof host === "string" && host.length <= LIMITS.hostChars)
+			)
+				return invalid_request("The browser policy is required.");
+			return await this.set_agent_access(
+				body.sessionId,
+				body.on,
+				body.policyRevision,
+				body.selectionRevision,
+				body.agentBlockedHosts,
+			);
 		}
 		return json_response({ ok: false, error: { code: "not_found" } }, 404);
 	}
@@ -5177,17 +7258,17 @@ export class BrowserSession {
 // stays here because only the host request context exposes the connection-gate
 // binding factory.
 
-function session_object_name(ownerId: string, organizationId: string, workspaceId: string): string {
-	return `browser:${ownerId}:${organizationId}:${workspaceId}`;
+function session_object_name(ownerId: string, organizationId: string, workspaceId: string, mode: SessionMode): string {
+	return `browser:${ownerId}:${organizationId}:${workspaceId}${mode === "file" ? ":file" : ""}`;
 }
 
 function workspace_key(organizationId: string, workspaceId: string): string {
 	return `${organizationId}:${workspaceId}`;
 }
 
-function session_stub(env: Env, ownerId: string, organizationId: string, workspaceId: string) {
+function session_stub(env: Env, ownerId: string, organizationId: string, workspaceId: string, mode: SessionMode) {
 	return env.BROWSER_SESSIONS.get(
-		env.BROWSER_SESSIONS.idFromName(session_object_name(ownerId, organizationId, workspaceId)),
+		env.BROWSER_SESSIONS.idFromName(session_object_name(ownerId, organizationId, workspaceId, mode)),
 	);
 }
 
@@ -5209,7 +7290,7 @@ async function object_json(stub: DurableObjectStubStub, path: string, body: unkn
 async function parse_json_body(
 	request: Request,
 	allowed: Set<string>,
-): Promise<{ ok: true; body: Record<string, unknown> } | { ok: false; response: Response }> {
+): Promise<{ ok: true; body: Record<string, unknown> & { mode: SessionMode } } | { ok: false; response: Response }> {
 	const raw = await read_bounded_text(request);
 	if (!raw.ok) {
 		return {
@@ -5240,11 +7321,13 @@ async function parse_json_body(
 		};
 	}
 	for (const key of Object.keys(body)) {
-		if (!allowed.has(key)) {
+		if (!allowed.has(key) && key !== "mode") {
 			return { ok: false, response: invalid_request(`Unknown request field \`${key}\`.`) };
 		}
 	}
-	return { ok: true, body };
+	if (body.mode !== "file" && body.mode !== "web")
+		return { ok: false, response: invalid_request("`mode` must be file or web.") };
+	return { ok: true, body: { ...body, mode: body.mode } };
 }
 
 async function require_host_access(
@@ -5261,19 +7344,17 @@ async function require_host_access(
 	if (env.BROWSER_RUNNER_DISABLED === "true") {
 		return {
 			ok: false,
-			response: json_response(
-				{ ok: false, error: { code: "disabled", message: "Browser runner is disabled." } },
-				503,
-			),
+			response: json_response({ ok: false, error: { code: "disabled", message: "Browser runner is disabled." } }, 503),
 		};
 	}
 	return { ok: true };
 }
 
-function parse_owner_tuple(body: Record<string, unknown>): (
-	| { ok: true; ownerId: string; organizationId: string; workspaceId: string }
-	| { ok: false; response: Response }
-) {
+function parse_owner_tuple(
+	body: Record<string, unknown>,
+):
+	| { ok: true; ownerId: string; organizationId: string; workspaceId: string; mode: SessionMode }
+	| { ok: false; response: Response } {
 	if (
 		!is_non_empty_string(body.ownerId) ||
 		!is_non_empty_string(body.organizationId) ||
@@ -5294,13 +7375,20 @@ function parse_owner_tuple(body: Record<string, unknown>): (
 	) {
 		return { ok: false, response: invalid_request("Owner scope fields are invalid.") };
 	}
-	return { ok: true, ownerId: body.ownerId, organizationId: body.organizationId, workspaceId: body.workspaceId };
+	if (body.mode !== "file" && body.mode !== "web")
+		return { ok: false, response: invalid_request("`mode` must be file or web.") };
+	return {
+		ok: true,
+		ownerId: body.ownerId,
+		organizationId: body.organizationId,
+		workspaceId: body.workspaceId,
+		mode: body.mode,
+	};
 }
 
-function parse_viewport(body: Record<string, unknown>): (
-	| { ok: true; viewport: { width: number; height: number } }
-	| { ok: false; response: Response }
-) {
+function parse_viewport(
+	body: Record<string, unknown>,
+): { ok: true; viewport: { width: number; height: number } } | { ok: false; response: Response } {
 	if (body.viewport === undefined) return { ok: true, viewport: { width: 1280, height: 900 } };
 	if (!is_record(body.viewport) || !is_positive_int(body.viewport.width) || !is_positive_int(body.viewport.height)) {
 		return { ok: false, response: invalid_request("`viewport` must be `{ width, height }` positive ints.") };
@@ -5316,12 +7404,12 @@ function parse_viewport(body: Record<string, unknown>): (
 	return { ok: true, viewport: { width: body.viewport.width, height: body.viewport.height } };
 }
 
-function parse_snapshot(
-	body: Record<string, unknown>,
-): { ok: true; sourceKind: string; sourceVersion: string; sourceHash: string; html: string } | {
-	ok: false;
-	response: Response;
-} {
+function parse_snapshot(body: Record<string, unknown>):
+	| { ok: true; sourceKind: string; sourceVersion: string; sourceHash: string; html: string }
+	| {
+			ok: false;
+			response: Response;
+	  } {
 	if (typeof body.sourceKind !== "string" || !SOURCE_KINDS.has(body.sourceKind)) {
 		return { ok: false, response: invalid_request("`sourceKind` must be saved, proposed, or draft.") };
 	}
@@ -5343,7 +7431,13 @@ function parse_snapshot(
 			),
 		};
 	}
-	return { ok: true, sourceKind: body.sourceKind, sourceVersion: body.sourceVersion, sourceHash: body.sourceHash, html: body.html };
+	return {
+		ok: true,
+		sourceKind: body.sourceKind,
+		sourceVersion: body.sourceVersion,
+		sourceHash: body.sourceHash,
+		html: body.html,
+	};
 }
 
 async function handle_browser_open(request: Request, env: Env): Promise<Response> {
@@ -5367,14 +7461,18 @@ async function handle_browser_open(request: Request, env: Env): Promise<Response
 	let modeFields: Record<string, unknown>;
 	if (body.mode === "web") {
 		// Web sessions never change document, so navGen stays 1.
-		if (body.navGen !== 1) return invalid_request("`navGen` must be 1 in web mode.");
-		if (body.startUrl !== null && typeof body.startUrl !== "string") return invalid_request("`startUrl` must be a string or null.");
+		if (!is_positive_int(body.navGen)) return invalid_request("`navGen` must be positive.");
+		if (body.startUrl !== null && typeof body.startUrl !== "string")
+			return invalid_request("`startUrl` must be a string or null.");
 		if (typeof body.agentAccess !== "boolean") return invalid_request("`agentAccess` must be a boolean.");
+		if (!is_revision(body.policyRevision) || !is_revision(body.selectionRevision))
+			return invalid_request("The browser policy revisions are required.");
 		// Convex owns the profile doc. Its id names the saved cookies, and its key unlocks them.
 		if (!is_profile_id(body.profileId)) return invalid_request("`profileId` is invalid.");
 		if (!is_profile_key(body.profileKey)) return invalid_request("`profileKey` must be 32 bytes in base64.");
 		if (
-			!Array.isArray(body.agentBlockedHosts) || body.agentBlockedHosts.length > LIMITS.agentBlockedHosts ||
+			!Array.isArray(body.agentBlockedHosts) ||
+			body.agentBlockedHosts.length > LIMITS.agentBlockedHosts ||
 			!body.agentBlockedHosts.every((host) => is_non_empty_string(host) && host.length <= LIMITS.hostChars)
 		) {
 			return invalid_request("`agentBlockedHosts` must be a short list of hosts.");
@@ -5386,6 +7484,8 @@ async function handle_browser_open(request: Request, env: Env): Promise<Response
 			profileId: body.profileId,
 			profileKey: body.profileKey,
 			agentBlockedHosts: body.agentBlockedHosts,
+			policyRevision: body.policyRevision,
+			selectionRevision: body.selectionRevision,
 		};
 	} else {
 		const snapshot = parse_snapshot(body);
@@ -5407,64 +7507,143 @@ async function handle_browser_open(request: Request, env: Env): Promise<Response
 		typeof body.attemptId === "string" && body.attemptId.length > 0 && body.attemptId.length <= 128
 			? body.attemptId
 			: crypto.randomUUID();
-
-	// Charge admission before acquisition so simultaneous calls cannot bypass quotas.
-	const claim = await object_json(registry_stub(env), "/claim", {
-		workspaceKey: workspace_key(owners.organizationId, owners.workspaceId),
-		ownerId: owners.ownerId,
-		organizationId: owners.organizationId,
-	});
-	if (!is_record(claim) || claim.ok !== true || typeof claim.grantId !== "string") {
-		const code = is_record(claim) && is_record(claim.error) && typeof claim.error.code === "string"
-			? claim.error.code
-			: "registry_error";
-		return operation_refused(code, "The browser service is busy.");
-	}
-
-	const opened = await object_json(
-		session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId),
-		"/open",
-		{
-			...modeFields,
-			grantId: claim.grantId,
-			attemptId,
+	return managed_operation(env, owners, body, "/open", async () => {
+		// Charge admission before acquisition so simultaneous calls cannot bypass quotas.
+		if (body.mode === "web") {
+			const reused = await object_json(
+				session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId, "web"),
+				"/reuse",
+				{ profileId: body.profileId, profileKey: body.profileKey },
+			);
+			if (is_record(reused) && reused.ok === true) return json_response(reused, 200);
+		}
+		const claim = await object_json(registry_stub(env), "/claim", {
+			workspaceKey: workspace_key(owners.organizationId, owners.workspaceId),
 			ownerId: owners.ownerId,
 			organizationId: owners.organizationId,
-			workspaceId: owners.workspaceId,
-			navGen: body.navGen,
-			viewport: viewport.viewport,
-		},
-	);
-	if (!is_record(opened) || opened.ok !== true) {
-		await object_json(registry_stub(env), "/release", { grantId: claim.grantId });
-		if (is_record(opened) && is_record(opened.error) && typeof opened.error.code === "string") {
-			return json_response({ ok: false, error: opened.error }, 200);
+		});
+		if (!is_record(claim) || claim.ok !== true || typeof claim.grantId !== "string") {
+			const code =
+				is_record(claim) && is_record(claim.error) && typeof claim.error.code === "string"
+					? claim.error.code
+					: "registry_error";
+			return operation_refused(code, "The browser service is busy.");
 		}
+
+		const opened = await object_json(
+			session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId, owners.mode),
+			"/open",
+			{
+				...modeFields,
+				grantId: claim.grantId,
+				attemptId,
+				ownerId: owners.ownerId,
+				organizationId: owners.organizationId,
+				workspaceId: owners.workspaceId,
+				navGen: body.navGen,
+				viewport: viewport.viewport,
+				...(typeof body.operationId === "string" ? { operationId: body.operationId } : {}),
+			},
+		);
+		if (!is_record(opened) || opened.ok !== true) {
+			await object_json(registry_stub(env), "/release", { grantId: claim.grantId });
+			if (is_record(opened) && is_record(opened.error) && typeof opened.error.code === "string") {
+				return json_response({ ok: false, error: opened.error }, 200);
+			}
+			return json_response({ ok: false, error: { code: "open_failed", message: "The browser did not start." } }, 200);
+		}
+
+		const confirmed = await object_json(registry_stub(env), "/confirm", { grantId: claim.grantId });
+		if (!is_record(confirmed) || confirmed.ok !== true) {
+			// The claim lapsed mid-bootstrap (or the registry dropped it). Close the orphan
+			// instead of running outside the admission caps; idle expiry backstops a lost close.
+			const openedSession = is_record(opened.session) ? opened.session : null;
+			const openedSessionId =
+				openedSession && typeof openedSession.sessionId === "string" ? openedSession.sessionId : null;
+			try {
+				await object_json(
+					session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId, owners.mode),
+					"/close",
+					openedSessionId ? { sessionId: openedSessionId } : {},
+				);
+			} catch {
+				// Best effort.
+			}
+			return operation_refused("busy", "The browser service is busy.");
+		}
+		return json_response(opened, 200);
+	});
+}
+
+async function managed_operation(
+	env: Env,
+	owners: { ownerId: string; organizationId: string; workspaceId: string; mode: SessionMode },
+	body: Record<string, unknown>,
+	path: string,
+	work: () => Promise<Response>,
+): Promise<Response> {
+	if (body.operationId === undefined && body.expectedAgentLease === undefined) return work();
+	if (
+		!is_non_empty_string(body.operationId) ||
+		body.operationId.length > 128 ||
+		!is_positive_int(body.operationDeadline) ||
+		body.operationDeadline > Date.now() + 120_000 ||
+		!is_command_source(body.source)
+	)
+		return invalid_request("A bounded operation identity and source are required.");
+	const stub = session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId, owners.mode);
+	const identity = {
+		operationId: body.operationId,
+		operationDeadline: body.operationDeadline,
+		source: body.source,
+		...(typeof body.sessionId === "string" ? { sessionId: body.sessionId } : {}),
+	};
+	const claim = await object_json(stub, "/operation/claim", {
+		...identity,
+		payloadHash: await sha256_hex(JSON.stringify([path, body])),
+	});
+	if (!is_record(claim) || claim.ok !== true || claim.execute !== true)
+		return json_response(is_record(claim) ? claim : { ok: false, error: { code: "claim_failed" } }, 200);
+	try {
+		const response = await work();
+		const result: unknown = await response.json();
+		if (!is_record(result)) throw new Error("Invalid operation result.");
+		const status = result.ok === true ? "completed" : "refused";
+		const cleanup =
+			result.verified === false || (is_record(result.error) && result.error.code === "bootstrap_failed")
+				? "unknown"
+				: "complete";
+		const receipt = await object_json(stub, "/operation/finish", {
+			...identity,
+			status,
+			cleanup,
+			session: is_record(result.session) ? result.session : null,
+			reason: is_record(result.error) ? result.error.code : null,
+		});
 		return json_response(
-			{ ok: false, error: { code: "open_failed", message: "The browser did not start." } },
+			{
+				...result,
+				status,
+				tabs: is_record(receipt) ? receipt.tabs : [],
+				result: is_record(receipt) ? receipt.result : { tabId: null, reason: null },
+			},
+			response.status,
+		);
+	} catch {
+		await object_json(stub, "/operation/finish", { ...identity, status: "unknown", reason: "outcome_unknown" }).catch(
+			() => {},
+		);
+		return json_response(
+			{
+				ok: true,
+				status: "unknown",
+				session: null,
+				tabs: [],
+				result: { tabId: null, reason: "outcome_unknown", cleanup: "unknown" },
+			},
 			200,
 		);
 	}
-
-	const confirmed = await object_json(registry_stub(env), "/confirm", { grantId: claim.grantId });
-	if (!is_record(confirmed) || confirmed.ok !== true) {
-		// The claim lapsed mid-bootstrap (or the registry dropped it). Close the orphan
-		// instead of running outside the admission caps; idle expiry backstops a lost close.
-		const openedSession = is_record(opened.session) ? opened.session : null;
-		const openedSessionId =
-			openedSession && typeof openedSession.sessionId === "string" ? openedSession.sessionId : null;
-		try {
-			await object_json(
-				session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId),
-				"/close",
-				openedSessionId ? { sessionId: openedSessionId } : {},
-			);
-		} catch {
-			// Best effort.
-		}
-		return operation_refused("busy", "The browser service is busy.");
-	}
-	return json_response(opened, 200);
 }
 
 async function evaluate_snippet(input: {
@@ -5568,13 +7747,15 @@ async function execute_browser_command(args: {
 	};
 	const snippetPopups = (value: unknown): { blocked: number; urls: string[] } => {
 		if (!is_record(value)) return { blocked: 0, urls: [] };
-		const blocked = typeof value.blocked === "number" && Number.isInteger(value.blocked) && value.blocked >= 0
-			? Math.min(value.blocked, 10_000)
-			: 0;
+		const blocked =
+			typeof value.blocked === "number" && Number.isInteger(value.blocked) && value.blocked >= 0
+				? Math.min(value.blocked, 10_000)
+				: 0;
 		const urls = Array.isArray(value.urls)
-			? value.urls.filter((url): url is string => typeof url === "string").slice(0, 10).map((url) =>
-				url.slice(0, 200)
-			)
+			? value.urls
+					.filter((url): url is string => typeof url === "string")
+					.slice(0, 10)
+					.map((url) => url.slice(0, 200))
 			: [];
 		return { blocked, urls };
 	};
@@ -5611,9 +7792,7 @@ async function execute_browser_command(args: {
 				pageErrors: [],
 				logs: [],
 				logsTruncated: false,
-				error: wallTimeout
-					? { name: "TimeoutError", message: "Execution timed out." }
-					: sanitize_error(error),
+				error: wallTimeout ? { name: "TimeoutError", message: "Execution timed out." } : sanitize_error(error),
 			},
 			200,
 		);
@@ -5753,17 +7932,33 @@ async function execute_browser_command(args: {
 			result = null;
 		}
 	}
-	const finished = await finish(false, { resultBytes, fileCount: files.files.length, fileBytes: files.fileBytes, viewport: snippetViewport(sandbox.viewport) });
+	const finished = await finish(false, {
+		resultBytes,
+		fileCount: files.files.length,
+		fileBytes: files.fileBytes,
+		viewport: snippetViewport(sandbox.viewport),
+	});
 	// Web mode: the files the page downloaded during the command. They share the 8-file, 8 MiB
 	// output limit with `emitFile` files, which come first. Downloads over the limit are dropped.
 	const downloads: Array<{ name: string; contentType: string; dataBase64: string }> = [];
-	let downloadsDropped = is_record(finished) && is_positive_int(finished.downloadsDropped) ? finished.downloadsDropped : 0;
+	let downloadsDropped =
+		is_record(finished) && is_positive_int(finished.downloadsDropped) ? finished.downloadsDropped : 0;
 	let outputCount = files.files.length;
 	let outputBytes = files.fileBytes;
-	for (const item of is_record(finished) && Array.isArray(finished.downloads) ? (finished.downloads as unknown[]) : []) {
-		const size = is_record(item) && typeof item.dataBase64 === "string" ? base64_bytes(item.dataBase64)?.byteLength : undefined;
-		if (!is_record(item) || typeof item.name !== "string" || typeof item.contentType !== "string" || typeof item.dataBase64 !== "string" ||
-			size === undefined || outputCount >= LIMITS.files || outputBytes + size > LIMITS.fileBytes) {
+	for (const item of is_record(finished) && Array.isArray(finished.downloads)
+		? (finished.downloads as unknown[])
+		: []) {
+		const size =
+			is_record(item) && typeof item.dataBase64 === "string" ? base64_bytes(item.dataBase64)?.byteLength : undefined;
+		if (
+			!is_record(item) ||
+			typeof item.name !== "string" ||
+			typeof item.contentType !== "string" ||
+			typeof item.dataBase64 !== "string" ||
+			size === undefined ||
+			outputCount >= LIMITS.files ||
+			outputBytes + size > LIMITS.fileBytes
+		) {
 			downloadsDropped += 1;
 			continue;
 		}
@@ -5823,25 +8018,65 @@ async function handle_browser_run(request: Request, env: Env, ctx?: BrowserRunne
 		return invalid_request("`code` must be a non-empty string.");
 	}
 	if (byte_length(body.code) > LIMITS.codeBytes) {
-		return json_response(
-			{ ok: false, error: { code: "too_large", message: "`code` exceeds the size limit." } },
-			413,
-		);
+		return json_response({ ok: false, error: { code: "too_large", message: "`code` exceeds the size limit." } }, 413);
 	}
-	const commandId =
-		typeof body.commandId === "string" && body.commandId.length > 0 && body.commandId.length <= 128
-			? body.commandId
-			: crypto.randomUUID();
+	if (
+		!is_non_empty_string(body.commandId) ||
+		body.commandId.length > 128 ||
+		!is_command_source(body.source) ||
+		!is_positive_int(body.deadline) ||
+		body.deadline > Date.now() + LIMITS.childWallMs ||
+		!is_positive_int(body.receiptResolutionDeadline) ||
+		body.receiptResolutionDeadline < body.deadline ||
+		body.receiptResolutionDeadline > Date.now() + 120_000
+	)
+		return invalid_request("A bounded command identity is required.");
+	if (
+		body.mode === "web" &&
+		(!is_non_empty_string(body.tabId) ||
+			!is_positive_int(body.tabGen) ||
+			!is_revision(body.policyRevision) ||
+			!is_revision(body.selectionRevision))
+	)
+		return invalid_request("The web tab lease is required.");
+	const commandId = body.commandId;
+	const codeHash = await sha256_hex(`browser-v3\n${body.code}`);
+	const receiptIdentity = {
+		sessionId: body.sessionId,
+		commandId,
+		codeHash,
+		source: body.source,
+		deadline: body.deadline,
+		receiptResolutionDeadline: body.receiptResolutionDeadline,
+	};
 
-	const stub = session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId);
+	const stub = session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId, owners.mode);
+	const claim = await object_json(stub, "/run/claim", {
+		...receiptIdentity,
+		payloadHash: await sha256_hex(JSON.stringify(body)),
+	});
+	if (!is_record(claim) || claim.ok !== true || claim.execute !== true)
+		return json_response(is_record(claim) ? claim : { ok: false, error: { code: "claim_failed" } }, 200);
 	const begin = await object_json(stub, "/run/begin", {
 		sessionId: body.sessionId,
 		navGen: body.navGen,
 		loadGen: body.loadGen,
 		controlGen: body.controlGen,
 		commandId,
+		deadline: body.deadline,
+		tabId: body.tabId,
+		tabGen: body.tabGen,
+		policyRevision: body.policyRevision,
+		selectionRevision: body.selectionRevision,
 	});
 	if (!is_record(begin) || begin.ok !== true || !is_record(begin.lease)) {
+		await object_json(stub, "/run/complete", {
+			...receiptIdentity,
+			status: "refused",
+			cleanup: "complete",
+			reason: is_record(begin) && is_record(begin.error) ? begin.error.code : "begin_failed",
+			session: null,
+		});
 		if (is_record(begin) && is_record(begin.error) && typeof begin.error.code === "string") {
 			return json_response({ ok: false, error: begin.error }, 200);
 		}
@@ -5853,7 +8088,11 @@ async function handle_browser_run(request: Request, env: Env, ctx?: BrowserRunne
 	const lease = begin.lease;
 	// Every path must finish its command. If execution or validation fails unexpectedly,
 	// close the session before releasing control. Duplicate finishes are harmless.
-	const runState = { finished: false };
+	const runState = {
+		finished: false,
+		session: null as Record<string, unknown> | null,
+		cleanup: "unknown" as "complete" | "unknown",
+	};
 	const finish = async (
 		tainted: boolean,
 		meta: {
@@ -5870,14 +8109,55 @@ async function handle_browser_run(request: Request, env: Env, ctx?: BrowserRunne
 			...meta,
 		});
 		runState.finished = true;
+		if (is_record(finished)) {
+			runState.session = is_record(finished.session) ? finished.session : null;
+			runState.cleanup = finished.cleanup === "complete" ? "complete" : "unknown";
+		}
 		return finished;
 	};
 	try {
-		return await execute_browser_command({
-			env, ctx, body, commandId, lease, finish,
-			connection: { sessionId: body.sessionId, ownerId: owners.ownerId, organizationId: owners.organizationId, workspaceId: owners.workspaceId, commandId },
-			settle: () => object_json(stub, "/run/settle", { sessionId: body.sessionId, commandId }),
+		const response = await with_wall_timeout(
+			execute_browser_command({
+				env,
+				ctx,
+				body,
+				commandId,
+				lease,
+				finish,
+				connection: {
+					mode: owners.mode,
+					sessionId: body.sessionId,
+					ownerId: owners.ownerId,
+					organizationId: owners.organizationId,
+					workspaceId: owners.workspaceId,
+					commandId,
+				},
+				settle: () => object_json(stub, "/run/settle", { sessionId: body.sessionId, commandId }),
+			}),
+			Math.max(1, body.deadline - Date.now()),
+		);
+		const result: unknown = await response.json();
+		if (!is_record(result)) throw new Error("Invalid command result.");
+		await object_json(stub, "/run/complete", {
+			...receiptIdentity,
+			status: runState.cleanup === "complete" ? "completed" : "unknown",
+			cleanup: runState.cleanup,
+			reason: result.status === "succeeded" ? null : "command_failed",
+			session: runState.session,
 		});
+		return json_response({ ...result, session: runState.session }, response.status);
+	} catch {
+		return json_response(
+			{
+				ok: true,
+				status: "unknown",
+				commandId,
+				codeHash,
+				session: null,
+				result: { cleanup: "unknown", reason: "outcome_unknown" },
+			},
+			200,
+		);
 	} finally {
 		if (!runState.finished) {
 			try {
@@ -5894,7 +8174,40 @@ async function handle_browser_run(request: Request, env: Env, ctx?: BrowserRunne
 				// The command deadline closes a session whose finish was lost.
 			}
 		}
+		if (!runState.finished) await object_json(stub, "/command-fence", receiptIdentity).catch(() => {});
 	}
+}
+
+async function handle_browser_command_receipt(request: Request, env: Env, path: string): Promise<Response> {
+	if (!(await is_authorized(request, env))) return json_response({ ok: false, error: { code: "unauthorized" } }, 401);
+	const parsed = await parse_json_body(request, BROWSER_COMMAND_FIELDS);
+	if (!parsed.ok) return parsed.response;
+	const owners = parse_owner_tuple(parsed.body);
+	if (!owners.ok) return owners.response;
+	const response = await object_json(
+		session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId, owners.mode),
+		path,
+		parsed.body,
+	);
+	return json_response(is_record(response) ? response : { ok: false, error: { code: "receipt_failed" } }, 200);
+}
+
+async function handle_browser_tab(request: Request, env: Env, path: string): Promise<Response> {
+	const access =
+		path === "/operation-status" ? await is_authorized(request, env) : (await require_host_access(request, env)).ok;
+	if (!access) return operation_refused("unavailable", "Browser management is unavailable.");
+	const parsed = await parse_json_body(request, BROWSER_OPERATION_FIELDS);
+	if (!parsed.ok) return parsed.response;
+	const owners = parse_owner_tuple(parsed.body);
+	if (!owners.ok) return owners.response;
+	if (path !== "/operation-status" && !is_non_empty_string(parsed.body.sessionId))
+		return invalid_request("`sessionId` is required.");
+	const response = await object_json(
+		session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId, owners.mode),
+		path,
+		parsed.body,
+	);
+	return json_response(is_record(response) ? response : { ok: false, error: { code: "operation_failed" } }, 200);
 }
 
 async function handle_browser_reload(request: Request, env: Env): Promise<Response> {
@@ -5913,16 +8226,18 @@ async function handle_browser_reload(request: Request, env: Env): Promise<Respon
 			if (!BROWSER_WEB_RELOAD_FIELDS.has(key)) return invalid_request(`Unknown request field \`${key}\`.`);
 		}
 		if (!is_non_empty_string(body.sessionId)) return invalid_request("`sessionId` is required.");
-		if (body.navGen !== 1) return invalid_request("`navGen` must be 1 in web mode.");
+		if (!is_positive_int(body.navGen)) return invalid_request("`navGen` must be positive.");
 		if (body.expectedAgentLease !== undefined && !is_agent_lease(body.expectedAgentLease)) {
 			return invalid_request("`expectedAgentLease` must contain positive nav, load, and control generations.");
 		}
-		const reloaded = await object_json(
-			session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId),
-			"/reload",
-			{ mode: "web", sessionId: body.sessionId, navGen: body.navGen, expectedAgentLease: body.expectedAgentLease },
-		);
-		return json_response(is_record(reloaded) ? reloaded : { ok: false, error: { code: "reload_failed" } }, 200);
+		return managed_operation(env, owners, body, "/reload", async () => {
+			const reloaded = await object_json(
+				session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId, owners.mode),
+				"/reload",
+				{ mode: "web", sessionId: body.sessionId, navGen: body.navGen, expectedAgentLease: body.expectedAgentLease },
+			);
+			return json_response(is_record(reloaded) ? reloaded : { ok: false, error: { code: "reload_failed" } }, 200);
+		});
 	}
 	if (body.mode !== undefined && body.mode !== "file") return invalid_request("`mode` must be file or web.");
 	const snapshot = parse_snapshot(body);
@@ -5933,23 +8248,23 @@ async function handle_browser_reload(request: Request, env: Env): Promise<Respon
 		return invalid_request("`expectedAgentLease` must contain positive nav, load, and control generations.");
 	}
 
-	const reloaded = await object_json(
-		session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId),
-		"/reload",
-		{
-			sessionId: body.sessionId,
-			navGen: body.navGen,
-			sourceKind: snapshot.sourceKind,
-			sourceVersion: snapshot.sourceVersion,
-			sourceHash: snapshot.sourceHash,
-			html: snapshot.html,
-			expectedAgentLease: body.expectedAgentLease,
-		},
-	);
-	return json_response(
-		is_record(reloaded) ? reloaded : { ok: false, error: { code: "reload_failed" } },
-		200,
-	);
+	return managed_operation(env, owners, body, "/reload", async () => {
+		const reloaded = await object_json(
+			session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId, owners.mode),
+			"/reload",
+			{
+				mode: "file",
+				sessionId: body.sessionId,
+				navGen: body.navGen,
+				sourceKind: snapshot.sourceKind,
+				sourceVersion: snapshot.sourceVersion,
+				sourceHash: snapshot.sourceHash,
+				html: snapshot.html,
+				expectedAgentLease: body.expectedAgentLease,
+			},
+		);
+		return json_response(is_record(reloaded) ? reloaded : { ok: false, error: { code: "reload_failed" } }, 200);
+	});
 }
 
 async function handle_browser_close(request: Request, env: Env): Promise<Response> {
@@ -5967,7 +8282,10 @@ async function handle_browser_close(request: Request, env: Env): Promise<Respons
 	if (body.sessionId !== undefined && typeof body.sessionId !== "string") {
 		return invalid_request("`sessionId` is invalid.");
 	}
-	if (body.expectedAgentLease !== undefined && (!is_agent_lease(body.expectedAgentLease) || !is_non_empty_string(body.sessionId))) {
+	if (
+		body.expectedAgentLease !== undefined &&
+		(!is_agent_lease(body.expectedAgentLease) || !is_non_empty_string(body.sessionId))
+	) {
 		return invalid_request("`expectedAgentLease` needs a session id and positive nav, load, and control generations.");
 	}
 	// Only a human End sends `saveProfile: true`. Every other close drops the cookies.
@@ -5981,22 +8299,24 @@ async function handle_browser_close(request: Request, env: Env): Promise<Respons
 
 	// Send close without the caller's abort signal: cleanup must complete even
 	// when the triggering request is already gone.
-	const closed = await object_json(
-		session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId),
-		"/close",
-		{ sessionId: body.sessionId, expectedAgentLease: body.expectedAgentLease, saveProfile: body.saveProfile, by },
-	);
-	return json_response(
-		is_record(closed) ? closed : { ok: false, error: { code: "close_failed" } },
-		200,
-	);
+	return managed_operation(env, owners, body, "/close", async () => {
+		const closed = await object_json(
+			session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId, owners.mode),
+			"/close",
+			{ sessionId: body.sessionId, expectedAgentLease: body.expectedAgentLease, saveProfile: body.saveProfile, by },
+		);
+		return json_response(is_record(closed) ? closed : { ok: false, error: { code: "close_failed" } }, 200);
+	});
 }
 
 async function handle_browser_profile(request: Request, env: Env, route: "summary" | "clear"): Promise<Response> {
 	const access = await require_host_access(request, env);
 	if (!access.ok) return access.response;
 
-	const parsed = await parse_json_body(request, route === "summary" ? BROWSER_PROFILE_SUMMARY_FIELDS : BROWSER_PROFILE_CLEAR_FIELDS);
+	const parsed = await parse_json_body(
+		request,
+		route === "summary" ? BROWSER_PROFILE_SUMMARY_FIELDS : BROWSER_PROFILE_CLEAR_FIELDS,
+	);
 	if (!parsed.ok) return parsed.response;
 	const body = parsed.body;
 
@@ -6009,9 +8329,16 @@ async function handle_browser_profile(request: Request, env: Env, route: "summar
 	}
 
 	const replied = await object_json(
-		session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId),
+		session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId, owners.mode),
 		`/profile/${route}`,
-		{ ownerId: owners.ownerId, organizationId: owners.organizationId, workspaceId: owners.workspaceId, profileId: body.profileId, profileKey: body.profileKey, ...(route === "clear" ? { domain: body.domain } : {}) },
+		{
+			ownerId: owners.ownerId,
+			organizationId: owners.organizationId,
+			workspaceId: owners.workspaceId,
+			profileId: body.profileId,
+			profileKey: body.profileKey,
+			...(route === "clear" ? { domain: body.domain } : {}),
+		},
 	);
 	return json_response(is_record(replied) ? replied : { ok: false, error: { code: "profile_failed" } }, 200);
 }
@@ -6031,7 +8358,7 @@ async function handle_browser_profile_delete(request: Request, env: Env): Promis
 	if (!is_profile_id(body.profileId)) return invalid_request("`profileId` is invalid.");
 
 	const deleted = await object_json(
-		session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId),
+		session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId, owners.mode),
 		"/profile/delete",
 		{ profileId: body.profileId },
 	);
@@ -6061,27 +8388,44 @@ async function handle_browser_download(request: Request, env: Env, route: "info"
 	const access = await require_host_access(request, env);
 	if (!access.ok) return access.response;
 
-	const parsed = await parse_json_body(request, route === "info" ? BROWSER_DOWNLOAD_INFO_FIELDS : BROWSER_DOWNLOAD_PUSH_FIELDS);
+	const parsed = await parse_json_body(
+		request,
+		route === "info" ? BROWSER_DOWNLOAD_INFO_FIELDS : BROWSER_DOWNLOAD_PUSH_FIELDS,
+	);
 	if (!parsed.ok) return parsed.response;
 	const body = parsed.body;
 
 	const owners = parse_owner_tuple(body);
 	if (!owners.ok) return owners.response;
-	if (!is_item_id(body.sessionId) || !is_item_id(body.downloadId)) return invalid_request("`sessionId` and `downloadId` are required.");
+	if (!is_item_id(body.sessionId) || !is_item_id(body.downloadId))
+		return invalid_request("`sessionId` and `downloadId` are required.");
 	if (route === "push") {
 		if (!is_signed_url(body.url)) return invalid_request("`url` must be an https URL.");
 		// The signed PUT may need a few headers, like `Content-Type`. Keep them plain and small.
 		const headers = is_record(body.headers) ? Object.entries(body.headers) : null;
-		if (!headers || headers.length > 20 || !headers.every(([name, value]) =>
-			/^[A-Za-z0-9-]{1,64}$/u.test(name) && typeof value === "string" && value.length <= 1024 && !/[\r\n]/u.test(value))) {
+		if (
+			!headers ||
+			headers.length > 20 ||
+			!headers.every(
+				([name, value]) =>
+					/^[A-Za-z0-9-]{1,64}$/u.test(name) &&
+					typeof value === "string" &&
+					value.length <= 1024 &&
+					!/[\r\n]/u.test(value),
+			)
+		) {
 			return invalid_request("`headers` is invalid.");
 		}
 	}
 
 	const replied = await object_json(
-		session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId),
+		session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId, owners.mode),
 		`/download/${route}`,
-		{ sessionId: body.sessionId, downloadId: body.downloadId, ...(route === "push" ? { url: body.url, headers: body.headers } : {}) },
+		{
+			sessionId: body.sessionId,
+			downloadId: body.downloadId,
+			...(route === "push" ? { url: body.url, headers: body.headers } : {}),
+		},
 	);
 	return json_response(is_record(replied) ? replied : { ok: false, error: { code: "download_failed" } }, 200);
 }
@@ -6090,31 +8434,51 @@ async function handle_browser_upload(request: Request, env: Env, route: "fill" |
 	const access = await require_host_access(request, env);
 	if (!access.ok) return access.response;
 
-	const parsed = await parse_json_body(request, route === "fill" ? BROWSER_UPLOAD_FILL_FIELDS : BROWSER_UPLOAD_GRANT_FIELDS);
+	const parsed = await parse_json_body(
+		request,
+		route === "fill" ? BROWSER_UPLOAD_FILL_FIELDS : BROWSER_UPLOAD_GRANT_FIELDS,
+	);
 	if (!parsed.ok) return parsed.response;
 	const body = parsed.body;
 
 	const owners = parse_owner_tuple(body);
 	if (!owners.ok) return owners.response;
-	if (!is_item_id(body.sessionId) || !is_item_id(body.chooserId)) return invalid_request("`sessionId` and `chooserId` are required.");
+	if (!is_item_id(body.sessionId) || !is_item_id(body.chooserId))
+		return invalid_request("`sessionId` and `chooserId` are required.");
 	if (!is_positive_int(body.controlGen)) return invalid_request("`controlGen` must be a positive int.");
+	if (!is_item_id(body.tabId) || !is_positive_int(body.tabGen) || !is_positive_int(body.viewGen))
+		return invalid_request("A tab and its view are required.");
 	if (route === "fill") {
 		if (!Array.isArray(body.files) || body.files.length < 1 || body.files.length > LIMITS.uploadFiles) {
 			return invalid_request("`files` must have 1 to 10 items.");
 		}
 		for (const file of body.files as unknown[]) {
-			if (!is_record(file) || Object.keys(file).some((key) => !BROWSER_UPLOAD_FILE_FIELDS.has(key)) ||
-				!is_non_empty_string(file.name) || file.name.length > 255 ||
-				!is_non_empty_string(file.contentType) || file.contentType.length > 255 || !is_signed_url(file.url)) {
+			if (
+				!is_record(file) ||
+				Object.keys(file).some((key) => !BROWSER_UPLOAD_FILE_FIELDS.has(key)) ||
+				!is_non_empty_string(file.name) ||
+				file.name.length > 255 ||
+				!is_non_empty_string(file.contentType) ||
+				file.contentType.length > 255 ||
+				!is_signed_url(file.url)
+			) {
 				return invalid_request("`files` has an invalid item.");
 			}
 		}
 	}
 
 	const replied = await object_json(
-		session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId),
+		session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId, owners.mode),
 		`/upload/${route}`,
-		{ sessionId: body.sessionId, chooserId: body.chooserId, controlGen: body.controlGen, ...(route === "fill" ? { files: body.files } : {}) },
+		{
+			sessionId: body.sessionId,
+			chooserId: body.chooserId,
+			controlGen: body.controlGen,
+			tabId: body.tabId,
+			tabGen: body.tabGen,
+			viewGen: body.viewGen,
+			...(route === "fill" ? { files: body.files } : {}),
+		},
 	);
 	return json_response(is_record(replied) ? replied : { ok: false, error: { code: "upload_failed" } }, 200);
 }
@@ -6133,14 +8497,11 @@ async function handle_browser_keep_open(request: Request, env: Env): Promise<Res
 	if (!is_positive_int(body.navGen)) return invalid_request("`navGen` must be a positive int.");
 
 	const kept = await object_json(
-		session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId),
+		session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId, owners.mode),
 		"/keep-open",
-		{ sessionId: body.sessionId, navGen: body.navGen },
+		{ sessionId: body.sessionId, navGen: body.navGen, controlGen: body.controlGen },
 	);
-	return json_response(
-		is_record(kept) ? kept : { ok: false, error: { code: "keep_open_failed" } },
-		200,
-	);
+	return json_response(is_record(kept) ? kept : { ok: false, error: { code: "keep_open_failed" } }, 200);
 }
 
 async function handle_browser_status(request: Request, env: Env): Promise<Response> {
@@ -6156,7 +8517,7 @@ async function handle_browser_status(request: Request, env: Env): Promise<Respon
 	if (!is_non_empty_string(body.sessionId)) return invalid_request("`sessionId` is required.");
 
 	const status = await object_json(
-		session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId),
+		session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId, owners.mode),
 		"/status",
 		{ sessionId: body.sessionId },
 	);
@@ -6177,14 +8538,11 @@ async function handle_browser_viewer_grant(request: Request, env: Env): Promise<
 	if (!is_positive_int(body.navGen)) return invalid_request("`navGen` must be a positive int.");
 
 	const granted = await object_json(
-		session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId),
+		session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId, owners.mode),
 		"/viewer/grant",
 		{ sessionId: body.sessionId, navGen: body.navGen },
 	);
-	return json_response(
-		is_record(granted) ? granted : { ok: false, error: { code: "grant_failed" } },
-		200,
-	);
+	return json_response(is_record(granted) ? granted : { ok: false, error: { code: "grant_failed" } }, 200);
 }
 
 async function handle_browser_viewer_renew(request: Request, env: Env): Promise<Response> {
@@ -6201,14 +8559,11 @@ async function handle_browser_viewer_renew(request: Request, env: Env): Promise<
 	if (!is_non_empty_string(body.viewerId)) return invalid_request("`viewerId` is required.");
 
 	const renewed = await object_json(
-		session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId),
+		session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId, owners.mode),
 		"/viewer/renew",
 		{ sessionId: body.sessionId, viewerId: body.viewerId },
 	);
-	return json_response(
-		is_record(renewed) ? renewed : { ok: false, error: { code: "renew_failed" } },
-		200,
-	);
+	return json_response(is_record(renewed) ? renewed : { ok: false, error: { code: "renew_failed" } }, 200);
 }
 
 async function handle_browser_control_take(request: Request, env: Env): Promise<Response> {
@@ -6226,14 +8581,11 @@ async function handle_browser_control_take(request: Request, env: Env): Promise<
 	if (!is_non_empty_string(body.viewerId)) return invalid_request("`viewerId` is required.");
 
 	const taken = await object_json(
-		session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId),
+		session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId, owners.mode),
 		"/control/take-human",
 		{ sessionId: body.sessionId, navGen: body.navGen, viewerId: body.viewerId },
 	);
-	return json_response(
-		is_record(taken) ? taken : { ok: false, error: { code: "take_failed" } },
-		200,
-	);
+	return json_response(is_record(taken) ? taken : { ok: false, error: { code: "take_failed" } }, 200);
 }
 
 async function handle_browser_control_resume(request: Request, env: Env): Promise<Response> {
@@ -6248,21 +8600,18 @@ async function handle_browser_control_resume(request: Request, env: Env): Promis
 	if (!owners.ok) return owners.response;
 	if (!is_non_empty_string(body.sessionId)) return invalid_request("`sessionId` is required.");
 	if (!is_positive_int(body.navGen)) return invalid_request("`navGen` must be a positive int.");
+	if (!is_positive_int(body.controlGen)) return invalid_request("`controlGen` must be a positive int.");
 
 	const resumed = await object_json(
-		session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId),
+		session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId, owners.mode),
 		"/control/to-agent",
-		{ sessionId: body.sessionId, navGen: body.navGen },
+		{ sessionId: body.sessionId, navGen: body.navGen, controlGen: body.controlGen },
 	);
-	return json_response(
-		is_record(resumed) ? resumed : { ok: false, error: { code: "resume_failed" } },
-		200,
-	);
+	return json_response(is_record(resumed) ? resumed : { ok: false, error: { code: "resume_failed" } }, 200);
 }
 
 async function handle_browser_agent_access(request: Request, env: Env): Promise<Response> {
-	const access = await require_host_access(request, env);
-	if (!access.ok) return access.response;
+	if (!(await is_authorized(request, env))) return json_response({ ok: false, error: { code: "unauthorized" } }, 401);
 
 	const parsed = await parse_json_body(request, BROWSER_AGENT_ACCESS_FIELDS);
 	if (!parsed.ok) return parsed.response;
@@ -6272,16 +8621,27 @@ async function handle_browser_agent_access(request: Request, env: Env): Promise<
 	if (!owners.ok) return owners.response;
 	if (!is_non_empty_string(body.sessionId)) return invalid_request("`sessionId` is required.");
 	if (typeof body.on !== "boolean") return invalid_request("`on` must be a boolean.");
+	if (
+		!is_revision(body.policyRevision) ||
+		!is_revision(body.selectionRevision) ||
+		!Array.isArray(body.agentBlockedHosts) ||
+		!body.agentBlockedHosts.every((host) => typeof host === "string") ||
+		body.agentBlockedHosts.length > 200
+	)
+		return invalid_request("A bounded policy is required.");
 
 	const changed = await object_json(
-		session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId),
+		session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId, owners.mode),
 		"/agent-access",
-		{ sessionId: body.sessionId, on: body.on },
+		{
+			sessionId: body.sessionId,
+			on: body.on,
+			policyRevision: body.policyRevision,
+			selectionRevision: body.selectionRevision,
+			agentBlockedHosts: body.agentBlockedHosts,
+		},
 	);
-	return json_response(
-		is_record(changed) ? changed : { ok: false, error: { code: "agent_access_failed" } },
-		200,
-	);
+	return json_response(is_record(changed) ? changed : { ok: false, error: { code: "agent_access_failed" } }, 200);
 }
 
 // Viewer stream gateway
@@ -6290,6 +8650,7 @@ async function handle_browser_agent_access(request: Request, env: Env): Promise<
 // consumes the grant, shares one frame producer, and checks each input locally.
 
 type ViewerHello = {
+	mode: SessionMode;
 	ownerId: string;
 	organizationId: string;
 	workspaceId: string;
@@ -6330,9 +8691,18 @@ function is_key(value: unknown): value is string {
 	return typeof value === "string" && value.length > 0 && value.length <= 32;
 }
 
-export function parse_viewer_input(
-	data: unknown,
-): { ok: true; seq: string | number; controlGen: number; loadGen: number; input: ViewerInput } | { ok: false } {
+export function parse_viewer_input(data: unknown):
+	| {
+			ok: true;
+			seq: string | number;
+			controlGen: number;
+			loadGen: number;
+			tabId: string;
+			tabGen: number;
+			viewGen: number;
+			input: ViewerInput;
+	  }
+	| { ok: false } {
 	if (typeof data !== "string" || data.length === 0 || data.length > LIMITS.viewerMessageChars) return { ok: false };
 	let body: unknown;
 	try {
@@ -6342,9 +8712,27 @@ export function parse_viewer_input(
 	}
 	if (!is_record(body) || body.t !== "input") return { ok: false };
 	if (typeof body.seq !== "string" && typeof body.seq !== "number") return { ok: false };
-	if (!is_positive_int(body.controlGen) || !Number.isSafeInteger(body.controlGen) ||
-		!is_positive_int(body.loadGen) || !Number.isSafeInteger(body.loadGen)) return { ok: false };
-	const lease = { controlGen: body.controlGen, loadGen: body.loadGen };
+	if (
+		!is_positive_int(body.controlGen) ||
+		!Number.isSafeInteger(body.controlGen) ||
+		!is_positive_int(body.loadGen) ||
+		!Number.isSafeInteger(body.loadGen)
+	)
+		return { ok: false };
+	if (
+		!is_non_empty_string(body.tabId) ||
+		body.tabId.length > 256 ||
+		!is_positive_int(body.tabGen) ||
+		!is_positive_int(body.viewGen)
+	)
+		return { ok: false };
+	const lease = {
+		controlGen: body.controlGen,
+		loadGen: body.loadGen,
+		tabId: body.tabId,
+		tabGen: body.tabGen,
+		viewGen: body.viewGen,
+	};
 
 	switch (body.kind) {
 		case "mouse.move":
@@ -6372,7 +8760,11 @@ export function parse_viewer_input(
 					ok: true,
 					seq: body.seq,
 					...lease,
-					input: { kind: body.kind, button: is_button(body.button) ? body.button : "left", clickCount: body.clickCount },
+					input: {
+						kind: body.kind,
+						button: is_button(body.button) ? body.button : "left",
+						clickCount: body.clickCount,
+					},
 				};
 			}
 			break;
@@ -6410,19 +8802,30 @@ export function parse_viewer_input(
 /**
  * Parse a `nav` message. The address rules run later, so a bad address gets a nav-ack with its reason.
  */
-function parse_viewer_nav(
-	body: unknown,
-): { ok: true; seq: string | number; controlGen: number; nav: ViewerNav } | { ok: false } {
+function parse_viewer_nav(body: unknown):
+	| {
+			ok: true;
+			seq: string | number;
+			controlGen: number;
+			tabId: string;
+			tabGen: number;
+			viewGen: number;
+			nav: ViewerNav;
+	  }
+	| { ok: false } {
 	if (!is_record(body) || body.t !== "nav") return { ok: false };
 	if (typeof body.seq !== "string" && typeof body.seq !== "number") return { ok: false };
 	if (!is_positive_int(body.controlGen) || !Number.isSafeInteger(body.controlGen)) return { ok: false };
+	if (!is_non_empty_string(body.tabId) || !is_positive_int(body.tabGen) || !is_positive_int(body.viewGen))
+		return { ok: false };
+	const lease = { controlGen: body.controlGen, tabId: body.tabId, tabGen: body.tabGen, viewGen: body.viewGen };
 	if (body.action === "go") {
 		if (typeof body.url !== "string") return { ok: false };
-		return { ok: true, seq: body.seq, controlGen: body.controlGen, nav: { action: "go", url: body.url } };
+		return { ok: true, seq: body.seq, ...lease, nav: { action: "go", url: body.url } };
 	}
 	if (body.action === "back" || body.action === "forward" || body.action === "reload" || body.action === "stop") {
 		if (body.url !== undefined) return { ok: false };
-		return { ok: true, seq: body.seq, controlGen: body.controlGen, nav: { action: body.action } };
+		return { ok: true, seq: body.seq, ...lease, nav: { action: body.action } };
 	}
 	return { ok: false };
 }
@@ -6430,7 +8833,11 @@ function parse_viewer_nav(
 /**
  * Run one address bar action on the page. Return null on success or a refusal code.
  */
-async function apply_viewer_nav(cdp: CDPSession, action: ViewerNav["action"], url: string | null): Promise<string | null> {
+async function apply_viewer_nav(
+	cdp: CDPSession,
+	action: ViewerNav["action"],
+	url: string | null,
+): Promise<string | null> {
 	switch (action) {
 		case "go":
 			await cdp.send("Page.navigate", { url: url! });
@@ -6499,6 +8906,7 @@ export function parse_viewer_hello(data: unknown): { ok: true; hello: ViewerHell
 	}
 	if (!is_record(body)) return { ok: false };
 	if (
+		(body.mode !== "file" && body.mode !== "web") ||
 		!is_non_empty_string(body.ownerId) ||
 		!is_non_empty_string(body.organizationId) ||
 		!is_non_empty_string(body.workspaceId) ||
@@ -6522,6 +8930,7 @@ export function parse_viewer_hello(data: unknown): { ok: true; hello: ViewerHell
 	return {
 		ok: true,
 		hello: {
+			mode: body.mode,
 			ownerId: body.ownerId,
 			organizationId: body.organizationId,
 			workspaceId: body.workspaceId,
@@ -6551,9 +8960,10 @@ async function handle_viewer_stream(request: Request, env: Env): Promise<Respons
 		ownerId: url.searchParams.get("ownerId"),
 		organizationId: url.searchParams.get("organizationId"),
 		workspaceId: url.searchParams.get("workspaceId"),
+		mode: url.searchParams.get("mode"),
 	});
 	if (!owners.ok) return owners.response;
-	return session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId).fetch(request);
+	return session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId, owners.mode).fetch(request);
 }
 
 /**
@@ -6563,13 +8973,20 @@ async function handle_viewer_stream(request: Request, env: Env): Promise<Respons
  */
 async function handle_viewer_upload(request: Request, env: Env): Promise<Response> {
 	const origin = request.headers.get("Origin");
-	const cors = origin && app_origins(env).includes(origin) ? { "Access-Control-Allow-Origin": origin, Vary: "Origin" } : null;
+	const cors =
+		origin && app_origins(env).includes(origin) ? { "Access-Control-Allow-Origin": origin, Vary: "Origin" } : null;
 	if (request.method === "OPTIONS") {
 		// A refused preflight has no CORS headers, so the browser never sends the PUT.
-		if (!cors || request.headers.get("Access-Control-Request-Method") !== "PUT") return new Response(null, { status: 403 });
+		if (!cors || request.headers.get("Access-Control-Request-Method") !== "PUT")
+			return new Response(null, { status: 403 });
 		return new Response(null, {
 			status: 204,
-			headers: { ...cors, "Access-Control-Allow-Methods": "PUT", "Access-Control-Allow-Headers": "Content-Type", "Access-Control-Max-Age": "600" },
+			headers: {
+				...cors,
+				"Access-Control-Allow-Methods": "PUT",
+				"Access-Control-Allow-Headers": "Content-Type",
+				"Access-Control-Max-Age": "600",
+			},
 		});
 	}
 	if (!cors) return json_response({ ok: false, code: "origin_refused" }, 403);
@@ -6585,6 +9002,7 @@ async function handle_viewer_upload(request: Request, env: Env): Promise<Respons
 		ownerId: url.searchParams.get("ownerId"),
 		organizationId: url.searchParams.get("organizationId"),
 		workspaceId: url.searchParams.get("workspaceId"),
+		mode: url.searchParams.get("mode"),
 	});
 	const name = url.searchParams.get("name") ?? "";
 	if (!owners.ok || !is_item_id(url.searchParams.get("grantId")) || name.length < 1 || name.length > 255) {
@@ -6592,24 +9010,35 @@ async function handle_viewer_upload(request: Request, env: Env): Promise<Respons
 	}
 	// Refuse a large file before reading it. The session object still caps the bytes it reads.
 	const length = request.headers.get("Content-Length");
-	if (length === null || !/^\d+$/u.test(length)) return reply(json_response({ ok: false, code: "length_required" }, 411));
+	if (length === null || !/^\d+$/u.test(length))
+		return reply(json_response({ ok: false, code: "length_required" }, 411));
 	if (Number(length) > LIMITS.uploadBytes) return reply(json_response({ ok: false, code: "too_large" }, 413));
 
 	// A throw would reach the browser as a bare 500 without CORS headers, which the app cannot read.
 	try {
-		return reply(await session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId).fetch(request));
+		return reply(
+			await session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId, owners.mode).fetch(request),
+		);
 	} catch (error) {
 		log_browser({ route: "viewer_upload", error: sanitize_error(error).name });
 		return reply(json_response({ ok: false, code: "upload_failed" }, 500));
 	}
 }
 
-export async function handle_request(
-	request: Request,
-	env: Env,
-	ctx?: BrowserRunnerContext,
-): Promise<Response> {
+export async function handle_request(request: Request, env: Env, ctx?: BrowserRunnerContext): Promise<Response> {
 	const url = new URL(request.url);
+	if (request.method === "POST" && url.pathname.startsWith("/internal/playwriter/")) {
+		if (!(await is_authorized(request, env)))
+			return json_response({ ok: false, error: { code: "unauthorized", message: "Unauthorized" } }, 401);
+		if (
+			env.BROWSER_RUNNER_DISABLED === "true" &&
+			!["status", "disconnect", "agent-access", "pause", "command-status", "command-fence", "command-ack"].includes(
+				url.pathname.split("/").at(-1)!,
+			)
+		)
+			return json_response({ ok: false, error: { code: "disabled", message: "Browser runner is disabled" } }, 503);
+		return handle_playwriter_request(request, env, ctx);
+	}
 	if (request.method === "GET" && url.pathname === "/health") {
 		return json_response({ ok: true }, 200);
 	}
@@ -6625,6 +9054,22 @@ export async function handle_request(
 	if (request.method === "POST" && url.pathname === "/internal/browser/run") {
 		return handle_browser_run(request, env, ctx);
 	}
+	if (
+		request.method === "POST" &&
+		["/internal/browser/command-status", "/internal/browser/command-fence"].includes(url.pathname)
+	)
+		return handle_browser_command_receipt(request, env, url.pathname.slice("/internal/browser".length));
+	if (
+		request.method === "POST" &&
+		[
+			"/internal/browser/tabs",
+			"/internal/browser/tab-new",
+			"/internal/browser/tab-close",
+			"/internal/browser/tab-select",
+			"/internal/browser/operation-status",
+		].includes(url.pathname)
+	)
+		return handle_browser_tab(request, env, url.pathname.slice("/internal/browser".length));
 	if (request.method === "POST" && url.pathname === "/internal/browser/close") {
 		return handle_browser_close(request, env);
 	}

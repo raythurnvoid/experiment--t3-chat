@@ -55,6 +55,8 @@ vi.mock("convex/react", async (importOriginal) => {
 			);
 			if (args === "skip") return undefined;
 			switch (getFunctionName(query)) {
+				case "files_browser:current_browser_preferences":
+					return { webChoice: { provider: "cloud" }, selectionRevision: 0, policyRevision: 0 };
 				case "ai_chat:thread_messages_list":
 					if (messageStatusByThreadId[args.threadId!] === "denied") return null;
 					if (messageStatusByThreadId[args.threadId!] === "loading") return undefined;
@@ -152,12 +154,7 @@ describe("FileEditorSidebarAgent thread upgrade", () => {
 		);
 		app_local_storage_set_value(openTabsKey, tabs);
 		app_local_storage_set_value(selectedTabKey, "thread_private");
-		render(
-			<FileEditorSidebarAgent
-				isActive
-				browserBinding={null}
-			/>,
-		);
+		render(<FileEditorSidebarAgent isActive />);
 		await userEvent.click(screen.getByRole("tab", { name: "Left chat" }));
 		await userEvent.click(await screen.findByRole("textbox", { name: "Send a message..." }));
 		await userEvent.keyboard("Keep this draft");
@@ -213,12 +210,7 @@ describe("FileEditorSidebarAgent thread upgrade", () => {
 		app_local_storage_set_value(openTabsKey, [{ id: "thread_private", title: "Private chat" }]);
 		app_local_storage_set_value(selectedTabKey, "thread_private");
 		mocks.messageStatusByThreadId = { thread_private: "denied" };
-		render(
-			<FileEditorSidebarAgent
-				isActive
-				browserBinding={null}
-			/>,
-		);
+		render(<FileEditorSidebarAgent isActive />);
 		await waitFor(() => expect(screen.queryByRole("tab", { name: "Private chat" })).toBeNull());
 		const editor = await screen.findByRole("textbox", { name: "Send a message..." });
 		await userEvent.click(editor);
@@ -242,7 +234,7 @@ describe("FileEditorSidebarAgent thread upgrade", () => {
 		);
 		render(
 			<div style={{ width: 480, height: 720 }}>
-				<FileEditorSidebarAgent isActive browserBinding={null} />
+				<FileEditorSidebarAgent isActive />
 			</div>,
 		);
 		const editor = await screen.findByRole("textbox", { name: "Send a message..." });
@@ -322,7 +314,7 @@ describe("FileEditorSidebarAgent thread upgrade", () => {
 		try {
 			render(
 				<div style={{ width: 480, height: 720 }}>
-					<FileEditorSidebarAgent isActive browserBinding={null} />
+					<FileEditorSidebarAgent isActive />
 				</div>,
 			);
 			await screen.findByRole("textbox", { name: "Send a message..." });
@@ -344,7 +336,7 @@ describe("FileEditorSidebarAgent thread upgrade", () => {
 	test("restores each chat's draft when switching between different tabs", async () => {
 		render(
 			<div style={{ width: 480, height: 720 }}>
-				<FileEditorSidebarAgent isActive browserBinding={null} />
+				<FileEditorSidebarAgent isActive />
 			</div>,
 		);
 		const firstEditor = await screen.findByRole("textbox", { name: "Send a message..." });
@@ -364,7 +356,7 @@ describe("FileEditorSidebarAgent thread upgrade", () => {
 	test("scrolls the new chat tab into view when tabs overflow", async () => {
 		render(
 			<div style={{ width: 480, height: 720 }}>
-				<FileEditorSidebarAgent isActive browserBinding={null} />
+				<FileEditorSidebarAgent isActive />
 			</div>,
 		);
 		await screen.findByRole("textbox", { name: "Send a message..." });

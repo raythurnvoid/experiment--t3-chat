@@ -1,7 +1,7 @@
 # bonobo-senate-browser-runner
 
-A trusted host Cloudflare Worker for the cloud browser. It owns one Browser Run
-session per user workspace, loads the private HTML snapshot into the existing
+A trusted host Cloudflare Worker for cloud and Playwriter browsers. Each user
+workspace has separate cloud web and file slots. It loads a private HTML snapshot into the existing
 preview runtime, runs agent Playwright JavaScript inside an isolated Dynamic
 Worker, and streams the live page to authorized viewers. It backs the Files
 shared browser (file mode) and the workspace Browser route (web mode, see Web
@@ -19,9 +19,167 @@ changes, reload, and blocked provider capabilities. In file mode, delayed
 navigation closes the session; delayed popups close while the assigned page stays usable.
 Mocked tests also cover connection replay, drain failures, and late cleanup.
 
+### Playwriter remote browser
+
+`src/playwriter-session.ts` owns the remote connection, routes, receipts, and
+private command socket. `src/playwriter-executor.ts` contains fixed read, act,
+navigate, and capture templates. The model supplies data only. It cannot send
+JavaScript, CDP, a share key, or a socket URL.
+
+`src/playwriter-transport.ts` is the remote protocol bridge. It translates
+extension messages for one confirmed native page and its real frames/workers.
+Each command gets a fresh child socket. The caller keeps the physical remote
+socket and owns hello/version checks, tab confirmation, deadlines, and receipts.
+The official extension is used as installed. There is no extension fork.
+The fixed executor revision is `guarded-navigation-2026-09-29-v3`. The host checks
+the same child's revision before it calls `evaluate`. The revision check and
+execution share the command deadline. `POST /internal/playwriter/revision`
+returns that fixed marker after the normal bearer and scope checks.
+
+Start a fresh `PlaywriterTargetInventory` before accepting each physical socket.
+Pass every message to `consume`; a false result requires closing that socket.
+It keeps at most 64 current sessions, 1 MiB of attachment packets, and 8 MiB per
+incoming packet. Repeats and updates replace byte costs. Detach removes known
+descendants even when the parent's attachment has not arrived.
+
+Missing parents and cycles keep `ready` false. The caller must enforce a fixed
+startup deadline. Confirm the exact current target ID and session ID, then call
+`snapshot` and construct `PlaywriterTransport` in one synchronous step. Do not
+await between them. The snapshot keeps native parent links and debugger waits;
+it excludes peer pages and past Runtime contexts.
+
+Playwriter has no app video viewer. The bridge refuses screencast commands and
+drops unsolicited video frames. Explicit single screenshot commands remain
+allowed for model observation, with the existing image limits. Capture never runs
+on mount, status, ping, or renewal. The command WebSocket is not a video stream.
+
+Two separate limits apply. The official extension can miss an iframe that existed
+before remote attachment. Read and capture refuse `iframe_unsupported` when the
+DOM frame count does not match the announced tree. This upstream replay limit is
+accepted. Guarded input currently supports the main frame only. An action with
+`frameRef` returns `iframe_unsupported`; this is an app action limit. It does not
+fall back to another frame or the page's main JavaScript world.
+
+Host checks combine the current `BROWSER_WEB_DENIED_HOSTS` list with the saved
+user list at confirmation and each new command. Only user entries are stored.
+The child uses the common host matcher for page and frame addresses, including
+subdomains, trailing dots, and IPv6 brackets. A blank main page stays allowed.
+Blank, srcdoc, and data child pages use their checked parent's host rule.
+These checks are best effort and do not change the native browser's network rules.
+The native profile keeps the user's existing logins. Production does not block
+Press hosts, so the agent can open Press as that user across their organizations.
+The tab can also reach localhost, private-network, and intranet pages through the
+user's network. It has no cloud-provider network boundary. This is the accepted
+shared host policy, not a promise that only public pages can be reached.
+
+Input uses the trusted utility world in pinned `@cloudflare/playwright` 1.3.6.
+It checks the exact node, visibility, disabled/inert state, geometry, hit target,
+and trusted event order. Read and Fill use the SDK's field names and label rules.
+Role Fill accepts `textbox`, `spinbutton`, and `combobox` for the same observed
+input or textarea, with the existing type and value checks. Read and guarded input
+check the current SDK field name and all associated label text for credentials,
+including labels hidden by another name. These checks apply to native inputs,
+textareas, selects, and editable page text. Ordinary help buttons stay usable.
+Input checks the current names again before focus.
+Fill and press focus that exact DOM field without a preparatory click or
+`bringToFront`.
+Tab is not accepted because its focus move leaves the guarded node. Scroll uses that
+frame's utility world. The guard checks its exact utility document without an
+extra native owner-frame lookup. Outcome and guard stop share one native call.
+A failed or lost outcome reply uses a separate stop call and stays unknown.
+Cleanup waits for the guard stop call to reply or fail, then releases its owned
+native handles together within one shared second. A pending stop keeps those
+handles and stays unknown. The host then drains or closes the command connection.
+The same command ID never runs again,
+including after an unknown outcome.
+Native navigation stops new input from the old page. A command-owned binding in
+the exact isolated main-frame utility context records the final trusted Click
+or Enter event while that native input is in flight. The host checks that proof,
+settled input, unchanged authority, and the current allowed address before
+returning success with the exact new navigation lease. This works for a new
+document and an SPA route change. Old observations are dropped, and a fresh
+Read can run without Reconnect. No action is repeated.
+Without completion proof, the effect remains `outcome_unknown`. Once the child
+has settled or the owned socket is closed, the host advances the generation.
+That prevents further dispatch and lets Convex release the slot for Reconnect.
+Explicit Navigate keeps its own checked navigation path.
+The native tab stays open. Viewport, device size, theme, focus emulation, and
+download settings are unchanged. Live app checks still need to prove the shipped
+click, fill, press, scroll, and cleanup paths.
+
+All `/internal/playwriter/*` calls require the runner bearer and
+`connectionId`, `ownerId`, `organizationId`, and `workspaceId`.
+The shared Zod contracts are in `packages/common/src/playwriter-browser.ts`.
+
+- Connect and recover take the private share ID and attempt ID. The share is
+  used only for the fixed dial URL, never stored or logged. The socket's first
+  bytes enter a new checked inventory before acceptance. Startup takes at most
+  15 seconds. Three dials per 30 seconds are allowed.
+- Only human Reconnect can use `/reconnect` for a fresh session budget. It needs
+  the exact `previousSessionId`, saved native target, and current control and
+  policy. It drains the old command and keeps Pause and Off. Automatic recovery
+  cannot reset a session. A delayed old restart cannot replace the new session.
+- Confirmation includes `generation`, `targetId`, and `inventoryRevision`.
+  Recovery accepts only the saved confirmed native target. A changed target
+  needs human confirmation. Titles and URLs remain transient status data.
+- Run takes one fixed operation, exact generation and target/control/policy/
+  selection/navigation revisions, command ID, operation hash, source identity,
+  deadlines, and the current trusted `allowedVersions` list. The actual socket's
+  hello version must still be allowed before new work. This list is outside the
+  receipt identity and hash; duplicate receipts and cleanup still work after a
+  version is removed. Act and navigate need the latest Read or Capture revision.
+  Native navigation invalidates that observation. A new boot increments generation.
+  Capture keeps earlier checked Read fields only in the same document. Fill
+  still checks those fields again before input; Capture alone is not field proof.
+- `command-status`, `command-fence`, and `command-ack` use the exact command
+  identity. Missing status reserves `not_started` before returning. A fence
+  reports cleanup complete only after accepted work is retired and drained.
+  A lost HTTP reply is not cleanup proof. Receipts retain no DOM or images.
+  After the receipt deadline, an exact existing receipt returns only an unknown
+  outcome and cleanup proof. It cannot recover observations or `completedLease`.
+  A missing late receipt stays unknown and never reserves `not_started`.
+  Successful receipts also return `completedLease`: the seven lease fields frozen
+  before native cleanup waits and stored only after safe settlement. `runtime`
+  stays current. Human changes during or after cleanup cannot become the
+  completed command's authority. Other outcomes have `completedLease: null`.
+- Pause, access revocation, and disconnect stop new work and drain a live
+  command. Several callers, for example finish, fence, and Pause, can wait for
+  the same drain, and each one gets the same result. A successful drain stays
+  cleanup proof even when Pause makes the page effect unknown. After a failed
+  drain, only the first waiter closes the old socket and advances generation.
+  Resume needs the current control revision. Human pause survives
+  disconnect and recovery. Idle expiry closes the owned extension connection
+  and its command socket. The native browser and tab stay open.
+  Resume requires a live transport; a closed socket needs Reconnect. Convex
+  restores the recovery state if a stale paused mirror receives a refusal.
+  Restoring Pause advances saved control again, so a lost successful Resume
+  reply cannot replace that newer intent with its old unpaused runtime.
+  Convex refuses a stale Pause or Resume after session retirement. An earlier
+  human Pause stays saved and carries into the next human Reconnect.
+  New-session Reconnect may adopt a changed Pause value only with a strictly
+  newer trusted control revision. This keeps a prepared Pause when old-session
+  cleanup finishes before its request arrives. Equal-revision changes and older
+  revisions refuse. The new session remains paused until the user resumes.
+- Generationless Disconnect means permanent credential Forget. It saves the
+  exact scope fence before cleanup waits and cancels any pending dial. Only the
+  backend Disconnect cleanup caller treats `connection_forgotten` as proof. If
+  native drain fails, the runner closes the old socket and advances generation
+  before Forget can finish. This prevents further dispatch on that ID; earlier
+  page effects stay unknown. Exact old-generation cleanup leaves a newer socket alone.
+  Proven Forget deletes the stored session and dial history. The permanent
+  fence contains no blocked-site list or native target.
+- Limits: 10 idle minutes, 60 total minutes, 120 operations, 256 receipts and
+  256 KiB of receipt data. Recovery cannot reset used operations or extend the
+  total deadline. Remote use has no cloud acquisition, profile, viewer, or
+  per-minute browser billing calls. Normal model/account billing still applies.
+
 ## Request contract
 
 All `/internal/browser/*` routes need `Authorization: Bearer <BROWSER_RUNNER_SECRET>`.
+Every cloud request also requires `mode: "file" | "web"`. Viewer and upload
+URLs carry that mode in their query. The web slot keeps its existing object name;
+the file slot adds `:file`. Existing any-mode sessions must be closed before
+deploying this strict contract.
 Operational outcomes return HTTP 200 with `{ ok: true }` or
 `{ ok: false, error: { code, message } }`. Transport failures (401, 400, 413,
 503) use `{ ok: false, error }` with no session detail.
@@ -42,7 +200,9 @@ Operational outcomes return HTTP 200 with `{ ok: true }` or
   allowing viewer input. An overdue reload closes its page before the command
   slot can be reused. Explicit human reload omits this lease.
 - `POST /internal/browser/run` — run one Playwright snippet. Body: owner
-  triple, session/nav/load/control ids, command id, code (20 KB max). Returns
+  triple, session/nav/load/control ids, command id, source identity, deadline,
+  receipt-resolution deadline, and code (20 KB max). Web calls also require
+  `tabId`, `tabGen`, `policyRevision`, and `selectionRevision`. Returns
   `succeeded` with result, files, popups, console/page errors, and logs; or
   `errored`, `timed_out`, or `tainted` (target escape: the session is closed
   and the result is discarded). `succeeded` also has `downloads` (always `[]`
@@ -53,6 +213,26 @@ Operational outcomes return HTTP 200 with `{ ok: true }` or
   checked by the trusted host. A snippet that is only a function (for example
   `async ({ page }) => { ... }`) never runs, so it returns `errored` with
   "Your code returned a function. Write the function body only, do not wrap it in a function."
+- `command-status` and `command-fence` read the exact durable command receipt.
+  Their identity includes `sessionId`, `commandId`, `codeHash`, source, and both
+  deadlines. A run result includes the command tab's resulting session lease.
+  Status reserves a missing command before replying. Unknown work must be
+  fenced and its cleanup proved; it must not be replayed.
+- Agent open, reload, close, tab-new, and tab-close take stable `operationId`,
+  `operationDeadline` (at most 120 seconds), and source identity. `operation-status`
+  can omit session ID so a lost open reply can still resolve. It keeps bounded
+  session metadata, usage, and `result.cleanup`. It never creates a provider
+  browser. It reserves a missing request before replying and fences expired
+  work. An unproved provider close keeps cleanup unknown.
+- `tabs` lists transient `{tabId,tabGen,navGen,title,url}` items. `tab-new`
+  accepts a URL or null and creates one of at most eight registered tabs.
+  Agent creation does not select the viewer tab. `tab-close` closes exactly
+  that tab; closing the last tab ends the web session. Both advance `controlGen`.
+  If agent access changes during New, close only its new page and keep older
+  tabs. Keep the result unknown until that page's cleanup is proved.
+  `tab-select` takes tab ID and viewer ID. The input holder alone may select
+  while input is held; otherwise any authorized viewer may select. All viewers
+  share that selection and one screencast producer.
 - `POST /internal/browser/close` — close the provider browser, verify it is
   gone from the provider inventory, and free the slot. Works while disabled.
   Returns `{ ok: true, existed, verified, usage }`.
@@ -83,10 +263,11 @@ Operational outcomes return HTTP 200 with `{ ok: true }` or
 - `POST /internal/browser/control-take` — hand control to a viewer: ready
   becomes human at once; a running command finishes first (pausing) and then
   hands over. Refuses new agent commands meanwhile.
-- `POST /internal/browser/control-resume` — atomically end human input and
+- `POST /internal/browser/control-resume` — require the exact paused `controlGen`, end human input, and
   ready the agent side for a fresh request lease.
 - `POST /internal/browser/agent-access` — web mode only. Body: owner triple,
-  `sessionId`, `on`. Every real change bumps `controlGen`, so a late reply cannot
+  `sessionId`, `on`, `agentBlockedHosts`, `policyRevision`, and `selectionRevision`.
+  Older revisions are refused. Every real change bumps `controlGen`, so a late reply cannot
   undo it in Convex. Turning it off also revokes a running command's bridge. New
   agent commands and agent reloads get `agent_access_off`.
 - `POST /internal/browser/profile-summary` — body: owner triple, `profileId`,
@@ -114,8 +295,9 @@ Operational outcomes return HTTP 200 with `{ ok: true }` or
   `download_push_failed` and keeps the bytes until the 2-minute expiry. The
   expiry waits for a push that is still running.
 - `POST /internal/browser/upload-fill` — body: owner triple, `sessionId`,
-  `chooserId`, `controlGen`, `files` (1–10 of `{ name, contentType, url }`,
-  https URLs). The runner reads all URLs at the same time (20 MiB total, shared)
+  `chooserId`, `controlGen`, `tabId`, `tabGen`, `viewGen`, `files`
+  (1–10 of `{ name, contentType, url }`, https URLs). The runner reads all URLs
+  at the same time (20 MiB total, shared)
   and gives the files to the open file chooser: `{ ok: true }`. The whole fill
   takes at most 120 seconds: the reads stop after 85 seconds (`fetch_failed`),
   then the origin check (5 s) and `setFiles` (30 s) follow. Convex must wait
@@ -123,8 +305,8 @@ Operational outcomes return HTTP 200 with `{ ok: true }` or
   `fetch_failed`, `too_many_files`.
 - `POST /internal/browser/upload-grant` — the same body without `files`.
   Returns `{ ok: true, grantId, expiresAt }`: one computer upload to that
-  chooser within 2 minutes. Refusals: `chooser_gone`, `not_human`.
-- `PUT /viewer/upload?ownerId=&organizationId=&workspaceId=&grantId=&name=` —
+  chooser, tab, and view within 2 minutes. Refusals: `chooser_gone`, `not_human`.
+- `PUT /viewer/upload?mode=&ownerId=&organizationId=&workspaceId=&grantId=&name=` —
   public, no bearer: the grant is the secret and is used up on the first try.
   Raw body with `Content-Type` and `Content-Length` (20 MiB max). Replies
   `200 { ok: true }` or `4xx { ok: false, code }`: `origin_refused` (403),
@@ -144,22 +326,23 @@ Operational outcomes return HTTP 200 with `{ ok: true }` or
 
 1. The app mints a grant over the trusted route, then opens
    `GET /viewer/stream` (WebSocket) with `ownerId`, `organizationId`, and
-   `workspaceId` query fields. These non-secret ids route the socket to its
+   `workspaceId`, and `mode` query fields. These non-secret ids route the socket to its
    session Durable Object. The grant stays in the hello, sent within 5 seconds:
-   `{ ownerId, organizationId, workspaceId, grantId, host: "docked"|"detached" }`.
+   `{ ownerId, organizationId, workspaceId, mode, grantId, host: "docked"|"detached" }`.
    The object checks that the URL, hello, and stored session have the same ids.
 2. The object owns all viewer sockets and answers
-   `{ t: "hello", viewerId, viewport, control, controlGen }`. One shared CDP
+   `{ t: "hello", mode, viewerId, viewport, control, controlGen, loadGen, tabId, tabGen,
+   viewGen, viewedTabId, policyRevision, selectionRevision, tabs }`. One shared CDP
    screencast produces JPEG frames for all viewers. Provider credentials and
    raw CDP commands never reach the client.
-3. Each `{ t: "frame", seq, loadGen }` is immediately followed by its binary
+3. Each `{ t: "frame", seq, loadGen, tabId, tabGen, viewGen }` is immediately followed by its binary
    JPEG. The app assigns the image and sends `{ t: "frame-ack", seq }` after
    its synchronous frame callback, even if that callback fails. On failure, the
    client then closes the socket. This ACK confirms delivery, not decode or paint.
    Each viewer may have two frames in flight. ACKs must match the oldest frame;
    the object keeps only the latest waiting frame. A slow viewer cannot block
    the others. A new viewer receives the cached frame even on a static page.
-4. Input messages `{ t: "input", seq, controlGen, loadGen, kind, ... }` carry
+4. Input messages `{ t: "input", seq, controlGen, loadGen, tabId, tabGen, viewGen, kind, ... }` carry
    mouse, wheel, and keyboard actions in page CSS pixels. The client uses the
    latest hello/control generation and the last delivered image's load
    generation. It sends no input until both are known. The object checks both
@@ -169,10 +352,14 @@ Operational outcomes return HTTP 200 with `{ ok: true }` or
    `authorizeMs`, `readyMs`, and `applyMs` without input content.
    Only mouse moves to the last applied position are skipped after authorization.
    Mouse down/up accept `clickCount` from 1 to 10 for native multiple clicks.
-5. Control changes are pushed as `{ t: "control", control, controlGen }`.
-   `{ t: "viewport", viewport }` comes before frames for a new load or size.
+5. Control changes are pushed as `{ t: "control", control, controlGen, tabId, tabGen, viewGen }`.
+   `{ t: "viewport", viewport, tabId, tabGen, viewGen }` comes before frames for a new load or size.
    The client ignores binary frames without adjacent valid metadata and clears
    pending metadata on viewport changes and close.
+   Location, viewport, chooser, download, notice, and tab-list messages also
+   carry tab/view identities. File mode uses its session ID as the fixed tab ID,
+   navigation generation as tab generation, and load generation as view generation.
+   Old tab input and input before a fresh image are refused.
 6. The app renews every ~20 seconds. A grant unrenewed for 90 seconds ends
    the socket, including on a static page. The 90 seconds cover a background
    tab whose 20-second timer runs only once a minute. Session idle and total
@@ -186,7 +373,8 @@ The object retains one trusted Playwright connection for input and command
 checks. The producer starts with the first viewer and stops after the last
 leaves, without closing that connection. Each start gets a fresh page CDP
 session so old frames cannot enter a new stream. Start and stop are serialized.
-Reloads, viewport changes, and completed agent commands restart the producer.
+Reloads and viewport changes restart the producer. A completed agent command
+restarts it in file mode or when the command used the viewed web tab.
 Agent tracing can replace Chromium's screencast, so the command stays locked
 through restart and re-checks the session before handing control back. Each
 start forces the stored viewport through CDP; Playwright's cached size can be
@@ -200,8 +388,8 @@ Socket close codes: 4401 bad grant, 4404 session gone, 4408 grant expired,
 
 ## Session and control model
 
-- One active browser per owner/organization/workspace (the object name is the
-  slot), two per workspace, ten per deployment. Claims expire in 60 seconds
+- One web slot and one file slot per owner/organization/workspace, subject to
+  two per workspace and ten per deployment. Claims expire in 60 seconds
   so a crash cannot leak a slot.
 - States: `starting`, `ready`, `agent`, `pausing`, `human`, `closing`.
   Generations invalidate late calls: a result or viewer from a retired file,
@@ -220,7 +408,8 @@ Socket close codes: 4401 bad grant, 4404 session gone, 4408 grant expired,
   executor). A finish for an old command is a no-op. A stale command, lost
   bridge, or uncertain cleanup closes that browser; its lock is never cleared
   for reuse. Takeover waits for a live command to finish. Detaching the last
-  input holder releases `human` back to `ready` (never to agent work).
+  input holder releases held keys and buttons. Human pause stays until Resume,
+  including after route detach, command finish, and reload.
 - Admission also caps two browsers per user and four per organization
   (`user_limit`, `organization_limit`). A running agent command returns
   `busy_command`. A reload holding the slot returns plain `busy`.
@@ -233,10 +422,12 @@ Socket close codes: 4401 bad grant, 4404 session gone, 4408 grant expired,
 
 ## Web mode
 
-Open with `mode: "web"`, `navGen: 1`, `startUrl` (string or null),
+Open with `mode: "web"`, positive `navGen`, `startUrl` (string or null),
 `agentAccess`, `profileId` (the Convex profile doc id), `profileKey` (32 bytes,
-base64), and `agentBlockedHosts` (up to 50 hosts, 253 characters each). A web
-session shows one real tab on the open internet.
+base64), `policyRevision`, `selectionRevision`, and `agentBlockedHosts`
+(up to 50 hosts, 253 characters each). An open reuses the existing web slot.
+A web session holds up to eight real tabs on the open internet. The viewer shows
+the shared selected tab. Agent commands name their own exact tab.
 
 - The provider browser has no egress guardrails, `keep_alive` of 10 minutes,
   and recording off. The provider egress proxy still refuses private addresses.
@@ -247,14 +438,25 @@ session shows one real tab on the open internet.
   are allowed, with no user name or password in the URL.
 - Budgets: 60 minutes total, 9 idle minutes, 120 commands. Page navigation
   does not count as activity. Reload reloads the current page and keeps `loadGen`.
-- The record keeps the page target id chosen at open. Reconnect keeps that
-  page and closes any other page.
-- Popups: with no agent command running, the popup closes and its address opens
-  in the main page (`notice: popup_opened_here`). During a command it only
-  closes (`popup_closed`). A blocked address gives `address_blocked`.
+- Open and New tab initial URLs wait for document commit and the stored tab and
+  navigation generations. They do not wait for DOMContentLoaded or all scripts.
+  Open still keeps the browser usable when its start site is slow or fails.
+  The trusted main-frame Playwright event records both new-document and
+  same-document navigation. Each tab saves those events in order.
+- Web Reload waits for commit and the same tab's saved generations within one
+  five second budget. A slow site stays usable. A broken connection or failed
+  navigation save closes the session. Take and End still win during the wait.
+- The record keeps opaque tab IDs mapped to native target IDs. Reconnect checks
+  all registered pages and closes unknown pages. Tabs share one browser context,
+  including cookies and storage; they are not security boundaries.
+- A popup from the selected tab after a human input gesture may become a new
+  registered tab (`popup_opened_here`). It must have that real opener, pass host
+  checks, and fit the eight-tab limit. Agent and unowned popups close
+  (`popup_closed`). A blocked address gives `address_blocked`.
 - File choosers and downloads: see Downloads and uploads below.
 - Viewer messages may be 16,384 characters. New messages:
-  `{ t: "nav", seq, controlGen, action: "go"|"back"|"forward"|"reload"|"stop", url? }`
+  `{ t: "nav", seq, controlGen, tabId, tabGen, viewGen,
+  action: "go"|"back"|"forward"|"reload"|"stop", url? }`
   (answered by `{ t: "nav-ack", seq, ok, code? }`), and the input kind
   `text.insert` (1–4000 characters, one paste-like call). The object pushes
   `{ t: "location", url, title, loading, canGoBack, canGoForward }`,
@@ -286,7 +488,7 @@ The object keeps the user's cookies between web sessions in storage key
 - Save: `Storage.getCookies` (no context id). Cookies of `BROWSER_WEB_DENIED_HOSTS`
   are dropped. At most 3,000 cookies (the longest-living ones) and 1 MiB of JSON;
   more sets `truncated`. Saves happen at human End (`saveProfile: true`), at idle
-  or total expiry, and on viewer renew when people or the agent used the page and
+  or total expiry, after settled agent work, and on viewer renew when people or the agent used the page and
   the last save is over 2 minutes old. Other closes (security, failures, agent
   `browser_close`, profile delete) never save.
 - Each put also writes `profileDeleteAt` = `savedAt` + 100 days. The alarm is
@@ -306,7 +508,7 @@ The object keeps the user's cookies between web sessions in storage key
 `agentBlockedHosts` is best effort (the UI says so). A host also covers its
 subdomains.
 
-- `run` refuses `agent_blocked_site` when the main page is on a blocked site,
+- `run` refuses `agent_blocked_site` when any registered peer is on a blocked site,
   and `not_ready` when the page cannot be checked.
 - During an agent command the host turns on `Fetch` at the request stage for
   page, XHR, and fetch requests and fails requests to blocked sites
@@ -371,15 +573,15 @@ catches downloads itself and keeps them only in object memory.
 - File choosers: in human control only, a chooser with an input element is
   pushed as `{ t: "file-chooser", chooserId, multiple, accept, origin }`
   (`accept` is the raw attribute, 512 characters max; `origin` is the frame
-  origin). A chooser is gone after a main-frame navigation, a `controlGen`
-  change, 5 minutes, a fill, or a cancel, with `{ t: "file-chooser-closed",
-  chooserId }`. A new chooser replaces the old one. During agent commands the
-  snippet handles its own choosers. A chooser with no input element gives
+  origin). A chooser is gone after a main-frame navigation, a tab or view change,
+  a `controlGen` change, 5 minutes, a fill, or a cancel, with
+  `{ t: "file-chooser-closed", chooserId }`. A new chooser replaces the old one.
+  During agent commands the snippet handles its own choosers. A chooser with no input element gives
   `upload_unsupported`.
-- A fill checks the frame origin after reading the files, and then the chooser
-  again right before `setFiles`, so a chooser that closed during the origin
-  check gets no files. `multiple: false` takes exactly one file. A computer
-  upload gives one file.
+- A fill checks the frame origin after reading the files, and then the chooser's
+  exact tab, view, and control again right before `setFiles`, so a chooser that
+  closed during the origin check gets no files. `multiple: false` takes exactly
+  one file. A computer upload gives one file.
 - Cancel dispatches a `cancel` event on the input, like a closed Chrome
   dialog, and keeps the page's current files.
 - Logs never contain file names, URLs, or hosts.
@@ -442,7 +644,7 @@ There is no two-capture limit. Generic file exports do not use image checks.
   inventory, controller URL, and page nonce before marking the command settled.
   Only a settled command may release its slot without closing the browser.
 - **No snippet network.** `globalOutbound: null` makes fetch/connect throw.
-  The snippet module exports only `connect` and `expect`.
+  The snippet module exports `connect`, `expect`, and the pure host matcher.
 - **No ambient authority.** User code runs with an undefined receiver, so it
   cannot reach the loader env. The provider session id never leaves the
   runner; both callers and the child use the opaque app session id.
@@ -493,6 +695,7 @@ There is no two-capture limit. Generic file exports do not use image checks.
 | `LOADER`                 | worker_loaders    | The Worker Loader binding (declared in `wrangler.jsonc`).      |
 | `BROWSER_SESSIONS`       | durable object    | Session, lease, and deadline state.                            |
 | `BROWSER_REGISTRY`       | durable object    | Deployment and workspace admission slots.                      |
+| `PLAYWRITER_SESSIONS`    | durable object    | Remote socket, target, revisions, budgets, and receipts.         |
 
 The `dev` environment repeats every binding explicitly and deploys as
 `bonobo-senate-browser-runner-dev`. The top-level (prod) name stays disabled

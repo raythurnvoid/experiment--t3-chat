@@ -6,7 +6,11 @@ import { access_control_db_ensure_owner_memberships } from "./access_control.ts"
 import { access_control_changes_db_record } from "./access_control_changes.ts";
 import { plugins_scheduled_runs_workpool } from "./plugins_schedules_db.ts";
 import { activities_db_delete, activities_db_require_by_source_id } from "./activities_db.ts";
-import { ai_chat_files_db_delete_job_batch, ai_chat_files_db_request_job_stop } from "./ai_chat_files.ts";
+import {
+	ai_chat_files_db_delete_browser_invocations,
+	ai_chat_files_db_delete_job_batch,
+	ai_chat_files_db_request_job_stop,
+} from "./ai_chat_files.ts";
 import { organizations_membership_lifetimes_db_record } from "./organizations_membership_lifetimes.ts";
 import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
 import {
@@ -603,6 +607,15 @@ async function db_purge_organization_workspace_content_batch(
 		);
 		return { done: false, deletedCount: lastSequenceSaved.length };
 	}
+
+	// Finish or delete browser call receipts before deleting the chat. Late receipts keep copied IDs.
+	const browserInvocations = await ctx.db
+		.query("ai_chat_browser_invocations")
+		.withIndex("by_organization_workspace", (q) =>
+			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
+		)
+		.take(batchSize);
+	if (browserInvocations.length > 0) return ai_chat_files_db_delete_browser_invocations(ctx, browserInvocations);
 
 	// Bash command links and terminal receipts live until their owning threads are purged.
 	const bashTransferLinks = await ctx.db
@@ -2321,10 +2334,11 @@ async function db_drain_user_finalization_batch(
 	if (archiveRunCount > 0) return { done: false, deletedCount: archiveRunCount };
 	if (await db_user_has_subtree_ops(ctx, args)) return { done: false, deletedCount: 0 };
 
-	const browserCount = (
-		await files_browser_db_delete_user_batch(ctx, { userId: args.userId, batchSize: args.batchSize })
-	).deletedCount;
-	if (browserCount > 0) return { done: false, deletedCount: browserCount };
+	const browserDelete = await files_browser_db_delete_user_batch(ctx, {
+		userId: args.userId,
+		batchSize: args.batchSize,
+	});
+	if (!browserDelete.done) return browserDelete;
 
 	const mcpCount = (await plugins_mcp_db_delete_user_batch(ctx, { userId: args.userId, batchSize: args.batchSize }))
 		.deletedCount;
@@ -3666,9 +3680,8 @@ export const prepare_user_for_hard_deletion = internalMutation({
 		if (deletedArchiveRunCount > 0) return false;
 		if (await db_user_has_subtree_ops(ctx, { userId: args.userId })) return false;
 
-		const deletedBrowserCount = (await files_browser_db_delete_user_batch(ctx, { userId: args.userId, batchSize }))
-			.deletedCount;
-		if (deletedBrowserCount > 0) return false;
+		const browserDelete = await files_browser_db_delete_user_batch(ctx, { userId: args.userId, batchSize });
+		if (!browserDelete.done) return false;
 
 		const deletedSessionCount = await db_drain_user_plugin_ui_sessions_batch(ctx, {
 			userId: args.userId,

@@ -1,10 +1,23 @@
 import { vOnCompleteArgs, vWorkId, Workpool, type WorkId } from "@convex-dev/workpool";
 import { compareValues, v, type Infer } from "convex/values";
-import { paginationOptsValidator, type RegisteredMutation, type RegisteredQuery } from "convex/server";
+import {
+	paginationOptsValidator,
+	type FunctionArgs,
+	type RegisteredMutation,
+	type RegisteredQuery,
+} from "convex/server";
 import { omit } from "convex-helpers";
 import { doc } from "convex-helpers/validators";
+import { z } from "zod";
 import { Result } from "common/errors-as-values-utils.ts";
-import { internalMutation, internalQuery, query, type MutationCtx, type QueryCtx } from "./_generated/server.js";
+import {
+	internalAction,
+	internalMutation,
+	internalQuery,
+	query,
+	type MutationCtx,
+	type QueryCtx,
+} from "./_generated/server.js";
 import type { Doc, Id } from "./_generated/dataModel";
 import { components, internal } from "./_generated/api.js";
 import app_convex_schema, {
@@ -12,6 +25,10 @@ import app_convex_schema, {
 	ai_chat_bash_result_validator,
 	ai_chat_model_id_validator,
 	ai_chat_workspaces_source_validator,
+	ai_chat_browser_source_validator,
+	ai_chat_browser_resource_validator,
+	ai_chat_browser_result_validator,
+	browser_intent_validator,
 	bash_shell_state_validator,
 	files_pending_target_validator,
 	files_transfer_scope_validator,
@@ -41,6 +58,13 @@ import {
 } from "./organizations_membership_lifetimes.ts";
 import { ai_chat_workspaces_db_authorize_file_scope, ai_chat_workspaces_db_resolve } from "./ai_chat_workspaces.ts";
 import { billing_db_check_paid_plan, billing_pick_billed_user_id } from "./billing_db.ts";
+import { files_browser_db_check_agent_intent } from "./files_browser.ts";
+import {
+	files_browser_runner_call,
+	files_browser_runner_session_schema,
+	files_browser_runner_status_schema,
+	files_browser_runner_usage_schema,
+} from "../server/files-browser.ts";
 import { files_nodes_db_plan_private_node_by_path } from "./files_nodes.ts";
 import { files_visible_db_create_reader } from "./files_visible.ts";
 import { files_pending_nodes_db_resolve_read_target } from "./files_pending_nodes.ts";
@@ -144,6 +168,8 @@ const bash_invocation_identity = {
 	membershipLifetime: v.number(),
 	toolCallId: v.string(),
 	commandHash: v.string(),
+	browserIntent: v.optional(browser_intent_validator),
+	sourceMessageId: v.optional(v.id("ai_chat_threads_messages_aisdk_5")),
 };
 
 const bash_invocation_result = v.object({
@@ -566,6 +592,584 @@ export const cleanup_expired_bash_results = internalMutation({
 			await ctx.db.patch("ai_chat_bash_invocations", invocation._id, { result: undefined, resultExpiresAt: undefined });
 		if (invocations.length === BASH_RESULT_CLEANUP_BATCH_COUNT)
 			await ctx.scheduler.runAfter(0, internal.ai_chat_files.cleanup_expired_bash_results, {});
+		return null;
+	},
+});
+
+const browser_invocation_identity = {
+	source: ai_chat_browser_source_validator,
+	browserIntent: browser_intent_validator,
+	toolCallId: v.string(),
+	operationHash: v.string(),
+	resource: v.union(ai_chat_browser_resource_validator, v.null()),
+	mode: v.optional(v.union(v.literal("file"), v.literal("web"))),
+	operationKind: v.optional(v.union(v.literal("run"), v.literal("management"))),
+};
+
+const browser_invocation_result = v.object({
+	isNew: v.boolean(),
+	invocationId: v.id("ai_chat_browser_invocations"),
+	commandId: v.string(),
+	deadlineAt: v.number(),
+	receiptResolutionDeadline: v.number(),
+	status: app_convex_schema.tables.ai_chat_browser_invocations.validator.fields.status,
+	resource: v.union(ai_chat_browser_resource_validator, v.null()),
+	result: v.union(ai_chat_browser_result_validator, v.null()),
+	resultExpired: v.boolean(),
+});
+
+// Explicit handler results keep generated API argument types from forming a cycle.
+type BrowserInvocationResult<T> =
+	| { _yay: T; _nay?: undefined }
+	| { _yay?: undefined; _nay: { message: string; name?: string } };
+
+function browser_invocation_output(invocation: Doc<"ai_chat_browser_invocations">, isNew = false) {
+	const resultExpired = invocation.status === "finished" && (invocation.resultExpiresAt ?? 0) <= Date.now();
+	return {
+		isNew,
+		invocationId: invocation._id,
+		commandId: invocation.commandId,
+		deadlineAt: invocation.deadlineAt,
+		receiptResolutionDeadline: invocation.receiptResolutionDeadline,
+		status:
+			invocation.status === "running" && invocation.deadlineAt <= Date.now()
+				? ("interrupted" as const)
+				: invocation.status,
+		resource: invocation.resource,
+		result: resultExpired ? null : (invocation.result ?? null),
+		resultExpired,
+	};
+}
+
+export async function ai_chat_files_db_get_browser_invocation(
+	ctx: QueryCtx | MutationCtx,
+	args: FunctionArgs<typeof internal.ai_chat_files.get_browser_invocation>,
+): Promise<BrowserInvocationResult<Doc<"ai_chat_browser_invocations"> | null>> {
+	const mode = args.mode ?? (args.resource?.provider === "cloud" ? args.resource.mode : "web");
+	const checked = await files_browser_db_check_agent_intent(ctx, { ...args, mode });
+	if (checked._nay) return checked;
+	const invocation = await ctx.db
+		.query("ai_chat_browser_invocations")
+		.withIndex("by_thread_toolCall", (q) => q.eq("threadId", args.source.threadId).eq("toolCallId", args.toolCallId))
+		.first();
+	if (!invocation) return Result({ _yay: null });
+	if (
+		invocation.userId !== args.source.userId ||
+		invocation.organizationId !== args.source.organizationId ||
+		invocation.workspaceId !== args.source.workspaceId ||
+		invocation.membershipId !== args.source.membershipId ||
+		invocation.membershipLifetime !== args.source.membershipLifetime ||
+		invocation.sourceMessageId !== args.source.sourceMessageId
+	)
+		return Result({ _nay: { message: "Unauthorized" } });
+	if (
+		invocation.operationHash !== args.operationHash ||
+		invocation.mode !== mode ||
+		invocation.operationKind !== (args.operationKind ?? "management")
+	)
+		return Result({ _nay: { name: "invocation_changed", message: "This browser call already has different input" } });
+	return Result({ _yay: invocation });
+}
+
+/**
+ * Remote reserve writes this receipt and its unresolved slot in one transaction.
+ */
+export async function ai_chat_files_db_begin_browser_invocation(
+	ctx: MutationCtx,
+	args: FunctionArgs<typeof internal.ai_chat_files.begin_browser_invocation>,
+): Promise<BrowserInvocationResult<Infer<typeof browser_invocation_result>>> {
+	if (!args.toolCallId || args.toolCallId.length > 256 || !/^[a-f0-9]{64}$/.test(args.operationHash))
+		return Result({ _nay: { message: "Invalid browser call identity" } });
+	const found = await ai_chat_files_db_get_browser_invocation(ctx, args);
+	if (found._nay) return found;
+	if (found._yay) return Result({ _yay: browser_invocation_output(found._yay) });
+	const resource = args.resource;
+	if (resource?.provider === "cloud") {
+		const session = await ctx.db.get("files_browser_sessions", resource.sessionId);
+		if (
+			!session ||
+			session.ownerId !== args.source.userId ||
+			session.organizationId !== args.source.organizationId ||
+			session.workspaceId !== args.source.workspaceId ||
+			session.mode !== resource.mode ||
+			session.control !== "ready" ||
+			session.controlGen !== resource.controlGen ||
+			session.loadGen !== resource.loadGen
+		)
+			return Result({ _nay: { message: "Browser control changed" } });
+		if (session.mode === "file" && session.navigationGeneration !== resource.navGen)
+			return Result({ _nay: { message: "Browser source changed" } });
+		if (
+			session.mode === "web" &&
+			(!session.agentAccess ||
+				session.policyRevision !== args.browserIntent.policyRevision ||
+				session.selectionRevision !== args.browserIntent.selectionRevision ||
+				!session.tabs.some(
+					(tab) => tab.tabId === resource.tabId && tab.tabGen === resource.tabGen && tab.navGen === resource.navGen,
+				))
+		)
+			return Result({ _nay: { message: "Browser tab changed" } });
+	} else if (resource?.provider === "playwriter") {
+		const connection = await ctx.db.get("playwriter_connections", resource.connectionId);
+		if (
+			!connection ||
+			connection.ownerId !== args.source.userId ||
+			connection.organizationId !== args.source.organizationId ||
+			connection.workspaceId !== args.source.workspaceId ||
+			connection.membershipId !== args.source.membershipId ||
+			connection.membershipLifetime !== args.source.membershipLifetime ||
+			connection.connectionGeneration !== resource.connectionGeneration ||
+			connection.controlRevision !== resource.controlRevision ||
+			connection.targetRevision !== resource.targetRevision ||
+			connection.navRevision !== resource.navRevision ||
+			connection.confirmedTargetHandle !== resource.confirmedTargetHandle
+		)
+			return Result({ _nay: { message: "Shared browser changed" } });
+	}
+	const maxTimeout = resource?.provider === "playwriter" ? 30_000 : 120_000;
+	if (!Number.isInteger(args.timeoutMs) || args.timeoutMs <= 0 || args.timeoutMs > maxTimeout)
+		return Result({ _nay: { message: "Invalid browser deadline" } });
+	const now = Date.now();
+	const value = {
+		...args.source,
+		toolCallId: args.toolCallId,
+		operationHash: args.operationHash,
+		mode: args.mode ?? (resource?.provider === "cloud" ? resource.mode : "web"),
+		operationKind: args.operationKind ?? ("management" as const),
+		runnerSessionId:
+			resource?.provider === "cloud"
+				? ((await ctx.db.get("files_browser_sessions", resource.sessionId))?.runnerSessionId ?? null)
+				: null,
+		openingSessionId: null,
+		browserIntent: args.browserIntent,
+		resource,
+		commandId: crypto.randomUUID(),
+		status: "running" as const,
+		deadlineAt: now + args.timeoutMs,
+		receiptResolutionDeadline: now + args.timeoutMs + 5_000,
+		createdAt: now,
+	};
+	const invocationId = await ctx.db.insert("ai_chat_browser_invocations", value);
+	await ctx.scheduler.runAt(value.deadlineAt, internal.ai_chat_files.interrupt_browser_invocation, { invocationId });
+	const inserted = (await ctx.db.get("ai_chat_browser_invocations", invocationId))!;
+	return Result({ _yay: browser_invocation_output(inserted, true) });
+}
+
+export const begin_browser_invocation = internalMutation({
+	args: { ...browser_invocation_identity, timeoutMs: v.number() },
+	returns: v_result({ _yay: browser_invocation_result }),
+	handler: async (ctx, args): Promise<BrowserInvocationResult<Infer<typeof browser_invocation_result>>> =>
+		ai_chat_files_db_begin_browser_invocation(ctx, args),
+});
+
+export const get_browser_invocation = internalQuery({
+	args: browser_invocation_identity,
+	returns: v_result({ _yay: v.union(browser_invocation_result, v.null()) }),
+	handler: async (ctx, args): Promise<BrowserInvocationResult<Infer<typeof browser_invocation_result> | null>> => {
+		const found = await ai_chat_files_db_get_browser_invocation(ctx, args);
+		return found._nay ? found : Result({ _yay: found._yay ? browser_invocation_output(found._yay) : null });
+	},
+});
+
+// Copy the app session before open is sent. A lost reply must still drain and bill that session.
+export const bind_browser_open_invocation = internalMutation({
+	args: { commandId: v.string(), source: ai_chat_browser_source_validator, sessionId: v.id("files_browser_sessions") },
+	returns: v_result({ _yay: v.null() }),
+	handler: async (ctx, args) => {
+		const invocation = await ctx.db
+			.query("ai_chat_browser_invocations")
+			.withIndex("by_commandId", (q) => q.eq("commandId", args.commandId))
+			.first();
+		const session = await ctx.db.get("files_browser_sessions", args.sessionId);
+		if (
+			!invocation ||
+			invocation.status !== "running" ||
+			invocation.resource !== null ||
+			invocation.deadlineAt <= Date.now() ||
+			invocation.userId !== args.source.userId ||
+			invocation.organizationId !== args.source.organizationId ||
+			invocation.workspaceId !== args.source.workspaceId ||
+			invocation.threadId !== args.source.threadId ||
+			invocation.sourceMessageId !== args.source.sourceMessageId ||
+			invocation.membershipId !== args.source.membershipId ||
+			invocation.membershipLifetime !== args.source.membershipLifetime ||
+			!session ||
+			session.control !== "starting" ||
+			session.ownerId !== invocation.userId ||
+			session.organizationId !== invocation.organizationId ||
+			session.workspaceId !== invocation.workspaceId ||
+			session.mode !== invocation.mode ||
+			(invocation.openingSessionId !== null && invocation.openingSessionId !== session._id)
+		)
+			return Result({ _nay: { message: "Browser open identity changed" } });
+		await ctx.db.patch("ai_chat_browser_invocations", invocation._id, { openingSessionId: session._id });
+		return Result({ _yay: null });
+	},
+});
+
+const browser_finish_args = {
+	invocationId: v.id("ai_chat_browser_invocations"),
+	operationHash: v.string(),
+	commandId: v.string(),
+	result: ai_chat_browser_result_validator,
+	resource: v.optional(v.union(ai_chat_browser_resource_validator, v.null())),
+};
+
+/**
+ * Safe late receipts may settle a call. They never grant new authority.
+ */
+export async function ai_chat_files_db_finish_browser_invocation(
+	ctx: MutationCtx,
+	args: FunctionArgs<typeof internal.ai_chat_files.finish_browser_invocation>,
+): Promise<BrowserInvocationResult<Infer<typeof browser_invocation_result>>> {
+	const invocation = await ctx.db.get("ai_chat_browser_invocations", args.invocationId);
+	if (!invocation) return Result({ _nay: { message: "Not found" } });
+	if (invocation.operationHash !== args.operationHash || invocation.commandId !== args.commandId)
+		return Result({ _nay: { name: "invocation_changed", message: "Browser call identity changed" } });
+	if (args.result.reason !== null && !/^[a-z0-9_]{1,64}$/.test(args.result.reason))
+		return Result({ _nay: { message: "Invalid browser result" } });
+	if (invocation.status === "finished") return Result({ _yay: browser_invocation_output(invocation) });
+	const now = Date.now();
+	const patch = {
+		status: "finished" as const,
+		finishedAt: now,
+		result: args.result,
+		resultExpiresAt: now + 24 * 60 * 60 * 1000,
+		...(args.resource !== undefined ? { resource: args.resource } : {}),
+	};
+	await ctx.db.patch("ai_chat_browser_invocations", invocation._id, patch);
+	await ctx.scheduler.runAt(patch.resultExpiresAt, internal.ai_chat_files.expire_browser_invocation_result, {
+		invocationId: invocation._id,
+	});
+	return Result({ _yay: browser_invocation_output({ ...invocation, ...patch }) });
+}
+
+export const finish_browser_invocation = internalMutation({
+	args: browser_finish_args,
+	returns: v_result({ _yay: browser_invocation_result }),
+	handler: async (ctx, args): Promise<BrowserInvocationResult<Infer<typeof browser_invocation_result>>> =>
+		ai_chat_files_db_finish_browser_invocation(ctx, args),
+});
+
+export const interrupt_browser_invocation = internalMutation({
+	args: { invocationId: v.id("ai_chat_browser_invocations"), force: v.optional(v.boolean()) },
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const invocation = await ctx.db.get("ai_chat_browser_invocations", args.invocationId);
+		if (invocation?.status === "running" && (args.force || invocation.deadlineAt <= Date.now())) {
+			await ctx.db.patch("ai_chat_browser_invocations", invocation._id, {
+				status: "interrupted",
+				finishedAt: Date.now(),
+			});
+			if (invocation.resource?.provider !== "playwriter")
+				await ctx.scheduler.runAfter(0, internal.ai_chat_files.resolve_cloud_browser_invocation, {
+					invocationId: invocation._id,
+				});
+		}
+		return null;
+	},
+});
+
+// Cleanup reads the copied call identity even after its chat, membership, or session was deleted.
+export const load_browser_invocation_receipt_identity = internalQuery({
+	args: { invocationId: v.id("ai_chat_browser_invocations") },
+	returns: v.union(doc(app_convex_schema, "ai_chat_browser_invocations"), v.null()),
+	handler: async (ctx, args) => ctx.db.get("ai_chat_browser_invocations", args.invocationId),
+});
+
+export const record_interrupted_browser_open = internalMutation({
+	args: { invocationId: v.id("ai_chat_browser_invocations"), commandId: v.string(), runnerSessionId: v.string() },
+	returns: v.boolean(),
+	handler: async (ctx, args) => {
+		const invocation = await ctx.db.get("ai_chat_browser_invocations", args.invocationId);
+		if (
+			!invocation ||
+			invocation.commandId !== args.commandId ||
+			!invocation.openingSessionId ||
+			invocation.status === "finished" ||
+			(invocation.runnerSessionId && invocation.runnerSessionId !== args.runnerSessionId)
+		)
+			return false;
+		await ctx.db.patch("ai_chat_browser_invocations", invocation._id, { runnerSessionId: args.runnerSessionId });
+		const session = await ctx.db.get("files_browser_sessions", invocation.openingSessionId);
+		if (session)
+			await ctx.db.patch("files_browser_sessions", session._id, {
+				runnerSessionId: args.runnerSessionId,
+				control: "closing",
+				startingExpiresAt: undefined,
+				updatedAt: Date.now(),
+			});
+		return true;
+	},
+});
+
+const cloud_command_receipt_schema = z.object({
+	ok: z.literal(true),
+	status: z.enum(["completed", "refused", "in_progress", "unknown", "not_started"]),
+	commandId: z.string(),
+	codeHash: z.string(),
+	result: z.object({ cleanup: z.enum(["complete", "unknown"]), reason: z.string().nullable() }),
+});
+const cloud_management_receipt_schema = z.object({
+	ok: z.literal(true),
+	status: z.enum(["completed", "refused", "in_progress", "unknown", "not_started"]),
+	session: files_browser_runner_session_schema.nullable(),
+	result: z.object({ reason: z.string().nullable(), cleanup: z.enum(["complete", "unknown"]) }),
+	usage: files_browser_runner_usage_schema.nullable().optional(),
+});
+
+export const resolve_cloud_browser_invocation = internalAction({
+	args: { invocationId: v.id("ai_chat_browser_invocations") },
+	returns: v.null(),
+	handler: async (ctx, args): Promise<null> => {
+		const invocation = await ctx.runQuery(internal.ai_chat_files.load_browser_invocation_receipt_identity, args);
+		if (!invocation || invocation.status === "finished" || invocation.resource?.provider === "playwriter") return null;
+		const source = {
+			chatId: invocation.threadId,
+			sourceMessageId: invocation.sourceMessageId,
+			toolCallId: invocation.toolCallId,
+		};
+		const body = {
+			mode: invocation.mode,
+			ownerId: invocation.userId,
+			organizationId: invocation.organizationId,
+			workspaceId: invocation.workspaceId,
+			sessionId: invocation.runnerSessionId,
+			source,
+		};
+		const reply = await files_browser_runner_call({
+			route: invocation.operationKind === "run" ? "command-fence" : "operation-status",
+			body:
+				invocation.operationKind === "run"
+					? {
+							...body,
+							commandId: invocation.commandId,
+							codeHash: invocation.operationHash,
+							deadline: invocation.deadlineAt,
+							receiptResolutionDeadline: invocation.receiptResolutionDeadline,
+						}
+					: { ...body, operationId: invocation.commandId, operationDeadline: invocation.deadlineAt },
+			timeoutMs: 5_000,
+		});
+		let status: Infer<typeof ai_chat_browser_result_validator>["status"] = "unknown";
+		let reason: string | null = "receipt_unknown";
+		let unsettled = true;
+		if (reply._yay) {
+			if (invocation.operationKind === "run") {
+				const parsed = cloud_command_receipt_schema.safeParse(reply._yay);
+				if (
+					parsed.success &&
+					parsed.data.commandId === invocation.commandId &&
+					parsed.data.codeHash === invocation.operationHash
+				) {
+					unsettled = parsed.data.status === "in_progress" || parsed.data.result.cleanup !== "complete";
+					if (parsed.data.result.cleanup === "complete")
+						status =
+							parsed.data.status === "completed"
+								? parsed.data.result.reason === null
+									? "succeeded"
+									: "errored"
+								: parsed.data.status === "refused"
+									? "errored"
+									: parsed.data.status === "not_started"
+										? "not_started"
+										: "unknown";
+					reason = parsed.data.result.reason;
+				}
+			} else {
+				const parsed = cloud_management_receipt_schema.safeParse(reply._yay);
+				if (
+					parsed.success &&
+					(!parsed.data.session ||
+						(parsed.data.session.mode === invocation.mode &&
+							(!invocation.runnerSessionId || parsed.data.session.sessionId === invocation.runnerSessionId)))
+				) {
+					unsettled = parsed.data.status === "in_progress" || parsed.data.result.cleanup !== "complete";
+					status =
+						parsed.data.status === "completed"
+							? parsed.data.result.reason === null
+								? "succeeded"
+								: "errored"
+							: parsed.data.status === "refused"
+								? "errored"
+								: parsed.data.status === "not_started"
+									? "not_started"
+									: "unknown";
+					reason = parsed.data.result.reason;
+					if (invocation.openingSessionId && invocation.resource === null) {
+						if (parsed.data.session) {
+							const recorded = await ctx.runMutation(internal.ai_chat_files.record_interrupted_browser_open, {
+								invocationId: invocation._id,
+								commandId: invocation.commandId,
+								runnerSessionId: parsed.data.session.sessionId,
+							});
+							if (recorded) {
+								body.sessionId = parsed.data.session.sessionId;
+								await ctx.runAction(internal.files_browser.end_browser_session_internal, {
+									sessionId: invocation.openingSessionId,
+									reason: "interrupted_open",
+								});
+							}
+							unsettled = true;
+							status = "unknown";
+							reason = "outcome_unknown";
+						} else if (!unsettled)
+							await ctx.runMutation(internal.files_browser.settle_browser_usage, {
+								sessionId: invocation.openingSessionId,
+								usage: parsed.data.usage ?? null,
+							});
+					}
+					if (invocation.resource?.provider === "cloud" && parsed.data.status === "completed") {
+						if (parsed.data.session) {
+							const synced = await ctx.runMutation(internal.files_browser.sync_browser_session, {
+								sessionId: invocation.resource.sessionId,
+								runner: parsed.data.session,
+							});
+							if (synced._nay)
+								console.warn("Browser receipt metadata was not saved", {
+									invocationId: invocation._id,
+									error: synced._nay,
+								});
+						} else
+							await ctx.runMutation(internal.files_browser.settle_browser_usage, {
+								sessionId: invocation.resource.sessionId,
+								usage: parsed.data.usage ?? null,
+							});
+					}
+				}
+			}
+		}
+		if (unsettled && body.sessionId) {
+			const checked = await files_browser_runner_call({ route: "status", body, timeoutMs: 5_000 });
+			const parsed = checked._yay ? files_browser_runner_status_schema.safeParse(checked._yay) : null;
+			if (parsed?.success && !parsed.data.alive && !parsed.data.closing) {
+				unsettled = false;
+				if (invocation.resource?.provider === "cloud")
+					await ctx.runMutation(internal.files_browser.settle_browser_usage, {
+						sessionId: invocation.resource.sessionId,
+						usage: parsed.data.usage ?? null,
+					});
+				else if (invocation.openingSessionId)
+					await ctx.runMutation(internal.files_browser.settle_browser_usage, {
+						sessionId: invocation.openingSessionId,
+						usage: parsed.data.usage ?? null,
+					});
+			}
+		}
+		if (unsettled) {
+			await ctx.scheduler.runAfter(
+				Date.now() < invocation.receiptResolutionDeadline ? 1_000 : 60_000,
+				internal.ai_chat_files.resolve_cloud_browser_invocation,
+				args,
+			);
+			return null;
+		}
+		const finished = await ctx.runMutation(internal.ai_chat_files.finish_browser_invocation, {
+			invocationId: invocation._id,
+			commandId: invocation.commandId,
+			operationHash: invocation.operationHash,
+			result: { status, reason: reason !== null && /^[a-z0-9_]{1,64}$/.test(reason) ? reason : null },
+		});
+		if (finished._nay) console.warn("Browser call could not settle", { reason: finished._nay.name ?? "finish_failed" });
+		if (invocation.openingSessionId && invocation.resource === null && !body.sessionId)
+			await ctx.runMutation(internal.files_browser.settle_browser_usage, {
+				sessionId: invocation.openingSessionId,
+				usage: null,
+			});
+		return null;
+	},
+});
+
+export const expire_browser_invocation_result = internalMutation({
+	args: { invocationId: v.id("ai_chat_browser_invocations") },
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const invocation = await ctx.db.get("ai_chat_browser_invocations", args.invocationId);
+		if (invocation?.resultExpiresAt !== undefined && invocation.resultExpiresAt <= Date.now())
+			await ctx.db.patch("ai_chat_browser_invocations", invocation._id, {
+				result: undefined,
+				resultExpiresAt: undefined,
+			});
+		return null;
+	},
+});
+
+export async function ai_chat_files_db_delete_browser_invocations(
+	ctx: MutationCtx,
+	invocations: Doc<"ai_chat_browser_invocations">[],
+) {
+	let deletedCount = 0;
+	for (const invocation of invocations) {
+		if (invocation.status === "finished") {
+			await ctx.db.delete("ai_chat_browser_invocations", invocation._id);
+			deletedCount++;
+		} else if (invocation.resource?.provider === "playwriter") {
+			const connection = await ctx.db.get("playwriter_connections", invocation.resource.connectionId);
+			if (
+				!connection ||
+				(connection.state === "closed" && !connection.unresolvedCommand && !connection.pendingAcknowledgement)
+			) {
+				await ctx.db.delete("ai_chat_browser_invocations", invocation._id);
+				deletedCount++;
+			}
+		} else {
+			if (invocation.status === "running")
+				await ctx.db.patch("ai_chat_browser_invocations", invocation._id, {
+					status: "interrupted",
+					finishedAt: Date.now(),
+				});
+			await ctx.scheduler.runAfter(0, internal.ai_chat_files.resolve_cloud_browser_invocation, {
+				invocationId: invocation._id,
+			});
+		}
+	}
+	return { done: false, deletedCount };
+}
+
+export const recover_browser_invocations = internalMutation({
+	args: {},
+	returns: v.null(),
+	handler: async (ctx) => {
+		const invocations = (
+			await Promise.all(
+				(["running", "interrupted"] as const).map((status) =>
+					ctx.db
+						.query("ai_chat_browser_invocations")
+						.withIndex("by_status_deadlineAt", (q) => q.eq("status", status).lte("deadlineAt", Date.now()))
+						.take(25),
+				),
+			)
+		).flat();
+		for (const invocation of invocations) {
+			if (invocation.resource?.provider === "playwriter") continue;
+			if (invocation.status === "running")
+				await ctx.db.patch("ai_chat_browser_invocations", invocation._id, {
+					status: "interrupted",
+					finishedAt: Date.now(),
+				});
+			await ctx.scheduler.runAfter(0, internal.ai_chat_files.resolve_cloud_browser_invocation, {
+				invocationId: invocation._id,
+			});
+		}
+		return null;
+	},
+});
+
+export const cleanup_expired_browser_results = internalMutation({
+	args: {},
+	returns: v.null(),
+	handler: async (ctx) => {
+		const invocations = await ctx.db
+			.query("ai_chat_browser_invocations")
+			.withIndex("by_resultExpiresAt", (q) => q.gt("resultExpiresAt", 0).lte("resultExpiresAt", Date.now()))
+			.take(50);
+		for (const invocation of invocations)
+			await ctx.db.patch("ai_chat_browser_invocations", invocation._id, {
+				result: undefined,
+				resultExpiresAt: undefined,
+			});
+		if (invocations.length === 50)
+			await ctx.scheduler.runAfter(0, internal.ai_chat_files.cleanup_expired_browser_results, {});
 		return null;
 	},
 });
@@ -1824,6 +2428,8 @@ export const start_bash_job = internalMutation({
 			commandHash: await crypto_sha256_hex(JSON.stringify([args.script, args.allowDbFilesMkdir])),
 			membershipId: parent.membershipId,
 			membershipLifetime: parent.membershipLifetime,
+			...(parent.browserIntent ? { browserIntent: parent.browserIntent } : {}),
+			...(parent.sourceMessageId ? { sourceMessageId: parent.sourceMessageId } : {}),
 			status: "running",
 			deadlineAt,
 			transferDeadlineAt: deadlineAt,

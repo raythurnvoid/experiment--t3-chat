@@ -23,6 +23,7 @@ import { objects_equal_deep } from "@/lib/object.ts";
 import { app_local_storage_get_value, app_local_storage_set_value, type storage_local_Key } from "@/lib/storage.ts";
 import { should_never_happen } from "@/lib/utils.ts";
 import { generate_id, get_id_generator } from "../../shared/generated-ids.ts";
+import { browser_intent_schema, type browser_Intent } from "../../shared/browser-intent.ts";
 import { useFn, useLiveRef } from "./utils-hooks.ts";
 import {
 	type ai_chat_UiMessage,
@@ -52,7 +53,7 @@ export type AiChatQueuedUserMessage = {
 	attachments: readonly FileUIPart[];
 	selectedModelId: ai_chat_ModelId;
 	selectedModeId: ai_chat_ModeId;
-	browserSessionId: string | null;
+	browserIntent: browser_Intent;
 };
 
 type ThreadSession = {
@@ -92,12 +93,6 @@ type StoreState = {
 	membershipId: string | null;
 	draftSelectedModelId: ai_chat_ModelId;
 	draftSelectedModeId: ai_chat_ModeId;
-	/**
-	 * Live shared-browser session for the selected Files item, or null. Written by the Files
-	 * agent sidebar from the session query; sends freeze it into message metadata. The full
-	 * chat page never sets it.
-	 */
-	browserSessionId: string | null;
 	threadById: Map<string, ThreadSession>;
 	messageById: Map<string, ai_chat_UiMessage>;
 	activeMessageIdsByThreadId: Map<string, readonly string[]>;
@@ -230,6 +225,7 @@ type SelectionSetOptions = {
 type SelectionNext = string | null | ((previousThreadId: string | null) => string | null);
 
 type SelectionContextValue = {
+	browserIntent: browser_Intent | null | undefined;
 	selectedThreadId: string | null;
 	setSelectedThreadId: (next: SelectionNext, options?: SelectionSetOptions) => void;
 	removeThreadSelection: (threadId: string) => void;
@@ -280,6 +276,14 @@ function get_initial_selected_thread_id(
 function ControllerProvider(props: AiChatController_Props) {
 	const { storageKey, initialSelectedThreadId, children } = props;
 	const { membershipId } = AppTenantProvider.useContext();
+	const preferences = useQuery(app_convex_api.files_browser.current_browser_preferences, { membershipId });
+	const browserIntent = preferences
+		? ({
+				webChoice: preferences.webChoice,
+				selectionRevision: preferences.selectionRevision,
+				policyRevision: preferences.policyRevision,
+			} satisfies browser_Intent)
+		: preferences;
 
 	const [selectedThreadId, setSelectedThreadIdState] = useState(() =>
 		get_initial_selected_thread_id(storageKey, initialSelectedThreadId),
@@ -330,10 +334,11 @@ function ControllerProvider(props: AiChatController_Props) {
 		useStore.actions.clearRenderState();
 		persistedUiMessageById.clear();
 		optimisticThreadListItemByKey.clear();
-		useStore.setState({ membershipId, threadById: new Map(), browserSessionId: null });
+		useStore.setState({ membershipId, threadById: new Map() });
 	}, [membershipId]);
 
 	const value = {
+		browserIntent,
 		selectedThreadId,
 		setSelectedThreadId,
 		removeThreadSelection,
@@ -482,31 +487,6 @@ function get_message_selected_mode_id(message?: ai_chat_UiMessage | null) {
 	return selectedModeId;
 }
 
-function get_message_browser_session_id(message?: ai_chat_UiMessage | null) {
-	const browserSessionId = message?.metadata?.browserSessionId;
-	if (!browserSessionId || typeof browserSessionId !== "string") {
-		return undefined;
-	}
-
-	return browserSessionId;
-}
-
-/**
- * Frozen browser session of the turn a regenerate or edit replays. Regenerate sends no new
- * user message, so the id comes from the last user turn in history. Submit never falls back:
- * a fresh message without an id means no browser on purpose.
- */
-function get_replayed_browser_session_id(messages: Array<ai_chat_UiMessage>) {
-	for (let index = messages.length - 1; index >= 0; index--) {
-		const message = messages[index];
-		if (message?.role === "user") {
-			return get_message_browser_session_id(message);
-		}
-	}
-
-	return undefined;
-}
-
 const thread_session_create = (args?: {
 	chat?: Chat<ai_chat_UiMessage> | null;
 	chatArgs?: ThreadChatArgs | undefined;
@@ -616,7 +596,6 @@ const useStore = ((/* iife */) => {
 		membershipId: null,
 		draftSelectedModelId: ai_chat_DEFAULT_MODEL_ID,
 		draftSelectedModeId: ai_chat_DEFAULT_MODE_ID,
-		browserSessionId: null,
 		threadById: new Map(),
 		messageById: new Map(),
 		activeMessageIdsByThreadId: new Map(),
@@ -886,7 +865,7 @@ const useStore = ((/* iife */) => {
 					return { threadById };
 				});
 			},
-			resumeQueuedUserMessages(threadId: string) {
+			resumeQueuedUserMessages(threadId: string, browserIntent: browser_Intent) {
 				store.setState((state) => {
 					const session = state.threadById.get(threadId);
 					if (!session?.queuePauseReason) {
@@ -897,6 +876,7 @@ const useStore = ((/* iife */) => {
 					threadById.set(threadId, {
 						...session,
 						queuePauseReason: null,
+						queuedUserMessages: session.queuedUserMessages.map((message) => ({ ...message, browserIntent })),
 					});
 					return { threadById };
 				});
@@ -1203,7 +1183,7 @@ const useThreadList = (props?: useThreadList_Props) => {
 	const includeArchived = props?.includeArchived ?? true;
 
 	const { membershipId, organizationId, workspaceId } = AppTenantProvider.useContext();
-	const { selectedThreadId, setSelectedThreadId } = useControllerSelection();
+	const { selectedThreadId, setSelectedThreadId, browserIntent } = useControllerSelection();
 
 	const draftSelectedModelId = useStore((state) => state.draftSelectedModelId);
 	const draftSelectedModeId = useStore((state) => state.draftSelectedModeId);
@@ -1316,9 +1296,9 @@ const useThreadList = (props?: useThreadList_Props) => {
 			const requestUserMessage = messagesToAppend.at(-1);
 			const messageSelectedModelId = get_message_selected_model_id(requestUserMessage);
 			const messageSelectedModeId = get_message_selected_mode_id(requestUserMessage);
-			const requestBrowserSessionId =
-				get_message_browser_session_id(requestUserMessage) ??
-				(options.trigger === "submit-message" ? undefined : get_replayed_browser_session_id(options.messages));
+			const requestBrowserIntent = browser_intent_schema.parse(
+				requestUserMessage ? requestUserMessage.metadata?.browserIntent : options.body?.browserIntent,
+			);
 			const modelForRequest =
 				messageSelectedModelId ??
 				(requestSelectedModelId && ai_chat_is_model_id(requestSelectedModelId)
@@ -1340,7 +1320,7 @@ const useThreadList = (props?: useThreadList_Props) => {
 				trigger: options.trigger,
 				parentId,
 				membershipId,
-				browserSessionId: requestBrowserSessionId,
+				browserIntent: requestBrowserIntent,
 			} satisfies api_schemas_Main["/api/chat"]["POST"]["body"];
 
 			return {
@@ -1462,6 +1442,9 @@ const useThreadList = (props?: useThreadList_Props) => {
 	};
 
 	const startNewChat = useFn((message?: string, attachments?: FileUIPart[]) => {
+		if ((message?.trim() || attachments?.length) && !browserIntent) {
+			return;
+		}
 		const nextSelectedModelId = selectedModelId;
 		const nextSelectedModeId = selectedModeId;
 		const threadId = generate_id("ai_thread");
@@ -1481,18 +1464,21 @@ const useThreadList = (props?: useThreadList_Props) => {
 		setSelectedThreadId(threadId, { persist: false });
 
 		if (message?.trim() || attachments?.length) {
-			const request = optimisticChat.sendMessage({
-				role: "user",
-				// Image parts go first so the transcript shows the images above the text.
-				parts: [...(attachments ?? []), ...(message?.trim() ? [{ type: "text" as const, text: message }] : [])],
-				metadata: {
-					convexParentId: null,
-					parentClientGeneratedId: null,
-					selectedModelId: nextSelectedModelId,
-					selectedModeId: nextSelectedModeId,
-					browserSessionId: useStore.getState().browserSessionId ?? undefined,
-				} satisfies NonNullable<ai_chat_UiMessage["metadata"]>,
-			});
+			const request = optimisticChat.sendMessage(
+				{
+					role: "user",
+					// Image parts go first so the transcript shows the images above the text.
+					parts: [...(attachments ?? []), ...(message?.trim() ? [{ type: "text" as const, text: message }] : [])],
+					metadata: {
+						convexParentId: null,
+						parentClientGeneratedId: null,
+						selectedModelId: nextSelectedModelId,
+						selectedModeId: nextSelectedModeId,
+						browserIntent: browserIntent ?? undefined,
+					} satisfies NonNullable<ai_chat_UiMessage["metadata"]>,
+				},
+				{ body: { browserIntent } },
+			);
 			track_chat_request(optimisticChat, request);
 		}
 
@@ -1752,7 +1738,12 @@ export type AiChatThreadListController = ReturnType<typeof useThreadList>;
 
 const useThreadRuntimeController = () => {
 	const { membershipId } = AppTenantProvider.useContext();
-	const { selectedThreadId: requestedThreadId, setSelectedThreadId, removeThreadSelection } = useControllerSelection();
+	const {
+		selectedThreadId: requestedThreadId,
+		setSelectedThreadId,
+		removeThreadSelection,
+		browserIntent,
+	} = useControllerSelection();
 	const selectedThreadIsOptimistic = ai_chat_is_optimistic_thread_id(requestedThreadId);
 	const isCurrentMembership = useStore((state) => state.membershipId === membershipId);
 
@@ -1930,9 +1921,9 @@ const useThreadRuntimeController = () => {
 			const requestUserMessage = messagesToAppend.at(-1);
 			const messageSelectedModelId = get_message_selected_model_id(requestUserMessage);
 			const messageSelectedModeId = get_message_selected_mode_id(requestUserMessage);
-			const requestBrowserSessionId =
-				get_message_browser_session_id(requestUserMessage) ??
-				(options.trigger === "submit-message" ? undefined : get_replayed_browser_session_id(options.messages));
+			const requestBrowserIntent = browser_intent_schema.parse(
+				requestUserMessage ? requestUserMessage.metadata?.browserIntent : options.body?.browserIntent,
+			);
 			const modelForRequest =
 				messageSelectedModelId ?? (ai_chat_is_model_id(selectedModelId) ? selectedModelId : ai_chat_DEFAULT_MODEL_ID);
 			const modeForRequest =
@@ -1949,7 +1940,7 @@ const useThreadRuntimeController = () => {
 				trigger: options.trigger,
 				parentId,
 				membershipId,
-				browserSessionId: requestBrowserSessionId,
+				browserIntent: requestBrowserIntent,
 			} satisfies api_schemas_Main["/api/chat"]["POST"]["body"];
 
 			return {
@@ -2231,6 +2222,9 @@ const useThreadRuntimeController = () => {
 	})();
 
 	const startNewChat = useFn((message?: string, attachments?: FileUIPart[]) => {
+		if ((message?.trim() || attachments?.length) && !browserIntent) {
+			return;
+		}
 		const nextSelectedModelId = selectedModelId;
 		const nextSelectedModeId = selectedModeId;
 		const threadId = generate_id("ai_thread");
@@ -2253,18 +2247,21 @@ const useThreadRuntimeController = () => {
 		setSelectedThreadId(threadId, { persist: false });
 
 		if (message?.trim() || attachments?.length) {
-			const request = optimisticChat.sendMessage({
-				role: "user",
-				// Image parts go first so the transcript shows the images above the text.
-				parts: [...(attachments ?? []), ...(message?.trim() ? [{ type: "text" as const, text: message }] : [])],
-				metadata: {
-					convexParentId: null,
-					parentClientGeneratedId: null,
-					selectedModelId: nextSelectedModelId,
-					selectedModeId: nextSelectedModeId,
-					browserSessionId: useStore.getState().browserSessionId ?? undefined,
-				} satisfies NonNullable<ai_chat_UiMessage["metadata"]>,
-			});
+			const request = optimisticChat.sendMessage(
+				{
+					role: "user",
+					// Image parts go first so the transcript shows the images above the text.
+					parts: [...(attachments ?? []), ...(message?.trim() ? [{ type: "text" as const, text: message }] : [])],
+					metadata: {
+						convexParentId: null,
+						parentClientGeneratedId: null,
+						selectedModelId: nextSelectedModelId,
+						selectedModeId: nextSelectedModeId,
+						browserIntent: browserIntent ?? undefined,
+					} satisfies NonNullable<ai_chat_UiMessage["metadata"]>,
+				},
+				{ body: { browserIntent } },
+			);
 			track_chat_request(optimisticChat, request);
 		}
 
@@ -2406,7 +2403,7 @@ const useThreadRuntimeController = () => {
 	});
 
 	const regenerate = useFn((threadId: string, messageId: string) => {
-		if (threadId !== selectedThreadId) {
+		if (threadId !== selectedThreadId || !browserIntent) {
 			return;
 		}
 		const session = useStore.getState().threadById.get(threadId);
@@ -2436,6 +2433,7 @@ const useThreadRuntimeController = () => {
 		chat.messages = activeBranchMessages.list;
 		const request = chat.regenerate({
 			messageId,
+			body: { browserIntent },
 		});
 		track_chat_request(chat, request);
 		request.catch((error: unknown) => {
@@ -2557,13 +2555,9 @@ const useThreadRuntimeController = () => {
 				(targetMessageIsFailedOptimisticUserMessage ? get_message_selected_mode_id(targetMessage) : undefined) ??
 				session.selectedModeId ??
 				selectedModeId;
-			// Queued messages and retries keep their frozen binding, including no browser.
-			// Only a new turn reads the current file selection.
-			const threadBrowserSessionId = options?.queuedMessage
-				? (options.queuedMessage.browserSessionId ?? undefined)
-				: (get_message_browser_session_id(targetMessage) ??
-					get_message_browser_session_id(failedSendUserMessage) ??
-					(targetMessage || shouldReplaceFailedSend ? undefined : (useStore.getState().browserSessionId ?? undefined)));
+			// Automatic queue sends retain intent. Human sends, edits, and retries capture it again.
+			const threadBrowserIntent = options?.queuedMessage?.browserIntent ?? browserIntent;
+			if (!threadBrowserIntent) return false;
 
 			if (
 				ai_chat_is_optimistic_thread_id(threadId) &&
@@ -2670,19 +2664,22 @@ const useThreadRuntimeController = () => {
 
 			chat.messages = nextChatMessages;
 
-			const request = chat.sendMessage({
-				...(options?.queuedMessage ? { id: options.queuedMessage.id } : {}),
-				role: "user",
-				// Image parts go first so the transcript shows the images above the text.
-				parts: [...attachmentParts, ...(value.trim() ? [{ type: "text" as const, text: value }] : [])],
-				metadata: {
-					convexParentId: parentMessageIds.convexParentId,
-					parentClientGeneratedId: parentMessageIds.parentClientGeneratedId,
-					selectedModelId: threadSelectedModelId,
-					selectedModeId: threadSelectedModeId,
-					browserSessionId: threadBrowserSessionId,
-				} satisfies NonNullable<ai_chat_UiMessage["metadata"]>,
-			});
+			const request = chat.sendMessage(
+				{
+					...(options?.queuedMessage ? { id: options.queuedMessage.id } : {}),
+					role: "user",
+					// Image parts go first so the transcript shows the images above the text.
+					parts: [...attachmentParts, ...(value.trim() ? [{ type: "text" as const, text: value }] : [])],
+					metadata: {
+						convexParentId: parentMessageIds.convexParentId,
+						parentClientGeneratedId: parentMessageIds.parentClientGeneratedId,
+						selectedModelId: threadSelectedModelId,
+						selectedModeId: threadSelectedModeId,
+						browserIntent: threadBrowserIntent,
+					} satisfies NonNullable<ai_chat_UiMessage["metadata"]>,
+				},
+				{ body: { browserIntent: threadBrowserIntent } },
+			);
 			track_chat_request(chat, request, options?.queuedMessage?.id ?? null);
 
 			useStore.actions.setSession(threadId, (prev) => {
@@ -2707,7 +2704,7 @@ const useThreadRuntimeController = () => {
 
 	const sendUserText = useFn(
 		(threadId: string, value: string, options?: { messageId?: string; attachments?: FileUIPart[] }) => {
-			if (threadId !== selectedThreadId) {
+			if (threadId !== selectedThreadId || !browserIntent) {
 				return false;
 			}
 			// A retry/edit target may be an image-only message with empty text;
@@ -2746,7 +2743,7 @@ const useThreadRuntimeController = () => {
 					attachments: options?.attachments ?? [],
 					selectedModelId: session.selectedModelId ?? selectedModelId,
 					selectedModeId: session.selectedModeId ?? selectedModeId,
-					browserSessionId: useStore.getState().browserSessionId,
+					browserIntent,
 				});
 				if (didEnqueue) {
 					setComposerValue(chat, "");
@@ -2878,9 +2875,11 @@ const useThreadRuntimeController = () => {
 	});
 
 	const saveQueuedUserMessageEdit = useFn((messageId: AiChatQueuedUserMessage["id"], text: string) => {
-		if (!selectedThreadId) {
+		if (!selectedThreadId || !browserIntent) {
 			return false;
 		}
+		const edit = useStore.actions.getSession(selectedThreadId)?.queuedUserMessageEdit;
+		if (edit) useStore.actions.updateQueuedUserMessageEdit(selectedThreadId, { ...edit, browserIntent });
 		return useStore.actions.saveQueuedUserMessageEdit(selectedThreadId, messageId, text);
 	});
 
@@ -2906,9 +2905,10 @@ const useThreadRuntimeController = () => {
 	});
 
 	const resumeQueuedUserMessages = useFn(() => {
-		if (!selectedThreadId) {
+		if (!selectedThreadId || !browserIntent) {
 			return;
 		}
+		useStore.actions.resumeQueuedUserMessages(selectedThreadId, browserIntent);
 
 		// Resume an error-paused queue by retrying its visible failed turn first.
 		if (failedSendUserMessage?.role === "user") {
@@ -2917,8 +2917,6 @@ const useThreadRuntimeController = () => {
 			});
 			return;
 		}
-
-		useStore.actions.resumeQueuedUserMessages(selectedThreadId);
 	});
 
 	const stop = useFn(() => {
@@ -2937,6 +2935,7 @@ const useThreadRuntimeController = () => {
 	const isRunning = chat.status === "submitted" || chat.status === "streaming";
 
 	const canSendUserText = ((/* iife */) => {
+		if (!browserIntent) return false;
 		if (!selectedThreadId) {
 			return true;
 		}
@@ -2984,7 +2983,10 @@ const useThreadRuntimeController = () => {
 		Boolean(session?.isArchivePending) ||
 		(queuedUserMessages.length > 0 && session?.queuePauseReason !== "stop");
 	const canQueueUserText =
-		Boolean(selectedThreadId) && !session?.isArchivePending && queuedUserMessages.length < QUEUED_USER_MESSAGE_LIMIT;
+		Boolean(browserIntent) &&
+		Boolean(selectedThreadId) &&
+		!session?.isArchivePending &&
+		queuedUserMessages.length < QUEUED_USER_MESSAGE_LIMIT;
 	const isMessageQueueFull = queuedUserMessages.length >= QUEUED_USER_MESSAGE_LIMIT;
 	const isMessageQueuePaused = Boolean(session?.queuePauseReason);
 

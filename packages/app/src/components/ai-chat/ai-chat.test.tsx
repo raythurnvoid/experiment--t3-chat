@@ -5,6 +5,8 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import type { AiChatThreadRuntime } from "@/hooks/ai-chat-controller.tsx";
 import type { ai_chat_UiMessage } from "@/lib/ai-chat.ts";
 
+const composerMocks = vi.hoisted(() => ({ submitResults: [] as Array<boolean | void> }));
+
 // Network boundary: the real hooks talk to a live Convex client.
 vi.mock("convex/react", () => ({
 	useQuery: () => undefined,
@@ -62,7 +64,7 @@ vi.mock("@/components/ai-chat/ai-chat-composer.tsx", () => ({
 					}
 				}}
 			>
-				<button type="button" onClick={() => props.onSubmit(props.initialValue, [])}>
+				<button type="button" onClick={() => composerMocks.submitResults.push(props.onSubmit(props.initialValue, []))}>
 					{props.submitLabel ?? "Send message"}
 				</button>
 			</div>
@@ -149,9 +151,22 @@ function makeController(overrides?: Partial<AiChatThreadRuntime>): AiChatThreadR
 
 afterEach(() => {
 	cleanup();
+	composerMocks.submitResults = [];
 });
 
 describe("AiChatThread", () => {
+	test("keeps the draft when a new chat waits for browser settings", () => {
+		const startNewChat = vi.fn(() => undefined);
+		const controller = makeController({
+			startNewChat,
+			session: { composerId: "draft", draftComposerText: "Keep this draft" } as AiChatThreadRuntime["session"],
+		});
+		render(<AiChatThread controller={controller} scrollableContainer={null} />);
+		fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+		expect(startNewChat).toHaveBeenCalledWith("Keep this draft", []);
+		expect(composerMocks.submitResults).toEqual([false]);
+	});
+
 	test("keeps the same composer when an optimistic thread gets its persisted id during a queued edit", () => {
 		const queuedUserMessageEdit = {
 			id: "ai_message-queued",
@@ -159,7 +174,7 @@ describe("AiChatThread", () => {
 			attachments: [],
 			selectedModelId: "gpt-6-luna",
 			selectedModeId: "agent",
-			browserSessionId: null,
+			browserIntent: { webChoice: { provider: "cloud" }, selectionRevision: 0, policyRevision: 0 },
 		} as const;
 		const controller = makeController({
 			selectedThreadId: "ai_thread-optimistic",
@@ -284,7 +299,7 @@ describe("AiChatThread", () => {
 							attachments: [],
 							selectedModelId: "gpt-6-luna",
 							selectedModeId: "agent",
-							browserSessionId: null,
+							browserIntent: { webChoice: { provider: "cloud" }, selectionRevision: 0, policyRevision: 0 },
 						},
 					],
 					canQueueUserText: true,
@@ -319,7 +334,7 @@ describe("AiChatThread", () => {
 			attachments: [],
 			selectedModelId: "gpt-6-luna",
 			selectedModeId: "ask",
-			browserSessionId: null,
+			browserIntent: { webChoice: { provider: "cloud" }, selectionRevision: 0, policyRevision: 0 },
 		} as const;
 		const saveQueuedUserMessageEdit = vi.fn(() => true);
 		const cancelQueuedUserMessageEdit = vi.fn();
@@ -384,7 +399,7 @@ describe("AiChatThread", () => {
 			attachments: [],
 			selectedModelId: "gpt-6-luna",
 			selectedModeId: "ask",
-			browserSessionId: null,
+			browserIntent: { webChoice: { provider: "cloud" }, selectionRevision: 0, policyRevision: 0 },
 		} as const;
 		const cancelQueuedUserMessageEdit = vi.fn();
 		const sendUserText = vi.fn();
@@ -434,7 +449,7 @@ describe("AiChatThread", () => {
 			attachments: [],
 			selectedModelId: "gpt-6-luna",
 			selectedModeId: "agent",
-			browserSessionId: null,
+			browserIntent: { webChoice: { provider: "cloud" }, selectionRevision: 0, policyRevision: 0 },
 		} as const;
 		const secondQueuedMessage = {
 			id: "ai_message-second",
@@ -442,7 +457,7 @@ describe("AiChatThread", () => {
 			attachments: [],
 			selectedModelId: "gpt-6-luna",
 			selectedModeId: "ask",
-			browserSessionId: null,
+			browserIntent: { webChoice: { provider: "cloud" }, selectionRevision: 0, policyRevision: 0 },
 		} as const;
 		const view = render(
 			<AiChatThread

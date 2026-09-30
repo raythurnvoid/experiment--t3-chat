@@ -119,6 +119,7 @@ describe("/api/chat credit gate", () => {
 				trigger: "submit-message",
 				clientGeneratedThreadId: "thread_chat_credit_gate_client",
 				membershipId: seeded.membershipId,
+				browserIntent: { webChoice: { provider: "cloud" }, selectionRevision: 0, policyRevision: 0 },
 			}),
 		});
 		const body = await response.json();
@@ -170,6 +171,7 @@ describe("/api/chat credit gate", () => {
 			trigger: "submit-message",
 			clientGeneratedThreadId: "thread_chat_rate_limit_client",
 			membershipId: seeded.membershipId,
+			browserIntent: { webChoice: { provider: "cloud" }, selectionRevision: 0, policyRevision: 0 },
 		};
 
 		for (let i = 0; i < 1; i++) {
@@ -411,6 +413,7 @@ describe("/api/chat credit gate", () => {
 				trigger: "submit-message",
 				clientGeneratedThreadId: "thread_anon_credit_gate_client",
 				membershipId: seeded.membershipId,
+				browserIntent: { webChoice: { provider: "cloud" }, selectionRevision: 0, policyRevision: 0 },
 			}),
 		});
 		const body = await response.json();

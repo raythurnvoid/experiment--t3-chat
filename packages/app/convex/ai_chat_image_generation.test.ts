@@ -99,6 +99,7 @@ async function setup(viewer = false) {
 			trigger: "submit-message",
 			threadId,
 			membershipId: team.membershipId,
+			browserIntent: { webChoice: { provider: "cloud" }, selectionRevision: 0, policyRevision: 0 },
 		}),
 	});
 	expect(response.status, await response.text()).toBe(200);

@@ -11,6 +11,7 @@ import {
 	type files_browser_StreamInput,
 	type files_browser_StreamNav,
 	type files_browser_StreamWebMessage,
+	type files_browser_StreamTabIdentity,
 } from "@/lib/files-browser-stream.ts";
 import { memo, useEffect, useRef, useState, type Ref } from "react";
 
@@ -96,6 +97,7 @@ const BrowserViewer = Object.assign(
 		const viewportRef = useRef<{ width: number; height: number }>({ width: 1280, height: 800 });
 		const lastMoveRef = useRef(0);
 		const pressedButtonRef = useRef<{ button: "left" | "middle" | "right"; clickCount: number } | null>(null);
+		const viewRef = useRef<files_browser_StreamTabIdentity | null>(null);
 		const [status, setStatus] = useState<BrowserViewer_Status>("connecting");
 		const [statusDetail, setStatusDetail] = useState<string | null>(null);
 		const [attempt, setAttempt] = useState(0);
@@ -127,6 +129,21 @@ const BrowserViewer = Object.assign(
 			if (inputEnabled) {
 				streamRef.current?.sendInput(input);
 			}
+		};
+
+		const changeView = (view: files_browser_StreamTabIdentity) => {
+			if (
+				!viewRef.current ||
+				viewRef.current.tabId !== view.tabId ||
+				viewRef.current.tabGen !== view.tabGen ||
+				viewRef.current.viewGen !== view.viewGen
+			) {
+				pressedButtonRef.current = null;
+				if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
+				objectUrlRef.current = null;
+				imgRef.current?.removeAttribute("src");
+			}
+			viewRef.current = view;
 		};
 
 		const handleMouseMove = (event: React.MouseEvent) => {
@@ -254,6 +271,7 @@ const BrowserViewer = Object.assign(
 					const stream = files_browser_stream_connect({
 						url: granted.viewerUrl,
 						hello: {
+							mode,
 							ownerId: ownerId,
 							organizationId: organizationId,
 							workspaceId: workspaceId,
@@ -266,10 +284,25 @@ const BrowserViewer = Object.assign(
 									return;
 								}
 								retries = 0;
+								changeView(hello);
 								viewportRef.current = hello.viewport;
 								setStatus("live");
 								setStatusDetail(null);
-								onControl({ control: hello.control, controlGen: hello.controlGen });
+								onControl({
+									control: hello.control,
+									controlGen: hello.controlGen,
+									tabId: hello.tabId,
+									tabGen: hello.tabGen,
+									viewGen: hello.viewGen,
+								});
+								if (hello.mode === "web") {
+									onWebMessage?.({
+										t: "tabs",
+										tabs: hello.tabs,
+										viewedTabId: hello.viewedTabId,
+										viewGen: hello.viewGen,
+									});
+								}
 								onViewerHello(hello.viewerId, hello.viewport, hello.control);
 								onConnection(true, null);
 							},
@@ -287,6 +320,7 @@ const BrowserViewer = Object.assign(
 							},
 							onControl: (control) => {
 								if (!cancelled) {
+									changeView(control);
 									onControl(control);
 								}
 							},
@@ -298,6 +332,12 @@ const BrowserViewer = Object.assign(
 							onAck: () => {},
 							onWebMessage: (message) => {
 								if (!cancelled) {
+									if (message.t === "tabs") {
+										const selected = message.tabs.find((tab) => tab.tabId === message.viewedTabId);
+										if (selected) {
+											changeView({ tabId: selected.tabId, tabGen: selected.tabGen, viewGen: message.viewGen });
+										}
+									}
 									onWebMessage?.(message);
 								}
 							},
@@ -361,7 +401,7 @@ const BrowserViewer = Object.assign(
 			};
 			// The grant callback is stable per session; a new session id or tenant reconnects.
 			// A manual retry re-runs the whole sequence after a terminal close.
-		}, [sessionId, ownerId, organizationId, workspaceId, host, attempt]);
+		}, [sessionId, ownerId, organizationId, workspaceId, host, mode, attempt]);
 
 		useEffect(() => {
 			const frame = frameRef.current;

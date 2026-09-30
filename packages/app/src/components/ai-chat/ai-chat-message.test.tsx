@@ -1143,6 +1143,107 @@ describe("AiChatMessage", () => {
 		expect(screen.queryByRole("img")).toBeNull();
 	});
 
+	test.each([
+		["browser_status", "Browser status"],
+		["browser_open", "Browser open"],
+		["browser_tabs", "Browser tabs"],
+		["browser_new_tab", "Browser new tab"],
+		["browser_close_tab", "Browser close tab"],
+		["playwriter_read", "Shared browser read"],
+		["playwriter_act", "Shared browser action"],
+		["playwriter_navigate", "Shared browser navigate"],
+		["playwriter_capture", "Shared browser capture"],
+	])("%s shows status without exposing inputs or live tab summaries", (toolName, title) => {
+		renderMessage({
+			message: {
+				...createAssistantMessage(),
+				parts: [
+					{
+						type: "dynamic-tool",
+						toolName,
+						toolCallId: "browser_management",
+						state: "output-available",
+						input: { share: "private-share", tabId: "native-tab", title: "private page title" },
+						output: {
+							title,
+							output: `${title}: succeeded.`,
+							metadata: { status: "succeeded", reason: null, files: [] },
+						},
+					},
+				],
+			},
+		});
+		fireEvent.click(screen.getByRole("button", { name: title }));
+		expect(screen.getByText("Browser succeeded.")).toBeTruthy();
+		expect(document.body.textContent).not.toContain("private-share");
+		expect(document.body.textContent).not.toContain("native-tab");
+		expect(document.body.textContent).not.toContain("private page title");
+		expect(screen.queryByRole("textbox", { name: "Result" })).toBeNull();
+	});
+
+	test.each([
+		["tool-browser_status", "Browser status"],
+		["tool-playwriter_read", "Shared browser read"],
+		["tool-playwriter_act", "Shared browser action"],
+		["tool-playwriter_navigate", "Shared browser navigate"],
+		["tool-playwriter_capture", "Shared browser capture"],
+	] as const)("%s uses the safe browser card for a typed part", (type, title) => {
+		renderMessage({
+			message: {
+				...createAssistantMessage(),
+				parts: [
+					{
+						type,
+						toolCallId: "typed_browser",
+						state: "output-available",
+						input: {},
+						output: {
+							title,
+							output: `${title}: succeeded.`,
+							metadata: { status: "succeeded", reason: null, files: [] },
+						},
+					},
+				],
+			},
+		});
+		fireEvent.click(screen.getByRole("button", { name: title }));
+		expect(screen.getByText("Browser succeeded.")).toBeTruthy();
+		expect(screen.queryByRole("textbox", { name: "Parameters" })).toBeNull();
+		expect(screen.queryByRole("textbox", { name: "Result" })).toBeNull();
+	});
+
+	test.each([
+		["unknown", "The browser could not confirm the result. Check the page before you retry."],
+		["not_started", "Start or connect a browser first."],
+		["offline", "The browser is offline. Reconnect it."],
+		["paused", "Resume the browser to continue."],
+		["iframe_unsupported", "This frame is not supported by the browser."],
+		["needs_human", "The browser needs your help."],
+		["sensitive_input", "Type this value in your browser."],
+	])("shows the fixed browser reason %s", (reason, text) => {
+		renderMessage({
+			message: {
+				...createAssistantMessage(),
+				parts: [
+					{
+						type: "dynamic-tool",
+						toolName: "browser_run",
+						toolCallId: "remote_reason",
+						state: "output-available",
+						input: {},
+						output: {
+							title: "Browser run",
+							output: "Browser run: errored.",
+							metadata: { status: "errored", reason, files: [] },
+						},
+					},
+				],
+			},
+		});
+		expect(screen.getByText(`Browser failed. ${text}`)).toBeTruthy();
+		expect(screen.queryByRole("textbox", { name: "Error" })).toBeNull();
+	});
+
 	test("browser run success renders debug sections and files without a badge", () => {
 		hookMocks.files.set("private_1", {
 			target: { kind: "private", id: "private_1" },

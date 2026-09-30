@@ -65,6 +65,12 @@ const rate_limiter_CONFIG = {
 		capacity: 100,
 	},
 	ai_chat_http: STRICT_AI_HTTP,
+	playwriter_connect: {
+		kind: "token bucket",
+		rate: 5,
+		period: MINUTE,
+		capacity: 5,
+	},
 	ai_chat_message_write: {
 		kind: "token bucket",
 		rate: 24,

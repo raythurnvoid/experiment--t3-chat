@@ -10800,7 +10800,6 @@ describe("saved browser profiles", () => {
 		return await ctx.db.insert("files_browser_profiles", {
 			...args,
 			profileKey: new Uint8Array(32).buffer,
-			agentBlockedHosts: [],
 			createdAt: Date.now(),
 			lastUsedAt: Date.now(),
 		});
@@ -10839,6 +10838,14 @@ describe("saved browser profiles", () => {
 				loadGen: 0,
 				controlGen: 1,
 				agentAccess: true,
+				tabId: "tab-1",
+				tabGen: 1,
+				viewedTabId: "tab-1",
+				viewGen: 1,
+				tabCount: 1,
+				tabs: [{ tabId: "tab-1", tabGen: 1, navGen: 1 }],
+				policyRevision: 0,
+				selectionRevision: 0,
 				createdAt: now,
 				updatedAt: now,
 			};

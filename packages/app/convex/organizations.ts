@@ -44,6 +44,7 @@ import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { plugins_data_db_get_scope_cleanup_pairs } from "./plugins_data.ts";
 import { plugins_mcp_db_drain_member_batch } from "./plugins_mcp.ts";
 import { files_browser_db_delete_profile } from "./files_browser.ts";
+import { playwriter_browser_db_disconnect } from "./playwriter_browser.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
 // Does NOT work for http actions (see http.ts). No mutable module-level state allowed here.
@@ -1536,6 +1537,42 @@ export const remove_user_from_organization = mutation({
 					.first(),
 			),
 		);
+		const browserPreferencesPromise = Promise.all(
+			memberships.map((membership) =>
+				ctx.db
+					.query("files_browser_preferences")
+					.withIndex("by_owner_organization_workspace", (q) =>
+						q
+							.eq("ownerId", args.userIdToRemove)
+							.eq("organizationId", organization._id)
+							.eq("workspaceId", membership.workspaceId),
+					)
+					.first(),
+			),
+		);
+		// Closed history has no credential or dispatch. Live and saved links stay bounded by admission.
+		const sharedBrowsersPromise = Promise.all(
+			(
+				[
+					"connecting",
+					"needs_confirmation",
+					"ready",
+					"running",
+					"paused",
+					"recovering",
+					"offline",
+					"limit_reached",
+					"needs_human",
+				] as const
+			).map((state) =>
+				ctx.db
+					.query("playwriter_connections")
+					.withIndex("by_owner_organization_state", (q) =>
+						q.eq("ownerId", args.userIdToRemove).eq("organizationId", organization._id).eq("state", state),
+					)
+					.take(51),
+			),
+		).then((connections) => connections.flat());
 		const apiCredentialQuotasPromise = Promise.all(
 			memberships.map((membership) =>
 				quotas_db_get(ctx, {
@@ -1614,6 +1651,16 @@ export const remove_user_from_organization = mutation({
 				if (found.length > 0) {
 					await ctx.scheduler.runAfter(0, internal.files_browser.process_browser_profile_wipes, {});
 				}
+			}),
+			browserPreferencesPromise.then((preferences) =>
+				Promise.all(
+					preferences
+						.filter((preference) => preference !== null)
+						.map((preference) => ctx.db.delete("files_browser_preferences", preference._id)),
+				),
+			),
+			sharedBrowsersPromise.then(async (connections) => {
+				for (const connection of connections) await playwriter_browser_db_disconnect(ctx, connection, "member_removed");
 			}),
 			// A per-member plugin storage row names the member, so it must not outlive their membership.
 			// The documents it counted stay: they belong to the workspace, and the counters they fed are

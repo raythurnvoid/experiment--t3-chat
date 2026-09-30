@@ -100,8 +100,9 @@ type WebBrowserFileChooser_Props = {
 	onCancel: () => void;
 	/**
 	 * The page got the files. The runner closes the chooser after one fill.
+	 * A late reply must not close a newer chooser.
 	 */
-	onGiven: () => void;
+	onGiven: (chooserId: string) => void;
 	/**
 	 * The page did not get the files. `text` is the refusal this dialog also shows inline. The runner
 	 * can close the chooser before it answers, and that closes this dialog, so the host shows the text
@@ -195,6 +196,9 @@ export const WebBrowserFileChooser = memo(function WebBrowserFileChooser(props: 
 				membershipId,
 				sessionId,
 				chooserId: chooser.chooserId,
+				tabId: chooser.tabId,
+				tabGen: chooser.tabGen,
+				viewGen: chooser.viewGen,
 				controlGen,
 				nodeIds: chosen.map((item) => item._id),
 			})
@@ -203,7 +207,7 @@ export const WebBrowserFileChooser = memo(function WebBrowserFileChooser(props: 
 					fail(web_browser_file_chooser_error(result._nay.name, result._nay.message));
 					return;
 				}
-				onGiven();
+				onGiven(chooser.chooserId);
 			})
 			.catch((error: unknown) => {
 				fail("The files could not be given to the page. Try again.");
@@ -234,6 +238,9 @@ export const WebBrowserFileChooser = memo(function WebBrowserFileChooser(props: 
 				membershipId,
 				sessionId,
 				chooserId: chooser.chooserId,
+				tabId: chooser.tabId,
+				tabGen: chooser.tabGen,
+				viewGen: chooser.viewGen,
 				controlGen,
 			});
 			if (granted._nay) {
@@ -258,7 +265,7 @@ export const WebBrowserFileChooser = memo(function WebBrowserFileChooser(props: 
 				);
 				return;
 			}
-			onGiven();
+			onGiven(chooser.chooserId);
 		})()
 			.catch((error: unknown) => {
 				fail("The file could not be given to the page. Try again.");

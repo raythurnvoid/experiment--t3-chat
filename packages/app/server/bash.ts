@@ -1675,6 +1675,8 @@ export async function bash_run_command(
 		membershipId: Id<"organizations_workspaces_users">;
 		membershipLifetime: number;
 		toolCallId: string;
+		browserIntent?: Doc<"ai_chat_bash_invocations">["browserIntent"];
+		sourceMessageId?: Id<"ai_chat_threads_messages_aisdk_5">;
 		command: string;
 		allowDbFilesMkdir: boolean;
 		shellName: string;
@@ -1703,6 +1705,8 @@ export async function bash_run_command(
 		membershipLifetime: args.membershipLifetime,
 		toolCallId: args.toolCallId,
 		commandHash,
+		...(args.browserIntent ? { browserIntent: args.browserIntent } : {}),
+		...(args.sourceMessageId ? { sourceMessageId: args.sourceMessageId } : {}),
 	};
 
 	// A lost begin reply may already own this call. Read it back instead of running it a second time.

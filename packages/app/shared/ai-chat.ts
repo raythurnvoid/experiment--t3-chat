@@ -18,6 +18,7 @@ import type {
 } from "../server/server-ai-tools.ts";
 import type { GeneratedIdPrefix } from "./generated-ids.ts";
 import type { ai_chat_McpAuthNeededData } from "./ai-chat-files.ts";
+import type { browser_Intent } from "./browser-intent.ts";
 
 export type ai_chat_Message = Doc<"ai_chat_threads_messages_aisdk_5">;
 
@@ -133,7 +134,27 @@ export type ai_chat_UiTools = {
 	 * The stored part keeps a safe status and ordinary Files references. Raw browser observations
 	 * and image bytes never reach stored tool parts.
 	 */
+	browser_status: {
+		input: ai_chat_tool_create_file_stored_ToolInput;
+		output: ai_chat_tool_create_file_stored_ToolOutput;
+	};
 	browser_run: {
+		input: ai_chat_tool_create_file_stored_ToolInput;
+		output: ai_chat_tool_create_file_stored_ToolOutput;
+	};
+	browser_open: {
+		input: ai_chat_tool_create_file_stored_ToolInput;
+		output: ai_chat_tool_create_file_stored_ToolOutput;
+	};
+	browser_tabs: {
+		input: ai_chat_tool_create_file_stored_ToolInput;
+		output: ai_chat_tool_create_file_stored_ToolOutput;
+	};
+	browser_new_tab: {
+		input: ai_chat_tool_create_file_stored_ToolInput;
+		output: ai_chat_tool_create_file_stored_ToolOutput;
+	};
+	browser_close_tab: {
 		input: ai_chat_tool_create_file_stored_ToolInput;
 		output: ai_chat_tool_create_file_stored_ToolOutput;
 	};
@@ -150,6 +171,22 @@ export type ai_chat_UiTools = {
 		output: ai_chat_tool_create_file_stored_ToolOutput;
 	};
 	browser_close: {
+		input: ai_chat_tool_create_file_stored_ToolInput;
+		output: ai_chat_tool_create_file_stored_ToolOutput;
+	};
+	playwriter_read: {
+		input: ai_chat_tool_create_file_stored_ToolInput;
+		output: ai_chat_tool_create_file_stored_ToolOutput;
+	};
+	playwriter_act: {
+		input: ai_chat_tool_create_file_stored_ToolInput;
+		output: ai_chat_tool_create_file_stored_ToolOutput;
+	};
+	playwriter_navigate: {
+		input: ai_chat_tool_create_file_stored_ToolInput;
+		output: ai_chat_tool_create_file_stored_ToolOutput;
+	};
+	playwriter_capture: {
 		input: ai_chat_tool_create_file_stored_ToolInput;
 		output: ai_chat_tool_create_file_stored_ToolOutput;
 	};
@@ -184,11 +221,9 @@ export type ai_chat_UiMessage = UIMessage<
 		selectedModelId?: ai_chat_ModelId | undefined;
 		selectedModeId?: ai_chat_ModeId | undefined;
 		/**
-		 * Frozen shared-browser session for this request. Stamped at queue time from the Files
-		 * selection; the server re-checks the live session, so an ended file degrades instead of
-		 * rebinding to whatever is selected now.
+		 * Saved browser choice and policy, captured for this human turn or queued message.
 		 */
-		browserSessionId?: string | undefined;
+		browserIntent?: browser_Intent | undefined;
 	},
 	ai_chat_UiDataParts,
 	ai_chat_UiTools

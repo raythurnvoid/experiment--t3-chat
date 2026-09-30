@@ -1,13 +1,16 @@
-# Web Browser (Web Mode) QA
+# Workspace Browser QA
 
 Recipes for the workspace web browser route `/w/<org>/<ws>/browser`. The file mode browser inside
 Files has its own recipe in [files.md](files.md) under "Shared Cloud Browser End To End". Product
-rules and limits live in `.agents/skills/cloud-browser/SKILL.md`. Verified 2026-09-23.
+rules and limits live in `.agents/skills/cloud-browser/SKILL.md`. The older cloud checks were verified
+2026-09-23. The provider and tab checks below describe the new UI; run them before release.
 
 ## Before you start
 
 - Needs `AI_CHAT_BROWSER_ENABLED=true` on the dev deployment and a deployed dev runner
   (`bonobo-senate-browser-runner-dev`).
+- Remote access needs `AI_CHAT_PLAYWRITER_ENABLED=true` and the remote runner. It is free. The
+  Playwriter branch has no cloud viewer or saved-login profile.
 - Browser time is billed to the signed-in user: 0.3 credit cents per started minute, settled once per
   session. Keep sessions short and press `End browser` on every session you start.
 - Limits: 60 min total, 9 min idle. Watching and page navigation do not extend idle. Input (address
@@ -23,20 +26,86 @@ rules and limits live in `.agents/skills/cloud-browser/SKILL.md`. Verified 2026-
 
 ## Selectors
 
-- Panel: `getByRole("region", { name: "Web browser" })` with `data-browser-mode="web"`.
+- Provider: combobox `Browser provider`, with `Cloud browser` and `My browser (Playwriter)`.
+  Open it with Enter, then focus its listbox. Use Home for Cloud or End for Playwriter,
+  then Enter. Keep keyboard focus on the listbox, rather than an option.
+- Cloud panel: `getByRole("region", { name: "Web browser" })` with `data-browser-mode="web"`.
+- Remote panel: region `My browser connection`, with `data-browser-provider="playwriter"` and
+  `data-connection-state`. Status and safe tab summaries are plain DOM text.
+- Shared settings: button and dialog `Browser settings`. It has the switch `Agent can use web
+  browser`, the `Sites the agent may not use` list, and the `Add a site` input.
 - Start card: button `Start web browser`. A user without a paid plan sees `The browser needs a Pay As
   You Go or Pro plan...` and no button. A user without `workspace.browser.use` (system role
   `viewer`) sees `The web browser is not available in this workspace.` and no `Browser` item in
-  `[aria-label="Main navigation"]`. A live file browser shows `A file browser is open in Files.` with
-  `End it and start here`.
+  `[aria-label="Main navigation"]` unless remote access or saved remote cleanup is available.
+  File and web sessions have separate slots. Neither start ends the other mode.
 - Live panel: toolbar `role=toolbar` named `Browser` (`Back`, `Forward`, `Reload`/`Stop`, textbox
-  `Address`, `Go`, `Take control`/`Resume agent`, `Manage saved data`, `Keep open`, `End browser`, switch
-  `Agent can use this browser` with `data-agent-access`).
+  `Address`, `Go`, `Take control`/`Resume agent`, `Manage saved data`, `Keep open`, `End browser`).
+  The common access status has `data-agent-access="on"|"off"`.
+- Cloud tabs: tablist `Browser tabs`, tab names from live page titles, `Close <title>` buttons,
+  and `New tab`. Keyboard arrows move focus; Enter selects the tab.
 - Status text: `.WebBrowserLive-title` (page title), the first `role=status` (`Live`, `You have
   control`, ...), `.WebBrowserLive-notice` (`role=status`, one-shot notices), and
   `.WebBrowserLive-address-error` (`role=alert`).
 - Viewer: `role=application` inside the region, with an `img` whose natural size is 1280x800.
 - Agent panel on the same route: `section[aria-label="Agent"]`.
+
+## Provider and hidden-panel checks
+
+- Select `My browser (Playwriter)`. Check that no viewer application, image, cloud viewer grant,
+  cloud session query, or profile query starts. Use the native shared tab to watch the agent.
+- Open `Browser settings` from the app header while Chat or Files is visible. Change agent access
+  and add or remove a blocked site. The saved settings apply to both providers. Closing the dialog
+  keeps the connection and native tab open.
+- Paste a share ID or its exact Remote control link in `Share ID or Remote control link`. Never
+  print the value, put it in chat, or copy it into QA logs. Connect clears the local field before
+  the action settles. A copied CLI command must be reduced to the value after `--remote`.
+- If Connect returns `Choose a tab`, select the intended row with `Use this tab`. Check the exact
+  title and safe URL first. Do not select the first row by default.
+- The extension's remote toolbar can appear in `snapshot()` while page role locators cannot reach
+  it. Read its exact control with `Accessibility.getFullAXTree` through `getCDPSession(page)`.
+  Use that node's `backendDOMNodeId` with `DOM.getBoxModel`, then click its current center with
+  `page.mouse.click`. Read the tree again after each action; never reuse saved coordinates.
+- A `Remote ON` badge does not prove the saved share still connects. Keep a failed Connect's
+  evidence. If only an owned QA share is affected, renew it through the extension's `Stop sharing`
+  and `Start remote control` controls, then copy its new ID into the local Connect field. Never
+  print it or restart the shared browser or relay. A successful renewal does not prove why the old
+  share failed.
+- After `Start remote control` and its `Share` confirm, the clipboard holds the longer agent
+  prompt, not the ID. Open `Remote control options`, choose `Copy id`, focus the app's share field,
+  and press `Control+V`. Check only the value's length and hex pattern, never the value. Verified
+  2026-09-30.
+- Check `Pause`, `Resume`, `Reconnect`, `Refresh status`, and `Disconnect`. With the feature off,
+  an existing connection still has `Refresh status` and `Disconnect`.
+- With remote access enabled, `Disconnect` shows `No browser selected` and `Choose a browser`.
+  Cloud Start appears only after an explicit `Cloud browser` choice is saved. A Disconnect from
+  another view also clears an old Connect draft.
+- For background remote checks, disable focus emulation from the local QA client on the owned
+  fixture tab first: `cdp.send("Emulation.setFocusEmulationEnabled", { enabled: false })`.
+  Then check `document.hidden`, `document.visibilityState`, and `document.hasFocus()`. The local
+  Playwright client can otherwise make a hidden tab report visible. Never enable emulation to
+  make a failed remote action pass. A background check does not prove minimized-window support.
+- A pasted Remote control link or copied `--remote` command in chat must show the local share
+  warning and send no message. `Remove share ID` removes the value. A bare 32-character ID can be
+  sent only after `This is another ID` and a second Send.
+- With the Browser panel hidden, ask the agent to open the cloud browser, list tabs, create a tab,
+  run in that tab, reload it, and close it. Test both Ask and Agent modes. Browser tools must be
+  present before a session exists.
+- Queue a message, then change the provider. Automatic drain keeps its saved intent. Explicit
+  Resume refreshes intent for messages still waiting. Retry, edit, and regenerate refresh only the
+  requested turn. Attachments and Files sources stay attached.
+- Start a file preview and a web session together. End only sessions created by the QA run.
+
+## Cloud tab checks
+
+- Human `New tab` creates and selects a tab. An agent-created tab adds a tab without changing the
+  visible tab. Check `aria-selected` and the Address value.
+- Select another tab. The old image, address, and file chooser must clear. Input waits for a frame
+  with the selected tab and view IDs. A late frame, location, or chooser from the old tab is ignored.
+- Close the selected tab. Focus moves to the remaining selected tab. Closing the last tab ends the
+  session. The panel supports at most eight tabs.
+- Page titles and URLs come from the live runner stream. They are not saved in chat tool cards or
+  Convex tab docs. Management cards show only safe status.
 
 ## Drive the panel
 
@@ -78,9 +147,9 @@ await state.page.mouse.click(vx, vy);
 ```
 
 Take control first and wait for `You have control` and `Resume agent`. A view-only click sends
-nothing. A page reload or HMR remount of your tab drops human control back to `Live`, so read the
-status before each input step. A viewer socket reconnect does the same, with the notice `You lost
-control because the viewer reconnected. Take control again.` On runner `dd116c55` this hit 3 minutes
+nothing. A reload, HMR remount, or viewer reconnect releases human input but keeps the agent paused
+until `Resume agent`. Read the status before each input step. A viewer socket reconnect shows
+`You lost control because the viewer reconnected. Take control again.` On runner `dd116c55` this hit 3 minutes
 after Start on a background QA tab: the tab renews the viewer every 20 s, the grant lasted 30 s, and
 the throttled background timer fired late. The tail then shows `viewer_end` with `code: 4408` and
 `reason: "grant expired"`, then a new `viewer-grant` and `viewer_attach`. The grant now lasts 90 s,
@@ -118,7 +187,7 @@ test site `login`, the `Log in` button is at about (210, 18).
 ## Checks
 
 - Start: press `Start web browser`, wait for `Live` (the first start can take 20-60 s). Read
-  `files_browser.current_browser_session` to get the session id.
+  `files_browser.current_browser_session({ membershipId, mode: "web" })` to get the session id.
 - Navigation: Address to `/site/links`, click a link through the viewer, then `Back` and `Forward`.
   Poll the notice, address, and status every 250 ms for about 3 s; the address updates from the
   runner, not from your typing.
@@ -126,24 +195,18 @@ test site `login`, the `Log in` button is at about (210, 18).
   - `ftp://x` → `Use an address that starts with http:// or https://.`
   - `http://user:pw@example.com` → `Remove the user name and password from the address.`
   - `localhost:5173` or an app, Convex, or Clerk host → `This address is blocked.`
-- Popups on `/site/links`: the `target=_blank` link and the `window.open` button must each show the
-  notice `Opened the new tab here` and load the target in the same viewer.
-- Agent: send the first message in the Agent section, wait for the saved chat tab, then press `Resume
-  agent`. An empty optimistic `New chat` does not enable Resume. A message sent while you still hold
-  control gets no browser tool at all: the model answers that `browser_run` is not available (seen
-  2026-09-23). Press `Resume agent` (status back to `Live`) before the message that must run. For a screenshot use the snippet
-  from files.md with path `/qa-web-<runId>/page.png`. Send a second message in the same chat and
-  require a second `Browser run` card.
+- Popups on `/site/links`: `target=_blank` and `window.open` add tabs while the tab cap allows them.
+- Agent: Resume works without a selected chat. A tool called during human control returns a safe
+  refusal. Press `Resume agent` before the turn that must run. For a screenshot use the snippet
+  from files.md with path `/qa-web-<runId>/page.png`. Send a second turn and check its Browser run card.
 - Two chats: start a long `browser_run` in chat A (for example `await page.waitForTimeout(24000)`),
   wait for its card to be `aria-busy="true"`, then send in chat B. Chat B's card must fail with
   `Another chat is using the browser. Try again later.` Chat sends share a rate limit (a new token
   every 15 s), so a send in B right after A waits about 15 s before its tool call. Send B about 14 s
   after A. Keep A's wait under 30 s: a command that times out closes the session.
-- Agent access switch: it is an `input type=checkbox role=switch`, so `aria-checked` reads null.
-  Focus it, press Space, then read `.checked` and `data-agent-access` (`on`/`off`). While off, an
-  agent `browser_run` must be refused. Test two paths: off before the turn starts (the model gets no
-  browser tool and a note, so there is no card), and off while a card is `aria-busy="true"` (the
-  card must show the access-off reason).
+- Agent access switch in `Browser settings`: it is an `input type=checkbox role=switch`. Focus it,
+  press Space, then read `.checked` and the common access status. Test Off before the turn and
+  during a running tool. Both paths must refuse browser work.
 - Service worker sites: `https://squoosh.app/` registers a service worker. Ask for a goto plus a
   3 s wait, then a second command. The session must stay open. The tail must show two `run`
   lines with `status: succeeded` and no `drain_timeout`, and the doc must stay `control: "ready"`.
@@ -173,11 +236,7 @@ test site `login`, the `Log in` button is at about (210, 18).
   while a session is live, so a `profile_save` alone does not mean a close.
 - Idle: leave the session without input. After `idleUntil` the Start card must return and
   `current_browser_session` must be null.
-- Busy both ways: with a web session live, the Files browser panel shows `A web browser is open.`
-  with `Open the web browser` and `End it`, and no Start button. With a file session live, the web
-  route shows `A file browser is open in Files.` with `End it and start here`. The door check is
-  `start_web_browser` while a file session is live, and `start_browser` while a web session is live;
-  both must return `_nay` `Browser busy` without a new row.
+- Mode slots: web and file sessions can run together. Starting one must keep the other session.
 - End: `End browser` must bring the Start card back.
 - A session that closes on its own: the `files_browser_sessions` row keeps no close reason, and the
   runner logs `close` with `reason: "close"` for every app-sent close. A human End logs
@@ -215,10 +274,10 @@ Verified 2026-09-23 on runner version `ac58f65d`.
 - Manage saved data dialog (`.WebBrowserSavedData`, open it from the Start card or the live toolbar
   button `Manage saved data`): `Show saved sites` lists one row per site with a cookie count and no
   values. Each row has its own button named `Clear <domain>`, and
-  the dialog also has the blocked-sites `Add a site` input and `Clear all saved data`, which asks
+  the dialog also has `Clear all saved data`, which asks
   for a confirm step. Escape closes it and focus returns to `Manage saved data`. Focus checks
   (verified 2026-09-23 on the fixed build): after `Show saved sites` focus moves to the `Saved
-  sites` heading (`h3`); after `Add` or a row's `Remove` it lands in the `Add a site` input. Trace
+  sites` heading (`h3`). In Browser settings, Add or Remove returns focus to `Add a site`. Trace
   focus with a 50 ms page-side poll of `document.activeElement` started in the same call as the key
   press; a single read after the call can miss a short stop on `<body>`. A row's `Clear <domain>`
   moves focus to the `Saved sites` heading before the row goes away (verified again on
@@ -235,7 +294,7 @@ Verified 2026-09-23 on runner version `ac58f65d`.
   is no profile at all); a row clear shows `Cleared <domain>.` and the tail logs `profile_clear`
   with `removed`; `Clear all saved data` asks for `Clear all` / `Cancel`, then shows `All saved
   data is cleared.` and moves focus to the `Clear all saved data` heading.
-- Blocked site check: add the site's host, Start on a page of that site, and ask the agent for one
+- Blocked site check: add the site's host in Browser settings, Start on that site, and ask for one
   `browser_run`. The tool card must fail with `This site is on the list of sites the agent may not
   use.` and hold no page text. The runner tail logs `run_begin` refused with `agent_blocked_site`.
   Remove the host at the end.
@@ -247,6 +306,7 @@ Verified 2026-09-23 on runner version `ac58f65d`.
   gone without printing `profileKey`, keep only the `There are no documents in this table.` line
   of `convex data files_browser_profiles`. Then Start again on the private
   page; it must show `LOGGED OUT`.
+- Clear all saved data keeps common browser choice, access, and blocked hosts.
 - Member removal: the owner's `Remove` on the Users page has no confirm step. To restore the member,
   invite the same email again. The new membership has a new id.
 - Account deletion: `Manage account` > `Security` > delete account, then type `delete`. This deletes
@@ -385,12 +445,36 @@ Use an isolated headless Playwriter session and the seeded `+clerk_test` account
   `deletedAt` set; that deletes the snapshot row. Read the snapshot before and after, so you restore
   the state you found.
 
+## Playwriter navigation and recovery checks
+
+Use the normal Connect flow and one confirmed native fixture tab. Keep the
+fixture link and form in the visible viewport; the trusted input guard refuses
+offscreen nodes. Keep iframes out of this fixture so the accepted extension
+replay limit does not hide the navigation result.
+
+- Ask the app agent to Read, click a link that loads a new document, then Read
+  again in the same turn. Check the native URL, the completed tool card, the
+  finished invocation, and the released connection slot.
+- Repeat with a link whose normal handler calls `history.pushState`. The second
+  Read must see the new page state without Reconnect.
+- Repeat with Enter in a normal form. Check that it submits once and that a fresh
+  Read works. Do not repeat an action after an unknown result.
+- Pause through the app UI. Expect a plain sentence, not `human`. Resume while
+  the transport is live, then Read. After a closed socket, expect Reconnect and
+  Refresh status; Resume must not leave the UI stuck in Recovering.
+
+The native extension toolbar uses a closed shadow root. If a DOM role locator
+cannot reach its remote-control button, read the button's current accessibility
+node and box through CDP, then use a normal Playwriter pointer click. Never
+print the copied share ID. Keep it in private memory or encrypted task scratch.
+
 ## Accessibility screen
 
 - Run `auditAccessibility({ selector: '[role="region"][aria-label="Web browser"]' })` once view-only
   and once with human control.
 - With control, the audit reports one `blockedHitTarget` on the viewer `role=application`. That is a
   false positive: the element at its center is its own `img`.
-- Tab walk with control: `Reload`, `Address`, `Go`, `Resume agent`, `Manage saved data`, `Keep open`,
-  `End browser`, the switch, then the viewer. `Back` and `Forward` are skipped while disabled. The
+- Tab walk with control starts with provider settings and cloud tabs, then `Reload`, `Address`,
+  `Go`, `Resume agent`, `Manage saved data`, `Keep open`, `End browser`, and the viewer. The
+  access switch is in Browser settings. `Back` and `Forward` are skipped while disabled. The
   Address focus ring is drawn on its `MyInputBox` wrapper, not on the `input`.

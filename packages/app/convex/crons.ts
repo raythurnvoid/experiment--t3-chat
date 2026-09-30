@@ -64,6 +64,12 @@ crons.cron("settle browser usage", "*/5 * * * *", internal.files_browser.settle_
 // and retry failed wipes whose backoff is over. Each deletion also starts this job at once.
 crons.cron("process browser profile wipes", "*/5 * * * *", internal.files_browser.process_browser_profile_wipes, {});
 
+// Every minute — close expired shared connections and retry exact socket cleanup.
+crons.cron("sweep shared browser connections", "* * * * *", internal.playwriter_browser.sweep_connections, {});
+crons.cron("process shared browser cleanups", "* * * * *", internal.playwriter_browser.process_cleanups, {});
+crons.cron("recover browser calls", "* * * * *", internal.ai_chat_files.recover_browser_invocations, {});
+crons.cron("retry browser policy sync", "* * * * *", internal.files_browser.retry_browser_preferences_sync, {});
+
 // Each hour, schedule up to 50 R2 deletion jobs whose retry time has passed.
 crons.cron(
 	"process due r2 object deletion jobs",
@@ -77,6 +83,8 @@ crons.cron("cleanup activity history", "30 6 * * *", internal.activities.cleanup
 
 // Once daily — remove seven-day Bash results while keeping terminal call identities.
 crons.cron("cleanup expired bash results", "35 6 * * *", internal.ai_chat_files.cleanup_expired_bash_results, {});
+// Once daily — remove browser results after their 24-hour retention.
+crons.cron("cleanup expired browser results", "36 6 * * *", internal.ai_chat_files.cleanup_expired_browser_results, {});
 
 // Once daily — remove old private publication links after their last caller releases them.
 crons.cron(

@@ -1,4 +1,25 @@
 @layer components {
+	.WebBrowser {
+		display: flex;
+		flex-direction: column;
+		height: 100%;
+		min-height: 0;
+	}
+
+	.WebBrowser-controls {
+		display: flex;
+		align-items: center;
+		flex-wrap: wrap;
+		gap: 8px;
+
+		padding-bottom: 8px;
+	}
+
+	.WebBrowser > .PlaywriterBrowserConnection {
+		min-height: 0;
+		overflow-y: auto;
+	}
+
 	.WebBrowserStart {
 		display: flex;
 		flex-direction: column;
@@ -71,6 +92,25 @@
 		border-bottom: 1px solid var(--color-fg-03);
 	}
 
+	.WebBrowserLive-tabs {
+		display: flex;
+		gap: 4px;
+
+		padding: 8px 12px 0;
+		overflow-x: auto;
+	}
+
+	.WebBrowserLive-tab {
+		flex-shrink: 0;
+		max-width: 240px;
+
+		& .MyTabsTabPrimaryAction {
+			overflow: hidden;
+			text-overflow: ellipsis;
+			white-space: nowrap;
+		}
+	}
+
 	.WebBrowserLive-address {
 		display: flex;
 		align-items: center;
@@ -139,7 +179,7 @@
 		}
 	}
 
-	.WebBrowser {
+	.CloudWebBrowser {
 		display: flex;
 		flex-direction: column;
 		height: 100%;

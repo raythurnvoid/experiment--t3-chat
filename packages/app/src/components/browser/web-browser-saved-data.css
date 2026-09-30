@@ -62,19 +62,6 @@
 		flex-wrap: wrap;
 	}
 
-	.WebBrowserSavedData-add {
-		display: flex;
-		align-items: end;
-		gap: 8px;
-
-		width: 100%;
-
-		& .MyInput {
-			flex: 1;
-			min-width: 0;
-		}
-	}
-
 	.WebBrowserSavedData-error {
 		margin: 0;
 

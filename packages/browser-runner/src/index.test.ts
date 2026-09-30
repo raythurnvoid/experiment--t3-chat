@@ -24,7 +24,11 @@ import {
 const URL_BASE = "https://runner.internal";
 const OWNERS = { ownerId: "user_1", organizationId: "org_1", workspaceId: "ws_1" };
 const PROFILE_SECRET = Buffer.alloc(32, 1).toString("base64");
-const PROFILE = { profileId: "profile_1", profileKey: Buffer.alloc(32, 7).toString("base64"), agentBlockedHosts: [] as string[] };
+const PROFILE = {
+	profileId: "profile_1",
+	profileKey: Buffer.alloc(32, 7).toString("base64"),
+	agentBlockedHosts: [] as string[],
+};
 
 type SessionRecord = Parameters<typeof session_can_run>[0];
 type DurableObjectState = ConstructorParameters<typeof BrowserRegistry>[0];
@@ -37,6 +41,10 @@ function make_namespace(handler: ObjectHandler = () => ({ ok: true })) {
 		get: () => ({
 			fetch: async (request: Request) => {
 				const url = new URL(request.url);
+				if (url.pathname === "/run/claim" || url.pathname === "/operation/claim")
+					return Response.json({ ok: true, execute: true });
+				if (url.pathname === "/run/complete" || url.pathname === "/operation/finish" || url.pathname === "/reuse")
+					return Response.json({ ok: false });
 				return Response.json(await handler(url.pathname, await request.json()));
 			},
 		}),
@@ -69,6 +77,31 @@ function browser_request(
 	rawBody: string,
 	headers: Record<string, string> = { Authorization: "Bearer test-secret" },
 ): Request {
+	try {
+		const body = JSON.parse(rawBody) as Record<string, unknown>;
+		if (body && typeof body === "object" && !Array.isArray(body))
+			rawBody = JSON.stringify({
+				mode: "file",
+				...(route === "open" && body.mode === "web" ? { policyRevision: 0, selectionRevision: 0 } : {}),
+				...(route === "run"
+					? {
+							commandId: "command-1",
+							source: { chatId: "chat", sourceMessageId: "message", toolCallId: "tool" },
+							deadline: Date.now() + 30_000,
+							receiptResolutionDeadline: Date.now() + 35_000,
+						}
+					: body.expectedAgentLease
+						? {
+								operationId: "operation-1",
+								operationDeadline: Date.now() + 120_000,
+								source: { chatId: "chat", sourceMessageId: "message", toolCallId: "tool" },
+							}
+						: {}),
+				...body,
+			});
+	} catch {
+		/* Bad JSON remains bad. */
+	}
 	return new Request(`${URL_BASE}/internal/browser/${route}`, {
 		method: "POST",
 		headers: { "Content-Type": "application/json", ...headers },
@@ -85,8 +118,8 @@ function make_storage(initial: Record<string, unknown> = {}) {
 		state: {
 			id: { toString: () => "test-id" },
 			storage: {
-				get: async <T,>(key: string) => map.get(key) as T | undefined,
-				list: async <T,>(options: { prefix: string }) =>
+				get: async <T>(key: string) => map.get(key) as T | undefined,
+				list: async <T>(options: { prefix: string }) =>
 					new Map([...map].filter(([key]) => key.startsWith(options.prefix))) as Map<string, T>,
 				put: async (key: string, value: unknown) => {
 					map.set(key, value);
@@ -107,7 +140,7 @@ function make_storage(initial: Record<string, unknown> = {}) {
 
 function make_record(overrides: Partial<SessionRecord> = {}): SessionRecord {
 	const now = Date.now();
-	return {
+	const record = {
 		mode: "file",
 		version: 1,
 		sessionId: "session-1",
@@ -137,8 +170,16 @@ function make_record(overrides: Partial<SessionRecord> = {}): SessionRecord {
 		closeAttempts: 0,
 		...overrides,
 	} as SessionRecord;
+	if (record.mode === "web") {
+		record.tabs = { "tab-1": { targetId: "page-1", navGen: 1, tabGen: 1, viewport: record.viewport } };
+		record.tabId = "tab-1";
+		record.viewedTabId = "tab-1";
+		record.viewGen = 1;
+		record.policyRevision = 0;
+		record.selectionRevision = 0;
+	}
+	return record;
 }
-
 
 describe("routing", () => {
 	it("returns ok for GET /health", async () => {
@@ -154,18 +195,24 @@ describe("routing", () => {
 });
 
 describe("auth", () => {
-	it.each(["open", "reload", "run", "close", "keep-open", "status"] as const)("rejects %s without a token", async (route) => {
-		const res = await handle_request(browser_request(route, JSON.stringify({}), {}), make_env({}));
-		expect(res.status).toBe(401);
-	});
+	it.each(["open", "reload", "run", "close", "keep-open", "status"] as const)(
+		"rejects %s without a token",
+		async (route) => {
+			const res = await handle_request(browser_request(route, JSON.stringify({}), {}), make_env({}));
+			expect(res.status).toBe(401);
+		},
+	);
 
-	it.each(["open", "reload", "run", "close", "keep-open", "status"] as const)("rejects %s with the wrong token", async (route) => {
-		const res = await handle_request(
-			browser_request(route, JSON.stringify({}), { Authorization: "Bearer wrong" }),
-			make_env({}),
-		);
-		expect(res.status).toBe(401);
-	});
+	it.each(["open", "reload", "run", "close", "keep-open", "status"] as const)(
+		"rejects %s with the wrong token",
+		async (route) => {
+			const res = await handle_request(
+				browser_request(route, JSON.stringify({}), { Authorization: "Bearer wrong" }),
+				make_env({}),
+			);
+			expect(res.status).toBe(401);
+		},
+	);
 
 	it("fails closed when the secret is empty", async () => {
 		const res = await handle_request(
@@ -260,6 +307,131 @@ describe("open validation", () => {
 		expect(calls).toEqual(["registry:/claim", "session:/open", "registry:/confirm"]);
 	});
 
+	it("admits a file Open from Chat and retains its operation receipt", async () => {
+		const source = { chatId: "chat", sourceMessageId: "message", toolCallId: "tool" };
+		const body = {
+			...valid(),
+			attemptId: "file-open",
+			operationId: "file-open",
+			operationDeadline: Date.now() + 60_000,
+			source,
+			viewport: { width: 1280, height: 720 },
+		};
+		const metadata = {
+			mode: "file",
+			sessionId: "s1",
+			navGen: 1,
+			loadGen: 1,
+			controlGen: 1,
+			control: "ready",
+			sourceKind: "saved",
+			sourceVersion: "v1",
+			sourceHash: "hash",
+		};
+		const calls: string[] = [];
+		const received: unknown[] = [];
+		const storage = make_storage();
+		const env = make_env({
+			registry: (path) => {
+				calls.push(`registry:${path}`);
+				return path === "/claim" ? { ok: true, grantId: "g1" } : { ok: true };
+			},
+		});
+		const session = new BrowserSession(storage.state as unknown as DurableObjectState, env);
+		env.BROWSER_SESSIONS = {
+			idFromName: (name: string) => ({ toString: () => name }),
+			get: () => ({
+				fetch: async (request: Request) => {
+					const path = new URL(request.url).pathname;
+					calls.push(`session:${path}`);
+					if (path === "/open") {
+						received.push(await request.json());
+						return Response.json({ ok: true, session: metadata });
+					}
+					return session.fetch(request);
+				},
+			}),
+		};
+
+		const response = await handle_request(browser_request("open", JSON.stringify(body)), env);
+		expect(response.status, "File Open must admit the Chat operation identity").toBe(200);
+		expect(await response.json()).toMatchObject({
+			ok: true,
+			status: "completed",
+			session: metadata,
+			result: { reason: null, cleanup: "complete" },
+		});
+		expect(calls).toEqual([
+			"session:/operation/claim",
+			"registry:/claim",
+			"session:/open",
+			"registry:/confirm",
+			"session:/operation/finish",
+		]);
+		expect(received).toEqual([
+			{ ...valid(), attemptId: "file-open", operationId: "file-open", grantId: "g1", viewport: body.viewport },
+		]);
+		expect(storage.map.get("tabOperations")).toEqual([
+			[
+				"file-open",
+				expect.objectContaining({
+					source,
+					deadline: body.operationDeadline,
+					status: "completed",
+					session: metadata,
+					result: { tabId: null, reason: null, cleanup: "complete" },
+				}),
+			],
+		]);
+
+		const replay = await handle_request(browser_request("open", JSON.stringify(body)), env);
+		expect(await replay.json()).toMatchObject({
+			ok: true,
+			execute: false,
+			status: "completed",
+			session: metadata,
+			result: { cleanup: "complete" },
+		});
+		expect(calls.slice(5)).toEqual(["session:/operation/claim"]);
+		expect(received).toHaveLength(1);
+	});
+
+	it.each([
+		{ name: "an invalid source", body: { source: { chatId: "chat" } } },
+		{ name: "a long deadline", body: { operationDeadline: Date.now() + 121_000 } },
+	])("rejects a Chat file Open with $name before admission", async ({ body }) => {
+		const calls: string[] = [];
+		const env = make_env({
+			registry: (path) => {
+				calls.push(path);
+				return { ok: true, grantId: "g1" };
+			},
+			sessions: (path) => {
+				calls.push(path);
+				return { ok: true };
+			},
+		});
+		const response = await handle_request(
+			browser_request(
+				"open",
+				JSON.stringify({
+					...valid(),
+					operationId: "file-open",
+					operationDeadline: Date.now() + 60_000,
+					source: { chatId: "chat", sourceMessageId: "message", toolCallId: "tool" },
+					...body,
+				}),
+			),
+			env,
+		);
+		expect(response.status).toBe(400);
+		expect(await response.json()).toMatchObject({
+			ok: false,
+			error: { code: "invalid_request", message: "A bounded operation identity and source are required." },
+		});
+		expect(calls).toEqual([]);
+	});
+
 	it("releases the grant when the session refuses", async () => {
 		const calls: string[] = [];
 		const env = make_env({
@@ -321,16 +493,41 @@ describe("open validation", () => {
 				return { ok: true, session: { sessionId: "s1" } };
 			},
 		});
-		const res = await handle_request(browser_request("open", JSON.stringify({
-			mode: "web", ...OWNERS, navGen: 1, startUrl: "example.com", agentAccess: false, ...PROFILE, agentBlockedHosts: ["bank.test"],
-		})), env);
+		const res = await handle_request(
+			browser_request(
+				"open",
+				JSON.stringify({
+					mode: "web",
+					...OWNERS,
+					navGen: 1,
+					startUrl: "example.com",
+					agentAccess: false,
+					...PROFILE,
+					agentBlockedHosts: ["bank.test"],
+				}),
+			),
+			env,
+		);
 		expect(res.status).toBe(200);
 		expect(received).toEqual([
 			["registry:/claim", { workspaceKey: expect.any(String), ownerId: "user_1", organizationId: "org_1" }],
-			["session:/open", {
-				mode: "web", startUrl: "example.com", agentAccess: false, ...PROFILE, agentBlockedHosts: ["bank.test"], grantId: "g1", attemptId: expect.any(String),
-				...OWNERS, navGen: 1, viewport: { width: 1280, height: 900 },
-			}],
+			[
+				"session:/open",
+				{
+					mode: "web",
+					startUrl: "example.com",
+					agentAccess: false,
+					...PROFILE,
+					agentBlockedHosts: ["bank.test"],
+					policyRevision: 0,
+					selectionRevision: 0,
+					grantId: "g1",
+					attemptId: expect.any(String),
+					...OWNERS,
+					navGen: 1,
+					viewport: { width: 1280, height: 900 },
+				},
+			],
 			["registry:/confirm", { grantId: "g1" }],
 		]);
 	});
@@ -338,7 +535,7 @@ describe("open validation", () => {
 	it.each([
 		{ name: "no mode", body: { mode: undefined } },
 		{ name: "a file field", body: { nodeId: "node_1" } },
-		{ name: "navGen 2", body: { navGen: 2 } },
+		{ name: "navGen 0", body: { navGen: 0 } },
 		{ name: "no agentAccess", body: { agentAccess: undefined } },
 		{ name: "a number startUrl", body: { startUrl: 1 } },
 		{ name: "no profileId", body: { profileId: undefined } },
@@ -347,35 +544,83 @@ describe("open validation", () => {
 		{ name: "a short profileKey", body: { profileKey: Buffer.alloc(16).toString("base64") } },
 		{ name: "a profileKey that is not base64", body: { profileKey: "not base64!" } },
 		{ name: "no agentBlockedHosts", body: { agentBlockedHosts: undefined } },
-		{ name: "51 agentBlockedHosts", body: { agentBlockedHosts: Array.from({ length: 51 }, (_, index) => `site${index}.test`) } },
+		{
+			name: "51 agentBlockedHosts",
+			body: { agentBlockedHosts: Array.from({ length: 51 }, (_, index) => `site${index}.test`) },
+		},
 		{ name: "a 254-char blocked host", body: { agentBlockedHosts: ["a".repeat(254)] } },
 		{ name: "an empty blocked host", body: { agentBlockedHosts: [""] } },
 	])("rejects a web open with $name", async ({ body }) => {
 		let calls = 0;
-		const env = make_env({ registry: () => { calls += 1; return { ok: true, grantId: "g1" }; } });
-		const res = await handle_request(browser_request("open", JSON.stringify({
-			mode: "web", ...OWNERS, navGen: 1, startUrl: null, agentAccess: true, ...PROFILE, ...body,
-		})), env);
+		const env = make_env({
+			registry: () => {
+				calls += 1;
+				return { ok: true, grantId: "g1" };
+			},
+		});
+		const res = await handle_request(
+			browser_request(
+				"open",
+				JSON.stringify({
+					mode: "web",
+					...OWNERS,
+					navGen: 1,
+					startUrl: null,
+					agentAccess: true,
+					...PROFILE,
+					...body,
+				}),
+			),
+			env,
+		);
 		expect(res.status).toBe(400);
 		expect(calls).toBe(0);
 	});
 });
 
 describe("web host routes", () => {
-	function host_request(route: "agent-access" | "reload", body: unknown, headers: Record<string, string> = { Authorization: "Bearer test-secret" }) {
+	function host_request(
+		route: "agent-access" | "reload",
+		body: unknown,
+		headers: Record<string, string> = { Authorization: "Bearer test-secret" },
+	) {
 		return new Request(`${URL_BASE}/internal/browser/${route}`, {
 			method: "POST",
 			headers: { "Content-Type": "application/json", ...headers },
-			body: JSON.stringify(body),
+			body: JSON.stringify({
+				mode: "web",
+				...(route === "agent-access" ? { policyRevision: 1, selectionRevision: 0, agentBlockedHosts: [] } : {}),
+				...(body as object),
+				...(route === "reload" && (body as Record<string, unknown>).expectedAgentLease
+					? {
+							operationId: "reload-1",
+							operationDeadline: Date.now() + 120_000,
+							source: { chatId: "chat", sourceMessageId: "message", toolCallId: "tool" },
+						}
+					: {}),
+			}),
 		});
 	}
 
 	it("passes agent access through to the session", async () => {
 		const received: Array<[string, unknown]> = [];
-		const env = make_env({ sessions: (path, body) => { received.push([path, body]); return { ok: true, session: { agentAccess: false } }; } });
-		const res = await handle_request(host_request("agent-access", { ...OWNERS, sessionId: "session-1", on: false }), env);
+		const env = make_env({
+			sessions: (path, body) => {
+				received.push([path, body]);
+				return { ok: true, session: { agentAccess: false } };
+			},
+		});
+		const res = await handle_request(
+			host_request("agent-access", { ...OWNERS, sessionId: "session-1", on: false }),
+			env,
+		);
 		expect(await res.json()).toEqual({ ok: true, session: { agentAccess: false } });
-		expect(received).toEqual([["/agent-access", { sessionId: "session-1", on: false }]]);
+		expect(received).toEqual([
+			[
+				"/agent-access",
+				{ sessionId: "session-1", on: false, policyRevision: 1, selectionRevision: 0, agentBlockedHosts: [] },
+			],
+		]);
 	});
 
 	it.each([
@@ -384,71 +629,125 @@ describe("web host routes", () => {
 		{ name: "no session id", body: { ...OWNERS, on: false } },
 	])("rejects agent access with $name", async ({ body }) => {
 		let calls = 0;
-		const env = make_env({ sessions: () => { calls += 1; return { ok: true }; } });
+		const env = make_env({
+			sessions: () => {
+				calls += 1;
+				return { ok: true };
+			},
+		});
 		expect((await handle_request(host_request("agent-access", body), env)).status).toBe(400);
 		expect(calls).toBe(0);
 	});
 
 	it("refuses agent access without a token", async () => {
-		const res = await handle_request(host_request("agent-access", { ...OWNERS, sessionId: "session-1", on: false }, {}), make_env({}));
+		const res = await handle_request(
+			host_request("agent-access", { ...OWNERS, sessionId: "session-1", on: false }, {}),
+			make_env({}),
+		);
 		expect(res.status).toBe(401);
 	});
 
 	it("routes a web reload without a file snapshot", async () => {
 		const received: Array<[string, unknown]> = [];
-		const env = make_env({ sessions: (path, body) => { received.push([path, body]); return { ok: true }; } });
+		const env = make_env({
+			sessions: (path, body) => {
+				received.push([path, body]);
+				return { ok: true };
+			},
+		});
 		const expectedAgentLease = { navGen: 1, loadGen: 1, controlGen: 2 };
-		const res = await handle_request(host_request("reload", { mode: "web", ...OWNERS, sessionId: "session-1", navGen: 1, expectedAgentLease }), env);
+		const res = await handle_request(
+			host_request("reload", { mode: "web", ...OWNERS, sessionId: "session-1", navGen: 1, expectedAgentLease }),
+			env,
+		);
 		expect(res.status).toBe(200);
 		expect(received).toEqual([["/reload", { mode: "web", sessionId: "session-1", navGen: 1, expectedAgentLease }]]);
 	});
 
 	it.each([
 		{ name: "a file field", body: { html: "<p></p>" } },
-		{ name: "navGen 2", body: { navGen: 2 } },
+		{ name: "navGen 0", body: { navGen: 0 } },
 	])("rejects a web reload with $name", async ({ body }) => {
 		let calls = 0;
-		const env = make_env({ sessions: () => { calls += 1; return { ok: true }; } });
-		const res = await handle_request(host_request("reload", { mode: "web", ...OWNERS, sessionId: "session-1", navGen: 1, ...body }), env);
+		const env = make_env({
+			sessions: () => {
+				calls += 1;
+				return { ok: true };
+			},
+		});
+		const res = await handle_request(
+			host_request("reload", { mode: "web", ...OWNERS, sessionId: "session-1", navGen: 1, ...body }),
+			env,
+		);
 		expect(res.status).toBe(400);
 		expect(calls).toBe(0);
 	});
 });
 
 describe("profile host routes", () => {
-	function profile_request(route: "summary" | "clear" | "delete", body: unknown, headers: Record<string, string> = { Authorization: "Bearer test-secret" }) {
+	function profile_request(
+		route: "summary" | "clear" | "delete",
+		body: unknown,
+		headers: Record<string, string> = { Authorization: "Bearer test-secret" },
+	) {
 		return new Request(`${URL_BASE}/internal/browser/profile-${route}`, {
 			method: "POST",
 			headers: { "Content-Type": "application/json", ...headers },
-			body: JSON.stringify(body),
+			body: JSON.stringify({ mode: "web", ...(body as object) }),
 		});
 	}
 	const { agentBlockedHosts: _hosts, ...PROFILE_INPUT } = PROFILE;
 
 	it.each([
 		{ route: "summary" as const, body: { ...OWNERS, ...PROFILE_INPUT }, sent: { ...OWNERS, ...PROFILE_INPUT } },
-		{ route: "clear" as const, body: { ...OWNERS, ...PROFILE_INPUT, domain: "github.com" }, sent: { ...OWNERS, ...PROFILE_INPUT, domain: "github.com" } },
+		{
+			route: "clear" as const,
+			body: { ...OWNERS, ...PROFILE_INPUT, domain: "github.com" },
+			sent: { ...OWNERS, ...PROFILE_INPUT, domain: "github.com" },
+		},
 		{ route: "delete" as const, body: { ...OWNERS, profileId: "profile_1" }, sent: { profileId: "profile_1" } },
 	])("passes profile-$route to the owner's session object", async ({ route, body, sent }) => {
 		const received: Array<[string, unknown]> = [];
-		const env = make_env({ sessions: (path, value) => { received.push([path, value]); return { ok: true }; } });
+		const env = make_env({
+			sessions: (path, value) => {
+				received.push([path, value]);
+				return { ok: true };
+			},
+		});
 		const res = await handle_request(profile_request(route, body), env);
 		expect(await res.json()).toEqual({ ok: true });
 		expect(received).toEqual([[`/profile/${route}`, sent]]);
 	});
 
 	it.each([
-		{ route: "summary" as const, name: "an unknown field", body: { ...OWNERS, ...PROFILE_INPUT, domain: "github.com" } },
-		{ route: "summary" as const, name: "a short key", body: { ...OWNERS, ...PROFILE_INPUT, profileKey: Buffer.alloc(31).toString("base64") } },
+		{
+			route: "summary" as const,
+			name: "an unknown field",
+			body: { ...OWNERS, ...PROFILE_INPUT, domain: "github.com" },
+		},
+		{
+			route: "summary" as const,
+			name: "a short key",
+			body: { ...OWNERS, ...PROFILE_INPUT, profileKey: Buffer.alloc(31).toString("base64") },
+		},
 		{ route: "summary" as const, name: "no profile id", body: { ...OWNERS, profileKey: PROFILE.profileKey } },
 		{ route: "clear" as const, name: "no domain", body: { ...OWNERS, ...PROFILE_INPUT } },
-		{ route: "clear" as const, name: "a 254-char domain", body: { ...OWNERS, ...PROFILE_INPUT, domain: "a".repeat(254) } },
+		{
+			route: "clear" as const,
+			name: "a 254-char domain",
+			body: { ...OWNERS, ...PROFILE_INPUT, domain: "a".repeat(254) },
+		},
 		{ route: "delete" as const, name: "a profile key", body: { ...OWNERS, ...PROFILE_INPUT } },
 		{ route: "delete" as const, name: "a profile id with a colon", body: { ...OWNERS, profileId: "profile:1" } },
 		{ route: "delete" as const, name: "no owner", body: { profileId: "profile_1" } },
 	])("rejects profile-$route with $name", async ({ route, body }) => {
 		let calls = 0;
-		const env = make_env({ sessions: () => { calls += 1; return { ok: true }; } });
+		const env = make_env({
+			sessions: () => {
+				calls += 1;
+				return { ok: true };
+			},
+		});
 		expect((await handle_request(profile_request(route, body), env)).status).toBe(400);
 		expect(calls).toBe(0);
 	});
@@ -460,25 +759,48 @@ describe("profile host routes", () => {
 
 	it("keeps profile-delete open while the runner is disabled, but not summary", async () => {
 		const env = make_env({ disabled: true });
-		expect((await handle_request(profile_request("delete", { ...OWNERS, profileId: "profile_1" }), env)).status).toBe(200);
-		expect((await handle_request(profile_request("summary", { ...OWNERS, ...PROFILE_INPUT }), env)).status).not.toBe(200);
+		expect((await handle_request(profile_request("delete", { ...OWNERS, profileId: "profile_1" }), env)).status).toBe(
+			200,
+		);
+		expect((await handle_request(profile_request("summary", { ...OWNERS, ...PROFILE_INPUT }), env)).status).not.toBe(
+			200,
+		);
 	});
 
 	it("forwards saveProfile on close", async () => {
 		const received: Array<[string, unknown]> = [];
-		const env = make_env({ sessions: (path, value) => { received.push([path, value]); return { ok: true }; } });
-		await handle_request(browser_request("close", JSON.stringify({ ...OWNERS, sessionId: "session-1", saveProfile: true })), env);
+		const env = make_env({
+			sessions: (path, value) => {
+				received.push([path, value]);
+				return { ok: true };
+			},
+		});
+		await handle_request(
+			browser_request("close", JSON.stringify({ ...OWNERS, sessionId: "session-1", saveProfile: true })),
+			env,
+		);
 		expect(received).toEqual([["/close", { sessionId: "session-1", saveProfile: true }]]);
 	});
 
 	it("forwards the close reason as `by` and drops a reason that is not a short code", async () => {
 		const received: Array<[string, Record<string, unknown>]> = [];
-		const env = make_env({ sessions: (path, value) => { received.push([path, value as Record<string, unknown>]); return { ok: true }; } });
-		await handle_request(browser_request("close", JSON.stringify({ ...OWNERS, sessionId: "session-1", reason: "access_lost" })), env);
+		const env = make_env({
+			sessions: (path, value) => {
+				received.push([path, value as Record<string, unknown>]);
+				return { ok: true };
+			},
+		});
+		await handle_request(
+			browser_request("close", JSON.stringify({ ...OWNERS, sessionId: "session-1", reason: "access_lost" })),
+			env,
+		);
 		expect(received).toEqual([["/close", { sessionId: "session-1", by: "access_lost" }]]);
 
 		// The reason is only logged, so a bad one must not stop the close.
-		const bad = await handle_request(browser_request("close", JSON.stringify({ ...OWNERS, sessionId: "session-1", reason: "Access Lost!" })), env);
+		const bad = await handle_request(
+			browser_request("close", JSON.stringify({ ...OWNERS, sessionId: "session-1", reason: "Access Lost!" })),
+			env,
+		);
 		expect(bad.status).toBe(200);
 		expect(received).toHaveLength(2);
 		expect(received[1]![1].by).toBeUndefined();
@@ -486,60 +808,177 @@ describe("profile host routes", () => {
 });
 
 describe("download and upload host routes", () => {
-	function route_request(route: string, body: unknown, headers: Record<string, string> = { Authorization: "Bearer test-secret" }) {
+	function route_request(
+		route: string,
+		body: unknown,
+		headers: Record<string, string> = { Authorization: "Bearer test-secret" },
+	) {
 		return new Request(`${URL_BASE}/internal/browser/${route}`, {
 			method: "POST",
 			headers: { "Content-Type": "application/json", ...headers },
-			body: JSON.stringify(body),
+			body: JSON.stringify({ mode: "web", ...(body as object) }),
 		});
 	}
 	const FILE = { name: "a.txt", contentType: "text/plain", url: "https://r2.test/a?sig=1" };
+	const TAB = { tabId: "tab-1", tabGen: 1, viewGen: 2 };
 
 	it.each([
-		{ route: "download-info", objectPath: "/download/info", body: { ...OWNERS, sessionId: "s", downloadId: "d" }, sent: { sessionId: "s", downloadId: "d" } },
+		{
+			route: "download-info",
+			objectPath: "/download/info",
+			body: { ...OWNERS, sessionId: "s", downloadId: "d" },
+			sent: { sessionId: "s", downloadId: "d" },
+		},
 		{
 			route: "download-push",
 			objectPath: "/download/push",
-			body: { ...OWNERS, sessionId: "s", downloadId: "d", url: "https://r2.test/put", headers: { "Content-Type": "text/csv" } },
+			body: {
+				...OWNERS,
+				sessionId: "s",
+				downloadId: "d",
+				url: "https://r2.test/put",
+				headers: { "Content-Type": "text/csv" },
+			},
 			sent: { sessionId: "s", downloadId: "d", url: "https://r2.test/put", headers: { "Content-Type": "text/csv" } },
 		},
-		{ route: "upload-grant", objectPath: "/upload/grant", body: { ...OWNERS, sessionId: "s", chooserId: "c", controlGen: 2 }, sent: { sessionId: "s", chooserId: "c", controlGen: 2 } },
+		{
+			route: "upload-grant",
+			objectPath: "/upload/grant",
+			body: { ...OWNERS, ...TAB, sessionId: "s", chooserId: "c", controlGen: 2 },
+			sent: { ...TAB, sessionId: "s", chooserId: "c", controlGen: 2 },
+		},
 		{
 			route: "upload-fill",
 			objectPath: "/upload/fill",
-			body: { ...OWNERS, sessionId: "s", chooserId: "c", controlGen: 2, files: [FILE] },
-			sent: { sessionId: "s", chooserId: "c", controlGen: 2, files: [FILE] },
+			body: { ...OWNERS, ...TAB, sessionId: "s", chooserId: "c", controlGen: 2, files: [FILE] },
+			sent: { ...TAB, sessionId: "s", chooserId: "c", controlGen: 2, files: [FILE] },
 		},
-	])("passes $route to the owner's session object", async ({ route, objectPath, body, sent }) => {
+	])("forwards the complete app body through $route", async ({ route, objectPath, body, sent }) => {
 		const received: Array<[string, unknown]> = [];
-		const env = make_env({ sessions: (path, value) => { received.push([path, value]); return { ok: true }; } });
+		const env = make_env({
+			sessions: (path, value) => {
+				received.push([path, value]);
+				return { ok: true };
+			},
+		});
 		const res = await handle_request(route_request(route, body), env);
+		expect(res.status).toBe(200);
 		expect(await res.json()).toEqual({ ok: true });
 		expect(received).toEqual([[objectPath, sent]]);
 	});
 
 	it.each([
-		{ route: "download-info", name: "an unknown field", body: { ...OWNERS, sessionId: "s", downloadId: "d", url: "https://r2.test/" } },
+		{
+			route: "download-info",
+			name: "an unknown field",
+			body: { ...OWNERS, sessionId: "s", downloadId: "d", url: "https://r2.test/" },
+		},
 		{ route: "download-info", name: "no download id", body: { ...OWNERS, sessionId: "s" } },
-		{ route: "download-push", name: "an http URL", body: { ...OWNERS, sessionId: "s", downloadId: "d", url: "http://r2.test/", headers: {} } },
-		{ route: "download-push", name: "a header with a newline", body: { ...OWNERS, sessionId: "s", downloadId: "d", url: "https://r2.test/", headers: { "X-A": "a\r\nb" } } },
-		{ route: "download-push", name: "a bad header name", body: { ...OWNERS, sessionId: "s", downloadId: "d", url: "https://r2.test/", headers: { "X A": "a" } } },
-		{ route: "upload-grant", name: "no controlGen", body: { ...OWNERS, sessionId: "s", chooserId: "c" } },
-		{ route: "upload-fill", name: "no files", body: { ...OWNERS, sessionId: "s", chooserId: "c", controlGen: 2, files: [] } },
-		{ route: "upload-fill", name: "11 files", body: { ...OWNERS, sessionId: "s", chooserId: "c", controlGen: 2, files: Array(11).fill(FILE) } },
-		{ route: "upload-fill", name: "an http file URL", body: { ...OWNERS, sessionId: "s", chooserId: "c", controlGen: 2, files: [{ ...FILE, url: "http://r2.test/a" }] } },
-		{ route: "upload-fill", name: "an extra file field", body: { ...OWNERS, sessionId: "s", chooserId: "c", controlGen: 2, files: [{ ...FILE, size: 1 }] } },
-		{ route: "upload-fill", name: "a 256-char name", body: { ...OWNERS, sessionId: "s", chooserId: "c", controlGen: 2, files: [{ ...FILE, name: "n".repeat(256) }] } },
+		{
+			route: "download-push",
+			name: "an http URL",
+			body: { ...OWNERS, sessionId: "s", downloadId: "d", url: "http://r2.test/", headers: {} },
+		},
+		{
+			route: "download-push",
+			name: "a header with a newline",
+			body: { ...OWNERS, sessionId: "s", downloadId: "d", url: "https://r2.test/", headers: { "X-A": "a\r\nb" } },
+		},
+		{
+			route: "download-push",
+			name: "a bad header name",
+			body: { ...OWNERS, sessionId: "s", downloadId: "d", url: "https://r2.test/", headers: { "X A": "a" } },
+		},
+		{ route: "upload-grant", name: "no controlGen", body: { ...OWNERS, ...TAB, sessionId: "s", chooserId: "c" } },
+		{
+			route: "upload-fill",
+			name: "no files",
+			body: { ...OWNERS, ...TAB, sessionId: "s", chooserId: "c", controlGen: 2, files: [] },
+		},
+		{
+			route: "upload-fill",
+			name: "11 files",
+			body: { ...OWNERS, ...TAB, sessionId: "s", chooserId: "c", controlGen: 2, files: Array(11).fill(FILE) },
+		},
+		{
+			route: "upload-fill",
+			name: "an http file URL",
+			body: {
+				...OWNERS,
+				...TAB,
+				sessionId: "s",
+				chooserId: "c",
+				controlGen: 2,
+				files: [{ ...FILE, url: "http://r2.test/a" }],
+			},
+		},
+		{
+			route: "upload-fill",
+			name: "an extra file field",
+			body: { ...OWNERS, ...TAB, sessionId: "s", chooserId: "c", controlGen: 2, files: [{ ...FILE, size: 1 }] },
+		},
+		{
+			route: "upload-fill",
+			name: "a 256-char name",
+			body: {
+				...OWNERS,
+				...TAB,
+				sessionId: "s",
+				chooserId: "c",
+				controlGen: 2,
+				files: [{ ...FILE, name: "n".repeat(256) }],
+			},
+		},
 	])("rejects $route with $name", async ({ route, body }) => {
 		let calls = 0;
-		const env = make_env({ sessions: () => { calls += 1; return { ok: true }; } });
+		const env = make_env({
+			sessions: () => {
+				calls += 1;
+				return { ok: true };
+			},
+		});
 		expect((await handle_request(route_request(route, body), env)).status).toBe(400);
 		expect(calls).toBe(0);
 	});
 
-	it.each(["download-info", "download-push", "upload-fill", "upload-grant"])("refuses %s without a token", async (route) => {
-		expect((await handle_request(route_request(route, { ...OWNERS }, {}), make_env({}))).status).toBe(401);
+	it.each([
+		{ name: "missing tabId", changed: { tabId: undefined } },
+		{ name: "empty tabId", changed: { tabId: "" } },
+		{ name: "missing tabGen", changed: { tabGen: undefined } },
+		{ name: "zero tabGen", changed: { tabGen: 0 } },
+		{ name: "fractional tabGen", changed: { tabGen: 1.5 } },
+		{ name: "missing viewGen", changed: { viewGen: undefined } },
+		{ name: "zero viewGen", changed: { viewGen: 0 } },
+		{ name: "string viewGen", changed: { viewGen: "2" } },
+	])("refuses invalid upload tab identity: $name", async ({ changed }) => {
+		for (const route of ["upload-grant", "upload-fill"]) {
+			const received: unknown[] = [];
+			const env = make_env({
+				sessions: (_path, value) => {
+					received.push(value);
+					return { ok: true };
+				},
+			});
+			const body = {
+				...OWNERS,
+				...TAB,
+				sessionId: "s",
+				chooserId: "c",
+				controlGen: 2,
+				...changed,
+				...(route === "upload-fill" ? { files: [FILE] } : {}),
+			};
+			expect((await handle_request(route_request(route, body), env)).status).toBe(400);
+			expect(received).toEqual([]);
+		}
 	});
+
+	it.each(["download-info", "download-push", "upload-fill", "upload-grant"])(
+		"refuses %s without a token",
+		async (route) => {
+			expect((await handle_request(route_request(route, { ...OWNERS }, {}), make_env({}))).status).toBe(401);
+		},
+	);
 });
 
 describe("viewer upload route", () => {
@@ -550,22 +989,34 @@ describe("viewer upload route", () => {
 		const forwarded: Request[] = [];
 		env.BROWSER_SESSIONS = {
 			idFromName: (name: string) => ({ toString: () => name }),
-			get: () => ({ fetch: async (request: Request) => { forwarded.push(request); return Response.json({ ok: true }); } }),
+			get: () => ({
+				fetch: async (request: Request) => {
+					forwarded.push(request);
+					return Response.json({ ok: true });
+				},
+			}),
 		};
 		return { env, forwarded };
 	}
 	function upload_request(method: string, headers: Record<string, string>, body?: BodyInit) {
 		const url = new URL(`${URL_BASE}/viewer/upload`);
-		for (const [name, value] of Object.entries({ ...OWNERS, grantId: "grant-1", name: "notes.txt" })) url.searchParams.set(name, value);
+		for (const [name, value] of Object.entries({ ...OWNERS, mode: "web", grantId: "grant-1", name: "notes.txt" }))
+			url.searchParams.set(name, value);
 		return new Request(url, { method, headers, body });
 	}
 
 	it("answers a preflight from an allowed origin", async () => {
 		const { env } = upload_env();
-		const res = await handle_request(upload_request("OPTIONS", { Origin: APP, "Access-Control-Request-Method": "PUT" }), env);
+		const res = await handle_request(
+			upload_request("OPTIONS", { Origin: APP, "Access-Control-Request-Method": "PUT" }),
+			env,
+		);
 		expect(res.status).toBe(204);
 		expect(Object.fromEntries(res.headers)).toMatchObject({
-			"access-control-allow-origin": APP, "access-control-allow-methods": "PUT", "access-control-allow-headers": "Content-Type", vary: "Origin",
+			"access-control-allow-origin": APP,
+			"access-control-allow-methods": "PUT",
+			"access-control-allow-headers": "Content-Type",
+			vary: "Origin",
 		});
 	});
 
@@ -582,7 +1033,10 @@ describe("viewer upload route", () => {
 
 	it("forwards a PUT from an allowed origin and adds CORS headers", async () => {
 		const { env, forwarded } = upload_env();
-		const res = await handle_request(upload_request("PUT", { Origin: APP, "Content-Type": "text/plain", "Content-Length": "5" }, "hello"), env);
+		const res = await handle_request(
+			upload_request("PUT", { Origin: APP, "Content-Type": "text/plain", "Content-Length": "5" }, "hello"),
+			env,
+		);
 		expect(res.status).toBe(200);
 		expect(await res.json()).toEqual({ ok: true });
 		expect(res.headers.get("Access-Control-Allow-Origin")).toBe(APP);
@@ -595,9 +1049,16 @@ describe("viewer upload route", () => {
 		const { env } = upload_env();
 		env.BROWSER_SESSIONS = {
 			idFromName: (name: string) => ({ toString: () => name }),
-			get: () => ({ fetch: async () => { throw new Error("Session object reset"); } }),
+			get: () => ({
+				fetch: async () => {
+					throw new Error("Session object reset");
+				},
+			}),
 		};
-		const res = await handle_request(upload_request("PUT", { Origin: APP, "Content-Type": "text/plain", "Content-Length": "5" }, "hello"), env);
+		const res = await handle_request(
+			upload_request("PUT", { Origin: APP, "Content-Type": "text/plain", "Content-Length": "5" }, "hello"),
+			env,
+		);
 		expect(res.status).toBe(500);
 		expect(await res.json()).toEqual({ ok: false, code: "upload_failed" });
 		expect(res.headers.get("Access-Control-Allow-Origin")).toBe(APP);
@@ -605,26 +1066,45 @@ describe("viewer upload route", () => {
 
 	it("refuses a PUT from another origin, and every PUT when the list is empty", async () => {
 		const { env, forwarded } = upload_env();
-		const refused = await handle_request(upload_request("PUT", { Origin: "https://evil.test", "Content-Length": "5" }, "hello"), env);
+		const refused = await handle_request(
+			upload_request("PUT", { Origin: "https://evil.test", "Content-Length": "5" }, "hello"),
+			env,
+		);
 		expect(refused.status).toBe(403);
 		expect(await refused.json()).toEqual({ ok: false, code: "origin_refused" });
 		expect(refused.headers.get("Access-Control-Allow-Origin")).toBeNull();
 		env.BROWSER_APP_ORIGINS = "";
-		expect((await handle_request(upload_request("PUT", { Origin: APP, "Content-Length": "5" }, "hello"), env)).status).toBe(403);
+		expect(
+			(await handle_request(upload_request("PUT", { Origin: APP, "Content-Length": "5" }, "hello"), env)).status,
+		).toBe(403);
 		expect(forwarded).toEqual([]);
 	});
 
 	it("refuses a PUT over 20 MiB or without a length before reading it", async () => {
 		const { env, forwarded } = upload_env();
-		const large = await handle_request(upload_request("PUT", { Origin: APP, "Content-Length": String(LIMITS.uploadBytes + 1) }, "x"), env);
+		const large = await handle_request(
+			upload_request("PUT", { Origin: APP, "Content-Length": String(LIMITS.uploadBytes + 1) }, "x"),
+			env,
+		);
 		expect(large.status).toBe(413);
 		expect(await large.json()).toEqual({ ok: false, code: "too_large" });
 		expect(large.headers.get("Access-Control-Allow-Origin")).toBe(APP);
 		const url = new URL(`${URL_BASE}/viewer/upload`);
-		for (const [name, value] of Object.entries({ ...OWNERS, grantId: "grant-1", name: "notes.txt" })) url.searchParams.set(name, value);
+		for (const [name, value] of Object.entries({ ...OWNERS, mode: "web", grantId: "grant-1", name: "notes.txt" }))
+			url.searchParams.set(name, value);
 		// A stream body has no length, like a chunked upload.
-		const stream = new ReadableStream({ start(controller) { controller.enqueue(new Uint8Array([1])); controller.close(); } });
-		const chunked = new Request(url, { method: "PUT", headers: { Origin: APP }, body: stream, duplex: "half" } as RequestInit);
+		const stream = new ReadableStream({
+			start(controller) {
+				controller.enqueue(new Uint8Array([1]));
+				controller.close();
+			},
+		});
+		const chunked = new Request(url, {
+			method: "PUT",
+			headers: { Origin: APP },
+			body: stream,
+			duplex: "half",
+		} as RequestInit);
 		expect((await handle_request(chunked, env)).status).toBe(411);
 		expect(forwarded).toEqual([]);
 	});
@@ -633,7 +1113,10 @@ describe("viewer upload route", () => {
 		const { env } = upload_env();
 		const url = new URL(`${URL_BASE}/viewer/upload`);
 		for (const [name, value] of Object.entries(OWNERS)) url.searchParams.set(name, value);
-		const res = await handle_request(new Request(url, { method: "PUT", headers: { Origin: APP, "Content-Length": "1" }, body: "x" }), env);
+		const res = await handle_request(
+			new Request(url, { method: "PUT", headers: { Origin: APP, "Content-Length": "1" }, body: "x" }),
+			env,
+		);
 		expect(res.status).toBe(400);
 	});
 });
@@ -651,7 +1134,14 @@ describe("run validation", () => {
 		const res = await handle_request(
 			browser_request(
 				"run",
-				JSON.stringify({ ...OWNERS, sessionId: "s", navGen: 1, loadGen: 1, controlGen: 1, code: "x".repeat(LIMITS.codeBytes + 1) }),
+				JSON.stringify({
+					...OWNERS,
+					sessionId: "s",
+					navGen: 1,
+					loadGen: 1,
+					controlGen: 1,
+					code: "x".repeat(LIMITS.codeBytes + 1),
+				}),
 			),
 			make_env({}),
 		);
@@ -680,10 +1170,7 @@ describe("close and keep-open", () => {
 
 	it("passes close through to the session", async () => {
 		const env = make_env({ sessions: () => ({ ok: true, existed: true, verified: true }) });
-		const res = await handle_request(
-			browser_request("close", JSON.stringify({ ...OWNERS, sessionId: "s" })),
-			env,
-		);
+		const res = await handle_request(browser_request("close", JSON.stringify({ ...OWNERS, sessionId: "s" })), env);
 		expect(await res.json()).toEqual({ ok: true, existed: true, verified: true });
 	});
 
@@ -700,38 +1187,88 @@ describe("close and keep-open", () => {
 describe("execute_browser_command", () => {
 	afterEach(() => vi.restoreAllMocks());
 
-	it.each([undefined, null, "", "home", "CURRENT", 1])("drops the whole HTTP batch for forged workspace %s", async (workspace) => {
-		const finishes: unknown[] = [];
-		const env = make_env({ sessions: (path, body) => {
-			if (path === "/run/begin") return { ok: true, lease: { sessionId: "session-1", mode: "file", viewport: { width: 1280, height: 900 } } };
-			if (path === "/run/settle") return { ok: true, blockedPopups: 0 };
-			finishes.push(body);
-			return { ok: true };
-		} });
-		// A forged RPC reply can bypass the snippet's local emitFile checks.
-		const evaluate = vi.fn().mockResolvedValue({
-			ok: true, resultJson: "42", files: [
-				{ workspace: "personal", path: "/first.bin", bytes: new Uint8Array([1]) },
-				{ workspace, path: "/bad.bin", bytes: new Uint8Array([2]) },
-			], viewport: null, popups: { blocked: 0, urls: [] }, consoleEntries: [], pageErrors: [], logs: [], logsTruncated: false,
-		});
-		env.LOADER = { load: () => ({ getEntrypoint: () => ({ evaluate }) }) };
-		const response = await handle_request(browser_request("run", JSON.stringify({
-			...OWNERS, sessionId: "session-1", navGen: 1, loadGen: 1, controlGen: 1, code: "forged reply",
-		})), env, { waitUntil: () => {}, exports: { BrowserConnectionGateway: () => ({ fetch }) } });
-		const result = await response.json();
-		expect(response.status).toBe(200);
-		expect(result.status).toBe("tainted");
-		expect(result.result).toBeNull();
-		expect(result.files).toEqual([]);
-		expect(result.error.message).toBe("Snippet output failed host validation.");
-		expect(finishes).toEqual([expect.objectContaining({ tainted: true, fileCount: 0, fileBytes: 0 })]);
-	});
+	it.each([undefined, null, "", "home", "CURRENT", 1])(
+		"drops the whole HTTP batch for forged workspace %s",
+		async (workspace) => {
+			const finishes: unknown[] = [];
+			const env = make_env({
+				sessions: (path, body) => {
+					if (path === "/run/begin")
+						return {
+							ok: true,
+							lease: { sessionId: "session-1", mode: "file", viewport: { width: 1280, height: 900 } },
+						};
+					if (path === "/run/settle") return { ok: true, blockedPopups: 0 };
+					finishes.push(body);
+					return { ok: true };
+				},
+			});
+			// A forged RPC reply can bypass the snippet's local emitFile checks.
+			const evaluate = vi.fn().mockResolvedValue({
+				ok: true,
+				resultJson: "42",
+				files: [
+					{ workspace: "personal", path: "/first.bin", bytes: new Uint8Array([1]) },
+					{ workspace, path: "/bad.bin", bytes: new Uint8Array([2]) },
+				],
+				viewport: null,
+				popups: { blocked: 0, urls: [] },
+				consoleEntries: [],
+				pageErrors: [],
+				logs: [],
+				logsTruncated: false,
+			});
+			env.LOADER = { load: () => ({ getEntrypoint: () => ({ evaluate }) }) };
+			const response = await handle_request(
+				browser_request(
+					"run",
+					JSON.stringify({
+						...OWNERS,
+						sessionId: "session-1",
+						navGen: 1,
+						loadGen: 1,
+						controlGen: 1,
+						code: "forged reply",
+					}),
+				),
+				env,
+				{ waitUntil: () => {}, exports: { BrowserConnectionGateway: () => ({ fetch }) } },
+			);
+			const result = await response.json();
+			expect(response.status).toBe(200);
+			expect(result.status).toBe("tainted");
+			expect(result.result).toBeNull();
+			expect(result.files).toEqual([]);
+			expect(result.error.message).toBe("Snippet output failed host validation.");
+			expect(finishes).toEqual([expect.objectContaining({ tainted: true, fileCount: 0, fileBytes: 0 })]);
+		},
+	);
 
 	it.each([
-		{ name: "a failed snippet that changed the page", changed: true, timeout: false, lost: false, status: "tainted", tainted: true },
-		{ name: "a failed snippet on the registered page", changed: false, timeout: false, lost: false, status: "errored", tainted: false },
-		{ name: "a timed-out snippet on the registered page", changed: false, timeout: true, lost: false, status: "timed_out", tainted: true },
+		{
+			name: "a failed snippet that changed the page",
+			changed: true,
+			timeout: false,
+			lost: false,
+			status: "tainted",
+			tainted: true,
+		},
+		{
+			name: "a failed snippet on the registered page",
+			changed: false,
+			timeout: false,
+			lost: false,
+			status: "errored",
+			tainted: false,
+		},
+		{
+			name: "a timed-out snippet on the registered page",
+			changed: false,
+			timeout: true,
+			lost: false,
+			status: "timed_out",
+			tainted: true,
+		},
 		{ name: "a lost isolate call", changed: false, timeout: false, lost: true, status: "errored", tainted: true },
 	])("checks or closes after $name", async ({ changed, timeout, lost, status, tainted }) => {
 		const finishes: unknown[] = [];
@@ -739,44 +1276,64 @@ describe("execute_browser_command", () => {
 		const env = make_env({
 			sessions: (path, body) => {
 				calls.push(path);
-				if (path === "/run/begin") return {
-					ok: true,
-					lease: { sessionId: "session-1", mode: "file", viewport: { width: 1280, height: 900 } },
-				};
-				if (path === "/run/settle") return changed
-					? { ok: false, error: { code: "closed", message: "Browser target changed." } }
-					: { ok: true, blockedPopups: 0 };
+				if (path === "/run/begin")
+					return {
+						ok: true,
+						lease: { sessionId: "session-1", mode: "file", viewport: { width: 1280, height: 900 } },
+					};
+				if (path === "/run/settle")
+					return changed
+						? { ok: false, error: { code: "closed", message: "Browser target changed." } }
+						: { ok: true, blockedPopups: 0 };
 				finishes.push(body);
 				return { ok: true };
 			},
 		});
 		env.LOADER = {
-			load: () => ({ getEntrypoint: () => ({
-				evaluate: async () => {
-					if (lost) throw new Error("Isolate disconnected");
-					return {
-						ok: false,
-						error: { name: "Error", message: timeout ? "Execution timed out" : "test failure" },
-						viewport: null,
-						popups: { blocked: 0, urls: [] },
-						consoleEntries: ["private output"],
-						pageErrors: [],
-						logs: [],
-						logsTruncated: false,
-					};
-				},
-			}) }),
+			load: () => ({
+				getEntrypoint: () => ({
+					evaluate: async () => {
+						if (lost) throw new Error("Isolate disconnected");
+						return {
+							ok: false,
+							error: { name: "Error", message: timeout ? "Execution timed out" : "test failure" },
+							viewport: null,
+							popups: { blocked: 0, urls: [] },
+							consoleEntries: ["private output"],
+							pageErrors: [],
+							logs: [],
+							logsTruncated: false,
+						};
+					},
+				}),
+			}),
 		};
-		const ctx = { exports: { BrowserConnectionGateway: () => ({ fetch }) } } as unknown as NonNullable<Parameters<typeof handle_request>[2]>;
-		const response = await handle_request(browser_request("run", JSON.stringify({
-			...OWNERS, sessionId: "session-1", navGen: 1, loadGen: 1, controlGen: 1, code: "throw new Error('test');",
-		})), env, ctx);
+		const ctx = { exports: { BrowserConnectionGateway: () => ({ fetch }) } } as unknown as NonNullable<
+			Parameters<typeof handle_request>[2]
+		>;
+		const response = await handle_request(
+			browser_request(
+				"run",
+				JSON.stringify({
+					...OWNERS,
+					sessionId: "session-1",
+					navGen: 1,
+					loadGen: 1,
+					controlGen: 1,
+					code: "throw new Error('test');",
+				}),
+			),
+			env,
+			ctx,
+		);
 		const result = await response.json();
 		expect(result.status).toBe(status);
 		expect(result.files).toEqual([]);
 		expect(finishes).toEqual([expect.objectContaining({ tainted })]);
 		expect(result.consoleEntries).toEqual(tainted ? [] : ["private output"]);
-		expect(calls).toEqual(timeout || lost ? ["/run/begin", "/run/finish"] : ["/run/begin", "/run/settle", "/run/finish"]);
+		expect(calls).toEqual(
+			timeout || lost ? ["/run/begin", "/run/finish"] : ["/run/begin", "/run/settle", "/run/finish"],
+		);
 	});
 
 	it("waits for trusted settlement before finishing and returning results", async () => {
@@ -784,40 +1341,75 @@ describe("execute_browser_command", () => {
 		const settled = Promise.withResolvers<void>();
 		const calls: string[] = [];
 		const finishes: unknown[] = [];
-		const env = make_env({ sessions: async (path, body) => {
-			calls.push(path);
-			if (path === "/run/begin") return {
-				ok: true, lease: { sessionId: "session-1", mode: "file", viewport: { width: 1280, height: 900 } },
-			};
-			if (path === "/run/settle") {
-				expect(body).toEqual({ sessionId: "session-1", commandId: "command-1" });
-				settling.resolve();
-				await settled.promise;
-				return { ok: true, blockedPopups: 2 };
-			}
-			finishes.push(body);
-			return { ok: true };
-		} });
+		const env = make_env({
+			sessions: async (path, body) => {
+				calls.push(path);
+				if (path === "/run/begin")
+					return {
+						ok: true,
+						lease: { sessionId: "session-1", mode: "file", viewport: { width: 1280, height: 900 } },
+					};
+				if (path === "/run/settle") {
+					expect(body).toEqual({ sessionId: "session-1", commandId: "command-1" });
+					settling.resolve();
+					await settled.promise;
+					return { ok: true, blockedPopups: 2 };
+				}
+				finishes.push(body);
+				return { ok: true };
+			},
+		});
 		const evaluate = vi.fn(async () => ({
-			ok: true, resultJson: "42", files: [
+			ok: true,
+			resultJson: "42",
+			files: [
 				{ workspace: "current" as const, path: "/reports/result.bin", bytes: new Uint8Array([0, 255, 128]) },
 				{ workspace: "personal" as const, path: "/reports/result.bin", bytes: new Uint8Array([1]) },
-			], viewport: null,
-			popups: { blocked: 99, urls: ["untrusted"] }, consoleEntries: [], pageErrors: [], logs: [], logsTruncated: false,
+			],
+			viewport: null,
+			popups: { blocked: 99, urls: ["untrusted"] },
+			consoleEntries: [],
+			pageErrors: [],
+			logs: [],
+			logsTruncated: false,
 		}));
 		env.LOADER = { load: () => ({ getEntrypoint: () => ({ evaluate }) }) };
 		const gateway = vi.fn(() => ({ fetch }));
-		const ctx = { exports: { BrowserConnectionGateway: gateway } } as unknown as NonNullable<Parameters<typeof handle_request>[2]>;
+		const ctx = { exports: { BrowserConnectionGateway: gateway } } as unknown as NonNullable<
+			Parameters<typeof handle_request>[2]
+		>;
 		let returned = false;
-		const pending = handle_request(browser_request("run", JSON.stringify({
-			...OWNERS, sessionId: "session-1", navGen: 1, loadGen: 1, controlGen: 1, commandId: "command-1", code: "return 42;",
-		})), env, ctx).then((response) => { returned = true; return response; });
+		const pending = handle_request(
+			browser_request(
+				"run",
+				JSON.stringify({
+					...OWNERS,
+					sessionId: "session-1",
+					navGen: 1,
+					loadGen: 1,
+					controlGen: 1,
+					commandId: "command-1",
+					code: "return 42;",
+				}),
+			),
+			env,
+			ctx,
+		).then((response) => {
+			returned = true;
+			return response;
+		});
 		await settling.promise;
 		expect(finishes).toEqual([]);
 		expect(returned).toBe(false);
-		expect(gateway).toHaveBeenCalledWith({ props: { ...OWNERS, sessionId: "session-1", commandId: "command-1" } });
+		expect(gateway).toHaveBeenCalledWith({
+			props: { ...OWNERS, mode: "file", sessionId: "session-1", commandId: "command-1" },
+		});
 		expect(evaluate).toHaveBeenCalledWith({
-			sessionId: "session-1", mode: "file", runtimeOrigin: "https://controller.browser.invalid", viewport: { width: 1280, height: 900 }, timeoutMs: LIMITS.commandTimeoutMs,
+			sessionId: "session-1",
+			mode: "file",
+			runtimeOrigin: "https://controller.browser.invalid",
+			viewport: { width: 1280, height: 900 },
+			timeoutMs: LIMITS.commandTimeoutMs,
 		});
 		settled.resolve();
 		const result = await (await pending).json();
@@ -831,25 +1423,59 @@ describe("execute_browser_command", () => {
 	});
 
 	it("adds agent downloads under the shared 8-file limit and counts the dropped ones", async () => {
-		const env = make_env({ sessions: (path) => {
-			if (path === "/run/begin") return { ok: true, lease: { sessionId: "session-1", mode: "web", viewport: { width: 1280, height: 900 } } };
-			if (path === "/run/settle") return { ok: true, blockedPopups: 0 };
-			// The object already dropped one download of its own.
-			return {
-				ok: true, state: "ready", downloadsDropped: 1,
-				downloads: Array.from({ length: 4 }, (_, index) => ({ name: `d${index}.csv`, contentType: "text/csv", dataBase64: "YWJj" })),
-			};
-		} });
+		const env = make_env({
+			sessions: (path) => {
+				if (path === "/run/begin")
+					return { ok: true, lease: { sessionId: "session-1", mode: "web", viewport: { width: 1280, height: 900 } } };
+				if (path === "/run/settle") return { ok: true, blockedPopups: 0 };
+				// The object already dropped one download of its own.
+				return {
+					ok: true,
+					state: "ready",
+					downloadsDropped: 1,
+					downloads: Array.from({ length: 4 }, (_, index) => ({
+						name: `d${index}.csv`,
+						contentType: "text/csv",
+						dataBase64: "YWJj",
+					})),
+				};
+			},
+		});
 		env.BROWSER_PREVIEW_URL = undefined;
 		const evaluate = vi.fn(async () => ({
-			ok: true, resultJson: "1", viewport: null, popups: { blocked: 0, urls: [] }, consoleEntries: [], pageErrors: [], logs: [], logsTruncated: false,
-			files: Array.from({ length: 6 }, (_, index) => ({ workspace: "current" as const, path: `/f${index}.bin`, bytes: new Uint8Array([index]) })),
+			ok: true,
+			resultJson: "1",
+			viewport: null,
+			popups: { blocked: 0, urls: [] },
+			consoleEntries: [],
+			pageErrors: [],
+			logs: [],
+			logsTruncated: false,
+			files: Array.from({ length: 6 }, (_, index) => ({
+				workspace: "current" as const,
+				path: `/f${index}.bin`,
+				bytes: new Uint8Array([index]),
+			})),
 		}));
 		env.LOADER = { load: () => ({ getEntrypoint: () => ({ evaluate }) }) };
-		const ctx = { exports: { BrowserConnectionGateway: () => ({ fetch }) } } as unknown as NonNullable<Parameters<typeof handle_request>[2]>;
-		const response = await handle_request(browser_request("run", JSON.stringify({
-			...OWNERS, sessionId: "session-1", navGen: 1, loadGen: 1, controlGen: 1, code: "return 1;",
-		})), env, ctx);
+		const ctx = { exports: { BrowserConnectionGateway: () => ({ fetch }) } } as unknown as NonNullable<
+			Parameters<typeof handle_request>[2]
+		>;
+		const response = await handle_request(
+			browser_request(
+				"run",
+				JSON.stringify({
+					...OWNERS,
+					sessionId: "session-1",
+					navGen: 1,
+					loadGen: 1,
+					controlGen: 1,
+					code: "return 1;",
+				}),
+			),
+			env,
+			ctx,
+		);
 		const result = await response.json();
 		expect(result.status).toBe("succeeded");
 		expect(result.files).toHaveLength(6);
@@ -863,52 +1489,114 @@ describe("execute_browser_command", () => {
 	it("drops a download that would pass 8 MiB with the files, and omits downloadsDropped at 0", async () => {
 		const big = Buffer.alloc(LIMITS.fileBytes - 2).toString("base64");
 		const make = (downloads: unknown[]) => {
-			const env = make_env({ sessions: (path) => {
-				if (path === "/run/begin") return { ok: true, lease: { sessionId: "session-1", mode: "web", viewport: { width: 1280, height: 900 } } };
-				if (path === "/run/settle") return { ok: true, blockedPopups: 0 };
-				return { ok: true, state: "ready", downloads };
-			} });
+			const env = make_env({
+				sessions: (path) => {
+					if (path === "/run/begin")
+						return { ok: true, lease: { sessionId: "session-1", mode: "web", viewport: { width: 1280, height: 900 } } };
+					if (path === "/run/settle") return { ok: true, blockedPopups: 0 };
+					return { ok: true, state: "ready", downloads };
+				},
+			});
 			env.BROWSER_PREVIEW_URL = undefined;
-			env.LOADER = { load: () => ({ getEntrypoint: () => ({ evaluate: async () => ({
-				ok: true, resultJson: "1", viewport: null, popups: { blocked: 0, urls: [] }, consoleEntries: [], pageErrors: [], logs: [], logsTruncated: false,
-				files: [{ workspace: "current" as const, path: "/f.bin", bytes: new Uint8Array([1, 2]) }],
-			}) }) }) };
+			env.LOADER = {
+				load: () => ({
+					getEntrypoint: () => ({
+						evaluate: async () => ({
+							ok: true,
+							resultJson: "1",
+							viewport: null,
+							popups: { blocked: 0, urls: [] },
+							consoleEntries: [],
+							pageErrors: [],
+							logs: [],
+							logsTruncated: false,
+							files: [{ workspace: "current" as const, path: "/f.bin", bytes: new Uint8Array([1, 2]) }],
+						}),
+					}),
+				}),
+			};
 			return env;
 		};
-		const ctx = { exports: { BrowserConnectionGateway: () => ({ fetch }) } } as unknown as NonNullable<Parameters<typeof handle_request>[2]>;
-		const run = async (env: Env) => await (await handle_request(browser_request("run", JSON.stringify({
-			...OWNERS, sessionId: "session-1", navGen: 1, loadGen: 1, controlGen: 1, code: "return 1;",
-		})), env, ctx)).json();
+		const ctx = { exports: { BrowserConnectionGateway: () => ({ fetch }) } } as unknown as NonNullable<
+			Parameters<typeof handle_request>[2]
+		>;
+		const run = async (env: Env) =>
+			await (
+				await handle_request(
+					browser_request(
+						"run",
+						JSON.stringify({
+							...OWNERS,
+							sessionId: "session-1",
+							navGen: 1,
+							loadGen: 1,
+							controlGen: 1,
+							code: "return 1;",
+						}),
+					),
+					env,
+					ctx,
+				)
+			).json();
 		const fits = await run(make([{ name: "big.bin", contentType: "application/octet-stream", dataBase64: big }]));
 		expect(fits.downloads).toHaveLength(1);
 		expect(fits).not.toHaveProperty("downloadsDropped");
-		const over = await run(make([
-			{ name: "big.bin", contentType: "application/octet-stream", dataBase64: big },
-			{ name: "one.bin", contentType: "application/octet-stream", dataBase64: "AA==" },
-		]));
+		const over = await run(
+			make([
+				{ name: "big.bin", contentType: "application/octet-stream", dataBase64: big },
+				{ name: "one.bin", contentType: "application/octet-stream", dataBase64: "AA==" },
+			]),
+		);
 		expect(over.downloads).toHaveLength(1);
 		expect(over.downloadsDropped).toBe(1);
 	});
 
 	it("runs a web command without a preview URL and drops URL queries from the error", async () => {
-		const env = make_env({ sessions: (path) => {
-			if (path === "/run/begin") return { ok: true, lease: { sessionId: "session-1", mode: "web", viewport: { width: 1280, height: 900 } } };
-			if (path === "/run/settle") return { ok: true, blockedPopups: 0 };
-			return { ok: true };
-		} });
+		const env = make_env({
+			sessions: (path) => {
+				if (path === "/run/begin")
+					return { ok: true, lease: { sessionId: "session-1", mode: "web", viewport: { width: 1280, height: 900 } } };
+				if (path === "/run/settle") return { ok: true, blockedPopups: 0 };
+				return { ok: true };
+			},
+		});
 		env.BROWSER_PREVIEW_URL = undefined;
 		const evaluate = vi.fn(async () => ({
-			ok: false, error: { name: "Error", message: "Timeout while loading https://example.com/login?token=abc#code=1 after 5s" },
-			viewport: null, popups: { blocked: 0, urls: [] }, consoleEntries: [], pageErrors: [], logs: [], logsTruncated: false,
+			ok: false,
+			error: { name: "Error", message: "Timeout while loading https://example.com/login?token=abc#code=1 after 5s" },
+			viewport: null,
+			popups: { blocked: 0, urls: [] },
+			consoleEntries: [],
+			pageErrors: [],
+			logs: [],
+			logsTruncated: false,
 		}));
 		env.LOADER = { load: () => ({ getEntrypoint: () => ({ evaluate }) }) };
-		const ctx = { exports: { BrowserConnectionGateway: () => ({ fetch }) } } as unknown as NonNullable<Parameters<typeof handle_request>[2]>;
-		const response = await handle_request(browser_request("run", JSON.stringify({
-			...OWNERS, sessionId: "session-1", navGen: 1, loadGen: 1, controlGen: 1, code: "await page.goto('https://example.com/');",
-		})), env, ctx);
+		const ctx = { exports: { BrowserConnectionGateway: () => ({ fetch }) } } as unknown as NonNullable<
+			Parameters<typeof handle_request>[2]
+		>;
+		const response = await handle_request(
+			browser_request(
+				"run",
+				JSON.stringify({
+					...OWNERS,
+					sessionId: "session-1",
+					navGen: 1,
+					loadGen: 1,
+					controlGen: 1,
+					code: "await page.goto('https://example.com/');",
+				}),
+			),
+			env,
+			ctx,
+		);
 		const result = await response.json();
 		expect(evaluate).toHaveBeenCalledWith({
-			sessionId: "session-1", mode: "web", runtimeOrigin: null, viewport: { width: 1280, height: 900 }, timeoutMs: LIMITS.commandTimeoutMs,
+			sessionId: "session-1",
+			mode: "web",
+			runtimeOrigin: null,
+			viewport: { width: 1280, height: 900 },
+			timeoutMs: LIMITS.commandTimeoutMs,
 		});
 		expect(result.status).toBe("errored");
 		expect(result.error.message).toBe("Timeout while loading https://example.com/login after 5s");
@@ -918,24 +1606,52 @@ describe("execute_browser_command", () => {
 describe("agent blocked site result", () => {
 	it("refuses the result, keeps the session, and finishes untainted when the page ends on a blocked site", async () => {
 		const finishes: unknown[] = [];
-		const env = make_env({ sessions: (path, body) => {
-			if (path === "/run/begin") return { ok: true, lease: { sessionId: "session-1", mode: "web", viewport: { width: 1280, height: 900 } } };
-			if (path === "/run/settle") return { ok: true, blockedPopups: 0, blockedSite: true };
-			if (path === "/run/finish") finishes.push(body);
-			return { ok: true };
-		} });
+		const env = make_env({
+			sessions: (path, body) => {
+				if (path === "/run/begin")
+					return { ok: true, lease: { sessionId: "session-1", mode: "web", viewport: { width: 1280, height: 900 } } };
+				if (path === "/run/settle") return { ok: true, blockedPopups: 0, blockedSite: true };
+				if (path === "/run/finish") finishes.push(body);
+				return { ok: true };
+			},
+		});
 		env.BROWSER_PREVIEW_URL = undefined;
 		const evaluate = vi.fn(async () => ({
-			ok: true, resultJson: JSON.stringify({ balance: 100 }), files: [], viewport: null, popups: { blocked: 0, urls: [] },
-			consoleEntries: [], pageErrors: [], logs: [], logsTruncated: false,
+			ok: true,
+			resultJson: JSON.stringify({ balance: 100 }),
+			files: [],
+			viewport: null,
+			popups: { blocked: 0, urls: [] },
+			consoleEntries: [],
+			pageErrors: [],
+			logs: [],
+			logsTruncated: false,
 		}));
 		env.LOADER = { load: () => ({ getEntrypoint: () => ({ evaluate }) }) };
-		const ctx = { exports: { BrowserConnectionGateway: () => ({ fetch }) } } as unknown as NonNullable<Parameters<typeof handle_request>[2]>;
-		const response = await handle_request(browser_request("run", JSON.stringify({
-			...OWNERS, sessionId: "session-1", navGen: 1, loadGen: 1, controlGen: 1, code: "return 1;",
-		})), env, ctx);
+		const ctx = { exports: { BrowserConnectionGateway: () => ({ fetch }) } } as unknown as NonNullable<
+			Parameters<typeof handle_request>[2]
+		>;
+		const response = await handle_request(
+			browser_request(
+				"run",
+				JSON.stringify({
+					...OWNERS,
+					sessionId: "session-1",
+					navGen: 1,
+					loadGen: 1,
+					controlGen: 1,
+					code: "return 1;",
+				}),
+			),
+			env,
+			ctx,
+		);
 		const result = await response.json();
-		expect(result).toEqual({ ok: false, error: { code: "agent_blocked_site", message: "The page is on a site the agent may not use." } });
+		expect(result).toEqual({
+			ok: false,
+			session: null,
+			error: { code: "agent_blocked_site", message: "The page is on a site the agent may not use." },
+		});
 		expect(JSON.stringify(result)).not.toContain("balance");
 		expect(finishes).toEqual([expect.objectContaining({ tainted: false, resultBytes: 0, fileCount: 0 })]);
 	});
@@ -953,10 +1669,20 @@ describe("agent reload and close leases", () => {
 		const storage = make_storage({ session: make_record(overrides) });
 		const put = vi.spyOn(storage.state.storage, "put");
 		const session = new BrowserSession(storage.state, make_env({}));
-		const response = await session.fetch(new Request(`https://object/${route}`, { method: "POST", body: JSON.stringify({
-			sessionId: "session-1", navGen: 1, sourceKind: "saved", sourceVersion: "v2", sourceHash: "h2", html: "<p>new</p>",
-			expectedAgentLease: { navGen: 1, loadGen: 1, controlGen: 1 },
-		}) }));
+		const response = await session.fetch(
+			new Request(`https://object/${route}`, {
+				method: "POST",
+				body: JSON.stringify({
+					sessionId: "session-1",
+					navGen: 1,
+					sourceKind: "saved",
+					sourceVersion: "v2",
+					sourceHash: "h2",
+					html: "<p>new</p>",
+					expectedAgentLease: { navGen: 1, loadGen: 1, controlGen: 1 },
+				}),
+			}),
+		);
 		expect((await response.json()).error.code).toBe(reason);
 		expect(put).not.toHaveBeenCalled();
 	});
@@ -964,38 +1690,72 @@ describe("agent reload and close leases", () => {
 	it.each(["reload", "close"])("passes the frozen lease through the %s host route", async (route) => {
 		const expectedAgentLease = { navGen: 1, loadGen: 2, controlGen: 3 };
 		const received: unknown[] = [];
-		const env = make_env({ sessions: (_path, body) => { received.push(body); return { ok: true }; } });
-		const response = await handle_request(browser_request(route as "reload" | "close", JSON.stringify({
-			...OWNERS, sessionId: "session-1", expectedAgentLease,
-			...(route === "reload" ? { navGen: 1, sourceKind: "saved", sourceVersion: "v2", sourceHash: "h2", html: "<p>new</p>" } : {}),
-		})), env);
+		const env = make_env({
+			sessions: (_path, body) => {
+				received.push(body);
+				return { ok: true };
+			},
+		});
+		const response = await handle_request(
+			browser_request(
+				route as "reload" | "close",
+				JSON.stringify({
+					...OWNERS,
+					sessionId: "session-1",
+					expectedAgentLease,
+					...(route === "reload"
+						? { navGen: 1, sourceKind: "saved", sourceVersion: "v2", sourceHash: "h2", html: "<p>new</p>" }
+						: {}),
+				}),
+			),
+			env,
+		);
 		expect(response.status).toBe(200);
 		expect(received).toEqual([expect.objectContaining({ expectedAgentLease })]);
 	});
 });
 
 describe("BrowserSession reload", () => {
-		afterEach(() => {
+	afterEach(() => {
 		vi.restoreAllMocks();
 		vi.unstubAllGlobals();
 	});
 
 	it.each(["take", "run", "alarm"])("closes an overdue reload before %s can reuse its page", async (operation) => {
-		const storage = make_storage({ session: make_record({
-			control: "agent",
-			command: { id: "reload:old", startedAt: Date.now() - LIMITS.commandTimeoutMs - 10_001 },
-			inputHolder: null,
-			viewers: { v1: { host: "docked", controlGen: 1, grantedUntil: Date.now() + 30_000, attachedAt: Date.now(), lastInputAt: Date.now() } },
-			viewerGrants: {},
-		}) });
+		const storage = make_storage({
+			session: make_record({
+				control: "agent",
+				command: { id: "reload:old", startedAt: Date.now() - LIMITS.commandTimeoutMs - 10_001 },
+				inputHolder: null,
+				viewers: {
+					v1: {
+						host: "docked",
+						controlGen: 1,
+						grantedUntil: Date.now() + 30_000,
+						attachedAt: Date.now(),
+						lastInputAt: Date.now(),
+					},
+				},
+				viewerGrants: {},
+			}),
+		});
 		const session = new BrowserSession(storage.state, make_env({}));
 		if (operation === "alarm") {
 			await session.alarm();
 		} else {
-			await session.fetch(new Request(`https://object${operation === "take" ? "/control/take-human" : "/run/begin"}`, {
-				method: "POST",
-				body: JSON.stringify({ sessionId: "session-1", navGen: 1, loadGen: 1, controlGen: 1, viewerId: "v1", commandId: "next" }),
-			}));
+			await session.fetch(
+				new Request(`https://object${operation === "take" ? "/control/take-human" : "/run/begin"}`, {
+					method: "POST",
+					body: JSON.stringify({
+						sessionId: "session-1",
+						navGen: 1,
+						loadGen: 1,
+						controlGen: 1,
+						viewerId: "v1",
+						commandId: "next",
+					}),
+				}),
+			);
 		}
 		// Provider close fails in this test, so its old page stays retired while cleanup retries.
 		expect(storage.map.get("session")).toMatchObject({ control: "closing", command: null });
@@ -1008,89 +1768,138 @@ describe("BrowserSession reload", () => {
 		{ agent: false, failed: true, take: true },
 		{ agent: true, failed: false, take: false },
 		{ agent: true, failed: true, take: false },
-	])("finishes reload with the right control (agent=$agent, failed=$failed, take=$take)", async ({ agent, failed, take }) => {
-		const connecting = Promise.withResolvers<void>();
-		const finishConnect = Promise.withResolvers<void>();
-		const uuid = "00000000-0000-0000-0000-000000000001";
-		vi.spyOn(crypto, "randomUUID").mockReturnValue(uuid);
-		vi.spyOn(Math, "random").mockReturnValue(0);
-		vi.stubGlobal("fetch", vi.fn(async () => new Response("<html></html>")));
-		const cdp = {
-			send: vi.fn(async (method: string) => method === "Target.getTargetInfo" ? { targetInfo: { targetId: "page-1" } } :
-				method === "Target.getBrowserContexts" ? { browserContextIds: [] } :
-					method === "Target.getTargets" ? { targetInfos: [{ targetId: "page-1", type: "page" }] } : {}),
-		};
-		const context = Object.assign(new EventEmitter(), { newCDPSession: async () => cdp });
-		const page = Object.assign(new EventEmitter(), {
-			context: () => context,
-			mainFrame: () => ({ url: () => "https://controller.browser.invalid/" }),
-			unroute: vi.fn(async () => {}),
-			route: vi.fn(async () => {}),
-			goto: vi.fn(async () => {}),
-			waitForFunction: async () => {},
-			evaluate: vi.fn().mockResolvedValueOnce({ url: "https://controller.browser.invalid/", nonce: "nonce-1" })
-				.mockResolvedValue({ ready: true, error: null, nonce: `${uuid}-0` }),
-			setViewportSize: async () => {},
-		});
-		Object.assign(context, { pages: () => [page] });
-		const browser = Object.assign(new EventEmitter(), {
-			contexts: () => [context], newBrowserCDPSession: async () => cdp, close: vi.fn(async () => {}),
-		});
-		vi.spyOn(provider, "sessions").mockResolvedValue([]);
-		const connect = vi.spyOn(provider, "connect")
-			.mockResolvedValue(browser as unknown as Awaited<ReturnType<typeof provider.connect>>)
-			.mockImplementationOnce(async () => {
-				connecting.resolve();
-				await finishConnect.promise;
-				if (failed) throw new Error("Provider connection failed");
-				return browser as unknown as Awaited<ReturnType<typeof provider.connect>>;
+	])(
+		"finishes reload with the right control (agent=$agent, failed=$failed, take=$take)",
+		async ({ agent, failed, take }) => {
+			const connecting = Promise.withResolvers<void>();
+			const finishConnect = Promise.withResolvers<void>();
+			const uuid = "00000000-0000-0000-0000-000000000001";
+			vi.spyOn(crypto, "randomUUID").mockReturnValue(uuid);
+			vi.spyOn(Math, "random").mockReturnValue(0);
+			vi.stubGlobal(
+				"fetch",
+				vi.fn(async () => new Response("<html></html>")),
+			);
+			const cdp = {
+				send: vi.fn(async (method: string) =>
+					method === "Target.getTargetInfo"
+						? { targetInfo: { targetId: "page-1" } }
+						: method === "Target.getBrowserContexts"
+							? { browserContextIds: [] }
+							: method === "Target.getTargets"
+								? { targetInfos: [{ targetId: "page-1", type: "page" }] }
+								: {},
+				),
+			};
+			const context = Object.assign(new EventEmitter(), { newCDPSession: async () => cdp });
+			const page = Object.assign(new EventEmitter(), {
+				context: () => context,
+				mainFrame: () => ({ url: () => "https://controller.browser.invalid/" }),
+				unroute: vi.fn(async () => {}),
+				route: vi.fn(async () => {}),
+				goto: vi.fn(async () => {}),
+				waitForFunction: async () => {},
+				evaluate: vi
+					.fn()
+					.mockResolvedValueOnce({ url: "https://controller.browser.invalid/", nonce: "nonce-1" })
+					.mockResolvedValue({ ready: true, error: null, nonce: `${uuid}-0` }),
+				setViewportSize: async () => {},
 			});
-		const storage = make_storage({ session: make_record({
-			control: agent ? "ready" : "human",
-			inputHolder: agent ? null : "v1",
-			viewers: { v1: { host: "docked", controlGen: 1, grantedUntil: Date.now() + 30_000, attachedAt: Date.now(), lastInputAt: Date.now() } },
-			viewerGrants: {},
-		}) });
-		// Durable Object reads return copies, so each interleaved call must reload the record.
-		storage.state.storage.get = async <T,>(key: string) => structuredClone(storage.map.get(key)) as T | undefined;
-		storage.state.storage.put = async (key, value) => { storage.map.set(key, structuredClone(value)); };
-		const session = new BrowserSession(storage.state, make_env({}));
-		const post = async (path: string, body: unknown) => {
-			const response = await session.fetch(new Request(`https://object${path}`, { method: "POST", body: JSON.stringify(body) }));
-			return await response.json();
-		};
-		const reload = post("/reload", {
-			sessionId: "session-1", navGen: 1, sourceKind: "saved", sourceVersion: "v2", sourceHash: "h2", html: "<input />",
-			...(agent ? { expectedAgentLease: { navGen: 1, loadGen: 1, controlGen: 1 } } : {}),
-		});
-		await connecting.promise;
-		const taken = take ? await post("/control/take-human", { sessionId: "session-1", navGen: 1, viewerId: "v1" }) : null;
-		finishConnect.resolve();
-		const result = await reload;
-		if (take) expect(taken).toMatchObject({ ok: true, control: "pausing", controlGen: 2 });
-		expect(result.ok).toBe(!failed);
-		expect(page.goto).toHaveBeenCalledTimes(failed ? 0 : 1);
-		expect(connect).toHaveBeenCalledTimes(failed ? 2 : 1);
-		if (failed) {
-			expect(cdp.send).toHaveBeenCalledWith("Browser.close", {});
-			expect(browser.close).toHaveBeenCalledOnce();
-			expect(storage.map.has("session")).toBe(false);
-		} else {
-			expect(browser.close).not.toHaveBeenCalled();
-			expect(page.unroute).toHaveBeenCalledWith("https://controller.browser.invalid/**");
-			expect(page.unroute.mock.invocationCallOrder[0]).toBeLessThan(page.route.mock.invocationCallOrder[0]!);
-			expect(storage.map.get("session")).toMatchObject({ control: take ? "human" : "ready", controlGen: take ? 2 : 1, command: null, loadGen: 2 });
-		}
-	});
+			Object.assign(context, { pages: () => [page] });
+			const browser = Object.assign(new EventEmitter(), {
+				contexts: () => [context],
+				newBrowserCDPSession: async () => cdp,
+				close: vi.fn(async () => {}),
+			});
+			vi.spyOn(provider, "sessions").mockResolvedValue([]);
+			const connect = vi
+				.spyOn(provider, "connect")
+				.mockResolvedValue(browser as unknown as Awaited<ReturnType<typeof provider.connect>>)
+				.mockImplementationOnce(async () => {
+					connecting.resolve();
+					await finishConnect.promise;
+					if (failed) throw new Error("Provider connection failed");
+					return browser as unknown as Awaited<ReturnType<typeof provider.connect>>;
+				});
+			const storage = make_storage({
+				session: make_record({
+					control: agent ? "ready" : "human",
+					inputHolder: agent ? null : "v1",
+					viewers: {
+						v1: {
+							host: "docked",
+							controlGen: 1,
+							grantedUntil: Date.now() + 30_000,
+							attachedAt: Date.now(),
+							lastInputAt: Date.now(),
+						},
+					},
+					viewerGrants: {},
+				}),
+			});
+			// Durable Object reads return copies, so each interleaved call must reload the record.
+			storage.state.storage.get = async <T>(key: string) => structuredClone(storage.map.get(key)) as T | undefined;
+			storage.state.storage.put = async (key, value) => {
+				storage.map.set(key, structuredClone(value));
+			};
+			const session = new BrowserSession(storage.state, make_env({}));
+			const post = async (path: string, body: unknown) => {
+				const response = await session.fetch(
+					new Request(`https://object${path}`, { method: "POST", body: JSON.stringify(body) }),
+				);
+				return await response.json();
+			};
+			const reload = post("/reload", {
+				sessionId: "session-1",
+				navGen: 1,
+				sourceKind: "saved",
+				sourceVersion: "v2",
+				sourceHash: "h2",
+				html: "<input />",
+				...(agent ? { expectedAgentLease: { navGen: 1, loadGen: 1, controlGen: 1 } } : {}),
+			});
+			await connecting.promise;
+			const taken = take
+				? await post("/control/take-human", { sessionId: "session-1", navGen: 1, viewerId: "v1" })
+				: null;
+			finishConnect.resolve();
+			const result = await reload;
+			if (take) expect(taken).toMatchObject({ ok: true, control: "pausing", controlGen: 2 });
+			expect(result.ok).toBe(!failed);
+			expect(page.goto).toHaveBeenCalledTimes(failed ? 0 : 1);
+			expect(connect).toHaveBeenCalledTimes(failed ? 2 : 1);
+			if (failed) {
+				expect(cdp.send).toHaveBeenCalledWith("Browser.close", {});
+				expect(browser.close).toHaveBeenCalledOnce();
+				expect(storage.map.has("session")).toBe(false);
+			} else {
+				expect(browser.close).not.toHaveBeenCalled();
+				expect(page.unroute).toHaveBeenCalledWith("https://controller.browser.invalid/**");
+				expect(page.unroute.mock.invocationCallOrder[0]).toBeLessThan(page.route.mock.invocationCallOrder[0]!);
+				expect(storage.map.get("session")).toMatchObject({
+					control: take ? "human" : "ready",
+					controlGen: take ? 2 : 1,
+					command: null,
+					loadGen: 2,
+				});
+			}
+		},
+	);
 });
 
 describe("browser status", () => {
 	it("passes an authenticated status read through while disabled", async () => {
 		const seen: unknown[] = [];
-		const response = await handle_request(browser_request("status", JSON.stringify({ ...OWNERS, sessionId: "session-1" })), make_env({
-			disabled: true,
-			sessions: (path, body) => { seen.push({ path, body }); return { ok: true, alive: false }; },
-		}));
+		const response = await handle_request(
+			browser_request("status", JSON.stringify({ ...OWNERS, sessionId: "session-1" })),
+			make_env({
+				disabled: true,
+				sessions: (path, body) => {
+					seen.push({ path, body });
+					return { ok: true, alive: false };
+				},
+			}),
+		);
 		expect(await response.json()).toEqual({ ok: true, alive: false });
 		expect(seen).toEqual([{ path: "/status", body: { sessionId: "session-1" } }]);
 	});
@@ -1105,20 +1914,42 @@ describe("browser status", () => {
 		const storage = make_storage(record ? { session: record } : {});
 		const put = vi.spyOn(storage.state.storage, "put");
 		const session = new BrowserSession(storage.state, make_env({}));
-		const response = await session.fetch(new Request("https://object/status", { method: "POST", body: JSON.stringify({ sessionId: "session-1" }) }));
+		const response = await session.fetch(
+			new Request("https://object/status", { method: "POST", body: JSON.stringify({ sessionId: "session-1" }) }),
+		);
 		const result = await response.json();
 		if (alive && record) {
-			expect(result).toEqual({ ok: true, alive: true, session: {
-				mode: "file", sessionId: record.sessionId, nodeId: record.nodeId, navGen: record.navGen, loadGen: record.loadGen,
-				controlGen: record.controlGen, control: record.control, sourceKind: record.sourceKind,
-				sourceVersion: record.sourceVersion, sourceHash: record.sourceHash, pageNonce: record.pageNonce,
-				commandCount: record.commandCount, loadCount: record.loadCount,
-				idleUntil: record.lastActiveAt + LIMITS.sessionIdleMs,
-				totalUntil: record.providerAcquiredAt! + LIMITS.sessionTotalMs,
-			}, profileStored: false });
+			expect(result).toEqual({
+				ok: true,
+				alive: true,
+				session: {
+					mode: "file",
+					sessionId: record.sessionId,
+					nodeId: record.nodeId,
+					navGen: record.navGen,
+					loadGen: record.loadGen,
+					controlGen: record.controlGen,
+					control: record.control,
+					sourceKind: record.sourceKind,
+					sourceVersion: record.sourceVersion,
+					sourceHash: record.sourceHash,
+					pageNonce: record.pageNonce,
+					commandCount: record.commandCount,
+					loadCount: record.loadCount,
+					idleUntil: record.lastActiveAt + LIMITS.sessionIdleMs,
+					totalUntil: record.providerAcquiredAt! + LIMITS.sessionTotalMs,
+				},
+				profileStored: false,
+			});
 		} else {
 			// A record that still has this session id is closing: its usage receipt may still come.
-			expect(result).toEqual({ ok: true, alive: false, closing: record?.sessionId === "session-1", usage: null, profileStored: false });
+			expect(result).toEqual({
+				ok: true,
+				alive: false,
+				closing: record?.sessionId === "session-1",
+				usage: null,
+				profileStored: false,
+			});
 		}
 		expect(put).not.toHaveBeenCalled();
 	});
@@ -1148,9 +1979,13 @@ describe("BrowserSession close", () => {
 		vi.spyOn(provider, "sessions").mockResolvedValue([]);
 		const storage = make_storage({ session: make_record() });
 		const session = new BrowserSession(storage.state, make_env({}));
-		const close = () => session.fetch(new Request("https://object/close", {
-			method: "POST", body: JSON.stringify({ sessionId: "session-1" }),
-		}));
+		const close = () =>
+			session.fetch(
+				new Request("https://object/close", {
+					method: "POST",
+					body: JSON.stringify({ sessionId: "session-1" }),
+				}),
+			);
 		const first = close();
 		await firstStarted.promise;
 		const second = await close();
@@ -1158,7 +1993,11 @@ describe("BrowserSession close", () => {
 		expect(storage.map.has("session")).toBe(false);
 
 		// A new Start now owns the empty slot while the first provider close is pending.
-		const replacement = make_record({ sessionId: "replacement", grantId: "new-grant", providerSessionId: "new-provider" });
+		const replacement = make_record({
+			sessionId: "replacement",
+			grantId: "new-grant",
+			providerSessionId: "new-provider",
+		});
 		await storage.state.storage.put("session", replacement);
 		await storage.state.storage.setAlarm(12345);
 		finishFirst.resolve();
@@ -1237,10 +2076,12 @@ describe("validate_gate_request", () => {
 		const idFromName = vi.fn((name: string) => ({ toString: () => name }));
 		const sessions = {
 			idFromName,
-			get: () => ({ fetch: async (request: Request) => {
-				seen.push(request);
-				return new Response("upgraded", { status: 200 });
-			} }),
+			get: () => ({
+				fetch: async (request: Request) => {
+					seen.push(request);
+					return new Response("upgraded", { status: 200 });
+				},
+			}),
 		};
 		const res = await handle_gate_request(
 			gate("http://fake.host/v1/devtools/browser/sess-1?persistent=true", {
@@ -1261,19 +2102,30 @@ describe("validate_gate_request", () => {
 
 describe("validate_snippet_files", () => {
 	it.each([undefined, null, "", "home", "CURRENT", 1])("refuses missing or invalid workspace %s", (workspace) => {
-		expect(validate_snippet_files([
-			{ workspace: "current", path: "/first.bin", bytes: new Uint8Array([1]) },
-			{ workspace, path: "/bad.bin", bytes: new Uint8Array([2]) },
-		])).toEqual({ ok: false, reason: "files_shape" });
+		expect(
+			validate_snippet_files([
+				{ workspace: "current", path: "/first.bin", bytes: new Uint8Array([1]) },
+				{ workspace, path: "/bad.bin", bytes: new Uint8Array([2]) },
+			]),
+		).toEqual({ ok: false, reason: "files_shape" });
 	});
 
 	it("preserves arbitrary, empty, and sliced bytes without a forced content type", () => {
 		const source = new Uint8Array([99, 0, 255, 128, 99]);
-		expect(validate_snippet_files([
-			{ workspace: "current", path: "/reports/custom", contentType: "application/x-custom", bytes: source.subarray(1, 4) },
-			{ workspace: "personal", path: "/reports/empty", bytes: new Uint8Array() },
-		])).toEqual({
-			ok: true, fileBytes: 3, files: [
+		expect(
+			validate_snippet_files([
+				{
+					workspace: "current",
+					path: "/reports/custom",
+					contentType: "application/x-custom",
+					bytes: source.subarray(1, 4),
+				},
+				{ workspace: "personal", path: "/reports/empty", bytes: new Uint8Array() },
+			]),
+		).toEqual({
+			ok: true,
+			fileBytes: 3,
+			files: [
 				{ workspace: "current", path: "/reports/custom", contentType: "application/x-custom", dataBase64: "AP+A" },
 				{ workspace: "personal", path: "/reports/empty", dataBase64: "" },
 			],
@@ -1283,7 +2135,8 @@ describe("validate_snippet_files", () => {
 	it("allows exactly eight files and 8 MiB across both workspaces", () => {
 		const files = Array.from({ length: LIMITS.files }, (_, index) => ({
 			workspace: index % 2 ? "personal" : "current",
-			path: "/reports/" + index, bytes: new Uint8Array(LIMITS.fileBytes / LIMITS.files).fill(index),
+			path: "/reports/" + index,
+			bytes: new Uint8Array(LIMITS.fileBytes / LIMITS.files).fill(index),
 		}));
 		const result = validate_snippet_files(files);
 		expect(result.ok).toBe(true);
@@ -1302,10 +2155,33 @@ describe("validate_snippet_files", () => {
 		[[{ workspace: "current", path: "/reports/file", bytes: [1, 2] }], "files_shape"],
 		[[{ workspace: "current", path: "/reports/file", contentType: null, bytes: new Uint8Array() }], "files_shape"],
 		[[{ workspace: "current", path: "x".repeat(LIMITS.filePathChars + 1), bytes: new Uint8Array() }], "files_shape"],
-		[[{ workspace: "current", path: "/reports/file", contentType: "x".repeat(LIMITS.fileContentTypeChars + 1), bytes: new Uint8Array() }], "files_shape"],
-		[Array.from({ length: LIMITS.files + 1 }, (_, index) => ({ workspace: index % 2 ? "personal" : "current", path: "/reports/file", bytes: new Uint8Array() })), "files_count"],
+		[
+			[
+				{
+					workspace: "current",
+					path: "/reports/file",
+					contentType: "x".repeat(LIMITS.fileContentTypeChars + 1),
+					bytes: new Uint8Array(),
+				},
+			],
+			"files_shape",
+		],
+		[
+			Array.from({ length: LIMITS.files + 1 }, (_, index) => ({
+				workspace: index % 2 ? "personal" : "current",
+				path: "/reports/file",
+				bytes: new Uint8Array(),
+			})),
+			"files_count",
+		],
 		[[{ workspace: "current", path: "/reports/file", bytes: new Uint8Array(LIMITS.fileBytes + 1) }], "files_bytes"],
-		[[{ workspace: "current", path: "/reports/one", bytes: new Uint8Array(LIMITS.fileBytes) }, { workspace: "personal", path: "/reports/two", bytes: new Uint8Array([1]) }], "files_bytes"],
+		[
+			[
+				{ workspace: "current", path: "/reports/one", bytes: new Uint8Array(LIMITS.fileBytes) },
+				{ workspace: "personal", path: "/reports/two", bytes: new Uint8Array([1]) },
+			],
+			"files_bytes",
+		],
 	])("refuses malformed or over-limit output", (files, reason) => {
 		expect(validate_snippet_files(files)).toEqual({ ok: false, reason });
 	});
@@ -1373,31 +2249,62 @@ describe("build_controller_html", () => {
 
 describe("build_executor_module", () => {
 	function run_snippet(code: string, timeoutMs = 1000) {
-		const screenshot = Uint8Array.from(Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+Xf6sAAAAASUVORK5CYII=", "base64"));
+		const screenshot = Uint8Array.from(
+			Buffer.from(
+				"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+Xf6sAAAAASUVORK5CYII=",
+				"base64",
+			),
+		);
 		const outer = { url: () => "https://controller.browser.invalid/v0", childFrames: () => [{}] };
 		const page = {
-			on: () => {}, mainFrame: () => ({ childFrames: () => [outer] }),
-			setViewportSize: async () => {}, viewportSize: () => ({ width: 1280, height: 900 }),
+			on: () => {},
+			mainFrame: () => ({ childFrames: () => [outer] }),
+			setViewportSize: async () => {},
+			viewportSize: () => ({ width: 1280, height: 900 }),
 			screenshot: async () => screenshot,
 		};
-		const source = build_executor_module(code).replace(/^import .*;$/gm, "").replace("export default class", "class") + "\nSnippetExecutor;";
+		const source =
+			build_executor_module(code)
+				.replace(/^import .*;$/gm, "")
+				.replace("export default class", "class") + "\nSnippetExecutor;";
 		const Executor = runInNewContext(source, {
-			WorkerEntrypoint: class {}, TextEncoder, URL, Uint8Array, ArrayBuffer, console: {}, expect: () => {}, setTimeout, clearTimeout,
+			WorkerEntrypoint: class {},
+			TextEncoder,
+			URL,
+			Uint8Array,
+			ArrayBuffer,
+			console: {},
+			expect: () => {},
+			setTimeout,
+			clearTimeout,
 			connect: async () => ({ contexts: () => [{ pages: () => [page] }], close: async () => {} }),
-		}) as new () => { evaluate: (input: unknown) => Promise<{
-			ok: boolean; files?: Array<{ workspace: "current" | "personal"; path: string; contentType?: string; bytes: Uint8Array }>; error?: { message: string };
-		}> };
-		return new Executor().evaluate({ sessionId: "fixture", mode: "file", runtimeOrigin: "https://controller.browser.invalid", viewport: { width: 1280, height: 900 }, timeoutMs });
+		}) as new () => {
+			evaluate: (input: unknown) => Promise<{
+				ok: boolean;
+				files?: Array<{ workspace: "current" | "personal"; path: string; contentType?: string; bytes: Uint8Array }>;
+				error?: { message: string };
+			}>;
+		};
+		return new Executor().evaluate({
+			sessionId: "fixture",
+			mode: "file",
+			runtimeOrigin: "https://controller.browser.invalid",
+			viewport: { width: 1280, height: 900 },
+			timeoutMs,
+		});
 	}
 
-	it.each([undefined, null, "", "home", "CURRENT", 1])("rejects workspace %s inside the browser harness", async (workspace) => {
-		const result = await run_snippet(`
+	it.each([undefined, null, "", "home", "CURRENT", 1])(
+		"rejects workspace %s inside the browser harness",
+		async (workspace) => {
+			const result = await run_snippet(`
 			emitFile({ workspace: "personal", path: "/first.bin", bytes: new Uint8Array([1]) });
 			emitFile({ workspace: ${JSON.stringify(workspace)}, path: "/bad.bin", bytes: new Uint8Array([2]) });
 		`);
-		expect(result).toMatchObject({ ok: false, error: { message: "emitFile workspace must be current or personal" } });
-		expect(result.files).toBeUndefined();
-	});
+			expect(result).toMatchObject({ ok: false, error: { message: "emitFile workspace must be current or personal" } });
+			expect(result.files).toBeUndefined();
+		},
+	);
 
 	it("emits a screenshot and arbitrary binary bytes through the same helper", async () => {
 		const result = await run_snippet(`
@@ -1411,7 +2318,12 @@ describe("build_executor_module", () => {
 		expect(result.ok).toBe(true);
 		expect(result.files?.slice(0, 3)).toEqual([
 			{ workspace: "current", path: "/reports/slice.bin", bytes: new Uint8Array([0, 255, 128]) },
-			{ workspace: "personal", path: "/reports/buffer.bin", bytes: new Uint8Array([99, 0, 255, 128, 99]), contentType: "application/x-custom" },
+			{
+				workspace: "personal",
+				path: "/reports/buffer.bin",
+				bytes: new Uint8Array([99, 0, 255, 128, 99]),
+				contentType: "application/x-custom",
+			},
 			{ workspace: "current", path: "/reports/empty", bytes: new Uint8Array() },
 		]);
 		expect(result.files?.[3]?.bytes.slice(0, 8)).toEqual(new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]));
@@ -1419,7 +2331,9 @@ describe("build_executor_module", () => {
 	});
 
 	it("allows the exact file and byte budgets", async () => {
-		const result = await run_snippet(`for (let i = 0; i < ${LIMITS.files}; i++) emitFile({ workspace: i % 2 ? "personal" : "current", path: "/reports/" + i, bytes: new Uint8Array(${LIMITS.fileBytes / LIMITS.files}) });`);
+		const result = await run_snippet(
+			`for (let i = 0; i < ${LIMITS.files}; i++) emitFile({ workspace: i % 2 ? "personal" : "current", path: "/reports/" + i, bytes: new Uint8Array(${LIMITS.fileBytes / LIMITS.files}) });`,
+		);
 		expect(result.ok).toBe(true);
 		expect(result.files).toHaveLength(LIMITS.files);
 		expect(result.files?.reduce((sum, file) => sum + file.bytes.byteLength, 0)).toBe(LIMITS.fileBytes);
@@ -1433,7 +2347,9 @@ describe("build_executor_module", () => {
 		`emitFile({ workspace: "current", path: "/reports/bad", contentType: null, bytes: new Uint8Array() });`,
 		`throw new Error("failed");`,
 	])("drops all emitted files when the snippet fails", async (failure) => {
-		const result = await run_snippet(`emitFile({ workspace: "current", path: "/reports/first", bytes: new Uint8Array([1]) }); ${failure}`);
+		const result = await run_snippet(
+			`emitFile({ workspace: "current", path: "/reports/first", bytes: new Uint8Array([1]) }); ${failure}`,
+		);
 		expect(result.ok).toBe(false);
 		expect(result.files).toBeUndefined();
 	});
@@ -1441,13 +2357,18 @@ describe("build_executor_module", () => {
 	it("drops emitted files on timeout and clears the timer after success", async () => {
 		vi.useFakeTimers();
 		try {
-			const pending = run_snippet('emitFile({ workspace: "current", path: "/reports/first", bytes: new Uint8Array([1]) }); await new Promise(() => {});', 50);
+			const pending = run_snippet(
+				'emitFile({ workspace: "current", path: "/reports/first", bytes: new Uint8Array([1]) }); await new Promise(() => {});',
+				50,
+			);
 			await vi.advanceTimersByTimeAsync(50);
 			expect(await pending).toMatchObject({ ok: false, error: { message: "Execution timed out" } });
 			expect((await pending).files).toBeUndefined();
 			expect((await run_snippet("return 1;")).ok).toBe(true);
 			expect(vi.getTimerCount()).toBe(0);
-		} finally { vi.useRealTimers(); }
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("caps Unicode console and log output in the running harness", async () => {
@@ -1455,41 +2376,87 @@ describe("build_executor_module", () => {
 		const outer = { url: () => "https://controller.browser.invalid/v0", childFrames: () => [inner] };
 		const page = {
 			on: (event: string, callback: (message: { type: () => string; text: () => string }) => void) => {
-				if (event === "console") for (let i = 0; i < 10; i++) callback({ type: () => "log", text: () => "€".repeat(500) });
+				if (event === "console")
+					for (let i = 0; i < 10; i++) callback({ type: () => "log", text: () => "€".repeat(500) });
 			},
 			mainFrame: () => ({ childFrames: () => [outer] }),
-			setViewportSize: async () => {}, viewportSize: () => ({ width: 1280, height: 900 }),
+			setViewportSize: async () => {},
+			viewportSize: () => ({ width: 1280, height: 900 }),
 		};
-		const source = build_executor_module('console.log("€".repeat(6000)); return 42;')
-			.replace(/^import .*;$/gm, "").replace("export default class", "class") + "\nSnippetExecutor;";
+		const source =
+			build_executor_module('console.log("€".repeat(6000)); return 42;')
+				.replace(/^import .*;$/gm, "")
+				.replace("export default class", "class") + "\nSnippetExecutor;";
 		const Executor = runInNewContext(source, {
-			WorkerEntrypoint: class {}, TextEncoder, URL, console: {}, expect: () => {}, setTimeout: () => 0, clearTimeout: () => {},
+			WorkerEntrypoint: class {},
+			TextEncoder,
+			URL,
+			console: {},
+			expect: () => {},
+			setTimeout: () => 0,
+			clearTimeout: () => {},
 			connect: async () => ({ contexts: () => [{ pages: () => [page] }], close: async () => {} }),
-		}) as new () => { evaluate: (input: unknown) => Promise<{ ok: boolean; logs: string[]; consoleEntries: string[]; logsTruncated: boolean }> };
-		const result = await new Executor().evaluate({ sessionId: "fixture", mode: "file", runtimeOrigin: "https://controller.browser.invalid", viewport: { width: 1280, height: 900 } });
+		}) as new () => {
+			evaluate: (
+				input: unknown,
+			) => Promise<{ ok: boolean; logs: string[]; consoleEntries: string[]; logsTruncated: boolean }>;
+		};
+		const result = await new Executor().evaluate({
+			sessionId: "fixture",
+			mode: "file",
+			runtimeOrigin: "https://controller.browser.invalid",
+			viewport: { width: 1280, height: 900 },
+		});
 		expect(result.ok).toBe(true);
 		expect(result.logsTruncated).toBe(true);
 		expect(result.logs).toEqual(["€".repeat(5461)]);
-		expect(result.consoleEntries.reduce((sum, line) => sum + new TextEncoder().encode(line).length, 0)).toBeLessThanOrEqual(LIMITS.consoleBytes);
+		expect(
+			result.consoleEntries.reduce((sum, line) => sum + new TextEncoder().encode(line).length, 0),
+		).toBeLessThanOrEqual(LIMITS.consoleBytes);
 	});
 
 	it("gives web snippets the main frame without waiting for a preview frame", async () => {
 		const mainFrame = { childFrames: () => [] };
 		const page = {
-			on: () => {}, mainFrame: () => mainFrame,
-			setViewportSize: async () => {}, viewportSize: () => ({ width: 1280, height: 900 }),
+			on: () => {},
+			mainFrame: () => mainFrame,
+			setViewportSize: async () => {},
+			viewportSize: () => ({ width: 1280, height: 900 }),
 		};
-		const source = build_executor_module("return frame === page.mainFrame();")
-			.replace(/^import .*;$/gm, "").replace("export default class", "class") + "\nSnippetExecutor;";
+		const source =
+			build_executor_module("return frame === page.mainFrame();")
+				.replace(/^import .*;$/gm, "")
+				.replace("export default class", "class") + "\nSnippetExecutor;";
 		const Executor = runInNewContext(source, {
-			WorkerEntrypoint: class {}, TextEncoder, URL, Uint8Array, ArrayBuffer, console: {}, expect: () => {}, setTimeout, clearTimeout,
+			WorkerEntrypoint: class {},
+			TextEncoder,
+			URL,
+			Uint8Array,
+			ArrayBuffer,
+			console: {},
+			expect: () => {},
+			setTimeout,
+			clearTimeout,
 			connect: async () => ({ contexts: () => [{ pages: () => [page] }], close: async () => {} }),
 		}) as new () => { evaluate: (input: unknown) => Promise<{ ok: boolean; resultJson?: string }> };
-		const result = await new Executor().evaluate({ sessionId: "fixture", mode: "web", runtimeOrigin: null, viewport: { width: 1280, height: 900 }, timeoutMs: 1000 });
+		const result = await new Executor().evaluate({
+			sessionId: "fixture",
+			mode: "web",
+			runtimeOrigin: null,
+			viewport: { width: 1280, height: 900 },
+			timeoutMs: 1000,
+		});
 		expect(result).toMatchObject({ ok: true, resultJson: "true" });
 		// Only web mode may skip the runtime origin.
-		await expect(new Executor().evaluate({ sessionId: "fixture", mode: "file", runtimeOrigin: null, viewport: { width: 1280, height: 900 }, timeoutMs: 1000 }))
-			.rejects.toThrow("Missing runtime origin.");
+		await expect(
+			new Executor().evaluate({
+				sessionId: "fixture",
+				mode: "file",
+				runtimeOrigin: null,
+				viewport: { width: 1280, height: 900 },
+				timeoutMs: 1000,
+			}),
+		).rejects.toThrow("Missing runtime origin.");
 	});
 
 	it.each([
@@ -1500,7 +2467,8 @@ describe("build_executor_module", () => {
 		"return async ({ page }) => 1;",
 	])("refuses a snippet that only defines or returns a function: %s", async (code) => {
 		expect(await run_snippet(code)).toMatchObject({
-			ok: false, error: { message: "Your code returned a function. Write the function body only, do not wrap it in a function." },
+			ok: false,
+			error: { message: "Your code returned a function. Write the function body only, do not wrap it in a function." },
 		});
 	});
 
@@ -1508,7 +2476,10 @@ describe("build_executor_module", () => {
 		["return 1;", "1"],
 		["(async () => 1)();", "null"],
 		["async function helper() { return 2; }\nawait helper();", "null"],
-		["function helper() {}\nemitFile({ workspace: \"current\", path: \"/a\", bytes: new Uint8Array() });\nhelper();", "null"],
+		[
+			'function helper() {}\nemitFile({ workspace: "current", path: "/a", bytes: new Uint8Array() });\nhelper();',
+			"null",
+		],
 		["const run = async () => 3;\nreturn await run();", "3"],
 	])("runs a snippet that uses its own functions: %s", async (code, resultJson) => {
 		expect(await run_snippet(code)).toMatchObject({ ok: true, resultJson });
@@ -1585,9 +2556,12 @@ describe("session transitions", () => {
 		const stale = make_record({ command: { id: "c1", startedAt: now - LIMITS.commandTimeoutMs - 20_000 } });
 		const storage = make_storage({ session: stale });
 		const session = new BrowserSession(storage.state, make_env({}));
-		const response = await session.fetch(new Request("https://do/run/begin", {
-			method: "POST", body: JSON.stringify({ ...lease, commandId: "next" }),
-		}));
+		const response = await session.fetch(
+			new Request("https://do/run/begin", {
+				method: "POST",
+				body: JSON.stringify({ ...lease, commandId: "next" }),
+			}),
+		);
 		expect((await response.json()).error.code).toBe("expired");
 		expect(storage.map.get("session")).toMatchObject({ control: "closing", command: null });
 	});
@@ -1600,22 +2574,34 @@ describe("session transitions", () => {
 	it("computes expiry from idle and total deadlines", () => {
 		const now = Date.now();
 		expect(session_is_expired(make_record(), now)).toBe(false);
-		expect(
-			session_is_expired(make_record({ lastActiveAt: now - LIMITS.sessionIdleMs }), now),
-		).toBe(true);
-		expect(
-			session_is_expired(make_record({ providerAcquiredAt: now - LIMITS.sessionTotalMs }), now),
-		).toBe(true);
+		expect(session_is_expired(make_record({ lastActiveAt: now - LIMITS.sessionIdleMs }), now)).toBe(true);
+		expect(session_is_expired(make_record({ providerAcquiredAt: now - LIMITS.sessionTotalMs }), now)).toBe(true);
 	});
 
 	it("uses web limits and refuses a web command while agent access is off", () => {
 		const now = Date.now();
+		const lease = {
+			sessionId: "session-1",
+			navGen: 1,
+			loadGen: 1,
+			controlGen: 1,
+			tabId: "tab-1",
+			tabGen: 1,
+			policyRevision: 0,
+			selectionRevision: 0,
+		};
 		const web = (overrides: Partial<SessionRecord> = {}) =>
 			make_record({ mode: "web", agentAccess: true, pageTargetId: "page-1", ...overrides } as Partial<SessionRecord>);
 		expect(session_can_run(web(), lease, now)).toEqual({ ok: true });
-		expect(session_can_run(web({ agentAccess: false } as Partial<SessionRecord>), lease, now)).toEqual({ ok: false, reason: "agent_access_off" });
+		expect(session_can_run(web({ agentAccess: false } as Partial<SessionRecord>), lease, now)).toEqual({
+			ok: false,
+			reason: "agent_access_off",
+		});
 		expect(session_can_run(web({ commandCount: LIMITS.webCommandsPerSession - 1 }), lease, now)).toEqual({ ok: true });
-		expect(session_can_run(web({ commandCount: LIMITS.webCommandsPerSession }), lease, now)).toEqual({ ok: false, reason: "session_limit" });
+		expect(session_can_run(web({ commandCount: LIMITS.webCommandsPerSession }), lease, now)).toEqual({
+			ok: false,
+			reason: "session_limit",
+		});
 		expect(session_is_expired(web({ lastActiveAt: now - LIMITS.webSessionIdleMs + 1000 }), now)).toBe(false);
 		expect(session_is_expired(web({ lastActiveAt: now - LIMITS.webSessionIdleMs }), now)).toBe(true);
 		expect(session_is_expired(web({ providerAcquiredAt: now - LIMITS.webSessionTotalMs + 1000 }), now)).toBe(false);
@@ -1648,7 +2634,11 @@ describe("BrowserRegistry", () => {
 	it("claims, confirms, and releases a grant", async () => {
 		const storage = make_storage();
 		const registry = new BrowserRegistry(storage.state as unknown as DurableObjectState, make_env({}));
-		const claim = (await post(registry, "/claim", { workspaceKey: "org:ws", ownerId: "user_1", organizationId: "org" })) as { grantId: string };
+		const claim = (await post(registry, "/claim", {
+			workspaceKey: "org:ws",
+			ownerId: "user_1",
+			organizationId: "org",
+		})) as { grantId: string };
 		expect(typeof claim.grantId).toBe("string");
 		expect(await post(registry, "/confirm", { grantId: claim.grantId })).toEqual({ ok: true });
 		expect(await post(registry, "/release", { grantId: claim.grantId })).toEqual({ ok: true });
@@ -1661,10 +2651,18 @@ describe("BrowserRegistry", () => {
 		const registry = new BrowserRegistry(storage.state as unknown as DurableObjectState, make_env({}));
 		await post(registry, "/claim", { workspaceKey: "org:ws", ownerId: "user_1", organizationId: "org" });
 		await post(registry, "/claim", { workspaceKey: "org:ws", ownerId: "user_1", organizationId: "org" });
-		const third = (await post(registry, "/claim", { workspaceKey: "org:ws", ownerId: "user_1", organizationId: "org" })) as { error: { code: string } };
+		const third = (await post(registry, "/claim", {
+			workspaceKey: "org:ws",
+			ownerId: "user_1",
+			organizationId: "org",
+		})) as { error: { code: string } };
 		expect(third.error.code).toBe("workspace_busy");
 		// Another workspace still has room.
-		const other = (await post(registry, "/claim", { workspaceKey: "org:ws2", ownerId: "user_2", organizationId: "org" })) as { ok: boolean };
+		const other = (await post(registry, "/claim", {
+			workspaceKey: "org:ws2",
+			ownerId: "user_2",
+			organizationId: "org",
+		})) as { ok: boolean };
 		expect(other.ok).toBe(true);
 	});
 
@@ -1694,11 +2692,23 @@ describe("BrowserRegistry", () => {
 	it("sweeps expired claims on the next claim", async () => {
 		const storage = make_storage({
 			registry: {
-				grants: { old: { workspaceKey: "org:ws", ownerId: "user_1", organizationId: "org", state: "claimed", expiresAt: Date.now() - 1000 } },
+				grants: {
+					old: {
+						workspaceKey: "org:ws",
+						ownerId: "user_1",
+						organizationId: "org",
+						state: "claimed",
+						expiresAt: Date.now() - 1000,
+					},
+				},
 			},
 		});
 		const registry = new BrowserRegistry(storage.state as unknown as DurableObjectState, make_env({}));
-		const res = (await post(registry, "/claim", { workspaceKey: "org:ws", ownerId: "user_1", organizationId: "org" })) as { ok: boolean };
+		const res = (await post(registry, "/claim", {
+			workspaceKey: "org:ws",
+			ownerId: "user_1",
+			organizationId: "org",
+		})) as { ok: boolean };
 		expect(res.ok).toBe(true);
 		const stored = storage.map.get("registry") as { grants: Record<string, unknown> };
 		expect("old" in stored.grants).toBe(false);
@@ -1766,13 +2776,23 @@ describe("BrowserSession alarm", () => {
 	it("writes an unverified receipt when the last close retry gives up", async () => {
 		const record = make_record({ control: "closing", closeAttempts: LIMITS.closeAttempts });
 		const { storage, session } = make_session({ session: record });
-		const status = async () => await (await session.fetch(new Request("https://do/status", {
-			method: "POST", body: JSON.stringify({ sessionId: "session-1" }),
-		}))).json();
+		const status = async () =>
+			await (
+				await session.fetch(
+					new Request("https://do/status", {
+						method: "POST",
+						body: JSON.stringify({ sessionId: "session-1" }),
+					}),
+				)
+			).json();
 		// Until the record goes away, the caller must wait: the receipt is not final.
 		expect(await status()).toEqual({ ok: true, alive: false, closing: true, usage: null, profileStored: false });
 		await session.alarm();
-		const usage = { providerAcquiredAt: record.providerAcquiredAt, endedAt: expect.any(Number), reason: "close_unverified" };
+		const usage = {
+			providerAcquiredAt: record.providerAcquiredAt,
+			endedAt: expect.any(Number),
+			reason: "close_unverified",
+		};
 		expect(storage.map.get("usage:session-1")).toEqual({ sessionId: "session-1", ...usage });
 		expect(await status()).toEqual({ ok: true, alive: false, closing: false, usage, profileStored: false });
 	});
@@ -1794,7 +2814,12 @@ describe("BrowserSession alarm", () => {
 
 	it("deletes receipts older than seven days when a session closes", async () => {
 		const now = Date.now();
-		const old = { sessionId: "old", providerAcquiredAt: now - LIMITS.usageReceiptMs - 60_000, endedAt: now - LIMITS.usageReceiptMs - 1, reason: "close" };
+		const old = {
+			sessionId: "old",
+			providerAcquiredAt: now - LIMITS.usageReceiptMs - 60_000,
+			endedAt: now - LIMITS.usageReceiptMs - 1,
+			reason: "close",
+		};
 		const recent = { sessionId: "recent", providerAcquiredAt: now - 120_000, endedAt: now - 60_000, reason: "close" };
 		const { storage, session } = make_session({
 			session: make_record({ control: "closing", closeAttempts: LIMITS.closeAttempts }),
@@ -1854,6 +2879,375 @@ describe("BrowserSession alarm", () => {
 	});
 });
 
+describe("BrowserSession operation receipts", () => {
+	const source = { chatId: "chat", sourceMessageId: "message", toolCallId: "tool" };
+	function make_session() {
+		const storage = make_storage();
+		const session = new BrowserSession(storage.state as unknown as DurableObjectState, make_env({}));
+		const post = async (path: string, body: unknown) => {
+			const reply = await session.fetch(
+				new Request(`https://do${path}`, { method: "POST", body: JSON.stringify(body) }),
+			);
+			return (await reply.json()) as Record<string, unknown>;
+		};
+		return { storage, post };
+	}
+
+	it("reserves missing management status before a delayed open claim", async () => {
+		const { post } = make_session();
+		const identity = { operationId: "open", operationDeadline: Date.now() + 60_000, source };
+		expect(await post("/operation-status", identity)).toMatchObject({
+			status: "unknown",
+			session: null,
+			result: { reason: "not_started", cleanup: "complete" },
+		});
+		expect(await post("/operation/claim", { ...identity, payloadHash: "hash" })).toMatchObject({
+			execute: false,
+			status: "unknown",
+			result: { cleanup: "complete" },
+		});
+	});
+
+	it("keeps unresolved management work and blocks another start", async () => {
+		const { post, storage } = make_session();
+		const identity = { operationId: "open", operationDeadline: Date.now() + 60_000, source };
+		expect(await post("/operation/claim", { ...identity, payloadHash: "hash" })).toMatchObject({ execute: true });
+		await post("/operation/finish", { ...identity, status: "unknown", cleanup: "unknown" });
+		expect(await post("/operation/claim", { ...identity, operationId: "other", payloadHash: "other" })).toMatchObject({
+			ok: false,
+			error: { code: "busy" },
+		});
+		expect((storage.map.get("tabOperations") as Array<[string, unknown]>).map(([id]) => id)).toEqual(["open"]);
+		expect(await post("/operation-status", { ...identity, source: { ...source, toolCallId: "other" } })).toMatchObject({
+			ok: false,
+			error: { code: "operation_mismatch" },
+		});
+	});
+
+	it("reserves missing command status and never replays the code", async () => {
+		const { post } = make_session();
+		const identity = {
+			sessionId: "session",
+			commandId: "command",
+			codeHash: "a".repeat(64),
+			source,
+			deadline: Date.now() + 20_000,
+			receiptResolutionDeadline: Date.now() + 25_000,
+		};
+		expect(await post("/command-status", identity)).toMatchObject({
+			status: "not_started",
+			result: { cleanup: "complete" },
+		});
+		expect(await post("/run/claim", { ...identity, payloadHash: "payload" })).toMatchObject({
+			execute: false,
+			status: "not_started",
+		});
+		expect(await post("/command-status", { ...identity, codeHash: "b".repeat(64) })).toMatchObject({
+			ok: false,
+			error: { code: "command_mismatch" },
+		});
+	});
+});
+
+describe("BrowserSession tab operations", () => {
+	afterEach(() => vi.restoreAllMocks());
+
+	it.each([
+		["tab-new", "navigation"],
+		["tab-close", "navigation"],
+		["tab-new", "idle expiry"],
+		["tab-close", "idle expiry"],
+		["tab-new", "total expiry"],
+		["tab-close", "total expiry"],
+		["tab-new", "access off during host connect"],
+		["tab-close", "access off during host connect"],
+		["tab-new", "choice change during host connect"],
+		["tab-close", "choice change during host connect"],
+		["tab-new", "idle expiry during host connect"],
+		["tab-close", "idle expiry during host connect"],
+		["tab-new", "total expiry during host connect"],
+		["tab-close", "total expiry during host connect"],
+		["tab-new", "access off during new page"],
+		["tab-new", "blocked host during new page"],
+		["tab-new", "allowed new page"],
+		["tab-close", "access off before final close"],
+	] as const)("settles agent %s after %s", async (route, change) => {
+		const source = { chatId: "chat", sourceMessageId: "message", toolCallId: "tool" };
+		const record = make_record({
+			mode: "web",
+			agentAccess: true,
+			viewers: {},
+			viewerGrants: {},
+			inputHolder: null,
+		} as Partial<SessionRecord>);
+		if (record.mode !== "web") throw new Error("Expected a web session");
+		record.agentBlockedHosts = [];
+		const expiryAt = Date.now() + 10_000;
+		if (change === "idle expiry" || change === "idle expiry during host connect")
+			record.lastActiveAt = expiryAt - LIMITS.webSessionIdleMs;
+		if (change === "total expiry" || change === "total expiry during host connect")
+			record.providerAcquiredAt = expiryAt - LIMITS.webSessionTotalMs;
+		const finalClose = change === "access off before final close";
+		if (!finalClose) record.tabs["tab-2"] = { targetId: "page-2", navGen: 1, tabGen: 1, viewport: record.viewport };
+		const storage = make_storage({ session: record });
+		storage.state.storage.get = async <T>(key: string) => structuredClone(storage.map.get(key)) as T | undefined;
+		storage.state.storage.put = async (key, value) => {
+			storage.map.set(key, structuredClone(value));
+		};
+		const pages: Array<ReturnType<typeof make_page>> = [];
+		const goto = vi.fn(async () => null);
+		const make_cdp = (targetId: string | null) =>
+			Object.assign(new EventEmitter(), {
+				send: vi.fn(async (method: string): Promise<unknown> => {
+					if (method === "Target.getTargetInfo") return { targetInfo: { targetId } };
+					if (method === "Target.getBrowserContexts") return { browserContextIds: [] };
+					if (method === "Target.getTargets")
+						return { targetInfos: pages.map((page) => ({ targetId: page.targetId, type: "page" })) };
+					return {};
+				}),
+				detach: vi.fn(async () => {}),
+			});
+		function make_page(targetId: string) {
+			const frame = { targetId };
+			let closed = false;
+			const page = Object.assign(new EventEmitter(), {
+				targetId,
+				context: () => context,
+				mainFrame: () => frame,
+				url: () => `https://${targetId}.test/`,
+				close: vi.fn(async () => {
+					closed = true;
+					pages.splice(pages.indexOf(page), 1);
+				}),
+				isClosed: () => closed,
+				goto,
+			});
+			return page;
+		}
+		const newPage = vi.fn(async () => {
+			const page = make_page("page-3");
+			pages.push(page);
+			return page;
+		});
+		const context = Object.assign(new EventEmitter(), {
+			pages: () => pages,
+			newCDPSession: async (page: { targetId: string }) => make_cdp(page.targetId),
+			newPage,
+		});
+		const page = make_page("page-1");
+		pages.push(page);
+		if (!finalClose) pages.push(make_page("page-2"));
+		const browser = Object.assign(new EventEmitter(), {
+			contexts: () => [context],
+			newBrowserCDPSession: async () => make_cdp(null),
+			close: vi.fn(async () => {}),
+		});
+		const connect = vi
+			.spyOn(provider, "connect")
+			.mockResolvedValue(browser as unknown as Awaited<ReturnType<typeof provider.connect>>);
+		const env = make_env({});
+		const session = new BrowserSession(storage.state as unknown as DurableObjectState, env);
+		env.BROWSER_SESSIONS = {
+			idFromName: (name: string) => ({ toString: () => name }),
+			get: () => ({ fetch: (request: Request) => session.fetch(request) }),
+		};
+		const post = (path: string, body: Record<string, unknown>) =>
+			handle_request(
+				new Request(`${URL_BASE}/internal/browser/${path}`, {
+					method: "POST",
+					headers: { Authorization: "Bearer test-secret", "Content-Type": "application/json" },
+					body: JSON.stringify({ mode: "web", ...OWNERS, sessionId: "session-1", ...body }),
+				}),
+				env,
+			);
+		expect(await (await post("tabs", {})).json()).toMatchObject({
+			ok: true,
+			tabs: finalClose ? [{ tabId: "tab-1" }] : [{ tabId: "tab-1" }, { tabId: "tab-2" }],
+		});
+		browser.close.mockClear();
+		const duringHostConnect = change.endsWith("during host connect");
+		const duringNewPage = change === "allowed new page" || change.endsWith("during new page");
+		const heldConnect = Promise.withResolvers<Awaited<ReturnType<typeof provider.connect>>>();
+		const heldNewPage = Promise.withResolvers<void>();
+		if (duringHostConnect) {
+			Object.assign(session, { hostConnections: new Map(), hostConnection: null });
+			connect.mockImplementationOnce(async () => heldConnect.promise);
+		}
+		if (duringNewPage)
+			newPage.mockImplementationOnce(async () => {
+				const next = make_page("page-3");
+				pages.push(next);
+				await heldNewPage.promise;
+				return next;
+			});
+		const heldLockSave = Promise.withResolvers<void>();
+		const lockSaved = Promise.withResolvers<void>();
+		if (finalClose) {
+			const put = storage.state.storage.put;
+			let held = false;
+			storage.state.storage.put = async (key, value) => {
+				await put(key, value);
+				if (key === "session" && !held && (value as SessionRecord).command?.id === "tabs:agent-tab-close") {
+					held = true;
+					lockSaved.resolve();
+					await heldLockSave.promise;
+				}
+			};
+		}
+
+		const heldInput = Promise.withResolvers<void>();
+		Object.assign(session, { inputQueue: heldInput.promise });
+		const body = {
+			operationId: `agent-${route}`,
+			operationDeadline: Date.now() + 120_000,
+			source,
+			expectedAgentLease: {
+				controlGen: 1,
+				loadGen: 1,
+				tabId: "tab-1",
+				tabGen: 1,
+				navGen: 1,
+				policyRevision: 0,
+				selectionRevision: 0,
+			},
+			policyRevision: 0,
+			selectionRevision: 0,
+			...(route === "tab-close" ? { tabId: "tab-1" } : { url: duringNewPage ? "https://allowed.test/start" : null }),
+		};
+		const pending = post(route, body);
+		await vi.waitFor(() =>
+			expect(storage.map.get("tabOperations")).toEqual([
+				[body.operationId, expect.objectContaining({ status: "in_progress" })],
+			]),
+		);
+		if (change === "navigation") {
+			page.emit("framenavigated", page.mainFrame());
+			await vi.waitFor(() =>
+				expect(storage.map.get("session")).toMatchObject({ tabs: { "tab-1": { tabGen: 2, navGen: 2 } } }),
+			);
+		} else if (!duringHostConnect && !duringNewPage && !finalClose) vi.spyOn(Date, "now").mockReturnValue(expiryAt);
+		heldInput.resolve();
+		if (duringHostConnect) {
+			await vi.waitFor(() => expect(connect).toHaveBeenCalledTimes(2));
+			if (change === "access off during host connect") {
+				expect(
+					await (
+						await post("agent-access", { on: false, policyRevision: 1, selectionRevision: 0, agentBlockedHosts: [] })
+					).json(),
+				).toMatchObject({ ok: true });
+			} else if (change === "choice change during host connect") {
+				expect(
+					await (
+						await post("agent-access", { on: true, policyRevision: 0, selectionRevision: 1, agentBlockedHosts: [] })
+					).json(),
+				).toMatchObject({ ok: true });
+			} else vi.spyOn(Date, "now").mockReturnValue(expiryAt);
+			heldConnect.resolve(browser as unknown as Awaited<ReturnType<typeof provider.connect>>);
+		} else if (duringNewPage) {
+			await vi.waitFor(() => expect(newPage).toHaveBeenCalledTimes(1));
+			if (change !== "allowed new page")
+				expect(
+					await (
+						await post("agent-access", {
+							on: change !== "access off during new page",
+							policyRevision: 1,
+							selectionRevision: 0,
+							agentBlockedHosts: change === "blocked host during new page" ? ["allowed.test"] : [],
+						})
+					).json(),
+				).toMatchObject({ ok: true });
+			heldNewPage.resolve();
+		} else if (finalClose) {
+			await lockSaved.promise;
+			expect(
+				await (
+					await post("agent-access", { on: false, policyRevision: 1, selectionRevision: 0, agentBlockedHosts: [] })
+				).json(),
+			).toMatchObject({ ok: true });
+			heldLockSave.resolve();
+		}
+		const reply = await (await pending).json();
+		if (duringNewPage) {
+			if (change === "allowed new page") {
+				expect(goto).toHaveBeenCalledOnce();
+				expect(reply).toMatchObject({ ok: true, status: "completed", result: { cleanup: "complete" } });
+				return;
+			}
+			expect(goto, "The new page must not navigate after Off or a blocked host is acknowledged").not.toHaveBeenCalled();
+			expect(browser.close, "A rejected new tab must keep the reused browser open").not.toHaveBeenCalled();
+			expect(storage.map.get("session"), "A rejected new tab must keep the old tab").toMatchObject({
+				control: "ready",
+				tabs: { "tab-1": { targetId: "page-1" } },
+			});
+			expect(
+				Object.keys((storage.map.get("session") as SessionRecord & { tabs: Record<string, unknown> }).tabs),
+			).toEqual(["tab-1", "tab-2"]);
+			expect(pages.map((page) => page.targetId)).toEqual(["page-1", "page-2"]);
+			expect(reply).toMatchObject({ ok: true, status: "unknown", result: { cleanup: "complete" } });
+			return;
+		}
+		if (finalClose) {
+			expect(browser.close, "Off acknowledged before final Close must not close the provider").not.toHaveBeenCalled();
+			expect(reply).toMatchObject({ ok: true, status: "refused", result: { cleanup: "complete" } });
+			return;
+		}
+		if (change === "navigation")
+			expect(reply, "Navigation must refuse the old agent lease before native tab work").toMatchObject({
+				ok: true,
+				status: "refused",
+				result: { reason: "stale_tab", cleanup: "complete" },
+			});
+		else if (duringHostConnect) {
+			expect(
+				newPage.mock.calls.length + page.close.mock.calls.length,
+				"A changed access, choice, or expired session must not start native New or Close after host connect",
+			).toBe(0);
+			expect(reply).toMatchObject({ ok: true, status: "refused", result: { cleanup: "complete" } });
+			if (change === "idle expiry during host connect" || change === "total expiry during host connect") {
+				expect(
+					session_is_expired(storage.map.get("session") as SessionRecord, Date.now()),
+					"A refused expired tab operation must not renew the session",
+				).toBe(true);
+			}
+		} else {
+			expect(
+				newPage.mock.calls.length + page.close.mock.calls.length,
+				"An expired session must not start native New or Close",
+			).toBe(0);
+			expect(reply).toMatchObject({ ok: true, status: "refused", result: { reason: "expired", cleanup: "complete" } });
+		}
+		expect(newPage).not.toHaveBeenCalled();
+		expect(page.close).not.toHaveBeenCalled();
+		if (change === "navigation")
+			expect(await (await post(route, body)).json()).toMatchObject({
+				ok: true,
+				status: "refused",
+				result: { reason: "stale_tab" },
+			});
+		else if (duringHostConnect)
+			expect(storage.map.get("tabOperations")).toEqual([
+				[
+					body.operationId,
+					expect.objectContaining({ status: "refused", result: expect.objectContaining({ cleanup: "complete" }) }),
+				],
+			]);
+		else {
+			expect(storage.map.get("tabOperations")).toEqual([
+				[
+					body.operationId,
+					expect.objectContaining({
+						status: "refused",
+						result: { tabId: null, reason: "expired", cleanup: "complete" },
+					}),
+				],
+			]);
+			expect(await (await post(route, body)).json()).toMatchObject({ ok: false, error: { code: "closed" } });
+		}
+		expect(newPage).not.toHaveBeenCalled();
+		expect(page.close).not.toHaveBeenCalled();
+	});
+});
+
 describe("BrowserSession viewer", () => {
 	function make_session(initial: Record<string, unknown>) {
 		const storage = make_storage(initial);
@@ -1891,9 +3285,11 @@ describe("BrowserSession viewer", () => {
 
 	it("takes human control from ready and hands back to the agent", async () => {
 		const now = Date.now();
-		const { storage, session } = make_session({ session: live_record({
-			viewers: { v1: { host: "docked", controlGen: 1, grantedUntil: now + 30_000, attachedAt: now, lastInputAt: 0 } },
-		}) });
+		const { storage, session } = make_session({
+			session: live_record({
+				viewers: { v1: { host: "docked", controlGen: 1, grantedUntil: now + 30_000, attachedAt: now, lastInputAt: 0 } },
+			}),
+		});
 
 		const take = (await post(session, "/control/take-human", {
 			sessionId: "session-1",
@@ -1914,7 +3310,11 @@ describe("BrowserSession viewer", () => {
 		})) as { error: { code: string } };
 		expect(begin.error.code).toBe("control");
 
-		const resume = (await post(session, "/control/to-agent", { sessionId: "session-1", navGen: 1 })) as {
+		const resume = (await post(session, "/control/to-agent", {
+			sessionId: "session-1",
+			navGen: 1,
+			controlGen: take.controlGen,
+		})) as {
 			control: string;
 		};
 		expect(resume.control).toBe("ready");
@@ -1925,7 +3325,8 @@ describe("BrowserSession viewer", () => {
 		const now = Date.now();
 		const { storage, session } = make_session({
 			session: live_record({
-				control: "agent", command: { id: "c1", startedAt: now, connection: "settled" },
+				control: "agent",
+				command: { id: "c1", startedAt: now, connection: "settled" },
 				viewers: { v1: { host: "docked", controlGen: 1, grantedUntil: now + 30_000, attachedAt: now, lastInputAt: 0 } },
 			}),
 		});
@@ -1954,7 +3355,8 @@ describe("BrowserSession viewer", () => {
 		const now = Date.now();
 		const { storage, session } = make_session({
 			session: live_record({
-				control: "agent", command: { id: "c1", startedAt: now - 60_000 },
+				control: "agent",
+				command: { id: "c1", startedAt: now - 60_000 },
 				viewers: { v1: { host: "docked", controlGen: 1, grantedUntil: now + 30_000, attachedAt: now, lastInputAt: 0 } },
 			}),
 		});
@@ -1972,7 +3374,8 @@ describe("BrowserSession viewer", () => {
 		const now = Date.now();
 		const { storage, session } = make_session({
 			session: live_record({
-				control: "pausing", command: { id: "c1", startedAt: now - 60_000 },
+				control: "pausing",
+				command: { id: "c1", startedAt: now - 60_000 },
 				viewers: { v1: { host: "docked", controlGen: 1, grantedUntil: now + 30_000, attachedAt: now, lastInputAt: 0 } },
 			}),
 		});
@@ -1986,10 +3389,14 @@ describe("BrowserSession viewer", () => {
 		expect(storage.map.get("session")).toMatchObject({ control: "closing", command: null });
 	});
 
-	it("finishes a pausing command to ready when the holder is gone", async () => {
+	it("keeps human pause after the holder is gone", async () => {
 		const now = Date.now();
 		const { session } = make_session({
-			session: live_record({ control: "pausing", command: { id: "c1", startedAt: now, connection: "settled" }, inputHolder: null }),
+			session: live_record({
+				control: "pausing",
+				command: { id: "c1", startedAt: now, connection: "settled" },
+				inputHolder: null,
+			}),
 		});
 
 		const finish = (await post(session, "/run/finish", {
@@ -2001,7 +3408,7 @@ describe("BrowserSession viewer", () => {
 			fileBytes: 0,
 			viewport: null,
 		})) as { state: string };
-		expect(finish.state).toBe("ready");
+		expect(finish.state).toBe("human");
 	});
 
 	it("refuses reload while a command holds the slot", async () => {
@@ -2023,53 +3430,77 @@ describe("BrowserSession viewer", () => {
 });
 
 describe("parse_viewer_input", () => {
-	const lease = { controlGen: 2, loadGen: 3 };
+	const lease = { controlGen: 2, loadGen: 3, tabId: "tab", tabGen: 1, viewGen: 3 };
 
 	it.each(["mouse.down", "mouse.up"])("keeps the native click count for %s", (kind) => {
-		expect(parse_viewer_input(JSON.stringify({ t: "input", seq: 1, ...lease, kind, button: "left", clickCount: 2 }))).toEqual({
-			ok: true, seq: 1, ...lease, input: { kind, button: "left", clickCount: 2 },
+		expect(
+			parse_viewer_input(JSON.stringify({ t: "input", seq: 1, ...lease, kind, button: "left", clickCount: 2 })),
+		).toEqual({
+			ok: true,
+			seq: 1,
+			...lease,
+			input: { kind, button: "left", clickCount: 2 },
 		});
 	});
 
 	it.each([0, -1, 1.5, 11, "2"])("refuses invalid click count %s", (clickCount) => {
-		expect(parse_viewer_input(JSON.stringify({ t: "input", seq: 1, ...lease, kind: "mouse.down", clickCount }))).toEqual({ ok: false });
+		expect(
+			parse_viewer_input(JSON.stringify({ t: "input", seq: 1, ...lease, kind: "mouse.down", clickCount })),
+		).toEqual({ ok: false });
 	});
 
-	it.each([undefined, 0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, "2"])("refuses invalid input generations %s", (generation) => {
-		for (const field of ["controlGen", "loadGen"] as const) {
-			expect(parse_viewer_input(JSON.stringify({ t: "input", seq: 1, kind: "key.press", key: "Enter", ...lease, [field]: generation }))).toEqual({ ok: false });
-		}
-	});
+	it.each([undefined, 0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, "2"])(
+		"refuses invalid input generations %s",
+		(generation) => {
+			for (const field of ["controlGen", "loadGen"] as const) {
+				expect(
+					parse_viewer_input(
+						JSON.stringify({ t: "input", seq: 1, kind: "key.press", key: "Enter", ...lease, [field]: generation }),
+					),
+				).toEqual({ ok: false });
+			}
+		},
+	);
 
 	it("accepts mouse, wheel, and keyboard shapes", () => {
-		expect(parse_viewer_input(JSON.stringify({ t: "input", seq: 1, ...lease, kind: "mouse.move", x: 10, y: 20 })).ok).toBe(true);
+		expect(
+			parse_viewer_input(JSON.stringify({ t: "input", seq: 1, ...lease, kind: "mouse.move", x: 10, y: 20 })).ok,
+		).toBe(true);
 		expect(
 			parse_viewer_input(JSON.stringify({ t: "input", seq: 2, ...lease, kind: "mouse.click", x: 10, y: 20 })).ok,
 		).toBe(true);
 		expect(
-			parse_viewer_input(JSON.stringify({ t: "input", seq: 3, ...lease, kind: "wheel", x: 1, y: 2, dx: 0, dy: 100 })).ok,
+			parse_viewer_input(JSON.stringify({ t: "input", seq: 3, ...lease, kind: "wheel", x: 1, y: 2, dx: 0, dy: 100 }))
+				.ok,
 		).toBe(true);
-		expect(parse_viewer_input(JSON.stringify({ t: "input", seq: 4, ...lease, kind: "key.press", key: "Enter" })).ok).toBe(
+		expect(
+			parse_viewer_input(JSON.stringify({ t: "input", seq: 4, ...lease, kind: "key.press", key: "Enter" })).ok,
+		).toBe(true);
+		expect(parse_viewer_input(JSON.stringify({ t: "input", seq: 5, ...lease, kind: "key.type", text: "hi" })).ok).toBe(
 			true,
 		);
-		expect(parse_viewer_input(JSON.stringify({ t: "input", seq: 5, ...lease, kind: "key.type", text: "hi" })).ok).toBe(true);
 	});
 
 	it("refuses malformed input", () => {
 		expect(parse_viewer_input("{nope")).toEqual({ ok: false });
-		expect(parse_viewer_input(JSON.stringify({ t: "input", seq: 1, ...lease, kind: "mouse.move", x: -5, y: 1 }))).toEqual({
+		expect(
+			parse_viewer_input(JSON.stringify({ t: "input", seq: 1, ...lease, kind: "mouse.move", x: -5, y: 1 })),
+		).toEqual({
 			ok: false,
 		});
 		expect(parse_viewer_input(JSON.stringify({ t: "input", seq: 1, ...lease, kind: "key.press", key: "" }))).toEqual({
 			ok: false,
 		});
-		expect(parse_viewer_input(JSON.stringify({ t: "input", ...lease, kind: "mouse.move", x: 1, y: 1 }))).toEqual({ ok: false });
+		expect(parse_viewer_input(JSON.stringify({ t: "input", ...lease, kind: "mouse.move", x: 1, y: 1 }))).toEqual({
+			ok: false,
+		});
 		expect(parse_viewer_input(JSON.stringify({ t: "other", ...lease, seq: 1 }))).toEqual({ ok: false });
 	});
 });
 
 describe("parse_viewer_hello", () => {
 	const valid = JSON.stringify({
+		mode: "file",
 		ownerId: "u",
 		organizationId: "o",
 		workspaceId: "w",
@@ -2080,7 +3511,7 @@ describe("parse_viewer_hello", () => {
 	it("accepts a well-formed hello", () => {
 		expect(parse_viewer_hello(valid)).toEqual({
 			ok: true,
-			hello: { ownerId: "u", organizationId: "o", workspaceId: "w", grantId: "g", host: "docked" },
+			hello: { mode: "file", ownerId: "u", organizationId: "o", workspaceId: "w", grantId: "g", host: "docked" },
 		});
 	});
 
@@ -2111,7 +3542,7 @@ describe("viewer host routes", () => {
 			new Request(`${URL_BASE}/internal/browser/viewer-grant`, {
 				method: "POST",
 				headers: { "Content-Type": "application/json", Authorization: "Bearer test-secret" },
-				body: JSON.stringify({ ...OWNERS, sessionId: "s", navGen: 1 }),
+				body: JSON.stringify({ mode: "file", ...OWNERS, sessionId: "s", navGen: 1 }),
 			}),
 			env,
 		);

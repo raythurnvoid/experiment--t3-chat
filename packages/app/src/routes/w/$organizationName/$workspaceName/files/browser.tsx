@@ -20,7 +20,7 @@ type RouteBrowser_ClassNames = "RouteBrowser" | "RouteBrowser-message";
 const RouteBrowser = memo(function RouteBrowser() {
 	const search = Route.useSearch();
 	const { membershipId } = AppTenantProvider.useContext();
-	const session = useQuery(app_convex_api.files_browser.current_browser_session, { membershipId });
+	const session = useQuery(app_convex_api.files_browser.current_browser_session, { membershipId, mode: "file" });
 
 	if (session === undefined) {
 		return (

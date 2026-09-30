@@ -1,7 +1,9 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { useState, type ReactNode } from "react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { getFunctionName } from "convex/server";
+import { useEffect, useState, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { FileUIPart } from "ai";
+import type { browser_Intent } from "../../shared/browser-intent.ts";
 
 import { ai_chat_get_message_text, type ai_chat_UiMessage, type ai_chat_Thread } from "@/lib/ai-chat.ts";
 
@@ -32,6 +34,7 @@ type MockPrepareSendMessagesRequestOptions = {
 			convexParentId?: string | null;
 			selectedModelId?: string;
 			selectedModeId?: string;
+			browserIntent?: browser_Intent;
 		};
 	}>;
 	trigger: "submit-message" | "regenerate-message";
@@ -67,6 +70,12 @@ const hookMocks = vi.hoisted(() => {
 		renderRuntime: vi.fn(),
 		chatInstances: [] as MockChatInstance[],
 		holdChatRequests: false,
+		preferences: { webChoice: { provider: "cloud" }, selectionRevision: 0, policyRevision: 0 } as
+			| browser_Intent
+			| undefined,
+		preferenceListeners: new Set<() => void>(),
+		startNewChatList: null as ((message: string) => string | undefined) | null,
+		startNewChatRuntime: null as ((message: string) => string | undefined) | null,
 	};
 });
 
@@ -177,6 +186,7 @@ vi.mock("ai", async (importOriginal) => {
 
 vi.mock("convex/react", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("convex/react")>();
+	const { useSyncExternalStore } = await import("react");
 
 	return {
 		...actual,
@@ -196,7 +206,15 @@ vi.mock("convex/react", async (importOriginal) => {
 			};
 		},
 		useMutation: () => hookMocks.mutation,
-		useQuery: (_query: unknown, args: unknown) => {
+		useQuery: (query: never, args: unknown) => {
+			const preferences = useSyncExternalStore(
+				(listener) => {
+					hookMocks.preferenceListeners.add(listener);
+					return () => hookMocks.preferenceListeners.delete(listener);
+				},
+				() => hookMocks.preferences,
+			);
+			if (getFunctionName(query) === "files_browser:current_browser_preferences") return preferences;
 			if (args === "skip" || hookMocks.messagesStatus === "loading") return undefined;
 			if (hookMocks.messagesStatus === "denied") return null;
 			return { messages: hookMocks.threadMessages };
@@ -218,6 +236,13 @@ vi.mock("@/lib/app-tenant-context.tsx", () => ({
 
 import { AiChatController, type AiChatControllerStorageKey } from "./ai-chat-controller.tsx";
 import { app_local_storage_get_value, app_local_storage_set_value } from "@/lib/storage.ts";
+
+function setBrowserIntent(intent: browser_Intent) {
+	act(() => {
+		hookMocks.preferences = intent;
+		for (const listener of hookMocks.preferenceListeners) listener();
+	});
+}
 
 const QUEUE_IMAGE_FILE_PART = {
 	type: "file",
@@ -286,7 +311,7 @@ function ControllerProbe(props: {
 				type="button"
 				onClick={() => {
 					const threadId = controller.startNewChat();
-					onStartNewChat?.(threadId);
+					if (threadId) onStartNewChat?.(threadId);
 				}}
 			>
 				new {label}
@@ -303,6 +328,16 @@ function ThreadUpgradeMapProbe(props: { clientGeneratedId: string }) {
 			{controller.persistedThreadIdByClientGeneratedId.get(props.clientGeneratedId) ?? "null"}
 		</div>
 	);
+}
+
+function NewChatLoadingProbe() {
+	const list = AiChatController.useThreadList({ includeArchived: false });
+	const runtime = AiChatController.useThreadRuntime();
+	useEffect(() => {
+		hookMocks.startNewChatList = list.startNewChat;
+		hookMocks.startNewChatRuntime = runtime.startNewChat;
+	}, [list.startNewChat, runtime.startNewChat]);
+	return null;
 }
 
 function RuntimeIdentityProbe() {
@@ -1014,6 +1049,7 @@ function FullPageSurface(props: { children: ReactNode; initialSelectedThreadId?:
 
 describe("AiChatController", () => {
 	beforeEach(() => {
+		hookMocks.preferences = { webChoice: { provider: "cloud" }, selectionRevision: 0, policyRevision: 0 };
 		hookMocks.tenant.membershipId = `membership_${crypto.randomUUID()}`;
 		hookMocks.tenant.organizationId = "organization_test";
 		hookMocks.tenant.workspaceId = "workspace_test";
@@ -1199,7 +1235,7 @@ describe("AiChatController", () => {
 			throw new Error("Expected restored optimistic chat instance");
 		}
 		expect(chat.sendMessage).toHaveBeenCalledTimes(1);
-		expect(chat.sendMessage.mock.calls[0]?.[1]).toBeUndefined();
+		expect(chat.sendMessage.mock.calls[0]?.[1]).toEqual({ body: { browserIntent: hookMocks.preferences } });
 
 		const prepareSendMessagesRequest = chat.transport?.options.prepareSendMessagesRequest;
 		expect(prepareSendMessagesRequest).toBeTypeOf("function");
@@ -1221,6 +1257,7 @@ describe("AiChatController", () => {
 						convexParentId: null,
 						selectedModelId: "gpt-6-luna",
 						selectedModeId: "ask",
+						browserIntent: hookMocks.preferences,
 					},
 				},
 			],
@@ -1264,7 +1301,7 @@ describe("AiChatController", () => {
 
 		const preparedRequest = await prepareSendMessagesRequest({
 			api: "/api/chat",
-			body: {},
+			body: { browserIntent: hookMocks.preferences },
 			headers: new Headers(),
 			id: "thread_auto_submit_guard",
 			messages: [
@@ -1308,7 +1345,7 @@ describe("AiChatController", () => {
 		expect(body.parentId).toBeNull();
 	});
 
-	test("submit carries the frozen browser session and regenerate replays it", async () => {
+	test("submit carries frozen intent and regenerate uses the new request intent", async () => {
 		render(
 			<FullPageSurface initialSelectedThreadId="thread_browser_body">
 				<RuntimeSendProbe />
@@ -1333,10 +1370,11 @@ describe("AiChatController", () => {
 		const preparedBody = async (options: {
 			messages: Array<Record<string, unknown>>;
 			trigger: "submit-message" | "regenerate-message";
+			browserIntent?: browser_Intent;
 		}) => {
 			const preparedRequest = await prepareSendMessagesRequest({
 				api: "/api/chat",
-				body: {},
+				body: options.browserIntent ? { browserIntent: options.browserIntent } : {},
 				headers: new Headers(),
 				id: "thread_browser_body",
 				messages: options.messages,
@@ -1348,18 +1386,20 @@ describe("AiChatController", () => {
 			return (preparedRequest as { body: Record<string, unknown> }).body;
 		};
 
+		const frozenIntent: browser_Intent = { webChoice: { provider: "cloud" }, selectionRevision: 1, policyRevision: 1 };
+		const currentIntent: browser_Intent = { webChoice: { provider: "none" }, selectionRevision: 2, policyRevision: 2 };
 		const bound = await preparedBody({
 			messages: [
 				{
 					id: "msg_browser_bound",
 					role: "user",
 					parts: [{ type: "text", text: "Inspect it" }],
-					metadata: { convexParentId: null, browserSessionId: "session-1" },
+					metadata: { convexParentId: null, browserIntent: frozenIntent },
 				},
 			],
 			trigger: "submit-message",
 		});
-		expect(bound.browserSessionId).toBe("session-1");
+		expect(bound.browserIntent).toEqual(frozenIntent);
 
 		const replayed = await preparedBody({
 			messages: [
@@ -1367,22 +1407,23 @@ describe("AiChatController", () => {
 					id: "msg_browser_bound",
 					role: "user",
 					parts: [{ type: "text", text: "Inspect it" }],
-					metadata: { convexParentId: null, browserSessionId: "session-1" },
+					metadata: { convexParentId: null, browserIntent: frozenIntent },
 				},
 				{ id: "msg_browser_answer", role: "assistant", parts: [{ type: "text", text: "Done" }] },
 			],
 			trigger: "regenerate-message",
+			browserIntent: currentIntent,
 		});
-		expect(replayed.browserSessionId).toBe("session-1");
+		expect(replayed.browserIntent).toEqual(currentIntent);
 
-		// A fresh message without an id means no browser on purpose: history must not leak in.
-		const unbound = await preparedBody({
+		// Missing intent never takes authority from old history.
+		const missingIntentRequest = preparedBody({
 			messages: [
 				{
 					id: "msg_browser_old",
 					role: "user",
 					parts: [{ type: "text", text: "Inspect it" }],
-					metadata: { convexParentId: null, browserSessionId: "session-1" },
+					metadata: { convexParentId: null, browserIntent: frozenIntent },
 				},
 				{
 					id: "msg_browser_fresh",
@@ -1393,7 +1434,7 @@ describe("AiChatController", () => {
 			],
 			trigger: "submit-message",
 		});
-		expect(unbound.browserSessionId).toBeUndefined();
+		await expect(missingIntentRequest).rejects.toThrow("Failed to prepare send messages request");
 	});
 
 	test("retries the same chat request after the server rate limit clears", async () => {
@@ -1510,7 +1551,7 @@ describe("AiChatController", () => {
 
 		const preparedRequest = await prepareSendMessagesRequest({
 			api: "/api/chat",
-			body: {},
+			body: { browserIntent: hookMocks.preferences },
 			headers: new Headers(),
 			id: "thread_regenerate_settings",
 			messages: [
@@ -1744,6 +1785,26 @@ describe("AiChatController", () => {
 		expect(app_local_storage_get_value(storageKey)).toBe("thread_existing_last");
 	});
 
+	test.each(["list", "runtime"] as const)("startNewChat in %s waits for browser settings without throwing", (scope) => {
+		hookMocks.preferences = undefined;
+		render(
+			<FullPageSurface>
+				<NewChatLoadingProbe />
+			</FullPageSurface>,
+		);
+		const startNewChat = scope === "list" ? hookMocks.startNewChatList! : hookMocks.startNewChatRuntime!;
+		const chatCount = hookMocks.chatInstances.length;
+		expect(() => {
+			let threadId: string | undefined;
+			act(() => {
+				threadId = startNewChat("Keep this draft");
+			});
+			expect(threadId).toBeUndefined();
+		}).not.toThrow();
+		expect(hookMocks.chatInstances).toHaveLength(chatCount);
+		for (const chat of hookMocks.chatInstances) expect(chat.sendMessage).not.toHaveBeenCalled();
+	});
+
 	test("retries a failed optimistic user message by replacing it from its original parent", async () => {
 		const storageKey: `app_state::ai_chat_last_open::scope::${string}` = `app_state::ai_chat_last_open::scope::${hookMocks.tenant.membershipId}`;
 
@@ -1784,7 +1845,7 @@ describe("AiChatController", () => {
 		expect(chat.messages).toHaveLength(1);
 	});
 
-	test("retry keeps the failed turn's frozen browser session, not the live selection", async () => {
+	test("a human retry captures current browser intent", async () => {
 		const storageKey: `app_state::ai_chat_last_open::scope::${string}` = `app_state::ai_chat_last_open::scope::${hookMocks.tenant.membershipId}`;
 
 		render(
@@ -1799,7 +1860,7 @@ describe("AiChatController", () => {
 			expect(screen.getByTestId("runtime-selected").textContent).toMatch(/^ai_thread-/);
 		});
 
-		AiChatController.useStore.setState({ browserSessionId: "session-frozen" });
+		setBrowserIntent({ webChoice: { provider: "cloud" }, selectionRevision: 1, policyRevision: 1 });
 		fireEvent.click(screen.getByRole("button", { name: "send first" }));
 
 		const chat = hookMocks.chatInstances.find((chat) => chat.sendMessage.mock.calls.length === 1);
@@ -1818,16 +1879,20 @@ describe("AiChatController", () => {
 			expect(screen.getByTestId("runtime-failed-message").textContent).toBe("ai_message_mock_0");
 		});
 
-		// The user moved to another file: the live selection must not leak into the retry.
-		AiChatController.useStore.setState({ browserSessionId: "session-live" });
+		const currentIntent: browser_Intent = {
+			webChoice: { provider: "playwriter", connectionId: "connection-live", confirmedTargetHandle: "target-live" },
+			selectionRevision: 2,
+			policyRevision: 2,
+		};
+		setBrowserIntent(currentIntent);
 		fireEvent.click(screen.getByRole("button", { name: "retry latest" }));
 
 		expect(chat.sendMessage).toHaveBeenCalledTimes(2);
 		const retried = chat.sendMessage.mock.calls[1]?.[0] as { metadata?: Record<string, unknown> };
-		expect(retried?.metadata?.browserSessionId).toBe("session-frozen");
+		expect(retried?.metadata?.browserIntent).toEqual(currentIntent);
 	});
 
-	test("retry of an unbound turn binds nothing, not the live selection", async () => {
+	test("a human retry can change from no browser to cloud", async () => {
 		const storageKey: `app_state::ai_chat_last_open::scope::${string}` = `app_state::ai_chat_last_open::scope::${hookMocks.tenant.membershipId}`;
 
 		render(
@@ -1842,7 +1907,7 @@ describe("AiChatController", () => {
 			expect(screen.getByTestId("runtime-selected").textContent).toMatch(/^ai_thread-/);
 		});
 
-		AiChatController.useStore.setState({ browserSessionId: null });
+		setBrowserIntent({ webChoice: { provider: "none" }, selectionRevision: 1, policyRevision: 1 });
 		fireEvent.click(screen.getByRole("button", { name: "send first" }));
 
 		const chat = hookMocks.chatInstances.find((chat) => chat.sendMessage.mock.calls.length === 1);
@@ -1861,12 +1926,13 @@ describe("AiChatController", () => {
 			expect(screen.getByTestId("runtime-failed-message").textContent).toBe("ai_message_mock_0");
 		});
 
-		AiChatController.useStore.setState({ browserSessionId: "session-live" });
+		const currentIntent: browser_Intent = { webChoice: { provider: "cloud" }, selectionRevision: 2, policyRevision: 2 };
+		setBrowserIntent(currentIntent);
 		fireEvent.click(screen.getByRole("button", { name: "retry latest" }));
 
 		expect(chat.sendMessage).toHaveBeenCalledTimes(2);
 		const retried = chat.sendMessage.mock.calls[1]?.[0] as { metadata?: Record<string, unknown> };
-		expect(retried?.metadata?.browserSessionId).toBeUndefined();
+		expect(retried?.metadata?.browserIntent).toEqual(currentIntent);
 	});
 
 	test("keeps Retry on the failed user message when AI SDK adds an assistant placeholder", async () => {
@@ -1904,50 +1970,52 @@ describe("AiChatController", () => {
 		expect(chat.messages).toHaveLength(1);
 	});
 
-	test.each(["session-queued", null])(
-		"drains a queued message with frozen browser session %s",
-		async (browserSessionId) => {
-			hookMocks.holdChatRequests = true;
-			const threadId = `thread_queue_browser_${browserSessionId ?? "none"}`;
-			render(
-				<FullPageSurface initialSelectedThreadId={threadId}>
-					<RuntimeQueueProbe />
-				</FullPageSurface>,
-			);
+	test.each(["cloud", "none"] as const)("drains a queued message with frozen browser choice %s", async (provider) => {
+		hookMocks.holdChatRequests = true;
+		const threadId = `thread_queue_browser_${provider}`;
+		render(
+			<FullPageSurface initialSelectedThreadId={threadId}>
+				<RuntimeQueueProbe />
+			</FullPageSurface>,
+		);
 
-			await waitFor(() => {
-				expect(screen.getByTestId("queue-session").textContent).toBe("session");
-			});
+		await waitFor(() => {
+			expect(screen.getByTestId("queue-session").textContent).toBe("session");
+		});
 
-			AiChatController.useStore.setState({ browserSessionId });
-			fireEvent.click(screen.getByRole("button", { name: "send first queue probe" }));
-			fireEvent.click(screen.getByRole("button", { name: "send second queue probe" }));
+		const frozenIntent: browser_Intent = { webChoice: { provider }, selectionRevision: 1, policyRevision: 1 };
+		setBrowserIntent(frozenIntent);
+		fireEvent.click(screen.getByRole("button", { name: "send first queue probe" }));
+		fireEvent.click(screen.getByRole("button", { name: "send second queue probe" }));
 
-			const chat = hookMocks.chatInstances.find((item) => item.id === threadId);
-			expect(chat).toBeDefined();
-			if (!chat) {
-				throw new Error("Expected queue chat instance");
-			}
-			expect(chat.sendMessage).toHaveBeenCalledTimes(1);
-			expect(screen.getByTestId("queue-texts").textContent).toBe("Second");
+		const chat = hookMocks.chatInstances.find((item) => item.id === threadId);
+		expect(chat).toBeDefined();
+		if (!chat) {
+			throw new Error("Expected queue chat instance");
+		}
+		expect(chat.sendMessage).toHaveBeenCalledTimes(1);
+		expect(screen.getByTestId("queue-texts").textContent).toBe("Second");
 
-			// The live selection moves on while the message waits; the drain must keep the freeze.
-			AiChatController.useStore.setState({ browserSessionId: "session-live" });
-			fireEvent.click(screen.getByRole("button", { name: "complete client response queue probe" }));
+		// The live selection moves on while the message waits; the drain must keep the freeze.
+		setBrowserIntent({
+			webChoice: { provider: "playwriter", connectionId: "connection-live", confirmedTargetHandle: "target-live" },
+			selectionRevision: 2,
+			policyRevision: 2,
+		});
+		fireEvent.click(screen.getByRole("button", { name: "complete client response queue probe" }));
 
-			await waitFor(() => {
-				expect(chat.pendingRequestResolvers).toHaveLength(0);
-			});
+		await waitFor(() => {
+			expect(chat.pendingRequestResolvers).toHaveLength(0);
+		});
 
-			fireEvent.click(screen.getByRole("button", { name: "persist assistant queue probe" }));
+		fireEvent.click(screen.getByRole("button", { name: "persist assistant queue probe" }));
 
-			await waitFor(() => {
-				expect(chat.sendMessage).toHaveBeenCalledTimes(2);
-			});
-			const drained = chat.sendMessage.mock.calls[1]?.[0] as ai_chat_UiMessage | undefined;
-			expect(drained?.metadata?.browserSessionId).toBe(browserSessionId ?? undefined);
-		},
-	);
+		await waitFor(() => {
+			expect(chat.sendMessage).toHaveBeenCalledTimes(2);
+		});
+		const drained = chat.sendMessage.mock.calls[1]?.[0] as ai_chat_UiMessage | undefined;
+		expect(drained?.metadata?.browserIntent).toEqual(frozenIntent);
+	});
 
 	test("clears a refused thread, its queue, and cached messages without restarting it", async () => {
 		const threadId = "thread_privacy_refused";
@@ -3324,12 +3392,25 @@ describe("AiChatController", () => {
 		expect(screen.getByTestId("queue-paused").textContent).toBe("yes");
 
 		fireEvent.click(screen.getByRole("button", { name: "settle stopped request with empty assistant queue probe" }));
+		const resumedIntent: browser_Intent = {
+			webChoice: {
+				provider: "playwriter",
+				connectionId: "connection-resumed",
+				confirmedTargetHandle: "target-resumed",
+			},
+			selectionRevision: 3,
+			policyRevision: 4,
+		};
+		setBrowserIntent(resumedIntent);
 		fireEvent.click(screen.getByRole("button", { name: "resume queue probe" }));
 
 		await waitFor(() => {
 			expect(chat.sendMessage).toHaveBeenCalledTimes(2);
 			expect(screen.getByTestId("queue-texts").textContent).toBe("");
 		});
+		expect((chat.sendMessage.mock.calls[1]?.[0] as ai_chat_UiMessage | undefined)?.metadata?.browserIntent).toEqual(
+			resumedIntent,
+		);
 		expect(screen.getByTestId("queue-paused").textContent).toBe("no");
 	});
 

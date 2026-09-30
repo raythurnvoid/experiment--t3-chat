@@ -40,11 +40,18 @@ export const files_browser_runner_session_schema = z.discriminatedUnion("mode", 
 	z.object({
 		mode: z.literal("web"),
 		sessionId: z.string(),
-		navGen: z.literal(1),
+		navGen: z.number().int().positive(),
 		loadGen: z.number().int().nonnegative(),
 		controlGen: z.number().int().positive(),
 		control: runner_control_schema,
 		agentAccess: z.boolean(),
+		tabId: z.string(),
+		tabGen: z.number().int().positive(),
+		viewedTabId: z.string().nullable(),
+		viewGen: z.number().int().positive(),
+		tabCount: z.number().int().min(1).max(8),
+		policyRevision: z.number().int().nonnegative(),
+		selectionRevision: z.number().int().nonnegative(),
 		idleUntil: z.number(),
 		totalUntil: z.number(),
 	}),
@@ -79,6 +86,13 @@ export const files_browser_RUNNER_ROUTES = [
 	"download-push",
 	"upload-fill",
 	"upload-grant",
+	"tabs",
+	"tab-new",
+	"tab-close",
+	"tab-select",
+	"operation-status",
+	"command-status",
+	"command-fence",
 ] as const;
 
 export type files_browser_RunnerRoute = (typeof files_browser_RUNNER_ROUTES)[number];
@@ -106,15 +120,34 @@ const ROUTE_TIMEOUTS_MS: Record<files_browser_RunnerRoute, number> = {
 	// 120 seconds, so wait a bit longer than that.
 	"upload-fill": 150_000,
 	"upload-grant": 30_000,
+	tabs: 30_000,
+	"tab-new": 60_000,
+	"tab-close": 30_000,
+	"tab-select": 30_000,
+	"operation-status": 30_000,
+	"command-status": 5_000,
+	"command-fence": 6_000,
 };
 
 function runner_config(route: files_browser_RunnerRoute | null): { url: string; secret: string } | null {
-	// Feature-gate at call time so deployments without the browser rollout keep working. Wipes of
-	// deleted saved logins still reach the runner while the flag is off. The runner accepts them then.
-	if (process.env.AI_CHAT_BROWSER_ENABLED !== "true" && route !== "profile-delete") return null;
+	// Check the flag at call time. Status and cleanup still work while the rollout is off.
+	if (
+		process.env.AI_CHAT_BROWSER_ENABLED !== "true" &&
+		route !== "status" &&
+		route !== "close" &&
+		route !== "profile-delete" &&
+		route !== "command-status" &&
+		route !== "command-fence" &&
+		route !== "operation-status" &&
+		route !== "agent-access"
+	) {
+		return null;
+	}
 	const url = process.env.BROWSER_RUNNER_URL;
 	const secret = process.env.BROWSER_RUNNER_SECRET;
-	if (!url || !secret) return null;
+	if (!url || !secret) {
+		return null;
+	}
 	return { url: url.replace(/\/$/u, ""), secret };
 }
 
@@ -133,6 +166,7 @@ export function files_browser_runner_viewer_url(): string | null {
  * the only credential. The client adds the `name` param.
  */
 export function files_browser_runner_upload_url(args: {
+	mode: "file" | "web";
 	ownerId: string;
 	organizationId: string;
 	workspaceId: string;
@@ -141,6 +175,7 @@ export function files_browser_runner_upload_url(args: {
 	const config = runner_config(null);
 	if (!config) return null;
 	const url = new URL(`${config.url}/viewer/upload`);
+	url.searchParams.set("mode", args.mode);
 	url.searchParams.set("ownerId", args.ownerId);
 	url.searchParams.set("organizationId", args.organizationId);
 	url.searchParams.set("workspaceId", args.workspaceId);
@@ -158,10 +193,7 @@ export async function files_browser_runner_call(args: {
 	body: unknown;
 	timeoutMs?: number;
 	signal?: AbortSignal;
-}): Promise<
-	| { _yay: unknown; _nay?: never }
-	| { _yay?: never; _nay: { message: string; name?: string } }
-> {
+}): Promise<{ _yay: unknown; _nay?: never } | { _yay?: never; _nay: { message: string; name?: string } }> {
 	const config = runner_config(args.route);
 	if (!config) {
 		return Result({ _nay: { message: "Browser unavailable" } });
@@ -237,7 +269,10 @@ export const files_browser_runner_status_schema = z.discriminatedUnion("alive", 
  * Refresh live metadata without extending the runner's idle deadline.
  * The explicit return type breaks a cycle through Convex's generated API.
  */
-export async function files_browser_refresh_session(ctx: ActionCtx, session: Doc<"files_browser_sessions">): Promise<
+export async function files_browser_refresh_session(
+	ctx: ActionCtx,
+	session: Doc<"files_browser_sessions">,
+): Promise<
 	| { _yay: Doc<"files_browser_sessions"> | null; _nay?: never }
 	| { _yay?: never; _nay: { message: string; name?: string } }
 > {
@@ -247,6 +282,7 @@ export async function files_browser_refresh_session(ctx: ActionCtx, session: Doc
 	const checked = await files_browser_runner_call({
 		route: "status",
 		body: {
+			mode: session.mode,
 			sessionId: session.runnerSessionId,
 			ownerId: session.ownerId,
 			organizationId: session.organizationId,

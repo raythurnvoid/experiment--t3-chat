@@ -5,21 +5,41 @@ import { BrowserSession, LIMITS, session_can_run, type Env } from "./index";
 
 const OWNERS = { ownerId: "user_1", organizationId: "org_1", workspaceId: "ws_1" };
 const PROFILE_SECRET = Buffer.alloc(32, 1).toString("base64");
-const PROFILE = { profileId: "profile_1", profileKey: Buffer.alloc(32, 7).toString("base64"), agentBlockedHosts: [] as string[] };
+const PROFILE = {
+	profileId: "profile_1",
+	profileKey: Buffer.alloc(32, 7).toString("base64"),
+	agentBlockedHosts: [] as string[],
+	policyRevision: 0,
+	selectionRevision: 0,
+};
 const NativeResponse = Response;
 type SessionRecord = Parameters<typeof session_can_run>[0];
-const TIMINGS = { queueMs: expect.any(Number), authorizeMs: expect.any(Number), readyMs: expect.any(Number), applyMs: expect.any(Number) };
+const TIMINGS = {
+	queueMs: expect.any(Number),
+	authorizeMs: expect.any(Number),
+	readyMs: expect.any(Number),
+	applyMs: expect.any(Number),
+};
 
 class Socket extends EventTarget {
 	peer: Socket | null = null;
 	readyState = 1;
 	received: Array<string | Uint8Array> = [];
 	closed: { code: number; reason: string } | null = null;
+	frameReady: (() => void) | null = null;
 
 	accept() {}
 
 	send(data: string | Uint8Array) {
 		if (this.readyState !== 1 || !this.peer) throw new Error("Socket closed");
+		if (typeof data === "string") {
+			const message = JSON.parse(data) as Record<string, unknown>;
+			if (message.t === "input" || message.t === "nav") {
+				this.frameReady?.();
+				const latest = messages(this).findLast((entry) => typeof entry.tabId === "string");
+				data = JSON.stringify({ tabId: latest?.tabId, tabGen: latest?.tabGen, viewGen: latest?.viewGen, ...message });
+			}
+		}
 		this.peer.received.push(data);
 		this.peer.dispatchEvent(new MessageEvent("message", { data }));
 	}
@@ -59,7 +79,8 @@ class SocketResponse extends NativeResponse {
 }
 
 function messages(socket: Socket) {
-	return socket.received.filter((data): data is string => typeof data === "string")
+	return socket.received
+		.filter((data): data is string => typeof data === "string")
 		.map((data) => JSON.parse(data) as Record<string, unknown>);
 }
 
@@ -70,10 +91,16 @@ function frames(socket: Socket) {
 function make_cdp() {
 	return Object.assign(new EventEmitter(), {
 		send: vi.fn(async (method: string, _params?: unknown): Promise<Record<string, unknown>> =>
-			method === "Target.getTargetInfo" ? { targetInfo: { targetId: "page-1" } } :
-				method === "Target.getBrowserContexts" ? { browserContextIds: [] } :
-					method === "Target.getTargets" ? { targetInfos: [{ targetId: "page-1", type: "page" }] } :
-						method === "Page.getNavigationHistory" ? { currentIndex: 0, entries: [{ id: 1, url: "https://example.com/", title: "Example" }] } : {}),
+			method === "Target.getTargetInfo"
+				? { targetInfo: { targetId: "page-1" } }
+				: method === "Target.getBrowserContexts"
+					? { browserContextIds: [] }
+					: method === "Target.getTargets"
+						? { targetInfos: [{ targetId: "page-1", type: "page" }] }
+						: method === "Page.getNavigationHistory"
+							? { currentIndex: 0, entries: [{ id: 1, url: "https://example.com/", title: "Example" }] }
+							: {},
+		),
 		detach: vi.fn(async () => {}),
 	});
 }
@@ -82,19 +109,39 @@ function make_provider() {
 	const hostCdp = make_cdp();
 	const cdp = make_cdp();
 	const viewerCdps = [cdp];
-	const newCDPSession = vi.fn(async () => {
+	const pageTargets = new Map<object, string>();
+	let cdpCalls = 0;
+	const newCDPSession = vi.fn(async (target?: object) => {
+		cdpCalls += 1;
+		if (cdpCalls === 1) return hostCdp;
+		if (cdpCalls === 2 && (!target || pageTargets.get(target) === "page-1")) return cdp;
 		const next = make_cdp();
+		const send = next.send.getMockImplementation()!;
+		next.send.mockImplementation(async (method, params) =>
+			method === "Target.getTargetInfo"
+				? { targetInfo: { targetId: target ? (pageTargets.get(target) ?? "page-1") : "page-1" } }
+				: send(method, params),
+		);
 		viewerCdps.push(next);
 		return next;
-	}).mockResolvedValueOnce(hostCdp).mockResolvedValueOnce(cdp);
+	});
 	const mainFrame = { url: () => "https://controller.browser.invalid/", parentFrame: () => null };
 	const context = Object.assign(new EventEmitter(), { newCDPSession });
 	const page = Object.assign(new EventEmitter(), {
 		setViewportSize: vi.fn(async (_viewport: { width: number; height: number }) => {}),
+		goto: vi.fn(async (url: string, _options?: { waitUntil: string; timeout: number }) => {
+			await cdp.send("Page.navigate", { url });
+			return null;
+		}),
+		reload: vi.fn(async (_options?: { waitUntil: string; timeout: number }) => {
+			await hostCdp.send("Page.reload");
+			return null;
+		}),
 		unroute: vi.fn(async () => {}),
 		evaluate: vi.fn(async () => ({ url: "https://controller.browser.invalid/", nonce: "nonce-1" })),
 		context: () => context,
 		mainFrame: () => mainFrame,
+		url: () => mainFrame.url(),
 		mouse: {
 			move: vi.fn(async (_x: number, _y: number) => {}),
 			click: vi.fn(async () => {}),
@@ -110,21 +157,73 @@ function make_provider() {
 			insertText: vi.fn(async (_text: string) => {}),
 		},
 	});
-	Object.assign(context, { pages: () => [page] });
+	pageTargets.set(page, "page-1");
+	const pages: object[] = [page];
+	const add_page = (candidate: object) => {
+		pages.push(candidate);
+		pageTargets.set(candidate, `page-${pages.length}`);
+	};
+	const newPage = vi.fn(async () => {
+		const frame = { url: () => "about:blank", parentFrame: () => null };
+		const candidate = Object.assign(new EventEmitter(), {
+			context: () => context,
+			mainFrame: () => frame,
+			url: () => "about:blank",
+			goto: vi.fn(async (url: string, _options?: { waitUntil: string; timeout: number }) => {
+				await viewerCdps.at(-1)!.send("Page.navigate", { url });
+				return null;
+			}),
+			reload: vi.fn(async (_options?: { waitUntil: string; timeout: number }) => {
+				await viewerCdps.at(-1)!.send("Page.reload");
+				return null;
+			}),
+			setViewportSize: vi.fn(async () => {}),
+			mouse: page.mouse,
+			keyboard: page.keyboard,
+			close: vi.fn(async () => {
+				const index = pages.indexOf(candidate);
+				if (index >= 0) pages.splice(index, 1);
+			}),
+			isClosed: () => !pages.includes(candidate),
+		});
+		add_page(candidate);
+		context.emit("page", candidate);
+		return candidate;
+	});
+	Object.assign(context, { pages: () => pages, newPage });
+	const hostSend = hostCdp.send.getMockImplementation()!;
+	hostCdp.send.mockImplementation(async (method, params) =>
+		method === "Target.getTargets"
+			? { targetInfos: pages.map((candidate) => ({ targetId: pageTargets.get(candidate), type: "page" })) }
+			: hostSend(method, params),
+	);
 	const browser = Object.assign(new EventEmitter(), {
 		contexts: () => [context],
 		newBrowserCDPSession: async () => hostCdp,
 		close: vi.fn(async () => {}),
 	});
-	return { cdp, hostCdp, viewerCdps, newCDPSession, context, page, browser };
+	return { cdp, hostCdp, viewerCdps, newCDPSession, context, page, browser, add_page, newPage };
 }
 
 /**
  * Turn the file-mode fixture into a web session that owns page target `page-1`.
  */
 function web_record(record: SessionRecord, agentAccess = true): SessionRecord {
-	const copy: Record<string, unknown> = { ...record, mode: "web", agentAccess, pageTargetId: "page-1", profileId: "profile_1", agentBlockedHosts: [] };
-	for (const key of ["nodeId", "sourceKind", "sourceVersion", "sourceHash", "htmlBytesTotal", "loadCount"]) delete copy[key];
+	const copy: Record<string, unknown> = {
+		...record,
+		mode: "web",
+		agentAccess,
+		tabs: { "tab-1": { targetId: "page-1", tabGen: 1, navGen: 1, viewport: record.viewport } },
+		tabId: "tab-1",
+		viewedTabId: "tab-1",
+		viewGen: 1,
+		policyRevision: 0,
+		selectionRevision: 0,
+		profileId: "profile_1",
+		agentBlockedHosts: [],
+	};
+	for (const key of ["nodeId", "sourceKind", "sourceVersion", "sourceHash", "htmlBytesTotal", "loadCount"])
+		delete copy[key];
 	return copy as SessionRecord;
 }
 
@@ -162,7 +261,9 @@ function make_session(options: { web?: boolean } = {}) {
 	};
 	const stored = new Map<string, unknown>([["session", structuredClone(options.web ? web_record(record) : record)]]);
 	const get = vi.fn(async (key: string) => structuredClone(stored.get(key)));
-	const put = vi.fn(async (key: string, value: unknown) => { stored.set(key, structuredClone(value)); });
+	const put = vi.fn(async (key: string, value: unknown) => {
+		stored.set(key, structuredClone(value));
+	});
 	const setAlarm = vi.fn(async () => {});
 	const pending = new Set<Promise<unknown>>();
 	const registryFetch = vi.fn(async (_request: Request) => Response.json({ ok: true }));
@@ -178,48 +279,100 @@ function make_session(options: { web?: boolean } = {}) {
 		BROWSER_PROFILE_KEY: PROFILE_SECRET,
 		BROWSER_PREVIEW_URL: "https://preview.invalid/v0",
 		BROWSER_WEB_DENIED_HOSTS: "blocked.test, other-blocked.test",
-		LOADER: { load: () => { throw new Error("No snippets in viewer tests"); } },
+		LOADER: {
+			load: () => {
+				throw new Error("No snippets in viewer tests");
+			},
+		},
 	};
-	const session = new BrowserSession({
-		id: { toString: () => "test-session" },
-		storage: {
-			get: async <T,>(key: string) => await get(key) as T | undefined,
-			list: async <T,>(options: { prefix: string }) =>
-				new Map([...stored].filter(([key]) => key.startsWith(options.prefix)).map(([key, value]) => [key, structuredClone(value)])) as Map<string, T>,
-			put,
-			delete: async (key) => stored.delete(key),
-			setAlarm,
-			getAlarm: async () => null,
-			deleteAlarm: async () => {},
+	const session = new BrowserSession(
+		{
+			id: { toString: () => "test-session" },
+			storage: {
+				get: async <T>(key: string) => (await get(key)) as T | undefined,
+				list: async <T>(options: { prefix: string }) =>
+					new Map(
+						[...stored]
+							.filter(([key]) => key.startsWith(options.prefix))
+							.map(([key, value]) => [key, structuredClone(value)]),
+					) as Map<string, T>,
+				put,
+				delete: async (key) => stored.delete(key),
+				setAlarm,
+				getAlarm: async () => null,
+				deleteAlarm: async () => {},
+			},
+			waitUntil: (promise) => {
+				pending.add(promise);
+				void promise.then(
+					() => pending.delete(promise),
+					() => pending.delete(promise),
+				);
+			},
 		},
-		waitUntil: (promise) => {
-			pending.add(promise);
-			void promise.then(() => pending.delete(promise), () => pending.delete(promise));
-		},
-	}, env);
+		env,
+	);
 	const mocked = make_provider();
-	const connect = vi.spyOn(provider, "connect").mockResolvedValue(mocked.browser as unknown as Awaited<ReturnType<typeof provider.connect>>);
+	const connect = vi
+		.spyOn(provider, "connect")
+		.mockResolvedValue(mocked.browser as unknown as Awaited<ReturnType<typeof provider.connect>>);
 	vi.spyOn(provider, "sessions").mockResolvedValue([]);
 
 	const post = async (path: string, body: unknown) => {
-		const response = await session.fetch(new Request(`https://object${path}`, {
-			method: "POST", body: JSON.stringify(body),
-		}));
-		return await response.json() as Record<string, unknown>;
+		const current = stored.get("session") as SessionRecord;
+		const defaults =
+			path === "/control/to-agent"
+				? { controlGen: current.controlGen }
+				: path === "/agent-access"
+					? {
+							policyRevision: current.mode === "web" ? current.policyRevision + 1 : 1,
+							selectionRevision: 0,
+							agentBlockedHosts: [],
+						}
+					: path === "/run/begin" && current.mode === "web"
+						? {
+								tabId: current.tabId,
+								tabGen: current.tabs[current.tabId]!.tabGen,
+								policyRevision: current.policyRevision,
+								selectionRevision: current.selectionRevision,
+							}
+						: {};
+		const response = await session.fetch(
+			new Request(`https://object${path}`, {
+				method: "POST",
+				body: JSON.stringify({ mode: current?.mode ?? "file", ...defaults, ...(body as object) }),
+			}),
+		);
+		return (await response.json()) as Record<string, unknown>;
 	};
 	const open_socket = async () => {
 		const url = new URL("https://object/viewer/stream");
+		url.searchParams.set("mode", options.web ? "web" : "file");
 		for (const [name, value] of Object.entries(OWNERS)) url.searchParams.set(name, value);
 		const response = await session.fetch(new Request(url, { headers: { Upgrade: "websocket" } }));
 		expect(response.status).toBe(101);
 		const socket = (response as SocketResponse).webSocket;
 		if (!socket) throw new Error("Missing viewer socket");
+		socket.frameReady = () => {
+			const latest = messages(socket).findLast((entry) => typeof entry.tabId === "string");
+			if (
+				messages(socket).some(
+					(entry) =>
+						entry.t === "frame" &&
+						entry.tabId === latest?.tabId &&
+						entry.tabGen === latest?.tabGen &&
+						entry.viewGen === latest?.viewGen,
+				)
+			)
+				return;
+			emit_frame(1);
+		};
 		return socket;
 	};
 	const attach = async (host = "docked") => {
 		const grant = await post("/viewer/grant", { sessionId: "session-1", navGen: 1 });
 		const socket = await open_socket();
-		socket.send(JSON.stringify({ ...OWNERS, grantId: grant.grantId, host }));
+		socket.send(JSON.stringify({ ...OWNERS, mode: options.web ? "web" : "file", grantId: grant.grantId, host }));
 		await vi.waitFor(() => expect(messages(socket).some((message) => message.t === "hello")).toBe(true));
 		const hello = messages(socket).find((message) => message.t === "hello");
 		if (typeof hello?.viewerId !== "string") throw new Error("Missing viewer id");
@@ -233,7 +386,21 @@ function make_session(options: { web?: boolean } = {}) {
 		mocked.viewerCdps.at(-1)!.emit("Page.screencastFrame", { sessionId: 1, data: btoa(String.fromCharCode(...bytes)) });
 		return bytes;
 	};
-	return { ...mocked, connect, registryFetch, session, stored, get, put, setAlarm, post, open_socket, attach, drain, emit_frame };
+	return {
+		...mocked,
+		connect,
+		registryFetch,
+		session,
+		stored,
+		get,
+		put,
+		setAlarm,
+		post,
+		open_socket,
+		attach,
+		drain,
+		emit_frame,
+	};
 }
 
 beforeEach(() => {
@@ -255,7 +422,7 @@ describe("BrowserSession viewer stream", () => {
 		const { open_socket, drain, connect, stored, put } = make_session();
 		const before = structuredClone(stored.get("session"));
 		const socket = await open_socket();
-		socket.send(JSON.stringify({ ...OWNERS, grantId: "unknown", host: "docked" }));
+		socket.send(JSON.stringify({ ...OWNERS, mode: "file", grantId: "unknown", host: "docked" }));
 		await drain();
 		expect(socket.closed).toEqual({ code: 4401, reason: "grant refused" });
 		expect(messages(socket)).toEqual([]);
@@ -271,7 +438,7 @@ describe("BrowserSession viewer stream", () => {
 		const before = structuredClone(stored.get("session"));
 		put.mockClear();
 		const socket = await open_socket();
-		socket.send(JSON.stringify({ ...OWNERS, grantId: viewer.grantId, host: "detached" }));
+		socket.send(JSON.stringify({ ...OWNERS, mode: "file", grantId: viewer.grantId, host: "detached" }));
 		await drain();
 		expect(socket.closed).toEqual({ code: 4401, reason: "grant refused" });
 		expect(messages(socket)).toEqual([]);
@@ -320,7 +487,8 @@ describe("BrowserSession viewer stream", () => {
 		await drain();
 
 		expect(messages(viewer.socket).filter((message) => message.t === "pong")).toEqual([
-			{ t: "pong", seq: 1 }, { t: "pong", seq: 4 },
+			{ t: "pong", seq: 1 },
+			{ t: "pong", seq: 4 },
 		]);
 		expect(get).not.toHaveBeenCalled();
 		expect(put).not.toHaveBeenCalled();
@@ -337,13 +505,15 @@ describe("BrowserSession viewer stream", () => {
 		const second = await attach("detached");
 		const grant = await post("/viewer/grant", { sessionId: "session-1", navGen: 1 });
 		const socket = await open_socket();
-		socket.send(JSON.stringify({ ...OWNERS, grantId: grant.grantId, host: "docked" }));
+		socket.send(JSON.stringify({ ...OWNERS, mode: "file", grantId: grant.grantId, host: "docked" }));
 		await drain();
 		expect(socket.closed).toEqual({ code: 4401, reason: "grant refused" });
 		expect(messages(socket)).toEqual([]);
 		expect(first.socket.closed).toBeNull();
 		expect(second.socket.closed).toBeNull();
-		expect(Object.keys((stored.get("session") as SessionRecord).viewers).sort()).toEqual([first.viewerId, second.viewerId].sort());
+		expect(Object.keys((stored.get("session") as SessionRecord).viewers).sort()).toEqual(
+			[first.viewerId, second.viewerId].sort(),
+		);
 		expect((stored.get("session") as SessionRecord).viewerGrants).toEqual({});
 		expect(connect).toHaveBeenCalledTimes(1);
 	});
@@ -361,12 +531,31 @@ describe("BrowserSession viewer stream", () => {
 		expect(frames(first.socket)).toEqual([frame]);
 		expect(frames(second.socket)).toEqual([frame]);
 		expect(messages(second.socket).find((message) => message.t === "hello")).toEqual({
-			t: "hello", viewerId: second.viewerId, viewport: { width: 1280, height: 900 }, control: "ready", controlGen: 1,
+			mode: "file",
+			tabId: "session-1",
+			tabGen: 1,
+			viewGen: 1,
+			viewedTabId: "session-1",
+			policyRevision: 0,
+			selectionRevision: 0,
+			tabs: [{ tabId: "session-1", tabGen: 1, navGen: 1, title: "Preview", url: "" }],
+			t: "hello",
+			viewerId: second.viewerId,
+			viewport: { width: 1280, height: 900 },
+			control: "ready",
+			controlGen: 1,
 		});
 		expect(stored.get("session")).toMatchObject({
 			viewers: { [first.viewerId]: { host: "docked" }, [second.viewerId]: { host: "detached" } },
 		});
-		expect(messages(second.socket)).toContainEqual({ t: "frame", seq: 1, loadGen: 1 });
+		expect(messages(second.socket)).toContainEqual({
+			t: "frame",
+			tabId: "session-1",
+			tabGen: 1,
+			viewGen: 1,
+			seq: 1,
+			loadGen: 1,
+		});
 	});
 
 	it("closes the session when the shared host connection fails", async () => {
@@ -414,19 +603,33 @@ describe("BrowserSession viewer stream", () => {
 	});
 
 	it("reuses the host and restores viewport metrics after a settled command", async () => {
-		const { attach, drain, connect, cdp, hostCdp, browser, newCDPSession, page, post, stored, emit_frame } = make_session();
+		const { attach, drain, connect, cdp, hostCdp, browser, newCDPSession, page, post, stored, emit_frame } =
+			make_session();
 		const viewer = await attach();
 		await drain();
-		expect(await post("/run/begin", {
-			sessionId: "session-1", navGen: 1, loadGen: 1, controlGen: 1, commandId: "command-1",
-		})).toMatchObject({ ok: true });
+		expect(
+			await post("/run/begin", {
+				sessionId: "session-1",
+				navGen: 1,
+				loadGen: 1,
+				controlGen: 1,
+				commandId: "command-1",
+			}),
+		).toMatchObject({ ok: true });
 		const record = structuredClone(stored.get("session")) as SessionRecord;
 		record.command!.connection = "settled";
 		stored.set("session", record);
-		expect(await post("/run/finish", {
-			sessionId: "session-1", commandId: "command-1", tainted: false,
-			resultBytes: 0, fileCount: 0, fileBytes: 0, viewport: { width: 800, height: 600 },
-		})).toMatchObject({ ok: true, state: "ready" });
+		expect(
+			await post("/run/finish", {
+				sessionId: "session-1",
+				commandId: "command-1",
+				tainted: false,
+				resultBytes: 0,
+				fileCount: 0,
+				fileBytes: 0,
+				viewport: { width: 800, height: 600 },
+			}),
+		).toMatchObject({ ok: true, state: "ready" });
 		await drain();
 
 		expect(connect).toHaveBeenCalledOnce();
@@ -435,12 +638,21 @@ describe("BrowserSession viewer stream", () => {
 		expect(browser.close).not.toHaveBeenCalled();
 		expect(page.setViewportSize).toHaveBeenLastCalledWith({ width: 800, height: 600 });
 		expect(hostCdp.send).toHaveBeenLastCalledWith("Emulation.setDeviceMetricsOverride", {
-			width: 800, height: 600, deviceScaleFactor: 1, mobile: false, screenWidth: 800, screenHeight: 600,
+			width: 800,
+			height: 600,
+			deviceScaleFactor: 1,
+			mobile: false,
+			screenWidth: 800,
+			screenHeight: 600,
 		});
 		cdp.emit("Page.screencastFrame", { sessionId: 1, data: btoa("old frame") });
 		const frame = emit_frame(2);
 		expect(frames(viewer.socket)).toEqual([frame]);
-		expect(stored.get("session")).toMatchObject({ command: null, commandCount: 1, viewport: { width: 800, height: 600 } });
+		expect(stored.get("session")).toMatchObject({
+			command: null,
+			commandCount: 1,
+			viewport: { width: 800, height: 600 },
+		});
 	});
 
 	it("keeps only the latest waiting frame and lets viewers acknowledge separately", async () => {
@@ -478,15 +690,32 @@ describe("BrowserSession viewer stream", () => {
 		const viewer = await attach();
 		await drain();
 		await post("/control/take-human", { sessionId: "session-1", navGen: 1, viewerId: viewer.viewerId });
-		page.mouse.down.mockImplementationOnce(async () => { emit_frame(1); });
-		page.mouse.up.mockImplementationOnce(async () => { emit_frame(2); });
-		viewer.socket.send(JSON.stringify({ t: "input", controlGen: 2, loadGen: 1, seq: 1, kind: "mouse.down", button: "left" }));
-		viewer.socket.send(JSON.stringify({ t: "input", controlGen: 2, loadGen: 1, seq: 2, kind: "mouse.up", button: "left" }));
-		await vi.waitFor(() => expect(messages(viewer.socket)).toContainEqual({ t: "input-ack", timings: TIMINGS, seq: 2, ok: true }));
+		emit_frame(0);
+		viewer.socket.send(JSON.stringify({ t: "frame-ack", seq: 1 }));
+		await drain();
+		viewer.socket.received = viewer.socket.received.filter(
+			(data) => typeof data === "string" && (JSON.parse(data) as { t: string }).t !== "frame",
+		);
+		viewer.socket.frameReady = null;
+		page.mouse.down.mockImplementationOnce(async () => {
+			emit_frame(1);
+		});
+		page.mouse.up.mockImplementationOnce(async () => {
+			emit_frame(2);
+		});
+		viewer.socket.send(
+			JSON.stringify({ t: "input", controlGen: 2, loadGen: 1, seq: 1, kind: "mouse.down", button: "left" }),
+		);
+		viewer.socket.send(
+			JSON.stringify({ t: "input", controlGen: 2, loadGen: 1, seq: 2, kind: "mouse.up", button: "left" }),
+		);
+		await vi.waitFor(() =>
+			expect(messages(viewer.socket)).toContainEqual({ t: "input-ack", timings: TIMINGS, seq: 2, ok: true }),
+		);
 		expect(frames(viewer.socket).map((frame) => frame[4])).toEqual([1, 2]);
 		expect(messages(viewer.socket).filter((message) => message.t === "frame")).toEqual([
-			{ t: "frame", seq: 1, loadGen: 1 },
-			{ t: "frame", seq: 2, loadGen: 1 },
+			{ t: "frame", tabId: "session-1", tabGen: 1, viewGen: 1, seq: 2, loadGen: 1 },
+			{ t: "frame", tabId: "session-1", tabGen: 1, viewGen: 1, seq: 3, loadGen: 1 },
 		]);
 	});
 
@@ -517,12 +746,30 @@ describe("BrowserSession viewer stream", () => {
 		const second = await attach("detached");
 		await drain();
 		await post("/control/take-human", { sessionId: "session-1", navGen: 1, viewerId: first.viewerId });
-		first.socket.send(JSON.stringify({ t: "input", controlGen: 2, loadGen: 1, seq: 1, kind: "mouse.move", x: 10, y: 20 }));
-		await vi.waitFor(() => expect(messages(first.socket)).toContainEqual({ t: "input-ack", timings: TIMINGS, seq: 1, ok: true }));
-		first.socket.send(JSON.stringify({ t: "input", controlGen: 2, loadGen: 1, seq: 2, kind: "mouse.move", x: 10, y: 20 }));
-		await vi.waitFor(() => expect(messages(first.socket)).toContainEqual({ t: "input-ack", timings: TIMINGS, seq: 2, ok: true }));
-		second.socket.send(JSON.stringify({ t: "input", controlGen: 2, loadGen: 1, seq: 3, kind: "mouse.move", x: 10, y: 20 }));
-		await vi.waitFor(() => expect(messages(second.socket)).toContainEqual({ t: "input-ack", timings: TIMINGS, seq: 3, ok: false, code: "control" }));
+		first.socket.send(
+			JSON.stringify({ t: "input", controlGen: 2, loadGen: 1, seq: 1, kind: "mouse.move", x: 10, y: 20 }),
+		);
+		await vi.waitFor(() =>
+			expect(messages(first.socket)).toContainEqual({ t: "input-ack", timings: TIMINGS, seq: 1, ok: true }),
+		);
+		first.socket.send(
+			JSON.stringify({ t: "input", controlGen: 2, loadGen: 1, seq: 2, kind: "mouse.move", x: 10, y: 20 }),
+		);
+		await vi.waitFor(() =>
+			expect(messages(first.socket)).toContainEqual({ t: "input-ack", timings: TIMINGS, seq: 2, ok: true }),
+		);
+		second.socket.send(
+			JSON.stringify({ t: "input", controlGen: 2, loadGen: 1, seq: 3, kind: "mouse.move", x: 10, y: 20 }),
+		);
+		await vi.waitFor(() =>
+			expect(messages(second.socket)).toContainEqual({
+				t: "input-ack",
+				timings: TIMINGS,
+				seq: 3,
+				ok: false,
+				code: "control",
+			}),
+		);
 		expect(page.mouse.move).toHaveBeenCalledTimes(1);
 		expect(page.mouse.move).toHaveBeenCalledWith(10, 20);
 	});
@@ -536,14 +783,28 @@ describe("BrowserSession viewer stream", () => {
 		await post("/control/take-human", { sessionId: "session-1", navGen: 1, viewerId: viewer.viewerId });
 		const before = structuredClone(stored.get("session"));
 		put.mockClear();
-		viewer.socket.send(JSON.stringify({ t: "input", controlGen: 2, loadGen: 1, seq: 1, kind: "mouse.move", x: 10, y: 20 }));
-		await vi.waitFor(() => expect(messages(viewer.socket)).toContainEqual({ t: "input-ack", seq: 1, ok: false, code: "control", timings: TIMINGS }));
+		viewer.socket.send(
+			JSON.stringify({ t: "input", controlGen: 2, loadGen: 1, seq: 1, kind: "mouse.move", x: 10, y: 20 }),
+		);
+		await vi.waitFor(() =>
+			expect(messages(viewer.socket)).toContainEqual({
+				t: "input-ack",
+				seq: 1,
+				ok: false,
+				code: "control",
+				timings: TIMINGS,
+			}),
+		);
 		expect(page.mouse.move).not.toHaveBeenCalled();
 		expect(put).not.toHaveBeenCalled();
 		expect(stored.get("session")).toEqual(before);
 
-		viewer.socket.send(JSON.stringify({ t: "input", controlGen: 4, loadGen: 1, seq: 2, kind: "mouse.move", x: 10, y: 20 }));
-		await vi.waitFor(() => expect(messages(viewer.socket)).toContainEqual({ t: "input-ack", seq: 2, ok: true, timings: TIMINGS }));
+		viewer.socket.send(
+			JSON.stringify({ t: "input", controlGen: 4, loadGen: 1, seq: 2, kind: "mouse.move", x: 10, y: 20 }),
+		);
+		await vi.waitFor(() =>
+			expect(messages(viewer.socket)).toContainEqual({ t: "input-ack", seq: 2, ok: true, timings: TIMINGS }),
+		);
 		expect(page.mouse.move).toHaveBeenCalledOnce();
 	});
 
@@ -557,12 +818,20 @@ describe("BrowserSession viewer stream", () => {
 			vi.setSystemTime(Date.now() + 7);
 			await write(key, value);
 		});
-		page.mouse.move.mockImplementationOnce(async () => { vi.setSystemTime(Date.now() + 11); });
-		viewer.socket.send(JSON.stringify({ t: "input", controlGen: 2, loadGen: 1, seq: 1, kind: "mouse.move", x: 10, y: 20 }));
-		await vi.waitFor(() => expect(messages(viewer.socket)).toContainEqual({
-			t: "input-ack", seq: 1, ok: true,
-			timings: { queueMs: expect.any(Number), authorizeMs: 7, readyMs: 0, applyMs: 11 },
-		}));
+		page.mouse.move.mockImplementationOnce(async () => {
+			vi.setSystemTime(Date.now() + 11);
+		});
+		viewer.socket.send(
+			JSON.stringify({ t: "input", controlGen: 2, loadGen: 1, seq: 1, kind: "mouse.move", x: 10, y: 20 }),
+		);
+		await vi.waitFor(() =>
+			expect(messages(viewer.socket)).toContainEqual({
+				t: "input-ack",
+				seq: 1,
+				ok: true,
+				timings: { queueMs: expect.any(Number), authorizeMs: 7, readyMs: 0, applyMs: 11 },
+			}),
+		);
 	});
 
 	it("releases held buttons and keys before handing input to another viewer", async () => {
@@ -571,19 +840,37 @@ describe("BrowserSession viewer stream", () => {
 		const second = await attach("detached");
 		await drain();
 		await post("/control/take-human", { sessionId: "session-1", navGen: 1, viewerId: first.viewerId });
-		first.socket.send(JSON.stringify({ t: "input", controlGen: 2, loadGen: 1, seq: 1, kind: "mouse.down", button: "left" }));
-		first.socket.send(JSON.stringify({ t: "input", controlGen: 2, loadGen: 1, seq: 2, kind: "key.down", key: "Shift" }));
-		await vi.waitFor(() => expect(messages(first.socket)).toContainEqual({ t: "input-ack", timings: TIMINGS, seq: 2, ok: true }));
+		first.socket.send(
+			JSON.stringify({ t: "input", controlGen: 2, loadGen: 1, seq: 1, kind: "mouse.down", button: "left" }),
+		);
+		first.socket.send(
+			JSON.stringify({ t: "input", controlGen: 2, loadGen: 1, seq: 2, kind: "key.down", key: "Shift" }),
+		);
+		await vi.waitFor(() =>
+			expect(messages(first.socket)).toContainEqual({ t: "input-ack", timings: TIMINGS, seq: 2, ok: true }),
+		);
 
 		const taken = await post("/control/take-human", { sessionId: "session-1", navGen: 1, viewerId: second.viewerId });
 		expect(taken).toMatchObject({ ok: true, control: "human" });
 		expect(page.mouse.up).toHaveBeenCalledWith({ button: "left" });
 		expect(page.keyboard.up).toHaveBeenCalledWith("Shift");
 		expect(stored.get("session")).toMatchObject({ inputHolder: second.viewerId });
-		first.socket.send(JSON.stringify({ t: "input", controlGen: 3, loadGen: 1, seq: 3, kind: "mouse.move", x: 20, y: 30 }));
-		second.socket.send(JSON.stringify({ t: "input", controlGen: 3, loadGen: 1, seq: 3, kind: "mouse.move", x: 20, y: 30 }));
-		await vi.waitFor(() => expect(messages(second.socket)).toContainEqual({ t: "input-ack", timings: TIMINGS, seq: 3, ok: true }));
-		expect(messages(first.socket)).toContainEqual({ t: "input-ack", timings: TIMINGS, seq: 3, ok: false, code: "control" });
+		first.socket.send(
+			JSON.stringify({ t: "input", controlGen: 3, loadGen: 1, seq: 3, kind: "mouse.move", x: 20, y: 30 }),
+		);
+		second.socket.send(
+			JSON.stringify({ t: "input", controlGen: 3, loadGen: 1, seq: 3, kind: "mouse.move", x: 20, y: 30 }),
+		);
+		await vi.waitFor(() =>
+			expect(messages(second.socket)).toContainEqual({ t: "input-ack", timings: TIMINGS, seq: 3, ok: true }),
+		);
+		expect(messages(first.socket)).toContainEqual({
+			t: "input-ack",
+			timings: TIMINGS,
+			seq: 3,
+			ok: false,
+			code: "control",
+		});
 		expect(page.mouse.move).toHaveBeenCalledTimes(1);
 		expect(page.mouse.up.mock.invocationCallOrder[0]).toBeLessThan(page.mouse.move.mock.invocationCallOrder[0]!);
 	});
@@ -596,7 +883,9 @@ describe("BrowserSession viewer stream", () => {
 		await post("/control/take-human", { sessionId: "session-1", navGen: 1, viewerId: first.viewerId });
 		const pressing = Promise.withResolvers<void>();
 		page.mouse.down.mockImplementationOnce(() => pressing.promise);
-		first.socket.send(JSON.stringify({ t: "input", controlGen: 2, loadGen: 1, seq: 1, kind: "mouse.down", button: "left" }));
+		first.socket.send(
+			JSON.stringify({ t: "input", controlGen: 2, loadGen: 1, seq: 1, kind: "mouse.down", button: "left" }),
+		);
 		await vi.waitFor(() => expect(page.mouse.down).toHaveBeenCalledTimes(1));
 		const taking = post("/control/take-human", { sessionId: "session-1", navGen: 1, viewerId: second.viewerId });
 		await vi.advanceTimersByTimeAsync(1);
@@ -616,15 +905,21 @@ describe("BrowserSession viewer stream", () => {
 		await drain();
 		await post("/control/take-human", { sessionId: "session-1", navGen: 1, viewerId: viewer.viewerId });
 		const controlGen = (stored.get("session") as SessionRecord).controlGen;
-		viewer.socket.send(JSON.stringify({ t: "input", controlGen: 2, loadGen: 1, seq: 1, kind: "mouse.down", button: "left" }));
-		viewer.socket.send(JSON.stringify({ t: "input", controlGen: 2, loadGen: 1, seq: 2, kind: "key.down", key: "Shift" }));
-		await vi.waitFor(() => expect(messages(viewer.socket)).toContainEqual({ t: "input-ack", timings: TIMINGS, seq: 2, ok: true }));
+		viewer.socket.send(
+			JSON.stringify({ t: "input", controlGen: 2, loadGen: 1, seq: 1, kind: "mouse.down", button: "left" }),
+		);
+		viewer.socket.send(
+			JSON.stringify({ t: "input", controlGen: 2, loadGen: 1, seq: 2, kind: "key.down", key: "Shift" }),
+		);
+		await vi.waitFor(() =>
+			expect(messages(viewer.socket)).toContainEqual({ t: "input-ack", timings: TIMINGS, seq: 2, ok: true }),
+		);
 
 		viewer.socket.close();
 		await drain();
 		expect(page.mouse.up).toHaveBeenCalledWith({ button: "left" });
 		expect(page.keyboard.up).toHaveBeenCalledWith("Shift");
-		expect(stored.get("session")).toMatchObject({ control: "ready", controlGen: controlGen + 1, inputHolder: null, viewers: {} });
+		expect(stored.get("session")).toMatchObject({ control: "human", controlGen, inputHolder: null, viewers: {} });
 		expect(cdp.detach).toHaveBeenCalledTimes(1);
 		expect(browser.close).not.toHaveBeenCalled();
 		expect(page.keyboard.up.mock.invocationCallOrder[0]).toBeLessThan(cdp.detach.mock.invocationCallOrder[0]!);
@@ -635,9 +930,15 @@ describe("BrowserSession viewer stream", () => {
 		const viewer = await attach();
 		await drain();
 		await post("/control/take-human", { sessionId: "session-1", navGen: 1, viewerId: viewer.viewerId });
-		viewer.socket.send(JSON.stringify({ t: "input", controlGen: 2, loadGen: 1, seq: 1, kind: "mouse.down", button: "left" }));
-		viewer.socket.send(JSON.stringify({ t: "input", controlGen: 2, loadGen: 1, seq: 2, kind: "key.down", key: "Shift" }));
-		await vi.waitFor(() => expect(messages(viewer.socket)).toContainEqual({ t: "input-ack", timings: TIMINGS, seq: 2, ok: true }));
+		viewer.socket.send(
+			JSON.stringify({ t: "input", controlGen: 2, loadGen: 1, seq: 1, kind: "mouse.down", button: "left" }),
+		);
+		viewer.socket.send(
+			JSON.stringify({ t: "input", controlGen: 2, loadGen: 1, seq: 2, kind: "key.down", key: "Shift" }),
+		);
+		await vi.waitFor(() =>
+			expect(messages(viewer.socket)).toContainEqual({ t: "input-ack", timings: TIMINGS, seq: 2, ok: true }),
+		);
 
 		browser.emit("disconnected");
 		await drain();
@@ -653,7 +954,9 @@ describe("BrowserSession viewer stream", () => {
 		await post("/control/take-human", { sessionId: "session-1", navGen: 1, viewerId: viewer.viewerId });
 		const pressing = Promise.withResolvers<void>();
 		page.mouse.down.mockImplementationOnce(() => pressing.promise);
-		viewer.socket.send(JSON.stringify({ t: "input", controlGen: 2, loadGen: 1, seq: 1, kind: "mouse.down", button: "left" }));
+		viewer.socket.send(
+			JSON.stringify({ t: "input", controlGen: 2, loadGen: 1, seq: 1, kind: "mouse.down", button: "left" }),
+		);
 		await vi.waitFor(() => expect(page.mouse.down).toHaveBeenCalledTimes(1));
 
 		cdp.send.mockRejectedValueOnce(new Error("Frame ACK failed"));
@@ -674,20 +977,32 @@ describe("BrowserSession viewer stream", () => {
 		await post("/control/take-human", { sessionId: "session-1", navGen: 1, viewerId: first.viewerId });
 		const moving = Promise.withResolvers<void>();
 		page.mouse.move.mockImplementationOnce(() => moving.promise);
-		first.socket.send(JSON.stringify({ t: "input", controlGen: 2, loadGen: 1, seq: 1, kind: "mouse.move", x: 10, y: 20 }));
+		first.socket.send(
+			JSON.stringify({ t: "input", controlGen: 2, loadGen: 1, seq: 1, kind: "mouse.move", x: 10, y: 20 }),
+		);
 		await vi.waitFor(() => expect(page.mouse.move).toHaveBeenCalledTimes(1));
-		first.socket.send(JSON.stringify({ t: "input", controlGen: 2, loadGen: 1, seq: 2, kind: "mouse.move", x: 30, y: 40 }));
+		first.socket.send(
+			JSON.stringify({ t: "input", controlGen: 2, loadGen: 1, seq: 2, kind: "mouse.move", x: 30, y: 40 }),
+		);
 		let completed = false;
-		const taking = post("/control/take-human", { sessionId: "session-1", navGen: 1, viewerId: second.viewerId }).then((result) => {
-			completed = true;
-			return result;
-		});
+		const taking = post("/control/take-human", { sessionId: "session-1", navGen: 1, viewerId: second.viewerId }).then(
+			(result) => {
+				completed = true;
+				return result;
+			},
+		);
 		await vi.advanceTimersByTimeAsync(1);
 		expect(completed).toBe(false);
 		moving.resolve();
 		expect(await taking).toMatchObject({ ok: true, control: "human" });
 		expect(messages(first.socket)).toContainEqual({ t: "input-ack", timings: TIMINGS, seq: 1, ok: true });
-		expect(messages(first.socket)).toContainEqual({ t: "input-ack", timings: TIMINGS, seq: 2, ok: false, code: "control" });
+		expect(messages(first.socket)).toContainEqual({
+			t: "input-ack",
+			timings: TIMINGS,
+			seq: 2,
+			ok: false,
+			code: "control",
+		});
 		expect(page.mouse.move).toHaveBeenCalledTimes(1);
 	});
 
@@ -698,18 +1013,29 @@ describe("BrowserSession viewer stream", () => {
 		await post("/control/take-human", { sessionId: "session-1", navGen: 1, viewerId: viewer.viewerId });
 		const moving = Promise.withResolvers<void>();
 		page.mouse.move.mockImplementationOnce(() => moving.promise);
-		viewer.socket.send(JSON.stringify({ t: "input", controlGen: 2, loadGen: 1, seq: 1, kind: "mouse.move", x: 10, y: 20 }));
+		viewer.socket.send(
+			JSON.stringify({ t: "input", controlGen: 2, loadGen: 1, seq: 1, kind: "mouse.move", x: 10, y: 20 }),
+		);
 		await vi.waitFor(() => expect(page.mouse.move).toHaveBeenCalledTimes(1));
-		viewer.socket.send(JSON.stringify({ t: "input", controlGen: 2, loadGen: 1, seq: 2, kind: "mouse.move", x: 30, y: 40 }));
+		viewer.socket.send(
+			JSON.stringify({ t: "input", controlGen: 2, loadGen: 1, seq: 2, kind: "mouse.move", x: 30, y: 40 }),
+		);
 		const grantedUntil = (stored.get("session") as SessionRecord).viewers[viewer.viewerId]!.grantedUntil;
 		await vi.advanceTimersByTimeAsync(1);
 		const renewed = await post("/viewer/renew", { sessionId: "session-1", viewerId: viewer.viewerId });
 		expect(renewed).toMatchObject({ ok: true });
 		expect(renewed.grantedUntil).toBeGreaterThan(grantedUntil);
-		expect(stored.get("session")).toMatchObject({ viewers: { [viewer.viewerId]: { grantedUntil: renewed.grantedUntil } } });
+		expect(stored.get("session")).toMatchObject({
+			viewers: { [viewer.viewerId]: { grantedUntil: renewed.grantedUntil } },
+		});
 		moving.resolve();
-		await vi.waitFor(() => expect(messages(viewer.socket)).toContainEqual({ t: "input-ack", timings: TIMINGS, seq: 2, ok: true }));
-		expect(page.mouse.move.mock.calls).toEqual([[10, 20], [30, 40]]);
+		await vi.waitFor(() =>
+			expect(messages(viewer.socket)).toContainEqual({ t: "input-ack", timings: TIMINGS, seq: 2, ok: true }),
+		);
+		expect(page.mouse.move.mock.calls).toEqual([
+			[10, 20],
+			[30, 40],
+		]);
 	});
 
 	it("waits for the first host page check before reload changes its nonce", async () => {
@@ -718,8 +1044,13 @@ describe("BrowserSession viewer stream", () => {
 		const uuid = "00000000-0000-0000-0000-000000000001";
 		vi.spyOn(crypto, "randomUUID").mockReturnValue(uuid);
 		vi.spyOn(Math, "random").mockReturnValue(0);
-		vi.stubGlobal("fetch", vi.fn(async () => new Response("<html></html>")));
-		const evaluate = vi.fn().mockReturnValueOnce(validation.promise)
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => new Response("<html></html>")),
+		);
+		const evaluate = vi
+			.fn()
+			.mockReturnValueOnce(validation.promise)
 			.mockResolvedValue({ url: "https://controller.browser.invalid/", ready: true, error: null, nonce: `${uuid}-0` });
 		const route = vi.fn(async () => {});
 		const goto = vi.fn(async () => {});
@@ -728,7 +1059,12 @@ describe("BrowserSession viewer stream", () => {
 		await vi.waitFor(() => expect(evaluate).toHaveBeenCalledOnce());
 
 		const reload = post("/reload", {
-			sessionId: "session-1", navGen: 1, sourceKind: "saved", sourceVersion: "v2", sourceHash: "h2", html: "<input />",
+			sessionId: "session-1",
+			navGen: 1,
+			sourceKind: "saved",
+			sourceVersion: "v2",
+			sourceHash: "h2",
+			html: "<input />",
 		});
 		await vi.waitFor(() => expect((stored.get("session") as SessionRecord).command?.id).toMatch(/^reload:/));
 		await vi.advanceTimersByTimeAsync(1);
@@ -744,7 +1080,12 @@ describe("BrowserSession viewer stream", () => {
 		expect(page.unroute).toHaveBeenCalledWith("https://controller.browser.invalid/**");
 		expect(page.unroute.mock.invocationCallOrder[0]).toBeLessThan(route.mock.invocationCallOrder[0]!);
 		expect(browser.close).not.toHaveBeenCalled();
-		expect(stored.get("session")).toMatchObject({ control: "ready", command: null, loadGen: 2, pageNonce: `${uuid}-0` });
+		expect(stored.get("session")).toMatchObject({
+			control: "ready",
+			command: null,
+			loadGen: 2,
+			pageNonce: `${uuid}-0`,
+		});
 	});
 
 	it.each([false, true])("restores human input only after a successful reload (failed=%s)", async (failed) => {
@@ -758,25 +1099,48 @@ describe("BrowserSession viewer stream", () => {
 		const uuid = "00000000-0000-0000-0000-000000000001";
 		vi.spyOn(crypto, "randomUUID").mockReturnValue(uuid);
 		vi.spyOn(Math, "random").mockReturnValue(0);
-		vi.stubGlobal("fetch", vi.fn(async () => {
-			loading.resolve();
-			await finishLoad.promise;
-			if (failed) throw new Error("Preview request failed");
-			return new Response("<html></html>");
-		}));
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => {
+				loading.resolve();
+				await finishLoad.promise;
+				if (failed) throw new Error("Preview request failed");
+				return new Response("<html></html>");
+			}),
+		);
 		const goto = vi.fn(async () => {});
 		Object.assign(page, {
 			route: async () => {},
 			goto,
 			waitForFunction: async () => {},
-			evaluate: async () => ({ url: "https://controller.browser.invalid/", ready: true, error: null, nonce: `${uuid}-0` }),
+			evaluate: async () => ({
+				url: "https://controller.browser.invalid/",
+				ready: true,
+				error: null,
+				nonce: `${uuid}-0`,
+			}),
 		});
 		const reload = post("/reload", {
-			sessionId: "session-1", navGen: 1, sourceKind: "saved", sourceVersion: "v2", sourceHash: "h2", html: "<input />",
+			sessionId: "session-1",
+			navGen: 1,
+			sourceKind: "saved",
+			sourceVersion: "v2",
+			sourceHash: "h2",
+			html: "<input />",
 		});
 		await loading.promise;
-		viewer.socket.send(JSON.stringify({ t: "input", controlGen: 2, loadGen: 1, seq: 1, kind: "mouse.move", x: 10, y: 20 }));
-		await vi.waitFor(() => expect(messages(viewer.socket)).toContainEqual({ t: "input-ack", timings: TIMINGS, seq: 1, ok: false, code: "control" }));
+		viewer.socket.send(
+			JSON.stringify({ t: "input", controlGen: 2, loadGen: 1, seq: 1, kind: "mouse.move", x: 10, y: 20 }),
+		);
+		await vi.waitFor(() =>
+			expect(messages(viewer.socket)).toContainEqual({
+				t: "input-ack",
+				timings: TIMINGS,
+				seq: 1,
+				ok: false,
+				code: "control",
+			}),
+		);
 		expect(page.mouse.move).not.toHaveBeenCalled();
 
 		finishLoad.resolve();
@@ -792,44 +1156,79 @@ describe("BrowserSession viewer stream", () => {
 		}
 		expect(connect).toHaveBeenCalledOnce();
 		expect(browser.close).not.toHaveBeenCalled();
-		expect(stored.get("session")).toMatchObject({ control: "human", controlGen, inputHolder: viewer.viewerId, command: null, loadGen: 2 });
+		expect(stored.get("session")).toMatchObject({
+			control: "human",
+			controlGen,
+			inputHolder: viewer.viewerId,
+			command: null,
+			loadGen: 2,
+		});
 		put.mockClear();
-		viewer.socket.send(JSON.stringify({ t: "input", controlGen, loadGen: 1, seq: 2, kind: "mouse.move", x: 10, y: 20 }));
-		await vi.waitFor(() => expect(messages(viewer.socket)).toContainEqual({ t: "input-ack", timings: TIMINGS, seq: 2, ok: false, code: "control" }));
+		viewer.socket.send(
+			JSON.stringify({ t: "input", controlGen, loadGen: 1, seq: 2, kind: "mouse.move", x: 10, y: 20 }),
+		);
+		await vi.waitFor(() =>
+			expect(messages(viewer.socket)).toContainEqual({
+				t: "input-ack",
+				timings: TIMINGS,
+				seq: 2,
+				ok: false,
+				code: "control",
+			}),
+		);
 		expect(page.mouse.move).not.toHaveBeenCalled();
 		expect(put).not.toHaveBeenCalled();
-		viewer.socket.send(JSON.stringify({ t: "input", controlGen, loadGen: 2, seq: 3, kind: "mouse.move", x: 10, y: 20 }));
-		await vi.waitFor(() => expect(messages(viewer.socket)).toContainEqual({ t: "input-ack", timings: TIMINGS, seq: 3, ok: true }));
+		viewer.socket.send(
+			JSON.stringify({ t: "input", controlGen, loadGen: 2, seq: 3, kind: "mouse.move", x: 10, y: 20 }),
+		);
+		await vi.waitFor(() =>
+			expect(messages(viewer.socket)).toContainEqual({ t: "input-ack", timings: TIMINGS, seq: 3, ok: true }),
+		);
 		expect(page.mouse.move.mock.calls).toEqual([[10, 20]]);
 	});
 
-	it.each(["ready", "human"])("closes the %s session when the reloaded controller fails after navigation", async (control) => {
-		const { attach, drain, post, page, hostCdp, stored, put } = make_session();
-		const viewer = await attach();
-		await drain();
-		if (control === "human") {
-			await post("/control/take-human", { sessionId: "session-1", navGen: 1, viewerId: viewer.viewerId });
-		}
-		vi.stubGlobal("fetch", vi.fn(async () => new Response("<html></html>")));
-		const goto = vi.fn(async () => {});
-		const waitForFunction = vi.fn(async () => { throw new Error("Controller did not become ready"); });
-		Object.assign(page, { route: async () => {}, goto, waitForFunction });
-		put.mockClear();
+	it.each(["ready", "human"])(
+		"closes the %s session when the reloaded controller fails after navigation",
+		async (control) => {
+			const { attach, drain, post, page, hostCdp, stored, put } = make_session();
+			const viewer = await attach();
+			await drain();
+			if (control === "human") {
+				await post("/control/take-human", { sessionId: "session-1", navGen: 1, viewerId: viewer.viewerId });
+			}
+			vi.stubGlobal(
+				"fetch",
+				vi.fn(async () => new Response("<html></html>")),
+			);
+			const goto = vi.fn(async () => {});
+			const waitForFunction = vi.fn(async () => {
+				throw new Error("Controller did not become ready");
+			});
+			Object.assign(page, { route: async () => {}, goto, waitForFunction });
+			put.mockClear();
 
-		expect(await post("/reload", {
-			sessionId: "session-1", navGen: 1, sourceKind: "saved", sourceVersion: "v2", sourceHash: "h2", html: "<input />",
-		})).toMatchObject({ ok: false, error: { code: "reload_failed" } });
-		await drain();
-		expect(goto).toHaveBeenCalledOnce();
-		expect(waitForFunction).toHaveBeenCalledOnce();
-		expect(goto.mock.invocationCallOrder[0]).toBeLessThan(waitForFunction.mock.invocationCallOrder[0]!);
-		expect(hostCdp.send).toHaveBeenCalledWith("Browser.close", {});
-		expect(stored.has("session")).toBe(false);
-		for (const [, value] of put.mock.calls) {
-			const record = value as SessionRecord;
-			expect(record.command === null && (record.control === "ready" || record.control === "human")).toBe(false);
-		}
-	});
+			expect(
+				await post("/reload", {
+					sessionId: "session-1",
+					navGen: 1,
+					sourceKind: "saved",
+					sourceVersion: "v2",
+					sourceHash: "h2",
+					html: "<input />",
+				}),
+			).toMatchObject({ ok: false, error: { code: "reload_failed" } });
+			await drain();
+			expect(goto).toHaveBeenCalledOnce();
+			expect(waitForFunction).toHaveBeenCalledOnce();
+			expect(goto.mock.invocationCallOrder[0]).toBeLessThan(waitForFunction.mock.invocationCallOrder[0]!);
+			expect(hostCdp.send).toHaveBeenCalledWith("Browser.close", {});
+			expect(stored.has("session")).toBe(false);
+			for (const [, value] of put.mock.calls) {
+				const record = value as SessionRecord;
+				expect(record.command === null && (record.control === "ready" || record.control === "human")).toBe(false);
+			}
+		},
+	);
 
 	it("keeps a failed reload from restoring a disconnected host session", async () => {
 		const { attach, drain, post, browser, connect, stored } = make_session();
@@ -840,7 +1239,12 @@ describe("BrowserSession viewer stream", () => {
 		const fetchPreview = vi.fn(() => loading.promise);
 		vi.stubGlobal("fetch", fetchPreview);
 		const reloading = post("/reload", {
-			sessionId: "session-1", navGen: 1, sourceKind: "saved", sourceVersion: "v2", sourceHash: "h2", html: "<input />",
+			sessionId: "session-1",
+			navGen: 1,
+			sourceKind: "saved",
+			sourceVersion: "v2",
+			sourceHash: "h2",
+			html: "<input />",
 		});
 		await vi.waitFor(() => expect(fetchPreview).toHaveBeenCalledOnce());
 		expect(connect).toHaveBeenCalledOnce();
@@ -852,28 +1256,50 @@ describe("BrowserSession viewer stream", () => {
 		expect(stored.has("session")).toBe(false);
 	});
 
-	it("releases a pending human takeover when the finish producer cannot attach", async () => {
+	it("keeps a pending human pause when the finish producer cannot attach", async () => {
 		const { attach, drain, post, newCDPSession, stored } = make_session();
 		const viewer = await attach();
 		await drain();
-		expect(await post("/run/begin", {
-			sessionId: "session-1", navGen: 1, loadGen: 1, controlGen: 1, commandId: "command-1",
-		})).toMatchObject({ ok: true });
-		expect(await post("/control/take-human", {
-			sessionId: "session-1", navGen: 1, viewerId: viewer.viewerId,
-		})).toMatchObject({ ok: true, control: "pausing" });
+		expect(
+			await post("/run/begin", {
+				sessionId: "session-1",
+				navGen: 1,
+				loadGen: 1,
+				controlGen: 1,
+				commandId: "command-1",
+			}),
+		).toMatchObject({ ok: true });
+		expect(
+			await post("/control/take-human", {
+				sessionId: "session-1",
+				navGen: 1,
+				viewerId: viewer.viewerId,
+			}),
+		).toMatchObject({ ok: true, control: "pausing" });
 		const record = structuredClone(stored.get("session")) as SessionRecord;
 		record.command!.connection = "settled";
 		stored.set("session", record);
 		newCDPSession.mockRejectedValueOnce(new Error("Producer attach failed"));
 
-		expect(await post("/run/finish", {
-			sessionId: "session-1", commandId: "command-1", tainted: false,
-			resultBytes: 0, fileCount: 0, fileBytes: 0, viewport: null,
-		})).toMatchObject({ ok: true, state: "ready" });
+		expect(
+			await post("/run/finish", {
+				sessionId: "session-1",
+				commandId: "command-1",
+				tainted: false,
+				resultBytes: 0,
+				fileCount: 0,
+				fileBytes: 0,
+				viewport: null,
+			}),
+		).toMatchObject({ ok: true, state: "human" });
 		await drain();
 		expect(viewer.socket.closed?.code).toBe(1011);
-		expect(stored.get("session")).toMatchObject({ control: "ready", inputHolder: null, command: null, commandCount: 1 });
+		expect(stored.get("session")).toMatchObject({
+			control: "human",
+			inputHolder: null,
+			command: null,
+			commandCount: 1,
+		});
 		expect(Object.keys((stored.get("session") as SessionRecord).viewers)).toHaveLength(0);
 	});
 
@@ -897,7 +1323,9 @@ describe("BrowserSession viewer stream", () => {
 		await vi.advanceTimersByTimeAsync(80_000);
 		await drain();
 		expect(viewer.socket.closed).toBeNull();
-		expect(await post("/viewer/renew", { sessionId: "session-1", viewerId: viewer.viewerId })).toMatchObject({ ok: true });
+		expect(await post("/viewer/renew", { sessionId: "session-1", viewerId: viewer.viewerId })).toMatchObject({
+			ok: true,
+		});
 	});
 
 	it("keeps a live viewer until the provider total deadline", async () => {
@@ -912,21 +1340,44 @@ describe("BrowserSession viewer stream", () => {
 		const sessionId = "00000000-0000-0000-0000-000000000009";
 		vi.spyOn(crypto, "randomUUID").mockReturnValue(sessionId);
 		vi.spyOn(Math, "random").mockReturnValue(0);
-		vi.stubGlobal("fetch", vi.fn(async () => new Response("<html></html>")));
-		const acquire = vi.spyOn(provider, "acquire").mockResolvedValue({ sessionId: "provider-2" } as Awaited<ReturnType<typeof provider.acquire>>);
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => new Response("<html></html>")),
+		);
+		const acquire = vi
+			.spyOn(provider, "acquire")
+			.mockResolvedValue({ sessionId: "provider-2" } as Awaited<ReturnType<typeof provider.acquire>>);
 		Object.assign(page, {
 			route: async () => {},
 			goto: async () => {},
 			waitForFunction: async () => {},
-			evaluate: async () => ({ url: "https://controller.browser.invalid/", ready: true, error: null, nonce: `${sessionId}-0` }),
+			evaluate: async () => ({
+				url: "https://controller.browser.invalid/",
+				ready: true,
+				error: null,
+				nonce: `${sessionId}-0`,
+			}),
 		});
-		expect(await post("/open", {
-			mode: "file", ...OWNERS, grantId: "admission-2", attemptId: "attempt-2", nodeId: "node_2", navGen: 2,
-			sourceKind: "saved", sourceVersion: "v1", sourceHash: "hash2", html: "<input />",
-			viewport: { width: 1280, height: 900 },
-		})).toMatchObject({ ok: true });
+		expect(
+			await post("/open", {
+				mode: "file",
+				...OWNERS,
+				grantId: "admission-2",
+				attemptId: "attempt-2",
+				nodeId: "node_2",
+				navGen: 2,
+				sourceKind: "saved",
+				sourceVersion: "v1",
+				sourceHash: "hash2",
+				html: "<input />",
+				viewport: { width: 1280, height: 900 },
+			}),
+		).toMatchObject({ ok: true });
 		// File mode keeps its egress guardrail: only esm.sh.
-		expect(acquire).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ guardrails: { allowedDomains: ["esm.sh"] } }));
+		expect(acquire).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.objectContaining({ guardrails: { allowedDomains: ["esm.sh"] } }),
+		);
 		expect(stored.get("session")).toMatchObject({ createdAt, providerAcquiredAt: createdAt + 1000 });
 
 		// Keep open refreshes idle expiry before a fresh viewer attaches near the total cap.
@@ -939,11 +1390,13 @@ describe("BrowserSession viewer stream", () => {
 		const grant = await post("/viewer/grant", { sessionId, navGen: 2 });
 		expect(grant).toMatchObject({ ok: true });
 		const socket = await open_socket();
-		socket.send(JSON.stringify({ ...OWNERS, grantId: grant.grantId, host: "docked" }));
+		socket.send(JSON.stringify({ ...OWNERS, mode: "file", grantId: grant.grantId, host: "docked" }));
 		await vi.waitFor(() => expect(messages(socket).some((message) => message.t === "hello")).toBe(true));
 		await drain();
 		const hello = messages(socket).find((message) => message.t === "hello");
-		expect(await post("/control/take-human", { sessionId, navGen: 2, viewerId: hello?.viewerId })).toMatchObject({ ok: true });
+		expect(await post("/control/take-human", { sessionId, navGen: 2, viewerId: hello?.viewerId })).toMatchObject({
+			ok: true,
+		});
 		await vi.advanceTimersByTimeAsync(500);
 		await drain();
 		expect(await post("/status", { sessionId })).toMatchObject({ ok: true, alive: true });
@@ -962,8 +1415,12 @@ describe("BrowserSession viewer stream", () => {
 		connect.mockImplementationOnce(() => connecting.promise);
 		const viewer = await attach();
 		await vi.waitFor(() => expect(connect).toHaveBeenCalledTimes(1));
-		expect(await post("/control/take-human", { sessionId: "session-1", navGen: 1, viewerId: viewer.viewerId })).toMatchObject({ ok: true });
-		viewer.socket.send(JSON.stringify({ t: "input", controlGen: 2, loadGen: 1, seq: 1, kind: "mouse.move", x: 10, y: 20 }));
+		expect(
+			await post("/control/take-human", { sessionId: "session-1", navGen: 1, viewerId: viewer.viewerId }),
+		).toMatchObject({ ok: true });
+		viewer.socket.send(
+			JSON.stringify({ t: "input", controlGen: 2, loadGen: 1, seq: 1, kind: "mouse.move", x: 10, y: 20 }),
+		);
 		await vi.advanceTimersByTimeAsync(1);
 		expect(await post("/close", { sessionId: "session-1" })).toMatchObject({ ok: true, verified: true });
 		expect(stored.has("session")).toBe(false);
@@ -972,18 +1429,36 @@ describe("BrowserSession viewer stream", () => {
 		const uuid = "00000000-0000-0000-0000-000000000009";
 		vi.spyOn(crypto, "randomUUID").mockReturnValue(uuid);
 		vi.spyOn(Math, "random").mockReturnValue(0);
-		vi.stubGlobal("fetch", vi.fn(async () => new Response("<html></html>")));
-		vi.spyOn(provider, "acquire").mockResolvedValue({ sessionId: "provider-2" } as Awaited<ReturnType<typeof provider.acquire>>);
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => new Response("<html></html>")),
+		);
+		vi.spyOn(provider, "acquire").mockResolvedValue({ sessionId: "provider-2" } as Awaited<
+			ReturnType<typeof provider.acquire>
+		>);
 		Object.assign(next.page, {
 			route: async () => {},
 			goto: async () => {},
 			waitForFunction: async () => {},
-			evaluate: async () => ({ url: "https://controller.browser.invalid/", ready: true, error: null, nonce: `${uuid}-0` }),
+			evaluate: async () => ({
+				url: "https://controller.browser.invalid/",
+				ready: true,
+				error: null,
+				nonce: `${uuid}-0`,
+			}),
 		});
 		connect.mockResolvedValue(next.browser as unknown as Awaited<ReturnType<typeof provider.connect>>);
 		const opened = await post("/open", {
-			mode: "file", ...OWNERS, grantId: "admission-2", attemptId: "attempt-2", nodeId: "node_2", navGen: 2,
-			sourceKind: "saved", sourceVersion: "v1", sourceHash: "hash2", html: "<input />",
+			mode: "file",
+			...OWNERS,
+			grantId: "admission-2",
+			attemptId: "attempt-2",
+			nodeId: "node_2",
+			navGen: 2,
+			sourceKind: "saved",
+			sourceVersion: "v1",
+			sourceHash: "hash2",
+			html: "<input />",
 			viewport: { width: 1280, height: 900 },
 		});
 		expect(opened).toMatchObject({ ok: true, session: { sessionId: uuid } });
@@ -1002,17 +1477,23 @@ describe("BrowserSession viewer stream", () => {
 		const { attach, drain, post, page, cdp, connect, stored, emit_frame, open_socket } = make_session();
 		const viewer = await attach();
 		await drain();
-		expect(await post("/control/take-human", { sessionId: "session-1", navGen: 1, viewerId: viewer.viewerId })).toMatchObject({ ok: true });
+		expect(
+			await post("/control/take-human", { sessionId: "session-1", navGen: 1, viewerId: viewer.viewerId }),
+		).toMatchObject({ ok: true });
 		const pendingInput = Promise.withResolvers<void>();
 		let resuming: Promise<Record<string, unknown>> | null = null;
 		if (phase === "pending input") page.mouse.down.mockImplementationOnce(() => pendingInput.promise);
-		viewer.socket.send(JSON.stringify({ t: "input", controlGen: 2, loadGen: 1, seq: 1, kind: "mouse.down", button: "left" }));
+		viewer.socket.send(
+			JSON.stringify({ t: "input", controlGen: 2, loadGen: 1, seq: 1, kind: "mouse.down", button: "left" }),
+		);
 		await vi.waitFor(() => expect(page.mouse.down).toHaveBeenCalledTimes(1));
 		if (phase === "pending input") {
 			cdp.send.mockRejectedValueOnce(new Error("Frame ACK failed"));
 			emit_frame(1);
 		} else {
-			await vi.waitFor(() => expect(messages(viewer.socket)).toContainEqual({ t: "input-ack", timings: TIMINGS, seq: 1, ok: true }));
+			await vi.waitFor(() =>
+				expect(messages(viewer.socket)).toContainEqual({ t: "input-ack", timings: TIMINGS, seq: 1, ok: true }),
+			);
 			page.mouse.up.mockImplementationOnce(() => pendingInput.promise);
 			resuming = post("/control/to-agent", { sessionId: "session-1", navGen: 1 });
 			await vi.waitFor(() => expect(page.mouse.up).toHaveBeenCalledTimes(1));
@@ -1024,23 +1505,43 @@ describe("BrowserSession viewer stream", () => {
 		const sessionId = "00000000-0000-0000-0000-000000000009";
 		vi.spyOn(crypto, "randomUUID").mockReturnValue(sessionId);
 		vi.spyOn(Math, "random").mockReturnValue(0);
-		vi.stubGlobal("fetch", vi.fn(async () => new Response("<html></html>")));
-		vi.spyOn(provider, "acquire").mockResolvedValue({ sessionId: "provider-2" } as Awaited<ReturnType<typeof provider.acquire>>);
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => new Response("<html></html>")),
+		);
+		vi.spyOn(provider, "acquire").mockResolvedValue({ sessionId: "provider-2" } as Awaited<
+			ReturnType<typeof provider.acquire>
+		>);
 		Object.assign(next.page, {
 			route: async () => {},
 			goto: async () => {},
 			waitForFunction: async () => {},
-			evaluate: async () => ({ url: "https://controller.browser.invalid/", ready: true, error: null, nonce: `${sessionId}-0` }),
+			evaluate: async () => ({
+				url: "https://controller.browser.invalid/",
+				ready: true,
+				error: null,
+				nonce: `${sessionId}-0`,
+			}),
 		});
 		connect.mockResolvedValue(next.browser as unknown as Awaited<ReturnType<typeof provider.connect>>);
-		expect(await post("/open", {
-			mode: "file", ...OWNERS, grantId: "admission-2", attemptId: "attempt-2", nodeId: "node_2", navGen: 2,
-			sourceKind: "saved", sourceVersion: "v1", sourceHash: "hash2", html: "<input />",
-			viewport: { width: 1280, height: 900 },
-		})).toMatchObject({ ok: true });
+		expect(
+			await post("/open", {
+				mode: "file",
+				...OWNERS,
+				grantId: "admission-2",
+				attemptId: "attempt-2",
+				nodeId: "node_2",
+				navGen: 2,
+				sourceKind: "saved",
+				sourceVersion: "v1",
+				sourceHash: "hash2",
+				html: "<input />",
+				viewport: { width: 1280, height: 900 },
+			}),
+		).toMatchObject({ ok: true });
 		const grant = await post("/viewer/grant", { sessionId, navGen: 2 });
 		const replacement = await open_socket();
-		replacement.send(JSON.stringify({ ...OWNERS, grantId: grant.grantId, host: "docked" }));
+		replacement.send(JSON.stringify({ ...OWNERS, mode: "file", grantId: grant.grantId, host: "docked" }));
 		await vi.waitFor(() => expect(next.cdp.send).toHaveBeenCalledWith("Page.startScreencast", expect.anything()));
 
 		// The old request finishes after the replacement viewer is connected.
@@ -1053,7 +1554,9 @@ describe("BrowserSession viewer stream", () => {
 		await drain();
 		expect(stored.get("session")).toMatchObject({ sessionId, control: "ready" });
 		const hello = messages(replacement).find((message) => message.t === "hello");
-		expect(await post("/control/take-human", { sessionId, navGen: 2, viewerId: hello?.viewerId })).toMatchObject({ ok: true });
+		expect(await post("/control/take-human", { sessionId, navGen: 2, viewerId: hello?.viewerId })).toMatchObject({
+			ok: true,
+		});
 		expect(next.page.mouse.up).not.toHaveBeenCalled();
 		expect(next.page.keyboard.up).not.toHaveBeenCalled();
 	});
@@ -1079,15 +1582,245 @@ describe("BrowserSession viewer stream", () => {
 });
 
 describe("BrowserSession web mode", () => {
-	function page_sends(mocked: { hostCdp: ReturnType<typeof make_cdp>; viewerCdps: Array<ReturnType<typeof make_cdp>> }) {
+	function tab_input(
+		record: Extract<SessionRecord, { mode: "web" }>,
+		operationId: string,
+		extra: Record<string, unknown> = {},
+	) {
+		return {
+			sessionId: record.sessionId,
+			operationId,
+			operationDeadline: Date.now() + 120_000,
+			source: { chatId: "chat", sourceMessageId: "message", toolCallId: operationId },
+			expectedAgentLease: {
+				navGen: record.tabs[record.tabId]!.navGen,
+				loadGen: record.loadGen,
+				controlGen: record.controlGen,
+				tabId: record.tabId,
+				tabGen: record.tabs[record.tabId]!.tabGen,
+				policyRevision: record.policyRevision,
+				selectionRevision: record.selectionRevision,
+			},
+			policyRevision: record.policyRevision,
+			selectionRevision: record.selectionRevision,
+			...extra,
+		};
+	}
+
+	it("creates one tab headlessly and replays its receipt without switching the viewer", async () => {
+		const { post, stored, newPage } = make_session({ web: true });
+		const initial = stored.get("session") as Extract<SessionRecord, { mode: "web" }>;
+		const input = tab_input(initial, "new-tab", { url: null });
+		const created = await post("/tab-new", input);
+		expect(created).toMatchObject({
+			ok: true,
+			status: "completed",
+			session: { tabCount: 2, viewedTabId: "tab-1", controlGen: 2 },
+			result: { cleanup: "complete" },
+		});
+		expect(newPage).toHaveBeenCalledOnce();
+		expect(await post("/tab-new", input)).toEqual(created);
+		expect(newPage).toHaveBeenCalledOnce();
+		expect(await post("/tab-new", { ...input, source: { ...input.source, toolCallId: "other" } })).toMatchObject({
+			ok: false,
+			error: { code: "operation_mismatch" },
+		});
+		expect(JSON.stringify(stored.get("session"))).not.toContain('"title"');
+		expect(JSON.stringify(stored.get("session"))).not.toContain('"url"');
+	});
+
+	it("keeps viewer selection separate from the command tab and refuses old view input", async () => {
+		const { post, stored, attach, drain, newPage, page } = make_session({ web: true });
+		const created = await post(
+			"/tab-new",
+			tab_input(stored.get("session") as Extract<SessionRecord, { mode: "web" }>, "new-tab", { url: null }),
+		);
+		const addedTabId = (created.result as { tabId: string }).tabId;
+		const first = await attach();
+		const second = await attach("detached");
+		await drain();
+		await post("/control/take-human", { sessionId: "session-1", navGen: 1, viewerId: first.viewerId });
+		expect(
+			await post("/tab-select", { sessionId: "session-1", tabId: addedTabId, viewerId: second.viewerId }),
+		).toMatchObject({ ok: false, error: { code: "control" } });
+		expect(
+			await post("/tab-select", { sessionId: "session-1", tabId: addedTabId, viewerId: first.viewerId }),
+		).toMatchObject({ ok: true, session: { viewedTabId: addedTabId, tabId: "tab-1", viewGen: 2 } });
+		await drain();
+		first.socket.send(
+			JSON.stringify({
+				t: "input",
+				tabId: "tab-1",
+				tabGen: 1,
+				viewGen: 1,
+				controlGen: 3,
+				loadGen: 1,
+				seq: 1,
+				kind: "mouse.move",
+				x: 10,
+				y: 20,
+			}),
+		);
+		expect(messages(first.socket)).toContainEqual({
+			t: "input-ack",
+			seq: 1,
+			ok: false,
+			code: "stale_view",
+			timings: TIMINGS,
+		});
+		expect(page.mouse.move).not.toHaveBeenCalled();
+		expect(newPage).toHaveBeenCalledOnce();
+	});
+
+	it("refuses a ninth tab and a blocked address before creating a native page", async () => {
+		const { post, stored, newPage } = make_session({ web: true });
+		const initial = stored.get("session") as Extract<SessionRecord, { mode: "web" }>;
+		expect(await post("/tab-new", tab_input(initial, "blocked", { url: "https://blocked.test/" }))).toMatchObject({
+			status: "refused",
+			result: { reason: "address_blocked", cleanup: "complete" },
+		});
+		const current = stored.get("session") as Extract<SessionRecord, { mode: "web" }>;
+		for (let index = 2; index <= 8; index += 1)
+			current.tabs[`tab-${index}`] = { ...current.tabs["tab-1"]!, targetId: `page-${index}` };
+		stored.set("session", current);
+		expect(await post("/tab-new", tab_input(current, "ninth", { url: null }))).toMatchObject({
+			status: "refused",
+			result: { reason: "tab_limit", cleanup: "complete" },
+		});
+		expect(newPage).not.toHaveBeenCalled();
+	});
+
+	it("closes the exact tab once and keeps the surviving viewer", async () => {
+		const { post, stored, newPage } = make_session({ web: true });
+		const created = await post(
+			"/tab-new",
+			tab_input(stored.get("session") as Extract<SessionRecord, { mode: "web" }>, "new-tab", { url: null }),
+		);
+		const tabId = (created.result as { tabId: string }).tabId;
+		const input = tab_input(stored.get("session") as Extract<SessionRecord, { mode: "web" }>, "close-tab", { tabId });
+		const closed = await post("/tab-close", input);
+		expect(closed).toMatchObject({
+			status: "completed",
+			session: { tabCount: 1, viewedTabId: "tab-1", controlGen: 3 },
+		});
+		expect(await post("/tab-close", input)).toEqual(closed);
+		expect((await newPage.mock.results[0]!.value).close).toHaveBeenCalledOnce();
+	});
+
+	it("keeps Agent access Off when native tab close replies later", async () => {
+		const { post, stored, newPage } = make_session({ web: true });
+		const created = await post(
+			"/tab-new",
+			tab_input(stored.get("session") as Extract<SessionRecord, { mode: "web" }>, "new-tab", { url: null }),
+		);
+		const tabId = (created.result as { tabId: string }).tabId;
+		const page = await newPage.mock.results[0]!.value;
+		const nativeClose = page.close.getMockImplementation()!;
+		const closing = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		page.close.mockImplementation(async () => {
+			closing.resolve();
+			await release.promise;
+			await nativeClose();
+		});
+		const pending = post(
+			"/tab-close",
+			tab_input(stored.get("session") as Extract<SessionRecord, { mode: "web" }>, "close-tab", { tabId }),
+		);
+		try {
+			await closing.promise;
+			expect(
+				await post("/agent-access", {
+					sessionId: "session-1",
+					on: false,
+					policyRevision: 1,
+					agentBlockedHosts: ["bank.test"],
+				}),
+			).toMatchObject({ ok: true, session: { agentAccess: false, policyRevision: 1 } });
+		} finally {
+			release.resolve();
+		}
+		expect(await pending).toMatchObject({
+			status: "completed",
+			session: { tabCount: 1, agentAccess: false, policyRevision: 1 },
+		});
+		expect(stored.get("session")).toMatchObject({
+			agentAccess: false,
+			policyRevision: 1,
+			agentBlockedHosts: ["bank.test"],
+			controlGen: 4,
+			command: null,
+		});
+	});
+
+	it("does not revive a retired session after native tab close replies", async () => {
+		const { post, stored, newPage } = make_session({ web: true });
+		const created = await post(
+			"/tab-new",
+			tab_input(stored.get("session") as Extract<SessionRecord, { mode: "web" }>, "new-tab", { url: null }),
+		);
+		const tabId = (created.result as { tabId: string }).tabId;
+		const page = await newPage.mock.results[0]!.value;
+		const nativeClose = page.close.getMockImplementation()!;
+		const closing = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		page.close.mockImplementation(async () => {
+			closing.resolve();
+			await release.promise;
+			await nativeClose();
+		});
+		const pending = post(
+			"/tab-close",
+			tab_input(stored.get("session") as Extract<SessionRecord, { mode: "web" }>, "close-tab", { tabId }),
+		);
+		try {
+			await closing.promise;
+			expect(await post("/close", { sessionId: "session-1", saveProfile: false })).toMatchObject({
+				ok: true,
+				verified: true,
+			});
+			expect(stored.get("session")).toBeUndefined();
+		} finally {
+			release.resolve();
+		}
+		expect(await pending).toMatchObject({ status: "unknown", session: null, result: { cleanup: "complete" } });
+		expect(stored.get("session")).toBeUndefined();
+	});
+
+	it("refuses human input before the viewer has received a frame", async () => {
+		const { post, attach, drain, page } = make_session({ web: true });
+		const viewer = await attach();
+		await drain();
+		await post("/control/take-human", { sessionId: "session-1", navGen: 1, viewerId: viewer.viewerId });
+		viewer.socket.frameReady = null;
+		viewer.socket.send(
+			JSON.stringify({ t: "input", controlGen: 2, loadGen: 1, seq: 1, kind: "mouse.move", x: 10, y: 20 }),
+		);
+		expect(messages(viewer.socket)).toContainEqual({
+			t: "input-ack",
+			seq: 1,
+			ok: false,
+			code: "stale_view",
+			timings: TIMINGS,
+		});
+		expect(page.mouse.move).not.toHaveBeenCalled();
+	});
+
+	function page_sends(mocked: {
+		hostCdp: ReturnType<typeof make_cdp>;
+		viewerCdps: Array<ReturnType<typeof make_cdp>>;
+	}) {
 		return [mocked.hostCdp, ...mocked.viewerCdps].flatMap((cdp) => cdp.send.mock.calls);
 	}
 
-	function make_popup(url: string, lateUrl?: string) {
+	function make_popup(url: string, lateUrl?: string, opener: unknown = null) {
 		let current = url;
 		return Object.assign(new EventEmitter(), {
 			url: () => current,
-			waitForURL: vi.fn(async () => { if (lateUrl) current = lateUrl; }),
+			opener: async () => opener,
+			waitForURL: vi.fn(async () => {
+				if (lateUrl) current = lateUrl;
+			}),
 			close: vi.fn(async () => {}),
 			isClosed: () => false,
 		});
@@ -1097,26 +1830,261 @@ describe("BrowserSession web mode", () => {
 		const mocked = make_session();
 		const { post, stored } = mocked;
 		stored.clear();
-		const acquire = vi.spyOn(provider, "acquire").mockResolvedValue({ sessionId: "provider-2" } as Awaited<ReturnType<typeof provider.acquire>>);
+		const acquire = vi
+			.spyOn(provider, "acquire")
+			.mockResolvedValue({ sessionId: "provider-2" } as Awaited<ReturnType<typeof provider.acquire>>);
 		const opened = await post("/open", {
-			mode: "web", ...OWNERS, grantId: "admission-2", attemptId: "attempt-2", navGen: 1,
-			startUrl: "Example.com/start", agentAccess: true, ...PROFILE, viewport: { width: 1280, height: 900 },
+			mode: "web",
+			...OWNERS,
+			grantId: "admission-2",
+			attemptId: "attempt-2",
+			navGen: 1,
+			startUrl: "Example.com/start",
+			agentAccess: true,
+			...PROFILE,
+			viewport: { width: 1280, height: 900 },
 		});
 		expect(acquire).toHaveBeenCalledWith(expect.anything(), { keep_alive: LIMITS.keepAliveMs, recording: false });
-		expect(opened).toMatchObject({ ok: true, session: { mode: "web", navGen: 1, loadGen: 1, control: "ready", agentAccess: true } });
+		expect(opened).toMatchObject({
+			ok: true,
+			session: { mode: "web", navGen: 1, loadGen: 1, control: "ready", agentAccess: true },
+		});
 		expect(Object.keys(opened.session as object).sort()).toEqual([
-			"agentAccess", "commandCount", "control", "controlGen", "idleUntil", "loadGen", "mode", "navGen", "pageNonce", "sessionId", "totalUntil",
+			"agentAccess",
+			"commandCount",
+			"control",
+			"controlGen",
+			"idleUntil",
+			"loadGen",
+			"mode",
+			"navGen",
+			"pageNonce",
+			"policyRevision",
+			"selectionRevision",
+			"sessionId",
+			"tabCount",
+			"tabGen",
+			"tabId",
+			"totalUntil",
+			"viewGen",
+			"viewedTabId",
 		]);
 		expect(page_sends(mocked)).toContainEqual(["Page.navigate", { url: "https://example.com/start" }]);
 		expect(page_sends(mocked)).toContainEqual(["Page.setInterceptFileChooserDialog", { enabled: true }]);
 		// The first load already uses the session size.
 		const navigateOrder = [mocked.hostCdp, ...mocked.viewerCdps].flatMap(({ send }) =>
-			send.mock.calls.flatMap(([method], index) => (method === "Page.navigate" ? [send.mock.invocationCallOrder[index]!] : [])));
+			send.mock.calls.flatMap(([method], index) =>
+				method === "Page.navigate" ? [send.mock.invocationCallOrder[index]!] : [],
+			),
+		);
 		expect(navigateOrder).toHaveLength(1);
 		expect(mocked.page.setViewportSize).toHaveBeenCalledWith({ width: 1280, height: 900 });
 		expect(mocked.page.setViewportSize.mock.invocationCallOrder[0]).toBeLessThan(navigateOrder[0]!);
-		expect(stored.get("session")).toMatchObject({ mode: "web", control: "ready", providerSessionId: "provider-2", pageTargetId: "page-1" });
+		expect(stored.get("session")).toMatchObject({
+			mode: "web",
+			control: "ready",
+			providerSessionId: "provider-2",
+			tabs: { [String((opened.session as Record<string, unknown>).tabId)]: { targetId: "page-1" } },
+		});
 		expect((stored.get("session") as { pageNonce: unknown }).pageNonce).toEqual(expect.any(String));
+	});
+
+	it.each([false, true])(
+		"keeps web viewer controls usable after Open with another preferred agent tab (%s)",
+		async (anotherTab) => {
+			const mocked = make_session({ web: true });
+			mocked.stored.clear();
+			vi.spyOn(provider, "acquire").mockResolvedValue({ sessionId: "provider-2" } as Awaited<
+				ReturnType<typeof provider.acquire>
+			>);
+			mocked.page.goto.mockImplementationOnce(async (url) => {
+				await mocked.cdp.send("Page.navigate", { url });
+				mocked.page.emit("framenavigated", mocked.page.mainFrame());
+				return null;
+			});
+			const opened = await mocked.post("/open", {
+				mode: "web",
+				...OWNERS,
+				grantId: "admission-2",
+				attemptId: "attempt-2",
+				navGen: 1,
+				startUrl: "https://example.com/start",
+				agentAccess: true,
+				...PROFILE,
+				viewport: { width: 1280, height: 900 },
+			});
+			const session = opened.session as { sessionId: string; navGen: number; tabId: string };
+			expect(session.navGen).toBe(2);
+			let preferredNavGen = session.navGen;
+			if (anotherTab) {
+				const created = await mocked.post(
+					"/tab-new",
+					tab_input(mocked.stored.get("session") as Extract<SessionRecord, { mode: "web" }>, "preferred-agent-tab", {
+						url: null,
+					}),
+				);
+				expect(created.status).toBe("completed");
+				const page = await mocked.newPage.mock.results[0]!.value;
+				page.emit("framenavigated", page.mainFrame());
+				page.emit("framenavigated", page.mainFrame());
+				await mocked.drain();
+				preferredNavGen = 3;
+			}
+			expect(
+				await mocked.post("/keep-open", { sessionId: session.sessionId, navGen: preferredNavGen }),
+				"Keep open must use web session identity, not the file source generation",
+			).toMatchObject({ ok: true });
+			const grant = await mocked.post("/viewer/grant", { sessionId: session.sessionId, navGen: preferredNavGen });
+			expect(grant, "A committed web tab must receive a viewer grant").toMatchObject({ ok: true });
+			const socket = await mocked.open_socket();
+			socket.send(JSON.stringify({ ...OWNERS, mode: "web", grantId: grant.grantId, host: "docked" }));
+			await vi.waitFor(() => expect(messages(socket).some((message) => message.t === "hello")).toBe(true));
+			const hello = messages(socket).find((message) => message.t === "hello")!;
+			expect(hello).toMatchObject({ mode: "web", viewedTabId: session.tabId, tabGen: 2 });
+			const taken = await mocked.post("/control/take-human", {
+				sessionId: session.sessionId,
+				navGen: preferredNavGen,
+				viewerId: hello.viewerId,
+			});
+			expect(taken).toMatchObject({ ok: true, control: "human" });
+			expect(
+				await mocked.post("/control/to-agent", {
+					sessionId: session.sessionId,
+					navGen: preferredNavGen,
+					controlGen: Number(taken.controlGen) - 1,
+				}),
+			).toMatchObject({ ok: false, error: { code: "stale_control" } });
+			expect(
+				await mocked.post("/control/to-agent", {
+					sessionId: session.sessionId,
+					navGen: preferredNavGen,
+					controlGen: taken.controlGen,
+				}),
+			).toMatchObject({ ok: true, control: "ready" });
+			await mocked.drain();
+		},
+	);
+
+	it.each(["Open", "New tab"])("settles the initial %s navigation while the page still loads", async (operation) => {
+		const mocked = make_session({ web: operation === "New tab" });
+		const address = "https://example.com/start";
+		const committed = Promise.withResolvers<void>();
+		const saveStarted = Promise.withResolvers<void>();
+		const saveReleased = Promise.withResolvers<void>();
+		let nativePage: { emit: (event: string, frame: object) => boolean; mainFrame: () => object } = mocked.page;
+		const nativeCommit = committed.promise.then(() => {
+			mocked.viewerCdps
+				.at(-1)!
+				.emit("Page.frameStartedLoading", { frameId: operation === "Open" ? "page-1" : "page-2" });
+			nativePage.emit("framenavigated", nativePage.mainFrame());
+		});
+		const put = mocked.put.getMockImplementation()!;
+		mocked.put.mockImplementation(async (key, value) => {
+			const record = value as SessionRecord;
+			if (key === "session" && record.mode === "web" && Object.values(record.tabs).some((tab) => tab.navGen === 2)) {
+				saveStarted.resolve();
+				await saveReleased.promise;
+			}
+			await put(key, value);
+		});
+		mocked.page.goto.mockImplementation(async (url, options) => {
+			expect(options).toEqual({ waitUntil: "commit", timeout: LIMITS.openNavWallMs });
+			await mocked.cdp.send("Page.navigate", { url });
+			await nativeCommit;
+			return null;
+		});
+		const newPage = mocked.newPage.getMockImplementation()!;
+		mocked.newPage.mockImplementation(async () => {
+			const candidate = await newPage();
+			nativePage = candidate;
+			candidate.goto.mockImplementation(async (url, options) => {
+				expect(options).toEqual({ waitUntil: "commit", timeout: LIMITS.navWallMs });
+				await mocked.viewerCdps.at(-1)!.send("Page.navigate", { url });
+				await nativeCommit;
+				return null;
+			});
+			return candidate;
+		});
+		let pending: Promise<Record<string, unknown>>;
+		if (operation === "Open") {
+			mocked.stored.clear();
+			vi.spyOn(provider, "acquire").mockResolvedValue({ sessionId: "provider-2" } as Awaited<
+				ReturnType<typeof provider.acquire>
+			>);
+			pending = mocked.post("/open", {
+				mode: "web",
+				...OWNERS,
+				grantId: "admission-2",
+				attemptId: "attempt-2",
+				navGen: 1,
+				startUrl: address,
+				agentAccess: true,
+				...PROFILE,
+				viewport: { width: 1280, height: 900 },
+			});
+		} else
+			pending = mocked.post(
+				"/tab-new",
+				tab_input(mocked.stored.get("session") as Extract<SessionRecord, { mode: "web" }>, "new-tab-url", {
+					url: address,
+				}),
+			);
+		let finished = false;
+		pending = pending.then((reply) => {
+			finished = true;
+			return reply;
+		});
+		try {
+			await vi.waitFor(() => expect(page_sends(mocked)).toContainEqual(["Page.navigate", { url: address }]));
+			await vi.advanceTimersByTimeAsync(10);
+			expect(finished, "A navigation ACK must not finish before the initial document commits").toBe(false);
+			committed.resolve();
+			await saveStarted.promise;
+			await vi.advanceTimersByTimeAsync(10);
+			expect(finished, "The initial navigation generation save must finish before the reply").toBe(false);
+		} finally {
+			committed.resolve();
+			saveReleased.resolve();
+		}
+		const reply = await pending;
+		await mocked.drain();
+		if (operation === "Open")
+			expect(reply).toMatchObject({ ok: true, session: { control: "ready", navGen: 2, tabGen: 2 } });
+		else {
+			expect(reply).toMatchObject({ ok: true, status: "completed", result: { cleanup: "complete" } });
+			expect(reply.tabs).toContainEqual(
+				expect.objectContaining({ tabId: (reply.result as { tabId: string }).tabId, navGen: 2, tabGen: 2 }),
+			);
+		}
+		const session = mocked.stored.get("session") as Extract<SessionRecord, { mode: "web" }>;
+		expect(Object.values(session.tabs)).toContainEqual(expect.objectContaining({ navGen: 2, tabGen: 2 }));
+	});
+
+	it.each(["fails", "times out"])("keeps Open usable when the initial site %s", async (outcome) => {
+		const mocked = make_session();
+		mocked.stored.clear();
+		vi.spyOn(provider, "acquire").mockResolvedValue({ sessionId: "provider-2" } as Awaited<
+			ReturnType<typeof provider.acquire>
+		>);
+		mocked.page.goto.mockImplementationOnce(() =>
+			outcome === "fails" ? Promise.reject(new Error("Navigation failed")) : new Promise(() => {}),
+		);
+		const pending = mocked.post("/open", {
+			mode: "web",
+			...OWNERS,
+			grantId: "admission-2",
+			attemptId: "attempt-2",
+			navGen: 1,
+			startUrl: "https://example.com/start",
+			agentAccess: true,
+			...PROFILE,
+			viewport: { width: 1280, height: 900 },
+		});
+		await vi.waitFor(() => expect(mocked.page.goto).toHaveBeenCalledOnce());
+		if (outcome === "times out") await vi.advanceTimersByTimeAsync(LIMITS.openNavWallMs);
+		expect(await pending).toMatchObject({ ok: true, session: { control: "ready", navGen: 1, tabGen: 1 } });
+		expect(mocked.stored.get("session")).toMatchObject({ control: "ready", providerSessionId: "provider-2" });
+		expect(mocked.hostCdp.send.mock.calls.some(([method]) => method === "Browser.close")).toBe(false);
 	});
 
 	it("refuses a blocked start address before acquiring a browser", async () => {
@@ -1124,8 +2092,15 @@ describe("BrowserSession web mode", () => {
 		stored.clear();
 		const acquire = vi.spyOn(provider, "acquire");
 		const opened = await post("/open", {
-			mode: "web", ...OWNERS, grantId: "admission-2", attemptId: "attempt-2", navGen: 1,
-			startUrl: "https://www.blocked.test/login", agentAccess: true, ...PROFILE, viewport: { width: 1280, height: 900 },
+			mode: "web",
+			...OWNERS,
+			grantId: "admission-2",
+			attemptId: "attempt-2",
+			navGen: 1,
+			startUrl: "https://www.blocked.test/login",
+			agentAccess: true,
+			...PROFILE,
+			viewport: { width: 1280, height: 900 },
 		});
 		expect(opened).toMatchObject({ ok: false, error: { code: "address_blocked" } });
 		expect(acquire).not.toHaveBeenCalled();
@@ -1135,60 +2110,126 @@ describe("BrowserSession web mode", () => {
 	it("closes the browser, releases the grant, and writes a receipt when the open fails after acquire", async () => {
 		const { post, stored, connect, browser, hostCdp, registryFetch } = make_session();
 		stored.clear();
-		vi.spyOn(provider, "acquire").mockResolvedValue({ sessionId: "provider-2" } as Awaited<ReturnType<typeof provider.acquire>>);
+		vi.spyOn(provider, "acquire").mockResolvedValue({ sessionId: "provider-2" } as Awaited<
+			ReturnType<typeof provider.acquire>
+		>);
 		// The acquire check connects once. Then the host connection fails.
-		connect.mockResolvedValueOnce(browser as unknown as Awaited<ReturnType<typeof provider.connect>>)
+		connect
+			.mockResolvedValueOnce(browser as unknown as Awaited<ReturnType<typeof provider.connect>>)
 			.mockRejectedValueOnce(new Error("Provider socket lost"));
 		const opened = await post("/open", {
-			mode: "web", ...OWNERS, grantId: "admission-2", attemptId: "attempt-2", navGen: 1,
-			startUrl: "https://example.com/start", agentAccess: true, ...PROFILE, viewport: { width: 1280, height: 900 },
+			mode: "web",
+			...OWNERS,
+			grantId: "admission-2",
+			attemptId: "attempt-2",
+			navGen: 1,
+			startUrl: "https://example.com/start",
+			agentAccess: true,
+			...PROFILE,
+			viewport: { width: 1280, height: 900 },
 		});
 		expect(opened).toMatchObject({ ok: false, error: { code: "bootstrap_failed" } });
 		expect(hostCdp.send).toHaveBeenCalledWith("Browser.close", {});
-		const registryCalls = await Promise.all(registryFetch.mock.calls.map(async ([request]) => [new URL(request.url).pathname, await request.json()]));
+		const registryCalls = await Promise.all(
+			registryFetch.mock.calls.map(async ([request]) => [new URL(request.url).pathname, await request.json()]),
+		);
 		expect(registryCalls).toEqual([["/release", { grantId: "admission-2" }]]);
 		expect(stored.has("session")).toBe(false);
 		// Convex never learns this session id, but the provider time is still on record.
 		const receipts = [...stored].filter(([key]) => key.startsWith("usage:")).map(([, value]) => value);
-		expect(receipts).toEqual([{ sessionId: expect.any(String), providerAcquiredAt: Date.now(), endedAt: Date.now(), reason: "open_failed" }]);
+		expect(receipts).toEqual([
+			{ sessionId: expect.any(String), providerAcquiredAt: Date.now(), endedAt: Date.now(), reason: "open_failed" },
+		]);
 	});
 
 	it("keeps the session and loadGen on navigation, pushes location, and does not extend idle", async () => {
-		const { attach, drain, hostCdp, stored, put } = make_session({ web: true });
+		const { attach, drain, hostCdp, page, stored, put } = make_session({ web: true });
 		const viewer = await attach();
 		await drain();
-		await vi.waitFor(() => expect(messages(viewer.socket).filter((message) => message.t === "location")).toHaveLength(1));
-		expect(messages(viewer.socket)).toContainEqual({ t: "agent-access", on: true });
+		await vi.waitFor(() =>
+			expect(messages(viewer.socket).filter((message) => message.t === "location")).toHaveLength(1),
+		);
+		expect(messages(viewer.socket)).toContainEqual({
+			t: "agent-access",
+			tabId: "tab-1",
+			tabGen: 1,
+			viewGen: 1,
+			on: true,
+		});
 		const before = structuredClone(stored.get("session")) as SessionRecord;
 		put.mockClear();
 		await vi.advanceTimersByTimeAsync(1000);
 
-		hostCdp.send.mockImplementation(async (method: string) => method === "Page.getNavigationHistory"
-			? { currentIndex: 1, entries: [{ id: 1, url: "https://example.com/", title: "Example" }, { id: 2, url: "https://example.com/next", title: "T".repeat(2000) }] }
-			: {});
-		hostCdp.emit("Page.frameNavigated", { frame: { id: "child", parentId: "page-1", url: "https://ads.example/" } });
-		hostCdp.emit("Page.frameNavigated", { frame: { id: "page-1", url: "https://example.com/next" } });
+		hostCdp.send.mockImplementation(async (method: string) =>
+			method === "Page.getNavigationHistory"
+				? {
+						currentIndex: 1,
+						entries: [
+							{ id: 1, url: "https://example.com/", title: "Example" },
+							{ id: 2, url: "https://example.com/next", title: "T".repeat(2000) },
+						],
+					}
+				: {},
+		);
+		page.emit("framenavigated", { url: () => "https://ads.example/", parentFrame: () => page.mainFrame() });
+		page.emit("framenavigated", page.mainFrame());
 		await drain();
 		const locations = messages(viewer.socket).filter((message) => message.t === "location");
 		expect(locations).toHaveLength(2);
 		expect(locations.at(-1)).toEqual({
-			t: "location", url: "https://example.com/next", title: "T".repeat(LIMITS.titleChars), loading: false, canGoBack: true, canGoForward: false,
+			tabId: "tab-1",
+			tabGen: 2,
+			viewGen: 1,
+			t: "location",
+			url: "https://example.com/next",
+			title: "T".repeat(LIMITS.titleChars),
+			loading: false,
+			canGoBack: true,
+			canGoForward: false,
 		});
 		hostCdp.emit("Page.frameStartedLoading", { frameId: "page-1" });
 		await drain();
-		expect(messages(viewer.socket).filter((message) => message.t === "location").at(-1)).toMatchObject({ loading: true });
+		expect(
+			messages(viewer.socket)
+				.filter((message) => message.t === "location")
+				.at(-1),
+		).toMatchObject({ loading: true });
 
-		expect(put).not.toHaveBeenCalled();
-		expect(stored.get("session")).toMatchObject({ control: "ready", loadGen: before.loadGen, lastActiveAt: before.lastActiveAt });
+		expect(put).toHaveBeenCalled();
+		expect(stored.get("session")).toMatchObject({
+			control: "ready",
+			loadGen: before.loadGen,
+			lastActiveAt: before.lastActiveAt,
+			tabs: { "tab-1": { navGen: 2, tabGen: 2 } },
+		});
 		expect(viewer.socket.closed).toBeNull();
+	});
+
+	it("advances only the main tab lease for same-document navigation", async () => {
+		const { attach, drain, page, stored } = make_session({ web: true });
+		await attach();
+		await drain();
+		const before = structuredClone(stored.get("session")) as SessionRecord;
+		page.emit("framenavigated", { url: () => "https://child.test/#next", parentFrame: () => page.mainFrame() });
+		await drain();
+		expect(stored.get("session")).toMatchObject({ tabs: { "tab-1": { navGen: 1, tabGen: 1 } } });
+		page.emit("framenavigated", page.mainFrame());
+		await drain();
+		expect(stored.get("session")).toMatchObject({
+			tabs: { "tab-1": { navGen: 2, tabGen: 2 } },
+			lastActiveAt: before.lastActiveAt,
+			loadGen: before.loadGen,
+		});
 	});
 
 	it("runs address bar actions only for the controller and checks each address", async () => {
 		const { attach, drain, post, hostCdp, stored } = make_session({ web: true });
 		const viewer = await attach();
 		await drain();
-		const nav = (seq: number, body: Record<string, unknown>) => viewer.socket.send(JSON.stringify({ t: "nav", seq, controlGen: 2, ...body }));
-		const ack = (seq: number) => messages(viewer.socket).find((message) => message.t === "nav-ack" && message.seq === seq);
+		const nav = (seq: number, body: Record<string, unknown>) =>
+			viewer.socket.send(JSON.stringify({ t: "nav", seq, controlGen: 2, ...body }));
+		const ack = (seq: number) =>
+			messages(viewer.socket).find((message) => message.t === "nav-ack" && message.seq === seq);
 
 		// Not the controller yet.
 		nav(1, { action: "go", url: "example.com" });
@@ -1230,10 +2271,17 @@ describe("BrowserSession web mode", () => {
 		// `Page.navigate` answers only when the new page commits. This slow site never commits.
 		const send = hostCdp.send.getMockImplementation()!;
 		hostCdp.send.mockImplementation((method: string, params?: unknown) =>
-			method === "Page.navigate" ? new Promise<Record<string, unknown>>(() => {}) : send(method, params));
-		viewer.socket.send(JSON.stringify({ t: "nav", seq: 1, controlGen: 2, action: "go", url: "https://example.com/slow" }));
-		viewer.socket.send(JSON.stringify({ t: "nav", seq: 2, controlGen: 2, action: "go", url: "https://example.com/slower" }));
-		await vi.waitFor(() => expect(hostCdp.send.mock.calls.filter(([method]) => method === "Page.navigate")).toHaveLength(1));
+			method === "Page.navigate" ? new Promise<Record<string, unknown>>(() => {}) : send(method, params),
+		);
+		viewer.socket.send(
+			JSON.stringify({ t: "nav", seq: 1, controlGen: 2, action: "go", url: "https://example.com/slow" }),
+		);
+		viewer.socket.send(
+			JSON.stringify({ t: "nav", seq: 2, controlGen: 2, action: "go", url: "https://example.com/slower" }),
+		);
+		await vi.waitFor(() =>
+			expect(hostCdp.send.mock.calls.filter(([method]) => method === "Page.navigate")).toHaveLength(1),
+		);
 
 		const resumed = post("/control/to-agent", { sessionId: "session-1", navGen: 1 });
 		await vi.advanceTimersByTimeAsync(12_000);
@@ -1243,7 +2291,10 @@ describe("BrowserSession web mode", () => {
 		// Resume waits only for the running nav, whose 5 s wall started first. The queued nav is
 		// refused without running, so two slow navs do not add up.
 		const acks = messages(viewer.socket).filter((message) => message.t === "nav-ack");
-		expect(acks).toEqual([{ t: "nav-ack", seq: 1, ok: true }, { t: "nav-ack", seq: 2, ok: false, code: "not_controller" }]);
+		expect(acks).toEqual([
+			{ t: "nav-ack", seq: 1, ok: true },
+			{ t: "nav-ack", seq: 2, ok: false, code: "not_controller" },
+		]);
 		expect(hostCdp.send.mock.calls.filter(([method]) => method === "Page.navigate")).toHaveLength(1);
 	});
 
@@ -1253,7 +2304,9 @@ describe("BrowserSession web mode", () => {
 		await drain();
 		await post("/control/take-human", { sessionId: "session-1", navGen: 1, viewerId: viewer.viewerId });
 		viewer.socket.send(JSON.stringify({ t: "nav", seq: 1, controlGen: 2, action: "reload" }));
-		await vi.waitFor(() => expect(messages(viewer.socket)).toContainEqual({ t: "nav-ack", seq: 1, ok: false, code: "bad_request" }));
+		await vi.waitFor(() =>
+			expect(messages(viewer.socket)).toContainEqual({ t: "nav-ack", seq: 1, ok: false, code: "bad_request" }),
+		);
 	});
 
 	it("inserts pasted text with one call and ignores text over the cap", async () => {
@@ -1261,52 +2314,134 @@ describe("BrowserSession web mode", () => {
 		const viewer = await attach();
 		await drain();
 		await post("/control/take-human", { sessionId: "session-1", navGen: 1, viewerId: viewer.viewerId });
-		viewer.socket.send(JSON.stringify({ t: "input", controlGen: 2, loadGen: 1, seq: 1, kind: "text.insert", text: "x".repeat(LIMITS.textInsertChars + 1) }));
-		viewer.socket.send(JSON.stringify({ t: "input", controlGen: 2, loadGen: 1, seq: 2, kind: "text.insert", text: "hello world" }));
-		await vi.waitFor(() => expect(messages(viewer.socket)).toContainEqual({ t: "input-ack", timings: TIMINGS, seq: 2, ok: true }));
+		viewer.socket.send(
+			JSON.stringify({
+				t: "input",
+				controlGen: 2,
+				loadGen: 1,
+				seq: 1,
+				kind: "text.insert",
+				text: "x".repeat(LIMITS.textInsertChars + 1),
+			}),
+		);
+		viewer.socket.send(
+			JSON.stringify({ t: "input", controlGen: 2, loadGen: 1, seq: 2, kind: "text.insert", text: "hello world" }),
+		);
+		await vi.waitFor(() =>
+			expect(messages(viewer.socket)).toContainEqual({ t: "input-ack", timings: TIMINGS, seq: 2, ok: true }),
+		);
 		expect(messages(viewer.socket).some((message) => message.t === "input-ack" && message.seq === 1)).toBe(false);
 		expect(page.keyboard.insertText).toHaveBeenCalledTimes(1);
 		expect(page.keyboard.insertText).toHaveBeenCalledWith("hello world");
 		expect(page.keyboard.type).not.toHaveBeenCalled();
 	});
 
-	it("opens a human popup in the main page", async () => {
-		const { attach, drain, context, hostCdp } = make_session({ web: true });
+	it("registers a human popup as a new tab", async () => {
+		const { attach, drain, context, hostCdp, page, post, stored, add_page } = make_session({ web: true });
 		const viewer = await attach();
 		await drain();
-		const popup = make_popup("about:blank", "https://example.com/popup");
+		await post("/control/take-human", { sessionId: "session-1", navGen: 1, viewerId: viewer.viewerId });
+		viewer.socket.send(
+			JSON.stringify({
+				t: "input",
+				controlGen: 2,
+				loadGen: 1,
+				seq: 1,
+				kind: "mouse.click",
+				x: 10,
+				y: 20,
+				button: "left",
+			}),
+		);
+		await vi.waitFor(() =>
+			expect(messages(viewer.socket)).toContainEqual({ t: "input-ack", timings: TIMINGS, seq: 1, ok: true }),
+		);
+		const popup = Object.assign(make_popup("about:blank", "https://example.com/popup", page), {
+			context: () => context,
+			mainFrame: () => ({ url: () => "https://example.com/popup", parentFrame: () => null }),
+			setViewportSize: vi.fn(async () => {}),
+			mouse: page.mouse,
+			keyboard: page.keyboard,
+		});
+		add_page(popup);
 		context.emit("page", popup);
 		await drain();
 		expect(popup.waitForURL).toHaveBeenCalledOnce();
-		expect(popup.close).toHaveBeenCalledOnce();
-		expect(hostCdp.send).toHaveBeenCalledWith("Page.navigate", { url: "https://example.com/popup" });
-		expect(messages(viewer.socket)).toContainEqual({ t: "notice", code: "popup_opened_here" });
+		expect(popup.close).not.toHaveBeenCalled();
+		expect(hostCdp.send).not.toHaveBeenCalledWith("Page.navigate", expect.anything());
+		const record = stored.get("session") as Extract<SessionRecord, { mode: "web" }>;
+		expect(Object.keys(record.tabs)).toHaveLength(2);
+		expect(record.viewedTabId).not.toBe("tab-1");
+		expect(record.tabId).toBe("tab-1");
+		expect(messages(viewer.socket)).toContainEqual({
+			t: "notice",
+			tabId: record.viewedTabId,
+			tabGen: 1,
+			viewGen: 2,
+			code: "popup_opened_here",
+		});
 	});
 
 	it("only closes a popup while an agent command runs", async () => {
 		const { attach, drain, post, context, hostCdp } = make_session({ web: true });
 		const viewer = await attach();
 		await drain();
-		expect(await post("/run/begin", { sessionId: "session-1", navGen: 1, loadGen: 1, controlGen: 1, commandId: "command-1" })).toMatchObject({ ok: true });
+		expect(
+			await post("/run/begin", {
+				sessionId: "session-1",
+				navGen: 1,
+				loadGen: 1,
+				controlGen: 1,
+				commandId: "command-1",
+			}),
+		).toMatchObject({ ok: true });
 		const popup = make_popup("https://example.com/popup");
 		context.emit("page", popup);
 		await drain();
 		expect(popup.close).toHaveBeenCalledOnce();
 		expect(popup.waitForURL).not.toHaveBeenCalled();
 		expect(hostCdp.send.mock.calls.filter(([method]) => method === "Page.navigate")).toEqual([]);
-		expect(messages(viewer.socket)).toContainEqual({ t: "notice", code: "popup_closed" });
+		expect(messages(viewer.socket)).toContainEqual({
+			t: "notice",
+			tabId: "tab-1",
+			tabGen: 1,
+			viewGen: 1,
+			code: "popup_closed",
+		});
 	});
 
 	it("closes a popup to a blocked host without following it", async () => {
-		const { attach, drain, context, hostCdp } = make_session({ web: true });
+		const { attach, drain, context, hostCdp, page, post } = make_session({ web: true });
 		const viewer = await attach();
 		await drain();
-		const popup = make_popup("https://blocked.test/steal");
+		await post("/control/take-human", { sessionId: "session-1", navGen: 1, viewerId: viewer.viewerId });
+		viewer.socket.send(
+			JSON.stringify({
+				t: "input",
+				controlGen: 2,
+				loadGen: 1,
+				seq: 1,
+				kind: "mouse.click",
+				x: 10,
+				y: 20,
+				button: "left",
+			}),
+		);
+		await vi.waitFor(() =>
+			expect(messages(viewer.socket)).toContainEqual({ t: "input-ack", timings: TIMINGS, seq: 1, ok: true }),
+		);
+		const popup = make_popup("https://blocked.test/steal", undefined, page);
 		context.emit("page", popup);
 		await drain();
 		expect(popup.close).toHaveBeenCalledOnce();
 		expect(hostCdp.send.mock.calls.filter(([method]) => method === "Page.navigate")).toEqual([]);
-		expect(messages(viewer.socket)).toContainEqual({ t: "notice", code: "address_blocked" });
+		expect(messages(viewer.socket)).toContainEqual({
+			t: "notice",
+			tabId: "tab-1",
+			tabGen: 1,
+			viewGen: 1,
+			code: "address_blocked",
+		});
 	});
 
 	it("cancels file choosers and tells the viewer", async () => {
@@ -1314,22 +2449,41 @@ describe("BrowserSession web mode", () => {
 		const viewer = await attach();
 		await drain();
 		hostCdp.emit("Page.fileChooserOpened", { frameId: "page-1", mode: "selectSingle" });
-		expect(messages(viewer.socket)).toContainEqual({ t: "notice", code: "upload_unsupported" });
+		expect(messages(viewer.socket)).toContainEqual({
+			t: "notice",
+			tabId: "tab-1",
+			tabGen: 1,
+			viewGen: 1,
+			code: "upload_unsupported",
+		});
 	});
 
 	it("keeps the assigned page and closes other pages on reconnect", async () => {
 		const { attach, drain, hostCdp, stored } = make_session({ web: true });
+		let extraPage = true;
 		hostCdp.send.mockImplementation(async (method: string) =>
-			method === "Target.getTargetInfo" ? { targetInfo: { targetId: "page-1" } } :
-				method === "Target.getBrowserContexts" ? { browserContextIds: [] } :
-					method === "Target.getTargets" ? { targetInfos: [
-						{ targetId: "page-2", type: "page" }, { targetId: "page-1", type: "page" },
-						{ targetId: "frame-1", type: "iframe" }, { targetId: "worker-1", type: "worker" },
-					] } :
-						method === "Target.closeTarget" ? { success: true } : {});
+			method === "Target.getTargetInfo"
+				? { targetInfo: { targetId: "page-1" } }
+				: method === "Target.getBrowserContexts"
+					? { browserContextIds: [] }
+					: method === "Target.getTargets"
+						? {
+								targetInfos: [
+									...(extraPage ? [{ targetId: "page-2", type: "page" }] : []),
+									{ targetId: "page-1", type: "page" },
+									{ targetId: "frame-1", type: "iframe" },
+									{ targetId: "worker-1", type: "worker" },
+								],
+							}
+						: method === "Target.closeTarget"
+							? ((extraPage = false), { success: true })
+							: {},
+		);
 		const viewer = await attach();
 		await drain();
-		expect(hostCdp.send.mock.calls.filter(([method]) => method === "Target.closeTarget")).toEqual([["Target.closeTarget", { targetId: "page-2" }]]);
+		expect(hostCdp.send.mock.calls.filter(([method]) => method === "Target.closeTarget")).toEqual([
+			["Target.closeTarget", { targetId: "page-2" }],
+		]);
 		expect(stored.get("session")).toMatchObject({ mode: "web", control: "ready" });
 		expect(viewer.socket.closed).toBeNull();
 	});
@@ -1340,11 +2494,38 @@ describe("BrowserSession web mode", () => {
 		await drain();
 		const changed = await post("/agent-access", { sessionId: "session-1", on: false });
 		expect(changed).toMatchObject({ ok: true, session: { mode: "web", agentAccess: false, controlGen: 2 } });
-		expect(messages(viewer.socket)).toContainEqual({ t: "agent-access", on: false });
-		expect(await post("/run/begin", { sessionId: "session-1", navGen: 1, loadGen: 1, controlGen: 2, commandId: "command-1" }))
-			.toMatchObject({ ok: false, error: { code: "agent_access_off" } });
-		expect(await post("/reload", { mode: "web", sessionId: "session-1", navGen: 1, expectedAgentLease: { navGen: 1, loadGen: 1, controlGen: 2 } }))
-			.toMatchObject({ ok: false, error: { code: "agent_access_off" } });
+		expect(messages(viewer.socket)).toContainEqual({
+			t: "agent-access",
+			tabId: "tab-1",
+			tabGen: 1,
+			viewGen: 1,
+			on: false,
+		});
+		expect(
+			await post("/run/begin", {
+				sessionId: "session-1",
+				navGen: 1,
+				loadGen: 1,
+				controlGen: 2,
+				commandId: "command-1",
+			}),
+		).toMatchObject({ ok: false, error: { code: "agent_access_off" } });
+		expect(
+			await post("/reload", {
+				mode: "web",
+				sessionId: "session-1",
+				navGen: 1,
+				expectedAgentLease: {
+					navGen: 1,
+					loadGen: 1,
+					controlGen: 2,
+					tabId: "tab-1",
+					tabGen: 1,
+					policyRevision: 1,
+					selectionRevision: 0,
+				},
+			}),
+		).toMatchObject({ ok: false, error: { code: "agent_access_off" } });
 		expect(stored.get("session")).toMatchObject({ agentAccess: false, control: "ready" });
 	});
 
@@ -1352,20 +2533,47 @@ describe("BrowserSession web mode", () => {
 		const { attach, drain, post, stored } = make_session({ web: true });
 		const viewer = await attach();
 		await drain();
-		expect(await post("/agent-access", { sessionId: "session-1", on: false })).toMatchObject({ ok: true, session: { agentAccess: false, controlGen: 2 } });
+		expect(await post("/agent-access", { sessionId: "session-1", on: false })).toMatchObject({
+			ok: true,
+			session: { agentAccess: false, controlGen: 2 },
+		});
 		// Convex applies `agentAccess` from a reply only when its controlGen is not older. Without a
 		// bump here, a late reply that still says "off" at controlGen 2 would undo this change.
-		expect(await post("/agent-access", { sessionId: "session-1", on: true })).toMatchObject({ ok: true, session: { agentAccess: true, controlGen: 3 } });
-		expect(messages(viewer.socket)).toContainEqual({ t: "control", control: "ready", controlGen: 3 });
+		expect(await post("/agent-access", { sessionId: "session-1", on: true })).toMatchObject({
+			ok: true,
+			session: { agentAccess: true, controlGen: 3 },
+		});
+		expect(messages(viewer.socket)).toContainEqual({
+			t: "control",
+			tabId: "tab-1",
+			tabGen: 1,
+			viewGen: 1,
+			control: "ready",
+			controlGen: 3,
+		});
 		// Setting the same value again is not a change.
-		expect(await post("/agent-access", { sessionId: "session-1", on: true })).toMatchObject({ ok: true, session: { agentAccess: true, controlGen: 3 } });
+		expect(await post("/agent-access", { sessionId: "session-1", on: true, policyRevision: 2 })).toMatchObject({
+			ok: true,
+			session: { agentAccess: true, controlGen: 3 },
+		});
 		expect(stored.get("session")).toMatchObject({ agentAccess: true, controlGen: 3 });
-		expect(await post("/run/begin", { sessionId: "session-1", navGen: 1, loadGen: 1, controlGen: 3, commandId: "command-1" })).toMatchObject({ ok: true });
+		expect(
+			await post("/run/begin", {
+				sessionId: "session-1",
+				navGen: 1,
+				loadGen: 1,
+				controlGen: 3,
+				commandId: "command-1",
+			}),
+		).toMatchObject({ ok: true });
 	});
 
 	it("refuses agent access changes for a file session", async () => {
 		const { post } = make_session();
-		expect(await post("/agent-access", { sessionId: "session-1", on: false })).toMatchObject({ ok: false, error: { code: "bad_request" } });
+		expect(await post("/agent-access", { sessionId: "session-1", on: false })).toMatchObject({
+			ok: false,
+			error: { code: "bad_request" },
+		});
 	});
 
 	it("reloads the current web page without a new loadGen", async () => {
@@ -1374,8 +2582,213 @@ describe("BrowserSession web mode", () => {
 		expect(reloaded).toMatchObject({ ok: true, session: { mode: "web", loadGen: 1 } });
 		expect(page_sends(mocked)).toContainEqual(["Page.reload"]);
 		expect(mocked.stored.get("session")).toMatchObject({ loadGen: 1, command: null, control: "ready" });
-		expect(await mocked.post("/reload", { sessionId: "session-1", navGen: 1, sourceKind: "saved", sourceVersion: "v2", sourceHash: "h", html: "<p></p>" }))
-			.toMatchObject({ ok: false, error: { code: "bad_request" } });
+		expect(
+			await mocked.post("/reload", {
+				mode: "file",
+				sessionId: "session-1",
+				navGen: 1,
+				sourceKind: "saved",
+				sourceVersion: "v2",
+				sourceHash: "h",
+				html: "<p></p>",
+			}),
+		).toMatchObject({ ok: false, error: { code: "bad_request" } });
+	});
+
+	it("refuses an old agent Reload lease before native reload after navigation during its fresh read", async () => {
+		const mocked = make_session({ web: true });
+		await mocked.attach();
+		await mocked.drain();
+		const get = mocked.get.getMockImplementation()!;
+		let changed = false;
+		mocked.get.mockImplementation(async (key) => {
+			const snapshot = await get(key);
+			if (key === "session" && !changed) {
+				changed = true;
+				mocked.page.emit("framenavigated", mocked.page.mainFrame());
+				await mocked.drain();
+			}
+			return snapshot;
+		});
+		const expectedAgentLease = {
+			navGen: 1,
+			loadGen: 1,
+			controlGen: 1,
+			tabId: "tab-1",
+			tabGen: 1,
+			policyRevision: 0,
+			selectionRevision: 0,
+		};
+		const reloaded = await mocked.post("/reload", {
+			mode: "web",
+			sessionId: "session-1",
+			navGen: 1,
+			expectedAgentLease,
+		});
+		expect(mocked.page.reload, "A stale lease must send no native Reload").not.toHaveBeenCalled();
+		expect(reloaded).toMatchObject({ ok: false, error: { code: "stale_tab" } });
+		expect(mocked.stored.get("session")).toMatchObject({
+			control: "ready",
+			command: null,
+			tabs: { "tab-1": { navGen: 2, tabGen: 2 } },
+		});
+	});
+
+	it("settles Reload commit and tab generations while the page still loads", async () => {
+		const mocked = make_session({ web: true });
+		const committed = Promise.withResolvers<void>();
+		const saveStarted = Promise.withResolvers<void>();
+		const saveReleased = Promise.withResolvers<void>();
+		const put = mocked.put.getMockImplementation()!;
+		mocked.put.mockImplementation(async (key, value) => {
+			const record = value as SessionRecord;
+			if (key === "session" && record.mode === "web" && record.tabs["tab-1"]?.navGen === 2) {
+				saveStarted.resolve();
+				await saveReleased.promise;
+			}
+			await put(key, value);
+		});
+		mocked.page.reload.mockImplementation(async (options) => {
+			expect(options).toEqual({ waitUntil: "commit", timeout: LIMITS.navWallMs });
+			await mocked.hostCdp.send("Page.reload");
+			await committed.promise;
+			mocked.hostCdp.emit("Page.frameStartedLoading", { frameId: "page-1" });
+			mocked.page.emit("framenavigated", mocked.page.mainFrame());
+			return null;
+		});
+		let finished = false;
+		const pending = mocked.post("/reload", { mode: "web", sessionId: "session-1", navGen: 1 }).then((reply) => {
+			finished = true;
+			return reply;
+		});
+		try {
+			await vi.waitFor(() => expect(page_sends(mocked)).toContainEqual(["Page.reload"]));
+			await vi.advanceTimersByTimeAsync(10);
+			expect(finished, "A Reload ACK must not finish before its document commits").toBe(false);
+			committed.resolve();
+			await saveStarted.promise;
+			await vi.advanceTimersByTimeAsync(10);
+			expect(finished, "Reload must save its tab generations before the reply").toBe(false);
+		} finally {
+			committed.resolve();
+			saveReleased.resolve();
+		}
+		expect(await pending).toMatchObject({
+			ok: true,
+			session: { control: "ready", loadGen: 1, navGen: 2, tabId: "tab-1", tabGen: 2 },
+		});
+		await mocked.drain();
+		expect(mocked.stored.get("session")).toMatchObject({
+			control: "ready",
+			command: null,
+			tabs: { "tab-1": { navGen: 2, tabGen: 2 } },
+		});
+	});
+
+	it.each(["SDK timeout", "wall timeout"])("keeps a slow Reload usable after %s", async (outcome) => {
+		const mocked = make_session({ web: true });
+		mocked.page.reload.mockImplementationOnce(async () => {
+			await mocked.hostCdp.send("Page.reload");
+			if (outcome === "SDK timeout") throw new provider.errors.TimeoutError("Navigation timed out");
+			return new Promise(() => {});
+		});
+		const pending = mocked.post("/reload", { mode: "web", sessionId: "session-1", navGen: 1 });
+		await vi.waitFor(() => expect(mocked.page.reload).toHaveBeenCalledOnce());
+		if (outcome === "wall timeout") await vi.advanceTimersByTimeAsync(LIMITS.navWallMs);
+		expect(await pending).toMatchObject({ ok: true, session: { control: "ready", loadGen: 1, navGen: 1, tabGen: 1 } });
+		expect(mocked.stored.get("session")).toMatchObject({
+			control: "ready",
+			command: null,
+			providerSessionId: "provider-1",
+		});
+		expect(mocked.hostCdp.send.mock.calls.some(([method]) => method === "Browser.close")).toBe(false);
+	});
+
+	it.each(["Take", "End"])("keeps human %s while Reload waits for commit", async (operation) => {
+		const mocked = make_session({ web: true });
+		const viewer = await mocked.attach();
+		await mocked.drain();
+		const committed = Promise.withResolvers<void>();
+		mocked.page.reload.mockImplementationOnce(async () => {
+			await mocked.hostCdp.send("Page.reload");
+			await committed.promise;
+			mocked.page.emit("framenavigated", mocked.page.mainFrame());
+			return null;
+		});
+		const expectedAgentLease = {
+			navGen: 1,
+			loadGen: 1,
+			controlGen: 1,
+			tabId: "tab-1",
+			tabGen: 1,
+			policyRevision: 0,
+			selectionRevision: 0,
+		};
+		const pending = mocked.post("/reload", { mode: "web", sessionId: "session-1", navGen: 1, expectedAgentLease });
+		try {
+			await vi.waitFor(() => expect(mocked.page.reload).toHaveBeenCalledOnce());
+			if (operation === "Take")
+				expect(
+					await mocked.post("/control/take-human", { sessionId: "session-1", navGen: 1, viewerId: viewer.viewerId }),
+				).toMatchObject({ ok: true, control: "pausing" });
+			else expect(await mocked.post("/close", { sessionId: "session-1" })).toMatchObject({ ok: true });
+		} finally {
+			committed.resolve();
+		}
+		const reply = await pending;
+		await mocked.drain();
+		if (operation === "Take") {
+			expect(reply).toMatchObject({ ok: true, session: { control: "human", controlGen: 2, navGen: 2, tabGen: 2 } });
+			expect(mocked.stored.get("session")).toMatchObject({
+				control: "human",
+				inputHolder: viewer.viewerId,
+				command: null,
+			});
+		} else {
+			expect(reply).toMatchObject({ ok: false });
+			expect(mocked.stored.has("session")).toBe(false);
+		}
+	});
+
+	it("closes Reload when its committed navigation save exceeds the same five second budget", async () => {
+		const mocked = make_session({ web: true });
+		const saveStarted = Promise.withResolvers<void>();
+		const saveReleased = Promise.withResolvers<void>();
+		const put = mocked.put.getMockImplementation()!;
+		mocked.put.mockImplementation(async (key, value) => {
+			const record = value as SessionRecord;
+			if (
+				key === "session" &&
+				record.mode === "web" &&
+				record.control !== "closing" &&
+				record.tabs["tab-1"]?.navGen === 2
+			) {
+				await put(key, value);
+				saveStarted.resolve();
+				await saveReleased.promise;
+				return;
+			}
+			await put(key, value);
+		});
+		mocked.page.reload.mockImplementationOnce(async () => {
+			await mocked.hostCdp.send("Page.reload");
+			await new Promise((resolve) => setTimeout(resolve, LIMITS.navWallMs - 1000));
+			mocked.page.emit("framenavigated", mocked.page.mainFrame());
+			return null;
+		});
+		const pending = mocked.post("/reload", { mode: "web", sessionId: "session-1", navGen: 1 });
+		try {
+			await vi.waitFor(() => expect(mocked.page.reload).toHaveBeenCalledOnce());
+			await vi.advanceTimersByTimeAsync(LIMITS.navWallMs - 1000);
+			await saveStarted.promise;
+			await vi.advanceTimersByTimeAsync(1000);
+			expect(await pending).toMatchObject({ ok: false, error: { code: "reload_failed" } });
+			expect(mocked.hostCdp.send.mock.calls.some(([method]) => method === "Browser.close")).toBe(true);
+		} finally {
+			saveReleased.resolve();
+			await mocked.drain();
+		}
+		expect(mocked.stored.has("session")).toBe(false);
 	});
 
 	it("answers a run during a reload with busy, not busy_command", async () => {
@@ -1383,12 +2796,20 @@ describe("BrowserSession web mode", () => {
 		const reloaded = Promise.withResolvers<Record<string, unknown>>();
 		const send = hostCdp.send.getMockImplementation()!;
 		hostCdp.send.mockImplementation((method: string, params?: unknown) =>
-			method === "Page.reload" ? reloaded.promise : send(method, params));
+			method === "Page.reload" ? reloaded.promise : send(method, params),
+		);
 		const reload = post("/reload", { mode: "web", sessionId: "session-1", navGen: 1 });
 		await vi.waitFor(() => expect(hostCdp.send).toHaveBeenCalledWith("Page.reload"));
 		// "busy_command" makes the chat say another chat uses the browser. A reload is not a chat.
-		expect(await post("/run/begin", { sessionId: "session-1", navGen: 1, loadGen: 1, controlGen: 1, commandId: "command-1" }))
-			.toMatchObject({ ok: false, error: { code: "busy" } });
+		expect(
+			await post("/run/begin", {
+				sessionId: "session-1",
+				navGen: 1,
+				loadGen: 1,
+				controlGen: 1,
+				commandId: "command-1",
+			}),
+		).toMatchObject({ ok: false, error: { code: "busy" } });
 		reloaded.resolve({});
 		expect(await reload).toMatchObject({ ok: true });
 	});
@@ -1399,23 +2820,45 @@ describe("BrowserSession web mode", () => {
 		const viewer = await mocked.attach();
 		await mocked.drain();
 		await mocked.post("/control/take-human", { sessionId: "session-1", navGen: 1, viewerId: viewer.viewerId });
-		viewer.socket.send(JSON.stringify({ t: "nav", seq: 1, controlGen: 2, action: "go", url: "https://example.com/secret?token=abc" }));
-		viewer.socket.send(JSON.stringify({ t: "nav", seq: 2, controlGen: 2, action: "go", url: "https://blocked.test/secret" }));
-		await vi.waitFor(() => expect(messages(viewer.socket).filter((message) => message.t === "nav-ack")).toHaveLength(2));
+		viewer.socket.send(
+			JSON.stringify({ t: "nav", seq: 1, controlGen: 2, action: "go", url: "https://example.com/secret?token=abc" }),
+		);
+		viewer.socket.send(
+			JSON.stringify({ t: "nav", seq: 2, controlGen: 2, action: "go", url: "https://blocked.test/secret" }),
+		);
+		await vi.waitFor(() =>
+			expect(messages(viewer.socket).filter((message) => message.t === "nav-ack")).toHaveLength(2),
+		);
 		mocked.context.emit("page", make_popup("https://blocked.test/popup"));
 		await mocked.drain();
 		await mocked.post("/control/to-agent", { sessionId: "session-1", navGen: 1 });
 		mocked.context.emit("page", make_popup("https://example.com/popup"));
 		await mocked.drain();
 		mocked.stored.clear();
-		vi.spyOn(provider, "acquire").mockResolvedValue({ sessionId: "provider-2" } as Awaited<ReturnType<typeof provider.acquire>>);
+		vi.spyOn(provider, "acquire").mockResolvedValue({ sessionId: "provider-2" } as Awaited<
+			ReturnType<typeof provider.acquire>
+		>);
 		await mocked.post("/open", {
-			mode: "web", ...OWNERS, grantId: "admission-2", attemptId: "attempt-2", navGen: 1,
-			startUrl: "https://blocked.test/start", agentAccess: true, ...PROFILE, viewport: { width: 1280, height: 900 },
+			mode: "web",
+			...OWNERS,
+			grantId: "admission-2",
+			attemptId: "attempt-2",
+			navGen: 1,
+			startUrl: "https://blocked.test/start",
+			agentAccess: true,
+			...PROFILE,
+			viewport: { width: 1280, height: 900 },
 		});
 		await mocked.post("/open", {
-			mode: "web", ...OWNERS, grantId: "admission-3", attemptId: "attempt-3", navGen: 1,
-			startUrl: "https://example.com/start", agentAccess: true, ...PROFILE, viewport: { width: 1280, height: 900 },
+			mode: "web",
+			...OWNERS,
+			grantId: "admission-3",
+			attemptId: "attempt-3",
+			navGen: 1,
+			startUrl: "https://example.com/start",
+			agentAccess: true,
+			...PROFILE,
+			viewport: { width: 1280, height: 900 },
 		});
 		const lines = log.mock.calls.map((call) => call.map(String).join(" "));
 		expect(lines.length).toBeGreaterThan(3);

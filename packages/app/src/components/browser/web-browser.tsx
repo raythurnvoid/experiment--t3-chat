@@ -1,10 +1,11 @@
 import "./web-browser.css";
 
 import { AppAuthProvider } from "@/components/app-auth.tsx";
+import { BrowserProviderSelect, BrowserSettings } from "@/components/browser/browser-settings.tsx";
 import { BrowserViewer, type BrowserViewer_Ref } from "@/components/browser/browser-viewer.tsx";
+import { PlaywriterBrowserConnection } from "@/components/browser/playwriter-browser-connection.tsx";
 import { WebBrowserFileChooser } from "@/components/browser/web-browser-file-chooser.tsx";
 import { WebBrowserSavedData } from "@/components/browser/web-browser-saved-data.tsx";
-import { FilesBrowserResumeThreadMirror } from "@/components/files/file-node-view/files-browser.tsx";
 import { MyBadge } from "@/components/my-badge.tsx";
 import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
@@ -18,9 +19,15 @@ import {
 	MyInputLabel,
 } from "@/components/my-input.tsx";
 import { MySpinner } from "@/components/my-spinner.tsx";
-import { MySwitch } from "@/components/my-switch.tsx";
+import {
+	MyTabs,
+	MyTabsList,
+	MyTabsTabPrimaryAction,
+	MyTabsTabSecondaryAction,
+	MyTabsTabSecondaryActionIcon,
+	MyTabsTabSurface,
+} from "@/components/my-tabs.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
-import { ai_chat_is_optimistic_thread_id } from "@/lib/ai-chat.ts";
 import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import type { files_browser_StreamControlMessage, files_browser_StreamWebMessage } from "@/lib/files-browser-stream.ts";
@@ -29,7 +36,7 @@ import { browser_web_normalize_url, type browser_web_UrlRefusal } from "common/b
 import { useConvex, useQuery } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
 import { ArrowLeft, ArrowRight, Bot, Clock, Hand, KeyRound, Play, RotateCw, Square, X } from "lucide-react";
-import { memo, useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "react";
+import { memo, useEffect, useId, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 import { toast } from "sonner";
 
 type WebBrowser_Session = Extract<
@@ -53,7 +60,7 @@ const WEB_BROWSER_ADDRESS_ERRORS: Record<browser_web_UrlRefusal, string> = {
 };
 
 const WEB_BROWSER_NOTICES: Record<string, string> = {
-	popup_opened_here: "Opened the new tab here",
+	popup_opened_here: "Opened a new tab",
 	popup_closed: "Closed a new tab",
 	address_blocked: "This address is blocked",
 	upload_unsupported: "This site uses a file picker the cloud browser does not support.",
@@ -87,11 +94,6 @@ type WebBrowserStart_ClassNames =
 
 type WebBrowserStart_Props = {
 	/**
-	 * The live file browser of this user and workspace. Only one browser can be live, so Start
-	 * offers to end it first.
-	 */
-	fileSessionId: app_convex_Id<"files_browser_sessions"> | null;
-	/**
 	 * A web session exists but the runner is still opening it. This card stays until the session
 	 * is ready, so a refusal that arrives after that still shows here, with the typed address.
 	 */
@@ -102,7 +104,7 @@ type WebBrowserStart_Props = {
 };
 
 const WebBrowserStart = memo(function WebBrowserStart(props: WebBrowserStart_Props) {
-	const { fileSessionId, sessionStarting, available, savedData, onManageSavedData } = props;
+	const { sessionStarting, available, savedData, onManageSavedData } = props;
 	const { membershipId } = AppTenantProvider.useContext();
 	const convex = useConvex();
 
@@ -130,16 +132,6 @@ const WebBrowserStart = memo(function WebBrowserStart(props: WebBrowserStart_Pro
 		setError(null);
 		const normalized = startAddress.trim() === "" ? null : browser_web_normalize_url(startAddress, []);
 		(async (/* iife */) => {
-			if (fileSessionId) {
-				const ended = await convex.action(app_convex_api.files_browser.end_browser, {
-					membershipId,
-					sessionId: fileSessionId,
-				});
-				if (ended._nay) {
-					setError(ended._nay.message);
-					return;
-				}
-			}
 			const started = await convex.action(app_convex_api.files_browser.start_web_browser, {
 				membershipId,
 				viewport: WEB_BROWSER_VIEWPORT,
@@ -156,8 +148,7 @@ const WebBrowserStart = memo(function WebBrowserStart(props: WebBrowserStart_Pro
 					setError("You reached today's limit of web browser starts. Try again tomorrow.");
 					break;
 				case "Browser busy":
-					// A live file browser also shows up in the session query, and then this card offers to end it.
-					setError("Another browser is open. End it first.");
+					setError("The browser is busy. Try again in a moment.");
 					break;
 				case "Address blocked":
 					setError("This address is blocked.");
@@ -238,8 +229,8 @@ const WebBrowserStart = memo(function WebBrowserStart(props: WebBrowserStart_Pro
 				{manageSavedDataButton}
 			</div>
 			<p className={"WebBrowserStart-text" satisfies WebBrowserStart_ClassNames}>
-				Your agent can use the sites you are logged in to. Add sites it must not use, like your bank, under Manage saved
-				data.
+				Your agent can use the sites you are logged in to. Add sites it must not use, like your bank, under Browser
+				settings.
 			</p>
 			<p className={"WebBrowserStart-text" satisfies WebBrowserStart_ClassNames}>
 				Reload the page before you type a password if the agent used it.
@@ -270,21 +261,12 @@ const WebBrowserStart = memo(function WebBrowserStart(props: WebBrowserStart_Pro
 						<MyInputHelperText aria-live="polite">{displayValidationMessage}</MyInputHelperText>
 					</MyInput>
 					<div className={"WebBrowserStart-actions" satisfies WebBrowserStart_ClassNames}>
-						{fileSessionId ? (
-							<>
-								<span>A file browser is open in Files.</span>
-								<MyButton type="submit" variant="default" disabled={starting} aria-busy={starting}>
-									{starting ? "Starting…" : "End it and start here"}
-								</MyButton>
-							</>
-						) : (
-							<MyButton type="submit" variant="default" disabled={starting} aria-busy={starting}>
-								<MyButtonIcon>
-									<Play aria-hidden />
-								</MyButtonIcon>
-								{starting ? "Starting…" : "Start web browser"}
-							</MyButton>
-						)}
+						<MyButton type="submit" variant="default" disabled={starting} aria-busy={starting}>
+							<MyButtonIcon>
+								<Play aria-hidden />
+							</MyButtonIcon>
+							{starting ? "Starting…" : "Start web browser"}
+						</MyButton>
 					</div>
 				</>
 			) : (
@@ -305,6 +287,8 @@ const WebBrowserStart = memo(function WebBrowserStart(props: WebBrowserStart_Pro
 type WebBrowserLive_ClassNames =
 	| "WebBrowserLive"
 	| "WebBrowserLive-toolbar"
+	| "WebBrowserLive-tabs"
+	| "WebBrowserLive-tab"
 	| "WebBrowserLive-address"
 	| "WebBrowserLive-address-hint"
 	| "WebBrowserLive-address-error"
@@ -337,7 +321,8 @@ const WebBrowserLive = memo(function WebBrowserLive(props: WebBrowserLive_Props)
 	const convex = useConvex();
 	const navigate = useNavigate();
 	const viewerRef = useRef<BrowserViewer_Ref | null>(null);
-	const resumeThreadId = FilesBrowserResumeThreadMirror.useThreadId();
+	const tabListRef = useRef<HTMLDivElement>(null);
+	const tabIdPrefix = useId();
 
 	const [viewerId, setViewerId] = useState<string | null>(null);
 	const [connected, setConnected] = useState(false);
@@ -345,8 +330,11 @@ const WebBrowserLive = memo(function WebBrowserLive(props: WebBrowserLive_Props)
 	const [remoteControl, setRemoteControl] = useState<files_browser_StreamControlMessage | null>(null);
 	const [takingGen, setTakingGen] = useState<number | null>(null);
 	const [remoteAgentAccess, setRemoteAgentAccess] = useState<boolean | null>(null);
-	const [switchingAgentAccess, setSwitchingAgentAccess] = useState(false);
+	const preferences = useQuery(app_convex_api.files_browser.current_browser_preferences, { membershipId });
 	const [location, setLocation] = useState<WebBrowserLive_Location | null>(null);
+	const [tabs, setTabs] = useState<Extract<files_browser_StreamWebMessage, { t: "tabs" }> | null>(null);
+	const [tabsPending, setTabsPending] = useState(false);
+	const [focusTabAfterAction, setFocusTabAfterAction] = useState(false);
 	const [addressDraft, setAddressDraft] = useState<string | null>(null);
 	const [displayValidationMessage, setDisplayValidationMessage] = useState<string | undefined>();
 	const [notice, setNotice] = useState<{ id: number; text: string } | null>(null);
@@ -366,8 +354,8 @@ const WebBrowserLive = memo(function WebBrowserLive(props: WebBrowserLive_Props)
 	const hasControl = control === "human" && connected;
 	// Take is in progress until the control generation moves on.
 	const taking = takingGen !== null && takingGen === controlGen;
-	// The socket pushes every change, so its value wins over the query.
-	const agentAccess = remoteAgentAccess ?? session.agentAccess;
+	// Saved access settings apply to both web providers.
+	const agentAccess = preferences?.webAgentAccess ?? remoteAgentAccess ?? session.agentAccess;
 	const addressValue = addressDraft ?? location?.url ?? "";
 	const validationMessage = addressDraft === null ? undefined : web_browser_address_error(addressDraft);
 	const loading = location?.loading ?? false;
@@ -483,8 +471,20 @@ const WebBrowserLive = memo(function WebBrowserLive(props: WebBrowserLive_Props)
 
 	const handleWebMessage = useFn((message: files_browser_StreamWebMessage) => {
 		switch (message.t) {
+			case "tabs":
+				if (tabs && tabs.viewGen > message.viewGen) return;
+				setTabs(message);
+				if (message.viewedTabId !== location?.tabId) {
+					setLocation(null);
+					setAddressDraft(null);
+					setFileChooser(null);
+				}
+				break;
 			case "location":
 				setLocation({
+					tabId: message.tabId,
+					tabGen: message.tabGen,
+					viewGen: message.viewGen,
 					url: message.url,
 					title: message.title,
 					loading: message.loading,
@@ -504,6 +504,9 @@ const WebBrowserLive = memo(function WebBrowserLive(props: WebBrowserLive_Props)
 			case "file-chooser":
 				// The runner keeps one open chooser. A new one replaces the old one.
 				setFileChooser({
+					tabId: message.tabId,
+					tabGen: message.tabGen,
+					viewGen: message.viewGen,
 					chooserId: message.chooserId,
 					multiple: message.multiple,
 					accept: message.accept,
@@ -529,6 +532,143 @@ const WebBrowserLive = memo(function WebBrowserLive(props: WebBrowserLive_Props)
 				break;
 		}
 	});
+
+	const handleSelectTab = useFn((id: string | null | undefined) => {
+		const tab = tabs?.tabs.find((tab) => `${tabIdPrefix}-${tab.tabId}` === id);
+		if (!tab || !viewerId || tabsPending || tab.tabId === tabs?.viewedTabId) return;
+		setTabsPending(true);
+		convex
+			.action(app_convex_api.files_browser.select_browser_tab, {
+				membershipId,
+				sessionId: session.sessionId,
+				viewerId,
+				tabId: tab.tabId,
+			})
+			.then((result) => {
+				if (result._nay) {
+					toast.error(result._nay.message);
+					return;
+				}
+				if (result._yay.viewedTabId === null) return;
+				handleWebMessage({
+					t: "tabs",
+					tabs: result._yay.tabs,
+					viewedTabId: result._yay.viewedTabId,
+					viewGen: result._yay.viewGen,
+				});
+				setFocusTabAfterAction(true);
+			})
+			.catch(() => {
+				// Browser errors may contain viewer grants. Show only this fixed message.
+				toast.error("Could not select the tab. Try again.");
+			})
+			.finally(() => setTabsPending(false));
+	});
+
+	const handleNewTab = useFn(() => {
+		if (!viewerId || tabsPending) return;
+		setTabsPending(true);
+		convex
+			.action(app_convex_api.files_browser.new_browser_tab, { membershipId, sessionId: session.sessionId, viewerId })
+			.then(async (result) => {
+				if (result._nay) {
+					toast.error(result._nay.message);
+					return;
+				}
+				const tabId = result._yay.result.tabId;
+				if (!tabId || result._yay.status !== "completed") {
+					toast.error("The tab could not be opened. Try again.");
+					return;
+				}
+				// A human New tab selects it. Agent-created tabs leave the viewed tab alone.
+				const selected = await convex.action(app_convex_api.files_browser.select_browser_tab, {
+					membershipId,
+					sessionId: session.sessionId,
+					viewerId,
+					tabId,
+				});
+				if (selected._nay) {
+					toast.error(selected._nay.message);
+					return;
+				}
+				if (selected._yay.viewedTabId === null) return;
+				handleWebMessage({
+					t: "tabs",
+					tabs: selected._yay.tabs,
+					viewedTabId: selected._yay.viewedTabId,
+					viewGen: selected._yay.viewGen,
+				});
+				setFocusTabAfterAction(true);
+			})
+			.catch(() => {
+				// Browser errors may contain viewer grants. Show only this fixed message.
+				toast.error("Could not open a tab. Try again.");
+			})
+			.finally(() => setTabsPending(false));
+	});
+
+	const handleCloseTab = (tabId: string) => {
+		if (!viewerId || tabsPending) return;
+		setTabsPending(true);
+		convex
+			.action(app_convex_api.files_browser.close_browser_tab, {
+				membershipId,
+				sessionId: session.sessionId,
+				tabId,
+				viewerId,
+			})
+			.then((result) => {
+				if (result._nay) {
+					toast.error(result._nay.message);
+					return;
+				}
+				if (result._yay.status !== "completed") {
+					toast.error("The tab could not be closed. Try again.");
+					return;
+				}
+				if (result._yay.session && result._yay.viewedTabId !== null)
+					handleWebMessage({
+						t: "tabs",
+						tabs: result._yay.tabs,
+						viewedTabId: result._yay.viewedTabId,
+						viewGen: result._yay.viewGen,
+					});
+				setFocusTabAfterAction(true);
+			})
+			.catch(() => {
+				// Browser errors may contain viewer grants. Show only this fixed message.
+				toast.error("Could not close the tab. Try again.");
+			})
+			.finally(() => setTabsPending(false));
+	};
+
+	useEffect(() => {
+		convex
+			.action(app_convex_api.files_browser.list_browser_tabs, { membershipId, sessionId: session.sessionId })
+			.then((result) => {
+				if (result._nay) {
+					toast.error(result._nay.message);
+					return;
+				}
+				if (result._yay.viewedTabId === null) return;
+				handleWebMessage({
+					t: "tabs",
+					tabs: result._yay.tabs,
+					viewedTabId: result._yay.viewedTabId,
+					viewGen: result._yay.viewGen,
+				});
+			})
+			.catch(() => {
+				// Browser errors may contain viewer grants. Show only this fixed message.
+				toast.error("Could not load the tabs. Try again.");
+			});
+	}, [convex, membershipId, session.sessionId, handleWebMessage]);
+
+	useEffect(() => {
+		if (!focusTabAfterAction || tabsPending) return;
+		tabListRef.current?.querySelector<HTMLElement>('[aria-selected="true"]')?.focus();
+		setFocusTabAfterAction(false);
+	}, [focusTabAfterAction, tabsPending, tabs]);
 
 	const sendNav = (nav: Parameters<BrowserViewer_Ref["sendNav"]>[0]) => {
 		const seq = viewerRef.current?.sendNav(nav) ?? -1;
@@ -597,14 +737,11 @@ const WebBrowserLive = memo(function WebBrowserLive(props: WebBrowserLive_Props)
 	});
 
 	const handleResume = useFn(() => {
-		if (!resumeThreadId || ai_chat_is_optimistic_thread_id(resumeThreadId)) {
-			return;
-		}
 		convex
 			.action(app_convex_api.files_browser.resume_browser_agent, {
 				membershipId,
 				sessionId: session.sessionId,
-				threadId: resumeThreadId as app_convex_Id<"ai_chat_threads">,
+				controlGen,
 			})
 			.then((result) => {
 				if (result._nay) {
@@ -638,8 +775,8 @@ const WebBrowserLive = memo(function WebBrowserLive(props: WebBrowserLive_Props)
 		setFileChooser(null);
 	});
 
-	const handleFileChooserGiven = useFn(() => {
-		setFileChooser(null);
+	const handleFileChooserGiven = useFn((chooserId: string) => {
+		setFileChooser((current) => (current?.chooserId === chooserId ? null : current));
 		showNotice("File given to the page");
 	});
 
@@ -649,29 +786,6 @@ const WebBrowserLive = memo(function WebBrowserLive(props: WebBrowserLive_Props)
 		if (fileChooser?.chooserId !== chooserId) {
 			toast.error(text);
 		}
-	});
-
-	const handleAgentAccessChange = useFn((on: boolean) => {
-		setSwitchingAgentAccess(true);
-		convex
-			.action(app_convex_api.files_browser.set_browser_agent_access, {
-				membershipId,
-				sessionId: session.sessionId,
-				on,
-			})
-			.then((result) => {
-				if (result._nay) {
-					toast.error(result._nay.message);
-					return;
-				}
-				setRemoteAgentAccess(result._yay.agentAccess);
-			})
-			.catch((error: unknown) => {
-				console.error("[WebBrowserLive.agentAccess] Unexpected agent access error", { error });
-			})
-			.finally(() => {
-				setSwitchingAgentAccess(false);
-			});
 	});
 
 	useEffect(() => {
@@ -720,6 +834,41 @@ const WebBrowserLive = memo(function WebBrowserLive(props: WebBrowserLive_Props)
 
 	return (
 		<div className={"WebBrowserLive" satisfies WebBrowserLive_ClassNames} aria-busy={loading}>
+			<MyTabs
+				selectedId={tabs ? `${tabIdPrefix}-${tabs.viewedTabId}` : null}
+				setSelectedId={handleSelectTab}
+				selectOnMove={false}
+			>
+				<MyTabsList
+					ref={tabListRef}
+					className={"WebBrowserLive-tabs" satisfies WebBrowserLive_ClassNames}
+					aria-label="Browser tabs"
+				>
+					{tabs?.tabs.map((tab) => (
+						<MyTabsTabSurface key={tab.tabId} className={"WebBrowserLive-tab" satisfies WebBrowserLive_ClassNames}>
+							<MyTabsTabPrimaryAction id={`${tabIdPrefix}-${tab.tabId}`} disabled={tabsPending || !connected}>
+								{tab.title || "New tab"}
+							</MyTabsTabPrimaryAction>
+							<MyTabsTabSecondaryAction
+								tooltip={`Close ${tab.title || "New tab"}`}
+								disabled={tabsPending || !connected}
+								onClick={() => handleCloseTab(tab.tabId)}
+							>
+								<MyTabsTabSecondaryActionIcon>
+									<X />
+								</MyTabsTabSecondaryActionIcon>
+							</MyTabsTabSecondaryAction>
+						</MyTabsTabSurface>
+					))}
+					<MyButton
+						variant="ghost"
+						disabled={!connected || tabsPending || (tabs?.tabs.length ?? 0) >= 8}
+						onClick={handleNewTab}
+					>
+						New tab
+					</MyButton>
+				</MyTabsList>
+			</MyTabs>
 			<div className={"WebBrowserLive-toolbar" satisfies WebBrowserLive_ClassNames} role="toolbar" aria-label="Browser">
 				<MyIconButton
 					variant="ghost-highlightable"
@@ -788,16 +937,7 @@ const WebBrowserLive = memo(function WebBrowserLive(props: WebBrowserLive_Props)
 					</MyButton>
 				</form>
 				{control === "human" ? (
-					<MyButton
-						variant="outline"
-						disabled={!resumeThreadId || ai_chat_is_optimistic_thread_id(resumeThreadId)}
-						tooltip={
-							resumeThreadId && !ai_chat_is_optimistic_thread_id(resumeThreadId)
-								? "Resume agent"
-								: "Resume agent (select a chat first)"
-						}
-						onClick={handleResume}
-					>
+					<MyButton variant="outline" onClick={handleResume}>
 						<MyButtonIcon>
 							<Bot aria-hidden />
 						</MyButtonIcon>
@@ -830,15 +970,12 @@ const WebBrowserLive = memo(function WebBrowserLive(props: WebBrowserLive_Props)
 						<Square size={16} />
 					</MyIconButtonIcon>
 				</MyIconButton>
-				<label className={"WebBrowserLive-agent-access" satisfies WebBrowserLive_ClassNames}>
-					<MySwitch
-						{...({ "data-agent-access": agentAccess ? "on" : "off" } satisfies WebBrowserLive_CustomAttributes)}
-						checked={agentAccess}
-						disabled={switchingAgentAccess}
-						onCheckedChange={handleAgentAccessChange}
-					/>
-					Agent can use this browser
-				</label>
+				<span
+					className={"WebBrowserLive-agent-access" satisfies WebBrowserLive_ClassNames}
+					{...({ "data-agent-access": agentAccess ? "on" : "off" } satisfies WebBrowserLive_CustomAttributes)}
+				>
+					{agentAccess ? "Agent access on" : "Agent access off"}
+				</span>
 			</div>
 			{!hasControl && (
 				<span className={"WebBrowserLive-address-hint" satisfies WebBrowserLive_ClassNames}>
@@ -904,9 +1041,9 @@ const WebBrowserLive = memo(function WebBrowserLive(props: WebBrowserLive_Props)
 	);
 });
 
-type WebBrowser_ClassNames = "WebBrowser";
+type CloudWebBrowser_ClassNames = "CloudWebBrowser";
 
-type WebBrowser_CustomAttributes = {
+type CloudWebBrowser_CustomAttributes = {
 	"data-browser-mode": "web";
 };
 
@@ -914,18 +1051,16 @@ type WebBrowser_CustomAttributes = {
  * The cloud web browser of this user and workspace. Leaving the page keeps the session: the
  * runner's idle limit ends it. Coming back attaches a new viewer to the same session.
  */
-export const WebBrowser = memo(function WebBrowser() {
+const CloudWebBrowser = memo(function CloudWebBrowser() {
 	const { membershipId } = AppTenantProvider.useContext();
-	const session = useQuery(app_convex_api.files_browser.current_browser_session, { membershipId });
+	const session = useQuery(app_convex_api.files_browser.current_browser_session, { membershipId, mode: "web" });
 	const available = useQuery(app_convex_api.files_browser.web_browser_available, { membershipId });
 	const profile = useQuery(app_convex_api.files_browser.current_browser_profile, { membershipId });
 
 	// This owner keeps the dialog, so it stays open when listing saved sites ends the live panel.
 	const [savedDataOpen, setSavedDataOpen] = useState(false);
 
-	// The profile doc exists after the first web start, and also after the blocked sites list was
-	// set before any start. The query cannot tell those apart, so the badge says "Saved data" and
-	// not "Saved logins".
+	// The profile doc exists after the first web start.
 	const savedData = profile?.exists === true;
 
 	const handleManageSavedData = useFn(() => {
@@ -938,10 +1073,10 @@ export const WebBrowser = memo(function WebBrowser() {
 
 	return (
 		<div
-			className={"WebBrowser" satisfies WebBrowser_ClassNames}
+			className={"CloudWebBrowser" satisfies CloudWebBrowser_ClassNames}
 			role="region"
 			aria-label="Web browser"
-			{...({ "data-browser-mode": "web" } satisfies WebBrowser_CustomAttributes)}
+			{...({ "data-browser-mode": "web" } satisfies CloudWebBrowser_CustomAttributes)}
 		>
 			{session?.mode === "web" && session.control !== "starting" ? (
 				// A new session remounts the live panel, so no state from the old session survives.
@@ -955,17 +1090,67 @@ export const WebBrowser = memo(function WebBrowser() {
 				// The Start card stays while the runner opens the session. It shows a refusal from the
 				// runner with the typed address, and live controls appear only once the session is ready.
 				<WebBrowserStart
-					fileSessionId={session?.mode === "file" ? session.sessionId : null}
 					sessionStarting={session?.mode === "web"}
 					available={available}
 					savedData={savedData}
 					onManageSavedData={handleManageSavedData}
 				/>
 			)}
-			{savedDataOpen && (
-				// Any live browser of this user here, file or web, ends when saved sites are read.
-				<WebBrowserSavedData browserLive={!!session} profile={profile} onClose={handleSavedDataClose} />
+			{savedDataOpen && <WebBrowserSavedData browserLive={!!session} onClose={handleSavedDataClose} />}
+		</div>
+	);
+});
+
+type WebBrowser_ClassNames = "WebBrowser" | "WebBrowser-controls";
+
+type WebBrowser_CustomAttributes = {
+	"data-browser-provider": "none" | "cloud" | "playwriter";
+};
+
+/**
+ * Provider choice is saved outside the page. The Playwriter branch mounts no cloud hooks.
+ */
+export const WebBrowser = memo(function WebBrowser() {
+	const { membershipId } = AppTenantProvider.useContext();
+	const preferences = useQuery(app_convex_api.files_browser.current_browser_preferences, { membershipId });
+	const [providerDraft, setProviderDraft] = useState<{ provider: "playwriter"; revision: number } | null>(null);
+	const [settingsOpen, setSettingsOpen] = useState(false);
+	const provider =
+		(providerDraft?.revision === preferences?.selectionRevision ? providerDraft?.provider : null) ??
+		preferences?.webChoice.provider ??
+		"none";
+
+	if (preferences === undefined) return <MySpinner size="16px" aria-label="Loading browser settings" />;
+	if (preferences === null) return <p>Browser settings are not available in this workspace.</p>;
+
+	return (
+		<div
+			className={"WebBrowser" satisfies WebBrowser_ClassNames}
+			{...({ "data-browser-provider": provider } satisfies WebBrowser_CustomAttributes)}
+		>
+			<div className={"WebBrowser-controls" satisfies WebBrowser_ClassNames}>
+				<BrowserProviderSelect
+					provider={provider}
+					onProviderChange={(nextProvider) =>
+						setProviderDraft(
+							nextProvider === "playwriter"
+								? { provider: nextProvider, revision: preferences.selectionRevision }
+								: null,
+						)
+					}
+				/>
+				<MyButton variant="outline" onClick={() => setSettingsOpen(true)}>
+					Browser settings
+				</MyButton>
+			</div>
+			{provider === "playwriter" ? (
+				<PlaywriterBrowserConnection />
+			) : provider === "cloud" ? (
+				<CloudWebBrowser />
+			) : (
+				<p>No browser selected. Choose a browser to continue.</p>
 			)}
+			{settingsOpen && <BrowserSettings onClose={() => setSettingsOpen(false)} />}
 		</div>
 	);
 });

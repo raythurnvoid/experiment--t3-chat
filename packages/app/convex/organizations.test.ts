@@ -3758,7 +3758,6 @@ describe("remove_user_from_organization", () => {
 					organizationId,
 					workspaceId,
 					profileKey: new Uint8Array(32).buffer,
-					agentBlockedHosts: [],
 					createdAt: now,
 					lastUsedAt: now,
 				});

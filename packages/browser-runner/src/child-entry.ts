@@ -1,5 +1,6 @@
 // Entry for the snippet child bundle. Export ONLY what untrusted snippets may
-// use: `connect` reaches the one-session gate binding, and `expect` asserts.
+// use: `connect` reaches the one-session gate, `expect` asserts, and the host
+// matcher checks addresses without network access.
 // `launch`, `acquire`, `sessions`, `history`, and `limits` stay unreachable by
 // import. Built by `pnpm run build:child` into `src/child-bundle.gen.ts`.
 //
@@ -10,3 +11,4 @@
 // injected name helper to be called `__name`.
 
 export { connect, expect } from "@cloudflare/playwright/test";
+export { browser_web_url_host_matches } from "common/browser-web-url.ts";

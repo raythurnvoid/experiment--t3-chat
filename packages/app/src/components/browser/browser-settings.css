@@ -1,0 +1,67 @@
+@layer components {
+	.BrowserSettings {
+		width: min(92vw, 560px);
+	}
+
+	.BrowserSettings-section {
+		display: grid;
+		gap: 12px;
+
+		&:not(:first-child) {
+			margin-top: 20px;
+			padding-top: 16px;
+			border-top: 1px solid var(--color-fg-03);
+		}
+
+		& .PlaywriterBrowserConnection {
+			padding: 0;
+		}
+	}
+
+	.BrowserSettings-section-title {
+		margin: 0;
+
+		font-size: 0.9375rem;
+	}
+
+	.BrowserSettings-text {
+		margin: 0;
+
+		font-size: 0.875rem;
+		color: var(--color-fg-08);
+	}
+
+	.BrowserSettings-access,
+	.BrowserSettings-row {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+	}
+
+	.BrowserSettings-row {
+		justify-content: space-between;
+
+		overflow-wrap: anywhere;
+	}
+
+	.BrowserSettings-list {
+		display: grid;
+		gap: 4px;
+
+		padding: 0;
+		margin: 0;
+
+		list-style: none;
+	}
+
+	.BrowserSettings-add {
+		display: flex;
+		align-items: end;
+		gap: 8px;
+
+		& .MyInput {
+			flex: 1;
+			min-width: 0;
+		}
+	}
+}

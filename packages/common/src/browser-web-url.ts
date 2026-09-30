@@ -50,7 +50,8 @@ export function browser_web_normalize_url(
 	if (trimmed.length > browser_web_URL_MAX_CHARS) return { ok: false, reason: "too_long" };
 
 	// Treat `example.com` and `localhost:3000` as hosts, not as a `localhost:` scheme.
-	const hasScheme = /^[a-z][a-z0-9+.-]*:\/\//iu.test(trimmed) || /^(?:about|data|javascript|file|blob|view-source):/iu.test(trimmed);
+	const hasScheme =
+		/^[a-z][a-z0-9+.-]*:\/\//iu.test(trimmed) || /^(?:about|data|javascript|file|blob|view-source):/iu.test(trimmed);
 	let url: URL;
 	try {
 		url = new URL(hasScheme ? trimmed : `https://${trimmed}`);

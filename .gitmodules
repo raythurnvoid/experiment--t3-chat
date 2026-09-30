@@ -200,3 +200,6 @@
 [submodule "plugins/bonobo-plugin-github-sources"]
 	path = plugins/bonobo-plugin-github-sources
 	url = https://github.com/raythurnvoid/bonobo-plugin-github-sources.git
+[submodule "references-submodules/playwriter"]
+	path = references-submodules/playwriter
+	url = https://github.com/remorses/playwriter.git

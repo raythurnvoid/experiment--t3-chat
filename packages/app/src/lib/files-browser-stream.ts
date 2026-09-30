@@ -5,12 +5,16 @@
 export type files_browser_StreamHost = "docked" | "detached";
 
 export type files_browser_StreamHello = {
+	mode: "file" | "web";
 	ownerId: string;
 	organizationId: string;
 	workspaceId: string;
 	grantId: string;
 	host: files_browser_StreamHost;
 };
+
+export type files_browser_StreamTabIdentity = { tabId: string; tabGen: number; viewGen: number };
+export type files_browser_StreamTab = { tabId: string; tabGen: number; navGen: number; title: string; url: string };
 
 export type files_browser_StreamInput =
 	| { kind: "mouse.move"; x: number; y: number }
@@ -24,42 +28,69 @@ export type files_browser_StreamInput =
 /**
  * One address bar action. Web mode only, and only while this viewer holds control.
  */
-export type files_browser_StreamNav = { action: "go"; url: string } | { action: "back" | "forward" | "reload" | "stop" };
+export type files_browser_StreamNav =
+	| { action: "go"; url: string }
+	| { action: "back" | "forward" | "reload" | "stop" };
 
 /**
  * Messages the runner sends only for a web session.
  */
 export type files_browser_StreamWebMessage =
-	| { t: "location"; url: string; title: string; loading: boolean; canGoBack: boolean; canGoForward: boolean }
-	| { t: "notice"; code: string }
-	| { t: "nav-ack"; seq: number; ok: boolean; code?: string }
+	| ({
+			t: "location";
+			url: string;
+			title: string;
+			loading: boolean;
+			canGoBack: boolean;
+			canGoForward: boolean;
+	  } & files_browser_StreamTabIdentity)
+	| ({ t: "notice"; code: string } & files_browser_StreamTabIdentity)
+	| ({ t: "nav-ack"; seq: number; ok: boolean; code?: string } & files_browser_StreamTabIdentity)
 	| { t: "agent-access"; on: boolean }
+	| { t: "tabs"; viewedTabId: string; viewGen: number; tabs: files_browser_StreamTab[] }
 	/**
 	 * A human download is held in the runner. The app saves it to Files with this id.
 	 */
-	| { t: "download"; downloadId: string; name: string; size: number; contentType: string }
+	| ({
+			t: "download";
+			downloadId: string;
+			name: string;
+			size: number;
+			contentType: string;
+	  } & files_browser_StreamTabIdentity)
 	/**
 	 * The page opened a file dialog. `accept` is the input's raw `accept` text, `origin` the frame origin.
 	 */
-	| { t: "file-chooser"; chooserId: string; multiple: boolean; accept: string; origin: string }
-	| { t: "file-chooser-closed"; chooserId: string };
+	| ({
+			t: "file-chooser";
+			chooserId: string;
+			multiple: boolean;
+			accept: string;
+			origin: string;
+	  } & files_browser_StreamTabIdentity)
+	| ({ t: "file-chooser-closed"; chooserId: string } & files_browser_StreamTabIdentity);
 
 export type files_browser_StreamHelloMessage = {
+	mode: "file" | "web";
 	viewerId: string;
 	viewport: { width: number; height: number };
 	control: string;
 	controlGen: number;
-};
+	viewedTabId: string;
+	policyRevision: number;
+	selectionRevision: number;
+	tabs: files_browser_StreamTab[];
+} & files_browser_StreamTabIdentity;
 
 export type files_browser_StreamControlMessage = {
 	control: string;
 	controlGen: number;
-};
+} & files_browser_StreamTabIdentity;
 
 export type files_browser_StreamViewportMessage = {
 	width: number;
 	height: number;
-};
+} & files_browser_StreamTabIdentity;
 
 export type files_browser_StreamAckMessage = {
 	seq: number;
@@ -119,8 +150,75 @@ function is_record(value: unknown): value is Record<string, unknown> {
 	return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
+function parse_tab_identity(value: Record<string, unknown>): files_browser_StreamTabIdentity | null {
+	if (
+		typeof value.tabId !== "string" ||
+		value.tabId.length === 0 ||
+		typeof value.tabGen !== "number" ||
+		!Number.isSafeInteger(value.tabGen) ||
+		value.tabGen <= 0 ||
+		typeof value.viewGen !== "number" ||
+		!Number.isSafeInteger(value.viewGen) ||
+		value.viewGen <= 0
+	) {
+		return null;
+	}
+	return { tabId: value.tabId, tabGen: value.tabGen, viewGen: value.viewGen };
+}
+
+function parse_tabs(value: Record<string, unknown>) {
+	if (
+		typeof value.viewedTabId !== "string" ||
+		typeof value.viewGen !== "number" ||
+		!Number.isSafeInteger(value.viewGen) ||
+		value.viewGen <= 0 ||
+		!Array.isArray(value.tabs) ||
+		value.tabs.length > 8
+	) {
+		return null;
+	}
+	const tabs: files_browser_StreamTab[] = [];
+	for (const tab of value.tabs) {
+		if (
+			!is_record(tab) ||
+			typeof tab.tabId !== "string" ||
+			typeof tab.tabGen !== "number" ||
+			!Number.isSafeInteger(tab.tabGen) ||
+			tab.tabGen <= 0 ||
+			typeof tab.navGen !== "number" ||
+			!Number.isSafeInteger(tab.navGen) ||
+			tab.navGen <= 0 ||
+			typeof tab.title !== "string" ||
+			typeof tab.url !== "string"
+		) {
+			return null;
+		}
+		tabs.push({ tabId: tab.tabId, tabGen: tab.tabGen, navGen: tab.navGen, title: tab.title, url: tab.url });
+	}
+	if (!tabs.some((tab) => tab.tabId === value.viewedTabId)) {
+		return null;
+	}
+	return { viewedTabId: value.viewedTabId, viewGen: value.viewGen, tabs };
+}
+
 function parse_hello(value: unknown): files_browser_StreamHelloMessage | null {
 	if (!is_record(value) || value.t !== "hello") {
+		return null;
+	}
+	const tab = parse_tab_identity(value);
+	const tabs = parse_tabs(value);
+	if (
+		!tab ||
+		!tabs ||
+		(value.mode !== "file" && value.mode !== "web") ||
+		typeof value.policyRevision !== "number" ||
+		!Number.isSafeInteger(value.policyRevision) ||
+		value.policyRevision < 0 ||
+		typeof value.selectionRevision !== "number" ||
+		!Number.isSafeInteger(value.selectionRevision) ||
+		value.selectionRevision < 0 ||
+		value.viewedTabId !== tab.tabId
+	) {
 		return null;
 	}
 	if (
@@ -133,18 +231,28 @@ function parse_hello(value: unknown): files_browser_StreamHelloMessage | null {
 		return null;
 	}
 	const viewport = value.viewport;
-	if (
-		!is_record(viewport) ||
-		typeof viewport.width !== "number" ||
-		typeof viewport.height !== "number"
-	) {
+	if (!is_record(viewport) || typeof viewport.width !== "number" || typeof viewport.height !== "number") {
 		return null;
 	}
-	return { viewerId: value.viewerId, viewport: { width: viewport.width, height: viewport.height }, control: value.control, controlGen: value.controlGen };
+	return {
+		mode: value.mode,
+		viewerId: value.viewerId,
+		viewport: { width: viewport.width, height: viewport.height },
+		control: value.control,
+		controlGen: value.controlGen,
+		...tab,
+		...tabs,
+		policyRevision: value.policyRevision,
+		selectionRevision: value.selectionRevision,
+	};
 }
 
 function parse_control(value: unknown): files_browser_StreamControlMessage | null {
 	if (!is_record(value) || value.t !== "control") {
+		return null;
+	}
+	const tab = parse_tab_identity(value);
+	if (!tab) {
 		return null;
 	}
 	if (
@@ -155,11 +263,15 @@ function parse_control(value: unknown): files_browser_StreamControlMessage | nul
 	) {
 		return null;
 	}
-	return { control: value.control, controlGen: value.controlGen };
+	return { control: value.control, controlGen: value.controlGen, ...tab };
 }
 
 function parse_viewport(value: unknown): files_browser_StreamViewportMessage | null {
 	if (!is_record(value) || value.t !== "viewport") {
+		return null;
+	}
+	const tab = parse_tab_identity(value);
+	if (!tab) {
 		return null;
 	}
 	const viewport = value.viewport;
@@ -172,7 +284,7 @@ function parse_viewport(value: unknown): files_browser_StreamViewportMessage | n
 	) {
 		return null;
 	}
-	return { width: viewport.width, height: viewport.height };
+	return { width: viewport.width, height: viewport.height, ...tab };
 }
 
 function parse_ack(value: unknown): files_browser_StreamAckMessage | null {
@@ -189,6 +301,17 @@ function parse_web_message(value: unknown): files_browser_StreamWebMessage | nul
 	if (!is_record(value)) {
 		return null;
 	}
+	if (value.t === "agent-access") {
+		return typeof value.on === "boolean" ? { t: "agent-access", on: value.on } : null;
+	}
+	if (value.t === "tabs") {
+		const tabs = parse_tabs(value);
+		return tabs ? { t: "tabs", ...tabs } : null;
+	}
+	const tab = parse_tab_identity(value);
+	if (!tab) {
+		return null;
+	}
 	switch (value.t) {
 		case "location":
 			if (
@@ -202,6 +325,7 @@ function parse_web_message(value: unknown): files_browser_StreamWebMessage | nul
 			}
 			return {
 				t: "location",
+				...tab,
 				url: value.url,
 				title: value.title,
 				loading: value.loading,
@@ -209,19 +333,18 @@ function parse_web_message(value: unknown): files_browser_StreamWebMessage | nul
 				canGoForward: value.canGoForward,
 			};
 		case "notice":
-			return typeof value.code === "string" ? { t: "notice", code: value.code } : null;
+			return typeof value.code === "string" ? { t: "notice", code: value.code, ...tab } : null;
 		case "nav-ack":
 			if (typeof value.seq !== "number" || typeof value.ok !== "boolean") {
 				return null;
 			}
 			return {
 				t: "nav-ack",
+				...tab,
 				seq: value.seq,
 				ok: value.ok,
 				...(typeof value.code === "string" ? { code: value.code } : {}),
 			};
-		case "agent-access":
-			return typeof value.on === "boolean" ? { t: "agent-access", on: value.on } : null;
 		case "download":
 			if (
 				typeof value.downloadId !== "string" ||
@@ -233,6 +356,7 @@ function parse_web_message(value: unknown): files_browser_StreamWebMessage | nul
 			}
 			return {
 				t: "download",
+				...tab,
 				downloadId: value.downloadId,
 				name: value.name,
 				size: value.size,
@@ -249,13 +373,16 @@ function parse_web_message(value: unknown): files_browser_StreamWebMessage | nul
 			}
 			return {
 				t: "file-chooser",
+				...tab,
 				chooserId: value.chooserId,
 				multiple: value.multiple,
 				accept: value.accept,
 				origin: value.origin,
 			};
 		case "file-chooser-closed":
-			return typeof value.chooserId === "string" ? { t: "file-chooser-closed", chooserId: value.chooserId } : null;
+			return typeof value.chooserId === "string"
+				? { t: "file-chooser-closed", chooserId: value.chooserId, ...tab }
+				: null;
 		default:
 			return null;
 	}
@@ -276,11 +403,19 @@ export function files_browser_stream_connect(args: {
 	let seq = 0;
 	let controlGen: number | null = null;
 	let loadGen: number | null = null;
-	let pendingFrame: { seq: number; loadGen: number } | null = null;
+	let view: files_browser_StreamTabIdentity | null = null;
+	let pendingFrame: ({ seq: number; loadGen: number } & files_browser_StreamTabIdentity) | null = null;
+	const matches_view = (tab: files_browser_StreamTabIdentity) =>
+		view?.tabId === tab.tabId && view.tabGen === tab.tabGen && view.viewGen === tab.viewGen;
+	const change_view = (tab: files_browser_StreamTabIdentity) => {
+		if (!matches_view(tab)) loadGen = null;
+		view = { tabId: tab.tabId, tabGen: tab.tabGen, viewGen: tab.viewGen };
+	};
 
 	socket.onopen = () => {
 		socket.send(
 			JSON.stringify({
+				mode: args.hello.mode,
 				ownerId: args.hello.ownerId,
 				organizationId: args.hello.organizationId,
 				workspaceId: args.hello.workspaceId,
@@ -296,7 +431,7 @@ export function files_browser_stream_connect(args: {
 		// The frame bytes must be the next message after their metadata.
 		pendingFrame = null;
 		if (data instanceof Blob || data instanceof ArrayBuffer) {
-			if (frame === null) {
+			if (frame === null || !matches_view(frame)) {
 				return;
 			}
 			let frameFailed = false;
@@ -336,18 +471,30 @@ export function files_browser_stream_connect(args: {
 			Number.isSafeInteger(value.loadGen) &&
 			value.loadGen > 0
 		) {
-			pendingFrame = { seq: value.seq, loadGen: value.loadGen };
+			const tab = parse_tab_identity(value);
+			if (tab && matches_view(tab)) pendingFrame = { seq: value.seq, loadGen: value.loadGen, ...tab };
 			return;
 		}
 		const hello = parse_hello(value);
 		if (hello) {
+			if (hello.mode !== args.hello.mode) {
+				return;
+			}
 			controlGen = hello.controlGen;
+			change_view(hello);
 			args.events.onHello(hello);
 			return;
 		}
 		const control = parse_control(value);
 		if (control) {
+			if (
+				controlGen !== null &&
+				(control.controlGen < controlGen || (view !== null && control.viewGen < view.viewGen))
+			) {
+				return;
+			}
 			controlGen = control.controlGen;
+			change_view(control);
 			args.events.onControl(control);
 			return;
 		}
@@ -358,11 +505,24 @@ export function files_browser_stream_connect(args: {
 		}
 		const viewport = parse_viewport(value);
 		if (viewport) {
-			args.events.onViewport(viewport);
+			if (matches_view(viewport)) args.events.onViewport(viewport);
 			return;
 		}
 		const webMessage = parse_web_message(value);
 		if (webMessage) {
+			if ("tabId" in webMessage && !matches_view(webMessage)) {
+				return;
+			}
+			if (webMessage.t === "tabs") {
+				if (view !== null && webMessage.viewGen < view.viewGen) {
+					return;
+				}
+				const selected = webMessage.tabs.find((tab) => tab.tabId === webMessage.viewedTabId);
+				if (!selected) {
+					return;
+				}
+				change_view({ tabId: selected.tabId, tabGen: selected.tabGen, viewGen: webMessage.viewGen });
+			}
 			args.events.onWebMessage(webMessage);
 		}
 		// Unknown message types are ignored so the server can add new ones.
@@ -372,6 +532,7 @@ export function files_browser_stream_connect(args: {
 		pendingFrame = null;
 		controlGen = null;
 		loadGen = null;
+		view = null;
 		args.events.onClose({ code: event.code, reason: event.reason });
 	};
 
@@ -391,29 +552,30 @@ export function files_browser_stream_connect(args: {
 
 	return {
 		sendInput: (input) => {
-			if (socket.readyState !== WEBSOCKET_OPEN || controlGen === null || loadGen === null) {
+			if (socket.readyState !== WEBSOCKET_OPEN || controlGen === null || loadGen === null || view === null) {
 				return -1;
 			}
-			return send_numbered({ t: "input", seq: seq + 1, ...input, controlGen, loadGen });
+			return send_numbered({ t: "input", seq: seq + 1, ...input, controlGen, loadGen, ...view });
 		},
 		sendNav: (nav) => {
 			// Navigation does not depend on the image on screen, so it needs only control.
-			if (socket.readyState !== WEBSOCKET_OPEN || controlGen === null) {
+			if (socket.readyState !== WEBSOCKET_OPEN || controlGen === null || view === null) {
 				return -1;
 			}
-			return send_numbered({ t: "nav", seq: seq + 1, controlGen, ...nav });
+			return send_numbered({ t: "nav", seq: seq + 1, controlGen, ...nav, ...view });
 		},
 		sendFileChooserCancel: (chooserId) => {
-			if (socket.readyState !== WEBSOCKET_OPEN || controlGen === null) {
+			if (socket.readyState !== WEBSOCKET_OPEN || controlGen === null || view === null) {
 				return false;
 			}
-			socket.send(JSON.stringify({ t: "file-chooser-cancel", chooserId }));
+			socket.send(JSON.stringify({ t: "file-chooser-cancel", chooserId, ...view }));
 			return true;
 		},
 		close: () => {
 			pendingFrame = null;
 			controlGen = null;
 			loadGen = null;
+			view = null;
 			socket.close(1000, "client closed");
 		},
 	};

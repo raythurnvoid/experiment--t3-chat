@@ -3,6 +3,7 @@
 // A mocked SDK cannot show that an SDK upgrade changed behavior.
 
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { getFunctionName } from "convex/server";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { userEvent } from "vitest/browser";
 
@@ -50,7 +51,7 @@ vi.mock("convex/react", async (importOriginal) => {
 			};
 		},
 		useMutation: () => hookMocks.mutation,
-		useQuery: (_query: unknown, args: unknown) => {
+		useQuery: (query: never, args: unknown) => {
 			const messagesDenied = useSyncExternalStore(
 				(listener) => {
 					hookMocks.messagesDeniedListeners.add(listener);
@@ -61,6 +62,8 @@ vi.mock("convex/react", async (importOriginal) => {
 				() => hookMocks.messagesDenied,
 			);
 
+			if (getFunctionName(query) === "files_browser:current_browser_preferences")
+				return { webChoice: { provider: "cloud" }, selectionRevision: 0, policyRevision: 0 };
 			return args !== "skip" && messagesDenied ? null : { messages: hookMocks.threadMessages };
 		},
 	};

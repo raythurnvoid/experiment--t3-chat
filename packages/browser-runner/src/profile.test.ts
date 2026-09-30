@@ -83,6 +83,7 @@ function make_runner() {
 	const page = Object.assign(new EventEmitter(), {
 		context: () => context,
 		mainFrame: () => ({ url: () => browserState.pageUrl, parentFrame: () => null }),
+		goto: vi.fn(async (url: string) => { await cdp.send("Page.navigate", { url }); return null; }),
 		setViewportSize: vi.fn(async () => {}),
 		evaluate: vi.fn(async () => ({})),
 		unroute: vi.fn(async () => {}),
@@ -123,14 +124,17 @@ function make_runner() {
 	let session = new BrowserSession(state, env);
 
 	const post = async (path: string, body: unknown) => {
-		const response = await session.fetch(new Request(`https://object${path}`, { method: "POST", body: JSON.stringify(body) }));
+		const current = record();
+		const defaults = path === "/run/begin" ? { tabId: current?.tabId, tabGen: 1, policyRevision: 0, selectionRevision: 0 } : {};
+		const input = body as Record<string, unknown>;
+		const response = await session.fetch(new Request(`https://object${path}`, { method: "POST", body: JSON.stringify({ ...defaults, ...input, ...(input.expectedAgentLease ? { expectedAgentLease: { tabId: current?.tabId, tabGen: 1, policyRevision: 0, selectionRevision: 0, ...input.expectedAgentLease as object } } : {}) }) }));
 		return await response.json() as Record<string, unknown>;
 	};
 	const record = () => stored.get("session") as Record<string, unknown> | undefined;
 	const open = async (overrides: Record<string, unknown> = {}) => {
 		const opened = await post("/open", {
 			mode: "web", ...OWNERS, grantId: "grant-1", attemptId: "attempt-1", navGen: 1, startUrl: "https://example.com/",
-			agentAccess: true, viewport: { width: 1280, height: 900 },
+			agentAccess: true, policyRevision: 0, selectionRevision: 0, viewport: { width: 1280, height: 900 },
 			profileId: "profile_1", profileKey: KEY, agentBlockedHosts: [], ...overrides,
 		});
 		expect(opened).toMatchObject({ ok: true });

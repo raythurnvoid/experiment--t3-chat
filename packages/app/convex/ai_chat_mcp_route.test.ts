@@ -246,6 +246,7 @@ async function chat(
 			trigger: "submit-message",
 			threadId: args.threadId,
 			membershipId: args.membershipId,
+			browserIntent: { webChoice: { provider: "cloud" }, selectionRevision: 0, policyRevision: 0 },
 		}),
 		signal: args.signal,
 	});

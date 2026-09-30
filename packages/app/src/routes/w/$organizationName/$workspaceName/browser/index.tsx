@@ -9,8 +9,7 @@ import { memo } from "react";
 type RouteWebBrowser_ClassNames = "RouteWebBrowser" | "RouteWebBrowser-panel" | "RouteWebBrowser-agent";
 
 /**
- * The cloud web browser page: the browser on the left and the agent chat on the right. The agent
- * panel shares its chat tabs with the Files agent panel, and its requests bind the web browser.
+ * Browser controls and the shared agent chat tabs. Chat uses the saved browser choice.
  */
 const RouteWebBrowser = memo(function RouteWebBrowser() {
 	return (
@@ -24,7 +23,7 @@ const RouteWebBrowser = memo(function RouteWebBrowser() {
 				<MyPanelResizeHandle aria-label="Resize browser and agent panel" />
 				<MyPanel id="route-web-browser-agent" order={2} defaultSize={30} minSize={20}>
 					<section className={"RouteWebBrowser-agent" satisfies RouteWebBrowser_ClassNames} aria-label="Agent">
-						<FileEditorSidebarAgent isActive browserBinding={{ mode: "web" }} />
+						<FileEditorSidebarAgent isActive />
 					</section>
 				</MyPanel>
 			</MyPanelGroup>

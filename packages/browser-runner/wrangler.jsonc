@@ -17,12 +17,14 @@
 	"durable_objects": {
 		"bindings": [
 			{ "name": "BROWSER_SESSIONS", "class_name": "BrowserSession" },
-			{ "name": "BROWSER_REGISTRY", "class_name": "BrowserRegistry" }
+			{ "name": "BROWSER_REGISTRY", "class_name": "BrowserRegistry" },
+			{ "name": "PLAYWRITER_SESSIONS", "class_name": "PlaywriterSession" }
 		]
 	},
 	"migrations": [
 		{ "tag": "v1", "new_sqlite_classes": ["BrowserSession"] },
-		{ "tag": "v2", "new_sqlite_classes": ["BrowserRegistry"] }
+		{ "tag": "v2", "new_sqlite_classes": ["BrowserRegistry"] },
+		{ "tag": "v3", "new_sqlite_classes": ["PlaywriterSession"] }
 	],
 	"vars": {
 		"BROWSER_RUNNER_DISABLED": "true",
@@ -56,12 +58,14 @@
 			"durable_objects": {
 				"bindings": [
 					{ "name": "BROWSER_SESSIONS", "class_name": "BrowserSession" },
-					{ "name": "BROWSER_REGISTRY", "class_name": "BrowserRegistry" }
+					{ "name": "BROWSER_REGISTRY", "class_name": "BrowserRegistry" },
+					{ "name": "PLAYWRITER_SESSIONS", "class_name": "PlaywriterSession" }
 				]
 			},
 			"migrations": [
 				{ "tag": "v1", "new_sqlite_classes": ["BrowserSession"] },
-				{ "tag": "v2", "new_sqlite_classes": ["BrowserRegistry"] }
+				{ "tag": "v2", "new_sqlite_classes": ["BrowserRegistry"] },
+				{ "tag": "v3", "new_sqlite_classes": ["PlaywriterSession"] }
 			],
 			"vars": {
 				"BROWSER_RUNNER_DISABLED": "false",

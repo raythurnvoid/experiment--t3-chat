@@ -14,7 +14,14 @@ import {
 import { test_convex, test_create_saved_text_file, test_mocks_fill_db_with } from "./setup.test.ts";
 import type { Id } from "./_generated/dataModel.js";
 import { files_yjs_doc_create_from_text } from "../shared/files-tiptap.ts";
+import { ai_chat_file_result_schema } from "../shared/ai-chat-files.ts";
 import { files_u8_to_array_buffer } from "../server/files.ts";
+import {
+	ai_chat_tool_browser_check_bindings,
+	ai_chat_tool_create_browser_management,
+	type ai_chat_tool_BrowserTurnContext,
+} from "../server/ai-chat-browser-tools.ts";
+import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 import { quotas_db_ensure } from "./quotas.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { files_nodes_db_create_private_node_by_path } from "./files_nodes.ts";
@@ -27,6 +34,40 @@ const r2Objects = new Map<string, Uint8Array>();
 let r2FetchCount = 0;
 
 const model = vi.hoisted(() => ({ streamText: vi.fn() }));
+// Pause real action calls so the race tests can use public human controls.
+const browserActionGate = vi.hoisted(() => ({
+	call: null as
+		| null
+		| ((kind: "query" | "mutation", name: string, args: unknown, phase: "before" | "after") => Promise<void>),
+}));
+vi.mock("./_generated/server.js", async (importOriginal) => {
+	const original = await importOriginal<typeof import("./_generated/server.js")>();
+	return {
+		...original,
+		internalAction: ((definition: Parameters<typeof original.internalAction>[0]) => {
+			if (typeof definition === "function") return original.internalAction(definition);
+			return original.internalAction({
+				...definition,
+				handler: async (ctx, ...args) => {
+					const runQuery = ctx.runQuery.bind(ctx);
+					const runMutation = ctx.runMutation.bind(ctx);
+					ctx.runQuery = async (ref, callArgs) => {
+						await browserActionGate.call?.("query", getFunctionName(ref), callArgs, "before");
+						const result = await runQuery(ref, callArgs);
+						await browserActionGate.call?.("query", getFunctionName(ref), callArgs, "after");
+						return result;
+					};
+					ctx.runMutation = async (ref, callArgs) => {
+						const result = await runMutation(ref, callArgs);
+						await browserActionGate.call?.("mutation", getFunctionName(ref), callArgs, "after");
+						return result;
+					};
+					return definition.handler(ctx, ...args);
+				},
+			});
+		}) as typeof original.internalAction,
+	};
+});
 vi.mock("ai", async (importOriginal) => ({
 	...(await importOriginal<typeof import("ai")>()),
 	streamText: model.streamText,
@@ -108,6 +149,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+	browserActionGate.call = null;
 	vi.restoreAllMocks();
 	vi.unstubAllGlobals();
 });
@@ -173,6 +215,38 @@ async function seed_private_html_file(t: ReturnType<typeof test_convex>, path = 
 
 function authed(t: ReturnType<typeof test_convex>, userId: Id<"users">) {
 	return t.withIdentity({ issuer: "https://clerk.test", external_id: userId });
+}
+
+async function seed_browser_chat_source(t: ReturnType<typeof test_convex>, fixture: WebFixture) {
+	const asUser = authed(t, fixture.userId);
+	const thread = await asUser.mutation(api.ai_chat.thread_create, {
+		membershipId: fixture.membershipId,
+		clientGeneratedId: "browser-control-chat",
+		lastMessageAt: Date.now(),
+	});
+	if (thread._nay) throw new Error(thread._nay.message);
+	const message = await asUser.mutation(api.ai_chat.thread_messages_add, {
+		membershipId: fixture.membershipId,
+		threadId: thread._yay.threadId,
+		messages: [
+			{
+				clientGeneratedMessageId: "browser-control-request",
+				content: { role: "user", parts: [{ type: "text", text: "Open the browser." }] },
+			},
+		],
+	});
+	if (message._nay) throw new Error(message._nay.message);
+	const captured = await t.mutation(internal.ai_chat_workspaces.capture, {
+		userId: fixture.userId,
+		membershipId: fixture.membershipId,
+	});
+	if (captured._nay) throw new Error(captured._nay.message);
+	return {
+		...fixture,
+		threadId: thread._yay.threadId,
+		sourceMessageId: message._yay.ids[0]!,
+		membershipLifetime: captured._yay.membershipLifetime,
+	};
 }
 
 function runner_open_session(overrides: Record<string, unknown> = {}) {
@@ -1284,7 +1358,7 @@ describe("start_browser", () => {
 			navigationClientId: "client-1",
 			viewport: { width: 1280, height: 900 },
 		});
-		expect(started._nay?.message).toBe("Choose an available source.");
+		expect(started._nay).toMatchObject({ name: "needs_capture", message: "Capture the current editor draft first." });
 		expect(runnerCalls).toEqual([]);
 	});
 });
@@ -1359,6 +1433,65 @@ describe("set_browser_control", () => {
 });
 
 describe("reload_browser", () => {
+	test("returns the exact settled web tab lease", async () => {
+		const t = test_convex();
+		const fixture = await seed_web_member(t);
+		const started = await start_web_session(t, fixture);
+		if (started._nay) throw new Error(started._nay.message);
+		const expectedAgentLease = {
+			controlGen: 1,
+			loadGen: 0,
+			navGen: 1,
+			tabId: "tab-1",
+			tabGen: 1,
+			policyRevision: 0,
+			selectionRevision: 0,
+		};
+		runnerQueue.push(runner_web_session({ navGen: 2, tabGen: 2 }));
+		const reloaded = await authed(t, fixture.userId).action(api.files_browser.reload_browser, {
+			membershipId: fixture.membershipId,
+			sessionId: started._yay.session.sessionId,
+			path: "",
+			expectedAgentLease,
+		});
+		expect(reloaded._yay).toEqual({ mode: "web", loadGen: 0, controlGen: 1, navGen: 2, tabId: "tab-1", tabGen: 2 });
+		expect(runnerCalls.at(-1)?.body.expectedAgentLease).toEqual(expectedAgentLease);
+		expect(await t.run((ctx) => ctx.db.get("files_browser_sessions", started._yay.session.sessionId))).toMatchObject({
+			navigationGeneration: 2,
+			tabGen: 2,
+			tabs: [{ tabId: "tab-1", tabGen: 2, navGen: 2 }],
+		});
+	});
+
+	test.each([{ tabId: "other-tab" }, { controlGen: 3 }])(
+		"refuses an agent reload reply with a changed lease: %j",
+		async (changed) => {
+			const t = test_convex();
+			const fixture = await seed_web_member(t);
+			const started = await start_web_session(t, fixture);
+			if (started._nay) throw new Error(started._nay.message);
+			const sessionId = started._yay.session.sessionId;
+			const before = await t.run((ctx) => ctx.db.get("files_browser_sessions", sessionId));
+			runnerQueue.push(runner_web_session({ navGen: 2, tabGen: 2, ...changed }));
+			const reloaded = await authed(t, fixture.userId).action(api.files_browser.reload_browser, {
+				membershipId: fixture.membershipId,
+				sessionId,
+				path: "",
+				expectedAgentLease: {
+					controlGen: 1,
+					loadGen: 0,
+					navGen: 1,
+					tabId: "tab-1",
+					tabGen: 1,
+					policyRevision: 0,
+					selectionRevision: 0,
+				},
+			});
+			expect(reloaded._nay?.name).toBe("stale");
+			expect(await t.run((ctx) => ctx.db.get("files_browser_sessions", sessionId))).toEqual(before);
+		},
+	);
+
 	test("copies the runner generation and source instead of counting local reloads", async () => {
 		const t = test_convex();
 		const fixture = await seed_html_file(t);
@@ -1421,6 +1554,65 @@ describe("reload_browser", () => {
 });
 
 describe("sync_browser_session", () => {
+	test("a late viewer renew keeps the completed web navigation in the catalog", async () => {
+		const t = test_convex();
+		const fixture = await seed_web_member(t);
+		const started = await start_web_session(t, fixture);
+		if (started._nay) throw new Error(started._nay.message);
+		const sessionId = started._yay.session.sessionId;
+		const source = await seed_browser_chat_source(t, fixture);
+		const browserIntent = { webChoice: { provider: "cloud" as const }, selectionRevision: 0, policyRevision: 0 };
+		const base = vi.mocked(fetch).getMockImplementation()!;
+		let releaseRenew!: () => void;
+		let startedRenew!: () => void;
+		const waiting = new Promise<void>((resolve) => {
+			releaseRenew = resolve;
+		});
+		const reached = new Promise<void>((resolve) => {
+			startedRenew = resolve;
+		});
+		vi.mocked(fetch).mockImplementation(async (input, init) => {
+			if (!String(input).endsWith("/internal/browser/viewer-renew")) return base(input, init);
+			runnerCalls.push({ route: "viewer-renew", body: JSON.parse(String(init?.body)) as Record<string, unknown> });
+			startedRenew();
+			await waiting;
+			return Response.json({ ok: true, grantedUntil: Date.now() + 30_000, session: runner_web_session().session });
+		});
+		const asUser = authed(t, fixture.userId);
+		const renewing = asUser.action(api.files_browser.renew_browser_viewer, {
+			membershipId: fixture.membershipId,
+			sessionId,
+			viewerId: "viewer-1",
+		});
+		await reached;
+		runnerQueue.push(runner_web_session({ navGen: 2, tabGen: 2 }));
+		const reloaded = await asUser.action(api.files_browser.reload_browser, {
+			membershipId: fixture.membershipId,
+			sessionId,
+			path: "",
+			expectedAgentLease: {
+				controlGen: 1,
+				loadGen: 0,
+				navGen: 1,
+				tabId: "tab-1",
+				tabGen: 1,
+				policyRevision: 0,
+				selectionRevision: 0,
+			},
+		});
+		expect(reloaded._yay).toMatchObject({ navGen: 2, tabGen: 2 });
+		releaseRenew();
+		expect((await renewing)._nay).toBeUndefined();
+		const catalog = await t.query(internal.files_browser.get_agent_browser_catalog, { source, browserIntent });
+		expect(catalog._yay?.browsers[0]?.resource).toMatchObject({ sessionId, navGen: 2, tabGen: 2 });
+		const checked = await t.query(internal.files_browser.check_browser_session_access, {
+			...fixture,
+			sessionId,
+			tabId: "tab-1",
+		});
+		expect(checked).toMatchObject({ ok: true, navGen: 2, tabGen: 2 });
+	});
+
 	test("merges source and control separately when replies arrive out of order", async () => {
 		const t = test_convex();
 		const fixture = await seed_html_file(t);
@@ -1486,13 +1678,189 @@ describe("sync_browser_session", () => {
 	});
 });
 
-describe("/api/chat browser binding", () => {
-	async function send_chat(
-		t: ReturnType<typeof test_convex>,
-		fixture: BrowserFixture,
-		sessionId: Id<"files_browser_sessions">,
-	) {
+describe("sync_browser_tab_identities", () => {
+	test("a late public Tabs reply keeps the completed navigation of the other tab", async () => {
+		const t = test_convex();
+		const fixture = await seed_web_member(t);
+		await t.run((ctx) => ctx.db.patch("users", fixture.userId, { clerkUserId: "user_browser_tabs" }));
+		const source = await seed_browser_chat_source(t, fixture);
+		const turn: ai_chat_tool_BrowserTurnContext = {
+			...fixture,
+			organizationName: "test-organization",
+			workspaceName: "test-workspace",
+			membershipLifetime: source.membershipLifetime,
+			getThreadId: () => source.threadId,
+			getSourceMessageId: () => source.sourceMessageId,
+			browserIntent: { webChoice: { provider: "cloud" }, selectionRevision: 0, policyRevision: 0 },
+			browsers: new Map(),
+			observations: new Map(),
+			pendingPlaywriterCommands: new Map(),
+			revocation: { revoked: false },
+			canWriteFiles: false,
+		};
+		await t.action(async (ctx) => {
+			const tools = ai_chat_tool_create_browser_management(ctx, turn);
+			runnerQueue.push(runner_web_session());
+			const opened = ai_chat_file_result_schema.parse(
+				await tools.browser_open.execute!({ mode: "web" }, { toolCallId: "tabs-open", messages: [] }),
+			);
+			expect(opened.metadata.status).toBe("succeeded");
+			const browser = [...turn.browsers.values()][0]!;
+			if (browser.provider !== "cloud") throw new Error("Expected the cloud browser");
+			const sessionId = browser.sessionId;
+			const tabs = [
+				{ tabId: "tab-1", tabGen: 1, navGen: 1, title: "A", url: "https://example.com/a" },
+				{ tabId: "tab-2", tabGen: 1, navGen: 1, title: "B", url: "https://example.com/b" },
+			];
+			runnerQueue.push({
+				...runner_web_session({ controlGen: 2, tabCount: 2 }),
+				tabs,
+				status: "completed",
+				result: { tabId: "tab-2", reason: null, cleanup: "complete" },
+			});
+			const newTab = ai_chat_file_result_schema.parse(
+				await tools.browser_new_tab.execute!(
+					{ browserRef: sessionId, url: "https://example.com/b" },
+					{ toolCallId: "tabs-new", messages: [] },
+				),
+			);
+			expect(newTab.metadata.status).toBe("succeeded");
+
+			const base = vi.mocked(fetch).getMockImplementation()!;
+			let releaseTabs!: () => void;
+			let startedTabs!: () => void;
+			const waiting = new Promise<void>((resolve) => {
+				releaseTabs = resolve;
+			});
+			const reached = new Promise<void>((resolve) => {
+				startedTabs = resolve;
+			});
+			vi.mocked(fetch).mockImplementation(async (input, init) => {
+				const route = String(input).split("/").at(-1)!;
+				if (!["tabs", "run", "status"].includes(route)) return base(input, init);
+				const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+				runnerCalls.push({ route, body });
+				if (route === "tabs") {
+					startedTabs();
+					await waiting;
+					return Response.json({ ...runner_web_session({ controlGen: 2, tabCount: 2 }), tabs });
+				}
+				if (route === "status")
+					return Response.json({
+						...runner_web_session({ controlGen: 2, tabCount: 2 }),
+						alive: true,
+						profileStored: false,
+					});
+				return Response.json({
+					ok: true,
+					status: "succeeded",
+					commandId: body.commandId,
+					codeHash: await crypto_sha256_hex(`browser-v3\n${String(body.code)}`),
+					elapsedMs: 10,
+					result: "B",
+					resultTruncated: false,
+					files: [],
+					consoleEntries: [],
+					pageErrors: [],
+					logs: [],
+					logsTruncated: false,
+					error: null,
+					session: runner_web_session({ controlGen: 2, tabCount: 2, tabId: "tab-2", navGen: 2, tabGen: 2 }).session,
+				});
+			});
+			const asUser = authed(t, fixture.userId);
+			const listing = asUser.action(api.files_browser.list_browser_tabs, {
+				membershipId: fixture.membershipId,
+				sessionId,
+			});
+			await reached;
+			try {
+				const navigated = ai_chat_file_result_schema.parse(
+					await tools.browser_run.execute!(
+						{
+							browserRef: sessionId,
+							tabRef: "tab-2",
+							code: "await page.goto('https://example.com/next'); return await page.title();",
+						},
+						{ toolCallId: "tabs-navigate-b", messages: [] },
+					),
+				);
+				expect(navigated.metadata.status).toBe("succeeded");
+				const completed = await t.run((readCtx) => readCtx.db.get("files_browser_sessions", sessionId));
+				if (completed?.mode !== "web") throw new Error("Expected the completed web navigation");
+				expect(completed.tabs.find((tab) => tab.tabId === "tab-2")).toEqual({
+					tabId: "tab-2",
+					tabGen: 2,
+					navGen: 2,
+				});
+				expect(completed.viewedTabId).toBe("tab-1");
+			} finally {
+				releaseTabs();
+				await listing;
+			}
+			expect((await listing)._nay).toBeUndefined();
+			const stored = await t.run((readCtx) => readCtx.db.get("files_browser_sessions", sessionId));
+			if (stored?.mode !== "web") throw new Error("Expected the live web browser");
+			expect(
+				stored.tabs.find((tab) => tab.tabId === "tab-2"),
+				"late Tabs must keep B's completed navigation",
+			).toEqual({
+				tabId: "tab-2",
+				tabGen: 2,
+				navGen: 2,
+			});
+			expect(stored).toMatchObject({ tabId: "tab-1", viewedTabId: "tab-1", controlGen: 2 });
+			expect(await ai_chat_tool_browser_check_bindings(ctx, turn)).toBe(true);
+			expect(turn.revocation.revoked).toBe(false);
+			const read = ai_chat_file_result_schema.parse(
+				await tools.browser_run.execute!(
+					{ browserRef: sessionId, tabRef: "tab-2", code: "return await page.title();" },
+					{ toolCallId: "tabs-read-b", messages: [] },
+				),
+			);
+			expect(read.metadata.status).toBe("succeeded");
+			expect(runnerCalls.filter((call) => call.route === "run").at(-1)?.body).toMatchObject({
+				tabId: "tab-2",
+				tabGen: 2,
+				navGen: 2,
+				controlGen: 2,
+			});
+			runnerQueue.push({
+				...runner_web_session({ controlGen: 3 }),
+				tabs: [tabs[0]],
+				status: "completed",
+				result: { tabId: "tab-2", reason: null, cleanup: "complete" },
+			});
+			expect(
+				(
+					await asUser.action(api.files_browser.close_browser_tab, {
+						membershipId: fixture.membershipId,
+						sessionId,
+						tabId: "tab-2",
+						viewerId: "viewer-1",
+					})
+				)._yay?.status,
+			).toBe("completed");
+			const closedTab = await t.run((readCtx) => readCtx.db.get("files_browser_sessions", sessionId));
+			if (closedTab?.mode !== "web") throw new Error("Expected the remaining web tab");
+			expect(closedTab.tabs).toEqual([{ tabId: "tab-1", tabGen: 1, navGen: 1 }]);
+		});
+	});
+});
+
+describe("/api/chat browser availability", () => {
+	async function send_chat(t: ReturnType<typeof test_convex>, fixture: WebFixture) {
 		const asUser = authed(t, fixture.userId);
+		const preference = await asUser.query(api.files_browser.current_browser_preferences, {
+			membershipId: fixture.membershipId,
+		});
+		const browserIntent = preference
+			? {
+					webChoice: preference.webChoice,
+					selectionRevision: preference.selectionRevision,
+					policyRevision: preference.policyRevision,
+				}
+			: null;
 		const thread = await asUser.mutation(api.ai_chat.thread_create, {
 			membershipId: fixture.membershipId,
 			clientGeneratedId: "browser-thread",
@@ -1504,7 +1872,7 @@ describe("/api/chat browser binding", () => {
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({
 				membershipId: fixture.membershipId,
-				browserSessionId: sessionId,
+				browserIntent,
 				threadId: thread._yay!.threadId,
 				messages: [{ id: "browser-message", role: "user", parts: [{ type: "text", text: "Inspect the page." }] }],
 				parentId: null,
@@ -1517,107 +1885,64 @@ describe("/api/chat browser binding", () => {
 		return model.streamText.mock.calls[0][0] as Parameters<typeof streamText>[0];
 	}
 
-	test("takes the initial lease and disables only browser tools after another takeover", async () => {
+	test("a Viewer can send plain chat while browser use stays refused", async () => {
+		const t = test_convex();
+		const owner = await seed_web_member(t);
+		const viewer = await add_workspace_member(t, owner, { role: "viewer", plan: "Pro" });
+		const call = await send_chat(t, viewer);
+		expect(call.tools).toHaveProperty("bash");
+		const source = await seed_browser_chat_source(t, viewer);
+		const browserIntent = { webChoice: { provider: "cloud" as const }, selectionRevision: 0, policyRevision: 0 };
+		expect((await t.query(internal.files_browser.check_browser_source, { source, browserIntent }))._nay?.message).toBe(
+			"Permission denied",
+		);
+		expect(
+			(
+				await authed(t, viewer.userId).action(api.files_browser.start_web_browser, {
+					membershipId: viewer.membershipId,
+					viewport: { width: 1280, height: 720 },
+					startUrl: null,
+				})
+			)._nay?.message,
+		).toBe("Permission denied");
+		expect(runnerCalls).toEqual([]);
+	});
+
+	test("offers browser tools before a browser exists in Ask mode", async () => {
+		const t = test_convex();
+		const fixture = await seed_html_file(t);
+		const call = await send_chat(t, fixture);
+		expect(call.tools).toHaveProperty("browser_run");
+		expect(call.tools).toHaveProperty("browser_open");
+		expect(call.tools).toHaveProperty("browser_new_tab");
+		expect(call.tools).toHaveProperty("playwriter_read");
+		expect(call.tools).not.toHaveProperty("edit_file");
+		expect(runnerCalls).toEqual([]);
+	});
+
+	test("does not Resume a human pause when a new chat request starts", async () => {
 		const t = test_convex();
 		const fixture = await seed_html_file(t);
 		const started = await start_saved_session(t, fixture);
 		const sessionId = started._yay!.sessionId;
 		await t.mutation(internal.files_browser.set_browser_control, { sessionId, control: "human", controlGen: 2 });
-		runnerQueue.push({ ...runner_open_session({ nodeId: fixture.nodeId, controlGen: 3, loadGen: 7 }), alive: true, profileStored: false });
-		const call = await send_chat(t, fixture, sessionId);
-		expect(call.tools).toHaveProperty("browser_run");
-		if (!call.prepareStep) throw new Error("Expected prepareStep");
-		const step = {
-			model: call.model,
-			messages: call.messages ?? [],
-			steps: [],
-			stepNumber: 0,
-			experimental_context: call.experimental_context,
-		};
-		await t.run(async () => {
-			expect(await call.prepareStep!(step)).toEqual({ activeTools: call.activeTools, messages: step.messages });
-		});
-		await t.mutation(internal.files_browser.set_browser_control, { sessionId, control: "ready", controlGen: 4 });
-		await t.run(async () => {
-			const next = await call.prepareStep!({ ...step, stepNumber: 1 });
-			expect(next?.activeTools).toContain("bash");
-			expect(next?.activeTools).not.toContain("browser_run");
-			expect(next?.activeTools).not.toContain("browser_reload");
-			expect(next?.activeTools).not.toContain("browser_close");
-			expect(next?.system).toContain("no longer available");
-		});
-		expect(runnerCalls.map((call) => call.route)).toEqual(["open", "status"]);
+		const call = await send_chat(t, fixture);
+		expect(call.tools).toHaveProperty("browser_status");
+		expect((await t.run((ctx) => ctx.db.get("files_browser_sessions", sessionId)))?.control).toBe("human");
+		expect(runnerCalls.map((entry) => entry.route)).toEqual(["open"]);
 	});
 
-	test("keeps browser tools available after their own acknowledged reload", async () => {
-		const t = test_convex();
-		const fixture = await seed_html_file(t);
-		const started = await start_saved_session(t, fixture);
-		const sessionId = started._yay!.sessionId;
-		runnerQueue.push({ ...runner_open_session({ nodeId: fixture.nodeId }), alive: true, profileStored: false });
-		const call = await send_chat(t, fixture, sessionId);
-		const reload = call.tools?.browser_reload;
-		if (!reload?.execute || !call.prepareStep) throw new Error("Expected live browser tools");
-		runnerQueue.push(runner_open_session({ nodeId: fixture.nodeId, loadGen: 2 }));
-		await authed(t, fixture.userId).run(async () => {
-			expect(await reload.execute!({}, { toolCallId: "reload", messages: [] })).toMatchObject({
-				metadata: { status: "succeeded", reason: null },
-			});
-			const next = await call.prepareStep!({
-				model: call.model,
-				messages: call.messages ?? [],
-				steps: [],
-				stepNumber: 1,
-				experimental_context: call.experimental_context,
-			});
-			expect(next?.activeTools).toEqual(call.activeTools);
-			expect(next?.system).toBeUndefined();
-		});
-		expect(runnerCalls.map((call) => call.route)).toEqual(["open", "status", "reload"]);
-	});
-
-	test("drops web browser tools when the owner turns agent access off", async () => {
+	test("keeps discovery tools available after a browser ends", async () => {
 		const t = test_convex();
 		const fixture = await seed_html_file(t);
 		const started = await start_web_session(t, fixture);
 		if (started._nay) throw new Error(started._nay.message);
 		const sessionId = started._yay.session.sessionId;
-		runnerQueue.push({ ...runner_web_session(), alive: true, profileStored: false });
-		const call = await send_chat(t, fixture, sessionId);
-		expect(call.tools).toHaveProperty("browser_run");
-		expect(call.system).toContain("You may navigate with `page.goto`.");
-		if (!call.prepareStep) throw new Error("Expected prepareStep");
-
-		// Change only the switch, not the control generation, so this proves the switch check itself.
-		await t.run((ctx) => ctx.db.patch("files_browser_sessions", sessionId, { agentAccess: false }));
-		await t.run(async () => {
-			const next = await call.prepareStep!({
-				model: call.model,
-				messages: call.messages ?? [],
-				steps: [],
-				stepNumber: 1,
-				experimental_context: call.experimental_context,
-			});
-			expect(next?.activeTools).toContain("bash");
-			expect(next?.activeTools).not.toContain("browser_run");
-			expect(next?.system).toContain("no longer available");
-		});
-	});
-
-	test.each([
-		{ reply: { ok: true, alive: false, closing: false, usage: null, profileStored: false }, control: "closed" },
-		{ reply: { ok: false, error: { code: "offline", message: "Unavailable" } }, control: "ready" },
-		{ reply: { ok: true, alive: true, profileStored: false }, control: "ready" },
-	])("omits browser tools after an unavailable status: $reply", async ({ reply, control }) => {
-		const t = test_convex();
-		const fixture = await seed_html_file(t);
-		const started = await start_saved_session(t, fixture);
-		const sessionId = started._yay!.sessionId;
-		runnerQueue.push(reply);
-		const call = await send_chat(t, fixture, sessionId);
-		expect(call.tools).not.toHaveProperty("browser_run");
-		expect(call.system).toContain("unavailable for this request");
-		expect((await t.run((ctx) => ctx.db.get("files_browser_sessions", sessionId)))?.control).toBe(control);
+		await t.mutation(internal.files_browser.finish_close_browser_session, { sessionId });
+		const call = await send_chat(t, fixture);
+		expect(call.tools).toHaveProperty("browser_status");
+		expect(call.tools).toHaveProperty("browser_open");
+		expect(runnerCalls.map((entry) => entry.route)).toEqual(["open"]);
 	});
 });
 
@@ -1877,13 +2202,17 @@ describe("current_browser_session", () => {
 		const t = test_convex();
 		const fixture = await seed_html_file(t);
 		const asUser = authed(t, fixture.userId);
-		expect(await asUser.query(api.files_browser.current_browser_session, { membershipId: fixture.membershipId })).toBe(
-			null,
-		);
+		expect(
+			await asUser.query(api.files_browser.current_browser_session, {
+				membershipId: fixture.membershipId,
+				mode: "file",
+			}),
+		).toBe(null);
 
 		const started = await start_saved_session(t, fixture);
 		const current = await asUser.query(api.files_browser.current_browser_session, {
 			membershipId: fixture.membershipId,
+			mode: "file",
 		});
 		expect(current?.sessionId).toBe(started._yay?.sessionId);
 		expect(current).not.toHaveProperty("runnerSessionId");
@@ -1893,9 +2222,12 @@ describe("current_browser_session", () => {
 			membershipId: fixture.membershipId,
 			sessionId: started._yay!.sessionId,
 		});
-		expect(await asUser.query(api.files_browser.current_browser_session, { membershipId: fixture.membershipId })).toBe(
-			null,
-		);
+		expect(
+			await asUser.query(api.files_browser.current_browser_session, {
+				membershipId: fixture.membershipId,
+				mode: "file",
+			}),
+		).toBe(null);
 	});
 });
 
@@ -1929,9 +2261,12 @@ describe("viewer and control doors", () => {
 			viewerId: "viewer-1",
 		});
 		expect(renewed._nay).toBeDefined();
-		expect(await asUser.query(api.files_browser.current_browser_session, { membershipId: fixture.membershipId })).toBe(
-			null,
-		);
+		expect(
+			await asUser.query(api.files_browser.current_browser_session, {
+				membershipId: fixture.membershipId,
+				mode: "file",
+			}),
+		).toBe(null);
 	});
 
 	test.each([true, null])("keeps the session after a renewal failure when liveness is %s", async (alive) => {
@@ -1990,23 +2325,10 @@ describe("viewer and control doors", () => {
 		expect((await t.run((ctx) => ctx.db.get("files_browser_sessions", sessionId)))?.control).toBe("human");
 
 		runnerQueue.push({ ok: true, control: "ready", controlGen: 3 });
-		const threadId = await t.run((ctx) =>
-			ctx.db.insert("ai_chat_threads", {
-				organizationId: fixture.organizationId as unknown as string,
-				workspaceId: fixture.workspaceId as unknown as string,
-				clientGeneratedId: "thread-1",
-				title: null,
-				archived: false,
-				runtime: "aisdk_5",
-				createdBy: fixture.userId,
-				updatedBy: fixture.userId,
-				updatedAt: Date.now(),
-			}),
-		);
 		const resumed = await asUser.action(api.files_browser.resume_browser_agent, {
 			membershipId: fixture.membershipId,
 			sessionId,
-			threadId,
+			controlGen: 2,
 		});
 		expect(resumed._nay).toBeUndefined();
 		expect((await t.run((ctx) => ctx.db.get("files_browser_sessions", sessionId)))?.control).toBe("ready");
@@ -2032,6 +2354,66 @@ describe("viewer and control doors", () => {
 		});
 		expect(renewed._nay).toBeUndefined();
 		expect((await t.run((ctx) => ctx.db.get("files_browser_sessions", sessionId)))?.idleUntil).toBe(idleUntil);
+	});
+});
+
+describe("resume_browser_agent", () => {
+	test("an old Resume cannot release a newer public Take", async () => {
+		const t = test_convex();
+		const fixture = await seed_html_file(t);
+		const started = await start_saved_session(t, fixture);
+		if (started._nay) throw new Error(started._nay.message);
+		const sessionId = started._yay.sessionId;
+		const asUser = authed(t, fixture.userId);
+		runnerQueue.push({ ok: true, grantId: "grant-1", expiresAt: Date.now() + 30_000 });
+		expect(
+			(await asUser.action(api.files_browser.grant_browser_viewer, { membershipId: fixture.membershipId, sessionId }))
+				._nay,
+		).toBeUndefined();
+		runnerQueue.push({ ok: true, control: "human", controlGen: 2 });
+		expect(
+			(
+				await asUser.action(api.files_browser.take_browser_control, {
+					membershipId: fixture.membershipId,
+					sessionId,
+					viewerId: "viewer-1",
+				})
+			)._yay,
+		).toEqual({ control: "human", controlGen: 2 });
+		runnerQueue.push({ ok: true, control: "ready", controlGen: 3 });
+		expect(
+			(
+				await asUser.action(api.files_browser.resume_browser_agent, {
+					membershipId: fixture.membershipId,
+					sessionId,
+					controlGen: 2,
+				})
+			)._yay,
+		).toEqual({ control: "ready", controlGen: 3 });
+		expect(runnerCalls.at(-1)?.body.controlGen).toBe(2);
+		runnerQueue.push({ ok: true, control: "human", controlGen: 4 });
+		expect(
+			(
+				await asUser.action(api.files_browser.take_browser_control, {
+					membershipId: fixture.membershipId,
+					sessionId,
+					viewerId: "viewer-1",
+				})
+			)._yay,
+		).toEqual({ control: "human", controlGen: 4 });
+		const callsBefore = runnerCalls.length;
+		runnerQueue.push({ ok: true, control: "ready", controlGen: 5 });
+		const stale = await asUser.action(api.files_browser.resume_browser_agent, {
+			membershipId: fixture.membershipId,
+			sessionId,
+			controlGen: 2,
+		});
+		expect(stale._nay?.name).toBe("stale");
+		expect(runnerCalls).toHaveLength(callsBefore);
+		expect(await t.run((ctx) => ctx.db.get("files_browser_sessions", sessionId))).toMatchObject({
+			control: "human",
+			controlGen: 4,
+		});
 	});
 });
 
@@ -2151,6 +2533,12 @@ describe("cleanup_expired_browser_docs", () => {
 				webStarts: 1,
 				updatedAt: Date.now(),
 			});
+			await ctx.db.insert("playwriter_user_daily_use", { userId: fixture.userId, day: threeDaysAgo, starts: 1 });
+			await ctx.db.insert("playwriter_user_daily_use", {
+				userId: fixture.userId,
+				day: new Date().toISOString().slice(0, 10),
+				starts: 1,
+			});
 			const recentId = await ctx.db.insert("files_browser_sessions", {
 				...session,
 				control: "closed",
@@ -2179,6 +2567,10 @@ describe("cleanup_expired_browser_docs", () => {
 		expect(counters).toHaveLength(1);
 		expect(counters[0]?.day).toBe(new Date().toISOString().slice(0, 10));
 		expect(await t.run((ctx) => ctx.db.query("files_browser_user_daily_use").collect())).toEqual([]);
+		expect(
+			await t.run((ctx) => ctx.db.query("playwriter_user_daily_use").collect()),
+			"Old Playwriter counters must be removed",
+		).toMatchObject([{ day: new Date().toISOString().slice(0, 10) }]);
 	});
 
 	test("sweep deletes expired captures and starting sessions", async () => {
@@ -2385,6 +2777,7 @@ describe("rename and closing slot", () => {
 		const asUser = authed(t, fixture.userId);
 		const current = await asUser.query(api.files_browser.current_browser_session, {
 			membershipId: fixture.membershipId,
+			mode: "file",
 		});
 		expect(current?.mode === "file" ? current.nodeId : null).toBe(String(fixture.nodeId));
 		expect(current?.mode === "file" ? current.path : null).toBe("/renamed.html");
@@ -2440,6 +2833,7 @@ describe("rename and closing slot", () => {
 		const asUser = authed(t, fixture.userId);
 		const current = await asUser.query(api.files_browser.current_browser_session, {
 			membershipId: fixture.membershipId,
+			mode: "file",
 		});
 		expect(current?.sessionId).toBe(String(liveId));
 	});
@@ -2623,6 +3017,13 @@ function runner_web_session(overrides: Record<string, unknown> = {}) {
 			controlGen: 1,
 			control: "ready" as const,
 			agentAccess: true,
+			tabId: "tab-1",
+			tabGen: 1,
+			viewedTabId: "tab-1",
+			viewGen: 1,
+			tabCount: 1,
+			policyRevision: 0,
+			selectionRevision: 0,
 			pageNonce: "nonce-1",
 			commandCount: 0,
 			idleUntil: Date.now() + 300_000,
@@ -2678,14 +3079,265 @@ async function add_workspace_member(
 	});
 }
 
-async function start_web_session(t: ReturnType<typeof test_convex>, fixture: WebFixture, startUrl: string | null = null) {
-	runnerQueue.push(runner_web_session());
+async function start_web_session(
+	t: ReturnType<typeof test_convex>,
+	fixture: WebFixture,
+	startUrl: string | null = null,
+) {
+	const preference = await authed(t, fixture.userId).query(api.files_browser.current_browser_preferences, {
+		membershipId: fixture.membershipId,
+	});
+	runnerQueue.push(
+		runner_web_session({
+			policyRevision: preference?.policyRevision ?? 0,
+			selectionRevision: preference?.selectionRevision ?? 0,
+			agentAccess: preference?.webAgentAccess !== false && preference?.webChoice.provider !== "none",
+		}),
+	);
 	return await authed(t, fixture.userId).action(api.files_browser.start_web_browser, {
 		membershipId: fixture.membershipId,
 		viewport: { width: 1280, height: 900 },
 		startUrl,
 	});
 }
+
+describe("current_browser_preferences", () => {
+	test("a Viewer reads their saved intent without gaining browser permission", async () => {
+		const t = test_convex();
+		const owner = await seed_web_member(t);
+		const member = await add_workspace_member(t, owner, { role: "member", plan: "Pro" });
+		const asMember = authed(t, member.userId);
+		expect(
+			(
+				await asMember.action(api.files_browser.set_browser_choice, {
+					membershipId: member.membershipId,
+					webChoice: { provider: "none" },
+				})
+			)._nay,
+		).toBeUndefined();
+		expect(
+			(
+				await authed(t, owner.userId).mutation(api.access_control.set_user_role, {
+					organizationId: owner.organizationId,
+					workspaceId: owner.workspaceId,
+					userId: member.userId,
+					role: "viewer",
+				})
+			)._nay,
+		).toBeUndefined();
+		expect(
+			await asMember.query(api.files_browser.current_browser_preferences, { membershipId: member.membershipId }),
+		).toMatchObject({
+			webChoice: { provider: "none" },
+			selectionRevision: 1,
+			policyRevision: 0,
+		});
+		expect(
+			await asMember.query(api.files_browser.current_browser_preferences, { membershipId: owner.membershipId }),
+		).toBeNull();
+		expect(
+			(
+				await asMember.action(api.files_browser.set_browser_choice, {
+					membershipId: member.membershipId,
+					webChoice: { provider: "cloud" },
+				})
+			)._nay?.message,
+		).toBe("Permission denied");
+		expect(runnerCalls).toEqual([]);
+	});
+});
+
+describe("browser tabs", () => {
+	test.each([
+		{ operation: "new", viewerId: "viewer-1", permitted: true },
+		{ operation: "close", viewerId: "viewer-1", permitted: true },
+		{ operation: "new", viewerId: "other-viewer", permitted: false },
+		{ operation: "close", viewerId: "other-viewer", permitted: false },
+	] as const)("human $operation uses the checked holder $viewerId", async ({ operation, viewerId, permitted }) => {
+		const t = test_convex();
+		const fixture = await seed_web_member(t);
+		const started = await start_web_session(t, fixture);
+		if (started._nay) throw new Error(started._nay.message);
+		const sessionId = started._yay.session.sessionId;
+		const asUser = authed(t, fixture.userId);
+		runnerQueue.push({ ok: true, grantId: "grant-1", expiresAt: Date.now() + 30_000 });
+		expect(
+			(await asUser.action(api.files_browser.grant_browser_viewer, { membershipId: fixture.membershipId, sessionId }))
+				._nay,
+		).toBeUndefined();
+		runnerQueue.push({ ok: true, control: "human", controlGen: 2 });
+		expect(
+			(
+				await asUser.action(api.files_browser.take_browser_control, {
+					membershipId: fixture.membershipId,
+					sessionId,
+					viewerId: "viewer-1",
+				})
+			)._yay,
+		).toEqual({ control: "human", controlGen: 2 });
+		const base = vi.mocked(fetch).getMockImplementation()!;
+		vi.mocked(fetch).mockImplementation(async (input, init) => {
+			const reply = await base(input, init);
+			if (!String(input).endsWith(`/internal/browser/tab-${operation}`)) return reply;
+			const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+			if (body.viewerId === "viewer-1") return reply;
+			return Response.json({
+				ok: true,
+				session: null,
+				tabs: [{ tabId: "tab-1", tabGen: 1, navGen: 1, title: "Fixture", url: "https://example.com/" }],
+				status: "refused",
+				result: { tabId: null, reason: "control", cleanup: "complete" },
+			});
+		});
+		runnerQueue.push(
+			operation === "new"
+				? {
+						...runner_web_session({ control: "human", controlGen: 3, tabCount: 2 }),
+						tabs: [
+							{ tabId: "tab-1", tabGen: 1, navGen: 1, title: "Fixture", url: "https://example.com/" },
+							{ tabId: "tab-2", tabGen: 1, navGen: 1, title: "", url: "about:blank" },
+						],
+						status: "completed",
+						result: { tabId: "tab-2", reason: null, cleanup: "complete" },
+					}
+				: {
+						ok: true,
+						session: null,
+						tabs: [],
+						status: "completed",
+						result: { tabId: "tab-1", reason: null, cleanup: "complete" },
+					},
+		);
+		const result =
+			operation === "new"
+				? await asUser.action(api.files_browser.new_browser_tab, {
+						membershipId: fixture.membershipId,
+						sessionId,
+						viewerId,
+					})
+				: await asUser.action(api.files_browser.close_browser_tab, {
+						membershipId: fixture.membershipId,
+						sessionId,
+						tabId: "tab-1",
+						viewerId,
+					});
+		expect(result._yay?.status).toBe(permitted ? "completed" : "refused");
+		expect(result._yay?.result.reason).toBe(permitted ? null : "control");
+		expect(runnerCalls.at(-1)?.body).toMatchObject({ mode: "web", viewerId, sessionId: "runner-web-1" });
+		expect(runnerCalls.at(-1)?.body.expectedAgentLease).toBeUndefined();
+		const stored = await t.run((ctx) => ctx.db.get("files_browser_sessions", sessionId));
+		expect(stored?.control, "a refused Close must keep the human browser").toBe(
+			permitted && operation === "close" ? "closed" : "human",
+		);
+		if (!permitted) expect(stored?.billing.state).toBe("pending");
+	});
+});
+
+describe("agent_open_browser", () => {
+	test.each(["fresh web", "reused web", "reused file"] as const)(
+		"does not adopt a human Take and Resume during %s Open",
+		async (kind) => {
+			const t = test_convex();
+			const fixture = await seed_web_member(t);
+			await t.run((ctx) => ctx.db.patch("users", fixture.userId, { clerkUserId: "user_browser_control" }));
+			const asUser = authed(t, fixture.userId);
+			const source = await seed_browser_chat_source(t, fixture);
+			const browserIntent = { webChoice: { provider: "cloud" as const }, selectionRevision: 0, policyRevision: 0 };
+			const path = "/control.html";
+			const nodeId =
+				kind === "reused file"
+					? await test_create_saved_text_file(t, { membershipId: fixture.membershipId, path, textContent: HTML_TEXT })
+					: null;
+			let existingId: Id<"files_browser_sessions"> | null = null;
+			if (nodeId) {
+				const started = await start_saved_session(t, { ...fixture, nodeId, path });
+				if (started._nay) throw new Error(started._nay.message);
+				existingId = started._yay.sessionId;
+			} else if (kind === "reused web") {
+				const started = await start_web_session(t, fixture);
+				if (started._nay) throw new Error(started._nay.message);
+				existingId = started._yay.session.sessionId;
+			}
+			const admitted = await t.mutation(internal.ai_chat_files.begin_browser_invocation, {
+				source,
+				browserIntent,
+				toolCallId: "open-control",
+				operationHash: "a".repeat(64),
+				resource: null,
+				mode: nodeId ? "file" : "web",
+				timeoutMs: 120_000,
+			});
+			if (admitted._nay) throw new Error(admitted._nay.message);
+			if (existingId)
+				runnerQueue.push({
+					alive: true,
+					profileStored: false,
+					...(nodeId ? runner_open_session({ nodeId }) : runner_web_session()),
+				});
+			else runnerQueue.push(runner_web_session());
+			let changedId: Id<"files_browser_sessions"> | null = null;
+			browserActionGate.call = async (operation, name, args, phase) => {
+				if (changedId) return;
+				const call = args as { sessionId?: Id<"files_browser_sessions"> };
+				const reached =
+					kind === "fresh web"
+						? phase === "after" && operation === "mutation" && name === "files_browser:commit_live_browser_session"
+						: phase === "before" &&
+							operation === "query" &&
+							name === "files_browser:load_browser_session" &&
+							call.sessionId === existingId;
+				if (!reached || !call.sessionId) return;
+				changedId = call.sessionId;
+				runnerQueue.push({ ok: true, grantId: "grant-1", expiresAt: Date.now() + 30_000 });
+				expect(
+					(
+						await asUser.action(api.files_browser.grant_browser_viewer, {
+							membershipId: fixture.membershipId,
+							sessionId: changedId,
+						})
+					)._yay?.grantId,
+				).toBe("grant-1");
+				runnerQueue.push({ ok: true, control: "human", controlGen: 2 });
+				expect(
+					(
+						await asUser.action(api.files_browser.take_browser_control, {
+							membershipId: fixture.membershipId,
+							sessionId: changedId,
+							viewerId: "viewer-1",
+						})
+					)._yay,
+				).toEqual({ control: "human", controlGen: 2 });
+				runnerQueue.push({ ok: true, control: "ready", controlGen: 3 });
+				expect(
+					(
+						await asUser.action(api.files_browser.resume_browser_agent, {
+							membershipId: fixture.membershipId,
+							sessionId: changedId,
+							controlGen: 2,
+						})
+					)._yay,
+				).toEqual({ control: "ready", controlGen: 3 });
+			};
+			const input = {
+				source,
+				browserIntent,
+				operationId: admitted._yay.commandId,
+				operationDeadline: admitted._yay.deadlineAt,
+				toolCallId: "open-control",
+			};
+			const opened = nodeId
+				? await t.action(internal.files_browser.agent_open_file_browser, { ...input, path, sourceKind: "saved" })
+				: await t.action(internal.files_browser.agent_open_browser, input);
+			expect(changedId).not.toBeNull();
+			expect(opened._nay?.name, JSON.stringify(opened)).toBe("stale");
+			expect(await t.run((ctx) => ctx.db.get("files_browser_sessions", changedId!))).toMatchObject({
+				control: "ready",
+				controlGen: 3,
+			});
+			expect(runnerCalls.filter((call) => call.route === "control-resume")).toHaveLength(1);
+		},
+	);
+});
 
 async function web_starts_today(t: ReturnType<typeof test_convex>, userId: Id<"users">) {
 	const day = new Date().toISOString().slice(0, 10);
@@ -2709,6 +3361,26 @@ async function consumed_units(t: ReturnType<typeof test_convex>, userId: Id<"use
 }
 
 describe("start_web_browser", () => {
+	test("returns the runner's settled initial navigation generation", async () => {
+		const t = test_convex();
+		const fixture = await seed_web_member(t);
+		runnerQueue.push(runner_web_session({ navGen: 2, tabGen: 2 }));
+		const started = await authed(t, fixture.userId).action(api.files_browser.start_web_browser, {
+			membershipId: fixture.membershipId,
+			viewport: { width: 1280, height: 900 },
+			startUrl: "https://example.com/",
+		});
+		if (started._nay) throw new Error(started._nay.message);
+		expect(started._yay.session.navigationGeneration).toBe(2);
+		expect(started._yay.session.tabGen).toBe(2);
+		expect(await t.run((ctx) => ctx.db.get("files_browser_sessions", started._yay.session.sessionId))).toMatchObject({
+			navigationGeneration: 2,
+			tabGen: 2,
+			tabs: [{ tabId: "tab-1", tabGen: 2, navGen: 2 }],
+		});
+		expect(runnerCalls.map((call) => call.route)).toEqual(["open"]);
+	});
+
 	test("starts a web session, counts it at commit, and reattaches for free", async () => {
 		const t = test_convex();
 		const fixture = await seed_web_member(t);
@@ -2926,28 +3598,31 @@ describe("start_web_browser", () => {
 		expect(runnerCalls).toEqual([]);
 	});
 
-	test("reports busy both ways with the live mode", async () => {
+	test("keeps independent file and web slots in the same workspace", async () => {
 		const t = test_convex();
 		const fixture = await seed_html_file(t);
 		const file = await start_saved_session(t, fixture);
 		expect(file._nay).toBeUndefined();
 
-		runnerQueue.push({ ...runner_open_session({ nodeId: fixture.nodeId }), alive: true, profileStored: false });
 		const web = await start_web_session(t, fixture);
-		runnerQueue.length = 0;
-		expect(web._nay).toMatchObject({ message: "Browser busy", data: { mode: "file" } });
-
-		runnerQueue.push({ ok: true, existed: true, verified: true, usage: null });
-		await authed(t, fixture.userId).action(api.files_browser.end_browser, {
-			membershipId: fixture.membershipId,
-			sessionId: file._yay!.sessionId,
-		});
-		expect((await start_web_session(t, fixture))._nay).toBeUndefined();
-
-		runnerQueue.push({ ...runner_web_session(), alive: true, profileStored: false });
-		const fileAgain = await start_saved_session(t, fixture, { navigationGeneration: 2 });
-		runnerQueue.length = 0;
-		expect(fileAgain._nay).toMatchObject({ message: "Browser busy", data: { mode: "web" } });
+		expect(web._nay).toBeUndefined();
+		const asUser = authed(t, fixture.userId);
+		expect(
+			await asUser.query(api.files_browser.current_browser_session, {
+				membershipId: fixture.membershipId,
+				mode: "file",
+			}),
+		).toMatchObject({ sessionId: file._yay!.sessionId, mode: "file" });
+		expect(
+			await asUser.query(api.files_browser.current_browser_session, {
+				membershipId: fixture.membershipId,
+				mode: "web",
+			}),
+		).toMatchObject({ sessionId: web._yay!.session.sessionId, mode: "web" });
+		expect(runnerCalls.filter((entry) => entry.route === "open").map((entry) => entry.body.mode)).toEqual([
+			"file",
+			"web",
+		]);
 	});
 });
 
@@ -3087,13 +3762,12 @@ describe("web browser access", () => {
 			mode: "web",
 		});
 
-		runnerQueue.push(runner_web_session({ agentAccess: false, controlGen: 2 }));
+		runnerQueue.push(runner_web_session({ agentAccess: false, controlGen: 2, policyRevision: 1 }));
 		const switched = await authed(t, fixture.userId).action(api.files_browser.set_browser_agent_access, {
 			membershipId: fixture.membershipId,
-			sessionId: started._yay.session.sessionId,
-			on: false,
+			enabled: false,
 		});
-		expect(switched._yay).toEqual({ agentAccess: false, controlGen: 2 });
+		expect(switched._yay).toMatchObject({ webAgentAccess: false, policyRevision: 1 });
 		expect(runnerCalls.at(-1)).toMatchObject({ route: "agent-access", body: { on: false } });
 		expect(await t.query(internal.files_browser.check_browser_session_access, args)).toEqual({
 			ok: false,
@@ -3111,7 +3785,15 @@ describe("web browser access", () => {
 		await authed(t, fixture.userId).action(api.files_browser.end_browser, {
 			membershipId: fixture.membershipId,
 			sessionId: started._yay.session.sessionId,
-			expectedAgentLease: { controlGen: 1, loadGen: 0, navGen: 1 },
+			expectedAgentLease: {
+				controlGen: 1,
+				loadGen: 0,
+				navGen: 1,
+				tabId: "tab-1",
+				tabGen: 1,
+				policyRevision: 0,
+				selectionRevision: 0,
+			},
 		});
 		expect(runnerCalls.at(-1)?.body).toMatchObject({ saveProfile: false, reason: "agent_close" });
 
@@ -3313,6 +3995,14 @@ describe("browser billing", () => {
 				loadGen: 0,
 				controlGen: 1,
 				control: "closed" as const,
+				tabId: null,
+				tabGen: 0,
+				viewedTabId: null,
+				viewGen: 0,
+				tabCount: 0,
+				tabs: [],
+				policyRevision: 0,
+				selectionRevision: 0,
 				closedAt: now - 60_000,
 				createdAt: now - 60_000,
 			};
@@ -3373,9 +4063,7 @@ describe("browser billing", () => {
 			billing: { state: "pending" },
 		});
 
-		await t.run((ctx) =>
-			ctx.db.patch("files_browser_sessions", sessionId, { closedAt: Date.now() - 11 * 60 * 1000 }),
-		);
+		await t.run((ctx) => ctx.db.patch("files_browser_sessions", sessionId, { closedAt: Date.now() - 11 * 60 * 1000 }));
 		await t.mutation(internal.files_browser.settle_browser_usage, { sessionId, usage: null });
 		expect((await t.run((ctx) => ctx.db.get("files_browser_sessions", sessionId)))?.billing).toMatchObject({
 			state: "settled",
@@ -3417,7 +4105,6 @@ describe("saved browser profiles", () => {
 				organizationId: fixture.organizationId,
 				workspaceId: fixture.workspaceId,
 				profileKey: crypto.getRandomValues(new Uint8Array(32)).buffer,
-				agentBlockedHosts: [],
 				createdAt: Date.now(),
 				lastUsedAt: overrides.lastUsedAt ?? Date.now(),
 			}),
@@ -3438,7 +4125,6 @@ describe("saved browser profiles", () => {
 			userId: fixture.userId,
 			organizationId: fixture.organizationId,
 			workspaceId: fixture.workspaceId,
-			agentBlockedHosts: [],
 		});
 		expect(profile!.profileKey.byteLength).toBe(32);
 		expect(runnerCalls[0]).toMatchObject({
@@ -3482,8 +4168,9 @@ describe("saved browser profiles", () => {
 		const keyText = key_base64(profile!.profileKey);
 
 		const returned: Array<unknown> = [started];
+		runnerQueue.push(runner_web_session({ controlGen: 2, policyRevision: 1 }));
 		returned.push(
-			await asUser.mutation(api.files_browser.set_browser_agent_blocked_hosts, {
+			await asUser.action(api.files_browser.set_agent_blocked_hosts, {
 				membershipId: fixture.membershipId,
 				hosts: ["bank.example"],
 			}),
@@ -3492,7 +4179,10 @@ describe("saved browser profiles", () => {
 			await asUser.query(api.files_browser.current_browser_profile, { membershipId: fixture.membershipId }),
 		);
 		returned.push(
-			await asUser.query(api.files_browser.current_browser_session, { membershipId: fixture.membershipId }),
+			await asUser.query(api.files_browser.current_browser_session, {
+				membershipId: fixture.membershipId,
+				mode: "web",
+			}),
 		);
 		runnerQueue.push(RUNNER_CLOSED, {
 			ok: true,
@@ -3526,10 +4216,10 @@ describe("saved browser profiles", () => {
 		);
 		expect(text).not.toContain(keyText);
 		expect(text).not.toContain("profileKey");
-		expect(returned.slice(1, 3)).toEqual([
-			{ _yay: null },
-			{ exists: true, lastUsedAt: profile!.lastUsedAt, agentBlockedHosts: ["bank.example"] },
-		]);
+		expect(returned[1]).toMatchObject({
+			_yay: { agentBlockedHosts: ["bank.example"], policyRevision: 1, syncPending: false },
+		});
+		expect(returned[2]).toEqual({ exists: true, lastUsedAt: profile!.lastUsedAt, agentBlockedHosts: ["bank.example"] });
 	});
 
 	test("Clear all ends the browser, deletes the profile, and the next start makes a new one", async () => {
@@ -3538,7 +4228,8 @@ describe("saved browser profiles", () => {
 		const asUser = authed(t, fixture.userId);
 		const started = await start_web_session(t, fixture);
 		if (started._nay) throw new Error(started._nay.message);
-		await asUser.mutation(api.files_browser.set_browser_agent_blocked_hosts, {
+		runnerQueue.push(runner_web_session({ controlGen: 2, policyRevision: 1 }));
+		await asUser.action(api.files_browser.set_agent_blocked_hosts, {
 			membershipId: fixture.membershipId,
 			hosts: ["bank.example"],
 		});
@@ -3557,7 +4248,7 @@ describe("saved browser profiles", () => {
 			vi.useRealTimers();
 		}
 
-		expect(runnerCalls.map((call) => call.route)).toEqual(["open", "close"]);
+		expect(runnerCalls.map((call) => call.route)).toEqual(["open", "agent-access", "close"]);
 		expect(runnerCalls.at(-1)).toMatchObject({ body: { saveProfile: false, reason: "profile_cleared" } });
 		expect(await t.run((ctx) => ctx.db.get("files_browser_sessions", started._yay.session.sessionId))).toMatchObject({
 			control: "closed",
@@ -3577,10 +4268,13 @@ describe("saved browser profiles", () => {
 		const [after] = await list_profiles(t);
 		expect(after!._id).not.toBe(before!._id);
 		expect(key_base64(after!.profileKey)).not.toBe(key_base64(before!.profileKey));
-		expect(after!.agentBlockedHosts).toEqual([]);
+		expect(
+			(await asUser.query(api.files_browser.current_browser_preferences, { membershipId: fixture.membershipId }))
+				?.agentBlockedHosts,
+		).toEqual(["bank.example"]);
 		expect(runnerCalls.at(-1)).toMatchObject({
 			route: "open",
-			body: { profileId: after!._id, profileKey: key_base64(after!.profileKey), agentBlockedHosts: [] },
+			body: { profileId: after!._id, profileKey: key_base64(after!.profileKey), agentBlockedHosts: ["bank.example"] },
 		});
 	});
 
@@ -3623,6 +4317,7 @@ describe("saved browser profiles", () => {
 		expect(listed).toEqual({ _yay: { exists: true, savedAt: 123, truncated: false, sites } });
 		expect(runnerCalls.map((call) => call.route)).toEqual(["open", "close", "profile-summary"]);
 		expect(runnerCalls.at(-1)?.body).toEqual({
+			mode: "web",
 			ownerId: fixture.userId,
 			organizationId: fixture.organizationId,
 			workspaceId: fixture.workspaceId,
@@ -3675,18 +4370,19 @@ describe("saved browser profiles", () => {
 		}
 	});
 
-	test("set_browser_agent_blocked_hosts stores canonical hosts and checks them", async () => {
+	test("set_agent_blocked_hosts stores policy without creating saved logins", async () => {
 		const t = test_convex();
 		const fixture = await seed_web_member(t);
 		const asUser = authed(t, fixture.userId);
 		const setHosts = (hosts: Array<string>) =>
-			asUser.mutation(api.files_browser.set_browser_agent_blocked_hosts, { membershipId: fixture.membershipId, hosts });
+			asUser.action(api.files_browser.set_agent_blocked_hosts, { membershipId: fixture.membershipId, hosts });
 
-		expect(await setHosts([" Bank.Example. ", "bank.example", "bücher.de", "10.0.0.1"])).toEqual({ _yay: null });
+		expect((await setHosts([" Bank.Example. ", "bank.example", "bücher.de", "10.0.0.1"]))._nay).toBeUndefined();
 		const state = await asUser.query(api.files_browser.current_browser_profile, {
 			membershipId: fixture.membershipId,
 		});
-		expect(state?.agentBlockedHosts).toEqual(["bank.example", "xn--bcher-kva.de", "10.0.0.1"]);
+		expect(state?.agentBlockedHosts).toEqual(["10.0.0.1", "bank.example", "xn--bcher-kva.de"]);
+		expect(await list_profiles(t)).toEqual([]);
 
 		for (const bad of [
 			"",
@@ -3703,13 +4399,16 @@ describe("saved browser profiles", () => {
 
 		const many = Array.from({ length: 51 }, (_, index) => `site${index}.example`);
 		expect((await setHosts(many))._nay?.message).toBe("Too many sites");
-		expect(await setHosts(many.slice(0, 50))).toEqual({ _yay: null });
-		const [profile] = await list_profiles(t);
-		expect(profile!.agentBlockedHosts).toHaveLength(50);
+		expect((await setHosts(many.slice(0, 50)))._nay).toBeUndefined();
+		expect(
+			(await asUser.query(api.files_browser.current_browser_preferences, { membershipId: fixture.membershipId }))
+				?.agentBlockedHosts,
+		).toHaveLength(50);
 
-		// The list set before the first start lives in the profile the start then uses.
-		expect(await setHosts(["bank.example"])).toEqual({ _yay: null });
+		// The next browser receives the saved policy.
+		expect((await setHosts(["bank.example"]))._nay).toBeUndefined();
 		expect((await start_web_session(t, fixture))._nay).toBeUndefined();
+		const [profile] = await list_profiles(t);
 		expect(await list_profiles(t)).toHaveLength(1);
 		expect(runnerCalls[0]).toMatchObject({
 			route: "open",
@@ -3718,7 +4417,7 @@ describe("saved browser profiles", () => {
 
 		// A viewer may not use the browser, so a viewer may not set its list either.
 		const viewer = await add_workspace_member(t, fixture, { role: "viewer", plan: "Pro" });
-		const refused = await authed(t, viewer.userId).mutation(api.files_browser.set_browser_agent_blocked_hosts, {
+		const refused = await authed(t, viewer.userId).action(api.files_browser.set_agent_blocked_hosts, {
 			membershipId: viewer.membershipId,
 			hosts: ["bank.example"],
 		});
@@ -3733,9 +4432,9 @@ describe("saved browser profiles", () => {
 		const member = await add_workspace_member(t, owner, { role: "member", plan: "Pro" });
 		const asMember = authed(t, member.userId);
 
-		expect(
-			await asMember.query(api.files_browser.current_browser_profile, { membershipId: owner.membershipId }),
-		).toBe(null);
+		expect(await asMember.query(api.files_browser.current_browser_profile, { membershipId: owner.membershipId })).toBe(
+			null,
+		);
 		expect(
 			(await asMember.action(api.files_browser.list_browser_profile_sites, { membershipId: owner.membershipId }))._nay
 				?.message,
@@ -3754,7 +4453,7 @@ describe("saved browser profiles", () => {
 		).toBe("Unauthorized");
 		expect(
 			(
-				await asMember.mutation(api.files_browser.set_browser_agent_blocked_hosts, {
+				await asMember.action(api.files_browser.set_agent_blocked_hosts, {
 					membershipId: owner.membershipId,
 					hosts: ["bank.example"],
 				})
@@ -3791,6 +4490,7 @@ describe("saved browser profiles", () => {
 			{
 				route: "profile-delete",
 				body: {
+					mode: "web",
 					ownerId: fixture.userId,
 					organizationId: fixture.organizationId,
 					workspaceId: fixture.workspaceId,
@@ -3850,9 +4550,7 @@ describe("saved browser profiles", () => {
 			});
 
 			// A reply without `deleted: true` is a failure too. Many failures stop growing at 6 hours.
-			await t.run((ctx) =>
-				ctx.db.patch("files_browser_profile_wipes", wipeId, { attempts: 20, nextAttemptAt: start }),
-			);
+			await t.run((ctx) => ctx.db.patch("files_browser_profile_wipes", wipeId, { attempts: 20, nextAttemptAt: start }));
 			runnerQueue.push({ ok: true });
 			await t.action(internal.files_browser.process_browser_profile_wipes, {});
 			expect(await t.run((ctx) => ctx.db.get("files_browser_profile_wipes", wipeId))).toMatchObject({
@@ -3956,7 +4654,9 @@ async function node_metadata(t: ReturnType<typeof test_convex>, fixture: WebFixt
 			)
 			.collect(),
 	);
-	return Object.fromEntries(docs.filter((doc) => doc.docKind === "value").map((doc) => [doc.fieldPath, doc.stringValue]));
+	return Object.fromEntries(
+		docs.filter((doc) => doc.docKind === "value").map((doc) => [doc.fieldPath, doc.stringValue]),
+	);
 }
 
 async function saved_node_id_by_path(t: ReturnType<typeof test_convex>, fixture: WebFixture, path: string) {
@@ -4226,6 +4926,9 @@ describe("fill_browser_chooser_from_files", () => {
 			sessionId,
 			chooserId: "chooser-1",
 			controlGen: 2,
+			tabId: "tab-1",
+			tabGen: 1,
+			viewGen: 1,
 			nodeIds,
 		});
 	}
@@ -4251,12 +4954,16 @@ describe("fill_browser_chooser_from_files", () => {
 		expect(runnerCalls.at(-1)).toEqual({
 			route: "upload-fill",
 			body: {
+				mode: "web",
 				sessionId: "runner-web-1",
 				ownerId: owner.userId,
 				organizationId: owner.organizationId,
 				workspaceId: owner.workspaceId,
 				chooserId: "chooser-1",
 				controlGen: 2,
+				tabId: "tab-1",
+				tabGen: 1,
+				viewGen: 1,
 				files: nodes.map((node) => ({
 					name: node!.name,
 					contentType: node!.contentType,
@@ -4298,7 +5005,14 @@ describe("fill_browser_chooser_from_files", () => {
 		expect(await fill(t, owner, sessionId, [folderId])).toEqual({ _nay: { message: "Not found" } });
 
 		expect(await fill(t, owner, sessionId, [])).toEqual({ _nay: { message: "Choose 1 to 10 files." } });
-		expect(await fill(t, owner, sessionId, Array.from({ length: 11 }, () => first))).toEqual({
+		expect(
+			await fill(
+				t,
+				owner,
+				sessionId,
+				Array.from({ length: 11 }, () => first),
+			),
+		).toEqual({
 			_nay: { message: "Choose 1 to 10 files." },
 		});
 
@@ -4327,8 +5041,12 @@ describe("grant_browser_upload", () => {
 			sessionId: started._yay.session.sessionId,
 			chooserId: "chooser-1",
 			controlGen: 2,
+			tabId: "tab-1",
+			tabGen: 1,
+			viewGen: 1,
 		});
 		const query = new URLSearchParams({
+			mode: "web",
 			ownerId: fixture.userId,
 			organizationId: fixture.organizationId,
 			workspaceId: fixture.workspaceId,
@@ -4340,12 +5058,16 @@ describe("grant_browser_upload", () => {
 		expect(runnerCalls.at(-1)).toEqual({
 			route: "upload-grant",
 			body: {
+				mode: "web",
 				sessionId: "runner-web-1",
 				ownerId: fixture.userId,
 				organizationId: fixture.organizationId,
 				workspaceId: fixture.workspaceId,
 				chooserId: "chooser-1",
 				controlGen: 2,
+				tabId: "tab-1",
+				tabGen: 1,
+				viewGen: 1,
 			},
 		});
 	});
@@ -4362,6 +5084,9 @@ describe("grant_browser_upload", () => {
 			sessionId: started._yay.session.sessionId,
 			chooserId: "chooser-1",
 			controlGen: 2,
+			tabId: "tab-1",
+			tabGen: 1,
+			viewGen: 1,
 		});
 		expect(granted).toEqual({ _nay: { message: "Not found" } });
 		expect(runnerCalls.map((call) => call.route)).toEqual(["open"]);

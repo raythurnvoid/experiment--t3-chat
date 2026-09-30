@@ -77,7 +77,7 @@ function make_session(options: { web?: boolean } = {}) {
 		if (!options.web) return fileRecord;
 		// Web records have no file fields. They own page target `page-1`.
 		const copy: Record<string, unknown> = {
-			...fileRecord, mode: "web", agentAccess: true, pageTargetId: "page-1", profileId: "profile_1", agentBlockedHosts: [],
+			...fileRecord, mode: "web", agentAccess: true, tabs: { "tab-1": { targetId: "page-1", navGen: 1, tabGen: 1, viewport: fileRecord.viewport } }, tabId: "tab-1", viewedTabId: "tab-1", viewGen: 1, policyRevision: 0, selectionRevision: 0, profileId: "profile_1", agentBlockedHosts: [],
 		};
 		for (const key of ["nodeId", "sourceKind", "sourceVersion", "sourceHash", "htmlBytesTotal", "loadCount"]) delete copy[key];
 		return copy as SessionRecord;
@@ -109,7 +109,9 @@ function make_session(options: { web?: boolean } = {}) {
 	vi.spyOn(provider, "sessions").mockResolvedValue([]);
 	let session = new BrowserSession(state, env);
 	const post = async (path: string, body: unknown) => {
-		const response = await session.fetch(new Request(`https://do${path}`, { method: "POST", body: JSON.stringify(body) }));
+		const current = stored.get("session") as SessionRecord;
+		const defaults = path === "/agent-access" ? { policyRevision: current.mode === "web" ? current.policyRevision + 1 : 1, selectionRevision: 0, agentBlockedHosts: [] } : path === "/run/begin" && current.mode === "web" ? { tabId: current.tabId, tabGen: current.tabs[current.tabId]!.tabGen, policyRevision: current.policyRevision, selectionRevision: current.selectionRevision } : {};
+		const response = await session.fetch(new Request(`https://do${path}`, { method: "POST", body: JSON.stringify({ ...defaults, ...body as object }) }));
 		return await response.json() as Record<string, unknown>;
 	};
 	const begin = (sessionId = "session-1") => post("/run/begin", { sessionId, navGen: 1, loadGen: 1, controlGen: 1, commandId: "command-1" });
@@ -330,7 +332,7 @@ describe("BrowserSession agent connection", () => {
 			sessionId: "session-2", control: "agent", command: { connection: "consumed" },
 		});
 		expect((await session.settle("session-2")).ok).toBe(true);
-		expect(await session.finish("session-2")).toEqual({ ok: true, state: "ready" });
+		expect(await session.finish("session-2")).toMatchObject({ ok: true, state: "ready", cleanup: "complete", session: { sessionId: "session-2" } });
 		expect(session.browser.close).not.toHaveBeenCalled();
 	});
 
@@ -479,7 +481,7 @@ describe("BrowserSession web agent access", () => {
 		expect(await session.settle()).toEqual({ ok: true, blockedPopups: 2 });
 		expect(session.send).toHaveBeenCalledWith("Target.getTargets");
 		expect(session.evaluate).not.toHaveBeenCalled();
-		expect(await session.finish()).toEqual({ ok: true, state: "ready" });
+		expect(await session.finish()).toMatchObject({ ok: true, state: "ready", cleanup: "complete", session: { sessionId: "session-1" } });
 	});
 
 	it("revokes a running bridge and retires the lease when access turns off", async () => {
@@ -487,21 +489,22 @@ describe("BrowserSession web agent access", () => {
 		await session.begin(); await session.stream();
 		expect(await session.post("/agent-access", { sessionId: "session-1", on: false }))
 			.toMatchObject({ ok: true, session: { agentAccess: false, controlGen: 2 } });
-		expect(bridges.revoke).toHaveBeenCalledOnce();
+		expect(bridges.revoke).toHaveBeenCalled();
+		expect(bridges.settle).toHaveBeenCalled();
 		expect((await session.settle()).ok).toBe(true);
-		expect(await session.finish()).toEqual({ ok: true, state: "ready" });
+		expect(await session.finish()).toMatchObject({ ok: true, state: "ready", cleanup: "complete", session: { sessionId: "session-1" } });
 		expect(await session.post("/run/begin", { sessionId: "session-1", navGen: 1, loadGen: 1, controlGen: 2, commandId: "command-2" }))
 			.toMatchObject({ ok: false, error: { code: "agent_access_off" } });
 	});
 
-	it("revokes a bridge that connects after access turned off", async () => {
+	it("retires an unused connection before access turns off", async () => {
 		const session = make_session({ web: true });
 		await session.begin();
 		await session.post("/agent-access", { sessionId: "session-1", on: false });
 		expect(bridges.revoke).not.toHaveBeenCalled();
-		expect((await session.stream()).status).toBe(101);
-		expect(bridges.revoke).toHaveBeenCalledOnce();
-		await session.settle(); await session.finish();
+		expect((await session.stream()).status).toBe(403);
+		expect(bridges.revoke).not.toHaveBeenCalled();
+		expect(session.stored.has("session")).toBe(false);
 	});
 });
 
