@@ -26,7 +26,6 @@ import {
 	ArchiveRestore,
 	ChevronDown,
 	ChevronRight,
-	Copy,
 	EllipsisVertical,
 	Edit2,
 	FilePlus,
@@ -39,6 +38,7 @@ import {
 	Info,
 	Link2,
 	LockKeyhole,
+	Route,
 	Upload,
 	UserRound,
 	Users,
@@ -1077,6 +1077,7 @@ const FilesSidebarTreeItemMoreAction = memo(function FilesSidebarTreeItemMoreAct
 
 // #region tree item menu popover
 type FilesSidebarTreeItemMenuPopover_ClassNames =
+	| "FilesSidebarTreeItemMenuPopover"
 	| "FilesSidebarTreeItemMenuPopover-create-action"
 	| "FilesSidebarTreeItemMenuPopover-create-action-visible";
 
@@ -1160,6 +1161,7 @@ const FilesSidebarTreeItemMenuPopover = memo(function FilesSidebarTreeItemMenuPo
 
 	return createPortal(
 		<MyContextMenuPopover
+			className={"FilesSidebarTreeItemMenuPopover" satisfies FilesSidebarTreeItemMenuPopover_ClassNames}
 			{...({
 				"data-files-sidebar-tree-context": "",
 			} satisfies Partial<CustomAttributes>)}
@@ -1210,7 +1212,7 @@ const FilesSidebarTreeItemMenuPopover = memo(function FilesSidebarTreeItemMenuPo
 					<MyMenuItem hideOnClick onClick={onCopy}>
 						<MyMenuItemContent>
 							<MyMenuItemContentIcon>
-								<Copy />
+								<Route />
 							</MyMenuItemContentIcon>
 							<MyMenuItemContentPrimary>Copy path</MyMenuItemContentPrimary>
 						</MyMenuItemContent>
