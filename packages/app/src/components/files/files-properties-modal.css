@@ -4,6 +4,12 @@
 		width: min(38rem, calc(100vw - 2rem));
 	}
 
+	/* Use a fixed height, so the modal does not resize when the content replaces the skeleton. The
+	   height fits a text file with all its sections. A shorter or longer body scrolls instead. */
+	.FilesPropertiesModal-scrollable-area {
+		height: min(50rem, calc(85vh - 140px));
+	}
+
 	.FilesPropertiesModal-body {
 		display: flex;
 		flex-direction: column;
@@ -82,6 +88,28 @@
 		width: 90px;
 	}
 	/* #endregion facts */
+
+	/* #region skeleton */
+	.FilesPropertiesModalSkeleton-general {
+		height: 172px;
+		width: 100%;
+	}
+
+	.FilesPropertiesModalSkeleton-protection {
+		height: 140px;
+		width: 100%;
+	}
+
+	.FilesPropertiesModalSkeleton-collaboration {
+		height: 80px;
+		width: 100%;
+	}
+
+	.FilesPropertiesModalSkeleton-metadata {
+		height: 282px;
+		width: 100%;
+	}
+	/* #endregion skeleton */
 
 	/* #region write policy */
 	.FilesPropertiesModalWritePolicy {
@@ -241,8 +269,11 @@
 		background: var(--color-base-1-01);
 	}
 
+	/* The editor's loading slot is a flex box, and `.MySkeleton` has size containment, so it needs an
+	   explicit width. */
 	.FilesPropertiesModalMetadata-skeleton {
 		height: 160px;
+		width: 100%;
 	}
 
 	.FilesPropertiesModalMetadata-actions {

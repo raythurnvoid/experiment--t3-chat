@@ -279,6 +279,31 @@ afterEach(() => {
 	cleanup();
 });
 
+describe("FilesPropertiesModal", () => {
+	test("shows only the skeleton until the protection state arrives, then the saved value", () => {
+		const view = renderModal();
+
+		expect(screen.queryAllByRole("radio")).toHaveLength(0);
+		expect(document.querySelector(".FilesPropertiesModalSkeleton-protection")).not.toBeNull();
+
+		mockQueries({
+			management: {
+				...WRITABLE_POLICY,
+				canWrite: false,
+				writeBlockedReason: "read_only",
+				localPolicy: { mode: "read_only" },
+			},
+			entries: [],
+			canWrite: false,
+		});
+		view.rerender(<FilesPropertiesModal nodeId={NODE_ID} nodeName="notes.md" nodeKind="file" onClose={() => {}} />);
+
+		expect(document.querySelector(".FilesPropertiesModalSkeleton-protection")).toBeNull();
+		expect((screen.getByRole("radio", { name: "Read-only" }) as HTMLInputElement).checked).toBe(true);
+		expect((screen.getByRole("radio", { name: "Editable" }) as HTMLInputElement).checked).toBe(false);
+	});
+});
+
 describe("FilesPropertiesModalFacts", () => {
 	test("shows the file facts, and drops the file-only rows for a folder", () => {
 		mockQueries({ entries: [], canWrite: true });
@@ -348,6 +373,13 @@ describe("FilesPropertiesModalFacts", () => {
 			if (query === "get_file_node_for_membership") {
 				return NODE;
 			}
+			// The modal shows its own skeleton until these two answer.
+			if (query === "get_node_write_policy_management_state") {
+				return { nodeId: NODE_ID, ...WRITABLE_POLICY };
+			}
+			if (query === "get_entries") {
+				return [];
+			}
 			if (query === "get_asset_by_file_node_id") {
 				return { size: 2048 };
 			}
@@ -379,14 +411,6 @@ describe("FilesPropertiesModalWritePolicy", () => {
 			expect(screen.getByText(description, { exact: false })).toBeTruthy();
 		},
 	);
-
-	test("disables policy choices until settings arrive", () => {
-		renderModal();
-		for (const radio of screen.getAllByRole("radio")) {
-			expect((radio as HTMLInputElement).disabled).toBe(true);
-		}
-		expect(screen.getByText("Loading protection…")).toBeTruthy();
-	});
 
 	test("saves an explicit policy and ignores a second press while saving", async () => {
 		mockQueries({ entries: [], canWrite: true });

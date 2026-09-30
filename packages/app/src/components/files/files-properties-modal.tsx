@@ -66,6 +66,7 @@ type FilesPropertiesModalFacts_Props = {
  */
 const FilesPropertiesModalFacts = memo(function FilesPropertiesModalFacts(props: FilesPropertiesModalFacts_Props) {
 	const { nodeId, nodeKind } = props;
+
 	const { membershipId } = AppTenantProvider.useContext();
 
 	const node = useQuery(app_convex_api.files_nodes.get_file_node_for_membership, { membershipId, fileNodeId: nodeId });
@@ -413,6 +414,7 @@ const FilesPropertiesModalWritePolicy = memo(function FilesPropertiesModalWriteP
 	props: FilesPropertiesModalWritePolicy_Props,
 ) {
 	const { nodeId, nodeKind } = props;
+
 	const { membershipId, organizationId, workspaceId } = AppTenantProvider.useContext();
 	const descriptionId = `FilesPropertiesModalWritePolicy-${useId()}-description`;
 	const defaultDescriptionId = `FilesPropertiesModalWritePolicy-default-${useId()}-description`;
@@ -853,6 +855,7 @@ const FilesPropertiesModalCollaboration = memo(function FilesPropertiesModalColl
 	props: FilesPropertiesModalCollaboration_Props,
 ) {
 	const { nodeId } = props;
+
 	const { membershipId } = AppTenantProvider.useContext();
 	const descriptionId = useId();
 	const confirmId = useId();
@@ -1103,6 +1106,7 @@ const FilesPropertiesModalMetadata = memo(function FilesPropertiesModalMetadata(
 	props: FilesPropertiesModalMetadata_Props,
 ) {
 	const { nodeId, onDirtyChange } = props;
+
 	const { membershipId } = AppTenantProvider.useContext();
 
 	const entries = useQuery(app_convex_api.files_metadata.get_entries, { membershipId, fileNodeId: nodeId });
@@ -1345,6 +1349,13 @@ const FilesPropertiesModalMetadata = memo(function FilesPropertiesModalMetadata(
 				{metadata.loaded ? (
 					<Editor
 						height="160px"
+						// Monaco needs a moment after mount to create the editor. Show the same skeleton in
+						// that gap, so the default "Loading..." text never flashes.
+						loading={
+							<MySkeleton
+								className={"FilesPropertiesModalMetadata-skeleton" satisfies FilesPropertiesModalMetadata_ClassNames}
+							/>
+						}
 						language="yaml"
 						theme={app_monaco_THEME_NAME_DARK}
 						value={metadata.draftYaml}
@@ -1391,10 +1402,62 @@ const FilesPropertiesModalMetadata = memo(function FilesPropertiesModalMetadata(
 });
 // #endregion metadata
 
+// #region skeleton
+type FilesPropertiesModalSkeleton_ClassNames =
+	| "FilesPropertiesModalSkeleton-general"
+	| "FilesPropertiesModalSkeleton-protection"
+	| "FilesPropertiesModalSkeleton-collaboration"
+	| "FilesPropertiesModalSkeleton-metadata";
+
+type FilesPropertiesModalSkeleton_Props = {
+	nodeKind: "file" | "folder";
+};
+
+/**
+ * A rough copy of the modal body: one block per section, with about the same height.
+ *
+ * Keep it in step with the sections above. When a section is added, removed, or changes its size a
+ * lot, update the matching block in this region and its CSS.
+ */
+const FilesPropertiesModalSkeleton = memo(function FilesPropertiesModalSkeleton(
+	props: FilesPropertiesModalSkeleton_Props,
+) {
+	const { nodeKind } = props;
+
+	return (
+		<>
+			<section className={"FilesPropertiesModal-section" satisfies FilesPropertiesModal_ClassNames}>
+				<MySkeleton
+					className={"FilesPropertiesModalSkeleton-general" satisfies FilesPropertiesModalSkeleton_ClassNames}
+				/>
+			</section>
+			<section className={"FilesPropertiesModal-section" satisfies FilesPropertiesModal_ClassNames}>
+				<MySkeleton
+					className={"FilesPropertiesModalSkeleton-protection" satisfies FilesPropertiesModalSkeleton_ClassNames}
+				/>
+			</section>
+			{nodeKind === "file" ? (
+				<section className={"FilesPropertiesModal-section" satisfies FilesPropertiesModal_ClassNames}>
+					<MySkeleton
+						className={"FilesPropertiesModalSkeleton-collaboration" satisfies FilesPropertiesModalSkeleton_ClassNames}
+					/>
+				</section>
+			) : null}
+			<section className={"FilesPropertiesModal-section" satisfies FilesPropertiesModal_ClassNames}>
+				<MySkeleton
+					className={"FilesPropertiesModalSkeleton-metadata" satisfies FilesPropertiesModalSkeleton_ClassNames}
+				/>
+			</section>
+		</>
+	);
+});
+// #endregion skeleton
+
 // #region root
 type FilesPropertiesModal_ClassNames =
 	| "FilesPropertiesModal"
 	| "FilesPropertiesModal-body"
+	| "FilesPropertiesModal-scrollable-area"
 	| "FilesPropertiesModal-section"
 	| "FilesPropertiesModal-section-heading"
 	| "FilesPropertiesModal-unsaved"
@@ -1410,7 +1473,27 @@ export type FilesPropertiesModal_Props = {
 
 export const FilesPropertiesModal = memo(function FilesPropertiesModal(props: FilesPropertiesModal_Props) {
 	const { nodeId, nodeName, nodeKind, returnFocusRef, onClose } = props;
+
+	const { membershipId } = AppTenantProvider.useContext();
 	const [dirty, setDirty] = useState(false);
+
+	// The sections below read these same queries. Nothing else in the app subscribes to them before
+	// the modal opens, so the first answer needs a server round trip. Wait for it here and show the
+	// skeleton. Then every section finds its answer already in the Convex cache and draws once,
+	// with the right values.
+	const node = useQuery(
+		app_convex_api.files_nodes.get_file_node_for_membership,
+		nodeId ? { membershipId, fileNodeId: nodeId } : "skip",
+	);
+	const managementState = useQuery(
+		app_convex_api.files_nodes.get_node_write_policy_management_state,
+		nodeId ? { membershipId, nodeId } : "skip",
+	);
+	const metadataEntries = useQuery(
+		app_convex_api.files_metadata.get_entries,
+		nodeId ? { membershipId, fileNodeId: nodeId } : "skip",
+	);
+	const loading = node === undefined || managementState === undefined || metadataEntries === undefined;
 
 	const handleClose = useFn(() => {
 		// The metadata section unmounts with the dialog body, so it cannot report the draft it just
@@ -1438,9 +1521,14 @@ export const FilesPropertiesModal = memo(function FilesPropertiesModal(props: Fi
 					<MyModalDescription>{nodeName}</MyModalDescription>
 				</MyModalHeader>
 
-				<MyModalScrollableArea>
+				<MyModalScrollableArea
+					className={"FilesPropertiesModal-scrollable-area" satisfies FilesPropertiesModal_ClassNames}
+					aria-busy={loading || undefined}
+				>
 					<div className={"FilesPropertiesModal-body" satisfies FilesPropertiesModal_ClassNames}>
-						{nodeId ? (
+						{nodeId && loading ? (
+							<FilesPropertiesModalSkeleton nodeKind={nodeKind} />
+						) : nodeId ? (
 							<>
 								<section
 									aria-label="General"
