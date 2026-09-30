@@ -53,45 +53,39 @@
 	/* #endregion root */
 
 	/* #region facts */
+	/* The editor is read-only, so show the dim focus ring on the frame when it takes focus. Use the same
+	   ring as the other read-only text blocks, not the bright ring of an editable input. */
 	.FilesPropertiesModalFacts {
-		display: flex;
-		flex-direction: column;
-		gap: 6px;
+		overflow: hidden;
 
-		margin: 0;
+		border: 1px solid var(--color-base-1-07);
+		border-radius: 8px;
+
+		background: var(--color-base-1-01);
+
+		outline-offset: -2px;
+
+		&:focus-within {
+			outline-color: var(--app-readonly-focus-ring);
+		}
+
+		/* Hide Monaco's read-only bubble here too. Same reason as the metadata editor. */
+		.monaco-editor-overlaymessage {
+			display: none !important;
+		}
 	}
 
-	.FilesPropertiesModalFacts-row {
-		display: grid;
-		grid-template-columns: 130px minmax(0, 1fr);
-		gap: 16px;
-		align-items: baseline;
-	}
-
-	.FilesPropertiesModalFacts-label {
-		font-size: 13px;
-		font-weight: 500;
-		color: var(--color-fg-08);
-	}
-
-	.FilesPropertiesModalFacts-value {
-		margin: 0;
-
-		overflow-wrap: anywhere;
-
-		font-size: 13px;
-		color: var(--color-fg-11);
-	}
-
+	/* `.MySkeleton` has size containment, so it needs an explicit width. The height comes from the line
+	   count of the facts. */
 	.FilesPropertiesModalFacts-skeleton {
-		height: 16px;
-		width: 90px;
+		width: 100%;
+		height: var(--FilesPropertiesModalFacts-height);
 	}
 	/* #endregion facts */
 
 	/* #region skeleton */
 	.FilesPropertiesModalSkeleton-general {
-		height: 172px;
+		height: 155px;
 		width: 100%;
 	}
 
@@ -275,6 +269,13 @@
 		border-radius: 8px;
 
 		background: var(--color-base-1-01);
+
+		/* Hide Monaco's "Cannot edit in read-only editor" bubble. It opens above the first line, and the
+		   editor box clips it. The reason for the lock is written under the editor. Monaco sets `display`
+		   inline on the bubble, so only `!important` wins. Screen readers still hear the message. */
+		.monaco-editor-overlaymessage {
+			display: none !important;
+		}
 	}
 
 	/* The editor's loading slot is a flex box, and `.MySkeleton` has size containment, so it needs an

@@ -352,6 +352,16 @@ Follow the existing test file's layout. When adding a new related group or reorg
 - Do not make regular runtime tests depend on Convex migration functions or `packages/app/convex/migrations.ts` entrypoints.
 - If you need to verify a migration, add a focused migration-specific test for that migration instead of routing normal feature tests through migration APIs.
 
+## When to add a test
+
+Add a test only when it protects behavior that can break silently. Every new test is code to maintain.
+
+- Add one for business rules, permissions, data transforms, validation, race conditions, and bugs you fixed (the test must fail with the fix off).
+- Do not add one for text, labels, layout, class names, or a prop that is only passed through and shown.
+- Add at most one test per new behavior. Do not test each branch of a simple condition.
+- When a change renames or moves UI, update the existing tests that break. Do not add new ones for the same thing.
+- If you are unsure, do not add the test, and say in the final answer what you left untested.
+
 ## Test design
 
 Avoid test-induced design damage. Do not reshape production code primarily to satisfy a testing style when that reshape makes the code less natural, more fragmented, or expands the module's public surface without a real product need.

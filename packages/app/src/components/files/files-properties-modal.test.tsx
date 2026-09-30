@@ -119,16 +119,22 @@ vi.mock("@monaco-editor/react", async () => {
 			onMount?: (editor: unknown) => void;
 			options?: Record<string, unknown>;
 		}) {
-			editorChangeRef.current = props.onChange ?? null;
-			editorOptionsRef.current = props.options ?? null;
-			editorValues.push(props.value ?? "");
+			// The read-only facts editor is not the metadata editor. Keep it out of the metadata bookkeeping.
+			const isFacts = props.options?.readOnly === true;
+			if (!isFacts) {
+				editorChangeRef.current = props.onChange ?? null;
+				editorOptionsRef.current = props.options ?? null;
+				editorValues.push(props.value ?? "");
+			}
 			const onMount = props.onMount;
 
 			useEffect(() => {
-				onMount?.(editorHandle);
-			}, [onMount]);
+				if (!isFacts) {
+					onMount?.(editorHandle);
+				}
+			}, [onMount, isFacts]);
 
-			return <textarea aria-label="Metadata YAML" readOnly value={props.value ?? ""} />;
+			return <textarea aria-label={isFacts ? "Properties" : "Metadata YAML"} readOnly value={props.value ?? ""} />;
 		},
 	};
 });
@@ -254,7 +260,7 @@ function typeDraft(value: string) {
 
 function clickSave() {
 	act(() => {
-		screen.getByRole("button", { name: "Save metadata" }).click();
+		screen.getByRole("button", { name: /^Save$/ }).click();
 	});
 }
 
@@ -310,34 +316,44 @@ describe("FilesPropertiesModal", () => {
 		expect((screen.getByRole("radio", { name: "Read-only" }) as HTMLInputElement).checked).toBe(true);
 		expect((screen.getByRole("radio", { name: "Editable" }) as HTMLInputElement).checked).toBe(false);
 	});
+
+	test("enables the footer Save only after a setting was edited", () => {
+		mockQueries({ entries: [], canWrite: true });
+		renderModal();
+		const save = screen.getByRole("button", { name: /^Save$/ });
+
+		expect(save.hasAttribute("disabled")).toBe(true);
+
+		typeDraft("created-by: agent\n");
+		expect(save.hasAttribute("disabled")).toBe(false);
+	});
 });
 
 describe("FilesPropertiesModalFacts", () => {
-	test("shows the file facts, and drops the file-only rows for a folder", () => {
+	const factsText = () => (screen.getByRole("textbox", { name: "Properties" }) as HTMLTextAreaElement).value;
+
+	test("shows the file facts, and drops the file-only lines for a folder", () => {
 		mockQueries({ entries: [], canWrite: true });
 
 		const { unmount } = renderModal();
-		expect(screen.getByText("Content type")).toBeTruthy();
-		expect(screen.getByText("Size")).toBeTruthy();
-		expect(screen.getByText("/docs")).toBeTruthy();
+		expect(factsText()).toContain("Content type: text/markdown");
+		expect(factsText()).toContain("Size: 2.0 KB");
 		unmount();
 
 		renderModal({ nodeKind: "folder" });
-		expect(screen.queryByText("Content type")).toBeNull();
-		expect(screen.queryByText("Size")).toBeNull();
+		expect(factsText()).not.toContain("Content type");
+		expect(factsText()).not.toContain("Size");
 	});
 
-	// The test above reads the row names. The work is in the values: two author lookups, a skipped
-	// lookup for the author the app uses for its own writes, and the size of the stored blob.
-	test("shows the value in every row, and System for a file the app itself last wrote", () => {
+	// The work is in the values: two author lookups, a skipped lookup for the author the app uses for
+	// its own writes, and the size of the stored blob.
+	test("shows the value on every line, and System for a file the app itself last wrote", () => {
 		mockQueries({ node: { ...NODE, updatedBy: users_SYSTEM_AUTHOR }, entries: [], canWrite: true });
 
 		renderModal();
 
-		const labels = Array.from(document.querySelectorAll(".FilesPropertiesModalFacts-label")).map(
-			(element) => element.textContent,
-		);
-		expect(labels).toEqual([
+		const lines = factsText().split("\n");
+		expect(lines.map((line) => line.split(":")[0])).toEqual([
 			"Content type",
 			"Size",
 			"Location",
@@ -346,15 +362,10 @@ describe("FilesPropertiesModalFacts", () => {
 			"Last edited",
 			"Last edited by",
 		]);
-		const rowValue = (label: string) =>
-			Array.from(document.querySelectorAll(".FilesPropertiesModalFacts-row"))
-				.find((row) => row.querySelector(".FilesPropertiesModalFacts-label")?.textContent === label)
-				?.querySelector(".FilesPropertiesModalFacts-value")?.textContent;
-		expect(rowValue("Content type")).toBe("text/markdown");
-		expect(rowValue("Size")).toBe("2.0 KB");
-		expect(rowValue("Location")).toBe("/docs");
-		expect(rowValue("Created by")).toBe("Ada");
-		expect(rowValue("Last edited by")).toBe("System");
+		expect(lines).toContain("Location: /docs");
+		expect(lines.find((line) => line.startsWith("Created: "))).toMatch(/^Created: \d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);
+		expect(lines).toContain("Created by: Ada");
+		expect(lines).toContain("Last edited by: System");
 
 		// SYSTEM is not a real user id, so its lookup must be skipped instead of sent.
 		expect(useQueryMock).toHaveBeenCalledWith("get_anagraphic", { userId: "user_1" });
@@ -368,15 +379,12 @@ describe("FilesPropertiesModalFacts", () => {
 
 		renderModal();
 
-		const sizeRow = Array.from(document.querySelectorAll(".FilesPropertiesModalFacts-row")).find(
-			(row) => row.querySelector(".FilesPropertiesModalFacts-label")?.textContent === "Size",
-		);
-		expect(sizeRow?.querySelector(".FilesPropertiesModalFacts-value")?.textContent).toBe("Unknown");
+		expect(factsText()).toContain("Size: Unknown");
 	});
 
-	// The two author lookups answer after the node does. Rendering the rows as soon as the node
-	// arrives would leave both author values blank for a moment, so every row waits for all of them.
-	test("keeps skeleton rows while the author lookups are still loading", () => {
+	// The two author lookups answer after the node does. Showing the lines as soon as the node arrives
+	// would leave both author values blank for a moment, so the skeleton waits for all of them.
+	test("keeps the skeleton while the author lookups are still loading", () => {
 		useQueryMock.mockImplementation((query: unknown) => {
 			if (query === "get_file_node_for_membership") {
 				return NODE;
@@ -396,9 +404,8 @@ describe("FilesPropertiesModalFacts", () => {
 
 		renderModal();
 
-		expect(document.querySelectorAll(".FilesPropertiesModalFacts-row")).toHaveLength(7);
-		expect(document.querySelectorAll(".FilesPropertiesModalFacts-skeleton").length).toBeGreaterThan(0);
-		expect(screen.queryByText("Content type")).toBeNull();
+		expect(document.querySelector(".FilesPropertiesModalFacts-skeleton")).not.toBeNull();
+		expect(screen.queryByRole("textbox", { name: "Properties" })).toBeNull();
 	});
 });
 
@@ -431,11 +438,10 @@ describe("FilesPropertiesModalWritePolicy", () => {
 		renderModal();
 		fireEvent.click(screen.getByRole("radio", { name: "Read-only" }));
 		expect(mutationMock).not.toHaveBeenCalled();
-		const save = screen.getByRole("button", { name: "Save policy" });
-		save.focus();
+		const save = screen.getByRole("button", { name: /^Save$/ });
 		fireEvent.click(save);
-		expect(save.hasAttribute("disabled")).toBe(false);
-		expect(document.activeElement).toBe(save);
+		// The button is disabled while the save runs, so a second press does nothing.
+		expect(save.hasAttribute("disabled")).toBe(true);
 		fireEvent.click(save);
 		expect(mutationMock).toHaveBeenCalledTimes(1);
 		expect(mutationMock).toHaveBeenCalledWith("set_node_write_policy", {
@@ -461,7 +467,7 @@ describe("FilesPropertiesModalWritePolicy", () => {
 		});
 		renderModal();
 		fireEvent.click(screen.getByRole("radio", { name: "Editable" }));
-		fireEvent.click(screen.getByRole("button", { name: "Save policy" }));
+		fireEvent.click(screen.getByRole("button", { name: /^Save$/ }));
 		expect(mutationMock).toHaveBeenCalledWith("set_node_write_policy", {
 			membershipId: MEMBERSHIP_ID,
 			nodeId: NODE_ID,
@@ -494,7 +500,7 @@ describe("FilesPropertiesModalWritePolicy", () => {
 		renderModal();
 		expect(screen.getByText("Only the selected writer can edit.", { exact: false })).toBeTruthy();
 		expect((screen.getByRole("radio", { name: "Selected writer" }) as HTMLInputElement).checked).toBe(true);
-		expect(screen.getByRole("button", { name: "Save policy" }).hasAttribute("disabled")).toBe(true);
+		expect(screen.getByRole("button", { name: /^Save$/ }).hasAttribute("disabled")).toBe(true);
 		expect(mutationMock).not.toHaveBeenCalled();
 	});
 
@@ -526,7 +532,7 @@ describe("FilesPropertiesModalWritePolicy", () => {
 		const onClose = vi.fn();
 		renderModal({ onClose });
 		fireEvent.click(screen.getByRole("radio", { name: "Read-only" }));
-		fireEvent.click(screen.getByRole("button", { name: "Save policy" }));
+		fireEvent.click(screen.getByRole("button", { name: /^Save$/ }));
 		expect((await screen.findByRole("alert")).textContent).toBe("The policy changed in another tab");
 		expect(onClose).not.toHaveBeenCalled();
 	});
@@ -578,7 +584,7 @@ describe("FilesPropertiesModalWritePolicy", () => {
 		}
 
 		render(<Harness />);
-		fireEvent.click(screen.getByRole("button", { name: "Done" }));
+		fireEvent.click(screen.getByText("Close", { selector: "button" }));
 
 		await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
 		await waitFor(() => expect(document.activeElement).toBe(returnFocusRef.current));
@@ -713,7 +719,7 @@ describe("FilesPropertiesModalCollaboration", () => {
 	// a write that is going to be refused.
 	test.each([
 		[{ canWrite: false, locked: false }, "You don't have permission to edit this file."],
-		[{ canWrite: false, locked: true }, "A file policy blocks editing this file."],
+		[{ canWrite: false, locked: true }, "This file is read-only."],
 	] as const)("disables the box and says why when the server would refuse", (blocked, expectedText) => {
 		mockQueries({
 			node: { ...TEXT_NODE, writeBlockedReason: blocked.locked ? "read_only" : "permission" },
@@ -757,10 +763,10 @@ describe("FilesPropertiesModalMetadata", () => {
 		renderModal();
 
 		expect((screen.getByLabelText("Metadata YAML") as HTMLTextAreaElement).value).toContain("created-by: slack");
-		expect(screen.getByRole("button", { name: "Save metadata" }).hasAttribute("disabled")).toBe(true);
+		expect(screen.getByRole("button", { name: /^Save$/ }).hasAttribute("disabled")).toBe(true);
 
 		typeDraft("created-by: email\n");
-		expect(screen.getByRole("button", { name: "Save metadata" }).hasAttribute("disabled")).toBe(false);
+		expect(screen.getByRole("button", { name: /^Save$/ }).hasAttribute("disabled")).toBe(false);
 	});
 
 	test("mounts the editor on the stored YAML, not an empty draft", () => {
@@ -822,13 +828,9 @@ describe("FilesPropertiesModalMetadata", () => {
 		renderModal();
 		typeDraft("created-by: agent\n");
 
-		expect(screen.getByRole("status").textContent).toBe("A file policy blocks editing this item.");
-		const save = screen.getByRole("button", { name: "Save metadata" });
-		// Native `disabled` drops the button from the tab order, so a keyboard user never reaches
-		// the reason. Keep it focusable with `aria-disabled`, the same way the users page does.
-		expect(save.hasAttribute("disabled")).toBe(false);
-		expect(save.getAttribute("aria-disabled")).toBe("true");
-		expect(save.getAttribute("aria-describedby")).toBe(screen.getByRole("status").id);
+		expect(screen.getByRole("status").textContent).toBe("This item is read-only, so its metadata cannot be changed.");
+		const save = screen.getByRole("button", { name: /^Save$/ });
+		expect(save.hasAttribute("disabled")).toBe(true);
 	});
 
 	test("blocks saving without write permission and names the permission first", () => {
@@ -840,11 +842,9 @@ describe("FilesPropertiesModalMetadata", () => {
 
 		renderModal();
 
-		expect(screen.getByRole("status").textContent).toBe("You don't have permission to edit this item.");
-		const save = screen.getByRole("button", { name: "Save metadata" });
-		expect(save.hasAttribute("disabled")).toBe(false);
-		expect(save.getAttribute("aria-disabled")).toBe("true");
-		expect(save.getAttribute("aria-describedby")).toBe(screen.getByRole("status").id);
+		expect(screen.getByRole("status").textContent).toBe("You don't have permission to change this item's metadata.");
+		const save = screen.getByRole("button", { name: /^Save$/ });
+		expect(save.hasAttribute("disabled")).toBe(true);
 	});
 
 	// Monaco traps Tab by default, which leaves a keyboard user stuck inside this small field with no
@@ -892,7 +892,7 @@ describe("FilesPropertiesModalMetadata", () => {
 		expect(screen.queryByRole("alert")).toBeNull();
 		expect(screen.getByRole("status").textContent).toBe("Metadata saved");
 		expect((screen.getByLabelText("Metadata YAML") as HTMLTextAreaElement).value).toBe("created-by: agent\n");
-		expect(screen.getByRole("button", { name: "Save metadata" }).hasAttribute("disabled")).toBe(true);
+		expect(screen.getByRole("button", { name: /^Save$/ }).hasAttribute("disabled")).toBe(true);
 	});
 
 	// A draft that already reads like the stored map needs no re-rendering, so it lands on the branch
@@ -907,7 +907,7 @@ describe("FilesPropertiesModalMetadata", () => {
 		await pushServerEntries([{ key: "created-by", value: "agent" }]);
 
 		expect(screen.getByRole("status").textContent).toBe("Metadata saved");
-		expect(screen.getByRole("button", { name: "Save metadata" }).hasAttribute("disabled")).toBe(true);
+		expect(screen.getByRole("button", { name: /^Save$/ }).hasAttribute("disabled")).toBe(true);
 	});
 
 	test("keeps an unsaved draft and warns when somebody else changes the metadata", async () => {
@@ -939,10 +939,10 @@ describe("FilesPropertiesModalMetadata", () => {
 		mockQueries({ entries: [], canWrite: true });
 
 		renderModal();
-		expect(screen.queryByText("Unsaved metadata will be lost.")).toBeNull();
+		expect(screen.queryByText("Unsaved changes will be lost.")).toBeNull();
 
 		typeDraft("created-by: agent\n");
-		expect(screen.getByText("Unsaved metadata will be lost.")).toBeTruthy();
+		expect(screen.getByText("Unsaved changes will be lost.")).toBeTruthy();
 	});
 
 	// The section unmounts with the dialog body, so it cannot report the draft it just lost. Without
@@ -968,12 +968,12 @@ describe("FilesPropertiesModalMetadata", () => {
 
 		render(<Harness />);
 		typeDraft("created-by: agent\n");
-		expect(screen.getByText("Unsaved metadata will be lost.")).toBeTruthy();
+		expect(screen.getByText("Unsaved changes will be lost.")).toBeTruthy();
 
-		fireEvent.click(screen.getByRole("button", { name: "Done" }));
+		fireEvent.click(screen.getByText("Close", { selector: "button" }));
 		await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
 
-		expect(screen.queryByText("Unsaved metadata will be lost.")).toBeNull();
+		expect(screen.queryByText("Unsaved changes will be lost.")).toBeNull();
 	});
 
 	test("edits and removes folder metadata without showing collaboration", async () => {
@@ -996,7 +996,7 @@ describe("FilesPropertiesModalMetadata", () => {
 			metadataYaml: "plugin-name: council\n",
 		});
 		await pushServerEntries([{ key: "plugin-name", value: "council" }]);
-		expect(screen.getByRole("button", { name: "Save metadata" }).hasAttribute("disabled")).toBe(true);
+		expect(screen.getByRole("button", { name: /^Save$/ }).hasAttribute("disabled")).toBe(true);
 
 		typeDraft("");
 		clickSave();
@@ -1010,8 +1010,8 @@ describe("FilesPropertiesModalMetadata", () => {
 	});
 
 	test.each([
-		[{ canWrite: false, locked: false }, "You don't have permission to edit this item."],
-		[{ canWrite: false, locked: true }, "A file policy blocks editing this item."],
+		[{ canWrite: false, locked: false }, "You don't have permission to change this item's metadata."],
+		[{ canWrite: false, locked: true }, "This item is read-only, so its metadata cannot be changed."],
 	] as const)("blocks folder metadata when writing is not allowed", (blocked, expectedText) => {
 		mockQueries({
 			node: {
@@ -1028,10 +1028,8 @@ describe("FilesPropertiesModalMetadata", () => {
 		typeDraft("plugin-name: chitchat\n");
 		clickSave();
 		expect(editorHandle.options.readOnly).toBe(true);
-		const save = screen.getByRole("button", { name: "Save metadata" });
-		expect(save.hasAttribute("disabled")).toBe(false);
-		expect(save.getAttribute("aria-disabled")).toBe("true");
-		expect(save.getAttribute("aria-describedby")).toBe(screen.getByRole("status").id);
+		const save = screen.getByRole("button", { name: /^Save$/ });
+		expect(save.hasAttribute("disabled")).toBe(true);
 		expect(screen.getByRole("status").textContent).toBe(expectedText);
 		expect(mutationMock).not.toHaveBeenCalled();
 	});

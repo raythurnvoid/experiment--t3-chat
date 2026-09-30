@@ -278,6 +278,11 @@ The map holds member-defined labels and details recorded by creation flows.
   example lines are drawn over the editor as a placeholder, because Monaco has no placeholder
   option. It replaced the sidebar
   `Metadata` tab and the separate `Read-only settings` modal; both are gone.
+  The facts at the top (type, size, location, dates, authors) are `label: value` lines in a read-only Monaco
+  editor with the dim read-only focus ring.
+  The dialog has one footer with `Close` and `Save`. Each section reports its unsaved state
+  (`onSaveStateChange`), and `Save` writes every changed section. It is enabled only when a section
+  has edits and none is invalid. The subtitle shows the node path from the root, with a leading `/`.
 - **Agent tool**: `set_file_metadata` in `packages/app/server/server-ai-tools.ts`. It is in
   `ai_chat_WRITE_TOOL_NAMES`, so Ask mode drops it from the tool record, not only from `activeTools`.
   It requires `workspace: "current" | "personal"` beside its root-relative path. The backend resolves

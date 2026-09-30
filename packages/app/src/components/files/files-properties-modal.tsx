@@ -1,13 +1,13 @@
 import "./files-properties-modal.css";
 
 import { Editor, type EditorProps } from "@monaco-editor/react";
-import { Check, CircleHelp, Save, X } from "lucide-react";
+import { Check, CircleHelp, X } from "lucide-react";
 import { useQueries, useQuery } from "convex/react";
 import { editor as monaco_editor } from "monaco-editor";
 import { Fragment, memo, useEffect, useId, useMemo, useRef, useState, type RefObject } from "react";
 import { toast } from "sonner";
 
-import { MyButton, type MyButton_ClassNames } from "@/components/my-button.tsx";
+import { MyButton } from "@/components/my-button.tsx";
 import { MyCheckboxButton } from "@/components/my-checkbox-button.tsx";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
 import { MyRadio } from "@/components/my-radio.tsx";
@@ -37,9 +37,8 @@ import { useFn } from "@/hooks/utils-hooks.ts";
 import { app_convex, app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { app_monaco_THEME_NAME_DARK } from "@/lib/app-monaco-config.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
-import { format_relative_time } from "@/lib/date.ts";
 import { files_format_size } from "@/lib/files.ts";
-import { cn } from "@/lib/utils.ts";
+import { cn, sx } from "@/lib/utils.ts";
 import {
 	files_metadata_parse_entries_yaml,
 	files_metadata_stringify_entries_yaml,
@@ -47,13 +46,64 @@ import {
 import { files_node_has_editable_text_content } from "../../../shared/files.ts";
 import { users_SYSTEM_AUTHOR } from "../../../shared/users.ts";
 
+/**
+ * What a section tells the footer. The footer has one Save button for the whole dialog. It runs the
+ * `save` of every section that is `dirty`. A section that cannot save yet (for example a selected
+ * writer with nobody chosen) is `invalid`, and that turns Save off. A section reports `null` when it has
+ * nothing to save.
+ *
+ * `save` answers `true` when the write worked. The section shows its own error when it did not.
+ */
+type SaveState = {
+	dirty: boolean;
+	invalid: boolean;
+	save: () => Promise<boolean>;
+};
+
 // #region facts
-type FilesPropertiesModalFacts_ClassNames =
-	| "FilesPropertiesModalFacts"
-	| "FilesPropertiesModalFacts-row"
-	| "FilesPropertiesModalFacts-label"
-	| "FilesPropertiesModalFacts-value"
-	| "FilesPropertiesModalFacts-skeleton";
+type FilesPropertiesModalFacts_ClassNames = "FilesPropertiesModalFacts" | "FilesPropertiesModalFacts-skeleton";
+
+type FilesPropertiesModalFacts_CssVars = {
+	"--FilesPropertiesModalFacts-height": string;
+};
+
+const FACTS_LINE_HEIGHT = 19;
+const FACTS_PADDING = 10;
+
+// The editor only shows the facts, so it has no scrolling, cursor line, or minimap. Its height fits
+// the lines, which are always the same count for one kind of node.
+const FACTS_EDITOR_OPTIONS = {
+	ariaLabel: "Properties",
+	readOnly: true,
+	domReadOnly: true,
+	// Let Tab move focus on to the next control instead of staying in this block.
+	tabFocusMode: true,
+	automaticLayout: true,
+	fontSize: 13,
+	lineHeight: FACTS_LINE_HEIGHT,
+	minimap: { enabled: false },
+	lineNumbers: "off",
+	padding: { top: FACTS_PADDING, bottom: FACTS_PADDING },
+	renderLineHighlight: "none",
+	// Hide the ruler strip at the right edge. It only marks the cursor line.
+	overviewRulerLanes: 0,
+	hideCursorInOverviewRuler: true,
+	scrollBeyondLastLine: false,
+	wordWrap: "on",
+} satisfies NonNullable<EditorProps["options"]>;
+
+/**
+ * Write a time as `YYYY-MM-DD HH:mm` in the user's time zone. This is the same date shape the metadata
+ * editor uses, so a person can copy it into a metadata field or the search box.
+ */
+const facts_format_time = (timestamp: number) => {
+	const date = new Date(timestamp);
+	const pad = (value: number) => String(value).padStart(2, "0");
+
+	return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+};
+
+const facts_height = (lineCount: number) => `${lineCount * FACTS_LINE_HEIGHT + FACTS_PADDING * 2}px`;
 
 type FilesPropertiesModalFacts_Props = {
 	nodeId: app_convex_Id<"files_nodes">;
@@ -62,6 +112,7 @@ type FilesPropertiesModalFacts_Props = {
 
 /**
  * The plain facts about the node. Where it is, what it is, and who created and last changed it.
+ * They show as read-only `label: value` lines in a Monaco editor, so a person can select and copy them.
  *
  * Every value is read from the node itself, so a rename or a move does not make them wrong.
  */
@@ -122,25 +173,18 @@ const FilesPropertiesModalFacts = memo(function FilesPropertiesModalFacts(props:
 		updatedByDisplayName === undefined ||
 		(nodeKind === "file" && asset === undefined);
 
+	const skeletonLineCount = nodeKind === "file" ? 7 : 5;
+	const skeleton = (
+		<MySkeleton
+			className={"FilesPropertiesModalFacts-skeleton" satisfies FilesPropertiesModalFacts_ClassNames}
+			style={sx({
+				"--FilesPropertiesModalFacts-height": facts_height(skeletonLineCount),
+			} satisfies FilesPropertiesModalFacts_CssVars)}
+		/>
+	);
+
 	if (loading) {
-		return (
-			<dl className={"FilesPropertiesModalFacts" satisfies FilesPropertiesModalFacts_ClassNames}>
-				{Array.from({ length: nodeKind === "file" ? 7 : 5 }, (_, index) => (
-					<div key={index} className={"FilesPropertiesModalFacts-row" satisfies FilesPropertiesModalFacts_ClassNames}>
-						<dt className={"FilesPropertiesModalFacts-label" satisfies FilesPropertiesModalFacts_ClassNames}>
-							<MySkeleton
-								className={"FilesPropertiesModalFacts-skeleton" satisfies FilesPropertiesModalFacts_ClassNames}
-							/>
-						</dt>
-						<dd className={"FilesPropertiesModalFacts-value" satisfies FilesPropertiesModalFacts_ClassNames}>
-							<MySkeleton
-								className={"FilesPropertiesModalFacts-skeleton" satisfies FilesPropertiesModalFacts_ClassNames}
-							/>
-						</dd>
-					</div>
-				))}
-			</dl>
-		);
+		return skeleton;
 	}
 
 	// The node is gone, or this member may not read it. The write-policy section below reports the
@@ -151,59 +195,28 @@ const FilesPropertiesModalFacts = memo(function FilesPropertiesModalFacts(props:
 
 	const location = node.path.slice(0, node.path.lastIndexOf("/")) || "/";
 
+	const lines = [
+		...(nodeKind === "file"
+			? [`Content type: ${node.contentType ?? "Unknown"}`, `Size: ${files_format_size(asset?.size)}`]
+			: []),
+		`Location: ${location}`,
+		`Created: ${facts_format_time(node._creationTime)}`,
+		`Created by: ${createdByDisplayName}`,
+		`Last edited: ${facts_format_time(node.updatedAt)}`,
+		`Last edited by: ${updatedByDisplayName}`,
+	];
+
 	return (
-		<dl className={"FilesPropertiesModalFacts" satisfies FilesPropertiesModalFacts_ClassNames}>
-			{nodeKind === "file" ? (
-				<>
-					<div className={"FilesPropertiesModalFacts-row" satisfies FilesPropertiesModalFacts_ClassNames}>
-						<dt className={"FilesPropertiesModalFacts-label" satisfies FilesPropertiesModalFacts_ClassNames}>
-							Content type
-						</dt>
-						<dd className={"FilesPropertiesModalFacts-value" satisfies FilesPropertiesModalFacts_ClassNames}>
-							{node.contentType ?? "Unknown"}
-						</dd>
-					</div>
-					<div className={"FilesPropertiesModalFacts-row" satisfies FilesPropertiesModalFacts_ClassNames}>
-						<dt className={"FilesPropertiesModalFacts-label" satisfies FilesPropertiesModalFacts_ClassNames}>Size</dt>
-						<dd className={"FilesPropertiesModalFacts-value" satisfies FilesPropertiesModalFacts_ClassNames}>
-							{files_format_size(asset?.size)}
-						</dd>
-					</div>
-				</>
-			) : null}
-			<div className={"FilesPropertiesModalFacts-row" satisfies FilesPropertiesModalFacts_ClassNames}>
-				<dt className={"FilesPropertiesModalFacts-label" satisfies FilesPropertiesModalFacts_ClassNames}>Location</dt>
-				<dd className={"FilesPropertiesModalFacts-value" satisfies FilesPropertiesModalFacts_ClassNames}>{location}</dd>
-			</div>
-			<div className={"FilesPropertiesModalFacts-row" satisfies FilesPropertiesModalFacts_ClassNames}>
-				<dt className={"FilesPropertiesModalFacts-label" satisfies FilesPropertiesModalFacts_ClassNames}>Created</dt>
-				<dd className={"FilesPropertiesModalFacts-value" satisfies FilesPropertiesModalFacts_ClassNames}>
-					{format_relative_time(node._creationTime)}
-				</dd>
-			</div>
-			<div className={"FilesPropertiesModalFacts-row" satisfies FilesPropertiesModalFacts_ClassNames}>
-				<dt className={"FilesPropertiesModalFacts-label" satisfies FilesPropertiesModalFacts_ClassNames}>Created by</dt>
-				<dd className={"FilesPropertiesModalFacts-value" satisfies FilesPropertiesModalFacts_ClassNames}>
-					{createdByDisplayName}
-				</dd>
-			</div>
-			<div className={"FilesPropertiesModalFacts-row" satisfies FilesPropertiesModalFacts_ClassNames}>
-				<dt className={"FilesPropertiesModalFacts-label" satisfies FilesPropertiesModalFacts_ClassNames}>
-					Last edited
-				</dt>
-				<dd className={"FilesPropertiesModalFacts-value" satisfies FilesPropertiesModalFacts_ClassNames}>
-					{format_relative_time(node.updatedAt)}
-				</dd>
-			</div>
-			<div className={"FilesPropertiesModalFacts-row" satisfies FilesPropertiesModalFacts_ClassNames}>
-				<dt className={"FilesPropertiesModalFacts-label" satisfies FilesPropertiesModalFacts_ClassNames}>
-					Last edited by
-				</dt>
-				<dd className={"FilesPropertiesModalFacts-value" satisfies FilesPropertiesModalFacts_ClassNames}>
-					{updatedByDisplayName}
-				</dd>
-			</div>
-		</dl>
+		<div className={"FilesPropertiesModalFacts" satisfies FilesPropertiesModalFacts_ClassNames}>
+			<Editor
+				height={facts_height(lines.length)}
+				loading={skeleton}
+				language="yaml"
+				theme={app_monaco_THEME_NAME_DARK}
+				value={lines.join("\n")}
+				options={FACTS_EDITOR_OPTIONS}
+			/>
+		</div>
 	);
 });
 // #endregion facts
@@ -399,6 +412,7 @@ const PolicyWriterPicker = memo(function PolicyWriterPicker(props: PolicyWriterP
 type FilesPropertiesModalWritePolicy_Props = {
 	nodeId: app_convex_Id<"files_nodes">;
 	nodeKind: "file" | "folder";
+	onSaveStateChange: (state: SaveState | null) => void;
 };
 
 const RADIO_MODES = [
@@ -414,13 +428,11 @@ const RADIO_MODES = [
 const FilesPropertiesModalWritePolicy = memo(function FilesPropertiesModalWritePolicy(
 	props: FilesPropertiesModalWritePolicy_Props,
 ) {
-	const { nodeId, nodeKind } = props;
+	const { nodeId, nodeKind, onSaveStateChange } = props;
 
 	const { membershipId, organizationId, workspaceId } = AppTenantProvider.useContext();
 	const descriptionId = `FilesPropertiesModalWritePolicy-${useId()}-description`;
 	const defaultDescriptionId = `FilesPropertiesModalWritePolicy-default-${useId()}-description`;
-	const choicesRef = useRef<HTMLFieldSetElement>(null);
-	const defaultChoicesRef = useRef<HTMLFieldSetElement>(null);
 	const applyCancelRef = useRef<HTMLButtonElement>(null);
 	const [isRunning, setIsRunning] = useState(false);
 	const [isDefaultRunning, setIsDefaultRunning] = useState(false);
@@ -471,6 +483,11 @@ const FilesPropertiesModalWritePolicy = memo(function FilesPropertiesModalWriteP
 		defaultChoice.writerKind === "user" ? defaultChoice.userId !== null : defaultChoice.serviceAccountId !== null;
 	const policyUnsaved =
 		draft !== null && JSON.stringify(saved_policy_from_draft(draft)) !== JSON.stringify(savedPolicy);
+	const defaultUnsaved =
+		defaultDraft !== null && JSON.stringify(saved_policy_from_draft(defaultDraft)) !== JSON.stringify(savedDefault);
+	// Selected writer without a writer cannot be saved yet.
+	const policyInvalid = policyUnsaved && choice.mode === "writer" && !writerSelected;
+	const defaultInvalid = defaultUnsaved && defaultChoice.mode === "writer" && !defaultWriterSelected;
 	const applySource = mutation_policy_from_visible(savedPolicy);
 	const applyUnavailable = savedPolicy?.mode === "writer" && !applySource.writerKnown;
 	const description =
@@ -486,52 +503,43 @@ const FilesPropertiesModalWritePolicy = memo(function FilesPropertiesModalWriteP
 							? "This file is read-only."
 							: "This folder is read-only. Items keep their own protection.";
 
-	const handleSavePolicy = () => {
+	const savePolicy = () => {
 		const writePolicy = saved_policy_from_draft(choice);
-		if (isRunning || !canManage || !draft || (choice.mode === "writer" && !writerSelected)) {
-			return;
-		}
 
 		setError(null);
 		setIsRunning(true);
 
-		app_convex
+		return app_convex
 			.mutation(app_convex_api.files_nodes.set_node_write_policy, { membershipId, nodeId, writePolicy })
 			.then((result) => {
 				if (result._nay) {
 					setError(result._nay.message);
-				} else {
-					choicesRef.current?.querySelector<HTMLInputElement>("input:checked")?.focus();
-					setDraft(null);
+					return false;
 				}
+
+				setDraft(null);
+				return true;
 			})
 			.catch((caughtError: unknown) => {
-				console.error("[FilesPropertiesModalWritePolicy.handleSavePolicy] Failed to change protection", {
+				console.error("[FilesPropertiesModalWritePolicy.savePolicy] Failed to change protection", {
 					error: caughtError,
 					nodeId,
 				});
 				setError("Failed to change protection");
+				return false;
 			})
 			.finally(() => {
 				setIsRunning(false);
 			});
 	};
 
-	const handleSaveDefault = () => {
+	const saveDefault = () => {
 		const newChildWritePolicy = saved_policy_from_draft(defaultChoice);
-		if (
-			isDefaultRunning ||
-			!canManage ||
-			!defaultDraft ||
-			(defaultChoice.mode === "writer" && !defaultWriterSelected)
-		) {
-			return;
-		}
 
 		setDefaultError(null);
 		setIsDefaultRunning(true);
 
-		app_convex
+		return app_convex
 			.mutation(app_convex_api.files_nodes.set_node_new_child_write_policy, {
 				membershipId,
 				nodeId,
@@ -540,22 +548,38 @@ const FilesPropertiesModalWritePolicy = memo(function FilesPropertiesModalWriteP
 			.then((result) => {
 				if (result._nay) {
 					setDefaultError(result._nay.message);
-				} else {
-					defaultChoicesRef.current?.querySelector<HTMLInputElement>("input:checked")?.focus();
-					setDefaultDraft(null);
+					return false;
 				}
+
+				setDefaultDraft(null);
+				return true;
 			})
 			.catch((caughtError: unknown) => {
-				console.error("[FilesPropertiesModalWritePolicy.handleSaveDefault] Failed to change new-item default", {
+				console.error("[FilesPropertiesModalWritePolicy.saveDefault] Failed to change new-item default", {
 					error: caughtError,
 					nodeId,
 				});
 				setDefaultError("Failed to change new-item default");
+				return false;
 			})
 			.finally(() => {
 				setIsDefaultRunning(false);
 			});
 	};
+
+	// The footer Save button calls this. It writes only the rules that changed, and the two rules
+	// are independent, so they run together.
+	const save = useFn(() => {
+		const writes: Promise<boolean>[] = [];
+		if (canManage && policyUnsaved && !policyInvalid && !isRunning) {
+			writes.push(savePolicy());
+		}
+		if (canManage && defaultUnsaved && !defaultInvalid && !isDefaultRunning) {
+			writes.push(saveDefault());
+		}
+
+		return Promise.all(writes).then((results) => results.every(Boolean));
+	});
 
 	const handleOpenApplyConfirm = () => {
 		if (isApplying || !canManage || policyUnsaved || applyUnavailable) {
@@ -606,17 +630,23 @@ const FilesPropertiesModalWritePolicy = memo(function FilesPropertiesModalWriteP
 		}
 	}, [applyConfirm]);
 
+	useEffect(() => {
+		onSaveStateChange({
+			dirty: policyUnsaved || defaultUnsaved,
+			invalid: policyInvalid || defaultInvalid,
+			save,
+		});
+	}, [policyUnsaved, defaultUnsaved, policyInvalid, defaultInvalid, save, onSaveStateChange]);
+
 	const choiceFieldset = (
 		choiceValue: PolicyDraft,
 		onChoice: (choice: PolicyDraft) => void,
 		groupName: string,
-		fieldsetRef: RefObject<HTMLFieldSetElement | null>,
 		describedBy: string,
 		running: boolean,
 		groupKind: "policy" | "default",
 	) => (
 		<fieldset
-			ref={fieldsetRef}
 			className={"FilesPropertiesModalWritePolicy-choices" satisfies FilesPropertiesModalWritePolicy_ClassNames}
 			aria-describedby={describedBy}
 		>
@@ -651,7 +681,6 @@ const FilesPropertiesModalWritePolicy = memo(function FilesPropertiesModalWriteP
 				choice,
 				(choiceValue) => setDraft(choiceValue),
 				`${descriptionId}-group`,
-				choicesRef,
 				descriptionId,
 				isRunning,
 				"policy",
@@ -677,16 +706,10 @@ const FilesPropertiesModalWritePolicy = memo(function FilesPropertiesModalWriteP
 					: null}{" "}
 				{managementState?.canManage === false ? "You cannot change this protection." : null}
 			</p>
-			<div className={"FilesPropertiesModalWritePolicy-actions" satisfies FilesPropertiesModalWritePolicy_ClassNames}>
-				<MyButton
-					variant="outline"
-					disabled={!canManage || !draft || (choice.mode === "writer" && !writerSelected)}
-					aria-busy={isRunning || undefined}
-					onClick={handleSavePolicy}
-				>
-					{isRunning ? "Saving…" : "Save policy"}
-				</MyButton>
-				{nodeKind === "folder" ? (
+			{/* The rule itself is saved by the Save button in the dialog footer. Applying it to the contents is
+			    a separate action, so it keeps its own button here. */}
+			{nodeKind === "folder" ? (
+				<div className={"FilesPropertiesModalWritePolicy-actions" satisfies FilesPropertiesModalWritePolicy_ClassNames}>
 					<MyButton
 						variant="ghost"
 						disabled={!canManage || isApplying || policyUnsaved || applyUnavailable}
@@ -695,8 +718,8 @@ const FilesPropertiesModalWritePolicy = memo(function FilesPropertiesModalWriteP
 					>
 						Apply to contents…
 					</MyButton>
-				) : null}
-			</div>
+				</div>
+			) : null}
 			{applyUnavailable ? (
 				<p
 					className={"FilesPropertiesModalWritePolicy-description" satisfies FilesPropertiesModalWritePolicy_ClassNames}
@@ -765,7 +788,6 @@ const FilesPropertiesModalWritePolicy = memo(function FilesPropertiesModalWriteP
 						defaultChoice,
 						(choiceValue) => setDefaultDraft(choiceValue),
 						`${defaultDescriptionId}-group`,
-						defaultChoicesRef,
 						defaultDescriptionId,
 						isDefaultRunning,
 						"default",
@@ -794,18 +816,6 @@ const FilesPropertiesModalWritePolicy = memo(function FilesPropertiesModalWriteP
 						Copied once to new files and subfolders. Existing items keep their settings. New subfolders copy this
 						default too, but later changes do not cascade. Copies keep their source settings.
 					</p>
-					<div
-						className={"FilesPropertiesModalWritePolicy-actions" satisfies FilesPropertiesModalWritePolicy_ClassNames}
-					>
-						<MyButton
-							variant="outline"
-							disabled={!canManage || !defaultDraft || (defaultChoice.mode === "writer" && !defaultWriterSelected)}
-							aria-busy={isDefaultRunning || undefined}
-							onClick={handleSaveDefault}
-						>
-							{isDefaultRunning ? "Saving…" : "Save default"}
-						</MyButton>
-					</div>
 					{defaultError ? (
 						<p
 							className={"FilesPropertiesModalWritePolicy-error" satisfies FilesPropertiesModalWritePolicy_ClassNames}
@@ -880,7 +890,7 @@ const FilesPropertiesModalCollaboration = memo(function FilesPropertiesModalColl
 	const blockedReason =
 		canWrite === false
 			? node?.writeBlockedReason === "read_only"
-				? "A file policy blocks editing this file."
+				? "This file is read-only."
 				: "You don't have permission to edit this file."
 			: null;
 	const canToggle = canWrite === true;
@@ -1087,10 +1097,10 @@ type FilesPropertiesModalMetadata_ClassNames =
 type FilesPropertiesModalMetadata_Props = {
 	nodeId: app_convex_Id<"files_nodes">;
 	/**
-	 * Report an unsaved draft, so the footer can warn before the dialog is closed. Closing throws the
-	 * draft away, and a modal is easier to dismiss by accident than the sidebar tab this replaced.
+	 * Report the unsaved draft and how to save it. The footer Save button uses this, and the footer
+	 * warns before the dialog is closed, because closing throws the draft away.
 	 */
-	onDirtyChange: (dirty: boolean) => void;
+	onSaveStateChange: (saveState: SaveState | null) => void;
 };
 
 /**
@@ -1115,7 +1125,7 @@ type FilesPropertiesModalMetadata_State = {
 const FilesPropertiesModalMetadata = memo(function FilesPropertiesModalMetadata(
 	props: FilesPropertiesModalMetadata_Props,
 ) {
-	const { nodeId, onDirtyChange } = props;
+	const { nodeId, onSaveStateChange } = props;
 
 	const { membershipId } = AppTenantProvider.useContext();
 
@@ -1158,8 +1168,8 @@ const FilesPropertiesModalMetadata = memo(function FilesPropertiesModalMetadata(
 	const blockedReason =
 		canWrite === false
 			? node?.writeBlockedReason === "read_only"
-				? "A file policy blocks editing this item."
-				: "You don't have permission to edit this item."
+				? "This item is read-only, so its metadata cannot be changed."
+				: "You don't have permission to change this item's metadata."
 			: null;
 
 	// Keep these options in one state slot that never changes. @monaco-editor/react deep-clones the
@@ -1217,7 +1227,7 @@ const FilesPropertiesModalMetadata = memo(function FilesPropertiesModalMetadata(
 
 	const handleSave = useFn(() => {
 		if (saving || !editable || metadata.draftYaml === metadata.serverYaml) {
-			return;
+			return Promise.resolve(false);
 		}
 
 		// Parse with the shared parser first, so an invalid draft does not spend a write rate-limit
@@ -1226,7 +1236,7 @@ const FilesPropertiesModalMetadata = memo(function FilesPropertiesModalMetadata(
 		if (parsed._nay) {
 			setMetadata((current) => ({ ...current, feedback: { kind: "error", message: parsed._nay.message } }));
 			toast.error(parsed._nay.message);
-			return;
+			return Promise.resolve(false);
 		}
 
 		const yamlToSave = metadata.draftYaml;
@@ -1236,7 +1246,7 @@ const FilesPropertiesModalMetadata = memo(function FilesPropertiesModalMetadata(
 		sentDraftRef.current = yamlToSave;
 		setSaving(true);
 		setMetadata((current) => ({ ...current, feedback: null }));
-		app_convex
+		return app_convex
 			.mutation(app_convex_api.files_metadata.set_entries, {
 				membershipId,
 				fileNodeId: nodeId,
@@ -1260,7 +1270,7 @@ const FilesPropertiesModalMetadata = memo(function FilesPropertiesModalMetadata(
 								: { kind: "error", message: result._nay.message },
 					}));
 					toast.error(result._nay.message);
-					return;
+					return false;
 				}
 
 				// The reactive query pushes the saved map back, and the effect below is what really
@@ -1278,6 +1288,8 @@ const FilesPropertiesModalMetadata = memo(function FilesPropertiesModalMetadata(
 									message: "An earlier draft was saved. Review the current draft before saving again.",
 								},
 				}));
+
+				return true;
 			})
 			.catch((error: unknown) => {
 				sentDraftRef.current = null;
@@ -1290,6 +1302,8 @@ const FilesPropertiesModalMetadata = memo(function FilesPropertiesModalMetadata(
 					feedback: { kind: "error", message: "Failed to save metadata" },
 				}));
 				toast.error("Failed to save metadata");
+
+				return false;
 			})
 			.finally(() => {
 				setSaving(false);
@@ -1303,8 +1317,8 @@ const FilesPropertiesModalMetadata = memo(function FilesPropertiesModalMetadata(
 	}, [saving, editable]);
 
 	useEffect(() => {
-		onDirtyChange(dirty && editable);
-	}, [dirty, editable, onDirtyChange]);
+		onSaveStateChange({ dirty: dirty && editable, invalid: false, save: handleSave });
+	}, [dirty, editable, handleSave, onSaveStateChange]);
 
 	useEffect(() => {
 		if (serverYaml === undefined) {
@@ -1411,17 +1425,6 @@ const FilesPropertiesModalMetadata = memo(function FilesPropertiesModalMetadata(
 						{metadata.feedback?.message ?? blockedReason}
 					</p>
 				) : null}
-				<MyButton
-					className={cn(blockedReason && ("MyButton-state-disabled" satisfies MyButton_ClassNames))}
-					disabled={blockedReason === null && (saving || !editable || !dirty)}
-					aria-disabled={blockedReason ? true : undefined}
-					aria-describedby={blockedReason ? statusId : undefined}
-					aria-busy={saving}
-					onClick={handleSave}
-				>
-					<Save aria-hidden />
-					{saving ? "Saving..." : "Save metadata"}
-				</MyButton>
 			</div>
 		</div>
 	);
@@ -1738,7 +1741,9 @@ export const FilesPropertiesModal = memo(function FilesPropertiesModal(props: Fi
 	const { nodeId, nodeName, nodeKind, returnFocusRef, onClose } = props;
 
 	const { membershipId } = AppTenantProvider.useContext();
-	const [dirty, setDirty] = useState(false);
+	const [policySaveState, setPolicySaveState] = useState<SaveState | null>(null);
+	const [metadataSaveState, setMetadataSaveState] = useState<SaveState | null>(null);
+	const [saving, setSaving] = useState(false);
 
 	// The sections below read these same queries. Nothing else in the app subscribes to them before
 	// the modal opens, so the first answer needs a server round trip. Wait for it here and show the
@@ -1758,11 +1763,37 @@ export const FilesPropertiesModal = memo(function FilesPropertiesModal(props: Fi
 	);
 	const loading = node === undefined || managementState === undefined || metadataEntries === undefined;
 
+	const saveStates = [policySaveState, metadataSaveState];
+	const dirty = saveStates.some((saveState) => saveState?.dirty);
+	const invalid = saveStates.some((saveState) => saveState?.invalid);
+
+	const handleSave = useFn(() => {
+		if (saving || !dirty || invalid) {
+			return;
+		}
+
+		setSaving(true);
+
+		Promise.all(saveStates.map((saveState) => (saveState?.dirty ? saveState.save() : true)))
+			.then((results) => {
+				if (results.every(Boolean)) {
+					toast.success("Properties saved");
+				}
+			})
+			.catch((error: unknown) => {
+				console.error("[FilesPropertiesModal.handleSave] Unexpected async error", { error });
+			})
+			.finally(() => {
+				setSaving(false);
+			});
+	});
+
 	const handleClose = useFn(() => {
-		// The metadata section unmounts with the dialog body, so it cannot report the draft it just
-		// lost. Clear the flag here, or the next file opens still showing the unsaved-draft warning
-		// left over from the file that was just closed.
-		setDirty(false);
+		// The sections unmount with the dialog body, so they cannot report that their draft is gone.
+		// Clear the states here, or the next file opens still showing the unsaved warning left over
+		// from the file that was just closed.
+		setPolicySaveState(null);
+		setMetadataSaveState(null);
 		onClose();
 		queueMicrotask(() => returnFocusRef?.current?.focus());
 	});
@@ -1781,7 +1812,8 @@ export const FilesPropertiesModal = memo(function FilesPropertiesModal(props: Fi
 			>
 				<MyModalHeader>
 					<MyModalHeading>Properties</MyModalHeading>
-					<MyModalDescription>{nodeName}</MyModalDescription>
+					{/* Start with "/" to show the path from the root. */}
+					<MyModalDescription>{node?.path ?? `/${nodeName}`}</MyModalDescription>
 				</MyModalHeader>
 
 				<MyModalScrollableArea
@@ -1804,7 +1836,11 @@ export const FilesPropertiesModal = memo(function FilesPropertiesModal(props: Fi
 									aria-label="Protection"
 									className={"FilesPropertiesModal-section" satisfies FilesPropertiesModal_ClassNames}
 								>
-									<FilesPropertiesModalWritePolicy nodeId={nodeId} nodeKind={nodeKind} />
+									<FilesPropertiesModalWritePolicy
+										nodeId={nodeId}
+										nodeKind={nodeKind}
+										onSaveStateChange={setPolicySaveState}
+									/>
 								</section>
 
 								{/* Only a text file can have a collaborative document, and the section itself decides
@@ -1818,7 +1854,7 @@ export const FilesPropertiesModal = memo(function FilesPropertiesModal(props: Fi
 									<h3 className={"FilesPropertiesModal-section-heading" satisfies FilesPropertiesModal_ClassNames}>
 										Metadata
 									</h3>
-									<FilesPropertiesModalMetadata nodeId={nodeId} onDirtyChange={setDirty} />
+									<FilesPropertiesModalMetadata nodeId={nodeId} onSaveStateChange={setMetadataSaveState} />
 								</section>
 							</>
 						) : null}
@@ -1826,15 +1862,18 @@ export const FilesPropertiesModal = memo(function FilesPropertiesModal(props: Fi
 				</MyModalScrollableArea>
 
 				<MyModalFooter>
-					{/* Each section saves its own changes. Closing discards an unsaved draft. */}
+					{/* One Save writes every changed section. Closing discards unsaved changes. */}
 					{dirty ? (
 						<p className={"FilesPropertiesModal-unsaved" satisfies FilesPropertiesModal_ClassNames}>
-							Unsaved metadata will be lost.
+							Unsaved changes will be lost.
 						</p>
 					) : null}
 					<div className={"FilesPropertiesModal-footer-spacer" satisfies FilesPropertiesModal_ClassNames} />
 					<MyButton variant="ghost" onClick={handleClose}>
-						Done
+						Close
+					</MyButton>
+					<MyButton disabled={!dirty || invalid || saving} aria-busy={saving || undefined} onClick={handleSave}>
+						{saving ? "Saving…" : "Save"}
 					</MyButton>
 				</MyModalFooter>
 				<MyModalCloseTrigger />
