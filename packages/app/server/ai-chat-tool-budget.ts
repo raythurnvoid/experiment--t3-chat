@@ -8,9 +8,11 @@ function serialized_bytes(value: unknown) {
 	return encoder.encode(JSON.stringify(value) ?? "null").byteLength;
 }
 
+// Leave room for the Convex document fields around the UI message.
+export const ai_chat_MESSAGE_MAX_BYTES = 900 * 1024;
+
 export function ai_chat_message_fits_storage(message: unknown) {
-	// Leave room for the Convex document fields around the UI message.
-	return serialized_bytes(message) <= 900 * 1024;
+	return serialized_bytes(message) <= ai_chat_MESSAGE_MAX_BYTES;
 }
 
 export function ai_chat_tool_budget_create() {

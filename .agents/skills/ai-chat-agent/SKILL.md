@@ -599,6 +599,20 @@ calls end, the budget is exhausted and tools stop for the rest of the reply. New
 must fit the 900 KiB serialized storage guard. An oversized final reply is not saved; the stream ends
 with a clear error asking for a shorter result or smaller pages.
 
+Every lost reply also writes one Convex log line, `console.error("Chat data not saved", { reason,
+threadId, messageId, bytes })`. The reasons are:
+
+- `reply_too_large`: the guard above. The line adds `limit`.
+- `reply_save_failed`: the chat reply save throws (refused or a Convex error). The line adds
+  `errorName`, and the error is then rethrown as before.
+- `reply_save_refused`: `store_job_wakeup_reply` returns `false`, because the user lost access
+  during a wake run. Nothing throws.
+
+Log only ids and sizes, never reply text. A Convex validation error can quote the value, so the
+error message is not logged. Keep the message stable, because alerts will match it. It names chat
+data, not only replies, because later tool output losses will use the same message. See the
+`troubleshooting` skill to find these lines.
+
 - [x] **Cap total written-document size — done by the editable-text feature.** Every
       string→document producer now enforces `files_MAX_TEXT_CONTENT_BYTES` (900,000 bytes):
       the pending-state staging funnel, the public write routes, the pending-state seal's

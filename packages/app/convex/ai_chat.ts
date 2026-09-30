@@ -125,6 +125,7 @@ import { ai_chat_workspaces_db_resolve, ai_chat_workspaces_SELECTORS } from "./a
 import { browser_intent_schema, type browser_Intent } from "../shared/browser-intent.ts";
 import {
 	ai_chat_message_fits_storage,
+	ai_chat_MESSAGE_MAX_BYTES,
 	ai_chat_tool_budget_apply,
 	ai_chat_tool_budget_create,
 } from "../server/ai-chat-tool-budget.ts";
@@ -3201,6 +3202,15 @@ async function create_agent_turn_stream(args: {
 					if (!ai_chat_message_fits_storage(result.responseMessage)) {
 						responseStorageError =
 							"This reply is too large and was not saved. Start a new message and ask for a shorter result or smaller file pages. Any file changes already made still need review.";
+						// Only the browser sees the refusal above. Log the lost reply so the team can see it too.
+						// Log ids and sizes only, never the reply text.
+						console.error("Chat data not saved", {
+							reason: "reply_too_large",
+							threadId,
+							messageId: result.responseMessage.id,
+							bytes: new TextEncoder().encode(JSON.stringify(result.responseMessage)).byteLength,
+							limit: ai_chat_MESSAGE_MAX_BYTES,
+						});
 					} else {
 						const capturedInputTokens = capturedUsage?.inputTokens ?? 0;
 						const capturedOutputTokens = capturedUsage?.outputTokens ?? 0;
@@ -3248,7 +3258,21 @@ async function create_agent_turn_stream(args: {
 
 						// Persist the assistant reply, including a Stop, below the last persisted request
 						// message. A mid-run finish re-parents through `get_chat_reply_parent`.
-						await args.storeReply(result.responseMessage);
+						try {
+							await args.storeReply(result.responseMessage);
+						} catch (error) {
+							// A refused save and a Convex limit error both lose the reply. Log only the error
+							// name, because a Convex validation error can quote the reply text. A mutation that
+							// throws writes its own log line with the details.
+							console.error("Chat data not saved", {
+								reason: "reply_save_failed",
+								threadId,
+								messageId: result.responseMessage.id,
+								bytes: new TextEncoder().encode(JSON.stringify(result.responseMessage)).byteLength,
+								errorName: error instanceof Error ? error.name : "Error",
+							});
+							throw error;
+						}
 					}
 				} else if (result.isAborted) {
 					console.info("onFinish aborted", {
@@ -3933,6 +3957,8 @@ type get_job_wakeup_context_Result =
  *
  * A later finish or the chat reply can land under the finish while this run
  * streams; parenting on that newest descendant keeps one line.
+ *
+ * Returns `false` when it refuses the reply, so the caller can log the lost reply.
  */
 export const store_job_wakeup_reply = internalMutation({
 	args: {
@@ -3943,24 +3969,24 @@ export const store_job_wakeup_reply = internalMutation({
 			app_convex_schema.tables.ai_chat_threads_messages_aisdk_5.validator.fields.clientGeneratedMessageId,
 		content: app_convex_schema.tables.ai_chat_threads_messages_aisdk_5.validator.fields.content,
 	},
-	returns: v.null(),
+	returns: v.boolean(),
 	handler: async (ctx, args) => {
 		const thread = await ctx.db.get("ai_chat_threads", args.threadId);
-		if (!thread || thread.createdBy !== args.userId) return null;
+		if (!thread || thread.createdBy !== args.userId) return false;
 		const finish = await ctx.db.get("ai_chat_threads_messages_aisdk_5", args.finishMessageId);
-		if (!finish || finish.threadId !== thread._id || !finish.jobFinishInvocationId) return null;
+		if (!finish || finish.threadId !== thread._id || !finish.jobFinishInvocationId) return false;
 		const invocation = await ctx.db.get("ai_chat_bash_invocations", finish.jobFinishInvocationId);
-		if (!invocation?.job || invocation.threadId !== thread._id || invocation.userId !== args.userId) return null;
+		if (!invocation?.job || invocation.threadId !== thread._id || invocation.userId !== args.userId) return false;
 
 		// A stream can finish after access was removed. Rejoining must not revive that run.
 		const membership = await ai_chat_files_db_get_invocation_membership(ctx, invocation);
-		if (!membership) return null;
+		if (!membership) return false;
 		const authorized = await access_control_db_authorize_membership(ctx, {
 			userAuth: { id: args.userId },
 			membership,
 			permission: "content.read",
 		});
-		if (authorized._nay) return null;
+		if (authorized._nay) return false;
 
 		// A wakeup reply skips `thread_messages_add`, so the size and tool part rules are applied here
 		// instead. Both doors must store the same safe shape. The server wrote this reply, so MCP parts
@@ -4004,7 +4030,7 @@ export const store_job_wakeup_reply = internalMutation({
 			content: args.content,
 		});
 		await ctx.db.patch("ai_chat_threads", thread._id, { lastMessageAt: now, updatedAt: now, updatedBy: args.userId });
-		return null;
+		return true;
 	},
 });
 
@@ -4256,13 +4282,23 @@ export const run_job_wakeup = internalAction({
 				runStartedAt: finishMessageUpdatedAt,
 				excludeFinishMessageId: args.finishMessageId,
 				storeReply: async (message) => {
-					await ctx.runMutation(internal.ai_chat.store_job_wakeup_reply, {
+					const stored = await ctx.runMutation(internal.ai_chat.store_job_wakeup_reply, {
 						threadId: thread._id,
 						userId: membership.userId,
 						finishMessageId: args.finishMessageId,
 						clientGeneratedMessageId: message.id,
 						content: message,
 					});
+					// The door refuses the reply when the user lost access during the run. The refusal does
+					// not throw, so log the lost reply here. Log ids and sizes only, never the reply text.
+					if (!stored) {
+						console.error("Chat data not saved", {
+							reason: "reply_save_refused",
+							threadId: thread._id,
+							messageId: message.id,
+							bytes: new TextEncoder().encode(JSON.stringify(message)).byteLength,
+						});
+					}
 				},
 				releaseRun: async () => {
 					if (followupScheduled) return;

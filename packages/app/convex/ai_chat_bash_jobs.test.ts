@@ -2366,7 +2366,7 @@ describe("job wakeup", () => {
 				clientGeneratedMessageId: "wake-before-revocation",
 				content: { id: "wake-before-revocation", role: "assistant", parts: [{ type: "text", text: "done" }] },
 			};
-			await f.t.mutation(internal.ai_chat.store_job_wakeup_reply, reply);
+			expect(await f.t.mutation(internal.ai_chat.store_job_wakeup_reply, reply)).toBe(true);
 			expect((await read_thread(f)).messages.at(-1)?.clientGeneratedMessageId).toBe("wake-before-revocation");
 
 			await f.t.run(async (ctx) => {
@@ -2383,11 +2383,14 @@ describe("job wakeup", () => {
 			// A different member cannot publish the creator's job reply, even in the same team.
 			const userId = lost === "creator" ? (await add_member(f, "other-wake-user")).userId : f.scope.userId;
 			const before = await read_thread(f);
-			await f.t.mutation(internal.ai_chat.store_job_wakeup_reply, {
-				...reply,
-				userId,
-				clientGeneratedMessageId: "wake-after-revocation",
-			});
+			// The wake run logs the lost reply only when the door reports the refusal.
+			expect(
+				await f.t.mutation(internal.ai_chat.store_job_wakeup_reply, {
+					...reply,
+					userId,
+					clientGeneratedMessageId: "wake-after-revocation",
+				}),
+			).toBe(false);
 			expect((await read_thread(f)).messages).toEqual(before.messages);
 			expect((await read_thread(f)).thread).toEqual(before.thread);
 		},
