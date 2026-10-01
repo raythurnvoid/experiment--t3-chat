@@ -171,11 +171,7 @@ export function files_sort_key_of(args: {
 /**
  * Missing values stay last in either direction. Multi-sort applies each direction on its own.
  */
-export function files_sort_compare(args: {
-	a: files_sort_RowKey;
-	b: files_sort_RowKey;
-	sort: files_sort_Sort;
-}) {
+export function files_sort_compare(args: { a: files_sort_RowKey; b: files_sort_RowKey; sort: files_sort_Sort }) {
 	const { a, b, sort } = args;
 
 	for (const [index, clause] of sort.entries()) {

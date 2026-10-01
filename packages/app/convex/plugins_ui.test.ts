@@ -467,12 +467,8 @@ async function seed_session_token(args: {
 }
 
 // Default to the frame's own origin, derived from the env exactly like the handler derives it.
-async function exchange_session_jwt(args: {
-	t: ReturnType<typeof test_convex>;
-	token: string;
-	origin?: string;
-}) {
-	const { t, origin, token} = args;
+async function exchange_session_jwt(args: { t: ReturnType<typeof test_convex>; token: string; origin?: string }) {
+	const { t, origin, token } = args;
 
 	return await t.fetch("/plugins-ui/session-jwt", {
 		method: "POST",

@@ -1640,12 +1640,7 @@ describe("public API routes", () => {
 			throw new Error(minted._nay?.message ?? otherMinted._nay!.message);
 		}
 
-		const batch = async (args: {
-			token: string;
-			prefix: string;
-			size: number;
-		}) =>
-			{
+		const batch = async (args: { token: string; prefix: string; size: number }) => {
 			const { token, prefix, size } = args;
 
 			return await t.fetch("/api/v1/plugin-data/write-batch", {
@@ -8497,7 +8492,10 @@ describe("per-member capacity", () => {
 		if (created._nay) {
 			throw new Error(created._nay.message);
 		}
-		expect(await read_member_usage({ t, fixture, userId: fixture.userId })).toMatchObject({ usedBytes: 200, usedDocuments: 2 });
+		expect(await read_member_usage({ t, fixture, userId: fixture.userId })).toMatchObject({
+			usedBytes: 200,
+			usedDocuments: 2,
+		});
 
 		// B renames the shared channel. The whole document moves: A is credited the old bytes and the
 		// slot, B is charged the new bytes and the slot. Leaving the slot on A would let a member keep
@@ -8510,8 +8508,14 @@ describe("per-member capacity", () => {
 		if (renamed._nay) {
 			throw new Error(renamed._nay.message);
 		}
-		expect(await read_member_usage({ t, fixture, userId: fixture.userId })).toMatchObject({ usedBytes: 100, usedDocuments: 1 });
-		expect(await read_member_usage({ t, fixture, userId: memberB.userId })).toMatchObject({ usedBytes: 300, usedDocuments: 1 });
+		expect(await read_member_usage({ t, fixture, userId: fixture.userId })).toMatchObject({
+			usedBytes: 100,
+			usedDocuments: 1,
+		});
+		expect(await read_member_usage({ t, fixture, userId: memberB.userId })).toMatchObject({
+			usedBytes: 300,
+			usedDocuments: 1,
+		});
 	});
 
 	test("deletes a member's share row once they hold nothing, at every door that attributes", async () => {
@@ -8954,9 +8958,9 @@ describe("per-member capacity", () => {
 			fixture,
 			userId: fixture.userId,
 			patch: {
-			usedBytes: 3 * 16 * 1024 + 1600 * 1024,
-			machineBytes: 3 * 16 * 1024 + 1600 * 1024,
-		},
+				usedBytes: 3 * 16 * 1024 + 1600 * 1024,
+				machineBytes: 3 * 16 * 1024 + 1600 * 1024,
+			},
 		});
 
 		// A composed none of those bytes, so both doors still take A's own writes. The comparison lives
@@ -9017,7 +9021,10 @@ describe("per-member capacity", () => {
 				})
 			)._nay,
 		).toBeUndefined();
-		expect(await read_member_usage({ t, fixture, userId: fixture.userId })).toMatchObject({ usedBytes: 100, machineBytes: 0 });
+		expect(await read_member_usage({ t, fixture, userId: fixture.userId })).toMatchObject({
+			usedBytes: 100,
+			machineBytes: 0,
+		});
 		expect(
 			(
 				await memberB.asPage.mutation(api.plugins_data.user_put_document, {
@@ -9028,7 +9035,10 @@ describe("per-member capacity", () => {
 			)._nay,
 		).toBeUndefined();
 		// A member no backend ever touched holds the same own-bytes for the same value.
-		expect(await read_member_usage({ t, fixture, userId: memberB.userId })).toMatchObject({ usedBytes: 100, machineBytes: 0 });
+		expect(await read_member_usage({ t, fixture, userId: memberB.userId })).toMatchObject({
+			usedBytes: 100,
+			machineBytes: 0,
+		});
 
 		// Transfer. The backend grows A's document again and B renames it. B is charged only what B
 		// wrote, and A keeps nothing of it: the machine share is zeroed by B's own write instead of
@@ -9067,7 +9077,10 @@ describe("per-member capacity", () => {
 		if (appended._nay) {
 			throw new Error(appended._nay.message);
 		}
-		expect(await read_member_usage({ t, fixture, userId: fixture.userId })).toMatchObject({ usedBytes: 100, machineBytes: 0 });
+		expect(await read_member_usage({ t, fixture, userId: fixture.userId })).toMatchObject({
+			usedBytes: 100,
+			machineBytes: 0,
+		});
 		const removed = await fixture.asPage.mutation(api.plugins_data.user_remove_document, {
 			collection: "messages",
 			key: appended._yay.key,

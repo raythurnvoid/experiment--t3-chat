@@ -127,8 +127,8 @@ async function install_mcp_plugin(args: {
 	headers?: Array<{ name: string; secret: string; value: string }>;
 	tools?: string[] | null;
 	/**
-		 * A sign-in server pin. Without it the server uses the headers, or nothing.
-		 */
+	 * A sign-in server pin. Without it the server uses the headers, or nothing.
+	 */
 	oauth?: { issuer: string; scopes: string[] };
 }) {
 	const { t, membership } = args;
@@ -302,11 +302,7 @@ async function reopen_route_runs(t: TestConvex) {
  * Run one captured tool the way the SDK does. MCP calls use timers, which convex-test allows only
  * inside an action.
  */
-async function run_tool(args: {
-	t: TestConvex;
-	name: string;
-	input: unknown;
-}) {
+async function run_tool(args: { t: TestConvex; name: string; input: unknown }) {
 	const { t, name, input } = args;
 
 	const execute = last_call().tools?.[name]?.execute;
@@ -573,62 +569,73 @@ describe("/api/chat MCP tool calls", () => {
 		expect(fixtures.wire[0]?.headers.get("x-api-key")).toBe(headerValue);
 
 		const token = `sk-${"a".repeat(24)}`;
-		const result = await run_tool({ t, name: "mcp__tracker__echo", input: { text: `key ${headerValue} token ${token}` } });
+		const result = await run_tool({
+			t,
+			name: "mcp__tracker__echo",
+			input: { text: `key ${headerValue} token ${token}` },
+		});
 
 		expect(result.output).toMatchObject({ output: "key [secret] token [secret]" });
 		expect(tools_calls()[0]?.headers.get("x-api-key")).toBe(headerValue);
 	});
 
-	test.each(["text", "number", "exponent"])("keeps an echoed %s header out of the model's tool schemas", async (kind) => {
-		const { t, asUser, membership, threadId } = await setup();
-		const secret =
-			kind === "number" ? "123456789" : kind === "exponent" ? "10000000000000000000000" : 'PRIVATE_HEADER_"quoted"\\value';
-		await install_mcp_plugin({
-			t,
-			membership,
-			url: MODERN_BASIC_URL,
-			headers: [{ name: "X-Api-Key", secret: "api_key", value: secret }],
-		});
-		const fixtureFetch = fixtures.fetch;
-		fixtures.fetch = async (input, init) => {
-			const request = new Request(input, init);
-			const body = JSON.parse(await request.clone().text()) as { id: number; method: string };
-			if (body.method === "tools/list") {
-				return Response.json({
-					jsonrpc: "2.0",
-					id: body.id,
-					result: {
-						resultType: "complete",
-						ttlMs: 0,
-						cacheScope: "private",
-						tools: [
-							{
-								name: "private",
-								inputSchema: {
-									type: "object",
-									properties: {
-										key: {
-										type: kind === "text" ? "string" : "number",
-											default:
-											kind === "text" ? request.headers.get("x-api-key") : Number(request.headers.get("x-api-key")),
+	test.each(["text", "number", "exponent"])(
+		"keeps an echoed %s header out of the model's tool schemas",
+		async (kind) => {
+			const { t, asUser, membership, threadId } = await setup();
+			const secret =
+				kind === "number"
+					? "123456789"
+					: kind === "exponent"
+						? "10000000000000000000000"
+						: 'PRIVATE_HEADER_"quoted"\\value';
+			await install_mcp_plugin({
+				t,
+				membership,
+				url: MODERN_BASIC_URL,
+				headers: [{ name: "X-Api-Key", secret: "api_key", value: secret }],
+			});
+			const fixtureFetch = fixtures.fetch;
+			fixtures.fetch = async (input, init) => {
+				const request = new Request(input, init);
+				const body = JSON.parse(await request.clone().text()) as { id: number; method: string };
+				if (body.method === "tools/list") {
+					return Response.json({
+						jsonrpc: "2.0",
+						id: body.id,
+						result: {
+							resultType: "complete",
+							ttlMs: 0,
+							cacheScope: "private",
+							tools: [
+								{
+									name: "private",
+									inputSchema: {
+										type: "object",
+										properties: {
+											key: {
+												type: kind === "text" ? "string" : "number",
+												default:
+													kind === "text" ? request.headers.get("x-api-key") : Number(request.headers.get("x-api-key")),
+											},
 										},
 									},
 								},
-							},
-							{ name: "safe", inputSchema: { type: "object", properties: { text: { type: "string" } } } },
-						],
-					},
-				});
-			}
-			return await fixtureFetch(request);
-		};
+								{ name: "safe", inputSchema: { type: "object", properties: { text: { type: "string" } } } },
+							],
+						},
+					});
+				}
+				return await fixtureFetch(request);
+			};
 
-		expect((await chat(asUser, { membershipId: membership.membershipId, threadId })).status).toBe(200);
-		expect(Object.keys(last_call().tools ?? {}).filter((name) => name.startsWith("mcp__"))).toEqual([
-			"mcp__tracker__safe",
-		]);
-		expect(JSON.stringify(last_call().tools)).not.toContain(JSON.stringify(secret).slice(1, -1));
-	});
+			expect((await chat(asUser, { membershipId: membership.membershipId, threadId })).status).toBe(200);
+			expect(Object.keys(last_call().tools ?? {}).filter((name) => name.startsWith("mcp__"))).toEqual([
+				"mcp__tracker__safe",
+			]);
+			expect(JSON.stringify(last_call().tools)).not.toContain(JSON.stringify(secret).slice(1, -1));
+		},
+	);
 
 	test("refuses a call over the per-member server rate limit", async () => {
 		const { t, asUser, membership, threadId } = await setup();
@@ -673,7 +680,9 @@ describe("/api/chat MCP tool calls", () => {
 		for (let index = 0; index < 60; index++) {
 			expect((await run_tool({ t, name: "mcp__tracker__echo", input: { text: "ok" } })).error).toBeNull();
 		}
-		expect((await run_tool({ t, name: "mcp__tracker__echo", input: { text: "ok" } })).error).toBe("Rate limit exceeded");
+		expect((await run_tool({ t, name: "mcp__tracker__echo", input: { text: "ok" } })).error).toBe(
+			"Rate limit exceeded",
+		);
 		expect((await run_tool({ t, name: "mcp__second__echo", input: { text: "ok" } })).error).toBeNull();
 		expect(tools_calls()).toHaveLength(61);
 	});
@@ -897,7 +906,7 @@ describe("/api/chat MCP custom servers", () => {
 		secretValues?: Array<{ name: string; value: string }>;
 		customServerId?: Id<"mcp_custom_servers">;
 	}) {
-		const { asUser, membershipId} = args;
+		const { asUser, membershipId } = args;
 
 		const saved = await asUser.action(api.mcp_custom_servers.save, {
 			membershipId,
@@ -1067,7 +1076,9 @@ describe("/api/chat MCP custom servers", () => {
 			url: `${MODERN_BASIC_URL}moved`,
 			customServerId,
 		});
-		expect((await run_tool({ t, name: "mcp__my-fixture__echo", input: { text: "ok" } })).error).toBe("The server changed; try again.");
+		expect((await run_tool({ t, name: "mcp__my-fixture__echo", input: { text: "ok" } })).error).toBe(
+			"The server changed; try again.",
+		);
 
 		expect(tools_calls()).toEqual([]);
 	});
@@ -1118,7 +1129,9 @@ describe("/api/chat MCP custom servers", () => {
 			expect((await run_tool({ t, name: "mcp__my-first__echo", input: { text: "ok" } })).error).toBeNull();
 		}
 
-		expect((await run_tool({ t, name: "mcp__my-first__echo", input: { text: "ok" } })).error).toBe("Rate limit exceeded");
+		expect((await run_tool({ t, name: "mcp__my-first__echo", input: { text: "ok" } })).error).toBe(
+			"Rate limit exceeded",
+		);
 		expect((await run_tool({ t, name: "mcp__my-second__echo", input: { text: "ok" } })).error).toBeNull();
 	});
 });
@@ -1487,7 +1500,7 @@ describe("/api/chat MCP sign-in notice", () => {
 		membership: Membership;
 		target: FunctionArgs<typeof api.plugins_mcp_oauth.start>["target"];
 	}) {
-		const { asUser, membership, target} = args;
+		const { asUser, membership, target } = args;
 
 		const started = await asUser.action(api.plugins_mcp_oauth.start, {
 			membershipId: membership.membershipId,

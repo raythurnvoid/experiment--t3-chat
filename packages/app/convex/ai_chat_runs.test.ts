@@ -61,7 +61,7 @@ async function answer_turn(args: {
 	run: { runId: Id<"ai_chat_runs">; generation: number };
 	text: string;
 }) {
-	const { fx, run, text} = args;
+	const { fx, run, text } = args;
 
 	await fx.t.mutation(internal.ai_chat_runs.step_complete, {
 		runId: run.runId,

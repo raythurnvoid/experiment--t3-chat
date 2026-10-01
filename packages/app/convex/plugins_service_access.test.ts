@@ -139,7 +139,7 @@ async function events(args: {
 	afterRevision?: number;
 	limit?: number;
 }) {
-	const { t, afterRevision = 0, limit = 100, installationId} = args;
+	const { t, afterRevision = 0, limit = 100, installationId } = args;
 
 	return await t.mutation(internal.plugins_service_access.get_events, {
 		installationId,
@@ -181,7 +181,12 @@ describe("create_lease_facts", () => {
 	test("binds each ordinary plugin to its own registration secret and audience", async () => {
 		const t = test_convex();
 		const first = await seed_installation({ t });
-		const second = await seed_installation({ t, organizationName: "notes", pluginName: "report-notes", secret: "NOTES_SERVICE_SECRET" });
+		const second = await seed_installation({
+			t,
+			organizationName: "notes",
+			pluginName: "report-notes",
+			secret: "NOTES_SERVICE_SECRET",
+		});
 		expect((await lease({ t, fixture: first }))._yay?.audience).toBe("bonobo-plugin:task-board");
 		expect((await lease({ t, fixture: second }))._yay?.audience).toBe("bonobo-plugin:report-notes");
 		expect((await lease({ t, fixture: { ...second, secret: first.secret } }))._nay?.message).toBe("Unauthorized");
@@ -332,7 +337,9 @@ describe("set_plugin_service_registration", () => {
 			scopes: [],
 		});
 		expect(registered._nay).toBeUndefined();
-		expect((await lease({ t, fixture: { ...fixture, secret: registered._yay!.exchangeSecret } }))._yay?.canRead).toBe(true);
+		expect((await lease({ t, fixture: { ...fixture, secret: registered._yay!.exchangeSecret } }))._yay?.canRead).toBe(
+			true,
+		);
 		expect(
 			(await publisher.query(api.plugins.get_plugin_service_registration, { pluginName: fixture.pluginName }))!.scopes,
 		).toEqual([]);
@@ -658,7 +665,9 @@ describe("get_events", () => {
 		expect((await events({ t, installationId: first.installationId }))._yay!.events).toEqual([
 			{ revision: 1, event: { kind: "session_revoked", hostSessionId: String(first.sessionId) } },
 		]);
-		expect((await events({ t, installationId: second.installationId }))._yay!.events).toEqual([{ revision: 1, event: { kind: "noop" } }]);
+		expect((await events({ t, installationId: second.installationId }))._yay!.events).toEqual([
+			{ revision: 1, event: { kind: "noop" } },
+		]);
 		expect((await lease({ t, fixture: first }))._nay?.message).toBe("Unauthorized");
 	});
 

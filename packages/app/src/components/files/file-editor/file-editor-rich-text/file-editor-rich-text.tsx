@@ -630,14 +630,14 @@ const FileEditorRichTextBubble = memo(function FileEditorRichTextBubble(props: F
 			const clearPointerSelectingEndListeners = global_event_listen_all({
 				events: ["pointerup", "pointercancel", "blur"],
 				handler: () => {
-				const wasSelecting = isPointerSelectingRef.current;
-				isPointerSelectingRef.current = false;
+					const wasSelecting = isPointerSelectingRef.current;
+					isPointerSelectingRef.current = false;
 
-				// Re-check bubble visibility on pointerup so it can show after the gesture ends.
-				if (wasSelecting) {
-					bubbleMenuReevaluateVisibility(editor);
-				}
-			},
+					// Re-check bubble visibility on pointerup so it can show after the gesture ends.
+					if (wasSelecting) {
+						bubbleMenuReevaluateVisibility(editor);
+					}
+				},
 			});
 
 			// Track editor pointer gestures.

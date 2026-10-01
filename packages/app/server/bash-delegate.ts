@@ -430,7 +430,6 @@ class RestrictedNativeJustBashTmpCommandFs implements IFileSystem {
 	}
 
 	async writeFile(path: string, content: FileContent, options?: Parameters<IFileSystem["writeFile"]>[2]) {
-
 		const normalizedPath = bash_normalize_path(path);
 		if (!is_native_just_bash_tmp_path(normalizedPath)) {
 			if (native_just_bash_app_root_path(this.dbFilesRoots, normalizedPath) != null) {
@@ -442,7 +441,6 @@ class RestrictedNativeJustBashTmpCommandFs implements IFileSystem {
 	}
 
 	async appendFile(path: string, content: FileContent, options?: Parameters<IFileSystem["appendFile"]>[2]) {
-
 		const normalizedPath = bash_normalize_path(path);
 		if (!is_native_just_bash_tmp_path(normalizedPath)) {
 			if (native_just_bash_app_root_path(this.dbFilesRoots, normalizedPath) != null) {
@@ -584,7 +582,6 @@ class RestrictedNativeJustBashTmpCommandFs implements IFileSystem {
 	}
 
 	async cp(src: string, dest: string, options?: CpOptions) {
-
 		const normalizedSrc = bash_normalize_path(src);
 		if (!is_native_just_bash_tmp_path(normalizedSrc)) {
 			if (native_just_bash_app_root_path(this.dbFilesRoots, normalizedSrc) != null) {
@@ -765,7 +762,6 @@ class RestrictedNativeJustBashTmpCommandFs implements IFileSystem {
 	}
 
 	async utimes(path: string, atime: Date, mtime: Date) {
-
 		const normalizedPath = bash_normalize_path(path);
 		if (!is_native_just_bash_tmp_path(normalizedPath)) {
 			if (native_just_bash_app_root_path(this.dbFilesRoots, normalizedPath) != null) {

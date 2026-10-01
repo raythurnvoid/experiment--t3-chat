@@ -313,7 +313,11 @@ export function bash_tree_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 					})) as files_nodes_list_subtree_Result;
 					return {
 						items: pageResult.page.map((item) => ({
-							path: bash_external_mounts_fan_out_db_files_path({ mount: pageArgs.mount, storedPath: item.path, basePath: pathResolution.basePath }),
+							path: bash_external_mounts_fan_out_db_files_path({
+								mount: pageArgs.mount,
+								storedPath: item.path,
+								basePath: pathResolution.basePath,
+							}),
 							kind: item.kind,
 						})),
 						continueCursor: pageResult.continueCursor,

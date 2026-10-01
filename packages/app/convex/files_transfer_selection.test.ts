@@ -50,7 +50,9 @@ describe("Copy selection pages", () => {
 		if (started._nay) throw new Error(started._nay.message);
 		const args = { membershipId: f.scope.membershipId, runId: started._yay.runId };
 		expect(await start({ f, sources: [source], expectedCount: 3 })).toEqual(started);
-		expect(await start({ f, sources: [source], expectedCount: 4 })).toMatchObject({ _nay: { name: "request_changed" } });
+		expect(await start({ f, sources: [source], expectedCount: 4 })).toMatchObject({
+			_nay: { name: "request_changed" },
+		});
 		await f.t.mutation(internal.files_transfer.advance, { runId: args.runId });
 		expect(await f.t.run((ctx) => ctx.db.query("files_transfer_items").collect())).toEqual([]);
 		expect(await f.asUser.mutation(api.files_transfer.seal, args)).toMatchObject({

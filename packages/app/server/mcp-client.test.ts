@@ -25,12 +25,7 @@ const echo_tool: mcp_client_NormalizedTool = {
 	annotations: null,
 };
 
-function list(args: {
-	fixture: string;
-	variant?: string;
-	timeoutMs?: number;
-	signal?: AbortSignal;
-}) {
+function list(args: { fixture: string; variant?: string; timeoutMs?: number; signal?: AbortSignal }) {
 	const { fixture, variant = "", timeoutMs = 5000, signal = new AbortController().signal } = args;
 
 	return mcp_client_list_tools({
@@ -364,7 +359,9 @@ describe("mcp_client_list_tools", () => {
 		const caller = new AbortController();
 		caller.abort();
 
-		expect((await list({ fixture: "modern-basic", variant: "", timeoutMs: 5000, signal: caller.signal }))._nay?.name).toBe("timeout");
+		expect(
+			(await list({ fixture: "modern-basic", variant: "", timeoutMs: 5000, signal: caller.signal }))._nay?.name,
+		).toBe("timeout");
 		expect(globalThis.fetch).not.toHaveBeenCalled();
 	});
 
@@ -378,10 +375,12 @@ describe("mcp_client_list_tools", () => {
 			return setTimeout(callback, delay, ...args);
 		});
 		let finished = false;
-		const pending = list({ fixture: "http-status", variant: "500", timeoutMs: 5000, signal: caller.signal }).then((result) => {
-			finished = true;
-			return result;
-		});
+		const pending = list({ fixture: "http-status", variant: "500", timeoutMs: 5000, signal: caller.signal }).then(
+			(result) => {
+				finished = true;
+				return result;
+			},
+		);
 		await waiting.promise;
 		caller.abort();
 		await vi.advanceTimersByTimeAsync(1);
@@ -418,9 +417,9 @@ describe("mcp_client_call_tool", () => {
 			fixture: "modern-basic",
 			variant: "",
 			options: {
-			tool: { ...echo_tool, name: "picture", outputSchema: null },
-			arguments: {},
-		},
+				tool: { ...echo_tool, name: "picture", outputSchema: null },
+				arguments: {},
+			},
 		});
 
 		expect(result._yay?.result.blocks).toEqual([{ kind: "omitted", type: "image", mimeType: "image/png", bytes: 8 }]);
@@ -437,10 +436,10 @@ describe("mcp_client_call_tool", () => {
 			fixture: "version-legacy",
 			variant: "",
 			options: {
-			era: "legacy",
-			tool: { ...echo_tool, name: "ping", outputSchema: null },
-			arguments: {},
-		},
+				era: "legacy",
+				tool: { ...echo_tool, name: "ping", outputSchema: null },
+				arguments: {},
+			},
 		});
 
 		expect(result._yay?.result.blocks).toEqual([{ kind: "text", text: "pong" }]);
@@ -499,11 +498,11 @@ describe("mcp_client_call_tool", () => {
 				fixture: "version-legacy",
 				variant: "",
 				options: {
-				era: "legacy",
-				timeoutMs: 80,
-				tool: { ...echo_tool, name: "ping", outputSchema: null },
-				arguments: {},
-			},
+					era: "legacy",
+					timeoutMs: 80,
+					tool: { ...echo_tool, name: "ping", outputSchema: null },
+					arguments: {},
+				},
 			});
 			const signal = await held.received;
 			await vi.advanceTimersByTimeAsync(80);
@@ -523,11 +522,11 @@ describe("mcp_client_call_tool", () => {
 			fixture: "version-legacy",
 			variant: "",
 			options: {
-			era: "legacy",
-			signal: caller.signal,
-			tool: { ...echo_tool, name: "ping", outputSchema: null },
-			arguments: {},
-		},
+				era: "legacy",
+				signal: caller.signal,
+				tool: { ...echo_tool, name: "ping", outputSchema: null },
+				arguments: {},
+			},
 		});
 		const signal = await held.received;
 		caller.abort();
@@ -544,10 +543,10 @@ describe("mcp_client_call_tool", () => {
 			fixture: "legacy-session-404",
 			variant: "",
 			options: {
-			era: "legacy",
-			tool: { ...echo_tool, name: "ping", outputSchema: null },
-			arguments: {},
-		},
+				era: "legacy",
+				tool: { ...echo_tool, name: "ping", outputSchema: null },
+				arguments: {},
+			},
 		});
 
 		expect(result._nay).toMatchObject({
@@ -690,10 +689,10 @@ describe("mcp_client_call_tool", () => {
 				fixture: "version-legacy",
 				variant: "",
 				options: {
-				era: "legacy",
-				tool: { ...echo_tool, name: "ping", outputSchema: null },
-				arguments: {},
-			},
+					era: "legacy",
+					tool: { ...echo_tool, name: "ping", outputSchema: null },
+					arguments: {},
+				},
 			});
 
 			expect(methods).toContain("GET");
@@ -712,7 +711,11 @@ describe("mcp_client_call_tool", () => {
 		const tool = listed._yay?.tools[0];
 		if (!tool) throw new Error("Failed to list the header-strict fixture");
 
-		const result = await call({ fixture: "header-strict", variant: "call", options: { tool, arguments: { region: "us-west1" } } });
+		const result = await call({
+			fixture: "header-strict",
+			variant: "call",
+			options: { tool, arguments: { region: "us-west1" } },
+		});
 
 		expect(result._yay?.result.blocks).toEqual([{ kind: "text", text: "region us-west1" }]);
 		expect(fixtures.wire[0]?.headers.get("mcp-param-region")).toBe("us-west1");
@@ -758,7 +761,11 @@ describe("mcp_client_call_tool", () => {
 	});
 
 	test("normalizes audio, links, and embedded resources without fetching them", async () => {
-		const result = await call({ fixture: "bad-output", variant: "mixed", options: { tool: { ...echo_tool, outputSchema: null } } });
+		const result = await call({
+			fixture: "bad-output",
+			variant: "mixed",
+			options: { tool: { ...echo_tool, outputSchema: null } },
+		});
 
 		expect(result._yay?.result.blocks).toEqual([
 			{ kind: "omitted", type: "audio", mimeType: "audio/wav", bytes: 6 },

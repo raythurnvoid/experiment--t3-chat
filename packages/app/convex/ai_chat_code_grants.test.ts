@@ -111,12 +111,7 @@ async function fixture(personal = false) {
 		},
 	};
 	const mint = () => t.mutation(internal.public_api.create_code_grants, mintArgs);
-	const request = (args: {
-		workspace: "current" | "personal";
-		route: string;
-		body: Record<string, unknown>;
-	}) =>
-		{
+	const request = (args: { workspace: "current" | "personal"; route: string; body: Record<string, unknown> }) => {
 		const { workspace, route, body } = args;
 
 		return t.fetch(`/api/v1/files/${route}`, {
@@ -127,11 +122,7 @@ async function fixture(personal = false) {
 	};
 	const read = (workspace: "current" | "personal", length = 6) =>
 		request({ workspace, route: "read-bytes", body: { path: "/data.txt", offset: 0, length, revision: null } });
-	async function file(args: {
-		workspace: "current" | "personal";
-		textContent?: string;
-		stored?: boolean;
-	}) {
+	async function file(args: { workspace: "current" | "personal"; textContent?: string; stored?: boolean }) {
 		const { workspace, textContent = workspace, stored = false } = args;
 
 		const nodeId = await test_create_saved_text_file(t, {
@@ -182,7 +173,10 @@ describe("two-root code grants", () => {
 		const third = await f.t.run((ctx) =>
 			test_mocks_fill_db_with.membership(ctx, { userId: f.actor.userId, organizationName: "third" }),
 		);
-		const nodeIds = { current: await f.file({ workspace: "current" }), personal: await f.file({ workspace: "personal" }) };
+		const nodeIds = {
+			current: await f.file({ workspace: "current" }),
+			personal: await f.file({ workspace: "personal" }),
+		};
 		const before = Date.now();
 		expect(await f.mint()).toEqual({ _yay: { personalIsCurrent: false } });
 		const grants = await f.t.run((ctx) => ctx.db.query("public_api_grants").collect());
@@ -221,7 +215,9 @@ describe("two-root code grants", () => {
 			const list = await f.request({ workspace, route: "list", body: { path: "/" } });
 			expect(list.status).toBe(200);
 			expect(await list.json()).toMatchObject({ items: [{ path: "/data.txt" }] });
-			expect((await f.request({ workspace, route: "download-urls", body: { fileNodeIds: [nodeIds[workspace]] } })).status).toBe(403);
+			expect(
+				(await f.request({ workspace, route: "download-urls", body: { fileNodeIds: [nodeIds[workspace]] } })).status,
+			).toBe(403);
 		}
 	});
 
@@ -285,12 +281,12 @@ describe("two-root code grants", () => {
 						workspace: "personal",
 						route,
 						body: {
-						path: "/data.txt",
-						paths: ["/data.txt"],
-						offset: 0,
-						length: 6,
-						revision: null,
-					},
+							path: "/data.txt",
+							paths: ["/data.txt"],
+							offset: 0,
+							length: 6,
+							revision: null,
+						},
 					})
 				).status,
 			).toBe(401);

@@ -99,7 +99,7 @@ async function save_media(args: {
 	userId: Id<"users">;
 	target: files_PendingTarget;
 }) {
-	const { t, userId, membershipId, target} = args;
+	const { t, userId, membershipId, target } = args;
 
 	// Keep large real Save sequences within the public rate limit without running cleanup timers.
 	vi.setSystemTime(Date.now() + 1500);
@@ -160,7 +160,12 @@ async function fixture(
 	const media = await create_media({ t, scope: source, path: options.video ? "/clip.mp4" : "/photo.png" });
 	const original = media.target;
 	if (options.sourceKind !== "private")
-		media.target = await save_media({ t, membershipId: source.membershipId, userId: source.userId, target: media.target });
+		media.target = await save_media({
+			t,
+			membershipId: source.membershipId,
+			userId: source.userId,
+			target: media.target,
+		});
 	const sourceRef =
 		media.target.kind === "saved"
 			? files_media_build_file_src(media.target.id)
@@ -170,7 +175,12 @@ async function fixture(
 	if (options.aliases && original.kind === "private") sourceRefs.push(files_media_build_private_src(original.id));
 	for (let index = 1; index < (options.mediaCount ?? 1); index++) {
 		const extra = await create_media({ t, scope: source, path: `/photo-${index}.png` });
-		extra.target = await save_media({ t, membershipId: source.membershipId, userId: source.userId, target: extra.target });
+		extra.target = await save_media({
+			t,
+			membershipId: source.membershipId,
+			userId: source.userId,
+			target: extra.target,
+		});
 		mediaFiles.push(extra);
 		sourceRefs.push(files_media_build_file_src(extra.target.id));
 	}
@@ -190,7 +200,12 @@ async function fixture(
 		});
 	const occupant = options.replacement ? await create_media({ t, scope: destination }) : null;
 	const savedOccupant = occupant
-		? await save_media({ t, membershipId: destination.membershipId, userId: destination.userId, target: occupant.target })
+		? await save_media({
+				t,
+				membershipId: destination.membershipId,
+				userId: destination.userId,
+				target: occupant.target,
+			})
 		: null;
 	const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: personal.userId });
 	const thread = await asUser.mutation(api.ai_chat.thread_create, {
@@ -516,7 +531,12 @@ describe("files_transfer_media_db_map_refs", () => {
 
 	test("finds a selected private source after it is saved under its stable origin", async () => {
 		const f = await fixture({ sourceKind: "private" });
-		const saved = await save_media({ t: f.t, membershipId: f.source.membershipId, userId: f.source.userId, target: f.media.target });
+		const saved = await save_media({
+			t: f.t,
+			membershipId: f.source.membershipId,
+			userId: f.source.userId,
+			target: f.media.target,
+		});
 		const savedRef = files_media_build_file_src(saved.id);
 		expect(await map_refs(f, [savedRef, f.sourceRef])).toMatchObject({
 			_yay: {
@@ -873,11 +893,11 @@ describe("copy_transfer_file media", () => {
 			const savedMedia =
 				changedSide === "destination"
 					? await save_media({
-						t: f.t,
-						membershipId: f.destination.membershipId,
-						userId: f.destination.userId,
-						target: f.selectedMedia!.outputTarget!,
-					})
+							t: f.t,
+							membershipId: f.destination.membershipId,
+							userId: f.destination.userId,
+							target: f.selectedMedia!.outputTarget!,
+						})
 					: null;
 			const capture = await prepare_document_capture(f);
 			const validation = {

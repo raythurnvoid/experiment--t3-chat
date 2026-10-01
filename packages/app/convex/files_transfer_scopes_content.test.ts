@@ -160,7 +160,7 @@ async function append_saved_text(args: {
 	nodeId: Id<"files_nodes">;
 	text: string;
 }) {
-	const { f, nodeId, text, membershipId} = args;
+	const { f, nodeId, text, membershipId } = args;
 
 	const pointers = await test_get_file_yjs_pointers(f.t, nodeId);
 	const asset = await f.t.run(async (ctx) => {
@@ -221,7 +221,7 @@ async function get_proposal(args: {
 	workspace: "current" | "personal";
 	target: files_PendingTarget;
 }) {
-	const { f, workspace, target} = args;
+	const { f, workspace, target } = args;
 
 	const view = await f.asUser.query(api.files_pending_updates.get_file_pending_target, {
 		membershipId: f[workspace].membershipId,
@@ -597,7 +597,8 @@ describe("copy_transfer_file scopes", () => {
 				const existing = await media_proposal({ f, workspace: "personal" });
 				expect(await save_proposal({ f, workspace: "personal", target: existing })).toHaveProperty("_yay");
 			}
-			const otherMedia = change === "save" ? null : await media_proposal({ f, workspace: "personal", path: "/different.png" });
+			const otherMedia =
+				change === "save" ? null : await media_proposal({ f, workspace: "personal", path: "/different.png" });
 			const personalThread = await f.asUser.mutation(api.ai_chat.thread_create, {
 				membershipId: f.personal.membershipId,
 				clientGeneratedId: "personal-media-edit",
@@ -665,7 +666,9 @@ describe("copy_transfer_file scopes", () => {
 			expect(await get_dependencies(f, pending.mediaDependencySetId)).toEqual([
 				expect.objectContaining({ src: mediaRef, assetId: pinnedAssetId }),
 			]);
-			expect(await save_proposal({ f, workspace: "personal", target: copied[0]!.outputTarget! })).toHaveProperty("_yay");
+			expect(await save_proposal({ f, workspace: "personal", target: copied[0]!.outputTarget! })).toHaveProperty(
+				"_yay",
+			);
 		},
 	);
 
@@ -681,7 +684,12 @@ describe("copy_transfer_file scopes", () => {
 				path: "/source.txt",
 				textContent: "Saved\n",
 			});
-			await append_saved_text({ f, membershipId: sourceScope.membershipId, nodeId: sourceId, text: "Unmaterialized\n" });
+			await append_saved_text({
+				f,
+				membershipId: sourceScope.membershipId,
+				nodeId: sourceId,
+				text: "Unmaterialized\n",
+			});
 			expect(
 				await f.asUser.mutation(api.files_metadata.set_entries, {
 					membershipId: sourceScope.membershipId,
@@ -696,7 +704,12 @@ describe("copy_transfer_file scopes", () => {
 					writePolicy: { mode: "read_only" },
 				}),
 			).toEqual({ _yay: null });
-			const copy = await start_copy({ f, source: { kind: "saved", id: sourceId }, sourceWorkspace, destinationWorkspace });
+			const copy = await start_copy({
+				f,
+				source: { kind: "saved", id: sourceId },
+				sourceWorkspace,
+				destinationWorkspace,
+			});
 			const data = await f.t.mutation(internal.files_nodes_content.get_transfer_file_copy_data, {
 				itemId: copy.item._id,
 				attempt: copy.item.attempt,

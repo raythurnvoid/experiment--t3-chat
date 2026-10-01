@@ -193,12 +193,8 @@ export function mcp_oauth_fixtures_create() {
 		return auth.secret === client.secret && auth.method === client.authMethod;
 	};
 
-	const issue_tokens = (args: {
-		resource: string | null;
-		scope: string;
-		grant: string;
-	}) => {
-		const { scope, grant, resource} = args;
+	const issue_tokens = (args: { resource: string | null; scope: string; grant: string }) => {
+		const { scope, grant, resource } = args;
 
 		const accessToken = next("access");
 		accessTokens.set(accessToken, { resource, scope, grant });
@@ -213,13 +209,8 @@ export function mcp_oauth_fixtures_create() {
 		return Response.json(body);
 	};
 
-	const token_error = (args: {
-		error: string;
-		status?: number;
-		echo?: string;
-	}) =>
-		{
-		const { status = 400, echo = "", error} = args;
+	const token_error = (args: { error: string; status?: number; echo?: string }) => {
+		const { status = 400, echo = "", error } = args;
 
 		return Response.json(
 			{ error, error_description: switches.echoSecretsInErrors ? `<b>bad</b> ${echo}` : "refused" },
@@ -227,11 +218,7 @@ export function mcp_oauth_fixtures_create() {
 		);
 	};
 
-	const handle_as = async (args: {
-		request: Request;
-		url: URL;
-		body: string;
-	}) => {
+	const handle_as = async (args: { request: Request; url: URL; body: string }) => {
 		const { request, url, body } = args;
 
 		const path = url.pathname;
@@ -331,12 +318,7 @@ export function mcp_oauth_fixtures_create() {
 		return new Response("not found", { status: 404 });
 	};
 
-	const handle_server = async (args: {
-		name: ServerName;
-		request: Request;
-		url: URL;
-		body: string;
-	}) => {
+	const handle_server = async (args: { name: ServerName; request: Request; url: URL; body: string }) => {
 		const { name, request, url, body } = args;
 
 		const origin = `https://${name}.oauth.test`;

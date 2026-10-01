@@ -106,9 +106,9 @@ export const BrowserSettings = memo(function BrowserSettings(props: BrowserSetti
 					)}
 					<section className={"BrowserSettings-section" satisfies BrowserSettings_ClassNames}>
 						<p className={"BrowserSettings-text" satisfies BrowserSettings_ClassNames}>
-							Your agent can use two kinds of web tabs and picks the one it needs. It can start the cloud
-							browser from any chat. Cloud browser time is billed per minute. It can also use one tab that
-							you share from your own browser.
+							Your agent can use two kinds of web tabs and picks the one it needs. It can start the cloud browser from
+							any chat. Cloud browser time is billed per minute. It can also use one tab that you share from your own
+							browser.
 						</p>
 						<PlaywriterBrowserConnection />
 					</section>

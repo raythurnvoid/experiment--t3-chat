@@ -43,7 +43,7 @@ async function db_retire_generation(args: {
 	generation: Doc<"plugins_volume_generations">;
 	expiresAt: number;
 }) {
-	let { ctx, generation, expiresAt} = args;
+	let { ctx, generation, expiresAt } = args;
 
 	if (generation.status !== "retired") {
 		await db_release_generation_usage(ctx, generation);

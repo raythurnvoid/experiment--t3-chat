@@ -908,9 +908,9 @@ describe("agent downloads", () => {
 				await web.pause({
 					requestId: `r${index}`,
 					headers: {
-					"Content-Type": "text/csv",
-					"Content-Disposition": `attachment; filename="f${index}.csv"`,
-				},
+						"Content-Type": "text/csv",
+						"Content-Disposition": `attachment; filename="f${index}.csv"`,
+					},
 				});
 			}
 		});
@@ -1244,11 +1244,7 @@ describe("file choosers", () => {
 			url.searchParams.set(key, value);
 		return url;
 	};
-	const put = async (args: {
-		web: ReturnType<typeof make_web>;
-		grantId: string;
-		body: BodyInit;
-	}) => {
+	const put = async (args: { web: ReturnType<typeof make_web>; grantId: string; body: BodyInit }) => {
 		const { web, grantId, body } = args;
 
 		// `duplex` lets a stream body through, like a browser upload.
@@ -1270,8 +1266,7 @@ describe("file choosers", () => {
 		chooserId: string;
 		files: unknown[];
 		controlGen?: number;
-	}) =>
-		{
+	}) => {
 		const { web, chooserId, files, controlGen = 2 } = args;
 
 		return web.post("/upload/fill", { ...SESSION, ...TAB, chooserId, controlGen, files });
@@ -1371,10 +1366,16 @@ describe("file choosers", () => {
 
 	it("refuses a fill after a controlGen change", async () => {
 		const { web, viewer, chooser, chooserId } = await open();
-		expect(await fill({ web, chooserId, files: ONE, controlGen: 1 })).toMatchObject({ ok: false, error: { code: "chooser_gone" } });
+		expect(await fill({ web, chooserId, files: ONE, controlGen: 1 })).toMatchObject({
+			ok: false,
+			error: { code: "chooser_gone" },
+		});
 		await web.post("/control/to-agent", { ...SESSION, navGen: 1 });
 		await web.post("/control/take-human", { ...SESSION, navGen: 1, viewerId: viewer.viewerId });
-		expect(await fill({ web, chooserId, files: ONE, controlGen: 4 })).toMatchObject({ ok: false, error: { code: "chooser_gone" } });
+		expect(await fill({ web, chooserId, files: ONE, controlGen: 4 })).toMatchObject({
+			ok: false,
+			error: { code: "chooser_gone" },
+		});
 		expect(chooser.chooser.setFiles).not.toHaveBeenCalled();
 	});
 
@@ -1420,7 +1421,10 @@ describe("file choosers", () => {
 		// Each file is under 20 MiB, but not both together.
 		const next = await open({ multiple: true });
 		fetchMock.mockImplementation(async () => new NativeResponse(new Uint8Array(LIMITS.uploadBytes / 2 + 1)));
-		expect(await fill({ web: next.web, chooserId: next.chooserId, files: two })).toMatchObject({ ok: false, error: { code: "too_large" } });
+		expect(await fill({ web: next.web, chooserId: next.chooserId, files: two })).toMatchObject({
+			ok: false,
+			error: { code: "too_large" },
+		});
 		expect(next.chooser.chooser.setFiles).not.toHaveBeenCalled();
 	});
 
@@ -1482,10 +1486,16 @@ describe("file choosers", () => {
 	it("refuses a fill over 20 MiB and a failed fetch", async () => {
 		const first = await open({ multiple: true });
 		fetchMock.mockResolvedValue(new NativeResponse(new Uint8Array(LIMITS.uploadBytes + 1)));
-		expect(await fill({ web: first.web, chooserId: first.chooserId, files: ONE })).toMatchObject({ ok: false, error: { code: "too_large" } });
+		expect(await fill({ web: first.web, chooserId: first.chooserId, files: ONE })).toMatchObject({
+			ok: false,
+			error: { code: "too_large" },
+		});
 		const second = await open();
 		fetchMock.mockResolvedValue(new NativeResponse(null, { status: 403 }));
-		expect(await fill({ web: second.web, chooserId: second.chooserId, files: ONE })).toMatchObject({ ok: false, error: { code: "fetch_failed" } });
+		expect(await fill({ web: second.web, chooserId: second.chooserId, files: ONE })).toMatchObject({
+			ok: false,
+			error: { code: "fetch_failed" },
+		});
 	});
 
 	it("uses a grant once for a computer upload, even when the first try fails", async () => {
@@ -1493,7 +1503,9 @@ describe("file choosers", () => {
 		const granted = await web.post("/upload/grant", { ...SESSION, ...TAB, chooserId, controlGen: 2 });
 		expect(granted).toEqual({ ok: true, grantId: expect.any(String), expiresAt: Date.now() + LIMITS.uploadGrantMs });
 		// A failed try keeps the chooser open, so only the used grant can refuse the retry.
-		expect(await put({ web, grantId: granted.grantId as string, body: new Uint8Array(LIMITS.uploadBytes + 1) })).toMatchObject({
+		expect(
+			await put({ web, grantId: granted.grantId as string, body: new Uint8Array(LIMITS.uploadBytes + 1) }),
+		).toMatchObject({
 			status: 413,
 		});
 		expect(await put({ web, grantId: granted.grantId as string, body: "hello" })).toEqual({
@@ -1503,7 +1515,10 @@ describe("file choosers", () => {
 		expect(chooser.chooser.setFiles).not.toHaveBeenCalled();
 
 		const again = await web.post("/upload/grant", { ...SESSION, ...TAB, chooserId, controlGen: 2 });
-		expect(await put({ web, grantId: again.grantId as string, body: "hello" })).toEqual({ status: 200, body: { ok: true } });
+		expect(await put({ web, grantId: again.grantId as string, body: "hello" })).toEqual({
+			status: 200,
+			body: { ok: true },
+		});
 		expect(chooser.chooser.setFiles).toHaveBeenCalledWith([
 			{ name: "notes.txt", mimeType: "text/plain", buffer: Buffer.from("hello") },
 		]);
@@ -1523,7 +1538,9 @@ describe("file choosers", () => {
 	it("refuses a computer upload over 20 MiB", async () => {
 		const { web, chooser, chooserId } = await open();
 		const granted = await web.post("/upload/grant", { ...SESSION, ...TAB, chooserId, controlGen: 2 });
-		expect(await put({ web, grantId: granted.grantId as string, body: new Uint8Array(LIMITS.uploadBytes + 1) })).toEqual({
+		expect(
+			await put({ web, grantId: granted.grantId as string, body: new Uint8Array(LIMITS.uploadBytes + 1) }),
+		).toEqual({
 			status: 413,
 			body: { ok: false, code: "too_large" },
 		});

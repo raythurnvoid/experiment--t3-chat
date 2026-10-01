@@ -218,12 +218,15 @@ describe("bash_resolve_db_files_shell_path", () => {
 		const mount = dbFilesRoots.externalMounts.mounts.get(MOUNT_NAME);
 		if (!mount) throw new Error("fixture mount missing");
 
-		expect(bash_external_mounts_fan_out_db_files_path({ mount, storedPath: `/${MOUNT_NAME}/${MOUNT_COMMIT_SHA}` })).toBe(
-			`/${MOUNT_NAME}`,
-		);
-		expect(bash_external_mounts_fan_out_db_files_path({ mount, storedPath: `/${MOUNT_NAME}/${MOUNT_COMMIT_SHA}/src/index.ts` })).toBe(
-			`/${MOUNT_NAME}/src/index.ts`,
-		);
+		expect(
+			bash_external_mounts_fan_out_db_files_path({ mount, storedPath: `/${MOUNT_NAME}/${MOUNT_COMMIT_SHA}` }),
+		).toBe(`/${MOUNT_NAME}`);
+		expect(
+			bash_external_mounts_fan_out_db_files_path({
+				mount,
+				storedPath: `/${MOUNT_NAME}/${MOUNT_COMMIT_SHA}/src/index.ts`,
+			}),
+		).toBe(`/${MOUNT_NAME}/src/index.ts`);
 	});
 
 	test("classifies the synthetic plugins root without a stored tree", () => {

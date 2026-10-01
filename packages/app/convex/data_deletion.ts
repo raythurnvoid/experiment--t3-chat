@@ -631,7 +631,11 @@ async function db_purge_organization_workspace_content_batch(
 		)
 		.take(batchSize);
 	if (browserInvocations.length > 0)
-		return ai_chat_files_db_delete_browser_invocations({ ctx, invocations: browserInvocations, options: { cloudCommands: "interrupt" } });
+		return ai_chat_files_db_delete_browser_invocations({
+			ctx,
+			invocations: browserInvocations,
+			options: { cloudCommands: "interrupt" },
+		});
 
 	// Bash command links and terminal receipts live until their owning threads are purged.
 	const bashTransferLinks = await ctx.db
@@ -2321,7 +2325,11 @@ async function db_wait_deleting_thread(ctx: MutationCtx, args: { thread: Doc<"ai
 		.withIndex("by_thread_toolCall", (q) => q.eq("threadId", thread._id))
 		.take(DELETE_CHAT_WAIT_BATCH_SIZE);
 	if (browserInvocations.length > 0)
-		return await ai_chat_files_db_delete_browser_invocations({ ctx, invocations: browserInvocations, options: { cloudCommands: "wait" } });
+		return await ai_chat_files_db_delete_browser_invocations({
+			ctx,
+			invocations: browserInvocations,
+			options: { cloudCommands: "wait" },
+		});
 
 	return null;
 }

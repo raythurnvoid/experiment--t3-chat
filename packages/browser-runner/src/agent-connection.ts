@@ -675,11 +675,7 @@ export class AgentConnection {
 		this.send(message.id, { method, params: forwarded, sessionId, source: "child" });
 	}
 
-	private allowed_params(args: {
-		method: string;
-		params: Params;
-		session: Session | undefined;
-	}) {
+	private allowed_params(args: { method: string; params: Params; session: Session | undefined }) {
 		const { method, params, session } = args;
 
 		if (method === "Browser.getWindowForTarget" || method === "Target.getTargetInfo") {
@@ -709,7 +705,8 @@ export class AgentConnection {
 			this.pending.set(id, request);
 		}
 		const session = request.sessionId ? this.sessions.get(request.sessionId) : undefined;
-		if (session && request.source === "child") this.track_input({ method: request.method, params: request.params, session });
+		if (session && request.source === "child")
+			this.track_input({ method: request.method, params: request.params, session });
 		if (this.unsafeReason) return;
 		try {
 			this.input.upstream.send(
@@ -725,11 +722,7 @@ export class AgentConnection {
 		}
 	}
 
-	private track_input(args: {
-		method: string;
-		params: Params;
-		session: Session;
-	}) {
+	private track_input(args: { method: string; params: Params; session: Session }) {
 		const { method, params, session } = args;
 
 		if (method === "Input.dispatchKeyEvent") {

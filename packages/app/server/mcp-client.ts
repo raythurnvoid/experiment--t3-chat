@@ -284,7 +284,7 @@ async function log_failure(args: {
 	startedAt: number;
 	error: unknown;
 }) {
-	const { server, nay, startedAt, error, operation} = args;
+	const { server, nay, startedAt, error, operation } = args;
 
 	console.warn("MCP request failed", {
 		operation,
@@ -383,11 +383,7 @@ function schema_problem(schema: unknown): SchemaProblem | null {
 	// Walk every subschema once. Count them, track the depth, and collect each `$ref`.
 	const refs: Array<{ ref: string; path: string }> = [];
 	let subschemas = 0;
-	const walk = (args: {
-		node: unknown;
-		depth: number;
-		path: string;
-	}): boolean => {
+	const walk = (args: { node: unknown; depth: number; path: string }): boolean => {
 		const { node, depth, path } = args;
 
 		if (typeof node !== "object" || node === null || Array.isArray(node)) return true;
@@ -397,17 +393,23 @@ function schema_problem(schema: unknown): SchemaProblem | null {
 
 		const record = node as Record<string, unknown>;
 		for (const keyword of SCHEMA_KEYWORDS) {
-			if (!Array.isArray(record[keyword]) && !walk({ node: record[keyword], depth: depth + 1, path: `${path}/${keyword}` })) return false;
+			if (
+				!Array.isArray(record[keyword]) &&
+				!walk({ node: record[keyword], depth: depth + 1, path: `${path}/${keyword}` })
+			)
+				return false;
 		}
 		for (const keyword of SCHEMA_MAP_KEYWORDS) {
 			const map = record[keyword];
 			if (typeof map !== "object" || map === null || Array.isArray(map)) continue;
 			for (const [key, child] of Object.entries(map)) {
-				if (!walk({
-					node: child,
-					depth: depth + 1,
-					path: `${path}/${keyword}/${key.replaceAll("~", "~0").replaceAll("/", "~1")}`,
-				})) {
+				if (
+					!walk({
+						node: child,
+						depth: depth + 1,
+						path: `${path}/${keyword}/${key.replaceAll("~", "~0").replaceAll("/", "~1")}`,
+					})
+				) {
 					return false;
 				}
 			}

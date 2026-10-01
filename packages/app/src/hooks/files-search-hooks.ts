@@ -455,10 +455,13 @@ export function useFilesSortedChildren(props: useFilesSortedChildren_Props) {
 			key in sideKeyRequests
 				? (sideKeyResponses[key] as files_sort_RowKey | null | Error | undefined)
 				: files_sort_key_of({
-					sort,
-					facts: { ...row, type: dot > 0 && dot < row.name.length - 1 ? row.name.slice(dot + 1).toLowerCase() : null },
-					metadataParts: new Map(),
-				});
+						sort,
+						facts: {
+							...row,
+							type: dot > 0 && dot < row.name.length - 1 ? row.name.slice(dot + 1).toLowerCase() : null,
+						},
+						metadataParts: new Map(),
+					});
 		if (sortKey == null || sortKey instanceof Error) return [];
 		const segment =
 			row.kind === "folder" && field === "size" && sort.length === 1

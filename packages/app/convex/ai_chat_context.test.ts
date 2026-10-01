@@ -63,12 +63,8 @@ async function fixture(personal = false) {
 	const workspaces = captured._yay;
 	const agentSource = { ...db, threadId: thread._yay.threadId, membershipLifetime: workspaces.membershipLifetime };
 	const scope = { source: agentSource };
-	async function create(args: {
-		path: string;
-		textContent: string;
-		workspace?: "current" | "personal";
-	}) {
-		const { workspace = "current", path, textContent} = args;
+	async function create(args: { path: string; textContent: string; workspace?: "current" | "personal" }) {
+		const { workspace = "current", path, textContent } = args;
 
 		return await test_create_saved_text_file(t, {
 			membershipId: workspaces[workspace].membershipId,
@@ -136,7 +132,7 @@ async function fixture(personal = false) {
 		destParentId: Id<"files_nodes"> | typeof files_ROOT_ID;
 		destName: string;
 	}) {
-		const { nodeId, destParentId, destName} = args;
+		const { nodeId, destParentId, destName } = args;
 
 		const moved = await t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
 			organizationId: db.organizationId,
@@ -242,7 +238,11 @@ describe("discover_sources", () => {
 	test("uses one twenty-page scan budget across both roots", async () => {
 		const f = await fixture();
 		for (const workspace of ["current", "personal"] as const) {
-			const nodeId = await f.create({ path: "/.agents/skills/example/noise-0000.md", textContent: "Not a skill", workspace });
+			const nodeId = await f.create({
+				path: "/.agents/skills/example/noise-0000.md",
+				textContent: "Not a skill",
+				workspace,
+			});
 			// Clone a valid file header: discovery reads paths, not these noise files' content.
 			await f.t.run(async (ctx) => {
 				const node = (await ctx.db.get("files_nodes", nodeId))!;
@@ -455,16 +455,12 @@ describe("ai_chat_context_create", () => {
 				old: await ai_chat_context_read_instructions({
 					ctx,
 					context: created._yay.context,
-					paths: [
-					{ workspace: "current", path: "/old/file.md" },
-				],
+					paths: [{ workspace: "current", path: "/old/file.md" }],
 				}),
 				current: await ai_chat_context_read_instructions({
 					ctx,
 					context: created._yay.context,
-					paths: [
-					{ workspace: "current", path: "/new/file.md" },
-				],
+					paths: [{ workspace: "current", path: "/new/file.md" }],
 				}),
 			};
 		});

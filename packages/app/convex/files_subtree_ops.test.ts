@@ -73,7 +73,7 @@ async function restrict_to_end(args: {
 	nodeId: Id<"files_nodes">;
 	afterStep: (queued: Array<Id<"files_nodes">>, sequence: number) => void | Promise<void>;
 }) {
-	const { f, afterStep, nodeId} = args;
+	const { f, afterStep, nodeId } = args;
 
 	const restricted = await f.asOwner.mutation(api.files_sharing.restrict_node, {
 		membershipId: f.db.membershipId,
@@ -215,7 +215,9 @@ describe("files_subtree_ops_db_find_blocker", () => {
 describe("advance", () => {
 	test("a step that only clears empty and deleted folders from the queue stops near the limits", async () => {
 		const { t, scope } = await fixture();
-		const opId = await t.run((ctx) => insert_scope_op(ctx, { scope, treePath: "/", status: "running", blockedByOpId: null }));
+		const opId = await t.run((ctx) =>
+			insert_scope_op(ctx, { scope, treePath: "/", status: "running", blockedByOpId: null }),
+		);
 		// Each deleted folder costs the step 2 reads and each empty folder 3. Together they are more than
 		// the 4,096 reads one mutation may do.
 		for (const isDeleted of [true, false]) {
@@ -252,10 +254,18 @@ describe("advance", () => {
 		const read_walk = () =>
 			t.run(async (ctx) => ({
 				op: await ctx.db.get("files_subtree_ops", opId),
-				step: (await ctx.db.query("files_subtree_op_walks").withIndex("by_op", (q) => q.eq("opId", opId)).unique())
-					?.step,
-				queued: (await ctx.db.query("files_subtree_op_nodes").withIndex("by_op_sequence", (q) => q.eq("opId", opId)).collect())
-					.length,
+				step: (
+					await ctx.db
+						.query("files_subtree_op_walks")
+						.withIndex("by_op", (q) => q.eq("opId", opId))
+						.unique()
+				)?.step,
+				queued: (
+					await ctx.db
+						.query("files_subtree_op_nodes")
+						.withIndex("by_op_sequence", (q) => q.eq("opId", opId))
+						.collect()
+				).length,
 			}));
 
 		await expect(t.mutation(internal.files_subtree_ops.advance, { opId, step: 0 })).resolves.toBeNull();
@@ -273,28 +283,32 @@ describe("advance", () => {
 	test("walks into the folders of a page before their siblings' folders, so the queue stays small", async () => {
 		const f = await fixture();
 		const top = await f.t.run(async (ctx) => {
-			const top = await insert_node({ ctx, f, fields: { parent: null, name: "top", kind: "folder", archiveOperationId: null } });
+			const top = await insert_node({
+				ctx,
+				f,
+				fields: { parent: null, name: "top", kind: "folder", archiveOperationId: null },
+			});
 			for (let index = 0; index < 30; index++) {
 				const child = await insert_node({
 					ctx,
 					f,
 					fields: {
-					parent: top,
-					name: `d${index}`,
-					kind: "folder",
-					archiveOperationId: null,
-				},
+						parent: top,
+						name: `d${index}`,
+						kind: "folder",
+						archiveOperationId: null,
+					},
 				});
 				for (let grandchildIndex = 0; grandchildIndex < 60; grandchildIndex++) {
 					await insert_node({
 						ctx,
 						f,
 						fields: {
-						parent: child,
-						name: `e${grandchildIndex}`,
-						kind: "folder",
-						archiveOperationId: null,
-					},
+							parent: child,
+							name: `e${grandchildIndex}`,
+							kind: "folder",
+							archiveOperationId: null,
+						},
 					});
 				}
 			}
@@ -309,8 +323,8 @@ describe("advance", () => {
 			f,
 			nodeId: top._id,
 			afterStep: (queued) => {
-			largestQueue = Math.max(largestQueue, queued.length);
-		},
+				largestQueue = Math.max(largestQueue, queued.length);
+			},
 		});
 		expect(largestQueue).toBeLessThanOrEqual(1 + 30 + 50);
 
@@ -324,22 +338,30 @@ describe("advance", () => {
 		// name. Their files keep the steps busy, so a step ends while their folders are still queued. The
 		// 50 files before them fill the first page, so the group starts on the second page.
 		const top = await f.t.run(async (ctx) => {
-			const top = await insert_node({ ctx, f, fields: { parent: null, name: "top", kind: "folder", archiveOperationId: null } });
+			const top = await insert_node({
+				ctx,
+				f,
+				fields: { parent: null, name: "top", kind: "folder", archiveOperationId: null },
+			});
 			for (let index = 0; index < 50; index++) {
 				await insert_node({
 					ctx,
 					f,
 					fields: {
-					parent: top,
-					name: `a${String(index).padStart(2, "0")}.md`,
-					kind: "file",
-					archiveOperationId: null,
-				},
+						parent: top,
+						name: `a${String(index).padStart(2, "0")}.md`,
+						kind: "file",
+						archiveOperationId: null,
+					},
 				});
 			}
 			for (let index = 0; index < 100; index++) {
 				const archiveOperationId = `replace-${index}`;
-				const old = await insert_node({ ctx, f, fields: { parent: top, name: "old", kind: "folder", archiveOperationId } });
+				const old = await insert_node({
+					ctx,
+					f,
+					fields: { parent: top, name: "old", kind: "folder", archiveOperationId },
+				});
 				for (const name of ["a.md", "b.md"]) {
 					await insert_node({ ctx, f, fields: { parent: old, name, kind: "file", archiveOperationId } });
 				}
@@ -353,20 +375,20 @@ describe("advance", () => {
 			f,
 			nodeId: top._id,
 			afterStep: async (queued, sequence) => {
-			twice.push(...queued.filter((nodeId, index) => queued.indexOf(nodeId) !== index));
+				twice.push(...queued.filter((nodeId, index) => queued.indexOf(nodeId) !== index));
 
-			// A step rewrites a folder and queues it in the same mutation. So while the first pass runs, the
-			// walk has used one queue number for `/top` and one for each rewritten folder. A step that read a
-			// page again would queue some folders a second time, even when the first row is already gone.
-			const nodes = await f.t.run((ctx) => ctx.db.query("files_nodes").collect());
-			if (nodes.every((node) => node.restrictedScopeNodeId === top._id)) return;
-			firstPass.push({
-				sequence,
-				rewrittenFolders: nodes.filter(
-					(node) => node.kind === "folder" && node._id !== top._id && node.restrictedScopeNodeId === top._id,
-				).length,
-			});
-		},
+				// A step rewrites a folder and queues it in the same mutation. So while the first pass runs, the
+				// walk has used one queue number for `/top` and one for each rewritten folder. A step that read a
+				// page again would queue some folders a second time, even when the first row is already gone.
+				const nodes = await f.t.run((ctx) => ctx.db.query("files_nodes").collect());
+				if (nodes.every((node) => node.restrictedScopeNodeId === top._id)) return;
+				firstPass.push({
+					sequence,
+					rewrittenFolders: nodes.filter(
+						(node) => node.kind === "folder" && node._id !== top._id && node.restrictedScopeNodeId === top._id,
+					).length,
+				});
+			},
 		});
 		expect(twice).toEqual([]);
 		expect(firstPass.length).toBeGreaterThan(1);
@@ -476,8 +498,9 @@ describe("files_subtree_ops_db_delete", () => {
 			return { blockerId, waiterIds };
 		});
 		const read_waiting = () =>
-			t.run(async (ctx) =>
-				(await ctx.db.query("files_subtree_ops").collect()).filter((op) => op.blockedByOpId === blockerId).length,
+			t.run(
+				async (ctx) =>
+					(await ctx.db.query("files_subtree_ops").collect()).filter((op) => op.blockedByOpId === blockerId).length,
 			);
 
 		await expect(t.mutation(internal.files_subtree_ops.advance, { opId: blockerId, step: 0 })).resolves.toBeNull();

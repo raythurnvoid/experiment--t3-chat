@@ -213,12 +213,8 @@ function parse_header_value(args: {
 	const parts: mcp_custom_config_DraftPart[] = [];
 	let text = "";
 
-	const pushSecret = (args: {
-		secretName: string;
-		hint: string | null;
-		stored: boolean;
-	}) => {
-			const { hint, secretName, stored } = args;
+	const pushSecret = (args: { secretName: string; hint: string | null; stored: boolean }) => {
+		const { hint, secretName, stored } = args;
 		if (text !== "") {
 			parts.push({ kind: "text", text });
 			text = "";
@@ -344,11 +340,7 @@ function parse_mcp_remote(tokens: string[]) {
 	return Result({ _yay: url === null ? null : { url, headers } });
 }
 
-function parse_entry(args: {
-	key: string;
-	value: unknown;
-	inputHints: Map<string, string>;
-}): mcp_custom_config_Draft {
+function parse_entry(args: { key: string; value: unknown; inputHints: Map<string, string> }): mcp_custom_config_Draft {
 	const { key, value, inputHints } = args;
 
 	const name = key.trim().slice(0, MAX_NAME_LENGTH);

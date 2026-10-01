@@ -421,7 +421,11 @@ export function bash_ls_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 										? []
 										: [
 												{
-													path: bash_external_mounts_fan_out_db_files_path({ mount, storedPath: mount.fs.dbFilesRootPath, basePath }),
+													path: bash_external_mounts_fan_out_db_files_path({
+														mount,
+														storedPath: mount.fs.dbFilesRootPath,
+														basePath,
+													}),
 													kind: "folder" as const,
 													updatedAt: 0,
 												},

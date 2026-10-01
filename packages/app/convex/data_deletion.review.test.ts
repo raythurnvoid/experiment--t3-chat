@@ -1362,11 +1362,7 @@ async function review_seed_all_workspace_content(
 	return { nodes: nodes.map((node) => node._id) };
 }
 
-async function review_seed_user_publisher_docs(args: {
-	ctx: MutationCtx;
-	userId: Id<"users">;
-	tag: string;
-}) {
+async function review_seed_user_publisher_docs(args: { ctx: MutationCtx; userId: Id<"users">; tag: string }) {
 	const { ctx, userId, tag } = args;
 
 	for (let i = 0; i < 2; i += 1) {
@@ -1610,7 +1606,11 @@ for (const path of ["queue", "admin"] as const) {
 				tokenId,
 				billingId,
 				lastActiveId,
-				workspaceRows: await review_capture_workspace_rows({ ctx, organizationId: user.defaultOrganizationId, workspaceId: user.defaultWorkspaceId }),
+				workspaceRows: await review_capture_workspace_rows({
+					ctx,
+					organizationId: user.defaultOrganizationId,
+					workspaceId: user.defaultWorkspaceId,
+				}),
 				userRows: await review_capture_user_rows(ctx, user.userId),
 			};
 		});

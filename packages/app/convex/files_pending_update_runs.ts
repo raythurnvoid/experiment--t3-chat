@@ -1050,11 +1050,11 @@ export const classify_plan_page = internalMutation({
 			ctx,
 			run,
 			plan: {
-			...run.plan,
-			atomicItemCount,
-			phase: page.isDone ? "atomic" : "classify",
-			cursor: page.isDone ? null : page.continueCursor,
-		},
+				...run.plan,
+				atomicItemCount,
+				phase: page.isDone ? "atomic" : "classify",
+				cursor: page.isDone ? null : page.continueCursor,
+			},
 		});
 		return Result({ _yay: (await ctx.db.get("files_pending_update_runs", run._id))! });
 	},
@@ -1071,7 +1071,7 @@ async function db_insert_plan_unit(args: {
 		"order" | "kind" | "itemCount" | "deleteLast" | "privateDiscardRoots"
 	>;
 }) {
-	const { ctx, unit, runId} = args;
+	const { ctx, unit, runId } = args;
 
 	return await ctx.db.insert("files_pending_update_run_units", {
 		runId,
@@ -1107,12 +1107,12 @@ export const stage_copy_units_page = internalMutation({
 				ctx,
 				runId: run._id,
 				unit: {
-				order: item.order,
-				kind: "copy",
-				itemCount: 1,
-				deleteLast: false,
-				privateDiscardRoots: [],
-			},
+					order: item.order,
+					kind: "copy",
+					itemCount: 1,
+					deleteLast: false,
+					privateDiscardRoots: [],
+				},
 			});
 			await ctx.db.patch("files_pending_update_run_items", item._id, { unitId });
 		}
@@ -1124,10 +1124,10 @@ export const stage_copy_units_page = internalMutation({
 			ctx,
 			run,
 			plan: {
-			...run.plan,
-			phase: page.isDone ? "dependencies" : "copy_units",
-			cursor: page.isDone ? null : page.continueCursor,
-		},
+				...run.plan,
+				phase: page.isDone ? "dependencies" : "copy_units",
+				cursor: page.isDone ? null : page.continueCursor,
+			},
 		});
 		return Result({ _yay: (await ctx.db.get("files_pending_update_runs", run._id))! });
 	},
@@ -1172,11 +1172,11 @@ export const advance_atomic_plan = internalMutation({
 			ctx,
 			run,
 			plan: {
-			...run.plan,
-			atomicItemCount: run.plan.atomicItemCount + promote.length,
-			phase: args.done ? "copy_units" : "atomic",
-			cursor: args.done || promote.length ? null : args.nextCursor,
-		},
+				...run.plan,
+				atomicItemCount: run.plan.atomicItemCount + promote.length,
+				phase: args.done ? "copy_units" : "atomic",
+				cursor: args.done || promote.length ? null : args.nextCursor,
+			},
 		});
 		return Result({ _yay: null });
 	},
@@ -1236,12 +1236,12 @@ export const block_atomic_plan_page = internalMutation({
 				ctx,
 				runId: run._id,
 				unit: {
-				order: first.order,
-				kind: "atomic",
-				itemCount: run.plan.atomicItemCount,
-				deleteLast: false,
-				privateDiscardRoots: [],
-			},
+					order: first.order,
+					kind: "atomic",
+					itemCount: run.plan.atomicItemCount,
+					deleteLast: false,
+					privateDiscardRoots: [],
+				},
 			});
 			await ctx.db.patch("files_pending_update_run_units", unitId, {
 				errorCode: "needs_review",
@@ -1453,7 +1453,9 @@ export const get_atomic_media_selection_page = internalQuery({
 		const valid = await db_validate_items(ctx, { ...checked._yay, items: [item] });
 		if (valid._nay) return valid;
 		// Missing media blocks this unit later; still group all of its selected media now.
-		return Result({ _yay: (await db_get_selected_media({ ctx, run: checked._yay, item, mediaRefs: args.mediaRefs })).selectedItems });
+		return Result({
+			_yay: (await db_get_selected_media({ ctx, run: checked._yay, item, mediaRefs: args.mediaRefs })).selectedItems,
+		});
 	},
 });
 
@@ -1549,12 +1551,12 @@ export const stage_dependency_plan_page = internalMutation({
 			ctx,
 			run,
 			plan: {
-			...run.plan,
-			phase: itemDone && page.lastItem ? "ready" : "dependencies",
-			cursor: itemDone ? (page.lastItem ? null : page.nextItemCursor) : run.plan.cursor,
-			itemId: itemDone ? null : item!._id,
-			dependencyCursor: itemDone ? null : String(Number(run.plan.dependencyCursor ?? 0) + args.mediaRefs.length),
-		},
+				...run.plan,
+				phase: itemDone && page.lastItem ? "ready" : "dependencies",
+				cursor: itemDone ? (page.lastItem ? null : page.nextItemCursor) : run.plan.cursor,
+				itemId: itemDone ? null : item!._id,
+				dependencyCursor: itemDone ? null : String(Number(run.plan.dependencyCursor ?? 0) + args.mediaRefs.length),
+			},
 		});
 		return Result({ _yay: null });
 	},
@@ -1780,9 +1782,9 @@ export const stage_plan_units = internalMutation({
 					ctx,
 					runId: run._id,
 					unit: {
-					kind: "atomic",
-					...unit,
-				},
+						kind: "atomic",
+						...unit,
+					},
 				}),
 			);
 		}
@@ -1942,11 +1944,7 @@ async function build_review_dependencies(args: {
 	const archives = new Map<string, Set<number>>();
 	const privateDiscards = new Map<Id<"files_pending_nodes">, number>();
 
-	function add(args: {
-		map: Map<string, Set<number>>;
-		key: string;
-		index: number;
-	}) {
+	function add(args: { map: Map<string, Set<number>>; key: string; index: number }) {
 		const { map, key, index } = args;
 
 		const values = map.get(key) ?? new Set<number>();
@@ -1958,7 +1956,10 @@ async function build_review_dependencies(args: {
 		const { proposal } = context;
 		if (kind === "accept") {
 			const projected = projectedPath({ path: context.path, savedAncestorPath: context.savedAncestorPath });
-			const destination = projectedPath({ path: context.destinationPath, savedAncestorPath: context.destinationSavedAncestorPath });
+			const destination = projectedPath({
+				path: context.destinationPath,
+				savedAncestorPath: context.destinationSavedAncestorPath,
+			});
 			if (projected === null || (context.destinationPath !== null && destination === null)) {
 				return Result({
 					_nay: { name: "needs_review", message: "These moves form a folder cycle. Review their destinations." },
@@ -2039,7 +2040,12 @@ async function build_review_dependencies(args: {
 	// Ordinary documents keep their selected media in the same bounded atomic component.
 	media: for (const [index, { item, context }] of selected.entries()) {
 		if (kind !== "accept" || !item.mediaDependencySet || is_independent_copy(context.proposal)) continue;
-		const media = await action_read_reviewed_media_refs({ ctx, run: { ...context.proposal, kind }, item, proposal: context.proposal });
+		const media = await action_read_reviewed_media_refs({
+			ctx,
+			run: { ...context.proposal, kind },
+			item,
+			proposal: context.proposal,
+		});
 		for (let offset = 0; offset < media.refs.length; offset += PLAN_PAGE_SIZE) {
 			const page = (await ctx.runQuery(internal.files_pending_update_runs.get_atomic_media_selection_page, {
 				...previousArgs,

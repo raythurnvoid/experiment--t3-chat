@@ -45,7 +45,7 @@ async function stop_transfer(args: {
 	};
 	reason: "user" | "timeout";
 }) {
-	const { ctx, scope, reason} = args;
+	const { ctx, scope, reason } = args;
 
 	try {
 		const stopped = await ctx.runMutation(internal.files_transfer.stop_for_agent, { ...scope, reason });

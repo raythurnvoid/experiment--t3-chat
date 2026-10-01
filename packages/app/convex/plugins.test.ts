@@ -799,17 +799,17 @@ describe("install_version service accounts", () => {
 				changed === "tenant"
 					? firstVersion
 					: await register_media_plugin({
-						t,
-						userId: publisherId,
-						version: "0.2.0",
-						...(changed === "source"
+							t,
+							userId: publisherId,
+							version: "0.2.0",
+							...(changed === "source"
 								? {
 										sourceRepositoryUrl: "https://github.com/other/media-plugin",
 										sourceOwner: "other",
 										sourceRepo: "media-plugin",
 									}
 								: {}),
-					});
+						});
 			const replacement = await t
 				.withIdentity(user_identity(targetMembership.userId))
 				.mutation(api.plugins.install_version, {
@@ -1060,7 +1060,12 @@ describe("plugins Phase 0", () => {
 		]);
 
 		// Versions published before the field existed have no secrets field at all.
-		const undeclared = await register_media_plugin({ t, userId: membership.userId, name: "media-plain", version: "0.1.0" });
+		const undeclared = await register_media_plugin({
+			t,
+			userId: membership.userId,
+			name: "media-plain",
+			version: "0.1.0",
+		});
 		const undeclaredVersion = await t.run((ctx) => ctx.db.get("plugins_versions", undeclared.pluginVersionId));
 		expect(undeclaredVersion?.secrets).toBeUndefined();
 	});
@@ -2270,12 +2275,8 @@ describe("plugins Phase 0", () => {
 			return null;
 		});
 
-		async function upload_and_dispatch(args: {
-			filename: string;
-			path: string;
-			eventId: string;
-		}) {
-			const { path, eventId, filename} = args;
+		async function upload_and_dispatch(args: { filename: string; path: string; eventId: string }) {
+			const { path, eventId, filename } = args;
 
 			const upload = await asOwner.mutation(api.files_nodes.create_upload_node, {
 				membershipId: membership.membershipId,
@@ -2302,13 +2303,21 @@ describe("plugins Phase 0", () => {
 			return upload._yay.nodeId;
 		}
 
-		const meetingsNodeId = await upload_and_dispatch({ filename: "meeting.png", path: "/meetings/meeting.png", eventId: "r2:meeting" });
+		const meetingsNodeId = await upload_and_dispatch({
+			filename: "meeting.png",
+			path: "/meetings/meeting.png",
+			eventId: "r2:meeting",
+		});
 		let runs = await t.run((ctx) => ctx.db.query("plugins_event_runs").collect());
 		expect(runs.map((run) => ({ fileNodeId: run.fileNodeId, installationId: run.installationId }))).toEqual([
 			{ fileNodeId: meetingsNodeId, installationId: meetingsInstalled._yay.installationId },
 		]);
 
-		const documentsNodeId = await upload_and_dispatch({ filename: "document.png", path: "/documents/document.png", eventId: "r2:document" });
+		const documentsNodeId = await upload_and_dispatch({
+			filename: "document.png",
+			path: "/documents/document.png",
+			eventId: "r2:document",
+		});
 		runs = await t.run((ctx) => ctx.db.query("plugins_event_runs").collect());
 		expect(runs.map((run) => ({ fileNodeId: run.fileNodeId, installationId: run.installationId }))).toEqual([
 			{ fileNodeId: meetingsNodeId, installationId: meetingsInstalled._yay.installationId },
@@ -4578,12 +4587,12 @@ describe("plugins Phase 0", () => {
 		const replacementVersion =
 			change === "installation version changes"
 				? await register_media_plugin({
-					t,
-					userId: fixture.membership.userId,
-					version: "0.1.1",
-					artifactHash: `sha256:${"c".repeat(64)}`,
-					sourceCommitSha: "abcdef1234567890abcdef1234567890abcdef12",
-				})
+						t,
+						userId: fixture.membership.userId,
+						version: "0.1.1",
+						artifactHash: `sha256:${"c".repeat(64)}`,
+						sourceCommitSha: "abcdef1234567890abcdef1234567890abcdef12",
+					})
 				: null;
 
 		// Reproduce an authority or access change after the route consumes the API call but before
@@ -13034,11 +13043,7 @@ describe("plugins backend invoke runs", () => {
 		return JSON.stringify(body);
 	}
 
-	async function post_invoke(args: {
-		t: ReturnType<typeof test_convex>;
-		token: string;
-		rawBody: string;
-	}) {
+	async function post_invoke(args: { t: ReturnType<typeof test_convex>; token: string; rawBody: string }) {
 		const { t, token, rawBody } = args;
 
 		return await t.fetch("/api/v1/plugin-backend/invoke", {
@@ -13993,12 +13998,7 @@ describe("plugins metadata file doors", () => {
 		return { apiToken, runId: started._yay.pluginRun._id };
 	}
 
-	async function door_call(args: {
-		t: ReturnType<typeof test_convex>;
-		path: string;
-		apiToken: string;
-		body: unknown;
-	}) {
+	async function door_call(args: { t: ReturnType<typeof test_convex>; path: string; apiToken: string; body: unknown }) {
 		const { t, path, apiToken, body } = args;
 
 		return await t.fetch(path, {
@@ -14133,8 +14133,8 @@ describe("plugins metadata file doors", () => {
 			path: "/api/v1/files/plugin-folders/ensure",
 			apiToken: run.apiToken,
 			body: {
-			path: "/probe/output",
-		},
+				path: "/probe/output",
+			},
 		});
 		expect(ensured.status).toBe(200);
 		const ensuredBody = (await ensured.json()) as { nodeId: string; path: string; created: boolean };
@@ -14162,8 +14162,8 @@ describe("plugins metadata file doors", () => {
 			path: "/api/v1/files/plugin-folders/ensure",
 			apiToken: run.apiToken,
 			body: {
-			path: "/probe/output",
-		},
+				path: "/probe/output",
+			},
 		});
 		expect(replay.status).toBe(200);
 		expect(await replay.json()).toEqual({ nodeId: ensuredBody.nodeId, path: "/probe/output", created: false });
@@ -14175,8 +14175,8 @@ describe("plugins metadata file doors", () => {
 			path: "/api/v1/files/plugin-folders/ensure",
 			apiToken: run.apiToken,
 			body: {
-			path: "/member-zone/sub",
-		},
+				path: "/member-zone/sub",
+			},
 		});
 		expect(occupied.status).toBe(409);
 		expect(await occupied.json()).toEqual({ message: "This path is used by an item without this plugin's label" });
@@ -14216,8 +14216,8 @@ describe("plugins metadata file doors", () => {
 			path: "/api/v1/files/plugin-folders/ensure",
 			apiToken: run.apiToken,
 			body: {
-			path: "/member-folder/new",
-		},
+				path: "/member-folder/new",
+			},
 		});
 		expect(refused.status).toBe(409);
 		expect(await find_active_node({ t, fixture, path: "/member-folder/new" })).toBeNull();
@@ -14243,8 +14243,8 @@ describe("plugins metadata file doors", () => {
 			path: "/api/v1/files/plugin-folders/ensure",
 			apiToken: run.apiToken,
 			body: {
-			path: "/member-folder",
-		},
+				path: "/member-folder",
+			},
 		});
 		expect(ensured.status).toBe(200);
 		expect(await ensured.json()).toMatchObject({ nodeId, created: false });
@@ -14256,9 +14256,9 @@ describe("plugins metadata file doors", () => {
 					path: "/api/v1/files/write",
 					apiToken: run.apiToken,
 					body: {
-					path: "/member-folder/member-opted-in.md",
-					content: "Allowed",
-				},
+						path: "/member-folder/member-opted-in.md",
+						content: "Allowed",
+					},
 				})
 			).status,
 		).toBe(200);
@@ -14285,9 +14285,9 @@ describe("plugins metadata file doors", () => {
 					path: "/api/v1/files/plugin-folders/ensure",
 					apiToken: run.apiToken,
 					body: {
-					path: "/probe",
-					access: { readOnly: true, readScopeId: "private" },
-				},
+						path: "/probe",
+						access: { readOnly: true, readScopeId: "private" },
+					},
 				})
 			).status,
 		).toBe(200);
@@ -14332,9 +14332,9 @@ describe("plugins metadata file doors", () => {
 					path: "/api/v1/files/plugin-folders/ensure",
 					apiToken: run.apiToken,
 					body: {
-					path: "/probe",
-					access: { readOnly: true, readScopeId: "private" },
-				},
+						path: "/probe",
+						access: { readOnly: true, readScopeId: "private" },
+					},
 				})
 			).status,
 		).toBe(200);
@@ -14374,9 +14374,9 @@ describe("plugins metadata file doors", () => {
 					path: "/api/v1/files/plugin-folders/ensure",
 					apiToken: run.apiToken,
 					body: {
-					path: "/probe",
-					access: { readOnly: false },
-				},
+						path: "/probe",
+						access: { readOnly: false },
+					},
 				})
 			).status,
 		).toBe(409);
@@ -14400,18 +14400,25 @@ describe("plugins metadata file doors", () => {
 								path: "/api/v1/files/plugin-folders/ensure",
 								apiToken: run.apiToken,
 								body: {
-								path: `/bound-${index}`,
-								access: { readScopeId: "limited" },
-							},
+									path: `/bound-${index}`,
+									access: { readScopeId: "limited" },
+								},
 							})
 						).status,
 					).toBe(200);
 				}
 			}
 
-			expect((await door_call({ t, path: "/api/v1/files/plugin-folders/ensure", apiToken: run.apiToken, body: { path: "/probe" } })).status).toBe(
-				200,
-			);
+			expect(
+				(
+					await door_call({
+						t,
+						path: "/api/v1/files/plugin-folders/ensure",
+						apiToken: run.apiToken,
+						body: { path: "/probe" },
+					})
+				).status,
+			).toBe(200);
 
 			const before = await find_active_node({ t, fixture, path: "/probe" });
 			const expectedStatus = reason === "missing" ? 404 : 409;
@@ -14423,9 +14430,9 @@ describe("plugins metadata file doors", () => {
 						path: "/api/v1/files/plugin-folders/ensure",
 						apiToken: run.apiToken,
 						body: {
-						path: "/new-parent/new-child",
-						access: { readOnly: true, readScopeId: "limited" },
-					},
+							path: "/new-parent/new-child",
+							access: { readOnly: true, readScopeId: "limited" },
+						},
 					})
 				).status,
 			).toBe(expectedStatus);
@@ -14438,9 +14445,9 @@ describe("plugins metadata file doors", () => {
 						path: "/api/v1/files/plugin-access/set",
 						apiToken: run.apiToken,
 						body: {
-						path: "/probe",
-						access: { readOnly: true, readScopeId: "limited" },
-					},
+							path: "/probe",
+							access: { readOnly: true, readScopeId: "limited" },
+						},
 					})
 				).status,
 			).toBe(expectedStatus);
@@ -14466,9 +14473,9 @@ describe("plugins metadata file doors", () => {
 					path: "/api/v1/files/plugin-folders/ensure",
 					apiToken: run.apiToken,
 					body: {
-					path: "/probe",
-					access: { readScopeId: "first" },
-				},
+						path: "/probe",
+						access: { readScopeId: "first" },
+					},
 				})
 			).status,
 		).toBe(200);
@@ -14481,9 +14488,9 @@ describe("plugins metadata file doors", () => {
 					path: "/api/v1/files/plugin-folders/ensure",
 					apiToken: run.apiToken,
 					body: {
-					path: "/probe",
-					access: { readScopeId: "second" },
-				},
+						path: "/probe",
+						access: { readScopeId: "second" },
+					},
 				})
 			).status,
 		).toBe(409);
@@ -14529,9 +14536,9 @@ describe("plugins metadata file doors", () => {
 			path: "/api/v1/files/plugin-folders/ensure",
 			apiToken: run.apiToken,
 			body: {
-			path: "/probe",
-			access: { readOnly: true },
-		},
+				path: "/probe",
+				access: { readOnly: true },
+			},
 		});
 		expect(root.status).toBe(200);
 
@@ -14541,9 +14548,9 @@ describe("plugins metadata file doors", () => {
 			path: "/api/v1/files/plugin-folders/ensure",
 			apiToken: run.apiToken,
 			body: {
-			path: "/probe/private",
-			access: { readOnly: true },
-		},
+				path: "/probe/private",
+				access: { readOnly: true },
+			},
 		});
 		expect(nested.status).toBe(200);
 
@@ -14569,9 +14576,9 @@ describe("plugins metadata file doors", () => {
 			path: "/api/v1/files/plugin-folders/ensure",
 			apiToken: run.apiToken,
 			body: {
-			path: "/probe/private/channel-a",
-			access: { readOnly: true, readScopeId: "scope-a" },
-		},
+				path: "/probe/private/channel-a",
+				access: { readOnly: true, readScopeId: "scope-a" },
+			},
 		});
 		expect(scoped.status).toBe(200);
 
@@ -14587,7 +14594,10 @@ describe("plugins metadata file doors", () => {
 			},
 		});
 		expect(scopedNode).toMatchObject({
-			writePolicy: { mode: "writer", writers: [{ kind: "service_account", serviceAccountId: fixture.serviceAccountId }] },
+			writePolicy: {
+				mode: "writer",
+				writers: [{ kind: "service_account", serviceAccountId: fixture.serviceAccountId }],
+			},
 		});
 		const binding = await t.run((ctx) => ctx.db.query("plugins_file_access_bindings").first());
 		expect(binding).toMatchObject({ nodeId: scopedNode?._id, scopeId: "scope-a" });
@@ -14598,21 +14608,35 @@ describe("plugins metadata file doors", () => {
 		const fixture = await install_file_doors_plugin(t, [...FILE_CAPABILITIES, "workspace.files.read"]);
 		const run = await start_file_invoke_run({ t, fixture });
 
-		expect((await door_call({ t, path: "/api/v1/files/plugin-folders/ensure", apiToken: run.apiToken, body: { path: "/probe" } })).status).toBe(
-			200,
-		);
 		expect(
-			(await door_call({
-				t,
-				path: "/api/v1/files/write",
-				apiToken: run.apiToken,
-				body: { path: "/probe/tail.md", content: "# Tail\n" },
-			})).status,
+			(
+				await door_call({
+					t,
+					path: "/api/v1/files/plugin-folders/ensure",
+					apiToken: run.apiToken,
+					body: { path: "/probe" },
+				})
+			).status,
+		).toBe(200);
+		expect(
+			(
+				await door_call({
+					t,
+					path: "/api/v1/files/write",
+					apiToken: run.apiToken,
+					body: { path: "/probe/tail.md", content: "# Tail\n" },
+				})
+			).status,
 		).toBe(200);
 
 		// An invoke run has no source file, so these reads prove the workspace.files.read consent
 		// path: the run principal holds files:read and files:list, and both routes accept plugin_run.
-		const read = await door_call({ t, path: "/api/v1/files/read", apiToken: run.apiToken, body: { path: "/probe/tail.md" } });
+		const read = await door_call({
+			t,
+			path: "/api/v1/files/read",
+			apiToken: run.apiToken,
+			body: { path: "/probe/tail.md" },
+		});
 		expect(read.status).toBe(200);
 		expect(await read.json()).toMatchObject({ path: "/probe/tail.md", content: "# Tail\n" });
 
@@ -14626,20 +14650,35 @@ describe("plugins metadata file doors", () => {
 		const t = test_convex();
 		const fixture = await install_file_doors_plugin(t, [...FILE_CAPABILITIES, "workspace.files.read"]);
 		const run = await start_file_invoke_run({ t, fixture });
-		expect((await door_call({ t, path: "/api/v1/files/plugin-folders/ensure", apiToken: run.apiToken, body: { path: "/probe" } })).status).toBe(
-			200,
-		);
 		expect(
-			(await door_call({
-				t,
-				path: "/api/v1/files/write",
-				apiToken: run.apiToken,
-				body: { path: "/probe/tail.md", content: "# Tail\n" },
-			})).status,
+			(
+				await door_call({
+					t,
+					path: "/api/v1/files/plugin-folders/ensure",
+					apiToken: run.apiToken,
+					body: { path: "/probe" },
+				})
+			).status,
+		).toBe(200);
+		expect(
+			(
+				await door_call({
+					t,
+					path: "/api/v1/files/write",
+					apiToken: run.apiToken,
+					body: { path: "/probe/tail.md", content: "# Tail\n" },
+				})
+			).status,
 		).toBe(200);
 
-		expect((await door_call({ t, path: "/api/v1/files/read", apiToken: run.apiToken, body: { path: "/probe/tail.md" } })).status).toBe(200);
-		expect((await door_call({ t, path: "/api/v1/files/read", apiToken: run.apiToken, body: { path: "/probe/gone.md" } })).status).toBe(404);
+		expect(
+			(await door_call({ t, path: "/api/v1/files/read", apiToken: run.apiToken, body: { path: "/probe/tail.md" } }))
+				.status,
+		).toBe(200);
+		expect(
+			(await door_call({ t, path: "/api/v1/files/read", apiToken: run.apiToken, body: { path: "/probe/gone.md" } }))
+				.status,
+		).toBe(404);
 
 		// Authorizing consumes one call slot per request. A run that ends with any call still
 		// "started" is failed as "Plugin left API calls unfinished", even though every request here
@@ -14663,12 +14702,24 @@ describe("plugins metadata file doors", () => {
 		const t = test_convex();
 		const fixture = await install_file_doors_plugin(t, [...FILE_CAPABILITIES, "workspace.files.read"]);
 		const run = await start_file_invoke_run({ t, fixture });
-		expect((await door_call({ t, path: "/api/v1/files/plugin-folders/ensure", apiToken: run.apiToken, body: { path: "/probe" } })).status).toBe(
-			200,
-		);
+		expect(
+			(
+				await door_call({
+					t,
+					path: "/api/v1/files/plugin-folders/ensure",
+					apiToken: run.apiToken,
+					body: { path: "/probe" },
+				})
+			).status,
+		).toBe(200);
 
-		expect((await door_call({ t, path: "/api/v1/files/list", apiToken: run.apiToken, body: { path: "/probe" } })).status).toBe(200);
-		expect((await door_call({ t, path: "/api/v1/files/list", apiToken: run.apiToken, body: { path: "/probe", limit: 0 } })).status).toBe(400);
+		expect(
+			(await door_call({ t, path: "/api/v1/files/list", apiToken: run.apiToken, body: { path: "/probe" } })).status,
+		).toBe(200);
+		expect(
+			(await door_call({ t, path: "/api/v1/files/list", apiToken: run.apiToken, body: { path: "/probe", limit: 0 } }))
+				.status,
+		).toBe(400);
 
 		// Same slot accounting as the read door above. The list door admits plugin_run, so authorizing
 		// consumes a slot here too, and the door owns settling it on the success path as well.
@@ -14690,16 +14741,25 @@ describe("plugins metadata file doors", () => {
 		const t = test_convex();
 		const fixture = await install_file_doors_plugin(t);
 		const run = await start_file_invoke_run({ t, fixture });
-		expect((await door_call({ t, path: "/api/v1/files/plugin-folders/ensure", apiToken: run.apiToken, body: { path: "/probe" } })).status).toBe(
-			200,
-		);
 		expect(
-			(await door_call({
-				t,
-				path: "/api/v1/files/write",
-				apiToken: run.apiToken,
-				body: { path: "/probe/tail.md", content: "# Tail\n" },
-			})).status,
+			(
+				await door_call({
+					t,
+					path: "/api/v1/files/plugin-folders/ensure",
+					apiToken: run.apiToken,
+					body: { path: "/probe" },
+				})
+			).status,
+		).toBe(200);
+		expect(
+			(
+				await door_call({
+					t,
+					path: "/api/v1/files/write",
+					apiToken: run.apiToken,
+					body: { path: "/probe/tail.md", content: "# Tail\n" },
+				})
+			).status,
 		).toBe(200);
 
 		// The workspace never accepted workspace.files.read, so the resolver granted no files:read
@@ -14718,22 +14778,39 @@ describe("plugins metadata file doors", () => {
 		const t = test_convex();
 		const fixture = await install_file_doors_plugin(t, [...FILE_CAPABILITIES, "workspace.files.read"]);
 		const run = await start_file_invoke_run({ t, fixture });
-		expect((await door_call({ t, path: "/api/v1/files/plugin-folders/ensure", apiToken: run.apiToken, body: { path: "/probe" } })).status).toBe(
-			200,
-		);
 		expect(
-			(await door_call({
-				t,
-				path: "/api/v1/files/write",
-				apiToken: run.apiToken,
-				body: { path: "/probe/tail.md", content: "# Tail\n" },
-			})).status,
+			(
+				await door_call({
+					t,
+					path: "/api/v1/files/plugin-folders/ensure",
+					apiToken: run.apiToken,
+					body: { path: "/probe" },
+				})
+			).status,
 		).toBe(200);
-		expect((await door_call({ t, path: "/api/v1/files/read", apiToken: run.apiToken, body: { path: "/probe/tail.md" } })).status).toBe(200);
+		expect(
+			(
+				await door_call({
+					t,
+					path: "/api/v1/files/write",
+					apiToken: run.apiToken,
+					body: { path: "/probe/tail.md", content: "# Tail\n" },
+				})
+			).status,
+		).toBe(200);
+		expect(
+			(await door_call({ t, path: "/api/v1/files/read", apiToken: run.apiToken, body: { path: "/probe/tail.md" } }))
+				.status,
+		).toBe(200);
 
 		// The bulk read door stays with the key holders. A run reads one file at a time, so this
 		// refusal is the kind gate, not the consent: the same run reads that exact path above.
-		const refused = await door_call({ t, path: "/api/v1/files/read-many", apiToken: run.apiToken, body: { paths: ["/probe/tail.md"] } });
+		const refused = await door_call({
+			t,
+			path: "/api/v1/files/read-many",
+			apiToken: run.apiToken,
+			body: { paths: ["/probe/tail.md"] },
+		});
 		expect(refused.status).toBe(403);
 		expect(await refused.json()).toEqual({ message: "Permission denied" });
 	});
@@ -14746,25 +14823,38 @@ describe("plugins metadata file doors", () => {
 		// below could just as well mean an empty workspace or a file with no content.
 		const ownerRun = await start_file_invoke_run({ t, fixture });
 		expect(
-			(await door_call({
-				t,
-				path: "/api/v1/files/plugin-folders/ensure",
-				apiToken: ownerRun.apiToken,
-				body: { path: "/probe" },
-			})).status,
+			(
+				await door_call({
+					t,
+					path: "/api/v1/files/plugin-folders/ensure",
+					apiToken: ownerRun.apiToken,
+					body: { path: "/probe" },
+				})
+			).status,
 		).toBe(200);
 		expect(
-			(await door_call({
-				t,
-				path: "/api/v1/files/write",
-				apiToken: ownerRun.apiToken,
-				body: { path: "/probe/tail.md", content: "# Tail\n" },
-			}))
-				.status,
+			(
+				await door_call({
+					t,
+					path: "/api/v1/files/write",
+					apiToken: ownerRun.apiToken,
+					body: { path: "/probe/tail.md", content: "# Tail\n" },
+				})
+			).status,
 		).toBe(200);
-		const ownerRead = await door_call({ t, path: "/api/v1/files/read", apiToken: ownerRun.apiToken, body: { path: "/probe/tail.md" } });
+		const ownerRead = await door_call({
+			t,
+			path: "/api/v1/files/read",
+			apiToken: ownerRun.apiToken,
+			body: { path: "/probe/tail.md" },
+		});
 		expect(ownerRead.status).toBe(200);
-		const ownerListed = await door_call({ t, path: "/api/v1/files/list", apiToken: ownerRun.apiToken, body: { path: "/" } });
+		const ownerListed = await door_call({
+			t,
+			path: "/api/v1/files/list",
+			apiToken: ownerRun.apiToken,
+			body: { path: "/" },
+		});
 		expect(((await ownerListed.json()) as { items: { path: string }[] }).items.map((item) => item.path)).toContain(
 			"/probe",
 		);
@@ -14806,12 +14896,22 @@ describe("plugins metadata file doors", () => {
 
 		// Installing a plugin must not become a way around a restriction: the run sees exactly what
 		// the member who invoked it sees, which is nothing of this folder.
-		const listed = await door_call({ t, path: "/api/v1/files/list", apiToken: outsiderRun.apiToken, body: { path: "/" } });
+		const listed = await door_call({
+			t,
+			path: "/api/v1/files/list",
+			apiToken: outsiderRun.apiToken,
+			body: { path: "/" },
+		});
 		expect(listed.status).toBe(200);
 		const listedBody = (await listed.json()) as { items: { path: string }[] };
 		expect(listedBody.items.map((item) => item.path)).not.toContain("/probe");
 
-		const read = await door_call({ t, path: "/api/v1/files/read", apiToken: outsiderRun.apiToken, body: { path: "/probe/tail.md" } });
+		const read = await door_call({
+			t,
+			path: "/api/v1/files/read",
+			apiToken: outsiderRun.apiToken,
+			body: { path: "/probe/tail.md" },
+		});
 		expect(read.status).toBe(404);
 		expect(await read.json()).toEqual({ message: "File not found or exceeds the read limit." });
 	});
@@ -14820,18 +14920,25 @@ describe("plugins metadata file doors", () => {
 		const t = test_convex();
 		const fixture = await install_file_doors_plugin(t);
 		const run = await start_file_invoke_run({ t, fixture });
-		expect((await door_call({ t, path: "/api/v1/files/plugin-folders/ensure", apiToken: run.apiToken, body: { path: "/probe" } })).status).toBe(
-			200,
-		);
+		expect(
+			(
+				await door_call({
+					t,
+					path: "/api/v1/files/plugin-folders/ensure",
+					apiToken: run.apiToken,
+					body: { path: "/probe" },
+				})
+			).status,
+		).toBe(200);
 
 		const written = await door_call({
 			t,
 			path: "/api/v1/files/write",
 			apiToken: run.apiToken,
 			body: {
-			path: "/probe/notes/data.md",
-			content: "# Data\n",
-		},
+				path: "/probe/notes/data.md",
+				content: "# Data\n",
+			},
 		});
 		expect(written.status).toBe(200);
 
@@ -14857,16 +14964,21 @@ describe("plugins metadata file doors", () => {
 			path: "/api/v1/files/write",
 			apiToken: run.apiToken,
 			body: {
-			path: "/probe/notes/second.md",
-			content: "# Second\n",
-		},
+				path: "/probe/notes/second.md",
+				content: "# Second\n",
+			},
 		});
 		expect(sibling.status).toBe(200);
 
 		// A create needs a matching existing ancestor. Neither path below has one.
 		await seed_member_folder({ t, fixture, name: "member-zone" });
 		for (const path of ["/elsewhere/loose.md", "/member-zone/steal.md"]) {
-			const refused = await door_call({ t, path: "/api/v1/files/write", apiToken: run.apiToken, body: { path, content: "# No\n" } });
+			const refused = await door_call({
+				t,
+				path: "/api/v1/files/write",
+				apiToken: run.apiToken,
+				body: { path, content: "# No\n" },
+			});
 			expect(refused.status).toBe(403);
 			expect(await refused.json()).toEqual({ message: "Permission denied" });
 			expect(await find_active_node({ t, fixture, path })).toBeNull();
@@ -14878,15 +14990,18 @@ describe("plugins metadata file doors", () => {
 			path: "/api/v1/files/write",
 			apiToken: run.apiToken,
 			body: {
-			path: "/probe/locked.md",
-			content: "# Locked\n",
-			access: { readOnly: true },
-		},
+				path: "/probe/locked.md",
+				content: "# Locked\n",
+				access: { readOnly: true },
+			},
 		});
 		expect(locked.status).toBe(200);
 		const lockedNode = await find_active_node({ t, fixture, path: "/probe/locked.md" });
 		expect(lockedNode).toMatchObject({
-			writePolicy: { mode: "writer", writers: [{ kind: "service_account", serviceAccountId: fixture.serviceAccountId }] },
+			writePolicy: {
+				mode: "writer",
+				writers: [{ kind: "service_account", serviceAccountId: fixture.serviceAccountId }],
+			},
 		});
 	});
 
@@ -14894,9 +15009,16 @@ describe("plugins metadata file doors", () => {
 		const t = test_convex();
 		const fixture = await install_file_doors_plugin(t);
 		const run = await start_file_invoke_run({ t, fixture });
-		expect((await door_call({ t, path: "/api/v1/files/plugin-folders/ensure", apiToken: run.apiToken, body: { path: "/probe" } })).status).toBe(
-			200,
-		);
+		expect(
+			(
+				await door_call({
+					t,
+					path: "/api/v1/files/plugin-folders/ensure",
+					apiToken: run.apiToken,
+					body: { path: "/probe" },
+				})
+			).status,
+		).toBe(200);
 		for (const [path, readOnly] of [
 			["/probe/a/one.md", true],
 			["/probe/a/two.md", false],
@@ -14906,19 +15028,27 @@ describe("plugins metadata file doors", () => {
 				path: "/api/v1/files/write",
 				apiToken: run.apiToken,
 				body: {
-				path,
-				content: "# A\n",
-				...(readOnly ? { access: { readOnly: true } } : {}),
-			},
+					path,
+					content: "# A\n",
+					...(readOnly ? { access: { readOnly: true } } : {}),
+				},
 			});
 			expect(written.status).toBe(200);
 		}
 		const lockedNode = await find_active_node({ t, fixture, path: "/probe/a/one.md" });
 		expect(lockedNode).toMatchObject({
-			writePolicy: { mode: "writer", writers: [{ kind: "service_account", serviceAccountId: fixture.serviceAccountId }] },
+			writePolicy: {
+				mode: "writer",
+				writers: [{ kind: "service_account", serviceAccountId: fixture.serviceAccountId }],
+			},
 		});
 
-		const archived = await door_call({ t, path: "/api/v1/files/plugin-archive", apiToken: run.apiToken, body: { path: "/probe/a" } });
+		const archived = await door_call({
+			t,
+			path: "/api/v1/files/plugin-archive",
+			apiToken: run.apiToken,
+			body: { path: "/probe/a" },
+		});
 		expect(archived.status).toBe(200);
 		expect(await archived.json()).toEqual({ archivedNodes: 3 });
 		expect(await find_active_node({ t, fixture, path: "/probe/a" })).toBeNull();
@@ -14931,12 +15061,14 @@ describe("plugins metadata file doors", () => {
 
 		// A member's file inside an open plugin folder refuses the whole subtree archive.
 		expect(
-			(await door_call({
-				t,
-				path: "/api/v1/files/write",
-				apiToken: run.apiToken,
-				body: { path: "/probe/keep.md", content: "# K\n" },
-			})).status,
+			(
+				await door_call({
+					t,
+					path: "/api/v1/files/write",
+					apiToken: run.apiToken,
+					body: { path: "/probe/keep.md", content: "# K\n" },
+				})
+			).status,
 		).toBe(200);
 		const probeRoot = await find_active_node({ t, fixture, path: "/probe" });
 		await t.run(async (ctx) => {
@@ -14974,7 +15106,12 @@ describe("plugins metadata file doors", () => {
 				archiveOperationId: null,
 			});
 		});
-		const refused = await door_call({ t, path: "/api/v1/files/plugin-archive", apiToken: run.apiToken, body: { path: "/probe" } });
+		const refused = await door_call({
+			t,
+			path: "/api/v1/files/plugin-archive",
+			apiToken: run.apiToken,
+			body: { path: "/probe" },
+		});
 		expect(refused.status).toBe(409);
 		expect(await refused.json()).toEqual({ message: "This folder holds items without this plugin's label" });
 		expect(await find_active_node({ t, fixture, path: "/probe" })).not.toBeNull();
@@ -15001,16 +15138,25 @@ describe("plugins metadata file doors", () => {
 		const t = test_convex();
 		const fixture = await install_file_doors_plugin(t);
 		const run = await start_file_invoke_run({ t, fixture });
-		expect((await door_call({ t, path: "/api/v1/files/plugin-folders/ensure", apiToken: run.apiToken, body: { path: "/probe" } })).status).toBe(
-			200,
-		);
 		expect(
-			(await door_call({
-				t,
-				path: "/api/v1/files/write",
-				apiToken: run.apiToken,
-				body: { path: "/probe/report.md", content: "# R\n" },
-			})).status,
+			(
+				await door_call({
+					t,
+					path: "/api/v1/files/plugin-folders/ensure",
+					apiToken: run.apiToken,
+					body: { path: "/probe" },
+				})
+			).status,
+		).toBe(200);
+		expect(
+			(
+				await door_call({
+					t,
+					path: "/api/v1/files/write",
+					apiToken: run.apiToken,
+					body: { path: "/probe/report.md", content: "# R\n" },
+				})
+			).status,
 		).toBe(200);
 		const reportNode = await find_active_node({ t, fixture, path: "/probe/report.md" });
 
@@ -15019,9 +15165,9 @@ describe("plugins metadata file doors", () => {
 			path: "/api/v1/files/plugin-access/set",
 			apiToken: run.apiToken,
 			body: {
-			path: "/probe/report.md",
-			access: { readOnly: true },
-		},
+				path: "/probe/report.md",
+				access: { readOnly: true },
+			},
 		});
 		expect(lock.status).toBe(200);
 		expect(await lock.json()).toEqual({ nodeId: String(reportNode!._id) });
@@ -15047,9 +15193,9 @@ describe("plugins metadata file doors", () => {
 			path: "/api/v1/files/plugin-access/set",
 			apiToken: run.apiToken,
 			body: {
-			path: "/probe/report.md",
-			access: { readOnly: false },
-		},
+				path: "/probe/report.md",
+				access: { readOnly: false },
+			},
 		});
 		expect(unlock.status).toBe(200);
 		expect(await find_active_node({ t, fixture, path: "/probe/report.md" })).toMatchObject({
@@ -15062,9 +15208,9 @@ describe("plugins metadata file doors", () => {
 			path: "/api/v1/files/plugin-access/set",
 			apiToken: run.apiToken,
 			body: {
-			path: "/probe",
-			access: { readOnly: true },
-		},
+				path: "/probe",
+				access: { readOnly: true },
+			},
 		});
 		expect(folderLock.status).toBe(200);
 		expect(await find_active_node({ t, fixture, path: "/probe" })).toMatchObject({
@@ -15094,9 +15240,9 @@ describe("plugins metadata file doors", () => {
 			path: "/api/v1/files/plugin-access/set",
 			apiToken: run.apiToken,
 			body: {
-			path: "/probe",
-			access: { readOnly: true },
-		},
+				path: "/probe",
+				access: { readOnly: true },
+			},
 		});
 		expect(folderRelock.status).toBe(200);
 		expect(await find_active_node({ t, fixture, path: "/probe" })).toMatchObject({ writePolicy: sharedFolderPolicy });
@@ -15108,9 +15254,9 @@ describe("plugins metadata file doors", () => {
 			path: "/api/v1/files/write",
 			apiToken: run.apiToken,
 			body: {
-			path: "/probe/still-mine.md",
-			content: "# Mine\n",
-		},
+				path: "/probe/still-mine.md",
+				content: "# Mine\n",
+			},
 		});
 		expect(throughLock.status).toBe(200);
 
@@ -15121,9 +15267,9 @@ describe("plugins metadata file doors", () => {
 			path: "/api/v1/files/plugin-access/set",
 			apiToken: run.apiToken,
 			body: {
-			path: "/member-zone",
-			access: { readOnly: true },
-		},
+				path: "/member-zone",
+				access: { readOnly: true },
+			},
 		});
 		expect(foreign.status).toBe(403);
 		expect(await foreign.json()).toEqual({ message: "Permission denied" });
@@ -15132,9 +15278,9 @@ describe("plugins metadata file doors", () => {
 			path: "/api/v1/files/plugin-access/set",
 			apiToken: run.apiToken,
 			body: {
-			path: "/probe/ghost.md",
-			access: { readOnly: true },
-		},
+				path: "/probe/ghost.md",
+				access: { readOnly: true },
+			},
 		});
 		expect(absent.status).toBe(404);
 		expect(await absent.json()).toEqual({ message: "Not found" });
@@ -15163,16 +15309,25 @@ describe("plugins metadata file doors", () => {
 		const t = test_convex();
 		const fixture = await install_file_doors_plugin(t);
 		const run = await start_file_invoke_run({ t, fixture });
-		expect((await door_call({ t, path: "/api/v1/files/plugin-folders/ensure", apiToken: run.apiToken, body: { path: "/probe" } })).status).toBe(
-			200,
-		);
 		expect(
-			(await door_call({
-				t,
-				path: "/api/v1/files/write",
-				apiToken: run.apiToken,
-				body: { path: "/probe/secret.md", content: "# S\n" },
-			})).status,
+			(
+				await door_call({
+					t,
+					path: "/api/v1/files/plugin-folders/ensure",
+					apiToken: run.apiToken,
+					body: { path: "/probe" },
+				})
+			).status,
+		).toBe(200);
+		expect(
+			(
+				await door_call({
+					t,
+					path: "/api/v1/files/write",
+					apiToken: run.apiToken,
+					body: { path: "/probe/secret.md", content: "# S\n" },
+				})
+			).status,
 		).toBe(200);
 		const secretNode = await find_active_node({ t, fixture, path: "/probe/secret.md" });
 		// The binding needs a live private scope of this installation; the door checks the scope
@@ -15207,9 +15362,9 @@ describe("plugins metadata file doors", () => {
 			path: "/api/v1/files/plugin-access/set",
 			apiToken: run.apiToken,
 			body: {
-			path: "/probe/secret.md",
-			access: {},
-		},
+				path: "/probe/secret.md",
+				access: {},
+			},
 		});
 		expect(empty.status).toBe(400);
 		expect(await empty.json()).toEqual({ message: "access must set readOnly or readScopeId." });
@@ -15219,13 +15374,15 @@ describe("plugins metadata file doors", () => {
 			path: "/api/v1/files/plugin-access/set",
 			apiToken: run.apiToken,
 			body: {
-			path: "/probe/secret.md",
-			access: { readScopeId: "p/door" },
-		},
+				path: "/probe/secret.md",
+				access: { readScopeId: "p/door" },
+			},
 		});
 		expect(bound.status).toBe(200);
 		expect(await bound.json()).toEqual({ nodeId: String(secretNode!._id) });
-		expect((await find_active_node({ t, fixture, path: "/probe/secret.md" }))?.restrictedScopeNodeId).toBe(secretNode!._id);
+		expect((await find_active_node({ t, fixture, path: "/probe/secret.md" }))?.restrictedScopeNodeId).toBe(
+			secretNode!._id,
+		);
 		expect(await read_binding_rows()).toMatchObject([{ nodeId: secretNode!._id }]);
 		await grant_file_account(fixture, secretNode!._id);
 
@@ -15234,9 +15391,9 @@ describe("plugins metadata file doors", () => {
 			path: "/api/v1/files/plugin-access/set",
 			apiToken: run.apiToken,
 			body: {
-			path: "/probe/secret.md",
-			access: { readScopeId: "p/ghost" },
-		},
+				path: "/probe/secret.md",
+				access: { readScopeId: "p/ghost" },
+			},
 		});
 		expect(deadScope.status).toBe(404);
 		expect(await deadScope.json()).toEqual({ message: "Not found" });
@@ -15250,9 +15407,9 @@ describe("plugins metadata file doors", () => {
 			path: "/api/v1/files/plugin-access/set",
 			apiToken: run.apiToken,
 			body: {
-			path: "/probe/secret.md",
-			access: { readScopeId: null },
-		},
+				path: "/probe/secret.md",
+				access: { readScopeId: null },
+			},
 		});
 		expect(released.status).toBe(200);
 		expect(
@@ -15269,14 +15426,17 @@ describe("plugins metadata file doors", () => {
 			path: "/api/v1/files/plugin-folders/ensure",
 			apiToken: run.apiToken,
 			body: {
-			path: "/probe/vault",
-			access: { readOnly: true, readScopeId: "p/door" },
-		},
+				path: "/probe/vault",
+				access: { readOnly: true, readScopeId: "p/door" },
+			},
 		});
 		expect(vault.status).toBe(200);
 		const vaultNode = await find_active_node({ t, fixture, path: "/probe/vault" });
 		expect(vaultNode).toMatchObject({
-			writePolicy: { mode: "writer", writers: [{ kind: "service_account", serviceAccountId: fixture.serviceAccountId }] },
+			writePolicy: {
+				mode: "writer",
+				writers: [{ kind: "service_account", serviceAccountId: fixture.serviceAccountId }],
+			},
 			restrictedScopeNodeId: vaultNode!._id,
 		});
 		expect(await read_binding_rows()).toMatchObject([{ nodeId: vaultNode!._id }]);
@@ -15287,9 +15447,9 @@ describe("plugins metadata file doors", () => {
 			path: "/api/v1/files/plugin-folders/ensure",
 			apiToken: run.apiToken,
 			body: {
-			path: "/probe/vault-two",
-			access: { readScopeId: "p/ghost" },
-		},
+				path: "/probe/vault-two",
+				access: { readScopeId: "p/ghost" },
+			},
 		});
 		expect(vaultDead.status).toBe(404);
 		expect(await vaultDead.json()).toEqual({ message: "Not found" });
@@ -15300,28 +15460,46 @@ describe("plugins metadata file doors", () => {
 		const t = test_convex();
 		const fixture = await install_file_doors_plugin(t);
 		const run = await start_file_invoke_run({ t, fixture });
-		expect((await door_call({ t, path: "/api/v1/files/plugin-folders/ensure", apiToken: run.apiToken, body: { path: "/probe" } })).status).toBe(
-			200,
-		);
+		expect(
+			(
+				await door_call({
+					t,
+					path: "/api/v1/files/plugin-folders/ensure",
+					apiToken: run.apiToken,
+					body: { path: "/probe" },
+				})
+			).status,
+		).toBe(200);
 
 		// Invoke touch checks the target or nearest existing ancestor, as `/api/v1/files/write` does.
-		const inside = await door_call({ t, path: "/api/v1/files/touch", apiToken: run.apiToken, body: { paths: ["/probe/empty.md"] } });
+		const inside = await door_call({
+			t,
+			path: "/api/v1/files/touch",
+			apiToken: run.apiToken,
+			body: { paths: ["/probe/empty.md"] },
+		});
 		expect(inside.status).toBe(200);
 		expect(await find_active_node({ t, fixture, path: "/probe/empty.md" })).toMatchObject({ kind: "file" });
 
 		// Touch labels each new node, so the later fill can match the file's own label.
 		expect(
-			(await door_call({
-				t,
-				path: "/api/v1/files/write",
-				apiToken: run.apiToken,
-				body: { path: "/probe/empty.md", content: "# Filled\n" },
-			}))
-				.status,
+			(
+				await door_call({
+					t,
+					path: "/api/v1/files/write",
+					apiToken: run.apiToken,
+					body: { path: "/probe/empty.md", content: "# Filled\n" },
+				})
+			).status,
 		).toBe(200);
 
 		// A create at workspace root has no matching existing ancestor.
-		const outside = await door_call({ t, path: "/api/v1/files/touch", apiToken: run.apiToken, body: { paths: ["/loose.md"] } });
+		const outside = await door_call({
+			t,
+			path: "/api/v1/files/touch",
+			apiToken: run.apiToken,
+			body: { paths: ["/loose.md"] },
+		});
 		expect(outside.status).toBe(403);
 		expect(await outside.json()).toEqual({ message: "Permission denied" });
 		expect(await find_active_node({ t, fixture, path: "/loose.md" })).toBeNull();
@@ -15364,7 +15542,12 @@ describe("plugins metadata file doors", () => {
 				archiveOperationId: null,
 			});
 		});
-		const existing = await door_call({ t, path: "/api/v1/files/touch", apiToken: run.apiToken, body: { paths: ["/board-minutes.md"] } });
+		const existing = await door_call({
+			t,
+			path: "/api/v1/files/touch",
+			apiToken: run.apiToken,
+			body: { paths: ["/board-minutes.md"] },
+		});
 		expect(existing.status).toBe(403);
 		expect(await existing.json()).toEqual({ message: "Permission denied" });
 
@@ -15377,9 +15560,9 @@ describe("plugins metadata file doors", () => {
 					path: "/api/v1/files/plugin-access/set",
 					apiToken: run.apiToken,
 					body: {
-					path: "/probe",
-					access: { readOnly: true },
-				},
+						path: "/probe",
+						access: { readOnly: true },
+					},
 				})
 			).status,
 		).toBe(200);
@@ -15425,9 +15608,9 @@ describe("plugins metadata file doors", () => {
 				path: "/api/v1/files/plugin-access/set",
 				apiToken: run.apiToken,
 				body: {
-				path: "/member-folder",
-				access,
-			},
+					path: "/member-folder",
+					access,
+				},
 			});
 			expect(refused.status).toBe(403);
 			expect(await refused.json()).toEqual({ message: "Permission denied" });
@@ -15453,9 +15636,9 @@ describe("plugins metadata file doors", () => {
 				path: "/api/v1/files/plugin-access/set",
 				apiToken: run.apiToken,
 				body: {
-				path: "/member-folder",
-				access,
-			},
+					path: "/member-folder",
+					access,
+				},
 			});
 			expect(accepted.status).toBe(200);
 			expect(await accepted.json()).toEqual({ nodeId });
@@ -15487,8 +15670,8 @@ describe("plugins metadata file doors", () => {
 					path: "/api/v1/files/plugin-folders/ensure",
 					apiToken: ownerRun.apiToken,
 					body: {
-					path: "/probe",
-				},
+						path: "/probe",
+					},
 				})
 			).status,
 		).toBe(200);
@@ -15523,9 +15706,9 @@ describe("plugins metadata file doors", () => {
 			path: "/api/v1/files/plugin-access/set",
 			apiToken: run.apiToken,
 			body: {
-			path: "/probe",
-			access: { readOnly: true },
-		},
+				path: "/probe",
+				access: { readOnly: true },
+			},
 		});
 		expect(refused.status).toBe(403);
 		expect(await t.run((ctx) => ctx.db.get("files_nodes", root._id))).toEqual(before);
@@ -15546,9 +15729,9 @@ describe("plugins metadata file doors", () => {
 					path: "/api/v1/files/plugin-access/set",
 					apiToken: run.apiToken,
 					body: {
-					path: "/probe",
-					access: { readOnly: true },
-				},
+						path: "/probe",
+						access: { readOnly: true },
+					},
 				})
 			).status,
 		).toBe(200);
@@ -15572,8 +15755,8 @@ describe("plugins metadata file doors", () => {
 						path: "/api/v1/files/plugin-folders/ensure",
 						apiToken: ownerRun.apiToken,
 						body: {
-						path: "/probe/sub/nested",
-					},
+							path: "/probe/sub/nested",
+						},
 					})
 				).status,
 			).toBe(200);
@@ -15624,9 +15807,9 @@ describe("plugins metadata file doors", () => {
 				path: "/api/v1/files/plugin-access/set",
 				apiToken: run.apiToken,
 				body: {
-				path: "/probe/sub",
-				access: change === "lock" ? { readOnly: true } : { readScopeId: "private" },
-			},
+					path: "/probe/sub",
+					access: change === "lock" ? { readOnly: true } : { readScopeId: "private" },
+				},
 			});
 			expect(response.status).toBe(200);
 			expect(await response.json()).toEqual({ nodeId: sub._id });
@@ -15665,9 +15848,9 @@ describe("plugins metadata file doors", () => {
 					path: "/api/v1/files/plugin-folders/ensure",
 					apiToken: run.apiToken,
 					body: {
-					path: "/outer/plugin",
-					access: { readOnly: true },
-				},
+						path: "/outer/plugin",
+						access: { readOnly: true },
+					},
 				})
 			).status,
 		).toBe(200);
@@ -15678,9 +15861,9 @@ describe("plugins metadata file doors", () => {
 					path: "/api/v1/files/write",
 					apiToken: run.apiToken,
 					body: {
-					path: "/outer/plugin/file.md",
-					content: "Keep",
-				},
+						path: "/outer/plugin/file.md",
+						content: "Keep",
+					},
 				})
 			).status,
 		).toBe(200);
@@ -15695,20 +15878,24 @@ describe("plugins metadata file doors", () => {
 		).toEqual({ _yay: null });
 
 		expect(
-			(await door_call({
-				t,
-				path: "/api/v1/files/plugin-folders/ensure",
-				apiToken: run.apiToken,
-				body: { path: "/outer/plugin" },
-			})).status,
+			(
+				await door_call({
+					t,
+					path: "/api/v1/files/plugin-folders/ensure",
+					apiToken: run.apiToken,
+					body: { path: "/outer/plugin" },
+				})
+			).status,
 		).toBe(200);
 		expect(
-			(await door_call({
-				t,
-				path: "/api/v1/files/plugin-folders/ensure",
-				apiToken: run.apiToken,
-				body: { path: "/outer/plugin/new" },
-			})).status,
+			(
+				await door_call({
+					t,
+					path: "/api/v1/files/plugin-folders/ensure",
+					apiToken: run.apiToken,
+					body: { path: "/outer/plugin/new" },
+				})
+			).status,
 		).toBe(200);
 		expect(
 			(
@@ -15717,9 +15904,9 @@ describe("plugins metadata file doors", () => {
 					path: "/api/v1/files/plugin-access/set",
 					apiToken: run.apiToken,
 					body: {
-					path: "/outer/plugin",
-					access: { readOnly: false },
-				},
+						path: "/outer/plugin",
+						access: { readOnly: false },
+					},
 				})
 			).status,
 		).toBe(200);
@@ -15730,13 +15917,18 @@ describe("plugins metadata file doors", () => {
 			path: "/api/v1/files/plugin-folders/ensure",
 			apiToken: run.apiToken,
 			body: {
-			path: "/outer/sibling",
-		},
+				path: "/outer/sibling",
+			},
 		});
 		expect(refused.status).toBe(409);
 		expect(await refused.json()).toEqual({ message: "This item is read-only." });
 
-		const archived = await door_call({ t, path: "/api/v1/files/plugin-archive", apiToken: run.apiToken, body: { path: "/outer/plugin" } });
+		const archived = await door_call({
+			t,
+			path: "/api/v1/files/plugin-archive",
+			apiToken: run.apiToken,
+			body: { path: "/outer/plugin" },
+		});
 		expect(archived.status).toBe(200);
 	});
 
@@ -15748,12 +15940,14 @@ describe("plugins metadata file doors", () => {
 			const ownerRun = await start_file_invoke_run({ t, fixture });
 
 			expect(
-				(await door_call({
-					t,
-					path: "/api/v1/files/plugin-folders/ensure",
-					apiToken: ownerRun.apiToken,
-					body: { path: "/probe" },
-				})).status,
+				(
+					await door_call({
+						t,
+						path: "/api/v1/files/plugin-folders/ensure",
+						apiToken: ownerRun.apiToken,
+						body: { path: "/probe" },
+					})
+				).status,
 			).toBe(200);
 			for (const [path, readOnly] of [
 				["/probe/a.md", true],
@@ -15766,10 +15960,10 @@ describe("plugins metadata file doors", () => {
 							path: "/api/v1/files/write",
 							apiToken: ownerRun.apiToken,
 							body: {
-							path,
-							content: "Keep",
-							...(readOnly ? { access: { readOnly: true } } : {}),
-						},
+								path,
+								content: "Keep",
+								...(readOnly ? { access: { readOnly: true } } : {}),
+							},
 						})
 					).status,
 				).toBe(200);
@@ -15818,7 +16012,12 @@ describe("plugins metadata file doors", () => {
 			}
 
 			const before = await t.run((ctx) => ctx.db.query("files_nodes").collect());
-			const refused = await door_call({ t, path: "/api/v1/files/plugin-archive", apiToken: token, body: { path: "/probe" } });
+			const refused = await door_call({
+				t,
+				path: "/api/v1/files/plugin-archive",
+				apiToken: token,
+				body: { path: "/probe" },
+			});
 			expect(refused.status).toBe(reason === "permission" ? 403 : 409);
 			expect(await t.run((ctx) => ctx.db.query("files_nodes").collect())).toEqual(before);
 		},
@@ -15829,9 +16028,16 @@ describe("plugins metadata file doors", () => {
 		const fixture = await install_file_doors_plugin(t);
 		const run = await start_file_invoke_run({ t, fixture });
 
-		expect((await door_call({ t, path: "/api/v1/files/plugin-folders/ensure", apiToken: run.apiToken, body: { path: "/probe" } })).status).toBe(
-			200,
-		);
+		expect(
+			(
+				await door_call({
+					t,
+					path: "/api/v1/files/plugin-folders/ensure",
+					apiToken: run.apiToken,
+					body: { path: "/probe" },
+				})
+			).status,
+		).toBe(200);
 		expect(
 			(
 				await door_call({
@@ -15839,9 +16045,9 @@ describe("plugins metadata file doors", () => {
 					path: "/api/v1/files/write",
 					apiToken: run.apiToken,
 					body: {
-					path: "/probe/source.md",
-					content: "Source",
-				},
+						path: "/probe/source.md",
+						content: "Source",
+					},
 				})
 			).status,
 		).toBe(200);
@@ -15860,9 +16066,9 @@ describe("plugins metadata file doors", () => {
 					path: "/api/v1/files/write",
 					apiToken: run.apiToken,
 					body: {
-					path: "/probe/result.md",
-					content: "First",
-				},
+						path: "/probe/result.md",
+						content: "First",
+					},
 				})
 			).status,
 		).toBe(200);
@@ -15873,9 +16079,9 @@ describe("plugins metadata file doors", () => {
 					path: "/api/v1/files/write",
 					apiToken: run.apiToken,
 					body: {
-					path: "/probe/result.md",
-					content: "Second",
-				},
+						path: "/probe/result.md",
+						content: "Second",
+					},
 				})
 			).status,
 		).toBe(200);
@@ -15886,8 +16092,8 @@ describe("plugins metadata file doors", () => {
 					path: "/api/v1/files/touch",
 					apiToken: run.apiToken,
 					body: {
-					paths: ["/probe/result.md", "/probe/empty.md"],
-				},
+						paths: ["/probe/result.md", "/probe/empty.md"],
+					},
 				})
 			).status,
 		).toBe(200);
@@ -15910,9 +16116,16 @@ describe("plugins metadata file doors", () => {
 		const t = test_convex();
 		const fixture = await install_file_doors_plugin(t);
 		const run = await start_file_invoke_run({ t, fixture });
-		expect((await door_call({ t, path: "/api/v1/files/plugin-folders/ensure", apiToken: run.apiToken, body: { path: "/probe" } })).status).toBe(
-			200,
-		);
+		expect(
+			(
+				await door_call({
+					t,
+					path: "/api/v1/files/plugin-folders/ensure",
+					apiToken: run.apiToken,
+					body: { path: "/probe" },
+				})
+			).status,
+		).toBe(200);
 
 		// The plugin policy doors belong to invoke runs. A sourceless non-invoke run already loses the
 		// write scope at resolve time.
@@ -15922,8 +16135,8 @@ describe("plugins metadata file doors", () => {
 			path: "/api/v1/files/plugin-folders/ensure",
 			apiToken: run.apiToken,
 			body: {
-			path: "/probe/more",
-		},
+				path: "/probe/more",
+			},
 		});
 		expect(sourcelessRun.status).toBe(403);
 		expect(await sourcelessRun.json()).toEqual({ message: "Permission denied" });
@@ -15971,8 +16184,8 @@ describe("plugins metadata file doors", () => {
 			path: "/api/v1/files/plugin-folders/ensure",
 			apiToken: run.apiToken,
 			body: {
-			path: "/probe/more",
-		},
+				path: "/probe/more",
+			},
 		});
 		expect(uploadRun.status).toBe(401);
 		expect(await uploadRun.json()).toEqual({ message: "Unauthenticated" });
@@ -15992,9 +16205,9 @@ describe("plugins metadata file doors", () => {
 			path: "/api/v1/files/plugin-access/set",
 			apiToken: run.apiToken,
 			body: {
-			path: "/probe",
-			access: { readOnly: true },
-		},
+				path: "/probe",
+				access: { readOnly: true },
+			},
 		});
 		expect(noAccessConsent.status).toBe(403);
 		await t.run((ctx) =>
@@ -16007,8 +16220,8 @@ describe("plugins metadata file doors", () => {
 			path: "/api/v1/files/plugin-folders/ensure",
 			apiToken: run.apiToken,
 			body: {
-			path: "/probe/more",
-		},
+				path: "/probe/more",
+			},
 		});
 		expect(noWriteConsent.status).toBe(403);
 		const noWriteWrite = await door_call({
@@ -16016,9 +16229,9 @@ describe("plugins metadata file doors", () => {
 			path: "/api/v1/files/write",
 			apiToken: run.apiToken,
 			body: {
-			path: "/probe/late.md",
-			content: "# Late\n",
-		},
+				path: "/probe/late.md",
+				content: "# Late\n",
+			},
 		});
 		expect(noWriteWrite.status).toBe(403);
 		await t.run((ctx) =>
@@ -16038,8 +16251,8 @@ describe("plugins metadata file doors", () => {
 			path: "/api/v1/files/plugin-folders/ensure",
 			apiToken: run.apiToken,
 			body: {
-			path: "/probe/more",
-		},
+				path: "/probe/more",
+			},
 		});
 		expect(finishedRun.status).toBe(401);
 	});

@@ -244,12 +244,7 @@ async function seal_token(args: {
 /**
  * The service upload routes are public API routes: bearer only, no service secret header.
  */
-async function call(args: {
-	t: ReturnType<typeof test_convex>;
-	path: string;
-	bearer: string;
-	body: unknown;
-}) {
+async function call(args: { t: ReturnType<typeof test_convex>; path: string; bearer: string; body: unknown }) {
 	const { t, path, bearer, body } = args;
 
 	return await t.fetch(path, {
@@ -297,7 +292,7 @@ async function set_quota_used(args: {
 	fixture: Awaited<ReturnType<typeof seed_installation>>;
 	usedCount: number;
 }) {
-	const { t, fixture, usedCount} = args;
+	const { t, fixture, usedCount } = args;
 
 	const quota = await read_quota(t, fixture);
 	await t.run(async (ctx) => await ctx.db.patch("quotas", quota!._id, { usedCount }));
@@ -372,12 +367,8 @@ async function simulate_finalizer(args: {
  * before it publishes the node, so stub the upload URL and the PUT. No other service upload route
  * in this file reaches R2.
  */
-async function write_note(args: {
-	t: ReturnType<typeof test_convex>;
-	sealed: string;
-	path: string;
-}) {
-	const { t, sealed, path} = args;
+async function write_note(args: { t: ReturnType<typeof test_convex>; sealed: string; path: string }) {
+	const { t, sealed, path } = args;
 
 	const generateUploadUrl = vi
 		.spyOn(R2.prototype, "generateUploadUrl")
@@ -401,11 +392,11 @@ async function write_note(args: {
 			path: "/api/v1/files/write",
 			bearer: sealed,
 			body: {
-			path,
-			content: "# Meeting",
-			nonCollaborative: true,
-			access: { readOnly: true },
-		},
+				path,
+				content: "# Meeting",
+				nonCollaborative: true,
+				access: { readOnly: true },
+			},
 		});
 	} finally {
 		vi.unstubAllGlobals();
@@ -708,7 +699,12 @@ describe("service upload authorization", () => {
 		const sealedA = await seal_token({ t, fixture: fixtureA });
 		const sealedB = await seal_token({ t, fixture: fixtureB });
 
-		const createdB = await call({ t, path: CREATE_TARGET_PATH, bearer: sealedB, body: target_body({ idempotencyKey: "meeting-b" }) });
+		const createdB = await call({
+			t,
+			path: CREATE_TARGET_PATH,
+			bearer: sealedB,
+			body: target_body({ idempotencyKey: "meeting-b" }),
+		});
 		expect(createdB.status).toBe(200);
 
 		// A's grant naming B's keys finds nothing: targets are keyed inside A's own installation, so
@@ -882,7 +878,11 @@ describe("service upload plan gate", () => {
 			t,
 			path: CREATE_TARGET_PATH,
 			bearer: sealed,
-			body: target_body({ targetKey: "slides", path: "/meetings/meeting-1/slides.pdf", contentType: "application/pdf" }),
+			body: target_body({
+				targetKey: "slides",
+				path: "/meetings/meeting-1/slides.pdf",
+				contentType: "application/pdf",
+			}),
 		});
 		expect(refused.status).toBe(403);
 		expect(await refused.json()).toEqual({ message: PLAN_REFUSAL });
@@ -898,14 +898,16 @@ describe("service upload plan gate", () => {
 		// Creating the target accepted the upload. A later downgrade must not strand a half-written
 		// file, the same way a later read-only lock does not cancel it.
 		await t.run(async (ctx) => test_mocks_fill_db_with.plan(ctx, { userId: fixture.userId, plan: "Free" }));
-		expect((await call({
-			t,
-			path: REMINT_PATH,
-			bearer: sealed,
-			body: { idempotencyKey: "meeting-1", targetKey: "recording" },
-		})).status).toBe(
-			200,
-		);
+		expect(
+			(
+				await call({
+					t,
+					path: REMINT_PATH,
+					bearer: sealed,
+					body: { idempotencyKey: "meeting-1", targetKey: "recording" },
+				})
+			).status,
+		).toBe(200);
 		const target = (await read_targets(t))[0]!;
 		await simulate_finalizer({ t, fixture, target, size: 3 * MIB });
 		const finalized = await call({
@@ -923,7 +925,11 @@ describe("service upload plan gate", () => {
 			t,
 			path: CREATE_TARGET_PATH,
 			bearer: sealed,
-			body: target_body({ targetKey: "slides", path: "/meetings/meeting-1/slides.pdf", contentType: "application/pdf" }),
+			body: target_body({
+				targetKey: "slides",
+				path: "/meetings/meeting-1/slides.pdf",
+				contentType: "application/pdf",
+			}),
 		});
 		expect(refused.status).toBe(403);
 		expect(await refused.json()).toEqual({ message: PLAN_REFUSAL });
@@ -1054,14 +1060,16 @@ describe("service upload drain", () => {
 		const committed = targets.find((target) => target.targetKey === "recording")!;
 		const locked = targets.find((target) => target.targetKey === "notes")!;
 		await simulate_finalizer({ t, fixture, target: committed, size: 4 * MIB });
-		expect((await call({
-			t,
-			path: FINALIZE_PATH,
-			bearer: sealed,
-			body: { idempotencyKey: "meeting-1", targetKey: "recording" },
-		})).status).toBe(
-			200,
-		);
+		expect(
+			(
+				await call({
+					t,
+					path: FINALIZE_PATH,
+					bearer: sealed,
+					body: { idempotencyKey: "meeting-1", targetKey: "recording" },
+				})
+			).status,
+		).toBe(200);
 		await t.run(async (ctx) => {
 			await ctx.db.patch("files_nodes", locked.nodeId, {
 				writePolicy: { mode: "read_only" },
@@ -1168,7 +1176,12 @@ describe("service upload targets", () => {
 
 		const missing = await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body: missingFlags });
 		expect(missing.status).toBe(400);
-		const binary = await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body: target_body({ nonCollaborative: true }) });
+		const binary = await call({
+			t,
+			path: CREATE_TARGET_PATH,
+			bearer: sealed,
+			body: target_body({ nonCollaborative: true }),
+		});
 		expect(binary.status).toBe(400);
 		expect(await binary.json()).toEqual({ message: "Only editable text files can be non-collaborative" });
 		expect(await read_targets(t)).toHaveLength(0);
@@ -1200,14 +1213,16 @@ describe("service upload targets", () => {
 		});
 		expect((await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body })).status).toBe(200);
 		await simulate_finalizer({ t, fixture, target, size: 2 * MIB });
-		expect((await call({
-			t,
-			path: FINALIZE_PATH,
-			bearer: sealed,
-			body: { idempotencyKey: "meeting-1", targetKey: "recording" },
-		})).status).toBe(
-			200,
-		);
+		expect(
+			(
+				await call({
+					t,
+					path: FINALIZE_PATH,
+					bearer: sealed,
+					body: { idempotencyKey: "meeting-1", targetKey: "recording" },
+				})
+			).status,
+		).toBe(200);
 
 		const changedMode = await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body: { ...body, readOnly: false } });
 		expect(changedMode.status).toBe(409);
@@ -1254,7 +1269,10 @@ describe("service upload targets", () => {
 		const target = (await read_targets(t))[0]!;
 		expect(await t.run((ctx) => ctx.db.get("files_nodes", target.nodeId))).toMatchObject({
 			restrictedScopeNodeId: destinationId,
-			writePolicy: { mode: "writer", writers: [{ kind: "service_account", serviceAccountId: fixture.serviceAccountId }] },
+			writePolicy: {
+				mode: "writer",
+				writers: [{ kind: "service_account", serviceAccountId: fixture.serviceAccountId }],
+			},
 		});
 
 		expect((await call({ t, path: ARCHIVE_PATH, bearer: sealed, body: {} })).status).toBe(200);
@@ -1264,7 +1282,9 @@ describe("service upload targets", () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
 		const sealed = await seal_token({ t, fixture });
-		expect((await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body: target_body({ readOnly: true }) })).status).toBe(200);
+		expect(
+			(await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body: target_body({ readOnly: true }) })).status,
+		).toBe(200);
 		const protectedTarget = (await read_targets(t))[0]!;
 		await simulate_finalizer({ t, fixture, target: protectedTarget, size: MIB });
 		await t.run(async (ctx) => {
@@ -1293,7 +1313,10 @@ describe("service upload targets", () => {
 				})
 			).status,
 		).toBe(403);
-		expect((await call({ t, path: DELETE_PATH, bearer: sealed, body: { idempotencyKey: "delete", targetKey: "recording" } })).status).toBe(403);
+		expect(
+			(await call({ t, path: DELETE_PATH, bearer: sealed, body: { idempotencyKey: "delete", targetKey: "recording" } }))
+				.status,
+		).toBe(403);
 		expect((await call({ t, path: ARCHIVE_PATH, bearer: sealed, body: {} })).status).toBe(403);
 		expect((await t.run((ctx) => ctx.db.get("files_nodes", protectedTarget.nodeId)))?.writePolicy).not.toBeNull();
 
@@ -1310,21 +1333,25 @@ describe("service upload targets", () => {
 				})
 			).status,
 		).toBe(200);
-		expect((await call({
-			t,
-			path: DELETE_PATH,
-			bearer: sealed,
-			body: { idempotencyKey: "delete-plain", targetKey: "plain" },
-		})).status).toBe(
-			200,
-		);
+		expect(
+			(
+				await call({
+					t,
+					path: DELETE_PATH,
+					bearer: sealed,
+					body: { idempotencyKey: "delete-plain", targetKey: "plain" },
+				})
+			).status,
+		).toBe(200);
 	});
 
 	test("member policy changes replace the local writer without changing the service target", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
 		const sealed = await seal_token({ t, fixture });
-		expect((await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body: target_body({ readOnly: true }) })).status).toBe(200);
+		expect(
+			(await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body: target_body({ readOnly: true }) })).status,
+		).toBe(200);
 		const target = (await read_targets(t))[0]!;
 		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: fixture.userId });
 		const args = { membershipId: fixture.membershipId, nodeId: target.nodeId };
@@ -1351,7 +1378,10 @@ describe("service upload targets", () => {
 		expect(
 			await asUser.mutation(api.files_nodes.set_node_write_policy, { ...args, writePolicy: { mode: "read_only" } }),
 		).toEqual({ _yay: null });
-		expect((await call({ t, path: DELETE_PATH, bearer: sealed, body: { idempotencyKey: "delete", targetKey: "recording" } })).status).toBe(409);
+		expect(
+			(await call({ t, path: DELETE_PATH, bearer: sealed, body: { idempotencyKey: "delete", targetKey: "recording" } }))
+				.status,
+		).toBe(409);
 		expect(await t.run((ctx) => ctx.db.get("plugin_service_storage_targets", target._id))).toEqual(target);
 	});
 
@@ -1386,14 +1416,16 @@ describe("service upload targets", () => {
 				nodeId: target.nodeId,
 			}),
 		).toEqual({ _yay: null });
-		expect((await call({
-			t,
-			path: REMINT_PATH,
-			bearer: sealed,
-			body: { idempotencyKey: "meeting-1", targetKey: "recording" },
-		})).status).toBe(
-			200,
-		);
+		expect(
+			(
+				await call({
+					t,
+					path: REMINT_PATH,
+					bearer: sealed,
+					body: { idempotencyKey: "meeting-1", targetKey: "recording" },
+				})
+			).status,
+		).toBe(200);
 		const newest = (await read_targets(t))[0]!;
 		await simulate_finalizer({ t, fixture, target: newest, size: 2 * MIB });
 		const finalized = await call({
@@ -1421,7 +1453,10 @@ describe("service upload targets", () => {
 				nodeId: target.nodeId,
 			}),
 		).toEqual({ _yay: null });
-		expect((await call({ t, path: DELETE_PATH, bearer: sealed, body: { idempotencyKey: "delete", targetKey: "recording" } })).status).toBe(200);
+		expect(
+			(await call({ t, path: DELETE_PATH, bearer: sealed, body: { idempotencyKey: "delete", targetKey: "recording" } }))
+				.status,
+		).toBe(200);
 		expect((await t.run((ctx) => ctx.db.get("files_nodes", target.nodeId)))?.archiveOperationId).toBeDefined();
 	});
 
@@ -1436,7 +1471,12 @@ describe("service upload targets", () => {
 				),
 			});
 		});
-		const missingCapability = await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body: target_body({ readOnly: true }) });
+		const missingCapability = await call({
+			t,
+			path: CREATE_TARGET_PATH,
+			bearer: sealed,
+			body: target_body({ readOnly: true }),
+		});
 		expect(missingCapability.status).toBe(403);
 		expect(await read_targets(t)).toHaveLength(0);
 
@@ -1464,8 +1504,18 @@ describe("service upload targets", () => {
 			return userId;
 		});
 		await t.run(async (ctx) => test_mocks_fill_db_with.plan(ctx, { userId: memberUserId, plan: "Pro" }));
-		const memberSealed = await seal_token({ t, fixture, destinationPathPrefix: "/meetings", actorUserId: memberUserId });
-		const writable = await call({ t, path: CREATE_TARGET_PATH, bearer: memberSealed, body: target_body({ readOnly: false }) });
+		const memberSealed = await seal_token({
+			t,
+			fixture,
+			destinationPathPrefix: "/meetings",
+			actorUserId: memberUserId,
+		});
+		const writable = await call({
+			t,
+			path: CREATE_TARGET_PATH,
+			bearer: memberSealed,
+			body: target_body({ readOnly: false }),
+		});
 		expect(writable.status, await writable.clone().text()).toBe(200);
 		expect(await read_targets(t)).toHaveLength(1);
 
@@ -1487,12 +1537,14 @@ describe("service upload targets", () => {
 		});
 		// Neither management nor the policy capability is needed to delete an unprotected target.
 		expect(
-			(await call({
-				t,
-				path: DELETE_PATH,
-				bearer: memberSealed,
-				body: { idempotencyKey: "delete", targetKey: "recording" },
-			})).status,
+			(
+				await call({
+					t,
+					path: DELETE_PATH,
+					bearer: memberSealed,
+					body: { idempotencyKey: "delete", targetKey: "recording" },
+				})
+			).status,
 		).toBe(200);
 	});
 
@@ -1732,9 +1784,9 @@ describe("service upload targets", () => {
 			path: FINALIZE_PATH,
 			bearer: sealed,
 			body: {
-			idempotencyKey: "meeting-1",
-			targetKey: "transcript_markdown",
-		},
+				idempotencyKey: "meeting-1",
+				targetKey: "transcript_markdown",
+			},
 		});
 		expect(finalized.status).toBe(200);
 		expect(await finalized.json()).toMatchObject({ state: "committed", actualBytes: 1024 });
@@ -1864,9 +1916,9 @@ describe("service upload targets", () => {
 				path: FINALIZE_PATH,
 				bearer: sealed,
 				body: {
-				idempotencyKey: body.idempotencyKey,
-				targetKey: body.targetKey,
-			},
+					idempotencyKey: body.idempotencyKey,
+					targetKey: body.targetKey,
+				},
 			});
 			expect(await finalized.json()).toMatchObject({ state: "committed", actualBytes: 5 * MIB });
 
@@ -1978,14 +2030,16 @@ describe("service upload targets", () => {
 		expect((await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body: target_body() })).status).toBe(200);
 		const target = (await read_targets(t))[0]!;
 		const canonicalKey = await simulate_finalizer({ t, fixture, target, size: 3 * MIB });
-		expect((await call({
-			t,
-			path: FINALIZE_PATH,
-			bearer: sealed,
-			body: { idempotencyKey: "meeting-1", targetKey: "recording" },
-		})).status).toBe(
-			200,
-		);
+		expect(
+			(
+				await call({
+					t,
+					path: FINALIZE_PATH,
+					bearer: sealed,
+					body: { idempotencyKey: "meeting-1", targetKey: "recording" },
+				})
+			).status,
+		).toBe(200);
 		expect((await read_quota(t, fixture))?.usedCount).toBe(3 * MIB);
 
 		// R2 confirms the canonical object is gone. Its receipt and target keep the charged history.
@@ -2080,9 +2134,9 @@ describe("service upload targets", () => {
 			path: REMINT_PATH,
 			bearer: sealed,
 			body: {
-			idempotencyKey: "meeting-1",
-			targetKey: "recording",
-		},
+				idempotencyKey: "meeting-1",
+				targetKey: "recording",
+			},
 		});
 		expect(reminted.status).toBe(200);
 		const targetAfterRemint = (await read_targets(t))[0]!;
@@ -2175,9 +2229,9 @@ describe("service upload targets", () => {
 					path: REMINT_PATH,
 					bearer: sealed,
 					body: {
-					idempotencyKey: "meeting-1",
-					targetKey: "recording",
-				},
+						idempotencyKey: "meeting-1",
+						targetKey: "recording",
+					},
 				})
 			).status,
 		).toBe(200);
@@ -2194,13 +2248,18 @@ describe("service upload delete", () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
 		const sealed = await seal_token({ t, fixture });
-		expect((await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body: target_body({ readOnly: true }) })).status).toBe(200);
+		expect(
+			(await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body: target_body({ readOnly: true }) })).status,
+		).toBe(200);
 		const target = (await read_targets(t))[0]!;
 
 		await t.run((ctx) =>
 			ctx.db.patch("plugin_service_storage_targets", target._id, { destinationNodeId: target.nodeId }),
 		);
-		expect((await call({ t, path: DELETE_PATH, bearer: sealed, body: { idempotencyKey: "delete", targetKey: "recording" } })).status).toBe(409);
+		expect(
+			(await call({ t, path: DELETE_PATH, bearer: sealed, body: { idempotencyKey: "delete", targetKey: "recording" } }))
+				.status,
+		).toBe(409);
 
 		await t.run((ctx) =>
 			ctx.db.patch("plugin_service_storage_targets", target._id, { destinationNodeId: target.destinationNodeId }),
@@ -2210,7 +2269,10 @@ describe("service upload delete", () => {
 		expect(
 			await asUser.mutation(api.files_nodes.set_node_write_policy, { ...args, writePolicy: { mode: "read_only" } }),
 		).toEqual({ _yay: null });
-		expect((await call({ t, path: DELETE_PATH, bearer: sealed, body: { idempotencyKey: "delete", targetKey: "recording" } })).status).toBe(409);
+		expect(
+			(await call({ t, path: DELETE_PATH, bearer: sealed, body: { idempotencyKey: "delete", targetKey: "recording" } }))
+				.status,
+		).toBe(409);
 
 		expect(
 			await asUser.mutation(api.files_nodes.set_node_write_policy, {
@@ -2221,7 +2283,10 @@ describe("service upload delete", () => {
 				},
 			}),
 		).toEqual({ _yay: null });
-		expect((await call({ t, path: DELETE_PATH, bearer: sealed, body: { idempotencyKey: "delete", targetKey: "recording" } })).status).toBe(200);
+		expect(
+			(await call({ t, path: DELETE_PATH, bearer: sealed, body: { idempotencyKey: "delete", targetKey: "recording" } }))
+				.status,
+		).toBe(200);
 		expect(await t.run((ctx) => ctx.db.get("files_nodes", target.nodeId))).toBeNull();
 	});
 
@@ -2229,7 +2294,9 @@ describe("service upload delete", () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
 		const sealed = await seal_token({ t, fixture });
-		expect((await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body: target_body({ readOnly: true }) })).status).toBe(200);
+		expect(
+			(await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body: target_body({ readOnly: true }) })).status,
+		).toBe(200);
 		const target = (await read_targets(t))[0]!;
 		await t.run(async (ctx) => {
 			await ctx.db.patch("plugins_workspace_installations", fixture.installationId, {
@@ -2239,7 +2306,12 @@ describe("service upload delete", () => {
 			});
 		});
 
-		const refused = await call({ t, path: DELETE_PATH, bearer: sealed, body: { idempotencyKey: "delete", targetKey: "recording" } });
+		const refused = await call({
+			t,
+			path: DELETE_PATH,
+			bearer: sealed,
+			body: { idempotencyKey: "delete", targetKey: "recording" },
+		});
 		expect(refused.status).toBe(409);
 		expect(await t.run(async (ctx) => ctx.db.get("files_nodes", target.nodeId))).not.toBeNull();
 	});
@@ -2248,7 +2320,9 @@ describe("service upload delete", () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
 		const sealed = await seal_token({ t, fixture });
-		expect((await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body: target_body({ readOnly: true }) })).status).toBe(200);
+		expect(
+			(await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body: target_body({ readOnly: true }) })).status,
+		).toBe(200);
 		const target = (await read_targets(t))[0]!;
 		await t.run(async (ctx) => {
 			const destination = await ctx.db
@@ -2269,7 +2343,12 @@ describe("service upload delete", () => {
 			});
 		});
 
-		const refused = await call({ t, path: DELETE_PATH, bearer: sealed, body: { idempotencyKey: "delete", targetKey: "recording" } });
+		const refused = await call({
+			t,
+			path: DELETE_PATH,
+			bearer: sealed,
+			body: { idempotencyKey: "delete", targetKey: "recording" },
+		});
 		expect(refused.status).toBe(404);
 		expect(await t.run(async (ctx) => ctx.db.get("files_nodes", target.nodeId))).not.toBeNull();
 	});
@@ -2281,14 +2360,16 @@ describe("service upload delete", () => {
 		expect((await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body: target_body() })).status).toBe(200);
 		const target = (await read_targets(t))[0]!;
 		const canonicalKey = await simulate_finalizer({ t, fixture, target, size: 3 * MIB });
-		expect((await call({
-			t,
-			path: FINALIZE_PATH,
-			bearer: sealed,
-			body: { idempotencyKey: "meeting-1", targetKey: "recording" },
-		})).status).toBe(
-			200,
-		);
+		expect(
+			(
+				await call({
+					t,
+					path: FINALIZE_PATH,
+					bearer: sealed,
+					body: { idempotencyKey: "meeting-1", targetKey: "recording" },
+				})
+			).status,
+		).toBe(200);
 		expect((await read_quota(t, fixture))?.usedCount).toBe(3 * MIB);
 		const metadataId = await t.run((ctx) =>
 			ctx.db.insert("files_metadata_docs", {
@@ -2341,9 +2422,9 @@ describe("service upload delete", () => {
 			path: REMINT_PATH,
 			bearer: sealed,
 			body: {
-			idempotencyKey: "meeting-1",
-			targetKey: "recording",
-		},
+				idempotencyKey: "meeting-1",
+				targetKey: "recording",
+			},
 		});
 		expect(remintDuringDelete.status).toBe(409);
 		expect(await remintDuringDelete.json()).toEqual({ message: "This target was already released" });
@@ -2352,9 +2433,9 @@ describe("service upload delete", () => {
 			path: FINALIZE_PATH,
 			bearer: sealed,
 			body: {
-			idempotencyKey: "meeting-1",
-			targetKey: "recording",
-		},
+				idempotencyKey: "meeting-1",
+				targetKey: "recording",
+			},
 		});
 		expect(finalizeDuringDelete.status).toBe(200);
 		expect(await finalizeDuringDelete.json()).toMatchObject({ state: "released", actualBytes: 3 * MIB });
@@ -2393,17 +2474,21 @@ describe("service upload delete", () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
 		const sealed = await seal_token({ t, fixture });
-		expect((await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body: target_body({ readOnly: true }) })).status).toBe(200);
+		expect(
+			(await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body: target_body({ readOnly: true }) })).status,
+		).toBe(200);
 		const target = (await read_targets(t))[0]!;
 		await simulate_finalizer({ t, fixture, target, size: 3 * MIB });
-		expect((await call({
-			t,
-			path: FINALIZE_PATH,
-			bearer: sealed,
-			body: { idempotencyKey: "meeting-1", targetKey: "recording" },
-		})).status).toBe(
-			200,
-		);
+		expect(
+			(
+				await call({
+					t,
+					path: FINALIZE_PATH,
+					bearer: sealed,
+					body: { idempotencyKey: "meeting-1", targetKey: "recording" },
+				})
+			).status,
+		).toBe(200);
 
 		const deleted = await call({
 			t,
@@ -2436,17 +2521,21 @@ describe("service upload delete", () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
 		const sealed = await seal_token({ t, fixture });
-		expect((await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body: target_body({ readOnly: true }) })).status).toBe(200);
+		expect(
+			(await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body: target_body({ readOnly: true }) })).status,
+		).toBe(200);
 		const target = (await read_targets(t))[0]!;
 		await simulate_finalizer({ t, fixture, target, size: 3 * MIB });
-		expect((await call({
-			t,
-			path: FINALIZE_PATH,
-			bearer: sealed,
-			body: { idempotencyKey: "meeting-1", targetKey: "recording" },
-		})).status).toBe(
-			200,
-		);
+		expect(
+			(
+				await call({
+					t,
+					path: FINALIZE_PATH,
+					bearer: sealed,
+					body: { idempotencyKey: "meeting-1", targetKey: "recording" },
+				})
+			).status,
+		).toBe(200);
 
 		const asUser = t.withIdentity({
 			issuer: "https://clerk.test",
@@ -2500,12 +2589,14 @@ describe("service upload delete", () => {
 			}),
 		).toEqual({ _yay: null });
 		expect(
-			(await call({
-				t,
-				path: DELETE_PATH,
-				bearer: sealed,
-				body: { idempotencyKey: "delete-meeting-1", targetKey: "recording" },
-			})).status,
+			(
+				await call({
+					t,
+					path: DELETE_PATH,
+					bearer: sealed,
+					body: { idempotencyKey: "delete-meeting-1", targetKey: "recording" },
+				})
+			).status,
 		).toBe(200);
 		expect(await t.run(async (ctx) => (await ctx.db.get("files_nodes", target.nodeId))?.archiveOperationId)).toBeTypeOf(
 			"string",
@@ -2616,14 +2707,16 @@ describe("service upload delete", () => {
 			throw new Error("Expected a service upload asset");
 		}
 
-		expect((await call({
-			t,
-			path: DELETE_PATH,
-			bearer: sealed,
-			body: { idempotencyKey: "delete-1", targetKey: "recording" },
-		})).status).toBe(
-			200,
-		);
+		expect(
+			(
+				await call({
+					t,
+					path: DELETE_PATH,
+					bearer: sealed,
+					body: { idempotencyKey: "delete-1", targetKey: "recording" },
+				})
+			).status,
+		).toBe(200);
 		expect((await read_targets(t))[0]).toMatchObject({ state: "released", actualBytes: null });
 		const canonicalKey = `organizations/${fixture.organizationId}/workspaces/${fixture.workspaceId}/assets/${target.assetId}`;
 		const firstCanonicalJob = await t.run(async (ctx) =>
@@ -2774,14 +2867,16 @@ describe("service upload delete", () => {
 		await t.run(async (ctx) => {
 			await ctx.db.patch("files_nodes", target.nodeId, { writePolicy: null });
 		});
-		expect((await call({
-			t,
-			path: DELETE_PATH,
-			bearer: sealed,
-			body: { idempotencyKey: "delete-1", targetKey: "recording" },
-		})).status).toBe(
-			200,
-		);
+		expect(
+			(
+				await call({
+					t,
+					path: DELETE_PATH,
+					bearer: sealed,
+					body: { idempotencyKey: "delete-1", targetKey: "recording" },
+				})
+			).status,
+		).toBe(200);
 	});
 
 	test("a read-only file refuses the hard delete and keeps the node", async () => {
@@ -2791,14 +2886,16 @@ describe("service upload delete", () => {
 		expect((await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body: target_body() })).status).toBe(200);
 		const target = (await read_targets(t))[0]!;
 		await simulate_finalizer({ t, fixture, target, size: 3 * MIB });
-		expect((await call({
-			t,
-			path: FINALIZE_PATH,
-			bearer: sealed,
-			body: { idempotencyKey: "meeting-1", targetKey: "recording" },
-		})).status).toBe(
-			200,
-		);
+		expect(
+			(
+				await call({
+					t,
+					path: FINALIZE_PATH,
+					bearer: sealed,
+					body: { idempotencyKey: "meeting-1", targetKey: "recording" },
+				})
+			).status,
+		).toBe(200);
 
 		await t.run(async (ctx) => {
 			await ctx.db.patch("files_nodes", target.nodeId, {
@@ -2812,9 +2909,9 @@ describe("service upload delete", () => {
 			path: DELETE_PATH,
 			bearer: laterSealed,
 			body: {
-			idempotencyKey: "delete-1",
-			targetKey: "recording",
-		},
+				idempotencyKey: "delete-1",
+				targetKey: "recording",
+			},
 		});
 		expect(response.status).toBe(409);
 		expect(await response.json()).toEqual({ message: "This item is read-only." });
@@ -2826,7 +2923,9 @@ describe("service upload delete", () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
 		const ownerGrant = await seal_token({ t, fixture });
-		expect((await call({ t, path: CREATE_TARGET_PATH, bearer: ownerGrant, body: target_body({ readOnly: true }) })).status).toBe(200);
+		expect(
+			(await call({ t, path: CREATE_TARGET_PATH, bearer: ownerGrant, body: target_body({ readOnly: true }) })).status,
+		).toBe(200);
 		const target = (await read_targets(t))[0]!;
 
 		const memberUserId = await t.run(async (ctx) => {
@@ -2866,9 +2965,9 @@ describe("service upload delete", () => {
 			path: DELETE_PATH,
 			bearer: memberGrant,
 			body: {
-			idempotencyKey: "delete-1",
-			targetKey: "recording",
-		},
+				idempotencyKey: "delete-1",
+				targetKey: "recording",
+			},
 		});
 		expect(response.status).toBe(403);
 		expect(await response.json()).toEqual({ message: "Permission denied" });
@@ -3060,9 +3159,9 @@ describe("service upload delete", () => {
 			path: REMINT_PATH,
 			bearer: sealed,
 			body: {
-			idempotencyKey: "meeting-1",
-			targetKey: "recording",
-		},
+				idempotencyKey: "meeting-1",
+				targetKey: "recording",
+			},
 		});
 		expect(observedOutside.status).toBe(404);
 		expect((await read_targets(t))[0]).toMatchObject({ movedOutAt: expect.any(Number) });
@@ -3085,9 +3184,9 @@ describe("service upload delete", () => {
 			path: REMINT_PATH,
 			bearer: sealed,
 			body: {
-			idempotencyKey: "meeting-1",
-			targetKey: "recording",
-		},
+				idempotencyKey: "meeting-1",
+				targetKey: "recording",
+			},
 		});
 		expect(replayAfterRestore.status).toBe(404);
 		expect(await replayAfterRestore.json()).toEqual({ message: "Not found" });
@@ -3156,9 +3255,9 @@ describe("service upload delete", () => {
 			path: DELETE_PATH,
 			bearer: sealed,
 			body: {
-			idempotencyKey: "cleanup",
-			targetKey: "recording",
-		},
+				idempotencyKey: "cleanup",
+				targetKey: "recording",
+			},
 		});
 		expect(deleted.status).toBe(200);
 		expect(await deleted.json()).toEqual({ state: "deleted", paths: ["/meetings/replacement.mp4"] });
@@ -3177,14 +3276,16 @@ describe("service upload delete", () => {
 		expect((await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body: target_body() })).status).toBe(200);
 		const target = (await read_targets(t))[0]!;
 		await simulate_finalizer({ t, fixture, target, size: 3 * MIB });
-		expect((await call({
-			t,
-			path: FINALIZE_PATH,
-			bearer: sealed,
-			body: { idempotencyKey: "meeting-1", targetKey: "recording" },
-		})).status).toBe(
-			200,
-		);
+		expect(
+			(
+				await call({
+					t,
+					path: FINALIZE_PATH,
+					bearer: sealed,
+					body: { idempotencyKey: "meeting-1", targetKey: "recording" },
+				})
+			).status,
+		).toBe(200);
 
 		// The stored path is under /meetings, so a grant sealed to /other must not even learn that the
 		// target key exists.
@@ -3241,14 +3342,16 @@ describe("service upload archive", () => {
 			await simulate_finalizer({ t, fixture, target, size: MIB });
 		}
 
-		expect((await call({
-			t,
-			path: DELETE_PATH,
-			bearer: sealed,
-			body: { idempotencyKey: "delete-first", targetKey: "first" },
-		})).status).toBe(
-			200,
-		);
+		expect(
+			(
+				await call({
+					t,
+					path: DELETE_PATH,
+					bearer: sealed,
+					body: { idempotencyKey: "delete-first", targetKey: "first" },
+				})
+			).status,
+		).toBe(200);
 		const deleted = await t.run(async (ctx) => ({
 			target: await ctx.db.get("plugin_service_storage_targets", first._id),
 			node: await ctx.db.get("files_nodes", first.nodeId),
@@ -3290,10 +3393,15 @@ describe("service upload archive", () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
 		const sealed = await seal_token({ t, fixture, destinationPathPrefix: "/meetings/meeting-1" });
-		expect((await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body: target_body({ readOnly: true }) })).status).toBe(200);
+		expect(
+			(await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body: target_body({ readOnly: true }) })).status,
+		).toBe(200);
 		const target = (await read_targets(t))[0]!;
 		await simulate_finalizer({ t, fixture, target, size: MIB });
-		expect((await call({ t, path: DELETE_PATH, bearer: sealed, body: { idempotencyKey: "delete", targetKey: "recording" } })).status).toBe(200);
+		expect(
+			(await call({ t, path: DELETE_PATH, bearer: sealed, body: { idempotencyKey: "delete", targetKey: "recording" } }))
+				.status,
+		).toBe(200);
 
 		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: fixture.userId });
 		expect(
@@ -3324,7 +3432,9 @@ describe("service upload archive", () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
 		const sealed = await seal_token({ t, fixture, destinationPathPrefix: "/meetings/meeting-1" });
-		expect((await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body: target_body({ readOnly: true }) })).status).toBe(200);
+		expect(
+			(await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body: target_body({ readOnly: true }) })).status,
+		).toBe(200);
 
 		const response = await call({ t, path: ARCHIVE_PATH, bearer: sealed, body: {} });
 		expect(response.status).toBe(200);
@@ -3339,7 +3449,9 @@ describe("service upload archive", () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
 		const sealed = await seal_token({ t, fixture, destinationPathPrefix: "/meetings/meeting-1" });
-		expect((await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body: target_body({ readOnly: true }) })).status).toBe(200);
+		expect(
+			(await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body: target_body({ readOnly: true }) })).status,
+		).toBe(200);
 		const target = (await read_targets(t))[0]!;
 
 		const response = await call({ t, path: ARCHIVE_PATH, bearer: sealed, body: {} });
@@ -3370,7 +3482,9 @@ describe("service upload archive", () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
 		const sealed = await seal_token({ t, fixture, destinationPathPrefix: "/meetings/meeting-1" });
-		expect((await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body: target_body({ readOnly: true }) })).status).toBe(200);
+		expect(
+			(await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body: target_body({ readOnly: true }) })).status,
+		).toBe(200);
 		const target = (await read_targets(t))[0]!;
 
 		const asUser = t.withIdentity({
@@ -3435,14 +3549,16 @@ describe("service upload archive", () => {
 		expect((await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body: target_body() })).status).toBe(200);
 		const target = (await read_targets(t))[0]!;
 		const canonicalKey = await simulate_finalizer({ t, fixture, target, size: 3 * MIB });
-		expect((await call({
-			t,
-			path: FINALIZE_PATH,
-			bearer: sealed,
-			body: { idempotencyKey: "meeting-1", targetKey: "recording" },
-		})).status).toBe(
-			200,
-		);
+		expect(
+			(
+				await call({
+					t,
+					path: FINALIZE_PATH,
+					bearer: sealed,
+					body: { idempotencyKey: "meeting-1", targetKey: "recording" },
+				})
+			).status,
+		).toBe(200);
 		expect((await read_quota(t, fixture))?.usedCount).toBe(3 * MIB);
 
 		// A member put their own notes in the meeting folder. The archive sweeps the subtree, so their
@@ -3552,7 +3668,10 @@ describe("service upload archive", () => {
 		const firstTarget = (await read_targets(t))[0]!;
 		expect((await call({ t, path: ARCHIVE_PATH, bearer: sealed, body: {} })).status).toBe(200);
 
-		expect((await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body: target_body({ idempotencyKey: "meeting-2" }) })).status).toBe(200);
+		expect(
+			(await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body: target_body({ idempotencyKey: "meeting-2" }) }))
+				.status,
+		).toBe(200);
 		const secondTarget = (await read_targets(t)).find((target) => target.idempotencyKey === "meeting-2");
 		if (!firstTarget.destinationNodeId || !secondTarget?.destinationNodeId) {
 			throw new Error("Expected both upload runs to keep their destination folder ids");
@@ -3579,9 +3698,16 @@ describe("service upload archive", () => {
 			const sealed = await seal_token({ t, fixture, destinationPathPrefix: "/meetings/meeting-1" });
 			expect((await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body: target_body() })).status).toBe(200);
 			expect((await call({ t, path: ARCHIVE_PATH, bearer: sealed, body: {} })).status).toBe(200);
-			expect((await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body: target_body({ idempotencyKey: "meeting-2" }) })).status).toBe(
-				200,
-			);
+			expect(
+				(
+					await call({
+						t,
+						path: CREATE_TARGET_PATH,
+						bearer: sealed,
+						body: target_body({ idempotencyKey: "meeting-2" }),
+					})
+				).status,
+			).toBe(200);
 
 			const targets = await read_targets(t);
 			expect(targets.map((target) => target.destinationEpoch)).toEqual([1, 2]);
@@ -3590,9 +3716,9 @@ describe("service upload archive", () => {
 				path: REMINT_PATH,
 				bearer: sealed,
 				body: {
-				idempotencyKey: "meeting-2",
-				targetKey: "recording",
-			},
+					idempotencyKey: "meeting-2",
+					targetKey: "recording",
+				},
 			});
 			expect(remint.status).toBe(200);
 		} finally {
@@ -3645,7 +3771,10 @@ describe("service upload archive", () => {
 			}),
 		).toEqual({ _yay: null });
 
-		expect((await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body: target_body({ idempotencyKey: "meeting-2" }) })).status).toBe(200);
+		expect(
+			(await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body: target_body({ idempotencyKey: "meeting-2" }) }))
+				.status,
+		).toBe(200);
 		const secondTarget = (await read_targets(t)).find((target) => target.idempotencyKey === "meeting-2");
 		if (!secondTarget) {
 			throw new Error("Expected the recreated destination target");
@@ -3698,9 +3827,9 @@ describe("service upload archive", () => {
 					path: DELETE_PATH,
 					bearer: sealed,
 					body: {
-					idempotencyKey: "delete-obsolete",
-					targetKey: "obsolete",
-				},
+						idempotencyKey: "delete-obsolete",
+						targetKey: "obsolete",
+					},
 				})
 			).status,
 		).toBe(200);
@@ -3716,7 +3845,10 @@ describe("service upload archive", () => {
 			}),
 		).toEqual({ _yay: null });
 
-		expect((await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body: target_body({ idempotencyKey: "meeting-2" }) })).status).toBe(200);
+		expect(
+			(await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body: target_body({ idempotencyKey: "meeting-2" }) }))
+				.status,
+		).toBe(200);
 		const archived = await call({ t, path: ARCHIVE_PATH, bearer: sealed, body: {} });
 		expect(archived.status).toBe(200);
 		expect(await archived.json()).toEqual({ archivedNodes: 2 });
@@ -3732,9 +3864,9 @@ describe("service upload archive", () => {
 			path: REMINT_PATH,
 			bearer: sealed,
 			body: {
-			idempotencyKey: "meeting-1",
-			targetKey: "recording",
-		},
+				idempotencyKey: "meeting-1",
+				targetKey: "recording",
+			},
 		});
 		expect(remint.status).toBe(404);
 		expect(await remint.json()).toEqual({ message: "Not found" });
@@ -3746,9 +3878,9 @@ describe("service upload archive", () => {
 			path: FINALIZE_PATH,
 			bearer: sealed,
 			body: {
-			idempotencyKey: "meeting-1",
-			targetKey: "recording",
-		},
+				idempotencyKey: "meeting-1",
+				targetKey: "recording",
+			},
 		});
 		expect(finalize.status).toBe(404);
 		expect(await finalize.json()).toEqual({ message: "Not found" });
@@ -3757,9 +3889,9 @@ describe("service upload archive", () => {
 			path: DELETE_PATH,
 			bearer: sealed,
 			body: {
-			idempotencyKey: "delete-obsolete-again",
-			targetKey: "obsolete",
-		},
+				idempotencyKey: "delete-obsolete-again",
+				targetKey: "obsolete",
+			},
 		});
 		expect(deleteReplay.status).toBe(404);
 		expect(await deleteReplay.json()).toEqual({ message: "Not found" });
@@ -3828,14 +3960,16 @@ describe("service upload archive", () => {
 			throw new Error("Expected the upload target to keep its destination folder id");
 		}
 
-		expect((await call({
-			t,
-			path: DELETE_PATH,
-			bearer: sealed,
-			body: { idempotencyKey: "delete-1", targetKey: "recording" },
-		})).status).toBe(
-			200,
-		);
+		expect(
+			(
+				await call({
+					t,
+					path: DELETE_PATH,
+					bearer: sealed,
+					body: { idempotencyKey: "delete-1", targetKey: "recording" },
+				})
+			).status,
+		).toBe(200);
 		expect((await read_targets(t))[0]).toMatchObject({
 			state: "released",
 			destinationNodeId: target.destinationNodeId,
@@ -4138,7 +4272,12 @@ describe("service upload archive", () => {
 			return userId;
 		});
 
-		const sealed = await seal_token({ t, fixture, destinationPathPrefix: "/meetings/meeting-1", actorUserId: memberUserId });
+		const sealed = await seal_token({
+			t,
+			fixture,
+			destinationPathPrefix: "/meetings/meeting-1",
+			actorUserId: memberUserId,
+		});
 		const response = await call({ t, path: ARCHIVE_PATH, bearer: sealed, body: {} });
 		expect(response.status).toBe(403);
 		expect(await response.json()).toEqual({ message: "Permission denied" });

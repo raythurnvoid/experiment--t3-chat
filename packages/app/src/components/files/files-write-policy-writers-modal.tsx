@@ -238,77 +238,73 @@ const FilesWritePolicyWritersModalContent = memo(function FilesWritePolicyWriter
 		</MyComboboxItem>
 	);
 
-	const renderGroup = (args: {
-		heading: string;
-		emptyText: string;
-		groupWriters: FilesWritePolicyWriter[];
-	}) => {
+	const renderGroup = (args: { heading: string; emptyText: string; groupWriters: FilesWritePolicyWriter[] }) => {
 		const { heading, emptyText, groupWriters } = args;
 
 		return (
-		<section
-			aria-label={heading}
-			className={cn(
-				"FilesWritePolicyWritersModalContent-group" satisfies FilesWritePolicyWritersModalContent_ClassNames,
-			)}
-		>
-			<h3
+			<section
+				aria-label={heading}
 				className={cn(
-					"FilesWritePolicyWritersModalContent-group-heading" satisfies FilesWritePolicyWritersModalContent_ClassNames,
+					"FilesWritePolicyWritersModalContent-group" satisfies FilesWritePolicyWritersModalContent_ClassNames,
 				)}
 			>
-				{heading} ({groupWriters.length})
-			</h3>
-			{groupWriters.length > 0 ? (
-				<ul
+				<h3
 					className={cn(
-						"FilesWritePolicyWritersModalContent-list" satisfies FilesWritePolicyWritersModalContent_ClassNames,
+						"FilesWritePolicyWritersModalContent-group-heading" satisfies FilesWritePolicyWritersModalContent_ClassNames,
 					)}
 				>
-					{groupWriters.map((writer) => (
-						<li
-							key={files_write_policy_writer_key(writer)}
-							className={cn(
-								"FilesWritePolicyWritersModalContent-row" satisfies FilesWritePolicyWritersModalContent_ClassNames,
-							)}
-						>
-							<WriterIcon
-								writer={writer}
-								avatarUrl={
-									people.find(
-										(candidate) =>
-											files_write_policy_writer_key(candidate.writer) === files_write_policy_writer_key(writer),
-									)?.avatarUrl
-								}
-							/>
-							<span
+					{heading} ({groupWriters.length})
+				</h3>
+				{groupWriters.length > 0 ? (
+					<ul
+						className={cn(
+							"FilesWritePolicyWritersModalContent-list" satisfies FilesWritePolicyWritersModalContent_ClassNames,
+						)}
+					>
+						{groupWriters.map((writer) => (
+							<li
+								key={files_write_policy_writer_key(writer)}
 								className={cn(
-									"FilesWritePolicyWritersModalContent-row-name" satisfies FilesWritePolicyWritersModalContent_ClassNames,
+									"FilesWritePolicyWritersModalContent-row" satisfies FilesWritePolicyWritersModalContent_ClassNames,
 								)}
 							>
-								{writer.name}
-							</span>
-							<MyButton
-								variant="ghost-highlightable"
-								aria-label={`Remove ${writer.name}`}
-								onClick={() => handleRemove(writer)}
-							>
-								Remove
-							</MyButton>
-						</li>
-					))}
-				</ul>
-			) : (
-				<p
-					className={cn(
-						"FilesWritePolicyWritersModalContent-empty" satisfies FilesWritePolicyWritersModalContent_ClassNames,
-					)}
-				>
-					{emptyText}
-				</p>
-			)}
-		</section>
-	);
+								<WriterIcon
+									writer={writer}
+									avatarUrl={
+										people.find(
+											(candidate) =>
+												files_write_policy_writer_key(candidate.writer) === files_write_policy_writer_key(writer),
+										)?.avatarUrl
+									}
+								/>
+								<span
+									className={cn(
+										"FilesWritePolicyWritersModalContent-row-name" satisfies FilesWritePolicyWritersModalContent_ClassNames,
+									)}
+								>
+									{writer.name}
+								</span>
+								<MyButton
+									variant="ghost-highlightable"
+									aria-label={`Remove ${writer.name}`}
+									onClick={() => handleRemove(writer)}
+								>
+									Remove
+								</MyButton>
+							</li>
+						))}
+					</ul>
+				) : (
+					<p
+						className={cn(
+							"FilesWritePolicyWritersModalContent-empty" satisfies FilesWritePolicyWritersModalContent_ClassNames,
+						)}
+					>
+						{emptyText}
+					</p>
+				)}
+			</section>
+		);
 	};
 
 	return (

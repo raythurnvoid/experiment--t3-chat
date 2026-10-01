@@ -228,7 +228,12 @@ describe("save_image", () => {
 describe("ai_model_call_receipts_create", () => {
 	// The middleware only needs `runMutation`, so drive the real mutations through convex-test.
 	const middlewareFor = (t: ReturnType<typeof test_convex>, payer: Awaited<ReturnType<typeof setup>>["payer"]) =>
-		ai_model_call_receipts_create({ ctx: { runMutation: t.mutation } as unknown as ActionCtx, payer, modelCallIds: null, run: null });
+		ai_model_call_receipts_create({
+			ctx: { runMutation: t.mutation } as unknown as ActionCtx,
+			payer,
+			modelCallIds: null,
+			run: null,
+		});
 
 	const modelCallIds = (t: ReturnType<typeof test_convex>) =>
 		t.run(async (ctx) =>
@@ -359,9 +364,11 @@ describe("ai_model_call_receipts_create", () => {
 						response: { error: { code: "server_error", message: "Server error" }, usage },
 					},
 				]
-					.map((event) => `data: ${JSON.stringify(event)}
+					.map(
+						(event) => `data: ${JSON.stringify(event)}
 
-`)
+`,
+					)
 					.join(""),
 				{ headers: { "Content-Type": "text/event-stream" } },
 			);

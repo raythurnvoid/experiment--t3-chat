@@ -5368,7 +5368,11 @@ export const decrypt_secret_for_runtime = internalAction({
 					? `${args.resolved.secret.installationId}:${args.resolved.secret.name}`
 					: `${args.resolved.secret.ownerUserId}:${args.resolved.secret.name}`;
 			return Result({
-				_yay: await crypto_decrypt_secret_value({ secret: args.resolved.secret, additionalData, keyName: "PLUGIN_SECRETS_ENCRYPTION_KEY" }),
+				_yay: await crypto_decrypt_secret_value({
+					secret: args.resolved.secret,
+					additionalData,
+					keyName: "PLUGIN_SECRETS_ENCRYPTION_KEY",
+				}),
 			});
 		} catch (error) {
 			return Result({ _nay: { message: error instanceof Error ? error.message : String(error) } });

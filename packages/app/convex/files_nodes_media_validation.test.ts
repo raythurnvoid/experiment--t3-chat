@@ -56,7 +56,7 @@ async function folder(args: {
 	path: string;
 	parentId?: Id<"files_nodes"> | "root";
 }) {
-	const { f, parentId = "root", path} = args;
+	const { f, parentId = "root", path } = args;
 
 	const result = await f.asUser.mutation(api.files_nodes.create_folder_node, {
 		membershipId: f.db.membershipId,
@@ -70,10 +70,12 @@ async function folder(args: {
 /**
  * Start "Apply to contents" and run its steps until the job finishes.
  */
-async function apply_to_contents(args: FunctionArgs<typeof api.files_write_policy_runs.start> & {
-	f: Awaited<ReturnType<typeof fixture>>;
-	asUser: Awaited<ReturnType<typeof fixture>>["asUser"];
-}) {
+async function apply_to_contents(
+	args: FunctionArgs<typeof api.files_write_policy_runs.start> & {
+		f: Awaited<ReturnType<typeof fixture>>;
+		asUser: Awaited<ReturnType<typeof fixture>>["asUser"];
+	},
+) {
 	const { f, asUser, ...previousArgs } = args;
 
 	const started = await asUser.mutation(api.files_write_policy_runs.start, previousArgs);
@@ -116,11 +118,7 @@ async function expect_clock(args: {
 	if (!pendingChanged) expect(after.pending).toEqual(before.pending);
 }
 
-async function upload(args: {
-	f: Awaited<ReturnType<typeof fixture>>;
-	bulk: boolean;
-	replace?: boolean;
-}) {
+async function upload(args: { f: Awaited<ReturnType<typeof fixture>>; bulk: boolean; replace?: boolean }) {
 	const { f, bulk, replace = false } = args;
 
 	if (bulk) {
@@ -620,7 +618,9 @@ describe("saved file media validation clocks", () => {
 		).toEqual({ _yay: null });
 		for (const writePolicy of [{ mode: "read_only" } as const, null]) {
 			const before = await snapshot(f);
-			expect(await apply_to_contents({ f, asUser: f.asUser, membershipId: f.db.membershipId, nodeId, writePolicy })).toEqual({
+			expect(
+				await apply_to_contents({ f, asUser: f.asUser, membershipId: f.db.membershipId, nodeId, writePolicy }),
+			).toEqual({
 				_yay: { status: "succeeded", completed: writePolicy ? 1 : 2 },
 			});
 			for (const id of [first, second])
@@ -723,7 +723,9 @@ describe("saved file media validation clocks", () => {
 		"keeps files and the workspace clock for a path conflict: %s",
 		async (operation) => {
 			const f = await fixture();
-			const nodeId = operation.includes("upload") ? await upload({ f, bulk: false }) : await folder({ f, path: "source" });
+			const nodeId = operation.includes("upload")
+				? await upload({ f, bulk: false })
+				: await folder({ f, path: "source" });
 			if (operation === "rename") await folder({ f, path: "taken" });
 			if (operation === "restore") {
 				expect(

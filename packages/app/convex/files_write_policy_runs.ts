@@ -130,10 +130,12 @@ function with_unpublished_progress(
  * Finish the job before its walk ends. First show the counts that earlier steps kept on the run, so
  * "Stopped. N items were updated." counts every item the job really updated.
  */
-async function db_finish_run_early(args: Omit<Parameters<typeof activities_db_finish>[1], "sourceId"> & {
-	ctx: MutationCtx;
-	run: Doc<"files_write_policy_runs">;
-}) {
+async function db_finish_run_early(
+	args: Omit<Parameters<typeof activities_db_finish>[1], "sourceId"> & {
+		ctx: MutationCtx;
+		run: Doc<"files_write_policy_runs">;
+	},
+) {
 	const { ctx, run, ...previousArgs } = args;
 
 	const activity = await db_require_activity(ctx, run._id);
@@ -149,7 +151,7 @@ async function db_fail_run(args: {
 	errorMessage: string;
 	now: number;
 }) {
-	const { ctx, run, errorMessage, now} = args;
+	const { ctx, run, errorMessage, now } = args;
 
 	await db_finish_run_early({ ctx, run, status: "failed", errorMessage, errorCode: "failed", now });
 }
@@ -313,7 +315,12 @@ export const advance = internalMutation({
 		}
 		const folder = await ctx.db.get("files_nodes", run.folderId);
 		if (!folder || folder.archiveOperationId !== null || folder.treePath !== run.folderTreePath) {
-			await db_fail_run({ ctx, run, errorMessage: "The folder moved or was archived during the update. Run it again.", now });
+			await db_fail_run({
+				ctx,
+				run,
+				errorMessage: "The folder moved or was archived during the update. Run it again.",
+				now,
+			});
 			return null;
 		}
 		const writeContext: files_nodes_WriteContext = {

@@ -76,23 +76,20 @@ const written_validator = v.object({ path: v.string(), bytes: v.number() });
 type RunContext = { runId: Id<"plugins_event_runs">; callId: Id<"plugins_event_run_calls">; tokenHash: string };
 type FailureStatus = Infer<typeof failure_data_validator>["status"];
 
-function failure(args: {
-	status: FailureStatus;
-	message: string;
-	errorCode: string;
-	retryAfterMs?: number;
-}) {
-	const { retryAfterMs, errorCode, message, status} = args;
+function failure(args: { status: FailureStatus; message: string; errorCode: string; retryAfterMs?: number }) {
+	const { retryAfterMs, errorCode, message, status } = args;
 
 	return Result({
 		_nay: { message, data: { status, errorCode, ...(retryAfterMs === undefined ? {} : { retryAfterMs }) } },
 	});
 }
 
-async function db_authorize_run(args: RunContext & {
-	ctx: QueryCtx | MutationCtx;
-	route: string;
-}) {
+async function db_authorize_run(
+	args: RunContext & {
+		ctx: QueryCtx | MutationCtx;
+		route: string;
+	},
+) {
 	const { ctx, route } = args;
 
 	const storedRun = await ctx.db.get("plugins_event_runs", args.runId);
@@ -232,17 +229,14 @@ async function db_get_staging(args: {
 		!(await db_get_mount({ ctx, installation, mountId: volume.mountId }))
 	)
 		return failure({ status: 404, message: "Not found", errorCode: "not_found" });
-	if (volume.deleteRequestedAt !== null) return failure({ status: 409, message: "Volume deletion is in progress", errorCode: "volume_deleting" });
+	if (volume.deleteRequestedAt !== null)
+		return failure({ status: 409, message: "Volume deletion is in progress", errorCode: "volume_deleting" });
 	if (generation.status !== "staging" || generation.expiresAt === null || generation.expiresAt <= Date.now())
 		return failure({ status: 409, message: "Staging copy is unavailable", errorCode: "staging_unavailable" });
 	return Result({ _yay: { generation, volume } });
 }
 
-function db_get_node(args: {
-	ctx: QueryCtx | MutationCtx;
-	volume: Doc<"plugins_volumes">;
-	path: string;
-}) {
+function db_get_node(args: { ctx: QueryCtx | MutationCtx; volume: Doc<"plugins_volumes">; path: string }) {
 	const { ctx, volume, path } = args;
 
 	return ctx.db
@@ -293,15 +287,13 @@ async function db_check_credits(args: {
 	if (!billedUser || billedUser.deletedAt !== undefined)
 		return failure({ status: 402, message: "Insufficient funds", errorCode: "insufficient_funds" });
 	const credits = await billing_db_check_credits(ctx, { userId: billedUser._id, minimumRequiredCents: count * 0.5 });
-	return credits.hasCredits ? Result({ _yay: billedUser }) : failure({ status: 402, message: "Insufficient funds", errorCode: "insufficient_funds" });
+	return credits.hasCredits
+		? Result({ _yay: billedUser })
+		: failure({ status: 402, message: "Insufficient funds", errorCode: "insufficient_funds" });
 }
 
 // Bound both old reads/deletes and new chunk inserts. A replacement can be much smaller than its old file.
-function file_budget(args: {
-	bytes: number;
-	chunks: number;
-	path: string;
-}) {
+function file_budget(args: { bytes: number; chunks: number; path: string }) {
 	const { bytes, chunks, path } = args;
 
 	return { bytes: 3 * bytes + chunks * (1_200 + files_get_utf8_byte_size(path)) + 64_000, documents: 2 * chunks + 80 };
@@ -506,15 +498,17 @@ export const stage = internalMutation({
 					q.eq("installationId", installation._id).eq("mountId", args.mountId),
 				)
 				.take(LIMITS.volumesPerMount);
-			if (volumes.length >= LIMITS.volumesPerMount) return failure({ status: 409, message: "Mount has 32 volumes", errorCode: "volume_cap_reached" });
+			if (volumes.length >= LIMITS.volumesPerMount)
+				return failure({ status: 409, message: "Mount has 32 volumes", errorCode: "volume_cap_reached" });
 		}
 		const rate = await rate_limiter_limit_by_key(ctx, { name: "plugins_volume_control", key: installation._id });
-		if (rate) return failure({
-			status: 429,
-			message: rate.message,
-			errorCode: "rate_limit_exceeded",
-			retryAfterMs: rate.retryAfterMs,
-		});
+		if (rate)
+			return failure({
+				status: 429,
+				message: rate.message,
+				errorCode: "rate_limit_exceeded",
+				retryAfterMs: rate.retryAfterMs,
+			});
 		const now = Date.now();
 		const tenant = {
 			organizationId: installation.organizationId,
@@ -573,20 +567,26 @@ export const publish = internalMutation({
 	handler: async (ctx, args) => {
 		const authorized = await db_authorize_run({ ctx, ...args, route: "/api/v1/volumes/publish" });
 		if (authorized._nay) return authorized;
-		const staging = await db_get_staging({ ctx, installation: authorized._yay.installation, stagingId: args.stagingId });
+		const staging = await db_get_staging({
+			ctx,
+			installation: authorized._yay.installation,
+			stagingId: args.stagingId,
+		});
 		if (staging._nay) return staging;
 		const { generation, volume } = staging._yay;
-		if (generation.fileCount === 0) return failure({ status: 409, message: "Cannot publish an empty copy", errorCode: "empty_copy" });
+		if (generation.fileCount === 0)
+			return failure({ status: 409, message: "Cannot publish an empty copy", errorCode: "empty_copy" });
 		const rate = await rate_limiter_limit_by_key(ctx, {
 			name: "plugins_volume_control",
 			key: authorized._yay.installation._id,
 		});
-		if (rate) return failure({
-			status: 429,
-			message: rate.message,
-			errorCode: "rate_limit_exceeded",
-			retryAfterMs: rate.retryAfterMs,
-		});
+		if (rate)
+			return failure({
+				status: 429,
+				message: rate.message,
+				errorCode: "rate_limit_exceeded",
+				retryAfterMs: rate.retryAfterMs,
+			});
 		if (volume.publishedGenerationId)
 			await plugins_volumes_db_retire_generation(ctx, { generationId: volume.publishedGenerationId });
 		const now = Date.now();
@@ -615,7 +615,8 @@ export const delete_volume = internalMutation({
 		const authorized = await db_authorize_run({ ctx, ...args, route: "/api/v1/volumes/delete" });
 		if (authorized._nay) return authorized;
 		const { installation } = authorized._yay;
-		if (!(await db_get_mount({ ctx, installation, mountId: args.mountId }))) return failure({ status: 400, message: "Unknown mountId", errorCode: "invalid_input" });
+		if (!(await db_get_mount({ ctx, installation, mountId: args.mountId })))
+			return failure({ status: 400, message: "Unknown mountId", errorCode: "invalid_input" });
 		if (!VOLUME_KEY_REGEX.test(args.volumeKey) || args.volumeKey === "tmp")
 			return failure({ status: 400, message: "Invalid volumeKey", errorCode: "invalid_input" });
 		const volume = await ctx.db
@@ -625,14 +626,16 @@ export const delete_volume = internalMutation({
 			)
 			.unique();
 		if (!volume) return failure({ status: 404, message: "Not found", errorCode: "not_found" });
-		if (volume.deleteRequestedAt !== null) return failure({ status: 409, message: "Volume deletion is in progress", errorCode: "volume_deleting" });
+		if (volume.deleteRequestedAt !== null)
+			return failure({ status: 409, message: "Volume deletion is in progress", errorCode: "volume_deleting" });
 		const rate = await rate_limiter_limit_by_key(ctx, { name: "plugins_volume_control", key: installation._id });
-		if (rate) return failure({
-			status: 429,
-			message: rate.message,
-			errorCode: "rate_limit_exceeded",
-			retryAfterMs: rate.retryAfterMs,
-		});
+		if (rate)
+			return failure({
+				status: 429,
+				message: rate.message,
+				errorCode: "rate_limit_exceeded",
+				retryAfterMs: rate.retryAfterMs,
+			});
 		await plugins_volumes_db_schedule_volume_drain(ctx, { volumeId: volume._id });
 		return Result({ _yay: { deleted: true as const } });
 	},
@@ -678,12 +681,13 @@ export const prepare_write = internalMutation({
 			key: installation._id,
 			count: args.requestFileCount,
 		});
-		if (rate) return failure({
-			status: 429,
-			message: rate.message,
-			errorCode: "rate_limit_exceeded",
-			retryAfterMs: rate.retryAfterMs,
-		});
+		if (rate)
+			return failure({
+				status: 429,
+				message: rate.message,
+				errorCode: "rate_limit_exceeded",
+				retryAfterMs: rate.retryAfterMs,
+			});
 		const { generation, volume } = staging._yay;
 		const usage = await db_get_usage(ctx, installation);
 		if (!usage) throw should_never_happen("Volume usage is missing", { installationId: installation._id });
@@ -895,7 +899,8 @@ export const finalize_write = internalMutation({
 				key: daily_key(installation),
 				count: addedCount,
 			});
-			if (daily) return failure({ status: 409, message: "Daily volume file limit reached", errorCode: "daily_cap_reached" });
+			if (daily)
+				return failure({ status: 409, message: "Daily volume file limit reached", errorCode: "daily_cap_reached" });
 		}
 		const written = [];
 		const billedAssets = [];
@@ -1020,7 +1025,7 @@ async function finish_failure(args: {
 	callId: Id<"plugins_event_run_calls">;
 	error: { message: string; data?: Infer<typeof failure_data_validator> };
 }) {
-	const { ctx, error, callId} = args;
+	const { ctx, error, callId } = args;
 
 	const data = error.data ?? { status: 500 as const, errorCode: "storage_failure" };
 	await public_api_settle_plugin_call_best_effort(ctx, {
@@ -1041,12 +1046,8 @@ async function finish_failure(args: {
 	} as const;
 }
 
-async function finish_response<T>(args: {
-	ctx: ActionCtx;
-	callId: Id<"plugins_event_run_calls">;
-	body: T;
-}) {
-	const { ctx, body, callId} = args;
+async function finish_response<T>(args: { ctx: ActionCtx; callId: Id<"plugins_event_run_calls">; body: T }) {
+	const { ctx, body, callId } = args;
 
 	await public_api_settle_plugin_call_best_effort(ctx, { callId, status: "succeeded", responseStatus: 200 });
 	return { status: 200, body, headers: { "Cache-Control": "no-store" } } as const;
@@ -1073,11 +1074,13 @@ async function authorize_request<T>(args: {
 	if (!callId) throw should_never_happen("Volume request has no plugin call", { runId: auth._yay.principal.runId });
 	const declaredBytes = Number(request.headers.get("content-length"));
 	if (Number.isFinite(declaredBytes) && declaredBytes > maxBytes)
-		return { _nay: await finish_failure({
-			ctx,
-			callId,
-			error: failure({ status: 400, message: "Request body is too large", errorCode: "invalid_input" })._nay,
-		}) };
+		return {
+			_nay: await finish_failure({
+				ctx,
+				callId,
+				error: failure({ status: 400, message: "Request body is too large", errorCode: "invalid_input" })._nay,
+			}),
+		};
 	let text = "";
 	try {
 		const reader = request.body?.getReader();
@@ -1125,7 +1128,8 @@ async function authorize_request<T>(args: {
 			_nay: await finish_failure({
 				ctx,
 				callId,
-				error: failure({ status: 400, message: "Failed to parse request body as JSON", errorCode: "invalid_input" })._nay,
+				error: failure({ status: 400, message: "Failed to parse request body as JSON", errorCode: "invalid_input" })
+					._nay,
 			}),
 		};
 	}
@@ -1282,7 +1286,13 @@ export async function public_api_volumes_http_write_many(args: {
 }) {
 	const { ctx, request, path } = args;
 
-	const auth = await authorize_request({ ctx, request, path, validator: write_many_body_validator, maxBytes: 8_000_000 });
+	const auth = await authorize_request({
+		ctx,
+		request,
+		path,
+		validator: write_many_body_validator,
+		maxBytes: 8_000_000,
+	});
 	if (auth._nay) return auth._nay;
 	const { context, body } = auth._yay;
 	const paths = body.files.map((file) => file.path).sort();
@@ -1358,7 +1368,11 @@ export async function public_api_volumes_http_write_many(args: {
 		let writes = 0;
 		let documents = 0;
 		for (const item of pending) {
-			const next = file_budget({ bytes: item.bytes, chunks: item.chunkCount, path: `/${prepared.generationId}${item.path}` });
+			const next = file_budget({
+				bytes: item.bytes,
+				chunks: item.chunkCount,
+				path: `/${prepared.generationId}${item.path}`,
+			});
 			if (
 				chunk.length > 0 &&
 				(chunk.length >= CHUNK_MAX_FILES ||

@@ -768,9 +768,9 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 		container: rootRef,
 		callback: onInteractedOutside,
 		options: {
-		allowedAreas: [editor?.view.dom, mentionPopupElement],
-		enable: Boolean(onInteractedOutside) && enableInteractedOutside,
-	},
+			allowedAreas: [editor?.view.dom, mentionPopupElement],
+			enable: Boolean(onInteractedOutside) && enableInteractedOutside,
+		},
 	});
 
 	useEffect(() => {

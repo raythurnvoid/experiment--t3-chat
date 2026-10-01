@@ -124,11 +124,7 @@ function run_request(rawBody: string, headers: Record<string, string> = { Author
 	});
 }
 
-function streamed_response(args: {
-	text: string;
-	chunkBytes: number;
-	status?: number;
-}) {
+function streamed_response(args: { text: string; chunkBytes: number; status?: number }) {
 	const { text, chunkBytes, status = 200 } = args;
 
 	const bytes = TEXT_ENCODER.encode(text);
@@ -798,38 +794,34 @@ describe("runner responses", () => {
 		const originalRemove = AbortSignal.prototype.removeEventListener;
 		const listeners = new WeakMap<AbortSignal, Set<EventListenerOrEventListenerObject>>();
 		let maximum = 0;
-		const addSpy = vi
-			.spyOn(AbortSignal.prototype, "addEventListener")
-			.mockImplementation(function (args: {
-				type: any;
-				listener: any;
-				options: any;
-			}) {
-				const { type, listener, options } = args;
+		const addSpy = vi.spyOn(AbortSignal.prototype, "addEventListener").mockImplementation(function (args: {
+			type: any;
+			listener: any;
+			options: any;
+		}) {
+			const { type, listener, options } = args;
 
-				if (type === "abort" && listener) {
-					let active = listeners.get(this);
-					if (!active) {
-						active = new Set();
-						listeners.set(this, active);
-					}
-					active.add(listener);
-					maximum = Math.max(maximum, active.size);
+			if (type === "abort" && listener) {
+				let active = listeners.get(this);
+				if (!active) {
+					active = new Set();
+					listeners.set(this, active);
 				}
-				return originalAdd.call(this, type, listener, options);
-			});
-		const removeSpy = vi
-			.spyOn(AbortSignal.prototype, "removeEventListener")
-			.mockImplementation(function (args: {
-				type: any;
-				listener: any;
-				options: any;
-			}) {
-				const { type, listener, options } = args;
+				active.add(listener);
+				maximum = Math.max(maximum, active.size);
+			}
+			return originalAdd.call(this, type, listener, options);
+		});
+		const removeSpy = vi.spyOn(AbortSignal.prototype, "removeEventListener").mockImplementation(function (args: {
+			type: any;
+			listener: any;
+			options: any;
+		}) {
+			const { type, listener, options } = args;
 
-				if (type === "abort" && listener) listeners.get(this)?.delete(listener);
-				return originalRemove.call(this, type, listener, options);
-			});
+			if (type === "abort" && listener) listeners.get(this)?.delete(listener);
+			return originalRemove.call(this, type, listener, options);
+		});
 		try {
 			const output = "x".repeat(32_768);
 			const response = await worker.fetch(

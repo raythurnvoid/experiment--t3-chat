@@ -18,7 +18,8 @@ export default {
 		}
 
 		return (
-			(await oauth_fixture_fetch({ env, basic: get_basic_handler(), request })) ?? new Response("Not found", { status: 404 })
+			(await oauth_fixture_fetch({ env, basic: get_basic_handler(), request })) ??
+			new Response("Not found", { status: 404 })
 		);
 	},
 };

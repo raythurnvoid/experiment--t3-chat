@@ -221,12 +221,8 @@ async function fixture() {
 	return { t, db, asUser, scope, turn: turn._yay, parent, shell, seed_job, read, scheduled_state };
 }
 
-function job_result(args: {
-	exitCode: number;
-	stdout?: string;
-	stderr?: string;
-}) {
-	const { stdout = "done\n", stderr = "", exitCode} = args;
+function job_result(args: { exitCode: number; stdout?: string; stderr?: string }) {
+	const { stdout = "done\n", stderr = "", exitCode } = args;
 
 	return {
 		title: "job",
@@ -1497,8 +1493,7 @@ describe("pause_bash_job", () => {
 		invocationId: Id<"ai_chat_bash_invocations">;
 		liveOutput?: typeof head | null;
 		workId?: WorkId;
-	}) =>
-		{
+	}) => {
 		const { f, invocationId, liveOutput = head, workId } = args;
 
 		return await f.t.mutation(internal.ai_chat_files.pause_bash_job, {
@@ -1524,7 +1519,8 @@ describe("pause_bash_job", () => {
 		const job = await f.seed_job({ jobNumber: 1, status: "running" });
 		expect(await pause({ f, invocationId: job.invocationId })).toBe(true);
 		const before = await f.read(job.invocationId);
-		if (operation === "pause") expect(await pause({ f, invocationId: job.invocationId, liveOutput: head, workId: job.workId! })).toBe(false);
+		if (operation === "pause")
+			expect(await pause({ f, invocationId: job.invocationId, liveOutput: head, workId: job.workId! })).toBe(false);
 		else
 			expect(
 				await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
@@ -1841,8 +1837,8 @@ describe("job wakeup", () => {
 			});
 		}
 		let state = await read_thread(f);
-		const [firstFinish, secondFinish] = [first, second].map(
-			(job) => state.finishes.find((finish) => finish.jobFinishInvocationId === job.invocationId)!,
+		const [firstFinish, secondFinish] = [first, second].map((job) =>
+			state.finishes.find((finish) => finish.jobFinishInvocationId === job.invocationId)!,
 		);
 		expect(secondFinish?.parentId).toBe(firstFinish?._id);
 
@@ -1881,9 +1877,7 @@ describe("job wakeup", () => {
 		// The run streams on the job's branch, so the finish waits for its next step. No message is
 		// stored and no wake run starts.
 		let state = await read_thread(f);
-		expect(state.inbox).toEqual([
-			expect.objectContaining({ invocationId: first.invocationId, state: "waiting" }),
-		]);
+		expect(state.inbox).toEqual([expect.objectContaining({ invocationId: first.invocationId, state: "waiting" })]);
 		expect(state.finishes).toHaveLength(0);
 		expect(state.wakeups).toHaveLength(0);
 
@@ -2714,18 +2708,18 @@ describe("handle_bash_job_complete", () => {
 		workId: WorkId;
 		kind: "success" | "failed" | "canceled";
 	}) => {
-		const { kind, invocationId, workId} = args;
+		const { kind, invocationId, workId } = args;
 
-		return ({
-		workId,
-		context: { invocationId },
-		result:
-			kind === "success"
-				? { kind: "success" as const, returnValue: null }
-				: kind === "failed"
-					? { kind: "failed" as const, error: "boom" }
-					: { kind: "canceled" as const },
-	});
+		return {
+			workId,
+			context: { invocationId },
+			result:
+				kind === "success"
+					? { kind: "success" as const, returnValue: null }
+					: kind === "failed"
+						? { kind: "failed" as const, error: "boom" }
+						: { kind: "canceled" as const },
+		};
 	};
 
 	test.each(["success", "failed", "canceled"] as const)(

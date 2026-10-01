@@ -22,11 +22,7 @@ export const AppHotkeysProvider = Object.assign(
 		);
 	},
 	{
-		useHotkey(args: {
-			hotkey: RegisterableHotkey;
-			callback: HotkeyCallback;
-			options?: UseHotkeyOptions;
-		}) {
+		useHotkey(args: { hotkey: RegisterableHotkey; callback: HotkeyCallback; options?: UseHotkeyOptions }) {
 			const { hotkey, callback, options } = args;
 
 			tanstack_useHotkey(hotkey, callback, {

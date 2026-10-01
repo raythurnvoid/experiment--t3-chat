@@ -6029,7 +6029,7 @@ export async function public_api_http_set_file_write_policy(args: {
 					: result._nay.message === "Not found"
 						? 404
 						: result._nay.message === "Writer is not available" ||
-								result._nay.message === files_WRITE_POLICY_INVALID_WRITERS_MESSAGE
+							  result._nay.message === files_WRITE_POLICY_INVALID_WRITERS_MESSAGE
 							? 400
 							: 403,
 			body: { message: result._nay.message },

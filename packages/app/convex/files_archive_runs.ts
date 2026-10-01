@@ -250,10 +250,12 @@ async function db_get_owned_run(
  * where it lives. Access is asked once per restricted scope, and once for the unrestricted part of
  * the workspace, so an ordinary tree costs one check per step.
  */
-async function db_check_writable_nodes(args: StepArgs & {
-	ctx: MutationCtx;
-	nodes: readonly Doc<"files_nodes">[];
-}) {
+async function db_check_writable_nodes(
+	args: StepArgs & {
+		ctx: MutationCtx;
+		nodes: readonly Doc<"files_nodes">[];
+	},
+) {
 	const { ctx, nodes } = args;
 
 	const membership = args.membership;
@@ -295,10 +297,12 @@ async function db_check_writable_nodes(args: StepArgs & {
  * A restore changes the folder an item leaves and the folder it lands in, like a move. So both
  * folders must not be read-only. Name the folder only for somebody who may read it.
  */
-async function db_check_restore_folder(args: StepArgs & {
-	ctx: MutationCtx;
-	folder: Doc<"files_nodes">;
-}) {
+async function db_check_restore_folder(
+	args: StepArgs & {
+		ctx: MutationCtx;
+		folder: Doc<"files_nodes">;
+	},
+) {
 	const { ctx, folder } = args;
 
 	const membership = args.membership;
@@ -329,10 +333,12 @@ async function db_check_restore_folder(args: StepArgs & {
  * leave the item's restricted folder, like `move_nodes`. An item that is its own restricted folder
  * keeps its scope wherever it lands, so it needs neither.
  */
-async function db_check_restore_move(args: StepArgs & {
-	ctx: MutationCtx;
-	node: Doc<"files_nodes">;
-}) {
+async function db_check_restore_move(
+	args: StepArgs & {
+		ctx: MutationCtx;
+		node: Doc<"files_nodes">;
+	},
+) {
 	const { ctx, node } = args;
 
 	const membership = args.membership;
@@ -528,10 +534,12 @@ async function db_check_archive(ctx: MutationCtx, args: StepArgs): Promise<StepO
 	return { kind: "done" };
 }
 
-async function db_archive_node(args: StepArgs & {
-	ctx: MutationCtx;
-	node: Doc<"files_nodes">;
-}) {
+async function db_archive_node(
+	args: StepArgs & {
+		ctx: MutationCtx;
+		node: Doc<"files_nodes">;
+	},
+) {
 	const { ctx, node } = args;
 
 	await files_nodes_db_archive_node(ctx, {
@@ -734,7 +742,10 @@ function add_discover_tree_path(run: RunFields, treePath: string) {
 	const holds = (outer: string, inner: string) => outer === inner || (outer.endsWith("/") && inner.startsWith(outer));
 	const add = (path: string) => {
 		if (run.discoverTreePaths.some((discoverTreePath) => holds(discoverTreePath, path))) return;
-		run.discoverTreePaths = [...run.discoverTreePaths.filter((discoverTreePath) => !holds(path, discoverTreePath)), path];
+		run.discoverTreePaths = [
+			...run.discoverTreePaths.filter((discoverTreePath) => !holds(path, discoverTreePath)),
+			path,
+		];
 	};
 
 	add(treePath);
@@ -937,11 +948,13 @@ async function db_check_restore(ctx: MutationCtx, args: StepArgs): Promise<StepO
 /**
  * Find a free name for Keep both: `name-2.md`, `name-3.md`, and so on.
  */
-async function db_find_free_name(args: StepArgs & {
-	ctx: MutationCtx;
-	node: Doc<"files_nodes">;
-	parentId: Doc<"files_nodes">["parentId"];
-}) {
+async function db_find_free_name(
+	args: StepArgs & {
+		ctx: MutationCtx;
+		node: Doc<"files_nodes">;
+		parentId: Doc<"files_nodes">["parentId"];
+	},
+) {
 	const { ctx, node, parentId } = args;
 
 	const dot = node.kind === "file" ? node.name.indexOf(".", 1) : -1;
@@ -970,10 +983,12 @@ async function db_find_free_name(args: StepArgs & {
  * workspace root when the check said so, or into the parent's archive when that parent is archived
  * and not landing here. A name clash pauses the job until the person chooses.
  */
-async function db_restore_top(args: StepArgs & {
-	ctx: MutationCtx;
-	node: Doc<"files_nodes">;
-}): Promise<StepOutcome | null> {
+async function db_restore_top(
+	args: StepArgs & {
+		ctx: MutationCtx;
+		node: Doc<"files_nodes">;
+	},
+): Promise<StepOutcome | null> {
 	const { ctx, node, ...previousArgs } = args;
 
 	const { run, progress } = previousArgs;
@@ -1021,11 +1036,13 @@ async function db_restore_top(args: StepArgs & {
  * An active item with the same name there pauses the job until the person chooses. This holds for a
  * top item and for an item inside a restored folder.
  */
-async function db_land_node(args: StepArgs & {
-	ctx: MutationCtx;
-	node: Doc<"files_nodes">;
-	landing: Doc<"files_nodes"> | null;
-}): Promise<StepOutcome | null> {
+async function db_land_node(
+	args: StepArgs & {
+		ctx: MutationCtx;
+		node: Doc<"files_nodes">;
+		landing: Doc<"files_nodes"> | null;
+	},
+): Promise<StepOutcome | null> {
 	const { ctx, node, landing, ...previousArgs } = args;
 
 	const { run, progress } = previousArgs;
@@ -1333,10 +1350,12 @@ async function db_step(ctx: MutationCtx, args: StepArgs): Promise<StepOutcome> {
 	return outcome;
 }
 
-async function db_finish_run(args: Omit<Parameters<typeof activities_db_finish>[1], "sourceId"> & {
-	ctx: MutationCtx;
-	runId: Id<"files_archive_runs">;
-}) {
+async function db_finish_run(
+	args: Omit<Parameters<typeof activities_db_finish>[1], "sourceId"> & {
+		ctx: MutationCtx;
+		runId: Id<"files_archive_runs">;
+	},
+) {
 	const { ctx, runId, ...previousArgs } = args;
 
 	await ctx.db.patch("files_archive_runs", runId, { active: false });
@@ -1373,7 +1392,8 @@ async function db_settle_step(
 			: args.outcome.kind === "blocked"
 				? { status: "queued" as const, feedVisible: false }
 				: {}),
-		deadlineAt: args.now +
+		deadlineAt:
+			args.now +
 			(args.outcome.kind === "paused" || args.outcome.kind === "blocked" ? CHOICE_TIMEOUT_MS : RUN_TIMEOUT_MS),
 		updatedAt: args.now,
 	});
@@ -1801,9 +1821,7 @@ export const get = query({
 			run.kind === "archive" ? run.rootNodeIds.filter((nodeId) => !refusedNodeIds.has(nodeId)) : [];
 		// A named id that was not found can belong to another workspace. Never name it.
 		const namedNodes = (
-			await Promise.all(
-				[...refusedNodeIds, ...archivedNodeIds].map((nodeId) => ctx.db.get("files_nodes", nodeId)),
-			)
+			await Promise.all([...refusedNodeIds, ...archivedNodeIds].map((nodeId) => ctx.db.get("files_nodes", nodeId)))
 		).flatMap((node) => (node && node.workspaceId === run.workspaceId ? [node] : []));
 		// Name an item only while the person may still read it.
 		const workspaceRead = await access_control_db_authorize_membership(ctx, {

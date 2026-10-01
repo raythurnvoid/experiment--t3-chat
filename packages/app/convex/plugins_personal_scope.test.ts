@@ -188,11 +188,7 @@ async function fixture() {
 	const shared = await connect(team);
 	expect(home.installationId).not.toBe(shared.installationId);
 
-	async function write(args: {
-		scope: typeof home;
-		path: string;
-		content: string;
-	}) {
+	async function write(args: { scope: typeof home; path: string; content: string }) {
 		const { scope, path, content } = args;
 
 		const body = {

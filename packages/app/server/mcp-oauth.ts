@@ -136,13 +136,8 @@ function oauth_nay(name: ErrorCode, data: { hosts: string[] } | { oauthError: st
 	return Result({ _nay: { name, message: ERROR_MESSAGES[name], data } });
 }
 
-async function log_failure(args: {
-	operation: string;
-	url: string;
-	code: string;
-	error: unknown;
-}) {
-	const { url, error, code, operation} = args;
+async function log_failure(args: { operation: string; url: string; code: string; error: unknown }) {
+	const { url, error, code, operation } = args;
 
 	console.warn("MCP OAuth request failed", {
 		operation,
@@ -195,11 +190,7 @@ function trusted_issuers() {
  * GET one metadata document. `missing` means discovery may move on to the next URL: only a 404 for
  * PRM, and a 4xx or a 502 for AS metadata. Any other failure stops it.
  */
-async function get_metadata(args: {
-	url: string;
-	options: TestOptions;
-	moveOn: (status: number) => boolean;
-}) {
+async function get_metadata(args: { url: string; options: TestOptions; moveOn: (status: number) => boolean }) {
 	const { url, options, moveOn } = args;
 
 	const guard = mcp_guarded_fetch_create({ kind: "oauth", ...options });
@@ -306,7 +297,11 @@ export async function mcp_oauth_discover(
 	// Step 6: the RFC 8414 and OIDC URLs in the spec order. Move on only on a 4xx or a 502, like the SDK.
 	let metadata: z.infer<typeof as_metadata_schema> | null = null;
 	for (const { url } of buildDiscoveryUrls(issuer)) {
-		const found = await get_metadata({ url: url.href, options: testOptions, moveOn: (status) => status === 502 || status < 500 });
+		const found = await get_metadata({
+			url: url.href,
+			options: testOptions,
+			moveOn: (status) => status === 502 || status < 500,
+		});
 		if (found.kind === "missing") continue;
 		if (found.kind === "failed") {
 			await log_failure({ operation: "discover_as", url: url.href, code: found.code, error: found.error });
@@ -529,7 +524,12 @@ async function token_request(
 			typeof json === "object" && json !== null && "error" in json && typeof json.error === "string"
 				? json.error
 				: null;
-		await log_failure({ operation: args.operation, url: args.tokenEndpoint, code: `http_${response.status}`, error: null });
+		await log_failure({
+			operation: args.operation,
+			url: args.tokenEndpoint,
+			code: `http_${response.status}`,
+			error: null,
+		});
 		if (oauthError === "invalid_grant") return oauth_nay("oauth_invalid_grant");
 		if (response.status >= 500) return oauth_nay("server_error");
 		return oauth_nay("oauth_token_refused", {
@@ -553,11 +553,7 @@ async function token_request(
  * Add client authentication by the stored method (RFC 6749 §2.3.1). Basic auth encodes the id and
  * the secret with the form encoding first, as the RFC says.
  */
-function add_client_auth(args: {
-	client: mcp_oauth_Client;
-	headers: Headers;
-	params: URLSearchParams;
-}) {
+function add_client_auth(args: { client: mcp_oauth_Client; headers: Headers; params: URLSearchParams }) {
 	const { client, headers, params } = args;
 
 	if (client.authMethod === "client_secret_basic" && client.clientSecret !== null) {
@@ -673,7 +669,12 @@ export async function mcp_oauth_revoke(
 		const response = await guard.fetch(args.revocationEndpoint, { method: "POST", headers, body: params.toString() });
 		await response.body?.cancel();
 		if (!response.ok) {
-			await log_failure({ operation: "revoke", url: args.revocationEndpoint, code: `http_${response.status}`, error: null });
+			await log_failure({
+				operation: "revoke",
+				url: args.revocationEndpoint,
+				code: `http_${response.status}`,
+				error: null,
+			});
 			return oauth_nay(response.status >= 500 ? "server_error" : "oauth_token_refused");
 		}
 	} catch (error) {

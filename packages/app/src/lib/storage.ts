@@ -196,14 +196,15 @@ const storage_local_schema = {
 				if (typeof value !== "object" || value === null || Array.isArray(value)) return {};
 				return Object.fromEntries(
 					Object.entries(value)
-						.filter(([folderId, columns]) =>
-							folderId.length > 0 &&
-							Array.isArray(columns) &&
-							columns.length > 0 &&
-							columns.length <= files_table_MAX_COLUMNS &&
-							columns.includes("name") &&
-							new Set(columns).size === columns.length &&
-							columns.every((field: unknown) => typeof field === "string" && files_table_column_is_valid(field)),
+						.filter(
+							([folderId, columns]) =>
+								folderId.length > 0 &&
+								Array.isArray(columns) &&
+								columns.length > 0 &&
+								columns.length <= files_table_MAX_COLUMNS &&
+								columns.includes("name") &&
+								new Set(columns).size === columns.length &&
+								columns.every((field: unknown) => typeof field === "string" && files_table_column_is_valid(field)),
 						)
 						.slice(-100),
 				);
@@ -271,12 +272,8 @@ const mock_storage = {
  * but in order to sync the react storage in the current tab, we manually dispatch a `StorageEvent`
  * even when the storage is changed in the current tab.
  */
-function storage_dispatch_storage_event(args: {
-	key: string;
-	newValue: string | null;
-	storageArea: Storage;
-}) {
-		const { key, newValue, storageArea } = args;
+function storage_dispatch_storage_event(args: { key: string; newValue: string | null; storageArea: Storage }) {
+	const { key, newValue, storageArea } = args;
 	if (typeof window === "undefined") {
 		return;
 	}

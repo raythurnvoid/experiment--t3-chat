@@ -9,7 +9,9 @@ const bridges = vi.hoisted(() => ({
 }));
 vi.mock("./agent-connection", () => ({
 	AgentConnection: class {
-		constructor(input: Record<string, unknown>) { bridges.inputs.push(input); }
+		constructor(input: Record<string, unknown>) {
+			bridges.inputs.push(input);
+		}
 		revoke = vi.fn();
 		settle = bridges.settle;
 		close = vi.fn();
@@ -27,7 +29,9 @@ const DOWNLOAD_PATTERN = { urlPattern: "*", resourceType: "Document", requestSta
 class Socket extends EventTarget {
 	readyState = 1;
 	accept() {}
-	close() { this.readyState = 3; }
+	close() {
+		this.readyState = 3;
+	}
 }
 
 class SocketPair {
@@ -46,16 +50,24 @@ class SocketResponse extends NativeResponse {
 
 type Cookie = Record<string, unknown> & { name: string; value: string; domain: string; expires: number };
 
-function cookie(args: {
-	name: string;
-	domain: string;
-	extra?: Partial<Cookie>;
-}): Cookie {
+function cookie(args: { name: string; domain: string; extra?: Partial<Cookie> }): Cookie {
 	const { name, domain, extra = {} } = args;
 
 	return {
-		name, value: `value-of-${name}`, domain, path: "/", expires: FUTURE, size: 10, httpOnly: true, secure: true,
-		session: false, sameSite: "Lax", priority: "Medium", sourceScheme: "Secure", sourcePort: 443, ...extra,
+		name,
+		value: `value-of-${name}`,
+		domain,
+		path: "/",
+		expires: FUTURE,
+		size: 10,
+		httpOnly: true,
+		secure: true,
+		session: false,
+		sameSite: "Lax",
+		priority: "Medium",
+		sourceScheme: "Secure",
+		sourcePort: 443,
+		...extra,
 	};
 }
 
@@ -78,7 +90,7 @@ function make_runner() {
 			return { currentIndex: 0, entries: [{ id: 1, url: browserState.pageUrl, title: "" }] };
 		}
 		if (method === "Storage.getCookies") {
-			if (hooks.getCookies) return await hooks.getCookies() as Record<string, unknown>;
+			if (hooks.getCookies) return (await hooks.getCookies()) as Record<string, unknown>;
 			return { cookies: structuredClone(browserState.jar) };
 		}
 		if (method === "Storage.setCookies") browserState.jar = structuredClone(params?.cookies as Cookie[]);
@@ -89,43 +101,75 @@ function make_runner() {
 	const page = Object.assign(new EventEmitter(), {
 		context: () => context,
 		mainFrame: () => ({ url: () => browserState.pageUrl, parentFrame: () => null }),
-		goto: vi.fn(async (url: string) => { await cdp.send("Page.navigate", { url }); return null; }),
+		goto: vi.fn(async (url: string) => {
+			await cdp.send("Page.navigate", { url });
+			return null;
+		}),
 		setViewportSize: vi.fn(async () => {}),
 		evaluate: vi.fn(async () => ({})),
 		unroute: vi.fn(async () => {}),
 	});
 	Object.assign(context, { pages: () => [page] });
 	const browser = Object.assign(new EventEmitter(), {
-		contexts: () => [context], newBrowserCDPSession: async () => cdp, close: vi.fn(async () => {}),
+		contexts: () => [context],
+		newBrowserCDPSession: async () => cdp,
+		close: vi.fn(async () => {}),
 	});
-	const connect = vi.spyOn(provider, "connect").mockResolvedValue(browser as unknown as Awaited<ReturnType<typeof provider.connect>>);
+	const connect = vi
+		.spyOn(provider, "connect")
+		.mockResolvedValue(browser as unknown as Awaited<ReturnType<typeof provider.connect>>);
 	vi.spyOn(provider, "sessions").mockResolvedValue([]);
-	vi.spyOn(provider, "acquire").mockResolvedValue({ sessionId: "provider-1" } as Awaited<ReturnType<typeof provider.acquire>>);
+	vi.spyOn(provider, "acquire").mockResolvedValue({ sessionId: "provider-1" } as Awaited<
+		ReturnType<typeof provider.acquire>
+	>);
 
 	const state = {
 		id: { toString: () => "profile-test" },
 		storage: {
-			get: async <T,>(key: string) => structuredClone(stored.get(key)) as T | undefined,
-			list: async <T,>(options: { prefix: string }) =>
-				new Map([...stored].filter(([key]) => key.startsWith(options.prefix)).map(([key, value]) => [key, structuredClone(value)])) as Map<string, T>,
-			put: async (key: string, value: unknown) => { stored.set(key, structuredClone(value)); },
+			get: async <T>(key: string) => structuredClone(stored.get(key)) as T | undefined,
+			list: async <T>(options: { prefix: string }) =>
+				new Map(
+					[...stored]
+						.filter(([key]) => key.startsWith(options.prefix))
+						.map(([key, value]) => [key, structuredClone(value)]),
+				) as Map<string, T>,
+			put: async (key: string, value: unknown) => {
+				stored.set(key, structuredClone(value));
+			},
 			delete: async (key: string) => stored.delete(key),
-			setAlarm: async (time: number | Date) => { alarms.push(Number(time)); },
+			setAlarm: async (time: number | Date) => {
+				alarms.push(Number(time));
+			},
 			getAlarm: async () => null,
-			deleteAlarm: async () => { alarms.push(null); },
+			deleteAlarm: async () => {
+				alarms.push(null);
+			},
 		},
 		waitUntil: (promise: Promise<unknown>) => {
 			pending.add(promise);
-			void promise.then(() => pending.delete(promise), () => pending.delete(promise));
+			void promise.then(
+				() => pending.delete(promise),
+				() => pending.delete(promise),
+			);
 		},
 	};
-	const namespace = { idFromName: (name: string) => ({ toString: () => name }), get: () => ({ fetch: async () => Response.json({ ok: true }) }) };
+	const namespace = {
+		idFromName: (name: string) => ({ toString: () => name }),
+		get: () => ({ fetch: async () => Response.json({ ok: true }) }),
+	};
 	const env: Env = {
 		BROWSER: { fetch: vi.fn(async () => new Response(null, { status: 101, webSocket: new WebSocketPair()[0] })) },
-		BROWSER_SESSIONS: namespace, BROWSER_REGISTRY: namespace,
-		BROWSER_RUNNER_SECRET: "test-secret", BROWSER_PROFILE_KEY: SECRET,
-		BROWSER_PREVIEW_URL: "https://preview.invalid/v0", BROWSER_WEB_DENIED_HOSTS: "blocked.test",
-		LOADER: { load: () => { throw new Error("No snippets in profile tests"); } },
+		BROWSER_SESSIONS: namespace,
+		BROWSER_REGISTRY: namespace,
+		BROWSER_RUNNER_SECRET: "test-secret",
+		BROWSER_PROFILE_KEY: SECRET,
+		BROWSER_PREVIEW_URL: "https://preview.invalid/v0",
+		BROWSER_WEB_DENIED_HOSTS: "blocked.test",
+		LOADER: {
+			load: () => {
+				throw new Error("No snippets in profile tests");
+			},
+		},
 	};
 	let session = new BrowserSession(state, env);
 
@@ -133,42 +177,107 @@ function make_runner() {
 		const current = record();
 		const defaults = path === "/run/begin" ? { tabId: current?.tabId, tabGen: 1, policyRevision: 0 } : {};
 		const input = body as Record<string, unknown>;
-		const response = await session.fetch(new Request(`https://object${path}`, { method: "POST", body: JSON.stringify({ ...defaults, ...input, ...(input.expectedAgentLease ? { expectedAgentLease: { tabId: current?.tabId, tabGen: 1, policyRevision: 0, ...input.expectedAgentLease as object } } : {}) }) }));
-		return await response.json() as Record<string, unknown>;
+		const response = await session.fetch(
+			new Request(`https://object${path}`, {
+				method: "POST",
+				body: JSON.stringify({
+					...defaults,
+					...input,
+					...(input.expectedAgentLease
+						? {
+								expectedAgentLease: {
+									tabId: current?.tabId,
+									tabGen: 1,
+									policyRevision: 0,
+									...(input.expectedAgentLease as object),
+								},
+							}
+						: {}),
+				}),
+			}),
+		);
+		return (await response.json()) as Record<string, unknown>;
 	};
 	const record = () => stored.get("session") as Record<string, unknown> | undefined;
 	const open = async (overrides: Record<string, unknown> = {}) => {
 		const opened = await post("/open", {
-			mode: "web", ...OWNERS, grantId: "grant-1", attemptId: "attempt-1", navGen: 1, startUrl: "https://example.com/",
-			agentAccess: true, policyRevision: 0, viewport: { width: 1280, height: 900 },
-			profileId: "profile_1", profileKey: KEY, agentBlockedHosts: [], ...overrides,
+			mode: "web",
+			...OWNERS,
+			grantId: "grant-1",
+			attemptId: "attempt-1",
+			navGen: 1,
+			startUrl: "https://example.com/",
+			agentAccess: true,
+			policyRevision: 0,
+			viewport: { width: 1280, height: 900 },
+			profileId: "profile_1",
+			profileKey: KEY,
+			agentBlockedHosts: [],
+			...overrides,
 		});
 		expect(opened).toMatchObject({ ok: true });
 		return (opened.session as { sessionId: string }).sessionId;
 	};
-	const profile_input = (overrides: Record<string, unknown> = {}) => ({ ...OWNERS, profileId: "profile_1", profileKey: KEY, ...overrides });
+	const profile_input = (overrides: Record<string, unknown> = {}) => ({
+		...OWNERS,
+		profileId: "profile_1",
+		profileKey: KEY,
+		...overrides,
+	});
 	const sends = (method: string) => send.mock.calls.filter(([name]) => name === method);
 	const seed_viewer = () => {
 		const current = structuredClone(record()!) as { viewers: Record<string, unknown> };
-		current.viewers.v1 = { host: "docked", controlGen: 1, grantedUntil: Date.now() + 3_600_000, lastInputAt: 0, attachedAt: Date.now() };
+		current.viewers.v1 = {
+			host: "docked",
+			controlGen: 1,
+			grantedUntil: Date.now() + 3_600_000,
+			lastInputAt: 0,
+			attachedAt: Date.now(),
+		};
 		stored.set("session", current);
 	};
 	const command = async (sessionId: string) => {
 		const begun = await post("/run/begin", { sessionId, navGen: 1, loadGen: 1, controlGen: 1, commandId: "command-1" });
 		if (begun.ok !== true) return { begun, settled: null, finished: null };
 		const url = new URL("https://object/run/stream");
-		for (const [name, value] of Object.entries({ ...OWNERS, sessionId, commandId: "command-1" })) url.searchParams.set(name, value);
+		for (const [name, value] of Object.entries({ ...OWNERS, sessionId, commandId: "command-1" }))
+			url.searchParams.set(name, value);
 		expect((await session.fetch(new Request(url, { headers: { Upgrade: "websocket" } }))).status).toBe(101);
 		const settled = await post("/run/settle", { sessionId, commandId: "command-1" });
-		const finished = await post("/run/finish", { sessionId, commandId: "command-1", tainted: false, resultBytes: 0, fileCount: 0, fileBytes: 0, viewport: null });
+		const finished = await post("/run/finish", {
+			sessionId,
+			commandId: "command-1",
+			tainted: false,
+			resultBytes: 0,
+			fileCount: 0,
+			fileBytes: 0,
+			viewport: null,
+		});
 		return { begun, settled, finished };
 	};
 	const drain = async () => {
 		while (pending.size) await Promise.all([...pending]);
 	};
 	return {
-		stored, alarms, browserState, hooks, send, cdp, browser, connect, post, open, record, profile_input, sends, seed_viewer, command, drain,
-		restart: () => { session = new BrowserSession(state, env); },
+		stored,
+		alarms,
+		browserState,
+		hooks,
+		send,
+		cdp,
+		browser,
+		connect,
+		post,
+		open,
+		record,
+		profile_input,
+		sends,
+		seed_viewer,
+		command,
+		drain,
+		restart: () => {
+			session = new BrowserSession(state, env);
+		},
 		alarm: () => session.alarm(),
 	};
 }
@@ -195,9 +304,16 @@ describe("saved profile", () => {
 	it("restores the same cookies after a save, before the start page loads", async () => {
 		const runner = make_runner();
 		const first = await runner.open();
-		const saved = [cookie({ name: "sid", domain: ".example.com" }), cookie({ name: "pref", domain: "www.example.com", extra: { session: true, expires: -1 } })];
+		const saved = [
+			cookie({ name: "sid", domain: ".example.com" }),
+			cookie({ name: "pref", domain: "www.example.com", extra: { session: true, expires: -1 } }),
+		];
 		runner.browserState.jar = structuredClone(saved);
-		expect(await runner.post("/close", { sessionId: first, saveProfile: true })).toMatchObject({ ok: true, existed: true, verified: true });
+		expect(await runner.post("/close", { sessionId: first, saveProfile: true })).toMatchObject({
+			ok: true,
+			existed: true,
+			verified: true,
+		});
 
 		const blob = runner.stored.get("profile") as Record<string, unknown>;
 		expect(blob).toMatchObject({ v: 1, profileId: "profile_1", truncated: false, savedAt: Date.now() });
@@ -227,11 +343,15 @@ describe("saved profile", () => {
 		await runner.open({ ownerId: "user_2" });
 		expect(runner.sends("Storage.setCookies")).toEqual([]);
 		expect(runner.browserState.jar).toEqual([]);
-		expect(await runner.post("/profile/summary", runner.profile_input({ ownerId: "user_2" })))
-			.toMatchObject({ ok: false, error: { code: "busy" } });
+		expect(await runner.post("/profile/summary", runner.profile_input({ ownerId: "user_2" }))).toMatchObject({
+			ok: false,
+			error: { code: "busy" },
+		});
 		await runner.post("/close", { sessionId: runner.record()!.sessionId });
-		expect(await runner.post("/profile/summary", runner.profile_input({ ownerId: "user_2" })))
-			.toMatchObject({ ok: false, error: { code: "profile_unreadable" } });
+		expect(await runner.post("/profile/summary", runner.profile_input({ ownerId: "user_2" }))).toMatchObject({
+			ok: false,
+			error: { code: "profile_unreadable" },
+		});
 		expect(await runner.post("/profile/summary", runner.profile_input())).toMatchObject({ ok: true, exists: true });
 	});
 
@@ -252,15 +372,22 @@ describe("saved profile", () => {
 		runner.browserState.jar = [cookie({ name: "new", domain: "other.test" })];
 		await runner.post("/close", { sessionId: third, saveProfile: true });
 		expect(runner.stored.get("profile")).toMatchObject({ profileId: "profile_2" });
-		expect(await runner.post("/profile/summary", runner.profile_input({ profileId: "profile_2" })))
-			.toMatchObject({ ok: true, exists: true, sites: [{ domain: "other.test", cookies: 1 }] });
+		expect(await runner.post("/profile/summary", runner.profile_input({ profileId: "profile_2" }))).toMatchObject({
+			ok: true,
+			exists: true,
+			sites: [{ domain: "other.test", cookies: 1 }],
+		});
 	});
 
 	it.each([
 		{ name: "human End", close: { saveProfile: true }, saves: true },
 		{ name: "End without saveProfile", close: {}, saves: false },
 		{ name: "saveProfile false", close: { saveProfile: false }, saves: false },
-		{ name: "agent browser_close", close: { expectedAgentLease: { navGen: 1, loadGen: 1, controlGen: 1 } }, saves: false },
+		{
+			name: "agent browser_close",
+			close: { expectedAgentLease: { navGen: 1, loadGen: 1, controlGen: 1 } },
+			saves: false,
+		},
 	])("saves on close only for $name", async ({ close, saves }) => {
 		const runner = make_runner();
 		const sessionId = await runner.open();
@@ -281,20 +408,37 @@ describe("saved profile", () => {
 	});
 
 	it.each([
-		{ name: "a tainted command", run: async (runner: ReturnType<typeof make_runner>, sessionId: string) => {
-			await runner.post("/run/begin", { sessionId, navGen: 1, loadGen: 1, controlGen: 1, commandId: "command-1" });
-			await runner.post("/run/finish", { sessionId, commandId: "command-1", tainted: true, resultBytes: 0, fileCount: 0, fileBytes: 0, viewport: null });
-		} },
-		{ name: "a lost host", run: async (runner: ReturnType<typeof make_runner>) => {
-			runner.browser.emit("disconnected");
-			await vi.waitFor(() => expect(runner.record()).toBeUndefined());
-			await runner.drain();
-		} },
-		{ name: "a restarted object", run: async (runner: ReturnType<typeof make_runner>, sessionId: string) => {
-			// The key lived only in memory, so the new instance cannot save.
-			runner.restart();
-			await runner.post("/close", { sessionId, saveProfile: true });
-		} },
+		{
+			name: "a tainted command",
+			run: async (runner: ReturnType<typeof make_runner>, sessionId: string) => {
+				await runner.post("/run/begin", { sessionId, navGen: 1, loadGen: 1, controlGen: 1, commandId: "command-1" });
+				await runner.post("/run/finish", {
+					sessionId,
+					commandId: "command-1",
+					tainted: true,
+					resultBytes: 0,
+					fileCount: 0,
+					fileBytes: 0,
+					viewport: null,
+				});
+			},
+		},
+		{
+			name: "a lost host",
+			run: async (runner: ReturnType<typeof make_runner>) => {
+				runner.browser.emit("disconnected");
+				await vi.waitFor(() => expect(runner.record()).toBeUndefined());
+				await runner.drain();
+			},
+		},
+		{
+			name: "a restarted object",
+			run: async (runner: ReturnType<typeof make_runner>, sessionId: string) => {
+				// The key lived only in memory, so the new instance cannot save.
+				runner.restart();
+				await runner.post("/close", { sessionId, saveProfile: true });
+			},
+		},
 	])("does not save after $name", async ({ run }) => {
 		const runner = make_runner();
 		const sessionId = await runner.open();
@@ -365,17 +509,29 @@ describe("saved profile", () => {
 		await runner.drain();
 		providerClose.resolve(runner.browser as unknown as Awaited<ReturnType<typeof provider.connect>>);
 		expect(await closing).toMatchObject({ ok: true, existed: true });
-		expect(await runner.post("/profile/summary", runner.profile_input()))
-			.toMatchObject({ ok: true, exists: true, sites: [{ domain: "new.test", cookies: 1 }] });
+		expect(await runner.post("/profile/summary", runner.profile_input())).toMatchObject({
+			ok: true,
+			exists: true,
+			sites: [{ domain: "new.test", cookies: 1 }],
+		});
 	});
 
 	it("never saves cookies of denied hosts", async () => {
 		const runner = make_runner();
 		const sessionId = await runner.open();
-		runner.browserState.jar = [cookie({ name: "app", domain: "blocked.test" }), cookie({ name: "api", domain: ".api.blocked.test" }), cookie({ name: "sid", domain: "example.com" })];
+		runner.browserState.jar = [
+			cookie({ name: "app", domain: "blocked.test" }),
+			cookie({ name: "api", domain: ".api.blocked.test" }),
+			cookie({ name: "sid", domain: "example.com" }),
+		];
 		await runner.post("/close", { sessionId, saveProfile: true });
-		expect(await runner.post("/profile/summary", runner.profile_input()))
-			.toEqual({ ok: true, exists: true, savedAt: Date.now(), truncated: false, sites: [{ domain: "example.com", cookies: 1 }] });
+		expect(await runner.post("/profile/summary", runner.profile_input())).toEqual({
+			ok: true,
+			exists: true,
+			savedAt: Date.now(),
+			truncated: false,
+			sites: [{ domain: "example.com", cookies: 1 }],
+		});
 	});
 
 	it("keeps the 3,000 longest-living cookies and marks the profile truncated", async () => {
@@ -383,24 +539,35 @@ describe("saved profile", () => {
 		const sessionId = await runner.open();
 		runner.browserState.jar = [
 			cookie({ name: "oldest", domain: "old.test", extra: { expires: FUTURE - 10_000 } }),
-			...Array.from({ length: LIMITS.profileCookies }, (_, index) => cookie({ name: `c${index}`, domain: "example.com", extra: { expires: FUTURE + index } })),
+			...Array.from({ length: LIMITS.profileCookies }, (_, index) =>
+				cookie({ name: `c${index}`, domain: "example.com", extra: { expires: FUTURE + index } }),
+			),
 		];
 		await runner.post("/close", { sessionId, saveProfile: true });
-		expect(await runner.post("/profile/summary", runner.profile_input()))
-			.toMatchObject({ ok: true, truncated: true, sites: [{ domain: "example.com", cookies: LIMITS.profileCookies }] });
+		expect(await runner.post("/profile/summary", runner.profile_input())).toMatchObject({
+			ok: true,
+			truncated: true,
+			sites: [{ domain: "example.com", cookies: LIMITS.profileCookies }],
+		});
 	});
 
 	it("keeps at most 1 MiB of cookie JSON and marks the profile truncated", async () => {
 		const runner = make_runner();
 		const sessionId = await runner.open();
-		runner.browserState.jar = Array.from({ length: 300 }, (_, index) => cookie({ name: `c${index}`, domain: "example.com", extra: { value: "x".repeat(4000) } }));
+		runner.browserState.jar = Array.from({ length: 300 }, (_, index) =>
+			cookie({ name: `c${index}`, domain: "example.com", extra: { value: "x".repeat(4000) } }),
+		);
 		await runner.post("/close", { sessionId, saveProfile: true });
 		const summary = await runner.post("/profile/summary", runner.profile_input());
 		const kept = (summary.sites as Array<{ cookies: number }>)[0]!.cookies;
 		expect(summary.truncated).toBe(true);
 		// All values are ASCII, so string length is the byte count. One more cookie would not fit.
-		expect(JSON.stringify({ cookies: runner.browserState.jar.slice(0, kept) }).length).toBeLessThanOrEqual(LIMITS.profileJsonBytes);
-		expect(JSON.stringify({ cookies: runner.browserState.jar.slice(0, kept + 1) }).length).toBeGreaterThan(LIMITS.profileJsonBytes);
+		expect(JSON.stringify({ cookies: runner.browserState.jar.slice(0, kept) }).length).toBeLessThanOrEqual(
+			LIMITS.profileJsonBytes,
+		);
+		expect(JSON.stringify({ cookies: runner.browserState.jar.slice(0, kept + 1) }).length).toBeGreaterThan(
+			LIMITS.profileJsonBytes,
+		);
 	});
 
 	it("reports stored bytes in status without the profile id", async () => {
@@ -425,42 +592,78 @@ describe("profile summary and clear", () => {
 
 	it("counts cookies per site, sorted, with no names or values", async () => {
 		const runner = await saved_runner([
-			cookie({ name: "b", domain: "www.github.com" }), cookie({ name: "a", domain: ".github.com" }), cookie({ name: "c", domain: "github.com" }), cookie({ name: "d", domain: "Example.COM" }),
+			cookie({ name: "b", domain: "www.github.com" }),
+			cookie({ name: "a", domain: ".github.com" }),
+			cookie({ name: "c", domain: "github.com" }),
+			cookie({ name: "d", domain: "Example.COM" }),
 		]);
 		const summary = await runner.post("/profile/summary", runner.profile_input());
 		expect(summary).toEqual({
-			ok: true, exists: true, savedAt: Date.now(), truncated: false,
-			sites: [{ domain: "example.com", cookies: 1 }, { domain: "github.com", cookies: 2 }, { domain: "www.github.com", cookies: 1 }],
+			ok: true,
+			exists: true,
+			savedAt: Date.now(),
+			truncated: false,
+			sites: [
+				{ domain: "example.com", cookies: 1 },
+				{ domain: "github.com", cookies: 2 },
+				{ domain: "www.github.com", cookies: 1 },
+			],
 		});
 		expect(JSON.stringify(summary)).not.toMatch(/value-of/u);
 	});
 
 	it("answers exists false when nothing is stored for this profile", async () => {
 		const runner = make_runner();
-		expect(await runner.post("/profile/summary", runner.profile_input()))
-			.toEqual({ ok: true, exists: false, savedAt: null, truncated: false, sites: [] });
-		expect(await runner.post("/profile/clear", runner.profile_input({ domain: "example.com" }))).toEqual({ ok: true, removed: 0 });
+		expect(await runner.post("/profile/summary", runner.profile_input())).toEqual({
+			ok: true,
+			exists: false,
+			savedAt: null,
+			truncated: false,
+			sites: [],
+		});
+		expect(await runner.post("/profile/clear", runner.profile_input({ domain: "example.com" }))).toEqual({
+			ok: true,
+			removed: 0,
+		});
 	});
 
 	it("clears one site and its subdomains and keeps savedAt", async () => {
 		const runner = await saved_runner([
-			cookie({ name: "a", domain: "example.com" }), cookie({ name: "b", domain: ".example.com" }), cookie({ name: "c", domain: "www.example.com" }),
-			cookie({ name: "d", domain: "notexample.com" }), cookie({ name: "e", domain: "other.test" }),
+			cookie({ name: "a", domain: "example.com" }),
+			cookie({ name: "b", domain: ".example.com" }),
+			cookie({ name: "c", domain: "www.example.com" }),
+			cookie({ name: "d", domain: "notexample.com" }),
+			cookie({ name: "e", domain: "other.test" }),
 		]);
 		const savedAt = Date.now();
 		vi.setSystemTime(savedAt + 60_000);
-		expect(await runner.post("/profile/clear", runner.profile_input({ domain: ".Example.com" }))).toEqual({ ok: true, removed: 3 });
+		expect(await runner.post("/profile/clear", runner.profile_input({ domain: ".Example.com" }))).toEqual({
+			ok: true,
+			removed: 3,
+		});
 		expect(await runner.post("/profile/summary", runner.profile_input())).toEqual({
-			ok: true, exists: true, savedAt, truncated: false,
-			sites: [{ domain: "notexample.com", cookies: 1 }, { domain: "other.test", cookies: 1 }],
+			ok: true,
+			exists: true,
+			savedAt,
+			truncated: false,
+			sites: [
+				{ domain: "notexample.com", cookies: 1 },
+				{ domain: "other.test", cookies: 1 },
+			],
 		});
 	});
 
 	it("refuses summary and clear while a session is live", async () => {
 		const runner = make_runner();
 		await runner.open();
-		expect(await runner.post("/profile/summary", runner.profile_input())).toMatchObject({ ok: false, error: { code: "busy" } });
-		expect(await runner.post("/profile/clear", runner.profile_input({ domain: "example.com" }))).toMatchObject({ ok: false, error: { code: "busy" } });
+		expect(await runner.post("/profile/summary", runner.profile_input())).toMatchObject({
+			ok: false,
+			error: { code: "busy" },
+		});
+		expect(await runner.post("/profile/clear", runner.profile_input({ domain: "example.com" }))).toMatchObject({
+			ok: false,
+			error: { code: "busy" },
+		});
 	});
 });
 
@@ -634,19 +837,42 @@ describe("agent blocked sites", () => {
 		// Web mode always pauses page responses to catch downloads.
 		expect(runner.sends("Fetch.enable")).toEqual([["Fetch.enable", { patterns: [DOWNLOAD_PATTERN] }]]);
 		runner.send.mockClear();
-		const begun = await runner.post("/run/begin", { sessionId, navGen: 1, loadGen: 1, controlGen: 1, commandId: "command-1" });
+		const begun = await runner.post("/run/begin", {
+			sessionId,
+			navGen: 1,
+			loadGen: 1,
+			controlGen: 1,
+			commandId: "command-1",
+		});
 		expect(begun).toMatchObject({ ok: true });
 		// One `Fetch.enable` replaces the list, so the download pattern stays next to the filter.
-		expect(runner.sends("Fetch.enable")).toEqual([["Fetch.enable", { patterns: [
-			DOWNLOAD_PATTERN,
-			{ urlPattern: "*", resourceType: "Document", requestStage: "Request" },
-			{ urlPattern: "*", resourceType: "XHR", requestStage: "Request" },
-			{ urlPattern: "*", resourceType: "Fetch", requestStage: "Request" },
-		] }]]);
-		runner.cdp.emit("Fetch.requestPaused", { requestId: "r1", request: { url: "https://api.bank.test/transfer" }, resourceType: "XHR" });
-		runner.cdp.emit("Fetch.requestPaused", { requestId: "r2", request: { url: "https://example.com/next" }, resourceType: "Document" });
+		expect(runner.sends("Fetch.enable")).toEqual([
+			[
+				"Fetch.enable",
+				{
+					patterns: [
+						DOWNLOAD_PATTERN,
+						{ urlPattern: "*", resourceType: "Document", requestStage: "Request" },
+						{ urlPattern: "*", resourceType: "XHR", requestStage: "Request" },
+						{ urlPattern: "*", resourceType: "Fetch", requestStage: "Request" },
+					],
+				},
+			],
+		]);
+		runner.cdp.emit("Fetch.requestPaused", {
+			requestId: "r1",
+			request: { url: "https://api.bank.test/transfer" },
+			resourceType: "XHR",
+		});
+		runner.cdp.emit("Fetch.requestPaused", {
+			requestId: "r2",
+			request: { url: "https://example.com/next" },
+			resourceType: "Document",
+		});
 		await runner.drain();
-		expect(runner.sends("Fetch.failRequest")).toEqual([["Fetch.failRequest", { requestId: "r1", errorReason: "BlockedByClient" }]]);
+		expect(runner.sends("Fetch.failRequest")).toEqual([
+			["Fetch.failRequest", { requestId: "r1", errorReason: "BlockedByClient" }],
+		]);
 		expect(runner.sends("Fetch.continueRequest")).toEqual([["Fetch.continueRequest", { requestId: "r2" }]]);
 	});
 
@@ -683,7 +909,10 @@ describe("profile logs", () => {
 	it("never logs cookie names, values, or domains", async () => {
 		const runner = make_runner();
 		const first = await runner.open({ startUrl: null });
-		runner.browserState.jar = [cookie({ name: "secretname", domain: "privatesite.test" }), cookie({ name: "blocked", domain: "blocked.test" })];
+		runner.browserState.jar = [
+			cookie({ name: "secretname", domain: "privatesite.test" }),
+			cookie({ name: "blocked", domain: "blocked.test" }),
+		];
 		await runner.post("/close", { sessionId: first, saveProfile: true });
 		const second = await runner.open({ startUrl: null });
 		await runner.post("/close", { sessionId: second, saveProfile: true });

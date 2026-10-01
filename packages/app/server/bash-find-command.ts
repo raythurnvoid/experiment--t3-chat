@@ -464,11 +464,7 @@ function parse_args(args: string[]) {
  * returned shell path to pick the right scope and convert it into a trailing-slash
  * `treePath` prefix via `list_subtree`.
  */
-function prefix_to_shell_path(args: {
-	commandCtx: CommandContext;
-	dbFilesRoots: bash_DbFilesRoots;
-	prefix: string;
-}) {
+function prefix_to_shell_path(args: { commandCtx: CommandContext; dbFilesRoots: bash_DbFilesRoots; prefix: string }) {
 	const { commandCtx, dbFilesRoots, prefix } = args;
 
 	if (bash_GLOB_METACHARACTER_REGEX.test(prefix)) {
@@ -852,7 +848,11 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 						})) as files_nodes_search_paths_Result;
 						return {
 							items: pageResult.items.map((item) => ({
-								path: bash_external_mounts_fan_out_db_files_path({ mount: pageArgs.mount, storedPath: item.path, basePath: pathResolution.basePath }),
+								path: bash_external_mounts_fan_out_db_files_path({
+									mount: pageArgs.mount,
+									storedPath: item.path,
+									basePath: pathResolution.basePath,
+								}),
 								kind: item.kind,
 							})),
 							continueCursor: pageResult.continueCursor,
@@ -880,7 +880,11 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 					})) as files_nodes_list_subtree_Result;
 					return {
 						items: pageResult.page.map((item) => ({
-							path: bash_external_mounts_fan_out_db_files_path({ mount: pageArgs.mount, storedPath: item.path, basePath: pathResolution.basePath }),
+							path: bash_external_mounts_fan_out_db_files_path({
+								mount: pageArgs.mount,
+								storedPath: item.path,
+								basePath: pathResolution.basePath,
+							}),
 							kind: item.kind,
 						})),
 						continueCursor: pageResult.continueCursor,

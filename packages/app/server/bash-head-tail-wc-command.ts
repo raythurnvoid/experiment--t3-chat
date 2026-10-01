@@ -45,11 +45,7 @@ type ReaderCommandOversizedFileOperand = {
 	pathResolution: bash_DbFilesShellPathResolution;
 };
 
-function parse_line_count(args: {
-	command: string;
-	option: string;
-	value: string | undefined;
-}) {
+function parse_line_count(args: { command: string; option: string; value: string | undefined }) {
 	const { command, option, value } = args;
 
 	if (value == null) {
@@ -206,7 +202,7 @@ async function find_oversized_file_operand(args: {
 	commandCtx: CommandContext;
 	files: string[];
 }): Promise<ReaderCommandOversizedFileOperand | null> {
-	const { dbFilesRoots, commandCtx, files, ctx} = args;
+	const { dbFilesRoots, commandCtx, files, ctx } = args;
 
 	for (const file of files) {
 		if (file === "-") continue;
@@ -396,10 +392,10 @@ export function bash_head_tail_wc_command_create(args: {
 							stderr: oversized.hasEditableTextContent
 								? `tail: ${oversized.file}: content is not available from materialized chunks\n`
 								: bash_build_unreadable_file_advisory({
-									currentWorkspacePath: oversized.pathResolution.basePath,
-									normalizedPath: oversized.dbFilesPath,
-									contentType: oversized.contentType,
-								}),
+										currentWorkspacePath: oversized.pathResolution.basePath,
+										normalizedPath: oversized.dbFilesPath,
+										contentType: oversized.contentType,
+									}),
 							exitCode: bash_COMMAND_EXIT_FAILURE,
 						};
 					}
@@ -449,10 +445,10 @@ export function bash_head_tail_wc_command_create(args: {
 							stderr: oversized.hasEditableTextContent
 								? `head: ${oversized.file}: content is not available from materialized chunks\n`
 								: bash_build_unreadable_file_advisory({
-									currentWorkspacePath: oversized.pathResolution.basePath,
-									normalizedPath: oversized.dbFilesPath,
-									contentType: oversized.contentType,
-								}),
+										currentWorkspacePath: oversized.pathResolution.basePath,
+										normalizedPath: oversized.dbFilesPath,
+										contentType: oversized.contentType,
+									}),
 							exitCode: bash_COMMAND_EXIT_FAILURE,
 						};
 					}
@@ -494,10 +490,10 @@ export function bash_head_tail_wc_command_create(args: {
 						stderr: oversized.hasEditableTextContent
 							? `tail: ${oversized.file}: content is not available from materialized chunks\n`
 							: bash_build_unreadable_file_advisory({
-								currentWorkspacePath: oversized.pathResolution.basePath,
-								normalizedPath: oversized.dbFilesPath,
-								contentType: oversized.contentType,
-							}),
+									currentWorkspacePath: oversized.pathResolution.basePath,
+									normalizedPath: oversized.dbFilesPath,
+									contentType: oversized.contentType,
+								}),
 						exitCode: bash_COMMAND_EXIT_FAILURE,
 					};
 				}
@@ -592,10 +588,10 @@ export function bash_head_tail_wc_command_create(args: {
 								dbFilesDoc.textKind !== null
 									? `${command}: ${file}: content is not available from materialized chunks\n`
 									: bash_build_unreadable_file_advisory({
-										currentWorkspacePath: pathResolution.basePath,
-										normalizedPath: dbFilesPath,
-										contentType: dbFilesDoc.contentType,
-									}),
+											currentWorkspacePath: pathResolution.basePath,
+											normalizedPath: dbFilesPath,
+											contentType: dbFilesDoc.contentType,
+										}),
 							exitCode: bash_COMMAND_EXIT_FAILURE,
 						};
 					}

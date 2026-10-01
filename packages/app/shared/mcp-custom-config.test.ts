@@ -23,12 +23,8 @@ function parse_one(text: string) {
 /**
  * One remote entry under `mcpServers`, with the given headers.
  */
-function remote_text(args: {
-	name: string;
-	url: string;
-	headers?: Record<string, string>;
-}) {
-	const { name, headers = {}, url} = args;
+function remote_text(args: { name: string; url: string; headers?: Record<string, string> }) {
+	const { name, headers = {}, url } = args;
 
 	return JSON.stringify({ mcpServers: { [name]: { url, headers } } });
 }
@@ -248,7 +244,9 @@ describe("mcp_custom_config_parse", () => {
 	});
 
 	test("Authorization: Bearer abc123 gives text Bearer and a prefilled secret", () => {
-		const draft = parse_one(remote_text({ name: "linear", url: "https://mcp.linear.app/mcp", headers: { Authorization: "Bearer abc123" } }));
+		const draft = parse_one(
+			remote_text({ name: "linear", url: "https://mcp.linear.app/mcp", headers: { Authorization: "Bearer abc123" } }),
+		);
 
 		expect(draft.state).toBe("ready");
 		expect(draft.headers[0].parts).toEqual([
@@ -265,7 +263,9 @@ describe("mcp_custom_config_parse", () => {
 	});
 
 	test("makes a literal header value a prefilled secret", () => {
-		const draft = parse_one(remote_text({ name: "remote", url: "https://mcp.example.com/mcp", headers: { "X-Region": "us-east-1" } }));
+		const draft = parse_one(
+			remote_text({ name: "remote", url: "https://mcp.example.com/mcp", headers: { "X-Region": "us-east-1" } }),
+		);
 
 		expect(draft.headers[0].parts).toEqual([
 			{
@@ -461,7 +461,9 @@ describe("mcp_custom_config_parse", () => {
 
 describe("mcp_custom_config_build", () => {
 	test("stores a literal Authorization value as text Bearer plus a secret", () => {
-		const draft = parse_one(remote_text({ name: "linear", url: "https://mcp.linear.app/mcp", headers: { Authorization: "Bearer abc123" } }));
+		const draft = parse_one(
+			remote_text({ name: "linear", url: "https://mcp.linear.app/mcp", headers: { Authorization: "Bearer abc123" } }),
+		);
 
 		const result = mcp_custom_config_build(draft, make_fill({ name: " Linear " }));
 
@@ -484,7 +486,9 @@ describe("mcp_custom_config_build", () => {
 	});
 
 	test("keeps X-Region secret by default and makes it text when marked not secret", () => {
-		const draft = parse_one(remote_text({ name: "remote", url: "https://mcp.example.com/mcp", headers: { "X-Region": "us-east-1" } }));
+		const draft = parse_one(
+			remote_text({ name: "remote", url: "https://mcp.example.com/mcp", headers: { "X-Region": "us-east-1" } }),
+		);
 
 		const asSecret = mcp_custom_config_build(draft, make_fill({}));
 		const asText = mcp_custom_config_build(draft, make_fill({ notSecretHeaders: ["X-Region"] }));
@@ -498,7 +502,9 @@ describe("mcp_custom_config_build", () => {
 	});
 
 	test("needs a value for each placeholder secret unless it is kept", () => {
-		const draft = parse_one(remote_text({ name: "remote", url: "https://mcp.example.com/mcp", headers: { Authorization: "Bearer <token>" } }));
+		const draft = parse_one(
+			remote_text({ name: "remote", url: "https://mcp.example.com/mcp", headers: { Authorization: "Bearer <token>" } }),
+		);
 
 		expect(mcp_custom_config_build(draft, make_fill({}))._nay?.message).toBe("Fill in TOKEN.");
 		expect(
@@ -508,7 +514,9 @@ describe("mcp_custom_config_build", () => {
 	});
 
 	test("refuses a value with a line break or a character beyond Latin-1", () => {
-		const draft = parse_one(remote_text({ name: "remote", url: "https://mcp.example.com/mcp", headers: { Authorization: "Bearer <token>" } }));
+		const draft = parse_one(
+			remote_text({ name: "remote", url: "https://mcp.example.com/mcp", headers: { Authorization: "Bearer <token>" } }),
+		);
 		const messageFor = (value: string) =>
 			mcp_custom_config_build(draft, make_fill({ secretValues: [{ name: "TOKEN", value }] }))._nay?.message;
 		const refusal =

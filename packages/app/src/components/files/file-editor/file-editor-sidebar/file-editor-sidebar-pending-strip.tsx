@@ -35,11 +35,7 @@ function useFilesPendingUpdatesCount(skip: boolean) {
  * The chat scope says "from this chat" because the count is files this chat TOUCHED — the diff
  * behind each row is the combined pending state, which other chats may have contributed to.
  */
-function files_pending_strip_label(args: {
-	count: number;
-	scope: "workspace" | "chat";
-	truncated?: boolean;
-}) {
+function files_pending_strip_label(args: { count: number; scope: "workspace" | "chat"; truncated?: boolean }) {
 	const { count, scope, truncated = false } = args;
 
 	const noun = count === 1 && !truncated ? "pending file change" : "pending file changes";

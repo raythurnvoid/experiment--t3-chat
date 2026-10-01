@@ -715,11 +715,7 @@ const useStore = ((/* iife */) => {
 					return { threadById };
 				});
 			},
-			saveQueuedUserMessageEdit(args: {
-				threadId: string;
-				messageId: AiChatQueuedUserMessage["id"];
-				text: string;
-			}) {
+			saveQueuedUserMessageEdit(args: { threadId: string; messageId: AiChatQueuedUserMessage["id"]; text: string }) {
 				const { threadId, messageId, text } = args;
 
 				let didSave = false;
@@ -2327,7 +2323,11 @@ const useThreadRuntimeController = () => {
 		// loading state for a moment, and the whole list would flash.
 		Promise.all(
 			pageArgs.map((args) => {
-				app_convex.prewarmQuery({ query: app_convex_api.ai_chat_runs.branch_page, args, extendSubscriptionFor: 10_000 });
+				app_convex.prewarmQuery({
+					query: app_convex_api.ai_chat_runs.branch_page,
+					args,
+					extendSubscriptionFor: 10_000,
+				});
 				return app_convex.query(app_convex_api.ai_chat_runs.branch_page, args);
 			}),
 		)
@@ -2731,11 +2731,7 @@ const useThreadRuntimeController = () => {
 	);
 
 	const sendUserText = useFn(
-		(args: {
-			threadId: string;
-			value: string;
-			options?: { messageId?: string; attachments?: FileUIPart[] };
-		}) => {
+		(args: { threadId: string; value: string; options?: { messageId?: string; attachments?: FileUIPart[] } }) => {
 			const { threadId, value, options } = args;
 
 			if (threadId !== selectedThreadId || !browserIntent) {
@@ -2845,11 +2841,7 @@ const useThreadRuntimeController = () => {
 	});
 
 	const setQueuedUserMessageEditText = useFn(
-		(args: {
-			chat: Chat<ai_chat_UiMessage>;
-			messageId: AiChatQueuedUserMessage["id"];
-			text: string;
-		}) => {
+		(args: { chat: Chat<ai_chat_UiMessage>; messageId: AiChatQueuedUserMessage["id"]; text: string }) => {
 			const { chat, messageId, text } = args;
 
 			const threadId = threadIdByChat.get(chat);
@@ -2865,11 +2857,7 @@ const useThreadRuntimeController = () => {
 	);
 
 	const setQueuedUserMessageEditAttachments = useFn(
-		(args: {
-			chat: Chat<ai_chat_UiMessage>;
-			messageId: AiChatQueuedUserMessage["id"];
-			attachments: FileUIPart[];
-		}) => {
+		(args: { chat: Chat<ai_chat_UiMessage>; messageId: AiChatQueuedUserMessage["id"]; attachments: FileUIPart[] }) => {
 			const { chat, messageId, attachments } = args;
 
 			const threadId = threadIdByChat.get(chat);
@@ -2974,8 +2962,8 @@ const useThreadRuntimeController = () => {
 				threadId: selectedThreadId,
 				value: ai_chat_get_message_text(failedSendUserMessage),
 				options: {
-				messageId: failedSendUserMessage.id,
-			},
+					messageId: failedSendUserMessage.id,
+				},
 			});
 			return;
 		}
@@ -3232,7 +3220,11 @@ const useThreadRuntimeController = () => {
 			}
 
 			try {
-				const didSend = sendUserTextNow({ threadId: selectedThreadId, value: queuedMessage.text, options: { queuedMessage } });
+				const didSend = sendUserTextNow({
+					threadId: selectedThreadId,
+					value: queuedMessage.text,
+					options: { queuedMessage },
+				});
 				if (!didSend) {
 					useStore.actions.restoreClaimedQueuedUserMessage(selectedThreadId, queuedMessage);
 				}

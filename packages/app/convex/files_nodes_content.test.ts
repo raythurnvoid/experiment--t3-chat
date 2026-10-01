@@ -362,7 +362,11 @@ async function prepare_agent_replacement(
 	sourceId: Id<"files_nodes">,
 ) {
 	const destination = await fixture.t.run((ctx) => ctx.db.get("files_nodes", fixture.nodeId));
-	const copy = await start_agent_copy({ fixture, source: { kind: "saved", id: sourceId }, targetName: destination!.name });
+	const copy = await start_agent_copy({
+		fixture,
+		source: { kind: "saved", id: sourceId },
+		targetName: destination!.name,
+	});
 	await fixture.t.action(internal.files_nodes_content.copy_transfer_file, {
 		itemId: copy.item._id,
 		attempt: copy.item.attempt,
@@ -469,12 +473,16 @@ async function create_private_copy_source(
 async function create_pending_proposal(args: {
 	fixture: Awaited<ReturnType<typeof create_file_fixture>>;
 	userId?: Id<"users">;
-	texts?: { staged: string; unstaged: string; };
+	texts?: { staged: string; unstaged: string };
 }) {
-	const { fixture, userId = fixture.scope.userId, texts = {
-		staged: "---\nreview: accepted\n---\n\nAccepted text\n",
-		unstaged: "---\nreview: accepted\n---\n\nAccepted text\n\nProposed text\n",
-	} } = args;
+	const {
+		fixture,
+		userId = fixture.scope.userId,
+		texts = {
+			staged: "---\nreview: accepted\n---\n\nAccepted text\n",
+			unstaged: "---\nreview: accepted\n---\n\nAccepted text\n\nProposed text\n",
+		},
+	} = args;
 
 	const { t, scope, nodeId } = fixture;
 	const ownerScope = { ...scope, userId };
@@ -749,9 +757,9 @@ describe("copy_transfer_file", () => {
 			fixture,
 			userId: db.userId,
 			texts: {
-			staged: "Saved line\nStaged line\n",
-			unstaged: "Saved line\nStaged line\nUnstaged line\n",
-		},
+				staged: "Saved line\nStaged line\n",
+				unstaged: "Saved line\nStaged line\nUnstaged line\n",
+			},
 		});
 		const yjsKey = await t.run(async (ctx) => {
 			const snapshot = await ctx.db.get("files_yjs_snapshots", pointers.yjsSnapshotId);

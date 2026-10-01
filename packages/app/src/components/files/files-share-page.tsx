@@ -199,9 +199,9 @@ function useFilesSharePageSignedUrls(props: { token: string; view: FilesSharePag
 					forRevision: current.revision,
 					keys: pendingKeys,
 					state: (key) => {
-					const url = urls.get(key);
-					return url ? { status: "ready", url, issuedAt } : { status: "failed" };
-				},
+						const url = urls.get(key);
+						return url ? { status: "ready", url, issuedAt } : { status: "failed" };
+					},
 				});
 
 				const url = urls.get(pendingKeys[0]!);

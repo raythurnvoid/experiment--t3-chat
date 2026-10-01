@@ -242,13 +242,14 @@ describe("/api/chat tool output clearing", () => {
 			doStream: async () => {
 				const index = provider.model!.doStreamCalls.length - 1;
 				return step_stream({
-					step: index < 5
-						? {
-								toolCallId: `read-${index}`,
-								toolName: "view_image",
-								input: { workspace: "current", path: `/missing-${index}.png` },
-							}
-						: { text: "Done" },
+					step:
+						index < 5
+							? {
+									toolCallId: `read-${index}`,
+									toolName: "view_image",
+									input: { workspace: "current", path: `/missing-${index}.png` },
+								}
+							: { text: "Done" },
 					inputTokens: 150_000,
 				});
 			},
@@ -280,15 +281,15 @@ describe("/api/chat tool output clearing", () => {
 			doStream: async () =>
 				provider.model!.doStreamCalls.length === 1
 					? step_stream({
-						step: {
+							step: {
 								calls: [0, 1, 2, 3, 4].map((index) => ({
 									toolCallId: `read-${index}`,
 									toolName: "view_image",
 									input: { workspace: "current", path: `/missing-${index}.png` },
 								})),
 							},
-						inputTokens: 150_000,
-					})
+							inputTokens: 150_000,
+						})
 					: step_stream({ step: { text: "Done" }, inputTokens: 150_000 }),
 		});
 		await send(fx, { messageId: "read-images", text: "Read the images.", parentId: null });
@@ -311,13 +312,14 @@ describe("/api/chat loop detection", () => {
 			doStream: async (options) => {
 				const index = provider.model!.doStreamCalls.length - 1;
 				return step_stream({
-					step: (options.tools ?? []).length > 0
-						? {
-								toolCallId: `again-${index}`,
-								toolName: "view_image",
-								input: { workspace: "current", path: "/missing.png" },
-							}
-						: { text: "I am stuck." },
+					step:
+						(options.tools ?? []).length > 0
+							? {
+									toolCallId: `again-${index}`,
+									toolName: "view_image",
+									input: { workspace: "current", path: "/missing.png" },
+								}
+							: { text: "I am stuck." },
 					inputTokens: 10,
 				});
 			},

@@ -845,7 +845,11 @@ export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props
 							break;
 						}
 						const targetElement =
-							dom_find_first_element_overflowing_element({ scrollEl, elements: userMessageElements, direction: "up" }) ??
+							dom_find_first_element_overflowing_element({
+								scrollEl,
+								elements: userMessageElements,
+								direction: "up",
+							}) ??
 							userMessageElements.at(0) ??
 							null;
 						targetMessageEl = targetElement instanceof HTMLElement ? targetElement : null;
@@ -855,7 +859,11 @@ export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props
 							break;
 						}
 						const targetElement =
-							dom_find_first_element_overflowing_element({ scrollEl, elements: userMessageElements, direction: "down" }) ??
+							dom_find_first_element_overflowing_element({
+								scrollEl,
+								elements: userMessageElements,
+								direction: "down",
+							}) ??
 							userMessageElements.at(-1) ??
 							null;
 						targetMessageEl = targetElement instanceof HTMLElement ? targetElement : null;

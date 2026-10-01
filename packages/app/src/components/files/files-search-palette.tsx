@@ -59,7 +59,11 @@ const FilesSearchPaletteContent = memo(function FilesSearchPaletteContent(props:
 	const inputRef = useRef<HTMLInputElement>(null);
 	const firstResultRef = useRef<HTMLButtonElement>(null);
 	const resultsRef = useRef<HTMLDivElement>(null);
-	const { entries, isFailed: isEntriesFailed } = useFilesVisibleEntries({ membershipId, folderPath: "/", mode: "subtree" });
+	const { entries, isFailed: isEntriesFailed } = useFilesVisibleEntries({
+		membershipId,
+		folderPath: "/",
+		mode: "subtree",
+	});
 	const treeItems = useMemo(
 		() =>
 			entries?.map((entry) => ({

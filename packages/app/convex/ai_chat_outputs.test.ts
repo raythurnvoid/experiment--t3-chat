@@ -80,7 +80,7 @@ async function begin_run(args: {
 	source: FunctionArgs<typeof internal.ai_chat.thread_run_begin>["source"];
 	messageId: string;
 }) {
-	const { t, messageId, source} = args;
+	const { t, messageId, source } = args;
 
 	const begun = await t.mutation(internal.ai_chat.thread_run_begin, {
 		source,

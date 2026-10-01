@@ -630,7 +630,7 @@ class BashTmpFs implements IFileSystem {
 		threadId: Id<"ai_chat_threads">;
 		invocationId: Id<"ai_chat_bash_invocations">;
 	}): Promise<BashTmpFs> {
-		const { ctx, invocationId, threadId} = args;
+		const { ctx, invocationId, threadId } = args;
 
 		const loaded = (await ctx.runQuery(internal.ai_chat_files.load_thread_tmp_files, {
 			threadId,
@@ -683,13 +683,11 @@ class BashTmpFs implements IFileSystem {
 	}
 
 	async writeFile(path: string, content: FileContent, options?: Parameters<IFileSystem["writeFile"]>[2]) {
-
 		await this.fs.writeFile(path, content, options);
 		this.markDirty(path);
 	}
 
 	async appendFile(path: string, content: FileContent, options?: Parameters<IFileSystem["appendFile"]>[2]) {
-
 		await this.fs.appendFile(path, content, options);
 		this.markDirty(path);
 	}
@@ -717,7 +715,6 @@ class BashTmpFs implements IFileSystem {
 	}
 
 	async cp(src: string, dest: string, options?: CpOptions) {
-
 		await this.fs.cp(src, dest, options);
 		this.markDirty(dest);
 	}
@@ -764,7 +761,6 @@ class BashTmpFs implements IFileSystem {
 	}
 
 	async utimes(path: string, atime: Date, mtime: Date) {
-
 		await this.fs.utimes(path, atime, mtime);
 		this.markDirty(path);
 	}
@@ -808,7 +804,6 @@ class ReadOnlyBaseFs implements IFileSystem {
 	}
 
 	async writeFile(path: string, _content: FileContent, _options?: Parameters<IFileSystem["writeFile"]>[2]) {
-
 		if (bash_normalize_path(path) === bash_DEV_NULL_PATH) {
 			return;
 		}
@@ -816,7 +811,6 @@ class ReadOnlyBaseFs implements IFileSystem {
 	}
 
 	async appendFile(path: string, _content: FileContent, _options?: Parameters<IFileSystem["appendFile"]>[2]) {
-
 		if (bash_normalize_path(path) === bash_DEV_NULL_PATH) {
 			return;
 		}
@@ -877,7 +871,6 @@ class ReadOnlyBaseFs implements IFileSystem {
 	}
 
 	async cp(_src: string, dest: string, _options?: CpOptions) {
-
 		throw new ReadOnlyFileSystemError(dest);
 	}
 
@@ -920,7 +913,6 @@ class ReadOnlyBaseFs implements IFileSystem {
 	}
 
 	async utimes(path: string, _atime: Date, _mtime: Date) {
-
 		throw new ReadOnlyFileSystemError(path);
 	}
 }
@@ -942,12 +934,10 @@ class ReadOnlyInMemoryFs implements IFileSystem {
 	}
 
 	async writeFile(path: string, _content: FileContent, _options?: Parameters<IFileSystem["writeFile"]>[2]) {
-
 		throw new ReadOnlyFileSystemError(path);
 	}
 
 	async appendFile(path: string, _content: FileContent, _options?: Parameters<IFileSystem["appendFile"]>[2]) {
-
 		throw new ReadOnlyFileSystemError(path);
 	}
 
@@ -975,7 +965,6 @@ class ReadOnlyInMemoryFs implements IFileSystem {
 	}
 
 	async cp(_src: string, dest: string, _options?: CpOptions) {
-
 		throw new ReadOnlyFileSystemError(dest);
 	}
 
@@ -1016,7 +1005,6 @@ class ReadOnlyInMemoryFs implements IFileSystem {
 	}
 
 	async utimes(path: string, _atime: Date, _mtime: Date) {
-
 		throw new ReadOnlyFileSystemError(path);
 	}
 }
@@ -1151,7 +1139,11 @@ async function bash_fs_create(args: {
 	});
 	if (personal._nay) throw new Error(personal._nay.message);
 
-	const tmpFs = await BashTmpFs.create({ ctx: args.ctx, threadId: args.threadId, invocationId: args.jobContext.invocationId });
+	const tmpFs = await BashTmpFs.create({
+		ctx: args.ctx,
+		threadId: args.threadId,
+		invocationId: args.jobContext.invocationId,
+	});
 
 	// `/shells/<name>/transcript` loads on first read. The engine also loads a lazy file on `stat`
 	// (it needs a size), so `ls -l`, `find`, `wc -c` and `test -s` on a transcript run the query;
@@ -3106,11 +3098,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 	});
 
 	describe("tmp_fs_evict_to_limits", () => {
-		const set_mtime = async (args: {
-			tmpFs: BashTmpFs;
-			path: string;
-			mtime: number;
-		}) => {
+		const set_mtime = async (args: { tmpFs: BashTmpFs; path: string; mtime: number }) => {
 			const { tmpFs, path, mtime } = args;
 
 			const date = new Date(mtime);

@@ -33,8 +33,12 @@ function makeWriter() {
 	const ctx = { runMutation, runQuery } as unknown as ActionCtx;
 	const producer = {
 		requestId: "tool-1",
-		prepare: vi.fn<Parameters<typeof files_ingestion_write>[0]["producer"]["prepare"]>().mockResolvedValue({ _yay: prepared }),
-		finalize: vi.fn<Parameters<typeof files_ingestion_write>[0]["producer"]["finalize"]>().mockResolvedValue({ _yay: file }),
+		prepare: vi
+			.fn<Parameters<typeof files_ingestion_write>[0]["producer"]["prepare"]>()
+			.mockResolvedValue({ _yay: prepared }),
+		finalize: vi
+			.fn<Parameters<typeof files_ingestion_write>[0]["producer"]["finalize"]>()
+			.mockResolvedValue({ _yay: file }),
 	};
 	return { ctx, producer, runMutation, runQuery };
 }
@@ -184,7 +188,12 @@ describe("files_ingestion_write", () => {
 				expect(init?.signal?.aborted).toBe(true);
 				throw new DOMException("Stopped", "AbortError");
 			});
-		const results = await files_ingestion_write({ ctx, files: [binary, binary, binary], producer, abortSignal: controller.signal });
+		const results = await files_ingestion_write({
+			ctx,
+			files: [binary, binary, binary],
+			producer,
+			abortSignal: controller.signal,
+		});
 		expect(results.map((item) => item.status)).toEqual(["succeeded", "cancelled", "cancelled"]);
 		expect(producer.finalize).toHaveBeenCalledOnce();
 		expect(runMutation).toHaveBeenCalledOnce();
@@ -218,7 +227,11 @@ describe("files_ingestion_write", () => {
 		"keeps invalid or over-limit declared text as exact stored bytes",
 		async (bytes) => {
 			const { ctx, producer } = makeWriter();
-			await files_ingestion_write({ ctx, files: [{ scope, path: "/file.txt", contentType: "text/plain", bytes }], producer });
+			await files_ingestion_write({
+				ctx,
+				files: [{ scope, path: "/file.txt", contentType: "text/plain", bytes }],
+				producer,
+			});
 			expect(producer.prepare.mock.calls[0]?.[0].content).toEqual({ kind: "stored" });
 			expect(vi.mocked(fetch).mock.calls[0]?.[1]?.body).toBe(bytes);
 		},
@@ -229,7 +242,11 @@ describe("files_ingestion_write", () => {
 		const bytes = new TextEncoder().encode("a".repeat(900_000));
 		expect(
 			(
-				await files_ingestion_write({ ctx, files: [{ scope, path: "/large.md", contentType: "text/markdown", bytes }], producer })
+				await files_ingestion_write({
+					ctx,
+					files: [{ scope, path: "/large.md", contentType: "text/markdown", bytes }],
+					producer,
+				})
 			)[0]?.status,
 		).toBe("succeeded");
 		expect(producer.prepare.mock.calls[0]?.[0].content).toEqual({ kind: "stored" });

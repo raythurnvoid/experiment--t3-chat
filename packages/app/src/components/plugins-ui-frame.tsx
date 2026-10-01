@@ -531,7 +531,13 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 				}
 				if (result._nay) {
 					cancelled = true;
-					onError(mint_error_message({ kindLabel, message: result._nay.message, retryAfterMs: result._nay.data?.retryAfterMs }));
+					onError(
+						mint_error_message({
+							kindLabel,
+							message: result._nay.message,
+							retryAfterMs: result._nay.data?.retryAfterMs,
+						}),
+					);
 					return;
 				}
 				if (result._yay.pluginVersionId !== pluginVersionId) {
@@ -725,7 +731,13 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 							// commit. It still carries the raw message because every arm of this function
 							// must return a response, and because that is the right value to send if a
 							// mount point ever keeps a stopped frame on screen.
-							onError(mint_error_message({ kindLabel, message: minted._nay.message, retryAfterMs: minted._nay.data?.retryAfterMs }));
+							onError(
+								mint_error_message({
+									kindLabel,
+									message: minted._nay.message,
+									retryAfterMs: minted._nay.data?.retryAfterMs,
+								}),
+							);
 							return token_error(requestId, minted._nay.message);
 						}
 

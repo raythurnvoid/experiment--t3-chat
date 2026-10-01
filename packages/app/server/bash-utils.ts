@@ -771,12 +771,10 @@ export class bash_DbFilesFs implements IFileSystem {
 	}
 
 	async writeFile(path: string, content: FileContent, options?: Parameters<IFileSystem["writeFile"]>[2]) {
-
 		await this.proposeWrite({ path, content, options, mode: "overwrite" });
 	}
 
 	async appendFile(path: string, content: FileContent, options?: Parameters<IFileSystem["appendFile"]>[2]) {
-
 		await this.proposeWrite({ path, content, options, mode: "append" });
 	}
 
@@ -1135,7 +1133,6 @@ export class bash_DbFilesFs implements IFileSystem {
 	}
 
 	async cp(_src: string, dest: string, _options?: CpOptions) {
-
 		throw this.readOnlyFileSystemError(dest);
 	}
 
@@ -1187,7 +1184,6 @@ export class bash_DbFilesFs implements IFileSystem {
 	}
 
 	async utimes(path: string, _atime: Date, _mtime: Date) {
-
 		// Builtin touch always calls utimes after creating or finding its target. App files
 		// keep their own updatedAt, so Agent-mode app-tree utimes is a silent no-op; mounts
 		// and Ask mode keep rejecting like every other write.
@@ -1788,11 +1784,7 @@ function shell_word_is_redirection_prefix(word: string) {
 /**
  * Find the next shell word while ignoring redirection targets and selected wrapper options.
  */
-function next_shell_word_from_words(args: {
-	words: string[];
-	startIndex: number;
-	skippedWords?: ReadonlySet<string>;
-}) {
+function next_shell_word_from_words(args: { words: string[]; startIndex: number; skippedWords?: ReadonlySet<string> }) {
 	const { words, startIndex, skippedWords } = args;
 
 	let skipRedirectionTarget = false;
@@ -2013,7 +2005,11 @@ async function simple_command_loads_disallowed_shell_code(args: {
 
 		if (SOURCE_BUILTIN_PREFIX_COMMANDS.has(word)) {
 			// `command source file` and `builtin . file` still invoke the source builtins.
-			const command = next_shell_word_from_words({ words, startIndex: index + 1, skippedWords: SOURCE_BUILTIN_PREFIX_OPTIONS });
+			const command = next_shell_word_from_words({
+				words,
+				startIndex: index + 1,
+				skippedWords: SOURCE_BUILTIN_PREFIX_OPTIONS,
+			});
 			if (command === "source" || command === ".") {
 				const sourceIndex = words.indexOf(command, index + 1);
 				const target = next_shell_word_from_words({ words, startIndex: sourceIndex + 1 });
@@ -2051,7 +2047,9 @@ export async function bash_command_loads_disallowed_shell_code(command: string, 
 	for (const token of tokens) {
 		if (token.kind === "separator") {
 			await update_shell_code_assignments({ words, assignmentNames: shellCodeAssignmentNames, options });
-			if (await simple_command_loads_disallowed_shell_code({ words, options, assignmentNames: shellCodeAssignmentNames })) {
+			if (
+				await simple_command_loads_disallowed_shell_code({ words, options, assignmentNames: shellCodeAssignmentNames })
+			) {
 				return true;
 			}
 			words = [];
@@ -2061,7 +2059,11 @@ export async function bash_command_loads_disallowed_shell_code(command: string, 
 	}
 
 	await update_shell_code_assignments({ words, assignmentNames: shellCodeAssignmentNames, options });
-	return await simple_command_loads_disallowed_shell_code({ words, options, assignmentNames: shellCodeAssignmentNames });
+	return await simple_command_loads_disallowed_shell_code({
+		words,
+		options,
+		assignmentNames: shellCodeAssignmentNames,
+	});
 }
 
 /**

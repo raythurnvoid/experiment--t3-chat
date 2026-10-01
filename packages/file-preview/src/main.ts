@@ -43,7 +43,11 @@ window.addEventListener("message", (event: MessageEvent<unknown>) => {
 			// allow-same-origin stays off so the untrusted document keeps an opaque origin.
 			frame.sandbox.add("allow-scripts");
 			frame.referrerPolicy = "no-referrer";
-			frame.srcdoc = file_preview_create_document({ source: message.html, loadId: message.loadId, runtimeOrigin: window.location.origin });
+			frame.srcdoc = file_preview_create_document({
+				source: message.html,
+				loadId: message.loadId,
+				runtimeOrigin: window.location.origin,
+			});
 			currentFrame = frame;
 			document.body.replaceChildren(frame);
 		} catch {

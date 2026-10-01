@@ -93,9 +93,17 @@ describe("crypto_hmac_sha256_hex", () => {
 				keyName: "BROWSER_REMOTE_SECRETS_ENCRYPTION_KEY",
 			}),
 		).rejects.toThrow("BROWSER_REMOTE_SECRETS_ENCRYPTION_KEY");
-		const encrypted = await crypto_encrypt_secret_value({ value: "plugin-secret", additionalData: "plugin", keyName: "PLUGIN_SECRETS_ENCRYPTION_KEY" });
-		expect(await crypto_decrypt_secret_value({ secret: encrypted, additionalData: "plugin", keyName: "PLUGIN_SECRETS_ENCRYPTION_KEY" })).toBe(
-			"plugin-secret",
-		);
+		const encrypted = await crypto_encrypt_secret_value({
+			value: "plugin-secret",
+			additionalData: "plugin",
+			keyName: "PLUGIN_SECRETS_ENCRYPTION_KEY",
+		});
+		expect(
+			await crypto_decrypt_secret_value({
+				secret: encrypted,
+				additionalData: "plugin",
+				keyName: "PLUGIN_SECRETS_ENCRYPTION_KEY",
+			}),
+		).toBe("plugin-secret");
 	});
 });

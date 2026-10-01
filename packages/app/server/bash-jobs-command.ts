@@ -171,11 +171,7 @@ function job_line(summary: ai_chat_files_list_thread_jobs_Result[number]) {
  * that marker. The transcript keeps the full output; this read is bounded so two big reads cannot
  * push the reading call over its own output limit.
  */
-async function print_job_output(args: {
-	ctx: ActionCtx;
-	job: bash_JobContext;
-	jobNumber: number;
-}) {
+async function print_job_output(args: { ctx: ActionCtx; job: bash_JobContext; jobNumber: number }) {
 	const { ctx, job, jobNumber } = args;
 
 	const output = (await ctx.runQuery(internal.ai_chat_files.read_job_output, {

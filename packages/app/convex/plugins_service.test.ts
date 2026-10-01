@@ -223,11 +223,7 @@ async function read_grants(t: ReturnType<typeof test_convex>) {
 	return await t.run(async (ctx) => await ctx.db.query("plugin_service_grants").collect());
 }
 
-async function exchange(args: {
-	t: ReturnType<typeof test_convex>;
-	pageToken: string;
-	secret?: string | null;
-}) {
+async function exchange(args: { t: ReturnType<typeof test_convex>; pageToken: string; secret?: string | null }) {
 	const { t, pageToken, ...previousArgs } = args;
 
 	return await t.fetch(EXCHANGE_PATH, {
@@ -1011,11 +1007,7 @@ describe("/api/v1/plugins/service-grants/verify-live", () => {
 });
 
 describe("/api/v1/plugins/service-grants/seal-processing", () => {
-	async function seal(args: {
-		t: ReturnType<typeof test_convex>;
-		bearer: string;
-		destinationPathPrefix?: string;
-	}) {
+	async function seal(args: { t: ReturnType<typeof test_convex>; bearer: string; destinationPathPrefix?: string }) {
 		const { t, bearer, destinationPathPrefix = "/meetings" } = args;
 
 		return await t.fetch(SEAL_PROCESSING_PATH, {

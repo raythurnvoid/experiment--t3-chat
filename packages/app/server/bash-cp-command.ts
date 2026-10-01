@@ -34,7 +34,7 @@ export function bash_cp_command_create(args: {
 	dbFilesRoots: bash_DbFilesRoots;
 	transferContext?: bash_TransferContext;
 }): Command {
-	const { dbFilesRoots, ctx, transferContext} = args;
+	const { dbFilesRoots, ctx, transferContext } = args;
 
 	return defineCommand("cp", async (args, commandCtx) => {
 		const parsed = bash_parse_cp_mv_operands("cp", args);

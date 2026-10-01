@@ -171,7 +171,11 @@ export function files_truncate_path_segments(args: {
 	if (args.fits(args.segments)) return args.segments;
 	if (args.segments.length === 0) return args.segments;
 	if (args.segments.length === 1) {
-		return truncate_segment_prefix({ graphemes: segment_graphemes(args.segments[0] ?? ""), wrap: (label) => [label], fits: args.fits });
+		return truncate_segment_prefix({
+			graphemes: segment_graphemes(args.segments[0] ?? ""),
+			wrap: (label) => [label],
+			fits: args.fits,
+		});
 	}
 
 	const firstSegment = args.segments[0] ?? "";
@@ -241,7 +245,11 @@ export function files_truncate_path_segments(args: {
 		const firstPrefix = find_max_fitting({
 			min: 2,
 			max: firstGraphemes.length - 1,
-			buildCandidate: (visibleCount) => [`${firstGraphemes.slice(0, visibleCount).join("")}${ELLIPSIS}`, ...middleLabels, lastSegment],
+			buildCandidate: (visibleCount) => [
+				`${firstGraphemes.slice(0, visibleCount).join("")}${ELLIPSIS}`,
+				...middleLabels,
+				lastSegment,
+			],
 			fits: args.fits,
 		});
 		if (firstPrefix) return firstPrefix;

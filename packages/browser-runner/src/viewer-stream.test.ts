@@ -1674,7 +1674,12 @@ describe("BrowserSession web mode", () => {
 	it("refuses a ninth tab and a blocked address before creating a native page", async () => {
 		const { post, stored, newPage } = make_session({ web: true });
 		const initial = stored.get("session") as Extract<SessionRecord, { mode: "web" }>;
-		expect(await post("/tab-new", tab_input({ record: initial, operationId: "blocked", extra: { url: "https://blocked.test/" } }))).toMatchObject({
+		expect(
+			await post(
+				"/tab-new",
+				tab_input({ record: initial, operationId: "blocked", extra: { url: "https://blocked.test/" } }),
+			),
+		).toMatchObject({
 			status: "refused",
 			result: { reason: "address_blocked", cleanup: "complete" },
 		});
@@ -1682,7 +1687,9 @@ describe("BrowserSession web mode", () => {
 		for (let index = 2; index <= 8; index += 1)
 			current.tabs[`tab-${index}`] = { ...current.tabs["tab-1"]!, targetId: `page-${index}` };
 		stored.set("session", current);
-		expect(await post("/tab-new", tab_input({ record: current, operationId: "ninth", extra: { url: null } }))).toMatchObject({
+		expect(
+			await post("/tab-new", tab_input({ record: current, operationId: "ninth", extra: { url: null } })),
+		).toMatchObject({
 			status: "refused",
 			result: { reason: "tab_limit", cleanup: "complete" },
 		});
@@ -1836,11 +1843,7 @@ describe("BrowserSession web mode", () => {
 		return [mocked.hostCdp, ...mocked.viewerCdps].flatMap((cdp) => cdp.send.mock.calls);
 	}
 
-	function make_popup(args: {
-		url: string;
-		lateUrl?: string;
-		opener?: unknown;
-	}) {
+	function make_popup(args: { url: string; lateUrl?: string; opener?: unknown }) {
 		const { url, lateUrl, opener = null } = args;
 
 		let current = url;
@@ -1951,8 +1954,8 @@ describe("BrowserSession web mode", () => {
 						record: mocked.stored.get("session") as Extract<SessionRecord, { mode: "web" }>,
 						operationId: "preferred-agent-tab",
 						extra: {
-						url: null,
-					},
+							url: null,
+						},
 					}),
 				);
 				expect(created.status).toBe("completed");
@@ -2061,8 +2064,8 @@ describe("BrowserSession web mode", () => {
 					record: mocked.stored.get("session") as Extract<SessionRecord, { mode: "web" }>,
 					operationId: "new-tab-url",
 					extra: {
-					url: address,
-				},
+						url: address,
+					},
 				}),
 			);
 		let finished = false;
@@ -2392,13 +2395,16 @@ describe("BrowserSession web mode", () => {
 		await vi.waitFor(() =>
 			expect(messages(viewer.socket)).toContainEqual({ t: "input-ack", timings: TIMINGS, seq: 1, ok: true }),
 		);
-		const popup = Object.assign(make_popup({ url: "about:blank", lateUrl: "https://example.com/popup", opener: page }), {
-			context: () => context,
-			mainFrame: () => ({ url: () => "https://example.com/popup", parentFrame: () => null }),
-			setViewportSize: vi.fn(async () => {}),
-			mouse: page.mouse,
-			keyboard: page.keyboard,
-		});
+		const popup = Object.assign(
+			make_popup({ url: "about:blank", lateUrl: "https://example.com/popup", opener: page }),
+			{
+				context: () => context,
+				mainFrame: () => ({ url: () => "https://example.com/popup", parentFrame: () => null }),
+				setViewportSize: vi.fn(async () => {}),
+				mouse: page.mouse,
+				keyboard: page.keyboard,
+			},
+		);
 		add_page(popup);
 		context.emit("page", popup);
 		await drain();

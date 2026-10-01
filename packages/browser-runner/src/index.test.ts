@@ -196,7 +196,10 @@ describe("auth", () => {
 	it.each(["open", "reload", "run", "close", "keep-open", "status"] as const)(
 		"rejects %s without a token",
 		async (route) => {
-			const res = await handle_request(browser_request({ route, rawBody: JSON.stringify({}), headers: {} }), make_env({}));
+			const res = await handle_request(
+				browser_request({ route, rawBody: JSON.stringify({}), headers: {} }),
+				make_env({}),
+			);
 			expect(res.status).toBe(401);
 		},
 	);
@@ -223,7 +226,10 @@ describe("auth", () => {
 
 describe("kill switch", () => {
 	it.each(["open", "reload", "run", "keep-open"] as const)("returns 503 for %s while disabled", async (route) => {
-		const res = await handle_request(browser_request({ route, rawBody: JSON.stringify({}) }), make_env({ disabled: true }));
+		const res = await handle_request(
+			browser_request({ route, rawBody: JSON.stringify({}) }),
+			make_env({ disabled: true }),
+		);
 		expect(res.status).toBe(503);
 		expect((await res.json()).error.code).toBe("disabled");
 	});
@@ -259,7 +265,10 @@ describe("open validation", () => {
 	});
 
 	it("rejects a missing owner tuple", async () => {
-		const res = await handle_request(browser_request({ route: "open", rawBody: JSON.stringify({ nodeId: "n" }) }), make_env({}));
+		const res = await handle_request(
+			browser_request({ route: "open", rawBody: JSON.stringify({ nodeId: "n" }) }),
+			make_env({}),
+		);
 		expect(res.status).toBe(400);
 	});
 
@@ -281,7 +290,10 @@ describe("open validation", () => {
 
 	it("rejects oversize html", async () => {
 		const res = await handle_request(
-			browser_request({ route: "open", rawBody: JSON.stringify({ ...valid(), html: "x".repeat(LIMITS.htmlBytes + 1) }) }),
+			browser_request({
+				route: "open",
+				rawBody: JSON.stringify({ ...valid(), html: "x".repeat(LIMITS.htmlBytes + 1) }),
+			}),
 			make_env({}),
 		);
 		expect(res.status).toBe(413);
@@ -576,11 +588,7 @@ describe("open validation", () => {
 });
 
 describe("web host routes", () => {
-	function host_request(args: {
-		route: "agent-access" | "reload";
-		body: unknown;
-		headers?: Record<string, string>;
-	}) {
+	function host_request(args: { route: "agent-access" | "reload"; body: unknown; headers?: Record<string, string> }) {
 		const { route, body, headers = { Authorization: "Bearer test-secret" } } = args;
 
 		return new Request(`${URL_BASE}/internal/browser/${route}`, {
@@ -615,10 +623,7 @@ describe("web host routes", () => {
 		);
 		expect(await res.json()).toEqual({ ok: true, session: { agentAccess: false } });
 		expect(received).toEqual([
-			[
-				"/agent-access",
-				{ sessionId: "session-1", on: false, policyRevision: 1, agentBlockedHosts: [] },
-			],
+			["/agent-access", { sessionId: "session-1", on: false, policyRevision: 1, agentBlockedHosts: [] }],
 		]);
 	});
 
@@ -757,18 +762,22 @@ describe("profile host routes", () => {
 	});
 
 	it.each(["summary", "clear", "delete"] as const)("refuses profile-%s without a token", async (route) => {
-		const res = await handle_request(profile_request({ route, body: { ...OWNERS, profileId: "profile_1" }, headers: {} }), make_env({}));
+		const res = await handle_request(
+			profile_request({ route, body: { ...OWNERS, profileId: "profile_1" }, headers: {} }),
+			make_env({}),
+		);
 		expect(res.status).toBe(401);
 	});
 
 	it("keeps profile-delete open while the runner is disabled, but not summary", async () => {
 		const env = make_env({ disabled: true });
-		expect((await handle_request(profile_request({ route: "delete", body: { ...OWNERS, profileId: "profile_1" } }), env)).status).toBe(
-			200,
-		);
-		expect((await handle_request(profile_request({ route: "summary", body: { ...OWNERS, ...PROFILE_INPUT } }), env)).status).not.toBe(
-			200,
-		);
+		expect(
+			(await handle_request(profile_request({ route: "delete", body: { ...OWNERS, profileId: "profile_1" } }), env))
+				.status,
+		).toBe(200);
+		expect(
+			(await handle_request(profile_request({ route: "summary", body: { ...OWNERS, ...PROFILE_INPUT } }), env)).status,
+		).not.toBe(200);
 	});
 
 	it("forwards saveProfile on close", async () => {
@@ -821,11 +830,7 @@ describe("profile host routes", () => {
 });
 
 describe("download and upload host routes", () => {
-	function route_request(args: {
-		route: string;
-		body: unknown;
-		headers?: Record<string, string>;
-	}) {
+	function route_request(args: { route: string; body: unknown; headers?: Record<string, string> }) {
 		const { route, body, headers = { Authorization: "Bearer test-secret" } } = args;
 
 		return new Request(`${URL_BASE}/internal/browser/${route}`, {
@@ -991,7 +996,9 @@ describe("download and upload host routes", () => {
 	it.each(["download-info", "download-push", "upload-fill", "upload-grant"])(
 		"refuses %s without a token",
 		async (route) => {
-			expect((await handle_request(route_request({ route, body: { ...OWNERS }, headers: {} }), make_env({}))).status).toBe(401);
+			expect(
+				(await handle_request(route_request({ route, body: { ...OWNERS }, headers: {} }), make_env({}))).status,
+			).toBe(401);
 		},
 	);
 });
@@ -1013,11 +1020,7 @@ describe("viewer upload route", () => {
 		};
 		return { env, forwarded };
 	}
-	function upload_request(args: {
-		method: string;
-		headers: Record<string, string>;
-		body?: BodyInit;
-	}) {
+	function upload_request(args: { method: string; headers: Record<string, string>; body?: BodyInit }) {
 		const { method, headers, body } = args;
 
 		const url = new URL(`${URL_BASE}/viewer/upload`);
@@ -1104,7 +1107,12 @@ describe("viewer upload route", () => {
 		expect(refused.headers.get("Access-Control-Allow-Origin")).toBeNull();
 		env.BROWSER_APP_ORIGINS = "";
 		expect(
-			(await handle_request(upload_request({ method: "PUT", headers: { Origin: APP, "Content-Length": "5" }, body: "hello" }), env)).status,
+			(
+				await handle_request(
+					upload_request({ method: "PUT", headers: { Origin: APP, "Content-Length": "5" }, body: "hello" }),
+					env,
+				)
+			).status,
 		).toBe(403);
 		expect(forwarded).toEqual([]);
 	});
@@ -1206,7 +1214,10 @@ describe("close and keep-open", () => {
 
 	it("passes close through to the session", async () => {
 		const env = make_env({ sessions: () => ({ ok: true, existed: true, verified: true }) });
-		const res = await handle_request(browser_request({ route: "close", rawBody: JSON.stringify({ ...OWNERS, sessionId: "s" }) }), env);
+		const res = await handle_request(
+			browser_request({ route: "close", rawBody: JSON.stringify({ ...OWNERS, sessionId: "s" }) }),
+			env,
+		);
 		expect(await res.json()).toEqual({ ok: true, existed: true, verified: true });
 	});
 
@@ -1333,7 +1344,10 @@ describe("execute_browser_command", () => {
 						return {
 							ok: false,
 							...(timeout ? { timedOut: true } : {}),
-							error: { name: timeout ? "TimeoutError" : "Error", message: timeout ? "Execution timed out" : "test failure" },
+							error: {
+								name: timeout ? "TimeoutError" : "Error",
+								message: timeout ? "Execution timed out" : "test failure",
+							},
 							stateJson: '{"step":1}',
 							viewport: null,
 							popups: { blocked: 0, urls: [] },
@@ -2158,7 +2172,10 @@ describe("cap_snippet_string_lists", () => {
 	});
 
 	it("marks a clipped single line as truncated", () => {
-		expect(cap_snippet_string_lists({ lists: [["abcdef"]], maxEntries: 50, maxBytes: 3 })).toEqual({ capped: [["abc"]], truncated: true });
+		expect(cap_snippet_string_lists({ lists: [["abcdef"]], maxEntries: 50, maxBytes: 3 })).toEqual({
+			capped: [["abc"]],
+			truncated: true,
+		});
 	});
 
 	it("caps entries and the shared byte budget", () => {
@@ -2183,7 +2200,11 @@ describe("cap_snippet_string_lists", () => {
 	});
 
 	it("evicts the largest list by bytes, not by entries", () => {
-		const res = cap_snippet_string_lists({ lists: [["x".repeat(1000)], ["a", "b", "c"]], maxEntries: 50, maxBytes: 100 });
+		const res = cap_snippet_string_lists({
+			lists: [["x".repeat(1000)], ["a", "b", "c"]],
+			maxEntries: 50,
+			maxBytes: 100,
+		});
 		expect(res.truncated).toBe(true);
 		expect(res.capped[0]).toEqual([]);
 		expect(res.capped[1]).toEqual(["a", "b", "c"]);
@@ -2303,15 +2324,21 @@ describe("session transitions", () => {
 		const web = (overrides: Partial<SessionRecord> = {}) =>
 			make_record({ mode: "web", agentAccess: true, pageTargetId: "page-1", ...overrides } as Partial<SessionRecord>);
 		expect(session_can_run({ record: web(), input: lease, now })).toEqual({ ok: true });
-		expect(session_can_run({ record: web({ agentAccess: false } as Partial<SessionRecord>), input: lease, now })).toEqual({
+		expect(
+			session_can_run({ record: web({ agentAccess: false } as Partial<SessionRecord>), input: lease, now }),
+		).toEqual({
 			ok: false,
 			reason: "agent_access_off",
 		});
-		expect(session_can_run({ record: web({ commandCount: LIMITS.webCommandsPerSession - 1 }), input: lease, now })).toEqual({ ok: true });
-		expect(session_can_run({ record: web({ commandCount: LIMITS.webCommandsPerSession }), input: lease, now })).toEqual({
-			ok: false,
-			reason: "session_limit",
-		});
+		expect(
+			session_can_run({ record: web({ commandCount: LIMITS.webCommandsPerSession - 1 }), input: lease, now }),
+		).toEqual({ ok: true });
+		expect(session_can_run({ record: web({ commandCount: LIMITS.webCommandsPerSession }), input: lease, now })).toEqual(
+			{
+				ok: false,
+				reason: "session_limit",
+			},
+		);
 		expect(session_is_expired(web({ lastActiveAt: now - LIMITS.webSessionIdleMs + 1000 }), now)).toBe(false);
 		expect(session_is_expired(web({ lastActiveAt: now - LIMITS.webSessionIdleMs }), now)).toBe(true);
 		expect(session_is_expired(web({ providerAcquiredAt: now - LIMITS.webSessionTotalMs + 1000 }), now)).toBe(false);
@@ -2330,11 +2357,7 @@ describe("session transitions", () => {
 });
 
 describe("BrowserRegistry", () => {
-	async function post(args: {
-		registry: BrowserRegistry;
-		path: string;
-		body: unknown;
-	}) {
+	async function post(args: { registry: BrowserRegistry; path: string; body: unknown }) {
 		const { registry, path, body } = args;
 
 		const res = await registry.fetch(
@@ -2354,10 +2377,10 @@ describe("BrowserRegistry", () => {
 			registry,
 			path: "/claim",
 			body: {
-			workspaceKey: "org:ws",
-			ownerId: "user_1",
-			organizationId: "org",
-		},
+				workspaceKey: "org:ws",
+				ownerId: "user_1",
+				organizationId: "org",
+			},
 		})) as { grantId: string };
 		expect(typeof claim.grantId).toBe("string");
 		expect(await post({ registry, path: "/confirm", body: { grantId: claim.grantId } })).toEqual({ ok: true });
@@ -2383,10 +2406,10 @@ describe("BrowserRegistry", () => {
 			registry,
 			path: "/claim",
 			body: {
-			workspaceKey: "org:ws",
-			ownerId: "user_1",
-			organizationId: "org",
-		},
+				workspaceKey: "org:ws",
+				ownerId: "user_1",
+				organizationId: "org",
+			},
 		})) as { error: { code: string } };
 		expect(third.error.code).toBe("workspace_busy");
 		// Another workspace still has room.
@@ -2394,10 +2417,10 @@ describe("BrowserRegistry", () => {
 			registry,
 			path: "/claim",
 			body: {
-			workspaceKey: "org:ws2",
-			ownerId: "user_2",
-			organizationId: "org",
-		},
+				workspaceKey: "org:ws2",
+				ownerId: "user_2",
+				organizationId: "org",
+			},
 		})) as { ok: boolean };
 		expect(other.ok).toBe(true);
 	});
@@ -2405,25 +2428,39 @@ describe("BrowserRegistry", () => {
 	it("enforces the user and organization caps", async () => {
 		const storage = make_storage();
 		const registry = new BrowserRegistry(storage.state as unknown as DurableObjectState, make_env({}));
-		const claim = (args: {
-			workspaceKey: string;
-			ownerId: string;
-			organizationId: string;
-		}) =>
-			{
+		const claim = (args: { workspaceKey: string; ownerId: string; organizationId: string }) => {
 			const { workspaceKey, ownerId, organizationId } = args;
 
 			return post({ registry, path: "/claim", body: { workspaceKey, ownerId, organizationId } });
 		};
-		expect(await claim({ workspaceKey: "org:ws1", ownerId: "user_1", organizationId: "org" })).toMatchObject({ ok: true });
-		expect(await claim({ workspaceKey: "org:ws2", ownerId: "user_1", organizationId: "org" })).toMatchObject({ ok: true });
-		expect(await claim({ workspaceKey: "org:ws3", ownerId: "user_1", organizationId: "org" })).toMatchObject({ ok: false, error: { code: "user_limit" } });
-		expect(await claim({ workspaceKey: "org:ws3", ownerId: "user_2", organizationId: "org" })).toMatchObject({ ok: true });
-		expect(await claim({ workspaceKey: "org:ws4", ownerId: "user_3", organizationId: "org" })).toMatchObject({ ok: true });
-		expect(await claim({ workspaceKey: "org:ws5", ownerId: "user_4", organizationId: "org" })).toMatchObject({ ok: false, error: { code: "organization_limit" } });
+		expect(await claim({ workspaceKey: "org:ws1", ownerId: "user_1", organizationId: "org" })).toMatchObject({
+			ok: true,
+		});
+		expect(await claim({ workspaceKey: "org:ws2", ownerId: "user_1", organizationId: "org" })).toMatchObject({
+			ok: true,
+		});
+		expect(await claim({ workspaceKey: "org:ws3", ownerId: "user_1", organizationId: "org" })).toMatchObject({
+			ok: false,
+			error: { code: "user_limit" },
+		});
+		expect(await claim({ workspaceKey: "org:ws3", ownerId: "user_2", organizationId: "org" })).toMatchObject({
+			ok: true,
+		});
+		expect(await claim({ workspaceKey: "org:ws4", ownerId: "user_3", organizationId: "org" })).toMatchObject({
+			ok: true,
+		});
+		expect(await claim({ workspaceKey: "org:ws5", ownerId: "user_4", organizationId: "org" })).toMatchObject({
+			ok: false,
+			error: { code: "organization_limit" },
+		});
 		// The same user in another organization is still capped by the user limit.
-		expect(await claim({ workspaceKey: "org2:ws1", ownerId: "user_1", organizationId: "org2" })).toMatchObject({ ok: false, error: { code: "user_limit" } });
-		expect(await claim({ workspaceKey: "org2:ws1", ownerId: "user_4", organizationId: "org2" })).toMatchObject({ ok: true });
+		expect(await claim({ workspaceKey: "org2:ws1", ownerId: "user_1", organizationId: "org2" })).toMatchObject({
+			ok: false,
+			error: { code: "user_limit" },
+		});
+		expect(await claim({ workspaceKey: "org2:ws1", ownerId: "user_4", organizationId: "org2" })).toMatchObject({
+			ok: true,
+		});
 	});
 
 	it("refuses a claim without owner ids", async () => {
@@ -2452,10 +2489,10 @@ describe("BrowserRegistry", () => {
 			registry,
 			path: "/claim",
 			body: {
-			workspaceKey: "org:ws",
-			ownerId: "user_1",
-			organizationId: "org",
-		},
+				workspaceKey: "org:ws",
+				ownerId: "user_1",
+				organizationId: "org",
+			},
 		})) as { ok: boolean };
 		expect(res.ok).toBe(true);
 		const stored = storage.map.get("registry") as { grants: Record<string, unknown> };
@@ -2880,15 +2917,11 @@ describe("BrowserSession tab operations", () => {
 			await vi.waitFor(() => expect(connect).toHaveBeenCalledTimes(2));
 			if (change === "access off during host connect") {
 				expect(
-					await (
-						await post("agent-access", { on: false, policyRevision: 1, agentBlockedHosts: [] })
-					).json(),
+					await (await post("agent-access", { on: false, policyRevision: 1, agentBlockedHosts: [] })).json(),
 				).toMatchObject({ ok: true });
 			} else if (change === "policy change during host connect") {
 				expect(
-					await (
-						await post("agent-access", { on: true, policyRevision: 1, agentBlockedHosts: [] })
-					).json(),
+					await (await post("agent-access", { on: true, policyRevision: 1, agentBlockedHosts: [] })).json(),
 				).toMatchObject({ ok: true });
 			} else vi.spyOn(Date, "now").mockReturnValue(expiryAt);
 			heldConnect.resolve(browser as unknown as Awaited<ReturnType<typeof provider.connect>>);
@@ -2908,9 +2941,7 @@ describe("BrowserSession tab operations", () => {
 		} else if (finalClose) {
 			await lockSaved.promise;
 			expect(
-				await (
-					await post("agent-access", { on: false, policyRevision: 1, agentBlockedHosts: [] })
-				).json(),
+				await (await post("agent-access", { on: false, policyRevision: 1, agentBlockedHosts: [] })).json(),
 			).toMatchObject({ ok: true });
 			heldLockSave.resolve();
 		}
@@ -3004,11 +3035,7 @@ describe("BrowserSession viewer", () => {
 		return { storage, session };
 	}
 
-	async function post(args: {
-		session: BrowserSession;
-		path: string;
-		body: unknown;
-	}) {
+	async function post(args: { session: BrowserSession; path: string; body: unknown }) {
 		const { session, path, body } = args;
 
 		const res = await session.fetch(
@@ -3049,10 +3076,10 @@ describe("BrowserSession viewer", () => {
 			session,
 			path: "/control/take-human",
 			body: {
-			sessionId: "session-1",
-			navGen: 1,
-			viewerId: "v1",
-		},
+				sessionId: "session-1",
+				navGen: 1,
+				viewerId: "v1",
+			},
 		})) as { control: string; controlGen: number };
 		expect(take.control).toBe("human");
 		const record = storage.map.get("session") as { inputHolder: string; controlGen: number };
@@ -3063,12 +3090,12 @@ describe("BrowserSession viewer", () => {
 			session,
 			path: "/run/begin",
 			body: {
-			sessionId: "session-1",
-			navGen: 1,
-			loadGen: 1,
-			controlGen: take.controlGen,
-			commandId: "c1",
-		},
+				sessionId: "session-1",
+				navGen: 1,
+				loadGen: 1,
+				controlGen: take.controlGen,
+				commandId: "c1",
+			},
 		})) as { error: { code: string } };
 		expect(begin.error.code).toBe("control");
 
@@ -3076,10 +3103,10 @@ describe("BrowserSession viewer", () => {
 			session,
 			path: "/control/to-agent",
 			body: {
-			sessionId: "session-1",
-			navGen: 1,
-			controlGen: take.controlGen,
-		},
+				sessionId: "session-1",
+				navGen: 1,
+				controlGen: take.controlGen,
+			},
 		})) as {
 			control: string;
 		};
@@ -3101,10 +3128,10 @@ describe("BrowserSession viewer", () => {
 			session,
 			path: "/control/take-human",
 			body: {
-			sessionId: "session-1",
-			navGen: 1,
-			viewerId: "v1",
-		},
+				sessionId: "session-1",
+				navGen: 1,
+				viewerId: "v1",
+			},
 		})) as { control: string };
 		expect(take.control).toBe("pausing");
 
@@ -3112,14 +3139,14 @@ describe("BrowserSession viewer", () => {
 			session,
 			path: "/run/finish",
 			body: {
-			sessionId: "session-1",
-			commandId: "c1",
-			tainted: false,
-			resultBytes: 10,
-			fileCount: 0,
-			fileBytes: 0,
-			viewport: null,
-		},
+				sessionId: "session-1",
+				commandId: "c1",
+				tainted: false,
+				resultBytes: 10,
+				fileCount: 0,
+				fileBytes: 0,
+				viewport: null,
+			},
 		})) as { state: string };
 		expect(finish.state).toBe("human");
 		expect((storage.map.get("session") as { control: string }).control).toBe("human");
@@ -3139,10 +3166,10 @@ describe("BrowserSession viewer", () => {
 			session,
 			path: "/control/take-human",
 			body: {
-			sessionId: "session-1",
-			navGen: 1,
-			viewerId: "v1",
-		},
+				sessionId: "session-1",
+				navGen: 1,
+				viewerId: "v1",
+			},
 		})) as { error: { code: string } };
 		expect(take.error.code).toBe("expired");
 		expect(storage.map.get("session")).toMatchObject({ control: "closing", command: null });
@@ -3162,10 +3189,10 @@ describe("BrowserSession viewer", () => {
 			session,
 			path: "/control/take-human",
 			body: {
-			sessionId: "session-1",
-			navGen: 1,
-			viewerId: "v1",
-		},
+				sessionId: "session-1",
+				navGen: 1,
+				viewerId: "v1",
+			},
 		})) as { error: { code: string } };
 		expect(take.error.code).toBe("expired");
 		expect(storage.map.get("session")).toMatchObject({ control: "closing", command: null });
@@ -3185,14 +3212,14 @@ describe("BrowserSession viewer", () => {
 			session,
 			path: "/run/finish",
 			body: {
-			sessionId: "session-1",
-			commandId: "c1",
-			tainted: false,
-			resultBytes: 10,
-			fileCount: 0,
-			fileBytes: 0,
-			viewport: null,
-		},
+				sessionId: "session-1",
+				commandId: "c1",
+				tainted: false,
+				resultBytes: 10,
+				fileCount: 0,
+				fileBytes: 0,
+				viewport: null,
+			},
 		})) as { state: string };
 		expect(finish.state).toBe("human");
 	});
@@ -3228,15 +3255,15 @@ describe("BrowserSession viewer", () => {
 			session,
 			path: "/run/finish",
 			body: {
-			sessionId: "session-1",
-			commandId: "c1",
-			tainted: false,
-			resultBytes: 0,
-			fileCount: 0,
-			fileBytes: 0,
-			viewport: null,
-			stateJson: '{"n":1}',
-		},
+				sessionId: "session-1",
+				commandId: "c1",
+				tainted: false,
+				resultBytes: 0,
+				fileCount: 0,
+				fileBytes: 0,
+				viewport: null,
+				stateJson: '{"n":1}',
+			},
 		});
 		expect(storage.map.get("scriptState:chat-a")).toMatchObject({ sessionId: "session-1", json: '{"n":1}' });
 
@@ -3244,12 +3271,12 @@ describe("BrowserSession viewer", () => {
 			session,
 			path: "/run/begin",
 			body: {
-			sessionId: "session-1",
-			navGen: 1,
-			loadGen: 1,
-			controlGen: 1,
-			commandId: nextCommandId,
-		},
+				sessionId: "session-1",
+				navGen: 1,
+				loadGen: 1,
+				controlGen: 1,
+				commandId: nextCommandId,
+			},
 		});
 		expect(begin).toMatchObject({ ok: true, lease: { scriptState } });
 	});
@@ -3264,13 +3291,13 @@ describe("BrowserSession viewer", () => {
 			session,
 			path: "/reload",
 			body: {
-			sessionId: "session-1",
-			navGen: 1,
-			sourceKind: "saved",
-			sourceVersion: "v2",
-			sourceHash: "h2",
-			html: "<h1>hi</h1>",
-		},
+				sessionId: "session-1",
+				navGen: 1,
+				sourceKind: "saved",
+				sourceVersion: "v2",
+				sourceHash: "h2",
+				html: "<h1>hi</h1>",
+			},
 		})) as { error: { code: string } };
 		expect(reloaded.error.code).toBe("busy");
 	});

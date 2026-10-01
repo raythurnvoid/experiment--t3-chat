@@ -37,11 +37,7 @@ export const is_browser = ((/* iife */) => {
  * math_clamp(-10, 0, 100); // 0
  * ```
  **/
-export function math_clamp(args: {
-	value: number;
-	min: number;
-	max: number;
-}) {
+export function math_clamp(args: { value: number; min: number; max: number }) {
 	const { value, min, max } = args;
 
 	return Math.min(Math.max(value, min), max);
@@ -54,9 +50,9 @@ function is_convex_runtime() {
 
 	return Boolean(
 		process.env.CONVEX_CLOUD_URL ||
-			process.env.CONVEX_SITE_URL ||
-			process.env.CONVEX_URL ||
-			process.env.VITE_CONVEX_HTTP_URL,
+		process.env.CONVEX_SITE_URL ||
+		process.env.CONVEX_URL ||
+		process.env.VITE_CONVEX_HTTP_URL,
 	);
 }
 

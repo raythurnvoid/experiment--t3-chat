@@ -58,12 +58,7 @@ async function hmac(env: OauthFixture_Env, text: string) {
 /**
  * Sign a payload of one kind (`kind` stops a refresh token from working as a code or an access token).
  */
-async function sign(args: {
-	env: OauthFixture_Env;
-	kind: string;
-	seconds: number;
-	payload: Record<string, string>;
-}) {
+async function sign(args: { env: OauthFixture_Env; kind: string; seconds: number; payload: Record<string, string> }) {
 	const { env, kind, seconds, payload } = args;
 
 	const body = base64url(
@@ -72,11 +67,7 @@ async function sign(args: {
 	return `${body}.${await hmac(env, body)}`;
 }
 
-async function verify(args: {
-	env: OauthFixture_Env;
-	kind: string;
-	token: string;
-}) {
+async function verify(args: { env: OauthFixture_Env; kind: string; token: string }) {
 	const { env, kind, token } = args;
 
 	const [body = "", signature = ""] = token.split(".");
@@ -125,11 +116,7 @@ async function issue_tokens(env: OauthFixture_Env, grant: { clientId: string; re
  * check that it lists the redirect URI, so the page never sends a code to an address the client did
  * not name.
  */
-async function handle_authorize_page(args: {
-	env: OauthFixture_Env;
-	url: URL;
-	origin: string;
-}) {
+async function handle_authorize_page(args: { env: OauthFixture_Env; url: URL; origin: string }) {
 	const { env, url, origin } = args;
 
 	const params = url.searchParams;
@@ -165,13 +152,13 @@ async function handle_authorize_page(args: {
 		kind: "request",
 		seconds: CODE_SECONDS,
 		payload: {
-		clientId,
-		redirectUri,
-		resource,
-		challenge,
-		scope: params.get("scope") ?? SCOPE,
-		state: params.get("state") ?? "",
-	},
+			clientId,
+			redirectUri,
+			resource,
+			challenge,
+			scope: params.get("scope") ?? SCOPE,
+			state: params.get("state") ?? "",
+		},
 	});
 	const html = `<!doctype html>
 <html lang="en">
@@ -194,11 +181,7 @@ async function handle_authorize_page(args: {
 	});
 }
 
-async function handle_authorize_decision(args: {
-	env: OauthFixture_Env;
-	request: Request;
-	origin: string;
-}) {
+async function handle_authorize_decision(args: { env: OauthFixture_Env; request: Request; origin: string }) {
 	const { env, request, origin } = args;
 
 	const form = await request.formData();
@@ -218,12 +201,12 @@ async function handle_authorize_decision(args: {
 				kind: "code",
 				seconds: CODE_SECONDS,
 				payload: {
-				clientId: String(signed.clientId),
-				redirectUri: String(signed.redirectUri),
-				resource: String(signed.resource),
-				challenge: String(signed.challenge),
-				scope: String(signed.scope),
-			},
+					clientId: String(signed.clientId),
+					redirectUri: String(signed.redirectUri),
+					resource: String(signed.resource),
+					challenge: String(signed.challenge),
+					scope: String(signed.scope),
+				},
 			}),
 		);
 	} else {
@@ -276,7 +259,9 @@ async function handle_server(args: {
 	const needsToken = name === "oauth-list" || body.includes('"tools/call"');
 
 	const authorization = request.headers.get("authorization") ?? "";
-	const access = authorization.startsWith("Bearer ") ? await verify({ env, kind: "access", token: authorization.slice(7) }) : null;
+	const access = authorization.startsWith("Bearer ")
+		? await verify({ env, kind: "access", token: authorization.slice(7) })
+		: null;
 	if (needsToken && access?.resource !== serverUrl) {
 		const challenge = `Bearer resource_metadata="${origin}/.well-known/oauth-protected-resource/${name}/mcp", scope="${SCOPE}"`;
 		return new Response(null, { status: 401, headers: { "WWW-Authenticate": challenge } });

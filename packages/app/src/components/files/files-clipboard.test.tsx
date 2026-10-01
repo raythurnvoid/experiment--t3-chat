@@ -165,11 +165,7 @@ function push_run(run: TransferRun) {
 	});
 }
 
-function press_key(args: {
-	target: HTMLElement;
-	key: string;
-	ctrlKey?: boolean;
-}) {
+function press_key(args: { target: HTMLElement; key: string; ctrlKey?: boolean }) {
 	const { target, key, ctrlKey = true } = args;
 
 	const result = fireEvent.keyDown(target, { key, code: key === "Escape" ? key : `Key${key.toUpperCase()}`, ctrlKey });

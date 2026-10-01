@@ -63,11 +63,7 @@ async function read_request_text_bounded(request: Request, maxBytes: number) {
 	return new TextDecoder().decode(bytes);
 }
 
-async function parse_request_json<T>(args: {
-	request: Request;
-	schema: z.ZodSchema<T>;
-	maxBytes: number;
-}) {
+async function parse_request_json<T>(args: { request: Request; schema: z.ZodSchema<T>; maxBytes: number }) {
 	const { request, schema, maxBytes } = args;
 
 	const declaredBytes = Number(request.headers.get("content-length") ?? Number.NaN);

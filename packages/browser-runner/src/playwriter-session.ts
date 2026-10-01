@@ -1173,11 +1173,7 @@ export class PlaywriterConnectionGateway extends WorkerEntrypoint<RemoteEnv, Pla
 }
 
 // Called only after the main runner's shared-secret check.
-export async function handle_playwriter_request(args: {
-	request: Request;
-	env: RemoteEnv;
-	ctx: Context | undefined;
-}) {
+export async function handle_playwriter_request(args: { request: Request; env: RemoteEnv; ctx: Context | undefined }) {
 	const { request, env, ctx } = args;
 
 	const path = new URL(request.url).pathname.replace("/internal/playwriter", "");

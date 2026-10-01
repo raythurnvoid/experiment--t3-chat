@@ -77,35 +77,33 @@ export type FilesNameInputControl_Props = Omit<
 export const FilesNameInputControl = memo(function FilesNameInputControl(props: FilesNameInputControl_Props) {
 	const { kind, onValueChange, onEditStart, ...rest } = props;
 
-	const syncInputValue = useFn((args: {
-		element: HTMLInputElement;
-		nextValue: string;
-		nextSelectionStart?: number;
-	}) => {
-		const { element, nextValue, nextSelectionStart } = args;
+	const syncInputValue = useFn(
+		(args: { element: HTMLInputElement; nextValue: string; nextSelectionStart?: number }) => {
+			const { element, nextValue, nextSelectionStart } = args;
 
-		if (element.value !== nextValue) {
-			// Update the DOM immediately because beforeinput/paste handlers prevent the browser default.
-			element.value = nextValue;
-		}
+			if (element.value !== nextValue) {
+				// Update the DOM immediately because beforeinput/paste handlers prevent the browser default.
+				element.value = nextValue;
+			}
 
-		// Mirror the same value into the consumer's controlled state.
-		onValueChange(nextValue);
+			// Mirror the same value into the consumer's controlled state.
+			onValueChange(nextValue);
 
-		if (nextSelectionStart === undefined) {
-			return;
-		}
-
-		queueMicrotask(() => {
-			if (document.activeElement !== element) {
+			if (nextSelectionStart === undefined) {
 				return;
 			}
 
-			// Restore the caret after React has reconciled the controlled value.
-			const safeSelectionStart = Math.min(nextSelectionStart, element.value.length);
-			element.setSelectionRange(safeSelectionStart, safeSelectionStart);
-		});
-	});
+			queueMicrotask(() => {
+				if (document.activeElement !== element) {
+					return;
+				}
+
+				// Restore the caret after React has reconciled the controlled value.
+				const safeSelectionStart = Math.min(nextSelectionStart, element.value.length);
+				element.setSelectionRange(safeSelectionStart, safeSelectionStart);
+			});
+		},
+	);
 
 	const replaceInputSelection = useFn((element: HTMLInputElement, insertedText: string) => {
 		// Read the current selection so typed and pasted text replace the same range natively.

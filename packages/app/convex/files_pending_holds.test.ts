@@ -176,7 +176,11 @@ describe("proposal hold expiry", () => {
 
 		// This edit is stamped before the review window ends, so it must not shorten the expiry.
 		await f.t.run((ctx) =>
-			files_db_patch_pending_update({ ctx, pendingUpdateId: d.proposal._id, value: { updatedAt: d.proposal.updatedAt + 1000 } }),
+			files_db_patch_pending_update({
+				ctx,
+				pendingUpdateId: d.proposal._id,
+				value: { updatedAt: d.proposal.updatedAt + 1000 },
+			}),
 		);
 		expect((await read_draft(f, d.proposal)).expiresAt).toBe(endedAt + FOUR_HOURS);
 
@@ -255,7 +259,9 @@ describe("proposal hold expiry", () => {
 		const f = await fixture();
 		const d = await draft(f);
 		vi.setSystemTime(Date.now() + 60_000);
-		await f.t.run((ctx) => files_db_patch_pending_update({ ctx, pendingUpdateId: d.proposal._id, value: { updatedAt: Date.now() } }));
+		await f.t.run((ctx) =>
+			files_db_patch_pending_update({ ctx, pendingUpdateId: d.proposal._id, value: { updatedAt: Date.now() } }),
+		);
 		const edited = await read_draft(f, d.proposal);
 		expect(edited.expiresAt).toBe(d.proposal.expiresAt + 60_000);
 		// The check still wakes at the first deadline. It finds nothing due and waits for the new one.
@@ -340,7 +346,9 @@ describe("proposal hold expiry", () => {
 		// Edit the parent later, so only the leaf is due. Otherwise the expiry run would check the
 		// parent too and drain these holds first.
 		vi.setSystemTime(Date.now() + 60 * 60 * 1000);
-		await f.t.run((ctx) => files_db_patch_pending_update({ ctx, pendingUpdateId: parent.proposal._id, value: { updatedAt: Date.now() } }));
+		await f.t.run((ctx) =>
+			files_db_patch_pending_update({ ctx, pendingUpdateId: parent.proposal._id, value: { updatedAt: Date.now() } }),
+		);
 		vi.setSystemTime(leaf.proposal.expiresAt);
 		await expire(f);
 		expect(await f.t.run((ctx) => ctx.db.query("files_pending_holds").collect())).toHaveLength(1);

@@ -79,12 +79,8 @@ function upload_failure(failure: { name?: string; message: string }) {
  * lives here because an interactive grant could in principle carry the scope: only the sealed
  * processing grant may upload.
  */
-async function authorize_service_upload_request(args: {
-	ctx: ActionCtx;
-	request: Request;
-	route: string;
-}) {
-	const { ctx, request, route} = args;
+async function authorize_service_upload_request(args: { ctx: ActionCtx; request: Request; route: string }) {
+	const { ctx, request, route } = args;
 
 	const auth = await public_api_authorize_request({
 		ctx,

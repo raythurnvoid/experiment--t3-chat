@@ -291,11 +291,7 @@ type ViewReads = {
  * Count planned reads before they run. Keep room for one more doc of the largest size per planned doc,
  * so the reads cannot pass the byte limit.
  */
-function reads_try_reserve(args: {
-	reads: ViewReads;
-	calls: number;
-	docs: number;
-}) {
+function reads_try_reserve(args: { reads: ViewReads; calls: number; docs: number }) {
 	const { reads, calls, docs } = args;
 
 	if (
@@ -311,11 +307,7 @@ function reads_try_reserve(args: {
 	return true;
 }
 
-function reads_reserve(args: {
-	reads: ViewReads;
-	calls: number;
-	docs: number;
-}) {
+function reads_reserve(args: { reads: ViewReads; calls: number; docs: number }) {
 	const { reads, calls, docs } = args;
 
 	if (!reads_try_reserve({ reads, calls, docs })) {
@@ -445,11 +437,7 @@ async function db_read_folder_chain(args: {
  * The live restricted scope of a file that the public view may show. Undefined when the file or a
  * folder above it cannot be shown.
  */
-async function db_read_live_file_scope(args: {
-	ctx: QueryCtx;
-	reads: ViewReads;
-	node: Doc<"files_nodes">;
-}) {
+async function db_read_live_file_scope(args: { ctx: QueryCtx; reads: ViewReads; node: Doc<"files_nodes"> }) {
 	const { ctx, reads, node } = args;
 
 	const chain = await db_read_folder_chain({ ctx, reads, parentId: node.parentId });

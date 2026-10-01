@@ -62,7 +62,7 @@ async function execute(args: {
 	abortSignal?: AbortSignal;
 	workspace?: "current" | "personal";
 }) {
-	const { tool, toolCallId = "view-1", workspace = "current", abortSignal} = args;
+	const { tool, toolCallId = "view-1", workspace = "current", abortSignal } = args;
 
 	if (!tool.execute) throw new Error("Missing execute");
 	return (await tool.execute(
@@ -71,12 +71,8 @@ async function execute(args: {
 	)) as InferToolOutput<Viewer>;
 }
 
-async function convert(args: {
-	tool: Viewer;
-	output: InferToolOutput<Viewer>;
-	toolCallId?: string;
-}) {
-	const { tool, toolCallId = "view-1", output} = args;
+async function convert(args: { tool: Viewer; output: InferToolOutput<Viewer>; toolCallId?: string }) {
+	const { tool, toolCallId = "view-1", output } = args;
 
 	if (!tool.toModelOutput) throw new Error("Missing converter");
 	return await tool.toModelOutput({
@@ -216,7 +212,9 @@ describe("ai_chat_tool_create_view_image", () => {
 	test("does not read a file when source resolution fails", async () => {
 		const { tool, resolve, readSource } = makeReader();
 		resolve.mockResolvedValue({ _nay: { message: "Source access revoked" } });
-		expect((await execute({ tool, toolCallId: "view-1", abortSignal: undefined, workspace: "personal" })).metadata.reason).toBe("unavailable");
+		expect(
+			(await execute({ tool, toolCallId: "view-1", abortSignal: undefined, workspace: "personal" })).metadata.reason,
+		).toBe("unavailable");
 		expect(readSource).not.toHaveBeenCalled();
 		expect(fetch).not.toHaveBeenCalled();
 	});
@@ -248,7 +246,10 @@ describe("ai_chat_tool_create_view_image", () => {
 		bytes.set(png);
 		vi.mocked(fetch).mockImplementation(async () => new Response(bytes));
 		const { tool } = makeReader({ size: bytes.length });
-		const results = await Promise.all([execute({ tool, toolCallId: "one" }), execute({ tool, toolCallId: "two", abortSignal: undefined, workspace: "personal" })]);
+		const results = await Promise.all([
+			execute({ tool, toolCallId: "one" }),
+			execute({ tool, toolCallId: "two", abortSignal: undefined, workspace: "personal" }),
+		]);
 		expect(results.map((result) => result.metadata.status)).toEqual(["succeeded", "errored"]);
 		expect(results[1]?.metadata.reason).toBe("limit");
 		expect(fetch).toHaveBeenCalledTimes(1);
@@ -303,7 +304,9 @@ describe("ai_chat_tool_create_view_image", () => {
 		const { tool, observations, runQuery } = makeReader();
 		const controller = new AbortController();
 		controller.abort();
-		expect((await execute({ tool, toolCallId: "view-1", abortSignal: controller.signal })).metadata.status).toBe("cancelled");
+		expect((await execute({ tool, toolCallId: "view-1", abortSignal: controller.signal })).metadata.status).toBe(
+			"cancelled",
+		);
 		expect(observations.size).toBe(0);
 		expect(runQuery).not.toHaveBeenCalled();
 		expect(fetch).not.toHaveBeenCalled();

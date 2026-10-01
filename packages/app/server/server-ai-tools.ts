@@ -737,11 +737,11 @@ export function ai_chat_tool_create_bash(args: {
 			const context = ctxData.getWorkspaceContext?.();
 			let instructions = context
 				? await ai_chat_context_read_instructions({
-					ctx,
-					context,
-					paths: result.metadata.observedPaths,
-					maxBytes: ai_chat_INSTRUCTIONS_READ_MAX_BYTES,
-				})
+						ctx,
+						context,
+						paths: result.metadata.observedPaths,
+						maxBytes: ai_chat_INSTRUCTIONS_READ_MAX_BYTES,
+					})
 				: "";
 			if (context && result.metadata.observedPathsTruncated) {
 				instructions += `${instructions ? "\n\n" : ""}Workspace guidance is incomplete: inspect fewer app paths per Bash call.`;
@@ -783,11 +783,7 @@ export type ai_chat_WriteToolName = (typeof ai_chat_WRITE_TOOL_NAMES)[number];
  * A later hunk becomes an empty line. Without it, two hunks from far apart in the file would
  * read as one continuous block.
  */
-function ai_chat_tool_edit_file_create_diff(args: {
-	path: string;
-	before: string;
-	after: string;
-}) {
+function ai_chat_tool_edit_file_create_diff(args: { path: string; before: string; after: string }) {
 	const { path, before, after } = args;
 
 	const patch = createPatch(path, before, after);
@@ -973,12 +969,16 @@ export function ai_chat_tool_create_edit_file(
 					oldString,
 					newString,
 					opts: {
-					replaceAll: args.replaceAll,
-					mode: "auto",
-				},
+						replaceAll: args.replaceAll,
+						mode: "auto",
+					},
 				});
 				const modifiedText = files_normalize_ai_edit_content(modifiedTextRaw, currentFileContent.content);
-				const diff = ai_chat_tool_edit_file_create_diff({ path: normalizedPath, before: currentFileContent.content, after: modifiedText });
+				const diff = ai_chat_tool_edit_file_create_diff({
+					path: normalizedPath,
+					before: currentFileContent.content,
+					after: modifiedText,
+				});
 
 				const written = await files_agent_write_file_text(ctx, {
 					organizationId,
@@ -1021,11 +1021,11 @@ export function ai_chat_tool_create_edit_file(
 				const context = ctxData.getWorkspaceContext?.();
 				const instructions = context
 					? await ai_chat_context_read_instructions({
-						ctx,
-						context,
-						paths: [{ workspace: args.workspace, path: normalizedPath }],
-						maxBytes: ai_chat_INSTRUCTIONS_READ_MAX_BYTES,
-					})
+							ctx,
+							context,
+							paths: [{ workspace: args.workspace, path: normalizedPath }],
+							maxBytes: ai_chat_INSTRUCTIONS_READ_MAX_BYTES,
+						})
 					: "";
 				return {
 					title: normalizedPath,
@@ -1167,11 +1167,11 @@ export function ai_chat_tool_create_set_file_metadata(
 			const context = ctxData.getWorkspaceContext?.();
 			const instructions = context
 				? await ai_chat_context_read_instructions({
-					ctx,
-					context,
-					paths: [{ workspace: args.workspace, path: normalizedPath }],
-					maxBytes: ai_chat_INSTRUCTIONS_READ_MAX_BYTES,
-				})
+						ctx,
+						context,
+						paths: [{ workspace: args.workspace, path: normalizedPath }],
+						maxBytes: ai_chat_INSTRUCTIONS_READ_MAX_BYTES,
+					})
 				: "";
 			return {
 				title: normalizedPath,
@@ -1370,12 +1370,17 @@ export async function ai_chat_write_file_outputs(args: {
 }) {
 	const { ctx, agentSource, files, options } = args;
 
-	if (options.modeId !== "agent") return ai_chat_file_result({ title: options.title, status: "errored", files: [], reason: "agent_required" });
-	const destinations = new Map<"current" | "personal", Parameters<typeof files_ingestion_write>[0]["files"][number]["scope"]>();
+	if (options.modeId !== "agent")
+		return ai_chat_file_result({ title: options.title, status: "errored", files: [], reason: "agent_required" });
+	const destinations = new Map<
+		"current" | "personal",
+		Parameters<typeof files_ingestion_write>[0]["files"][number]["scope"]
+	>();
 	for (const { workspace } of files) {
 		if (destinations.has(workspace)) continue;
 		const resolved = await ctx.runQuery(internal.ai_chat_workspaces.resolve, { source: agentSource, workspace });
-		if (resolved._nay) return ai_chat_file_result({ title: options.title, status: "errored", files: [], reason: "unavailable" });
+		if (resolved._nay)
+			return ai_chat_file_result({ title: options.title, status: "errored", files: [], reason: "unavailable" });
 		const { organizationId, workspaceId, membershipId } = resolved._yay;
 		destinations.set(workspace, {
 			organizationId,
@@ -2073,7 +2078,7 @@ export async function ai_chat_tool_create_mcp_tools(args: {
 								bytesIn: number;
 								result: ai_chat_McpToolOutput | null;
 							}) => {
-								const { result, bytesIn, outcome} = args;
+								const { result, bytesIn, outcome } = args;
 
 								await ctx.runMutation(internal.plugins_mcp.record_call, {
 									source,
@@ -2307,7 +2312,11 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 	describe("ai_chat_tool_edit_file_create_diff", () => {
 		test("bounds a large edit preview", () => {
-			const diff = ai_chat_tool_edit_file_create_diff({ path: "/large.txt", before: "a".repeat(5000), after: "b".repeat(5000) });
+			const diff = ai_chat_tool_edit_file_create_diff({
+				path: "/large.txt",
+				before: "a".repeat(5000),
+				after: "b".repeat(5000),
+			});
 			expect(diff).toHaveLength(4122);
 			expect(diff).toContain("[Diff preview truncated.]");
 		});

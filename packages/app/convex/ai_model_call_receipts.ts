@@ -654,7 +654,11 @@ export const save_usage = internalMutation({
 		}
 
 		const { state: _state, ...usage } = args.usage;
-		const tokens = await db_deliver_charge({ ctx, receipt: { ...receipt, responseId, providerModelId }, component: { kind: "tokens", usage } });
+		const tokens = await db_deliver_charge({
+			ctx,
+			receipt: { ...receipt, responseId, providerModelId },
+			component: { kind: "tokens", usage },
+		});
 		await ctx.db.patch("ai_model_call_receipts", receipt._id, {
 			usage: args.usage,
 			responseId,
@@ -676,7 +680,11 @@ export const save_image = internalMutation({
 		const receipt = await db_get_receipt(ctx, args.modelCallId);
 		if (receipt.images.some((image) => image.imageCallId === args.imageCallId)) return null;
 
-		const charge = await db_deliver_charge({ ctx, receipt, component: { kind: "image", imageCallId: args.imageCallId } });
+		const charge = await db_deliver_charge({
+			ctx,
+			receipt,
+			component: { kind: "image", imageCallId: args.imageCallId },
+		});
 		await ctx.db.patch("ai_model_call_receipts", receipt._id, {
 			images: [...receipt.images, { imageCallId: args.imageCallId, charge }],
 		});

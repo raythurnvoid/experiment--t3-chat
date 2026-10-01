@@ -84,12 +84,8 @@ async function flush_microtasks() {
 	for (let i = 0; i < 8; i++) await Promise.resolve();
 }
 
-function create_editor(args: {
-	src: string;
-	kind?: "image" | "video";
-	uploadId?: string;
-}) {
-	const { kind = "image", src, uploadId} = args;
+function create_editor(args: { src: string; kind?: "image" | "video"; uploadId?: string }) {
+	const { kind = "image", src, uploadId } = args;
 
 	const element = document.createElement("div");
 	document.body.append(element);

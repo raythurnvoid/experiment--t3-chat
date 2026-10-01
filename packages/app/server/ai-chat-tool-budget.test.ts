@@ -23,8 +23,8 @@ describe("ai_chat_tool_budget_apply", () => {
 			tools: { edit: tool({ inputSchema: z.object({}), execute: write }) },
 			budget,
 			reserve: {
-			resultReservedBytes: 128 * 1024,
-		},
+				resultReservedBytes: 128 * 1024,
+			},
 		});
 		const first = tools.edit.execute!({}, { toolCallId: "one", messages: [] });
 		const second = tools.edit.execute!({}, { toolCallId: "two", messages: [] });
@@ -55,8 +55,8 @@ describe("ai_chat_tool_budget_apply", () => {
 			tools: { call: tool({ inputSchema: z.object({}), execute: call }) },
 			budget,
 			reserve: {
-			resultReservedBytes: 72 * 1024,
-		},
+				resultReservedBytes: 72 * 1024,
+			},
 		});
 		const running = [1, 2, 3, 4, 5, 6].map((index) =>
 			tools.call.execute!({}, { toolCallId: `call-${index}`, messages: [] }),
@@ -199,8 +199,8 @@ describe("ai_chat_tool_budget_apply", () => {
 			tools: { read: tool({ inputSchema: z.object({}), execute: read }) },
 			budget,
 			reserve: {
-			resultReservedBytes: 128 * 1024,
-		},
+				resultReservedBytes: 128 * 1024,
+			},
 		});
 		const stop = new AbortController();
 		const running = [1, 2].map((index) =>
@@ -228,8 +228,8 @@ describe("ai_chat_tool_budget_apply", () => {
 			tools: { read: tool({ inputSchema: z.object({}), execute: read }) },
 			budget,
 			reserve: {
-			resultReservedBytes: 128 * 1024,
-		},
+				resultReservedBytes: 128 * 1024,
+			},
 		});
 		await tools.read.execute!({}, { toolCallId: "large", messages: [] });
 		await expect(tools.read.execute!({}, { toolCallId: "next", messages: [] })).rejects.toThrow("Tool budget reached");
@@ -298,8 +298,8 @@ describe("ai_chat_tool_budget_apply", () => {
 			tools: { edit: tool({ inputSchema: z.object({}), execute: write }) },
 			budget,
 			reserve: {
-			resultReservedBytes: 128 * 1024,
-		},
+				resultReservedBytes: 128 * 1024,
+			},
 		});
 		const result = await tools.edit.execute!({}, { toolCallId: "write", messages: [] });
 		expect(write).toHaveBeenCalledOnce();
@@ -327,8 +327,8 @@ describe("ai_chat_tool_budget_apply", () => {
 			tools: { echo: tool({ inputSchema: z.object({}), execute: call }) },
 			budget,
 			reserve: {
-			resultReservedBytes: 128 * 1024,
-		},
+				resultReservedBytes: 128 * 1024,
+			},
 		});
 		const result = await tools.echo.execute!({}, { toolCallId: "mcp", messages: [] });
 		expect(result).toMatchObject({ metadata: { kind: "mcp_result", truncated: true } });

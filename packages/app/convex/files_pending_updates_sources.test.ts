@@ -50,12 +50,8 @@ async function fixture(homeChat = false) {
 	});
 	if (created._nay) throw new Error(created._nay.message);
 	const threadId = created._yay.threadId;
-	async function folder(args: {
-		root: typeof home;
-		path: string;
-		fromChat?: boolean;
-	}) {
-		const { root, fromChat = true, path} = args;
+	async function folder(args: { root: typeof home; path: string; fromChat?: boolean }) {
+		const { root, fromChat = true, path } = args;
 
 		const result = await t.mutation(internal.files_nodes.create_private_node_by_path, {
 			organizationId: root.organizationId,

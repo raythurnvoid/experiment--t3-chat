@@ -2696,8 +2696,8 @@ export const agent_open_browser = internalAction({
 			operationId: args.operationId,
 			operationDeadline: args.operationDeadline,
 			admittedAgentControl: previous._yay
-					? { sessionId: previous._yay._id, controlGen: previous._yay.controlGen }
-					: undefined,
+				? { sessionId: previous._yay._id, controlGen: previous._yay.controlGen }
+				: undefined,
 			source: args.source,
 			browserIntent: args.browserIntent,
 			toolCallId: args.toolCallId,
@@ -2789,8 +2789,8 @@ export const agent_open_file_browser = internalAction({
 			operationId: args.operationId,
 			operationDeadline: args.operationDeadline,
 			admittedAgentControl: previous._yay
-					? { sessionId: previous._yay._id, controlGen: previous._yay.controlGen }
-					: undefined,
+				? { sessionId: previous._yay._id, controlGen: previous._yay.controlGen }
+				: undefined,
 			source: args.source,
 			browserIntent: args.browserIntent,
 			toolCallId: args.toolCallId,
@@ -2840,9 +2840,7 @@ export const get_agent_browser_catalog = internalQuery({
 			if (session.control !== "ready" || !session.runnerSessionId) continue;
 			if (
 				session.mode === "web" &&
-				(webAllowed._nay ||
-					!session.agentAccess ||
-					session.policyRevision !== args.browserIntent.policyRevision)
+				(webAllowed._nay || !session.agentAccess || session.policyRevision !== args.browserIntent.policyRevision)
 			)
 				continue;
 			const access = await check_browser_session_access_db(ctx, {
@@ -4758,7 +4756,7 @@ async function sync_browser_preferences(args: {
 	preference: Doc<"files_browser_preferences">;
 	membershipId: Id<"organizations_workspaces_users">;
 }): Promise<BrowserActionResult<null>> {
-	const { ctx, preference, membershipId} = args;
+	const { ctx, preference, membershipId } = args;
 
 	const cloud = (await ctx.runQuery(internal.files_browser.load_browser_session, {
 		userId: preference.ownerId,
@@ -4816,7 +4814,7 @@ async function change_browser_preferences_from_user(args: {
 	membershipId: Id<"organizations_workspaces_users">;
 	change: FunctionArgs<typeof internal.files_browser.change_browser_preferences>["change"];
 }): Promise<BrowserActionResult<Infer<typeof browser_preferences_public_validator>>> {
-	const { ctx, membershipId, change} = args;
+	const { ctx, membershipId, change } = args;
 
 	const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
 	const user = userAuth ? await ctx.runQuery(internal.users.get, { userId: userAuth.id }) : null;
@@ -4843,14 +4841,22 @@ export const set_browser_agent_access = action({
 	args: { membershipId: v.id("organizations_workspaces_users"), enabled: v.boolean() },
 	returns: v_result({ _yay: browser_preferences_public_validator }),
 	handler: async (ctx, args): Promise<BrowserActionResult<Infer<typeof browser_preferences_public_validator>>> =>
-		change_browser_preferences_from_user({ ctx, membershipId: args.membershipId, change: { kind: "access", enabled: args.enabled } }),
+		change_browser_preferences_from_user({
+			ctx,
+			membershipId: args.membershipId,
+			change: { kind: "access", enabled: args.enabled },
+		}),
 });
 
 export const set_agent_blocked_hosts = action({
 	args: { membershipId: v.id("organizations_workspaces_users"), hosts: v.array(v.string()) },
 	returns: v_result({ _yay: browser_preferences_public_validator }),
 	handler: async (ctx, args): Promise<BrowserActionResult<Infer<typeof browser_preferences_public_validator>>> =>
-		change_browser_preferences_from_user({ ctx, membershipId: args.membershipId, change: { kind: "hosts", hosts: args.hosts } }),
+		change_browser_preferences_from_user({
+			ctx,
+			membershipId: args.membershipId,
+			change: { kind: "hosts", hosts: args.hosts },
+		}),
 });
 
 /**
@@ -5266,7 +5272,8 @@ async function disconnect_user_connections(ctx: MutationCtx, args: { userId: Id<
 		.withIndex("by_owner", (q) => q.eq("ownerId", args.userId))
 		.filter((q) => q.or(q.neq(q.field("encryptedShareId"), null), q.eq(q.field("active"), true)))
 		.take(BROWSER_PROFILE_DELETE_BATCH_SIZE);
-	for (const connection of connections) await playwriter_browser_db_disconnect({ ctx, connection, reason: "account_deleted" });
+	for (const connection of connections)
+		await playwriter_browser_db_disconnect({ ctx, connection, reason: "account_deleted" });
 	if (connections.length === BROWSER_PROFILE_DELETE_BATCH_SIZE)
 		await ctx.scheduler.runAfter(0, internal.files_browser.disconnect_user_browser_connections, args);
 }

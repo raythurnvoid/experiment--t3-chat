@@ -217,10 +217,10 @@ export function bash_cat_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFil
 								dbFilesDoc.textKind !== null
 									? `cat: ${file}: content is not available from materialized chunks\n`
 									: bash_build_unreadable_file_advisory({
-										currentWorkspacePath: pathResolution.basePath,
-										normalizedPath: target.dbFilesPath,
-										contentType: dbFilesDoc.contentType,
-									});
+											currentWorkspacePath: pathResolution.basePath,
+											normalizedPath: target.dbFilesPath,
+											contentType: dbFilesDoc.contentType,
+										});
 						} else {
 							stderr +=
 								dbFilesDoc?.kind === "folder"
@@ -292,10 +292,10 @@ export function bash_cat_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFil
 						dbFilesDoc.textKind !== null
 							? `cat: ${file}: content is not available from materialized chunks\n`
 							: bash_build_unreadable_file_advisory({
-								currentWorkspacePath: pathResolution.basePath,
-								normalizedPath: target.dbFilesPath,
-								contentType: dbFilesDoc.contentType,
-							});
+									currentWorkspacePath: pathResolution.basePath,
+									normalizedPath: target.dbFilesPath,
+									contentType: dbFilesDoc.contentType,
+								});
 					exitCode = bash_COMMAND_EXIT_FAILURE;
 					continue;
 				}

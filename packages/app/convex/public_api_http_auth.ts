@@ -175,11 +175,7 @@ export async function public_api_resolve_live_principal(
  * nullable scope on the shared one, and the returned list is already filtered to what the person
  * behind the key may still do.
  */
-export async function public_api_authorize_key_inspection(args: {
-	ctx: ActionCtx;
-	request: Request;
-	route: string;
-}) {
+export async function public_api_authorize_key_inspection(args: { ctx: ActionCtx; request: Request; route: string }) {
 	const { ctx, request } = args;
 
 	const token = get_bearer_token(request);

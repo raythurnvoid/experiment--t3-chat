@@ -492,8 +492,10 @@ async function log_outbound_event(input: {
 }
 
 async function capped_outbound_response(response: Response, fileRead: boolean) {
-	const { bytes, truncated } = await read_bounded_stream(response.body,
-		fileRead ? LIMITS.fileReadResponseBytes : LIMITS.fetchResponseBytes);
+	const { bytes, truncated } = await read_bounded_stream(
+		response.body,
+		fileRead ? LIMITS.fileReadResponseBytes : LIMITS.fetchResponseBytes,
+	);
 	return {
 		// Refuse a body over the cap instead of returning its first bytes, because a cut file would
 		// look complete to the snippet. 204, 205 and 304 carry no body at all, and `Response` throws
@@ -594,8 +596,11 @@ export async function handle_outbound_gateway_request(request: Request, props: E
 
 		const app = props.app;
 		// Only the bounded byte API gets a larger body. Other URLs keep the network cap.
-		const fileRead = app !== undefined && nextUrl.origin === app.origin &&
-			nextUrl.pathname === "/api/v1/files/read-bytes" && nextMethod === "POST";
+		const fileRead =
+			app !== undefined &&
+			nextUrl.origin === app.origin &&
+			nextUrl.pathname === "/api/v1/files/read-bytes" &&
+			nextMethod === "POST";
 		if (app && is_app_public_api_url(nextUrl, app)) {
 			// A public redirect cannot choose an app grant, even if it started with a selector.
 			if (workspace === null) return new Response("Blocked app redirect", { status: 403 });
@@ -861,15 +866,28 @@ function parse_network_policy(
 
 function parse_app_runtime(value: unknown): { ok: true; app: AppRuntime | null } | { ok: false; response: Response } {
 	if (value === undefined || value === null) return { ok: true, app: null };
-	if (!is_record(value) || typeof value.origin !== "string" || !is_record(value.tokens) ||
+	if (
+		!is_record(value) ||
+		typeof value.origin !== "string" ||
+		!is_record(value.tokens) ||
 		Object.keys(value).some((key) => key !== "origin" && key !== "tokens") ||
-		Object.keys(value.tokens).some((key) => key !== "current" && key !== "personal")) {
+		Object.keys(value.tokens).some((key) => key !== "current" && key !== "personal")
+	) {
 		return { ok: false, response: invalid_request("`app` must include `origin` and `tokens: { current, personal }`.") };
 	}
 	const { current, personal } = value.tokens;
-	if (typeof current !== "string" || current.length === 0 || current.length > 512 ||
-		typeof personal !== "string" || personal.length === 0 || personal.length > 512) {
-		return { ok: false, response: invalid_request("`app.tokens.current` and `app.tokens.personal` must be 1–512 characters.") };
+	if (
+		typeof current !== "string" ||
+		current.length === 0 ||
+		current.length > 512 ||
+		typeof personal !== "string" ||
+		personal.length === 0 ||
+		personal.length > 512
+	) {
+		return {
+			ok: false,
+			response: invalid_request("`app.tokens.current` and `app.tokens.personal` must be 1–512 characters."),
+		};
 	}
 
 	let origin: string;
@@ -899,11 +917,7 @@ function build_evaluate_input(
 	return { ok: true, input: input ?? null, inputJson };
 }
 
-async function handle_execute_code(args: {
-	request: Request;
-	env: Env;
-	ctx?: ExecuteCodeContext;
-}): Promise<Response> {
+async function handle_execute_code(args: { request: Request; env: Env; ctx?: ExecuteCodeContext }): Promise<Response> {
 	const { request, env, ctx } = args;
 
 	// Auth first so an unauthenticated caller cannot probe the kill-switch state.

@@ -3134,28 +3134,28 @@ export const finalize_transfer_file_copy = internalMutation({
 					ctx,
 					pendingUpdateId,
 					value: {
-					createIntent: {
-						kind: "stored",
-						contentType,
-						assetId: contentAsset._id,
+						createIntent: {
+							kind: "stored",
+							contentType,
+							assetId: contentAsset._id,
+							size: contentAsset.size,
+							metadata,
+						},
+						content: undefined,
+						preparation: undefined,
+						mediaDependencySetId: mediaSet?._id,
+						revision: proposalRevision + 1,
 						size: contentAsset.size,
-						metadata,
+						copiedFrom: {
+							target: item.source,
+							path: item.sourcePath,
+							...files_nodes_db_copied_from_policy_fields({
+								prev: previous?.copiedFrom,
+								sourceWritePolicy: copiedPolicies.sourceWritePolicy,
+							}),
+						},
+						updatedAt: now,
 					},
-					content: undefined,
-					preparation: undefined,
-					mediaDependencySetId: mediaSet?._id,
-					revision: proposalRevision + 1,
-					size: contentAsset.size,
-					copiedFrom: {
-						target: item.source,
-						path: item.sourcePath,
-						...files_nodes_db_copied_from_policy_fields({
-							prev: previous?.copiedFrom,
-							sourceWritePolicy: copiedPolicies.sourceWritePolicy,
-						}),
-					},
-					updatedAt: now,
-				},
 				});
 			} else {
 				const state = item.capture.artifact.textStateId
@@ -3233,36 +3233,36 @@ export const finalize_transfer_file_copy = internalMutation({
 					ctx,
 					pendingUpdateId,
 					value: {
-					createIntent: {
-						kind: "text",
-						contentType,
-						textKind,
-						collaborationEnabled:
-							previous?.createIntent?.kind === "text"
-								? previous.createIntent.collaborationEnabled
-								: collaborationEnabled === true,
-						metadata,
+						createIntent: {
+							kind: "text",
+							contentType,
+							textKind,
+							collaborationEnabled:
+								previous?.createIntent?.kind === "text"
+									? previous.createIntent.collaborationEnabled
+									: collaborationEnabled === true,
+							metadata,
+						},
+						content: {
+							base: { kind: "new" },
+							baseStateId: base._yay,
+							stagedStateId: staged._yay,
+							unstagedStateId: unstaged._yay,
+						},
+						preparation: undefined,
+						revision: proposalRevision + 1,
+						size: files_get_utf8_byte_size(capturedText),
+						mediaDependencySetId: mediaSet?._id,
+						copiedFrom: {
+							target: item.source,
+							path: item.sourcePath,
+							...files_nodes_db_copied_from_policy_fields({
+								prev: previous?.copiedFrom,
+								sourceWritePolicy: copiedPolicies.sourceWritePolicy,
+							}),
+						},
+						updatedAt: now,
 					},
-					content: {
-						base: { kind: "new" },
-						baseStateId: base._yay,
-						stagedStateId: staged._yay,
-						unstagedStateId: unstaged._yay,
-					},
-					preparation: undefined,
-					revision: proposalRevision + 1,
-					size: files_get_utf8_byte_size(capturedText),
-					mediaDependencySetId: mediaSet?._id,
-					copiedFrom: {
-						target: item.source,
-						path: item.sourcePath,
-						...files_nodes_db_copied_from_policy_fields({
-							prev: previous?.copiedFrom,
-							sourceWritePolicy: copiedPolicies.sourceWritePolicy,
-						}),
-					},
-					updatedAt: now,
-				},
 				});
 
 				await files_pending_update_db_replace_chunks(ctx, {
@@ -3370,11 +3370,11 @@ export const finalize_transfer_file_copy = internalMutation({
 					ctx,
 					pendingUpdateId,
 					value: {
-					...changes,
-					content: undefined,
-					contentNeedsRebase: undefined,
-					contentRebaseRootKind: undefined,
-				},
+						...changes,
+						content: undefined,
+						contentNeedsRebase: undefined,
+						contentRebaseRootKind: undefined,
+					},
 				});
 			} else {
 				pendingUpdateId = await files_db_insert_pending_update(ctx, { ...scope, target, ...changes });
@@ -4351,10 +4351,7 @@ export const get_file_text_content_db_state_by_path = internalQuery({
 		// External scope: no Yjs/pending/materialization. Read the linked R2 content asset
 		// directly and leave `content` undefined so `get_file_last_available_text_content_by_path`
 		// falls into its raw-R2 `.text()` branch.
-		if (
-			organizations_is_global_organization_id(args.organizationId) ||
-			scope.kind !== "workspace"
-		) {
+		if (organizations_is_global_organization_id(args.organizationId) || scope.kind !== "workspace") {
 			const asset = fileNode.assetId
 				? await ctx.db
 						.get("files_r2_assets", fileNode.assetId)
@@ -7171,8 +7168,8 @@ export const finalize_file_pending_replacement = internalMutation({
 			ctx,
 			...args,
 			actor: {
-			billedUserId: billing_pick_billed_user_id({ userId: args.userId, organization }),
-		},
+				billedUserId: billing_pick_billed_user_id({ userId: args.userId, organization }),
+			},
 		});
 	},
 });
@@ -7449,13 +7446,13 @@ export async function files_nodes_content_db_finalize_pending_replacement(args: 
 				ctx,
 				pendingUpdateId: pendingUpdate._id,
 				value: {
-				revision: pendingUpdate.revision + 1,
-				pendingReplacement: undefined,
-				copiedFrom: undefined,
-				mediaDependencySetId: undefined,
-				size: 0,
-				updatedAt: now,
-			},
+					revision: pendingUpdate.revision + 1,
+					pendingReplacement: undefined,
+					copiedFrom: undefined,
+					mediaDependencySetId: undefined,
+					size: 0,
+					updatedAt: now,
+				},
 			}),
 			files_pending_update_db_delete_chunks(ctx, { pendingUpdateId: pendingUpdate._id }),
 		]);
@@ -9085,10 +9082,7 @@ async function db_delete_superseded_yjs_asset(
 
 	if (asset.r2Key) {
 		const scope = files_db_resolve_scope(ctx, asset.workspaceId);
-		if (
-			organizations_is_global_organization_id(asset.organizationId) ||
-			scope.kind !== "workspace"
-		) {
+		if (organizations_is_global_organization_id(asset.organizationId) || scope.kind !== "workspace") {
 			await r2.deleteObject(ctx, asset.r2Key);
 		} else {
 			await r2_enqueue_object_deletion_job(ctx, {
@@ -9233,10 +9227,7 @@ export const delete_unfinalized_repair_assets = internalMutation({
 						assetId: asset._id,
 					});
 					const scope = files_db_resolve_scope(ctx, asset.workspaceId);
-					if (
-						organizations_is_global_organization_id(asset.organizationId) ||
-						scope.kind !== "workspace"
-					) {
+					if (organizations_is_global_organization_id(asset.organizationId) || scope.kind !== "workspace") {
 						await r2.deleteObject(ctx, r2Key);
 					} else {
 						await r2_enqueue_object_deletion_job(ctx, {

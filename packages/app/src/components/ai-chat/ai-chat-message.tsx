@@ -704,12 +704,12 @@ const AiChatMessagePartToolBrowser = memo(function AiChatMessagePartToolBrowser(
 	}[toolName];
 	const expected = parsed.success
 		? ai_chat_file_result({
-			title,
-			status: parsed.data.metadata.status,
-			files: parsed.data.metadata.files,
-			reason: parsed.data.metadata.reason,
-			debug: parsed.data.metadata.debug,
-		})
+				title,
+				status: parsed.data.metadata.status,
+				files: parsed.data.metadata.files,
+				reason: parsed.data.metadata.reason,
+				debug: parsed.data.metadata.debug,
+			})
 		: null;
 
 	// Only a run may carry files or page text. Management cards keep safe status only.
@@ -931,12 +931,12 @@ const AiChatMessagePartToolFiles = memo(function AiChatMessagePartToolFiles(prop
 	}[toolName];
 	const expected = parsed.success
 		? ai_chat_file_result({
-			title,
-			status: parsed.data.metadata.status,
-			files: parsed.data.metadata.files,
-			reason: parsed.data.metadata.reason,
-			debug: parsed.data.metadata.debug,
-		})
+				title,
+				status: parsed.data.metadata.status,
+				files: parsed.data.metadata.files,
+				reason: parsed.data.metadata.reason,
+				debug: parsed.data.metadata.debug,
+			})
 		: null;
 
 	// The server rewrites every file tool result into one exact shape before the message is stored.
@@ -1697,12 +1697,12 @@ const AiChatMessageContent = memo(function AiChatMessageContent(props: AiChatMes
 	const displayItems = children
 		? []
 		: ai_chat_message_content_get_display_items({
-			message,
-			parts: parts.filter(
+				message,
+				parts: parts.filter(
 					(part) => part.type === "data-job-finish" || (!part.type.startsWith("data-") && part.type !== "step-start"),
 				),
-			isChatRunning,
-		});
+				isChatRunning,
+			});
 	if (message.role === "assistant" && isChatRunning && displayItems.length === 0) {
 		displayItems.push({ type: "thinking", text: "", isStreaming: true });
 	}

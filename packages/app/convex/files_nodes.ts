@@ -489,10 +489,7 @@ export const get_visible_entry_by_path = internalQuery({
 		const authorized = await files_db_authorize_file_read(ctx, { ...args, userId: args.visibilityUserId });
 		if (authorized._nay) return null;
 		const scope = files_db_resolve_scope(ctx, args.workspaceId);
-		if (
-			organizations_is_global_organization_id(args.organizationId) ||
-			scope.kind !== "workspace"
-		) {
+		if (organizations_is_global_organization_id(args.organizationId) || scope.kind !== "workspace") {
 			const node = await files_db_get_visible_node_by_path(ctx, args);
 			return node ? { kind: "saved" as const, node, pendingUpdate: null, path: args.path } : null;
 		}
@@ -2612,21 +2609,21 @@ export async function files_nodes_db_create_private_node_by_path(
 			ctx,
 			pendingUpdateId,
 			value: {
-			createIntent:
-				kind === "folder"
-					? { kind: "folder", metadata: [] }
-					: args.content?.kind === "stored"
-						? { ...args.content, metadata: [] }
-						: {
-								kind: "text",
-								contentType: shape.contentType,
-								textKind: shape.rootKind,
-								collaborationEnabled: true,
-								metadata: [],
-							},
-			// Uploaded bytes already know their size. A text create keeps size 0 until its first batch.
-			...(kind === "file" && args.content?.kind === "stored" ? { size: args.content.size } : {}),
-		},
+				createIntent:
+					kind === "folder"
+						? { kind: "folder", metadata: [] }
+						: args.content?.kind === "stored"
+							? { ...args.content, metadata: [] }
+							: {
+									kind: "text",
+									contentType: shape.contentType,
+									textKind: shape.rootKind,
+									collaborationEnabled: true,
+									metadata: [],
+								},
+				// Uploaded bytes already know their size. A text create keeps size 0 until its first batch.
+				...(kind === "file" && args.content?.kind === "stored" ? { size: args.content.size } : {}),
+			},
 		});
 		parent = { kind: "private", id: privateNodeId };
 
@@ -3121,7 +3118,9 @@ export async function files_nodes_db_hard_delete_node(
 		...yjsLastSequences.map((lastSequence) => ctx.db.delete("files_yjs_docs_last_sequences", lastSequence._id)),
 		...materializationJobs.map((job) => ctx.db.delete("files_content_materialization_jobs", job._id)),
 		...snapshots.map((snapshot) => ctx.db.delete("files_snapshots", snapshot._id)),
-		...pendingUpdates.map((pendingUpdate) => files_db_delete_pending_update({ ctx, pendingUpdateId: pendingUpdate._id })),
+		...pendingUpdates.map((pendingUpdate) =>
+			files_db_delete_pending_update({ ctx, pendingUpdateId: pendingUpdate._id }),
+		),
 		...lastSequenceSavedDocs.map((doc) => ctx.db.delete("files_pending_updates_last_sequence_saved", doc._id)),
 		...shareGrants.map((grant) => ctx.db.delete("access_control_permission_grants", grant._id)),
 	]);
@@ -4700,7 +4699,11 @@ export const rename_node = mutation({
 			],
 		});
 		if (plan._nay) return plan;
-		await files_nodes_db_apply_move({ ctx, plan: plan._yay, shareLinkCleanup: files_share_links_create_cleanup_state() });
+		await files_nodes_db_apply_move({
+			ctx,
+			plan: plan._yay,
+			shareLinkCleanup: files_share_links_create_cleanup_state(),
+		});
 
 		return Result({ _yay: null });
 	},
@@ -5228,8 +5231,7 @@ export async function files_nodes_db_preflight_move(
 		if (storedOccupant && !fits_move_read_budget(readBudget, storedOccupant)) {
 			return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
 		}
-		const occupant =
-			storedOccupant && (nodesById.get(storedOccupant._id) ?? (await withLiveScope(storedOccupant)));
+		const occupant = storedOccupant && (nodesById.get(storedOccupant._id) ?? (await withLiveScope(storedOccupant)));
 		if (occupant && !nodesById.has(occupant._id)) nodesById.set(occupant._id, occupant);
 
 		if (intent.occupant.kind === "empty") {
@@ -6089,9 +6091,7 @@ export async function files_nodes_db_archive_nodes(args: {
 			ctx,
 			organizationId,
 			workspaceId,
-			rootNodeIds: fileNodes
-					.filter((fileNode) => fileNode.workspaceId === workspaceId)
-					.map((fileNode) => fileNode._id),
+			rootNodeIds: fileNodes.filter((fileNode) => fileNode.workspaceId === workspaceId).map((fileNode) => fileNode._id),
 			state: shareLinkCleanup,
 		});
 	}
@@ -7004,11 +7004,7 @@ function count_table_doc(budget: { readBytes: number }, value: object | null) {
 	if (value) budget.readBytes += files_get_utf8_byte_size(JSON.stringify(value)) + 128;
 }
 
-async function fits_table_read_budget(args: {
-	ctx: QueryCtx;
-	budget: { readBytes: number };
-	reserve?: boolean;
-}) {
+async function fits_table_read_budget(args: { ctx: QueryCtx; budget: { readBytes: number }; reserve?: boolean }) {
 	const { ctx, budget, reserve = false } = args;
 
 	// Metrics include joins and access reads that stream bandwidth does not count.
@@ -7099,7 +7095,8 @@ async function db_get_table_scalar(
 ) {
 	const entry = args.entry;
 	if (entry.kind === "saved") {
-		if (args.fieldDoc === undefined && !(await fits_table_read_budget({ ctx, budget: args.budget, reserve: true }))) return undefined;
+		if (args.fieldDoc === undefined && !(await fits_table_read_budget({ ctx, budget: args.budget, reserve: true })))
+			return undefined;
 		const fieldDoc =
 			args.fieldDoc !== undefined
 				? args.fieldDoc
@@ -8250,8 +8247,8 @@ export const list_tree_children_sorted = query({
 			scanBoundary:
 				result.page.length > 0
 					? files_sort_key_of({
-						sort: args.sort,
-						facts: {
+							sort: args.sort,
+							facts: {
 								kind: result.page.at(-1)!.kind,
 								name: result.page.at(-1)!.name,
 								createdAt: result.page.at(-1)!._creationTime,
@@ -8259,8 +8256,8 @@ export const list_tree_children_sorted = query({
 								type: result.page.at(-1)!.lowercaseExtension,
 								contentByteSize: result.page.at(-1)!.contentByteSize,
 							},
-						metadataParts: new Map(),
-					})
+							metadataParts: new Map(),
+						})
 					: null,
 			scannedCount: result.page.length,
 			workCount: 0,
@@ -9996,11 +9993,7 @@ function files_truncate_long_display_line(line: string) {
  * within `content`. `content` may be a leading window of a larger file. Over-long lines are
  * truncated for display (with a marker) so a single huge line cannot flood the output.
  */
-export function files_line_range_from_text(args: {
-	content: string;
-	startLine: number;
-	maxLines: number;
-}) {
+export function files_line_range_from_text(args: { content: string; startLine: number; maxLines: number }) {
 	const { content, startLine, maxLines } = args;
 
 	if (maxLines <= 0 || content.length === 0) {

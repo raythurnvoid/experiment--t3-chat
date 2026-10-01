@@ -678,7 +678,9 @@ export const advance = internalMutation({
 		switch (op.kind) {
 			case "move":
 			case "scope": {
-				if (await db_rebuild_walk({ ctx, op, budget: { nodes: files_subtree_ops_STEP_MAX_NODES, hasPaginated: false } })) {
+				if (
+					await db_rebuild_walk({ ctx, op, budget: { nodes: files_subtree_ops_STEP_MAX_NODES, hasPaginated: false } })
+				) {
 					await files_subtree_ops_db_delete(ctx, { opId: op._id, now });
 					await activities_db_finish(ctx, { sourceId: op._id, status: "succeeded", errorMessage: null, now });
 				} else {

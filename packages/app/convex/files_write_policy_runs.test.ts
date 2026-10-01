@@ -82,12 +82,8 @@ async function restrict(f: Fixture, nodeId: Id<"files_nodes">) {
 	).toEqual({ _yay: null });
 }
 
-async function grant(args: {
-	f: Fixture;
-	nodeId: Id<"files_nodes">;
-	level: "read" | "manage";
-}) {
-	const { f, level, nodeId} = args;
+async function grant(args: { f: Fixture; nodeId: Id<"files_nodes">; level: "read" | "manage" }) {
+	const { f, level, nodeId } = args;
 
 	expect(
 		await f.asOwner.mutation(api.files_sharing.set_node_share_grant, {

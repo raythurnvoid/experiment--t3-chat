@@ -53,13 +53,8 @@ async function fixture() {
 		membershipLifetime: captured._yay.membershipLifetime,
 	};
 	let toolCallNumber = 0;
-	const runRuntime = (args: {
-		command: string;
-		agent?: boolean;
-		shellName?: string;
-	}) =>
-		{
-		const { agent = true, shellName = "default", command} = args;
+	const runRuntime = (args: { command: string; agent?: boolean; shellName?: string }) => {
+		const { agent = true, shellName = "default", command } = args;
 
 		return t.action(internal.bash.run, {
 			...agentSource,
@@ -132,8 +127,11 @@ describe("Bash workspace runtime", () => {
 	test("relative find prefixes and retry hints follow a personal cwd", async () => {
 		const f = await fixture();
 		expect(
-			(await f.runRuntime({ command: `mkdir ${homePath}/docs; printf home > ${homePath}/docs/notes.txt; cd ${homePath}` })).metadata
-				.exitCode,
+			(
+				await f.runRuntime({
+					command: `mkdir ${homePath}/docs; printf home > ${homePath}/docs/notes.txt; cd ${homePath}`,
+				})
+			).metadata.exitCode,
 		).toBe(0);
 		const found = await f.runRuntime({ command: "find --prefix docs -type f", agent: false });
 		expect(found).toMatchObject({ stderr: "", metadata: { exitCode: 0 } });
@@ -150,7 +148,9 @@ describe("Bash workspace runtime", () => {
 		"printf '%s\\n' 'false && value=$(cat docs/missing.txt); echo done' | xargs -I {} bash -c '{}'",
 	])("does not record personal paths from safety probes: %s", async (command) => {
 		const f = await fixture();
-		expect((await f.runRuntime({ command: `printf home > ${homePath}/notes.txt; cd ${homePath}` })).metadata.exitCode).toBe(0);
+		expect(
+			(await f.runRuntime({ command: `printf home > ${homePath}/notes.txt; cd ${homePath}` })).metadata.exitCode,
+		).toBe(0);
 		const result = await f.runRuntime({ command: `cat notes.txt > /tmp/read; ${command}`, agent: false });
 		expect(result).toMatchObject({ stdout: "done\n", stderr: "", metadata: { exitCode: 0 } });
 		expect(result.metadata.observedPaths).toEqual([{ workspace: "personal", path: "/notes.txt" }]);
@@ -172,7 +172,9 @@ describe("Bash workspace runtime", () => {
 				expect.objectContaining({ workspaceId: f.home.workspaceId, userId: f.team.userId, name: "notes.txt" }),
 			]),
 		);
-		expect(await f.runRuntime({ command: `cat ${homePath}/notes.txt; cat notes.txt`, agent: false, shellName: "ask" })).toMatchObject({
+		expect(
+			await f.runRuntime({ command: `cat ${homePath}/notes.txt; cat notes.txt`, agent: false, shellName: "ask" }),
+		).toMatchObject({
 			stdout: "hometeam",
 			stderr: "",
 			metadata: { exitCode: 0 },
@@ -181,7 +183,9 @@ describe("Bash workspace runtime", () => {
 
 	test("restores a personal cwd across calls and a pending folder rename", async () => {
 		const f = await fixture();
-		expect((await f.runRuntime({ command: `mkdir ${homePath}/notes; cd ${homePath}/notes` })).metadata.exitCode).toBe(0);
+		expect((await f.runRuntime({ command: `mkdir ${homePath}/notes; cd ${homePath}/notes` })).metadata.exitCode).toBe(
+			0,
+		);
 		const folder = await f.t.run((ctx) => ctx.db.query("files_pending_nodes").first());
 		if (!folder) throw new Error("Expected a personal folder");
 		expect(

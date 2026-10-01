@@ -278,7 +278,11 @@ export function bash_search_command_create(ctx: ActionCtx, dbFilesRoots: bash_Db
 					return {
 						items: pageResult.items.map((item) => ({
 							...item,
-							path: bash_external_mounts_fan_out_db_files_path({ mount: pageArgs.mount, storedPath: item.path, basePath: scope.basePath }),
+							path: bash_external_mounts_fan_out_db_files_path({
+								mount: pageArgs.mount,
+								storedPath: item.path,
+								basePath: scope.basePath,
+							}),
 						})),
 						continueCursor: pageResult.continueCursor,
 						isDone: pageResult.isDone,

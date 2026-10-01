@@ -93,11 +93,7 @@ async function read_request_text_bounded(request: Request, maxBytes: number) {
 	return new TextDecoder().decode(bytes);
 }
 
-async function parse_request_json<T>(args: {
-	request: Request;
-	schema: z.ZodSchema<T>;
-	maxBytes: number;
-}) {
+async function parse_request_json<T>(args: { request: Request; schema: z.ZodSchema<T>; maxBytes: number }) {
 	const { request, schema, maxBytes } = args;
 
 	const declaredBytes = Number(request.headers.get("content-length") ?? Number.NaN);
@@ -359,7 +355,7 @@ async function settle(args: {
 	status: number;
 	errorMessage?: string;
 }) {
-	const { ctx, status, callId, errorMessage} = args;
+	const { ctx, status, callId, errorMessage } = args;
 
 	await public_api_settle_plugin_call_best_effort(ctx, {
 		callId,
@@ -402,7 +398,11 @@ export async function plugins_data_http_read(args: {
 		return auth._nay;
 	}
 
-	const body = await parse_request_json({ request, schema: read_body_validator, maxBytes: PLUGIN_DATA_REQUEST_MAX_BYTES });
+	const body = await parse_request_json({
+		request,
+		schema: read_body_validator,
+		maxBytes: PLUGIN_DATA_REQUEST_MAX_BYTES,
+	});
 	if (body._nay) {
 		const response = { status: 400, body: { message: body._nay.message } } as const;
 		await settle({
@@ -568,7 +568,11 @@ export async function plugins_data_http_list(args: {
 		return auth._nay;
 	}
 
-	const body = await parse_request_json({ request, schema: list_body_validator, maxBytes: PLUGIN_DATA_REQUEST_MAX_BYTES });
+	const body = await parse_request_json({
+		request,
+		schema: list_body_validator,
+		maxBytes: PLUGIN_DATA_REQUEST_MAX_BYTES,
+	});
 	if (body._nay) {
 		const response = { status: 400, body: { message: body._nay.message } } as const;
 		await settle({
@@ -708,7 +712,11 @@ export async function plugins_data_http_write(args: {
 		return auth._nay;
 	}
 
-	const body = await parse_request_json({ request, schema: write_body_validator, maxBytes: PLUGIN_DATA_REQUEST_MAX_BYTES });
+	const body = await parse_request_json({
+		request,
+		schema: write_body_validator,
+		maxBytes: PLUGIN_DATA_REQUEST_MAX_BYTES,
+	});
 	if (body._nay) {
 		const response = { status: 400, body: { message: body._nay.message } } as const;
 		await settle({
@@ -794,7 +802,11 @@ export async function plugins_data_http_write_batch(args: {
 	if (auth._nay) {
 		return auth._nay;
 	}
-	const body = await parse_request_json({ request, schema: write_batch_body_validator, maxBytes: PLUGIN_DATA_WRITE_BATCH_REQUEST_MAX_BYTES });
+	const body = await parse_request_json({
+		request,
+		schema: write_batch_body_validator,
+		maxBytes: PLUGIN_DATA_WRITE_BATCH_REQUEST_MAX_BYTES,
+	});
 	if (body._nay) {
 		const response = { status: 400, body: { message: body._nay.message } } as const;
 		await settle({
@@ -893,7 +905,11 @@ export async function plugins_data_http_delete(args: {
 		return auth._nay;
 	}
 
-	const body = await parse_request_json({ request, schema: delete_body_validator, maxBytes: PLUGIN_DATA_REQUEST_MAX_BYTES });
+	const body = await parse_request_json({
+		request,
+		schema: delete_body_validator,
+		maxBytes: PLUGIN_DATA_REQUEST_MAX_BYTES,
+	});
 	if (body._nay) {
 		const response = { status: 400, body: { message: body._nay.message } } as const;
 		await settle({
@@ -977,7 +993,11 @@ export async function plugins_data_http_write_versioned(args: {
 		return auth._nay;
 	}
 
-	const body = await parse_request_json({ request, schema: write_versioned_body_validator, maxBytes: PLUGIN_DATA_REQUEST_MAX_BYTES });
+	const body = await parse_request_json({
+		request,
+		schema: write_versioned_body_validator,
+		maxBytes: PLUGIN_DATA_REQUEST_MAX_BYTES,
+	});
 	if (body._nay) {
 		return { status: 400, body: { message: body._nay.message } } as const;
 	}
@@ -1037,7 +1057,11 @@ export async function plugins_data_http_delete_versioned(args: {
 		return auth._nay;
 	}
 
-	const body = await parse_request_json({ request, schema: delete_versioned_body_validator, maxBytes: PLUGIN_DATA_REQUEST_MAX_BYTES });
+	const body = await parse_request_json({
+		request,
+		schema: delete_versioned_body_validator,
+		maxBytes: PLUGIN_DATA_REQUEST_MAX_BYTES,
+	});
 	if (body._nay) {
 		return { status: 400, body: { message: body._nay.message } } as const;
 	}
@@ -1102,7 +1126,11 @@ export async function plugins_data_http_reserve(args: {
 		return auth._nay;
 	}
 
-	const body = await parse_request_json({ request, schema: reserve_body_validator, maxBytes: PLUGIN_DATA_REQUEST_MAX_BYTES });
+	const body = await parse_request_json({
+		request,
+		schema: reserve_body_validator,
+		maxBytes: PLUGIN_DATA_REQUEST_MAX_BYTES,
+	});
 	if (body._nay) {
 		return { status: 400, body: { message: body._nay.message } } as const;
 	}
@@ -1164,7 +1192,11 @@ export async function plugins_data_http_release_reservation(args: {
 		return auth._nay;
 	}
 
-	const body = await parse_request_json({ request, schema: release_reservation_body_validator, maxBytes: PLUGIN_DATA_REQUEST_MAX_BYTES });
+	const body = await parse_request_json({
+		request,
+		schema: release_reservation_body_validator,
+		maxBytes: PLUGIN_DATA_REQUEST_MAX_BYTES,
+	});
 	if (body._nay) {
 		return { status: 400, body: { message: body._nay.message } } as const;
 	}

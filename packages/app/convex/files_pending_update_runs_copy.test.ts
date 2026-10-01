@@ -104,9 +104,9 @@ async function copied_folders(args: {
 						ctx,
 						pendingUpdateId: created._yay.pendingUpdateId,
 						value: {
-						createIntent: { kind: "folder", metadata: [] },
-						copiedFrom: { target: { kind: "saved", id: f.sourceId }, path: "/source", sourceWritePolicy: null },
-					},
+							createIntent: { kind: "folder", metadata: [] },
+							copiedFrom: { target: { kind: "saved", id: f.sourceId }, path: "/source", sourceWritePolicy: null },
+						},
 					});
 					const proposal = await ctx.db.get("files_pending_updates", created._yay.pendingUpdateId);
 					if (!proposal) throw new Error("Expected the copied proposal");
@@ -204,7 +204,7 @@ async function pending_move(args: {
 	destParent: FunctionArgs<typeof internal.files_pending_updates.upsert_file_pending_move_in_db>["destParent"];
 	destName: string;
 }) {
-	const { f, target, destName, destParent} = args;
+	const { f, target, destName, destParent } = args;
 
 	const moved = await f.t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
 		...f.scope,
@@ -669,7 +669,12 @@ describe("scalable Copy Save", () => {
 		const { runId } = await start_review(f, [...f.copies, move, child]);
 		// The child moves out after seal. Its current path no longer shows the reviewed link to the Move,
 		// so only the revised selection itself can keep the pair together.
-		const revised = await pending_move({ f, target: child.target, destParent: { kind: "root" }, destName: "moved-away-child" });
+		const revised = await pending_move({
+			f,
+			target: child.target,
+			destParent: { kind: "root" },
+			destName: "moved-away-child",
+		});
 		const planned = await plan_review(f, runId);
 		expect(planned).toMatchObject({ unitCount: 4, plan: { phase: "ready", atomicItemCount: 2 } });
 		const units = await f.t.run((ctx) => ctx.db.query("files_pending_update_run_units").collect());
@@ -712,11 +717,11 @@ describe("scalable Copy Save", () => {
 		).toMatchObject({ phase: "atomic", atomicItemCount: 1 });
 		const changed = revised
 			? await pending_move({
-				f,
-				target: { kind: "saved", id: f.targetId },
-				destParent: { kind: "root" },
-				destName: "target-revised",
-			})
+					f,
+					target: { kind: "saved", id: f.targetId },
+					destParent: { kind: "root" },
+					destName: "target-revised",
+				})
 			: null;
 		const planned = await plan_review(f, runId);
 		// The Copies were reviewed below the renamed folder, so they join its unit in both cases.
@@ -775,11 +780,11 @@ describe("scalable Copy Save", () => {
 			).toMatchObject({ phase: "atomic", atomicItemCount: 1 });
 			const parentMove = unselected
 				? await pending_move({
-					f,
-					target: { kind: "saved", id: parent._yay.nodeId },
-					destParent: { kind: "root" },
-					destName: "a-moved",
-				})
+						f,
+						target: { kind: "saved", id: parent._yay.nodeId },
+						destParent: { kind: "root" },
+						destName: "a-moved",
+					})
 				: null;
 			const planned = await plan_review(f, runId);
 			expect(planned).toMatchObject({ step: "running", unitCount: 4, plan: { phase: "ready", atomicItemCount: 1 } });

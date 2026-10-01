@@ -936,9 +936,9 @@ export async function public_api_plugin_files_http_ensure_folder(args: {
 			ctx,
 			request,
 			ids: {
-			nodeIds: body._yay.writer.rootNodeId === null ? [] : [body._yay.writer.rootNodeId],
-			userIds: body._yay.access?.readers?.map((reader) => reader.userId),
-		},
+				nodeIds: body._yay.writer.rootNodeId === null ? [] : [body._yay.writer.rootNodeId],
+				userIds: body._yay.access?.readers?.map((reader) => reader.userId),
+			},
 		});
 		if (proof._nay) return writer_failure(proof._nay);
 		const result = (await ctx.runMutation(internal.plugins_external_files.ensure_writer, {
@@ -1104,9 +1104,9 @@ export async function public_api_plugin_files_http_archive(args: {
 			ctx,
 			request,
 			ids: {
-			writerId: body._yay.writer.writerId,
-			nodeIds: [body._yay.writer.nodeId],
-		},
+				writerId: body._yay.writer.writerId,
+				nodeIds: [body._yay.writer.nodeId],
+			},
 		});
 		if (proof._nay) return writer_failure(proof._nay);
 		const writer = body._yay.writer;
@@ -1281,9 +1281,9 @@ export async function public_api_plugin_files_http_set_access(args: {
 			ctx,
 			request,
 			ids: {
-			writerId: body._yay.writer.writerId,
-			userIds: body._yay.access.readers.map((reader) => reader.userId),
-		},
+				writerId: body._yay.writer.writerId,
+				userIds: body._yay.access.readers.map((reader) => reader.userId),
+			},
 		});
 		if (proof._nay) return writer_failure(proof._nay);
 		const writer = body._yay.writer;

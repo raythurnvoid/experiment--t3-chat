@@ -198,7 +198,7 @@ describe("bash_run_command", () => {
 		path: string;
 		updatedAt: number;
 	}) {
-		const { ctx, scope, path, updatedAt} = args;
+		const { ctx, scope, path, updatedAt } = args;
 
 		const segments = path.split("/").filter(Boolean);
 		let parentId: Id<"files_nodes"> | typeof files_ROOT_ID = files_ROOT_ID;
@@ -633,12 +633,8 @@ describe("bash_run_command", () => {
 		};
 
 		let toolCallNumber = 0;
-		const run = async (args: {
-			command: string;
-			toolCallId?: string;
-			shellName?: string;
-		}) => {
-			const { toolCallId = `bash-${runnerIndex}-${toolCallNumber++}`, shellName = "default", command} = args;
+		const run = async (args: { command: string; toolCallId?: string; shellName?: string }) => {
+			const { toolCallId = `bash-${runnerIndex}-${toolCallNumber++}`, shellName = "default", command } = args;
 
 			// A job end can start a wake that takes over an expired run, and the wake can end too. Like the
 			// next turn in the app, the call runs in the live run, or in a new one.
@@ -985,7 +981,7 @@ describe("bash_run_command", () => {
 		fileNode: Awaited<ReturnType<typeof get_seeded_node>>;
 		text: string;
 	}) {
-		const { runner, fileNode, text} = args;
+		const { runner, fileNode, text } = args;
 
 		const editedYjsDoc = files_yjs_doc_create_from_text({ rootKind: "rich_text", text });
 		if ("_nay" in editedYjsDoc) {
@@ -1155,9 +1151,9 @@ describe("bash_run_command", () => {
 		expect((await runner.run({ command: "cat /tmp/replay.txt; cat draft-replay.txt" })).stdout).toBe("oncedraft");
 		const unchanged = await get_private_entry(runner, "/draft-replay.txt");
 		expect(unchanged.pendingUpdate).toEqual(draft.pendingUpdate);
-		await expect(runner.run({ command: "printf changed >> /tmp/replay.txt", toolCallId: "replay-write" })).rejects.toThrow(
-			"already has a different command",
-		);
+		await expect(
+			runner.run({ command: "printf changed >> /tmp/replay.txt", toolCallId: "replay-write" }),
+		).rejects.toThrow("already has a different command");
 		expect((await runner.run({ command: "cat /tmp/replay.txt" })).stdout).toBe("once");
 	});
 
@@ -1200,7 +1196,9 @@ describe("bash_run_command", () => {
 			return result;
 		});
 
-		await expect(runner.run({ command: "printf once >> /tmp/lost-finish.txt", toolCallId: "lost-finish" })).rejects.toThrow("Lost finish reply");
+		await expect(
+			runner.run({ command: "printf once >> /tmp/lost-finish.txt", toolCallId: "lost-finish" }),
+		).rejects.toThrow("Lost finish reply");
 		const replay = await runner.run({ command: "printf once >> /tmp/lost-finish.txt", toolCallId: "lost-finish" });
 		expect(replay.metadata.exitCode).toBe(0);
 		expect((await runner.run({ command: "cat /tmp/lost-finish.txt" })).stdout).toBe("once");
@@ -1218,9 +1216,9 @@ describe("bash_run_command", () => {
 			return await mutate(ref, args);
 		});
 
-		await expect(runner.run({ command: "printf once >> /tmp/interrupted.txt", toolCallId: "interrupted" })).rejects.toThrow(
-			"Finish unavailable",
-		);
+		await expect(
+			runner.run({ command: "printf once >> /tmp/interrupted.txt", toolCallId: "interrupted" }),
+		).rejects.toThrow("Finish unavailable");
 		const replay = await runner.run({ command: "printf once >> /tmp/interrupted.txt", toolCallId: "interrupted" });
 		expect(replay.metadata.exitCode).toBe(1);
 		expect(replay.stderr).toContain("was interrupted");
@@ -1341,7 +1339,9 @@ describe("bash_run_command", () => {
 		});
 		expect((await currentRun.run({ command: "printf current", toolCallId: "current-call" })).stdout).toBe("current");
 		const before = await t.run((ctx) => ctx.db.query("ai_chat_bash_invocations").collect());
-		await expect(oldRun.run({ command: "printf stale > /tmp/stale.txt", toolCallId: "old-new-call", shellName: "stale" })).rejects.toThrow("Unauthorized");
+		await expect(
+			oldRun.run({ command: "printf stale > /tmp/stale.txt", toolCallId: "old-new-call", shellName: "stale" }),
+		).rejects.toThrow("Unauthorized");
 		if (lostReply) {
 			const mutate = oldRun.runMutation.getMockImplementation()!;
 			oldRun.runMutation.mockImplementation(async (ref, args) => {
@@ -1542,7 +1542,9 @@ describe("bash_run_command", () => {
 
 		// `2>/dev/null` drops the `Try:` line and the pipe turns exit 2 into head's exit 0, so
 		// without the restore the model sees an empty successful result and reports "not found".
-		const blinded = await run({ command: `find ${test_db_files_mount} -type f -iname 'readme*' 2>/dev/null | head -n 5` });
+		const blinded = await run({
+			command: `find ${test_db_files_mount} -type f -iname 'readme*' 2>/dev/null | head -n 5`,
+		});
 
 		expect(blinded.metadata.exitCode).toBe(0);
 		expect(blinded.stdout).toBe("");
@@ -2321,7 +2323,9 @@ describe("bash_run_command", () => {
 	test("accepts ls no-op presentation flags and name sort alias", async () => {
 		const { run } = await create_bash_runner();
 
-		const result = await run({ command: `ls -1apF --sort=name --indicator-style=slash --limit 10 ${test_db_files_mount}/docs` });
+		const result = await run({
+			command: `ls -1apF --sort=name --indicator-style=slash --limit 10 ${test_db_files_mount}/docs`,
+		});
 
 		expect(result.metadata.exitCode).toBe(0);
 		expect(result.stdout.trim().split("\n")).toEqual(["nested/", "readme.md", "tutorial.md"]);
@@ -2422,10 +2426,16 @@ describe("bash_run_command", () => {
 
 		const nameResult = await run({ command: "find -name readme --limit 10" });
 		const explicitResult = await run({ command: "find --path-query readme --limit 10" });
-		const scopedResult = await run({ command: `find ${test_db_files_mount}/docs -maxdepth 1 -name readme -type f --limit 10` });
+		const scopedResult = await run({
+			command: `find ${test_db_files_mount}/docs -maxdepth 1 -name readme -type f --limit 10`,
+		});
 		const subtreeResult = await run({ command: `find ${test_db_files_mount}/docs -name readme --limit 10` });
-		const dottedNameResult = await run({ command: `find ${test_db_files_mount}/docs -type f -name 'word readme.md' --limit 10` });
-		const scopedSelfResult = await run({ command: `find '${test_db_files_mount}/docs/scope word' --path-query word --limit 10` });
+		const dottedNameResult = await run({
+			command: `find ${test_db_files_mount}/docs -type f -name 'word readme.md' --limit 10`,
+		});
+		const scopedSelfResult = await run({
+			command: `find '${test_db_files_mount}/docs/scope word' --path-query word --limit 10`,
+		});
 		const scopedMindepthResult = await run({
 			command: `find '${test_db_files_mount}/docs/scope word' -mindepth 1 --path-query word --limit 10`,
 		});
@@ -2549,7 +2559,9 @@ describe("bash_run_command", () => {
 
 		const scopedDepth = await run({ command: `find ${test_db_files_mount}/docs -maxdepth 2 -name readme --limit 10` });
 		const tokenGlobName = await run({ command: "find -type f -name '*readme*' --limit 10" });
-		const prefixExtensionGlobName = await run({ command: `find ${test_db_files_mount}/docs -type f -name 'readme*.md' --limit 10` });
+		const prefixExtensionGlobName = await run({
+			command: `find ${test_db_files_mount}/docs -type f -name 'readme*.md' --limit 10`,
+		});
 		const complexGlobName = await run({ command: "find -name 'read.*.md' --limit 10" });
 		const pathQueryGlob = await run({ command: "find --path-query '.*readme.*' --limit 10" });
 		const combinedPathQueryExtension = await run({
@@ -2558,7 +2570,9 @@ describe("bash_run_command", () => {
 		const recursivePathQuery = await run({
 			command: `find ${test_db_files_mount} -maxdepth 5 -type f --path-query readme --limit 10`,
 		});
-		const regexPathPredicate = await run({ command: `find ${test_db_files_mount}/docs -type f -regex '.*readme.*' --limit 10` });
+		const regexPathPredicate = await run({
+			command: `find ${test_db_files_mount}/docs -type f -regex '.*readme.*' --limit 10`,
+		});
 
 		expect(scopedDepth.metadata.exitCode).toBe(2);
 		expect(scopedDepth.stderr).toContain("full subtree (omit -maxdepth) or immediate children with -maxdepth 1");
@@ -2848,7 +2862,9 @@ describe("bash_run_command", () => {
 		// one path. Only one node may be sent for it. Two would write two docs for one path, and the next
 		// call could not even build the filesystem: `mkdir` refuses a path a file already holds, so every
 		// later call in the thread would fail before it ran a command.
-		const wrote = await run({ command: `printf hi > "/tmp/$(printf 'a\\ud83c').txt" && mkdir "/tmp/$(printf 'a\\udf89').txt"` });
+		const wrote = await run({
+			command: `printf hi > "/tmp/$(printf 'a\\ud83c').txt" && mkdir "/tmp/$(printf 'a\\udf89').txt"`,
+		});
 		expect(wrote.metadata.exitCode, wrote.stderr).toBe(0);
 
 		const patchCalls = runMutation.mock.calls.filter(
@@ -2914,7 +2930,8 @@ describe("bash_run_command", () => {
 		const { run, runMutation } = await create_bash_runner();
 
 		await run({
-			command: "mkdir -p /tmp/src /tmp/copy-dir /tmp/move-dir && printf copied > /tmp/src/a.txt && printf moved > /tmp/to-move.txt",
+			command:
+				"mkdir -p /tmp/src /tmp/copy-dir /tmp/move-dir && printf copied > /tmp/src/a.txt && printf moved > /tmp/to-move.txt",
 		});
 		runMutation.mockClear();
 
@@ -2972,7 +2989,10 @@ describe("bash_run_command", () => {
 	test("merges parallel same-thread /tmp writes through deltas", async () => {
 		const { run } = await create_bash_runner();
 
-		const [aResult, bResult] = await Promise.all([run({ command: "printf a > /tmp/a.txt" }), run({ command: "printf b > /tmp/b.txt" })]);
+		const [aResult, bResult] = await Promise.all([
+			run({ command: "printf a > /tmp/a.txt" }),
+			run({ command: "printf b > /tmp/b.txt" }),
+		]);
 		expect(aResult.metadata.exitCode).toBe(0);
 		expect(bResult.metadata.exitCode).toBe(0);
 
@@ -3464,14 +3484,22 @@ describe("bash_run_command", () => {
 			],
 		});
 
-		const paths = await run({ command: `meta search --where '{"eq":["frontmatter.from","alice@example.com"]}' --limit 5` });
-		const json = await run({ command: `meta search --format json --where '{"range":["frontmatter.amount",{"gte":100}]}'` });
+		const paths = await run({
+			command: `meta search --where '{"eq":["frontmatter.from","alice@example.com"]}' --limit 5`,
+		});
+		const json = await run({
+			command: `meta search --format json --where '{"range":["frontmatter.amount",{"gte":100}]}'`,
+		});
 		const jsonExists = await run({ command: `meta search --format json --where '{"exists":"frontmatter.cc"}'` });
 		const jsonDateRange = await run({
 			command: `meta search --format json --where '{"range":["frontmatter.sentAt",{"gte":"2026-07-27","lt":"2026-08-02"}]}'`,
 		});
-		const dedupedPrefix = await run({ command: `meta search --where '{"prefix":["frontmatter.topic","a"]}' --limit 5` });
-		const scoped = await run({ command: `cd ${test_db_files_mount}/docs && meta search --where '{"exists":"frontmatter.cc"}'` });
+		const dedupedPrefix = await run({
+			command: `meta search --where '{"prefix":["frontmatter.topic","a"]}' --limit 5`,
+		});
+		const scoped = await run({
+			command: `cd ${test_db_files_mount}/docs && meta search --where '{"exists":"frontmatter.cc"}'`,
+		});
 		const get = await run({ command: `meta get ${test_db_files_mount}/docs/meta-email.md` });
 		const invalid = await run({ command: `meta search --where '{"eq":["from","alice@example.com"]}'` });
 
@@ -3728,7 +3756,9 @@ describe("bash_run_command", () => {
 		expect(dashPattern.metadata.exitCode).toBe(0);
 		expect(dashPattern.stdout).toBe("unique-token here\nmore unique-token below\n");
 
-		const piped = await run({ command: `cat ${test_db_files_mount}/docs/readme.md | head -n 20 | grep -n unique-token` });
+		const piped = await run({
+			command: `cat ${test_db_files_mount}/docs/readme.md | head -n 20 | grep -n unique-token`,
+		});
 		expect(piped.metadata.exitCode).toBe(0);
 		expect(piped.stdout).toBe("2:unique-token here\n3:more unique-token below\n");
 
@@ -3736,7 +3766,9 @@ describe("bash_run_command", () => {
 		expect(pipedRegex.metadata.exitCode).toBe(0);
 		expect(pipedRegex.stdout).toBe("more unique-token below\n");
 
-		const pipedFixedMiss = await run({ command: `cat ${test_db_files_mount}/docs/readme.md | grep -F 'unique.*below'` });
+		const pipedFixedMiss = await run({
+			command: `cat ${test_db_files_mount}/docs/readme.md | grep -F 'unique.*below'`,
+		});
 		expect(pipedFixedMiss.metadata.exitCode).toBe(1);
 		expect(pipedFixedMiss.stdout).toBe("");
 
@@ -3837,7 +3869,9 @@ describe("bash_run_command", () => {
 		expect(lineWindow.metadata.exitCode).toBe(0);
 		expect(lineWindow.stdout).toBe("more unique-token below\n");
 
-		const capped = await run({ command: `grep --start-line 1 --max-lines 1 late-window-token ${test_db_files_mount}${latePath}` });
+		const capped = await run({
+			command: `grep --start-line 1 --max-lines 1 late-window-token ${test_db_files_mount}${latePath}`,
+		});
 		expect(capped.metadata.exitCode).toBe(1);
 		expect(capped.stdout).toBe("");
 		expect(capped.stderr).toContain("line scan cap reached");
@@ -4063,7 +4097,9 @@ describe("bash_run_command", () => {
 		const readmePath = `${test_db_files_mount}/docs/readme.md`;
 
 		const appResult = await run({ command: `stat -c "%i %b %s %%" ${readmePath}` });
-		const tmpResult = await run({ command: 'printf hi > /tmp/stat-format.txt && stat -c "%i %b %s %%" /tmp/stat-format.txt' });
+		const tmpResult = await run({
+			command: 'printf hi > /tmp/stat-format.txt && stat -c "%i %b %s %%" /tmp/stat-format.txt',
+		});
 
 		expect(appResult.metadata.exitCode).toBe(0);
 		expect(appResult.stdout).toContain("%i %b ");
@@ -4167,7 +4203,9 @@ describe("bash_run_command", () => {
 		}
 		expect(asset.size).toBeGreaterThan(bash_READ_INLINE_MAX_BYTES);
 
-		const moved = await runner.run({ command: `mv ${test_db_files_mount}/big.md ${test_db_files_mount}/renamed-big.md` });
+		const moved = await runner.run({
+			command: `mv ${test_db_files_mount}/big.md ${test_db_files_mount}/renamed-big.md`,
+		});
 		expect(moved.metadata.exitCode).toBe(0);
 
 		// The move-only pending update doc stores size 0; stat must report the committed asset size, not 0.
@@ -4225,7 +4263,9 @@ describe("bash_run_command", () => {
 		test("refuses the 11th shell and names the existing ones", async () => {
 			const runner = await create_bash_runner();
 			for (let i = 0; i < 10; i++) {
-				expect((await runner.run({ command: "true", toolCallId: undefined, shellName: `s${i}` })).metadata.exitCode).toBe(0);
+				expect(
+					(await runner.run({ command: "true", toolCallId: undefined, shellName: `s${i}` })).metadata.exitCode,
+				).toBe(0);
 			}
 			await expect(runner.run({ command: "true", toolCallId: undefined, shellName: "s10" })).rejects.toThrow(
 				"This thread already has 10 shells (s0, s1, s2, s3, s4, s5, s6, s7, s8, s9). Reuse one of them.",
@@ -4252,8 +4292,8 @@ describe("bash_run_command", () => {
 			// /tmp is per-thread scratch with its own caps, so a cwd left there is the case most
 			// likely to lose the rest of the shell state on the way back.
 			expect(
-				(await runner.run({ command: "kept=yes; fruits=(apple pear); mkdir -p /tmp/scratch-cwd; cd /tmp/scratch-cwd" })).metadata
-					.exitCode,
+				(await runner.run({ command: "kept=yes; fruits=(apple pear); mkdir -p /tmp/scratch-cwd; cd /tmp/scratch-cwd" }))
+					.metadata.exitCode,
 			).toBe(0);
 
 			const read = await runner.run({ command: 'printf "%s|%s|%s\\n" "$kept" "${#fruits[@]}" "$(pwd)"' });
@@ -4266,14 +4306,19 @@ describe("bash_run_command", () => {
 
 			// Arrays live outside env in the engine state, so they need their own place in the saved
 			// snapshot. Without it a later call sees the names as unset.
-			expect((await runner.run({ command: "fruits=(apple pear plum); declare -A ages; ages[ana]=31" })).metadata.exitCode).toBe(0);
+			expect(
+				(await runner.run({ command: "fruits=(apple pear plum); declare -A ages; ages[ana]=31" })).metadata.exitCode,
+			).toBe(0);
 
 			const read = await runner.run({ command: 'printf "%s|%s|%s\\n" "${fruits[1]}" "${#fruits[@]}" "${ages[ana]}"' });
 			expect(read.stderr).toBe("");
 			expect(read.stdout).toBe("pear|3|31\n");
 
 			// A different shell in the same thread starts without them.
-			expect((await runner.run({ command: 'printf "%s\\n" "${#fruits[@]}"', toolCallId: undefined, shellName: "other" })).stdout).toBe("0\n");
+			expect(
+				(await runner.run({ command: 'printf "%s\\n" "${#fruits[@]}"', toolCallId: undefined, shellName: "other" }))
+					.stdout,
+			).toBe("0\n");
 		});
 
 		test("still saves the variable when the call ends with exit 0", async () => {
@@ -4306,9 +4351,15 @@ describe("bash_run_command", () => {
 
 		test("cd in one shell does not move another", async () => {
 			const runner = await create_bash_runner();
-			expect((await runner.run({ command: "cd docs", toolCallId: undefined, shellName: "a" })).metadata.nextCwd).toBe(`${test_db_files_mount}/docs`);
-			expect((await runner.run({ command: "pwd", toolCallId: undefined, shellName: "b" })).stdout).toBe(`${test_db_files_mount}\n`);
-			expect((await runner.run({ command: "pwd", toolCallId: undefined, shellName: "a" })).stdout).toBe(`${test_db_files_mount}/docs\n`);
+			expect((await runner.run({ command: "cd docs", toolCallId: undefined, shellName: "a" })).metadata.nextCwd).toBe(
+				`${test_db_files_mount}/docs`,
+			);
+			expect((await runner.run({ command: "pwd", toolCallId: undefined, shellName: "b" })).stdout).toBe(
+				`${test_db_files_mount}\n`,
+			);
+			expect((await runner.run({ command: "pwd", toolCallId: undefined, shellName: "a" })).stdout).toBe(
+				`${test_db_files_mount}/docs\n`,
+			);
 		});
 
 		test("warns about a file descriptor left open and does not restore it", async () => {
@@ -4369,7 +4420,9 @@ describe("bash_run_command", () => {
 
 		test("mounts the transcripts read-only under /shells and reads one only when asked", async () => {
 			const runner = await create_bash_runner();
-			expect((await runner.run({ command: "echo hi", toolCallId: undefined, shellName: "a" })).metadata.exitCode).toBe(0);
+			expect((await runner.run({ command: "echo hi", toolCallId: undefined, shellName: "a" })).metadata.exitCode).toBe(
+				0,
+			);
 			const listed = await runner.run({ command: "ls /shells", toolCallId: undefined, shellName: "b" });
 			expect(listed.metadata.exitCode, listed.stderr).toBe(0);
 			expect(listed.stdout).toBe("a\nb\n");
@@ -4385,10 +4438,17 @@ describe("bash_run_command", () => {
 			expect(read.stdout).toContain("echo hi\nhi\n");
 			expect(transcript_reads(runner)).toBe(2);
 
-			const written = await runner.run({ command: "echo x > /shells/a/transcript", toolCallId: undefined, shellName: "b" });
+			const written = await runner.run({
+				command: "echo x > /shells/a/transcript",
+				toolCallId: undefined,
+				shellName: "b",
+			});
 			expect(written.metadata.exitCode).not.toBe(0);
 			expect(written.stderr).toMatch(/read-only/i);
-			expect((await runner.run({ command: "rm /shells/a/transcript", toolCallId: undefined, shellName: "b" })).metadata.exitCode).not.toBe(0);
+			expect(
+				(await runner.run({ command: "rm /shells/a/transcript", toolCallId: undefined, shellName: "b" })).metadata
+					.exitCode,
+			).not.toBe(0);
 			expect((await transcript_of(runner, "a")).entries).toHaveLength(1);
 		});
 
@@ -4408,14 +4468,18 @@ describe("bash_run_command", () => {
 			await expect(runner.run({ command: "pwd", toolCallId: "same-call", shellName: "b" })).rejects.toThrow(
 				"This Bash call already has a different command.",
 			);
-			await expect(runner.run({ command: "pwd", toolCallId: "job:x:1" })).rejects.toThrow("Invalid Bash call identity.");
+			await expect(runner.run({ command: "pwd", toolCallId: "job:x:1" })).rejects.toThrow(
+				"Invalid Bash call identity.",
+			);
 		});
 	});
 
 	describe("jobs", () => {
 		test("durable Copy warns when suspension drops job tmp writes", async () => {
 			const runner = await create_bash_runner();
-			await runner.run({ command: "{ echo scratch > /tmp/copy-scratch.txt; cp docs/readme.md copy.md; echo after; } &" });
+			await runner.run({
+				command: "{ echo scratch > /tmp/copy-scratch.txt; cp docs/readme.md copy.md; echo after; } &",
+			});
 			const waiting = await run_job(runner, 1);
 			expect(waiting.job.copy?.phase).toBe("waiting");
 			expect(waiting.job.liveOutput?.stderr ?? "").toContain(
@@ -4534,7 +4598,8 @@ describe("bash_run_command", () => {
 			await runner.run({ command: "mkdir copies" });
 			// 3,401 sources need 35 pages. One worker appends at most 32 pages, then requeues the job.
 			await runner.run({
-				command: "{ cp $(echo once >> count.txt; printf 'docs/readme.md\\n%.0s' $(seq 3401)) copies/; echo after > after.txt; } &",
+				command:
+					"{ cp $(echo once >> count.txt; printf 'docs/readme.md\\n%.0s' $(seq 3401)) copies/; echo after > after.txt; } &",
 			});
 
 			const first = await run_job(runner, 1);
@@ -4644,7 +4709,8 @@ describe("bash_run_command", () => {
 					return waiting.job.copy.commandNumber;
 				};
 				await runner.run({
-					command: "{ cp docs/readme.md first.md; cp docs/readme.md second.md; sleep 5; cp docs/readme.md third.md; echo after; } &",
+					command:
+						"{ cp docs/readme.md first.md; cp docs/readme.md second.md; sleep 5; cp docs/readme.md third.md; echo after; } &",
 				});
 
 				await run_job(runner, 1);
@@ -4755,9 +4821,10 @@ describe("bash_run_command", () => {
 				const home = `/home/cloud-usr/w/${personal._yay.organizationName}/${personal._yay.workspaceName}`;
 				await runner.run({ command: `echo team > source.txt; echo private > ${home}/source.txt` });
 				await runner.run({
-					command: change === "source"
-						? `{ cp ${home}/source.txt copy.txt; echo after; } &`
-						: `{ cp source.txt ${home}/copy.txt; echo after; } &`,
+					command:
+						change === "source"
+							? `{ cp ${home}/source.txt copy.txt; echo after; } &`
+							: `{ cp source.txt ${home}/copy.txt; echo after; } &`,
 				});
 				const waiting = await run_job(runner, 1);
 				if (waiting.job.copy?.phase !== "waiting") throw new Error("Expected waiting Copy");
@@ -5265,8 +5332,12 @@ describe("bash_run_command", () => {
 			// A shell name may be 32 characters. Padding the column to 9 would add nothing at that
 			// width, so the name would run straight into the script.
 			const widest = "a".repeat(32);
-			expect((await runner.run({ command: "echo one &", toolCallId: "bash-widest", shellName: widest })).metadata.exitCode).toBe(0);
-			expect((await runner.run({ command: "jobs", toolCallId: "bash-widest-list", shellName: widest })).stdout).toBe(`[1] queued    ${widest} echo one\n`);
+			expect(
+				(await runner.run({ command: "echo one &", toolCallId: "bash-widest", shellName: widest })).metadata.exitCode,
+			).toBe(0);
+			expect((await runner.run({ command: "jobs", toolCallId: "bash-widest-list", shellName: widest })).stdout).toBe(
+				`[1] queued    ${widest} echo one\n`,
+			);
 		});
 
 		test("jobs -o reads one 32k page per stream and refuses a third read in one call", async () => {
@@ -5286,9 +5357,10 @@ describe("bash_run_command", () => {
 			const runner = await create_bash_runner();
 			// A long `sleep $t` runs inline and keeps the worker busy. A literal `sleep 60` would pause the job
 			// instead (see the pause tests below). The tests below use the same form for the same reason.
-			expect((await runner.run({ command: "{ echo first; echo warn >&2; t=60; sleep $t; echo last; } &" })).metadata.exitCode).toBe(
-				0,
-			);
+			expect(
+				(await runner.run({ command: "{ echo first; echo warn >&2; t=60; sleep $t; echo last; } &" })).metadata
+					.exitCode,
+			).toBe(0);
 			const row = await job_row(runner, 1);
 			vi.useFakeTimers();
 			try {
@@ -5408,7 +5480,9 @@ describe("bash_run_command", () => {
 			// count only ever reaches two in a row, so the sixth launch must still ask the door.
 			const tooBig = `true '${"a".repeat(66_000)}' &`;
 			const before = mutation_calls(runner, "ai_chat_files:start_bash_job");
-			const mixed = await runner.run({ command: `${tooBig} ${tooBig} true & ${tooBig} ${tooBig} true & echo rc=$?; jobs -a` });
+			const mixed = await runner.run({
+				command: `${tooBig} ${tooBig} true & ${tooBig} ${tooBig} true & echo rc=$?; jobs -a`,
+			});
 			expect(mutation_calls(runner, "ai_chat_files:start_bash_job") - before).toBe(6);
 			expect(mixed.stdout).toBe("rc=0\n[2] queued    default  true\n[1] queued    default  true\n");
 			expect(mixed.stderr).toContain("bash: started job 2 in shell default");
@@ -5571,7 +5645,9 @@ describe("bash_run_command", () => {
 			const parent = await run_job(runner, 1);
 			expect(parent.result?.stderr).toContain("bash: started job 2 in shell default.");
 			expect(await activity_of(runner, 2)).toMatchObject({ status: "queued", source: { parentJobNumber: 1 } });
-			expect((await runner.run({ command: "jobs" })).stdout).toBe("[2] queued    default  echo nested   (from job 1)\n");
+			expect((await runner.run({ command: "jobs" })).stdout).toBe(
+				"[2] queued    default  echo nested   (from job 1)\n",
+			);
 			const child = await run_job(runner, 2);
 			expect(child.result?.stdout).toBe("nested\n");
 		});
@@ -5782,7 +5858,9 @@ describe("bash_run_command", () => {
 
 		test("a launch before a pause still answers wait $! in the next run", async () => {
 			const runner = await create_bash_runner();
-			expect((await runner.run({ command: "sleep 1 & { echo one & sleep 30; wait -t 1 $!; } &" })).metadata.exitCode).toBe(0);
+			expect(
+				(await runner.run({ command: "sleep 1 & { echo one & sleep 30; wait -t 1 $!; } &" })).metadata.exitCode,
+			).toBe(0);
 			// A job starts with `$!` at 0: job 1 belongs to the call that started it, not to job 2.
 			expect((await job_row(runner, 2)).job?.shellState?.lastBackgroundPid).toBeUndefined();
 			// The shell the call leaves behind keeps no `$!` either, so the next call reads 0. That is
@@ -6306,7 +6384,9 @@ describe("bash_run_command", () => {
 
 		test("cp inside a job hides its transfer from the feed and cp && cat waits for the copy", async () => {
 			const runner = await create_bash_runner();
-			expect((await runner.run({ command: "cp docs/readme.md docs/copy.md && cat docs/copy.md &" })).metadata.exitCode).toBe(0);
+			expect(
+				(await runner.run({ command: "cp docs/readme.md docs/copy.md && cat docs/copy.md &" })).metadata.exitCode,
+			).toBe(0);
 			const finished = await run_job(runner, 1);
 			expect(finished.result?.metadata.exitCode, finished.result?.stderr).toBe(0);
 			expect(finished.result?.stdout).toContain("Transfer ");
@@ -6582,7 +6662,8 @@ describe("bash_run_command", () => {
 			const runner = await create_bash_runner();
 			const nodeId = await get_seeded_node_id(runner, "/docs/tutorial.md");
 			const moved = await runner.run({
-				command: `mv docs/tutorial.md docs/guide.md >/dev/null && resolve '${nodeId}' && ` +
+				command:
+					`mv docs/tutorial.md docs/guide.md >/dev/null && resolve '${nodeId}' && ` +
 					`mv docs/guide.md reports/manual.md >/dev/null && p=$(resolve '${nodeId}') && cat "$p"`,
 			});
 			expect(moved.metadata.exitCode, moved.stderr).toBe(0);
@@ -6594,7 +6675,9 @@ describe("bash_run_command", () => {
 				await pending_review_for_test(runner, nodeId),
 			);
 			expect(discarded._nay).toBeUndefined();
-			expect((await runner.run({ command: `resolve '${nodeId}'` })).stdout).toBe(`${test_db_files_mount}/docs/tutorial.md\n`);
+			expect((await runner.run({ command: `resolve '${nodeId}'` })).stdout).toBe(
+				`${test_db_files_mount}/docs/tutorial.md\n`,
+			);
 			expect((await runner.run({ command: "mv docs/tutorial.md reports/manual.md" })).metadata.exitCode).toBe(0);
 			const accepted = await runner_as_user(runner).mutation(
 				api.files_pending_updates.apply_file_pending_move,
@@ -6602,7 +6685,9 @@ describe("bash_run_command", () => {
 			);
 			expect(accepted._nay).toBeUndefined();
 			expect((await get_seeded_node(runner, "/reports/manual.md"))._id).toBe(nodeId);
-			expect((await runner.run({ command: `resolve '${nodeId}'` })).stdout).toBe(`${test_db_files_mount}/reports/manual.md\n`);
+			expect((await runner.run({ command: `resolve '${nodeId}'` })).stdout).toBe(
+				`${test_db_files_mount}/reports/manual.md\n`,
+			);
 		});
 
 		test("follows pending ancestor moves for folder and child IDs", async () => {
@@ -6632,7 +6717,9 @@ describe("bash_run_command", () => {
 				expect(moved.metadata.exitCode, moved.stderr).toBe(0);
 			}
 
-			const result = await runner.run({ command: "resolve 'https://app.example/w/personal/home/files/docs/tutorial.md'" });
+			const result = await runner.run({
+				command: "resolve 'https://app.example/w/personal/home/files/docs/tutorial.md'",
+			});
 
 			expect(result.metadata.exitCode, result.stderr).toBe(0);
 			expect(result.stdout).toBe(`${test_db_files_mount}/reports/summary.md\n`);
@@ -6654,7 +6741,9 @@ describe("bash_run_command", () => {
 				expect(result.stderr).toBe(unavailable.stderr);
 				expect(result.metadata.observedPaths).toEqual([]);
 			}
-			expect((await runner.run({ command: `resolve '${sourceId}'` })).stdout).toBe(`${test_db_files_mount}/reports/summary.md\n`);
+			expect((await runner.run({ command: `resolve '${sourceId}'` })).stdout).toBe(
+				`${test_db_files_mount}/reports/summary.md\n`,
+			);
 		});
 
 		test("hides a pending-deleted folder but keeps a child moved out of it", async () => {
@@ -6673,13 +6762,17 @@ describe("bash_run_command", () => {
 				expect(result.stdout).toBe("");
 				expect(result.metadata.observedPaths).toEqual([]);
 			}
-			expect((await runner.run({ command: `resolve '${childId}'` })).stdout).toBe(`${test_db_files_mount}/reports/survivor.md\n`);
+			expect((await runner.run({ command: `resolve '${childId}'` })).stdout).toBe(
+				`${test_db_files_mount}/reports/survivor.md\n`,
+			);
 			const discarded = await runner_as_user(runner).mutation(
 				api.files_pending_updates.discard_file_pending_structural,
 				await pending_review_for_test(runner, folderId),
 			);
 			expect(discarded._nay).toBeUndefined();
-			expect((await runner.run({ command: `resolve '${hiddenId}'` })).stdout).toBe(`${test_db_files_mount}/docs/nested/hidden.md\n`);
+			expect((await runner.run({ command: `resolve '${hiddenId}'` })).stdout).toBe(
+				`${test_db_files_mount}/docs/nested/hidden.md\n`,
+			);
 		});
 
 		test("is discoverable through which without adding a native executable", async () => {
@@ -7071,13 +7164,17 @@ describe("bash_run_command", () => {
 		expect(linesOnly.stdout).toContain(`2 ${test_db_files_mount}/wc/b.md`);
 		expect(linesOnly.stdout).toContain("5 total");
 
-		const combinedLinesWords = await run({ command: `wc -lw ${test_db_files_mount}/wc/a.md ${test_db_files_mount}/wc/b.md` });
+		const combinedLinesWords = await run({
+			command: `wc -lw ${test_db_files_mount}/wc/a.md ${test_db_files_mount}/wc/b.md`,
+		});
 		expect(combinedLinesWords.metadata.exitCode).toBe(0);
 		expect(combinedLinesWords.stdout).toContain(`3 5 ${test_db_files_mount}/wc/a.md`);
 		expect(combinedLinesWords.stdout).toContain(`2 4 ${test_db_files_mount}/wc/b.md`);
 		expect(combinedLinesWords.stdout).toContain("5 9 total");
 
-		const combinedCharsBytes = await run({ command: `wc -mc ${test_db_files_mount}/wc/a.md ${test_db_files_mount}/wc/b.md` });
+		const combinedCharsBytes = await run({
+			command: `wc -mc ${test_db_files_mount}/wc/a.md ${test_db_files_mount}/wc/b.md`,
+		});
 		expect(combinedCharsBytes.metadata.exitCode).toBe(0);
 		expect(combinedCharsBytes.stdout).toContain(`20 20 ${test_db_files_mount}/wc/a.md`);
 		expect(combinedCharsBytes.stdout).toContain(`12 12 ${test_db_files_mount}/wc/b.md`);
@@ -7097,7 +7194,9 @@ describe("bash_run_command", () => {
 			],
 		});
 
-		const result = await run({ command: `wc -l ${test_db_files_mount}/wc/windowed.md ${test_db_files_mount}/wc/missing.md` });
+		const result = await run({
+			command: `wc -l ${test_db_files_mount}/wc/windowed.md ${test_db_files_mount}/wc/missing.md`,
+		});
 
 		// A missing operand reports an error and exit 1, but the readable file still counts.
 		expect(result.metadata.exitCode).toBe(1);
@@ -7233,11 +7332,15 @@ describe("bash_run_command", () => {
 	test("large cat oversize gate still fires behind a pure move", async () => {
 		const runner = await create_bash_runner({ extraFiles: [big_md_file] });
 
-		const moved = await runner.run({ command: `mv ${test_db_files_mount}/big.md ${test_db_files_mount}/renamed-big.md` });
+		const moved = await runner.run({
+			command: `mv ${test_db_files_mount}/big.md ${test_db_files_mount}/renamed-big.md`,
+		});
 		expect(moved.metadata.exitCode).toBe(0);
 
 		// The move-only pending update doc stores size 0; both cat gates must keep using the committed asset size.
-		const multi = await runner.run({ command: `cat ${test_db_files_mount}/renamed-big.md ${test_db_files_mount}/docs/readme.md` });
+		const multi = await runner.run({
+			command: `cat ${test_db_files_mount}/renamed-big.md ${test_db_files_mount}/docs/readme.md`,
+		});
 		expect(multi.metadata.exitCode).toBe(1);
 		expect(multi.stderr).toContain("too large to concatenate");
 		expect(multi.stdout).not.toContain("# Readme");
@@ -7316,7 +7419,9 @@ describe("bash_run_command", () => {
 
 		// The mount path appears inside the sed SCRIPT, not as a file operand; piping via cat
 		// must run, not be rejected by an over-broad substring guard.
-		const result = await run({ command: `cat ${test_db_files_mount}/docs/readme.md | sed 's|${test_db_files_mount}|X|'` });
+		const result = await run({
+			command: `cat ${test_db_files_mount}/docs/readme.md | sed 's|${test_db_files_mount}|X|'`,
+		});
 
 		expect(result.metadata.exitCode).toBe(0);
 		expect(result.stdout).toContain("# Readme");
@@ -7331,12 +7436,18 @@ describe("bash_run_command", () => {
 		});
 
 		const touchReferenceResult = await run({ command: `touch -r ${test_db_files_mount}/docs/readme.md /tmp/from-ref` });
-		const cpAppDestResult = await run({ command: "printf copy > /tmp/copy-src.txt; cp /tmp/copy-src.txt -- -copy-dest.md" });
+		const cpAppDestResult = await run({
+			command: "printf copy > /tmp/copy-src.txt; cp /tmp/copy-src.txt -- -copy-dest.md",
+		});
 		const cpAppFolderDestResult = await run({
 			command: `printf copy > /tmp/native-output.md; cp /tmp/native-output.md ${test_db_files_mount}/docs`,
 		});
-		const mvResult = await run({ command: `mv ${test_db_files_mount}/docs/readme.md /tmp/moved.md; cat /tmp/moved.md` });
-		const mvAppDestResult = await run({ command: "printf move > /tmp/move-src.txt; mv /tmp/move-src.txt -- -move-dest.md" });
+		const mvResult = await run({
+			command: `mv ${test_db_files_mount}/docs/readme.md /tmp/moved.md; cat /tmp/moved.md`,
+		});
+		const mvAppDestResult = await run({
+			command: "printf move > /tmp/move-src.txt; mv /tmp/move-src.txt -- -move-dest.md",
+		});
 		const mvAppDestSource = await run({ command: "cat /tmp/move-src.txt" });
 		const mvAppToAppResult = await run({ command: `mv ${test_db_files_mount}/docs/readme.md renamed.md` });
 		const mvGlobResult = await run({ command: `mv '${test_db_files_mount}/docs/*.md' /tmp/moved.md` });
@@ -7371,7 +7482,9 @@ describe("bash_run_command", () => {
 
 	test.each(["cp", "mv"])("rejects unsupported app %s flags before copy or move work", async (command) => {
 		const runner = await create_bash_runner({ initialCwd: test_db_files_mount });
-		expect((await runner.run({ command: "printf scratch > /tmp/source.txt && mkdir /tmp/target" })).metadata.exitCode).toBe(0);
+		expect(
+			(await runner.run({ command: "printf scratch > /tmp/source.txt && mkdir /tmp/target" })).metadata.exitCode,
+		).toBe(0);
 
 		const app = await runner.run({ command: `${command} -v docs/readme.md new.md` });
 		expect(app.metadata.exitCode).toBe(2);
@@ -7502,7 +7615,9 @@ describe("bash_run_command", () => {
 		expect(scratchRead.metadata.exitCode).not.toBe(0);
 
 		// A failing operand does not stop later operands (builtin continue-on-error).
-		const partial = await runner.run({ command: `rm ${test_db_files_mount}/missing.md ${test_db_files_mount}/docs/nested/deep.md` });
+		const partial = await runner.run({
+			command: `rm ${test_db_files_mount}/missing.md ${test_db_files_mount}/docs/nested/deep.md`,
+		});
 		expect(partial.metadata.exitCode).not.toBe(0);
 		expect(partial.stderr).toBe(`rm: cannot remove '${test_db_files_mount}/missing.md': No such file or directory\n`);
 		expect(partial.stdout).toBe(
@@ -7555,7 +7670,9 @@ describe("bash_run_command", () => {
 
 		// The builtin's parser ignores a boolean long option's value, so --force=false still
 		// means force and must be intercepted, not delegated into a silent builtin no-op.
-		const booleanForm = await runner.run({ command: `rm --force=false --recursive=x ${test_db_files_mount}/docs/tutorial.md` });
+		const booleanForm = await runner.run({
+			command: `rm --force=false --recursive=x ${test_db_files_mount}/docs/tutorial.md`,
+		});
 		expect(booleanForm.metadata.exitCode).toBe(0);
 		expect(booleanForm.stdout).toBe(
 			"pending delete created: /docs/tutorial.md — archives the file when accepted; review in Files\n",
@@ -7576,9 +7693,13 @@ describe("bash_run_command", () => {
 			extraFiles: [{ path: "/-dash-copy.md", content: "dash cp\n" }],
 		});
 
-		const copied = await run({ command: `cp ${test_db_files_mount}/docs/readme.md /tmp/readme.md && cat /tmp/readme.md` });
+		const copied = await run({
+			command: `cp ${test_db_files_mount}/docs/readme.md /tmp/readme.md && cat /tmp/readme.md`,
+		});
 		const dashCopied = await run({ command: "cp -- -dash-copy.md /tmp/dash-copy.md && cat /tmp/dash-copy.md" });
-		const dirDestination = await run({ command: `cp ${test_db_files_mount}/docs/readme.md /tmp && cat /tmp/readme.md` });
+		const dirDestination = await run({
+			command: `cp ${test_db_files_mount}/docs/readme.md /tmp && cat /tmp/readme.md`,
+		});
 		const outsideTmp = await run({ command: `cp ${test_db_files_mount}/docs/readme.md /dev/null` });
 		const unreadable = await run({ command: `cp ${test_db_files_mount}/source.pdf /tmp/source.pdf` });
 
@@ -7613,7 +7734,9 @@ describe("bash_run_command", () => {
 		const runner = await create_bash_runner();
 		const docsId = await get_seeded_node_id(runner, "/docs");
 
-		const result = await runner.run({ command: `mv ${test_db_files_mount}/docs/tutorial.md ${test_db_files_mount}/docs/guide.md` });
+		const result = await runner.run({
+			command: `mv ${test_db_files_mount}/docs/tutorial.md ${test_db_files_mount}/docs/guide.md`,
+		});
 
 		expect(result.metadata.exitCode).toBe(0);
 		expect(result.stderr).toBe("");
@@ -7655,7 +7778,9 @@ describe("bash_run_command", () => {
 	test("mv back to the original path cancels the pending move", async () => {
 		const runner = await create_bash_runner();
 
-		const moved = await runner.run({ command: `mv ${test_db_files_mount}/docs/tutorial.md ${test_db_files_mount}/docs/guide.md` });
+		const moved = await runner.run({
+			command: `mv ${test_db_files_mount}/docs/tutorial.md ${test_db_files_mount}/docs/guide.md`,
+		});
 		expect(moved.metadata.exitCode).toBe(0);
 
 		const cancelled = await runner.run({
@@ -7685,13 +7810,17 @@ describe("bash_run_command", () => {
 		const runner = await create_bash_runner();
 		const reportsId = await get_seeded_node_id(runner, "/reports");
 
-		const fileMove = await runner.run({ command: `mv ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/reports` });
+		const fileMove = await runner.run({
+			command: `mv ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/reports`,
+		});
 		expect(fileMove.metadata.exitCode).toBe(0);
 		expect(fileMove.stdout).toMatch(
 			/^Transfer \S+: 1 ready for review, 0 skipped, 0 failed\. Activity \S+\. Review in Files\.\n$/,
 		);
 
-		const folderMove = await runner.run({ command: `mv ${test_db_files_mount}/docs/nested ${test_db_files_mount}/reports` });
+		const folderMove = await runner.run({
+			command: `mv ${test_db_files_mount}/docs/nested ${test_db_files_mount}/reports`,
+		});
 		expect(folderMove.metadata.exitCode).toBe(0);
 		expect(folderMove.stdout).toMatch(
 			/^Transfer \S+: 1 ready for review, 0 skipped, 0 failed\. Activity \S+\. Review in Files\.\n$/,
@@ -7741,16 +7870,22 @@ describe("bash_run_command", () => {
 		expect(missingParent.metadata.exitCode).not.toBe(0);
 		expect(missingParent.stderr).toBe("mv: the destination parent is not a directory\n");
 
-		const folderIntoItself = await runner.run({ command: `mv ${test_db_files_mount}/docs ${test_db_files_mount}/docs/nested` });
+		const folderIntoItself = await runner.run({
+			command: `mv ${test_db_files_mount}/docs ${test_db_files_mount}/docs/nested`,
+		});
 		expect(folderIntoItself.metadata.exitCode).not.toBe(0);
 		expect(folderIntoItself.stderr).toBe("mv: A folder cannot be transferred inside itself\n");
 
-		const samePath = await runner.run({ command: `mv ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/docs/readme.md` });
+		const samePath = await runner.run({
+			command: `mv ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/docs/readme.md`,
+		});
 		expect(samePath.metadata.exitCode).toBe(0);
 		expect(samePath.stdout).toBe("");
 		expect(samePath.stderr).toBe("");
 
-		const missingSource = await runner.run({ command: `mv ${test_db_files_mount}/nope.md ${test_db_files_mount}/reports` });
+		const missingSource = await runner.run({
+			command: `mv ${test_db_files_mount}/nope.md ${test_db_files_mount}/reports`,
+		});
 		expect(missingSource.metadata.exitCode).not.toBe(0);
 		expect(missingSource.stderr).toBe(`mv: source '${test_db_files_mount}/nope.md' is not available\n`);
 
@@ -7802,7 +7937,9 @@ describe("bash_run_command", () => {
 
 		// The pending move hides its source from the proposer's overlay, so a later mv of the
 		// same source path reads as missing (the file is already spoken for).
-		const hiddenSource = await runner.run({ command: `mv -f ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/reports` });
+		const hiddenSource = await runner.run({
+			command: `mv -f ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/reports`,
+		});
 		expect(hiddenSource.metadata.exitCode).not.toBe(0);
 		expect(hiddenSource.stderr).toBe(`mv: source '${test_db_files_mount}/docs/readme.md' is not available\n`);
 
@@ -7845,7 +7982,9 @@ describe("bash_run_command", () => {
 
 		// A non-editable target has no version history to keep, so the source's pending update doc
 		// records a structural replacement: accepting archives the target and moves the source onto its path.
-		const result = await runner.run({ command: `mv -f ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/uploaded.md` });
+		const result = await runner.run({
+			command: `mv -f ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/uploaded.md`,
+		});
 		expect(result.stderr).toBe("");
 		expect(result.metadata.exitCode).toBe(0);
 		expect(result.stdout).toMatch(
@@ -7939,7 +8078,9 @@ describe("bash_run_command", () => {
 		expect(scratchCopy.metadata.exitCode).toBe(0);
 		expect(scratchCopy.stdout).toContain("zeta");
 
-		const appCopy = await runner.run({ command: `cp ${test_db_files_mount}/docs/guide.md ${test_db_files_mount}/guide-copy.md` });
+		const appCopy = await runner.run({
+			command: `cp ${test_db_files_mount}/docs/guide.md ${test_db_files_mount}/guide-copy.md`,
+		});
 		expect(appCopy.metadata.exitCode).toBe(0);
 		expect(appCopy.stdout).toMatch(
 			/^Transfer \S+: 1 ready for review, 0 skipped, 0 failed\. Activity \S+\. Review in Files\.\n$/,
@@ -7961,7 +8102,9 @@ describe("bash_run_command", () => {
 		const childBId = await get_seeded_node_id(runner, "/fsc-b/b-child.md");
 
 		// The classic 3-step swap: every mv succeeds and leaves a 2-row folder cycle.
-		const moveBToTemp = await runner.run({ command: `mv ${test_db_files_mount}/fsc-b ${test_db_files_mount}/fsc-temp` });
+		const moveBToTemp = await runner.run({
+			command: `mv ${test_db_files_mount}/fsc-b ${test_db_files_mount}/fsc-temp`,
+		});
 		expect(moveBToTemp.metadata.exitCode).toBe(0);
 		const moveAToB = await runner.run({ command: `mv ${test_db_files_mount}/fsc-a ${test_db_files_mount}/fsc-b` });
 		expect(moveAToB.metadata.exitCode).toBe(0);
@@ -8044,7 +8187,9 @@ describe("bash_run_command", () => {
 		expect(moveFolderToFilePath.metadata.exitCode).toBe(0);
 
 		// The closing mv forms a mixed cycle with a folder member: proposable like any swap.
-		const closing = await runner.run({ command: `mv ${test_db_files_mount}/fsc-mix-tmp.md ${test_db_files_mount}/fsc-mix-b.md` });
+		const closing = await runner.run({
+			command: `mv ${test_db_files_mount}/fsc-mix-tmp.md ${test_db_files_mount}/fsc-mix-b.md`,
+		});
 		expect(closing.metadata.exitCode).toBe(0);
 		expect(closing.stderr).toBe("");
 		expect(closing.stdout).toMatch(
@@ -8105,7 +8250,9 @@ describe("bash_run_command", () => {
 		const destId = await get_seeded_node_id(runner, "/edr-nf-dst");
 
 		// -T alone only says "do not move inside the destination". Replacing it still needs -f.
-		const moved = await runner.run({ command: `mv -T ${test_db_files_mount}/edr-nf-src ${test_db_files_mount}/edr-nf-dst` });
+		const moved = await runner.run({
+			command: `mv -T ${test_db_files_mount}/edr-nf-src ${test_db_files_mount}/edr-nf-dst`,
+		});
 		expect(moved.stderr).toBe("mv: The destination already exists\n");
 		expect(moved.metadata.exitCode).not.toBe(0);
 
@@ -8126,12 +8273,16 @@ describe("bash_run_command", () => {
 			],
 		});
 
-		const moved = await runner.run({ command: `mv -Tf ${test_db_files_mount}/edr-full-src ${test_db_files_mount}/edr-full` });
+		const moved = await runner.run({
+			command: `mv -Tf ${test_db_files_mount}/edr-full-src ${test_db_files_mount}/edr-full`,
+		});
 		expect(moved.metadata.exitCode).not.toBe(0);
 		expect(moved.stderr).toBe("mv: Directory not empty\n");
 
 		// A file never replaces a folder, matching rename()'s EISDIR.
-		const fileMove = await runner.run({ command: `mv -Tf ${test_db_files_mount}/edr-full-file.md ${test_db_files_mount}/edr-full` });
+		const fileMove = await runner.run({
+			command: `mv -Tf ${test_db_files_mount}/edr-full-file.md ${test_db_files_mount}/edr-full`,
+		});
 		expect(fileMove.metadata.exitCode).not.toBe(0);
 		expect(fileMove.stderr).toBe("mv: The source and destination types differ\n");
 	});
@@ -8171,7 +8322,9 @@ describe("bash_run_command", () => {
 			command: `mv ${test_db_files_mount}/r16s-swap-a.md ${test_db_files_mount}/r16s-swap-tmp.md`,
 		});
 		expect(moveAToTemp.metadata.exitCode).toBe(0);
-		const moveBToA = await runner.run({ command: `mv ${test_db_files_mount}/r16s-swap-b.md ${test_db_files_mount}/r16s-swap-a.md` });
+		const moveBToA = await runner.run({
+			command: `mv ${test_db_files_mount}/r16s-swap-b.md ${test_db_files_mount}/r16s-swap-a.md`,
+		});
 		expect(moveBToA.metadata.exitCode).toBe(0);
 
 		// A pure file cycle stays proposable: accept applies the whole cycle atomically.
@@ -8214,9 +8367,13 @@ describe("bash_run_command", () => {
 		});
 
 		// B vacates its path, then A claims it: a chain with no cycle stays allowed.
-		const moveB = await runner.run({ command: `mv ${test_db_files_mount}/r16s-lin-b ${test_db_files_mount}/r16s-lin-c` });
+		const moveB = await runner.run({
+			command: `mv ${test_db_files_mount}/r16s-lin-b ${test_db_files_mount}/r16s-lin-c`,
+		});
 		expect(moveB.metadata.exitCode).toBe(0);
-		const moveA = await runner.run({ command: `mv ${test_db_files_mount}/r16s-lin-a ${test_db_files_mount}/r16s-lin-b` });
+		const moveA = await runner.run({
+			command: `mv ${test_db_files_mount}/r16s-lin-a ${test_db_files_mount}/r16s-lin-b`,
+		});
 		expect(moveA.metadata.exitCode).toBe(0);
 		expect(moveA.stdout).toMatch(
 			/^Transfer \S+: 1 ready for review, 0 skipped, 0 failed\. Activity \S+\. Review in Files\.\n$/,
@@ -8237,7 +8394,9 @@ describe("bash_run_command", () => {
 		// B vacates its path, then -T claims it: the direct rename sees the path as free.
 		const moveB = await runner.run({ command: `mv ${test_db_files_mount}/edr-vac-b ${test_db_files_mount}/edr-vac-c` });
 		expect(moveB.metadata.exitCode).toBe(0);
-		const moveA = await runner.run({ command: `mv -T ${test_db_files_mount}/edr-vac-a ${test_db_files_mount}/edr-vac-b` });
+		const moveA = await runner.run({
+			command: `mv -T ${test_db_files_mount}/edr-vac-a ${test_db_files_mount}/edr-vac-b`,
+		});
 		expect(moveA.stderr).toBe("");
 		expect(moveA.metadata.exitCode).toBe(0);
 		expect(moveA.stdout).toMatch(
@@ -8281,7 +8440,9 @@ describe("bash_run_command", () => {
 	test("overlays pending moves onto ls listings", async () => {
 		const runner = await create_bash_runner();
 
-		const move = await runner.run({ command: `mv ${test_db_files_mount}/docs/tutorial.md ${test_db_files_mount}/reports/guide.md` });
+		const move = await runner.run({
+			command: `mv ${test_db_files_mount}/docs/tutorial.md ${test_db_files_mount}/reports/guide.md`,
+		});
 		expect(move.metadata.exitCode).toBe(0);
 
 		// The destination folder shows the moved file under its new name.
@@ -8295,7 +8456,9 @@ describe("bash_run_command", () => {
 		expect(sourceList.stdout.trim().split("\n")).toEqual(["nested/", "readme.md"]);
 
 		// A move to the workspace root shows up in the root listing.
-		const rootMove = await runner.run({ command: `mv ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/root-readme.md` });
+		const rootMove = await runner.run({
+			command: `mv ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/root-readme.md`,
+		});
 		expect(rootMove.metadata.exitCode).toBe(0);
 		const rootList = await runner.run({ command: `ls ${test_db_files_mount}` });
 		const rootLines = rootList.stdout.trim().split("\n");
@@ -8350,7 +8513,9 @@ describe("bash_run_command", () => {
 	test("splices a moved folder's subtree into tree and recursive ls", async () => {
 		const runner = await create_bash_runner();
 
-		const move = await runner.run({ command: `mv ${test_db_files_mount}/docs/nested ${test_db_files_mount}/reports/nested` });
+		const move = await runner.run({
+			command: `mv ${test_db_files_mount}/docs/nested ${test_db_files_mount}/reports/nested`,
+		});
 		expect(move.metadata.exitCode).toBe(0);
 
 		// The destination parent shows the moved folder with its subtree spliced in.
@@ -8387,7 +8552,9 @@ describe("bash_run_command", () => {
 	test("lists a pending move nested under a moved folder exactly once", async () => {
 		const runner = await create_bash_runner();
 
-		const folderMove = await runner.run({ command: `mv ${test_db_files_mount}/docs/nested ${test_db_files_mount}/reports/nested` });
+		const folderMove = await runner.run({
+			command: `mv ${test_db_files_mount}/docs/nested ${test_db_files_mount}/reports/nested`,
+		});
 		expect(folderMove.metadata.exitCode).toBe(0);
 		// The follow-up mv uses the moved folder's visible path, nesting one pending move
 		// under another.
@@ -8412,7 +8579,9 @@ describe("bash_run_command", () => {
 	test("ls -R lists a pending move nested under a moved folder exactly once", async () => {
 		const runner = await create_bash_runner();
 
-		const folderMove = await runner.run({ command: `mv ${test_db_files_mount}/docs/nested ${test_db_files_mount}/reports/nested` });
+		const folderMove = await runner.run({
+			command: `mv ${test_db_files_mount}/docs/nested ${test_db_files_mount}/reports/nested`,
+		});
 		expect(folderMove.metadata.exitCode).toBe(0);
 		const nestedMove = await runner.run({
 			command: `mv ${test_db_files_mount}/reports/nested/deep.md ${test_db_files_mount}/reports/nested/renamed.md`,
@@ -8530,7 +8699,9 @@ describe("bash_run_command", () => {
 	test("grep finds matches in a file with a pending move-only row", async () => {
 		const runner = await create_bash_runner();
 
-		const moved = await runner.run({ command: `mv ${test_db_files_mount}/docs/tutorial.md ${test_db_files_mount}/docs/guide.md` });
+		const moved = await runner.run({
+			command: `mv ${test_db_files_mount}/docs/tutorial.md ${test_db_files_mount}/docs/guide.md`,
+		});
 		expect(moved.metadata.exitCode).toBe(0);
 
 		// The move-only pending update doc has no pending chunks; grep must fall back to the
@@ -8544,7 +8715,9 @@ describe("bash_run_command", () => {
 	test("textgrep finds matches in a file with a pending move-only row", async () => {
 		const runner = await create_bash_runner();
 
-		const moved = await runner.run({ command: `mv ${test_db_files_mount}/docs/tutorial.md ${test_db_files_mount}/docs/guide.md` });
+		const moved = await runner.run({
+			command: `mv ${test_db_files_mount}/docs/tutorial.md ${test_db_files_mount}/docs/guide.md`,
+		});
 		expect(moved.metadata.exitCode).toBe(0);
 
 		// Same committed fallback for the plain-text matcher behind a move-only pending update doc.
@@ -8685,7 +8858,9 @@ describe("bash_run_command", () => {
 		expect(mvResult.metadata.exitCode).not.toBe(0);
 		expect(mvResult.stderr).toBe("mv: app file writes require Agent mode\n");
 
-		const cpResult = await runner.run({ command: `cp ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/docs/copy.md` });
+		const cpResult = await runner.run({
+			command: `cp ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/docs/copy.md`,
+		});
 		expect(cpResult.metadata.exitCode).not.toBe(0);
 		expect(cpResult.stderr).toBe("cp: app file writes require Agent mode\n");
 
@@ -8849,7 +9024,9 @@ describe("bash_run_command", () => {
 		expect(frontmatter.stderr).toBe("");
 		expect(frontmatter.metadata.exitCode).toBe(0);
 		expect(frontmatter.stdout).toBe(`${test_db_files_mount}/private-meta/note.md\n`);
-		const metadata = await runner.run({ command: `meta search --where '{"eq":["metadata.source","draft-copy"]}' --format json` });
+		const metadata = await runner.run({
+			command: `meta search --where '{"eq":["metadata.source","draft-copy"]}' --format json`,
+		});
 		expect(metadata.metadata.exitCode).toBe(0);
 		expect(JSON.parse(metadata.stdout).results).toEqual(
 			expect.arrayContaining([
@@ -9250,7 +9427,9 @@ describe("bash_run_command", () => {
 				],
 			});
 			const node = await get_seeded_node(runner, filePath);
-			const proposed = await runner.run({ command: `printf 'first: proposal\\nsecond: old\\nthird: old\\n' > ${path}` });
+			const proposed = await runner.run({
+				command: `printf 'first: proposal\\nsecond: old\\nthird: old\\n' > ${path}`,
+			});
 			expect(proposed.stderr).toBe("");
 			expect(proposed.metadata.exitCode).toBe(0);
 			const [originalPending] = await list_pending_updates(runner);
@@ -9375,7 +9554,9 @@ describe("bash_run_command", () => {
 			expect(pendingSearch.metadata.exitCode).toBe(0);
 			expect(pendingSearch.stdout).toContain(path);
 			if (extension === "md") {
-				const pendingMetadata = await runner.run({ command: `meta search --where '{"eq":["frontmatter.status","proposed"]}'` });
+				const pendingMetadata = await runner.run({
+					command: `meta search --where '{"eq":["frontmatter.status","proposed"]}'`,
+				});
 				expect(pendingMetadata.metadata.exitCode).toBe(0);
 				expect(pendingMetadata.stdout).toContain(path);
 			}
@@ -9406,10 +9587,14 @@ describe("bash_run_command", () => {
 			expect(committedSearch.metadata.exitCode).toBe(0);
 			expect(committedSearch.stdout).toContain(path);
 			if (extension === "md") {
-				const hiddenMetadata = await runner.run({ command: `meta search --where '{"eq":["frontmatter.status","proposed"]}'` });
+				const hiddenMetadata = await runner.run({
+					command: `meta search --where '{"eq":["frontmatter.status","proposed"]}'`,
+				});
 				expect(hiddenMetadata.metadata.exitCode).toBe(0);
 				expect(hiddenMetadata.stdout).not.toContain(path);
-				const committedMetadata = await runner.run({ command: `meta search --where '{"eq":["frontmatter.status","saved"]}'` });
+				const committedMetadata = await runner.run({
+					command: `meta search --where '{"eq":["frontmatter.status","saved"]}'`,
+				});
 				expect(committedMetadata.metadata.exitCode).toBe(0);
 				expect(committedMetadata.stdout).toContain(path);
 			}
@@ -9557,7 +9742,9 @@ describe("bash_run_command", () => {
 			expect(existing.metadata.exitCode, existing.stderr).toBe(0);
 			expect((await get_seeded_node(runner, `/legacy/${name}`))._id).toBe(nodeId);
 		}
-		expect((await runner.run({ command: `cat ${test_db_files_mount}/legacy/README.md` })).stdout).toBe("canonical sibling\n");
+		expect((await runner.run({ command: `cat ${test_db_files_mount}/legacy/README.md` })).stdout).toBe(
+			"canonical sibling\n",
+		);
 	});
 
 	test("uses README.md for new bare readme copy and move destinations", async () => {
@@ -9569,12 +9756,16 @@ describe("bash_run_command", () => {
 			],
 		});
 		for (const destination of ["/copies", "/docs/readme"]) {
-			const copied = await runner.run({ command: `cp ${test_db_files_mount}/legacy/readme ${test_db_files_mount}${destination}` });
+			const copied = await runner.run({
+				command: `cp ${test_db_files_mount}/legacy/readme ${test_db_files_mount}${destination}`,
+			});
 			expect(copied.metadata.exitCode, copied.stderr).toBe(0);
 		}
 		expect((await get_private_entry(runner, "/copies/README.md")).node.name).toBe("README.md");
 		expect((await get_private_entry(runner, "/docs/README.md")).node.name).toBe("README.md");
-		const moved = await runner.run({ command: `mv ${test_db_files_mount}/legacy/readme ${test_db_files_mount}/moved/readme` });
+		const moved = await runner.run({
+			command: `mv ${test_db_files_mount}/legacy/readme ${test_db_files_mount}/moved/readme`,
+		});
 		expect(moved.metadata.exitCode, moved.stderr).toBe(0);
 		expect(await list_pending_updates(runner)).toEqual(
 			expect.arrayContaining([
@@ -9587,10 +9778,14 @@ describe("bash_run_command", () => {
 		const runner = await create_bash_runner({
 			extraFiles: [{ path: "/legacy/readme.md", content: "legacy\n", withRealYjsSnapshot: true }],
 		});
-		const copied = await runner.run({ command: `cp ${test_db_files_mount}/legacy/readme.md ${test_db_files_mount}/docs/skill.md` });
+		const copied = await runner.run({
+			command: `cp ${test_db_files_mount}/legacy/readme.md ${test_db_files_mount}/docs/skill.md`,
+		});
 		expect(copied.metadata.exitCode, copied.stderr).toBe(0);
 		expect((await get_private_entry(runner, "/docs/SKILL.md")).path).toBe("/docs/SKILL.md");
-		const moved = await runner.run({ command: `mv ${test_db_files_mount}/legacy/readme.md ${test_db_files_mount}/docs/agents.md` });
+		const moved = await runner.run({
+			command: `mv ${test_db_files_mount}/legacy/readme.md ${test_db_files_mount}/docs/agents.md`,
+		});
 		expect(moved.metadata.exitCode, moved.stderr).toBe(0);
 		expect(await list_pending_updates(runner)).toEqual(
 			expect.arrayContaining([
@@ -9996,7 +10191,9 @@ describe("bash_run_command", () => {
 		expect(await list_pending_updates_for_node(runner, targetId)).toHaveLength(0);
 
 		// A stored upload may change its extension too. The type stays with the bytes.
-		const extensionChange = await runner.run({ command: `mv ${test_db_files_mount}/source.pdf ${test_db_files_mount}/video.mp4` });
+		const extensionChange = await runner.run({
+			command: `mv ${test_db_files_mount}/source.pdf ${test_db_files_mount}/video.mp4`,
+		});
 		expect(extensionChange.stderr).toBe("");
 		expect(extensionChange.metadata.exitCode).toBe(0);
 		expect(extensionChange.stdout).toMatch(
@@ -10021,7 +10218,9 @@ describe("bash_run_command", () => {
 		// lands, so the proposal stays empty and the user discards it like any other proposal.
 		const pendingNodes = await runner.t.run(async (ctx) => ctx.db.query("files_pending_nodes").collect());
 		expect(pendingNodes.map((node) => node.name)).toEqual(["big.md"]);
-		expect((await runner.run({ command: `wc -c ${test_db_files_mount}/big.md` })).stdout).toBe(`0 ${test_db_files_mount}/big.md\n`);
+		expect((await runner.run({ command: `wc -c ${test_db_files_mount}/big.md` })).stdout).toBe(
+			`0 ${test_db_files_mount}/big.md\n`,
+		);
 		expect((await list_pending_updates(runner)).map((update) => update.size)).toEqual([0]);
 
 		// The refusal still commits nothing to the shared tree.
@@ -10074,7 +10273,9 @@ describe("bash_run_command", () => {
 		expect(overlayRead.stdout).toContain("unique-token");
 
 		// A new child inside an existing folder uses the special-name casing.
-		const folderDest = await runner.run({ command: `cp ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/reports` });
+		const folderDest = await runner.run({
+			command: `cp ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/reports`,
+		});
 		expect(folderDest.metadata.exitCode).toBe(0);
 		expect(folderDest.stdout).toMatch(
 			/^Transfer \S+: 1 ready for review, 0 skipped, 0 failed\. Activity \S+\. Review in Files\.\n$/,
@@ -10194,7 +10395,9 @@ describe("bash_run_command", () => {
 	test("cp into a new deep path keeps the file and its parents private", async () => {
 		const runner = await create_bash_runner();
 
-		const result = await runner.run({ command: `cp ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/new/deep/copy.md` });
+		const result = await runner.run({
+			command: `cp ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/new/deep/copy.md`,
+		});
 		expect(result.stderr).toBe("");
 		expect(result.metadata.exitCode).toBe(0);
 		expect(result.stdout).toMatch(
@@ -10746,7 +10949,9 @@ describe("bash_run_command", () => {
 		expect(await runner.t.run((ctx) => ctx.db.get("files_pending_nodes", markdownCopy.node._id))).toMatchObject({
 			state: "discarded",
 		});
-		expect((await runner.run({ command: `cat ${test_db_files_mount}/data/readme-copy.txt` })).metadata.exitCode).not.toBe(0);
+		expect(
+			(await runner.run({ command: `cat ${test_db_files_mount}/data/readme-copy.txt` })).metadata.exitCode,
+		).not.toBe(0);
 	});
 
 	test("cp of a plain text file onto a Markdown file keeps the text exactly, before review and after accept", async () => {
@@ -10826,7 +11031,9 @@ describe("bash_run_command", () => {
 
 		// Lock: the copy is refused before anything is staged.
 		await runner.t.run((ctx) => ctx.db.patch("files_nodes", lockedId, { writePolicy: { mode: "read_only" } }));
-		const locked = await runner.run({ command: `cp ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/data/locked.yaml` });
+		const locked = await runner.run({
+			command: `cp ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/data/locked.yaml`,
+		});
 		expect(locked.metadata.exitCode).not.toBe(0);
 		expect(locked.stderr).toContain("read-only");
 		const lockedRead = await runner.run({ command: `cat ${test_db_files_mount}/data/locked.yaml` });
@@ -10913,7 +11120,9 @@ describe("bash_run_command", () => {
 		expect(onRead.stdout).toBe(plain_copy_canonical);
 
 		// The rebuilt document takes a normal edit, accept, and materialization.
-		const appended = await runner.run({ command: `printf '\\ntail line\\n' >> ${test_db_files_mount}/docs/rich-target.md` });
+		const appended = await runner.run({
+			command: `printf '\\ntail line\\n' >> ${test_db_files_mount}/docs/rich-target.md`,
+		});
 		expect(appended.metadata.exitCode).toBe(0);
 		await accept_pending_update_for_test(runner, { nodeId: targetBefore._id, path: "/docs/rich-target.md" });
 		const committed = await read_committed_text(runner, targetBefore._id);
@@ -10999,7 +11208,9 @@ describe("bash_run_command", () => {
 	test("cp creates a private file at a path vacated by the user's pending move", async () => {
 		const runner = await create_bash_runner();
 
-		const move = await runner.run({ command: `mv ${test_db_files_mount}/docs/tutorial.md ${test_db_files_mount}/docs/guide.md` });
+		const move = await runner.run({
+			command: `mv ${test_db_files_mount}/docs/tutorial.md ${test_db_files_mount}/docs/guide.md`,
+		});
 		expect(move.metadata.exitCode).toBe(0);
 		const tutorialId = await get_seeded_node_id(runner, "/docs/tutorial.md");
 
@@ -11031,7 +11242,9 @@ describe("bash_run_command", () => {
 		expect(movedRead.stdout).toContain("zeta");
 
 		// A genuinely free path still takes a plain pending copy.
-		const freeCopy = await runner.run({ command: `cp ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/docs/fresh.md` });
+		const freeCopy = await runner.run({
+			command: `cp ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/docs/fresh.md`,
+		});
 		expect(freeCopy.metadata.exitCode).toBe(0);
 		expect(freeCopy.stdout).toMatch(
 			/^Transfer \S+: 1 ready for review, 0 skipped, 0 failed\. Activity \S+\. Review in Files\.\n$/,
@@ -11122,7 +11335,10 @@ describe("bash_run_command", () => {
 			});
 			expect(moved.metadata.exitCode, moved.stderr).toBe(0);
 			expect(moved.metadata.nextCwd).toBe(`${test_db_files_mount}/archive`);
-			expect((await get_shell({ t: runner.t, threadId: runner.threadId }))?.cwdTarget).toEqual({ kind: "saved", id: folderId });
+			expect((await get_shell({ t: runner.t, threadId: runner.threadId }))?.cwdTarget).toEqual({
+				kind: "saved",
+				id: folderId,
+			});
 			expect((await runner.run({ command: "cat readme.md" })).stdout).toContain("# Readme");
 			expect((await runner.run({ command: "cat ../docs/replacement.txt" })).stdout).toBe("replacement");
 		},
@@ -11177,7 +11393,9 @@ describe("bash_run_command", () => {
 		// root, so this thread's persisted cwd is never touched by the end-of-command
 		// projection of that call.
 		const otherThread = await create_bash_runner({ shared: { t: runner.t, seeded: runner.seeded } });
-		const moved = await otherThread.run({ command: `mv ${test_db_files_mount}/reports ${test_db_files_mount}/archive` });
+		const moved = await otherThread.run({
+			command: `mv ${test_db_files_mount}/reports ${test_db_files_mount}/archive`,
+		});
 		expect(moved.metadata.exitCode).toBe(0);
 		expect(moved.metadata.nextCwd).toBe(test_db_files_mount);
 
@@ -11196,7 +11414,9 @@ describe("bash_run_command", () => {
 		await runner.run({ command: `mv ${test_db_files_mount}/docs/tutorial.md ${test_db_files_mount}/docs/guide.md` });
 
 		// Moving by the visible path into a folder keeps its visible name.
-		const folderMove = await runner.run({ command: `mv ${test_db_files_mount}/docs/guide.md ${test_db_files_mount}/reports` });
+		const folderMove = await runner.run({
+			command: `mv ${test_db_files_mount}/docs/guide.md ${test_db_files_mount}/reports`,
+		});
 		expect(folderMove.metadata.exitCode).toBe(0);
 		expect(folderMove.stdout).toMatch(
 			/^Transfer \S+: 1 ready for review, 0 skipped, 0 failed\. Activity \S+\. Review in Files\.\n$/,
@@ -11211,11 +11431,15 @@ describe("bash_run_command", () => {
 	test("mv into a moved destination folder uses its visible path", async () => {
 		const runner = await create_bash_runner();
 
-		const folderMove = await runner.run({ command: `mv ${test_db_files_mount}/reports ${test_db_files_mount}/archive` });
+		const folderMove = await runner.run({
+			command: `mv ${test_db_files_mount}/reports ${test_db_files_mount}/archive`,
+		});
 		expect(folderMove.metadata.exitCode).toBe(0);
 
 		// The parent keeps its saved identity while the shell uses its visible path.
-		const move = await runner.run({ command: `mv ${test_db_files_mount}/docs/tutorial.md ${test_db_files_mount}/archive` });
+		const move = await runner.run({
+			command: `mv ${test_db_files_mount}/docs/tutorial.md ${test_db_files_mount}/archive`,
+		});
 		expect(move.stderr).toBe("");
 		expect(move.metadata.exitCode).toBe(0);
 		expect(move.stdout).toMatch(
@@ -11242,20 +11466,28 @@ describe("bash_run_command", () => {
 		expect(folderMove.metadata.exitCode).toBe(0);
 
 		// The committed child at the visible destination is a real conflict, not a claim.
-		const conflict = await runner.run({ command: `mv ${test_db_files_mount}/other/report.md ${test_db_files_mount}/new` });
+		const conflict = await runner.run({
+			command: `mv ${test_db_files_mount}/other/report.md ${test_db_files_mount}/new`,
+		});
 		expect(conflict.metadata.exitCode).not.toBe(0);
 		expect(conflict.stderr).toBe("mv: The destination already exists\n");
 
 		// A visible path claimed by a file's own pending move is still rejected: one visible path, one proposal.
-		const claim = await runner.run({ command: `mv ${test_db_files_mount}/other/claim.md ${test_db_files_mount}/new/claim.md` });
+		const claim = await runner.run({
+			command: `mv ${test_db_files_mount}/other/claim.md ${test_db_files_mount}/new/claim.md`,
+		});
 		expect(claim.metadata.exitCode).toBe(0);
-		const claimedDest = await runner.run({ command: `mv ${test_db_files_mount}/third/claim.md ${test_db_files_mount}/new` });
+		const claimedDest = await runner.run({
+			command: `mv ${test_db_files_mount}/third/claim.md ${test_db_files_mount}/new`,
+		});
 		expect(claimedDest.metadata.exitCode).not.toBe(0);
 		expect(claimedDest.stderr).toBe("mv: The destination already exists\n");
 
 		// -f proposes the structural replace on the committed child, under the folder's
 		// committed identity, so the replacement travels with the folder when its move is accepted.
-		const forced = await runner.run({ command: `mv -f ${test_db_files_mount}/other/report.md ${test_db_files_mount}/new` });
+		const forced = await runner.run({
+			command: `mv -f ${test_db_files_mount}/other/report.md ${test_db_files_mount}/new`,
+		});
 		expect(forced.stderr).toBe("");
 		expect(forced.metadata.exitCode).toBe(0);
 		expect(forced.stdout).toMatch(
@@ -11297,7 +11529,9 @@ describe("bash_run_command", () => {
 		});
 		const reportsId = await get_seeded_node_id(runner, "/reports");
 
-		const folderMove = await runner.run({ command: `mv ${test_db_files_mount}/reports ${test_db_files_mount}/archive` });
+		const folderMove = await runner.run({
+			command: `mv ${test_db_files_mount}/reports ${test_db_files_mount}/archive`,
+		});
 		expect(folderMove.metadata.exitCode).toBe(0);
 
 		// Without -f the committed child at the exact visible path is a normal conflict,
@@ -11359,7 +11593,9 @@ describe("bash_run_command", () => {
 		});
 
 		// An exact dest path presented by its own pending move is still rejected.
-		const claim = await runner.run({ command: `mv ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/docs/claim.md` });
+		const claim = await runner.run({
+			command: `mv ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/docs/claim.md`,
+		});
 		expect(claim.metadata.exitCode).toBe(0);
 		const claimedDest = await runner.run({
 			command: `mv -f ${test_db_files_mount}/docs/tutorial.md ${test_db_files_mount}/docs/claim.md`,
@@ -11374,7 +11610,9 @@ describe("bash_run_command", () => {
 		await runner.run({ command: `mv ${test_db_files_mount}/docs/tutorial.md ${test_db_files_mount}/docs/guide.md` });
 
 		// Copying by the visible path into a folder keeps the visible basename, like real cp.
-		const folderCopy = await runner.run({ command: `cp ${test_db_files_mount}/docs/guide.md ${test_db_files_mount}/reports` });
+		const folderCopy = await runner.run({
+			command: `cp ${test_db_files_mount}/docs/guide.md ${test_db_files_mount}/reports`,
+		});
 		expect(folderCopy.metadata.exitCode).toBe(0);
 		expect(folderCopy.stdout).toMatch(
 			/^Transfer \S+: 1 ready for review, 0 skipped, 0 failed\. Activity \S+\. Review in Files\.\n$/,
@@ -11389,11 +11627,15 @@ describe("bash_run_command", () => {
 		const runner = await create_bash_runner();
 		const reportsId = await get_seeded_node_id(runner, "/reports");
 
-		const folderMove = await runner.run({ command: `mv ${test_db_files_mount}/reports ${test_db_files_mount}/archive` });
+		const folderMove = await runner.run({
+			command: `mv ${test_db_files_mount}/reports ${test_db_files_mount}/archive`,
+		});
 		expect(folderMove.metadata.exitCode).toBe(0);
 
 		// cp uses the moved folder's visible path.
-		const copy = await runner.run({ command: `cp ${test_db_files_mount}/docs/tutorial.md ${test_db_files_mount}/archive` });
+		const copy = await runner.run({
+			command: `cp ${test_db_files_mount}/docs/tutorial.md ${test_db_files_mount}/archive`,
+		});
 		expect(copy.stderr).toBe("");
 		expect(copy.metadata.exitCode).toBe(0);
 		expect(copy.stdout).toMatch(
@@ -11417,11 +11659,15 @@ describe("bash_run_command", () => {
 		const runner = await create_bash_runner();
 		const reportsId = await get_seeded_node_id(runner, "/reports");
 
-		const folderMove = await runner.run({ command: `mv ${test_db_files_mount}/reports ${test_db_files_mount}/archive` });
+		const folderMove = await runner.run({
+			command: `mv ${test_db_files_mount}/reports ${test_db_files_mount}/archive`,
+		});
 		expect(folderMove.metadata.exitCode).toBe(0);
 
 		// cp can name a new private child under the moved folder's visible path.
-		const copy = await runner.run({ command: `cp ${test_db_files_mount}/docs/tutorial.md ${test_db_files_mount}/archive/copy.md` });
+		const copy = await runner.run({
+			command: `cp ${test_db_files_mount}/docs/tutorial.md ${test_db_files_mount}/archive/copy.md`,
+		});
 		expect(copy.stderr).toBe("");
 		expect(copy.metadata.exitCode).toBe(0);
 		expect(copy.stdout).toMatch(
@@ -11473,7 +11719,9 @@ describe("bash_run_command", () => {
 		const runner = await create_bash_runner();
 		const reportsId = await get_seeded_node_id(runner, "/reports");
 
-		const folderMove = await runner.run({ command: `mv ${test_db_files_mount}/reports ${test_db_files_mount}/archive` });
+		const folderMove = await runner.run({
+			command: `mv ${test_db_files_mount}/reports ${test_db_files_mount}/archive`,
+		});
 		expect(folderMove.metadata.exitCode).toBe(0);
 
 		// mkdir at the moved folder's VISIBLE path succeeds, plain and -p.
@@ -11528,7 +11776,9 @@ describe("bash_run_command", () => {
 	test("mkdir can create private folders at a path vacated by the user's pending move", async () => {
 		const runner = await create_bash_runner();
 
-		const folderMove = await runner.run({ command: `mv ${test_db_files_mount}/reports ${test_db_files_mount}/archive` });
+		const folderMove = await runner.run({
+			command: `mv ${test_db_files_mount}/reports ${test_db_files_mount}/archive`,
+		});
 		expect(folderMove.metadata.exitCode).toBe(0);
 
 		// Plain mkdir still needs a visible parent. Recursive mkdir creates private parents.
@@ -11563,7 +11813,9 @@ describe("bash_run_command", () => {
 		const runner = await create_bash_runner();
 
 		// The pending file move makes /foo.md a visible file; nothing sits there committed.
-		const fileMove = await runner.run({ command: `mv ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/foo.md` });
+		const fileMove = await runner.run({
+			command: `mv ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/foo.md`,
+		});
 		expect(fileMove.metadata.exitCode).toBe(0);
 
 		const made = await runner.run({ command: `mkdir -p ${test_db_files_mount}/foo.md/sub` });
@@ -11591,10 +11843,14 @@ describe("bash_run_command", () => {
 	test("cp under a pending file-move claim is rejected without creating committed folders", async () => {
 		const runner = await create_bash_runner();
 
-		const fileMove = await runner.run({ command: `mv ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/foo.md` });
+		const fileMove = await runner.run({
+			command: `mv ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/foo.md`,
+		});
 		expect(fileMove.metadata.exitCode).toBe(0);
 
-		const copy = await runner.run({ command: `cp ${test_db_files_mount}/docs/tutorial.md ${test_db_files_mount}/foo.md/sub/y.md` });
+		const copy = await runner.run({
+			command: `cp ${test_db_files_mount}/docs/tutorial.md ${test_db_files_mount}/foo.md/sub/y.md`,
+		});
 		expect(copy.metadata.exitCode).not.toBe(0);
 		expect(copy.stderr).toBe("cp: the destination parent is not a directory\n");
 
@@ -11643,19 +11899,27 @@ describe("bash_run_command", () => {
 			extraFiles: [{ path: "/conflict/readme.md", kind: "folder" }],
 		});
 
-		const sameFile = await runner.run({ command: `cp ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/docs` });
+		const sameFile = await runner.run({
+			command: `cp ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/docs`,
+		});
 		expect(sameFile.metadata.exitCode).not.toBe(0);
 		expect(sameFile.stderr).toBe("cp: A copy cannot replace or merge into its sources\n");
 
-		const folderOccupant = await runner.run({ command: `cp ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/conflict` });
+		const folderOccupant = await runner.run({
+			command: `cp ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/conflict`,
+		});
 		expect(folderOccupant.metadata.exitCode).not.toBe(0);
 		expect(folderOccupant.stderr).toBe("cp: The source and destination types differ\n");
 
-		const folderSource = await runner.run({ command: `cp ${test_db_files_mount}/docs ${test_db_files_mount}/docs-copy` });
+		const folderSource = await runner.run({
+			command: `cp ${test_db_files_mount}/docs ${test_db_files_mount}/docs-copy`,
+		});
 		expect(folderSource.metadata.exitCode).not.toBe(0);
 		expect(folderSource.stderr).toBe("cp: copying a folder requires -R\n");
 
-		const missingSource = await runner.run({ command: `cp ${test_db_files_mount}/nope.md ${test_db_files_mount}/copy.md` });
+		const missingSource = await runner.run({
+			command: `cp ${test_db_files_mount}/nope.md ${test_db_files_mount}/copy.md`,
+		});
 		expect(missingSource.metadata.exitCode).not.toBe(0);
 		expect(missingSource.stderr).toBe(`cp: source '${test_db_files_mount}/nope.md' is not available\n`);
 
@@ -11678,7 +11942,11 @@ describe("bash_run_command", () => {
 			/^Transfer \S+: 2 ready for review, 0 skipped, 0 failed\. Activity \S+\. Review in Files\.\n$/,
 		);
 		expect(
-			(await runner.run({ command: `cat ${test_db_files_mount}/reports/one.txt ${test_db_files_mount}/reports/two.txt` })).stdout,
+			(
+				await runner.run({
+					command: `cat ${test_db_files_mount}/reports/one.txt ${test_db_files_mount}/reports/two.txt`,
+				})
+			).stdout,
 		).toBe("one\ntwo\n");
 		const rows = await list_pending_updates(runner);
 		expect(rows).toHaveLength(2);
@@ -11716,7 +11984,9 @@ describe("bash_run_command", () => {
 	test("cp -R into a descendant copies only the checked source tree", async () => {
 		const runner = await create_bash_runner();
 		const before = await runner.t.run((ctx) => ctx.db.query("files_nodes").collect());
-		const result = await runner.run({ command: `cp -R ${test_db_files_mount}/docs ${test_db_files_mount}/docs/nested` });
+		const result = await runner.run({
+			command: `cp -R ${test_db_files_mount}/docs ${test_db_files_mount}/docs/nested`,
+		});
 		expect(result.metadata.exitCode, result.stderr).toBe(0);
 		expect(result.stdout).toMatch(
 			/^Transfer \S+: 5 ready for review, 0 skipped, 0 failed\. Activity \S+\. Review in Files\.\n$/,
@@ -11744,7 +12014,9 @@ describe("bash_run_command", () => {
 		});
 		const sourceId = await get_seeded_node_id(runner, "/source.pdf");
 
-		const result = await runner.run({ command: `cp ${test_db_files_mount}/source.pdf ${test_db_files_mount}/source-copy.pdf` });
+		const result = await runner.run({
+			command: `cp ${test_db_files_mount}/source.pdf ${test_db_files_mount}/source-copy.pdf`,
+		});
 		expect(result.stderr).toBe("");
 		expect(result.metadata.exitCode).toBe(0);
 		expect(result.stdout).toMatch(
@@ -11806,7 +12078,9 @@ describe("bash_run_command", () => {
 			return await baseImpl(ref, actionArgs);
 		});
 
-		const result = await runner.run({ command: `cp ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}${racedPath}` });
+		const result = await runner.run({
+			command: `cp ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}${racedPath}`,
+		});
 
 		expect(raced).toBe(true);
 		expect(result.metadata.exitCode).toBe(0);
@@ -11860,7 +12134,9 @@ describe("bash_run_command", () => {
 		const items = await runner.t.run((ctx) => ctx.db.query("files_transfer_items").collect());
 		expect(items).toHaveLength(1);
 		expect(items[0]).toMatchObject({ state: "failed", attempt: 3 });
-		expect((await runner.run({ command: `cat ${test_db_files_mount}/docs/failed-copy.md` })).metadata.exitCode).not.toBe(0);
+		expect(
+			(await runner.run({ command: `cat ${test_db_files_mount}/docs/failed-copy.md` })).metadata.exitCode,
+		).not.toBe(0);
 		expect(
 			await runner.t.run(async (ctx) =>
 				(await ctx.db.query("files_pending_nodes").collect()).filter((node) => node.state === "active"),
@@ -11871,7 +12147,9 @@ describe("bash_run_command", () => {
 				(await ctx.db.query("files_nodes").collect()).filter((node) => node.path === "/docs/failed-copy.md"),
 			),
 		).toEqual([]);
-		expect((await runner.run({ command: `cat ${test_db_files_mount}/docs/readme.md` })).stdout).toBe(readme_seed_content);
+		expect((await runner.run({ command: `cat ${test_db_files_mount}/docs/readme.md` })).stdout).toBe(
+			readme_seed_content,
+		);
 	});
 
 	test("a failed cp leaves an existing target and another member's draft unchanged", async () => {
@@ -11906,7 +12184,8 @@ describe("bash_run_command", () => {
 		});
 		const other = await create_bash_runner({ shared: { t: runner.t, seeded: { ...runner.seeded, ...member } } });
 		expect(
-			(await other.run({ command: `printf 'member draft\\n' > ${test_db_files_mount}/docs/copy-target.md` })).metadata.exitCode,
+			(await other.run({ command: `printf 'member draft\\n' > ${test_db_files_mount}/docs/copy-target.md` })).metadata
+				.exitCode,
 		).toBe(0);
 		const otherDraft = await list_pending_updates(other);
 		expect(otherDraft).toHaveLength(1);
@@ -11920,7 +12199,9 @@ describe("bash_run_command", () => {
 		expect((await get_seeded_node(runner, "/docs/copy-target.md"))._id).toBe(targetId);
 		expect(await read_committed_text(runner, targetId)).toBe("saved target\n");
 		expect(await list_pending_updates(other)).toEqual(otherDraft);
-		expect((await other.run({ command: `cat ${test_db_files_mount}/docs/copy-target.md` })).stdout).toBe("member draft\n");
+		expect((await other.run({ command: `cat ${test_db_files_mount}/docs/copy-target.md` })).stdout).toBe(
+			"member draft\n",
+		);
 		expect(await list_pending_updates(runner)).toEqual([]);
 	});
 
@@ -11959,7 +12240,8 @@ describe("bash_run_command", () => {
 		const { run } = await create_bash_runner();
 
 		const result = await run({
-			command: "printf 'example: command not found\\n' > /tmp/literal.txt && grep -n 'command not found' /tmp/literal.txt",
+			command:
+				"printf 'example: command not found\\n' > /tmp/literal.txt && grep -n 'command not found' /tmp/literal.txt",
 		});
 
 		expect(result.metadata.exitCode).toBe(0);
@@ -11972,7 +12254,8 @@ describe("bash_run_command", () => {
 		const { run } = await create_bash_runner();
 
 		const nullResult = await run({
-			command: "printf hi > /dev/null && printf 'alpha\\n' > /tmp/a.txt && tee /dev/null /tmp/b.txt < /tmp/a.txt >/dev/null && cat /tmp/b.txt",
+			command:
+				"printf hi > /dev/null && printf 'alpha\\n' > /tmp/a.txt && tee /dev/null /tmp/b.txt < /tmp/a.txt >/dev/null && cat /tmp/b.txt",
 		});
 		const zeroResult = await run({ command: "head -c 5 /dev/zero | wc -c" });
 
@@ -12065,7 +12348,9 @@ describe("bash_run_command", () => {
 	test("ignores shell comment lines when hinting unavailable file commands", async () => {
 		const { run } = await create_bash_runner();
 
-		const result = await run({ command: "# Try file (intentionally unavailable)\nprintf hi > /tmp/a.txt\nfile /tmp/a.txt" });
+		const result = await run({
+			command: "# Try file (intentionally unavailable)\nprintf hi > /tmp/a.txt\nfile /tmp/a.txt",
+		});
 
 		expect(result.metadata.exitCode).not.toBe(0);
 		expect(result.stderr).toContain("file: command not found");
@@ -12078,7 +12363,9 @@ describe("bash_run_command", () => {
 	test("prevents scratch symlinks from escaping into the app mount", async () => {
 		const { run } = await create_bash_runner();
 
-		const result = await run({ command: `ln -s ${test_db_files_mount}/docs/readme.md /tmp/readme-link && cat /tmp/readme-link` });
+		const result = await run({
+			command: `ln -s ${test_db_files_mount}/docs/readme.md /tmp/readme-link && cat /tmp/readme-link`,
+		});
 
 		expect(result.metadata.exitCode).not.toBe(0);
 		expect(result.stdout).not.toContain("unique-token");
@@ -12154,7 +12441,9 @@ describe("bash_run_command", () => {
 		const xargsHelp = await run({ command: "xargs --help" });
 		const xargsCombined = await run({ command: "printf 'a b' | xargs -rt echo" });
 		const xargsNullCombined = await run({ command: "printf 'a\\0b\\0' | xargs -0t echo" });
-		const whichResult = await run({ command: "which ls find cat du rg sha256sum search meta textgrep && which --silent bash" });
+		const whichResult = await run({
+			command: "which ls find cat du rg sha256sum search meta textgrep && which --silent bash",
+		});
 		const whichAll = await run({ command: "which --all search" });
 		const whichCombined = await run({ command: "which -as search" });
 		const whichHelp = await run({ command: "which --help" });
@@ -12228,7 +12517,8 @@ describe("bash_run_command", () => {
 		const writeScript = await run({ command: "printf 'echo script:$1\\n' > /tmp/nested-script.sh" });
 		const scriptPath = await run({ command: "bash /tmp/nested-script.sh forwarded" });
 		const nestedTmpGlob = await run({
-			command: "printf 'nested-a\\n' > /tmp/nested-a.txt && printf 'nested-b\\n' > /tmp/nested-b.txt && bash -c 'cat /tmp/nested-*.txt'",
+			command:
+				"printf 'nested-a\\n' > /tmp/nested-a.txt && printf 'nested-b\\n' > /tmp/nested-b.txt && bash -c 'cat /tmp/nested-*.txt'",
 		});
 		const sourceTmpScript = await run({
 			command: "printf 'echo sourced:$BONOBO\\n' > /tmp/source-script.sh && BONOBO=ok source /tmp/source-script.sh",
@@ -12241,10 +12531,14 @@ describe("bash_run_command", () => {
 		const appSourceScript = await run({ command: `source ${test_db_files_mount}/docs/readme.md` });
 		const appDotScript = await run({ command: `. ${test_db_files_mount}/docs/readme.md` });
 		const appEnvSourceScript = await run({ command: `BONOBO=1 source ${test_db_files_mount}/docs/readme.md` });
-		const appRedirectSourceScript = await run({ command: `2>/tmp/source.err source ${test_db_files_mount}/docs/readme.md` });
+		const appRedirectSourceScript = await run({
+			command: `2>/tmp/source.err source ${test_db_files_mount}/docs/readme.md`,
+		});
 		const appCommandSourceScript = await run({ command: `command source ${test_db_files_mount}/docs/readme.md` });
 		const appEvalSourceScript = await run({ command: `eval 'source ${test_db_files_mount}/docs/readme.md'` });
-		const appEvalEnvSourceScript = await run({ command: `eval 'BONOBO=1 source ${test_db_files_mount}/docs/readme.md'` });
+		const appEvalEnvSourceScript = await run({
+			command: `eval 'BONOBO=1 source ${test_db_files_mount}/docs/readme.md'`,
+		});
 		const nestedAppSourceScript = await run({ command: `bash -c 'source ${test_db_files_mount}/docs/readme.md'` });
 		const nestedAppRedirectSourceScript = await run({
 			command: `bash -c '2>/tmp/source.err source ${test_db_files_mount}/docs/readme.md'`,
@@ -12339,7 +12633,9 @@ describe("bash_run_command", () => {
 		expect(tmpScript.metadata.exitCode).toBe(0);
 		expect(tmpScript.stdout).toBe("tmp-loaded\n");
 
-		const appPathAsData = await runner.run({ command: `bash -c "$(echo 'echo app-path' ${test_db_files_mount}/loaded-script.sh)"` });
+		const appPathAsData = await runner.run({
+			command: `bash -c "$(echo 'echo app-path' ${test_db_files_mount}/loaded-script.sh)"`,
+		});
 		expect(appPathAsData.metadata.exitCode).toBe(0);
 		expect(appPathAsData.stdout).toBe(`app-path ${test_db_files_mount}/loaded-script.sh\n`);
 
@@ -12523,7 +12819,7 @@ describe("bash_run_command", () => {
 			files: { path: string; text: string }[];
 			opts?: { status?: "published" | "staging"; revision?: string; chunks?: boolean };
 		}) {
-			const { runner, volumeId, files, opts = {}, installationId} = args;
+			const { runner, volumeId, files, opts = {}, installationId } = args;
 
 			return await runner.t.run(async (ctx) => {
 				const now = Date.now();
@@ -12814,7 +13110,9 @@ describe("bash_run_command", () => {
 
 		test("copies data to scratch and never executes mounted code", async () => {
 			const f = await create_volume_runner();
-			expect((await f.runner.run({ command: `cp ${VOLUME_PATH} /tmp/notes.md && cat /tmp/notes.md` })).stdout).toBe(VOLUME_TEXT);
+			expect((await f.runner.run({ command: `cp ${VOLUME_PATH} /tmp/notes.md && cat /tmp/notes.md` })).stdout).toBe(
+				VOLUME_TEXT,
+			);
 			for (const command of [`bash ${VOLUME_PATH}`, `source ${VOLUME_PATH}`, `eval "$(cat ${VOLUME_PATH})"`])
 				expect((await f.runner.run({ command })).metadata.exitCode).not.toBe(0);
 		});
@@ -12907,9 +13205,9 @@ describe("bash_run_command", () => {
 					if (base !== "/.mounts") expect(result.stdout, command).not.toContain("legacy");
 				}
 			}
-			expect((await f.runner.run({ command: "meta search --path /.mounts/research name=Mountneedle" })).metadata.exitCode).not.toBe(
-				0,
-			);
+			expect(
+				(await f.runner.run({ command: "meta search --path /.mounts/research name=Mountneedle" })).metadata.exitCode,
+			).not.toBe(0);
 			expect((await f.runner.run({ command: "grep -R Mountneedle /.mounts/research" })).stdout).toContain(
 				"search --path /.mounts/research",
 			);
@@ -12945,7 +13243,9 @@ describe("bash_run_command", () => {
 				opts: { status: "staging", revision: "copy-2" },
 			});
 			expect((await f.runner.run({ command: "find /.mounts --limit 20" })).stdout).not.toContain("staging.md");
-			expect((await f.runner.run({ command: "search --path /.mounts Stagingneedle" })).stdout).toContain("No content matches");
+			expect((await f.runner.run({ command: "search --path /.mounts Stagingneedle" })).stdout).toContain(
+				"No content matches",
+			);
 			await f.runner.t.run((ctx) => ctx.db.patch("plugins_volumes", f.volumeId, { publishedGenerationId: null }));
 			expect((await f.runner.run({ command: "ls /.mounts/research" })).metadata.exitCode).not.toBe(0);
 		});
@@ -13309,9 +13609,9 @@ describe("bash_run_command", () => {
 				runner,
 				name: "t3-chat",
 				files: [
-				{ path: "/README.md", rawText: README_TEXT },
-				{ path: "/docs/guide.md", rawText: GUIDE_TEXT },
-			],
+					{ path: "/README.md", rawText: README_TEXT },
+					{ path: "/docs/guide.md", rawText: GUIDE_TEXT },
+				],
 			});
 
 			const listing = await runner.run({ command: "ls /.mounts/t3-chat" });
@@ -13392,10 +13692,10 @@ describe("bash_run_command", () => {
 				runner,
 				name: "t3-chat",
 				files: [
-				{ path: "/docs/guide.md", rawText: GUIDE_TEXT },
-				{ path: "/docs/notes.md", rawText: "notes\n" },
-				{ path: "/docs-archive/leak.md", rawText: "leak\n" },
-			],
+					{ path: "/docs/guide.md", rawText: GUIDE_TEXT },
+					{ path: "/docs/notes.md", rawText: "notes\n" },
+					{ path: "/docs-archive/leak.md", rawText: "leak\n" },
+				],
 			});
 
 			const fromMount = await runner.run({ command: "cd /.mounts/t3-chat && find --prefix docs --limit 20 -type f" });
@@ -13465,7 +13765,9 @@ describe("bash_run_command", () => {
 			const runner = await create_bash_runner();
 			await seed_github_mount({ runner, name: "t3-chat", files: [{ path: "/README.md", rawText: README_TEXT }] });
 
-			const copied = await runner.run({ command: "cp /.mounts/t3-chat/README.md /tmp/readme.md && cat /tmp/readme.md" });
+			const copied = await runner.run({
+				command: "cp /.mounts/t3-chat/README.md /tmp/readme.md && cat /tmp/readme.md",
+			});
 			expect(copied.metadata.exitCode).toBe(0);
 			expect(copied.stdout).toBe(README_TEXT);
 		});
@@ -13504,7 +13806,11 @@ describe("bash_run_command", () => {
 
 		test("keeps nested command loaders from executing mount files", async () => {
 			const runner = await create_bash_runner();
-			await seed_github_mount({ runner, name: "t3-chat", files: [{ path: "/script.sh", rawText: "echo mount-loaded\n" }] });
+			await seed_github_mount({
+				runner,
+				name: "t3-chat",
+				files: [{ path: "/script.sh", rawText: "echo mount-loaded\n" }],
+			});
 
 			for (const command of [
 				"printf '%s\\n' '/.mounts/t3-chat/script.sh' | xargs source",
@@ -13537,7 +13843,9 @@ describe("bash_run_command", () => {
 			const runner = await create_bash_runner();
 			await seed_github_mount({ runner, name: "t3-chat", files: [{ path: "/README.md", rawText: README_TEXT }] });
 
-			expect((await runner.run({ command: "{ ls /.mounts; cat /.mounts/t3-chat/README.md; } &" })).metadata.exitCode).toBe(0);
+			expect(
+				(await runner.run({ command: "{ ls /.mounts; cat /.mounts/t3-chat/README.md; } &" })).metadata.exitCode,
+			).toBe(0);
 
 			// The worker builds its own filesystem, so it must fetch the mount list itself. Without
 			// that query `/.mounts` is empty inside the job even though the launching call saw it.
@@ -13963,8 +14271,8 @@ describe("bash_run_command", () => {
 				pluginName: "media",
 				files: [{ path: "/dist/backend/worker.js", rawText: WORKER_TEXT }],
 				opts: {
-				installed: false,
-			},
+					installed: false,
+				},
 			});
 
 			const listing = await runner.run({ command: "ls /.plugins" });
@@ -13991,8 +14299,16 @@ describe("bash_run_command", () => {
 
 		test("lists installed plugin names at the synthetic /.plugins root", async () => {
 			const runner = await create_bash_runner();
-			await seed_plugin_mount({ runner, pluginName: "media", files: [{ path: "/dist/backend/worker.js", rawText: WORKER_TEXT }] });
-			await seed_plugin_mount({ runner, pluginName: "alpha-notes", files: [{ path: "/README.md", rawText: PLUGIN_README_TEXT }] });
+			await seed_plugin_mount({
+				runner,
+				pluginName: "media",
+				files: [{ path: "/dist/backend/worker.js", rawText: WORKER_TEXT }],
+			});
+			await seed_plugin_mount({
+				runner,
+				pluginName: "alpha-notes",
+				files: [{ path: "/README.md", rawText: PLUGIN_README_TEXT }],
+			});
 
 			const result = await runner.run({ command: "ls /.plugins" });
 
@@ -14007,9 +14323,9 @@ describe("bash_run_command", () => {
 				runner,
 				pluginName: "media",
 				files: [
-				{ path: "/README.md", rawText: PLUGIN_README_TEXT },
-				{ path: "/dist/backend/worker.js", rawText: WORKER_TEXT },
-			],
+					{ path: "/README.md", rawText: PLUGIN_README_TEXT },
+					{ path: "/dist/backend/worker.js", rawText: WORKER_TEXT },
+				],
 			});
 
 			const listing = await runner.run({ command: "ls /.plugins/media" });
@@ -14028,7 +14344,11 @@ describe("bash_run_command", () => {
 
 		test("grep and search find content scoped to one plugin", async () => {
 			const runner = await create_bash_runner();
-			await seed_plugin_mount({ runner, pluginName: "media", files: [{ path: "/dist/backend/worker.js", rawText: WORKER_TEXT }] });
+			await seed_plugin_mount({
+				runner,
+				pluginName: "media",
+				files: [{ path: "/dist/backend/worker.js", rawText: WORKER_TEXT }],
+			});
 
 			const grepped = await runner.run({ command: "grep Glomtelemetry /.plugins/media/dist/backend/worker.js" });
 			expect(grepped.metadata.exitCode).toBe(0);
@@ -14041,8 +14361,16 @@ describe("bash_run_command", () => {
 
 		test("fans out root-scope tree, find, and search across installed plugins in name order", async () => {
 			const runner = await create_bash_runner();
-			await seed_plugin_mount({ runner, pluginName: "media", files: [{ path: "/dist/backend/worker.js", rawText: WORKER_TEXT }] });
-			await seed_plugin_mount({ runner, pluginName: "alpha-notes", files: [{ path: "/README.md", rawText: PLUGIN_README_TEXT }] });
+			await seed_plugin_mount({
+				runner,
+				pluginName: "media",
+				files: [{ path: "/dist/backend/worker.js", rawText: WORKER_TEXT }],
+			});
+			await seed_plugin_mount({
+				runner,
+				pluginName: "alpha-notes",
+				files: [{ path: "/README.md", rawText: PLUGIN_README_TEXT }],
+			});
 
 			const tree = await runner.run({ command: "tree /.plugins" });
 			expect(tree.metadata.exitCode).toBe(0);
@@ -14073,13 +14401,15 @@ describe("bash_run_command", () => {
 
 		test("pages the /.plugins fan-out with a composite cursor and detects listing changes", async () => {
 			const runner = await create_bash_runner();
-			await seed_plugin_mount({ runner, pluginName: "alpha-notes", files: [{ path: "/README.md", rawText: PLUGIN_README_TEXT }] });
+			await seed_plugin_mount({
+				runner,
+				pluginName: "alpha-notes",
+				files: [{ path: "/README.md", rawText: PLUGIN_README_TEXT }],
+			});
 			const { installationId } = await seed_plugin_mount({
 				runner,
 				pluginName: "media",
-				files: [
-				{ path: "/README.md", rawText: PLUGIN_README_TEXT },
-			],
+				files: [{ path: "/README.md", rawText: PLUGIN_README_TEXT }],
 			});
 
 			const firstPage = await runner.run({ command: "find /.plugins -type f --limit 1" });
@@ -14111,13 +14441,19 @@ describe("bash_run_command", () => {
 
 		test("keeps guidance for root-scope --prefix and meta search", async () => {
 			const runner = await create_bash_runner();
-			await seed_plugin_mount({ runner, pluginName: "media", files: [{ path: "/dist/backend/worker.js", rawText: WORKER_TEXT }] });
+			await seed_plugin_mount({
+				runner,
+				pluginName: "media",
+				files: [{ path: "/dist/backend/worker.js", rawText: WORKER_TEXT }],
+			});
 
 			const prefixed = await runner.run({ command: "find --prefix /.plugins --limit 5" });
 			expect(prefixed.metadata.exitCode).not.toBe(0);
 			expect(prefixed.stderr).toContain("--prefix cannot scan the /.plugins root");
 
-			const metaSearched = await runner.run({ command: `meta search --path /.plugins --where '{"exists":"frontmatter.cc"}'` });
+			const metaSearched = await runner.run({
+				command: `meta search --path /.plugins --where '{"exists":"frontmatter.cc"}'`,
+			});
 			expect(metaSearched.metadata.exitCode).not.toBe(0);
 			expect(metaSearched.stderr).toContain("choose a single plugin to search");
 		});
@@ -14128,9 +14464,9 @@ describe("bash_run_command", () => {
 				runner,
 				pluginName: "media",
 				files: [
-				{ path: "/README.md", rawText: PLUGIN_README_TEXT },
-				{ path: "/dist/backend/worker.js", rawText: WORKER_TEXT },
-			],
+					{ path: "/README.md", rawText: PLUGIN_README_TEXT },
+					{ path: "/dist/backend/worker.js", rawText: WORKER_TEXT },
+				],
 			});
 
 			const tree = await runner.run({ command: "tree /.plugins/media" });
@@ -14146,7 +14482,11 @@ describe("bash_run_command", () => {
 
 		test("cd into a plugin mount persists across invocations", async () => {
 			const runner = await create_bash_runner();
-			await seed_plugin_mount({ runner, pluginName: "media", files: [{ path: "/dist/backend/worker.js", rawText: WORKER_TEXT }] });
+			await seed_plugin_mount({
+				runner,
+				pluginName: "media",
+				files: [{ path: "/dist/backend/worker.js", rawText: WORKER_TEXT }],
+			});
 
 			const moved = await runner.run({ command: "cd /.plugins/media/dist" });
 			expect(moved.metadata.exitCode).toBe(0);
@@ -14158,7 +14498,11 @@ describe("bash_run_command", () => {
 
 		test("rejects every write into a plugin mount and leaves it intact", async () => {
 			const runner = await create_bash_runner();
-			await seed_plugin_mount({ runner, pluginName: "media", files: [{ path: "/README.md", rawText: PLUGIN_README_TEXT }] });
+			await seed_plugin_mount({
+				runner,
+				pluginName: "media",
+				files: [{ path: "/README.md", rawText: PLUGIN_README_TEXT }],
+			});
 
 			const writes = [
 				"touch /.plugins/media/new.txt",
@@ -14180,7 +14524,11 @@ describe("bash_run_command", () => {
 
 		test("allows copying a plugin file out to /tmp scratch", async () => {
 			const runner = await create_bash_runner();
-			await seed_plugin_mount({ runner, pluginName: "media", files: [{ path: "/README.md", rawText: PLUGIN_README_TEXT }] });
+			await seed_plugin_mount({
+				runner,
+				pluginName: "media",
+				files: [{ path: "/README.md", rawText: PLUGIN_README_TEXT }],
+			});
 
 			const copied = await runner.run({ command: "cp /.plugins/media/README.md /tmp/readme.md && cat /tmp/readme.md" });
 			expect(copied.metadata.exitCode).toBe(0);
@@ -14189,7 +14537,11 @@ describe("bash_run_command", () => {
 
 		test("refuses to execute plugin source through bash and source", async () => {
 			const runner = await create_bash_runner();
-			await seed_plugin_mount({ runner, pluginName: "media", files: [{ path: "/script.sh", rawText: "echo pwned\n" }] });
+			await seed_plugin_mount({
+				runner,
+				pluginName: "media",
+				files: [{ path: "/script.sh", rawText: "echo pwned\n" }],
+			});
 
 			const executed = await runner.run({ command: "bash /.plugins/media/script.sh" });
 			expect(executed.metadata.exitCode).not.toBe(0);
@@ -14204,7 +14556,11 @@ describe("bash_run_command", () => {
 
 		test("reports not-installed plugin names as plain missing paths", async () => {
 			const runner = await create_bash_runner();
-			await seed_plugin_mount({ runner, pluginName: "media", files: [{ path: "/README.md", rawText: PLUGIN_README_TEXT }] });
+			await seed_plugin_mount({
+				runner,
+				pluginName: "media",
+				files: [{ path: "/README.md", rawText: PLUGIN_README_TEXT }],
+			});
 
 			const listMissing = await runner.run({ command: "ls /.plugins/nope" });
 			expect(listMissing.metadata.exitCode).not.toBe(0);
@@ -14220,9 +14576,7 @@ describe("bash_run_command", () => {
 			const { pluginVersionId } = await seed_plugin_mount({
 				runner,
 				pluginName: "media",
-				files: [
-				{ path: "/dist/backend/worker.js", rawText: WORKER_TEXT },
-			],
+				files: [{ path: "/dist/backend/worker.js", rawText: WORKER_TEXT }],
 			});
 
 			// App-scope search never reaches the reserved plugin scope.
@@ -14240,9 +14594,7 @@ describe("bash_run_command", () => {
 			const { installationId } = await seed_plugin_mount({
 				runner,
 				pluginName: "media",
-				files: [
-				{ path: "/README.md", rawText: PLUGIN_README_TEXT },
-			],
+				files: [{ path: "/README.md", rawText: PLUGIN_README_TEXT }],
 			});
 
 			const visible = await runner.run({ command: "cat /.plugins/media/README.md" });
@@ -14263,9 +14615,15 @@ describe("bash_run_command", () => {
 
 		test("keeps the launching call's plugin mounts inside a background job", async () => {
 			const runner = await create_bash_runner();
-			await seed_plugin_mount({ runner, pluginName: "media", files: [{ path: "/README.md", rawText: PLUGIN_README_TEXT }] });
+			await seed_plugin_mount({
+				runner,
+				pluginName: "media",
+				files: [{ path: "/README.md", rawText: PLUGIN_README_TEXT }],
+			});
 
-			expect((await runner.run({ command: "{ ls /.plugins; cat /.plugins/media/README.md; } &" })).metadata.exitCode).toBe(0);
+			expect(
+				(await runner.run({ command: "{ ls /.plugins; cat /.plugins/media/README.md; } &" })).metadata.exitCode,
+			).toBe(0);
 
 			// The worker builds its own filesystem, so it must fetch the installed plugins itself.
 			// Without that query `/.plugins` is empty inside the job.

@@ -55,11 +55,7 @@ function parse_context_value(raw: string | undefined) {
 	return Number.isInteger(value) && value >= 0 ? value : null;
 }
 
-function parse_window_value(args: {
-	option: string;
-	raw: string;
-	min: number;
-}) {
+function parse_window_value(args: { option: string; raw: string; min: number }) {
 	const { option, raw, min } = args;
 
 	if (!bash_NON_NEGATIVE_INTEGER_REGEX.test(raw.trim())) {

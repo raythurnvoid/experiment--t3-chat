@@ -361,7 +361,8 @@ function create_generated_image_save(input: {
 
 				// Ask mode may not write files, so there is nowhere to put the picture. Say so instead of
 				// saving it, and the model can tell the user to switch to Agent mode.
-				if (!input.canWriteFiles) return ai_chat_file_result({ title, status: "errored", files: [], reason: "agent_required" });
+				if (!input.canWriteFiles)
+					return ai_chat_file_result({ title, status: "errored", files: [], reason: "agent_required" });
 
 				try {
 					input.abortSignal?.throwIfAborted();
@@ -1315,18 +1316,18 @@ function build_agent_configuration(input: {
 			ctx,
 			ctxData: toolCtxData,
 			options: {
-			allowDbFilesMkdir: modeId === "agent",
-			browser: browserEnabled,
-			jobWakeup:
-				modeId === "agent"
-					? {
-							modelId,
-							onWaiting: () => {
-								jobWait.requested = true;
-							},
-						}
-					: null,
-		},
+				allowDbFilesMkdir: modeId === "agent",
+				browser: browserEnabled,
+				jobWakeup:
+					modeId === "agent"
+						? {
+								modelId,
+								onWaiting: () => {
+									jobWait.requested = true;
+								},
+							}
+						: null,
+			},
 		}),
 		edit_file: ai_chat_tool_create_edit_file(ctx, toolCtxData),
 		set_file_metadata: ai_chat_tool_create_set_file_metadata(ctx, toolCtxData),
@@ -1342,8 +1343,8 @@ function build_agent_configuration(input: {
 		tools: { bash },
 		budget: toolBudget,
 		reserve: {
-		resultReservedBytes: ai_chat_tool_output_INLINE_MAX_BYTES + 1024,
-	},
+			resultReservedBytes: ai_chat_tool_output_INLINE_MAX_BYTES + 1024,
+		},
 	});
 	// An MCP result over the inline size is stored too. MCP tools stay out of `appTools`: their
 	// stored parts are checked by their own schema, not by `validationTools`.
@@ -1351,8 +1352,8 @@ function build_agent_configuration(input: {
 		tools: mcpTools,
 		budget: toolBudget,
 		reserve: {
-		resultReservedBytes: ai_chat_tool_output_INLINE_MAX_BYTES + 1024,
-	},
+			resultReservedBytes: ai_chat_tool_output_INLINE_MAX_BYTES + 1024,
+		},
 	});
 	// These tools change Files or run code. A receipt per call refuses a call of a stopped run and
 	// lets a replayed call find its result instead of running twice.
@@ -2177,7 +2178,9 @@ export const thread_run_begin = internalMutation({
 		}
 
 		const existingMessages = await Promise.all(
-			args.messages.map((message) => db_get_message_by_client_id({ ctx, thread, clientGeneratedMessageId: message.clientGeneratedMessageId })),
+			args.messages.map((message) =>
+				db_get_message_by_client_id({ ctx, thread, clientGeneratedMessageId: message.clientGeneratedMessageId }),
+			),
 		);
 		const newMessageCount = existingMessages.filter((message) => message === null).length;
 		if (newMessageCount > 0) {

@@ -156,14 +156,18 @@ async function install(args: {
 	});
 }
 
-async function update_policy(args: FunctionArgs<typeof api.organizations_integration_policy.update_policy> & {
-	t: TestConvex;
-	userId: Id<"users">;
-}) {
+async function update_policy(
+	args: FunctionArgs<typeof api.organizations_integration_policy.update_policy> & {
+		t: TestConvex;
+		userId: Id<"users">;
+	},
+) {
 	const { t, userId, ...previousArgs } = args;
 
 	refill_rate_limits();
-	return await t.withIdentity(user_identity(userId)).mutation(api.organizations_integration_policy.update_policy, previousArgs);
+	return await t
+		.withIdentity(user_identity(userId))
+		.mutation(api.organizations_integration_policy.update_policy, previousArgs);
 }
 
 async function installation_status(t: TestConvex, installationId: Id<"plugins_workspace_installations">) {
@@ -638,13 +642,16 @@ describe("get_policy", () => {
 			test_mocks_fill_db_with.membership(ctx, { organizationName: "personal", workspaceName: "home" }),
 		);
 		refill_rate_limits();
-		await t.withIdentity(user_identity(owner.userId)).mutation(api.organizations.invite_user_to_organization_workspace, {
-			organizationId: owner.organizationId,
-			workspaceId: owner.workspaceId,
-			userIdToAdd: member.userId,
-		});
+		await t
+			.withIdentity(user_identity(owner.userId))
+			.mutation(api.organizations.invite_user_to_organization_workspace, {
+				organizationId: owner.organizationId,
+				workspaceId: owner.workspaceId,
+				userIdToAdd: member.userId,
+			});
 		const customServerId = await t.run((ctx) => test_mocks_fill_db_with.mcp_custom_server(ctx, owner));
-		const fingerprint = (await t.run((ctx) => ctx.db.get("mcp_custom_servers", customServerId)))!.destinationFingerprint;
+		const fingerprint = (await t.run((ctx) => ctx.db.get("mcp_custom_servers", customServerId)))!
+			.destinationFingerprint;
 		expect(
 			await update_policy({
 				t,
@@ -668,7 +675,9 @@ describe("get_policy", () => {
 		});
 		expect(asOwner).toMatchObject({
 			view: "manager",
-			policy: { mcpServers: { allowlist: [{ destinationFingerprint: fingerprint, url: "https://mcp.example.com/mcp" }] } },
+			policy: {
+				mcpServers: { allowlist: [{ destinationFingerprint: fingerprint, url: "https://mcp.example.com/mcp" }] },
+			},
 		});
 	});
 });
@@ -681,11 +690,13 @@ describe("list_custom_server_candidates", () => {
 			test_mocks_fill_db_with.membership(ctx, { organizationName: "personal", workspaceName: "home" }),
 		);
 		refill_rate_limits();
-		await t.withIdentity(user_identity(owner.userId)).mutation(api.organizations.invite_user_to_organization_workspace, {
-			organizationId: owner.organizationId,
-			workspaceId: owner.workspaceId,
-			userIdToAdd: member.userId,
-		});
+		await t
+			.withIdentity(user_identity(owner.userId))
+			.mutation(api.organizations.invite_user_to_organization_workspace, {
+				organizationId: owner.organizationId,
+				workspaceId: owner.workspaceId,
+				userIdToAdd: member.userId,
+			});
 		// 120 docs of server A, split between two members, then 30 docs of server B. Page one holds 100
 		// docs of A, so A spans both pages.
 		await t.run(async (ctx) => {

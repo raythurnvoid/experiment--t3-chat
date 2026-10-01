@@ -101,11 +101,7 @@ export function files_text_diff_compute(args: { sourceText: string; targetText: 
  * Find the differences between two texts. Simplifies the problem by stripping any common prefix
  * or suffix off the texts before diffing.
  */
-function doDiff(args: {
-	textA: string;
-	textB: string;
-	options: InternalDiffOptions;
-}): Diff[] {
+function doDiff(args: { textA: string; textB: string; options: InternalDiffOptions }): Diff[] {
 	const { textA, textB, options } = args;
 
 	// Don't reassign fn params
@@ -147,11 +143,7 @@ function doDiff(args: {
  * Find the differences between two texts. Assumes that the texts do not have any common prefix
  * or suffix.
  */
-function computeDiff(args: {
-	text1: string;
-	text2: string;
-	opts: InternalDiffOptions;
-}): Diff[] {
+function computeDiff(args: { text1: string; text2: string; opts: InternalDiffOptions }): Diff[] {
 	const { text1, text2, opts } = args;
 
 	let diffs: Diff[];
@@ -219,11 +211,7 @@ function computeDiff(args: {
 /**
  * Do a quick line-level diff on both strings, then rediff the parts for greater accuracy.
  */
-function doLineModeDiff(args: {
-	textA: string;
-	textB: string;
-	opts: InternalDiffOptions;
-}): Diff[] {
+function doLineModeDiff(args: { textA: string; textB: string; opts: InternalDiffOptions }): Diff[] {
 	const { textA, textB, opts } = args;
 
 	// Don't reassign fn params
@@ -240,9 +228,9 @@ function doLineModeDiff(args: {
 		textA: text1,
 		textB: text2,
 		options: {
-		checkLines: false,
-		budget: opts.budget,
-	},
+			checkLines: false,
+			budget: opts.budget,
+		},
 	});
 
 	// Convert the diff back to original text.
@@ -278,9 +266,9 @@ function doLineModeDiff(args: {
 						textA: textDelete,
 						textB: textInsert,
 						options: {
-						checkLines: false,
-						budget: opts.budget,
-					},
+							checkLines: false,
+							budget: opts.budget,
+						},
 					});
 					for (let j = aa.length - 1; j >= 0; j--) {
 						diffs.splice(pointer, 0, aa[j]);
@@ -310,11 +298,7 @@ function doLineModeDiff(args: {
  * on deadline and falls through to a coarse whole-block delete+insert, this throws
  * `TextDiffBudgetExceeded` so no coarse result can ever be returned.
  */
-function bisect(args: {
-	text1: string;
-	text2: string;
-	budget: DiffBudget;
-}): Diff[] {
+function bisect(args: { text1: string; text2: string; budget: DiffBudget }): Diff[] {
 	const { text1, text2, budget } = args;
 
 	// Cache the text lengths to prevent multiple calls.
@@ -438,14 +422,8 @@ function bisect(args: {
 /**
  * Given the location of the 'middle snake', split the diff in two parts and recurse.
  */
-function bisectSplit(args: {
-	text1: string;
-	text2: string;
-	x: number;
-	y: number;
-	budget: DiffBudget;
-}): Diff[] {
-	const { text1, text2, x, y, budget} = args;
+function bisectSplit(args: { text1: string; text2: string; x: number; y: number; budget: DiffBudget }): Diff[] {
+	const { text1, text2, x, y, budget } = args;
 
 	const text1a = text1.substring(0, x);
 	const text2a = text2.substring(0, y);
@@ -576,11 +554,7 @@ function findHalfMatch(text1: string, text2: string): null | HalfMatch {
  * Do the two texts share a slice which is at least half the length of the longer text?
  * This speedup can produce non-minimal diffs.
  */
-function halfMatchI(args: {
-	longText: string;
-	shortText: string;
-	i: number;
-}): null | HalfMatch {
+function halfMatchI(args: { longText: string; shortText: string; i: number }): null | HalfMatch {
 	const { longText, shortText, i } = args;
 
 	// Start with a 1/4 length slice at position i as a seed.
@@ -827,11 +801,7 @@ function isLowSurrogate(char: string): boolean {
 	return charCode >= 0xdc00 && charCode <= 0xdfff;
 }
 
-function combineChar(args: {
-	data: string;
-	char: string;
-	dir: 1 | -1;
-}) {
+function combineChar(args: { data: string; char: string; dir: 1 | -1 }) {
 	const { data, char, dir } = args;
 
 	return dir === 1 ? data + char : char + data;
@@ -847,12 +817,7 @@ function splitChar(data: string, dir: 1 | -1): [string, string] {
 /**
  * Checks if two entries of the diff has the same character in the same "direction".
  */
-function hasSharedChar(args: {
-	diffs: Diff[];
-	i: number;
-	j: number;
-	dir: 1 | -1;
-}): boolean {
+function hasSharedChar(args: { diffs: Diff[]; i: number; j: number; dir: 1 | -1 }): boolean {
 	const { diffs, i, j, dir } = args;
 
 	return dir === 1
@@ -865,11 +830,7 @@ function hasSharedChar(args: {
  * given direction. By this we mean that we attempt to either "shift" it to the later diffs, or
  * bring another character next into this one. See the installed source for worked examples.
  */
-function deisolateChar(args: {
-	diffs: Diff[];
-	i: number;
-	dir: 1 | -1;
-}) {
+function deisolateChar(args: { diffs: Diff[]; i: number; dir: 1 | -1 }) {
 	const { diffs, i, dir } = args;
 
 	const inv = dir === 1 ? -1 : 1;

@@ -4053,9 +4053,9 @@ describe("custom roles", () => {
 		expect(transferred._nay).toBeUndefined();
 
 		const listed = await access_control_test_identity(t, memberId).query(api.organizations.list, {});
-		expect(listed.organizationIdsWorkspacesDict[organization.organizationId]?.map((workspace) => workspace._id)).toEqual(
-			expect.arrayContaining([organization.defaultWorkspaceId, extraWorkspaceId]),
-		);
+		expect(
+			listed.organizationIdsWorkspacesDict[organization.organizationId]?.map((workspace) => workspace._id),
+		).toEqual(expect.arrayContaining([organization.defaultWorkspaceId, extraWorkspaceId]));
 	});
 
 	test("you cannot edit a role to grant a permission you do not have", async () => {

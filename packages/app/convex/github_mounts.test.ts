@@ -462,7 +462,9 @@ describe("clear_pending_root_batch", () => {
 		}
 
 		expect(await list_root_file_paths({ t, mount: MOUNT, commitSha: COMMIT_2 })).toEqual([]);
-		expect(await list_root_file_paths({ t, mount: MOUNT, commitSha: COMMIT_1 })).toEqual([`/${MOUNT}/${COMMIT_1}/README.md`]);
+		expect(await list_root_file_paths({ t, mount: MOUNT, commitSha: COMMIT_1 })).toEqual([
+			`/${MOUNT}/${COMMIT_1}/README.md`,
+		]);
 		expect(await list_mount_file_paths(t, `${MOUNT}-extra`)).toEqual([`/${MOUNT}-extra/keep.md`]);
 
 		// Only the surviving files' assets remain (active-root README + the extra mount's file).
@@ -628,8 +630,12 @@ describe("gc_sweep_mount_roots", () => {
 			if (batch.done) break;
 		}
 
-		expect(await list_root_file_paths({ t, mount: MOUNT, commitSha: COMMIT_1 })).toEqual([`/${MOUNT}/${COMMIT_1}/README.md`]);
-		expect(await list_root_file_paths({ t, mount: MOUNT, commitSha: COMMIT_2 })).toEqual([`/${MOUNT}/${COMMIT_2}/README.md`]);
+		expect(await list_root_file_paths({ t, mount: MOUNT, commitSha: COMMIT_1 })).toEqual([
+			`/${MOUNT}/${COMMIT_1}/README.md`,
+		]);
+		expect(await list_root_file_paths({ t, mount: MOUNT, commitSha: COMMIT_2 })).toEqual([
+			`/${MOUNT}/${COMMIT_2}/README.md`,
+		]);
 		expect(await list_root_file_paths({ t, mount: MOUNT, commitSha: COMMIT_3 })).toEqual([]);
 
 		// Once the run is no longer running, its pending root loses protection and gets collected too.
@@ -638,7 +644,9 @@ describe("gc_sweep_mount_roots", () => {
 			const batch = await t.mutation(internal.github_mounts.gc_sweep_mount_roots, { mountId });
 			if (batch.done) break;
 		}
-		expect(await list_root_file_paths({ t, mount: MOUNT, commitSha: COMMIT_1 })).toEqual([`/${MOUNT}/${COMMIT_1}/README.md`]);
+		expect(await list_root_file_paths({ t, mount: MOUNT, commitSha: COMMIT_1 })).toEqual([
+			`/${MOUNT}/${COMMIT_1}/README.md`,
+		]);
 		expect(await list_root_file_paths({ t, mount: MOUNT, commitSha: COMMIT_2 })).toEqual([]);
 	});
 });

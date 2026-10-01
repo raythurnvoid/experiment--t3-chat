@@ -126,9 +126,9 @@ function create_group_noop_cached_animation(
 		id,
 		keyframes: [{}],
 		options: {
-		duration: options.duration,
-		fill: "none",
-	},
+			duration: options.duration,
+			fill: "none",
+		},
 	});
 }
 

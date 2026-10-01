@@ -409,11 +409,7 @@ async function seed_signed_in_file_with_markdown(
  * Clerk-backed user so its saves bill through the workpool the tests spy on; an anonymous user's
  * events take another path.
  */
-async function seed_non_collaborative_file(args: {
-	ctx: MutationCtx;
-	path: string;
-	text: string;
-}) {
+async function seed_non_collaborative_file(args: { ctx: MutationCtx; path: string; text: string }) {
 	const { ctx, path, text } = args;
 
 	const clerkUserId = await ctx.db.insert("users", {
@@ -496,7 +492,7 @@ async function save_as_member(args: {
 	seeded: Awaited<ReturnType<typeof seed_non_collaborative_file>>;
 	text: string;
 }) {
-	const { t, seeded, text} = args;
+	const { t, seeded, text } = args;
 
 	const asUser = t.withIdentity({
 		issuer: "https://clerk.test",
@@ -958,7 +954,7 @@ async function set_pending_test_read_only(args: {
 	membershipId: Id<"organizations_workspaces_users">;
 	nodeId: Id<"files_nodes">;
 }) {
-	const { asUser, membershipId, nodeId} = args;
+	const { asUser, membershipId, nodeId } = args;
 
 	const result = await asUser.mutation(api.files_nodes.set_node_write_policy, {
 		writePolicy: { mode: "read_only" },
@@ -975,7 +971,7 @@ async function set_pending_test_writable(args: {
 	membershipId: Id<"organizations_workspaces_users">;
 	nodeId: Id<"files_nodes">;
 }) {
-	const { asUser, membershipId, nodeId} = args;
+	const { asUser, membershipId, nodeId } = args;
 
 	const result = await asUser.mutation(api.files_nodes.set_node_write_policy, {
 		writePolicy: null,
@@ -3331,7 +3327,11 @@ describe("prepared Save media proof", () => {
 			expect(await files_media_dependencies_db_seal(ctx, { setId: created._yay, generation: 0 })).toEqual({
 				_yay: null,
 			});
-			await files_db_patch_pending_update({ ctx, pendingUpdateId: proposal._id, value: { mediaDependencySetId: created._yay } });
+			await files_db_patch_pending_update({
+				ctx,
+				pendingUpdateId: proposal._id,
+				value: { mediaDependencySetId: created._yay },
+			});
 		});
 		const before = await f.t.run(async (ctx) => ({
 			proposal: await ctx.db.get("files_pending_updates", proposal._id),
@@ -3374,7 +3374,11 @@ describe("prepared Save media proof", () => {
 			expect(await files_media_dependencies_db_seal(ctx, { setId: created._yay, generation: 0 })).toEqual({
 				_yay: null,
 			});
-			await files_db_patch_pending_update({ ctx, pendingUpdateId: f.proposal._id, value: { mediaDependencySetId: created._yay } });
+			await files_db_patch_pending_update({
+				ctx,
+				pendingUpdateId: f.proposal._id,
+				value: { mediaDependencySetId: created._yay },
+			});
 			return created._yay;
 		});
 		const args = {
@@ -3447,7 +3451,11 @@ describe("prepared Save media proof", () => {
 				expect(await files_media_dependencies_db_seal(ctx, { setId: created._yay, generation: 0 })).toEqual({
 					_yay: null,
 				});
-				await files_db_patch_pending_update({ ctx, pendingUpdateId: proposal._id, value: { mediaDependencySetId: created._yay } });
+				await files_db_patch_pending_update({
+					ctx,
+					pendingUpdateId: proposal._id,
+					value: { mediaDependencySetId: created._yay },
+				});
 			});
 			const args = {
 				membershipId: f.membershipId,
@@ -3890,7 +3898,9 @@ describe("saved proposal publication headroom", () => {
 		"saves a partial proposal at the private storage cap with collaboration %s",
 		async (collaborative) => {
 			const t = test_convex();
-			const seeded = await t.run((ctx) => seed_non_collaborative_file({ ctx, path: "/full-storage.txt", text: "base\n" }));
+			const seeded = await t.run((ctx) =>
+				seed_non_collaborative_file({ ctx, path: "/full-storage.txt", text: "base\n" }),
+			);
 			r2Objects.set("content-snapshot/full-storage.txt", "base\n");
 			const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: seeded.userId, name: "Owner" });
 			if (collaborative)
@@ -5899,7 +5909,9 @@ describe("upsert_file_pending_update", () => {
 describe("upsert, discard, move, and restore on a file with collaboration off", () => {
 	test("builds the branches from the committed text and records the node's asset as base", async () => {
 		const t = test_convex();
-		const seeded = await t.run((ctx) => seed_non_collaborative_file({ ctx, path: "/off-create.md", text: "# Off base" }));
+		const seeded = await t.run((ctx) =>
+			seed_non_collaborative_file({ ctx, path: "/off-create.md", text: "# Off base" }),
+		);
 		const unstagedMarkdown = normalize_pending_update_markdown("# Off base\n\nAgent line");
 
 		const upserted = await upsert_file_pending_update_internal_for_test({
@@ -5943,7 +5955,9 @@ describe("upsert, discard, move, and restore on a file with collaboration off", 
 
 	test("a second write on the same base keeps the doc and its base asset", async () => {
 		const t = test_convex();
-		const seeded = await t.run((ctx) => seed_non_collaborative_file({ ctx, path: "/off-second-write.md", text: "# Off base" }));
+		const seeded = await t.run((ctx) =>
+			seed_non_collaborative_file({ ctx, path: "/off-second-write.md", text: "# Off base" }),
+		);
 		const ids = {
 			t,
 			organizationId: seeded.organizationId,
@@ -5996,7 +6010,9 @@ describe("upsert, discard, move, and restore on a file with collaboration off", 
 
 	test("accepts a client edit on a fresh proposal, the way the pending row does before Accept", async () => {
 		const t = test_convex();
-		const seeded = await t.run((ctx) => seed_non_collaborative_file({ ctx, path: "/off-client-fresh.md", text: "# Off base" }));
+		const seeded = await t.run((ctx) =>
+			seed_non_collaborative_file({ ctx, path: "/off-client-fresh.md", text: "# Off base" }),
+		);
 		const proposalMarkdown = normalize_pending_update_markdown("# Off base\n\nAgent line");
 
 		const upserted = await upsert_file_pending_update_internal_for_test({
@@ -6046,7 +6062,9 @@ describe("upsert, discard, move, and restore on a file with collaboration off", 
 
 	test("refuses a client edit after a member saved the file and leaves the proposal untouched", async () => {
 		const t = test_convex();
-		const seeded = await t.run((ctx) => seed_non_collaborative_file({ ctx, path: "/off-client-stale.md", text: "# Off base" }));
+		const seeded = await t.run((ctx) =>
+			seed_non_collaborative_file({ ctx, path: "/off-client-stale.md", text: "# Off base" }),
+		);
 
 		const upserted = await upsert_file_pending_update_internal_for_test({
 			t,
@@ -6115,7 +6133,9 @@ describe("upsert, discard, move, and restore on a file with collaboration off", 
 
 	test("direct agent upsert keeps a stale proposal until preparation", async () => {
 		const t = test_convex();
-		const seeded = await t.run((ctx) => seed_non_collaborative_file({ ctx, path: "/off-agent-rebuild.md", text: "# Off base" }));
+		const seeded = await t.run((ctx) =>
+			seed_non_collaborative_file({ ctx, path: "/off-agent-rebuild.md", text: "# Off base" }),
+		);
 		const ids = {
 			t,
 			organizationId: seeded.organizationId,
@@ -6173,7 +6193,9 @@ describe("upsert, discard, move, and restore on a file with collaboration off", 
 
 	test("a version restore keeps the content proposal for preparation", async () => {
 		const t = test_convex();
-		const seeded = await t.run((ctx) => seed_non_collaborative_file({ ctx, path: "/off-restore-preserve.md", text: "# Off base" }));
+		const seeded = await t.run((ctx) =>
+			seed_non_collaborative_file({ ctx, path: "/off-restore-preserve.md", text: "# Off base" }),
+		);
 		const ids = {
 			t,
 			organizationId: seeded.organizationId,
@@ -6227,7 +6249,9 @@ describe("upsert, discard, move, and restore on a file with collaboration off", 
 
 	test("the commit refuses a base asset the node no longer has", async () => {
 		const t = test_convex();
-		const seeded = await t.run((ctx) => seed_non_collaborative_file({ ctx, path: "/off-commit-stale.md", text: "# Off base" }));
+		const seeded = await t.run((ctx) =>
+			seed_non_collaborative_file({ ctx, path: "/off-commit-stale.md", text: "# Off base" }),
+		);
 		const commit = async (expectedAssetId: Id<"files_r2_assets">) => {
 			const family = await seal_output_family_for_test(t, seeded);
 			const committed = await t.mutation(internal.files_pending_updates.commit_file_pending_update_upsert_in_db, {
@@ -6289,7 +6313,9 @@ describe("upsert, discard, move, and restore on a file with collaboration off", 
 
 	test("Discard deletes a stale proposal even when its staged branch differs from base", async () => {
 		const t = test_convex();
-		const seeded = await t.run((ctx) => seed_non_collaborative_file({ ctx, path: "/off-discard-stale.md", text: "# Off base" }));
+		const seeded = await t.run((ctx) =>
+			seed_non_collaborative_file({ ctx, path: "/off-discard-stale.md", text: "# Off base" }),
+		);
 
 		// The positive control is the first test of `discard_file_pending_content`: a collaborative
 		// doc with accepted staged text survives Discard.
@@ -6346,7 +6372,9 @@ describe("upsert, discard, move, and restore on a file with collaboration off", 
 
 	test("Discard on a stale mixed row keeps the move and drops the content with its base", async () => {
 		const t = test_convex();
-		const seeded = await t.run((ctx) => seed_non_collaborative_file({ ctx, path: "/off-discard-stale-mixed.md", text: "# Off base" }));
+		const seeded = await t.run((ctx) =>
+			seed_non_collaborative_file({ ctx, path: "/off-discard-stale-mixed.md", text: "# Off base" }),
+		);
 		const ids = {
 			t,
 			organizationId: seeded.organizationId,
@@ -6401,7 +6429,9 @@ describe("upsert, discard, move, and restore on a file with collaboration off", 
 
 	test("Discard on a stale row with a delete keeps the delete and drops the content", async () => {
 		const t = test_convex();
-		const seeded = await t.run((ctx) => seed_non_collaborative_file({ ctx, path: "/off-discard-stale-delete.md", text: "# Off base" }));
+		const seeded = await t.run((ctx) =>
+			seed_non_collaborative_file({ ctx, path: "/off-discard-stale-delete.md", text: "# Off base" }),
+		);
 		const ids = {
 			t,
 			organizationId: seeded.organizationId,
@@ -6449,7 +6479,9 @@ describe("upsert, discard, move, and restore on a file with collaboration off", 
 
 	test("Discard on a fresh proposal deletes the doc when no hunk was accepted", async () => {
 		const t = test_convex();
-		const seeded = await t.run((ctx) => seed_non_collaborative_file({ ctx, path: "/off-discard-fresh.md", text: "# Off base" }));
+		const seeded = await t.run((ctx) =>
+			seed_non_collaborative_file({ ctx, path: "/off-discard-fresh.md", text: "# Off base" }),
+		);
 
 		const upserted = await upsert_file_pending_update_internal_for_test({
 			t,
@@ -6501,7 +6533,9 @@ describe("upsert, discard, move, and restore on a file with collaboration off", 
 
 	test("Discard on a fresh proposal keeps the accepted hunks and drops only the unstaged edits", async () => {
 		const t = test_convex();
-		const seeded = await t.run((ctx) => seed_non_collaborative_file({ ctx, path: "/off-discard-partial.md", text: "# Off base" }));
+		const seeded = await t.run((ctx) =>
+			seed_non_collaborative_file({ ctx, path: "/off-discard-partial.md", text: "# Off base" }),
+		);
 		const stagedMarkdown = normalize_pending_update_markdown("# Off base\n\nAccepted change");
 
 		const upserted = await upsert_file_pending_update_internal_for_test({
@@ -6564,7 +6598,9 @@ describe("upsert, discard, move, and restore on a file with collaboration off", 
 
 	test("requires one review for a move with non-collaborative content", async () => {
 		const t = test_convex();
-		const seeded = await t.run((ctx) => seed_non_collaborative_file({ ctx, path: "/off-apply-mixed.md", text: "# Off base" }));
+		const seeded = await t.run((ctx) =>
+			seed_non_collaborative_file({ ctx, path: "/off-apply-mixed.md", text: "# Off base" }),
+		);
 		const ids = {
 			t,
 			organizationId: seeded.organizationId,
@@ -6605,7 +6641,9 @@ describe("upsert, discard, move, and restore on a file with collaboration off", 
 
 	test("dropping the content of a mixed row clears the base asset with the branches", async () => {
 		const t = test_convex();
-		const seeded = await t.run((ctx) => seed_non_collaborative_file({ ctx, path: "/off-drop-mixed.md", text: "# Off base" }));
+		const seeded = await t.run((ctx) =>
+			seed_non_collaborative_file({ ctx, path: "/off-drop-mixed.md", text: "# Off base" }),
+		);
 		const ids = {
 			t,
 			organizationId: seeded.organizationId,
@@ -7442,7 +7480,10 @@ Expiry pending`,
 				const reviewVersion = await ctx.db
 					.query("files_pending_review_versions")
 					.withIndex("by_organization_workspace_user", (q) =>
-						q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId).eq("userId", scope.userId),
+						q
+							.eq("organizationId", scope.organizationId)
+							.eq("workspaceId", scope.workspaceId)
+							.eq("userId", scope.userId),
 					)
 					.unique();
 				return { draft, check, reviewVersion: reviewVersion?.revision ?? null };
@@ -8942,7 +8983,9 @@ describe("save_file_pending_update", () => {
 describe("save_file_pending_update on a file with collaboration off", () => {
 	test("a full accept publishes the staged text as a member save and settles the proposal", async () => {
 		const t = test_convex();
-		const seeded = await t.run((ctx) => seed_non_collaborative_file({ ctx, path: "/off-accept.txt", text: "base line" }));
+		const seeded = await t.run((ctx) =>
+			seed_non_collaborative_file({ ctx, path: "/off-accept.txt", text: "base line" }),
+		);
 		const stagedText = "base line\nagent line";
 		const upserted = await upsert_file_pending_update_internal_for_test({
 			t,
@@ -9028,7 +9071,9 @@ describe("save_file_pending_update on a file with collaboration off", () => {
 
 	test("a full accept with a pending move publishes the text and keeps the doc as move-only", async () => {
 		const t = test_convex();
-		const seeded = await t.run((ctx) => seed_non_collaborative_file({ ctx, path: "/off-accept-mixed.txt", text: "base line" }));
+		const seeded = await t.run((ctx) =>
+			seed_non_collaborative_file({ ctx, path: "/off-accept-mixed.txt", text: "base line" }),
+		);
 		const ids = {
 			t,
 			organizationId: seeded.organizationId,
@@ -9078,7 +9123,9 @@ describe("save_file_pending_update on a file with collaboration off", () => {
 
 	test("a member save between the upload and the commit refuses and hands the upload to the deletion ledger", async () => {
 		const t = test_convex();
-		const seeded = await t.run((ctx) => seed_non_collaborative_file({ ctx, path: "/off-accept-race.txt", text: "base line" }));
+		const seeded = await t.run((ctx) =>
+			seed_non_collaborative_file({ ctx, path: "/off-accept-race.txt", text: "base line" }),
+		);
 		const stagedText = "base line\nagent line";
 		const upserted = await upsert_file_pending_update_internal_for_test({
 			t,
@@ -9150,7 +9197,9 @@ describe("save_file_pending_update on a file with collaboration off", () => {
 
 	test("a full accept on a Markdown file commits the staged branch as the rich text document reads it", async () => {
 		const t = test_convex();
-		const seeded = await t.run((ctx) => seed_non_collaborative_file({ ctx, path: "/off-accept.md", text: "# Off base" }));
+		const seeded = await t.run((ctx) =>
+			seed_non_collaborative_file({ ctx, path: "/off-accept.md", text: "# Off base" }),
+		);
 		const stagedMarkdown = normalize_pending_update_markdown("# Off base\n\n- Agent item");
 		const upserted = await upsert_file_pending_update_internal_for_test({
 			t,
@@ -9178,7 +9227,9 @@ describe("save_file_pending_update on a file with collaboration off", () => {
 
 	test("a partial accept publishes the staged text and keeps the unstaged edits on the new base", async () => {
 		const t = test_convex();
-		const seeded = await t.run((ctx) => seed_non_collaborative_file({ ctx, path: "/off-partial.md", text: "# Off base" }));
+		const seeded = await t.run((ctx) =>
+			seed_non_collaborative_file({ ctx, path: "/off-partial.md", text: "# Off base" }),
+		);
 		const stagedMarkdown = normalize_pending_update_markdown("# Off base\n\nAccepted change");
 		const unstagedMarkdown = normalize_pending_update_markdown("# Off base\n\nAccepted change\n\nUnresolved change");
 		const upserted = await upsert_file_pending_update_internal_for_test({
@@ -9226,7 +9277,9 @@ describe("save_file_pending_update on a file with collaboration off", () => {
 
 	test("an accept with nothing staged writes and bills nothing and leaves the doc as it is", async () => {
 		const t = test_convex();
-		const seeded = await t.run((ctx) => seed_non_collaborative_file({ ctx, path: "/off-nothing-staged.md", text: "# Off base" }));
+		const seeded = await t.run((ctx) =>
+			seed_non_collaborative_file({ ctx, path: "/off-nothing-staged.md", text: "# Off base" }),
+		);
 		const upserted = await upsert_file_pending_update_internal_for_test({
 			t,
 			organizationId: seeded.organizationId,
@@ -9257,7 +9310,9 @@ describe("save_file_pending_update on a file with collaboration off", () => {
 
 	test("refuses a stale proposal after a member save and changes nothing", async () => {
 		const t = test_convex();
-		const seeded = await t.run((ctx) => seed_non_collaborative_file({ ctx, path: "/off-accept-stale.md", text: "# Off base" }));
+		const seeded = await t.run((ctx) =>
+			seed_non_collaborative_file({ ctx, path: "/off-accept-stale.md", text: "# Off base" }),
+		);
 		const stagedMarkdown = normalize_pending_update_markdown("# Off base\n\nAgent line");
 		const upserted = await upsert_file_pending_update_internal_for_test({
 			t,
@@ -9301,7 +9356,9 @@ describe("save_file_pending_update on a file with collaboration off", () => {
 
 	test("refuses at zero credits before inserting the version asset", async () => {
 		const t = test_convex();
-		const seeded = await t.run((ctx) => seed_non_collaborative_file({ ctx, path: "/off-no-credits.md", text: "# Off base" }));
+		const seeded = await t.run((ctx) =>
+			seed_non_collaborative_file({ ctx, path: "/off-no-credits.md", text: "# Off base" }),
+		);
 		const stagedMarkdown = normalize_pending_update_markdown("# Off base\n\nAgent line");
 		const upserted = await upsert_file_pending_update_internal_for_test({
 			t,
@@ -9346,7 +9403,9 @@ describe("save_file_pending_update on a file with collaboration off", () => {
 
 	test("refuses a read-only file", async () => {
 		const t = test_convex();
-		const seeded = await t.run((ctx) => seed_non_collaborative_file({ ctx, path: "/off-read-only.md", text: "# Off base" }));
+		const seeded = await t.run((ctx) =>
+			seed_non_collaborative_file({ ctx, path: "/off-read-only.md", text: "# Off base" }),
+		);
 		const stagedMarkdown = normalize_pending_update_markdown("# Off base\n\nAgent line");
 		const upserted = await upsert_file_pending_update_internal_for_test({
 			t,
@@ -9381,7 +9440,9 @@ describe("save_file_pending_update on a file with collaboration off", () => {
 
 	test("the action refuses a pending delete before uploading a version", async () => {
 		const t = test_convex();
-		const seeded = await t.run((ctx) => seed_non_collaborative_file({ ctx, path: "/off-action-delete.md", text: "# Off base" }));
+		const seeded = await t.run((ctx) =>
+			seed_non_collaborative_file({ ctx, path: "/off-action-delete.md", text: "# Off base" }),
+		);
 		const stagedMarkdown = normalize_pending_update_markdown("# Off base\n\nAgent line");
 		const ids = {
 			t,
@@ -9415,7 +9476,9 @@ describe("save_file_pending_update on a file with collaboration off", () => {
 
 	test("a rate-limited accept writes nothing and leaves the doc as it was", async () => {
 		const t = test_convex();
-		const seeded = await t.run((ctx) => seed_non_collaborative_file({ ctx, path: "/off-rate-limit.md", text: "# Off base" }));
+		const seeded = await t.run((ctx) =>
+			seed_non_collaborative_file({ ctx, path: "/off-rate-limit.md", text: "# Off base" }),
+		);
 		const stagedMarkdown = normalize_pending_update_markdown("# Off base\n\nAgent line");
 		const upserted = await upsert_file_pending_update_internal_for_test({
 			t,
@@ -9446,7 +9509,9 @@ describe("save_file_pending_update on a file with collaboration off", () => {
 
 	test("the commit refuses a save action that read the doc before another tab rewrote it", async () => {
 		const t = test_convex();
-		const seeded = await t.run((ctx) => seed_non_collaborative_file({ ctx, path: "/off-replay.md", text: "# Off base" }));
+		const seeded = await t.run((ctx) =>
+			seed_non_collaborative_file({ ctx, path: "/off-replay.md", text: "# Off base" }),
+		);
 		const stagedMarkdown = normalize_pending_update_markdown("# Off base\n\nAgent line");
 		const upserted = await upsert_file_pending_update_internal_for_test({
 			t,
@@ -9490,7 +9555,9 @@ describe("save_file_pending_update on a file with collaboration off", () => {
 
 	test("the commit refuses when a delete was proposed after the action read the doc", async () => {
 		const t = test_convex();
-		const seeded = await t.run((ctx) => seed_non_collaborative_file({ ctx, path: "/off-commit-delete.md", text: "# Off base" }));
+		const seeded = await t.run((ctx) =>
+			seed_non_collaborative_file({ ctx, path: "/off-commit-delete.md", text: "# Off base" }),
+		);
 		const stagedMarkdown = normalize_pending_update_markdown("# Off base\n\nAgent line");
 		const upserted = await upsert_file_pending_update_internal_for_test({
 			t,
@@ -9538,7 +9605,9 @@ describe("save_file_pending_update on a file with collaboration off", () => {
 
 	test("the commit checks the lock again after the action's own check", async () => {
 		const t = test_convex();
-		const seeded = await t.run((ctx) => seed_non_collaborative_file({ ctx, path: "/off-commit-lock.md", text: "# Off base" }));
+		const seeded = await t.run((ctx) =>
+			seed_non_collaborative_file({ ctx, path: "/off-commit-lock.md", text: "# Off base" }),
+		);
 		const stagedMarkdown = normalize_pending_update_markdown("# Off base\n\nAgent line");
 		const upserted = await upsert_file_pending_update_internal_for_test({
 			t,
@@ -9585,7 +9654,9 @@ describe("save_file_pending_update on a file with collaboration off", () => {
 
 	test("the commit refuses when collaboration was turned on after the action read the doc", async () => {
 		const t = test_convex();
-		const seeded = await t.run((ctx) => seed_non_collaborative_file({ ctx, path: "/off-commit-collab-on.md", text: "# Off base" }));
+		const seeded = await t.run((ctx) =>
+			seed_non_collaborative_file({ ctx, path: "/off-commit-collab-on.md", text: "# Off base" }),
+		);
 		const stagedMarkdown = normalize_pending_update_markdown("# Off base\n\nAgent line");
 		const upserted = await upsert_file_pending_update_internal_for_test({
 			t,
@@ -9628,7 +9699,9 @@ describe("save_file_pending_update on a file with collaboration off", () => {
 
 	test("the commit refuses at zero credits even when the action's check passed", async () => {
 		const t = test_convex();
-		const seeded = await t.run((ctx) => seed_non_collaborative_file({ ctx, path: "/off-commit-credits.md", text: "# Off base" }));
+		const seeded = await t.run((ctx) =>
+			seed_non_collaborative_file({ ctx, path: "/off-commit-credits.md", text: "# Off base" }),
+		);
 		const stagedMarkdown = normalize_pending_update_markdown("# Off base\n\nAgent line");
 		const upserted = await upsert_file_pending_update_internal_for_test({
 			t,
@@ -9698,7 +9771,9 @@ describe("save_file_pending_update on a file with collaboration off", () => {
 
 	test("a refused partial accept retires its output batch, so the next operation is not blocked", async () => {
 		const t = test_convex();
-		const seeded = await t.run((ctx) => seed_non_collaborative_file({ ctx, path: "/off-accept-race-partial.txt", text: "base line" }));
+		const seeded = await t.run((ctx) =>
+			seed_non_collaborative_file({ ctx, path: "/off-accept-race-partial.txt", text: "base line" }),
+		);
 		const stagedText = "base line\nagent line";
 		const upserted = await upsert_file_pending_update_internal_for_test({
 			t,
@@ -19605,7 +19680,9 @@ describe("create_file_pending_update_operation_batch", () => {
 
 	test("rejects sealed outputs after a same-time proposal change and keeps index revisions current", async () => {
 		const t = test_convex();
-		const seeded = await t.run((ctx) => seed_non_collaborative_file({ ctx, path: "/revision-base.md", text: "# Base" }));
+		const seeded = await t.run((ctx) =>
+			seed_non_collaborative_file({ ctx, path: "/revision-base.md", text: "# Base" }),
+		);
 		r2Objects.set("content-snapshot/revision-base.md", "# Base");
 		const proposed = await upsert_file_pending_update_internal_for_test({
 			t,
@@ -20226,7 +20303,8 @@ describe("cleanup_expired_pending_state_rows", () => {
 			userId: Id<"users">;
 			nodeId: Id<"files_nodes">;
 		};
-		owner: | { kind: "active"; pendingUpdateId: Id<"files_pending_updates">; role: "base" }
+		owner:
+			| { kind: "active"; pendingUpdateId: Id<"files_pending_updates">; role: "base" }
 			| {
 					kind: "temporary";
 					operationBatchId: Id<"files_pending_update_operation_batches">;
@@ -20237,7 +20315,7 @@ describe("cleanup_expired_pending_state_rows", () => {
 			| { kind: "retired"; cleanupTaskId: Id<"files_pending_update_state_cleanup_tasks"> };
 		pageCount?: number;
 	}) {
-		const { t, seeded, pageCount = 1, owner} = args;
+		const { t, seeded, pageCount = 1, owner } = args;
 
 		return await t.run(async (ctx) => {
 			const stateId = await ctx.db.insert("files_pending_update_yjs_states", {
@@ -20378,21 +20456,21 @@ describe("cleanup_expired_pending_state_rows", () => {
 			t,
 			seeded,
 			owner: {
-			kind: "active",
-			pendingUpdateId,
-			role: "base",
-		},
+				kind: "active",
+				pendingUpdateId,
+				role: "base",
+			},
 		});
 		const expiredTemporaryStateId = await seed_state_family({
 			t,
 			seeded,
 			owner: {
-			kind: "temporary",
-			operationBatchId: batchId,
-			phase: "input",
-			role: "base",
-			expiresAt: now - 1000,
-		},
+				kind: "temporary",
+				operationBatchId: batchId,
+				phase: "input",
+				role: "base",
+				expiresAt: now - 1000,
+			},
 		});
 
 		const swept = await t.mutation(internal.files_pending_updates.cleanup_expired_pending_state_rows, {
@@ -20528,9 +20606,9 @@ describe("cleanup_expired_pending_state_rows", () => {
 			t,
 			seeded,
 			owner: {
-			kind: "retired",
-			cleanupTaskId: ownedTaskId,
-		},
+				kind: "retired",
+				cleanupTaskId: ownedTaskId,
+			},
 		});
 
 		const swept = await t.mutation(internal.files_pending_updates.cleanup_expired_pending_state_rows, {
@@ -21275,7 +21353,9 @@ describe("pending update read-only checks", () => {
 
 	test("a batch made on a locked file cannot commit", async () => {
 		const t = test_convex();
-		const seeded = await t.run((ctx) => seed_non_collaborative_file({ ctx, path: "/off-batch-lock.md", text: "# Off base" }));
+		const seeded = await t.run((ctx) =>
+			seed_non_collaborative_file({ ctx, path: "/off-batch-lock.md", text: "# Off base" }),
+		);
 		const asUser = t.withIdentity({
 			issuer: "https://clerk.test",
 			external_id: seeded.userId,

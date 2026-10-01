@@ -36,11 +36,13 @@ const model = vi.hoisted(() => ({ streamText: vi.fn() }));
 const browserActionGate = vi.hoisted(() => ({
 	call: null as
 		| null
-		| ((args: {
-				operation: "query" | "mutation";
-				name: string;
-				phase: "before" | "after";
-		  } & Record<string, unknown>) => Promise<void>),
+		| ((
+				args: {
+					operation: "query" | "mutation";
+					name: string;
+					phase: "before" | "after";
+				} & Record<string, unknown>,
+		  ) => Promise<void>),
 }));
 vi.mock("./_generated/server.js", async (importOriginal) => {
 	const original = await importOriginal<typeof import("./_generated/server.js")>();
@@ -448,10 +450,10 @@ describe("browser file outputs", () => {
 			t,
 			scope,
 			changes: {
-			requestId: "file-output-2",
-			size: 0,
-			contentType: "application/x-custom",
-		},
+				requestId: "file-output-2",
+				size: 0,
+				contentType: "application/x-custom",
+			},
 		});
 		const secondResult = await t.mutation(internal.files_browser.finalize_file_output, {
 			...scope,
@@ -3312,11 +3314,13 @@ describe("agent_open_browser", () => {
 				});
 			else runnerQueue.push(runner_web_session());
 			let changedId: Id<"files_browser_sessions"> | null = null;
-			browserActionGate.call = async (args: {
-				operation: "query" | "mutation";
-				name: string;
-				phase: "before" | "after";
-			} & Record<string, unknown>) => {
+			browserActionGate.call = async (
+				args: {
+					operation: "query" | "mutation";
+					name: string;
+					phase: "before" | "after";
+				} & Record<string, unknown>,
+			) => {
 				const { operation, name, phase, ...previousArgs } = args;
 
 				if (changedId) return;
@@ -4666,7 +4670,7 @@ function download_node_args(args: {
 	sessionId: Id<"files_browser_sessions">;
 	downloadId?: string;
 }) {
-	const { fixture, downloadId = "download-1", sessionId} = args;
+	const { fixture, downloadId = "download-1", sessionId } = args;
 
 	return {
 		userId: fixture.userId,
@@ -4686,7 +4690,7 @@ async function save_download(args: {
 	sessionId: Id<"files_browser_sessions">;
 	downloadId?: string;
 }) {
-	const { t, fixture, downloadId = "download-1", sessionId} = args;
+	const { t, fixture, downloadId = "download-1", sessionId } = args;
 
 	return await authed(t, fixture.userId).action(api.files_browser.save_browser_download, {
 		membershipId: fixture.membershipId,
@@ -4715,11 +4719,7 @@ async function node_metadata(args: {
 	);
 }
 
-async function saved_node_id_by_path(args: {
-	t: ReturnType<typeof test_convex>;
-	fixture: WebFixture;
-	path: string;
-}) {
+async function saved_node_id_by_path(args: { t: ReturnType<typeof test_convex>; fixture: WebFixture; path: string }) {
 	const { t, fixture, path } = args;
 
 	const node = await t.run((ctx) =>
@@ -4804,7 +4804,9 @@ describe("save_browser_download", () => {
 		if (first._nay) throw new Error(first._nay.message);
 		expect(first._yay).toMatchObject({ kind: "push", path: "/.system/downloads/data.bin", shared: true });
 		// A `data:` download has no origin, so no `original-url` is stored.
-		expect(await node_metadata({ t, fixture, nodeId: first._yay.nodeId })).toEqual({ "metadata.source": "browser-download" });
+		expect(await node_metadata({ t, fixture, nodeId: first._yay.nodeId })).toEqual({
+			"metadata.source": "browser-download",
+		});
 
 		// Two viewer tabs can pass the first check at the same time. The second create finds the save,
 		// which is not pushed yet, so it gets an upload URL for the same asset. The runner joins the
@@ -4934,7 +4936,9 @@ describe("save_browser_download", () => {
 		const started = await start_web_session({ t, fixture: owner });
 		if (started._nay) throw new Error(started._nay.message);
 
-		expect(await save_download({ t, fixture: member, sessionId: started._yay.session.sessionId })).toEqual({ _nay: { message: "Not found" } });
+		expect(await save_download({ t, fixture: member, sessionId: started._yay.session.sessionId })).toEqual({
+			_nay: { message: "Not found" },
+		});
 		expect(runnerCalls.map((call) => call.route)).toEqual(["open"]);
 	});
 
@@ -4944,7 +4948,9 @@ describe("save_browser_download", () => {
 		const started = await start_saved_session({ t, fixture });
 		if (started._nay) throw new Error(started._nay.message);
 
-		expect(await save_download({ t, fixture, sessionId: started._yay.sessionId })).toEqual({ _nay: { message: "Not found" } });
+		expect(await save_download({ t, fixture, sessionId: started._yay.sessionId })).toEqual({
+			_nay: { message: "Not found" },
+		});
 		expect(runnerCalls.map((call) => call.route)).toEqual(["open"]);
 	});
 
@@ -4983,7 +4989,7 @@ describe("fill_browser_chooser_from_files", () => {
 		sessionId: Id<"files_browser_sessions">;
 		nodeIds: Array<Id<"files_nodes">>;
 	}) {
-		const { t, fixture, nodeIds, sessionId} = args;
+		const { t, fixture, nodeIds, sessionId } = args;
 
 		return await authed(t, fixture.userId).action(api.files_browser.fill_browser_chooser_from_files, {
 			membershipId: fixture.membershipId,
@@ -5007,7 +5013,9 @@ describe("fill_browser_chooser_from_files", () => {
 		const getUrl = vi.spyOn(R2.prototype, "getUrl");
 		const timeout = vi.spyOn(AbortSignal, "timeout");
 		runnerQueue.push({ ok: true });
-		expect(await fill({ t, fixture: owner, sessionId: started._yay.session.sessionId, nodeIds: [first, second] })).toEqual({ _yay: null });
+		expect(
+			await fill({ t, fixture: owner, sessionId: started._yay.session.sessionId, nodeIds: [first, second] }),
+		).toEqual({ _yay: null });
 		// The runner gives the whole fill 120 seconds. Convex waits a bit longer for its answer.
 		expect(timeout).toHaveBeenLastCalledWith(150_000);
 
@@ -5052,7 +5060,9 @@ describe("fill_browser_chooser_from_files", () => {
 		if (started._nay) throw new Error(started._nay.message);
 
 		runnerQueue.push({ ok: true });
-		expect(await fill({ t, fixture: member, sessionId: started._yay.session.sessionId, nodeIds: [first, second] })).toEqual({
+		expect(
+			await fill({ t, fixture: member, sessionId: started._yay.session.sessionId, nodeIds: [first, second] }),
+		).toEqual({
 			_nay: { message: "Not found" },
 		});
 		expect(runnerCalls.map((call) => call.route)).toEqual(["open"]);
@@ -5066,9 +5076,13 @@ describe("fill_browser_chooser_from_files", () => {
 		const sessionId = started._yay.session.sessionId;
 
 		const folderId = await saved_node_id_by_path({ t, fixture: owner, path: "/docs" });
-		expect(await fill({ t, fixture: owner, sessionId, nodeIds: [folderId] })).toEqual({ _nay: { message: "Not found" } });
+		expect(await fill({ t, fixture: owner, sessionId, nodeIds: [folderId] })).toEqual({
+			_nay: { message: "Not found" },
+		});
 
-		expect(await fill({ t, fixture: owner, sessionId, nodeIds: [] })).toEqual({ _nay: { message: "Choose 1 to 10 files." } });
+		expect(await fill({ t, fixture: owner, sessionId, nodeIds: [] })).toEqual({
+			_nay: { message: "Choose 1 to 10 files." },
+		});
 		expect(
 			await fill({
 				t,

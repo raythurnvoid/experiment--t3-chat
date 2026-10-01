@@ -234,7 +234,11 @@ describe("save", () => {
 		const decrypt = (serverId: Id<"mcp_custom_servers">) =>
 			crypto_decrypt_secret_value({
 				secret: secret!.value,
-				additionalData: plugins_mcp_custom_secret_additional_data({ customServerId: serverId, userId: member.userId, name: "API_KEY" }),
+				additionalData: plugins_mcp_custom_secret_additional_data({
+					customServerId: serverId,
+					userId: member.userId,
+					name: "API_KEY",
+				}),
 				keyName: "MCP_SECRETS_ENCRYPTION_KEY",
 			});
 

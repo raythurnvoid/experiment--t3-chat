@@ -134,7 +134,11 @@ function median(values: number[]) {
 	return sortedValues[Math.floor(sortedValues.length / 2)] ?? 0;
 }
 
-function benchmark_implementation(args: { implementation: ByteSizeImplementation; content: string; expectedBytes: number }) {
+function benchmark_implementation(args: {
+	implementation: ByteSizeImplementation;
+	content: string;
+	expectedBytes: number;
+}) {
 	const { implementation, content, expectedBytes } = args;
 	const actualBytes = implementation.getByteSize(content);
 	if (actualBytes !== expectedBytes) {

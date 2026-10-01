@@ -8,11 +8,7 @@ import {
 } from "./snippet-executor";
 
 describe("build_executor_module", () => {
-	function run_snippet(args: {
-		code: string;
-		budgetMs?: number;
-		state?: string | null;
-	}) {
+	function run_snippet(args: { code: string; budgetMs?: number; state?: string | null }) {
 		const { code, budgetMs = 1000, state = null } = args;
 
 		const screenshot = Uint8Array.from(
@@ -284,10 +280,18 @@ describe("build_executor_module", () => {
 	});
 
 	it("keeps plain JSON state between calls, even when the snippet throws", async () => {
-		const first = await run_snippet({ code: "state.count = (state.count ?? 0) + 1; return state.count;", budgetMs: 1000, state: null });
+		const first = await run_snippet({
+			code: "state.count = (state.count ?? 0) + 1; return state.count;",
+			budgetMs: 1000,
+			state: null,
+		});
 		expect(first).toMatchObject({ ok: true, resultJson: "1", stateJson: '{"count":1}', stateWarnings: [] });
 
-		const second = await run_snippet({ code: 'state.count += 1; throw new Error("failed");', budgetMs: 1000, state: first.stateJson });
+		const second = await run_snippet({
+			code: 'state.count += 1; throw new Error("failed");',
+			budgetMs: 1000,
+			state: first.stateJson,
+		});
 		expect(second).toMatchObject({ ok: false, stateJson: '{"count":2}' });
 	});
 

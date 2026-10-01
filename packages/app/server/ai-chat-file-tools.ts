@@ -145,7 +145,8 @@ export function ai_chat_tool_create_view_image(
 			.strict(),
 		strict: true,
 		execute: async ({ workspace, path }, options) => {
-			const unavailable = () => ai_chat_file_result({ title: "View image", status: "errored", files: [], reason: "unavailable" });
+			const unavailable = () =>
+				ai_chat_file_result({ title: "View image", status: "errored", files: [], reason: "unavailable" });
 			const threadId = args.getThreadId();
 			if (!threadId) return unavailable();
 			const agentSource = {
@@ -165,8 +166,15 @@ export function ai_chat_tool_create_view_image(
 				const checked = await ctx.runQuery(internal.files_nodes_content.get_file_read_source, readArgs);
 				if (checked._nay) return unavailable();
 				const file = checked._yay;
-				if (file.size === 0) return ai_chat_file_result({ title: "View image", status: "errored", files: [], reason: "unsupported_image" });
-				if (file.size > imageBytesRemaining) return ai_chat_file_result({ title: "View image", status: "errored", files: [], reason: "limit" });
+				if (file.size === 0)
+					return ai_chat_file_result({
+						title: "View image",
+						status: "errored",
+						files: [],
+						reason: "unsupported_image",
+					});
+				if (file.size > imageBytesRemaining)
+					return ai_chat_file_result({ title: "View image", status: "errored", files: [], reason: "limit" });
 
 				// Reserve before the GET so parallel calls cannot spend the same bytes.
 				imageBytesRemaining -= file.size;
@@ -174,7 +182,13 @@ export function ai_chat_tool_create_view_image(
 				const bytes = await files_ingestion_read_bytes(response, file.size);
 				if (bytes.byteLength !== file.size) return unavailable();
 				const header = ai_chat_image_header(bytes);
-				if (!header) return ai_chat_file_result({ title: "View image", status: "errored", files: [], reason: "unsupported_image" });
+				if (!header)
+					return ai_chat_file_result({
+						title: "View image",
+						status: "errored",
+						files: [],
+						reason: "unsupported_image",
+					});
 
 				const isCurrent = async () => {
 					const fresh = await ctx.runQuery(internal.files_nodes_content.get_file_read_source, {
@@ -204,7 +218,9 @@ export function ai_chat_tool_create_view_image(
 				});
 				return ai_chat_file_result({ title: "View image", status: "succeeded", files: [file.target] });
 			} catch {
-				return options.abortSignal?.aborted ? ai_chat_file_result({ title: "View image", status: "cancelled" }) : unavailable();
+				return options.abortSignal?.aborted
+					? ai_chat_file_result({ title: "View image", status: "cancelled" })
+					: unavailable();
 			}
 		},
 		toModelOutput: ({ toolCallId, output }) =>

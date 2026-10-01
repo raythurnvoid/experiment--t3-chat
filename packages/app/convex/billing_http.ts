@@ -5,11 +5,7 @@ import { billing_polar } from "./billing_polar.ts";
 import { convertToDatabaseProduct, convertToDatabaseSubscription } from "../vendor/polar/src/component/util.ts";
 
 // Keep the built-in event handling in sync with @convex-dev/polar's registerRoutes implementation.
-export async function billing_http_handle_request(args: {
-	ctx: ActionCtx;
-	request: Request;
-	webhookSecret: string;
-}) {
+export async function billing_http_handle_request(args: { ctx: ActionCtx; request: Request; webhookSecret: string }) {
 	const { ctx, request, webhookSecret } = args;
 
 	if (!request.body) {

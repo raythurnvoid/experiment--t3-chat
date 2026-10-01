@@ -110,10 +110,10 @@ async function decrypt_client(clientDoc: Doc<"plugins_mcp_oauth_clients">) {
 		clientDoc.clientSecret === null
 			? null
 			: await crypto_decrypt_secret_value({
-				secret: clientDoc.clientSecret,
-				additionalData: client_additional_data(clientDoc.issuer, clientDoc.clientId),
-				keyName: "MCP_SECRETS_ENCRYPTION_KEY",
-			}).catch(() => undefined);
+					secret: clientDoc.clientSecret,
+					additionalData: client_additional_data(clientDoc.issuer, clientDoc.clientId),
+					keyName: "MCP_SECRETS_ENCRYPTION_KEY",
+				}).catch(() => undefined);
 	if (clientSecret === undefined) {
 		return null;
 	}
@@ -1401,10 +1401,10 @@ export async function plugins_mcp_oauth_get_access_token(
 			lease.grant.refreshToken === null
 				? null
 				: await crypto_decrypt_secret_value({
-					secret: lease.grant.refreshToken,
-					additionalData: grant.additionalData,
-					keyName: "MCP_SECRETS_ENCRYPTION_KEY",
-				}).catch(() => null);
+						secret: lease.grant.refreshToken,
+						additionalData: grant.additionalData,
+						keyName: "MCP_SECRETS_ENCRYPTION_KEY",
+					}).catch(() => null);
 		const client = await load_client(lease.grant, lease.clientDoc);
 		// Never assume a refresh token exists. Without one, or without the client, the member
 		// must connect again.

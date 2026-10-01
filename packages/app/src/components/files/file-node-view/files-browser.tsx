@@ -757,61 +757,59 @@ const FilesBrowser = memo(function FilesBrowser(props: FilesBrowser_Props) {
 			});
 	});
 
-	const handleViewerHello = useFn((args: {
-		id: string;
-		viewport: { width: number; height: number };
-		control: string;
-	}) => {
-		const { id, control } = args;
+	const handleViewerHello = useFn(
+		(args: { id: string; viewport: { width: number; height: number }; control: string }) => {
+			const { id, control } = args;
 
-		setViewerId(id);
-		// The child moves human input here before the docked viewer stops streaming.
-		if (isChild) {
-			if (takeoverSent || !mine) {
+			setViewerId(id);
+			// The child moves human input here before the docked viewer stops streaming.
+			if (isChild) {
+				if (takeoverSent || !mine) {
+					return;
+				}
+				setTakeoverSent(true);
+				const postTakeover = () => {
+					window.opener?.postMessage({ kind: "browser-takeover", sessionId: mine.sessionId }, window.location.origin);
+				};
+				if (control === "human") {
+					takeWithViewer(id).then((moved: boolean) => {
+						if (moved) {
+							postTakeover();
+						} else {
+							// Stay live here: the docked viewer keeps streaming, so a failed move
+							// loses nothing and the user can close this window to retry.
+							setTakeoverSent(false);
+						}
+					});
+				} else {
+					postTakeover();
+				}
 				return;
 			}
-			setTakeoverSent(true);
-			const postTakeover = () => {
-				window.opener?.postMessage({ kind: "browser-takeover", sessionId: mine.sessionId }, window.location.origin);
-			};
-			if (control === "human") {
-				takeWithViewer(id).then((moved: boolean) => {
-					if (moved) {
-						postTakeover();
-					} else {
-						// Stay live here: the docked viewer keeps streaming, so a failed move
-						// loses nothing and the user can close this window to retry.
-						setTakeoverSent(false);
-					}
-				});
-			} else {
-				postTakeover();
+			// Move input back here before the child closes; its detach would otherwise release control.
+			if (pendingDockAck && mine && popout) {
+				const sessionId = mine.sessionId;
+				const child = popout.child;
+				// The child closes on the ack, so this tab forgets it.
+				const ack = () => {
+					child.postMessage({ kind: "browser-dock-ack", sessionId }, window.location.origin);
+					files_browser_set_popout_step(sessionId, null);
+				};
+				if (control === "human") {
+					takeWithViewer(id).then((moved: boolean) => {
+						// On a failed move the child stays live; Dock retries the dance.
+						if (moved) {
+							ack();
+						} else {
+							files_browser_set_popout_step(sessionId, "opening");
+						}
+					});
+				} else {
+					ack();
+				}
 			}
-			return;
-		}
-		// Move input back here before the child closes; its detach would otherwise release control.
-		if (pendingDockAck && mine && popout) {
-			const sessionId = mine.sessionId;
-			const child = popout.child;
-			// The child closes on the ack, so this tab forgets it.
-			const ack = () => {
-				child.postMessage({ kind: "browser-dock-ack", sessionId }, window.location.origin);
-				files_browser_set_popout_step(sessionId, null);
-			};
-			if (control === "human") {
-				takeWithViewer(id).then((moved: boolean) => {
-					// On a failed move the child stays live; Dock retries the dance.
-					if (moved) {
-						ack();
-					} else {
-						files_browser_set_popout_step(sessionId, "opening");
-					}
-				});
-			} else {
-				ack();
-			}
-		}
-	});
+		},
+	);
 
 	const handleViewerControl = useFn((next: files_browser_StreamControlMessage) => {
 		setRemoteControl(next);

@@ -219,13 +219,8 @@ async function start_frame() {
 	return { frame, post, hello };
 }
 
-function send_status(args: {
-	frame: HTMLIFrameElement;
-	data: unknown;
-	origin?: string;
-	source?: Window | null;
-}) {
-	const { frame, origin = "https://preview.test", source = frame.contentWindow, data} = args;
+function send_status(args: { frame: HTMLIFrameElement; data: unknown; origin?: string; source?: Window | null }) {
+	const { frame, origin = "https://preview.test", source = frame.contentWindow, data } = args;
 
 	act(() => {
 		window.dispatchEvent(new MessageEvent("message", { data, origin, source }));

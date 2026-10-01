@@ -33,19 +33,19 @@ function FileEditorCommentsSidebarThread(props: FileEditorCommentsSidebarThread_
 	useGlobalEventList({
 		events: ["pointerdown", "focusin"],
 		handler: (e) => {
-		if (threadEl.current && (!e.target || !threadEl.current.contains(e.target as Node))) {
-			setOpen(false);
-		}
-	},
+			if (threadEl.current && (!e.target || !threadEl.current.contains(e.target as Node))) {
+				setOpen(false);
+			}
+		},
 	});
 
 	useGlobalEvent({
 		event: "keydown",
 		handler: (e) => {
-		if (e.key === "Escape") {
-			setOpen(false);
-		}
-	},
+			if (e.key === "Escape") {
+				setOpen(false);
+			}
+		},
 	});
 
 	return (

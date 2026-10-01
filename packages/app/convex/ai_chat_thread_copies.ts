@@ -303,11 +303,7 @@ async function db_copy_message(
 	return copiedId;
 }
 
-async function db_publish(args: {
-	ctx: MutationCtx;
-	copy: Doc<"ai_chat_thread_copies">;
-	now: number;
-}) {
+async function db_publish(args: { ctx: MutationCtx; copy: Doc<"ai_chat_thread_copies">; now: number }) {
 	const { ctx, copy, now } = args;
 
 	await ctx.db.patch("ai_chat_threads", copy.targetThreadId, {

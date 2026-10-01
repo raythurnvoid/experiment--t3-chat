@@ -190,7 +190,12 @@ export function bash_stat_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			return await bash_delegate_builtin_command({ command: "stat", args, commandCtx });
 		}
 
-		const capError = bash_enforce_reader_operand_cap({ command: "stat", commandCtx, dbFilesRoots, files: parsed._yay.files });
+		const capError = bash_enforce_reader_operand_cap({
+			command: "stat",
+			commandCtx,
+			dbFilesRoots,
+			files: parsed._yay.files,
+		});
 		if (capError != null) return capError;
 
 		let stdout = "";
@@ -259,7 +264,8 @@ export function bash_stat_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 					size: currentDbFileSize,
 					mtime: new Date(dbFilesDoc.updatedAt),
 				},
-				advisory: "[stat: Access is a fixed placeholder; app files track only Size, Type, and Modify — not POSIX permissions, owner, group, inode, or blocks]",
+				advisory:
+					"[stat: Access is a fixed placeholder; app files track only Size, Type, and Modify — not POSIX permissions, owner, group, inode, or blocks]",
 			});
 			// Unsupported format tokens are preserved literally in stdout, matching the
 			// formatter above. Warn once on stderr so agents do not treat `%i`, `%b`,

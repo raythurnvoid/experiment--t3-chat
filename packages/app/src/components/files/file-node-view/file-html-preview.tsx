@@ -401,11 +401,7 @@ export const FileHtmlPreview = memo(function FileHtmlPreview(props: {
 		(selectedSource !== "proposed_changes" || snapshot.pendingId === pendingUpdate?._id);
 	const updatesAvailable = canShowSnapshot && snapshot.contentKey !== contentKey;
 
-	const isCurrentRequest = useFn((args: {
-		request: number;
-		capturedScope: string;
-		source: FileHtmlPreview_Source;
-	}) => {
+	const isCurrentRequest = useFn((args: { request: number; capturedScope: string; source: FileHtmlPreview_Source }) => {
 		const { request, capturedScope, source } = args;
 
 		return requestRef.current === request && scope === capturedScope && selectedSource === source;

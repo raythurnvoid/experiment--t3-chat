@@ -34,12 +34,7 @@ async function fixture(options: Parameters<typeof test_convex>[0] = { transactio
 		return { userId, membershipId };
 	});
 	const asViewer = t.withIdentity({ issuer: "https://clerk.test", external_id: viewer.userId });
-	const child = (args: {
-		name: string;
-		entries?: files_metadata_Entry[];
-		folderId?: Id<"files_nodes">;
-	}) =>
-		{
+	const child = (args: { name: string; entries?: files_metadata_Entry[]; folderId?: Id<"files_nodes"> }) => {
 		const { name, entries = [], folderId = parentId } = args;
 
 		return t.run(async (ctx) => {
@@ -212,7 +207,8 @@ describe("table metadata caller", () => {
 describe("list_folder_fields", () => {
 	test("lists direct children beyond row 50 and excludes a sibling and descendants", async () => {
 		const { t, owner, parentId, child, catalog } = await fixture();
-		for (let i = 0; i < 51; i++) await child({ name: `child-${i}.md`, entries: i === 50 ? [{ key: "late", value: true }] : [] });
+		for (let i = 0; i < 51; i++)
+			await child({ name: `child-${i}.md`, entries: i === 50 ? [{ key: "late", value: true }] : [] });
 		for (const path of ["/other", "/table/nested"]) {
 			const created = await t.mutation(internal.files_nodes.create_folder_node_by_path, { ...owner, path });
 			if (created._nay) throw new Error(created._nay.message);
@@ -417,10 +413,10 @@ describe("get_field_values", () => {
 		const nodeId = await child({
 			name: "values.md",
 			entries: [
-			{ key: "zero", value: 0 },
-			{ key: "false", value: false },
-			{ key: "empty", value: "" },
-		],
+				{ key: "zero", value: 0 },
+				{ key: "false", value: false },
+				{ key: "empty", value: "" },
+			],
 		});
 		await frontmatter(nodeId, "date: 2026-09-29\nitems: [false, 2]\nmap: {child: 3}\nempty: []");
 		const fields = [

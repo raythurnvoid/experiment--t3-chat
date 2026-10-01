@@ -61,13 +61,8 @@ function rpc_result(id: JsonRpcBody["id"], result: Record<string, unknown>) {
 	return Response.json({ jsonrpc: "2.0", id, result: { resultType: "complete", ...result } });
 }
 
-function rpc_error(args: {
-	id: JsonRpcBody["id"] | null;
-	code: number;
-	status: number;
-	data?: unknown;
-}) {
-	const { code, data, id, status} = args;
+function rpc_error(args: { id: JsonRpcBody["id"] | null; code: number; status: number; data?: unknown }) {
+	const { code, data, id, status } = args;
 
 	return Response.json({ jsonrpc: "2.0", id, error: { code, message: `fixture error ${code}`, data } }, { status });
 }
@@ -325,7 +320,10 @@ export function mcp_fixtures_create() {
 			progress: { method: "tools/call", handle: () => sse_response([], { end: "never" }) },
 		},
 		"version-other": {
-			"": { method: "*", handle: (body) => rpc_error({ id: body.id, code: -32022, status: 400, data: { supported: ["2027-01-01"] } }) },
+			"": {
+				method: "*",
+				handle: (body) => rpc_error({ id: body.id, code: -32022, status: 400, data: { supported: ["2027-01-01"] } }),
+			},
 		},
 		"version-old-sse": {
 			"": { method: "*", handle: () => new Response(null, { status: 405 }) },
@@ -373,7 +371,8 @@ export function mcp_fixtures_create() {
 					// Refuse a call whose `Mcp-Param-Region` header does not match the argument, like a
 					// SEP-2243 server.
 					const args = body.params?.arguments as { region?: unknown } | undefined;
-					if (request.headers.get("mcp-param-region") !== args?.region) return rpc_error({ id: body.id, code: -32020, status: 400 });
+					if (request.headers.get("mcp-param-region") !== args?.region)
+						return rpc_error({ id: body.id, code: -32020, status: 400 });
 					return rpc_result(body.id, { content: [{ type: "text", text: `region ${String(args?.region)}` }] });
 				},
 			},
@@ -415,9 +414,18 @@ export function mcp_fixtures_create() {
 				method: "tools/call",
 				handle: (body) => Response.json({ jsonrpc: "2.0", id: body.id, result: { content: [] } }),
 			},
-			"invalid-params": { method: "tools/call", handle: (body) => rpc_error({ id: body.id, code: -32602, status: 200 }) },
-			"capability-required": { method: "tools/call", handle: (body) => rpc_error({ id: body.id, code: -32021, status: 400 }) },
-			"header-mismatch": { method: "tools/call", handle: (body) => rpc_error({ id: body.id, code: -32020, status: 400 }) },
+			"invalid-params": {
+				method: "tools/call",
+				handle: (body) => rpc_error({ id: body.id, code: -32602, status: 200 }),
+			},
+			"capability-required": {
+				method: "tools/call",
+				handle: (body) => rpc_error({ id: body.id, code: -32021, status: 400 }),
+			},
+			"header-mismatch": {
+				method: "tools/call",
+				handle: (body) => rpc_error({ id: body.id, code: -32020, status: 400 }),
+			},
 			"method-error": { method: "tools/call", handle: (body) => rpc_error({ id: body.id, code: -32603, status: 200 }) },
 		},
 		"bad-tools": {

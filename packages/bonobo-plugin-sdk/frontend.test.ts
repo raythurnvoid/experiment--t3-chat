@@ -126,14 +126,16 @@ function answer_refresh(args: {
 	if (!request) {
 		throw new Error("refresh request not posted");
 	}
-	post_from_host({ data: {
-		type: "bonobo:token",
-		nonce: NONCE,
-		requestId: request.requestId,
-		token,
-		tokenExpiresAt: Date.now() + 600_000,
-		...overrides,
-	} });
+	post_from_host({
+		data: {
+			type: "bonobo:token",
+			nonce: NONCE,
+			requestId: request.requestId,
+			token,
+			tokenExpiresAt: Date.now() + 600_000,
+			...overrides,
+		},
+	});
 	return request.requestId;
 }
 
@@ -348,11 +350,13 @@ describe("bonobo_connect", () => {
 		const clientPromise = bonobo_connect();
 
 		post_from_host({ data: make_init({ context: make_file_view_context({ kind: undefined }), token: "plu_no_kind" }) });
-		post_from_host({ data: make_init({ context: make_file_view_context({ kind: "backend" }), token: "plu_bad_kind" }) });
+		post_from_host({
+			data: make_init({ context: make_file_view_context({ kind: "backend" }), token: "plu_bad_kind" }),
+		});
 		post_from_host({ data: make_init({ context: make_file_view_context({ file: undefined }), token: "plu_no_file" }) });
-		post_from_host(
-			{ data: make_init({ context: make_file_view_context({ file: { fileNodeId: "node_1" } }), token: "plu_bad_file" }) },
-		);
+		post_from_host({
+			data: make_init({ context: make_file_view_context({ file: { fileNodeId: "node_1" } }), token: "plu_bad_file" }),
+		});
 		post_from_host({ data: make_init({ context: make_file_view_context() }) });
 		const client = await clientPromise;
 
@@ -377,10 +381,12 @@ describe("bonobo_connect", () => {
 		spy_on_post_message();
 		const clientPromise = bonobo_connect();
 
-		post_from_host({ data: make_init({ context: { ...make_init().context, userId: undefined }, token: "plu_no_user" }) });
-		post_from_host(
-			{ data: make_init({ context: make_file_view_context({ userId: undefined }), token: "plu_no_user_file_view" }) },
-		);
+		post_from_host({
+			data: make_init({ context: { ...make_init().context, userId: undefined }, token: "plu_no_user" }),
+		});
+		post_from_host({
+			data: make_init({ context: make_file_view_context({ userId: undefined }), token: "plu_no_user_file_view" }),
+		});
 		post_from_host({ data: make_init() });
 		const client = await clientPromise;
 
@@ -509,12 +515,14 @@ describe("bonobo_connect", () => {
 		const secondRejected = expect(second).rejects.toThrow("Refresh denied");
 		await vi.waitFor(() => expect(refresh_requests(postSpy)).toHaveLength(1));
 		const firstRequest = refresh_requests(postSpy)[0]?.[0] as { requestId: string };
-		post_from_host({ data: {
-			type: "bonobo:token-error",
-			nonce: NONCE,
-			requestId: firstRequest.requestId,
-			message: "Refresh denied",
-		} });
+		post_from_host({
+			data: {
+				type: "bonobo:token-error",
+				nonce: NONCE,
+				requestId: firstRequest.requestId,
+				message: "Refresh denied",
+			},
+		});
 		await Promise.all([firstRejected, secondRejected]);
 
 		const later = client.refreshToken();
@@ -679,12 +687,14 @@ describe("bonobo_connect", () => {
 		const result = client.fetchJson("/api/v1/files/list", { limit: 1 });
 		await vi.waitFor(() => expect(refresh_requests(postSpy)).toHaveLength(1));
 		const request = refresh_requests(postSpy)[0]?.[0] as { requestId: string };
-		post_from_host({ data: {
-			type: "bonobo:token-error",
-			nonce: NONCE,
-			requestId: request.requestId,
-			message: "This plugin was uninstalled",
-		} });
+		post_from_host({
+			data: {
+				type: "bonobo:token-error",
+				nonce: NONCE,
+				requestId: request.requestId,
+				message: "This plugin was uninstalled",
+			},
+		});
 
 		await expect(result).rejects.toThrow("This plugin was uninstalled");
 		await expect(result).rejects.not.toHaveProperty("status");
@@ -1001,12 +1011,14 @@ describe("convex session jwt auth", () => {
 		const jwtPromise = convex_instance().fetchToken!();
 		await vi.waitFor(() => expect(refresh_requests(postSpy)).toHaveLength(1));
 		const request = refresh_requests(postSpy)[0]?.[0] as { requestId: string };
-		post_from_host({ data: {
-			type: "bonobo:token-error",
-			nonce: NONCE,
-			requestId: request.requestId,
-			message: "Session revoked",
-		} });
+		post_from_host({
+			data: {
+				type: "bonobo:token-error",
+				nonce: NONCE,
+				requestId: request.requestId,
+				message: "Session revoked",
+			},
+		});
 
 		await expect(jwtPromise).resolves.toBeNull();
 	});
@@ -1051,12 +1063,14 @@ describe("convex session jwt delivered by the host", () => {
 		if (!request) {
 			throw new Error("refresh request not posted");
 		}
-		post_from_host({ data: {
-			type: "bonobo:token-error",
-			nonce: NONCE,
-			requestId: request.requestId,
-			message: "Session revoked",
-		} });
+		post_from_host({
+			data: {
+				type: "bonobo:token-error",
+				nonce: NONCE,
+				requestId: request.requestId,
+				message: "Session revoked",
+			},
+		});
 	}
 
 	test("hands the delivered JWT to the Convex client without an exchange request", async () => {
@@ -1078,7 +1092,11 @@ describe("convex session jwt delivered by the host", () => {
 		// Convex refused jwt_1 (or its expiry timer fired): it asks for a newer token.
 		const jwtPromise = fetchToken({ forceRefreshToken: true });
 		await vi.waitFor(() => expect(refresh_requests(postSpy)).toHaveLength(1));
-		answer_refresh({ postSpy: postSpy, token: "plu_2", overrides: { jwt: "jwt_2", jwtExpiresAt: Date.now() + JWT_LIFETIME_MS } });
+		answer_refresh({
+			postSpy: postSpy,
+			token: "plu_2",
+			overrides: { jwt: "jwt_2", jwtExpiresAt: Date.now() + JWT_LIFETIME_MS },
+		});
 
 		await expect(jwtPromise).resolves.toBe("jwt_2");
 		expect(fetchMock).not.toHaveBeenCalled();
@@ -1093,7 +1111,11 @@ describe("convex session jwt delivered by the host", () => {
 		// A 401 on a REST call already rotated the pair.
 		const tokenPromise = client.refreshToken();
 		await vi.waitFor(() => expect(refresh_requests(postSpy)).toHaveLength(1));
-		answer_refresh({ postSpy: postSpy, token: "plu_2", overrides: { jwt: "jwt_2", jwtExpiresAt: Date.now() + JWT_LIFETIME_MS } });
+		answer_refresh({
+			postSpy: postSpy,
+			token: "plu_2",
+			overrides: { jwt: "jwt_2", jwtExpiresAt: Date.now() + JWT_LIFETIME_MS },
+		});
 		await expect(tokenPromise).resolves.toBe("plu_2");
 
 		// The Convex client schedules its next ask from the delivered JWT's `exp - iat`, as if it were
@@ -1101,7 +1123,11 @@ describe("convex session jwt delivered by the host", () => {
 		// the real session end, so a forced ask always rotates again.
 		const jwtPromise = fetchToken({ forceRefreshToken: true });
 		await vi.waitFor(() => expect(refresh_requests(postSpy)).toHaveLength(2));
-		answer_refresh({ postSpy: postSpy, token: "plu_3", overrides: { jwt: "jwt_3", jwtExpiresAt: Date.now() + JWT_LIFETIME_MS } });
+		answer_refresh({
+			postSpy: postSpy,
+			token: "plu_3",
+			overrides: { jwt: "jwt_3", jwtExpiresAt: Date.now() + JWT_LIFETIME_MS },
+		});
 		await expect(jwtPromise).resolves.toBe("jwt_3");
 	});
 
@@ -1138,7 +1164,11 @@ describe("convex session jwt delivered by the host", () => {
 
 		const jwtPromise = convex_instance().fetchToken!({ forceRefreshToken: false });
 		await vi.waitFor(() => expect(refresh_requests(postSpy)).toHaveLength(1));
-		answer_refresh({ postSpy: postSpy, token: "plu_2", overrides: { jwt: "jwt_2", jwtExpiresAt: Date.now() + JWT_LIFETIME_MS } });
+		answer_refresh({
+			postSpy: postSpy,
+			token: "plu_2",
+			overrides: { jwt: "jwt_2", jwtExpiresAt: Date.now() + JWT_LIFETIME_MS },
+		});
 
 		await expect(jwtPromise).resolves.toBe("jwt_2");
 		expect(fetchMock).not.toHaveBeenCalled();
@@ -1313,11 +1343,13 @@ describe("client.theme", () => {
 		post_from_host({ data: { type: "bonobo:theme", nonce: NONCE, theme: "light" } });
 		post_from_host({ data: { type: "bonobo:theme", nonce: NONCE, theme: { mode: "dusk", tokens: {} } } });
 		post_from_host({ data: { type: "bonobo:theme", nonce: NONCE, theme: { mode: "light", tokens: null } } });
-		post_from_host({ data: {
-			type: "bonobo:theme",
-			nonce: NONCE,
-			theme: { mode: "light", tokens: { "--color-fg-12": 7 } },
-		} });
+		post_from_host({
+			data: {
+				type: "bonobo:theme",
+				nonce: NONCE,
+				theme: { mode: "light", tokens: { "--color-fg-12": 7 } },
+			},
+		});
 		// The nonce is what proves the message came from this frame's host.
 		post_from_host({ data: { type: "bonobo:theme", nonce: "other-nonce", theme: { mode: "light", tokens: {} } } });
 

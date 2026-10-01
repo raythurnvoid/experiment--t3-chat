@@ -617,13 +617,8 @@ describe("start_for_agent", () => {
 		const { t, db, asUser } = fixture;
 		// 100 folders do not fit in one step of 75, so the restore still runs when the copy reads them.
 		const topId = await t.run(async (ctx) => {
-			const insert_folder = (args: {
-				parentId: Doc<"files_nodes">["parentId"];
-				name: string;
-				path: string;
-			}) =>
-				{
-				const { name, path, parentId} = args;
+			const insert_folder = (args: { parentId: Doc<"files_nodes">["parentId"]; name: string; path: string }) => {
+				const { name, path, parentId } = args;
 
 				return ctx.db.insert("files_nodes", {
 					...test_mocks.files.base(),
@@ -662,7 +657,10 @@ describe("start_for_agent", () => {
 		const read_children = () =>
 			t.run(async (ctx) => (await ctx.db.query("files_nodes").collect()).filter((node) => node.parentId === topId));
 
-		const archived = await asUser.mutation(api.files_nodes.archive_nodes, { membershipId: db.membershipId, nodeIds: [topId] });
+		const archived = await asUser.mutation(api.files_nodes.archive_nodes, {
+			membershipId: db.membershipId,
+			nodeIds: [topId],
+		});
 		if (archived._nay) throw new Error(archived._nay.message);
 		for (let count = 0; count < 20 && (await step_op()); count++);
 		expect(await t.run((ctx) => ctx.db.query("files_subtree_ops").collect())).toEqual([]);
@@ -672,7 +670,11 @@ describe("start_for_agent", () => {
 			nodeIds: [topId],
 		});
 		if (restored._nay) throw new Error(restored._nay.message);
-		for (let count = 0; count < 20 && !(await read_children()).some((node) => node.archiveOperationId === null); count++) {
+		for (
+			let count = 0;
+			count < 20 && !(await read_children()).some((node) => node.archiveOperationId === null);
+			count++
+		) {
 			await step_op();
 		}
 		const children = await read_children();
@@ -705,7 +707,12 @@ describe("start_for_agent", () => {
 
 		// The copy reads what is active when it reads it. The items the restore has not reached are not copied.
 		const drafts = await t.run((ctx) => ctx.db.query("files_pending_nodes").collect());
-		expect(drafts.map((draft) => draft.name).filter((name) => name !== "restoring").sort()).toEqual(backNames.sort());
+		expect(
+			drafts
+				.map((draft) => draft.name)
+				.filter((name) => name !== "restoring")
+				.sort(),
+		).toEqual(backNames.sort());
 	}, 120_000);
 
 	test.each([false, true])(

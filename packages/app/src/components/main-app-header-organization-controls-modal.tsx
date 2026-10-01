@@ -883,7 +883,11 @@ const MainAppHeaderOrganizationNameField = memo(function MainAppHeaderOrganizati
 
 	const validateInput = useFn((el: HTMLInputElement) => {
 		const canonicalName = get_canonical_name_value(el.value);
-		const validationResult = validate_name_field_input({ el, canonicalName, rejectedValueMessagesMap: rejectedNameMessagesMapRef.current });
+		const validationResult = validate_name_field_input({
+			el,
+			canonicalName,
+			rejectedValueMessagesMap: rejectedNameMessagesMapRef.current,
+		});
 
 		setValidationMessage(validationResult.validationMessage);
 		setDraftValueLength(el.value.length);
@@ -976,7 +980,11 @@ const MainAppHeaderOrganizationNameField = memo(function MainAppHeaderOrganizati
 
 		el.value = initialValue;
 		const canonicalName = get_canonical_name_value(el.value);
-		const validationResult = validate_name_field_input({ el, canonicalName, rejectedValueMessagesMap: rejectedNameMessagesMapRef.current });
+		const validationResult = validate_name_field_input({
+			el,
+			canonicalName,
+			rejectedValueMessagesMap: rejectedNameMessagesMapRef.current,
+		});
 		setValidationMessage(validationResult.validationMessage);
 		setDraftValueLength(el.value.length);
 		onValidationStateChangeRef.current({
@@ -997,7 +1005,11 @@ const MainAppHeaderOrganizationNameField = memo(function MainAppHeaderOrganizati
 				}
 
 				const canonicalName = get_canonical_name_value(el.value);
-				const validationResult = validate_name_field_input({ el, canonicalName, rejectedValueMessagesMap: rejectedNameMessagesMapRef.current });
+				const validationResult = validate_name_field_input({
+					el,
+					canonicalName,
+					rejectedValueMessagesMap: rejectedNameMessagesMapRef.current,
+				});
 				setValidationMessage(validationResult.validationMessage);
 				setDraftValueLength(el.value.length);
 				onValidationStateChangeRef.current({

@@ -23,7 +23,7 @@ async function read_file(args: {
 	path: string;
 	mode: "skill" | "instruction";
 }) {
-	const { ctx, context, path, mode, workspace} = args;
+	const { ctx, context, path, mode, workspace } = args;
 
 	const resolved = await ctx.runQuery(internal.ai_chat_workspaces.resolve, { source: context.source, workspace });
 	if (resolved._nay) return resolved;

@@ -312,12 +312,8 @@ async function restore(f: Fixture, nodeIds: Array<Id<"files_nodes">>) {
 	return await f.asOwner.mutation(api.files_nodes.unarchive_nodes, { membershipId: f.db.membershipId, nodeIds });
 }
 
-async function lock(args: {
-	f: Fixture;
-	nodeId: Id<"files_nodes">;
-	locked: boolean;
-}) {
-	const { f, locked, nodeId} = args;
+async function lock(args: { f: Fixture; nodeId: Id<"files_nodes">; locked: boolean }) {
+	const { f, locked, nodeId } = args;
 
 	expect(
 		await f.asOwner.mutation(api.files_nodes.set_node_write_policy, {
@@ -357,11 +353,7 @@ async function lock_archived(f: Fixture, nodeId: Id<"files_nodes">) {
  * Copy the file's metadata doc `count` more times. With 2,000 extra docs the file has more side docs
  * than a move may write in one mutation.
  */
-async function add_metadata_docs(args: {
-	f: Fixture;
-	fileNodeId: Id<"files_nodes">;
-	count: number;
-}) {
+async function add_metadata_docs(args: { f: Fixture; fileNodeId: Id<"files_nodes">; count: number }) {
 	const { f, fileNodeId, count } = args;
 
 	await f.t.run(async (ctx) => {
@@ -388,7 +380,7 @@ async function queue_empty_folders_first(args: {
 	runId: Id<"files_archive_runs">;
 	archiveOperationId: string | null;
 }) {
-	const { f, runId, archiveOperationId} = args;
+	const { f, runId, archiveOperationId } = args;
 
 	const opId = await f.t.run(
 		async (ctx) =>
@@ -1560,10 +1552,15 @@ describe("unarchive_nodes", () => {
 			choice: "keep_both" | "skip" | "replace";
 			applyToRemaining?: { file: null | "keep_both" | "skip" | "replace"; folder: null | "keep_both" | "skip" };
 		}) {
-			const { f, runId, applyToRemaining = {
-				file: null,
-				folder: null,
-			} , choice} = args;
+			const {
+				f,
+				runId,
+				applyToRemaining = {
+					file: null,
+					folder: null,
+				},
+				choice,
+			} = args;
 
 			const run = await read_run(f, runId);
 			return await f.asOwner.mutation(api.files_archive_runs.resolve_conflicts, {
@@ -1690,7 +1687,14 @@ describe("unarchive_nodes", () => {
 			const f = await fixture();
 			const { tree, job } = await seed_clash(f);
 
-			expect(await resolve({ f, runId: job.runId, choice: "keep_both", applyToRemaining: { file: "keep_both", folder: null } })).toEqual({ _yay: null });
+			expect(
+				await resolve({
+					f,
+					runId: job.runId,
+					choice: "keep_both",
+					applyToRemaining: { file: "keep_both", folder: null },
+				}),
+			).toEqual({ _yay: null });
 			const ended = await run_to_end(f, job);
 
 			expect(ended.activity.status).toBe("succeeded");
@@ -1701,7 +1705,9 @@ describe("unarchive_nodes", () => {
 			const f = await fixture();
 			const { tree, job } = await seed_clash(f);
 
-			expect(await resolve({ f, runId: job.runId, choice: "skip", applyToRemaining: { file: "skip", folder: null } })).toEqual({ _yay: null });
+			expect(
+				await resolve({ f, runId: job.runId, choice: "skip", applyToRemaining: { file: "skip", folder: null } }),
+			).toEqual({ _yay: null });
 			const ended = await run_to_end(f, job);
 
 			expect(ended.activity.status).toBe("succeeded");
@@ -1719,7 +1725,9 @@ describe("unarchive_nodes", () => {
 				const run = (await ctx.db.get("files_archive_runs", job.runId))!;
 				await ctx.db.patch("files_archive_runs", job.runId, { skipOperationId: run.archiveOperationId });
 			});
-			expect(await resolve({ f, runId: job.runId, choice: "skip", applyToRemaining: { file: "skip", folder: null } })).toEqual({ _yay: null });
+			expect(
+				await resolve({ f, runId: job.runId, choice: "skip", applyToRemaining: { file: "skip", folder: null } }),
+			).toEqual({ _yay: null });
 
 			await expect(step(f, job.runId)).rejects.toThrow("Restore pull found no new top item");
 		});
@@ -1728,7 +1736,9 @@ describe("unarchive_nodes", () => {
 			const f = await fixture();
 			const { tree, occupants, job } = await seed_clash(f);
 
-			expect(await resolve({ f, runId: job.runId, choice: "replace", applyToRemaining: { file: "replace", folder: null } })).toEqual({ _yay: null });
+			expect(
+				await resolve({ f, runId: job.runId, choice: "replace", applyToRemaining: { file: "replace", folder: null } }),
+			).toEqual({ _yay: null });
 			const ended = await run_to_end(f, job);
 
 			expect(ended.activity.status).toBe("succeeded");
@@ -1759,7 +1769,9 @@ describe("unarchive_nodes", () => {
 			const job = restored._yay!;
 
 			expect((await run_to_end(f, job)).activity.status).toBe("awaiting_input");
-			expect(await resolve({ f, runId: job.runId, choice: "replace", applyToRemaining: { file: "replace", folder: null } })).toEqual({ _yay: null });
+			expect(
+				await resolve({ f, runId: job.runId, choice: "replace", applyToRemaining: { file: "replace", folder: null } }),
+			).toEqual({ _yay: null });
 			await step(f, job.runId);
 
 			// A step may change 75 nodes. Each Replace changes two: the restored file and the one in the way.
@@ -1826,7 +1838,14 @@ describe("unarchive_nodes", () => {
 			const f = await fixture();
 			const { tree, job } = await seed_clash_inside(f, ["f050.md", "f080.md"]);
 
-			expect(await resolve({ f, runId: job.runId, choice: "keep_both", applyToRemaining: { file: "keep_both", folder: null } })).toEqual({ _yay: null });
+			expect(
+				await resolve({
+					f,
+					runId: job.runId,
+					choice: "keep_both",
+					applyToRemaining: { file: "keep_both", folder: null },
+				}),
+			).toEqual({ _yay: null });
 			const ended = await run_to_end(f, job);
 
 			expect(ended.activity.status).toBe("succeeded");
@@ -1925,7 +1944,14 @@ describe("unarchive_nodes", () => {
 			await expect_consistent(f);
 			const job = restored._yay!;
 			expect((await read_activity(f, job.activityId)).status).toBe("awaiting_input");
-			expect(await resolve({ f, runId: job.runId, choice: "keep_both", applyToRemaining: { file: "keep_both", folder: null } })).toEqual({ _yay: null });
+			expect(
+				await resolve({
+					f,
+					runId: job.runId,
+					choice: "keep_both",
+					applyToRemaining: { file: "keep_both", folder: null },
+				}),
+			).toEqual({ _yay: null });
 			expect((await run_to_end(f, job)).activity.status).toBe("succeeded");
 
 			const names = await Promise.all(same.fileIds.map(async (fileId) => (await read_node(f, fileId)).name));

@@ -6422,7 +6422,11 @@ export const delete_versioned_document = internalMutation({
 		// A live reservation already holds that slot, so the tombstone converts it instead of charging
 		// a second one. A released never-stored retry record already holds it the same way.
 		if (!existing && ownedReservation === null && !releasedSlotAlreadyHeld) {
-			const capacity = check_capacity({ usage, change: { addedBytes: 0, addedSlots: 1, addedCollections: 0 }, maxDocumentSlots });
+			const capacity = check_capacity({
+				usage,
+				change: { addedBytes: 0, addedSlots: 1, addedCollections: 0 },
+				maxDocumentSlots,
+			});
 			if (capacity._nay) {
 				return capacity;
 			}

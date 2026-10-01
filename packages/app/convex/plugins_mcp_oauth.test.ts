@@ -621,7 +621,9 @@ describe("finish", () => {
 		const { callback } = await sign_in(owner, target);
 
 		expect((await finish({ member: owner, callback }))._yay).toBeTruthy();
-		expect(await finish({ member: owner, callback })).toEqual({ _nay: { message: "This sign-in expired. Connect again." } });
+		expect(await finish({ member: owner, callback })).toEqual({
+			_nay: { message: "This sign-in expired. Connect again." },
+		});
 	});
 
 	test("a callback replay cannot exchange the code while the first callback waits", async () => {
@@ -680,7 +682,9 @@ describe("finish", () => {
 
 		vi.setSystemTime(Date.now() + 11 * 60 * 1000);
 
-		expect(await finish({ member: owner, callback })).toEqual({ _nay: { message: "This sign-in expired. Connect again." } });
+		expect(await finish({ member: owner, callback })).toEqual({
+			_nay: { message: "This sign-in expired. Connect again." },
+		});
 	});
 
 	test("checks `iss` before anything else (RFC 9207)", async () => {
@@ -691,9 +695,13 @@ describe("finish", () => {
 		// Each finish uses its sign-in up, so every case signs in again. The sign-in server promised
 		// `iss`, so a missing one is refused, even next to an error.
 		const first = await sign_in(owner, target);
-		expect(await finish({ member: owner, callback: { ...first.callback, iss: null }, error: "access_denied" })).toEqual(mismatch);
+		expect(await finish({ member: owner, callback: { ...first.callback, iss: null }, error: "access_denied" })).toEqual(
+			mismatch,
+		);
 		const second = await sign_in(owner, target);
-		expect(await finish({ member: owner, callback: { ...second.callback, iss: "https://evil.test" } })).toEqual(mismatch);
+		expect(await finish({ member: owner, callback: { ...second.callback, iss: "https://evil.test" } })).toEqual(
+			mismatch,
+		);
 		expect(fixtures.counts.token).toBe(0);
 
 		next_minute();
@@ -706,7 +714,9 @@ describe("finish", () => {
 		fixtures.switches.issSupported = false;
 		vi.stubEnv("MCP_TRUSTED_ISSUERS", fixtures.issuer());
 		const fourth = await sign_in(owner, target);
-		expect(await finish({ member: owner, callback: { ...fourth.callback, iss: "https://evil.test" } })).toEqual(mismatch);
+		expect(await finish({ member: owner, callback: { ...fourth.callback, iss: "https://evil.test" } })).toEqual(
+			mismatch,
+		);
 		next_minute();
 		const fifth = await sign_in(owner, target);
 		expect(fifth.callback.iss).toBeNull();
@@ -744,7 +754,9 @@ describe("finish", () => {
 			ctx.db.patch("mcp_custom_servers", target.customServerId, { destinationFingerprint: "sha256:moved" }),
 		);
 
-		expect(await finish({ member: owner, callback })).toEqual({ _nay: { message: "The server changed. Connect again." } });
+		expect(await finish({ member: owner, callback })).toEqual({
+			_nay: { message: "The server changed. Connect again." },
+		});
 		expect(fixtures.counts.token).toBe(0);
 	});
 

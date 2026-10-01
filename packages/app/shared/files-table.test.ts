@@ -60,20 +60,35 @@ describe("files_table_filter_is_valid", () => {
 describe("files_table_filter_matches", () => {
 	test("matches Name case and accents without changing digits or cutting text", () => {
 		expect(
-			files_table_filter_matches({ filter: { kind: "name", field: "name", op: "contains", value: "RESUME 007" }, facts: FACTS }),
+			files_table_filter_matches({
+				filter: { kind: "name", field: "name", op: "contains", value: "RESUME 007" },
+				facts: FACTS,
+			}),
 		).toBe(true);
-		expect(files_table_filter_matches({ filter: { kind: "name", field: "name", op: "starts_with", value: "résu" }, facts: FACTS })).toBe(
-			true,
-		);
-		expect(files_table_filter_matches({ filter: { kind: "name", field: "name", op: "contains", value: "7.md" }, facts: FACTS })).toBe(
-			true,
-		);
-		expect(files_table_filter_matches({ filter: { kind: "name", field: "name", op: "contains", value: "resume 7" }, facts: FACTS })).toBe(
-			false,
-		);
-		expect(files_table_filter_matches({ filter: { kind: "name", field: "name", op: "starts_with", value: "007" }, facts: FACTS })).toBe(
-			false,
-		);
+		expect(
+			files_table_filter_matches({
+				filter: { kind: "name", field: "name", op: "starts_with", value: "résu" },
+				facts: FACTS,
+			}),
+		).toBe(true);
+		expect(
+			files_table_filter_matches({
+				filter: { kind: "name", field: "name", op: "contains", value: "7.md" },
+				facts: FACTS,
+			}),
+		).toBe(true);
+		expect(
+			files_table_filter_matches({
+				filter: { kind: "name", field: "name", op: "contains", value: "resume 7" },
+				facts: FACTS,
+			}),
+		).toBe(false);
+		expect(
+			files_table_filter_matches({
+				filter: { kind: "name", field: "name", op: "starts_with", value: "007" },
+				facts: FACTS,
+			}),
+		).toBe(false);
 		expect(
 			files_table_filter_matches({
 				filter: { kind: "name", field: "name", op: "contains", value: "END🚀" },
@@ -83,14 +98,26 @@ describe("files_table_filter_matches", () => {
 	});
 
 	test("compares lower-case Type without removing a leading dot", () => {
-		expect(files_table_filter_matches({ filter: { kind: "type", field: "type", op: "is", value: "MD" }, facts: FACTS })).toBe(true);
-		expect(files_table_filter_matches({ filter: { kind: "type", field: "type", op: "is", value: ".md" }, facts: FACTS })).toBe(false);
-		expect(files_table_filter_matches({ filter: { kind: "type", field: "type", op: "missing" }, facts: FACTS })).toBe(false);
-		expect(files_table_filter_matches({ filter: { kind: "type", field: "type", op: "missing" }, facts: { ...FACTS, type: null } })).toBe(
-			true,
+		expect(
+			files_table_filter_matches({ filter: { kind: "type", field: "type", op: "is", value: "MD" }, facts: FACTS }),
+		).toBe(true);
+		expect(
+			files_table_filter_matches({ filter: { kind: "type", field: "type", op: "is", value: ".md" }, facts: FACTS }),
+		).toBe(false);
+		expect(files_table_filter_matches({ filter: { kind: "type", field: "type", op: "missing" }, facts: FACTS })).toBe(
+			false,
 		);
 		expect(
-			files_table_filter_matches({ filter: { kind: "type", field: "type", op: "is", value: "md" }, facts: { ...FACTS, type: null } }),
+			files_table_filter_matches({
+				filter: { kind: "type", field: "type", op: "missing" },
+				facts: { ...FACTS, type: null },
+			}),
+		).toBe(true);
+		expect(
+			files_table_filter_matches({
+				filter: { kind: "type", field: "type", op: "is", value: "md" },
+				facts: { ...FACTS, type: null },
+			}),
 		).toBe(false);
 	});
 
@@ -109,7 +136,9 @@ describe("files_table_filter_matches", () => {
 
 	test("compares Size and keeps unknown values separate from zero", () => {
 		for (const op of ["is", "at_least", "at_most"] as const) {
-			expect(files_table_filter_matches({ filter: { kind: "size", field: "size", op, value: 42 }, facts: FACTS })).toBe(true);
+			expect(files_table_filter_matches({ filter: { kind: "size", field: "size", op, value: 42 }, facts: FACTS })).toBe(
+				true,
+			);
 			expect(
 				files_table_filter_matches({
 					filter: { kind: "size", field: "size", op, value: 0 },
@@ -117,8 +146,12 @@ describe("files_table_filter_matches", () => {
 				}),
 			).toBe(false);
 		}
-		expect(files_table_filter_matches({ filter: { kind: "size", field: "size", op: "at_least", value: 43 }, facts: FACTS })).toBe(false);
-		expect(files_table_filter_matches({ filter: { kind: "size", field: "size", op: "at_most", value: 41 }, facts: FACTS })).toBe(false);
+		expect(
+			files_table_filter_matches({ filter: { kind: "size", field: "size", op: "at_least", value: 43 }, facts: FACTS }),
+		).toBe(false);
+		expect(
+			files_table_filter_matches({ filter: { kind: "size", field: "size", op: "at_most", value: 41 }, facts: FACTS }),
+		).toBe(false);
 		expect(
 			files_table_filter_matches({
 				filter: { kind: "size", field: "size", op: "missing" },
@@ -126,7 +159,10 @@ describe("files_table_filter_matches", () => {
 			}),
 		).toBe(true);
 		expect(
-			files_table_filter_matches({ filter: { kind: "size", field: "size", op: "missing" }, facts: { ...FACTS, contentByteSize: 0 } }),
+			files_table_filter_matches({
+				filter: { kind: "size", field: "size", op: "missing" },
+				facts: { ...FACTS, contentByteSize: 0 },
+			}),
 		).toBe(false);
 		expect(
 			files_table_filter_matches({
@@ -137,12 +173,20 @@ describe("files_table_filter_matches", () => {
 	});
 
 	test.each([false, 0, ""])("keeps %s as a present scalar", (scalar) => {
-		expect(files_table_filter_matches({ filter: { kind: "text", field: "metadata.status", op: "present" }, facts: FACTS, scalar })).toBe(
-			true,
-		);
-		expect(files_table_filter_matches({ filter: { kind: "text", field: "metadata.status", op: "missing" }, facts: FACTS, scalar })).toBe(
-			false,
-		);
+		expect(
+			files_table_filter_matches({
+				filter: { kind: "text", field: "metadata.status", op: "present" },
+				facts: FACTS,
+				scalar,
+			}),
+		).toBe(true);
+		expect(
+			files_table_filter_matches({
+				filter: { kind: "text", field: "metadata.status", op: "missing" },
+				facts: FACTS,
+				scalar,
+			}),
+		).toBe(false);
 		if (scalar !== "") {
 			expect(
 				files_table_filter_matches({
@@ -183,11 +227,19 @@ describe("files_table_filter_matches", () => {
 				scalar: null,
 			}),
 		).toBe(false);
-		expect(files_table_filter_matches({ filter: { kind: "text", field: "metadata.status", op: "missing" }, facts: FACTS, scalar: null })).toBe(
-			true,
-		);
-		expect(files_table_filter_matches({ filter: { kind: "text", field: "metadata.status", op: "present" }, facts: FACTS, scalar: null })).toBe(
-			false,
-		);
+		expect(
+			files_table_filter_matches({
+				filter: { kind: "text", field: "metadata.status", op: "missing" },
+				facts: FACTS,
+				scalar: null,
+			}),
+		).toBe(true);
+		expect(
+			files_table_filter_matches({
+				filter: { kind: "text", field: "metadata.status", op: "present" },
+				facts: FACTS,
+				scalar: null,
+			}),
+		).toBe(false);
 	});
 });

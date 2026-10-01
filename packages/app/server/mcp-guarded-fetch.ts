@@ -61,11 +61,7 @@ function denied_host_entries() {
 /**
  * Return the parsed URL when Press may send a request to it, or `null` when it must not.
  */
-function allowed_url(args: {
-	rawUrl: string;
-	testAllowLocalHttp: boolean;
-	allowedPressHost: string | null;
-}) {
+function allowed_url(args: { rawUrl: string; testAllowLocalHttp: boolean; allowedPressHost: string | null }) {
 	const { rawUrl, testAllowLocalHttp, allowedPressHost } = args;
 
 	if (!URL.canParse(rawUrl)) return null;
@@ -169,7 +165,11 @@ export function mcp_guarded_fetch_create(
 				return new Error(`Guarded fetch refused the request: ${failure}`);
 			};
 
-			let url = allowed_url({ rawUrl: String(input), testAllowLocalHttp: options.testAllowLocalHttp === true, allowedPressHost });
+			let url = allowed_url({
+				rawUrl: String(input),
+				testAllowLocalHttp: options.testAllowLocalHttp === true,
+				allowedPressHost,
+			});
 			if (!url) throw refuse("url_blocked");
 
 			const method = (init?.method ?? "GET").toUpperCase();

@@ -633,7 +633,12 @@ export const cleanup_discarded_node = internalMutation({
 			.take(CLEANUP_ACTIVE_CHILD_BATCH_SIZE);
 
 		for (const child of activeChildren) {
-			await files_pending_nodes_db_fence_discard({ ctx, node: child, reason: "discard", options: { ancestorAlreadyFenced: true } });
+			await files_pending_nodes_db_fence_discard({
+				ctx,
+				node: child,
+				reason: "discard",
+				options: { ancestorAlreadyFenced: true },
+			});
 			await files_pending_nodes_db_start_cleanup(ctx, child);
 		}
 
@@ -727,7 +732,8 @@ export const cleanup_discarded_node = internalMutation({
 						.query("files_pending_node_cleanup_tasks")
 						.withIndex("by_privateNode", (q) => q.eq("privateNodeId", parentId))
 						.unique();
-			if (parentTask && parentTask.nextAttemptAt > now) await db_reschedule_cleanup({ ctx, task: parentTask, runAt: now });
+			if (parentTask && parentTask.nextAttemptAt > now)
+				await db_reschedule_cleanup({ ctx, task: parentTask, runAt: now });
 		}
 		return null;
 	},

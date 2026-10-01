@@ -21,7 +21,7 @@ async function create_private(args: {
 	kind?: "file" | "folder";
 	threadId?: Id<"ai_chat_threads">;
 }) {
-	const { f, kind = "folder", threadId, path} = args;
+	const { f, kind = "folder", threadId, path } = args;
 
 	const created = await f.t.mutation(internal.files_nodes.create_private_node_by_path, {
 		organizationId: f.db.organizationId,
@@ -674,7 +674,8 @@ describe("list_files_pending_updates", () => {
 			}),
 		);
 		await create_private({ f, path: "/first.md", kind: "file", threadId: chatB });
-		for (let index = 0; index < 101; index++) await create_private({ f, path: `/other-${index}.md`, kind: "file", threadId: chatA });
+		for (let index = 0; index < 101; index++)
+			await create_private({ f, path: `/other-${index}.md`, kind: "file", threadId: chatA });
 		await create_private({ f, path: "/last.md", kind: "file", threadId: chatB });
 
 		const list = (paginationOpts: { numItems: number; cursor: string | null; endCursor?: string }) =>

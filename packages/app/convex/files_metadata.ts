@@ -1087,11 +1087,7 @@ function count_table_doc(budget: { readBytes: number }, metadataDoc: object | nu
 	if (metadataDoc) budget.readBytes += files_get_utf8_byte_size(JSON.stringify(metadataDoc)) + 128;
 }
 
-async function fits_table_read_budget(args: {
-	ctx: QueryCtx;
-	budget: { readBytes: number };
-	reserve?: boolean;
-}) {
+async function fits_table_read_budget(args: { ctx: QueryCtx; budget: { readBytes: number }; reserve?: boolean }) {
 	const { ctx, budget, reserve = false } = args;
 
 	// Keep room for one max-sized doc. Metrics also count auth and access reads.
@@ -2051,7 +2047,11 @@ export const update_entries_by_path = internalMutation({
 			const revision = entry.pendingUpdate.revision + 1;
 			const updatedAt = Date.now();
 			const createIntent = { ...entry.pendingUpdate.createIntent!, metadata: validated._yay.entries };
-			await files_db_patch_pending_update({ ctx, pendingUpdateId: entry.pendingUpdate._id, value: { createIntent, revision, updatedAt } });
+			await files_db_patch_pending_update({
+				ctx,
+				pendingUpdateId: entry.pendingUpdate._id,
+				value: { createIntent, revision, updatedAt },
+			});
 			await files_pending_update_db_update_index_revision(ctx, {
 				pendingUpdateId: entry.pendingUpdate._id,
 				proposalRevision: revision,

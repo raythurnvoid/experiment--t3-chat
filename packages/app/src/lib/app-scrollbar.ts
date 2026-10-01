@@ -64,6 +64,9 @@ function app_scrollbar_mark_containers_that_fit(target: EventTarget | null) {
 export function app_scrollbar_install() {
 	// Both events run before the browser recalculates styles for the new :hover and
 	// :focus-within state, so the marks are already correct for that same repaint.
-	global_event_listen({ event: "pointerover", handler: (event) => app_scrollbar_mark_containers_that_fit(event.target) });
+	global_event_listen({
+		event: "pointerover",
+		handler: (event) => app_scrollbar_mark_containers_that_fit(event.target),
+	});
 	global_event_listen({ event: "focusin", handler: (event) => app_scrollbar_mark_containers_that_fit(event.target) });
 }

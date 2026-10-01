@@ -45,13 +45,15 @@ function png_with_dimensions(width: number, height: number) {
 	return bytes.toString("base64");
 }
 
-function make_connection(options: {
-	autoReply?: boolean;
-	onPopup?: (targetId: string) => Promise<void>;
-	cleanupError?: boolean;
-	mode?: "file" | "web";
-	agentBlockedHosts?: string[];
-} = {}) {
+function make_connection(
+	options: {
+		autoReply?: boolean;
+		onPopup?: (targetId: string) => Promise<void>;
+		cleanupError?: boolean;
+		mode?: "file" | "web";
+		agentBlockedHosts?: string[];
+	} = {},
+) {
 	const [upstream, provider] = socket_pair();
 	const [downstream, child] = socket_pair();
 	const onUnsafe = vi.fn();
@@ -67,35 +69,52 @@ function make_connection(options: {
 		onUnsafe,
 		onPopup,
 	});
-	const emit = (args: {
-		method: string;
-		params: unknown;
-		sessionId?: string | null;
-	}) =>
-		{
+	const emit = (args: { method: string; params: unknown; sessionId?: string | null }) => {
 		const { method, params, sessionId = "page-session" } = args;
 
 		return provider.send(JSON.stringify({ method, params, ...(sessionId ? { sessionId } : {}) }));
 	};
 	const reply = (request: Record<string, unknown>, result: unknown = {}) =>
-		provider.send(JSON.stringify({ id: request.id, result, ...(request.sessionId ? { sessionId: request.sessionId } : {}) }));
-	if (options.autoReply !== false) provider.addEventListener("message", (event) => {
-		const request = JSON.parse((event as MessageEvent<string>).data) as Record<string, unknown>;
-		if (options.cleanupError && Number(request.id) < 0) {
-			provider.send(JSON.stringify({ id: request.id, sessionId: request.sessionId, error: { code: -32000, message: "Cleanup failed" } }));
-			return;
-		}
-		const result = request.method === "Page.getFrameTree" ? {
-			frameTree: { frame: { id: "main-frame" }, childFrames: [{ frame: { id: "inner-frame" } }] },
-		} : request.method === "Page.addScriptToEvaluateOnNewDocument" ? { identifier: `script-${request.id}` } :
-			request.method === "Browser.getWindowForTarget" ? { windowId: 7 } :
-			request.method === "Page.captureScreenshot" ? { data: PNG_DATA } :
-			request.method === "Page.createIsolatedWorld" ? { executionContextId: 9 } :
-			request.method === "Page.getNavigationHistory" ? { currentIndex: 1, entries: [
-				{ id: 3, url: "https://example.com/", title: "" }, { id: 4, url: "https://bank.test/account", title: "" },
-			] } : {};
-		reply(request, result);
-	});
+		provider.send(
+			JSON.stringify({ id: request.id, result, ...(request.sessionId ? { sessionId: request.sessionId } : {}) }),
+		);
+	if (options.autoReply !== false)
+		provider.addEventListener("message", (event) => {
+			const request = JSON.parse((event as MessageEvent<string>).data) as Record<string, unknown>;
+			if (options.cleanupError && Number(request.id) < 0) {
+				provider.send(
+					JSON.stringify({
+						id: request.id,
+						sessionId: request.sessionId,
+						error: { code: -32000, message: "Cleanup failed" },
+					}),
+				);
+				return;
+			}
+			const result =
+				request.method === "Page.getFrameTree"
+					? {
+							frameTree: { frame: { id: "main-frame" }, childFrames: [{ frame: { id: "inner-frame" } }] },
+						}
+					: request.method === "Page.addScriptToEvaluateOnNewDocument"
+						? { identifier: `script-${request.id}` }
+						: request.method === "Browser.getWindowForTarget"
+							? { windowId: 7 }
+							: request.method === "Page.captureScreenshot"
+								? { data: PNG_DATA }
+								: request.method === "Page.createIsolatedWorld"
+									? { executionContextId: 9 }
+									: request.method === "Page.getNavigationHistory"
+										? {
+												currentIndex: 1,
+												entries: [
+													{ id: 3, url: "https://example.com/", title: "" },
+													{ id: 4, url: "https://bank.test/account", title: "" },
+												],
+											}
+										: {};
+			reply(request, result);
+		});
 	emit({
 		method: "Target.attachedToTarget",
 		params: { sessionId: "page-session", targetInfo: { targetId: "assigned-page", type: "page" } },
@@ -103,11 +122,7 @@ function make_connection(options: {
 	});
 	emit({ method: "Runtime.executionContextCreated", params: { context: { id: 1 } } });
 	let id = 0;
-	const send = (args: {
-		method: string;
-		params?: unknown;
-		sessionId?: string | null;
-	}) => {
+	const send = (args: { method: string; params?: unknown; sessionId?: string | null }) => {
 		const { method, params = {}, sessionId = "page-session" } = args;
 
 		const request = { id: ++id, method, params, ...(sessionId ? { sessionId } : {}) };
@@ -158,7 +173,14 @@ describe("AgentConnection", () => {
 		send({ method: "Runtime.evaluate", params: { expression: "document.body", contextId: 9 } });
 		send({
 			method: "Runtime.callFunctionOn",
-			params: { functionDeclaration: "function () { return 1; }", objectId: "object-1", arguments: [{ value: "hello" }], awaitPromise: true, returnByValue: true, userGesture: true },
+			params: {
+				functionDeclaration: "function () { return 1; }",
+				objectId: "object-1",
+				arguments: [{ value: "hello" }],
+				awaitPromise: true,
+				returnByValue: true,
+				userGesture: true,
+			},
 		});
 		send({ method: "DOM.describeNode", params: { objectId: "object-1" } });
 		send({ method: "DOM.resolveNode", params: { backendNodeId: 1, executionContextId: 9 } });
@@ -177,20 +199,37 @@ describe("AgentConnection", () => {
 		});
 		expect(messages(child).filter((message) => message.error)).toEqual([]);
 		expect((await bridge.settle(1000)).safe).toBe(true);
-		expect(messages(provider).filter((message) => Number(message.id) < 0).map((message) => message.method))
-			.toEqual(["Page.removeScriptToEvaluateOnNewDocument", "Page.stopScreencast"]);
+		expect(
+			messages(provider)
+				.filter((message) => Number(message.id) < 0)
+				.map((message) => message.method),
+		).toEqual(["Page.removeScriptToEvaluateOnNewDocument", "Page.stopScreencast"]);
 	});
 
 	it.each([
-		"Cloudflare.getLiveView", "Cloudflare.getSessionId", "Cloudflare.handoff", "Browser.close",
-		"Target.attachToBrowserTarget", "Target.attachToTarget", "Target.createTarget", "Target.createBrowserContext",
-		"Target.sendMessageToTarget", "Target.exposeDevToolsProtocol", "Target.setRemoteLocations",
-		"DOM.setFileInputFiles", "Network.loadNetworkResource", "IO.read", "Tracing.start",
+		"Cloudflare.getLiveView",
+		"Cloudflare.getSessionId",
+		"Cloudflare.handoff",
+		"Browser.close",
+		"Target.attachToBrowserTarget",
+		"Target.attachToTarget",
+		"Target.createTarget",
+		"Target.createBrowserContext",
+		"Target.sendMessageToTarget",
+		"Target.exposeDevToolsProtocol",
+		"Target.setRemoteLocations",
+		"DOM.setFileInputFiles",
+		"Network.loadNetworkResource",
+		"IO.read",
+		"Tracing.start",
 	])("refuses %s before forwarding", async (method) => {
 		const { bridge, send, provider, child, onUnsafe } = make_connection();
 		send({ method });
 		expect(messages(provider)).toEqual([]);
-		expect(messages(child).at(-1)?.error).toEqual({ code: -32601, message: `Browser command is not allowed: ${method}.` });
+		expect(messages(child).at(-1)?.error).toEqual({
+			code: -32601,
+			message: `Browser command is not allowed: ${method}.`,
+		});
 		expect((await bridge.settle(1000)).safe).toBe(true);
 		expect(onUnsafe).not.toHaveBeenCalled();
 	});
@@ -205,26 +244,38 @@ describe("AgentConnection", () => {
 		["Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: true, flatten: false }],
 		["Page.captureScreenshot", { format: "png", clip: { x: 0, y: 0, width: 8192, height: 8192, scale: 1 } }],
 		["Runtime.evaluate", { expression: "1", contextId: 1, includeCommandLineAPI: true }],
-		["Input.dispatchDragEvent", { type: "drop", x: 1, y: 1, data: { items: [], files: ["/provider/file"], dragOperationsMask: 1 } }],
+		[
+			"Input.dispatchDragEvent",
+			{ type: "drop", x: 1, y: 1, data: { items: [], files: ["/provider/file"], dragOperationsMask: 1 } },
+		],
 	])("checks parameters for %s", async (method, params) => {
 		const { bridge, send, provider, child } = make_connection();
 		send({ method, params });
 		expect(messages(provider)).toEqual([]);
-		expect(messages(child).at(-1)?.error).toEqual({ code: -32601, message: `Browser command is not allowed: ${method}.` });
+		expect(messages(child).at(-1)?.error).toEqual({
+			code: -32601,
+			message: `Browser command is not allowed: ${method}.`,
+		});
 		expect((await bridge.settle(1000)).safe).toBe(true);
 	});
 
-	it.each([undefined, { x: 0, y: 0, width: 1, height: 1, scale: 1 }])("passes screenshot bytes for page and clipped captures", async (clip) => {
-		const { bridge, send, reply, child, onUnsafe } = make_connection({ autoReply: false });
-		// More than two captures are allowed. File exports have their own budget.
-		for (let count = 0; count < 3; count++) {
-			const request = send({ method: "Page.captureScreenshot", params: { format: "png", ...(clip ? { clip } : {}) } });
-			reply(request, { data: PNG_DATA });
-			expect(messages(child).at(-1)).toMatchObject({ id: request.id, result: { data: PNG_DATA } });
-		}
-		expect((await bridge.settle(1000)).safe).toBe(true);
-		expect(onUnsafe).not.toHaveBeenCalled();
-	});
+	it.each([undefined, { x: 0, y: 0, width: 1, height: 1, scale: 1 }])(
+		"passes screenshot bytes for page and clipped captures",
+		async (clip) => {
+			const { bridge, send, reply, child, onUnsafe } = make_connection({ autoReply: false });
+			// More than two captures are allowed. File exports have their own budget.
+			for (let count = 0; count < 3; count++) {
+				const request = send({
+					method: "Page.captureScreenshot",
+					params: { format: "png", ...(clip ? { clip } : {}) },
+				});
+				reply(request, { data: PNG_DATA });
+				expect(messages(child).at(-1)).toMatchObject({ id: request.id, result: { data: PNG_DATA } });
+			}
+			expect((await bridge.settle(1000)).safe).toBe(true);
+			expect(onUnsafe).not.toHaveBeenCalled();
+		},
+	);
 
 	it.each([
 		"A".repeat(Math.ceil(2_097_152 / 3) * 4 + 4),
@@ -237,7 +288,9 @@ describe("AgentConnection", () => {
 		const request = send({ method: "Page.captureScreenshot", params: { format: "png" } });
 		reply(request, { data });
 		expect(messages(child).at(-1)).toEqual({
-			id: request.id, sessionId: "page-session", error: { code: -32000, message: "Screenshot exceeds the size limit." },
+			id: request.id,
+			sessionId: "page-session",
+			error: { code: -32000, message: "Screenshot exceeds the size limit." },
 		});
 		if (data.length > Math.ceil(2_097_152 / 3) * 4) expect(decode).not.toHaveBeenCalled();
 		decode.mockRestore();
@@ -248,14 +301,17 @@ describe("AgentConnection", () => {
 		expect(onUnsafe).not.toHaveBeenCalled();
 	});
 
-	it.each([{}, { data: null }, { data: "%%%=" }, { data: "AAAA" }, { data: png_with_dimensions(0, 1) }])("closes on a malformed screenshot reply", async (result) => {
-		const { bridge, send, reply, child, onUnsafe } = make_connection({ autoReply: false });
-		const request = send({ method: "Page.captureScreenshot", params: { format: "png" } });
-		reply(request, result);
-		expect(messages(child).some((message) => message.id === request.id)).toBe(false);
-		expect(await bridge.settle(1000)).toMatchObject({ safe: false, reason: "invalid_provider_reply" });
-		expect(onUnsafe).toHaveBeenCalledExactlyOnceWith("invalid_provider_reply");
-	});
+	it.each([{}, { data: null }, { data: "%%%=" }, { data: "AAAA" }, { data: png_with_dimensions(0, 1) }])(
+		"closes on a malformed screenshot reply",
+		async (result) => {
+			const { bridge, send, reply, child, onUnsafe } = make_connection({ autoReply: false });
+			const request = send({ method: "Page.captureScreenshot", params: { format: "png" } });
+			reply(request, result);
+			expect(messages(child).some((message) => message.id === request.id)).toBe(false);
+			expect(await bridge.settle(1000)).toMatchObject({ safe: false, reason: "invalid_provider_reply" });
+			expect(onUnsafe).toHaveBeenCalledExactlyOnceWith("invalid_provider_reply");
+		},
+	);
 
 	it("requires the screenshot reply to match the pending session", async () => {
 		const { bridge, send, provider } = make_connection({ autoReply: false });
@@ -302,7 +358,11 @@ describe("AgentConnection", () => {
 		});
 		send({ method: "Page.enable", params: {}, sessionId: null });
 		expect(messages(provider)).toEqual([]);
-		expect(messages(child).slice(-2).every((message) => message.error)).toBe(true);
+		expect(
+			messages(child)
+				.slice(-2)
+				.every((message) => message.error),
+		).toBe(true);
 		send({ method: "Browser.getWindowForTarget" });
 		send({ method: "Browser.setWindowBounds", params: { windowId: 7, bounds: { width: 800, height: 600 } } });
 		expect(messages(provider).at(-1)?.method).toBe("Browser.setWindowBounds");
@@ -310,7 +370,9 @@ describe("AgentConnection", () => {
 	});
 
 	it.each(["close", "error"])("keeps upstream alive to drain after child %s", async (event) => {
-		const { bridge, send, provider, child, downstream, upstream, reply, onUnsafe } = make_connection({ autoReply: false });
+		const { bridge, send, provider, child, downstream, upstream, reply, onUnsafe } = make_connection({
+			autoReply: false,
+		});
 		const request = send({ method: "Runtime.evaluate", params: { expression: "1", contextId: 1 } });
 		if (event === "close") child.close();
 		else {
@@ -318,7 +380,10 @@ describe("AgentConnection", () => {
 			send({ method: "Input.insertText", params: { text: "late input" } });
 		}
 		let settled = false;
-		const result = bridge.settle(1000).then((value) => { settled = true; return value; });
+		const result = bridge.settle(1000).then((value) => {
+			settled = true;
+			return value;
+		});
 		await Promise.resolve();
 		expect(settled).toBe(false);
 		expect(upstream.readyState).toBe(1);
@@ -337,7 +402,9 @@ describe("AgentConnection", () => {
 		downstream.dispatchEvent(new Event("error"));
 		expect((await bridge.settle(1000)).safe).toBe(true);
 		expect(messages(provider).at(-1)).toMatchObject({
-			method: "Input.dispatchKeyEvent", sessionId: "page-session", params: { type: "keyUp", key: "Shift", code: "ShiftLeft" },
+			method: "Input.dispatchKeyEvent",
+			sessionId: "page-session",
+			params: { type: "keyUp", key: "Shift", code: "ShiftLeft" },
 		});
 		expect(onUnsafe).not.toHaveBeenCalled();
 	});
@@ -360,7 +427,11 @@ describe("AgentConnection", () => {
 		expect((await settlement).safe).toBe(true);
 		expect(messages(provider)).toHaveLength(1);
 		// The late request gets an error reply, so the snippet does not wait for its timeout.
-		expect(messages(child).find((message) => message.id === 2)).toEqual({ id: 2, sessionId: "page-session", error: { code: -32000, message: "Browser access was revoked." } });
+		expect(messages(child).find((message) => message.id === 2)).toEqual({
+			id: 2,
+			sessionId: "page-session",
+			error: { code: -32000, message: "Browser access was revoked." },
+		});
 	});
 
 	it("stops waiting for a page read at revoke and drops its late reply", async () => {
@@ -389,16 +460,24 @@ describe("AgentConnection", () => {
 
 	it("waits for trusted popup cleanup and hides its session", async () => {
 		let finishPopup: () => void = () => {};
-		const popup = new Promise<void>((resolve) => { finishPopup = resolve; });
+		const popup = new Promise<void>((resolve) => {
+			finishPopup = resolve;
+		});
 		const { bridge, emit, send, onPopup, child, provider } = make_connection({ onPopup: async () => popup });
 		emit({
 			method: "Target.attachedToTarget",
-			params: { sessionId: "popup-session", targetInfo: { targetId: "popup", type: "page", url: "https://private.invalid" } },
+			params: {
+				sessionId: "popup-session",
+				targetInfo: { targetId: "popup", type: "page", url: "https://private.invalid" },
+			},
 			sessionId: null,
 		});
 		send({ method: "Page.enable", params: {}, sessionId: "popup-session" });
 		let settled = false;
-		const settlement = bridge.settle(1000).then((value) => { settled = true; return value; });
+		const settlement = bridge.settle(1000).then((value) => {
+			settled = true;
+			return value;
+		});
 		await Promise.resolve();
 		expect(onPopup).toHaveBeenCalledWith("popup");
 		expect(settled).toBe(false);
@@ -436,8 +515,14 @@ describe("AgentConnection", () => {
 		expect((await bridge.settle(1000)).safe).toBe(true);
 		const cleanup = messages(provider).filter((message) => Number(message.id) < 0);
 		expect(cleanup.map((message) => message.method)).toEqual([
-			"Page.removeScriptToEvaluateOnNewDocument", "Runtime.removeBinding", "Input.dispatchKeyEvent",
-			"Input.dispatchMouseEvent", "Input.dispatchTouchEvent", "Input.dispatchDragEvent", "Input.setInterceptDrags", "Page.stopScreencast",
+			"Page.removeScriptToEvaluateOnNewDocument",
+			"Runtime.removeBinding",
+			"Input.dispatchKeyEvent",
+			"Input.dispatchMouseEvent",
+			"Input.dispatchTouchEvent",
+			"Input.dispatchDragEvent",
+			"Input.setInterceptDrags",
+			"Page.stopScreencast",
 		]);
 		expect(cleanup.every((message) => message.sessionId === "page-session")).toBe(true);
 	});
@@ -516,55 +601,59 @@ describe("AgentConnection", () => {
 		["web", "service_worker", null, true],
 		["web", "shared_worker", null, false],
 		["web", "service_worker", "page-session", false],
-	] as const)("detaches a %s mode %s (parent %s, paused=%s) without giving the child a session", async (args: {
-		mode: any;
-		type: any;
-		parent: any;
-		waiting: any;
-	}) => {
-		const { mode, type, parent, waiting } = args;
+	] as const)(
+		"detaches a %s mode %s (parent %s, paused=%s) without giving the child a session",
+		async (args: { mode: any; type: any; parent: any; waiting: any }) => {
+			const { mode, type, parent, waiting } = args;
 
-		const { bridge, emit, send, provider, child, onUnsafe } = make_connection({ mode });
-		emit({
-			method: "Target.attachedToTarget",
-			params: {
-			sessionId: "worker-session", targetInfo: { targetId: "sw", type, url: "https://example.com/sw.js" }, waitingForDebugger: waiting,
+			const { bridge, emit, send, provider, child, onUnsafe } = make_connection({ mode });
+			emit({
+				method: "Target.attachedToTarget",
+				params: {
+					sessionId: "worker-session",
+					targetInfo: { targetId: "sw", type, url: "https://example.com/sw.js" },
+					waitingForDebugger: waiting,
+				},
+				sessionId: parent,
+			});
+			expect(messages(provider).map(({ method, params, sessionId }) => ({ method, params, sessionId }))).toEqual([
+				...(waiting ? [{ method: "Runtime.runIfWaitingForDebugger", params: {}, sessionId: "worker-session" }] : []),
+				{ method: "Target.detachFromTarget", params: { sessionId: "worker-session" }, sessionId: parent ?? undefined },
+			]);
+			emit({
+				method: "Target.detachedFromTarget",
+				params: { sessionId: "worker-session", targetId: "sw" },
+				sessionId: parent,
+			});
+			send({
+				method: "Runtime.evaluate",
+				params: { expression: "1", contextId: 1 },
+				sessionId: "worker-session",
+			});
+			expect(messages(child).at(-1)?.error).toBeDefined();
+			expect(child.received.join(" ")).not.toContain("sw.js");
+			expect(await bridge.settle(1000)).toEqual({ safe: true, reason: null, blockedPopups: 0 });
+			expect(onUnsafe).not.toHaveBeenCalled();
 		},
-			sessionId: parent,
-		});
-		expect(messages(provider).map(({ method, params, sessionId }) => ({ method, params, sessionId }))).toEqual([
-			...(waiting ? [{ method: "Runtime.runIfWaitingForDebugger", params: {}, sessionId: "worker-session" }] : []),
-			{ method: "Target.detachFromTarget", params: { sessionId: "worker-session" }, sessionId: parent ?? undefined },
-		]);
-		emit({
-			method: "Target.detachedFromTarget",
-			params: { sessionId: "worker-session", targetId: "sw" },
-			sessionId: parent,
-		});
-		send({
-			method: "Runtime.evaluate",
-			params: { expression: "1", contextId: 1 },
-			sessionId: "worker-session",
-		});
-		expect(messages(child).at(-1)?.error).toBeDefined();
-		expect(child.received.join(" ")).not.toContain("sw.js");
-		expect(await bridge.settle(1000)).toEqual({ safe: true, reason: null, blockedPopups: 0 });
-		expect(onUnsafe).not.toHaveBeenCalled();
-	});
+	);
 
 	it("keeps the session when a worker ends before the bridge detaches it", async () => {
 		const { bridge, emit, provider, onUnsafe } = make_connection({ autoReply: false, mode: "web" });
 		emit({
 			method: "Target.attachedToTarget",
 			params: {
-			sessionId: "worker-session", targetInfo: { targetId: "sw", type: "service_worker" }, waitingForDebugger: true,
-		},
+				sessionId: "worker-session",
+				targetInfo: { targetId: "sw", type: "service_worker" },
+				waitingForDebugger: true,
+			},
 			sessionId: null,
 		});
 		const [resume, detach] = messages(provider);
 		// Chrome answers a call to an ended session on the root session, with no session id.
 		expect(resume).toMatchObject({ method: "Runtime.runIfWaitingForDebugger", sessionId: "worker-session" });
-		provider.send(JSON.stringify({ id: resume!.id, error: { code: -32001, message: "Session with given id not found." } }));
+		provider.send(
+			JSON.stringify({ id: resume!.id, error: { code: -32001, message: "Session with given id not found." } }),
+		);
 		expect(onUnsafe).not.toHaveBeenCalled();
 		expect(detach).toMatchObject({ method: "Target.detachFromTarget" });
 		provider.send(JSON.stringify({ id: detach!.id, error: { code: -32602, message: "No session with given id" } }));
@@ -579,8 +668,10 @@ describe("AgentConnection", () => {
 		emit({
 			method: "Target.attachedToTarget",
 			params: {
-			sessionId: "worker-session", targetInfo: { targetId: "sw", type: "service_worker" }, waitingForDebugger: true,
-		},
+				sessionId: "worker-session",
+				targetInfo: { targetId: "sw", type: "service_worker" },
+				waitingForDebugger: true,
+			},
 			sessionId: null,
 		});
 		const [resume, detach] = messages(provider);
@@ -602,8 +693,10 @@ describe("AgentConnection", () => {
 		emit({
 			method: "Target.attachedToTarget",
 			params: {
-			sessionId: "worker-session", targetInfo: { targetId: "sw", type: "service_worker" }, waitingForDebugger: true,
-		},
+				sessionId: "worker-session",
+				targetInfo: { targetId: "sw", type: "service_worker" },
+				waitingForDebugger: true,
+			},
 			sessionId: null,
 		});
 		const [resume, detach] = messages(provider);
@@ -670,10 +763,18 @@ describe("AgentConnection web mode", () => {
 		send({ method: "Page.stopLoading" });
 		expect(messages(child).filter((message) => message.error)).toEqual([]);
 		expect(messages(provider).find((message) => message.method === "Page.navigate")?.params).toEqual({
-			url: "https://example.com/path?q=1", frameId: "main-frame", referrer: "", referrerPolicy: "unsafeUrl",
+			url: "https://example.com/path?q=1",
+			frameId: "main-frame",
+			referrer: "",
+			referrerPolicy: "unsafeUrl",
 		});
 		expect(messages(provider).map((message) => message.method)).toEqual([
-			"Page.getFrameTree", "Page.navigate", "Page.reload", "Page.getNavigationHistory", "Page.navigateToHistoryEntry", "Page.stopLoading",
+			"Page.getFrameTree",
+			"Page.navigate",
+			"Page.reload",
+			"Page.getNavigationHistory",
+			"Page.navigateToHistoryEntry",
+			"Page.stopLoading",
 		]);
 		expect((await bridge.settle(1000)).safe).toBe(true);
 	});
@@ -696,21 +797,26 @@ describe("AgentConnection web mode", () => {
 		expect(onUnsafe).not.toHaveBeenCalled();
 	});
 
-	it.each([
-		["https://bank.test/login"],
-		["https://www.Bank.test./"],
-	])("refuses navigation to the agent's blocked site %s", async (url) => {
-		const { bridge, send, provider, child, onUnsafe } = make_connection({ mode: "web", agentBlockedHosts: ["bank.test"] });
-		send({ method: "Page.getFrameTree" });
-		send({ method: "Page.navigate", params: { url, frameId: "main-frame" } });
-		send({ method: "Page.navigate", params: { url: "https://example.com/", frameId: "main-frame" } });
-		expect(messages(provider).map((message) => message.method)).toEqual(["Page.getFrameTree", "Page.navigate"]);
-		expect(messages(child).find((message) => message.id === 2)?.error)
-			.toEqual({ code: -32000, message: "Browser address is not allowed: agent_blocked_site." });
-		expect(JSON.stringify(messages(child))).not.toContain("bank.test");
-		expect((await bridge.settle(1000)).safe).toBe(true);
-		expect(onUnsafe).not.toHaveBeenCalled();
-	});
+	it.each([["https://bank.test/login"], ["https://www.Bank.test./"]])(
+		"refuses navigation to the agent's blocked site %s",
+		async (url) => {
+			const { bridge, send, provider, child, onUnsafe } = make_connection({
+				mode: "web",
+				agentBlockedHosts: ["bank.test"],
+			});
+			send({ method: "Page.getFrameTree" });
+			send({ method: "Page.navigate", params: { url, frameId: "main-frame" } });
+			send({ method: "Page.navigate", params: { url: "https://example.com/", frameId: "main-frame" } });
+			expect(messages(provider).map((message) => message.method)).toEqual(["Page.getFrameTree", "Page.navigate"]);
+			expect(messages(child).find((message) => message.id === 2)?.error).toEqual({
+				code: -32000,
+				message: "Browser address is not allowed: agent_blocked_site.",
+			});
+			expect(JSON.stringify(messages(child))).not.toContain("bank.test");
+			expect((await bridge.settle(1000)).safe).toBe(true);
+			expect(onUnsafe).not.toHaveBeenCalled();
+		},
+	);
 
 	it("refuses history navigation to a blocked site or to an entry it never saw", async () => {
 		const { bridge, send, provider, child } = make_connection({ mode: "web", agentBlockedHosts: ["bank.test"] });
@@ -720,10 +826,13 @@ describe("AgentConnection web mode", () => {
 		send({ method: "Page.navigateToHistoryEntry", params: { entryId: 4 } });
 		send({ method: "Page.navigateToHistoryEntry", params: { entryId: 99 } });
 		send({ method: "Page.navigateToHistoryEntry", params: { entryId: 3 } });
-		const refused = messages(child).filter((message) => message.error).map((message) => message.id);
+		const refused = messages(child)
+			.filter((message) => message.error)
+			.map((message) => message.id);
 		expect(refused).toEqual([1, 3, 4]);
 		expect(messages(provider).map((message) => [message.method, message.params])).toEqual([
-			["Page.getNavigationHistory", {}], ["Page.navigateToHistoryEntry", { entryId: 3 }],
+			["Page.getNavigationHistory", {}],
+			["Page.navigateToHistoryEntry", { entryId: 3 }],
 		]);
 		expect((await bridge.settle(1000)).safe).toBe(true);
 	});
@@ -735,21 +844,31 @@ describe("AgentConnection web mode", () => {
 		expect((await bridge.settle(1000)).safe).toBe(true);
 	});
 
-	it.each(["Page.navigate", "Page.reload", "Page.getNavigationHistory", "Page.navigateToHistoryEntry", "Page.stopLoading"])(
-		"refuses %s in file mode",
-		async (method) => {
-			const { bridge, send, provider, child } = make_connection();
-			send({ method: "Page.getFrameTree" });
-			send({
-				method,
-				params: method === "Page.navigate" ? { url: "https://example.com/", frameId: "main-frame" } :
-				method === "Page.navigateToHistoryEntry" ? { entryId: 1 } : {},
-			});
-			expect(messages(provider).map((message) => message.method)).toEqual(["Page.getFrameTree"]);
-			expect(messages(child).at(-1)?.error).toEqual({ code: -32601, message: `Browser command is not allowed: ${method}.` });
-			expect((await bridge.settle(1000)).safe).toBe(true);
-		},
-	);
+	it.each([
+		"Page.navigate",
+		"Page.reload",
+		"Page.getNavigationHistory",
+		"Page.navigateToHistoryEntry",
+		"Page.stopLoading",
+	])("refuses %s in file mode", async (method) => {
+		const { bridge, send, provider, child } = make_connection();
+		send({ method: "Page.getFrameTree" });
+		send({
+			method,
+			params:
+				method === "Page.navigate"
+					? { url: "https://example.com/", frameId: "main-frame" }
+					: method === "Page.navigateToHistoryEntry"
+						? { entryId: 1 }
+						: {},
+		});
+		expect(messages(provider).map((message) => message.method)).toEqual(["Page.getFrameTree"]);
+		expect(messages(child).at(-1)?.error).toEqual({
+			code: -32601,
+			message: `Browser command is not allowed: ${method}.`,
+		});
+		expect((await bridge.settle(1000)).safe).toBe(true);
+	});
 
 	it("turns off universal access for isolated worlds in web mode only", async () => {
 		const web = make_connection({ mode: "web" });
@@ -758,14 +877,22 @@ describe("AgentConnection web mode", () => {
 			method: "Page.createIsolatedWorld",
 			params: { frameId: "main-frame", worldName: "utility", grantUniveralAccess: true },
 		});
-		expect(messages(web.provider).at(-1)?.params).toEqual({ frameId: "main-frame", worldName: "utility", grantUniveralAccess: false });
+		expect(messages(web.provider).at(-1)?.params).toEqual({
+			frameId: "main-frame",
+			worldName: "utility",
+			grantUniveralAccess: false,
+		});
 		const file = make_connection();
 		file.send({ method: "Page.getFrameTree" });
 		file.send({
 			method: "Page.createIsolatedWorld",
 			params: { frameId: "main-frame", worldName: "utility", grantUniveralAccess: true },
 		});
-		expect(messages(file.provider).at(-1)?.params).toEqual({ frameId: "main-frame", worldName: "utility", grantUniveralAccess: true });
+		expect(messages(file.provider).at(-1)?.params).toEqual({
+			frameId: "main-frame",
+			worldName: "utility",
+			grantUniveralAccess: true,
+		});
 	});
 
 	it("answers the download setting itself in web mode", async () => {
@@ -785,35 +912,54 @@ describe("AgentConnection web mode", () => {
 		emit({
 			method: "Network.requestWillBeSent",
 			params: {
-			requestId: "r1",
-			request: { url: "https://example.com/", headers: { Cookie: "sid=1", AUTHORIZATION: "Bearer t", Accept: "text/html" } },
-			redirectResponse: { url: "https://example.com/old", headers: { "Set-Cookie": "sid=2", Location: "/" }, requestHeaders: { cookie: "sid=0" }, headersText: "Set-Cookie: sid=2" },
-		},
+				requestId: "r1",
+				request: {
+					url: "https://example.com/",
+					headers: { Cookie: "sid=1", AUTHORIZATION: "Bearer t", Accept: "text/html" },
+				},
+				redirectResponse: {
+					url: "https://example.com/old",
+					headers: { "Set-Cookie": "sid=2", Location: "/" },
+					requestHeaders: { cookie: "sid=0" },
+					headersText: "Set-Cookie: sid=2",
+				},
+			},
 		});
 		emit({
 			method: "Network.requestWillBeSentExtraInfo",
 			params: {
-			requestId: "r1", headers: { cookie: "sid=1", "Proxy-Authorization": "Basic x", accept: "*/*" },
-			associatedCookies: [{ cookie: { name: "sid" } }], connectTiming: { requestTime: 1 },
-		},
+				requestId: "r1",
+				headers: { cookie: "sid=1", "Proxy-Authorization": "Basic x", accept: "*/*" },
+				associatedCookies: [{ cookie: { name: "sid" } }],
+				connectTiming: { requestTime: 1 },
+			},
 		});
 		emit({
 			method: "Network.responseReceived",
 			params: {
-			requestId: "r1",
-			response: {
-				url: "https://example.com/", status: 200, statusText: "OK", headers: { "set-cookie": "sid=3", "Content-Type": "text/html" },
-				requestHeaders: { Cookie: "sid=1" }, headersText: "Set-Cookie: sid=3", requestHeadersText: "Cookie: sid=1",
+				requestId: "r1",
+				response: {
+					url: "https://example.com/",
+					status: 200,
+					statusText: "OK",
+					headers: { "set-cookie": "sid=3", "Content-Type": "text/html" },
+					requestHeaders: { Cookie: "sid=1" },
+					headersText: "Set-Cookie: sid=3",
+					requestHeadersText: "Cookie: sid=1",
+				},
 			},
-		},
 		});
 		emit({
 			method: "Network.responseReceivedExtraInfo",
 			params: {
-			requestId: "r1", headers: { "Set-Cookie": "sid=3", "x-safe": "1" }, headersText: "Set-Cookie: sid=3",
-			blockedCookies: [{ cookieLine: "sid=3" }], exemptedCookies: [], cookiePartitionKey: { topLevelSite: "https://example.com" },
-			statusCode: 200,
-		},
+				requestId: "r1",
+				headers: { "Set-Cookie": "sid=3", "x-safe": "1" },
+				headersText: "Set-Cookie: sid=3",
+				blockedCookies: [{ cookieLine: "sid=3" }],
+				exemptedCookies: [],
+				cookiePartitionKey: { topLevelSite: "https://example.com" },
+				statusCode: 200,
+			},
 		});
 		emit({
 			method: "Network.webSocketWillSendHandshakeRequest",
@@ -822,10 +968,19 @@ describe("AgentConnection web mode", () => {
 		emit({
 			method: "Network.webSocketHandshakeResponseReceived",
 			params: {
-			requestId: "w1", response: { status: 101, headers: { "Set-Cookie": "sid=4" }, requestHeaders: { Authorization: "x" }, headersText: "x", requestHeadersText: "y" },
-		},
+				requestId: "w1",
+				response: {
+					status: 101,
+					headers: { "Set-Cookie": "sid=4" },
+					requestHeaders: { Authorization: "x" },
+					headersText: "x",
+					requestHeadersText: "y",
+				},
+			},
 		});
-		const events = messages(child).filter((message) => typeof message.method === "string" && message.method.startsWith("Network."));
+		const events = messages(child).filter(
+			(message) => typeof message.method === "string" && message.method.startsWith("Network."),
+		);
 		expect(events.map((event) => event.params)).toEqual([
 			{
 				requestId: "r1",
@@ -835,7 +990,13 @@ describe("AgentConnection web mode", () => {
 			{ requestId: "r1", headers: { accept: "*/*" }, connectTiming: { requestTime: 1 } },
 			{
 				requestId: "r1",
-				response: { url: "https://example.com/", status: 200, statusText: "OK", headers: { "Content-Type": "text/html" }, requestHeaders: {} },
+				response: {
+					url: "https://example.com/",
+					status: 200,
+					statusText: "OK",
+					headers: { "Content-Type": "text/html" },
+					requestHeaders: {},
+				},
 			},
 			{ requestId: "r1", headers: { "x-safe": "1" }, statusCode: 200 },
 			{ requestId: "w1", request: { headers: {} } },

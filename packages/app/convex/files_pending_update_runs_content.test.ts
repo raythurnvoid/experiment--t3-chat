@@ -105,7 +105,7 @@ async function stage_text(args: {
 	pendingUpdateId?: Id<"files_pending_updates">;
 	unstagedText?: string;
 }) {
-	const { f, target, text, unstagedText = text, operationBatchId, pendingUpdateId} = args;
+	const { f, target, text, unstagedText = text, operationBatchId, pendingUpdateId } = args;
 
 	for (const role of ["staged", "unstaged"] as const) {
 		const staged = await f.t.mutation(internal.files_pending_updates.stage_file_pending_update_text_input_internal, {
@@ -140,12 +140,8 @@ async function stage_text(args: {
 	return proposal;
 }
 
-async function private_node(args: {
-	f: Awaited<ReturnType<typeof fixture>>;
-	path: string;
-	text?: string;
-}) {
-	const { f, text, path} = args;
+async function private_node(args: { f: Awaited<ReturnType<typeof fixture>>; path: string; text?: string }) {
+	const { f, text, path } = args;
 
 	const created = await f.t.mutation(internal.files_nodes.create_private_node_by_path, {
 		...f.scope,
@@ -303,8 +299,8 @@ async function private_media(args: {
 				ctx,
 				pendingUpdateId: entry.pendingUpdate._id,
 				value: {
-				copiedFrom: { target: { kind: "saved", id: sourceId }, path: "/source", sourceWritePolicy: null },
-			},
+					copiedFrom: { target: { kind: "saved", id: sourceId }, path: "/source", sourceWritePolicy: null },
+				},
 			});
 		const pending = (await ctx.db.get("files_pending_updates", entry.pendingUpdate._id))!;
 		const version = await files_transfer_db_get_entry_version(ctx, { ...entry, pendingUpdate: pending });
@@ -357,11 +353,17 @@ async function attach_media(args: {
 			ctx,
 			pendingUpdateId: pending._id,
 			value: {
-			mediaDependencySetId: set._yay,
-			...(sourceId
-				? { copiedFrom: { target: { kind: "saved" as const, id: sourceId }, path: "/source", sourceWritePolicy: null } }
-				: {}),
-		},
+				mediaDependencySetId: set._yay,
+				...(sourceId
+					? {
+							copiedFrom: {
+								target: { kind: "saved" as const, id: sourceId },
+								path: "/source",
+								sourceWritePolicy: null,
+							},
+						}
+					: {}),
+			},
 		});
 		return (await ctx.db.get("files_pending_updates", pending._id))!;
 	});
@@ -435,9 +437,12 @@ describe("review job content", () => {
 		const initial = [];
 		for (const root of ["source", "target"]) {
 			initial.push(await private_node({ f, path: `/${root}` }));
-			for (const name of ["a", "b"]) initial.push(await private_node({ f, path: `/${root}/${name}.txt`, text: `${root} ${name}\n` }));
+			for (const name of ["a", "b"])
+				initial.push(await private_node({ f, path: `/${root}/${name}.txt`, text: `${root} ${name}\n` }));
 		}
-		expect((await finish_review({ f, runId: await start_review({ f, proposals: initial }) }))?.activity.status).toBe("succeeded");
+		expect((await finish_review({ f, runId: await start_review({ f, proposals: initial }) }))?.activity.status).toBe(
+			"succeeded",
+		);
 		const before = await f.t.run((ctx) => ctx.db.query("files_nodes").collect());
 		const parent = before.find((node) => node.path === "/target")!;
 		const sources = before
@@ -558,11 +563,12 @@ describe("review job content", () => {
 			const source = await private_node({ f, path: "/source.md", text: sourceText });
 			const destination = await private_node({ f, path: "/destination" });
 			expect(
-				(await finish_review({
-					f,
-					runId: await start_review({ f, proposals: [...(oldImage ? [oldImage.pending] : []), source, destination] }),
-				}))
-					?.activity.status,
+				(
+					await finish_review({
+						f,
+						runId: await start_review({ f, proposals: [...(oldImage ? [oldImage.pending] : []), source, destination] }),
+					})
+				)?.activity.status,
 			).toBe("succeeded");
 			const before = await f.t.run((ctx) => ctx.db.query("files_nodes").collect());
 			const sourceId = before.find((node) => node.path === "/source.md")!._id;
@@ -824,8 +830,8 @@ describe("review job content", () => {
 				ctx,
 				pendingUpdateId: unrelated._id,
 				value: {
-				copiedFrom: { target: { kind: "saved", id: source._yay.nodeId }, path: "/source", sourceWritePolicy: null },
-			},
+					copiedFrom: { target: { kind: "saved", id: source._yay.nodeId }, path: "/source", sourceWritePolicy: null },
+				},
 			});
 			return (await ctx.db.get("files_pending_updates", unrelated._id))!;
 		});
@@ -857,8 +863,16 @@ describe("review job content", () => {
 		const parent = await private_node({ f, path: "/parent" });
 		const image = await private_media({ f, path: "/parent/photo.png" });
 		const text = `![Image](${image.dependency.src})\n`;
-		const first = await attach_media({ f, pending: await private_node({ f, path: "/parent/first.md", text }), images: [image] });
-		const second = await attach_media({ f, pending: await private_node({ f, path: "/parent/second.md", text }), images: [image] });
+		const first = await attach_media({
+			f,
+			pending: await private_node({ f, path: "/parent/first.md", text }),
+			images: [image],
+		});
+		const second = await attach_media({
+			f,
+			pending: await private_node({ f, path: "/parent/second.md", text }),
+			images: [image],
+		});
 		const runId = await start_review({ f, proposals: [first, second, image.pending, parent] });
 		expect(await f.t.run((ctx) => ctx.db.query("files_pending_update_run_units").collect())).toMatchObject([
 			{ kind: "atomic", itemCount: 4 },
@@ -961,7 +975,9 @@ describe("review job content", () => {
 		const f = await fixture();
 		const parent = await private_node({ f, path: "/parent" });
 		const child = await private_node({ f, path: "/parent/child.txt", text: "before\n" });
-		expect((await finish_review({ f, runId: await start_review({ f, proposals: [parent, child] }) }))?.activity.status).toBe("succeeded");
+		expect(
+			(await finish_review({ f, runId: await start_review({ f, proposals: [parent, child] }) }))?.activity.status,
+		).toBe("succeeded");
 		const saved = await f.t.run((ctx) => ctx.db.query("files_nodes").collect());
 		const savedParent = saved.find((node) => node.kind === "folder")!;
 		const savedChild = saved.find((node) => node.kind === "file")!;
@@ -985,7 +1001,10 @@ describe("review job content", () => {
 		const proposals = await f.t.run((ctx) => ctx.db.query("files_pending_updates").collect());
 		const result = await finish_review({
 			f,
-			runId: await start_review({ f, proposals: [edited, ...proposals.filter((proposal) => proposal._id !== edited._id)] }),
+			runId: await start_review({
+				f,
+				proposals: [edited, ...proposals.filter((proposal) => proposal._id !== edited._id)],
+			}),
 		});
 		expect(result?.activity).toMatchObject({ status: "succeeded", progress: { completed: 2 } });
 		expect(result?.run.unitCount).toBe(1);
@@ -1003,7 +1022,10 @@ describe("review job content", () => {
 		const nested = await private_node({ f, path: "/parent/nested" });
 		const sibling = await private_node({ f, path: "/parent/sibling.txt", text: "sibling\n" });
 		const child = await private_node({ f, path: "/parent/nested/child.txt", text: "child\n" });
-		const result = await finish_review({ f, runId: await start_review({ f, proposals: [child, sibling, nested, parent] }) });
+		const result = await finish_review({
+			f,
+			runId: await start_review({ f, proposals: [child, sibling, nested, parent] }),
+		});
 		expect(result?.activity).toMatchObject({ status: "succeeded", progress: { completed: 4 } });
 		expect(result?.run.unitCount).toBe(1);
 		const saved = await f.t.run((ctx) => ctx.db.query("files_nodes").collect());
@@ -1105,7 +1127,8 @@ describe("review job content", () => {
 		const parent = await private_node({ f, path: "/full" });
 		const children = [];
 		const text = "x".repeat(files_MAX_TEXT_CONTENT_BYTES);
-		for (let index = 0; index < 12; index++) children.push(await private_node({ f, path: `/full/file-${index}.txt`, text }));
+		for (let index = 0; index < 12; index++)
+			children.push(await private_node({ f, path: `/full/file-${index}.txt`, text }));
 		const proposals = [parent, ...children];
 		const beforeBilling = await f.t.run((ctx) => ctx.db.query("billing_usage_snapshots").first());
 		const enqueue = vi.spyOn(Workpool.prototype, "enqueueAction");

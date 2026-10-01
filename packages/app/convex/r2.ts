@@ -449,7 +449,11 @@ export const get_data_for_public_download_url = internalQuery({
 			return { fileNode, asset, materializationState: null };
 		}
 
-		const materializeScope = r2_require_real_scope({ ctx, organizationId: fileNode.organizationId, workspaceId: fileNode.workspaceId });
+		const materializeScope = r2_require_real_scope({
+			ctx,
+			organizationId: fileNode.organizationId,
+			workspaceId: fileNode.workspaceId,
+		});
 		return {
 			fileNode,
 			asset,
@@ -1007,7 +1011,11 @@ export const finalize_text_file_node_from_r2_assets = internalMutation({
 	returns: v.null(),
 	handler: async (ctx, args) => {
 		const now = Date.now();
-		const finalizeScope = r2_require_real_scope({ ctx, organizationId: args.organizationId, workspaceId: args.workspaceId });
+		const finalizeScope = r2_require_real_scope({
+			ctx,
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+		});
 
 		// A member can archive or move the node while the calling action runs its R2 work, so the
 		// node state that action read at enqueue time can be stale. Read the node here instead: this
@@ -1338,7 +1346,11 @@ export const process_uploaded_asset_event = internalMutation({
 		const now = Date.now();
 		const serviceTarget = await public_api_service_uploads_db_get_target_by_asset(ctx, asset._id);
 		if (!fileNode || (serviceTarget && (serviceTarget.assetId !== asset._id || serviceTarget.state !== "pending"))) {
-			const scope = r2_require_real_scope({ ctx, organizationId: asset.organizationId, workspaceId: asset.workspaceId });
+			const scope = r2_require_real_scope({
+				ctx,
+				organizationId: asset.organizationId,
+				workspaceId: asset.workspaceId,
+			});
 			await public_api_service_uploads_db_record_untracked_asset_bytes(ctx, {
 				...scope,
 				assetId: asset._id,
@@ -1739,7 +1751,11 @@ export const cleanup_expired_unfinalized_assets = internalMutation({
 					}
 					const recoveryStartedAt =
 						(asset.uploadUrlExpiresAt ?? asset._creationTime + UPLOAD_SIGNED_URL_TTL_MS) - UPLOAD_SIGNED_URL_TTL_MS;
-					const recoveryScope = r2_require_real_scope({ ctx, organizationId: asset.organizationId, workspaceId: asset.workspaceId });
+					const recoveryScope = r2_require_real_scope({
+						ctx,
+						organizationId: asset.organizationId,
+						workspaceId: asset.workspaceId,
+					});
 					await ctx.scheduler.runAfter(0, internal.r2.recover_unfinalized_upload_publication, {
 						...recoveryScope,
 						assetId: asset._id,

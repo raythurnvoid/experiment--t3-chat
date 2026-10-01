@@ -1223,9 +1223,9 @@ describe("create_workspace", () => {
 		const workspaceId = created._yay!.workspaceId;
 
 		const listedBeforeLeave = await asOwner.query(api.organizations.list, {});
-		expect(listedBeforeLeave.organizationIdsWorkspacesDict[organizationId]?.map((workspace) => workspace._id)).toContain(
-			workspaceId,
-		);
+		expect(
+			listedBeforeLeave.organizationIdsWorkspacesDict[organizationId]?.map((workspace) => workspace._id),
+		).toContain(workspaceId);
 
 		const left = await asMember.mutation(api.organizations.remove_user_from_organization, {
 			organizationId,
@@ -1257,9 +1257,7 @@ describe("create_workspace", () => {
 		expect(listedAfterLeave.organizationIdsWorkspacesDict[organizationId]?.map((workspace) => workspace._id)).toContain(
 			workspaceId,
 		);
-		expect(workspaceMemberships.map((membership) => [membership.userId, membership.active])).toEqual([
-			[ownerId, true],
-		]);
+		expect(workspaceMemberships.map((membership) => [membership.userId, membership.active])).toEqual([[ownerId, true]]);
 		// Creating an API key in this workspace reads this quota doc and throws when it is missing.
 		expect(ownerApiCredentialQuota).not.toBeNull();
 	});
@@ -3758,9 +3756,8 @@ describe("remove_user_from_organization", () => {
 				userId: Id<"users">;
 				organizationId: Id<"organizations">;
 				workspaceId: Id<"organizations_workspaces">;
-			}) =>
-				{
-					const { userId, organizationId, workspaceId } = args;
+			}) => {
+				const { userId, organizationId, workspaceId } = args;
 				return ctx.db.insert("files_browser_profiles", {
 					userId,
 					organizationId,

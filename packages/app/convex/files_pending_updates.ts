@@ -590,10 +590,10 @@ export async function files_pending_updates_db_mark_content_for_rebase(
 				ctx,
 				pendingUpdateId: pendingUpdate._id,
 				value: {
-				revision: pendingUpdate.revision + 1,
-				contentNeedsRebase: true,
-				contentRebaseRootKind: rootKind,
-			},
+					revision: pendingUpdate.revision + 1,
+					contentNeedsRebase: true,
+					contentRebaseRootKind: rootKind,
+				},
 			});
 			// Old indexes stay hidden until preparation rebuilds them. Do not rewrite every owner's text here.
 		}),
@@ -634,7 +634,10 @@ export async function files_pending_updates_db_drop_content_for_node(
 
 			// Nothing else was proposed, so the whole doc goes.
 			if (!pendingUpdate.pendingMove && !pendingUpdate.pendingArchive) {
-				await Promise.all([...retireStatesAndChunks, files_db_delete_pending_update({ ctx, pendingUpdateId: pendingUpdate._id })]);
+				await Promise.all([
+					...retireStatesAndChunks,
+					files_db_delete_pending_update({ ctx, pendingUpdateId: pendingUpdate._id }),
+				]);
 				return;
 			}
 
@@ -644,14 +647,14 @@ export async function files_pending_updates_db_drop_content_for_node(
 					ctx,
 					pendingUpdateId: pendingUpdate._id,
 					value: {
-					revision: pendingUpdate.revision + 1,
-					content: undefined,
-					contentNeedsRebase: undefined,
-					contentRebaseRootKind: undefined,
-					copiedFrom: undefined,
-					size: 0,
-					updatedAt: now,
-				},
+						revision: pendingUpdate.revision + 1,
+						content: undefined,
+						contentNeedsRebase: undefined,
+						contentRebaseRootKind: undefined,
+						copiedFrom: undefined,
+						size: 0,
+						updatedAt: now,
+					},
 				}),
 			]);
 		}),
@@ -831,10 +834,10 @@ export async function files_pending_update_db_settle_move_row(
 				ctx,
 				pendingUpdateId: pendingUpdate._id,
 				value: {
-				revision: pendingUpdate.revision + 1,
-				pendingMove: undefined,
-				updatedAt: now,
-			},
+					revision: pendingUpdate.revision + 1,
+					pendingMove: undefined,
+					updatedAt: now,
+				},
 			}),
 			files_pending_update_db_update_index_revision(ctx, {
 				pendingUpdateId: pendingUpdate._id,
@@ -868,10 +871,10 @@ async function files_pending_update_db_settle_archive_row(
 				ctx,
 				pendingUpdateId: pendingUpdate._id,
 				value: {
-				revision: pendingUpdate.revision + 1,
-				pendingArchive: undefined,
-				updatedAt: now,
-			},
+					revision: pendingUpdate.revision + 1,
+					pendingArchive: undefined,
+					updatedAt: now,
+				},
 			}),
 			files_pending_update_db_update_index_revision(ctx, {
 				pendingUpdateId: pendingUpdate._id,
@@ -2451,7 +2454,11 @@ export const remove_fenced_private_pending_update = internalMutation({
 		for (const assetId of assetIds) await files_pending_update_db_release_replacement_asset(ctx, { ...scope, assetId });
 		await files_db_retire_pending_update_yjs_states(ctx, { ...scope, pendingUpdateId: pendingUpdate._id });
 		await files_pending_update_db_delete_chunks(ctx, { pendingUpdateId: pendingUpdate._id });
-		await files_db_delete_pending_update({ ctx, pendingUpdateId: pendingUpdate._id, options: { reviewAlreadyFenced: true } });
+		await files_db_delete_pending_update({
+			ctx,
+			pendingUpdateId: pendingUpdate._id,
+			options: { reviewAlreadyFenced: true },
+		});
 		return null;
 	},
 });
@@ -2933,14 +2940,14 @@ export const settle_file_pending_update_no_change_in_db = internalMutation({
 					ctx,
 					pendingUpdateId: pendingUpdate._id,
 					value: {
-					revision: pendingUpdate.revision + 1,
-					content: undefined,
-					contentNeedsRebase: undefined,
-					contentRebaseRootKind: undefined,
-					copiedFrom: undefined,
-					size: 0,
-					updatedAt: now,
-				},
+						revision: pendingUpdate.revision + 1,
+						content: undefined,
+						contentNeedsRebase: undefined,
+						contentRebaseRootKind: undefined,
+						copiedFrom: undefined,
+						size: 0,
+						updatedAt: now,
+					},
 				}),
 				files_db_retire_pending_update_yjs_states(ctx, {
 					organizationId: args.organizationId,
@@ -3078,10 +3085,10 @@ export const refresh_file_pending_update_in_db = internalMutation({
 				ctx,
 				pendingUpdateId: pendingUpdate._id,
 				value: {
-				revision: pendingUpdate.revision + 1,
-				...(nextThreadIds ? { threadIds: nextThreadIds } : {}),
-				updatedAt: now,
-			},
+					revision: pendingUpdate.revision + 1,
+					...(nextThreadIds ? { threadIds: nextThreadIds } : {}),
+					updatedAt: now,
+				},
 			}),
 			files_pending_update_db_update_index_revision(ctx, {
 				pendingUpdateId: pendingUpdate._id,
@@ -3423,14 +3430,14 @@ export const commit_file_pending_update_upsert_in_db = internalMutation({
 				ctx,
 				pendingUpdateId,
 				value: {
-				revision: existingPendingUpdate.revision + 1,
-				content,
-				// The newest structural intent wins: a later cp re-records where the content comes from.
-				...(args.copiedFrom ? { copiedFrom: args.copiedFrom } : {}),
-				...(nextThreadIds ? { threadIds: nextThreadIds } : {}),
-				...(args.unstagedBranchChanged ? { size: unstagedSize } : {}),
-				updatedAt: now,
-			},
+					revision: existingPendingUpdate.revision + 1,
+					content,
+					// The newest structural intent wins: a later cp re-records where the content comes from.
+					...(args.copiedFrom ? { copiedFrom: args.copiedFrom } : {}),
+					...(nextThreadIds ? { threadIds: nextThreadIds } : {}),
+					...(args.unstagedBranchChanged ? { size: unstagedSize } : {}),
+					updatedAt: now,
+				},
 			});
 		}
 
@@ -3640,19 +3647,19 @@ export async function files_pending_updates_db_commit_private_file(
 		ctx,
 		pendingUpdateId: pendingUpdate._id,
 		value: {
-		revision: pendingUpdate.revision + 1,
-		content: {
-			base: { kind: "new" },
-			baseStateId: args.family.baseStateId,
-			stagedStateId: args.family.stagedStateId,
-			unstagedStateId: args.family.unstagedStateId,
+			revision: pendingUpdate.revision + 1,
+			content: {
+				base: { kind: "new" },
+				baseStateId: args.family.baseStateId,
+				stagedStateId: args.family.stagedStateId,
+				unstagedStateId: args.family.unstagedStateId,
+			},
+			...(args.threadId && !pendingUpdate.threadIds?.includes(args.threadId)
+				? { threadIds: [...(pendingUpdate.threadIds ?? []), args.threadId] }
+				: {}),
+			size: files_get_utf8_byte_size(args.unstagedText),
+			updatedAt: now,
 		},
-		...(args.threadId && !pendingUpdate.threadIds?.includes(args.threadId)
-			? { threadIds: [...(pendingUpdate.threadIds ?? []), args.threadId] }
-			: {}),
-		size: files_get_utf8_byte_size(args.unstagedText),
-		updatedAt: now,
-	},
 	});
 
 	await db_swap_canonical_states_and_consume_batch(ctx, {
@@ -4579,19 +4586,19 @@ export const upsert_file_pending_move_in_db = internalMutation({
 					ctx,
 					pendingUpdateId: pendingUpdate._id,
 					value: {
-					revision: pendingUpdate.revision + 1,
-					updatedAt: now,
-					threadIds,
-					pendingMove: replaced?.replacesNode
-						? {
-								destParent: args.destParent,
-								destName: args.destName,
-								fromPath: source.entry.path,
-								replacesTarget: { kind: "saved", id: replaced.replacesNode._id },
-								replacesContentVersion: replaced.replacesContentVersion,
-							}
-						: undefined,
-				},
+						revision: pendingUpdate.revision + 1,
+						updatedAt: now,
+						threadIds,
+						pendingMove: replaced?.replacesNode
+							? {
+									destParent: args.destParent,
+									destName: args.destName,
+									fromPath: source.entry.path,
+									replacesTarget: { kind: "saved", id: replaced.replacesNode._id },
+									replacesContentVersion: replaced.replacesContentVersion,
+								}
+							: undefined,
+					},
 				});
 
 				await files_pending_update_db_update_index_revision(ctx, {
@@ -4779,11 +4786,11 @@ export const upsert_file_pending_move_in_db = internalMutation({
 					ctx,
 					pendingUpdateId: existingPendingUpdate._id,
 					value: {
-					revision: existingPendingUpdate.revision + 1,
-					pendingMove,
-					...(nextThreadIds ? { threadIds: nextThreadIds } : {}),
-					updatedAt: now,
-				},
+						revision: existingPendingUpdate.revision + 1,
+						pendingMove,
+						...(nextThreadIds ? { threadIds: nextThreadIds } : {}),
+						updatedAt: now,
+					},
 				}),
 				files_pending_update_db_update_index_revision(ctx, {
 					pendingUpdateId: existingPendingUpdate._id,
@@ -4962,12 +4969,12 @@ export const upsert_file_pending_archive_in_db = internalMutation({
 					ctx,
 					pendingUpdateId: existingPendingUpdate._id,
 					value: {
-					revision: existingPendingUpdate.revision + 1,
-					pendingArchive: { fromPath: node.path },
-					pendingMove: undefined,
-					...(nextThreadIds ? { threadIds: nextThreadIds } : {}),
-					updatedAt: now,
-				},
+						revision: existingPendingUpdate.revision + 1,
+						pendingArchive: { fromPath: node.path },
+						pendingMove: undefined,
+						...(nextThreadIds ? { threadIds: nextThreadIds } : {}),
+						updatedAt: now,
+					},
 				}),
 				files_pending_update_db_update_index_revision(ctx, {
 					pendingUpdateId: existingPendingUpdate._id,
@@ -5436,10 +5443,10 @@ export const discard_file_pending_structural = mutation({
 					ctx,
 					pendingUpdateId: pendingUpdate._id,
 					value: {
-					revision: pendingUpdate.revision + 1,
-					pendingMove: undefined,
-					updatedAt: now,
-				},
+						revision: pendingUpdate.revision + 1,
+						pendingMove: undefined,
+						updatedAt: now,
+					},
 				}),
 				files_pending_update_db_update_index_revision(ctx, {
 					pendingUpdateId: pendingUpdate._id,
@@ -5542,12 +5549,12 @@ export const discard_file_pending_content = mutation({
 						ctx,
 						pendingUpdateId: pendingUpdate._id,
 						value: {
-						revision: pendingUpdate.revision + 1,
-						pendingReplacement: undefined,
-						copiedFrom: undefined,
-						size: 0,
-						updatedAt: now,
-					},
+							revision: pendingUpdate.revision + 1,
+							pendingReplacement: undefined,
+							copiedFrom: undefined,
+							size: 0,
+							updatedAt: now,
+						},
 					}),
 					files_pending_update_db_delete_chunks(ctx, { pendingUpdateId: pendingUpdate._id }),
 				]);
@@ -5634,14 +5641,14 @@ export const discard_file_pending_content = mutation({
 						ctx,
 						pendingUpdateId: pendingUpdate._id,
 						value: {
-						revision: pendingUpdate.revision + 1,
-						content: undefined,
-						contentNeedsRebase: undefined,
-						contentRebaseRootKind: undefined,
-						copiedFrom: undefined,
-						size: 0,
-						updatedAt: now,
-					},
+							revision: pendingUpdate.revision + 1,
+							content: undefined,
+							contentNeedsRebase: undefined,
+							contentRebaseRootKind: undefined,
+							copiedFrom: undefined,
+							size: 0,
+							updatedAt: now,
+						},
 					}),
 					files_db_retire_pending_update_yjs_states(ctx, {
 						organizationId: membership.organizationId,
@@ -5696,11 +5703,11 @@ export const discard_file_pending_content = mutation({
 				ctx,
 				pendingUpdateId: pendingUpdate._id,
 				value: {
-				revision: pendingUpdate.revision + 1,
-				content: { ...content, unstagedStateId: newUnstagedState._yay },
-				size: files_get_utf8_byte_size(stagedText._yay),
-				updatedAt: now,
-			},
+					revision: pendingUpdate.revision + 1,
+					content: { ...content, unstagedStateId: newUnstagedState._yay },
+					size: files_get_utf8_byte_size(stagedText._yay),
+					updatedAt: now,
+				},
 			}),
 			ctx.scheduler.runAfter(0, internal.files_pending_updates.cleanup_expired_pending_state_rows, {}),
 		]);
@@ -5941,14 +5948,14 @@ export const commit_file_pending_update_rebase_in_db = internalMutation({
 					ctx,
 					pendingUpdateId: existingPendingUpdate._id,
 					value: {
-					revision: existingPendingUpdate.revision + 1,
-					content: undefined,
-					contentNeedsRebase: undefined,
-					contentRebaseRootKind: undefined,
-					copiedFrom: undefined,
-					size: 0,
-					updatedAt: now,
-				},
+						revision: existingPendingUpdate.revision + 1,
+						content: undefined,
+						contentNeedsRebase: undefined,
+						contentRebaseRootKind: undefined,
+						copiedFrom: undefined,
+						size: 0,
+						updatedAt: now,
+					},
 				});
 
 				return Result({
@@ -5964,21 +5971,21 @@ export const commit_file_pending_update_rebase_in_db = internalMutation({
 			ctx,
 			pendingUpdateId: existingPendingUpdate._id,
 			value: {
-			revision: existingPendingUpdate.revision + 1,
-			content: {
-				base:
-					args.base.kind === "yjs"
-						? { kind: "yjs", sequence: args.base.baseYjsSequence, lineageGeneration: args.base.baseLineageGeneration }
-						: { kind: "asset", assetId: args.base.expectedAssetId },
-				baseStateId: args.baseStateId,
-				stagedStateId: args.stagedStateId,
-				unstagedStateId: args.unstagedStateId,
+				revision: existingPendingUpdate.revision + 1,
+				content: {
+					base:
+						args.base.kind === "yjs"
+							? { kind: "yjs", sequence: args.base.baseYjsSequence, lineageGeneration: args.base.baseLineageGeneration }
+							: { kind: "asset", assetId: args.base.expectedAssetId },
+					baseStateId: args.baseStateId,
+					stagedStateId: args.stagedStateId,
+					unstagedStateId: args.unstagedStateId,
+				},
+				contentNeedsRebase: undefined,
+				contentRebaseRootKind: undefined,
+				size: files_get_utf8_byte_size(args.unstagedText),
+				updatedAt: now,
 			},
-			contentNeedsRebase: undefined,
-			contentRebaseRootKind: undefined,
-			size: files_get_utf8_byte_size(args.unstagedText),
-			updatedAt: now,
-		},
 		});
 
 		await db_swap_canonical_states_and_consume_batch(ctx, {
@@ -7980,9 +7987,9 @@ async function files_pending_updates_db_save_yjs(args: {
 	reviewRunId?: Id<"files_pending_update_runs">;
 	trustedStageId?: Id<"files_yjs_trusted_update_stages">;
 	partial?: Infer<typeof files_pending_prepared_state_family_validator> & {
-			unstagedText: string;
-			unstagedTextChanged: boolean;
-		};
+		unstagedText: string;
+		unstagedTextChanged: boolean;
+	};
 	actor: { userId: Id<"users">; billedUserId: Id<"users">; validatedMedia?: files_pending_media_ValidatedSave };
 }) {
 	const { ctx, actor } = args;
@@ -8330,14 +8337,14 @@ async function files_pending_updates_db_save_yjs(args: {
 					ctx,
 					pendingUpdateId: pendingUpdate._id,
 					value: {
-					revision: pendingUpdate.revision + 1,
-					content: undefined,
-					contentNeedsRebase: undefined,
-					contentRebaseRootKind: undefined,
-					copiedFrom: undefined,
-					size: 0,
-					updatedAt: now,
-				},
+						revision: pendingUpdate.revision + 1,
+						content: undefined,
+						contentNeedsRebase: undefined,
+						contentRebaseRootKind: undefined,
+						copiedFrom: undefined,
+						size: 0,
+						updatedAt: now,
+					},
 				}),
 				files_db_retire_pending_update_yjs_states(ctx, {
 					organizationId: membership.organizationId,
@@ -8396,17 +8403,17 @@ async function files_pending_updates_db_save_yjs(args: {
 			ctx,
 			pendingUpdateId: pendingUpdate._id,
 			value: {
-			revision: pendingUpdate.revision + 1,
-			content: {
-				base: { kind: "yjs", sequence: nextBaseYjsSequence, lineageGeneration: args.baseLineageGeneration },
-				baseStateId: partial.baseStateId,
-				stagedStateId: partial.stagedStateId,
-				unstagedStateId: partial.unstagedStateId,
+				revision: pendingUpdate.revision + 1,
+				content: {
+					base: { kind: "yjs", sequence: nextBaseYjsSequence, lineageGeneration: args.baseLineageGeneration },
+					baseStateId: partial.baseStateId,
+					stagedStateId: partial.stagedStateId,
+					unstagedStateId: partial.unstagedStateId,
+				},
+				copiedFrom: undefined,
+				...(partial.unstagedTextChanged ? { size: files_get_utf8_byte_size(partial.unstagedText) } : {}),
+				updatedAt: now,
 			},
-			copiedFrom: undefined,
-			...(partial.unstagedTextChanged ? { size: files_get_utf8_byte_size(partial.unstagedText) } : {}),
-			updatedAt: now,
-		},
 		}),
 		files_pending_update_upsert_last_sequence_saved(ctx, {
 			organizationId: membership.organizationId,
@@ -8809,14 +8816,14 @@ async function files_pending_updates_db_save_asset(args: {
 					ctx,
 					pendingUpdateId: pendingUpdate._id,
 					value: {
-					revision: pendingUpdate.revision + 1,
-					content: undefined,
-					contentNeedsRebase: undefined,
-					contentRebaseRootKind: undefined,
-					copiedFrom: undefined,
-					size: 0,
-					updatedAt: now,
-				},
+						revision: pendingUpdate.revision + 1,
+						content: undefined,
+						contentNeedsRebase: undefined,
+						contentRebaseRootKind: undefined,
+						copiedFrom: undefined,
+						size: 0,
+						updatedAt: now,
+					},
 				}),
 				files_db_retire_pending_update_yjs_states(ctx, {
 					organizationId: membership.organizationId,
@@ -8858,16 +8865,16 @@ async function files_pending_updates_db_save_asset(args: {
 			ctx,
 			pendingUpdateId: pendingUpdate._id,
 			value: {
-			revision: pendingUpdate.revision + 1,
-			content: {
-				base: { kind: "asset", assetId: args.publish ? args.publish.versionSnapshotAssetId : content.base.assetId },
-				baseStateId: partial.baseStateId,
-				stagedStateId: partial.stagedStateId,
-				unstagedStateId: partial.unstagedStateId,
+				revision: pendingUpdate.revision + 1,
+				content: {
+					base: { kind: "asset", assetId: args.publish ? args.publish.versionSnapshotAssetId : content.base.assetId },
+					baseStateId: partial.baseStateId,
+					stagedStateId: partial.stagedStateId,
+					unstagedStateId: partial.unstagedStateId,
+				},
+				copiedFrom: undefined,
+				updatedAt: now,
 			},
-			copiedFrom: undefined,
-			updatedAt: now,
-		},
 		}),
 		files_pending_update_db_update_index_revision(ctx, {
 			pendingUpdateId: pendingUpdate._id,
@@ -9696,20 +9703,20 @@ async function files_pending_updates_db_save_private(args: {
 			ctx,
 			pendingUpdateId: pendingUpdate._id,
 			value: {
-			target: published._yay.target,
-			revision: pendingUpdate.revision + 1,
-			createIntent: undefined,
-			preparation: undefined,
-			pendingMove: undefined,
-			content: {
-				base,
-				baseStateId: family.baseStateId,
-				stagedStateId: family.stagedStateId,
-				unstagedStateId: family.unstagedStateId,
+				target: published._yay.target,
+				revision: pendingUpdate.revision + 1,
+				createIntent: undefined,
+				preparation: undefined,
+				pendingMove: undefined,
+				content: {
+					base,
+					baseStateId: family.baseStateId,
+					stagedStateId: family.stagedStateId,
+					unstagedStateId: family.unstagedStateId,
+				},
+				size: files_get_utf8_byte_size(args.partial.unstagedText),
+				updatedAt: now,
 			},
-			size: files_get_utf8_byte_size(args.partial.unstagedText),
-			updatedAt: now,
-		},
 		});
 
 		const chunks = await files_pending_update_db_replace_chunks(ctx, {

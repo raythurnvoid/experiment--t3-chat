@@ -30,25 +30,16 @@ function watch_key(name: string, args: Record<string, unknown>) {
 	return JSON.stringify({ name, ...sorted, cursor: paginationOpts?.cursor, endCursor: paginationOpts?.endCursor });
 }
 
-function page_key(args: {
-	membershipId: string;
-	cursor: string | null;
-	endCursor?: string | null;
-}) {
-		const { cursor, endCursor, membershipId } = args;
+function page_key(args: { membershipId: string; cursor: string | null; endCursor?: string | null }) {
+	const { cursor, endCursor, membershipId } = args;
 	return watch_key(getFunctionName(app_convex_api.files_nodes.list_tree), {
 		membershipId,
 		paginationOpts: { cursor, endCursor },
 	});
 }
 
-function children_key(args: {
-	parentId: string;
-	kind: "folder" | "file";
-	cursor: string | null;
-	archived?: boolean;
-}) {
-	const { archived = false, cursor, kind, parentId} = args;
+function children_key(args: { parentId: string; kind: "folder" | "file"; cursor: string | null; archived?: boolean }) {
+	const { archived = false, cursor, kind, parentId } = args;
 
 	return watch_key(getFunctionName(app_convex_api.files_nodes.list_tree_children), {
 		membershipId: "membership_1",
@@ -283,10 +274,10 @@ describe("FilesTreeProvider.useFullList", () => {
 			membershipId: "membership_1",
 			cursor: null,
 			result: {
-			page: [{ name: "a.md" }, { name: "README.md" }],
-			isDone: true,
-			continueCursor: "b",
-		},
+				page: [{ name: "a.md" }, { name: "README.md" }],
+				isDone: true,
+				continueCursor: "b",
+			},
 		});
 		const editor = screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Mentions draft" });
 		fireEvent.change(editor, { target: { value: "Unsaved README" } });
@@ -296,12 +287,12 @@ describe("FilesTreeProvider.useFullList", () => {
 			membershipId: "membership_1",
 			cursor: null,
 			result: {
-			page: [{ name: "a.md" }],
-			isDone: true,
-			continueCursor: "b",
-			pageStatus: "SplitRequired",
-			splitCursor: "a",
-		},
+				page: [{ name: "a.md" }],
+				isDone: true,
+				continueCursor: "b",
+				pageStatus: "SplitRequired",
+				splitCursor: "a",
+			},
 		});
 		expect(screen.getByLabelText("Mentions").textContent).toBe("a.md,README.md");
 		expect(screen.getByRole("textbox", { name: "Mentions draft" })).toBe(editor);
@@ -348,11 +339,19 @@ describe("FilesTreeProvider.useFolders", () => {
 		expect(listeners.get(children_key({ parentId: "root", kind: "file", cursor: null }))?.size).toBe(1);
 
 		receive(shared_roots_key(), { rows: [], truncated: false });
-		receive(children_key({ parentId: "root", kind: "folder", cursor: null }), { page: [row("docs")], isDone: true, continueCursor: "d" });
+		receive(children_key({ parentId: "root", kind: "folder", cursor: null }), {
+			page: [row("docs")],
+			isDone: true,
+			continueCursor: "d",
+		});
 		// Wait for both kinds, so the files never show before the folders above them.
 		expect(screen.getByLabelText("Rows").textContent).toBe("Loading files");
 
-		receive(children_key({ parentId: "root", kind: "file", cursor: null }), { page: [row("a.md")], isDone: true, continueCursor: "a" });
+		receive(children_key({ parentId: "root", kind: "file", cursor: null }), {
+			page: [row("a.md")],
+			isDone: true,
+			continueCursor: "a",
+		});
 		expect(screen.getByLabelText("Rows").textContent).toBe("docs,a.md");
 		expect(screen.getByLabelText("Status").textContent).toBe("root:done");
 	});
@@ -364,11 +363,23 @@ describe("FilesTreeProvider.useFolders", () => {
 			</TestWorkspace>,
 		);
 		receive(shared_roots_key(), { rows: [], truncated: false });
-		receive(children_key({ parentId: "root", kind: "folder", cursor: null }), { page: [row("people")], isDone: true, continueCursor: "p" });
-		receive(children_key({ parentId: "root", kind: "file", cursor: null }), { page: [], isDone: true, continueCursor: "" });
+		receive(children_key({ parentId: "root", kind: "folder", cursor: null }), {
+			page: [row("people")],
+			isDone: true,
+			continueCursor: "p",
+		});
+		receive(children_key({ parentId: "root", kind: "file", cursor: null }), {
+			page: [],
+			isDone: true,
+			continueCursor: "",
+		});
 		expect(screen.getByLabelText("Status").textContent).toBe("root:done,people:loading");
 
-		receive(children_key({ parentId: "people", kind: "folder", cursor: null }), { page: [], isDone: true, continueCursor: "" });
+		receive(children_key({ parentId: "people", kind: "folder", cursor: null }), {
+			page: [],
+			isDone: true,
+			continueCursor: "",
+		});
 		receive(children_key({ parentId: "people", kind: "file", cursor: null }), {
 			page: [row("ann.md", "people")],
 			isDone: false,
@@ -404,7 +415,11 @@ describe("FilesTreeProvider.useFolders", () => {
 			</TestWorkspace>,
 		);
 		receive(shared_roots_key(), { rows: [], truncated: false });
-		receive(children_key({ parentId: "root", kind: "folder", cursor: null }), { page: [], isDone: true, continueCursor: "" });
+		receive(children_key({ parentId: "root", kind: "folder", cursor: null }), {
+			page: [],
+			isDone: true,
+			continueCursor: "",
+		});
 		receive(children_key({ parentId: "root", kind: "file", cursor: null }), {
 			page: [row("a.md"), row("b.md")],
 			isDone: true,
@@ -429,8 +444,16 @@ describe("FilesTreeProvider.useFolders", () => {
 			</TestWorkspace>,
 		);
 		receive(shared_roots_key(), { rows: [row("shared", "hidden")], truncated: false });
-		receive(children_key({ parentId: "root", kind: "folder", cursor: null }), { page: [], isDone: true, continueCursor: "" });
-		receive(children_key({ parentId: "root", kind: "file", cursor: null }), { page: [], isDone: true, continueCursor: "" });
+		receive(children_key({ parentId: "root", kind: "folder", cursor: null }), {
+			page: [],
+			isDone: true,
+			continueCursor: "",
+		});
+		receive(children_key({ parentId: "root", kind: "file", cursor: null }), {
+			page: [],
+			isDone: true,
+			continueCursor: "",
+		});
 		expect(screen.getByLabelText("Rows").textContent).toBe("shared");
 		expect(screen.getByLabelText("Hoisted").textContent).toBe("shared");
 
@@ -456,7 +479,9 @@ describe("FilesTreeProvider.useFolders", () => {
 				<FoldersConsumer folderIds={[]} archived />
 			</TestWorkspace>,
 		);
-		expect(listeners.get(children_key({ parentId: "root", kind: "folder", cursor: null, archived: true }))?.size).toBe(1);
+		expect(listeners.get(children_key({ parentId: "root", kind: "folder", cursor: null, archived: true }))?.size).toBe(
+			1,
+		);
 		expect(listeners.get(shared_roots_key(true))?.size).toBe(1);
 	});
 });

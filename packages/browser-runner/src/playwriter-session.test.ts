@@ -183,7 +183,10 @@ function make_session(existingRecords?: Map<string, unknown>) {
 	};
 	const remote = async (path: string, input: unknown) => {
 		const response = await handle_playwriter_request({
-			request: new Request(`https://runner/internal/playwriter${path}`, { method: "POST", body: JSON.stringify(input) }),
+			request: new Request(`https://runner/internal/playwriter${path}`, {
+				method: "POST",
+				body: JSON.stringify(input),
+			}),
 			env,
 			ctx: { exports: { PlaywriterConnectionGateway: () => ({ fetch: async () => new Response() }) } },
 		});
@@ -370,9 +373,8 @@ describe("PlaywriterSession", () => {
 				agentBlockedHosts: [],
 			})
 		).reply.runtime as typeof runtime;
-		const reply = (
-			await mocked.remote("/run", { ...command_request(synced, "system-policy"), operation: SCRIPT })
-		).reply;
+		const reply = (await mocked.remote("/run", { ...command_request(synced, "system-policy"), operation: SCRIPT }))
+			.reply;
 		expect(reply, "A user policy sync must not remove the current system deny").toMatchObject({
 			status: "refused",
 			result: { reason: "blocked_site", inputSent: false, cleanup: "complete" },
@@ -686,11 +688,11 @@ describe("PlaywriterSession", () => {
 				mocked,
 				socket,
 				input: {
-				...connect_request(),
-				...(order === "total deadline before Pause"
-					? { idleExpiresAt: deadline, totalExpiresAt: deadline }
-					: { operations: 119 }),
-			},
+					...connect_request(),
+					...(order === "total deadline before Pause"
+						? { idleExpiresAt: deadline, totalExpiresAt: deadline }
+						: { operations: 119 }),
+				},
 			});
 			const preparedPauseRevision = connected.controlRevision + 1;
 			if (order === "cleanup before Pause") {
@@ -1434,12 +1436,12 @@ describe("PlaywriterSession", () => {
 				mocked,
 				socket: new NativeSocket(),
 				input: {
-				...connect_request(),
-				attemptId: "fenced-recovery",
-				operations: 1,
-				idleExpiresAt: connected.idleExpiresAt,
-				totalExpiresAt: connected.totalExpiresAt,
-			},
+					...connect_request(),
+					attemptId: "fenced-recovery",
+					operations: 1,
+					idleExpiresAt: connected.idleExpiresAt,
+					totalExpiresAt: connected.totalExpiresAt,
+				},
 			});
 			expect(recovered.generation).toBe(connected.generation + 2);
 			expect(
@@ -1487,11 +1489,7 @@ describe("PlaywriterSession", () => {
 });
 
 describe("PlaywriterSession scripts", () => {
-	function script_request(args: {
-		connected: typeof runtime;
-		commandId: string;
-		chatId?: string;
-	}) {
+	function script_request(args: { connected: typeof runtime; commandId: string; chatId?: string }) {
 		const { connected, commandId, chatId = "chat" } = args;
 
 		const request = command_request(connected, commandId);
@@ -1511,7 +1509,9 @@ describe("PlaywriterSession scripts", () => {
 			socket.navigate();
 			return {
 				...SCRIPT_RESULT,
-				files: [{ workspace: "current", path: "/shot.png", contentType: "image/png", bytes: new Uint8Array([1, 2, 3]) }],
+				files: [
+					{ workspace: "current", path: "/shot.png", contentType: "image/png", bytes: new Uint8Array([1, 2, 3]) },
+				],
 			};
 		});
 		mocked.evaluate.mockResolvedValue(SCRIPT_RESULT);

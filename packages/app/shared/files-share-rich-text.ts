@@ -1582,11 +1582,11 @@ export function files_share_rich_text_prepare(args: { text: string; textKind: fi
 	const media: files_share_rich_text_Prepared["media"] = [];
 	const doc = preflight.layoutRanges
 		? build_rich_document({
-			html: html._yay,
-			layoutRanges: preflight.layoutRanges,
-			media,
-			mediaWithTakenInTag: preflight.mediaWithTakenInTag,
-		})
+				html: html._yay,
+				layoutRanges: preflight.layoutRanges,
+				media,
+				mediaWithTakenInTag: preflight.mediaWithTakenInTag,
+			})
 		: null;
 	if (!doc) {
 		return Result({

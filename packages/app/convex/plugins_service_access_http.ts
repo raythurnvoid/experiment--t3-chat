@@ -37,11 +37,7 @@ function failure(message: string) {
 	return { status: 400, body: { code: "invalid_request", message } } as const;
 }
 
-async function request_failure(args: {
-	ctx: ActionCtx;
-	request: Request;
-	message: string;
-}) {
+async function request_failure(args: { ctx: ActionCtx; request: Request; message: string }) {
 	const { ctx, request, message } = args;
 
 	if (message === "Unauthorized") {

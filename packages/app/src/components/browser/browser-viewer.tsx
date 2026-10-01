@@ -102,11 +102,7 @@ const BrowserViewer = Object.assign(
 		const [statusDetail, setStatusDetail] = useState<string | null>(null);
 		const [attempt, setAttempt] = useState(0);
 
-		function to_remote_point(args: {
-			clientX: number;
-			clientY: number;
-			clampToPage?: boolean;
-		}) {
+		function to_remote_point(args: { clientX: number; clientY: number; clampToPage?: boolean }) {
 			const { clientX, clientY, clampToPage = false } = args;
 
 			const frame = frameRef.current;
@@ -161,7 +157,11 @@ const BrowserViewer = Object.assign(
 				return;
 			}
 			lastMoveRef.current = now;
-			const point = to_remote_point({ clientX: event.clientX, clientY: event.clientY, clampToPage: pressedButtonRef.current !== null });
+			const point = to_remote_point({
+				clientX: event.clientX,
+				clientY: event.clientY,
+				clampToPage: pressedButtonRef.current !== null,
+			});
 			if (point) {
 				send({ kind: "mouse.move", ...point });
 			}

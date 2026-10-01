@@ -461,7 +461,7 @@ function encode_invoke_reply(reply: pluginRunner_InvokeReply, deadline: ReturnTy
 
 	append(`{"runId":${JSON.stringify(reply.runId)},"pluginStatus":${reply.pluginStatus},"output":"`);
 	// Escape the output in slices so one huge string is never JSON-stringified in one pass.
-	for (let start = 0; start < reply.output.length; ) {
+	for (let start = 0; start < reply.output.length;) {
 		deadline.check();
 		let end = Math.min(start + 16 * 1024, reply.output.length);
 		const last = reply.output.charCodeAt(end - 1);
@@ -917,15 +917,27 @@ const routes = {
 
 				const validated = RUN_REQUEST_SCHEMA.safeParse(body);
 				if (!validated.success) {
-					return runner_refusal({ status: 400, name: "invalid_request", message: validation_error_message(validated.error) });
+					return runner_refusal({
+						status: 400,
+						name: "invalid_request",
+						message: validation_error_message(validated.error),
+					});
 				}
 
 				const prefix = env.PLUGIN_RUNNER_ARTIFACT_PREFIX ?? "plugins/";
 				if (!validated.data.artifactKey.startsWith(prefix)) {
-					return runner_refusal({ status: 400, name: "invalid_artifact_key", message: "Artifact key is outside the plugin prefix" });
+					return runner_refusal({
+						status: 400,
+						name: "invalid_artifact_key",
+						message: "Artifact key is outside the plugin prefix",
+					});
 				}
 				if (!ctx?.exports?.BonoboHost || !ctx.exports.BonoboOutbound) {
-					return runner_refusal({ status: 503, name: "misconfigured", message: "Runner entrypoint bindings are unavailable" });
+					return runner_refusal({
+						status: 503,
+						name: "misconfigured",
+						message: "Runner entrypoint bindings are unavailable",
+					});
 				}
 
 				const startedAt = Date.now();
@@ -1131,7 +1143,9 @@ export default {
 
 		// @ts-expect-error arbitrary request strings can't index the literal-keyed routes table
 		const handler: RouteHandler | undefined = routes[url.pathname]?.[request.method];
-		const result = handler ? await handler({ request, env, ctx }) : runner_refusal({ status: 404, name: "not_found", message: "Not found" });
+		const result = handler
+			? await handler({ request, env, ctx })
+			: runner_refusal({ status: 404, name: "not_found", message: "Not found" });
 		if (!("kind" in result)) return json_response(result.body, result.status);
 
 		const bytes = result.body instanceof Uint8Array ? result.body : TEXT_ENCODER.encode(JSON.stringify(result.body));

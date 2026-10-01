@@ -696,11 +696,7 @@ export function files_is_node(item: files_TreeItem): item is files_VisibleTreeNo
 	return item._id !== files_ROOT_ID;
 }
 
-export function files_create_room_id(args: {
-	organizationId: string;
-	workspaceId: string;
-	nodeId: string;
-}) {
+export function files_create_room_id(args: { organizationId: string; workspaceId: string; nodeId: string }) {
 	const { organizationId, workspaceId, nodeId } = args;
 
 	return composite_id("rooms", "files_nodes", organizationId, workspaceId, nodeId);

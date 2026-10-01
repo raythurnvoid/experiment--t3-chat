@@ -1446,15 +1446,15 @@ describe("RoutePluginsPluginAccess", () => {
 		setQueries({
 			plugin,
 			installations: [
-			{
-				...installed,
-				version: {
-					...installed.version,
-					events: [{ type: "users.account.deleted", contentTypes: [], filters: [] }],
+				{
+					...installed,
+					version: {
+						...installed.version,
+						events: [{ type: "users.account.deleted", contentTypes: [], filters: [] }],
+					},
+					handlers: active ? [{ event: "users.account.deleted" }] : [],
 				},
-				handlers: active ? [{ event: "users.account.deleted" }] : [],
-			},
-		],
+			],
 		});
 
 		render(<PageComponent />);

@@ -231,12 +231,8 @@ async function start_run(f: Awaited<ReturnType<typeof fixture>>, runId: Id<"plug
 	return { token, tokenHash, run: started._yay.pluginRun };
 }
 
-async function follow_up(args: {
-	f: Awaited<ReturnType<typeof fixture>>;
-	token: string;
-	state: string;
-}) {
-	const { f, token, state} = args;
+async function follow_up(args: { f: Awaited<ReturnType<typeof fixture>>; token: string; state: string }) {
+	const { f, token, state } = args;
 
 	return await f.t.fetch("/api/v1/plugin-runs/follow-up", {
 		method: "POST",
@@ -558,7 +554,10 @@ describe("request_follow_up", () => {
 		const { token, run } = await start_run(f, root._id);
 		if (run.apiTokenExpiresAt === undefined) throw new Error("Expected a live run token deadline");
 		vi.setSystemTime(run.apiTokenExpiresAt);
-		expect((await follow_up({ f, token, state: '{"cursor":1}' })).status, "an expired follow-up token must return 401").toBe(401);
+		expect(
+			(await follow_up({ f, token, state: '{"cursor":1}' })).status,
+			"an expired follow-up token must return 401",
+		).toBe(401);
 		const saved = await f.t.run((ctx) => ctx.db.get("plugins_event_runs", root._id));
 		expect(saved?.followUpState).toBeUndefined();
 		expect(saved?.apiCallCount).toBe(0);
@@ -828,7 +827,10 @@ describe("scheduled cancellation and retention", () => {
 		expect(saved.run?.followUpState).toBeUndefined();
 		expect(saved.run?.apiCallCount).toBe(1);
 		expect(saved.calls).toEqual(calls);
-		expect(saved.runs.map((run) => run._id), "revoked requests must not create a child run").toEqual([root._id]);
+		expect(
+			saved.runs.map((run) => run._id),
+			"revoked requests must not create a child run",
+		).toEqual([root._id]);
 	});
 
 	test("timeouts cancel the scheduled pool and preserve scheduled history forever", async () => {

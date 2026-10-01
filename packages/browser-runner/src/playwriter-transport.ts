@@ -773,8 +773,8 @@ export class PlaywriterTransport {
 			sessionId,
 			method: "Fetch.enable",
 			params: {
-			patterns: hosts.map((host) => ({ urlPattern: `*${host}*`, requestStage: "Request" })),
-		},
+				patterns: hosts.map((host) => ({ urlPattern: `*${host}*`, requestStage: "Request" })),
+			},
 		});
 	}
 
@@ -793,11 +793,7 @@ export class PlaywriterTransport {
 	/**
 	 * Send a command nobody waits for. A late reply finds no pending request and is dropped.
 	 */
-	private send_untracked(args: {
-		sessionId: string;
-		method: string;
-		params: Params;
-	}) {
+	private send_untracked(args: { sessionId: string; method: string; params: Params }) {
 		const { sessionId, method, params } = args;
 
 		if (this.closed || this.nextId >= Number.MAX_SAFE_INTEGER) return;
@@ -844,11 +840,7 @@ export class PlaywriterTransport {
 		this.sessions.clear();
 	}
 
-	private parse(args: {
-		data: unknown;
-		maxBytes: number;
-		child?: Child;
-	}) {
+	private parse(args: { data: unknown; maxBytes: number; child?: Child }) {
 		const { data, maxBytes, child } = args;
 
 		if (typeof data !== "string" || data.length > maxBytes) return null;
@@ -875,11 +867,7 @@ export class PlaywriterTransport {
 		}
 	}
 
-	private refuse(args: {
-		child: Child;
-		id: number;
-		sessionId: string | undefined;
-	}) {
+	private refuse(args: { child: Child; id: number; sessionId: string | undefined }) {
 		const { child, id, sessionId } = args;
 
 		this.reply(child, {
@@ -1140,11 +1128,7 @@ export class PlaywriterTransport {
 		}
 	}
 
-	private remember_frames(args: {
-		session: Session;
-		value: unknown;
-		depth?: number;
-	}): boolean {
+	private remember_frames(args: { session: Session; value: unknown; depth?: number }): boolean {
 		const { session, value, depth = 0 } = args;
 
 		if (
@@ -1406,7 +1390,9 @@ export class PlaywriterTransport {
 			this.send_untracked({
 				sessionId: sessionId ?? this.input.sessionId,
 				method: blocked ? "Fetch.failRequest" : "Fetch.continueRequest",
-				params: blocked ? { requestId: params.requestId, errorReason: "BlockedByClient" } : { requestId: params.requestId },
+				params: blocked
+					? { requestId: params.requestId, errorReason: "BlockedByClient" }
+					: { requestId: params.requestId },
 			});
 			return;
 		}
@@ -1542,7 +1528,8 @@ export class PlaywriterTransport {
 		// The input that opened a dialog only finishes after the dialog closes. So close the dialogs
 		// the script left open before the drain.
 		for (const sessionId of child.dialogs)
-			if (this.sessions.has(sessionId)) this.send({ child, sessionId, method: "Page.handleJavaScriptDialog", params: { accept: false } });
+			if (this.sessions.has(sessionId))
+				this.send({ child, sessionId, method: "Page.handleJavaScriptDialog", params: { accept: false } });
 		await this.drain(child, deadline);
 		if (!this.closed && Date.now() < deadline) {
 			for (const [sessionId] of this.sessions) {

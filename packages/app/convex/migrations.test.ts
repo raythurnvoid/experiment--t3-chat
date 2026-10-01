@@ -418,12 +418,7 @@ describe("backfill_plugin_scope_append_activity", () => {
 		const seeded = await t.run(async (ctx) => {
 			const membershipRevision = 123;
 			const secondUserId = await ctx.db.insert("users", { clerkUserId: null });
-			const keyAt = (args: {
-				prefix: string;
-				at: number;
-				suffix: string;
-			}) =>
-				{
+			const keyAt = (args: { prefix: string; at: number; suffix: string }) => {
 				const { prefix, at, suffix } = args;
 
 				return `${prefix}${String(9_999_999_999_999 - at).padStart(13, "0")}:${suffix}`;
@@ -437,9 +432,8 @@ describe("backfill_plugin_scope_append_activity", () => {
 					createdByUserId: typeof fixture.userId;
 				} | null;
 				appendSequence?: number;
-			}) =>
-				{
-				const { scopeId, lastAppend, appendSequence, collection} = args;
+			}) => {
+				const { scopeId, lastAppend, appendSequence, collection } = args;
 
 				return await ctx.db.insert("plugins_data_scopes", {
 					organizationId: fixture.organizationId,
@@ -533,8 +527,16 @@ describe("backfill_plugin_scope_append_activity", () => {
 			});
 
 			// These rows look close to append history but are public, non-append, malformed, or released.
-			await insertDocument({ collection: "messages", key: keyAt({ prefix: "public/", at: 400, suffix: "0001" }), requestId: "public" });
-			await insertDocument({ scopeId: "live", collection: "channels", key: keyAt({ prefix: "live/", at: 450, suffix: "0001" }) });
+			await insertDocument({
+				collection: "messages",
+				key: keyAt({ prefix: "public/", at: 400, suffix: "0001" }),
+				requestId: "public",
+			});
+			await insertDocument({
+				scopeId: "live",
+				collection: "channels",
+				key: keyAt({ prefix: "live/", at: 450, suffix: "0001" }),
+			});
 			await insertDocument({
 				scopeId: "live",
 				collection: "channels",

@@ -2691,10 +2691,10 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 					await app_convex_wait_new_query_value({
 						query: api.files_pending_updates.get_file_pending_update,
 						queryArgs: {
-						membershipId,
-						target,
-						pendingUpdateId,
-					},
+							membershipId,
+							target,
+							pendingUpdateId,
+						},
 					});
 				}
 				return;

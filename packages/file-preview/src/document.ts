@@ -14,11 +14,7 @@ export const file_preview_DocumentMessageSchema = z.discriminatedUnion("type", [
 	}),
 ]);
 
-export function file_preview_create_document(args: {
-	source: string;
-	loadId: string;
-	runtimeOrigin: string;
-}) {
+export function file_preview_create_document(args: { source: string; loadId: string; runtimeOrigin: string }) {
 	const { source, loadId, runtimeOrigin } = args;
 
 	const document = parse(source, { scriptingEnabled: true, sourceCodeLocationInfo: true });

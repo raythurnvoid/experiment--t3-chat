@@ -117,12 +117,7 @@ function make_transport(
 		onUnsafe,
 		onEvent,
 	});
-	const emit = (args: {
-		method: string;
-		params: unknown;
-		sessionId?: string | null;
-	}) =>
-		{
+	const emit = (args: { method: string; params: unknown; sessionId?: string | null }) => {
 		const { method, params, sessionId = "page-session" } = args;
 
 		return extension.send(
@@ -166,12 +161,7 @@ function make_transport(
 		const connection = transport.create_child({ deadline: Date.now() + 30_000 });
 		const child = connection.webSocket as unknown as Socket;
 		let id = 0;
-		const send = (args: {
-			method: string;
-			params?: unknown;
-			sessionId?: string | null;
-			requestId?: number;
-		}) => {
+		const send = (args: { method: string; params?: unknown; sessionId?: string | null; requestId?: number }) => {
 			const { method, params = {}, sessionId = "page-session", requestId } = args;
 
 			const nextId = requestId ?? ++id;
@@ -204,11 +194,17 @@ afterEach(() => {
 describe("PlaywriterTargetInventory", () => {
 	it("hands a worker before frame before root to the real transport in parent order", async () => {
 		const inventory = new PlaywriterTargetInventory();
-		expect(inventory.consume(attachment_event({ sessionId: "worker-session", targetInfo: WORKER_TARGET, parent: "iframe-session" }))).toBe(true);
+		expect(
+			inventory.consume(
+				attachment_event({ sessionId: "worker-session", targetInfo: WORKER_TARGET, parent: "iframe-session" }),
+			),
+		).toBe(true);
 		expect(inventory.ready).toBe(false);
 		expect(inventory.consume(attachment_event({ sessionId: "iframe-session", targetInfo: FRAME_TARGET }))).toBe(true);
 		expect(inventory.ready).toBe(false);
-		expect(inventory.consume(attachment_event({ sessionId: "page-session", targetInfo: TARGET, parent: null }))).toBe(true);
+		expect(inventory.consume(attachment_event({ sessionId: "page-session", targetInfo: TARGET, parent: null }))).toBe(
+			true,
+		);
 		expect(inventory.ready).toBe(true);
 		const snapshot = inventory.snapshot({ targetId: "assigned-page", sessionId: "page-session" });
 		expect(snapshot.targetInfo).not.toHaveProperty("ignoredSecret");
@@ -247,7 +243,9 @@ describe("PlaywriterTargetInventory", () => {
 
 	it("removes descendants when the detached parent was never announced", () => {
 		const inventory = new PlaywriterTargetInventory();
-		inventory.consume(attachment_event({ sessionId: "worker-session", targetInfo: WORKER_TARGET, parent: "missing-frame" }));
+		inventory.consume(
+			attachment_event({ sessionId: "worker-session", targetInfo: WORKER_TARGET, parent: "missing-frame" }),
+		);
 		inventory.consume(
 			attachment_event({
 				sessionId: "nested-worker",
@@ -272,8 +270,12 @@ describe("PlaywriterTargetInventory", () => {
 		const inventory = new PlaywriterTargetInventory();
 		inventory.consume(attachment_event({ sessionId: "page-session", targetInfo: TARGET, parent: null }));
 		inventory.consume(attachment_event({ sessionId: "iframe-session", targetInfo: FRAME_TARGET }));
-		inventory.consume(attachment_event({ sessionId: "worker-session", targetInfo: WORKER_TARGET, parent: "iframe-session" }));
-		inventory.consume(attachment_event({ sessionId: "peer-session", targetInfo: { ...TARGET, targetId: "peer-target" }, parent: null }));
+		inventory.consume(
+			attachment_event({ sessionId: "worker-session", targetInfo: WORKER_TARGET, parent: "iframe-session" }),
+		);
+		inventory.consume(
+			attachment_event({ sessionId: "peer-session", targetInfo: { ...TARGET, targetId: "peer-target" }, parent: null }),
+		);
 		inventory.consume(
 			JSON.stringify({
 				method: "forwardCDPEvent",
@@ -305,7 +307,9 @@ describe("PlaywriterTargetInventory", () => {
 		inventory.consume(attachment_event({ sessionId: "iframe-session", targetInfo: FRAME_TARGET }));
 		const root = { ...TARGET, title: "Current", url: "https://fixture.test/current" };
 		const frame = { ...FRAME_TARGET, title: "Current frame", url: "https://frame.test/current" };
-		expect(inventory.consume(attachment_event({ sessionId: "page-session", targetInfo: root, parent: null }))).toBe(true);
+		expect(inventory.consume(attachment_event({ sessionId: "page-session", targetInfo: root, parent: null }))).toBe(
+			true,
+		);
 		expect(inventory.consume(attachment_event({ sessionId: "iframe-session", targetInfo: frame }))).toBe(true);
 		const snapshot = inventory.snapshot({ targetId: TARGET.targetId, sessionId: "page-session" });
 		expect(snapshot.targetInfo).toMatchObject({ title: root.title, url: root.url });
@@ -321,32 +325,34 @@ describe("PlaywriterTargetInventory", () => {
 		["unsupported type", { ...FRAME_TARGET, type: "service_worker" }, "page-session"],
 		["context", { ...FRAME_TARGET, browserContextId: "changed-context" }, "page-session"],
 		["parent", FRAME_TARGET, "changed-parent"],
-	])("makes changed %s identity unusable", (args: {
-		_name: any;
-		targetInfo: any;
-		parent: any;
-	}) => {
+	])("makes changed %s identity unusable", (args: { _name: any; targetInfo: any; parent: any }) => {
 		const { targetInfo, parent } = args;
 
 		const inventory = new PlaywriterTargetInventory();
 		inventory.consume(attachment_event({ sessionId: "page-session", targetInfo: TARGET, parent: null }));
 		inventory.consume(attachment_event({ sessionId: "iframe-session", targetInfo: FRAME_TARGET }));
 		expect(
-			inventory.consume(attachment_event({
-				sessionId: "iframe-session",
-				targetInfo: targetInfo as Record<string, unknown>,
-				parent: String(parent),
-			})),
+			inventory.consume(
+				attachment_event({
+					sessionId: "iframe-session",
+					targetInfo: targetInfo as Record<string, unknown>,
+					parent: String(parent),
+				}),
+			),
 		).toBe(false);
 		expect(inventory.ready).toBe(false);
 		expect(inventory.roots).toEqual([]);
-		expect(inventory.consume(attachment_event({ sessionId: "page-session", targetInfo: TARGET, parent: null }))).toBe(false);
+		expect(inventory.consume(attachment_event({ sessionId: "page-session", targetInfo: TARGET, parent: null }))).toBe(
+			false,
+		);
 	});
 
 	it("rejects a reused target under a second session", () => {
 		const inventory = new PlaywriterTargetInventory();
 		inventory.consume(attachment_event({ sessionId: "page-session", targetInfo: TARGET, parent: null }));
-		expect(inventory.consume(attachment_event({ sessionId: "new-page-session", targetInfo: TARGET, parent: null }))).toBe(false);
+		expect(
+			inventory.consume(attachment_event({ sessionId: "new-page-session", targetInfo: TARGET, parent: null })),
+		).toBe(false);
 	});
 
 	it.each([
@@ -539,18 +545,28 @@ describe("PlaywriterTargetInventory", () => {
 		);
 		for (let index = 0; index < 63; index++)
 			expect(
-				inventory.consume(attachment_event({ sessionId: `frame-${index}`, targetInfo: { ...FRAME_TARGET, targetId: `frame-target-${index}` } })),
+				inventory.consume(
+					attachment_event({
+						sessionId: `frame-${index}`,
+						targetInfo: { ...FRAME_TARGET, targetId: `frame-target-${index}` },
+					}),
+				),
 			).toBe(true);
 		expect(inventory.ready).toBe(true);
-		expect(inventory.consume(attachment_event({ sessionId: "overflow", targetInfo: { ...FRAME_TARGET, targetId: "overflow-target" } }))).toBe(
-			false,
-		);
+		expect(
+			inventory.consume(
+				attachment_event({ sessionId: "overflow", targetInfo: { ...FRAME_TARGET, targetId: "overflow-target" } }),
+			),
+		).toBe(false);
 	});
 
 	it("replaces packet costs and reclaims bytes on updates and detaches", () => {
 		const inventory = new PlaywriterTargetInventory();
 		inventory.consume(attachment_event({ sessionId: "page-session", targetInfo: TARGET, parent: null }));
-		const large = attachment_event({ sessionId: "iframe-session", targetInfo: { ...FRAME_TARGET, ignored: "x".repeat(600_000) } });
+		const large = attachment_event({
+			sessionId: "iframe-session",
+			targetInfo: { ...FRAME_TARGET, ignored: "x".repeat(600_000) },
+		});
 		for (let index = 0; index < 4; index++) expect(inventory.consume(large)).toBe(true);
 		expect(
 			inventory.consume(
@@ -594,17 +610,31 @@ describe("PlaywriterTargetInventory", () => {
 		const padding = 1_048_576 - new TextEncoder().encode(root).byteLength - new TextEncoder().encode(empty).byteLength;
 		inventory.consume(root);
 		expect(
-			inventory.consume(attachment_event({ sessionId: "iframe-session", targetInfo: { ...FRAME_TARGET, ignored: "x".repeat(padding) } })),
+			inventory.consume(
+				attachment_event({
+					sessionId: "iframe-session",
+					targetInfo: { ...FRAME_TARGET, ignored: "x".repeat(padding) },
+				}),
+			),
 		).toBe(true);
 		expect(inventory.ready).toBe(true);
-		expect(inventory.consume(attachment_event({ sessionId: "worker-session", targetInfo: WORKER_TARGET, parent: "iframe-session" }))).toBe(false);
+		expect(
+			inventory.consume(
+				attachment_event({ sessionId: "worker-session", targetInfo: WORKER_TARGET, parent: "iframe-session" }),
+			),
+		).toBe(false);
 	});
 
 	it("counts UTF-8 attachment bytes and caps physical provider packets", () => {
 		const utf8 = new PlaywriterTargetInventory();
-		expect(utf8.consume(attachment_event({ sessionId: "iframe-session", targetInfo: { ...FRAME_TARGET, ignored: "界".repeat(350_000) } }))).toBe(
-			false,
-		);
+		expect(
+			utf8.consume(
+				attachment_event({
+					sessionId: "iframe-session",
+					targetInfo: { ...FRAME_TARGET, ignored: "界".repeat(350_000) },
+				}),
+			),
+		).toBe(false);
 		const provider = new PlaywriterTargetInventory();
 		expect(provider.consume(JSON.stringify({ method: "hello", ignored: "界".repeat(2_800_000) }))).toBe(false);
 		const ascii = new PlaywriterTargetInventory();
@@ -626,7 +656,11 @@ describe("PlaywriterTargetInventory", () => {
 				}),
 			),
 		).toBe(true);
-		expect(inventory.consume(attachment_event({ sessionId: "unsupported", targetInfo: { ...WORKER_TARGET, type: "service_worker" } }))).toBe(true);
+		expect(
+			inventory.consume(
+				attachment_event({ sessionId: "unsupported", targetInfo: { ...WORKER_TARGET, type: "service_worker" } }),
+			),
+		).toBe(true);
 		expect(inventory.snapshot({ targetId: TARGET.targetId, sessionId: "page-session" }).initialEvents).toEqual([
 			attachment_event({ sessionId: "page-session", targetInfo: TARGET, parent: null }),
 		]);
@@ -642,8 +676,8 @@ describe("PlaywriterTransport", () => {
 		fixture.emit({
 			method: "Runtime.executionContextCreated",
 			params: {
-			context: { id: 1, auxData: { isDefault: true, frameId: "main-frame" } },
-		},
+				context: { id: 1, auxData: { isDefault: true, frameId: "main-frame" } },
+			},
 		});
 		const id = send({ method: "Runtime.addBinding", params: { name: "__page_binding", executionContextId: 1 } });
 		expect(messages(child).find((message) => message.id === id)).toHaveProperty("error");
@@ -759,15 +793,15 @@ describe("PlaywriterTransport", () => {
 		emit({
 			method: "Runtime.executionContextCreated",
 			params: {
-			context: { id: 2, auxData: { isDefault: true, frameId: "other-frame" } },
-		},
+				context: { id: 2, auxData: { isDefault: true, frameId: "other-frame" } },
+			},
 		});
 		expect(messages(child).find((message) => message.id === id)).toBeUndefined();
 		emit({
 			method: "Runtime.executionContextCreated",
 			params: {
-			context: { id: 1, auxData: { isDefault: true, frameId: "main-frame" } },
-		},
+				context: { id: 1, auxData: { isDefault: true, frameId: "main-frame" } },
+			},
 		});
 		expect(
 			messages(child)
@@ -787,8 +821,8 @@ describe("PlaywriterTransport", () => {
 		emit({
 			method: "Runtime.executionContextCreated",
 			params: {
-			context: { id: 1, auxData: { isDefault: true, frameId: "main-frame" } },
-		},
+				context: { id: 1, auxData: { isDefault: true, frameId: "main-frame" } },
+			},
 		});
 		expect(messages(child).find((message) => message.id === id)).toBeUndefined();
 		send({ method: "Page.getFrameTree" });
@@ -969,16 +1003,16 @@ describe("PlaywriterTransport", () => {
 		emit({
 			method: "Target.attachedToTarget",
 			params: {
-			sessionId: "iframe-session",
-			targetInfo: {
-				targetId: "iframe-target",
-				type: "iframe",
-				title: "",
-				url: "https://frame.test/",
-				parentFrameId: "main-frame",
+				sessionId: "iframe-session",
+				targetInfo: {
+					targetId: "iframe-target",
+					type: "iframe",
+					title: "",
+					url: "https://frame.test/",
+					parentFrameId: "main-frame",
+				},
+				waitingForDebugger: false,
 			},
-			waitingForDebugger: false,
-		},
 		});
 		emit({
 			method: "Target.attachedToTarget",
@@ -1013,11 +1047,11 @@ describe("PlaywriterTransport", () => {
 			attachment_event({
 				sessionId: "iframe-session",
 				targetInfo: {
-				targetId: "iframe-target",
-				type: "iframe",
-				title: "",
-				url: "https://frame.test/",
-			},
+					targetId: "iframe-target",
+					type: "iframe",
+					title: "",
+					url: "https://frame.test/",
+				},
 			}),
 			attachment_event({
 				sessionId: "worker-session",
@@ -1042,10 +1076,10 @@ describe("PlaywriterTransport", () => {
 		emit({
 			method: "Target.attachedToTarget",
 			params: {
-			sessionId: "iframe-session",
-			targetInfo: { targetId: "iframe-target", type: "iframe", title: "", url: "https://frame.test/" },
-			waitingForDebugger: false,
-		},
+				sessionId: "iframe-session",
+				targetInfo: { targetId: "iframe-target", type: "iframe", title: "", url: "https://frame.test/" },
+				waitingForDebugger: false,
+			},
 		});
 		expect(messages(first.child).filter((message) => message.method === "Target.attachedToTarget")).toEqual(attached);
 		expect(await first.connection.settle(1000)).toEqual({ safe: true, reason: null });
@@ -1076,10 +1110,10 @@ describe("PlaywriterTransport", () => {
 		emit({
 			method: "Target.attachedToTarget",
 			params: {
-			sessionId: "iframe-session",
-			targetInfo: { ...target, title: "Frame" },
-			waitingForDebugger: false,
-		},
+				sessionId: "iframe-session",
+				targetInfo: { ...target, title: "Frame" },
+				waitingForDebugger: false,
+			},
 		});
 		send({
 			method: "Runtime.evaluate",
@@ -1122,7 +1156,16 @@ describe("PlaywriterTransport", () => {
 				}),
 			],
 		],
-		["unrelated page", [attachment_event({ sessionId: "other-page-session", targetInfo: { ...TARGET, targetId: "other-page" }, parent: null })]],
+		[
+			"unrelated page",
+			[
+				attachment_event({
+					sessionId: "other-page-session",
+					targetInfo: { ...TARGET, targetId: "other-page" },
+					parent: null,
+				}),
+			],
+		],
 		[
 			"debugger wait",
 			[
@@ -1134,7 +1177,12 @@ describe("PlaywriterTransport", () => {
 				}),
 			],
 		],
-		["too many events", Array.from({ length: 65 }, () => attachment_event({ sessionId: "page-session", targetInfo: TARGET, parent: null }))],
+		[
+			"too many events",
+			Array.from({ length: 65 }, () =>
+				attachment_event({ sessionId: "page-session", targetInfo: TARGET, parent: null }),
+			),
+		],
 		["too many bytes", [" ".repeat(1_048_577)]],
 		[
 			"too many UTF-8 bytes",
@@ -1142,12 +1190,12 @@ describe("PlaywriterTransport", () => {
 				attachment_event({
 					sessionId: "iframe-session",
 					targetInfo: {
-					targetId: "iframe-target",
-					type: "iframe",
-					title: "",
-					url: "https://frame.test/",
-					ignored: "界".repeat(350_000),
-				},
+						targetId: "iframe-target",
+						type: "iframe",
+						title: "",
+						url: "https://frame.test/",
+						ignored: "界".repeat(350_000),
+					},
 				}),
 			],
 		],
@@ -1163,11 +1211,11 @@ describe("PlaywriterTransport", () => {
 			attachment_event({
 				sessionId: "iframe-session",
 				targetInfo: {
-				targetId: "iframe-target",
-				type: "iframe",
-				title: "",
-				url: "https://frame.test/",
-			},
+					targetId: "iframe-target",
+					type: "iframe",
+					title: "",
+					url: "https://frame.test/",
+				},
 			}),
 		);
 		expect(
@@ -1195,10 +1243,10 @@ describe("PlaywriterTransport", () => {
 		emit({
 			method: "Target.attachedToTarget",
 			params: {
-			sessionId: "iframe-session",
-			targetInfo: { ...targetInfo, [String(field).toLowerCase()]: value },
-			waitingForDebugger: false,
-		},
+				sessionId: "iframe-session",
+				targetInfo: { ...targetInfo, [String(field).toLowerCase()]: value },
+				waitingForDebugger: false,
+			},
 		});
 		expect(socket.readyState).toBe(3);
 		expect(onUnsafe).toHaveBeenCalledWith("invalid_target");
@@ -1211,26 +1259,26 @@ describe("PlaywriterTransport", () => {
 				attachment_event({
 					sessionId: "iframe-session",
 					targetInfo: {
-					targetId: "iframe-target",
-					type: "iframe",
-					title: "",
-					url: "https://frame.test/",
-				},
+						targetId: "iframe-target",
+						type: "iframe",
+						title: "",
+						url: "https://frame.test/",
+					},
 				}),
 			],
 		});
 		emit({
 			method: "Target.attachedToTarget",
 			params: {
-			sessionId: "unsupported-session",
-			targetInfo: {
-				targetId: "unsupported-target",
-				type: "service_worker",
-				title: "",
-				url: "https://frame.test/sw.js",
+				sessionId: "unsupported-session",
+				targetInfo: {
+					targetId: "unsupported-target",
+					type: "service_worker",
+					title: "",
+					url: "https://frame.test/sw.js",
+				},
+				waitingForDebugger: false,
 			},
-			waitingForDebugger: false,
-		},
 		});
 		const { connection, child, start } = create_child();
 		start();
@@ -1281,11 +1329,7 @@ describe("PlaywriterTransport", () => {
 		["target", { targetId: "different-target", type: "iframe", title: "", url: "https://frame.test/" }, "page-session"],
 		["type", { targetId: "iframe-target", type: "worker", title: "", url: "https://frame.test/" }, "page-session"],
 		["parent", { targetId: "iframe-target", type: "iframe", title: "", url: "https://frame.test/" }, "other-parent"],
-	])("fences changed %s before a child exists", (args: {
-		_name: any;
-		targetInfo: any;
-		parent: any;
-	}) => {
+	])("fences changed %s before a child exists", (args: { _name: any; targetInfo: any; parent: any }) => {
 		const { targetInfo, parent } = args;
 
 		const { create_child, emit, socket, onUnsafe } = make_transport({
@@ -1293,11 +1337,11 @@ describe("PlaywriterTransport", () => {
 				attachment_event({
 					sessionId: "iframe-session",
 					targetInfo: {
-					targetId: "iframe-target",
-					type: "iframe",
-					title: "",
-					url: "https://frame.test/",
-				},
+						targetId: "iframe-target",
+						type: "iframe",
+						title: "",
+						url: "https://frame.test/",
+					},
 				}),
 			],
 		});
@@ -1317,11 +1361,11 @@ describe("PlaywriterTransport", () => {
 				attachment_event({
 					sessionId: "iframe-session",
 					targetInfo: {
-					targetId: "iframe-target",
-					type: "iframe",
-					title: "",
-					url: "https://frame.test/",
-				},
+						targetId: "iframe-target",
+						type: "iframe",
+						title: "",
+						url: "https://frame.test/",
+					},
 				}),
 				attachment_event({
 					sessionId: "worker-session",
@@ -1350,11 +1394,11 @@ describe("PlaywriterTransport", () => {
 				data: attachment_event({
 					sessionId: "iframe-session",
 					targetInfo: {
-					targetId: "iframe-target",
-					type: "iframe",
-					title: "",
-					url: "https://frame.test/",
-				},
+						targetId: "iframe-target",
+						type: "iframe",
+						title: "",
+						url: "https://frame.test/",
+					},
 				}),
 			}),
 		);
@@ -1372,7 +1416,11 @@ describe("PlaywriterTransport", () => {
 		start();
 		emit({
 			method: "Target.attachedToTarget",
-			params: { sessionId: "popup-session", targetInfo: { ...TARGET, targetId: "popup-target" }, waitingForDebugger: false },
+			params: {
+				sessionId: "popup-session",
+				targetInfo: { ...TARGET, targetId: "popup-target" },
+				waitingForDebugger: false,
+			},
 			sessionId: null,
 		});
 		expect(onEvent.mock.calls.map(([reason]) => reason)).toEqual(["popup"]);
@@ -1388,10 +1436,10 @@ describe("PlaywriterTransport", () => {
 		emit({
 			method: "Target.attachedToTarget",
 			params: {
-			sessionId: "worker-session",
-			targetInfo: { targetId: "worker-target", type: "worker", title: "", url: "https://fixture.test/worker.js" },
-			waitingForDebugger: true,
-		},
+				sessionId: "worker-session",
+				targetInfo: { targetId: "worker-target", type: "worker", title: "", url: "https://fixture.test/worker.js" },
+				waitingForDebugger: true,
+			},
 		});
 		expect(onEvent).toHaveBeenCalledWith("debugger_conflict");
 		expect(await connection.settle(1000)).toEqual({ safe: false, reason: "debugger_conflict" });
@@ -1449,10 +1497,10 @@ describe("PlaywriterTransport", () => {
 		send({
 			method: "Page.captureScreenshot",
 			params: {
-			format: "png",
-			captureBeyondViewport: false,
-			clip: { x: 0, y: 0, width: 8192, height: 8192, scale: 1 },
-		},
+				format: "png",
+				captureBeyondViewport: false,
+				clip: { x: 0, y: 0, width: 8192, height: 8192, scale: 1 },
+			},
 		});
 		send({ method: "Runtime.evaluate", params: { expression: "1", contextId: 99 } });
 		send({ method: "Page.navigate", params: { url: "file:///private" } });
@@ -1508,14 +1556,14 @@ describe("PlaywriterTransport script commands", () => {
 		emit({
 			method: "Page.frameNavigated",
 			params: {
-			frame: { id: "inner-frame", parentId: "main-frame", url: "https://blocked.test/" },
-		},
+				frame: { id: "inner-frame", parentId: "main-frame", url: "https://blocked.test/" },
+			},
 		});
 		emit({
 			method: "Page.frameNavigated",
 			params: {
-			frame: { id: "inner-frame", parentId: "main-frame", url: "https://fixture.test/" },
-		},
+				frame: { id: "inner-frame", parentId: "main-frame", url: "https://fixture.test/" },
+			},
 		});
 		const id = send({ method: "Page.enable" });
 		expect(messages(child).find((message) => message.id === id)).toHaveProperty("error");
@@ -1566,9 +1614,9 @@ describe("PlaywriterTransport script commands", () => {
 		emit({
 			method: "Fetch.requestPaused",
 			params: {
-			requestId: "allowed-request",
-			request: { url: "https://fixture.test/?q=blocked.test" },
-		},
+				requestId: "allowed-request",
+				request: { url: "https://fixture.test/?q=blocked.test" },
+			},
 		});
 		expect(commands(extension).slice(-2)).toMatchObject([
 			{ method: "Fetch.failRequest", params: { requestId: "blocked-request", errorReason: "BlockedByClient" } },
@@ -1584,11 +1632,7 @@ describe("PlaywriterTransport script commands", () => {
 		["Meta+V", "Input.dispatchKeyEvent", { type: "keyDown", modifiers: 4, key: "v", code: "KeyV" }],
 		["Shift+Insert", "Input.dispatchKeyEvent", { type: "keyDown", modifiers: 8, key: "Insert", code: "Insert" }],
 		["middle click", "Input.dispatchMouseEvent", { type: "mousePressed", button: "middle", x: 1, y: 1 }],
-	])("refuses a paste from the user's clipboard: %s", async (args: {
-		_name: any;
-		method: any;
-		params: any;
-	}) => {
+	])("refuses a paste from the user's clipboard: %s", async (args: { _name: any; method: any; params: any }) => {
 		const { method, params } = args;
 
 		const { create_child, extension } = make_transport();

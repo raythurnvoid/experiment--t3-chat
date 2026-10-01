@@ -118,11 +118,7 @@ export async function crypto_decrypt_secret_value(args: {
 /**
  * Keep link fingerprints separate from encryption and other HMAC uses.
  */
-export async function crypto_hmac_sha256_hex(args: {
-	value: string;
-	purpose: string;
-	keyName: SecretKeyName;
-}) {
+export async function crypto_hmac_sha256_hex(args: { value: string; purpose: string; keyName: SecretKeyName }) {
 	const { value, purpose, keyName } = args;
 
 	const secret = process.env[keyName];

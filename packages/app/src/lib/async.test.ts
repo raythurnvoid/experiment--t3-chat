@@ -201,7 +201,11 @@ describe("CoalescedRunner", () => {
 
 describe("async_all_settled_with_limit", () => {
 	test("Should return all results in input order", async () => {
-		const results = await async_all_settled_with_limit({ items: [1, 2, 3, 4], limit: 2, run: async (item) => item * 10 });
+		const results = await async_all_settled_with_limit({
+			items: [1, 2, 3, 4],
+			limit: 2,
+			run: async (item) => item * 10,
+		});
 
 		expect(results).toEqual([
 			{ status: "fulfilled", value: 10 },
@@ -219,11 +223,11 @@ describe("async_all_settled_with_limit", () => {
 			items: [1, 2, 3, 4, 5, 6, 7, 8],
 			limit: 3,
 			run: async () => {
-			active += 1;
-			maxActive = Math.max(maxActive, active);
-			await new Promise((resolve) => setTimeout(resolve, 5));
-			active -= 1;
-		},
+				active += 1;
+				maxActive = Math.max(maxActive, active);
+				await new Promise((resolve) => setTimeout(resolve, 5));
+				active -= 1;
+			},
 		});
 
 		expect(maxActive).toBe(3);
@@ -237,11 +241,11 @@ describe("async_all_settled_with_limit", () => {
 			items: [0, 1, 2, 3],
 			limit: 2,
 			run: (item) => {
-			started.push(item);
-			return new Promise<void>((resolve) => {
-				resolvers.push(resolve);
-			});
-		},
+				started.push(item);
+				return new Promise<void>((resolve) => {
+					resolvers.push(resolve);
+				});
+			},
 		});
 
 		// Only the first `limit` items start right away.
@@ -266,9 +270,9 @@ describe("async_all_settled_with_limit", () => {
 			items: [1, 2, 3],
 			limit: 1,
 			run: async (item) => {
-			if (item === 2) throw error;
-			return item;
-		},
+				if (item === 2) throw error;
+				return item;
+			},
 		});
 
 		expect(results).toEqual([
@@ -283,8 +287,8 @@ describe("async_all_settled_with_limit", () => {
 			items: [],
 			limit: 5,
 			run: async () => {
-			throw new Error("should not run");
-		},
+				throw new Error("should not run");
+			},
 		});
 
 		expect(results).toEqual([]);
@@ -298,12 +302,12 @@ describe("async_all_settled_with_limit", () => {
 			items: [1, 2],
 			limit: 0,
 			run: async (item) => {
-			active += 1;
-			maxActive = Math.max(maxActive, active);
-			await new Promise((resolve) => setTimeout(resolve, 1));
-			active -= 1;
-			return item;
-		},
+				active += 1;
+				maxActive = Math.max(maxActive, active);
+				await new Promise((resolve) => setTimeout(resolve, 1));
+				active -= 1;
+				return item;
+			},
 		});
 
 		expect(maxActive).toBe(1);

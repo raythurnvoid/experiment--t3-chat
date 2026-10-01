@@ -2073,11 +2073,7 @@ export const deliver_bash_job_copy_refusal = internalMutation({
 /**
  * Only complete input or a waiting Copy can survive a lost worker. Never replay shell code.
  */
-async function db_requeue_bash_job_copy(args: {
-	ctx: MutationCtx;
-	invocation: BashJobRow;
-	now: number;
-}) {
+async function db_requeue_bash_job_copy(args: { ctx: MutationCtx; invocation: BashJobRow; now: number }) {
 	const { ctx, invocation, now } = args;
 
 	const copy = invocation.job.copy;
@@ -2340,7 +2336,12 @@ async function db_settle_bash_job(args: {
 	const { ctx, invocation } = args;
 
 	if (invocation.status === "running") {
-		await db_stop_bash_job_transfers({ ctx, invocation, reason: args.status === "timed_out" ? "timeout" : "user", now: args.now });
+		await db_stop_bash_job_transfers({
+			ctx,
+			invocation,
+			reason: args.status === "timed_out" ? "timeout" : "user",
+			now: args.now,
+		});
 		if (invocation.job.copy)
 			await ctx.scheduler.runAfter(0, internal.ai_chat_files.cleanup_bash_job_copy_pages, {
 				invocationId: invocation._id,
