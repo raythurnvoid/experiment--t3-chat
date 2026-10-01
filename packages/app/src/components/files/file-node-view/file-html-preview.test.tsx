@@ -8,19 +8,27 @@ import type { files_VisibleEntry } from "@/lib/files.ts";
 import { files_yjs_doc_create_from_text } from "../../../../shared/files-tiptap.ts";
 import { files_u8_to_array_buffer } from "../../../../shared/files.ts";
 
-const { queryMock, actionMock, savedReadMock, pendingReadMock, privateReadMock, tenantMock, queryValues, queryListeners } =
-	vi.hoisted(() => ({
-		queryMock: vi.fn(),
-		actionMock: vi.fn(),
-		savedReadMock: vi.fn(),
-		pendingReadMock: vi.fn(),
-		privateReadMock: vi.fn(),
-		tenantMock: vi.fn(),
-		queryValues: { pending: null as unknown, sequence: null as unknown },
-		// The mocked useQuery subscribes here. Like a real Convex query update, a change re-renders the
-		// component that called it. A parent rerender does not, because the React Compiler keeps its output.
-		queryListeners: new Set<() => void>(),
-	}));
+const {
+	queryMock,
+	actionMock,
+	savedReadMock,
+	pendingReadMock,
+	privateReadMock,
+	tenantMock,
+	queryValues,
+	queryListeners,
+} = vi.hoisted(() => ({
+	queryMock: vi.fn(),
+	actionMock: vi.fn(),
+	savedReadMock: vi.fn(),
+	pendingReadMock: vi.fn(),
+	privateReadMock: vi.fn(),
+	tenantMock: vi.fn(),
+	queryValues: { pending: null as unknown, sequence: null as unknown },
+	// The mocked useQuery subscribes here. Like a real Convex query update, a change re-renders the
+	// component that called it. A parent rerender does not, because the React Compiler keeps its output.
+	queryListeners: new Set<() => void>(),
+}));
 
 vi.mock("@/lib/app-tenant-context.tsx", () => ({ AppTenantProvider: { useContext: () => tenantMock() } }));
 vi.mock("convex/react", async () => {

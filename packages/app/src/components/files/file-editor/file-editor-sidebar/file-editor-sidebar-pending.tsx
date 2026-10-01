@@ -1619,7 +1619,8 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 			const deepestKeptIndex = row.requiredParents.findLastIndex(
 				(parent) => !pending_row_matches_source(parent, activeSource),
 			);
-			for (const parent of row.requiredParents.slice(0, deepestKeptIndex + 1)) keptParentIds.add(parent.pendingUpdateId);
+			for (const parent of row.requiredParents.slice(0, deepestKeptIndex + 1))
+				keptParentIds.add(parent.pendingUpdateId);
 		}
 		const discardParentsById = new Map(
 			shownRows

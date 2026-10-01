@@ -803,7 +803,13 @@ const FileNodeViewHeader = memo(function FileNodeViewHeader(props: FileNodeViewH
 									className={cn("FileNodeViewHeader-breadcrumb-home" satisfies FileNodeViewHeader_ClassNames)}
 									to="/w/$organizationName/$workspaceName/files"
 									params={{ organizationName, workspaceName }}
-									search={(prev) => ({ ...prev, nodeId: files_ROOT_ID, pendingNodeId: undefined, view: undefined, fileView: undefined })}
+									search={(prev) => ({
+										...prev,
+										nodeId: files_ROOT_ID,
+										pendingNodeId: undefined,
+										view: undefined,
+										fileView: undefined,
+									})}
 									variant="button-icon-ghost-highlightable"
 									tooltip="Home"
 								>
@@ -841,7 +847,13 @@ const FileNodeViewHeader = memo(function FileNodeViewHeader(props: FileNodeViewH
 									params={{ organizationName, workspaceName }}
 									// Keep `q` so the URL stays in step with the still-filled sidebar search box.
 									// Drop `view` so the target node opens on its own default editor.
-									search={(prev) => ({ ...prev, nodeId: files_ROOT_ID, pendingNodeId: undefined, view: undefined, fileView: undefined })}
+									search={(prev) => ({
+										...prev,
+										nodeId: files_ROOT_ID,
+										pendingNodeId: undefined,
+										view: undefined,
+										fileView: undefined,
+									})}
 									variant="button-icon-ghost-highlightable"
 									tooltip="Home"
 								>
@@ -4140,7 +4152,13 @@ const FileNodeViewFolderExplorerRow = memo(function FileNodeViewFolderExplorerRo
 					to="/w/$organizationName/$workspaceName/files"
 					params={{ organizationName, workspaceName }}
 					// Drop `view` so the target node opens on its own default editor.
-					search={(prev) => ({ ...prev, nodeId: child._id, pendingNodeId: undefined, view: undefined, fileView: undefined })}
+					search={(prev) => ({
+						...prev,
+						nodeId: child._id,
+						pendingNodeId: undefined,
+						view: undefined,
+						fileView: undefined,
+					})}
 					draggable={false}
 				/>
 				<MyIcon className={"FileNodeViewFolderExplorer-icon" satisfies FileNodeViewFolderExplorerRow_ClassNames}>

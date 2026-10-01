@@ -938,7 +938,10 @@ describe("unarchive_nodes", () => {
 		expect(restored._nay).toBeUndefined();
 		expect(restored._yay).not.toBeNull();
 		const op = await f.t.run((ctx) =>
-			ctx.db.query("files_subtree_ops").withIndex("by_archiveRun", (q) => q.eq("archiveRunId", restored._yay!.runId)).unique(),
+			ctx.db
+				.query("files_subtree_ops")
+				.withIndex("by_archiveRun", (q) => q.eq("archiveRunId", restored._yay!.runId))
+				.unique(),
 		);
 		expect(op).toMatchObject({ kind: "restore", status: "queued", blockedByOpId: blockerId });
 		expect((await read_activity(f, restored._yay!.activityId)).feedVisible).toBe(false);
@@ -984,7 +987,10 @@ describe("unarchive_nodes", () => {
 
 		await step(f, restored._yay!.runId);
 		const op = await f.t.run((ctx) =>
-			ctx.db.query("files_subtree_ops").withIndex("by_archiveRun", (q) => q.eq("archiveRunId", restored._yay!.runId)).unique(),
+			ctx.db
+				.query("files_subtree_ops")
+				.withIndex("by_archiveRun", (q) => q.eq("archiveRunId", restored._yay!.runId))
+				.unique(),
 		);
 		expect(op?.treePaths).toContain("/cursor/a.md");
 		expect(op).toMatchObject({ status: "queued", blockedByOpId: blockerId });
@@ -1014,13 +1020,12 @@ describe("unarchive_nodes", () => {
 		expect((await f.t.run((ctx) => ctx.db.get("files_archive_runs", restored._yay!.runId)))?.phase).toBe("discover");
 		const firstBlockerId = await blocker("/queued/same.md");
 		await step(f, restored._yay!.runId);
-		const opId = await f.t.run(async (ctx) =>
-			(
-				await ctx.db
+		const opId = await f.t.run(
+			async (ctx) =>
+				(await ctx.db
 					.query("files_subtree_ops")
 					.withIndex("by_archiveRun", (q) => q.eq("archiveRunId", restored._yay!.runId))
-					.unique()
-			)!._id,
+					.unique())!._id,
 		);
 		expect(await f.t.run((ctx) => ctx.db.get("files_subtree_ops", opId))).toMatchObject({
 			status: "queued",
@@ -1130,7 +1135,10 @@ describe("unarchive_nodes", () => {
 		const refused = await restore(f, [tooMany.fileIds[0]!]);
 		expect(refused._nay).toBeUndefined();
 		const failed = await run_to_end(f, refused._yay!);
-		expect(failed.activity).toMatchObject({ status: "failed", errorMessage: "Too many archived items share one path." });
+		expect(failed.activity).toMatchObject({
+			status: "failed",
+			errorMessage: "Too many archived items share one path.",
+		});
 		expect((await read_node(f, tooMany.fileIds[0]!)).archiveOperationId).not.toBeNull();
 	});
 
@@ -1554,11 +1562,7 @@ describe("unarchive_nodes", () => {
 		/**
 		 * Run steps until `nodeId` is back.
 		 */
-		async function step_until_restored(
-			f: Fixture,
-			runId: Id<"files_archive_runs">,
-			nodeId: Id<"files_nodes">,
-		) {
+		async function step_until_restored(f: Fixture, runId: Id<"files_archive_runs">, nodeId: Id<"files_nodes">) {
 			for (let count = 0; (await read_node(f, nodeId)).archiveOperationId !== null; count++) {
 				if (count === 20) throw new Error("The node did not come back");
 				await step(f, runId);
@@ -1747,7 +1751,10 @@ describe("unarchive_nodes", () => {
 			const f = await fixture();
 			const { tree, occupantIds, job } = await seed_clash_inside(f, ["f050.md"]);
 
-			expect((await read_run(f, job.runId)).conflict).toEqual({ nodeId: tree.fileIds[150], occupantId: occupantIds[0] });
+			expect((await read_run(f, job.runId)).conflict).toEqual({
+				nodeId: tree.fileIds[150],
+				occupantId: occupantIds[0],
+			});
 			expect(
 				(await f.asOwner.query(api.files_archive_runs.get, { membershipId: f.db.membershipId, runId: job.runId }))
 					?.conflict,
@@ -1773,7 +1780,10 @@ describe("unarchive_nodes", () => {
 
 			expect(await resolve(f, job.runId, "skip")).toEqual({ _yay: null });
 			expect((await run_to_end(f, job)).activity.status).toBe("awaiting_input");
-			expect((await read_run(f, job.runId)).conflict).toEqual({ nodeId: tree.fileIds[180], occupantId: occupantIds[1] });
+			expect((await read_run(f, job.runId)).conflict).toEqual({
+				nodeId: tree.fileIds[180],
+				occupantId: occupantIds[1],
+			});
 			expect(await resolve(f, job.runId, "replace")).toEqual({ _yay: null });
 			const ended = await run_to_end(f, job);
 
