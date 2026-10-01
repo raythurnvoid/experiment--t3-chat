@@ -685,80 +685,47 @@ async function dial(args: {
 	return Result({ _yay: { connectionId: connection._id } });
 }
 
-export const connect_tab = action({
-	args: { membershipId: v.id("organizations_workspaces_users"), share: v.string() },
-	returns: connection_result_validator,
-	handler: async (ctx, args) => {
-		const userId = await current_user(ctx);
-		const shareId = playwriter_parse_share(args.share);
-		if (!shareId || args.share.length > 256)
-			return Result({
-				_nay: { message: "Paste the Playwriter ID or its official share link.", name: "invalid_share" },
-			});
-		if (!enabled()) return Result({ _nay: { message: "Browser unavailable" } });
-		const linkFingerprint = await crypto_hmac_sha256_hex({
+async function connect_share(args: {
+	ctx: ActionCtx;
+	userId: Id<"users">;
+	membershipId: Id<"organizations_workspaces_users">;
+	share: string;
+}) {
+	const { ctx, userId } = args;
+	const shareId = playwriter_parse_share(args.share);
+	if (!shareId || args.share.length > 256)
+		return Result({
+			_nay: { message: "Paste the Playwriter ID or its official share link.", name: "invalid_share" },
+		});
+	if (!enabled()) return Result({ _nay: { message: "Browser unavailable" } });
+	const linkFingerprint = await crypto_hmac_sha256_hex({
+		value: shareId,
+		purpose: "playwriter-link",
+		keyName: KEY_NAME,
+	});
+	const prepared = (await ctx.runMutation(internal.playwriter_browser.prepare_connect, {
+		userId,
+		membershipId: args.membershipId,
+		linkFingerprint,
+	})) as prepare_connect_Result;
+	if (prepared._nay) return prepared;
+	const connection = prepared._yay.connection;
+	if (prepared._yay.reused) return Result({ _yay: { connectionId: connection._id } });
+	try {
+		const encrypted = await crypto_encrypt_secret_value({
 			value: shareId,
-			purpose: "playwriter-link",
+			additionalData: secret_scope(connection),
 			keyName: KEY_NAME,
 		});
-		const prepared = (await ctx.runMutation(internal.playwriter_browser.prepare_connect, {
-			userId,
-			membershipId: args.membershipId,
-			linkFingerprint,
-		})) as prepare_connect_Result;
-		if (prepared._nay) return prepared;
-		const connection = prepared._yay.connection;
-		if (prepared._yay.reused) return Result({ _yay: { connectionId: connection._id } });
-		try {
-			const encrypted = await crypto_encrypt_secret_value({
-				value: shareId,
-				additionalData: secret_scope(connection),
-				keyName: KEY_NAME,
-			});
-			const stored = await ctx.runMutation(internal.playwriter_browser.store_credential, {
-				connectionId: connection._id,
-				attemptId: connection.connectAttemptId,
-				encryptedShareId: encrypted.ciphertext,
-				shareNonce: encrypted.nonce,
-			});
-			if (!stored) return Result({ _nay: { message: "Browser connection changed", name: "stale" } });
-			const connected = await dial({ ctx, connection, shareId, transition: { route: "connect" } });
-			if (connected._nay) {
-				await ctx.runMutation(internal.playwriter_browser.forget_connection, {
-					connectionId: connection._id,
-					userId,
-					attemptId: connection.connectAttemptId,
-					controlRevision: connection.controlRevision,
-					reason: "connect_failed",
-				});
-				return connected;
-			}
-
-			// A share ID shares exactly one tab, which the user picked in the extension. Confirm it
-			// for them. With more tabs (popups it opened) the user still chooses one.
-			const dialed = (await ctx.runQuery(internal.playwriter_browser.load_connection, {
-				connectionId: connection._id,
-				membershipId: args.membershipId,
-				userId,
-				requireBrowserPermission: true,
-			})) as load_connection_Result;
-			if (dialed._nay || dialed._yay.state !== "needs_confirmation" || dialed._yay.targets.length !== 1)
-				return connected;
-			// The connect already worked. If this confirm fails (a blocked site, a runner error), keep the
-			// connection, so the user can still choose the tab by hand and see why it is refused.
-			const confirmed = await confirm_target({
-				ctx,
-				connection: dialed._yay,
-				targetHandle: dialed._yay.targets[0]!.handle,
-			}).catch((error: unknown) => {
-				// Log only the error name. Runner errors may contain the share ID.
-				console.error("Failed to confirm the shared tab after connect", {
-					errorName: error instanceof Error ? error.name : null,
-				});
-				return connected;
-			});
-			return confirmed._nay ? connected : confirmed;
-		} catch {
+		const stored = await ctx.runMutation(internal.playwriter_browser.store_credential, {
+			connectionId: connection._id,
+			attemptId: connection.connectAttemptId,
+			encryptedShareId: encrypted.ciphertext,
+			shareNonce: encrypted.nonce,
+		});
+		if (!stored) return Result({ _nay: { message: "Browser connection changed", name: "stale" } });
+		const connected = await dial({ ctx, connection, shareId, transition: { route: "connect" } });
+		if (connected._nay) {
 			await ctx.runMutation(internal.playwriter_browser.forget_connection, {
 				connectionId: connection._id,
 				userId,
@@ -766,9 +733,57 @@ export const connect_tab = action({
 				controlRevision: connection.controlRevision,
 				reason: "connect_failed",
 			});
-			return Result({ _nay: { message: "The browser connection could not finish.", name: "connect_failed" } });
+			return connected;
 		}
-	},
+
+		// A share ID shares exactly one tab, which the user picked in the extension. Confirm it
+		// for them. With more tabs (popups it opened) the user still chooses one.
+		const dialed = (await ctx.runQuery(internal.playwriter_browser.load_connection, {
+			connectionId: connection._id,
+			membershipId: args.membershipId,
+			userId,
+			requireBrowserPermission: true,
+		})) as load_connection_Result;
+		if (dialed._nay || dialed._yay.state !== "needs_confirmation" || dialed._yay.targets.length !== 1) return connected;
+		// The connect already worked. If this confirm fails (a blocked site, a runner error), keep the
+		// connection, so the user can still choose the tab by hand and see why it is refused.
+		const confirmed = await confirm_target({
+			ctx,
+			connection: dialed._yay,
+			targetHandle: dialed._yay.targets[0]!.handle,
+		}).catch((error: unknown) => {
+			// Log only the error name. Runner errors may contain the share ID.
+			console.error("Failed to confirm the shared tab after connect", {
+				errorName: error instanceof Error ? error.name : null,
+			});
+			return connected;
+		});
+		return confirmed._nay ? connected : confirmed;
+	} catch {
+		await ctx.runMutation(internal.playwriter_browser.forget_connection, {
+			connectionId: connection._id,
+			userId,
+			attemptId: connection.connectAttemptId,
+			controlRevision: connection.controlRevision,
+			reason: "connect_failed",
+		});
+		return Result({ _nay: { message: "The browser connection could not finish.", name: "connect_failed" } });
+	}
+}
+
+export const connect_tab = action({
+	args: { membershipId: v.id("organizations_workspaces_users"), share: v.string() },
+	returns: connection_result_validator,
+	handler: async (ctx, args) => connect_share({ ctx, userId: await current_user(ctx), ...args }),
+});
+
+/**
+ * Let the agent connect the tab a user shared in chat. It acts for the message's own user.
+ */
+export const connect_tab_for_agent = internalAction({
+	args: { userId: v.id("users"), membershipId: v.id("organizations_workspaces_users"), share: v.string() },
+	returns: connection_result_validator,
+	handler: async (ctx, args) => connect_share({ ctx, ...args }),
 });
 
 export const forget_connection = internalMutation({

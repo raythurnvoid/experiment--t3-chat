@@ -2,6 +2,9 @@
 	"$schema": "node_modules/wrangler/config-schema.json",
 	"name": "t3-chat-app",
 	"compatibility_date": "2026-10-01",
+	// Serve the app only on our own domain. Cloudflare creates the DNS record and the certificate.
+	"workers_dev": false,
+	"routes": [{ "pattern": "app.dev.bonobo-senate.com", "custom_domain": true }],
 	// Serve the built SPA. Unknown paths return index.html so client routes work on reload.
 	"assets": {
 		"directory": "./dist",

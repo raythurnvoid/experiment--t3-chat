@@ -196,6 +196,10 @@ function fixture(tabs: "playwriter" | "cloud" | "both") {
 			remoteState.offline = false;
 			return { _yay: null };
 		}
+		if (name === "playwriter_browser:connect_tab_for_agent")
+			return _args.share === "leaky"
+				? { _nay: { message: "runner failed for leaky", name: "connect_failed" } }
+				: { _yay: { connectionId: "connection" } };
 		throw new Error(`Unexpected action ${name}`);
 	});
 	const ctx = { runQuery, runMutation, runAction } as unknown as ActionCtx;
@@ -516,6 +520,26 @@ describe("bash_browser_command_create", () => {
 
 		expect((await f.exec(["run", "-e", "return 1;"])).exitCode).toBe(0);
 		expect(recovers()).toHaveLength(1);
+	});
+
+	test("connects the tab a user shared in chat, and never prints the share ID", async () => {
+		const f = fixture("playwriter");
+		const share = "9f77b26e102c904301e51ce61d01ec9f";
+
+		const connected = await f.exec(["connect", share]);
+		expect(connected.exitCode).toBe(0);
+		expect(connected.stdout).toContain("my browser connected.");
+		expect(connected.stdout).not.toContain(share);
+		expect(f.runAction).toHaveBeenCalledWith(expect.anything(), {
+			userId: f.browser.source.userId,
+			membershipId: f.browser.source.membershipId,
+			share,
+		});
+
+		const refused = await f.exec(["connect", "leaky"]);
+		expect(refused.exitCode).toBe(1);
+		expect(refused.stderr).toContain("could not be connected");
+		expect(refused.stderr).not.toContain("leaky");
 	});
 
 	test("does not start a run that could outlast the Bash call", async () => {

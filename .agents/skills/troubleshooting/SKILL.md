@@ -268,7 +268,7 @@ Read the most recent terminal files with `Get-Content -Tail`. Use this to confir
 
 # Cloudflare Frontend
 
-The same SPA is also hosted on Cloudflare Workers static assets at `https://t3-chat-app.ray-thurne-void.workers.dev`. Both hosts run side by side. The workflow is `.github/workflows/deploy-cloudflare.yml`. It runs on `workflow_dispatch` and on push to the `cf-deploy` branch:
+The same SPA is also hosted on Cloudflare Workers static assets at `https://app.dev.bonobo-senate.com`. The Worker is a custom domain (`routes` in `packages/app/wrangler.jsonc`), and `workers_dev` is off. Both hosts run side by side. The workflow is `.github/workflows/deploy-cloudflare.yml`. It runs on `workflow_dispatch` and on push to the `cf-deploy` branch:
 
 ```powershell
 git push origin main:cf-deploy

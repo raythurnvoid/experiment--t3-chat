@@ -71,6 +71,7 @@ type BrowserReason = keyof typeof REFUSAL_TEXT;
 const USAGE = `Usage:
   browser status                          Show the web browsers and file preview this chat can use.
   browser tabs                            List every web tab: cloud tabs and the my browser tab.
+  browser connect SHARE                   Connect the tab the user shared. SHARE is a Playwriter ID or its share link.
   browser open [URL]                      Open or reuse the cloud browser. It may start at URL.
   browser open --file PATH [--source saved|proposed|draft]
                                           Open an app HTML file in the cloud file preview.
@@ -597,7 +598,8 @@ async function command_status(ctx: ActionCtx, browser: bash_BrowserContext) {
 			resources.push(remote._yay);
 			myBrowserLine = `my browser: tab ${short_tab_id(remote._yay.confirmedTargetHandle)}, ready. It is the user's own tab, signed in as them.`;
 		} else if (remote._nay.name === "not_connected")
-			myBrowserLine = "my browser: not connected. The user can connect it in Browser settings.";
+			myBrowserLine =
+				"my browser: not connected. Run browser connect ID with the Playwriter ID the user gave, or the user can connect it in Browser settings.";
 		else if (remote._nay.name === "paused") myBrowserLine = "my browser: paused by the user.";
 		else if (remote._nay.name === "offline")
 			myBrowserLine = "my browser: offline. browser run reconnects it when no other web tab fits.";
@@ -627,6 +629,47 @@ async function command_status(ctx: ActionCtx, browser: bash_BrowserContext) {
 		if (bound._nay) return refuse(turn_reason(bound._nay.name));
 	}
 	return { stdout: `${web}\n${file}\n`, stderr: "", exitCode: 0 };
+}
+
+/**
+ * Connect the tab a user shared in chat. The result never repeats the share ID.
+ */
+async function command_connect(args: {
+	ctx: ActionCtx;
+	browser: bash_BrowserContext;
+	bindings: BrowserResource[];
+	share: string;
+}) {
+	const { ctx, browser, bindings, share } = args;
+
+	const connected = await ctx.runAction(internal.playwriter_browser.connect_tab_for_agent, {
+		userId: browser.source.userId,
+		membershipId: browser.source.membershipId,
+		share,
+	});
+	if (connected._nay)
+		return {
+			stdout: "",
+			// Only these refusals carry a fixed message. Other runner errors may contain the share ID.
+			stderr: `browser: ${
+				connected._nay.name === "invalid_share" ||
+				connected._nay.name === "link_reserved" ||
+				connected._nay.name === "busy" ||
+				connected._nay.name === "rate_limit" ||
+				connected._nay.name === "limit"
+					? connected._nay.message
+					: "the my browser tab could not be connected."
+			}
+`,
+			exitCode: bash_COMMAND_EXIT_FAILURE,
+		};
+
+	const tabs = await command_tabs({ ctx, browser, bindings, input: { operation: "tabs", url: null, tab: null } });
+	return {
+		...tabs,
+		stdout: `my browser connected.
+${tabs.stdout}`,
+	};
 }
 
 async function command_open(args: {
@@ -1607,7 +1650,7 @@ export function bash_browser_command_create(ctx: ActionCtx, browser: bash_Browse
 			positionals.push(arg);
 		}
 
-		const known = ["status", "open", "tabs", "tab", "run", "reload", "close"];
+		const known = ["status", "open", "tabs", "connect", "tab", "run", "reload", "close"];
 		if (!known.includes(subcommand)) return usage_error(`unknown subcommand ${subcommand}`);
 		if (file && tab !== null) return usage_error("use --tab or --file, not both");
 		if (code !== null && subcommand !== "run") return usage_error("-e works only with run");
@@ -1645,6 +1688,11 @@ export function bash_browser_command_create(ctx: ActionCtx, browser: bash_Browse
 		if (subcommand === "tabs") {
 			if (positionals.length > 0) return usage_error("tabs takes no arguments");
 			return command_tabs({ ctx, browser, bindings, input: { operation: "tabs", url: null, tab: null } });
+		}
+
+		if (subcommand === "connect") {
+			if (positionals.length !== 1) return usage_error("connect takes one share ID or link");
+			return command_connect({ ctx, browser, bindings, share: positionals[0]! });
 		}
 
 		if (subcommand === "tab") {

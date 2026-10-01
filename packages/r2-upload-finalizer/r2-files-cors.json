@@ -6,7 +6,7 @@
 					"http://localhost:5173",
 					"http://localhost:4173",
 					"https://raythurnvoid.github.io",
-					"https://t3-chat-app.ray-thurne-void.workers.dev"
+					"https://app.dev.bonobo-senate.com"
 				],
 				"methods": ["GET", "PUT", "HEAD"],
 				"headers": ["Content-Type", "If-None-Match"]
