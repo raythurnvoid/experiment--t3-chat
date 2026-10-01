@@ -249,7 +249,7 @@ async function seed_browser_chat_source(t: ReturnType<typeof test_convex>, fixtu
 	return {
 		...fixture,
 		threadId: thread._yay.threadId,
-		sourceMessageId: message._yay.ids[0]!,
+		sourceMessageId,
 		membershipLifetime: captured._yay.membershipLifetime,
 	};
 }

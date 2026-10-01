@@ -1322,7 +1322,7 @@ describe("follow-up HTTP schema", () => {
 		expectTypeOf<Route["body"]>().toEqualTypeOf<{ state: string }>();
 		expectTypeOf<Route["response"][200]["body"]>().toEqualTypeOf<{
 			readonly ok: true;
-			readonly message?: undefined;
+			message?: undefined;
 			readonly errorCode?: undefined;
 		}>();
 		expectTypeOf<Route["response"][409]["body"]>().toEqualTypeOf<{
