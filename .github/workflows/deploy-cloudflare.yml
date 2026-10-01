@@ -1,0 +1,70 @@
+name: Deploy App To Cloudflare
+
+on:
+  push:
+    branches:
+      - cf-deploy
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloudflare
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Same submodules as deploy-pages.yml. Keep both lists equal.
+      - name: Checkout app build submodules
+        run: |
+          git submodule update --init --depth 1 -- \
+            packages/app/vendor/headless-tree \
+            packages/app/vendor/mastra \
+            packages/app/vendor/novel \
+            packages/app/vendor/polar \
+            packages/app/vendor/presence \
+            packages/app/vendor/r2 \
+            packages/app/vendor/rate-limiter \
+            packages/app/vendor/remix \
+            packages/app/vendor/tiptap \
+            packages/native-popovers
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Cloudflare serves the app at the domain root, so the base is "/".
+      # GitHub Pages uses a sub path, so only deploy-pages.yml sets a different base.
+      # `CF_VITE_APP_BASE_URL` is the Cloudflare origin. Convex `APP_BASE_URL` stays on one host only.
+      - name: Build app
+        working-directory: packages/app
+        env:
+          VITE_CLERK_PUBLISHABLE_KEY: ${{ vars.VITE_CLERK_PUBLISHABLE_KEY }}
+          VITE_CONVEX_URL: ${{ vars.VITE_CONVEX_URL }}
+          VITE_CONVEX_HTTP_URL: ${{ vars.VITE_CONVEX_HTTP_URL }}
+          VITE_APP_BASE_URL: ${{ vars.CF_VITE_APP_BASE_URL }}
+        run: pnpm exec vite build --base /
+
+      - name: Deploy to Cloudflare
+        working-directory: packages/app
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: pnpm dlx wrangler deploy

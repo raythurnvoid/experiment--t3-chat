@@ -266,6 +266,22 @@ C:\Users\rt0\.cursor\projects\c-Users-rt0-Documents-workspace-rt0-t3-chat\termin
 
 Read the most recent terminal files with `Get-Content -Tail`. Use this to confirm whether servers are running, whether a previous CLI is stuck retrying, and which deployment a human configured. Search for the task marker and quote only the needed lines. Redact secrets, tokens, signed URLs, private content, and unrelated user commands.
 
+# Cloudflare Frontend
+
+The same SPA is also hosted on Cloudflare Workers static assets at `https://t3-chat-app.ray-thurne-void.workers.dev`. Both hosts run side by side. The workflow is `.github/workflows/deploy-cloudflare.yml`. It runs on `workflow_dispatch` and on push to the `cf-deploy` branch:
+
+```powershell
+git push origin main:cf-deploy
+```
+
+The Worker config is `packages/app/wrangler.jsonc`. Cloudflare serves from the domain root, so this workflow builds with `--base /`. Each workflow sets its own base. Vite has no branch logic.
+
+The workflow needs GitHub secrets `CLOUDFLARE_API_TOKEN` (Workers edit permission) and `CLOUDFLARE_ACCOUNT_ID`. It reads the same `VITE_*` variables as Pages. It reads `CF_VITE_APP_BASE_URL` instead of `VITE_APP_BASE_URL`.
+
+Every new origin must be in Convex `ALLOWED_ORIGINS` and in the R2 CORS file `packages/r2-upload-finalizer/r2-files-cors.json`. Convex `APP_BASE_URL` takes one value. It stays on the Pages host, so the MCP OAuth sign-in only works from Pages until you switch it.
+
+To deploy by hand, build with `pnpm exec vite build --base /` in `packages/app`, then run `vp env exec pnpm dlx wrangler deploy` there.
+
 # GitHub Pages Frontend
 
 The hosted SPA is [https://raythurnvoid.github.io/experiment--t3-chat/](https://raythurnvoid.github.io/experiment--t3-chat/). GitHub Pages is `build_type: workflow`. The workflow file is `.github/workflows/deploy-pages.yml`. It runs on `workflow_dispatch` and on push to the `deploy` branch.
