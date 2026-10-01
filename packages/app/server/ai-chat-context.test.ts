@@ -122,10 +122,14 @@ describe("ai_chat_context_create", () => {
 		expect(system.match(/"name":"example"/gu)).toHaveLength(1);
 		f.runQuery.mockClear();
 		expect(
-			await ai_chat_context_read_instructions(f.ctx, context, [
+			await ai_chat_context_read_instructions({
+				ctx: f.ctx,
+				context,
+				paths: [
 				{ workspace: "current", path: "/" },
 				{ workspace: "personal", path: "/" },
-			]),
+			],
+			}),
 		).toBe("");
 		expect(context.instructionBytes).toBe("ONE_ROOT".length);
 		expect(
@@ -238,10 +242,14 @@ describe("ai_chat_context_read_instructions", () => {
 		f.files.set("/notes/AGENTS.md", "SAME_RULE");
 		f.personalFiles.set("/notes/AGENTS.md", "SAME_RULE");
 		const { context } = await f.create();
-		const current = await ai_chat_context_read_instructions(f.ctx, context, [{ workspace: "current", path: "/notes" }]);
-		const personal = await ai_chat_context_read_instructions(f.ctx, context, [
+		const current = await ai_chat_context_read_instructions({ ctx: f.ctx, context, paths: [{ workspace: "current", path: "/notes" }] });
+		const personal = await ai_chat_context_read_instructions({
+			ctx: f.ctx,
+			context,
+			paths: [
 			{ workspace: "personal", path: "/notes" },
-		]);
+		],
+		});
 		expect(current).toContain('"scope":"/home/cloud-usr/w/team/docs/notes/"');
 		expect(current).not.toContain("personal/home");
 		expect(personal).toContain('"scope":"/home/cloud-usr/w/personal/home/notes/"');
@@ -257,9 +265,9 @@ describe("ai_chat_context_read_instructions", () => {
 		f.personalFiles.set("/b/AGENTS.md", body);
 		const { context } = await f.create();
 		const results = await Promise.all([
-			ai_chat_context_read_instructions(f.ctx, context, [{ workspace: "current", path: "/a" }]),
-			ai_chat_context_read_instructions(f.ctx, context, [{ workspace: "personal", path: "/a" }]),
-			ai_chat_context_read_instructions(f.ctx, context, [{ workspace: "personal", path: "/b" }]),
+			ai_chat_context_read_instructions({ ctx: f.ctx, context, paths: [{ workspace: "current", path: "/a" }] }),
+			ai_chat_context_read_instructions({ ctx: f.ctx, context, paths: [{ workspace: "personal", path: "/a" }] }),
+			ai_chat_context_read_instructions({ ctx: f.ctx, context, paths: [{ workspace: "personal", path: "/b" }] }),
 		]);
 		expect(results.filter((result) => result.includes(body))).toHaveLength(2);
 		expect(results.filter((result) => result.includes("64 KiB instruction limit"))).toHaveLength(1);
@@ -282,12 +290,12 @@ describe("ai_chat_context_read_instructions", () => {
 			revoked = true;
 			return { content: "PRIVATE_RULE" };
 		});
-		const result = await ai_chat_context_read_instructions(
-			f.ctx,
+		const result = await ai_chat_context_read_instructions({
+			ctx: f.ctx,
 			context,
-			[{ workspace: "personal", path: "/notes" }],
-			1024,
-		);
+			paths: [{ workspace: "personal", path: "/notes" }],
+			maxBytes: 1024,
+		});
 		expect(result).not.toContain("PRIVATE_RULE");
 		expect(result).toContain("unavailable");
 		expect(context.instructionBytes).toBe(0);
@@ -301,9 +309,13 @@ describe("ai_chat_context_read_instructions", () => {
 		f.files.set("/reports/monthly/AGENTS.md", "MONTH_RULE");
 		f.files.set("/invoices/AGENTS.md", "SIBLING_RULE");
 		const { context } = await f.create();
-		const text = await ai_chat_context_read_instructions(f.ctx, context, [
+		const text = await ai_chat_context_read_instructions({
+			ctx: f.ctx,
+			context,
+			paths: [
 			{ workspace: "current", path: "/reports/monthly" },
-		]);
+		],
+		});
 		expect(text).toContain("REPORT_RULE");
 		expect(text).toContain("MONTH_RULE");
 		expect(text.indexOf("REPORT_RULE")).toBeLessThan(text.indexOf("MONTH_RULE"));
@@ -316,7 +328,7 @@ describe("ai_chat_context_read_instructions", () => {
 		f.files.set("/tmp/AGENTS.md", "APP_TMP_RULE");
 		const { context } = await f.create();
 		expect(
-			await ai_chat_context_read_instructions(f.ctx, context, [{ workspace: "current", path: "/tmp/file.md" }]),
+			await ai_chat_context_read_instructions({ ctx: f.ctx, context, paths: [{ workspace: "current", path: "/tmp/file.md" }] }),
 		).toContain("APP_TMP_RULE");
 	});
 
@@ -327,26 +339,26 @@ describe("ai_chat_context_read_instructions", () => {
 		const first = await f.create();
 		const second = await f.create();
 		expect(
-			await ai_chat_context_read_instructions(f.ctx, first.context, [{ workspace: "current", path: "/a/file" }]),
+			await ai_chat_context_read_instructions({ ctx: f.ctx, context: first.context, paths: [{ workspace: "current", path: "/a/file" }] }),
 		).toContain("SAME");
 		expect(
-			await ai_chat_context_read_instructions(f.ctx, first.context, [{ workspace: "current", path: "/a/file" }]),
+			await ai_chat_context_read_instructions({ ctx: f.ctx, context: first.context, paths: [{ workspace: "current", path: "/a/file" }] }),
 		).toBe("");
 		expect(
-			await ai_chat_context_read_instructions(f.ctx, first.context, [{ workspace: "current", path: "/b/file" }]),
+			await ai_chat_context_read_instructions({ ctx: f.ctx, context: first.context, paths: [{ workspace: "current", path: "/b/file" }] }),
 		).toContain("SAME");
 
 		f.files.set("/a/AGENTS.md", "CHANGED");
 		expect(
-			await ai_chat_context_read_instructions(f.ctx, first.context, [{ workspace: "current", path: "/a/file" }]),
+			await ai_chat_context_read_instructions({ ctx: f.ctx, context: first.context, paths: [{ workspace: "current", path: "/a/file" }] }),
 		).toContain("CHANGED");
 		expect(
-			await ai_chat_context_read_instructions(f.ctx, second.context, [{ workspace: "current", path: "/b/file" }]),
+			await ai_chat_context_read_instructions({ ctx: f.ctx, context: second.context, paths: [{ workspace: "current", path: "/b/file" }] }),
 		).toContain("SAME");
 
 		f.files.delete("/a/AGENTS.md");
 		expect(
-			await ai_chat_context_read_instructions(f.ctx, first.context, [{ workspace: "current", path: "/a/file" }]),
+			await ai_chat_context_read_instructions({ ctx: f.ctx, context: first.context, paths: [{ workspace: "current", path: "/a/file" }] }),
 		).toBe("");
 	});
 
@@ -354,16 +366,16 @@ describe("ai_chat_context_read_instructions", () => {
 		const f = fixture();
 		f.files.set("/a/AGENTS.md", "\u0001".repeat(500));
 		const { context } = await f.create();
-		const limited = await ai_chat_context_read_instructions(
-			f.ctx,
+		const limited = await ai_chat_context_read_instructions({
+			ctx: f.ctx,
 			context,
-			[{ workspace: "current", path: "/a/file" }],
-			1024,
-		);
+			paths: [{ workspace: "current", path: "/a/file" }],
+			maxBytes: 1024,
+		});
 		expect(files_get_utf8_byte_size(JSON.stringify(limited))).toBeLessThanOrEqual(1024);
 		expect(limited).not.toContain("\\u0001");
 		expect(
-			await ai_chat_context_read_instructions(f.ctx, context, [{ workspace: "current", path: "/a/file" }]),
+			await ai_chat_context_read_instructions({ ctx: f.ctx, context, paths: [{ workspace: "current", path: "/a/file" }] }),
 		).toContain("\\u0001");
 	});
 
@@ -374,7 +386,7 @@ describe("ai_chat_context_read_instructions", () => {
 		const { context } = await f.create();
 		const texts = await Promise.all(
 			["a", "b", "c"].map((name) =>
-				ai_chat_context_read_instructions(f.ctx, context, [{ workspace: "current", path: `/${name}/file` }]),
+				ai_chat_context_read_instructions({ ctx: f.ctx, context, paths: [{ workspace: "current", path: `/${name}/file` }] }),
 			),
 		);
 		expect(texts.filter((text) => text.includes(body))).toHaveLength(2);
@@ -387,13 +399,13 @@ describe("ai_chat_context_read_instructions", () => {
 		f.files.set("/a/AGENTS.md", "x".repeat(ai_chat_skills_LIMITS.instruction + 1));
 		const { context } = await f.create();
 		expect(
-			await ai_chat_context_read_instructions(f.ctx, context, [{ workspace: "current", path: "/a/file" }]),
+			await ai_chat_context_read_instructions({ ctx: f.ctx, context, paths: [{ workspace: "current", path: "/a/file" }] }),
 		).toContain("could not be read");
 
 		f.runQuery.mockClear();
 		const deepPath = `/${Array.from({ length: 1000 }, (_, index) => `dir${index}`).join("/")}`;
 		expect(
-			await ai_chat_context_read_instructions(f.ctx, context, [{ workspace: "current", path: deepPath }]),
+			await ai_chat_context_read_instructions({ ctx: f.ctx, context, paths: [{ workspace: "current", path: deepPath }] }),
 		).toContain("incomplete");
 		expect(
 			f.runQuery.mock.calls.filter(([ref]) => getFunctionName(ref) === "files_visible:internal_get_by_path"),
@@ -405,10 +417,14 @@ describe("ai_chat_context_read_instructions", () => {
 		const { context } = await f.create();
 		f.runQuery.mockClear();
 		const path = `/${Array.from({ length: 70 }, (_, index) => `dir${index}`).join("/")}`;
-		const result = await ai_chat_context_read_instructions(f.ctx, context, [
+		const result = await ai_chat_context_read_instructions({
+			ctx: f.ctx,
+			context,
+			paths: [
 			{ workspace: "current", path },
 			{ workspace: "personal", path },
-		]);
+		],
+		});
 		expect(result).toContain("too many ancestor paths");
 		const reads = f.runQuery.mock.calls.filter(
 			([ref]) => getFunctionName(ref) === "files_visible:internal_get_by_path",
@@ -422,7 +438,7 @@ describe("ai_chat_context_read_instructions", () => {
 		const f = fixture();
 		const { context } = await f.create();
 		f.runQuery.mockRejectedValueOnce(new Error("PRIVATE_FAILURE"));
-		const text = await ai_chat_context_read_instructions(f.ctx, context, [{ workspace: "current", path: "/a/file" }]);
+		const text = await ai_chat_context_read_instructions({ ctx: f.ctx, context, paths: [{ workspace: "current", path: "/a/file" }] });
 		expect(text).toContain("could not be read");
 		expect(text).not.toContain("PRIVATE_FAILURE");
 	});

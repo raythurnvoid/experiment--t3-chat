@@ -68,12 +68,14 @@ function createParagraph(editor: Editor, text: string) {
 	return paragraph.create(null, text ? editor.schema.text(text) : undefined);
 }
 
-function getRevertTransaction(
-	tr: Transaction,
-	editor: Editor,
-	storage: file_editor_rich_text_AiExtension_Storage,
-	doc?: Doc,
-): Transaction | null {
+function getRevertTransaction(args: {
+	tr: Transaction;
+	editor: Editor;
+	storage: file_editor_rich_text_AiExtension_Storage;
+	doc?: Doc;
+}): Transaction | null {
+	const { tr, editor, storage, doc } = args;
+
 	if (storage.snapshot) {
 		const binding = getYjsBinding(editor);
 
@@ -211,7 +213,7 @@ export const file_editor_rich_text_AiExtension = Extension.create<
 					// 3. If in "thinking" or "reviewing" phase, revert the editor if possible and unblock it
 					if (currentState.phase === "thinking" || currentState.phase === "reviewing") {
 						// Get the revert transaction and dispatch it
-						const revertTr = getRevertTransaction(tr, this.editor, this.storage, this.options.doc);
+						const revertTr = getRevertTransaction({ tr, editor: this.editor, storage: this.storage, doc: this.options.doc });
 						if (revertTr) {
 							view.dispatch(revertTr);
 							// Prevent TipTap from dispatching this transaction, because we already did (this is a hack)
@@ -281,7 +283,7 @@ export const file_editor_rich_text_AiExtension = Extension.create<
 					// 3. If this is a retry or a refinement, revert the editor and restore the initial selection
 					if (currentState.phase === "reviewing") {
 						// 3.a. Revert the editor
-						const revertTr = getRevertTransaction(tr, this.editor, this.storage, this.options.doc);
+						const revertTr = getRevertTransaction({ tr, editor: this.editor, storage: this.storage, doc: this.options.doc });
 						if (revertTr) {
 							// Important: in this scenario we do not unpause the provider
 							view.dispatch(revertTr);

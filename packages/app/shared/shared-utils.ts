@@ -37,7 +37,13 @@ export const is_browser = ((/* iife */) => {
  * math_clamp(-10, 0, 100); // 0
  * ```
  **/
-export function math_clamp(value: number, min: number, max: number) {
+export function math_clamp(args: {
+	value: number;
+	min: number;
+	max: number;
+}) {
+	const { value, min, max } = args;
+
 	return Math.min(Math.max(value, min), max);
 }
 

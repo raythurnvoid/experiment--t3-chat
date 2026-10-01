@@ -29,11 +29,13 @@ function is_under_tmp_mount(path: string) {
 /**
  * App copies create reviewable transfer output. Scratch copies keep native behavior.
  */
-export function bash_cp_command_create(
-	ctx: ActionCtx,
-	dbFilesRoots: bash_DbFilesRoots,
-	transferContext?: bash_TransferContext,
-): Command {
+export function bash_cp_command_create(args: {
+	ctx: ActionCtx;
+	dbFilesRoots: bash_DbFilesRoots;
+	transferContext?: bash_TransferContext;
+}): Command {
+	const { dbFilesRoots, ctx, transferContext} = args;
+
 	return defineCommand("cp", async (args, commandCtx) => {
 		const parsed = bash_parse_cp_mv_operands("cp", args);
 		const { operands } = parsed;
@@ -156,7 +158,11 @@ export function bash_cp_command_create(
 					bash_current_workspace_path_to_db_files_path(sourceWorkspacePath, error.shellPath) ?? error.shellPath;
 				return {
 					stdout: "",
-					stderr: bash_build_unreadable_file_advisory(sourceWorkspacePath, dbFilesPath, error.contentType),
+					stderr: bash_build_unreadable_file_advisory({
+						currentWorkspacePath: sourceWorkspacePath,
+						normalizedPath: dbFilesPath,
+						contentType: error.contentType,
+					}),
 					exitCode: bash_COMMAND_EXIT_FAILURE,
 				};
 			}

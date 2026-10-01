@@ -185,12 +185,14 @@ function has_repeated_challenge_param(value: string) {
 /**
  * Map an SDK error to a Press error. Read error types and codes only, never message text.
  */
-function error_to_nay(
-	error: unknown,
-	guard: ReturnType<typeof mcp_guarded_fetch_create>,
-	phase: "list" | "call",
-	era: "modern" | "legacy" | null,
-) {
+function error_to_nay(args: {
+	error: unknown;
+	guard: ReturnType<typeof mcp_guarded_fetch_create>;
+	phase: "list" | "call";
+	era: "modern" | "legacy" | null;
+}) {
+	const { error, guard, phase, era } = args;
+
 	// The guard's own refusal is the real reason. The SDK only wraps it.
 	if (guard.failure) return mcp_nay(guard.failure);
 
@@ -275,13 +277,15 @@ function retry_after_ms(value: string | null) {
 	return Number.isNaN(date) ? null : Math.max(0, date - Date.now());
 }
 
-async function log_failure(
-	operation: string,
-	server: McpServer,
-	nay: { name: string },
-	startedAt: number,
-	error: unknown,
-) {
+async function log_failure(args: {
+	operation: string;
+	server: McpServer;
+	nay: { name: string };
+	startedAt: number;
+	error: unknown;
+}) {
+	const { server, nay, startedAt, error, operation} = args;
+
 	console.warn("MCP request failed", {
 		operation,
 		code: nay.name,
@@ -379,7 +383,13 @@ function schema_problem(schema: unknown): SchemaProblem | null {
 	// Walk every subschema once. Count them, track the depth, and collect each `$ref`.
 	const refs: Array<{ ref: string; path: string }> = [];
 	let subschemas = 0;
-	const walk = (node: unknown, depth: number, path: string): boolean => {
+	const walk = (args: {
+		node: unknown;
+		depth: number;
+		path: string;
+	}): boolean => {
+		const { node, depth, path } = args;
+
 		if (typeof node !== "object" || node === null || Array.isArray(node)) return true;
 		subschemas += 1;
 		if (subschemas > SCHEMA_MAX_SUBSCHEMAS || depth > SCHEMA_MAX_DEPTH) return false;
@@ -387,13 +397,17 @@ function schema_problem(schema: unknown): SchemaProblem | null {
 
 		const record = node as Record<string, unknown>;
 		for (const keyword of SCHEMA_KEYWORDS) {
-			if (!Array.isArray(record[keyword]) && !walk(record[keyword], depth + 1, `${path}/${keyword}`)) return false;
+			if (!Array.isArray(record[keyword]) && !walk({ node: record[keyword], depth: depth + 1, path: `${path}/${keyword}` })) return false;
 		}
 		for (const keyword of SCHEMA_MAP_KEYWORDS) {
 			const map = record[keyword];
 			if (typeof map !== "object" || map === null || Array.isArray(map)) continue;
 			for (const [key, child] of Object.entries(map)) {
-				if (!walk(child, depth + 1, `${path}/${keyword}/${key.replaceAll("~", "~0").replaceAll("/", "~1")}`)) {
+				if (!walk({
+					node: child,
+					depth: depth + 1,
+					path: `${path}/${keyword}/${key.replaceAll("~", "~0").replaceAll("/", "~1")}`,
+				})) {
 					return false;
 				}
 			}
@@ -402,12 +416,12 @@ function schema_problem(schema: unknown): SchemaProblem | null {
 			const list = record[keyword];
 			if (!Array.isArray(list)) continue;
 			for (const [index, child] of list.entries()) {
-				if (!walk(child, depth + 1, `${path}/${keyword}/${index}`)) return false;
+				if (!walk({ node: child, depth: depth + 1, path: `${path}/${keyword}/${index}` })) return false;
 			}
 		}
 		return true;
 	};
-	if (!walk(schema, 0, "")) return "too_large";
+	if (!walk({ node: schema, depth: 0, path: "" })) return "too_large";
 
 	// A client must never fetch a network `$ref`, so only local refs are allowed.
 	if (refs.some(({ ref }) => !ref.startsWith("#"))) return "external_ref";
@@ -606,7 +620,7 @@ export async function mcp_client_list_tools(args: {
 	try {
 		for (let attempt = 0; ; attempt++) {
 			if (signal.aborted || Date.now() >= deadline) return mcp_nay("timeout");
-			const result = await list_tools_once({ ...args, signal }, deadline, startedAt);
+			const result = await list_tools_once({ ...args, signal, deadline, startedAt });
 			if (!result._nay || attempt >= LIST_MAX_RETRIES) return result;
 			if (result._nay.name !== "rate_limited" && result._nay.name !== "server_error") return result;
 
@@ -630,11 +644,16 @@ export async function mcp_client_list_tools(args: {
 	}
 }
 
-async function list_tools_once(
-	args: { server: McpServer; accessToken: string | null; signal: AbortSignal; testAllowLocalHttp?: true },
-	deadline: number,
-	startedAt: number,
-) {
+async function list_tools_once(args: {
+	server: McpServer;
+	accessToken: string | null;
+	signal: AbortSignal;
+	testAllowLocalHttp?: true;
+	deadline: number;
+	startedAt: number;
+}) {
+	const { deadline, startedAt } = args;
+
 	const guard = mcp_guarded_fetch_create({
 		kind: "mcp",
 		server: args.server,
@@ -698,8 +717,8 @@ async function list_tools_once(
 		});
 	})()
 		.catch(async (error: unknown) => {
-			const nay = error_to_nay(error, guard, "list", client.getProtocolEra() ?? null);
-			await log_failure("list_tools", args.server, nay._nay, startedAt, error);
+			const nay = error_to_nay({ error, guard, phase: "list", era: client.getProtocolEra() ?? null });
+			await log_failure({ operation: "list_tools", server: args.server, nay: nay._nay, startedAt, error });
 			return nay;
 		})
 		.finally(() => client.close().catch(() => {}));
@@ -811,8 +830,8 @@ export async function mcp_client_call_tool(args: {
 		return Result({ _yay: { result: normalize_result(result.value, args.tool) } });
 	})()
 		.catch(async (error: unknown) => {
-			const nay = error_to_nay(error, guard, "call", era);
-			await log_failure("call_tool", args.server, nay._nay, startedAt, error);
+			const nay = error_to_nay({ error, guard, phase: "call", era });
+			await log_failure({ operation: "call_tool", server: args.server, nay: nay._nay, startedAt, error });
 			return nay;
 		})
 		.finally(async () => {

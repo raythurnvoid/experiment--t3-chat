@@ -732,11 +732,11 @@ export const write_server = internalMutation({
 				continue;
 			}
 
-			const encrypted = await crypto_encrypt_secret_value(
-				secret.value,
-				plugins_mcp_custom_secret_additional_data({ customServerId, userId: args.userId, name: secret.name }),
-				"MCP_SECRETS_ENCRYPTION_KEY",
-			);
+			const encrypted = await crypto_encrypt_secret_value({
+				value: secret.value,
+				additionalData: plugins_mcp_custom_secret_additional_data({ customServerId, userId: args.userId, name: secret.name }),
+				keyName: "MCP_SECRETS_ENCRYPTION_KEY",
+			});
 			await ctx.db.insert("mcp_custom_server_secrets", {
 				organizationId: member.membership.organizationId,
 				workspaceId: member.membership.workspaceId,

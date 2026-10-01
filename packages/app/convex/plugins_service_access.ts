@@ -88,11 +88,13 @@ async function db_connect(
 	else await ctx.db.insert("plugins_service_connections", fields);
 }
 
-async function db_check_connection(
-	ctx: QueryCtx,
-	connection: Doc<"plugins_service_connections">,
-	serviceSecretHash: string,
-) {
+async function db_check_connection(args: {
+	ctx: QueryCtx;
+	connection: Doc<"plugins_service_connections">;
+	serviceSecretHash: string;
+}) {
+	const { ctx, connection, serviceSecretHash } = args;
+
 	const registration = await ctx.db.get("plugins_service_registrations", connection.registrationId);
 	if (!registration || !crypto_timing_safe_equal(registration.exchangeSecretHash, serviceSecretHash)) return false;
 
@@ -271,7 +273,7 @@ export const get_snapshot = internalMutation({
 			.query("plugins_service_connections")
 			.withIndex("by_installation", (q) => q.eq("installationId", installationId))
 			.first();
-		if (!connection || !(await db_check_connection(ctx, connection, args.serviceSecretHash)))
+		if (!connection || !(await db_check_connection({ ctx, connection, serviceSecretHash: args.serviceSecretHash })))
 			return Result({ _nay: { message: "Unauthorized" } });
 
 		const limited = await rate_limiter_limit_by_key(ctx, {
@@ -378,7 +380,7 @@ export const get_events = internalMutation({
 			.query("plugins_service_connections")
 			.withIndex("by_installation", (q) => q.eq("installationId", installationId))
 			.first();
-		if (!connection || !(await db_check_connection(ctx, connection, args.serviceSecretHash)))
+		if (!connection || !(await db_check_connection({ ctx, connection, serviceSecretHash: args.serviceSecretHash })))
 			return Result({ _nay: { message: "Unauthorized" } });
 
 		const limited = await rate_limiter_limit_by_key(ctx, {

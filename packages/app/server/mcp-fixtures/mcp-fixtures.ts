@@ -61,7 +61,14 @@ function rpc_result(id: JsonRpcBody["id"], result: Record<string, unknown>) {
 	return Response.json({ jsonrpc: "2.0", id, result: { resultType: "complete", ...result } });
 }
 
-function rpc_error(id: JsonRpcBody["id"] | null, code: number, status: number, data?: unknown) {
+function rpc_error(args: {
+	id: JsonRpcBody["id"] | null;
+	code: number;
+	status: number;
+	data?: unknown;
+}) {
+	const { code, data, id, status} = args;
+
 	return Response.json({ jsonrpc: "2.0", id, error: { code, message: `fixture error ${code}`, data } }, { status });
 }
 
@@ -109,15 +116,15 @@ function create_legacy_handler(
 	return async (request: Request, body: JsonRpcBody | null) => {
 		const sessionId = request.headers.get("mcp-session-id");
 		if (sessionId && options.forgetSessionOnCall && body?.method === "tools/call") {
-			return rpc_error(null, -32001, 404);
+			return rpc_error({ id: null, code: -32001, status: 404 });
 		}
 		if (sessionId && options.rawTools && body?.method === "tools/list") {
 			return Response.json({ jsonrpc: "2.0", id: body.id, result: { tools: options.rawTools } });
 		}
 		const transport = sessionId ? sessions.get(sessionId) : undefined;
 		if (transport) return await transport.handleRequest(request);
-		if (sessionId) return rpc_error(null, -32001, 404);
-		if (!isInitializeRequest(body)) return rpc_error(null, -32000, 400);
+		if (sessionId) return rpc_error({ id: null, code: -32001, status: 404 });
+		if (!isInitializeRequest(body)) return rpc_error({ id: null, code: -32000, status: 400 });
 
 		const newTransport: WebStandardStreamableHTTPServerTransport = new WebStandardStreamableHTTPServerTransport({
 			sessionIdGenerator: () => crypto.randomUUID(),
@@ -318,7 +325,7 @@ export function mcp_fixtures_create() {
 			progress: { method: "tools/call", handle: () => sse_response([], { end: "never" }) },
 		},
 		"version-other": {
-			"": { method: "*", handle: (body) => rpc_error(body.id, -32022, 400, { supported: ["2027-01-01"] }) },
+			"": { method: "*", handle: (body) => rpc_error({ id: body.id, code: -32022, status: 400, data: { supported: ["2027-01-01"] } }) },
 		},
 		"version-old-sse": {
 			"": { method: "*", handle: () => new Response(null, { status: 405 }) },
@@ -366,7 +373,7 @@ export function mcp_fixtures_create() {
 					// Refuse a call whose `Mcp-Param-Region` header does not match the argument, like a
 					// SEP-2243 server.
 					const args = body.params?.arguments as { region?: unknown } | undefined;
-					if (request.headers.get("mcp-param-region") !== args?.region) return rpc_error(body.id, -32020, 400);
+					if (request.headers.get("mcp-param-region") !== args?.region) return rpc_error({ id: body.id, code: -32020, status: 400 });
 					return rpc_result(body.id, { content: [{ type: "text", text: `region ${String(args?.region)}` }] });
 				},
 			},
@@ -408,10 +415,10 @@ export function mcp_fixtures_create() {
 				method: "tools/call",
 				handle: (body) => Response.json({ jsonrpc: "2.0", id: body.id, result: { content: [] } }),
 			},
-			"invalid-params": { method: "tools/call", handle: (body) => rpc_error(body.id, -32602, 200) },
-			"capability-required": { method: "tools/call", handle: (body) => rpc_error(body.id, -32021, 400) },
-			"header-mismatch": { method: "tools/call", handle: (body) => rpc_error(body.id, -32020, 400) },
-			"method-error": { method: "tools/call", handle: (body) => rpc_error(body.id, -32603, 200) },
+			"invalid-params": { method: "tools/call", handle: (body) => rpc_error({ id: body.id, code: -32602, status: 200 }) },
+			"capability-required": { method: "tools/call", handle: (body) => rpc_error({ id: body.id, code: -32021, status: 400 }) },
+			"header-mismatch": { method: "tools/call", handle: (body) => rpc_error({ id: body.id, code: -32020, status: 400 }) },
+			"method-error": { method: "tools/call", handle: (body) => rpc_error({ id: body.id, code: -32603, status: 200 }) },
 		},
 		"bad-tools": {
 			invalid: {
@@ -538,7 +545,7 @@ export function mcp_fixtures_create() {
 			if (fixture in legacy) return await legacy[fixture as keyof typeof legacy](request, body);
 			if (fixture === "http-status") {
 				const [status = "500", kind] = variant.split("-");
-				if (kind === "rpc") return rpc_error(body?.id ?? null, -32600, Number(status));
+				if (kind === "rpc") return rpc_error({ id: body?.id ?? null, code: -32600, status: Number(status) });
 				const headers = new Headers();
 				if (status === "401") {
 					headers.set(

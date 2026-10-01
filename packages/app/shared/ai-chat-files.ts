@@ -83,13 +83,15 @@ export const ai_chat_file_result_schema = z
  *
  * Callers pass fixed reason codes. Private observations never become chat text.
  */
-export function ai_chat_file_result(
-	title: string,
-	status: z.infer<typeof ai_chat_file_result_schema>["metadata"]["status"],
-	files: Array<z.infer<typeof ai_chat_file_target_schema>> = [],
-	reason: z.infer<typeof ai_chat_file_result_schema>["metadata"]["reason"] = null,
-	debug?: z.infer<typeof ai_chat_file_debug_schema>,
-) {
+export function ai_chat_file_result(args: {
+	title: string;
+	status: z.infer<typeof ai_chat_file_result_schema>["metadata"]["status"];
+	files?: Array<z.infer<typeof ai_chat_file_target_schema>>;
+	reason?: z.infer<typeof ai_chat_file_result_schema>["metadata"]["reason"];
+	debug?: z.infer<typeof ai_chat_file_debug_schema>;
+}) {
+	const { title, status, files = [], reason = null, debug } = args;
+
 	return {
 		title,
 		output: `${title}: ${status}.`,

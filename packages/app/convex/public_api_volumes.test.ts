@@ -281,12 +281,14 @@ async function invited_member(f: Awaited<ReturnType<typeof fixture>>) {
 	};
 }
 
-async function assign_scheduled_user(
-	f: Awaited<ReturnType<typeof fixture>>,
-	member: Awaited<ReturnType<typeof invited_member>>,
-	scopes: NonNullable<Doc<"access_control_permission_grants">["runAs"]>["scopes"],
-	filesReadProof?: { kind: "file"; nodeId: Id<"files_nodes"> },
-) {
+async function assign_scheduled_user(args: {
+	f: Awaited<ReturnType<typeof fixture>>;
+	member: Awaited<ReturnType<typeof invited_member>>;
+	scopes: NonNullable<Doc<"access_control_permission_grants">["runAs"]>["scopes"];
+	filesReadProof?: { kind: "file"; nodeId: Id<"files_nodes"> };
+}) {
+	const { f, member, filesReadProof, scopes} = args;
+
 	const granted = await member.asMember.mutation(api.plugins_access.grant_run_as_me, {
 		membershipId: member.membershipId,
 		installationId: f.installationId,
@@ -309,11 +311,13 @@ async function assign_scheduled_user(
 	f.runId = await start_scheduled_run(f);
 }
 
-async function post(
-	f: Awaited<ReturnType<typeof fixture>>,
-	route: "list" | "stage" | "write-many" | "publish" | "delete",
-	body: unknown,
-) {
+async function post(args: {
+	f: Awaited<ReturnType<typeof fixture>>;
+	route: "list" | "stage" | "write-many" | "publish" | "delete";
+	body: unknown;
+}) {
+	const { f, route, body } = args;
+
 	return await f.t.fetch(`/api/v1/volumes/${route}`, {
 		method: "POST",
 		headers: { Authorization: `Bearer ${f.token}`, "Content-Type": "application/json" },
@@ -370,7 +374,13 @@ async function readable_file(f: Awaited<ReturnType<typeof fixture>>, path = "/no
 	return saved;
 }
 
-function api_request(f: Awaited<ReturnType<typeof fixture>>, path: string, body: unknown) {
+function api_request(args: {
+	f: Awaited<ReturnType<typeof fixture>>;
+	path: string;
+	body: unknown;
+}) {
+	const { f, path, body } = args;
+
 	return new Request(`https://api.test${path}`, {
 		method: "POST",
 		headers: { Authorization: `Bearer ${f.token}`, "Content-Type": "application/json" },
@@ -389,8 +399,8 @@ function is_api_function(reference: Parameters<typeof getFunctionName>[0], name:
 
 async function read_after_io(f: Awaited<ReturnType<typeof fixture>>, afterIo: () => Promise<void>) {
 	return await f.t.action(async (ctx) =>
-		public_api_http_read_file(
-			{
+		public_api_http_read_file({
+			ctx: {
 				...ctx,
 				runAction: async (...args) => {
 					const result = await ctx.runAction(...args);
@@ -399,9 +409,9 @@ async function read_after_io(f: Awaited<ReturnType<typeof fixture>>, afterIo: ()
 					return result;
 				},
 			},
-			api_request(f, "/api/v1/files/read", { path: "/note.txt" }),
-			"/api/v1/files/read",
-		),
+			request: api_request({ f, path: "/api/v1/files/read", body: { path: "/note.txt" } }),
+			path: "/api/v1/files/read",
+		}),
 	);
 }
 
@@ -426,22 +436,30 @@ async function list_after_io(f: Awaited<ReturnType<typeof fixture>>, afterIo: ()
 					return result;
 				},
 			},
-			api_request(f, "/api/v1/files/list", {}),
+			api_request({ f, path: "/api/v1/files/list", body: {} }),
 		);
 		return { status: response.status, body: await response.text() };
 	});
 }
-async function stage(f: Awaited<ReturnType<typeof fixture>>, volumeKey = "records", revision = "revision-1") {
-	const response = await post(f, "stage", { mountId: "sources", volumeKey, revision });
+async function stage(args: {
+	f: Awaited<ReturnType<typeof fixture>>;
+	volumeKey?: string;
+	revision?: string;
+}) {
+	const { f, volumeKey = "records", revision = "revision-1" } = args;
+
+	const response = await post({ f, route: "stage", body: { mountId: "sources", volumeKey, revision } });
 	expect(response.status).toBe(200);
 	return z.object({ stagingId: z.string(), abandonedStagingId: z.string().nullable() }).parse(await response.json());
 }
-async function write(
-	f: Awaited<ReturnType<typeof fixture>>,
-	stagingId: string,
-	files: Array<{ path: string; content: string }>,
-) {
-	const response = await post(f, "write-many", { stagingId, files });
+async function write(args: {
+	f: Awaited<ReturnType<typeof fixture>>;
+	stagingId: string;
+	files: Array<{ path: string; content: string }>;
+}) {
+	const { f, files, stagingId} = args;
+
+	const response = await post({ f, route: "write-many", body: { stagingId, files } });
 	return { response, body: (await response.json()) as unknown };
 }
 async function volume_nodes(f: Awaited<ReturnType<typeof fixture>>) {
@@ -552,12 +570,16 @@ describe("volumes stage, write, and publish", () => {
 
 	test("stores read-only files and publishes through the public routes", async () => {
 		const f = await fixture();
-		const staged = await stage(f);
+		const staged = await stage({ f });
 		const content = "---\ntitle: exact text\n---\nUnicode: café 🐒\nNo final newline";
-		const result = await write(f, staged.stagingId, [
+		const result = await write({
+			f,
+			stagingId: staged.stagingId,
+			files: [
 			{ path: "/README.md", content },
 			{ path: "/empty.txt", content: "" },
-		]);
+		],
+		});
 		expect(result.response.status).toBe(200);
 		expect(result.response.headers.get("Cache-Control")).toBe("no-store");
 		expect(result.body).toEqual({
@@ -608,7 +630,7 @@ describe("volumes stage, write, and publish", () => {
 			]),
 		);
 		expect(await unused_assets(f)).toEqual([]);
-		const published = await post(f, "publish", { stagingId: staged.stagingId });
+		const published = await post({ f, route: "publish", body: { stagingId: staged.stagingId } });
 		expect(published.status).toBe(200);
 		expect(await published.json()).toMatchObject({
 			volumeKey: "records",
@@ -616,7 +638,7 @@ describe("volumes stage, write, and publish", () => {
 			fileCount: 2,
 			bytes: files_get_utf8_byte_size(content),
 		});
-		const listed = await post(f, "list", {});
+		const listed = await post({ f, route: "list", body: {} });
 		expect(listed.status).toBe(200);
 		expect(await listed.json()).toMatchObject({
 			mounts: [
@@ -633,39 +655,39 @@ describe("volumes stage, write, and publish", () => {
 
 	test("an unrelated structured-data plugin uses the same doors", async () => {
 		const f = await fixture({ name: "record-export" });
-		const staged = await stage(f, "export");
+		const staged = await stage({ f, volumeKey: "export" });
 		const content = JSON.stringify({ id: 1, value: "hello" });
-		expect((await write(f, staged.stagingId, [{ path: "/records/item-1.json", content }])).body).toEqual({
+		expect((await write({ f, stagingId: staged.stagingId, files: [{ path: "/records/item-1.json", content }] })).body).toEqual({
 			written: [{ path: "/records/item-1.json", bytes: content.length }],
 			errors: [],
 		});
-		expect((await post(f, "publish", { stagingId: staged.stagingId })).status).toBe(200);
+		expect((await post({ f, route: "publish", body: { stagingId: staged.stagingId } })).status).toBe(200);
 	});
 
 	test("emits N events for N new files and charges no replacement", async () => {
 		const f = await fixture();
-		const staged = await stage(f);
+		const staged = await stage({ f });
 		const files = [
 			{ path: "/one.txt", content: "one" },
 			{ path: "/two.txt", content: "two" },
 		];
-		expect((await write(f, staged.stagingId, files)).response.status).toBe(200);
+		expect((await write({ f, stagingId: staged.stagingId, files })).response.status).toBe(200);
 		expect(events(), "N events for N files").toHaveLength(2);
 		expect(events().map((event) => event.metadata.amount)).toEqual([0.5, 0.5]);
 		expect(new Set(events().map((event) => event.externalId)).size).toBe(2);
 		const prior = (await volume_nodes(f)).filter((node) => node.kind === "file");
-		expect((await write(f, staged.stagingId, files)).response.status).toBe(200);
+		expect((await write({ f, stagingId: staged.stagingId, files })).response.status).toBe(200);
 		expect(events(), "retry must not charge a replacement").toHaveLength(2);
 		const next = (await volume_nodes(f)).filter((node) => node.kind === "file");
 		expect(next).toHaveLength(2);
 		for (const node of prior) expect(await f.t.run((ctx) => ctx.db.get("files_nodes", node._id))).toBeNull();
-		const listed = await post(f, "list", {});
+		const listed = await post({ f, route: "list", body: {} });
 		expect(await listed.json()).toMatchObject({ usage: { fileCount: 2, dailyFilesLeft: 9_998 } });
 	});
 
 	test("preinserts canonical R2 keys before an upload event arrives", async () => {
 		const f = await fixture();
-		const staged = await stage(f);
+		const staged = await stage({ f });
 		let seen = false;
 		onPut = async (key) => {
 			const asset = await f.t.run(async (ctx) =>
@@ -675,29 +697,33 @@ describe("volumes stage, write, and publish", () => {
 			expect(asset?.unfinalizedExpiresAt).toBeGreaterThan(Date.now());
 			seen = true;
 		};
-		expect((await write(f, staged.stagingId, [{ path: "/one", content: "hello" }])).response.status).toBe(200);
+		expect((await write({ f, stagingId: staged.stagingId, files: [{ path: "/one", content: "hello" }] })).response.status).toBe(200);
 		expect(seen).toBe(true);
 	});
 
 	test("caps concurrent PUTs at sixteen", async () => {
 		const f = await fixture();
-		const staged = await stage(f);
+		const staged = await stage({ f });
 		const files = Array.from({ length: 40 }, (_, i) => ({ path: `/file-${i}`, content: "text" }));
-		expect((await write(f, staged.stagingId, files)).response.status).toBe(200);
+		expect((await write({ f, stagingId: staged.stagingId, files })).response.status).toBe(200);
 		expect(maxPuts).toBe(16);
 	});
 
 	test("a failed PUT cleans its asset and preserves successful items", async () => {
 		const f = await fixture();
-		const staged = await stage(f);
+		const staged = await stage({ f });
 		let count = 0;
 		onPut = async () => {
 			if (count++ === 0) throw new Error("Provider detail must stay private");
 		};
-		const result = await write(f, staged.stagingId, [
+		const result = await write({
+			f,
+			stagingId: staged.stagingId,
+			files: [
 			{ path: "/failed", content: "failed" },
 			{ path: "/saved", content: "saved" },
-		]);
+		],
+		});
 		expect(result.response.status).toBe(200);
 		expect(result.body).toEqual({
 			written: [{ path: "/saved", bytes: 5 }],
@@ -710,24 +736,24 @@ describe("volumes stage, write, and publish", () => {
 
 	test("abandon and publish release the old copy only once", async () => {
 		const f = await fixture();
-		const first = await stage(f);
-		await write(f, first.stagingId, [{ path: "/one", content: "old" }]);
-		const second = await stage(f, "records", "revision-2");
+		const first = await stage({ f });
+		await write({ f, stagingId: first.stagingId, files: [{ path: "/one", content: "old" }] });
+		const second = await stage({ f, volumeKey: "records", revision: "revision-2" });
 		expect(second.abandonedStagingId).toBe(first.stagingId);
-		expect((await post(f, "publish", { stagingId: first.stagingId })).status).toBe(409);
-		await write(f, second.stagingId, [{ path: "/one", content: "second" }]);
-		expect((await post(f, "publish", { stagingId: second.stagingId })).status).toBe(200);
-		const third = await stage(f, "records", "revision-3");
-		await write(f, third.stagingId, [{ path: "/one", content: "new" }]);
-		expect((await post(f, "publish", { stagingId: third.stagingId })).status).toBe(200);
-		expect(await (await post(f, "list", {})).json()).toMatchObject({ usage: { fileCount: 1, bytes: 3 } });
+		expect((await post({ f, route: "publish", body: { stagingId: first.stagingId } })).status).toBe(409);
+		await write({ f, stagingId: second.stagingId, files: [{ path: "/one", content: "second" }] });
+		expect((await post({ f, route: "publish", body: { stagingId: second.stagingId } })).status).toBe(200);
+		const third = await stage({ f, volumeKey: "records", revision: "revision-3" });
+		await write({ f, stagingId: third.stagingId, files: [{ path: "/one", content: "new" }] });
+		expect((await post({ f, route: "publish", body: { stagingId: third.stagingId } })).status).toBe(200);
+		expect(await (await post({ f, route: "list", body: {} })).json()).toMatchObject({ usage: { fileCount: 1, bytes: 3 } });
 	});
 });
 
 describe("volumes write-many validation", () => {
 	test.each(["../bad", "tmp"])("delete refuses invalid volume key %s", async (volumeKey) => {
 		const f = await fixture();
-		const response = await post(f, "delete", { mountId: "sources", volumeKey });
+		const response = await post({ f, route: "delete", body: { mountId: "sources", volumeKey } });
 		expect(response.status, "invalid delete keys must return 400").toBe(400);
 		expect(await response.json()).toMatchObject({ errorCode: "invalid_input" });
 		expect(await f.t.run((ctx) => ctx.db.query("plugins_volumes").collect())).toEqual([]);
@@ -735,11 +761,11 @@ describe("volumes write-many validation", () => {
 
 	test("delete keeps 404 for a valid missing volume key", async () => {
 		const f = await fixture();
-		expect((await post(f, "delete", { mountId: "sources", volumeKey: "missing" })).status).toBe(404);
+		expect((await post({ f, route: "delete", body: { mountId: "sources", volumeKey: "missing" } })).status).toBe(404);
 	});
 	test("refuses traversal and invalid items while preserving exact valid names", async () => {
 		const f = await fixture();
-		const staged = await stage(f);
+		const staged = await stage({ f });
 		const invalid = [
 			"/../escape",
 			"/a/./b",
@@ -751,12 +777,16 @@ describe("volumes write-many validation", () => {
 			`/${"x".repeat(256)}`,
 			`/${Array(33).fill("x").join("/")}`,
 		];
-		const result = await write(f, staged.stagingId, [
+		const result = await write({
+			f,
+			stagingId: staged.stagingId,
+			files: [
 			...invalid.map((path) => ({ path, content: "bad" })),
 			{ path: "/bad-unicode", content: "\ud800" },
 			{ path: "/too-large", content: "x".repeat(900_001) },
 			{ path: "/MiXeD/AGENTS.md", content: "kept" },
-		]);
+		],
+		});
 		expect(result.response.status).toBe(200);
 		const body = z
 			.object({
@@ -788,8 +818,8 @@ describe("volumes write-many validation", () => {
 		].map((files) => ({ files })),
 	)("refuses bad whole-request paths or count before upload %#", async ({ files }) => {
 		const f = await fixture();
-		const staged = await stage(f);
-		expect((await write(f, staged.stagingId, files)).response.status).toBe(400);
+		const staged = await stage({ f });
+		expect((await write({ f, stagingId: staged.stagingId, files })).response.status).toBe(400);
 		expect(objects.size).toBe(0);
 		expect(await volume_nodes(f)).toEqual([]);
 		expect((await calls(f)).at(-1)).toMatchObject({ status: "failed", responseStatus: 400 });
@@ -804,7 +834,7 @@ describe("volumes write-many validation", () => {
 		{ mountId: "sources", volumeKey: "ok", revision: "x".repeat(201) },
 	])("refuses bad stage input %#", async (body) => {
 		const f = await fixture();
-		expect((await post(f, "stage", body)).status).toBe(400);
+		expect((await post({ f, route: "stage", body })).status).toBe(400);
 		expect(await f.t.run((ctx) => ctx.db.query("plugins_volumes").collect())).toEqual([]);
 		expect((await calls(f)).at(-1)?.status).toBe("failed");
 	});
@@ -844,15 +874,23 @@ describe("volumes write-many validation", () => {
 
 	test("refuses a folder target and a file parent without partial folders", async () => {
 		const f = await fixture();
-		const staged = await stage(f);
-		await write(f, staged.stagingId, [
+		const staged = await stage({ f });
+		await write({
+			f,
+			stagingId: staged.stagingId,
+			files: [
 			{ path: "/folder/file", content: "ok" },
 			{ path: "/leaf", content: "ok" },
-		]);
-		const result = await write(f, staged.stagingId, [
+		],
+		});
+		const result = await write({
+			f,
+			stagingId: staged.stagingId,
+			files: [
 			{ path: "/folder", content: "bad" },
 			{ path: "/leaf/new/file", content: "bad" },
-		]);
+		],
+		});
 		expect(result.body).toMatchObject({
 			written: [],
 			errors: [{ errorCode: "path_conflict" }, { errorCode: "path_conflict" }],
@@ -863,11 +901,11 @@ describe("volumes write-many validation", () => {
 	test("another installation staging id and malformed ids are 404", async () => {
 		const f = await fixture();
 		const other = await fixture({ name: "other-plugin", t: f.t });
-		const own = await stage(f);
-		const otherStage = await stage(other);
+		const own = await stage({ f });
+		const otherStage = await stage({ f: other });
 		for (const id of ["bad-id", otherStage.stagingId])
-			expect((await write(f, id, [{ path: "/bad", content: "bad" }])).response.status).toBe(404);
-		expect((await write(f, own.stagingId, [{ path: "/ok", content: "ok" }])).response.status).toBe(200);
+			expect((await write({ f, stagingId: id, files: [{ path: "/bad", content: "bad" }] })).response.status).toBe(404);
+		expect((await write({ f, stagingId: own.stagingId, files: [{ path: "/ok", content: "ok" }] })).response.status).toBe(200);
 	});
 });
 
@@ -926,8 +964,8 @@ describe("scheduled public API authority", () => {
 	test("KV repeats scope consent inside the write transaction", async () => {
 		const f = await fixture({ scheduled: true });
 		const response = await f.t.action(async (ctx) =>
-			plugins_data_http_write(
-				{
+			plugins_data_http_write({
+				ctx: {
 					...ctx,
 					runMutation: async (...args) => {
 						if (is_api_function(args[0], "plugins_data:write_document")) {
@@ -943,13 +981,17 @@ describe("scheduled public API authority", () => {
 						return await ctx.runMutation(...args);
 					},
 				},
-				api_request(f, "/api/v1/plugin-data/write", {
+				request: api_request({
+					f,
+					path: "/api/v1/plugin-data/write",
+					body: {
 					collection: "records",
 					key: "one",
 					value: { message: "denied" },
+				},
 				}),
-				"/api/v1/plugin-data/write",
-			),
+				path: "/api/v1/plugin-data/write",
+			}),
 		);
 		expect(response.status, "KV writes must repeat direct scope consent").toBe(403);
 		expect(await f.t.run((ctx) => ctx.db.query("plugins_data").collect())).toEqual([]);
@@ -958,8 +1000,8 @@ describe("scheduled public API authority", () => {
 
 	test("scheduled volume writes work with direct consent", async () => {
 		const f = await fixture({ scheduled: true });
-		const staged = await stage(f);
-		expect((await write(f, staged.stagingId, [{ path: "/record", content: "saved" }])).response.status).toBe(200);
+		const staged = await stage({ f });
+		expect((await write({ f, stagingId: staged.stagingId, files: [{ path: "/record", content: "saved" }] })).response.status).toBe(200);
 		expect(events()).toHaveLength(1);
 	});
 
@@ -977,7 +1019,7 @@ describe("scheduled public API authority", () => {
 					principals: [{ kind: "user", userId: member.userId }],
 				}),
 			).toEqual({ _yay: null });
-			await assign_scheduled_user(f, member, ["volumes:write"]);
+			await assign_scheduled_user({ f, member, scopes: ["volumes:write"] });
 			await f.t.run(async (ctx) => {
 				await ctx.db.patch("organizations", f.owner.organizationId, { billingMode: "user" });
 				const userId = empty === "owner" ? f.owner.userId : member.userId;
@@ -989,8 +1031,8 @@ describe("scheduled public API authority", () => {
 				if (!snapshot?.meter) throw new Error("Expected payer meter");
 				await ctx.db.patch("billing_usage_snapshots", snapshot._id, { meter: { ...snapshot.meter, balance: 0 } });
 			});
-			const staged = await stage(f);
-			const result = await write(f, staged.stagingId, [{ path: "/record", content: "saved" }]);
+			const staged = await stage({ f });
+			const result = await write({ f, stagingId: staged.stagingId, files: [{ path: "/record", content: "saved" }] });
 			expect(result.response.status, "scheduled writes must use the current owner credit").toBe(
 				empty === "owner" ? 402 : 200,
 			);
@@ -1005,7 +1047,7 @@ describe("scheduled public API authority", () => {
 
 	test("scheduled volume writes repeat direct consent after PUT", async () => {
 		const f = await fixture({ scheduled: true });
-		const staged = await stage(f);
+		const staged = await stage({ f });
 		onPut = async () => {
 			onPut = null;
 			await f.t.run(async (ctx) => {
@@ -1016,7 +1058,7 @@ describe("scheduled public API authority", () => {
 			});
 		};
 		expect(
-			(await write(f, staged.stagingId, [{ path: "/record", content: "denied" }])).response.status,
+			(await write({ f, stagingId: staged.stagingId, files: [{ path: "/record", content: "denied" }] })).response.status,
 			"volume finalization must repeat direct scope consent",
 		).toBe(403);
 		expect(await volume_nodes(f)).toEqual([]);
@@ -1064,7 +1106,12 @@ describe("scheduled Files response authority", () => {
 				level: "read",
 			}),
 		).toEqual({ _yay: null });
-		await assign_scheduled_user(f, member, ["files:read", "files:list"], { kind: "file", nodeId: file.nodeId });
+		await assign_scheduled_user({
+			f,
+			member,
+			scopes: ["files:read", "files:list"],
+			filesReadProof: { kind: "file", nodeId: file.nodeId },
+		});
 		expect(
 			await member.asMember.query(api.access_control.get_current_user_workspace_permission, {
 				membershipId: member.membershipId,
@@ -1164,7 +1211,7 @@ describe("volumes caps and lifecycle", () => {
 		"reports %s before uploading refused files",
 		async (code) => {
 			const f = await fixture();
-			const staged = await stage(f);
+			const staged = await stage({ f });
 			await f.t.run(async (ctx) => {
 				if (code === "daily_cap_reached") {
 					await rate_limiter_limit_by_key(ctx, {
@@ -1192,7 +1239,7 @@ describe("volumes caps and lifecycle", () => {
 					await ctx.db.patch("plugins_volume_usage", usage._id, { fileCount: 20_000 });
 				}
 			});
-			const result = await write(f, staged.stagingId, [{ path: "/refused", content: "bad" }]);
+			const result = await write({ f, stagingId: staged.stagingId, files: [{ path: "/refused", content: "bad" }] });
 			expect(result.body).toMatchObject({ written: [], errors: [{ path: "/refused", errorCode: code }] });
 			expect(objects.size).toBe(0);
 		},
@@ -1200,8 +1247,8 @@ describe("volumes caps and lifecycle", () => {
 
 	test("daily budget skips excess uploads and still allows replacements", async () => {
 		const f = await fixture();
-		const staged = await stage(f);
-		await write(f, staged.stagingId, [{ path: "/old", content: "old" }]);
+		const staged = await stage({ f });
+		await write({ f, stagingId: staged.stagingId, files: [{ path: "/old", content: "old" }] });
 		await f.t.run((ctx) =>
 			rate_limiter_limit_by_key(ctx, {
 				name: "plugins_volume_daily_files",
@@ -1210,11 +1257,15 @@ describe("volumes caps and lifecycle", () => {
 			}),
 		);
 		const before = objects.size;
-		const result = await write(f, staged.stagingId, [
+		const result = await write({
+			f,
+			stagingId: staged.stagingId,
+			files: [
 			{ path: "/old", content: "new" },
 			{ path: "/one", content: "one" },
 			{ path: "/two", content: "two" },
-		]);
+		],
+		});
 		expect(result.body).toMatchObject({
 			written: [{ path: "/old" }, { path: "/one" }],
 			errors: [{ path: "/two", errorCode: "daily_cap_reached" }],
@@ -1234,7 +1285,7 @@ describe("volumes caps and lifecycle", () => {
 
 	test("uninstall and reinstall keep the daily plugin-name budget", async () => {
 		const f = await fixture();
-		const staged = await stage(f);
+		const staged = await stage({ f });
 		await f.t.run((ctx) =>
 			rate_limiter_limit_by_key(ctx, {
 				name: "plugins_volume_daily_files",
@@ -1242,7 +1293,7 @@ describe("volumes caps and lifecycle", () => {
 				count: 9_999,
 			}),
 		);
-		await write(f, staged.stagingId, [{ path: "/last", content: "last" }]);
+		await write({ f, stagingId: staged.stagingId, files: [{ path: "/last", content: "last" }] });
 		await reset_manage_limit(f);
 		expect(
 			await f.asOwner.mutation(api.plugins.uninstall_version, {
@@ -1263,15 +1314,15 @@ describe("volumes caps and lifecycle", () => {
 		if (installed._nay) throw new Error(installed._nay.message);
 		f.installationId = installed._yay.installationId;
 		await restart_run(f);
-		const next = await stage(f);
-		const result = await write(f, next.stagingId, [{ path: "/refused", content: "refused" }]);
+		const next = await stage({ f });
+		const result = await write({ f, stagingId: next.stagingId, files: [{ path: "/refused", content: "refused" }] });
 		expect(result.body).toMatchObject({ written: [], errors: [{ errorCode: "daily_cap_reached" }] });
 		expect(events()).toHaveLength(1);
 	});
 
 	test.each(["copy", "installation"])("refuses the %s byte cap before PUT", async (kind) => {
 		const f = await fixture();
-		const staged = await stage(f);
+		const staged = await stage({ f });
 		await f.t.run(async (ctx) => {
 			if (kind === "copy") {
 				const id = ctx.db.normalizeId("plugins_volume_generations", staged.stagingId);
@@ -1291,7 +1342,7 @@ describe("volumes caps and lifecycle", () => {
 				await ctx.db.patch("plugins_volume_usage", usage._id, { bytes: 200_000_000 });
 			}
 		});
-		expect((await write(f, staged.stagingId, [{ path: "/refused", content: "one" }])).body).toMatchObject({
+		expect((await write({ f, stagingId: staged.stagingId, files: [{ path: "/refused", content: "one" }] })).body).toMatchObject({
 			written: [],
 			errors: [{ errorCode: kind === "copy" ? "copy_cap_reached" : "installation_cap_reached" }],
 		});
@@ -1314,7 +1365,7 @@ describe("volumes caps and lifecycle", () => {
 					drainScheduledUntil: null,
 				});
 		});
-		const response = await post(f, "stage", { mountId: "sources", volumeKey: "another", revision: "r" });
+		const response = await post({ f, route: "stage", body: { mountId: "sources", volumeKey: "another", revision: "r" } });
 		expect(response.status).toBe(409);
 		expect(await response.json()).toMatchObject({ errorCode: "volume_cap_reached" });
 	});
@@ -1335,10 +1386,10 @@ describe("volumes caps and lifecycle", () => {
 					drainScheduledUntil: null,
 				});
 		});
-		const response = await post(f, "stage", { mountId: "sources", volumeKey: "current", revision: "r" });
+		const response = await post({ f, route: "stage", body: { mountId: "sources", volumeKey: "current", revision: "r" } });
 		expect(response.status, "dropped mount rows must still count toward 128 volumes").toBe(409);
 		expect(await response.json()).toMatchObject({ errorCode: "volume_cap_reached" });
-		expect(await (await post(f, "list", {})).json()).toMatchObject({
+		expect(await (await post({ f, route: "list", body: {} })).json()).toMatchObject({
 			mounts: [{ volumes: [] }],
 			usage: { limits: { volumesPerInstallation: 128 } },
 		});
@@ -1346,17 +1397,17 @@ describe("volumes caps and lifecycle", () => {
 
 	test("lists deleting state and refuses controls and writes with 409", async () => {
 		const f = await fixture();
-		const staged = await stage(f);
-		await write(f, staged.stagingId, [{ path: "/old", content: "old" }]);
-		expect((await post(f, "delete", { mountId: "sources", volumeKey: "records" })).status).toBe(200);
-		expect(await (await post(f, "list", {})).json()).toMatchObject({ mounts: [{ volumes: [{ deleting: true }] }] });
+		const staged = await stage({ f });
+		await write({ f, stagingId: staged.stagingId, files: [{ path: "/old", content: "old" }] });
+		expect((await post({ f, route: "delete", body: { mountId: "sources", volumeKey: "records" } })).status).toBe(200);
+		expect(await (await post({ f, route: "list", body: {} })).json()).toMatchObject({ mounts: [{ volumes: [{ deleting: true }] }] });
 		for (const [route, body] of [
 			["stage", { mountId: "sources", volumeKey: "records", revision: "new" }],
 			["publish", { stagingId: staged.stagingId }],
 			["delete", { mountId: "sources", volumeKey: "records" }],
 			["write-many", { stagingId: staged.stagingId, files: [{ path: "/new", content: "new" }] }],
 		] as const) {
-			const response = await post(f, route, body);
+			const response = await post({ f, route, body });
 			expect(response.status).toBe(409);
 			expect(await response.json()).toMatchObject({ errorCode: "volume_deleting" });
 		}
@@ -1364,28 +1415,28 @@ describe("volumes caps and lifecycle", () => {
 
 	test("rejects expired and empty staging copies", async () => {
 		const f = await fixture();
-		const staged = await stage(f);
-		expect((await post(f, "publish", { stagingId: staged.stagingId })).status).toBe(409);
+		const staged = await stage({ f });
+		expect((await post({ f, route: "publish", body: { stagingId: staged.stagingId } })).status).toBe(409);
 		await f.t.run(async (ctx) => {
 			const id = ctx.db.normalizeId("plugins_volume_generations", staged.stagingId);
 			if (!id) throw new Error("Expected staging id");
 			await ctx.db.patch("plugins_volume_generations", id, { expiresAt: Date.now() - 1 });
 		});
-		expect((await write(f, staged.stagingId, [{ path: "/late", content: "late" }])).response.status).toBe(409);
+		expect((await write({ f, stagingId: staged.stagingId, files: [{ path: "/late", content: "late" }] })).response.status).toBe(409);
 		expect(objects.size).toBe(0);
 	});
 
 	test("uses the installation rate bucket for controls and bulk writes", async () => {
 		const f = await fixture();
-		const staged = await stage(f);
+		const staged = await stage({ f });
 		await f.t.run((ctx) =>
 			rate_limiter_limit_by_key(ctx, { name: "plugins_volume_write_bulk", key: f.installationId, count: 1_200 }),
 		);
-		expect((await write(f, staged.stagingId, [{ path: "/rate", content: "rate" }])).response.status).toBe(429);
+		expect((await write({ f, stagingId: staged.stagingId, files: [{ path: "/rate", content: "rate" }] })).response.status).toBe(429);
 		await f.t.run((ctx) =>
 			rate_limiter_limit_by_key(ctx, { name: "plugins_volume_control", key: f.installationId, count: 29 }),
 		);
-		expect((await post(f, "stage", { mountId: "sources", volumeKey: "another", revision: "r" })).status).toBe(429);
+		expect((await post({ f, route: "stage", body: { mountId: "sources", volumeKey: "another", revision: "r" } })).status).toBe(429);
 		expect(objects.size).toBe(0);
 	});
 
@@ -1393,8 +1444,8 @@ describe("volumes caps and lifecycle", () => {
 		"a %s during PUT cannot save into the old staging copy",
 		async (control) => {
 			const f = await fixture();
-			const staged = await stage(f);
-			await write(f, staged.stagingId, [{ path: "/old", content: "old" }]);
+			const staged = await stage({ f });
+			await write({ f, stagingId: staged.stagingId, files: [{ path: "/old", content: "old" }] });
 			const old = (await volume_nodes(f)).find((node) => node.kind === "file")!;
 			onPut = async () => {
 				onPut = null;
@@ -1404,9 +1455,9 @@ describe("volumes caps and lifecycle", () => {
 						: control === "publish"
 							? { stagingId: staged.stagingId }
 							: { mountId: "sources", volumeKey: "records" };
-				expect((await post(f, control, body)).status).toBe(200);
+				expect((await post({ f, route: control, body })).status).toBe(200);
 			};
-			expect((await write(f, staged.stagingId, [{ path: "/old", content: "replacement" }])).response.status).toBe(409);
+			expect((await write({ f, stagingId: staged.stagingId, files: [{ path: "/old", content: "replacement" }] })).response.status).toBe(409);
 			expect(await f.t.run((ctx) => ctx.db.get("files_nodes", old._id))).toEqual(old);
 			expect(events()).toHaveLength(1);
 			expect(await unused_assets(f)).toEqual([]);
@@ -1428,7 +1479,7 @@ describe("volumes live authority and credits", () => {
 			}),
 		).toEqual({ _yay: null });
 		await restart_run(f, member.userId);
-		const response = await post(f, "stage", { mountId: "sources", volumeKey: "records", revision: "r" });
+		const response = await post({ f, route: "stage", body: { mountId: "sources", volumeKey: "records", revision: "r" } });
 		expect(response.status).toBe(403);
 		expect(await f.t.run((ctx) => ctx.db.query("plugins_volumes").collect())).toEqual([]);
 		expect((await calls(f)).at(-1)?.status).toBe("failed");
@@ -1439,12 +1490,12 @@ describe("volumes live authority and credits", () => {
 		await f.t.run((ctx) =>
 			ctx.db.patch("plugins_event_runs", f.runId, { acceptedCapabilities: ["plugin.backend.invoke"] }),
 		);
-		expect((await post(f, "list", {})).status).toBe(403);
+		expect((await post({ f, route: "list", body: {} })).status).toBe(403);
 	});
 
 	test("refuses insufficient entry credits before PUT", async () => {
 		const f = await fixture();
-		const staged = await stage(f);
+		const staged = await stage({ f });
 		await f.t.run(async (ctx) => {
 			await test_mocks_fill_db_with.plan(ctx, { userId: f.owner.userId, plan: "Free" });
 			const snapshot = await ctx.db
@@ -1456,10 +1507,14 @@ describe("volumes live authority and credits", () => {
 		});
 		expect(
 			(
-				await write(f, staged.stagingId, [
+				await write({
+					f,
+					stagingId: staged.stagingId,
+					files: [
 					{ path: "/one", content: "one" },
 					{ path: "/two", content: "two" },
-				])
+				],
+				})
 			).response.status,
 		).toBe(402);
 		expect(objects.size).toBe(0);
@@ -1470,7 +1525,7 @@ describe("volumes live authority and credits", () => {
 		"refuses %s during R2 I/O before final writes",
 		async (change) => {
 			const f = await fixture();
-			const staged = await stage(f);
+			const staged = await stage({ f });
 			let changed = false;
 			onPut = async () => {
 				if (changed) return;
@@ -1506,7 +1561,7 @@ describe("volumes live authority and credits", () => {
 					else await ctx.db.patch("plugins_event_runs", f.runId, { apiTokenHash: undefined });
 				});
 			};
-			expect((await write(f, staged.stagingId, [{ path: "/refused", content: "refused" }])).response.status).toBe(401);
+			expect((await write({ f, stagingId: staged.stagingId, files: [{ path: "/refused", content: "refused" }] })).response.status).toBe(401);
 			expect((await volume_nodes(f)).filter((node) => node.kind === "file")).toEqual([]);
 			expect(events()).toHaveLength(0);
 			expect(await unused_assets(f)).toEqual([]);
@@ -1516,11 +1571,15 @@ describe("volumes live authority and credits", () => {
 
 	test("revoking exact management during PUT leaves the old file and sibling intact", async () => {
 		const f = await fixture();
-		const staged = await stage(f);
-		await write(f, staged.stagingId, [
+		const staged = await stage({ f });
+		await write({
+			f,
+			stagingId: staged.stagingId,
+			files: [
 			{ path: "/old", content: "old" },
 			{ path: "/old-sibling", content: "sibling" },
-		]);
+		],
+		});
 		const prior = (await volume_nodes(f)).filter((node) => node.kind === "file");
 		const member = await f.t.run((ctx) =>
 			test_mocks_fill_db_with.membership(ctx, { organizationName: "personal", workspaceName: "home" }),
@@ -1551,7 +1610,7 @@ describe("volumes live authority and credits", () => {
 				}),
 			).toEqual({ _yay: null });
 		};
-		expect((await write(f, staged.stagingId, [{ path: "/old", content: "changed" }])).response.status).toBe(403);
+		expect((await write({ f, stagingId: staged.stagingId, files: [{ path: "/old", content: "changed" }] })).response.status).toBe(403);
 		for (const node of prior) expect(await f.t.run((ctx) => ctx.db.get("files_nodes", node._id))).toEqual(node);
 		expect(events()).toHaveLength(2);
 		expect(await unused_assets(f)).toEqual([]);
@@ -1559,7 +1618,7 @@ describe("volumes live authority and credits", () => {
 
 	test("an owner transfer repeats the new payer credit check before saving", async () => {
 		const f = await fixture();
-		const staged = await stage(f);
+		const staged = await stage({ f });
 		const nextOwner = await f.t.run((ctx) =>
 			test_mocks_fill_db_with.membership(ctx, { organizationName: "personal", workspaceName: "home", plan: "Free" }),
 		);
@@ -1600,10 +1659,10 @@ describe("volumes live authority and credits", () => {
 				}),
 			).toEqual({ _yay: null });
 		};
-		expect((await write(f, staged.stagingId, [{ path: "/refused", content: "refused" }])).response.status).toBe(402);
+		expect((await write({ f, stagingId: staged.stagingId, files: [{ path: "/refused", content: "refused" }] })).response.status).toBe(402);
 		expect((await volume_nodes(f)).filter((node) => node.kind === "file")).toEqual([]);
 		expect(events()).toHaveLength(0);
-		expect(await (await post(f, "list", {})).json()).toMatchObject({ usage: { fileCount: 0, dailyFilesLeft: 10_000 } });
+		expect(await (await post({ f, route: "list", body: {} })).json()).toMatchObject({ usage: { fileCount: 0, dailyFilesLeft: 10_000 } });
 		expect(await unused_assets(f)).toEqual([]);
 	});
 });
@@ -1611,11 +1670,11 @@ describe("volumes live authority and credits", () => {
 describe("volumes replacement transaction budget", () => {
 	test("writes valid large multiline files and splits small replacements by old content", async () => {
 		const f = await fixture({ transactionLimits: true });
-		const staged = await stage(f);
+		const staged = await stage({ f });
 		const content = `${"x".repeat(600)}\n`.repeat(1_490);
 		expect(content.length).toBeLessThan(900_000);
 		const files = Array.from({ length: 5 }, (_, i) => ({ path: `/large-${i}`, content }));
-		const initial = await write(f, staged.stagingId, files);
+		const initial = await write({ f, stagingId: staged.stagingId, files });
 		expect(initial.response.status).toBe(200);
 		expect(initial.body).toMatchObject({ written: files.map((file) => ({ path: file.path })), errors: [] });
 		const prior = (await volume_nodes(f)).filter((node) => node.kind === "file");
@@ -1633,16 +1692,16 @@ describe("volumes replacement transaction budget", () => {
 			);
 			expect(saved.map((row) => row.textChunk).join("")).toBe(content);
 		}
-		const replaced = await write(
+		const replaced = await write({
 			f,
-			staged.stagingId,
-			files.map((file) => ({ path: file.path, content: "tiny" })),
-		);
+			stagingId: staged.stagingId,
+			files: files.map((file) => ({ path: file.path, content: "tiny" })),
+		});
 		expect(replaced.response.status, "old replacement content must fit each final transaction").toBe(200);
 		expect(replaced.body).toMatchObject({ written: files.map((file) => ({ path: file.path, bytes: 4 })), errors: [] });
 		expect(events()).toHaveLength(5);
 		for (const node of prior) expect(await f.t.run((ctx) => ctx.db.get("files_nodes", node._id))).toBeNull();
-		expect(await (await post(f, "list", {})).json()).toMatchObject({
+		expect(await (await post({ f, route: "list", body: {} })).json()).toMatchObject({
 			usage: { fileCount: 5, bytes: 20, dailyFilesLeft: 9_995 },
 		});
 	}, 30_000);

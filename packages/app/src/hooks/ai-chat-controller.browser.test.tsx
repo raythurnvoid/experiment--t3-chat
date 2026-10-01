@@ -200,7 +200,7 @@ function RuntimeStreamProbe() {
 				type="button"
 				onClick={() => {
 					if (selectedThreadId) {
-						controller.sendUserText(selectedThreadId, "Hi");
+						controller.sendUserText({ threadId: selectedThreadId, value: "Hi" });
 					}
 				}}
 			>
@@ -210,7 +210,7 @@ function RuntimeStreamProbe() {
 				type="button"
 				onClick={() => {
 					if (selectedThreadId) {
-						controller.sendUserText(selectedThreadId, "Queued");
+						controller.sendUserText({ threadId: selectedThreadId, value: "Queued" });
 					}
 				}}
 			>

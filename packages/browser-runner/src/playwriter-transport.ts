@@ -768,8 +768,13 @@ export class PlaywriterTransport {
 		if (this.sessions.get(sessionId)?.target.type === "worker") return;
 		child.fetchSessions.add(sessionId);
 		// A wide pattern is fine: the requestPaused handler checks the host and continues the rest.
-		this.send(child, sessionId, "Fetch.enable", {
+		this.send({
+			child,
+			sessionId,
+			method: "Fetch.enable",
+			params: {
 			patterns: hosts.map((host) => ({ urlPattern: `*${host}*`, requestStage: "Request" })),
+		},
 		});
 	}
 
@@ -788,7 +793,13 @@ export class PlaywriterTransport {
 	/**
 	 * Send a command nobody waits for. A late reply finds no pending request and is dropped.
 	 */
-	private send_untracked(sessionId: string, method: string, params: Params) {
+	private send_untracked(args: {
+		sessionId: string;
+		method: string;
+		params: Params;
+	}) {
+		const { sessionId, method, params } = args;
+
 		if (this.closed || this.nextId >= Number.MAX_SAFE_INTEGER) return;
 		try {
 			this.input.socket.send(
@@ -833,7 +844,13 @@ export class PlaywriterTransport {
 		this.sessions.clear();
 	}
 
-	private parse(data: unknown, maxBytes: number, child?: Child) {
+	private parse(args: {
+		data: unknown;
+		maxBytes: number;
+		child?: Child;
+	}) {
+		const { data, maxBytes, child } = args;
+
 		if (typeof data !== "string" || data.length > maxBytes) return null;
 		const bytes = new TextEncoder().encode(data).byteLength;
 		if (bytes > maxBytes) return null;
@@ -858,7 +875,13 @@ export class PlaywriterTransport {
 		}
 	}
 
-	private refuse(child: Child, id: number, sessionId: string | undefined) {
+	private refuse(args: {
+		child: Child;
+		id: number;
+		sessionId: string | undefined;
+	}) {
+		const { child, id, sessionId } = args;
+
 		this.reply(child, {
 			id,
 			...(sessionId ? { sessionId } : {}),
@@ -880,7 +903,7 @@ export class PlaywriterTransport {
 	}
 
 	private from_child(child: Child, data: unknown) {
-		const message = this.parse(data, MAX_CHILD_BYTES, child);
+		const message = this.parse({ data, maxBytes: MAX_CHILD_BYTES, child });
 		if (
 			!message ||
 			!shape(message, { id: is_number, method: is_id, params: optional(is_record), sessionId: optional(is_id) }) ||
@@ -898,7 +921,7 @@ export class PlaywriterTransport {
 			return;
 		}
 		if (id <= 0 || !child.accepting || child.ended || this.child !== child || Date.now() >= child.deadline)
-			return this.refuse(child, id, childSessionId);
+			return this.refuse({ child, id, sessionId: childSessionId });
 		if (
 			++child.requests > MAX_REQUESTS ||
 			this.pending.size >= MAX_PENDING ||
@@ -907,7 +930,7 @@ export class PlaywriterTransport {
 			return this.fail_child(child, "command_limit");
 		const fields = Object.hasOwn(PARAMS, method) ? PARAMS[method] : undefined;
 		const params = is_record(message.params) ? message.params : {};
-		if (!fields || !shape(params, fields)) return this.refuse(child, id, childSessionId);
+		if (!fields || !shape(params, fields)) return this.refuse({ child, id, sessionId: childSessionId });
 		if (
 			(method.startsWith("Input.") ||
 				method === "Page.navigate" ||
@@ -916,7 +939,7 @@ export class PlaywriterTransport {
 				method === "Page.handleJavaScriptDialog") &&
 			!this.input.canSendInput()
 		)
-			return this.refuse(child, id, childSessionId);
+			return this.refuse({ child, id, sessionId: childSessionId });
 		if (
 			(method === "Input.dispatchKeyEvent" &&
 				["keyDown", "rawKeyDown"].includes(String(params.type)) &&
@@ -926,7 +949,7 @@ export class PlaywriterTransport {
 				params.button === "middle" &&
 				(params.type === "mousePressed" || params.type === "mouseReleased"))
 		)
-			return this.refuse(child, id, childSessionId);
+			return this.refuse({ child, id, sessionId: childSessionId });
 		const sessionId = childSessionId ? (child.aliases.get(childSessionId) ?? childSessionId) : this.input.sessionId;
 		const session = this.sessions.get(sessionId);
 		const browserScope = !childSessionId || childSessionId === child.browserSession;
@@ -934,18 +957,18 @@ export class PlaywriterTransport {
 			(!browserScope && (!session || !child.announced.has(sessionId))) ||
 			(session?.target.type === "worker" && !WORKER_METHODS.has(method))
 		)
-			return this.refuse(child, id, childSessionId);
+			return this.refuse({ child, id, sessionId: childSessionId });
 		if (params.targetId !== undefined && params.targetId !== this.input.targetId)
-			return this.refuse(child, id, childSessionId);
+			return this.refuse({ child, id, sessionId: childSessionId });
 		if (params.frameId !== undefined && !session?.frames.has(String(params.frameId)))
-			return this.refuse(child, id, childSessionId);
+			return this.refuse({ child, id, sessionId: childSessionId });
 		if (
 			(method === "Runtime.evaluate" && !session?.contexts.has(Number(params.contextId))) ||
 			(method === "DOM.resolveNode" && !session?.contexts.has(Number(params.executionContextId)))
 		)
-			return this.refuse(child, id, childSessionId);
+			return this.refuse({ child, id, sessionId: childSessionId });
 		if (method === "Runtime.addBinding" && params.executionContextId !== undefined)
-			return this.refuse(child, id, childSessionId);
+			return this.refuse({ child, id, sessionId: childSessionId });
 
 		if (method === "Browser.getVersion" && browserScope) {
 			this.reply(child, {
@@ -981,7 +1004,7 @@ export class PlaywriterTransport {
 			return;
 		}
 		if (method === "Target.attachToTarget" && childSessionId === child.browserSession) {
-			if (child.aliasCount >= 8) return this.refuse(child, id, childSessionId);
+			if (child.aliasCount >= 8) return this.refuse({ child, id, sessionId: childSessionId });
 			const alias = `playwriter-capture-${this.nextChildId}-${++child.aliasCount}`;
 			child.aliases.set(alias, this.input.sessionId);
 			this.reply(child, { id, sessionId: childSessionId, result: { sessionId: alias } });
@@ -1021,16 +1044,16 @@ export class PlaywriterTransport {
 			this.reply(child, { id, ...(childSessionId ? { sessionId: childSessionId } : {}), result: {} });
 			return;
 		}
-		if (browserScope && method !== "Target.setAutoAttach") return this.refuse(child, id, childSessionId);
+		if (browserScope && method !== "Target.setAutoAttach") return this.refuse({ child, id, sessionId: childSessionId });
 		if (method === "Target.attachToTarget" || method === "Target.detachFromTarget" || method.startsWith("Browser."))
-			return this.refuse(child, id, childSessionId);
+			return this.refuse({ child, id, sessionId: childSessionId });
 		if (
 			method === "Page.removeScriptToEvaluateOnNewDocument" &&
 			!child.scripts.get(sessionId)?.has(String(params.identifier))
 		)
-			return this.refuse(child, id, childSessionId);
+			return this.refuse({ child, id, sessionId: childSessionId });
 		if (method === "Runtime.removeBinding" && !child.bindings.get(sessionId)?.has(String(params.name)))
-			return this.refuse(child, id, childSessionId);
+			return this.refuse({ child, id, sessionId: childSessionId });
 		let forwarded = params;
 		if (method === "Target.setAutoAttach") {
 			forwarded = { autoAttach: true, waitForDebuggerOnStart: false, flatten: true };
@@ -1041,26 +1064,28 @@ export class PlaywriterTransport {
 		if (method === "Page.createIsolatedWorld") forwarded = { ...params, grantUniveralAccess: false };
 		if (method === "Page.navigate") {
 			const normalized = browser_web_normalize_url(String(params.url), this.input.blockedHosts());
-			if (!normalized.ok) return this.refuse(child, id, childSessionId);
+			if (!normalized.ok) return this.refuse({ child, id, sessionId: childSessionId });
 			forwarded = { ...params, url: normalized.url };
 		}
 		// An entry may lead anywhere in the user's history. Check its real url like a new address.
 		if (method === "Page.navigateToHistoryEntry") {
 			const url = child.history.get(Number(params.entryId));
 			if (url === undefined || !browser_web_normalize_url(url, this.input.blockedHosts()).ok)
-				return this.refuse(child, id, childSessionId);
+				return this.refuse({ child, id, sessionId: childSessionId });
 		}
-		this.send(child, sessionId, method, forwarded, id, childSessionId);
+		this.send({ child, sessionId, method, params: forwarded, childId: id, childSessionId });
 	}
 
-	private send(
-		child: Child,
-		sessionId: string,
-		method: string,
-		params: Params,
-		childId?: number,
-		childSessionId?: string,
-	) {
+	private send(args: {
+		child: Child;
+		sessionId: string;
+		method: string;
+		params: Params;
+		childId?: number;
+		childSessionId?: string;
+	}) {
+		const { child, sessionId, method, params, childId, childSessionId } = args;
+
 		if (this.closed || this.pending.size >= MAX_PENDING || this.nextId >= Number.MAX_SAFE_INTEGER)
 			return this.fail_child(child, "connection_limit");
 		const id = ++this.nextId;
@@ -1115,7 +1140,13 @@ export class PlaywriterTransport {
 		}
 	}
 
-	private remember_frames(session: Session, value: unknown, depth = 0): boolean {
+	private remember_frames(args: {
+		session: Session;
+		value: unknown;
+		depth?: number;
+	}): boolean {
+		const { session, value, depth = 0 } = args;
+
 		if (
 			!is_record(value) ||
 			!is_record(value.frame) ||
@@ -1129,7 +1160,7 @@ export class PlaywriterTransport {
 		if (value.childFrames === undefined) return true;
 		return (
 			Array.isArray(value.childFrames) &&
-			value.childFrames.every((child) => this.remember_frames(session, child, depth + 1))
+			value.childFrames.every((child) => this.remember_frames({ session, value: child, depth: depth + 1 }))
 		);
 	}
 
@@ -1151,7 +1182,7 @@ export class PlaywriterTransport {
 
 	private from_extension(data: unknown, initial = false) {
 		if (this.closed) return;
-		const message = this.parse(data, MAX_PROVIDER_BYTES, this.child ?? undefined);
+		const message = this.parse({ data, maxBytes: MAX_PROVIDER_BYTES, child: this.child ?? undefined });
 		if (
 			!message ||
 			(initial &&
@@ -1202,7 +1233,7 @@ export class PlaywriterTransport {
 			if (request.method === "Page.getFrameTree") {
 				session.frames.clear();
 				if (
-					!this.remember_frames(session, message.result.frameTree) ||
+					!this.remember_frames({ session, value: message.result.frameTree }) ||
 					!is_record(message.result.frameTree) ||
 					!is_record(message.result.frameTree.frame)
 				)
@@ -1372,11 +1403,11 @@ export class PlaywriterTransport {
 			// command ended, so the user's page never hangs. The child never sees these events.
 			if (!is_id(params.requestId) || !is_record(params.request) || typeof params.request.url !== "string") return;
 			const blocked = browser_web_url_host_matches(params.request.url, this.input.blockedHosts());
-			this.send_untracked(
-				sessionId ?? this.input.sessionId,
-				blocked ? "Fetch.failRequest" : "Fetch.continueRequest",
-				blocked ? { requestId: params.requestId, errorReason: "BlockedByClient" } : { requestId: params.requestId },
-			);
+			this.send_untracked({
+				sessionId: sessionId ?? this.input.sessionId,
+				method: blocked ? "Fetch.failRequest" : "Fetch.continueRequest",
+				params: blocked ? { requestId: params.requestId, errorReason: "BlockedByClient" } : { requestId: params.requestId },
+			});
 			return;
 		}
 		if (!session || !EVENTS.has(method)) return;
@@ -1511,19 +1542,19 @@ export class PlaywriterTransport {
 		// The input that opened a dialog only finishes after the dialog closes. So close the dialogs
 		// the script left open before the drain.
 		for (const sessionId of child.dialogs)
-			if (this.sessions.has(sessionId)) this.send(child, sessionId, "Page.handleJavaScriptDialog", { accept: false });
+			if (this.sessions.has(sessionId)) this.send({ child, sessionId, method: "Page.handleJavaScriptDialog", params: { accept: false } });
 		await this.drain(child, deadline);
 		if (!this.closed && Date.now() < deadline) {
 			for (const [sessionId] of this.sessions) {
 				for (const identifier of child.scripts.get(sessionId) ?? [])
-					this.send(child, sessionId, "Page.removeScriptToEvaluateOnNewDocument", { identifier });
+					this.send({ child, sessionId, method: "Page.removeScriptToEvaluateOnNewDocument", params: { identifier } });
 				for (const name of child.bindings.get(sessionId) ?? [])
-					this.send(child, sessionId, "Runtime.removeBinding", { name });
+					this.send({ child, sessionId, method: "Runtime.removeBinding", params: { name } });
 				for (const params of child.keys.get(sessionId)?.values() ?? [])
-					this.send(child, sessionId, "Input.dispatchKeyEvent", params);
+					this.send({ child, sessionId, method: "Input.dispatchKeyEvent", params });
 				for (const params of child.buttons.get(sessionId)?.values() ?? [])
-					this.send(child, sessionId, "Input.dispatchMouseEvent", params);
-				if (child.fetchSessions.has(sessionId)) this.send(child, sessionId, "Fetch.disable", {});
+					this.send({ child, sessionId, method: "Input.dispatchMouseEvent", params });
+				if (child.fetchSessions.has(sessionId)) this.send({ child, sessionId, method: "Fetch.disable", params: {} });
 				if (this.pending.size >= 64) await this.drain(child, deadline);
 			}
 			await this.drain(child, deadline);

@@ -792,16 +792,14 @@ describe("files_nodes_db_set_restricted_scope", () => {
 		const link = await link_on(f, f.nodeId);
 		const set_scope = (restrictedScopeNodeId: Id<"files_nodes"> | null) =>
 			f.t.run((ctx) =>
-				files_nodes_db_set_restricted_scope(
+				files_nodes_db_set_restricted_scope({
 					ctx,
-					{
-						organizationId: f.db.organizationId,
-						workspaceId: f.db.workspaceId,
-						nodeId: f.nodeId,
-						restrictedScopeNodeId,
-					},
-					files_share_links_create_cleanup_state(),
-				),
+					organizationId: f.db.organizationId,
+					workspaceId: f.db.workspaceId,
+					nodeId: f.nodeId,
+					restrictedScopeNodeId,
+					shareLinkCleanup: files_share_links_create_cleanup_state(),
+				}),
 			);
 
 		await set_scope(null);
@@ -1179,7 +1177,7 @@ describe("create_upload_nodes", () => {
 		});
 		expect(uploaded._yay?.skipped).toEqual([{ relativePath: "locked.md", reason: "conflict" }]);
 		expect(await f.t.run((ctx) => ctx.db.query("files_share_links").collect())).toEqual([kept]);
-		expect(new Set(deleteForRoots.mock.calls.map(([, , state]) => state)).size).toBe(1);
+		expect(new Set(deleteForRoots.mock.calls.map(([call]) => call.state)).size).toBe(1);
 		expect(deleteForRoots).toHaveBeenCalledTimes(2);
 	});
 });
@@ -1215,7 +1213,7 @@ describe("create_file_upload_targets", () => {
 		});
 		expect(created._nay).toBeUndefined();
 		expect(await f.t.run((ctx) => ctx.db.query("files_share_links").collect())).toEqual([]);
-		expect(new Set(deleteForRoots.mock.calls.map(([, , state]) => state)).size).toBe(1);
+		expect(new Set(deleteForRoots.mock.calls.map(([call]) => call.state)).size).toBe(1);
 		expect(deleteForRoots).toHaveBeenCalledTimes(2);
 	});
 });
@@ -1248,17 +1246,15 @@ describe("files_share_links_db_delete_for_roots", () => {
 			const query = vi.spyOn(ctx.db, "query");
 			const state = files_share_links_create_cleanup_state();
 			const tenant = { organizationId: f.db.organizationId, workspaceId: f.db.workspaceId };
-			await files_share_links_db_delete_for_roots(ctx, { ...tenant, rootNodeIds: [f.nodeId] }, state);
-			await files_share_links_db_delete_for_roots(ctx, { ...tenant, rootNodeIds: [f.nodeId, otherId] }, state);
-			await files_share_links_db_delete_for_roots(
+			await files_share_links_db_delete_for_roots({ ctx, ...tenant, rootNodeIds: [f.nodeId], state });
+			await files_share_links_db_delete_for_roots({ ctx, ...tenant, rootNodeIds: [f.nodeId, otherId], state });
+			await files_share_links_db_delete_for_roots({
 				ctx,
-				{
-					organizationId: organizations_GLOBAL_ORGANIZATION_ID,
-					workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
-					rootNodeIds: [f.nodeId],
-				},
-				files_share_links_create_cleanup_state(),
-			);
+				organizationId: organizations_GLOBAL_ORGANIZATION_ID,
+				workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
+				rootNodeIds: [f.nodeId],
+				state: files_share_links_create_cleanup_state(),
+			});
 			return query.mock.calls.filter(([table]) => table === "files_share_links").length;
 		});
 		expect(linkQueries).toBe(1);
@@ -1301,11 +1297,13 @@ describe("files_share_links_db_delete_for_roots", () => {
 		});
 
 		await f.t.run((ctx) =>
-			files_share_links_db_delete_for_roots(
+			files_share_links_db_delete_for_roots({
 				ctx,
-				{ organizationId: f.db.organizationId, workspaceId: f.db.workspaceId, rootNodeIds: [folderId] },
-				files_share_links_create_cleanup_state(),
-			),
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				rootNodeIds: [folderId],
+				state: files_share_links_create_cleanup_state(),
+			}),
 		);
 		expect(await f.t.run((ctx) => ctx.db.query("files_share_links").collect())).toEqual([]);
 	});

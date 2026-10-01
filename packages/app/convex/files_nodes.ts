@@ -719,23 +719,25 @@ export async function files_nodes_db_resolve_parent_restricted_scope(
  * Pass `null` as `shareLinkCleanup` only for a folder this mutation just created. It has no links, so
  * this skips the link scan.
  */
-export async function files_nodes_db_set_restricted_scope(
-	ctx: MutationCtx,
-	args: {
-		organizationId: Doc<"files_nodes">["organizationId"];
-		workspaceId: Doc<"files_nodes">["workspaceId"];
-		nodeId: Id<"files_nodes">;
-		restrictedScopeNodeId: Id<"files_nodes"> | null;
-	},
-	shareLinkCleanup: files_share_links_CleanupState | null,
-) {
+export async function files_nodes_db_set_restricted_scope(args: {
+	ctx: MutationCtx;
+	organizationId: Doc<"files_nodes">["organizationId"];
+	workspaceId: Doc<"files_nodes">["workspaceId"];
+	nodeId: Id<"files_nodes">;
+	restrictedScopeNodeId: Id<"files_nodes"> | null;
+	shareLinkCleanup: files_share_links_CleanupState | null;
+}) {
+	const { ctx, shareLinkCleanup } = args;
+
 	const node = await ctx.db.get("files_nodes", args.nodeId);
 	if (shareLinkCleanup && node?.restrictedScopeNodeId !== args.restrictedScopeNodeId) {
-		await files_share_links_db_delete_for_roots(
+		await files_share_links_db_delete_for_roots({
 			ctx,
-			{ organizationId: args.organizationId, workspaceId: args.workspaceId, rootNodeIds: [args.nodeId] },
-			shareLinkCleanup,
-		);
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			rootNodeIds: [args.nodeId],
+			state: shareLinkCleanup,
+		});
 	}
 
 	const isRestrictedScopeRoot = args.restrictedScopeNodeId === args.nodeId;
@@ -2606,7 +2608,10 @@ export async function files_nodes_db_create_private_node_by_path(
 				? { contentType: args.content.contentType, rootKind: args.content.textKind }
 				: files_default_text_shape_for_name(segments[index]!);
 
-		await files_db_patch_pending_update(ctx, pendingUpdateId, {
+		await files_db_patch_pending_update({
+			ctx,
+			pendingUpdateId,
+			value: {
 			createIntent:
 				kind === "folder"
 					? { kind: "folder", metadata: [] }
@@ -2621,6 +2626,7 @@ export async function files_nodes_db_create_private_node_by_path(
 							},
 			// Uploaded bytes already know their size. A text create keeps size 0 until its first batch.
 			...(kind === "file" && args.content?.kind === "stored" ? { size: args.content.size } : {}),
+		},
 		});
 		parent = { kind: "private", id: privateNodeId };
 
@@ -3115,7 +3121,7 @@ export async function files_nodes_db_hard_delete_node(
 		...yjsLastSequences.map((lastSequence) => ctx.db.delete("files_yjs_docs_last_sequences", lastSequence._id)),
 		...materializationJobs.map((job) => ctx.db.delete("files_content_materialization_jobs", job._id)),
 		...snapshots.map((snapshot) => ctx.db.delete("files_snapshots", snapshot._id)),
-		...pendingUpdates.map((pendingUpdate) => files_db_delete_pending_update(ctx, pendingUpdate._id)),
+		...pendingUpdates.map((pendingUpdate) => files_db_delete_pending_update({ ctx, pendingUpdateId: pendingUpdate._id })),
 		...lastSequenceSavedDocs.map((doc) => ctx.db.delete("files_pending_updates_last_sequence_saved", doc._id)),
 		...shareGrants.map((grant) => ctx.db.delete("access_control_permission_grants", grant._id)),
 	]);
@@ -3376,15 +3382,13 @@ export const create_upload_node = mutation({
 				return occupantWritable;
 			}
 
-			await files_nodes_db_archive_nodes(
+			await files_nodes_db_archive_nodes({
 				ctx,
-				{
-					nodeIds: [existingNode._id],
-					updatedBy: userAuth.id,
-					now,
-				},
-				files_share_links_create_cleanup_state(),
-			);
+				nodeIds: [existingNode._id],
+				updatedBy: userAuth.id,
+				now,
+				shareLinkCleanup: files_share_links_create_cleanup_state(),
+			});
 		}
 
 		const assetId = await ctx.db.insert("files_r2_assets", {
@@ -3819,15 +3823,13 @@ export const create_upload_nodes = mutation({
 
 				// Safe to archive now: every folder on the way passed the walk above, so the create
 				// below cannot refuse this item after the old file is already gone.
-				await files_nodes_db_archive_nodes(
+				await files_nodes_db_archive_nodes({
 					ctx,
-					{
-						nodeIds: [existingNode._id],
-						updatedBy: userAuth.id,
-						now,
-					},
+					nodeIds: [existingNode._id],
+					updatedBy: userAuth.id,
+					now,
 					shareLinkCleanup,
-				);
+				});
 			}
 
 			runnable.push(item);
@@ -4539,7 +4541,7 @@ export async function files_nodes_db_apply_pending_move(
 		}
 	}
 
-	await files_nodes_db_apply_move(ctx, plan._yay, files_share_links_create_cleanup_state());
+	await files_nodes_db_apply_move({ ctx, plan: plan._yay, shareLinkCleanup: files_share_links_create_cleanup_state() });
 	return Result({ _yay: { destPath: plan._yay.moved.find((moved) => moved.nodeId === node._id)?.path ?? node.path } });
 }
 
@@ -4698,7 +4700,7 @@ export const rename_node = mutation({
 			],
 		});
 		if (plan._nay) return plan;
-		await files_nodes_db_apply_move(ctx, plan._yay, files_share_links_create_cleanup_state());
+		await files_nodes_db_apply_move({ ctx, plan: plan._yay, shareLinkCleanup: files_share_links_create_cleanup_state() });
 
 		return Result({ _yay: null });
 	},
@@ -5713,16 +5715,20 @@ export async function files_nodes_db_preflight_move(
  * now. A job gives their descendants the new paths and scope, and its first step runs here too.
  * Returns the job, or null when the walk ended inside this request.
  */
-export async function files_nodes_db_apply_move(
-	ctx: MutationCtx,
-	plan: NonNullable<Awaited<ReturnType<typeof files_nodes_db_preflight_move>>["_yay"]>,
-	shareLinkCleanup: files_share_links_CleanupState,
-) {
-	await files_share_links_db_delete_for_roots(
+export async function files_nodes_db_apply_move(args: {
+	ctx: MutationCtx;
+	plan: NonNullable<Awaited<ReturnType<typeof files_nodes_db_preflight_move>>["_yay"]>;
+	shareLinkCleanup: files_share_links_CleanupState;
+}) {
+	const { ctx, plan, shareLinkCleanup } = args;
+
+	await files_share_links_db_delete_for_roots({
 		ctx,
-		{ organizationId: plan.organizationId, workspaceId: plan.workspaceId, rootNodeIds: plan.shareLinkRootNodeIds },
-		shareLinkCleanup,
-	);
+		organizationId: plan.organizationId,
+		workspaceId: plan.workspaceId,
+		rootNodeIds: plan.shareLinkRootNodeIds,
+		state: shareLinkCleanup,
+	});
 
 	const folderIds = new Map<string, Id<"files_nodes">>();
 	for (const folder of plan.folderInserts) {
@@ -5923,7 +5929,7 @@ export async function files_nodes_db_move_nodes(
 	});
 	if (plan._nay) return plan;
 
-	await files_nodes_db_apply_move(ctx, plan._yay, files_share_links_create_cleanup_state());
+	await files_nodes_db_apply_move({ ctx, plan: plan._yay, shareLinkCleanup: files_share_links_create_cleanup_state() });
 	return Result({ _yay: { moved: plan._yay.moved, unchangedNodeIds: plan._yay.unchangedNodeIds } });
 }
 
@@ -6059,15 +6065,15 @@ export async function files_nodes_db_restore_node(
 	});
 }
 
-export async function files_nodes_db_archive_nodes(
-	ctx: MutationCtx,
-	args: {
-		nodeIds: Array<Id<"files_nodes">>;
-		updatedBy: Id<"users">;
-		now: number;
-	},
-	shareLinkCleanup: files_share_links_CleanupState,
-) {
+export async function files_nodes_db_archive_nodes(args: {
+	ctx: MutationCtx;
+	nodeIds: Array<Id<"files_nodes">>;
+	updatedBy: Id<"users">;
+	now: number;
+	shareLinkCleanup: files_share_links_CleanupState;
+}) {
+	const { ctx, shareLinkCleanup } = args;
+
 	const archiveOperationId = crypto.randomUUID();
 	const fileNodes = (await Promise.all(args.nodeIds.map((nodeId) => ctx.db.get("files_nodes", nodeId)))).filter(
 		(fileNode) => fileNode !== null,
@@ -6079,17 +6085,15 @@ export async function files_nodes_db_archive_nodes(
 
 	// Archive stamps only the named nodes. Delete the public links below them too, once per workspace.
 	for (const [workspaceId, organizationId] of archivedWorkspaces) {
-		await files_share_links_db_delete_for_roots(
+		await files_share_links_db_delete_for_roots({
 			ctx,
-			{
-				organizationId,
-				workspaceId,
-				rootNodeIds: fileNodes
+			organizationId,
+			workspaceId,
+			rootNodeIds: fileNodes
 					.filter((fileNode) => fileNode.workspaceId === workspaceId)
 					.map((fileNode) => fileNode._id),
-			},
-			shareLinkCleanup,
-		);
+			state: shareLinkCleanup,
+		});
 	}
 
 	await Promise.all(
@@ -7000,7 +7004,13 @@ function count_table_doc(budget: { readBytes: number }, value: object | null) {
 	if (value) budget.readBytes += files_get_utf8_byte_size(JSON.stringify(value)) + 128;
 }
 
-async function fits_table_read_budget(ctx: QueryCtx, budget: { readBytes: number }, reserve = false) {
+async function fits_table_read_budget(args: {
+	ctx: QueryCtx;
+	budget: { readBytes: number };
+	reserve?: boolean;
+}) {
+	const { ctx, budget, reserve = false } = args;
+
 	// Metrics include joins and access reads that stream bandwidth does not count.
 	const metrics = await ctx.meta.getTransactionMetrics();
 	const bytes = reserve ? TABLE_FILTER_BYTE_RESERVE : 0;
@@ -7053,7 +7063,7 @@ async function db_get_table_field_node(
 		budget: { readBytes: number };
 	},
 ) {
-	if (!(await fits_table_read_budget(ctx, args.budget, true))) return undefined;
+	if (!(await fits_table_read_budget({ ctx, budget: args.budget, reserve: true }))) return undefined;
 	const fieldDoc = args.fieldDoc;
 	const node = fieldDoc.sourceKind === "committed" ? await ctx.db.get("files_nodes", fieldDoc.fileNodeId) : null;
 	count_table_doc(args.budget, node);
@@ -7074,7 +7084,7 @@ async function db_get_table_field_node(
 		throw should_never_happen(errorMessage, errorData);
 	}
 	check_table_node(node);
-	if (!(await fits_table_read_budget(ctx, args.budget))) return undefined;
+	if (!(await fits_table_read_budget({ ctx, budget: args.budget }))) return undefined;
 	return node;
 }
 
@@ -7089,7 +7099,7 @@ async function db_get_table_scalar(
 ) {
 	const entry = args.entry;
 	if (entry.kind === "saved") {
-		if (args.fieldDoc === undefined && !(await fits_table_read_budget(ctx, args.budget, true))) return undefined;
+		if (args.fieldDoc === undefined && !(await fits_table_read_budget({ ctx, budget: args.budget, reserve: true }))) return undefined;
 		const fieldDoc =
 			args.fieldDoc !== undefined
 				? args.fieldDoc
@@ -7107,7 +7117,7 @@ async function db_get_table_scalar(
 						.first();
 		if (args.fieldDoc === undefined) count_table_doc(args.budget, fieldDoc);
 		if (fieldDoc) check_table_filter_field(fieldDoc, entry);
-		if (!(await fits_table_read_budget(ctx, args.budget))) return undefined;
+		if (!(await fits_table_read_budget({ ctx, budget: args.budget }))) return undefined;
 		return {
 			sortValue: fieldDoc?.sourceKind === "committed" ? (fieldDoc.sortValue ?? null) : null,
 			displayValue: fieldDoc?.sourceKind === "committed" ? (fieldDoc.sortDisplayValue ?? null) : null,
@@ -7122,12 +7132,12 @@ async function db_get_table_scalar(
 		[Symbol.asyncIterator]();
 	try {
 		while (true) {
-			if (!(await fits_table_read_budget(ctx, args.budget, true))) return undefined;
+			if (!(await fits_table_read_budget({ ctx, budget: args.budget, reserve: true }))) return undefined;
 			const next = await iterator.next();
 			if (next.done) return { sortValue: null, displayValue: null };
 			count_table_doc(args.budget, next.value);
 			check_table_filter_field(next.value, entry);
-			if (!(await fits_table_read_budget(ctx, args.budget))) return undefined;
+			if (!(await fits_table_read_budget({ ctx, budget: args.budget }))) return undefined;
 			if (next.value.docKind !== "value" || next.value.valueKind === "maybe_date") continue;
 			const displayValue = next.value.stringValue ?? next.value.numberValue ?? next.value.booleanValue ?? null;
 			return { sortValue: displayValue === null ? null : files_sort_text_key(String(displayValue)), displayValue };
@@ -7352,7 +7362,7 @@ async function db_list_custom_table_children(
 	let folderPath: string | undefined;
 
 	while (workCount < maxWork && page.length < maxRows) {
-		if (!(await fits_table_read_budget(ctx, budget, true))) break;
+		if (!(await fits_table_read_budget({ ctx, budget, reserve: true }))) break;
 		workCount++;
 		const next = await iterator.next();
 		if (next.done) {
@@ -7382,7 +7392,7 @@ async function db_list_custom_table_children(
 		let eligible = true;
 		if (fieldIterator) {
 			while (!fieldsDone && (!fieldDoc || compareValues([fieldDoc.sortName!, fieldDoc.name!], by_name) < 0)) {
-				if (workCount >= maxWork || !(await fits_table_read_budget(ctx, budget, true))) break;
+				if (workCount >= maxWork || !(await fits_table_read_budget({ ctx, budget, reserve: true }))) break;
 				workCount++;
 				const nextField = await fieldIterator.next();
 				if (nextField.done) {
@@ -7410,7 +7420,7 @@ async function db_list_custom_table_children(
 			primaryField = fieldDoc?.fileNodeId === node._id ? fieldDoc : null;
 			eligible = primaryField?.sortValue === undefined;
 		}
-		if (!(await fits_table_read_budget(ctx, budget, true))) break;
+		if (!(await fits_table_read_budget({ ctx, budget, reserve: true }))) break;
 		const pendingUpdate = await ctx.db
 			.query("files_pending_updates")
 			.withIndex("by_user_target", (q) =>
@@ -7419,7 +7429,7 @@ async function db_list_custom_table_children(
 			.unique();
 		count_table_doc(budget, pendingUpdate);
 		if (pendingUpdate?.pendingArchive || pendingUpdate?.pendingMove) {
-			if (!(await fits_table_read_budget(ctx, budget, true))) break;
+			if (!(await fits_table_read_budget({ ctx, budget, reserve: true }))) break;
 			if (!visibleReader) {
 				visibleReader = await files_visible_db_create_reader(ctx, {
 					organizationId: membership.organizationId,
@@ -7451,9 +7461,9 @@ async function db_list_custom_table_children(
 		const matches =
 			eligible &&
 			(args.filter === null ||
-				files_table_filter_matches(
-					args.filter,
-					{
+				files_table_filter_matches({
+					filter: args.filter,
+					facts: {
 						name: node.name,
 						createdAt: node._creationTime,
 						updatedAt: node.updatedAt,
@@ -7461,10 +7471,10 @@ async function db_list_custom_table_children(
 						contentByteSize: node.kind === "folder" ? null : node.contentByteSize,
 					},
 					scalar,
-				));
-		const sortKey = files_sort_key_of(
-			args.sort,
-			{
+				}));
+		const sortKey = files_sort_key_of({
+			sort: args.sort,
+			facts: {
 				kind: node.kind,
 				name: node.name,
 				createdAt: node._creationTime,
@@ -7472,14 +7482,14 @@ async function db_list_custom_table_children(
 				type: node.lowercaseExtension,
 				contentByteSize: node.contentByteSize,
 			},
-			new Map([[field, metadataMissing ? null : (primaryField?.sortValue ?? null)]]),
-		);
+			metadataParts: new Map([[field, metadataMissing ? null : (primaryField?.sortValue ?? null)]]),
+		});
 		let treeRow: Awaited<ReturnType<typeof db_get_tree_rows>>[number] | undefined;
 		if (matches) {
-			if (!(await fits_table_read_budget(ctx, budget, true))) break;
+			if (!(await fits_table_read_budget({ ctx, budget, reserve: true }))) break;
 			[treeRow] = await db_get_tree_rows(ctx, { userAuth, membership, fileNodes: [node], canWriteContentByScope });
 		}
-		if (!(await fits_table_read_budget(ctx, budget))) break;
+		if (!(await fits_table_read_budget({ ctx, budget }))) break;
 		// Commit only a complete candidate. A stopped join is reread on the next page.
 		last = indexKey.slice(prefix.length) as Array<string | number | null>;
 		scanBoundary = sortKey;
@@ -7627,14 +7637,14 @@ async function db_list_multi_sorted_table_children(
 			stopReason = "scan_work";
 			return undefined;
 		}
-		if (!(await fits_table_read_budget(ctx, budget, true))) {
+		if (!(await fits_table_read_budget({ ctx, budget, reserve: true }))) {
 			await stop_for_budget();
 			return undefined;
 		}
 		workCount++;
 		const next = await iterator.next();
 		if (!next.done) budget.readBytes += next.value[2];
-		if (!(await fits_table_read_budget(ctx, budget))) {
+		if (!(await fits_table_read_budget({ ctx, budget }))) {
 			await stop_for_budget();
 			return undefined;
 		}
@@ -7779,9 +7789,9 @@ async function db_list_multi_sorted_table_children(
 		return {
 			node,
 			scalar,
-			key: files_sort_key_of(
-				args.sort,
-				{
+			key: files_sort_key_of({
+				sort: args.sort,
+				facts: {
 					kind: node.kind,
 					name: node.name,
 					createdAt: node._creationTime,
@@ -7789,13 +7799,13 @@ async function db_list_multi_sorted_table_children(
 					type: node.lowercaseExtension,
 					contentByteSize: node.contentByteSize,
 				},
-				parts,
-			),
+				metadataParts: parts,
+			}),
 		};
 	};
 	const process_candidate = async (candidate: Candidate, eligible = true) => {
 		if (!eligible) return { complete: true, row: undefined };
-		if (!(await fits_table_read_budget(ctx, budget, true))) {
+		if (!(await fits_table_read_budget({ ctx, budget, reserve: true }))) {
 			await stop_for_budget();
 			return { complete: false, row: undefined };
 		}
@@ -7808,7 +7818,7 @@ async function db_list_multi_sorted_table_children(
 			.unique();
 		count_table_doc(budget, pendingUpdate);
 		if (pendingUpdate?.pendingArchive || pendingUpdate?.pendingMove) {
-			if (!(await fits_table_read_budget(ctx, budget, true))) {
+			if (!(await fits_table_read_budget({ ctx, budget, reserve: true }))) {
 				await stop_for_budget();
 				return { complete: false, row: undefined };
 			}
@@ -7833,26 +7843,26 @@ async function db_list_multi_sorted_table_children(
 		const matches =
 			eligible &&
 			(args.filter === null ||
-				files_table_filter_matches(
-					args.filter,
-					{
+				files_table_filter_matches({
+					filter: args.filter,
+					facts: {
 						name: node.name,
 						createdAt: node._creationTime,
 						updatedAt: node.updatedAt,
 						type: files_lowercase_extension(node.name, node.kind),
 						contentByteSize: node.kind === "folder" ? null : node.contentByteSize,
 					},
-					candidate.scalar,
-				));
+					scalar: candidate.scalar,
+				}));
 		let row: Awaited<ReturnType<typeof db_get_tree_rows>>[number] | undefined;
 		if (matches) {
-			if (!(await fits_table_read_budget(ctx, budget, true))) {
+			if (!(await fits_table_read_budget({ ctx, budget, reserve: true }))) {
 				await stop_for_budget();
 				return { complete: false, row: undefined };
 			}
 			[row] = await db_get_tree_rows(ctx, { userAuth, membership, fileNodes: [node], canWriteContentByScope });
 		}
-		if (!(await fits_table_read_budget(ctx, budget))) {
+		if (!(await fits_table_read_budget({ ctx, budget }))) {
 			await stop_for_budget();
 			return { complete: false, row: undefined };
 		}
@@ -8058,9 +8068,9 @@ async function db_list_multi_sorted_table_children(
 		}
 		if (!rangeDone) break;
 		// Order every candidate before filtering. A small group stays whole on the page.
-		candidates.sort((left, right) => files_sort_compare(left.key, right.key, args.sort));
+		candidates.sort((left, right) => files_sort_compare({ a: left.key, b: right.key, sort: args.sort }));
 		const remaining = candidates.filter(
-			(candidate) => afterKey === null || files_sort_compare(candidate.key, afterKey, args.sort) > 0,
+			(candidate) => afterKey === null || files_sort_compare({ a: candidate.key, b: afterKey, sort: args.sort }) > 0,
 		);
 		if (candidates.length <= pageSize && remaining.length > pageSize - scannedCount) break;
 		const batch = remaining.slice(0, pageSize - scannedCount);
@@ -8239,9 +8249,9 @@ export const list_tree_children_sorted = query({
 			})),
 			scanBoundary:
 				result.page.length > 0
-					? files_sort_key_of(
-							args.sort,
-							{
+					? files_sort_key_of({
+						sort: args.sort,
+						facts: {
 								kind: result.page.at(-1)!.kind,
 								name: result.page.at(-1)!.name,
 								createdAt: result.page.at(-1)!._creationTime,
@@ -8249,8 +8259,8 @@ export const list_tree_children_sorted = query({
 								type: result.page.at(-1)!.lowercaseExtension,
 								contentByteSize: result.page.at(-1)!.contentByteSize,
 							},
-							new Map(),
-						)
+						metadataParts: new Map(),
+					})
 					: null,
 			scannedCount: result.page.length,
 			workCount: 0,
@@ -8831,7 +8841,7 @@ export const get_table_sort_key = query({
 			return null;
 		const { membership, userAuth } = reader;
 		const budget = { readBytes: 0 };
-		if (!(await fits_table_read_budget(ctx, budget, true)))
+		if (!(await fits_table_read_budget({ ctx, budget, reserve: true })))
 			throw convex_error({ message: "Table sort exceeded its work limit." });
 		const visibleReader = await files_visible_db_create_reader(ctx, {
 			organizationId: membership.organizationId,
@@ -8841,12 +8851,12 @@ export const get_table_sort_key = query({
 		const folder =
 			args.parentId === files_ROOT_ID ? null : await visibleReader.resolveTarget({ kind: "saved", id: args.parentId });
 		if (visibleReader.exhausted) throw convex_error({ message: "Table sort exceeded its read limit." });
-		if (!(await fits_table_read_budget(ctx, budget, true)))
+		if (!(await fits_table_read_budget({ ctx, budget, reserve: true })))
 			throw convex_error({ message: "Table sort exceeded its work limit." });
 		if (args.parentId !== files_ROOT_ID && (!folder || folder.node.kind !== "folder")) return null;
 		const entry = await visibleReader.resolveTarget(args.target);
 		if (visibleReader.exhausted) throw convex_error({ message: "Table sort exceeded its read limit." });
-		if (!(await fits_table_read_budget(ctx, budget, true)))
+		if (!(await fits_table_read_budget({ ctx, budget, reserve: true })))
 			throw convex_error({ message: "Table sort exceeded its work limit." });
 		if (!entry || entry.path.slice(0, entry.path.lastIndexOf("/")) !== (folder?.path ?? "")) return null;
 		if (
@@ -8878,7 +8888,7 @@ export const get_table_sort_key = query({
 			if (value === undefined) throw convex_error({ message: "Table sort exceeded its work limit." });
 			metadataParts.set(clause.field, value.sortValue);
 		}
-		if (!(await fits_table_read_budget(ctx, budget)))
+		if (!(await fits_table_read_budget({ ctx, budget })))
 			throw convex_error({ message: "Table sort exceeded its work limit." });
 		const name = path_name_of(entry.path);
 		const size =
@@ -8887,9 +8897,9 @@ export const get_table_sort_key = query({
 				: entry.pendingUpdate.createIntent?.kind === "stored"
 					? entry.pendingUpdate.createIntent.size
 					: null;
-		return files_sort_key_of(
-			args.sort,
-			{
+		return files_sort_key_of({
+			sort: args.sort,
+			facts: {
 				kind: entry.node.kind,
 				name,
 				createdAt: entry.node._creationTime,
@@ -8898,7 +8908,7 @@ export const get_table_sort_key = query({
 				contentByteSize: entry.node.kind === "folder" ? null : size,
 			},
 			metadataParts,
-		);
+		});
 	},
 });
 
@@ -8918,7 +8928,7 @@ export const get_table_filter_match = query({
 			return null;
 		const { membership, userAuth } = reader;
 		const budget = { readBytes: 0 };
-		if (!(await fits_table_read_budget(ctx, budget, true)))
+		if (!(await fits_table_read_budget({ ctx, budget, reserve: true })))
 			throw convex_error({ message: "Table filter exceeded its work limit." });
 		const visibleReader = await files_visible_db_create_reader(ctx, {
 			organizationId: membership.organizationId,
@@ -8928,12 +8938,12 @@ export const get_table_filter_match = query({
 		const folder =
 			args.parentId === files_ROOT_ID ? null : await visibleReader.resolveTarget({ kind: "saved", id: args.parentId });
 		if (visibleReader.exhausted) throw convex_error({ message: "Table filter exceeded its read limit." });
-		if (!(await fits_table_read_budget(ctx, budget, true)))
+		if (!(await fits_table_read_budget({ ctx, budget, reserve: true })))
 			throw convex_error({ message: "Table filter exceeded its work limit." });
 		if (args.parentId !== files_ROOT_ID && (!folder || folder.node.kind !== "folder")) return null;
 		const entry = await visibleReader.resolveTarget(args.target);
 		if (visibleReader.exhausted) throw convex_error({ message: "Table filter exceeded its read limit." });
-		if (!(await fits_table_read_budget(ctx, budget, true)))
+		if (!(await fits_table_read_budget({ ctx, budget, reserve: true })))
 			throw convex_error({ message: "Table filter exceeded its work limit." });
 		if (!entry || entry.path.slice(0, entry.path.lastIndexOf("/")) !== (folder?.path ?? "")) return null;
 		if (
@@ -8962,7 +8972,7 @@ export const get_table_filter_match = query({
 			if (value === undefined) throw convex_error({ message: "Table filter exceeded its work limit." });
 			scalar = value.displayValue;
 		}
-		if (!(await fits_table_read_budget(ctx, budget)))
+		if (!(await fits_table_read_budget({ ctx, budget })))
 			throw convex_error({ message: "Table filter exceeded its work limit." });
 		const name = path_name_of(entry.path);
 		const size =
@@ -8972,9 +8982,9 @@ export const get_table_filter_match = query({
 					? entry.pendingUpdate.createIntent.size
 					: null;
 		return {
-			matches: files_table_filter_matches(
-				args.filter,
-				{
+			matches: files_table_filter_matches({
+				filter: args.filter,
+				facts: {
 					name,
 					createdAt: entry.node._creationTime,
 					updatedAt: entry.kind === "saved" ? entry.node.updatedAt : entry.pendingUpdate.updatedAt,
@@ -8982,7 +8992,7 @@ export const get_table_filter_match = query({
 					contentByteSize: entry.node.kind === "folder" ? null : size,
 				},
 				scalar,
-			),
+			}),
 			preparing: false,
 		};
 	},
@@ -9986,7 +9996,13 @@ function files_truncate_long_display_line(line: string) {
  * within `content`. `content` may be a leading window of a larger file. Over-long lines are
  * truncated for display (with a marker) so a single huge line cannot flood the output.
  */
-export function files_line_range_from_text(content: string, startLine: number, maxLines: number) {
+export function files_line_range_from_text(args: {
+	content: string;
+	startLine: number;
+	maxLines: number;
+}) {
+	const { content, startLine, maxLines } = args;
+
 	if (maxLines <= 0 || content.length === 0) {
 		return { content: "", linesReturned: 0, moreLines: false };
 	}
@@ -10299,7 +10315,7 @@ async function files_read_forward_line_range_from_ordered_chunks(
 	const baseLine = overlapping[0]!.lineStart;
 	// The merged text begins at baseLine, so translate the document line number
 	// into the merged-string line number before slicing.
-	const range = files_line_range_from_text(merged, startLine - baseLine + 1, maxLines);
+	const range = files_line_range_from_text({ content: merged, startLine: startLine - baseLine + 1, maxLines });
 	return { hasChunks, content: range.content, moreLines: range.moreLines || sawBeyond || stoppedForSize };
 }
 
@@ -10945,7 +10961,13 @@ async function match_text_chunks_list(
 	let lastScannedIndex: number | null = null;
 	let scannedBytes = 0;
 
-	const setTruncated = (reason: MatchChunksListTruncatedReason, nextLine: number | null, nextIndex: number | null) => {
+	const setTruncated = (args: {
+		reason: MatchChunksListTruncatedReason;
+		nextLine: number | null;
+		nextIndex: number | null;
+	}) => {
+		const { reason, nextLine, nextIndex } = args;
+
 		scanTruncated = true;
 		stopScanning = true;
 		if (truncation.reason == null) {
@@ -10965,7 +10987,7 @@ async function match_text_chunks_list(
 		}
 		if (linesByNumber.size >= files_GREP_MAX_OUTPUT_LINES) {
 			outputTruncated = true;
-			setTruncated("output_line_limit_reached", line.lineNumber, null);
+			setTruncated({ reason: "output_line_limit_reached", nextLine: line.lineNumber, nextIndex: null });
 			return false;
 		}
 		linesByNumber.set(line.lineNumber, { ...line, matched });
@@ -10988,18 +11010,18 @@ async function match_text_chunks_list(
 			return true;
 		}
 		if (lineNumber > lineWindowEnd) {
-			setTruncated("scan_line_limit_reached", lineNumber, null);
+			setTruncated({ reason: "scan_line_limit_reached", nextLine: lineNumber, nextIndex: null });
 			return false;
 		}
 
 		const lineBytes = files_get_utf8_byte_size(line) + 1;
 		if (scannedBytes + lineBytes > files_GREP_MAX_SCAN_BYTES) {
 			const lineExceedsByteCap = lineBytes > files_GREP_MAX_SCAN_BYTES;
-			setTruncated(
-				"scan_byte_limit_reached",
-				lineExceedsByteCap ? null : lineNumber,
-				lineExceedsByteCap ? lineStartIndex : null,
-			);
+			setTruncated({
+				reason: "scan_byte_limit_reached",
+				nextLine: lineExceedsByteCap ? null : lineNumber,
+				nextIndex: lineExceedsByteCap ? lineStartIndex : null,
+			});
 			return false;
 		}
 		scannedBytes += lineBytes;
@@ -11039,7 +11061,7 @@ async function match_text_chunks_list(
 				afterRemaining = after;
 				afterContextCapPending = requestedAfter > after;
 			} else {
-				setTruncated("selected_match_limit_reached", lineNumber, null);
+				setTruncated({ reason: "selected_match_limit_reached", nextLine: lineNumber, nextIndex: null });
 				rememberPreviousLine(displayLine);
 				return afterRemaining > 0;
 			}
@@ -11080,7 +11102,11 @@ async function match_text_chunks_list(
 				continue;
 			}
 			if (sliceWindowEnd != null && chunk.startIndex >= sliceWindowEnd) {
-				setTruncated("slice_window_ended", null, sliceWindow.startIndex + sliceWindow.maxChars);
+				setTruncated({
+					reason: "slice_window_ended",
+					nextLine: null,
+					nextIndex: sliceWindow.startIndex + sliceWindow.maxChars,
+				});
 				break;
 			}
 			const trimStart = Math.max(0, sliceWindow.startIndex - chunk.startIndex);
@@ -11092,11 +11118,11 @@ async function match_text_chunks_list(
 			text = text.slice(trimStart, trimEnd);
 			textStartIndex = chunk.startIndex + trimStart;
 			if (chunk.startIndex + trimEnd < chunk.endIndex) {
-				setTruncated(
-					"slice_window_ended",
-					null,
-					sliceWindow.startIndex + Math.max(1, sliceWindow.maxChars - args.pattern.length + 1),
-				);
+				setTruncated({
+					reason: "slice_window_ended",
+					nextLine: null,
+					nextIndex: sliceWindow.startIndex + Math.max(1, sliceWindow.maxChars - args.pattern.length + 1),
+				});
 			}
 		}
 

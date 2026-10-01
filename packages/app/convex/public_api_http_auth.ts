@@ -175,7 +175,13 @@ export async function public_api_resolve_live_principal(
  * nullable scope on the shared one, and the returned list is already filtered to what the person
  * behind the key may still do.
  */
-export async function public_api_authorize_key_inspection(ctx: ActionCtx, request: Request, args: { route: string }) {
+export async function public_api_authorize_key_inspection(args: {
+	ctx: ActionCtx;
+	request: Request;
+	route: string;
+}) {
+	const { ctx, request } = args;
+
 	const token = get_bearer_token(request);
 	const rateLimitAuthFailure = async () => {
 		const rateLimit = await rate_limiter_limit_by_key(ctx, {
@@ -275,15 +281,15 @@ export async function public_api_settle_plugin_call_best_effort(
 	}
 }
 
-export async function public_api_authorize_request<K extends PrincipalKind>(
-	ctx: ActionCtx,
-	request: Request,
-	args: {
-		requiredScope: public_api_Scope;
-		allowedKinds: readonly K[];
-		route: string;
-	},
-) {
+export async function public_api_authorize_request<K extends PrincipalKind>(args: {
+	ctx: ActionCtx;
+	request: Request;
+	requiredScope: public_api_Scope;
+	allowedKinds: readonly K[];
+	route: string;
+}) {
+	const { ctx, request } = args;
+
 	const token = get_bearer_token(request);
 	if (!token || !is_plausible_bearer_token(token)) {
 		const rateLimit = await rate_limiter_limit_by_key(ctx, {

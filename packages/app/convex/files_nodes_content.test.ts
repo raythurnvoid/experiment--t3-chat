@@ -298,11 +298,13 @@ function saved_copy_id(item: Doc<"files_transfer_items"> | null) {
 	return item.outputTarget.id;
 }
 
-async function start_agent_copy(
-	fixture: Awaited<ReturnType<typeof create_file_fixture>>,
-	source: Doc<"files_transfer_items">["source"] = { kind: "saved", id: fixture.nodeId },
-	targetName = "copied.txt",
-) {
+async function start_agent_copy(args: {
+	fixture: Awaited<ReturnType<typeof create_file_fixture>>;
+	source?: Doc<"files_transfer_items">["source"];
+	targetName?: string;
+}) {
+	const { fixture, source = { kind: "saved", id: fixture.nodeId }, targetName = "copied.txt" } = args;
+
 	const { t, db } = fixture;
 	const threadId = await t.run((ctx) =>
 		ctx.db.insert("ai_chat_threads", {
@@ -360,7 +362,7 @@ async function prepare_agent_replacement(
 	sourceId: Id<"files_nodes">,
 ) {
 	const destination = await fixture.t.run((ctx) => ctx.db.get("files_nodes", fixture.nodeId));
-	const copy = await start_agent_copy(fixture, { kind: "saved", id: sourceId }, destination!.name);
+	const copy = await start_agent_copy({ fixture, source: { kind: "saved", id: sourceId }, targetName: destination!.name });
 	await fixture.t.action(internal.files_nodes_content.copy_transfer_file, {
 		itemId: copy.item._id,
 		attempt: copy.item.attempt,
@@ -464,14 +466,16 @@ async function create_private_copy_source(
 	return { target, pendingUpdateId, text: text + "Unstaged too\n" };
 }
 
-async function create_pending_proposal(
-	fixture: Awaited<ReturnType<typeof create_file_fixture>>,
-	userId = fixture.scope.userId,
-	texts = {
+async function create_pending_proposal(args: {
+	fixture: Awaited<ReturnType<typeof create_file_fixture>>;
+	userId?: Id<"users">;
+	texts?: { staged: string; unstaged: string; };
+}) {
+	const { fixture, userId = fixture.scope.userId, texts = {
 		staged: "---\nreview: accepted\n---\n\nAccepted text\n",
 		unstaged: "---\nreview: accepted\n---\n\nAccepted text\n\nProposed text\n",
-	},
-) {
+	} } = args;
+
 	const { t, scope, nodeId } = fixture;
 	const ownerScope = { ...scope, userId };
 	const batch = await t.mutation(internal.files_pending_updates.create_file_pending_update_operation_batch_internal, {
@@ -702,8 +706,8 @@ describe("copy_transfer_file", () => {
 			const fixture = await create_file_fixture();
 			const { t, db, scope } = fixture;
 			const source = kind === "private" ? await create_private_copy_source(fixture) : null;
-			if (!source) await create_pending_proposal(fixture);
-			const copy = await start_agent_copy(fixture, source?.target);
+			if (!source) await create_pending_proposal({ fixture });
+			const copy = await start_agent_copy({ fixture, source: source?.target });
 			expect(copy.item.preparation).not.toBeNull();
 			expect(await t.run((ctx) => ctx.db.query("files_nodes").collect())).toHaveLength(1);
 			const sourceBefore = await t.run((ctx) => ctx.db.query("files_pending_updates").collect());
@@ -741,9 +745,13 @@ describe("copy_transfer_file", () => {
 		vi.useFakeTimers();
 		const fixture = await create_file_fixture("plain_text", "Saved line\nDraft line\n");
 		const { t, db, asUser, scope, nodeId, pointers } = fixture;
-		const pending = await create_pending_proposal(fixture, db.userId, {
+		const pending = await create_pending_proposal({
+			fixture,
+			userId: db.userId,
+			texts: {
 			staged: "Saved line\nStaged line\n",
 			unstaged: "Saved line\nStaged line\nUnstaged line\n",
+		},
 		});
 		const yjsKey = await t.run(async (ctx) => {
 			const snapshot = await ctx.db.get("files_yjs_snapshots", pointers.yjsSnapshotId);
@@ -774,7 +782,7 @@ describe("copy_transfer_file", () => {
 				})
 			)._nay,
 		).toBeUndefined();
-		const copy = await start_agent_copy(fixture);
+		const copy = await start_agent_copy({ fixture });
 		await t.action(internal.files_nodes_content.copy_transfer_file, {
 			itemId: copy.item._id,
 			attempt: copy.item.attempt,
@@ -799,7 +807,7 @@ describe("copy_transfer_file", () => {
 		vi.useFakeTimers();
 		const fixture = await create_file_fixture();
 		const { t } = fixture;
-		const copy = await start_agent_copy(fixture);
+		const copy = await start_agent_copy({ fixture });
 		const preparation = copy.item.preparation!;
 		await t.run(async (ctx) => {
 			const node = await ctx.db.get("files_pending_nodes", preparation.privateNodeId);
@@ -1015,7 +1023,7 @@ describe("copy_transfer_file", () => {
 		vi.useFakeTimers();
 		const fixture = await create_file_fixture();
 		const { t, db, asUser, scope, nodeId, pointers } = fixture;
-		await create_pending_proposal(fixture);
+		await create_pending_proposal({ fixture });
 		const yjsKey = await t.run(async (ctx) => {
 			const snapshot = await ctx.db.get("files_yjs_snapshots", pointers.yjsSnapshotId);
 			return (await ctx.db.get("files_r2_assets", snapshot!.assetId))!.r2Key!;
@@ -1573,7 +1581,7 @@ describe("copy_transfer_file", () => {
 		vi.useFakeTimers();
 		const fixture = await create_file_fixture();
 		const { t } = fixture;
-		const copy = await start_agent_copy(fixture);
+		const copy = await start_agent_copy({ fixture });
 		const attemptExpiresAt = copy.item.attemptExpiresAt!;
 		vi.setSystemTime(attemptExpiresAt - 60_000);
 		const uploadStarted = Promise.withResolvers<void>();
@@ -2631,7 +2639,7 @@ describe("restore_snapshot_r2", () => {
 		async ({ sourceRootKind, targetRootKind, off }) => {
 			const fixture = await create_file_fixture(sourceRootKind);
 			const { t, db, asUser, nodeId, snapshotId } = fixture;
-			await create_pending_proposal(fixture);
+			await create_pending_proposal({ fixture });
 			const otherUserId = await t.run(async (ctx) => {
 				const userId = await ctx.db.insert("users", { clerkUserId: "restore_other_owner" });
 				await ctx.db.insert("organizations_workspaces_users", {
@@ -2649,7 +2657,7 @@ describe("restore_snapshot_r2", () => {
 				});
 				return userId;
 			});
-			await create_pending_proposal(fixture, otherUserId);
+			await create_pending_proposal({ fixture, userId: otherUserId });
 			if (off) {
 				const toggled = await asUser.mutation(api.files_nodes_content.set_file_non_collaborative, {
 					membershipId: db.membershipId,
@@ -2824,7 +2832,7 @@ describe("restore_snapshot_r2", () => {
 	test("requires the Properties confirmation before a stored version removes shared history", async () => {
 		const fixture = await create_file_fixture();
 		const { t, db, asUser, nodeId, snapshotId, pointers } = fixture;
-		const pending = await create_pending_proposal(fixture);
+		const pending = await create_pending_proposal({ fixture });
 		// A historical version saved as stored bytes, before the file became editable text.
 		await t.run(async (ctx) =>
 			ctx.db.patch("files_snapshots", snapshotId, {
@@ -3115,7 +3123,7 @@ describe("accept_file_pending_replacement", () => {
 				});
 				return userId;
 			});
-			const pending = await create_pending_proposal(fixture, otherUserId);
+			const pending = await create_pending_proposal({ fixture, userId: otherUserId });
 			await t.run((ctx) =>
 				ctx.db.patch("files_snapshots", snapshotId, {
 					contentType: "application/octet-stream",

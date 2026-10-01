@@ -107,7 +107,7 @@ export function bash_cat_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFil
 		}
 
 		const targets = parsed._yay.files.length ? parsed._yay.files : ["-"];
-		const capError = bash_enforce_reader_operand_cap("cat", commandCtx, dbFilesRoots, targets);
+		const capError = bash_enforce_reader_operand_cap({ command: "cat", commandCtx, dbFilesRoots, files: targets });
 		if (capError != null) return capError;
 
 		// Multi-file cat is all-or-nothing. If one app file is too large to read inline,
@@ -216,11 +216,11 @@ export function bash_cat_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFil
 							stderr +=
 								dbFilesDoc.textKind !== null
 									? `cat: ${file}: content is not available from materialized chunks\n`
-									: bash_build_unreadable_file_advisory(
-											pathResolution.basePath,
-											target.dbFilesPath,
-											dbFilesDoc.contentType,
-										);
+									: bash_build_unreadable_file_advisory({
+										currentWorkspacePath: pathResolution.basePath,
+										normalizedPath: target.dbFilesPath,
+										contentType: dbFilesDoc.contentType,
+									});
 						} else {
 							stderr +=
 								dbFilesDoc?.kind === "folder"
@@ -291,11 +291,11 @@ export function bash_cat_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFil
 					stderr +=
 						dbFilesDoc.textKind !== null
 							? `cat: ${file}: content is not available from materialized chunks\n`
-							: bash_build_unreadable_file_advisory(
-									pathResolution.basePath,
-									target.dbFilesPath,
-									dbFilesDoc.contentType,
-								);
+							: bash_build_unreadable_file_advisory({
+								currentWorkspacePath: pathResolution.basePath,
+								normalizedPath: target.dbFilesPath,
+								contentType: dbFilesDoc.contentType,
+							});
 					exitCode = bash_COMMAND_EXIT_FAILURE;
 					continue;
 				}

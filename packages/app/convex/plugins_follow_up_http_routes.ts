@@ -21,7 +21,7 @@ export function plugins_follow_up_http_routes(router: { route: HttpRouter["route
 							method,
 							handler: httpAction(async (ctx, request) => {
 								const { plugins_follow_up_http } = await import("./plugins_follow_up_http.ts");
-								const result = await plugins_follow_up_http(ctx, request, path);
+								const result = await plugins_follow_up_http({ ctx, request, path });
 								return Response.json(result.body, result);
 							}),
 						});

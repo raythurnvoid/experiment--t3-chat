@@ -401,11 +401,13 @@ export async function files_subtree_ops_db_save_page(
  * already changed the roots. When the queue is empty, a pass ended. Walk again from the roots,
  * until a pass writes nothing.
  */
-async function db_rebuild_walk(
-	ctx: MutationCtx,
-	op: Doc<"files_subtree_ops">,
-	budget: { nodes: number; hasPaginated: boolean },
-) {
+async function db_rebuild_walk(args: {
+	ctx: MutationCtx;
+	op: Doc<"files_subtree_ops">;
+	budget: { nodes: number; hasPaginated: boolean };
+}) {
+	const { ctx, op, budget } = args;
+
 	const walk = await db_require_walk(ctx, op._id);
 	let passWrote = walk.passWrote;
 	let isWritten = false;
@@ -532,7 +534,7 @@ export async function files_subtree_ops_db_start_rebuild(
 	});
 
 	const op = (await ctx.db.get("files_subtree_ops", opId))!;
-	if (await db_rebuild_walk(ctx, op, args.budget)) {
+	if (await db_rebuild_walk({ ctx, op, budget: args.budget })) {
 		await files_subtree_ops_db_delete(ctx, { opId, now: args.now });
 		return null;
 	}
@@ -676,7 +678,7 @@ export const advance = internalMutation({
 		switch (op.kind) {
 			case "move":
 			case "scope": {
-				if (await db_rebuild_walk(ctx, op, { nodes: files_subtree_ops_STEP_MAX_NODES, hasPaginated: false })) {
+				if (await db_rebuild_walk({ ctx, op, budget: { nodes: files_subtree_ops_STEP_MAX_NODES, hasPaginated: false } })) {
 					await files_subtree_ops_db_delete(ctx, { opId: op._id, now });
 					await activities_db_finish(ctx, { sourceId: op._id, status: "succeeded", errorMessage: null, now });
 				} else {

@@ -161,7 +161,12 @@ async function list_tools() {
 	return listed._yay;
 }
 
-async function call_tool(listed: Awaited<ReturnType<typeof list_tools>>, name: string, args: Record<string, unknown>) {
+async function call_tool(args: {
+	listed: Awaited<ReturnType<typeof list_tools>>;
+	name: string;
+	arguments: Record<string, unknown>;
+}) {
+	const { listed, name } = args;
 	const tool = listed.tools.find((candidate) => candidate.name === name);
 	if (!tool) throw new Error(`Failed to find tool ${name}`);
 
@@ -171,7 +176,7 @@ async function call_tool(listed: Awaited<ReturnType<typeof list_tools>>, name: s
 			accessToken: signIn.accessToken,
 			discover: listed.discover,
 			tool,
-			arguments: args,
+			arguments: args.arguments,
 			timeoutMs: CALL_TIMEOUT_MS,
 			signal,
 			testAllowLocalHttp: true,
@@ -194,7 +199,7 @@ const scenarios: Record<string, () => Promise<void>> = {
 	},
 	tools_call: async () => {
 		const listed = await list_tools();
-		await call_tool(listed, "add_numbers", { a: 5, b: 3 });
+		await call_tool({ listed, name: "add_numbers", arguments: { a: 5, b: 3 } });
 	},
 	"request-metadata": async () => {
 		await list_tools();
@@ -204,7 +209,7 @@ const scenarios: Record<string, () => Promise<void>> = {
 	},
 	"http-standard-headers": async () => {
 		const listed = await list_tools();
-		for (const tool of listed.tools) await call_tool(listed, tool.name, {});
+		for (const tool of listed.tools) await call_tool({ listed, name: tool.name, arguments: {} });
 	},
 	"http-custom-headers": async () => {
 		const listed = await list_tools();
@@ -213,12 +218,12 @@ const scenarios: Record<string, () => Promise<void>> = {
 			typeof context === "object" && context !== null && "toolCalls" in context && Array.isArray(context.toolCalls)
 				? (context.toolCalls as Array<{ name: string; arguments: Record<string, unknown> }>)
 				: [];
-		for (const toolCall of toolCalls) await call_tool(listed, toolCall.name, toolCall.arguments);
+		for (const toolCall of toolCalls) await call_tool({ listed, name: toolCall.name, arguments: toolCall.arguments });
 	},
 	"http-invalid-tool-headers": async () => {
 		// Call every tool Press kept. A tool with an invalid `x-mcp-header` must not be in the list.
 		const listed = await list_tools();
-		for (const tool of listed.tools) await call_tool(listed, tool.name, { region: "us-west1" });
+		for (const tool of listed.tools) await call_tool({ listed, name: tool.name, arguments: { region: "us-west1" } });
 	},
 	"sep-2322-client-request-state": async () => {
 		// Press does not answer `input_required`, so the first three calls fail on purpose. The last
@@ -230,16 +235,16 @@ const scenarios: Record<string, () => Promise<void>> = {
 			"test_mrtr_unrelated",
 			"test_mrtr_no_result_type",
 		]) {
-			await call_tool(listed, name, {});
+			await call_tool({ listed, name, arguments: {} });
 		}
 	},
 	"sse-retry": async () => {
 		const listed = await list_tools();
-		await call_tool(listed, "test_reconnection", {});
+		await call_tool({ listed, name: "test_reconnection", arguments: {} });
 	},
 	"elicitation-sep1034-client-defaults": async () => {
 		const listed = await list_tools();
-		await call_tool(listed, "test_client_elicitation_defaults", {});
+		await call_tool({ listed, name: "test_client_elicitation_defaults", arguments: {} });
 	},
 };
 
@@ -248,7 +253,7 @@ const scenarios: Record<string, () => Promise<void>> = {
  */
 async function run_auth_scenario() {
 	const listed = await list_tools();
-	await call_tool(listed, "test-tool", {});
+	await call_tool({ listed, name: "test-tool", arguments: {} });
 }
 
 const run = scenario.startsWith("auth/") ? run_auth_scenario : scenarios[scenario];

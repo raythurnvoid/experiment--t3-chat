@@ -10,8 +10,16 @@ import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 const follow_up_body_validator = z.object({ state: z.string() }).strict();
 export type plugins_follow_up_http_Body = z.infer<typeof follow_up_body_validator>;
 
-export async function plugins_follow_up_http(ctx: ActionCtx, request: Request, path: "/api/v1/plugin-runs/follow-up") {
-	const auth = await public_api_authorize_request(ctx, request, {
+export async function plugins_follow_up_http(args: {
+	ctx: ActionCtx;
+	request: Request;
+	path: "/api/v1/plugin-runs/follow-up";
+}) {
+	const { ctx, request, path } = args;
+
+	const auth = await public_api_authorize_request({
+		ctx,
+		request,
 		requiredScope: "runs:follow_up",
 		allowedKinds: ["plugin_run"],
 		route: path,

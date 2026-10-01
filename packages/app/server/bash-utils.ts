@@ -295,7 +295,7 @@ export function bash_is_path_under_read_only_mounts(path: string) {
 
 export function bash_clamp_listing_page_limit(limit: number) {
 	const finiteLimit = Number.isFinite(limit) ? Math.trunc(limit) : LISTING_PAGE_LIMIT_MAX;
-	return math_clamp(finiteLimit, 1, LISTING_PAGE_LIMIT_MAX);
+	return math_clamp({ value: finiteLimit, min: 1, max: LISTING_PAGE_LIMIT_MAX });
 }
 
 /**
@@ -553,11 +553,13 @@ class ReadOnlyFileSystemError extends Error {
  * plain utf8 strings otherwise; builtin `touch` passes no encoding. App files store
  * UTF-8 Markdown/text, so byte content that is not valid UTF-8 is rejected.
  */
-function decode_write_content(
-	content: FileContent,
-	options: Parameters<IFileSystem["writeFile"]>[2],
-	shellPath: string,
-): string {
+function decode_write_content(args: {
+	content: FileContent;
+	options: Parameters<IFileSystem["writeFile"]>[2];
+	shellPath: string;
+}): string {
+	const { content, options, shellPath } = args;
+
 	const encoding = typeof options === "string" ? options : options?.encoding;
 	let bytes: Uint8Array;
 	if (typeof content === "string") {
@@ -769,11 +771,13 @@ export class bash_DbFilesFs implements IFileSystem {
 	}
 
 	async writeFile(path: string, content: FileContent, options?: Parameters<IFileSystem["writeFile"]>[2]) {
-		await this.proposeWrite(path, content, options, "overwrite");
+
+		await this.proposeWrite({ path, content, options, mode: "overwrite" });
 	}
 
 	async appendFile(path: string, content: FileContent, options?: Parameters<IFileSystem["appendFile"]>[2]) {
-		await this.proposeWrite(path, content, options, "append");
+
+		await this.proposeWrite({ path, content, options, mode: "append" });
 	}
 
 	/**
@@ -787,12 +791,14 @@ export class bash_DbFilesFs implements IFileSystem {
 	 * empty write before the content write: two upserts on the same pending doc, correct
 	 * end state, and both writes use the same private target.
 	 */
-	private async proposeWrite(
-		path: string,
-		content: FileContent,
-		options: Parameters<IFileSystem["writeFile"]>[2],
-		mode: "overwrite" | "append",
-	) {
+	private async proposeWrite(args: {
+		path: string;
+		content: FileContent;
+		options: Parameters<IFileSystem["writeFile"]>[2];
+		mode: "overwrite" | "append";
+	}) {
+		const { path, content, options, mode } = args;
+
 		const normalizedPath = bash_normalize_path(path);
 		if (this.readOnlySource != null) {
 			throw this.readOnlyFileSystemError(normalizedPath);
@@ -883,7 +889,7 @@ export class bash_DbFilesFs implements IFileSystem {
 			);
 		}
 
-		const chunk = decode_write_content(content, options, shellPath);
+		const chunk = decode_write_content({ content, options, shellPath });
 		const normalizedChunk = files_normalize_lf_newlines(chunk);
 
 		if (files_get_utf8_byte_size(normalizedChunk) > files_MAX_TEXT_CONTENT_BYTES) {
@@ -1129,6 +1135,7 @@ export class bash_DbFilesFs implements IFileSystem {
 	}
 
 	async cp(_src: string, dest: string, _options?: CpOptions) {
+
 		throw this.readOnlyFileSystemError(dest);
 	}
 
@@ -1180,6 +1187,7 @@ export class bash_DbFilesFs implements IFileSystem {
 	}
 
 	async utimes(path: string, _atime: Date, _mtime: Date) {
+
 		// Builtin touch always calls utimes after creating or finding its target. App files
 		// keep their own updatedAt, so Agent-mode app-tree utimes is a silent no-op; mounts
 		// and Ask mode keep rejecting like every other write.
@@ -1780,7 +1788,13 @@ function shell_word_is_redirection_prefix(word: string) {
 /**
  * Find the next shell word while ignoring redirection targets and selected wrapper options.
  */
-function next_shell_word_from_words(words: string[], startIndex: number, skippedWords?: ReadonlySet<string>) {
+function next_shell_word_from_words(args: {
+	words: string[];
+	startIndex: number;
+	skippedWords?: ReadonlySet<string>;
+}) {
+	const { words, startIndex, skippedWords } = args;
+
 	let skipRedirectionTarget = false;
 
 	for (let index = startIndex; index < words.length; index++) {
@@ -1912,11 +1926,13 @@ function shell_script_uses_assignment(script: string, assignmentNames: ReadonlyS
 	return false;
 }
 
-async function update_shell_code_assignments(
-	words: string[],
-	assignmentNames: Set<string>,
-	options: ShellCodeGuardOptions,
-) {
+async function update_shell_code_assignments(args: {
+	words: string[];
+	assignmentNames: Set<string>;
+	options: ShellCodeGuardOptions;
+}) {
+	const { words, assignmentNames, options } = args;
+
 	for (const word of words) {
 		if (!SHELL_ASSIGNMENT_WORD_REGEX.test(word)) {
 			break;
@@ -1939,11 +1955,13 @@ async function update_shell_code_assignments(
  * Assignment words, redirections, and wrapper builtins can appear before
  * `source`, so skip them before checking the script target.
  */
-async function simple_command_loads_disallowed_shell_code(
-	words: string[],
-	options: ShellCodeGuardOptions,
-	assignmentNames: ReadonlySet<string>,
-): Promise<boolean> {
+async function simple_command_loads_disallowed_shell_code(args: {
+	words: string[];
+	options: ShellCodeGuardOptions;
+	assignmentNames: ReadonlySet<string>;
+}): Promise<boolean> {
+	const { words, options, assignmentNames } = args;
+
 	let skipRedirectionTarget = false;
 
 	for (let index = 0; index < words.length; index++) {
@@ -1963,7 +1981,7 @@ async function simple_command_loads_disallowed_shell_code(
 		}
 
 		if (word === "source" || word === ".") {
-			const target = next_shell_word_from_words(words, index + 1);
+			const target = next_shell_word_from_words({ words, startIndex: index + 1 });
 			return target == null ? false : shell_code_path_is_disallowed(target, options);
 		}
 
@@ -1979,12 +1997,12 @@ async function simple_command_loads_disallowed_shell_code(
 		}
 
 		if (NESTED_SHELL_COMMANDS.has(word)) {
-			const flag = next_shell_word_from_words(words, index + 1);
+			const flag = next_shell_word_from_words({ words, startIndex: index + 1 });
 			if (flag == null || !NESTED_SHELL_SCRIPT_FLAGS.has(flag)) {
 				return false;
 			}
 			const flagIndex = words.indexOf(flag, index + 1);
-			const script = next_shell_word_from_words(words, flagIndex + 1);
+			const script = next_shell_word_from_words({ words, startIndex: flagIndex + 1 });
 			return (
 				script != null &&
 				(shell_script_uses_assignment(script, assignmentNames) ||
@@ -1995,10 +2013,10 @@ async function simple_command_loads_disallowed_shell_code(
 
 		if (SOURCE_BUILTIN_PREFIX_COMMANDS.has(word)) {
 			// `command source file` and `builtin . file` still invoke the source builtins.
-			const command = next_shell_word_from_words(words, index + 1, SOURCE_BUILTIN_PREFIX_OPTIONS);
+			const command = next_shell_word_from_words({ words, startIndex: index + 1, skippedWords: SOURCE_BUILTIN_PREFIX_OPTIONS });
 			if (command === "source" || command === ".") {
 				const sourceIndex = words.indexOf(command, index + 1);
-				const target = next_shell_word_from_words(words, sourceIndex + 1);
+				const target = next_shell_word_from_words({ words, startIndex: sourceIndex + 1 });
 				return target == null ? false : shell_code_path_is_disallowed(target, options);
 			}
 			if (command === "eval") {
@@ -2032,8 +2050,8 @@ export async function bash_command_loads_disallowed_shell_code(command: string, 
 
 	for (const token of tokens) {
 		if (token.kind === "separator") {
-			await update_shell_code_assignments(words, shellCodeAssignmentNames, options);
-			if (await simple_command_loads_disallowed_shell_code(words, options, shellCodeAssignmentNames)) {
+			await update_shell_code_assignments({ words, assignmentNames: shellCodeAssignmentNames, options });
+			if (await simple_command_loads_disallowed_shell_code({ words, options, assignmentNames: shellCodeAssignmentNames })) {
 				return true;
 			}
 			words = [];
@@ -2042,8 +2060,8 @@ export async function bash_command_loads_disallowed_shell_code(command: string, 
 		words.push(token.value);
 	}
 
-	await update_shell_code_assignments(words, shellCodeAssignmentNames, options);
-	return await simple_command_loads_disallowed_shell_code(words, options, shellCodeAssignmentNames);
+	await update_shell_code_assignments({ words, assignmentNames: shellCodeAssignmentNames, options });
+	return await simple_command_loads_disallowed_shell_code({ words, options, assignmentNames: shellCodeAssignmentNames });
 }
 
 /**
@@ -2177,11 +2195,13 @@ export function bash_search_command_exact_query_filter(query: string) {
  * pagination; the note keeps fuzzy full-text matches from being relayed as exact
  * matches.
  */
-export function bash_search_command_exact_query_note(
-	exactQueryFilter: string | null,
-	query: string,
-	textChunk: string,
-) {
+export function bash_search_command_exact_query_note(args: {
+	exactQueryFilter: string | null;
+	query: string;
+	textChunk: string;
+}) {
+	const { exactQueryFilter, query, textChunk } = args;
+
 	if (exactQueryFilter == null) {
 		return "";
 	}
@@ -2294,7 +2314,14 @@ export function bash_read_option_value(command: string, args: string[], index: n
 /**
  * Parse a positive pagination limit, applying the command default and max clamp.
  */
-export function bash_parse_limit(command: string, value: string | undefined, defaultLimit: number, maxLimit: number) {
+export function bash_parse_limit(args: {
+	command: string;
+	value: string | undefined;
+	defaultLimit: number;
+	maxLimit: number;
+}) {
+	const { command, value, defaultLimit, maxLimit } = args;
+
 	const rawValue = value ?? String(defaultLimit);
 	if (!SIGNED_INTEGER_REGEX.test(rawValue.trim())) {
 		return Result({ _nay: { message: `${command}: --limit must be an integer` } });
@@ -2574,11 +2601,13 @@ export async function bash_external_mounts_fan_out_paginate<TItem>(args: {
  * Strip the pinned copy prefix and return the path relative to the Mounts root or group.
  * The path resolution adds the shell root when rendering the result.
  */
-export function bash_external_mounts_fan_out_db_files_path(
-	mount: bash_ExternalSourceMount,
-	storedPath: string,
-	basePath = bash_EXTERNAL_MOUNTS_ROOT,
-) {
+export function bash_external_mounts_fan_out_db_files_path(args: {
+	mount: bash_ExternalSourceMount;
+	storedPath: string;
+	basePath?: string;
+}) {
+	const { mount, storedPath, basePath = bash_EXTERNAL_MOUNTS_ROOT } = args;
+
 	const copyRootPath = mount.fs.dbFilesRootPath;
 	const relativePath =
 		storedPath === copyRootPath
@@ -2600,12 +2629,14 @@ export function bash_external_mounts_fan_out_db_files_path(
  * Stdin and `/tmp` files do not count. App files and external mount files
  * both count because they load db file content from the db.
  */
-export function bash_enforce_reader_operand_cap(
-	command: string,
-	commandCtx: Pick<CommandContext, "cwd">,
-	dbFilesRoots: bash_DbFilesRoots,
-	files: string[],
-) {
+export function bash_enforce_reader_operand_cap(args: {
+	command: string;
+	commandCtx: Pick<CommandContext, "cwd">;
+	dbFilesRoots: bash_DbFilesRoots;
+	files: string[];
+}) {
+	const { command, commandCtx, dbFilesRoots, files } = args;
+
 	let fileOperandCount = 0;
 	for (const file of files) {
 		if (file === "-") continue;
@@ -2665,11 +2696,13 @@ export async function bash_get_db_file_byte_size(args: {
  * The sibling paths are hints for generated Markdown or plain text output.
  * Callers keep this advisory on stderr so it cannot be piped as file content.
  */
-export function bash_build_unreadable_file_advisory(
-	currentWorkspacePath: string,
-	normalizedPath: string,
-	contentType: string | null | undefined,
-) {
+export function bash_build_unreadable_file_advisory(args: {
+	currentWorkspacePath: string;
+	normalizedPath: string;
+	contentType: string | null | undefined;
+}) {
+	const { currentWorkspacePath, normalizedPath, contentType } = args;
+
 	const shellPath = bash_db_files_path_to_current_workspace_path(currentWorkspacePath, normalizedPath);
 	const lastSlashIndex = normalizedPath.lastIndexOf("/");
 	const lastDotIndex = normalizedPath.lastIndexOf(".");

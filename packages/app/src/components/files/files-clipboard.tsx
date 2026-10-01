@@ -287,11 +287,11 @@ function useFilesClipboardHotkeys(args: {
 		event.preventDefault();
 		setClipboard(mode, sourceIds);
 	};
-	AppHotkeysProvider.useHotkey("Mod+C", (event) => handleSetClipboard(event, "copy"), options);
-	AppHotkeysProvider.useHotkey("Mod+X", (event) => handleSetClipboard(event, "cut"), options);
-	AppHotkeysProvider.useHotkey(
-		"Mod+V",
-		(event) => {
+	AppHotkeysProvider.useHotkey({ hotkey: "Mod+C", callback: (event) => handleSetClipboard(event, "copy"), options });
+	AppHotkeysProvider.useHotkey({ hotkey: "Mod+X", callback: (event) => handleSetClipboard(event, "cut"), options });
+	AppHotkeysProvider.useHotkey({
+		hotkey: "Mod+V",
+		callback: (event) => {
 			if (event.defaultPrevented || event.isComposing || !clipboard || isPasting) return;
 			const targetParentId = args.getTargetParentId(event);
 			if (targetParentId === null) return;
@@ -299,17 +299,17 @@ function useFilesClipboardHotkeys(args: {
 			paste(targetParentId);
 		},
 		options,
-	);
-	AppHotkeysProvider.useHotkey(
-		"Escape",
-		(event) => {
+	});
+	AppHotkeysProvider.useHotkey({
+		hotkey: "Escape",
+		callback: (event) => {
 			// Only a cut marks its rows, so only a cut gets an Escape cancel.
 			if (event.defaultPrevented || event.isComposing || clipboard?.mode !== "cut" || isPasting) return;
 			event.preventDefault();
 			clearClipboard();
 		},
 		options,
-	);
+	});
 }
 // #endregion provider
 

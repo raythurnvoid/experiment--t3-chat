@@ -69,17 +69,21 @@ type PlaywriterResource = Extract<BrowserResource, { provider: "playwriter" }>;
 type BrowserReason = keyof typeof REFUSAL_TEXT;
 
 const USAGE = `Usage:
-  browser status                          Show the web browser and file preview this chat can use.
-  browser open [URL]                      Open or reuse the web browser. The cloud browser may start at URL.
+  browser status                          Show the web browsers and file preview this chat can use.
+  browser tabs                            List every web tab: cloud tabs and the my browser tab.
+  browser open [URL]                      Open or reuse the cloud browser. It may start at URL.
   browser open --file PATH [--source saved|proposed|draft]
                                           Open an app HTML file in the cloud file preview.
-  browser tabs                            List cloud web tabs.
-  browser tab new [URL]                   Open a cloud web tab.
-  browser tab close TAB                   Close a cloud web tab.
+  browser tab new [URL]                   Open one more cloud tab.
+  browser tab close TAB                   Close a cloud tab.
   browser run [--tab TAB | --file] [-e CODE]
                                           Run Playwright code. Without -e the code is read from stdin.
   browser reload [--tab TAB | --file]     Reload a cloud tab or the file preview.
-  browser close [--file]                  End the cloud browser, or stop automation of My browser.
+  browser close [--tab TAB | --file]      End the cloud browser, or stop automation of the my browser tab.
+
+Web tabs are of two kinds. A cloud tab is in a Cloudflare browser that this command can open. The
+my browser tab is the one tab the user shared from their own browser, where they are signed in as
+themselves. Nothing can open a new my browser tab.
 
 The code is an async function body. It gets page, frame (file preview only), expect, emitFile and state.
 console.log lines and the return value print on stdout. Page console lines, page errors and state
@@ -88,7 +92,7 @@ In Agent mode emitFile({workspace: "current" | "personal", path, bytes, contentT
 file, for example a screenshot: emitFile({workspace: "current", path: "/reports/page.png", bytes: await
 page.screenshot(), contentType: "image/png"}). Then use view_image to look at it. TAB is the
 8-character id that status, open, tabs and tab new print. --tab may be left out when this turn knows
-only one tab.
+only one web tab.
 Exit codes: 0 success, 1 failure or refusal, 2 usage error, 124 time limit.
 `;
 
@@ -119,6 +123,8 @@ const RUN_TIME_MS = 30_000;
 const STDOUT_MAX_CHARS = 100_000;
 const STDERR_MAX_CHARS = 20_000;
 const TAB_ID_PRINT_CHARS = 8;
+
+const WEB_KIND_LABEL = { cloud: "cloud", playwriter: "my browser" } as const;
 
 const run_schema = z.object({
 	ok: z.literal(true),
@@ -208,6 +214,14 @@ function short_tab_id(tabId: string) {
 }
 
 /**
+ * The id the model uses for a web tab. The my browser tab is named by its random app handle, never
+ * by the native target id.
+ */
+function web_tab_id(item: BrowserResource) {
+	return item.provider === "playwriter" ? item.confirmedTargetHandle : (item.tabId ?? "");
+}
+
+/**
  * Print one run the same way for both browsers. stdout holds the snippet's own `console.log` lines
  * and its return value, so `| jq` reads only what the snippet produced.
  */
@@ -247,21 +261,21 @@ function cloud_lease(binding: CloudResource, browser: bash_BrowserContext) {
 					tabId: binding.tabId!,
 					tabGen: binding.tabGen!,
 					policyRevision: browser.browserIntent.policyRevision,
-					selectionRevision: browser.browserIntent.selectionRevision,
 				}
 			: {}),
 	};
 }
 
-async function update_turn(
-	ctx: ActionCtx,
-	browser: bash_BrowserContext,
-	change:
-		| { kind: "claim" }
+async function update_turn(args: {
+	ctx: ActionCtx;
+	browser: bash_BrowserContext;
+	change: | { kind: "claim" }
 		| { kind: "bind"; bindings: BrowserResource[]; ifAbsent: boolean }
 		| { kind: "unbind"; keys: string[] }
-		| { kind: "revoke" },
-) {
+		| { kind: "revoke" };
+}) {
+	const { ctx, browser, change} = args;
+
 	return ctx.runMutation(internal.ai_chat_files.update_browser_turn, {
 		run: browser.run,
 		userId: browser.source.userId,
@@ -272,7 +286,13 @@ async function update_turn(
 /**
  * Whether the browser still has exactly the lease this turn learned.
  */
-async function binding_current(ctx: ActionCtx, browser: bash_BrowserContext, binding: BrowserResource) {
+async function binding_current(args: {
+	ctx: ActionCtx;
+	browser: bash_BrowserContext;
+	binding: BrowserResource;
+}) {
+	const { ctx, browser, binding } = args;
+
 	const allowed = await ctx.runQuery(internal.files_browser.check_browser_source, {
 		source: browser.source,
 		browserIntent: browser.browserIntent,
@@ -317,7 +337,13 @@ async function binding_current(ctx: ActionCtx, browser: bash_BrowserContext, bin
  * change by a person ends browser access for the turn. Returns the bindings to keep, or null after
  * revoking the turn.
  */
-async function check_bindings(ctx: ActionCtx, browser: bash_BrowserContext, bindings: BrowserResource[]) {
+async function check_bindings(args: {
+	ctx: ActionCtx;
+	browser: bash_BrowserContext;
+	bindings: BrowserResource[];
+}) {
+	const { ctx, browser, bindings } = args;
+
 	const checked: BrowserResource[] = [];
 	const refreshed = new Set<string>();
 	for (const binding of bindings) {
@@ -393,7 +419,7 @@ async function check_bindings(ctx: ActionCtx, browser: bash_BrowserContext, bind
 			}
 		}
 
-		if (!(await binding_current(ctx, browser, binding))) return null;
+		if (!(await binding_current({ ctx, browser, binding }))) return null;
 		checked.push(binding);
 	}
 	return checked;
@@ -403,17 +429,17 @@ async function check_bindings(ctx: ActionCtx, browser: bash_BrowserContext, bind
  * Count one turn operation and write the call's durable receipt. Each operation gets its own call id
  * inside this Bash call, so a replayed Bash call never runs a browser action twice.
  */
-async function claim(
-	ctx: ActionCtx,
-	browser: bash_BrowserContext,
-	args: {
-		operationHash: string;
-		resource: BrowserResource | null;
-		operationKind?: "run";
-		mode?: "file";
-	},
-) {
-	const claimed = await update_turn(ctx, browser, { kind: "claim" });
+async function claim(args: {
+	ctx: ActionCtx;
+	browser: bash_BrowserContext;
+	operationHash: string;
+	resource: BrowserResource | null;
+	operationKind?: "run";
+	mode?: "file";
+}) {
+	const { ctx, browser } = args;
+
+	const claimed = await update_turn({ ctx, browser, change: { kind: "claim" } });
 	if (claimed._nay) return { _nay: turn_reason(claimed._nay.name) };
 
 	const toolCallId = `${browser.invocationId}:browser:${browser.nextCommandNumber()}`;
@@ -429,7 +455,7 @@ async function claim(
 		...(args.operationKind ? { operationKind: args.operationKind } : {}),
 		...(args.mode ? { mode: args.mode } : {}),
 	});
-	// A begin refusal means the saved choice, access, or lease changed, or the chat was stopped.
+	// A begin refusal means the browser settings, access, or lease changed, or the chat was stopped.
 	if (begun._nay) return { _nay: begun._nay.message.startsWith("Stopped") ? ("stopped" as const) : ("stale" as const) };
 	return { _yay: { ...begun._yay, toolCallId, operationHash: args.operationHash } };
 }
@@ -441,13 +467,15 @@ function turn_reason(name: string | undefined): BrowserReason {
 	return name === "stopped" ? "stopped" : name === "limit" ? "limit" : "stale";
 }
 
-async function finish(
-	ctx: ActionCtx,
-	invocation: { invocationId: Id<"ai_chat_browser_invocations">; commandId: string; operationHash: string },
-	status: "succeeded" | "errored" | "cancelled",
-	reason: string | null,
-	resource?: BrowserResource,
-) {
+async function finish(args: {
+	ctx: ActionCtx;
+	invocation: { invocationId: Id<"ai_chat_browser_invocations">; commandId: string; operationHash: string };
+	status: "succeeded" | "errored" | "cancelled";
+	reason: string | null;
+	resource?: BrowserResource;
+}) {
+	const { ctx, invocation, resource, reason, status} = args;
+
 	await ctx.runMutation(internal.ai_chat_files.finish_browser_invocation, {
 		invocationId: invocation.invocationId,
 		commandId: invocation.commandId,
@@ -458,54 +486,72 @@ async function finish(
 }
 
 /**
- * Pick the binding a command acts on. A turn that has none for the target binds the live session,
+ * Pick the binding a command acts on. A turn that does not know the target yet binds the live one,
  * like `browser status` would: there is no older lease for a person's change to replace.
  */
-async function target_binding(
-	ctx: ActionCtx,
-	browser: bash_BrowserContext,
-	bindings: BrowserResource[],
-	target: { file: boolean; tab: string | null },
-) {
+async function target_binding(args: {
+	ctx: ActionCtx;
+	browser: bash_BrowserContext;
+	bindings: BrowserResource[];
+	target: { file: boolean; tab: string | null };
+}) {
+	const { ctx, browser, bindings, target } = args;
+
 	const matching = (items: BrowserResource[]) =>
 		items.filter((item) =>
 			target.file
 				? item.provider === "cloud" && item.mode === "file"
-				: browser.browserIntent.webChoice.provider === "playwriter"
-					? item.provider === "playwriter"
-					: item.provider === "cloud" && item.mode === "web",
+				: (item.provider === "playwriter" || item.mode === "web") &&
+					(target.tab === null || web_tab_id(item).startsWith(target.tab)),
 		);
 
 	let candidates = matching(bindings);
 	if (candidates.length === 0) {
-		const live = await live_resources(ctx, browser);
-		candidates = matching(live);
-		if (candidates.length > 0) {
-			const bound = await update_turn(ctx, browser, { kind: "bind", bindings: candidates, ifAbsent: true });
+		const live = matching(await live_resources(ctx, browser));
+		if (live.length > 0) {
+			const bound = await update_turn({ ctx, browser, change: { kind: "bind", bindings: live, ifAbsent: true } });
 			if (bound._nay) return { _nay: "stale" as const };
+			candidates = matching(bound._yay.bindings);
 		}
 	}
 
-	if (target.tab !== null) {
-		const tab = target.tab;
-		const found = candidates.filter((item) => item.provider === "cloud" && item.tabId?.startsWith(tab));
-		if (found.length !== 1)
-			return { _nay: "usage" as const, text: `unknown tab ${tab}. Run browser tabs to list the tabs.` };
-		return { _yay: found[0]! };
-	}
+	if (target.tab !== null && candidates.length !== 1)
+		return { _nay: "usage" as const, text: `unknown tab ${target.tab}. Run browser tabs to list the tabs.` };
 	if (candidates.length === 0) return { _nay: "none" as const };
 	if (candidates.length > 1)
 		return {
 			_nay: "usage" as const,
-			text: `this turn knows ${candidates.length} tabs. Name one with --tab: ${candidates
-				.map((item) => (item.provider === "cloud" && item.tabId ? short_tab_id(item.tabId) : ""))
+			text: `this turn knows ${candidates.length} web tabs. Name one with --tab: ${candidates
+				.map((item) => `${short_tab_id(web_tab_id(item))} (${WEB_KIND_LABEL[item.provider]})`)
 				.join(", ")}.`,
 		};
 	return { _yay: candidates[0]! };
 }
 
 /**
- * The live sessions this chat may use now: the cloud catalog plus the confirmed shared tab.
+ * The lease of the my browser tab. A dropped connection reconnects once here, because no person
+ * change is adopted by a reconnect to the same confirmed tab.
+ */
+async function my_browser_lease(ctx: ActionCtx, browser: bash_BrowserContext) {
+	const lease = await ctx.runQuery(internal.playwriter_browser.get_remote_lease, {
+		source: browser.source,
+		browserIntent: browser.browserIntent,
+	});
+	if (lease._nay?.name !== "offline") return lease;
+
+	const recovered = await ctx.runAction(internal.playwriter_browser.recover_for_source, {
+		source: browser.source,
+		browserIntent: browser.browserIntent,
+	});
+	if (recovered._nay) return lease;
+	return ctx.runQuery(internal.playwriter_browser.get_remote_lease, {
+		source: browser.source,
+		browserIntent: browser.browserIntent,
+	});
+}
+
+/**
+ * The live sessions this chat may use now: the cloud catalog plus the my browser tab.
  */
 async function live_resources(ctx: ActionCtx, browser: bash_BrowserContext) {
 	const resources: BrowserResource[] = [];
@@ -514,13 +560,8 @@ async function live_resources(ctx: ActionCtx, browser: bash_BrowserContext) {
 		browserIntent: browser.browserIntent,
 	});
 	if (!catalog._nay) for (const item of catalog._yay.browsers) resources.push(item.resource);
-	if (browser.browserIntent.webChoice.provider === "playwriter") {
-		const remote = await ctx.runQuery(internal.playwriter_browser.get_remote_lease, {
-			source: browser.source,
-			browserIntent: browser.browserIntent,
-		});
-		if (!remote._nay) resources.push(remote._yay);
-	}
+	const remote = await my_browser_lease(ctx, browser);
+	if (!remote._nay) resources.push(remote._yay);
 	return resources;
 }
 
@@ -531,25 +572,36 @@ async function command_status(ctx: ActionCtx, browser: bash_BrowserContext) {
 	});
 	const resources = catalog._nay ? [] : catalog._yay.browsers.map((item) => item.resource);
 
-	const provider = browser.browserIntent.webChoice.provider;
+	const webAllowed = await ctx.runQuery(internal.files_browser.check_browser_source, {
+		source: browser.source,
+		browserIntent: browser.browserIntent,
+	});
 	let web: string;
-	if (provider === "none") web = "web: off. The user has not chosen a web browser.";
-	else if (provider === "playwriter") {
-		const remote = await ctx.runQuery(internal.playwriter_browser.get_remote_lease, {
-			source: browser.source,
-			browserIntent: browser.browserIntent,
-		});
-		if (remote._nay) web = `web: My browser (the user's shared tab), not ready (${remote._nay.name ?? "unavailable"}).`;
-		else {
-			resources.push(remote._yay);
-			web = "web: My browser (the user's shared tab), ready. tabs, tab new and tab close do not apply.";
-		}
-	} else {
-		const session = resources.find((item) => item.provider === "cloud" && item.mode === "web");
+	// Both web kinds share one agent access switch and one settings revision.
+	if (webAllowed._nay)
 		web =
+			webAllowed._nay.name === "agent_access_off"
+				? "web: off. The user turned off agent access to web browsers."
+				: "web: not available. The browser settings changed after this message was sent.";
+	else {
+		const session = resources.find((item) => item.provider === "cloud" && item.mode === "web");
+		const cloud =
 			session?.provider === "cloud" && session.tabId
-				? `web: cloud browser open, tab ${short_tab_id(session.tabId)}. Run browser tabs to list every tab.`
-				: "web: cloud browser not open. Run: browser open [URL]";
+				? `cloud browser: open, tab ${short_tab_id(session.tabId)}. Run browser tabs to list every tab.`
+				: "cloud browser: not open. Run: browser open [URL]";
+
+		const remote = await my_browser_lease(ctx, browser);
+		let mine: string;
+		if (!remote._nay) {
+			resources.push(remote._yay);
+			mine = `my browser: tab ${short_tab_id(remote._yay.confirmedTargetHandle)}, ready. It is the user's own tab, signed in as them.`;
+		} else if (remote._nay.name === "not_connected")
+			mine = "my browser: not connected. The user can connect it in Browser settings.";
+		else if (remote._nay.name === "paused") mine = "my browser: paused by the user.";
+		else mine = `my browser: not ready (${remote._nay.name ?? "unavailable"}).`;
+
+		web = `${cloud}
+${mine}`;
 	}
 
 	const fileSession = resources.find((item) => item.provider === "cloud" && item.mode === "file");
@@ -569,22 +621,24 @@ async function command_status(ctx: ActionCtx, browser: bash_BrowserContext) {
 	}
 
 	if (resources.length > 0) {
-		const bound = await update_turn(ctx, browser, { kind: "bind", bindings: resources, ifAbsent: true });
+		const bound = await update_turn({ ctx, browser, change: { kind: "bind", bindings: resources, ifAbsent: true } });
 		if (bound._nay) return refuse(turn_reason(bound._nay.name));
 	}
-	return { stdout: `${web}\n${file}\n`, stderr: "", exitCode: 0 };
+	return { stdout: `${web}
+${file}
+`, stderr: "", exitCode: 0 };
 }
 
-async function command_open(
-	ctx: ActionCtx,
-	browser: bash_BrowserContext,
-	input: { url: string | null; file: { path: string; sourceKind: "saved" | "proposed" | "draft" } | null },
-) {
-	const provider = browser.browserIntent.webChoice.provider;
-	if (!input.file && provider === "playwriter" && input.url)
-		return usage_error(`My browser keeps its one tab. Navigate inside a run: browser run -e 'await page.goto("URL")'`);
+async function command_open(args: {
+	ctx: ActionCtx;
+	browser: bash_BrowserContext;
+	input: { url: string | null; file: { path: string; sourceKind: "saved" | "proposed" | "draft" } | null };
+}) {
+	const { ctx, browser, input } = args;
 
-	const claimed = await claim(ctx, browser, {
+	const claimed = await claim({
+		ctx,
+		browser,
 		operationHash: await crypto_sha256_hex(`browser_open\n${JSON.stringify(input)}`),
 		resource: null,
 		...(input.file ? { mode: "file" as const } : {}),
@@ -605,7 +659,7 @@ async function command_open(
 		});
 		if (opened._nay) {
 			const reason = safe_reason(opened._nay.name);
-			await finish(ctx, invocation, "errored", reason);
+			await finish({ ctx, invocation, status: "errored", reason });
 			return refuse(reason);
 		}
 		const session = opened._yay.session;
@@ -619,46 +673,9 @@ async function command_open(
 			tabId: null,
 			tabGen: null,
 		};
-		await finish(ctx, invocation, "succeeded", null, binding);
-		await update_turn(ctx, browser, { kind: "bind", bindings: [binding], ifAbsent: false });
+		await finish({ ctx, invocation, status: "succeeded", reason: null, resource: binding });
+		await update_turn({ ctx, browser, change: { kind: "bind", bindings: [binding], ifAbsent: false } });
 		return { stdout: `Opened the file preview of ${input.file.path}.\n`, stderr: "", exitCode: 0 };
-	}
-
-	if (provider === "playwriter") {
-		let lease = await ctx.runQuery(internal.playwriter_browser.get_remote_lease, {
-			source: browser.source,
-			browserIntent: browser.browserIntent,
-		});
-		if (lease._nay?.name === "offline") {
-			const recovered = await ctx.runAction(internal.playwriter_browser.recover_for_source, {
-				source: browser.source,
-				browserIntent: browser.browserIntent,
-			});
-			if (recovered._nay) {
-				const reason = safe_reason(recovered._nay.name);
-				await finish(ctx, invocation, "errored", reason);
-				return refuse(reason);
-			}
-			lease = await ctx.runQuery(internal.playwriter_browser.get_remote_lease, {
-				source: browser.source,
-				browserIntent: browser.browserIntent,
-			});
-		}
-		if (lease._nay) {
-			await finish(ctx, invocation, "errored", "unavailable");
-			return refuse("unavailable");
-		}
-		const bound = await update_turn(ctx, browser, { kind: "bind", bindings: [lease._yay], ifAbsent: true });
-		const binding = bound._nay
-			? null
-			: bound._yay.bindings.find((item) => ai_chat_files_browser_resource_key(item) === lease._yay.connectionId);
-		if (!binding || !(await binding_current(ctx, browser, binding))) {
-			await finish(ctx, invocation, "errored", "stale");
-			await update_turn(ctx, browser, { kind: "revoke" });
-			return refuse("stale");
-		}
-		await finish(ctx, invocation, "succeeded", null, binding);
-		return { stdout: "My browser is ready: the user's shared tab.\n", stderr: "", exitCode: 0 };
 	}
 
 	const opened = await ctx.runAction(internal.files_browser.agent_open_browser, {
@@ -671,8 +688,8 @@ async function command_open(
 	});
 	if (opened._nay) {
 		const reason = safe_reason(opened._nay.name);
-		await finish(ctx, invocation, "errored", reason);
-		if (reason === "stale") await update_turn(ctx, browser, { kind: "revoke" });
+		await finish({ ctx, invocation, status: "errored", reason });
+		if (reason === "stale") await update_turn({ ctx, browser, change: { kind: "revoke" } });
 		return refuse(reason);
 	}
 	const session = opened._yay.session;
@@ -686,41 +703,52 @@ async function command_open(
 		tabId: session.tabId,
 		tabGen: session.tabGen,
 	};
-	await finish(ctx, invocation, "succeeded", null, binding);
-	await update_turn(ctx, browser, { kind: "bind", bindings: [binding], ifAbsent: true });
+	await finish({ ctx, invocation, status: "succeeded", reason: null, resource: binding });
+	await update_turn({ ctx, browser, change: { kind: "bind", bindings: [binding], ifAbsent: true } });
 	return { stdout: `Opened the cloud browser. Tab ${short_tab_id(session.tabId ?? "")}.\n`, stderr: "", exitCode: 0 };
 }
 
-async function command_tabs(
-	ctx: ActionCtx,
-	browser: bash_BrowserContext,
-	bindings: BrowserResource[],
-	input: { operation: "tabs" | "tab-new" | "tab-close"; url: string | null; tab: string | null },
-) {
-	if (browser.browserIntent.webChoice.provider !== "cloud")
-		return {
-			stdout: "",
-			stderr: "browser: tabs work only in the cloud browser. My browser has one shared tab.\n",
-			exitCode: bash_COMMAND_EXIT_FAILURE,
-		};
+async function command_tabs(args: {
+	ctx: ActionCtx;
+	browser: bash_BrowserContext;
+	bindings: BrowserResource[];
+	input: { operation: "tabs" | "tab-new" | "tab-close"; url: string | null; tab: string | null };
+}) {
+	const { ctx, browser, input } = args;
 
-	// Any known tab of the web session carries the session lease that the tab doors check.
-	let session = bindings.find((item) => item.provider === "cloud" && item.mode === "web");
-	if (!session) {
-		const target = await target_binding(ctx, browser, bindings, { file: false, tab: null });
-		if (target._nay === "stale") return refuse("stale");
-		session = target._yay;
+	// Learn the live web tabs this turn does not know yet, like browser status does.
+	let bindings = args.bindings;
+	const live = (await live_resources(ctx, browser)).filter(
+		(item) => item.provider === "playwriter" || item.mode === "web",
+	);
+	if (live.length > 0) {
+		const bound = await update_turn({ ctx, browser, change: { kind: "bind", bindings: live, ifAbsent: true } });
+		if (bound._nay) return refuse(turn_reason(bound._nay.name));
+		bindings = bound._yay.bindings;
 	}
-	if (session?.provider !== "cloud")
+	const mine = bindings.find((item) => item.provider === "playwriter");
+	// Any known tab of the cloud session carries the session lease that the tab doors check.
+	const session = bindings.find((item) => item.provider === "cloud" && item.mode === "web");
+	if (session?.provider !== "cloud") {
+		if (input.operation === "tabs" && mine?.provider === "playwriter")
+			return { stdout: redact(await my_browser_tab_line({ ctx, browser, mine })), stderr: "", exitCode: 0 };
 		return {
 			stdout: "",
-			stderr: "browser: no web browser is open. Run: browser open [URL]\n",
+			stderr:
+				input.operation === "tabs"
+					? "browser: no web tab is open. Run: browser open [URL]\n"
+					: "browser: no cloud browser is open. Run: browser open [URL]\n",
 			exitCode: bash_COMMAND_EXIT_FAILURE,
 		};
+	}
 
 	let closeTabId: string | null = null;
 	if (input.operation === "tab-close") {
 		const tab = input.tab!;
+		if (mine && web_tab_id(mine).startsWith(tab))
+			return usage_error(
+				`tab ${tab} is the my browser tab, and only cloud tabs can be closed. To stop using it, run: browser close --tab ${tab}`,
+			);
 		const found = bindings.filter(
 			(item) => item.provider === "cloud" && item.sessionId === session.sessionId && item.tabId?.startsWith(tab),
 		);
@@ -729,12 +757,14 @@ async function command_tabs(
 		closeTabId = found[0]!.tabId;
 	}
 
-	const claimed = await claim(ctx, browser, {
+	const claimed = await claim({
+		ctx,
+		browser,
 		operationHash: await crypto_sha256_hex(`browser_${input.operation}\n${JSON.stringify(input)}`),
 		resource: session,
 	});
 	if (claimed._nay) {
-		if (claimed._nay === "stale") await update_turn(ctx, browser, { kind: "revoke" });
+		if (claimed._nay === "stale") await update_turn({ ctx, browser, change: { kind: "revoke" } });
 		return refuse(claimed._nay);
 	}
 	const invocation = claimed._yay;
@@ -754,7 +784,7 @@ async function command_tabs(
 	});
 	if (result._nay) {
 		const reason = safe_reason(result._nay.name);
-		await finish(ctx, invocation, "errored", reason);
+		await finish({ ctx, invocation, status: "errored", reason });
 		return refuse(reason);
 	}
 	if (result._yay.status !== "completed") {
@@ -762,15 +792,15 @@ async function command_tabs(
 			result._yay.status === "unknown" || result._yay.status === "in_progress"
 				? "unknown"
 				: safe_reason(result._yay.result.reason);
-		await finish(ctx, invocation, "errored", reason);
+		await finish({ ctx, invocation, status: "errored", reason });
 		return refuse(reason);
 	}
 
 	const listed = result._yay.session;
 	// Only this tab change may advance control. A person's Take or Resume ends the turn.
 	if (listed && listed.controlGen !== session.controlGen + (input.operation === "tabs" ? 0 : 1)) {
-		await finish(ctx, invocation, "errored", "stale");
-		await update_turn(ctx, browser, { kind: "revoke" });
+		await finish({ ctx, invocation, status: "errored", reason: "stale" });
+		await update_turn({ ctx, browser, change: { kind: "revoke" } });
 		return refuse("stale");
 	}
 
@@ -802,9 +832,9 @@ async function command_tabs(
 					tabId: tab.tabId,
 					tabGen: tab.tabGen,
 				});
-	await finish(ctx, invocation, "succeeded", null);
-	if (removeKeys.length > 0) await update_turn(ctx, browser, { kind: "unbind", keys: removeKeys });
-	if (put.length > 0) await update_turn(ctx, browser, { kind: "bind", bindings: put, ifAbsent: false });
+	await finish({ ctx, invocation, status: "succeeded", reason: null });
+	if (removeKeys.length > 0) await update_turn({ ctx, browser, change: { kind: "unbind", keys: removeKeys } });
+	if (put.length > 0) await update_turn({ ctx, browser, change: { kind: "bind", bindings: put, ifAbsent: false } });
 
 	if (input.operation === "tab-new")
 		return { stdout: `Opened tab ${short_tab_id(result._yay.result.tabId ?? "")}.\n`, stderr: "", exitCode: 0 };
@@ -818,18 +848,44 @@ async function command_tabs(
 		};
 	const lines = result._yay.tabs.map(
 		(tab) =>
-			`${short_tab_id(tab.tabId)}  ${tab.url}  ${tab.title}${tab.tabId === result._yay.viewedTabId ? "  (the user sees this tab)" : ""}\n`,
+			`${short_tab_id(tab.tabId)}  ${WEB_KIND_LABEL.cloud}  ${tab.url}  ${tab.title}${tab.tabId === result._yay.viewedTabId ? "  (the user sees this tab)" : ""}\n`,
 	);
+	if (mine?.provider === "playwriter") lines.push(await my_browser_tab_line({ ctx, browser, mine }));
 	return { stdout: redact(lines.join("")), stderr: "", exitCode: 0 };
 }
 
-async function command_reload(ctx: ActionCtx, browser: bash_BrowserContext, binding: CloudResource) {
-	const claimed = await claim(ctx, browser, {
+/**
+ * One `browser tabs` line for the my browser tab. The app stores only the origin of its address.
+ */
+async function my_browser_tab_line(args: { ctx: ActionCtx; browser: bash_BrowserContext; mine: PlaywriterResource }) {
+	const { ctx, browser, mine } = args;
+
+	const loaded = await ctx.runQuery(internal.playwriter_browser.load_connection, {
+		connectionId: mine.connectionId,
+		userId: browser.source.userId,
+		membershipId: browser.source.membershipId,
+	});
+	const target = loaded._nay
+		? undefined
+		: loaded._yay.targets.find((item) => item.handle === mine.confirmedTargetHandle);
+	return `${short_tab_id(mine.confirmedTargetHandle)}  ${WEB_KIND_LABEL.playwriter}  ${target?.url ?? ""}  ${target?.title ?? ""}  (the user's own tab)\n`;
+}
+
+async function command_reload(args: {
+	ctx: ActionCtx;
+	browser: bash_BrowserContext;
+	binding: CloudResource;
+}) {
+	const { ctx, browser, binding } = args;
+
+	const claimed = await claim({
+		ctx,
+		browser,
 		operationHash: await crypto_sha256_hex(`browser_reload\n${ai_chat_files_browser_resource_key(binding)}`),
 		resource: binding,
 	});
 	if (claimed._nay) {
-		if (claimed._nay === "stale") await update_turn(ctx, browser, { kind: "revoke" });
+		if (claimed._nay === "stale") await update_turn({ ctx, browser, change: { kind: "revoke" } });
 		return refuse(claimed._nay);
 	}
 	const invocation = claimed._yay;
@@ -846,7 +902,7 @@ async function command_reload(ctx: ActionCtx, browser: bash_BrowserContext, bind
 	});
 	if (reloaded._nay) {
 		const reason = safe_reason(reloaded._nay.name);
-		await finish(ctx, invocation, "errored", reason);
+		await finish({ ctx, invocation, status: "errored", reason });
 		return refuse(reason);
 	}
 	if (
@@ -854,8 +910,8 @@ async function command_reload(ctx: ActionCtx, browser: bash_BrowserContext, bind
 		reloaded._yay.controlGen !== binding.controlGen ||
 		(reloaded._yay.mode === "web" && reloaded._yay.tabId !== binding.tabId)
 	) {
-		await finish(ctx, invocation, "errored", "stale");
-		await update_turn(ctx, browser, { kind: "revoke" });
+		await finish({ ctx, invocation, status: "errored", reason: "stale" });
+		await update_turn({ ctx, browser, change: { kind: "revoke" } });
 		return refuse("stale");
 	}
 
@@ -865,23 +921,27 @@ async function command_reload(ctx: ActionCtx, browser: bash_BrowserContext, bind
 		navGen: reloaded._yay.navGen,
 		...(reloaded._yay.mode === "web" ? { tabGen: reloaded._yay.tabGen } : {}),
 	};
-	await finish(ctx, invocation, "succeeded", null, next);
-	await update_turn(ctx, browser, { kind: "bind", bindings: [next], ifAbsent: false });
+	await finish({ ctx, invocation, status: "succeeded", reason: null, resource: next });
+	await update_turn({ ctx, browser, change: { kind: "bind", bindings: [next], ifAbsent: false } });
 	return { stdout: "Reloaded.\n", stderr: "", exitCode: 0 };
 }
 
-async function command_close(
-	ctx: ActionCtx,
-	browser: bash_BrowserContext,
-	bindings: BrowserResource[],
-	binding: BrowserResource,
-) {
-	const claimed = await claim(ctx, browser, {
+async function command_close(args: {
+	ctx: ActionCtx;
+	browser: bash_BrowserContext;
+	bindings: BrowserResource[];
+	binding: BrowserResource;
+}) {
+	const { ctx, browser, bindings, binding } = args;
+
+	const claimed = await claim({
+		ctx,
+		browser,
 		operationHash: await crypto_sha256_hex(`browser_close\n${ai_chat_files_browser_resource_key(binding)}`),
 		resource: binding,
 	});
 	if (claimed._nay) {
-		if (claimed._nay === "stale") await update_turn(ctx, browser, { kind: "revoke" });
+		if (claimed._nay === "stale") await update_turn({ ctx, browser, change: { kind: "revoke" } });
 		return refuse(claimed._nay);
 	}
 	const invocation = claimed._yay;
@@ -895,7 +955,7 @@ async function command_close(
 		});
 		if (retired._nay) {
 			const reason = safe_reason(retired._nay.name);
-			await finish(ctx, invocation, "errored", reason);
+			await finish({ ctx, invocation, status: "errored", reason });
 			return refuse(reason);
 		}
 		const closed = await playwriter_runner_call({
@@ -908,10 +968,19 @@ async function command_close(
 				generation: binding.connectionGeneration,
 			},
 		});
-		await update_turn(ctx, browser, { kind: "unbind", keys: [binding.connectionId] });
-		await finish(ctx, invocation, closed._nay ? "errored" : "succeeded", closed._nay ? "execution" : null);
+		await update_turn({ ctx, browser, change: { kind: "unbind", keys: [binding.connectionId] } });
+		await finish({
+			ctx,
+			invocation,
+			status: closed._nay ? "errored" : "succeeded",
+			reason: closed._nay ? "execution" : null,
+		});
 		if (closed._nay) return refuse("execution");
-		return { stdout: "Stopped automation of My browser. The user's tab stays open.\n", stderr: "", exitCode: 0 };
+		return {
+			stdout: "Stopped automation of the my browser tab. The user's tab stays open.\n",
+			stderr: "",
+			exitCode: 0,
+		};
 	}
 
 	const closed = await ctx.runAction(internal.files_browser.agent_close_browser, {
@@ -925,15 +994,19 @@ async function command_close(
 	});
 	if (closed._nay) {
 		const reason = safe_reason(closed._nay.name);
-		await finish(ctx, invocation, "errored", reason);
+		await finish({ ctx, invocation, status: "errored", reason });
 		return refuse(reason);
 	}
-	await finish(ctx, invocation, "succeeded", null);
-	await update_turn(ctx, browser, {
+	await finish({ ctx, invocation, status: "succeeded", reason: null });
+	await update_turn({
+		ctx,
+		browser,
+		change: {
 		kind: "unbind",
 		keys: bindings
 			.filter((item) => item.provider === "cloud" && item.sessionId === binding.sessionId)
 			.map(ai_chat_files_browser_resource_key),
+	},
 	});
 	return {
 		stdout: binding.mode === "file" ? "Closed the file preview.\n" : "Closed the cloud browser.\n",
@@ -958,18 +1031,20 @@ function agent_source(browser: bash_BrowserContext) {
  * saves files. The producer's mutations check again that the browser is still the one the command
  * ran in.
  */
-async function save_files(
-	ctx: ActionCtx,
-	browser: bash_BrowserContext,
-	emitted: Array<{ workspace: "current" | "personal"; path: string; contentType?: string; dataBase64: string }>,
-	downloads: Array<{ path: string; contentType: string | undefined; bytes: Uint8Array<ArrayBuffer> }>,
-	producer: Parameters<typeof files_ingestion_write>[2],
-) {
+async function save_files(args: {
+	ctx: ActionCtx;
+	browser: bash_BrowserContext;
+	emitted: Array<{ workspace: "current" | "personal"; path: string; contentType?: string; dataBase64: string }>;
+	downloads: Array<{ path: string; contentType: string | undefined; bytes: Uint8Array<ArrayBuffer> }>;
+	producer: Parameters<typeof files_ingestion_write>[0]["producer"];
+}) {
+	const { ctx, browser, emitted, downloads, producer } = args;
+
 	if (emitted.length === 0 && downloads.length === 0) return { notes: [], filesFailed: false };
 	if (!browser.canWriteFiles) return { notes: [REFUSAL_TEXT.agent_required], filesFailed: true };
 
 	const agentSource = agent_source(browser);
-	const destinations = new Map<"current" | "personal", Parameters<typeof files_ingestion_write>[1][number]["scope"]>();
+	const destinations = new Map<"current" | "personal", Parameters<typeof files_ingestion_write>[0]["files"][number]["scope"]>();
 	const workspaces: Array<"current" | "personal"> = emitted.map((file) => file.workspace);
 	if (downloads.length > 0) workspaces.push("current");
 	for (const workspace of workspaces) {
@@ -994,7 +1069,7 @@ async function save_files(
 		})),
 		...downloads.map((download) => ({ ...download, scope: destinations.get("current")! })),
 	];
-	const outcomes = await files_ingestion_write(ctx, files, producer, browser.signal);
+	const outcomes = await files_ingestion_write({ ctx, files, producer, abortSignal: browser.signal });
 
 	const notes: string[] = [];
 	let filesFailed = false;
@@ -1010,7 +1085,14 @@ async function save_files(
  * Run one snippet in a cloud web tab or the file preview. The lease is checked before and after the
  * run, so a person's change during the run is never reported as the agent's own result.
  */
-async function run_cloud(ctx: ActionCtx, browser: bash_BrowserContext, binding: CloudResource, code: string) {
+async function run_cloud(args: {
+	ctx: ActionCtx;
+	browser: bash_BrowserContext;
+	binding: CloudResource;
+	code: string;
+}) {
+	const { ctx, browser, binding, code } = args;
+
 	const readArgs = {
 		organizationId: browser.source.organizationId,
 		workspaceId: browser.source.workspaceId,
@@ -1031,9 +1113,9 @@ async function run_cloud(ctx: ActionCtx, browser: bash_BrowserContext, binding: 
 	};
 
 	const codeHash = await crypto_sha256_hex(`browser-v3\n${code}`);
-	const claimed = await claim(ctx, browser, { operationHash: codeHash, resource: binding, operationKind: "run" });
+	const claimed = await claim({ ctx, browser, operationHash: codeHash, resource: binding, operationKind: "run" });
 	if (claimed._nay) {
-		if (claimed._nay === "stale") await update_turn(ctx, browser, { kind: "revoke" });
+		if (claimed._nay === "stale") await update_turn({ ctx, browser, change: { kind: "revoke" } });
 		return refuse(claimed._nay);
 	}
 	const invocation = claimed._yay;
@@ -1041,7 +1123,7 @@ async function run_cloud(ctx: ActionCtx, browser: bash_BrowserContext, binding: 
 
 	const access = await ctx.runQuery(internal.files_browser.check_browser_session_access, readArgs);
 	if (!access.ok && access.reason === "agent_access_off") {
-		await finish(ctx, invocation, "errored", "agent_access_off");
+		await finish({ ctx, invocation, status: "errored", reason: "agent_access_off" });
 		return refuse("agent_access_off");
 	}
 	if (
@@ -1051,8 +1133,8 @@ async function run_cloud(ctx: ActionCtx, browser: bash_BrowserContext, binding: 
 		access.loadGen !== binding.loadGen ||
 		access.navGen !== binding.navGen
 	) {
-		await finish(ctx, invocation, "errored", "stale");
-		await update_turn(ctx, browser, { kind: "revoke" });
+		await finish({ ctx, invocation, status: "errored", reason: "stale" });
+		await update_turn({ ctx, browser, change: { kind: "revoke" } });
 		return refuse("stale");
 	}
 
@@ -1079,7 +1161,6 @@ async function run_cloud(ctx: ActionCtx, browser: bash_BrowserContext, binding: 
 				? {
 						tabId: binding.tabId,
 						tabGen: binding.tabGen,
-						selectionRevision: browser.browserIntent.selectionRevision,
 						policyRevision: browser.browserIntent.policyRevision,
 					}
 				: {}),
@@ -1116,8 +1197,8 @@ async function run_cloud(ctx: ActionCtx, browser: bash_BrowserContext, binding: 
 		runner.controlGen !== binding.controlGen ||
 		(runner.mode === "web" && runner.tabId !== binding.tabId)
 	) {
-		await finish(ctx, invocation, "errored", "stale");
-		await update_turn(ctx, browser, { kind: "revoke" });
+		await finish({ ctx, invocation, status: "errored", reason: "stale" });
+		await update_turn({ ctx, browser, change: { kind: "revoke" } });
 		return refuse("stale");
 	}
 	const synced = await ctx.runMutation(internal.files_browser.sync_browser_session, {
@@ -1134,11 +1215,11 @@ async function run_cloud(ctx: ActionCtx, browser: bash_BrowserContext, binding: 
 		const after = await ctx.runQuery(internal.files_browser.check_browser_session_access, readArgs);
 		// The user can turn agent access off while the command runs. Say so, so the model does not retry.
 		const reason = !after.ok && after.reason === "agent_access_off" ? "agent_access_off" : "stale";
-		await finish(ctx, invocation, "errored", reason);
-		if (reason === "stale") await update_turn(ctx, browser, { kind: "revoke" });
+		await finish({ ctx, invocation, status: "errored", reason });
+		if (reason === "stale") await update_turn({ ctx, browser, change: { kind: "revoke" } });
 		return refuse(reason);
 	}
-	await update_turn(ctx, browser, { kind: "bind", bindings: [next], ifAbsent: false });
+	await update_turn({ ctx, browser, change: { kind: "bind", bindings: [next], ifAbsent: false } });
 
 	// Each download of a successful run becomes a pending file in `/.system/downloads/` of this
 	// workspace, like an emitted file. The Files writer refuses the whole batch for one bad file, so
@@ -1191,27 +1272,33 @@ async function run_cloud(ctx: ActionCtx, browser: bash_BrowserContext, binding: 
 						sourceHash: access.sourceHash,
 					},
 	};
-	const saved = await save_files(ctx, browser, outcome.files, downloads, {
+	const saved = await save_files({
+		ctx,
+		browser,
+		emitted: outcome.files,
+		downloads,
+		producer: {
 		requestId: invocation.toolCallId,
 		prepare: (args) => ctx.runMutation(internal.files_browser.prepare_file_output, { ...args, ...browserScope }),
 		finalize: (args) => ctx.runMutation(internal.files_browser.finalize_file_output, { ...args, ...browserScope }),
+	},
 	});
 	notes.push(...saved.notes);
 	const filesFailed = saved.filesFailed;
 
-	await finish(
+	await finish({
 		ctx,
 		invocation,
-		outcome.status === "succeeded" && !filesFailed ? "succeeded" : "errored",
-		outcome.status === "succeeded"
+		status: outcome.status === "succeeded" && !filesFailed ? "succeeded" : "errored",
+		reason: outcome.status === "succeeded"
 			? filesFailed
 				? browser.canWriteFiles
 					? "storage"
 					: "agent_required"
 				: null
 			: "execution",
-		next,
-	);
+		resource: next,
+	});
 
 	const error = outcome.error as { name?: unknown; message?: unknown } | null | undefined;
 	const printed = print_run({
@@ -1246,11 +1333,18 @@ async function run_cloud(ctx: ActionCtx, browser: bash_BrowserContext, binding: 
  * unresolved command per connection. A lost reply stays with the scheduled resolver and is never
  * run again here.
  */
-async function run_playwriter(ctx: ActionCtx, browser: bash_BrowserContext, binding: PlaywriterResource, code: string) {
+async function run_playwriter(args: {
+	ctx: ActionCtx;
+	browser: bash_BrowserContext;
+	binding: PlaywriterResource;
+	code: string;
+}) {
+	const { ctx, browser, binding, code} = args;
+
 	const operation = { kind: "script" as const, code };
 	const operationHash = await crypto_sha256_hex(`browser_script\n${JSON.stringify(operation)}`);
 
-	const claimed = await update_turn(ctx, browser, { kind: "claim" });
+	const claimed = await update_turn({ ctx, browser, change: { kind: "claim" } });
 	if (claimed._nay) return refuse(turn_reason(claimed._nay.name));
 
 	const toolCallId = `${browser.invocationId}:browser:${browser.nextCommandNumber()}`;
@@ -1273,7 +1367,7 @@ async function run_playwriter(ctx: ActionCtx, browser: bash_BrowserContext, bind
 					: reserved._nay.message.startsWith("Stopped")
 						? "stopped"
 						: "stale";
-		if (reason === "stale") await update_turn(ctx, browser, { kind: "revoke" });
+		if (reason === "stale") await update_turn({ ctx, browser, change: { kind: "revoke" } });
 		return refuse(reason);
 	}
 	const { connection, invocation, allowedVersions } = reserved._yay;
@@ -1304,7 +1398,6 @@ async function run_playwriter(ctx: ActionCtx, browser: bash_BrowserContext, bind
 			...receipt,
 			controlRevision: binding.controlRevision,
 			policyRevision: browser.browserIntent.policyRevision,
-			selectionRevision: browser.browserIntent.selectionRevision,
 			targetRevision: binding.targetRevision,
 			navRevision: binding.navRevision,
 			targetId: connection.confirmedTargetId!,
@@ -1384,15 +1477,13 @@ async function run_playwriter(ctx: ActionCtx, browser: bash_BrowserContext, bind
 		run.runtime.generation !== binding.connectionGeneration ||
 		run.runtime.controlRevision !== binding.controlRevision ||
 		run.runtime.policyRevision !== browser.browserIntent.policyRevision ||
-		run.runtime.selectionRevision !== browser.browserIntent.selectionRevision ||
 		run.runtime.confirmedTargetId !== connection.confirmedTargetId ||
 		completed.generation !== binding.connectionGeneration ||
 		completed.controlRevision !== binding.controlRevision ||
 		completed.policyRevision !== browser.browserIntent.policyRevision ||
-		completed.selectionRevision !== browser.browserIntent.selectionRevision ||
 		completed.confirmedTargetId !== connection.confirmedTargetId
 	) {
-		await update_turn(ctx, browser, { kind: "revoke" });
+		await update_turn({ ctx, browser, change: { kind: "revoke" } });
 		return refuse("stale");
 	}
 
@@ -1404,11 +1495,11 @@ async function run_playwriter(ctx: ActionCtx, browser: bash_BrowserContext, bind
 		navRevision: run.runtime.navRevision,
 		targetRevision: run.runtime.targetRevision,
 	};
-	if (!(await binding_current(ctx, browser, next))) {
-		await update_turn(ctx, browser, { kind: "revoke" });
+	if (!(await binding_current({ ctx, browser, binding: next }))) {
+		await update_turn({ ctx, browser, change: { kind: "revoke" } });
 		return refuse("stale");
 	}
-	await update_turn(ctx, browser, { kind: "bind", bindings: [next], ifAbsent: false });
+	await update_turn({ ctx, browser, change: { kind: "bind", bindings: [next], ifAbsent: false } });
 
 	// A thrown or timed out script still completes the receipt. Its own status decides the exit code.
 	const script: PlaywriterBrowserScriptOutput | undefined = run.script;
@@ -1423,10 +1514,16 @@ async function run_playwriter(ctx: ActionCtx, browser: bash_BrowserContext, bind
 		browserIntent: browser.browserIntent,
 		expectedLease: next,
 	};
-	const saved = await save_files(ctx, browser, script.files, [], {
+	const saved = await save_files({
+		ctx,
+		browser,
+		emitted: script.files,
+		downloads: [],
+		producer: {
 		requestId: toolCallId,
 		prepare: (args) => ctx.runMutation(internal.playwriter_browser.prepare_file_output, { ...args, ...browserScope }),
 		finalize: (args) => ctx.runMutation(internal.playwriter_browser.finalize_file_output, { ...args, ...browserScope }),
+	},
 	});
 
 	// Print a string result raw, like the cloud browser does. A cut result is no longer valid JSON.
@@ -1458,9 +1555,9 @@ async function run_playwriter(ctx: ActionCtx, browser: bash_BrowserContext, bind
 }
 
 /**
- * `browser` drives the user's chosen web browser or the cloud file preview with Playwright code,
- * like the Playwriter CLI. The provider is the user's saved choice; the agent never picks or
- * switches it. Output is normal Bash output: it is saved with the chat like any other command.
+ * `browser` drives web tabs and the cloud file preview with Playwright code, like the Playwriter CLI.
+ * The agent picks the tab: a cloud tab, or the my browser tab the user shared. Output is normal Bash
+ * output: it is saved with the chat like any other command.
  */
 export function bash_browser_command_create(ctx: ActionCtx, browser: bash_BrowserContext): Command {
 	return defineCommand("browser", async (args, commandCtx) => {
@@ -1519,8 +1616,8 @@ export function bash_browser_command_create(ctx: ActionCtx, browser: bash_Browse
 		if (file && tab !== null) return usage_error("use --tab or --file, not both");
 		if (code !== null && subcommand !== "run") return usage_error("-e works only with run");
 		if (sourceKindGiven && !filePath) return usage_error("--source works only with open --file");
-		if (tab !== null && subcommand !== "run" && subcommand !== "reload")
-			return usage_error("--tab works only with run and reload");
+		if (tab !== null && subcommand !== "run" && subcommand !== "reload" && subcommand !== "close")
+			return usage_error("--tab works only with run, reload and close");
 		if (file && subcommand !== "run" && subcommand !== "reload" && subcommand !== "close" && subcommand !== "open")
 			return usage_error(`--file does not work with ${subcommand}`);
 
@@ -1530,13 +1627,13 @@ export function bash_browser_command_create(ctx: ActionCtx, browser: bash_Browse
 			userId: browser.source.userId,
 		});
 		if (turn._nay || turn._yay.revoked) return refuse("stale");
-		const bindings = await check_bindings(ctx, browser, turn._yay.bindings);
+		const bindings = await check_bindings({ ctx, browser, bindings: turn._yay.bindings });
 		if (!bindings) {
-			await update_turn(ctx, browser, { kind: "revoke" });
+			await update_turn({ ctx, browser, change: { kind: "revoke" } });
 			return refuse("stale");
 		}
 		if (bindings.some((item, index) => item !== turn._yay.bindings[index]))
-			await update_turn(ctx, browser, { kind: "bind", bindings, ifAbsent: false });
+			await update_turn({ ctx, browser, change: { kind: "bind", bindings, ifAbsent: false } });
 
 		if (subcommand === "status") {
 			if (positionals.length > 0) return usage_error("status takes no arguments");
@@ -1545,35 +1642,27 @@ export function bash_browser_command_create(ctx: ActionCtx, browser: bash_Browse
 
 		if (subcommand === "open") {
 			if (positionals.length > (filePath ? 0 : 1)) return usage_error("open takes one URL");
-			if (filePath) return command_open(ctx, browser, { url: null, file: { path: filePath, sourceKind } });
-			if (browser.browserIntent.webChoice.provider === "none")
-				return {
-					stdout: "",
-					stderr: "browser: the user has not chosen a web browser.\n",
-					exitCode: bash_COMMAND_EXIT_FAILURE,
-				};
-			return command_open(ctx, browser, { url: positionals[0] ?? null, file: null });
+			if (filePath) return command_open({ ctx, browser, input: { url: null, file: { path: filePath, sourceKind } } });
+			return command_open({ ctx, browser, input: { url: positionals[0] ?? null, file: null } });
 		}
 
 		if (subcommand === "tabs") {
 			if (positionals.length > 0) return usage_error("tabs takes no arguments");
-			return command_tabs(ctx, browser, bindings, { operation: "tabs", url: null, tab: null });
+			return command_tabs({ ctx, browser, bindings, input: { operation: "tabs", url: null, tab: null } });
 		}
 
 		if (subcommand === "tab") {
 			const [action, value, extra] = positionals;
 			if (action === "new" && extra === undefined)
-				return command_tabs(ctx, browser, bindings, { operation: "tab-new", url: value ?? null, tab: null });
+				return command_tabs({ ctx, browser, bindings, input: { operation: "tab-new", url: value ?? null, tab: null } });
 			if (action === "close" && value !== undefined && value.length >= 4 && extra === undefined)
-				return command_tabs(ctx, browser, bindings, { operation: "tab-close", url: null, tab: value });
+				return command_tabs({ ctx, browser, bindings, input: { operation: "tab-close", url: null, tab: value } });
 			return usage_error("use tab new [URL] or tab close TAB");
 		}
 
 		if (positionals.length > 0) return usage_error(`${subcommand} takes no positional arguments`);
-		if (subcommand !== "close" && !file && browser.browserIntent.webChoice.provider === "playwriter" && tab !== null)
-			return usage_error("My browser has one shared tab. Leave out --tab.");
 
-		const target = await target_binding(ctx, browser, bindings, { file, tab });
+		const target = await target_binding({ ctx, browser, bindings, target: { file, tab } });
 		if (target._nay === "stale") return refuse("stale");
 		if (target._nay === "usage") return usage_error(target.text);
 		if (target._nay === "none")
@@ -1581,21 +1670,21 @@ export function bash_browser_command_create(ctx: ActionCtx, browser: bash_Browse
 				stdout: "",
 				stderr: file
 					? "browser: no file preview is open. Run: browser open --file PATH\n"
-					: "browser: no web browser is open. Run: browser open [URL]\n",
+					: "browser: no web tab is open. Run: browser open [URL]\n",
 				exitCode: bash_COMMAND_EXIT_FAILURE,
 			};
 		const binding = target._yay;
 
-		if (subcommand === "close") return command_close(ctx, browser, bindings, binding);
+		if (subcommand === "close") return command_close({ ctx, browser, bindings, binding });
 
 		if (subcommand === "reload") {
 			if (binding.provider !== "cloud")
 				return {
 					stdout: "",
-					stderr: `browser: reload works only in the cloud browser. In My browser use: browser run -e 'await page.reload()'\n`,
+					stderr: `browser: reload works only in cloud tabs. In the my browser tab use: browser run -e 'await page.reload()'\n`,
 					exitCode: bash_COMMAND_EXIT_FAILURE,
 				};
-			return command_reload(ctx, browser, binding);
+			return command_reload({ ctx, browser, binding });
 		}
 
 		const source = code ?? bash_decode_stdin_as_utf8(commandCtx.stdin);
@@ -1606,7 +1695,7 @@ export function bash_browser_command_create(ctx: ActionCtx, browser: bash_Browse
 			return { stdout: "", stderr: `browser: ${REFUSAL_TEXT.time}\n`, exitCode: bash_COMMAND_EXIT_TIMED_OUT };
 
 		return binding.provider === "cloud"
-			? run_cloud(ctx, browser, binding, source)
-			: run_playwriter(ctx, browser, binding, source);
+			? run_cloud({ ctx, browser, binding, code: source })
+			: run_playwriter({ ctx, browser, binding, code: source });
 	});
 }

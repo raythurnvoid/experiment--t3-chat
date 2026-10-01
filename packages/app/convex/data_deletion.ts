@@ -604,7 +604,7 @@ async function db_purge_organization_workspace_content_batch(
 				assetId,
 			});
 		}
-		await files_db_delete_pending_update(ctx, pendingUpdate._id);
+		await files_db_delete_pending_update({ ctx, pendingUpdateId: pendingUpdate._id });
 		return { done: false, deletedCount: 1 };
 	}
 
@@ -631,7 +631,7 @@ async function db_purge_organization_workspace_content_batch(
 		)
 		.take(batchSize);
 	if (browserInvocations.length > 0)
-		return ai_chat_files_db_delete_browser_invocations(ctx, browserInvocations, { cloudCommands: "interrupt" });
+		return ai_chat_files_db_delete_browser_invocations({ ctx, invocations: browserInvocations, options: { cloudCommands: "interrupt" } });
 
 	// Bash command links and terminal receipts live until their owning threads are purged.
 	const bashTransferLinks = await ctx.db
@@ -895,7 +895,7 @@ async function db_purge_organization_workspace_content_batch(
 		.take(batchSize);
 	if (fileWriteStages.length > 0) {
 		for (const stage of fileWriteStages) {
-			await public_api_db_cleanup_file_write_stage(ctx, stage);
+			await public_api_db_cleanup_file_write_stage({ ctx, stage });
 		}
 		return { done: false, deletedCount: fileWriteStages.length };
 	}
@@ -2321,7 +2321,7 @@ async function db_wait_deleting_thread(ctx: MutationCtx, args: { thread: Doc<"ai
 		.withIndex("by_thread_toolCall", (q) => q.eq("threadId", thread._id))
 		.take(DELETE_CHAT_WAIT_BATCH_SIZE);
 	if (browserInvocations.length > 0)
-		return await ai_chat_files_db_delete_browser_invocations(ctx, browserInvocations, { cloudCommands: "wait" });
+		return await ai_chat_files_db_delete_browser_invocations({ ctx, invocations: browserInvocations, options: { cloudCommands: "wait" } });
 
 	return null;
 }
@@ -2666,7 +2666,7 @@ async function db_drain_user_pending_updates_batch(ctx: MutationCtx, args: { use
 			assetId,
 		});
 	}
-	await files_db_delete_pending_update(ctx, pendingUpdate._id);
+	await files_db_delete_pending_update({ ctx, pendingUpdateId: pendingUpdate._id });
 	return 1;
 }
 

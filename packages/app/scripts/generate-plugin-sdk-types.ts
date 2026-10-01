@@ -238,11 +238,12 @@ function generate_plugin_sdk_types_find_import_refs(text: string) {
  * `import("<package>").Name`; a name from another app file becomes a relative `import("...")`
  * that the next round inlines in turn.
  */
-function generate_plugin_sdk_types_inline_alias(
-	ref: generate_plugin_sdk_types_AppAliasRef,
-	emitted: ReturnType<typeof generate_plugin_sdk_types_emit_entry>,
-	entryPath: string,
-) {
+function generate_plugin_sdk_types_inline_alias(args: {
+	ref: generate_plugin_sdk_types_AppAliasRef;
+	emitted: ReturnType<typeof generate_plugin_sdk_types_emit_entry>;
+	entryPath: string;
+}) {
+	const { ref, emitted, entryPath } = args;
 	const { program, options } = emitted;
 	const checker = program.getTypeChecker();
 
@@ -371,7 +372,7 @@ function generate_plugin_sdk_types_inline_app_aliases(
 		for (const ref of appRefs.sort((a, b) => b.start - a.start)) {
 			text =
 				text.slice(0, ref.start) +
-				generate_plugin_sdk_types_inline_alias(ref, emitted, entryPath) +
+				generate_plugin_sdk_types_inline_alias({ ref, emitted, entryPath }) +
 				text.slice(ref.end);
 		}
 	}

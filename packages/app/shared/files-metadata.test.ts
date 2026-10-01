@@ -270,12 +270,12 @@ describe("files_metadata_parse_maybe_date", () => {
 describe("files_metadata_parse_entries_yaml", () => {
 	test("parses a flat map of scalar values", () => {
 		const parsed = files_metadata_parse_entries_yaml(
-			["created-by: alice", "slack:message-id: C123.456", "count: 12", "archived: false"].join("\n"),
+			["created-by: alice", "slack-message-id: C123.456", "count: 12", "archived: false"].join("\n"),
 		);
 
 		expect(parsed._yay?.entries).toEqual([
 			{ key: "created-by", value: "alice" },
-			{ key: "slack:message-id", value: "C123.456" },
+			{ key: "slack-message-id", value: "C123.456" },
 			{ key: "count", value: 12 },
 			{ key: "archived", value: false },
 		]);
@@ -401,10 +401,10 @@ describe("files_metadata_parse_entries_yaml", () => {
 
 	test("refuses a key outside the metadata key grammar", () => {
 		expect(files_metadata_parse_entries_yaml("a.b: 1")._nay?.message).toBe(
-			'Metadata key "a.b" may contain only letters, numbers, "_", "-" and ":"',
+			'Metadata key "a.b" may contain only letters, numbers, "_" and "-"',
 		);
 		expect(files_metadata_parse_entries_yaml("with space: 1")._nay?.message).toBe(
-			'Metadata key "with space" may contain only letters, numbers, "_", "-" and ":"',
+			'Metadata key "with space" may contain only letters, numbers, "_" and "-"',
 		);
 	});
 
@@ -546,7 +546,7 @@ describe("files_metadata_stringify_entries_yaml", () => {
 		const entries: files_metadata_Entry[] = [
 			{ key: "zebra", value: "last" },
 			{ key: "created-by", value: "alice" },
-			{ key: "slack:message-id", value: "C123.456" },
+			{ key: "slack-message-id", value: "C123.456" },
 			{ key: "padded", value: "1.10" },
 			{ key: "looks-boolean", value: "true" },
 			{ key: "looks-number", value: "12" },
@@ -607,7 +607,7 @@ describe("files_metadata_validate_remove_keys", () => {
 			'Metadata key "metadata.status" is a search field name. Pass the bare key "status" instead',
 		);
 		expect(files_metadata_validate_remove_keys(["with space"])._nay?.message).toBe(
-			'Metadata key "with space" may contain only letters, numbers, "_", "-" and ":"',
+			'Metadata key "with space" may contain only letters, numbers, "_" and "-"',
 		);
 		expect(files_metadata_validate_remove_keys(["x".repeat(129)])._nay?.message).toBe(
 			"Metadata keys must be at most 128 characters",
@@ -615,9 +615,9 @@ describe("files_metadata_validate_remove_keys", () => {
 	});
 
 	test("accepts bare keys, including one that is not there", () => {
-		expect(files_metadata_validate_remove_keys(["status", "slack:message-id", "missing"])._yay).toEqual([
+		expect(files_metadata_validate_remove_keys(["status", "slack-message-id", "missing"])._yay).toEqual([
 			"status",
-			"slack:message-id",
+			"slack-message-id",
 			"missing",
 		]);
 	});

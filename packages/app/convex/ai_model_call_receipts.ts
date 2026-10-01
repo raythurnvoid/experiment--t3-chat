@@ -222,23 +222,25 @@ async function save_with_retries<T>(args: { modelCallId: string; logLoss: boolea
  * doc, before any of its tools start. When Stop won that race, the step's tool call ids go into
  * `stoppedToolCallIds`, and the tool start guard refuses them.
  */
-export function ai_model_call_receipts_create(
-	ctx: ActionCtx,
+export function ai_model_call_receipts_create(args: {
+	ctx: ActionCtx;
 	payer: {
 		threadId: Id<"ai_chat_threads"> | null;
 		billedUserId: Id<"users">;
 		actorUserId: Id<"users">;
 		organizationId: Id<"organizations">;
 		workspaceId: Id<"organizations_workspaces">;
-	},
-	modelCallIds: Map<string, string> | null,
+	};
+	modelCallIds: Map<string, string> | null;
 	run: {
 		runId: Id<"ai_chat_runs">;
 		generation: number;
 		getStepIndex: () => number;
 		stoppedToolCallIds: Set<string>;
-	} | null,
-) {
+	} | null;
+}) {
+	const { ctx, payer, modelCallIds, run } = args;
+
 	const pending = new Set<Promise<unknown>>();
 
 	const track = <T>(promise: Promise<T>) => {
@@ -455,11 +457,13 @@ async function db_get_receipt(ctx: MutationCtx, modelCallId: string) {
  * before sign-in goes to the new account. The provider already charged us, so this checks no run,
  * Stop, membership, thread or credits.
  */
-async function db_deliver_charge(
-	ctx: MutationCtx,
-	receipt: Doc<"ai_model_call_receipts">,
-	component: { kind: "tokens"; usage: ReportedUsage } | { kind: "image"; imageCallId: string },
-) {
+async function db_deliver_charge(args: {
+	ctx: MutationCtx;
+	receipt: Doc<"ai_model_call_receipts">;
+	component: { kind: "tokens"; usage: ReportedUsage } | { kind: "image"; imageCallId: string };
+}) {
+	const { ctx, receipt, component } = args;
+
 	const amountCents =
 		component.kind === "tokens"
 			? compute_token_usage_cost_cents({ modelId: receipt.modelId, ...component.usage })
@@ -650,7 +654,7 @@ export const save_usage = internalMutation({
 		}
 
 		const { state: _state, ...usage } = args.usage;
-		const tokens = await db_deliver_charge(ctx, { ...receipt, responseId, providerModelId }, { kind: "tokens", usage });
+		const tokens = await db_deliver_charge({ ctx, receipt: { ...receipt, responseId, providerModelId }, component: { kind: "tokens", usage } });
 		await ctx.db.patch("ai_model_call_receipts", receipt._id, {
 			usage: args.usage,
 			responseId,
@@ -672,7 +676,7 @@ export const save_image = internalMutation({
 		const receipt = await db_get_receipt(ctx, args.modelCallId);
 		if (receipt.images.some((image) => image.imageCallId === args.imageCallId)) return null;
 
-		const charge = await db_deliver_charge(ctx, receipt, { kind: "image", imageCallId: args.imageCallId });
+		const charge = await db_deliver_charge({ ctx, receipt, component: { kind: "image", imageCallId: args.imageCallId } });
 		await ctx.db.patch("ai_model_call_receipts", receipt._id, {
 			images: [...receipt.images, { imageCallId: args.imageCallId, charge }],
 		});

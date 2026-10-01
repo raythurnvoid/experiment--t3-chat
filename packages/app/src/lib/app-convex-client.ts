@@ -38,13 +38,13 @@ export const app_convex = new ConvexReactClient(app_convex_deployment_url, {
 
 // #region helpers
 
-export async function app_convex_wait_new_query_value<Q extends FunctionReference<"query", "public">>(
-	query: Q,
-	queryArgs?: FunctionArgs<Q>,
-	args?: {
-		signal?: AbortSignal;
-	},
-) {
+export async function app_convex_wait_new_query_value<Q extends FunctionReference<"query", "public">>(args: {
+	query: Q;
+	queryArgs?: FunctionArgs<Q>;
+	signal?: AbortSignal;
+}) {
+	const { query, queryArgs } = args;
+
 	const watcher = app_convex.watchQuery(query, queryArgs);
 
 	let canDispose = true;

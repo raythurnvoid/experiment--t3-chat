@@ -1660,7 +1660,7 @@ export const remove_user_from_organization = mutation({
 				),
 			),
 			sharedBrowsersPromise.then(async (connections) => {
-				for (const connection of connections) await playwriter_browser_db_disconnect(ctx, connection, "member_removed");
+				for (const connection of connections) await playwriter_browser_db_disconnect({ ctx, connection, reason: "member_removed" });
 			}),
 			// A per-member plugin storage row names the member, so it must not outlive their membership.
 			// The documents it counted stay: they belong to the workspace, and the counters they fed are

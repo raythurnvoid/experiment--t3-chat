@@ -165,14 +165,20 @@ function push_run(run: TransferRun) {
 	});
 }
 
-function press_key(target: HTMLElement, key: string, ctrlKey = true) {
+function press_key(args: {
+	target: HTMLElement;
+	key: string;
+	ctrlKey?: boolean;
+}) {
+	const { target, key, ctrlKey = true } = args;
+
 	const result = fireEvent.keyDown(target, { key, code: key === "Escape" ? key : `Key${key.toUpperCase()}`, ctrlKey });
 	fireEvent.keyUp(target, { key, code: key === "Escape" ? key : `Key${key.toUpperCase()}`, ctrlKey });
 	return result;
 }
 
 function press_paste() {
-	return press_key(screen.getByRole("group", { name: "File navigation" }), "v");
+	return press_key({ target: screen.getByRole("group", { name: "File navigation" }), key: "v" });
 }
 
 function FileNavigation(props: { blocked?: boolean }) {
@@ -257,11 +263,11 @@ describe("FilesClipboardProvider", () => {
 	test("scopes shortcuts to navigation and preserves editable shortcuts", () => {
 		render(<TestClipboard />);
 		const navigation = screen.getByRole("group", { name: "File navigation" });
-		expect(press_key(navigation, "c")).toBe(false);
+		expect(press_key({ target: navigation, key: "c" })).toBe(false);
 		expect(screen.getByLabelText("Clipboard sources").textContent).toBe(SOURCE_ID);
 		for (const name of ["Rename file", "Search notes", "Editable note", "Chat message"]) {
 			const input = screen.getByLabelText(name);
-			for (const key of ["c", "x", "v"]) expect(press_key(input, key)).toBe(true);
+			for (const key of ["c", "x", "v"]) expect(press_key({ target: input, key })).toBe(true);
 		}
 		expect(mutationMock).not.toHaveBeenCalled();
 		expect(screen.getByLabelText("Clipboard sources").textContent).toBe(SOURCE_ID);
@@ -270,11 +276,11 @@ describe("FilesClipboardProvider", () => {
 	test("Escape clears an idle cut and leaves Copy ready", () => {
 		render(<TestClipboard />);
 		const navigation = screen.getByRole("group", { name: "File navigation" });
-		press_key(navigation, "c");
-		expect(press_key(navigation, "Escape", false)).toBe(true);
+		press_key({ target: navigation, key: "c" });
+		expect(press_key({ target: navigation, key: "Escape", ctrlKey: false })).toBe(true);
 		expect(screen.getByLabelText("Clipboard sources").textContent).toBe(SOURCE_ID);
-		press_key(navigation, "x");
-		expect(press_key(navigation, "Escape", false)).toBe(false);
+		press_key({ target: navigation, key: "x" });
+		expect(press_key({ target: navigation, key: "Escape", ctrlKey: false })).toBe(false);
 		expect(screen.getByLabelText("Clipboard sources").textContent).toBe("empty");
 	});
 

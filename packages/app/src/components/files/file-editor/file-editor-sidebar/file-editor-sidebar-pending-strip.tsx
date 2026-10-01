@@ -35,7 +35,13 @@ function useFilesPendingUpdatesCount(skip: boolean) {
  * The chat scope says "from this chat" because the count is files this chat TOUCHED — the diff
  * behind each row is the combined pending state, which other chats may have contributed to.
  */
-function files_pending_strip_label(count: number, scope: "workspace" | "chat", truncated = false) {
+function files_pending_strip_label(args: {
+	count: number;
+	scope: "workspace" | "chat";
+	truncated?: boolean;
+}) {
+	const { count, scope, truncated = false } = args;
+
 	const noun = count === 1 && !truncated ? "pending file change" : "pending file changes";
 	return scope === "chat" ? `${noun} from this chat` : noun;
 }
@@ -110,7 +116,7 @@ const FileEditorSidebarPendingStripRow = memo(function FileEditorSidebarPendingS
 			"FileEditorSidebarPendingStrip" satisfies FileEditorSidebarPendingStrip_ClassNames,
 			isLeaving && ("FileEditorSidebarPendingStrip-leaving" satisfies FileEditorSidebarPendingStrip_ClassNames),
 		),
-		"aria-label": `${displayCountLabel} ${files_pending_strip_label(displayCount.count, labelScope, displayCount.truncated)}${destinationLabel}, review`,
+		"aria-label": `${displayCountLabel} ${files_pending_strip_label({ count: displayCount.count, scope: labelScope, truncated: displayCount.truncated })}${destinationLabel}, review`,
 		onClick: handleClick,
 	};
 	const reviewContent = (
@@ -124,7 +130,7 @@ const FileEditorSidebarPendingStripRow = memo(function FileEditorSidebarPendingS
 			</span>
 			<span className={cn("FileEditorSidebarPendingStrip-label" satisfies FileEditorSidebarPendingStrip_ClassNames)}>
 				{destination && `${destination.workspace === "current" ? "Current workspace" : "Personal home"} · `}
-				{files_pending_strip_label(displayCount.count, labelScope, displayCount.truncated)}
+				{files_pending_strip_label({ count: displayCount.count, scope: labelScope, truncated: displayCount.truncated })}
 			</span>
 			<span className={cn("FileEditorSidebarPendingStrip-review" satisfies FileEditorSidebarPendingStrip_ClassNames)}>
 				Review
@@ -150,7 +156,7 @@ const FileEditorSidebarPendingStripRow = memo(function FileEditorSidebarPendingS
 				aria-live="polite"
 			>
 				{hasUpdates
-					? `${count}${truncated ? "+" : ""} ${files_pending_strip_label(count, labelScope, truncated)}${destinationLabel}`
+					? `${count}${truncated ? "+" : ""} ${files_pending_strip_label({ count, scope: labelScope, truncated })}${destinationLabel}`
 					: ""}
 			</span>
 			{displayCount.count > 0 || displayCount.truncated ? (
@@ -224,15 +230,15 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 	describe("files_pending_strip_label", () => {
 		test("uses the singular label only for exactly one change", () => {
-			expect(files_pending_strip_label(1, "workspace")).toBe("pending file change");
-			expect(files_pending_strip_label(0, "workspace")).toBe("pending file changes");
-			expect(files_pending_strip_label(2, "workspace")).toBe("pending file changes");
-			expect(files_pending_strip_label(5, "workspace")).toBe("pending file changes");
+			expect(files_pending_strip_label({ count: 1, scope: "workspace" })).toBe("pending file change");
+			expect(files_pending_strip_label({ count: 0, scope: "workspace" })).toBe("pending file changes");
+			expect(files_pending_strip_label({ count: 2, scope: "workspace" })).toBe("pending file changes");
+			expect(files_pending_strip_label({ count: 5, scope: "workspace" })).toBe("pending file changes");
 		});
 
 		test("appends the chat qualifier in the chat scope", () => {
-			expect(files_pending_strip_label(1, "chat")).toBe("pending file change from this chat");
-			expect(files_pending_strip_label(3, "chat")).toBe("pending file changes from this chat");
+			expect(files_pending_strip_label({ count: 1, scope: "chat" })).toBe("pending file change from this chat");
+			expect(files_pending_strip_label({ count: 3, scope: "chat" })).toBe("pending file changes from this chat");
 		});
 	});
 }

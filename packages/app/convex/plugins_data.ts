@@ -799,15 +799,17 @@ async function db_patch_usage(
  * key. A plugin backend passes none: refusing a backend because one member is full would let that
  * member block the whole plugin.
  */
-function check_capacity(
-	usage: Doc<"plugins_data_usage"> | null,
-	change: { addedBytes: number; addedSlots: number; addedCollections: number },
-	maxDocumentSlots: number,
+function check_capacity(args: {
+	usage: Doc<"plugins_data_usage"> | null;
+	change: { addedBytes: number; addedSlots: number; addedCollections: number };
+	maxDocumentSlots: number;
 	member?: {
 		usage: Doc<"plugins_data_member_usage"> | null;
 		change: { addedBytes: number; addedSlots: number; addedCollections: number };
-	},
-) {
+	};
+}) {
+	const { usage, change, maxDocumentSlots, member } = args;
+
 	const usedBytes = usage ? usage.usedBytes + usage.reservedBytes : 0;
 	const usedSlots = usage ? usage.usedDocuments + usage.reservedDocuments + usage.tombstoneDocuments : 0;
 	const usedCollections = usage ? usage.collectionNames.length : 0;
@@ -1432,15 +1434,15 @@ export const reserve_document = internalMutation({
 		const usage = await db_get_usage(ctx, installation._id);
 		const addsCollection = !(usage?.collectionNames ?? []).includes(collection._yay);
 		const maxDocumentSlots = await db_resolve_document_slot_cap(ctx, { organization });
-		const capacity = check_capacity(
+		const capacity = check_capacity({
 			usage,
-			{
+			change: {
 				addedBytes: args.maximumBytes,
 				addedSlots: 1,
 				addedCollections: addsCollection ? 1 : 0,
 			},
 			maxDocumentSlots,
-		);
+		});
 		if (capacity._nay) {
 			return capacity;
 		}
@@ -2189,15 +2191,15 @@ async function db_write_documents(
 	}
 
 	const maxDocumentSlots = await db_resolve_document_slot_cap(ctx, { organization });
-	const capacity = check_capacity(
+	const capacity = check_capacity({
 		usage,
-		{
+		change: {
 			addedBytes,
 			addedSlots,
 			addedCollections: addedCollections.size,
 		},
 		maxDocumentSlots,
-		writer
+		member: writer
 			? {
 					usage: memberUsage,
 					change: {
@@ -2209,7 +2211,7 @@ async function db_write_documents(
 					},
 				}
 			: undefined,
-	);
+	});
 	if (capacity._nay) {
 		return capacity;
 	}
@@ -2616,15 +2618,15 @@ async function db_preflight_user_write_document(
 		userId: args.userId,
 	});
 	const maxDocumentSlots = await db_resolve_document_slot_cap(ctx, { organization: args.organization });
-	const capacity = check_capacity(
+	const capacity = check_capacity({
 		usage,
-		{
+		change: {
 			addedBytes: args.byteSize - (args.existing?.byteSize ?? 0),
 			addedSlots: args.existing ? 0 : 1,
 			addedCollections: addsCollection ? 1 : 0,
 		},
 		maxDocumentSlots,
-		{
+		member: {
 			usage: memberUsage,
 			change: member_capacity_change({
 				existing: args.existing,
@@ -2634,7 +2636,7 @@ async function db_preflight_user_write_document(
 				byteSize: args.byteSize,
 			}),
 		},
-	);
+	});
 	if (capacity._nay) {
 		return capacity;
 	}
@@ -3940,16 +3942,16 @@ function db_binding_file_grants(
  * readers and stay restricted — fail closed. It also ends the public links on and under the bound
  * nodes.
  */
-async function db_sync_file_access_bindings(
-	ctx: MutationCtx,
-	args: {
-		installation: Doc<"plugins_workspace_installations">;
-		scopeId: string;
-		addUserIds: Id<"users">[];
-		removeUserIds: Id<"users">[] | "all";
-	},
-	shareLinkCleanup: files_share_links_CleanupState,
-) {
+async function db_sync_file_access_bindings(args: {
+	ctx: MutationCtx;
+	installation: Doc<"plugins_workspace_installations">;
+	scopeId: string;
+	addUserIds: Id<"users">[];
+	removeUserIds: Id<"users">[] | "all";
+	shareLinkCleanup: files_share_links_CleanupState;
+}) {
+	const { ctx, shareLinkCleanup } = args;
+
 	const bindings = await ctx.db
 		.query("plugins_file_access_bindings")
 		.withIndex("by_installation_scopeId", (q) =>
@@ -3958,15 +3960,13 @@ async function db_sync_file_access_bindings(
 		.collect();
 
 	if (args.removeUserIds === "all") {
-		await files_share_links_db_delete_for_roots(
+		await files_share_links_db_delete_for_roots({
 			ctx,
-			{
-				organizationId: args.installation.organizationId,
-				workspaceId: args.installation.workspaceId,
-				rootNodeIds: bindings.map((binding) => binding.nodeId),
-			},
-			shareLinkCleanup,
-		);
+			organizationId: args.installation.organizationId,
+			workspaceId: args.installation.workspaceId,
+			rootNodeIds: bindings.map((binding) => binding.nodeId),
+			state: shareLinkCleanup,
+		});
 	}
 
 	const now = Date.now();
@@ -4102,28 +4102,26 @@ export async function plugins_data_db_apply_file_access_binding(
 		if (!existingBinding) {
 			return;
 		}
-		await files_share_links_db_delete_for_roots(ctx, shareLinkRoots, shareLinkCleanup);
+		await files_share_links_db_delete_for_roots({ ctx, ...shareLinkRoots, state: shareLinkCleanup });
 		await ctx.db.delete("plugins_file_access_bindings", existingBinding._id);
 		return;
 	}
 
 	// The plugin now decides who reads this node and everything under it, so end their public links.
 	// Do it even when the node is already restricted and no scope op starts.
-	await files_share_links_db_delete_for_roots(ctx, shareLinkRoots, shareLinkCleanup);
+	await files_share_links_db_delete_for_roots({ ctx, ...shareLinkRoots, state: shareLinkCleanup });
 
 	let accessChanged = false;
 	// Restrict the node on itself and start a scope op for the items inside, like the member share door does.
 	if (args.node.restrictedScopeNodeId !== args.node._id) {
-		await files_nodes_db_set_restricted_scope(
+		await files_nodes_db_set_restricted_scope({
 			ctx,
-			{
-				organizationId: args.node.organizationId,
-				workspaceId: args.node.workspaceId,
-				nodeId: args.node._id,
-				restrictedScopeNodeId: args.node._id,
-			},
+			organizationId: args.node.organizationId,
+			workspaceId: args.node.workspaceId,
+			nodeId: args.node._id,
+			restrictedScopeNodeId: args.node._id,
 			shareLinkCleanup,
-		);
+		});
 		await files_subtree_ops_db_start_rebuild(ctx, {
 			kind: "scope",
 			organizationId: args.installation.organizationId,
@@ -4220,16 +4218,16 @@ export async function plugins_data_db_apply_file_access_binding(
 /**
  * Delete an empty live scope, or make its lowest active member the manager.
  */
-export async function plugins_data_db_keep_scope_managed(
-	ctx: MutationCtx,
-	args: {
-		installation: Doc<"plugins_workspace_installations">;
-		scopes: Doc<"plugins_data_scopes">[];
-		excludeUserId?: Id<"users">;
-		deleteIfEmpty?: boolean;
-	},
-	shareLinkCleanup: files_share_links_CleanupState,
-) {
+export async function plugins_data_db_keep_scope_managed(args: {
+	ctx: MutationCtx;
+	installation: Doc<"plugins_workspace_installations">;
+	scopes: Doc<"plugins_data_scopes">[];
+	excludeUserId?: Id<"users">;
+	deleteIfEmpty?: boolean;
+	shareLinkCleanup: files_share_links_CleanupState;
+}) {
+	const { ctx, shareLinkCleanup } = args;
+
 	const [first] = args.scopes;
 	if (!first) {
 		return { deleted: false, hasActivePrincipal: false, promoted: false };
@@ -4252,16 +4250,14 @@ export async function plugins_data_db_keep_scope_managed(
 		// Account deletion and organization member drain reach scope teardown only through this
 		// branch (via cleanup_stranded_scopes), so a binding not synced here would keep mirrored
 		// `content.read` grants alive on a file whose scope no longer exists.
-		await db_sync_file_access_bindings(
+		await db_sync_file_access_bindings({
 			ctx,
-			{
-				installation: args.installation,
-				scopeId: first.scopeId,
-				addUserIds: [],
-				removeUserIds: "all",
-			},
+			installation: args.installation,
+			scopeId: first.scopeId,
+			addUserIds: [],
+			removeUserIds: "all",
 			shareLinkCleanup,
-		);
+		});
 		return { deleted: true, hasActivePrincipal: false, promoted: false };
 	}
 
@@ -4352,14 +4348,12 @@ export const cleanup_stranded_scopes = internalMutation({
 				continue;
 			}
 
-			const managed = await plugins_data_db_keep_scope_managed(
+			const managed = await plugins_data_db_keep_scope_managed({
 				ctx,
-				{
-					installation,
-					scopes,
-				},
+				installation,
+				scopes,
 				shareLinkCleanup,
-			);
+			});
 			if (!managed.deleted) {
 				// This job follows a removed direct grant, so even a scope that still had another
 				// manager needs a new membership revision.
@@ -4960,15 +4954,13 @@ export const user_manage_scope = mutation({
 				});
 			}
 
-			const managed = await plugins_data_db_keep_scope_managed(
+			const managed = await plugins_data_db_keep_scope_managed({
 				ctx,
-				{
-					installation,
-					scopes: existing,
-					excludeUserId: userId,
-				},
+				installation,
+				scopes: existing,
+				excludeUserId: userId,
 				shareLinkCleanup,
-			);
+			});
 			if (managed.deleted) {
 				return Result({ _yay: { scopeId: scopeId._yay, deleted: true, membershipRevision } });
 			}
@@ -4981,16 +4973,14 @@ export const user_manage_scope = mutation({
 				level: null,
 				now,
 			});
-			await db_sync_file_access_bindings(
+			await db_sync_file_access_bindings({
 				ctx,
-				{
-					installation,
-					scopeId: scopeId._yay,
-					addUserIds: [],
-					removeUserIds: [userId],
-				},
+				installation,
+				scopeId: scopeId._yay,
+				addUserIds: [],
+				removeUserIds: [userId],
 				shareLinkCleanup,
-			);
+			});
 			await Promise.all(
 				existing.map((scope) => ctx.db.patch("plugins_data_scopes", scope._id, { updatedAt: membershipRevision })),
 			);
@@ -5024,16 +5014,14 @@ export const user_manage_scope = mutation({
 
 		if (args.action.kind === "delete") {
 			await plugins_data_db_delete_scope(ctx, existing);
-			await db_sync_file_access_bindings(
+			await db_sync_file_access_bindings({
 				ctx,
-				{
-					installation,
-					scopeId: scopeId._yay,
-					addUserIds: [],
-					removeUserIds: "all",
-				},
+				installation,
+				scopeId: scopeId._yay,
+				addUserIds: [],
+				removeUserIds: "all",
 				shareLinkCleanup,
-			);
+			});
 			return Result({ _yay: { scopeId: scopeId._yay, deleted: true, membershipRevision } });
 		}
 
@@ -5045,16 +5033,14 @@ export const user_manage_scope = mutation({
 			if (principals.size === 1 && principals.has(target)) {
 				return Result({ _nay: { message: "The last person must leave this private space themselves" } });
 			}
-			const managed = await plugins_data_db_keep_scope_managed(
+			const managed = await plugins_data_db_keep_scope_managed({
 				ctx,
-				{
-					installation,
-					scopes: existing,
-					excludeUserId: target,
-					deleteIfEmpty: false,
-				},
+				installation,
+				scopes: existing,
+				excludeUserId: target,
+				deleteIfEmpty: false,
 				shareLinkCleanup,
-			);
+			});
 			if (!managed.hasActivePrincipal) {
 				return Result({ _nay: { message: "The last person must leave this private space themselves" } });
 			}
@@ -5066,16 +5052,14 @@ export const user_manage_scope = mutation({
 				level: null,
 				now,
 			});
-			await db_sync_file_access_bindings(
+			await db_sync_file_access_bindings({
 				ctx,
-				{
-					installation,
-					scopeId: scopeId._yay,
-					addUserIds: [],
-					removeUserIds: [target],
-				},
+				installation,
+				scopeId: scopeId._yay,
+				addUserIds: [],
+				removeUserIds: [target],
 				shareLinkCleanup,
-			);
+			});
 			await Promise.all(
 				existing.map((scope) => ctx.db.patch("plugins_data_scopes", scope._id, { updatedAt: membershipRevision })),
 			);
@@ -5120,16 +5104,14 @@ export const user_manage_scope = mutation({
 		}
 
 		if (args.action.level === "member") {
-			const managed = await plugins_data_db_keep_scope_managed(
+			const managed = await plugins_data_db_keep_scope_managed({
 				ctx,
-				{
-					installation,
-					scopes: existing,
-					excludeUserId: target,
-					deleteIfEmpty: false,
-				},
+				installation,
+				scopes: existing,
+				excludeUserId: target,
+				deleteIfEmpty: false,
 				shareLinkCleanup,
-			);
+			});
 			if (!managed.hasActivePrincipal) {
 				return Result({ _nay: { message: "Add another person before lowering the last manager's access" } });
 			}
@@ -5144,16 +5126,14 @@ export const user_manage_scope = mutation({
 			now,
 		});
 		// A level change for an existing member makes this an idempotent no-op.
-		await db_sync_file_access_bindings(
+		await db_sync_file_access_bindings({
 			ctx,
-			{
-				installation,
-				scopeId: scopeId._yay,
-				addUserIds: [target],
-				removeUserIds: [],
-			},
+			installation,
+			scopeId: scopeId._yay,
+			addUserIds: [target],
+			removeUserIds: [],
 			shareLinkCleanup,
-		);
+		});
 		await Promise.all(
 			existing.map((scope) => ctx.db.patch("plugins_data_scopes", scope._id, { updatedAt: membershipRevision })),
 		);
@@ -6244,15 +6224,15 @@ export const write_versioned_document = internalMutation({
 		// charging a second slot, so a store at the ceiling can still store the key it reserved.
 		const convertsReservedSlot = !existing && ownedReservation !== null;
 		const maxDocumentSlots = await db_resolve_document_slot_cap(ctx, { organization });
-		const capacity = check_capacity(
+		const capacity = check_capacity({
 			usage,
-			{
+			change: {
 				addedBytes: delta - spentFromReservation,
 				addedSlots: existing || convertsReservedSlot ? 0 : 1,
 				addedCollections: addsCollection ? 1 : 0,
 			},
 			maxDocumentSlots,
-		);
+		});
 		if (capacity._nay) {
 			return capacity;
 		}
@@ -6442,7 +6422,7 @@ export const delete_versioned_document = internalMutation({
 		// A live reservation already holds that slot, so the tombstone converts it instead of charging
 		// a second one. A released never-stored retry record already holds it the same way.
 		if (!existing && ownedReservation === null && !releasedSlotAlreadyHeld) {
-			const capacity = check_capacity(usage, { addedBytes: 0, addedSlots: 1, addedCollections: 0 }, maxDocumentSlots);
+			const capacity = check_capacity({ usage, change: { addedBytes: 0, addedSlots: 1, addedCollections: 0 }, maxDocumentSlots });
 			if (capacity._nay) {
 				return capacity;
 			}
@@ -6673,15 +6653,13 @@ export async function plugins_data_db_drain_batch(
 		})
 		.take(args.batchSize);
 	if (fileAccessBindings.length > 0) {
-		await files_share_links_db_delete_for_roots(
+		await files_share_links_db_delete_for_roots({
 			ctx,
-			{
-				organizationId: args.organizationId,
-				workspaceId: args.workspaceId,
-				rootNodeIds: fileAccessBindings.map((doc) => doc.nodeId),
-			},
-			files_share_links_create_cleanup_state(),
-		);
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			rootNodeIds: fileAccessBindings.map((doc) => doc.nodeId),
+			state: files_share_links_create_cleanup_state(),
+		});
 		await Promise.all(fileAccessBindings.map((doc) => ctx.db.delete("plugins_file_access_bindings", doc._id)));
 		return { done: false, deletedCount: fileAccessBindings.length };
 	}
@@ -6817,11 +6795,13 @@ export type plugins_data_PreviewReadBudget = {
 	truncated: boolean;
 };
 
-async function db_take_preview_docs<T>(
-	read: (limit: number) => Promise<T[]>,
-	budget?: plugins_data_PreviewReadBudget,
-	countLimit = PREVIEW_DOC_COUNT_LIMIT,
-) {
+async function db_take_preview_docs<T>(args: {
+	read: (limit: number) => Promise<T[]>;
+	budget?: plugins_data_PreviewReadBudget;
+	countLimit?: number;
+}) {
+	const { read, budget, countLimit = PREVIEW_DOC_COUNT_LIMIT } = args;
+
 	if (budget?.remaining === 0) {
 		budget.truncated = true;
 		return { docs: [], truncated: true };
@@ -6856,15 +6836,15 @@ async function db_take_preview_docs<T>(
  * A registry-wide caller also passes one shared budget so many small installation reads cannot
  * add up to one unbounded query.
  */
-export async function plugins_data_db_count_installation_docs(
-	ctx: QueryCtx,
-	args: {
-		organizationId: Id<"organizations">;
-		workspaceId: Id<"organizations_workspaces">;
-		installationId: Id<"plugins_workspace_installations">;
-	},
-	previewBudget?: plugins_data_PreviewReadBudget,
-) {
+export async function plugins_data_db_count_installation_docs(args: {
+	ctx: QueryCtx;
+	organizationId: Id<"organizations">;
+	workspaceId: Id<"organizations_workspaces">;
+	installationId: Id<"plugins_workspace_installations">;
+	previewBudget?: plugins_data_PreviewReadBudget;
+}) {
+	const { ctx, previewBudget } = args;
+
 	const scopeResourcePrefix = `${args.installationId}:`;
 	let usage: Doc<"plugins_data_usage"> | null = null;
 	if (previewBudget?.remaining === 0) {
@@ -6877,16 +6857,16 @@ export async function plugins_data_db_count_installation_docs(
 		}
 	}
 
-	const memberUsage = await db_take_preview_docs(
-		(limit) =>
+	const memberUsage = await db_take_preview_docs({
+		read: (limit) =>
 			ctx.db
 				.query("plugins_data_member_usage")
 				.withIndex("by_installation_user", (q) => q.eq("installationId", args.installationId))
 				.take(limit),
-		previewBudget,
-	);
-	const serviceGrants = await db_take_preview_docs(
-		(limit) =>
+		budget: previewBudget,
+	});
+	const serviceGrants = await db_take_preview_docs({
+		read: (limit) =>
 			ctx.db
 				.query("plugin_service_grants")
 				.withIndex("by_organization_workspace_installation", (q) =>
@@ -6896,10 +6876,10 @@ export async function plugins_data_db_count_installation_docs(
 						.eq("installationId", args.installationId),
 				)
 				.take(limit),
-		previewBudget,
-	);
-	const fileAccessBindings = await db_take_preview_docs(
-		(limit) =>
+		budget: previewBudget,
+	});
+	const fileAccessBindings = await db_take_preview_docs({
+		read: (limit) =>
 			ctx.db
 				.query("plugins_file_access_bindings")
 				.withIndex("by_organization_workspace_installation", (q) =>
@@ -6909,10 +6889,10 @@ export async function plugins_data_db_count_installation_docs(
 						.eq("installationId", args.installationId),
 				)
 				.take(limit),
-		previewBudget,
-	);
-	const pluginScopeGrants = await db_take_preview_docs(
-		(limit) =>
+		budget: previewBudget,
+	});
+	const pluginScopeGrants = await db_take_preview_docs({
+		read: (limit) =>
 			ctx.db
 				.query("access_control_permission_grants")
 				.withIndex("by_organization_workspace_resource_user_permission", (q) =>
@@ -6924,10 +6904,10 @@ export async function plugins_data_db_count_installation_docs(
 						.lt("resourceId", key_prefix_upper_bound(scopeResourcePrefix)),
 				)
 				.take(limit),
-		previewBudget,
-	);
-	const pluginDataScopeRows = await db_take_preview_docs(
-		(limit) =>
+		budget: previewBudget,
+	});
+	const pluginDataScopeRows = await db_take_preview_docs({
+		read: (limit) =>
 			ctx.db
 				.query("plugins_data_scopes")
 				.withIndex("by_organization_workspace_installation", (q) =>
@@ -6937,10 +6917,10 @@ export async function plugins_data_db_count_installation_docs(
 						.eq("installationId", args.installationId),
 				)
 				.take(limit),
-		previewBudget,
-	);
-	const releasedScopeRangeRows = await db_take_preview_docs(
-		(limit) =>
+		budget: previewBudget,
+	});
+	const releasedScopeRangeRows = await db_take_preview_docs({
+		read: (limit) =>
 			ctx.db
 				.query("plugins_data_released_scope_ranges")
 				.withIndex("by_organization_workspace_installation", (q) =>
@@ -6950,8 +6930,8 @@ export async function plugins_data_db_count_installation_docs(
 						.eq("installationId", args.installationId),
 				)
 				.take(limit),
-		previewBudget,
-	);
+		budget: previewBudget,
+	});
 
 	return {
 		usageDocs: usage ? 1 : 0,

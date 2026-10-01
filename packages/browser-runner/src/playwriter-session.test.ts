@@ -26,7 +26,6 @@ const runtime = {
 	confirmedTargetId: "native-tab",
 	controlRevision: 4,
 	policyRevision: 1,
-	selectionRevision: 1,
 	agentAccess: true,
 	operations: 0,
 	idleExpiresAt: 0,
@@ -183,11 +182,11 @@ function make_session(existingRecords?: Map<string, unknown>) {
 		return { response, reply: (await response.json()) as Record<string, unknown> };
 	};
 	const remote = async (path: string, input: unknown) => {
-		const response = await handle_playwriter_request(
-			new Request(`https://runner/internal/playwriter${path}`, { method: "POST", body: JSON.stringify(input) }),
+		const response = await handle_playwriter_request({
+			request: new Request(`https://runner/internal/playwriter${path}`, { method: "POST", body: JSON.stringify(input) }),
 			env,
-			{ exports: { PlaywriterConnectionGateway: () => ({ fetch: async () => new Response() }) } },
-		);
+			ctx: { exports: { PlaywriterConnectionGateway: () => ({ fetch: async () => new Response() }) } },
+		});
 		return { response, reply: (await response.json()) as Record<string, unknown> };
 	};
 	return { session, records, put, post, remote, evaluate, env };
@@ -235,16 +234,17 @@ function connect_request() {
 		agentBlockedHosts: [] as string[],
 		agentAccess: true,
 		policyRevision: 1,
-		selectionRevision: 1,
 		controlRevision: 4,
 	};
 }
 
-async function connect_session(
-	mocked: ReturnType<typeof make_session>,
-	socket = new NativeSocket(),
-	input = connect_request(),
-) {
+async function connect_session(args: {
+	mocked: ReturnType<typeof make_session>;
+	socket?: NativeSocket;
+	input?: ReturnType<typeof connect_request>;
+}) {
+	const { mocked, socket = new NativeSocket(), input = connect_request() } = args;
+
 	vi.stubGlobal(
 		"fetch",
 		vi.fn(async () => ({ status: 101, webSocket: socket })),
@@ -263,7 +263,6 @@ function command_request(connected: typeof runtime, commandId: string) {
 		generation: connected.generation,
 		controlRevision: connected.controlRevision,
 		policyRevision: connected.policyRevision,
-		selectionRevision: connected.selectionRevision,
 		targetRevision: connected.targetRevision,
 		navRevision: connected.navRevision,
 		targetId: "native-tab",
@@ -294,7 +293,7 @@ describe("PlaywriterSession", () => {
 
 	it("keeps a successor command when an exact policy sync is retried", async () => {
 		const mocked = make_session();
-		const connected = await connect_session(mocked);
+		const connected = await connect_session({ mocked });
 		const command = { ...command_request(connected, "during-policy-retry"), operation: SCRIPT };
 		expect((await mocked.post("/run/begin", command)).reply.execute).toBe(true);
 		expect(
@@ -305,7 +304,6 @@ describe("PlaywriterSession", () => {
 					agentAccess: true,
 					agentBlockedHosts: [],
 					policyRevision: connected.policyRevision,
-					selectionRevision: connected.selectionRevision,
 				})
 			).reply,
 		).toMatchObject({ runtime: { state: "connected", generation: connected.generation } });
@@ -361,7 +359,7 @@ describe("PlaywriterSession", () => {
 
 	it("keeps current system denies after an empty user policy sync", async () => {
 		const mocked = make_session();
-		const connected = await connect_session(mocked);
+		const connected = await connect_session({ mocked });
 		mocked.env.BROWSER_WEB_DENIED_HOSTS = "FIXTURE.TEST.";
 		const synced = (
 			await mocked.remote("/agent-access", {
@@ -369,7 +367,6 @@ describe("PlaywriterSession", () => {
 				generation: connected.generation,
 				agentAccess: true,
 				policyRevision: 2,
-				selectionRevision: 1,
 				agentBlockedHosts: [],
 			})
 		).reply.runtime as typeof runtime;
@@ -388,7 +385,7 @@ describe("PlaywriterSession", () => {
 		const mocked = make_session();
 		mocked.env.BROWSER_WEB_DENIED_HOSTS = " system.test, , ";
 		const socket = new NativeSocket();
-		await connect_session(mocked, socket, { ...connect_request(), agentBlockedHosts: ["user.test"] });
+		await connect_session({ mocked, socket, input: { ...connect_request(), agentBlockedHosts: ["user.test"] } });
 		expect(mocked.records.get("session")).toMatchObject({ blockedHosts: ["user.test"] });
 		for (const host of ["user.test", "system.test"]) {
 			socket.packet({
@@ -413,7 +410,7 @@ describe("PlaywriterSession", () => {
 		mocked.env.BROWSER_WEB_DENIED_HOSTS = "fixture.test";
 		const socket = new NativeSocket();
 		socket.url = "about:blank";
-		const connected = await connect_session(mocked, socket);
+		const connected = await connect_session({ mocked, socket });
 		mocked.evaluate.mockResolvedValue(SCRIPT_RESULT);
 		expect(
 			(await mocked.remote("/run", { ...command_request(connected, "blank-read"), operation: SCRIPT })).reply,
@@ -423,7 +420,7 @@ describe("PlaywriterSession", () => {
 	it("refuses a removed live version before new child work", async () => {
 		const mocked = make_session();
 		const socket = new NativeSocket();
-		const connected = await connect_session(mocked, socket);
+		const connected = await connect_session({ mocked, socket });
 		mocked.evaluate.mockResolvedValue(SCRIPT_RESULT);
 		const reply = (
 			await mocked.remote("/run", {
@@ -442,7 +439,7 @@ describe("PlaywriterSession", () => {
 
 	it("keeps exact duplicate receipts and cleanup after version removal", async () => {
 		const mocked = make_session();
-		const connected = await connect_session(mocked);
+		const connected = await connect_session({ mocked });
 		mocked.evaluate.mockResolvedValue(SCRIPT_RESULT);
 		const command = { ...command_request(connected, "version-receipt"), operation: SCRIPT };
 		expect((await mocked.remote("/run", command)).reply.status).toBe("completed");
@@ -477,7 +474,6 @@ describe("PlaywriterSession", () => {
 			...request,
 			controlRevision: 4,
 			policyRevision: 1,
-			selectionRevision: 1,
 			targetRevision: 4,
 			navRevision: 3,
 			targetId: "native-tab",
@@ -493,7 +489,7 @@ describe("PlaywriterSession", () => {
 		"returns only safe cleanup for a completed late receipt through %s",
 		async (path) => {
 			const mocked = make_session();
-			const connected = await connect_session(mocked);
+			const connected = await connect_session({ mocked });
 			mocked.evaluate.mockResolvedValue(SCRIPT_RESULT);
 			const command = { ...command_request(connected, "late-completed"), operation: SCRIPT };
 			expect((await mocked.remote("/run", command)).reply.status).toBe("completed");
@@ -517,7 +513,7 @@ describe("PlaywriterSession", () => {
 			vi.stubGlobal("Response", SocketResponse);
 			const mocked = make_session();
 			const socket = new NativeSocket();
-			const connected = await connect_session(mocked, socket);
+			const connected = await connect_session({ mocked, socket });
 			const command = { ...command_request(connected, "late-retained"), operation: SCRIPT };
 			expect((await mocked.post("/run/begin", command)).reply.execute).toBe(true);
 			const response = await mocked.session.fetch(
@@ -579,7 +575,7 @@ describe("PlaywriterSession", () => {
 
 	it("allows only a fresh trusted human Reconnect to reset the ended session", async () => {
 		const mocked = make_session();
-		const connected = await connect_session(mocked);
+		const connected = await connect_session({ mocked });
 		await mocked.remote("/disconnect", { ...SCOPE, generation: connected.generation });
 		const ended = (await mocked.remote("/status", SCOPE)).reply.runtime as typeof runtime;
 		const next = {
@@ -619,7 +615,7 @@ describe("PlaywriterSession", () => {
 				operations: limit === "operation limit" ? 119 : 0,
 				totalExpiresAt: Date.now() + 600_000,
 			};
-			const connected = await connect_session(mocked, socket, input);
+			const connected = await connect_session({ mocked, socket, input });
 			if (limit === "operation limit") {
 				mocked.evaluate.mockResolvedValue(SCRIPT_RESULT);
 				expect(
@@ -641,7 +637,6 @@ describe("PlaywriterSession", () => {
 				generation: connected.generation,
 				agentAccess: false,
 				policyRevision: connected.policyRevision + 1,
-				selectionRevision: connected.selectionRevision + 1,
 				agentBlockedHosts: ["blocked.test"],
 			});
 			if (limit === "total limit") vi.setSystemTime(input.totalExpiresAt + 1);
@@ -654,7 +649,6 @@ describe("PlaywriterSession", () => {
 				paused: true,
 				agentAccess: false,
 				policyRevision: current.policyRevision,
-				selectionRevision: current.selectionRevision,
 				controlRevision: current.controlRevision,
 				agentBlockedHosts: ["blocked.test"],
 			};
@@ -688,11 +682,15 @@ describe("PlaywriterSession", () => {
 			const mocked = make_session();
 			const socket = new NativeSocket();
 			const deadline = Date.now() + 1000;
-			const connected = await connect_session(mocked, socket, {
+			const connected = await connect_session({
+				mocked,
+				socket,
+				input: {
 				...connect_request(),
 				...(order === "total deadline before Pause"
 					? { idleExpiresAt: deadline, totalExpiresAt: deadline }
 					: { operations: 119 }),
+			},
 			});
 			const preparedPauseRevision = connected.controlRevision + 1;
 			if (order === "cleanup before Pause") {
@@ -818,7 +816,7 @@ describe("PlaywriterSession", () => {
 		"refuses a changed %s on a fresh human Reconnect before dialing",
 		async (change) => {
 			const mocked = make_session();
-			const connected = await connect_session(mocked);
+			const connected = await connect_session({ mocked });
 			await mocked.remote("/disconnect", { ...SCOPE, generation: connected.generation });
 			const current = (await mocked.remote("/status", SCOPE)).reply.runtime as typeof runtime;
 			const next = {
@@ -849,7 +847,7 @@ describe("PlaywriterSession", () => {
 
 	it("refuses an active unspent session reset and fences old receipts after human Reconnect", async () => {
 		const mocked = make_session();
-		const connected = await connect_session(mocked);
+		const connected = await connect_session({ mocked });
 		const next = { ...connect_request(), previousSessionId: "session", sessionId: "fresh", attemptId: "fresh" };
 		expect((await mocked.remote("/reconnect", next)).reply).toMatchObject({ error: { code: "busy" } });
 		const command = command_request(connected, "old-session-command");
@@ -881,7 +879,7 @@ describe("PlaywriterSession", () => {
 			vi.stubGlobal("Response", SocketResponse);
 			const mocked = make_session();
 			const socket = new NativeSocket();
-			const connected = await connect_session(mocked, socket, { ...connect_request(), operations: 119 });
+			const connected = await connect_session({ mocked, socket, input: { ...connect_request(), operations: 119 } });
 			const command = { ...command_request(connected, "last-active-command"), operation: SCRIPT };
 			expect((await mocked.post("/run/begin", command)).reply.execute).toBe(true);
 			const response = await mocked.session.fetch(
@@ -928,7 +926,6 @@ describe("PlaywriterSession", () => {
 							generation: connected.generation,
 							agentAccess: false,
 							policyRevision: connected.policyRevision + 1,
-							selectionRevision: connected.selectionRevision + 1,
 							agentBlockedHosts: [],
 						});
 			await vi.advanceTimersByTimeAsync(1);
@@ -955,7 +952,7 @@ describe("PlaywriterSession", () => {
 		vi.stubGlobal("Response", SocketResponse);
 		const mocked = make_session();
 		const socket = new NativeSocket();
-		const connected = await connect_session(mocked, socket);
+		const connected = await connect_session({ mocked, socket });
 		const command = { ...command_request(connected, "finish-pause-drain"), operation: SCRIPT };
 		expect((await mocked.post("/run/begin", command)).reply.execute).toBe(true);
 		const response = await mocked.session.fetch(
@@ -1076,7 +1073,7 @@ describe("PlaywriterSession", () => {
 		vi.stubGlobal("Response", SocketResponse);
 		const mocked = make_session();
 		const socket = new NativeSocket();
-		const connected = await connect_session(mocked, socket);
+		const connected = await connect_session({ mocked, socket });
 		const command = { ...command_request(connected, "finish-alarm-drain"), operation: SCRIPT };
 		expect((await mocked.post("/run/begin", command)).reply.execute).toBe(true);
 		const response = await mocked.session.fetch(
@@ -1124,7 +1121,7 @@ describe("PlaywriterSession", () => {
 
 	it("marks a command unknown when its deadline alarm runs before finish", async () => {
 		const mocked = make_session();
-		const connected = await connect_session(mocked, new NativeSocket());
+		const connected = await connect_session({ mocked, socket: new NativeSocket() });
 		const command = { ...command_request(connected, "alarm-before-finish"), operation: SCRIPT };
 		expect((await mocked.post("/run/begin", command)).reply.execute).toBe(true);
 
@@ -1191,7 +1188,6 @@ describe("PlaywriterSession", () => {
 					generation: 6,
 					agentAccess: false,
 					policyRevision: 2,
-					selectionRevision: 2,
 					agentBlockedHosts: ["blocked.test"],
 				})
 			).reply,
@@ -1210,7 +1206,7 @@ describe("PlaywriterSession", () => {
 		"permanently fences credential Forget before a delayed initial Connect (existing: %s)",
 		async (existing) => {
 			const mocked = make_session(existing ? undefined : new Map());
-			if (existing) await connect_session(mocked);
+			if (existing) await connect_session({ mocked });
 			vi.stubGlobal(
 				"fetch",
 				vi.fn(async () => ({ status: 101, webSocket: new NativeSocket() })),
@@ -1248,7 +1244,7 @@ describe("PlaywriterSession", () => {
 
 	it("settles old exact-generation Disconnect without closing the newer socket", async () => {
 		const mocked = make_session();
-		const connected = await connect_session(mocked);
+		const connected = await connect_session({ mocked });
 		await mocked.remote("/disconnect", { ...SCOPE, generation: connected.generation });
 		const ended = (await mocked.remote("/status", SCOPE)).reply.runtime as typeof runtime;
 		const newerSocket = new NativeSocket();
@@ -1282,7 +1278,7 @@ describe("PlaywriterSession", () => {
 		vi.stubGlobal("Response", SocketResponse);
 		const mocked = make_session();
 		const socket = new NativeSocket();
-		const connected = await connect_session(mocked, socket);
+		const connected = await connect_session({ mocked, socket });
 		const command = { ...command_request(connected, "unsettled-forget"), operation: SCRIPT };
 		expect((await mocked.post("/run/begin", command)).reply.execute).toBe(true);
 		const response = await mocked.session.fetch(
@@ -1382,7 +1378,7 @@ describe("PlaywriterSession", () => {
 			vi.stubGlobal("Response", SocketResponse);
 			const mocked = make_session();
 			const socket = new NativeSocket();
-			const connected = await connect_session(mocked, socket);
+			const connected = await connect_session({ mocked, socket });
 			const command = { ...command_request(connected, "failed-before-forget"), operation: SCRIPT };
 			expect((await mocked.post("/run/begin", command)).reply.execute).toBe(true);
 			const response = await mocked.session.fetch(
@@ -1434,12 +1430,16 @@ describe("PlaywriterSession", () => {
 				}),
 			);
 			expect(socket.inputCalls, "The retired child must never dispatch late input").toBe(calls);
-			const recovered = await connect_session(mocked, new NativeSocket(), {
+			const recovered = await connect_session({
+				mocked,
+				socket: new NativeSocket(),
+				input: {
 				...connect_request(),
 				attemptId: "fenced-recovery",
 				operations: 1,
 				idleExpiresAt: connected.idleExpiresAt,
 				totalExpiresAt: connected.totalExpiresAt,
+			},
 			});
 			expect(recovered.generation).toBe(connected.generation + 2);
 			expect(
@@ -1461,7 +1461,7 @@ describe("PlaywriterSession", () => {
 
 	it("finishes a no-command Forget after restart from its first saved fence", async () => {
 		const mocked = make_session();
-		await connect_session(mocked);
+		await connect_session({ mocked });
 		const put = mocked.put.getMockImplementation()!;
 		mocked.put.mockImplementation(async (key, value) => {
 			await put(key, structuredClone(value));
@@ -1487,7 +1487,13 @@ describe("PlaywriterSession", () => {
 });
 
 describe("PlaywriterSession scripts", () => {
-	function script_request(connected: typeof runtime, commandId: string, chatId = "chat") {
+	function script_request(args: {
+		connected: typeof runtime;
+		commandId: string;
+		chatId?: string;
+	}) {
+		const { connected, commandId, chatId = "chat" } = args;
+
 		const request = command_request(connected, commandId);
 		return {
 			...request,
@@ -1499,7 +1505,7 @@ describe("PlaywriterSession scripts", () => {
 	it("keeps script state per chat while the shared tab stays open", async () => {
 		const mocked = make_session();
 		const socket = new NativeSocket();
-		const connected = await connect_session(mocked, socket);
+		const connected = await connect_session({ mocked, socket });
 		// A script may navigate during its command. Its emitted files come back with the completed receipt.
 		mocked.evaluate.mockImplementationOnce(async () => {
 			socket.navigate();
@@ -1509,7 +1515,7 @@ describe("PlaywriterSession scripts", () => {
 			};
 		});
 		mocked.evaluate.mockResolvedValue(SCRIPT_RESULT);
-		const first = (await mocked.remote("/run", script_request(connected, "first-script"))).reply;
+		const first = (await mocked.remote("/run", script_request({ connected, commandId: "first-script" }))).reply;
 		expect(first).toMatchObject({
 			status: "completed",
 			script: {
@@ -1527,9 +1533,9 @@ describe("PlaywriterSession scripts", () => {
 		});
 
 		const current = (await mocked.remote("/status", SCOPE)).reply.runtime as typeof runtime;
-		await mocked.remote("/run", script_request(current, "second-script"));
+		await mocked.remote("/run", script_request({ connected: current, commandId: "second-script" }));
 		expect(mocked.evaluate.mock.calls.at(-1)![0]).toMatchObject({ state: '{"n":1}' });
-		await mocked.remote("/run", script_request(current, "other-chat", "other"));
+		await mocked.remote("/run", script_request({ connected: current, commandId: "other-chat", chatId: "other" }));
 		expect(mocked.evaluate.mock.calls.at(-1)![0], "Another chat must not read this chat's state").toMatchObject({
 			state: null,
 		});
@@ -1543,7 +1549,7 @@ describe("PlaywriterSession scripts", () => {
 		const mocked = make_session();
 		mocked.env.BROWSER_WEB_DENIED_HOSTS = "blocked.test";
 		const socket = new NativeSocket();
-		const connected = await connect_session(mocked, socket);
+		const connected = await connect_session({ mocked, socket });
 		mocked.evaluate.mockImplementation(async () => {
 			socket.packet({
 				method: "forwardCDPEvent",
@@ -1555,7 +1561,7 @@ describe("PlaywriterSession scripts", () => {
 			});
 			return SCRIPT_RESULT;
 		});
-		const reply = (await mocked.remote("/run", script_request(connected, "blocked-script"))).reply;
+		const reply = (await mocked.remote("/run", script_request({ connected, commandId: "blocked-script" }))).reply;
 		expect(reply).toMatchObject({ status: "refused", result: { reason: "blocked_site" } });
 		expect(reply).not.toHaveProperty("script");
 		expect(mocked.records.has("scriptState:chat")).toBe(false);
@@ -1563,14 +1569,14 @@ describe("PlaywriterSession scripts", () => {
 
 	it("keeps the connection when a script never answers", async () => {
 		const mocked = make_session();
-		const connected = await connect_session(mocked);
+		const connected = await connect_session({ mocked });
 		let started!: () => void;
 		const began = new Promise<void>((resolve) => (started = resolve));
 		mocked.evaluate.mockImplementation(() => {
 			started();
 			return new Promise(() => {});
 		});
-		const pending = mocked.remote("/run", script_request(connected, "hung-script"));
+		const pending = mocked.remote("/run", script_request({ connected, commandId: "hung-script" }));
 		await began;
 		await vi.advanceTimersByTimeAsync(20_000);
 		const reply = (await pending).reply;

@@ -18,7 +18,7 @@ vi.mock("./agent-connection", () => ({
 
 const OWNERS = { ownerId: "user_1", organizationId: "org_1", workspaceId: "ws_1" };
 const NativeResponse = Response;
-type SessionRecord = Parameters<typeof session_can_run>[0];
+type SessionRecord = Parameters<typeof session_can_run>[0]["record"];
 
 class Socket extends EventTarget {
 	readyState = 1;
@@ -77,7 +77,7 @@ function make_session(options: { web?: boolean } = {}) {
 		if (!options.web) return fileRecord;
 		// Web records have no file fields. They own page target `page-1`.
 		const copy: Record<string, unknown> = {
-			...fileRecord, mode: "web", agentAccess: true, tabs: { "tab-1": { targetId: "page-1", navGen: 1, tabGen: 1, viewport: fileRecord.viewport } }, tabId: "tab-1", viewedTabId: "tab-1", viewGen: 1, policyRevision: 0, selectionRevision: 0, profileId: "profile_1", agentBlockedHosts: [],
+			...fileRecord, mode: "web", agentAccess: true, tabs: { "tab-1": { targetId: "page-1", navGen: 1, tabGen: 1, viewport: fileRecord.viewport } }, tabId: "tab-1", viewedTabId: "tab-1", viewGen: 1, policyRevision: 0, profileId: "profile_1", agentBlockedHosts: [],
 		};
 		for (const key of ["nodeId", "sourceKind", "sourceVersion", "sourceHash", "htmlBytesTotal", "loadCount"]) delete copy[key];
 		return copy as SessionRecord;
@@ -110,7 +110,7 @@ function make_session(options: { web?: boolean } = {}) {
 	let session = new BrowserSession(state, env);
 	const post = async (path: string, body: unknown) => {
 		const current = stored.get("session") as SessionRecord;
-		const defaults = path === "/agent-access" ? { policyRevision: current.mode === "web" ? current.policyRevision + 1 : 1, selectionRevision: 0, agentBlockedHosts: [] } : path === "/run/begin" && current.mode === "web" ? { tabId: current.tabId, tabGen: current.tabs[current.tabId]!.tabGen, policyRevision: current.policyRevision, selectionRevision: current.selectionRevision } : {};
+		const defaults = path === "/agent-access" ? { policyRevision: current.mode === "web" ? current.policyRevision + 1 : 1, agentBlockedHosts: [] } : path === "/run/begin" && current.mode === "web" ? { tabId: current.tabId, tabGen: current.tabs[current.tabId]!.tabGen, policyRevision: current.policyRevision } : {};
 		const response = await session.fetch(new Request(`https://do${path}`, { method: "POST", body: JSON.stringify({ ...defaults, ...body as object }) }));
 		return await response.json() as Record<string, unknown>;
 	};

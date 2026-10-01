@@ -65,11 +65,13 @@ async function setup(args?: { integrationPolicy?: null }) {
 /**
  * Invite a new user into the owner's workspace with the given role.
  */
-async function add_member(
-	t: TestConvex,
-	owner: Awaited<ReturnType<typeof setup>>["owner"],
-	role: "member" | "viewer" = "member",
-) {
+async function add_member(args: {
+	t: TestConvex;
+	owner: Awaited<ReturnType<typeof setup>>["owner"];
+	role?: "member" | "viewer";
+}) {
+	const { t, owner, role = "member" } = args;
+
 	const user = await t.run((ctx) =>
 		test_mocks_fill_db_with.membership(ctx, { organizationName: "personal", workspaceName: "home" }),
 	);
@@ -148,16 +150,16 @@ function saved_id(result: Awaited<ReturnType<typeof save>>) {
 /**
  * Write one server the way `save` does after its probe, with no fetch and no rate limit.
  */
-async function write_server(
-	t: TestConvex,
-	member: Pick<Member, "userId" | "membershipId">,
-	args: {
-		name: string;
-		customServerId?: Id<"mcp_custom_servers">;
-		expectedDestinationFingerprint?: string;
-		keptSecretNames?: string[];
-	},
-) {
+async function write_server(args: {
+	t: TestConvex;
+	member: Pick<Member, "userId" | "membershipId">;
+	name: string;
+	customServerId?: Id<"mcp_custom_servers">;
+	expectedDestinationFingerprint?: string;
+	keptSecretNames?: string[];
+}) {
+	const { t, member } = args;
+
 	return await t.mutation(internal.mcp_custom_servers.write_server, {
 		userId: member.userId,
 		membershipId: member.membershipId,
@@ -181,7 +183,7 @@ async function server_docs(t: TestConvex) {
 describe("save", () => {
 	test("stores header values only encrypted and never returns them", async () => {
 		const { t, owner } = await setup();
-		const member = await add_member(t, owner);
+		const member = await add_member({ t, owner });
 		const literal = "LITERAL_SECRET_VALUE_1";
 		const typed = "TYPED_SECRET_VALUE_2";
 
@@ -222,7 +224,7 @@ describe("save", () => {
 
 	test("decrypts a secret only with its own server id", async () => {
 		const { t, owner } = await setup();
-		const member = await add_member(t, owner);
+		const member = await add_member({ t, owner });
 		const customServerId = saved_id(
 			await save(member, { headers: { "X-Api-Key": "${API_KEY}" }, secretValues: [{ name: "API_KEY", value: "v-1" }] }),
 		);
@@ -230,11 +232,11 @@ describe("save", () => {
 		const [secret] = (await server_docs(t)).secrets;
 
 		const decrypt = (serverId: Id<"mcp_custom_servers">) =>
-			crypto_decrypt_secret_value(
-				secret!.value,
-				plugins_mcp_custom_secret_additional_data({ customServerId: serverId, userId: member.userId, name: "API_KEY" }),
-				"MCP_SECRETS_ENCRYPTION_KEY",
-			);
+			crypto_decrypt_secret_value({
+				secret: secret!.value,
+				additionalData: plugins_mcp_custom_secret_additional_data({ customServerId: serverId, userId: member.userId, name: "API_KEY" }),
+				keyName: "MCP_SECRETS_ENCRYPTION_KEY",
+			});
 
 		expect(await decrypt(customServerId)).toBe("v-1");
 		await expect(decrypt(otherServerId)).rejects.toThrow();
@@ -242,7 +244,7 @@ describe("save", () => {
 
 	test("refuses a viewer", async () => {
 		const { t, owner } = await setup();
-		const viewer = await add_member(t, owner, "viewer");
+		const viewer = await add_member({ t, owner, role: "viewer" });
 
 		expect(await save(viewer, {})).toEqual({ _nay: { message: "You cannot use MCP servers in this workspace." } });
 		expect(await viewer.asUser.query(api.mcp_custom_servers.list, { membershipId: viewer.membershipId })).toEqual({
@@ -254,7 +256,7 @@ describe("save", () => {
 
 	test("refuses the 11th server", async () => {
 		const { t, owner } = await setup();
-		const member = await add_member(t, owner);
+		const member = await add_member({ t, owner });
 		for (let index = 0; index < 10; index++) {
 			await t.run((ctx) => test_mocks_fill_db_with.mcp_custom_server(ctx, member));
 		}
@@ -267,7 +269,7 @@ describe("save", () => {
 
 	test("an edit keeps an untouched secret and deletes a removed one", async () => {
 		const { t, owner } = await setup();
-		const member = await add_member(t, owner);
+		const member = await add_member({ t, owner });
 		const customServerId = saved_id(
 			await save(member, {
 				headers: { "X-Api-Key": "${API_KEY}", "X-Team": "${TEAM}" },
@@ -292,7 +294,7 @@ describe("save", () => {
 
 	test("a URL change deletes the sign-in and the running sign-ins of the server", async () => {
 		const { t, owner } = await setup();
-		const member = await add_member(t, owner);
+		const member = await add_member({ t, owner });
 		const customServerId = saved_id(await save(member, {}));
 		const target = { kind: "custom" as const, customServerId };
 		await t.run(async (ctx) => {
@@ -322,7 +324,7 @@ describe("save", () => {
 
 	test("a new origin needs the saved secrets typed again", async () => {
 		const { t, owner } = await setup();
-		const member = await add_member(t, owner);
+		const member = await add_member({ t, owner });
 		const customServerId = saved_id(
 			await save(member, {
 				headers: { "X-Api-Key": "${API_KEY}" },
@@ -355,7 +357,7 @@ describe("save", () => {
 
 	test("a saved secret Press cannot read works again once it is typed", async () => {
 		const { t, owner } = await setup();
-		const member = await add_member(t, owner);
+		const member = await add_member({ t, owner });
 		const headers = { "X-Api-Key": "${API_KEY}" };
 		const customServerId = saved_id(
 			await save(member, { headers, secretValues: [{ name: "API_KEY", value: "key-1" }] }),
@@ -393,7 +395,7 @@ describe("save", () => {
 
 	test("the final write checks the member and the server again", async () => {
 		const { t, owner, asOwner } = await setup();
-		const member = await add_member(t, owner);
+		const member = await add_member({ t, owner });
 		const customServerId = saved_id(
 			await save(member, {
 				headers: { "X-Api-Key": "${API_KEY}" },
@@ -415,10 +417,12 @@ describe("save", () => {
 
 		// Another save moved the server, or deleted a secret this save keeps.
 		expect(
-			await write_server(t, member, { name: "moved", customServerId, expectedDestinationFingerprint: "stale" }),
+			await write_server({ t, member, name: "moved", customServerId, expectedDestinationFingerprint: "stale" }),
 		).toEqual(changed);
 		expect(
-			await write_server(t, member, {
+			await write_server({
+				t,
+				member,
 				name: "gone",
 				customServerId,
 				expectedDestinationFingerprint: destinationFingerprint,
@@ -435,7 +439,7 @@ describe("save", () => {
 			role: "viewer",
 		});
 		const cannotUse = { _nay: { message: "You cannot use MCP servers in this workspace." } };
-		expect(await write_server(t, member, { name: "new" })).toEqual(cannotUse);
+		expect(await write_server({ t, member, name: "new" })).toEqual(cannotUse);
 		expect(await record_test(destinationFingerprint)).toEqual(cannotUse);
 
 		expect(await server_docs(t)).toEqual(before);
@@ -443,7 +447,7 @@ describe("save", () => {
 
 	test("the 11th save in a burst gets the rate limit, not the server cap", async () => {
 		const { t, owner } = await setup();
-		const member = await add_member(t, owner);
+		const member = await add_member({ t, owner });
 		vi.useFakeTimers({ toFake: ["Date"] });
 		const customServerId = saved_id(await save(member, {}));
 
@@ -460,7 +464,7 @@ describe("sign-in pin", () => {
 
 	test("save pins the sign-in server of a server that asks for sign-in", async () => {
 		const { t, owner } = await setup();
-		const member = await add_member(t, owner);
+		const member = await add_member({ t, owner });
 
 		const saved = await save(member, { url: OAUTH_URL });
 
@@ -478,7 +482,7 @@ describe("sign-in pin", () => {
 
 	test("save refuses a sign-in server that sends no `iss` unless it is trusted", async () => {
 		const { t, owner } = await setup();
-		const member = await add_member(t, owner);
+		const member = await add_member({ t, owner });
 		oauthFixtures.switches.issSupported = false;
 
 		const refused = await save(member, { url: OAUTH_URL });
@@ -494,7 +498,7 @@ describe("sign-in pin", () => {
 
 	test("save refuses a server whose sign-in settings name several sign-in servers", async () => {
 		const { t, owner } = await setup();
-		const member = await add_member(t, owner);
+		const member = await add_member({ t, owner });
 		oauthFixtures.switches.prmAuthorizationServers = [oauthFixtures.issuer(), "https://other.oauth.test"];
 
 		const refused = await save(member, { url: OAUTH_URL });
@@ -505,7 +509,7 @@ describe("sign-in pin", () => {
 
 	test("an edit of the same URL keeps the pin when the tool list works without a token", async () => {
 		const { t, owner } = await setup();
-		const member = await add_member(t, owner);
+		const member = await add_member({ t, owner });
 		const customServerId = saved_id(await save(member, { url: OAUTH_URL }));
 		const before = await t.run((ctx) => ctx.db.get("mcp_custom_servers", customServerId));
 
@@ -520,7 +524,7 @@ describe("sign-in pin", () => {
 
 	test("test_connection pins a server saved with no sign-in that now asks for one", async () => {
 		const { t, owner } = await setup();
-		const member = await add_member(t, owner);
+		const member = await add_member({ t, owner });
 		oauthFixtures.switches.serverTokenOnlyForCall = true;
 		const customServerId = saved_id(await save(member, { url: OAUTH_URL }));
 		const before = await t.run((ctx) => ctx.db.get("mcp_custom_servers", customServerId));
@@ -542,11 +546,11 @@ describe("sign-in pin", () => {
 describe("tool prefixes", () => {
 	test("slugs the name, numbers clashes, and keeps the prefix on a rename", async () => {
 		const { t, owner } = await setup();
-		const member = await add_member(t, owner);
+		const member = await add_member({ t, owner });
 
 		const ids = [];
 		for (let index = 0; index < 10; index++) {
-			const written = await write_server(t, member, { name: "Framelink MCP for Figma" });
+			const written = await write_server({ t, member, name: "Framelink MCP for Figma" });
 			if (written._nay) throw new Error(written._nay.message);
 			ids.push(written._yay.customServerId);
 		}
@@ -559,7 +563,9 @@ describe("tool prefixes", () => {
 		}
 
 		const first = (await server_docs(t)).servers[0]!;
-		const renamed = await write_server(t, member, {
+		const renamed = await write_server({
+			t,
+			member,
 			name: "Figma",
 			customServerId: ids[0],
 			expectedDestinationFingerprint: first.destinationFingerprint,
@@ -572,8 +578,8 @@ describe("tool prefixes", () => {
 describe("ownership", () => {
 	test("another member sees none of the servers and gets Not found from every door", async () => {
 		const { t, owner } = await setup();
-		const member = await add_member(t, owner);
-		const other = await add_member(t, owner);
+		const member = await add_member({ t, owner });
+		const other = await add_member({ t, owner });
 		const customServerId = saved_id(await save(member, {}));
 
 		expect(await other.asUser.query(api.mcp_custom_servers.list, { membershipId: other.membershipId })).toEqual({
@@ -603,7 +609,7 @@ describe("ownership", () => {
 
 	test("the same user gets Not found for a server of another workspace", async () => {
 		const { t, owner } = await setup();
-		const member = await add_member(t, owner);
+		const member = await add_member({ t, owner });
 		const customServerId = saved_id(await save({ ...member, membershipId: member.personalMembershipId }, {}));
 		const wireBefore = fixtures.wire.length;
 
@@ -636,7 +642,7 @@ describe("ownership", () => {
 describe("test_connection", () => {
 	test("records the outcome and clears a pause", async () => {
 		const { t, owner } = await setup();
-		const member = await add_member(t, owner);
+		const member = await add_member({ t, owner });
 		const customServerId = saved_id(await save(member, {}));
 		await t.run((ctx) =>
 			ctx.db.patch("mcp_custom_servers", customServerId, { failures: 3, unhealthyUntil: Date.now() + 60_000 }),
@@ -661,7 +667,7 @@ describe("test_connection", () => {
 describe("set_enabled", () => {
 	test("a member who lost the permission can turn a server off but not on", async () => {
 		const { t, owner, asOwner } = await setup();
-		const member = await add_member(t, owner);
+		const member = await add_member({ t, owner });
 		const customServerId = saved_id(await save(member, {}));
 		await asOwner.mutation(api.access_control.set_user_role, {
 			organizationId: owner.organizationId,
@@ -683,7 +689,7 @@ describe("set_enabled", () => {
 
 	test("uses the write bucket", async () => {
 		const { t, owner } = await setup();
-		const member = await add_member(t, owner);
+		const member = await add_member({ t, owner });
 		const customServerId = await t.run((ctx) => test_mocks_fill_db_with.mcp_custom_server(ctx, member));
 		vi.useFakeTimers({ toFake: ["Date"] });
 
@@ -710,7 +716,7 @@ describe("set_enabled", () => {
 describe("remove", () => {
 	test("deletes the server, its secrets, and its sign-ins, then drains its calls", async () => {
 		const { t, owner } = await setup();
-		const member = await add_member(t, owner);
+		const member = await add_member({ t, owner });
 		const customServerId = await t.run((ctx) =>
 			test_mocks_fill_db_with.mcp_custom_server(ctx, { ...member, secretNames: ["API_KEY"] }),
 		);
@@ -756,7 +762,7 @@ describe("remove", () => {
 describe("list", () => {
 	test("follows the organization allowlist and the destination", async () => {
 		const { t, owner } = await setup({ integrationPolicy: null });
-		const member = await add_member(t, owner);
+		const member = await add_member({ t, owner });
 		const policy_of_first = async () =>
 			(await member.asUser.query(api.mcp_custom_servers.list, { membershipId: member.membershipId })).servers[0]
 				?.policy;
@@ -802,7 +808,7 @@ describe("list", () => {
 
 	test("the personal organization allows every server", async () => {
 		const { t, owner } = await setup({ integrationPolicy: null });
-		const member = await add_member(t, owner);
+		const member = await add_member({ t, owner });
 		const personal = { ...member, membershipId: member.personalMembershipId };
 
 		saved_id(await save(personal, {}));

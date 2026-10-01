@@ -467,12 +467,12 @@ export const MainAppSidebar = memo(function MainAppSidebar(props: MainAppSidebar
 		setMainAppSidebarCollapsed((value) => !value);
 	});
 
-	AppHotkeysProvider.useHotkey(
-		"Mod+B",
-		useFn(() => {
+	AppHotkeysProvider.useHotkey({
+		hotkey: "Mod+B",
+		callback: useFn(() => {
 			setIsOpen((value) => !value);
 		}),
-	);
+	});
 
 	return (
 		<MySidebar

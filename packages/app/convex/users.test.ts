@@ -1586,11 +1586,14 @@ describe("get_anagraphic", () => {
 });
 
 describe("get_workspace_member_anagraphic", () => {
-	function users_test_identity(
-		t: ReturnType<typeof test_convex>,
-		userId: Id<"users">,
-		args: { name: string; email: string },
-	) {
+	function users_test_identity(args: {
+		t: ReturnType<typeof test_convex>;
+		userId: Id<"users">;
+		name: string;
+		email: string;
+	}) {
+		const { t, userId } = args;
+
 		return t.withIdentity({
 			issuer: "https://clerk.test",
 			subject: `clerk-${userId}`,
@@ -1661,11 +1664,15 @@ describe("get_workspace_member_anagraphic", () => {
 			userId: owner.userId,
 		};
 
-		const asMember = users_test_identity(t, member.userId, {
+		const asMember = users_test_identity({
+			t,
+			userId: member.userId,
 			name: "Member Anagraphic Member",
 			email: "member-anagraphic-member@test.local",
 		});
-		const asStranger = users_test_identity(t, stranger.userId, {
+		const asStranger = users_test_identity({
+			t,
+			userId: stranger.userId,
 			name: "Member Anagraphic Stranger",
 			email: "member-anagraphic-stranger@test.local",
 		});

@@ -68,18 +68,20 @@ async function fixture() {
 		membershipId: db.membershipId,
 		membershipLifetime: captured._yay.membershipLifetime,
 	};
-	const runId = await begin_run(t, source, "request");
+	const runId = await begin_run({ t, source, messageId: "request" });
 	return { t, db, asUser, source, runId };
 }
 
 /**
  * Send one user message the way `/api/chat` does, and return the run it starts.
  */
-async function begin_run(
-	t: ReturnType<typeof test_convex>,
-	source: FunctionArgs<typeof internal.ai_chat.thread_run_begin>["source"],
-	messageId: string,
-) {
+async function begin_run(args: {
+	t: ReturnType<typeof test_convex>;
+	source: FunctionArgs<typeof internal.ai_chat.thread_run_begin>["source"];
+	messageId: string;
+}) {
+	const { t, messageId, source} = args;
+
 	const begun = await t.mutation(internal.ai_chat.thread_run_begin, {
 		source,
 		parentId: null,
@@ -275,7 +277,7 @@ describe("ai_chat_tool_output_keep", () => {
 		expect(afterEnd.jobs).toMatchObject([{ reason: "chat_output", chatOutputObjectId: kept.ref!.outputId }]);
 
 		// An ended run saves no more steps. A later run that names the old ref keeps only its preview.
-		const laterRunId = await begin_run(f.t, f.source, "later-request");
+		const laterRunId = await begin_run({ t: f.t, source: f.source, messageId: "later-request" });
 		expect(await save_reply(f, { runId: laterRunId, id: "late", output: kept.output, ref: kept.ref! })).toEqual({
 			saved: true,
 		});

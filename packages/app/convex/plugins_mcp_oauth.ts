@@ -109,11 +109,11 @@ async function decrypt_client(clientDoc: Doc<"plugins_mcp_oauth_clients">) {
 	const clientSecret =
 		clientDoc.clientSecret === null
 			? null
-			: await crypto_decrypt_secret_value(
-					clientDoc.clientSecret,
-					client_additional_data(clientDoc.issuer, clientDoc.clientId),
-					"MCP_SECRETS_ENCRYPTION_KEY",
-				).catch(() => undefined);
+			: await crypto_decrypt_secret_value({
+				secret: clientDoc.clientSecret,
+				additionalData: client_additional_data(clientDoc.issuer, clientDoc.clientId),
+				keyName: "MCP_SECRETS_ENCRYPTION_KEY",
+			}).catch(() => undefined);
 	if (clientSecret === undefined) {
 		return null;
 	}
@@ -156,7 +156,7 @@ async function encrypt_grant_tokens(
 ) {
 	const additionalData = plugins_mcp_grant_additional_data(grant);
 	const encrypt = async (value: string) => ({
-		...(await crypto_encrypt_secret_value(value, additionalData, "MCP_SECRETS_ENCRYPTION_KEY")),
+		...(await crypto_encrypt_secret_value({ value, additionalData, keyName: "MCP_SECRETS_ENCRYPTION_KEY" })),
 		keyId: "v1" as const,
 	});
 	return {
@@ -782,11 +782,11 @@ export const insert_pending = internalMutation({
 					args.newClient.clientSecret === null
 						? null
 						: {
-								...(await crypto_encrypt_secret_value(
-									args.newClient.clientSecret,
-									client_additional_data(args.issuer, args.clientId),
-									"MCP_SECRETS_ENCRYPTION_KEY",
-								)),
+								...(await crypto_encrypt_secret_value({
+									value: args.newClient.clientSecret,
+									additionalData: client_additional_data(args.issuer, args.clientId),
+									keyName: "MCP_SECRETS_ENCRYPTION_KEY",
+								})),
 								keyId: "v1",
 							},
 				clientSecretExpiresAt: args.newClient.clientSecretExpiresAt,
@@ -794,11 +794,11 @@ export const insert_pending = internalMutation({
 			});
 		}
 
-		const codeVerifier = await crypto_encrypt_secret_value(
-			args.codeVerifier,
-			`pending:${args.stateHash}`,
-			"MCP_SECRETS_ENCRYPTION_KEY",
-		);
+		const codeVerifier = await crypto_encrypt_secret_value({
+			value: args.codeVerifier,
+			additionalData: `pending:${args.stateHash}`,
+			keyName: "MCP_SECRETS_ENCRYPTION_KEY",
+		});
 		await ctx.db.insert("plugins_mcp_oauth_pending", {
 			stateHash: args.stateHash,
 			organizationId: membership!.organizationId,
@@ -885,11 +885,11 @@ export const finish = action({
 				return Result({ _nay: { message: "The sign-in server sent no code. Connect again." } });
 			}
 
-			const codeVerifier = await crypto_decrypt_secret_value(
-				pending.codeVerifier,
-				`pending:${pending.stateHash}`,
-				"MCP_SECRETS_ENCRYPTION_KEY",
-			).catch(() => null);
+			const codeVerifier = await crypto_decrypt_secret_value({
+				secret: pending.codeVerifier,
+				additionalData: `pending:${pending.stateHash}`,
+				keyName: "MCP_SECRETS_ENCRYPTION_KEY",
+			}).catch(() => null);
 			const client = await load_client(pending, clientDoc);
 			if (codeVerifier === null || client === null) {
 				return Result({ _nay: { message: EXPIRED_MESSAGE } });
@@ -1359,11 +1359,11 @@ export async function plugins_mcp_oauth_get_access_token(
 		const refreshed = args.refusedGrant !== null && !wasRefused;
 		const needsRefresh = wasRefused || (grant.expiresAt !== null && grant.expiresAt - now < REFRESH_BEFORE_MS);
 		if (!needsRefresh) {
-			const accessToken = await crypto_decrypt_secret_value(
-				grant.accessToken,
-				grant.additionalData,
-				"MCP_SECRETS_ENCRYPTION_KEY",
-			).catch(() => null);
+			const accessToken = await crypto_decrypt_secret_value({
+				secret: grant.accessToken,
+				additionalData: grant.additionalData,
+				keyName: "MCP_SECRETS_ENCRYPTION_KEY",
+			}).catch(() => null);
 			// A token Press cannot read (a changed key) is as good as gone.
 			if (accessToken === null) {
 				await ctx.runMutation(internal.plugins_mcp_oauth.mark_refused, {
@@ -1400,11 +1400,11 @@ export async function plugins_mcp_oauth_get_access_token(
 		const refreshToken =
 			lease.grant.refreshToken === null
 				? null
-				: await crypto_decrypt_secret_value(
-						lease.grant.refreshToken,
-						grant.additionalData,
-						"MCP_SECRETS_ENCRYPTION_KEY",
-					).catch(() => null);
+				: await crypto_decrypt_secret_value({
+					secret: lease.grant.refreshToken,
+					additionalData: grant.additionalData,
+					keyName: "MCP_SECRETS_ENCRYPTION_KEY",
+				}).catch(() => null);
 		const client = await load_client(lease.grant, lease.clientDoc);
 		// Never assume a refresh token exists. Without one, or without the client, the member
 		// must connect again.
@@ -1523,11 +1523,11 @@ export const revoke_one = internalAction({
 		}
 
 		const { revocation, clientDoc } = found;
-		const token = await crypto_decrypt_secret_value(
-			revocation.token,
-			revocation.additionalData,
-			"MCP_SECRETS_ENCRYPTION_KEY",
-		).catch(() => null);
+		const token = await crypto_decrypt_secret_value({
+			secret: revocation.token,
+			additionalData: revocation.additionalData,
+			keyName: "MCP_SECRETS_ENCRYPTION_KEY",
+		}).catch(() => null);
 		const client = await load_client(revocation, clientDoc);
 		// `mcp_oauth_revoke` logs its own failures, without the token.
 		if (token !== null && client !== null) {

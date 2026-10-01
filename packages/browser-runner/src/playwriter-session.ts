@@ -361,7 +361,6 @@ export class PlaywriterSession {
 			request.generation === runtime.generation &&
 			request.controlRevision === runtime.controlRevision &&
 			request.policyRevision === runtime.policyRevision &&
-			request.selectionRevision === runtime.selectionRevision &&
 			request.targetRevision === runtime.targetRevision &&
 			// A script owns every navigation during its command, so the nav revision is not checked. The
 			// DO cannot tell an agent navigation from a human one, and the target check below still stops
@@ -438,7 +437,6 @@ export class PlaywriterSession {
 				input.expectedTargetId !== previous.runtime.confirmedTargetId ||
 				input.controlRevision < previous.runtime.controlRevision ||
 				input.policyRevision < previous.runtime.policyRevision ||
-				input.selectionRevision < previous.runtime.selectionRevision ||
 				(input.controlRevision === previous.runtime.controlRevision && input.paused !== previous.humanPaused) ||
 				(input.policyRevision === previous.runtime.policyRevision && input.agentAccess !== previous.runtime.agentAccess)
 			)
@@ -456,8 +454,7 @@ export class PlaywriterSession {
 				input.operations < this.saved.runtime.operations ||
 				input.totalExpiresAt > this.saved.runtime.totalExpiresAt ||
 				input.controlRevision < this.saved.runtime.controlRevision ||
-				input.policyRevision < this.saved.runtime.policyRevision ||
-				input.selectionRevision < this.saved.runtime.selectionRevision)
+				input.policyRevision < this.saved.runtime.policyRevision)
 		)
 			return error("recovery_changed");
 		this.dialAttempts = this.dialAttempts.filter((at) => now - at < 30_000);
@@ -475,7 +472,6 @@ export class PlaywriterSession {
 			const previous = this.saved!;
 			const controlRevision = previous.runtime.controlRevision;
 			const policyRevision = previous.runtime.policyRevision;
-			const selectionRevision = previous.runtime.selectionRevision;
 			this.connectAttempt = input.attemptId;
 			const safe = await this.retire_command();
 			if (
@@ -486,11 +482,7 @@ export class PlaywriterSession {
 				return error("canceled");
 			this.connectAttempt = null;
 			if (!safe) return error("cleanup_unknown");
-			if (
-				previous.runtime.controlRevision !== controlRevision ||
-				previous.runtime.policyRevision !== policyRevision ||
-				previous.runtime.selectionRevision !== selectionRevision
-			)
+			if (previous.runtime.controlRevision !== controlRevision || previous.runtime.policyRevision !== policyRevision)
 				return error("recovery_changed");
 			this.receipts.clear();
 		}
@@ -516,7 +508,6 @@ export class PlaywriterSession {
 				confirmedTargetId: input.expectedTargetId,
 				controlRevision: input.controlRevision,
 				policyRevision: input.policyRevision,
-				selectionRevision: input.selectionRevision,
 				agentAccess: input.agentAccess,
 				operations: input.operations,
 				idleExpiresAt: input.idleExpiresAt,
@@ -912,22 +903,16 @@ export class PlaywriterSession {
 		if (url.pathname === "/agent-access") {
 			const parsed = playwriter_browser_access_schema.safeParse(input);
 			if (!parsed.success) return error("invalid_body", 400);
-			if (
-				parsed.data.generation !== runtime.generation ||
-				parsed.data.policyRevision < runtime.policyRevision ||
-				parsed.data.selectionRevision < runtime.selectionRevision
-			)
+			if (parsed.data.generation !== runtime.generation || parsed.data.policyRevision < runtime.policyRevision)
 				return error("stale_policy");
 			if (
 				runtime.policyRevision === parsed.data.policyRevision &&
-				runtime.selectionRevision === parsed.data.selectionRevision &&
 				runtime.agentAccess === parsed.data.agentAccess &&
 				JSON.stringify(this.saved.blockedHosts) === JSON.stringify(parsed.data.agentBlockedHosts)
 			)
 				return this.response();
 			runtime.agentAccess = parsed.data.agentAccess;
 			runtime.policyRevision = parsed.data.policyRevision;
-			runtime.selectionRevision = parsed.data.selectionRevision;
 			this.saved.blockedHosts = parsed.data.agentBlockedHosts;
 			await this.retire_command();
 			await this.persist();
@@ -988,7 +973,6 @@ export class PlaywriterSession {
 					command.targetId,
 					command.controlRevision,
 					command.policyRevision,
-					command.selectionRevision,
 					command.targetRevision,
 					command.navRevision,
 				]),
@@ -1045,7 +1029,6 @@ export class PlaywriterSession {
 				command.targetId !== runtime.confirmedTargetId ||
 				command.controlRevision !== runtime.controlRevision ||
 				command.policyRevision !== runtime.policyRevision ||
-				command.selectionRevision !== runtime.selectionRevision ||
 				command.targetRevision !== runtime.targetRevision ||
 				command.navRevision !== runtime.navRevision
 			)
@@ -1084,7 +1067,6 @@ export class PlaywriterSession {
 							generation: runtime.generation,
 							controlRevision: runtime.controlRevision,
 							policyRevision: runtime.policyRevision,
-							selectionRevision: runtime.selectionRevision,
 							confirmedTargetId: runtime.confirmedTargetId,
 							targetRevision: runtime.targetRevision,
 							navRevision: runtime.navRevision,
@@ -1100,7 +1082,6 @@ export class PlaywriterSession {
 				runtime.confirmedTargetId === command.request.targetId &&
 				runtime.controlRevision === command.request.controlRevision &&
 				runtime.policyRevision === command.request.policyRevision &&
-				runtime.selectionRevision === command.request.selectionRevision &&
 				runtime.targetRevision === command.request.targetRevision &&
 				this.target_allowed();
 			// A script that saw a blocked site, or ends on one, returns nothing. This holds even when it
@@ -1192,7 +1173,13 @@ export class PlaywriterConnectionGateway extends WorkerEntrypoint<RemoteEnv, Pla
 }
 
 // Called only after the main runner's shared-secret check.
-export async function handle_playwriter_request(request: Request, env: RemoteEnv, ctx: Context | undefined) {
+export async function handle_playwriter_request(args: {
+	request: Request;
+	env: RemoteEnv;
+	ctx: Context | undefined;
+}) {
+	const { request, env, ctx } = args;
+
 	const path = new URL(request.url).pathname.replace("/internal/playwriter", "");
 	let input: unknown;
 	try {

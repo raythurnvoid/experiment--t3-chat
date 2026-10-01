@@ -161,7 +161,12 @@ function parse_args(args: string[]) {
 		paths.push(arg);
 	}
 
-	const limit = bash_parse_limit("ls", limitValue, bash_LISTING_DEFAULT_LIMIT, bash_LISTING_MAX_LIMIT);
+	const limit = bash_parse_limit({
+		command: "ls",
+		value: limitValue,
+		defaultLimit: bash_LISTING_DEFAULT_LIMIT,
+		maxLimit: bash_LISTING_MAX_LIMIT,
+	});
 	if (limit._nay) {
 		return limit;
 	}
@@ -416,7 +421,7 @@ export function bash_ls_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 										? []
 										: [
 												{
-													path: bash_external_mounts_fan_out_db_files_path(mount, mount.fs.dbFilesRootPath, basePath),
+													path: bash_external_mounts_fan_out_db_files_path({ mount, storedPath: mount.fs.dbFilesRootPath, basePath }),
 													kind: "folder" as const,
 													updatedAt: 0,
 												},
@@ -438,7 +443,7 @@ export function bash_ls_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 						return {
 							items: result.page.map((item) => ({
 								...item,
-								path: bash_external_mounts_fan_out_db_files_path(mount, item.path, basePath),
+								path: bash_external_mounts_fan_out_db_files_path({ mount, storedPath: item.path, basePath }),
 							})),
 							continueCursor: result.continueCursor,
 							isDone: result.isDone,

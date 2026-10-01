@@ -275,7 +275,7 @@ describe("files_pending_nodes_db_get_ancestry", () => {
 		const child = await t.run(async (ctx) =>
 			create_folder(ctx, { ...db, name: "child", parent: { kind: "private", id: parent.node._id } }),
 		);
-		await t.run(async (ctx) => files_pending_nodes_db_fence_discard(ctx, parent.node));
+		await t.run(async (ctx) => files_pending_nodes_db_fence_discard({ ctx, node: parent.node }));
 		const refused = await t.run(async (ctx) =>
 			files_pending_nodes_db_get_ancestry(ctx, { ...db, privateNodeId: child.node._id }),
 		);

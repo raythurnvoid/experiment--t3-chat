@@ -115,16 +115,16 @@ describe("agent file write source", () => {
 			}),
 		).toEqual({ _yay: null });
 		const result = await f.t.action((ctx) =>
-			ai_chat_write_file_outputs(
+			ai_chat_write_file_outputs({
 				ctx,
-				f.agentSource,
-				(["current", "personal"] as const).map((workspace) => ({
+				agentSource: f.agentSource,
+				files: (["current", "personal"] as const).map((workspace) => ({
 					workspace,
 					path: "/output.bin",
 					bytes: new Uint8Array([1, 2, 3]),
 				})),
-				{ title: "Code files", requestId: "two-destinations", modeId: "agent" },
-			),
+				options: { title: "Code files", requestId: "two-destinations", modeId: "agent" },
+			}),
 		);
 		expect(result.metadata.status).toBe("succeeded");
 		expect(result.metadata.files).toHaveLength(2);
@@ -170,18 +170,18 @@ describe("agent file write source", () => {
 		await f.t.run((ctx) => test_mocks_fill_db_with.plan(ctx, { userId: f.home.userId, plan: "Free" }));
 		const write = () =>
 			f.t.action((ctx) =>
-				ai_chat_write_file_outputs(
+				ai_chat_write_file_outputs({
 					ctx,
-					f.agentSource,
-					[
+					agentSource: f.agentSource,
+					files: [
 						{
 							workspace: "personal",
 							path: "/paid-output.bin",
 							bytes: new Uint8Array([1, 2, 3]),
 						},
 					],
-					{ title: "Home output", requestId: "home-payer", modeId: "agent" },
-				),
+					options: { title: "Home output", requestId: "home-payer", modeId: "agent" },
+				}),
 			);
 		expect((await write()).metadata.status).toBe("errored");
 		expect(await f.t.run((ctx) => ctx.db.query("files_r2_assets").collect())).toEqual([]);
@@ -278,8 +278,8 @@ describe("agent file write source", () => {
 		const f = await fixture();
 		let prepared = false;
 		const result = await f.t.action((ctx) =>
-			ai_chat_write_file_outputs(
-				{
+			ai_chat_write_file_outputs({
+				ctx: {
 					...ctx,
 					runMutation: async (ref, ...args) => {
 						const reply = await ctx.runMutation(ref, ...args);
@@ -299,16 +299,16 @@ describe("agent file write source", () => {
 						return reply;
 					},
 				},
-				f.agentSource,
-				[
+				agentSource: f.agentSource,
+				files: [
 					{
 						workspace: "personal",
 						path: kind === "text" ? "/output.txt" : "/output.bin",
 						bytes: new TextEncoder().encode("private"),
 					},
 				],
-				{ title: "Code files", requestId: "revoked-output", modeId: "agent" },
-			),
+				options: { title: "Code files", requestId: "revoked-output", modeId: "agent" },
+			}),
 		);
 		expect(prepared).toBe(true);
 		expect(result.metadata).toMatchObject({ status: "errored", files: [] });
@@ -637,7 +637,8 @@ describe("agent file write source", () => {
 			const bytes = files_u8_to_array_buffer(encodeStateAsUpdate(doc));
 			doc.destroy();
 			const staged = await f.t.action((ctx) =>
-				files_pending_updates_action_stage_private_state_family(ctx, {
+				files_pending_updates_action_stage_private_state_family({
+					ctx,
 					...f.scope,
 					operationBatchId,
 					base: bytes,

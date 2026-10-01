@@ -24,7 +24,7 @@ export function plugins_invoke_http_routes(router: { route: HttpRouter["route"] 
 							method,
 							handler: httpAction(async (ctx, request) => {
 								const { plugins_invoke_http_invoke } = await import("./plugins_invoke.ts");
-								const result = await plugins_invoke_http_invoke(ctx, request, path);
+								const result = await plugins_invoke_http_invoke({ ctx, request, path });
 								if (result.status === 200) return new Response(result.body, result);
 								return Response.json(result.body, result);
 							}),

@@ -193,7 +193,13 @@ export function mcp_oauth_fixtures_create() {
 		return auth.secret === client.secret && auth.method === client.authMethod;
 	};
 
-	const issue_tokens = (resource: string | null, scope: string, grant: string) => {
+	const issue_tokens = (args: {
+		resource: string | null;
+		scope: string;
+		grant: string;
+	}) => {
+		const { scope, grant, resource} = args;
+
 		const accessToken = next("access");
 		accessTokens.set(accessToken, { resource, scope, grant });
 		const body: Record<string, unknown> = { access_token: accessToken, token_type: switches.tokenType };
@@ -207,13 +213,27 @@ export function mcp_oauth_fixtures_create() {
 		return Response.json(body);
 	};
 
-	const token_error = (error: string, status = 400, echo = "") =>
-		Response.json(
+	const token_error = (args: {
+		error: string;
+		status?: number;
+		echo?: string;
+	}) =>
+		{
+		const { status = 400, echo = "", error} = args;
+
+		return Response.json(
 			{ error, error_description: switches.echoSecretsInErrors ? `<b>bad</b> ${echo}` : "refused" },
 			{ status },
 		);
+	};
 
-	const handle_as = async (request: Request, url: URL, body: string) => {
+	const handle_as = async (args: {
+		request: Request;
+		url: URL;
+		body: string;
+	}) => {
+		const { request, url, body } = args;
+
 		const path = url.pathname;
 		const metadataPaths =
 			switches.asMetadataLocation === "oauth"
@@ -260,7 +280,7 @@ export function mcp_oauth_fixtures_create() {
 			counts.token++;
 			const params = new URLSearchParams(body);
 			const auth = client_from_request(request.headers, params);
-			if (!check_client(auth)) return token_error("invalid_client", 401);
+			if (!check_client(auth)) return token_error({ error: "invalid_client", status: 401 });
 
 			if (params.get("grant_type") === "authorization_code") {
 				const code = params.get("code") ?? "";
@@ -273,9 +293,13 @@ export function mcp_oauth_fixtures_create() {
 					recorded.resource !== params.get("resource") ||
 					recorded.challenge !== (await s256(params.get("code_verifier") ?? ""))
 				) {
-					return token_error("invalid_grant", 400, code);
+					return token_error({ error: "invalid_grant", status: 400, echo: code });
 				}
-				return issue_tokens(recorded.resource, switches.grantedScope ?? recorded.scope, next("grant"));
+				return issue_tokens({
+					resource: recorded.resource,
+					scope: switches.grantedScope ?? recorded.scope,
+					grant: next("grant"),
+				});
 			}
 
 			if (params.get("grant_type") === "refresh_token") {
@@ -283,19 +307,19 @@ export function mcp_oauth_fixtures_create() {
 				const refreshToken = params.get("refresh_token") ?? "";
 				const recorded = refreshTokens.get(refreshToken);
 				if (switches.refreshInvalidGrant || !recorded || deadGrants.has(recorded.grant)) {
-					return token_error("invalid_grant", 400, refreshToken);
+					return token_error({ error: "invalid_grant", status: 400, echo: refreshToken });
 				}
 				// Rotation: a reused refresh token kills the whole grant.
 				if (recorded.used) {
 					deadGrants.add(recorded.grant);
-					return token_error("invalid_grant", 400, refreshToken);
+					return token_error({ error: "invalid_grant", status: 400, echo: refreshToken });
 				}
 				recorded.used = true;
-				if (params.get("resource") !== recorded.resource) return token_error("invalid_target");
-				return issue_tokens(recorded.resource, recorded.scope, recorded.grant);
+				if (params.get("resource") !== recorded.resource) return token_error({ error: "invalid_target" });
+				return issue_tokens({ resource: recorded.resource, scope: recorded.scope, grant: recorded.grant });
 			}
 
-			return token_error("unsupported_grant_type");
+			return token_error({ error: "unsupported_grant_type" });
 		}
 
 		if (request.method === "POST" && path === "/revoke") {
@@ -307,7 +331,14 @@ export function mcp_oauth_fixtures_create() {
 		return new Response("not found", { status: 404 });
 	};
 
-	const handle_server = async (name: ServerName, request: Request, url: URL, body: string) => {
+	const handle_server = async (args: {
+		name: ServerName;
+		request: Request;
+		url: URL;
+		body: string;
+	}) => {
+		const { name, request, url, body } = args;
+
 		const origin = `https://${name}.oauth.test`;
 		const pathAware = "/.well-known/oauth-protected-resource/mcp";
 		const root = "/.well-known/oauth-protected-resource";
@@ -359,9 +390,9 @@ export function mcp_oauth_fixtures_create() {
 		const body = request.method === "POST" ? await request.clone().text() : "";
 		wire.push({ host: url.host, path: url.pathname, method: request.method, headers: request.headers, body });
 
-		if (url.origin === AS_ORIGIN) return await handle_as(request, url, body);
-		if (url.host === "mcp-a.oauth.test") return await handle_server("mcp-a", request, url, body);
-		if (url.host === "mcp-b.oauth.test") return await handle_server("mcp-b", request, url, body);
+		if (url.origin === AS_ORIGIN) return await handle_as({ request, url, body });
+		if (url.host === "mcp-a.oauth.test") return await handle_server({ name: "mcp-a", request, url, body });
+		if (url.host === "mcp-b.oauth.test") return await handle_server({ name: "mcp-b", request, url, body });
 		throw new TypeError(`fixture: no route for ${url.host}`);
 	};
 

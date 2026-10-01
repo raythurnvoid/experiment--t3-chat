@@ -21,9 +21,9 @@ const { mentionTreeNodes, treeNodesMock } = vi.hoisted(() => {
 	];
 	return {
 		mentionTreeNodes,
-		treeNodesMock: vi.fn(
-			(_query: unknown, _args: unknown, _options: unknown): typeof mentionTreeNodes | undefined => mentionTreeNodes,
-		),
+		treeNodesMock: vi.fn((_query: unknown, _args: unknown, _options: unknown): typeof mentionTreeNodes | undefined => {
+			return mentionTreeNodes;
+		}),
 	};
 });
 

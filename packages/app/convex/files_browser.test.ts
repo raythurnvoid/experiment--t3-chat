@@ -36,7 +36,11 @@ const model = vi.hoisted(() => ({ streamText: vi.fn() }));
 const browserActionGate = vi.hoisted(() => ({
 	call: null as
 		| null
-		| ((kind: "query" | "mutation", name: string, args: unknown, phase: "before" | "after") => Promise<void>),
+		| ((args: {
+				operation: "query" | "mutation";
+				name: string;
+				phase: "before" | "after";
+		  } & Record<string, unknown>) => Promise<void>),
 }));
 vi.mock("./_generated/server.js", async (importOriginal) => {
 	const original = await importOriginal<typeof import("./_generated/server.js")>();
@@ -50,14 +54,29 @@ vi.mock("./_generated/server.js", async (importOriginal) => {
 					const runQuery = ctx.runQuery.bind(ctx);
 					const runMutation = ctx.runMutation.bind(ctx);
 					ctx.runQuery = async (ref, callArgs) => {
-						await browserActionGate.call?.("query", getFunctionName(ref), callArgs, "before");
+						await browserActionGate.call?.({
+							operation: "query",
+							name: getFunctionName(ref),
+							phase: "before",
+							...(callArgs as Record<string, unknown>),
+						});
 						const result = await runQuery(ref, callArgs);
-						await browserActionGate.call?.("query", getFunctionName(ref), callArgs, "after");
+						await browserActionGate.call?.({
+							operation: "query",
+							name: getFunctionName(ref),
+							phase: "after",
+							...(callArgs as Record<string, unknown>),
+						});
 						return result;
 					};
 					ctx.runMutation = async (ref, callArgs) => {
 						const result = await runMutation(ref, callArgs);
-						await browserActionGate.call?.("mutation", getFunctionName(ref), callArgs, "after");
+						await browserActionGate.call?.({
+							operation: "mutation",
+							name: getFunctionName(ref),
+							phase: "after",
+							...(callArgs as Record<string, unknown>),
+						});
 						return result;
 					};
 					return definition.handler(ctx, ...args);
@@ -296,11 +315,13 @@ function during_next_runner_open(during: () => Promise<void>, reply: unknown) {
 	};
 }
 
-async function start_saved_session(
-	t: ReturnType<typeof test_convex>,
-	fixture: BrowserFixture,
-	overrides: Record<string, unknown> = {},
-) {
+async function start_saved_session(args: {
+	t: ReturnType<typeof test_convex>;
+	fixture: BrowserFixture;
+	overrides?: Record<string, unknown>;
+}) {
+	const { t, fixture, overrides = {} } = args;
+
 	runnerQueue.push(runner_open_session({ nodeId: fixture.nodeId }));
 	const asUser = authed(t, fixture.userId);
 	return await asUser.action(api.files_browser.start_browser, {
@@ -327,7 +348,7 @@ async function sha256_hex(text: string) {
  */
 async function seed_browser_file_scope(t: ReturnType<typeof test_convex>) {
 	const fixture = await seed_html_file(t);
-	const started = await start_saved_session(t, fixture);
+	const started = await start_saved_session({ t, fixture });
 	if (started._nay) throw new Error(started._nay.message);
 
 	const session = await t.run((ctx) => ctx.db.get("files_browser_sessions", started._yay.sessionId));
@@ -395,11 +416,13 @@ const browserFile = {
 	content: { kind: "stored" as const },
 };
 
-async function prepare_browser_file(
-	t: ReturnType<typeof test_convex>,
-	scope: Awaited<ReturnType<typeof seed_browser_file_scope>>,
-	changes: Partial<typeof browserFile> = {},
-) {
+async function prepare_browser_file(args: {
+	t: ReturnType<typeof test_convex>;
+	scope: Awaited<ReturnType<typeof seed_browser_file_scope>>;
+	changes?: Partial<typeof browserFile>;
+}) {
+	const { t, scope, changes = {} } = args;
+
 	const prepared = await t.mutation(internal.files_browser.prepare_file_output, {
 		...scope,
 		...browserFile,
@@ -414,17 +437,21 @@ describe("browser file outputs", () => {
 	test("creates generic files with exact parent review and replays after Save", async () => {
 		const t = test_convex();
 		const scope = await seed_browser_file_scope(t);
-		const first = await prepare_browser_file(t, scope);
+		const first = await prepare_browser_file({ t, scope });
 		expect(
 			(await t.run((ctx) => ctx.db.query("files_pending_nodes").collect())).filter((node) => node.state === "active"),
 		).toEqual([]);
 		const finalArgs = { ...scope, receiptId: first.receiptId, attemptId: browserFile.attemptId };
 		const finalized = await t.mutation(internal.files_browser.finalize_file_output, finalArgs);
 		if (finalized._nay) throw new Error(finalized._nay.message);
-		const second = await prepare_browser_file(t, scope, {
+		const second = await prepare_browser_file({
+			t,
+			scope,
+			changes: {
 			requestId: "file-output-2",
 			size: 0,
 			contentType: "application/x-custom",
+		},
 		});
 		const secondResult = await t.mutation(internal.files_browser.finalize_file_output, {
 			...scope,
@@ -509,7 +536,7 @@ describe("browser file outputs", () => {
 			const quotaId = await quotas_db_ensure(ctx, { ...scope, quotaName: "files_private_nodes", now: Date.now() });
 			await ctx.db.patch("quotas", quotaId, { maxCount: 2 });
 		});
-		const first = await prepare_browser_file(t, scope);
+		const first = await prepare_browser_file({ t, scope });
 		const finalized = await t.mutation(internal.files_browser.finalize_file_output, {
 			...scope,
 			receiptId: first.receiptId,
@@ -536,7 +563,7 @@ describe("browser file outputs", () => {
 		async (change) => {
 			const t = test_convex();
 			const scope = await seed_browser_file_scope(t);
-			const prepared = await prepare_browser_file(t, scope);
+			const prepared = await prepare_browser_file({ t, scope });
 			if (change === "control")
 				await t.run((ctx) =>
 					ctx.db.patch("files_browser_sessions", scope.sessionId, {
@@ -639,7 +666,7 @@ describe("browser file outputs", () => {
 				expiresAt: Date.now() + 4 * 60 * 60 * 1000,
 			}),
 		);
-		const prepared = await prepare_browser_file(t, scope);
+		const prepared = await prepare_browser_file({ t, scope });
 		const finalized = await t.mutation(internal.files_browser.finalize_file_output, {
 			...scope,
 			receiptId: prepared.receiptId,
@@ -652,7 +679,7 @@ describe("browser file outputs", () => {
 	test("reads across same-tenant threads and refuses cross-tenant reads and discarded replay", async () => {
 		const t = test_convex();
 		const scope = await seed_browser_file_scope(t);
-		const prepared = await prepare_browser_file(t, scope);
+		const prepared = await prepare_browser_file({ t, scope });
 		const finalArgs = { ...scope, receiptId: prepared.receiptId, attemptId: browserFile.attemptId };
 		const finalized = await t.mutation(internal.files_browser.finalize_file_output, finalArgs);
 		if (finalized._nay) throw new Error(finalized._nay.message);
@@ -697,7 +724,7 @@ describe("browser file outputs", () => {
 			const quotaId = await quotas_db_ensure(ctx, { ...scope, quotaName: "files_private_user_bytes", now: Date.now() });
 			await ctx.db.patch("quotas", quotaId, { maxCount: 8 });
 		});
-		const first = await prepare_browser_file(t, scope);
+		const first = await prepare_browser_file({ t, scope });
 		await expect(
 			t.mutation(internal.files_browser.prepare_file_output, {
 				...scope,
@@ -870,7 +897,7 @@ describe("get_file_read_source", () => {
 		const t = test_convex();
 		const scope = await seed_browser_file_scope(t);
 		const path = "/reports/shared.bin";
-		const prepared = await prepare_browser_file(t, scope, { path });
+		const prepared = await prepare_browser_file({ t, scope, changes: { path } });
 		const finalized = await t.mutation(internal.files_browser.finalize_file_output, {
 			...scope,
 			receiptId: prepared.receiptId,
@@ -1010,7 +1037,7 @@ describe("get_file_read_source", () => {
 		const t = test_convex();
 		const scope = await seed_browser_file_scope(t);
 		const path = "/reports/expired.bin";
-		const prepared = await prepare_browser_file(t, scope, { path });
+		const prepared = await prepare_browser_file({ t, scope, changes: { path } });
 		const finalized = await t.mutation(internal.files_browser.finalize_file_output, {
 			...scope,
 			receiptId: prepared.receiptId,
@@ -1052,7 +1079,7 @@ describe("start_browser", () => {
 	test.each(["/page.html", "/other.html"])("replaces an expired runner before starting %s", async (path) => {
 		const t = test_convex();
 		const fixture = await seed_html_file(t);
-		const first = await start_saved_session(t, fixture);
+		const first = await start_saved_session({ t, fixture });
 		const nodeId =
 			path === fixture.path
 				? fixture.nodeId
@@ -1062,7 +1089,7 @@ describe("start_browser", () => {
 						textContent: HTML_TEXT,
 					});
 		runnerQueue.push({ ok: true, alive: false, closing: false, usage: null, profileStored: false });
-		const next = await start_saved_session(t, { ...fixture, nodeId, path });
+		const next = await start_saved_session({ t, fixture: { ...fixture, nodeId, path } });
 		expect(next._nay).toBeUndefined();
 		expect(next._yay?.sessionId).not.toBe(first._yay?.sessionId);
 		expect((await t.run((ctx) => ctx.db.get("files_browser_sessions", first._yay!.sessionId)))?.control).toBe("closed");
@@ -1072,10 +1099,10 @@ describe("start_browser", () => {
 	test("keeps a live runner when only the mirrored idle deadline is old", async () => {
 		const t = test_convex();
 		const fixture = await seed_html_file(t);
-		const first = await start_saved_session(t, fixture);
+		const first = await start_saved_session({ t, fixture });
 		await t.run((ctx) => ctx.db.patch("files_browser_sessions", first._yay!.sessionId, { idleUntil: Date.now() - 1 }));
 		runnerQueue.push({ ...runner_open_session({ nodeId: fixture.nodeId }), alive: true, profileStored: false });
-		const next = await start_saved_session(t, fixture);
+		const next = await start_saved_session({ t, fixture });
 		expect(next._yay?.sessionId).toBe(first._yay?.sessionId);
 		expect(runnerCalls.map((call) => call.route)).toEqual(["open", "status"]);
 	});
@@ -1083,9 +1110,9 @@ describe("start_browser", () => {
 	test("preserves the slot when a status request cannot reach the runner", async () => {
 		const t = test_convex();
 		const fixture = await seed_html_file(t);
-		const first = await start_saved_session(t, fixture);
+		const first = await start_saved_session({ t, fixture });
 		vi.mocked(fetch).mockRejectedValueOnce(new Error("network unavailable"));
-		const next = await start_saved_session(t, fixture);
+		const next = await start_saved_session({ t, fixture });
 		expect(next._nay?.message).toBe("Browser request failed");
 		expect((await t.run((ctx) => ctx.db.get("files_browser_sessions", first._yay!.sessionId)))?.control).toBe("ready");
 	});
@@ -1176,7 +1203,7 @@ describe("start_browser", () => {
 	test("starts a saved session and sends the committed bytes", async () => {
 		const t = test_convex();
 		const fixture = await seed_html_file(t);
-		const result = await start_saved_session(t, fixture);
+		const result = await start_saved_session({ t, fixture });
 		expect(result._nay).toBeUndefined();
 		expect(result._yay).toMatchObject({
 			nodeId: fixture.nodeId,
@@ -1202,7 +1229,7 @@ describe("start_browser", () => {
 	test("returns busy for another file while one is live", async () => {
 		const t = test_convex();
 		const fixture = await seed_html_file(t);
-		await start_saved_session(t, fixture);
+		await start_saved_session({ t, fixture });
 
 		const otherId = await test_create_saved_text_file(t, {
 			membershipId: fixture.membershipId,
@@ -1230,7 +1257,7 @@ describe("start_browser", () => {
 	test("closes a live browser whose file was archived, then starts another file", async () => {
 		const t = test_convex();
 		const fixture = await seed_html_file(t);
-		const first = await start_saved_session(t, fixture);
+		const first = await start_saved_session({ t, fixture });
 		await t.run((ctx) => ctx.db.patch("files_nodes", fixture.nodeId, { archiveOperationId: "archived" }));
 		const otherId = await test_create_saved_text_file(t, {
 			membershipId: fixture.membershipId,
@@ -1246,7 +1273,7 @@ describe("start_browser", () => {
 			verified: true,
 			usage: { providerAcquiredAt: acquiredAt, endedAt: acquiredAt + 60_000, reason: "closed" },
 		});
-		const next = await start_saved_session(t, { ...fixture, nodeId: otherId, path: "/other.html" });
+		const next = await start_saved_session({ t, fixture: { ...fixture, nodeId: otherId, path: "/other.html" } });
 		expect(next._nay).toBeUndefined();
 		expect(next._yay?.nodeId).toBe(String(otherId));
 		expect(runnerCalls.map((call) => call.route)).toEqual(["open", "status", "close", "open"]);
@@ -1257,9 +1284,9 @@ describe("start_browser", () => {
 	test("reattaches the same live file without opening again", async () => {
 		const t = test_convex();
 		const fixture = await seed_html_file(t);
-		const first = await start_saved_session(t, fixture);
+		const first = await start_saved_session({ t, fixture });
 		runnerQueue.push({ ...runner_open_session({ nodeId: fixture.nodeId }), alive: true, profileStored: false });
-		const second = await start_saved_session(t, fixture);
+		const second = await start_saved_session({ t, fixture });
 		expect(second._yay?.sessionId).toBe(first._yay?.sessionId);
 		expect(runnerCalls.map((call) => call.route)).toEqual(["open", "status"]);
 	});
@@ -1310,7 +1337,7 @@ describe("start_browser", () => {
 	test("reattach with a different source kind reports busy", async () => {
 		const t = test_convex();
 		const fixture = await seed_html_file(t);
-		await start_saved_session(t, fixture);
+		await start_saved_session({ t, fixture });
 
 		const asUser = authed(t, fixture.userId);
 		runnerQueue.push({ ...runner_open_session({ nodeId: fixture.nodeId }), alive: true, profileStored: false });
@@ -1406,7 +1433,7 @@ describe("set_browser_control", () => {
 		async ({ control, controlGen, nextControl, nextGen }) => {
 			const t = test_convex();
 			const fixture = await seed_html_file(t);
-			const started = await start_saved_session(t, fixture);
+			const started = await start_saved_session({ t, fixture });
 			const sessionId = started._yay!.sessionId;
 			await t.run((ctx) => ctx.db.patch("files_browser_sessions", sessionId, { control, controlGen }));
 			await t.mutation(internal.files_browser.set_browser_control, {
@@ -1424,7 +1451,7 @@ describe("set_browser_control", () => {
 	test("finishes a pausing handoff within the same generation", async () => {
 		const t = test_convex();
 		const fixture = await seed_html_file(t);
-		const started = await start_saved_session(t, fixture);
+		const started = await start_saved_session({ t, fixture });
 		const sessionId = started._yay!.sessionId;
 		await t.run((ctx) => ctx.db.patch("files_browser_sessions", sessionId, { control: "pausing", controlGen: 2 }));
 		await t.mutation(internal.files_browser.set_browser_control, { sessionId, control: "human", controlGen: 2 });
@@ -1438,8 +1465,8 @@ describe("set_browser_control", () => {
 describe("reload_browser", () => {
 	test("returns the exact settled web tab lease", async () => {
 		const t = test_convex();
-		const fixture = await seed_web_member(t);
-		const started = await start_web_session(t, fixture);
+		const fixture = await seed_web_member({ t });
+		const started = await start_web_session({ t, fixture });
 		if (started._nay) throw new Error(started._nay.message);
 		const expectedAgentLease = {
 			controlGen: 1,
@@ -1470,8 +1497,8 @@ describe("reload_browser", () => {
 		"refuses an agent reload reply with a changed lease: %j",
 		async (changed) => {
 			const t = test_convex();
-			const fixture = await seed_web_member(t);
-			const started = await start_web_session(t, fixture);
+			const fixture = await seed_web_member({ t });
+			const started = await start_web_session({ t, fixture });
 			if (started._nay) throw new Error(started._nay.message);
 			const sessionId = started._yay.session.sessionId;
 			const before = await t.run((ctx) => ctx.db.get("files_browser_sessions", sessionId));
@@ -1498,7 +1525,7 @@ describe("reload_browser", () => {
 	test("copies the runner generation and source instead of counting local reloads", async () => {
 		const t = test_convex();
 		const fixture = await seed_html_file(t);
-		const started = await start_saved_session(t, fixture);
+		const started = await start_saved_session({ t, fixture });
 		runnerQueue.push(
 			runner_open_session({ nodeId: fixture.nodeId, loadGen: 7, sourceVersion: "loaded-7", sourceHash: "hash-7" }),
 		);
@@ -1527,7 +1554,7 @@ describe("reload_browser", () => {
 	test("does not update the source after an incomplete runner reply", async () => {
 		const t = test_convex();
 		const fixture = await seed_html_file(t);
-		const started = await start_saved_session(t, fixture);
+		const started = await start_saved_session({ t, fixture });
 		runnerQueue.push({ ok: true });
 		const reloaded = await authed(t, fixture.userId).action(api.files_browser.reload_browser, {
 			membershipId: fixture.membershipId,
@@ -1541,7 +1568,7 @@ describe("reload_browser", () => {
 	test("keeps the agent lease through the source read and runner reload", async () => {
 		const t = test_convex();
 		const fixture = await seed_html_file(t);
-		const started = await start_saved_session(t, fixture);
+		const started = await start_saved_session({ t, fixture });
 		const expectedAgentLease = { controlGen: 1, loadGen: 1, navGen: 1 };
 		runnerQueue.push({ ok: false, error: { code: "stale_control", message: "Control changed" } });
 		const reloaded = await authed(t, fixture.userId).action(api.files_browser.reload_browser, {
@@ -1559,8 +1586,8 @@ describe("reload_browser", () => {
 describe("sync_browser_session", () => {
 	test("a late viewer renew keeps the completed web navigation in the catalog", async () => {
 		const t = test_convex();
-		const fixture = await seed_web_member(t);
-		const started = await start_web_session(t, fixture);
+		const fixture = await seed_web_member({ t });
+		const started = await start_web_session({ t, fixture });
 		if (started._nay) throw new Error(started._nay.message);
 		const sessionId = started._yay.session.sessionId;
 		const source = await seed_browser_chat_source(t, fixture);
@@ -1619,7 +1646,7 @@ describe("sync_browser_session", () => {
 	test("merges source and control separately when replies arrive out of order", async () => {
 		const t = test_convex();
 		const fixture = await seed_html_file(t);
-		const started = await start_saved_session(t, fixture);
+		const started = await start_saved_session({ t, fixture });
 		const sessionId = started._yay!.sessionId;
 		const runner = runner_open_session({ nodeId: fixture.nodeId }).session;
 		await t.mutation(internal.files_browser.set_browser_control, { sessionId, control: "human", controlGen: 4 });
@@ -1639,7 +1666,7 @@ describe("sync_browser_session", () => {
 	test.each(["human", "ready"] as const)("keeps the final %s state after a delayed pausing reply", async (control) => {
 		const t = test_convex();
 		const fixture = await seed_html_file(t);
-		const started = await start_saved_session(t, fixture);
+		const started = await start_saved_session({ t, fixture });
 		const sessionId = started._yay!.sessionId;
 		const runner = { ...runner_open_session({ nodeId: fixture.nodeId }).session, controlGen: 2 };
 		await t.mutation(internal.files_browser.set_browser_control, { sessionId, control: "pausing", controlGen: 2 });
@@ -1656,7 +1683,7 @@ describe("sync_browser_session", () => {
 	])("rejects metadata for a different binding: %j", async (changed) => {
 		const t = test_convex();
 		const fixture = await seed_html_file(t);
-		const started = await start_saved_session(t, fixture);
+		const started = await start_saved_session({ t, fixture });
 		const sessionId = started._yay!.sessionId;
 		const synced = await t.mutation(internal.files_browser.sync_browser_session, {
 			sessionId,
@@ -1669,7 +1696,7 @@ describe("sync_browser_session", () => {
 	test.each(["closing", "closed"] as const)("does not reopen a %s session", async (control) => {
 		const t = test_convex();
 		const fixture = await seed_html_file(t);
-		const started = await start_saved_session(t, fixture);
+		const started = await start_saved_session({ t, fixture });
 		const sessionId = started._yay!.sessionId;
 		await t.run((ctx) => ctx.db.patch("files_browser_sessions", sessionId, { control }));
 		const synced = await t.mutation(internal.files_browser.sync_browser_session, {
@@ -1684,7 +1711,7 @@ describe("sync_browser_session", () => {
 describe("sync_browser_tab_identities", () => {
 	test("a late public Tabs reply keeps the completed navigation of the other tab", async () => {
 		const t = test_convex();
-		const fixture = await seed_web_member(t);
+		const fixture = await seed_web_member({ t });
 		await t.run((ctx) => ctx.db.patch("users", fixture.userId, { clerkUserId: "user_browser_tabs" }));
 		const source = await seed_browser_chat_source(t, fixture);
 		const begun = await t.mutation(internal.ai_chat.thread_run_begin, {
@@ -1905,8 +1932,8 @@ describe("/api/chat browser availability", () => {
 
 	test("a Viewer can send plain chat while browser use stays refused", async () => {
 		const t = test_convex();
-		const owner = await seed_web_member(t);
-		const viewer = await add_workspace_member(t, owner, { role: "viewer", plan: "Pro" });
+		const owner = await seed_web_member({ t });
+		const viewer = await add_workspace_member({ t, owner, role: "viewer", plan: "Pro" });
 		const call = await send_chat(t, viewer);
 		expect(call.tools).toHaveProperty("bash");
 		const source = await seed_browser_chat_source(t, viewer);
@@ -1939,7 +1966,7 @@ describe("/api/chat browser availability", () => {
 	test("does not Resume a human pause when a new chat request starts", async () => {
 		const t = test_convex();
 		const fixture = await seed_html_file(t);
-		const started = await start_saved_session(t, fixture);
+		const started = await start_saved_session({ t, fixture });
 		const sessionId = started._yay!.sessionId;
 		await t.mutation(internal.files_browser.set_browser_control, { sessionId, control: "human", controlGen: 2 });
 		await send_chat(t, fixture);
@@ -1950,7 +1977,7 @@ describe("/api/chat browser availability", () => {
 	test("keeps the browser command available after a browser ends", async () => {
 		const t = test_convex();
 		const fixture = await seed_html_file(t);
-		const started = await start_web_session(t, fixture);
+		const started = await start_web_session({ t, fixture });
 		if (started._nay) throw new Error(started._nay.message);
 		const sessionId = started._yay.session.sessionId;
 		await t.mutation(internal.files_browser.finish_close_browser_session, { sessionId });
@@ -2124,7 +2151,7 @@ describe("end_browser", () => {
 	test("closes the session when the runner accepts the agent lease", async () => {
 		const t = test_convex();
 		const fixture = await seed_html_file(t);
-		const started = await start_saved_session(t, fixture);
+		const started = await start_saved_session({ t, fixture });
 		runnerQueue.push({ ok: true, existed: true, verified: true });
 		const ended = await authed(t, fixture.userId).action(api.files_browser.end_browser, {
 			membershipId: fixture.membershipId,
@@ -2140,7 +2167,7 @@ describe("end_browser", () => {
 	test("refuses agent close after human takeover before calling the runner", async () => {
 		const t = test_convex();
 		const fixture = await seed_html_file(t);
-		const started = await start_saved_session(t, fixture);
+		const started = await start_saved_session({ t, fixture });
 		await t.mutation(internal.files_browser.set_browser_control, {
 			sessionId: started._yay!.sessionId,
 			control: "human",
@@ -2161,7 +2188,7 @@ describe("end_browser", () => {
 	test("keeps the session open when the runner refuses an old agent lease", async () => {
 		const t = test_convex();
 		const fixture = await seed_html_file(t);
-		const started = await start_saved_session(t, fixture);
+		const started = await start_saved_session({ t, fixture });
 		const expectedAgentLease = { controlGen: 1, loadGen: 1, navGen: 1 };
 		runnerQueue.push({ ok: false, error: { code: "stale_control", message: "Control changed" } });
 		const ended = await authed(t, fixture.userId).action(api.files_browser.end_browser, {
@@ -2179,7 +2206,7 @@ describe("end_browser", () => {
 	test("closes the runner session and marks the doc closed", async () => {
 		const t = test_convex();
 		const fixture = await seed_html_file(t);
-		const started = await start_saved_session(t, fixture);
+		const started = await start_saved_session({ t, fixture });
 		runnerQueue.push({ ok: true, existed: true, verified: true });
 
 		const asUser = authed(t, fixture.userId);
@@ -2197,7 +2224,7 @@ describe("end_browser", () => {
 	test("marks closed even when the runner call fails", async () => {
 		const t = test_convex();
 		const fixture = await seed_html_file(t);
-		const started = await start_saved_session(t, fixture);
+		const started = await start_saved_session({ t, fixture });
 		runnerQueue.push({ ok: false, error: { code: "error", message: "boom" } });
 
 		const asUser = authed(t, fixture.userId);
@@ -2223,7 +2250,7 @@ describe("current_browser_session", () => {
 			}),
 		).toBe(null);
 
-		const started = await start_saved_session(t, fixture);
+		const started = await start_saved_session({ t, fixture });
 		const current = await asUser.query(api.files_browser.current_browser_session, {
 			membershipId: fixture.membershipId,
 			mode: "file",
@@ -2249,7 +2276,7 @@ describe("viewer and control doors", () => {
 	test("retires the session when a failed viewer grant confirms the runner is gone", async () => {
 		const t = test_convex();
 		const fixture = await seed_html_file(t);
-		const started = await start_saved_session(t, fixture);
+		const started = await start_saved_session({ t, fixture });
 		runnerQueue.push({ ok: false, error: { code: "closed", message: "The browser session is closed." } });
 		runnerQueue.push({ ok: true, alive: false, closing: false, usage: null, profileStored: false });
 		const granted = await authed(t, fixture.userId).action(api.files_browser.grant_browser_viewer, {
@@ -2265,7 +2292,7 @@ describe("viewer and control doors", () => {
 	test("retires the session when a failed renewal confirms the runner is gone", async () => {
 		const t = test_convex();
 		const fixture = await seed_html_file(t);
-		const started = await start_saved_session(t, fixture);
+		const started = await start_saved_session({ t, fixture });
 		runnerQueue.push({ ok: false, error: { code: "viewer", message: "The viewer is gone." } });
 		runnerQueue.push({ ok: true, alive: false, closing: false, usage: null, profileStored: false });
 		const asUser = authed(t, fixture.userId);
@@ -2286,7 +2313,7 @@ describe("viewer and control doors", () => {
 	test.each([true, null])("keeps the session after a renewal failure when liveness is %s", async (alive) => {
 		const t = test_convex();
 		const fixture = await seed_html_file(t);
-		const started = await start_saved_session(t, fixture);
+		const started = await start_saved_session({ t, fixture });
 		runnerQueue.push({ ok: false, error: { code: "viewer", message: "The viewer is gone." } });
 		runnerQueue.push(
 			alive === null
@@ -2306,7 +2333,7 @@ describe("viewer and control doors", () => {
 	test("grants, renews, takes, and resumes with doc mirrors", async () => {
 		const t = test_convex();
 		const fixture = await seed_html_file(t);
-		const started = await start_saved_session(t, fixture);
+		const started = await start_saved_session({ t, fixture });
 		const asUser = authed(t, fixture.userId);
 		const sessionId = started._yay!.sessionId;
 
@@ -2351,7 +2378,7 @@ describe("viewer and control doors", () => {
 	test("renew mirrors the runner idle deadline", async () => {
 		const t = test_convex();
 		const fixture = await seed_html_file(t);
-		const started = await start_saved_session(t, fixture);
+		const started = await start_saved_session({ t, fixture });
 		const sessionId = started._yay!.sessionId;
 		const idleUntil = Date.now() + 310_000;
 
@@ -2375,7 +2402,7 @@ describe("resume_browser_agent", () => {
 	test("an old Resume cannot release a newer public Take", async () => {
 		const t = test_convex();
 		const fixture = await seed_html_file(t);
-		const started = await start_saved_session(t, fixture);
+		const started = await start_saved_session({ t, fixture });
 		if (started._nay) throw new Error(started._nay.message);
 		const sessionId = started._yay.sessionId;
 		const asUser = authed(t, fixture.userId);
@@ -2434,12 +2461,12 @@ describe("resume_browser_agent", () => {
 describe("cleanup_expired_browser_docs", () => {
 	test("deletes the download saves of an old settled session and keeps the saved file", async () => {
 		const t = test_convex();
-		const fixture = await seed_web_member(t);
-		const started = await start_web_session(t, fixture);
+		const fixture = await seed_web_member({ t });
+		const started = await start_web_session({ t, fixture });
 		if (started._nay) throw new Error(started._nay.message);
 		const sessionId = started._yay.session.sessionId;
 		const created = await t.mutation(internal.files_browser.create_browser_download_node, {
-			...download_node_args(fixture, sessionId),
+			...download_node_args({ fixture, sessionId }),
 		});
 		if (created._nay) throw new Error(created._nay.message);
 
@@ -2516,7 +2543,7 @@ describe("cleanup_expired_browser_docs", () => {
 	test("deletes old settled sessions and daily counters while keeping recent and unbilled ones", async () => {
 		const t = test_convex();
 		const fixture = await seed_html_file(t);
-		const started = await start_saved_session(t, fixture);
+		const started = await start_saved_session({ t, fixture });
 		const sessionId = started._yay!.sessionId;
 		const oldAt = Date.now() - 8 * 24 * 60 * 60 * 1000;
 		const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
@@ -2632,7 +2659,7 @@ describe("access loss and daily caps", () => {
 	test("viewer grant closes the session when the file is gone", async () => {
 		const t = test_convex();
 		const fixture = await seed_html_file(t);
-		const started = await start_saved_session(t, fixture);
+		const started = await start_saved_session({ t, fixture });
 		expect(started._nay).toBeUndefined();
 		const sessionId = started._yay!.sessionId;
 
@@ -2681,7 +2708,7 @@ describe("access loss and daily caps", () => {
 	test("reload follows a rename through the node id", async () => {
 		const t = test_convex();
 		const fixture = await seed_html_file(t);
-		const started = await start_saved_session(t, fixture);
+		const started = await start_saved_session({ t, fixture });
 		expect(started._nay).toBeUndefined();
 
 		await t.run((ctx) => ctx.db.patch("files_nodes", fixture.nodeId, { path: "/renamed.html", name: "renamed.html" }));
@@ -2785,7 +2812,7 @@ describe("rename and closing slot", () => {
 	test("current session survives a rename through the live path", async () => {
 		const t = test_convex();
 		const fixture = await seed_html_file(t);
-		await start_saved_session(t, fixture);
+		await start_saved_session({ t, fixture });
 		await t.run((ctx) => ctx.db.patch("files_nodes", fixture.nodeId, { path: "/renamed.html", name: "renamed.html" }));
 
 		const asUser = authed(t, fixture.userId);
@@ -2800,7 +2827,7 @@ describe("rename and closing slot", () => {
 	test("viewer grant survives a rename instead of ending the session", async () => {
 		const t = test_convex();
 		const fixture = await seed_html_file(t);
-		const started = await start_saved_session(t, fixture);
+		const started = await start_saved_session({ t, fixture });
 		const sessionId = started._yay!.sessionId;
 		await t.run((ctx) => ctx.db.patch("files_nodes", fixture.nodeId, { path: "/renamed.html", name: "renamed.html" }));
 
@@ -2817,7 +2844,7 @@ describe("rename and closing slot", () => {
 	test("current session skips a closing doc for the live one", async () => {
 		const t = test_convex();
 		const fixture = await seed_html_file(t);
-		const started = await start_saved_session(t, fixture);
+		const started = await start_saved_session({ t, fixture });
 		const staleId = started._yay!.sessionId;
 		await t.run((ctx) => ctx.db.patch("files_browser_sessions", staleId, { control: "closing" }));
 		const liveId = await t.run((ctx) =>
@@ -2893,7 +2920,7 @@ describe("check_browser_session_access", () => {
 	test("check denies a session whose node is gone", async () => {
 		const t = test_convex();
 		const fixture = await seed_html_file(t);
-		const started = await start_saved_session(t, fixture);
+		const started = await start_saved_session({ t, fixture });
 		await t.run((ctx) => ctx.db.delete("files_nodes", fixture.nodeId));
 
 		const checked = await t.query(internal.files_browser.check_browser_session_access, {
@@ -2911,7 +2938,7 @@ describe("keep_open_browser", () => {
 	test("keep_open moves idle only, never the total", async () => {
 		const t = test_convex();
 		const fixture = await seed_html_file(t);
-		const started = await start_saved_session(t, fixture);
+		const started = await start_saved_session({ t, fixture });
 		const sessionId = started._yay!.sessionId;
 		const before = (await t.run((ctx) => ctx.db.get("files_browser_sessions", sessionId)))!;
 
@@ -2997,12 +3024,12 @@ describe("files_browser_db_delete_user_batch", () => {
 
 	test.each(["user", "workspace"] as const)("the %s purge deletes download saves with their session", async (scope) => {
 		const t = test_convex();
-		const fixture = await seed_web_member(t);
-		const started = await start_web_session(t, fixture);
+		const fixture = await seed_web_member({ t });
+		const started = await start_web_session({ t, fixture });
 		if (started._nay) throw new Error(started._nay.message);
 		const sessionId = started._yay.session.sessionId;
 		const created = await t.mutation(internal.files_browser.create_browser_download_node, {
-			...download_node_args(fixture, sessionId),
+			...download_node_args({ fixture, sessionId }),
 		});
 		if (created._nay) throw new Error(created._nay.message);
 
@@ -3054,22 +3081,27 @@ type WebFixture = {
 	workspaceId: Id<"organizations_workspaces">;
 };
 
-async function seed_web_member(
-	t: ReturnType<typeof test_convex>,
-	plan: "Free" | "Pro" | "Pay As You Go" = "Pay As You Go",
-	organizationName = "test-organization",
-): Promise<WebFixture> {
+async function seed_web_member(args: {
+	t: ReturnType<typeof test_convex>;
+	plan?: "Free" | "Pro" | "Pay As You Go";
+	organizationName?: string;
+}): Promise<WebFixture> {
+	const { t, plan = "Pay As You Go", organizationName = "test-organization" } = args;
+
 	return await t.run((ctx) => test_mocks_fill_db_with.membership(ctx, { plan, organizationName }));
 }
 
 /**
  * Add a second person to the owner's workspace with one system role and one plan.
  */
-async function add_workspace_member(
-	t: ReturnType<typeof test_convex>,
-	owner: WebFixture,
-	args: { role: "member" | "viewer"; plan: "Free" | "Pro" | "Pay As You Go" },
-): Promise<WebFixture> {
+async function add_workspace_member(args: {
+	t: ReturnType<typeof test_convex>;
+	owner: WebFixture;
+	role: "member" | "viewer";
+	plan: "Free" | "Pro" | "Pay As You Go";
+}): Promise<WebFixture> {
+	const { t, owner } = args;
+
 	return await t.run(async (ctx) => {
 		const { userId } = await test_mocks_fill_db_with.membership(ctx, {
 			organizationName: "personal",
@@ -3093,11 +3125,13 @@ async function add_workspace_member(
 	});
 }
 
-async function start_web_session(
-	t: ReturnType<typeof test_convex>,
-	fixture: WebFixture,
-	startUrl: string | null = null,
-) {
+async function start_web_session(args: {
+	t: ReturnType<typeof test_convex>;
+	fixture: WebFixture;
+	startUrl?: string | null;
+}) {
+	const { t, fixture, startUrl = null } = args;
+
 	const preference = await authed(t, fixture.userId).query(api.files_browser.current_browser_preferences, {
 		membershipId: fixture.membershipId,
 	});
@@ -3118,8 +3152,8 @@ async function start_web_session(
 describe("current_browser_preferences", () => {
 	test("a Viewer reads their saved intent without gaining browser permission", async () => {
 		const t = test_convex();
-		const owner = await seed_web_member(t);
-		const member = await add_workspace_member(t, owner, { role: "member", plan: "Pro" });
+		const owner = await seed_web_member({ t });
+		const member = await add_workspace_member({ t, owner, role: "member", plan: "Pro" });
 		const asMember = authed(t, member.userId);
 		expect(
 			(
@@ -3169,8 +3203,8 @@ describe("browser tabs", () => {
 		{ operation: "close", viewerId: "other-viewer", permitted: false },
 	] as const)("human $operation uses the checked holder $viewerId", async ({ operation, viewerId, permitted }) => {
 		const t = test_convex();
-		const fixture = await seed_web_member(t);
-		const started = await start_web_session(t, fixture);
+		const fixture = await seed_web_member({ t });
+		const started = await start_web_session({ t, fixture });
 		if (started._nay) throw new Error(started._nay.message);
 		const sessionId = started._yay.session.sessionId;
 		const asUser = authed(t, fixture.userId);
@@ -3252,7 +3286,7 @@ describe("agent_open_browser", () => {
 		"does not adopt a human Take and Resume during %s Open",
 		async (kind) => {
 			const t = test_convex();
-			const fixture = await seed_web_member(t);
+			const fixture = await seed_web_member({ t });
 			await t.run((ctx) => ctx.db.patch("users", fixture.userId, { clerkUserId: "user_browser_control" }));
 			const asUser = authed(t, fixture.userId);
 			const source = await seed_browser_chat_source(t, fixture);
@@ -3264,11 +3298,11 @@ describe("agent_open_browser", () => {
 					: null;
 			let existingId: Id<"files_browser_sessions"> | null = null;
 			if (nodeId) {
-				const started = await start_saved_session(t, { ...fixture, nodeId, path });
+				const started = await start_saved_session({ t, fixture: { ...fixture, nodeId, path } });
 				if (started._nay) throw new Error(started._nay.message);
 				existingId = started._yay.sessionId;
 			} else if (kind === "reused web") {
-				const started = await start_web_session(t, fixture);
+				const started = await start_web_session({ t, fixture });
 				if (started._nay) throw new Error(started._nay.message);
 				existingId = started._yay.session.sessionId;
 			}
@@ -3290,9 +3324,15 @@ describe("agent_open_browser", () => {
 				});
 			else runnerQueue.push(runner_web_session());
 			let changedId: Id<"files_browser_sessions"> | null = null;
-			browserActionGate.call = async (operation, name, args, phase) => {
+			browserActionGate.call = async (args: {
+				operation: "query" | "mutation";
+				name: string;
+				phase: "before" | "after";
+			} & Record<string, unknown>) => {
+				const { operation, name, phase, ...previousArgs } = args;
+
 				if (changedId) return;
-				const call = args as { sessionId?: Id<"files_browser_sessions"> };
+				const call = previousArgs as { sessionId?: Id<"files_browser_sessions"> };
 				const reached =
 					kind === "fresh web"
 						? phase === "after" && operation === "mutation" && name === "files_browser:commit_live_browser_session"
@@ -3377,7 +3417,7 @@ async function consumed_units(t: ReturnType<typeof test_convex>, userId: Id<"use
 describe("start_web_browser", () => {
 	test("returns the runner's settled initial navigation generation", async () => {
 		const t = test_convex();
-		const fixture = await seed_web_member(t);
+		const fixture = await seed_web_member({ t });
 		runnerQueue.push(runner_web_session({ navGen: 2, tabGen: 2 }));
 		const started = await authed(t, fixture.userId).action(api.files_browser.start_web_browser, {
 			membershipId: fixture.membershipId,
@@ -3397,8 +3437,8 @@ describe("start_web_browser", () => {
 
 	test("starts a web session, counts it at commit, and reattaches for free", async () => {
 		const t = test_convex();
-		const fixture = await seed_web_member(t);
-		const started = await start_web_session(t, fixture, "example.com");
+		const fixture = await seed_web_member({ t });
+		const started = await start_web_session({ t, fixture, startUrl: "example.com" });
 		if (started._nay) throw new Error(started._nay.message);
 		expect(started._yay.session).toMatchObject({ mode: "web", agentAccess: true, control: "ready", loadGen: 0 });
 		expect(runnerCalls[0]).toMatchObject({
@@ -3415,7 +3455,7 @@ describe("start_web_browser", () => {
 
 		// A repeated start finds the live session and keeps its page: no open, no count.
 		runnerQueue.push({ ...runner_web_session(), alive: true, profileStored: false });
-		const again = await start_web_session(t, fixture);
+		const again = await start_web_session({ t, fixture });
 		runnerQueue.length = 0;
 		expect(again._yay?.session.sessionId).toBe(started._yay.session.sessionId);
 		expect(runnerCalls.map((call) => call.route)).toEqual(["open", "status"]);
@@ -3424,21 +3464,21 @@ describe("start_web_browser", () => {
 
 	test("refuses a viewer", async () => {
 		const t = test_convex();
-		const owner = await seed_web_member(t);
-		const viewer = await add_workspace_member(t, owner, { role: "viewer", plan: "Pro" });
-		const started = await start_web_session(t, viewer);
+		const owner = await seed_web_member({ t });
+		const viewer = await add_workspace_member({ t, owner, role: "viewer", plan: "Pro" });
+		const started = await start_web_session({ t, fixture: viewer });
 		runnerQueue.length = 0;
 		expect(started._nay?.message).toBe("Permission denied");
 		expect(runnerCalls).toEqual([]);
 
 		// A member of the same workspace has the permission.
-		const member = await add_workspace_member(t, owner, { role: "member", plan: "Pro" });
-		expect((await start_web_session(t, member))._nay).toBeUndefined();
+		const member = await add_workspace_member({ t, owner, role: "member", plan: "Pro" });
+		expect((await start_web_session({ t, fixture: member }))._nay).toBeUndefined();
 	});
 
 	test("refuses an anonymous user", async () => {
 		const t = test_convex();
-		const fixture = await seed_web_member(t);
+		const fixture = await seed_web_member({ t });
 		const started = await t
 			.withIdentity({ issuer: process.env.VITE_CONVEX_HTTP_URL!, subject: fixture.userId })
 			.action(api.files_browser.start_web_browser, {
@@ -3454,10 +3494,10 @@ describe("start_web_browser", () => {
 		const t = test_convex();
 		const fixture = await seed_html_file(t);
 		await t.run((ctx) => test_mocks_fill_db_with.plan(ctx, { userId: fixture.userId, plan }));
-		expect((await start_saved_session(t, fixture))._nay).toBeUndefined();
+		expect((await start_saved_session({ t, fixture }))._nay).toBeUndefined();
 
-		const other = await seed_web_member(t, plan, "other-organization");
-		expect((await start_web_session(t, other))._nay).toBeUndefined();
+		const other = await seed_web_member({ t, plan, organizationName: "other-organization" });
+		expect((await start_web_session({ t, fixture: other }))._nay).toBeUndefined();
 	});
 
 	test("refuses Free with plan_required in both modes", async () => {
@@ -3465,9 +3505,9 @@ describe("start_web_browser", () => {
 		const fixture = await seed_html_file(t);
 		await t.run((ctx) => test_mocks_fill_db_with.plan(ctx, { userId: fixture.userId, plan: "Free" }));
 
-		const web = await start_web_session(t, fixture);
+		const web = await start_web_session({ t, fixture });
 		expect(web._nay).toMatchObject({ message: "Plan required", data: { code: "plan_required" } });
-		const file = await start_saved_session(t, fixture);
+		const file = await start_saved_session({ t, fixture });
 		expect(file._nay).toMatchObject({ message: "Plan required", data: { code: "plan_required" } });
 		runnerQueue.length = 0;
 		expect(runnerCalls).toEqual([]);
@@ -3481,18 +3521,18 @@ describe("start_web_browser", () => {
 
 	test("checks the owner's plan in an owner-billed organization", async () => {
 		const t = test_convex();
-		const owner = await seed_web_member(t, "Free");
-		const member = await add_workspace_member(t, owner, { role: "member", plan: "Pro" });
+		const owner = await seed_web_member({ t, plan: "Free" });
+		const member = await add_workspace_member({ t, owner, role: "member", plan: "Pro" });
 		await t.run((ctx) => ctx.db.patch("organizations", owner.organizationId, { billingMode: "organization_owner" }));
 
 		// The member pays for Pro, but the owner pays here, and the owner is on Free.
-		const refused = await start_web_session(t, member);
+		const refused = await start_web_session({ t, fixture: member });
 		runnerQueue.length = 0;
 		expect(refused._nay).toMatchObject({ message: "Plan required", data: { code: "plan_required" } });
 
 		await t.run((ctx) => test_mocks_fill_db_with.plan(ctx, { userId: owner.userId, plan: "Pro" }));
 		await t.run((ctx) => test_mocks_fill_db_with.plan(ctx, { userId: member.userId, plan: "Free" }));
-		const started = await start_web_session(t, member);
+		const started = await start_web_session({ t, fixture: member });
 		if (started._nay) throw new Error(started._nay.message);
 		const stored = await t.run((ctx) => ctx.db.get("files_browser_sessions", started._yay.session.sessionId));
 		expect(stored?.billedUserId).toBe(owner.userId);
@@ -3500,11 +3540,11 @@ describe("start_web_browser", () => {
 
 	test("refuses while web mode is off", async () => {
 		const t = test_convex();
-		const fixture = await seed_web_member(t);
+		const fixture = await seed_web_member({ t });
 		const enabled = process.env.AI_CHAT_BROWSER_ENABLED;
 		process.env.AI_CHAT_BROWSER_ENABLED = "false";
 		try {
-			const started = await start_web_session(t, fixture);
+			const started = await start_web_session({ t, fixture });
 			expect(started._nay?.message).toBe("Browser unavailable");
 			const available = await authed(t, fixture.userId).query(api.files_browser.web_browser_available, {
 				membershipId: fixture.membershipId,
@@ -3519,7 +3559,7 @@ describe("start_web_browser", () => {
 
 	test("refuses the 51st web start of the day", async () => {
 		const t = test_convex();
-		const fixture = await seed_web_member(t);
+		const fixture = await seed_web_member({ t });
 		await t.run((ctx) =>
 			ctx.db.insert("files_browser_user_daily_use", {
 				userId: fixture.userId,
@@ -3528,7 +3568,7 @@ describe("start_web_browser", () => {
 				updatedAt: Date.now(),
 			}),
 		);
-		const started = await start_web_session(t, fixture);
+		const started = await start_web_session({ t, fixture });
 		expect(started._nay?.message).toBe("Daily limit reached");
 		runnerQueue.length = 0;
 		expect(runnerCalls).toEqual([]);
@@ -3542,7 +3582,7 @@ describe("start_web_browser", () => {
 		{ code: "organization_limit", message: "Your organization already has 4 browsers open. Try again later." },
 	])("does not count a failed open ($code)", async ({ code, message }) => {
 		const t = test_convex();
-		const fixture = await seed_web_member(t);
+		const fixture = await seed_web_member({ t });
 		runnerQueue.push({ ok: false, error: { code, message: "refused" } });
 		const started = await authed(t, fixture.userId).action(api.files_browser.start_web_browser, {
 			membershipId: fixture.membershipId,
@@ -3556,7 +3596,7 @@ describe("start_web_browser", () => {
 
 	test("End during Start still bills the browser time, even when the cron runs first", async () => {
 		const t = test_convex();
-		const fixture = await seed_web_member(t);
+		const fixture = await seed_web_member({ t });
 		const acquiredAt = Date.now() - 20_000;
 		const checkDuringOpen = during_next_runner_open(async () => {
 			const starting = await t.run((ctx) => ctx.db.query("files_browser_sessions").first());
@@ -3602,7 +3642,7 @@ describe("start_web_browser", () => {
 
 	test("refuses a bad start address before the runner", async () => {
 		const t = test_convex();
-		const fixture = await seed_web_member(t);
+		const fixture = await seed_web_member({ t });
 		const started = await authed(t, fixture.userId).action(api.files_browser.start_web_browser, {
 			membershipId: fixture.membershipId,
 			viewport: { width: 1280, height: 900 },
@@ -3615,10 +3655,10 @@ describe("start_web_browser", () => {
 	test("keeps independent file and web slots in the same workspace", async () => {
 		const t = test_convex();
 		const fixture = await seed_html_file(t);
-		const file = await start_saved_session(t, fixture);
+		const file = await start_saved_session({ t, fixture });
 		expect(file._nay).toBeUndefined();
 
-		const web = await start_web_session(t, fixture);
+		const web = await start_web_session({ t, fixture });
 		expect(web._nay).toBeUndefined();
 		const asUser = authed(t, fixture.userId);
 		expect(
@@ -3643,9 +3683,9 @@ describe("start_web_browser", () => {
 describe("web browser access", () => {
 	test("internal close works after the owner's membership is gone", async () => {
 		const t = test_convex();
-		const owner = await seed_web_member(t);
-		const member = await add_workspace_member(t, owner, { role: "member", plan: "Pro" });
-		const started = await start_web_session(t, member);
+		const owner = await seed_web_member({ t });
+		const member = await add_workspace_member({ t, owner, role: "member", plan: "Pro" });
+		const started = await start_web_session({ t, fixture: member });
 		if (started._nay) throw new Error(started._nay.message);
 		await t.run((ctx) => ctx.db.delete("organizations_workspaces_users", member.membershipId));
 
@@ -3669,9 +3709,9 @@ describe("web browser access", () => {
 
 	test("removing a member closes their live browser", async () => {
 		const t = test_convex();
-		const owner = await seed_web_member(t);
-		const member = await add_workspace_member(t, owner, { role: "member", plan: "Pro" });
-		const started = await start_web_session(t, member);
+		const owner = await seed_web_member({ t });
+		const member = await add_workspace_member({ t, owner, role: "member", plan: "Pro" });
+		const started = await start_web_session({ t, fixture: member });
 		if (started._nay) throw new Error(started._nay.message);
 		// The removal clears the member's API credential counter, which a real invite creates.
 		await t.run((ctx) =>
@@ -3721,10 +3761,10 @@ describe("web browser access", () => {
 
 	test("the browser cron closes a live web browser whose owner lost access", async () => {
 		const t = test_convex();
-		const owner = await seed_web_member(t);
-		const member = await add_workspace_member(t, owner, { role: "member", plan: "Pro" });
-		const ownerSession = await start_web_session(t, owner);
-		const memberSession = await start_web_session(t, member);
+		const owner = await seed_web_member({ t });
+		const member = await add_workspace_member({ t, owner, role: "member", plan: "Pro" });
+		const ownerSession = await start_web_session({ t, fixture: owner });
+		const memberSession = await start_web_session({ t, fixture: member });
 		if (ownerSession._nay || memberSession._nay) throw new Error("Expected two web sessions");
 
 		// The member becomes a viewer, and viewers may not use the browser.
@@ -3767,8 +3807,8 @@ describe("web browser access", () => {
 
 	test("check_browser_session_access refuses when agent access is off", async () => {
 		const t = test_convex();
-		const fixture = await seed_web_member(t);
-		const started = await start_web_session(t, fixture);
+		const fixture = await seed_web_member({ t });
+		const started = await start_web_session({ t, fixture });
 		if (started._nay) throw new Error(started._nay.message);
 		const args = { ...fixture, sessionId: started._yay.session.sessionId };
 		expect(await t.query(internal.files_browser.check_browser_session_access, args)).toMatchObject({
@@ -3791,8 +3831,8 @@ describe("web browser access", () => {
 
 	test("human End saves the profile and the agent close does not", async () => {
 		const t = test_convex();
-		const fixture = await seed_web_member(t);
-		const started = await start_web_session(t, fixture);
+		const fixture = await seed_web_member({ t });
+		const started = await start_web_session({ t, fixture });
 		if (started._nay) throw new Error(started._nay.message);
 
 		runnerQueue.push({ ok: true, existed: true, verified: true, usage: null });
@@ -3811,7 +3851,7 @@ describe("web browser access", () => {
 		});
 		expect(runnerCalls.at(-1)?.body).toMatchObject({ saveProfile: false, reason: "agent_close" });
 
-		const again = await start_web_session(t, fixture);
+		const again = await start_web_session({ t, fixture });
 		if (again._nay) throw new Error(again._nay.message);
 		runnerQueue.push({ ok: true, existed: true, verified: true, usage: null });
 		await authed(t, fixture.userId).action(api.files_browser.end_browser, {
@@ -3825,8 +3865,8 @@ describe("web browser access", () => {
 describe("browser billing", () => {
 	test("settles once, per started minute", async () => {
 		const t = test_convex();
-		const fixture = await seed_web_member(t);
-		const started = await start_web_session(t, fixture);
+		const fixture = await seed_web_member({ t });
+		const started = await start_web_session({ t, fixture });
 		if (started._nay) throw new Error(started._nay.message);
 		const sessionId = started._yay.session.sessionId;
 		const before = await consumed_units(t, fixture.userId);
@@ -3863,13 +3903,13 @@ describe("browser billing", () => {
 
 	test("bills the payer frozen at start after an ownership transfer", async () => {
 		const t = test_convex();
-		const owner = await seed_web_member(t, "Pro");
-		const member = await add_workspace_member(t, owner, { role: "member", plan: "Free" });
+		const owner = await seed_web_member({ t, plan: "Pro" });
+		const member = await add_workspace_member({ t, owner, role: "member", plan: "Free" });
 		await t.run((ctx) => ctx.db.patch("organizations", owner.organizationId, { billingMode: "organization_owner" }));
-		const started = await start_web_session(t, member);
+		const started = await start_web_session({ t, fixture: member });
 		if (started._nay) throw new Error(started._nay.message);
 
-		const nextOwner = await seed_web_member(t, "Pro", "other-organization");
+		const nextOwner = await seed_web_member({ t, plan: "Pro", organizationName: "other-organization" });
 		await t.run((ctx) => ctx.db.patch("organizations", owner.organizationId, { ownerUserId: nextOwner.userId }));
 		const ownerBefore = await consumed_units(t, owner.userId);
 		const nextOwnerBefore = await consumed_units(t, nextOwner.userId);
@@ -3891,8 +3931,8 @@ describe("browser billing", () => {
 
 	test("the cron settles a session whose doc stayed ready", async () => {
 		const t = test_convex();
-		const fixture = await seed_web_member(t);
-		const started = await start_web_session(t, fixture);
+		const fixture = await seed_web_member({ t });
+		const started = await start_web_session({ t, fixture });
 		if (started._nay) throw new Error(started._nay.message);
 		const sessionId = started._yay.session.sessionId;
 		// The runner ended the session at its total deadline, but no app door saw it.
@@ -3916,8 +3956,8 @@ describe("browser billing", () => {
 
 	test("does not settle while the runner is still closing", async () => {
 		const t = test_convex();
-		const fixture = await seed_web_member(t);
-		const started = await start_web_session(t, fixture);
+		const fixture = await seed_web_member({ t });
+		const started = await start_web_session({ t, fixture });
 		if (started._nay) throw new Error(started._nay.message);
 		const sessionId = started._yay.session.sessionId;
 		await t.run((ctx) =>
@@ -3944,10 +3984,10 @@ describe("browser billing", () => {
 
 	test("sends one Polar event for a signed-in payer", async () => {
 		const t = test_convex();
-		const fixture = await seed_web_member(t);
+		const fixture = await seed_web_member({ t });
 		// A Clerk-backed payer is billed through Polar, not through the local anonymous meter.
 		await t.run((ctx) => ctx.db.patch("users", fixture.userId, { clerkUserId: "clerk_browser_payer" }));
-		const started = await start_web_session(t, fixture);
+		const started = await start_web_session({ t, fixture });
 		if (started._nay) throw new Error(started._nay.message);
 		const sessionId = started._yay.session.sessionId;
 		const before = await consumed_units(t, fixture.userId);
@@ -3994,7 +4034,7 @@ describe("browser billing", () => {
 
 	test("the settle cron moves docs it cannot settle behind newer ones", async () => {
 		const t = test_convex();
-		const fixture = await seed_web_member(t);
+		const fixture = await seed_web_member({ t });
 		const now = Date.now();
 		const { goodId } = await t.run(async (ctx) => {
 			const session = {
@@ -4065,8 +4105,8 @@ describe("browser billing", () => {
 
 	test("bills nothing when the receipt stays missing past the wait", async () => {
 		const t = test_convex();
-		const fixture = await seed_web_member(t);
-		const started = await start_web_session(t, fixture);
+		const fixture = await seed_web_member({ t });
+		const started = await start_web_session({ t, fixture });
 		if (started._nay) throw new Error(started._nay.message);
 		const sessionId = started._yay.session.sessionId;
 
@@ -4108,11 +4148,13 @@ describe("saved browser profiles", () => {
 		);
 	}
 
-	async function seed_profile(
-		t: ReturnType<typeof test_convex>,
-		fixture: WebFixture,
-		overrides: { lastUsedAt?: number } = {},
-	) {
+	async function seed_profile(args: {
+		t: ReturnType<typeof test_convex>;
+		fixture: WebFixture;
+		overrides?: { lastUsedAt?: number };
+	}) {
+		const { t, fixture, overrides = {} } = args;
+
 		return await t.run((ctx) =>
 			ctx.db.insert("files_browser_profiles", {
 				userId: fixture.userId,
@@ -4129,8 +4171,8 @@ describe("saved browser profiles", () => {
 
 	test("keeps one profile per user and workspace and sends it to the runner", async () => {
 		const t = test_convex();
-		const fixture = await seed_web_member(t);
-		const started = await start_web_session(t, fixture);
+		const fixture = await seed_web_member({ t });
+		const started = await start_web_session({ t, fixture });
 		if (started._nay) throw new Error(started._nay.message);
 
 		const [profile, ...others] = await list_profiles(t);
@@ -4153,7 +4195,7 @@ describe("saved browser profiles", () => {
 			reason: "test",
 		});
 		await t.run((ctx) => ctx.db.patch("files_browser_profiles", profile!._id, { lastUsedAt: 1 }));
-		expect((await start_web_session(t, fixture))._nay).toBeUndefined();
+		expect((await start_web_session({ t, fixture }))._nay).toBeUndefined();
 		const [again, ...othersAgain] = await list_profiles(t);
 		expect(othersAgain).toEqual([]);
 		expect(again!._id).toBe(profile!._id);
@@ -4165,8 +4207,8 @@ describe("saved browser profiles", () => {
 		});
 
 		// Another member of the same workspace gets a profile of their own.
-		const member = await add_workspace_member(t, fixture, { role: "member", plan: "Pro" });
-		expect((await start_web_session(t, member))._nay).toBeUndefined();
+		const member = await add_workspace_member({ t, owner: fixture, role: "member", plan: "Pro" });
+		expect((await start_web_session({ t, fixture: member }))._nay).toBeUndefined();
 		const profiles = await list_profiles(t);
 		expect(profiles.map((doc) => doc.userId).sort()).toEqual([fixture.userId, member.userId].sort());
 		expect(new Set(profiles.map((doc) => key_base64(doc.profileKey))).size).toBe(2);
@@ -4174,9 +4216,9 @@ describe("saved browser profiles", () => {
 
 	test("never returns the profile key from a public door", async () => {
 		const t = test_convex();
-		const fixture = await seed_web_member(t);
+		const fixture = await seed_web_member({ t });
 		const asUser = authed(t, fixture.userId);
-		const started = await start_web_session(t, fixture);
+		const started = await start_web_session({ t, fixture });
 		if (started._nay) throw new Error(started._nay.message);
 		const [profile] = await list_profiles(t);
 		const keyText = key_base64(profile!.profileKey);
@@ -4238,9 +4280,9 @@ describe("saved browser profiles", () => {
 
 	test("Clear all ends the browser, deletes the profile, and the next start makes a new one", async () => {
 		const t = test_convex();
-		const fixture = await seed_web_member(t);
+		const fixture = await seed_web_member({ t });
 		const asUser = authed(t, fixture.userId);
-		const started = await start_web_session(t, fixture);
+		const started = await start_web_session({ t, fixture });
 		if (started._nay) throw new Error(started._nay.message);
 		runnerQueue.push(runner_web_session({ controlGen: 2, policyRevision: 1 }));
 		await asUser.action(api.files_browser.set_agent_blocked_hosts, {
@@ -4278,7 +4320,7 @@ describe("saved browser profiles", () => {
 			}),
 		]);
 
-		expect((await start_web_session(t, fixture))._nay).toBeUndefined();
+		expect((await start_web_session({ t, fixture }))._nay).toBeUndefined();
 		const [after] = await list_profiles(t);
 		expect(after!._id).not.toBe(before!._id);
 		expect(key_base64(after!.profileKey)).not.toBe(key_base64(before!.profileKey));
@@ -4294,7 +4336,7 @@ describe("saved browser profiles", () => {
 
 	test("Clear all without a profile calls nothing", async () => {
 		const t = test_convex();
-		const fixture = await seed_web_member(t);
+		const fixture = await seed_web_member({ t });
 		const cleared = await authed(t, fixture.userId).action(api.files_browser.clear_browser_profile, {
 			membershipId: fixture.membershipId,
 		});
@@ -4305,7 +4347,7 @@ describe("saved browser profiles", () => {
 
 	test("listing and clearing sites end the live browser first", async () => {
 		const t = test_convex();
-		const fixture = await seed_web_member(t);
+		const fixture = await seed_web_member({ t });
 		const asUser = authed(t, fixture.userId);
 
 		// Without a profile there is nothing to ask the runner.
@@ -4320,7 +4362,7 @@ describe("saved browser profiles", () => {
 		).toEqual({ _yay: { removed: 0 } });
 		expect(runnerCalls).toEqual([]);
 
-		const started = await start_web_session(t, fixture);
+		const started = await start_web_session({ t, fixture });
 		if (started._nay) throw new Error(started._nay.message);
 		const [profile] = await list_profiles(t);
 		const sites = [{ domain: "example.com", cookies: 3 }];
@@ -4386,7 +4428,7 @@ describe("saved browser profiles", () => {
 
 	test("set_agent_blocked_hosts stores policy without creating saved logins", async () => {
 		const t = test_convex();
-		const fixture = await seed_web_member(t);
+		const fixture = await seed_web_member({ t });
 		const asUser = authed(t, fixture.userId);
 		const setHosts = (hosts: Array<string>) =>
 			asUser.action(api.files_browser.set_agent_blocked_hosts, { membershipId: fixture.membershipId, hosts });
@@ -4421,7 +4463,7 @@ describe("saved browser profiles", () => {
 
 		// The next browser receives the saved policy.
 		expect((await setHosts(["bank.example"]))._nay).toBeUndefined();
-		expect((await start_web_session(t, fixture))._nay).toBeUndefined();
+		expect((await start_web_session({ t, fixture }))._nay).toBeUndefined();
 		const [profile] = await list_profiles(t);
 		expect(await list_profiles(t)).toHaveLength(1);
 		expect(runnerCalls[0]).toMatchObject({
@@ -4430,7 +4472,7 @@ describe("saved browser profiles", () => {
 		});
 
 		// A viewer may not use the browser, so a viewer may not set its list either.
-		const viewer = await add_workspace_member(t, fixture, { role: "viewer", plan: "Pro" });
+		const viewer = await add_workspace_member({ t, owner: fixture, role: "viewer", plan: "Pro" });
 		const refused = await authed(t, viewer.userId).action(api.files_browser.set_agent_blocked_hosts, {
 			membershipId: viewer.membershipId,
 			hosts: ["bank.example"],
@@ -4440,10 +4482,10 @@ describe("saved browser profiles", () => {
 
 	test("another member cannot read or change the profile", async () => {
 		const t = test_convex();
-		const owner = await seed_web_member(t);
-		expect((await start_web_session(t, owner))._nay).toBeUndefined();
+		const owner = await seed_web_member({ t });
+		expect((await start_web_session({ t, fixture: owner }))._nay).toBeUndefined();
 		const [profile] = await list_profiles(t);
-		const member = await add_workspace_member(t, owner, { role: "member", plan: "Pro" });
+		const member = await add_workspace_member({ t, owner, role: "member", plan: "Pro" });
 		const asMember = authed(t, member.userId);
 
 		expect(await asMember.query(api.files_browser.current_browser_profile, { membershipId: owner.membershipId })).toBe(
@@ -4484,8 +4526,8 @@ describe("saved browser profiles", () => {
 
 	test("the wipe job deletes the wipe doc when the runner deleted the bytes", async () => {
 		const t = test_convex();
-		const fixture = await seed_web_member(t);
-		const profileId = await seed_profile(t, fixture);
+		const fixture = await seed_web_member({ t });
+		const profileId = await seed_profile({ t, fixture });
 		await t.run(async (ctx) => {
 			const profile = await ctx.db.get("files_browser_profiles", profileId);
 			await files_browser_db_delete_profile(ctx as never, profile!);
@@ -4517,7 +4559,7 @@ describe("saved browser profiles", () => {
 
 	test("the wipe job backs off after each failure, up to 6 hours", async () => {
 		const t = test_convex();
-		const fixture = await seed_web_member(t);
+		const fixture = await seed_web_member({ t });
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		const start = Date.now();
 		vi.useFakeTimers({ now: start, toFake: ["Date"] });
@@ -4579,9 +4621,9 @@ describe("saved browser profiles", () => {
 
 	test("the account deletion batch continues until every profile is gone", async () => {
 		const t = test_convex();
-		const fixture = await seed_web_member(t);
+		const fixture = await seed_web_member({ t });
 		for (let index = 0; index < 51; index++) {
-			await seed_profile(t, fixture);
+			await seed_profile({ t, fixture });
 		}
 		// Answer every wipe with success, in any order.
 		vi.mocked(fetch).mockImplementation(async () => Response.json({ ok: true, deleted: true }));
@@ -4605,10 +4647,10 @@ describe("saved browser profiles", () => {
 
 	test("the hourly cleanup deletes profiles unused for 90 days", async () => {
 		const t = test_convex();
-		const fixture = await seed_web_member(t);
+		const fixture = await seed_web_member({ t });
 		const day = 24 * 60 * 60 * 1000;
-		const oldId = await seed_profile(t, fixture, { lastUsedAt: Date.now() - 91 * day });
-		const recentId = await seed_profile(t, fixture, { lastUsedAt: Date.now() - 89 * day });
+		const oldId = await seed_profile({ t, fixture, overrides: { lastUsedAt: Date.now() - 91 * day } });
+		const recentId = await seed_profile({ t, fixture, overrides: { lastUsedAt: Date.now() - 89 * day } });
 
 		vi.useFakeTimers();
 		try {
@@ -4633,7 +4675,13 @@ function runner_download_info(overrides: Record<string, unknown> = {}) {
 	};
 }
 
-function download_node_args(fixture: WebFixture, sessionId: Id<"files_browser_sessions">, downloadId = "download-1") {
+function download_node_args(args: {
+	fixture: WebFixture;
+	sessionId: Id<"files_browser_sessions">;
+	downloadId?: string;
+}) {
+	const { fixture, downloadId = "download-1", sessionId} = args;
+
 	return {
 		userId: fixture.userId,
 		membershipId: fixture.membershipId,
@@ -4646,12 +4694,14 @@ function download_node_args(fixture: WebFixture, sessionId: Id<"files_browser_se
 	};
 }
 
-async function save_download(
-	t: ReturnType<typeof test_convex>,
-	fixture: { userId: Id<"users">; membershipId: Id<"organizations_workspaces_users"> },
-	sessionId: Id<"files_browser_sessions">,
-	downloadId = "download-1",
-) {
+async function save_download(args: {
+	t: ReturnType<typeof test_convex>;
+	fixture: { userId: Id<"users">; membershipId: Id<"organizations_workspaces_users"> };
+	sessionId: Id<"files_browser_sessions">;
+	downloadId?: string;
+}) {
+	const { t, fixture, downloadId = "download-1", sessionId} = args;
+
 	return await authed(t, fixture.userId).action(api.files_browser.save_browser_download, {
 		membershipId: fixture.membershipId,
 		sessionId,
@@ -4659,7 +4709,13 @@ async function save_download(
 	});
 }
 
-async function node_metadata(t: ReturnType<typeof test_convex>, fixture: WebFixture, nodeId: Id<"files_nodes">) {
+async function node_metadata(args: {
+	t: ReturnType<typeof test_convex>;
+	fixture: WebFixture;
+	nodeId: Id<"files_nodes">;
+}) {
+	const { t, fixture, nodeId } = args;
+
 	const docs = await t.run((ctx) =>
 		ctx.db
 			.query("files_metadata_docs")
@@ -4673,7 +4729,13 @@ async function node_metadata(t: ReturnType<typeof test_convex>, fixture: WebFixt
 	);
 }
 
-async function saved_node_id_by_path(t: ReturnType<typeof test_convex>, fixture: WebFixture, path: string) {
+async function saved_node_id_by_path(args: {
+	t: ReturnType<typeof test_convex>;
+	fixture: WebFixture;
+	path: string;
+}) {
+	const { t, fixture, path } = args;
+
 	const node = await t.run((ctx) =>
 		ctx.db
 			.query("files_nodes")
@@ -4693,8 +4755,8 @@ async function saved_node_id_by_path(t: ReturnType<typeof test_convex>, fixture:
 describe("save_browser_download", () => {
 	test("saves to /.system/downloads with the origin only, and a second save pushes nothing", async () => {
 		const t = test_convex();
-		const fixture = await seed_web_member(t);
-		const started = await start_web_session(t, fixture);
+		const fixture = await seed_web_member({ t });
+		const started = await start_web_session({ t, fixture });
 		if (started._nay) throw new Error(started._nay.message);
 		const sessionId = started._yay.session.sessionId;
 
@@ -4703,7 +4765,7 @@ describe("save_browser_download", () => {
 		runnerQueue.push(runner_download_info({ origin: "https://example.com/account/export?token=secret#top" }), {
 			ok: true,
 		});
-		const saved = await save_download(t, fixture, sessionId);
+		const saved = await save_download({ t, fixture, sessionId });
 		if (saved._nay) throw new Error(saved._nay.message);
 		expect(saved._yay).toEqual({ nodeId: saved._yay.nodeId, path: "/.system/downloads/report.pdf", shared: true });
 
@@ -4732,14 +4794,14 @@ describe("save_browser_download", () => {
 				},
 			},
 		]);
-		expect(await node_metadata(t, fixture, saved._yay.nodeId)).toEqual({
+		expect(await node_metadata({ t, fixture, nodeId: saved._yay.nodeId })).toEqual({
 			"metadata.source": "browser-download",
 			"metadata.original-url": "https://example.com",
 		});
 
 		// A second viewer tab saves the same download. It gets the saved file, and the runner is not asked again.
 		runnerQueue.push(runner_download_info(), { ok: true });
-		const again = await save_download(t, fixture, sessionId);
+		const again = await save_download({ t, fixture, sessionId });
 		expect(again).toEqual(saved);
 		expect(runnerCalls).toHaveLength(3);
 		expect(await t.run((ctx) => ctx.db.query("files_browser_download_saves").collect())).toHaveLength(1);
@@ -4747,16 +4809,16 @@ describe("save_browser_download", () => {
 
 	test("the create step finds the save: it signs the same asset again until the push worked", async () => {
 		const t = test_convex();
-		const fixture = await seed_web_member(t);
-		const started = await start_web_session(t, fixture);
+		const fixture = await seed_web_member({ t });
+		const started = await start_web_session({ t, fixture });
 		if (started._nay) throw new Error(started._nay.message);
-		const args = download_node_args(fixture, started._yay.session.sessionId);
+		const args = download_node_args({ fixture, sessionId: started._yay.session.sessionId });
 
 		const first = await t.mutation(internal.files_browser.create_browser_download_node, args);
 		if (first._nay) throw new Error(first._nay.message);
 		expect(first._yay).toMatchObject({ kind: "push", path: "/.system/downloads/data.bin", shared: true });
 		// A `data:` download has no origin, so no `original-url` is stored.
-		expect(await node_metadata(t, fixture, first._yay.nodeId)).toEqual({ "metadata.source": "browser-download" });
+		expect(await node_metadata({ t, fixture, nodeId: first._yay.nodeId })).toEqual({ "metadata.source": "browser-download" });
 
 		// Two viewer tabs can pass the first check at the same time. The second create finds the save,
 		// which is not pushed yet, so it gets an upload URL for the same asset. The runner joins the
@@ -4777,8 +4839,8 @@ describe("save_browser_download", () => {
 
 	test("a failed push can be retried: the next save pushes the same asset, and then it is saved", async () => {
 		const t = test_convex();
-		const fixture = await seed_web_member(t);
-		const started = await start_web_session(t, fixture);
+		const fixture = await seed_web_member({ t });
+		const started = await start_web_session({ t, fixture });
 		if (started._nay) throw new Error(started._nay.message);
 		const sessionId = started._yay.session.sessionId;
 
@@ -4787,7 +4849,7 @@ describe("save_browser_download", () => {
 			ok: false,
 			error: { code: "download_push_failed", message: "The download could not be saved." },
 		});
-		expect(await save_download(t, fixture, sessionId)).toEqual({
+		expect(await save_download({ t, fixture, sessionId })).toEqual({
 			_nay: { name: "download_push_failed", message: "Download not saved: the upload failed." },
 		});
 		const [save] = await t.run((ctx) => ctx.db.query("files_browser_download_saves").collect());
@@ -4795,7 +4857,7 @@ describe("save_browser_download", () => {
 
 		// Retry. The saved row is not pushed, so the runner is asked to push the same asset again.
 		runnerQueue.push(runner_download_info(), { ok: true });
-		const retried = await save_download(t, fixture, sessionId);
+		const retried = await save_download({ t, fixture, sessionId });
 		if (retried._nay) throw new Error(retried._nay.message);
 		expect(retried._yay).toEqual({ nodeId: save!.nodeId, path: "/.system/downloads/report.pdf", shared: true });
 		const pushes = runnerCalls.filter((call) => call.route === "download-push");
@@ -4808,17 +4870,17 @@ describe("save_browser_download", () => {
 
 		// Now it is saved. A third save asks the runner nothing.
 		const callsBefore = runnerCalls.length;
-		expect(await save_download(t, fixture, sessionId)).toEqual(retried);
+		expect(await save_download({ t, fixture, sessionId })).toEqual(retried);
 		expect(runnerCalls).toHaveLength(callsBefore);
 	});
 
 	test("returns the file another tab saved when the runner already forgot the download", async () => {
 		const t = test_convex();
-		const fixture = await seed_web_member(t);
-		const started = await start_web_session(t, fixture);
+		const fixture = await seed_web_member({ t });
+		const started = await start_web_session({ t, fixture });
 		if (started._nay) throw new Error(started._nay.message);
 		const sessionId = started._yay.session.sessionId;
-		const args = { ...download_node_args(fixture, sessionId), name: "report.pdf" };
+		const args = { ...download_node_args({ fixture, sessionId }), name: "report.pdf" };
 
 		// Tab A saves and pushes the download while tab B asks the runner about it. The runner then
 		// forgot it, because it forgets a download once it is pushed.
@@ -4828,7 +4890,7 @@ describe("save_browser_download", () => {
 			await t.mutation(internal.files_browser.mark_browser_download_pushed, { sessionId, downloadId: "download-1" });
 			return Response.json({ ok: false, error: { code: "download_gone", message: "The download is gone." } });
 		});
-		const saved = await save_download(t, fixture, sessionId);
+		const saved = await save_download({ t, fixture, sessionId });
 
 		expect(saved).toEqual({
 			_yay: { nodeId: expect.any(String), path: "/.system/downloads/report.pdf", shared: true },
@@ -4840,17 +4902,17 @@ describe("save_browser_download", () => {
 		const fixture = await t.run((ctx) =>
 			test_mocks_fill_db_with.membership(ctx, { organizationName: "personal", workspaceName: "home" }),
 		);
-		const started = await start_web_session(t, fixture);
+		const started = await start_web_session({ t, fixture });
 		if (started._nay) throw new Error(started._nay.message);
 		const sessionId = started._yay.session.sessionId;
 
 		runnerQueue.push(runner_download_info({ name: "report.pdf" }), { ok: true });
-		const first = await save_download(t, fixture, sessionId, "download-1");
+		const first = await save_download({ t, fixture, sessionId, downloadId: "download-1" });
 		// The personal workspace has no other members, so the file is not shared.
 		expect(first._yay).toMatchObject({ path: "/.system/downloads/report.pdf", shared: false });
 
 		runnerQueue.push(runner_download_info({ name: "report.pdf" }), { ok: true });
-		const second = await save_download(t, fixture, sessionId, "download-2");
+		const second = await save_download({ t, fixture, sessionId, downloadId: "download-2" });
 		expect(second._yay).toMatchObject({ path: "/.system/downloads/report-2.pdf", shared: false });
 		expect(await t.run((ctx) => ctx.db.get("files_nodes", first._yay!.nodeId))).toMatchObject({
 			path: "/.system/downloads/report.pdf",
@@ -4859,19 +4921,19 @@ describe("save_browser_download", () => {
 
 		// A page must not create an instruction file that the agent would read.
 		runnerQueue.push(runner_download_info({ name: "AGENTS.md", contentType: "text/markdown" }), { ok: true });
-		const special = await save_download(t, fixture, sessionId, "download-3");
+		const special = await save_download({ t, fixture, sessionId, downloadId: "download-3" });
 		expect(special._yay).toMatchObject({ path: "/.system/downloads/agents-download.md" });
 	});
 
 	test("refuses after the payer's plan drops to Free", async () => {
 		const t = test_convex();
-		const fixture = await seed_web_member(t);
-		const started = await start_web_session(t, fixture);
+		const fixture = await seed_web_member({ t });
+		const started = await start_web_session({ t, fixture });
 		if (started._nay) throw new Error(started._nay.message);
 		await t.run((ctx) => test_mocks_fill_db_with.plan(ctx, { userId: fixture.userId, plan: "Free" }));
 
 		runnerQueue.push(runner_download_info(), { ok: true });
-		expect(await save_download(t, fixture, started._yay.session.sessionId)).toEqual({
+		expect(await save_download({ t, fixture, sessionId: started._yay.session.sessionId })).toEqual({
 			_nay: { message: "Download not saved: your plan no longer allows the browser." },
 		});
 		expect(runnerCalls.map((call) => call.route)).toEqual(["open", "download-info"]);
@@ -4881,33 +4943,33 @@ describe("save_browser_download", () => {
 
 	test("refuses a workspace member who does not own the session", async () => {
 		const t = test_convex();
-		const owner = await seed_web_member(t);
-		const member = await add_workspace_member(t, owner, { role: "member", plan: "Pro" });
-		const started = await start_web_session(t, owner);
+		const owner = await seed_web_member({ t });
+		const member = await add_workspace_member({ t, owner, role: "member", plan: "Pro" });
+		const started = await start_web_session({ t, fixture: owner });
 		if (started._nay) throw new Error(started._nay.message);
 
-		expect(await save_download(t, member, started._yay.session.sessionId)).toEqual({ _nay: { message: "Not found" } });
+		expect(await save_download({ t, fixture: member, sessionId: started._yay.session.sessionId })).toEqual({ _nay: { message: "Not found" } });
 		expect(runnerCalls.map((call) => call.route)).toEqual(["open"]);
 	});
 
 	test("refuses a file-mode session", async () => {
 		const t = test_convex();
 		const fixture = await seed_html_file(t);
-		const started = await start_saved_session(t, fixture);
+		const started = await start_saved_session({ t, fixture });
 		if (started._nay) throw new Error(started._nay.message);
 
-		expect(await save_download(t, fixture, started._yay.sessionId)).toEqual({ _nay: { message: "Not found" } });
+		expect(await save_download({ t, fixture, sessionId: started._yay.sessionId })).toEqual({ _nay: { message: "Not found" } });
 		expect(runnerCalls.map((call) => call.route)).toEqual(["open"]);
 	});
 
 	test("says so when the runner no longer has the download", async () => {
 		const t = test_convex();
-		const fixture = await seed_web_member(t);
-		const started = await start_web_session(t, fixture);
+		const fixture = await seed_web_member({ t });
+		const started = await start_web_session({ t, fixture });
 		if (started._nay) throw new Error(started._nay.message);
 
 		runnerQueue.push({ ok: false, error: { code: "download_gone", message: "Unknown download." } });
-		expect(await save_download(t, fixture, started._yay.session.sessionId)).toEqual({
+		expect(await save_download({ t, fixture, sessionId: started._yay.session.sessionId })).toEqual({
 			_nay: { name: "download_gone", message: "Download not saved: it is no longer available." },
 		});
 	});
@@ -4915,7 +4977,7 @@ describe("save_browser_download", () => {
 
 describe("fill_browser_chooser_from_files", () => {
 	async function seed_chooser_files(t: ReturnType<typeof test_convex>) {
-		const owner = await seed_web_member(t);
+		const owner = await seed_web_member({ t });
 		const first = await test_create_saved_text_file(t, {
 			membershipId: owner.membershipId,
 			path: "/docs/first.txt",
@@ -4929,12 +4991,14 @@ describe("fill_browser_chooser_from_files", () => {
 		return { owner, first, second };
 	}
 
-	async function fill(
-		t: ReturnType<typeof test_convex>,
-		fixture: WebFixture,
-		sessionId: Id<"files_browser_sessions">,
-		nodeIds: Array<Id<"files_nodes">>,
-	) {
+	async function fill(args: {
+		t: ReturnType<typeof test_convex>;
+		fixture: WebFixture;
+		sessionId: Id<"files_browser_sessions">;
+		nodeIds: Array<Id<"files_nodes">>;
+	}) {
+		const { t, fixture, nodeIds, sessionId} = args;
+
 		return await authed(t, fixture.userId).action(api.files_browser.fill_browser_chooser_from_files, {
 			membershipId: fixture.membershipId,
 			sessionId,
@@ -4950,14 +5014,14 @@ describe("fill_browser_chooser_from_files", () => {
 	test("gives the runner short signed URLs for readable files", async () => {
 		const t = test_convex();
 		const { owner, first, second } = await seed_chooser_files(t);
-		const started = await start_web_session(t, owner);
+		const started = await start_web_session({ t, fixture: owner });
 		if (started._nay) throw new Error(started._nay.message);
 
 		// Spying again returns the spy from `beforeEach`, with its mock URL.
 		const getUrl = vi.spyOn(R2.prototype, "getUrl");
 		const timeout = vi.spyOn(AbortSignal, "timeout");
 		runnerQueue.push({ ok: true });
-		expect(await fill(t, owner, started._yay.session.sessionId, [first, second])).toEqual({ _yay: null });
+		expect(await fill({ t, fixture: owner, sessionId: started._yay.session.sessionId, nodeIds: [first, second] })).toEqual({ _yay: null });
 		// The runner gives the whole fill 120 seconds. Convex waits a bit longer for its answer.
 		expect(timeout).toHaveBeenLastCalledWith(150_000);
 
@@ -4992,17 +5056,17 @@ describe("fill_browser_chooser_from_files", () => {
 	test("refuses the whole call when one file is not readable", async () => {
 		const t = test_convex();
 		const { owner, first, second } = await seed_chooser_files(t);
-		const member = await add_workspace_member(t, owner, { role: "member", plan: "Pro" });
+		const member = await add_workspace_member({ t, owner, role: "member", plan: "Pro" });
 		const restricted = await authed(t, owner.userId).mutation(api.files_sharing.restrict_node, {
 			membershipId: owner.membershipId,
 			nodeId: second,
 		});
 		expect(restricted._nay).toBeUndefined();
-		const started = await start_web_session(t, member);
+		const started = await start_web_session({ t, fixture: member });
 		if (started._nay) throw new Error(started._nay.message);
 
 		runnerQueue.push({ ok: true });
-		expect(await fill(t, member, started._yay.session.sessionId, [first, second])).toEqual({
+		expect(await fill({ t, fixture: member, sessionId: started._yay.session.sessionId, nodeIds: [first, second] })).toEqual({
 			_nay: { message: "Not found" },
 		});
 		expect(runnerCalls.map((call) => call.route)).toEqual(["open"]);
@@ -5011,21 +5075,21 @@ describe("fill_browser_chooser_from_files", () => {
 	test("refuses a folder, a total over 20 MiB, and a wrong file count", async () => {
 		const t = test_convex();
 		const { owner, first } = await seed_chooser_files(t);
-		const started = await start_web_session(t, owner);
+		const started = await start_web_session({ t, fixture: owner });
 		if (started._nay) throw new Error(started._nay.message);
 		const sessionId = started._yay.session.sessionId;
 
-		const folderId = await saved_node_id_by_path(t, owner, "/docs");
-		expect(await fill(t, owner, sessionId, [folderId])).toEqual({ _nay: { message: "Not found" } });
+		const folderId = await saved_node_id_by_path({ t, fixture: owner, path: "/docs" });
+		expect(await fill({ t, fixture: owner, sessionId, nodeIds: [folderId] })).toEqual({ _nay: { message: "Not found" } });
 
-		expect(await fill(t, owner, sessionId, [])).toEqual({ _nay: { message: "Choose 1 to 10 files." } });
+		expect(await fill({ t, fixture: owner, sessionId, nodeIds: [] })).toEqual({ _nay: { message: "Choose 1 to 10 files." } });
 		expect(
-			await fill(
+			await fill({
 				t,
-				owner,
+				fixture: owner,
 				sessionId,
-				Array.from({ length: 11 }, () => first),
-			),
+				nodeIds: Array.from({ length: 11 }, () => first),
+			}),
 		).toEqual({
 			_nay: { message: "Choose 1 to 10 files." },
 		});
@@ -5034,7 +5098,7 @@ describe("fill_browser_chooser_from_files", () => {
 			const node = await ctx.db.get("files_nodes", first);
 			await ctx.db.patch("files_r2_assets", node!.assetId!, { size: 20 * 1024 * 1024 + 1 });
 		});
-		expect(await fill(t, owner, sessionId, [first])).toEqual({
+		expect(await fill({ t, fixture: owner, sessionId, nodeIds: [first] })).toEqual({
 			_nay: { message: "Files too large: a page takes at most 20 MB at once." },
 		});
 		expect(runnerCalls.map((call) => call.route)).toEqual(["open"]);
@@ -5044,8 +5108,8 @@ describe("fill_browser_chooser_from_files", () => {
 describe("grant_browser_upload", () => {
 	test("returns the runner upload URL with the single-use grant", async () => {
 		const t = test_convex();
-		const fixture = await seed_web_member(t);
-		const started = await start_web_session(t, fixture);
+		const fixture = await seed_web_member({ t });
+		const started = await start_web_session({ t, fixture });
 		if (started._nay) throw new Error(started._nay.message);
 
 		const expiresAt = Date.now() + 120_000;
@@ -5088,9 +5152,9 @@ describe("grant_browser_upload", () => {
 
 	test("refuses a workspace member who does not own the session", async () => {
 		const t = test_convex();
-		const owner = await seed_web_member(t);
-		const member = await add_workspace_member(t, owner, { role: "member", plan: "Pro" });
-		const started = await start_web_session(t, owner);
+		const owner = await seed_web_member({ t });
+		const member = await add_workspace_member({ t, owner, role: "member", plan: "Pro" });
+		const started = await start_web_session({ t, fixture: owner });
 		if (started._nay) throw new Error(started._nay.message);
 
 		const granted = await authed(t, member.userId).action(api.files_browser.grant_browser_upload, {

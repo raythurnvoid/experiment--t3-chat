@@ -13,7 +13,7 @@ export function plugins_ui_http_routes(router: { route: HttpRouter["route"] }) {
 		method: "GET",
 		handler: httpAction(async (ctx, request) => {
 			const { plugins_ui_http_handle_request } = await import("./plugins_ui.ts");
-			return await plugins_ui_http_handle_request(ctx, request, pathPrefix);
+			return await plugins_ui_http_handle_request({ ctx, request, pathPrefix });
 		}),
 	});
 

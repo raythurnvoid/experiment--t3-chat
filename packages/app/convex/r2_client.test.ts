@@ -45,11 +45,15 @@ async function create_upload(t: ReturnType<typeof test_convex>) {
 	return { ...created._yay, asset };
 }
 
-async function post_event(
-	t: ReturnType<typeof test_convex>,
-	upload: Awaited<ReturnType<typeof create_upload>>,
-	args: { id: string; size: number; etag: string },
-) {
+async function post_event(args: {
+	t: ReturnType<typeof test_convex>;
+	upload: Awaited<ReturnType<typeof create_upload>>;
+	id: string;
+	size: number;
+	etag: string;
+}) {
+	const { t, upload } = args;
+
 	return await t.fetch("/api/r2/event", {
 		method: "POST",
 		headers: {
@@ -112,8 +116,8 @@ describe("direct upload publication", () => {
 			412,
 		);
 		const results = await Promise.all([
-			post_event(t, upload, { id: "first", size: 5, etag: "first-etag" }),
-			post_event(t, upload, { id: "duplicate", size: 5, etag: "first-etag" }),
+			post_event({ t, upload, id: "first", size: 5, etag: "first-etag" }),
+			post_event({ t, upload, id: "duplicate", size: 5, etag: "first-etag" }),
 		]);
 		expect(results.map((response) => response.status)).toEqual([204, 204]);
 		const saved = await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload.assetId));
@@ -132,7 +136,7 @@ describe("direct upload publication", () => {
 					}),
 			),
 		);
-		expect((await post_event(t, upload, { id: "weak", size: 12, etag: "stale-event" })).status).toBe(204);
+		expect((await post_event({ t, upload, id: "weak", size: 12, etag: "stale-event" })).status).toBe(204);
 		expect(await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload.assetId))).toMatchObject({
 			size: 5,
 			etag: "same-etag",
@@ -144,7 +148,7 @@ describe("direct upload publication", () => {
 		const upload = await create_upload(t);
 		const fetchSpy = vi.fn(async () => new Response(null, { headers: { "Content-Length": "0", ETag: '"empty"' } }));
 		vi.stubGlobal("fetch", fetchSpy);
-		expect((await post_event(t, upload, { id: "review-empty", size: 0, etag: "empty" })).status).toBe(204);
+		expect((await post_event({ t, upload, id: "review-empty", size: 0, etag: "empty" })).status).toBe(204);
 		expect(fetchSpy).toHaveBeenCalledTimes(1);
 		expect(await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload.assetId))).toMatchObject({ size: 0 });
 	});
@@ -160,7 +164,7 @@ describe("direct upload publication", () => {
 					: new Response(null, { headers: { ETag: '"empty"' } });
 			}),
 		);
-		expect((await post_event(t, upload, { id: "review-range", size: 0, etag: "empty" })).status).toBe(500);
+		expect((await post_event({ t, upload, id: "review-range", size: 0, etag: "empty" })).status).toBe(500);
 		expect((await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload.assetId)))?.r2Key).toBeUndefined();
 	});
 });

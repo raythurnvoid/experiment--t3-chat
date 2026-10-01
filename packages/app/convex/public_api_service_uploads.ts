@@ -1727,15 +1727,13 @@ export const delete_upload_target = internalMutation({
 				}
 			}
 			// Archive every committed match together, like one member delete action.
-			await files_nodes_db_archive_nodes(
+			await files_nodes_db_archive_nodes({
 				ctx,
-				{
-					nodeIds: committedNodes.map((node) => node._id),
-					updatedBy: args.principal.actorUserId,
-					now,
-				},
-				files_share_links_create_cleanup_state(),
-			);
+				nodeIds: committedNodes.map((node) => node._id),
+				updatedBy: args.principal.actorUserId,
+				now,
+				shareLinkCleanup: files_share_links_create_cleanup_state(),
+			});
 		}
 
 		for (const match of matches) {
@@ -2144,15 +2142,13 @@ export const archive_destination = internalMutation({
 			}
 		}
 
-		await files_nodes_db_archive_nodes(
+		await files_nodes_db_archive_nodes({
 			ctx,
-			{
-				nodeIds: [destination._id, ...activeDescendants.map((descendant) => descendant._id)],
-				updatedBy: args.principal.actorUserId,
-				now,
-			},
-			files_share_links_create_cleanup_state(),
-		);
+			nodeIds: [destination._id, ...activeDescendants.map((descendant) => descendant._id)],
+			updatedBy: args.principal.actorUserId,
+			now,
+			shareLinkCleanup: files_share_links_create_cleanup_state(),
+		});
 
 		return Result({ _yay: { archivedNodes: activeDescendants.length + 1 } });
 	},

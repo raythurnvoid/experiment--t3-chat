@@ -25,7 +25,7 @@ export function public_api_plugin_files_http_routes(router: { route: HttpRouter[
 							method,
 							handler: httpAction(async (ctx, request) => {
 								const { public_api_plugin_files_http_ensure_folder } = await import("./public_api_plugin_files.ts");
-								const result = await public_api_plugin_files_http_ensure_folder(ctx, request, path);
+								const result = await public_api_plugin_files_http_ensure_folder({ ctx, request, path });
 								return Response.json(result.body, { ...result, headers: { "Cache-Control": "no-store" } });
 							}),
 						});
@@ -57,7 +57,7 @@ export function public_api_plugin_files_http_routes(router: { route: HttpRouter[
 							method,
 							handler: httpAction(async (ctx, request) => {
 								const { public_api_plugin_files_http_archive } = await import("./public_api_plugin_files.ts");
-								const result = await public_api_plugin_files_http_archive(ctx, request, path);
+								const result = await public_api_plugin_files_http_archive({ ctx, request, path });
 								return Response.json(result.body, { ...result, headers: { "Cache-Control": "no-store" } });
 							}),
 						});
@@ -89,7 +89,7 @@ export function public_api_plugin_files_http_routes(router: { route: HttpRouter[
 							method,
 							handler: httpAction(async (ctx, request) => {
 								const { public_api_plugin_files_http_set_access } = await import("./public_api_plugin_files.ts");
-								const result = await public_api_plugin_files_http_set_access(ctx, request, path);
+								const result = await public_api_plugin_files_http_set_access({ ctx, request, path });
 								return Response.json(result.body, { ...result, headers: { "Cache-Control": "no-store" } });
 							}),
 						});

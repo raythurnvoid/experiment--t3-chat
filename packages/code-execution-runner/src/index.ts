@@ -899,7 +899,13 @@ function build_evaluate_input(
 	return { ok: true, input: input ?? null, inputJson };
 }
 
-async function handle_execute_code(request: Request, env: Env, ctx?: ExecuteCodeContext): Promise<Response> {
+async function handle_execute_code(args: {
+	request: Request;
+	env: Env;
+	ctx?: ExecuteCodeContext;
+}): Promise<Response> {
+	const { request, env, ctx } = args;
+
 	// Auth first so an unauthenticated caller cannot probe the kill-switch state.
 	if (!(await is_authorized(request, env))) {
 		return json_response({ ok: false, error: { code: "unauthorized", message: "Unauthorized" } }, 401);
@@ -1148,7 +1154,7 @@ export async function handle_request(request: Request, env: Env, ctx?: ExecuteCo
 		return json_response({ ok: true }, 200);
 	}
 	if (request.method === "POST" && url.pathname === "/internal/execute-code") {
-		return handle_execute_code(request, env, ctx);
+		return handle_execute_code({ request, env, ctx });
 	}
 	return json_response({ ok: false, error: { code: "not_found", message: "Not found" } }, 404);
 }

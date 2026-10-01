@@ -591,15 +591,13 @@ export const archive_plugin_path = internalMutation({
 			}
 
 			const activeDescendants = descendants.filter((descendant) => descendant.archiveOperationId === null);
-			await files_nodes_db_archive_nodes(
+			await files_nodes_db_archive_nodes({
 				ctx,
-				{
-					nodeIds: [node._id, ...activeDescendants.map((descendant) => descendant._id)],
-					updatedBy: args.userId,
-					now,
-				},
-				files_share_links_create_cleanup_state(),
-			);
+				nodeIds: [node._id, ...activeDescendants.map((descendant) => descendant._id)],
+				updatedBy: args.userId,
+				now,
+				shareLinkCleanup: files_share_links_create_cleanup_state(),
+			});
 
 			return Result({ _yay: { archivedNodes: activeDescendants.length + 1 } });
 		}
@@ -642,11 +640,13 @@ export const archive_plugin_path = internalMutation({
 			}
 		}
 
-		await files_nodes_db_archive_nodes(
+		await files_nodes_db_archive_nodes({
 			ctx,
-			{ nodeIds: [node._id], updatedBy: args.userId, now },
-			files_share_links_create_cleanup_state(),
-		);
+			nodeIds: [node._id],
+			updatedBy: args.userId,
+			now,
+			shareLinkCleanup: files_share_links_create_cleanup_state(),
+		});
 
 		return Result({ _yay: { archivedNodes: 1 } });
 	},
@@ -805,15 +805,17 @@ function writer_failure(error: { message: string; name?: string }) {
 	return { status: 400, body: { message: error.message } } as const;
 }
 
-async function read_writer_proof(
-	ctx: ActionCtx,
-	request: Request,
+async function read_writer_proof(args: {
+	ctx: ActionCtx;
+	request: Request;
 	ids: {
 		writerId?: string;
 		nodeIds?: string[];
 		userIds?: string[];
-	},
-) {
+	};
+}) {
+	const { ctx, request, ids } = args;
+
 	const token = request.headers.get("Authorization");
 	const secret = request.headers.get("X-Bonobo-Service-Authorization");
 	if (!token?.startsWith("Bearer ") || !secret?.startsWith("Bearer "))
@@ -874,12 +876,16 @@ const ensure_folder_body_validator = z.object({
 
 export type public_api_plugin_files_http_ensure_folder_Body = z.infer<typeof ensure_folder_body_validator>;
 
-export async function public_api_plugin_files_http_ensure_folder(
-	ctx: ActionCtx,
-	request: Request,
-	path: "/api/v1/files/plugin-folders/ensure",
-) {
-	const auth = await public_api_authorize_request(ctx, request, {
+export async function public_api_plugin_files_http_ensure_folder(args: {
+	ctx: ActionCtx;
+	request: Request;
+	path: "/api/v1/files/plugin-folders/ensure";
+}) {
+	const { ctx, request, path } = args;
+
+	const auth = await public_api_authorize_request({
+		ctx,
+		request,
 		requiredScope: "files:write" satisfies public_api_Scope,
 		allowedKinds: ["plugin_run", "plugin_service"],
 		route: path,
@@ -926,9 +932,13 @@ export async function public_api_plugin_files_http_ensure_folder(
 			} as const;
 		if (body._yay.access?.readScopeId !== undefined)
 			return { status: 400, body: { message: "Writer folders use readers, not readScopeId." } } as const;
-		const proof = await read_writer_proof(ctx, request, {
+		const proof = await read_writer_proof({
+			ctx,
+			request,
+			ids: {
 			nodeIds: body._yay.writer.rootNodeId === null ? [] : [body._yay.writer.rootNodeId],
 			userIds: body._yay.access?.readers?.map((reader) => reader.userId),
+		},
 		});
 		if (proof._nay) return writer_failure(proof._nay);
 		const result = (await ctx.runMutation(internal.plugins_external_files.ensure_writer, {
@@ -1029,12 +1039,16 @@ const plugin_archive_body_validator = z.object({
 
 export type public_api_plugin_files_http_archive_Body = z.infer<typeof plugin_archive_body_validator>;
 
-export async function public_api_plugin_files_http_archive(
-	ctx: ActionCtx,
-	request: Request,
-	path: "/api/v1/files/plugin-archive",
-) {
-	const auth = await public_api_authorize_request(ctx, request, {
+export async function public_api_plugin_files_http_archive(args: {
+	ctx: ActionCtx;
+	request: Request;
+	path: "/api/v1/files/plugin-archive";
+}) {
+	const { ctx, request, path } = args;
+
+	const auth = await public_api_authorize_request({
+		ctx,
+		request,
 		requiredScope: "files:write" satisfies public_api_Scope,
 		allowedKinds: ["plugin_run", "plugin_service"],
 		route: path,
@@ -1086,9 +1100,13 @@ export async function public_api_plugin_files_http_archive(
 				status: 403,
 				body: await fail({ status: 403, message: "Permission denied", errorCode: "permission_denied" }),
 			} as const;
-		const proof = await read_writer_proof(ctx, request, {
+		const proof = await read_writer_proof({
+			ctx,
+			request,
+			ids: {
 			writerId: body._yay.writer.writerId,
 			nodeIds: [body._yay.writer.nodeId],
+		},
 		});
 		if (proof._nay) return writer_failure(proof._nay);
 		const writer = body._yay.writer;
@@ -1193,12 +1211,16 @@ const plugin_access_body_validator = z.object({
 
 export type public_api_plugin_files_http_set_access_Body = z.infer<typeof plugin_access_body_validator>;
 
-export async function public_api_plugin_files_http_set_access(
-	ctx: ActionCtx,
-	request: Request,
-	path: "/api/v1/files/plugin-access/set",
-) {
-	const auth = await public_api_authorize_request(ctx, request, {
+export async function public_api_plugin_files_http_set_access(args: {
+	ctx: ActionCtx;
+	request: Request;
+	path: "/api/v1/files/plugin-access/set";
+}) {
+	const { ctx, request, path } = args;
+
+	const auth = await public_api_authorize_request({
+		ctx,
+		request,
 		requiredScope: "files:write" satisfies public_api_Scope,
 		allowedKinds: ["plugin_run", "plugin_service"],
 		route: path,
@@ -1255,9 +1277,13 @@ export async function public_api_plugin_files_http_set_access(
 			body._yay.access.readOnly !== undefined
 		)
 			return { status: 400, body: { message: "A writer access change sets only readers." } } as const;
-		const proof = await read_writer_proof(ctx, request, {
+		const proof = await read_writer_proof({
+			ctx,
+			request,
+			ids: {
 			writerId: body._yay.writer.writerId,
 			userIds: body._yay.access.readers.map((reader) => reader.userId),
+		},
 		});
 		if (proof._nay) return writer_failure(proof._nay);
 		const writer = body._yay.writer;
@@ -1370,7 +1396,9 @@ const inspect_writer_body_validator = z
 export type public_api_plugin_files_http_inspect_writer_Body = z.infer<typeof inspect_writer_body_validator>;
 
 export async function public_api_plugin_files_http_inspect_writer(ctx: ActionCtx, request: Request) {
-	const auth = await public_api_authorize_request(ctx, request, {
+	const auth = await public_api_authorize_request({
+		ctx,
+		request,
 		requiredScope: "files:write",
 		allowedKinds: ["plugin_service"],
 		route: "/api/v1/files/plugin-writers/inspect",
@@ -1382,7 +1410,7 @@ export async function public_api_plugin_files_http_inspect_writer(ctx: ActionCtx
 	if (!body._yay.path.startsWith("/") || server_path_normalize(body._yay.path) !== body._yay.path)
 		return { status: 400, body: { message: "Path must be a normalized absolute path." } } as const;
 
-	const proof = await read_writer_proof(ctx, request, { writerId: body._yay.writerId });
+	const proof = await read_writer_proof({ ctx, request, ids: { writerId: body._yay.writerId } });
 	if (proof._nay) return writer_failure(proof._nay);
 
 	const args = {
@@ -1470,7 +1498,9 @@ const advance_writer_body_validator = z
 export type public_api_plugin_files_http_advance_writer_Body = z.infer<typeof advance_writer_body_validator>;
 
 export async function public_api_plugin_files_http_advance_writer(ctx: ActionCtx, request: Request) {
-	const auth = await public_api_authorize_request(ctx, request, {
+	const auth = await public_api_authorize_request({
+		ctx,
+		request,
 		requiredScope: "files:write",
 		allowedKinds: ["plugin_service"],
 		route: "/api/v1/files/plugin-writers/advance",
@@ -1480,7 +1510,7 @@ export async function public_api_plugin_files_http_advance_writer(ctx: ActionCtx
 	const body = await server_request_json_parse_and_validate(request, advance_writer_body_validator);
 	if (body._nay) return { status: 400, body: { message: body._nay.message } } as const;
 
-	const proof = await read_writer_proof(ctx, request, { writerId: body._yay.writerId });
+	const proof = await read_writer_proof({ ctx, request, ids: { writerId: body._yay.writerId } });
 	if (proof._nay) return writer_failure(proof._nay);
 
 	const result = (await ctx.runMutation(internal.plugins_external_files.change_scope, {

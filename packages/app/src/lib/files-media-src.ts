@@ -38,7 +38,13 @@ function read_cached_signed_url(cacheKey: string, now: number) {
 	return null;
 }
 
-function remember_signed_url(cacheKey: string, url: string, now: number) {
+function remember_signed_url(args: {
+	cacheKey: string;
+	url: string;
+	now: number;
+}) {
+	const { cacheKey, now, url} = args;
+
 	// Re-insert so the map stays ordered oldest first, then drop from the front once it is full.
 	signed_url_cache.delete(cacheKey);
 	signed_url_cache.set(cacheKey, { url, expiresAt: now + SIGNED_URL_LIFETIME_MS });
@@ -79,7 +85,7 @@ export async function files_media_get_signed_url(args: {
 		return signed;
 	}
 
-	remember_signed_url(cacheKey, signed._yay.url, now);
+	remember_signed_url({ cacheKey, url: signed._yay.url, now });
 
 	return Result({ _yay: signed._yay.url });
 }

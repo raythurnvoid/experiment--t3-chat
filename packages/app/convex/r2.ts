@@ -85,11 +85,13 @@ const ASSET_KEY_REGEX = /^organizations\/([^/]+)\/workspaces\/([^/]+)\/assets\/(
 /**
  * Upload and media processing only accept real tenant file storage.
  */
-function r2_require_real_scope(
-	ctx: QueryCtx | MutationCtx,
-	organizationId: Doc<"files_nodes">["organizationId"],
-	workspaceId: Doc<"files_nodes">["workspaceId"],
-): { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces"> } {
+function r2_require_real_scope(args: {
+	ctx: QueryCtx | MutationCtx;
+	organizationId: Doc<"files_nodes">["organizationId"];
+	workspaceId: Doc<"files_nodes">["workspaceId"];
+}): { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces"> } {
+	const { ctx, organizationId, workspaceId } = args;
+
 	const scope = files_db_resolve_scope(ctx, workspaceId);
 	if (organizationId === organizations_GLOBAL_ORGANIZATION_ID || scope.kind !== "workspace") {
 		const errorMessage = "Mount scope reached a sink that requires real tenant ids";
@@ -447,7 +449,7 @@ export const get_data_for_public_download_url = internalQuery({
 			return { fileNode, asset, materializationState: null };
 		}
 
-		const materializeScope = r2_require_real_scope(ctx, fileNode.organizationId, fileNode.workspaceId);
+		const materializeScope = r2_require_real_scope({ ctx, organizationId: fileNode.organizationId, workspaceId: fileNode.workspaceId });
 		return {
 			fileNode,
 			asset,
@@ -1005,7 +1007,7 @@ export const finalize_text_file_node_from_r2_assets = internalMutation({
 	returns: v.null(),
 	handler: async (ctx, args) => {
 		const now = Date.now();
-		const finalizeScope = r2_require_real_scope(ctx, args.organizationId, args.workspaceId);
+		const finalizeScope = r2_require_real_scope({ ctx, organizationId: args.organizationId, workspaceId: args.workspaceId });
 
 		// A member can archive or move the node while the calling action runs its R2 work, so the
 		// node state that action read at enqueue time can be stale. Read the node here instead: this
@@ -1336,7 +1338,7 @@ export const process_uploaded_asset_event = internalMutation({
 		const now = Date.now();
 		const serviceTarget = await public_api_service_uploads_db_get_target_by_asset(ctx, asset._id);
 		if (!fileNode || (serviceTarget && (serviceTarget.assetId !== asset._id || serviceTarget.state !== "pending"))) {
-			const scope = r2_require_real_scope(ctx, asset.organizationId, asset.workspaceId);
+			const scope = r2_require_real_scope({ ctx, organizationId: asset.organizationId, workspaceId: asset.workspaceId });
 			await public_api_service_uploads_db_record_untracked_asset_bytes(ctx, {
 				...scope,
 				assetId: asset._id,
@@ -1636,7 +1638,7 @@ export const retire_missing_upload = internalMutation({
 			return null;
 		}
 
-		const scope = r2_require_real_scope(ctx, asset.organizationId, asset.workspaceId);
+		const scope = r2_require_real_scope({ ctx, organizationId: asset.organizationId, workspaceId: asset.workspaceId });
 		const node = await ctx.db
 			.query("files_nodes")
 			.withIndex("by_organization_workspace_asset", (q) =>
@@ -1737,7 +1739,7 @@ export const cleanup_expired_unfinalized_assets = internalMutation({
 					}
 					const recoveryStartedAt =
 						(asset.uploadUrlExpiresAt ?? asset._creationTime + UPLOAD_SIGNED_URL_TTL_MS) - UPLOAD_SIGNED_URL_TTL_MS;
-					const recoveryScope = r2_require_real_scope(ctx, asset.organizationId, asset.workspaceId);
+					const recoveryScope = r2_require_real_scope({ ctx, organizationId: asset.organizationId, workspaceId: asset.workspaceId });
 					await ctx.scheduler.runAfter(0, internal.r2.recover_unfinalized_upload_publication, {
 						...recoveryScope,
 						assetId: asset._id,

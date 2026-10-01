@@ -39,11 +39,13 @@ async function create_asset(
 	return { kind: "asset", id, r2Key: r2_create_asset_key({ ...db, assetId: id }) } as const;
 }
 
-async function create_publication(
-	ctx: MutationCtx,
-	db: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces">; userId: Id<"users"> },
-	name: string,
-) {
+async function create_publication(args: {
+	ctx: MutationCtx;
+	db: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces">; userId: Id<"users"> };
+	name: string;
+}) {
+	const { ctx, db, name } = args;
+
 	const created = await files_pending_nodes_db_create(ctx, { ...db, parent: { kind: "root" }, name, kind: "file" });
 	if (created._nay) throw new Error(created._nay.message);
 	const resource = await create_asset(ctx, db);
@@ -113,7 +115,7 @@ describe("files_private_storage_db_reserve", () => {
 	test("counts reviewed Save outputs above cap while ordinary growth stays blocked", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
-		const publication = await t.run(async (ctx) => create_publication(ctx, db, "saved.txt"));
+		const publication = await t.run(async (ctx) => create_publication({ ctx, db, name: "saved.txt" }));
 		await t.run(async (ctx) => {
 			for (const quotaName of ["files_private_user_bytes", "files_private_workspace_bytes"] as const) {
 				const quotaId = await quotas_db_ensure(ctx, {
@@ -152,7 +154,7 @@ describe("files_private_storage_db_reserve", () => {
 		async (changed) => {
 			const t = test_convex();
 			const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
-			const publication = await t.run(async (ctx) => create_publication(ctx, db, "changed.txt"));
+			const publication = await t.run(async (ctx) => create_publication({ ctx, db, name: "changed.txt" }));
 			await t.run(async (ctx) => {
 				if (changed === "proposal")
 					await ctx.db.patch("files_pending_updates", publication.pendingUpdateId, { revision: 2 });
@@ -195,7 +197,7 @@ describe("files_private_storage_db_reserve", () => {
 			reservationId: Id<"files_private_storage_reservations">;
 		})[] = [];
 		for (let i = 0; i < 5; i++) {
-			const publication = await t.run(async (ctx) => create_publication(ctx, db, `${i}.txt`));
+			const publication = await t.run(async (ctx) => create_publication({ ctx, db, name: `${i}.txt` }));
 			const held = await t.run(async (ctx) =>
 				files_private_storage_db_reserve(ctx, {
 					...db,
@@ -207,7 +209,7 @@ describe("files_private_storage_db_reserve", () => {
 			if (held._nay) throw new Error(held._nay.message);
 			reservations.push({ ...publication, reservationId: held._yay });
 		}
-		const publication = await t.run(async (ctx) => create_publication(ctx, db, "retry.txt"));
+		const publication = await t.run(async (ctx) => create_publication({ ctx, db, name: "retry.txt" }));
 		await t.run(async (ctx) => {
 			const hold = await ctx.db.get("files_private_storage_reservations", reservations[0]!.reservationId);
 			if (!hold?.workspaceQuotaId) throw new Error("Expected workspace quota");
@@ -489,7 +491,7 @@ describe("private storage purge", () => {
 					})
 				)._nay,
 			).toBeUndefined();
-			const publication = await t.run((ctx) => create_publication(ctx, db, "failed-save.txt"));
+			const publication = await t.run((ctx) => create_publication({ ctx, db, name: "failed-save.txt" }));
 			const deadline = Date.now() + 60_000;
 			const assetHold = await t.run(async (ctx) => {
 				await ctx.db.patch("files_r2_assets", publication.resource.id, { unfinalizedExpiresAt: deadline });

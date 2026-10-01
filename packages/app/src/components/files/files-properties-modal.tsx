@@ -613,14 +613,16 @@ const FilesPropertiesModalWritePolicy = memo(function FilesPropertiesModalWriteP
 		onSaveStateChange,
 	]);
 
-	const renderChoices = (
-		choiceValue: PolicyDraft,
-		onChoice: (choice: PolicyDraft) => void,
-		groupId: string,
-		running: boolean,
-		groupKind: "policy" | "default",
-		writerPicker: ReactNode,
-	) => {
+	const renderChoices = (args: {
+		choiceValue: PolicyDraft;
+		onChoice: (choice: PolicyDraft) => void;
+		groupId: string;
+		running: boolean;
+		groupKind: "policy" | "default";
+		writerPicker: ReactNode;
+	}) => {
+		const { choiceValue, onChoice, groupId, running, groupKind, writerPicker } = args;
+
 		const copy = POLICY_COPY[groupKind === "default" ? "default" : nodeKind];
 		const headingId = `${groupId}-heading`;
 		const helperId = `${groupId}-helper`;
@@ -703,19 +705,19 @@ const FilesPropertiesModalWritePolicy = memo(function FilesPropertiesModalWriteP
 
 	return (
 		<div className={"FilesPropertiesModalWritePolicy" satisfies FilesPropertiesModalWritePolicy_ClassNames}>
-			{renderChoices(
-				choice,
-				(choiceValue) => setDraft(choiceValue),
-				policyGroupId,
-				isRunning,
-				"policy",
-				<FilesPropertiesModalWriterSummary
+			{renderChoices({
+				choiceValue: choice,
+				onChoice: (choiceValue) => setDraft(choiceValue),
+				groupId: policyGroupId,
+				running: isRunning,
+				groupKind: "policy",
+				writerPicker: <FilesPropertiesModalWriterSummary
 					writers={choice.writers}
 					hiddenWriterCount={policy_hidden_writer_count(savedPolicy)}
 					disabled={!canManage || isRunning}
 					onManage={() => setWritersDialog("policy")}
 				/>,
-			)}
+			})}
 			{error ? (
 				<p
 					className={"FilesPropertiesModalWritePolicy-error" satisfies FilesPropertiesModalWritePolicy_ClassNames}
@@ -729,19 +731,19 @@ const FilesPropertiesModalWritePolicy = memo(function FilesPropertiesModalWriteP
 				<div
 					className={"FilesPropertiesModalWritePolicy-new-items" satisfies FilesPropertiesModalWritePolicy_ClassNames}
 				>
-					{renderChoices(
-						defaultChoice,
-						(choiceValue) => setDefaultDraft(choiceValue),
-						defaultGroupId,
-						isDefaultRunning,
-						"default",
-						<FilesPropertiesModalWriterSummary
+					{renderChoices({
+						choiceValue: defaultChoice,
+						onChoice: (choiceValue) => setDefaultDraft(choiceValue),
+						groupId: defaultGroupId,
+						running: isDefaultRunning,
+						groupKind: "default",
+						writerPicker: <FilesPropertiesModalWriterSummary
 							writers={defaultChoice.writers}
 							hiddenWriterCount={policy_hidden_writer_count(savedDefault)}
 							disabled={!canManage || isDefaultRunning}
 							onManage={() => setWritersDialog("default")}
 						/>,
-					)}
+					})}
 					{/* Copying the rule onto the items already inside is one step of the next Save, not a setting
 					    that stays on. Do not disable the box while the job starts, or the browser throws a
 					    keyboard user out of the dialog. */}

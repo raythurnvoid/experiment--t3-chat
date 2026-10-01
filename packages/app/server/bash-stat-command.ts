@@ -97,12 +97,14 @@ function format_mode(mode: number, isDirectory: boolean) {
 /**
  * Render either `stat -c` replacement tokens or the default multi-line app metadata view.
  */
-function render_output(
-	format: string | null,
-	file: string,
-	stat: { isDirectory: boolean; mode: number; size: number | null | undefined; mtime: Date },
-	advisory?: string,
-) {
+function render_output(args: {
+	format: string | null;
+	file: string;
+	stat: { isDirectory: boolean; mode: number; size: number | null | undefined; mtime: Date };
+	advisory?: string;
+}) {
+	const { format, file, stat, advisory } = args;
+
 	const modeOctal = stat.mode.toString(8);
 	const modeStr = format_mode(stat.mode, stat.isDirectory);
 	// When size is undefined the current app-file size is unknown/not tracked;
@@ -188,7 +190,7 @@ export function bash_stat_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			return await bash_delegate_builtin_command({ command: "stat", args, commandCtx });
 		}
 
-		const capError = bash_enforce_reader_operand_cap("stat", commandCtx, dbFilesRoots, parsed._yay.files);
+		const capError = bash_enforce_reader_operand_cap({ command: "stat", commandCtx, dbFilesRoots, files: parsed._yay.files });
 		if (capError != null) return capError;
 
 		let stdout = "";
@@ -203,7 +205,7 @@ export function bash_stat_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			if (dbFilesPath == null) {
 				try {
 					const stat = await commandCtx.fs.stat(resolvedPath);
-					stdout += render_output(parsed._yay.format, file, stat);
+					stdout += render_output({ format: parsed._yay.format, file, stat });
 				} catch {
 					stderr += `stat: cannot stat '${file}': No such file or directory\n`;
 					hasError = true;
@@ -248,17 +250,17 @@ export function bash_stat_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 				}
 			}
 
-			stdout += render_output(
-				parsed._yay.format,
+			stdout += render_output({
+				format: parsed._yay.format,
 				file,
-				{
+				stat: {
 					isDirectory: dbFilesDoc.kind === "folder",
 					mode: dbFilesDoc.kind === "folder" ? 0o755 : 0o644,
 					size: currentDbFileSize,
 					mtime: new Date(dbFilesDoc.updatedAt),
 				},
-				"[stat: Access is a fixed placeholder; app files track only Size, Type, and Modify — not POSIX permissions, owner, group, inode, or blocks]",
-			);
+				advisory: "[stat: Access is a fixed placeholder; app files track only Size, Type, and Modify — not POSIX permissions, owner, group, inode, or blocks]",
+			});
 			// Unsupported format tokens are preserved literally in stdout, matching the
 			// formatter above. Warn once on stderr so agents do not treat `%i`, `%b`,
 			// device ids, or filesystem ids as real app-file metadata.

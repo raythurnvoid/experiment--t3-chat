@@ -79,8 +79,16 @@ function upload_failure(failure: { name?: string; message: string }) {
  * lives here because an interactive grant could in principle carry the scope: only the sealed
  * processing grant may upload.
  */
-async function authorize_service_upload_request(ctx: ActionCtx, request: Request, route: string) {
-	const auth = await public_api_authorize_request(ctx, request, {
+async function authorize_service_upload_request(args: {
+	ctx: ActionCtx;
+	request: Request;
+	route: string;
+}) {
+	const { ctx, request, route} = args;
+
+	const auth = await public_api_authorize_request({
+		ctx,
+		request,
 		requiredScope: "files:write" satisfies public_api_Scope,
 		allowedKinds: ["plugin_service"],
 		route,
@@ -125,12 +133,14 @@ const create_target_body_validator = z
 
 export type public_api_service_uploads_http_create_target_Body = z.infer<typeof create_target_body_validator>;
 
-export async function public_api_service_uploads_http_create_target(
-	ctx: ActionCtx,
-	request: Request,
-	path: "/api/v1/files/service-uploads/create-target",
-) {
-	const auth = await authorize_service_upload_request(ctx, request, path);
+export async function public_api_service_uploads_http_create_target(args: {
+	ctx: ActionCtx;
+	request: Request;
+	path: "/api/v1/files/service-uploads/create-target";
+}) {
+	const { ctx, request, path } = args;
+
+	const auth = await authorize_service_upload_request({ ctx, request, route: path });
 	if (auth._nay) {
 		return auth._nay;
 	}
@@ -177,12 +187,14 @@ const remint_body_validator = z
 
 export type public_api_service_uploads_http_remint_Body = z.infer<typeof remint_body_validator>;
 
-export async function public_api_service_uploads_http_remint(
-	ctx: ActionCtx,
-	request: Request,
-	path: "/api/v1/files/service-uploads/remint",
-) {
-	const auth = await authorize_service_upload_request(ctx, request, path);
+export async function public_api_service_uploads_http_remint(args: {
+	ctx: ActionCtx;
+	request: Request;
+	path: "/api/v1/files/service-uploads/remint";
+}) {
+	const { ctx, request, path } = args;
+
+	const auth = await authorize_service_upload_request({ ctx, request, route: path });
 	if (auth._nay) {
 		return auth._nay;
 	}
@@ -224,12 +236,14 @@ const finalize_body_validator = z
 
 export type public_api_service_uploads_http_finalize_Body = z.infer<typeof finalize_body_validator>;
 
-export async function public_api_service_uploads_http_finalize(
-	ctx: ActionCtx,
-	request: Request,
-	path: "/api/v1/files/service-uploads/finalize",
-) {
-	const auth = await authorize_service_upload_request(ctx, request, path);
+export async function public_api_service_uploads_http_finalize(args: {
+	ctx: ActionCtx;
+	request: Request;
+	path: "/api/v1/files/service-uploads/finalize";
+}) {
+	const { ctx, request, path } = args;
+
+	const auth = await authorize_service_upload_request({ ctx, request, route: path });
 	if (auth._nay) {
 		return auth._nay;
 	}
@@ -271,12 +285,14 @@ const delete_body_validator = z
 
 export type public_api_service_uploads_http_delete_Body = z.infer<typeof delete_body_validator>;
 
-export async function public_api_service_uploads_http_delete(
-	ctx: ActionCtx,
-	request: Request,
-	path: "/api/v1/files/service-uploads/delete",
-) {
-	const auth = await authorize_service_upload_request(ctx, request, path);
+export async function public_api_service_uploads_http_delete(args: {
+	ctx: ActionCtx;
+	request: Request;
+	path: "/api/v1/files/service-uploads/delete";
+}) {
+	const { ctx, request, path } = args;
+
+	const auth = await authorize_service_upload_request({ ctx, request, route: path });
 	if (auth._nay) {
 		return auth._nay;
 	}
@@ -318,12 +334,14 @@ export type public_api_service_uploads_http_archive_destination_Body = z.infer<
 	typeof archive_destination_body_validator
 >;
 
-export async function public_api_service_uploads_http_archive_destination(
-	ctx: ActionCtx,
-	request: Request,
-	path: "/api/v1/files/service-uploads/archive-destination",
-) {
-	const auth = await authorize_service_upload_request(ctx, request, path);
+export async function public_api_service_uploads_http_archive_destination(args: {
+	ctx: ActionCtx;
+	request: Request;
+	path: "/api/v1/files/service-uploads/archive-destination";
+}) {
+	const { ctx, request, path } = args;
+
+	const auth = await authorize_service_upload_request({ ctx, request, route: path });
 	if (auth._nay) {
 		return auth._nay;
 	}

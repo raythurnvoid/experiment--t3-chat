@@ -93,7 +93,13 @@ async function read_request_text_bounded(request: Request, maxBytes: number) {
 	return new TextDecoder().decode(bytes);
 }
 
-async function parse_request_json<T>(request: Request, schema: z.ZodSchema<T>, maxBytes: number) {
+async function parse_request_json<T>(args: {
+	request: Request;
+	schema: z.ZodSchema<T>;
+	maxBytes: number;
+}) {
+	const { request, schema, maxBytes } = args;
+
 	const declaredBytes = Number(request.headers.get("content-length") ?? Number.NaN);
 	if (Number.isFinite(declaredBytes) && declaredBytes > maxBytes) {
 		return { _nay: { message: "Request body is too large" } } as const;
@@ -347,12 +353,14 @@ const ERROR_CODE_BY_STATUS: Record<number, string> = {
  * Plugin runs pay one call slot per API request and report how that call ended. Every other kind has
  * nothing to settle, and `public_api_settle_plugin_call_best_effort` already ignores a null id.
  */
-async function settle(
-	ctx: ActionCtx,
-	callId: Parameters<typeof public_api_settle_plugin_call_best_effort>[1]["callId"],
-	status: number,
-	errorMessage?: string,
-) {
+async function settle(args: {
+	ctx: ActionCtx;
+	callId: Parameters<typeof public_api_settle_plugin_call_best_effort>[1]["callId"];
+	status: number;
+	errorMessage?: string;
+}) {
+	const { ctx, status, callId, errorMessage} = args;
+
 	await public_api_settle_plugin_call_best_effort(ctx, {
 		callId,
 		status: status === 200 ? "succeeded" : "failed",
@@ -376,8 +384,16 @@ const read_body_validator = z
 
 export type plugins_data_http_read_Body = z.infer<typeof read_body_validator>;
 
-export async function plugins_data_http_read(ctx: ActionCtx, request: Request, path: "/api/v1/plugin-data/read") {
-	const auth = await public_api_authorize_request(ctx, request, {
+export async function plugins_data_http_read(args: {
+	ctx: ActionCtx;
+	request: Request;
+	path: "/api/v1/plugin-data/read";
+}) {
+	const { ctx, request, path } = args;
+
+	const auth = await public_api_authorize_request({
+		ctx,
+		request,
 		requiredScope: "plugin_data:read" satisfies public_api_Scope,
 		allowedKinds: ["user_api_key", "plugin_run", "plugin_ui", "plugin_service"],
 		route: path,
@@ -386,16 +402,26 @@ export async function plugins_data_http_read(ctx: ActionCtx, request: Request, p
 		return auth._nay;
 	}
 
-	const body = await parse_request_json(request, read_body_validator, PLUGIN_DATA_REQUEST_MAX_BYTES);
+	const body = await parse_request_json({ request, schema: read_body_validator, maxBytes: PLUGIN_DATA_REQUEST_MAX_BYTES });
 	if (body._nay) {
 		const response = { status: 400, body: { message: body._nay.message } } as const;
-		await settle(ctx, auth._yay.pluginCallId, response.status, response.body.message);
+		await settle({
+			ctx,
+			callId: auth._yay.pluginCallId,
+			status: response.status,
+			errorMessage: response.body.message,
+		});
 		return response;
 	}
 
 	const principal = to_store_principal(auth._yay.principal, body._yay.installationId);
 	if (principal._nay) {
-		await settle(ctx, auth._yay.pluginCallId, principal._nay.status, principal._nay.body.message);
+		await settle({
+			ctx,
+			callId: auth._yay.pluginCallId,
+			status: principal._nay.status,
+			errorMessage: principal._nay.body.message,
+		});
 		return principal._nay;
 	}
 
@@ -406,7 +432,12 @@ export async function plugins_data_http_read(ctx: ActionCtx, request: Request, p
 	});
 	if (read._nay) {
 		const response = store_failure(read._nay);
-		await settle(ctx, auth._yay.pluginCallId, response.status, response.body.message);
+		await settle({
+			ctx,
+			callId: auth._yay.pluginCallId,
+			status: response.status,
+			errorMessage: response.body.message,
+		});
 		return response;
 	}
 
@@ -415,7 +446,7 @@ export async function plugins_data_http_read(ctx: ActionCtx, request: Request, p
 		body: { document: read._yay },
 		headers: { "Cache-Control": "no-store" },
 	} as const;
-	await settle(ctx, auth._yay.pluginCallId, 200);
+	await settle({ ctx, callId: auth._yay.pluginCallId, status: 200 });
 	return response;
 }
 
@@ -519,8 +550,16 @@ const list_body_validator = z
 
 export type plugins_data_http_list_Body = z.infer<typeof list_body_validator>;
 
-export async function plugins_data_http_list(ctx: ActionCtx, request: Request, path: "/api/v1/plugin-data/list") {
-	const auth = await public_api_authorize_request(ctx, request, {
+export async function plugins_data_http_list(args: {
+	ctx: ActionCtx;
+	request: Request;
+	path: "/api/v1/plugin-data/list";
+}) {
+	const { ctx, request, path } = args;
+
+	const auth = await public_api_authorize_request({
+		ctx,
+		request,
 		requiredScope: "plugin_data:read" satisfies public_api_Scope,
 		allowedKinds: ["user_api_key", "plugin_run", "plugin_ui", "plugin_service"],
 		route: path,
@@ -529,16 +568,26 @@ export async function plugins_data_http_list(ctx: ActionCtx, request: Request, p
 		return auth._nay;
 	}
 
-	const body = await parse_request_json(request, list_body_validator, PLUGIN_DATA_REQUEST_MAX_BYTES);
+	const body = await parse_request_json({ request, schema: list_body_validator, maxBytes: PLUGIN_DATA_REQUEST_MAX_BYTES });
 	if (body._nay) {
 		const response = { status: 400, body: { message: body._nay.message } } as const;
-		await settle(ctx, auth._yay.pluginCallId, response.status, response.body.message);
+		await settle({
+			ctx,
+			callId: auth._yay.pluginCallId,
+			status: response.status,
+			errorMessage: response.body.message,
+		});
 		return response;
 	}
 
 	const principal = to_store_principal(auth._yay.principal, body._yay.installationId);
 	if (principal._nay) {
-		await settle(ctx, auth._yay.pluginCallId, principal._nay.status, principal._nay.body.message);
+		await settle({
+			ctx,
+			callId: auth._yay.pluginCallId,
+			status: principal._nay.status,
+			errorMessage: principal._nay.body.message,
+		});
 		return principal._nay;
 	}
 
@@ -561,7 +610,12 @@ export async function plugins_data_http_list(ctx: ActionCtx, request: Request, p
 				status: 400,
 				body: { message: "cursor is not a cursor this route issued" },
 			} as const;
-			await settle(ctx, auth._yay.pluginCallId, response.status, response.body.message);
+			await settle({
+				ctx,
+				callId: auth._yay.pluginCallId,
+				status: response.status,
+				errorMessage: response.body.message,
+			});
 			return response;
 		}
 
@@ -571,7 +625,12 @@ export async function plugins_data_http_list(ctx: ActionCtx, request: Request, p
 				status: 400,
 				body: { message: `cursor was issued for a different ${changedField}. Start a new page instead of reusing it.` },
 			} as const;
-			await settle(ctx, auth._yay.pluginCallId, response.status, response.body.message);
+			await settle({
+				ctx,
+				callId: auth._yay.pluginCallId,
+				status: response.status,
+				errorMessage: response.body.message,
+			});
 			return response;
 		}
 
@@ -591,7 +650,12 @@ export async function plugins_data_http_list(ctx: ActionCtx, request: Request, p
 	});
 	if (listed._nay) {
 		const response = store_failure(listed._nay);
-		await settle(ctx, auth._yay.pluginCallId, response.status, response.body.message);
+		await settle({
+			ctx,
+			callId: auth._yay.pluginCallId,
+			status: response.status,
+			errorMessage: response.body.message,
+		});
 		return response;
 	}
 
@@ -607,7 +671,7 @@ export async function plugins_data_http_list(ctx: ActionCtx, request: Request, p
 		},
 		headers: { "Cache-Control": "no-store" },
 	} as const;
-	await settle(ctx, auth._yay.pluginCallId, 200);
+	await settle({ ctx, callId: auth._yay.pluginCallId, status: 200 });
 	return response;
 }
 
@@ -626,8 +690,16 @@ const write_body_validator = z
 
 export type plugins_data_http_write_Body = z.infer<typeof write_body_validator>;
 
-export async function plugins_data_http_write(ctx: ActionCtx, request: Request, path: "/api/v1/plugin-data/write") {
-	const auth = await public_api_authorize_request(ctx, request, {
+export async function plugins_data_http_write(args: {
+	ctx: ActionCtx;
+	request: Request;
+	path: "/api/v1/plugin-data/write";
+}) {
+	const { ctx, request, path } = args;
+
+	const auth = await public_api_authorize_request({
+		ctx,
+		request,
 		requiredScope: "plugin_data:write" satisfies public_api_Scope,
 		allowedKinds: ["user_api_key", "plugin_run", "plugin_service"],
 		route: path,
@@ -636,16 +708,26 @@ export async function plugins_data_http_write(ctx: ActionCtx, request: Request, 
 		return auth._nay;
 	}
 
-	const body = await parse_request_json(request, write_body_validator, PLUGIN_DATA_REQUEST_MAX_BYTES);
+	const body = await parse_request_json({ request, schema: write_body_validator, maxBytes: PLUGIN_DATA_REQUEST_MAX_BYTES });
 	if (body._nay) {
 		const response = { status: 400, body: { message: body._nay.message } } as const;
-		await settle(ctx, auth._yay.pluginCallId, response.status, response.body.message);
+		await settle({
+			ctx,
+			callId: auth._yay.pluginCallId,
+			status: response.status,
+			errorMessage: response.body.message,
+		});
 		return response;
 	}
 
 	const principal = to_store_principal(auth._yay.principal, body._yay.installationId);
 	if (principal._nay) {
-		await settle(ctx, auth._yay.pluginCallId, principal._nay.status, principal._nay.body.message);
+		await settle({
+			ctx,
+			callId: auth._yay.pluginCallId,
+			status: principal._nay.status,
+			errorMessage: principal._nay.body.message,
+		});
 		return principal._nay;
 	}
 
@@ -657,7 +739,12 @@ export async function plugins_data_http_write(ctx: ActionCtx, request: Request, 
 	});
 	if (written._nay) {
 		const response = store_failure(written._nay);
-		await settle(ctx, auth._yay.pluginCallId, response.status, response.body.message);
+		await settle({
+			ctx,
+			callId: auth._yay.pluginCallId,
+			status: response.status,
+			errorMessage: response.body.message,
+		});
 		return response;
 	}
 
@@ -666,7 +753,7 @@ export async function plugins_data_http_write(ctx: ActionCtx, request: Request, 
 		body: { revision: written._yay.revision, byteSize: written._yay.byteSize },
 		headers: { "Cache-Control": "no-store" },
 	} as const;
-	await settle(ctx, auth._yay.pluginCallId, 200);
+	await settle({ ctx, callId: auth._yay.pluginCallId, status: 200 });
 	return response;
 }
 
@@ -690,12 +777,16 @@ const write_batch_body_validator = z
 
 export type plugins_data_http_write_batch_Body = z.infer<typeof write_batch_body_validator>;
 
-export async function plugins_data_http_write_batch(
-	ctx: ActionCtx,
-	request: Request,
-	path: "/api/v1/plugin-data/write-batch",
-) {
-	const auth = await public_api_authorize_request(ctx, request, {
+export async function plugins_data_http_write_batch(args: {
+	ctx: ActionCtx;
+	request: Request;
+	path: "/api/v1/plugin-data/write-batch";
+}) {
+	const { ctx, request, path } = args;
+
+	const auth = await public_api_authorize_request({
+		ctx,
+		request,
 		requiredScope: "plugin_data:write" satisfies public_api_Scope,
 		allowedKinds: ["user_api_key", "plugin_run", "plugin_service"],
 		route: path,
@@ -703,16 +794,26 @@ export async function plugins_data_http_write_batch(
 	if (auth._nay) {
 		return auth._nay;
 	}
-	const body = await parse_request_json(request, write_batch_body_validator, PLUGIN_DATA_WRITE_BATCH_REQUEST_MAX_BYTES);
+	const body = await parse_request_json({ request, schema: write_batch_body_validator, maxBytes: PLUGIN_DATA_WRITE_BATCH_REQUEST_MAX_BYTES });
 	if (body._nay) {
 		const response = { status: 400, body: { message: body._nay.message } } as const;
-		await settle(ctx, auth._yay.pluginCallId, response.status, response.body.message);
+		await settle({
+			ctx,
+			callId: auth._yay.pluginCallId,
+			status: response.status,
+			errorMessage: response.body.message,
+		});
 		return response;
 	}
 
 	const principal = to_store_principal(auth._yay.principal, body._yay.installationId);
 	if (principal._nay) {
-		await settle(ctx, auth._yay.pluginCallId, principal._nay.status, principal._nay.body.message);
+		await settle({
+			ctx,
+			callId: auth._yay.pluginCallId,
+			status: principal._nay.status,
+			errorMessage: principal._nay.body.message,
+		});
 		return principal._nay;
 	}
 
@@ -728,7 +829,12 @@ export async function plugins_data_http_write_batch(
 			status: 429,
 			body: { message: batchRateLimit.message, retryAfterMs: batchRateLimit.retryAfterMs },
 		} as const;
-		await settle(ctx, auth._yay.pluginCallId, response.status, response.body.message);
+		await settle({
+			ctx,
+			callId: auth._yay.pluginCallId,
+			status: response.status,
+			errorMessage: response.body.message,
+		});
 		return response;
 	}
 
@@ -741,7 +847,12 @@ export async function plugins_data_http_write_batch(
 	);
 	if (written._nay) {
 		const response = store_failure(written._nay);
-		await settle(ctx, auth._yay.pluginCallId, response.status, response.body.message);
+		await settle({
+			ctx,
+			callId: auth._yay.pluginCallId,
+			status: response.status,
+			errorMessage: response.body.message,
+		});
 		return response;
 	}
 
@@ -750,7 +861,7 @@ export async function plugins_data_http_write_batch(
 		body: { documents: written._yay.documents },
 		headers: { "Cache-Control": "no-store" },
 	} as const;
-	await settle(ctx, auth._yay.pluginCallId, 200);
+	await settle({ ctx, callId: auth._yay.pluginCallId, status: 200 });
 	return response;
 }
 
@@ -764,8 +875,16 @@ const delete_body_validator = z
 
 export type plugins_data_http_delete_Body = z.infer<typeof delete_body_validator>;
 
-export async function plugins_data_http_delete(ctx: ActionCtx, request: Request, path: "/api/v1/plugin-data/delete") {
-	const auth = await public_api_authorize_request(ctx, request, {
+export async function plugins_data_http_delete(args: {
+	ctx: ActionCtx;
+	request: Request;
+	path: "/api/v1/plugin-data/delete";
+}) {
+	const { ctx, request, path } = args;
+
+	const auth = await public_api_authorize_request({
+		ctx,
+		request,
 		requiredScope: "plugin_data:write" satisfies public_api_Scope,
 		allowedKinds: ["user_api_key", "plugin_run", "plugin_service"],
 		route: path,
@@ -774,16 +893,26 @@ export async function plugins_data_http_delete(ctx: ActionCtx, request: Request,
 		return auth._nay;
 	}
 
-	const body = await parse_request_json(request, delete_body_validator, PLUGIN_DATA_REQUEST_MAX_BYTES);
+	const body = await parse_request_json({ request, schema: delete_body_validator, maxBytes: PLUGIN_DATA_REQUEST_MAX_BYTES });
 	if (body._nay) {
 		const response = { status: 400, body: { message: body._nay.message } } as const;
-		await settle(ctx, auth._yay.pluginCallId, response.status, response.body.message);
+		await settle({
+			ctx,
+			callId: auth._yay.pluginCallId,
+			status: response.status,
+			errorMessage: response.body.message,
+		});
 		return response;
 	}
 
 	const principal = to_store_principal(auth._yay.principal, body._yay.installationId);
 	if (principal._nay) {
-		await settle(ctx, auth._yay.pluginCallId, principal._nay.status, principal._nay.body.message);
+		await settle({
+			ctx,
+			callId: auth._yay.pluginCallId,
+			status: principal._nay.status,
+			errorMessage: principal._nay.body.message,
+		});
 		return principal._nay;
 	}
 
@@ -794,7 +923,12 @@ export async function plugins_data_http_delete(ctx: ActionCtx, request: Request,
 	});
 	if (removed._nay) {
 		const response = store_failure(removed._nay);
-		await settle(ctx, auth._yay.pluginCallId, response.status, response.body.message);
+		await settle({
+			ctx,
+			callId: auth._yay.pluginCallId,
+			status: response.status,
+			errorMessage: response.body.message,
+		});
 		return response;
 	}
 
@@ -803,7 +937,7 @@ export async function plugins_data_http_delete(ctx: ActionCtx, request: Request,
 		body: { deleted: removed._yay.deleted },
 		headers: { "Cache-Control": "no-store" },
 	} as const;
-	await settle(ctx, auth._yay.pluginCallId, 200);
+	await settle({ ctx, callId: auth._yay.pluginCallId, status: 200 });
 	return response;
 }
 
@@ -823,14 +957,18 @@ const write_versioned_body_validator = z
 
 export type plugins_data_http_write_versioned_Body = z.infer<typeof write_versioned_body_validator>;
 
-export async function plugins_data_http_write_versioned(
-	ctx: ActionCtx,
-	request: Request,
-	path: "/api/v1/plugin-data/write-versioned",
-) {
+export async function plugins_data_http_write_versioned(args: {
+	ctx: ActionCtx;
+	request: Request;
+	path: "/api/v1/plugin-data/write-versioned";
+}) {
+	const { ctx, request, path } = args;
+
 	// Ordered writes come from one external producer that keeps its own outbox, so only a service
 	// grant may use them. A page or a key has no ordering of its own to enforce.
-	const auth = await public_api_authorize_request(ctx, request, {
+	const auth = await public_api_authorize_request({
+		ctx,
+		request,
 		requiredScope: "plugin_data:write" satisfies public_api_Scope,
 		allowedKinds: ["plugin_service"],
 		route: path,
@@ -839,7 +977,7 @@ export async function plugins_data_http_write_versioned(
 		return auth._nay;
 	}
 
-	const body = await parse_request_json(request, write_versioned_body_validator, PLUGIN_DATA_REQUEST_MAX_BYTES);
+	const body = await parse_request_json({ request, schema: write_versioned_body_validator, maxBytes: PLUGIN_DATA_REQUEST_MAX_BYTES });
 	if (body._nay) {
 		return { status: 400, body: { message: body._nay.message } } as const;
 	}
@@ -881,12 +1019,16 @@ const delete_versioned_body_validator = z
 
 export type plugins_data_http_delete_versioned_Body = z.infer<typeof delete_versioned_body_validator>;
 
-export async function plugins_data_http_delete_versioned(
-	ctx: ActionCtx,
-	request: Request,
-	path: "/api/v1/plugin-data/delete-versioned",
-) {
-	const auth = await public_api_authorize_request(ctx, request, {
+export async function plugins_data_http_delete_versioned(args: {
+	ctx: ActionCtx;
+	request: Request;
+	path: "/api/v1/plugin-data/delete-versioned";
+}) {
+	const { ctx, request, path } = args;
+
+	const auth = await public_api_authorize_request({
+		ctx,
+		request,
 		requiredScope: "plugin_data:write" satisfies public_api_Scope,
 		allowedKinds: ["plugin_service"],
 		route: path,
@@ -895,7 +1037,7 @@ export async function plugins_data_http_delete_versioned(
 		return auth._nay;
 	}
 
-	const body = await parse_request_json(request, delete_versioned_body_validator, PLUGIN_DATA_REQUEST_MAX_BYTES);
+	const body = await parse_request_json({ request, schema: delete_versioned_body_validator, maxBytes: PLUGIN_DATA_REQUEST_MAX_BYTES });
 	if (body._nay) {
 		return { status: 400, body: { message: body._nay.message } } as const;
 	}
@@ -942,8 +1084,16 @@ const reserve_body_validator = z
 
 export type plugins_data_http_reserve_Body = z.infer<typeof reserve_body_validator>;
 
-export async function plugins_data_http_reserve(ctx: ActionCtx, request: Request, path: "/api/v1/plugin-data/reserve") {
-	const auth = await public_api_authorize_request(ctx, request, {
+export async function plugins_data_http_reserve(args: {
+	ctx: ActionCtx;
+	request: Request;
+	path: "/api/v1/plugin-data/reserve";
+}) {
+	const { ctx, request, path } = args;
+
+	const auth = await public_api_authorize_request({
+		ctx,
+		request,
 		requiredScope: "plugin_data:write" satisfies public_api_Scope,
 		allowedKinds: ["plugin_service"],
 		route: path,
@@ -952,7 +1102,7 @@ export async function plugins_data_http_reserve(ctx: ActionCtx, request: Request
 		return auth._nay;
 	}
 
-	const body = await parse_request_json(request, reserve_body_validator, PLUGIN_DATA_REQUEST_MAX_BYTES);
+	const body = await parse_request_json({ request, schema: reserve_body_validator, maxBytes: PLUGIN_DATA_REQUEST_MAX_BYTES });
 	if (body._nay) {
 		return { status: 400, body: { message: body._nay.message } } as const;
 	}
@@ -996,12 +1146,16 @@ const release_reservation_body_validator = z
 
 export type plugins_data_http_release_reservation_Body = z.infer<typeof release_reservation_body_validator>;
 
-export async function plugins_data_http_release_reservation(
-	ctx: ActionCtx,
-	request: Request,
-	path: "/api/v1/plugin-data/release-reservation",
-) {
-	const auth = await public_api_authorize_request(ctx, request, {
+export async function plugins_data_http_release_reservation(args: {
+	ctx: ActionCtx;
+	request: Request;
+	path: "/api/v1/plugin-data/release-reservation";
+}) {
+	const { ctx, request, path } = args;
+
+	const auth = await public_api_authorize_request({
+		ctx,
+		request,
 		requiredScope: "plugin_data:write" satisfies public_api_Scope,
 		allowedKinds: ["plugin_service"],
 		route: path,
@@ -1010,7 +1164,7 @@ export async function plugins_data_http_release_reservation(
 		return auth._nay;
 	}
 
-	const body = await parse_request_json(request, release_reservation_body_validator, PLUGIN_DATA_REQUEST_MAX_BYTES);
+	const body = await parse_request_json({ request, schema: release_reservation_body_validator, maxBytes: PLUGIN_DATA_REQUEST_MAX_BYTES });
 	if (body._nay) {
 		return { status: 400, body: { message: body._nay.message } } as const;
 	}

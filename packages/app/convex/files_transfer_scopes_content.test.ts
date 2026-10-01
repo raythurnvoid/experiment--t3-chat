@@ -108,12 +108,14 @@ async function fixture() {
 	return { t, owner, current, personal, asOwner, asUser, threadId: created._yay.threadId };
 }
 
-async function start_copy(
-	f: Awaited<ReturnType<typeof fixture>>,
-	source: files_PendingTarget,
-	sourceWorkspace: "current" | "personal" = "personal",
-	destinationWorkspace: "current" | "personal" = "current",
-) {
+async function start_copy(args: {
+	f: Awaited<ReturnType<typeof fixture>>;
+	source: files_PendingTarget;
+	sourceWorkspace?: "current" | "personal";
+	destinationWorkspace?: "current" | "personal";
+}) {
+	const { f, source, sourceWorkspace = "personal", destinationWorkspace = "current" } = args;
+
 	const started = await f.t.mutation(internal.files_transfer.start_for_agent, {
 		membershipId: f.current.membershipId,
 		threadId: f.threadId,
@@ -152,12 +154,14 @@ async function start_copy(
 	throw new Error("Copy did not start");
 }
 
-async function append_saved_text(
-	f: Awaited<ReturnType<typeof fixture>>,
-	membershipId: Id<"organizations_workspaces_users">,
-	nodeId: Id<"files_nodes">,
-	text: string,
-) {
+async function append_saved_text(args: {
+	f: Awaited<ReturnType<typeof fixture>>;
+	membershipId: Id<"organizations_workspaces_users">;
+	nodeId: Id<"files_nodes">;
+	text: string;
+}) {
+	const { f, nodeId, text, membershipId} = args;
+
 	const pointers = await test_get_file_yjs_pointers(f.t, nodeId);
 	const asset = await f.t.run(async (ctx) => {
 		const snapshot = await ctx.db.get("files_yjs_snapshots", pointers.yjsSnapshotId);
@@ -183,11 +187,13 @@ async function append_saved_text(
 	}
 }
 
-async function media_proposal(
-	f: Awaited<ReturnType<typeof fixture>>,
-	workspace: "current" | "personal",
-	path = "/photo.png",
-) {
+async function media_proposal(args: {
+	f: Awaited<ReturnType<typeof fixture>>;
+	workspace: "current" | "personal";
+	path?: string;
+}) {
+	const { f, workspace, path = "/photo.png" } = args;
+
 	const scope = f[workspace];
 	const prepared = await f.t.mutation(internal.files_ingestion.prepare_file, {
 		...scope,
@@ -210,11 +216,13 @@ async function media_proposal(
 	return finalized._yay.target;
 }
 
-async function get_proposal(
-	f: Awaited<ReturnType<typeof fixture>>,
-	workspace: "current" | "personal",
-	target: files_PendingTarget,
-) {
+async function get_proposal(args: {
+	f: Awaited<ReturnType<typeof fixture>>;
+	workspace: "current" | "personal";
+	target: files_PendingTarget;
+}) {
+	const { f, workspace, target} = args;
+
 	const view = await f.asUser.query(api.files_pending_updates.get_file_pending_target, {
 		membershipId: f[workspace].membershipId,
 		target,
@@ -238,12 +246,14 @@ async function get_dependencies(
 	);
 }
 
-async function save_proposal(
-	f: Awaited<ReturnType<typeof fixture>>,
-	workspace: "current" | "personal",
-	target: files_PendingTarget,
-) {
-	const proposal = await get_proposal(f, workspace, target);
+async function save_proposal(args: {
+	f: Awaited<ReturnType<typeof fixture>>;
+	workspace: "current" | "personal";
+	target: files_PendingTarget;
+}) {
+	const { f, workspace, target } = args;
+
+	const proposal = await get_proposal({ f, workspace, target });
 	return await f.asUser.action(api.files_pending_updates.save_file_pending_update, {
 		membershipId: f[workspace].membershipId,
 		target,
@@ -306,8 +316,8 @@ async function copy_files(
 }
 
 async function media_copy_source(f: Awaited<ReturnType<typeof fixture>>) {
-	const media = await media_proposal(f, "current");
-	const saved = await save_proposal(f, "current", media);
+	const media = await media_proposal({ f, workspace: "current" });
+	const saved = await save_proposal({ f, workspace: "current", target: media });
 	if (saved._nay || saved._yay.target.kind !== "saved") throw new Error("Expected saved media");
 	const documentId = await test_create_saved_text_file(f.t, {
 		membershipId: f.current.membershipId,
@@ -531,7 +541,7 @@ describe("copy_transfer_file scopes", () => {
 			const first = await copy_files(f, { sources, sourceWorkspace: "current", destinationWorkspace: "personal" });
 			expect(first.every((item) => item.state === "completed")).toBe(true);
 			const source = first[0]!.outputTarget!;
-			const original = await get_proposal(f, "personal", source);
+			const original = await get_proposal({ f, workspace: "personal", target: source });
 			const originalDependencies = await get_dependencies(f, original.mediaDependencySetId);
 			expect(originalDependencies).toHaveLength(1);
 			if (destination === "saved")
@@ -555,19 +565,19 @@ describe("copy_transfer_file scopes", () => {
 			});
 			expect(second[0]).toMatchObject({ state: "completed" });
 			const target = second[0]!.outputTarget!;
-			const pending = await get_proposal(f, "personal", target);
+			const pending = await get_proposal({ f, workspace: "personal", target });
 			const before = target.kind === "saved" ? await f.t.run((ctx) => ctx.db.get("files_nodes", target.id)) : null;
-			expect(await save_proposal(f, "personal", target)).toMatchObject({
+			expect(await save_proposal({ f, workspace: "personal", target })).toMatchObject({
 				_nay: { message: expect.stringContaining("Save the selected media") },
 			});
-			expect(await get_proposal(f, "personal", target)).toEqual(pending);
+			expect(await get_proposal({ f, workspace: "personal", target })).toEqual(pending);
 			expect(await get_dependencies(f, pending.mediaDependencySetId)).toEqual(originalDependencies);
 			expect(second[0]!.capture!.mediaDependencySetId).toBe(pending.mediaDependencySetId);
 			if (target.kind === "saved") expect(await f.t.run((ctx) => ctx.db.get("files_nodes", target.id))).toEqual(before);
 			else
 				expect(await f.t.run((ctx) => ctx.db.get("files_pending_nodes", target.id))).toMatchObject({ state: "active" });
-			expect(await save_proposal(f, "personal", first[1]!.outputTarget!)).toHaveProperty("_yay");
-			expect(await save_proposal(f, "personal", target)).toHaveProperty("_yay");
+			expect(await save_proposal({ f, workspace: "personal", target: first[1]!.outputTarget! })).toHaveProperty("_yay");
+			expect(await save_proposal({ f, workspace: "personal", target })).toHaveProperty("_yay");
 		},
 	);
 
@@ -584,10 +594,10 @@ describe("copy_transfer_file scopes", () => {
 			const f = await fixture();
 			const sources = await media_copy_source(f);
 			if (destinationKind === "saved") {
-				const existing = await media_proposal(f, "personal");
-				expect(await save_proposal(f, "personal", existing)).toHaveProperty("_yay");
+				const existing = await media_proposal({ f, workspace: "personal" });
+				expect(await save_proposal({ f, workspace: "personal", target: existing })).toHaveProperty("_yay");
 			}
-			const otherMedia = change === "save" ? null : await media_proposal(f, "personal", "/different.png");
+			const otherMedia = change === "save" ? null : await media_proposal({ f, workspace: "personal", path: "/different.png" });
 			const personalThread = await f.asUser.mutation(api.ai_chat.thread_create, {
 				membershipId: f.personal.membershipId,
 				clientGeneratedId: "personal-media-edit",
@@ -607,7 +617,7 @@ describe("copy_transfer_file scopes", () => {
 					if (!media) throw new Error("Expected copied media");
 					const target = media.target;
 					expect(target.kind).toBe(destinationKind);
-					const pending = await get_proposal(f, "personal", target);
+					const pending = await get_proposal({ f, workspace: "personal", target });
 					const stored =
 						pending.pendingReplacement ?? (pending.createIntent?.kind === "stored" ? pending.createIntent : null);
 					if (!stored) throw new Error("Expected stored media");
@@ -617,7 +627,7 @@ describe("copy_transfer_file scopes", () => {
 							? files_media_build_private_src(target.id)
 							: files_media_build_file_src(target.id);
 					expect(init.body).toContain(mediaRef);
-					const saved = await save_proposal(f, "personal", target);
+					const saved = await save_proposal({ f, workspace: "personal", target });
 					if (saved._nay) throw new Error(saved._nay.message);
 					savedTarget = saved._yay.target;
 					if (otherMedia) {
@@ -632,10 +642,10 @@ describe("copy_transfer_file scopes", () => {
 							},
 						);
 						expect(replaced[0]).toMatchObject({ state: "completed", outputTarget: savedTarget });
-						const replacement = await get_proposal(f, "personal", savedTarget);
+						const replacement = await get_proposal({ f, workspace: "personal", target: savedTarget });
 						expect(replacement.pendingReplacement!.assetId).not.toBe(pinnedAssetId);
 						if (change === "save_replacement")
-							expect(await save_proposal(f, "personal", savedTarget)).toHaveProperty("_yay");
+							expect(await save_proposal({ f, workspace: "personal", target: savedTarget })).toHaveProperty("_yay");
 					}
 				}
 				return await fetch(input, init);
@@ -651,11 +661,11 @@ describe("copy_transfer_file scopes", () => {
 				return;
 			}
 			expect(copied[0]).toMatchObject({ state: "completed" });
-			const pending = await get_proposal(f, "personal", copied[0]!.outputTarget!);
+			const pending = await get_proposal({ f, workspace: "personal", target: copied[0]!.outputTarget! });
 			expect(await get_dependencies(f, pending.mediaDependencySetId)).toEqual([
 				expect.objectContaining({ src: mediaRef, assetId: pinnedAssetId }),
 			]);
-			expect(await save_proposal(f, "personal", copied[0]!.outputTarget!)).toHaveProperty("_yay");
+			expect(await save_proposal({ f, workspace: "personal", target: copied[0]!.outputTarget! })).toHaveProperty("_yay");
 		},
 	);
 
@@ -671,7 +681,7 @@ describe("copy_transfer_file scopes", () => {
 				path: "/source.txt",
 				textContent: "Saved\n",
 			});
-			await append_saved_text(f, sourceScope.membershipId, sourceId, "Unmaterialized\n");
+			await append_saved_text({ f, membershipId: sourceScope.membershipId, nodeId: sourceId, text: "Unmaterialized\n" });
 			expect(
 				await f.asUser.mutation(api.files_metadata.set_entries, {
 					membershipId: sourceScope.membershipId,
@@ -686,7 +696,7 @@ describe("copy_transfer_file scopes", () => {
 					writePolicy: { mode: "read_only" },
 				}),
 			).toEqual({ _yay: null });
-			const copy = await start_copy(f, { kind: "saved", id: sourceId }, sourceWorkspace, destinationWorkspace);
+			const copy = await start_copy({ f, source: { kind: "saved", id: sourceId }, sourceWorkspace, destinationWorkspace });
 			const data = await f.t.mutation(internal.files_nodes_content.get_transfer_file_copy_data, {
 				itemId: copy.item._id,
 				attempt: copy.item.attempt,
@@ -815,8 +825,8 @@ describe("copy_transfer_file scopes", () => {
 				operationBatchId: batch._yay.operationBatchId,
 			}),
 		).toEqual({ _yay: null });
-		await append_saved_text(f, f.personal.membershipId, sourceId, "New saved line\n");
-		const copy = await start_copy(f, target);
+		await append_saved_text({ f, membershipId: f.personal.membershipId, nodeId: sourceId, text: "New saved line\n" });
+		const copy = await start_copy({ f, source: target });
 		const data = await f.t.mutation(internal.files_nodes_content.get_transfer_file_copy_data, {
 			itemId: copy.item._id,
 			attempt: copy.item.attempt,
@@ -866,7 +876,7 @@ describe("copy_transfer_file scopes", () => {
 		).toEqual({ _yay: null });
 		const source = await f.t.run((ctx) => ctx.db.get("files_nodes", sourceId));
 		const destination = await f.t.run((ctx) => ctx.db.get("files_nodes", destinationId));
-		const copy = await start_copy(f, { kind: "saved", id: sourceId });
+		const copy = await start_copy({ f, source: { kind: "saved", id: sourceId } });
 		await f.t.action(internal.files_nodes_content.copy_transfer_file, {
 			itemId: copy.item._id,
 			attempt: copy.item.attempt,
@@ -908,7 +918,12 @@ describe("copy_transfer_file scopes", () => {
 			await ctx.db.patch("files_r2_assets", source._yay.assetId, { r2Key: key, unfinalizedExpiresAt: undefined });
 			await test_mocks_fill_db_with.plan(ctx, { userId: f.personal.userId, plan: "Free" });
 		});
-		const copy = await start_copy(f, { kind: "saved", id: source._yay.nodeId }, "current", "personal");
+		const copy = await start_copy({
+			f,
+			source: { kind: "saved", id: source._yay.nodeId },
+			sourceWorkspace: "current",
+			destinationWorkspace: "personal",
+		});
 		const before = vi.mocked(globalThis.fetch).mock.calls.length;
 		await f.t.action(internal.files_nodes_content.copy_transfer_file, {
 			itemId: copy.item._id,
@@ -929,7 +944,12 @@ describe("copy_transfer_file scopes", () => {
 			path: "/source.txt",
 			textContent: "Captured text\n",
 		});
-		const copy = await start_copy(f, { kind: "saved", id: sourceId }, "current", "personal");
+		const copy = await start_copy({
+			f,
+			source: { kind: "saved", id: sourceId },
+			sourceWorkspace: "current",
+			destinationWorkspace: "personal",
+		});
 		const data = await f.t.mutation(internal.files_nodes_content.get_transfer_file_copy_data, {
 			itemId: copy.item._id,
 			attempt: copy.item.attempt,

@@ -94,7 +94,12 @@ function parse_args(args: string[]) {
 		path = arg;
 	}
 
-	const limit = bash_parse_limit("tree", limitValue, bash_LISTING_DEFAULT_LIMIT, bash_LISTING_MAX_LIMIT);
+	const limit = bash_parse_limit({
+		command: "tree",
+		value: limitValue,
+		defaultLimit: bash_LISTING_DEFAULT_LIMIT,
+		maxLimit: bash_LISTING_MAX_LIMIT,
+	});
 	if (limit._nay) {
 		return limit;
 	}
@@ -308,7 +313,7 @@ export function bash_tree_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 					})) as files_nodes_list_subtree_Result;
 					return {
 						items: pageResult.page.map((item) => ({
-							path: bash_external_mounts_fan_out_db_files_path(pageArgs.mount, item.path, pathResolution.basePath),
+							path: bash_external_mounts_fan_out_db_files_path({ mount: pageArgs.mount, storedPath: item.path, basePath: pathResolution.basePath }),
 							kind: item.kind,
 						})),
 						continueCursor: pageResult.continueCursor,

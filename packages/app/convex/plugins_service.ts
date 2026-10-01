@@ -91,14 +91,14 @@ function get_bearer_token(request: Request) {
  * that presented a stolen token from another plugin finds that plugin's registration — a hash its
  * own secret does not match.
  */
-async function authorize_service_request<Body>(
-	ctx: ActionCtx,
-	request: Request,
-	args: {
-		tokenRegex: RegExp;
-		bodyValidator: z.ZodSchema<Body>;
-	},
-) {
+async function authorize_service_request<Body>(args: {
+	ctx: ActionCtx;
+	request: Request;
+	tokenRegex: RegExp;
+	bodyValidator: z.ZodSchema<Body>;
+}) {
+	const { ctx, request } = args;
+
 	const presentedSecret = get_service_secret(request);
 	if (!presentedSecret) {
 		return Result({ _nay: { message: "Unauthorized" } });
@@ -281,7 +281,9 @@ const exchange_body_validator = z.object({ requestId: z.string().min(1).max(128)
 export type plugins_service_http_exchange_Body = z.infer<typeof exchange_body_validator>;
 
 export async function plugins_service_http_exchange(ctx: ActionCtx, request: Request) {
-	const auth = await authorize_service_request(ctx, request, {
+	const auth = await authorize_service_request({
+		ctx,
+		request,
 		tokenRegex: public_api_PLUGIN_UI_TOKEN_REGEX,
 		bodyValidator: exchange_body_validator,
 	});
@@ -381,7 +383,9 @@ export type plugins_service_http_renew_Body = z.infer<typeof renew_body_validato
  * what stops a leaked exchange secret from being enough to reach a workspace's data on its own.
  */
 export async function plugins_service_http_renew(ctx: ActionCtx, request: Request) {
-	const auth = await authorize_service_request(ctx, request, {
+	const auth = await authorize_service_request({
+		ctx,
+		request,
 		tokenRegex: public_api_PLUGIN_SERVICE_TOKEN_REGEX,
 		bodyValidator: renew_body_validator,
 	});
@@ -457,7 +461,9 @@ export type plugins_service_http_seal_processing_Body = z.infer<typeof seal_proc
  * the next one and the six-day deadline would mean nothing.
  */
 export async function plugins_service_http_seal_processing(ctx: ActionCtx, request: Request) {
-	const auth = await authorize_service_request(ctx, request, {
+	const auth = await authorize_service_request({
+		ctx,
+		request,
 		tokenRegex: public_api_PLUGIN_SERVICE_TOKEN_REGEX,
 		bodyValidator: seal_processing_body_validator,
 	});
@@ -679,7 +685,9 @@ const REQUIRED_CONTENT_PERMISSION_BY_SCOPE = {
 } as const satisfies Record<plugins_service_http_verify_live_Body["scopes"][number], "read" | "write">;
 
 export async function plugins_service_http_verify_live(ctx: ActionCtx, request: Request) {
-	const auth = await authorize_service_request(ctx, request, {
+	const auth = await authorize_service_request({
+		ctx,
+		request,
 		tokenRegex: public_api_PLUGIN_SERVICE_TOKEN_REGEX,
 		bodyValidator: verify_live_body_validator,
 	});

@@ -219,12 +219,14 @@ async function start_frame() {
 	return { frame, post, hello };
 }
 
-function send_status(
-	frame: HTMLIFrameElement,
-	data: unknown,
-	origin = "https://preview.test",
-	source = frame.contentWindow,
-) {
+function send_status(args: {
+	frame: HTMLIFrameElement;
+	data: unknown;
+	origin?: string;
+	source?: Window | null;
+}) {
+	const { frame, origin = "https://preview.test", source = frame.contentWindow, data} = args;
+
 	act(() => {
 		window.dispatchEvent(new MessageEvent("message", { data, origin, source }));
 	});
@@ -291,7 +293,7 @@ describe("FileHtmlPreview", () => {
 	test("captures the first activation in StrictMode", async () => {
 		render(<Preview initialSource="saved" />, { wrapper: StrictMode });
 		const { frame, post, hello } = await start_frame();
-		send_status(frame, { ...hello, type: "ready" });
+		send_status({ frame, data: { ...hello, type: "ready" } });
 		expect(post).toHaveBeenLastCalledWith(expect.objectContaining({ html: "<p>Saved</p>" }), "https://preview.test");
 	});
 
@@ -315,7 +317,7 @@ describe("FileHtmlPreview", () => {
 			/>,
 		);
 		const { frame, post, hello } = await start_frame();
-		send_status(frame, { ...hello, type: "ready" });
+		send_status({ frame, data: { ...hello, type: "ready" } });
 		expect(post).toHaveBeenLastCalledWith(
 			expect.objectContaining({ html: localEdits ? "<p>Private local edits</p>" : "<p>Private</p>" }),
 			"https://preview.test",
@@ -374,7 +376,7 @@ describe("FileHtmlPreview", () => {
 		publish_query_values({ pending: PENDING });
 		render(<Preview getEditorSnapshot={() => editor_snapshot()} />);
 		const { frame, post, hello } = await start_frame();
-		send_status(frame, { ...hello, type: "ready" });
+		send_status({ frame, data: { ...hello, type: "ready" } });
 		expect(post).toHaveBeenLastCalledWith(
 			expect.objectContaining({ type: "load_html", html: "<p>Unsaved draft</p>" }),
 			"https://preview.test",
@@ -394,7 +396,7 @@ describe("FileHtmlPreview", () => {
 		expect(screen.queryByTitle("HTML preview: brief.html")).toBeNull();
 		publish_query_values({ pending: null });
 		const { frame, post, hello } = await start_frame();
-		send_status(frame, { ...hello, type: "ready" });
+		send_status({ frame, data: { ...hello, type: "ready" } });
 		expect(post).toHaveBeenLastCalledWith(
 			expect.objectContaining({ html: "<p>Unsaved draft</p>" }),
 			"https://preview.test",
@@ -407,7 +409,7 @@ describe("FileHtmlPreview", () => {
 		expect(screen.queryByTitle("HTML preview: brief.html")).toBeNull();
 		publish_query_values({ pending: PENDING });
 		const { frame, post, hello } = await start_frame();
-		send_status(frame, { ...hello, type: "ready" });
+		send_status({ frame, data: { ...hello, type: "ready" } });
 		expect(post).toHaveBeenLastCalledWith(expect.objectContaining({ html: "<p>Proposed</p>" }), "https://preview.test");
 		expect(pendingReadMock).toHaveBeenCalledWith({
 			membershipId: MEMBERSHIP_ID,
@@ -420,16 +422,16 @@ describe("FileHtmlPreview", () => {
 	test("requires the current frame, origin, version, session, and load", async () => {
 		render(<Preview />);
 		const { frame, post, hello } = await start_frame();
-		send_status(frame, { ...hello, type: "ready" }, "https://wrong.test");
-		send_status(frame, { ...hello, type: "ready" }, "https://preview.test", window);
-		send_status(frame, { ...hello, type: "ready", version: 2 });
-		send_status(frame, { ...hello, type: "ready", sessionId: crypto.randomUUID() });
+		send_status({ frame, data: { ...hello, type: "ready" }, origin: "https://wrong.test" });
+		send_status({ frame, data: { ...hello, type: "ready" }, origin: "https://preview.test", source: window });
+		send_status({ frame, data: { ...hello, type: "ready", version: 2 } });
+		send_status({ frame, data: { ...hello, type: "ready", sessionId: crypto.randomUUID() } });
 		expect(post).toHaveBeenCalledTimes(1);
-		send_status(frame, { ...hello, type: "ready" });
+		send_status({ frame, data: { ...hello, type: "ready" } });
 		const load = post.mock.calls.at(-1)![0] as { loadId: string };
-		send_status(frame, { ...hello, type: "loaded", loadId: crypto.randomUUID() });
+		send_status({ frame, data: { ...hello, type: "loaded", loadId: crypto.randomUUID() } });
 		expect(screen.queryByText("Preview loaded")).toBeNull();
-		send_status(frame, { ...hello, type: "loaded", loadId: load.loadId });
+		send_status({ frame, data: { ...hello, type: "loaded", loadId: load.loadId } });
 		expect(screen.getByText("Preview loaded")).toBeDefined();
 	});
 
@@ -437,7 +439,7 @@ describe("FileHtmlPreview", () => {
 		publish_query_values({ pending: PENDING });
 		render(<Preview initialSource="proposed_changes" />);
 		const { frame, hello } = await start_frame();
-		send_status(frame, { ...hello, type: "ready" });
+		send_status({ frame, data: { ...hello, type: "ready" } });
 		pendingReadMock.mockResolvedValue(pending_bytes("<p>Revised</p>"));
 		publish_query_values({
 			pending: {
@@ -453,7 +455,7 @@ describe("FileHtmlPreview", () => {
 		fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
 		await waitFor(() => expect(screen.getByTitle("HTML preview: brief.html")).not.toBe(frame));
 		const next = await start_frame();
-		send_status(next.frame, { ...next.hello, type: "ready" });
+		send_status({ frame: next.frame, data: { ...next.hello, type: "ready" } });
 		expect(next.post).toHaveBeenLastCalledWith(
 			expect.objectContaining({ html: "<p>Revised</p>" }),
 			"https://preview.test",
@@ -469,7 +471,7 @@ describe("FileHtmlPreview", () => {
 		);
 		const view = render(<Preview initialSource="saved" />);
 		const first = await start_frame();
-		send_status(first.frame, { ...first.hello, type: "ready" });
+		send_status({ frame: first.frame, data: { ...first.hello, type: "ready" } });
 		currentNode = { ...NODE, collaborationEnabled: false, yjsLastSequenceId: null, yjsSnapshotId: null };
 		await act(async () => view.rerender(<Preview node={currentNode} initialSource="saved" />));
 		expect(screen.queryByTitle("HTML preview: brief.html")).toBeNull();
@@ -478,7 +480,7 @@ describe("FileHtmlPreview", () => {
 		fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
 		const next = await start_frame();
 		expect(next.frame).not.toBe(first.frame);
-		send_status(next.frame, { ...next.hello, type: "ready" });
+		send_status({ frame: next.frame, data: { ...next.hello, type: "ready" } });
 		expect(next.post).toHaveBeenLastCalledWith(
 			expect.objectContaining({ html: "<p>Saved with collaboration off</p>" }),
 			"https://preview.test",
@@ -498,7 +500,7 @@ describe("FileHtmlPreview", () => {
 		);
 		const view = render(<Preview node={currentNode} initialSource="proposed_changes" />);
 		const first = await start_frame();
-		send_status(first.frame, { ...first.hello, type: "ready" });
+		send_status({ frame: first.frame, data: { ...first.hello, type: "ready" } });
 		// A member save makes this proposal stale. Agent preparation keeps its id.
 		currentNode = { ...currentNode, assetId: "asset_2" as typeof NODE.assetId };
 		view.rerender(<Preview node={currentNode} initialSource="proposed_changes" />);
@@ -522,7 +524,7 @@ describe("FileHtmlPreview", () => {
 		expect(screen.getByText("Refresh to preview this source.")).toBeDefined();
 		fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
 		const next = await start_frame();
-		send_status(next.frame, { ...next.hello, type: "ready" });
+		send_status({ frame: next.frame, data: { ...next.hello, type: "ready" } });
 		expect(next.post).toHaveBeenLastCalledWith(
 			expect.objectContaining({ html: "<p>Prepared proposal</p>" }),
 			"https://preview.test",
@@ -583,7 +585,7 @@ describe("FileHtmlPreview", () => {
 		await waitFor(() => expect(pendingReadMock).toHaveBeenCalled());
 		view.rerender(<FileHtmlPreview {...props} selectedSource="saved" />);
 		const { frame, post, hello } = await start_frame();
-		send_status(frame, { ...hello, type: "ready" });
+		send_status({ frame, data: { ...hello, type: "ready" } });
 		expect(post).toHaveBeenLastCalledWith(expect.objectContaining({ html: "<p>Saved</p>" }), "https://preview.test");
 		await act(async () => deferred.resolve(pending_bytes("<p>Old proposal</p>")));
 		expect(screen.getByTitle("HTML preview: brief.html")).toBe(frame);
@@ -603,7 +605,7 @@ describe("FileHtmlPreview", () => {
 		expect(pendingReadMock).toHaveBeenCalledOnce();
 		fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
 		const { frame, post, hello } = await start_frame();
-		send_status(frame, { ...hello, type: "ready" });
+		send_status({ frame, data: { ...hello, type: "ready" } });
 		expect(post).toHaveBeenLastCalledWith(expect.objectContaining({ html: "<p>Proposed</p>" }), "https://preview.test");
 		expect(queryMock).toHaveBeenCalledWith("get_file_node_for_membership", {
 			membershipId: "membership_2",
@@ -621,7 +623,7 @@ describe("FileHtmlPreview", () => {
 			/>,
 		);
 		const { frame, post, hello } = await start_frame();
-		send_status(frame, { ...hello, type: "ready" });
+		send_status({ frame, data: { ...hello, type: "ready" } });
 		expect(post).toHaveBeenLastCalledWith(
 			expect.objectContaining({ html: "<p>Local proposal</p>" }),
 			"https://preview.test",
@@ -640,7 +642,7 @@ describe("FileHtmlPreview", () => {
 			/>,
 		);
 		const { frame, post, hello } = await start_frame();
-		send_status(frame, { ...hello, type: "ready" });
+		send_status({ frame, data: { ...hello, type: "ready" } });
 		expect(post).toHaveBeenLastCalledWith(expect.objectContaining({ html: "<p>Proposed</p>" }), "https://preview.test");
 		expect(pendingReadMock).toHaveBeenCalledTimes(1);
 	});
@@ -654,7 +656,7 @@ describe("FileHtmlPreview", () => {
 		);
 		render(<Preview node={node} />);
 		const { frame, post, hello } = await start_frame();
-		send_status(frame, { ...hello, type: "ready" });
+		send_status({ frame, data: { ...hello, type: "ready" } });
 		expect(post).toHaveBeenLastCalledWith(
 			expect.objectContaining({ html: "<p>Saved bytes</p>" }),
 			"https://preview.test",
@@ -723,17 +725,17 @@ describe("FileHtmlPreview", () => {
 	test("keeps an error visible after a later loaded message and retries in a fresh frame", async () => {
 		render(<Preview />);
 		const { frame, post, hello } = await start_frame();
-		send_status(frame, { ...hello, type: "ready" });
+		send_status({ frame, data: { ...hello, type: "ready" } });
 		const load = post.mock.calls.at(-1)![0] as { loadId: string };
-		send_status(frame, { ...hello, type: "error", loadId: load.loadId, message: "<b>Runtime failed</b>" });
-		send_status(frame, { ...hello, type: "loaded", loadId: load.loadId });
+		send_status({ frame, data: { ...hello, type: "error", loadId: load.loadId, message: "<b>Runtime failed</b>" } });
+		send_status({ frame, data: { ...hello, type: "loaded", loadId: load.loadId } });
 		expect(screen.getByRole("alert").textContent).toBe("<b>Runtime failed</b>");
 		expect(screen.queryByTitle("HTML preview: brief.html")).toBeNull();
 		fireEvent.click(screen.getByRole("button", { name: "Retry" }));
 		const next = await start_frame();
 		expect(next.frame).not.toBe(frame);
 		expect(next.hello.sessionId).not.toBe(hello.sessionId);
-		send_status(next.frame, { ...hello, type: "ready" });
+		send_status({ frame: next.frame, data: { ...hello, type: "ready" } });
 		expect(next.post).toHaveBeenCalledTimes(1);
 	});
 

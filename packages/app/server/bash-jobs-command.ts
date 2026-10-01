@@ -171,7 +171,13 @@ function job_line(summary: ai_chat_files_list_thread_jobs_Result[number]) {
  * that marker. The transcript keeps the full output; this read is bounded so two big reads cannot
  * push the reading call over its own output limit.
  */
-async function print_job_output(ctx: ActionCtx, job: bash_JobContext, jobNumber: number) {
+async function print_job_output(args: {
+	ctx: ActionCtx;
+	job: bash_JobContext;
+	jobNumber: number;
+}) {
+	const { ctx, job, jobNumber } = args;
+
 	const output = (await ctx.runQuery(internal.ai_chat_files.read_job_output, {
 		...job_scope(job),
 		jobNumber,
@@ -258,7 +264,7 @@ export function bash_jobs_command_create(ctx: ActionCtx, job: bash_JobContext): 
 			}
 			return usage_error(`jobs: unsupported argument ${arg}`, JOBS_USAGE);
 		}
-		if (outputOf !== null) return await print_job_output(ctx, job, outputOf);
+		if (outputOf !== null) return await print_job_output({ ctx, job, jobNumber: outputOf });
 
 		const jobs = (await ctx.runQuery(internal.ai_chat_files.list_thread_jobs, {
 			...job_scope(job),

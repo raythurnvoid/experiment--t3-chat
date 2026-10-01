@@ -46,7 +46,7 @@ export type BrowserViewer_Props = {
 	host: files_browser_StreamHost;
 	inputEnabled: boolean;
 	grant: () => Promise<{ grantId: string; viewerUrl: string } | null>;
-	onViewerHello: (viewerId: string, viewport: { width: number; height: number }, control: string) => void;
+	onViewerHello: (args: { id: string; viewport: { width: number; height: number }; control: string }) => void;
 	onControl: (control: files_browser_StreamControlMessage) => void;
 	onConnection: (connected: boolean, detail: string | null) => void;
 	onSessionEnded: (sessionId: app_convex_Id<"files_browser_sessions">) => void;
@@ -102,7 +102,13 @@ const BrowserViewer = Object.assign(
 		const [statusDetail, setStatusDetail] = useState<string | null>(null);
 		const [attempt, setAttempt] = useState(0);
 
-		function to_remote_point(clientX: number, clientY: number, clampToPage = false) {
+		function to_remote_point(args: {
+			clientX: number;
+			clientY: number;
+			clampToPage?: boolean;
+		}) {
+			const { clientX, clientY, clampToPage = false } = args;
+
 			const frame = frameRef.current;
 			if (!frame) {
 				return null;
@@ -155,7 +161,7 @@ const BrowserViewer = Object.assign(
 				return;
 			}
 			lastMoveRef.current = now;
-			const point = to_remote_point(event.clientX, event.clientY, pressedButtonRef.current !== null);
+			const point = to_remote_point({ clientX: event.clientX, clientY: event.clientY, clampToPage: pressedButtonRef.current !== null });
 			if (point) {
 				send({ kind: "mouse.move", ...point });
 			}
@@ -163,7 +169,7 @@ const BrowserViewer = Object.assign(
 
 		const handleMouseDown = (event: React.MouseEvent) => {
 			if (!inputEnabled || event.button > 2) return;
-			const point = to_remote_point(event.clientX, event.clientY);
+			const point = to_remote_point({ clientX: event.clientX, clientY: event.clientY });
 			if (!point) return;
 			event.preventDefault();
 			const button = event.button === 1 ? "middle" : event.button === 2 ? "right" : "left";
@@ -178,7 +184,7 @@ const BrowserViewer = Object.assign(
 			const pressed = pressedButtonRef.current;
 			if (!pressed) return;
 			pressedButtonRef.current = null;
-			const point = to_remote_point(event.clientX, event.clientY, true);
+			const point = to_remote_point({ clientX: event.clientX, clientY: event.clientY, clampToPage: true });
 			if (point) send({ kind: "mouse.move", ...point });
 			send({ kind: "mouse.up", ...pressed });
 		};
@@ -303,7 +309,7 @@ const BrowserViewer = Object.assign(
 										viewGen: hello.viewGen,
 									});
 								}
-								onViewerHello(hello.viewerId, hello.viewport, hello.control);
+								onViewerHello({ id: hello.viewerId, viewport: hello.viewport, control: hello.control });
 								onConnection(true, null);
 							},
 							onFrame: (frame) => {
@@ -415,7 +421,7 @@ const BrowserViewer = Object.assign(
 					return;
 				}
 				event.preventDefault();
-				const point = to_remote_point(event.clientX, event.clientY);
+				const point = to_remote_point({ clientX: event.clientX, clientY: event.clientY });
 				if (point) {
 					streamRef.current?.sendInput({ kind: "wheel", ...point, dx: event.deltaX, dy: event.deltaY });
 				}
@@ -476,7 +482,7 @@ const BrowserViewer = Object.assign(
 					onMouseDown={handleMouseDown}
 					onMouseUp={handleMouseUp}
 					onPointerDown={(event) => {
-						if (inputEnabled && to_remote_point(event.clientX, event.clientY)) {
+						if (inputEnabled && to_remote_point({ clientX: event.clientX, clientY: event.clientY })) {
 							event.currentTarget.setPointerCapture(event.pointerId);
 						}
 					}}

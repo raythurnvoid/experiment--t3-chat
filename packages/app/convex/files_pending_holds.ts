@@ -29,14 +29,16 @@ async function db_get_producer(ctx: MutationCtx, producer: Doc<"files_pending_ho
 	};
 }
 
-async function db_matches_identity(
-	ctx: MutationCtx,
+async function db_matches_identity(args: {
+	ctx: MutationCtx;
 	identity: Pick<
 		Doc<"files_pending_holds">,
 		"organizationId" | "workspaceId" | "userId" | "target" | "privateGeneration"
-	>,
-	proposal: Doc<"files_pending_updates">,
-) {
+	>;
+	proposal: Doc<"files_pending_updates">;
+}) {
+	const { ctx, identity, proposal } = args;
+
 	if (
 		identity.organizationId !== proposal.organizationId ||
 		identity.workspaceId !== proposal.workspaceId ||
@@ -94,7 +96,7 @@ export async function files_pending_holds_db_acquire(
 		target: args.target,
 		privateGeneration: args.privateGeneration,
 	};
-	if (proposal.revision !== args.expectedRevision || !(await db_matches_identity(ctx, identity, proposal)))
+	if (proposal.revision !== args.expectedRevision || !(await db_matches_identity({ ctx, identity, proposal })))
 		return Result({ _nay: { name: "target_changed", message: "This draft changed. Review it again" } });
 	const existing = await ctx.db
 		.query("files_pending_holds")
@@ -107,7 +109,7 @@ export async function files_pending_holds_db_acquire(
 		)
 		.unique();
 	if (existing) {
-		if (!(await db_matches_identity(ctx, existing, proposal)))
+		if (!(await db_matches_identity({ ctx, identity: existing, proposal })))
 			return Result({ _nay: { name: "target_changed", message: "This draft changed. Review it again" } });
 	} else {
 		await ctx.db.insert("files_pending_holds", {
@@ -136,7 +138,7 @@ export async function files_pending_holds_db_acquire(
 
 async function db_release_hold(ctx: MutationCtx, hold: Doc<"files_pending_holds">) {
 	const proposal = await ctx.db.get("files_pending_updates", hold.pendingUpdateId);
-	if (proposal && (await db_matches_identity(ctx, hold, proposal))) {
+	if (proposal && (await db_matches_identity({ ctx, identity: hold, proposal }))) {
 		const producer = await db_get_producer(ctx, hold.producer);
 		if (producer && !activities_is_active(producer.activity.status) && keeps_terminal_output(hold.role)) {
 			// Install the fixed window before dropping the last producer reference. Patch only the
@@ -232,7 +234,7 @@ async function db_has_ancestor_source_hold(ctx: MutationCtx, proposal: Doc<"file
 				.take(remaining);
 			for (const hold of holds) {
 				const parentProposal = await ctx.db.get("files_pending_updates", hold.pendingUpdateId);
-				if (parentProposal && (await db_matches_identity(ctx, hold, parentProposal))) {
+				if (parentProposal && (await db_matches_identity({ ctx, identity: hold, proposal: parentProposal }))) {
 					const producer = await db_get_producer(ctx, hold.producer);
 					if (producer && activities_is_active(producer.activity.status)) return true;
 				}
@@ -314,7 +316,7 @@ export async function files_pending_holds_db_check_expiry(
 		.take(HOLD_BATCH_SIZE);
 	let expiresAt: number | null = null;
 	for (const hold of holds) {
-		if (await db_matches_identity(ctx, hold, args.pendingUpdate)) {
+		if (await db_matches_identity({ ctx, identity: hold, proposal: args.pendingUpdate })) {
 			const producer = await db_get_producer(ctx, hold.producer);
 			if (producer && activities_is_active(producer.activity.status)) return { held: true, expiresAt };
 			if (producer && keeps_terminal_output(hold.role))
@@ -361,7 +363,7 @@ export const recover = internalMutation({
 				!proposal ||
 				!producer ||
 				!activities_is_active(producer.activity.status) ||
-				!(await db_matches_identity(ctx, hold, proposal))
+				!(await db_matches_identity({ ctx, identity: hold, proposal }))
 			)
 				await db_release_hold(ctx, hold);
 		}

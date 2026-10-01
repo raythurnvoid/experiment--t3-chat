@@ -91,16 +91,18 @@ function wait_for_space(
 	});
 }
 
-export function ai_chat_tool_budget_apply<T extends ToolSet>(
-	tools: T,
-	budget: ReturnType<typeof ai_chat_tool_budget_create>,
+export function ai_chat_tool_budget_apply<T extends ToolSet>(args: {
+	tools: T;
+	budget: ReturnType<typeof ai_chat_tool_budget_create>;
 	reserve: {
 		/**
 		 * Result space each call of these tools keeps inside the reply budget, so inputs can never spend it all.
 		 */
 		resultReservedBytes: number;
-	},
-) {
+	};
+}) {
+	const { tools, budget, reserve } = args;
+
 	for (const value of Object.values(tools)) {
 		const execute = value.execute;
 		if (!execute) continue;

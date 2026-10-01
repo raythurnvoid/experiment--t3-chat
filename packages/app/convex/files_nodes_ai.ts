@@ -231,13 +231,18 @@ export async function files_nodes_ai_http_contextual_prompt(ctx: ActionCtx, requ
 			}
 		}
 
-		const receipts = ai_model_call_receipts_create(ctx, {
+		const receipts = ai_model_call_receipts_create({
+			ctx,
+			payer: {
 			threadId: null,
 			billedUserId: billedUser._id,
 			actorUserId: user._id,
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
-		}, null, null);
+		},
+			modelCallIds: null,
+			run: null,
+		});
 		const model = wrapLanguageModel({
 			model: openai(INLINE_AI_MODEL_ID),
 			middleware: receipts.middleware({ purpose: "inline_ai", modelId: INLINE_AI_MODEL_ID }),

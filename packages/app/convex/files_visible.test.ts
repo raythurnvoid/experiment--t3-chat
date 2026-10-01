@@ -15,12 +15,14 @@ async function fixture() {
 	return { t, db, asUser };
 }
 
-async function create_private(
-	f: Awaited<ReturnType<typeof fixture>>,
-	path: string,
-	kind: "file" | "folder" = "folder",
-	threadId?: Id<"ai_chat_threads">,
-) {
+async function create_private(args: {
+	f: Awaited<ReturnType<typeof fixture>>;
+	path: string;
+	kind?: "file" | "folder";
+	threadId?: Id<"ai_chat_threads">;
+}) {
+	const { f, kind = "folder", threadId, path} = args;
+
 	const created = await f.t.mutation(internal.files_nodes.create_private_node_by_path, {
 		organizationId: f.db.organizationId,
 		workspaceId: f.db.workspaceId,
@@ -104,7 +106,7 @@ describe("list", () => {
 		const movedOut = await create_saved(f, "source/out");
 		const removed = await create_saved(f, "source/removed");
 		const movedIn = await create_saved(f, "outside");
-		await create_private(f, "/source/mine");
+		await create_private({ f, path: "/source/mine" });
 		for (const [target, destParent, destName] of [
 			[movedOut, { kind: "root" as const }, "out"],
 			[movedIn, source, "in"],
@@ -173,7 +175,7 @@ describe("list", () => {
 			vi.setSystemTime(Date.now() + 2_000);
 			await create_saved(f, `folder-${String(index).padStart(3, "0")}`);
 		}
-		const last = await create_private(f, "/zzz-match");
+		const last = await create_private({ f, path: "/zzz-match" });
 		let cursor: string | null = null;
 		const paths: string[] = [];
 		let done = false;
@@ -206,7 +208,7 @@ describe("list", () => {
 		await create_saved(f, "a");
 		await create_saved(f, "c");
 		const renamed = await create_saved(f, "z");
-		await create_private(f, "/b");
+		await create_private({ f, path: "/b" });
 		const moved = await f.t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
 			organizationId: f.db.organizationId,
 			workspaceId: f.db.workspaceId,
@@ -270,8 +272,8 @@ describe("list", () => {
 		const renamed = await insert_file(box.id, "/box/q.txt");
 		const outside = await insert_file("root", "/outside.txt");
 
-		await create_private(f, "/box/c-draft");
-		await create_private(f, "/box/b-draft.txt", "file");
+		await create_private({ f, path: "/box/c-draft" });
+		await create_private({ f, path: "/box/b-draft.txt", kind: "file" });
 		for (const [target, destName] of [
 			[renamed, "m.txt"],
 			[outside, "0-moved.txt"],
@@ -333,8 +335,8 @@ describe("list", () => {
 
 	test("walks private folders and moved-in saved folders once", async () => {
 		const f = await fixture();
-		const parent = await create_private(f, "/draft/nested");
-		await create_private(f, "/draft/nested/preparing.txt", "file");
+		const parent = await create_private({ f, path: "/draft/nested" });
+		await create_private({ f, path: "/draft/nested/preparing.txt", kind: "file" });
 		const source = await create_saved(f, "source/child");
 		const sourceParent = await f.asUser.query(api.files_nodes.get_visible_target_by_path, {
 			membershipId: f.db.membershipId,
@@ -371,8 +373,8 @@ describe("list", () => {
 
 	test("keeps private children reachable after their parent is saved", async () => {
 		const f = await fixture();
-		const parent = await create_private(f, "/draft");
-		const child = await create_private(f, "/draft/child");
+		const parent = await create_private({ f, path: "/draft" });
+		const child = await create_private({ f, path: "/draft/child" });
 		if (!parent.pendingUpdateId) throw new Error("Expected the parent proposal");
 		const saved = await f.asUser.action(api.files_pending_updates.save_file_pending_update, {
 			membershipId: f.db.membershipId,
@@ -400,8 +402,8 @@ describe("list", () => {
 
 	test("rejects a cursor from a different folder", async () => {
 		const f = await fixture();
-		await create_private(f, "/a/first");
-		await create_private(f, "/b/second");
+		await create_private({ f, path: "/a/first" });
+		await create_private({ f, path: "/b/second" });
 		const first = await f.asUser.query(api.files_visible.list, {
 			membershipId: f.db.membershipId,
 			folderPath: "/",
@@ -424,7 +426,7 @@ describe("list", () => {
 describe("files_visible_db_create_reader", () => {
 	test("resolves preparing files by owner path without exposing a saved placeholder", async () => {
 		const f = await fixture();
-		const created = await create_private(f, "/draft/new.txt", "file");
+		const created = await create_private({ f, path: "/draft/new.txt", kind: "file" });
 		const read = await f.t.run(async (ctx) => {
 			const reader = await files_visible_db_create_reader(ctx, f.db);
 			return {
@@ -441,7 +443,7 @@ describe("files_visible_db_create_reader", () => {
 
 	test("hides a private target from another owner and from an inactive member", async () => {
 		const f = await fixture();
-		const created = await create_private(f, "/draft");
+		const created = await create_private({ f, path: "/draft" });
 		const other = await f.t.run((ctx) => test_mocks_fill_db_with.membership(ctx, { organizationName: "other" }));
 		expect(
 			await f.t.run(async (ctx) =>
@@ -458,7 +460,7 @@ describe("files_visible_db_create_reader", () => {
 describe("list_files_pending_updates", () => {
 	test("fills a chat-filtered page and excludes a discarded draft from its count", async () => {
 		const f = await fixture();
-		for (let index = 0; index < 7; index++) await create_private(f, `/review-${index}`);
+		for (let index = 0; index < 7; index++) await create_private({ f, path: `/review-${index}` });
 		const queryArgs = { membershipId: f.db.membershipId, paginationOpts: { numItems: 20, cursor: null } };
 		const first = await f.asUser.query(api.files_pending_updates.list_files_pending_updates, queryArgs);
 		expect(first.page).toHaveLength(5);
@@ -528,8 +530,8 @@ describe("list_files_pending_updates", () => {
 
 	test("skips a folder draft that holds a draft before paging and in the count", async () => {
 		const f = await fixture();
-		await create_private(f, "/qa/page.md", "file");
-		await create_private(f, "/a/b");
+		await create_private({ f, path: "/qa/page.md", kind: "file" });
+		await create_private({ f, path: "/a/b" });
 
 		// One row per page. Every page that is not the last one must hold a row, so a hidden
 		// folder never uses a slot.
@@ -600,8 +602,8 @@ describe("list_files_pending_updates", () => {
 				return thread._yay.threadId;
 			}),
 		);
-		await create_private(f, "/reports", "folder", chatA);
-		await create_private(f, "/reports/june.md", "file", chatB);
+		await create_private({ f, path: "/reports", kind: "folder", threadId: chatA });
+		await create_private({ f, path: "/reports/june.md", kind: "file", threadId: chatB });
 
 		const count = (threadId?: Id<"ai_chat_threads">) =>
 			f.asUser.query(api.files_pending_updates.get_files_pending_updates_summary, {
@@ -625,7 +627,7 @@ describe("list_files_pending_updates", () => {
 
 	test("fills the first page when a deep private folder chain comes first", async () => {
 		const f = await fixture();
-		await create_private(f, "/deep/a/b/c/d/e/note.md", "file");
+		await create_private({ f, path: "/deep/a/b/c/d/e/note.md", kind: "file" });
 
 		const page = await f.asUser.query(api.files_pending_updates.list_files_pending_updates, {
 			membershipId: f.db.membershipId,
@@ -637,9 +639,9 @@ describe("list_files_pending_updates", () => {
 	test("keeps a page's end at the given endCursor", async () => {
 		// The `convex-helpers/react` hook sends `endCursor` to keep a loaded page's end fixed.
 		const f = await fixture();
-		await create_private(f, "/one.md", "file");
-		await create_private(f, "/two.md", "file");
-		await create_private(f, "/three.md", "file");
+		await create_private({ f, path: "/one.md", kind: "file" });
+		await create_private({ f, path: "/two.md", kind: "file" });
+		await create_private({ f, path: "/three.md", kind: "file" });
 
 		const list = (paginationOpts: { numItems: number; cursor: string | null; endCursor?: string }) =>
 			f.asUser.query(api.files_pending_updates.list_files_pending_updates, {
@@ -671,9 +673,9 @@ describe("list_files_pending_updates", () => {
 				return thread._yay.threadId;
 			}),
 		);
-		await create_private(f, "/first.md", "file", chatB);
-		for (let index = 0; index < 101; index++) await create_private(f, `/other-${index}.md`, "file", chatA);
-		await create_private(f, "/last.md", "file", chatB);
+		await create_private({ f, path: "/first.md", kind: "file", threadId: chatB });
+		for (let index = 0; index < 101; index++) await create_private({ f, path: `/other-${index}.md`, kind: "file", threadId: chatA });
+		await create_private({ f, path: "/last.md", kind: "file", threadId: chatB });
 
 		const list = (paginationOpts: { numItems: number; cursor: string | null; endCursor?: string }) =>
 			f.asUser.query(api.files_pending_updates.list_files_pending_updates, {

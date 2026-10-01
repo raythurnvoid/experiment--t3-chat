@@ -291,7 +291,13 @@ type ViewReads = {
  * Count planned reads before they run. Keep room for one more doc of the largest size per planned doc,
  * so the reads cannot pass the byte limit.
  */
-function reads_try_reserve(reads: ViewReads, calls: number, docs: number) {
+function reads_try_reserve(args: {
+	reads: ViewReads;
+	calls: number;
+	docs: number;
+}) {
+	const { reads, calls, docs } = args;
+
 	if (
 		reads.calls + calls > MAX_VIEW_READ_CALLS ||
 		reads.docs + docs > MAX_VIEW_READ_DOCS ||
@@ -305,8 +311,14 @@ function reads_try_reserve(reads: ViewReads, calls: number, docs: number) {
 	return true;
 }
 
-function reads_reserve(reads: ViewReads, calls: number, docs: number) {
-	if (!reads_try_reserve(reads, calls, docs)) {
+function reads_reserve(args: {
+	reads: ViewReads;
+	calls: number;
+	docs: number;
+}) {
+	const { reads, calls, docs } = args;
+
+	if (!reads_try_reserve({ reads, calls, docs })) {
 		throw new ShareViewBudgetError("Public view read budget spent");
 	}
 }
@@ -333,13 +345,15 @@ async function reads_sync(ctx: QueryCtx, reads: ViewReads) {
 	reads.bytes = Math.max(reads.bytes, metrics.bytesRead.used);
 }
 
-async function reads_get<TableName extends TableNames>(
-	ctx: QueryCtx,
-	reads: ViewReads,
-	table: TableName,
-	id: Id<TableName>,
-) {
-	reads_reserve(reads, 1, 1);
+async function reads_get<TableName extends TableNames>(args: {
+	ctx: QueryCtx;
+	reads: ViewReads;
+	table: TableName;
+	id: Id<TableName>;
+}) {
+	const { ctx, reads, table, id } = args;
+
+	reads_reserve({ reads, calls: 1, docs: 1 });
 	const doc = await ctx.db.get(table, id);
 	reads_count(reads, doc);
 	return doc;
@@ -349,11 +363,11 @@ async function reads_get<TableName extends TableNames>(
  * Read the docs of one index range. Count each doc before Convex reads it.
  */
 async function* reads_iterate<T extends Value>(reads: ViewReads, docs: AsyncIterable<T>) {
-	reads_reserve(reads, 1, 1);
+	reads_reserve({ reads, calls: 1, docs: 1 });
 	for await (const doc of docs) {
 		reads_count(reads, doc);
 		yield doc;
-		reads_reserve(reads, 0, 1);
+		reads_reserve({ reads, calls: 0, docs: 1 });
 	}
 }
 
@@ -364,7 +378,13 @@ async function* reads_iterate<T extends Value>(reads: ViewReads, docs: AsyncIter
  *
  * A shared document and its images often sit in the same folders, so each folder is read once.
  */
-async function db_read_folder_chain(ctx: QueryCtx, reads: ViewReads, parentId: Doc<"files_nodes">["parentId"]) {
+async function db_read_folder_chain(args: {
+	ctx: QueryCtx;
+	reads: ViewReads;
+	parentId: Doc<"files_nodes">["parentId"];
+}) {
+	const { ctx, reads, parentId } = args;
+
 	const unchecked: Id<"files_nodes">[] = [];
 	const folders: Doc<"files_nodes">[] = [];
 	let above: { depth: number; restrictedScopeNodeId: Id<"files_nodes"> | null } | null = {
@@ -386,8 +406,8 @@ async function db_read_folder_chain(ctx: QueryCtx, reads: ViewReads, parentId: D
 			return null;
 		}
 
-		const folder = await reads_get(ctx, reads, "files_nodes", folderId);
-		reads_reserve(reads, 2, 2);
+		const folder = await reads_get({ ctx, reads, table: "files_nodes", id: folderId });
+		reads_reserve({ reads, calls: 2, docs: 2 });
 		if (
 			!folder ||
 			folder.kind !== "folder" ||
@@ -425,9 +445,15 @@ async function db_read_folder_chain(ctx: QueryCtx, reads: ViewReads, parentId: D
  * The live restricted scope of a file that the public view may show. Undefined when the file or a
  * folder above it cannot be shown.
  */
-async function db_read_live_file_scope(ctx: QueryCtx, reads: ViewReads, node: Doc<"files_nodes">) {
-	const chain = await db_read_folder_chain(ctx, reads, node.parentId);
-	reads_reserve(reads, 2, 2);
+async function db_read_live_file_scope(args: {
+	ctx: QueryCtx;
+	reads: ViewReads;
+	node: Doc<"files_nodes">;
+}) {
+	const { ctx, reads, node } = args;
+
+	const chain = await db_read_folder_chain({ ctx, reads, parentId: node.parentId });
+	reads_reserve({ reads, calls: 2, docs: 2 });
 	if (!chain || (await db_has_plugin_binding(ctx, node._id))) {
 		return undefined;
 	}
@@ -438,11 +464,14 @@ async function db_read_live_file_scope(ctx: QueryCtx, reads: ViewReads, node: Do
 /**
  * The service accounts with `permission` on one exact open file. Null past the sharing cap.
  */
-async function db_read_file_service_accounts(
-	ctx: QueryCtx,
-	reads: ViewReads,
-	args: { nodeId: Id<"files_nodes">; permission: "content.read" | "content.write" },
-) {
+async function db_read_file_service_accounts(args: {
+	ctx: QueryCtx;
+	reads: ViewReads;
+	nodeId: Id<"files_nodes">;
+	permission: "content.read" | "content.write";
+}) {
+	const { ctx, reads } = args;
+
 	const accountIds = new Set<Id<"access_control_service_accounts">>();
 	let grantCount = 0;
 	for await (const grant of reads_iterate(
@@ -474,12 +503,14 @@ async function db_read_file_service_accounts(
 /**
  * Whether a service account is live in this workspace, and whether it reads every open file.
  */
-async function db_read_service_account_access(
-	ctx: QueryCtx,
-	reads: ViewReads,
-	accountId: Id<"access_control_service_accounts">,
-) {
-	const account = await reads_get(ctx, reads, "access_control_service_accounts", accountId);
+async function db_read_service_account_access(args: {
+	ctx: QueryCtx;
+	reads: ViewReads;
+	accountId: Id<"access_control_service_accounts">;
+}) {
+	const { ctx, reads, accountId } = args;
+
+	const account = await reads_get({ ctx, reads, table: "access_control_service_accounts", id: accountId });
 	if (
 		!account ||
 		account.revokedAt !== null ||
@@ -489,7 +520,7 @@ async function db_read_service_account_access(
 		return { live: false, readsWorkspace: false };
 	}
 
-	reads_reserve(reads, 1, 1);
+	reads_reserve({ reads, calls: 1, docs: 1 });
 	const workspaceGrant = await ctx.db
 		.query("access_control_permission_grants")
 		.withIndex("by_organization_workspace_resource_serviceAccount_permission", (q) =>
@@ -511,11 +542,13 @@ async function db_read_service_account_access(
  * The saved file that one image or video names, when it is an image or video file of the shared
  * file's workspace. Null otherwise.
  */
-async function db_read_media_node(
-	ctx: QueryCtx,
-	reads: ViewReads,
-	item: { kind: files_share_rich_text_MediaKind; src: string },
-) {
+async function db_read_media_node(args: {
+	ctx: QueryCtx;
+	reads: ViewReads;
+	item: { kind: files_share_rich_text_MediaKind; src: string };
+}) {
+	const { ctx, reads, item } = args;
+
 	const parsed = files_media_parse_src(item.src);
 	let mediaNodeId: Id<"files_nodes"> | null = null;
 	if (parsed.kind === "file") {
@@ -525,7 +558,7 @@ async function db_read_media_node(
 	else if (parsed.kind === "private") {
 		const privateNodeId = ctx.db.normalizeId("files_pending_nodes", parsed.privateNodeId);
 		if (privateNodeId) {
-			reads_reserve(reads, 1, 1);
+			reads_reserve({ reads, calls: 1, docs: 1 });
 			const resolved = await files_pending_nodes_db_resolve_read_target(ctx, {
 				organizationId: reads.organizationId,
 				workspaceId: reads.workspaceId,
@@ -538,7 +571,7 @@ async function db_read_media_node(
 		return null;
 	}
 
-	const mediaNode = await reads_get(ctx, reads, "files_nodes", mediaNodeId);
+	const mediaNode = await reads_get({ ctx, reads, table: "files_nodes", id: mediaNodeId });
 	if (
 		!mediaNode ||
 		mediaNode.kind !== "file" ||
@@ -564,17 +597,17 @@ async function db_read_media_node(
  * add an image it cannot read and publish it through the link. So every such account must be live and
  * able to read the media file.
  */
-async function db_check_media_node(
-	ctx: QueryCtx,
-	reads: ViewReads,
-	args: {
-		mediaNode: Doc<"files_nodes">;
-		restrictedScopeNodeId: Id<"files_nodes"> | null;
-		readFileWriters: () => Promise<Set<Id<"access_control_service_accounts">> | null>;
-		accountAccess: Map<Id<"access_control_service_accounts">, { live: boolean; readsWorkspace: boolean }>;
-	},
-) {
-	const mediaScopeNodeId = await db_read_live_file_scope(ctx, reads, args.mediaNode);
+async function db_check_media_node(args: {
+	ctx: QueryCtx;
+	reads: ViewReads;
+	mediaNode: Doc<"files_nodes">;
+	restrictedScopeNodeId: Id<"files_nodes"> | null;
+	readFileWriters: () => Promise<Set<Id<"access_control_service_accounts">> | null>;
+	accountAccess: Map<Id<"access_control_service_accounts">, { live: boolean; readsWorkspace: boolean }>;
+}) {
+	const { ctx, reads } = args;
+
+	const mediaScopeNodeId = await db_read_live_file_scope({ ctx, reads, node: args.mediaNode });
 	if (mediaScopeNodeId === undefined || mediaScopeNodeId !== args.restrictedScopeNodeId) {
 		return null;
 	}
@@ -586,7 +619,9 @@ async function db_check_media_node(
 		}
 
 		if (writerAccountIds.size > 0) {
-			const readerAccountIds = await db_read_file_service_accounts(ctx, reads, {
+			const readerAccountIds = await db_read_file_service_accounts({
+				ctx,
+				reads,
 				nodeId: args.mediaNode._id,
 				permission: "content.read",
 			});
@@ -597,7 +632,7 @@ async function db_check_media_node(
 			for (const accountId of writerAccountIds) {
 				let access = args.accountAccess.get(accountId);
 				if (!access) {
-					access = await db_read_service_account_access(ctx, reads, accountId);
+					access = await db_read_service_account_access({ ctx, reads, accountId });
 					args.accountAccess.set(accountId, access);
 				}
 				// Never skip a revoked or missing account. Its write grant stays, so the media stays hidden.
@@ -608,7 +643,7 @@ async function db_check_media_node(
 		}
 	}
 
-	reads_reserve(reads, 1, 1);
+	reads_reserve({ reads, calls: 1, docs: 1 });
 	return await db_get_finished_asset(ctx, args.mediaNode);
 }
 
@@ -637,7 +672,7 @@ async function db_prepare_share_link_view(ctx: QueryCtx, token: string) {
 	};
 	reads_count(reads, link);
 
-	const node = await reads_get(ctx, reads, "files_nodes", link.nodeId);
+	const node = await reads_get({ ctx, reads, table: "files_nodes", id: link.nodeId });
 	if (
 		!node ||
 		node.kind !== "file" ||
@@ -649,12 +684,12 @@ async function db_prepare_share_link_view(ctx: QueryCtx, token: string) {
 		return null;
 	}
 
-	const restrictedScopeNodeId = await db_read_live_file_scope(ctx, reads, node);
+	const restrictedScopeNodeId = await db_read_live_file_scope({ ctx, reads, node });
 	if (restrictedScopeNodeId === undefined || restrictedScopeNodeId !== link.restrictedScopeNodeId) {
 		return null;
 	}
 
-	reads_reserve(reads, 5, 5);
+	reads_reserve({ reads, calls: 5, docs: 5 });
 	const asset = await db_get_finished_asset(ctx, node);
 	if (!asset || !(await db_is_workspace_live(ctx, link))) {
 		return null;
@@ -705,7 +740,7 @@ async function db_prepare_share_link_view(ctx: QueryCtx, token: string) {
 		let mediaNode: Doc<"files_nodes"> | null = null;
 		if (!mediaBudgetSpent) {
 			try {
-				mediaNode = await db_read_media_node(ctx, reads, item);
+				mediaNode = await db_read_media_node({ ctx, reads, item });
 			} catch (error) {
 				if (!(error instanceof ShareViewBudgetError)) {
 					throw error;
@@ -727,7 +762,7 @@ async function db_prepare_share_link_view(ctx: QueryCtx, token: string) {
 		maxOps: MAX_WORKSPACE_SUBTREE_OPS,
 		beforeNextRead: (lastOp) => {
 			reads_count(reads, lastOp);
-			return reads_try_reserve(reads, lastOp ? 0 : 1, 1);
+			return reads_try_reserve({ reads, calls: lastOp ? 0 : 1, docs: 1 });
 		},
 	});
 	if (!blocked || blocked[0]) {
@@ -745,11 +780,15 @@ async function db_prepare_share_link_view(ctx: QueryCtx, token: string) {
 		const mediaBlocked = mediaNode ? blocked[blockedIndex++] : true;
 		if (mediaNode && !mediaBlocked && !mediaBudgetSpent) {
 			try {
-				mediaAsset = await db_check_media_node(ctx, reads, {
+				mediaAsset = await db_check_media_node({
+					ctx,
+					reads,
 					mediaNode,
 					restrictedScopeNodeId,
 					readFileWriters: async () => {
-						fileWriterAccountIds ??= await db_read_file_service_accounts(ctx, reads, {
+						fileWriterAccountIds ??= await db_read_file_service_accounts({
+							ctx,
+							reads,
 							nodeId: node._id,
 							permission: "content.write",
 						});

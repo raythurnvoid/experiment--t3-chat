@@ -68,11 +68,13 @@ async function read_clocks(f: Fixture) {
 	}));
 }
 
-async function expect_clocks(
-	f: Fixture,
-	before: Awaited<ReturnType<typeof read_clocks>>,
-	changed: Array<Id<"organizations_workspaces"> | null>,
-) {
+async function expect_clocks(args: {
+	f: Fixture;
+	before: Awaited<ReturnType<typeof read_clocks>>;
+	changed: Array<Id<"organizations_workspaces"> | null>;
+}) {
+	const { f, before, changed } = args;
+
 	const after = await read_clocks(f);
 	for (const previous of before.versions) {
 		const current = after.versions.find((doc) => doc._id === previous._id);
@@ -139,17 +141,17 @@ describe("media access clocks", () => {
 		const role = await f.t.run((ctx) => ctx.db.get("access_control_roles", roleId));
 		if (change === "permissions") expect(role?.permissions).toEqual(["content.read"]);
 		if (change === "name") expect(role?.name).toBe("Renamed");
-		await expect_clocks(f, before, change === "permissions" ? [null] : []);
+		await expect_clocks({ f, before, changed: change === "permissions" ? [null] : [] });
 	});
 
 	test("role creation does not change access, but deletion advances the organization clock", async () => {
 		const f = await fixture();
 		const before = await read_clocks(f);
 		const roleId = await create_role(f);
-		await expect_clocks(f, before, []);
+		await expect_clocks({ f, before, changed: [] });
 		expect(await f.asOwner.mutation(api.access_control.delete_role, { roleId })).toEqual({ _yay: null });
 		expect(await f.t.run((ctx) => ctx.db.get("access_control_roles", roleId))).toBeNull();
-		await expect_clocks(f, before, [null]);
+		await expect_clocks({ f, before, changed: [null] });
 	});
 
 	test("deleting an inactive holder's custom role changes the fallback and the organization clock", async () => {
@@ -169,7 +171,7 @@ describe("media access clocks", () => {
 		expect(await f.t.run((ctx) => ctx.db.query("access_control_role_assignments").collect())).toEqual([
 			expect.objectContaining({ userId: f.member.userId, role: "viewer" }),
 		]);
-		await expect_clocks(f, before, [null]);
+		await expect_clocks({ f, before, changed: [null] });
 	});
 
 	test.each(["change", "same", "refused"] as const)("organization assignment: %s", async (change) => {
@@ -198,7 +200,7 @@ describe("media access clocks", () => {
 				),
 			).toMatchObject({ role: change === "same" ? "member" : "viewer" });
 		}
-		await expect_clocks(f, before, change === "change" ? [null] : []);
+		await expect_clocks({ f, before, changed: change === "change" ? [null] : [] });
 	});
 
 	test.each(["create", "remove", "absent"] as const)(
@@ -234,7 +236,7 @@ describe("media access clocks", () => {
 			);
 			if (change === "create") expect(assignment?.role).toBe("admin");
 			else expect(assignment).toBeNull();
-			await expect_clocks(f, before, change === "absent" ? [] : [null]);
+			await expect_clocks({ f, before, changed: change === "absent" ? [] : [null] });
 		},
 	);
 
@@ -257,10 +259,10 @@ describe("media access clocks", () => {
 		};
 		const id = await f.t.run((ctx) => access_control_db_ensure_role_assignment(ctx, args));
 		expect(await f.t.run((ctx) => ctx.db.get("access_control_role_assignments", id))).toMatchObject({ role: "admin" });
-		await expect_clocks(f, before, [null]);
+		await expect_clocks({ f, before, changed: [null] });
 		const repeated = await read_clocks(f);
 		expect(await f.t.run((ctx) => access_control_db_ensure_role_assignment(ctx, args))).toBe(id);
-		await expect_clocks(f, repeated, []);
+		await expect_clocks({ f, before: repeated, changed: [] });
 	});
 
 	test("explicit ownership handoff advances organization and new membership clocks without a feed", async () => {
@@ -297,7 +299,7 @@ describe("media access clocks", () => {
 		);
 		expect(membership).toMatchObject({ active: true });
 		expect(lifetime).toMatchObject({ membershipId: membership!._id, active: true, lifetime: 1 });
-		await expect_clocks(f, before, [null, f.siblingId]);
+		await expect_clocks({ f, before, changed: [null, f.siblingId] });
 		expect((await read_clocks(f)).versions.find((doc) => doc.workspaceId === f.siblingId)?.revision).toBe(
 			before.versions.find((doc) => doc.workspaceId === f.siblingId)!.revision + 1,
 		);
@@ -435,7 +437,7 @@ describe("media sharing clocks", () => {
 		expect(await f.asOwner.mutation(api.files_sharing.set_node_share_grant, { ...args, level: "read" })).toEqual({
 			_yay: null,
 		});
-		await expect_clocks(f, before, []);
+		await expect_clocks({ f, before, changed: [] });
 		expect(await f.t.run((ctx) => ctx.db.get("access_control_permission_grants", readGrant!._id))).toEqual(readGrant);
 		vi.setSystemTime(Date.now() + 60_000);
 		expect(await f.asOwner.mutation(api.files_sharing.set_node_share_grant, { ...args, level: "write" })).toEqual({
@@ -457,7 +459,7 @@ describe("media sharing clocks", () => {
 					.unique(),
 			),
 		).toMatchObject({ detachedAt: Date.now() });
-		await expect_clocks(f, before, [f.owner.workspaceId]);
+		await expect_clocks({ f, before, changed: [f.owner.workspaceId] });
 	});
 
 	test("service-only sharing changes and revocation leave media clocks unchanged", async () => {
@@ -479,10 +481,10 @@ describe("media sharing clocks", () => {
 			_yay: null,
 		});
 		expect(await f.t.run((ctx) => ctx.db.query("access_control_permission_grants").collect())).toHaveLength(1);
-		await expect_clocks(f, before, []);
+		await expect_clocks({ f, before, changed: [] });
 		expect(await f.asOwner.mutation(api.files_sharing.remove_node_share_grant, args)).toEqual({ _yay: null });
 		expect(await f.t.run((ctx) => ctx.db.query("access_control_permission_grants").collect())).toEqual([]);
-		await expect_clocks(f, before, []);
+		await expect_clocks({ f, before, changed: [] });
 		expect(
 			await f.asOwner.mutation(api.access_control.revoke_service_account, {
 				membershipId: f.owner.membershipId,
@@ -492,7 +494,7 @@ describe("media sharing clocks", () => {
 		expect(await f.t.run((ctx) => ctx.db.get("access_control_service_accounts", serviceAccountId))).toMatchObject({
 			revokedAt: Date.now(),
 		});
-		await expect_clocks(f, before, []);
+		await expect_clocks({ f, before, changed: [] });
 	});
 
 	test("denied sharing leaves all clocks and grants unchanged", async () => {
@@ -512,7 +514,7 @@ describe("media sharing clocks", () => {
 			});
 		expect(result._nay).toBeDefined();
 		expect(await f.t.run((ctx) => ctx.db.query("access_control_permission_grants").collect())).toEqual([]);
-		await expect_clocks(f, before, []);
+		await expect_clocks({ f, before, changed: [] });
 	});
 	test.each([false, true])(
 		"root restriction and release advance the workspace clock (children: %s)",
@@ -527,13 +529,13 @@ describe("media sharing clocks", () => {
 			expect(await f.t.run((ctx) => ctx.db.get("files_nodes", nodeId))).toMatchObject({
 				restrictedScopeNodeId: rootId,
 			});
-			await expect_clocks(f, before, [f.owner.workspaceId]);
+			await expect_clocks({ f, before, changed: [f.owner.workspaceId] });
 			const restricted = await read_clocks(f);
 			expect(await f.asOwner.mutation(api.files_sharing.restrict_node, args)).toEqual({ _yay: null });
-			await expect_clocks(f, restricted, []);
+			await expect_clocks({ f, before: restricted, changed: [] });
 			expect(await f.asOwner.mutation(api.files_sharing.unrestrict_node, args)).toEqual({ _yay: null });
 			expect((await f.t.run((ctx) => ctx.db.get("files_nodes", nodeId)))?.restrictedScopeNodeId ?? null).toBeNull();
-			await expect_clocks(f, restricted, [f.owner.workspaceId]);
+			await expect_clocks({ f, before: restricted, changed: [f.owner.workspaceId] });
 		},
 	);
 
@@ -554,15 +556,15 @@ describe("media sharing clocks", () => {
 			expect(await f.t.run((ctx) => ctx.db.query("access_control_permission_grants").collect())).toEqual([
 				expect.objectContaining({ resourceId: String(nodeId), permission: "content.read", principalKind: kind }),
 			]);
-			await expect_clocks(f, before, [f.owner.workspaceId]);
+			await expect_clocks({ f, before, changed: [f.owner.workspaceId] });
 			const granted = await read_clocks(f);
 			expect(await f.asOwner.mutation(api.files_sharing.set_node_share_grant, { ...args, level: "read" })).toEqual({
 				_yay: null,
 			});
-			await expect_clocks(f, granted, []);
+			await expect_clocks({ f, before: granted, changed: [] });
 			expect(await f.asOwner.mutation(api.files_sharing.remove_node_share_grant, args)).toEqual({ _yay: null });
 			expect(await f.t.run((ctx) => ctx.db.query("access_control_permission_grants").collect())).toEqual([]);
-			await expect_clocks(f, granted, [f.owner.workspaceId]);
+			await expect_clocks({ f, before: granted, changed: [f.owner.workspaceId] });
 		},
 	);
 });
@@ -584,7 +586,7 @@ describe("media tenancy clocks", () => {
 		expect(await f.t.run((ctx) => ctx.db.get("organizations_workspaces_users", f.membership._id))).toMatchObject({
 			active: false,
 		});
-		await expect_clocks(f, before, [f.owner.workspaceId, f.member.workspaceId]);
+		await expect_clocks({ f, before, changed: [f.owner.workspaceId, f.member.workspaceId] });
 		const deleted = await read_clocks(f);
 		const restored = await f.t.mutation(internal.users.resolve_user, {
 			clerkUserId: "media-clock-returning-member",
@@ -596,7 +598,7 @@ describe("media tenancy clocks", () => {
 		expect(await f.t.run((ctx) => ctx.db.get("organizations_workspaces_users", f.membership._id))).toMatchObject({
 			active: true,
 		});
-		await expect_clocks(f, deleted, [f.owner.workspaceId, f.member.workspaceId]);
+		await expect_clocks({ f, before: deleted, changed: [f.owner.workspaceId, f.member.workspaceId] });
 	});
 
 	test("owned organization teardown advances the organization and workspace clocks only on the first call", async () => {
@@ -609,10 +611,10 @@ describe("media tenancy clocks", () => {
 				"pluginDataPurgeStartedAt",
 			);
 		}
-		await expect_clocks(f, before, [null, f.owner.workspaceId, f.siblingId]);
+		await expect_clocks({ f, before, changed: [null, f.owner.workspaceId, f.siblingId] });
 		const deleted = await read_clocks(f);
 		await f.t.mutation(internal.data_deletion.init_user_deletion, { userId: f.owner.userId });
-		await expect_clocks(f, deleted, []);
+		await expect_clocks({ f, before: deleted, changed: [] });
 	});
 
 	test("data reset replaces the workspace clock when it clears the purge fence", async () => {
@@ -633,11 +635,11 @@ describe("media tenancy clocks", () => {
 				expect(newW?.revision).toBeGreaterThan(0);
 				const oldW = before.versions.find((doc) => doc.workspaceId === f.member.workspaceId);
 				if (oldW) expect(newW?._id).not.toBe(oldW._id);
-				await expect_clocks(
+				await expect_clocks({
 					f,
-					{ ...before, versions: before.versions.filter((doc) => doc.workspaceId !== f.member.workspaceId) },
-					[],
-				);
+					before: { ...before, versions: before.versions.filter((doc) => doc.workspaceId !== f.member.workspaceId) },
+					changed: [],
+				});
 				cleared = true;
 			}
 			if (result.done) break;
@@ -720,7 +722,7 @@ describe("media tenancy clocks", () => {
 				_test_batchSize: 1,
 			});
 			if ((await f.t.run((ctx) => ctx.db.query("access_control_permission_grants").collect())).length === 0) {
-				await expect_clocks(f, before, [f.owner.workspaceId]);
+				await expect_clocks({ f, before, changed: [f.owner.workspaceId] });
 				removed = true;
 				break;
 			}
@@ -740,7 +742,7 @@ describe("media tenancy clocks", () => {
 				_test_disableReschedule: true,
 			});
 			if ((await f.t.run((ctx) => ctx.db.query("access_control_role_assignments").collect())).length === 0) {
-				await expect_clocks(f, before, [null]);
+				await expect_clocks({ f, before, changed: [null] });
 				removed = true;
 				break;
 			}
@@ -840,10 +842,10 @@ describe("media tenancy clocks", () => {
 					.unique(),
 			),
 		).toMatchObject({ active: true, lifetime: 1 });
-		await expect_clocks(f, before, [f.owner.workspaceId]);
+		await expect_clocks({ f, before, changed: [f.owner.workspaceId] });
 		const ensured = await read_clocks(f);
 		await f.t.run((ctx) => organizations_membership_lifetimes_db_ensure(ctx, ownerMembership));
-		await expect_clocks(f, ensured, []);
+		await expect_clocks({ f, before: ensured, changed: [] });
 	});
 
 	test("membership removal and reinvite change the workspace clock and preserve old lifetime refusal", async () => {
@@ -856,7 +858,7 @@ describe("media tenancy clocks", () => {
 			}),
 		).toEqual({ _yay: null });
 		expect(await f.t.run((ctx) => ctx.db.get("organizations_workspaces_users", f.membership._id))).toBeNull();
-		await expect_clocks(f, before, [null, f.owner.workspaceId]);
+		await expect_clocks({ f, before, changed: [null, f.owner.workspaceId] });
 		const removed = await read_clocks(f);
 		vi.setSystemTime(Date.now() + 60_000);
 		expect(
@@ -874,7 +876,7 @@ describe("media tenancy clocks", () => {
 					.unique(),
 			),
 		).toMatchObject({ active: true, lifetime: 2 });
-		await expect_clocks(f, removed, [null, f.owner.workspaceId]);
+		await expect_clocks({ f, before: removed, changed: [null, f.owner.workspaceId] });
 	});
 
 	test("member grant continuation advances the organization clock after roles and membership are already revoked", async () => {
@@ -913,7 +915,7 @@ describe("media tenancy clocks", () => {
 			userId: f.member.userId,
 		});
 		expect(await f.t.run((ctx) => ctx.db.query("access_control_permission_grants").collect())).toEqual([]);
-		await expect_clocks(f, before, [null]);
+		await expect_clocks({ f, before, changed: [null] });
 	});
 
 	test("repeated inactive lifetime recording keeps the workspace clock unchanged", async () => {
@@ -928,7 +930,7 @@ describe("media tenancy clocks", () => {
 		await f.t.run((ctx) =>
 			organizations_membership_lifetimes_db_record(ctx, [{ membership: f.membership, active: false }]),
 		);
-		await expect_clocks(f, before, []);
+		await expect_clocks({ f, before, changed: [] });
 	});
 
 	test.each([false, true])(
@@ -961,7 +963,7 @@ describe("media tenancy clocks", () => {
 			expect(await f.t.run((ctx) => ctx.db.query("access_control_role_assignments").collect())).toEqual([
 				expect.objectContaining({ workspaceId: f.owner.workspaceId, userId: f.member.userId, role: "member" }),
 			]);
-			await expect_clocks(f, before, assigned ? [null, f.siblingId] : [f.siblingId]);
+			await expect_clocks({ f, before, changed: assigned ? [null, f.siblingId] : [f.siblingId] });
 		},
 	);
 
@@ -975,7 +977,7 @@ describe("media tenancy clocks", () => {
 			expect(await f.t.run((ctx) => ctx.db.get("organizations_workspaces", workspaceId))).toHaveProperty(
 				"pluginDataPurgeStartedAt",
 			);
-		await expect_clocks(f, before, [null, f.owner.workspaceId, f.siblingId]);
+		await expect_clocks({ f, before, changed: [null, f.owner.workspaceId, f.siblingId] });
 	});
 
 	test("purge entry advances the workspace clock once while data drains", async () => {
@@ -996,10 +998,10 @@ describe("media tenancy clocks", () => {
 		expect(await f.t.run((ctx) => ctx.db.get("organizations_workspaces", f.owner.workspaceId))).toHaveProperty(
 			"pluginDataPurgeStartedAt",
 		);
-		await expect_clocks(f, before, [f.owner.workspaceId]);
+		await expect_clocks({ f, before, changed: [f.owner.workspaceId] });
 		const fenced = await read_clocks(f);
 		await f.t.mutation(internal.data_deletion.process_workspace_deletion_request, { requestId, _test_batchSize: 1 });
-		await expect_clocks(f, fenced, []);
+		await expect_clocks({ f, before: fenced, changed: [] });
 	});
 
 	test("final workspace purge removes its workspace clock identity", async () => {
@@ -1068,7 +1070,7 @@ describe("media tenancy clocks", () => {
 		);
 		expect(membership).toMatchObject({ active: true });
 		expect(lifetime).toMatchObject({ membershipId: membership!._id, active: true, lifetime: 1 });
-		await expect_clocks(f, before, [null, f.siblingId]);
+		await expect_clocks({ f, before, changed: [null, f.siblingId] });
 		expect((await read_clocks(f)).versions.find((doc) => doc.workspaceId === f.siblingId)?.revision).toBe(
 			before.versions.find((doc) => doc.workspaceId === f.siblingId)!.revision + 1,
 		);

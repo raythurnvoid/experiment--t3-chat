@@ -210,15 +210,15 @@ async function access_control_test_seed_enforcement_fixture(t: TestConvex, args:
  * permission test. Only the shape matters here: every field below is filler except the organization
  * and workspace ids.
  */
-async function access_control_test_seed_activity(
-	t: TestConvex,
-	fixture: Awaited<ReturnType<typeof access_control_test_seed_enforcement_fixture>>,
-	args: {
-		fileNodeId: Id<"files_nodes">;
-		/** Files this activity names. Left empty by default, which is an activity about the workspace itself. */
-		targets?: Array<{ kind: "file_node"; id: Id<"files_nodes">; path: string; message: string }>;
-	},
-) {
+async function access_control_test_seed_activity(args: {
+	t: TestConvex;
+	fixture: Awaited<ReturnType<typeof access_control_test_seed_enforcement_fixture>>;
+	fileNodeId: Id<"files_nodes">;
+	/** Files this activity names. Left empty by default, which is an activity about the workspace itself. */
+	targets?: Array<{ kind: "file_node"; id: Id<"files_nodes">; path: string; message: string }>;
+}) {
+	const { t, fixture } = args;
+
 	return await t.run(async (ctx) => {
 		const now = Date.now();
 		const pluginVersionId = await ctx.db.insert("plugins_versions", {
@@ -325,11 +325,14 @@ async function access_control_test_seed_activity(
 	});
 }
 
-async function access_control_test_seed_plugin_installation(
-	t: TestConvex,
-	fixture: Awaited<ReturnType<typeof access_control_test_seed_enforcement_fixture>>,
-	args: { name?: string; workspaceId?: Id<"organizations_workspaces"> } = {},
-) {
+async function access_control_test_seed_plugin_installation(args: {
+	t: TestConvex;
+	fixture: Awaited<ReturnType<typeof access_control_test_seed_enforcement_fixture>>;
+	name?: string;
+	workspaceId?: Id<"organizations_workspaces">;
+}) {
+	const { t, fixture } = args;
+
 	return await t.run(async (ctx) => {
 		const now = Date.now();
 		const name = args.name ?? "access-plugin";
@@ -993,7 +996,7 @@ describe("set_node_share_grant service accounts", () => {
 		});
 		const serviceAccountId = created._yay!.serviceAccountId;
 		const nodeId = await access_control_test_seed_open_folder(fixture, { name: "bound-output" });
-		const activityId = await access_control_test_seed_activity(t, fixture, { fileNodeId: nodeId });
+		const activityId = await access_control_test_seed_activity({ t, fixture, fileNodeId: nodeId });
 		const binding = await t.run(async (ctx) => {
 			const activity = (await ctx.db.get("activities", activityId))!;
 			if (activity.source.kind !== "plugin_run") {
@@ -1116,8 +1119,10 @@ describe("access_control_db_has_permission plugin management", () => {
 			name: "plugin-exact",
 			suffix: "plugin-exact",
 		});
-		const installationId = await access_control_test_seed_plugin_installation(t, fixture);
-		const otherInstallationId = await access_control_test_seed_plugin_installation(t, fixture, {
+		const installationId = await access_control_test_seed_plugin_installation({ t, fixture });
+		const otherInstallationId = await access_control_test_seed_plugin_installation({
+			t,
+			fixture,
 			name: "other-access-plugin",
 		});
 		expect(
@@ -1210,7 +1215,7 @@ describe("access_control_db_has_permission plugin management", () => {
 			name: "plugin-everybody",
 			suffix: "plugin-everybody",
 		});
-		const installationId = await access_control_test_seed_plugin_installation(t, fixture);
+		const installationId = await access_control_test_seed_plugin_installation({ t, fixture });
 		expect(
 			(
 				await fixture.asOwner.mutation(api.plugins_access.update_installation_access, {
@@ -1243,7 +1248,7 @@ describe("access_control_db_has_permission run-as consent", () => {
 			name: "run-consent",
 			suffix: "run-consent",
 		});
-		const installationId = await access_control_test_seed_plugin_installation(t, fixture);
+		const installationId = await access_control_test_seed_plugin_installation({ t, fixture });
 		const scope = {
 			organizationId: fixture.organizationId,
 			workspaceId: fixture.defaultWorkspaceId,
@@ -1320,7 +1325,7 @@ describe("plugin role grant ceilings", () => {
 				name: `ceiling-${kind === "workspace" ? "workspace" : "install"}`,
 				suffix: `plugin-ceiling-${kind}`,
 			});
-			const installationId = await access_control_test_seed_plugin_installation(t, fixture);
+			const installationId = await access_control_test_seed_plugin_installation({ t, fixture });
 			const role = await fixture.asOwner.mutation(api.access_control.create_role, {
 				organizationId: fixture.organizationId,
 				name: "Plugin operator",
@@ -1382,7 +1387,7 @@ describe("plugin role grant ceilings", () => {
 			name: "plugin-invite",
 			suffix: "plugin-invite",
 		});
-		const installationId = await access_control_test_seed_plugin_installation(t, fixture);
+		const installationId = await access_control_test_seed_plugin_installation({ t, fixture });
 		expect(
 			(
 				await fixture.asOwner.mutation(api.access_control.set_user_role, {
@@ -1448,7 +1453,7 @@ describe("plugin role grant ceilings", () => {
 			workspaceId,
 			userId: fixture.memberId,
 		});
-		const installationId = await access_control_test_seed_plugin_installation(t, fixture, { workspaceId });
+		const installationId = await access_control_test_seed_plugin_installation({ t, fixture, workspaceId });
 		const role = await fixture.asOwner.mutation(api.access_control.create_role, {
 			organizationId: fixture.organizationId,
 			name: "Side operator",
@@ -1511,7 +1516,9 @@ describe("plugin role grant ceilings", () => {
 			role: replacement._yay!.roleId,
 		});
 		expect(swapped._nay).toBeUndefined();
-		const otherInstallationId = await access_control_test_seed_plugin_installation(t, fixture, {
+		const otherInstallationId = await access_control_test_seed_plugin_installation({
+			t,
+			fixture,
 			name: "default-role-plugin",
 			workspaceId,
 		});
@@ -1557,7 +1564,7 @@ describe("plugin role grant ceilings", () => {
 			name: "plugin-fallback",
 			suffix: "plugin-fallback",
 		});
-		const installationId = await access_control_test_seed_plugin_installation(t, fixture);
+		const installationId = await access_control_test_seed_plugin_installation({ t, fixture });
 		expect(
 			(
 				await fixture.asOwner.mutation(api.access_control.set_user_role, {
@@ -1614,7 +1621,7 @@ describe("plugin role grant ceilings", () => {
 			name: "plugin-role-cap",
 			suffix: "plugin-role-cap",
 		});
-		const installationId = await access_control_test_seed_plugin_installation(t, fixture);
+		const installationId = await access_control_test_seed_plugin_installation({ t, fixture });
 		// Fill counts directly, like the existing Files cap test. The writer is the boundary under test.
 		await t.run(async (ctx) => {
 			for (let index = 0; index < 50; index++) {
@@ -2016,7 +2023,7 @@ describe("enforcement", () => {
 			path: "uploads",
 		});
 		expect(folder._nay).toBeUndefined();
-		const activityId = await access_control_test_seed_activity(t, fixture, { fileNodeId: folder._yay!.nodeId });
+		const activityId = await access_control_test_seed_activity({ t, fixture, fileNodeId: folder._yay!.nodeId });
 
 		// A viewer keeps `content.read`, so the list still answers them. Activity titles contain file
 		// names, and reading the workspace is what gives the right to see those.
@@ -2071,7 +2078,7 @@ describe("enforcement", () => {
 		expect(assigned._nay).toBeUndefined();
 
 		// This new card has not been dismissed, so the empty page must come from access checks.
-		await access_control_test_seed_activity(t, fixture, { fileNodeId: folder._yay!.nodeId });
+		await access_control_test_seed_activity({ t, fixture, fileNodeId: folder._yay!.nodeId });
 		const noReadListed = await fixture.asMember.query(api.activities.list_page, {
 			membershipId: fixture.memberMembershipId,
 			section: "history",
@@ -5609,11 +5616,13 @@ describe("role and permission queries", () => {
 
 describe("file sharing", () => {
 	/** A restricted folder with one file inside it, made by the fixture owner. */
-	async function seed_restricted_folder(
-		t: TestConvex,
-		fixture: Awaited<ReturnType<typeof access_control_test_seed_enforcement_fixture>>,
-		args: { name: string },
-	) {
+	async function seed_restricted_folder(args: {
+		t: TestConvex;
+		fixture: Awaited<ReturnType<typeof access_control_test_seed_enforcement_fixture>>;
+		name: string;
+	}) {
+		const { t, fixture } = args;
+
 		const folder = await fixture.asOwner.mutation(api.files_nodes.create_folder_node, {
 			membershipId: fixture.ownerMembershipId,
 			parentId: files_ROOT_ID,
@@ -5665,17 +5674,17 @@ describe("file sharing", () => {
 	 * kinds. `create_text_node` uploads to R2, which these tests do not have, and text search
 	 * reads only the node and its plain-text chunks.
 	 */
-	async function seed_committed_search_file(
-		t: TestConvex,
-		fixture: Awaited<ReturnType<typeof access_control_test_seed_enforcement_fixture>>,
-		args: {
-			workspaceId?: Id<"organizations_workspaces">;
-			parentId: Id<"files_nodes"> | typeof files_ROOT_ID;
-			path: string;
-			markdown: string;
-			restrictedScopeNodeId?: Id<"files_nodes">;
-		},
-	) {
+	async function seed_committed_search_file(args: {
+		t: TestConvex;
+		fixture: Awaited<ReturnType<typeof access_control_test_seed_enforcement_fixture>>;
+		workspaceId?: Id<"organizations_workspaces">;
+		parentId: Id<"files_nodes"> | typeof files_ROOT_ID;
+		path: string;
+		markdown: string;
+		restrictedScopeNodeId?: Id<"files_nodes">;
+	}) {
+		const { t, fixture } = args;
+
 		const chunks = await files_chunk_markdown(args.markdown);
 		if (chunks._nay) {
 			throw new Error(chunks._nay.message);
@@ -5777,7 +5786,7 @@ describe("file sharing", () => {
 			name: "rename-dest-org",
 			suffix: "rename-dest",
 		});
-		const { folderId, childId } = await seed_restricted_folder(t, fixture, { name: "closed" });
+		const { folderId, childId } = await seed_restricted_folder({ t, fixture, name: "closed" });
 
 		// An open folder beside it, to cover the case where the destination already exists.
 		const open = await fixture.asOwner.mutation(api.files_nodes.create_folder_node, {
@@ -5988,7 +5997,7 @@ describe("file sharing", () => {
 			name: "restrict-org",
 			suffix: "restrict",
 		});
-		const { folderId, childId } = await seed_restricted_folder(t, fixture, { name: "private" });
+		const { folderId, childId } = await seed_restricted_folder({ t, fixture, name: "private" });
 
 		const [{ page: memberTree }, memberFolder, memberChild, { page: ownerTree }] = await Promise.all([
 			fixture.asMember.query(api.files_nodes.list_tree, {
@@ -6026,7 +6035,7 @@ describe("file sharing", () => {
 			name: "grant-write-org",
 			suffix: "grant-write",
 		});
-		const { folderId, childId } = await seed_restricted_folder(t, fixture, { name: "team-space" });
+		const { folderId, childId } = await seed_restricted_folder({ t, fixture, name: "team-space" });
 
 		const granted = await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, {
 			membershipId: fixture.ownerMembershipId,
@@ -6091,7 +6100,7 @@ describe("file sharing", () => {
 			name: "grant-read-org",
 			suffix: "grant-read",
 		});
-		const { folderId, childId } = await seed_restricted_folder(t, fixture, { name: "read-only-space" });
+		const { folderId, childId } = await seed_restricted_folder({ t, fixture, name: "read-only-space" });
 
 		const granted = await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, {
 			membershipId: fixture.ownerMembershipId,
@@ -6136,7 +6145,7 @@ describe("file sharing", () => {
 			name: "grant-role-org",
 			suffix: "grant-role",
 		});
-		const { folderId } = await seed_restricted_folder(t, fixture, { name: "role-space" });
+		const { folderId } = await seed_restricted_folder({ t, fixture, name: "role-space" });
 
 		const granted = await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, {
 			membershipId: fixture.ownerMembershipId,
@@ -6170,7 +6179,7 @@ describe("file sharing", () => {
 			name: "role-ceiling-org",
 			suffix: "role-ceiling",
 		});
-		const { folderId } = await seed_restricted_folder(t, fixture, { name: "payroll" });
+		const { folderId } = await seed_restricted_folder({ t, fixture, name: "payroll" });
 
 		// A third member, so the fixture's member can act as the assigner and somebody else receives.
 		const eveId = await access_control_test_bootstrap_user(t, { clerkUserId: "clerk-role-ceiling-eve" });
@@ -6299,7 +6308,7 @@ describe("file sharing", () => {
 			name: "del-role-ceiling",
 			suffix: "delete-ceiling",
 		});
-		const { folderId } = await seed_restricted_folder(t, fixture, { name: "payroll" });
+		const { folderId } = await seed_restricted_folder({ t, fixture, name: "payroll" });
 
 		// The folder is shared with `viewer`, the role `delete_role` falls back to. Nothing in
 		// `viewer`'s permission list mentions it.
@@ -6423,7 +6432,7 @@ describe("file sharing", () => {
 			name: "invite-ceiling",
 			suffix: "invite-ceiling",
 		});
-		const { folderId } = await seed_restricted_folder(t, fixture, { name: "payroll" });
+		const { folderId } = await seed_restricted_folder({ t, fixture, name: "payroll" });
 
 		// The folder is shared with the system `member` role, which is the role an invite hands out.
 		const granted = await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, {
@@ -7005,7 +7014,7 @@ describe("file sharing", () => {
 			name: "share-role-ceil",
 			suffix: "share-role",
 		});
-		const { folderId } = await seed_restricted_folder(t, fixture, { name: "payroll" });
+		const { folderId } = await seed_restricted_folder({ t, fixture, name: "payroll" });
 
 		// A plain `member` is given "Can manage" on the folder. That is the ordinary way to let somebody
 		// run a shared folder, and it hands them `content.permissions.manage` on this node — everything
@@ -7075,7 +7084,7 @@ describe("file sharing", () => {
 			name: "share-role-lower",
 			suffix: "share-role-lower",
 		});
-		const { folderId } = await seed_restricted_folder(t, fixture, { name: "payroll" });
+		const { folderId } = await seed_restricted_folder({ t, fixture, name: "payroll" });
 
 		// The role on the list. Its permission list does not matter here; only its level on this
 		// folder does.
@@ -7158,7 +7167,7 @@ describe("file sharing", () => {
 			name: "edit-role-ceil",
 			suffix: "edit-ceiling",
 		});
-		const { folderId } = await seed_restricted_folder(t, fixture, { name: "payroll" });
+		const { folderId } = await seed_restricted_folder({ t, fixture, name: "payroll" });
 
 		// The role the folder is shared with. Its permission list says nothing about files, so the
 		// caller clears the normal ceiling on it without ever seeing the folder.
@@ -7352,7 +7361,7 @@ describe("file sharing", () => {
 			name: "ceiling-perm-org",
 			suffix: "ceiling-perm",
 		});
-		const { folderId } = await seed_restricted_folder(t, fixture, { name: "payroll" });
+		const { folderId } = await seed_restricted_folder({ t, fixture, name: "payroll" });
 
 		const eveId = await access_control_test_bootstrap_user(t, { clerkUserId: "clerk-ceiling-perm-eve" });
 		await t.run(async (ctx) => {
@@ -7454,7 +7463,7 @@ describe("file sharing", () => {
 			name: "share-level-org",
 			suffix: "share-level",
 		});
-		const { folderId } = await seed_restricted_folder(t, fixture, { name: "payroll" });
+		const { folderId } = await seed_restricted_folder({ t, fixture, name: "payroll" });
 
 		// Read plus manage, with no write. The share dialog cannot produce this state — its levels are
 		// nested — so it is built by hand. The guard exists for exactly the state the UI cannot reach.
@@ -7820,7 +7829,7 @@ describe("file sharing", () => {
 			name: "agent-write-org",
 			suffix: "agent-write",
 		});
-		const { folderId } = await seed_restricted_folder(t, fixture, { name: "payroll" });
+		const { folderId } = await seed_restricted_folder({ t, fixture, name: "payroll" });
 
 		// A markdown file inside the restricted folder. Built by hand because the real creation path
 		// uploads to R2, which this suite does not run.
@@ -8031,7 +8040,7 @@ describe("file sharing", () => {
 		});
 		expect(promoted._nay).toBeUndefined();
 
-		const { folderId } = await seed_restricted_folder(t, fixture, { name: "owner-only" });
+		const { folderId } = await seed_restricted_folder({ t, fixture, name: "owner-only" });
 
 		const [{ page: tree }, shareState, unrestricted] = await Promise.all([
 			fixture.asMember.query(api.files_nodes.list_tree, {
@@ -8218,7 +8227,7 @@ describe("file sharing", () => {
 			name: "owner-row-org",
 			suffix: "owner-row",
 		});
-		const { folderId } = await seed_restricted_folder(t, fixture, { name: "owner-row-space" });
+		const { folderId } = await seed_restricted_folder({ t, fixture, name: "owner-row-space" });
 		const strangerId = await access_control_test_bootstrap_user(t, { clerkUserId: "clerk-owner-row-stranger" });
 
 		// A role that existed, and does not any more. The share dialog can still be holding its id from
@@ -8270,7 +8279,7 @@ describe("file sharing", () => {
 			name: "scope-node-org",
 			suffix: "scope-node",
 		});
-		const { folderId, childId } = await seed_restricted_folder(t, fixture, { name: "scope-space" });
+		const { folderId, childId } = await seed_restricted_folder({ t, fixture, name: "scope-space" });
 
 		// The dialog sends the folder's id for anything inside it. Sending the child's id instead is
 		// refused, because a grant on the child would be a list nothing ever reads.
@@ -8304,7 +8313,7 @@ describe("file sharing", () => {
 			name: "unrestrict-org",
 			suffix: "unrestrict",
 		});
-		const { folderId, childId } = await seed_restricted_folder(t, fixture, { name: "temporary-space" });
+		const { folderId, childId } = await seed_restricted_folder({ t, fixture, name: "temporary-space" });
 
 		const granted = await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, {
 			membershipId: fixture.ownerMembershipId,
@@ -8346,7 +8355,7 @@ describe("file sharing", () => {
 			name: "rename-scope-org",
 			suffix: "rename-scope",
 		});
-		const { folderId } = await seed_restricted_folder(t, fixture, { name: "closed" });
+		const { folderId } = await seed_restricted_folder({ t, fixture, name: "closed" });
 
 		const loose = await fixture.asOwner.mutation(api.files_nodes.create_folder_node, {
 			membershipId: fixture.ownerMembershipId,
@@ -8382,7 +8391,7 @@ describe("file sharing", () => {
 			name: "reader-gate-org",
 			suffix: "reader-gate",
 		});
-		const { folderId } = await seed_restricted_folder(t, fixture, { name: "closed" });
+		const { folderId } = await seed_restricted_folder({ t, fixture, name: "closed" });
 
 		const markdown = "# Private notes\nsecretneedle\n";
 		const chunks = await files_chunk_markdown(markdown);
@@ -8579,7 +8588,9 @@ describe("file sharing", () => {
 		});
 		expect(otherWorkspace._nay).toBeUndefined();
 		const otherWorkspaceId = otherWorkspace._yay!.workspaceId;
-		await seed_committed_search_file(t, fixture, {
+		await seed_committed_search_file({
+			t,
+			fixture,
 			workspaceId: otherWorkspaceId,
 			parentId: files_ROOT_ID,
 			path: "/other-only.md",
@@ -8626,14 +8637,18 @@ describe("file sharing", () => {
 			name: "search-grant-org",
 			suffix: "search-grant",
 		});
-		const { folderId } = await seed_restricted_folder(t, fixture, { name: "closed" });
+		const { folderId } = await seed_restricted_folder({ t, fixture, name: "closed" });
 
-		await seed_committed_search_file(t, fixture, {
+		await seed_committed_search_file({
+			t,
+			fixture,
 			parentId: files_ROOT_ID,
 			path: "/open-notes.md",
 			markdown: "# Open\n\ngrantsearchneedle\n",
 		});
-		await seed_committed_search_file(t, fixture, {
+		await seed_committed_search_file({
+			t,
+			fixture,
 			parentId: folderId,
 			path: "/closed/secret-notes.md",
 			markdown: "# Secret\n\ngrantsearchneedle\n",
@@ -8733,7 +8748,7 @@ describe("file sharing", () => {
 			name: "owner-repair-org",
 			suffix: "owner-repair",
 		});
-		const { folderId } = await seed_restricted_folder(t, fixture, { name: "owner-repair-space" });
+		const { folderId } = await seed_restricted_folder({ t, fixture, name: "owner-repair-space" });
 
 		const granted = await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, {
 			membershipId: fixture.ownerMembershipId,
@@ -8767,7 +8782,7 @@ describe("file sharing", () => {
 			name: "move-scope-org",
 			suffix: "move-scope",
 		});
-		const { folderId } = await seed_restricted_folder(t, fixture, { name: "closed-space" });
+		const { folderId } = await seed_restricted_folder({ t, fixture, name: "closed-space" });
 
 		const loose = await fixture.asOwner.mutation(api.files_nodes.create_folder_node, {
 			membershipId: fixture.ownerMembershipId,
@@ -8811,7 +8826,7 @@ describe("file sharing", () => {
 			name: "comment-scope-org",
 			suffix: "comment-scope",
 		});
-		const { folderId } = await seed_restricted_folder(t, fixture, { name: "closed" });
+		const { folderId } = await seed_restricted_folder({ t, fixture, name: "closed" });
 
 		const thread = await fixture.asOwner.mutation(api.chat_messages.chat_messages_threads_create, {
 			membershipId: fixture.ownerMembershipId,
@@ -8882,7 +8897,7 @@ describe("file sharing", () => {
 			name: "role-share-cap-org",
 			suffix: "role-share-cap",
 		});
-		const { folderId } = await seed_restricted_folder(t, fixture, { name: "closed" });
+		const { folderId } = await seed_restricted_folder({ t, fixture, name: "closed" });
 
 		// Fill the role's quota by hand. Going through the mutation 50 times would spend the whole
 		// sharing rate limit and prove nothing extra: the check counts grant docs, and these are the
@@ -8943,7 +8958,7 @@ describe("file sharing", () => {
 			name: "file-plugin-cap",
 			suffix: "file-plugin-cap",
 		});
-		const { folderId } = await seed_restricted_folder(t, fixture, { name: "closed" });
+		const { folderId } = await seed_restricted_folder({ t, fixture, name: "closed" });
 		await t.run(async (ctx) => {
 			for (let index = 0; index < 49; index++) {
 				for (const permission of ["content.read", "content.write", "content.permissions.manage"] as const) {
@@ -8987,7 +9002,7 @@ describe("file sharing", () => {
 			(await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, { ...args, level: "manage" }))._nay,
 		).toBeUndefined();
 		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
-		const other = await seed_restricted_folder(t, fixture, { name: "other" });
+		const other = await seed_restricted_folder({ t, fixture, name: "other" });
 		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
 		const capped = await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, {
 			...args,
@@ -9003,7 +9018,7 @@ describe("file sharing", () => {
 			name: "move-out-org",
 			suffix: "move-out",
 		});
-		const { folderId, childId } = await seed_restricted_folder(t, fixture, { name: "closed" });
+		const { folderId, childId } = await seed_restricted_folder({ t, fixture, name: "closed" });
 
 		const shared = await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, {
 			membershipId: fixture.ownerMembershipId,
@@ -9078,11 +9093,14 @@ describe("file sharing", () => {
 		 * `closed` before the request, and `outerRestricted` makes `/outer` restricted too. The request
 		 * then flips `closed`, and the last child in name order (`child-99`) keeps its old scope.
 		 */
-		async function seed_folder_job(
-			t: TestConvex,
-			fixture: Awaited<ReturnType<typeof access_control_test_seed_enforcement_fixture>>,
-			args: { restricted: boolean; outerRestricted: boolean },
-		) {
+		async function seed_folder_job(args: {
+			t: TestConvex;
+			fixture: Awaited<ReturnType<typeof access_control_test_seed_enforcement_fixture>>;
+			restricted: boolean;
+			outerRestricted: boolean;
+		}) {
+			const { t, fixture } = args;
+
 			const { outerId, folderId, childId } = await t.run(async (ctx) => {
 				const base = {
 					...test_mocks.files.base(),
@@ -9152,7 +9170,7 @@ describe("file sharing", () => {
 				name: "rj-org",
 				suffix: "restrict-job",
 			});
-			const { folderId, childId } = await seed_folder_job(t, fixture, { restricted: false, outerRestricted: false });
+			const { folderId, childId } = await seed_folder_job({ t, fixture, restricted: false, outerRestricted: false });
 
 			const renamed = await fixture.asMember.mutation(api.files_nodes.rename_node, {
 				membershipId: fixture.memberMembershipId,
@@ -9180,7 +9198,7 @@ describe("file sharing", () => {
 				name: "rj-edit-org",
 				suffix: "restrict-job-edit",
 			});
-			const { folderId, childId } = await seed_folder_job(t, fixture, { restricted: false, outerRestricted: false });
+			const { folderId, childId } = await seed_folder_job({ t, fixture, restricted: false, outerRestricted: false });
 			const shared = await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, {
 				membershipId: fixture.ownerMembershipId,
 				nodeId: folderId,
@@ -9216,7 +9234,7 @@ describe("file sharing", () => {
 				suffix: "restrict-job-guest",
 			});
 			await demote_to_guest_role(fixture);
-			const { folderId, childId } = await seed_folder_job(t, fixture, { restricted: false, outerRestricted: false });
+			const { folderId, childId } = await seed_folder_job({ t, fixture, restricted: false, outerRestricted: false });
 			const shared = await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, {
 				membershipId: fixture.ownerMembershipId,
 				nodeId: folderId,
@@ -9244,7 +9262,7 @@ describe("file sharing", () => {
 				name: "rj-service-org",
 				suffix: "restrict-job-service",
 			});
-			const { folderId, childId } = await seed_folder_job(t, fixture, { restricted: false, outerRestricted: false });
+			const { folderId, childId } = await seed_folder_job({ t, fixture, restricted: false, outerRestricted: false });
 			const serviceAccountId = await t.run(async (ctx) => {
 				const now = Date.now();
 				const serviceAccountId = await ctx.db.insert("access_control_service_accounts", {
@@ -9312,7 +9330,7 @@ describe("file sharing", () => {
 				name: "uj-org",
 				suffix: "unrestrict-job",
 			});
-			const { childId } = await seed_folder_job(t, fixture, { restricted: true, outerRestricted: false });
+			const { childId } = await seed_folder_job({ t, fixture, restricted: true, outerRestricted: false });
 
 			const renamed = await fixture.asMember.mutation(api.files_nodes.rename_node, {
 				membershipId: fixture.memberMembershipId,
@@ -9332,7 +9350,7 @@ describe("file sharing", () => {
 				name: "uj-nested-org",
 				suffix: "unrestrict-job-nested",
 			});
-			const { outerId, childId } = await seed_folder_job(t, fixture, { restricted: true, outerRestricted: true });
+			const { outerId, childId } = await seed_folder_job({ t, fixture, restricted: true, outerRestricted: true });
 
 			// The child still points at `closed`, which is open now. Access control ignores that pointer, so
 			// without the live scope the member would pass as if the child were not restricted at all.
@@ -9369,7 +9387,7 @@ describe("file sharing", () => {
 				name: "mj-org",
 				suffix: "move-job",
 			});
-			const { folderId: closedId } = await seed_restricted_folder(t, fixture, { name: "closed" });
+			const { folderId: closedId } = await seed_restricted_folder({ t, fixture, name: "closed" });
 			const { openId, childId } = await t.run(async (ctx) => {
 				const base = {
 					...test_mocks.files.base(),
@@ -9428,7 +9446,7 @@ describe("file sharing", () => {
 			name: "create-walk-org",
 			suffix: "create-walk",
 		});
-		const { folderId } = await seed_restricted_folder(t, fixture, { name: "closed" });
+		const { folderId } = await seed_restricted_folder({ t, fixture, name: "closed" });
 
 		// The member is authorized against the root, which they may write. The walk then finds `/closed`
 		// on its own, and that folder was never theirs. Typing the path must not be a way in.
@@ -9460,7 +9478,7 @@ describe("file sharing", () => {
 			name: "rename-walk-org",
 			suffix: "rename-walk",
 		});
-		await seed_restricted_folder(t, fixture, { name: "closed" });
+		await seed_restricted_folder({ t, fixture, name: "closed" });
 
 		const loose = await fixture.asMember.mutation(api.files_nodes.create_folder_node, {
 			membershipId: fixture.memberMembershipId,
@@ -9538,7 +9556,7 @@ describe("file sharing", () => {
 			name: "unarchive-orphan-org",
 			suffix: "unarchive-orphan",
 		});
-		const { folderId, childId } = await seed_restricted_folder(t, fixture, { name: "closed" });
+		const { folderId, childId } = await seed_restricted_folder({ t, fixture, name: "closed" });
 
 		// Archive the child first, so it has its own archive operation and can come back alone.
 		for (const nodeId of [childId, folderId]) {
@@ -9579,7 +9597,7 @@ describe("file sharing", () => {
 			name: "mkdir-gate-org",
 			suffix: "mkdir-gate",
 		});
-		const { folderId } = await seed_restricted_folder(t, fixture, { name: "closed" });
+		const { folderId } = await seed_restricted_folder({ t, fixture, name: "closed" });
 
 		// The mutation behind bash `mkdir`. It looks the path up raw, so without a check it hands back the
 		// id of a folder the caller cannot see, and the shell remembers what it gets: `stat` would then
@@ -9690,7 +9708,7 @@ describe("file sharing", () => {
 			name: "search-gate-org",
 			suffix: "search-gate",
 		});
-		await seed_restricted_folder(t, fixture, { name: "closed" });
+		await seed_restricted_folder({ t, fixture, name: "closed" });
 
 		// An open folder the same query finds, so an empty member list cannot pass for the wrong reason:
 		// without it, hiding everything from every member would look exactly like hiding the restricted one.
@@ -9730,7 +9748,7 @@ describe("file sharing", () => {
 			name: "activity-scope-org",
 			suffix: "activity-scope",
 		});
-		const { childId } = await seed_restricted_folder(t, fixture, { name: "closed" });
+		const { childId } = await seed_restricted_folder({ t, fixture, name: "closed" });
 
 		const open = await fixture.asOwner.mutation(api.files_nodes.create_folder_node, {
 			membershipId: fixture.ownerMembershipId,
@@ -9743,18 +9761,24 @@ describe("file sharing", () => {
 		// Three activities. The first names the restricted file only. The second names it beside an open
 		// file, which must not save it: the title carries the restricted name whatever else it points at.
 		// The third names the open file only, and that one has to survive.
-		await access_control_test_seed_activity(t, fixture, {
+		await access_control_test_seed_activity({
+			t,
+			fixture,
 			fileNodeId: childId,
 			targets: [{ kind: "file_node", id: childId, path: "/closed/inside", message: "" }],
 		});
-		await access_control_test_seed_activity(t, fixture, {
+		await access_control_test_seed_activity({
+			t,
+			fixture,
 			fileNodeId: childId,
 			targets: [
 				{ kind: "file_node", id: childId, path: "/closed/inside", message: "" },
 				{ kind: "file_node", id: openId, path: "/open-notes", message: "" },
 			],
 		});
-		await access_control_test_seed_activity(t, fixture, {
+		await access_control_test_seed_activity({
+			t,
+			fixture,
 			fileNodeId: openId,
 			targets: [{ kind: "file_node", id: openId, path: "/open-notes", message: "" }],
 		});
@@ -9788,7 +9812,7 @@ describe("file sharing", () => {
 			name: "activity-move-org",
 			suffix: "activity-move",
 		});
-		const { childId } = await seed_restricted_folder(t, fixture, { name: "activity-old-scope" });
+		const { childId } = await seed_restricted_folder({ t, fixture, name: "activity-old-scope" });
 		const destinationFolder = await fixture.asOwner.mutation(api.files_nodes.create_folder_node, {
 			membershipId: fixture.ownerMembershipId,
 			parentId: files_ROOT_ID,
@@ -9802,7 +9826,9 @@ describe("file sharing", () => {
 		});
 		expect(destinationRestricted._nay).toBeUndefined();
 
-		const staleActivityId = await access_control_test_seed_activity(t, fixture, {
+		const staleActivityId = await access_control_test_seed_activity({
+			t,
+			fixture,
 			fileNodeId: childId,
 			targets: [{ kind: "file_node", id: childId, path: "/activity-old-scope/inside", message: "" }],
 		});
@@ -9824,7 +9850,9 @@ describe("file sharing", () => {
 		});
 		expect(shared._nay).toBeUndefined();
 
-		const currentActivityId = await access_control_test_seed_activity(t, fixture, {
+		const currentActivityId = await access_control_test_seed_activity({
+			t,
+			fixture,
 			fileNodeId: childId,
 			targets: [{ kind: "file_node", id: childId, path: "/activity-new-scope/inside", message: "" }],
 		});
@@ -9860,8 +9888,10 @@ describe("file sharing", () => {
 			name: "activity-archive-org",
 			suffix: "activity-archive",
 		});
-		const { childId } = await seed_restricted_folder(t, fixture, { name: "closed" });
-		const hiddenActivityId = await access_control_test_seed_activity(t, fixture, {
+		const { childId } = await seed_restricted_folder({ t, fixture, name: "closed" });
+		const hiddenActivityId = await access_control_test_seed_activity({
+			t,
+			fixture,
 			fileNodeId: childId,
 			targets: [{ kind: "file_node", id: childId, path: "/closed/inside", message: "" }],
 		});
@@ -9874,7 +9904,9 @@ describe("file sharing", () => {
 			path: "open",
 		});
 		expect(open._nay).toBeUndefined();
-		const openActivityId = await access_control_test_seed_activity(t, fixture, {
+		const openActivityId = await access_control_test_seed_activity({
+			t,
+			fixture,
 			fileNodeId: open._yay!.nodeId,
 			targets: [{ kind: "file_node", id: open._yay!.nodeId, path: "/open", message: "" }],
 		});
@@ -9922,7 +9954,7 @@ describe("file sharing", () => {
 			name: "guest-activity-org",
 			suffix: "guest-activity",
 		});
-		const { folderId, childId } = await seed_restricted_folder(t, fixture, { name: "shared-space" });
+		const { folderId, childId } = await seed_restricted_folder({ t, fixture, name: "shared-space" });
 
 		const open = await fixture.asOwner.mutation(api.files_nodes.create_folder_node, {
 			membershipId: fixture.ownerMembershipId,
@@ -9932,15 +9964,19 @@ describe("file sharing", () => {
 		expect(open._nay).toBeUndefined();
 
 		// One about the folder they get, one about an open folder they do not, one about no file at all.
-		await access_control_test_seed_activity(t, fixture, {
+		await access_control_test_seed_activity({
+			t,
+			fixture,
 			fileNodeId: childId,
 			targets: [{ kind: "file_node", id: childId, path: "/shared-space/inside", message: "" }],
 		});
-		await access_control_test_seed_activity(t, fixture, {
+		await access_control_test_seed_activity({
+			t,
+			fixture,
 			fileNodeId: open._yay!.nodeId,
 			targets: [{ kind: "file_node", id: open._yay!.nodeId, path: "/open-notes", message: "" }],
 		});
-		await access_control_test_seed_activity(t, fixture, { fileNodeId: folderId });
+		await access_control_test_seed_activity({ t, fixture, fileNodeId: folderId });
 
 		const granted = await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, {
 			membershipId: fixture.ownerMembershipId,
@@ -9981,7 +10017,7 @@ describe("file sharing", () => {
 			name: "guest-escape-org",
 			suffix: "guest-escape",
 		});
-		const { folderId, childId } = await seed_restricted_folder(t, fixture, { name: "closed" });
+		const { folderId, childId } = await seed_restricted_folder({ t, fixture, name: "closed" });
 
 		const granted = await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, {
 			membershipId: fixture.ownerMembershipId,
@@ -10102,7 +10138,7 @@ describe("file sharing", () => {
 			name: "member-escape-org",
 			suffix: "member-escape",
 		});
-		const { folderId, childId } = await seed_restricted_folder(t, fixture, { name: "closed" });
+		const { folderId, childId } = await seed_restricted_folder({ t, fixture, name: "closed" });
 
 		const granted = await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, {
 			membershipId: fixture.ownerMembershipId,
@@ -10329,7 +10365,7 @@ describe("file sharing", () => {
 			name: "archive-oracle-org",
 			suffix: "archive-oracle",
 		});
-		const { folderId } = await seed_restricted_folder(t, fixture, { name: "closed" });
+		const { folderId } = await seed_restricted_folder({ t, fixture, name: "closed" });
 
 		// "Permission denied" would confirm the folder is there. Somebody who cannot see it hears what
 		// they would hear for an id that is not in this workspace at all.
@@ -10346,7 +10382,7 @@ describe("file sharing", () => {
 			name: "guest-tree-org",
 			suffix: "guest-tree",
 		});
-		const { folderId, childId } = await seed_restricted_folder(t, fixture, { name: "shared-space" });
+		const { folderId, childId } = await seed_restricted_folder({ t, fixture, name: "shared-space" });
 
 		const open = await fixture.asOwner.mutation(api.files_nodes.create_folder_node, {
 			membershipId: fixture.ownerMembershipId,
@@ -10398,7 +10434,7 @@ describe("file sharing", () => {
 			name: "upload-walk-org",
 			suffix: "upload-walk",
 		});
-		const { folderId } = await seed_restricted_folder(t, fixture, { name: "closed" });
+		const { folderId } = await seed_restricted_folder({ t, fixture, name: "closed" });
 
 		const assetsBefore = await t.run(async (ctx) => (await ctx.db.query("files_r2_assets").collect()).length);
 
@@ -10438,7 +10474,7 @@ describe("file sharing", () => {
 			name: "upload-replace-org",
 			suffix: "upload-replace",
 		});
-		const { folderId } = await seed_restricted_folder(t, fixture, { name: "closed" });
+		const { folderId } = await seed_restricted_folder({ t, fixture, name: "closed" });
 
 		// A file inside `/closed` that gets its own share list. The member ends up able to write this
 		// file and unable to write the folder holding it, which is the shape the bug needs.
@@ -10574,7 +10610,7 @@ describe("file sharing", () => {
 			name: "bulk-walk-org",
 			suffix: "bulk-walk",
 		});
-		const { folderId } = await seed_restricted_folder(t, fixture, { name: "closed" });
+		const { folderId } = await seed_restricted_folder({ t, fixture, name: "closed" });
 
 		const assetsBefore = await t.run(async (ctx) => (await ctx.db.query("files_r2_assets").collect()).length);
 
@@ -10621,7 +10657,7 @@ describe("file sharing", () => {
 			name: "bulk-replace-org",
 			suffix: "bulk-replace",
 		});
-		const { folderId } = await seed_restricted_folder(t, fixture, { name: "closed" });
+		const { folderId } = await seed_restricted_folder({ t, fixture, name: "closed" });
 
 		// Same shape as the single-file test above: the member may write the file, not the folder
 		// holding it.
@@ -10699,7 +10735,7 @@ describe("file sharing", () => {
 			name: "bulk-conflict-org",
 			suffix: "bulk-conflict",
 		});
-		await seed_restricted_folder(t, fixture, { name: "closed" });
+		await seed_restricted_folder({ t, fixture, name: "closed" });
 
 		// A restricted node must look exactly like no conflict, or the (rate-limit-free) query
 		// becomes an existence oracle for paths the caller cannot see.
@@ -10728,7 +10764,7 @@ describe("file sharing", () => {
 			name: "bulk-kind-oracle-org",
 			suffix: "bulk-kind-oracle",
 		});
-		await seed_restricted_folder(t, fixture, { name: "closed" });
+		await seed_restricted_folder({ t, fixture, name: "closed" });
 
 		// Create a folder the member can read, as the contrast case.
 		const seeded = await fixture.asMember.mutation(api.files_nodes.create_upload_nodes, {
@@ -10798,7 +10834,7 @@ describe("file sharing", () => {
 			name: "pending-rm-org",
 			suffix: "pending-rm",
 		});
-		const { folderId, childId } = await seed_restricted_folder(t, fixture, { name: "closed" });
+		const { folderId, childId } = await seed_restricted_folder({ t, fixture, name: "closed" });
 
 		const shared = await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, {
 			membershipId: fixture.ownerMembershipId,
@@ -10829,7 +10865,7 @@ describe("file sharing", () => {
 			name: "pending-mv-org",
 			suffix: "pending-mv",
 		});
-		const { folderId, childId } = await seed_restricted_folder(t, fixture, { name: "closed" });
+		const { folderId, childId } = await seed_restricted_folder({ t, fixture, name: "closed" });
 
 		const shared = await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, {
 			membershipId: fixture.ownerMembershipId,

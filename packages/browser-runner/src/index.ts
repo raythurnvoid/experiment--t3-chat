@@ -189,7 +189,6 @@ type AgentLease = {
 	tabId?: string;
 	tabGen?: number;
 	policyRevision?: number;
-	selectionRevision?: number;
 };
 
 type BrowserTab = { targetId: string; tabGen: number; navGen: number; viewport: { width: number; height: number } };
@@ -274,7 +273,6 @@ type SessionRecord = SessionRecordBase &
 				viewedTabId: string;
 				viewGen: number;
 				policyRevision: number;
-				selectionRevision: number;
 				/**
 				 * The Convex profile doc id. The saved cookies belong to it.
 				 */
@@ -453,7 +451,6 @@ const BROWSER_WEB_OPEN_FIELDS = new Set([
 	"profileKey",
 	"agentBlockedHosts",
 	"policyRevision",
-	"selectionRevision",
 	"operationId",
 	"operationDeadline",
 	"source",
@@ -472,7 +469,6 @@ const BROWSER_RUN_FIELDS = new Set([
 	"tabId",
 	"tabGen",
 	"policyRevision",
-	"selectionRevision",
 	"source",
 	"deadline",
 	"receiptResolutionDeadline",
@@ -500,7 +496,6 @@ const BROWSER_OPERATION_FIELDS = new Set([
 	"expectedAgentLease",
 	"source",
 	"policyRevision",
-	"selectionRevision",
 	"tabId",
 	"url",
 	"viewerId",
@@ -533,7 +528,6 @@ for (const fields of [BROWSER_RELOAD_FIELDS, BROWSER_WEB_RELOAD_FIELDS])
 		"operationDeadline",
 		"source",
 		"policyRevision",
-		"selectionRevision",
 		"tabId",
 		"tabGen",
 	])
@@ -547,7 +541,7 @@ const BROWSER_CLOSE_FIELDS = new Set([
 	"expectedAgentLease",
 	"saveProfile",
 ]);
-for (const key of ["operationId", "operationDeadline", "source", "policyRevision", "selectionRevision"])
+for (const key of ["operationId", "operationDeadline", "source", "policyRevision"])
 	BROWSER_CLOSE_FIELDS.add(key);
 const BROWSER_AGENT_ACCESS_FIELDS = new Set([
 	"sessionId",
@@ -557,7 +551,6 @@ const BROWSER_AGENT_ACCESS_FIELDS = new Set([
 	"on",
 	"agentBlockedHosts",
 	"policyRevision",
-	"selectionRevision",
 ]);
 const BROWSER_STATUS_FIELDS = new Set(["sessionId", "ownerId", "organizationId", "workspaceId"]);
 const BROWSER_KEEP_OPEN_FIELDS = new Set(["sessionId", "ownerId", "organizationId", "workspaceId", "navGen"]);
@@ -712,11 +705,13 @@ function sanitize_error(error: unknown): { name: string; message: string } {
  * code reaches them as closure state and can bypass that, so the host caps again: per-list
  * entry count plus one shared byte budget across the lists.
  */
-export function cap_snippet_string_lists(
-	lists: Array<unknown>,
-	maxEntries: number,
-	maxBytes: number,
-): { capped: Array<Array<string>>; truncated: boolean } {
+export function cap_snippet_string_lists(args: {
+	lists: Array<unknown>;
+	maxEntries: number;
+	maxBytes: number;
+}): { capped: Array<Array<string>>; truncated: boolean } {
+	const { lists, maxEntries, maxBytes } = args;
+
 	let truncated = false;
 	const capped = lists.map((list) => {
 		if (!Array.isArray(list)) {
@@ -776,12 +771,12 @@ function cap_snippet_text(sandbox: SnippetEvaluateText): {
 	logs: Array<string>;
 	logsTruncated: boolean;
 } {
-	const console = cap_snippet_string_lists(
-		[sandbox.consoleEntries, sandbox.pageErrors],
-		LIMITS.consoleEntries,
-		LIMITS.consoleBytes,
-	);
-	const logs = cap_snippet_string_lists([sandbox.logs], LIMITS.logLines, LIMITS.logBytes);
+	const console = cap_snippet_string_lists({
+		lists: [sandbox.consoleEntries, sandbox.pageErrors],
+		maxEntries: LIMITS.consoleEntries,
+		maxBytes: LIMITS.consoleBytes,
+	});
+	const logs = cap_snippet_string_lists({ lists: [sandbox.logs], maxEntries: LIMITS.logLines, maxBytes: LIMITS.logBytes });
 	return {
 		consoleEntries: console.capped[0] ?? [],
 		pageErrors: console.capped[1] ?? [],
@@ -826,7 +821,13 @@ function append_bytes(chunks: Uint8Array[], size: number) {
  * Read a body up to `maxBytes`. When `signal` aborts, cancel the body and throw: a caller that
  * gave up must not keep reading into memory.
  */
-async function read_bounded_stream(stream: ReadableStream<Uint8Array> | null, maxBytes: number, signal?: AbortSignal) {
+async function read_bounded_stream(args: {
+	stream: ReadableStream<Uint8Array> | null;
+	maxBytes: number;
+	signal?: AbortSignal;
+}) {
+	const { stream, maxBytes, signal } = args;
+
 	if (!stream) return { bytes: new Uint8Array(), truncated: false };
 
 	const reader = stream.getReader();
@@ -865,7 +866,7 @@ async function read_bounded_stream(stream: ReadableStream<Uint8Array> | null, ma
 }
 
 async function read_bounded_text(request: Request) {
-	const { bytes, truncated } = await read_bounded_stream(request.body, LIMITS.bodyBytes);
+	const { bytes, truncated } = await read_bounded_stream({ stream: request.body, maxBytes: LIMITS.bodyBytes });
 	if (truncated) return { ok: false as const };
 	return { ok: true as const, text: TEXT_DECODER.decode(bytes) };
 }
@@ -937,14 +938,26 @@ function profile_aad(profileId: string, scope: { ownerId: string; organizationId
 	return TEXT_ENCODER.encode(JSON.stringify([profileId, scope.ownerId, scope.organizationId, scope.workspaceId]));
 }
 
-async function profile_encrypt(key: CryptoKey, aad: Uint8Array<ArrayBuffer>, cookies: ProfileCookie[]) {
+async function profile_encrypt(args: {
+	key: CryptoKey;
+	aad: Uint8Array<ArrayBuffer>;
+	cookies: ProfileCookie[];
+}) {
+	const { key, aad, cookies } = args;
+
 	const iv = crypto.getRandomValues(new Uint8Array(12));
 	const plain = TEXT_ENCODER.encode(JSON.stringify({ cookies }));
 	const sealed = await crypto.subtle.encrypt({ name: "AES-GCM", iv, additionalData: aad }, key, plain);
 	return { iv: bytes_base64(iv), ciphertext: bytes_base64(new Uint8Array(sealed)) };
 }
 
-async function profile_decrypt(key: CryptoKey, aad: Uint8Array<ArrayBuffer>, blob: ProfileBlob) {
+async function profile_decrypt(args: {
+	key: CryptoKey;
+	aad: Uint8Array<ArrayBuffer>;
+	blob: ProfileBlob;
+}) {
+	const { key, aad, blob } = args;
+
 	const iv = base64_bytes(blob.iv);
 	const sealed = base64_bytes(blob.ciphertext);
 	if (!iv || !sealed) throw new Error("Browser profile is damaged.");
@@ -1141,11 +1154,13 @@ export function validate_gate_request(
 	return { ok: true };
 }
 
-export async function handle_gate_request(
-	request: Request,
-	props: BrowserConnectionGatewayProps,
-	sessions: DurableObjectNamespaceStub,
-): Promise<Response> {
+export async function handle_gate_request(args: {
+	request: Request;
+	props: BrowserConnectionGatewayProps;
+	sessions: DurableObjectNamespaceStub;
+}): Promise<Response> {
+	const { request, props, sessions } = args;
+
 	const check = validate_gate_request(request, props.sessionId);
 	if (!check.ok) {
 		log_browser({ route: "gate", refused: check.reason, commandId: props.commandId });
@@ -1155,14 +1170,19 @@ export async function handle_gate_request(
 	const url = new URL("https://do/run/stream");
 	for (const [name, value] of Object.entries(props)) url.searchParams.set(name, value);
 	const stub = sessions.get(
-		sessions.idFromName(session_object_name(props.ownerId, props.organizationId, props.workspaceId, props.mode)),
+		sessions.idFromName(session_object_name({
+			ownerId: props.ownerId,
+			organizationId: props.organizationId,
+			workspaceId: props.workspaceId,
+			mode: props.mode,
+		})),
 	);
 	return await stub.fetch(new Request(url, { headers: { Upgrade: "websocket" } }));
 }
 
 export class BrowserConnectionGateway extends WorkerEntrypoint<Env, BrowserConnectionGatewayProps> {
 	async fetch(request: Request): Promise<Response> {
-		return await handle_gate_request(request, this.ctx.props, this.env.BROWSER_SESSIONS);
+		return await handle_gate_request({ request, props: this.ctx.props, sessions: this.env.BROWSER_SESSIONS });
 	}
 
 	connect(): never {
@@ -1175,13 +1195,18 @@ export class BrowserConnectionGateway extends WorkerEntrypoint<Env, BrowserConne
 // Pure decisions over the stored record. The object applies them; unit tests
 // cover them without a provider.
 
-function agent_lease_refusal(record: SessionRecord, lease: AgentLease, ownedCommandId?: string) {
+function agent_lease_refusal(args: {
+	record: SessionRecord;
+	lease: AgentLease;
+	ownedCommandId?: string;
+}) {
+	const { record, lease, ownedCommandId } = args;
+
 	if (record.mode === "web") {
 		const tab = lease.tabId ? record.tabs[lease.tabId] : undefined;
 		if (!tab || tab.tabGen !== lease.tabGen) return "stale_tab";
 		if (tab.navGen !== lease.navGen) return "stale_nav";
-		if (record.policyRevision !== lease.policyRevision || record.selectionRevision !== lease.selectionRevision)
-			return "stale_policy";
+		if (record.policyRevision !== lease.policyRevision) return "stale_policy";
 	} else if (record.navGen !== lease.navGen) return "stale_nav";
 	if (record.loadGen !== lease.loadGen) return "stale_load";
 	if (record.controlGen !== lease.controlGen) return "stale_control";
@@ -1214,11 +1239,13 @@ export function session_next_alarm(record: SessionRecord): number | null {
 	return Math.min(...deadlines);
 }
 
-export function session_can_run(
-	record: SessionRecord,
-	input: { sessionId: string } & AgentLease,
-	now: number,
-): { ok: true } | { ok: false; reason: string } {
+export function session_can_run(args: {
+	record: SessionRecord;
+	input: { sessionId: string } & AgentLease;
+	now: number;
+}): { ok: true } | { ok: false; reason: string } {
+	const { record, input, now } = args;
+
 	if (record.sessionId !== input.sessionId) return { ok: false, reason: "stale_session" };
 	if (record.control === "closed" || record.control === "closing") return { ok: false, reason: "closed" };
 	if (session_is_expired(record, now)) return { ok: false, reason: "expired" };
@@ -1228,8 +1255,7 @@ export function session_can_run(
 		const tab = input.tabId ? record.tabs[input.tabId] : undefined;
 		if (!tab || tab.tabGen !== input.tabGen) return { ok: false, reason: "stale_tab" };
 		if (tab.navGen !== input.navGen) return { ok: false, reason: "stale_nav" };
-		if (record.policyRevision !== input.policyRevision || record.selectionRevision !== input.selectionRevision)
-			return { ok: false, reason: "stale_policy" };
+		if (record.policyRevision !== input.policyRevision) return { ok: false, reason: "stale_policy" };
 	} else if (record.navGen !== input.navGen) return { ok: false, reason: "stale_nav" };
 	if (record.loadGen !== input.loadGen) return { ok: false, reason: "stale_load" };
 	// Control state before generations: a caller with a retired lease still
@@ -1827,12 +1853,14 @@ function decode_data_url(url: string) {
  * Read a CDP `IO` stream in 1 MiB chunks. Stop as soon as it grows past `maxBytes`, or at the next
  * chunk after `signal` aborts.
  */
-async function read_cdp_stream(
-	cdp: CDPSession,
-	handle: string,
-	maxBytes: number,
-	signal: AbortSignal,
-): Promise<{ over: true } | { over: false; bytes: Uint8Array<ArrayBuffer> }> {
+async function read_cdp_stream(args: {
+	cdp: CDPSession;
+	handle: string;
+	maxBytes: number;
+	signal: AbortSignal;
+}): Promise<{ over: true } | { over: false; bytes: Uint8Array<ArrayBuffer> }> {
+	const { cdp, handle, maxBytes, signal } = args;
+
 	const chunks: Uint8Array[] = [];
 	let size = 0;
 	while (true) {
@@ -1943,7 +1971,6 @@ type SessionOpenInput = {
 			profileKey: string;
 			agentBlockedHosts: string[];
 			policyRevision: number;
-			selectionRevision: number;
 	  }
 );
 
@@ -2202,7 +2229,6 @@ export class BrowserSession {
 				viewGen: record.viewGen,
 				tabCount: Object.keys(record.tabs).length,
 				policyRevision: record.policyRevision,
-				selectionRevision: record.selectionRevision,
 				agentAccess: record.agentAccess,
 			};
 		}
@@ -2316,7 +2342,7 @@ export class BrowserSession {
 			const record = await this.load();
 			if (record?.sessionId === receipt.sessionId) {
 				// Closing the owned cloud browser also retires a command lost during a restart.
-				const closed = await this.close_record(record, "command_fenced", false);
+				const closed = await this.close_record({ record, reason: "command_fenced", saveProfile: false });
 				if (closed.verified) receipt.result.cleanup = "complete";
 			} else {
 				const usage = await this.usage(receipt.sessionId);
@@ -2415,7 +2441,7 @@ export class BrowserSession {
 					typeof receipt.session?.sessionId === "string" ? receipt.session.sessionId : receipt.sessionId;
 				if (current && (current.sessionId === receiptSessionId || receipt.sessionId.startsWith("start:"))) {
 					receipt.session = this.public_meta(current);
-					const closed = await this.close_record(current, "operation_fenced", false);
+					const closed = await this.close_record({ record: current, reason: "operation_fenced", saveProfile: false });
 					if (closed.verified) receipt.result.cleanup = "complete";
 					receipt.usage = await this.usage(current.sessionId);
 				} else {
@@ -2444,7 +2470,13 @@ export class BrowserSession {
 		});
 	}
 
-	private async tab_operation(path: string, body: Record<string, unknown>, inputReleased = false): Promise<Response> {
+	private async tab_operation(args: {
+		path: string;
+		body: Record<string, unknown>;
+		inputReleased?: boolean;
+	}): Promise<Response> {
+		const { path, body, inputReleased = false } = args;
+
 		await this.tabOperationsReady;
 		let record = await this.load();
 		if (
@@ -2474,7 +2506,7 @@ export class BrowserSession {
 				record.inputHolder !== body.viewerId
 			)
 				return operation_refused("control", "Another viewer holds input.");
-			if (!inputReleased) return this.with_input_released(() => this.tab_operation(path, body, true));
+			if (!inputReleased) return this.with_input_released(() => this.tab_operation({ path, body, inputReleased: true }));
 			if (record.viewedTabId !== body.tabId) {
 				this.close_file_chooser();
 				this.stop_viewer_producer();
@@ -2540,7 +2572,6 @@ export class BrowserSession {
 						body.url,
 						body.expectedAgentLease,
 						body.policyRevision,
-						body.selectionRevision,
 					]),
 				),
 			)
@@ -2579,12 +2610,11 @@ export class BrowserSession {
 		if (record.command || this.trustedTabCreation) return refuse("busy");
 		if (body.expectedAgentLease !== undefined) {
 			if (!is_agent_lease(body.expectedAgentLease)) return refuse("invalid_lease");
-			const reason = agent_lease_refusal(record, body.expectedAgentLease);
+			const reason = agent_lease_refusal({ record, lease: body.expectedAgentLease });
 			if (reason || !record.agentAccess) return refuse(reason ?? "agent_access_off");
 		} else if (record.control !== "ready" && (record.control !== "human" || body.viewerId !== record.inputHolder))
 			return refuse("control");
-		if (body.policyRevision !== record.policyRevision || body.selectionRevision !== record.selectionRevision)
-			return refuse("stale_policy");
+		if (body.policyRevision !== record.policyRevision) return refuse("stale_policy");
 		if (!inputReleased) {
 			// The reserved receipt prevents a lost reply from repeating this operation.
 			return this.with_input_released(async () => {
@@ -2599,28 +2629,29 @@ export class BrowserSession {
 					return refuse("stale_control");
 				if (session_is_expired(current, Date.now())) return refuse("expired");
 				if (is_agent_lease(body.expectedAgentLease)) {
-					const reason = agent_lease_refusal(current, body.expectedAgentLease);
+					const reason = agent_lease_refusal({ record: current, lease: body.expectedAgentLease });
 					if (reason) return refuse(reason);
 				}
 				if (
 					body.policyRevision !== current.policyRevision ||
-					body.selectionRevision !== current.selectionRevision ||
 					(body.expectedAgentLease && !current.agentAccess)
 				)
 					return refuse("stale_policy");
 				record = current;
-				return this.apply_tab_operation(path, body, current, receipt!);
+				return this.apply_tab_operation({ path, body, record: current, receipt: receipt! });
 			});
 		}
-		return this.apply_tab_operation(path, body, record, receipt);
+		return this.apply_tab_operation({ path, body, record, receipt });
 	}
 
-	private async apply_tab_operation(
-		path: string,
-		body: Record<string, unknown>,
-		record: WebSessionRecord,
-		receipt: TabOperationReceipt,
-	) {
+	private async apply_tab_operation(args: {
+		path: string;
+		body: Record<string, unknown>;
+		record: WebSessionRecord;
+		receipt: TabOperationReceipt;
+	}) {
+		let { path, body, record, receipt } = args;
+
 		const lock = `tabs:${String(body.operationId)}`;
 		record.command = { id: lock, startedAt: Date.now(), deadline: body.operationDeadline as number };
 		await this.save(record);
@@ -2645,7 +2676,7 @@ export class BrowserSession {
 				const lease = afterNew
 					? { ...body.expectedAgentLease, controlGen: record.controlGen }
 					: body.expectedAgentLease;
-				const reason = agent_lease_refusal(current, lease, lock);
+				const reason = agent_lease_refusal({ record: current, lease, ownedCommandId: lock });
 				if (reason || !current.agentAccess) return reason ?? "agent_access_off";
 			} else {
 				if (
@@ -2661,8 +2692,7 @@ export class BrowserSession {
 				)
 					return "viewer";
 			}
-			if (body.policyRevision !== current.policyRevision || body.selectionRevision !== current.selectionRevision)
-				return "stale_policy";
+			if (body.policyRevision !== current.policyRevision) return "stale_policy";
 			return null;
 		};
 		const check_native_tab_authority = async (afterNew = false) => {
@@ -2751,12 +2781,12 @@ export class BrowserSession {
 				receipt.result.tabId = tabId;
 				if (Object.keys(record.tabs).length === 1) {
 					record = await check_native_tab_authority();
-					const closed = await this.close_record(
+					const closed = await this.close_record({
 						record,
-						body.expectedAgentLease ? "agent_end" : "human_end",
-						!body.expectedAgentLease,
-						body.expectedAgentLease ? tab_authority_refusal : undefined,
-					);
+						reason: body.expectedAgentLease ? "agent_end" : "human_end",
+						saveProfile: !body.expectedAgentLease,
+						beforeClose: body.expectedAgentLease ? tab_authority_refusal : undefined,
+					});
 					if (closed.refusal || !closed.existed) return refuseBeforeNative(closed.refusal ?? "stale_session");
 					if (!closed.verified) throw new Error("close_unverified");
 				} else {
@@ -2862,7 +2892,7 @@ export class BrowserSession {
 				} catch {
 					/* Keep the unknown receipt when exact cleanup is unproved. */
 				}
-			} else if ((await this.close_record(record, "tab_operation_failed", false)).verified)
+			} else if ((await this.close_record({ record, reason: "tab_operation_failed", saveProfile: false })).verified)
 				receipt.result.cleanup = "complete";
 		} finally {
 			this.trustedTabCreation = false;
@@ -2921,7 +2951,7 @@ export class BrowserSession {
 		try {
 			const stored = await this.state.storage.get<ProfileBlob>(PROFILE_BLOB_KEY);
 			if (stored?.profileId !== profile.profileId) return;
-			const cookies = await profile_decrypt(profile.key, profile_aad(profile.profileId, record), stored);
+			const cookies = await profile_decrypt({ key: profile.key, aad: profile_aad(profile.profileId, record), blob: stored });
 			// Without `browserContextId`: the page lives in the default context (checked live on 2026-09-23).
 			if (cookies.length > 0)
 				await with_wall_timeout(host.browserCdp.send("Storage.setCookies", { cookies }), LIMITS.profileCdpMs);
@@ -2937,7 +2967,13 @@ export class BrowserSession {
 	 * not be in a state the user wants to keep. The agent's `browser_close` does not save either;
 	 * its work is saved by the next End, expiry, or periodic save.
 	 */
-	private should_save(record: SessionRecord, reason: string, saveProfile: boolean | undefined) {
+	private should_save(args: {
+		record: SessionRecord;
+		reason: string;
+		saveProfile: boolean | undefined;
+	}) {
+		const { record, reason, saveProfile } = args;
+
 		// After a restart the key is gone, so nothing can be saved.
 		if (record.mode !== "web" || this.profile?.sessionId !== record.sessionId) return false;
 		if (reason === "close") return saveProfile === true;
@@ -2967,7 +3003,7 @@ export class BrowserSession {
 				is_record(reply) ? reply.cookies : null,
 				web_denied_hosts(this.env),
 			);
-			const sealed = await profile_encrypt(profile.key, profile_aad(profile.profileId, record), cookies);
+			const sealed = await profile_encrypt({ key: profile.key, aad: profile_aad(profile.profileId, record), cookies });
 
 			// A `profile-delete` may have run during the awaits above. Check its tombstone and the
 			// record right before the put, with storage reads only. The object holds other events
@@ -3053,7 +3089,7 @@ export class BrowserSession {
 				receipt.result.reason = "operation_fenced";
 				const current = await this.load();
 				if (current && current.sessionId === receipt.session?.sessionId) {
-					const closed = await this.close_record(current, "operation_fenced", false);
+					const closed = await this.close_record({ record: current, reason: "operation_fenced", saveProfile: false });
 					receipt.result.cleanup = closed.verified ? "complete" : "unknown";
 					receipt.usage = await this.usage(current.sessionId);
 				} else if (
@@ -3100,7 +3136,7 @@ export class BrowserSession {
 			}
 			// A stale start never finished bootstrap. Close its known
 			// provider session, then take over the slot.
-			await this.close_record(existing, "stale_start");
+			await this.close_record({ record: existing, reason: "stale_start" });
 		}
 
 		if (input.mode === "web") return await this.open_web(input, startUrl);
@@ -3234,7 +3270,6 @@ export class BrowserSession {
 			viewedTabId: tabId,
 			viewGen: 1,
 			policyRevision: input.policyRevision,
-			selectionRevision: input.selectionRevision,
 			profileId: input.profileId,
 			agentBlockedHosts: input.agentBlockedHosts,
 		};
@@ -3278,7 +3313,7 @@ export class BrowserSession {
 			const failure = sanitize_error(error);
 			const current = await this.load();
 			if (current?.sessionId === sessionId && current.control !== "closing")
-				await this.close_record(current, "open_failed");
+				await this.close_record({ record: current, reason: "open_failed" });
 			log_browser({ route: "open", refused: "bootstrap_failed", attemptId: input.attemptId });
 			return json_response({ ok: false, error: { code: "bootstrap_failed", message: failure.message } }, 200);
 		}
@@ -3408,7 +3443,7 @@ export class BrowserSession {
 						this.agentConnection?.bridge?.revoke();
 						this.state.waitUntil(
 							this.load().then(async (current) => {
-								if (current?.sessionId === host.sessionId) await this.close_record(current, "page_navigated");
+								if (current?.sessionId === host.sessionId) await this.close_record({ record: current, reason: "page_navigated" });
 							}),
 						);
 					});
@@ -3428,7 +3463,7 @@ export class BrowserSession {
 						popup.close().catch(async () => {
 							if (popup.isClosed()) return;
 							const current = await this.load();
-							if (current?.sessionId === host.sessionId) await this.close_record(current, "popup_cleanup_failed");
+							if (current?.sessionId === host.sessionId) await this.close_record({ record: current, reason: "popup_cleanup_failed" });
 						}),
 					);
 				});
@@ -3483,12 +3518,12 @@ export class BrowserSession {
 					cdp.on("Fetch.requestPaused", (event: unknown) => {
 						if (!is_record(event) || !is_non_empty_string(event.requestId)) return;
 						this.state.waitUntil(
-							this.answer_fetch_pause(
+							this.answer_fetch_pause({
 								host,
-								this.viewerRecord?.mode === "web" ? this.viewerRecord.agentBlockedHosts : [],
+								blockedHosts: this.viewerRecord?.mode === "web" ? this.viewerRecord.agentBlockedHosts : [],
 								event,
-								event.requestId,
-							),
+								requestId: event.requestId,
+							}),
 						);
 					});
 					browserCdp.on("Browser.downloadWillBegin", (event: unknown) => {
@@ -3529,7 +3564,7 @@ export class BrowserSession {
 					this.hostConnection = null;
 					this.state.waitUntil(
 						this.load().then(async (current) => {
-							if (current?.sessionId === host.sessionId) await this.close_record(current, "host_disconnected");
+							if (current?.sessionId === host.sessionId) await this.close_record({ record: current, reason: "host_disconnected" });
 						}),
 					);
 				});
@@ -3592,7 +3627,7 @@ export class BrowserSession {
 				if (this.hostConnection?.sessionId === record.sessionId) this.hostConnection = null;
 				const current = await this.load();
 				if (options.closeOnFailure && current?.sessionId === record.sessionId)
-					await this.close_record(current, "host_setup_failed");
+					await this.close_record({ record: current, reason: "host_setup_failed" });
 				await browser.close().catch(() => {});
 				throw error;
 			}
@@ -3616,7 +3651,7 @@ export class BrowserSession {
 			try {
 				stream.socket.send(text);
 			} catch {
-				this.end_viewer(stream, 1011, "socket error");
+				this.end_viewer({ stream, code: 1011, reason: "socket error" });
 			}
 		}
 	}
@@ -3667,7 +3702,7 @@ export class BrowserSession {
 			popup.close().catch(async () => {
 				if (popup.isClosed()) return;
 				const current = await this.load();
-				if (current?.sessionId === host.sessionId) await this.close_record(current, "popup_cleanup_failed");
+				if (current?.sessionId === host.sessionId) await this.close_record({ record: current, reason: "popup_cleanup_failed" });
 			});
 		if (opener !== host.page) {
 			await close();
@@ -3773,7 +3808,7 @@ export class BrowserSession {
 				await close();
 				const record = await this.load();
 				if (record?.sessionId === current.sessionId)
-					await this.close_record(record, "popup_registration_failed", false);
+					await this.close_record({ record, reason: "popup_registration_failed", saveProfile: false });
 				return operation_refused("closed", "The popup could not be registered.");
 			}
 		});
@@ -3784,12 +3819,14 @@ export class BrowserSession {
 	 * download. A request-stage pause comes from the agent's blocked-site filter. Every pause gets
 	 * exactly one answer, even when a step throws, or the page hangs.
 	 */
-	private async answer_fetch_pause(
-		host: HostConnection,
-		blockedHosts: string[],
-		event: Record<string, unknown>,
-		requestId: string,
-	) {
+	private async answer_fetch_pause(args: {
+		host: HostConnection;
+		blockedHosts: string[];
+		event: Record<string, unknown>;
+		requestId: string;
+	}) {
+		const { host, blockedHosts, event, requestId } = args;
+
 		const pause: { answer: "continue" | "abort" | "block" } = { answer: "continue" };
 		try {
 			if (event.responseStatusCode === undefined && event.responseErrorReason === undefined) {
@@ -3797,7 +3834,7 @@ export class BrowserSession {
 				if (browser_web_url_host_matches(url, blockedHosts)) pause.answer = "block";
 				return;
 			}
-			await this.capture_response_download(host, event, requestId, pause);
+			await this.capture_response_download({ host, event, requestId, pause });
 		} catch (error) {
 			log_browser({ route: "download", sessionId: host.sessionId, error: sanitize_error(error).name });
 		} finally {
@@ -3818,12 +3855,14 @@ export class BrowserSession {
 	 * Web mode: read a paused page response when Chrome would save it. Set `pause.answer` to abort
 	 * as soon as it is a download, so a later failure still stops Chrome's own download.
 	 */
-	private async capture_response_download(
-		host: HostConnection,
-		event: Record<string, unknown>,
-		requestId: string,
-		pause: { answer: string },
-	) {
+	private async capture_response_download(args: {
+		host: HostConnection;
+		event: Record<string, unknown>;
+		requestId: string;
+		pause: { answer: string };
+	}) {
+		const { host, event, requestId, pause } = args;
+
 		const status = event.responseStatusCode;
 		const request = is_record(event.request) ? event.request : {};
 		if (
@@ -3858,7 +3897,7 @@ export class BrowserSession {
 					10_000,
 				);
 				try {
-					const read = await read_cdp_stream(host.cdp, stream, maxBytes, signal);
+					const read = await read_cdp_stream({ cdp: host.cdp, handle: stream, maxBytes, signal });
 					if (read.over) return read;
 					// A stream that ends early (the server dropped the connection) still ends with `eof`.
 					// Fewer bytes than the header promised is a broken file, not a small one.
@@ -3904,7 +3943,7 @@ export class BrowserSession {
 		if (/^https?:/iu.test(url)) {
 			const tree: unknown = await with_wall_timeout(host.cdp.send("Page.getFrameTree"), 5000).catch(() => null);
 			if (tree === null) {
-				this.refuse_download(host.sessionId, owner, "download_failed");
+				this.refuse_download({ sessionId: host.sessionId, owner, code: "download_failed" });
 				return;
 			}
 			const find = (node: unknown): string | null => {
@@ -3921,7 +3960,7 @@ export class BrowserSession {
 				frameUrl !== null && download_origin(frameUrl) !== null && download_origin(frameUrl) === download_origin(url);
 		}
 		if (!sameOrigin) {
-			this.refuse_download(host.sessionId, owner, "download_unsupported");
+			this.refuse_download({ sessionId: host.sessionId, owner, code: "download_unsupported" });
 			return;
 		}
 		await this.capture_download(host, {
@@ -3929,7 +3968,7 @@ export class BrowserSession {
 			name,
 			origin: download_origin(url),
 			sizeHint: null,
-			read: (maxBytes, signal) => this.read_in_page(host, frameId, url, maxBytes, signal),
+			read: (maxBytes, signal) => this.read_in_page({ host, frameId, url, maxBytes, signal }),
 		});
 	}
 
@@ -3937,13 +3976,15 @@ export class BrowserSession {
 	 * Fetch a same-origin file again in an isolated world of its frame, with the page's cookies.
 	 * The bytes stay in that world and come back in 1 MiB base64 chunks, so no CDP message is huge.
 	 */
-	private async read_in_page(
-		host: HostConnection,
-		frameId: string,
-		url: string,
-		maxBytes: number,
-		signal: AbortSignal,
-	): Promise<DownloadRead> {
+	private async read_in_page(args: {
+		host: HostConnection;
+		frameId: string;
+		url: string;
+		maxBytes: number;
+		signal: AbortSignal;
+	}): Promise<DownloadRead> {
+		const { host, frameId, url, maxBytes, signal } = args;
+
 		const cdp = host.cdp;
 		const world = await with_wall_timeout(
 			cdp.send("Page.createIsolatedWorld", { frameId, worldName: "bonobo-download", grantUniveralAccess: false }),
@@ -4088,7 +4129,13 @@ export class BrowserSession {
 	 * Tell the viewers that a download was not kept. An agent download also counts as dropped in
 	 * its command's result, so the agent learns about it even when no viewer is attached.
 	 */
-	private refuse_download(sessionId: string, owner: DownloadOwner | null, code: string) {
+	private refuse_download(args: {
+		sessionId: string;
+		owner: DownloadOwner | null;
+		code: string;
+	}) {
+		const { sessionId, owner, code } = args;
+
 		log_browser({ route: "download", sessionId, refused: code });
 		this.push_viewers({ t: "notice", code });
 		const agent = this.downloads?.sessionId === sessionId ? this.downloads.agent : null;
@@ -4111,7 +4158,7 @@ export class BrowserSession {
 	) {
 		const owner = input.owner;
 		if (!owner) {
-			this.refuse_download(host.sessionId, null, "download_blocked");
+			this.refuse_download({ sessionId: host.sessionId, owner: null, code: "download_blocked" });
 			return;
 		}
 		const downloads = this.session_downloads(host.sessionId);
@@ -4131,7 +4178,7 @@ export class BrowserSession {
 						? "download_too_large"
 						: null;
 		if (refusal) {
-			this.refuse_download(host.sessionId, owner, refusal);
+			this.refuse_download({ sessionId: host.sessionId, owner, code: refusal });
 			return;
 		}
 		downloads.starts.push(now);
@@ -4145,11 +4192,11 @@ export class BrowserSession {
 				return;
 			}
 			if (read.over) {
-				this.refuse_download(host.sessionId, owner, "download_too_large");
+				this.refuse_download({ sessionId: host.sessionId, owner, code: "download_too_large" });
 				return;
 			}
 			if (downloads.bytes + read.bytes.byteLength > LIMITS.downloadSessionBytes) {
-				this.refuse_download(host.sessionId, owner, "download_limit");
+				this.refuse_download({ sessionId: host.sessionId, owner, code: "download_limit" });
 				return;
 			}
 			downloads.count += 1;
@@ -4164,7 +4211,7 @@ export class BrowserSession {
 				}
 				// Agent output shares one limit per command: 8 files and 8 MiB.
 				if (agent.items.length >= LIMITS.files || agent.bytes + file.bytes.byteLength > LIMITS.fileBytes) {
-					this.refuse_download(host.sessionId, owner, "download_limit");
+					this.refuse_download({ sessionId: host.sessionId, owner, code: "download_limit" });
 					return;
 				}
 				agent.items.push(file);
@@ -4190,7 +4237,7 @@ export class BrowserSession {
 			// A read error, a cut-off body, or the 30-second timeout. The user clicked, so say it failed.
 			stop.abort();
 			log_browser({ route: "download", sessionId: host.sessionId, error: sanitize_error(error).name });
-			if (this.downloads === downloads) this.refuse_download(host.sessionId, owner, "download_failed");
+			if (this.downloads === downloads) this.refuse_download({ sessionId: host.sessionId, owner, code: "download_failed" });
 		});
 		// Keep the one-capture slot until the read really ended, so two reads never fill memory at once.
 		const slot: Promise<void> = Promise.all([outcome, reading.catch(() => {})]).then(() => {
@@ -4538,7 +4585,7 @@ export class BrowserSession {
 			// A slow, aborted, or broken body is a refusal. On a timeout, stop reading the body too.
 			const stop = new AbortController();
 			const body = await with_wall_timeout(
-				read_bounded_stream(request.body, LIMITS.uploadBytes, stop.signal),
+				read_bounded_stream({ stream: request.body, maxBytes: LIMITS.uploadBytes, signal: stop.signal }),
 				60_000,
 			).catch(() => {
 				stop.abort();
@@ -4627,7 +4674,7 @@ export class BrowserSession {
 					// A timed-out fetch can still return an open provider socket.
 					if (!acceptingUpgrade && response.webSocket) {
 						response.webSocket.accept();
-						close_socket(response.webSocket, 1000, "command ended");
+						close_socket({ socket: response.webSocket, code: 1000, reason: "command ended" });
 					}
 					return response;
 				}),
@@ -4687,7 +4734,7 @@ export class BrowserSession {
 					this.state.waitUntil(
 						this.load().then(async (current) => {
 							if (current?.sessionId === connection.sessionId && current.command?.id === connection.commandId) {
-								await this.close_record(current, "agent_connection_failed");
+								await this.close_record({ record: current, reason: "agent_connection_failed" });
 							}
 						}),
 					);
@@ -4702,10 +4749,10 @@ export class BrowserSession {
 			acceptingUpgrade = false;
 			if (upstream) {
 				upstream.accept();
-				close_socket(upstream, 1011, "command failed");
+				close_socket({ socket: upstream, code: 1011, reason: "command failed" });
 			}
 			const current = await this.load();
-			if (current?.sessionId === record.sessionId) await this.close_record(current, "agent_connect_failed");
+			if (current?.sessionId === record.sessionId) await this.close_record({ record: current, reason: "agent_connect_failed" });
 			return new Response("Browser command failed", { status: 503 });
 		}
 	}
@@ -4724,7 +4771,7 @@ export class BrowserSession {
 		if (record.command.connection === "settled") return json_response({ ok: true, blockedPopups: 0 }, 200);
 		// A restarted object cannot prove that the old upstream drained.
 		if (!connection?.bridge || connection.sessionId !== sessionId || connection.commandId !== commandId) {
-			await this.close_record(record, "agent_connection_lost");
+			await this.close_record({ record, reason: "agent_connection_lost" });
 			return operation_refused("closed", "Browser command connection was lost.");
 		}
 		record.command.connection = "revoked";
@@ -4789,7 +4836,7 @@ export class BrowserSession {
 			);
 		} catch {
 			const current = await this.load();
-			if (current?.sessionId === sessionId) await this.close_record(current, "agent_settle_failed");
+			if (current?.sessionId === sessionId) await this.close_record({ record: current, reason: "agent_settle_failed" });
 			return operation_refused("closed", "Browser command could not be checked.");
 		}
 	}
@@ -4805,7 +4852,6 @@ export class BrowserSession {
 			tabId?: string;
 			tabGen?: number;
 			policyRevision?: number;
-			selectionRevision?: number;
 		},
 		inputReleased = false,
 	): Promise<Response> {
@@ -4817,13 +4863,13 @@ export class BrowserSession {
 		const now = Date.now();
 		// A lost caller may still have browser work in flight.
 		if (record.command && now - record.command.startedAt >= LIMITS.commandTimeoutMs + 10_000) {
-			await this.close_record(record, "command_timeout");
+			await this.close_record({ record, reason: "command_timeout" });
 			return operation_refused("expired", "The browser command timed out.");
 		}
-		const check = session_can_run(record, input, now);
+		const check = session_can_run({ record, input, now });
 		if (!check.ok) {
 			if (check.reason === "expired") {
-				await this.close_record(record, "expired");
+				await this.close_record({ record, reason: "expired" });
 				return operation_refused("expired", "The browser session expired.");
 			}
 			log_browser({ route: "run_begin", refused: check.reason, sessionId: record.sessionId });
@@ -4860,7 +4906,7 @@ export class BrowserSession {
 			}
 			// The checks above waited for the provider. Check the lease again before taking the slot.
 			const current = await this.load();
-			const again = current ? session_can_run(current, input, Date.now()) : { ok: false as const, reason: "closed" };
+			const again = current ? session_can_run({ record: current, input, now: Date.now() }) : { ok: false as const, reason: "closed" };
 			if (!current || !again.ok) {
 				await this.set_agent_site_filter(record.sessionId, false).catch(() => {});
 				return operation_refused(again.ok ? "closed" : again.reason, "The browser command was refused.");
@@ -4922,7 +4968,7 @@ export class BrowserSession {
 		if (input.tainted) {
 			log_browser({ route: "run_finish", sessionId: record.sessionId, tainted: true });
 			// A tainted command returns nothing. `close_record` drops its downloads too.
-			const closed = await this.close_record(record, "tainted");
+			const closed = await this.close_record({ record, reason: "tainted" });
 			return json_response(
 				{ ok: true, state: "closed", tainted: true, cleanup: closed.verified ? "complete" : "unknown", session: null },
 				200,
@@ -4930,7 +4976,7 @@ export class BrowserSession {
 		}
 
 		if (record.command?.connection !== "settled") {
-			await this.close_record(record, "command_not_settled");
+			await this.close_record({ record, reason: "command_not_settled" });
 			return json_response({ ok: true, state: "closed", tainted: true }, 200);
 		}
 		// The viewport is per-connection server-side, so the record keeps
@@ -4974,7 +5020,7 @@ export class BrowserSession {
 		}
 		await this.commandReceiptsReady;
 		const chatId = this.commandReceipts.get(input.commandId)?.source.chatId;
-		if (input.stateJson !== undefined && chatId) await this.save_script_state(record.sessionId, chatId, input.stateJson);
+		if (input.stateJson !== undefined && chatId) await this.save_script_state({ sessionId: record.sessionId, chatId, json: input.stateJson });
 		await this.save(record);
 		if (
 			this.profile?.sessionId === record.sessionId &&
@@ -5016,7 +5062,13 @@ export class BrowserSession {
 		);
 	}
 
-	private async save_script_state(sessionId: string, chatId: string, json: string): Promise<void> {
+	private async save_script_state(args: {
+		sessionId: string;
+		chatId: string;
+		json: string;
+	}): Promise<void> {
+		const { sessionId, chatId, json } = args;
+
 		await this.state.storage.put(`${SCRIPT_STATE_KEY_PREFIX}${chatId}`, {
 			sessionId,
 			json,
@@ -5046,7 +5098,7 @@ export class BrowserSession {
 			return operation_refused("bad_request", "The browser session has another mode.");
 		}
 		if (input.expectedAgentLease) {
-			const refusal = agent_lease_refusal(record, input.expectedAgentLease);
+			const refusal = agent_lease_refusal({ record, lease: input.expectedAgentLease });
 			if (refusal) return operation_refused(refusal, "The agent browser lease changed.");
 			// The agent may not reload a web page while the user has turned its access off.
 			if (record.mode === "web" && !record.agentAccess) {
@@ -5063,7 +5115,7 @@ export class BrowserSession {
 			return operation_refused("busy", "A browser command is running.");
 		}
 		if (session_is_expired(record, Date.now())) {
-			await this.close_record(record, "expired");
+			await this.close_record({ record, reason: "expired" });
 			return operation_refused("expired", "The browser session expired.");
 		}
 		// Web reload only reloads the current page, so the file load and content limits do not apply.
@@ -5102,7 +5154,7 @@ export class BrowserSession {
 				return operation_refused("busy", "The browser session changed.");
 			}
 			if (input.expectedAgentLease) {
-				const refusal = agent_lease_refusal(current, input.expectedAgentLease);
+				const refusal = agent_lease_refusal({ record: current, lease: input.expectedAgentLease });
 				if (refusal) return operation_refused(refusal, "The agent browser lease changed.");
 				if (current.mode === "web" && !current.agentAccess)
 					return operation_refused("agent_access_off", "Agent access to this browser is off.");
@@ -5151,7 +5203,7 @@ export class BrowserSession {
 			const failure = sanitize_error(error);
 			log_browser({ route: "reload", refused: "reload_failed", sessionId: record.sessionId });
 			// Reload may have replaced the document before reporting a failure.
-			await this.close_record(record, "reload_failed");
+			await this.close_record({ record, reason: "reload_failed" });
 			return json_response({ ok: false, error: { code: "reload_failed", message: failure.message } }, 200);
 		}
 
@@ -5226,18 +5278,20 @@ export class BrowserSession {
 		}
 	}
 
-	private async close_record(
-		record: SessionRecord,
-		reason: string,
-		saveProfile?: boolean,
-		beforeClose?: (current: SessionRecord) => string | null,
-	): Promise<{ existed: boolean; verified: boolean; refusal?: string }> {
+	private async close_record(args: {
+		record: SessionRecord;
+		reason: string;
+		saveProfile?: boolean;
+		beforeClose?: (current: SessionRecord) => string | null;
+	}): Promise<{ existed: boolean; verified: boolean; refusal?: string }> {
+		let { record, reason, saveProfile, beforeClose } = args;
+
 		let current = await this.load();
 		if (current?.sessionId !== record.sessionId) return { existed: false, verified: true };
 		const refusal = beforeClose?.(current);
 		if (refusal) return { existed: true, verified: false, refusal };
 		// Save the cookies while the host connection and the page still exist.
-		if (this.should_save(current, reason, saveProfile)) {
+		if (this.should_save({ record: current, reason, saveProfile })) {
 			await this.save_profile(current);
 			// The save waits for the provider. Another close may have finished meanwhile.
 			current = await this.load();
@@ -5292,12 +5346,14 @@ export class BrowserSession {
 		return { existed: true, verified };
 	}
 
-	private async close(
-		sessionId: string | null,
-		expectedAgentLease?: AgentLease,
-		saveProfile?: boolean,
-		by: string | null = null,
-	): Promise<Response> {
+	private async close(args: {
+		sessionId: string | null;
+		expectedAgentLease?: AgentLease;
+		saveProfile?: boolean;
+		by?: string | null;
+	}): Promise<Response> {
+		const { sessionId, expectedAgentLease, saveProfile, by = null } = args;
+
 		log_browser({
 			route: "close_request",
 			sessionId: sessionId ?? "none",
@@ -5313,10 +5369,10 @@ export class BrowserSession {
 			);
 		}
 		if (expectedAgentLease) {
-			const refusal = agent_lease_refusal(record, expectedAgentLease);
+			const refusal = agent_lease_refusal({ record, lease: expectedAgentLease });
 			if (refusal) return operation_refused(refusal, "The agent browser lease changed.");
 		}
-		const result = await this.close_record(record, "close", saveProfile);
+		const result = await this.close_record({ record, reason: "close", saveProfile });
 		return json_response({ ok: true, ...result, usage: await this.usage(record.sessionId) }, 200);
 	}
 
@@ -5359,7 +5415,7 @@ export class BrowserSession {
 		if (stored?.profileId !== input.profileId) return { ok: true as const, stored: null, cookies: [] };
 		try {
 			const key = await profile_crypto_key(this.env.BROWSER_PROFILE_KEY, input.profileKey);
-			const cookies = await profile_decrypt(key, profile_aad(input.profileId, input), stored);
+			const cookies = await profile_decrypt({ key, aad: profile_aad(input.profileId, input), blob: stored });
 			return { ok: true as const, stored, cookies, key };
 		} catch (error) {
 			log_browser({ route: "profile_read", error: sanitize_error(error).name });
@@ -5416,7 +5472,7 @@ export class BrowserSession {
 		const kept = read.cookies.filter((cookie) => !browser_web_host_matches(cookie_site(cookie), [domain]));
 		const removed = read.cookies.length - kept.length;
 		if (removed === 0) return json_response({ ok: true, removed: 0 }, 200);
-		const sealed = await profile_encrypt(read.key, profile_aad(input.profileId, input), kept);
+		const sealed = await profile_encrypt({ key: read.key, aad: profile_aad(input.profileId, input), cookies: kept });
 
 		// Like the save: a delete or an open may have run during the crypto awaits. Put only when the
 		// blob is still the one read above and no tombstone exists. Storage reads only until the put.
@@ -5446,7 +5502,7 @@ export class BrowserSession {
 			record.control !== "closing" &&
 			record.control !== "closed"
 		) {
-			await this.close_record(record, "profile_deleted");
+			await this.close_record({ record, reason: "profile_deleted" });
 		}
 		const stored = await this.state.storage.get<ProfileBlob>(PROFILE_BLOB_KEY);
 		if (stored?.profileId === profileId) {
@@ -5470,7 +5526,7 @@ export class BrowserSession {
 			return operation_refused("stale_nav", "The browser session moved to another file.");
 		}
 		if (session_is_expired(record, Date.now())) {
-			await this.close_record(record, "expired");
+			await this.close_record({ record, reason: "expired" });
 			return operation_refused("expired", "The browser session expired.");
 		}
 
@@ -5513,7 +5569,7 @@ export class BrowserSession {
 			return operation_refused("stale_nav", "The browser session moved to another file.");
 		}
 		if (session_is_expired(record, Date.now())) {
-			await this.close_record(record, "expired");
+			await this.close_record({ record, reason: "expired" });
 			return operation_refused("expired", "The browser session expired.");
 		}
 
@@ -5528,7 +5584,13 @@ export class BrowserSession {
 		return json_response({ ok: true, grantId, expiresAt: record.viewerGrants[grantId]?.expiresAt }, 200);
 	}
 
-	private async viewer_attach(grantId: string, viewerId: string, host: string): Promise<Response> {
+	private async viewer_attach(args: {
+		grantId: string;
+		viewerId: string;
+		host: string;
+	}): Promise<Response> {
+		const { grantId, viewerId, host } = args;
+
 		const record = await this.load();
 		if (!record || record.control === "closed" || record.control === "closing") {
 			return operation_refused("closed", "The browser session is closed.");
@@ -5551,7 +5613,7 @@ export class BrowserSession {
 		}
 		if (session_is_expired(record, now)) {
 			await this.save(record);
-			await this.close_record(record, "expired");
+			await this.close_record({ record, reason: "expired" });
 			return operation_refused("expired", "The browser session expired.");
 		}
 
@@ -5599,7 +5661,7 @@ export class BrowserSession {
 			return operation_refused("closed", "The browser session is closed.");
 		}
 		if (session_is_expired(record, Date.now())) {
-			await this.close_record(record, "expired");
+			await this.close_record({ record, reason: "expired" });
 			return operation_refused("expired", "The browser session expired.");
 		}
 
@@ -5646,12 +5708,14 @@ export class BrowserSession {
 		return json_response({ ok: true }, 200);
 	}
 
-	private async control_take_human(
-		sessionId: string,
-		navGen: number,
-		viewerId: string,
-		inputReleased = false,
-	): Promise<Response> {
+	private async control_take_human(args: {
+		sessionId: string;
+		navGen: number;
+		viewerId: string;
+		inputReleased?: boolean;
+	}): Promise<Response> {
+		const { sessionId, navGen, viewerId, inputReleased = false } = args;
+
 		const record = await this.load();
 		if (!record || record.control === "closed" || record.control === "closing") {
 			return operation_refused("closed", "The browser session is closed.");
@@ -5666,7 +5730,7 @@ export class BrowserSession {
 			return operation_refused("viewer", "The viewer is gone.");
 		}
 		if (session_is_expired(record, Date.now())) {
-			await this.close_record(record, "expired");
+			await this.close_record({ record, reason: "expired" });
 			return operation_refused("expired", "The browser session expired.");
 		}
 
@@ -5674,11 +5738,11 @@ export class BrowserSession {
 		const liveCommand =
 			record.command !== null && Date.now() - record.command.startedAt < LIMITS.commandTimeoutMs + 10_000;
 		if (!liveCommand && record.command) {
-			await this.close_record(record, "command_timeout");
+			await this.close_record({ record, reason: "command_timeout" });
 			return operation_refused("expired", "The browser command timed out.");
 		}
 		if (!inputReleased)
-			return this.with_input_released(() => this.control_take_human(sessionId, navGen, viewerId, true));
+			return this.with_input_released(() => this.control_take_human({ sessionId, navGen, viewerId, inputReleased: true }));
 		// Takeover is allowed: viewers are all authorized members, and a
 		// refused take could strand input on a dead tab until its sweep.
 		record.inputHolder = viewerId;
@@ -5696,12 +5760,14 @@ export class BrowserSession {
 		return json_response({ ok: true, control: record.control, controlGen: record.controlGen }, 200);
 	}
 
-	private async control_to_agent(
-		sessionId: string,
-		navGen: number,
-		controlGen: number,
-		inputReleased = false,
-	): Promise<Response> {
+	private async control_to_agent(args: {
+		sessionId: string;
+		navGen: number;
+		controlGen: number;
+		inputReleased?: boolean;
+	}): Promise<Response> {
+		const { sessionId, navGen, controlGen, inputReleased = false } = args;
+
 		const record = await this.load();
 		if (!record || record.control === "closed" || record.control === "closing") {
 			return operation_refused("closed", "The browser session is closed.");
@@ -5716,13 +5782,13 @@ export class BrowserSession {
 			return operation_refused("busy", "A browser command is running.");
 		}
 		if (session_is_expired(record, Date.now())) {
-			await this.close_record(record, "expired");
+			await this.close_record({ record, reason: "expired" });
 			return operation_refused("expired", "The browser session expired.");
 		}
 
 		if (record.controlGen !== controlGen) return operation_refused("stale_control", "The browser control changed.");
 		if (!inputReleased)
-			return this.with_input_released(() => this.control_to_agent(sessionId, navGen, controlGen, true));
+			return this.with_input_released(() => this.control_to_agent({ sessionId, navGen, controlGen, inputReleased: true }));
 		// Atomically end human input and ready the agent side. The fresh
 		// request lease arrives with the next begin under the new generation.
 		record.control = record.command ? "agent" : "ready";
@@ -5736,13 +5802,14 @@ export class BrowserSession {
 	/**
 	 * Web mode: the user allows or blocks agent commands on this browser.
 	 */
-	private async set_agent_access(
-		sessionId: string,
-		on: boolean,
-		policyRevision: number,
-		selectionRevision: number,
-		blockedHosts: string[],
-	): Promise<Response> {
+	private async set_agent_access(args: {
+		sessionId: string;
+		on: boolean;
+		policyRevision: number;
+		blockedHosts: string[];
+	}): Promise<Response> {
+		const { sessionId, on, policyRevision, blockedHosts } = args;
+
 		const record = await this.load();
 		if (!record || record.control === "closed" || record.control === "closing") {
 			return operation_refused("closed", "The browser session is closed.");
@@ -5754,21 +5821,19 @@ export class BrowserSession {
 			return operation_refused("bad_request", "Agent access applies to web sessions only.");
 		}
 		if (session_is_expired(record, Date.now())) {
-			await this.close_record(record, "expired");
+			await this.close_record({ record, reason: "expired" });
 			return operation_refused("expired", "The browser session expired.");
 		}
 
-		if (policyRevision < record.policyRevision || selectionRevision < record.selectionRevision)
+		if (policyRevision < record.policyRevision)
 			return operation_refused("stale_policy", "The browser policy changed.");
 		if (
 			record.agentAccess !== on ||
 			record.policyRevision !== policyRevision ||
-			record.selectionRevision !== selectionRevision ||
 			JSON.stringify(record.agentBlockedHosts) !== JSON.stringify(blockedHosts)
 		) {
 			record.agentAccess = on;
 			record.policyRevision = policyRevision;
-			record.selectionRevision = selectionRevision;
 			record.agentBlockedHosts = blockedHosts;
 			// Every real change gets a new controlGen. Convex copies `agentAccess` only from a reply
 			// with a controlGen at least as new as its own, so a late reply cannot undo this change.
@@ -5786,12 +5851,14 @@ export class BrowserSession {
 			: operation_refused("closed", "The browser session is closed.");
 	}
 
-	private async viewer_input(
-		viewerId: string,
-		sessionId: string,
-		controlGen: number,
-		loadGen: number | null,
-	): Promise<Response> {
+	private async viewer_input(args: {
+		viewerId: string;
+		sessionId: string;
+		controlGen: number;
+		loadGen: number | null;
+	}): Promise<Response> {
+		const { viewerId, sessionId, controlGen, loadGen } = args;
+
 		const record = await this.load();
 		if (!record || record.viewers[viewerId] === undefined) {
 			return operation_refused("viewer", "The viewer is gone.");
@@ -5814,7 +5881,7 @@ export class BrowserSession {
 			return operation_refused("grant", "The viewer grant expired.");
 		}
 		if (session_is_expired(record, Date.now())) {
-			await this.close_record(record, "expired");
+			await this.close_record({ record, reason: "expired" });
 			return operation_refused("expired", "The browser session expired.");
 		}
 
@@ -5863,7 +5930,7 @@ export class BrowserSession {
 				record.control === "closing" ||
 				record.control === "closed"
 			) {
-				this.end_viewer(stream, 4404, "session gone");
+				this.end_viewer({ stream, code: 4404, reason: "session gone" });
 				continue;
 			}
 			if (stream.deadlineTimer) clearTimeout(stream.deadlineTimer);
@@ -5874,7 +5941,7 @@ export class BrowserSession {
 				record.lastActiveAt + limits.idleMs,
 			);
 			stream.deadlineTimer = setTimeout(
-				() => this.end_viewer(stream, 4408, "grant expired"),
+				() => this.end_viewer({ stream, code: 4408, reason: "grant expired" }),
 				Math.max(0, deadline - Date.now()),
 			);
 			try {
@@ -5903,7 +5970,7 @@ export class BrowserSession {
 						JSON.stringify({ t: "agent-access", ...this.viewed_identity(record), on: record.agentAccess }),
 					);
 			} catch {
-				this.end_viewer(stream, 1011, "socket error");
+				this.end_viewer({ stream, code: 1011, reason: "socket error" });
 			}
 		}
 		// A chooser belongs to one human turn. It is gone when control or the session moves on.
@@ -5923,12 +5990,18 @@ export class BrowserSession {
 		}
 	}
 
-	private end_viewer(stream: ViewerStream, code: number, reason: string): void {
+	private end_viewer(args: {
+		stream: ViewerStream;
+		code: number;
+		reason: string;
+	}): void {
+		const { stream, code, reason } = args;
+
 		if (!this.viewerStreams.delete(stream.viewerId)) return;
 		if (stream.deadlineTimer) clearTimeout(stream.deadlineTimer);
 		// Log why each viewer socket ends. A dropped viewer is hard to explain without it.
 		log_browser({ route: "viewer_end", sessionId: stream.sessionId, code, reason });
-		close_socket(stream.socket, code, reason);
+		close_socket({ socket: stream.socket, code, reason });
 		// Detaches share a record, so each one must read after the previous save.
 		this.viewerCleanup = this.viewerCleanup
 			.then(async () => {
@@ -5950,10 +6023,10 @@ export class BrowserSession {
 
 	private fail_viewers(): void {
 		const record = this.viewerRecord;
-		for (const stream of this.viewerStreams.values()) this.end_viewer(stream, 1011, "viewer failed");
+		for (const stream of this.viewerStreams.values()) this.end_viewer({ stream, code: 1011, reason: "viewer failed" });
 		// A lost provider connection cannot safely release held or in-flight input.
 		if (record && (this.pressedButtons.size > 0 || this.pressedKeys.size > 0 || this.inputDepth > 0)) {
-			this.state.waitUntil(this.close_record(record, "viewer_input_failed"));
+			this.state.waitUntil(this.close_record({ record, reason: "viewer_input_failed" }));
 			return;
 		}
 		this.stop_viewer_producer();
@@ -5995,7 +6068,7 @@ export class BrowserSession {
 			record.control === "closing" ||
 			record.control === "closed"
 		) {
-			this.end_viewer(stream, 4408, "grant expired");
+			this.end_viewer({ stream, code: 4408, reason: "grant expired" });
 			return;
 		}
 		try {
@@ -6013,7 +6086,7 @@ export class BrowserSession {
 			);
 			stream.socket.send(frame.bytes);
 		} catch {
-			this.end_viewer(stream, 1011, "socket error");
+			this.end_viewer({ stream, code: 1011, reason: "socket error" });
 		}
 	}
 
@@ -6128,7 +6201,7 @@ export class BrowserSession {
 				const record = this.viewerRecord;
 				this.fail_viewers();
 				// A timed-out setup may still change the page. End it before another setup.
-				if (error instanceof WallTimeoutError && record) await this.close_record(record, "viewer_start_timeout");
+				if (error instanceof WallTimeoutError && record) await this.close_record({ record, reason: "viewer_start_timeout" });
 				throw error;
 			})
 			.finally(() => {
@@ -6155,7 +6228,7 @@ export class BrowserSession {
 				return await action();
 			} catch {
 				const record = await this.load();
-				if (record && record.sessionId === sessionId) await this.close_record(record, "input_timeout");
+				if (record && record.sessionId === sessionId) await this.close_record({ record, reason: "input_timeout" });
 				return operation_refused("closed", "Browser input failed.");
 			} finally {
 				this.pressedButtons.clear();
@@ -6178,7 +6251,7 @@ export class BrowserSession {
 			try {
 				stream.socket.send(JSON.stringify({ t: "input-ack", seq: parsed.seq, ok, timings, ...(code ? { code } : {}) }));
 			} catch {
-				this.end_viewer(stream, 1011, "socket error");
+				this.end_viewer({ stream, code: 1011, reason: "socket error" });
 			}
 		};
 		if (!this.viewerRecord || !this.viewer_matches(parsed, this.viewerRecord) || stream.lastFrameSeq === 0) {
@@ -6200,7 +6273,12 @@ export class BrowserSession {
 					return;
 				}
 				const checked: unknown = await (
-					await this.viewer_input(stream.viewerId, stream.sessionId, parsed.controlGen, parsed.loadGen)
+					await this.viewer_input({
+						viewerId: stream.viewerId,
+						sessionId: stream.sessionId,
+						controlGen: parsed.controlGen,
+						loadGen: parsed.loadGen,
+					})
 				).json();
 				timings.authorizeMs = Date.now() - startedAt;
 				if (!is_record(checked) || checked.ok !== true) {
@@ -6267,7 +6345,7 @@ export class BrowserSession {
 			} catch {
 				ack(false, "apply");
 				const record = await this.load();
-				if (record?.sessionId === stream.sessionId) await this.close_record(record, "input_failed");
+				if (record?.sessionId === stream.sessionId) await this.close_record({ record, reason: "input_failed" });
 			} finally {
 				this.inputDepth -= 1;
 			}
@@ -6287,7 +6365,7 @@ export class BrowserSession {
 			try {
 				stream.socket.send(JSON.stringify({ t: "nav-ack", seq: parsed.seq, ok, ...(code ? { code } : {}) }));
 			} catch {
-				this.end_viewer(stream, 1011, "socket error");
+				this.end_viewer({ stream, code: 1011, reason: "socket error" });
 			}
 		};
 		if (this.viewerRecord?.mode !== "web") {
@@ -6322,7 +6400,12 @@ export class BrowserSession {
 				}
 				// Check human control and set lastActiveAt, like input does.
 				const checked: unknown = await (
-					await this.viewer_input(stream.viewerId, stream.sessionId, parsed.controlGen, null)
+					await this.viewer_input({
+						viewerId: stream.viewerId,
+						sessionId: stream.sessionId,
+						controlGen: parsed.controlGen,
+						loadGen: null,
+					})
 				).json();
 				if (!is_record(checked) || checked.ok !== true) {
 					const code =
@@ -6354,7 +6437,7 @@ export class BrowserSession {
 					this.humanGesture = { sessionId: stream.sessionId, tabId: parsed.tabId, at: Date.now() };
 				// A slow site is still a good nav. A CDP error fails this nav but keeps the session.
 				const code = await with_wall_timeout(
-					apply_viewer_nav(host.cdp, parsed.nav.action, url),
+					apply_viewer_nav({ cdp: host.cdp, action: parsed.nav.action, url }),
 					LIMITS.navWallMs,
 				).catch((error: unknown) => (error instanceof WallTimeoutError ? null : "apply"));
 				if (code === null) ack(true);
@@ -6403,19 +6486,19 @@ export class BrowserSession {
 			record.organizationId !== scope.organizationId ||
 			record.workspaceId !== scope.workspaceId
 		) {
-			close_socket(socket, 4401, "bad grant message");
+			close_socket({ socket, code: 4401, reason: "bad grant message" });
 			return;
 		}
 		const viewerId = crypto.randomUUID();
-		const attached: unknown = await (await this.viewer_attach(hello.hello.grantId, viewerId, hello.hello.host)).json();
+		const attached: unknown = await (await this.viewer_attach({ grantId: hello.hello.grantId, viewerId, host: hello.hello.host })).json();
 		if (!is_record(attached) || attached.ok !== true) {
-			close_socket(socket, 4401, "grant refused");
+			close_socket({ socket, code: 4401, reason: "grant refused" });
 			return;
 		}
 		const current = await this.load();
 		if (!current || current.sessionId !== record.sessionId || !current.viewers[viewerId] || socket.readyState !== 1) {
 			if (current?.sessionId === record.sessionId) await this.viewer_detach(viewerId);
-			close_socket(socket, 4404, "session gone");
+			close_socket({ socket, code: 4404, reason: "session gone" });
 			return;
 		}
 		const stream: ViewerStream = {
@@ -6427,8 +6510,8 @@ export class BrowserSession {
 			deadlineTimer: null,
 		};
 		this.viewerStreams.set(viewerId, stream);
-		socket.addEventListener("close", () => this.end_viewer(stream, 1000, "client closed"));
-		socket.addEventListener("error", () => this.end_viewer(stream, 1011, "socket error"));
+		socket.addEventListener("close", () => this.end_viewer({ stream, code: 1000, reason: "client closed" }));
+		socket.addEventListener("error", () => this.end_viewer({ stream, code: 1011, reason: "socket error" }));
 		let lastPingAt = 0;
 		socket.addEventListener("message", (event) => {
 			if (typeof event.data !== "string" || event.data.length > LIMITS.viewerMessageChars) return;
@@ -6465,7 +6548,7 @@ export class BrowserSession {
 				try {
 					socket.send(JSON.stringify({ t: "pong", seq: body.seq }));
 				} catch {
-					this.end_viewer(stream, 1011, "socket error");
+					this.end_viewer({ stream, code: 1011, reason: "socket error" });
 				}
 				return;
 			}
@@ -6501,7 +6584,6 @@ export class BrowserSession {
 					...this.viewed_identity(current),
 					viewedTabId: current.mode === "web" ? current.viewedTabId : current.sessionId,
 					policyRevision: current.mode === "web" ? current.policyRevision : 0,
-					selectionRevision: current.mode === "web" ? current.selectionRevision : 0,
 					tabs:
 						current.mode === "web"
 							? this.tab_summaries(current)
@@ -6551,7 +6633,7 @@ export class BrowserSession {
 			if (current.mode === "web" && this.hostConnection?.sessionId === current.sessionId)
 				this.push_location(this.hostConnection);
 		} catch {
-			this.end_viewer(stream, 1011, "viewer start failed");
+			this.end_viewer({ stream, code: 1011, reason: "viewer start failed" });
 		}
 	}
 
@@ -6582,7 +6664,7 @@ export class BrowserSession {
 				await this.release_closed_session(record, "close_unverified");
 				return;
 			}
-			await this.close_record(record, "closing_retry");
+			await this.close_record({ record, reason: "closing_retry" });
 			return;
 		}
 		if (record.control === "closed") {
@@ -6590,11 +6672,11 @@ export class BrowserSession {
 			return;
 		}
 		if (record.control === "starting" && now - record.createdAt >= LIMITS.startingStaleMs) {
-			await this.close_record(record, "stale_start");
+			await this.close_record({ record, reason: "stale_start" });
 			return;
 		}
 		if (session_is_expired(record, now)) {
-			await this.close_record(record, "expired");
+			await this.close_record({ record, reason: "expired" });
 			return;
 		}
 		// A worker crash can leave browser work running after its caller has gone.
@@ -6602,7 +6684,7 @@ export class BrowserSession {
 			record.command &&
 			now >= (record.command.deadline ?? record.command.startedAt + LIMITS.commandTimeoutMs + 10_000)
 		) {
-			await this.close_record(record, "command_timeout");
+			await this.close_record({ record, reason: "command_timeout" });
 			return;
 		}
 		await this.schedule_alarm(record);
@@ -6632,7 +6714,7 @@ export class BrowserSession {
 			this.pendingViewers += 1;
 			this.state.waitUntil(
 				this.viewer_lifetime(server, scope)
-					.catch(() => close_socket(server, 1011, "viewer failed"))
+					.catch(() => close_socket({ socket: server, code: 1011, reason: "viewer failed" }))
 					.finally(() => {
 						this.pendingViewers -= 1;
 					}),
@@ -6660,7 +6742,7 @@ export class BrowserSession {
 		if (["/operation/claim", "/operation/finish", "/operation-status"].includes(url.pathname))
 			return this.management_receipt(url.pathname, body);
 		if (["/tabs", "/tab-new", "/tab-close", "/tab-select"].includes(url.pathname))
-			return this.tab_operation(url.pathname, body);
+			return this.tab_operation({ path: url.pathname, body });
 		if (url.pathname === "/reuse") {
 			const record = await this.load();
 			if (
@@ -6696,7 +6778,6 @@ export class BrowserSession {
 					(body.startUrl !== null && typeof body.startUrl !== "string") ||
 					typeof body.agentAccess !== "boolean" ||
 					!is_revision(body.policyRevision) ||
-					!is_revision(body.selectionRevision) ||
 					typeof body.profileId !== "string" ||
 					typeof body.profileKey !== "string" ||
 					!Array.isArray(body.agentBlockedHosts) ||
@@ -6722,7 +6803,6 @@ export class BrowserSession {
 					profileKey: body.profileKey,
 					agentBlockedHosts: body.agentBlockedHosts,
 					policyRevision: body.policyRevision,
-					selectionRevision: body.selectionRevision,
 					viewport: { width: viewport.width, height: viewport.height },
 				});
 			}
@@ -6782,13 +6862,11 @@ export class BrowserSession {
 				...(is_positive_int(body.deadline) ? { deadline: body.deadline } : {}),
 				...(typeof body.tabId === "string" &&
 				is_positive_int(body.tabGen) &&
-				is_revision(body.policyRevision) &&
-				is_revision(body.selectionRevision)
+				is_revision(body.policyRevision)
 					? {
 							tabId: body.tabId,
 							tabGen: body.tabGen,
 							policyRevision: body.policyRevision,
-							selectionRevision: body.selectionRevision,
 						}
 					: {}),
 			});
@@ -6870,12 +6948,12 @@ export class BrowserSession {
 			) {
 				return json_response({ ok: false, error: { code: "invalid_request" } }, 400);
 			}
-			return await this.close(
-				typeof body.sessionId === "string" ? body.sessionId : null,
-				body.expectedAgentLease,
-				body.saveProfile,
-				typeof body.by === "string" ? body.by : null,
-			);
+			return await this.close({
+				sessionId: typeof body.sessionId === "string" ? body.sessionId : null,
+				expectedAgentLease: body.expectedAgentLease,
+				saveProfile: body.saveProfile,
+				by: typeof body.by === "string" ? body.by : null,
+			});
 		}
 		if (url.pathname === "/profile/summary" || url.pathname === "/profile/clear") {
 			if (
@@ -6983,14 +7061,14 @@ export class BrowserSession {
 			if (typeof body.sessionId !== "string" || !is_positive_int(body.navGen) || typeof body.viewerId !== "string") {
 				return json_response({ ok: false, error: { code: "invalid_request" } }, 400);
 			}
-			return await this.control_take_human(body.sessionId, body.navGen, body.viewerId);
+			return await this.control_take_human({ sessionId: body.sessionId, navGen: body.navGen, viewerId: body.viewerId });
 		}
 		if (url.pathname === "/control/to-agent") {
 			if (typeof body.sessionId !== "string" || !is_positive_int(body.navGen)) {
 				return json_response({ ok: false, error: { code: "invalid_request" } }, 400);
 			}
 			if (!is_positive_int(body.controlGen)) return invalid_request("The control generation is required.");
-			return await this.control_to_agent(body.sessionId, body.navGen, body.controlGen);
+			return await this.control_to_agent({ sessionId: body.sessionId, navGen: body.navGen, controlGen: body.controlGen });
 		}
 		if (url.pathname === "/agent-access") {
 			if (typeof body.sessionId !== "string" || typeof body.on !== "boolean") {
@@ -6998,19 +7076,17 @@ export class BrowserSession {
 			}
 			if (
 				!is_revision(body.policyRevision) ||
-				!is_revision(body.selectionRevision) ||
 				!Array.isArray(body.agentBlockedHosts) ||
 				body.agentBlockedHosts.length > LIMITS.agentBlockedHosts ||
 				!body.agentBlockedHosts.every((host) => typeof host === "string" && host.length <= LIMITS.hostChars)
 			)
 				return invalid_request("The browser policy is required.");
-			return await this.set_agent_access(
-				body.sessionId,
-				body.on,
-				body.policyRevision,
-				body.selectionRevision,
-				body.agentBlockedHosts,
-			);
+			return await this.set_agent_access({
+				sessionId: body.sessionId,
+				on: body.on,
+				policyRevision: body.policyRevision,
+				blockedHosts: body.agentBlockedHosts,
+			});
 		}
 		return json_response({ ok: false, error: { code: "not_found" } }, 404);
 	}
@@ -7022,7 +7098,14 @@ export class BrowserSession {
 // stays here because only the host request context exposes the connection-gate
 // binding factory.
 
-function session_object_name(ownerId: string, organizationId: string, workspaceId: string, mode: SessionMode): string {
+function session_object_name(args: {
+	ownerId: string;
+	organizationId: string;
+	workspaceId: string;
+	mode: SessionMode;
+}): string {
+	const { ownerId, organizationId, workspaceId, mode } = args;
+
 	return `browser:${ownerId}:${organizationId}:${workspaceId}${mode === "file" ? ":file" : ""}`;
 }
 
@@ -7030,9 +7113,17 @@ function workspace_key(organizationId: string, workspaceId: string): string {
 	return `${organizationId}:${workspaceId}`;
 }
 
-function session_stub(env: Env, ownerId: string, organizationId: string, workspaceId: string, mode: SessionMode) {
+function session_stub(args: {
+	env: Env;
+	ownerId: string;
+	organizationId: string;
+	workspaceId: string;
+	mode: SessionMode;
+}) {
+	const { env, ownerId, organizationId, workspaceId, mode } = args;
+
 	return env.BROWSER_SESSIONS.get(
-		env.BROWSER_SESSIONS.idFromName(session_object_name(ownerId, organizationId, workspaceId, mode)),
+		env.BROWSER_SESSIONS.idFromName(session_object_name({ ownerId, organizationId, workspaceId, mode })),
 	);
 }
 
@@ -7040,7 +7131,13 @@ function registry_stub(env: Env) {
 	return env.BROWSER_REGISTRY.get(env.BROWSER_REGISTRY.idFromName(REGISTRY_NAME));
 }
 
-async function object_json(stub: DurableObjectStubStub, path: string, body: unknown): Promise<unknown> {
+async function object_json(args: {
+	stub: DurableObjectStubStub;
+	path: string;
+	body: unknown;
+}): Promise<unknown> {
+	const { stub, path, body } = args;
+
 	const response = await stub.fetch(
 		new Request(`https://do${path}`, {
 			method: "POST",
@@ -7229,8 +7326,7 @@ async function handle_browser_open(request: Request, env: Env): Promise<Response
 		if (body.startUrl !== null && typeof body.startUrl !== "string")
 			return invalid_request("`startUrl` must be a string or null.");
 		if (typeof body.agentAccess !== "boolean") return invalid_request("`agentAccess` must be a boolean.");
-		if (!is_revision(body.policyRevision) || !is_revision(body.selectionRevision))
-			return invalid_request("The browser policy revisions are required.");
+		if (!is_revision(body.policyRevision)) return invalid_request("The browser policy revision is required.");
 		// Convex owns the profile doc. Its id names the saved cookies, and its key unlocks them.
 		if (!is_profile_id(body.profileId)) return invalid_request("`profileId` is invalid.");
 		if (!is_profile_key(body.profileKey)) return invalid_request("`profileKey` must be 32 bytes in base64.");
@@ -7249,7 +7345,6 @@ async function handle_browser_open(request: Request, env: Env): Promise<Response
 			profileKey: body.profileKey,
 			agentBlockedHosts: body.agentBlockedHosts,
 			policyRevision: body.policyRevision,
-			selectionRevision: body.selectionRevision,
 		};
 	} else {
 		const snapshot = parse_snapshot(body);
@@ -7271,20 +7366,35 @@ async function handle_browser_open(request: Request, env: Env): Promise<Response
 		typeof body.attemptId === "string" && body.attemptId.length > 0 && body.attemptId.length <= 128
 			? body.attemptId
 			: crypto.randomUUID();
-	return managed_operation(env, owners, body, "/open", async () => {
+	return managed_operation({
+		env,
+		owners,
+		body,
+		path: "/open",
+		work: async () => {
 		// Charge admission before acquisition so simultaneous calls cannot bypass quotas.
 		if (body.mode === "web") {
-			const reused = await object_json(
-				session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId, "web"),
-				"/reuse",
-				{ profileId: body.profileId, profileKey: body.profileKey },
-			);
+			const reused = await object_json({
+				stub: session_stub({
+					env,
+					ownerId: owners.ownerId,
+					organizationId: owners.organizationId,
+					workspaceId: owners.workspaceId,
+					mode: "web",
+				}),
+				path: "/reuse",
+				body: { profileId: body.profileId, profileKey: body.profileKey },
+			});
 			if (is_record(reused) && reused.ok === true) return json_response(reused, 200);
 		}
-		const claim = await object_json(registry_stub(env), "/claim", {
+		const claim = await object_json({
+			stub: registry_stub(env),
+			path: "/claim",
+			body: {
 			workspaceKey: workspace_key(owners.organizationId, owners.workspaceId),
 			ownerId: owners.ownerId,
 			organizationId: owners.organizationId,
+		},
 		});
 		if (!is_record(claim) || claim.ok !== true || typeof claim.grantId !== "string") {
 			const code =
@@ -7294,10 +7404,16 @@ async function handle_browser_open(request: Request, env: Env): Promise<Response
 			return operation_refused(code, "The browser service is busy.");
 		}
 
-		const opened = await object_json(
-			session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId, owners.mode),
-			"/open",
-			{
+		const opened = await object_json({
+			stub: session_stub({
+				env,
+				ownerId: owners.ownerId,
+				organizationId: owners.organizationId,
+				workspaceId: owners.workspaceId,
+				mode: owners.mode,
+			}),
+			path: "/open",
+			body: {
 				...modeFields,
 				grantId: claim.grantId,
 				attemptId,
@@ -7308,16 +7424,16 @@ async function handle_browser_open(request: Request, env: Env): Promise<Response
 				viewport: viewport.viewport,
 				...(typeof body.operationId === "string" ? { operationId: body.operationId } : {}),
 			},
-		);
+		});
 		if (!is_record(opened) || opened.ok !== true) {
-			await object_json(registry_stub(env), "/release", { grantId: claim.grantId });
+			await object_json({ stub: registry_stub(env), path: "/release", body: { grantId: claim.grantId } });
 			if (is_record(opened) && is_record(opened.error) && typeof opened.error.code === "string") {
 				return json_response({ ok: false, error: opened.error }, 200);
 			}
 			return json_response({ ok: false, error: { code: "open_failed", message: "The browser did not start." } }, 200);
 		}
 
-		const confirmed = await object_json(registry_stub(env), "/confirm", { grantId: claim.grantId });
+		const confirmed = await object_json({ stub: registry_stub(env), path: "/confirm", body: { grantId: claim.grantId } });
 		if (!is_record(confirmed) || confirmed.ok !== true) {
 			// The claim lapsed mid-bootstrap (or the registry dropped it). Close the orphan
 			// instead of running outside the admission caps; idle expiry backstops a lost close.
@@ -7325,27 +7441,36 @@ async function handle_browser_open(request: Request, env: Env): Promise<Response
 			const openedSessionId =
 				openedSession && typeof openedSession.sessionId === "string" ? openedSession.sessionId : null;
 			try {
-				await object_json(
-					session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId, owners.mode),
-					"/close",
-					openedSessionId ? { sessionId: openedSessionId } : {},
-				);
+				await object_json({
+					stub: session_stub({
+						env,
+						ownerId: owners.ownerId,
+						organizationId: owners.organizationId,
+						workspaceId: owners.workspaceId,
+						mode: owners.mode,
+					}),
+					path: "/close",
+					body: openedSessionId ? { sessionId: openedSessionId } : {},
+				});
 			} catch {
 				// Best effort.
 			}
 			return operation_refused("busy", "The browser service is busy.");
 		}
 		return json_response(opened, 200);
+	},
 	});
 }
 
-async function managed_operation(
-	env: Env,
-	owners: { ownerId: string; organizationId: string; workspaceId: string; mode: SessionMode },
-	body: Record<string, unknown>,
-	path: string,
-	work: () => Promise<Response>,
-): Promise<Response> {
+async function managed_operation(args: {
+	env: Env;
+	owners: { ownerId: string; organizationId: string; workspaceId: string; mode: SessionMode };
+	body: Record<string, unknown>;
+	path: string;
+	work: () => Promise<Response>;
+}): Promise<Response> {
+	const { env, owners, body, path, work } = args;
+
 	if (body.operationId === undefined && body.expectedAgentLease === undefined) return work();
 	if (
 		!is_non_empty_string(body.operationId) ||
@@ -7355,16 +7480,26 @@ async function managed_operation(
 		!is_command_source(body.source)
 	)
 		return invalid_request("A bounded operation identity and source are required.");
-	const stub = session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId, owners.mode);
+	const stub = session_stub({
+		env,
+		ownerId: owners.ownerId,
+		organizationId: owners.organizationId,
+		workspaceId: owners.workspaceId,
+		mode: owners.mode,
+	});
 	const identity = {
 		operationId: body.operationId,
 		operationDeadline: body.operationDeadline,
 		source: body.source,
 		...(typeof body.sessionId === "string" ? { sessionId: body.sessionId } : {}),
 	};
-	const claim = await object_json(stub, "/operation/claim", {
+	const claim = await object_json({
+		stub,
+		path: "/operation/claim",
+		body: {
 		...identity,
 		payloadHash: await sha256_hex(JSON.stringify([path, body])),
+	},
 	});
 	if (!is_record(claim) || claim.ok !== true || claim.execute !== true)
 		return json_response(is_record(claim) ? claim : { ok: false, error: { code: "claim_failed" } }, 200);
@@ -7377,12 +7512,16 @@ async function managed_operation(
 			result.verified === false || (is_record(result.error) && result.error.code === "bootstrap_failed")
 				? "unknown"
 				: "complete";
-		const receipt = await object_json(stub, "/operation/finish", {
+		const receipt = await object_json({
+			stub,
+			path: "/operation/finish",
+			body: {
 			...identity,
 			status,
 			cleanup,
 			session: is_record(result.session) ? result.session : null,
 			reason: is_record(result.error) ? result.error.code : null,
+		},
 		});
 		return json_response(
 			{
@@ -7394,7 +7533,11 @@ async function managed_operation(
 			response.status,
 		);
 	} catch {
-		await object_json(stub, "/operation/finish", { ...identity, status: "unknown", reason: "outcome_unknown" }).catch(
+		await object_json({
+			stub,
+			path: "/operation/finish",
+			body: { ...identity, status: "unknown", reason: "outcome_unknown" },
+		}).catch(
 			() => {},
 		);
 		return json_response(
@@ -7769,7 +7912,13 @@ async function execute_browser_command(args: {
 	);
 }
 
-async function handle_browser_run(request: Request, env: Env, ctx?: BrowserRunnerContext): Promise<Response> {
+async function handle_browser_run(args: {
+	request: Request;
+	env: Env;
+	ctx?: BrowserRunnerContext;
+}): Promise<Response> {
+	const { request, env, ctx } = args;
+
 	const access = await require_host_access(request, env);
 	if (!access.ok) return access.response;
 
@@ -7804,8 +7953,7 @@ async function handle_browser_run(request: Request, env: Env, ctx?: BrowserRunne
 		body.mode === "web" &&
 		(!is_non_empty_string(body.tabId) ||
 			!is_positive_int(body.tabGen) ||
-			!is_revision(body.policyRevision) ||
-			!is_revision(body.selectionRevision))
+			!is_revision(body.policyRevision))
 	)
 		return invalid_request("The web tab lease is required.");
 	const commandId = body.commandId;
@@ -7819,14 +7967,27 @@ async function handle_browser_run(request: Request, env: Env, ctx?: BrowserRunne
 		receiptResolutionDeadline: body.receiptResolutionDeadline,
 	};
 
-	const stub = session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId, owners.mode);
-	const claim = await object_json(stub, "/run/claim", {
+	const stub = session_stub({
+		env,
+		ownerId: owners.ownerId,
+		organizationId: owners.organizationId,
+		workspaceId: owners.workspaceId,
+		mode: owners.mode,
+	});
+	const claim = await object_json({
+		stub,
+		path: "/run/claim",
+		body: {
 		...receiptIdentity,
 		payloadHash: await sha256_hex(JSON.stringify(body)),
+	},
 	});
 	if (!is_record(claim) || claim.ok !== true || claim.execute !== true)
 		return json_response(is_record(claim) ? claim : { ok: false, error: { code: "claim_failed" } }, 200);
-	const begin = await object_json(stub, "/run/begin", {
+	const begin = await object_json({
+		stub,
+		path: "/run/begin",
+		body: {
 		sessionId: body.sessionId,
 		navGen: body.navGen,
 		loadGen: body.loadGen,
@@ -7836,15 +7997,19 @@ async function handle_browser_run(request: Request, env: Env, ctx?: BrowserRunne
 		tabId: body.tabId,
 		tabGen: body.tabGen,
 		policyRevision: body.policyRevision,
-		selectionRevision: body.selectionRevision,
+	},
 	});
 	if (!is_record(begin) || begin.ok !== true || !is_record(begin.lease)) {
-		await object_json(stub, "/run/complete", {
+		await object_json({
+			stub,
+			path: "/run/complete",
+			body: {
 			...receiptIdentity,
 			status: "refused",
 			cleanup: "complete",
 			reason: is_record(begin) && is_record(begin.error) ? begin.error.code : "begin_failed",
 			session: null,
+		},
 		});
 		if (is_record(begin) && is_record(begin.error) && typeof begin.error.code === "string") {
 			return json_response({ ok: false, error: begin.error }, 200);
@@ -7872,11 +8037,15 @@ async function handle_browser_run(request: Request, env: Env, ctx?: BrowserRunne
 			stateJson?: string;
 		},
 	) => {
-		const finished = await object_json(stub, "/run/finish", {
+		const finished = await object_json({
+			stub,
+			path: "/run/finish",
+			body: {
 			sessionId: body.sessionId,
 			commandId,
 			tainted,
 			...meta,
+		},
 		});
 		runState.finished = true;
 		if (is_record(finished)) {
@@ -7903,18 +8072,22 @@ async function handle_browser_run(request: Request, env: Env, ctx?: BrowserRunne
 					commandId,
 				},
 				deadline: body.deadline,
-				settle: () => object_json(stub, "/run/settle", { sessionId: body.sessionId, commandId }),
+				settle: () => object_json({ stub, path: "/run/settle", body: { sessionId: body.sessionId, commandId } }),
 			}),
 			Math.max(1, body.deadline - Date.now()),
 		);
 		const result: unknown = await response.json();
 		if (!is_record(result)) throw new Error("Invalid command result.");
-		await object_json(stub, "/run/complete", {
+		await object_json({
+			stub,
+			path: "/run/complete",
+			body: {
 			...receiptIdentity,
 			status: runState.cleanup === "complete" ? "completed" : "unknown",
 			cleanup: runState.cleanup,
 			reason: result.status === "succeeded" ? null : "command_failed",
 			session: runState.session,
+		},
 		});
 		return json_response({ ...result, session: runState.session }, response.status);
 	} catch {
@@ -7932,7 +8105,10 @@ async function handle_browser_run(request: Request, env: Env, ctx?: BrowserRunne
 	} finally {
 		if (!runState.finished) {
 			try {
-				await object_json(stub, "/run/finish", {
+				await object_json({
+					stub,
+					path: "/run/finish",
+					body: {
 					sessionId: body.sessionId,
 					commandId,
 					tainted: true,
@@ -7940,30 +8116,49 @@ async function handle_browser_run(request: Request, env: Env, ctx?: BrowserRunne
 					fileCount: 0,
 					fileBytes: 0,
 					viewport: null,
+				},
 				});
 			} catch {
 				// The command deadline closes a session whose finish was lost.
 			}
 		}
-		if (!runState.finished) await object_json(stub, "/command-fence", receiptIdentity).catch(() => {});
+		if (!runState.finished) await object_json({ stub, path: "/command-fence", body: receiptIdentity }).catch(() => {});
 	}
 }
 
-async function handle_browser_command_receipt(request: Request, env: Env, path: string): Promise<Response> {
+async function handle_browser_command_receipt(args: {
+	request: Request;
+	env: Env;
+	path: string;
+}): Promise<Response> {
+	const { request, env, path } = args;
+
 	if (!(await is_authorized(request, env))) return json_response({ ok: false, error: { code: "unauthorized" } }, 401);
 	const parsed = await parse_json_body(request, BROWSER_COMMAND_FIELDS);
 	if (!parsed.ok) return parsed.response;
 	const owners = parse_owner_tuple(parsed.body);
 	if (!owners.ok) return owners.response;
-	const response = await object_json(
-		session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId, owners.mode),
+	const response = await object_json({
+		stub: session_stub({
+			env,
+			ownerId: owners.ownerId,
+			organizationId: owners.organizationId,
+			workspaceId: owners.workspaceId,
+			mode: owners.mode,
+		}),
 		path,
-		parsed.body,
-	);
+		body: parsed.body,
+	});
 	return json_response(is_record(response) ? response : { ok: false, error: { code: "receipt_failed" } }, 200);
 }
 
-async function handle_browser_tab(request: Request, env: Env, path: string): Promise<Response> {
+async function handle_browser_tab(args: {
+	request: Request;
+	env: Env;
+	path: string;
+}): Promise<Response> {
+	const { request, env, path } = args;
+
 	const access =
 		path === "/operation-status" ? await is_authorized(request, env) : (await require_host_access(request, env)).ok;
 	if (!access) return operation_refused("unavailable", "Browser management is unavailable.");
@@ -7973,11 +8168,17 @@ async function handle_browser_tab(request: Request, env: Env, path: string): Pro
 	if (!owners.ok) return owners.response;
 	if (path !== "/operation-status" && !is_non_empty_string(parsed.body.sessionId))
 		return invalid_request("`sessionId` is required.");
-	const response = await object_json(
-		session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId, owners.mode),
+	const response = await object_json({
+		stub: session_stub({
+			env,
+			ownerId: owners.ownerId,
+			organizationId: owners.organizationId,
+			workspaceId: owners.workspaceId,
+			mode: owners.mode,
+		}),
 		path,
-		parsed.body,
-	);
+		body: parsed.body,
+	});
 	return json_response(is_record(response) ? response : { ok: false, error: { code: "operation_failed" } }, 200);
 }
 
@@ -8001,13 +8202,25 @@ async function handle_browser_reload(request: Request, env: Env): Promise<Respon
 		if (body.expectedAgentLease !== undefined && !is_agent_lease(body.expectedAgentLease)) {
 			return invalid_request("`expectedAgentLease` must contain positive nav, load, and control generations.");
 		}
-		return managed_operation(env, owners, body, "/reload", async () => {
-			const reloaded = await object_json(
-				session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId, owners.mode),
-				"/reload",
-				{ mode: "web", sessionId: body.sessionId, navGen: body.navGen, expectedAgentLease: body.expectedAgentLease },
-			);
+		return managed_operation({
+			env,
+			owners,
+			body,
+			path: "/reload",
+			work: async () => {
+			const reloaded = await object_json({
+				stub: session_stub({
+					env,
+					ownerId: owners.ownerId,
+					organizationId: owners.organizationId,
+					workspaceId: owners.workspaceId,
+					mode: owners.mode,
+				}),
+				path: "/reload",
+				body: { mode: "web", sessionId: body.sessionId, navGen: body.navGen, expectedAgentLease: body.expectedAgentLease },
+			});
 			return json_response(is_record(reloaded) ? reloaded : { ok: false, error: { code: "reload_failed" } }, 200);
+		},
 		});
 	}
 	if (body.mode !== undefined && body.mode !== "file") return invalid_request("`mode` must be file or web.");
@@ -8019,11 +8232,22 @@ async function handle_browser_reload(request: Request, env: Env): Promise<Respon
 		return invalid_request("`expectedAgentLease` must contain positive nav, load, and control generations.");
 	}
 
-	return managed_operation(env, owners, body, "/reload", async () => {
-		const reloaded = await object_json(
-			session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId, owners.mode),
-			"/reload",
-			{
+	return managed_operation({
+		env,
+		owners,
+		body,
+		path: "/reload",
+		work: async () => {
+		const reloaded = await object_json({
+			stub: session_stub({
+				env,
+				ownerId: owners.ownerId,
+				organizationId: owners.organizationId,
+				workspaceId: owners.workspaceId,
+				mode: owners.mode,
+			}),
+			path: "/reload",
+			body: {
 				mode: "file",
 				sessionId: body.sessionId,
 				navGen: body.navGen,
@@ -8033,8 +8257,9 @@ async function handle_browser_reload(request: Request, env: Env): Promise<Respon
 				html: snapshot.html,
 				expectedAgentLease: body.expectedAgentLease,
 			},
-		);
+		});
 		return json_response(is_record(reloaded) ? reloaded : { ok: false, error: { code: "reload_failed" } }, 200);
+	},
 	});
 }
 
@@ -8070,17 +8295,35 @@ async function handle_browser_close(request: Request, env: Env): Promise<Respons
 
 	// Send close without the caller's abort signal: cleanup must complete even
 	// when the triggering request is already gone.
-	return managed_operation(env, owners, body, "/close", async () => {
-		const closed = await object_json(
-			session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId, owners.mode),
-			"/close",
-			{ sessionId: body.sessionId, expectedAgentLease: body.expectedAgentLease, saveProfile: body.saveProfile, by },
-		);
+	return managed_operation({
+		env,
+		owners,
+		body,
+		path: "/close",
+		work: async () => {
+		const closed = await object_json({
+			stub: session_stub({
+				env,
+				ownerId: owners.ownerId,
+				organizationId: owners.organizationId,
+				workspaceId: owners.workspaceId,
+				mode: owners.mode,
+			}),
+			path: "/close",
+			body: { sessionId: body.sessionId, expectedAgentLease: body.expectedAgentLease, saveProfile: body.saveProfile, by },
+		});
 		return json_response(is_record(closed) ? closed : { ok: false, error: { code: "close_failed" } }, 200);
+	},
 	});
 }
 
-async function handle_browser_profile(request: Request, env: Env, route: "summary" | "clear"): Promise<Response> {
+async function handle_browser_profile(args: {
+	request: Request;
+	env: Env;
+	route: "summary" | "clear";
+}): Promise<Response> {
+	const { request, env, route } = args;
+
 	const access = await require_host_access(request, env);
 	if (!access.ok) return access.response;
 
@@ -8099,10 +8342,16 @@ async function handle_browser_profile(request: Request, env: Env, route: "summar
 		return invalid_request("`domain` is invalid.");
 	}
 
-	const replied = await object_json(
-		session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId, owners.mode),
-		`/profile/${route}`,
-		{
+	const replied = await object_json({
+		stub: session_stub({
+			env,
+			ownerId: owners.ownerId,
+			organizationId: owners.organizationId,
+			workspaceId: owners.workspaceId,
+			mode: owners.mode,
+		}),
+		path: `/profile/${route}`,
+		body: {
 			ownerId: owners.ownerId,
 			organizationId: owners.organizationId,
 			workspaceId: owners.workspaceId,
@@ -8110,7 +8359,7 @@ async function handle_browser_profile(request: Request, env: Env, route: "summar
 			profileKey: body.profileKey,
 			...(route === "clear" ? { domain: body.domain } : {}),
 		},
-	);
+	});
 	return json_response(is_record(replied) ? replied : { ok: false, error: { code: "profile_failed" } }, 200);
 }
 
@@ -8128,11 +8377,17 @@ async function handle_browser_profile_delete(request: Request, env: Env): Promis
 	if (!owners.ok) return owners.response;
 	if (!is_profile_id(body.profileId)) return invalid_request("`profileId` is invalid.");
 
-	const deleted = await object_json(
-		session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId, owners.mode),
-		"/profile/delete",
-		{ profileId: body.profileId },
-	);
+	const deleted = await object_json({
+		stub: session_stub({
+			env,
+			ownerId: owners.ownerId,
+			organizationId: owners.organizationId,
+			workspaceId: owners.workspaceId,
+			mode: owners.mode,
+		}),
+		path: "/profile/delete",
+		body: { profileId: body.profileId },
+	});
 	return json_response(is_record(deleted) ? deleted : { ok: false, error: { code: "profile_failed" } }, 200);
 }
 
@@ -8155,7 +8410,13 @@ function is_item_id(value: unknown): value is string {
 	return is_non_empty_string(value) && value.length <= 128;
 }
 
-async function handle_browser_download(request: Request, env: Env, route: "info" | "push"): Promise<Response> {
+async function handle_browser_download(args: {
+	request: Request;
+	env: Env;
+	route: "info" | "push";
+}): Promise<Response> {
+	const { request, env, route } = args;
+
 	const access = await require_host_access(request, env);
 	if (!access.ok) return access.response;
 
@@ -8189,19 +8450,31 @@ async function handle_browser_download(request: Request, env: Env, route: "info"
 		}
 	}
 
-	const replied = await object_json(
-		session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId, owners.mode),
-		`/download/${route}`,
-		{
+	const replied = await object_json({
+		stub: session_stub({
+			env,
+			ownerId: owners.ownerId,
+			organizationId: owners.organizationId,
+			workspaceId: owners.workspaceId,
+			mode: owners.mode,
+		}),
+		path: `/download/${route}`,
+		body: {
 			sessionId: body.sessionId,
 			downloadId: body.downloadId,
 			...(route === "push" ? { url: body.url, headers: body.headers } : {}),
 		},
-	);
+	});
 	return json_response(is_record(replied) ? replied : { ok: false, error: { code: "download_failed" } }, 200);
 }
 
-async function handle_browser_upload(request: Request, env: Env, route: "fill" | "grant"): Promise<Response> {
+async function handle_browser_upload(args: {
+	request: Request;
+	env: Env;
+	route: "fill" | "grant";
+}): Promise<Response> {
+	const { request, env, route } = args;
+
 	const access = await require_host_access(request, env);
 	if (!access.ok) return access.response;
 
@@ -8238,10 +8511,16 @@ async function handle_browser_upload(request: Request, env: Env, route: "fill" |
 		}
 	}
 
-	const replied = await object_json(
-		session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId, owners.mode),
-		`/upload/${route}`,
-		{
+	const replied = await object_json({
+		stub: session_stub({
+			env,
+			ownerId: owners.ownerId,
+			organizationId: owners.organizationId,
+			workspaceId: owners.workspaceId,
+			mode: owners.mode,
+		}),
+		path: `/upload/${route}`,
+		body: {
 			sessionId: body.sessionId,
 			chooserId: body.chooserId,
 			controlGen: body.controlGen,
@@ -8250,7 +8529,7 @@ async function handle_browser_upload(request: Request, env: Env, route: "fill" |
 			viewGen: body.viewGen,
 			...(route === "fill" ? { files: body.files } : {}),
 		},
-	);
+	});
 	return json_response(is_record(replied) ? replied : { ok: false, error: { code: "upload_failed" } }, 200);
 }
 
@@ -8267,11 +8546,17 @@ async function handle_browser_keep_open(request: Request, env: Env): Promise<Res
 	if (!is_non_empty_string(body.sessionId)) return invalid_request("`sessionId` is required.");
 	if (!is_positive_int(body.navGen)) return invalid_request("`navGen` must be a positive int.");
 
-	const kept = await object_json(
-		session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId, owners.mode),
-		"/keep-open",
-		{ sessionId: body.sessionId, navGen: body.navGen, controlGen: body.controlGen },
-	);
+	const kept = await object_json({
+		stub: session_stub({
+			env,
+			ownerId: owners.ownerId,
+			organizationId: owners.organizationId,
+			workspaceId: owners.workspaceId,
+			mode: owners.mode,
+		}),
+		path: "/keep-open",
+		body: { sessionId: body.sessionId, navGen: body.navGen, controlGen: body.controlGen },
+	});
 	return json_response(is_record(kept) ? kept : { ok: false, error: { code: "keep_open_failed" } }, 200);
 }
 
@@ -8287,11 +8572,17 @@ async function handle_browser_status(request: Request, env: Env): Promise<Respon
 	if (!owners.ok) return owners.response;
 	if (!is_non_empty_string(body.sessionId)) return invalid_request("`sessionId` is required.");
 
-	const status = await object_json(
-		session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId, owners.mode),
-		"/status",
-		{ sessionId: body.sessionId },
-	);
+	const status = await object_json({
+		stub: session_stub({
+			env,
+			ownerId: owners.ownerId,
+			organizationId: owners.organizationId,
+			workspaceId: owners.workspaceId,
+			mode: owners.mode,
+		}),
+		path: "/status",
+		body: { sessionId: body.sessionId },
+	});
 	return json_response(is_record(status) ? status : { ok: false, error: { code: "status_failed" } }, 200);
 }
 
@@ -8308,11 +8599,17 @@ async function handle_browser_viewer_grant(request: Request, env: Env): Promise<
 	if (!is_non_empty_string(body.sessionId)) return invalid_request("`sessionId` is required.");
 	if (!is_positive_int(body.navGen)) return invalid_request("`navGen` must be a positive int.");
 
-	const granted = await object_json(
-		session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId, owners.mode),
-		"/viewer/grant",
-		{ sessionId: body.sessionId, navGen: body.navGen },
-	);
+	const granted = await object_json({
+		stub: session_stub({
+			env,
+			ownerId: owners.ownerId,
+			organizationId: owners.organizationId,
+			workspaceId: owners.workspaceId,
+			mode: owners.mode,
+		}),
+		path: "/viewer/grant",
+		body: { sessionId: body.sessionId, navGen: body.navGen },
+	});
 	return json_response(is_record(granted) ? granted : { ok: false, error: { code: "grant_failed" } }, 200);
 }
 
@@ -8329,11 +8626,17 @@ async function handle_browser_viewer_renew(request: Request, env: Env): Promise<
 	if (!is_non_empty_string(body.sessionId)) return invalid_request("`sessionId` is required.");
 	if (!is_non_empty_string(body.viewerId)) return invalid_request("`viewerId` is required.");
 
-	const renewed = await object_json(
-		session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId, owners.mode),
-		"/viewer/renew",
-		{ sessionId: body.sessionId, viewerId: body.viewerId },
-	);
+	const renewed = await object_json({
+		stub: session_stub({
+			env,
+			ownerId: owners.ownerId,
+			organizationId: owners.organizationId,
+			workspaceId: owners.workspaceId,
+			mode: owners.mode,
+		}),
+		path: "/viewer/renew",
+		body: { sessionId: body.sessionId, viewerId: body.viewerId },
+	});
 	return json_response(is_record(renewed) ? renewed : { ok: false, error: { code: "renew_failed" } }, 200);
 }
 
@@ -8351,11 +8654,17 @@ async function handle_browser_control_take(request: Request, env: Env): Promise<
 	if (!is_positive_int(body.navGen)) return invalid_request("`navGen` must be a positive int.");
 	if (!is_non_empty_string(body.viewerId)) return invalid_request("`viewerId` is required.");
 
-	const taken = await object_json(
-		session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId, owners.mode),
-		"/control/take-human",
-		{ sessionId: body.sessionId, navGen: body.navGen, viewerId: body.viewerId },
-	);
+	const taken = await object_json({
+		stub: session_stub({
+			env,
+			ownerId: owners.ownerId,
+			organizationId: owners.organizationId,
+			workspaceId: owners.workspaceId,
+			mode: owners.mode,
+		}),
+		path: "/control/take-human",
+		body: { sessionId: body.sessionId, navGen: body.navGen, viewerId: body.viewerId },
+	});
 	return json_response(is_record(taken) ? taken : { ok: false, error: { code: "take_failed" } }, 200);
 }
 
@@ -8373,11 +8682,17 @@ async function handle_browser_control_resume(request: Request, env: Env): Promis
 	if (!is_positive_int(body.navGen)) return invalid_request("`navGen` must be a positive int.");
 	if (!is_positive_int(body.controlGen)) return invalid_request("`controlGen` must be a positive int.");
 
-	const resumed = await object_json(
-		session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId, owners.mode),
-		"/control/to-agent",
-		{ sessionId: body.sessionId, navGen: body.navGen, controlGen: body.controlGen },
-	);
+	const resumed = await object_json({
+		stub: session_stub({
+			env,
+			ownerId: owners.ownerId,
+			organizationId: owners.organizationId,
+			workspaceId: owners.workspaceId,
+			mode: owners.mode,
+		}),
+		path: "/control/to-agent",
+		body: { sessionId: body.sessionId, navGen: body.navGen, controlGen: body.controlGen },
+	});
 	return json_response(is_record(resumed) ? resumed : { ok: false, error: { code: "resume_failed" } }, 200);
 }
 
@@ -8394,24 +8709,28 @@ async function handle_browser_agent_access(request: Request, env: Env): Promise<
 	if (typeof body.on !== "boolean") return invalid_request("`on` must be a boolean.");
 	if (
 		!is_revision(body.policyRevision) ||
-		!is_revision(body.selectionRevision) ||
 		!Array.isArray(body.agentBlockedHosts) ||
 		!body.agentBlockedHosts.every((host) => typeof host === "string") ||
 		body.agentBlockedHosts.length > 200
 	)
 		return invalid_request("A bounded policy is required.");
 
-	const changed = await object_json(
-		session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId, owners.mode),
-		"/agent-access",
-		{
+	const changed = await object_json({
+		stub: session_stub({
+			env,
+			ownerId: owners.ownerId,
+			organizationId: owners.organizationId,
+			workspaceId: owners.workspaceId,
+			mode: owners.mode,
+		}),
+		path: "/agent-access",
+		body: {
 			sessionId: body.sessionId,
 			on: body.on,
 			policyRevision: body.policyRevision,
-			selectionRevision: body.selectionRevision,
 			agentBlockedHosts: body.agentBlockedHosts,
 		},
-	);
+	});
 	return json_response(is_record(changed) ? changed : { ok: false, error: { code: "agent_access_failed" } }, 200);
 }
 
@@ -8604,11 +8923,13 @@ function parse_viewer_nav(body: unknown):
 /**
  * Run one address bar action on the page. Return null on success or a refusal code.
  */
-async function apply_viewer_nav(
-	cdp: CDPSession,
-	action: ViewerNav["action"],
-	url: string | null,
-): Promise<string | null> {
+async function apply_viewer_nav(args: {
+	cdp: CDPSession;
+	action: ViewerNav["action"];
+	url: string | null;
+}): Promise<string | null> {
+	const { cdp, action, url } = args;
+
 	switch (action) {
 		case "go":
 			await cdp.send("Page.navigate", { url: url! });
@@ -8711,7 +9032,13 @@ export function parse_viewer_hello(data: unknown): { ok: true; hello: ViewerHell
 	};
 }
 
-function close_socket(socket: WebSocket, code: number, reason: string): void {
+function close_socket(args: {
+	socket: WebSocket;
+	code: number;
+	reason: string;
+}): void {
+	const { socket, code, reason } = args;
+
 	try {
 		socket.close(code, reason);
 	} catch {
@@ -8734,7 +9061,13 @@ async function handle_viewer_stream(request: Request, env: Env): Promise<Respons
 		mode: url.searchParams.get("mode"),
 	});
 	if (!owners.ok) return owners.response;
-	return session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId, owners.mode).fetch(request);
+	return session_stub({
+		env,
+		ownerId: owners.ownerId,
+		organizationId: owners.organizationId,
+		workspaceId: owners.workspaceId,
+		mode: owners.mode,
+	}).fetch(request);
 }
 
 /**
@@ -8788,7 +9121,13 @@ async function handle_viewer_upload(request: Request, env: Env): Promise<Respons
 	// A throw would reach the browser as a bare 500 without CORS headers, which the app cannot read.
 	try {
 		return reply(
-			await session_stub(env, owners.ownerId, owners.organizationId, owners.workspaceId, owners.mode).fetch(request),
+			await session_stub({
+				env,
+				ownerId: owners.ownerId,
+				organizationId: owners.organizationId,
+				workspaceId: owners.workspaceId,
+				mode: owners.mode,
+			}).fetch(request),
 		);
 	} catch (error) {
 		log_browser({ route: "viewer_upload", error: sanitize_error(error).name });
@@ -8808,7 +9147,7 @@ export async function handle_request(request: Request, env: Env, ctx?: BrowserRu
 			)
 		)
 			return json_response({ ok: false, error: { code: "disabled", message: "Browser runner is disabled" } }, 503);
-		return handle_playwriter_request(request, env, ctx);
+		return handle_playwriter_request({ request, env, ctx });
 	}
 	if (request.method === "GET" && url.pathname === "/health") {
 		return json_response({ ok: true }, 200);
@@ -8823,13 +9162,13 @@ export async function handle_request(request: Request, env: Env, ctx?: BrowserRu
 		return handle_browser_reload(request, env);
 	}
 	if (request.method === "POST" && url.pathname === "/internal/browser/run") {
-		return handle_browser_run(request, env, ctx);
+		return handle_browser_run({ request, env, ctx });
 	}
 	if (
 		request.method === "POST" &&
 		["/internal/browser/command-status", "/internal/browser/command-fence"].includes(url.pathname)
 	)
-		return handle_browser_command_receipt(request, env, url.pathname.slice("/internal/browser".length));
+		return handle_browser_command_receipt({ request, env, path: url.pathname.slice("/internal/browser".length) });
 	if (
 		request.method === "POST" &&
 		[
@@ -8840,7 +9179,7 @@ export async function handle_request(request: Request, env: Env, ctx?: BrowserRu
 			"/internal/browser/operation-status",
 		].includes(url.pathname)
 	)
-		return handle_browser_tab(request, env, url.pathname.slice("/internal/browser".length));
+		return handle_browser_tab({ request, env, path: url.pathname.slice("/internal/browser".length) });
 	if (request.method === "POST" && url.pathname === "/internal/browser/close") {
 		return handle_browser_close(request, env);
 	}
@@ -8866,25 +9205,25 @@ export async function handle_request(request: Request, env: Env, ctx?: BrowserRu
 		return handle_browser_agent_access(request, env);
 	}
 	if (request.method === "POST" && url.pathname === "/internal/browser/profile-summary") {
-		return handle_browser_profile(request, env, "summary");
+		return handle_browser_profile({ request, env, route: "summary" });
 	}
 	if (request.method === "POST" && url.pathname === "/internal/browser/profile-clear") {
-		return handle_browser_profile(request, env, "clear");
+		return handle_browser_profile({ request, env, route: "clear" });
 	}
 	if (request.method === "POST" && url.pathname === "/internal/browser/profile-delete") {
 		return handle_browser_profile_delete(request, env);
 	}
 	if (request.method === "POST" && url.pathname === "/internal/browser/download-info") {
-		return handle_browser_download(request, env, "info");
+		return handle_browser_download({ request, env, route: "info" });
 	}
 	if (request.method === "POST" && url.pathname === "/internal/browser/download-push") {
-		return handle_browser_download(request, env, "push");
+		return handle_browser_download({ request, env, route: "push" });
 	}
 	if (request.method === "POST" && url.pathname === "/internal/browser/upload-fill") {
-		return handle_browser_upload(request, env, "fill");
+		return handle_browser_upload({ request, env, route: "fill" });
 	}
 	if (request.method === "POST" && url.pathname === "/internal/browser/upload-grant") {
-		return handle_browser_upload(request, env, "grant");
+		return handle_browser_upload({ request, env, route: "grant" });
 	}
 	if ((request.method === "PUT" || request.method === "OPTIONS") && url.pathname === "/viewer/upload") {
 		return handle_viewer_upload(request, env);

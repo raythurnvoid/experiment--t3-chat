@@ -98,21 +98,21 @@ export async function files_share_links_db_delete_for_node(
  * reads tree paths. It loads the workspace's link docs once per cleanup state. Callers union the roots
  * they know before calling, and pass the same state to later calls in the same mutation.
  */
-export async function files_share_links_db_delete_for_roots(
-	ctx: MutationCtx,
-	args: {
-		organizationId: Doc<"files_nodes">["organizationId"];
-		workspaceId: Doc<"files_nodes">["workspaceId"];
-		rootNodeIds: Iterable<Id<"files_nodes">>;
-	},
-	state: files_share_links_CleanupState,
-) {
+export async function files_share_links_db_delete_for_roots(args: {
+	ctx: MutationCtx;
+	organizationId: Doc<"files_nodes">["organizationId"];
+	workspaceId: Doc<"files_nodes">["workspaceId"];
+	rootNodeIds: Iterable<Id<"files_nodes">>;
+	state: files_share_links_CleanupState;
+}) {
+	const { ctx, state, ...previousArgs } = args;
+
 	const rootNodeIds = new Set<Id<"files_nodes">>(args.rootNodeIds);
 	if (rootNodeIds.size === 0) {
 		return;
 	}
 
-	const scope = resolve_link_scope(ctx, args);
+	const scope = resolve_link_scope(ctx, previousArgs);
 	if (!scope) {
 		return;
 	}

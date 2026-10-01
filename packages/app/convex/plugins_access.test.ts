@@ -31,18 +31,18 @@ async function fixture() {
 	return { t, owner, member, membership, asOwner, asMember };
 }
 
-async function version(
-	t: ReturnType<typeof test_convex>,
-	userId: Id<"users">,
-	args: {
-		name?: string;
-		version?: string;
-		mounts?: NonNullable<Doc<"plugins_versions">["mounts"]>;
-		defaultYaml?: string;
-		events?: Doc<"plugins_versions">["events"];
-		capabilities?: Doc<"plugins_versions">["capabilities"];
-	} = {},
-) {
+async function version(args: {
+	t: ReturnType<typeof test_convex>;
+	userId: Id<"users">;
+	name?: string;
+	version?: string;
+	mounts?: NonNullable<Doc<"plugins_versions">["mounts"]>;
+	defaultYaml?: string;
+	events?: Doc<"plugins_versions">["events"];
+	capabilities?: Doc<"plugins_versions">["capabilities"];
+}) {
+	const { t, userId } = args;
+
 	const name = args.name ?? "mount-test";
 	return await t.run((ctx) =>
 		ctx.db.insert("plugins_versions", {
@@ -110,7 +110,9 @@ async function scheduled_fixture() {
 		"plugin.secrets.read",
 		"outbound.fetch",
 	] as const;
-	const pluginVersionId = await version(f.t, f.owner.userId, {
+	const pluginVersionId = await version({
+		t: f.t,
+		userId: f.owner.userId,
 		capabilities: [...capabilities],
 		defaultYaml: "mount:\n  name: records\nschedule:\n  everyMinutes: 1440\n",
 		events: [
@@ -407,7 +409,7 @@ describe("grant_run_as_me", () => {
 describe("get_installation_mounts", () => {
 	test("shows usage to exact managers and hides revisions without workspace read", async () => {
 		const f = await fixture();
-		const pluginVersionId = await version(f.t, f.owner.userId);
+		const pluginVersionId = await version({ t: f.t, userId: f.owner.userId });
 		const installed = await f.asOwner.mutation(
 			api.plugins.install_version,
 			install_args(f.owner.membershipId, pluginVersionId),
@@ -567,7 +569,7 @@ describe("set_scheduled_run_user", () => {
 describe("update_workspace_install_access", () => {
 	test("starts owner-only and lets a selected member set up a new empty account", async () => {
 		const { t, owner, member, membership, asOwner, asMember } = await fixture();
-		const pluginVersionId = await version(t, owner.userId);
+		const pluginVersionId = await version({ t, userId: owner.userId });
 		expect(
 			await asOwner.query(api.plugins_access.get_workspace_install_access, { membershipId: owner.membershipId }),
 		).toMatchObject({ canInstall: true, canManageSettings: true, mode: "owner", principals: [] });
@@ -613,8 +615,8 @@ describe("update_workspace_install_access", () => {
 
 	test("offers setup only for plugins that are not installed", async () => {
 		const { t, owner, member, membership, asOwner, asMember } = await fixture();
-		const installedVersion = await version(t, owner.userId);
-		await version(t, owner.userId, { name: "new-mount" });
+		const installedVersion = await version({ t, userId: owner.userId });
+		await version({ t, userId: owner.userId, name: "new-mount" });
 		expect(
 			await asOwner.mutation(api.plugins_access.update_workspace_install_access, {
 				membershipId: owner.membershipId,
@@ -705,8 +707,10 @@ describe("update_workspace_install_access", () => {
 describe("update_installation_access", () => {
 	test("keeps configuration, secrets, health, history and MCP status on the exact installation", async () => {
 		const { t, owner, member, membership, asOwner, asMember } = await fixture();
-		const firstVersion = await version(t, owner.userId);
-		const otherVersion = await version(t, owner.userId, {
+		const firstVersion = await version({ t, userId: owner.userId });
+		const otherVersion = await version({
+			t,
+			userId: owner.userId,
 			name: "other-mount",
 			defaultYaml: "mount:\n  name: other\n",
 		});
@@ -761,7 +765,7 @@ describe("update_installation_access", () => {
 
 	test("owner-only clears management grants and keeps a member's own consent", async () => {
 		const { t, owner, member, membership, asOwner, asMember } = await fixture();
-		const pluginVersionId = await version(t, owner.userId);
+		const pluginVersionId = await version({ t, userId: owner.userId });
 		const installed = await asOwner.mutation(
 			api.plugins.install_version,
 			install_args(owner.membershipId, pluginVersionId),
@@ -816,7 +820,7 @@ describe("update_installation_access", () => {
 
 	test("rejects unknown and oversized lists before changing access", async () => {
 		const { t, owner, member, asOwner } = await fixture();
-		const pluginVersionId = await version(t, owner.userId);
+		const pluginVersionId = await version({ t, userId: owner.userId });
 		const installed = await asOwner.mutation(
 			api.plugins.install_version,
 			install_args(owner.membershipId, pluginVersionId),
@@ -863,7 +867,7 @@ describe("update_installation_access", () => {
 describe("installation mount claims", () => {
 	test("claims configured names and renames them without moving files", async () => {
 		const { t, owner, asOwner } = await fixture();
-		const pluginVersionId = await version(t, owner.userId);
+		const pluginVersionId = await version({ t, userId: owner.userId });
 		const installed = await asOwner.mutation(api.plugins.install_version, {
 			...install_args(owner.membershipId, pluginVersionId),
 			configurationYaml: "mount:\n  name: chosen\n",
@@ -886,8 +890,8 @@ describe("installation mount claims", () => {
 
 	test("refuses a second claim before writing an account or installation", async () => {
 		const { t, owner, asOwner } = await fixture();
-		const firstVersion = await version(t, owner.userId);
-		const otherVersion = await version(t, owner.userId, { name: "other-mount" });
+		const firstVersion = await version({ t, userId: owner.userId });
+		const otherVersion = await version({ t, userId: owner.userId, name: "other-mount" });
 		expect(
 			(await asOwner.mutation(api.plugins.install_version, install_args(owner.membershipId, firstVersion)))._nay,
 		).toBeUndefined();
@@ -901,7 +905,7 @@ describe("installation mount claims", () => {
 
 	test("allows the same mount name in another workspace", async () => {
 		const { t, owner, asOwner } = await fixture();
-		const pluginVersionId = await version(t, owner.userId);
+		const pluginVersionId = await version({ t, userId: owner.userId });
 		expect(
 			(await asOwner.mutation(api.plugins.install_version, install_args(owner.membershipId, pluginVersionId)))._nay,
 		).toBeUndefined();
@@ -935,7 +939,7 @@ describe("installation mount claims", () => {
 				lastError: null,
 			}),
 		);
-		const pluginVersionId = await version(t, owner.userId);
+		const pluginVersionId = await version({ t, userId: owner.userId });
 		expect(
 			(
 				await asOwner.mutation(api.plugins.install_version, {
@@ -968,7 +972,9 @@ describe("installation mount claims", () => {
 
 	test.each(["sources", "constructor"])("upgrades use exact rights and drop mount %s", async (mountId) => {
 		const { t, owner, member, membership, asOwner, asMember } = await fixture();
-		const firstVersion = await version(t, owner.userId, {
+		const firstVersion = await version({
+			t,
+			userId: owner.userId,
 			mounts: [{ id: mountId, description: "External records", configurationPath: ["mount", "name"] }],
 		});
 		const installed = await asOwner.mutation(
@@ -997,7 +1003,9 @@ describe("installation mount claims", () => {
 				principals: [{ kind: "user", userId: member.userId }],
 			}),
 		).toEqual({ _yay: null });
-		const nextVersion = await version(t, owner.userId, {
+		const nextVersion = await version({
+			t,
+			userId: owner.userId,
 			version: "0.2.0",
 			mounts: [{ id: "records", description: "New records", configurationPath: ["new", "name"] }],
 			defaultYaml: "new:\n  name: new-records\n",
@@ -1023,7 +1031,9 @@ describe("installation mount claims", () => {
 describe("list_bash_volume_mounts", () => {
 	test("lists published copies in path order and follows live claims and installation status", async () => {
 		const { t, owner, member, asOwner, asMember } = await fixture();
-		const pluginVersionId = await version(t, owner.userId, {
+		const pluginVersionId = await version({
+			t,
+			userId: owner.userId,
 			mounts: [
 				{ id: "sources", description: "Sources", configurationPath: ["mount", "name"] },
 				{ id: "archive", description: "Archive", configurationPath: ["archive", "name"] },

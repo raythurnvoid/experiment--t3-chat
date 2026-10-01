@@ -683,9 +683,12 @@ async function run_folder_import(args: {
 		// Compress images first so the declared sizes match the bytes that actually upload.
 		// `files_prepare_image_upload_file` returns the original file on any decode error, so a
 		// rejected slot here is unexpected; fall back to the original file for it too.
-		const preparedResults = await async_all_settled_with_limit(plan.items, FILES_IMPORT_PREPARE_CONCURRENCY, (item) =>
+		const preparedResults = await async_all_settled_with_limit({
+			items: plan.items,
+			limit: FILES_IMPORT_PREPARE_CONCURRENCY,
+			run: (item) =>
 			files_prepare_image_upload_file(item.file),
-		);
+		});
 
 		const uploadItems: FilesImportPlanItem[] = [];
 		for (const [index, item] of plan.items.entries()) {
@@ -828,7 +831,10 @@ async function run_folder_import(args: {
 
 			const itemByPath = new Map(chunk.map((item) => [item.normalizedPath, item]));
 			// Each task reports its own failure and never rejects, so the settled results are unused.
-			await async_all_settled_with_limit(createdItems, FILES_IMPORT_PUT_CONCURRENCY, async (created) => {
+			await async_all_settled_with_limit({
+				items: createdItems,
+				limit: FILES_IMPORT_PUT_CONCURRENCY,
+				run: async (created) => {
 				const item = itemByPath.get(created.relativePath);
 				if (!item) {
 					console.error(
@@ -870,6 +876,7 @@ async function run_folder_import(args: {
 					});
 					await discard_unuploaded_node(created, { reportFailed: true });
 				}
+			},
 			});
 
 			return "continue";
@@ -4374,11 +4381,11 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	// The full list has every parent, so a row with a missing parent there was shared on its own.
 	const hoistedTreeItemIds = isSearchActive ? null : treeFolders.hoistedIds;
 
-	const { searchServerTargetKeys, isSearchLoading, isSearchFailed } = useFilesSearchServerFilters(
+	const { searchServerTargetKeys, isSearchLoading, isSearchFailed } = useFilesSearchServerFilters({
 		membershipId,
-		searchQueryDeferred,
+		searchQuery: searchQueryDeferred,
 		treeItemsList,
-	);
+	});
 
 	const [isCreatingFile, setIsCreatingFile] = useState(false);
 	const createRequestRef = useRef<{
@@ -5740,9 +5747,9 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		},
 	});
 
-	useGlobalEventList(
-		FILES_SIDEBAR_SELECTION_CONTEXT_EVENTS,
-		(event) => {
+	useGlobalEventList({
+		events: FILES_SIDEBAR_SELECTION_CONTEXT_EVENTS,
+		handler: (event) => {
 			// The archive dialog is modal: while it is open, every click and focus belongs to it. A
 			// cancelled multi-select archive must keep the selection as it was.
 			if (archiveNodes !== null) {
@@ -5761,8 +5768,8 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 
 			reconcileTreeSelectionToNavigatedNode(tree());
 		},
-		{ capture: true },
-	);
+		options: { capture: true },
+	});
 
 	/**
 	 * The files ids used as the source for active tree tracks.
@@ -7150,7 +7157,13 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		return file;
 	};
 
-	const test_file_with_path = (name: string, path: string, type = "application/pdf") => {
+	const test_file_with_path = (args: {
+		name: string;
+		path: string;
+		type?: string;
+	}) => {
+		const { name, path, type = "application/pdf" } = args;
+
 		const file = new File(["content"], name, { type }) as FileWithPath;
 		Object.defineProperty(file, "path", { value: path, configurable: true });
 		return file;
@@ -7353,11 +7366,11 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 	describe("folder import helpers", () => {
 		test("get_import_file_entries strips path prefixes and filters junk files", () => {
-			const bare = test_file_with_path("bare.pdf", "./bare.pdf");
-			const dropped = test_file_with_path("photo.png", "/folder/photo.png");
-			const picked = test_file_with_path("notes.md", "folder/sub/notes.md");
-			const junk = test_file_with_path(".DS_Store", "/folder/.DS_Store");
-			const windowsJunk = test_file_with_path("Thumbs.db", "folder/Thumbs.db");
+			const bare = test_file_with_path({ name: "bare.pdf", path: "./bare.pdf" });
+			const dropped = test_file_with_path({ name: "photo.png", path: "/folder/photo.png" });
+			const picked = test_file_with_path({ name: "notes.md", path: "folder/sub/notes.md" });
+			const junk = test_file_with_path({ name: ".DS_Store", path: "/folder/.DS_Store" });
+			const windowsJunk = test_file_with_path({ name: "Thumbs.db", path: "folder/Thumbs.db" });
 			const relativePathOnly = new File(["content"], "legacy.pdf", { type: "application/pdf" }) as FileWithPath;
 			Object.defineProperty(relativePathOnly, "relativePath", { value: "folder/legacy.pdf", configurable: true });
 
@@ -7370,11 +7383,11 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("build_import_plan normalizes paths and dedupes targets first-wins", () => {
-			const first = test_file_with_path("A.PDF", "/docs/A.PDF");
-			const duplicate = test_file_with_path("a.pdf", "/docs/a.pdf");
-			const markdown = test_file_with_path("notes.markdown", "/docs/notes.markdown", "text/markdown");
-			const missingExtension = test_file_with_path("no-extension", "/docs/no-extension");
-			const invalidFolder = test_file_with_path("up.pdf", "../up.pdf");
+			const first = test_file_with_path({ name: "A.PDF", path: "/docs/A.PDF" });
+			const duplicate = test_file_with_path({ name: "a.pdf", path: "/docs/a.pdf" });
+			const markdown = test_file_with_path({ name: "notes.markdown", path: "/docs/notes.markdown", type: "text/markdown" });
+			const missingExtension = test_file_with_path({ name: "no-extension", path: "/docs/no-extension" });
+			const invalidFolder = test_file_with_path({ name: "up.pdf", path: "../up.pdf" });
 
 			const plan = build_import_plan(
 				get_import_file_entries([first, duplicate, markdown, missingExtension, invalidFolder]),
@@ -7392,9 +7405,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 		test("build_import_plan keeps special-cased markdown names server-acceptable", () => {
 			// The browser and server use the same spelling for instruction files.
-			const readme = test_file_with_path("readme", "/docs/readme", "text/markdown");
-			const agents = test_file_with_path("agents.md", "/docs/agents.md", "text/markdown");
-			const skill = test_file_with_path("skill.md", "/.agents/skills/one/skill.md", "text/markdown");
+			const readme = test_file_with_path({ name: "readme", path: "/docs/readme", type: "text/markdown" });
+			const agents = test_file_with_path({ name: "agents.md", path: "/docs/agents.md", type: "text/markdown" });
+			const skill = test_file_with_path({ name: "skill.md", path: "/.agents/skills/one/skill.md", type: "text/markdown" });
 
 			const plan = build_import_plan(get_import_file_entries([readme, agents, skill]));
 
@@ -7408,9 +7421,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("build_import_plan refuses the whole skill bundle before a resource path changes", () => {
-			const skill = test_file_with_path("SKILL.md", "/one/SKILL.md", "text/markdown");
-			const reference = test_file_with_path("Output_Format.md", "/one/references/Output_Format.md", "text/markdown");
-			const readme = test_file_with_path("readme.md", "/one/references/readme.md", "text/markdown");
+			const skill = test_file_with_path({ name: "SKILL.md", path: "/one/SKILL.md", type: "text/markdown" });
+			const reference = test_file_with_path({ name: "Output_Format.md", path: "/one/references/Output_Format.md", type: "text/markdown" });
+			const readme = test_file_with_path({ name: "readme.md", path: "/one/references/readme.md", type: "text/markdown" });
 
 			const plan = build_import_plan(get_import_file_entries([skill, reference, readme]));
 
@@ -7420,7 +7433,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 		test("build_import_plan skips too-deep paths", () => {
 			const deepPath = `${Array.from({ length: 33 }, (_, index) => `d${index}`).join("/")}/leaf.pdf`;
-			const deep = test_file_with_path("leaf.pdf", `/${deepPath}`);
+			const deep = test_file_with_path({ name: "leaf.pdf", path: `/${deepPath}` });
 
 			const plan = build_import_plan(get_import_file_entries([deep]));
 
@@ -7430,7 +7443,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 		test("build_import_plan skips over-long paths", () => {
 			const longPath = `${Array.from({ length: 20 }, () => "d".repeat(60)).join("/")}/leaf.pdf`;
-			const long = test_file_with_path("leaf.pdf", `/${longPath}`);
+			const long = test_file_with_path({ name: "leaf.pdf", path: `/${longPath}` });
 
 			const plan = build_import_plan(get_import_file_entries([long]));
 
@@ -7495,7 +7508,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					convex: convexStub,
 					membershipId: "membership" as app_convex_Id<"organizations_workspaces_users">,
 					parentId: files_ROOT_ID,
-					entries: get_import_file_entries([test_file_with_path("a.pdf", "./a.pdf")]),
+					entries: get_import_file_entries([test_file_with_path({ name: "a.pdf", path: "./a.pdf" })]),
 				});
 			} finally {
 				unsubscribe();
@@ -7532,7 +7545,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					convex: convexStub,
 					membershipId: "membership" as app_convex_Id<"organizations_workspaces_users">,
 					parentId: files_ROOT_ID,
-					entries: get_import_file_entries([test_file_with_path("a.pdf", "./a.pdf")]),
+					entries: get_import_file_entries([test_file_with_path({ name: "a.pdf", path: "./a.pdf" })]),
 				});
 			} finally {
 				unsubscribe();
@@ -8565,23 +8578,31 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const file = test_node({ id: "public_file", parentId: files_ROOT_ID, kind: "file", name: "a.md" });
 			const folder = test_node({ id: "docs", parentId: files_ROOT_ID, kind: "folder", name: "docs" });
 			// `undefined` is a list that has not answered yet, and `null` is a failed one.
-			const link_matches = (query: string, item: files_TreeItem, answer: Set<string> | null | undefined) =>
-				search_filter_matches_item({
+			const link_matches = (args: {
+				query: string;
+				item: files_TreeItem;
+				answer: Set<string> | null | undefined;
+			}) =>
+				{
+				const { query, item, answer } = args;
+
+				return search_filter_matches_item({
 					filter: files_search_query_parse(query).filters[0]!,
 					item,
 					targetKey: `saved:${item._id}`,
 					serverTargetKeys: answer === undefined ? new Map() : new Map([[query, answer]]),
 				});
+			};
 			const links = new Set(["saved:public_file"]);
 
-			expect(link_matches("file.link:public", file, links)).toBe(true);
-			expect(link_matches("file.link:Public", file, links)).toBe(true);
-			expect(link_matches("file.link:public", folder, links)).toBe(false);
-			expect(link_matches("file.link:public", file, new Set())).toBe(false);
-			expect(link_matches("!file.link:public", folder, links)).toBe(true);
-			expect(link_matches("!file.link:public", file, links)).toBe(false);
-			expect(link_matches("!file.link:public", file, null)).toBeNull();
-			expect(link_matches("!file.link:public", file, undefined)).toBeNull();
+			expect(link_matches({ query: "file.link:public", item: file, answer: links })).toBe(true);
+			expect(link_matches({ query: "file.link:Public", item: file, answer: links })).toBe(true);
+			expect(link_matches({ query: "file.link:public", item: folder, answer: links })).toBe(false);
+			expect(link_matches({ query: "file.link:public", item: file, answer: new Set() })).toBe(false);
+			expect(link_matches({ query: "!file.link:public", item: folder, answer: links })).toBe(true);
+			expect(link_matches({ query: "!file.link:public", item: file, answer: links })).toBe(false);
+			expect(link_matches({ query: "!file.link:public", item: file, answer: null })).toBeNull();
+			expect(link_matches({ query: "!file.link:public", item: file, answer: undefined })).toBeNull();
 		});
 	});
 

@@ -485,9 +485,9 @@ beforeEach(() => {
 								.filter((item) => {
 									if (filter === null) return true;
 									const dot = item.name.lastIndexOf(".");
-									return files_table_filter_matches(
+									return files_table_filter_matches({
 										filter,
-										{
+										facts: {
 											name: item.name,
 											createdAt: item._creationTime,
 											updatedAt: item.updatedAt,
@@ -497,14 +497,14 @@ beforeEach(() => {
 													: null,
 											contentByteSize: item.kind === "file" ? item.contentByteSize : null,
 										},
-										"Open",
-									);
+										scalar: "Open",
+									});
 								})
 								.map((item) => ({
 									...item,
-									sortKey: files_sort_key_of(
+									sortKey: files_sort_key_of({
 										sort,
-										{
+										facts: {
 											kind: item.kind === "folder" ? "folder" : "file",
 											name: item.name,
 											createdAt: item._creationTime,
@@ -512,10 +512,10 @@ beforeEach(() => {
 											type: item.name.includes(".") ? item.name.split(".").at(-1)!.toLowerCase() : null,
 											contentByteSize: item.contentByteSize,
 										},
-										new Map([["metadata.status", files_sort_text_key("Open")]]),
-									),
+										metadataParts: new Map([["metadata.status", files_sort_text_key("Open")]]),
+									}),
 								}))
-								.sort((a, b) => files_sort_compare(a.sortKey, b.sortKey, sort));
+								.sort((a, b) => files_sort_compare({ a: a.sortKey, b: b.sortKey, sort }));
 				return paginationOpts
 					? {
 							page,
@@ -1979,12 +1979,24 @@ describe("FileNodeView folder sort form", () => {
 		return await screen.findByRole("dialog", { name: "Sort" });
 	}
 
-	async function selectField(dialog: HTMLElement, priority: number, name: string) {
+	async function selectField(args: {
+		dialog: HTMLElement;
+		priority: number;
+		name: string;
+	}) {
+		const { dialog, priority, name } = args;
+
 		fireEvent.click(within(dialog).getByRole("combobox", { name: new RegExp(`^Sort field ${priority}: `) }));
 		fireEvent.click(await screen.findByRole("option", { name }));
 	}
 
-	async function selectDirection(dialog: HTMLElement, priority: number, name: string) {
+	async function selectDirection(args: {
+		dialog: HTMLElement;
+		priority: number;
+		name: string;
+	}) {
+		const { dialog, priority, name } = args;
+
 		fireEvent.click(within(dialog).getByRole("combobox", { name: new RegExp(`^Direction ${priority}: `) }));
 		fireEvent.click(await screen.findByRole("option", { name }));
 	}
@@ -2002,12 +2014,12 @@ describe("FileNodeView folder sort form", () => {
 		const table = await screen.findByRole("table", { name: "Folder contents" });
 		const dialog = await openSort();
 		expect(within(dialog).getByText("Saved for everyone who can read this folder")).toBeTruthy();
-		await selectField(dialog, 1, "status (metadata)");
-		await selectDirection(dialog, 1, "Z to A");
+		await selectField({ dialog, priority: 1, name: "status (metadata)" });
+		await selectDirection({ dialog, priority: 1, name: "Z to A" });
 		fireEvent.click(within(dialog).getByRole("button", { name: "Add sort field" }));
-		await selectDirection(dialog, 2, "Z to A");
+		await selectDirection({ dialog, priority: 2, name: "Z to A" });
 		fireEvent.click(within(dialog).getByRole("button", { name: "Add sort field" }));
-		await selectField(dialog, 3, "Size");
+		await selectField({ dialog, priority: 3, name: "Size" });
 		expect(table.getAttribute("data-sort-fields")).toBe(JSON.stringify([{ field: "name", direction: "asc" }]));
 		expect(mutationMock).not.toHaveBeenCalled();
 		const sort: files_sort_Sort = [
@@ -2033,7 +2045,7 @@ describe("FileNodeView folder sort form", () => {
 	test("drops Cancel and Escape drafts and returns focus to Sort", async () => {
 		renderFileView({ nodeId: node._id });
 		const dialog = await openSort();
-		await selectField(dialog, 1, "Updated");
+		await selectField({ dialog, priority: 1, name: "Updated" });
 		expect(within(dialog).getByRole("combobox", { name: "Direction 1: Newest first" })).toBeTruthy();
 		fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
 		await waitFor(() => expect(screen.queryByRole("dialog", { name: "Sort" })).toBeNull());
@@ -2096,7 +2108,7 @@ describe("FileNodeView folder sort form", () => {
 		expect(document.activeElement).toBe(nameField);
 		fireEvent.click(within(dialog).getByRole("button", { name: "Remove Updated" }));
 		expect(document.activeElement).toBe(nameField);
-		await selectField(dialog, 1, "Size");
+		await selectField({ dialog, priority: 1, name: "Size" });
 		expect(document.activeElement).toBe(nameField);
 		fireEvent.click(within(dialog).getByRole("button", { name: "Remove Size" }));
 		expect(within(dialog).getByRole("combobox", { name: "Sort field 1: Name" })).toBe(nameField);
@@ -2413,7 +2425,7 @@ describe("FileNodeView folder sort form", () => {
 	test.each(["folder", "membership"] as const)("clears a reader's local list when the %s changes", async (scope) => {
 		const view = renderFileView({ nodeId: node._id });
 		const dialog = await openSort();
-		await selectField(dialog, 1, "Size");
+		await selectField({ dialog, priority: 1, name: "Size" });
 		fireEvent.click(within(dialog).getByRole("button", { name: "Add sort field" }));
 		fireEvent.submit(dialog.querySelector("form")!);
 		expect(sortedChildrenMock.mock.calls.at(-1)![0].sort).toEqual([
@@ -4365,7 +4377,7 @@ describe("FileNodeView header breadcrumb", () => {
 
 	test("Reveal in sidebar sends the reveal event for the open file", async () => {
 		const handleReveal = vi.fn();
-		const stopListening = global_custom_event_listen("files::reveal_node", handleReveal);
+		const stopListening = global_custom_event_listen({ event: "files::reveal_node", handler: handleReveal });
 		renderFileView();
 		await screen.findByRole("textbox", { name: "Code draft" });
 		const menu = await openCurrentCrumbMenu("page.html");

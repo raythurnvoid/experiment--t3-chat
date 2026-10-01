@@ -168,7 +168,7 @@ function FileEditorPresenceSupplier_Enabled(
 
 	const { organizationId, workspaceId } = AppTenantProvider.useContext();
 
-	const roomId = files_create_room_id(organizationId, workspaceId, target.id);
+	const roomId = files_create_room_id({ organizationId, workspaceId, nodeId: target.id });
 
 	const presence = usePresence({
 		roomId: roomId,

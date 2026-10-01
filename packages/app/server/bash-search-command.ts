@@ -93,7 +93,7 @@ function parse_args(args: string[], options: { currentWorkspacePath: string; cwd
 		queryParts.push(arg);
 	}
 
-	const limit = bash_parse_limit("search", limitValue, 20, 100);
+	const limit = bash_parse_limit({ command: "search", value: limitValue, defaultLimit: 20, maxLimit: 100 });
 	if (limit._nay) {
 		return limit;
 	}
@@ -278,7 +278,7 @@ export function bash_search_command_create(ctx: ActionCtx, dbFilesRoots: bash_Db
 					return {
 						items: pageResult.items.map((item) => ({
 							...item,
-							path: bash_external_mounts_fan_out_db_files_path(pageArgs.mount, item.path, scope.basePath),
+							path: bash_external_mounts_fan_out_db_files_path({ mount: pageArgs.mount, storedPath: item.path, basePath: scope.basePath }),
 						})),
 						continueCursor: pageResult.continueCursor,
 						isDone: pageResult.isDone,
@@ -418,7 +418,7 @@ export function bash_search_command_create(ctx: ActionCtx, dbFilesRoots: bash_Db
 				// Each hit is one block: stable location metadata, optional context hints,
 				// then the matched text chunk exactly as it was indexed.
 				const blockLines = [
-					`${item.path} (lines ${item.lineStart}-${item.lineEnd}, chars ${item.startIndex}-${item.endIndex}, chunk #${item.chunkIndex})${bash_search_command_exact_query_note(exactQueryFilter, parsed._yay.query, item.textChunk)}`,
+					`${item.path} (lines ${item.lineStart}-${item.lineEnd}, chars ${item.startIndex}-${item.endIndex}, chunk #${item.chunkIndex})${bash_search_command_exact_query_note({ exactQueryFilter, query: parsed._yay.query, textChunk: item.textChunk })}`,
 				];
 
 				if (item.hasChunkAbove) {

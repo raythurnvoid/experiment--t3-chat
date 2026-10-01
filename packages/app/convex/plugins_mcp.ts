@@ -84,11 +84,11 @@ export async function plugins_mcp_decrypt_custom_secrets(args: {
 	for (const secret of args.secrets) {
 		values.set(
 			secret.name,
-			await crypto_decrypt_secret_value(
-				secret.value,
-				plugins_mcp_custom_secret_additional_data({ ...args, name: secret.name }),
-				"MCP_SECRETS_ENCRYPTION_KEY",
-			),
+			await crypto_decrypt_secret_value({
+				secret: secret.value,
+				additionalData: plugins_mcp_custom_secret_additional_data({ ...args, name: secret.name }),
+				keyName: "MCP_SECRETS_ENCRYPTION_KEY",
+			}),
 		);
 	}
 	return values;

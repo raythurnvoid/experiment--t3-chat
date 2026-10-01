@@ -327,7 +327,13 @@ function remove_upload_node(view: EditorView, uploadId: string) {
 	view.dispatch(view.state.tr.delete(found.pos, found.pos + found.node.nodeSize));
 }
 
-function patch_upload_node(view: EditorView, uploadId: string, attrs: { src?: string; alt?: string; uploadId?: null }) {
+function patch_upload_node(args: {
+	view: EditorView;
+	uploadId: string;
+	attrs: { src?: string; alt?: string; uploadId?: null };
+}) {
+	const { view, uploadId, attrs } = args;
+
 	const found = find_upload_node(view, uploadId);
 	if (!found) {
 		return false;
@@ -489,13 +495,13 @@ async function upload_one(args: {
 	// Point the placeholder at the real node. The node view swaps `Uploading…` for the asset
 	// watch (processing → ready) on this src change; `uploadId` stays set until the bytes are
 	// through, so a failed PUT can still find the node.
-	const patched = patch_upload_node(
+	const patched = patch_upload_node({
 		view,
-		item.uploadId,
-		item.isVideo
+		uploadId: item.uploadId,
+		attrs: item.isVideo
 			? { src: files_media_build_file_src(created.nodeId) }
 			: { src: files_media_build_file_src(created.nodeId), alt: created.filename },
-	);
+	});
 	if (!patched) {
 		// The embed disappeared while the node was being created (undo, collaborator delete).
 		// There is no embed left to keep either way; the discard's `removed: false` answer just
@@ -517,14 +523,14 @@ async function upload_one(args: {
 			// Keep the embed as a retryable placeholder instead of deleting it: the file is
 			// still in `local_uploads`, so the node view offers a retry button. Point the node
 			// back at nothing, because the created node was just discarded.
-			patch_upload_node(view, item.uploadId, { src: "" });
+			patch_upload_node({ view, uploadId: item.uploadId, attrs: { src: "" } });
 			local_upload_set_status(item.uploadId, "failed");
 			toast.error("Upload failed");
 			return "failed";
 		}
 	}
 
-	patch_upload_node(view, item.uploadId, { uploadId: null });
+	patch_upload_node({ view, uploadId: item.uploadId, attrs: { uploadId: null } });
 	local_upload_remove(item.uploadId);
 	return "done";
 }

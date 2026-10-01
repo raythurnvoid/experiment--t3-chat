@@ -51,11 +51,13 @@ async function fixture() {
 	return { t, db, scope, asUser };
 }
 
-async function folder(
-	f: Awaited<ReturnType<typeof fixture>>,
-	path: string,
-	parentId: Id<"files_nodes"> | "root" = "root",
-) {
+async function folder(args: {
+	f: Awaited<ReturnType<typeof fixture>>;
+	path: string;
+	parentId?: Id<"files_nodes"> | "root";
+}) {
+	const { f, parentId = "root", path} = args;
+
 	const result = await f.asUser.mutation(api.files_nodes.create_folder_node, {
 		membershipId: f.db.membershipId,
 		parentId,
@@ -68,12 +70,13 @@ async function folder(
 /**
  * Start "Apply to contents" and run its steps until the job finishes.
  */
-async function apply_to_contents(
-	f: Awaited<ReturnType<typeof fixture>>,
-	asUser: Awaited<ReturnType<typeof fixture>>["asUser"],
-	args: FunctionArgs<typeof api.files_write_policy_runs.start>,
-) {
-	const started = await asUser.mutation(api.files_write_policy_runs.start, args);
+async function apply_to_contents(args: FunctionArgs<typeof api.files_write_policy_runs.start> & {
+	f: Awaited<ReturnType<typeof fixture>>;
+	asUser: Awaited<ReturnType<typeof fixture>>["asUser"];
+}) {
+	const { f, asUser, ...previousArgs } = args;
+
+	const started = await asUser.mutation(api.files_write_policy_runs.start, previousArgs);
 	if (started._nay) return started;
 	for (let count = 0; count < 100; count++) {
 		const activity = await f.t.run((ctx) => ctx.db.get("activities", started._yay.activityId));
@@ -93,12 +96,14 @@ async function snapshot(f: Awaited<ReturnType<typeof fixture>>) {
 	}));
 }
 
-async function expect_clock(
-	f: Awaited<ReturnType<typeof fixture>>,
-	before: Awaited<ReturnType<typeof snapshot>>,
-	changed: boolean,
-	pendingChanged = false,
-) {
+async function expect_clock(args: {
+	f: Awaited<ReturnType<typeof fixture>>;
+	before: Awaited<ReturnType<typeof snapshot>>;
+	changed: boolean;
+	pendingChanged?: boolean;
+}) {
+	const { f, before, changed, pendingChanged = false } = args;
+
 	const after = await snapshot(f);
 	const previous = before.clocks.find((clock) => clock.workspaceId === f.db.workspaceId)!;
 	const current = after.clocks.find((clock) => clock._id === previous._id)!;
@@ -111,7 +116,13 @@ async function expect_clock(
 	if (!pendingChanged) expect(after.pending).toEqual(before.pending);
 }
 
-async function upload(f: Awaited<ReturnType<typeof fixture>>, bulk: boolean, replace = false) {
+async function upload(args: {
+	f: Awaited<ReturnType<typeof fixture>>;
+	bulk: boolean;
+	replace?: boolean;
+}) {
+	const { f, bulk, replace = false } = args;
+
 	if (bulk) {
 		const result = await f.asUser.mutation(api.files_nodes.create_upload_nodes, {
 			membershipId: f.db.membershipId,
@@ -158,22 +169,22 @@ describe("saved file media validation clocks", () => {
 		async (path) => {
 			const f = await fixture();
 			const before = await snapshot(f);
-			const nodeId = await folder(f, path);
+			const nodeId = await folder({ f, path });
 			const saved = await f.t.run((ctx) => ctx.db.get("files_nodes", nodeId));
 			expect(saved).toMatchObject({ path: `/${path}`, kind: "folder", archiveOperationId: null });
 			expect((await snapshot(f)).nodes).toHaveLength(path.split("/").length);
-			await expect_clock(f, before, true);
+			await expect_clock({ f, before, changed: true });
 		},
 	);
 
 	test.each([false, true])("advances the workspace clock for a new stored upload (bulk: %s)", async (bulk) => {
 		const f = await fixture();
 		const before = await snapshot(f);
-		const nodeId = await upload(f, bulk);
+		const nodeId = await upload({ f, bulk });
 		const node = await f.t.run((ctx) => ctx.db.get("files_nodes", nodeId));
 		expect(node).toMatchObject({ path: "/photo.png", contentType: "image/png", archiveOperationId: null });
 		expect(node?.assetId).toBeTruthy();
-		await expect_clock(f, before, true);
+		await expect_clock({ f, before, changed: true });
 	});
 
 	test("advances the workspace clock when a private text file is saved", async () => {
@@ -189,15 +200,15 @@ describe("saved file media validation clocks", () => {
 		expect(node).toMatchObject({ path: "/note.md", kind: "file", archiveOperationId: null });
 		expect(node?.assetId).toBeTruthy();
 		expect(await f.t.run((ctx) => ctx.db.query("files_pending_updates").collect())).toEqual([]);
-		await expect_clock(f, before, true, true);
+		await expect_clock({ f, before, changed: true, pendingChanged: true });
 	});
 
 	test("advances the workspace clock for a same-workspace parent Move", async () => {
 		const f = await fixture();
-		const parent = await folder(f, "parent");
-		const child = await folder(f, "child", parent);
-		const nested = await folder(f, "restricted", parent);
-		const destination = await folder(f, "destination");
+		const parent = await folder({ f, path: "parent" });
+		const child = await folder({ f, path: "child", parentId: parent });
+		const nested = await folder({ f, path: "restricted", parentId: parent });
+		const destination = await folder({ f, path: "destination" });
 		for (const nodeId of [nested, destination]) {
 			expect(
 				await f.asUser.mutation(api.files_sharing.restrict_node, { membershipId: f.db.membershipId, nodeId }),
@@ -228,15 +239,15 @@ describe("saved file media validation clocks", () => {
 			path: "/destination/parent/restricted",
 			restrictedScopeNodeId: nested,
 		});
-		await expect_clock(f, before, true);
+		await expect_clock({ f, before, changed: true });
 	});
 
 	test.each(["renamed", "new/parents/renamed"])(
 		"advances the workspace clock when Rename changes descendant paths: %s",
 		async (path) => {
 			const f = await fixture();
-			const parent = await folder(f, "parent");
-			const child = await folder(f, "child", parent);
+			const parent = await folder({ f, path: "parent" });
+			const child = await folder({ f, path: "child", parentId: parent });
 			const before = await snapshot(f);
 			expect(
 				await f.asUser.mutation(api.files_nodes.rename_node, { membershipId: f.db.membershipId, nodeId: parent, path }),
@@ -248,14 +259,14 @@ describe("saved file media validation clocks", () => {
 				treePath: `/${path}/child/`,
 			});
 			expect((await snapshot(f)).nodes).toHaveLength(path.split("/").length + 1);
-			await expect_clock(f, before, true);
+			await expect_clock({ f, before, changed: true });
 		},
 	);
 
 	test("advances the workspace clock when an independent pending Move is saved", async () => {
 		const f = await fixture();
-		const nodeId = await folder(f, "source");
-		const destination = await folder(f, "destination");
+		const nodeId = await folder({ f, path: "source" });
+		const destination = await folder({ f, path: "destination" });
 		expect(
 			(
 				await f.t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
@@ -281,7 +292,7 @@ describe("saved file media validation clocks", () => {
 			path: "/destination/source",
 		});
 		expect(await f.t.run((ctx) => ctx.db.get("files_pending_updates", pending._id))).toBeNull();
-		await expect_clock(f, before, true, true);
+		await expect_clock({ f, before, changed: true, pendingChanged: true });
 	});
 
 	test("advances the workspace clock when a pending Move replaces a pinned saved file", async () => {
@@ -327,14 +338,14 @@ describe("saved file media validation clocks", () => {
 		});
 		expect((await f.t.run((ctx) => ctx.db.get("files_nodes", occupantId)))?.archiveOperationId).toBeTruthy();
 		expect(await f.t.run((ctx) => ctx.db.get("files_pending_updates", pending._id))).toBeNull();
-		await expect_clock(f, before, true, true);
+		await expect_clock({ f, before, changed: true, pendingChanged: true });
 	});
 
 	test("advances the workspace clock when related pending Moves are saved together", async () => {
 		const f = await fixture();
-		const parent = await folder(f, "parent");
-		const child = await folder(f, "child", parent);
-		const destination = await folder(f, "destination");
+		const parent = await folder({ f, path: "parent" });
+		const child = await folder({ f, path: "child", parentId: parent });
+		const destination = await folder({ f, path: "destination" });
 		for (const [nodeId, destParentId, destName] of [
 			[parent, destination, "parent"],
 			[child, parent, "renamed"],
@@ -400,16 +411,16 @@ describe("saved file media validation clocks", () => {
 			path: "/destination/parent/renamed",
 		});
 		expect(await f.t.run((ctx) => ctx.db.query("files_pending_updates").collect())).toEqual([]);
-		await expect_clock(f, before, true, true);
+		await expect_clock({ f, before, changed: true, pendingChanged: true });
 	});
 
 	test.each([false, true])(
 		"advances the workspace clock when Archive hides a saved node (parent: %s)",
 		async (withChild) => {
 			const f = await fixture();
-			const nodeId = await folder(f, "archive");
-			const child = withChild ? await folder(f, "child", nodeId) : null;
-			const sibling = await folder(f, "keep");
+			const nodeId = await folder({ f, path: "archive" });
+			const child = withChild ? await folder({ f, path: "child", parentId: nodeId }) : null;
+			const sibling = await folder({ f, path: "keep" });
 			const before = await snapshot(f);
 			expect(
 				await f.asUser.mutation(api.files_nodes.archive_nodes, { membershipId: f.db.membershipId, nodeIds: [nodeId] }),
@@ -423,7 +434,7 @@ describe("saved file media validation clocks", () => {
 			expect(await f.t.run((ctx) => ctx.db.get("files_nodes", sibling))).toEqual(
 				before.nodes.find((node) => node._id === sibling),
 			);
-			await expect_clock(f, before, true);
+			await expect_clock({ f, before, changed: true });
 		},
 	);
 
@@ -431,22 +442,22 @@ describe("saved file media validation clocks", () => {
 		"advances the workspace clock when upload replacement archives the old path owner (bulk: %s)",
 		async (bulk) => {
 			const f = await fixture();
-			const oldId = await upload(f, false);
+			const oldId = await upload({ f, bulk: false });
 			const before = await snapshot(f);
-			const newId = await upload(f, bulk, true);
+			const newId = await upload({ f, bulk, replace: true });
 			expect(newId).not.toBe(oldId);
 			expect((await f.t.run((ctx) => ctx.db.get("files_nodes", oldId)))?.archiveOperationId).toBeTruthy();
 			expect(await f.t.run((ctx) => ctx.db.get("files_nodes", newId))).toMatchObject({
 				path: "/photo.png",
 				archiveOperationId: null,
 			});
-			await expect_clock(f, before, true);
+			await expect_clock({ f, before, changed: true });
 		},
 	);
 
 	test("advances the workspace clock when a pending Archive is saved", async () => {
 		const f = await fixture();
-		const nodeId = await folder(f, "archive");
+		const nodeId = await folder({ f, path: "archive" });
 		expect(
 			(
 				await f.t.mutation(internal.files_pending_updates.upsert_file_pending_archive_in_db, {
@@ -467,12 +478,12 @@ describe("saved file media validation clocks", () => {
 		).toEqual({ _yay: null });
 		expect((await f.t.run((ctx) => ctx.db.get("files_nodes", nodeId)))?.archiveOperationId).toBeTruthy();
 		expect(await f.t.run((ctx) => ctx.db.get("files_pending_updates", pending._id))).toBeNull();
-		await expect_clock(f, before, true, true);
+		await expect_clock({ f, before, changed: true, pendingChanged: true });
 	});
 
 	test("advances the workspace clock when Unarchive restores the same placement", async () => {
 		const f = await fixture();
-		const nodeId = await folder(f, "restore");
+		const nodeId = await folder({ f, path: "restore" });
 		expect(
 			await f.asUser.mutation(api.files_nodes.archive_nodes, { membershipId: f.db.membershipId, nodeIds: [nodeId] }),
 		).toEqual({ _yay: null });
@@ -485,15 +496,15 @@ describe("saved file media validation clocks", () => {
 			path: "/restore",
 			archiveOperationId: null,
 		});
-		await expect_clock(f, before, true);
+		await expect_clock({ f, before, changed: true });
 	});
 
 	test("advances the workspace clock when Unarchive restores below an archived parent", async () => {
 		const f = await fixture();
-		const parent = await folder(f, "parent");
-		const child = await folder(f, "child", parent);
-		const nested = await folder(f, "nested", child);
-		const restricted = await folder(f, "restricted", child);
+		const parent = await folder({ f, path: "parent" });
+		const child = await folder({ f, path: "child", parentId: parent });
+		const nested = await folder({ f, path: "nested", parentId: child });
+		const restricted = await folder({ f, path: "restricted", parentId: child });
 		for (const nodeId of [parent, restricted])
 			expect(
 				await f.asUser.mutation(api.files_sharing.restrict_node, { membershipId: f.db.membershipId, nodeId }),
@@ -525,15 +536,15 @@ describe("saved file media validation clocks", () => {
 			restrictedScopeNodeId: restricted,
 			archiveOperationId: null,
 		});
-		await expect_clock(f, before, true);
+		await expect_clock({ f, before, changed: true });
 	});
 
 	test.each([false, true])(
 		"advances the workspace clock for each real local write-policy change (archived: %s)",
 		async (archived) => {
 			const f = await fixture();
-			const nodeId = await folder(f, "policy");
-			const child = await folder(f, "child", nodeId);
+			const nodeId = await folder({ f, path: "policy" });
+			const child = await folder({ f, path: "child", parentId: nodeId });
 			if (archived)
 				expect(
 					await f.asUser.mutation(api.files_nodes.archive_nodes, {
@@ -562,15 +573,15 @@ describe("saved file media validation clocks", () => {
 				expect(await f.t.run((ctx) => ctx.db.get("files_nodes", child))).toEqual(
 					before.nodes.find((node) => node._id === child),
 				);
-				await expect_clock(f, before, true);
+				await expect_clock({ f, before, changed: true });
 			}
 		},
 	);
 
 	test("advances the workspace clock for each real new-child default change", async () => {
 		const f = await fixture();
-		const nodeId = await folder(f, "defaults");
-		const child = await folder(f, "child", nodeId);
+		const nodeId = await folder({ f, path: "defaults" });
+		const child = await folder({ f, path: "child", parentId: nodeId });
 		for (const newChildWritePolicy of [{ mode: "read_only" } as const, null]) {
 			const before = await snapshot(f);
 			expect(
@@ -587,16 +598,16 @@ describe("saved file media validation clocks", () => {
 			expect(await f.t.run((ctx) => ctx.db.get("files_nodes", child))).toEqual(
 				before.nodes.find((node) => node._id === child),
 			);
-			await expect_clock(f, before, true);
+			await expect_clock({ f, before, changed: true });
 		}
 	});
 
 	test("advances the workspace clock when bulk policy changes at least one descendant", async () => {
 		const f = await fixture();
-		const nodeId = await folder(f, "bulk");
-		const first = await folder(f, "first", nodeId);
-		const second = await folder(f, "second", nodeId);
-		const archived = await folder(f, "archived", nodeId);
+		const nodeId = await folder({ f, path: "bulk" });
+		const first = await folder({ f, path: "first", parentId: nodeId });
+		const second = await folder({ f, path: "second", parentId: nodeId });
+		const archived = await folder({ f, path: "archived", parentId: nodeId });
 		expect(
 			await f.asUser.mutation(api.files_nodes.archive_nodes, { membershipId: f.db.membershipId, nodeIds: [archived] }),
 		).toEqual({ _yay: null });
@@ -609,7 +620,7 @@ describe("saved file media validation clocks", () => {
 		).toEqual({ _yay: null });
 		for (const writePolicy of [{ mode: "read_only" } as const, null]) {
 			const before = await snapshot(f);
-			expect(await apply_to_contents(f, f.asUser, { membershipId: f.db.membershipId, nodeId, writePolicy })).toEqual({
+			expect(await apply_to_contents({ f, asUser: f.asUser, membershipId: f.db.membershipId, nodeId, writePolicy })).toEqual({
 				_yay: { status: "succeeded", completed: writePolicy ? 1 : 2 },
 			});
 			for (const id of [first, second])
@@ -621,7 +632,7 @@ describe("saved file media validation clocks", () => {
 				expect(await f.t.run((ctx) => ctx.db.get("files_nodes", id))).toEqual(
 					before.nodes.find((node) => node._id === id),
 				);
-			await expect_clock(f, before, true);
+			await expect_clock({ f, before, changed: true });
 		}
 	});
 
@@ -638,7 +649,7 @@ describe("saved file media validation clocks", () => {
 		"empty-restore",
 	] as const)("keeps the workspace clock for a successful no-op: %s", async (operation) => {
 		const f = await fixture();
-		const nodeId = await folder(f, "unchanged");
+		const nodeId = await folder({ f, path: "unchanged" });
 		if (operation === "archive")
 			expect(
 				await f.asUser.mutation(api.files_nodes.archive_nodes, { membershipId: f.db.membershipId, nodeIds: [nodeId] }),
@@ -660,7 +671,7 @@ describe("saved file media validation clocks", () => {
 				).toEqual({ _yay: null });
 				break;
 			case "bulk":
-				expect(await apply_to_contents(f, f.asUser, { ...scope, writePolicy: null })).toEqual({
+				expect(await apply_to_contents({ f, asUser: f.asUser, ...scope, writePolicy: null })).toEqual({
 					_yay: { status: "succeeded", completed: 0 },
 				});
 				break;
@@ -705,15 +716,15 @@ describe("saved file media validation clocks", () => {
 				break;
 		}
 		expect((await snapshot(f)).nodes).toEqual(before.nodes);
-		await expect_clock(f, before, false);
+		await expect_clock({ f, before, changed: false });
 	});
 
 	test.each(["rename", "restore", "upload", "bulk-upload"] as const)(
 		"keeps files and the workspace clock for a path conflict: %s",
 		async (operation) => {
 			const f = await fixture();
-			const nodeId = operation.includes("upload") ? await upload(f, false) : await folder(f, "source");
-			if (operation === "rename") await folder(f, "taken");
+			const nodeId = operation.includes("upload") ? await upload({ f, bulk: false }) : await folder({ f, path: "source" });
+			if (operation === "rename") await folder({ f, path: "taken" });
 			if (operation === "restore") {
 				expect(
 					await f.asUser.mutation(api.files_nodes.archive_nodes, {
@@ -721,7 +732,7 @@ describe("saved file media validation clocks", () => {
 						nodeIds: [nodeId],
 					}),
 				).toEqual({ _yay: null });
-				await folder(f, "source");
+				await folder({ f, path: "source" });
 			}
 			const before = await snapshot(f);
 			if (operation === "rename")
@@ -768,26 +779,26 @@ describe("saved file media validation clocks", () => {
 				expect(result._yay?.created).toEqual([]);
 			}
 			expect((await snapshot(f)).nodes).toEqual(before.nodes);
-			await expect_clock(f, before, false);
+			await expect_clock({ f, before, changed: false });
 		},
 	);
 
 	test("keeps the workspace clock when bulk policy already matches every child", async () => {
 		const f = await fixture();
-		const nodeId = await folder(f, "unchanged");
-		await folder(f, "first", nodeId);
-		await folder(f, "second", nodeId);
+		const nodeId = await folder({ f, path: "unchanged" });
+		await folder({ f, path: "first", parentId: nodeId });
+		await folder({ f, path: "second", parentId: nodeId });
 		const before = await snapshot(f);
 		expect(
-			await apply_to_contents(f, f.asUser, { membershipId: f.db.membershipId, nodeId, writePolicy: null }),
+			await apply_to_contents({ f, asUser: f.asUser, membershipId: f.db.membershipId, nodeId, writePolicy: null }),
 		).toEqual({ _yay: { status: "succeeded", completed: 0 } });
 		expect((await snapshot(f)).nodes).toEqual(before.nodes);
-		await expect_clock(f, before, false);
+		await expect_clock({ f, before, changed: false });
 	});
 
 	test("keeps files and the workspace clock when a file is given a new-child default", async () => {
 		const f = await fixture();
-		const nodeId = await upload(f, false);
+		const nodeId = await upload({ f, bulk: false });
 		const before = await snapshot(f);
 		const result = await f.asUser.mutation(api.files_nodes.set_node_new_child_write_policy, {
 			membershipId: f.db.membershipId,
@@ -796,15 +807,15 @@ describe("saved file media validation clocks", () => {
 		});
 		expect(result._nay?.message).toBe("Only folders have a new-item default.");
 		expect((await snapshot(f)).nodes).toEqual(before.nodes);
-		await expect_clock(f, before, false);
+		await expect_clock({ f, before, changed: false });
 	});
 
 	test.each(["move", "rename", "archive", "restore", "create"] as const)(
 		"keeps files and the workspace clock when read-only refuses: %s",
 		async (operation) => {
 			const f = await fixture();
-			const nodeId = await folder(f, "locked");
-			const destination = await folder(f, "destination");
+			const nodeId = await folder({ f, path: "locked" });
+			const destination = await folder({ f, path: "destination" });
 			if (operation === "restore")
 				expect(
 					await f.asUser.mutation(api.files_nodes.archive_nodes, {
@@ -841,7 +852,7 @@ describe("saved file media validation clocks", () => {
 									});
 			expect(result._nay?.name).toBe("read_only");
 			expect((await snapshot(f)).nodes).toEqual(before.nodes);
-			await expect_clock(f, before, false);
+			await expect_clock({ f, before, changed: false });
 		},
 	);
 
@@ -849,8 +860,8 @@ describe("saved file media validation clocks", () => {
 		"keeps files and the workspace clock without policy management: %s",
 		async (operation) => {
 			const f = await fixture();
-			const nodeId = await folder(f, "policy");
-			await folder(f, "child", nodeId);
+			const nodeId = await folder({ f, path: "policy" });
+			await folder({ f, path: "child", parentId: nodeId });
 			const member = await f.t.run(async (ctx) => {
 				const userId = await ctx.db.insert("users", { clerkUserId: "clock-viewer" });
 				const membershipId = await ctx.db.insert("organizations_workspaces_users", {
@@ -876,18 +887,18 @@ describe("saved file media validation clocks", () => {
 								...args,
 								newChildWritePolicy: { mode: "read_only" },
 							})
-						: await apply_to_contents(f, asMember, { ...args, writePolicy: { mode: "read_only" } });
+						: await apply_to_contents({ f, asUser: asMember, ...args, writePolicy: { mode: "read_only" } });
 			expect(result._nay).toBeDefined();
 			expect((await snapshot(f)).nodes).toEqual(before.nodes);
-			await expect_clock(f, before, false);
+			await expect_clock({ f, before, changed: false });
 		},
 	);
 
 	test("keeps files and the workspace clock when descendant authority is missing: restore", async () => {
 		const f = await fixture();
-		const parent = await folder(f, "parent");
-		const child = await folder(f, "child", parent);
-		await folder(f, "other", parent);
+		const parent = await folder({ f, path: "parent" });
+		const child = await folder({ f, path: "child", parentId: parent });
+		await folder({ f, path: "other", parentId: parent });
 		const member = await f.t.run(async (ctx) => {
 			const userId = await ctx.db.insert("users", { clerkUserId: "clock-member" });
 			const membershipId = await ctx.db.insert("organizations_workspaces_users", {
@@ -929,14 +940,14 @@ describe("saved file media validation clocks", () => {
 		});
 		expect(result._nay?.message).toContain("Can manage");
 		expect((await snapshot(f)).nodes).toEqual(before.nodes);
-		await expect_clock(f, before, false);
+		await expect_clock({ f, before, changed: false });
 	});
 
 	test("bulk policy skips a hidden restricted child and advances the clock for the rest", async () => {
 		const f = await fixture();
-		const parent = await folder(f, "parent");
-		const child = await folder(f, "child", parent);
-		const other = await folder(f, "other", parent);
+		const parent = await folder({ f, path: "parent" });
+		const child = await folder({ f, path: "child", parentId: parent });
+		const other = await folder({ f, path: "other", parentId: parent });
 		const member = await f.t.run(async (ctx) => {
 			const userId = await ctx.db.insert("users", { clerkUserId: "clock-admin" });
 			const membershipId = await ctx.db.insert("organizations_workspaces_users", {
@@ -962,7 +973,9 @@ describe("saved file media validation clocks", () => {
 
 		const before = await snapshot(f);
 		expect(
-			await apply_to_contents(f, asMember, {
+			await apply_to_contents({
+				f,
+				asUser: asMember,
 				membershipId: member.membershipId,
 				nodeId: parent,
 				writePolicy: { mode: "read_only" },
@@ -972,6 +985,6 @@ describe("saved file media validation clocks", () => {
 			before.nodes.find((node) => node._id === child),
 		);
 		expect((await f.t.run((ctx) => ctx.db.get("files_nodes", other)))?.writePolicy).toEqual({ mode: "read_only" });
-		await expect_clock(f, before, true);
+		await expect_clock({ f, before, changed: true });
 	});
 });

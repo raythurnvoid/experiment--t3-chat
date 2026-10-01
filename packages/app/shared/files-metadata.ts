@@ -420,14 +420,15 @@ const MAX_METADATA_YAML_BYTES = 16 * 1024;
 
 /**
  * Metadata keys are conventions, not rules, so this grammar is deliberately wide: `created-by` and
- * `slack:message-id` are both ordinary keys, and `città` works too because letters are not limited
- * to English. The dot is left out, because `metadata.a.b` would read like the real nesting that
- * `frontmatter.a.b` means.
+ * `città` are both ordinary keys, because letters are not limited to English. The dot is left out,
+ * because `metadata.a.b` would read like the real nesting that `frontmatter.a.b` means. The colon
+ * is left out, because the search bars split a field from its operator and value at the first
+ * colon, so a key never needs quotes there.
  *
  * `bash-meta-command.ts` (`meta search`) and `files-search-query.ts` (the search box) import this
  * grammar, so a key a user can write stays a key that can be searched for.
  */
-export const files_metadata_METADATA_KEY_REGEX = /^[\p{L}\p{N}_:-]+$/u;
+export const files_metadata_METADATA_KEY_REGEX = /^[\p{L}\p{N}_-]+$/u;
 
 /**
  * One metadata key and its scalar value. The map is flat: no nesting, no arrays, no null.
@@ -514,7 +515,7 @@ function metadata_key_problem(key: string) {
 		return `Metadata key "${key}" is a search field name. Pass the bare key "${bareKey}" instead`;
 	}
 	if (!files_metadata_METADATA_KEY_REGEX.test(key)) {
-		return `Metadata key "${key}" may contain only letters, numbers, "_", "-" and ":"`;
+		return `Metadata key "${key}" may contain only letters, numbers, "_" and "-"`;
 	}
 
 	return null;

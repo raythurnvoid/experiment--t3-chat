@@ -12,6 +12,11 @@ const DIGIT_RUN_MAX_LENGTH = 99;
 
 export const files_sort_BUILT_IN_FIELDS = ["name", "updated", "created", "type", "size"] as const;
 
+/**
+ * The most clauses one sort can hold. Each extra clause adds reads to the same table work limit.
+ */
+export const files_sort_MAX_CLAUSES = 8;
+
 type files_sort_Direction = "asc" | "desc";
 
 /**
@@ -49,7 +54,7 @@ export function files_sort_field_is_valid(field: string) {
 export function files_sort_is_valid(sort: files_sort_Sort) {
 	return (
 		sort.length >= 1 &&
-		sort.length <= 3 &&
+		sort.length <= files_sort_MAX_CLAUSES &&
 		new Set(sort.map((clause) => clause.field)).size === sort.length &&
 		sort.every(
 			(clause) =>
@@ -120,8 +125,8 @@ export function files_sort_value_of(values: files_metadata_Value[]) {
 /**
  * Build one fresh row key from its facts and encoded metadata scalars. Do not decode stored keys.
  */
-export function files_sort_key_of(
-	sort: files_sort_Sort,
+export function files_sort_key_of(args: {
+	sort: files_sort_Sort;
 	facts: {
 		kind: "folder" | "file";
 		name: string;
@@ -129,9 +134,11 @@ export function files_sort_key_of(
 		updatedAt: number;
 		type: string | null;
 		contentByteSize: number | null;
-	},
-	metadataParts: ReadonlyMap<string, string | null>,
-): files_sort_RowKey {
+	};
+	metadataParts: ReadonlyMap<string, string | null>;
+}): files_sort_RowKey {
+	const { sort, facts, metadataParts } = args;
+
 	const nameKey: [string, string] = [files_sort_text_key(facts.name), facts.name];
 	let hasName = false;
 	const parts = sort.map((clause): files_sort_Key | null => {
@@ -164,7 +171,13 @@ export function files_sort_key_of(
 /**
  * Missing values stay last in either direction. Multi-sort applies each direction on its own.
  */
-export function files_sort_compare(a: files_sort_RowKey, b: files_sort_RowKey, sort: files_sort_Sort) {
+export function files_sort_compare(args: {
+	a: files_sort_RowKey;
+	b: files_sort_RowKey;
+	sort: files_sort_Sort;
+}) {
+	const { a, b, sort } = args;
+
 	for (const [index, clause] of sort.entries()) {
 		const aPart = a.parts[index];
 		const bPart = b.parts[index];

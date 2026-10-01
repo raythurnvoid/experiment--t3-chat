@@ -136,7 +136,14 @@ function oauth_nay(name: ErrorCode, data: { hosts: string[] } | { oauthError: st
 	return Result({ _nay: { name, message: ERROR_MESSAGES[name], data } });
 }
 
-async function log_failure(operation: string, url: string, code: string, error: unknown) {
+async function log_failure(args: {
+	operation: string;
+	url: string;
+	code: string;
+	error: unknown;
+}) {
+	const { url, error, code, operation} = args;
+
 	console.warn("MCP OAuth request failed", {
 		operation,
 		code,
@@ -188,7 +195,13 @@ function trusted_issuers() {
  * GET one metadata document. `missing` means discovery may move on to the next URL: only a 404 for
  * PRM, and a 4xx or a 502 for AS metadata. Any other failure stops it.
  */
-async function get_metadata(url: string, options: TestOptions, moveOn: (status: number) => boolean) {
+async function get_metadata(args: {
+	url: string;
+	options: TestOptions;
+	moveOn: (status: number) => boolean;
+}) {
+	const { url, options, moveOn } = args;
+
 	const guard = mcp_guarded_fetch_create({ kind: "oauth", ...options });
 	let response: Response;
 	try {
@@ -250,10 +263,10 @@ export async function mcp_oauth_discover(
 
 	let prm: (z.infer<typeof prm_schema> & { expectedResource: string }) | null = null;
 	for (const candidate of candidates) {
-		const found = await get_metadata(candidate.url, testOptions, (status) => status === 404);
+		const found = await get_metadata({ url: candidate.url, options: testOptions, moveOn: (status) => status === 404 });
 		if (found.kind === "missing") continue;
 		if (found.kind === "failed") {
-			await log_failure("discover_prm", candidate.url, found.code, found.error);
+			await log_failure({ operation: "discover_prm", url: candidate.url, code: found.code, error: found.error });
 			return oauth_nay(found.code);
 		}
 
@@ -293,10 +306,10 @@ export async function mcp_oauth_discover(
 	// Step 6: the RFC 8414 and OIDC URLs in the spec order. Move on only on a 4xx or a 502, like the SDK.
 	let metadata: z.infer<typeof as_metadata_schema> | null = null;
 	for (const { url } of buildDiscoveryUrls(issuer)) {
-		const found = await get_metadata(url.href, testOptions, (status) => status === 502 || status < 500);
+		const found = await get_metadata({ url: url.href, options: testOptions, moveOn: (status) => status === 502 || status < 500 });
 		if (found.kind === "missing") continue;
 		if (found.kind === "failed") {
-			await log_failure("discover_as", url.href, found.code, found.error);
+			await log_failure({ operation: "discover_as", url: url.href, code: found.code, error: found.error });
 			return oauth_nay(found.code);
 		}
 
@@ -454,7 +467,7 @@ export async function mcp_oauth_start(
 			};
 		} catch (error) {
 			const code = guard.failure ?? "oauth_registration_failed";
-			await log_failure("register", issuer, code, error);
+			await log_failure({ operation: "register", url: issuer, code, error });
 			return oauth_nay(code);
 		}
 	} else {
@@ -494,7 +507,7 @@ async function token_request(
 	args: { tokenEndpoint: string; client: mcp_oauth_Client; params: URLSearchParams; operation: string } & TestOptions,
 ) {
 	const headers = new Headers({ "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" });
-	add_client_auth(args.client, headers, args.params);
+	add_client_auth({ client: args.client, headers, params: args.params });
 
 	const guard = mcp_guarded_fetch_create({
 		kind: "oauth",
@@ -505,7 +518,7 @@ async function token_request(
 		response = await guard.fetch(args.tokenEndpoint, { method: "POST", headers, body: args.params.toString() });
 	} catch (error) {
 		const code = guard.failure ?? "network_error";
-		await log_failure(args.operation, args.tokenEndpoint, code, error);
+		await log_failure({ operation: args.operation, url: args.tokenEndpoint, code, error });
 		return oauth_nay(code);
 	}
 
@@ -516,7 +529,7 @@ async function token_request(
 			typeof json === "object" && json !== null && "error" in json && typeof json.error === "string"
 				? json.error
 				: null;
-		await log_failure(args.operation, args.tokenEndpoint, `http_${response.status}`, null);
+		await log_failure({ operation: args.operation, url: args.tokenEndpoint, code: `http_${response.status}`, error: null });
 		if (oauthError === "invalid_grant") return oauth_nay("oauth_invalid_grant");
 		if (response.status >= 500) return oauth_nay("server_error");
 		return oauth_nay("oauth_token_refused", {
@@ -540,7 +553,13 @@ async function token_request(
  * Add client authentication by the stored method (RFC 6749 §2.3.1). Basic auth encodes the id and
  * the secret with the form encoding first, as the RFC says.
  */
-function add_client_auth(client: mcp_oauth_Client, headers: Headers, params: URLSearchParams) {
+function add_client_auth(args: {
+	client: mcp_oauth_Client;
+	headers: Headers;
+	params: URLSearchParams;
+}) {
+	const { client, headers, params } = args;
+
 	if (client.authMethod === "client_secret_basic" && client.clientSecret !== null) {
 		const id = encodeURIComponent(client.clientId);
 		const secret = encodeURIComponent(client.clientSecret);
@@ -644,7 +663,7 @@ export async function mcp_oauth_revoke(
 ) {
 	const headers = new Headers({ "Content-Type": "application/x-www-form-urlencoded" });
 	const params = new URLSearchParams({ token: args.token, token_type_hint: args.tokenTypeHint });
-	add_client_auth(args.client, headers, params);
+	add_client_auth({ client: args.client, headers, params });
 
 	const guard = mcp_guarded_fetch_create({
 		kind: "oauth",
@@ -654,12 +673,12 @@ export async function mcp_oauth_revoke(
 		const response = await guard.fetch(args.revocationEndpoint, { method: "POST", headers, body: params.toString() });
 		await response.body?.cancel();
 		if (!response.ok) {
-			await log_failure("revoke", args.revocationEndpoint, `http_${response.status}`, null);
+			await log_failure({ operation: "revoke", url: args.revocationEndpoint, code: `http_${response.status}`, error: null });
 			return oauth_nay(response.status >= 500 ? "server_error" : "oauth_token_refused");
 		}
 	} catch (error) {
 		const code: mcp_GuardedFetchFailure = guard.failure ?? "network_error";
-		await log_failure("revoke", args.revocationEndpoint, code, error);
+		await log_failure({ operation: "revoke", url: args.revocationEndpoint, code, error });
 		return oauth_nay(code);
 	}
 
@@ -681,7 +700,7 @@ export async function mcp_oauth_check_client_document(args: { clientIdMetadataUr
 		response = await guard.fetch(args.clientIdMetadataUrl, { headers: { Accept: "application/json" } });
 	} catch (error) {
 		const code = guard.failure ?? "network_error";
-		await log_failure("client_document", args.clientIdMetadataUrl, code, error);
+		await log_failure({ operation: "client_document", url: args.clientIdMetadataUrl, code, error });
 		return oauth_nay(code);
 	}
 

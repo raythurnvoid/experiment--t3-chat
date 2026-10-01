@@ -271,7 +271,12 @@ const mock_storage = {
  * but in order to sync the react storage in the current tab, we manually dispatch a `StorageEvent`
  * even when the storage is changed in the current tab.
  */
-function storage_dispatch_storage_event(key: string, newValue: string | null, storageArea: Storage) {
+function storage_dispatch_storage_event(args: {
+	key: string;
+	newValue: string | null;
+	storageArea: Storage;
+}) {
+		const { key, newValue, storageArea } = args;
 	if (typeof window === "undefined") {
 		return;
 	}
@@ -346,11 +351,11 @@ export function storage_local() {
 		getItem: (key: storage_local_Key) => storage.getItem(key),
 		setItem: (key: storage_local_Key, value: string) => {
 			storage.setItem(key, value);
-			storage_dispatch_storage_event(key, value, storage);
+			storage_dispatch_storage_event({ key, newValue: value, storageArea: storage });
 		},
 		removeItem: (key: storage_local_Key) => {
 			storage.removeItem(key);
-			storage_dispatch_storage_event(key, null, storage);
+			storage_dispatch_storage_event({ key, newValue: null, storageArea: storage });
 		},
 		clear: () => storage.clear(),
 		key: (index: number) => storage.key(index),
@@ -389,11 +394,11 @@ export function storage_session() {
 		getItem: (key: storage_session_Key) => storage.getItem(key),
 		setItem: (key: storage_session_Key, value: string) => {
 			storage.setItem(key, value);
-			storage_dispatch_storage_event(key, value, storage);
+			storage_dispatch_storage_event({ key, newValue: value, storageArea: storage });
 		},
 		removeItem: (key: storage_session_Key) => {
 			storage.removeItem(key);
-			storage_dispatch_storage_event(key, null, storage);
+			storage_dispatch_storage_event({ key, newValue: null, storageArea: storage });
 		},
 		clear: () => storage.clear(),
 		key: (index: number) => storage.key(index),

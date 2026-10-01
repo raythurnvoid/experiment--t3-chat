@@ -42,7 +42,8 @@ function make_env(args: { object?: Uint8Array | null } = {}) {
 	return { env, outputCalls, transformCalls };
 }
 
-function authed_request(path: string, body: unknown, secret = "secret") {
+function authed_request(args: { path: string; body: unknown; secret?: string }) {
+	const { path, body, secret = "secret" } = args;
 	return new Request(`https://worker.test${path}`, {
 		method: "POST",
 		headers: {
@@ -62,7 +63,7 @@ describe("handle_frame_request", () => {
 		const { env, outputCalls, transformCalls } = make_env();
 
 		const response = await handle_frame_request(
-			authed_request("/api/media/frame", { key: "organizations/w/workspaces/p/assets/a", timeSeconds: 5 }),
+			authed_request({ path: "/api/media/frame", body: { key: "organizations/w/workspaces/p/assets/a", timeSeconds: 5 } }),
 			env,
 		);
 
@@ -80,10 +81,10 @@ describe("handle_frame_request", () => {
 		vi.stubGlobal("fetch", fetchMock);
 
 		const response = await handle_frame_request(
-			authed_request("/api/media/frame", {
+			authed_request({ path: "/api/media/frame", body: {
 				sourceUrl: "https://signed.example.test/video.mp4?token=abc",
 				timeSeconds: 5,
-			}),
+			} }),
 			env,
 		);
 
@@ -99,7 +100,7 @@ describe("handle_frame_request", () => {
 		const { env } = make_env();
 
 		const response = await handle_frame_request(
-			authed_request("/api/media/frame", { key: "other/key.mp4", timeSeconds: 5 }),
+			authed_request({ path: "/api/media/frame", body: { key: "other/key.mp4", timeSeconds: 5 } }),
 			env,
 		);
 
@@ -113,7 +114,7 @@ describe("handle_frame_request", () => {
 
 		for (const sourceUrl of ["", "not a url", "ftp://signed.example.test/video.mp4"]) {
 			const response = await handle_frame_request(
-				authed_request("/api/media/frame", { sourceUrl, timeSeconds: 5 }),
+				authed_request({ path: "/api/media/frame", body: { sourceUrl, timeSeconds: 5 } }),
 				env,
 			);
 
@@ -128,10 +129,10 @@ describe("handle_frame_request", () => {
 		vi.stubGlobal("fetch", fetchMock);
 
 		const response = await handle_frame_request(
-			authed_request("/api/media/frame", {
+			authed_request({ path: "/api/media/frame", body: {
 				sourceUrl: "https://signed.example.test/video.mp4?token=expired",
 				timeSeconds: 5,
-			}),
+			} }),
 			env,
 		);
 
@@ -144,10 +145,10 @@ describe("handle_frame_request", () => {
 		vi.stubGlobal("fetch", fetchMock);
 
 		const response = await handle_frame_request(
-			authed_request("/api/media/frame", {
+			authed_request({ path: "/api/media/frame", body: {
 				sourceUrl: "https://signed.example.test/video.mp4?token=empty",
 				timeSeconds: 5,
-			}),
+			} }),
 			env,
 		);
 
@@ -158,7 +159,7 @@ describe("handle_frame_request", () => {
 		const { env } = make_env();
 
 		const response = await handle_frame_request(
-			authed_request("/api/media/frame", { key: "organizations/w/workspaces/p/assets/a", timeSeconds: 5 }, "wrong"),
+			authed_request({ path: "/api/media/frame", body: { key: "organizations/w/workspaces/p/assets/a", timeSeconds: 5 }, secret: "wrong" }),
 			env,
 		);
 
@@ -171,11 +172,11 @@ describe("handle_audio_segment_request", () => {
 		const { env, outputCalls } = make_env();
 
 		const response = await handle_audio_segment_request(
-			authed_request("/api/media/audio-segment", {
+			authed_request({ path: "/api/media/audio-segment", body: {
 				key: "organizations/w/workspaces/p/assets/a",
 				startSeconds: 10,
 				durationSeconds: 30,
-			}),
+			} }),
 			env,
 		);
 
@@ -191,11 +192,11 @@ describe("handle_audio_segment_request", () => {
 		vi.stubGlobal("fetch", fetchMock);
 
 		const response = await handle_audio_segment_request(
-			authed_request("/api/media/audio-segment", {
+			authed_request({ path: "/api/media/audio-segment", body: {
 				sourceUrl: "https://signed.example.test/video.mp4?token=abc",
 				startSeconds: 10,
 				durationSeconds: 30,
-			}),
+			} }),
 			env,
 		);
 
@@ -210,11 +211,11 @@ describe("handle_audio_segment_request", () => {
 		const { env } = make_env();
 
 		const response = await handle_audio_segment_request(
-			authed_request("/api/media/audio-segment", {
+			authed_request({ path: "/api/media/audio-segment", body: {
 				key: "organizations/w/workspaces/p/assets/a",
 				startSeconds: 0,
 				durationSeconds: 121,
-			}),
+			} }),
 			env,
 		);
 
@@ -225,11 +226,11 @@ describe("handle_audio_segment_request", () => {
 		const { env } = make_env({ object: null });
 
 		const response = await handle_audio_segment_request(
-			authed_request("/api/media/audio-segment", {
+			authed_request({ path: "/api/media/audio-segment", body: {
 				key: "organizations/w/workspaces/p/assets/a",
 				startSeconds: 0,
 				durationSeconds: 30,
-			}),
+			} }),
 			env,
 		);
 

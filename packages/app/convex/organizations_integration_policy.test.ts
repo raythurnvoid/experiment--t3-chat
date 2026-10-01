@@ -54,17 +54,17 @@ const tracker_server: Doc<"plugins_versions">["mcpServers"][number] = {
 /**
  * Register a page plugin version with no backend, owned by `userId`.
  */
-async function register_version(
-	t: TestConvex,
-	userId: Id<"users">,
-	args: {
-		version: string;
-		name?: string;
-		sourceRepositoryUrl?: string;
-		capabilities?: plugins_Capability[];
-		mcpServers?: Doc<"plugins_versions">["mcpServers"];
-	},
-) {
+async function register_version(args: {
+	t: TestConvex;
+	userId: Id<"users">;
+	version: string;
+	name?: string;
+	sourceRepositoryUrl?: string;
+	capabilities?: plugins_Capability[];
+	mcpServers?: Doc<"plugins_versions">["mcpServers"];
+}) {
+	const { t, userId } = args;
+
 	const name = args.name ?? "gallery";
 	const sourceRepositoryUrl = args.sourceRepositoryUrl ?? `https://github.com/bonobo/${name}-plugin`;
 	const repositoryId = await t.run(async (ctx) => {
@@ -135,11 +135,13 @@ async function register_version(
 	return registered._yay.pluginVersionId;
 }
 
-async function install(
-	t: TestConvex,
-	membership: { userId: Id<"users">; membershipId: Id<"organizations_workspaces_users"> },
-	pluginVersionId: Id<"plugins_versions">,
-) {
+async function install(args: {
+	t: TestConvex;
+	membership: { userId: Id<"users">; membershipId: Id<"organizations_workspaces_users"> };
+	pluginVersionId: Id<"plugins_versions">;
+}) {
+	const { t, membership, pluginVersionId } = args;
+
 	refill_rate_limits();
 	const version = (await t.run((ctx) => ctx.db.get("plugins_versions", pluginVersionId)))!;
 	return await t.withIdentity(user_identity(membership.userId)).mutation(api.plugins.install_version, {
@@ -154,13 +156,14 @@ async function install(
 	});
 }
 
-async function update_policy(
-	t: TestConvex,
-	userId: Id<"users">,
-	args: FunctionArgs<typeof api.organizations_integration_policy.update_policy>,
-) {
+async function update_policy(args: FunctionArgs<typeof api.organizations_integration_policy.update_policy> & {
+	t: TestConvex;
+	userId: Id<"users">;
+}) {
+	const { t, userId, ...previousArgs } = args;
+
 	refill_rate_limits();
-	return await t.withIdentity(user_identity(userId)).mutation(api.organizations_integration_policy.update_policy, args);
+	return await t.withIdentity(user_identity(userId)).mutation(api.organizations_integration_policy.update_policy, previousArgs);
 }
 
 async function installation_status(t: TestConvex, installationId: Id<"plugins_workspace_installations">) {
@@ -182,9 +185,9 @@ describe("personal organization", () => {
 		const personal = await t.run((ctx) =>
 			test_mocks_fill_db_with.membership(ctx, { organizationName: "personal", workspaceName: "home" }),
 		);
-		const pluginVersionId = await register_version(t, personal.userId, { version: "0.1.0" });
+		const pluginVersionId = await register_version({ t, userId: personal.userId, version: "0.1.0" });
 
-		expect(await install(t, personal, pluginVersionId)).toMatchObject({ _yay: expect.anything() });
+		expect(await install({ t, membership: personal, pluginVersionId })).toMatchObject({ _yay: expect.anything() });
 		const customServer = await t.run((ctx) => test_mocks_fill_db_with.mcp_custom_server(ctx, personal));
 		expect(
 			await t.run((ctx) =>
@@ -195,7 +198,9 @@ describe("personal organization", () => {
 			),
 		).toBe(true);
 		expect(
-			await update_policy(t, personal.userId, {
+			await update_policy({
+				t,
+				userId: personal.userId,
 				organizationId: personal.organizationId,
 				change: { kind: "set_plugins_mode", mode: "allowlist" },
 			}),
@@ -207,9 +212,9 @@ describe("install_version", () => {
 	test("a custom organization with no policy doc refuses every plugin and server", async () => {
 		const t = test_convex();
 		const owner = await custom_organization(t);
-		const pluginVersionId = await register_version(t, owner.userId, { version: "0.1.0" });
+		const pluginVersionId = await register_version({ t, userId: owner.userId, version: "0.1.0" });
 
-		expect(await install(t, owner, pluginVersionId)).toEqual({
+		expect(await install({ t, membership: owner, pluginVersionId })).toEqual({
 			_nay: { message: "Your organization does not allow this plugin" },
 		});
 		const customServer = await t.run((ctx) => test_mocks_fill_db_with.mcp_custom_server(ctx, owner));
@@ -226,28 +231,36 @@ describe("install_version", () => {
 	test("installs an upgrade inside the allowed ceiling and refuses a wider one", async () => {
 		const t = test_convex();
 		const owner = await custom_organization(t);
-		const first = await register_version(t, owner.userId, {
+		const first = await register_version({
+			t,
+			userId: owner.userId,
 			version: "0.1.0",
 			capabilities: ["workspace.files.read", "workspace.files.write"],
 		});
 		expect(
-			await update_policy(t, owner.userId, {
+			await update_policy({
+				t,
+				userId: owner.userId,
 				organizationId: owner.organizationId,
 				change: { kind: "allow_plugin", pluginVersionId: first },
 			}),
 		).toEqual({ _yay: null });
 
-		const inside = await register_version(t, owner.userId, {
+		const inside = await register_version({
+			t,
+			userId: owner.userId,
 			version: "0.2.0",
 			capabilities: ["workspace.files.read"],
 		});
-		expect(await install(t, owner, inside)).toMatchObject({ _yay: expect.anything() });
+		expect(await install({ t, membership: owner, pluginVersionId: inside })).toMatchObject({ _yay: expect.anything() });
 
-		const wider = await register_version(t, owner.userId, {
+		const wider = await register_version({
+			t,
+			userId: owner.userId,
 			version: "0.3.0",
 			capabilities: ["workspace.files.read", "outbound.fetch"],
 		});
-		expect(await install(t, owner, wider)).toEqual({
+		expect(await install({ t, membership: owner, pluginVersionId: wider })).toEqual({
 			_nay: { message: "This version needs approval from your organization owner" },
 		});
 	});
@@ -255,22 +268,28 @@ describe("install_version", () => {
 	test("an upgrade that moves an MCP server needs approval", async () => {
 		const t = test_convex();
 		const owner = await custom_organization(t);
-		const first = await register_version(t, owner.userId, {
+		const first = await register_version({
+			t,
+			userId: owner.userId,
 			version: "0.1.0",
 			capabilities: ["agent.mcp.connect"],
 			mcpServers: [tracker_server],
 		});
-		await update_policy(t, owner.userId, {
+		await update_policy({
+			t,
+			userId: owner.userId,
 			organizationId: owner.organizationId,
 			change: { kind: "allow_plugin", pluginVersionId: first },
 		});
 
-		const moved = await register_version(t, owner.userId, {
+		const moved = await register_version({
+			t,
+			userId: owner.userId,
 			version: "0.2.0",
 			capabilities: ["agent.mcp.connect"],
 			mcpServers: [{ ...tracker_server, url: "https://other.example.com/mcp" }],
 		});
-		expect(await install(t, owner, moved)).toEqual({
+		expect(await install({ t, membership: owner, pluginVersionId: moved })).toEqual({
 			_nay: { message: "This version needs approval from your organization owner" },
 		});
 	});
@@ -278,19 +297,21 @@ describe("install_version", () => {
 	test("a version of the same name from another repository is not allowed", async () => {
 		const t = test_convex();
 		const owner = await custom_organization(t);
-		const first = await register_version(t, owner.userId, { version: "0.1.0" });
-		await update_policy(t, owner.userId, {
+		const first = await register_version({ t, userId: owner.userId, version: "0.1.0" });
+		await update_policy({
+			t,
+			userId: owner.userId,
 			organizationId: owner.organizationId,
 			change: { kind: "allow_plugin", pluginVersionId: first },
 		});
 
 		// Publish binds a name to its first source, so only a registry delete lets another source take
 		// it. Patch the source to stand for that case.
-		const other = await register_version(t, owner.userId, { version: "0.2.0" });
+		const other = await register_version({ t, userId: owner.userId, version: "0.2.0" });
 		await t.run((ctx) =>
 			ctx.db.patch("plugins_versions", other, { sourceRepositoryUrl: "https://github.com/someone/gallery-plugin" }),
 		);
-		expect(await install(t, owner, other)).toEqual({
+		expect(await install({ t, membership: owner, pluginVersionId: other })).toEqual({
 			_nay: { message: "Your organization does not allow this plugin" },
 		});
 	});
@@ -300,16 +321,20 @@ describe("update_policy", () => {
 	test("removing a plugin disables its installations and its page refuses", async () => {
 		const t = test_convex();
 		const owner = await custom_organization(t);
-		const pluginVersionId = await register_version(t, owner.userId, { version: "0.1.0" });
-		await update_policy(t, owner.userId, {
+		const pluginVersionId = await register_version({ t, userId: owner.userId, version: "0.1.0" });
+		await update_policy({
+			t,
+			userId: owner.userId,
 			organizationId: owner.organizationId,
 			change: { kind: "allow_plugin", pluginVersionId },
 		});
-		const installed = await install(t, owner, pluginVersionId);
+		const installed = await install({ t, membership: owner, pluginVersionId });
 		if (installed._nay) throw new Error(installed._nay.message);
 
 		expect(
-			await update_policy(t, owner.userId, {
+			await update_policy({
+				t,
+				userId: owner.userId,
 				organizationId: owner.organizationId,
 				change: { kind: "remove_plugin", pluginName: "gallery" },
 			}),
@@ -327,8 +352,10 @@ describe("update_policy", () => {
 	test("the disable pass continues in batches", async () => {
 		const t = test_convex();
 		const owner = await custom_organization(t);
-		const pluginVersionId = await register_version(t, owner.userId, { version: "0.1.0" });
-		await update_policy(t, owner.userId, {
+		const pluginVersionId = await register_version({ t, userId: owner.userId, version: "0.1.0" });
+		await update_policy({
+			t,
+			userId: owner.userId,
 			organizationId: owner.organizationId,
 			change: { kind: "allow_plugin", pluginVersionId },
 		});
@@ -352,7 +379,7 @@ describe("update_policy", () => {
 		const memberships = [owner, second];
 		const installationIds = [];
 		for (const membership of memberships) {
-			const installed = await install(t, membership, pluginVersionId);
+			const installed = await install({ t, membership, pluginVersionId });
 			if (installed._nay) throw new Error(installed._nay.message);
 			installationIds.push(installed._yay.installationId);
 		}
@@ -383,12 +410,14 @@ describe("update_policy", () => {
 	test("the disable pass starts over when the cursor's workspace was deleted", async () => {
 		const t = test_convex();
 		const owner = await custom_organization(t);
-		const pluginVersionId = await register_version(t, owner.userId, { version: "0.1.0", name: "alpha" });
-		await update_policy(t, owner.userId, {
+		const pluginVersionId = await register_version({ t, userId: owner.userId, version: "0.1.0", name: "alpha" });
+		await update_policy({
+			t,
+			userId: owner.userId,
 			organizationId: owner.organizationId,
 			change: { kind: "allow_plugin", pluginVersionId },
 		});
-		const installed = await install(t, owner, pluginVersionId);
+		const installed = await install({ t, membership: owner, pluginVersionId });
 		if (installed._nay) throw new Error(installed._nay.message);
 
 		// A batch stopped in a workspace that was deleted before the next batch ran.
@@ -451,7 +480,7 @@ describe("update_policy", () => {
 			userId: member.userId,
 			role: "admin",
 		});
-		expect(await update_policy(t, member.userId, { organizationId: owner.organizationId, change })).toEqual({
+		expect(await update_policy({ t, userId: member.userId, organizationId: owner.organizationId, change })).toEqual({
 			_nay: { message: "Permission denied" },
 		});
 
@@ -470,11 +499,11 @@ describe("update_policy", () => {
 			userId: member.userId,
 			role: role._yay.roleId,
 		});
-		expect(await update_policy(t, member.userId, { organizationId: owner.organizationId, change })).toEqual({
+		expect(await update_policy({ t, userId: member.userId, organizationId: owner.organizationId, change })).toEqual({
 			_yay: null,
 		});
 
-		expect(await update_policy(t, outsider.userId, { organizationId: owner.organizationId, change })).toEqual({
+		expect(await update_policy({ t, userId: outsider.userId, organizationId: owner.organizationId, change })).toEqual({
 			_nay: { message: "Permission denied" },
 		});
 	});
@@ -482,8 +511,10 @@ describe("update_policy", () => {
 	test("refuses the 51st entry", async () => {
 		const t = test_convex();
 		const owner = await custom_organization(t);
-		const pluginVersionId = await register_version(t, owner.userId, { version: "0.1.0" });
-		await update_policy(t, owner.userId, {
+		const pluginVersionId = await register_version({ t, userId: owner.userId, version: "0.1.0" });
+		await update_policy({
+			t,
+			userId: owner.userId,
 			organizationId: owner.organizationId,
 			change: { kind: "set_plugins_mode", mode: "allowlist" },
 		});
@@ -512,7 +543,9 @@ describe("update_policy", () => {
 		});
 
 		expect(
-			await update_policy(t, owner.userId, {
+			await update_policy({
+				t,
+				userId: owner.userId,
 				organizationId: owner.organizationId,
 				change: { kind: "allow_plugin", pluginVersionId },
 			}),
@@ -527,7 +560,9 @@ describe("organizations_integration_policy_db_allows_mcp_server", () => {
 		const customServerId = await t.run((ctx) => test_mocks_fill_db_with.mcp_custom_server(ctx, owner));
 		const customServer = (await t.run((ctx) => ctx.db.get("mcp_custom_servers", customServerId)))!;
 		expect(
-			await update_policy(t, owner.userId, {
+			await update_policy({
+				t,
+				userId: owner.userId,
 				organizationId: owner.organizationId,
 				change: { kind: "allow_mcp_server", destinationFingerprint: customServer.destinationFingerprint },
 			}),
@@ -550,16 +585,20 @@ describe("organizations_integration_policy_db_allows_mcp_server", () => {
 	test("a plugin server passes with its plugin entry and fails after its destination changes", async () => {
 		const t = test_convex();
 		const owner = await custom_organization(t);
-		const pluginVersionId = await register_version(t, owner.userId, {
+		const pluginVersionId = await register_version({
+			t,
+			userId: owner.userId,
 			version: "0.1.0",
 			capabilities: ["agent.mcp.connect"],
 			mcpServers: [tracker_server],
 		});
-		await update_policy(t, owner.userId, {
+		await update_policy({
+			t,
+			userId: owner.userId,
 			organizationId: owner.organizationId,
 			change: { kind: "allow_plugin", pluginVersionId },
 		});
-		const installed = await install(t, owner, pluginVersionId);
+		const installed = await install({ t, membership: owner, pluginVersionId });
 		if (installed._nay) throw new Error(installed._nay.message);
 		const allows = () =>
 			t.run((ctx) =>
@@ -607,7 +646,9 @@ describe("get_policy", () => {
 		const customServerId = await t.run((ctx) => test_mocks_fill_db_with.mcp_custom_server(ctx, owner));
 		const fingerprint = (await t.run((ctx) => ctx.db.get("mcp_custom_servers", customServerId)))!.destinationFingerprint;
 		expect(
-			await update_policy(t, owner.userId, {
+			await update_policy({
+				t,
+				userId: owner.userId,
 				organizationId: owner.organizationId,
 				change: { kind: "allow_mcp_server", destinationFingerprint: fingerprint },
 			}),

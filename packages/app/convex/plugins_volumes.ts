@@ -38,11 +38,13 @@ async function db_schedule_generation_drain(ctx: MutationCtx, generation: Doc<"p
 	});
 }
 
-async function db_retire_generation(
-	ctx: MutationCtx,
-	generation: Doc<"plugins_volume_generations">,
-	expiresAt: number,
-) {
+async function db_retire_generation(args: {
+	ctx: MutationCtx;
+	generation: Doc<"plugins_volume_generations">;
+	expiresAt: number;
+}) {
+	let { ctx, generation, expiresAt} = args;
+
 	if (generation.status !== "retired") {
 		await db_release_generation_usage(ctx, generation);
 		await ctx.db.patch("plugins_volume_generations", generation._id, {
@@ -62,7 +64,7 @@ export async function plugins_volumes_db_retire_generation(
 ) {
 	const generation = await ctx.db.get("plugins_volume_generations", args.generationId);
 	if (!generation) return;
-	await db_retire_generation(ctx, generation, Date.now() + RETIRED_RETENTION_MS);
+	await db_retire_generation({ ctx, generation, expiresAt: Date.now() + RETIRED_RETENTION_MS });
 }
 
 export async function plugins_volumes_db_schedule_volume_drain(
@@ -257,7 +259,7 @@ export const gc_expired = internalMutation({
 			.take(15);
 		for (const generation of staging) {
 			// Expired staging copies have already waited 26 hours. They drain at once.
-			await db_retire_generation(ctx, generation, now);
+			await db_retire_generation({ ctx, generation, expiresAt: now });
 		}
 		const retired = await ctx.db
 			.query("plugins_volume_generations")

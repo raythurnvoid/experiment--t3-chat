@@ -49,7 +49,9 @@ export function public_api_files_list_http_routes(router: { route: HttpRouter["r
 						type Body = z.infer<typeof bodyValidator>;
 
 						const handler = async (ctx: ActionCtx, request: Request) => {
-							const auth = await public_api_authorize_request(ctx, request, {
+							const auth = await public_api_authorize_request({
+								ctx,
+								request,
 								requiredScope: "files:list" satisfies public_api_Scope,
 								allowedKinds: ["user_api_key", "public_api_grant", "plugin_ui", "plugin_run"],
 								route: path,

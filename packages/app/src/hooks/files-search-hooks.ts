@@ -22,11 +22,13 @@ import type { files_table_Filter } from "../../shared/files-table.ts";
 /**
  * Page `files_visible.list` 50 entries at a time, and return the entries only when the listing is done.
  */
-export function useFilesVisibleEntries(
-	membershipId: app_convex_Id<"organizations_workspaces_users">,
-	folderPath: string | null | undefined,
-	mode: "subtree" | "children",
-) {
+export function useFilesVisibleEntries(args: {
+	membershipId: app_convex_Id<"organizations_workspaces_users">;
+	folderPath: string | null | undefined;
+	mode: "subtree" | "children";
+}) {
+	const { membershipId, folderPath, mode } = args;
+
 	const scope = JSON.stringify([membershipId, folderPath, mode]);
 	const [pages, setPages] = useState({ scope, cursors: [null] as Array<string | null> });
 	const cursors = useMemo(() => (pages.scope === scope ? pages.cursors : [null]), [scope, pages]);
@@ -452,11 +454,11 @@ export function useFilesSortedChildren(props: useFilesSortedChildren_Props) {
 		const sortKey =
 			key in sideKeyRequests
 				? (sideKeyResponses[key] as files_sort_RowKey | null | Error | undefined)
-				: files_sort_key_of(
-						sort,
-						{ ...row, type: dot > 0 && dot < row.name.length - 1 ? row.name.slice(dot + 1).toLowerCase() : null },
-						new Map(),
-					);
+				: files_sort_key_of({
+					sort,
+					facts: { ...row, type: dot > 0 && dot < row.name.length - 1 ? row.name.slice(dot + 1).toLowerCase() : null },
+					metadataParts: new Map(),
+				});
 		if (sortKey == null || sortKey instanceof Error) return [];
 		const segment =
 			row.kind === "folder" && field === "size" && sort.length === 1
@@ -625,7 +627,7 @@ export function useFilesSortedChildren(props: useFilesSortedChildren_Props) {
 			const compare = (
 				a: { sortKey: FilesSortedChildrenRow["sortKey"] },
 				b: { sortKey: FilesSortedChildrenRow["sortKey"] },
-			) => files_sort_compare(a.sortKey, b.sortKey, sort!);
+			) => files_sort_compare({ a: a.sortKey, b: b.sortKey, sort: sort! });
 
 			// A draft or a pending move takes a name, so the saved row with that name is hidden, like in
 			// the rest of the Files view. The side rows win over a main row of the same node while the two
@@ -1039,11 +1041,13 @@ export function useFilesSortedChildren(props: useFilesSortedChildren_Props) {
 	};
 }
 
-export function useFilesSearchServerFilters(
-	membershipId: app_convex_Id<"organizations_workspaces_users">,
-	searchQuery: string,
-	treeItemsList: Pick<files_TreeItem, "kind" | "path">[] | undefined,
-) {
+export function useFilesSearchServerFilters(args: {
+	membershipId: app_convex_Id<"organizations_workspaces_users">;
+	searchQuery: string;
+	treeItemsList: Pick<files_TreeItem, "kind" | "path">[] | undefined;
+}) {
+	const { membershipId, searchQuery, treeItemsList } = args;
+
 	// A positive `file.path` filter bounds the metadata queries below to its folder. The tree
 	// filter ignores case, so the folder sent is the stored path of the node the typed path names. A
 	// path that names a file has nothing under it, so it sends no folder, and the tree filter keeps

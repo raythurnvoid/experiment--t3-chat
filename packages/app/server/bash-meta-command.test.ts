@@ -89,8 +89,8 @@ describe("bash_meta_command_create", () => {
 			},
 			{
 				// A colon is part of the key, not a separator.
-				where: '{"eq":["metadata.slack:message-id","1755500000.001"]}',
-				plan: { op: "eq", fieldPath: "metadata.slack:message-id", value: "1755500000.001" },
+				where: '{"eq":["metadata.slack-message-id","1755500000.001"]}',
+				plan: { op: "eq", fieldPath: "metadata.slack-message-id", value: "1755500000.001" },
 			},
 			{
 				// The write door accepts keys that are not written in English, so search must too.

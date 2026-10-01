@@ -74,11 +74,13 @@ async function create_folder_fixture(paths: string[]) {
 }
 
 // These tests exercise discovery and publication after Copy intake finishes.
-async function finish_selection(
-	t: Pick<ReturnType<typeof test_convex>, "mutation" | "run">,
-	runId: Id<"files_transfer_runs">,
-	activityId: Id<"activities">,
-) {
+async function finish_selection(args: {
+	t: Pick<ReturnType<typeof test_convex>, "mutation" | "run">;
+	runId: Id<"files_transfer_runs">;
+	activityId: Id<"activities">;
+}) {
+	const { t, runId, activityId } = args;
+
 	for (let step = 0; step < 300; step++) {
 		const run = await t.run((ctx) => ctx.db.get("files_transfer_runs", runId));
 		if (run?.step !== "select" && run?.step !== "normalize") return;
@@ -112,7 +114,7 @@ async function start_transfer(
 		).toEqual({ _yay: null });
 	}
 	expect(await t.mutation(api.files_transfer.seal, { membershipId: args.membershipId, runId })).toEqual({ _yay: null });
-	await finish_selection(t, runId, started._yay.activityId);
+	await finish_selection({ t, runId, activityId: started._yay.activityId });
 	return started;
 }
 
@@ -144,7 +146,7 @@ async function start_agent_transfer(
 			runId,
 		}),
 	).toEqual({ _yay: null });
-	await finish_selection(t, runId, started._yay.activityId);
+	await finish_selection({ t, runId, activityId: started._yay.activityId });
 	return started;
 }
 
@@ -615,8 +617,15 @@ describe("start_for_agent", () => {
 		const { t, db, asUser } = fixture;
 		// 100 folders do not fit in one step of 75, so the restore still runs when the copy reads them.
 		const topId = await t.run(async (ctx) => {
-			const insert_folder = (parentId: Doc<"files_nodes">["parentId"], name: string, path: string) =>
-				ctx.db.insert("files_nodes", {
+			const insert_folder = (args: {
+				parentId: Doc<"files_nodes">["parentId"];
+				name: string;
+				path: string;
+			}) =>
+				{
+				const { name, path, parentId} = args;
+
+				return ctx.db.insert("files_nodes", {
 					...test_mocks.files.base(),
 					organizationId: db.organizationId,
 					workspaceId: db.workspaceId,
@@ -630,10 +639,11 @@ describe("start_for_agent", () => {
 					treePath: `${path}/`,
 					pathDepth: path.split("/").length - 1,
 				});
-			const topId = await insert_folder("root", "restoring", "/restoring");
+			};
+			const topId = await insert_folder({ parentId: "root", name: "restoring", path: "/restoring" });
 			for (let index = 0; index < 100; index++) {
 				const name = `d${String(index).padStart(3, "0")}`;
-				await insert_folder(topId, name, `/restoring/${name}`);
+				await insert_folder({ parentId: topId, name, path: `/restoring/${name}` });
 			}
 			return topId;
 		});
@@ -3590,16 +3600,14 @@ describe("move", () => {
 		const member = await add_member(fixture);
 		// Restrict /shared the way a big folder is restricted: the folder now, its children later.
 		await t.run(async (ctx) => {
-			await files_nodes_db_set_restricted_scope(
+			await files_nodes_db_set_restricted_scope({
 				ctx,
-				{
-					organizationId: db.organizationId,
-					workspaceId: db.workspaceId,
-					nodeId: folders.get("/shared")!,
-					restrictedScopeNodeId: folders.get("/shared")!,
-				},
-				files_share_links_create_cleanup_state(),
-			);
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				nodeId: folders.get("/shared")!,
+				restrictedScopeNodeId: folders.get("/shared")!,
+				shareLinkCleanup: files_share_links_create_cleanup_state(),
+			});
 			await files_subtree_ops_db_insert(ctx, {
 				op: {
 					kind: "scope",

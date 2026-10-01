@@ -312,7 +312,13 @@ export type PluginsUiFrame_Props = {
  * time this function runs the frame is stopped at both call sites, and Retry is the only way back,
  * so waiting inside the host would only delay the same alert. Do not "fix" that asymmetry.
  */
-function mint_error_message(kindLabel: PluginsUiFrame_Props["kindLabel"], message: string, retryAfterMs?: number) {
+function mint_error_message(args: {
+	kindLabel: PluginsUiFrame_Props["kindLabel"];
+	message: string;
+	retryAfterMs?: number;
+}) {
+	const { kindLabel, message, retryAfterMs } = args;
+
 	if (message !== "Rate limit exceeded") {
 		return message;
 	}
@@ -525,7 +531,7 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 				}
 				if (result._nay) {
 					cancelled = true;
-					onError(mint_error_message(kindLabel, result._nay.message, result._nay.data?.retryAfterMs));
+					onError(mint_error_message({ kindLabel, message: result._nay.message, retryAfterMs: result._nay.data?.retryAfterMs }));
 					return;
 				}
 				if (result._yay.pluginVersionId !== pluginVersionId) {
@@ -719,7 +725,7 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 							// commit. It still carries the raw message because every arm of this function
 							// must return a response, and because that is the right value to send if a
 							// mount point ever keeps a stopped frame on screen.
-							onError(mint_error_message(kindLabel, minted._nay.message, minted._nay.data?.retryAfterMs));
+							onError(mint_error_message({ kindLabel, message: minted._nay.message, retryAfterMs: minted._nay.data?.retryAfterMs }));
 							return token_error(requestId, minted._nay.message);
 						}
 

@@ -46,7 +46,13 @@ class SocketResponse extends NativeResponse {
 
 type Cookie = Record<string, unknown> & { name: string; value: string; domain: string; expires: number };
 
-function cookie(name: string, domain: string, extra: Partial<Cookie> = {}): Cookie {
+function cookie(args: {
+	name: string;
+	domain: string;
+	extra?: Partial<Cookie>;
+}): Cookie {
+	const { name, domain, extra = {} } = args;
+
 	return {
 		name, value: `value-of-${name}`, domain, path: "/", expires: FUTURE, size: 10, httpOnly: true, secure: true,
 		session: false, sameSite: "Lax", priority: "Medium", sourceScheme: "Secure", sourcePort: 443, ...extra,
@@ -125,16 +131,16 @@ function make_runner() {
 
 	const post = async (path: string, body: unknown) => {
 		const current = record();
-		const defaults = path === "/run/begin" ? { tabId: current?.tabId, tabGen: 1, policyRevision: 0, selectionRevision: 0 } : {};
+		const defaults = path === "/run/begin" ? { tabId: current?.tabId, tabGen: 1, policyRevision: 0 } : {};
 		const input = body as Record<string, unknown>;
-		const response = await session.fetch(new Request(`https://object${path}`, { method: "POST", body: JSON.stringify({ ...defaults, ...input, ...(input.expectedAgentLease ? { expectedAgentLease: { tabId: current?.tabId, tabGen: 1, policyRevision: 0, selectionRevision: 0, ...input.expectedAgentLease as object } } : {}) }) }));
+		const response = await session.fetch(new Request(`https://object${path}`, { method: "POST", body: JSON.stringify({ ...defaults, ...input, ...(input.expectedAgentLease ? { expectedAgentLease: { tabId: current?.tabId, tabGen: 1, policyRevision: 0, ...input.expectedAgentLease as object } } : {}) }) }));
 		return await response.json() as Record<string, unknown>;
 	};
 	const record = () => stored.get("session") as Record<string, unknown> | undefined;
 	const open = async (overrides: Record<string, unknown> = {}) => {
 		const opened = await post("/open", {
 			mode: "web", ...OWNERS, grantId: "grant-1", attemptId: "attempt-1", navGen: 1, startUrl: "https://example.com/",
-			agentAccess: true, policyRevision: 0, selectionRevision: 0, viewport: { width: 1280, height: 900 },
+			agentAccess: true, policyRevision: 0, viewport: { width: 1280, height: 900 },
 			profileId: "profile_1", profileKey: KEY, agentBlockedHosts: [], ...overrides,
 		});
 		expect(opened).toMatchObject({ ok: true });
@@ -189,7 +195,7 @@ describe("saved profile", () => {
 	it("restores the same cookies after a save, before the start page loads", async () => {
 		const runner = make_runner();
 		const first = await runner.open();
-		const saved = [cookie("sid", ".example.com"), cookie("pref", "www.example.com", { session: true, expires: -1 })];
+		const saved = [cookie({ name: "sid", domain: ".example.com" }), cookie({ name: "pref", domain: "www.example.com", extra: { session: true, expires: -1 } })];
 		runner.browserState.jar = structuredClone(saved);
 		expect(await runner.post("/close", { sessionId: first, saveProfile: true })).toMatchObject({ ok: true, existed: true, verified: true });
 
@@ -213,7 +219,7 @@ describe("saved profile", () => {
 	it("does not decrypt a blob for another owner", async () => {
 		const runner = make_runner();
 		const sessionId = await runner.open();
-		runner.browserState.jar = [cookie("sid", "example.com")];
+		runner.browserState.jar = [cookie({ name: "sid", domain: "example.com" })];
 		await runner.post("/close", { sessionId, saveProfile: true });
 		runner.browserState.jar = [];
 
@@ -232,7 +238,7 @@ describe("saved profile", () => {
 	it("starts empty with a new profile key or another profile id", async () => {
 		const runner = make_runner();
 		const sessionId = await runner.open();
-		runner.browserState.jar = [cookie("sid", "example.com")];
+		runner.browserState.jar = [cookie({ name: "sid", domain: "example.com" })];
 		await runner.post("/close", { sessionId, saveProfile: true });
 
 		runner.browserState.jar = [];
@@ -243,7 +249,7 @@ describe("saved profile", () => {
 		// A blob of another profile id is ignored. The next save replaces it.
 		const third = await runner.open({ profileId: "profile_2" });
 		expect(runner.sends("Storage.setCookies")).toEqual([]);
-		runner.browserState.jar = [cookie("new", "other.test")];
+		runner.browserState.jar = [cookie({ name: "new", domain: "other.test" })];
 		await runner.post("/close", { sessionId: third, saveProfile: true });
 		expect(runner.stored.get("profile")).toMatchObject({ profileId: "profile_2" });
 		expect(await runner.post("/profile/summary", runner.profile_input({ profileId: "profile_2" })))
@@ -258,7 +264,7 @@ describe("saved profile", () => {
 	])("saves on close only for $name", async ({ close, saves }) => {
 		const runner = make_runner();
 		const sessionId = await runner.open();
-		runner.browserState.jar = [cookie("sid", "example.com")];
+		runner.browserState.jar = [cookie({ name: "sid", domain: "example.com" })];
 		expect(await runner.post("/close", { sessionId, ...close })).toMatchObject({ ok: true, existed: true });
 		expect(runner.sends("Storage.getCookies")).toHaveLength(saves ? 1 : 0);
 		expect(runner.stored.has("profile")).toBe(saves);
@@ -267,7 +273,7 @@ describe("saved profile", () => {
 	it("saves on idle expiry with no viewer attached", async () => {
 		const runner = make_runner();
 		await runner.open();
-		runner.browserState.jar = [cookie("sid", "example.com")];
+		runner.browserState.jar = [cookie({ name: "sid", domain: "example.com" })];
 		vi.setSystemTime(Date.now() + LIMITS.webSessionIdleMs + 1);
 		await runner.alarm();
 		expect(runner.record()).toBeUndefined();
@@ -292,7 +298,7 @@ describe("saved profile", () => {
 	])("does not save after $name", async ({ run }) => {
 		const runner = make_runner();
 		const sessionId = await runner.open();
-		runner.browserState.jar = [cookie("sid", "example.com")];
+		runner.browserState.jar = [cookie({ name: "sid", domain: "example.com" })];
 		await run(runner, sessionId);
 		expect(runner.record()).toBeUndefined();
 		expect(runner.sends("Storage.getCookies")).toEqual([]);
@@ -302,7 +308,7 @@ describe("saved profile", () => {
 	it("saves on viewer renew only when dirty and the last save is over 2 minutes old", async () => {
 		const runner = make_runner();
 		const sessionId = await runner.open();
-		runner.browserState.jar = [cookie("sid", "example.com")];
+		runner.browserState.jar = [cookie({ name: "sid", domain: "example.com" })];
 		// Returns how many saves this renew started.
 		const renew = async () => {
 			const before = runner.sends("Storage.getCookies").length;
@@ -349,13 +355,13 @@ describe("saved profile", () => {
 
 		// The user logs out and clicks End. The End save writes the new jar. The provider close then
 		// waits, so the record stays (closing) with the same ids.
-		runner.browserState.jar = [cookie("sid", "new.test")];
+		runner.browserState.jar = [cookie({ name: "sid", domain: "new.test" })];
 		const providerClose = Promise.withResolvers<Awaited<ReturnType<typeof provider.connect>>>();
 		runner.connect.mockImplementationOnce(() => providerClose.promise);
 		const closing = runner.post("/close", { sessionId, saveProfile: true });
 		await vi.waitFor(() => expect(runner.record()).toMatchObject({ control: "closing" }));
 
-		oldJar.resolve({ cookies: [cookie("sid", "old.test")] });
+		oldJar.resolve({ cookies: [cookie({ name: "sid", domain: "old.test" })] });
 		await runner.drain();
 		providerClose.resolve(runner.browser as unknown as Awaited<ReturnType<typeof provider.connect>>);
 		expect(await closing).toMatchObject({ ok: true, existed: true });
@@ -366,7 +372,7 @@ describe("saved profile", () => {
 	it("never saves cookies of denied hosts", async () => {
 		const runner = make_runner();
 		const sessionId = await runner.open();
-		runner.browserState.jar = [cookie("app", "blocked.test"), cookie("api", ".api.blocked.test"), cookie("sid", "example.com")];
+		runner.browserState.jar = [cookie({ name: "app", domain: "blocked.test" }), cookie({ name: "api", domain: ".api.blocked.test" }), cookie({ name: "sid", domain: "example.com" })];
 		await runner.post("/close", { sessionId, saveProfile: true });
 		expect(await runner.post("/profile/summary", runner.profile_input()))
 			.toEqual({ ok: true, exists: true, savedAt: Date.now(), truncated: false, sites: [{ domain: "example.com", cookies: 1 }] });
@@ -376,8 +382,8 @@ describe("saved profile", () => {
 		const runner = make_runner();
 		const sessionId = await runner.open();
 		runner.browserState.jar = [
-			cookie("oldest", "old.test", { expires: FUTURE - 10_000 }),
-			...Array.from({ length: LIMITS.profileCookies }, (_, index) => cookie(`c${index}`, "example.com", { expires: FUTURE + index })),
+			cookie({ name: "oldest", domain: "old.test", extra: { expires: FUTURE - 10_000 } }),
+			...Array.from({ length: LIMITS.profileCookies }, (_, index) => cookie({ name: `c${index}`, domain: "example.com", extra: { expires: FUTURE + index } })),
 		];
 		await runner.post("/close", { sessionId, saveProfile: true });
 		expect(await runner.post("/profile/summary", runner.profile_input()))
@@ -387,7 +393,7 @@ describe("saved profile", () => {
 	it("keeps at most 1 MiB of cookie JSON and marks the profile truncated", async () => {
 		const runner = make_runner();
 		const sessionId = await runner.open();
-		runner.browserState.jar = Array.from({ length: 300 }, (_, index) => cookie(`c${index}`, "example.com", { value: "x".repeat(4000) }));
+		runner.browserState.jar = Array.from({ length: 300 }, (_, index) => cookie({ name: `c${index}`, domain: "example.com", extra: { value: "x".repeat(4000) } }));
 		await runner.post("/close", { sessionId, saveProfile: true });
 		const summary = await runner.post("/profile/summary", runner.profile_input());
 		const kept = (summary.sites as Array<{ cookies: number }>)[0]!.cookies;
@@ -419,7 +425,7 @@ describe("profile summary and clear", () => {
 
 	it("counts cookies per site, sorted, with no names or values", async () => {
 		const runner = await saved_runner([
-			cookie("b", "www.github.com"), cookie("a", ".github.com"), cookie("c", "github.com"), cookie("d", "Example.COM"),
+			cookie({ name: "b", domain: "www.github.com" }), cookie({ name: "a", domain: ".github.com" }), cookie({ name: "c", domain: "github.com" }), cookie({ name: "d", domain: "Example.COM" }),
 		]);
 		const summary = await runner.post("/profile/summary", runner.profile_input());
 		expect(summary).toEqual({
@@ -438,8 +444,8 @@ describe("profile summary and clear", () => {
 
 	it("clears one site and its subdomains and keeps savedAt", async () => {
 		const runner = await saved_runner([
-			cookie("a", "example.com"), cookie("b", ".example.com"), cookie("c", "www.example.com"),
-			cookie("d", "notexample.com"), cookie("e", "other.test"),
+			cookie({ name: "a", domain: "example.com" }), cookie({ name: "b", domain: ".example.com" }), cookie({ name: "c", domain: "www.example.com" }),
+			cookie({ name: "d", domain: "notexample.com" }), cookie({ name: "e", domain: "other.test" }),
 		]);
 		const savedAt = Date.now();
 		vi.setSystemTime(savedAt + 60_000);
@@ -462,7 +468,7 @@ describe("profile delete", () => {
 	it("deletes a matching blob and answers deleted true", async () => {
 		const runner = make_runner();
 		const sessionId = await runner.open();
-		runner.browserState.jar = [cookie("sid", "example.com")];
+		runner.browserState.jar = [cookie({ name: "sid", domain: "example.com" })];
 		await runner.post("/close", { sessionId, saveProfile: true });
 		expect(await runner.post("/profile/delete", { profileId: "profile_1" })).toEqual({ ok: true, deleted: true });
 		expect(runner.stored.has("profile")).toBe(false);
@@ -493,7 +499,7 @@ describe("profile delete", () => {
 	it("closes a live session of the same profile without saving", async () => {
 		const runner = make_runner();
 		await runner.open();
-		runner.browserState.jar = [cookie("sid", "example.com")];
+		runner.browserState.jar = [cookie({ name: "sid", domain: "example.com" })];
 		expect(await runner.post("/profile/delete", { profileId: "profile_1" })).toEqual({ ok: true, deleted: true });
 		expect(runner.record()).toBeUndefined();
 		expect(runner.sends("Storage.getCookies")).toEqual([]);
@@ -510,11 +516,11 @@ describe("profile delete", () => {
 	it("does not bring the blob back when a save races the delete", async () => {
 		const runner = make_runner();
 		const first = await runner.open();
-		runner.browserState.jar = [cookie("old", "example.com")];
+		runner.browserState.jar = [cookie({ name: "old", domain: "example.com" })];
 		await runner.post("/close", { sessionId: first, saveProfile: true });
 
 		const second = await runner.open();
-		runner.browserState.jar.push(cookie("new", "example.com"));
+		runner.browserState.jar.push(cookie({ name: "new", domain: "example.com" }));
 		const cookies = Promise.withResolvers<unknown>();
 		runner.hooks.getCookies = () => cookies.promise;
 		const closing = runner.post("/close", { sessionId: second, saveProfile: true });
@@ -538,7 +544,7 @@ describe("profile alarm", () => {
 	async function saved_runner() {
 		const runner = make_runner();
 		const sessionId = await runner.open();
-		runner.browserState.jar = [cookie("sid", "example.com")];
+		runner.browserState.jar = [cookie({ name: "sid", domain: "example.com" })];
 		await runner.post("/close", { sessionId, saveProfile: true });
 		const deleteAt = runner.stored.get("profileDeleteAt") as number;
 		return { runner, sessionId, deleteAt };
@@ -677,7 +683,7 @@ describe("profile logs", () => {
 	it("never logs cookie names, values, or domains", async () => {
 		const runner = make_runner();
 		const first = await runner.open({ startUrl: null });
-		runner.browserState.jar = [cookie("secretname", "privatesite.test"), cookie("blocked", "blocked.test")];
+		runner.browserState.jar = [cookie({ name: "secretname", domain: "privatesite.test" }), cookie({ name: "blocked", domain: "blocked.test" })];
 		await runner.post("/close", { sessionId: first, saveProfile: true });
 		const second = await runner.open({ startUrl: null });
 		await runner.post("/close", { sessionId: second, saveProfile: true });

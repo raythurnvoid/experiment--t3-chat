@@ -67,7 +67,6 @@ export const PlaywriterBrowserConnection = memo(function PlaywriterBrowserConnec
 	const convex = useConvex();
 	const available = useQuery(app_convex_api.playwriter_browser.remote_browser_available, { membershipId });
 	const connection = useQuery(app_convex_api.playwriter_browser.current_connection, { membershipId });
-	const preferences = useQuery(app_convex_api.files_browser.current_browser_preferences, { membershipId });
 	const statusRef = useRef<HTMLParagraphElement>(null);
 	const shareRef = useRef<HTMLInputElement>(null);
 	const refreshedConnectionRef = useRef<string | null>(null);
@@ -128,11 +127,6 @@ export const PlaywriterBrowserConnection = memo(function PlaywriterBrowserConnec
 	const canAct = available?.enabled === true && !pending;
 	// Needs-help states may have no transport. Reconnect checks it before resuming.
 	const canResume = connection?.state === "paused";
-	const chosen = preferences?.webChoice;
-	const targetSelected =
-		chosen?.provider === "playwriter" &&
-		chosen.connectionId === connection?.connectionId &&
-		chosen.confirmedTargetHandle === connection?.target?.handle;
 
 	return (
 		<section
@@ -166,26 +160,6 @@ export const PlaywriterBrowserConnection = memo(function PlaywriterBrowserConnec
 				<p role="status">
 					{PAUSE_REASON_LABELS[connection.pauseReason] ?? "Check the connection, then reconnect if needed."}
 				</p>
-			)}
-			{connection?.target && connection.state !== "needs_confirmation" && !targetSelected && (
-				<MyButton
-					variant="outline"
-					disabled={!canAct}
-					onClick={() =>
-						void run(() =>
-							convex.action(app_convex_api.files_browser.set_browser_choice, {
-								membershipId,
-								webChoice: {
-									provider: "playwriter",
-									connectionId: connection.connectionId,
-									confirmedTargetHandle: connection.target!.handle,
-								},
-							}),
-						)
-					}
-				>
-					Use this tab for agent
-				</MyButton>
 			)}
 			{connection?.state === "needs_confirmation" && (
 				<ul

@@ -984,7 +984,13 @@ export const cleanup_expired_ui_sessions = internalMutation({
  * GETs are navigations/subresources that need no CORS, and the CORS wrapper must not touch their
  * headers.
  */
-export async function plugins_ui_http_handle_request(ctx: ActionCtx, request: Request, pathPrefix: "/plugins-ui/") {
+export async function plugins_ui_http_handle_request(args: {
+	ctx: ActionCtx;
+	request: Request;
+	pathPrefix: "/plugins-ui/";
+}) {
+	const { ctx, request, pathPrefix } = args;
+
 	const pathname = new URL(request.url).pathname;
 	const rest = pathname.slice(pathPrefix.length);
 	const slashIndex = rest.indexOf("/");

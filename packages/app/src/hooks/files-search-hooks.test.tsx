@@ -1,5 +1,6 @@
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { getFunctionName, type FunctionReference, type FunctionReturnType } from "convex/server";
+import type { Id } from "../../convex/_generated/dataModel";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { app_convex_api, app_convex_Id } from "@/lib/app-convex-client.ts";
 import {
@@ -76,13 +77,15 @@ type SortedArgs = {
 
 const sorted_key = (args: SortedArgs) =>
 	JSON.stringify([args.membershipId, args.parentId, args.kind, args.segment, args.sort, args.filter]);
-const sorted_fixture_key = (
-	kind: "folder" | "file",
-	segment: "value" | "missing",
-	field: string,
-	direction: "asc" | "desc",
-) =>
-	sorted_key({
+const sorted_fixture_key = (args: {
+	kind: "folder" | "file";
+	segment: "value" | "missing";
+	field: string;
+	direction: "asc" | "desc";
+}) =>
+	{
+		const { direction, field, kind, segment } = args;
+	return sorted_key({
 		membershipId: MEMBERSHIP_ID,
 		parentId: FOLDER_ID,
 		kind,
@@ -91,16 +94,21 @@ const sorted_fixture_key = (
 		filter: null,
 		workLimit: 1000,
 	});
+};
 const notify_sorted = () => {
 	sorted.revision++;
 	for (const listener of sorted.listeners) listener();
 };
-const match_key = (
-	filter: files_table_Filter,
-	target: SideRow["target"],
-	membershipId = MEMBERSHIP_ID,
-	parentId = FOLDER_ID,
-) => JSON.stringify([membershipId, parentId, target, filter]);
+const match_key = (args: {
+	filter: files_table_Filter;
+	target: SideRow["target"];
+	membershipId?: Id<"organizations_workspaces_users">;
+	parentId?: Id<"files_nodes">;
+}) => {
+	const { filter, target, membershipId = MEMBERSHIP_ID, parentId = FOLDER_ID } = args;
+
+	return JSON.stringify([membershipId, parentId, target, filter]);
+};
 
 // Answer each page at once. A cursor is the index of the page's first entry, or of the page itself for
 // a metadata key's missing segment.
@@ -163,7 +171,12 @@ vi.mock("convex/react", async (importOriginal) => {
 									target: SideRow["target"];
 									filter: files_table_Filter;
 								};
-								return [key, sorted.matches.get(match_key(args.filter, args.target, args.membershipId, args.parentId))];
+								return [key, sorted.matches.get(match_key({
+									filter: args.filter,
+									target: args.target,
+									membershipId: args.membershipId,
+									parentId: args.parentId,
+								}))];
 							}
 							if (getFunctionName(request.query) === "files_nodes:list_tree_children_sorted") {
 								const args = request.args as SortedArgs;
@@ -253,8 +266,15 @@ const row_key = (name: string, part: files_sort_Key | null = [name]): files_sort
 	};
 };
 
-const saved_row = (kind: "file" | "folder", name: string, part: files_sort_Key | null = [name]) =>
-	({
+const saved_row = (args: {
+	kind: "file" | "folder";
+	name: string;
+	part?: files_sort_Key | null;
+}) =>
+	{
+	const { kind, name, part = [name] } = args;
+
+	return ({
 		_id: `node_${name}` as app_convex_Id<"files_nodes">,
 		_creationTime: 2,
 		name,
@@ -265,6 +285,7 @@ const saved_row = (kind: "file" | "folder", name: string, part: files_sort_Key |
 		contentType: kind === "file" ? "text/markdown" : null,
 		sortKey: row_key(name, part),
 	}) as SortedRow;
+};
 
 const side_row = (name: string): SideRow => ({
 	target: { kind: "private", id: `draft_${name}` as app_convex_Id<"files_pending_nodes"> },
@@ -282,12 +303,15 @@ const side_row = (name: string): SideRow => ({
 const file_names = (count: number, prefix = "file") =>
 	Array.from({ length: count }, (_, index) => `${prefix}-${String(index).padStart(2, "0")}.md`);
 
-const filter_page = (
-	page: SortedRow[] = [],
-	continueCursor: string | null = null,
-	workCount = 0,
-	scanBoundary: files_sort_Key | files_sort_RowKey | null = page.at(-1)?.sortKey ?? null,
-): SortedPage => ({
+const filter_page = (args: {
+	page?: SortedRow[];
+	continueCursor?: string | null;
+	workCount?: number;
+	scanBoundary?: files_sort_Key | files_sort_RowKey | null;
+}): SortedPage => {
+	const { page = [], continueCursor = null, workCount = 0, scanBoundary = page.at(-1)?.sortKey ?? null } = args;
+
+	return ({
 	page,
 	isDone: continueCursor === null,
 	continueCursor: continueCursor ?? "",
@@ -297,6 +321,7 @@ const filter_page = (
 	sortLimit: null,
 	workPaused: false,
 });
+};
 
 beforeEach(() => {
 	cursorsSeen.length = 0;
@@ -334,7 +359,7 @@ afterEach(() => {
 
 describe("useFilesVisibleEntries", () => {
 	test("returns entries only after every page is loaded", async () => {
-		const { result } = renderHook(() => useFilesVisibleEntries(MEMBERSHIP_ID, "/folder", "children"));
+		const { result } = renderHook(() => useFilesVisibleEntries({ membershipId: MEMBERSHIP_ID, folderPath: "/folder", mode: "children" }));
 
 		expect(result.current.entries).toBeUndefined();
 		await waitFor(() => expect(result.current.entries).toEqual(ENTRIES));
@@ -368,10 +393,10 @@ describe("useFilesSortedChildren", () => {
 		);
 
 	test("puts folders first, holds a side row until the loaded rows reach it, and hides claimed names", () => {
-		sorted.rows.set(sorted_fixture_key("folder", "value", "name", "asc"), [saved_row("folder", "docs")]);
+		sorted.rows.set(sorted_fixture_key({ kind: "folder", segment: "value", field: "name", direction: "asc" }), [saved_row({ kind: "folder", name: "docs" })]);
 		sorted.rows.set(
-			sorted_fixture_key("file", "value", "name", "asc"),
-			file_names(60).map((name) => saved_row("file", name)),
+			sorted_fixture_key({ kind: "file", segment: "value", field: "name", direction: "asc" }),
+			file_names(60).map((name) => saved_row({ kind: "file", name })),
 		);
 		sorted.sideRows = {
 			rows: [side_row("file-05b.md"), side_row("zz.md")],
@@ -403,10 +428,10 @@ describe("useFilesSortedChildren", () => {
 
 	test("shows no files while more folders can load", () => {
 		sorted.rows.set(
-			sorted_fixture_key("folder", "value", "name", "asc"),
-			file_names(60, "folder").map((name) => saved_row("folder", name)),
+			sorted_fixture_key({ kind: "folder", segment: "value", field: "name", direction: "asc" }),
+			file_names(60, "folder").map((name) => saved_row({ kind: "folder", name })),
 		);
-		sorted.rows.set(sorted_fixture_key("file", "value", "name", "asc"), [saved_row("file", "a.md")]);
+		sorted.rows.set(sorted_fixture_key({ kind: "file", segment: "value", field: "name", direction: "asc" }), [saved_row({ kind: "file", name: "a.md" })]);
 		const { result } = render_sorted(NAME_ASC);
 
 		expect(result.current.rows?.map((row) => row.name)).toEqual(file_names(50, "folder"));
@@ -416,11 +441,11 @@ describe("useFilesSortedChildren", () => {
 	});
 
 	test("keeps folders A to Z when sorting by size, because folders have no size", () => {
-		sorted.rows.set(sorted_fixture_key("folder", "value", "size", "desc"), [
-			saved_row("folder", "a", null),
-			saved_row("folder", "c", null),
+		sorted.rows.set(sorted_fixture_key({ kind: "folder", segment: "value", field: "size", direction: "desc" }), [
+			saved_row({ kind: "folder", name: "a", part: null }),
+			saved_row({ kind: "folder", name: "c", part: null }),
 		]);
-		sorted.rows.set(sorted_fixture_key("file", "value", "size", "desc"), [saved_row("file", "big.md", [9, "big.md"])]);
+		sorted.rows.set(sorted_fixture_key({ kind: "file", segment: "value", field: "size", direction: "desc" }), [saved_row({ kind: "file", name: "big.md", part: [9, "big.md"] })]);
 		sorted.sideRows = {
 			rows: [{ ...side_row("b"), kind: "folder" }],
 			nameClaims: [],
@@ -433,21 +458,21 @@ describe("useFilesSortedChildren", () => {
 	});
 
 	test("keeps the last rows while a new sort loads", () => {
-		sorted.rows.set(sorted_fixture_key("file", "value", "name", "asc"), [
-			saved_row("file", "a.md"),
-			saved_row("file", "b.md"),
+		sorted.rows.set(sorted_fixture_key({ kind: "file", segment: "value", field: "name", direction: "asc" }), [
+			saved_row({ kind: "file", name: "a.md" }),
+			saved_row({ kind: "file", name: "b.md" }),
 		]);
-		sorted.rows.set(sorted_fixture_key("file", "value", "updated", "desc"), [
-			saved_row("file", "b.md", [2]),
-			saved_row("file", "a.md", [1]),
+		sorted.rows.set(sorted_fixture_key({ kind: "file", segment: "value", field: "updated", direction: "desc" }), [
+			saved_row({ kind: "file", name: "b.md", part: [2] }),
+			saved_row({ kind: "file", name: "a.md", part: [1] }),
 		]);
 		const { result, rerender } = render_sorted(NAME_ASC);
 		expect(result.current.rows?.map((row) => row.name)).toEqual(["a.md", "b.md"]);
 
 		// A row changes without joining or leaving. The held rows must be the new ones.
-		sorted.rows.set(sorted_fixture_key("file", "value", "name", "asc"), [
-			{ ...saved_row("file", "a.md"), updatedAt: 5 },
-			saved_row("file", "b.md"),
+		sorted.rows.set(sorted_fixture_key({ kind: "file", segment: "value", field: "name", direction: "asc" }), [
+			{ ...saved_row({ kind: "file", name: "a.md" }), updatedAt: 5 },
+			saved_row({ kind: "file", name: "b.md" }),
 		]);
 		act(notify_sorted);
 		rerender({ sort: NAME_ASC });
@@ -471,11 +496,11 @@ describe("useFilesSortedChildren", () => {
 
 	test("Show more loads only a segment that is shown", () => {
 		sorted.rows.set(
-			sorted_fixture_key("file", "value", "type", "asc"),
-			file_names(60).map((name) => saved_row("file", name, ["md", name])),
+			sorted_fixture_key({ kind: "file", segment: "value", field: "type", direction: "asc" }),
+			file_names(60).map((name) => saved_row({ kind: "file", name, part: ["md", name] })),
 		);
 		// No folder has a type, so the folders' missing rows start at once. Keep that page loading.
-		sorted.loadingKeys.add(sorted_fixture_key("folder", "missing", "type", "asc"));
+		sorted.loadingKeys.add(sorted_fixture_key({ kind: "folder", segment: "missing", field: "type", direction: "asc" }));
 		const { result, rerender } = render_sorted([{ field: "type", direction: "asc" }]);
 		expect(result.current.isBusy).toBe(true);
 
@@ -495,13 +520,13 @@ describe("useFilesSortedChildren", () => {
 
 	test("starts a metadata key's missing rows after its values, and loads past an empty page by itself", async () => {
 		const sort: files_sort_Sort = [{ field: "metadata.status", direction: "asc" }];
-		sorted.rows.set(sorted_fixture_key("file", "value", "metadata.status", "asc"), [
-			saved_row("file", "a.md", ["open", "a.md"]),
+		sorted.rows.set(sorted_fixture_key({ kind: "file", segment: "value", field: "metadata.status", direction: "asc" }), [
+			saved_row({ kind: "file", name: "a.md", part: ["open", "a.md"] }),
 		]);
-		sorted.missingPages.set(sorted_fixture_key("file", "missing", "metadata.status", "asc"), [
+		sorted.missingPages.set(sorted_fixture_key({ kind: "file", segment: "missing", field: "metadata.status", direction: "asc" }), [
 			[],
-			[saved_row("file", "b.md")],
-			[saved_row("file", "c.md")],
+			[saved_row({ kind: "file", name: "b.md" })],
+			[saved_row({ kind: "file", name: "c.md" })],
 		]);
 		const { result } = render_sorted(sort);
 
@@ -554,15 +579,15 @@ describe("useFilesSortedChildren", () => {
 		sorted.filtered = (args) =>
 			args.kind === "folder"
 				? release
-					? filter_page()
+					? filter_page({})
 					: undefined
 				: args.paginationOpts!.cursor === null
-					? filter_page([], "50", 50, ["m"])
-					: filter_page(
-							file_names(5, "match").map((name) => saved_row("file", name)),
-							"100",
-							50,
-						);
+					? filter_page({ page: [], continueCursor: "50", workCount: 50, scanBoundary: ["m"] })
+					: filter_page({
+						page: file_names(5, "match").map((name) => saved_row({ kind: "file", name })),
+						continueCursor: "100",
+						workCount: 50,
+					});
 		const { result } = render_filtered();
 		expect(requestsSeen).toHaveLength(1);
 		expect(requestsSeen[0]!.args.kind).toBe("folder");
@@ -593,18 +618,18 @@ describe("useFilesSortedChildren", () => {
 			tooManyShared: false,
 			tooManyPending: false,
 		};
-		sorted.matches.set(match_key(NAME_FILTER, draft.target), { matches: true, preparing: false });
-		sorted.matches.set(match_key(NAME_FILTER, shadow.target), { matches: false, preparing: false });
-		sorted.matches.set(match_key(NAME_FILTER, last.target), { matches: true, preparing: false });
+		sorted.matches.set(match_key({ filter: NAME_FILTER, target: draft.target }), { matches: true, preparing: false });
+		sorted.matches.set(match_key({ filter: NAME_FILTER, target: shadow.target }), { matches: false, preparing: false });
+		sorted.matches.set(match_key({ filter: NAME_FILTER, target: last.target }), { matches: true, preparing: false });
 		sorted.filtered = (args) =>
 			args.kind === "folder"
-				? filter_page()
-				: filter_page(
-						[saved_row("file", shadow.name), ...file_names(4, "match").map((name) => saved_row("file", name))],
-						"50",
-						50,
-						["t"],
-					);
+				? filter_page({})
+				: filter_page({
+					page: [saved_row({ kind: "file", name: shadow.name }), ...file_names(4, "match").map((name) => saved_row({ kind: "file", name }))],
+					continueCursor: "50",
+					workCount: 50,
+					scanBoundary: ["t"],
+				});
 		const { result } = render_filtered();
 		await waitFor(() => expect(result.current.rows).toHaveLength(5));
 		expect(result.current.rows?.map((row) => row.name)).toContain(draft.name);
@@ -617,16 +642,21 @@ describe("useFilesSortedChildren", () => {
 	test("shares one action allowance across all four segments and retains it across cached renders", async () => {
 		const sort: files_sort_Sort = [{ field: "type", direction: "asc" }];
 		sorted.filtered = (args) => {
-			if (args.kind === "folder" && args.segment === "value") return filter_page();
+			if (args.kind === "folder" && args.segment === "value") return filter_page({});
 			if (args.kind === "file" && args.segment === "missing")
-				return filter_page(
-					file_names(5, "match").map((name) => saved_row("file", name)),
-					"next",
-					50,
-				);
+				return filter_page({
+					page: file_names(5, "match").map((name) => saved_row({ kind: "file", name })),
+					continueCursor: "next",
+					workCount: 50,
+				});
 			const page = Number(args.paginationOpts!.cursor ?? 0);
 			const count = args.kind === "folder" ? 8 : 12;
-			return filter_page([], page + 1 === count ? null : String(page + 1), 50, [`${page}`]);
+			return filter_page({
+				page: [],
+				continueCursor: page + 1 === count ? null : String(page + 1),
+				workCount: 50,
+				scanBoundary: [`${page}`],
+			});
 		};
 		const { result } = render_filtered(sort);
 		await waitFor(() => expect(result.current.paused).toBe(true));
@@ -646,8 +676,13 @@ describe("useFilesSortedChildren", () => {
 	test("releases unused work once and freezes every issued limit", async () => {
 		sorted.filtered = (args) =>
 			args.kind === "folder"
-				? filter_page([], null, 7, ["folder"])
-				: filter_page([], String(Number(args.paginationOpts!.cursor ?? 0) + 1), args.workLimit, ["file"]);
+				? filter_page({ page: [], continueCursor: null, workCount: 7, scanBoundary: ["folder"] })
+				: filter_page({
+					page: [],
+					continueCursor: String(Number(args.paginationOpts!.cursor ?? 0) + 1),
+					workCount: args.workLimit,
+					scanBoundary: ["file"],
+				});
 		const { result } = render_filtered();
 		await waitFor(() => expect(result.current.paused).toBe(true));
 		expect(requestsSeen.reduce((sum, { args }) => sum + (sorted.filtered!(args) as SortedPage).workCount, 0)).toBe(
@@ -661,14 +696,14 @@ describe("useFilesSortedChildren", () => {
 
 	test("first and later Show more have new match goals and Show less stops work", async () => {
 		sorted.filtered = (args) => {
-			if (args.kind === "folder") return filter_page();
+			if (args.kind === "folder") return filter_page({});
 			const page = Number(args.paginationOpts!.cursor ?? 0);
 			const count = page === 0 ? 5 : 50;
-			return filter_page(
-				Array.from({ length: count }, (_, index) => saved_row("file", `match-${page}-${index}`)),
-				String(page + 1),
-				50,
-			);
+			return filter_page({
+				page: Array.from({ length: count }, (_, index) => saved_row({ kind: "file", name: `match-${page}-${index}` })),
+				continueCursor: String(page + 1),
+				workCount: 50,
+			});
 		};
 		const { result } = render_filtered();
 		await waitFor(() => expect(result.current.rows).toHaveLength(5));
@@ -687,14 +722,14 @@ describe("useFilesSortedChildren", () => {
 		let renewed = false;
 		sorted.filtered = (args) =>
 			args.kind === "folder"
-				? filter_page()
+				? filter_page({})
 				: renewed
-					? filter_page(
-							file_names(10, `match-${args.paginationOpts!.cursor}`).map((name) => saved_row("file", name)),
-							String(Number(args.paginationOpts!.cursor ?? 0) + 1),
-							50,
-						)
-					: filter_page([], String(Number(args.paginationOpts!.cursor ?? 0) + 1), 50);
+					? filter_page({
+						page: file_names(10, `match-${args.paginationOpts!.cursor}`).map((name) => saved_row({ kind: "file", name })),
+						continueCursor: String(Number(args.paginationOpts!.cursor ?? 0) + 1),
+						workCount: 50,
+					})
+					: filter_page({ page: [], continueCursor: String(Number(args.paginationOpts!.cursor ?? 0) + 1), workCount: 50 });
 		const { result } = render_filtered();
 		await waitFor(() => expect(result.current.paused).toBe(true));
 		act(() => result.current.requestMatches(50));
@@ -712,13 +747,13 @@ describe("useFilesSortedChildren", () => {
 		const nextFilter: files_table_Filter = { kind: "name", field: "name", op: "contains", value: "later" };
 		sorted.filtered = (args) =>
 			args.kind === "folder"
-				? filter_page()
+				? filter_page({})
 				: args.filter === null || ("value" in args.filter && args.filter.value === "match")
-					? filter_page(
-							file_names(5, "match").map((name) => saved_row("file", name)),
-							"next",
-							50,
-						)
+					? filter_page({
+						page: file_names(5, "match").map((name) => saved_row({ kind: "file", name })),
+						continueCursor: "next",
+						workCount: 50,
+					})
 					: undefined;
 		const { result, rerender } = render_filtered();
 		await waitFor(() => expect(result.current.rows).toHaveLength(5));
@@ -746,7 +781,7 @@ describe("useFilesSortedChildren", () => {
 	test.each([false, true])("finishes a built-in filter when a preparing draft has matches %s", async (matches) => {
 		const draft = { ...side_row(matches ? "match-draft.md" : "draft.md"), preparing: true };
 		sorted.sideRows = { rows: [draft], nameClaims: [draft.name], tooManyShared: false, tooManyPending: false };
-		sorted.matches.set(match_key(NAME_FILTER, draft.target), { matches, preparing: false });
+		sorted.matches.set(match_key({ filter: NAME_FILTER, target: draft.target }), { matches, preparing: false });
 		const { result } = render_filtered();
 		await waitFor(() => expect(result.current.isBusy).toBe(false));
 		expect(requestsSeen).toHaveLength(2);
@@ -758,14 +793,14 @@ describe("useFilesSortedChildren", () => {
 		const draft = side_row("draft.md");
 		const filter: files_table_Filter = { kind: "text", field: "metadata.status", op: "missing" };
 		sorted.sideRows = { rows: [draft], nameClaims: [draft.name], tooManyShared: false, tooManyPending: false };
-		sorted.matches.set(match_key(filter, draft.target), { matches: false, preparing: true });
+		sorted.matches.set(match_key({ filter, target: draft.target }), { matches: false, preparing: true });
 		const { result } = render_filtered(NAME_ASC, filter);
 		await waitFor(() => expect(result.current.isBusy).toBe(false));
 		expect(requestsSeen).toHaveLength(2);
 		expect(result.current.rows).toEqual([]);
 		expect(result.current).toMatchObject({ preparing: true, isDone: false });
 		act(() => {
-			sorted.matches.set(match_key(filter, draft.target), { matches: false, preparing: false });
+			sorted.matches.set(match_key({ filter, target: draft.target }), { matches: false, preparing: false });
 			notify_sorted();
 		});
 		expect(result.current).toMatchObject({ preparing: false, isDone: true });
@@ -784,9 +819,9 @@ describe("useFilesSortedChildren", () => {
 		async (match) => {
 			const draft = side_row("match-shadow.md");
 			sorted.sideRows = { rows: [draft], nameClaims: [draft.name], tooManyShared: true, tooManyPending: true };
-			sorted.matches.set(match_key(NAME_FILTER, draft.target), match);
+			sorted.matches.set(match_key({ filter: NAME_FILTER, target: draft.target }), match);
 			sorted.filtered = (args) =>
-				args.kind === "folder" ? filter_page() : filter_page([saved_row("file", draft.name)], null, 1);
+				args.kind === "folder" ? filter_page({}) : filter_page({ page: [saved_row({ kind: "file", name: draft.name })], continueCursor: null, workCount: 1 });
 			const { result } = render_filtered();
 			await waitFor(() =>
 				expect(match instanceof Error ? result.current.isFailed : result.current.rows).toEqual(
@@ -805,24 +840,24 @@ describe("useFilesSortedChildren", () => {
 	test("waits for all side checks and prunes an explicit refusal from held rows", async () => {
 		const draft = side_row("a-match.md");
 		sorted.sideRows = { rows: [draft], nameClaims: [draft.name], tooManyShared: false, tooManyPending: false };
-		sorted.matches.set(match_key(NAME_FILTER, draft.target), { matches: true, preparing: false });
+		sorted.matches.set(match_key({ filter: NAME_FILTER, target: draft.target }), { matches: true, preparing: false });
 		let loading = false;
 		sorted.filtered = (args) =>
 			args.kind === "folder"
-				? filter_page()
+				? filter_page({})
 				: loading
 					? undefined
-					: filter_page(
-							file_names(4, "match").map((name) => saved_row("file", name)),
-							"next",
-							50,
-							["z"],
-						);
+					: filter_page({
+						page: file_names(4, "match").map((name) => saved_row({ kind: "file", name })),
+						continueCursor: "next",
+						workCount: 50,
+						scanBoundary: ["z"],
+					});
 		const { result } = render_filtered();
 		await waitFor(() => expect(result.current.rows).toHaveLength(5));
 		act(() => {
 			loading = true;
-			sorted.matches.set(match_key(NAME_FILTER, draft.target), null);
+			sorted.matches.set(match_key({ filter: NAME_FILTER, target: draft.target }), null);
 			notify_sorted();
 		});
 		expect(result.current.rows?.some((row) => row.target.id === draft.target.id)).toBe(false);
@@ -837,19 +872,19 @@ describe("useFilesSortedChildren", () => {
 	test.each(["refused", "removed"] as const)("Retry keeps a %s side row out of held rows", async (change) => {
 		const draft = side_row("a-match.md");
 		sorted.sideRows = { rows: [draft], nameClaims: [draft.name], tooManyShared: false, tooManyPending: false };
-		sorted.matches.set(match_key(NAME_FILTER, draft.target), { matches: true, preparing: false });
+		sorted.matches.set(match_key({ filter: NAME_FILTER, target: draft.target }), { matches: true, preparing: false });
 		let loading = false;
 		sorted.filtered = (args) =>
 			args.kind === "folder"
-				? filter_page()
+				? filter_page({})
 				: loading
 					? undefined
-					: filter_page(
-							file_names(4, "match").map((name) => saved_row("file", name)),
-							"next",
-							50,
-							["z"],
-						);
+					: filter_page({
+						page: file_names(4, "match").map((name) => saved_row({ kind: "file", name })),
+						continueCursor: "next",
+						workCount: 50,
+						scanBoundary: ["z"],
+					});
 		const shownDraft: boolean[] = [];
 		const { result } = renderHook(() => {
 			const children = useFilesSortedChildren({
@@ -864,7 +899,7 @@ describe("useFilesSortedChildren", () => {
 		await waitFor(() => expect(result.current.rows).toHaveLength(5));
 		act(() => {
 			loading = true;
-			if (change === "refused") sorted.matches.set(match_key(NAME_FILTER, draft.target), null);
+			if (change === "refused") sorted.matches.set(match_key({ filter: NAME_FILTER, target: draft.target }), null);
 			else sorted.sideRows = { ...sorted.sideRows!, rows: [] };
 			notify_sorted();
 		});
@@ -878,7 +913,7 @@ describe("useFilesSortedChildren", () => {
 	test("a new name claim removes its held saved shadow while the side check loads", async () => {
 		const draft = side_row("match-shadow.md");
 		sorted.filtered = (args) =>
-			args.kind === "folder" ? filter_page() : filter_page([saved_row("file", draft.name)], null, 1);
+			args.kind === "folder" ? filter_page({}) : filter_page({ page: [saved_row({ kind: "file", name: draft.name })], continueCursor: null, workCount: 1 });
 		const { result } = render_filtered();
 		await waitFor(() => expect(result.current.rows?.map((row) => row.name)).toEqual([draft.name]));
 		act(() => {
@@ -894,19 +929,19 @@ describe("useFilesSortedChildren", () => {
 		sorted.sideRows = { rows: [draft], nameClaims: [draft.name], tooManyShared: false, tooManyPending: false };
 		sorted.filtered = (args) =>
 			args.kind === "folder"
-				? filter_page()
-				: filter_page(
-						file_names(5, "match").map((name) => saved_row("file", name)),
-						"next",
-						50,
-						["z"],
-					);
+				? filter_page({})
+				: filter_page({
+					page: file_names(5, "match").map((name) => saved_row({ kind: "file", name })),
+					continueCursor: "next",
+					workCount: 50,
+					scanBoundary: ["z"],
+				});
 		const { result } = render_filtered();
 		await waitFor(() => expect(requestsSeen.length).toBeGreaterThanOrEqual(2));
 		expect(requestsSeen).toHaveLength(2);
 		expect(result.current.searching).toBe(true);
 		act(() => {
-			sorted.matches.set(match_key(NAME_FILTER, draft.target), { matches: false, preparing: false });
+			sorted.matches.set(match_key({ filter: NAME_FILTER, target: draft.target }), { matches: false, preparing: false });
 			notify_sorted();
 		});
 		await waitFor(() => expect(result.current.rows).toHaveLength(5));
@@ -917,10 +952,10 @@ describe("useFilesSortedChildren", () => {
 		let fixed = false;
 		sorted.filtered = (args) =>
 			args.kind === "folder"
-				? filter_page()
+				? filter_page({})
 				: fixed
-					? filter_page([saved_row("file", "match.md")], null, 1)
-					: filter_page([], "", 50);
+					? filter_page({ page: [saved_row({ kind: "file", name: "match.md" })], continueCursor: null, workCount: 1 })
+					: filter_page({ page: [], continueCursor: "", workCount: 50 });
 		const { result } = render_filtered();
 		await waitFor(() => expect(result.current.filterRecovery).toBe("retry"));
 		expect(result.current.isDone).toBe(false);
@@ -938,12 +973,21 @@ describe("useFilesSortedChildren", () => {
 		let refreshing = false;
 		let release = false;
 		sorted.filtered = (args) => {
-			if (args.kind === "folder") return filter_page();
+			if (args.kind === "folder") return filter_page({});
 			const cursor = args.paginationOpts!.cursor;
-			if (!refreshing) return filter_page([], String(Number(cursor ?? 0) + 1), 50, ["old"]);
-			if (cursor === null) return filter_page([saved_row("file", "match-refreshed.md")], "r1", 50);
+			if (!refreshing) return filter_page({ page: [], continueCursor: String(Number(cursor ?? 0) + 1), workCount: 50, scanBoundary: ["old"] });
+			if (cursor === null) return filter_page({
+				page: [saved_row({ kind: "file", name: "match-refreshed.md" })],
+				continueCursor: "r1",
+				workCount: 50,
+			});
 			if (cursor === "r1" && !release) return undefined;
-			return filter_page([], `r${Number(cursor!.slice(1)) + 1}`, args.workLimit, ["new"]);
+			return filter_page({
+				page: [],
+				continueCursor: `r${Number(cursor!.slice(1)) + 1}`,
+				workCount: args.workLimit,
+				scanBoundary: ["new"],
+			});
 		};
 		const { result } = render_filtered();
 		await waitFor(() => expect(result.current.paused).toBe(true));
@@ -972,14 +1016,14 @@ describe("useFilesSortedChildren", () => {
 		let changed = false;
 		sorted.filtered = (args) =>
 			args.kind === "folder"
-				? filter_page()
+				? filter_page({})
 				: args.paginationOpts!.cursor === null
-					? filter_page(
-							changed ? [] : file_names(5, "match").map((name) => saved_row("file", name)),
-							changed ? "changed" : "next",
-							50,
-							["z"],
-						)
+					? filter_page({
+						page: changed ? [] : file_names(5, "match").map((name) => saved_row({ kind: "file", name })),
+						continueCursor: changed ? "changed" : "next",
+						workCount: 50,
+						scanBoundary: ["z"],
+					})
 					: undefined;
 		const { result } = render_filtered();
 		await waitFor(() => expect(result.current.rows).toHaveLength(5));
@@ -1001,12 +1045,12 @@ describe("useFilesSortedChildren", () => {
 		let changed = false;
 		sorted.filtered = (args) =>
 			args.kind === "folder"
-				? filter_page()
-				: filter_page(
-						changed ? [] : file_names(5, "match").map((name) => saved_row("file", name)),
-						changed ? null : "next",
-						50,
-					);
+				? filter_page({})
+				: filter_page({
+					page: changed ? [] : file_names(5, "match").map((name) => saved_row({ kind: "file", name })),
+					continueCursor: changed ? null : "next",
+					workCount: 50,
+				});
 		const { result } = render_filtered(sort);
 		await waitFor(() => expect(result.current.rows).toHaveLength(5));
 		const count = requestsSeen.length;
@@ -1024,16 +1068,21 @@ describe("useFilesSortedChildren", () => {
 		let changed = false;
 		let release = false;
 		sorted.filtered = (args) => {
-			if (args.kind === "folder") return filter_page([], null, 7);
+			if (args.kind === "folder") return filter_page({ page: [], continueCursor: null, workCount: 7 });
 			const cursor = args.paginationOpts!.cursor;
 			if (cursor === null)
-				return filter_page(
-					file_names(5, "match").map((name) => saved_row("file", name)),
-					changed ? "r1" : "1",
-					50,
-				);
+				return filter_page({
+					page: file_names(5, "match").map((name) => saved_row({ kind: "file", name })),
+					continueCursor: changed ? "r1" : "1",
+					workCount: 50,
+				});
 			if (!changed || !release) return undefined;
-			return filter_page([], `r${Number(cursor!.slice(1)) + 1}`, args.workLimit, ["z"]);
+			return filter_page({
+				page: [],
+				continueCursor: `r${Number(cursor!.slice(1)) + 1}`,
+				workCount: args.workLimit,
+				scanBoundary: ["z"],
+			});
 		};
 		const { result } = render_filtered();
 		await waitFor(() => expect(result.current.rows).toHaveLength(5));
@@ -1061,17 +1110,22 @@ describe("useFilesSortedChildren", () => {
 		let newAction = false;
 		sorted.filtered = (args) =>
 			args.kind === "folder"
-				? filter_page()
+				? filter_page({})
 				: args.paginationOpts!.cursor === null
-					? filter_page(
-							file_names(5, "match").map((name) => saved_row("file", name)),
-							"1",
-							50,
-						)
+					? filter_page({
+						page: file_names(5, "match").map((name) => saved_row({ kind: "file", name })),
+						continueCursor: "1",
+						workCount: 50,
+					})
 					: newAction
-						? filter_page([], String(Number(args.paginationOpts!.cursor) + 1), 50, ["z"])
+						? filter_page({
+							page: [],
+							continueCursor: String(Number(args.paginationOpts!.cursor) + 1),
+							workCount: 50,
+							scanBoundary: ["z"],
+						})
 						: oldResolved
-							? filter_page([], "2", 1, ["z"])
+							? filter_page({ page: [], continueCursor: "2", workCount: 1, scanBoundary: ["z"] })
 							: undefined;
 		const { result } = render_filtered();
 		await waitFor(() => expect(result.current.rows).toHaveLength(5));
@@ -1099,21 +1153,21 @@ describe("useFilesSortedChildren", () => {
 		let changed = false;
 		let fail = true;
 		sorted.filtered = (args) => {
-			if (args.kind === "folder") return filter_page();
+			if (args.kind === "folder") return filter_page({});
 			const cursor = args.paginationOpts!.cursor;
 			if (cursor === null)
-				return filter_page(
-					file_names(5, "match").map((name) => saved_row("file", name)),
-					changed ? "r1" : "1",
-					50,
-				);
+				return filter_page({
+					page: file_names(5, "match").map((name) => saved_row({ kind: "file", name })),
+					continueCursor: changed ? "r1" : "1",
+					workCount: 50,
+				});
 			return changed && fail
 				? new Error("refresh failed")
-				: filter_page(
-						file_names(45, "match-more").map((name) => saved_row("file", name)),
-						"2",
-						50,
-					);
+				: filter_page({
+					page: file_names(45, "match-more").map((name) => saved_row({ kind: "file", name })),
+					continueCursor: "2",
+					workCount: 50,
+				});
 		};
 		const { result } = render_filtered();
 		await waitFor(() => expect(result.current.rows).toHaveLength(5));
@@ -1137,20 +1191,20 @@ describe("useFilesSortedChildren", () => {
 		let changed = false;
 		sorted.filtered = (args) =>
 			args.kind === "folder"
-				? filter_page()
+				? filter_page({})
 				: args.paginationOpts!.cursor === null
-					? filter_page(
-							file_names(5, "match").map((name) => saved_row("file", name)),
-							changed ? "r1" : "1",
-							50,
-						)
+					? filter_page({
+						page: file_names(5, "match").map((name) => saved_row({ kind: "file", name })),
+						continueCursor: changed ? "r1" : "1",
+						workCount: 50,
+					})
 					: changed
-						? filter_page([], "r1", 50)
-						: filter_page(
-								file_names(45, "match-more").map((name) => saved_row("file", name)),
-								"2",
-								50,
-							);
+						? filter_page({ page: [], continueCursor: "r1", workCount: 50 })
+						: filter_page({
+							page: file_names(45, "match-more").map((name) => saved_row({ kind: "file", name })),
+							continueCursor: "2",
+							workCount: 50,
+						});
 		const { result } = render_filtered();
 		await waitFor(() => expect(result.current.rows).toHaveLength(5));
 		act(() => result.current.requestMatches(50));
@@ -1174,13 +1228,13 @@ describe("useFilesSortedChildren", () => {
 			tooManyPending: false,
 		};
 		for (const draft of drafts)
-			sorted.matches.set(match_key(NAME_FILTER, draft.target), { matches: draft === drafts.at(-1), preparing: false });
-		sorted.matches.set(match_key(NAME_FILTER, drafts[0]!.target), undefined);
+			sorted.matches.set(match_key({ filter: NAME_FILTER, target: draft.target }), { matches: draft === drafts.at(-1), preparing: false });
+		sorted.matches.set(match_key({ filter: NAME_FILTER, target: drafts[0]!.target }), undefined);
 		const { result } = render_filtered();
 		expect(result.current).toMatchObject({ searching: true, isDone: false });
 		expect(result.current.rows).toBeUndefined();
 		act(() => {
-			sorted.matches.set(match_key(NAME_FILTER, drafts[0]!.target), { matches: false, preparing: false });
+			sorted.matches.set(match_key({ filter: NAME_FILTER, target: drafts[0]!.target }), { matches: false, preparing: false });
 			notify_sorted();
 		});
 		await waitFor(() => expect(result.current.rows?.map((row) => row.name)).toEqual([drafts.at(-1)!.name]));
@@ -1191,16 +1245,21 @@ describe("useFilesSortedChildren", () => {
 	test("an older action's late count cannot release work into Keep searching", async () => {
 		let release = false;
 		sorted.filtered = (args) => {
-			if (args.kind === "folder") return filter_page();
+			if (args.kind === "folder") return filter_page({});
 			const cursor = args.paginationOpts!.cursor;
 			if (cursor === null)
-				return filter_page(
-					file_names(5, "match").map((name) => saved_row("file", name)),
-					"1",
-					50,
-				);
-			if (cursor === "1") return release ? filter_page([], "2", 1, ["z"]) : undefined;
-			return filter_page([], String(Number(cursor) + 1), args.workLimit, ["z"]);
+				return filter_page({
+					page: file_names(5, "match").map((name) => saved_row({ kind: "file", name })),
+					continueCursor: "1",
+					workCount: 50,
+				});
+			if (cursor === "1") return release ? filter_page({ page: [], continueCursor: "2", workCount: 1, scanBoundary: ["z"] }) : undefined;
+			return filter_page({
+				page: [],
+				continueCursor: String(Number(cursor) + 1),
+				workCount: args.workLimit,
+				scanBoundary: ["z"],
+			});
 		};
 		const { result } = render_filtered();
 		await waitFor(() => expect(result.current.rows).toHaveLength(5));
@@ -1220,21 +1279,21 @@ describe("useFilesSortedChildren", () => {
 		let revision = 0;
 		let release = false;
 		sorted.filtered = (args) => {
-			if (args.kind === "folder") return filter_page();
+			if (args.kind === "folder") return filter_page({});
 			const cursor = args.paginationOpts!.cursor;
 			if (cursor === null)
-				return filter_page(
-					file_names(5, `match-${revision}`).map((name) => saved_row("file", name)),
-					revision === 0 ? "1" : `${revision}:1`,
-					50,
-				);
+				return filter_page({
+					page: file_names(5, `match-${revision}`).map((name) => saved_row({ kind: "file", name })),
+					continueCursor: revision === 0 ? "1" : `${revision}:1`,
+					workCount: 50,
+				});
 			if (revision > 0 && !release) return undefined;
 			const page = Number(cursor!.split(":").at(-1));
-			return filter_page(
-				file_names(20, `match-${revision}-${page}`).map((name) => saved_row("file", name)),
-				revision === 0 ? String(page + 1) : `${revision}:${page + 1}`,
-				50,
-			);
+			return filter_page({
+				page: file_names(20, `match-${revision}-${page}`).map((name) => saved_row({ kind: "file", name })),
+				continueCursor: revision === 0 ? String(page + 1) : `${revision}:${page + 1}`,
+				workCount: 50,
+			});
 		};
 		const { result } = render_filtered();
 		await waitFor(() => expect(result.current.rows).toHaveLength(5));
@@ -1265,20 +1324,20 @@ describe("useFilesSortedChildren", () => {
 		let changed = false;
 		sorted.filtered = (args) =>
 			args.kind === "folder"
-				? filter_page()
+				? filter_page({})
 				: args.paginationOpts!.cursor === null
-					? filter_page(
-							file_names(5, "match").map((name) => saved_row("file", name)),
-							changed ? "r1" : "1",
-							50,
-						)
+					? filter_page({
+						page: file_names(5, "match").map((name) => saved_row({ kind: "file", name })),
+						continueCursor: changed ? "r1" : "1",
+						workCount: 50,
+					})
 					: changed
 						? undefined
-						: filter_page(
-								file_names(45, "match-more").map((name) => saved_row("file", name)),
-								"2",
-								50,
-							);
+						: filter_page({
+							page: file_names(45, "match-more").map((name) => saved_row({ kind: "file", name })),
+							continueCursor: "2",
+							workCount: 50,
+						});
 		const { result } = render_filtered();
 		await waitFor(() => expect(result.current.rows).toHaveLength(5));
 		act(() => result.current.requestMatches(50));
@@ -1302,10 +1361,10 @@ describe("useFilesSortedChildren", () => {
 			{ field: "updated", direction: "asc" },
 		];
 		sorted.filtered = (args) => {
-			if (args.kind === "folder" && args.segment === "value") return filter_page([], null, 10);
-			if (args.kind === "folder") return filter_page([], null, 250);
-			if (args.segment === "value") return filter_page([], null, 200);
-			return filter_page([], "later", args.workLimit);
+			if (args.kind === "folder" && args.segment === "value") return filter_page({ page: [], continueCursor: null, workCount: 10 });
+			if (args.kind === "folder") return filter_page({ page: [], continueCursor: null, workCount: 250 });
+			if (args.segment === "value") return filter_page({ page: [], continueCursor: null, workCount: 200 });
+			return filter_page({ page: [], continueCursor: "later", workCount: args.workLimit });
 		};
 		const { result } = render_sorted(sort);
 		await waitFor(() => expect(result.current.paused).toBe(true));
@@ -1334,10 +1393,10 @@ describe("useFilesSortedChildren", () => {
 			let renewed = false;
 			sorted.filtered = (args) =>
 				args.kind === "folder"
-					? filter_page([], null, 700)
+					? filter_page({ page: [], continueCursor: null, workCount: 700 })
 					: renewed
-						? filter_page([saved_row("file", "a")], null, 201)
-						: { ...filter_page([], "", 200), workPaused: true };
+						? filter_page({ page: [saved_row({ kind: "file", name: "a" })], continueCursor: null, workCount: 201 })
+						: { ...filter_page({ page: [], continueCursor: "", workCount: 200 }), workPaused: true };
 			const { result } = render_sorted(sort);
 			await waitFor(() =>
 				expect(result.current).toMatchObject({ paused: true, workPaused: true, isFailed: false, sortLimit: null }),
@@ -1363,9 +1422,9 @@ describe("useFilesSortedChildren", () => {
 		];
 		sorted.filtered = (args) =>
 			args.kind === "folder"
-				? filter_page()
+				? filter_page({})
 				: {
-						...filter_page([saved_row("file", "a")], "safe", 400),
+						...filter_page({ page: [saved_row({ kind: "file", name: "a" })], continueCursor: "safe", workCount: 400 }),
 						sortLimit: { reason: "group_rows" },
 					};
 		const { result } = render_sorted(sort);
@@ -1386,15 +1445,15 @@ describe("useFilesSortedChildren", () => {
 		const draft = side_row("draft.md");
 		sorted.sideRows = { rows: [draft], nameClaims: [], tooManyShared: false, tooManyPending: false };
 		const key = JSON.stringify([MEMBERSHIP_ID, FOLDER_ID, draft.target, sort]);
-		const freshKey = files_sort_key_of(sort, { ...draft, type: "md" }, new Map());
+		const freshKey = files_sort_key_of({ sort, facts: { ...draft, type: "md" }, metadataParts: new Map() });
 		sorted.keys.set(key, freshKey);
 		let renewed = false;
 		sorted.filtered = (args) =>
 			args.kind === "folder"
-				? filter_page([], null, 700)
+				? filter_page({ page: [], continueCursor: null, workCount: 700 })
 				: renewed && args.workLimit === 1000
-					? filter_page([], null, 201)
-					: { ...filter_page([], "", 200), workPaused: true };
+					? filter_page({ page: [], continueCursor: null, workCount: 201 })
+					: { ...filter_page({ page: [], continueCursor: "", workCount: 200 }), workPaused: true };
 		const { result } = render_sorted(sort);
 		await waitFor(() => expect(result.current.paused).toBe(true));
 		const pausedId = requestsSeen.at(-1)!.id;
@@ -1459,7 +1518,7 @@ describe("useFilesSortedChildren", () => {
 		for (const draft of drafts.slice(0, -1))
 			sorted.keys.set(
 				JSON.stringify([MEMBERSHIP_ID, FOLDER_ID, draft.target, sort]),
-				files_sort_key_of(sort, { ...draft, type: "md" }, new Map([["metadata.status", "same"]])),
+				files_sort_key_of({ sort, facts: { ...draft, type: "md" }, metadataParts: new Map([["metadata.status", "same"]]) }),
 			);
 		const { result } = render_sorted(sort);
 		expect(keysSeen).toHaveLength(400);
@@ -1468,7 +1527,7 @@ describe("useFilesSortedChildren", () => {
 		act(() => {
 			sorted.keys.set(
 				JSON.stringify([MEMBERSHIP_ID, FOLDER_ID, last.target, sort]),
-				files_sort_key_of(sort, { ...last, type: "md" }, new Map([["metadata.status", "same"]])),
+				files_sort_key_of({ sort, facts: { ...last, type: "md" }, metadataParts: new Map([["metadata.status", "same"]]) }),
 			);
 			notify_sorted();
 		});
@@ -1486,19 +1545,23 @@ describe("useFilesSortedChildren", () => {
 		const targetKey = JSON.stringify([MEMBERSHIP_ID, FOLDER_ID, draft.target, sort]);
 		sorted.keys.set(
 			targetKey,
-			files_sort_key_of(sort, { ...draft, updatedAt: 100, type: "md" }, new Map([["metadata.status", "same"]])),
+			files_sort_key_of({
+				sort,
+				facts: { ...draft, updatedAt: 100, type: "md" },
+				metadataParts: new Map([["metadata.status", "same"]]),
+			}),
 		);
 		const main = {
-			...saved_row("file", "other.md"),
-			sortKey: files_sort_key_of(
+			...saved_row({ kind: "file", name: "other.md" }),
+			sortKey: files_sort_key_of({
 				sort,
-				{ ...draft, name: "other.md", updatedAt: 2, type: "md" },
-				new Map([["metadata.status", "same"]]),
-			),
+				facts: { ...draft, name: "other.md", updatedAt: 2, type: "md" },
+				metadataParts: new Map([["metadata.status", "same"]]),
+			}),
 		};
 		let loading = false;
 		sorted.filtered = (args) =>
-			args.kind === "folder" ? filter_page() : loading ? undefined : filter_page([main, { ...main, name: draft.name }]);
+			args.kind === "folder" ? filter_page({}) : loading ? undefined : filter_page({ page: [main, { ...main, name: draft.name }] });
 		const { result } = render_sorted(sort);
 		await waitFor(() => expect(result.current.rows?.map((row) => row.name)).toEqual([draft.name, "other.md"]));
 		act(() => {
@@ -1523,17 +1586,17 @@ describe("useFilesSortedChildren", () => {
 		for (const draft of [before, after])
 			sorted.keys.set(
 				JSON.stringify([MEMBERSHIP_ID, FOLDER_ID, draft.target, sort]),
-				files_sort_key_of(sort, { ...draft, type: "md" }, new Map([["metadata.status", "same"]])),
+				files_sort_key_of({ sort, facts: { ...draft, type: "md" }, metadataParts: new Map([["metadata.status", "same"]]) }),
 			);
-		const boundary = files_sort_key_of(
+		const boundary = files_sort_key_of({
 			sort,
-			{ ...before, name: "boundary.md", updatedAt: 5, type: "md" },
-			new Map([["metadata.status", "same"]]),
-		);
+			facts: { ...before, name: "boundary.md", updatedAt: 5, type: "md" },
+			metadataParts: new Map([["metadata.status", "same"]]),
+		});
 		sorted.filtered = (args) =>
 			args.kind === "folder"
-				? filter_page()
-				: { ...filter_page([], "next", args.workLimit, boundary), scannedCount: 50 };
+				? filter_page({})
+				: { ...filter_page({ page: [], continueCursor: "next", workCount: args.workLimit, scanBoundary: boundary }), scannedCount: 50 };
 		const { result } = render_sorted(sort);
 		await waitFor(() => expect(result.current.paused).toBe(true));
 		expect(result.current.rows?.map((row) => row.name)).toEqual([before.name]);
@@ -1547,20 +1610,20 @@ describe("useFilesSortedChildren", () => {
 		let changed = false;
 		sorted.filtered = (args) =>
 			args.kind === "folder"
-				? filter_page()
+				? filter_page({})
 				: args.paginationOpts!.cursor === null
-					? filter_page(
-							file_names(5).map((name) => saved_row("file", name)),
-							changed ? "changed" : "first",
-							200,
-						)
+					? filter_page({
+						page: file_names(5).map((name) => saved_row({ kind: "file", name })),
+						continueCursor: changed ? "changed" : "first",
+						workCount: 200,
+					})
 					: changed
-						? { ...filter_page([], "changed", 100), workPaused: true }
-						: filter_page(
-								file_names(45, "more").map((name) => saved_row("file", name)),
-								"second",
-								200,
-							);
+						? { ...filter_page({ page: [], continueCursor: "changed", workCount: 100 }), workPaused: true }
+						: filter_page({
+							page: file_names(45, "more").map((name) => saved_row({ kind: "file", name })),
+							continueCursor: "second",
+							workCount: 200,
+						});
 		const { result } = render_sorted(sort);
 		await waitFor(() => expect(result.current.rows).toHaveLength(5));
 		act(() => result.current.requestMatches(50));
@@ -1589,23 +1652,23 @@ describe("useFilesSortedChildren", () => {
 		let limited = false;
 		sorted.filtered = (args) =>
 			args.kind === "folder"
-				? filter_page()
+				? filter_page({})
 				: args.paginationOpts!.cursor === null
 					? {
-							...filter_page(
-								file_names(5).map((name) => saved_row("file", name)),
-								"first",
-								200,
-							),
+							...filter_page({
+								page: file_names(5).map((name) => saved_row({ kind: "file", name })),
+								continueCursor: "first",
+								workCount: 200,
+							}),
 							sortLimit: limited ? { reason: "bytes" } : null,
 						}
 					: limited
 						? new Error("obsolete suffix")
-						: filter_page(
-								file_names(45, "more").map((name) => saved_row("file", name)),
-								"second",
-								200,
-							);
+						: filter_page({
+							page: file_names(45, "more").map((name) => saved_row({ kind: "file", name })),
+							continueCursor: "second",
+							workCount: 200,
+						});
 		const { result } = render_sorted(sort);
 		await waitFor(() => expect(result.current.rows).toHaveLength(5));
 		act(() => result.current.requestMatches(50));
@@ -1644,7 +1707,7 @@ describe("useFilesSortedChildren", () => {
 		act(() => {
 			sorted.keys.set(
 				JSON.stringify([MEMBERSHIP_ID, FOLDER_ID, draft.target, sort]),
-				files_sort_key_of(sort, { ...draft, type: "md" }, new Map()),
+				files_sort_key_of({ sort, facts: { ...draft, type: "md" }, metadataParts: new Map() }),
 			);
 			notify_sorted();
 		});
@@ -1655,7 +1718,7 @@ describe("useFilesSortedChildren", () => {
 
 describe("useFilesSearchServerFilters", () => {
 	const render_search = (query: string) =>
-		renderHook(() => useFilesSearchServerFilters(MEMBERSHIP_ID, query, undefined));
+		renderHook(() => useFilesSearchServerFilters({ membershipId: MEMBERSHIP_ID, searchQuery: query, treeItemsList: undefined }));
 	const LINK = {
 		nodeId: "node_1" as app_convex_Id<"files_nodes">,
 		createdBy: "user_1" as app_convex_Id<"users">,

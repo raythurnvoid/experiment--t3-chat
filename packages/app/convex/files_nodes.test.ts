@@ -157,29 +157,29 @@ afterEach(() => {
 describe("bounded read line helpers", () => {
 	test("files_line_range_from_text slices a 1-based line range", () => {
 		const content = "a\nb\nc\nd\ne\n";
-		expect(files_line_range_from_text(content, 1, 2)).toMatchObject({
+		expect(files_line_range_from_text({ content, startLine: 1, maxLines: 2 })).toMatchObject({
 			content: "a\nb\n",
 			linesReturned: 2,
 			moreLines: true,
 		});
-		expect(files_line_range_from_text(content, 3, 2)).toMatchObject({
+		expect(files_line_range_from_text({ content, startLine: 3, maxLines: 2 })).toMatchObject({
 			content: "c\nd\n",
 			linesReturned: 2,
 			moreLines: true,
 		});
-		expect(files_line_range_from_text(content, 5, 2)).toMatchObject({
+		expect(files_line_range_from_text({ content, startLine: 5, maxLines: 2 })).toMatchObject({
 			content: "e\n",
 			linesReturned: 1,
 			moreLines: false,
 		});
 		// Range entirely past the end → empty, no more lines.
-		expect(files_line_range_from_text(content, 10, 2)).toMatchObject({
+		expect(files_line_range_from_text({ content, startLine: 10, maxLines: 2 })).toMatchObject({
 			content: "",
 			linesReturned: 0,
 			moreLines: false,
 		});
 		// No trailing newline: the final unterminated line still counts.
-		expect(files_line_range_from_text("x\ny", 1, 5)).toMatchObject({
+		expect(files_line_range_from_text({ content: "x\ny", startLine: 1, maxLines: 5 })).toMatchObject({
 			content: "x\ny\n",
 			linesReturned: 2,
 			moreLines: false,
@@ -189,8 +189,8 @@ describe("bounded read line helpers", () => {
 	test("line pages stop at a UTF-8 byte boundary without skipping the next line", () => {
 		const lines = Array.from({ length: 500 }, (_, index) => `${index}: ${"é".repeat(500)}\n`);
 		const content = lines.join("");
-		const first = files_line_range_from_text(content, 1, 500);
-		const second = files_line_range_from_text(content, first.linesReturned + 1, 500);
+		const first = files_line_range_from_text({ content, startLine: 1, maxLines: 500 });
+		const second = files_line_range_from_text({ content, startLine: first.linesReturned + 1, maxLines: 500 });
 
 		expect(new TextEncoder().encode(first.content).byteLength).toBeLessThanOrEqual(64 * 1024);
 		expect(first.linesReturned).toBeGreaterThan(0);
@@ -204,14 +204,14 @@ describe("bounded read line helpers", () => {
 		const longLine = "Z".repeat(50000);
 		const content = `short\n${longLine}\nafter\n`;
 
-		const result = files_line_range_from_text(content, 2, 1);
+		const result = files_line_range_from_text({ content, startLine: 2, maxLines: 1 });
 		expect(result.linesReturned).toBe(1);
 		// Truncated to the display cap (8000), not the full 50000 chars.
 		expect(result.content.length).toBeLessThan(50000);
 		expect(result.content.startsWith("Z".repeat(8000))).toBe(true);
 		expect(result.content).toContain("[line truncated to 8000 chars");
 		// A normal-length line is returned untouched.
-		expect(files_line_range_from_text(content, 1, 1).content).toBe("short\n");
+		expect(files_line_range_from_text({ content, startLine: 1, maxLines: 1 }).content).toBe("short\n");
 	});
 
 	test("files_tail_lines_from_text returns the last lines and truncates long ones", () => {
@@ -560,17 +560,17 @@ describe("list_tree", () => {
 /**
  * Insert one node for the tree query tests. `scope: "self"` makes the node its own restricted scope.
  */
-async function insert_tree_node(
-	ctx: MutationCtx,
-	owner: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces">; userId: Id<"users"> },
-	args: {
-		parentId: Id<"files_nodes"> | typeof files_ROOT_ID;
-		path: string;
-		kind: "folder" | "file";
-		scope?: Id<"files_nodes"> | "self";
-		archiveOperationId?: string;
-	},
-) {
+async function insert_tree_node(args: {
+	ctx: MutationCtx;
+	owner: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces">; userId: Id<"users"> };
+	parentId: Id<"files_nodes"> | typeof files_ROOT_ID;
+	path: string;
+	kind: "folder" | "file";
+	scope?: Id<"files_nodes"> | "self";
+	archiveOperationId?: string;
+}) {
+	const { ctx, owner } = args;
+
 	const nodeId = await ctx.db.insert("files_nodes", {
 		...test_mocks.files.base(),
 		organizationId: owner.organizationId,
@@ -657,7 +657,8 @@ async function seed_tree_access_fixture(t: ReturnType<typeof test_convex>) {
 			});
 		};
 
-		const node = (args: Parameters<typeof insert_tree_node>[2]) => insert_tree_node(ctx, owner, args);
+		const node = (args: Omit<Parameters<typeof insert_tree_node>[0], "ctx" | "owner">) =>
+			insert_tree_node({ ctx, owner, ...args });
 		const openId = await node({ parentId: files_ROOT_ID, path: "/open", kind: "folder" });
 		const openFileId = await node({ parentId: openId, path: "/open/a.md", kind: "file" });
 		const openSubId = await node({ parentId: openId, path: "/open/sub", kind: "folder" });
@@ -727,7 +728,9 @@ async function seed_tree_access_fixture(t: ReturnType<typeof test_convex>) {
 		await grant(sharedId, { userId: admin.userId });
 		await grant(sharedId, { userId: grantOnly.userId });
 
-		const foreignFolderId = await insert_tree_node(ctx, foreign, {
+		const foreignFolderId = await insert_tree_node({
+			ctx,
+			owner: foreign,
 			parentId: files_ROOT_ID,
 			path: "/foreign",
 			kind: "folder",
@@ -785,12 +788,12 @@ describe("list_tree_children", () => {
 		);
 		const db = await t.run(async (ctx) => {
 			const owner = await test_mocks_fill_db_with.membership(ctx);
-			const bigId = await insert_tree_node(ctx, owner, { parentId: files_ROOT_ID, path: "/big", kind: "folder" });
+			const bigId = await insert_tree_node({ ctx, owner, parentId: files_ROOT_ID, path: "/big", kind: "folder" });
 			for (const name of ["zeta", "Alpha", "10", "9"]) {
-				await insert_tree_node(ctx, owner, { parentId: bigId, path: `/big/${name}`, kind: "folder" });
+				await insert_tree_node({ ctx, owner, parentId: bigId, path: `/big/${name}`, kind: "folder" });
 			}
 			await Promise.all(
-				fileNames.map((name) => insert_tree_node(ctx, owner, { parentId: bigId, path: `/big/${name}`, kind: "file" })),
+				fileNames.map((name) => insert_tree_node({ ctx, owner, parentId: bigId, path: `/big/${name}`, kind: "file" })),
 			);
 			return { ...owner, bigId };
 		});
@@ -958,27 +961,31 @@ describe("get_tree_ancestors", () => {
 	test("stops at the granted scope and never returns the hidden folder or anything above it", async () => {
 		const t = test_convex();
 		const f = await seed_tree_access_fixture(t);
-		const ancestors_of = async (
-			as: typeof f.asAdmin,
-			membershipId: Id<"organizations_workspaces_users">,
-			nodeId: Id<"files_nodes">,
-		) =>
-			(await as.query(api.files_nodes.get_tree_ancestors, { membershipId, nodeId: String(nodeId) }))?.ancestors.map(
+		const ancestors_of = async (args: {
+			as: typeof f.asAdmin;
+			membershipId: Id<"organizations_workspaces_users">;
+			nodeId: Id<"files_nodes">;
+		}) =>
+			{
+			const { as, nodeId, membershipId} = args;
+
+			return (await as.query(api.files_nodes.get_tree_ancestors, { membershipId, nodeId: String(nodeId) }))?.ancestors.map(
 				(row) => row.path,
 			);
+		};
 
 		// The owner shows the full walk, so the shorter answers below come from the stop.
-		expect(await ancestors_of(f.asOwner, f.owner.membershipId, f.nodes.grantedFileId)).toEqual([
+		expect(await ancestors_of({ as: f.asOwner, membershipId: f.owner.membershipId, nodeId: f.nodes.grantedFileId })).toEqual([
 			"/top",
 			"/top/hidden",
 			"/top/hidden/granted",
 		]);
 		// `/top` is readable for the admin, but it sits above the hidden folder, so it stays out too.
-		expect(await ancestors_of(f.asAdmin, f.admin.membershipId, f.nodes.grantedFileId)).toEqual(["/top/hidden/granted"]);
-		expect(await ancestors_of(f.asGrantOnly, f.grantOnly.membershipId, f.nodes.grantedFileId)).toEqual([
+		expect(await ancestors_of({ as: f.asAdmin, membershipId: f.admin.membershipId, nodeId: f.nodes.grantedFileId })).toEqual(["/top/hidden/granted"]);
+		expect(await ancestors_of({ as: f.asGrantOnly, membershipId: f.grantOnly.membershipId, nodeId: f.nodes.grantedFileId })).toEqual([
 			"/top/hidden/granted",
 		]);
-		expect(await ancestors_of(f.asGrantOnly, f.grantOnly.membershipId, f.nodes.sharedFileId)).toEqual(["/shared"]);
+		expect(await ancestors_of({ as: f.asGrantOnly, membershipId: f.grantOnly.membershipId, nodeId: f.nodes.sharedFileId })).toEqual(["/shared"]);
 	});
 
 	test("returns null for an unreadable, foreign, missing, malformed, or root node id", async () => {
@@ -1113,7 +1120,8 @@ describe("get_folder_readme", () => {
 		const t = test_convex();
 		const f = await seed_tree_access_fixture(t);
 		const ids = await t.run(async (ctx) => {
-			const node = (args: Parameters<typeof insert_tree_node>[2]) => insert_tree_node(ctx, f.owner, args);
+			const node = (args: Omit<Parameters<typeof insert_tree_node>[0], "ctx" | "owner">) =>
+				insert_tree_node({ ctx, owner: f.owner, ...args });
 			await node({ parentId: f.nodes.openId, path: "/open/reading-list.md", kind: "file" });
 			await node({ parentId: f.nodes.openId, path: "/open/readme.md", kind: "file" });
 			const expectedId = await node({ parentId: f.nodes.openId, path: "/open/Readme.md", kind: "file" });
@@ -1140,7 +1148,8 @@ describe("get_folder_readme", () => {
 		const t = test_convex();
 		const f = await seed_tree_access_fixture(t);
 		const ids = await t.run(async (ctx) => {
-			const node = (args: Parameters<typeof insert_tree_node>[2]) => insert_tree_node(ctx, f.owner, args);
+			const node = (args: Omit<Parameters<typeof insert_tree_node>[0], "ctx" | "owner">) =>
+				insert_tree_node({ ctx, owner: f.owner, ...args });
 			const hiddenReadmeId = await node({
 				parentId: f.nodes.boxId,
 				path: "/box/README.md",
@@ -1169,19 +1178,23 @@ describe("get_folder_readme", () => {
 			});
 			return { hiddenReadmeId, openReadmeId, grantedReadmeId };
 		});
-		const get = (
-			as: typeof f.asAdmin,
-			membershipId: Id<"organizations_workspaces_users">,
-			folderId: Id<"files_nodes">,
-		) => as.query(api.files_nodes.get_folder_readme, { membershipId, folderId });
+		const get = (args: {
+			as: typeof f.asAdmin;
+			membershipId: Id<"organizations_workspaces_users">;
+			folderId: Id<"files_nodes">;
+		}) => {
+			const { as, folderId, membershipId} = args;
 
-		expect((await get(f.asOwner, f.owner.membershipId, f.nodes.boxId))?._id).toBe(ids.hiddenReadmeId);
-		expect((await get(f.asAdmin, f.admin.membershipId, f.nodes.boxId))?._id).toBe(ids.openReadmeId);
+			return as.query(api.files_nodes.get_folder_readme, { membershipId, folderId });
+		};
 
-		expect((await get(f.asOwner, f.owner.membershipId, f.nodes.hiddenId))?._id).toBe(ids.grantedReadmeId);
-		expect(await get(f.asAdmin, f.admin.membershipId, f.nodes.hiddenId)).toBeNull();
-		expect(await get(f.asAdmin, f.admin.membershipId, f.nodes.foreignFolderId)).toBeNull();
-		expect(await get(f.asAdmin, f.admin.membershipId, f.nodes.missingNodeId)).toBeNull();
+		expect((await get({ as: f.asOwner, membershipId: f.owner.membershipId, folderId: f.nodes.boxId }))?._id).toBe(ids.hiddenReadmeId);
+		expect((await get({ as: f.asAdmin, membershipId: f.admin.membershipId, folderId: f.nodes.boxId }))?._id).toBe(ids.openReadmeId);
+
+		expect((await get({ as: f.asOwner, membershipId: f.owner.membershipId, folderId: f.nodes.hiddenId }))?._id).toBe(ids.grantedReadmeId);
+		expect(await get({ as: f.asAdmin, membershipId: f.admin.membershipId, folderId: f.nodes.hiddenId })).toBeNull();
+		expect(await get({ as: f.asAdmin, membershipId: f.admin.membershipId, folderId: f.nodes.foreignFolderId })).toBeNull();
+		expect(await get({ as: f.asAdmin, membershipId: f.admin.membershipId, folderId: f.nodes.missingNodeId })).toBeNull();
 		await expect(
 			t.query(api.files_nodes.get_folder_readme, { membershipId: f.admin.membershipId, folderId: f.nodes.boxId }),
 		).rejects.toThrow("Unauthenticated");
@@ -2177,7 +2190,7 @@ describe("files_nodes_db_preflight_move", () => {
 			if (result._nay) throw new Error(result._nay.message);
 			expect(inserts).not.toHaveBeenCalled();
 			expect(patches).not.toHaveBeenCalled();
-			await files_nodes_db_apply_move(ctx, result._yay, files_share_links_create_cleanup_state());
+			await files_nodes_db_apply_move({ ctx, plan: result._yay, shareLinkCleanup: files_share_links_create_cleanup_state() });
 			const createdFolders = await ctx.db
 				.query("files_nodes")
 				.filter((q) => q.or(q.eq(q.field("name"), "new"), q.eq(q.field("name"), "shared")))
@@ -2314,7 +2327,7 @@ describe("files_nodes_db_preflight_move", () => {
 			if (result._nay) throw new Error(result._nay.message);
 			expect(result._yay.moved).toHaveLength(3);
 			expect(new Set(result._yay.nodePatches.map((patch) => patch.id)).size).toBe(result._yay.nodePatches.length);
-			await files_nodes_db_apply_move(ctx, result._yay, files_share_links_create_cleanup_state());
+			await files_nodes_db_apply_move({ ctx, plan: result._yay, shareLinkCleanup: files_share_links_create_cleanup_state() });
 		});
 		await t.run(async (ctx) => {
 			expect(await ctx.db.get("files_nodes", child._id)).toMatchObject({
@@ -2373,7 +2386,7 @@ describe("files_nodes_db_preflight_move", () => {
 				],
 			});
 			if (result._nay) throw new Error(result._nay.message);
-			await files_nodes_db_apply_move(ctx, result._yay, files_share_links_create_cleanup_state());
+			await files_nodes_db_apply_move({ ctx, plan: result._yay, shareLinkCleanup: files_share_links_create_cleanup_state() });
 			expect(await ctx.db.get("files_nodes", parent._id)).toMatchObject({
 				parentId: child._id,
 				path: `/${child.name}/${parent.name}`,
@@ -2657,7 +2670,7 @@ describe("files_nodes_db_preflight_move", () => {
 				});
 				if (result._nay) throw new Error(result._nay.message);
 				expect(result._yay.nodePatches.filter((patch) => patch.id === occupant._id)).toHaveLength(1);
-				await files_nodes_db_apply_move(ctx, result._yay, files_share_links_create_cleanup_state());
+				await files_nodes_db_apply_move({ ctx, plan: result._yay, shareLinkCleanup: files_share_links_create_cleanup_state() });
 				const archived = (await ctx.db.get("files_nodes", occupant._id))!;
 				const path = `/moved-parent/${occupant.name}`;
 				expect(archived).toMatchObject({ path, assetId });
@@ -2725,7 +2738,7 @@ describe("files_nodes_db_preflight_move", () => {
 						},
 					],
 				});
-				if (plan._yay) await files_nodes_db_apply_move(ctx, plan._yay, files_share_links_create_cleanup_state());
+				if (plan._yay) await files_nodes_db_apply_move({ ctx, plan: plan._yay, shareLinkCleanup: files_share_links_create_cleanup_state() });
 				return plan;
 			});
 			if (childState === "archived") {
@@ -2995,11 +3008,14 @@ describe("files_nodes_db_preflight_move budgets", () => {
 	 * Insert `/source` with `childCount` child folders and `/target`. Every node gets
 	 * `metadataPerNode` metadata docs, so a test can see that the side docs follow their node.
 	 */
-	async function seed_wide_source(
-		t: ReturnType<typeof test_convex>,
-		db: Awaited<ReturnType<typeof test_mocks_fill_db_with.membership>>,
-		args: { childCount: number; metadataPerNode: number },
-	) {
+	async function seed_wide_source(args: {
+		t: ReturnType<typeof test_convex>;
+		db: Awaited<ReturnType<typeof test_mocks_fill_db_with.membership>>;
+		childCount: number;
+		metadataPerNode: number;
+	}) {
+		const { t, db } = args;
+
 		return await t.run(async (ctx) => {
 			const base = {
 				...test_mocks.files.base(),
@@ -3063,7 +3079,7 @@ describe("files_nodes_db_preflight_move budgets", () => {
 	test("plans only the moved folder, however many children it has", async () => {
 		const t = test_convex();
 		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const { source, target } = await seed_wide_source(t, db, { childCount: 600, metadataPerNode: 3 });
+		const { source, target } = await seed_wide_source({ t, db, childCount: 600, metadataPerNode: 3 });
 		const before = await t.run(async (ctx) => ({
 			nodes: await ctx.db.query("files_nodes").collect(),
 			metadata: await ctx.db.query("files_metadata_docs").collect(),
@@ -3108,7 +3124,7 @@ describe("files_nodes_db_preflight_move budgets", () => {
 		const t = test_convex();
 		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
-		const { source, target } = await seed_wide_source(t, db, { childCount: 600, metadataPerNode: 1 });
+		const { source, target } = await seed_wide_source({ t, db, childCount: 600, metadataPerNode: 1 });
 
 		expect(
 			await asUser.mutation(api.files_nodes.move_nodes, {
@@ -3182,7 +3198,7 @@ describe("files_nodes_db_preflight_move budgets", () => {
 		const t = test_convex();
 		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
-		const { source, target } = await seed_wide_source(t, db, { childCount: 0, metadataPerNode: 0 });
+		const { source, target } = await seed_wide_source({ t, db, childCount: 0, metadataPerNode: 0 });
 		// Each replace of `report.md` archives the old one, so a folder can collect many items with one name.
 		await t.run(async (ctx) => {
 			for (let index = 0; index < 400; index += 1) {
@@ -3231,7 +3247,7 @@ describe("files_nodes_db_preflight_move budgets", () => {
 		const t = test_convex();
 		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
-		const { source } = await seed_wide_source(t, db, { childCount: 600, metadataPerNode: 0 });
+		const { source } = await seed_wide_source({ t, db, childCount: 600, metadataPerNode: 0 });
 		// A restricted child keeps its own scope. The walk still goes inside it.
 		const nested = await t.run(async (ctx) => {
 			const node = (await ctx.db.query("files_nodes").collect()).find((node) => node.path === "/source/child-0")!;
@@ -6786,7 +6802,7 @@ describe("files_nodes_db_hard_delete_node", () => {
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
 		test_setup_r2_capture();
-		const nodeId = await test_materialize_markdown_file(t, asUser, db, "/delete-cleanup.md", "# Kept until deletion\n");
+		const nodeId = await test_materialize_markdown_file({ t, asUser, db, path: "/delete-cleanup.md", markdown: "# Kept until deletion\n" });
 
 		// Hold the scheduled worker so deletion must take ownership of its asset.
 		vi.useFakeTimers();
@@ -8124,13 +8140,15 @@ function test_setup_r2_capture() {
 
 // Create a file at `path`, push its markdown as the first Yjs update, and materialize it (sequence 1)
 // so its content lands in R2 + the markdown/plain-text chunk tables. Returns the node id.
-async function test_materialize_markdown_file(
-	t: ReturnType<typeof test_convex>,
-	asUser: ReturnType<ReturnType<typeof test_convex>["withIdentity"]>,
-	db: Awaited<ReturnType<typeof test_mocks_fill_db_with.membership>>,
-	path: string,
-	markdown: string,
-) {
+async function test_materialize_markdown_file(args: {
+	t: ReturnType<typeof test_convex>;
+	asUser: ReturnType<ReturnType<typeof test_convex>["withIdentity"]>;
+	db: Awaited<ReturnType<typeof test_mocks_fill_db_with.membership>>;
+	path: string;
+	markdown: string;
+}) {
+	const { t, asUser, db, path, markdown } = args;
+
 	const nodeId = await test_create_saved_text_file(t, {
 		membershipId: db.membershipId,
 		path,
@@ -8169,7 +8187,7 @@ test("materialize_file_content rolls back Convex writes when committed chunking 
 	});
 	const r2Writes = test_setup_r2_capture();
 
-	const nodeId = await test_materialize_markdown_file(t, asUser, db, "/chunk-failure.md", "# Last good\n");
+	const nodeId = await test_materialize_markdown_file({ t, asUser, db, path: "/chunk-failure.md", markdown: "# Last good\n" });
 	const nextYjsDoc = files_yjs_doc_create_from_text({ rootKind: "rich_text", text: "# Next version\n" });
 	if ("_nay" in nextYjsDoc) {
 		throw new Error(nextYjsDoc._nay.message);
@@ -8279,7 +8297,7 @@ test("materialize_file_content marks over-cap content too large and leaves the n
 	const r2Writes = test_setup_r2_capture();
 
 	const smallMarkdown = "# Small\n";
-	const nodeId = await test_materialize_markdown_file(t, asUser, db, "/too-large.md", smallMarkdown);
+	const nodeId = await test_materialize_markdown_file({ t, asUser, db, path: "/too-large.md", markdown: smallMarkdown });
 	const beforePush = await t.run(async (ctx) => ({
 		assetCount: (await ctx.db.query("files_r2_assets").collect()).length,
 		assetId: (await ctx.db.get("files_nodes", nodeId))?.assetId,
@@ -8476,7 +8494,7 @@ test("materialize_file_content clears the too-large mark once the content fits a
 	});
 	test_setup_r2_capture();
 
-	const nodeId = await test_materialize_markdown_file(t, asUser, db, "/trimmed.md", "# Trimmed\n");
+	const nodeId = await test_materialize_markdown_file({ t, asUser, db, path: "/trimmed.md", markdown: "# Trimmed\n" });
 	await t.run(async (ctx) => {
 		return await ctx.db.patch("files_nodes", nodeId, {
 			contentTooLargeByteSize: files_MAX_TEXT_CONTENT_BYTES + 1,
@@ -8514,12 +8532,14 @@ test("materialize_file_content clears the too-large mark once the content fits a
 	expect(fileNode?.contentTooLargeByteSize).toBeNull();
 });
 
-async function test_insert_searchable_markdown_file(
-	t: ReturnType<typeof test_convex>,
-	db: Awaited<ReturnType<typeof test_mocks_fill_db_with.membership>>,
-	path: string,
-	markdown: string,
-) {
+async function test_insert_searchable_markdown_file(args: {
+	t: ReturnType<typeof test_convex>;
+	db: Awaited<ReturnType<typeof test_mocks_fill_db_with.membership>>;
+	path: string;
+	markdown: string;
+}) {
+	const { t, db, path, markdown } = args;
+
 	// Seed only the node and committed plain-text chunk docs for tests that exercise search scope.
 	return await t.run(async (ctx) => {
 		const now = Date.now();
@@ -8575,11 +8595,13 @@ async function test_insert_searchable_markdown_file(
 // Get the exact committed markdown for a file, to compare chunk reads against. Editable files
 // do not store their current content in R2, so read the newest version snapshot instead:
 // materialization writes the exact committed markdown there.
-async function test_read_committed_markdown(
-	t: ReturnType<typeof test_convex>,
-	nodeId: Id<"files_nodes">,
-	r2Writes: Map<string, BodyInit>,
-) {
+async function test_read_committed_markdown(args: {
+	t: ReturnType<typeof test_convex>;
+	nodeId: Id<"files_nodes">;
+	r2Writes: Map<string, BodyInit>;
+}) {
+	const { t, nodeId, r2Writes } = args;
+
 	return t.run(async (ctx) => {
 		const snapshots = (await ctx.db.query("files_snapshots").collect()).filter(
 			(snapshot) => snapshot.fileNodeId === nodeId && snapshot.archivedAt <= 0,
@@ -8645,7 +8667,7 @@ test("read_committed_file_chunks_line_range/stats match full-text slicing across
 
 	// Compare against the exact committed markdown the chunker saw: materialization writes it to
 	// the version snapshot. The chunk reader must return the same line ranges as slicing that text.
-	const committed = await test_read_committed_markdown(t, nodeId, r2Writes);
+	const committed = await test_read_committed_markdown({ t, nodeId, r2Writes });
 	const chunkCount = await t.run(async (ctx) => {
 		const chunks = await ctx.db
 			.query("files_text_chunks")
@@ -8666,8 +8688,15 @@ test("read_committed_file_chunks_line_range/stats match full-text slicing across
 	expect(chunkCount).toBeGreaterThan(1);
 
 	const totalLines = committed.split("\n").length;
-	const readRange = (startLine: number, maxLines: number, fromEnd = false) =>
-		asUser.query(internal.files_nodes.read_committed_file_chunks_line_range, {
+	const readRange = (args: {
+		startLine: number;
+		maxLines: number;
+		fromEnd?: boolean;
+	}) =>
+		{
+		const { fromEnd = false, maxLines, startLine} = args;
+
+		return asUser.query(internal.files_nodes.read_committed_file_chunks_line_range, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId: db.userId,
@@ -8676,6 +8705,7 @@ test("read_committed_file_chunks_line_range/stats match full-text slicing across
 			maxLines,
 			fromEnd,
 		});
+	};
 
 	// Head, a deep mid-document range (the case the leading byte window could not reach), and the
 	// final lines — each must equal slicing the full committed text.
@@ -8684,24 +8714,24 @@ test("read_committed_file_chunks_line_range/stats match full-text slicing across
 		[41, 6],
 		[Math.max(1, totalLines - 3), 10],
 	] as const) {
-		const result = await readRange(startLine, maxLines);
+		const result = await readRange({ startLine, maxLines });
 		expect(result.usable).toBe(true);
 		if (!result.usable) throw new Error("expected usable");
-		expect(result.content).toBe(files_line_range_from_text(committed, startLine, maxLines).content);
+		expect(result.content).toBe(files_line_range_from_text({ content: committed, startLine, maxLines }).content);
 	}
 
 	// moreLines after the bounded-streaming refactor: a shallow read reports content follows; a range
 	// entirely past EOF does not (and is a valid empty page, not a fallback).
-	const shallow = await readRange(1, 5);
+	const shallow = await readRange({ startLine: 1, maxLines: 5 });
 	expect(shallow.usable && shallow.moreLines).toBe(true);
-	const pastEof = await readRange(totalLines + 50, 5);
+	const pastEof = await readRange({ startLine: totalLines + 50, maxLines: 5 });
 	expect(pastEof.usable).toBe(true);
 	if (!pastEof.usable) throw new Error("expected usable");
 	expect(pastEof.content).toBe("");
 	expect(pastEof.moreLines).toBe(false);
 
 	// tail.
-	const tail = await readRange(1, 5, true);
+	const tail = await readRange({ startLine: 1, maxLines: 5, fromEnd: true });
 	expect(tail.usable).toBe(true);
 	if (!tail.usable) throw new Error("expected usable");
 	expect(tail.content).toBe(files_tail_lines_from_text(committed, 5).content);
@@ -8734,7 +8764,7 @@ test("read_committed_file_chunks_line_range/stats match full-text slicing across
 			lastSequence: snapshot.sequence + 1,
 		});
 	});
-	const staleResult = await readRange(1, 5);
+	const staleResult = await readRange({ startLine: 1, maxLines: 5 });
 	expect(staleResult.usable).toBe(false);
 });
 
@@ -8752,8 +8782,8 @@ test("match_text_file_lines and match_plain_text_file_lines query committed and 
 
 	const path = "/grep-query.md";
 	const committedMarkdown = "intro context\n**critical** alert\ncommittedneedle one\nmiddle\ncommittedneedle two\n";
-	const nodeId = await test_materialize_markdown_file(t, asUser, db, path, committedMarkdown);
-	const committed = await test_read_committed_markdown(t, nodeId, r2Writes);
+	const nodeId = await test_materialize_markdown_file({ t, asUser, db, path, markdown: committedMarkdown });
+	const committed = await test_read_committed_markdown({ t, nodeId, r2Writes });
 	if (committed === undefined) throw new Error("Expected committed markdown");
 
 	const grepArgs = {
@@ -8892,13 +8922,13 @@ test("match_text_file_lines and match_plain_text_file_lines query committed and 
 			index % 2 === 0 ? `outputneedle-dense-${index + 1}` : `dense-filler-${index + 1}`,
 		),
 	].join("\n");
-	const cappedOutputNodeId = await test_materialize_markdown_file(
+	const cappedOutputNodeId = await test_materialize_markdown_file({
 		t,
 		asUser,
 		db,
-		"/grep-capped-output.md",
-		cappedOutputMarkdown,
-	);
+		path: "/grep-capped-output.md",
+		markdown: cappedOutputMarkdown,
+	});
 	const cappedContextScan = await asUser.query(internal.files_nodes.match_text_file_lines, {
 		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
@@ -9038,13 +9068,15 @@ test("match_text_file_lines and match_plain_text_file_lines query committed and 
 // Yjs/pending/materialization, committed markdown + plain-text chunks with NO yjsSequence, a linked
 // R2 `content` asset, and exact wc stats. `r2Writes` gets the raw body so action-level R2 reads
 // resolve. Returns the node id. Mirrors committed chunk doc shapes minus yjsSequence.
-async function test_insert_committed_external_markdown(
-	t: ReturnType<typeof test_convex>,
-	r2Writes: Map<string, BodyInit>,
-	userId: Id<"users">,
-	path: string,
-	markdown: string,
-) {
+async function test_insert_committed_external_markdown(args: {
+	t: ReturnType<typeof test_convex>;
+	r2Writes: Map<string, BodyInit>;
+	userId: Id<"users">;
+	path: string;
+	markdown: string;
+}) {
+	const { t, r2Writes, path, markdown } = args;
+
 	const chunks = await files_chunk_markdown(markdown);
 	if (chunks._nay) throw new Error(chunks._nay.message);
 	const byteSize = files_get_utf8_byte_size(markdown);
@@ -9174,7 +9206,7 @@ test("external (reserved) scope reads committed chunks and R2 without Yjs, pendi
 		"",
 	].join("\n");
 
-	const nodeId = await test_insert_committed_external_markdown(t, r2Writes, db.userId, path, markdown);
+	const nodeId = await test_insert_committed_external_markdown({ t, r2Writes, userId: db.userId, path, markdown });
 
 	// Guard the test is meaningful: the document really spans multiple committed chunks.
 	const chunkCount = await t.run(async (ctx) =>
@@ -9219,12 +9251,19 @@ test("external (reserved) scope reads committed chunks and R2 without Yjs, pendi
 	});
 	expect(lineRead).not.toBeNull();
 	if (!lineRead) throw new Error("expected external line read");
-	expect(lineRead.content).toBe(files_line_range_from_text(markdown, 1, 5).content);
+	expect(lineRead.content).toBe(files_line_range_from_text({ content: markdown, startLine: 1, maxLines: 5 }).content);
 
 	// read_committed_file_chunks_line_range: head / deep mid-document / tail each equal direct slicing.
 	const totalLines = markdown.split("\n").length;
-	const readRange = (startLine: number, maxLines: number, fromEnd = false) =>
-		t.query(internal.files_nodes.read_committed_file_chunks_line_range, {
+	const readRange = (args: {
+		startLine: number;
+		maxLines: number;
+		fromEnd?: boolean;
+	}) =>
+		{
+		const { fromEnd = false, maxLines, startLine} = args;
+
+		return t.query(internal.files_nodes.read_committed_file_chunks_line_range, {
 			...readScope,
 			userId: db.userId,
 			path,
@@ -9232,17 +9271,18 @@ test("external (reserved) scope reads committed chunks and R2 without Yjs, pendi
 			maxLines,
 			fromEnd,
 		});
+	};
 	for (const [startLine, maxLines] of [
 		[1, 5],
 		[20, 6],
 		[Math.max(1, totalLines - 3), 10],
 	] as const) {
-		const result = await readRange(startLine, maxLines);
+		const result = await readRange({ startLine, maxLines });
 		expect(result.usable).toBe(true);
 		if (!result.usable) throw new Error("expected usable");
-		expect(result.content).toBe(files_line_range_from_text(markdown, startLine, maxLines).content);
+		expect(result.content).toBe(files_line_range_from_text({ content: markdown, startLine, maxLines }).content);
 	}
-	const tail = await readRange(1, 5, true);
+	const tail = await readRange({ startLine: 1, maxLines: 5, fromEnd: true });
 	expect(tail.usable).toBe(true);
 	if (!tail.usable) throw new Error("expected usable tail");
 	expect(tail.content).toBe(files_tail_lines_from_text(markdown, 5).content);
@@ -9334,12 +9374,14 @@ describe("non-collaborative files", () => {
 		}
 	}
 
-	async function seed_non_collaborative_file(
-		t: ReturnType<typeof test_convex>,
-		db: Awaited<ReturnType<typeof test_mocks_fill_db_with.membership>>,
-		path: string,
-		markdown: string,
-	) {
+	async function seed_non_collaborative_file(args: {
+		t: ReturnType<typeof test_convex>;
+		db: Awaited<ReturnType<typeof test_mocks_fill_db_with.membership>>;
+		path: string;
+		markdown: string;
+	}) {
+		const { t, db, path, markdown } = args;
+
 		return await t.run(async (ctx) => {
 			const now = Date.now();
 			const name = path.split("/").filter(Boolean).at(-1);
@@ -9412,7 +9454,7 @@ describe("non-collaborative files", () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 		const markdown = "---\ntitle: Release notes\nowner: ada\n---\n\n# Release notes\n\nFirst line here.\n";
-		const { nodeId } = await seed_non_collaborative_file(t, db, "/notes.md", markdown);
+		const { nodeId } = await seed_non_collaborative_file({ t, db, path: "/notes.md", markdown });
 
 		const written = await t.run(async (ctx) => {
 			const node = await ctx.db.get("files_nodes", nodeId);
@@ -9462,7 +9504,7 @@ describe("non-collaborative files", () => {
 		const lines = ["# Handbook", "", "quietneedle one", "a middle line", "quietneedle two", "the last line"];
 		const markdown = lines.join("\n");
 		const path = "/handbook.md";
-		const { nodeId } = await seed_non_collaborative_file(t, db, path, markdown);
+		const { nodeId } = await seed_non_collaborative_file({ t, db, path, markdown });
 
 		const readScope = { organizationId: db.organizationId, workspaceId: db.workspaceId } as const;
 
@@ -9497,7 +9539,7 @@ describe("non-collaborative files", () => {
 		});
 		expect(lineRead).not.toBeNull();
 		if (!lineRead) throw new Error("expected a line read");
-		expect(lineRead.content).toBe(files_line_range_from_text(markdown, 1, 3).content);
+		expect(lineRead.content).toBe(files_line_range_from_text({ content: markdown, startLine: 1, maxLines: 3 }).content);
 
 		// read_committed_file_chunk_stats: the door behind `wc`.
 		const stats = await t.query(internal.files_nodes.read_committed_file_chunk_stats, {
@@ -9565,7 +9607,7 @@ describe("non-collaborative files", () => {
 		});
 
 		const markdown = "# Read\n\nbody\n";
-		const { nodeId } = await seed_non_collaborative_file(t, db, "/read.md", markdown);
+		const { nodeId } = await seed_non_collaborative_file({ t, db, path: "/read.md", markdown });
 
 		const read = await asUser.query(api.files_nodes_content.get_non_collaborative_file_content, {
 			membershipId: db.membershipId,
@@ -9602,7 +9644,7 @@ describe("non-collaborative files", () => {
 		const r2Writes = test_setup_r2_capture();
 
 		const path = "/plan.md";
-		const { nodeId, assetId } = await seed_non_collaborative_file(t, db, path, "# Plan\n\nold body\n");
+		const { nodeId, assetId } = await seed_non_collaborative_file({ t, db, path, markdown: "# Plan\n\nold body\n" });
 
 		const rawNextText = "\ufeff# Plan\r\n\r\nnew body with searchword\r\n";
 		const nextText = "# Plan\n\nnew body with searchword\n";
@@ -9674,7 +9716,7 @@ describe("non-collaborative files", () => {
 			name: "Last Write Wins User",
 		});
 		const r2Writes = test_setup_r2_capture();
-		const { nodeId } = await seed_non_collaborative_file(t, db, "/two-saves.txt", "original\n");
+		const { nodeId } = await seed_non_collaborative_file({ t, db, path: "/two-saves.txt", markdown: "original\n" });
 		const [firstRead, secondRead] = await Promise.all([
 			asUser.query(api.files_nodes_content.get_non_collaborative_file_content, {
 				membershipId: db.membershipId,
@@ -9765,7 +9807,7 @@ describe("non-collaborative files", () => {
 		const r2Writes = test_setup_r2_capture();
 
 		const original = "# Guarded\n\noriginal body\n";
-		const { nodeId, assetId } = await seed_non_collaborative_file(t, db, "/guarded.md", original);
+		const { nodeId, assetId } = await seed_non_collaborative_file({ t, db, path: "/guarded.md", markdown: original });
 
 		const read_current_text = () =>
 			t.query(internal.files_nodes.read_file_content_from_chunks, {
@@ -9836,7 +9878,7 @@ describe("non-collaborative files", () => {
 		});
 		const original = "# Final lock\n\noriginal body\n";
 		const nextText = "# Final lock\n\nreplacement body\n";
-		const { nodeId, assetId } = await seed_non_collaborative_file(t, db, "/replacement-final-lock.md", original);
+		const { nodeId, assetId } = await seed_non_collaborative_file({ t, db, path: "/replacement-final-lock.md", markdown: original });
 
 		const preflight = await t.query(internal.files_nodes_content.get_replace_file_content_preflight, {
 			organizationId: db.organizationId,
@@ -9905,7 +9947,7 @@ describe("non-collaborative files", () => {
 		const r2Writes = test_setup_r2_capture();
 
 		const original = "# Restricted\n\noriginal body\n";
-		const { nodeId } = await seed_non_collaborative_file(t, db, "/restricted.md", original);
+		const { nodeId } = await seed_non_collaborative_file({ t, db, path: "/restricted.md", markdown: original });
 
 		// A plain workspace member with no grant on this file. The owner passes every permission
 		// check, so a refusal can only be proven with a second identity.
@@ -10016,7 +10058,7 @@ describe("non-collaborative files", () => {
 			name: "Yjs Door User",
 			email: "yjs-door-user@example.com",
 		});
-		const { nodeId } = await seed_non_collaborative_file(t, db, "/locked.md", "# Locked\n\nbody\n");
+		const { nodeId } = await seed_non_collaborative_file({ t, db, path: "/locked.md", markdown: "# Locked\n\nbody\n" });
 
 		// The predicate is what every Yjs door gates on, so this is the single fact that makes them
 		// all fail closed. The read predicate answers the opposite for the same node.
@@ -10087,7 +10129,7 @@ describe("non-collaborative files", () => {
 		const r2Writes = test_setup_r2_capture();
 
 		const markdown = "# Round trip\n\nbody with searchword\n";
-		const nodeId = await test_materialize_markdown_file(t, asUser, db, "/round-trip.md", markdown);
+		const nodeId = await test_materialize_markdown_file({ t, asUser, db, path: "/round-trip.md", markdown });
 
 		const read_current_text = () =>
 			t.query(internal.files_nodes.read_file_content_from_chunks, {
@@ -10275,7 +10317,7 @@ describe("non-collaborative files", () => {
 			email: "stale-cleanup-user@example.com",
 		});
 		test_setup_r2_capture();
-		const nodeId = await test_materialize_markdown_file(t, asUser, db, "/stale-cleanup.md", "# Kept\n");
+		const nodeId = await test_materialize_markdown_file({ t, asUser, db, path: "/stale-cleanup.md", markdown: "# Kept\n" });
 		const oldSnapshot = await t.run(async (ctx) => {
 			const pointers = await ctx.db.get("files_nodes", nodeId);
 			if (!pointers?.yjsSnapshotId) throw new Error("Missing Yjs snapshot");
@@ -10356,7 +10398,7 @@ describe("non-collaborative files", () => {
 			email: "lineage-race-user@example.com",
 		});
 		const r2Writes = test_setup_r2_capture();
-		const nodeId = await test_materialize_markdown_file(t, asUser, db, "/lineage-race.md", "# Before\n");
+		const nodeId = await test_materialize_markdown_file({ t, asUser, db, path: "/lineage-race.md", markdown: "# Before\n" });
 		const oldLineage = await t.run(async (ctx) => {
 			const node = await ctx.db.get("files_nodes", nodeId);
 			if (!node?.yjsLastSequenceId || !node.yjsSnapshotId) throw new Error("Expected old Yjs pointers");
@@ -10501,7 +10543,7 @@ describe("non-collaborative files", () => {
 		const r2Writes = test_setup_r2_capture();
 
 		const markdown = "# Guarded toggle\n\nbody\n";
-		const nodeId = await test_materialize_markdown_file(t, asUser, db, "/guarded-toggle.md", markdown);
+		const nodeId = await test_materialize_markdown_file({ t, asUser, db, path: "/guarded-toggle.md", markdown });
 
 		// A destructive toggle without the acknowledgement is refused before any read.
 		const unacknowledged = await asUser.mutation(api.files_nodes_content.set_file_non_collaborative, {
@@ -10581,7 +10623,7 @@ describe("non-collaborative files", () => {
 			name: "Collaboration Final Lock User",
 		});
 		const text = "# Enable final lock\n\nbody\n";
-		const { nodeId, assetId } = await seed_non_collaborative_file(t, db, "/enable-final-lock.md", text);
+		const { nodeId, assetId } = await seed_non_collaborative_file({ t, db, path: "/enable-final-lock.md", markdown: text });
 
 		const preflight = await t.query(internal.files_nodes_content.get_set_file_collaborative_preflight, {
 			membershipId: db.membershipId,
@@ -10642,8 +10684,8 @@ describe("non-collaborative files", () => {
 		const r2Writes = test_setup_r2_capture();
 
 		const markdown = "# Toggle acl\n\nbody\n";
-		const collaborativeNodeId = await test_materialize_markdown_file(t, asOwner, db, "/toggle-acl-on.md", markdown);
-		const { nodeId: nonCollaborativeNodeId } = await seed_non_collaborative_file(t, db, "/toggle-acl-off.md", markdown);
+		const collaborativeNodeId = await test_materialize_markdown_file({ t, asUser: asOwner, db, path: "/toggle-acl-on.md", markdown });
+		const { nodeId: nonCollaborativeNodeId } = await seed_non_collaborative_file({ t, db, path: "/toggle-acl-off.md", markdown });
 		// The seed helper writes the asset doc but never uploads its object, and the ON toggle reads
 		// the committed text back from the bucket. Put it there so the positive control below
 		// reaches the permission check instead of a 404.
@@ -10755,7 +10797,7 @@ describe("non-collaborative files", () => {
 		test_setup_r2_capture();
 
 		const markdown = "# Gate\n\nbody\n";
-		const nodeId = await test_materialize_markdown_file(t, asUser, db, "/gate.md", markdown);
+		const nodeId = await test_materialize_markdown_file({ t, asUser, db, path: "/gate.md", markdown });
 
 		// Push one more edit and do NOT materialize it. The committed text is now behind the
 		// document, so dropping the document here would silently lose that edit.
@@ -10851,7 +10893,7 @@ describe("non-collaborative files", () => {
 		test_setup_r2_capture();
 
 		const markdown = "# Too large\n\nbody\n";
-		const nodeId = await test_materialize_markdown_file(t, asUser, db, "/too-large.md", markdown);
+		const nodeId = await test_materialize_markdown_file({ t, asUser, db, path: "/too-large.md", markdown });
 
 		const yjsDoc = files_yjs_doc_create_from_text({ rootKind: "rich_text", text: `${markdown}\nunsaved line\n` });
 		if ("_nay" in yjsDoc) throw new Error(yjsDoc._nay.message);
@@ -10922,8 +10964,8 @@ describe("non-collaborative files", () => {
 
 		const markdown = "# Pending\n\nbody\n";
 		vi.spyOn(r2_confirmed_object_delete, "delete_object").mockResolvedValue(undefined);
-		const contentOnlyNodeId = await test_materialize_markdown_file(t, asUser, db, "/pending-content.md", markdown);
-		const contentAndMoveNodeId = await test_materialize_markdown_file(t, asUser, db, "/pending-both.md", markdown);
+		const contentOnlyNodeId = await test_materialize_markdown_file({ t, asUser, db, path: "/pending-content.md", markdown });
+		const contentAndMoveNodeId = await test_materialize_markdown_file({ t, asUser, db, path: "/pending-both.md", markdown });
 
 		// Seed one content-only proposal and one content-plus-move proposal. The real upsert flow
 		// needs an operation batch and paged state staging; this test only cares about what the
@@ -11033,8 +11075,8 @@ describe("non-collaborative files", () => {
 		});
 		const r2Writes = test_setup_r2_capture();
 
-		const contentOnly = await seed_non_collaborative_file(t, db, "/off-content.md", "# Off\n\nbody\n");
-		const contentAndMove = await seed_non_collaborative_file(t, db, "/off-both.md", "# Off\n\nbody\n");
+		const contentOnly = await seed_non_collaborative_file({ t, db, path: "/off-content.md", markdown: "# Off\n\nbody\n" });
+		const contentAndMove = await seed_non_collaborative_file({ t, db, path: "/off-both.md", markdown: "# Off\n\nbody\n" });
 		// The seed helper writes no R2 object, and the ON toggle reads the committed text from R2.
 		r2Writes.set("content-snapshot/off-content.md", "# Off\n\nbody\n");
 		r2Writes.set("content-snapshot/off-both.md", "# Off\n\nbody\n");
@@ -11119,8 +11161,8 @@ describe("non-collaborative files", () => {
 			name: "Test User",
 			email: "test@example.com",
 		});
-		const { nodeId: markdownNodeId } = await seed_non_collaborative_file(t, db, "/notes.md", "# Notes\n\nbody\n");
-		const { nodeId: plainNodeId } = await seed_non_collaborative_file(t, db, "/data.json", "{}\n");
+		const { nodeId: markdownNodeId } = await seed_non_collaborative_file({ t, db, path: "/notes.md", markdown: "# Notes\n\nbody\n" });
+		const { nodeId: plainNodeId } = await seed_non_collaborative_file({ t, db, path: "/data.json", markdown: "{}\n" });
 
 		// The extension may change freely. The stored type does not follow the name, the same
 		// as for a collaborative file.
@@ -11182,7 +11224,7 @@ describe("non-collaborative files", () => {
 			});
 			test_setup_r2_capture();
 			const text = "# Restore guard\n";
-			const nodeId = await test_materialize_markdown_file(t, asUser, db, "/restore-mode.md", text);
+			const nodeId = await test_materialize_markdown_file({ t, asUser, db, path: "/restore-mode.md", markdown: text });
 			const before = await t.run(async (ctx) => ({
 				node: await ctx.db.get("files_nodes", nodeId),
 				snapshot: await ctx.db
@@ -11255,7 +11297,7 @@ describe("non-collaborative files", () => {
 		const r2Objects = test_setup_r2_capture();
 
 		const currentText = "- [x] done\n";
-		const { nodeId, assetId } = await seed_non_collaborative_file(t, db, "/todo.txt", currentText);
+		const { nodeId, assetId } = await seed_non_collaborative_file({ t, db, path: "/todo.txt", markdown: currentText });
 		const versionText = "- [ ] not yet\n";
 		const version = await t.run(async (ctx) => {
 			const versionAssetId = await ctx.db.insert("files_r2_assets", {
@@ -11420,7 +11462,7 @@ test("file_stats stay fresh after an edit: re-materialization patches the same d
 		path: "/stats-edit.md",
 	};
 
-	const committedA = await test_read_committed_markdown(t, nodeId, r2Writes);
+	const committedA = await test_read_committed_markdown({ t, nodeId, r2Writes });
 	if (committedA === undefined) throw new Error("Expected committed A");
 	const statsA = await asUser.query(internal.files_nodes.read_committed_file_chunk_stats, statsArgs);
 	expect(statsA.usable).toBe(true);
@@ -11456,7 +11498,7 @@ test("file_stats stay fresh after an edit: re-materialization patches the same d
 	});
 	if (matB._nay) throw new Error(matB._nay.message);
 
-	const committedB = await test_read_committed_markdown(t, nodeId, r2Writes);
+	const committedB = await test_read_committed_markdown({ t, nodeId, r2Writes });
 	if (committedB === undefined) throw new Error("Expected committed B");
 	// The edit really changed the content — otherwise the freshness guarantee is not exercised.
 	expect(committedB.length).toBeGreaterThan(committedA.length);
@@ -11532,7 +11574,7 @@ describe("text_search_files", () => {
 		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
 		test_setup_r2_capture();
 		const path = `/scope/${suffix}folder/inside.md`;
-		const nodeId = await test_materialize_markdown_file(t, asUser, db, "/scope/inside.md", "prefixneedle");
+		const nodeId = await test_materialize_markdown_file({ t, asUser, db, path: "/scope/inside.md", markdown: "prefixneedle" });
 		// The saved folder door allows a wider alphabet than the agent create door.
 		const folder = await asUser.mutation(api.files_nodes.create_folder_node, {
 			membershipId: db.membershipId,
@@ -11546,7 +11588,7 @@ describe("text_search_files", () => {
 			targetParentId: folder._yay.nodeId,
 		});
 		expect(moved._nay).toBeUndefined();
-		await test_materialize_markdown_file(t, asUser, db, "/scope-other/outside.md", "prefixneedle");
+		await test_materialize_markdown_file({ t, asUser, db, path: "/scope-other/outside.md", markdown: "prefixneedle" });
 		for (const pathPrefix of [undefined, "/scope"]) {
 			const result = await asUser.query(internal.files_nodes.text_search_files, {
 				organizationId: db.organizationId,
@@ -11581,11 +11623,18 @@ test("text_search_files scopes to a path prefix without sibling-prefix leakage a
 	// One file under /scope and one under the sibling-prefix folder /scope-other (string-prefix
 	// collision). Two files is the per-user push-rate-limit ceiling; the richer multi-candidate
 	// limit-after-filter case is covered by the bash search mock test.
-	await test_materialize_markdown_file(t, asUser, db, "/scope/inside.md", body("inside"));
-	await test_materialize_markdown_file(t, asUser, db, "/scope-other/collide.md", body("collide"));
+	await test_materialize_markdown_file({ t, asUser, db, path: "/scope/inside.md", markdown: body("inside") });
+	await test_materialize_markdown_file({ t, asUser, db, path: "/scope-other/collide.md", markdown: body("collide") });
 
-	const search = (pathPrefix: string | undefined, numItems: number, cursor: string | null = null) =>
-		asUser.query(internal.files_nodes.text_search_files, {
+	const search = (args: {
+		pathPrefix: string | undefined;
+		numItems: number;
+		cursor?: string | null;
+	}) =>
+		{
+		const { cursor = null, numItems, pathPrefix} = args;
+
+		return asUser.query(internal.files_nodes.text_search_files, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId: db.userId,
@@ -11595,32 +11644,33 @@ test("text_search_files scopes to a path prefix without sibling-prefix leakage a
 			cursor,
 			pathPrefix,
 		});
+	};
 
 	// Unscoped: both files match.
-	const all = await search(undefined, 50);
+	const all = await search({ pathPrefix: undefined, numItems: 50 });
 	expect(new Set(all.items.map((i) => i.path))).toEqual(new Set(["/scope/inside.md", "/scope-other/collide.md"]));
 
-	const firstUnscopedPage = await search(undefined, 1);
+	const firstUnscopedPage = await search({ pathPrefix: undefined, numItems: 1 });
 	expect(firstUnscopedPage.items).toHaveLength(1);
 	expect(firstUnscopedPage.isDone).toBe(false);
 	expect(firstUnscopedPage.continueCursor).not.toBe("");
-	const secondUnscopedPage = await search(undefined, 50, firstUnscopedPage.continueCursor);
+	const secondUnscopedPage = await search({ pathPrefix: undefined, numItems: 50, cursor: firstUnscopedPage.continueCursor });
 	expect(secondUnscopedPage.isDone).toBe(true);
 	expect(new Set([...firstUnscopedPage.items, ...secondUnscopedPage.items].map((i) => i.path))).toEqual(
 		new Set(["/scope/inside.md", "/scope-other/collide.md"]),
 	);
 
 	// Scoped to /scope: only the file under /scope, NOT the sibling-prefix /scope-other file.
-	const scoped = await search("/scope", 50);
+	const scoped = await search({ pathPrefix: "/scope", numItems: 50 });
 	expect(scoped.items.map((i) => i.path)).toEqual(["/scope/inside.md"]);
 
 	// Scoped to the sibling prefix: only its file (the collision is rejected in both directions).
-	const scopedOther = await search("/scope-other", 50);
+	const scopedOther = await search({ pathPrefix: "/scope-other", numItems: 50 });
 	expect(scopedOther.items.map((i) => i.path)).toEqual(["/scope-other/collide.md"]);
 
 	// Limit applied AFTER the path filter: with limit 1 and an out-of-scope match also present, the
 	// single in-scope match is still returned (an out-of-scope match must not consume the limit).
-	const scopedTinyLimit = await search("/scope", 1);
+	const scopedTinyLimit = await search({ pathPrefix: "/scope", numItems: 1 });
 	expect(scopedTinyLimit.items.map((i) => i.path)).toEqual(["/scope/inside.md"]);
 });
 
@@ -11638,20 +11688,20 @@ test("text_search_files searches pending unstaged content instead of stale commi
 
 	const path = "/pending-search/plan.md";
 	const otherPath = "/pending-search/other.md";
-	const nodeId = await test_materialize_markdown_file(
+	const nodeId = await test_materialize_markdown_file({
 		t,
 		asUser,
 		db,
 		path,
-		"# Plan\n\ncommittedneedle appears only in the committed version.",
-	);
-	const otherNodeId = await test_materialize_markdown_file(
+		markdown: "# Plan\n\ncommittedneedle appears only in the committed version.",
+	});
+	const otherNodeId = await test_materialize_markdown_file({
 		t,
 		asUser,
 		db,
-		otherPath,
-		"# Other\n\nsharedneedle lives in another committed file.",
-	);
+		path: otherPath,
+		markdown: "# Other\n\nsharedneedle lives in another committed file.",
+	});
 
 	const search = (query: string) =>
 		asUser.query(internal.files_nodes.text_search_files, {
@@ -11810,12 +11860,12 @@ test("metadata search indexes committed frontmatter values and scopes by path", 
 	});
 	test_setup_r2_capture();
 
-	await test_materialize_markdown_file(
+	await test_materialize_markdown_file({
 		t,
 		asUser,
 		db,
-		"/meta/invoice.md",
-		[
+		path: "/meta/invoice.md",
+		markdown: [
 			"---",
 			"from: alice@example.com",
 			"cc:",
@@ -11829,14 +11879,14 @@ test("metadata search indexes committed frontmatter values and scopes by path", 
 			"---",
 			"Body",
 		].join("\n"),
-	);
-	await test_materialize_markdown_file(
+	});
+	await test_materialize_markdown_file({
 		t,
 		asUser,
 		db,
-		"/meta-other/outside.md",
-		["---", "from: alice@example.com", "amount: 300", "sentAt: 2026-06-01", "---", "Outside"].join("\n"),
-	);
+		path: "/meta-other/outside.md",
+		markdown: ["---", "from: alice@example.com", "amount: 300", "sentAt: 2026-06-01", "---", "Outside"].join("\n"),
+	});
 
 	const search = (plan: files_metadata_SearchPlan, pathPrefix?: string) =>
 		asUser.query(internal.files_metadata.search, {
@@ -11938,12 +11988,12 @@ test("metadata search uses current-user pending frontmatter and hides stale comm
 	test_setup_r2_capture();
 
 	const path = "/meta-pending/message.md";
-	const nodeId = await test_materialize_markdown_file(
+	const nodeId = await test_materialize_markdown_file({
 		t,
 		asUser,
 		db,
 		path,
-		[
+		markdown: [
 			"---",
 			"from: committed@example.com",
 			"subject: Committed subject",
@@ -11951,7 +12001,7 @@ test("metadata search uses current-user pending frontmatter and hides stale comm
 			"---",
 			"Committed body",
 		].join("\n"),
-	);
+	});
 
 	const pending = await upsert_pending_update_internal_for_test(t, {
 		organizationId: db.organizationId,
@@ -12067,13 +12117,13 @@ test("a pure-move row keeps committed metadata visible", async () => {
 	test_setup_r2_capture();
 
 	const path = "/meta-move/message.md";
-	const nodeId = await test_materialize_markdown_file(
+	const nodeId = await test_materialize_markdown_file({
 		t,
 		asUser,
 		db,
 		path,
-		["---", "from: committed@example.com", "---", "Committed body"].join("\n"),
-	);
+		markdown: ["---", "from: committed@example.com", "---", "Committed body"].join("\n"),
+	});
 
 	// A pure move row (mv without edits) carries no content and must not mask metadata.
 	const moved = await t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
@@ -12158,13 +12208,13 @@ test("metadata search updates indexed scope when files are renamed and moved", a
 	});
 	test_setup_r2_capture();
 
-	const nodeId = await test_materialize_markdown_file(
+	const nodeId = await test_materialize_markdown_file({
 		t,
 		asUser,
 		db,
-		"/metadata-scope/source.md",
-		["---", "scope: metadata-scope-value", "---", "Body"].join("\n"),
-	);
+		path: "/metadata-scope/source.md",
+		markdown: ["---", "scope: metadata-scope-value", "---", "Body"].join("\n"),
+	});
 	const targetFolderId = await t.run(async (ctx) =>
 		ctx.db.insert("files_nodes", {
 			contentType: null,
@@ -12245,13 +12295,13 @@ test("metadata search updates indexed scope when files are archived and unarchiv
 	});
 	test_setup_r2_capture();
 
-	const nodeId = await test_materialize_markdown_file(
+	const nodeId = await test_materialize_markdown_file({
 		t,
 		asUser,
 		db,
-		"/metadata-archive/source.md",
-		["---", "scope: metadata-archive-value", "---", "Body"].join("\n"),
-	);
+		path: "/metadata-archive/source.md",
+		markdown: ["---", "scope: metadata-archive-value", "---", "Body"].join("\n"),
+	});
 
 	const search = () =>
 		asUser.query(internal.files_metadata.search, {
@@ -12292,13 +12342,13 @@ test("file metadata is searchable next to frontmatter and survives a content sav
 	test_setup_r2_capture();
 
 	const path = "/file-metadata/note.md";
-	const nodeId = await test_materialize_markdown_file(
+	const nodeId = await test_materialize_markdown_file({
 		t,
 		asUser,
 		db,
 		path,
-		["---", "title: From frontmatter", "---", "First body"].join("\n"),
-	);
+		markdown: ["---", "title: From frontmatter", "---", "First body"].join("\n"),
+	});
 
 	const written = await asUser.mutation(api.files_metadata.set_entries, {
 		membershipId: db.membershipId,
@@ -12306,7 +12356,7 @@ test("file metadata is searchable next to frontmatter and survives a content sav
 		metadataYaml: [
 			"title: From metadata",
 			"created-by: slack",
-			"slack:message-id: '1755500000.001'",
+			"slack-message-id: '1755500000.001'",
 			"priority: 3",
 			"archived: false",
 			"released-on: 2026-08-18",
@@ -12321,7 +12371,7 @@ test("file metadata is searchable next to frontmatter and survives a content sav
 	expect(await entries()).toEqual([
 		{ key: "title", value: "From metadata" },
 		{ key: "created-by", value: "slack" },
-		{ key: "slack:message-id", value: "1755500000.001" },
+		{ key: "slack-message-id", value: "1755500000.001" },
 		{ key: "priority", value: 3 },
 		{ key: "archived", value: false },
 		{ key: "released-on", value: "2026-08-18" },
@@ -12347,7 +12397,7 @@ test("file metadata is searchable next to frontmatter and survives a content sav
 	]);
 	expect((await search({ op: "eq", fieldPath: "metadata.title", value: "From frontmatter" })).items).toEqual([]);
 
-	expect((await search({ op: "exists", fieldPath: "metadata.slack:message-id" })).items).toMatchObject([
+	expect((await search({ op: "exists", fieldPath: "metadata.slack-message-id" })).items).toMatchObject([
 		{ path, target: { kind: "saved", id: nodeId } },
 	]);
 	expect(
@@ -12397,7 +12447,7 @@ test("file metadata is searchable next to frontmatter and survives a content sav
 	expect(await entries()).toEqual([
 		{ key: "title", value: "From metadata" },
 		{ key: "created-by", value: "slack" },
-		{ key: "slack:message-id", value: "1755500000.001" },
+		{ key: "slack-message-id", value: "1755500000.001" },
 		{ key: "priority", value: 3 },
 		{ key: "archived", value: false },
 		{ key: "released-on", value: "2026-08-18" },
@@ -12444,13 +12494,13 @@ test("file metadata stays visible while a pending content edit hides committed f
 	test_setup_r2_capture();
 
 	const path = "/file-metadata-pending/note.md";
-	const nodeId = await test_materialize_markdown_file(
+	const nodeId = await test_materialize_markdown_file({
 		t,
 		asUser,
 		db,
 		path,
-		["---", "from: committed@example.com", "---", "Body"].join("\n"),
-	);
+		markdown: ["---", "from: committed@example.com", "---", "Body"].join("\n"),
+	});
 	const written = await asUser.mutation(api.files_metadata.set_entries, {
 		membershipId: db.membershipId,
 		fileNodeId: nodeId,
@@ -12514,7 +12564,7 @@ test("set_entries accepts folders and refuses bad YAML and read-only nodes", asy
 	});
 	test_setup_r2_capture();
 
-	const nodeId = await test_materialize_markdown_file(t, asUser, db, "/file-metadata-refusal/note.md", "Body\n");
+	const nodeId = await test_materialize_markdown_file({ t, asUser, db, path: "/file-metadata-refusal/note.md", markdown: "Body\n" });
 	const setEntries = (fileNodeId: Id<"files_nodes">, metadataYaml: string) =>
 		asUser.mutation(api.files_metadata.set_entries, { membershipId: db.membershipId, fileNodeId, metadataYaml });
 
@@ -13299,7 +13349,7 @@ describe("folder table sort fields", () => {
 		await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
 		test_setup_r2_capture();
 		const markdown = "---\ntags: [Zeta, alpha]\ndue: 2026-09-04\nmeta:\n  size: 7\n---\n# Note\n";
-		const nodeId = await test_materialize_markdown_file(t, asOwner, db, "/note-10.md", markdown);
+		const nodeId = await test_materialize_markdown_file({ t, asUser: asOwner, db, path: "/note-10.md", markdown });
 
 		const read = await read_sort_fields(t, nodeId);
 		expect(read.node).toMatchObject({ sortName: "note-0210.md", isRestrictedScopeRoot: false });
@@ -13352,7 +13402,7 @@ describe("folder table sort fields", () => {
 		await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
 		test_setup_r2_capture();
 		const markdown = "# Longer text than before\n";
-		const nodeId = await test_materialize_markdown_file(t, asOwner, db, "/sized.md", markdown);
+		const nodeId = await test_materialize_markdown_file({ t, asUser: asOwner, db, path: "/sized.md", markdown });
 		const sized = await t.run(async (ctx) => {
 			const node = await ctx.db.get("files_nodes", nodeId);
 			const asset = node?.assetId ? await ctx.db.get("files_r2_assets", node.assetId) : null;
@@ -14241,17 +14291,21 @@ describe("get_table_filter_match", () => {
 		const seeded = await seed_folder_table(options);
 		const { t, db, asOwner, parentId } = seeded;
 		const owner = { organizationId: db.organizationId, workspaceId: db.workspaceId, userId: db.userId };
-		const match = (
-			target: files_PendingTarget,
-			filter: files_table_Filter,
-			folderId: Id<"files_nodes"> | "root" = parentId,
-		) =>
-			asOwner.query(api.files_nodes.get_table_filter_match, {
+		const match = (args: {
+			target: files_PendingTarget;
+			filter: files_table_Filter;
+			folderId?: Id<"files_nodes"> | "root";
+		}) =>
+			{
+			const { folderId = parentId, filter, target} = args;
+
+			return asOwner.query(api.files_nodes.get_table_filter_match, {
 				membershipId: db.membershipId,
 				parentId: folderId,
 				target,
 				filter,
 			});
+		};
 		const private_folder = (entries: files_metadata_Entry[] = []) =>
 			t.run(async (ctx) => {
 				const created = await files_pending_nodes_db_create(ctx, {
@@ -14316,7 +14370,7 @@ describe("get_table_filter_match", () => {
 			[{ kind: "text", field: "frontmatter.date", op: "is", value: "2026-09-29" }, true],
 		];
 		for (const [filter, matches] of cases) {
-			expect(await match({ kind: "saved", id: nodeId }, filter)).toEqual({ matches, preparing: false });
+			expect(await match({ target: { kind: "saved", id: nodeId }, filter })).toEqual({ matches, preparing: false });
 			const page = await asOwner.query(api.files_nodes.list_tree_children_sorted, {
 				membershipId: db.membershipId,
 				parentId,
@@ -14336,7 +14390,7 @@ describe("get_table_filter_match", () => {
 		const { t, owner, match, private_folder, add_member, parentId } = await seed_filter_match();
 		const draft = await private_folder([{ key: "status", value: "old" }]);
 		const filter = { kind: "text", field: "metadata.status", op: "is", value: "old" } as const;
-		expect(await match(draft.target, filter)).toEqual({ matches: true, preparing: false });
+		expect(await match({ target: draft.target, filter })).toEqual({ matches: true, preparing: false });
 		const member = await add_member();
 		expect(
 			await member.as.query(api.files_nodes.get_table_filter_match, {
@@ -14352,7 +14406,7 @@ describe("get_table_filter_match", () => {
 				createIntent: { kind: "folder", metadata: [{ key: "status", value: "new" }] },
 			}),
 		);
-		await expect(match(draft.target, filter)).rejects.toThrow("metadataDoc source is mismatched");
+		await expect(match({ target: draft.target, filter })).rejects.toThrow("metadataDoc source is mismatched");
 		await t.run((ctx) =>
 			files_metadata_db_replace_pending(ctx, {
 				...owner,
@@ -14363,8 +14417,8 @@ describe("get_table_filter_match", () => {
 				createMetadata: [{ key: "status", value: "new" }],
 			}),
 		);
-		expect(await match(draft.target, filter)).toEqual({ matches: false, preparing: false });
-		expect(await match(draft.target, { ...filter, value: "new" })).toEqual({ matches: true, preparing: false });
+		expect(await match({ target: draft.target, filter })).toEqual({ matches: false, preparing: false });
+		expect(await match({ target: draft.target, filter: { ...filter, value: "new" } })).toEqual({ matches: true, preparing: false });
 	});
 
 	test("reports missing intent and missing new text base as preparing only for metadata", async () => {
@@ -14380,8 +14434,8 @@ describe("get_table_filter_match", () => {
 		if (created._nay) throw new Error(created._nay.message);
 		const target = { kind: "private" as const, id: created._yay.privateNodeId };
 		const filter = { kind: "text", field: "metadata.absent", op: "missing" } as const;
-		expect(await match(target, filter)).toEqual({ matches: false, preparing: true });
-		expect(await match(target, { kind: "name", field: "name", op: "contains", value: "task" })).toEqual({
+		expect(await match({ target, filter })).toEqual({ matches: false, preparing: true });
+		expect(await match({ target, filter: { kind: "name", field: "name", op: "contains", value: "task" } })).toEqual({
 			matches: true,
 			preparing: false,
 		});
@@ -14396,7 +14450,7 @@ describe("get_table_filter_match", () => {
 				},
 			}),
 		);
-		expect(await match(target, filter)).toEqual({ matches: false, preparing: true });
+		expect(await match({ target, filter })).toEqual({ matches: false, preparing: true });
 	});
 
 	test("checks current grants and returns the same refusal for hidden and missing targets", async () => {
@@ -14463,13 +14517,21 @@ describe("get_table_filter_match", () => {
 		});
 		const target = { kind: "saved" as const, id: nodeId };
 		const filter = { kind: "name", field: "name", op: "contains", value: "task" } as const;
-		expect(await match(target, filter)).toBeNull();
-		expect(await match(target, filter, destination._yay.nodeId)).toEqual({ matches: true, preparing: false });
+		expect(await match({ target, filter })).toBeNull();
+		expect(await match({ target, filter, folderId: destination._yay.nodeId })).toEqual({ matches: true, preparing: false });
 		expect(
-			await match(target, { kind: "type", field: "type", op: "is", value: "MD" }, destination._yay.nodeId),
+			await match({
+				target,
+				filter: { kind: "type", field: "type", op: "is", value: "MD" },
+				folderId: destination._yay.nodeId,
+			}),
 		).toEqual({ matches: true, preparing: false });
 		expect(
-			await match(target, { kind: "type", field: "type", op: "is", value: ".md" }, destination._yay.nodeId),
+			await match({
+				target,
+				filter: { kind: "type", field: "type", op: "is", value: ".md" },
+				folderId: destination._yay.nodeId,
+			}),
 		).toEqual({ matches: false, preparing: false });
 		const page = await asOwner.query(api.files_nodes.list_tree_children_sorted, {
 			membershipId: db.membershipId,
@@ -14489,7 +14551,10 @@ describe("get_table_filter_match", () => {
 		const { insert_child, match } = await seed_filter_match({ transactionLimits: { bytesRead: 800_000 } });
 		const nodeId = await insert_child({ name: "task.md", kind: "file", updatedAt: 1 });
 		await expect(
-			match({ kind: "saved", id: nodeId }, { kind: "name", field: "name", op: "contains", value: "task" }),
+			match({
+				target: { kind: "saved", id: nodeId },
+				filter: { kind: "name", field: "name", op: "contains", value: "task" },
+			}),
 		).rejects.toThrow("Table filter exceeded its work limit.");
 	});
 
@@ -14509,7 +14574,7 @@ describe("get_table_filter_match", () => {
 		if (pending._nay) throw new Error(pending._nay.message);
 		for (const value of ["committed", "pending"]) {
 			const filter = { kind: "text", field: "frontmatter.status", op: "is", value } as const;
-			expect(await match({ kind: "saved", id: nodeId }, filter)).toEqual({
+			expect(await match({ target: { kind: "saved", id: nodeId }, filter })).toEqual({
 				matches: value === "committed",
 				preparing: false,
 			});
@@ -14554,7 +14619,7 @@ describe("get_table_filter_match", () => {
 		});
 		if (ready._nay) throw new Error(ready._nay.message);
 		for (const value of ["9", "2"])
-			expect(await match(target, { kind: "text", field: "frontmatter.list", op: "is", value })).toEqual({
+			expect(await match({ target, filter: { kind: "text", field: "frontmatter.list", op: "is", value } })).toEqual({
 				matches: value === "9",
 				preparing: false,
 			});
@@ -14701,13 +14766,15 @@ describe("table filter caller", () => {
 describe("list_tree_children_sorted multi", () => {
 	async function seed_multi(options: Parameters<typeof test_convex>[0] = {}) {
 		const seeded = await seed_folder_table(options);
-		const add = async (
-			name: string,
-			updatedAt: number,
-			size: number | undefined = undefined,
-			status?: string,
-			kind: "file" | "folder" = "file",
-		) => {
+		const add = async (args: {
+			name: string;
+			updatedAt: number;
+			size?: number | undefined;
+			status?: string;
+			kind?: "file" | "folder";
+		}) => {
+			const { size = undefined, status, kind = "file", updatedAt, name} = args;
+
 			const nodeId = await seeded.insert_child({ name, kind, updatedAt, contentByteSize: size });
 			if (status !== undefined && kind === "folder")
 				await seeded.t.run(async (ctx) =>
@@ -14727,17 +14794,20 @@ describe("list_tree_children_sorted multi", () => {
 				);
 			return nodeId;
 		};
-		const read = (
-			sort: files_sort_Sort,
-			cursor: string | null = null,
-			options: {
+		const read = (args: {
+			sort: files_sort_Sort;
+			cursor?: string | null;
+			options?: {
 				kind?: "file" | "folder";
 				segment?: "value" | "missing";
 				workLimit?: number;
 				filter?: files_table_Filter | null;
-			} = {},
-		) =>
-			seeded.asOwner.query(api.files_nodes.list_tree_children_sorted, {
+			};
+		}) =>
+			{
+			const { cursor = null, options = {}, sort} = args;
+
+			return seeded.asOwner.query(api.files_nodes.list_tree_children_sorted, {
 				membershipId: seeded.db.membershipId,
 				parentId: seeded.parentId,
 				kind: options.kind ?? "file",
@@ -14747,11 +14817,12 @@ describe("list_tree_children_sorted multi", () => {
 				segment: options.segment ?? "value",
 				paginationOpts: { numItems: 1, cursor },
 			});
-		const walk = async (sort: files_sort_Sort, options: Parameters<typeof read>[2] = {}) => {
+		};
+		const walk = async (sort: files_sort_Sort, options: Parameters<typeof read>[0]["options"] = {}) => {
 			const pages: Array<Awaited<ReturnType<typeof read>>> = [];
 			let cursor: string | null = null;
 			for (let index = 0; index < 20; index++) {
-				const result = await read(sort, cursor, options);
+				const result = await read({ sort, cursor, options });
 				pages.push(result);
 				expect(result.sortLimit).toBeNull();
 				expect(result.workPaused).toBe(false);
@@ -14766,12 +14837,12 @@ describe("list_tree_children_sorted multi", () => {
 
 	test("candidate 51 can sort first after a whole group is proved", async () => {
 		const { add, read, walk } = await seed_multi();
-		for (let index = 0; index < 61; index++) await add(`entry-${String(index).padStart(2, "0")}.md`, 1, 61 - index);
+		for (let index = 0; index < 61; index++) await add({ name: `entry-${String(index).padStart(2, "0")}.md`, updatedAt: 1, size: 61 - index });
 		const sort: files_sort_Sort = [
 			{ field: "updated", direction: "asc" },
 			{ field: "size", direction: "asc" },
 		];
-		const first = await read(sort);
+		const first = await read({ sort });
 		expect(first.page[0]?.name).toBe("entry-60.md");
 		expect(first.scannedCount).toBe(50);
 		expect(first.workCount).toBeGreaterThan(61);
@@ -14785,7 +14856,7 @@ describe("list_tree_children_sorted multi", () => {
 		const { add, walk } = await seed_multi();
 		for (const status of ["a", "b"])
 			for (let index = 0; index < 110; index++)
-				await add(`${status}-${String(index).padStart(3, "0")}.md`, 1, undefined, status);
+				await add({ name: `${status}-${String(index).padStart(3, "0")}.md`, updatedAt: 1, size: undefined, status });
 		for (const primaryDirection of ["asc", "desc"] as const)
 			for (const nameDirection of ["asc", "desc"] as const) {
 				const sort: files_sort_Sort = [
@@ -14816,15 +14887,17 @@ describe("list_tree_children_sorted multi", () => {
 			["f.md", 2, 3, "open"],
 			["g.md", 2, undefined, "closed"],
 		] as const)
-			await add(name, updatedAt, size, status);
+			await add({ name, updatedAt, size, status });
 		for (const primary of ["asc", "desc"] as const)
 			for (const secondary of ["asc", "desc"] as const)
 				for (const third of ["asc", "desc"] as const) {
-					const result = await read([
+					const result = await read({
+						sort: [
 						{ field: "updated", direction: primary },
 						{ field: "frontmatter.status", direction: secondary },
 						{ field: "size", direction: third },
-					]);
+					],
+					});
 					const open1 = third === "asc" ? ["b.md", "a.md"] : ["a.md", "b.md"];
 					const open2 = third === "asc" ? ["e.md", "f.md"] : ["f.md", "e.md"];
 					const first = secondary === "asc" ? ["c.md", ...open1, "d.md"] : [...open1, "c.md", "d.md"];
@@ -14840,10 +14913,12 @@ describe("list_tree_children_sorted multi", () => {
 		await insert_child({ name: "two.2", kind: "file", updatedAt: 1, lowercaseExtension: "2" });
 		await insert_child({ name: "ten.10", kind: "file", updatedAt: 1, lowercaseExtension: "10" });
 		for (const direction of ["asc", "desc"] as const) {
-			const result = await read([
+			const result = await read({
+				sort: [
 				{ field: "type", direction },
 				{ field: "name", direction: "asc" },
-			]);
+			],
+			});
 			expect(result.page.map((row) => row.name)).toEqual(
 				direction === "asc" ? ["ten.10", "two.2"] : ["two.2", "ten.10"],
 			);
@@ -14854,11 +14929,18 @@ describe("list_tree_children_sorted multi", () => {
 	test("packs 50 unique Created groups in one response", async () => {
 		const { add, read } = await seed_multi();
 		for (let index = 0; index < 50; index++)
-			await add(`created-${String(index).padStart(2, "0")}.md`, index, undefined, "open");
-		const result = await read([
+			await add({
+				name: `created-${String(index).padStart(2, "0")}.md`,
+				updatedAt: index,
+				size: undefined,
+				status: "open",
+			});
+		const result = await read({
+			sort: [
 			{ field: "created", direction: "asc" },
 			{ field: "frontmatter.status", direction: "asc" },
-		]);
+		],
+		});
 		expect(result.page).toHaveLength(50);
 		expect(result.scannedCount).toBe(50);
 		expect(result.workCount).toBeLessThan(1000);
@@ -14867,16 +14949,16 @@ describe("list_tree_children_sorted multi", () => {
 
 	test("packs short indexed Name ranges to 50 candidates under one budget", async () => {
 		const { add, read } = await seed_multi();
-		for (let index = 0; index < 70; index++) await add(`updated-${String(index).padStart(2, "0")}.md`, index);
+		for (let index = 0; index < 70; index++) await add({ name: `updated-${String(index).padStart(2, "0")}.md`, updatedAt: index });
 		const sort: files_sort_Sort = [
 			{ field: "updated", direction: "desc" },
 			{ field: "name", direction: "asc" },
 		];
-		const first = await read(sort);
+		const first = await read({ sort });
 		expect(first.page).toHaveLength(50);
 		expect(first.page[0]?.name).toBe("updated-69.md");
 		expect(first.workCount).toBeGreaterThan(50);
-		const second = await read(sort, first.continueCursor);
+		const second = await read({ sort, cursor: first.continueCursor });
 		expect(second.page).toHaveLength(20);
 		expect([...first.page, ...second.page].map((row) => row.name)).toEqual(
 			Array.from({ length: 70 }, (_, index) => `updated-${String(69 - index).padStart(2, "0")}.md`),
@@ -14886,35 +14968,35 @@ describe("list_tree_children_sorted multi", () => {
 	test("small groups stay whole and a zero-match prefix still advances safely", async () => {
 		const { add, read } = await seed_multi();
 		for (let index = 0; index < 51; index++)
-			await add(`entry-${String(index).padStart(2, "0")}.md`, index < 24 ? 1 : 2, index);
+			await add({ name: `entry-${String(index).padStart(2, "0")}.md`, updatedAt: index < 24 ? 1 : 2, size: index });
 		const sort: files_sort_Sort = [
 			{ field: "updated", direction: "asc" },
 			{ field: "size", direction: "desc" },
 		];
 		const options = { filter: { kind: "name", field: "name", op: "contains", value: "absent" } as const };
-		const first = await read(sort, null, options);
+		const first = await read({ sort, cursor: null, options });
 		expect(first.page).toEqual([]);
 		expect(first.scannedCount).toBe(24);
 		expect(first.isDone).toBe(false);
 		expect(first.scanBoundary?.nameKey[1]).toBe("entry-00.md");
-		const second = await read(sort, first.continueCursor, options);
+		const second = await read({ sort, cursor: first.continueCursor, options });
 		expect(second.scannedCount).toBe(27);
 		expect(second.page).toEqual([]);
 	});
 
 	test("a cumulative work stop keeps the completed prefix and resumes before the unproved group", async () => {
 		const { add, read } = await seed_multi();
-		await add("prefix.md", 0, 0);
-		for (let index = 0; index < 10; index++) await add(`group-${index}.md`, 1, index);
+		await add({ name: "prefix.md", updatedAt: 0, size: 0 });
+		for (let index = 0; index < 10; index++) await add({ name: `group-${index}.md`, updatedAt: 1, size: index });
 		const sort: files_sort_Sort = [
 			{ field: "updated", direction: "asc" },
 			{ field: "size", direction: "desc" },
 		];
-		const first = await read(sort, null, { workLimit: 8 });
+		const first = await read({ sort, cursor: null, options: { workLimit: 8 } });
 		expect(first.page.map((row) => row.name)).toEqual(["prefix.md"]);
 		expect(first).toMatchObject({ scannedCount: 1, workCount: 8, sortLimit: null, workPaused: false, isDone: false });
 		expect(JSON.parse(first.continueCursor)).toMatchObject({ group: 0, groupDone: true });
-		const second = await read(sort, first.continueCursor);
+		const second = await read({ sort, cursor: first.continueCursor });
 		expect(second.page.map((row) => row.name)).toEqual(
 			Array.from({ length: 10 }, (_, index) => `group-${9 - index}.md`),
 		);
@@ -14923,31 +15005,36 @@ describe("list_tree_children_sorted multi", () => {
 	test("cumulative byte limits keep a safe prefix and the next fresh page can finish", async () => {
 		const { add, read } = await seed_multi({ transactionLimits: true });
 		for (let index = 0; index < 5; index++)
-			await add(`large-${index}.md`, index < 3 ? index : 3, undefined, "x".repeat(800_000));
+			await add({
+				name: `large-${index}.md`,
+				updatedAt: index < 3 ? index : 3,
+				size: undefined,
+				status: "x".repeat(800_000),
+			});
 		const sort: files_sort_Sort = [
 			{ field: "updated", direction: "asc" },
 			{ field: "frontmatter.status", direction: "asc" },
 		];
-		const first = await read(sort);
+		const first = await read({ sort });
 		expect(first.page.map((row) => row.name)).toEqual(["large-0.md", "large-1.md", "large-2.md"]);
 		expect(first).toMatchObject({ isDone: false, sortLimit: null, workPaused: false });
-		const second = await read(sort, first.continueCursor);
+		const second = await read({ sort, cursor: first.continueCursor });
 		expect(second.page.map((row) => row.name)).toEqual(["large-3.md", "large-4.md"]);
 		expect(second.isDone).toBe(true);
 	});
 
 	test("whole-query call limits stop proof after a prefix without skipping the next group", async () => {
 		const { add, read } = await seed_multi({ transactionLimits: { databaseQueries: 50 } });
-		await add("prefix.md", 0, 0);
-		for (let index = 0; index < 20; index++) await add(`group-${String(index).padStart(2, "0")}.md`, 1, index);
+		await add({ name: "prefix.md", updatedAt: 0, size: 0 });
+		for (let index = 0; index < 20; index++) await add({ name: `group-${String(index).padStart(2, "0")}.md`, updatedAt: 1, size: index });
 		const sort: files_sort_Sort = [
 			{ field: "updated", direction: "asc" },
 			{ field: "size", direction: "asc" },
 		];
-		const first = await read(sort);
+		const first = await read({ sort });
 		expect(first.page.map((row) => row.name)).toEqual(["prefix.md"]);
 		expect(first).toMatchObject({ isDone: false, sortLimit: null, workPaused: false });
-		const second = await read(sort, first.continueCursor);
+		const second = await read({ sort, cursor: first.continueCursor });
 		expect(second.sortLimit).toBeNull();
 		expect(second.page.map((row) => row.name)).toEqual(
 			Array.from({ length: 20 }, (_, index) => `group-${String(index).padStart(2, "0")}.md`),
@@ -14957,11 +15044,13 @@ describe("list_tree_children_sorted multi", () => {
 
 	test("a fresh full allowance reports a byte limit for one unproved group", async () => {
 		const { add, read } = await seed_multi({ transactionLimits: true });
-		for (let index = 0; index < 5; index++) await add(`large-${index}.md`, 1, undefined, "x".repeat(800_000));
-		const result = await read([
+		for (let index = 0; index < 5; index++) await add({ name: `large-${index}.md`, updatedAt: 1, size: undefined, status: "x".repeat(800_000) });
+		const result = await read({
+			sort: [
 			{ field: "updated", direction: "asc" },
 			{ field: "frontmatter.status", direction: "asc" },
-		]);
+		],
+		});
 		expect(result).toMatchObject({
 			page: [],
 			scannedCount: 0,
@@ -14975,11 +15064,13 @@ describe("list_tree_children_sorted multi", () => {
 
 	test("a fresh full allowance reports a call limit before publishing a small group", async () => {
 		const { add, read } = await seed_multi({ transactionLimits: { databaseQueries: 50 } });
-		for (let index = 0; index < 50; index++) await add(`group-${String(index).padStart(2, "0")}.md`, 1, index);
-		const result = await read([
+		for (let index = 0; index < 50; index++) await add({ name: `group-${String(index).padStart(2, "0")}.md`, updatedAt: 1, size: index });
+		const result = await read({
+			sort: [
 			{ field: "updated", direction: "asc" },
 			{ field: "size", direction: "asc" },
-		]);
+		],
+		});
 		expect(result).toMatchObject({
 			page: [],
 			scannedCount: 0,
@@ -14993,12 +15084,12 @@ describe("list_tree_children_sorted multi", () => {
 
 	test("a small allowance pauses without exposing a partly proved group", async () => {
 		const { add, read } = await seed_multi();
-		for (let index = 0; index < 20; index++) await add(`group-${index}.md`, 1, index);
+		for (let index = 0; index < 20; index++) await add({ name: `group-${index}.md`, updatedAt: 1, size: index });
 		const sort: files_sort_Sort = [
 			{ field: "updated", direction: "asc" },
 			{ field: "size", direction: "asc" },
 		];
-		const paused = await read(sort, null, { workLimit: 5 });
+		const paused = await read({ sort, cursor: null, options: { workLimit: 5 } });
 		expect(paused).toMatchObject({
 			page: [],
 			scannedCount: 0,
@@ -15009,17 +15100,19 @@ describe("list_tree_children_sorted multi", () => {
 			workPaused: true,
 			isDone: false,
 		});
-		expect((await read(sort)).page).toHaveLength(20);
+		expect((await read({ sort })).page).toHaveLength(20);
 	});
 
 	test("candidate 201 proves a true group limit while completed prefix rows remain", async () => {
 		const { add, read } = await seed_multi();
-		await add("prefix.md", 0, 0);
-		for (let index = 0; index < 201; index++) await add(`group-${String(index).padStart(3, "0")}.md`, 1, index);
-		const result = await read([
+		await add({ name: "prefix.md", updatedAt: 0, size: 0 });
+		for (let index = 0; index < 201; index++) await add({ name: `group-${String(index).padStart(3, "0")}.md`, updatedAt: 1, size: index });
+		const result = await read({
+			sort: [
 			{ field: "updated", direction: "asc" },
 			{ field: "size", direction: "asc" },
-		]);
+		],
+		});
 		expect(result.page.map((row) => row.name)).toEqual(["prefix.md"]);
 		expect(result).toMatchObject({
 			scannedCount: 1,
@@ -15032,7 +15125,7 @@ describe("list_tree_children_sorted multi", () => {
 
 	test("a 200-row arbitrary group stays supported and splits by its full ordered key", async () => {
 		const { add, walk } = await seed_multi();
-		for (let index = 0; index < 200; index++) await add(`group-${String(index).padStart(3, "0")}.md`, 1, 199 - index);
+		for (let index = 0; index < 200; index++) await add({ name: `group-${String(index).padStart(3, "0")}.md`, updatedAt: 1, size: 199 - index });
 		const pages = await walk([
 			{ field: "updated", direction: "desc" },
 			{ field: "size", direction: "asc" },
@@ -15045,13 +15138,19 @@ describe("list_tree_children_sorted multi", () => {
 	test("folder Type and Size keep original null parts while execution uses Updated and Name", async () => {
 		const { add, read, walk } = await seed_multi();
 		for (let index = 0; index < 250; index++)
-			await add(`folder-${String(index).padStart(3, "0")}`, 1, undefined, undefined, "folder");
+			await add({
+				name: `folder-${String(index).padStart(3, "0")}`,
+				updatedAt: 1,
+				size: undefined,
+				status: undefined,
+				kind: "folder",
+			});
 		for (const field of ["type", "size"]) {
 			const sort: files_sort_Sort = [
 				{ field, direction: "desc" },
 				{ field: "updated", direction: "desc" },
 			];
-			expect((await read(sort, null, { kind: "folder" })).page).toEqual([]);
+			expect((await read({ sort, cursor: null, options: { kind: "folder" } })).page).toEqual([]);
 			const pages = await walk(sort, { kind: "folder", segment: "missing" });
 			expect(pages.flatMap((page) => page.page.map((row) => row.name))).toEqual(
 				Array.from({ length: 250 }, (_, index) => `folder-${String(index).padStart(3, "0")}`),
@@ -15071,9 +15170,9 @@ describe("list_tree_children_sorted multi", () => {
 
 	test("effective folder metadata phases keep the original segment and key positions", async () => {
 		const { add, walk } = await seed_multi();
-		await add("a", 1, undefined, "open", "folder");
-		await add("b", 2, undefined, undefined, "folder");
-		await add("c", 1, undefined, "closed", "folder");
+		await add({ name: "a", updatedAt: 1, size: undefined, status: "open", kind: "folder" });
+		await add({ name: "b", updatedAt: 2, size: undefined, status: undefined, kind: "folder" });
+		await add({ name: "c", updatedAt: 1, size: undefined, status: "closed", kind: "folder" });
 		const pages = await walk(
 			[
 				{ field: "type", direction: "desc" },
@@ -15091,15 +15190,20 @@ describe("list_tree_children_sorted multi", () => {
 	test("an arbitrary missing metadata group is fully proved before secondary ordering", async () => {
 		const { add, read } = await seed_multi();
 		for (let index = 0; index < 8; index++)
-			await add(`missing-${index}.md`, 1, 8 - index, index === 0 ? "open" : undefined);
-		const result = await read(
-			[
+			await add({
+				name: `missing-${index}.md`,
+				updatedAt: 1,
+				size: 8 - index,
+				status: index === 0 ? "open" : undefined,
+			});
+		const result = await read({
+			sort: [
 				{ field: "frontmatter.status", direction: "desc" },
 				{ field: "size", direction: "asc" },
 			],
-			null,
-			{ segment: "missing" },
-		);
+			cursor: null,
+			options: { segment: "missing" },
+		});
 		expect(result.page.map((row) => row.name)).toEqual(
 			Array.from({ length: 7 }, (_, index) => `missing-${7 - index}.md`),
 		);
@@ -15109,17 +15213,19 @@ describe("list_tree_children_sorted multi", () => {
 
 	test("hidden restricted rows never enter an ordinary group or its overflow cap", async () => {
 		const { t, db, asOwner, add, read } = await seed_multi();
-		const kept = await add("kept.md", 1, 1);
+		const kept = await add({ name: "kept.md", updatedAt: 1, size: 1 });
 		for (let index = 0; index < 201; index++) {
-			const nodeId = await add(`hidden-${index}.md`, 1, index);
+			const nodeId = await add({ name: `hidden-${index}.md`, updatedAt: 1, size: index });
 			await t.run((ctx) =>
 				ctx.db.patch("files_nodes", nodeId, { isRestrictedScopeRoot: true, restrictedScopeNodeId: nodeId }),
 			);
 		}
-		const result = await read([
+		const result = await read({
+			sort: [
 			{ field: "updated", direction: "asc" },
 			{ field: "size", direction: "desc" },
-		]);
+		],
+		});
 		expect(result.page.map((row) => row._id)).toEqual([kept]);
 		expect(result).toMatchObject({ scannedCount: 1, sortLimit: null, isDone: true });
 		const invalid = await asOwner.query(api.files_nodes.list_tree_children_sorted, {
@@ -15138,7 +15244,12 @@ describe("list_tree_children_sorted multi", () => {
 	test("missing metadata Name desc advances rejected positions without filter or secondary reads", async () => {
 		const { t, db, add, read } = await seed_multi({ transactionLimits: { databaseQueries: 100 } });
 		for (let index = 0; index < 51; index++)
-			await add(`entry-${String(index).padStart(2, "0")}.md`, 1, undefined, index === 0 ? undefined : "open");
+			await add({
+				name: `entry-${String(index).padStart(2, "0")}.md`,
+				updatedAt: 1,
+				size: undefined,
+				status: index === 0 ? undefined : "open",
+			});
 		// A large irrelevant filter value would spend the page budget if rejected nodes read it.
 		const lastId = await t.run(
 			async (ctx) =>
@@ -15169,13 +15280,13 @@ describe("list_tree_children_sorted multi", () => {
 			segment: "missing" as const,
 			filter: { kind: "text", field: "frontmatter.large", op: "missing" } as const,
 		};
-		const first = await read(sort, null, options);
+		const first = await read({ sort, cursor: null, options });
 		expect(first).toMatchObject({ page: [], scannedCount: 50, sortLimit: null, workPaused: false, isDone: false });
 		expect(first.scanBoundary).toEqual({
 			parts: [null, ["entry-011.md", "entry-01.md"], null],
 			nameKey: ["entry-011.md", "entry-01.md"],
 		});
-		const second = await read(sort, first.continueCursor, options);
+		const second = await read({ sort, cursor: first.continueCursor, options });
 		expect(second.page.map((row) => row.name)).toEqual(["entry-00.md"]);
 		expect(second.isDone).toBe(true);
 	});
@@ -15184,17 +15295,21 @@ describe("list_tree_children_sorted multi", () => {
 describe("get_table_sort_key", () => {
 	async function seed_key(options: Parameters<typeof test_convex>[0] = {}) {
 		const seeded = await seed_folder_table(options);
-		const key = (
-			target: files_PendingTarget,
-			sort: files_sort_Sort,
-			parentId: Id<"files_nodes"> | "root" = seeded.parentId,
-		) =>
-			seeded.asOwner.query(api.files_nodes.get_table_sort_key, {
+		const key = (args: {
+			target: files_PendingTarget;
+			sort: files_sort_Sort;
+			parentId?: Id<"files_nodes"> | "root";
+		}) =>
+			{
+			const { parentId = seeded.parentId, sort, target} = args;
+
+			return seeded.asOwner.query(api.files_nodes.get_table_sort_key, {
 				membershipId: seeded.db.membershipId,
 				parentId,
 				target,
 				sort,
 			});
+		};
 		const draft = (entries: files_metadata_Entry[] = [], ready = true) =>
 			seeded.t.run(async (ctx) => {
 				const created = await files_pending_nodes_db_create(ctx, {
@@ -15251,17 +15366,23 @@ describe("get_table_sort_key", () => {
 		expect(enumerated?.rows[0]).not.toHaveProperty("sortKey");
 		expect(enumerated?.rows[0]).not.toHaveProperty("segment");
 		await t.run((ctx) => ctx.db.patch("files_nodes", nodeId, { updatedAt: 9, contentByteSize: 8 }));
-		const result = await key({ kind: "saved", id: nodeId }, [
+		const result = await key({
+			target: { kind: "saved", id: nodeId },
+			sort: [
 			{ field: "frontmatter.status", direction: "desc" },
 			{ field: "updated", direction: "asc" },
 			{ field: "size", direction: "desc" },
-		]);
+		],
+		});
 		expect(result).toEqual({ parts: [["open"], [9], [8]], nameKey: ["after.txt", "after.txt"] });
 		expect(
-			await key({ kind: "saved", id: nodeId }, [
+			await key({
+				target: { kind: "saved", id: nodeId },
+				sort: [
 				{ field: "type", direction: "asc" },
 				{ field: "frontmatter.status", direction: "desc" },
-			]),
+			],
+			}),
 		).toEqual({ parts: [["txt"], ["open"]], nameKey: ["after.txt", "after.txt"] });
 	});
 
@@ -15278,9 +15399,9 @@ describe("get_table_sort_key", () => {
 			{ field: "metadata.no", direction: "asc" },
 			{ field: "metadata.empty", direction: "asc" },
 		];
-		expect(await key(target, sort)).toEqual({ parts: [["010"], ["false"], [""]], nameKey: ["draft", "draft"] });
+		expect(await key({ target, sort })).toEqual({ parts: [["010"], ["false"], [""]], nameKey: ["draft", "draft"] });
 		await t.run((ctx) => ctx.db.patch("files_pending_updates", created.pendingUpdateId, { createIntent: undefined }));
-		expect(await key(target, sort)).toEqual({ parts: [null, null, null], nameKey: ["draft", "draft"] });
+		expect(await key({ target, sort })).toEqual({ parts: [null, null, null], nameKey: ["draft", "draft"] });
 	});
 
 	test("a stale private revision is a loud error rather than a missing key", async () => {
@@ -15288,7 +15409,10 @@ describe("get_table_sort_key", () => {
 		const created = await draft([{ key: "status", value: "open" }]);
 		await t.run((ctx) => ctx.db.patch("files_pending_updates", created.pendingUpdateId, { revision: 2 }));
 		await expect(
-			key({ kind: "private", id: created.privateNodeId }, [{ field: "metadata.status", direction: "asc" }]),
+			key({
+				target: { kind: "private", id: created.privateNodeId },
+				sort: [{ field: "metadata.status", direction: "asc" }],
+			}),
 		).rejects.toThrow("metadataDoc source is mismatched");
 	});
 
@@ -15318,14 +15442,14 @@ describe("get_table_sort_key", () => {
 				sort,
 			}),
 		).toBeNull();
-		expect(await key({ kind: "saved", id: nodeId }, sort, "root")).toBeNull();
+		expect(await key({ target: { kind: "saved", id: nodeId }, sort, parentId: "root" })).toBeNull();
 		await t.mutation(internal.files_pending_updates.upsert_file_pending_archive_in_db, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId: db.userId,
 			target: { kind: "saved", id: nodeId },
 		});
-		expect(await key({ kind: "saved", id: nodeId }, sort)).toBeNull();
+		expect(await key({ target: { kind: "saved", id: nodeId }, sort })).toBeNull();
 		await t.run((ctx) => ctx.db.patch("organizations_workspaces_users", db.membershipId, { active: false }));
 		expect(
 			await asOwner.query(api.files_nodes.get_table_sort_key, {
@@ -15412,7 +15536,7 @@ describe("get_table_sort_key", () => {
 	test("whole-query exhaustion is an error rather than refusal or missing metadata", async () => {
 		const { insert_child, key } = await seed_key({ transactionLimits: { bytesRead: 800_000 } });
 		const nodeId = await insert_child({ name: "saved.md", kind: "file", updatedAt: 1 });
-		await expect(key({ kind: "saved", id: nodeId }, [{ field: "metadata.status", direction: "asc" }])).rejects.toThrow(
+		await expect(key({ target: { kind: "saved", id: nodeId }, sort: [{ field: "metadata.status", direction: "asc" }] })).rejects.toThrow(
 			"Table sort exceeded its work limit.",
 		);
 	});
@@ -15522,8 +15646,15 @@ describe("list_tree_children_sort_side_rows", () => {
 		 * Insert folders `shared-<index>` in the table folder, or `root-shared-<index>` at the root. Each
 		 * one is its own restricted root.
 		 */
-		const insert_shared = (from: number, to: number, parent: "table" | "root" = "table") =>
-			t.run(async (ctx) => {
+		const insert_shared = (args: {
+			from: number;
+			to: number;
+			parent?: "table" | "root";
+		}) =>
+			{
+			const { from, to, parent = "table" } = args;
+
+			return t.run(async (ctx) => {
 				const nodeIds: Array<Id<"files_nodes">> = [];
 				for (let index = from; index < to; index++) {
 					const name = parent === "table" ? `shared-${index}` : `root-shared-${index}`;
@@ -15548,6 +15679,7 @@ describe("list_tree_children_sort_side_rows", () => {
 				}
 				return nodeIds;
 			});
+		};
 
 		/**
 		 * Give a user the grant doc of a Can view share on each node. Many shares through the sharing
@@ -15592,7 +15724,7 @@ describe("list_tree_children_sort_side_rows", () => {
 									? row.name.slice(dot + 1).toLowerCase()
 									: null;
 							const sortKey = ["name", "created", "updated", "type", "size"].includes(args.sort.field)
-								? files_sort_key_of(sort, { ...row, type }, new Map())
+								? files_sort_key_of({ sort, facts: { ...row, type }, metadataParts: new Map() })
 								: await args.as.query(api.files_nodes.get_table_sort_key, {
 										membershipId: args.membershipId,
 										parentId: args.parentId ?? parentId,
@@ -15958,7 +16090,7 @@ describe("list_tree_children_sort_side_rows", () => {
 
 	test("says when a folder has more restricted children or pending changes than it sorts", async () => {
 		const { t, db, asOwner, parentId, add_member, insert_shared, side_rows } = await seed_side_rows();
-		const [userSharedId, roleSharedId] = await insert_shared(0, 200);
+		const [userSharedId, roleSharedId] = await insert_shared({ from: 0, to: 200 });
 		const member = await add_member("clerk_side_rows_cap", "member");
 		for (const [nodeId, principal] of [
 			[userSharedId!, { kind: "user", userId: member.userId }],
@@ -15983,7 +16115,7 @@ describe("list_tree_children_sort_side_rows", () => {
 
 		// Over the cap the owner still gets the first 200. A member's rows come from their own grants,
 		// so a child hidden from them changes nothing in their answer.
-		await insert_shared(200, 201);
+		await insert_shared({ from: 200, to: 201 });
 		const shared = await read();
 		expect(shared?.rows).toHaveLength(200);
 		expect(shared).toMatchObject({ tooManyShared: true, tooManyPending: false });
@@ -16010,7 +16142,7 @@ describe("list_tree_children_sort_side_rows", () => {
 
 	test("gives a member the first 200 of their shared children here, counting only the ones they can read", async () => {
 		const { t, db, add_member, insert_shared, grant_read, side_rows } = await seed_side_rows();
-		const sharedIds = await insert_shared(0, 202);
+		const sharedIds = await insert_shared({ from: 0, to: 202 });
 		const member = await add_member("clerk_side_rows_many_grants", "member");
 		const read_as_member = () =>
 			side_rows({ as: member.as, membershipId: member.membershipId, sort: { field: "name", direction: "asc" } });
@@ -16049,8 +16181,8 @@ describe("list_tree_children_sort_side_rows", () => {
 
 	test("scans the folder for a member whose grant list is cut off, and gives none over the cap", async () => {
 		const { add_member, insert_shared, grant_read, side_rows } = await seed_side_rows();
-		const [sharedId] = await insert_shared(0, 1);
-		const elsewhereIds = await insert_shared(0, 501, "root");
+		const [sharedId] = await insert_shared({ from: 0, to: 1 });
+		const elsewhereIds = await insert_shared({ from: 0, to: 501, parent: "root" });
 		const member = await add_member("clerk_side_rows_cut_grants", "member");
 		const read_as_member = () =>
 			side_rows({ as: member.as, membershipId: member.membershipId, sort: { field: "name", direction: "asc" } });
@@ -16063,7 +16195,7 @@ describe("list_tree_children_sort_side_rows", () => {
 		expect(scanned).toMatchObject({ tooManyShared: false });
 
 		// Over the cap the scan would stop at a position among rows hidden from the member, so none show.
-		await insert_shared(1, 201);
+		await insert_shared({ from: 1, to: 201 });
 		expect(await read_as_member()).toEqual({ rows: [], nameClaims: [], tooManyShared: true, tooManyPending: false });
 	});
 
@@ -16118,12 +16250,12 @@ describe("search box doors", () => {
 		});
 		test_setup_r2_capture();
 
-		const openTaskId = await test_materialize_markdown_file(
+		const openTaskId = await test_materialize_markdown_file({
 			t,
-			asOwner,
+			asUser: asOwner,
 			db,
-			"/tasks/2026-09-04-raw-media.md",
-			[
+			path: "/tasks/2026-09-04-raw-media.md",
+			markdown: [
 				"---",
 				"status: open",
 				"priority: 3",
@@ -16137,23 +16269,23 @@ describe("search box doors", () => {
 				"---",
 				"Body",
 			].join("\n"),
-		);
+		});
 		await reset_file_write_rate_limits(t, db.userId);
-		const fixedTaskId = await test_materialize_markdown_file(
+		const fixedTaskId = await test_materialize_markdown_file({
 			t,
-			asOwner,
+			asUser: asOwner,
 			db,
-			"/tasks/2026-08-20-waiting-room.md",
-			["---", "status: fixed", "priority: 2", "reported: 2026-08-20", "---", "Body"].join("\n"),
-		);
+			path: "/tasks/2026-08-20-waiting-room.md",
+			markdown: ["---", "status: fixed", "priority: 2", "reported: 2026-08-20", "---", "Body"].join("\n"),
+		});
 		await reset_file_write_rate_limits(t, db.userId);
-		const archivedTaskId = await test_materialize_markdown_file(
+		const archivedTaskId = await test_materialize_markdown_file({
 			t,
-			asOwner,
+			asUser: asOwner,
 			db,
-			"/tasks-archive/2026-07-01-old.md",
-			["---", "status: open", "priority: 1", "legacy: yes", "---", "Body"].join("\n"),
-		);
+			path: "/tasks-archive/2026-07-01-old.md",
+			markdown: ["---", "status: open", "priority: 1", "legacy: yes", "---", "Body"].join("\n"),
+		});
 		await reset_file_write_rate_limits(t, db.userId);
 
 		// The metadata map is the second metadata kind: this file is "fixed" in its frontmatter and "open"
@@ -16161,7 +16293,7 @@ describe("search box doors", () => {
 		const written = await asOwner.mutation(api.files_metadata.set_entries, {
 			membershipId: db.membershipId,
 			fileNodeId: fixedTaskId,
-			metadataYaml: ["status: open", "slack:message-id: '1757003021.482119'"].join("\n"),
+			metadataYaml: ["status: open", "slack-message-id: '1757003021.482119'"].join("\n"),
 		});
 		if (written._nay) throw new Error(written._nay.message);
 
@@ -16178,11 +16310,13 @@ describe("search box doors", () => {
 	 * A member with no role at all, so the workspace lets them read nothing and only a share grant
 	 * can let them in. The owner passes every check, so a refusal needs this second identity.
 	 */
-	async function seed_grant_only_member(
-		t: ReturnType<typeof test_convex>,
-		db: Awaited<ReturnType<typeof test_mocks_fill_db_with.membership>>,
-		suffix: string,
-	) {
+	async function seed_grant_only_member(args: {
+		t: ReturnType<typeof test_convex>;
+		db: Awaited<ReturnType<typeof test_mocks_fill_db_with.membership>>;
+		suffix: string;
+	}) {
+		const { t, db, suffix } = args;
+
 		const member = await t.run(async (ctx) => {
 			const userId = await ctx.db.insert("users", { clerkUserId: `clerk_search_box_${suffix}` });
 			const membershipId = await ctx.db.insert("organizations_workspaces_users", {
@@ -16278,7 +16412,7 @@ describe("search box doors", () => {
 		);
 		// A nested map is a key of its own, without a value.
 		expect(await search([{ op: "exists", fieldPath: "frontmatter.source" }])).toEqual(new Set([seeded.openTaskId]));
-		expect(await search([{ op: "exists", fieldPath: "metadata.slack:message-id" }])).toEqual(
+		expect(await search([{ op: "exists", fieldPath: "metadata.slack-message-id" }])).toEqual(
 			new Set([seeded.fixedTaskId]),
 		);
 
@@ -16357,13 +16491,13 @@ describe("search box doors", () => {
 		// The scope bound must sort after every path under the folder, including characters above
 		// the Basic Multilingual Plane.
 		await reset_file_write_rate_limits(t, seeded.db.userId);
-		const emojiTaskId = await test_materialize_markdown_file(
+		const emojiTaskId = await test_materialize_markdown_file({
 			t,
-			seeded.asOwner,
-			seeded.db,
-			"/tasks/x.md",
-			["---", "status: open", "---", "Body"].join("\n"),
-		);
+			asUser: seeded.asOwner,
+			db: seeded.db,
+			path: "/tasks/x.md",
+			markdown: ["---", "status: open", "---", "Body"].join("\n"),
+		});
 		const folder = await seeded.asOwner.mutation(api.files_nodes.create_folder_node, {
 			membershipId: seeded.db.membershipId,
 			parentId: seeded.tasksFolderId,
@@ -16405,7 +16539,7 @@ describe("search box doors", () => {
 	test("every door answers somebody else's membership with its empty shape", async () => {
 		const t = test_convex();
 		const seeded = await seed_search_box_fixture(t);
-		const member = await seed_grant_only_member(t, seeded.db, "other");
+		const member = await seed_grant_only_member({ t, db: seeded.db, suffix: "other" });
 
 		expect(
 			await seeded.asOwner.query(api.files_metadata.search_nodes, {
@@ -16428,7 +16562,7 @@ describe("search box doors", () => {
 	test("search_nodes hides a restricted folder from a member until they are given it", async () => {
 		const t = test_convex();
 		const seeded = await seed_search_box_fixture(t);
-		const member = await seed_grant_only_member(t, seeded.db, "search");
+		const member = await seed_grant_only_member({ t, db: seeded.db, suffix: "search" });
 
 		await reset_file_write_rate_limits(t, seeded.db.userId);
 		const restricted = await seeded.asOwner.mutation(api.files_sharing.restrict_node, {
@@ -16469,7 +16603,7 @@ describe("search box doors", () => {
 	test("folder maps follow read and write grants in every metadata door", async () => {
 		const t = test_convex();
 		const seeded = await seed_search_box_fixture(t);
-		const member = await seed_grant_only_member(t, seeded.db, "folder-map");
+		const member = await seed_grant_only_member({ t, db: seeded.db, suffix: "folder-map" });
 		await reset_file_write_rate_limits(t, seeded.db.userId);
 		expect(
 			await seeded.asOwner.mutation(api.files_metadata.set_entries, {
@@ -16588,7 +16722,7 @@ describe("search box doors", () => {
 			{ fieldPath: "frontmatter.source.channel", valueKinds: ["string"] },
 			{ fieldPath: "frontmatter.status", valueKinds: ["string"] },
 			{ fieldPath: "frontmatter.tags", valueKinds: ["string"] },
-			{ fieldPath: "metadata.slack:message-id", valueKinds: ["string"] },
+			{ fieldPath: "metadata.slack-message-id", valueKinds: ["string"] },
 			{ fieldPath: "metadata.status", valueKinds: ["string"] },
 		]);
 
@@ -16608,7 +16742,7 @@ describe("search box doors", () => {
 
 		// A member who was given `/tasks` sees its keys, not the archive's `legacy` and not the
 		// owner's draft key.
-		const member = await seed_grant_only_member(t, seeded.db, "fields");
+		const member = await seed_grant_only_member({ t, db: seeded.db, suffix: "fields" });
 		expect(
 			await member.asMember.query(api.files_metadata.list_search_fields, { membershipId: member.membershipId }),
 		).toEqual([]);
@@ -16768,7 +16902,7 @@ describe("search box doors", () => {
 		expect(await values(`frontmatter.${"a".repeat(160)}`, "")).toEqual([]);
 		expect(await values("frontmatter.status", "o".repeat(201))).toEqual([]);
 
-		const member = await seed_grant_only_member(t, seeded.db, "values");
+		const member = await seed_grant_only_member({ t, db: seeded.db, suffix: "values" });
 		const memberValues = () =>
 			member.asMember.query(api.files_metadata.list_search_values, {
 				membershipId: member.membershipId,
@@ -16937,7 +17071,7 @@ describe("search box doors", () => {
 	test("search_nodes hides another user's draft and keeps the committed value for them", async () => {
 		const t = test_convex();
 		const seeded = await seed_search_box_fixture(t);
-		const member = await seed_grant_only_member(t, seeded.db, "draft");
+		const member = await seed_grant_only_member({ t, db: seeded.db, suffix: "draft" });
 		await reset_file_write_rate_limits(t, seeded.db.userId);
 		const restricted = await seeded.asOwner.mutation(api.files_sharing.restrict_node, {
 			membershipId: seeded.db.membershipId,
@@ -16993,13 +17127,13 @@ describe("search box doors", () => {
 		const seeded = await seed_search_box_fixture(t);
 		// Convex sorts strings by UTF-8 bytes, so `op😀` sorts above `op\uffff`. A bound built from
 		// `\uffff` would drop it from the scan while the value catalog still suggests it.
-		const emojiTaskId = await test_materialize_markdown_file(
+		const emojiTaskId = await test_materialize_markdown_file({
 			t,
-			seeded.asOwner,
-			seeded.db,
-			"/tasks/2026-09-05-emoji.md",
-			["---", "status: op😀", "---", "Body"].join("\n"),
-		);
+			asUser: seeded.asOwner,
+			db: seeded.db,
+			path: "/tasks/2026-09-05-emoji.md",
+			markdown: ["---", "status: op😀", "---", "Body"].join("\n"),
+		});
 
 		const found = await seeded.asOwner.query(api.files_metadata.search_nodes, {
 			membershipId: seeded.db.membershipId,
@@ -17021,7 +17155,7 @@ describe("search box doors", () => {
 	test("a member with workspace read still needs the grant for a restricted folder", async () => {
 		const t = test_convex();
 		const seeded = await seed_search_box_fixture(t);
-		const member = await seed_grant_only_member(t, seeded.db, "reader");
+		const member = await seed_grant_only_member({ t, db: seeded.db, suffix: "reader" });
 		await t.run(async (ctx) =>
 			access_control_db_ensure_role_assignment(ctx, {
 				organizationId: seeded.db.organizationId,
@@ -17277,8 +17411,8 @@ test("text_search_files scopes pending hits to a path prefix without sibling-pre
 
 	const insidePath = "/scope-pending/inside.md";
 	const collidePath = "/scope-pending-other/collide.md";
-	const insideNodeId = await test_materialize_markdown_file(t, asUser, db, insidePath, "# Inside\n\nbase content.");
-	const collideNodeId = await test_materialize_markdown_file(t, asUser, db, collidePath, "# Collide\n\nbase content.");
+	const insideNodeId = await test_materialize_markdown_file({ t, asUser, db, path: insidePath, markdown: "# Inside\n\nbase content." });
+	const collideNodeId = await test_materialize_markdown_file({ t, asUser, db, path: collidePath, markdown: "# Collide\n\nbase content." });
 
 	for (const [nodeId, label] of [
 		[insideNodeId, "Inside"],
@@ -17333,7 +17467,7 @@ test("text_search_files drops pending hits for archived files", async () => {
 	test_setup_r2_capture();
 
 	const path = "/archive-pending/doc.md";
-	const nodeId = await test_materialize_markdown_file(t, asUser, db, path, "# Doc\n\nbase content.");
+	const nodeId = await test_materialize_markdown_file({ t, asUser, db, path, markdown: "# Doc\n\nbase content." });
 
 	const pending = await upsert_pending_update_internal_for_test(t, {
 		organizationId: db.organizationId,
@@ -17382,13 +17516,13 @@ test("text_search_files updates unified search scope when files are renamed and 
 	});
 	test_setup_r2_capture();
 
-	const renameNodeId = await test_insert_searchable_markdown_file(
+	const renameNodeId = await test_insert_searchable_markdown_file({
 		t,
 		db,
-		"/rename-source.md",
-		"# Rename\n\nscopecommittedneedle before rename.",
-	);
-	const moveNodeId = await test_materialize_markdown_file(t, asUser, db, "/move-source.md", "# Move\n\nbase content.");
+		path: "/rename-source.md",
+		markdown: "# Rename\n\nscopecommittedneedle before rename.",
+	});
+	const moveNodeId = await test_materialize_markdown_file({ t, asUser, db, path: "/move-source.md", markdown: "# Move\n\nbase content." });
 	const targetFolderId = await t.run(async (ctx) =>
 		ctx.db.insert("files_nodes", {
 			contentType: null,
@@ -17479,12 +17613,12 @@ test("text_search_files updates unified committed search scope when files are ar
 		email: "search-archive-user@example.com",
 	});
 
-	const archiveNodeId = await test_insert_searchable_markdown_file(
+	const archiveNodeId = await test_insert_searchable_markdown_file({
 		t,
 		db,
-		"/archive-source.md",
-		"# Archive\n\nscopearchivecommittedneedle before archive.",
-	);
+		path: "/archive-source.md",
+		markdown: "# Archive\n\nscopearchivecommittedneedle before archive.",
+	});
 
 	const search = (query: string) =>
 		asUser.query(internal.files_nodes.text_search_files, {
@@ -17524,14 +17658,14 @@ test("text_search_files paginates unified pending and committed chunks with the 
 
 	const pendingPath = "/paging/pending.md";
 	const committedPath = "/paging/committed.md";
-	const pendingNodeId = await test_materialize_markdown_file(t, asUser, db, pendingPath, "# Pending\n\nbase content.");
-	await test_materialize_markdown_file(
+	const pendingNodeId = await test_materialize_markdown_file({ t, asUser, db, path: pendingPath, markdown: "# Pending\n\nbase content." });
+	await test_materialize_markdown_file({
 		t,
 		asUser,
 		db,
-		committedPath,
-		"# Committed\n\npagingneedle stays in the committed index.",
-	);
+		path: committedPath,
+		markdown: "# Committed\n\npagingneedle stays in the committed index.",
+	});
 
 	// Two sections that together exceed the chunker max size, so the pending file materializes as
 	// two chunk docs that both match the query.
@@ -17624,20 +17758,20 @@ test("search_content groups readable matches per file for the calling member", a
 	// The second file is long enough to split into two committed chunks with the needle in both,
 	// so the per-file grouping has something to count.
 	const filler = "lorem ipsum dolor sit amet ".repeat(60);
-	const singleChunkNodeId = await test_materialize_markdown_file(
+	const singleChunkNodeId = await test_materialize_markdown_file({
 		t,
 		asUser,
 		db,
-		"/palette-single.md",
-		"# Single\n\nOnly one palneedle lives here.",
-	);
-	const doubleChunkNodeId = await test_materialize_markdown_file(
+		path: "/palette-single.md",
+		markdown: "# Single\n\nOnly one palneedle lives here.",
+	});
+	const doubleChunkNodeId = await test_materialize_markdown_file({
 		t,
 		asUser,
 		db,
-		"/palette-double.md",
-		`# Double\n\nFirst palneedle here.\n\n${filler}\n\nSecond palneedle here.`,
-	);
+		path: "/palette-double.md",
+		markdown: `# Double\n\nFirst palneedle here.\n\n${filler}\n\nSecond palneedle here.`,
+	});
 
 	const found = await asUser.query(api.files_nodes.search_content, {
 		membershipId: db.membershipId,
@@ -17946,10 +18080,10 @@ test("restore_snapshot_r2 restores from R2-backed content without Convex Markdow
 
 describe("restore_snapshot_r2 whole-file restore", () => {
 	// A version doc that recorded the type, shape, and collaboration mode of its content.
-	async function seed_version(
-		t: ReturnType<typeof test_convex>,
-		r2Objects: Map<string, BodyInit>,
-		db: Awaited<ReturnType<typeof test_mocks_fill_db_with.membership>>,
+	async function seed_version(args: {
+		t: ReturnType<typeof test_convex>;
+		r2Objects: Map<string, BodyInit>;
+		db: Awaited<ReturnType<typeof test_mocks_fill_db_with.membership>>;
 		version: {
 			nodeId: Id<"files_nodes">;
 			body: string;
@@ -17957,8 +18091,10 @@ describe("restore_snapshot_r2 whole-file restore", () => {
 			contentType: string;
 			yjsRootKind: "rich_text" | "plain_text" | null;
 			collaborationEnabled: boolean;
-		},
-	) {
+		};
+	}) {
+		const { t, r2Objects, db, version } = args;
+
 		return await t.run(async (ctx) => {
 			const assetId = await ctx.db.insert("files_r2_assets", {
 				organizationId: db.organizationId,
@@ -18009,13 +18145,15 @@ describe("restore_snapshot_r2 whole-file restore", () => {
 	}
 
 	// Push a fresh document built from `text` as one more update, and leave it unmaterialized.
-	async function push_unsaved_edit(
-		t: ReturnType<typeof test_convex>,
-		asUser: ReturnType<ReturnType<typeof test_convex>["withIdentity"]>,
-		db: Awaited<ReturnType<typeof test_mocks_fill_db_with.membership>>,
-		nodeId: Id<"files_nodes">,
-		text: string,
-	) {
+	async function push_unsaved_edit(args: {
+		t: ReturnType<typeof test_convex>;
+		asUser: ReturnType<ReturnType<typeof test_convex>["withIdentity"]>;
+		db: Awaited<ReturnType<typeof test_mocks_fill_db_with.membership>>;
+		nodeId: Id<"files_nodes">;
+		text: string;
+	}) {
+		const { t, asUser, db, nodeId, text} = args;
+
 		const yjsDoc = files_yjs_doc_create_from_text({ rootKind: "rich_text", text });
 		if ("_nay" in yjsDoc) {
 			throw new Error(yjsDoc._nay.message);
@@ -18088,13 +18226,18 @@ describe("restore_snapshot_r2 whole-file restore", () => {
 		});
 
 		const versionText = "plain version\nline two\n";
-		const version = await seed_version(t, r2Objects, db, {
+		const version = await seed_version({
+			t,
+			r2Objects,
+			db,
+			version: {
 			nodeId,
 			body: versionText,
 			kind: "content_snapshot",
 			contentType: "text/plain;charset=utf-8",
 			yjsRootKind: "plain_text",
 			collaborationEnabled: true,
+		},
 		});
 
 		const restored = await asUser.action(api.files_nodes_content.restore_snapshot_r2, {
@@ -18173,15 +18316,20 @@ describe("restore_snapshot_r2 whole-file restore", () => {
 			email: "restore-unsaved-user@example.com",
 		});
 		const r2Objects = test_setup_r2_capture();
-		const nodeId = await test_materialize_markdown_file(t, asUser, db, "/notes.md", "# Saved\n");
-		await push_unsaved_edit(t, asUser, db, nodeId, "# Unsaved edit");
-		const version = await seed_version(t, r2Objects, db, {
+		const nodeId = await test_materialize_markdown_file({ t, asUser, db, path: "/notes.md", markdown: "# Saved\n" });
+		await push_unsaved_edit({ t, asUser, db, nodeId, text: "# Unsaved edit" });
+		const version = await seed_version({
+			t,
+			r2Objects,
+			db,
+			version: {
 			nodeId,
 			body: "plain version\n",
 			kind: "content_snapshot",
 			contentType: "text/plain;charset=utf-8",
 			yjsRootKind: "plain_text",
 			collaborationEnabled: true,
+		},
 		});
 
 		const restored = await asUser.action(api.files_nodes_content.restore_snapshot_r2, {
@@ -18220,19 +18368,24 @@ describe("restore_snapshot_r2 whole-file restore", () => {
 				email: "restore-race-user@example.com",
 			});
 			const r2Objects = test_setup_r2_capture();
-			const nodeId = await test_materialize_markdown_file(t, asUser, db, "/notes.md", "# Saved\n");
+			const nodeId = await test_materialize_markdown_file({ t, asUser, db, path: "/notes.md", markdown: "# Saved\n" });
 			if (state === "edited") {
-				await push_unsaved_edit(t, asUser, db, nodeId, "# Earlier unsaved edit");
+				await push_unsaved_edit({ t, asUser, db, nodeId, text: "# Earlier unsaved edit" });
 				// Leave time between edits so the public edit rate limit can refill.
 				vi.spyOn(Date, "now").mockReturnValue(Date.now() + 10_000);
 			}
-			const version = await seed_version(t, r2Objects, db, {
+			const version = await seed_version({
+				t,
+				r2Objects,
+				db,
+				version: {
 				nodeId,
 				body: "plain version\n",
 				kind: "content_snapshot",
 				contentType: "text/plain;charset=utf-8",
 				yjsRootKind: "plain_text",
 				collaborationEnabled: true,
+			},
 			});
 
 			const versionsBefore = await read_versions(t, nodeId);
@@ -18250,7 +18403,7 @@ describe("restore_snapshot_r2 whole-file restore", () => {
 				const href = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
 				if (!raced && href === `https://r2.test/object?key=${encodeURIComponent(version.r2Key)}`) {
 					raced = true;
-					await push_unsaved_edit(t, asUser, db, nodeId, "# Edit during restore");
+					await push_unsaved_edit({ t, asUser, db, nodeId, text: "# Edit during restore" });
 				}
 				return await baseFetch(input, init);
 			});
@@ -18387,13 +18540,18 @@ describe("restore_snapshot_r2 whole-file restore", () => {
 			return { nodeId, assetId };
 		});
 		const pngBytes = "PNG-old-bytes";
-		const version = await seed_version(t, r2Objects, db, {
+		const version = await seed_version({
+			t,
+			r2Objects,
+			db,
+			version: {
 			nodeId,
 			body: pngBytes,
 			kind: "content",
 			contentType: "image/png",
 			yjsRootKind: null,
 			collaborationEnabled: false,
+		},
 		});
 
 		const restored = await asUser.action(api.files_nodes_content.restore_snapshot_r2, {
@@ -19237,7 +19395,7 @@ describe("external/system mount text materialization (Phase D)", () => {
 			path: MOUNT_FILE_PATH,
 			mode: { kind: "lines", startLine: 4, maxLines: 2 },
 		});
-		expect(lineRange?.content).toBe(files_line_range_from_text(MOUNT_RAW_TEXT, 4, 2).content);
+		expect(lineRange?.content).toBe(files_line_range_from_text({ content: MOUNT_RAW_TEXT, startLine: 4, maxLines: 2 }).content);
 
 		// Exact wc/stat from file_stats (read O(1), not estimated).
 		const stats = await t.query(internal.files_nodes.read_committed_file_chunk_stats, {
@@ -19926,11 +20084,13 @@ describe("files_db_yjs_push_update door 1", () => {
 		return { db, nodeId: createdId };
 	}
 
-	async function read_log_state(
-		t: ReturnType<typeof test_convex>,
-		db: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces"> },
-		nodeId: Id<"files_nodes">,
-	) {
+	async function read_log_state(args: {
+		t: ReturnType<typeof test_convex>;
+		db: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces"> };
+		nodeId: Id<"files_nodes">;
+	}) {
+		const { t, db, nodeId } = args;
+
 		return await t.run(async (ctx) => {
 			const rows = await ctx.db
 				.query("files_yjs_updates")
@@ -19948,13 +20108,15 @@ describe("files_db_yjs_push_update door 1", () => {
 		});
 	}
 
-	async function push_bytes(
-		t: ReturnType<typeof test_convex>,
-		db: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces">; userId: Id<"users"> },
-		nodeId: Id<"files_nodes">,
-		update: Uint8Array,
-		rootKind: "rich_text" | "plain_text",
-	) {
+	async function push_bytes(args: {
+		t: ReturnType<typeof test_convex>;
+		db: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces">; userId: Id<"users"> };
+		nodeId: Id<"files_nodes">;
+		update: Uint8Array;
+		rootKind: "rich_text" | "plain_text";
+	}) {
+		const { t, db, nodeId, update, rootKind} = args;
+
 		return await t.run(async (ctx) => {
 			const result = await files_db_yjs_push_update(ctx, {
 				organizationId: db.organizationId,
@@ -20032,12 +20194,12 @@ describe("files_db_yjs_push_update door 1", () => {
 		async ({ update, message }) => {
 			const t = test_convex();
 			const { db, nodeId } = await create_door_fixture(t, `/door-refusal-${Math.random().toString(36).slice(2)}.md`);
-			const before = await read_log_state(t, db, nodeId);
+			const before = await read_log_state({ t, db, nodeId });
 
-			const result = await push_bytes(t, db, nodeId, update(), "plain_text");
+			const result = await push_bytes({ t, db, nodeId, update: update(), rootKind: "plain_text" });
 
 			expect(result._nay?.message).toBe(message);
-			const after = await read_log_state(t, db, nodeId);
+			const after = await read_log_state({ t, db, nodeId });
 			expect(after.rowCount).toBe(before.rowCount);
 			expect(after.lastSequence).toBe(before.lastSequence);
 		},
@@ -20046,12 +20208,12 @@ describe("files_db_yjs_push_update door 1", () => {
 	test("refuses zero bytes before decode with no sequence or update write", async () => {
 		const t = test_convex();
 		const { db, nodeId } = await create_door_fixture(t, "/door-zero-byte.md");
-		const before = await read_log_state(t, db, nodeId);
+		const before = await read_log_state({ t, db, nodeId });
 
-		const result = await push_bytes(t, db, nodeId, new Uint8Array(0), "plain_text");
+		const result = await push_bytes({ t, db, nodeId, update: new Uint8Array(0), rootKind: "plain_text" });
 
 		expect(result._nay?.message).toBe("Empty update");
-		const after = await read_log_state(t, db, nodeId);
+		const after = await read_log_state({ t, db, nodeId });
 		expect(after.rowCount).toBe(before.rowCount);
 		expect(after.lastSequence).toBe(before.lastSequence);
 	});
@@ -20059,22 +20221,22 @@ describe("files_db_yjs_push_update door 1", () => {
 	test("refuses raw bytes over the wire cap before decode with no sequence or update write", async () => {
 		const t = test_convex();
 		const { db, nodeId } = await create_door_fixture(t, "/door-over-cap.md");
-		const before = await read_log_state(t, db, nodeId);
+		const before = await read_log_state({ t, db, nodeId });
 
 		// Garbage bytes: if the size check did not run before the decode, the refusal would be
 		// "Malformed update" instead of the size message. Fill with 0xff — zero-filled bytes
 		// decode cleanly as a v1 no-op, which would let the reserve gate's row cap answer
 		// "Update too large" even with the pre-decode check gone.
-		const result = await push_bytes(
+		const result = await push_bytes({
 			t,
 			db,
 			nodeId,
-			new Uint8Array(files_MAX_YJS_WIRE_BYTES + 1).fill(255),
-			"plain_text",
-		);
+			update: new Uint8Array(files_MAX_YJS_WIRE_BYTES + 1).fill(255),
+			rootKind: "plain_text",
+		});
 
 		expect(result._nay?.message).toBe("Update too large");
-		const after = await read_log_state(t, db, nodeId);
+		const after = await read_log_state({ t, db, nodeId });
 		expect(after.rowCount).toBe(before.rowCount);
 		expect(after.lastSequence).toBe(before.lastSequence);
 	});
@@ -20082,12 +20244,12 @@ describe("files_db_yjs_push_update door 1", () => {
 	test("stores the canonical two-byte v1 no-op and advances the sequence", async () => {
 		const t = test_convex();
 		const { db, nodeId } = await create_door_fixture(t, "/door-canonical-noop.md");
-		const before = await read_log_state(t, db, nodeId);
+		const before = await read_log_state({ t, db, nodeId });
 
-		const result = await push_bytes(t, db, nodeId, encodeStateAsUpdate(new YjsDoc()), "plain_text");
+		const result = await push_bytes({ t, db, nodeId, update: encodeStateAsUpdate(new YjsDoc()), rootKind: "plain_text" });
 
 		expect(result._nay).toBeUndefined();
-		const after = await read_log_state(t, db, nodeId);
+		const after = await read_log_state({ t, db, nodeId });
 		expect(after.rowCount).toBe(before.rowCount + 1);
 		expect(after.lastSequence).toBe((before.lastSequence ?? -1) + 1);
 	});
@@ -20095,18 +20257,18 @@ describe("files_db_yjs_push_update door 1", () => {
 	test("accepts a legal plain-text incremental edit", async () => {
 		const t = test_convex();
 		const { db, nodeId } = await create_door_fixture(t, "/door-legal-edit.md");
-		const before = await read_log_state(t, db, nodeId);
+		const before = await read_log_state({ t, db, nodeId });
 
-		const result = await push_bytes(
+		const result = await push_bytes({
 			t,
 			db,
 			nodeId,
-			encoded_attack_state((d) => d.getText("plain_text").insert(0, "legal plain text")),
-			"plain_text",
-		);
+			update: encoded_attack_state((d) => d.getText("plain_text").insert(0, "legal plain text")),
+			rootKind: "plain_text",
+		});
 
 		expect(result._nay).toBeUndefined();
-		const after = await read_log_state(t, db, nodeId);
+		const after = await read_log_state({ t, db, nodeId });
 		expect(after.rowCount).toBe(before.rowCount + 1);
 	});
 
@@ -20116,18 +20278,18 @@ describe("files_db_yjs_push_update door 1", () => {
 		await t.run(async (ctx) => {
 			await ctx.db.patch("files_nodes", nodeId, { contentShapeMismatchAt: Date.now() });
 		});
-		const before = await read_log_state(t, db, nodeId);
+		const before = await read_log_state({ t, db, nodeId });
 
-		const result = await push_bytes(
+		const result = await push_bytes({
 			t,
 			db,
 			nodeId,
-			encoded_attack_state((d) => d.getText("plain_text").insert(0, "blocked")),
-			"plain_text",
-		);
+			update: encoded_attack_state((d) => d.getText("plain_text").insert(0, "blocked")),
+			rootKind: "plain_text",
+		});
 
 		expect(result._nay?.message).toBe("File is not accepting new edits until an operator repairs it");
-		const after = await read_log_state(t, db, nodeId);
+		const after = await read_log_state({ t, db, nodeId });
 		expect(after.rowCount).toBe(before.rowCount);
 		expect(after.lastSequence).toBe(before.lastSequence);
 	});
@@ -20935,12 +21097,14 @@ describe("files_nodes_content.repair_file_yjs_state_from_visible_text", () => {
 	// Seed a file whose frontmatter marker settled: create, materialize once (so the Yjs snapshot
 	// bytes exist in mocked R2), push over-cap frontmatter, and materialize again so the marker
 	// pair lands. Returns the node id and the live over-cap doc for follow-up diff pushes.
-	async function seed_frontmatter_marked_file(
-		t: ReturnType<typeof test_convex>,
-		asUser: ReturnType<ReturnType<typeof test_convex>["withIdentity"]>,
-		db: Awaited<ReturnType<typeof test_mocks_fill_db_with.membership>>,
-		path: string,
-	) {
+	async function seed_frontmatter_marked_file(args: {
+		t: ReturnType<typeof test_convex>;
+		asUser: ReturnType<ReturnType<typeof test_convex>["withIdentity"]>;
+		db: Awaited<ReturnType<typeof test_mocks_fill_db_with.membership>>;
+		path: string;
+	}) {
+		const { t, asUser, db, path} = args;
+
 		const nodeId = await test_create_saved_text_file(t, {
 			membershipId: db.membershipId,
 			path,
@@ -20994,7 +21158,7 @@ describe("files_nodes_content.repair_file_yjs_state_from_visible_text", () => {
 		});
 		test_setup_r2_capture();
 
-		const { nodeId, overCapYjsDoc } = await seed_frontmatter_marked_file(t, asUser, db, "/repair-frontmatter-over.md");
+		const { nodeId, overCapYjsDoc } = await seed_frontmatter_marked_file({ t, asUser, db, path: "/repair-frontmatter-over.md" });
 		overCapYjsDoc.destroy();
 
 		// The frontmatter marker alone qualifies for the default source: no acknowledgement flag.
@@ -21061,7 +21225,7 @@ describe("files_nodes_content.repair_file_yjs_state_from_visible_text", () => {
 		});
 		test_setup_r2_capture();
 
-		const { nodeId, overCapYjsDoc } = await seed_frontmatter_marked_file(t, asUser, db, "/repair-frontmatter-fits.md");
+		const { nodeId, overCapYjsDoc } = await seed_frontmatter_marked_file({ t, asUser, db, path: "/repair-frontmatter-fits.md" });
 
 		// The user reduced the frontmatter, but the marker still stands because the fitting
 		// push's materialization has not run (convex-test never runs scheduled functions; in
@@ -21277,7 +21441,7 @@ async function seed_reused_read_only_path_tree(t: ReturnType<typeof test_convex>
 	if (archived._nay) {
 		throw new Error(archived._nay.message);
 	}
-	await set_read_only_or_throw(asUser, db.membershipId, archivedChild._yay.nodeId);
+	await set_read_only_or_throw({ asUser, membershipId: db.membershipId, nodeId: archivedChild._yay.nodeId });
 
 	const activeRoot = await asUser.mutation(api.files_nodes.create_folder_node, {
 		membershipId: db.membershipId,
@@ -21657,7 +21821,7 @@ describe("files_nodes.get_node_write_policy_management_state", () => {
 	test("a direct lock reports the local read-only state", async () => {
 		const t = test_convex();
 		const { db, asUser, outerId } = await seed_read_only_lock_tree(t);
-		await set_read_only_or_throw(asUser, db.membershipId, outerId);
+		await set_read_only_or_throw({ asUser, membershipId: db.membershipId, nodeId: outerId });
 
 		// This node's own lock is read-only. Clearing that local lock makes it writable.
 		// There is no inherit choice and no parent lock to open.
@@ -22427,7 +22591,7 @@ describe("files_nodes.get_user_file_write_access", () => {
 	test("a read-only policy keeps the stable refusal classification", async () => {
 		const t = test_convex();
 		const { db, asUser, outerId } = await seed_read_only_lock_tree(t);
-		await set_read_only_or_throw(asUser, db.membershipId, outerId);
+		await set_read_only_or_throw({ asUser, membershipId: db.membershipId, nodeId: outerId });
 
 		const refused = await t.query(internal.files_nodes.get_user_file_write_access, {
 			organizationId: db.organizationId,
@@ -22466,7 +22630,7 @@ describe("new-node write policy defaults", () => {
 	test("trusted creation does not copy the parent lock onto missing segments", async () => {
 		const t = test_convex();
 		const { db, asUser, outerId } = await seed_read_only_lock_tree(t);
-		await set_read_only_or_throw(asUser, db.membershipId, outerId);
+		await set_read_only_or_throw({ asUser, membershipId: db.membershipId, nodeId: outerId });
 
 		const created = await t.run(async (ctx) => {
 			return await files_nodes_db_create_node_recursively_at_path(ctx, {
@@ -22481,11 +22645,11 @@ describe("new-node write policy defaults", () => {
 			});
 		});
 		expect(created._nay).toBeUndefined();
-		const parent = await read_active_child(t, db, outerId, "new");
+		const parent = await read_active_child({ t, db, parentId: outerId, name: "new" });
 		if (!parent) {
 			throw new Error("Expected new parent folder");
 		}
-		const child = await read_active_child(t, db, parent._id, "deep");
+		const child = await read_active_child({ t, db, parentId: parent._id, name: "deep" });
 		for (const node of [parent, child]) {
 			expect(node).toMatchObject({
 				writePolicy: null,
@@ -22495,11 +22659,13 @@ describe("new-node write policy defaults", () => {
 });
 
 /** Lock a node through the public mutation. Fail the test when the mutation refuses. */
-async function set_read_only_or_throw(
-	asUser: ReturnType<ReturnType<typeof test_convex>["withIdentity"]>,
-	membershipId: Id<"organizations_workspaces_users">,
-	nodeId: Id<"files_nodes">,
-) {
+async function set_read_only_or_throw(args: {
+	asUser: ReturnType<ReturnType<typeof test_convex>["withIdentity"]>;
+	membershipId: Id<"organizations_workspaces_users">;
+	nodeId: Id<"files_nodes">;
+}) {
+	const { asUser, membershipId, nodeId} = args;
+
 	const locked = await asUser.mutation(api.files_nodes.set_node_write_policy, {
 		writePolicy: { mode: "read_only" },
 		membershipId,
@@ -22511,11 +22677,13 @@ async function set_read_only_or_throw(
 }
 
 /** Unlock a node through the public mutation. Fail the test when the mutation refuses. */
-async function set_writable_or_throw(
-	asUser: ReturnType<ReturnType<typeof test_convex>["withIdentity"]>,
-	membershipId: Id<"organizations_workspaces_users">,
-	nodeId: Id<"files_nodes">,
-) {
+async function set_writable_or_throw(args: {
+	asUser: ReturnType<ReturnType<typeof test_convex>["withIdentity"]>;
+	membershipId: Id<"organizations_workspaces_users">;
+	nodeId: Id<"files_nodes">;
+}) {
+	const { asUser, membershipId, nodeId} = args;
+
 	const unlocked = await asUser.mutation(api.files_nodes.set_node_write_policy, {
 		writePolicy: null,
 		membershipId,
@@ -22527,12 +22695,14 @@ async function set_writable_or_throw(
 }
 
 /** The active child with this name under the parent, or null when none exists. */
-function read_active_child(
-	t: ReturnType<typeof test_convex>,
-	db: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces"> },
-	parentId: Id<"files_nodes"> | typeof files_ROOT_ID,
-	name: string,
-) {
+function read_active_child(args: {
+	t: ReturnType<typeof test_convex>;
+	db: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces"> };
+	parentId: Id<"files_nodes"> | typeof files_ROOT_ID;
+	name: string;
+}) {
+	const { t, db, parentId, name } = args;
+
 	return t.run(async (ctx) =>
 		ctx.db
 			.query("files_nodes")
@@ -22552,7 +22722,7 @@ describe("files_nodes.create_folder_node read-only gates", () => {
 	test("creating inside a locked folder is refused, writes nothing, and succeeds after unlock", async () => {
 		const t = test_convex();
 		const { db, asUser, innerId } = await seed_read_only_lock_tree(t);
-		await set_read_only_or_throw(asUser, db.membershipId, innerId);
+		await set_read_only_or_throw({ asUser, membershipId: db.membershipId, nodeId: innerId });
 
 		// The caller is the organization owner: locks bind owners too (RO-03).
 		const refused = await asUser.mutation(api.files_nodes.create_folder_node, {
@@ -22562,22 +22732,22 @@ describe("files_nodes.create_folder_node read-only gates", () => {
 		});
 		expect(refused._nay?.name).toBe("read_only");
 		expect(refused._nay?.message).toBe("This item is read-only.");
-		expect(await read_active_child(t, db, innerId, "blocked")).toBeNull();
+		expect(await read_active_child({ t, db, parentId: innerId, name: "blocked" })).toBeNull();
 
-		await set_writable_or_throw(asUser, db.membershipId, innerId);
+		await set_writable_or_throw({ asUser, membershipId: db.membershipId, nodeId: innerId });
 		const created = await asUser.mutation(api.files_nodes.create_folder_node, {
 			membershipId: db.membershipId,
 			parentId: innerId,
 			path: "blocked",
 		});
 		expect(created._nay).toBeUndefined();
-		expect(await read_active_child(t, db, innerId, "blocked")).not.toBeNull();
+		expect(await read_active_child({ t, db, parentId: innerId, name: "blocked" })).not.toBeNull();
 	});
 
 	test("an unlocked folder with a locked descendant still accepts a new sibling", async () => {
 		const t = test_convex();
 		const { db, asUser, outerId, innerId } = await seed_read_only_lock_tree(t);
-		await set_read_only_or_throw(asUser, db.membershipId, innerId);
+		await set_read_only_or_throw({ asUser, membershipId: db.membershipId, nodeId: innerId });
 
 		const created = await asUser.mutation(api.files_nodes.create_folder_node, {
 			membershipId: db.membershipId,
@@ -22585,13 +22755,13 @@ describe("files_nodes.create_folder_node read-only gates", () => {
 			path: "fresh-sib",
 		});
 		expect(created._nay).toBeUndefined();
-		expect(await read_active_child(t, db, outerId, "fresh-sib")).not.toBeNull();
+		expect(await read_active_child({ t, db, parentId: outerId, name: "fresh-sib" })).not.toBeNull();
 	});
 
 	test("a nested path through a locked segment is refused before any intermediate folder exists", async () => {
 		const t = test_convex();
 		const { db, asUser, innerId } = await seed_read_only_lock_tree(t);
-		await set_read_only_or_throw(asUser, db.membershipId, innerId);
+		await set_read_only_or_throw({ asUser, membershipId: db.membershipId, nodeId: innerId });
 
 		// The path crosses unlocked `/outer`, then stops at read-only `/outer/inner`.
 		const refusedThroughSegment = await asUser.mutation(api.files_nodes.create_folder_node, {
@@ -22600,7 +22770,7 @@ describe("files_nodes.create_folder_node read-only gates", () => {
 			path: "outer/inner/deep2",
 		});
 		expect(refusedThroughSegment._nay?.name).toBe("read_only");
-		expect(await read_active_child(t, db, innerId, "deep2")).toBeNull();
+		expect(await read_active_child({ t, db, parentId: innerId, name: "deep2" })).toBeNull();
 
 		// A missing chain directly under the locked parent is refused before the first insert, so no
 		// partial "a" folder is committed.
@@ -22610,13 +22780,13 @@ describe("files_nodes.create_folder_node read-only gates", () => {
 			path: "a/b",
 		});
 		expect(refusedMissingChain._nay?.name).toBe("read_only");
-		expect(await read_active_child(t, db, innerId, "a")).toBeNull();
+		expect(await read_active_child({ t, db, parentId: innerId, name: "a" })).toBeNull();
 	});
 
 	test("the internal mkdir door refuses a locked path segment", async () => {
 		const t = test_convex();
 		const { db, asUser, innerId } = await seed_read_only_lock_tree(t);
-		await set_read_only_or_throw(asUser, db.membershipId, innerId);
+		await set_read_only_or_throw({ asUser, membershipId: db.membershipId, nodeId: innerId });
 
 		const refused = await t.mutation(internal.files_nodes.create_folder_node_by_path, {
 			organizationId: db.organizationId,
@@ -22625,7 +22795,7 @@ describe("files_nodes.create_folder_node read-only gates", () => {
 			path: "/outer/inner/made-by-agent",
 		});
 		expect(refused._nay?.name).toBe("read_only");
-		expect(await read_active_child(t, db, innerId, "made-by-agent")).toBeNull();
+		expect(await read_active_child({ t, db, parentId: innerId, name: "made-by-agent" })).toBeNull();
 	});
 });
 
@@ -22646,7 +22816,7 @@ describe("file parent create doors", () => {
 			path: "probe/deep",
 		});
 		expect(refused._nay?.message).toBe("Not found");
-		expect(await read_active_child(t, db, file._yay.nodeId, "probe")).toBeNull();
+		expect(await read_active_child({ t, db, parentId: file._yay.nodeId, name: "probe" })).toBeNull();
 	});
 
 	test("create_text_node refuses a file as parent", async () => {
@@ -22665,7 +22835,7 @@ describe("file parent create doors", () => {
 			path: "probe.md",
 		});
 		expect(refused._nay?.message).toBe("Not found");
-		expect(await read_active_child(t, db, file._yay.nodeId, "probe.md")).toBeNull();
+		expect(await read_active_child({ t, db, parentId: file._yay.nodeId, name: "probe.md" })).toBeNull();
 	});
 });
 
@@ -22680,7 +22850,7 @@ describe("archived parent create doors", () => {
 			path: "probe/deep",
 		});
 		expect(refused._nay?.message).toBe("Not found");
-		expect(await read_active_child(t, db, frozenId, "probe")).toBeNull();
+		expect(await read_active_child({ t, db, parentId: frozenId, name: "probe" })).toBeNull();
 	});
 
 	test("create_text_node refuses an archived parent before any R2 work", async () => {
@@ -22693,7 +22863,7 @@ describe("archived parent create doors", () => {
 			path: "probe.md",
 		});
 		expect(refused._nay?.message).toBe("Not found");
-		expect(await read_active_child(t, db, frozenId, "probe.md")).toBeNull();
+		expect(await read_active_child({ t, db, parentId: frozenId, name: "probe.md" })).toBeNull();
 		// The preflight refuses before the action creates asset docs, so nothing needs cleanup.
 		expect(await t.run((ctx) => ctx.db.query("files_r2_assets").collect())).toEqual([]);
 		expect(await read_deletion_jobs(t)).toEqual([]);
@@ -22711,7 +22881,7 @@ describe("archived parent create doors", () => {
 			size: 1234,
 		});
 		expect(refused._nay?.message).toBe("Not found");
-		expect(await read_active_child(t, db, frozenId, "probe.pdf")).toBeNull();
+		expect(await read_active_child({ t, db, parentId: frozenId, name: "probe.pdf" })).toBeNull();
 	});
 });
 
@@ -22865,7 +23035,7 @@ describe("files_nodes.rename_node read-only gates", () => {
 	test("a locked node cannot be renamed and renames after unlock (owner gets no bypass)", async () => {
 		const t = test_convex();
 		const { db, asUser, innerId } = await seed_read_only_lock_tree(t);
-		await set_read_only_or_throw(asUser, db.membershipId, innerId);
+		await set_read_only_or_throw({ asUser, membershipId: db.membershipId, nodeId: innerId });
 
 		const refused = await asUser.mutation(api.files_nodes.rename_node, {
 			membershipId: db.membershipId,
@@ -22877,7 +23047,7 @@ describe("files_nodes.rename_node read-only gates", () => {
 		expect(innerAfterRefusal?.name).toBe("inner");
 		expect(innerAfterRefusal?.path).toBe("/outer/inner");
 
-		await set_writable_or_throw(asUser, db.membershipId, innerId);
+		await set_writable_or_throw({ asUser, membershipId: db.membershipId, nodeId: innerId });
 		const renamed = await asUser.mutation(api.files_nodes.rename_node, {
 			membershipId: db.membershipId,
 			nodeId: innerId,
@@ -22890,7 +23060,7 @@ describe("files_nodes.rename_node read-only gates", () => {
 	test("a locked parent refuses renaming a child", async () => {
 		const t = test_convex();
 		const { db, asUser, outerId, siblingId } = await seed_read_only_lock_tree(t);
-		await set_read_only_or_throw(asUser, db.membershipId, outerId);
+		await set_read_only_or_throw({ asUser, membershipId: db.membershipId, nodeId: outerId });
 
 		const refused = await asUser.mutation(api.files_nodes.rename_node, {
 			membershipId: db.membershipId,
@@ -22904,7 +23074,7 @@ describe("files_nodes.rename_node read-only gates", () => {
 	test("a writable ancestor folder can be renamed while a descendant stays locked", async () => {
 		const t = test_convex();
 		const { db, asUser, outerId, deepId, siblingId } = await seed_read_only_lock_tree(t);
-		await set_read_only_or_throw(asUser, db.membershipId, deepId);
+		await set_read_only_or_throw({ asUser, membershipId: db.membershipId, nodeId: deepId });
 
 		const renamed = await asUser.mutation(api.files_nodes.rename_node, {
 			membershipId: db.membershipId,
@@ -22928,7 +23098,7 @@ describe("files_nodes.rename_node read-only gates", () => {
 	test("a writable folder can be renamed while an archived descendant stays locked", async () => {
 		const t = test_convex();
 		const { db, asUser, outerId, frozenId } = await seed_read_only_lock_tree(t);
-		await set_read_only_or_throw(asUser, db.membershipId, frozenId);
+		await set_read_only_or_throw({ asUser, membershipId: db.membershipId, nodeId: frozenId });
 
 		const renamed = await asUser.mutation(api.files_nodes.rename_node, {
 			membershipId: db.membershipId,
@@ -22961,7 +23131,7 @@ describe("files_nodes.rename_node read-only gates", () => {
 	test("renaming into a locked destination folder is refused", async () => {
 		const t = test_convex();
 		const { db, asUser, outerId, innerId, siblingId } = await seed_read_only_lock_tree(t);
-		await set_read_only_or_throw(asUser, db.membershipId, innerId);
+		await set_read_only_or_throw({ asUser, membershipId: db.membershipId, nodeId: innerId });
 
 		const refused = await asUser.mutation(api.files_nodes.rename_node, {
 			membershipId: db.membershipId,
@@ -22977,7 +23147,7 @@ describe("files_nodes.rename_node read-only gates", () => {
 	test("a writable folder can be renamed into a new parent while a descendant stays locked", async () => {
 		const t = test_convex();
 		const { db, asUser, outerId, innerId, deepId } = await seed_read_only_lock_tree(t);
-		await set_read_only_or_throw(asUser, db.membershipId, deepId);
+		await set_read_only_or_throw({ asUser, membershipId: db.membershipId, nodeId: deepId });
 
 		const renamed = await asUser.mutation(api.files_nodes.rename_node, {
 			membershipId: db.membershipId,
@@ -22985,7 +23155,7 @@ describe("files_nodes.rename_node read-only gates", () => {
 			path: "made/inner2",
 		});
 		expect(renamed._nay).toBeUndefined();
-		expect(await read_active_child(t, db, outerId, "made")).not.toBeNull();
+		expect(await read_active_child({ t, db, parentId: outerId, name: "made" })).not.toBeNull();
 		expect((await read_lock_node(t, innerId))?.path).toBe("/outer/made/inner2");
 		expect((await read_lock_node(t, deepId))?.path).toBe("/outer/made/inner2/deep");
 	});
@@ -22995,7 +23165,7 @@ describe("files_nodes.move_nodes read-only gates", () => {
 	test("one locked node in the batch refuses the whole move and nothing moves", async () => {
 		const t = test_convex();
 		const { db, asUser, outerId, innerId, deepId, siblingId } = await seed_read_only_lock_tree(t);
-		await set_read_only_or_throw(asUser, db.membershipId, siblingId);
+		await set_read_only_or_throw({ asUser, membershipId: db.membershipId, nodeId: siblingId });
 
 		const refused = await asUser.mutation(api.files_nodes.move_nodes, {
 			membershipId: db.membershipId,
@@ -23014,7 +23184,7 @@ describe("files_nodes.move_nodes read-only gates", () => {
 	test("moving into a locked destination folder is refused", async () => {
 		const t = test_convex();
 		const { db, asUser, outerId, innerId, siblingId } = await seed_read_only_lock_tree(t);
-		await set_read_only_or_throw(asUser, db.membershipId, innerId);
+		await set_read_only_or_throw({ asUser, membershipId: db.membershipId, nodeId: innerId });
 
 		const refused = await asUser.mutation(api.files_nodes.move_nodes, {
 			membershipId: db.membershipId,
@@ -23030,7 +23200,7 @@ describe("files_nodes.move_nodes read-only gates", () => {
 	test("a writable ancestor folder can be moved while a descendant stays locked", async () => {
 		const t = test_convex();
 		const { db, asUser, deepId, innerId, siblingId } = await seed_read_only_lock_tree(t);
-		await set_read_only_or_throw(asUser, db.membershipId, deepId);
+		await set_read_only_or_throw({ asUser, membershipId: db.membershipId, nodeId: deepId });
 
 		const moved = await asUser.mutation(api.files_nodes.move_nodes, {
 			membershipId: db.membershipId,
@@ -23061,7 +23231,7 @@ describe("files_nodes.move_nodes read-only gates", () => {
 			nodeIds: [deepId],
 		});
 		expect(archived._nay).toBeUndefined();
-		await set_read_only_or_throw(asUser, db.membershipId, deepId);
+		await set_read_only_or_throw({ asUser, membershipId: db.membershipId, nodeId: deepId });
 
 		const moved = await asUser.mutation(api.files_nodes.move_nodes, {
 			membershipId: db.membershipId,
@@ -23097,7 +23267,7 @@ describe("files_nodes.archive_nodes read-only gates", () => {
 	test("archiving a locked node is refused and archives after unlock", async () => {
 		const t = test_convex();
 		const { db, asUser, siblingId } = await seed_read_only_lock_tree(t);
-		await set_read_only_or_throw(asUser, db.membershipId, siblingId);
+		await set_read_only_or_throw({ asUser, membershipId: db.membershipId, nodeId: siblingId });
 
 		const refused = await asUser.mutation(api.files_nodes.archive_nodes, {
 			membershipId: db.membershipId,
@@ -23106,7 +23276,7 @@ describe("files_nodes.archive_nodes read-only gates", () => {
 		expect(refused._nay?.name).toBe("read_only");
 		expect((await read_lock_node(t, siblingId))?.archiveOperationId).toBeNull();
 
-		await set_writable_or_throw(asUser, db.membershipId, siblingId);
+		await set_writable_or_throw({ asUser, membershipId: db.membershipId, nodeId: siblingId });
 		const archived = await asUser.mutation(api.files_nodes.archive_nodes, {
 			membershipId: db.membershipId,
 			nodeIds: [siblingId],
@@ -23118,7 +23288,7 @@ describe("files_nodes.archive_nodes read-only gates", () => {
 	test("a locked active descendant blocks archiving the folder", async () => {
 		const t = test_convex();
 		const { db, asUser, outerId, innerId, deepId, siblingId } = await seed_read_only_lock_tree(t);
-		await set_read_only_or_throw(asUser, db.membershipId, deepId);
+		await set_read_only_or_throw({ asUser, membershipId: db.membershipId, nodeId: deepId });
 
 		const refused = await asUser.mutation(api.files_nodes.archive_nodes, {
 			membershipId: db.membershipId,
@@ -23195,8 +23365,8 @@ describe("files_nodes.archive_nodes read-only gates", () => {
 			nodeIds: [c1Id, c2Id, c3Id],
 		});
 		expect(archivedChildren._nay).toBeUndefined();
-		await set_read_only_or_throw(asOwner, db.membershipId, c2Id);
-		await set_read_only_or_throw(asOwner, db.membershipId, c3Id);
+		await set_read_only_or_throw({ asUser: asOwner, membershipId: db.membershipId, nodeId: c2Id });
+		await set_read_only_or_throw({ asUser: asOwner, membershipId: db.membershipId, nodeId: c3Id });
 
 		// Restrict c1 and c3 so a plain member cannot read them. The member has no grant on these
 		// scopes, so both children are hidden to them.
@@ -23309,7 +23479,7 @@ describe("files_nodes.unarchive_nodes read-only gates", () => {
 		expect(innerArchivedOperationId).toBeDefined();
 
 		// A locked archived descendant blocks restoring its ancestor.
-		await set_read_only_or_throw(asUser, db.membershipId, deepId);
+		await set_read_only_or_throw({ asUser, membershipId: db.membershipId, nodeId: deepId });
 		const refusedByDescendant = await asUser.mutation(api.files_nodes.unarchive_nodes, {
 			membershipId: db.membershipId,
 			nodeIds: [innerId],
@@ -23319,8 +23489,8 @@ describe("files_nodes.unarchive_nodes read-only gates", () => {
 		expect((await read_lock_node(t, deepId))?.archiveOperationId).toBe(innerArchivedOperationId);
 
 		// The named node's own lock blocks too.
-		await set_writable_or_throw(asUser, db.membershipId, deepId);
-		await set_read_only_or_throw(asUser, db.membershipId, innerId);
+		await set_writable_or_throw({ asUser, membershipId: db.membershipId, nodeId: deepId });
+		await set_read_only_or_throw({ asUser, membershipId: db.membershipId, nodeId: innerId });
 		const refusedByNamedNode = await asUser.mutation(api.files_nodes.unarchive_nodes, {
 			membershipId: db.membershipId,
 			nodeIds: [innerId],
@@ -23328,7 +23498,7 @@ describe("files_nodes.unarchive_nodes read-only gates", () => {
 		expect(refusedByNamedNode._nay?.name).toBe("read_only");
 		expect((await read_lock_node(t, innerId))?.archiveOperationId).toBe(innerArchivedOperationId);
 
-		await set_writable_or_throw(asUser, db.membershipId, innerId);
+		await set_writable_or_throw({ asUser, membershipId: db.membershipId, nodeId: innerId });
 		const restored = await asUser.mutation(api.files_nodes.unarchive_nodes, {
 			membershipId: db.membershipId,
 			nodeIds: [innerId],
@@ -23387,7 +23557,7 @@ describe("files_nodes.archive_snapshot and unarchive_snapshot read-only gates", 
 		const t = test_convex();
 		const { db, asUser, snapshotId, fileNodeId } = await seed_read_only_snapshot(t, 0);
 
-		await set_read_only_or_throw(asUser, db.membershipId, fileNodeId);
+		await set_read_only_or_throw({ asUser, membershipId: db.membershipId, nodeId: fileNodeId });
 		const refused = await asUser.mutation(api.files_nodes.archive_snapshot, {
 			membershipId: db.membershipId,
 			snapshotId,
@@ -23403,7 +23573,7 @@ describe("files_nodes.archive_snapshot and unarchive_snapshot read-only gates", 
 		});
 		expect(listed.snapshots).toHaveLength(1);
 
-		await set_writable_or_throw(asUser, db.membershipId, fileNodeId);
+		await set_writable_or_throw({ asUser, membershipId: db.membershipId, nodeId: fileNodeId });
 		const archivedSnapshot = await asUser.mutation(api.files_nodes.archive_snapshot, {
 			membershipId: db.membershipId,
 			snapshotId,
@@ -23417,7 +23587,7 @@ describe("files_nodes.archive_snapshot and unarchive_snapshot read-only gates", 
 		const seededArchivedAt = Date.now();
 		const { db, asUser, snapshotId, fileNodeId } = await seed_read_only_snapshot(t, seededArchivedAt);
 
-		await set_read_only_or_throw(asUser, db.membershipId, fileNodeId);
+		await set_read_only_or_throw({ asUser, membershipId: db.membershipId, nodeId: fileNodeId });
 		const refused = await asUser.mutation(api.files_nodes.unarchive_snapshot, {
 			membershipId: db.membershipId,
 			snapshotId,
@@ -23425,7 +23595,7 @@ describe("files_nodes.archive_snapshot and unarchive_snapshot read-only gates", 
 		expect(refused._nay?.name).toBe("read_only");
 		expect((await t.run(async (ctx) => ctx.db.get("files_snapshots", snapshotId)))?.archivedAt).toBe(seededArchivedAt);
 
-		await set_writable_or_throw(asUser, db.membershipId, fileNodeId);
+		await set_writable_or_throw({ asUser, membershipId: db.membershipId, nodeId: fileNodeId });
 		const restoredSnapshot = await asUser.mutation(api.files_nodes.unarchive_snapshot, {
 			membershipId: db.membershipId,
 			snapshotId,
@@ -23456,11 +23626,13 @@ describe("files_nodes.yjs_push_update read-only gates", () => {
 	}
 
 	/** The file's Yjs write state: stored update docs and the reserved sequence counter. */
-	function read_yjs_write_state(
-		t: ReturnType<typeof test_convex>,
-		db: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces"> },
-		nodeId: Id<"files_nodes">,
-	) {
+	function read_yjs_write_state(args: {
+		t: ReturnType<typeof test_convex>;
+		db: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces"> };
+		nodeId: Id<"files_nodes">;
+	}) {
+		const { t, db, nodeId } = args;
+
 		return t.run(async (ctx) => {
 			const updates = await ctx.db
 				.query("files_yjs_updates")
@@ -23481,9 +23653,9 @@ describe("files_nodes.yjs_push_update read-only gates", () => {
 	test("a direct lock refuses the push before any sequence reserve and unlock lets it through", async () => {
 		const t = test_convex();
 		const { db, asUser, nodeId } = await seed_yjs_push_file(t, "read-only-push-direct.md");
-		await set_read_only_or_throw(asUser, db.membershipId, nodeId);
+		await set_read_only_or_throw({ asUser, membershipId: db.membershipId, nodeId });
 
-		const before = await read_yjs_write_state(t, db, nodeId);
+		const before = await read_yjs_write_state({ t, db, nodeId });
 		// The current lock refuses the write.
 		const refused = await asUser.mutation(api.files_nodes.yjs_push_update, {
 			membershipId: db.membershipId,
@@ -23495,9 +23667,9 @@ describe("files_nodes.yjs_push_update read-only gates", () => {
 		expect(refused._nay?.name).toBe("read_only");
 		expect(refused._nay?.message).toBe("This item is read-only.");
 		// The refusal reserved no sequence and stored no update doc.
-		expect(await read_yjs_write_state(t, db, nodeId)).toEqual(before);
+		expect(await read_yjs_write_state({ t, db, nodeId })).toEqual(before);
 
-		await set_writable_or_throw(asUser, db.membershipId, nodeId);
+		await set_writable_or_throw({ asUser, membershipId: db.membershipId, nodeId });
 		const pushed = await asUser.mutation(api.files_nodes.yjs_push_update, {
 			membershipId: db.membershipId,
 			nodeId,
@@ -23536,7 +23708,7 @@ describe("files_nodes.yjs_push_update read-only gates", () => {
 		if (createdFile._nay) {
 			throw new Error(createdFile._nay.message);
 		}
-		await set_read_only_or_throw(asUser, db.membershipId, folder._yay.nodeId);
+		await set_read_only_or_throw({ asUser, membershipId: db.membershipId, nodeId: folder._yay.nodeId });
 
 		const pushed = await asUser.mutation(api.files_nodes.yjs_push_update, {
 			membershipId: db.membershipId,
@@ -23554,8 +23726,8 @@ describe("files_nodes.yjs_push_update read-only gates", () => {
 	test("a push succeeds after a lock is removed", async () => {
 		const t = test_convex();
 		const { db, asUser, nodeId } = await seed_yjs_push_file(t, "read-only-push-stale.md");
-		await set_read_only_or_throw(asUser, db.membershipId, nodeId);
-		await set_writable_or_throw(asUser, db.membershipId, nodeId);
+		await set_read_only_or_throw({ asUser, membershipId: db.membershipId, nodeId });
+		await set_writable_or_throw({ asUser, membershipId: db.membershipId, nodeId });
 
 		const pushed = await asUser.mutation(api.files_nodes.yjs_push_update, {
 			membershipId: db.membershipId,
@@ -23598,7 +23770,7 @@ describe("files_nodes read-only reads", () => {
 		if (source._nay) {
 			throw new Error(source._nay.message);
 		}
-		await set_read_only_or_throw(asUser, db.membershipId, folder._yay.nodeId);
+		await set_read_only_or_throw({ asUser, membershipId: db.membershipId, nodeId: folder._yay.nodeId });
 
 		// A lock stops writes, never reads. Copying a locked file out starts with this read, so a
 		// lock check added here would break copy-out and every agent read as well.
@@ -23637,7 +23809,7 @@ describe("files_nodes.create_upload_node read-only gates", () => {
 	test("refuses a locked destination folder before any asset or node write", async () => {
 		const t = test_convex();
 		const { db, asUser, outerId } = await seed_read_only_lock_tree(t);
-		await set_read_only_or_throw(asUser, db.membershipId, outerId);
+		await set_read_only_or_throw({ asUser, membershipId: db.membershipId, nodeId: outerId });
 
 		const refused = await asUser.mutation(api.files_nodes.create_upload_node, {
 			membershipId: db.membershipId,
@@ -23648,10 +23820,10 @@ describe("files_nodes.create_upload_node read-only gates", () => {
 		});
 		expect(refused._nay?.name).toBe("read_only");
 		expect(refused._nay?.message).toBe("This item is read-only.");
-		expect(await read_active_child(t, db, outerId, "report.pdf")).toBeNull();
+		expect(await read_active_child({ t, db, parentId: outerId, name: "report.pdf" })).toBeNull();
 		expect(await read_upload_assets(t, db)).toHaveLength(0);
 
-		await set_writable_or_throw(asUser, db.membershipId, outerId);
+		await set_writable_or_throw({ asUser, membershipId: db.membershipId, nodeId: outerId });
 		const upload = await asUser.mutation(api.files_nodes.create_upload_node, {
 			membershipId: db.membershipId,
 			parentId: outerId,
@@ -23671,7 +23843,7 @@ describe("files_nodes.create_upload_node read-only gates", () => {
 	test("refuses a filename that walks through a locked existing folder", async () => {
 		const t = test_convex();
 		const { db, asUser, outerId } = await seed_read_only_lock_tree(t);
-		await set_read_only_or_throw(asUser, db.membershipId, outerId);
+		await set_read_only_or_throw({ asUser, membershipId: db.membershipId, nodeId: outerId });
 
 		const refused = await asUser.mutation(api.files_nodes.create_upload_node, {
 			membershipId: db.membershipId,
@@ -23703,7 +23875,7 @@ describe("files_nodes.create_upload_node read-only gates", () => {
 		if (first._nay) {
 			throw new Error(first._nay.message);
 		}
-		await set_read_only_or_throw(asUser, db.membershipId, first._yay.nodeId);
+		await set_read_only_or_throw({ asUser, membershipId: db.membershipId, nodeId: first._yay.nodeId });
 
 		const refused = await asUser.mutation(api.files_nodes.create_upload_node, {
 			membershipId: db.membershipId,
@@ -23718,7 +23890,7 @@ describe("files_nodes.create_upload_node read-only gates", () => {
 		expect(occupant?.archiveOperationId).toBeNull();
 		expect(await read_upload_assets(t, db)).toHaveLength(1);
 
-		await set_writable_or_throw(asUser, db.membershipId, first._yay.nodeId);
+		await set_writable_or_throw({ asUser, membershipId: db.membershipId, nodeId: first._yay.nodeId });
 		const replaced = await asUser.mutation(api.files_nodes.create_upload_node, {
 			membershipId: db.membershipId,
 			parentId: files_ROOT_ID,
@@ -23742,7 +23914,7 @@ describe("files_nodes.create_upload_nodes read-only gates", () => {
 	test("a locked common destination refuses the whole call before any write", async () => {
 		const t = test_convex();
 		const { db, asUser, outerId } = await seed_read_only_lock_tree(t);
-		await set_read_only_or_throw(asUser, db.membershipId, outerId);
+		await set_read_only_or_throw({ asUser, membershipId: db.membershipId, nodeId: outerId });
 
 		const refused = await asUser.mutation(api.files_nodes.create_upload_nodes, {
 			membershipId: db.membershipId,
@@ -23772,8 +23944,8 @@ describe("files_nodes.create_upload_nodes read-only gates", () => {
 		if (occupant._nay) {
 			throw new Error(occupant._nay.message);
 		}
-		await set_read_only_or_throw(asUser, db.membershipId, occupant._yay.nodeId);
-		await set_read_only_or_throw(asUser, db.membershipId, outerId);
+		await set_read_only_or_throw({ asUser, membershipId: db.membershipId, nodeId: occupant._yay.nodeId });
+		await set_read_only_or_throw({ asUser, membershipId: db.membershipId, nodeId: outerId });
 
 		const imported = await asUser.mutation(api.files_nodes.create_upload_nodes, {
 			membershipId: db.membershipId,
@@ -23828,7 +24000,7 @@ describe("files_nodes.discard_failed_upload_node locks", () => {
 		if (upload._nay) {
 			throw new Error(upload._nay.message);
 		}
-		await set_read_only_or_throw(asUser, db.membershipId, upload._yay.nodeId);
+		await set_read_only_or_throw({ asUser, membershipId: db.membershipId, nodeId: upload._yay.nodeId });
 
 		// Cancel is cleanup of an upload that never landed, not a delete. The lock stops
 		// new writes, so it does not keep an empty placeholder alive.
@@ -23875,7 +24047,7 @@ describe("files_nodes.discard_failed_upload_node locks", () => {
 		if (upload._nay) {
 			throw new Error(upload._nay.message);
 		}
-		await set_read_only_or_throw(asUser, db.membershipId, folder._yay.nodeId);
+		await set_read_only_or_throw({ asUser, membershipId: db.membershipId, nodeId: folder._yay.nodeId });
 		const discarded = await asUser.mutation(api.files_nodes.discard_failed_upload_node, {
 			membershipId: db.membershipId,
 			nodeId: upload._yay.nodeId,
@@ -23915,7 +24087,7 @@ describe("apply_file_pending_move", () => {
 			destParent: { kind: "root" },
 			destName: "pending-src-moved.md",
 		});
-		await set_read_only_or_throw(asUser, db.membershipId, nodeId);
+		await set_read_only_or_throw({ asUser, membershipId: db.membershipId, nodeId });
 
 		const applied = await asUser.mutation(api.files_pending_updates.apply_file_pending_move, {
 			membershipId: db.membershipId,
@@ -23924,7 +24096,7 @@ describe("apply_file_pending_move", () => {
 		expect(applied._nay).toMatchObject({ name: "read_only" });
 		expect((await t.run(async (ctx) => ctx.db.get("files_nodes", nodeId)))?.path).toBe("/pending-src.md");
 
-		await set_writable_or_throw(asUser, db.membershipId, nodeId);
+		await set_writable_or_throw({ asUser, membershipId: db.membershipId, nodeId });
 		const appliedAfterUnlock = await asUser.mutation(api.files_pending_updates.apply_file_pending_move, {
 			membershipId: db.membershipId,
 			...move,
@@ -23950,7 +24122,7 @@ describe("apply_file_pending_move", () => {
 			destParent: { kind: "saved", id: folder._yay.nodeId },
 			destName: "pending-src-dest.md",
 		});
-		await set_read_only_or_throw(asUser, db.membershipId, folder._yay.nodeId);
+		await set_read_only_or_throw({ asUser, membershipId: db.membershipId, nodeId: folder._yay.nodeId });
 
 		const applied = await asUser.mutation(api.files_pending_updates.apply_file_pending_move, {
 			membershipId: db.membershipId,
@@ -23978,7 +24150,7 @@ describe("apply_file_pending_move", () => {
 			destName: "occupied.md",
 			replace: true,
 		});
-		await set_read_only_or_throw(asUser, db.membershipId, occupant._yay.nodeId);
+		await set_read_only_or_throw({ asUser, membershipId: db.membershipId, nodeId: occupant._yay.nodeId });
 
 		const applied = await asUser.mutation(api.files_pending_updates.apply_file_pending_move, {
 			membershipId: db.membershipId,
@@ -24143,7 +24315,7 @@ describe("files_nodes public read-only view", () => {
 		});
 
 		// Lock the outer folder: the lock root sits above the member's readable scope.
-		await set_read_only_or_throw(asOwner, db.membershipId, outer._yay.nodeId);
+		await set_read_only_or_throw({ asUser: asOwner, membershipId: db.membershipId, nodeId: outer._yay.nodeId });
 
 		return {
 			db,
@@ -24832,7 +25004,7 @@ describe("files_nodes_content.create_file_node read-only barrier", () => {
 				restrictedScopeNodeId: hidden._yay.nodeId,
 			});
 		});
-		await set_read_only_or_throw(asOwner, db.membershipId, hidden._yay.nodeId);
+		await set_read_only_or_throw({ asUser: asOwner, membershipId: db.membershipId, nodeId: hidden._yay.nodeId });
 
 		const refused = await t.mutation(internal.files_nodes_content.create_file_node, {
 			userId: member.userId,
@@ -24850,7 +25022,7 @@ describe("files_nodes_content.create_file_node read-only barrier", () => {
 		});
 		expect(refused._nay?.message).toBe("Permission denied");
 		expect(refused._nay?.name).not.toBe("read_only");
-		expect(await read_active_child(t, db, hidden._yay.nodeId, "leaf.md")).toBeNull();
+		expect(await read_active_child({ t, db, parentId: hidden._yay.nodeId, name: "leaf.md" })).toBeNull();
 		expect((await read_deletion_jobs(t)).map((job) => job.reason)).toEqual(["read_only_create", "read_only_create"]);
 	});
 
@@ -24870,8 +25042,8 @@ describe("files_nodes_content.create_file_node read-only barrier", () => {
 		}
 
 		const assets = await seed_unpublished_asset_pair(t, db);
-		await set_read_only_or_throw(asUser, db.membershipId, innerId);
-		await set_writable_or_throw(asUser, db.membershipId, innerId);
+		await set_read_only_or_throw({ asUser, membershipId: db.membershipId, nodeId: innerId });
+		await set_writable_or_throw({ asUser, membershipId: db.membershipId, nodeId: innerId });
 
 		const created = await t.mutation(internal.files_nodes_content.create_file_node, {
 			userId: db.userId,
@@ -24891,7 +25063,7 @@ describe("files_nodes_content.create_file_node read-only barrier", () => {
 			throw new Error(created._nay.message);
 		}
 
-		expect((await read_active_child(t, db, innerId, "mid-lock.md"))?._id).toBe(created._yay.nodeId);
+		expect((await read_active_child({ t, db, parentId: innerId, name: "mid-lock.md" }))?._id).toBe(created._yay.nodeId);
 		await t.run(async (ctx) => {
 			expect(await ctx.db.get("files_r2_assets", assets.yjsSnapshotAssetId)).not.toBeNull();
 			expect(await ctx.db.get("files_r2_assets", assets.contentSnapshotAssetId)).not.toBeNull();
@@ -24914,7 +25086,7 @@ describe("files_nodes_content.create_file_node read-only barrier", () => {
 			throw new Error("Expected a barrier for an existing destination");
 		}
 		const assets = await seed_unpublished_asset_pair(t, db);
-		await set_read_only_or_throw(asUser, db.membershipId, siblingId);
+		await set_read_only_or_throw({ asUser, membershipId: db.membershipId, nodeId: siblingId });
 
 		// The full action refuses at capture time, before creating any asset docs.
 		const assetCountBefore = await t.run(async (ctx) => (await ctx.db.query("files_r2_assets").collect()).length);
@@ -24948,7 +25120,7 @@ describe("files_nodes_content.create_file_node read-only barrier", () => {
 		expect(refused._nay?.message).toBe("This item is read-only.");
 		await t.finishInProgressScheduledFunctions();
 
-		expect(await read_active_child(t, db, siblingId, "prepared.md")).toBeNull();
+		expect(await read_active_child({ t, db, parentId: siblingId, name: "prepared.md" })).toBeNull();
 		await t.run(async (ctx) => {
 			expect(await ctx.db.get("files_r2_assets", assets.yjsSnapshotAssetId)).toBeNull();
 			expect(await ctx.db.get("files_r2_assets", assets.contentSnapshotAssetId)).toBeNull();
@@ -25010,7 +25182,7 @@ describe("files_nodes_content.create_file_node read-only barrier", () => {
 		await t.finishInProgressScheduledFunctions();
 
 		// The winner's file survives; only the loser's uploads went to the ledger.
-		expect(await read_active_child(t, db, files_ROOT_ID, "raced.md")).not.toBeNull();
+		expect(await read_active_child({ t, db, parentId: files_ROOT_ID, name: "raced.md" })).not.toBeNull();
 		await t.run(async (ctx) => {
 			expect(await ctx.db.get("files_r2_assets", assets.yjsSnapshotAssetId)).toBeNull();
 			expect(await ctx.db.get("files_r2_assets", assets.contentSnapshotAssetId)).toBeNull();
@@ -25061,8 +25233,8 @@ describe("files_nodes_content.create_file_node read-only barrier", () => {
 		if (mid._nay) {
 			throw new Error(mid._nay.message);
 		}
-		await set_read_only_or_throw(asUser, db.membershipId, mid._yay.nodeId);
-		await set_writable_or_throw(asUser, db.membershipId, mid._yay.nodeId);
+		await set_read_only_or_throw({ asUser, membershipId: db.membershipId, nodeId: mid._yay.nodeId });
+		await set_writable_or_throw({ asUser, membershipId: db.membershipId, nodeId: mid._yay.nodeId });
 		for (const nodeId of [mid._yay.nodeId, aba._yay.nodeId]) {
 			const archived = await asUser.mutation(api.files_nodes.archive_nodes, {
 				membershipId: db.membershipId,
@@ -25072,7 +25244,7 @@ describe("files_nodes_content.create_file_node read-only barrier", () => {
 				throw new Error(archived._nay.message);
 			}
 		}
-		expect(await read_active_child(t, db, files_ROOT_ID, "aba")).toBeNull();
+		expect(await read_active_child({ t, db, parentId: files_ROOT_ID, name: "aba" })).toBeNull();
 
 		const created = await t.mutation(internal.files_nodes_content.create_file_node, {
 			userId: db.userId,
@@ -25117,8 +25289,8 @@ describe("files_nodes_content.create_file_node read-only barrier", () => {
 		if (folder._nay) {
 			throw new Error(folder._nay.message);
 		}
-		await set_read_only_or_throw(asUser, db.membershipId, folder._yay.nodeId);
-		await set_writable_or_throw(asUser, db.membershipId, folder._yay.nodeId);
+		await set_read_only_or_throw({ asUser, membershipId: db.membershipId, nodeId: folder._yay.nodeId });
+		await set_writable_or_throw({ asUser, membershipId: db.membershipId, nodeId: folder._yay.nodeId });
 		const archived = await asUser.mutation(api.files_nodes.archive_nodes, {
 			membershipId: db.membershipId,
 			nodeIds: [folder._yay.nodeId],
@@ -25168,8 +25340,8 @@ describe("files_nodes_content.create_file_node read-only barrier", () => {
 
 		const assets = await seed_unpublished_asset_pair(t, db);
 		// A lock on an archived copy does not affect the new active path after it is removed.
-		await set_read_only_or_throw(asUser, db.membershipId, frozenId);
-		await set_writable_or_throw(asUser, db.membershipId, frozenId);
+		await set_read_only_or_throw({ asUser, membershipId: db.membershipId, nodeId: frozenId });
+		await set_writable_or_throw({ asUser, membershipId: db.membershipId, nodeId: frozenId });
 
 		const created = await t.mutation(internal.files_nodes_content.create_file_node, {
 			userId: db.userId,
@@ -25202,11 +25374,13 @@ describe("files_nodes_content.create_file_node read-only barrier", () => {
  * would have uploaded. The published snapshot asset keeps its r2Key; the current/restored pair
  * has none and still carries the insert-time cleanup deadline.
  */
-async function seed_snapshot_restore_target(
-	t: ReturnType<typeof test_convex>,
-	db: Awaited<ReturnType<typeof test_mocks_fill_db_with.membership>>,
-	path: string,
-) {
+async function seed_snapshot_restore_target(args: {
+	t: ReturnType<typeof test_convex>;
+	db: Awaited<ReturnType<typeof test_mocks_fill_db_with.membership>>;
+	path: string;
+}) {
+	const { t, db, path} = args;
+
 	const nodeId = await test_create_saved_text_file(t, {
 		membershipId: db.membershipId,
 		path,
@@ -25262,11 +25436,13 @@ async function seed_snapshot_restore_target(
 }
 
 /** Read every value that a refused restore must leave unchanged. */
-function read_restore_write_surfaces(
-	t: ReturnType<typeof test_convex>,
-	db: Awaited<ReturnType<typeof test_mocks_fill_db_with.membership>>,
-	nodeId: Id<"files_nodes">,
-) {
+function read_restore_write_surfaces(args: {
+	t: ReturnType<typeof test_convex>;
+	db: Awaited<ReturnType<typeof test_mocks_fill_db_with.membership>>;
+	nodeId: Id<"files_nodes">;
+}) {
+	const { t, db, nodeId } = args;
+
 	return t.run(async (ctx) => {
 		const node = await ctx.db.get("files_nodes", nodeId);
 		const snapshots = await ctx.db
@@ -25305,10 +25481,10 @@ describe("files_nodes_content.restore_snapshot read-only gates", () => {
 			external_id: db.userId,
 			name: "Restore Lock User",
 		});
-		const seeded = await seed_snapshot_restore_target(t, db, "/restore-lock.md");
-		const before = await read_restore_write_surfaces(t, db, seeded.nodeId);
+		const seeded = await seed_snapshot_restore_target({ t, db, path: "/restore-lock.md" });
+		const before = await read_restore_write_surfaces({ t, db, nodeId: seeded.nodeId });
 
-		await set_read_only_or_throw(asUser, db.membershipId, seeded.nodeId);
+		await set_read_only_or_throw({ asUser, membershipId: db.membershipId, nodeId: seeded.nodeId });
 		vi.spyOn(r2_confirmed_object_delete, "delete_object").mockRejectedValue(new Error("simulated R2 outage"));
 
 		// The live lock refuses the restore.
@@ -25330,7 +25506,7 @@ describe("files_nodes_content.restore_snapshot read-only gates", () => {
 		await t.finishInProgressScheduledFunctions();
 
 		// Nothing was written: node pointer, snapshot history, Yjs updates, and chunks are as before.
-		expect(await read_restore_write_surfaces(t, db, seeded.nodeId)).toEqual(before);
+		expect(await read_restore_write_surfaces({ t, db, nodeId: seeded.nodeId })).toEqual(before);
 		await t.run(async (ctx) => {
 			expect(await ctx.db.get("files_r2_assets", seeded.currentSnapshotAssetId)).toBeNull();
 			expect(await ctx.db.get("files_r2_assets", seeded.restoredSnapshotAssetId)).toBeNull();
@@ -25353,8 +25529,8 @@ describe("files_nodes_content.restore_snapshot read-only gates", () => {
 				external_id: db.userId,
 				name: "Restore Retry User",
 			});
-			const seeded = await seed_snapshot_restore_target(t, db, "/restore-retry.md");
-			await set_read_only_or_throw(asUser, db.membershipId, seeded.nodeId);
+			const seeded = await seed_snapshot_restore_target({ t, db, path: "/restore-retry.md" });
+			await set_read_only_or_throw({ asUser, membershipId: db.membershipId, nodeId: seeded.nodeId });
 
 			// Every confirmed delete fails: the exact keys must stay in the ledger for the retry
 			// backoff and the hourly sweep, never silently dropped.
@@ -25405,11 +25581,11 @@ describe("files_nodes_content.restore_snapshot read-only gates", () => {
 			name: "Restore Unlocked User",
 			email: "restore-readonly-user@example.com",
 		});
-		const seeded = await seed_snapshot_restore_target(t, db, "/restore-unlocked.md");
+		const seeded = await seed_snapshot_restore_target({ t, db, path: "/restore-unlocked.md" });
 
 		// Only the lock state in the final mutation matters.
-		await set_read_only_or_throw(asUser, db.membershipId, seeded.nodeId);
-		await set_writable_or_throw(asUser, db.membershipId, seeded.nodeId);
+		await set_read_only_or_throw({ asUser, membershipId: db.membershipId, nodeId: seeded.nodeId });
+		await set_writable_or_throw({ asUser, membershipId: db.membershipId, nodeId: seeded.nodeId });
 
 		const restoredMarkdown = "# restored content\n";
 		const restoreStage = await t.mutation(internal.files_pending_updates.stage_trusted_yjs_update, {
@@ -25472,11 +25648,13 @@ describe("files_nodes_content.restore_snapshot read-only gates", () => {
  * A durably marked file plus the three asset docs a repair action hands to its final mutation:
  * the two fresh unpublished uploads and the superseded Yjs snapshot asset.
  */
-async function seed_repair_finalize_target(
-	t: ReturnType<typeof test_convex>,
-	db: Awaited<ReturnType<typeof test_mocks_fill_db_with.membership>>,
-	path: string,
-) {
+async function seed_repair_finalize_target(args: {
+	t: ReturnType<typeof test_convex>;
+	db: Awaited<ReturnType<typeof test_mocks_fill_db_with.membership>>;
+	path: string;
+}) {
+	const { t, db, path} = args;
+
 	const nodeId = await test_create_saved_text_file(t, {
 		membershipId: db.membershipId,
 		path,
@@ -25606,8 +25784,8 @@ describe("files_nodes_content.finalize_file_yjs_repair read-only gates", () => {
 			external_id: db.userId,
 			name: "Repair Lock User",
 		});
-		const seeded = await seed_repair_finalize_target(t, db, "/repair-gate-lock.md");
-		await set_read_only_or_throw(asUser, db.membershipId, seeded.nodeId);
+		const seeded = await seed_repair_finalize_target({ t, db, path: "/repair-gate-lock.md" });
+		await set_read_only_or_throw({ asUser, membershipId: db.membershipId, nodeId: seeded.nodeId });
 		vi.spyOn(r2_confirmed_object_delete, "delete_object").mockRejectedValue(new Error("simulated R2 outage"));
 
 		// `targetSequence` is deliberately stale. A `read_only` result proves the lock check runs
@@ -25669,7 +25847,7 @@ describe("files_nodes_content.finalize_file_yjs_repair read-only gates", () => {
 		await t.run(async (ctx) => {
 			await ctx.db.patch("files_nodes", createdId, { contentShapeMismatchAt: Date.now() });
 		});
-		await set_read_only_or_throw(asUser, db.membershipId, createdId);
+		await set_read_only_or_throw({ asUser, membershipId: db.membershipId, nodeId: createdId });
 
 		const assetCountBefore = await t.run(async (ctx) => (await ctx.db.query("files_r2_assets").collect()).length);
 		const refused = await t.action(internal.files_nodes_content.repair_file_yjs_state_from_visible_text, {
@@ -25740,8 +25918,8 @@ describe("files_nodes_content.finalize_file_yjs_repair read-only gates", () => {
 		});
 
 		// The operator unlocked before repairing, so the final mutation accepts it.
-		await set_read_only_or_throw(asUser, db.membershipId, nodeId);
-		await set_writable_or_throw(asUser, db.membershipId, nodeId);
+		await set_read_only_or_throw({ asUser, membershipId: db.membershipId, nodeId });
+		await set_writable_or_throw({ asUser, membershipId: db.membershipId, nodeId });
 
 		const repaired = await t.action(internal.files_nodes_content.repair_file_yjs_state_from_visible_text, {
 			organizationId: db.organizationId,

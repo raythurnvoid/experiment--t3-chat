@@ -303,7 +303,13 @@ async function db_copy_message(
 	return copiedId;
 }
 
-async function db_publish(ctx: MutationCtx, copy: Doc<"ai_chat_thread_copies">, now: number) {
+async function db_publish(args: {
+	ctx: MutationCtx;
+	copy: Doc<"ai_chat_thread_copies">;
+	now: number;
+}) {
+	const { ctx, copy, now } = args;
+
 	await ctx.db.patch("ai_chat_threads", copy.targetThreadId, {
 		copyingAt: undefined,
 		lastMessageAt: now,
@@ -377,7 +383,7 @@ export const step = internalMutation({
 			}
 			// An empty chat has no pages.
 			if (pageCount === 0) {
-				await db_publish(ctx, copy, now);
+				await db_publish({ ctx, copy, now });
 				return "published";
 			}
 			// The root is the last id of the last page, so the copy starts there.
@@ -429,7 +435,7 @@ export const step = internalMutation({
 			return "running";
 		}
 
-		await db_publish(ctx, copy, now);
+		await db_publish({ ctx, copy, now });
 		return "published";
 	},
 });

@@ -3754,12 +3754,14 @@ describe("remove_user_from_organization", () => {
 				await quotas_db_ensure(ctx, { quotaName: "active_api_credentials", userId, organizationId, workspaceId, now });
 			}
 			const memberUser = await ctx.db.get("users", memberId);
-			const profile = (
-				userId: Id<"users">,
-				organizationId: Id<"organizations">,
-				workspaceId: Id<"organizations_workspaces">,
-			) =>
-				ctx.db.insert("files_browser_profiles", {
+			const profile = (args: {
+				userId: Id<"users">;
+				organizationId: Id<"organizations">;
+				workspaceId: Id<"organizations_workspaces">;
+			}) =>
+				{
+					const { userId, organizationId, workspaceId } = args;
+				return ctx.db.insert("files_browser_profiles", {
 					userId,
 					organizationId,
 					workspaceId,
@@ -3767,11 +3769,16 @@ describe("remove_user_from_organization", () => {
 					createdAt: now,
 					lastUsedAt: now,
 				});
+			};
 			return {
-				removedProfileId: await profile(memberId, organizationId, workspaceId),
-				otherMemberProfileId: await profile(otherMemberId, organizationId, workspaceId),
+				removedProfileId: await profile({ userId: memberId, organizationId, workspaceId }),
+				otherMemberProfileId: await profile({ userId: otherMemberId, organizationId, workspaceId }),
 				// The member keeps the logins of their own organization.
-				personalProfileId: await profile(memberId, memberUser!.defaultOrganizationId!, memberUser!.defaultWorkspaceId!),
+				personalProfileId: await profile({
+					userId: memberId,
+					organizationId: memberUser!.defaultOrganizationId!,
+					workspaceId: memberUser!.defaultWorkspaceId!,
+				}),
 			};
 		});
 

@@ -238,7 +238,14 @@ const FilesWritePolicyWritersModalContent = memo(function FilesWritePolicyWriter
 		</MyComboboxItem>
 	);
 
-	const renderGroup = (heading: string, emptyText: string, groupWriters: FilesWritePolicyWriter[]) => (
+	const renderGroup = (args: {
+		heading: string;
+		emptyText: string;
+		groupWriters: FilesWritePolicyWriter[];
+	}) => {
+		const { heading, emptyText, groupWriters } = args;
+
+		return (
 		<section
 			aria-label={heading}
 			className={cn(
@@ -302,6 +309,7 @@ const FilesWritePolicyWritersModalContent = memo(function FilesWritePolicyWriter
 			)}
 		</section>
 	);
+	};
 
 	return (
 		<div className={cn("FilesWritePolicyWritersModalContent" satisfies FilesWritePolicyWritersModalContent_ClassNames)}>
@@ -406,8 +414,8 @@ const FilesWritePolicyWritersModalContent = memo(function FilesWritePolicyWriter
 				</MyComboboxPopover>
 			</MyCombobox>
 
-			{renderGroup("People", "No people yet.", addedPeople)}
-			{renderGroup("Plugins", "No plugins yet.", addedPlugins)}
+			{renderGroup({ heading: "People", emptyText: "No people yet.", groupWriters: addedPeople })}
+			{renderGroup({ heading: "Plugins", emptyText: "No plugins yet.", groupWriters: addedPlugins })}
 
 			{/* Hidden writers are people who left and plugins that were revoked. Their names are private, so
 			    only their count shows. Saving the rule drops them. */}

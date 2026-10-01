@@ -1439,7 +1439,7 @@ export async function files_nodes_content_db_publish_private_node(
 		});
 
 		if (replacementPlan._nay) return replacementPlan;
-		await files_nodes_db_apply_move(ctx, replacementPlan._yay, args.shareLinkCleanup);
+		await files_nodes_db_apply_move({ ctx, plan: replacementPlan._yay, shareLinkCleanup: args.shareLinkCleanup });
 	}
 
 	const created = await files_nodes_db_create_node_recursively_at_path(ctx, {
@@ -1949,11 +1949,13 @@ async function action_create_file_node(
 // Keep this bound on the asset because attempt recovery can remove the item's deadline first.
 const TRANSFER_ASSET_WRITE_WINDOW_MS = 20 * 60 * 1000 + r2_PUT_MAY_ARRIVE_MARGIN_MS;
 
-async function db_get_transfer_copy_source_version(
-	ctx: MutationCtx,
-	sourceEntry: files_VisibleEntry,
-	capture: Doc<"files_transfer_items">["capture"],
-) {
+async function db_get_transfer_copy_source_version(args: {
+	ctx: MutationCtx;
+	sourceEntry: files_VisibleEntry;
+	capture: Doc<"files_transfer_items">["capture"];
+}) {
+	const { ctx, sourceEntry, capture } = args;
+
 	const version = await files_transfer_db_get_entry_version(ctx, sourceEntry);
 	if (!version) return Result({ _nay: { message: "The source file is not available" } });
 
@@ -2077,7 +2079,7 @@ export const get_transfer_file_copy_data = internalMutation({
 		// Only the first invocation owns this attempt's assets.
 		if (item.workId === null || item.stagedAssetIds.length > 0) return Result({ _yay: null });
 
-		const version = await db_get_transfer_copy_source_version(ctx, sourceEntry, item.capture);
+		const version = await db_get_transfer_copy_source_version({ ctx, sourceEntry, capture: item.capture });
 		if (version._nay) return await fail(version._nay.message);
 
 		const pendingContent = sourceEntry.pendingUpdate?.content;
@@ -2596,7 +2598,7 @@ export const stage_transfer_file_copy_assets = internalMutation({
 		// Only the first invocation owns this attempt's assets. Retries get a new attempt number.
 		if (item.capture === null || item.capture.artifact !== null || item.stagedAssetIds.length > 0)
 			return Result({ _yay: null });
-		const version = await db_get_transfer_copy_source_version(ctx, sourceEntry, item.capture);
+		const version = await db_get_transfer_copy_source_version({ ctx, sourceEntry, capture: item.capture });
 		if (version._nay) return version;
 		const textKind = item.capture.sourceVersion.textKind;
 
@@ -2801,7 +2803,7 @@ export const seal_transfer_file_capture = internalMutation({
 			return prepared._nay ? Result({ _nay: prepared._nay }) : Result({ _yay: null });
 		const { run, item, sourceEntry } = prepared._yay;
 		if (item.capture === null || item.capture.artifact !== null) return Result({ _yay: null });
-		const version = await db_get_transfer_copy_source_version(ctx, sourceEntry, item.capture);
+		const version = await db_get_transfer_copy_source_version({ ctx, sourceEntry, capture: item.capture });
 		if (version._nay) return version;
 
 		if (item.capture.sourceVersion.textKind === "rich_text") {
@@ -3070,7 +3072,7 @@ export const finalize_transfer_file_copy = internalMutation({
 		) {
 			return Result({ _yay: null });
 		}
-		const version = await db_get_transfer_copy_source_version(ctx, sourceEntry, item.capture);
+		const version = await db_get_transfer_copy_source_version({ ctx, sourceEntry, capture: item.capture });
 		if (version._nay) return version;
 		const { contentType, textKind, collaborationEnabled } = item.capture.sourceVersion;
 		const mediaSet = item.capture.mediaDependencySetId
@@ -3128,7 +3130,10 @@ export const finalize_transfer_file_copy = internalMutation({
 			if (textKind === null) {
 				if (previous?.content) await files_db_retire_pending_update_yjs_states(ctx, { ...scope, pendingUpdateId });
 				await files_pending_update_db_delete_chunks(ctx, { pendingUpdateId });
-				await files_db_patch_pending_update(ctx, pendingUpdateId, {
+				await files_db_patch_pending_update({
+					ctx,
+					pendingUpdateId,
+					value: {
 					createIntent: {
 						kind: "stored",
 						contentType,
@@ -3150,6 +3155,7 @@ export const finalize_transfer_file_copy = internalMutation({
 						}),
 					},
 					updatedAt: now,
+				},
 				});
 			} else {
 				const state = item.capture.artifact.textStateId
@@ -3223,7 +3229,10 @@ export const finalize_transfer_file_copy = internalMutation({
 				});
 				await db_retire_transfer_states(ctx, item);
 
-				await files_db_patch_pending_update(ctx, pendingUpdateId, {
+				await files_db_patch_pending_update({
+					ctx,
+					pendingUpdateId,
+					value: {
 					createIntent: {
 						kind: "text",
 						contentType,
@@ -3253,6 +3262,7 @@ export const finalize_transfer_file_copy = internalMutation({
 						}),
 					},
 					updatedAt: now,
+				},
 				});
 
 				await files_pending_update_db_replace_chunks(ctx, {
@@ -3356,11 +3366,15 @@ export const finalize_transfer_file_copy = internalMutation({
 						assetId: previous.pendingReplacement.assetId,
 					});
 				await files_pending_update_db_delete_chunks(ctx, { pendingUpdateId });
-				await files_db_patch_pending_update(ctx, pendingUpdateId, {
+				await files_db_patch_pending_update({
+					ctx,
+					pendingUpdateId,
+					value: {
 					...changes,
 					content: undefined,
 					contentNeedsRebase: undefined,
 					contentRebaseRootKind: undefined,
+				},
 				});
 			} else {
 				pendingUpdateId = await files_db_insert_pending_update(ctx, { ...scope, target, ...changes });
@@ -4576,19 +4590,19 @@ export type files_nodes_get_file_text_content_db_state_by_path_Result = get_file
  * Recheck the source and exact file after an action reads external content.
  * A new file at the same path must not authorize the old file's bytes.
  */
-async function files_can_finish_agent_read(
-	ctx: ActionCtx,
-	args: {
-		agentSource?: Infer<typeof ai_chat_workspaces_source_validator>;
-		organizationId: Doc<"files_nodes">["organizationId"];
-		workspaceId: Doc<"files_nodes">["workspaceId"];
-		userId: Id<"users">;
-		serviceAccountId?: Id<"access_control_service_accounts">;
-		path: string;
-		overlayUserId?: Id<"users">;
-	},
-	target: files_PendingTarget,
-) {
+async function files_can_finish_agent_read(args: {
+	ctx: ActionCtx;
+	agentSource?: Infer<typeof ai_chat_workspaces_source_validator>;
+	organizationId: Doc<"files_nodes">["organizationId"];
+	workspaceId: Doc<"files_nodes">["workspaceId"];
+	userId: Id<"users">;
+	serviceAccountId?: Id<"access_control_service_accounts">;
+	path: string;
+	overlayUserId?: Id<"users">;
+	target: files_PendingTarget;
+}) {
+	const { ctx, target } = args;
+
 	const entry = (await ctx.runQuery(internal.files_nodes.get_visible_entry_by_path, {
 		agentSource: args.agentSource,
 		organizationId: args.organizationId,
@@ -4697,7 +4711,7 @@ export const get_file_last_available_text_content_by_path = internalAction({
 		if (content_exceeds_max_bytes(content)) {
 			return null;
 		}
-		if (!(await files_can_finish_agent_read(ctx, args, contentState.target))) return null;
+		if (!(await files_can_finish_agent_read({ ctx, ...args, target: contentState.target }))) return null;
 
 		return {
 			content,
@@ -4873,8 +4887,8 @@ export const read_file_line_range = internalAction({
 		if (!resolved) {
 			return null;
 		}
-		const range = files_line_range_from_text(resolved.text, startLine, maxLines);
-		if (!(await files_can_finish_agent_read(ctx, args, resolved.target))) return null;
+		const range = files_line_range_from_text({ content: resolved.text, startLine, maxLines });
+		if (!(await files_can_finish_agent_read({ ctx, ...args, target: resolved.target }))) return null;
 		// Stopped on the byte window (not line count / EOF): output may be partial.
 		const scanTruncated = !resolved.fetchedAllBytes && range.linesReturned < maxLines;
 		return {
@@ -4972,7 +4986,7 @@ export const read_file_tail_lines = internalAction({
 				throw convex_error({ message: "Failed to reconstruct latest file content", cause: reconstructed._nay });
 			}
 			const tail = files_tail_lines_from_text(reconstructed._yay.text, maxLines);
-			if (!(await files_can_finish_agent_read(ctx, args, state.target))) return null;
+			if (!(await files_can_finish_agent_read({ ctx, ...args, target: state.target }))) return null;
 			return { target: state.target, content: tail.content, moreLines: tail.moreAbove, scanTruncated: false };
 		}
 
@@ -4987,7 +5001,7 @@ export const read_file_tail_lines = internalAction({
 		const bytes = new Uint8Array(await response.arrayBuffer());
 		const text = new TextDecoder("utf-8").decode(bytes);
 		const tail = files_tail_lines_from_text(text, maxLines);
-		if (!(await files_can_finish_agent_read(ctx, args, state.target))) return null;
+		if (!(await files_can_finish_agent_read({ ctx, ...args, target: state.target }))) return null;
 		// If the trailing window didn't reach the start of the file, the earliest returned line
 		// could be partial — only relevant for files larger than the scan window.
 		const scanTruncated = start > 0;
@@ -5057,7 +5071,7 @@ export const read_file_content_stats = internalAction({
 		}
 		// Same wc semantics as the materialized path, but on a possibly-partial window (lower bounds).
 		const counts = files_compute_wc_counts(resolved.text);
-		if (!(await files_can_finish_agent_read(ctx, args, resolved.target))) return null;
+		if (!(await files_can_finish_agent_read({ ctx, ...args, target: resolved.target }))) return null;
 		return {
 			target: resolved.target,
 			lineCount: counts.lineCount,
@@ -7153,40 +7167,44 @@ export const finalize_file_pending_replacement = internalMutation({
 	handler: async (ctx, args) => {
 		const organization = await ctx.db.get("organizations", args.organizationId);
 		if (!organization) return Result({ _nay: { message: "Not found" } });
-		return await files_nodes_content_db_finalize_pending_replacement(ctx, args, {
+		return await files_nodes_content_db_finalize_pending_replacement({
+			ctx,
+			...args,
+			actor: {
 			billedUserId: billing_pick_billed_user_id({ userId: args.userId, organization }),
+		},
 		});
 	},
 });
 
-export async function files_nodes_content_db_finalize_pending_replacement(
-	ctx: MutationCtx,
-	args: {
-		organizationId: Id<"organizations">;
-		workspaceId: Id<"organizations_workspaces">;
-		userId: Id<"users">;
-		nodeId: Id<"files_nodes">;
-		pendingUpdateId: Id<"files_pending_updates">;
-		expectedRevision: number;
-		stagedAssetId: Id<"files_r2_assets">;
-		expectedYjsLastSequence?: { id: Id<"files_yjs_docs_last_sequences">; lastSequence: number };
-		backup?: { assetId: Id<"files_r2_assets">; size: number };
-		contentAssetId: Id<"files_r2_assets">;
-		contentSize: number;
-		contentType: string;
-		yjsRootKind?: "rich_text" | "plain_text";
-		nonCollaborative?: boolean;
-		yjsSnapshot?: { assetId: Id<"files_r2_assets">; size: number };
-		text?: string;
-	},
+export async function files_nodes_content_db_finalize_pending_replacement(args: {
+	ctx: MutationCtx;
+	organizationId: Id<"organizations">;
+	workspaceId: Id<"organizations_workspaces">;
+	userId: Id<"users">;
+	nodeId: Id<"files_nodes">;
+	pendingUpdateId: Id<"files_pending_updates">;
+	expectedRevision: number;
+	stagedAssetId: Id<"files_r2_assets">;
+	expectedYjsLastSequence?: { id: Id<"files_yjs_docs_last_sequences">; lastSequence: number };
+	backup?: { assetId: Id<"files_r2_assets">; size: number };
+	contentAssetId: Id<"files_r2_assets">;
+	contentSize: number;
+	contentType: string;
+	yjsRootKind?: "rich_text" | "plain_text";
+	nonCollaborative?: boolean;
+	yjsSnapshot?: { assetId: Id<"files_r2_assets">; size: number };
+	text?: string;
 	actor: {
 		billedUserId: Id<"users">;
 		publicationBatchId?: Id<"files_pending_update_operation_batches">;
 		reviewedPendingUpdateIds?: ReadonlySet<Id<"files_pending_updates">>;
 		reviewRunId?: Id<"files_pending_update_runs">;
 		validatedMedia?: files_pending_media_ValidatedSave;
-	},
-) {
+	};
+}) {
+	const { ctx, actor, ...previousArgs } = args;
+
 	const user = await ctx.db.get("users", args.userId);
 	if (!user) {
 		return Result({ _nay: { message: "Unauthenticated" } });
@@ -7331,7 +7349,7 @@ export async function files_nodes_content_db_finalize_pending_replacement(
 				hold.settlement.kind !== "held" ||
 				hold.byteCount !== prepared.size ||
 				hold.resource.kind !== "asset" ||
-				hold.resource.r2Key !== r2_create_asset_key({ ...args, assetId: asset._id })
+				hold.resource.r2Key !== r2_create_asset_key({ ...previousArgs, assetId: asset._id })
 			)
 				return Result({ _nay: { message: "The prepared content is no longer available" } });
 			publicationReservations.push(hold);
@@ -7427,20 +7445,24 @@ export async function files_nodes_content_db_finalize_pending_replacement(
 	}
 	if (pendingUpdate.pendingMove) {
 		await Promise.all([
-			files_db_patch_pending_update(ctx, pendingUpdate._id, {
+			files_db_patch_pending_update({
+				ctx,
+				pendingUpdateId: pendingUpdate._id,
+				value: {
 				revision: pendingUpdate.revision + 1,
 				pendingReplacement: undefined,
 				copiedFrom: undefined,
 				mediaDependencySetId: undefined,
 				size: 0,
 				updatedAt: now,
+			},
 			}),
 			files_pending_update_db_delete_chunks(ctx, { pendingUpdateId: pendingUpdate._id }),
 		]);
 	} else {
 		await Promise.all([
 			files_pending_update_db_delete_chunks(ctx, { pendingUpdateId: pendingUpdate._id }),
-			files_db_delete_pending_update(ctx, pendingUpdate._id),
+			files_db_delete_pending_update({ ctx, pendingUpdateId: pendingUpdate._id }),
 		]);
 	}
 

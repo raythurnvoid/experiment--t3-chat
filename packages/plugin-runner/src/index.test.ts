@@ -124,7 +124,13 @@ function run_request(rawBody: string, headers: Record<string, string> = { Author
 	});
 }
 
-function streamed_response(text: string, chunkBytes: number, status = 200) {
+function streamed_response(args: {
+	text: string;
+	chunkBytes: number;
+	status?: number;
+}) {
+	const { text, chunkBytes, status = 200 } = args;
+
 	const bytes = TEXT_ENCODER.encode(text);
 	let offset = 0;
 	return new Response(
@@ -754,7 +760,7 @@ describe("runner responses", () => {
 		const exact = await worker.fetch(
 			run_request(requestBody),
 			make_env({
-				onPluginRequest: () => streamed_response(output, chunkBytes),
+				onPluginRequest: () => streamed_response({ text: output, chunkBytes }),
 			}),
 			make_ctx(),
 		);
@@ -764,7 +770,7 @@ describe("runner responses", () => {
 		const excess = await worker.fetch(
 			run_request(requestBody),
 			make_env({
-				onPluginRequest: () => streamed_response(`${output}a`, chunkBytes),
+				onPluginRequest: () => streamed_response({ text: `${output}a`, chunkBytes }),
 			}),
 			make_ctx(),
 		);
@@ -778,7 +784,7 @@ describe("runner responses", () => {
 		const response = await worker.fetch(
 			run_request(await make_run_body()),
 			make_env({
-				onPluginRequest: () => streamed_response(output, 1),
+				onPluginRequest: () => streamed_response({ text: output, chunkBytes: 1 }),
 			}),
 			make_ctx(),
 		);
@@ -794,7 +800,13 @@ describe("runner responses", () => {
 		let maximum = 0;
 		const addSpy = vi
 			.spyOn(AbortSignal.prototype, "addEventListener")
-			.mockImplementation(function (type, listener, options) {
+			.mockImplementation(function (args: {
+				type: any;
+				listener: any;
+				options: any;
+			}) {
+				const { type, listener, options } = args;
+
 				if (type === "abort" && listener) {
 					let active = listeners.get(this);
 					if (!active) {
@@ -808,7 +820,13 @@ describe("runner responses", () => {
 			});
 		const removeSpy = vi
 			.spyOn(AbortSignal.prototype, "removeEventListener")
-			.mockImplementation(function (type, listener, options) {
+			.mockImplementation(function (args: {
+				type: any;
+				listener: any;
+				options: any;
+			}) {
+				const { type, listener, options } = args;
+
 				if (type === "abort" && listener) listeners.get(this)?.delete(listener);
 				return originalRemove.call(this, type, listener, options);
 			});
@@ -817,7 +835,7 @@ describe("runner responses", () => {
 			const response = await worker.fetch(
 				run_request(await make_run_body()),
 				make_env({
-					onPluginRequest: () => streamed_response(output, 1),
+					onPluginRequest: () => streamed_response({ text: output, chunkBytes: 1 }),
 				}),
 				make_ctx(),
 			);
@@ -1337,7 +1355,7 @@ describe("secret masking", () => {
 				make_env({
 					async onPluginRequest() {
 						await plugin_secret_get();
-						return streamed_response(`${prefix}${secret} done`, 7, 409);
+						return streamed_response({ text: `${prefix}${secret} done`, chunkBytes: 7, status: 409 });
 					},
 				}),
 				make_ctx(),

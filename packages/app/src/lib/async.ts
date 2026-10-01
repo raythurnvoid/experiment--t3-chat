@@ -218,11 +218,13 @@ export class CoalescedRunner {
  * Items start in FIFO order: when one finishes, the next queued item starts. Results keep the
  * input order and rejections never stop the other items. A `limit` below 1 behaves as 1.
  */
-export async function async_all_settled_with_limit<T, R>(
-	items: readonly T[],
-	limit: number,
-	run: (item: T, index: number) => Promise<R>,
-): Promise<PromiseSettledResult<R>[]> {
+export async function async_all_settled_with_limit<T, R>(args: {
+	items: readonly T[];
+	limit: number;
+	run: (item: T, index: number) => Promise<R>;
+}): Promise<PromiseSettledResult<R>[]> {
+	const { items, limit, run } = args;
+
 	const results: PromiseSettledResult<R>[] = new Array(items.length);
 	// Every worker pulls from this one shared iterator, which is what keeps the order FIFO.
 	const queue = items.entries();

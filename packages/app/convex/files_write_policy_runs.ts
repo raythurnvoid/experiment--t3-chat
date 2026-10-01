@@ -81,11 +81,13 @@ async function db_require_activity(ctx: QueryCtx | MutationCtx, runId: Id<"files
  * Recheck the membership the job started with. A leave and re-join gives a new lifetime, so it stops
  * the job even though the person is a member again.
  */
-async function db_get_run_membership(
-	ctx: QueryCtx | MutationCtx,
-	run: Doc<"files_write_policy_runs">,
-	activity: Awaited<ReturnType<typeof db_require_activity>>,
-) {
+async function db_get_run_membership(args: {
+	ctx: QueryCtx | MutationCtx;
+	run: Doc<"files_write_policy_runs">;
+	activity: Awaited<ReturnType<typeof db_require_activity>>;
+}) {
+	const { ctx, run, activity } = args;
+
 	const user = await ctx.db.get("users", run.userId);
 	if (!user || user.deletedAt !== undefined) return null;
 
@@ -128,20 +130,28 @@ function with_unpublished_progress(
  * Finish the job before its walk ends. First show the counts that earlier steps kept on the run, so
  * "Stopped. N items were updated." counts every item the job really updated.
  */
-async function db_finish_run_early(
-	ctx: MutationCtx,
-	run: Doc<"files_write_policy_runs">,
-	args: Omit<Parameters<typeof activities_db_finish>[1], "sourceId">,
-) {
+async function db_finish_run_early(args: Omit<Parameters<typeof activities_db_finish>[1], "sourceId"> & {
+	ctx: MutationCtx;
+	run: Doc<"files_write_policy_runs">;
+}) {
+	const { ctx, run, ...previousArgs } = args;
+
 	const activity = await db_require_activity(ctx, run._id);
 	if (!activities_is_active(activity.status)) return;
 
 	await ctx.db.patch("activities", activity._id, { progress: with_unpublished_progress(activity.progress, run) });
-	await activities_db_finish(ctx, { sourceId: run._id, ...args });
+	await activities_db_finish(ctx, { sourceId: run._id, ...previousArgs });
 }
 
-async function db_fail_run(ctx: MutationCtx, run: Doc<"files_write_policy_runs">, errorMessage: string, now: number) {
-	await db_finish_run_early(ctx, run, { status: "failed", errorMessage, errorCode: "failed", now });
+async function db_fail_run(args: {
+	ctx: MutationCtx;
+	run: Doc<"files_write_policy_runs">;
+	errorMessage: string;
+	now: number;
+}) {
+	const { ctx, run, errorMessage, now} = args;
+
+	await db_finish_run_early({ ctx, run, status: "failed", errorMessage, errorCode: "failed", now });
 }
 
 /**
@@ -155,7 +165,9 @@ export async function files_write_policy_runs_db_request_stop(
 	const run = await ctx.db.get("files_write_policy_runs", args.runId);
 	if (!run) return;
 
-	await db_finish_run_early(ctx, run, {
+	await db_finish_run_early({
+		ctx,
+		run,
 		status: args.reason === "timeout" ? "timed_out" : "canceled",
 		errorMessage: args.reason === "timeout" ? "The protection update reached its time limit." : null,
 		errorCode: args.reason === "timeout" ? "timed_out" : "canceled",
@@ -294,14 +306,14 @@ export const advance = internalMutation({
 		}
 
 		// Check again every step. Items updated before a failed check keep the new rule.
-		const membership = await db_get_run_membership(ctx, run, activity);
+		const membership = await db_get_run_membership({ ctx, run, activity });
 		if (!membership) {
-			await db_fail_run(ctx, run, "You can no longer change this folder's protection.", now);
+			await db_fail_run({ ctx, run, errorMessage: "You can no longer change this folder's protection.", now });
 			return null;
 		}
 		const folder = await ctx.db.get("files_nodes", run.folderId);
 		if (!folder || folder.archiveOperationId !== null || folder.treePath !== run.folderTreePath) {
-			await db_fail_run(ctx, run, "The folder moved or was archived during the update. Run it again.", now);
+			await db_fail_run({ ctx, run, errorMessage: "The folder moved or was archived during the update. Run it again.", now });
 			return null;
 		}
 		const writeContext: files_nodes_WriteContext = {
@@ -318,7 +330,7 @@ export const advance = internalMutation({
 			writePolicy: run.writePolicy,
 		});
 		if (folderManaged._nay) {
-			await db_fail_run(ctx, run, "You can no longer change this folder's protection.", now);
+			await db_fail_run({ ctx, run, errorMessage: "You can no longer change this folder's protection.", now });
 			return null;
 		}
 

@@ -384,12 +384,14 @@ function create_deadline(timeoutMs: number) {
 	};
 }
 
-async function read_plugin_response(
-	response: Response,
-	keepText: boolean,
-	deadline: ReturnType<typeof create_deadline>,
-	metrics: { outputBytes: number },
-) {
+async function read_plugin_response(args: {
+	response: Response;
+	keepText: boolean;
+	deadline: ReturnType<typeof create_deadline>;
+	metrics: { outputBytes: number };
+}) {
+	const { response, keepText, deadline, metrics } = args;
+
 	const reader = response.body?.getReader();
 	if (!reader) return "";
 
@@ -484,11 +486,13 @@ function encode_invoke_reply(reply: pluginRunner_InvokeReply, deadline: ReturnTy
 	return bytes;
 }
 
-function runner_refusal<const Status extends 400 | 401 | 404 | 413 | 503>(
-	status: Status,
-	name: string,
-	message: string,
-) {
+function runner_refusal<const Status extends 400 | 401 | 404 | 413 | 503>(args: {
+	status: Status;
+	name: string;
+	message: string;
+}) {
+	const { message, name, status } = args;
+
 	return {
 		status,
 		kind: "error" as const,
@@ -497,11 +501,13 @@ function runner_refusal<const Status extends 400 | 401 | 404 | 413 | 503>(
 	};
 }
 
-function runner_headers(
-	kind: "invoke" | "event" | "error",
-	bodyBytes: number,
-	metrics?: { pluginRunId: string; elapsedMs: number; outputBytes: number; pluginStatus?: number },
-) {
+function runner_headers(args: {
+	kind: "invoke" | "event" | "error";
+	bodyBytes: number;
+	metrics?: { pluginRunId: string; elapsedMs: number; outputBytes: number; pluginStatus?: number };
+}) {
+	const { kind, bodyBytes, metrics } = args;
+
 	const headers: Record<string, string> = {
 		"Content-Type": "application/json",
 		"X-Bonobo-Runner-Kind": kind,
@@ -891,35 +897,35 @@ const routes = {
 		POST: ((/* iife */) => {
 			const handler = async ({ request, env, ctx }: RouteHandlerArgs) => {
 				if (!(await is_authorized(request, env))) {
-					return runner_refusal(401, "unauthorized", "Unauthorized");
+					return runner_refusal({ status: 401, name: "unauthorized", message: "Unauthorized" });
 				}
 				if (env.PLUGIN_RUNNER_DISABLED === "true") {
-					return runner_refusal(503, "disabled", "Plugin runner is disabled");
+					return runner_refusal({ status: 503, name: "disabled", message: "Plugin runner is disabled" });
 				}
 
 				const raw = await read_bounded_text(request);
 				if (!raw.ok) {
-					return runner_refusal(413, "body_too_large", "Request body too large");
+					return runner_refusal({ status: 413, name: "body_too_large", message: "Request body too large" });
 				}
 
 				let body: unknown;
 				try {
 					body = JSON.parse(raw.text);
 				} catch {
-					return runner_refusal(400, "invalid_json", "Invalid JSON");
+					return runner_refusal({ status: 400, name: "invalid_json", message: "Invalid JSON" });
 				}
 
 				const validated = RUN_REQUEST_SCHEMA.safeParse(body);
 				if (!validated.success) {
-					return runner_refusal(400, "invalid_request", validation_error_message(validated.error));
+					return runner_refusal({ status: 400, name: "invalid_request", message: validation_error_message(validated.error) });
 				}
 
 				const prefix = env.PLUGIN_RUNNER_ARTIFACT_PREFIX ?? "plugins/";
 				if (!validated.data.artifactKey.startsWith(prefix)) {
-					return runner_refusal(400, "invalid_artifact_key", "Artifact key is outside the plugin prefix");
+					return runner_refusal({ status: 400, name: "invalid_artifact_key", message: "Artifact key is outside the plugin prefix" });
 				}
 				if (!ctx?.exports?.BonoboHost || !ctx.exports.BonoboOutbound) {
-					return runner_refusal(503, "misconfigured", "Runner entrypoint bindings are unavailable");
+					return runner_refusal({ status: 503, name: "misconfigured", message: "Runner entrypoint bindings are unavailable" });
 				}
 
 				const startedAt = Date.now();
@@ -938,16 +944,16 @@ const routes = {
 					const pluginStableIdHash = await deadline.wait(sha256_hex(pluginStableId));
 					const artifact = await deadline.wait(env.PLUGIN_ARTIFACTS.get(validated.data.artifactKey));
 					if (!artifact) {
-						return runner_refusal(404, "artifact_not_found", "Artifact not found");
+						return runner_refusal({ status: 404, name: "artifact_not_found", message: "Artifact not found" });
 					}
 
 					const artifactRead = await deadline.wait(read_r2_artifact(artifact));
 					if (!artifactRead.ok) {
-						return runner_refusal(413, "artifact_too_large", "Artifact too large");
+						return runner_refusal({ status: 413, name: "artifact_too_large", message: "Artifact too large" });
 					}
 					const actualArtifactHash = `sha256:${await deadline.wait(sha256_hex_bytes(artifactRead.bytes))}`;
 					if (actualArtifactHash !== validated.data.artifactHash) {
-						return runner_refusal(400, "artifact_hash_mismatch", "Artifact hash mismatch");
+						return runner_refusal({ status: 400, name: "artifact_hash_mismatch", message: "Artifact hash mismatch" });
 					}
 
 					const hostBinding = ctx.exports.BonoboHost({
@@ -1023,12 +1029,12 @@ const routes = {
 						throw new Error("Plugin response status is invalid");
 					}
 					metrics.pluginStatus = pluginResponse.status;
-					const output = await read_plugin_response(
-						pluginResponse,
-						validated.data.responseMode === "invoke",
+					const output = await read_plugin_response({
+						response: pluginResponse,
+						keepText: validated.data.responseMode === "invoke",
 						deadline,
 						metrics,
-					);
+					});
 					const body =
 						validated.data.responseMode === "invoke"
 							? encode_invoke_reply(
@@ -1125,13 +1131,17 @@ export default {
 
 		// @ts-expect-error arbitrary request strings can't index the literal-keyed routes table
 		const handler: RouteHandler | undefined = routes[url.pathname]?.[request.method];
-		const result = handler ? await handler({ request, env, ctx }) : runner_refusal(404, "not_found", "Not found");
+		const result = handler ? await handler({ request, env, ctx }) : runner_refusal({ status: 404, name: "not_found", message: "Not found" });
 		if (!("kind" in result)) return json_response(result.body, result.status);
 
 		const bytes = result.body instanceof Uint8Array ? result.body : TEXT_ENCODER.encode(JSON.stringify(result.body));
 		return new Response(bytes, {
 			status: result.status,
-			headers: runner_headers(result.kind, bytes.byteLength, "metrics" in result ? result.metrics : undefined),
+			headers: runner_headers({
+				kind: result.kind,
+				bodyBytes: bytes.byteLength,
+				metrics: "metrics" in result ? result.metrics : undefined,
+			}),
 		});
 	},
 };

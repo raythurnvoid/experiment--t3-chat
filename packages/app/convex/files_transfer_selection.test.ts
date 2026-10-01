@@ -25,11 +25,13 @@ async function fixture(paths = ["/source", "/target"]) {
 	return { t, scope, asUser, folders };
 }
 
-async function start(
-	f: Awaited<ReturnType<typeof fixture>>,
-	sources: Id<"files_nodes">[],
-	expectedCount = sources.length,
-) {
+async function start(args: {
+	f: Awaited<ReturnType<typeof fixture>>;
+	sources: Id<"files_nodes">[];
+	expectedCount?: number;
+}) {
+	const { f, sources, expectedCount = sources.length } = args;
+
 	return await f.asUser.mutation(api.files_transfer.start, {
 		membershipId: f.scope.membershipId,
 		requestId: "selection",
@@ -44,11 +46,11 @@ describe("Copy selection pages", () => {
 	test("keeps input idle until sealed and refuses a changed replay", async () => {
 		const f = await fixture();
 		const source = f.folders.get("/source")!;
-		const started = await start(f, [source], 3);
+		const started = await start({ f, sources: [source], expectedCount: 3 });
 		if (started._nay) throw new Error(started._nay.message);
 		const args = { membershipId: f.scope.membershipId, runId: started._yay.runId };
-		expect(await start(f, [source], 3)).toEqual(started);
-		expect(await start(f, [source], 4)).toMatchObject({ _nay: { name: "request_changed" } });
+		expect(await start({ f, sources: [source], expectedCount: 3 })).toEqual(started);
+		expect(await start({ f, sources: [source], expectedCount: 4 })).toMatchObject({ _nay: { name: "request_changed" } });
 		await f.t.mutation(internal.files_transfer.advance, { runId: args.runId });
 		expect(await f.t.run((ctx) => ctx.db.query("files_transfer_items").collect())).toEqual([]);
 		expect(await f.asUser.mutation(api.files_transfer.seal, args)).toMatchObject({
@@ -78,11 +80,11 @@ describe("Copy selection pages", () => {
 	test("normalizes a later selected ancestor after more than 200 input entries", async () => {
 		const f = await fixture(["/source", "/source/child", "/target"]);
 		const child = f.folders.get("/source/child")!;
-		const started = await start(
+		const started = await start({
 			f,
-			Array.from({ length: 100 }, () => child),
-			201,
-		);
+			sources: Array.from({ length: 100 }, () => child),
+			expectedCount: 201,
+		});
 		if (started._nay) throw new Error(started._nay.message);
 		const args = { membershipId: f.scope.membershipId, runId: started._yay.runId };
 		expect(
@@ -114,7 +116,7 @@ describe("Copy selection pages", () => {
 	test.each([-1, 0.5, Number.MAX_SAFE_INTEGER + 1])("refuses invalid offset %s without appending", async (offset) => {
 		const f = await fixture();
 		const source = f.folders.get("/source")!;
-		const started = await start(f, [source], 2);
+		const started = await start({ f, sources: [source], expectedCount: 2 });
 		if (started._nay) throw new Error(started._nay.message);
 		expect(
 			await f.asUser.mutation(api.files_transfer.append_sources, {
@@ -131,7 +133,7 @@ describe("Copy selection pages", () => {
 		const paths = Array.from({ length: 201 }, (_, index) => `/source-${index}`);
 		const f = await fixture(["/target", ...paths]);
 		const sourceIds = paths.map((path) => f.folders.get(path)!);
-		const started = await start(f, sourceIds.slice(0, 100), sourceIds.length);
+		const started = await start({ f, sources: sourceIds.slice(0, 100), expectedCount: sourceIds.length });
 		if (started._nay) throw new Error(started._nay.message);
 		const args = { membershipId: f.scope.membershipId, runId: started._yay.runId };
 		for (let offset = 100; offset < sourceIds.length; offset += 100)
@@ -174,7 +176,7 @@ describe("Copy selection pages", () => {
 				});
 			}
 		});
-		const started = await start(f, [sourceId]);
+		const started = await start({ f, sources: [sourceId] });
 		if (started._nay) throw new Error(started._nay.message);
 		const args = { membershipId: f.scope.membershipId, runId: started._yay.runId };
 		expect(await f.asUser.mutation(api.files_transfer.seal, args)).toEqual({ _yay: null });
@@ -230,7 +232,7 @@ describe("Copy selection pages", () => {
 	test("Stop prevents later pages and seal; cleanup drains selection pages", async () => {
 		const f = await fixture();
 		const source = f.folders.get("/source")!;
-		const started = await start(f, [source], 2);
+		const started = await start({ f, sources: [source], expectedCount: 2 });
 		if (started._nay) throw new Error(started._nay.message);
 		const args = { membershipId: f.scope.membershipId, runId: started._yay.runId };
 		expect(await f.asUser.mutation(api.files_transfer.stop, args)).toEqual({ _yay: null });

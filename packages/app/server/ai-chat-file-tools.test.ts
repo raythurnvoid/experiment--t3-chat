@@ -56,12 +56,14 @@ function makeReader(overrides: Partial<typeof file> = {}) {
 
 type Viewer = ReturnType<typeof ai_chat_tool_create_view_image>;
 
-async function execute(
-	tool: Viewer,
-	toolCallId = "view-1",
-	abortSignal?: AbortSignal,
-	workspace: "current" | "personal" = "current",
-) {
+async function execute(args: {
+	tool: Viewer;
+	toolCallId?: string;
+	abortSignal?: AbortSignal;
+	workspace?: "current" | "personal";
+}) {
+	const { tool, toolCallId = "view-1", workspace = "current", abortSignal} = args;
+
 	if (!tool.execute) throw new Error("Missing execute");
 	return (await tool.execute(
 		{ workspace, path: file.path },
@@ -69,7 +71,13 @@ async function execute(
 	)) as InferToolOutput<Viewer>;
 }
 
-async function convert(tool: Viewer, output: InferToolOutput<Viewer>, toolCallId = "view-1") {
+async function convert(args: {
+	tool: Viewer;
+	output: InferToolOutput<Viewer>;
+	toolCallId?: string;
+}) {
+	const { tool, toolCallId = "view-1", output} = args;
+
 	if (!tool.toModelOutput) throw new Error("Missing converter");
 	return await tool.toModelOutput({
 		input: { workspace: "current", path: file.path } satisfies InferToolInput<Viewer>,
@@ -127,12 +135,12 @@ describe("ai_chat_tool_create_view_image", () => {
 			const bytes = Uint8Array.from(atob(encoded), (char) => char.charCodeAt(0));
 			vi.mocked(fetch).mockImplementation(async () => new Response(bytes));
 			const { tool, runQuery } = makeReader({ size: bytes.length });
-			const result = await execute(tool);
+			const result = await execute({ tool });
 			expect(result.metadata).toEqual({ status: "succeeded", reason: null, files: [target] });
 			expect(JSON.stringify(result)).not.toContain(encoded);
 			expect(fetch).toHaveBeenCalledTimes(1);
 			expect(runQuery).toHaveBeenCalledTimes(3);
-			const model = await convert(tool, result);
+			const model = await convert({ tool, output: result });
 			expect(model).toMatchObject({
 				type: "content",
 				value: [
@@ -140,7 +148,7 @@ describe("ai_chat_tool_create_view_image", () => {
 					{ type: "image-data", data: encoded, mediaType },
 				],
 			});
-			expect(await convert(tool, result)).toEqual(model);
+			expect(await convert({ tool, output: result })).toEqual(model);
 			expect(fetch).toHaveBeenCalledTimes(1);
 			expect(runQuery).toHaveBeenCalledTimes(3);
 		},
@@ -162,10 +170,10 @@ describe("ai_chat_tool_create_view_image", () => {
 							},
 						},
 			);
-			const result = await execute(tool);
+			const result = await execute({ tool });
 			expect(result.metadata.status).toBe("errored");
 			expect(observations.size).toBe(0);
-			expect((await convert(tool, result)).type).toBe("text");
+			expect((await convert({ tool, output: result })).type).toBe("text");
 		},
 	);
 
@@ -173,14 +181,14 @@ describe("ai_chat_tool_create_view_image", () => {
 		const { tool, readSource } = makeReader();
 		const saved = { kind: "saved", id: "saved-1" };
 		readSource.mockResolvedValue({ _yay: { ...file, target: saved } });
-		expect((await execute(tool)).metadata.files).toEqual([saved]);
+		expect((await execute({ tool })).metadata.files).toEqual([saved]);
 		expect(readSource.mock.calls[1]?.[0]).toMatchObject({ path: file.path, target: saved });
 	});
 
 	test("fails before GET when current access is denied", async () => {
 		const { tool, readSource } = makeReader();
 		readSource.mockResolvedValue({ _nay: { message: "Denied" } });
-		expect((await execute(tool)).metadata.reason).toBe("unavailable");
+		expect((await execute({ tool })).metadata.reason).toBe("unavailable");
 		expect(fetch).not.toHaveBeenCalled();
 	});
 
@@ -188,7 +196,7 @@ describe("ai_chat_tool_create_view_image", () => {
 		"reads %s with the captured source and exact destination",
 		async (workspace) => {
 			const { tool, readSource, resolve, observations } = makeReader();
-			const result = await execute(tool, "view-1", undefined, workspace);
+			const result = await execute({ tool, toolCallId: "view-1", abortSignal: undefined, workspace });
 			expect(result.metadata.status).toBe("succeeded");
 			expect(resolve).toHaveBeenCalledExactlyOnceWith({ source: agentSource, workspace });
 			const readArgs = {
@@ -208,7 +216,7 @@ describe("ai_chat_tool_create_view_image", () => {
 	test("does not read a file when source resolution fails", async () => {
 		const { tool, resolve, readSource } = makeReader();
 		resolve.mockResolvedValue({ _nay: { message: "Source access revoked" } });
-		expect((await execute(tool, "view-1", undefined, "personal")).metadata.reason).toBe("unavailable");
+		expect((await execute({ tool, toolCallId: "view-1", abortSignal: undefined, workspace: "personal" })).metadata.reason).toBe("unavailable");
 		expect(readSource).not.toHaveBeenCalled();
 		expect(fetch).not.toHaveBeenCalled();
 	});
@@ -221,7 +229,7 @@ describe("ai_chat_tool_create_view_image", () => {
 				return new Response(png);
 			});
 		}
-		const result = await execute(tool, "view-1", undefined, "personal");
+		const result = await execute({ tool, toolCallId: "view-1", abortSignal: undefined, workspace: "personal" });
 		if (when === "during fetch") {
 			expect(result.metadata.reason).toBe("unavailable");
 			expect(observations.size).toBe(0);
@@ -240,7 +248,7 @@ describe("ai_chat_tool_create_view_image", () => {
 		bytes.set(png);
 		vi.mocked(fetch).mockImplementation(async () => new Response(bytes));
 		const { tool } = makeReader({ size: bytes.length });
-		const results = await Promise.all([execute(tool, "one"), execute(tool, "two", undefined, "personal")]);
+		const results = await Promise.all([execute({ tool, toolCallId: "one" }), execute({ tool, toolCallId: "two", abortSignal: undefined, workspace: "personal" })]);
 		expect(results.map((result) => result.metadata.status)).toEqual(["succeeded", "errored"]);
 		expect(results[1]?.metadata.reason).toBe("limit");
 		expect(fetch).toHaveBeenCalledTimes(1);
@@ -268,14 +276,14 @@ describe("ai_chat_tool_create_view_image", () => {
 			const size = kind === "short_body" || kind === "long_body" ? png.length : bytes.length;
 			vi.mocked(fetch).mockImplementation(async () => new Response(bytes));
 			const { tool, observations } = makeReader({ size });
-			expect((await execute(tool)).metadata.status).toBe("errored");
+			expect((await execute({ tool })).metadata.status).toBe("errored");
 			expect(observations.size).toBe(0);
 		},
 	);
 
 	test("keeps a live source recheck without fetching bytes again", async () => {
 		const { tool, readSource, observations } = makeReader();
-		await execute(tool);
+		await execute({ tool });
 		expect(await observations.get("view-1")?.isCurrent()).toBe(true);
 		readSource.mockResolvedValue({ _nay: { message: "Denied" } });
 		expect(await observations.get("view-1")?.isCurrent()).toBe(false);
@@ -284,9 +292,9 @@ describe("ai_chat_tool_create_view_image", () => {
 
 	test("does not rebuild missing observations during conversion", async () => {
 		const { tool, observations, runQuery } = makeReader();
-		const result = await execute(tool);
+		const result = await execute({ tool });
 		observations.clear();
-		expect((await convert(tool, result)).type).toBe("text");
+		expect((await convert({ tool, output: result })).type).toBe("text");
 		expect(fetch).toHaveBeenCalledTimes(1);
 		expect(runQuery).toHaveBeenCalledTimes(3);
 	});
@@ -295,7 +303,7 @@ describe("ai_chat_tool_create_view_image", () => {
 		const { tool, observations, runQuery } = makeReader();
 		const controller = new AbortController();
 		controller.abort();
-		expect((await execute(tool, "view-1", controller.signal)).metadata.status).toBe("cancelled");
+		expect((await execute({ tool, toolCallId: "view-1", abortSignal: controller.signal })).metadata.status).toBe("cancelled");
 		expect(observations.size).toBe(0);
 		expect(runQuery).not.toHaveBeenCalled();
 		expect(fetch).not.toHaveBeenCalled();

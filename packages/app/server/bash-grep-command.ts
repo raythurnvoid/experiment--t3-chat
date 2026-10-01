@@ -55,7 +55,13 @@ function parse_context_value(raw: string | undefined) {
 	return Number.isInteger(value) && value >= 0 ? value : null;
 }
 
-function parse_window_value(option: string, raw: string, min: number) {
+function parse_window_value(args: {
+	option: string;
+	raw: string;
+	min: number;
+}) {
+	const { option, raw, min } = args;
+
 	if (!bash_NON_NEGATIVE_INTEGER_REGEX.test(raw.trim())) {
 		return Result({ _nay: { message: `grep: ${option} must be an integer` } });
 	}
@@ -140,14 +146,14 @@ function parse_args(args: string[]) {
 		if (arg === "--start-line") {
 			const value = bash_read_option_value("grep", args, index, "--start-line");
 			if (value._nay) return value;
-			const parsed = parse_window_value("--start-line", value._yay.value, 1);
+			const parsed = parse_window_value({ option: "--start-line", raw: value._yay.value, min: 1 });
 			if (parsed._nay) return parsed;
 			startLine = parsed._yay;
 			index++;
 			continue;
 		}
 		if (arg.startsWith("--start-line=")) {
-			const parsed = parse_window_value("--start-line", arg.slice("--start-line=".length), 1);
+			const parsed = parse_window_value({ option: "--start-line", raw: arg.slice("--start-line=".length), min: 1 });
 			if (parsed._nay) return parsed;
 			startLine = parsed._yay;
 			continue;
@@ -155,14 +161,14 @@ function parse_args(args: string[]) {
 		if (arg === "--max-lines") {
 			const value = bash_read_option_value("grep", args, index, "--max-lines");
 			if (value._nay) return value;
-			const parsed = parse_window_value("--max-lines", value._yay.value, 1);
+			const parsed = parse_window_value({ option: "--max-lines", raw: value._yay.value, min: 1 });
 			if (parsed._nay) return parsed;
 			maxLines = Math.min(parsed._yay, GREP_DEFAULT_MAX_LINES);
 			index++;
 			continue;
 		}
 		if (arg.startsWith("--max-lines=")) {
-			const parsed = parse_window_value("--max-lines", arg.slice("--max-lines=".length), 1);
+			const parsed = parse_window_value({ option: "--max-lines", raw: arg.slice("--max-lines=".length), min: 1 });
 			if (parsed._nay) return parsed;
 			maxLines = Math.min(parsed._yay, GREP_DEFAULT_MAX_LINES);
 			continue;
@@ -170,14 +176,14 @@ function parse_args(args: string[]) {
 		if (arg === "--start-index") {
 			const value = bash_read_option_value("grep", args, index, "--start-index");
 			if (value._nay) return value;
-			const parsed = parse_window_value("--start-index", value._yay.value, 0);
+			const parsed = parse_window_value({ option: "--start-index", raw: value._yay.value, min: 0 });
 			if (parsed._nay) return parsed;
 			startIndex = parsed._yay;
 			index++;
 			continue;
 		}
 		if (arg.startsWith("--start-index=")) {
-			const parsed = parse_window_value("--start-index", arg.slice("--start-index=".length), 0);
+			const parsed = parse_window_value({ option: "--start-index", raw: arg.slice("--start-index=".length), min: 0 });
 			if (parsed._nay) return parsed;
 			startIndex = parsed._yay;
 			continue;
@@ -185,14 +191,14 @@ function parse_args(args: string[]) {
 		if (arg === "--max-chars") {
 			const value = bash_read_option_value("grep", args, index, "--max-chars");
 			if (value._nay) return value;
-			const parsed = parse_window_value("--max-chars", value._yay.value, 1);
+			const parsed = parse_window_value({ option: "--max-chars", raw: value._yay.value, min: 1 });
 			if (parsed._nay) return parsed;
 			maxChars = Math.min(parsed._yay, GREP_DEFAULT_MAX_CHARS);
 			index++;
 			continue;
 		}
 		if (arg.startsWith("--max-chars=")) {
-			const parsed = parse_window_value("--max-chars", arg.slice("--max-chars=".length), 1);
+			const parsed = parse_window_value({ option: "--max-chars", raw: arg.slice("--max-chars=".length), min: 1 });
 			if (parsed._nay) return parsed;
 			maxChars = Math.min(parsed._yay, GREP_DEFAULT_MAX_CHARS);
 			continue;
@@ -780,7 +786,7 @@ export function bash_grep_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 								...allItems.map((item) => {
 									const textChunk = item.textChunk ?? "";
 									return [
-										`${pathResolution.renderShellPath(item.path)} (lines ${item.lineStart}-${item.lineEnd}, chars ${item.startIndex}-${item.endIndex}, chunk #${item.chunkIndex})${bash_search_command_exact_query_note(exactQueryFilter, recursivePattern, textChunk)}`,
+										`${pathResolution.renderShellPath(item.path)} (lines ${item.lineStart}-${item.lineEnd}, chars ${item.startIndex}-${item.endIndex}, chunk #${item.chunkIndex})${bash_search_command_exact_query_note({ exactQueryFilter, query: recursivePattern, textChunk })}`,
 										textChunk,
 									].join("\n");
 								}),

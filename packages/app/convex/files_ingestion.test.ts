@@ -33,22 +33,26 @@ async function seed_scope(t: ReturnType<typeof test_convex>) {
 	return t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 }
 
-async function prepare_stored(
-	t: ReturnType<typeof test_convex>,
-	scope: Awaited<ReturnType<typeof seed_scope>>,
-	changes: Partial<typeof output> = {},
-) {
+async function prepare_stored(args: {
+	t: ReturnType<typeof test_convex>;
+	scope: Awaited<ReturnType<typeof seed_scope>>;
+	changes?: Partial<typeof output>;
+}) {
+	const { t, scope, changes = {} } = args;
+
 	const result = await t.mutation(internal.files_ingestion.prepare_file, { ...scope, ...output, ...changes });
 	if (result._nay) throw new Error(result._nay.message);
 	if (result._yay.kind !== "stored") throw new Error("Expected a stored preparation");
 	return result._yay;
 }
 
-async function prepare_text(
-	t: ReturnType<typeof test_convex>,
-	scope: Awaited<ReturnType<typeof seed_scope>>,
-	path = "/notes.txt",
-) {
+async function prepare_text(args: {
+	t: ReturnType<typeof test_convex>;
+	scope: Awaited<ReturnType<typeof seed_scope>>;
+	path?: string;
+}) {
+	const { t, scope, path = "/notes.txt" } = args;
+
 	const result = await t.mutation(internal.files_ingestion.prepare_file, {
 		...scope,
 		...output,
@@ -62,11 +66,13 @@ async function prepare_text(
 	return result._yay;
 }
 
-async function stage_text(
-	t: ReturnType<typeof test_convex>,
-	scope: Awaited<ReturnType<typeof seed_scope>>,
-	prepared: Awaited<ReturnType<typeof prepare_text>>,
-) {
+async function stage_text(args: {
+	t: ReturnType<typeof test_convex>;
+	scope: Awaited<ReturnType<typeof seed_scope>>;
+	prepared: Awaited<ReturnType<typeof prepare_text>>;
+}) {
+	const { t, scope, prepared } = args;
+
 	const content = files_upload_content_from_bytes({
 		bytes: new TextEncoder().encode("hello"),
 		contentType: "text/plain",
@@ -117,8 +123,8 @@ describe("prepare_file", () => {
 	test("replays a lost prepare reply without another asset or hold", async () => {
 		const t = test_convex();
 		const scope = await seed_scope(t);
-		const first = await prepare_stored(t, scope);
-		expect(await prepare_stored(t, scope)).toEqual(first);
+		const first = await prepare_stored({ t, scope });
+		expect(await prepare_stored({ t, scope })).toEqual(first);
 		expect(await t.run((ctx) => ctx.db.query("files_r2_assets").collect())).toHaveLength(1);
 		expect(await t.run((ctx) => ctx.db.query("files_private_storage_reservations").collect())).toHaveLength(1);
 		expect(await t.run((ctx) => ctx.db.query("files_pending_nodes").collect())).toHaveLength(0);
@@ -127,7 +133,7 @@ describe("prepare_file", () => {
 	test("keeps a concurrent attempt out of the prepared resources", async () => {
 		const t = test_convex();
 		const scope = await seed_scope(t);
-		const prepared = await prepare_stored(t, scope);
+		const prepared = await prepare_stored({ t, scope });
 		const rival = await t.mutation(internal.files_ingestion.prepare_file, { ...scope, ...output, attemptId: "other" });
 		expect(rival._nay?.message).toContain("in progress");
 		await t.mutation(internal.files_ingestion.abort_file, {
@@ -154,7 +160,7 @@ describe("prepare_file", () => {
 		async (field) => {
 			const t = test_convex();
 			const scope = await seed_scope(t);
-			await prepare_stored(t, scope);
+			await prepare_stored({ t, scope });
 			const changes = { digest: "b".repeat(64), path: "/other.bin", contentType: "application/zip", size: 5 };
 			const result = await t.mutation(internal.files_ingestion.prepare_file, {
 				...scope,
@@ -197,7 +203,7 @@ describe("prepare_file", () => {
 	test("keeps the declared text shape and hides unfinished text", async () => {
 		const t = test_convex();
 		const scope = await seed_scope(t);
-		const prepared = await prepare_text(t, scope, "/notes.md");
+		const prepared = await prepare_text({ t, scope, path: "/notes.md" });
 		const proposal = await t.run((ctx) => ctx.db.get("files_pending_updates", prepared.pendingUpdateId));
 		expect(proposal?.createIntent).toMatchObject({
 			kind: "text",
@@ -230,7 +236,7 @@ describe("finalize_file", () => {
 	test("replays a completed file after Save and keeps it after receipt expiry", async () => {
 		const t = test_convex();
 		const scope = await seed_scope(t);
-		const prepared = await prepare_stored(t, scope);
+		const prepared = await prepare_stored({ t, scope });
 		const args = { ...scope, receiptId: prepared.receiptId, attemptId: output.attemptId };
 		const completed = await t.mutation(internal.files_ingestion.finalize_file, args);
 		if (!completed._yay) throw new Error("Expected a completed file");
@@ -262,7 +268,7 @@ describe("finalize_file", () => {
 	test("creates each file once and gives collisions their own names", async () => {
 		const t = test_convex();
 		const scope = await seed_scope(t);
-		const first = await prepare_stored(t, scope);
+		const first = await prepare_stored({ t, scope });
 		const args = { ...scope, receiptId: first.receiptId, attemptId: output.attemptId };
 		const result = await t.mutation(internal.files_ingestion.finalize_file, args);
 		expect(result._yay?.path).toBe("/output.bin");
@@ -271,7 +277,7 @@ describe("finalize_file", () => {
 			await t.run((ctx) => files_ingestion_db_finalize_file(ctx, { ...args, attemptId: "retry" }, closedProducer)),
 		).toEqual(result);
 		expect(closedProducer).not.toHaveBeenCalled();
-		const second = await prepare_stored(t, scope, { requestId: "output-2", size: 0 });
+		const second = await prepare_stored({ t, scope, changes: { requestId: "output-2", size: 0 } });
 		expect(
 			(
 				await t.mutation(internal.files_ingestion.finalize_file, {
@@ -286,8 +292,8 @@ describe("finalize_file", () => {
 	test("commits text readiness and receipt together", async () => {
 		const t = test_convex();
 		const scope = await seed_scope(t);
-		const prepared = await prepare_text(t, scope);
-		const text = await stage_text(t, scope, prepared);
+		const prepared = await prepare_text({ t, scope });
+		const text = await stage_text({ t, scope, prepared });
 		const result = await t.mutation(internal.files_ingestion.finalize_file, {
 			...scope,
 			receiptId: prepared.receiptId,
@@ -318,7 +324,7 @@ describe("finalize_file", () => {
 	test("refuses a new file when access changes during upload", async () => {
 		const t = test_convex();
 		const scope = await seed_scope(t);
-		const prepared = await prepare_stored(t, scope);
+		const prepared = await prepare_stored({ t, scope });
 		await t.run((ctx) => ctx.db.patch("organizations_workspaces_users", scope.membershipId, { active: false }));
 		expect(
 			(
@@ -337,13 +343,13 @@ describe("abort_file", () => {
 	test("keeps completed files and late-PUT holds", async () => {
 		const t = test_convex();
 		const scope = await seed_scope(t);
-		const completed = await prepare_stored(t, scope);
+		const completed = await prepare_stored({ t, scope });
 		await t.mutation(internal.files_ingestion.finalize_file, {
 			...scope,
 			receiptId: completed.receiptId,
 			attemptId: output.attemptId,
 		});
-		const unfinished = await prepare_stored(t, scope, { requestId: "output-2" });
+		const unfinished = await prepare_stored({ t, scope, changes: { requestId: "output-2" } });
 		for (const receiptId of [completed.receiptId, unfinished.receiptId])
 			await t.mutation(internal.files_ingestion.abort_file, {
 				userId: scope.userId,
@@ -371,7 +377,7 @@ describe("abort_file", () => {
 	test("retires unfinished text but keeps a reused parent", async () => {
 		const t = test_convex();
 		const scope = await seed_scope(t);
-		const prepared = await prepare_text(t, scope, "/reports/notes.txt");
+		const prepared = await prepare_text({ t, scope, path: "/reports/notes.txt" });
 		const sibling = await t.mutation(internal.files_nodes.create_private_node_by_path, {
 			organizationId: scope.organizationId,
 			workspaceId: scope.workspaceId,
@@ -398,7 +404,7 @@ describe("cleanup_expired_receipts", () => {
 	test("aborts expired preparation and later drops only the receipt", async () => {
 		const t = test_convex();
 		const scope = await seed_scope(t);
-		const prepared = await prepare_stored(t, scope);
+		const prepared = await prepare_stored({ t, scope });
 		await t.run((ctx) => ctx.db.patch("files_ingestion_receipts", prepared.receiptId, { expiresAt: 0 }));
 		await t.mutation(internal.files_ingestion.cleanup_expired_receipts, {});
 		expect((await t.run((ctx) => ctx.db.get("files_ingestion_receipts", prepared.receiptId)))?.state.kind).toBe(
@@ -520,8 +526,8 @@ describe("ingestion purge", () => {
 		const other = await t.run((ctx) =>
 			test_mocks_fill_db_with.membership(ctx, { organizationName: "other-organization" }),
 		);
-		const pending = await prepare_stored(t, scope);
-		const control = await prepare_stored(t, other);
+		const pending = await prepare_stored({ t, scope });
+		const control = await prepare_stored({ t, scope: other });
 		const requestId = await t.run((ctx) =>
 			data_deletion_db_request(ctx, {
 				userId: scope.userId,
@@ -549,8 +555,8 @@ describe("ingestion purge", () => {
 	test("user purge closes unfinished text before its batch is removed", async () => {
 		const t = test_convex();
 		const scope = await seed_scope(t);
-		const pending = await prepare_text(t, scope);
-		await stage_text(t, scope, pending);
+		const pending = await prepare_text({ t, scope });
+		await stage_text({ t, scope, prepared: pending });
 		for (let pass = 0; pass < 20; pass++) {
 			await t.mutation(internal.data_deletion.finalize_user_deletion_data, {
 				userId: scope.userId,

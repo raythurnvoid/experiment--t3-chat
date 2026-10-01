@@ -1349,11 +1349,13 @@ function sanitize_attributes(element: HTMLElement, tag: string) {
  * link destinations never do. The same kind and reference always get the same index. An external
  * image or video becomes a plain link, so the page never loads a third-party resource by itself.
  */
-function sanitize_dom(
-	body: HTMLElement,
-	media: files_share_rich_text_Prepared["media"],
-	mediaWithTakenInTag: Set<string>,
-) {
+function sanitize_dom(args: {
+	body: HTMLElement;
+	media: files_share_rich_text_Prepared["media"];
+	mediaWithTakenInTag: Set<string>;
+}) {
+	const { body, media, mediaWithTakenInTag } = args;
+
 	const document = body.ownerDocument;
 	const mediaIndexes = new Map<string, number>();
 
@@ -1492,12 +1494,14 @@ function dom_fits(body: Node) {
 /**
  * Build the bounded rich document, or null when it does not fit and the plain text must be shown.
  */
-function build_rich_document(
-	html: string,
-	layoutRanges: number[],
-	media: files_share_rich_text_Prepared["media"],
-	mediaWithTakenInTag: Set<string>,
-) {
+function build_rich_document(args: {
+	html: string;
+	layoutRanges: number[];
+	media: files_share_rich_text_Prepared["media"];
+	mediaWithTakenInTag: Set<string>;
+}) {
+	const { html, layoutRanges, media, mediaWithTakenInTag } = args;
+
 	// Delete the writer's layout newlines between tags, like the private editor does, but only the exact
 	// ranges the preflight found outside protected text.
 	let domHtml = "";
@@ -1518,7 +1522,7 @@ function build_rich_document(
 		return null;
 	}
 
-	sanitize_dom(body, media, mediaWithTakenInTag);
+	sanitize_dom({ body, media, mediaWithTakenInTag });
 	if (!dom_fits(body)) {
 		return null;
 	}
@@ -1577,7 +1581,12 @@ export function files_share_rich_text_prepare(args: { text: string; textKind: fi
 
 	const media: files_share_rich_text_Prepared["media"] = [];
 	const doc = preflight.layoutRanges
-		? build_rich_document(html._yay, preflight.layoutRanges, media, preflight.mediaWithTakenInTag)
+		? build_rich_document({
+			html: html._yay,
+			layoutRanges: preflight.layoutRanges,
+			media,
+			mediaWithTakenInTag: preflight.mediaWithTakenInTag,
+		})
 		: null;
 	if (!doc) {
 		return Result({

@@ -131,7 +131,11 @@ export function bash_sed_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFil
 					if (dbFilesDoc?.kind === "file") {
 						return {
 							stdout: "",
-							stderr: bash_build_unreadable_file_advisory(pathResolution.basePath, dbFilesPath, dbFilesDoc.contentType),
+							stderr: bash_build_unreadable_file_advisory({
+								currentWorkspacePath: pathResolution.basePath,
+								normalizedPath: dbFilesPath,
+								contentType: dbFilesDoc.contentType,
+							}),
 							exitCode: bash_COMMAND_EXIT_FAILURE,
 						};
 					}

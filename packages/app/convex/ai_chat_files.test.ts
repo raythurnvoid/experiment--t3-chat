@@ -391,8 +391,8 @@ describe("read_shell_transcript", () => {
 			});
 			const shell = await ctx.db.get("ai_chat_bash_shells", shellId);
 			if (!shell) throw new Error("Expected the shell");
-			await ai_chat_files_db_append_shell_transcript(ctx, shell, "$ first");
-			await ai_chat_files_db_append_shell_transcript(ctx, { ...shell, transcriptSeq: 1 }, "$ second");
+			await ai_chat_files_db_append_shell_transcript({ ctx, shell, text: "$ first" });
+			await ai_chat_files_db_append_shell_transcript({ ctx, shell: { ...shell, transcriptSeq: 1 }, text: "$ second" });
 			return shell;
 		});
 		const identity = {
@@ -835,7 +835,7 @@ describe("ai_chat_files_db_append_shell_transcript", () => {
 				for (const entryText of texts) {
 					const shell = await ctx.db.get("ai_chat_bash_shells", shellId);
 					if (!shell) throw new Error("Expected the shell");
-					await ai_chat_files_db_append_shell_transcript(ctx, shell, entryText);
+					await ai_chat_files_db_append_shell_transcript({ ctx, shell, text: entryText });
 				}
 			});
 		const read = () =>

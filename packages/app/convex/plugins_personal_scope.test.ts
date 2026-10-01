@@ -188,7 +188,13 @@ async function fixture() {
 	const shared = await connect(team);
 	expect(home.installationId).not.toBe(shared.installationId);
 
-	async function write(scope: typeof home, path: string, content: string) {
+	async function write(args: {
+		scope: typeof home;
+		path: string;
+		content: string;
+	}) {
+		const { scope, path, content } = args;
+
 		const body = {
 			path,
 			content,
@@ -228,8 +234,8 @@ async function fixture() {
 		).toEqual({ _yay: { text: content, textKind: "plain_text" } });
 		return { body, saved };
 	}
-	const homeFile = await write(home, PATH, "HOME_PRIVATE_IMPORT\n");
-	const teamFile = await write(shared, PATH, "TEAM_IMPORT\n");
+	const homeFile = await write({ scope: home, path: PATH, content: "HOME_PRIVATE_IMPORT\n" });
+	const teamFile = await write({ scope: shared, path: PATH, content: "TEAM_IMPORT\n" });
 	return { t, actor, home, team: shared, homeFile, teamFile, write };
 }
 
@@ -302,7 +308,7 @@ describe("personal plugin scope", () => {
 
 	test("a team page cannot read or sign home files even when its actor can read both", async () => {
 		const f = await fixture();
-		const onlyHome = await f.write(f.home, `${ROOT}/home-only.txt`, "HOME_ONLY_IMPORT\n");
+		const onlyHome = await f.write({ scope: f.home, path: `${ROOT}/home-only.txt`, content: "HOME_ONLY_IMPORT\n" });
 		const homeRead = await f.t.fetch("/api/v1/files/read", {
 			method: "POST",
 			headers: f.home.pageHeaders,

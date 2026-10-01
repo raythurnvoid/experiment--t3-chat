@@ -107,11 +107,13 @@ function get_canonical_description_value(value: string) {
 	return validatedDescription._nay ? value.trim() : validatedDescription._yay;
 }
 
-function validate_name_field_input(
-	el: HTMLInputElement,
-	canonicalName: string,
-	rejectedValueMessagesMap: Map<string, string>,
-) {
+function validate_name_field_input(args: {
+	el: HTMLInputElement;
+	canonicalName: string;
+	rejectedValueMessagesMap: Map<string, string>;
+}) {
+	const { el, canonicalName, rejectedValueMessagesMap } = args;
+
 	const normalized = organizations_name_autofix(el.value, { trim_trailing_hyphens: false });
 	if (el.value !== normalized) {
 		el.value = normalized;
@@ -881,7 +883,7 @@ const MainAppHeaderOrganizationNameField = memo(function MainAppHeaderOrganizati
 
 	const validateInput = useFn((el: HTMLInputElement) => {
 		const canonicalName = get_canonical_name_value(el.value);
-		const validationResult = validate_name_field_input(el, canonicalName, rejectedNameMessagesMapRef.current);
+		const validationResult = validate_name_field_input({ el, canonicalName, rejectedValueMessagesMap: rejectedNameMessagesMapRef.current });
 
 		setValidationMessage(validationResult.validationMessage);
 		setDraftValueLength(el.value.length);
@@ -974,7 +976,7 @@ const MainAppHeaderOrganizationNameField = memo(function MainAppHeaderOrganizati
 
 		el.value = initialValue;
 		const canonicalName = get_canonical_name_value(el.value);
-		const validationResult = validate_name_field_input(el, canonicalName, rejectedNameMessagesMapRef.current);
+		const validationResult = validate_name_field_input({ el, canonicalName, rejectedValueMessagesMap: rejectedNameMessagesMapRef.current });
 		setValidationMessage(validationResult.validationMessage);
 		setDraftValueLength(el.value.length);
 		onValidationStateChangeRef.current({
@@ -995,7 +997,7 @@ const MainAppHeaderOrganizationNameField = memo(function MainAppHeaderOrganizati
 				}
 
 				const canonicalName = get_canonical_name_value(el.value);
-				const validationResult = validate_name_field_input(el, canonicalName, rejectedNameMessagesMapRef.current);
+				const validationResult = validate_name_field_input({ el, canonicalName, rejectedValueMessagesMap: rejectedNameMessagesMapRef.current });
 				setValidationMessage(validationResult.validationMessage);
 				setDraftValueLength(el.value.length);
 				onValidationStateChangeRef.current({

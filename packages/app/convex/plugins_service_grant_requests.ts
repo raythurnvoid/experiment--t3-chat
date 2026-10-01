@@ -157,11 +157,11 @@ export async function plugins_service_grant_requests_db_recover(
 		return Result({ _nay: { message: "Reconnect Files sync" } });
 	}
 	// The stored ciphertext is AEAD-bound to this request's identity, not just the caller's token.
-	const token = await crypto_decrypt_secret_value(
-		{ ciphertext: receipt.ciphertext, nonce: receipt.nonce },
-		JSON.stringify([credentialHash, args.operation, args.requestId, args.fingerprint]),
-		"PLUGIN_SECRETS_ENCRYPTION_KEY",
-	);
+	const token = await crypto_decrypt_secret_value({
+		secret: { ciphertext: receipt.ciphertext, nonce: receipt.nonce },
+		additionalData: JSON.stringify([credentialHash, args.operation, args.requestId, args.fingerprint]),
+		keyName: "PLUGIN_SECRETS_ENCRYPTION_KEY",
+	});
 	return Result({
 		_yay: {
 			token,
@@ -190,11 +190,11 @@ export async function plugins_service_grant_requests_db_save(
 	},
 ) {
 	const credentialHash = await crypto_sha256_hex(args.presented);
-	const encrypted = await crypto_encrypt_secret_value(
-		args.token,
-		JSON.stringify([credentialHash, args.operation, args.requestId, args.fingerprint]),
-		"PLUGIN_SECRETS_ENCRYPTION_KEY",
-	);
+	const encrypted = await crypto_encrypt_secret_value({
+		value: args.token,
+		additionalData: JSON.stringify([credentialHash, args.operation, args.requestId, args.fingerprint]),
+		keyName: "PLUGIN_SECRETS_ENCRYPTION_KEY",
+	});
 	// A receipt never outlives the grant it replays.
 	const expiresAt = Math.min(Date.now() + 24 * 60 * 60 * 1000, args.grant.expiresAt);
 	await ctx.db.insert("plugin_service_grant_requests", {

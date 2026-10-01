@@ -93,7 +93,7 @@ export function plugins_runtime_http_routes(router: { route: HttpRouter["route"]
 							method,
 							handler: httpAction(async (ctx, request) => {
 								const { plugins_runtime_http_get_secret } = await import("./plugins_runtime.ts");
-								const result = await plugins_runtime_http_get_secret(ctx, request, path);
+								const result = await plugins_runtime_http_get_secret({ ctx, request, path });
 								return Response.json(result.body, result);
 							}),
 						});

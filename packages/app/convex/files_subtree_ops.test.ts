@@ -33,16 +33,18 @@ async function fixture() {
 
 type Fixture = Awaited<ReturnType<typeof fixture>>;
 
-async function insert_node(
-	ctx: MutationCtx,
-	f: Fixture,
+async function insert_node(args: {
+	ctx: MutationCtx;
+	f: Fixture;
 	fields: {
 		parent: Doc<"files_nodes"> | null;
 		name: string;
 		kind: "file" | "folder";
 		archiveOperationId: string | null;
-	},
-) {
+	};
+}) {
+	const { ctx, f, fields } = args;
+
 	const path = `${fields.parent?.path ?? ""}/${fields.name}`;
 	const nodeId = await ctx.db.insert("files_nodes", {
 		...test_mocks.files.base(),
@@ -66,11 +68,13 @@ async function insert_node(
  * Restrict `nodeId`, then run the steps of its scope op to the end. `afterStep` gets the node ids in
  * the op's queue and the walk's next queue number, after the request and after each step.
  */
-async function restrict_to_end(
-	f: Fixture,
-	nodeId: Id<"files_nodes">,
-	afterStep: (queued: Array<Id<"files_nodes">>, sequence: number) => void | Promise<void>,
-) {
+async function restrict_to_end(args: {
+	f: Fixture;
+	nodeId: Id<"files_nodes">;
+	afterStep: (queued: Array<Id<"files_nodes">>, sequence: number) => void | Promise<void>;
+}) {
+	const { f, afterStep, nodeId} = args;
+
 	const restricted = await f.asOwner.mutation(api.files_sharing.restrict_node, {
 		membershipId: f.db.membershipId,
 		nodeId,
@@ -269,20 +273,28 @@ describe("advance", () => {
 	test("walks into the folders of a page before their siblings' folders, so the queue stays small", async () => {
 		const f = await fixture();
 		const top = await f.t.run(async (ctx) => {
-			const top = await insert_node(ctx, f, { parent: null, name: "top", kind: "folder", archiveOperationId: null });
+			const top = await insert_node({ ctx, f, fields: { parent: null, name: "top", kind: "folder", archiveOperationId: null } });
 			for (let index = 0; index < 30; index++) {
-				const child = await insert_node(ctx, f, {
+				const child = await insert_node({
+					ctx,
+					f,
+					fields: {
 					parent: top,
 					name: `d${index}`,
 					kind: "folder",
 					archiveOperationId: null,
+				},
 				});
 				for (let grandchildIndex = 0; grandchildIndex < 60; grandchildIndex++) {
-					await insert_node(ctx, f, {
+					await insert_node({
+						ctx,
+						f,
+						fields: {
 						parent: child,
 						name: `e${grandchildIndex}`,
 						kind: "folder",
 						archiveOperationId: null,
+					},
 					});
 				}
 			}
@@ -293,8 +305,12 @@ describe("advance", () => {
 		// If the walk took the oldest row first, the queue would hold the folders of every `/top/d*` folder
 		// at once.
 		let largestQueue = 0;
-		await restrict_to_end(f, top._id, (queued) => {
+		await restrict_to_end({
+			f,
+			nodeId: top._id,
+			afterStep: (queued) => {
 			largestQueue = Math.max(largestQueue, queued.length);
+		},
 		});
 		expect(largestQueue).toBeLessThanOrEqual(1 + 30 + 50);
 
@@ -308,20 +324,24 @@ describe("advance", () => {
 		// name. Their files keep the steps busy, so a step ends while their folders are still queued. The
 		// 50 files before them fill the first page, so the group starts on the second page.
 		const top = await f.t.run(async (ctx) => {
-			const top = await insert_node(ctx, f, { parent: null, name: "top", kind: "folder", archiveOperationId: null });
+			const top = await insert_node({ ctx, f, fields: { parent: null, name: "top", kind: "folder", archiveOperationId: null } });
 			for (let index = 0; index < 50; index++) {
-				await insert_node(ctx, f, {
+				await insert_node({
+					ctx,
+					f,
+					fields: {
 					parent: top,
 					name: `a${String(index).padStart(2, "0")}.md`,
 					kind: "file",
 					archiveOperationId: null,
+				},
 				});
 			}
 			for (let index = 0; index < 100; index++) {
 				const archiveOperationId = `replace-${index}`;
-				const old = await insert_node(ctx, f, { parent: top, name: "old", kind: "folder", archiveOperationId });
+				const old = await insert_node({ ctx, f, fields: { parent: top, name: "old", kind: "folder", archiveOperationId } });
 				for (const name of ["a.md", "b.md"]) {
-					await insert_node(ctx, f, { parent: old, name, kind: "file", archiveOperationId });
+					await insert_node({ ctx, f, fields: { parent: old, name, kind: "file", archiveOperationId } });
 				}
 			}
 			return top;
@@ -329,7 +349,10 @@ describe("advance", () => {
 
 		const twice: Array<Id<"files_nodes">> = [];
 		const firstPass: Array<{ sequence: number; rewrittenFolders: number }> = [];
-		await restrict_to_end(f, top._id, async (queued, sequence) => {
+		await restrict_to_end({
+			f,
+			nodeId: top._id,
+			afterStep: async (queued, sequence) => {
 			twice.push(...queued.filter((nodeId, index) => queued.indexOf(nodeId) !== index));
 
 			// A step rewrites a folder and queues it in the same mutation. So while the first pass runs, the
@@ -343,6 +366,7 @@ describe("advance", () => {
 					(node) => node.kind === "folder" && node._id !== top._id && node.restrictedScopeNodeId === top._id,
 				).length,
 			});
+		},
 		});
 		expect(twice).toEqual([]);
 		expect(firstPass.length).toBeGreaterThan(1);
@@ -355,7 +379,7 @@ describe("advance", () => {
 	test("reads every child of a group that shares a name and a creation time", async () => {
 		const f = await fixture();
 		const top = await f.t.run((ctx) =>
-			insert_node(ctx, f, { parent: null, name: "top", kind: "folder", archiveOperationId: null }),
+			insert_node({ ctx, f, fields: { parent: null, name: "top", kind: "folder", archiveOperationId: null } }),
 		);
 		// `8.64e15` is the largest time a date can hold, and `8.64e15 + 0.001` is `8.64e15` again. So the
 		// test clock cannot move the creation time of the next node forward, and all of them get one time.
@@ -363,7 +387,11 @@ describe("advance", () => {
 		vi.setSystemTime(8.64e15);
 		await f.t.run(async (ctx) => {
 			for (let index = 0; index < 120; index++) {
-				await insert_node(ctx, f, { parent: top, name: "old.md", kind: "file", archiveOperationId: `replace-${index}` });
+				await insert_node({
+					ctx,
+					f,
+					fields: { parent: top, name: "old.md", kind: "file", archiveOperationId: `replace-${index}` },
+				});
 			}
 		});
 		vi.setSystemTime(now);
@@ -372,7 +400,7 @@ describe("advance", () => {
 		);
 		expect(new Set(tied.map((node) => node._creationTime))).toEqual(new Set([8.64e15]));
 
-		await restrict_to_end(f, top._id, () => {});
+		await restrict_to_end({ f, nodeId: top._id, afterStep: () => {} });
 
 		const nodes = await f.t.run((ctx) => ctx.db.query("files_nodes").collect());
 		expect(nodes.filter((node) => node.restrictedScopeNodeId !== top._id).map((node) => node.name)).toEqual([]);

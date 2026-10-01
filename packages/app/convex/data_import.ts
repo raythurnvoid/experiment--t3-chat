@@ -213,15 +213,13 @@ export const create_upload_targets = internalMutation({
 			// Importing over a name archives whatever holds it, like create_upload_node, so re-runs
 			// replace the previous import instead of failing.
 			if (item.collidingNodeId) {
-				await files_nodes_db_archive_nodes(
+				await files_nodes_db_archive_nodes({
 					ctx,
-					{
-						nodeIds: [item.collidingNodeId],
-						updatedBy: args.createdBy,
-						now,
-					},
+					nodeIds: [item.collidingNodeId],
+					updatedBy: args.createdBy,
+					now,
 					shareLinkCleanup,
-				);
+				});
 			}
 
 			const assetId = await ctx.db.insert("files_r2_assets", {

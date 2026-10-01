@@ -16,13 +16,15 @@ export type ai_chat_context_Context = {
 	instructionBytes: number;
 };
 
-async function read_file(
-	ctx: ActionCtx,
-	context: ai_chat_context_Context,
-	workspace: "current" | "personal",
-	path: string,
-	mode: "skill" | "instruction",
-) {
+async function read_file(args: {
+	ctx: ActionCtx;
+	context: ai_chat_context_Context;
+	workspace: "current" | "personal";
+	path: string;
+	mode: "skill" | "instruction";
+}) {
+	const { ctx, context, path, mode, workspace} = args;
+
 	const resolved = await ctx.runQuery(internal.ai_chat_workspaces.resolve, { source: context.source, workspace });
 	if (resolved._nay) return resolved;
 	const { organizationId, workspaceId, organizationName, workspaceName } = resolved._yay;
@@ -74,11 +76,11 @@ export async function ai_chat_context_create(
 		instructions: new Map(),
 		instructionBytes: 0,
 	};
-	const root = await ai_chat_context_read_instructions(
+	const root = await ai_chat_context_read_instructions({
 		ctx,
 		context,
-		discovered._yay.workspaces.map(({ workspace }) => ({ workspace, path: "/" })),
-	);
+		paths: discovered._yay.workspaces.map(({ workspace }) => ({ workspace, path: "/" })),
+	});
 	const catalog: (
 		| {
 				source: "workspace";
@@ -96,7 +98,7 @@ export async function ai_chat_context_create(
 	for (const { workspace, path } of discovered._yay.skills) {
 		let entry: (typeof catalog)[number];
 		try {
-			const read = await read_file(ctx, context, workspace, path, "skill");
+			const read = await read_file({ ctx, context, workspace, path, mode: "skill" });
 			if (read._nay) return Result({ _nay: read._nay });
 			if (!read._yay) continue;
 			const source = { source: "workspace" as const, workspace: read._yay.workspace, path: read._yay.path };
@@ -161,12 +163,14 @@ export async function ai_chat_context_create(
 /**
  * maxBytes covers the JSON-serialized return string. Callers must keep accepted text unchanged.
  */
-export async function ai_chat_context_read_instructions(
-	ctx: ActionCtx,
-	context: ai_chat_context_Context,
-	paths: readonly { workspace: "current" | "personal"; path: string }[],
-	maxBytes = Infinity,
-) {
+export async function ai_chat_context_read_instructions(args: {
+	ctx: ActionCtx;
+	context: ai_chat_context_Context;
+	paths: readonly { workspace: "current" | "personal"; path: string }[];
+	maxBytes?: number;
+}) {
+	const { ctx, context, paths, maxBytes = Infinity } = args;
+
 	const candidates = new Map<string, { workspace: "current" | "personal"; path: string }>();
 	let incomplete = false;
 	for (const requested of paths) {
@@ -209,7 +213,7 @@ export async function ai_chat_context_read_instructions(
 			a.path.localeCompare(b.path),
 	)) {
 		try {
-			const result = await read_file(ctx, context, workspace, path, "instruction");
+			const result = await read_file({ ctx, context, workspace, path, mode: "instruction" });
 			if (result._nay) {
 				blocks.length = 0;
 				append("Workspace guidance is unavailable. The source chat or workspace is no longer readable.");

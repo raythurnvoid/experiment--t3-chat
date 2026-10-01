@@ -48,12 +48,14 @@ async function saved_folder(f: Awaited<ReturnType<typeof fixture>>, name: string
 	);
 }
 
-async function start_review(
-	f: Awaited<ReturnType<typeof fixture>>,
-	kind: "accept" | "discard",
-	proposals: Doc<"files_pending_updates">[],
-	plan = true,
-) {
+async function start_review(args: {
+	f: Awaited<ReturnType<typeof fixture>>;
+	kind: "accept" | "discard";
+	proposals: Doc<"files_pending_updates">[];
+	plan?: boolean;
+}) {
+	const { f, kind, proposals, plan = true } = args;
+
 	const started = await f.asUser.mutation(api.files_pending_update_runs.start, {
 		membershipId: f.db.membershipId,
 		requestId: crypto.randomUUID(),
@@ -122,7 +124,7 @@ describe("review jobs", () => {
 				asUser: base.t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId }),
 			};
 			const proposal = await private_folder(f, "/draft");
-			const run = await start_review(f, "accept", [proposal]);
+			const run = await start_review({ f, kind: "accept", proposals: [proposal] });
 			await f.t.mutation(internal.files_pending_update_runs.advance, { runId: run.runId });
 			runs.push({ f, ...run });
 		}
@@ -168,7 +170,7 @@ describe("review jobs", () => {
 		const f = await fixture();
 		const first = await private_folder(f, "/first");
 		const second = await private_folder(f, "/second");
-		const running = await start_review(f, "accept", [first]);
+		const running = await start_review({ f, kind: "accept", proposals: [first] });
 		const reply = await f.asUser.mutation(api.files_pending_update_runs.start, {
 			membershipId: f.db.membershipId,
 			requestId: crypto.randomUUID(),
@@ -183,7 +185,7 @@ describe("review jobs", () => {
 	test("lets a Copy start while a review is running", async () => {
 		const f = await fixture();
 		const first = await private_folder(f, "/first");
-		const running = await start_review(f, "discard", [first]);
+		const running = await start_review({ f, kind: "discard", proposals: [first] });
 		const source = await saved_folder(f, "source");
 		const target = await saved_folder(f, "target");
 
@@ -254,7 +256,7 @@ describe("review jobs", () => {
 			const f = await fixture();
 			const first = await private_folder(f, "/first");
 			const second = await private_folder(f, "/second");
-			const { runId } = await start_review(f, kind, [first, second]);
+			const { runId } = await start_review({ f, kind, proposals: [first, second] });
 			const unrelated = await private_folder(f, "/unrelated");
 			const result = await finish_review(f, runId);
 			expect(result?.activity).toMatchObject({ status: "succeeded", progress: { completed: 2 } });
@@ -271,7 +273,7 @@ describe("review jobs", () => {
 		const parent = await private_folder(f, "/parent");
 		const children = [];
 		for (let index = 0; index < 10; index++) children.push(await private_folder(f, `/parent/child-${index}`));
-		const { runId } = await start_review(f, "discard", [first, parent, ...children]);
+		const { runId } = await start_review({ f, kind: "discard", proposals: [first, parent, ...children] });
 		const unselected = await private_folder(f, "/parent/new-child");
 		const result = await finish_review(f, runId);
 		expect(result?.activity).toMatchObject({ status: "partial", progress: { completed: 1, blocked: 11 } });
@@ -285,7 +287,7 @@ describe("review jobs", () => {
 		const f = await fixture();
 		const first = await private_folder(f, "/first");
 		const second = await private_folder(f, "/second");
-		const { runId } = await start_review(f, "accept", [first, second]);
+		const { runId } = await start_review({ f, kind: "accept", proposals: [first, second] });
 		expect(
 			(
 				await f.t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
@@ -308,7 +310,7 @@ describe("review jobs", () => {
 		const f = await fixture();
 		const first = await private_folder(f, "/first");
 		const second = await private_folder(f, "/second");
-		const { runId } = await start_review(f, "accept", [first, second]);
+		const { runId } = await start_review({ f, kind: "accept", proposals: [first, second] });
 		const result = await finish_review(f, runId);
 		expect(result?.activity).toMatchObject({ status: "succeeded", progress: { completed: 2 } });
 		expect(result?.run).toMatchObject({ revalidateRemaining: false, unitCount: 2 });
@@ -321,7 +323,7 @@ describe("review jobs", () => {
 			const parent = await private_folder(f, "/parent");
 			const children = [];
 			for (let index = 0; index < 10; index++) children.push(await private_folder(f, `/parent/child-${index}`));
-			const { runId } = await start_review(f, "discard", [parent, ...children]);
+			const { runId } = await start_review({ f, kind: "discard", proposals: [parent, ...children] });
 			await private_folder(f, "/unrelated");
 			await f.t.mutation(internal.files_pending_update_runs.advance, { runId });
 			const unit = await f.t.run((ctx) => ctx.db.query("files_pending_update_run_units").first());
@@ -418,7 +420,7 @@ describe("review jobs", () => {
 	test("bounds repeated clock changes to three attempts", async () => {
 		const f = await fixture();
 		const parent = await private_folder(f, "/parent");
-		const { runId } = await start_review(f, "discard", [parent]);
+		const { runId } = await start_review({ f, kind: "discard", proposals: [parent] });
 		for (let index = 0; index < 3; index++) {
 			await f.t.mutation(internal.files_pending_update_runs.advance, { runId });
 			const unit = await f.t.run((ctx) => ctx.db.query("files_pending_update_run_units").first());
@@ -527,11 +529,11 @@ describe("review jobs", () => {
 			const proposals = await f.t.run((ctx) => ctx.db.query("files_pending_updates").collect());
 			const child = proposals.find((proposal) => proposal.target.id === nodes.childId)!;
 			const before = await f.t.run((ctx) => ctx.db.query("files_nodes").collect());
-			const { runId } = await start_review(
+			const { runId } = await start_review({
 				f,
-				"accept",
-				proposals.filter((proposal) => includeChild || proposal._id !== child._id),
-			);
+				kind: "accept",
+				proposals: proposals.filter((proposal) => includeChild || proposal._id !== child._id),
+			});
 			const result = await finish_review(f, runId);
 			if (includeChild) {
 				const units = await f.t.run((ctx) => ctx.db.query("files_pending_update_run_units").collect());
@@ -558,7 +560,7 @@ describe("review jobs", () => {
 		const f = await fixture();
 		const parent = await private_folder(f, "/parent");
 		const child = await private_folder(f, "/parent/child");
-		const { runId } = await start_review(f, "accept", [child, parent]);
+		const { runId } = await start_review({ f, kind: "accept", proposals: [child, parent] });
 		const result = await finish_review(f, runId);
 		expect(result?.activity).toMatchObject({ status: "succeeded", progress: { completed: 2 } });
 		expect(result?.run).toMatchObject({ unitCount: 1, finishedUnitCount: 1 });
@@ -583,7 +585,7 @@ describe("review jobs", () => {
 			).toBeUndefined();
 		const proposals = await f.t.run((ctx) => ctx.db.query("files_pending_updates").collect());
 		const parent = proposals.find((proposal) => proposal.target.id === parentId)!;
-		const { runId } = await start_review(f, "accept", [parent]);
+		const { runId } = await start_review({ f, kind: "accept", proposals: [parent] });
 		const reviewVersion = await f.t.run((ctx) => ctx.db.query("files_pending_review_versions").first());
 		expect(
 			(
@@ -618,7 +620,7 @@ describe("review jobs", () => {
 			)._nay,
 		).toBeUndefined();
 		const proposals = await f.t.run((ctx) => ctx.db.query("files_pending_updates").collect());
-		const { runId } = await start_review(f, "accept", proposals);
+		const { runId } = await start_review({ f, kind: "accept", proposals });
 		const result = await finish_review(f, runId);
 		expect(await f.t.run((ctx) => ctx.db.query("files_pending_update_run_units").collect())).toMatchObject([
 			{ status: "completed", errorMessage: null },
@@ -680,7 +682,7 @@ describe("review jobs", () => {
 		).toBeUndefined();
 		const proposals = await f.t.run((ctx) => ctx.db.query("files_pending_updates").collect());
 
-		const { runId } = await start_review(f, "accept", proposals);
+		const { runId } = await start_review({ f, kind: "accept", proposals });
 		await finish_review(f, runId);
 
 		expect(await f.t.run((ctx) => ctx.db.query("files_pending_update_run_units").collect())).toMatchObject([
@@ -695,7 +697,7 @@ describe("review jobs", () => {
 		const f = await fixture();
 		const parent = await private_folder(f, "/parent");
 		const child = await private_folder(f, "/parent/child");
-		const { runId } = await start_review(f, "discard", [parent]);
+		const { runId } = await start_review({ f, kind: "discard", proposals: [parent] });
 		const result = await finish_review(f, runId);
 		expect(result?.activity).toMatchObject({ status: "failed", progress: { completed: 0, blocked: 1 } });
 		expect(await f.t.run((ctx) => ctx.db.query("files_pending_update_run_units").collect())).toMatchObject([
@@ -712,7 +714,7 @@ describe("review jobs", () => {
 		const f = await fixture();
 		const parent = await private_folder(f, "/parent");
 		const child = await private_folder(f, "/parent/child");
-		const { runId, activityId } = await start_review(f, "discard", [parent, child]);
+		const { runId, activityId } = await start_review({ f, kind: "discard", proposals: [parent, child] });
 		const result = await finish_review(f, runId);
 		expect(result?.activity).toMatchObject({ status: "succeeded", progress: { completed: 2 } });
 		const beforeCleanup = await f.t.run((ctx) => ctx.db.query("files_pending_nodes").collect());
@@ -733,7 +735,7 @@ describe("review jobs", () => {
 	test("Stop before preparation leaves every private proposal pending", async () => {
 		const f = await fixture();
 		const parent = await private_folder(f, "/parent");
-		const { runId, activityId } = await start_review(f, "accept", [parent]);
+		const { runId, activityId } = await start_review({ f, kind: "accept", proposals: [parent] });
 		await f.asUser.mutation(api.activities.request_stop, { membershipId: f.db.membershipId, activityId });
 		await f.t.mutation(internal.files_pending_update_runs.advance, { runId });
 		expect(
@@ -746,7 +748,7 @@ describe("review jobs", () => {
 	test("late planning delivery keeps the timeout result", async () => {
 		const f = await fixture();
 		const parent = await private_folder(f, "/parent");
-		const { runId } = await start_review(f, "accept", [parent], false);
+		const { runId } = await start_review({ f, kind: "accept", proposals: [parent], plan: false });
 		vi.setSystemTime(Date.now() + 30 * 60 * 1000);
 		await f.t.action(internal.files_pending_update_runs.plan, { runId, fence: 0 });
 		expect(await f.t.run((ctx) => ctx.db.get("files_pending_updates", parent._id))).toEqual(parent);
@@ -761,7 +763,7 @@ describe("review jobs", () => {
 	test.each([false, true])("late preparation keeps its retry (watchdog first: %s)", async (watchdogFirst) => {
 		const f = await fixture();
 		const parent = await private_folder(f, "/parent");
-		const { runId } = await start_review(f, "accept", [parent]);
+		const { runId } = await start_review({ f, kind: "accept", proposals: [parent] });
 		await f.t.mutation(internal.files_pending_update_runs.advance, { runId });
 		const unit = await f.t.run((ctx) => ctx.db.query("files_pending_update_run_units").unique());
 		if (!unit) throw new Error("Expected the first attempt");
@@ -783,7 +785,7 @@ describe("review jobs", () => {
 	test("stops after three expired preparation attempts", async () => {
 		const f = await fixture();
 		const parent = await private_folder(f, "/parent");
-		const { runId } = await start_review(f, "accept", [parent]);
+		const { runId } = await start_review({ f, kind: "accept", proposals: [parent] });
 		for (let attempt = 1; attempt <= 3; attempt++) {
 			await f.t.mutation(internal.files_pending_update_runs.advance, { runId });
 			const unit = await f.t.run((ctx) => ctx.db.query("files_pending_update_run_units").unique());
@@ -811,7 +813,7 @@ describe("review jobs", () => {
 	test("recovers a lost planning action and fences its old delivery", async () => {
 		const f = await fixture();
 		const parent = await private_folder(f, "/parent");
-		const { runId } = await start_review(f, "accept", [parent], false);
+		const { runId } = await start_review({ f, kind: "accept", proposals: [parent], plan: false });
 		vi.setSystemTime(Date.now() + 5 * 60 * 1000);
 		await f.t.mutation(internal.files_pending_update_runs.recover, {});
 		expect(await f.t.run((ctx) => ctx.db.get("files_pending_update_runs", runId))).toMatchObject({
@@ -833,7 +835,7 @@ describe("review jobs", () => {
 		const f = await fixture();
 		const parent = await private_folder(f, "/parent");
 		const child = await private_folder(f, "/parent/child");
-		const { runId, activityId } = await start_review(f, "accept", [parent, child]);
+		const { runId, activityId } = await start_review({ f, kind: "accept", proposals: [parent, child] });
 		const result = await finish_review(f, runId);
 		if (!result) throw new Error("Expected the finished review");
 		expect(result.activity.status).toBe("succeeded");
@@ -867,7 +869,7 @@ describe("review jobs", () => {
 	test("stops after three lost planning attempts without changing drafts", async () => {
 		const f = await fixture();
 		const parent = await private_folder(f, "/parent");
-		const { runId } = await start_review(f, "accept", [parent], false);
+		const { runId } = await start_review({ f, kind: "accept", proposals: [parent], plan: false });
 		for (let pass = 0; pass < 3; pass++) {
 			vi.setSystemTime(Date.now() + 5 * 60 * 1000);
 			await f.t.mutation(internal.files_pending_update_runs.recover, {});
@@ -890,7 +892,7 @@ describe("review jobs", () => {
 			const savedId = await saved_folder(f, "saved");
 			const parent = await private_folder(f, "/parent");
 			const child = await private_folder(f, "/parent/child");
-			const { runId, activityId } = await start_review(f, "accept", [parent, child]);
+			const { runId, activityId } = await start_review({ f, kind: "accept", proposals: [parent, child] });
 			await f.t.mutation(internal.files_pending_update_runs.advance, { runId });
 			const unit = await f.t.run((ctx) => ctx.db.query("files_pending_update_run_units").first());
 			if (!unit) throw new Error("Expected an active unit");

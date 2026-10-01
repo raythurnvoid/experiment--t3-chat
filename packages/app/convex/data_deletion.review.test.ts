@@ -1362,7 +1362,13 @@ async function review_seed_all_workspace_content(
 	return { nodes: nodes.map((node) => node._id) };
 }
 
-async function review_seed_user_publisher_docs(ctx: MutationCtx, userId: Id<"users">, tag: string) {
+async function review_seed_user_publisher_docs(args: {
+	ctx: MutationCtx;
+	userId: Id<"users">;
+	tag: string;
+}) {
+	const { ctx, userId, tag } = args;
+
 	for (let i = 0; i < 2; i += 1) {
 		const repositoryId = await ctx.db.insert("plugins_publisher_repositories", {
 			ownerUserId: userId,
@@ -1399,11 +1405,13 @@ async function review_seed_user_publisher_docs(ctx: MutationCtx, userId: Id<"use
 
 // Capture exact IDs BEFORE running any deletion. Child-only rows cannot be found through deleted parents.
 // A fixture should be alone in its convex-test database, except for explicit untouched controls.
-async function review_capture_workspace_rows(
-	ctx: MutationCtx,
-	organizationId: Id<"organizations">,
-	workspaceId: Id<"organizations_workspaces">,
-) {
+async function review_capture_workspace_rows(args: {
+	ctx: MutationCtx;
+	organizationId: Id<"organizations">;
+	workspaceId: Id<"organizations_workspaces">;
+}) {
+	const { ctx, organizationId, workspaceId } = args;
+
 	const activityIds = new Set(
 		(await ctx.db.query("activities").collect())
 			.filter((activity) => activity.organizationId === organizationId && activity.workspaceId === workspaceId)
@@ -1580,7 +1588,7 @@ for (const path of ["queue", "admin"] as const) {
 				workspaceId: user.defaultWorkspaceId,
 				tag: path,
 			});
-			await review_seed_user_publisher_docs(ctx, user.userId, path);
+			await review_seed_user_publisher_docs({ ctx, userId: user.userId, tag: path });
 			const tokenId = await ctx.db.insert("users_anon_tokens", {
 				userId: user.userId,
 				token: "test-only-token",
@@ -1602,7 +1610,7 @@ for (const path of ["queue", "admin"] as const) {
 				tokenId,
 				billingId,
 				lastActiveId,
-				workspaceRows: await review_capture_workspace_rows(ctx, user.defaultOrganizationId, user.defaultWorkspaceId),
+				workspaceRows: await review_capture_workspace_rows({ ctx, organizationId: user.defaultOrganizationId, workspaceId: user.defaultWorkspaceId }),
 				userRows: await review_capture_user_rows(ctx, user.userId),
 			};
 		});
@@ -1721,7 +1729,7 @@ for (const path of ["workspace", "organization", "reset"] as const) {
 				workspaceId = extra._yay.workspaceId;
 			}
 			await review_seed_all_workspace_content(ctx, { userId: user.userId, organizationId, workspaceId, tag: path });
-			const inventory = await review_capture_workspace_rows(ctx, organizationId, workspaceId);
+			const inventory = await review_capture_workspace_rows({ ctx, organizationId, workspaceId });
 			const requestId =
 				path === "reset"
 					? null
@@ -1916,7 +1924,7 @@ describe("organization structure at batch size one", () => {
 						userId: user.userId,
 						tag: `structure-${index}`,
 					});
-					workspaceRows.push(...(await review_capture_workspace_rows(ctx, organizationId, workspaceId)));
+					workspaceRows.push(...(await review_capture_workspace_rows({ ctx, organizationId, workspaceId })));
 				}
 				const structure = await review_capture_organization_structure(ctx, organizationId);
 				// One doc per organization, so it is checked here and not in the two-row structure table list.

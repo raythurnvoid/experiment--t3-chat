@@ -8,17 +8,19 @@ import { editor as monaco_editor } from "monaco-editor";
  * Monaco normalizes physical wheel notches through `wheelDelta / 120` and uses
  * a 50px wheel step, so do the same here instead of adding raw `deltaY`.
  */
-function get_monaco_scroll_delta(
+function get_monaco_scroll_delta(args: {
 	event: {
 		readonly deltaMode: number;
 		readonly deltaX: number;
 		readonly deltaY: number;
 		readonly wheelDeltaX?: number;
 		readonly wheelDeltaY?: number;
-	},
-	axis: "x" | "y",
-	scrollSensitivity: number,
-) {
+	};
+	axis: "x" | "y";
+	scrollSensitivity: number;
+}) {
+	const { event, axis, scrollSensitivity } = args;
+
 	const wheelDelta = axis === "x" ? event.wheelDeltaX : event.wheelDeltaY;
 	const delta = axis === "x" ? event.deltaX : event.deltaY;
 	const normalizedDelta = ((/* iife */) => {
@@ -117,8 +119,8 @@ export const FileEditorMonacoTopViewZone = memo(function FileEditorMonacoTopView
 				editor.getOption(monaco_editor.EditorOption.mouseWheelScrollSensitivity) *
 				(event.altKey ? editor.getOption(monaco_editor.EditorOption.fastScrollSensitivity) : 1);
 
-			editor.setScrollTop(editor.getScrollTop() + get_monaco_scroll_delta(event, "y", scrollSensitivity));
-			editor.setScrollLeft(editor.getScrollLeft() + get_monaco_scroll_delta(event, "x", scrollSensitivity));
+			editor.setScrollTop(editor.getScrollTop() + get_monaco_scroll_delta({ event, axis: "y", scrollSensitivity }));
+			editor.setScrollLeft(editor.getScrollLeft() + get_monaco_scroll_delta({ event, axis: "x", scrollSensitivity }));
 			event.preventDefault();
 		};
 
@@ -300,59 +302,59 @@ if (import.meta.vitest) {
 	describe("get_monaco_scroll_delta", () => {
 		test("matches Monaco's physical mouse wheel step", () => {
 			expect(
-				get_monaco_scroll_delta(
-					{
+				get_monaco_scroll_delta({
+					event: {
 						deltaMode: WheelEvent.DOM_DELTA_PIXEL,
 						deltaX: 0,
 						deltaY: 100,
 						wheelDeltaY: -120,
 					},
-					"y",
-					1,
-				),
+					axis: "y",
+					scrollSensitivity: 1,
+				}),
 			).toBe(50);
 		});
 
 		test("falls back to Monaco's pixel delta normalization", () => {
 			expect(
-				get_monaco_scroll_delta(
-					{
+				get_monaco_scroll_delta({
+					event: {
 						deltaMode: WheelEvent.DOM_DELTA_PIXEL,
 						deltaX: 0,
 						deltaY: 100,
 					},
-					"y",
-					1,
-				),
+					axis: "y",
+					scrollSensitivity: 1,
+				}),
 			).toBe(125);
 		});
 
 		test("applies editor scroll sensitivity", () => {
 			expect(
-				get_monaco_scroll_delta(
-					{
+				get_monaco_scroll_delta({
+					event: {
 						deltaMode: WheelEvent.DOM_DELTA_PIXEL,
 						deltaX: 0,
 						deltaY: 100,
 						wheelDeltaY: -120,
 					},
-					"y",
-					2,
-				),
+					axis: "y",
+					scrollSensitivity: 2,
+				}),
 			).toBe(100);
 		});
 
 		test("normalizes line delta events", () => {
 			expect(
-				get_monaco_scroll_delta(
-					{
+				get_monaco_scroll_delta({
+					event: {
 						deltaMode: WheelEvent.DOM_DELTA_LINE,
 						deltaX: 0,
 						deltaY: 3,
 					},
-					"y",
-					1,
-				),
+					axis: "y",
+					scrollSensitivity: 1,
+				}),
 			).toBe(150);
 		});
 	});

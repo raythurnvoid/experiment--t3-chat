@@ -33,8 +33,8 @@ function makeWriter() {
 	const ctx = { runMutation, runQuery } as unknown as ActionCtx;
 	const producer = {
 		requestId: "tool-1",
-		prepare: vi.fn<Parameters<typeof files_ingestion_write>[2]["prepare"]>().mockResolvedValue({ _yay: prepared }),
-		finalize: vi.fn<Parameters<typeof files_ingestion_write>[2]["finalize"]>().mockResolvedValue({ _yay: file }),
+		prepare: vi.fn<Parameters<typeof files_ingestion_write>[0]["producer"]["prepare"]>().mockResolvedValue({ _yay: prepared }),
+		finalize: vi.fn<Parameters<typeof files_ingestion_write>[0]["producer"]["finalize"]>().mockResolvedValue({ _yay: file }),
 	};
 	return { ctx, producer, runMutation, runQuery };
 }
@@ -59,7 +59,7 @@ describe("files_ingestion_write", () => {
 	test("binds exact bytes, MIME, digest, and retry identity before PUT", async () => {
 		const { ctx, producer } = makeWriter();
 		const syncMetadata = vi.spyOn(R2.prototype, "syncMetadata");
-		expect(await files_ingestion_write(ctx, [binary], producer)).toEqual([{ status: "succeeded", file }]);
+		expect(await files_ingestion_write({ ctx, files: [binary], producer })).toEqual([{ status: "succeeded", file }]);
 		expect(producer.prepare.mock.calls[0]?.[0]).toMatchObject({
 			...scope,
 			path: binary.path,
@@ -87,11 +87,11 @@ describe("files_ingestion_write", () => {
 
 	test("stores an empty custom binary", async () => {
 		const { ctx, producer } = makeWriter();
-		await files_ingestion_write(
+		await files_ingestion_write({
 			ctx,
-			[{ scope, path: "/empty", contentType: "application/x-custom", bytes: new Uint8Array(0) }],
+			files: [{ scope, path: "/empty", contentType: "application/x-custom", bytes: new Uint8Array(0) }],
 			producer,
-		);
+		});
 		expect(producer.prepare.mock.calls[0]?.[0]).toMatchObject({
 			size: 0,
 			contentType: "application/x-custom",
@@ -103,7 +103,7 @@ describe("files_ingestion_write", () => {
 	test.each(["prepare", "finalize"] as const)("retries a lost %s reply with identical arguments", async (method) => {
 		const { ctx, producer } = makeWriter();
 		producer[method].mockRejectedValueOnce(new Error("Lost reply"));
-		expect((await files_ingestion_write(ctx, [binary], producer))[0]?.status).toBe("succeeded");
+		expect((await files_ingestion_write({ ctx, files: [binary], producer }))[0]?.status).toBe("succeeded");
 		expect(producer[method].mock.calls[0]).toEqual(producer[method].mock.calls[1]);
 		expect(fetch).toHaveBeenCalledOnce();
 	});
@@ -111,7 +111,7 @@ describe("files_ingestion_write", () => {
 	test("returns a completed retry without another upload or finalize", async () => {
 		const { ctx, producer } = makeWriter();
 		producer.prepare.mockResolvedValue({ _yay: { kind: "completed", file } });
-		expect(await files_ingestion_write(ctx, [binary], producer)).toEqual([{ status: "succeeded", file }]);
+		expect(await files_ingestion_write({ ctx, files: [binary], producer })).toEqual([{ status: "succeeded", file }]);
 		expect(fetch).not.toHaveBeenCalled();
 		expect(producer.finalize).not.toHaveBeenCalled();
 	});
@@ -121,11 +121,11 @@ describe("files_ingestion_write", () => {
 		producer.finalize
 			.mockResolvedValueOnce({ _yay: file })
 			.mockResolvedValueOnce(Result({ _nay: { message: "Quota changed" } }));
-		const results = await files_ingestion_write(
+		const results = await files_ingestion_write({
 			ctx,
-			[binary, { ...binary, path: "/reports/second" }, { ...binary, path: "/reports/third" }],
+			files: [binary, { ...binary, path: "/reports/second" }, { ...binary, path: "/reports/third" }],
 			producer,
-		);
+		});
 		expect(results.map((item) => item.status)).toEqual(["succeeded", "errored", "succeeded"]);
 		expect(producer.prepare.mock.calls[0]?.[0].requestId).not.toBe(producer.prepare.mock.calls[1]?.[0].requestId);
 		expect(runMutation).toHaveBeenCalledOnce();
@@ -141,7 +141,7 @@ describe("files_ingestion_write", () => {
 	test("does not PUT or abort when prepare refuses", async () => {
 		const { ctx, producer, runMutation } = makeWriter();
 		producer.prepare.mockResolvedValue(Result({ _nay: { message: "Denied" } }));
-		expect(await files_ingestion_write(ctx, [binary], producer)).toEqual([{ status: "errored", index: 0 }]);
+		expect(await files_ingestion_write({ ctx, files: [binary], producer })).toEqual([{ status: "errored", index: 0 }]);
 		expect(producer.prepare).toHaveBeenCalledOnce();
 		expect(runMutation).not.toHaveBeenCalled();
 		expect(fetch).not.toHaveBeenCalled();
@@ -151,7 +151,7 @@ describe("files_ingestion_write", () => {
 		const { ctx, producer, runMutation } = makeWriter();
 		const controller = new AbortController();
 		controller.abort();
-		expect(await files_ingestion_write(ctx, [binary], producer, controller.signal)).toEqual([
+		expect(await files_ingestion_write({ ctx, files: [binary], producer, abortSignal: controller.signal })).toEqual([
 			{ status: "cancelled", index: 0 },
 		]);
 		expect(producer.prepare).not.toHaveBeenCalled();
@@ -166,7 +166,7 @@ describe("files_ingestion_write", () => {
 			controller.abort();
 			return { _yay: prepared };
 		});
-		expect(await files_ingestion_write(ctx, [binary], producer, controller.signal)).toEqual([
+		expect(await files_ingestion_write({ ctx, files: [binary], producer, abortSignal: controller.signal })).toEqual([
 			{ status: "cancelled", index: 0 },
 		]);
 		expect(fetch).not.toHaveBeenCalled();
@@ -184,7 +184,7 @@ describe("files_ingestion_write", () => {
 				expect(init?.signal?.aborted).toBe(true);
 				throw new DOMException("Stopped", "AbortError");
 			});
-		const results = await files_ingestion_write(ctx, [binary, binary, binary], producer, controller.signal);
+		const results = await files_ingestion_write({ ctx, files: [binary, binary, binary], producer, abortSignal: controller.signal });
 		expect(results.map((item) => item.status)).toEqual(["succeeded", "cancelled", "cancelled"]);
 		expect(producer.finalize).toHaveBeenCalledOnce();
 		expect(runMutation).toHaveBeenCalledOnce();
@@ -201,7 +201,7 @@ describe("files_ingestion_write", () => {
 		"/UPPER/file",
 	])("refuses noncanonical path %s before preparing any item", async (path) => {
 		const { ctx, producer } = makeWriter();
-		await expect(files_ingestion_write(ctx, [binary, { ...binary, path }], producer)).rejects.toThrow();
+		await expect(files_ingestion_write({ ctx, files: [binary, { ...binary, path }], producer })).rejects.toThrow();
 		expect(producer.prepare).not.toHaveBeenCalled();
 	});
 
@@ -210,7 +210,7 @@ describe("files_ingestion_write", () => {
 		{ files: [{ ...binary, bytes: new Uint8Array(8 * 1024 * 1024 + 1) }] },
 	])("refuses over-limit output before reserving", async ({ files }) => {
 		const { ctx, producer } = makeWriter();
-		await expect(files_ingestion_write(ctx, files, producer)).rejects.toThrow("at most eight");
+		await expect(files_ingestion_write({ ctx, files, producer })).rejects.toThrow("at most eight");
 		expect(producer.prepare).not.toHaveBeenCalled();
 	});
 
@@ -218,7 +218,7 @@ describe("files_ingestion_write", () => {
 		"keeps invalid or over-limit declared text as exact stored bytes",
 		async (bytes) => {
 			const { ctx, producer } = makeWriter();
-			await files_ingestion_write(ctx, [{ scope, path: "/file.txt", contentType: "text/plain", bytes }], producer);
+			await files_ingestion_write({ ctx, files: [{ scope, path: "/file.txt", contentType: "text/plain", bytes }], producer });
 			expect(producer.prepare.mock.calls[0]?.[0].content).toEqual({ kind: "stored" });
 			expect(vi.mocked(fetch).mock.calls[0]?.[1]?.body).toBe(bytes);
 		},
@@ -229,7 +229,7 @@ describe("files_ingestion_write", () => {
 		const bytes = new TextEncoder().encode("a".repeat(900_000));
 		expect(
 			(
-				await files_ingestion_write(ctx, [{ scope, path: "/large.md", contentType: "text/markdown", bytes }], producer)
+				await files_ingestion_write({ ctx, files: [{ scope, path: "/large.md", contentType: "text/markdown", bytes }], producer })
 			)[0]?.status,
 		).toBe("succeeded");
 		expect(producer.prepare.mock.calls[0]?.[0].content).toEqual({ kind: "stored" });
@@ -258,9 +258,9 @@ describe("files_ingestion_write", () => {
 				return { _yay: { stateId: `state-${args.role}`, digest: `digest-${args.role}` } };
 			throw new Error("Unexpected mutation");
 		});
-		const results = await files_ingestion_write(
+		const results = await files_ingestion_write({
 			ctx,
-			[
+			files: [
 				{
 					scope,
 					path: "/file.txt",
@@ -269,7 +269,7 @@ describe("files_ingestion_write", () => {
 				},
 			],
 			producer,
-		);
+		});
 		expect(results[0]?.status).toBe("succeeded");
 		expect(producer.prepare.mock.calls[0]?.[0].content).toEqual({ kind: "text", textKind: "plain_text" });
 		expect(producer.finalize.mock.calls[0]?.[0].text).toMatchObject({

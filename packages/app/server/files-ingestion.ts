@@ -100,8 +100,8 @@ export function files_ingestion_encode_base64(bytes: Uint8Array) {
  * Each item has a durable retry receipt. A later failure or Stop keeps completed items.
  * Producer callbacks add chat or browser checks inside the prepare and finalize transactions.
  */
-export async function files_ingestion_write(
-	ctx: ActionCtx,
+export async function files_ingestion_write(args: {
+	ctx: ActionCtx;
 	files: Array<{
 		scope: {
 			userId: Id<"users">;
@@ -114,7 +114,7 @@ export async function files_ingestion_write(
 		path: string;
 		contentType?: string;
 		bytes: Uint8Array<ArrayBuffer>;
-	}>,
+	}>;
 	producer: {
 		requestId: string;
 		prepare: (
@@ -123,9 +123,11 @@ export async function files_ingestion_write(
 		finalize: (
 			args: FunctionArgs<typeof internal.files_ingestion.finalize_file>,
 		) => Promise<FunctionReturnType<typeof internal.files_ingestion.finalize_file>>;
-	},
-	abortSignal?: AbortSignal,
-) {
+	};
+	abortSignal?: AbortSignal;
+}) {
+	const { ctx, files, producer, abortSignal } = args;
+
 	if (files.length > 8 || files.reduce((size, file) => size + file.bytes.byteLength, 0) > files_ingestion_MAX_BYTES)
 		throw new Error("A file batch may contain at most eight files and 8 MiB.");
 
@@ -240,17 +242,15 @@ export async function files_ingestion_write(
 				});
 				if (available._nay) throw new Error(available._nay.message);
 				const empty = files_u8_to_array_buffer(files_yjs_create_empty_state_update());
-				const family = await files_pending_updates_action_stage_private_state_family(
+				const family = await files_pending_updates_action_stage_private_state_family({
 					ctx,
-					{
-						...scope,
-						operationBatchId: available._yay.operationBatchId,
-						base: empty,
-						staged: empty,
-						unstaged: content.snapshotUpdate,
-					},
+					...scope,
+					operationBatchId: available._yay.operationBatchId,
+					base: empty,
+					staged: empty,
+					unstaged: content.snapshotUpdate,
 					abortSignal,
-				);
+				});
 				if (family._nay) throw new Error(family._nay.message);
 				text = { family: family._yay, unstagedText: canonicalText };
 			}

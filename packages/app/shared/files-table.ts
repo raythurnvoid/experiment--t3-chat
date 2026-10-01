@@ -54,11 +54,13 @@ function fold_filter_text(value: string) {
 	return value.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
 }
 
-export function files_table_filter_matches(
-	filter: files_table_Filter,
-	facts: { name: string; createdAt: number; updatedAt: number; type: string | null; contentByteSize: number | null },
-	scalar: string | number | boolean | null = null,
-) {
+export function files_table_filter_matches(args: {
+	filter: files_table_Filter;
+	facts: { name: string; createdAt: number; updatedAt: number; type: string | null; contentByteSize: number | null };
+	scalar?: string | number | boolean | null;
+}) {
+	const { filter, facts, scalar = null } = args;
+
 	switch (filter.kind) {
 		case "name": {
 			const name = fold_filter_text(facts.name);

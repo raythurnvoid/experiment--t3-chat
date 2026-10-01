@@ -18,11 +18,13 @@ import { bash_transfer_command_run, type bash_TransferContext } from "./bash-tra
 /**
  * App moves use transfer proposals. Scratch moves keep native behavior.
  */
-export function bash_mv_command_create(
-	ctx: ActionCtx,
-	dbFilesRoots: bash_DbFilesRoots,
-	transferContext?: bash_TransferContext,
-): Command {
+export function bash_mv_command_create(args: {
+	ctx: ActionCtx;
+	dbFilesRoots: bash_DbFilesRoots;
+	transferContext?: bash_TransferContext;
+}): Command {
+	const { dbFilesRoots, ctx, transferContext} = args;
+
 	return defineCommand("mv", async (args, commandCtx) => {
 		const parsed = bash_parse_cp_mv_operands("mv", args);
 		const { operands } = parsed;

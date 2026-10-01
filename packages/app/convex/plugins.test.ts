@@ -217,34 +217,34 @@ const media_event_filters = [
 	},
 ];
 
-async function register_media_plugin(
-	t: ReturnType<typeof test_convex>,
-	userId: Id<"users">,
-	args: {
-		repositoryId?: Id<"plugins_publisher_repositories">;
-		name?: string;
-		displayName?: string;
-		version?: string;
-		contentTypes?: string[];
-		events?: Doc<"plugins_versions">["events"];
-		configurable?: boolean;
-		artifactHash?: string;
-		sourceRepositoryUrl?: string;
-		sourceOwner?: string;
-		sourceRepo?: string;
-		sourceCommitSha?: string;
-		outboundOrigins?: string[];
-		uiOutboundOrigins?: string[];
-		capabilities?: plugins_Capability[];
-		pages?: Doc<"plugins_versions">["pages"];
-		endpoints?: Doc<"plugins_versions">["endpoints"];
-		mcpServers?: Doc<"plugins_versions">["mcpServers"];
-		mcpServersFingerprint?: string;
-		skills?: Doc<"plugins_versions">["skills"];
-		secrets?: Array<{ name: string; description: string; optional: boolean }>;
-		sourceFiles?: Array<{ path: string; rawText: string }>;
-	} = {},
-) {
+async function register_media_plugin(args: {
+	t: ReturnType<typeof test_convex>;
+	userId: Id<"users">;
+	repositoryId?: Id<"plugins_publisher_repositories">;
+	name?: string;
+	displayName?: string;
+	version?: string;
+	contentTypes?: string[];
+	events?: Doc<"plugins_versions">["events"];
+	configurable?: boolean;
+	artifactHash?: string;
+	sourceRepositoryUrl?: string;
+	sourceOwner?: string;
+	sourceRepo?: string;
+	sourceCommitSha?: string;
+	outboundOrigins?: string[];
+	uiOutboundOrigins?: string[];
+	capabilities?: plugins_Capability[];
+	pages?: Doc<"plugins_versions">["pages"];
+	endpoints?: Doc<"plugins_versions">["endpoints"];
+	mcpServers?: Doc<"plugins_versions">["mcpServers"];
+	mcpServersFingerprint?: string;
+	skills?: Doc<"plugins_versions">["skills"];
+	secrets?: Array<{ name: string; description: string; optional: boolean }>;
+	sourceFiles?: Array<{ path: string; rawText: string }>;
+}) {
+	const { t, userId } = args;
+
 	const name = args.name ?? "media";
 	const version = args.version ?? "0.1.0";
 	const sourceRepositoryUrl = args.sourceRepositoryUrl ?? `https://github.com/bonobo/${name}-plugin`;
@@ -370,11 +370,13 @@ async function drain_scheduled_work(t: ReturnType<typeof test_convex>) {
 	}
 }
 
-async function drain_plugin_registry_delete(
-	t: ReturnType<typeof test_convex>,
-	pluginName: string,
-	testBatchSize?: number,
-) {
+async function drain_plugin_registry_delete(args: {
+	t: ReturnType<typeof test_convex>;
+	pluginName: string;
+	testBatchSize?: number;
+}) {
+	const { t, pluginName, testBatchSize } = args;
+
 	for (let step = 0; step < 1_000; step += 1) {
 		const result = await t.mutation(internal.plugins.hard_delete_plugin_from_registry, {
 			pluginName,
@@ -399,8 +401,8 @@ describe("install_version service accounts", () => {
 	test("keeps grants removed across update and reinstall, and requires an explicit revoked-account replacement", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const firstVersion = await register_media_plugin(t, membership.userId, { events: [] });
-		const nextVersion = await register_media_plugin(t, membership.userId, { version: "0.2.0", events: [] });
+		const firstVersion = await register_media_plugin({ t, userId: membership.userId, events: [] });
+		const nextVersion = await register_media_plugin({ t, userId: membership.userId, version: "0.2.0", events: [] });
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 		const first = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
@@ -504,7 +506,7 @@ describe("install_version service accounts", () => {
 	test("plugin management alone cannot manage accounts or grants but can update an existing binding", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const version = await register_media_plugin(t, membership.userId, { events: [] });
+		const version = await register_media_plugin({ t, userId: membership.userId, events: [] });
 		const operator = await t.run(async (ctx) => {
 			const userId = await ctx.db.insert("users", { clerkUserId: "clerk-plugin-operator" });
 			const membershipId = await ctx.db.insert("organizations_workspaces_users", {
@@ -662,7 +664,7 @@ describe("install_version service accounts", () => {
 	test("checks every explicit grant before writing and supports a file-only account setup", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const version = await register_media_plugin(t, membership.userId, { events: [] });
+		const version = await register_media_plugin({ t, userId: membership.userId, events: [] });
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 		const folder = await asOwner.mutation(api.files_nodes.create_folder_node, {
 			membershipId: membership.membershipId,
@@ -753,7 +755,7 @@ describe("install_version service accounts", () => {
 		async (changed) => {
 			const t = test_convex();
 			const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-			const firstVersion = await register_media_plugin(t, membership.userId);
+			const firstVersion = await register_media_plugin({ t, userId: membership.userId });
 			const asOwner = t.withIdentity(user_identity(membership.userId));
 			const first = await asOwner.mutation(api.plugins.install_version, {
 				membershipId: membership.membershipId,
@@ -789,23 +791,25 @@ describe("install_version service accounts", () => {
 					: membership.userId;
 			if (changed === "publisher") {
 				// A new publisher can claim the name only after its old registry versions are removed.
-				await drain_plugin_registry_delete(t, "media");
+				await drain_plugin_registry_delete({ t, pluginName: "media" });
 				await t.mutation(internal.plugins.clear_plugin_registry_deletion_fence, { pluginName: "media" });
 			}
 
 			const replacementVersion =
 				changed === "tenant"
 					? firstVersion
-					: await register_media_plugin(t, publisherId, {
-							version: "0.2.0",
-							...(changed === "source"
+					: await register_media_plugin({
+						t,
+						userId: publisherId,
+						version: "0.2.0",
+						...(changed === "source"
 								? {
 										sourceRepositoryUrl: "https://github.com/other/media-plugin",
 										sourceOwner: "other",
 										sourceRepo: "media-plugin",
 									}
 								: {}),
-						});
+					});
 			const replacement = await t
 				.withIdentity(user_identity(targetMembership.userId))
 				.mutation(api.plugins.install_version, {
@@ -833,7 +837,7 @@ describe("plugins Phase 0", () => {
 		capabilities: plugins_Capability[] = media_plugin_consent.acceptedCapabilities,
 	) {
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const registered = await register_media_plugin(t, membership.userId, { capabilities });
+		const registered = await register_media_plugin({ t, userId: membership.userId, capabilities });
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 		const installed = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
@@ -863,16 +867,16 @@ describe("plugins Phase 0", () => {
 		return { membership, installationId: installed._yay.installationId, installation, upload: upload._yay };
 	}
 
-	function insert_event_run(
-		t: ReturnType<typeof test_convex>,
-		fixture: Awaited<ReturnType<typeof install_plugin_with_upload_asset>>,
-		args: {
-			eventId: string;
-			status: "queued" | "running" | "succeeded" | "failed";
-			expiresAt: number;
-			finishedAt?: number;
-		},
-	) {
+	function insert_event_run(args: {
+		t: ReturnType<typeof test_convex>;
+		fixture: Awaited<ReturnType<typeof install_plugin_with_upload_asset>>;
+		eventId: string;
+		status: "queued" | "running" | "succeeded" | "failed";
+		expiresAt: number;
+		finishedAt?: number;
+	}) {
+		const { t, fixture } = args;
+
 		return t.run(async (ctx) =>
 			insert_plugin_run(ctx, {
 				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", fixture.installationId))!
@@ -911,7 +915,7 @@ describe("plugins Phase 0", () => {
 		},
 	) {
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const registered = await register_media_plugin(t, membership.userId);
+		const registered = await register_media_plugin({ t, userId: membership.userId });
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 		const installed = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
@@ -1001,12 +1005,14 @@ describe("plugins Phase 0", () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 
-		const first = await register_media_plugin(t, membership.userId);
-		const rerun = await register_media_plugin(t, membership.userId);
+		const first = await register_media_plugin({ t, userId: membership.userId });
+		const rerun = await register_media_plugin({ t, userId: membership.userId });
 		expect(rerun.pluginVersionId).toBe(first.pluginVersionId);
 
 		// A same-artifact publish from a new commit reuses the immutable ready version.
-		const second = await register_media_plugin(t, membership.userId, {
+		const second = await register_media_plugin({
+			t,
+			userId: membership.userId,
 			sourceRepositoryUrl: "https://github.com/sybill-ai-engineering/media-plugin",
 			sourceOwner: "sybill-ai-engineering",
 			sourceRepo: "media-plugin",
@@ -1043,7 +1049,9 @@ describe("plugins Phase 0", () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 
-		const declared = await register_media_plugin(t, membership.userId, {
+		const declared = await register_media_plugin({
+			t,
+			userId: membership.userId,
 			secrets: [{ name: "OPENAI_API_KEY", description: "OpenAI key used for transcription.", optional: false }],
 		});
 		const declaredVersion = await t.run((ctx) => ctx.db.get("plugins_versions", declared.pluginVersionId));
@@ -1052,7 +1060,7 @@ describe("plugins Phase 0", () => {
 		]);
 
 		// Versions published before the field existed have no secrets field at all.
-		const undeclared = await register_media_plugin(t, membership.userId, { name: "media-plain", version: "0.1.0" });
+		const undeclared = await register_media_plugin({ t, userId: membership.userId, name: "media-plain", version: "0.1.0" });
 		const undeclaredVersion = await t.run((ctx) => ctx.db.get("plugins_versions", undeclared.pluginVersionId));
 		expect(undeclaredVersion?.secrets).toBeUndefined();
 	});
@@ -1071,8 +1079,8 @@ describe("plugins Phase 0", () => {
 			}),
 		).toEqual({ _yay: { existingReady: null } });
 
-		await register_media_plugin(t, publisherB);
-		await expect(register_media_plugin(t, publisherA)).rejects.toThrow(
+		await register_media_plugin({ t, userId: publisherB });
+		await expect(register_media_plugin({ t, userId: publisherA })).rejects.toThrow(
 			"Plugin name is already owned by another publisher",
 		);
 	});
@@ -1080,7 +1088,7 @@ describe("plugins Phase 0", () => {
 	test("keeps an incomplete source snapshot hidden until a retry finalizes it", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const previous = await register_media_plugin(t, membership.userId);
+		const previous = await register_media_plugin({ t, userId: membership.userId });
 		let uploadCount = 0;
 		vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => {
 			if (String(input) === "https://r2.test/source-upload") {
@@ -1091,7 +1099,9 @@ describe("plugins Phase 0", () => {
 		});
 
 		await expect(
-			register_media_plugin(t, membership.userId, {
+			register_media_plugin({
+				t,
+				userId: membership.userId,
 				version: "0.2.0",
 				artifactHash: `sha256:${"d".repeat(64)}`,
 				sourceFiles: [
@@ -1125,7 +1135,9 @@ describe("plugins Phase 0", () => {
 		});
 
 		vi.mocked(fetch).mockResolvedValue(new Response(null, { status: 200 }));
-		const retried = await register_media_plugin(t, membership.userId, {
+		const retried = await register_media_plugin({
+			t,
+			userId: membership.userId,
 			version: "0.2.0",
 			artifactHash: `sha256:${"d".repeat(64)}`,
 			sourceFiles: [
@@ -1146,7 +1158,7 @@ describe("plugins Phase 0", () => {
 	test("registers, installs, and materializes handlers and source tree", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const registered = await register_media_plugin(t, membership.userId);
+		const registered = await register_media_plugin({ t, userId: membership.userId });
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 
 		const installed = await asOwner.mutation(api.plugins.install_version, {
@@ -1178,12 +1190,16 @@ describe("plugins Phase 0", () => {
 	test("rejects same-name plugin installs from a different source repository", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const first = await register_media_plugin(t, membership.userId, {
+		const first = await register_media_plugin({
+			t,
+			userId: membership.userId,
 			sourceRepositoryUrl: "https://github.com/sybill-ai-engineering/media-plugin",
 			sourceOwner: "sybill-ai-engineering",
 			sourceRepo: "media-plugin",
 		});
-		const replacement = await register_media_plugin(t, membership.userId, {
+		const replacement = await register_media_plugin({
+			t,
+			userId: membership.userId,
 			version: "0.2.0",
 			sourceRepositoryUrl: "https://github.com/other/media-plugin",
 			sourceOwner: "other",
@@ -1212,7 +1228,7 @@ describe("plugins Phase 0", () => {
 	test("stores installation secrets encrypted and lists only redacted metadata", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const registered = await register_media_plugin(t, membership.userId);
+		const registered = await register_media_plugin({ t, userId: membership.userId });
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 		const installed = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
@@ -1278,7 +1294,7 @@ describe("plugins Phase 0", () => {
 	test("stores .env secret batches with a single plugin-management mutation", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const registered = await register_media_plugin(t, membership.userId);
+		const registered = await register_media_plugin({ t, userId: membership.userId });
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 		const installed = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
@@ -1318,7 +1334,7 @@ describe("plugins Phase 0", () => {
 	test("refuses an oversized value in a .env secret batch and writes none of the batch", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const registered = await register_media_plugin(t, membership.userId);
+		const registered = await register_media_plugin({ t, userId: membership.userId });
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 		const installed = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
@@ -1351,7 +1367,7 @@ describe("plugins Phase 0", () => {
 	test("refuses an oversized value in a single installation secret and writes nothing", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const registered = await register_media_plugin(t, membership.userId);
+		const registered = await register_media_plugin({ t, userId: membership.userId });
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 		const installed = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
@@ -1382,7 +1398,7 @@ describe("plugins Phase 0", () => {
 	test("serves installation secrets through the host secret endpoint with a running plugin token", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const registered = await register_media_plugin(t, membership.userId);
+		const registered = await register_media_plugin({ t, userId: membership.userId });
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 		const installed = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
@@ -1484,7 +1500,7 @@ describe("plugins Phase 0", () => {
 	test("records runner-local host call telemetry without storing raw payloads", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const registered = await register_media_plugin(t, membership.userId);
+		const registered = await register_media_plugin({ t, userId: membership.userId });
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 		const installed = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
@@ -1966,8 +1982,10 @@ describe("plugins Phase 0", () => {
 	test("enqueues multiple upload plugins without storing plugin work ids on the source asset", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const media = await register_media_plugin(t, membership.userId, { name: "media" });
-		const alternate = await register_media_plugin(t, membership.userId, {
+		const media = await register_media_plugin({ t, userId: membership.userId, name: "media" });
+		const alternate = await register_media_plugin({
+			t,
+			userId: membership.userId,
 			name: "media-alt",
 			displayName: "Media Alt",
 			contentTypes: ["image/png"],
@@ -2027,7 +2045,7 @@ describe("plugins Phase 0", () => {
 	test("an upload with a service attempt receipt never dispatches upload runs", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const registered = await register_media_plugin(t, membership.userId, { contentTypes: ["image/png"] });
+		const registered = await register_media_plugin({ t, userId: membership.userId, contentTypes: ["image/png"] });
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 		const installed = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
@@ -2139,7 +2157,7 @@ describe("plugins Phase 0", () => {
 	test("dispatches automatic runs only for files in the configured folders", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const registered = await register_media_plugin(t, membership.userId, { contentTypes: ["image/png"] });
+		const registered = await register_media_plugin({ t, userId: membership.userId, contentTypes: ["image/png"] });
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 		const installed = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
@@ -2211,12 +2229,16 @@ describe("plugins Phase 0", () => {
 	test("keeps automatic folder policies isolated between subscribed installations", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const meetingsPlugin = await register_media_plugin(t, membership.userId, {
+		const meetingsPlugin = await register_media_plugin({
+			t,
+			userId: membership.userId,
 			name: "meetings-media",
 			displayName: "Meetings Media",
 			contentTypes: ["image/png"],
 		});
-		const documentsPlugin = await register_media_plugin(t, membership.userId, {
+		const documentsPlugin = await register_media_plugin({
+			t,
+			userId: membership.userId,
 			name: "documents-media",
 			displayName: "Documents Media",
 			contentTypes: ["image/png"],
@@ -2248,7 +2270,13 @@ describe("plugins Phase 0", () => {
 			return null;
 		});
 
-		async function upload_and_dispatch(filename: string, path: string, eventId: string) {
+		async function upload_and_dispatch(args: {
+			filename: string;
+			path: string;
+			eventId: string;
+		}) {
+			const { path, eventId, filename} = args;
+
 			const upload = await asOwner.mutation(api.files_nodes.create_upload_node, {
 				membershipId: membership.membershipId,
 				parentId: "root",
@@ -2274,13 +2302,13 @@ describe("plugins Phase 0", () => {
 			return upload._yay.nodeId;
 		}
 
-		const meetingsNodeId = await upload_and_dispatch("meeting.png", "/meetings/meeting.png", "r2:meeting");
+		const meetingsNodeId = await upload_and_dispatch({ filename: "meeting.png", path: "/meetings/meeting.png", eventId: "r2:meeting" });
 		let runs = await t.run((ctx) => ctx.db.query("plugins_event_runs").collect());
 		expect(runs.map((run) => ({ fileNodeId: run.fileNodeId, installationId: run.installationId }))).toEqual([
 			{ fileNodeId: meetingsNodeId, installationId: meetingsInstalled._yay.installationId },
 		]);
 
-		const documentsNodeId = await upload_and_dispatch("document.png", "/documents/document.png", "r2:document");
+		const documentsNodeId = await upload_and_dispatch({ filename: "document.png", path: "/documents/document.png", eventId: "r2:document" });
 		runs = await t.run((ctx) => ctx.db.query("plugins_event_runs").collect());
 		expect(runs.map((run) => ({ fileNodeId: run.fileNodeId, installationId: run.installationId }))).toEqual([
 			{ fileNodeId: meetingsNodeId, installationId: meetingsInstalled._yay.installationId },
@@ -2293,7 +2321,9 @@ describe("plugins Phase 0", () => {
 	test("dispatches upload events for any handler-subscribed content type", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const registered = await register_media_plugin(t, membership.userId, {
+		const registered = await register_media_plugin({
+			t,
+			userId: membership.userId,
 			name: "notes-blob",
 			displayName: "Notes Blob",
 			contentTypes: ["application/x-notes"],
@@ -2373,7 +2403,7 @@ describe("plugins Phase 0", () => {
 	test("rejects markdown output conflicts when overwrite is fail", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const registered = await register_media_plugin(t, membership.userId);
+		const registered = await register_media_plugin({ t, userId: membership.userId });
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 		const installed = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
@@ -2478,7 +2508,7 @@ describe("plugins Phase 0", () => {
 	test("refuses plugin output into a locked destination and records the conflict without content", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const registered = await register_media_plugin(t, membership.userId);
+		const registered = await register_media_plugin({ t, userId: membership.userId });
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 		const installed = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
@@ -2683,7 +2713,7 @@ describe("plugins Phase 0", () => {
 	test("rejects plugin markdown outputs outside a simple markdown filename", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const registered = await register_media_plugin(t, membership.userId);
+		const registered = await register_media_plugin({ t, userId: membership.userId });
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 		const installed = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
@@ -2800,7 +2830,7 @@ describe("plugins Phase 0", () => {
 	test("requires already-normalized plugin markdown output names", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const registered = await register_media_plugin(t, membership.userId);
+		const registered = await register_media_plugin({ t, userId: membership.userId });
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 		const installed = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
@@ -2929,7 +2959,7 @@ describe("plugins Phase 0", () => {
 	test("allows one plugin run to write multiple markdown outputs", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const registered = await register_media_plugin(t, membership.userId);
+		const registered = await register_media_plugin({ t, userId: membership.userId });
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 		const installed = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
@@ -3046,7 +3076,7 @@ describe("plugins Phase 0", () => {
 	test("charges the anonymous workspace payer one cent for each plugin output write", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const registered = await register_media_plugin(t, membership.userId);
+		const registered = await register_media_plugin({ t, userId: membership.userId });
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 		const installed = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
@@ -3134,7 +3164,7 @@ describe("plugins Phase 0", () => {
 	test("refuses a plugin output write with 402 and settles the call as insufficient_funds", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const registered = await register_media_plugin(t, membership.userId);
+		const registered = await register_media_plugin({ t, userId: membership.userId });
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 		const installed = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
@@ -3242,7 +3272,7 @@ describe("plugins Phase 0", () => {
 	test("marks a run failed when the runner reports a non-2xx plugin status", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const registered = await register_media_plugin(t, membership.userId);
+		const registered = await register_media_plugin({ t, userId: membership.userId });
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 		const installed = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
@@ -3312,7 +3342,9 @@ describe("plugins Phase 0", () => {
 	test("marks a run failed when the plugin runner responds with an error status", async () => {
 		const t = test_convex();
 		const fixture = await install_plugin_with_upload_asset(t);
-		const runId = await insert_event_run(t, fixture, {
+		const runId = await insert_event_run({
+			t,
+			fixture,
 			eventId: "plugin:runner-error-status-test",
 			status: "queued",
 			expiresAt: Date.now() + 30 * 60 * 1000,
@@ -3338,7 +3370,9 @@ describe("plugins Phase 0", () => {
 	test("marks a run timed_out when the runner request times out", async () => {
 		const t = test_convex();
 		const fixture = await install_plugin_with_upload_asset(t);
-		const runId = await insert_event_run(t, fixture, {
+		const runId = await insert_event_run({
+			t,
+			fixture,
 			eventId: "plugin:runner-timeout-test",
 			status: "queued",
 			expiresAt: Date.now() + 30 * 60 * 1000,
@@ -3361,7 +3395,9 @@ describe("plugins Phase 0", () => {
 	test("refuses to publish a staged write once the run is terminal", async () => {
 		const t = test_convex();
 		const fixture = await install_plugin_with_upload_asset(t);
-		const runId = await insert_event_run(t, fixture, {
+		const runId = await insert_event_run({
+			t,
+			fixture,
 			eventId: "plugin:publish-terminal-run-test",
 			status: "running",
 			expiresAt: Date.now() + 30 * 60 * 1000,
@@ -3547,7 +3583,9 @@ describe("plugins Phase 0", () => {
 			});
 			return userId;
 		});
-		const runId = await insert_event_run(t, fixture, {
+		const runId = await insert_event_run({
+			t,
+			fixture,
 			eventId: "plugin:actor-lost-access-test",
 			status: "running",
 			expiresAt: Date.now() + 30 * 60 * 1000,
@@ -3616,7 +3654,9 @@ describe("plugins Phase 0", () => {
 	test("reaps only expired staged writes and their orphaned asset docs", async () => {
 		const t = test_convex();
 		const fixture = await install_plugin_with_upload_asset(t);
-		const runId = await insert_event_run(t, fixture, {
+		const runId = await insert_event_run({
+			t,
+			fixture,
 			eventId: "plugin:reap-expired-stage-test",
 			status: "running",
 			expiresAt: Date.now() + 30 * 60 * 1000,
@@ -3683,7 +3723,9 @@ describe("plugins Phase 0", () => {
 	test("returns 404 when a plugin requests a download URL for a node other than its source", async () => {
 		const t = test_convex();
 		const fixture = await install_plugin_with_upload_asset(t);
-		const runId = await insert_event_run(t, fixture, {
+		const runId = await insert_event_run({
+			t,
+			fixture,
 			eventId: "plugin:download-foreign-node-test",
 			status: "running",
 			expiresAt: Date.now() + 30 * 60 * 1000,
@@ -3736,7 +3778,9 @@ describe("plugins Phase 0", () => {
 	test("refuses plugin API calls once the run token expires", async () => {
 		const t = test_convex();
 		const fixture = await install_plugin_with_upload_asset(t);
-		const runId = await insert_event_run(t, fixture, {
+		const runId = await insert_event_run({
+			t,
+			fixture,
 			eventId: "plugin:expired-api-token-test",
 			status: "running",
 			expiresAt: Date.now() + 30 * 60 * 1000,
@@ -3771,7 +3815,7 @@ describe("plugins Phase 0", () => {
 	test("accepts an empty event response without a file write", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const registered = await register_media_plugin(t, membership.userId);
+		const registered = await register_media_plugin({ t, userId: membership.userId });
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 		const installed = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
@@ -3836,7 +3880,9 @@ describe("plugins Phase 0", () => {
 		async (outcome) => {
 			const t = test_convex();
 			const fixture = await install_plugin_with_upload_asset(t, ["plugin.data.read", "plugin.data.write"]);
-			const runId = await insert_event_run(t, fixture, {
+			const runId = await insert_event_run({
+				t,
+				fixture,
 				eventId: "plugin:data-only",
 				status: "queued",
 				expiresAt: Date.now() + 30 * 60_000,
@@ -3960,7 +4006,9 @@ describe("plugins Phase 0", () => {
 	test("marks a run failed when API calls are left unfinished", async () => {
 		const t = test_convex();
 		const fixture = await install_plugin_with_upload_asset(t);
-		const runId = await insert_event_run(t, fixture, {
+		const runId = await insert_event_run({
+			t,
+			fixture,
 			eventId: "plugin:unfinished-api-call-test",
 			status: "queued",
 			expiresAt: Date.now() + 30 * 60 * 1000,
@@ -4006,7 +4054,7 @@ describe("plugins Phase 0", () => {
 	test("persists bounded runner error messages and refuses oversized messages", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const registered = await register_media_plugin(t, membership.userId);
+		const registered = await register_media_plugin({ t, userId: membership.userId });
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 		const installed = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
@@ -4138,17 +4186,23 @@ describe("plugins Phase 0", () => {
 	test("times out expired queued and running runs", async () => {
 		const t = test_convex();
 		const fixture = await install_plugin_with_upload_asset(t);
-		const expiredQueuedRunId = await insert_event_run(t, fixture, {
+		const expiredQueuedRunId = await insert_event_run({
+			t,
+			fixture,
 			eventId: "plugin:expiry-expired-queued",
 			status: "queued",
 			expiresAt: Date.now() - 1000,
 		});
-		const expiredRunningRunId = await insert_event_run(t, fixture, {
+		const expiredRunningRunId = await insert_event_run({
+			t,
+			fixture,
 			eventId: "plugin:expiry-expired-running",
 			status: "running",
 			expiresAt: Date.now() - 1000,
 		});
-		const freshRunId = await insert_event_run(t, fixture, {
+		const freshRunId = await insert_event_run({
+			t,
+			fixture,
 			eventId: "plugin:expiry-fresh",
 			status: "queued",
 			expiresAt: Date.now() + 30 * 60 * 1000,
@@ -4251,7 +4305,9 @@ describe("plugins Phase 0", () => {
 	test("does not restart an expired run when its executor fires", async () => {
 		const t = test_convex();
 		const fixture = await install_plugin_with_upload_asset(t);
-		const runId = await insert_event_run(t, fixture, {
+		const runId = await insert_event_run({
+			t,
+			fixture,
 			eventId: "plugin:expired-then-executed",
 			status: "queued",
 			expiresAt: Date.now() - 1000,
@@ -4278,7 +4334,9 @@ describe("plugins Phase 0", () => {
 		const t = test_convex();
 		const fixture = await install_plugin_with_upload_asset(t);
 		for (const suffix of ["a", "b", "c"]) {
-			await insert_event_run(t, fixture, {
+			await insert_event_run({
+				t,
+				fixture,
 				eventId: `plugin:expiry-batch-${suffix}`,
 				status: "queued",
 				expiresAt: Date.now() - 1000,
@@ -4301,7 +4359,9 @@ describe("plugins Phase 0", () => {
 		const t = test_convex();
 		const fixture = await install_plugin_with_upload_asset(t);
 		for (const suffix of ["a", "b", "c"]) {
-			await insert_event_run(t, fixture, {
+			await insert_event_run({
+				t,
+				fixture,
 				eventId: `plugin:expiry-backlog-${suffix}`,
 				status: "queued",
 				expiresAt: Date.now() - 1000,
@@ -4325,7 +4385,9 @@ describe("plugins Phase 0", () => {
 	test("cleans up old terminal runs and their calls without changing active runs", async () => {
 		const t = test_convex();
 		const fixture = await install_plugin_with_upload_asset(t);
-		const oldRunId = await insert_event_run(t, fixture, {
+		const oldRunId = await insert_event_run({
+			t,
+			fixture,
 			eventId: "plugin:cleanup-old",
 			status: "failed",
 			expiresAt: Date.now() - 31 * 24 * 60 * 60 * 1000,
@@ -4350,12 +4412,16 @@ describe("plugins Phase 0", () => {
 				});
 			}
 		});
-		const recentRunId = await insert_event_run(t, fixture, {
+		const recentRunId = await insert_event_run({
+			t,
+			fixture,
 			eventId: "plugin:cleanup-recent",
 			status: "succeeded",
 			expiresAt: Date.now(),
 		});
-		const runningRunId = await insert_event_run(t, fixture, {
+		const runningRunId = await insert_event_run({
+			t,
+			fixture,
 			eventId: "plugin:cleanup-running",
 			status: "running",
 			expiresAt: Date.now() + 30 * 60 * 1000,
@@ -4380,7 +4446,9 @@ describe("plugins Phase 0", () => {
 	test("lets a plugin run opt into the activity feed and closes it with the run", async () => {
 		const t = test_convex();
 		const fixture = await install_plugin_with_upload_asset(t);
-		const runId = await insert_event_run(t, fixture, {
+		const runId = await insert_event_run({
+			t,
+			fixture,
 			eventId: "plugin:activity-happy",
 			status: "queued",
 			expiresAt: Date.now() + 30 * 60 * 1000,
@@ -4496,7 +4564,9 @@ describe("plugins Phase 0", () => {
 	] as const)("rejects a durable activity write after the %s", async (change) => {
 		const t = test_convex();
 		const fixture = await install_plugin_with_upload_asset(t);
-		const runId = await insert_event_run(t, fixture, {
+		const runId = await insert_event_run({
+			t,
+			fixture,
 			eventId: `plugin:activity-revoked-${change}`,
 			status: "queued",
 			expiresAt: Date.now() + 30 * 60 * 1000,
@@ -4507,11 +4577,13 @@ describe("plugins Phase 0", () => {
 		});
 		const replacementVersion =
 			change === "installation version changes"
-				? await register_media_plugin(t, fixture.membership.userId, {
-						version: "0.1.1",
-						artifactHash: `sha256:${"c".repeat(64)}`,
-						sourceCommitSha: "abcdef1234567890abcdef1234567890abcdef12",
-					})
+				? await register_media_plugin({
+					t,
+					userId: fixture.membership.userId,
+					version: "0.1.1",
+					artifactHash: `sha256:${"c".repeat(64)}`,
+					sourceCommitSha: "abcdef1234567890abcdef1234567890abcdef12",
+				})
 				: null;
 
 		// Reproduce an authority or access change after the route consumes the API call but before
@@ -4557,7 +4629,9 @@ describe("plugins Phase 0", () => {
 	test("rejects invalid activity input and a second activity for the same run", async () => {
 		const t = test_convex();
 		const fixture = await install_plugin_with_upload_asset(t);
-		const runId = await insert_event_run(t, fixture, {
+		const runId = await insert_event_run({
+			t,
+			fixture,
 			eventId: "plugin:activity-conflict",
 			status: "queued",
 			expiresAt: Date.now() + 30 * 60 * 1000,
@@ -4629,7 +4703,9 @@ describe("plugins Phase 0", () => {
 	test("expiry sweep closes an opted-in activity as timed_out", async () => {
 		const t = test_convex();
 		const fixture = await install_plugin_with_upload_asset(t);
-		const runId = await insert_event_run(t, fixture, {
+		const runId = await insert_event_run({
+			t,
+			fixture,
 			eventId: "plugin:activity-expired",
 			status: "queued",
 			expiresAt: Date.now() + 30 * 60 * 1000,
@@ -4666,7 +4742,9 @@ describe("plugins Phase 0", () => {
 	test("an overdue estimate stays running until the run finishes", async () => {
 		const t = test_convex();
 		const fixture = await install_plugin_with_upload_asset(t);
-		const runId = await insert_event_run(t, fixture, {
+		const runId = await insert_event_run({
+			t,
+			fixture,
 			eventId: "plugin:activity-timeout",
 			status: "queued",
 			expiresAt: Date.now() + 30 * 60 * 1000,
@@ -4713,7 +4791,9 @@ describe("plugins Phase 0", () => {
 	test("run retention drains viewer state before deleting the Activity and run together", async () => {
 		const t = test_convex();
 		const fixture = await install_plugin_with_upload_asset(t);
-		const oldRunId = await insert_event_run(t, fixture, {
+		const oldRunId = await insert_event_run({
+			t,
+			fixture,
 			eventId: "plugin:activity-retention",
 			status: "failed",
 			expiresAt: Date.now() - 31 * 24 * 60 * 60 * 1000,
@@ -4750,7 +4830,9 @@ describe("plugins Phase 0", () => {
 	test("does not overwrite a terminal run on duplicate finish", async () => {
 		const t = test_convex();
 		const fixture = await install_plugin_with_upload_asset(t);
-		const runId = await insert_event_run(t, fixture, {
+		const runId = await insert_event_run({
+			t,
+			fixture,
 			eventId: "plugin:duplicate-finish",
 			status: "succeeded",
 			expiresAt: Date.now() + 30 * 60 * 1000,
@@ -4772,7 +4854,9 @@ describe("plugins Phase 0", () => {
 		const t = test_convex();
 		const fixture = await install_plugin_with_upload_asset(t);
 		const expiresAt = Date.now() + 30 * 60 * 1000;
-		const runId = await insert_event_run(t, fixture, {
+		const runId = await insert_event_run({
+			t,
+			fixture,
 			eventId: "plugin:api-token-ttl",
 			status: "queued",
 			expiresAt,
@@ -4795,12 +4879,14 @@ describe("plugins Phase 0", () => {
 		test("settles a queued run from an older installation version without calling the runner", async () => {
 			const t = test_convex();
 			const fixture = await install_plugin_with_upload_asset(t);
-			const runId = await insert_event_run(t, fixture, {
+			const runId = await insert_event_run({
+				t,
+				fixture,
 				eventId: "plugin:old-queued-version",
 				status: "queued",
 				expiresAt: Date.now() + 60_000,
 			});
-			const updated = await register_media_plugin(t, fixture.membership.userId, { version: "0.2.0" });
+			const updated = await register_media_plugin({ t, userId: fixture.membership.userId, version: "0.2.0" });
 			const installed = await t
 				.withIdentity(user_identity(fixture.membership.userId))
 				.mutation(api.plugins.install_version, {
@@ -4824,7 +4910,9 @@ describe("plugins Phase 0", () => {
 		test("refuses a queued run after account rebind and preserves its original pin", async () => {
 			const t = test_convex();
 			const fixture = await install_plugin_with_upload_asset(t);
-			const runId = await insert_event_run(t, fixture, {
+			const runId = await insert_event_run({
+				t,
+				fixture,
 				eventId: "plugin:original-account",
 				status: "queued",
 				expiresAt: Date.now() + 30 * 60 * 1000,
@@ -4860,7 +4948,9 @@ describe("plugins Phase 0", () => {
 	test("refuses a queued run after its installation is disabled", async () => {
 		const t = test_convex();
 		const fixture = await install_plugin_with_upload_asset(t);
-		const runId = await insert_event_run(t, fixture, {
+		const runId = await insert_event_run({
+			t,
+			fixture,
 			eventId: "plugin:disabled-before-start",
 			status: "queued",
 			expiresAt: Date.now() + 30 * 60 * 1000,
@@ -4885,7 +4975,9 @@ describe("plugins Phase 0", () => {
 	test("marks a retried run as interrupted", async () => {
 		const t = test_convex();
 		const fixture = await install_plugin_with_upload_asset(t);
-		const runId = await insert_event_run(t, fixture, {
+		const runId = await insert_event_run({
+			t,
+			fixture,
 			eventId: "plugin:retried-run",
 			status: "running",
 			expiresAt: Date.now() + 30 * 60 * 1000,
@@ -4902,7 +4994,7 @@ describe("plugins Phase 0", () => {
 	test("denies install for a workspace member without plugin management permission", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const registered = await register_media_plugin(t, membership.userId);
+		const registered = await register_media_plugin({ t, userId: membership.userId });
 		const memberUserId = await t.run(async (ctx) => {
 			const userId = await ctx.db.insert("users", { clerkUserId: null });
 			await ctx.db.insert("organizations_workspaces_users", {
@@ -4960,7 +5052,9 @@ describe("plugins Phase 0", () => {
 	test("hides run file details from a plugin manager who cannot read content", async () => {
 		const t = test_convex();
 		const fixture = await install_plugin_with_upload_asset(t);
-		await insert_event_run(t, fixture, {
+		await insert_event_run({
+			t,
+			fixture,
 			eventId: "plugin:run-file-visibility",
 			status: "succeeded",
 			expiresAt: Date.now() + 30 * 60 * 1000,
@@ -5326,11 +5420,13 @@ describe("plugins publisher secrets", () => {
 		);
 	}
 
-	async function get_publisher_repository_secret_doc(
-		t: ReturnType<typeof test_convex>,
-		repositoryId: Id<"plugins_publisher_repositories">,
-		name: string,
-	) {
+	async function get_publisher_repository_secret_doc(args: {
+		t: ReturnType<typeof test_convex>;
+		repositoryId: Id<"plugins_publisher_repositories">;
+		name: string;
+	}) {
+		const { t, repositoryId, name } = args;
+
 		return await t.run(async (ctx) => {
 			const secret = await ctx.db
 				.query("plugins_publisher_repository_secrets")
@@ -5369,7 +5465,7 @@ describe("plugins publisher secrets", () => {
 		]);
 		expect(JSON.stringify(listed)).not.toContain("sk-publisher-secret");
 
-		const secret = await get_publisher_repository_secret_doc(t, repositoryId, "OPENAI_API_KEY");
+		const secret = await get_publisher_repository_secret_doc({ t, repositoryId, name: "OPENAI_API_KEY" });
 		expect(new TextDecoder().decode(secret.ciphertext)).not.toContain("sk-publisher-secret");
 
 		// Secrets are scoped to the claim owner; another user asking for this repository sees nothing.
@@ -5497,7 +5593,7 @@ describe("plugins publisher secrets", () => {
 		const listed = await asOwner.query(api.plugins.list_publisher_repository_secrets, { repositoryId });
 		expect(listed.map((secret) => secret.name)).toEqual(["MODAL_TOKEN", "OPENAI_API_KEY"]);
 
-		const secret = await get_publisher_repository_secret_doc(t, repositoryId, "OPENAI_API_KEY");
+		const secret = await get_publisher_repository_secret_doc({ t, repositoryId, name: "OPENAI_API_KEY" });
 		const decrypted = await t.action(internal.plugins.decrypt_secret_for_runtime, {
 			resolved: { tier: "publisher", secret },
 		});
@@ -5564,7 +5660,7 @@ describe("plugins publisher secrets", () => {
 			secrets: [{ name: "SECRET_63", value: "at-limit" }],
 		});
 		expect(atLimit).toEqual({ _yay: { count: 1 } });
-		const before = await get_publisher_repository_secret_doc(t, repositoryId, "SECRET_0");
+		const before = await get_publisher_repository_secret_doc({ t, repositoryId, name: "SECRET_0" });
 		const overLimit = await asOwner.mutation(api.plugins.upsert_publisher_repository_secrets, {
 			repositoryId,
 			secrets: [
@@ -5575,7 +5671,7 @@ describe("plugins publisher secrets", () => {
 		expect(overLimit).toEqual({
 			_nay: { message: "Publisher repositories can store at most 64 secrets" },
 		});
-		const after = await get_publisher_repository_secret_doc(t, repositoryId, "SECRET_0");
+		const after = await get_publisher_repository_secret_doc({ t, repositoryId, name: "SECRET_0" });
 		expect(after.ciphertext).toEqual(before.ciphertext);
 		expect(
 			await t.run((ctx) =>
@@ -5611,7 +5707,7 @@ describe("plugins publisher secrets", () => {
 		if (saved._nay) {
 			throw new Error(saved._nay.message);
 		}
-		const secret = await get_publisher_repository_secret_doc(t, repositoryId, "OPENAI_API_KEY");
+		const secret = await get_publisher_repository_secret_doc({ t, repositoryId, name: "OPENAI_API_KEY" });
 
 		const decrypted = await t.action(internal.plugins.decrypt_secret_for_runtime, {
 			resolved: { tier: "publisher", secret },
@@ -5632,7 +5728,7 @@ describe("plugins publisher secrets", () => {
 	test("resolves installation secrets before publisher secrets", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const registered = await register_media_plugin(t, membership.userId);
+		const registered = await register_media_plugin({ t, userId: membership.userId });
 		const repositoryId = registered.repositoryId;
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 		const installed = await asOwner.mutation(api.plugins.install_version, {
@@ -5681,7 +5777,7 @@ describe("plugins publisher secrets", () => {
 	test("falls through to publisher secrets and stamps lastUsedAt", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const registered = await register_media_plugin(t, membership.userId);
+		const registered = await register_media_plugin({ t, userId: membership.userId });
 		const repositoryId = registered.repositoryId;
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 		const installed = await asOwner.mutation(api.plugins.install_version, {
@@ -5715,14 +5811,14 @@ describe("plugins publisher secrets", () => {
 		const decrypted = await t.action(internal.plugins.decrypt_secret_for_runtime, { resolved });
 		expect(decrypted).toEqual({ _yay: "sk-publisher-secret" });
 
-		const secret = await get_publisher_repository_secret_doc(t, repositoryId, "OPENAI_API_KEY");
+		const secret = await get_publisher_repository_secret_doc({ t, repositoryId, name: "OPENAI_API_KEY" });
 		expect(typeof secret.lastUsedAt).toBe("number");
 	});
 
 	test("does not rebind a historical version to a foreign repository claimant", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const registered = await register_media_plugin(t, membership.userId);
+		const registered = await register_media_plugin({ t, userId: membership.userId });
 		const publisherB = await create_publisher_user(t);
 		const asPublisherA = t.withIdentity(user_identity(membership.userId));
 		const asPublisherB = t.withIdentity(user_identity(publisherB));
@@ -5808,7 +5904,7 @@ describe("plugins publisher secrets", () => {
 	test("does not serve secrets from unrelated repositories", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const registered = await register_media_plugin(t, membership.userId);
+		const registered = await register_media_plugin({ t, userId: membership.userId });
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 		const installed = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
@@ -5928,7 +6024,7 @@ describe("plugins get_installation_health", () => {
 		args: { secrets?: Array<{ name: string; description: string; optional: boolean }> } = {},
 	) {
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const registered = await register_media_plugin(t, membership.userId, { secrets: args.secrets });
+		const registered = await register_media_plugin({ t, userId: membership.userId, secrets: args.secrets });
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 		const installed = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
@@ -6026,7 +6122,9 @@ describe("plugins get_installation_health", () => {
 		const fixture = await install_plugin_for_health(t);
 
 		// A newer version declares a required secret, but the workspace still runs the old one.
-		await register_media_plugin(t, fixture.membership.userId, {
+		await register_media_plugin({
+			t,
+			userId: fixture.membership.userId,
 			version: "0.2.0",
 			artifactHash: `sha256:${"c".repeat(64)}`,
 			secrets: [{ name: "OPENAI_API_KEY", description: "", optional: false }],
@@ -6290,7 +6388,7 @@ describe("plugins get_installation_storage_usage", () => {
 	test("reports the installation's stored bytes to a manager and refuses everyone else", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const registered = await register_media_plugin(t, membership.userId);
+		const registered = await register_media_plugin({ t, userId: membership.userId });
 		const installed = await t.withIdentity(user_identity(membership.userId)).mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
 			pluginVersionId: registered.pluginVersionId,
@@ -6428,7 +6526,7 @@ describe("plugins update_installation_configuration", () => {
 	test("stores null and rejects edits when a plugin does not declare configuration", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const registered = await register_media_plugin(t, membership.userId, { configurable: false });
+		const registered = await register_media_plugin({ t, userId: membership.userId, configurable: false });
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 		const installed = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
@@ -6454,7 +6552,7 @@ describe("plugins update_installation_configuration", () => {
 	test("preserves configuration while upgrading the version and handlers", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const registered = await register_media_plugin(t, membership.userId);
+		const registered = await register_media_plugin({ t, userId: membership.userId });
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 		const installed = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
@@ -6492,7 +6590,9 @@ describe("plugins update_installation_configuration", () => {
 			updatedBy: membership.userId,
 		});
 
-		const upgraded = await register_media_plugin(t, membership.userId, {
+		const upgraded = await register_media_plugin({
+			t,
+			userId: membership.userId,
 			version: "0.2.0",
 			contentTypes: ["application/pdf"],
 			artifactHash: `sha256:${"d".repeat(64)}`,
@@ -6531,7 +6631,7 @@ describe("plugins update_installation_configuration", () => {
 	test("rejects invalid YAML and unauthorized callers without changing the stored configuration", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const registered = await register_media_plugin(t, membership.userId);
+		const registered = await register_media_plugin({ t, userId: membership.userId });
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 		const installed = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
@@ -6587,7 +6687,7 @@ describe("plugins update_installation_configuration", () => {
 				workspaceName: "config-space-b",
 			}),
 		);
-		const registered = await register_media_plugin(t, membershipA.userId);
+		const registered = await register_media_plugin({ t, userId: membershipA.userId });
 		const asOwnerA = t.withIdentity(user_identity(membershipA.userId));
 		const asOwnerB = t.withIdentity(user_identity(membershipB.userId));
 		const installedA = await asOwnerA.mutation(api.plugins.install_version, {
@@ -6674,7 +6774,9 @@ describe("plugins outbound origins consent", () => {
 	test("rejects installs whose consent does not exactly cover the declared surface", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const registered = await register_media_plugin(t, membership.userId, {
+		const registered = await register_media_plugin({
+			t,
+			userId: membership.userId,
 			outboundOrigins: ["https://api.openai.com"],
 		});
 		const asOwner = t.withIdentity(user_identity(membership.userId));
@@ -6741,7 +6843,9 @@ describe("plugins outbound origins consent", () => {
 	test("rejects an install that does not accept exactly the declared UI outbound origins", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const registered = await register_media_plugin(t, membership.userId, {
+		const registered = await register_media_plugin({
+			t,
+			userId: membership.userId,
 			capabilities: ["plugin.secrets.read", "ui.outbound.fetch"],
 			uiOutboundOrigins: ["https://council.example.com"],
 		});
@@ -6798,7 +6902,7 @@ describe("plugins outbound origins consent", () => {
 	test("requires fresh consent only when an upgrade adds outbound origins", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const first = await register_media_plugin(t, membership.userId);
+		const first = await register_media_plugin({ t, userId: membership.userId });
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 		const installed = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
@@ -6809,7 +6913,9 @@ describe("plugins outbound origins consent", () => {
 			throw new Error(installed._nay.message);
 		}
 
-		const upgraded = await register_media_plugin(t, membership.userId, {
+		const upgraded = await register_media_plugin({
+			t,
+			userId: membership.userId,
 			version: "0.2.0",
 			outboundOrigins: ["https://api.openai.com"],
 		});
@@ -6838,7 +6944,9 @@ describe("plugins outbound origins consent", () => {
 		expect(freshConsent._yay.installationId).toBe(installed._yay.installationId);
 
 		refill_manage_rate_limit();
-		const unchanged = await register_media_plugin(t, membership.userId, {
+		const unchanged = await register_media_plugin({
+			t,
+			userId: membership.userId,
 			version: "0.3.0",
 			outboundOrigins: ["https://api.openai.com"],
 		});
@@ -6864,7 +6972,9 @@ describe("plugins outbound origins consent", () => {
 	test("sends the runner exactly the consented outbound origins", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const registered = await register_media_plugin(t, membership.userId, {
+		const registered = await register_media_plugin({
+			t,
+			userId: membership.userId,
 			outboundOrigins: ["https://api.openai.com", "https://transformer.example.com"],
 		});
 		const asOwner = t.withIdentity(user_identity(membership.userId));
@@ -6977,7 +7087,9 @@ describe("plugins mcp servers install", () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const tracker = oauth_server("tracker", "https://mcp.example.com/mcp");
-		const registered = await register_media_plugin(t, membership.userId, {
+		const registered = await register_media_plugin({
+			t,
+			userId: membership.userId,
 			capabilities: mcp_capabilities,
 			mcpServers: [tracker],
 			mcpServersFingerprint: "sha256:tracker-v1",
@@ -7048,7 +7160,9 @@ describe("plugins mcp servers install", () => {
 		];
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 		for (const name of ["media", "media-alt"]) {
-			const registered = await register_media_plugin(t, membership.userId, {
+			const registered = await register_media_plugin({
+				t,
+				userId: membership.userId,
 				name,
 				capabilities: mcp_capabilities,
 				mcpServers: servers,
@@ -7078,7 +7192,9 @@ describe("plugins mcp servers install", () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const docs = oauth_server("docs", "https://docs.example.com/mcp");
-		const first = await register_media_plugin(t, membership.userId, {
+		const first = await register_media_plugin({
+			t,
+			userId: membership.userId,
 			capabilities: mcp_capabilities,
 			mcpServers: [oauth_server("tracker", "https://mcp.example.com/mcp"), docs],
 			mcpServersFingerprint: "sha256:v1",
@@ -7113,7 +7229,9 @@ describe("plugins mcp servers install", () => {
 
 		refill_manage_rate_limit();
 		const movedTracker = oauth_server("tracker", "https://mcp.example.com/v2/mcp");
-		const upgraded = await register_media_plugin(t, membership.userId, {
+		const upgraded = await register_media_plugin({
+			t,
+			userId: membership.userId,
 			version: "0.2.0",
 			capabilities: mcp_capabilities,
 			mcpServers: [movedTracker, docs],
@@ -7164,7 +7282,9 @@ describe("plugins mcp servers install", () => {
 	test("the status query shows the policy and the caller's own sign-in, never a token", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const registered = await register_media_plugin(t, membership.userId, {
+		const registered = await register_media_plugin({
+			t,
+			userId: membership.userId,
 			capabilities: mcp_capabilities,
 			mcpServers: [oauth_server("tracker", "https://mcp.example.com/mcp")],
 		});
@@ -11247,7 +11367,7 @@ describe("plugins publish artifact cleanup", () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		// register_media_plugin registers media 0.1.0 with the same artifactHash the attempt carries.
-		await register_media_plugin(t, membership.userId);
+		await register_media_plugin({ t, userId: membership.userId });
 		const deleteObjectSpy = vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
 		const attemptId = await insert_cleanup_attempt(t, {
 			ownerUserId: membership.userId,
@@ -11265,7 +11385,7 @@ describe("plugins publish artifact cleanup", () => {
 	test("deletes artifact keys and an unlinked anonymized review owned only by a failed source snapshot", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const registered = await register_media_plugin(t, membership.userId);
+		const registered = await register_media_plugin({ t, userId: membership.userId });
 		const reviewId = await t.run((ctx) =>
 			ctx.db.insert("plugins_version_reviews", {
 				createdBy: null,
@@ -11331,8 +11451,10 @@ describe("plugins publish artifact cleanup", () => {
 	test("keeps an anonymized review when another version still links to it", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const failedVersion = await register_media_plugin(t, membership.userId);
-		const readyVersion = await register_media_plugin(t, membership.userId, {
+		const failedVersion = await register_media_plugin({ t, userId: membership.userId });
+		const readyVersion = await register_media_plugin({
+			t,
+			userId: membership.userId,
 			version: "0.2.0",
 			artifactHash: `sha256:${"b".repeat(64)}`,
 		});
@@ -11382,7 +11504,7 @@ describe("plugins publish artifact cleanup", () => {
 	test("keeps an anonymized review when another publisher attempt still links to it", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const failedVersion = await register_media_plugin(t, membership.userId);
+		const failedVersion = await register_media_plugin({ t, userId: membership.userId });
 		const reviewId = await t.run((ctx) =>
 			ctx.db.insert("plugins_version_reviews", {
 				createdBy: null,
@@ -11442,7 +11564,7 @@ describe("plugins publish artifact cleanup", () => {
 	test("an older cleanup attempt keeps the incomplete version owned by a newer retry", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const registered = await register_media_plugin(t, membership.userId);
+		const registered = await register_media_plugin({ t, userId: membership.userId });
 		const oldKeys = [
 			"plugins/media/0.1.0/upload-a/dist/bonobo.plugin.json",
 			"plugins/media/0.1.0/upload-a/dist/backend/worker.js",
@@ -11519,7 +11641,7 @@ describe("plugins publish artifact cleanup", () => {
 	test("deletes only keys the registered version does not own", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		await register_media_plugin(t, membership.userId);
+		await register_media_plugin({ t, userId: membership.userId });
 		const deleteObjectSpy = vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
 		const attemptId = await insert_cleanup_attempt(t, {
 			ownerUserId: membership.userId,
@@ -11627,7 +11749,7 @@ describe("plugins uninstall_version", () => {
 	test("uninstalls the installation and lets admin deletion sweep its run history", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const registered = await register_media_plugin(t, membership.userId);
+		const registered = await register_media_plugin({ t, userId: membership.userId });
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 		const installed = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
@@ -11736,7 +11858,7 @@ describe("plugins uninstall_version", () => {
 		expect(preview.eventRunCalls).toBe(1);
 
 		vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
-		await drain_plugin_registry_delete(t, "media");
+		await drain_plugin_registry_delete({ t, pluginName: "media" });
 		expect(await t.run((ctx) => ctx.db.get("plugins_event_runs", runId))).toBeNull();
 		expect(await t.run((ctx) => ctx.db.get("plugins_event_run_calls", callId))).toBeNull();
 		expect(await t.run((ctx) => ctx.db.get("plugins_versions", registered.pluginVersionId))).toBeNull();
@@ -11745,7 +11867,7 @@ describe("plugins uninstall_version", () => {
 	test("rejects uninstalls from users without workspace plugin permissions", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const registered = await register_media_plugin(t, membership.userId);
+		const registered = await register_media_plugin({ t, userId: membership.userId });
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 		const installed = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
@@ -11772,7 +11894,7 @@ describe("plugins uninstall_version", () => {
 	test("reinstalls a plugin after uninstalling it", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const registered = await register_media_plugin(t, membership.userId);
+		const registered = await register_media_plugin({ t, userId: membership.userId });
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 		const installed = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
@@ -11816,7 +11938,9 @@ describe("plugins uninstall_version", () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const capabilities: plugins_Capability[] = ["plugin.secrets.read", "outbound.fetch", "agent.mcp.connect"];
-		const registered = await register_media_plugin(t, membership.userId, {
+		const registered = await register_media_plugin({
+			t,
+			userId: membership.userId,
 			capabilities,
 			mcpServers: [
 				{
@@ -11899,7 +12023,7 @@ describe("plugins list_bash_source_mounts", () => {
 				workspaceName: "test-workspace-b",
 			}),
 		);
-		const registered = await register_media_plugin(t, membershipA.userId);
+		const registered = await register_media_plugin({ t, userId: membershipA.userId });
 
 		const count_source_tree_nodes = async () => {
 			const nodes = await t.run((ctx) =>
@@ -11995,8 +12119,8 @@ describe("plugins list_bash_source_mounts", () => {
 	test("lists enabled installations in plugin-name order", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const zebra = await register_media_plugin(t, membership.userId, { name: "zebra", displayName: "Zebra" });
-		const alpha = await register_media_plugin(t, membership.userId, { name: "alpha", displayName: "Alpha" });
+		const zebra = await register_media_plugin({ t, userId: membership.userId, name: "zebra", displayName: "Zebra" });
+		const alpha = await register_media_plugin({ t, userId: membership.userId, name: "alpha", displayName: "Alpha" });
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 		for (const pluginVersionId of [zebra.pluginVersionId, alpha.pluginVersionId]) {
 			const installed = await asOwner.mutation(api.plugins.install_version, {
@@ -12023,7 +12147,9 @@ describe("plugins run_installation_on_files", () => {
 		args?: { contentTypes?: string[]; filename?: string; uploadContentType?: string; confirmUpload?: boolean },
 	) {
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const registered = await register_media_plugin(t, membership.userId, {
+		const registered = await register_media_plugin({
+			t,
+			userId: membership.userId,
 			contentTypes: args?.contentTypes ?? ["image/png"],
 		});
 		const asOwner = t.withIdentity(user_identity(membership.userId));
@@ -12434,12 +12560,12 @@ describe("plugins backend invoke runs", () => {
 		},
 	) {
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const registered = await register_media_plugin(t, membership.userId, {
+		const registered = await register_media_plugin({
+			t,
+			userId: membership.userId,
 			name: "probe",
 			displayName: "Probe",
 			capabilities: ["plugin.backend.invoke"],
-			// No configurable filters: invoke tests that need a configuration patch it on the
-			// installation directly.
 			configurable: false,
 			endpoints: args?.endpoints ?? [
 				{ id: "echo", path: "/echo", serialization: "installation" },
@@ -12908,7 +13034,13 @@ describe("plugins backend invoke runs", () => {
 		return JSON.stringify(body);
 	}
 
-	async function post_invoke(t: ReturnType<typeof test_convex>, token: string, rawBody: string) {
+	async function post_invoke(args: {
+		t: ReturnType<typeof test_convex>;
+		token: string;
+		rawBody: string;
+	}) {
+		const { t, token, rawBody } = args;
+
 		return await t.fetch("/api/v1/plugin-backend/invoke", {
 			method: "POST",
 			headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
@@ -12937,11 +13069,11 @@ describe("plugins backend invoke runs", () => {
 			return new Response(null, { status: 404 });
 		});
 
-		const response = await post_invoke(
+		const response = await post_invoke({
 			t,
 			token,
-			invoke_request_body({ endpoint: "echo", input: { hello: "world", actorUserId: "attacker" } }),
-		);
+			rawBody: invoke_request_body({ endpoint: "echo", input: { hello: "world", actorUserId: "attacker" } }),
+		});
 		expect(response.status).toBe(200);
 		const responseBody = (await response.json()) as Record<string, unknown>;
 		expect(responseBody).toEqual({ runId: expect.any(String), pluginStatus: 200, output: "pong" });
@@ -12980,7 +13112,7 @@ describe("plugins backend invoke runs", () => {
 		expect(String(responseBody.runId)).toBe(String(run?._id));
 
 		// The settle freed the serialization lock, so a second invoke goes through.
-		const again = await post_invoke(t, token, invoke_request_body({ endpoint: "echo" }));
+		const again = await post_invoke({ t, token, rawBody: invoke_request_body({ endpoint: "echo" }) });
 		expect(again.status).toBe(200);
 	});
 
@@ -13040,7 +13172,7 @@ describe("plugins backend invoke runs", () => {
 				});
 			const input = { clientRequestId: "same-request", text: "message" };
 
-			const response = await post_invoke(t, token, JSON.stringify({ endpoint: "message-send", input }));
+			const response = await post_invoke({ t, token, rawBody: JSON.stringify({ endpoint: "message-send", input }) });
 			const result: unknown = await response.json();
 			expect(runnerFetch).toHaveBeenCalledOnce();
 			if (outcome === "too large") {
@@ -13072,7 +13204,7 @@ describe("plugins backend invoke runs", () => {
 				return runner_success_response({ kind: "invoke", runId: wire.pluginRunId, pluginStatus, elapsedMs: 7, output });
 			});
 
-			const response = await post_invoke(t, token, invoke_request_body({ endpoint: "echo" }));
+			const response = await post_invoke({ t, token, rawBody: invoke_request_body({ endpoint: "echo" }) });
 			expect(response.status).toBe(200);
 			const run = (await t.run((ctx) => ctx.db.query("plugins_event_runs").first()))!;
 			expect(await response.json()).toEqual({ runId: run._id, pluginStatus, output });
@@ -13113,7 +13245,7 @@ describe("plugins backend invoke runs", () => {
 			return new Response(new ReadableStream<Uint8Array>({ cancel: canceled }), { headers: response.headers });
 		});
 
-		const response = await post_invoke(t, token, invoke_request_body({ endpoint: "echo" }));
+		const response = await post_invoke({ t, token, rawBody: invoke_request_body({ endpoint: "echo" }) });
 		expect(response.status).toBe(500);
 		expect(await response.json()).toMatchObject({ message: "Plugin backend failed", runId: expect.any(String) });
 		expect(canceled).toHaveBeenCalledOnce();
@@ -13156,7 +13288,7 @@ describe("plugins backend invoke runs", () => {
 				return new Response(body, { headers: response.headers });
 			});
 
-			const response = await post_invoke(t, token, invoke_request_body({ endpoint: "echo" }));
+			const response = await post_invoke({ t, token, rawBody: invoke_request_body({ endpoint: "echo" }) });
 			expect(response.status).toBe(500);
 			expect(await response.json()).toEqual({ message: "Plugin backend failed", runId: expect.any(String) });
 			const run = await t.run((ctx) => ctx.db.query("plugins_event_runs").first());
@@ -13217,7 +13349,7 @@ describe("plugins backend invoke runs", () => {
 				);
 			});
 
-			const accepted = await post_invoke(t, token, invoke_request_body({ endpoint: "echo" }));
+			const accepted = await post_invoke({ t, token, rawBody: invoke_request_body({ endpoint: "echo" }) });
 			expect(accepted.status).toBe(200);
 			const acceptedBytes = await accepted.arrayBuffer();
 			expect(acceptedBytes.byteLength).toBe(limit);
@@ -13227,7 +13359,7 @@ describe("plugins backend invoke runs", () => {
 				output: expectedOutput,
 			});
 			over = true;
-			const refused = await post_invoke(t, token, invoke_request_body({ endpoint: "echo" }));
+			const refused = await post_invoke({ t, token, rawBody: invoke_request_body({ endpoint: "echo" }) });
 			expect(refused.status).toBe(500);
 			expect(await refused.json()).toMatchObject({ code: "response_too_large" });
 			expect(canceled).toHaveBeenCalledOnce();
@@ -13264,7 +13396,7 @@ describe("plugins backend invoke runs", () => {
 			);
 		});
 
-		const response = await post_invoke(t, token, invoke_request_body({ endpoint: "echo" }));
+		const response = await post_invoke({ t, token, rawBody: invoke_request_body({ endpoint: "echo" }) });
 		expect(response.status).toBe(200);
 		expect(await response.json()).toEqual({ runId: expect.any(String), pluginStatus: 200, output });
 	});
@@ -13333,7 +13465,7 @@ describe("plugins backend invoke runs", () => {
 			});
 		});
 
-		const response = await post_invoke(t, token, invoke_request_body({ endpoint: "echo" }));
+		const response = await post_invoke({ t, token, rawBody: invoke_request_body({ endpoint: "echo" }) });
 		expect(response.status).toBe(500);
 		expect(await response.json()).toEqual({ message: "Plugin backend failed", runId: expect.any(String) });
 		expect(
@@ -13389,7 +13521,7 @@ describe("plugins backend invoke runs", () => {
 			});
 		});
 
-		const response = await post_invoke(t, token, invoke_request_body({ endpoint: "echo" }));
+		const response = await post_invoke({ t, token, rawBody: invoke_request_body({ endpoint: "echo" }) });
 		expect(response.status).toBe(500);
 		const run = await t.run((ctx) => ctx.db.query("plugins_event_runs").first());
 		expect((await t.run((ctx) => activities.activities_db_require_by_source_id(ctx, run!._id))).errorMessage).toBe(
@@ -13412,7 +13544,7 @@ describe("plugins backend invoke runs", () => {
 			});
 			return new Response(response.body, { status, headers: response.headers });
 		});
-		const response = await post_invoke(t, token, invoke_request_body({ endpoint: "echo" }));
+		const response = await post_invoke({ t, token, rawBody: invoke_request_body({ endpoint: "echo" }) });
 		expect(response.status).toBe(500);
 		expect(await response.json()).toEqual({ message: "Plugin backend failed", runId: expect.any(String) });
 	});
@@ -13442,7 +13574,7 @@ describe("plugins backend invoke runs", () => {
 			});
 		});
 
-		const response = await post_invoke(t, token, invoke_request_body({ endpoint: "echo" }));
+		const response = await post_invoke({ t, token, rawBody: invoke_request_body({ endpoint: "echo" }) });
 		expect(response.status).toBe(500);
 		const run = (await t.run((ctx) => ctx.db.query("plugins_event_runs").first()))!;
 		expect(await response.json()).toEqual({
@@ -13496,7 +13628,7 @@ describe("plugins backend invoke runs", () => {
 				});
 			});
 
-			const response = await post_invoke(t, token, invoke_request_body({ endpoint: "echo" }));
+			const response = await post_invoke({ t, token, rawBody: invoke_request_body({ endpoint: "echo" }) });
 			expect(response.status).toBe(500);
 			expect(await response.json()).toEqual({ message: "Plugin backend failed", runId: expect.any(String) });
 			const run = await t.run((ctx) => ctx.db.query("plugins_event_runs").first());
@@ -13543,7 +13675,7 @@ describe("plugins backend invoke runs", () => {
 			});
 		});
 
-		const response = await post_invoke(t, token, invoke_request_body({ endpoint: "echo" }));
+		const response = await post_invoke({ t, token, rawBody: invoke_request_body({ endpoint: "echo" }) });
 		expect(response.status).toBe(200);
 		expect(await response.json()).toMatchObject({ output: "handled" });
 		expect(
@@ -13583,7 +13715,7 @@ describe("plugins backend invoke runs", () => {
 		});
 
 		let responded = false;
-		const pending = post_invoke(t, token, invoke_request_body({ endpoint: "echo" })).then((response) => {
+		const pending = post_invoke({ t, token, rawBody: invoke_request_body({ endpoint: "echo" }) }).then((response) => {
 			responded = true;
 			return response;
 		});
@@ -13631,7 +13763,7 @@ describe("plugins backend invoke runs", () => {
 			return new Response(null, { status: 404 });
 		});
 
-		const response = await post_invoke(t, token, rawBody);
+		const response = await post_invoke({ t, token, rawBody });
 		expect(response.status).toBe(413);
 		expect(await response.json()).toEqual({
 			message: "Invoke request is too large for this plugin configuration",
@@ -13679,28 +13811,28 @@ describe("plugins backend invoke runs", () => {
 		// is a plain "a", which JSON stores as one byte, so the input length moves the wire body
 		// one byte at a time from here.
 		const probeInputLength = 1_000;
-		const probe = await post_invoke(
+		const probe = await post_invoke({
 			t,
 			token,
-			invoke_request_body({ endpoint: "echo", input: "a".repeat(probeInputLength) }),
-		);
+			rawBody: invoke_request_body({ endpoint: "echo", input: "a".repeat(probeInputLength) }),
+		});
 		expect(probe.status).toBe(200);
 		const exactInputLength = 64_000 - runnerBodySizes[0]! + probeInputLength;
 
-		const exact = await post_invoke(
+		const exact = await post_invoke({
 			t,
 			token,
-			invoke_request_body({ endpoint: "echo", input: "a".repeat(exactInputLength) }),
-		);
+			rawBody: invoke_request_body({ endpoint: "echo", input: "a".repeat(exactInputLength) }),
+		});
 		expect(exact.status).toBe(200);
 		expect(runnerBodySizes[1]).toBe(64_000);
 
 		// One byte more is one byte too many, and the host says so without calling the runner.
-		const over = await post_invoke(
+		const over = await post_invoke({
 			t,
 			token,
-			invoke_request_body({ endpoint: "echo", input: "a".repeat(exactInputLength + 1) }),
-		);
+			rawBody: invoke_request_body({ endpoint: "echo", input: "a".repeat(exactInputLength + 1) }),
+		});
 		expect(over.status).toBe(413);
 		expect(runnerBodySizes).toHaveLength(2);
 	});
@@ -13720,7 +13852,7 @@ describe("plugins backend invoke runs", () => {
 			);
 		}
 
-		const response = await post_invoke(t, token, invoke_request_body({ endpoint: "echo" }));
+		const response = await post_invoke({ t, token, rawBody: invoke_request_body({ endpoint: "echo" }) });
 		expect(response.status).toBe(500);
 		const run = (await t.run((ctx) => ctx.db.query("plugins_event_runs").first()))!;
 		expect(await response.json()).toEqual({ message: "Plugin backend failed", runId: String(run._id) });
@@ -13752,7 +13884,7 @@ describe("plugins backend invoke runs", () => {
 			return new Response(null, { status: 404 });
 		});
 
-		const response = await post_invoke(t, token, invoke_request_body({ endpoint: "echo" }));
+		const response = await post_invoke({ t, token, rawBody: invoke_request_body({ endpoint: "echo" }) });
 		expect(response.status).toBe(500);
 		const responseBody = (await response.json()) as Record<string, unknown>;
 
@@ -13780,7 +13912,9 @@ describe("plugins metadata file doors", () => {
 		capabilities: plugins_Capability[] = FILE_CAPABILITIES,
 	) {
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const registered = await register_media_plugin(t, membership.userId, {
+		const registered = await register_media_plugin({
+			t,
+			userId: membership.userId,
 			name: "probe",
 			displayName: "Probe",
 			capabilities,
@@ -13829,14 +13963,17 @@ describe("plugins metadata file doors", () => {
 	/**
 	 * Start a live invoke run and mint the API token its file-door calls present.
 	 */
-	async function start_file_invoke_run(
-		t: ReturnType<typeof test_convex>,
-		fixture: Awaited<ReturnType<typeof install_file_doors_plugin>>,
+	async function start_file_invoke_run(args: {
+		t: ReturnType<typeof test_convex>;
+		fixture: Awaited<ReturnType<typeof install_file_doors_plugin>>;
 		/**
 		 * The member who pressed the button. A run reads files with this person's eyes.
 		 */
-		args: { userId?: Id<"users">; tokenSeed?: string } = {},
-	) {
+		userId?: Id<"users">;
+		tokenSeed?: string;
+	}) {
+		const { t, fixture } = args;
+
 		const apiToken = `plr_${(args.tokenSeed ?? "d").repeat(64)}`;
 		const started = await t.mutation(internal.plugins_runtime.start_invoke_run, {
 			serviceAccountId: (await t.run((ctx) => ctx.db.get("plugins_workspace_installations", fixture.installationId)))!
@@ -13856,7 +13993,14 @@ describe("plugins metadata file doors", () => {
 		return { apiToken, runId: started._yay.pluginRun._id };
 	}
 
-	async function door_call(t: ReturnType<typeof test_convex>, path: string, apiToken: string, body: unknown) {
+	async function door_call(args: {
+		t: ReturnType<typeof test_convex>;
+		path: string;
+		apiToken: string;
+		body: unknown;
+	}) {
+		const { t, path, apiToken, body } = args;
+
 		return await t.fetch(path, {
 			method: "POST",
 			headers: { Authorization: `Bearer ${apiToken}`, "Content-Type": "application/json" },
@@ -13864,11 +14008,13 @@ describe("plugins metadata file doors", () => {
 		});
 	}
 
-	async function find_active_node(
-		t: ReturnType<typeof test_convex>,
-		fixture: Awaited<ReturnType<typeof install_file_doors_plugin>>,
-		path: string,
-	) {
+	async function find_active_node(args: {
+		t: ReturnType<typeof test_convex>;
+		fixture: Awaited<ReturnType<typeof install_file_doors_plugin>>;
+		path: string;
+	}) {
+		const { t, fixture, path } = args;
+
 		return await t.run(async (ctx) =>
 			ctx.db
 				.query("files_nodes")
@@ -13883,11 +14029,13 @@ describe("plugins metadata file doors", () => {
 		);
 	}
 
-	async function seed_member_folder(
-		t: ReturnType<typeof test_convex>,
-		fixture: Awaited<ReturnType<typeof install_file_doors_plugin>>,
-		name: string,
-	) {
+	async function seed_member_folder(args: {
+		t: ReturnType<typeof test_convex>;
+		fixture: Awaited<ReturnType<typeof install_file_doors_plugin>>;
+		name: string;
+	}) {
+		const { t, fixture, name } = args;
+
 		return await t.run(async (ctx) => {
 			const now = Date.now();
 			return await ctx.db.insert("files_nodes", {
@@ -13925,11 +14073,13 @@ describe("plugins metadata file doors", () => {
 		});
 	}
 
-	async function seed_file_scope(
-		t: ReturnType<typeof test_convex>,
-		fixture: Awaited<ReturnType<typeof install_file_doors_plugin>>,
-		scopeId: string,
-	) {
+	async function seed_file_scope(args: {
+		t: ReturnType<typeof test_convex>;
+		fixture: Awaited<ReturnType<typeof install_file_doors_plugin>>;
+		scopeId: string;
+	}) {
+		const { t, fixture, scopeId } = args;
+
 		await t.run(async (ctx) => {
 			const now = Date.now();
 			await ctx.db.insert("plugins_data_scopes", {
@@ -13976,18 +14126,23 @@ describe("plugins metadata file doors", () => {
 	test("the folder ensure labels each new folder once and refuses an unlabelled occupant", async () => {
 		const t = test_convex();
 		const fixture = await install_file_doors_plugin(t);
-		const run = await start_file_invoke_run(t, fixture);
+		const run = await start_file_invoke_run({ t, fixture });
 
-		const ensured = await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, {
+		const ensured = await door_call({
+			t,
+			path: "/api/v1/files/plugin-folders/ensure",
+			apiToken: run.apiToken,
+			body: {
 			path: "/probe/output",
+		},
 		});
 		expect(ensured.status).toBe(200);
 		const ensuredBody = (await ensured.json()) as { nodeId: string; path: string; created: boolean };
 		expect(ensuredBody).toEqual({ nodeId: expect.any(String), path: "/probe/output", created: true });
 
 		// Every new folder gets editable metadata, including the root.
-		const root = await find_active_node(t, fixture, "/probe");
-		const output = await find_active_node(t, fixture, "/probe/output");
+		const root = await find_active_node({ t, fixture, path: "/probe" });
+		const output = await find_active_node({ t, fixture, path: "/probe/output" });
 		for (const node of [root, output]) {
 			expect(node).toMatchObject({ kind: "folder" });
 			expect(
@@ -14002,16 +14157,26 @@ describe("plugins metadata file doors", () => {
 		}
 		expect(String(output!._id)).toBe(ensuredBody.nodeId);
 
-		const replay = await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, {
+		const replay = await door_call({
+			t,
+			path: "/api/v1/files/plugin-folders/ensure",
+			apiToken: run.apiToken,
+			body: {
 			path: "/probe/output",
+		},
 		});
 		expect(replay.status).toBe(200);
 		expect(await replay.json()).toEqual({ nodeId: ensuredBody.nodeId, path: "/probe/output", created: false });
 
 		// A member's folder on the path is a conflict the plugin resolves by picking another name.
-		await seed_member_folder(t, fixture, "member-zone");
-		const occupied = await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, {
+		await seed_member_folder({ t, fixture, name: "member-zone" });
+		const occupied = await door_call({
+			t,
+			path: "/api/v1/files/plugin-folders/ensure",
+			apiToken: run.apiToken,
+			body: {
 			path: "/member-zone/sub",
+		},
 		});
 		expect(occupied.status).toBe(409);
 		expect(await occupied.json()).toEqual({ message: "This path is used by an item without this plugin's label" });
@@ -14037,8 +14202,8 @@ describe("plugins metadata file doors", () => {
 	] as const)("folder selection refuses %s metadata", async (_name, metadataYaml, valid) => {
 		const t = test_convex();
 		const fixture = await install_file_doors_plugin(t);
-		const run = await start_file_invoke_run(t, fixture);
-		const nodeId = await seed_member_folder(t, fixture, "member-folder");
+		const run = await start_file_invoke_run({ t, fixture });
+		const nodeId = await seed_member_folder({ t, fixture, name: "member-folder" });
 		const edited = await fixture.asOwner.mutation(api.files_metadata.set_entries, {
 			membershipId: fixture.membership.membershipId,
 			fileNodeId: nodeId,
@@ -14046,19 +14211,24 @@ describe("plugins metadata file doors", () => {
 		});
 		expect(edited._nay === undefined).toBe(valid);
 		const before = await t.run((ctx) => ctx.db.get("files_nodes", nodeId));
-		const refused = await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, {
+		const refused = await door_call({
+			t,
+			path: "/api/v1/files/plugin-folders/ensure",
+			apiToken: run.apiToken,
+			body: {
 			path: "/member-folder/new",
+		},
 		});
 		expect(refused.status).toBe(409);
-		expect(await find_active_node(t, fixture, "/member-folder/new")).toBeNull();
+		expect(await find_active_node({ t, fixture, path: "/member-folder/new" })).toBeNull();
 		expect(await t.run((ctx) => ctx.db.get("files_nodes", nodeId))).toEqual(before);
 	});
 
 	test("a member can opt a folder in using only an exact plugin-name label", async () => {
 		const t = test_convex();
 		const fixture = await install_file_doors_plugin(t);
-		const run = await start_file_invoke_run(t, fixture);
-		const nodeId = await seed_member_folder(t, fixture, "member-folder");
+		const run = await start_file_invoke_run({ t, fixture });
+		const nodeId = await seed_member_folder({ t, fixture, name: "member-folder" });
 
 		expect(
 			await fixture.asOwner.mutation(api.files_metadata.set_entries, {
@@ -14068,17 +14238,27 @@ describe("plugins metadata file doors", () => {
 			}),
 		).toEqual({ _yay: null });
 
-		const ensured = await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, {
+		const ensured = await door_call({
+			t,
+			path: "/api/v1/files/plugin-folders/ensure",
+			apiToken: run.apiToken,
+			body: {
 			path: "/member-folder",
+		},
 		});
 		expect(ensured.status).toBe(200);
 		expect(await ensured.json()).toMatchObject({ nodeId, created: false });
 
 		expect(
 			(
-				await door_call(t, "/api/v1/files/write", run.apiToken, {
+				await door_call({
+					t,
+					path: "/api/v1/files/write",
+					apiToken: run.apiToken,
+					body: {
 					path: "/member-folder/member-opted-in.md",
 					content: "Allowed",
+				},
 				})
 			).status,
 		).toBe(200);
@@ -14094,20 +14274,25 @@ describe("plugins metadata file doors", () => {
 	test("ensure preserves member metadata, unlocks, and detached sharing, then obeys a member relock", async () => {
 		const t = test_convex();
 		const fixture = await install_file_doors_plugin(t);
-		const run = await start_file_invoke_run(t, fixture);
+		const run = await start_file_invoke_run({ t, fixture });
 		const member = await seed_file_member(t, fixture);
-		await seed_file_scope(t, fixture, "private");
+		await seed_file_scope({ t, fixture, scopeId: "private" });
 
 		expect(
 			(
-				await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, {
+				await door_call({
+					t,
+					path: "/api/v1/files/plugin-folders/ensure",
+					apiToken: run.apiToken,
+					body: {
 					path: "/probe",
 					access: { readOnly: true, readScopeId: "private" },
+				},
 				})
 			).status,
 		).toBe(200);
 
-		const node = (await find_active_node(t, fixture, "/probe"))!;
+		const node = (await find_active_node({ t, fixture, path: "/probe" }))!;
 		await grant_file_account(fixture, node._id);
 		expect(
 			await fixture.asOwner.mutation(api.files_nodes.set_node_write_policy, {
@@ -14142,9 +14327,14 @@ describe("plugins metadata file doors", () => {
 
 		expect(
 			(
-				await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, {
+				await door_call({
+					t,
+					path: "/api/v1/files/plugin-folders/ensure",
+					apiToken: run.apiToken,
+					body: {
 					path: "/probe",
 					access: { readOnly: true, readScopeId: "private" },
+				},
 				})
 			).status,
 		).toBe(200);
@@ -14174,18 +14364,23 @@ describe("plugins metadata file doors", () => {
 				nodeId: node._id,
 			}),
 		).toEqual({ _yay: null });
-		const relocked = await find_active_node(t, fixture, "/probe");
+		const relocked = await find_active_node({ t, fixture, path: "/probe" });
 		expect(relocked?.writePolicy).toEqual({ mode: "read_only" });
 
 		expect(
 			(
-				await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, {
+				await door_call({
+					t,
+					path: "/api/v1/files/plugin-folders/ensure",
+					apiToken: run.apiToken,
+					body: {
 					path: "/probe",
 					access: { readOnly: false },
+				},
 				})
 			).status,
 		).toBe(409);
-		expect(await find_active_node(t, fixture, "/probe")).toEqual(relocked);
+		expect(await find_active_node({ t, fixture, path: "/probe" })).toEqual(relocked);
 	});
 
 	test.each(["missing", "full"] as const)(
@@ -14193,49 +14388,64 @@ describe("plugins metadata file doors", () => {
 		async (reason) => {
 			const t = test_convex();
 			const fixture = await install_file_doors_plugin(t);
-			const run = await start_file_invoke_run(t, fixture);
+			const run = await start_file_invoke_run({ t, fixture });
 
 			if (reason === "full") {
-				await seed_file_scope(t, fixture, "limited");
+				await seed_file_scope({ t, fixture, scopeId: "limited" });
 				for (let index = 0; index < 4; index++) {
 					expect(
 						(
-							await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, {
+							await door_call({
+								t,
+								path: "/api/v1/files/plugin-folders/ensure",
+								apiToken: run.apiToken,
+								body: {
 								path: `/bound-${index}`,
 								access: { readScopeId: "limited" },
+							},
 							})
 						).status,
 					).toBe(200);
 				}
 			}
 
-			expect((await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, { path: "/probe" })).status).toBe(
+			expect((await door_call({ t, path: "/api/v1/files/plugin-folders/ensure", apiToken: run.apiToken, body: { path: "/probe" } })).status).toBe(
 				200,
 			);
 
-			const before = await find_active_node(t, fixture, "/probe");
+			const before = await find_active_node({ t, fixture, path: "/probe" });
 			const expectedStatus = reason === "missing" ? 404 : 409;
 
 			expect(
 				(
-					await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, {
+					await door_call({
+						t,
+						path: "/api/v1/files/plugin-folders/ensure",
+						apiToken: run.apiToken,
+						body: {
 						path: "/new-parent/new-child",
 						access: { readOnly: true, readScopeId: "limited" },
+					},
 					})
 				).status,
 			).toBe(expectedStatus);
-			expect(await find_active_node(t, fixture, "/new-parent")).toBeNull();
+			expect(await find_active_node({ t, fixture, path: "/new-parent" })).toBeNull();
 
 			expect(
 				(
-					await door_call(t, "/api/v1/files/plugin-access/set", run.apiToken, {
+					await door_call({
+						t,
+						path: "/api/v1/files/plugin-access/set",
+						apiToken: run.apiToken,
+						body: {
 						path: "/probe",
 						access: { readOnly: true, readScopeId: "limited" },
+					},
 					})
 				).status,
 			).toBe(expectedStatus);
 
-			expect(await find_active_node(t, fixture, "/probe")).toEqual(before);
+			expect(await find_active_node({ t, fixture, path: "/probe" })).toEqual(before);
 			expect(await t.run((ctx) => ctx.db.query("plugins_file_access_bindings").collect())).toHaveLength(
 				reason === "full" ? 4 : 0,
 			);
@@ -14245,25 +14455,35 @@ describe("plugins metadata file doors", () => {
 	test("ensure refuses a different scope and both policy doors refuse a foreign installation binding", async () => {
 		const t = test_convex();
 		const fixture = await install_file_doors_plugin(t);
-		const run = await start_file_invoke_run(t, fixture);
-		await seed_file_scope(t, fixture, "first");
-		await seed_file_scope(t, fixture, "second");
+		const run = await start_file_invoke_run({ t, fixture });
+		await seed_file_scope({ t, fixture, scopeId: "first" });
+		await seed_file_scope({ t, fixture, scopeId: "second" });
 
 		expect(
 			(
-				await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, {
+				await door_call({
+					t,
+					path: "/api/v1/files/plugin-folders/ensure",
+					apiToken: run.apiToken,
+					body: {
 					path: "/probe",
 					access: { readScopeId: "first" },
+				},
 				})
 			).status,
 		).toBe(200);
-		await grant_file_account(fixture, (await find_active_node(t, fixture, "/probe"))!._id);
+		await grant_file_account(fixture, (await find_active_node({ t, fixture, path: "/probe" }))!._id);
 
 		expect(
 			(
-				await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, {
+				await door_call({
+					t,
+					path: "/api/v1/files/plugin-folders/ensure",
+					apiToken: run.apiToken,
+					body: {
 					path: "/probe",
 					access: { readScopeId: "second" },
+				},
 				})
 			).status,
 		).toBe(409);
@@ -14285,35 +14505,45 @@ describe("plugins metadata file doors", () => {
 			await ctx.db.patch("plugins_data_scopes", scope!._id, { installationId: foreignId });
 		});
 
-		const before = await find_active_node(t, fixture, "/probe");
+		const before = await find_active_node({ t, fixture, path: "/probe" });
 		for (const [route, body] of [
 			["/api/v1/files/plugin-folders/ensure", { path: "/probe" }],
 			["/api/v1/files/plugin-access/set", { path: "/probe", access: { readOnly: true } }],
 			["/api/v1/files/plugin-access/set", { path: "/probe", access: { readScopeId: null } }],
 		] as const) {
-			const refused = await door_call(t, route, run.apiToken, body);
+			const refused = await door_call({ t, path: route, apiToken: run.apiToken, body });
 			expect(refused.status, route).toBe(409);
-			expect(await find_active_node(t, fixture, "/probe")).toEqual(before);
+			expect(await find_active_node({ t, fixture, path: "/probe" })).toEqual(before);
 		}
 	});
 
 	test("the folder ensure locks a folder under the plugin's own locked root", async () => {
 		const t = test_convex();
 		const fixture = await install_file_doors_plugin(t);
-		const run = await start_file_invoke_run(t, fixture);
+		const run = await start_file_invoke_run({ t, fixture });
 
 		// The shape every plugin with a locked root uses: lock the root, then build restricted
 		// subfolders inside it. Chitchat does exactly this for `/chitchat/private/<channel>`.
-		const root = await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, {
+		const root = await door_call({
+			t,
+			path: "/api/v1/files/plugin-folders/ensure",
+			apiToken: run.apiToken,
+			body: {
 			path: "/probe",
 			access: { readOnly: true },
+		},
 		});
 		expect(root.status).toBe(200);
 
 		// Each folder keeps its own selected-account rule. A parent lock never blocks a child.
-		const nested = await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, {
+		const nested = await door_call({
+			t,
+			path: "/api/v1/files/plugin-folders/ensure",
+			apiToken: run.apiToken,
+			body: {
 			path: "/probe/private",
 			access: { readOnly: true },
+		},
 		});
 		expect(nested.status).toBe(200);
 
@@ -14334,14 +14564,19 @@ describe("plugins metadata file doors", () => {
 				updatedAt: now,
 			});
 		});
-		const scoped = await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, {
+		const scoped = await door_call({
+			t,
+			path: "/api/v1/files/plugin-folders/ensure",
+			apiToken: run.apiToken,
+			body: {
 			path: "/probe/private/channel-a",
 			access: { readOnly: true, readScopeId: "scope-a" },
+		},
 		});
 		expect(scoped.status).toBe(200);
 
-		const scopedNode = await find_active_node(t, fixture, "/probe/private/channel-a");
-		const rootNode = await find_active_node(t, fixture, "/probe");
+		const scopedNode = await find_active_node({ t, fixture, path: "/probe/private/channel-a" });
+		const rootNode = await find_active_node({ t, fixture, path: "/probe" });
 		const installation = await t.run((ctx) => ctx.db.get("plugins_workspace_installations", fixture.installationId));
 		const pinnedRun = await t.run((ctx) => ctx.db.get("plugins_event_runs", run.runId));
 		expect(pinnedRun?.serviceAccountId).toBe(installation?.serviceAccountId);
@@ -14361,22 +14596,27 @@ describe("plugins metadata file doors", () => {
 	test("an invoke run reads and lists workspace files through the public doors", async () => {
 		const t = test_convex();
 		const fixture = await install_file_doors_plugin(t, [...FILE_CAPABILITIES, "workspace.files.read"]);
-		const run = await start_file_invoke_run(t, fixture);
+		const run = await start_file_invoke_run({ t, fixture });
 
-		expect((await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, { path: "/probe" })).status).toBe(
+		expect((await door_call({ t, path: "/api/v1/files/plugin-folders/ensure", apiToken: run.apiToken, body: { path: "/probe" } })).status).toBe(
 			200,
 		);
 		expect(
-			(await door_call(t, "/api/v1/files/write", run.apiToken, { path: "/probe/tail.md", content: "# Tail\n" })).status,
+			(await door_call({
+				t,
+				path: "/api/v1/files/write",
+				apiToken: run.apiToken,
+				body: { path: "/probe/tail.md", content: "# Tail\n" },
+			})).status,
 		).toBe(200);
 
 		// An invoke run has no source file, so these reads prove the workspace.files.read consent
 		// path: the run principal holds files:read and files:list, and both routes accept plugin_run.
-		const read = await door_call(t, "/api/v1/files/read", run.apiToken, { path: "/probe/tail.md" });
+		const read = await door_call({ t, path: "/api/v1/files/read", apiToken: run.apiToken, body: { path: "/probe/tail.md" } });
 		expect(read.status).toBe(200);
 		expect(await read.json()).toMatchObject({ path: "/probe/tail.md", content: "# Tail\n" });
 
-		const listed = await door_call(t, "/api/v1/files/list", run.apiToken, { path: "/probe" });
+		const listed = await door_call({ t, path: "/api/v1/files/list", apiToken: run.apiToken, body: { path: "/probe" } });
 		expect(listed.status).toBe(200);
 		const listedBody = (await listed.json()) as { items: { path: string }[] };
 		expect(listedBody.items.map((item) => item.path)).toContain("/probe/tail.md");
@@ -14385,16 +14625,21 @@ describe("plugins metadata file doors", () => {
 	test("the read door settles the call slot it consumed, on both the found and the missing path", async () => {
 		const t = test_convex();
 		const fixture = await install_file_doors_plugin(t, [...FILE_CAPABILITIES, "workspace.files.read"]);
-		const run = await start_file_invoke_run(t, fixture);
-		expect((await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, { path: "/probe" })).status).toBe(
+		const run = await start_file_invoke_run({ t, fixture });
+		expect((await door_call({ t, path: "/api/v1/files/plugin-folders/ensure", apiToken: run.apiToken, body: { path: "/probe" } })).status).toBe(
 			200,
 		);
 		expect(
-			(await door_call(t, "/api/v1/files/write", run.apiToken, { path: "/probe/tail.md", content: "# Tail\n" })).status,
+			(await door_call({
+				t,
+				path: "/api/v1/files/write",
+				apiToken: run.apiToken,
+				body: { path: "/probe/tail.md", content: "# Tail\n" },
+			})).status,
 		).toBe(200);
 
-		expect((await door_call(t, "/api/v1/files/read", run.apiToken, { path: "/probe/tail.md" })).status).toBe(200);
-		expect((await door_call(t, "/api/v1/files/read", run.apiToken, { path: "/probe/gone.md" })).status).toBe(404);
+		expect((await door_call({ t, path: "/api/v1/files/read", apiToken: run.apiToken, body: { path: "/probe/tail.md" } })).status).toBe(200);
+		expect((await door_call({ t, path: "/api/v1/files/read", apiToken: run.apiToken, body: { path: "/probe/gone.md" } })).status).toBe(404);
 
 		// Authorizing consumes one call slot per request. A run that ends with any call still
 		// "started" is failed as "Plugin left API calls unfinished", even though every request here
@@ -14417,13 +14662,13 @@ describe("plugins metadata file doors", () => {
 	test("the list door settles the call slot it consumed, on both the listed and the rejected path", async () => {
 		const t = test_convex();
 		const fixture = await install_file_doors_plugin(t, [...FILE_CAPABILITIES, "workspace.files.read"]);
-		const run = await start_file_invoke_run(t, fixture);
-		expect((await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, { path: "/probe" })).status).toBe(
+		const run = await start_file_invoke_run({ t, fixture });
+		expect((await door_call({ t, path: "/api/v1/files/plugin-folders/ensure", apiToken: run.apiToken, body: { path: "/probe" } })).status).toBe(
 			200,
 		);
 
-		expect((await door_call(t, "/api/v1/files/list", run.apiToken, { path: "/probe" })).status).toBe(200);
-		expect((await door_call(t, "/api/v1/files/list", run.apiToken, { path: "/probe", limit: 0 })).status).toBe(400);
+		expect((await door_call({ t, path: "/api/v1/files/list", apiToken: run.apiToken, body: { path: "/probe" } })).status).toBe(200);
+		expect((await door_call({ t, path: "/api/v1/files/list", apiToken: run.apiToken, body: { path: "/probe", limit: 0 } })).status).toBe(400);
 
 		// Same slot accounting as the read door above. The list door admits plugin_run, so authorizing
 		// consumes a slot here too, and the door owns settling it on the success path as well.
@@ -14444,12 +14689,17 @@ describe("plugins metadata file doors", () => {
 	test("a run without workspace.files.read is refused the read doors it just wrote through", async () => {
 		const t = test_convex();
 		const fixture = await install_file_doors_plugin(t);
-		const run = await start_file_invoke_run(t, fixture);
-		expect((await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, { path: "/probe" })).status).toBe(
+		const run = await start_file_invoke_run({ t, fixture });
+		expect((await door_call({ t, path: "/api/v1/files/plugin-folders/ensure", apiToken: run.apiToken, body: { path: "/probe" } })).status).toBe(
 			200,
 		);
 		expect(
-			(await door_call(t, "/api/v1/files/write", run.apiToken, { path: "/probe/tail.md", content: "# Tail\n" })).status,
+			(await door_call({
+				t,
+				path: "/api/v1/files/write",
+				apiToken: run.apiToken,
+				body: { path: "/probe/tail.md", content: "# Tail\n" },
+			})).status,
 		).toBe(200);
 
 		// The workspace never accepted workspace.files.read, so the resolver granted no files:read
@@ -14458,7 +14708,7 @@ describe("plugins metadata file doors", () => {
 			["/api/v1/files/read", { path: "/probe/tail.md" }],
 			["/api/v1/files/list", { path: "/probe" }],
 		] as const) {
-			const refused = await door_call(t, route, run.apiToken, body);
+			const refused = await door_call({ t, path: route, apiToken: run.apiToken, body });
 			expect([route, refused.status]).toEqual([route, 403]);
 			expect([route, await refused.json()]).toEqual([route, { message: "Permission denied" }]);
 		}
@@ -14467,18 +14717,23 @@ describe("plugins metadata file doors", () => {
 	test("read-many refuses a run that reads single files fine", async () => {
 		const t = test_convex();
 		const fixture = await install_file_doors_plugin(t, [...FILE_CAPABILITIES, "workspace.files.read"]);
-		const run = await start_file_invoke_run(t, fixture);
-		expect((await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, { path: "/probe" })).status).toBe(
+		const run = await start_file_invoke_run({ t, fixture });
+		expect((await door_call({ t, path: "/api/v1/files/plugin-folders/ensure", apiToken: run.apiToken, body: { path: "/probe" } })).status).toBe(
 			200,
 		);
 		expect(
-			(await door_call(t, "/api/v1/files/write", run.apiToken, { path: "/probe/tail.md", content: "# Tail\n" })).status,
+			(await door_call({
+				t,
+				path: "/api/v1/files/write",
+				apiToken: run.apiToken,
+				body: { path: "/probe/tail.md", content: "# Tail\n" },
+			})).status,
 		).toBe(200);
-		expect((await door_call(t, "/api/v1/files/read", run.apiToken, { path: "/probe/tail.md" })).status).toBe(200);
+		expect((await door_call({ t, path: "/api/v1/files/read", apiToken: run.apiToken, body: { path: "/probe/tail.md" } })).status).toBe(200);
 
 		// The bulk read door stays with the key holders. A run reads one file at a time, so this
 		// refusal is the kind gate, not the consent: the same run reads that exact path above.
-		const refused = await door_call(t, "/api/v1/files/read-many", run.apiToken, { paths: ["/probe/tail.md"] });
+		const refused = await door_call({ t, path: "/api/v1/files/read-many", apiToken: run.apiToken, body: { paths: ["/probe/tail.md"] } });
 		expect(refused.status).toBe(403);
 		expect(await refused.json()).toEqual({ message: "Permission denied" });
 	});
@@ -14489,25 +14744,35 @@ describe("plugins metadata file doors", () => {
 
 		// The owner's run writes a real file first. Without this control the outsider's refusals
 		// below could just as well mean an empty workspace or a file with no content.
-		const ownerRun = await start_file_invoke_run(t, fixture);
+		const ownerRun = await start_file_invoke_run({ t, fixture });
 		expect(
-			(await door_call(t, "/api/v1/files/plugin-folders/ensure", ownerRun.apiToken, { path: "/probe" })).status,
+			(await door_call({
+				t,
+				path: "/api/v1/files/plugin-folders/ensure",
+				apiToken: ownerRun.apiToken,
+				body: { path: "/probe" },
+			})).status,
 		).toBe(200);
 		expect(
-			(await door_call(t, "/api/v1/files/write", ownerRun.apiToken, { path: "/probe/tail.md", content: "# Tail\n" }))
+			(await door_call({
+				t,
+				path: "/api/v1/files/write",
+				apiToken: ownerRun.apiToken,
+				body: { path: "/probe/tail.md", content: "# Tail\n" },
+			}))
 				.status,
 		).toBe(200);
-		const ownerRead = await door_call(t, "/api/v1/files/read", ownerRun.apiToken, { path: "/probe/tail.md" });
+		const ownerRead = await door_call({ t, path: "/api/v1/files/read", apiToken: ownerRun.apiToken, body: { path: "/probe/tail.md" } });
 		expect(ownerRead.status).toBe(200);
-		const ownerListed = await door_call(t, "/api/v1/files/list", ownerRun.apiToken, { path: "/" });
+		const ownerListed = await door_call({ t, path: "/api/v1/files/list", apiToken: ownerRun.apiToken, body: { path: "/" } });
 		expect(((await ownerListed.json()) as { items: { path: string }[] }).items.map((item) => item.path)).toContain(
 			"/probe",
 		);
 
 		// Restrict the subtree the way `restrict_node` stamps it, then settle the run so the
 		// installation lock frees for the second one.
-		const probeRoot = await find_active_node(t, fixture, "/probe");
-		const tailFile = await find_active_node(t, fixture, "/probe/tail.md");
+		const probeRoot = await find_active_node({ t, fixture, path: "/probe" });
+		const tailFile = await find_active_node({ t, fixture, path: "/probe/tail.md" });
 		await t.run(async (ctx) => {
 			await ctx.db.patch("files_nodes", probeRoot!._id, { restrictedScopeNodeId: probeRoot!._id });
 			await ctx.db.patch("files_nodes", tailFile!._id, { restrictedScopeNodeId: probeRoot!._id });
@@ -14537,16 +14802,16 @@ describe("plugins metadata file doors", () => {
 			});
 			return userId;
 		});
-		const outsiderRun = await start_file_invoke_run(t, fixture, { userId: memberUserId, tokenSeed: "e" });
+		const outsiderRun = await start_file_invoke_run({ t, fixture, userId: memberUserId, tokenSeed: "e" });
 
 		// Installing a plugin must not become a way around a restriction: the run sees exactly what
 		// the member who invoked it sees, which is nothing of this folder.
-		const listed = await door_call(t, "/api/v1/files/list", outsiderRun.apiToken, { path: "/" });
+		const listed = await door_call({ t, path: "/api/v1/files/list", apiToken: outsiderRun.apiToken, body: { path: "/" } });
 		expect(listed.status).toBe(200);
 		const listedBody = (await listed.json()) as { items: { path: string }[] };
 		expect(listedBody.items.map((item) => item.path)).not.toContain("/probe");
 
-		const read = await door_call(t, "/api/v1/files/read", outsiderRun.apiToken, { path: "/probe/tail.md" });
+		const read = await door_call({ t, path: "/api/v1/files/read", apiToken: outsiderRun.apiToken, body: { path: "/probe/tail.md" } });
 		expect(read.status).toBe(404);
 		expect(await read.json()).toEqual({ message: "File not found or exceeds the read limit." });
 	});
@@ -14554,20 +14819,25 @@ describe("plugins metadata file doors", () => {
 	test("invoke writes label every new node and require a matching target or folder", async () => {
 		const t = test_convex();
 		const fixture = await install_file_doors_plugin(t);
-		const run = await start_file_invoke_run(t, fixture);
-		expect((await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, { path: "/probe" })).status).toBe(
+		const run = await start_file_invoke_run({ t, fixture });
+		expect((await door_call({ t, path: "/api/v1/files/plugin-folders/ensure", apiToken: run.apiToken, body: { path: "/probe" } })).status).toBe(
 			200,
 		);
 
-		const written = await door_call(t, "/api/v1/files/write", run.apiToken, {
+		const written = await door_call({
+			t,
+			path: "/api/v1/files/write",
+			apiToken: run.apiToken,
+			body: {
 			path: "/probe/notes/data.md",
 			content: "# Data\n",
+		},
 		});
 		expect(written.status).toBe(200);
 
 		// Each new folder needs its label for later writes below it.
-		const notes = await find_active_node(t, fixture, "/probe/notes");
-		const data = await find_active_node(t, fixture, "/probe/notes/data.md");
+		const notes = await find_active_node({ t, fixture, path: "/probe/notes" });
+		const data = await find_active_node({ t, fixture, path: "/probe/notes/data.md" });
 		expect(notes).toMatchObject({ kind: "folder" });
 		expect(data).toMatchObject({ kind: "file" });
 		for (const node of [notes, data]) {
@@ -14582,29 +14852,39 @@ describe("plugins metadata file doors", () => {
 			]);
 		}
 
-		const sibling = await door_call(t, "/api/v1/files/write", run.apiToken, {
+		const sibling = await door_call({
+			t,
+			path: "/api/v1/files/write",
+			apiToken: run.apiToken,
+			body: {
 			path: "/probe/notes/second.md",
 			content: "# Second\n",
+		},
 		});
 		expect(sibling.status).toBe(200);
 
 		// A create needs a matching existing ancestor. Neither path below has one.
-		await seed_member_folder(t, fixture, "member-zone");
+		await seed_member_folder({ t, fixture, name: "member-zone" });
 		for (const path of ["/elsewhere/loose.md", "/member-zone/steal.md"]) {
-			const refused = await door_call(t, "/api/v1/files/write", run.apiToken, { path, content: "# No\n" });
+			const refused = await door_call({ t, path: "/api/v1/files/write", apiToken: run.apiToken, body: { path, content: "# No\n" } });
 			expect(refused.status).toBe(403);
 			expect(await refused.json()).toEqual({ message: "Permission denied" });
-			expect(await find_active_node(t, fixture, path)).toBeNull();
+			expect(await find_active_node({ t, fixture, path })).toBeNull();
 		}
 
 		// The access option names the installation's account as the writer.
-		const locked = await door_call(t, "/api/v1/files/write", run.apiToken, {
+		const locked = await door_call({
+			t,
+			path: "/api/v1/files/write",
+			apiToken: run.apiToken,
+			body: {
 			path: "/probe/locked.md",
 			content: "# Locked\n",
 			access: { readOnly: true },
+		},
 		});
 		expect(locked.status).toBe(200);
-		const lockedNode = await find_active_node(t, fixture, "/probe/locked.md");
+		const lockedNode = await find_active_node({ t, fixture, path: "/probe/locked.md" });
 		expect(lockedNode).toMatchObject({
 			writePolicy: { mode: "writer", writers: [{ kind: "service_account", serviceAccountId: fixture.serviceAccountId }] },
 		});
@@ -14613,31 +14893,36 @@ describe("plugins metadata file doors", () => {
 	test("the archive door takes only the plugin's own subtree and releases its own locks", async () => {
 		const t = test_convex();
 		const fixture = await install_file_doors_plugin(t);
-		const run = await start_file_invoke_run(t, fixture);
-		expect((await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, { path: "/probe" })).status).toBe(
+		const run = await start_file_invoke_run({ t, fixture });
+		expect((await door_call({ t, path: "/api/v1/files/plugin-folders/ensure", apiToken: run.apiToken, body: { path: "/probe" } })).status).toBe(
 			200,
 		);
 		for (const [path, readOnly] of [
 			["/probe/a/one.md", true],
 			["/probe/a/two.md", false],
 		] as const) {
-			const written = await door_call(t, "/api/v1/files/write", run.apiToken, {
+			const written = await door_call({
+				t,
+				path: "/api/v1/files/write",
+				apiToken: run.apiToken,
+				body: {
 				path,
 				content: "# A\n",
 				...(readOnly ? { access: { readOnly: true } } : {}),
+			},
 			});
 			expect(written.status).toBe(200);
 		}
-		const lockedNode = await find_active_node(t, fixture, "/probe/a/one.md");
+		const lockedNode = await find_active_node({ t, fixture, path: "/probe/a/one.md" });
 		expect(lockedNode).toMatchObject({
 			writePolicy: { mode: "writer", writers: [{ kind: "service_account", serviceAccountId: fixture.serviceAccountId }] },
 		});
 
-		const archived = await door_call(t, "/api/v1/files/plugin-archive", run.apiToken, { path: "/probe/a" });
+		const archived = await door_call({ t, path: "/api/v1/files/plugin-archive", apiToken: run.apiToken, body: { path: "/probe/a" } });
 		expect(archived.status).toBe(200);
 		expect(await archived.json()).toEqual({ archivedNodes: 3 });
-		expect(await find_active_node(t, fixture, "/probe/a")).toBeNull();
-		expect(await find_active_node(t, fixture, "/probe/a/one.md")).toBeNull();
+		expect(await find_active_node({ t, fixture, path: "/probe/a" })).toBeNull();
+		expect(await find_active_node({ t, fixture, path: "/probe/a/one.md" })).toBeNull();
 
 		// The plugin's own lock was released before the archive, so a member restore gets a
 		// writable file back.
@@ -14646,9 +14931,14 @@ describe("plugins metadata file doors", () => {
 
 		// A member's file inside an open plugin folder refuses the whole subtree archive.
 		expect(
-			(await door_call(t, "/api/v1/files/write", run.apiToken, { path: "/probe/keep.md", content: "# K\n" })).status,
+			(await door_call({
+				t,
+				path: "/api/v1/files/write",
+				apiToken: run.apiToken,
+				body: { path: "/probe/keep.md", content: "# K\n" },
+			})).status,
 		).toBe(200);
-		const probeRoot = await find_active_node(t, fixture, "/probe");
+		const probeRoot = await find_active_node({ t, fixture, path: "/probe" });
 		await t.run(async (ctx) => {
 			const now = Date.now();
 			await ctx.db.insert("files_nodes", {
@@ -14684,11 +14974,11 @@ describe("plugins metadata file doors", () => {
 				archiveOperationId: null,
 			});
 		});
-		const refused = await door_call(t, "/api/v1/files/plugin-archive", run.apiToken, { path: "/probe" });
+		const refused = await door_call({ t, path: "/api/v1/files/plugin-archive", apiToken: run.apiToken, body: { path: "/probe" } });
 		expect(refused.status).toBe(409);
 		expect(await refused.json()).toEqual({ message: "This folder holds items without this plugin's label" });
-		expect(await find_active_node(t, fixture, "/probe")).not.toBeNull();
-		expect(await find_active_node(t, fixture, "/probe/keep.md")).not.toBeNull();
+		expect(await find_active_node({ t, fixture, path: "/probe" })).not.toBeNull();
+		expect(await find_active_node({ t, fixture, path: "/probe/keep.md" })).not.toBeNull();
 
 		// Every door call above consumed and settled one plugin call, the refused archive included.
 		const calls = await t.run((ctx) =>
@@ -14710,23 +15000,33 @@ describe("plugins metadata file doors", () => {
 	test("the access door changes plugin locks and a member can unlock them", async () => {
 		const t = test_convex();
 		const fixture = await install_file_doors_plugin(t);
-		const run = await start_file_invoke_run(t, fixture);
-		expect((await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, { path: "/probe" })).status).toBe(
+		const run = await start_file_invoke_run({ t, fixture });
+		expect((await door_call({ t, path: "/api/v1/files/plugin-folders/ensure", apiToken: run.apiToken, body: { path: "/probe" } })).status).toBe(
 			200,
 		);
 		expect(
-			(await door_call(t, "/api/v1/files/write", run.apiToken, { path: "/probe/report.md", content: "# R\n" })).status,
+			(await door_call({
+				t,
+				path: "/api/v1/files/write",
+				apiToken: run.apiToken,
+				body: { path: "/probe/report.md", content: "# R\n" },
+			})).status,
 		).toBe(200);
-		const reportNode = await find_active_node(t, fixture, "/probe/report.md");
+		const reportNode = await find_active_node({ t, fixture, path: "/probe/report.md" });
 
-		const lock = await door_call(t, "/api/v1/files/plugin-access/set", run.apiToken, {
+		const lock = await door_call({
+			t,
+			path: "/api/v1/files/plugin-access/set",
+			apiToken: run.apiToken,
+			body: {
 			path: "/probe/report.md",
 			access: { readOnly: true },
+		},
 		});
 		expect(lock.status).toBe(200);
 		expect(await lock.json()).toEqual({ nodeId: String(reportNode!._id) });
 		const installation = await t.run((ctx) => ctx.db.get("plugins_workspace_installations", fixture.installationId));
-		expect(await find_active_node(t, fixture, "/probe/report.md")).toMatchObject({
+		expect(await find_active_node({ t, fixture, path: "/probe/report.md" })).toMatchObject({
 			writePolicy: {
 				mode: "writer",
 				writers: [{ kind: "service_account", serviceAccountId: installation?.serviceAccountId }],
@@ -14742,22 +15042,32 @@ describe("plugins metadata file doors", () => {
 			}),
 		).toEqual({ _yay: null });
 
-		const unlock = await door_call(t, "/api/v1/files/plugin-access/set", run.apiToken, {
+		const unlock = await door_call({
+			t,
+			path: "/api/v1/files/plugin-access/set",
+			apiToken: run.apiToken,
+			body: {
 			path: "/probe/report.md",
 			access: { readOnly: false },
+		},
 		});
 		expect(unlock.status).toBe(200);
-		expect(await find_active_node(t, fixture, "/probe/report.md")).toMatchObject({
+		expect(await find_active_node({ t, fixture, path: "/probe/report.md" })).toMatchObject({
 			writePolicy: null,
 		});
 
 		// The plugin still writes through its own folder lock. Child files keep their own rule.
-		const folderLock = await door_call(t, "/api/v1/files/plugin-access/set", run.apiToken, {
+		const folderLock = await door_call({
+			t,
+			path: "/api/v1/files/plugin-access/set",
+			apiToken: run.apiToken,
+			body: {
 			path: "/probe",
 			access: { readOnly: true },
+		},
 		});
 		expect(folderLock.status).toBe(200);
-		expect(await find_active_node(t, fixture, "/probe")).toMatchObject({
+		expect(await find_active_node({ t, fixture, path: "/probe" })).toMatchObject({
 			writePolicy: {
 				mode: "writer",
 				writers: [{ kind: "service_account", serviceAccountId: installation?.serviceAccountId }],
@@ -14776,35 +15086,55 @@ describe("plugins metadata file doors", () => {
 			await fixture.asOwner.mutation(api.files_nodes.set_node_write_policy, {
 				writePolicy: sharedFolderPolicy,
 				membershipId: fixture.membership.membershipId,
-				nodeId: (await find_active_node(t, fixture, "/probe"))!._id,
+				nodeId: (await find_active_node({ t, fixture, path: "/probe" }))!._id,
 			}),
 		).toEqual({ _yay: null });
-		const folderRelock = await door_call(t, "/api/v1/files/plugin-access/set", run.apiToken, {
+		const folderRelock = await door_call({
+			t,
+			path: "/api/v1/files/plugin-access/set",
+			apiToken: run.apiToken,
+			body: {
 			path: "/probe",
 			access: { readOnly: true },
+		},
 		});
 		expect(folderRelock.status).toBe(200);
-		expect(await find_active_node(t, fixture, "/probe")).toMatchObject({ writePolicy: sharedFolderPolicy });
-		expect(await find_active_node(t, fixture, "/probe/report.md")).toMatchObject({
+		expect(await find_active_node({ t, fixture, path: "/probe" })).toMatchObject({ writePolicy: sharedFolderPolicy });
+		expect(await find_active_node({ t, fixture, path: "/probe/report.md" })).toMatchObject({
 			writePolicy: null,
 		});
-		const throughLock = await door_call(t, "/api/v1/files/write", run.apiToken, {
+		const throughLock = await door_call({
+			t,
+			path: "/api/v1/files/write",
+			apiToken: run.apiToken,
+			body: {
 			path: "/probe/still-mine.md",
 			content: "# Mine\n",
+		},
 		});
 		expect(throughLock.status).toBe(200);
 
 		// Not the plugin's node: refused without revealing more; an absent path answers not found.
-		await seed_member_folder(t, fixture, "member-zone");
-		const foreign = await door_call(t, "/api/v1/files/plugin-access/set", run.apiToken, {
+		await seed_member_folder({ t, fixture, name: "member-zone" });
+		const foreign = await door_call({
+			t,
+			path: "/api/v1/files/plugin-access/set",
+			apiToken: run.apiToken,
+			body: {
 			path: "/member-zone",
 			access: { readOnly: true },
+		},
 		});
 		expect(foreign.status).toBe(403);
 		expect(await foreign.json()).toEqual({ message: "Permission denied" });
-		const absent = await door_call(t, "/api/v1/files/plugin-access/set", run.apiToken, {
+		const absent = await door_call({
+			t,
+			path: "/api/v1/files/plugin-access/set",
+			apiToken: run.apiToken,
+			body: {
 			path: "/probe/ghost.md",
 			access: { readOnly: true },
+		},
 		});
 		expect(absent.status).toBe(404);
 		expect(await absent.json()).toEqual({ message: "Not found" });
@@ -14832,14 +15162,19 @@ describe("plugins metadata file doors", () => {
 	test("the access door binds a private-space reader list through readScopeId", async () => {
 		const t = test_convex();
 		const fixture = await install_file_doors_plugin(t);
-		const run = await start_file_invoke_run(t, fixture);
-		expect((await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, { path: "/probe" })).status).toBe(
+		const run = await start_file_invoke_run({ t, fixture });
+		expect((await door_call({ t, path: "/api/v1/files/plugin-folders/ensure", apiToken: run.apiToken, body: { path: "/probe" } })).status).toBe(
 			200,
 		);
 		expect(
-			(await door_call(t, "/api/v1/files/write", run.apiToken, { path: "/probe/secret.md", content: "# S\n" })).status,
+			(await door_call({
+				t,
+				path: "/api/v1/files/write",
+				apiToken: run.apiToken,
+				body: { path: "/probe/secret.md", content: "# S\n" },
+			})).status,
 		).toBe(200);
-		const secretNode = await find_active_node(t, fixture, "/probe/secret.md");
+		const secretNode = await find_active_node({ t, fixture, path: "/probe/secret.md" });
 		// The binding needs a live private scope of this installation; the door checks the scope
 		// row, not the page flow that normally creates it.
 		await t.run(async (ctx) => {
@@ -14867,26 +15202,41 @@ describe("plugins metadata file doors", () => {
 			);
 
 		// An access object with nothing to change is refused before the mutation runs.
-		const empty = await door_call(t, "/api/v1/files/plugin-access/set", run.apiToken, {
+		const empty = await door_call({
+			t,
+			path: "/api/v1/files/plugin-access/set",
+			apiToken: run.apiToken,
+			body: {
 			path: "/probe/secret.md",
 			access: {},
+		},
 		});
 		expect(empty.status).toBe(400);
 		expect(await empty.json()).toEqual({ message: "access must set readOnly or readScopeId." });
 
-		const bound = await door_call(t, "/api/v1/files/plugin-access/set", run.apiToken, {
+		const bound = await door_call({
+			t,
+			path: "/api/v1/files/plugin-access/set",
+			apiToken: run.apiToken,
+			body: {
 			path: "/probe/secret.md",
 			access: { readScopeId: "p/door" },
+		},
 		});
 		expect(bound.status).toBe(200);
 		expect(await bound.json()).toEqual({ nodeId: String(secretNode!._id) });
-		expect((await find_active_node(t, fixture, "/probe/secret.md"))?.restrictedScopeNodeId).toBe(secretNode!._id);
+		expect((await find_active_node({ t, fixture, path: "/probe/secret.md" }))?.restrictedScopeNodeId).toBe(secretNode!._id);
 		expect(await read_binding_rows()).toMatchObject([{ nodeId: secretNode!._id }]);
 		await grant_file_account(fixture, secretNode!._id);
 
-		const deadScope = await door_call(t, "/api/v1/files/plugin-access/set", run.apiToken, {
+		const deadScope = await door_call({
+			t,
+			path: "/api/v1/files/plugin-access/set",
+			apiToken: run.apiToken,
+			body: {
 			path: "/probe/secret.md",
 			access: { readScopeId: "p/ghost" },
+		},
 		});
 		expect(deadScope.status).toBe(404);
 		expect(await deadScope.json()).toEqual({ message: "Not found" });
@@ -14895,9 +15245,14 @@ describe("plugins metadata file doors", () => {
 			node: await ctx.db.get("files_nodes", secretNode!._id),
 			grants: await ctx.db.query("access_control_permission_grants").collect(),
 		}));
-		const released = await door_call(t, "/api/v1/files/plugin-access/set", run.apiToken, {
+		const released = await door_call({
+			t,
+			path: "/api/v1/files/plugin-access/set",
+			apiToken: run.apiToken,
+			body: {
 			path: "/probe/secret.md",
 			access: { readScopeId: null },
+		},
 		});
 		expect(released.status).toBe(200);
 		expect(
@@ -14909,12 +15264,17 @@ describe("plugins metadata file doors", () => {
 		expect(await read_binding_rows()).toEqual([]);
 
 		// Ensure applies both access fields on the folder it creates, in the same call.
-		const vault = await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, {
+		const vault = await door_call({
+			t,
+			path: "/api/v1/files/plugin-folders/ensure",
+			apiToken: run.apiToken,
+			body: {
 			path: "/probe/vault",
 			access: { readOnly: true, readScopeId: "p/door" },
+		},
 		});
 		expect(vault.status).toBe(200);
-		const vaultNode = await find_active_node(t, fixture, "/probe/vault");
+		const vaultNode = await find_active_node({ t, fixture, path: "/probe/vault" });
 		expect(vaultNode).toMatchObject({
 			writePolicy: { mode: "writer", writers: [{ kind: "service_account", serviceAccountId: fixture.serviceAccountId }] },
 			restrictedScopeNodeId: vaultNode!._id,
@@ -14922,39 +15282,49 @@ describe("plugins metadata file doors", () => {
 		expect(await read_binding_rows()).toMatchObject([{ nodeId: vaultNode!._id }]);
 
 		// A dead scope on ensure answers 404 through the same arm as the access door.
-		const vaultDead = await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, {
+		const vaultDead = await door_call({
+			t,
+			path: "/api/v1/files/plugin-folders/ensure",
+			apiToken: run.apiToken,
+			body: {
 			path: "/probe/vault-two",
 			access: { readScopeId: "p/ghost" },
+		},
 		});
 		expect(vaultDead.status).toBe(404);
 		expect(await vaultDead.json()).toEqual({ message: "Not found" });
-		expect(await find_active_node(t, fixture, "/probe/vault-two")).toBeNull();
+		expect(await find_active_node({ t, fixture, path: "/probe/vault-two" })).toBeNull();
 	});
 
 	test("touch creates an empty file inside the labelled area and refuses one outside it", async () => {
 		const t = test_convex();
 		const fixture = await install_file_doors_plugin(t);
-		const run = await start_file_invoke_run(t, fixture);
-		expect((await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, { path: "/probe" })).status).toBe(
+		const run = await start_file_invoke_run({ t, fixture });
+		expect((await door_call({ t, path: "/api/v1/files/plugin-folders/ensure", apiToken: run.apiToken, body: { path: "/probe" } })).status).toBe(
 			200,
 		);
 
 		// Invoke touch checks the target or nearest existing ancestor, as `/api/v1/files/write` does.
-		const inside = await door_call(t, "/api/v1/files/touch", run.apiToken, { paths: ["/probe/empty.md"] });
+		const inside = await door_call({ t, path: "/api/v1/files/touch", apiToken: run.apiToken, body: { paths: ["/probe/empty.md"] } });
 		expect(inside.status).toBe(200);
-		expect(await find_active_node(t, fixture, "/probe/empty.md")).toMatchObject({ kind: "file" });
+		expect(await find_active_node({ t, fixture, path: "/probe/empty.md" })).toMatchObject({ kind: "file" });
 
 		// Touch labels each new node, so the later fill can match the file's own label.
 		expect(
-			(await door_call(t, "/api/v1/files/write", run.apiToken, { path: "/probe/empty.md", content: "# Filled\n" }))
+			(await door_call({
+				t,
+				path: "/api/v1/files/write",
+				apiToken: run.apiToken,
+				body: { path: "/probe/empty.md", content: "# Filled\n" },
+			}))
 				.status,
 		).toBe(200);
 
 		// A create at workspace root has no matching existing ancestor.
-		const outside = await door_call(t, "/api/v1/files/touch", run.apiToken, { paths: ["/loose.md"] });
+		const outside = await door_call({ t, path: "/api/v1/files/touch", apiToken: run.apiToken, body: { paths: ["/loose.md"] } });
 		expect(outside.status).toBe(403);
 		expect(await outside.json()).toEqual({ message: "Permission denied" });
-		expect(await find_active_node(t, fixture, "/loose.md")).toBeNull();
+		expect(await find_active_node({ t, fixture, path: "/loose.md" })).toBeNull();
 
 		// An unlabeled member file is refused the same way. The route answers an already-existing file by
 		// itself and never reaches the publish mutation, so the label check has to be asked there too.
@@ -14994,7 +15364,7 @@ describe("plugins metadata file doors", () => {
 				archiveOperationId: null,
 			});
 		});
-		const existing = await door_call(t, "/api/v1/files/touch", run.apiToken, { paths: ["/board-minutes.md"] });
+		const existing = await door_call({ t, path: "/api/v1/files/touch", apiToken: run.apiToken, body: { paths: ["/board-minutes.md"] } });
 		expect(existing.status).toBe(403);
 		expect(await existing.json()).toEqual({ message: "Permission denied" });
 
@@ -15002,15 +15372,25 @@ describe("plugins metadata file doors", () => {
 		// lets it. Otherwise a machine-managed area could take writes but no touches.
 		expect(
 			(
-				await door_call(t, "/api/v1/files/plugin-access/set", run.apiToken, {
+				await door_call({
+					t,
+					path: "/api/v1/files/plugin-access/set",
+					apiToken: run.apiToken,
+					body: {
 					path: "/probe",
 					access: { readOnly: true },
+				},
 				})
 			).status,
 		).toBe(200);
-		const throughLock = await door_call(t, "/api/v1/files/touch", run.apiToken, { paths: ["/probe/through-lock.md"] });
+		const throughLock = await door_call({
+			t,
+			path: "/api/v1/files/touch",
+			apiToken: run.apiToken,
+			body: { paths: ["/probe/through-lock.md"] },
+		});
 		expect(throughLock.status).toBe(200);
-		expect(await find_active_node(t, fixture, "/probe/through-lock.md")).toMatchObject({ kind: "file" });
+		expect(await find_active_node({ t, fixture, path: "/probe/through-lock.md" })).toMatchObject({ kind: "file" });
 	});
 
 	test.each(["lock", "readers"] as const)(
@@ -15019,7 +15399,7 @@ describe("plugins metadata file doors", () => {
 			const t = test_convex();
 			const fixture = await install_file_doors_plugin(t);
 			const member = await seed_file_member(t, fixture);
-			const nodeId = await seed_member_folder(t, fixture, "member-folder");
+			const nodeId = await seed_member_folder({ t, fixture, name: "member-folder" });
 			expect(
 				await member.asUser.mutation(api.files_metadata.set_entries, {
 					membershipId: member.membershipId,
@@ -15028,9 +15408,9 @@ describe("plugins metadata file doors", () => {
 				}),
 			).toEqual({ _yay: null });
 			if (change === "readers") {
-				await seed_file_scope(t, fixture, "private");
+				await seed_file_scope({ t, fixture, scopeId: "private" });
 			}
-			const run = await start_file_invoke_run(t, fixture, { userId: member.userId });
+			const run = await start_file_invoke_run({ t, fixture, userId: member.userId });
 			const before = await t.run(async (ctx) => ({
 				node: await ctx.db.get("files_nodes", nodeId),
 				metadata: await ctx.db.query("files_metadata_docs").collect(),
@@ -15040,9 +15420,14 @@ describe("plugins metadata file doors", () => {
 			expect(before.node?.restrictedScopeNodeId).toBeNull();
 			expect(before.node?.writePolicy).toBeNull();
 			const access = change === "lock" ? { readOnly: true } : { readScopeId: "private" };
-			const refused = await door_call(t, "/api/v1/files/plugin-access/set", run.apiToken, {
+			const refused = await door_call({
+				t,
+				path: "/api/v1/files/plugin-access/set",
+				apiToken: run.apiToken,
+				body: {
 				path: "/member-folder",
 				access,
+			},
 			});
 			expect(refused.status).toBe(403);
 			expect(await refused.json()).toEqual({ message: "Permission denied" });
@@ -15063,9 +15448,14 @@ describe("plugins metadata file doors", () => {
 					role: "admin",
 				}),
 			).toEqual({ _yay: null });
-			const accepted = await door_call(t, "/api/v1/files/plugin-access/set", run.apiToken, {
+			const accepted = await door_call({
+				t,
+				path: "/api/v1/files/plugin-access/set",
+				apiToken: run.apiToken,
+				body: {
 				path: "/member-folder",
 				access,
+			},
 			});
 			expect(accepted.status).toBe(200);
 			expect(await accepted.json()).toEqual({ nodeId });
@@ -15087,17 +15477,22 @@ describe("plugins metadata file doors", () => {
 	test("the access door requires live manage permission on the target folder", async () => {
 		const t = test_convex();
 		const fixture = await install_file_doors_plugin(t);
-		const ownerRun = await start_file_invoke_run(t, fixture);
+		const ownerRun = await start_file_invoke_run({ t, fixture });
 		const member = await seed_file_member(t, fixture);
 
 		expect(
 			(
-				await door_call(t, "/api/v1/files/plugin-folders/ensure", ownerRun.apiToken, {
+				await door_call({
+					t,
+					path: "/api/v1/files/plugin-folders/ensure",
+					apiToken: ownerRun.apiToken,
+					body: {
 					path: "/probe",
+				},
 				})
 			).status,
 		).toBe(200);
-		const root = (await find_active_node(t, fixture, "/probe"))!;
+		const root = (await find_active_node({ t, fixture, path: "/probe" }))!;
 
 		expect(
 			await fixture.asOwner.mutation(api.files_sharing.restrict_node, {
@@ -15120,12 +15515,17 @@ describe("plugins metadata file doors", () => {
 				status: "succeeded",
 			}),
 		);
-		const run = await start_file_invoke_run(t, fixture, { userId: member.userId, tokenSeed: "e" });
+		const run = await start_file_invoke_run({ t, fixture, userId: member.userId, tokenSeed: "e" });
 		const before = await t.run((ctx) => ctx.db.get("files_nodes", root._id));
 
-		const refused = await door_call(t, "/api/v1/files/plugin-access/set", run.apiToken, {
+		const refused = await door_call({
+			t,
+			path: "/api/v1/files/plugin-access/set",
+			apiToken: run.apiToken,
+			body: {
 			path: "/probe",
 			access: { readOnly: true },
+		},
 		});
 		expect(refused.status).toBe(403);
 		expect(await t.run((ctx) => ctx.db.get("files_nodes", root._id))).toEqual(before);
@@ -15141,9 +15541,14 @@ describe("plugins metadata file doors", () => {
 
 		expect(
 			(
-				await door_call(t, "/api/v1/files/plugin-access/set", run.apiToken, {
+				await door_call({
+					t,
+					path: "/api/v1/files/plugin-access/set",
+					apiToken: run.apiToken,
+					body: {
 					path: "/probe",
 					access: { readOnly: true },
+				},
 				})
 			).status,
 		).toBe(200);
@@ -15157,19 +15562,24 @@ describe("plugins metadata file doors", () => {
 		async (change) => {
 			const t = test_convex();
 			const fixture = await install_file_doors_plugin(t);
-			const ownerRun = await start_file_invoke_run(t, fixture);
+			const ownerRun = await start_file_invoke_run({ t, fixture });
 			const member = await seed_file_member(t, fixture);
 
 			expect(
 				(
-					await door_call(t, "/api/v1/files/plugin-folders/ensure", ownerRun.apiToken, {
+					await door_call({
+						t,
+						path: "/api/v1/files/plugin-folders/ensure",
+						apiToken: ownerRun.apiToken,
+						body: {
 						path: "/probe/sub/nested",
+					},
 					})
 				).status,
 			).toBe(200);
-			const root = (await find_active_node(t, fixture, "/probe"))!;
-			const sub = (await find_active_node(t, fixture, "/probe/sub"))!;
-			const nested = (await find_active_node(t, fixture, "/probe/sub/nested"))!;
+			const root = (await find_active_node({ t, fixture, path: "/probe" }))!;
+			const sub = (await find_active_node({ t, fixture, path: "/probe/sub" }))!;
+			const nested = (await find_active_node({ t, fixture, path: "/probe/sub/nested" }))!;
 
 			for (const [nodeId, level] of [
 				[root._id, "manage"],
@@ -15192,7 +15602,7 @@ describe("plugins metadata file doors", () => {
 				await grant_file_account(fixture, nodeId);
 			}
 			if (change === "binding") {
-				await seed_file_scope(t, fixture, "private");
+				await seed_file_scope({ t, fixture, scopeId: "private" });
 			}
 
 			await t.run(async (ctx) =>
@@ -15200,7 +15610,7 @@ describe("plugins metadata file doors", () => {
 					status: "succeeded",
 				}),
 			);
-			const run = await start_file_invoke_run(t, fixture, { userId: member.userId, tokenSeed: "e" });
+			const run = await start_file_invoke_run({ t, fixture, userId: member.userId, tokenSeed: "e" });
 			const nestedBefore = await t.run(async (ctx) => ({
 				node: await ctx.db.get("files_nodes", nested._id),
 				grants: await ctx.db
@@ -15209,9 +15619,14 @@ describe("plugins metadata file doors", () => {
 					.then((grants) => grants.filter((grant) => grant.resourceId === nested._id)),
 			}));
 
-			const response = await door_call(t, "/api/v1/files/plugin-access/set", run.apiToken, {
+			const response = await door_call({
+				t,
+				path: "/api/v1/files/plugin-access/set",
+				apiToken: run.apiToken,
+				body: {
 				path: "/probe/sub",
 				access: change === "lock" ? { readOnly: true } : { readScopeId: "private" },
+			},
 			});
 			expect(response.status).toBe(200);
 			expect(await response.json()).toEqual({ nodeId: sub._id });
@@ -15241,25 +15656,35 @@ describe("plugins metadata file doors", () => {
 	test("an outer member lock does not block nested plugin doors", async () => {
 		const t = test_convex();
 		const fixture = await install_file_doors_plugin(t);
-		const run = await start_file_invoke_run(t, fixture);
+		const run = await start_file_invoke_run({ t, fixture });
 
 		expect(
 			(
-				await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, {
+				await door_call({
+					t,
+					path: "/api/v1/files/plugin-folders/ensure",
+					apiToken: run.apiToken,
+					body: {
 					path: "/outer/plugin",
 					access: { readOnly: true },
+				},
 				})
 			).status,
 		).toBe(200);
 		expect(
 			(
-				await door_call(t, "/api/v1/files/write", run.apiToken, {
+				await door_call({
+					t,
+					path: "/api/v1/files/write",
+					apiToken: run.apiToken,
+					body: {
 					path: "/outer/plugin/file.md",
 					content: "Keep",
+				},
 				})
 			).status,
 		).toBe(200);
-		const outer = (await find_active_node(t, fixture, "/outer"))!;
+		const outer = (await find_active_node({ t, fixture, path: "/outer" }))!;
 
 		expect(
 			await fixture.asOwner.mutation(api.files_nodes.set_node_write_policy, {
@@ -15270,28 +15695,48 @@ describe("plugins metadata file doors", () => {
 		).toEqual({ _yay: null });
 
 		expect(
-			(await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, { path: "/outer/plugin" })).status,
+			(await door_call({
+				t,
+				path: "/api/v1/files/plugin-folders/ensure",
+				apiToken: run.apiToken,
+				body: { path: "/outer/plugin" },
+			})).status,
 		).toBe(200);
 		expect(
-			(await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, { path: "/outer/plugin/new" })).status,
+			(await door_call({
+				t,
+				path: "/api/v1/files/plugin-folders/ensure",
+				apiToken: run.apiToken,
+				body: { path: "/outer/plugin/new" },
+			})).status,
 		).toBe(200);
 		expect(
 			(
-				await door_call(t, "/api/v1/files/plugin-access/set", run.apiToken, {
+				await door_call({
+					t,
+					path: "/api/v1/files/plugin-access/set",
+					apiToken: run.apiToken,
+					body: {
 					path: "/outer/plugin",
 					access: { readOnly: false },
+				},
 				})
 			).status,
 		).toBe(200);
 
 		// Creating beside the plugin folder still checks the locked parent.
-		const refused = await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, {
+		const refused = await door_call({
+			t,
+			path: "/api/v1/files/plugin-folders/ensure",
+			apiToken: run.apiToken,
+			body: {
 			path: "/outer/sibling",
+		},
 		});
 		expect(refused.status).toBe(409);
 		expect(await refused.json()).toEqual({ message: "This item is read-only." });
 
-		const archived = await door_call(t, "/api/v1/files/plugin-archive", run.apiToken, { path: "/outer/plugin" });
+		const archived = await door_call({ t, path: "/api/v1/files/plugin-archive", apiToken: run.apiToken, body: { path: "/outer/plugin" } });
 		expect(archived.status).toBe(200);
 	});
 
@@ -15300,10 +15745,15 @@ describe("plugins metadata file doors", () => {
 		async (reason) => {
 			const t = test_convex();
 			const fixture = await install_file_doors_plugin(t);
-			const ownerRun = await start_file_invoke_run(t, fixture);
+			const ownerRun = await start_file_invoke_run({ t, fixture });
 
 			expect(
-				(await door_call(t, "/api/v1/files/plugin-folders/ensure", ownerRun.apiToken, { path: "/probe" })).status,
+				(await door_call({
+					t,
+					path: "/api/v1/files/plugin-folders/ensure",
+					apiToken: ownerRun.apiToken,
+					body: { path: "/probe" },
+				})).status,
 			).toBe(200);
 			for (const [path, readOnly] of [
 				["/probe/a.md", true],
@@ -15311,15 +15761,20 @@ describe("plugins metadata file doors", () => {
 			] as const) {
 				expect(
 					(
-						await door_call(t, "/api/v1/files/write", ownerRun.apiToken, {
+						await door_call({
+							t,
+							path: "/api/v1/files/write",
+							apiToken: ownerRun.apiToken,
+							body: {
 							path,
 							content: "Keep",
 							...(readOnly ? { access: { readOnly: true } } : {}),
+						},
 						})
 					).status,
 				).toBe(200);
 			}
-			const blocked = (await find_active_node(t, fixture, "/probe/z.md"))!;
+			const blocked = (await find_active_node({ t, fixture, path: "/probe/z.md" }))!;
 
 			let token = ownerRun.apiToken;
 			if (reason === "label") {
@@ -15359,11 +15814,11 @@ describe("plugins metadata file doors", () => {
 						status: "succeeded",
 					}),
 				);
-				token = (await start_file_invoke_run(t, fixture, { userId: member.userId, tokenSeed: "e" })).apiToken;
+				token = (await start_file_invoke_run({ t, fixture, userId: member.userId, tokenSeed: "e" })).apiToken;
 			}
 
 			const before = await t.run((ctx) => ctx.db.query("files_nodes").collect());
-			const refused = await door_call(t, "/api/v1/files/plugin-archive", token, { path: "/probe" });
+			const refused = await door_call({ t, path: "/api/v1/files/plugin-archive", apiToken: token, body: { path: "/probe" } });
 			expect(refused.status).toBe(reason === "permission" ? 403 : 409);
 			expect(await t.run((ctx) => ctx.db.query("files_nodes").collect())).toEqual(before);
 		},
@@ -15372,20 +15827,25 @@ describe("plugins metadata file doors", () => {
 	test("upload runs can update labelled siblings but cannot ensure, archive, or change access", async () => {
 		const t = test_convex();
 		const fixture = await install_file_doors_plugin(t);
-		const run = await start_file_invoke_run(t, fixture);
+		const run = await start_file_invoke_run({ t, fixture });
 
-		expect((await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, { path: "/probe" })).status).toBe(
+		expect((await door_call({ t, path: "/api/v1/files/plugin-folders/ensure", apiToken: run.apiToken, body: { path: "/probe" } })).status).toBe(
 			200,
 		);
 		expect(
 			(
-				await door_call(t, "/api/v1/files/write", run.apiToken, {
+				await door_call({
+					t,
+					path: "/api/v1/files/write",
+					apiToken: run.apiToken,
+					body: {
 					path: "/probe/source.md",
 					content: "Source",
+				},
 				})
 			).status,
 		).toBe(200);
-		const source = (await find_active_node(t, fixture, "/probe/source.md"))!;
+		const source = (await find_active_node({ t, fixture, path: "/probe/source.md" }))!;
 		await t.run((ctx) =>
 			ctx.db.patch("plugins_event_runs", run.runId, {
 				event: "files.upload.completed",
@@ -15395,24 +15855,39 @@ describe("plugins metadata file doors", () => {
 
 		expect(
 			(
-				await door_call(t, "/api/v1/files/write", run.apiToken, {
+				await door_call({
+					t,
+					path: "/api/v1/files/write",
+					apiToken: run.apiToken,
+					body: {
 					path: "/probe/result.md",
 					content: "First",
+				},
 				})
 			).status,
 		).toBe(200);
 		expect(
 			(
-				await door_call(t, "/api/v1/files/write", run.apiToken, {
+				await door_call({
+					t,
+					path: "/api/v1/files/write",
+					apiToken: run.apiToken,
+					body: {
 					path: "/probe/result.md",
 					content: "Second",
+				},
 				})
 			).status,
 		).toBe(200);
 		expect(
 			(
-				await door_call(t, "/api/v1/files/touch", run.apiToken, {
+				await door_call({
+					t,
+					path: "/api/v1/files/touch",
+					apiToken: run.apiToken,
+					body: {
 					paths: ["/probe/result.md", "/probe/empty.md"],
+				},
 				})
 			).status,
 		).toBe(200);
@@ -15425,7 +15900,7 @@ describe("plugins metadata file doors", () => {
 			["/api/v1/files/plugin-archive", { path: "/probe/result.md" }, 403],
 			["/api/v1/files/plugin-access/set", { path: "/probe/result.md", access: { readOnly: true } }, 403],
 		] as const) {
-			const refused = await door_call(t, route, run.apiToken, body);
+			const refused = await door_call({ t, path: route, apiToken: run.apiToken, body });
 			expect(refused.status, route).toBe(status);
 			expect(await t.run((ctx) => ctx.db.query("files_nodes").collect())).toEqual(before);
 		}
@@ -15434,16 +15909,21 @@ describe("plugins metadata file doors", () => {
 	test("the doors refuse a non-invoke run, a finished run, and withdrawn consent", async () => {
 		const t = test_convex();
 		const fixture = await install_file_doors_plugin(t);
-		const run = await start_file_invoke_run(t, fixture);
-		expect((await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, { path: "/probe" })).status).toBe(
+		const run = await start_file_invoke_run({ t, fixture });
+		expect((await door_call({ t, path: "/api/v1/files/plugin-folders/ensure", apiToken: run.apiToken, body: { path: "/probe" } })).status).toBe(
 			200,
 		);
 
 		// The plugin policy doors belong to invoke runs. A sourceless non-invoke run already loses the
 		// write scope at resolve time.
 		await t.run((ctx) => ctx.db.patch("plugins_event_runs", run.runId, { event: "files.upload.completed" }));
-		const sourcelessRun = await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, {
+		const sourcelessRun = await door_call({
+			t,
+			path: "/api/v1/files/plugin-folders/ensure",
+			apiToken: run.apiToken,
+			body: {
 			path: "/probe/more",
+		},
 		});
 		expect(sourcelessRun.status).toBe(403);
 		expect(await sourcelessRun.json()).toEqual({ message: "Permission denied" });
@@ -15486,8 +15966,13 @@ describe("plugins metadata file doors", () => {
 			});
 		});
 		await t.run((ctx) => ctx.db.patch("plugins_event_runs", run.runId, { fileNodeId: sourceNodeId }));
-		const uploadRun = await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, {
+		const uploadRun = await door_call({
+			t,
+			path: "/api/v1/files/plugin-folders/ensure",
+			apiToken: run.apiToken,
+			body: {
 			path: "/probe/more",
+		},
 		});
 		expect(uploadRun.status).toBe(401);
 		expect(await uploadRun.json()).toEqual({ message: "Unauthenticated" });
@@ -15502,9 +15987,14 @@ describe("plugins metadata file doors", () => {
 				acceptedCapabilities: ["plugin.backend.invoke", "workspace.files.write", "workspace.files.own-write"],
 			}),
 		);
-		const noAccessConsent = await door_call(t, "/api/v1/files/plugin-access/set", run.apiToken, {
+		const noAccessConsent = await door_call({
+			t,
+			path: "/api/v1/files/plugin-access/set",
+			apiToken: run.apiToken,
+			body: {
 			path: "/probe",
 			access: { readOnly: true },
+		},
 		});
 		expect(noAccessConsent.status).toBe(403);
 		await t.run((ctx) =>
@@ -15512,13 +16002,23 @@ describe("plugins metadata file doors", () => {
 				acceptedCapabilities: ["plugin.backend.invoke", "workspace.files.write"],
 			}),
 		);
-		const noWriteConsent = await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, {
+		const noWriteConsent = await door_call({
+			t,
+			path: "/api/v1/files/plugin-folders/ensure",
+			apiToken: run.apiToken,
+			body: {
 			path: "/probe/more",
+		},
 		});
 		expect(noWriteConsent.status).toBe(403);
-		const noWriteWrite = await door_call(t, "/api/v1/files/write", run.apiToken, {
+		const noWriteWrite = await door_call({
+			t,
+			path: "/api/v1/files/write",
+			apiToken: run.apiToken,
+			body: {
 			path: "/probe/late.md",
 			content: "# Late\n",
+		},
 		});
 		expect(noWriteWrite.status).toBe(403);
 		await t.run((ctx) =>
@@ -15533,8 +16033,13 @@ describe("plugins metadata file doors", () => {
 				status: "succeeded",
 			}),
 		);
-		const finishedRun = await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, {
+		const finishedRun = await door_call({
+			t,
+			path: "/api/v1/files/plugin-folders/ensure",
+			apiToken: run.apiToken,
+			body: {
 			path: "/probe/more",
+		},
 		});
 		expect(finishedRun.status).toBe(401);
 	});
@@ -15554,7 +16059,9 @@ describe("plugins users.account.deleted dispatch", () => {
 			test_mocks_fill_db_with.membership(ctx, { organizationName: "third-org", workspaceName: "third-ws" }),
 		);
 
-		const chat = await register_media_plugin(t, tenantA.userId, {
+		const chat = await register_media_plugin({
+			t,
+			userId: tenantA.userId,
 			name: "chat",
 			displayName: "Chat",
 			configurable: false,
@@ -15584,7 +16091,7 @@ describe("plugins users.account.deleted dispatch", () => {
 
 		// A plugin installed in the same workspace that subscribes to a different event must stay out
 		// of this fan-out.
-		const media = await register_media_plugin(t, tenantA.userId, { contentTypes: ["image/png"] });
+		const media = await register_media_plugin({ t, userId: tenantA.userId, contentTypes: ["image/png"] });
 		const installedMedia = await t.withIdentity(user_identity(tenantA.userId)).mutation(api.plugins.install_version, {
 			membershipId: tenantA.membershipId,
 			pluginVersionId: media.pluginVersionId,
@@ -15644,7 +16151,9 @@ describe("plugins admin hard delete", () => {
 	test.each(["😀", "\uffff"])("counts and deletes every %s source node", async (suffix) => {
 		const t = test_convex();
 		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const registered = await register_media_plugin(t, db.userId, {
+		const registered = await register_media_plugin({
+			t,
+			userId: db.userId,
 			name: "unicode-source",
 			sourceFiles: [{ path: `${suffix}folder/needle.ts`, rawText: "export const value = 1;" }],
 		});
@@ -15760,7 +16269,7 @@ describe("plugins admin hard delete", () => {
 		expect(before.versions).toBe(0);
 		expect(before.versionReviews).toBe(1);
 
-		await drain_plugin_registry_delete(t, "rejected-only");
+		await drain_plugin_registry_delete({ t, pluginName: "rejected-only" });
 		expect(await t.run((ctx) => ctx.db.get("plugins_version_reviews", seeded.targetReviewId))).toBeNull();
 		expect(
 			await t.run((ctx) => ctx.db.get("plugins_publisher_repositories", seeded.targetRepositoryId)),
@@ -15867,7 +16376,7 @@ describe("plugins admin hard delete", () => {
 				attemptId: seeded.targetAttemptId,
 			}),
 		).toEqual({ done: true, deletedCount: 2 });
-		await drain_plugin_registry_delete(t, "interrupted-only");
+		await drain_plugin_registry_delete({ t, pluginName: "interrupted-only" });
 		expect(
 			await t.run((ctx) => ctx.db.get("plugins_publish_artifact_cleanup_attempts", seeded.targetAttemptId)),
 		).toBeNull();
@@ -15952,7 +16461,7 @@ describe("plugins admin hard delete", () => {
 	test("keeps a preparing version and source tree while its upload lease is live", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const registered = await register_media_plugin(t, membership.userId, { name: "preparing-lease" });
+		const registered = await register_media_plugin({ t, userId: membership.userId, name: "preparing-lease" });
 		const uploadId = "preparing-lease-upload";
 		const manifestR2Key = `plugins/preparing-lease/0.1.0/${uploadId}/dist/bonobo.plugin.json`;
 		const seeded = await t.run(async (ctx) => {
@@ -16047,7 +16556,7 @@ describe("plugins admin hard delete", () => {
 		const t = test_convex();
 		const originalPublisher = await t.run((ctx) => ctx.db.insert("users", { clerkUserId: null }));
 		const newPublisher = await t.run((ctx) => ctx.db.insert("users", { clerkUserId: null }));
-		const registered = await register_media_plugin(t, originalPublisher, { name: "reclaimed-plugin" });
+		const registered = await register_media_plugin({ t, userId: originalPublisher, name: "reclaimed-plugin" });
 		const reclaimed = await t.run(async (ctx) => {
 			await ctx.db.delete("plugins_publisher_repositories", registered.repositoryId);
 			const repositoryId = await ctx.db.insert("plugins_publisher_repositories", {
@@ -16075,7 +16584,7 @@ describe("plugins admin hard delete", () => {
 		expect(preview.publisherSecrets).toBe(0);
 
 		vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
-		await drain_plugin_registry_delete(t, "reclaimed-plugin");
+		await drain_plugin_registry_delete({ t, pluginName: "reclaimed-plugin" });
 		expect(await t.run((ctx) => ctx.db.get("plugins_versions", registered.pluginVersionId))).toBeNull();
 		expect(await t.run((ctx) => ctx.db.get("plugins_publisher_repositories", reclaimed.repositoryId))).not.toBeNull();
 		expect(await t.run((ctx) => ctx.db.get("plugins_publisher_repository_secrets", reclaimed.secretId))).not.toBeNull();
@@ -16085,12 +16594,16 @@ describe("plugins admin hard delete", () => {
 		const t = test_convex();
 		const publisher = await t.run((ctx) => ctx.db.insert("users", { clerkUserId: null }));
 		const sourceRepositoryUrl = "https://github.com/bonobo/shared-plugin-repository";
-		const first = await register_media_plugin(t, publisher, {
+		const first = await register_media_plugin({
+			t,
+			userId: publisher,
 			name: "shared-name-one",
 			sourceRepositoryUrl,
 			sourceRepo: "shared-plugin-repository",
 		});
-		const second = await register_media_plugin(t, publisher, {
+		const second = await register_media_plugin({
+			t,
+			userId: publisher,
 			repositoryId: first.repositoryId,
 			name: "shared-name-two",
 			sourceRepositoryUrl,
@@ -16146,7 +16659,7 @@ describe("plugins admin hard delete", () => {
 		expect(firstPreview.publisherSecrets).toBe(0);
 
 		vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
-		await drain_plugin_registry_delete(t, "shared-name-one");
+		await drain_plugin_registry_delete({ t, pluginName: "shared-name-one" });
 		expect(await t.run((ctx) => ctx.db.get("plugins_versions", first.pluginVersionId))).toBeNull();
 		expect(await t.run((ctx) => ctx.db.get("plugins_versions", second.pluginVersionId))).not.toBeNull();
 		expect(await t.run((ctx) => ctx.db.get("plugins_publisher_repositories", first.repositoryId))).not.toBeNull();
@@ -16161,7 +16674,7 @@ describe("plugins admin hard delete", () => {
 		});
 		expect(secondPreview.publisherRepositoryClaims).toBe(1);
 		expect(secondPreview.publisherSecrets).toBe(1);
-		await drain_plugin_registry_delete(t, "shared-name-two");
+		await drain_plugin_registry_delete({ t, pluginName: "shared-name-two" });
 		expect(await t.run((ctx) => ctx.db.get("plugins_publisher_repositories", first.repositoryId))).toBeNull();
 		expect(await t.run((ctx) => ctx.db.get("plugins_publisher_repository_secrets", seeded.secretId))).toBeNull();
 	});
@@ -16170,7 +16683,9 @@ describe("plugins admin hard delete", () => {
 		const t = test_convex();
 		const publisher = await t.run((ctx) => ctx.db.insert("users", { clerkUserId: null }));
 		const sourceRepositoryUrl = "https://github.com/bonobo/shared-active-publish";
-		const registered = await register_media_plugin(t, publisher, {
+		const registered = await register_media_plugin({
+			t,
+			userId: publisher,
 			name: "published-name",
 			sourceRepositoryUrl,
 			sourceRepo: "shared-active-publish",
@@ -16199,7 +16714,7 @@ describe("plugins admin hard delete", () => {
 		});
 
 		vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
-		await drain_plugin_registry_delete(t, "published-name");
+		await drain_plugin_registry_delete({ t, pluginName: "published-name" });
 		expect(await t.run((ctx) => ctx.db.get("plugins_versions", registered.pluginVersionId))).toBeNull();
 		expect(await t.run((ctx) => ctx.db.get("plugins_publisher_repositories", registered.repositoryId))).not.toBeNull();
 		expect(await t.run((ctx) => ctx.db.get("plugins_publisher_repository_secrets", seeded.secretId))).not.toBeNull();
@@ -16225,12 +16740,16 @@ describe("plugins admin hard delete", () => {
 		const t = test_convex();
 		const publisher = await t.run((ctx) => ctx.db.insert("users", { clerkUserId: null }));
 		const sourceRepositoryUrl = "https://github.com/bonobo/shared-attempt-repository";
-		const first = await register_media_plugin(t, publisher, {
+		const first = await register_media_plugin({
+			t,
+			userId: publisher,
 			name: "shared-attempt-one",
 			sourceRepositoryUrl,
 			sourceRepo: "shared-attempt-repository",
 		});
-		const second = await register_media_plugin(t, publisher, {
+		const second = await register_media_plugin({
+			t,
+			userId: publisher,
 			repositoryId: first.repositoryId,
 			name: "shared-attempt-two",
 			sourceRepositoryUrl,
@@ -16426,7 +16945,7 @@ describe("plugins admin hard delete", () => {
 		});
 		const deleteObject = vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
 
-		await drain_plugin_registry_delete(t, "secret-batch");
+		await drain_plugin_registry_delete({ t, pluginName: "secret-batch" });
 
 		expect(deleteObject).toHaveBeenCalledTimes(2);
 		expect(deleteObject).toHaveBeenCalledWith(expect.anything(), "plugins/secret-batch/manifest.json");
@@ -16545,7 +17064,7 @@ describe("plugins admin hard delete", () => {
 				workspaceName: "fence-other",
 			}),
 		);
-		const media = await register_media_plugin(t, membership.userId);
+		const media = await register_media_plugin({ t, userId: membership.userId });
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 		const asOtherOwner = t.withIdentity(user_identity(otherMembership.userId));
 		const installed = await asOwner.mutation(api.plugins.install_version, {
@@ -16671,19 +17190,23 @@ describe("plugins admin hard delete", () => {
 			}),
 		).rejects.toThrow("Plugin registry deletion is in progress");
 		await expect(
-			register_media_plugin(t, membership.userId, {
+			register_media_plugin({
+				t,
+				userId: membership.userId,
 				name: "media",
 				version: "0.2.0",
 				artifactHash: `sha256:${"c".repeat(64)}`,
 			}),
 		).rejects.toThrow("Plugin registry deletion is in progress");
 
-		await drain_plugin_registry_delete(t, "media");
+		await drain_plugin_registry_delete({ t, pluginName: "media" });
 		expect(
 			(await t.query(internal.plugins.preview_hard_delete_registered_plugin, { pluginName: "media" })).deletionFenced,
 		).toBe(true);
 		await expect(
-			register_media_plugin(t, membership.userId, {
+			register_media_plugin({
+				t,
+				userId: membership.userId,
 				name: "media",
 				version: "0.2.0",
 				artifactHash: `sha256:${"c".repeat(64)}`,
@@ -16698,7 +17221,9 @@ describe("plugins admin hard delete", () => {
 		expect(await t.run((ctx) => ctx.db.query("plugins_registry_deletion_fences").collect())).toEqual([]);
 
 		// Clearing the fence is the recovery point. The same name may now start a new lifecycle.
-		const replacement = await register_media_plugin(t, membership.userId, {
+		const replacement = await register_media_plugin({
+			t,
+			userId: membership.userId,
 			name: "media",
 			version: "0.2.0",
 			artifactHash: `sha256:${"c".repeat(64)}`,
@@ -16723,7 +17248,9 @@ describe("plugins admin hard delete", () => {
 			"plugin.data.user-write",
 			"plugin.service.connect",
 		] satisfies plugins_Capability[];
-		const media = await register_media_plugin(t, membership.userId, {
+		const media = await register_media_plugin({
+			t,
+			userId: membership.userId,
 			capabilities,
 			pages: [{ id: "main", title: "Media", entry: "dist/page.html", navItem: null }],
 		});
@@ -16888,7 +17415,7 @@ describe("plugins admin hard delete", () => {
 	test("refuses executor work but lets terminal bookkeeping drain while hard deletion waits", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const media = await register_media_plugin(t, membership.userId);
+		const media = await register_media_plugin({ t, userId: membership.userId });
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 		const installed = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
@@ -16956,7 +17483,7 @@ describe("plugins admin hard delete", () => {
 			status: "failed",
 		});
 		vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
-		await drain_plugin_registry_delete(t, "media");
+		await drain_plugin_registry_delete({ t, pluginName: "media" });
 		expect(await t.run((ctx) => ctx.db.get("plugins_event_runs", runId))).toBeNull();
 		expect(await t.run((ctx) => ctx.db.get("plugins_versions", media.pluginVersionId))).toBeNull();
 	});
@@ -16964,8 +17491,10 @@ describe("plugins admin hard delete", () => {
 	test("hard-deletes one plugin's rows, R2 artifacts, and repository secrets while other plugins stay intact", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const media = await register_media_plugin(t, membership.userId, { name: "media" });
-		const alternate = await register_media_plugin(t, membership.userId, {
+		const media = await register_media_plugin({ t, userId: membership.userId, name: "media" });
+		const alternate = await register_media_plugin({
+			t,
+			userId: membership.userId,
 			name: "media-alt",
 			displayName: "Media Alt",
 			contentTypes: ["image/png"],
@@ -17335,7 +17864,7 @@ describe("plugins admin hard delete", () => {
 
 		const deleteObjectSpy = vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
 		// A tiny batch size forces multiple mutation calls.
-		await drain_plugin_registry_delete(t, "media", 3);
+		await drain_plugin_registry_delete({ t, pluginName: "media", testBatchSize: 3 });
 
 		const previewAfter = await t.query(internal.plugins.preview_hard_delete_registered_plugin, {
 			pluginName: "media",
@@ -17472,8 +18001,8 @@ describe("plugins admin hard delete", () => {
 	test.each([99, 100, 101])("bounds scope rows in the registry preview at %i per installation", async (rowCount) => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const media = await register_media_plugin(t, membership.userId, { name: "media" });
-		const alternate = await register_media_plugin(t, membership.userId, { name: "media-alt" });
+		const media = await register_media_plugin({ t, userId: membership.userId, name: "media" });
+		const alternate = await register_media_plugin({ t, userId: membership.userId, name: "media-alt" });
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 		const installedMedia = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
@@ -17584,7 +18113,7 @@ describe("plugins admin hard delete", () => {
 	test("bounds the full registry preview when one plugin has a long release history", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const media = await register_media_plugin(t, membership.userId, { name: "media" });
+		const media = await register_media_plugin({ t, userId: membership.userId, name: "media" });
 
 		await t.run(async (ctx) => {
 			const baseVersion = await ctx.db.get("plugins_versions", media.pluginVersionId);
@@ -17611,7 +18140,7 @@ describe("plugins admin hard delete", () => {
 	test("says the service-grant count is a lower bound when one installation holds more than the preview reads", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const media = await register_media_plugin(t, membership.userId, { name: "media" });
+		const media = await register_media_plugin({ t, userId: membership.userId, name: "media" });
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 		const installed = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,

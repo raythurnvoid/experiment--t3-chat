@@ -308,7 +308,12 @@ function parse_args(args: string[]) {
 		return Result({ _nay: { message: "find: --prefix cannot be combined with PATH" } });
 	}
 
-	const limit = bash_parse_limit("find", limitValue, bash_LISTING_DEFAULT_LIMIT, bash_LISTING_MAX_LIMIT);
+	const limit = bash_parse_limit({
+		command: "find",
+		value: limitValue,
+		defaultLimit: bash_LISTING_DEFAULT_LIMIT,
+		maxLimit: bash_LISTING_MAX_LIMIT,
+	});
 	if (limit._nay) {
 		return limit;
 	}
@@ -459,7 +464,13 @@ function parse_args(args: string[]) {
  * returned shell path to pick the right scope and convert it into a trailing-slash
  * `treePath` prefix via `list_subtree`.
  */
-function prefix_to_shell_path(commandCtx: CommandContext, dbFilesRoots: bash_DbFilesRoots, prefix: string) {
+function prefix_to_shell_path(args: {
+	commandCtx: CommandContext;
+	dbFilesRoots: bash_DbFilesRoots;
+	prefix: string;
+}) {
+	const { commandCtx, dbFilesRoots, prefix } = args;
+
 	if (bash_GLOB_METACHARACTER_REGEX.test(prefix)) {
 		return Result({ _nay: { message: bash_create_glob_syntax_unsupported_message("find", prefix) } });
 	}
@@ -841,7 +852,7 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 						})) as files_nodes_search_paths_Result;
 						return {
 							items: pageResult.items.map((item) => ({
-								path: bash_external_mounts_fan_out_db_files_path(pageArgs.mount, item.path, pathResolution.basePath),
+								path: bash_external_mounts_fan_out_db_files_path({ mount: pageArgs.mount, storedPath: item.path, basePath: pathResolution.basePath }),
 								kind: item.kind,
 							})),
 							continueCursor: pageResult.continueCursor,
@@ -869,7 +880,7 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 					})) as files_nodes_list_subtree_Result;
 					return {
 						items: pageResult.page.map((item) => ({
-							path: bash_external_mounts_fan_out_db_files_path(pageArgs.mount, item.path, pathResolution.basePath),
+							path: bash_external_mounts_fan_out_db_files_path({ mount: pageArgs.mount, storedPath: item.path, basePath: pathResolution.basePath }),
 							kind: item.kind,
 						})),
 						continueCursor: pageResult.continueCursor,
@@ -992,7 +1003,7 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			}
 
 			// Resolve the prefix to a shell path, then classify it to pick the right scope and renderer.
-			const prefixResult = prefix_to_shell_path(commandCtx, dbFilesRoots, parsed._yay.prefix);
+			const prefixResult = prefix_to_shell_path({ commandCtx, dbFilesRoots, prefix: parsed._yay.prefix });
 			if (prefixResult._nay) {
 				return {
 					stdout: "",

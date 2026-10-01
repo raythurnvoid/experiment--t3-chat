@@ -213,7 +213,12 @@ function parse_header_value(args: {
 	const parts: mcp_custom_config_DraftPart[] = [];
 	let text = "";
 
-	const pushSecret = (secretName: string, hint: string | null, stored: boolean) => {
+	const pushSecret = (args: {
+		secretName: string;
+		hint: string | null;
+		stored: boolean;
+	}) => {
+			const { hint, secretName, stored } = args;
 		if (text !== "") {
 			parts.push({ kind: "text", text });
 			text = "";
@@ -233,15 +238,19 @@ function parse_header_value(args: {
 				}
 
 				text += word.slice(index, match.index);
-				pushSecret(to_secret_name(match.groups.secret, fallbackName), null, true);
+				pushSecret({ secretName: to_secret_name(match.groups.secret, fallbackName), hint: null, stored: true });
 				index = (match.index ?? 0) + match[0].length;
 			}
 			text += word.slice(index);
 		} else if (matches.length > 0) {
 			const placeholder = read_placeholder(matches[0], inputHints);
-			pushSecret(to_secret_name(placeholder.rawName, fallbackName), placeholder.hint, false);
+			pushSecret({
+				secretName: to_secret_name(placeholder.rawName, fallbackName),
+				hint: placeholder.hint,
+				stored: false,
+			});
 		} else if (PLACEHOLDER_WORDS.has(word)) {
-			pushSecret(fallbackName, null, false);
+			pushSecret({ secretName: fallbackName, hint: null, stored: false });
 		} else {
 			text += word;
 		}
@@ -335,7 +344,13 @@ function parse_mcp_remote(tokens: string[]) {
 	return Result({ _yay: url === null ? null : { url, headers } });
 }
 
-function parse_entry(key: string, value: unknown, inputHints: Map<string, string>): mcp_custom_config_Draft {
+function parse_entry(args: {
+	key: string;
+	value: unknown;
+	inputHints: Map<string, string>;
+}): mcp_custom_config_Draft {
+	const { key, value, inputHints } = args;
+
 	const name = key.trim().slice(0, MAX_NAME_LENGTH);
 	let convertedFromMcpRemote = false;
 	let ignoredKeys: string[] = [];
@@ -593,7 +608,7 @@ export function mcp_custom_config_parse(text: string) {
 	}
 
 	for (const [key, value] of Object.entries(servers)) {
-		drafts.push(parse_entry(key, value, inputHints));
+		drafts.push(parse_entry({ key, value, inputHints }));
 	}
 
 	return { drafts, errors };

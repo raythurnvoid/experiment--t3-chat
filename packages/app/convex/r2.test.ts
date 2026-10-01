@@ -519,17 +519,19 @@ async function flush_scheduled(t: ReturnType<typeof test_convex>, rounds = 5) {
 	}
 }
 
-async function create_upload_fixture(
-	t: ReturnType<typeof test_convex>,
+async function create_upload_fixture(args: {
+	t: ReturnType<typeof test_convex>;
 	db: {
 		userId: Id<"users">;
 		organizationId: Id<"organizations">;
 		workspaceId: Id<"organizations_workspaces">;
 		membershipId: Id<"organizations_workspaces_users">;
-	},
-	filename: string,
-	contentType = "image/png",
-) {
+	};
+	filename: string;
+	contentType?: string;
+}) {
+	const { t, db, contentType = "image/png", filename} = args;
+
 	const asUser = t.withIdentity({
 		issuer: "https://clerk.test",
 		external_id: db.userId,
@@ -2774,7 +2776,7 @@ describe("cleanup_expired_unfinalized_assets", () => {
 		async (elapsed) => {
 			const t = test_convex();
 			const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
-			const upload = await create_upload_fixture(t, db, "sweeper-recovery.png");
+			const upload = await create_upload_fixture({ t, db, filename: "sweeper-recovery.png" });
 			const liveBytes = new TextEncoder().encode("stored-before-event-loss");
 			r2Objects.set(upload.key, liveBytes);
 			r2ObjectMetadata.set(upload.key, { size: liveBytes.byteLength, etag: "etag_stored" });
@@ -2809,7 +2811,7 @@ describe("cleanup_expired_unfinalized_assets", () => {
 	test("retries an incomplete upload every hour while it is still young", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
-		const upload = await create_upload_fixture(t, db, "sweeper-young.png");
+		const upload = await create_upload_fixture({ t, db, filename: "sweeper-young.png" });
 		// A missing object keeps the next retry deadline while the upload is young.
 		const now = Date.now();
 		await t.run(async (ctx) =>
@@ -2832,7 +2834,7 @@ describe("cleanup_expired_unfinalized_assets", () => {
 	test("slows an old incomplete upload to the weekly retry", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
-		const upload = await create_upload_fixture(t, db, "sweeper-old.png");
+		const upload = await create_upload_fixture({ t, db, filename: "sweeper-old.png" });
 		// Sweep the asset more than the 30-hour fast window after it was created.
 		const now = Date.now() + 31 * 60 * 60 * 1000;
 		await t.run(async (ctx) =>
@@ -2857,7 +2859,7 @@ describe("cleanup_expired_unfinalized_assets", () => {
 	test("uses the signed URL issue time for the fast recovery window", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
-		const upload = await create_upload_fixture(t, db, "sweeper-reminted.png");
+		const upload = await create_upload_fixture({ t, db, filename: "sweeper-reminted.png" });
 		const now = Date.now() + 31 * 60 * 60 * 1000;
 		await t.run(async (ctx) =>
 			ctx.db.patch("files_r2_assets", upload.assetId, {
@@ -2879,7 +2881,7 @@ describe("cleanup_expired_unfinalized_assets", () => {
 	test("retires a missing upload after eight days and deletes its object key", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
-		const upload = await create_upload_fixture(t, db, "sweeper-terminal.png");
+		const upload = await create_upload_fixture({ t, db, filename: "sweeper-terminal.png" });
 		const now = Date.now() + 8 * DAY_MS + 16 * 60 * 1000;
 		await t.run(async (ctx) =>
 			ctx.db.patch("files_r2_assets", upload.assetId, {
@@ -2902,7 +2904,7 @@ describe("cleanup_expired_unfinalized_assets", () => {
 	test("deletes an expired upload placeholder even while the file is read-only", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
-		const upload = await create_upload_fixture(t, db, "sweeper-locked.png");
+		const upload = await create_upload_fixture({ t, db, filename: "sweeper-locked.png" });
 		const now = Date.now() + 8 * DAY_MS + 16 * 60 * 1000;
 		await t.run(async (ctx) => {
 			await ctx.db.patch("files_nodes", upload.nodeId, {
@@ -2930,7 +2932,7 @@ describe("cleanup_expired_unfinalized_assets", () => {
 	test("does not keep a placeholder when the file has no local lock", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
-		const upload = await create_upload_fixture(t, db, "sweeper-stale-pointer.png");
+		const upload = await create_upload_fixture({ t, db, filename: "sweeper-stale-pointer.png" });
 		const now = Date.now() + 8 * DAY_MS + 16 * 60 * 1000;
 		await t.run(async (ctx) => {
 			await ctx.db.patch("files_nodes", upload.nodeId, {
@@ -2956,7 +2958,7 @@ describe("cleanup_expired_unfinalized_assets", () => {
 	test("recovers a text upload whose compressed response hides the object size", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
-		const upload = await create_upload_fixture(t, db, "sweeper-compressed.md", "text/markdown");
+		const upload = await create_upload_fixture({ t, db, filename: "sweeper-compressed.md", contentType: "text/markdown" });
 		const bytes = new TextEncoder().encode("# stored markdown");
 		r2Objects.set(upload.key, bytes);
 		r2ObjectMetadata.set(upload.key, {
@@ -3065,7 +3067,7 @@ describe("cleanup_expired_unfinalized_assets", () => {
 	test("retires a node-less upload as soon as its event confirms bytes", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
-		const upload = await create_upload_fixture(t, db, "node-less.png");
+		const upload = await create_upload_fixture({ t, db, filename: "node-less.png" });
 		const bucket = await t.run(async (ctx) => (await ctx.db.get("files_r2_assets", upload.assetId))?.r2Bucket ?? "");
 		await t.run(async (ctx) => ctx.db.delete("files_nodes", upload.nodeId));
 		r2Objects.set(upload.key, new TextEncoder().encode("node-less-bytes"));
@@ -3086,7 +3088,7 @@ describe("cleanup_expired_unfinalized_assets", () => {
 	test("keeps a published asset that only history still references", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
-		const upload = await create_upload_fixture(t, db, "history.png");
+		const upload = await create_upload_fixture({ t, db, filename: "history.png" });
 		const bucket = await t.run(async (ctx) => (await ctx.db.get("files_r2_assets", upload.assetId))?.r2Bucket ?? "");
 
 		expect(
@@ -3680,7 +3682,7 @@ describe("process_uploaded_asset_event accepted upload", () => {
 	test("keeps an older settled HTML upload as stored bytes after another event", async () => {
 		const t = test_convex();
 		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const upload = await create_upload_fixture(t, db, "old.html", "text/html");
+		const upload = await create_upload_fixture({ t, db, filename: "old.html", contentType: "text/html" });
 		const bytes = new TextEncoder().encode("<!doctype html><p>Old upload</p>");
 		r2Objects.set(upload.key, bytes);
 		const bucket = await t.run(async (ctx) => {
@@ -3709,7 +3711,7 @@ describe("process_uploaded_asset_event accepted upload", () => {
 	test("keeps a pending upload unpublished when its object is missing", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
-		const upload = await create_upload_fixture(t, db, "missing-event.png");
+		const upload = await create_upload_fixture({ t, db, filename: "missing-event.png" });
 		const bucket = await t.run(async (ctx) => (await ctx.db.get("files_r2_assets", upload.assetId))?.r2Bucket ?? "");
 
 		const response = await post_r2_put_event(t, {
@@ -3728,7 +3730,7 @@ describe("process_uploaded_asset_event accepted upload", () => {
 	test("publishes the stored object's metadata instead of the event's metadata", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
-		const upload = await create_upload_fixture(t, db, "stored-metadata.png");
+		const upload = await create_upload_fixture({ t, db, filename: "stored-metadata.png" });
 		const bucket = await t.run(async (ctx) => (await ctx.db.get("files_r2_assets", upload.assetId))?.r2Bucket ?? "");
 		const bytes = new TextEncoder().encode("immutable-first");
 		r2Objects.set(upload.key, bytes);
@@ -3755,7 +3757,7 @@ describe("process_uploaded_asset_event accepted upload", () => {
 	test("publishes a text object whose response the edge compresses", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
-		const upload = await create_upload_fixture(t, db, "compressed.md", "text/markdown");
+		const upload = await create_upload_fixture({ t, db, filename: "compressed.md", contentType: "text/markdown" });
 		const bucket = await t.run(async (ctx) => (await ctx.db.get("files_r2_assets", upload.assetId))?.r2Bucket ?? "");
 		const bytes = new TextEncoder().encode("# immutable markdown");
 		r2Objects.set(upload.key, bytes);
@@ -3781,7 +3783,7 @@ describe("process_uploaded_asset_event accepted upload", () => {
 	test("rejects a second PUT and keeps published bytes after a lock and duplicate event", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
-		const upload = await create_upload_fixture(t, db, "immutable.png");
+		const upload = await create_upload_fixture({ t, db, filename: "immutable.png" });
 		const bucket = await t.run(async (ctx) => (await ctx.db.get("files_r2_assets", upload.assetId))?.r2Bucket ?? "");
 		expect((await fetch(upload.url, { method: "PUT", headers: upload.headers, body: "first-version" })).status).toBe(
 			200,
@@ -3840,8 +3842,8 @@ describe("process_uploaded_asset_event accepted upload", () => {
 			description: "Image markdown generation",
 			contentTypes: ["image/png"],
 		});
-		const locked = await create_upload_fixture(t, db, "locked.png");
-		const control = await create_upload_fixture(t, db, "control.png");
+		const locked = await create_upload_fixture({ t, db, filename: "locked.png" });
+		const control = await create_upload_fixture({ t, db, filename: "control.png" });
 		const bucket = await t.run(async (ctx) => (await ctx.db.get("files_r2_assets", locked.assetId))?.r2Bucket ?? "");
 
 		// The scope locks after the signed PUT target was minted, before its event arrives.
@@ -3961,7 +3963,7 @@ describe("process_uploaded_asset_event accepted upload", () => {
 	test("finishes after a lock and unlock before upload publication", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
-		const upload = await create_upload_fixture(t, db, "lock-cycle.png");
+		const upload = await create_upload_fixture({ t, db, filename: "lock-cycle.png" });
 		const bucket = await t.run(async (ctx) => (await ctx.db.get("files_r2_assets", upload.assetId))?.r2Bucket ?? "");
 
 		// Locking and then unlocking after acceptance does not cancel this upload.
@@ -3996,7 +3998,7 @@ describe("process_uploaded_asset_event accepted upload", () => {
 	test("advances the job generation per distinct event and recreates a settled job", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
-		const upload = await create_upload_fixture(t, db, "redelivered.png");
+		const upload = await create_upload_fixture({ t, db, filename: "redelivered.png" });
 		const bucket = await t.run(async (ctx) => (await ctx.db.get("files_r2_assets", upload.assetId))?.r2Bucket ?? "");
 		// The node and asset were removed before a delayed PUT reached R2.
 		await t.run(async (ctx) => {
@@ -4059,11 +4061,13 @@ describe("process_uploaded_asset_event accepted upload", () => {
 });
 
 describe("finalize_uploaded_text_file accepted upload", () => {
-	async function seed_non_collaborative_service_target(
-		t: ReturnType<typeof test_convex>,
-		db: Awaited<ReturnType<typeof test_mocks_fill_db_with.membership>>,
-		upload: Awaited<ReturnType<typeof create_upload_fixture>>,
-	) {
+	async function seed_non_collaborative_service_target(args: {
+		t: ReturnType<typeof test_convex>;
+		db: Awaited<ReturnType<typeof test_mocks_fill_db_with.membership>>;
+		upload: Awaited<ReturnType<typeof create_upload_fixture>>;
+	}) {
+		const { t, db, upload } = args;
+
 		const installationId = await install_upload_plugin(t, {
 			userId: db.userId,
 			membershipId: db.membershipId,
@@ -4126,12 +4130,14 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 		});
 	}
 
-	async function confirm_upload_put(
-		t: ReturnType<typeof test_convex>,
-		upload: { assetId: Id<"files_r2_assets">; key: string },
-		content: string,
-		messageId: string,
-	) {
+	async function confirm_upload_put(args: {
+		t: ReturnType<typeof test_convex>;
+		upload: { assetId: Id<"files_r2_assets">; key: string };
+		content: string;
+		messageId: string;
+	}) {
+		const { t, upload, content, messageId} = args;
+
 		const bucket = await t.run(async (ctx) => (await ctx.db.get("files_r2_assets", upload.assetId))?.r2Bucket ?? "");
 		r2Objects.set(upload.key, new TextEncoder().encode(content));
 		const response = await post_r2_put_event(t, {
@@ -4146,12 +4152,14 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 	/**
 	 * Run the conversion action while a read-only state change lands during its derived R2 PUTs.
 	 */
-	async function run_conversion_with_mid_put_change(
-		t: ReturnType<typeof test_convex>,
-		db: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces"> },
-		upload: { assetId: Id<"files_r2_assets"> },
-		applyChange: () => Promise<void>,
-	) {
+	async function run_conversion_with_mid_put_change(args: {
+		t: ReturnType<typeof test_convex>;
+		db: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces"> };
+		upload: { assetId: Id<"files_r2_assets"> };
+		applyChange: () => Promise<void>;
+	}) {
+		const { t, db, upload, applyChange } = args;
+
 		let changeApplied = false;
 		vi.spyOn(R2.prototype, "generateUploadUrl").mockImplementation(async (customKey?: string) => {
 			if (!changeApplied) {
@@ -4174,8 +4182,8 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 		// The lock lands between the event and the conversion action run.
-		const locked = await create_upload_fixture(t, db, "locked.md", "text/markdown;charset=utf-8");
-		await confirm_upload_put(t, locked, "# Locked\n\nbody", "message_locked_md");
+		const locked = await create_upload_fixture({ t, db, filename: "locked.md", contentType: "text/markdown;charset=utf-8" });
+		await confirm_upload_put({ t, upload: locked, content: "# Locked\n\nbody", messageId: "message_locked_md" });
 		await t.run(async (ctx) =>
 			ctx.db.patch("files_nodes", locked.nodeId, {
 				writePolicy: { mode: "read_only" },
@@ -4209,9 +4217,14 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 	test("publishes a service non-collaborative text file without any Yjs docs or asset", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
-		const upload = await create_upload_fixture(t, db, "service-transcript.md", "text/markdown;charset=utf-8");
-		const { targetId, serviceAccountId } = await seed_non_collaborative_service_target(t, db, upload);
-		await confirm_upload_put(t, upload, "# Service transcript\n\nbody", "message_service_non_collaborative");
+		const upload = await create_upload_fixture({ t, db, filename: "service-transcript.md", contentType: "text/markdown;charset=utf-8" });
+		const { targetId, serviceAccountId } = await seed_non_collaborative_service_target({ t, db, upload });
+		await confirm_upload_put({
+			t,
+			upload,
+			content: "# Service transcript\n\nbody",
+			messageId: "message_service_non_collaborative",
+		});
 
 		await t.action(internal.r2.finalize_uploaded_text_file, {
 			organizationId: db.organizationId,
@@ -4257,8 +4270,8 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 	test("keeps the selected service writer and target when non-collaborative conversion falls back", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
-		const upload = await create_upload_fixture(t, db, "service-invalid.md", "text/markdown;charset=utf-8");
-		const { targetId, serviceAccountId } = await seed_non_collaborative_service_target(t, db, upload);
+		const upload = await create_upload_fixture({ t, db, filename: "service-invalid.md", contentType: "text/markdown;charset=utf-8" });
+		const { targetId, serviceAccountId } = await seed_non_collaborative_service_target({ t, db, upload });
 		const bucket = await t.run(async (ctx) => (await ctx.db.get("files_r2_assets", upload.assetId))?.r2Bucket ?? "");
 		r2Objects.set(upload.key, new Uint8Array([0x48, 0xff, 0xfe]));
 		expect(
@@ -4306,7 +4319,7 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 			description: "Watches JSON uploads",
 			contentTypes: ["application/json"],
 		});
-		const upload = await create_upload_fixture(t, db, "mid-lock.json", "application/json");
+		const upload = await create_upload_fixture({ t, db, filename: "mid-lock.json", contentType: "application/json" });
 		const bucket = await t.run(async (ctx) => (await ctx.db.get("files_r2_assets", upload.assetId))?.r2Bucket ?? "");
 		r2Objects.set(upload.key, new Uint8Array([0x48, 0xff, 0xfe]));
 		expect(
@@ -4366,11 +4379,15 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 	test.each(["replaced", "deleted"] as const)("discards conversion output when its node is %s", async (change) => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
-		const upload = await create_upload_fixture(t, db, "stale.md", "text/markdown;charset=utf-8");
-		await confirm_upload_put(t, upload, "# Stale conversion", "message_stale_conversion");
-		const newer = await create_upload_fixture(t, db, "newer.md", "text/markdown;charset=utf-8");
+		const upload = await create_upload_fixture({ t, db, filename: "stale.md", contentType: "text/markdown;charset=utf-8" });
+		await confirm_upload_put({ t, upload, content: "# Stale conversion", messageId: "message_stale_conversion" });
+		const newer = await create_upload_fixture({ t, db, filename: "newer.md", contentType: "text/markdown;charset=utf-8" });
 
-		await run_conversion_with_mid_put_change(t, db, upload, async () => {
+		await run_conversion_with_mid_put_change({
+			t,
+			db,
+			upload,
+			applyChange: async () => {
 			await t.run(async (ctx) => {
 				if (change === "deleted") {
 					await ctx.db.delete("files_nodes", upload.nodeId);
@@ -4379,6 +4396,7 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 					await ctx.db.delete("files_nodes", newer.nodeId);
 				}
 			});
+		},
 		});
 		const docs = await t.run(async (ctx) => ({
 			node: await ctx.db.get("files_nodes", upload.nodeId),
@@ -4406,9 +4424,9 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 	test("replaying conversion publication keeps the published snapshots", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
-		const upload = await create_upload_fixture(t, db, "replayed.md", "text/markdown;charset=utf-8");
+		const upload = await create_upload_fixture({ t, db, filename: "replayed.md", contentType: "text/markdown;charset=utf-8" });
 		const text = "# Replayed conversion";
-		await confirm_upload_put(t, upload, text, "message_replayed_conversion");
+		await confirm_upload_put({ t, upload, content: text, messageId: "message_replayed_conversion" });
 		await t.action(internal.r2.finalize_uploaded_text_file, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
@@ -4453,15 +4471,20 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 	test("finishes when the node locks during conversion", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
-		const upload = await create_upload_fixture(t, db, "mid-lock.md", "text/markdown;charset=utf-8");
-		await confirm_upload_put(t, upload, "# Mid lock\n\nbody", "message_mid_lock_md");
+		const upload = await create_upload_fixture({ t, db, filename: "mid-lock.md", contentType: "text/markdown;charset=utf-8" });
+		await confirm_upload_put({ t, upload, content: "# Mid lock\n\nbody", messageId: "message_mid_lock_md" });
 
-		await run_conversion_with_mid_put_change(t, db, upload, async () => {
+		await run_conversion_with_mid_put_change({
+			t,
+			db,
+			upload,
+			applyChange: async () => {
 			await t.run(async (ctx) => {
 				await ctx.db.patch("files_nodes", upload.nodeId, {
 					writePolicy: { mode: "read_only" },
 				});
 			});
+		},
 		});
 
 		const published = await t.run(async (ctx) => ({
@@ -4495,12 +4518,16 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 			external_id: db.userId,
 			name: "Test User",
 		});
-		const upload = await create_upload_fixture(t, db, "mid-archive.md", "text/markdown;charset=utf-8");
-		await confirm_upload_put(t, upload, "# Mid archive\n\narchiveneedle body", "message_mid_archive_md");
+		const upload = await create_upload_fixture({ t, db, filename: "mid-archive.md", contentType: "text/markdown;charset=utf-8" });
+		await confirm_upload_put({ t, upload, content: "# Mid archive\n\narchiveneedle body", messageId: "message_mid_archive_md" });
 
 		// A member archives the file while the conversion action runs its R2 work. The action read the
 		// node before that, so its enqueue-time snapshot still says the node is not archived.
-		await run_conversion_with_mid_put_change(t, db, upload, async () => {
+		await run_conversion_with_mid_put_change({
+			t,
+			db,
+			upload,
+			applyChange: async () => {
 			const archived = await asUser.mutation(api.files_nodes.archive_nodes, {
 				membershipId: db.membershipId,
 				nodeIds: [upload.nodeId],
@@ -4508,6 +4535,7 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 			if (archived._nay) {
 				throw new Error(archived._nay.message);
 			}
+		},
 		});
 
 		const published = await t.run(async (ctx) => ({
@@ -4538,11 +4566,15 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 	test("finishes after a lock and unlock during conversion", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
-		const upload = await create_upload_fixture(t, db, "lock-cycle.md", "text/markdown;charset=utf-8");
-		await confirm_upload_put(t, upload, "# Lock cycle\n\nbody", "message_lock_cycle_md");
+		const upload = await create_upload_fixture({ t, db, filename: "lock-cycle.md", contentType: "text/markdown;charset=utf-8" });
+		await confirm_upload_put({ t, upload, content: "# Lock cycle\n\nbody", messageId: "message_lock_cycle_md" });
 
 		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
-		await run_conversion_with_mid_put_change(t, db, upload, async () => {
+		await run_conversion_with_mid_put_change({
+			t,
+			db,
+			upload,
+			applyChange: async () => {
 			for (const writePolicy of [{ mode: "read_only" } as const, null]) {
 				expect(
 					await asUser.mutation(api.files_nodes.set_node_write_policy, {
@@ -4552,6 +4584,7 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 					}),
 				).toEqual({ _yay: null });
 			}
+		},
 		});
 
 		const published = await t.run(async (ctx) => ({
@@ -4734,7 +4767,7 @@ describe("r2_enqueue_object_deletion_job", () => {
 			generation: 4,
 			failureCount: 1,
 		});
-		const linkedUpload = await create_upload_fixture(t, db, "ensure-linked.png");
+		const linkedUpload = await create_upload_fixture({ t, db, filename: "ensure-linked.png" });
 		await enqueue({ r2Key: "test/ledger-key", mode: "ensure", assetId: linkedUpload.assetId });
 		expect(await get_deletion_job_by_key(t, "test/ledger-key")).toMatchObject({
 			generation: 4,
@@ -4804,7 +4837,7 @@ describe("process_object_deletion_job", () => {
 		try {
 			const t = test_convex();
 			const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
-			const upload = await create_upload_fixture(t, db, "durable.png");
+			const upload = await create_upload_fixture({ t, db, filename: "durable.png" });
 			await t.run(async (ctx) =>
 				ctx.db.patch("files_r2_assets", upload.assetId, {
 					unfinalizedExpiresAt: Date.now() + 60_000,
@@ -4881,7 +4914,7 @@ describe("process_object_deletion_job", () => {
 		try {
 			const t = test_convex();
 			const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
-			const upload = await create_upload_fixture(t, db, "raced.png");
+			const upload = await create_upload_fixture({ t, db, filename: "raced.png" });
 			const bucket = await t.run(async (ctx) => (await ctx.db.get("files_r2_assets", upload.assetId))?.r2Bucket ?? "");
 			const uploadUrlExpiresAt = await t.run(
 				async (ctx) => (await ctx.db.get("files_r2_assets", upload.assetId))?.uploadUrlExpiresAt ?? 0,
@@ -4934,7 +4967,7 @@ describe("process_object_deletion_job", () => {
 		try {
 			const t = test_convex();
 			const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
-			const upload = await create_upload_fixture(t, db, "tombstone.png");
+			const upload = await create_upload_fixture({ t, db, filename: "tombstone.png" });
 			const bucket = await t.run(async (ctx) => (await ctx.db.get("files_r2_assets", upload.assetId))?.r2Bucket ?? "");
 			// Stamp the mint-time signed-url expiry the create door will provide; the window derives
 			// from it.
@@ -5068,7 +5101,7 @@ describe("r2_http_event authentication", () => {
 	test("refuses an otherwise-valid event without the shared secret, and changes nothing", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
-		const upload = await create_upload_fixture(t, db, "unauthenticated.png");
+		const upload = await create_upload_fixture({ t, db, filename: "unauthenticated.png" });
 		const bucket = await t.run(async (ctx) => (await ctx.db.get("files_r2_assets", upload.assetId))?.r2Bucket ?? "");
 		const bytes = new TextEncoder().encode("upload-bytes");
 		r2Objects.set(upload.key, bytes);
@@ -5193,7 +5226,7 @@ describe("record_untracked_asset_event", () => {
 	test("hands a valid tenant key without an asset doc to the ledger and keeps 404 for garbage keys", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
-		const abandoned = await create_upload_fixture(t, db, "abandoned.png");
+		const abandoned = await create_upload_fixture({ t, db, filename: "abandoned.png" });
 		const bucket = await t.run(async (ctx) => (await ctx.db.get("files_r2_assets", abandoned.assetId))?.r2Bucket ?? "");
 		// Cleanup already removed the asset and node docs; the PUT's event arrives late.
 		await t.run(async (ctx) => {
@@ -5229,7 +5262,7 @@ describe("record_untracked_asset_event", () => {
 		expect(tombstone?.nextAttemptAt).toBe(tombstone?.putMayArriveUntil);
 
 		// Also prove a tracked upload uses the same route and publishes without a deletion job.
-		const tracked = await create_upload_fixture(t, db, "tracked.png");
+		const tracked = await create_upload_fixture({ t, db, filename: "tracked.png" });
 		r2Objects.set(tracked.key, new TextEncoder().encode("tracked-bytes"));
 		const trackedResponse = await post_r2_put_event(t, {
 			bucket,
@@ -5306,7 +5339,7 @@ describe("get_asset", () => {
 			name: "Test User",
 		});
 
-		const upload = await create_upload_fixture(t, db, "locked-query.png");
+		const upload = await create_upload_fixture({ t, db, filename: "locked-query.png" });
 		const bucket = await t.run(async (ctx) => (await ctx.db.get("files_r2_assets", upload.assetId))?.r2Bucket ?? "");
 		await t.run(async (ctx) =>
 			ctx.db.patch("files_nodes", upload.nodeId, {

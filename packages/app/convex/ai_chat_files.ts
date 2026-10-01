@@ -192,11 +192,13 @@ const bash_begin_result = v.union(
  * its byte or entry cap. The running totals on the shell row mean no scan. Call this inside the
  * mutation that changes the shell, so a shell never has an entry without its state.
  */
-export async function ai_chat_files_db_append_shell_transcript(
-	ctx: MutationCtx,
-	shell: Doc<"ai_chat_bash_shells">,
-	text: string,
-) {
+export async function ai_chat_files_db_append_shell_transcript(args: {
+	ctx: MutationCtx;
+	shell: Doc<"ai_chat_bash_shells">;
+	text: string;
+}) {
+	const { ctx, shell, text } = args;
+
 	const encoded = new TextEncoder().encode(text);
 	// Cut the entry here, at the insert, so no caller can make the document too large. Decoding a
 	// byte slice can leave one replacement character where a character was split; drop it.
@@ -710,7 +712,6 @@ export async function ai_chat_files_db_begin_browser_invocation(
 			session.mode === "web" &&
 			(!session.agentAccess ||
 				session.policyRevision !== args.browserIntent.policyRevision ||
-				session.selectionRevision !== args.browserIntent.selectionRevision ||
 				!session.tabs.some(
 					(tab) => tab.tabId === resource.tabId && tab.tabGen === resource.tabGen && tab.navGen === resource.navGen,
 				))
@@ -1191,11 +1192,13 @@ export const expire_browser_invocation_result = internalMutation({
  * Delete chat: the user's cloud session stays open, and interrupting a run command would close it.
  * So a running command in a claimed cloud session is left to end through its normal path.
  */
-export async function ai_chat_files_db_delete_browser_invocations(
-	ctx: MutationCtx,
-	invocations: Doc<"ai_chat_browser_invocations">[],
-	options: { cloudCommands: "interrupt" | "wait" },
-) {
+export async function ai_chat_files_db_delete_browser_invocations(args: {
+	ctx: MutationCtx;
+	invocations: Doc<"ai_chat_browser_invocations">[];
+	options: { cloudCommands: "interrupt" | "wait" };
+}) {
+	const { ctx, invocations, options } = args;
+
 	let deletedCount = 0;
 	for (const invocation of invocations) {
 		if (invocation.status === "finished") {
@@ -1466,7 +1469,7 @@ async function db_check_bash_job_worker_or_cancel(
 	if (checked._nay?.message === "Unauthorized") {
 		const invocation = await db_get_job_row(ctx, args.invocationId);
 		if (invocation)
-			await db_settle_bash_job(ctx, invocation, { status: "canceled", errorMessage: null, now: Date.now() });
+			await db_settle_bash_job({ ctx, invocation, status: "canceled", errorMessage: null, now: Date.now() });
 	}
 	return checked;
 }
@@ -1722,11 +1725,11 @@ export const save_bash_job_copy_checkpoint = internalMutation({
 			});
 		const shell = await ctx.db.get("ai_chat_bash_shells", invocation.job.shellId);
 		if (!shell) throw should_never_happen("Job shell not found", { shellId: invocation.job.shellId });
-		await ai_chat_files_db_append_shell_transcript(
+		await ai_chat_files_db_append_shell_transcript({
 			ctx,
 			shell,
-			`$ [${new Date().toISOString()}] job ${invocation.job.jobNumber} suspended for Copy in shell ${shell.name}\n${args.output.stdout}\n${args.output.stderr}`,
-		);
+			text: `$ [${new Date().toISOString()}] job ${invocation.job.jobNumber} suspended for Copy in shell ${shell.name}\n${args.output.stdout}\n${args.output.stderr}`,
+		});
 		await ctx.db.patch("ai_chat_bash_invocations", invocation._id, {
 			job: {
 				...invocation.job,
@@ -2004,7 +2007,7 @@ export const take_bash_job_copy_result = internalMutation({
 		const checked = await files_transfer_db_get_job_copy(ctx, { ...args, runId: copy.runId });
 		const now = Date.now();
 		if (checked._nay) {
-			await db_settle_bash_job(ctx, invocation, { status: "canceled", errorMessage: checked._nay.message, now });
+			await db_settle_bash_job({ ctx, invocation, status: "canceled", errorMessage: checked._nay.message, now });
 			return null;
 		}
 		if (copy.phase === "delivering") return copy.workId === args.workId ? invocation : null;
@@ -2018,7 +2021,7 @@ export const take_bash_job_copy_result = internalMutation({
 			finishedAt + BASH_JOB_PLACEHOLDER_MS <= now ||
 			now - invocation._creationTime - excludedCopyWaitMs >= BASH_JOB_LIFETIME_MS
 		) {
-			await db_settle_bash_job(ctx, invocation, { status: "timed_out", errorMessage: null, now });
+			await db_settle_bash_job({ ctx, invocation, status: "timed_out", errorMessage: null, now });
 			return null;
 		}
 		const progress = copyActivity.progress;
@@ -2070,7 +2073,13 @@ export const deliver_bash_job_copy_refusal = internalMutation({
 /**
  * Only complete input or a waiting Copy can survive a lost worker. Never replay shell code.
  */
-async function db_requeue_bash_job_copy(ctx: MutationCtx, invocation: BashJobRow, now: number) {
+async function db_requeue_bash_job_copy(args: {
+	ctx: MutationCtx;
+	invocation: BashJobRow;
+	now: number;
+}) {
+	const { ctx, invocation, now } = args;
+
 	const copy = invocation.job.copy;
 	if (!copy || copy.phase === "delivering" || (copy.phase === "admitting" && !copy.sealed)) return false;
 	if (invocation.job.workId === null) return false;
@@ -2111,9 +2120,11 @@ export const requeue_bash_job_copy = internalMutation({
 	handler: async (ctx, args) => {
 		const checked = await db_check_bash_job_worker_or_cancel(ctx, args);
 		if (checked._nay) return false;
-		const queued = await db_requeue_bash_job_copy(ctx, checked._yay, Date.now());
+		const queued = await db_requeue_bash_job_copy({ ctx, invocation: checked._yay, now: Date.now() });
 		if (!queued)
-			await db_settle_bash_job(ctx, checked._yay, {
+			await db_settle_bash_job({
+				ctx,
+				invocation: checked._yay,
 				status: "failed",
 				errorMessage: "Copy continuation is no longer available.",
 				now: Date.now(),
@@ -2226,20 +2237,26 @@ function job_summary(activity: Doc<"activities">) {
  * so a job that never ran has no `started` part. Read the script off the row before the caller
  * empties it.
  */
-async function db_append_job_finish_entry(
-	ctx: MutationCtx,
-	invocation: BashJobRow,
-	args: { exitCode: number; stdout: string; stderr: string; startedAt: number | undefined; now: number },
-) {
+async function db_append_job_finish_entry(args: {
+	ctx: MutationCtx;
+	invocation: BashJobRow;
+	exitCode: number;
+	stdout: string;
+	stderr: string;
+	startedAt: number | undefined;
+	now: number;
+}) {
+	const { ctx, invocation } = args;
+
 	const shell = await ctx.db.get("ai_chat_bash_shells", invocation.job.shellId);
 	if (!shell) throw should_never_happen("Job shell not found", { shellId: invocation.job.shellId });
 	const started =
 		args.startedAt === undefined ? "" : `, started ${new Date(args.startedAt).toISOString().slice(11, 19)}`;
-	await ai_chat_files_db_append_shell_transcript(
+	await ai_chat_files_db_append_shell_transcript({
 		ctx,
 		shell,
-		`$ [${new Date(args.now).toISOString()}] job ${invocation.job.jobNumber} finished (exit ${args.exitCode}) in shell ${shell.name}${started}\n${invocation.job.script ?? ""}\n${args.stdout}\n${args.stderr}`,
-	);
+		text: `$ [${new Date(args.now).toISOString()}] job ${invocation.job.jobNumber} finished (exit ${args.exitCode}) in shell ${shell.name}${started}\n${invocation.job.script ?? ""}\n${args.stdout}\n${args.stderr}`,
+	});
 }
 
 /**
@@ -2251,11 +2268,16 @@ async function db_append_job_finish_entry(
  * `jobId` in metadata, `notify` then `inject` as a fresh prompt), read at pin
  * `3dd1b305`.
  */
-async function db_wake_agent_for_job(
-	ctx: MutationCtx,
-	invocation: BashJobRow,
-	args: { exitCode: number; stdout: string; stderr: string; now: number },
-) {
+async function db_wake_agent_for_job(args: {
+	ctx: MutationCtx;
+	invocation: BashJobRow;
+	exitCode: number;
+	stdout: string;
+	stderr: string;
+	now: number;
+}) {
+	const { ctx, invocation } = args;
+
 	if (invocation.wakeNotifiedAt !== undefined) return;
 	// A job whose member lost access must not write into the thread or start a run. The claim
 	// settles exactly such a job, and that settle would otherwise wake the agent for a member who is
@@ -2284,12 +2306,14 @@ async function db_wake_agent_for_job(
 	});
 }
 
-async function db_stop_bash_job_transfers(
-	ctx: MutationCtx,
-	invocation: BashJobRow,
-	reason: "user" | "timeout",
-	now: number,
-) {
+async function db_stop_bash_job_transfers(args: {
+	ctx: MutationCtx;
+	invocation: BashJobRow;
+	reason: "user" | "timeout";
+	now: number;
+}) {
+	const { ctx, invocation, reason, now } = args;
+
 	// One command at a time owns this job's transfer lane, so a live run is among the newest receipts.
 	// Read only the newest five to keep this settle bounded.
 	const transfers = await ctx.db
@@ -2306,13 +2330,17 @@ async function db_stop_bash_job_transfers(
  * `interrupted` and writes the finish entry. A retried settle cannot write a duplicate line.
  * The first settle wins on the Activity; `activities_db_finish` ignores the rest.
  */
-async function db_settle_bash_job(
-	ctx: MutationCtx,
-	invocation: BashJobRow,
-	args: { status: "failed" | "canceled" | "timed_out"; errorMessage: string | null; now: number },
-) {
+async function db_settle_bash_job(args: {
+	ctx: MutationCtx;
+	invocation: BashJobRow;
+	status: "failed" | "canceled" | "timed_out";
+	errorMessage: string | null;
+	now: number;
+}) {
+	const { ctx, invocation } = args;
+
 	if (invocation.status === "running") {
-		await db_stop_bash_job_transfers(ctx, invocation, args.status === "timed_out" ? "timeout" : "user", args.now);
+		await db_stop_bash_job_transfers({ ctx, invocation, reason: args.status === "timed_out" ? "timeout" : "user", now: args.now });
 		if (invocation.job.copy)
 			await ctx.scheduler.runAfter(0, internal.ai_chat_files.cleanup_bash_job_copy_pages, {
 				invocationId: invocation._id,
@@ -2346,8 +2374,8 @@ async function db_settle_bash_job(
 			stderr: invocation.job.liveOutput?.stderr ?? "",
 			now: args.now,
 		};
-		await db_append_job_finish_entry(ctx, invocation, { ...outcome, startedAt: activity?.startedAt });
-		await db_wake_agent_for_job(ctx, invocation, outcome);
+		await db_append_job_finish_entry({ ctx, invocation, ...outcome, startedAt: activity?.startedAt });
+		await db_wake_agent_for_job({ ctx, invocation, ...outcome });
 	}
 	if (invocation.job.watchdogId !== null) await ctx.scheduler.cancel(invocation.job.watchdogId);
 	await activities_db_finish(ctx, {
@@ -2528,11 +2556,11 @@ export const start_bash_job = internalMutation({
 			deadlineAt,
 			now,
 		});
-		await ai_chat_files_db_append_shell_transcript(
+		await ai_chat_files_db_append_shell_transcript({
 			ctx,
 			shell,
-			`[${new Date(now).toISOString()}] job ${jobNumber} started in shell ${shell.name}: ${scriptPreview}`,
-		);
+			text: `[${new Date(now).toISOString()}] job ${jobNumber} started in shell ${shell.name}: ${scriptPreview}`,
+		});
 
 		// Both ids go on the row: `handle_bash_job_complete` fences on `workId`, and every stop path
 		// cancels `watchdogId`. The annotation breaks a type cycle through the generated `internal`.
@@ -2588,7 +2616,7 @@ export const finish_bash_job = internalMutation({
 					: exitCode === bash_COMMAND_EXIT_TIMED_OUT
 						? "timed_out"
 						: "failed";
-		await db_stop_bash_job_transfers(ctx, invocation, status === "timed_out" ? "timeout" : "user", now);
+		await db_stop_bash_job_transfers({ ctx, invocation, reason: status === "timed_out" ? "timeout" : "user", now });
 		if (invocation.job.copy)
 			await ctx.scheduler.runAfter(0, internal.ai_chat_files.cleanup_bash_job_copy_pages, {
 				invocationId: invocation._id,
@@ -2636,7 +2664,7 @@ export const finish_bash_job = internalMutation({
 		// second entry would contradict the first one's exit code.
 		if (!settled) {
 			// The transcript keeps the full output; the row keeps the bounded copy.
-			await db_append_job_finish_entry(ctx, invocation, { ...outcome, startedAt: activity?.startedAt });
+			await db_append_job_finish_entry({ ctx, invocation, ...outcome, startedAt: activity?.startedAt });
 			await activities_db_finish(ctx, {
 				sourceId: invocation._id,
 				status,
@@ -2647,7 +2675,7 @@ export const finish_bash_job = internalMutation({
 
 		// The wake runs even on a settled row. The first of settle or this result stores the
 		// message. The other finds `wakeNotifiedAt` set and adds nothing.
-		await db_wake_agent_for_job(ctx, invocation, outcome);
+		await db_wake_agent_for_job({ ctx, invocation, ...outcome });
 		return null;
 	},
 });
@@ -2718,7 +2746,7 @@ export const claim_bash_job = internalMutation({
 
 		// The membership helper binds the row's tenant fields; read the names only after it.
 		if (!(await ai_chat_files_db_get_invocation_membership(ctx, invocation))) {
-			await db_settle_bash_job(ctx, invocation, { status: "canceled", errorMessage: null, now });
+			await db_settle_bash_job({ ctx, invocation, status: "canceled", errorMessage: null, now });
 			return null;
 		}
 		const organization = await ctx.db.get("organizations", invocation.organizationId);
@@ -2736,7 +2764,9 @@ export const claim_bash_job = internalMutation({
 
 		const copy = invocation.job.copy;
 		if (copy && (copy.phase === "delivering" || (copy.phase === "admitting" && !copy.sealed))) {
-			await db_settle_bash_job(ctx, invocation, {
+			await db_settle_bash_job({
+				ctx,
+				invocation,
 				status: "failed",
 				errorMessage: "Copy continuation cannot be replayed after a lost worker.",
 				now,
@@ -2750,7 +2780,7 @@ export const claim_bash_job = internalMutation({
 			(copy?.phase !== "waiting" &&
 				now - invocation._creationTime - (invocation.job.excludedCopyWaitMs ?? 0) >= BASH_JOB_LIFETIME_MS)
 		) {
-			await db_settle_bash_job(ctx, invocation, { status: "timed_out", errorMessage: null, now });
+			await db_settle_bash_job({ ctx, invocation, status: "timed_out", errorMessage: null, now });
 			return null;
 		}
 		if (invocation.job.watchdogId !== null) await ctx.scheduler.cancel(invocation.job.watchdogId);
@@ -2835,11 +2865,11 @@ export const handle_bash_job_complete = internalMutation({
 		const stopRequested = invocation.job.stopRequestedAt !== null;
 		if (args.result.kind === "success" && !stopRequested) return null;
 		if (args.result.kind === "failed" && !stopRequested) {
-			if (await db_requeue_bash_job_copy(ctx, invocation, now)) return null;
-			await db_settle_bash_job(ctx, invocation, { status: "failed", errorMessage: "Background command crashed", now });
+			if (await db_requeue_bash_job_copy({ ctx, invocation, now })) return null;
+			await db_settle_bash_job({ ctx, invocation, status: "failed", errorMessage: "Background command crashed", now });
 			return null;
 		}
-		await db_settle_bash_job(ctx, invocation, { status: "canceled", errorMessage: null, now });
+		await db_settle_bash_job({ ctx, invocation, status: "canceled", errorMessage: null, now });
 		return null;
 	},
 });
@@ -2881,13 +2911,13 @@ export async function ai_chat_files_db_request_job_stop(
 				return;
 			}
 		}
-		await db_settle_bash_job(
+		await db_settle_bash_job({
 			ctx,
 			invocation,
-			invocation.job.stopRequestedAt !== null
+			...(invocation.job.stopRequestedAt !== null
 				? { status: "canceled", errorMessage: null, now: args.now }
-				: { status: "timed_out", errorMessage: null, now: args.now },
-		);
+				: { status: "timed_out", errorMessage: null, now: args.now }),
+		});
 		return;
 	}
 
@@ -2905,7 +2935,7 @@ export async function ai_chat_files_db_request_job_stop(
 	if (invocation.job.workId !== null) await ai_chat_bash_jobs_workpool.cancel(ctx, invocation.job.workId);
 	if (invocation.job.watchdogId !== null) await ctx.scheduler.cancel(invocation.job.watchdogId);
 
-	await db_stop_bash_job_transfers(ctx, invocation, "user", args.now);
+	await db_stop_bash_job_transfers({ ctx, invocation, reason: "user", now: args.now });
 }
 
 /**
@@ -3015,7 +3045,7 @@ export const pause_bash_job = internalMutation({
 			return false;
 		if (!(await ai_chat_files_db_get_invocation_membership(ctx, invocation))) {
 			// A refused pause ends this worker; do not leave its Activity running until the watchdog.
-			await db_settle_bash_job(ctx, invocation, { status: "canceled", errorMessage: null, now: Date.now() });
+			await db_settle_bash_job({ ctx, invocation, status: "canceled", errorMessage: null, now: Date.now() });
 			return false;
 		}
 		const activity = await activities_db_get_by_source_id(ctx, invocation._id);
@@ -3032,7 +3062,7 @@ export const pause_bash_job = internalMutation({
 			return false;
 		const ageDeadlineAt = invocation._creationTime + BASH_JOB_LIFETIME_MS + (invocation.job.excludedCopyWaitMs ?? 0);
 		if (ageDeadlineAt <= now) {
-			await db_settle_bash_job(ctx, invocation, { status: "timed_out", errorMessage: null, now });
+			await db_settle_bash_job({ ctx, invocation, status: "timed_out", errorMessage: null, now });
 			return false;
 		}
 		const deadlineAt = Math.min(now + args.runAfterMs + BASH_JOB_PLACEHOLDER_MS, ageDeadlineAt);
@@ -3079,11 +3109,11 @@ export const pause_bash_job = internalMutation({
 		// The job waits for its next run like a fresh job waits for its first; `startedAt` stays.
 		await ctx.db.patch("activities", activity._id, { status: "queued", deadlineAt, updatedAt: now });
 
-		await ai_chat_files_db_append_shell_transcript(
+		await ai_chat_files_db_append_shell_transcript({
 			ctx,
 			shell,
-			`$ [${new Date(now).toISOString()}] job ${invocation.job.jobNumber} paused (exit ${args.outcome.exitCode}) in shell ${shell.name}: ${args.reason}\n${args.outcome.stdout}\n${args.outcome.stderr}`,
-		);
+			text: `$ [${new Date(now).toISOString()}] job ${invocation.job.jobNumber} paused (exit ${args.outcome.exitCode}) in shell ${shell.name}: ${args.reason}\n${args.outcome.stdout}\n${args.outcome.stderr}`,
+		});
 		return true;
 	},
 });

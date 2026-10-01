@@ -60,16 +60,18 @@ afterEach(() => {
 	vi.unstubAllGlobals();
 });
 
-async function create_media(
-	t: ReturnType<typeof test_convex>,
+async function create_media(args: {
+	t: ReturnType<typeof test_convex>;
 	scope: {
 		organizationId: Id<"organizations">;
 		workspaceId: Id<"organizations_workspaces">;
 		userId: Id<"users">;
 		membershipId: Id<"organizations_workspaces_users">;
-	},
-	path = "/photo.png",
-) {
+	};
+	path?: string;
+}) {
+	const { t, scope, path = "/photo.png" } = args;
+
 	const prepared = await t.mutation(internal.files_ingestion.prepare_file, {
 		...scope,
 		requestId: `${scope.workspaceId}:${path}`,
@@ -91,12 +93,14 @@ async function create_media(
 	return { target: completed._yay.target, assetId: prepared._yay.assetId };
 }
 
-async function save_media(
-	t: ReturnType<typeof test_convex>,
-	membershipId: Id<"organizations_workspaces_users">,
-	userId: Id<"users">,
-	target: files_PendingTarget,
-) {
+async function save_media(args: {
+	t: ReturnType<typeof test_convex>;
+	membershipId: Id<"organizations_workspaces_users">;
+	userId: Id<"users">;
+	target: files_PendingTarget;
+}) {
+	const { t, userId, membershipId, target} = args;
+
 	// Keep large real Save sequences within the public rate limit without running cleanup timers.
 	vi.setSystemTime(Date.now() + 1500);
 	const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: userId });
@@ -153,10 +157,10 @@ async function fixture(
 	const sourceWorkspace = options.sourceWorkspace ?? "current";
 	const source = sourceWorkspace === "current" ? current : personal;
 	const destination = sourceWorkspace === "current" ? personal : current;
-	const media = await create_media(t, source, options.video ? "/clip.mp4" : "/photo.png");
+	const media = await create_media({ t, scope: source, path: options.video ? "/clip.mp4" : "/photo.png" });
 	const original = media.target;
 	if (options.sourceKind !== "private")
-		media.target = await save_media(t, source.membershipId, source.userId, media.target);
+		media.target = await save_media({ t, membershipId: source.membershipId, userId: source.userId, target: media.target });
 	const sourceRef =
 		media.target.kind === "saved"
 			? files_media_build_file_src(media.target.id)
@@ -165,8 +169,8 @@ async function fixture(
 	const sourceRefs = [sourceRef];
 	if (options.aliases && original.kind === "private") sourceRefs.push(files_media_build_private_src(original.id));
 	for (let index = 1; index < (options.mediaCount ?? 1); index++) {
-		const extra = await create_media(t, source, `/photo-${index}.png`);
-		extra.target = await save_media(t, source.membershipId, source.userId, extra.target);
+		const extra = await create_media({ t, scope: source, path: `/photo-${index}.png` });
+		extra.target = await save_media({ t, membershipId: source.membershipId, userId: source.userId, target: extra.target });
 		mediaFiles.push(extra);
 		sourceRefs.push(files_media_build_file_src(extra.target.id));
 	}
@@ -184,9 +188,9 @@ async function fixture(
 			path: "/document.md",
 			textContent: "Destination\n",
 		});
-	const occupant = options.replacement ? await create_media(t, destination) : null;
+	const occupant = options.replacement ? await create_media({ t, scope: destination }) : null;
 	const savedOccupant = occupant
-		? await save_media(t, destination.membershipId, destination.userId, occupant.target)
+		? await save_media({ t, membershipId: destination.membershipId, userId: destination.userId, target: occupant.target })
 		: null;
 	const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: personal.userId });
 	const thread = await asUser.mutation(api.ai_chat.thread_create, {
@@ -371,7 +375,13 @@ async function finish_document(f: Awaited<ReturnType<typeof fixture>>) {
 	await f.t.mutation(internal.files_transfer.advance, { runId: f.document.runId });
 }
 
-async function copy_again(f: Awaited<ReturnType<typeof fixture>>, source: files_PendingTarget, targetName: string) {
+async function copy_again(args: {
+	f: Awaited<ReturnType<typeof fixture>>;
+	source: files_PendingTarget;
+	targetName: string;
+}) {
+	const { f, source, targetName } = args;
+
 	const thread = await f.asUser.mutation(api.ai_chat.thread_create, {
 		membershipId: f.destination.membershipId,
 		clientGeneratedId: `again-${targetName}`,
@@ -506,7 +516,7 @@ describe("files_transfer_media_db_map_refs", () => {
 
 	test("finds a selected private source after it is saved under its stable origin", async () => {
 		const f = await fixture({ sourceKind: "private" });
-		const saved = await save_media(f.t, f.source.membershipId, f.source.userId, f.media.target);
+		const saved = await save_media({ t: f.t, membershipId: f.source.membershipId, userId: f.source.userId, target: f.media.target });
 		const savedRef = files_media_build_file_src(saved.id);
 		expect(await map_refs(f, [savedRef, f.sourceRef])).toMatchObject({
 			_yay: {
@@ -520,7 +530,12 @@ describe("files_transfer_media_db_map_refs", () => {
 
 	test("keeps the destination private ref after that media is saved", async () => {
 		const f = await fixture();
-		await save_media(f.t, f.destination.membershipId, f.destination.userId, f.selectedMedia!.outputTarget!);
+		await save_media({
+			t: f.t,
+			membershipId: f.destination.membershipId,
+			userId: f.destination.userId,
+			target: f.selectedMedia!.outputTarget!,
+		});
 		expect(await map_refs(f)).toMatchObject({
 			_yay: {
 				mediaDependencies: [
@@ -797,8 +812,8 @@ describe("copy_transfer_file media", () => {
 		expect(
 			await f.t.mutation(internal.files_nodes_content.validate_transfer_file_media, { ...validate, offset: 0 }),
 		).toEqual({ _yay: { offset: 50, isDone: false } });
-		const other = await create_media(f.t, f.destination, "/other.png");
-		const replacement = await copy_again(f, other.target, "photo.png");
+		const other = await create_media({ t: f.t, scope: f.destination, path: "/other.png" });
+		const replacement = await copy_again({ f, source: other.target, targetName: "photo.png" });
 		if (replacement?.createIntent?.kind !== "stored") throw new Error("Expected replacement media");
 		expect(replacement.createIntent.assetId).not.toBe(f.selectedMedia!.outputMediaAssetId);
 		expect(
@@ -857,7 +872,12 @@ describe("copy_transfer_file media", () => {
 			const f = await fixture();
 			const savedMedia =
 				changedSide === "destination"
-					? await save_media(f.t, f.destination.membershipId, f.destination.userId, f.selectedMedia!.outputTarget!)
+					? await save_media({
+						t: f.t,
+						membershipId: f.destination.membershipId,
+						userId: f.destination.userId,
+						target: f.selectedMedia!.outputTarget!,
+					})
 					: null;
 			const capture = await prepare_document_capture(f);
 			const validation = {
@@ -901,7 +921,7 @@ describe("copy_transfer_file media", () => {
 		const original = await f.t.run((ctx) => ctx.db.get("files_transfer_items", f.document._id));
 		const setId = original!.capture!.mediaDependencySetId!;
 		const before = await f.t.run((ctx) => ctx.db.get("files_media_dependency_sets", setId));
-		const clone = await copy_again(f, original!.outputTarget!, "cloned.md");
+		const clone = await copy_again({ f, source: original!.outputTarget!, targetName: "cloned.md" });
 		expect(clone!.mediaDependencySetId).not.toBe(setId);
 		expect(await read_dependencies(f.t, clone!.mediaDependencySetId)).toEqual(await read_dependencies(f.t, setId));
 		expect(await f.t.run((ctx) => ctx.db.get("files_media_dependency_sets", setId))).toEqual(before);
@@ -925,7 +945,7 @@ describe("copy_transfer_file media", () => {
 			path: "/new-source.md",
 			textContent: "No media now\n",
 		});
-		const replacement = await copy_again(f, { kind: "saved", id: source }, "document.md");
+		const replacement = await copy_again({ f, source: { kind: "saved", id: source }, targetName: "document.md" });
 		expect(replacement!.target).toEqual(original!.outputTarget);
 		expect(replacement!.mediaDependencySetId).not.toBe(setId);
 		expect(await f.t.run((ctx) => ctx.db.get("files_media_dependency_sets", setId))).toMatchObject({
@@ -1011,7 +1031,12 @@ describe("copy_transfer_file media", () => {
 		expect(
 			await f.t.mutation(internal.files_nodes_content.validate_transfer_file_media, { ...validate, offset: 0 }),
 		).toEqual({ _yay: { offset: 50, isDone: false } });
-		await save_media(f.t, f.destination.membershipId, f.destination.userId, f.selectedMedia!.outputTarget!);
+		await save_media({
+			t: f.t,
+			membershipId: f.destination.membershipId,
+			userId: f.destination.userId,
+			target: f.selectedMedia!.outputTarget!,
+		});
 		expect(
 			await f.t.mutation(internal.files_nodes_content.validate_transfer_file_media, { ...validate, offset: 50 }),
 		).toHaveProperty("_nay");
@@ -1059,7 +1084,12 @@ describe("copy_transfer_file media", () => {
 			expectedCount: 2,
 			owner: { kind: "proposal" },
 		});
-		await save_media(f.t, f.destination.membershipId, f.destination.userId, f.selectedMedia!.outputTarget!);
+		await save_media({
+			t: f.t,
+			membershipId: f.destination.membershipId,
+			userId: f.destination.userId,
+			target: f.selectedMedia!.outputTarget!,
+		});
 		const view = await f.asUser.query(api.files_pending_updates.get_file_pending_target, {
 			membershipId: f.destination.membershipId,
 			target: item!.outputTarget!,
@@ -1135,7 +1165,12 @@ describe("copy_transfer_file media", () => {
 			for (const dependency of dependencies) expect(read?.content).toContain(`![Photo](${dependency.src})`);
 			for (const src of f.sourceRefs) expect(read?.content).not.toContain(src);
 			for (const media of f.selectedMediaItems)
-				await save_media(f.t, f.destination.membershipId, f.destination.userId, media.outputTarget!);
+				await save_media({
+					t: f.t,
+					membershipId: f.destination.membershipId,
+					userId: f.destination.userId,
+					target: media.outputTarget!,
+				});
 			expect(
 				await f.asUser.action(api.files_pending_updates.save_file_pending_update, {
 					membershipId: f.destination.membershipId,
@@ -1231,7 +1266,12 @@ describe("copy_transfer_file media", () => {
 		});
 		expect(await f.t.run((ctx) => ctx.db.get("files_nodes", target.id))).toEqual(before);
 		expect(await f.t.run((ctx) => ctx.db.get("files_pending_updates", pending._id))).toEqual(pending);
-		await save_media(f.t, f.destination.membershipId, f.destination.userId, f.selectedMedia!.outputTarget!);
+		await save_media({
+			t: f.t,
+			membershipId: f.destination.membershipId,
+			userId: f.destination.userId,
+			target: f.selectedMedia!.outputTarget!,
+		});
 		expect(await f.asUser.action(api.files_pending_updates.save_file_pending_update, args)).toMatchObject({
 			_yay: { target },
 		});
@@ -1249,7 +1289,7 @@ describe("copy_transfer_file media", () => {
 		const original = before!.entry.pendingUpdate!.createIntent!;
 		if (original.kind !== "stored") throw new Error("Expected stored media");
 
-		const other = await create_media(f.t, f.destination, "/other.png");
+		const other = await create_media({ t: f.t, scope: f.destination, path: "/other.png" });
 		const thread = await f.asUser.mutation(api.ai_chat.thread_create, {
 			membershipId: f.destination.membershipId,
 			clientGeneratedId: "replace-media-chat",
@@ -1382,7 +1422,12 @@ describe("copy_transfer_file media", () => {
 		});
 		const original = before!.entry.pendingUpdate!.createIntent!;
 		if (original.kind !== "stored") throw new Error("Expected stored media");
-		const savedMedia = await save_media(f.t, f.destination.membershipId, f.destination.userId, mediaTarget);
+		const savedMedia = await save_media({
+			t: f.t,
+			membershipId: f.destination.membershipId,
+			userId: f.destination.userId,
+			target: mediaTarget,
+		});
 		expect(await f.t.run((ctx) => ctx.db.get("files_nodes", savedMedia.id))).toMatchObject({
 			assetId: original.assetId,
 		});

@@ -56,7 +56,13 @@ async function begin_turn(fx: Fixture, args: { messageId: string; parentId: stri
 /**
  * Save one text step and end the run, like a turn that answered with one model call.
  */
-async function answer_turn(fx: Fixture, run: { runId: Id<"ai_chat_runs">; generation: number }, text: string) {
+async function answer_turn(args: {
+	fx: Fixture;
+	run: { runId: Id<"ai_chat_runs">; generation: number };
+	text: string;
+}) {
+	const { fx, run, text} = args;
+
 	await fx.t.mutation(internal.ai_chat_runs.step_complete, {
 		runId: run.runId,
 		generation: run.generation,
@@ -310,12 +316,12 @@ describe("branch_page", () => {
 	test("returns the shown branch newest first, with siblings and the reply parts from its steps", async () => {
 		const fx = await fixture();
 		const turn1 = await begin_turn(fx, { messageId: "user-1", parentId: null });
-		await answer_turn(fx, turn1, "answer-1");
+		await answer_turn({ fx, run: turn1, text: "answer-1" });
 		const turn2 = await begin_turn(fx, { messageId: "user-2", parentId: turn1.replyId });
-		await answer_turn(fx, turn2, "answer-2");
+		await answer_turn({ fx, run: turn2, text: "answer-2" });
 		// An edit of the second message makes a sibling branch. It is the newest one.
 		const edit = await begin_turn(fx, { messageId: "user-2-edit", parentId: turn1.replyId });
-		await answer_turn(fx, edit, "answer-2-edit");
+		await answer_turn({ fx, run: edit, text: "answer-2-edit" });
 
 		const pageArgs = { membershipId: fx.db.membershipId, threadId: fx.source.threadId, fromId: null, stopId: null };
 		const newest = await fx.asUser.query(api.ai_chat_runs.branch_page, { ...pageArgs, anchorId: null });
@@ -420,7 +426,7 @@ describe("history_page", () => {
 	test("stops at a compaction and returns its summary instead of the older nodes", async () => {
 		const fx = await fixture();
 		const turn1 = await begin_turn(fx, { messageId: "user-1", parentId: null });
-		await answer_turn(fx, turn1, "answer-1");
+		await answer_turn({ fx, run: turn1, text: "answer-1" });
 		const turn2 = await begin_turn(fx, { messageId: "user-2", parentId: turn1.replyId });
 		expect(
 			await fx.t.mutation(internal.ai_chat_runs.save_compaction, {
@@ -446,7 +452,7 @@ describe("history_page", () => {
 	test("keeps the newest user message when the walk starts at a compaction tail", async () => {
 		const fx = await fixture();
 		const turn1 = await begin_turn(fx, { messageId: "user-1", parentId: null });
-		await answer_turn(fx, turn1, "answer-1");
+		await answer_turn({ fx, run: turn1, text: "answer-1" });
 		const turn2 = await begin_turn(fx, { messageId: "user-2", parentId: turn1.replyId });
 		expect(
 			await fx.t.mutation(internal.ai_chat_runs.save_compaction, {
@@ -475,7 +481,7 @@ describe("save_compaction", () => {
 	test("saves only for the live run of the chat, and refuses a summary that is too large", async () => {
 		const fx = await fixture();
 		const turn1 = await begin_turn(fx, { messageId: "user-1", parentId: null });
-		await answer_turn(fx, turn1, "answer-1");
+		await answer_turn({ fx, run: turn1, text: "answer-1" });
 		const turn2 = await begin_turn(fx, { messageId: "user-2", parentId: turn1.replyId });
 		const save = (run: { runId: Id<"ai_chat_runs">; generation: number }, summary: string) =>
 			fx.t.mutation(internal.ai_chat_runs.save_compaction, {

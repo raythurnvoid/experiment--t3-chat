@@ -116,11 +116,13 @@ function useFilesSharePageSignedUrls(props: { token: string; view: FilesSharePag
 	const staleRevisionsRef = useRef(new Set<string>());
 	const inFlightRef = useRef(new Set<string>());
 
-	const setStates = (
-		forRevision: string,
-		keys: readonly FilesSharePage_TargetKey[],
-		state: (key: FilesSharePage_TargetKey) => FilesSharePage_MediaState,
-	) => {
+	const setStates = (args: {
+		forRevision: string;
+		keys: readonly FilesSharePage_TargetKey[];
+		state: (key: FilesSharePage_TargetKey) => FilesSharePage_MediaState;
+	}) => {
+		const { forRevision, keys, state } = args;
+
 		setSigned((previous) => {
 			const states = new Map(previous.revision === forRevision ? previous.states : EMPTY_MEDIA_STATES);
 			for (const key of keys) {
@@ -144,7 +146,7 @@ function useFilesSharePageSignedUrls(props: { token: string; view: FilesSharePag
 		for (const key of pendingKeys) {
 			inFlightRef.current.add(`${current.generation}:${key}`);
 		}
-		setStates(current.revision, pendingKeys, () => ({ status: "loading" }));
+		setStates({ forRevision: current.revision, keys: pendingKeys, state: () => ({ status: "loading" }) });
 
 		// A revision answered `stale` takes no more results, even from a request that was already running.
 		const isCurrent = () =>
@@ -168,16 +170,16 @@ function useFilesSharePageSignedUrls(props: { token: string; view: FilesSharePag
 				if (result._nay) {
 					const retryAfterMs = result._nay.data?.retryAfterMs;
 					if (retryAfterMs === undefined) {
-						setStates(current.revision, pendingKeys, () => ({ status: "failed" }));
+						setStates({ forRevision: current.revision, keys: pendingKeys, state: () => ({ status: "failed" }) });
 						return;
 					}
 
 					// The link's download budget is shared by every visitor. Keep the document visible, wait
 					// for the budget, then offer Retry. Never retry by itself, so the page cannot loop.
-					setStates(current.revision, pendingKeys, () => ({ status: "waiting" }));
+					setStates({ forRevision: current.revision, keys: pendingKeys, state: () => ({ status: "waiting" }) });
 					setTimeout(() => {
 						if (isCurrent()) {
-							setStates(current.revision, pendingKeys, () => ({ status: "failed" }));
+							setStates({ forRevision: current.revision, keys: pendingKeys, state: () => ({ status: "failed" }) });
 						}
 					}, retryAfterMs);
 					return;
@@ -193,9 +195,13 @@ function useFilesSharePageSignedUrls(props: { token: string; view: FilesSharePag
 				const urls = new Map<FilesSharePage_TargetKey, string>(
 					result._yay.urls.map((entry) => [entry.target.kind === "file" ? "file" : entry.target.index, entry.url]),
 				);
-				setStates(current.revision, pendingKeys, (key) => {
+				setStates({
+					forRevision: current.revision,
+					keys: pendingKeys,
+					state: (key) => {
 					const url = urls.get(key);
 					return url ? { status: "ready", url, issuedAt } : { status: "failed" };
+				},
 				});
 
 				const url = urls.get(pendingKeys[0]!);
@@ -209,7 +215,7 @@ function useFilesSharePageSignedUrls(props: { token: string; view: FilesSharePag
 					errorName: error instanceof Error ? error.name : null,
 				});
 				if (isCurrent()) {
-					setStates(current.revision, pendingKeys, () => ({ status: "failed" }));
+					setStates({ forRevision: current.revision, keys: pendingKeys, state: () => ({ status: "failed" }) });
 				}
 			})
 			.finally(() => {
@@ -235,7 +241,7 @@ function useFilesSharePageSignedUrls(props: { token: string; view: FilesSharePag
 			return;
 		}
 
-		setStates(revision, [key], () => ({ status: "failed" }));
+		setStates({ forRevision: revision, keys: [key], state: () => ({ status: "failed" }) });
 	});
 
 	const handleRetry = useFn((key: FilesSharePage_TargetKey) => {

@@ -192,11 +192,13 @@ async function caller_can_hand_out_level(
  * Detaching also deletes the public links on the node and below it. A bound node cannot get a link,
  * so this only deletes links an old attach did not reach. A detach never brings a link back.
  */
-async function db_detach_file_access_binding(
-	ctx: MutationCtx,
-	node: Doc<"files_nodes">,
-	shareLinkCleanup: files_share_links_CleanupState,
-) {
+async function db_detach_file_access_binding(args: {
+	ctx: MutationCtx;
+	node: Doc<"files_nodes">;
+	shareLinkCleanup: files_share_links_CleanupState;
+}) {
+	const { ctx, node, shareLinkCleanup } = args;
+
 	const binding = await ctx.db
 		.query("plugins_file_access_bindings")
 		.withIndex("by_node", (q) => q.eq("nodeId", node._id))
@@ -206,11 +208,13 @@ async function db_detach_file_access_binding(
 		.withIndex("by_node", (q) => q.eq("nodeId", node._id))
 		.first();
 	if (binding || externalBinding?.detachedAt === null) {
-		await files_share_links_db_delete_for_roots(
+		await files_share_links_db_delete_for_roots({
 			ctx,
-			{ organizationId: node.organizationId, workspaceId: node.workspaceId, rootNodeIds: [node._id] },
-			shareLinkCleanup,
-		);
+			organizationId: node.organizationId,
+			workspaceId: node.workspaceId,
+			rootNodeIds: [node._id],
+			state: shareLinkCleanup,
+		});
 	}
 
 	if (binding) {
@@ -961,7 +965,7 @@ export const set_node_share_grant = mutation({
 			now: Date.now(),
 		});
 		if (changed) {
-			await db_detach_file_access_binding(ctx, node, files_share_links_create_cleanup_state());
+			await db_detach_file_access_binding({ ctx, node, shareLinkCleanup: files_share_links_create_cleanup_state() });
 		}
 
 		return Result({ _yay: null });
@@ -1056,7 +1060,7 @@ export const remove_node_share_grant = mutation({
 			now: Date.now(),
 		});
 		if (changed) {
-			await db_detach_file_access_binding(ctx, node, files_share_links_create_cleanup_state());
+			await db_detach_file_access_binding({ ctx, node, shareLinkCleanup: files_share_links_create_cleanup_state() });
 		}
 
 		return Result({ _yay: null });
@@ -1127,17 +1131,15 @@ export const restrict_node = mutation({
 
 		const now = Date.now();
 		const shareLinkCleanup = files_share_links_create_cleanup_state();
-		await db_detach_file_access_binding(ctx, node, shareLinkCleanup);
-		await files_nodes_db_set_restricted_scope(
+		await db_detach_file_access_binding({ ctx, node, shareLinkCleanup });
+		await files_nodes_db_set_restricted_scope({
 			ctx,
-			{
-				organizationId: membership.organizationId,
-				workspaceId: membership.workspaceId,
-				nodeId: node._id,
-				restrictedScopeNodeId: node._id,
-			},
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			nodeId: node._id,
+			restrictedScopeNodeId: node._id,
 			shareLinkCleanup,
-		);
+		});
 		// The root changes even when the folder is empty and no op starts.
 		await files_media_validation_db_advance_version(ctx, {
 			organizationId: membership.organizationId,
@@ -1216,17 +1218,15 @@ export const unrestrict_node = mutation({
 		});
 
 		const shareLinkCleanup = files_share_links_create_cleanup_state();
-		await db_detach_file_access_binding(ctx, node, shareLinkCleanup);
-		await files_nodes_db_set_restricted_scope(
+		await db_detach_file_access_binding({ ctx, node, shareLinkCleanup });
+		await files_nodes_db_set_restricted_scope({
 			ctx,
-			{
-				organizationId: membership.organizationId,
-				workspaceId: membership.workspaceId,
-				nodeId: node._id,
-				restrictedScopeNodeId: parentScopeNodeId,
-			},
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			nodeId: node._id,
+			restrictedScopeNodeId: parentScopeNodeId,
 			shareLinkCleanup,
-		);
+		});
 		await files_media_validation_db_advance_version(ctx, {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,

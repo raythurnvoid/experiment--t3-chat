@@ -156,12 +156,14 @@ async function private_text(
 	return await proposal(f, target);
 }
 
-async function saved_proposal(
-	f: Awaited<ReturnType<typeof fixture>>,
-	target: Doc<"files_pending_updates">["target"],
-	staged: string,
-	unstaged = staged,
-) {
+async function saved_proposal(args: {
+	f: Awaited<ReturnType<typeof fixture>>;
+	target: Doc<"files_pending_updates">["target"];
+	staged: string;
+	unstaged?: string;
+}) {
+	const { f, target, staged, unstaged = staged } = args;
+
 	const batch = await f.asUser.mutation(api.files_pending_updates.create_file_pending_update_operation_batch, {
 		membershipId: f.membershipId,
 		target,
@@ -228,11 +230,13 @@ async function media(f: Awaited<ReturnType<typeof fixture>>, path = "/photo.png"
 	};
 }
 
-async function attach_dependencies(
-	f: Awaited<ReturnType<typeof fixture>>,
-	pending: Doc<"files_pending_updates">,
-	dependencies: Doc<"files_media_dependencies">["dependency"][],
-) {
+async function attach_dependencies(args: {
+	f: Awaited<ReturnType<typeof fixture>>;
+	pending: Doc<"files_pending_updates">;
+	dependencies: Doc<"files_media_dependencies">["dependency"][];
+}) {
+	const { f, pending, dependencies } = args;
+
 	// Only dependency metadata is seeded: transfer mapping is covered by the copy tests.
 	await f.t.run(async (ctx) => {
 		const set = await files_media_dependencies_db_create(ctx, {
@@ -510,17 +514,19 @@ describe("paged Save media proof", () => {
 	});
 });
 
-async function document_proposal(
-	f: Awaited<ReturnType<typeof fixture>>,
-	kind: "private" | "yjs" | "asset",
-	staged: string,
-	unstaged = staged,
-) {
+async function document_proposal(args: {
+	f: Awaited<ReturnType<typeof fixture>>;
+	kind: "private" | "yjs" | "asset";
+	staged: string;
+	unstaged?: string;
+}) {
+	const { f, kind, staged, unstaged = staged } = args;
+
 	if (kind === "private") return await private_text(f, { staged, unstaged });
 	const draft = await private_text(f, { staged: "Before\n\nMiddle\n\nAfter\n", collaborative: kind !== "asset" });
 	const saved = await save(f, draft);
 	if (saved._nay) throw new Error(saved._nay.message);
-	return await saved_proposal(f, saved._yay.target, staged, unstaged);
+	return await saved_proposal({ f, target: saved._yay.target, staged, unstaged });
 }
 
 async function saved_doc(f: Awaited<ReturnType<typeof fixture>>, nodeId: Id<"files_nodes">) {
@@ -547,11 +553,13 @@ async function saved_doc(f: Awaited<ReturnType<typeof fixture>>, nodeId: Id<"fil
 	});
 }
 
-async function bulk_save(
-	f: Awaited<ReturnType<typeof fixture>>,
-	selected: Doc<"files_pending_updates">[],
-	afterPlan?: () => Promise<void>,
-) {
+async function bulk_save(args: {
+	f: Awaited<ReturnType<typeof fixture>>;
+	selected: Doc<"files_pending_updates">[];
+	afterPlan?: () => Promise<void>;
+}) {
+	const { f, selected, afterPlan } = args;
+
 	const started = await f.asUser.mutation(api.files_pending_update_runs.start, {
 		membershipId: f.membershipId,
 		requestId: crypto.randomUUID(),
@@ -598,11 +606,13 @@ async function bulk_save(
 	throw new Error("Review did not finish");
 }
 
-async function copy_replacement(
-	f: Awaited<ReturnType<typeof fixture>>,
-	source: Doc<"files_pending_updates">["target"],
-	targetName: string,
-) {
+async function copy_replacement(args: {
+	f: Awaited<ReturnType<typeof fixture>>;
+	source: Doc<"files_pending_updates">["target"];
+	targetName: string;
+}) {
+	const { f, source, targetName} = args;
+
 	const thread = await f.asUser.mutation(api.ai_chat.thread_create, {
 		membershipId: f.membershipId,
 		clientGeneratedId: crypto.randomUUID(),
@@ -656,11 +666,13 @@ async function copy_replacement(
 	throw new Error("Copy did not finish");
 }
 
-async function cross_workspace_copy(
-	f: Awaited<ReturnType<typeof fixture>>,
-	source: Doc<"files_pending_updates">["target"],
-	mediaSources: Doc<"files_pending_updates">["target"][] = [],
-) {
+async function cross_workspace_copy(args: {
+	f: Awaited<ReturnType<typeof fixture>>;
+	source: Doc<"files_pending_updates">["target"];
+	mediaSources?: Doc<"files_pending_updates">["target"][];
+}) {
+	const { f, source, mediaSources = [] } = args;
+
 	const personal = await f.t.run((ctx) =>
 		test_mocks_fill_db_with.membership(ctx, {
 			userId: f.scope.userId,
@@ -741,7 +753,7 @@ describe("Save copied rich-text media", () => {
 			const f = await fixture();
 			const image = await media(f);
 			const text = `Before\n\n![Photo](${image.dependency.src})\n\nAfter\n`;
-			const pending = await attach_dependencies(f, await document_proposal(f, kind, text), [image.dependency]);
+			const pending = await attach_dependencies({ f, pending: await document_proposal({ f, kind, staged: text }), dependencies: [image.dependency] });
 			const target = pending.target;
 			const before = target.kind === "saved" ? await f.t.run((ctx) => ctx.db.get("files_nodes", target.id)) : null;
 			const beforeDoc = kind === "yjs" && target.kind === "saved" ? await saved_doc(f, target.id) : null;
@@ -779,12 +791,12 @@ describe("Save copied rich-text media", () => {
 		async (kind) => {
 			const f = await fixture();
 			const image = await media(f);
-			const pending = await attach_dependencies(
+			const pending = await attach_dependencies({
 				f,
-				await document_proposal(f, kind, `![Photo](${image.dependency.src})\n`),
-				[image.dependency],
-			);
-			const result = await bulk_save(f, [pending, image.pending]);
+				pending: await document_proposal({ f, kind, staged: `![Photo](${image.dependency.src})\n` }),
+				dependencies: [image.dependency],
+			});
+			const result = await bulk_save({ f, selected: [pending, image.pending] });
 			expect(result?.activity).toMatchObject({ status: "succeeded", progress: { completed: 2, blocked: 0 } });
 			expect(await f.t.run((ctx) => ctx.db.get("files_pending_updates", pending._id))).toBeNull();
 			expect(await f.t.run((ctx) => ctx.db.get("files_pending_updates", image.pending._id))).toBeNull();
@@ -796,11 +808,15 @@ describe("Save copied rich-text media", () => {
 		const selected = await media(f);
 		const unselected = await media(f, "/clip.mp4");
 		const text = `![Photo](${selected.dependency.src})\n\n<video src="${unselected.dependency.src}" controls></video>\n`;
-		const pending = await attach_dependencies(f, await private_text(f, { staged: text }), [
+		const pending = await attach_dependencies({
+			f,
+			pending: await private_text(f, { staged: text }),
+			dependencies: [
 			selected.dependency,
 			unselected.dependency,
-		]);
-		const result = await bulk_save(f, [selected.pending, pending]);
+		],
+		});
+		const result = await bulk_save({ f, selected: [selected.pending, pending] });
 		expect(result?.activity).toMatchObject({ status: "failed", progress: { completed: 0, blocked: 2 } });
 		for (const original of [selected.pending, pending, unselected.pending]) {
 			expect(await proposal(f, original.target)).toEqual(original);
@@ -817,14 +833,18 @@ describe("Save copied rich-text media", () => {
 			const image = await media(f);
 			const accepted = "Accepted\n";
 			const remaining = `${accepted}\n![Photo](${image.dependency.src})\n`;
-			const pending = await attach_dependencies(f, await document_proposal(f, kind, accepted, remaining), [
+			const pending = await attach_dependencies({
+				f,
+				pending: await document_proposal({ f, kind, staged: accepted, unstaged: remaining }),
+				dependencies: [
 				image.dependency,
-			]);
+			],
+			});
 			const first = await save(f, pending);
 			if (first._nay) throw new Error(first._nay.message);
 			const partial = await proposal(f, first._yay.target);
 			expect(await dependencies(f, partial)).toEqual([image.dependency]);
-			const second = await saved_proposal(f, partial.target, remaining);
+			const second = await saved_proposal({ f, target: partial.target, staged: remaining });
 			expect(await dependencies(f, second)).toEqual([image.dependency]);
 			expect(await save(f, second)).toMatchObject({
 				_nay: { message: expect.stringContaining("Save the selected media") },
@@ -839,11 +859,11 @@ describe("Save copied rich-text media", () => {
 			const f = await fixture();
 			const image = await media(f);
 			const base = "Before\n\nMiddle\n\nAfter\n";
-			const pending = await attach_dependencies(
+			const pending = await attach_dependencies({
 				f,
-				await document_proposal(f, kind, base, `${base}\n![Photo](${image.dependency.src})\n`),
-				[image.dependency],
-			);
+				pending: await document_proposal({ f, kind, staged: base, unstaged: `${base}\n![Photo](${image.dependency.src})\n` }),
+				dependencies: [image.dependency],
+			});
 			const saved = await save(f, pending);
 			if (saved._nay) throw new Error(saved._nay.message);
 			expect(await dependencies(f, await proposal(f, saved._yay.target))).toEqual([image.dependency]);
@@ -854,9 +874,13 @@ describe("Save copied rich-text media", () => {
 	test("Yjs checks accepted text merged with a live embed absent from the staged branch", async () => {
 		const f = await fixture();
 		const image = await media(f);
-		const pending = await attach_dependencies(f, await document_proposal(f, "yjs", "BEFORE\n\nMiddle\n\nAfter\n"), [
+		const pending = await attach_dependencies({
+			f,
+			pending: await document_proposal({ f, kind: "yjs", staged: "BEFORE\n\nMiddle\n\nAfter\n" }),
+			dependencies: [
 			image.dependency,
-		]);
+		],
+		});
 		if (pending.target.kind !== "saved") throw new Error("Expected saved document");
 		const nodeId = pending.target.id;
 		const before = await saved_doc(f, nodeId);
@@ -897,7 +921,7 @@ describe("Save copied rich-text media", () => {
 		const f = await fixture();
 		const image = await media(f);
 		const text = `\`\`\`text\n![code](${image.dependency.src})\n\`\`\`\n\n[link](${image.dependency.src})\n\n![External](https://example.test/photo.png)\n`;
-		const pending = await attach_dependencies(f, await private_text(f, { staged: text }), [image.dependency]);
+		const pending = await attach_dependencies({ f, pending: await private_text(f, { staged: text }), dependencies: [image.dependency] });
 		expect((await save(f, pending))._nay).toBeUndefined();
 		expect(await proposal(f, image.pending.target)).toEqual(image.pending);
 	});
@@ -908,11 +932,11 @@ describe("Save copied rich-text media", () => {
 		const saved = await save(f, image.pending);
 		if (saved._nay || saved._yay.target.kind !== "saved") throw new Error("Expected saved media");
 		const target = saved._yay.target;
-		const pending = await attach_dependencies(
+		const pending = await attach_dependencies({
 			f,
-			await private_text(f, { staged: `![Photo](${image.dependency.src})\n` }),
-			[image.dependency],
-		);
+			pending: await private_text(f, { staged: `![Photo](${image.dependency.src})\n` }),
+			dependencies: [image.dependency],
+		});
 		expect(
 			(await f.t.mutation(internal.files_pending_updates.upsert_file_pending_archive_in_db, { ...f.scope, target }))
 				._nay,
@@ -922,7 +946,7 @@ describe("Save copied rich-text media", () => {
 		expect(await save(f, pending)).toMatchObject({
 			_nay: { message: expect.stringContaining("Save the selected media") },
 		});
-		expect((await bulk_save(f, [pending, archive]))?.activity).toMatchObject({
+		expect((await bulk_save({ f, selected: [pending, archive] }))?.activity).toMatchObject({
 			status: "failed",
 			progress: { completed: 0, blocked: 2 },
 		});
@@ -943,7 +967,7 @@ describe("Save copied rich-text media", () => {
 			if (saved._nay || saved._yay.target.kind !== "saved") throw new Error("Expected saved media");
 			const target = saved._yay.target;
 			const source = await media(f, "/new.png");
-			const replacement = await copy_replacement(f, source.pending.target, "photo.png");
+			const replacement = await copy_replacement({ f, source: source.pending.target, targetName: "photo.png" });
 			expect(replacement._id).not.toBe(image.pending._id);
 			if (!replacement.pendingReplacement) throw new Error("Expected media replacement");
 			const version = await f.t.run(async (ctx) => {
@@ -955,10 +979,14 @@ describe("Save copied rich-text media", () => {
 			const dependency = expectsReplacement
 				? { ...image.dependency, assetId: replacement.pendingReplacement.assetId, version }
 				: image.dependency;
-			const pending = await attach_dependencies(f, await private_text(f, { staged: `![Photo](${dependency.src})\n` }), [
+			const pending = await attach_dependencies({
+				f,
+				pending: await private_text(f, { staged: `![Photo](${dependency.src})\n` }),
+				dependencies: [
 				dependency,
-			]);
-			const result = await bulk_save(f, [pending, replacement]);
+			],
+			});
+			const result = await bulk_save({ f, selected: [pending, replacement] });
 			if (expectsReplacement) {
 				expect(result?.activity).toMatchObject({ status: "succeeded", progress: { completed: 2, blocked: 0 } });
 				expect(await f.t.run((ctx) => ctx.db.get("files_nodes", target.id))).toMatchObject({
@@ -981,13 +1009,17 @@ describe("Save copied rich-text media", () => {
 		const saved = await save(f, await private_text(f, { staged: "Old document\n" }));
 		if (saved._nay) throw new Error(saved._nay.message);
 		const source = await private_text(f, { path: "/source.md", staged: `![Photo](${image.dependency.src})\n` });
-		const replacement = await attach_dependencies(f, await copy_replacement(f, source.target, "document.md"), [
+		const replacement = await attach_dependencies({
+			f,
+			pending: await copy_replacement({ f, source: source.target, targetName: "document.md" }),
+			dependencies: [
 			image.dependency,
-		]);
+		],
+		});
 		expect(await save(f, replacement)).toMatchObject({
 			_nay: { message: expect.stringContaining("Save the selected media") },
 		});
-		const result = await bulk_save(f, [replacement, image.pending]);
+		const result = await bulk_save({ f, selected: [replacement, image.pending] });
 		expect(result?.activity).toMatchObject({ status: "succeeded", progress: { completed: 2, blocked: 0 } });
 	});
 });
@@ -998,7 +1030,7 @@ describe("cross-workspace Copy from public Save", () => {
 		const source = await media(f);
 		const savedSource = await save(f, source.pending);
 		if (savedSource._nay) throw new Error(savedSource._nay.message);
-		const copied = await cross_workspace_copy(f, savedSource._yay.target);
+		const copied = await cross_workspace_copy({ f, source: savedSource._yay.target });
 		const target = copied.pending.target;
 		if (target.kind !== "private" || copied.pending.createIntent?.kind !== "stored")
 			throw new Error("Expected private media");
@@ -1015,14 +1047,14 @@ describe("cross-workspace Copy from public Save", () => {
 			version,
 		};
 		const unselected = await media(copied.destination, "/clip.mp4");
-		const doc = await attach_dependencies(
-			copied.destination,
-			await private_text(copied.destination, {
+		const doc = await attach_dependencies({
+			f: copied.destination,
+			pending: await private_text(copied.destination, {
 				staged: `![Photo](${selected.src})\n\n<video src="${unselected.dependency.src}" controls></video>\n`,
 			}),
-			[selected, unselected.dependency],
-		);
-		const result = await bulk_save(copied.destination, [copied.pending, doc]);
+			dependencies: [selected, unselected.dependency],
+		});
+		const result = await bulk_save({ f: copied.destination, selected: [copied.pending, doc] });
 		expect(result?.activity).toMatchObject({ status: "failed", progress: { completed: 0, blocked: 2 } });
 		expect(await proposal(copied.destination, target)).toEqual(copied.pending);
 		expect(await f.t.run((ctx) => ctx.db.get("files_pending_nodes", target.id))).toMatchObject({ state: "active" });
@@ -1052,7 +1084,7 @@ describe("cross-workspace Copy from public Save", () => {
 			if (savedSource._nay || savedSource._yay.target.kind !== "saved") throw new Error("Expected saved source");
 			const sourceId = savedSource._yay.target.id;
 			const before = await f.t.run((ctx) => ctx.db.get("files_nodes", sourceId));
-			const copied = await cross_workspace_copy(f, savedSource._yay.target);
+			const copied = await cross_workspace_copy({ f, source: savedSource._yay.target });
 			const saved = await save(copied.destination, copied.pending);
 			if (saved._nay || saved._yay.target.kind !== "saved") throw new Error("Expected saved copy");
 			const savedId = saved._yay.target.id;
@@ -1078,11 +1110,11 @@ describe("cross-workspace Copy from public Save", () => {
 		const source = await private_text(f, { path, staged: text, collaborative });
 		const savedSource = await save(f, source);
 		if (savedSource._nay) throw new Error(savedSource._nay.message);
-		const copied = await cross_workspace_copy(f, savedSource._yay.target);
-		const partial = await saved_proposal(copied.destination, copied.pending.target, "First\n", text);
+		const copied = await cross_workspace_copy({ f, source: savedSource._yay.target });
+		const partial = await saved_proposal({ f: copied.destination, target: copied.pending.target, staged: "First\n", unstaged: text });
 		const savedPart = await save(copied.destination, partial);
 		if (savedPart._nay) throw new Error(savedPart._nay.message);
-		const full = await saved_proposal(copied.destination, savedPart._yay.target, text);
+		const full = await saved_proposal({ f: copied.destination, target: savedPart._yay.target, staged: text });
 		expect(full._id).toBe(partial._id);
 		const saved = await save(copied.destination, full);
 		if (saved._nay) throw new Error(saved._nay.message);
@@ -1100,15 +1132,20 @@ describe("cross-workspace Copy from public Save", () => {
 			const source = await private_text(f, { path: "/document.txt", staged: text, collaborative });
 			const savedSource = await save(f, source);
 			if (savedSource._nay) throw new Error(savedSource._nay.message);
-			const copied = await cross_workspace_copy(f, savedSource._yay.target);
-			const partial = await saved_proposal(copied.destination, copied.pending.target, text, `${text}Extra\n`);
+			const copied = await cross_workspace_copy({ f, source: savedSource._yay.target });
+			const partial = await saved_proposal({ f: copied.destination, target: copied.pending.target, staged: text, unstaged: `${text}Extra\n` });
 			const savedPart = await save(copied.destination, partial);
 			if (savedPart._nay || savedPart._yay.target.kind !== "saved") throw new Error("Expected partial Save");
 			const nodeId = savedPart._yay.target.id;
 			const before = await f.t.run((ctx) => ctx.db.get("files_nodes", nodeId));
-			const full = await saved_proposal(copied.destination, savedPart._yay.target, `${text}Unselected\n`, text);
+			const full = await saved_proposal({
+				f: copied.destination,
+				target: savedPart._yay.target,
+				staged: `${text}Unselected\n`,
+				unstaged: text,
+			});
 			expect(full._id).toBe(partial._id);
-			const saved = await bulk_save(copied.destination, [full]);
+			const saved = await bulk_save({ f: copied.destination, selected: [full] });
 			expect(saved?.activity).toMatchObject({ status: "succeeded", progress: { completed: 1, blocked: 0 } });
 			expect(await f.t.run((ctx) => ctx.db.get("files_nodes", nodeId))).toEqual(before);
 			expect(await f.t.run((ctx) => ctx.db.get("files_pending_updates", full._id))).toBeNull();
@@ -1133,7 +1170,7 @@ describe("cross-workspace Copy from public Save", () => {
 			});
 			const savedSource = await save(f, source);
 			if (savedSource._nay) throw new Error(savedSource._nay.message);
-			const copied = await cross_workspace_copy(f, savedSource._yay.target, [savedSourceImage._yay.target]);
+			const copied = await cross_workspace_copy({ f, source: savedSource._yay.target, mediaSources: [savedSourceImage._yay.target] });
 			const destination = copied.destination;
 			const mappings = await dependencies(destination, copied.pending);
 			expect(mappings).toHaveLength(1);
@@ -1142,19 +1179,19 @@ describe("cross-workspace Copy from public Save", () => {
 			if (savedImage._nay || savedImage._yay.target.kind !== "saved") throw new Error("Expected saved media");
 			const imageNodeId = savedImage._yay.target.id;
 			const text = `First\n\n![Photo](${dependency.src})\n`;
-			const partial = await saved_proposal(destination, copied.pending.target, text, `${text}\nExtra\n`);
+			const partial = await saved_proposal({ f: destination, target: copied.pending.target, staged: text, unstaged: `${text}\nExtra\n` });
 			const savedPart = await save(destination, partial);
 			if (savedPart._nay || savedPart._yay.target.kind !== "saved") throw new Error("Expected partial Save");
 			const nodeId = savedPart._yay.target.id;
 
 			// Bulk Save selects U, which is already committed; S still has an unselected edit.
-			const full = await saved_proposal(destination, savedPart._yay.target, `${text}\nUnselected\n`, text);
+			const full = await saved_proposal({ f: destination, target: savedPart._yay.target, staged: `${text}\nUnselected\n`, unstaged: text });
 			expect(full._id).toBe(partial._id);
 			expect(await dependencies(destination, full)).toEqual([dependency]);
 			let replacement: Doc<"files_pending_updates"> | null = null;
 			if (replaceMedia) {
 				const newImage = await media(destination, "/new.png");
-				replacement = await copy_replacement(destination, newImage.pending.target, "photo.png");
+				replacement = await copy_replacement({ f: destination, source: newImage.pending.target, targetName: "photo.png" });
 				expect(replacement.pendingReplacement!.assetId).not.toBe(dependency.assetId);
 			}
 			const before = await f.t.run(async (ctx) => ({
@@ -1163,7 +1200,7 @@ describe("cross-workspace Copy from public Save", () => {
 				assets: await ctx.db.query("files_r2_assets").collect(),
 			}));
 			const objectsBefore = new Map(objects);
-			const result = await bulk_save(destination, replacement ? [full, replacement] : [full]);
+			const result = await bulk_save({ f: destination, selected: replacement ? [full, replacement] : [full] });
 			const reviewed = await f.t.run(async (ctx) => {
 				const items = await ctx.db.query("files_pending_update_run_items").collect();
 				const item = items.find((item) => item.pendingUpdateId === full._id)!;
@@ -1222,7 +1259,7 @@ describe("cross-workspace Copy from public Save", () => {
 			});
 			const savedSource = await save(f, source);
 			if (savedSource._nay) throw new Error(savedSource._nay.message);
-			const copied = await cross_workspace_copy(f, savedSource._yay.target, [savedSourceImage._yay.target]);
+			const copied = await cross_workspace_copy({ f, source: savedSource._yay.target, mediaSources: [savedSourceImage._yay.target] });
 			const destination = copied.destination;
 			const mappings = await dependencies(destination, copied.pending);
 			expect(mappings).toHaveLength(1);
@@ -1231,7 +1268,7 @@ describe("cross-workspace Copy from public Save", () => {
 			if (savedImage._nay || savedImage._yay.target.kind !== "saved") throw new Error("Expected saved media");
 			const imageNodeId = savedImage._yay.target.id;
 			const text = `First\n\n![Photo](${dependency.src})\n`;
-			const partial = await saved_proposal(destination, copied.pending.target, text, `${text}\nExtra\n`);
+			const partial = await saved_proposal({ f: destination, target: copied.pending.target, staged: text, unstaged: `${text}\nExtra\n` });
 			const savedPart = await save(destination, partial);
 			if (savedPart._nay || savedPart._yay.target.kind !== "saved") throw new Error("Expected partial Save");
 			const nodeId = savedPart._yay.target.id;
@@ -1239,10 +1276,10 @@ describe("cross-workspace Copy from public Save", () => {
 
 			// S keeps the image, but bulk Save selects U. Only U may remove this grouping edge.
 			const accepted = removeEmbed ? "Changed without an image\n" : `${text}\nChanged\n`;
-			const full = await saved_proposal(destination, savedPart._yay.target, text, accepted);
+			const full = await saved_proposal({ f: destination, target: savedPart._yay.target, staged: text, unstaged: accepted });
 			expect(await dependencies(destination, full)).toEqual([dependency]);
 			const newImage = await media(destination, "/new.png");
-			const replacement = await copy_replacement(destination, newImage.pending.target, "photo.png");
+			const replacement = await copy_replacement({ f: destination, source: newImage.pending.target, targetName: "photo.png" });
 			expect(replacement.pendingReplacement!.assetId).not.toBe(dependency.assetId);
 			const imageAssets = await f.t.run(async (ctx) =>
 				Promise.all([
@@ -1252,7 +1289,10 @@ describe("cross-workspace Copy from public Save", () => {
 			);
 			const imageObjects = imageAssets.map((asset) => objects.get(asset!.r2Key!));
 			let imageBefore = await f.t.run((ctx) => ctx.db.get("files_nodes", imageNodeId));
-			const result = await bulk_save(destination, [full, replacement], async () => {
+			const result = await bulk_save({
+				f: destination,
+				selected: [full, replacement],
+				afterPlan: async () => {
 				// Lock after selection and planning, so the worker must recheck the plan and write policy.
 				expect(
 					await destination.asUser.mutation(api.files_nodes.set_node_write_policy, {
@@ -1262,6 +1302,7 @@ describe("cross-workspace Copy from public Save", () => {
 					}),
 				).toEqual({ _yay: null });
 				imageBefore = await f.t.run((ctx) => ctx.db.get("files_nodes", imageNodeId));
+			},
 			});
 			expect(result?.activity).toMatchObject({
 				status: removeEmbed ? "partial" : "failed",
@@ -1315,7 +1356,7 @@ describe("cross-workspace Copy from public Save", () => {
 			});
 			const savedSource = await save(f, source);
 			if (savedSource._nay) throw new Error(savedSource._nay.message);
-			const copied = await cross_workspace_copy(f, savedSource._yay.target, [savedSourceImage._yay.target]);
+			const copied = await cross_workspace_copy({ f, source: savedSource._yay.target, mediaSources: [savedSourceImage._yay.target] });
 			const destination = copied.destination;
 			const mappings = await dependencies(destination, copied.pending);
 			expect(mappings).toHaveLength(1);
@@ -1324,19 +1365,22 @@ describe("cross-workspace Copy from public Save", () => {
 			if (savedImage._nay || savedImage._yay.target.kind !== "saved") throw new Error("Expected saved media");
 			const imageNodeId = savedImage._yay.target.id;
 			const text = `Intro\n\n![Original](${dependency.src})\n\nFooter\n`;
-			const partial = await saved_proposal(destination, copied.pending.target, text, `${text}\nExtra\n`);
+			const partial = await saved_proposal({ f: destination, target: copied.pending.target, staged: text, unstaged: `${text}\nExtra\n` });
 			const savedPart = await save(destination, partial);
 			if (savedPart._nay || savedPart._yay.target.kind !== "saved") throw new Error("Expected partial Save");
 			const nodeId = savedPart._yay.target.id;
 			// S keeps the old embed. The selected U removes it but keeps the footer.
 			const accepted = "Changed\n\nFooter\n";
-			const full = await saved_proposal(destination, savedPart._yay.target, text, accepted);
+			const full = await saved_proposal({ f: destination, target: savedPart._yay.target, staged: text, unstaged: accepted });
 			expect(await dependencies(destination, full)).toEqual([dependency]);
 			const newImage = await media(destination, "/new.png");
-			const replacement = await copy_replacement(destination, newImage.pending.target, "photo.png");
+			const replacement = await copy_replacement({ f: destination, source: newImage.pending.target, targetName: "photo.png" });
 			expect(replacement.pendingReplacement!.assetId).not.toBe(dependency.assetId);
 			const liveAppend = `\n![Live](${dependency.src})\n`;
-			const result = await bulk_save(destination, [full, ...(selectReplacement ? [replacement] : [])], async () => {
+			const result = await bulk_save({
+				f: destination,
+				selected: [full, ...(selectReplacement ? [replacement] : [])],
+				afterPlan: async () => {
 				// The new embed is outside U's changed lines and arrives only after the units are planned.
 				const before = await saved_doc(destination, nodeId);
 				expect(files_yjs_doc_get_text({ yjsDoc: before, rootKind: "rich_text" })._yay).toBe(text);
@@ -1361,6 +1405,7 @@ describe("cross-workspace Copy from public Save", () => {
 				before.destroy();
 				edited.destroy();
 				expect(await proposal(destination, full.target)).toEqual(full);
+			},
 			});
 			const pending = await f.t.run((ctx) => ctx.db.get("files_pending_updates", full._id));
 			const after = await saved_doc(destination, nodeId);
@@ -1393,12 +1438,12 @@ describe("cross-workspace Copy from public Save", () => {
 		});
 		const savedSource = await save(f, source);
 		if (savedSource._nay) throw new Error(savedSource._nay.message);
-		const copied = await cross_workspace_copy(f, savedSource._yay.target);
-		const partial = await saved_proposal(copied.destination, copied.pending.target, "First\n", text);
+		const copied = await cross_workspace_copy({ f, source: savedSource._yay.target });
+		const partial = await saved_proposal({ f: copied.destination, target: copied.pending.target, staged: "First\n", unstaged: text });
 		const savedPart = await save(copied.destination, partial);
 		if (savedPart._nay || savedPart._yay.target.kind !== "saved") throw new Error("Expected partial Save");
 		const nodeId = savedPart._yay.target.id;
-		const full = await saved_proposal(copied.destination, savedPart._yay.target, text);
+		const full = await saved_proposal({ f: copied.destination, target: savedPart._yay.target, staged: text });
 		const before = await saved_doc(copied.destination, nodeId);
 		const edited = files_yjs_doc_clone({ yjsDoc: before });
 		expect(files_yjs_doc_update_from_text({ mut_yjsDoc: edited, rootKind, text: "LIVE\n" })._nay).toBeUndefined();

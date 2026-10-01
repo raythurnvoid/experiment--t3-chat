@@ -757,7 +757,13 @@ const FilesBrowser = memo(function FilesBrowser(props: FilesBrowser_Props) {
 			});
 	});
 
-	const handleViewerHello = useFn((id: string, viewport: { width: number; height: number }, control: string) => {
+	const handleViewerHello = useFn((args: {
+		id: string;
+		viewport: { width: number; height: number };
+		control: string;
+	}) => {
+		const { id, control } = args;
+
 		setViewerId(id);
 		// The child moves human input here before the docked viewer stops streaming.
 		if (isChild) {

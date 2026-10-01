@@ -703,13 +703,13 @@ const AiChatMessagePartToolBrowser = memo(function AiChatMessagePartToolBrowser(
 		playwriter_capture: "Shared browser capture",
 	}[toolName];
 	const expected = parsed.success
-		? ai_chat_file_result(
-				title,
-				parsed.data.metadata.status,
-				parsed.data.metadata.files,
-				parsed.data.metadata.reason,
-				parsed.data.metadata.debug,
-			)
+		? ai_chat_file_result({
+			title,
+			status: parsed.data.metadata.status,
+			files: parsed.data.metadata.files,
+			reason: parsed.data.metadata.reason,
+			debug: parsed.data.metadata.debug,
+		})
 		: null;
 
 	// Only a run may carry files or page text. Management cards keep safe status only.
@@ -930,13 +930,13 @@ const AiChatMessagePartToolFiles = memo(function AiChatMessagePartToolFiles(prop
 		image_generation: "Generate image",
 	}[toolName];
 	const expected = parsed.success
-		? ai_chat_file_result(
-				title,
-				parsed.data.metadata.status,
-				parsed.data.metadata.files,
-				parsed.data.metadata.reason,
-				parsed.data.metadata.debug,
-			)
+		? ai_chat_file_result({
+			title,
+			status: parsed.data.metadata.status,
+			files: parsed.data.metadata.files,
+			reason: parsed.data.metadata.reason,
+			debug: parsed.data.metadata.debug,
+		})
 		: null;
 
 	// The server rewrites every file tool result into one exact shape before the message is stored.
@@ -1624,11 +1624,13 @@ type AiChatMessageContent_Props = ComponentPropsWithRef<"div"> & {
 	children?: ReactNode;
 };
 
-function ai_chat_message_content_get_display_items(
-	message: ai_chat_UiMessage,
-	parts: ai_chat_UiMessage["parts"],
-	isChatRunning: boolean,
-) {
+function ai_chat_message_content_get_display_items(args: {
+	message: ai_chat_UiMessage;
+	parts: ai_chat_UiMessage["parts"];
+	isChatRunning: boolean;
+}) {
+	const { message, parts, isChatRunning } = args;
+
 	if (message.role !== "assistant") {
 		return parts.map((part) => ({ type: "part", part }) satisfies AiChatMessageContent_DisplayItem);
 	}
@@ -1694,13 +1696,13 @@ const AiChatMessageContent = memo(function AiChatMessageContent(props: AiChatMes
 	const parts = message.role === "assistant" && !isChatRunning ? deferredAssistantParts : message.parts;
 	const displayItems = children
 		? []
-		: ai_chat_message_content_get_display_items(
-				message,
-				parts.filter(
+		: ai_chat_message_content_get_display_items({
+			message,
+			parts: parts.filter(
 					(part) => part.type === "data-job-finish" || (!part.type.startsWith("data-") && part.type !== "step-start"),
 				),
-				isChatRunning,
-			);
+			isChatRunning,
+		});
 	if (message.role === "assistant" && isChatRunning && displayItems.length === 0) {
 		displayItems.push({ type: "thinking", text: "", isStreaming: true });
 	}
@@ -2523,9 +2525,13 @@ export const AiChatMessage = memo(function AiChatMessage(props: AiChatMessage_Pr
 		}
 
 		// Pass the attachments explicitly: the user may have removed images while editing.
-		actions.sendUserText(selectedThreadId, args.value, {
-			messageId,
-			attachments: args.attachments,
+		actions.sendUserText({
+			threadId: selectedThreadId,
+			value: args.value,
+			options: {
+				messageId,
+				attachments: args.attachments,
+			},
 		});
 		actions.setEditingMessageId(selectedThreadId, null);
 	});
@@ -2535,7 +2541,7 @@ export const AiChatMessage = memo(function AiChatMessage(props: AiChatMessage_Pr
 	});
 
 	const handleMessageRetrySend = useFn((args: { threadId: string; messageId: string; value: string }) => {
-		actions.sendUserText(args.threadId, args.value, { messageId: args.messageId });
+		actions.sendUserText({ threadId: args.threadId, value: args.value, options: { messageId: args.messageId } });
 	});
 
 	const handleMessageBranchChat = useFn((args: { threadId: string; messageId?: string }) => {

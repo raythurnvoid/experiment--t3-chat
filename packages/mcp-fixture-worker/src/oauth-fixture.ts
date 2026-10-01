@@ -58,14 +58,27 @@ async function hmac(env: OauthFixture_Env, text: string) {
 /**
  * Sign a payload of one kind (`kind` stops a refresh token from working as a code or an access token).
  */
-async function sign(env: OauthFixture_Env, kind: string, seconds: number, payload: Record<string, string>) {
+async function sign(args: {
+	env: OauthFixture_Env;
+	kind: string;
+	seconds: number;
+	payload: Record<string, string>;
+}) {
+	const { env, kind, seconds, payload } = args;
+
 	const body = base64url(
 		new TextEncoder().encode(JSON.stringify({ ...payload, kind, exp: Math.floor(Date.now() / 1000) + seconds })),
 	);
 	return `${body}.${await hmac(env, body)}`;
 }
 
-async function verify(env: OauthFixture_Env, kind: string, token: string) {
+async function verify(args: {
+	env: OauthFixture_Env;
+	kind: string;
+	token: string;
+}) {
+	const { env, kind, token } = args;
+
 	const [body = "", signature = ""] = token.split(".");
 	if (!body || signature !== (await hmac(env, body))) {
 		return null;
@@ -97,10 +110,10 @@ function token_error(error: string) {
 async function issue_tokens(env: OauthFixture_Env, grant: { clientId: string; resource: string; scope: string }) {
 	return Response.json(
 		{
-			access_token: await sign(env, "access", ACCESS_TOKEN_SECONDS, grant),
+			access_token: await sign({ env, kind: "access", seconds: ACCESS_TOKEN_SECONDS, payload: grant }),
 			token_type: "Bearer",
 			expires_in: ACCESS_TOKEN_SECONDS,
-			refresh_token: await sign(env, "refresh", REFRESH_TOKEN_SECONDS, grant),
+			refresh_token: await sign({ env, kind: "refresh", seconds: REFRESH_TOKEN_SECONDS, payload: grant }),
 			scope: grant.scope,
 		},
 		{ headers: { "Cache-Control": "no-store" } },
@@ -112,7 +125,13 @@ async function issue_tokens(env: OauthFixture_Env, grant: { clientId: string; re
  * check that it lists the redirect URI, so the page never sends a code to an address the client did
  * not name.
  */
-async function handle_authorize_page(env: OauthFixture_Env, url: URL, origin: string) {
+async function handle_authorize_page(args: {
+	env: OauthFixture_Env;
+	url: URL;
+	origin: string;
+}) {
+	const { env, url, origin } = args;
+
 	const params = url.searchParams;
 	const clientId = params.get("client_id") ?? "";
 	const redirectUri = params.get("redirect_uri") ?? "";
@@ -141,13 +160,18 @@ async function handle_authorize_page(env: OauthFixture_Env, url: URL, origin: st
 	}
 
 	// Sign the checked request, so the approve form cannot be changed to send the code elsewhere.
-	const signedRequest = await sign(env, "request", CODE_SECONDS, {
+	const signedRequest = await sign({
+		env,
+		kind: "request",
+		seconds: CODE_SECONDS,
+		payload: {
 		clientId,
 		redirectUri,
 		resource,
 		challenge,
 		scope: params.get("scope") ?? SCOPE,
 		state: params.get("state") ?? "",
+	},
 	});
 	const html = `<!doctype html>
 <html lang="en">
@@ -170,9 +194,15 @@ async function handle_authorize_page(env: OauthFixture_Env, url: URL, origin: st
 	});
 }
 
-async function handle_authorize_decision(env: OauthFixture_Env, request: Request, origin: string) {
+async function handle_authorize_decision(args: {
+	env: OauthFixture_Env;
+	request: Request;
+	origin: string;
+}) {
+	const { env, request, origin } = args;
+
 	const form = await request.formData();
-	const signed = await verify(env, "request", String(form.get("request") ?? ""));
+	const signed = await verify({ env, kind: "request", token: String(form.get("request") ?? "") });
 	if (!signed) {
 		return new Response("This sign-in expired. Start again.", { status: 400 });
 	}
@@ -183,12 +213,17 @@ async function handle_authorize_decision(env: OauthFixture_Env, request: Request
 	if (form.get("decision") === "approve") {
 		redirect.searchParams.set(
 			"code",
-			await sign(env, "code", CODE_SECONDS, {
+			await sign({
+				env,
+				kind: "code",
+				seconds: CODE_SECONDS,
+				payload: {
 				clientId: String(signed.clientId),
 				redirectUri: String(signed.redirectUri),
 				resource: String(signed.resource),
 				challenge: String(signed.challenge),
 				scope: String(signed.scope),
+			},
 			}),
 		);
 	} else {
@@ -203,7 +238,7 @@ async function handle_token(env: OauthFixture_Env, request: Request) {
 	const resource = params.get("resource");
 
 	if (params.get("grant_type") === "authorization_code") {
-		const code = await verify(env, "code", params.get("code") ?? "");
+		const code = await verify({ env, kind: "code", token: params.get("code") ?? "" });
 		if (
 			!code ||
 			code.clientId !== clientId ||
@@ -217,7 +252,7 @@ async function handle_token(env: OauthFixture_Env, request: Request) {
 	}
 
 	if (params.get("grant_type") === "refresh_token") {
-		const refresh = await verify(env, "refresh", params.get("refresh_token") ?? "");
+		const refresh = await verify({ env, kind: "refresh", token: params.get("refresh_token") ?? "" });
 		if (!refresh || refresh.clientId !== clientId || (resource !== null && refresh.resource !== resource)) {
 			return token_error("invalid_grant");
 		}
@@ -227,14 +262,21 @@ async function handle_token(env: OauthFixture_Env, request: Request) {
 	return token_error("unsupported_grant_type");
 }
 
-async function handle_server(env: OauthFixture_Env, basic: OauthFixture_Handler, request: Request, name: string) {
+async function handle_server(args: {
+	env: OauthFixture_Env;
+	basic: OauthFixture_Handler;
+	request: Request;
+	name: string;
+}) {
+	const { env, basic, request, name } = args;
+
 	const origin = new URL(request.url).origin;
 	const serverUrl = `${origin}/${name}/mcp`;
 	const body = request.method === "POST" ? await request.clone().text() : "";
 	const needsToken = name === "oauth-list" || body.includes('"tools/call"');
 
 	const authorization = request.headers.get("authorization") ?? "";
-	const access = authorization.startsWith("Bearer ") ? await verify(env, "access", authorization.slice(7)) : null;
+	const access = authorization.startsWith("Bearer ") ? await verify({ env, kind: "access", token: authorization.slice(7) }) : null;
 	if (needsToken && access?.resource !== serverUrl) {
 		const challenge = `Bearer resource_metadata="${origin}/.well-known/oauth-protected-resource/${name}/mcp", scope="${SCOPE}"`;
 		return new Response(null, { status: 401, headers: { "WWW-Authenticate": challenge } });
@@ -246,7 +288,13 @@ async function handle_server(env: OauthFixture_Env, basic: OauthFixture_Handler,
 /**
  * Answer a request for the OAuth fixture, or `null` when the path is not one of its paths.
  */
-export async function oauth_fixture_fetch(env: OauthFixture_Env, basic: OauthFixture_Handler, request: Request) {
+export async function oauth_fixture_fetch(args: {
+	env: OauthFixture_Env;
+	basic: OauthFixture_Handler;
+	request: Request;
+}) {
+	const { env, basic, request } = args;
+
 	const url = new URL(request.url);
 	const origin = url.origin;
 	const path = url.pathname;
@@ -260,7 +308,7 @@ export async function oauth_fixture_fetch(env: OauthFixture_Env, basic: OauthFix
 			});
 		}
 		if (path === `/${name}/mcp`) {
-			return await handle_server(env, basic, request, name);
+			return await handle_server({ env, basic, request, name });
 		}
 	}
 
@@ -280,10 +328,10 @@ export async function oauth_fixture_fetch(env: OauthFixture_Env, basic: OauthFix
 		});
 	}
 	if (request.method === "GET" && path === `${ISSUER_PATH}/authorize`) {
-		return await handle_authorize_page(env, url, origin);
+		return await handle_authorize_page({ env, url, origin });
 	}
 	if (request.method === "POST" && path === `${ISSUER_PATH}/authorize`) {
-		return await handle_authorize_decision(env, request, origin);
+		return await handle_authorize_decision({ env, request, origin });
 	}
 	if (request.method === "POST" && path === `${ISSUER_PATH}/token`) {
 		return await handle_token(env, request);

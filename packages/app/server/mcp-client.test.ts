@@ -25,7 +25,14 @@ const echo_tool: mcp_client_NormalizedTool = {
 	annotations: null,
 };
 
-function list(fixture: string, variant = "", timeoutMs = 5000, signal = new AbortController().signal) {
+function list(args: {
+	fixture: string;
+	variant?: string;
+	timeoutMs?: number;
+	signal?: AbortSignal;
+}) {
+	const { fixture, variant = "", timeoutMs = 5000, signal = new AbortController().signal } = args;
+
 	return mcp_client_list_tools({
 		server: { url: `https://${fixture}.fixtures.test/${variant}`, headers: [] },
 		accessToken: null,
@@ -35,22 +42,24 @@ function list(fixture: string, variant = "", timeoutMs = 5000, signal = new Abor
 }
 
 async function modern_discover() {
-	const listed = await list("modern-basic");
+	const listed = await list({ fixture: "modern-basic" });
 	if (listed._nay) throw new Error("Failed to list the modern-basic fixture", { cause: listed._nay });
 	return listed._yay.discover;
 }
 
-async function call(
-	fixture: string,
-	variant: string,
-	options: {
+async function call(args: {
+	fixture: string;
+	variant: string;
+	options?: {
 		tool?: mcp_client_NormalizedTool;
 		arguments?: Record<string, unknown>;
 		era?: "modern" | "legacy";
 		timeoutMs?: number;
 		signal?: AbortSignal;
-	} = {},
-) {
+	};
+}) {
+	const { fixture, variant, options = {} } = args;
+
 	const discover = options.era === "legacy" ? null : await modern_discover();
 	// Keep only the wire entries of the call itself.
 	fixtures.wire.length = 0;
@@ -116,7 +125,7 @@ function hold_request(method: string, bodyOnly = false) {
 
 describe("mcp_client_list_tools", () => {
 	test("lists a modern server with the discover probe and no initialize", async () => {
-		const result = await list("modern-basic");
+		const result = await list({ fixture: "modern-basic" });
 
 		expect(result._yay).toMatchObject({
 			era: "modern",
@@ -131,13 +140,13 @@ describe("mcp_client_list_tools", () => {
 	});
 
 	test("lists a modern server that answers with SSE", async () => {
-		const result = await list("modern-sse");
+		const result = await list({ fixture: "modern-sse" });
 
 		expect(result._yay?.tools.map((tool) => tool.name)).toEqual(["echo", "picture"]);
 	});
 
 	test("lists tools of a 2025-11-25 server through initialize", async () => {
-		const result = await list("version-legacy");
+		const result = await list({ fixture: "version-legacy" });
 
 		expect(result._yay).toMatchObject({ era: "legacy", protocolVersion: "2025-11-25", discover: null });
 		expect(result._yay?.tools.map((tool) => tool.name)).toEqual(["ping"]);
@@ -145,13 +154,13 @@ describe("mcp_client_list_tools", () => {
 	});
 
 	test("lists tools of a 2025-06-18 server", async () => {
-		const result = await list("version-legacy-0618");
+		const result = await list({ fixture: "version-legacy-0618" });
 
 		expect(result._yay).toMatchObject({ era: "legacy", protocolVersion: "2025-06-18" });
 	});
 
 	test("refuses a server that only speaks 2024-11-05", async () => {
-		const result = await list("version-legacy-2024");
+		const result = await list({ fixture: "version-legacy-2024" });
 
 		expect(result._nay).toMatchObject({
 			name: "unsupported_version",
@@ -161,13 +170,13 @@ describe("mcp_client_list_tools", () => {
 	});
 
 	test("refuses a server that offers only a future version", async () => {
-		const result = await list("version-other");
+		const result = await list({ fixture: "version-other" });
 
 		expect(result._nay).toMatchObject({ name: "unsupported_version", data: { supported: ["2027-01-01"] } });
 	});
 
 	test("refuses an old HTTP+SSE server", async () => {
-		const result = await list("version-old-sse");
+		const result = await list({ fixture: "version-old-sse" });
 
 		expect(result._nay).toMatchObject({
 			name: "not_modern_mcp",
@@ -176,7 +185,7 @@ describe("mcp_client_list_tools", () => {
 	});
 
 	test("needs sign-in on a 401 and reads the challenge", async () => {
-		const result = await list("http-status", "401");
+		const result = await list({ fixture: "http-status", variant: "401" });
 
 		expect(result._nay).toEqual({
 			name: "auth_required",
@@ -199,7 +208,7 @@ describe("mcp_client_list_tools", () => {
 			async () => new Response(null, { status: 401, headers: { "WWW-Authenticate": challenge } }),
 		);
 
-		expect((await list("modern-basic"))._nay).toMatchObject({
+		expect((await list({ fixture: "modern-basic" }))._nay).toMatchObject({
 			name: "auth_required",
 			data: { resourceMetadataUrl: "https://remote.example/prm", scope: "files:read", error: null },
 		});
@@ -214,17 +223,17 @@ describe("mcp_client_list_tools", () => {
 			async () => new Response(null, { status: 401, headers: { "WWW-Authenticate": challenge } }),
 		);
 
-		expect((await list("modern-basic"))._nay?.name).toBe("bad_response");
+		expect((await list({ fixture: "modern-basic" }))._nay?.name).toBe("bad_response");
 	});
 
 	test("needs more access on a 403 insufficient_scope", async () => {
-		const result = await list("http-status", "403");
+		const result = await list({ fixture: "http-status", variant: "403" });
 
 		expect(result._nay).toMatchObject({ name: "insufficient_scope", data: { scope: "files:write" } });
 	});
 
 	test("retries a 429 twice inside the deadline and reads Retry-After", async () => {
-		const result = await list("http-status", "429");
+		const result = await list({ fixture: "http-status", variant: "429" });
 
 		expect(result._nay).toMatchObject({ name: "rate_limited", data: { retryAfterMs: 1000 } });
 		// The probe gets the 429, then the SDK tries `initialize`, so count the probes.
@@ -232,27 +241,27 @@ describe("mcp_client_list_tools", () => {
 	});
 
 	test("retries a 500 and then reports a server error", async () => {
-		const result = await list("http-status", "500");
+		const result = await list({ fixture: "http-status", variant: "500" });
 
 		expect(result._nay?.name).toBe("server_error");
 		expect(fixtures.wire.filter((entry) => entry.variant === "500")).toHaveLength(3);
 	});
 
 	test("does not retry a 429 that would pass the deadline", async () => {
-		const result = await list("http-status", "429", 800);
+		const result = await list({ fixture: "http-status", variant: "429", timeoutMs: 800 });
 
 		expect(result._nay?.name).toBe("rate_limited");
 		expect(fixtures.wire.filter((entry) => entry.rpcMethod === "server/discover")).toHaveLength(1);
 	});
 
 	test("reports a 404 without JSON-RPC as not MCP", async () => {
-		const result = await list("http-status", "404");
+		const result = await list({ fixture: "http-status", variant: "404" });
 
 		expect(result._nay?.name).toBe("not_modern_mcp");
 	});
 
 	test("drops each tool Press cannot send to the model and keeps the rest", async () => {
-		const result = await list("bad-tools");
+		const result = await list({ fixture: "bad-tools" });
 
 		expect(result._yay?.tools.map((tool) => tool.name)).toEqual(["good", "local_ref", "bad_output", "lying"]);
 		expect(result._yay?.dropped).toEqual([
@@ -277,13 +286,13 @@ describe("mcp_client_list_tools", () => {
 	});
 
 	test("fails the whole list when a 2026 server sends a malformed tool", async () => {
-		const result = await list("bad-tools", "invalid");
+		const result = await list({ fixture: "bad-tools", variant: "invalid" });
 
 		expect(result._nay?.name).toBe("bad_response");
 	});
 
 	test("drops a malformed tool on its own on a 2025 server", async () => {
-		const result = await list("legacy-bad-tools");
+		const result = await list({ fixture: "legacy-bad-tools" });
 
 		expect(result._yay?.tools.map((tool) => tool.name)).toEqual(["good"]);
 		expect(result._yay?.dropped).toEqual([
@@ -293,7 +302,7 @@ describe("mcp_client_list_tools", () => {
 	});
 
 	test("drops tools with an invalid x-mcp-header", async () => {
-		const result = await list("header-strict");
+		const result = await list({ fixture: "header-strict" });
 
 		expect(result._yay?.tools.map((tool) => tool.name)).toEqual(["with_header"]);
 		// The SDK drops them with only a warning, so they are not in `dropped` (plan 7.6).
@@ -301,7 +310,7 @@ describe("mcp_client_list_tools", () => {
 	});
 
 	test("keeps at most 500 tools per server", async () => {
-		const result = await list("big", "many");
+		const result = await list({ fixture: "big", variant: "many" });
 
 		expect(result._yay?.tools).toHaveLength(500);
 		expect(result._yay?.dropped).toHaveLength(4500);
@@ -309,7 +318,7 @@ describe("mcp_client_list_tools", () => {
 	});
 
 	test("refuses a list with more than 20 pages", async () => {
-		const result = await list("big", "too-many-pages");
+		const result = await list({ fixture: "big", variant: "too-many-pages" });
 
 		expect(result._nay?.name).toBe("too_large");
 	});
@@ -318,13 +327,13 @@ describe("mcp_client_list_tools", () => {
 		["empty-cursor", ["a"]],
 		["loop", ["a", "b", "c"]],
 	])("stops on a repeated cursor (%s)", async (variant, names) => {
-		const result = await list("big", variant);
+		const result = await list({ fixture: "big", variant });
 
 		expect(result._yay?.tools.map((tool) => tool.name)).toEqual(names);
 	});
 
 	test("times out a slow list", async () => {
-		const result = await list("slow", "list", 200);
+		const result = await list({ fixture: "slow", variant: "list", timeoutMs: 200 });
 
 		expect(result._nay).toMatchObject({
 			name: "timeout",
@@ -335,7 +344,7 @@ describe("mcp_client_list_tools", () => {
 	test("aborts an initialized notification at the list deadline", async () => {
 		vi.useFakeTimers();
 		const held = hold_request("notifications/initialized");
-		const pending = list("version-legacy", "", 80);
+		const pending = list({ fixture: "version-legacy", variant: "", timeoutMs: 80 });
 		const signal = await held.received;
 		await vi.advanceTimersByTimeAsync(80);
 		const aborted = signal.aborted;
@@ -350,7 +359,7 @@ describe("mcp_client_list_tools", () => {
 		const caller = new AbortController();
 		caller.abort();
 
-		expect((await list("modern-basic", "", 5000, caller.signal))._nay?.name).toBe("timeout");
+		expect((await list({ fixture: "modern-basic", variant: "", timeoutMs: 5000, signal: caller.signal }))._nay?.name).toBe("timeout");
 		expect(globalThis.fetch).not.toHaveBeenCalled();
 	});
 
@@ -364,7 +373,7 @@ describe("mcp_client_list_tools", () => {
 			return setTimeout(callback, delay, ...args);
 		});
 		let finished = false;
-		const pending = list("http-status", "500", 5000, caller.signal).then((result) => {
+		const pending = list({ fixture: "http-status", variant: "500", timeoutMs: 5000, signal: caller.signal }).then((result) => {
 			finished = true;
 			return result;
 		});
@@ -381,7 +390,7 @@ describe("mcp_client_list_tools", () => {
 
 describe("mcp_client_call_tool", () => {
 	test("calls a modern tool with the prior discover result and no probe", async () => {
-		const result = await call("modern-basic", "");
+		const result = await call({ fixture: "modern-basic", variant: "" });
 
 		expect(result._yay?.result).toEqual({
 			isError: false,
@@ -394,31 +403,39 @@ describe("mcp_client_call_tool", () => {
 	});
 
 	test("returns a tool error as an error result", async () => {
-		const result = await call("modern-basic", "", { arguments: { text: "fail" } });
+		const result = await call({ fixture: "modern-basic", variant: "", options: { arguments: { text: "fail" } } });
 
 		expect(result._yay?.result).toMatchObject({ isError: true, blocks: [{ kind: "text", text: "boom" }] });
 	});
 
 	test("omits an image and counts its bytes", async () => {
-		const result = await call("modern-basic", "", {
+		const result = await call({
+			fixture: "modern-basic",
+			variant: "",
+			options: {
 			tool: { ...echo_tool, name: "picture", outputSchema: null },
 			arguments: {},
+		},
 		});
 
 		expect(result._yay?.result.blocks).toEqual([{ kind: "omitted", type: "image", mimeType: "image/png", bytes: 8 }]);
 	});
 
 	test("calls a modern tool that answers with SSE", async () => {
-		const result = await call("modern-sse", "");
+		const result = await call({ fixture: "modern-sse", variant: "" });
 
 		expect(result._yay?.result.blocks).toEqual([{ kind: "text", text: "hi" }]);
 	});
 
 	test("calls a 2025 tool in its own session and ends it with a DELETE", async () => {
-		const result = await call("version-legacy", "", {
+		const result = await call({
+			fixture: "version-legacy",
+			variant: "",
+			options: {
 			era: "legacy",
 			tool: { ...echo_tool, name: "ping", outputSchema: null },
 			arguments: {},
+		},
 		});
 
 		expect(result._yay?.result.blocks).toEqual([{ kind: "text", text: "pong" }]);
@@ -431,7 +448,7 @@ describe("mcp_client_call_tool", () => {
 	test("sends no tool call after the initialized notification uses its deadline", async () => {
 		vi.useFakeTimers();
 		const held = hold_request("notifications/initialized");
-		const pending = call("version-legacy", "", { era: "legacy", timeoutMs: 80 });
+		const pending = call({ fixture: "version-legacy", variant: "", options: { era: "legacy", timeoutMs: 80 } });
 		await held.received;
 		await vi.advanceTimersByTimeAsync(80);
 		held.release();
@@ -444,7 +461,7 @@ describe("mcp_client_call_tool", () => {
 	test("refuses an expired tool call before the deadline timer runs", async () => {
 		vi.useFakeTimers();
 		const held = hold_request("notifications/initialized");
-		const pending = call("version-legacy", "", { era: "legacy", timeoutMs: 80 });
+		const pending = call({ fixture: "version-legacy", variant: "", options: { era: "legacy", timeoutMs: 80 } });
 		await held.received;
 		vi.setSystemTime(Date.now() + 80);
 		held.release();
@@ -457,7 +474,7 @@ describe("mcp_client_call_tool", () => {
 	test("aborts an initialized notification on Stop", async () => {
 		const caller = new AbortController();
 		const held = hold_request("notifications/initialized");
-		const pending = call("version-legacy", "", { era: "legacy", signal: caller.signal });
+		const pending = call({ fixture: "version-legacy", variant: "", options: { era: "legacy", signal: caller.signal } });
 		const signal = await held.received;
 		caller.abort();
 		const aborted = signal.aborted;
@@ -473,11 +490,15 @@ describe("mcp_client_call_tool", () => {
 		async (bodyOnly) => {
 			vi.useFakeTimers();
 			const held = hold_request("DELETE", bodyOnly);
-			const pending = call("version-legacy", "", {
+			const pending = call({
+				fixture: "version-legacy",
+				variant: "",
+				options: {
 				era: "legacy",
 				timeoutMs: 80,
 				tool: { ...echo_tool, name: "ping", outputSchema: null },
 				arguments: {},
+			},
 			});
 			const signal = await held.received;
 			await vi.advanceTimersByTimeAsync(80);
@@ -493,11 +514,15 @@ describe("mcp_client_call_tool", () => {
 	test("keeps the completed result when Stop aborts DELETE", async () => {
 		const caller = new AbortController();
 		const held = hold_request("DELETE");
-		const pending = call("version-legacy", "", {
+		const pending = call({
+			fixture: "version-legacy",
+			variant: "",
+			options: {
 			era: "legacy",
 			signal: caller.signal,
 			tool: { ...echo_tool, name: "ping", outputSchema: null },
 			arguments: {},
+		},
 		});
 		const signal = await held.received;
 		caller.abort();
@@ -510,10 +535,14 @@ describe("mcp_client_call_tool", () => {
 	});
 
 	test("reports an unknown result and does not retry when a legacy session is lost", async () => {
-		const result = await call("legacy-session-404", "", {
+		const result = await call({
+			fixture: "legacy-session-404",
+			variant: "",
+			options: {
 			era: "legacy",
 			tool: { ...echo_tool, name: "ping", outputSchema: null },
 			arguments: {},
+		},
 		});
 
 		expect(result._nay).toMatchObject({
@@ -526,19 +555,19 @@ describe("mcp_client_call_tool", () => {
 	// The SDK does not end a request when its SSE stream closes early, so the call waits for its
 	// timeout. The timeout message already says the tool may have run.
 	test.each(["close", "mid-event"])("times out when the stream drops before the answer (%s)", async (variant) => {
-		const result = await call("sse-drop", variant, { timeoutMs: 300 });
+		const result = await call({ fixture: "sse-drop", variant, options: { timeoutMs: 300 } });
 
 		expect(result._nay?.name).toBe("timeout");
 	});
 
 	test("reads the answer past comments, other events, a server request, and a stray id", async () => {
-		const result = await call("sse-extra", "");
+		const result = await call({ fixture: "sse-extra", variant: "" });
 
 		expect(result._yay?.result.blocks).toEqual([{ kind: "text", text: "done" }]);
 	});
 
 	test.each(["html", "array", "accepted"])("refuses a bad answer (%s)", async (variant) => {
-		const result = await call("bad-content-type", variant, { timeoutMs: 1000 });
+		const result = await call({ fixture: "bad-content-type", variant, options: { timeoutMs: 1000 } });
 
 		expect(result._nay).toMatchObject({
 			name: "bad_response",
@@ -547,19 +576,19 @@ describe("mcp_client_call_tool", () => {
 	});
 
 	test.each(["cross-origin", "to-ip"])("refuses a redirect (%s)", async (variant) => {
-		const result = await call("redirect", variant);
+		const result = await call({ fixture: "redirect", variant });
 
 		expect(result._nay?.name).toBe("bad_response");
 	});
 
 	test("refuses a result over 1 MiB", async () => {
-		const result = await call("big", "huge-result");
+		const result = await call({ fixture: "big", variant: "huge-result" });
 
 		expect(result._nay?.name).toBe("too_large");
 	});
 
 	test.each(["never", "progress"])("times out a call that does not answer (%s)", async (variant) => {
-		const result = await call("slow", variant, { timeoutMs: 200 });
+		const result = await call({ fixture: "slow", variant, options: { timeoutMs: 200 } });
 
 		expect(result._nay?.name).toBe("timeout");
 	});
@@ -575,7 +604,7 @@ describe("mcp_client_call_tool", () => {
 		["500", "server_error"],
 		["503", "server_error"],
 	])("maps HTTP %s to %s and never retries", async (status, code) => {
-		const result = await call("http-status", status);
+		const result = await call({ fixture: "http-status", variant: status });
 
 		expect(result._nay?.name).toBe(code);
 		expect(fixtures.wire).toHaveLength(1);
@@ -652,10 +681,14 @@ describe("mcp_client_call_tool", () => {
 				return await fixtures.fetch(input, init);
 			});
 
-			const result = await call("version-legacy", "", {
+			const result = await call({
+				fixture: "version-legacy",
+				variant: "",
+				options: {
 				era: "legacy",
 				tool: { ...echo_tool, name: "ping", outputSchema: null },
 				arguments: {},
+			},
 			});
 
 			expect(methods).toContain("GET");
@@ -670,18 +703,18 @@ describe("mcp_client_call_tool", () => {
 	);
 
 	test("mirrors an x-mcp-header parameter as an Mcp-Param header", async () => {
-		const listed = await list("header-strict");
+		const listed = await list({ fixture: "header-strict" });
 		const tool = listed._yay?.tools[0];
 		if (!tool) throw new Error("Failed to list the header-strict fixture");
 
-		const result = await call("header-strict", "call", { tool, arguments: { region: "us-west1" } });
+		const result = await call({ fixture: "header-strict", variant: "call", options: { tool, arguments: { region: "us-west1" } } });
 
 		expect(result._yay?.result.blocks).toEqual([{ kind: "text", text: "region us-west1" }]);
 		expect(fixtures.wire[0]?.headers.get("mcp-param-region")).toBe("us-west1");
 	});
 
 	test.each(["elicit", "state-only"])("refuses a tool that asks for more input (%s)", async (variant) => {
-		const result = await call("mrtr", variant);
+		const result = await call({ fixture: "mrtr", variant });
 
 		expect(result._nay).toMatchObject({
 			name: "input_required_unsupported",
@@ -697,13 +730,13 @@ describe("mcp_client_call_tool", () => {
 		["capability-required", "capability_required"],
 		["header-mismatch", "bad_response"],
 	])("maps the result type or protocol error %s to %s", async (variant, code) => {
-		const result = await call("result-types", variant);
+		const result = await call({ fixture: "result-types", variant });
 
 		expect(result._nay?.name).toBe(code);
 	});
 
 	test("turns invalid arguments into an error result the model can read", async () => {
-		const result = await call("result-types", "invalid-params");
+		const result = await call({ fixture: "result-types", variant: "invalid-params" });
 
 		expect(result._yay?.result).toMatchObject({
 			isError: true,
@@ -712,7 +745,7 @@ describe("mcp_client_call_tool", () => {
 	});
 
 	test("turns another protocol error into an error result", async () => {
-		const result = await call("result-types", "method-error");
+		const result = await call({ fixture: "result-types", variant: "method-error" });
 
 		expect(result._yay?.result.blocks).toEqual([
 			{ kind: "text", text: "tool call failed with error -32603: fixture error -32603" },
@@ -720,7 +753,7 @@ describe("mcp_client_call_tool", () => {
 	});
 
 	test("normalizes audio, links, and embedded resources without fetching them", async () => {
-		const result = await call("bad-output", "mixed", { tool: { ...echo_tool, outputSchema: null } });
+		const result = await call({ fixture: "bad-output", variant: "mixed", options: { tool: { ...echo_tool, outputSchema: null } } });
 
 		expect(result._yay?.result.blocks).toEqual([
 			{ kind: "omitted", type: "audio", mimeType: "audio/wav", bytes: 6 },
@@ -740,14 +773,14 @@ describe("mcp_client_call_tool", () => {
 	});
 
 	test("refuses an unknown content type", async () => {
-		const result = await call("bad-output", "unknown-type");
+		const result = await call({ fixture: "bad-output", variant: "unknown-type" });
 
 		// The SDK checks each content block against the spec, so Press never sees an unknown type.
 		expect(result._nay?.name).toBe("bad_response");
 	});
 
 	test("keeps structured output when a text block has the same JSON", async () => {
-		const result = await call("bad-output", "same-json");
+		const result = await call({ fixture: "bad-output", variant: "same-json" });
 
 		// The stored full output keeps both. The model text shows structured output only without text.
 		expect(result._yay?.result.structured).not.toBeNull();
@@ -757,7 +790,7 @@ describe("mcp_client_call_tool", () => {
 	test.each(["mismatch", "missing-structured"])(
 		"keeps the text and drops structured output that does not match (%s)",
 		async (variant) => {
-			const result = await call("bad-output", variant);
+			const result = await call({ fixture: "bad-output", variant });
 
 			expect(result._yay?.result).toMatchObject({
 				isError: false,
@@ -769,7 +802,7 @@ describe("mcp_client_call_tool", () => {
 	);
 
 	test("does not check structured output of an error result", async () => {
-		const result = await call("bad-output", "error-structured");
+		const result = await call({ fixture: "bad-output", variant: "error-structured" });
 
 		expect(result._yay?.result).toMatchObject({ isError: true, structured: { echoed: 1 }, structuredNote: null });
 	});

@@ -27,7 +27,7 @@ export function public_api_volumes_http_routes(router: { route: HttpRouter["rout
 							method,
 							handler: httpAction(async (ctx, request) => {
 								const { public_api_volumes_http_list } = await import("./public_api_volumes.ts");
-								const result = await public_api_volumes_http_list(ctx, request, path);
+								const result = await public_api_volumes_http_list({ ctx, request, path });
 								return Response.json(result.body, result);
 							}),
 						});
@@ -59,7 +59,7 @@ export function public_api_volumes_http_routes(router: { route: HttpRouter["rout
 							method,
 							handler: httpAction(async (ctx, request) => {
 								const { public_api_volumes_http_stage } = await import("./public_api_volumes.ts");
-								const result = await public_api_volumes_http_stage(ctx, request, path);
+								const result = await public_api_volumes_http_stage({ ctx, request, path });
 								return Response.json(result.body, result);
 							}),
 						});
@@ -91,7 +91,7 @@ export function public_api_volumes_http_routes(router: { route: HttpRouter["rout
 							method,
 							handler: httpAction(async (ctx, request) => {
 								const { public_api_volumes_http_write_many } = await import("./public_api_volumes.ts");
-								const result = await public_api_volumes_http_write_many(ctx, request, path);
+								const result = await public_api_volumes_http_write_many({ ctx, request, path });
 								return Response.json(result.body, result);
 							}),
 						});
@@ -123,7 +123,7 @@ export function public_api_volumes_http_routes(router: { route: HttpRouter["rout
 							method,
 							handler: httpAction(async (ctx, request) => {
 								const { public_api_volumes_http_publish } = await import("./public_api_volumes.ts");
-								const result = await public_api_volumes_http_publish(ctx, request, path);
+								const result = await public_api_volumes_http_publish({ ctx, request, path });
 								return Response.json(result.body, result);
 							}),
 						});
@@ -155,7 +155,7 @@ export function public_api_volumes_http_routes(router: { route: HttpRouter["rout
 							method,
 							handler: httpAction(async (ctx, request) => {
 								const { public_api_volumes_http_delete } = await import("./public_api_volumes.ts");
-								const result = await public_api_volumes_http_delete(ctx, request, path);
+								const result = await public_api_volumes_http_delete({ ctx, request, path });
 								return Response.json(result.body, result);
 							}),
 						});

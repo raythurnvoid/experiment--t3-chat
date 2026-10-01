@@ -19,8 +19,12 @@ describe("ai_chat_tool_budget_apply", () => {
 			return { title: "Edit", metadata: { pendingUpdateId: "pending-1" }, output: "Replaced 1 occurrence" };
 		});
 		const budget = ai_chat_tool_budget_create();
-		const tools = ai_chat_tool_budget_apply({ edit: tool({ inputSchema: z.object({}), execute: write }) }, budget, {
+		const tools = ai_chat_tool_budget_apply({
+			tools: { edit: tool({ inputSchema: z.object({}), execute: write }) },
+			budget,
+			reserve: {
 			resultReservedBytes: 128 * 1024,
+		},
 		});
 		const first = tools.edit.execute!({}, { toolCallId: "one", messages: [] });
 		const second = tools.edit.execute!({}, { toolCallId: "two", messages: [] });
@@ -47,8 +51,12 @@ describe("ai_chat_tool_budget_apply", () => {
 			return { title: "Call", metadata: {}, output: "done" };
 		});
 		const budget = ai_chat_tool_budget_create();
-		const tools = ai_chat_tool_budget_apply({ call: tool({ inputSchema: z.object({}), execute: call }) }, budget, {
+		const tools = ai_chat_tool_budget_apply({
+			tools: { call: tool({ inputSchema: z.object({}), execute: call }) },
+			budget,
+			reserve: {
 			resultReservedBytes: 72 * 1024,
+		},
 		});
 		const running = [1, 2, 3, 4, 5, 6].map((index) =>
 			tools.call.execute!({}, { toolCallId: `call-${index}`, messages: [] }),
@@ -75,11 +83,11 @@ describe("ai_chat_tool_budget_apply", () => {
 			return { title: "Read", metadata: {}, output: "small" };
 		});
 		const budget = ai_chat_tool_budget_create();
-		const tools = ai_chat_tool_budget_apply(
-			{ read: tool({ inputSchema: z.object({ size: z.string() }), execute: read }) },
+		const tools = ai_chat_tool_budget_apply({
+			tools: { read: tool({ inputSchema: z.object({ size: z.string() }), execute: read }) },
 			budget,
-			{ resultReservedBytes: 100 * 1024 },
-		);
+			reserve: { resultReservedBytes: 100 * 1024 },
+		});
 		const calls = [
 			tools.read.execute!({ size: "a" }, { toolCallId: "one", messages: [] }),
 			tools.read.execute!({ size: "a" }, { toolCallId: "two", messages: [] }),
@@ -107,11 +115,11 @@ describe("ai_chat_tool_budget_apply", () => {
 			return { title: "Read", metadata: {}, output: input.size === "a" ? "x".repeat(128 * 1024) : "small" };
 		});
 		const budget = ai_chat_tool_budget_create();
-		const tools = ai_chat_tool_budget_apply(
-			{ read: tool({ inputSchema: z.object({ size: z.string() }), execute: read }) },
+		const tools = ai_chat_tool_budget_apply({
+			tools: { read: tool({ inputSchema: z.object({ size: z.string() }), execute: read }) },
 			budget,
-			{ resultReservedBytes: 128 * 1024 },
-		);
+			reserve: { resultReservedBytes: 128 * 1024 },
+		});
 		const first = tools.read.execute!({ size: "a" }, { toolCallId: "one", messages: [] });
 		const second = tools.read.execute!({ size: "a" }, { toolCallId: "two", messages: [] });
 		const third = tools.read.execute!({ size: "b" }, { toolCallId: "three", messages: [] });
@@ -159,11 +167,11 @@ describe("ai_chat_tool_budget_apply", () => {
 				}),
 			}),
 		});
-		const tools = ai_chat_tool_budget_apply(
-			{ read: tool({ inputSchema: z.object({}), execute: read }) },
-			ai_chat_tool_budget_create(),
-			{ resultReservedBytes: 128 * 1024 },
-		);
+		const tools = ai_chat_tool_budget_apply({
+			tools: { read: tool({ inputSchema: z.object({}), execute: read }) },
+			budget: ai_chat_tool_budget_create(),
+			reserve: { resultReservedBytes: 128 * 1024 },
+		});
 		const result = streamText({ model, prompt: "Read three times.", maxRetries: 0, stopWhen: stepCountIs(1), tools });
 		const drained = result.consumeStream();
 
@@ -187,8 +195,12 @@ describe("ai_chat_tool_budget_apply", () => {
 			return { title: "Read", metadata: {}, output: "small" };
 		});
 		const budget = ai_chat_tool_budget_create();
-		const tools = ai_chat_tool_budget_apply({ read: tool({ inputSchema: z.object({}), execute: read }) }, budget, {
+		const tools = ai_chat_tool_budget_apply({
+			tools: { read: tool({ inputSchema: z.object({}), execute: read }) },
+			budget,
+			reserve: {
 			resultReservedBytes: 128 * 1024,
+		},
 		});
 		const stop = new AbortController();
 		const running = [1, 2].map((index) =>
@@ -212,8 +224,12 @@ describe("ai_chat_tool_budget_apply", () => {
 			.mockResolvedValueOnce({ title: "Read", metadata: {}, output: "x".repeat(300 * 1024) })
 			.mockResolvedValue({ title: "Read", metadata: {}, output: "small" });
 		const budget = ai_chat_tool_budget_create();
-		const tools = ai_chat_tool_budget_apply({ read: tool({ inputSchema: z.object({}), execute: read }) }, budget, {
+		const tools = ai_chat_tool_budget_apply({
+			tools: { read: tool({ inputSchema: z.object({}), execute: read }) },
+			budget,
+			reserve: {
 			resultReservedBytes: 128 * 1024,
+		},
 		});
 		await tools.read.execute!({}, { toolCallId: "large", messages: [] });
 		await expect(tools.read.execute!({}, { toolCallId: "next", messages: [] })).rejects.toThrow("Tool budget reached");
@@ -223,13 +239,13 @@ describe("ai_chat_tool_budget_apply", () => {
 
 	test("counts escaped input bytes and refuses a large write before execution", async () => {
 		const write = vi.fn(async () => ({ title: "Edit", metadata: {}, output: "Saved" }));
-		const tools = ai_chat_tool_budget_apply(
-			{
+		const tools = ai_chat_tool_budget_apply({
+			tools: {
 				edit: tool({ inputSchema: z.object({ content: z.string() }), execute: write }),
 			},
-			ai_chat_tool_budget_create(),
-			{ resultReservedBytes: 128 * 1024 },
-		);
+			budget: ai_chat_tool_budget_create(),
+			reserve: { resultReservedBytes: 128 * 1024 },
+		});
 		await expect(
 			tools.edit.execute!({ content: "\u0000".repeat(12 * 1024) }, { toolCallId: "large", messages: [] }),
 		).rejects.toThrow("Tool budget reached");
@@ -244,16 +260,16 @@ describe("ai_chat_tool_budget_apply", () => {
 			instructions: "Rule. ".repeat(5000),
 		});
 		const budget = ai_chat_tool_budget_create();
-		const tools = ai_chat_tool_budget_apply(
-			{
+		const tools = ai_chat_tool_budget_apply({
+			tools: {
 				bash: tool({
 					inputSchema: z.object({ command: z.string() }),
 					execute: async () => ({ title: "exit 0", metadata: { exitCode: 0 }, output: body, instructions }),
 				}),
 			},
 			budget,
-			{ resultReservedBytes: 128 * 1024 },
-		);
+			reserve: { resultReservedBytes: 128 * 1024 },
+		});
 		const input = { command: "cat /docs/notes.md" };
 		const output = await tools.bash.execute!(input, { toolCallId: "read", messages: [] });
 		expect(output).toEqual({ title: "exit 0", metadata: { exitCode: 0 }, output: body, instructions });
@@ -278,8 +294,12 @@ describe("ai_chat_tool_budget_apply", () => {
 			metadata: { pendingUpdateId: "pending-1", matches: 1, diff: "-old\n+new" },
 		}));
 		const budget = ai_chat_tool_budget_create();
-		const tools = ai_chat_tool_budget_apply({ edit: tool({ inputSchema: z.object({}), execute: write }) }, budget, {
+		const tools = ai_chat_tool_budget_apply({
+			tools: { edit: tool({ inputSchema: z.object({}), execute: write }) },
+			budget,
+			reserve: {
 			resultReservedBytes: 128 * 1024,
+		},
 		});
 		const result = await tools.edit.execute!({}, { toolCallId: "write", messages: [] });
 		expect(write).toHaveBeenCalledOnce();
@@ -303,8 +323,12 @@ describe("ai_chat_tool_budget_apply", () => {
 			metadata: { kind: "mcp_result", truncated: false },
 		}));
 		const budget = ai_chat_tool_budget_create();
-		const tools = ai_chat_tool_budget_apply({ echo: tool({ inputSchema: z.object({}), execute: call }) }, budget, {
+		const tools = ai_chat_tool_budget_apply({
+			tools: { echo: tool({ inputSchema: z.object({}), execute: call }) },
+			budget,
+			reserve: {
 			resultReservedBytes: 128 * 1024,
+		},
 		});
 		const result = await tools.echo.execute!({}, { toolCallId: "mcp", messages: [] });
 		expect(result).toMatchObject({ metadata: { kind: "mcp_result", truncated: true } });
@@ -363,11 +387,11 @@ describe("ai_chat_tool_budget_apply", () => {
 			},
 		});
 		const write = vi.fn(async () => ({ title: "Write", output: "written", metadata: {} }));
-		const tools = ai_chat_tool_budget_apply(
-			{ write: tool({ inputSchema: z.object({}), execute: write }) },
-			ai_chat_tool_budget_create(),
-			{ resultReservedBytes: 128 * 1024 },
-		);
+		const tools = ai_chat_tool_budget_apply({
+			tools: { write: tool({ inputSchema: z.object({}), execute: write }) },
+			budget: ai_chat_tool_budget_create(),
+			reserve: { resultReservedBytes: 128 * 1024 },
+		});
 		const stop = new AbortController();
 		const result = streamText({
 			model,

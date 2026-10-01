@@ -56,11 +56,13 @@ async function draft(f: Awaited<ReturnType<typeof fixture>>, path = "/draft") {
 	return { proposal, node };
 }
 
-async function hold(
-	f: Awaited<ReturnType<typeof fixture>>,
-	d: Awaited<ReturnType<typeof draft>>,
-	role: Doc<"files_pending_holds">["role"] = "output",
-) {
+async function hold(args: {
+	f: Awaited<ReturnType<typeof fixture>>;
+	d: Awaited<ReturnType<typeof draft>>;
+	role?: Doc<"files_pending_holds">["role"];
+}) {
+	const { f, d, role = "output" } = args;
+
 	expect(
 		await f.t.run((ctx) =>
 			files_pending_holds_db_acquire(ctx, {
@@ -146,7 +148,7 @@ describe("proposal hold expiry", () => {
 	test("an active output survives its deadline without a fake edit", async () => {
 		const f = await fixture();
 		const d = await draft(f);
-		await hold(f, d);
+		await hold({ f, d });
 		const reviewVersionBefore = await review_version(f);
 		vi.setSystemTime(d.proposal.expiresAt + 1);
 		await expire(f);
@@ -163,7 +165,7 @@ describe("proposal hold expiry", () => {
 	test.each([false, true])("terminal output keeps its review window; release first=%s", async (releaseFirst) => {
 		const f = await fixture();
 		const d = await draft(f);
-		await hold(f, d);
+		await hold({ f, d });
 		vi.setSystemTime(d.proposal.expiresAt + 1);
 		const endedAt = Date.now();
 		await finish(f);
@@ -174,7 +176,7 @@ describe("proposal hold expiry", () => {
 
 		// This edit is stamped before the review window ends, so it must not shorten the expiry.
 		await f.t.run((ctx) =>
-			files_db_patch_pending_update(ctx, d.proposal._id, { updatedAt: d.proposal.updatedAt + 1000 }),
+			files_db_patch_pending_update({ ctx, pendingUpdateId: d.proposal._id, value: { updatedAt: d.proposal.updatedAt + 1000 } }),
 		);
 		expect((await read_draft(f, d.proposal)).expiresAt).toBe(endedAt + FOUR_HOURS);
 
@@ -193,7 +195,7 @@ describe("proposal hold expiry", () => {
 		async (status) => {
 			const f = await fixture();
 			const d = await draft(f);
-			await hold(f, d);
+			await hold({ f, d });
 			const endedAt = Date.now();
 			await finish(f, status);
 			vi.setSystemTime(endedAt + 1000);
@@ -207,9 +209,9 @@ describe("proposal hold expiry", () => {
 	test("source release keeps another role on the same proposal and does not change its deadline", async () => {
 		const f = await fixture();
 		const d = await draft(f);
-		await hold(f, d, "source");
-		await hold(f, d, "destination_parent");
-		await hold(f, d, "destination_parent");
+		await hold({ f, d, role: "source" });
+		await hold({ f, d, role: "destination_parent" });
+		await hold({ f, d, role: "destination_parent" });
 		const before = await read_draft(f, d.proposal);
 		await f.t.run((ctx) =>
 			files_pending_holds_db_release(ctx, { producer: f.producer, pendingUpdateId: d.proposal._id, role: "source" }),
@@ -226,7 +228,7 @@ describe("proposal hold expiry", () => {
 	test("presence after finish keeps a due draft through a late release", async () => {
 		const f = await fixture();
 		const d = await draft(f);
-		await hold(f, d);
+		await hold({ f, d });
 		await finish(f);
 		// An open app tab marks the owner active shortly before the review window ends.
 		vi.setSystemTime(Date.now() + FOUR_HOURS - 1000);
@@ -253,7 +255,7 @@ describe("proposal hold expiry", () => {
 		const f = await fixture();
 		const d = await draft(f);
 		vi.setSystemTime(Date.now() + 60_000);
-		await f.t.run((ctx) => files_db_patch_pending_update(ctx, d.proposal._id, { updatedAt: Date.now() }));
+		await f.t.run((ctx) => files_db_patch_pending_update({ ctx, pendingUpdateId: d.proposal._id, value: { updatedAt: Date.now() } }));
 		const edited = await read_draft(f, d.proposal);
 		expect(edited.expiresAt).toBe(d.proposal.expiresAt + 60_000);
 		// The check still wakes at the first deadline. It finds nothing due and waits for the new one.
@@ -275,7 +277,7 @@ describe("proposal hold expiry", () => {
 		const f = await fixture();
 		const parent = await draft(f, "/parent");
 		const child = await draft(f, "/parent/child");
-		await hold(f, child, "source");
+		await hold({ f, d: child, role: "source" });
 		vi.setSystemTime(parent.proposal.expiresAt + 1);
 		await expire(f);
 		expect((await f.t.run((ctx) => ctx.db.get("files_pending_nodes", parent.node._id)))?.state).toBe("active");
@@ -293,7 +295,7 @@ describe("proposal hold expiry", () => {
 		const parent = await draft(f, "/parent");
 		await draft(f, "/parent/middle");
 		const leaf = await draft(f, "/parent/middle/leaf");
-		await hold(f, parent, "source");
+		await hold({ f, d: parent, role: "source" });
 		vi.setSystemTime(leaf.proposal.expiresAt + 1);
 		await expire(f);
 		expect((await f.t.run((ctx) => ctx.db.get("files_pending_nodes", leaf.node._id)))?.state).toBe("active");
@@ -309,7 +311,7 @@ describe("proposal hold expiry", () => {
 		const f = await fixture();
 		const parent = await draft(f, "/parent");
 		const leaf = await draft(f, "/parent/leaf");
-		await hold(f, parent, "output");
+		await hold({ f, d: parent, role: "output" });
 		vi.setSystemTime(leaf.proposal.expiresAt);
 		await expire(f);
 		expect((await f.t.run((ctx) => ctx.db.get("files_pending_nodes", leaf.node._id)))?.state).toBe("discarded");
@@ -321,7 +323,7 @@ describe("proposal hold expiry", () => {
 		const leaf = await draft(f, "/parent/leaf");
 		let current = f;
 		for (let i = 0; i < 8; i++) {
-			await hold(current, parent, "source");
+			await hold({ f: current, d: parent, role: "source" });
 			await finish(current);
 			const next = await f.asUser.mutation(api.files_transfer.start, {
 				membershipId: f.db.membershipId,
@@ -334,11 +336,11 @@ describe("proposal hold expiry", () => {
 			if (next._nay) throw new Error(next._nay.message);
 			current = { ...f, producer: { kind: "files_transfer_run", id: next._yay.runId } };
 		}
-		await hold(current, parent, "source");
+		await hold({ f: current, d: parent, role: "source" });
 		// Edit the parent later, so only the leaf is due. Otherwise the expiry run would check the
 		// parent too and drain these holds first.
 		vi.setSystemTime(Date.now() + 60 * 60 * 1000);
-		await f.t.run((ctx) => files_db_patch_pending_update(ctx, parent.proposal._id, { updatedAt: Date.now() }));
+		await f.t.run((ctx) => files_db_patch_pending_update({ ctx, pendingUpdateId: parent.proposal._id, value: { updatedAt: Date.now() } }));
 		vi.setSystemTime(leaf.proposal.expiresAt);
 		await expire(f);
 		expect(await f.t.run((ctx) => ctx.db.query("files_pending_holds").collect())).toHaveLength(1);
@@ -355,9 +357,9 @@ describe("proposal hold expiry", () => {
 	test("ready output replaces only its preparing role", async () => {
 		const f = await fixture();
 		const d = await draft(f);
-		await hold(f, d, "source");
-		await hold(f, d, "preparing_output");
-		await hold(f, d, "output");
+		await hold({ f, d, role: "source" });
+		await hold({ f, d, role: "preparing_output" });
+		await hold({ f, d, role: "output" });
 		expect(
 			(await f.t.run((ctx) => ctx.db.query("files_pending_holds").collect())).map((hold) => hold.role).sort(),
 		).toEqual(["output", "source"]);
@@ -471,7 +473,7 @@ describe("proposal hold expiry", () => {
 	test("explicit Discard wins over an active output hold and recovery drops it", async () => {
 		const f = await fixture();
 		const d = await draft(f);
-		await hold(f, d);
+		await hold({ f, d });
 		expect(
 			await f.asUser.mutation(api.files_pending_updates.discard_file_pending_update, {
 				membershipId: f.db.membershipId,
@@ -490,7 +492,7 @@ describe("proposal hold expiry", () => {
 
 	test("producer release drains at most 32 holds without deleting proposals", async () => {
 		const f = await fixture();
-		for (let i = 0; i < 33; i++) await hold(f, await draft(f, `/draft-${i}`));
+		for (let i = 0; i < 33; i++) await hold({ f, d: await draft(f, `/draft-${i}`) });
 		await finish(f);
 		expect(
 			await f.t.run((ctx) => files_pending_holds_db_release_producer_batch(ctx, { producer: f.producer })),

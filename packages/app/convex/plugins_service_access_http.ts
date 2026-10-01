@@ -37,7 +37,13 @@ function failure(message: string) {
 	return { status: 400, body: { code: "invalid_request", message } } as const;
 }
 
-async function request_failure(ctx: ActionCtx, request: Request, message: string) {
+async function request_failure(args: {
+	ctx: ActionCtx;
+	request: Request;
+	message: string;
+}) {
+	const { ctx, request, message } = args;
+
 	if (message === "Unauthorized") {
 		const limited = await rate_limiter_limit_by_key(ctx, {
 			name: "public_api_auth",
@@ -69,10 +75,10 @@ export type plugins_service_access_http_lease_Body = z.infer<typeof lease_body_v
 export async function plugins_service_access_http_lease(ctx: ActionCtx, request: Request) {
 	const token = bearer(request, "Authorization");
 	if (!token || !public_api_PLUGIN_UI_TOKEN_REGEX.test(token))
-		return await request_failure(ctx, request, "Unauthorized");
+		return await request_failure({ ctx, request, message: "Unauthorized" });
 
 	const parsed = await read_request(request, lease_body_validator);
-	if (parsed._nay) return await request_failure(ctx, request, parsed._nay.message);
+	if (parsed._nay) return await request_failure({ ctx, request, message: parsed._nay.message });
 
 	const result: plugins_service_access_create_lease_facts_Result = await ctx.runMutation(
 		internal.plugins_service_access.create_lease_facts,
@@ -82,7 +88,7 @@ export async function plugins_service_access_http_lease(ctx: ActionCtx, request:
 			tokenHash: await crypto_sha256_hex(token),
 		},
 	);
-	if (result._nay) return await request_failure(ctx, request, result._nay.message);
+	if (result._nay) return await request_failure({ ctx, request, message: result._nay.message });
 
 	const { audience, ...facts } = result._yay;
 	if (facts.expiresAt <= Date.now()) return failure("Lease has expired");
@@ -116,7 +122,7 @@ export type plugins_service_access_http_snapshot_Body = z.infer<typeof snapshot_
 
 export async function plugins_service_access_http_snapshot(ctx: ActionCtx, request: Request) {
 	const parsed = await read_request(request, snapshot_body_validator);
-	if (parsed._nay) return await request_failure(ctx, request, parsed._nay.message);
+	if (parsed._nay) return await request_failure({ ctx, request, message: parsed._nay.message });
 
 	const result: plugins_service_access_get_snapshot_Result = await ctx.runMutation(
 		internal.plugins_service_access.get_snapshot,
@@ -125,7 +131,7 @@ export async function plugins_service_access_http_snapshot(ctx: ActionCtx, reque
 			serviceSecretHash: parsed._yay.serviceSecretHash,
 		},
 	);
-	if (result._nay) return await request_failure(ctx, request, result._nay.message);
+	if (result._nay) return await request_failure({ ctx, request, message: result._nay.message });
 
 	return { status: 200, body: result._yay } as const;
 }
@@ -146,7 +152,7 @@ export type plugins_service_access_http_events_Body = z.infer<typeof events_body
 
 export async function plugins_service_access_http_events(ctx: ActionCtx, request: Request) {
 	const parsed = await read_request(request, events_body_validator);
-	if (parsed._nay) return await request_failure(ctx, request, parsed._nay.message);
+	if (parsed._nay) return await request_failure({ ctx, request, message: parsed._nay.message });
 
 	const result: plugins_service_access_get_events_Result = await ctx.runMutation(
 		internal.plugins_service_access.get_events,
@@ -155,7 +161,7 @@ export async function plugins_service_access_http_events(ctx: ActionCtx, request
 			serviceSecretHash: parsed._yay.serviceSecretHash,
 		},
 	);
-	if (result._nay) return await request_failure(ctx, request, result._nay.message);
+	if (result._nay) return await request_failure({ ctx, request, message: result._nay.message });
 
 	return { status: 200, body: result._yay } as const;
 }

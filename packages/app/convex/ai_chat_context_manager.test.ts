@@ -39,11 +39,13 @@ type ToolCall = { toolCallId: string; toolName: string; input: unknown };
  * One model step: text, one tool call, or several parallel calls. `inputTokens` is what the
  * provider says it read. `finishReason` replaces the normal one.
  */
-function step_stream(
-	step: { text: string } | ToolCall | { calls: ToolCall[] },
-	inputTokens: number,
-	finishReason?: "length",
-) {
+function step_stream(args: {
+	step: { text: string } | ToolCall | { calls: ToolCall[] };
+	inputTokens: number;
+	finishReason?: "length";
+}) {
+	const { step, inputTokens, finishReason } = args;
+
 	const parts: StreamPart[] = [{ type: "stream-start", warnings: [] }];
 	if ("text" in step) {
 		parts.push(
@@ -176,7 +178,10 @@ describe("/api/chat history compaction", () => {
 
 		provider.model = new MockLanguageModelV3({
 			doStream: async (options) =>
-				step_stream({ text: system_text(options).startsWith("You write a summary") ? SUMMARY_TEXT : "Answer" }, 10),
+				step_stream({
+					step: { text: system_text(options).startsWith("You write a summary") ? SUMMARY_TEXT : "Answer" },
+					inputTokens: 10,
+				}),
 		});
 		await send(fx, { messageId: "new-question", text: "What next?", parentId: nodeIds.at(-1)! });
 
@@ -214,8 +219,8 @@ describe("/api/chat history compaction", () => {
 		provider.model = new MockLanguageModelV3({
 			doStream: async (options) =>
 				system_text(options).startsWith("You write a summary")
-					? step_stream({ text: SUMMARY_TEXT }, 10, "length")
-					: step_stream({ text: "Answer" }, 10),
+					? step_stream({ step: { text: SUMMARY_TEXT }, inputTokens: 10, finishReason: "length" })
+					: step_stream({ step: { text: "Answer" }, inputTokens: 10 }),
 		});
 		await send(fx, { messageId: "new-question", text: "What next?", parentId: nodeIds.at(-1)! });
 
@@ -236,16 +241,16 @@ describe("/api/chat tool output clearing", () => {
 		provider.model = new MockLanguageModelV3({
 			doStream: async () => {
 				const index = provider.model!.doStreamCalls.length - 1;
-				return step_stream(
-					index < 5
+				return step_stream({
+					step: index < 5
 						? {
 								toolCallId: `read-${index}`,
 								toolName: "view_image",
 								input: { workspace: "current", path: `/missing-${index}.png` },
 							}
 						: { text: "Done" },
-					150_000,
-				);
+					inputTokens: 150_000,
+				});
 			},
 		});
 		await send(fx, { messageId: "read-images", text: "Read the images.", parentId: null });
@@ -274,17 +279,17 @@ describe("/api/chat tool output clearing", () => {
 		provider.model = new MockLanguageModelV3({
 			doStream: async () =>
 				provider.model!.doStreamCalls.length === 1
-					? step_stream(
-							{
+					? step_stream({
+						step: {
 								calls: [0, 1, 2, 3, 4].map((index) => ({
 									toolCallId: `read-${index}`,
 									toolName: "view_image",
 									input: { workspace: "current", path: `/missing-${index}.png` },
 								})),
 							},
-							150_000,
-						)
-					: step_stream({ text: "Done" }, 150_000),
+						inputTokens: 150_000,
+					})
+					: step_stream({ step: { text: "Done" }, inputTokens: 150_000 }),
 		});
 		await send(fx, { messageId: "read-images", text: "Read the images.", parentId: null });
 
@@ -305,16 +310,16 @@ describe("/api/chat loop detection", () => {
 		provider.model = new MockLanguageModelV3({
 			doStream: async (options) => {
 				const index = provider.model!.doStreamCalls.length - 1;
-				return step_stream(
-					(options.tools ?? []).length > 0
+				return step_stream({
+					step: (options.tools ?? []).length > 0
 						? {
 								toolCallId: `again-${index}`,
 								toolName: "view_image",
 								input: { workspace: "current", path: "/missing.png" },
 							}
 						: { text: "I am stuck." },
-					10,
-				);
+					inputTokens: 10,
+				});
 			},
 		});
 		await send(fx, { messageId: "loop", text: "Read the image.", parentId: null });

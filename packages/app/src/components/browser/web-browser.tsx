@@ -1,9 +1,8 @@
 import "./web-browser.css";
 
 import { AppAuthProvider } from "@/components/app-auth.tsx";
-import { BrowserProviderSelect, BrowserSettings } from "@/components/browser/browser-settings.tsx";
+import { BrowserSettings } from "@/components/browser/browser-settings.tsx";
 import { BrowserViewer, type BrowserViewer_Ref } from "@/components/browser/browser-viewer.tsx";
-import { PlaywriterBrowserConnection } from "@/components/browser/playwriter-browser-connection.tsx";
 import { WebBrowserFileChooser } from "@/components/browser/web-browser-file-chooser.tsx";
 import { WebBrowserSavedData } from "@/components/browser/web-browser-saved-data.tsx";
 import { MyBadge } from "@/components/my-badge.tsx";
@@ -381,8 +380,8 @@ const WebBrowserLive = memo(function WebBrowserLive(props: WebBrowserLive_Props)
 		return { grantId: granted._yay.grantId, viewerUrl: granted._yay.viewerUrl };
 	});
 
-	const handleViewerHello = useFn((id: string) => {
-		setViewerId(id);
+	const handleViewerHello = useFn((args: { id: string }) => {
+		setViewerId(args.id);
 	});
 
 	const handleViewerControl = useFn((next: files_browser_StreamControlMessage) => {
@@ -1103,53 +1102,26 @@ const CloudWebBrowser = memo(function CloudWebBrowser() {
 
 type WebBrowser_ClassNames = "WebBrowser" | "WebBrowser-controls";
 
-type WebBrowser_CustomAttributes = {
-	"data-browser-provider": "none" | "cloud" | "playwriter";
-};
-
 /**
- * Provider choice is saved outside the page. The Playwriter branch mounts no cloud hooks.
+ * The page shows the cloud browser. The user connects their own browser in Browser settings. The
+ * agent picks between both kinds of tab on its own.
  */
 export const WebBrowser = memo(function WebBrowser() {
 	const { membershipId } = AppTenantProvider.useContext();
 	const preferences = useQuery(app_convex_api.files_browser.current_browser_preferences, { membershipId });
-	const [providerDraft, setProviderDraft] = useState<{ provider: "playwriter"; revision: number } | null>(null);
 	const [settingsOpen, setSettingsOpen] = useState(false);
-	const provider =
-		(providerDraft?.revision === preferences?.selectionRevision ? providerDraft?.provider : null) ??
-		preferences?.webChoice.provider ??
-		"none";
 
 	if (preferences === undefined) return <MySpinner size="16px" aria-label="Loading browser settings" />;
 	if (preferences === null) return <p>Browser settings are not available in this workspace.</p>;
 
 	return (
-		<div
-			className={"WebBrowser" satisfies WebBrowser_ClassNames}
-			{...({ "data-browser-provider": provider } satisfies WebBrowser_CustomAttributes)}
-		>
+		<div className={"WebBrowser" satisfies WebBrowser_ClassNames}>
 			<div className={"WebBrowser-controls" satisfies WebBrowser_ClassNames}>
-				<BrowserProviderSelect
-					provider={provider}
-					onProviderChange={(nextProvider) =>
-						setProviderDraft(
-							nextProvider === "playwriter"
-								? { provider: nextProvider, revision: preferences.selectionRevision }
-								: null,
-						)
-					}
-				/>
 				<MyButton variant="outline" onClick={() => setSettingsOpen(true)}>
 					Browser settings
 				</MyButton>
 			</div>
-			{provider === "playwriter" ? (
-				<PlaywriterBrowserConnection />
-			) : provider === "cloud" ? (
-				<CloudWebBrowser />
-			) : (
-				<p>No browser selected. Choose a browser to continue.</p>
-			)}
+			<CloudWebBrowser />
 			{settingsOpen && <BrowserSettings onClose={() => setSettingsOpen(false)} />}
 		</div>
 	);

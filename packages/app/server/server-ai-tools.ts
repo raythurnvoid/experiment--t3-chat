@@ -505,12 +505,14 @@ function* ai_chat_tool_edit_file_replacer_context_aware(
 	}
 }
 
-export function replace_once_or_all(
-	content: string,
-	oldString: string,
-	newString: string,
-	opts?: { replaceAll?: boolean; mode?: "auto" | "exact" },
-): { content: string; matches: number; matcher: string } {
+export function replace_once_or_all(args: {
+	content: string;
+	oldString: string;
+	newString: string;
+	opts?: { replaceAll?: boolean; mode?: "auto" | "exact" };
+}): { content: string; matches: number; matcher: string } {
+	const { content, oldString, newString, opts } = args;
+
 	if (oldString.length === 0) throw new Error("oldString must not be empty");
 	if (oldString === newString) throw new Error("oldString and newString must be different");
 
@@ -564,8 +566,8 @@ export function replace_once_or_all(
 }
 
 // #region bash
-export function ai_chat_tool_create_bash(
-	ctx: ActionCtx,
+export function ai_chat_tool_create_bash(args: {
+	ctx: ActionCtx;
 	ctxData: {
 		organizationId: Id<"organizations">;
 		workspaceId: Id<"organizations_workspaces">;
@@ -583,7 +585,7 @@ export function ai_chat_tool_create_bash(
 		getSourceMessageId?: () => Id<"ai_chat_threads_messages_aisdk_5"> | null;
 		browserIntent?: browser_Intent | null;
 		getWorkspaceContext?: () => ai_chat_context_Context | null;
-	},
+	};
 	options: {
 		allowDbFilesMkdir: boolean;
 		/**
@@ -597,8 +599,10 @@ export function ai_chat_tool_create_bash(
 		 * `wakeOnJobFinish` field out of the schema, so an Ask-mode model never sees it.
 		 */
 		jobWakeup?: { modelId: ai_chat_ModelId; onWaiting: () => void } | null;
-	},
-) {
+	};
+}) {
+	const { ctx, ctxData, options } = args;
+
 	const HOME = "/home/cloud-usr";
 	const appMountPath = `${HOME}/w`;
 	const currentWorkspacePath = `${appMountPath}/${ctxData.organizationName}/${ctxData.workspaceName}`;
@@ -637,7 +641,7 @@ export function ai_chat_tool_create_bash(
 			Start with resolve '<reference>' for one raw node ID or full HTTP(S) app file URL. Do not run ls, find, search, or other discovery commands first. It prints only the current absolute Bash path and is available in Ask and Agent modes. It looks in the current workspace and your own personal/home even after cd elsewhere. It cannot resolve a third workspace or reserved source nodes. IDs and nodeId URLs follow your pending moves and renames; path URLs identify the saved node before applying your pending moves. Pending-deleted or inaccessible nodes are unavailable. Pass the returned absolute path unchanged to cat, stat, ls, or edit_file as needed; do not prefix it with @. Quote the reference and returned path; resolve does not read content. Known paths and @/path mentions need no resolve call. If resolve reports unavailable, do not scan files, fetch the URL, or use execute_code to find a path.
 			For a text-read request using a node ID or app file URL, start with one Bash call: \`p=$(resolve '<reference>') && cat -- "$p"\`.
 			Content-vs-path rule: use search for text inside files, and use find only for path/name discovery. Plain requests like "search for X with limit N" mean content search, so run search --limit N X. If the user says "search for the X file", "find the X file", "file named X", or "path/name contains X", use find. If the user says "search inside <folder> for X", "where does X appear", or "files mention X", run search --path <folder> X or search X; do not substitute find --path-query.
-			Use meta search --where '{"eq":["frontmatter.from","alice@example.com"]}' to search the indexed metadata of app files and folders. Prefer meta search/meta get over reading raw file text when answering which files or folders have a field or value. Fields must be qualified names of one of two kinds. frontmatter.* is the Markdown YAML frontmatter, which is part of the file's own text. metadata.* is the metadata stored next to the file or folder: every file kind supports it, uploads included, it is not part of the file content, and saving the content does not change it. A metadata key is flat and may contain letters, numbers, "_", "-" and ":", for example {"eq":["metadata.created-by","slack"]} or {"exists":"metadata.slack:message-id"}. One positive predicate per command is supported: exists, eq, prefix, or range. range works on numeric fields and on date-like string fields: strings shaped like ISO dates (e.g. 2026-07-29 or 2026-07-29T14:30:36.264Z) are also indexed as a second maybe_date value, and meta get marks those lines with (maybe_date), so a field is date-filterable only when meta get shows a maybe_date line for it. range takes a bounds object, e.g. {"range":["frontmatter.estimate",{"gte":5,"lte":120}]} or {"range":["frontmatter.realStartTime",{"gte":"2026-07-27","lt":"2026-08-02"}]} (any of gte/gt/lte/lt; bounds must be all numbers or all ISO date strings). The bound type picks which indexed values are scanned: number bounds scan number values, ISO date string bounds scan maybe_date values, so querying a numeric field with date bounds (or the reverse) returns an empty result instead of an error — check the field's kind with meta get first. Write a full YYYY-MM-DD; partial bounds such as 2026-07 are rejected. A date-only bound means midnight UTC, so for a whole day or month use an exclusive upper bound such as {"gte":"2026-07-29","lt":"2026-07-30"} rather than lte on the same day, which would drop that day's later timestamps. Default output is paths; use --format json for metadata details and cursors. Combine multiple predicates outside meta with shell tools over path output. There is no not/neq: to find where a field is NOT a value, first run exists <field> to list every file or folder that has the field, then remove the eq <field> <value> matches (e.g. comm -23 or grep -vxF) — the eq matches are only a subset, so never infer the complement from an eq result alone. Use meta get <path> to inspect one file or folder's indexed metadata; it lists frontmatter.* from file text and metadata.* from the item's map together, and its source: line describes the frontmatter.* lines only, because metadata.* is always the committed map. In Agent mode, use the set_file_metadata tool to write metadata.* keys. If field names are unclear, read nearby README.md files because folders may document frontmatter conventions.
+			Use meta search --where '{"eq":["frontmatter.from","alice@example.com"]}' to search the indexed metadata of app files and folders. Prefer meta search/meta get over reading raw file text when answering which files or folders have a field or value. Fields must be qualified names of one of two kinds. frontmatter.* is the Markdown YAML frontmatter, which is part of the file's own text. metadata.* is the metadata stored next to the file or folder: every file kind supports it, uploads included, it is not part of the file content, and saving the content does not change it. A metadata key is flat and may contain letters, numbers, "_" and "-", for example {"eq":["metadata.created-by","slack"]} or {"exists":"metadata.slack-message-id"}. One positive predicate per command is supported: exists, eq, prefix, or range. range works on numeric fields and on date-like string fields: strings shaped like ISO dates (e.g. 2026-07-29 or 2026-07-29T14:30:36.264Z) are also indexed as a second maybe_date value, and meta get marks those lines with (maybe_date), so a field is date-filterable only when meta get shows a maybe_date line for it. range takes a bounds object, e.g. {"range":["frontmatter.estimate",{"gte":5,"lte":120}]} or {"range":["frontmatter.realStartTime",{"gte":"2026-07-27","lt":"2026-08-02"}]} (any of gte/gt/lte/lt; bounds must be all numbers or all ISO date strings). The bound type picks which indexed values are scanned: number bounds scan number values, ISO date string bounds scan maybe_date values, so querying a numeric field with date bounds (or the reverse) returns an empty result instead of an error — check the field's kind with meta get first. Write a full YYYY-MM-DD; partial bounds such as 2026-07 are rejected. A date-only bound means midnight UTC, so for a whole day or month use an exclusive upper bound such as {"gte":"2026-07-29","lt":"2026-07-30"} rather than lte on the same day, which would drop that day's later timestamps. Default output is paths; use --format json for metadata details and cursors. Combine multiple predicates outside meta with shell tools over path output. There is no not/neq: to find where a field is NOT a value, first run exists <field> to list every file or folder that has the field, then remove the eq <field> <value> matches (e.g. comm -23 or grep -vxF) — the eq matches are only a subset, so never infer the complement from an eq result alone. Use meta get <path> to inspect one file or folder's indexed metadata; it lists frontmatter.* from file text and metadata.* from the item's map together, and its source: line describes the frontmatter.* lines only, because metadata.* is always the committed map. In Agent mode, use the set_file_metadata tool to write metadata.* keys. If field names are unclear, read nearby README.md files because folders may document frontmatter conventions.
 			For search --path and meta search --path, the same app-root path rule applies: pass ${currentWorkspacePath}/folder or relative folder, never raw /folder.
 			When a content-search request already names a folder, do not run ls first to verify that folder; run search --path <folder> <content terms> directly and let search report missing or invalid scopes.
 			For recursive grep requests over an app folder, the first Bash command should be search --path <folder> <content terms>; do not run ls, native rg, or multi-file grep first.
@@ -654,7 +658,7 @@ export function ai_chat_tool_create_bash(
 			In Agent mode, shell writes in the current workspace or your own personal/home create pending proposals the user reviews in Files, exactly like edit_file: create or overwrite a file with a quoted heredoc (cat > '<path>' <<'EOF' ... EOF) or a redirect, append with >>, tee writes each app target as a proposal, and touch on a new path creates an empty-file proposal (touch on an existing app file changes nothing). Every app file has a stored content type, and that type (never the name) decides how the file opens and how a write is stored: a Markdown file keeps rich text and serves back its rendered Markdown text, and any other text type (plain text, JSON, YAML, CSS, JavaScript, and similar) stores bytes exactly as written. A new file takes its type from its normalized name (README.md is Markdown, data.json is JSON, notes.txt or another name with no known extension is plain text). A new bare readme becomes README.md; other names keep their extension. Renaming or moving a file never changes its type: mv data.json data.yaml keeps JSON. Copying a file copies its content and its type: cp notes.md data.json makes data.json a Markdown file, and cp data.json notes.md makes notes.md a JSON file. Your own reads (bash and the file tools) see your pending proposals as if applied, while other users see only the saved tree. New files remain private proposals until the user saves them. The user's Files view shows their own proposals in each destination workspace. On a file with collaboration off, if a member saves the file after your write, your pending change becomes stale. Your reads show the saved text again. Your next edit or shell write automatically prepares the proposal before reading fresh text. It keeps earlier proposed work and unrelated saved text; a full overwrite replaces the proposed text you choose to overwrite. In Ask mode app files are read-only. rm <app-path> proposes a pending delete: accepting archives the file, and rm -r <app-folder> archives the folder with everything inside. Your own reads see a pending-deleted path as gone; rm on your own not-yet-accepted new file usually removes it immediately (stdout prints removed '<path>'; when it cannot be removed safely it becomes a normal pending delete). ln is not available for app files. mv <app-path> <app-path> proposes a pending move/rename within one workspace; accepting a move onto an occupied path replaces that file. Plain mv never overwrites an existing destination; mv -f <app-file> <existing-app-file> proposes replacing it: accepting moves the source file, with its type and history, onto that path and archives the file that was there (a plain folder move can replace an empty folder, and folders never replace files or the reverse). cp <app-file> <app-path> proposes a pending copy: a new destination file appears immediately with the copied content pending review, your reads at the destination show that pending content, accepting publishes it, and discarding removes the destination file. When the cp destination file already exists, the copy becomes a pending replacement of that file's content and type, and discarding keeps the destination file as it was. Use cp -n or cp --no-clobber to leave an existing final destination unchanged without creating a replacement proposal. cp <app-file> /tmp/<name> stays an immediate durable per-thread scratch copy. Targeted edits to existing text files belong in edit_file with app paths such as /docs/readme.md or /data/config.json; the edit_file description states how to convert a bash path to an app path. If a user asks to delete a file, run rm on it; the delete still waits for their accept in Files.${
 				options.browser
 					? `\n${dedent`
-					Browser: browser drives the web browser the user chose (the cloud browser, or My browser, the user's own shared tab) and the cloud file preview, with Playwright code, like the Playwriter CLI. Run browser --help first for the full usage. browser status shows what is open. browser open [URL] opens or reuses the web browser; browser open --file PATH opens an app HTML file in the preview. browser run -e 'return await page.title()' runs an async function body with page, frame (file preview), expect, emitFile and state; use a quoted heredoc (browser run <<'EOF' ... EOF) for longer code. Its console.log lines and return value print on stdout, so | jq works; page console lines, page errors and state warnings print on stderr. state keeps JSON data between runs of this chat while the browser stays open. A run has about 27 seconds; exit 124 means the time limit. One Bash call fits two or three runs. Cloud tabs: browser tabs, browser tab new [URL], browser tab close TAB, and --tab TAB on run and reload. My browser has one tab. In Agent mode emitFile saves a pending file such as a screenshot; then use view_image on it. A turn has 20 browser operations. Refusals print a fixed reason on stderr: never retry one that says not to.`}`
+					Browser: browser drives web tabs and the cloud file preview with Playwright code, like the Playwriter CLI. There are two kinds of web tabs: cloud tabs (a Cloudflare browser you can open) and my browser (the one tab the user shared from their own browser). Run browser --help first for the full usage. browser status shows what is open. browser tabs lists every web tab with its kind; pick one with --tab TAB on run, reload and close. browser open [URL] opens or reuses the cloud browser, and browser tab new [URL] opens one more cloud tab; nothing can open a new my browser tab. browser open --file PATH opens an app HTML file in the preview. browser run -e 'return await page.title()' runs an async function body with page, frame (file preview), expect, emitFile and state; use a quoted heredoc (browser run <<'EOF' ... EOF) for longer code. Its console.log lines and return value print on stdout, so | jq works; page console lines, page errors and state warnings print on stderr. state keeps JSON data between runs of this chat while the browser stays open. A run has about 27 seconds; exit 124 means the time limit. One Bash call fits two or three runs. In Agent mode emitFile saves a pending file such as a screenshot; then use view_image on it. A turn has 20 browser operations. Refusals print a fixed reason on stderr: never retry one that says not to.`}`
 					: ""
 			}`,
 		inputSchema: z.object({
@@ -732,12 +736,12 @@ export function ai_chat_tool_create_bash(
 
 			const context = ctxData.getWorkspaceContext?.();
 			let instructions = context
-				? await ai_chat_context_read_instructions(
-						ctx,
-						context,
-						result.metadata.observedPaths,
-						ai_chat_INSTRUCTIONS_READ_MAX_BYTES,
-					)
+				? await ai_chat_context_read_instructions({
+					ctx,
+					context,
+					paths: result.metadata.observedPaths,
+					maxBytes: ai_chat_INSTRUCTIONS_READ_MAX_BYTES,
+				})
 				: "";
 			if (context && result.metadata.observedPathsTruncated) {
 				instructions += `${instructions ? "\n\n" : ""}Workspace guidance is incomplete: inspect fewer app paths per Bash call.`;
@@ -779,7 +783,13 @@ export type ai_chat_WriteToolName = (typeof ai_chat_WRITE_TOOL_NAMES)[number];
  * A later hunk becomes an empty line. Without it, two hunks from far apart in the file would
  * read as one continuous block.
  */
-function ai_chat_tool_edit_file_create_diff(path: string, before: string, after: string) {
+function ai_chat_tool_edit_file_create_diff(args: {
+	path: string;
+	before: string;
+	after: string;
+}) {
+	const { path, before, after } = args;
+
 	const patch = createPatch(path, before, after);
 	const firstHunkIndex = patch.search(/^@@/m);
 	// An edit that changes nothing produces no hunk.
@@ -958,12 +968,17 @@ export function ai_chat_tool_create_edit_file(
 					content: modifiedTextRaw,
 					matches,
 					matcher,
-				} = replace_once_or_all(currentFileContent.content, oldString, newString, {
+				} = replace_once_or_all({
+					content: currentFileContent.content,
+					oldString,
+					newString,
+					opts: {
 					replaceAll: args.replaceAll,
 					mode: "auto",
+				},
 				});
 				const modifiedText = files_normalize_ai_edit_content(modifiedTextRaw, currentFileContent.content);
-				const diff = ai_chat_tool_edit_file_create_diff(normalizedPath, currentFileContent.content, modifiedText);
+				const diff = ai_chat_tool_edit_file_create_diff({ path: normalizedPath, before: currentFileContent.content, after: modifiedText });
 
 				const written = await files_agent_write_file_text(ctx, {
 					organizationId,
@@ -1005,12 +1020,12 @@ export function ai_chat_tool_create_edit_file(
 				const replacedCount = args.replaceAll ? `Replaced ${matches} occurrences` : "Replaced 1 occurrence";
 				const context = ctxData.getWorkspaceContext?.();
 				const instructions = context
-					? await ai_chat_context_read_instructions(
-							ctx,
-							context,
-							[{ workspace: args.workspace, path: normalizedPath }],
-							ai_chat_INSTRUCTIONS_READ_MAX_BYTES,
-						)
+					? await ai_chat_context_read_instructions({
+						ctx,
+						context,
+						paths: [{ workspace: args.workspace, path: normalizedPath }],
+						maxBytes: ai_chat_INSTRUCTIONS_READ_MAX_BYTES,
+					})
 					: "";
 				return {
 					title: normalizedPath,
@@ -1067,7 +1082,7 @@ export function ai_chat_tool_create_set_file_metadata(
 			- Choose workspace="current" for this chat's workspace or workspace="personal" for your own personal/home. Remove the matching /home/cloud-usr/w/<organization>/<workspace> path prefix before passing the path here. No other workspace is available.
 			- Preserve the full remaining suffix after that prefix; /home/cloud-usr/w/personal/home/folder/README.md becomes /folder/README.md, never /README.md.
 			- Metadata is a flat map. A value is text, a number, or true/false. There is no nesting and no lists.
-			- A key may contain letters, numbers, "_", "-" and ":", for example created-by or slack:message-id. A dot is not allowed.
+			- A key may contain letters, numbers, "_" and "-", for example created-by or slack-message-id. A dot and a colon are not allowed.
 			- Pass bare keys here. meta get and meta search print the search field name metadata.<key>; this tool takes <key> on its own, in both set and remove.
 			- This tool never writes Markdown frontmatter. meta get lists frontmatter.<key> lines from the file's own text next to the metadata.<key> lines; this tool cannot change those. To change frontmatter, edit the file's text with edit_file. Never drop the frontmatter. prefix and pass the rest here, because that would write a different key in a different place.
 			- Keys are a convention, not a permission: any writer may set any key. Read a folder's README.md first when the user expects a house convention.
@@ -1151,12 +1166,12 @@ export function ai_chat_tool_create_set_file_metadata(
 			const entries = written._yay.entries;
 			const context = ctxData.getWorkspaceContext?.();
 			const instructions = context
-				? await ai_chat_context_read_instructions(
-						ctx,
-						context,
-						[{ workspace: args.workspace, path: normalizedPath }],
-						ai_chat_INSTRUCTIONS_READ_MAX_BYTES,
-					)
+				? await ai_chat_context_read_instructions({
+					ctx,
+					context,
+					paths: [{ workspace: args.workspace, path: normalizedPath }],
+					maxBytes: ai_chat_INSTRUCTIONS_READ_MAX_BYTES,
+				})
 				: "";
 			return {
 				title: normalizedPath,
@@ -1332,7 +1347,7 @@ function file_output_result(title: string, outcomes: Awaited<ReturnType<typeof f
 	const cancelled = outcomes.some((item) => item.status === "cancelled");
 	const status =
 		files.length === outcomes.length ? "succeeded" : files.length > 0 ? "partial" : cancelled ? "cancelled" : "errored";
-	return ai_chat_file_result(title, status, files, failed ? "storage" : null);
+	return ai_chat_file_result({ title, status, files, reason: failed ? "storage" : null });
 }
 
 /**
@@ -1342,23 +1357,25 @@ function file_output_result(title: string, outcomes: Awaited<ReturnType<typeof f
  * thread access are checked again inside the prepare and finalize mutations, so a turn that loses
  * either one mid-run cannot still create files.
  */
-export async function ai_chat_write_file_outputs(
-	ctx: ActionCtx,
-	agentSource: Infer<typeof ai_chat_workspaces_source_validator>,
+export async function ai_chat_write_file_outputs(args: {
+	ctx: ActionCtx;
+	agentSource: Infer<typeof ai_chat_workspaces_source_validator>;
 	files: Array<{
 		workspace: "current" | "personal";
 		path: string;
 		contentType?: string;
 		bytes: Uint8Array<ArrayBuffer>;
-	}>,
-	options: { title: string; requestId: string; modeId: "ask" | "agent"; abortSignal?: AbortSignal },
-) {
-	if (options.modeId !== "agent") return ai_chat_file_result(options.title, "errored", [], "agent_required");
-	const destinations = new Map<"current" | "personal", Parameters<typeof files_ingestion_write>[1][number]["scope"]>();
+	}>;
+	options: { title: string; requestId: string; modeId: "ask" | "agent"; abortSignal?: AbortSignal };
+}) {
+	const { ctx, agentSource, files, options } = args;
+
+	if (options.modeId !== "agent") return ai_chat_file_result({ title: options.title, status: "errored", files: [], reason: "agent_required" });
+	const destinations = new Map<"current" | "personal", Parameters<typeof files_ingestion_write>[0]["files"][number]["scope"]>();
 	for (const { workspace } of files) {
 		if (destinations.has(workspace)) continue;
 		const resolved = await ctx.runQuery(internal.ai_chat_workspaces.resolve, { source: agentSource, workspace });
-		if (resolved._nay) return ai_chat_file_result(options.title, "errored", [], "unavailable");
+		if (resolved._nay) return ai_chat_file_result({ title: options.title, status: "errored", files: [], reason: "unavailable" });
 		const { organizationId, workspaceId, membershipId } = resolved._yay;
 		destinations.set(workspace, {
 			organizationId,
@@ -1369,10 +1386,10 @@ export async function ai_chat_write_file_outputs(
 			agentSource,
 		});
 	}
-	const outcomes = await files_ingestion_write(
+	const outcomes = await files_ingestion_write({
 		ctx,
-		files.map(({ workspace, ...file }) => ({ ...file, scope: destinations.get(workspace)! })),
-		{
+		files: files.map(({ workspace, ...file }) => ({ ...file, scope: destinations.get(workspace)! })),
+		producer: {
 			requestId: options.requestId,
 			prepare: (args) =>
 				ctx.runMutation(internal.ai_chat_files.prepare_file_output, {
@@ -1389,8 +1406,8 @@ export async function ai_chat_write_file_outputs(
 					modeId: options.modeId,
 				}),
 		},
-		options.abortSignal,
-	);
+		abortSignal: options.abortSignal,
+	});
 	return file_output_result(options.title, outcomes);
 }
 // #endregion file outputs
@@ -1495,8 +1512,8 @@ function ai_chat_tool_execute_code_format_output(result: ai_chat_tool_execute_co
 	return blocks.join("\n");
 }
 
-async function execute_code(
-	ctx: ActionCtx,
+async function execute_code(args: {
+	ctx: ActionCtx;
 	ctxData: {
 		organizationId: Id<"organizations">;
 		workspaceId: Id<"organizations_workspaces">;
@@ -1505,10 +1522,13 @@ async function execute_code(
 		membershipLifetime: number;
 		getThreadId: () => Id<"ai_chat_threads"> | null;
 		getRun: () => { runId: Id<"ai_chat_runs">; generation: number } | null;
-	},
-	args: { code: string; input?: unknown },
-	abortSignal: AbortSignal | undefined,
-) {
+	};
+	code: string;
+	input?: unknown;
+	abortSignal: AbortSignal | undefined;
+}) {
+	const { ctx, ctxData, abortSignal } = args;
+
 	const baseUrl = process.env.CODE_EXECUTION_RUNNER_URL?.trim();
 	const secret = process.env.CODE_EXECUTION_RUNNER_SECRET?.trim();
 	if (!baseUrl || !secret) throw new Error("Code execution is unavailable.");
@@ -1660,7 +1680,7 @@ export function ai_chat_tool_create_execute_code(
 
 		outputSchema: ai_chat_execute_code_result_schema,
 		execute: async (args, options) => {
-			const result = await execute_code(ctx, ctxData, args, options.abortSignal);
+			const result = await execute_code({ ctx, ctxData, ...args, abortSignal: options.abortSignal });
 			const output = ai_chat_tool_execute_code_format_output(result);
 			let fileResult: z.infer<typeof ai_chat_file_result_schema> | null = null;
 
@@ -1669,9 +1689,9 @@ export function ai_chat_tool_create_execute_code(
 				const threadId = ctxData.getThreadId?.();
 				if (!threadId) throw new Error("File output needs a chat thread.");
 
-				fileResult = await ai_chat_write_file_outputs(
+				fileResult = await ai_chat_write_file_outputs({
 					ctx,
-					{
+					agentSource: {
 						userId: ctxData.userId,
 						membershipId: ctxData.membershipId,
 						membershipLifetime: ctxData.membershipLifetime,
@@ -1680,14 +1700,14 @@ export function ai_chat_tool_create_execute_code(
 						workspaceId: ctxData.workspaceId,
 						run: ctxData.getRun(),
 					},
-					result.files,
-					{
+					files: result.files,
+					options: {
 						title: "File output",
 						requestId: options.toolCallId,
 						modeId: ctxData.canWriteFiles ? "agent" : "ask",
 						abortSignal: options.abortSignal,
 					},
-				);
+				});
 			}
 
 			return {
@@ -1888,8 +1908,8 @@ function mcp_result_stored_text(result: mcp_client_NormalizedResult, secrets: st
  * the tool definition frozen at turn setup. There is no approval step yet: a tool runs when the model
  * calls it. Every call that reached the server writes one ledger doc, with no arguments and no output.
  */
-export async function ai_chat_tool_create_mcp_tools(
-	ctx: ActionCtx,
+export async function ai_chat_tool_create_mcp_tools(args: {
+	ctx: ActionCtx;
 	ctxData: {
 		organizationId: Id<"organizations">;
 		workspaceId: Id<"organizations_workspaces">;
@@ -1906,9 +1926,11 @@ export async function ai_chat_tool_create_mcp_tools(
 		 * When the chat run lease ends. After that another run can take the thread, so no call may run longer.
 		 */
 		runDeadline: number;
-	},
-	servers: ai_chat_tool_McpServer[],
-) {
+	};
+	servers: ai_chat_tool_McpServer[];
+}) {
+	const { ctx, ctxData, servers } = args;
+
 	const tools: Record<string, Tool<unknown, unknown>> = {};
 	for (const server of servers) {
 		const secrets = server.secretValues;
@@ -2046,7 +2068,13 @@ export async function ai_chat_tool_create_mcp_tools(
 							const startedAt = Date.now();
 							let called = await callWith(access?.status === "connected" ? access.accessToken : null);
 
-							const recordCall = async (outcome: string, bytesIn: number, result: ai_chat_McpToolOutput | null) => {
+							const recordCall = async (args: {
+								outcome: string;
+								bytesIn: number;
+								result: ai_chat_McpToolOutput | null;
+							}) => {
+								const { result, bytesIn, outcome} = args;
+
 								await ctx.runMutation(internal.plugins_mcp.record_call, {
 									source,
 									target: server.target,
@@ -2065,17 +2093,17 @@ export async function ai_chat_tool_create_mcp_tools(
 							if (called._nay?.name === "auth_required" && access?.status === "connected" && !access.refreshed) {
 								access = await getAccess({ grantId: access.grantId, version: access.version });
 								if (access.status === "busy" || access.status === "failed") {
-									await recordCall(called._nay.name, 0, null);
+									await recordCall({ outcome: called._nay.name, bytesIn: 0, result: null });
 									throw new Error(access.status === "busy" ? MCP_SIGN_IN_BUSY_MESSAGE : access.message);
 								}
 								if (access.status === "connected") {
 									const retryRecheck = await recheckCall();
 									if (retryRecheck._nay) {
-										await recordCall(called._nay.name, 0, null);
+										await recordCall({ outcome: called._nay.name, bytesIn: 0, result: null });
 										throw new Error(retryRecheck._nay.message);
 									}
 									if (ctxData.runDeadline <= Date.now()) {
-										await recordCall(called._nay.name, 0, null);
+										await recordCall({ outcome: called._nay.name, bytesIn: 0, result: null });
 										throw new Error(MCP_NO_TIME_MESSAGE);
 									}
 									called = await callWith(access.accessToken);
@@ -2105,7 +2133,7 @@ export async function ai_chat_tool_create_mcp_tools(
 								server.auth !== "oauth" &&
 								!(server.kind === "custom" && server.auth === "none")
 							) {
-								await recordCall(called._nay.name, 0, null);
+								await recordCall({ outcome: called._nay.name, bytesIn: 0, result: null });
 								throw new Error(
 									server.kind === "custom"
 										? "This server refused its headers. Check them on the MCP servers page."
@@ -2130,11 +2158,11 @@ export async function ai_chat_tool_create_mcp_tools(
 										reason: needsMoreAccess ? "needs_more_access" : "needs_sign_in",
 									},
 								};
-								await recordCall("auth_needed", 0, result);
+								await recordCall({ outcome: "auth_needed", bytesIn: 0, result });
 								return result;
 							}
 							if (called._nay) {
-								await recordCall(called._nay.name, 0, null);
+								await recordCall({ outcome: called._nay.name, bytesIn: 0, result: null });
 								// Fixed Press text only. Text from the server never reaches `_nay.message`.
 								throw new Error(called._nay.message);
 							}
@@ -2169,7 +2197,11 @@ export async function ai_chat_tool_create_mcp_tools(
 									...(kept.ref ? { output: kept.ref } : {}),
 								},
 							};
-							await recordCall(called._yay.result.isError ? "tool_error" : "ok", called._yay.result.bytesIn, result);
+							await recordCall({
+								outcome: called._yay.result.isError ? "tool_error" : "ok",
+								bytesIn: called._yay.result.bytesIn,
+								result,
+							});
 							return result;
 						} finally {
 							await ctx.runMutation(internal.ai_chat_outputs.release_reservation, { objectId: reservation.objectId });
@@ -2275,7 +2307,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 	describe("ai_chat_tool_edit_file_create_diff", () => {
 		test("bounds a large edit preview", () => {
-			const diff = ai_chat_tool_edit_file_create_diff("/large.txt", "a".repeat(5000), "b".repeat(5000));
+			const diff = ai_chat_tool_edit_file_create_diff({ path: "/large.txt", before: "a".repeat(5000), after: "b".repeat(5000) });
 			expect(diff).toHaveLength(4122);
 			expect(diff).toContain("[Diff preview truncated.]");
 		});
@@ -2284,7 +2316,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const before = '{\n\t"n": 1\n}\n';
 			const after = '{\n\t"n": 2\n}\n';
 
-			expect(ai_chat_tool_edit_file_create_diff("/qa.json", before, after)).toBe(
+			expect(ai_chat_tool_edit_file_create_diff({ path: "/qa.json", before, after })).toBe(
 				[" {", '-\t"n": 1', '+\t"n": 2', " }", ""].join("\n"),
 			);
 		});
@@ -2293,7 +2325,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const before = `${["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l"].join("\n")}\n`;
 			const after = `${["A", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "L"].join("\n")}\n`;
 
-			const diff = ai_chat_tool_edit_file_create_diff("/qa.txt", before, after);
+			const diff = ai_chat_tool_edit_file_create_diff({ path: "/qa.txt", before, after });
 			expect(diff).not.toContain("@@");
 			expect(diff).not.toContain("Index:");
 			expect(diff).toContain("-a\n+A\n");
@@ -2302,7 +2334,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("returns an empty diff when nothing changed", () => {
-			expect(ai_chat_tool_edit_file_create_diff("/qa.txt", "same\n", "same\n")).toBe("");
+			expect(ai_chat_tool_edit_file_create_diff({ path: "/qa.txt", before: "same\n", after: "same\n" })).toBe("");
 		});
 	});
 }

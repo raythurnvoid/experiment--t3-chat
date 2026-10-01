@@ -33,7 +33,7 @@ export function public_api_http_routes(router: { route: HttpRouter["route"] }) {
 							method,
 							handler: httpAction(async (ctx, request) => {
 								const { public_api_http_read_file } = await import("./public_api.ts");
-								const result = await public_api_http_read_file(ctx, request, path);
+								const result = await public_api_http_read_file({ ctx, request, path });
 								return Response.json(result.body, result);
 							}),
 						});
@@ -65,7 +65,7 @@ export function public_api_http_routes(router: { route: HttpRouter["route"] }) {
 							method,
 							handler: httpAction(async (ctx, request) => {
 								const { public_api_http_read_many } = await import("./public_api.ts");
-								const result = await public_api_http_read_many(ctx, request, path);
+								const result = await public_api_http_read_many({ ctx, request, path });
 								return Response.json(result.body, result);
 							}),
 						});
@@ -97,7 +97,7 @@ export function public_api_http_routes(router: { route: HttpRouter["route"] }) {
 							method,
 							handler: httpAction(async (ctx, request) => {
 								const { public_api_http_read_bytes } = await import("./public_api.ts");
-								const result = await public_api_http_read_bytes(ctx, request, path);
+								const result = await public_api_http_read_bytes({ ctx, request, path });
 								return result.status === 200 ? new Response(result.body, result) : Response.json(result.body, result);
 							}),
 						});
@@ -129,7 +129,7 @@ export function public_api_http_routes(router: { route: HttpRouter["route"] }) {
 							method,
 							handler: httpAction(async (ctx, request) => {
 								const { public_api_http_get_file_write_policy } = await import("./public_api.ts");
-								const result = await public_api_http_get_file_write_policy(ctx, request, path);
+								const result = await public_api_http_get_file_write_policy({ ctx, request, path });
 								return Response.json(result.body, result);
 							}),
 						});
@@ -161,7 +161,7 @@ export function public_api_http_routes(router: { route: HttpRouter["route"] }) {
 							method,
 							handler: httpAction(async (ctx, request) => {
 								const { public_api_http_set_file_write_policy } = await import("./public_api.ts");
-								const result = await public_api_http_set_file_write_policy(ctx, request, path);
+								const result = await public_api_http_set_file_write_policy({ ctx, request, path });
 								return Response.json(result.body, result);
 							}),
 						});
@@ -193,7 +193,7 @@ export function public_api_http_routes(router: { route: HttpRouter["route"] }) {
 							method,
 							handler: httpAction(async (ctx, request) => {
 								const { public_api_http_write_file } = await import("./public_api.ts");
-								const result = await public_api_http_write_file(ctx, request, path);
+								const result = await public_api_http_write_file({ ctx, request, path });
 								return Response.json(result.body, { ...result, headers: { "Cache-Control": "no-store" } });
 							}),
 						});
@@ -225,7 +225,7 @@ export function public_api_http_routes(router: { route: HttpRouter["route"] }) {
 							method,
 							handler: httpAction(async (ctx, request) => {
 								const { public_api_http_write_many } = await import("./public_api.ts");
-								const result = await public_api_http_write_many(ctx, request, path);
+								const result = await public_api_http_write_many({ ctx, request, path });
 								return Response.json(result.body, result);
 							}),
 						});
@@ -257,7 +257,7 @@ export function public_api_http_routes(router: { route: HttpRouter["route"] }) {
 							method,
 							handler: httpAction(async (ctx, request) => {
 								const { public_api_http_touch_files } = await import("./public_api.ts");
-								const result = await public_api_http_touch_files(ctx, request, path);
+								const result = await public_api_http_touch_files({ ctx, request, path });
 								return Response.json(result.body, result);
 							}),
 						});
@@ -289,7 +289,7 @@ export function public_api_http_routes(router: { route: HttpRouter["route"] }) {
 							method,
 							handler: httpAction(async (ctx, request) => {
 								const { public_api_http_download_urls } = await import("./public_api.ts");
-								const result = await public_api_http_download_urls(ctx, request, path);
+								const result = await public_api_http_download_urls({ ctx, request, path });
 								return Response.json(result.body, result);
 							}),
 						});
@@ -321,7 +321,7 @@ export function public_api_http_routes(router: { route: HttpRouter["route"] }) {
 							method,
 							handler: httpAction(async (ctx, request) => {
 								const { public_api_http_upload_urls } = await import("./public_api.ts");
-								const result = await public_api_http_upload_urls(ctx, request, path);
+								const result = await public_api_http_upload_urls({ ctx, request, path });
 								return Response.json(result.body, result);
 							}),
 						});
@@ -354,7 +354,7 @@ export function public_api_http_routes(router: { route: HttpRouter["route"] }) {
 							method,
 							handler: httpAction(async (ctx, request) => {
 								const { public_api_http_verify_key } = await import("./public_api.ts");
-								const result = await public_api_http_verify_key(ctx, request, path);
+								const result = await public_api_http_verify_key({ ctx, request, path });
 								return Response.json(result.body, result);
 							}),
 						});
@@ -386,7 +386,7 @@ export function public_api_http_routes(router: { route: HttpRouter["route"] }) {
 							method,
 							handler: httpAction(async (ctx, request) => {
 								const { public_api_http_start_activity } = await import("./public_api.ts");
-								const result = await public_api_http_start_activity(ctx, request, path);
+								const result = await public_api_http_start_activity({ ctx, request, path });
 								return Response.json(result.body, result);
 							}),
 						});

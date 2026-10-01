@@ -55,11 +55,13 @@ export function dom_get_native_validation_message(element: HTMLInputElement | HT
 	return message;
 }
 
-export function dom_find_first_element_overflowing_element(
-	scrollEl: Element,
-	elements: readonly Element[],
-	direction: "up" | "down",
-): Element | null {
+export function dom_find_first_element_overflowing_element(args: {
+	scrollEl: Element;
+	elements: readonly Element[];
+	direction: "up" | "down";
+}): Element | null {
+	const { scrollEl, elements, direction } = args;
+
 	const scrollRect = scrollEl.getBoundingClientRect();
 
 	if (direction === "down") {

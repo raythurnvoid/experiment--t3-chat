@@ -334,7 +334,7 @@ function parse_search_args(args: string[], options: { cwd: string }) {
 	if (plan._nay) {
 		return plan;
 	}
-	const limit = bash_parse_limit("meta search", limitValue, 20, 100);
+	const limit = bash_parse_limit({ command: "meta search", value: limitValue, defaultLimit: 20, maxLimit: 100 });
 	if (limit._nay) {
 		return limit;
 	}

@@ -415,7 +415,7 @@ function RuntimeIdentityProbe() {
 						return;
 					}
 
-					controller.sendUserText(selectedThreadId, "Follow up");
+					controller.sendUserText({ threadId: selectedThreadId, value: "Follow up" });
 					forceRender((value) => value + 1);
 				}}
 			>
@@ -480,7 +480,7 @@ function RuntimeSendProbe() {
 						return;
 					}
 
-					controller.sendUserText(selectedThreadId, "Retry me");
+					controller.sendUserText({ threadId: selectedThreadId, value: "Retry me" });
 					forceRender((value) => value + 1);
 				}}
 			>
@@ -539,7 +539,11 @@ function RuntimeSendProbe() {
 						return;
 					}
 
-					controller.sendUserText(selectedThreadId, "Retry me", { messageId: latestMessage.id });
+					controller.sendUserText({
+						threadId: selectedThreadId,
+						value: "Retry me",
+						options: { messageId: latestMessage.id },
+					});
 					forceRender((value) => value + 1);
 				}}
 			>
@@ -552,7 +556,11 @@ function RuntimeSendProbe() {
 						return;
 					}
 
-					controller.sendUserText(selectedThreadId, "Retry me", { messageId: failedMessage.id });
+					controller.sendUserText({
+						threadId: selectedThreadId,
+						value: "Retry me",
+						options: { messageId: failedMessage.id },
+					});
 					forceRender((value) => value + 1);
 				}}
 			>
@@ -582,7 +590,7 @@ function RuntimeQueueProbe() {
 		if (!selectedThreadId) {
 			return;
 		}
-		controller.sendUserText(selectedThreadId, value);
+		controller.sendUserText({ threadId: selectedThreadId, value });
 		forceRender((current) => current + 1);
 	};
 
@@ -712,7 +720,7 @@ function RuntimeQueueProbe() {
 					const chat = controller.session?.chat;
 					const edit = controller.queuedUserMessageEdit;
 					if (chat && edit) {
-						controller.setQueuedUserMessageEditText(chat, edit.id, "Second edited");
+						controller.setQueuedUserMessageEditText({ chat, messageId: edit.id, text: "Second edited" });
 					}
 				}}
 			>
@@ -733,7 +741,11 @@ function RuntimeQueueProbe() {
 				type="button"
 				onClick={() => {
 					if (selectedThreadId) {
-						controller.sendUserText(selectedThreadId, "", { attachments: [QUEUE_IMAGE_FILE_PART] });
+						controller.sendUserText({
+							threadId: selectedThreadId,
+							value: "",
+							options: { attachments: [QUEUE_IMAGE_FILE_PART] },
+						});
 						forceRender((current) => current + 1);
 					}
 				}}
@@ -746,7 +758,11 @@ function RuntimeQueueProbe() {
 					const chat = controller.session?.chat;
 					const edit = controller.queuedUserMessageEdit;
 					if (chat && edit) {
-						controller.setQueuedUserMessageEditAttachments(chat, edit.id, [QUEUE_IMAGE_FILE_PART]);
+						controller.setQueuedUserMessageEditAttachments({
+							chat,
+							messageId: edit.id,
+							attachments: [QUEUE_IMAGE_FILE_PART],
+						});
 					}
 				}}
 			>
@@ -1022,8 +1038,12 @@ function RuntimeQueueProbe() {
 					if (!selectedThreadId || !failedMessage) {
 						return;
 					}
-					controller.sendUserText(selectedThreadId, ai_chat_get_message_text(failedMessage), {
-						messageId: failedMessage.id,
+					controller.sendUserText({
+						threadId: selectedThreadId,
+						value: ai_chat_get_message_text(failedMessage),
+						options: {
+							messageId: failedMessage.id,
+						},
 					});
 				}}
 			>

@@ -2128,7 +2128,13 @@ function get_runner_authorization_token(request: Request) {
  * Every auth failure is the fixed "Unauthorized" literal; any other `_nay` message is a
  * body-validation error. Callers own the status mapping (401 / 400).
  */
-async function authorize_runner_host_request<Body>(ctx: ActionCtx, request: Request, bodyValidator: z.ZodSchema<Body>) {
+async function authorize_runner_host_request<Body>(args: {
+	ctx: ActionCtx;
+	request: Request;
+	bodyValidator: z.ZodSchema<Body>;
+}) {
+	const { ctx, request, bodyValidator } = args;
+
 	const runnerToken = get_runner_authorization_token(request);
 	if (
 		!runnerToken ||
@@ -2175,7 +2181,7 @@ const claim_runner_call_body_validator = z
 export type plugins_runtime_http_claim_runner_call_Body = z.infer<typeof claim_runner_call_body_validator>;
 
 export async function plugins_runtime_http_claim_runner_call(ctx: ActionCtx, request: Request) {
-	const auth = await authorize_runner_host_request(ctx, request, claim_runner_call_body_validator);
+	const auth = await authorize_runner_host_request({ ctx, request, bodyValidator: claim_runner_call_body_validator });
 	if (auth._nay) {
 		if (auth._nay.message === "Unauthorized") {
 			return { status: 401, body: { message: auth._nay.message } } as const;
@@ -2247,7 +2253,7 @@ const finish_runner_call_body_validator = z
 export type plugins_runtime_http_finish_runner_call_Body = z.infer<typeof finish_runner_call_body_validator>;
 
 export async function plugins_runtime_http_finish_runner_call(ctx: ActionCtx, request: Request) {
-	const auth = await authorize_runner_host_request(ctx, request, finish_runner_call_body_validator);
+	const auth = await authorize_runner_host_request({ ctx, request, bodyValidator: finish_runner_call_body_validator });
 	if (auth._nay) {
 		if (auth._nay.message === "Unauthorized") {
 			return { status: 401, body: { message: auth._nay.message } } as const;
@@ -2280,12 +2286,14 @@ const get_secret_body_validator = z
 
 export type plugins_runtime_http_get_secret_Body = z.infer<typeof get_secret_body_validator>;
 
-export async function plugins_runtime_http_get_secret(
-	ctx: ActionCtx,
-	request: Request,
-	path: "/api/internal/plugins/host/secret-get",
-) {
-	const auth = await authorize_runner_host_request(ctx, request, get_secret_body_validator);
+export async function plugins_runtime_http_get_secret(args: {
+	ctx: ActionCtx;
+	request: Request;
+	path: "/api/internal/plugins/host/secret-get";
+}) {
+	const { ctx, request, path } = args;
+
+	const auth = await authorize_runner_host_request({ ctx, request, bodyValidator: get_secret_body_validator });
 	if (auth._nay) {
 		if (auth._nay.message === "Unauthorized") {
 			return { status: 401, body: { message: auth._nay.message } } as const;

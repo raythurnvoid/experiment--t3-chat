@@ -36,15 +36,17 @@ export type bash_TransferContext = {
 const LANE_WAIT_MAX_MS = 60_000;
 const LANE_WAIT_POLL_MS = 2_000;
 
-async function stop_transfer(
-	ctx: ActionCtx,
+async function stop_transfer(args: {
+	ctx: ActionCtx;
 	scope: {
 		membershipId: Id<"organizations_workspaces_users">;
 		threadId: Id<"ai_chat_threads">;
 		runId: Id<"files_transfer_runs">;
-	},
-	reason: "user" | "timeout",
-) {
+	};
+	reason: "user" | "timeout";
+}) {
+	const { ctx, scope, reason} = args;
+
 	try {
 		const stopped = await ctx.runMutation(internal.files_transfer.stop_for_agent, { ...scope, reason });
 		if (stopped._yay === null) return;
@@ -300,7 +302,7 @@ export async function bash_transfer_command_run(
 			// Copy cannot execute until every selected source has been accepted and sealed.
 			for (let offset = files_TRANSFER_SELECTION_PAGE_SIZE; ; offset += files_TRANSFER_SELECTION_PAGE_SIZE) {
 				if (transferContext.signal.aborted || Date.now() >= transferContext.deadlineAt) {
-					await stop_transfer(ctx, scope, abort_outcome(transferContext.signal).reason);
+					await stop_transfer({ ctx, scope, reason: abort_outcome(transferContext.signal).reason });
 					return aborted();
 				}
 				const intake =
@@ -312,7 +314,7 @@ export async function bash_transfer_command_run(
 							})
 						: await ctx.runMutation(internal.files_transfer.seal_for_agent, scope);
 				if (intake._nay) {
-					await stop_transfer(ctx, scope, "user");
+					await stop_transfer({ ctx, scope, reason: "user" });
 					return fail(intake._nay.message);
 				}
 				if (offset >= sources.length) break;
@@ -335,7 +337,7 @@ export async function bash_transfer_command_run(
 
 			if (transferContext.signal.aborted || Date.now() >= transferContext.deadlineAt) {
 				const outcome = abort_outcome(transferContext.signal);
-				await stop_transfer(ctx, scope, outcome.reason);
+				await stop_transfer({ ctx, scope, reason: outcome.reason });
 				return {
 					stdout: "",
 					stderr: `${command}: transfer ${outcome.word}; remaining work was stopped. Activity ${activityId}\n`,
@@ -349,11 +351,11 @@ export async function bash_transfer_command_run(
 	} catch (error) {
 		// A lost intake reply may have committed. Stop accepted work before any later shell write.
 		try {
-			await stop_transfer(
+			await stop_transfer({
 				ctx,
 				scope,
-				transferContext.signal.aborted ? abort_outcome(transferContext.signal).reason : "user",
-			);
+				reason: transferContext.signal.aborted ? abort_outcome(transferContext.signal).reason : "user",
+			});
 		} finally {
 			transferContext.abort(error);
 		}

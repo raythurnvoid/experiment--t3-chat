@@ -249,11 +249,13 @@ async function sign_in(member: Pick<Member, "asUser" | "membershipId">, target: 
 	return { started: started._yay, callback };
 }
 
-function finish(
-	member: Pick<Member, "asUser">,
-	callback: { code: string; state: string; iss: string | null },
-	error: string | null = null,
-) {
+function finish(args: {
+	member: Pick<Member, "asUser">;
+	callback: { code: string; state: string; iss: string | null };
+	error?: string | null;
+}) {
+	const { member, callback, error = null } = args;
+
 	return member.asUser.action(api.plugins_mcp_oauth.finish, {
 		state: callback.state,
 		code: callback.code,
@@ -329,11 +331,11 @@ describe("start", () => {
 		expect(fixtures.counts.register).toBe(1);
 		const [client] = (await read_all(t)).clients;
 		expect(client!.tokenEndpointAuthMethod).toBe("client_secret_basic");
-		const secret = await crypto_decrypt_secret_value(
-			client!.clientSecret!,
-			`client:${client!.issuer}:${client!.clientId}`,
-			"MCP_SECRETS_ENCRYPTION_KEY",
-		);
+		const secret = await crypto_decrypt_secret_value({
+			secret: client!.clientSecret!,
+			additionalData: `client:${client!.issuer}:${client!.clientId}`,
+			keyName: "MCP_SECRETS_ENCRYPTION_KEY",
+		});
 		expect(secret).toMatch(/^secret-/u);
 	});
 
@@ -462,7 +464,7 @@ describe("start", () => {
 		const { t, owner } = await setup();
 		const target = await save_custom_server(owner);
 		const { callback } = await sign_in(owner, target);
-		expect((await finish(owner, callback))._yay).toBeTruthy();
+		expect((await finish({ member: owner, callback }))._yay).toBeTruthy();
 
 		next_minute();
 		fixtures.switches.prmAuthorizationServers = ["https://other.oauth.test"];
@@ -506,7 +508,7 @@ describe("start", () => {
 		await metadataStarted.promise;
 		try {
 			fixtures.switches.prmAuthorizationServers = null;
-			expect((await finish(owner, callback))._yay !== undefined).toBe(true);
+			expect((await finish({ member: owner, callback }))._yay !== undefined).toBe(true);
 			const connected = (await read_all(t)).grants[0]!;
 			expect(connected.status).toBe("connected");
 			if (before) {
@@ -530,7 +532,7 @@ describe("finish", () => {
 		const target = await install_oauth_plugin(t, owner);
 		const { callback } = await sign_in(owner, target);
 
-		const finished = await finish(owner, callback);
+		const finished = await finish({ member: owner, callback });
 
 		expect(finished).toEqual({ _yay: { returnPath: RETURN_PATH } });
 		const { grants, pending } = await read_all(t);
@@ -550,13 +552,17 @@ describe("finish", () => {
 		expect(additionalData).toBe(
 			`grant:plugin:${target.installationId}:tracker:${owner.userId}:${fixtures.issuer()}:${SERVER_A}`,
 		);
-		const accessToken = await crypto_decrypt_secret_value(
-			grant.accessToken!,
+		const accessToken = await crypto_decrypt_secret_value({
+			secret: grant.accessToken!,
 			additionalData,
-			"MCP_SECRETS_ENCRYPTION_KEY",
-		);
+			keyName: "MCP_SECRETS_ENCRYPTION_KEY",
+		});
 		await expect(
-			crypto_decrypt_secret_value(grant.accessToken!, `${additionalData}x`, "MCP_SECRETS_ENCRYPTION_KEY"),
+			crypto_decrypt_secret_value({
+				secret: grant.accessToken!,
+				additionalData: `${additionalData}x`,
+				keyName: "MCP_SECRETS_ENCRYPTION_KEY",
+			}),
 		).rejects.toThrow();
 
 		// The token works at server A and nowhere else.
@@ -581,17 +587,17 @@ describe("finish", () => {
 		const target = await save_custom_server(owner);
 		const { callback } = await sign_in(owner, target);
 
-		expect((await finish(owner, callback))._yay).toBeTruthy();
+		expect((await finish({ member: owner, callback }))._yay).toBeTruthy();
 
 		const grant = (await read_all(t)).grants[0]!;
 		expect(plugins_mcp_grant_additional_data(grant)).toBe(
 			`grant:custom:${target.customServerId}:${owner.userId}:${fixtures.issuer()}:${SERVER_A}`,
 		);
-		await crypto_decrypt_secret_value(
-			grant.accessToken!,
-			plugins_mcp_grant_additional_data(grant),
-			"MCP_SECRETS_ENCRYPTION_KEY",
-		);
+		await crypto_decrypt_secret_value({
+			secret: grant.accessToken!,
+			additionalData: plugins_mcp_grant_additional_data(grant),
+			keyName: "MCP_SECRETS_ENCRYPTION_KEY",
+		});
 	});
 
 	test("another user cannot finish a sign-in, and cannot use it up either", async () => {
@@ -600,12 +606,12 @@ describe("finish", () => {
 		const target = await install_oauth_plugin(t, owner);
 		const { callback } = await sign_in(member, target);
 
-		const stolen = await finish(owner, callback);
+		const stolen = await finish({ member: owner, callback });
 
 		expect(stolen).toEqual({ _nay: { message: "This sign-in expired. Connect again." } });
 		expect((await read_all(t)).pending).toHaveLength(1);
 		expect(fixtures.counts.token).toBe(0);
-		expect(await finish(member, callback)).toEqual({ _yay: { returnPath: RETURN_PATH } });
+		expect(await finish({ member, callback })).toEqual({ _yay: { returnPath: RETURN_PATH } });
 		expect((await read_all(t)).grants.map((grant) => grant.userId)).toEqual([member.userId]);
 	});
 
@@ -614,8 +620,8 @@ describe("finish", () => {
 		const target = await install_oauth_plugin(t, owner);
 		const { callback } = await sign_in(owner, target);
 
-		expect((await finish(owner, callback))._yay).toBeTruthy();
-		expect(await finish(owner, callback)).toEqual({ _nay: { message: "This sign-in expired. Connect again." } });
+		expect((await finish({ member: owner, callback }))._yay).toBeTruthy();
+		expect(await finish({ member: owner, callback })).toEqual({ _nay: { message: "This sign-in expired. Connect again." } });
 	});
 
 	test("a callback replay cannot exchange the code while the first callback waits", async () => {
@@ -624,13 +630,13 @@ describe("finish", () => {
 		const { callback } = await sign_in(owner, target);
 		let release!: () => void;
 		gate = { path: "/token", promise: new Promise((resolve) => (release = resolve)), reached: false };
-		const first = finish(owner, callback);
+		const first = finish({ member: owner, callback });
 		await vi.waitFor(() => expect(gate?.reached).toBe(true));
 
 		let secondRequest!: () => void;
 		const requestedAgain = new Promise<void>((resolve) => (secondRequest = resolve));
 		gate.onRequest = secondRequest;
-		const second = finish(owner, callback);
+		const second = finish({ member: owner, callback });
 		await Promise.race([second, requestedAgain]);
 		release();
 
@@ -649,7 +655,7 @@ describe("finish", () => {
 		const { callback } = await sign_in(owner, target);
 		let release!: () => void;
 		gate = { path: "/token", promise: new Promise((resolve) => (release = resolve)), reached: false };
-		const finished = finish(owner, callback);
+		const finished = finish({ member: owner, callback });
 		await vi.waitFor(() => expect(gate?.reached).toBe(true));
 
 		const disconnected = await owner.asUser.mutation(api.plugins_mcp_oauth.disconnect, {
@@ -674,7 +680,7 @@ describe("finish", () => {
 
 		vi.setSystemTime(Date.now() + 11 * 60 * 1000);
 
-		expect(await finish(owner, callback)).toEqual({ _nay: { message: "This sign-in expired. Connect again." } });
+		expect(await finish({ member: owner, callback })).toEqual({ _nay: { message: "This sign-in expired. Connect again." } });
 	});
 
 	test("checks `iss` before anything else (RFC 9207)", async () => {
@@ -685,14 +691,14 @@ describe("finish", () => {
 		// Each finish uses its sign-in up, so every case signs in again. The sign-in server promised
 		// `iss`, so a missing one is refused, even next to an error.
 		const first = await sign_in(owner, target);
-		expect(await finish(owner, { ...first.callback, iss: null }, "access_denied")).toEqual(mismatch);
+		expect(await finish({ member: owner, callback: { ...first.callback, iss: null }, error: "access_denied" })).toEqual(mismatch);
 		const second = await sign_in(owner, target);
-		expect(await finish(owner, { ...second.callback, iss: "https://evil.test" })).toEqual(mismatch);
+		expect(await finish({ member: owner, callback: { ...second.callback, iss: "https://evil.test" } })).toEqual(mismatch);
 		expect(fixtures.counts.token).toBe(0);
 
 		next_minute();
 		const third = await sign_in(owner, target);
-		expect(await finish(owner, third.callback, "access_denied")).toEqual({
+		expect(await finish({ member: owner, callback: third.callback, error: "access_denied" })).toEqual({
 			_nay: { message: "The sign-in was canceled." },
 		});
 
@@ -700,11 +706,11 @@ describe("finish", () => {
 		fixtures.switches.issSupported = false;
 		vi.stubEnv("MCP_TRUSTED_ISSUERS", fixtures.issuer());
 		const fourth = await sign_in(owner, target);
-		expect(await finish(owner, { ...fourth.callback, iss: "https://evil.test" })).toEqual(mismatch);
+		expect(await finish({ member: owner, callback: { ...fourth.callback, iss: "https://evil.test" } })).toEqual(mismatch);
 		next_minute();
 		const fifth = await sign_in(owner, target);
 		expect(fifth.callback.iss).toBeNull();
-		expect((await finish(owner, fifth.callback))._yay).toBeTruthy();
+		expect((await finish({ member: owner, callback: fifth.callback }))._yay).toBeTruthy();
 		expect((await read_all(t)).pending.length).toBe(0);
 	});
 
@@ -738,7 +744,7 @@ describe("finish", () => {
 			ctx.db.patch("mcp_custom_servers", target.customServerId, { destinationFingerprint: "sha256:moved" }),
 		);
 
-		expect(await finish(owner, callback)).toEqual({ _nay: { message: "The server changed. Connect again." } });
+		expect(await finish({ member: owner, callback })).toEqual({ _nay: { message: "The server changed. Connect again." } });
 		expect(fixtures.counts.token).toBe(0);
 	});
 
@@ -750,7 +756,7 @@ describe("finish", () => {
 		let release!: () => void;
 		gate = { path: "/token", promise: new Promise((resolve) => (release = resolve)), reached: false };
 
-		const finished = finish(member, callback);
+		const finished = finish({ member, callback });
 		await vi.waitFor(() => expect(gate?.reached).toBe(true));
 		await t.run((ctx) => ctx.db.patch("organizations_workspaces_users", member.membershipId, { active: false }));
 		release();
@@ -767,12 +773,12 @@ describe("finish", () => {
 		const { t, owner } = await setup();
 		const target = await install_oauth_plugin(t, owner);
 		const first = await sign_in(owner, target);
-		await finish(owner, first.callback);
+		await finish({ member: owner, callback: first.callback });
 		const before = (await read_all(t)).grants[0]!;
 
 		next_minute();
 		const second = await sign_in(owner, target);
-		await finish(owner, second.callback);
+		await finish({ member: owner, callback: second.callback });
 
 		const { grants, revocations } = await read_all(t);
 		expect(grants.map((grant) => grant._id)).toEqual([before._id]);
@@ -786,7 +792,7 @@ describe("finish", () => {
  */
 async function connect(member: Pick<Member, "asUser" | "membershipId">, target: Parameters<typeof start>[1]) {
 	const { callback } = await sign_in(member, target);
-	const finished = await finish(member, callback);
+	const finished = await finish({ member, callback });
 	if (finished._nay) throw new Error(finished._nay.message);
 }
 
@@ -794,12 +800,14 @@ async function connect(member: Pick<Member, "asUser" | "membershipId">, target: 
  * Build the chat tools of one sign-in server the way a chat turn does, then run its `echo` tool once
  * per text, all at the same time.
  */
-async function call_echo(
-	t: TestConvex,
-	member: Pick<Member, "asUser" | "membershipId" | "userId" | "organizationId" | "workspaceId">,
-	target: Parameters<typeof start>[1],
-	texts = ["hello"],
-) {
+async function call_echo(args: {
+	t: TestConvex;
+	member: Pick<Member, "asUser" | "membershipId" | "userId" | "organizationId" | "workspaceId">;
+	target: Parameters<typeof start>[1];
+	texts?: string[];
+}) {
+	const { t, member, target, texts = ["hello"] } = args;
+
 	const thread = await member.asUser.mutation(api.ai_chat.thread_create, {
 		membershipId: member.membershipId,
 		clientGeneratedId: `thread-${Math.random()}`,
@@ -857,9 +865,9 @@ async function call_echo(
 			modelId: ai_chat_DEFAULT_MODEL_ID,
 		});
 		if (begun._nay) throw new Error(begun._nay.message);
-		const modelTools = await ai_chat_tool_create_mcp_tools(
+		const modelTools = await ai_chat_tool_create_mcp_tools({
 			ctx,
-			{
+			ctxData: {
 				organizationId: member.organizationId,
 				workspaceId: member.workspaceId,
 				userId: member.userId,
@@ -870,8 +878,8 @@ async function call_echo(
 				getModelCallId: () => "model_call_test",
 				runDeadline: Date.now() + 60_000,
 			},
-			[{ ...server, headers: [], secretValues: [], discover: tools._yay.discover, tools: tools._yay.tools }],
-		);
+			servers: [{ ...server, headers: [], secretValues: [], discover: tools._yay.discover, tools: tools._yay.tools }],
+		});
 		const echo = Object.entries(modelTools).find(([name]) => name.endsWith("__echo"))![1];
 		return await Promise.all(
 			texts.map((text) =>
@@ -886,11 +894,11 @@ async function call_echo(
 
 async function grant_access_token(t: TestConvex) {
 	const grant = (await read_all(t)).grants[0]!;
-	return await crypto_decrypt_secret_value(
-		grant.accessToken!,
-		plugins_mcp_grant_additional_data(grant),
-		"MCP_SECRETS_ENCRYPTION_KEY",
-	);
+	return await crypto_decrypt_secret_value({
+		secret: grant.accessToken!,
+		additionalData: plugins_mcp_grant_additional_data(grant),
+		keyName: "MCP_SECRETS_ENCRYPTION_KEY",
+	});
 }
 
 function tool_calls_to(host: string) {
@@ -972,8 +980,8 @@ describe("token use", () => {
 		const customTarget = await save_custom_server(owner, "https://mcp-b.oauth.test/mcp");
 		const accessToken = await grant_access_token(t);
 
-		const [atA] = await call_echo(t, owner, pluginTarget, [`echo ${accessToken}`]);
-		const [atB] = await call_echo(t, owner, customTarget);
+		const [atA] = await call_echo({ t, member: owner, target: pluginTarget, texts: [`echo ${accessToken}`] });
+		const [atB] = await call_echo({ t, member: owner, target: customTarget });
 
 		expect(atA!.output?.output).toBe("echo [secret]");
 		expect(tool_calls_to("mcp-a.oauth.test").map((entry) => entry.headers.get("authorization"))).toEqual([
@@ -1006,7 +1014,7 @@ describe("token use", () => {
 			});
 		});
 
-		const [called] = await call_echo(t, owner, target);
+		const [called] = await call_echo({ t, member: owner, target });
 
 		expect(called!.output?.metadata).toMatchObject({ kind: "mcp_auth_needed", reason: "needs_sign_in" });
 		expect(
@@ -1023,7 +1031,7 @@ describe("token use", () => {
 		const before = (await read_all(t)).grants[0]!;
 		await t.run((ctx) => ctx.db.patch("plugins_mcp_oauth_grants", before._id, { expiresAt: Date.now() + 30_000 }));
 
-		const [called] = await call_echo(t, owner, target);
+		const [called] = await call_echo({ t, member: owner, target });
 
 		expect(called!.error).toBeNull();
 		expect(fixtures.counts.refresh).toBe(1);
@@ -1043,16 +1051,16 @@ describe("token use", () => {
 		await connect(owner, target);
 		const grant = (await read_all(t)).grants[0]!;
 		const refused = {
-			...(await crypto_encrypt_secret_value(
-				"access-refused",
-				plugins_mcp_grant_additional_data(grant),
-				"MCP_SECRETS_ENCRYPTION_KEY",
-			)),
+			...(await crypto_encrypt_secret_value({
+				value: "access-refused",
+				additionalData: plugins_mcp_grant_additional_data(grant),
+				keyName: "MCP_SECRETS_ENCRYPTION_KEY",
+			})),
 			keyId: "v1" as const,
 		};
 		await t.run((ctx) => ctx.db.patch("plugins_mcp_oauth_grants", grant._id, { accessToken: refused }));
 
-		const [called] = await call_echo(t, owner, target);
+		const [called] = await call_echo({ t, member: owner, target });
 
 		expect(called!.error).toBeNull();
 		expect(called!.output?.metadata.kind).toBe("mcp_result");
@@ -1068,8 +1076,8 @@ describe("token use", () => {
 		await t.run((ctx) => ctx.db.patch("plugins_mcp_oauth_grants", grant._id, { expiresAt: Date.now() - 1000 }));
 		fixtures.switches.serverAlwaysUnauthorized = true;
 
-		const [first] = await call_echo(t, owner, target);
-		const [second] = await call_echo(t, owner, target);
+		const [first] = await call_echo({ t, member: owner, target });
+		const [second] = await call_echo({ t, member: owner, target });
 
 		expect(first!.output?.metadata).toMatchObject({ kind: "mcp_auth_needed", reason: "needs_sign_in" });
 		expect(second!.output?.metadata).toMatchObject({ kind: "mcp_auth_needed", reason: "needs_sign_in" });
@@ -1087,7 +1095,7 @@ describe("token use", () => {
 		const grant = (await read_all(t)).grants[0]!;
 		await t.run((ctx) => ctx.db.patch("plugins_mcp_oauth_grants", grant._id, { expiresAt: Date.now() - 1000 }));
 
-		const results = await call_echo(t, owner, target, ["one", "two"]);
+		const results = await call_echo({ t, member: owner, target, texts: ["one", "two"] });
 
 		expect(results.map((result) => result.output?.output)).toEqual(["one", "two"]);
 		expect(fixtures.counts.refresh).toBe(1);
@@ -1102,7 +1110,7 @@ describe("token use", () => {
 		await t.run((ctx) => ctx.db.patch("plugins_mcp_oauth_grants", grant._id, { expiresAt: Date.now() - 1000 }));
 		fixtures.switches.refreshInvalidGrant = true;
 
-		const [called] = await call_echo(t, owner, target);
+		const [called] = await call_echo({ t, member: owner, target });
 
 		expect(called!.output?.metadata).toMatchObject({ kind: "mcp_auth_needed", reason: "needs_sign_in" });
 		expect(tool_calls_to("mcp-a.oauth.test").every((entry) => !entry.headers.has("authorization"))).toBe(true);
@@ -1142,7 +1150,7 @@ describe("token use", () => {
 			return await fixtureFetch(request);
 		};
 
-		const operation = call_echo(t, owner, target);
+		const operation = call_echo({ t, member: owner, target });
 		await reached.promise;
 		try {
 			await connect(owner, target);
@@ -1181,7 +1189,7 @@ describe("token use", () => {
 			return await fixtureFetch(request);
 		};
 
-		const [called] = await call_echo(t, owner, target);
+		const [called] = await call_echo({ t, member: owner, target });
 
 		expect(called!.error).toBe("The sign-in server had an error.");
 		expect(attempts).toBe(1);
@@ -1226,7 +1234,7 @@ describe("token use", () => {
 		expect((await read_all(t)).grants[0]!.requestedScopes.includes("mcp:write")).toBe(false);
 		fixtures.switches.serverForbidden = "insufficient_scope";
 
-		const [called] = await call_echo(t, owner, target);
+		const [called] = await call_echo({ t, member: owner, target });
 
 		expect(called!.output?.metadata).toMatchObject({ kind: "mcp_auth_needed", reason: "needs_more_access" });
 		expect((await read_all(t)).grants[0]!.stepUpScope).toBe("mcp:write");
@@ -1277,7 +1285,7 @@ describe("token use", () => {
 		});
 		fixtures.switches.serverAlwaysUnauthorized = true;
 
-		const [called] = await call_echo(t, owner, target);
+		const [called] = await call_echo({ t, member: owner, target });
 
 		expect(called!.error).toBe(
 			"This MCP server refused the plugin's access. Ask an admin to check the plugin and its secrets.",
@@ -1291,7 +1299,7 @@ describe("token use", () => {
 		const grant = (await read_all(t)).grants[0]!;
 		fixtures.switches.serverForbidden = "plain";
 
-		const [called] = await call_echo(t, owner, target);
+		const [called] = await call_echo({ t, member: owner, target });
 
 		expect(called!.error).toBe("This MCP server refused the request.");
 		expect(tool_calls_to("mcp-a.oauth.test")).toHaveLength(1);
@@ -1310,7 +1318,7 @@ describe("revoke_one", () => {
 		const target = await install_oauth_plugin(t, owner);
 		fixtures.switches.tokenAuthMethods = ["client_secret_post"];
 		const { callback } = await sign_in(owner, target);
-		await finish(owner, callback);
+		await finish({ member: owner, callback });
 
 		const disconnected = await owner.asUser.mutation(api.plugins_mcp_oauth.disconnect, {
 			membershipId: owner.membershipId,

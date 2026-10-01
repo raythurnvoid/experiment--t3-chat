@@ -191,11 +191,11 @@ async function fixture() {
 				await ctx.db.patch("activities", activityId, { status: "stopping", stopRequestedAt: args.stopRequestedAt });
 			const shellDoc = await ctx.db.get("ai_chat_bash_shells", shell._id);
 			if (!shellDoc) throw new Error("Expected the shell");
-			await ai_chat_files_db_append_shell_transcript(
+			await ai_chat_files_db_append_shell_transcript({
 				ctx,
-				shellDoc,
-				`[${new Date(now).toISOString()}] job ${args.jobNumber} started in shell default: ${script.slice(0, 80)}`,
-			);
+				shell: shellDoc,
+				text: `[${new Date(now).toISOString()}] job ${args.jobNumber} started in shell default: ${script.slice(0, 80)}`,
+			});
 			const workId = (await ctx.db.get("ai_chat_bash_invocations", invocationId))!.job!.workId;
 			return { invocationId, activityId, watchdogId, workId };
 		});
@@ -221,7 +221,13 @@ async function fixture() {
 	return { t, db, asUser, scope, turn: turn._yay, parent, shell, seed_job, read, scheduled_state };
 }
 
-function job_result(exitCode: number, stdout = "done\n", stderr = "") {
+function job_result(args: {
+	exitCode: number;
+	stdout?: string;
+	stderr?: string;
+}) {
+	const { stdout = "done\n", stderr = "", exitCode} = args;
+
 	return {
 		title: "job",
 		output: stdout + stderr,
@@ -439,7 +445,7 @@ describe("begin_bash_invocation", () => {
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: job.invocationId,
 			workId: job.workId!,
-			result: job_result(0),
+			result: job_result({ exitCode: 0 }),
 		});
 		const begun = await f.t.mutation(internal.ai_chat_files.begin_bash_invocation, {
 			...f.scope,
@@ -1450,7 +1456,7 @@ describe("flush_bash_job_output", () => {
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: job.invocationId,
 			workId: job.workId!,
-			result: job_result(0),
+			result: job_result({ exitCode: 0 }),
 		});
 		const finished = await f.read(job.invocationId);
 		expect(finished.row?.job?.liveOutput).toBeUndefined();
@@ -1486,13 +1492,16 @@ describe("flush_bash_job_output", () => {
 
 describe("pause_bash_job", () => {
 	const head = { stdout: "one\n", stderr: "", stdoutTruncated: false, stderrTruncated: false };
-	const pause = async (
-		f: Awaited<ReturnType<typeof fixture>>,
-		invocationId: Id<"ai_chat_bash_invocations">,
-		liveOutput: typeof head | null = head,
-		workId?: WorkId,
-	) =>
-		await f.t.mutation(internal.ai_chat_files.pause_bash_job, {
+	const pause = async (args: {
+		f: Awaited<ReturnType<typeof fixture>>;
+		invocationId: Id<"ai_chat_bash_invocations">;
+		liveOutput?: typeof head | null;
+		workId?: WorkId;
+	}) =>
+		{
+		const { f, invocationId, liveOutput = head, workId } = args;
+
+		return await f.t.mutation(internal.ai_chat_files.pause_bash_job, {
 			invocationId,
 			workId: workId ?? (await f.read(invocationId)).row!.job!.workId!,
 			resume: {
@@ -1508,19 +1517,20 @@ describe("pause_bash_job", () => {
 			reason: "sleep 30s, continues at soon",
 			runAfterMs: 30_000,
 		});
+	};
 
 	test.each(["pause", "finish"])("a superseded worker cannot %s the next slice", async (operation) => {
 		const f = await fixture();
 		const job = await f.seed_job({ jobNumber: 1, status: "running" });
-		expect(await pause(f, job.invocationId)).toBe(true);
+		expect(await pause({ f, invocationId: job.invocationId })).toBe(true);
 		const before = await f.read(job.invocationId);
-		if (operation === "pause") expect(await pause(f, job.invocationId, head, job.workId!)).toBe(false);
+		if (operation === "pause") expect(await pause({ f, invocationId: job.invocationId, liveOutput: head, workId: job.workId! })).toBe(false);
 		else
 			expect(
 				await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 					invocationId: job.invocationId,
 					workId: job.workId!,
-					result: job_result(0, "stale output"),
+					result: job_result({ exitCode: 0, stdout: "stale output" }),
 				}),
 			).toBeNull();
 		expect(await f.read(job.invocationId)).toEqual(before);
@@ -1530,7 +1540,7 @@ describe("pause_bash_job", () => {
 	test("a stale queued worker cannot claim the next generation or reset its clocks", async () => {
 		const f = await fixture();
 		const job = await f.seed_job({ jobNumber: 1, status: "running" });
-		expect(await pause(f, job.invocationId)).toBe(true);
+		expect(await pause({ f, invocationId: job.invocationId })).toBe(true);
 		const before = await f.read(job.invocationId);
 		expect(before.row?.job?.workerGeneration).toBe(1);
 		vi.setSystemTime(Date.now() + 30_000);
@@ -1561,7 +1571,7 @@ describe("pause_bash_job", () => {
 		});
 		if (!claimed) throw new Error("Expected the claim");
 		vi.setSystemTime(start + 90_000);
-		expect(await pause(f, job.invocationId)).toBe(true);
+		expect(await pause({ f, invocationId: job.invocationId })).toBe(true);
 
 		const after = await f.read(job.invocationId);
 		const deadlineAt = start + 90_000 + 30_000 + PLACEHOLDER_MS;
@@ -1597,7 +1607,7 @@ describe("pause_bash_job", () => {
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: job.invocationId,
 			workId: after.row!.job!.workId!,
-			result: job_result(0),
+			result: job_result({ exitCode: 0 }),
 		});
 		const finished = await f.read(job.invocationId);
 		expect(finished.row?.job?.resumeScript).toBeUndefined();
@@ -1610,14 +1620,14 @@ describe("pause_bash_job", () => {
 	test("refuses a row with a Stop pending or one that already settled", async () => {
 		const f = await fixture();
 		const stopping = await f.seed_job({ jobNumber: 1, status: "running", stopRequestedAt: Date.now() });
-		expect(await pause(f, stopping.invocationId)).toBe(false);
+		expect(await pause({ f, invocationId: stopping.invocationId })).toBe(false);
 		const settled = await f.seed_job({ jobNumber: 2, status: "running" });
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: settled.invocationId,
 			workId: settled.workId!,
-			result: job_result(0),
+			result: job_result({ exitCode: 0 }),
 		});
-		expect(await pause(f, settled.invocationId)).toBe(false);
+		expect(await pause({ f, invocationId: settled.invocationId })).toBe(false);
 		for (const job of [stopping, settled]) {
 			const after = await f.read(job.invocationId);
 			expect(after.row?.job?.resumeScript).toBeUndefined();
@@ -1628,7 +1638,7 @@ describe("pause_bash_job", () => {
 	test("a flush from the paused run's pool item is refused", async () => {
 		const f = await fixture();
 		const job = await f.seed_job({ jobNumber: 1, status: "running" });
-		expect(await pause(f, job.invocationId)).toBe(true);
+		expect(await pause({ f, invocationId: job.invocationId })).toBe(true);
 		await f.t.mutation(internal.ai_chat_files.flush_bash_job_output, {
 			invocationId: job.invocationId,
 			workId: job.workId!,
@@ -1726,7 +1736,7 @@ describe("job wakeup", () => {
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: job.invocationId,
 			workId: job.workId!,
-			result: job_result(2, "line one\n", "oops\n"),
+			result: job_result({ exitCode: 2, stdout: "line one\n", stderr: "oops\n" }),
 		});
 
 		const { thread, finishes, wakeRuns, wakeups } = await read_thread(f);
@@ -1774,7 +1784,7 @@ describe("job wakeup", () => {
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: job.invocationId,
 			workId: job.workId!,
-			result: job_result(0),
+			result: job_result({ exitCode: 0 }),
 		});
 		let state = await read_thread(f);
 		expect(state.finishes).toEqual([expect.objectContaining({ parentId: f.turn.replyId, wakePending: true })]);
@@ -1804,7 +1814,7 @@ describe("job wakeup", () => {
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: job.invocationId,
 			workId: job.workId!,
-			result: job_result(0),
+			result: job_result({ exitCode: 0 }),
 		});
 
 		// The finish belongs to the branch where the job started. Under the other root, the woken run
@@ -1827,7 +1837,7 @@ describe("job wakeup", () => {
 			await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 				invocationId: job.invocationId,
 				workId: job.workId!,
-				result: job_result(0),
+				result: job_result({ exitCode: 0 }),
 			});
 		}
 		let state = await read_thread(f);
@@ -1851,7 +1861,7 @@ describe("job wakeup", () => {
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: job.invocationId,
 			workId: job.workId!,
-			result: job_result(0, `${"x".repeat(4095)}${emoji}`),
+			result: job_result({ exitCode: 0, stdout: `${"x".repeat(4095)}${emoji}` }),
 		});
 
 		const { finishes } = await read_thread(f);
@@ -1866,7 +1876,7 @@ describe("job wakeup", () => {
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: first.invocationId,
 			workId: first.workId!,
-			result: job_result(0),
+			result: job_result({ exitCode: 0 }),
 		});
 		// The run streams on the job's branch, so the finish waits for its next step. No message is
 		// stored and no wake run starts.
@@ -1913,7 +1923,7 @@ describe("job wakeup", () => {
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: second.invocationId,
 			workId: second.workId!,
-			result: job_result(0),
+			result: job_result({ exitCode: 0 }),
 		});
 		state = await read_thread(f);
 		expect(state.finishes).toEqual([
@@ -1931,7 +1941,7 @@ describe("job wakeup", () => {
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: job.invocationId,
 			workId: job.workId!,
-			result: job_result(0),
+			result: job_result({ exitCode: 0 }),
 		});
 		expect((await read_thread(f)).inbox).toHaveLength(1);
 
@@ -1954,7 +1964,7 @@ describe("job wakeup", () => {
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: job.invocationId,
 			workId: job.workId!,
-			result: job_result(0),
+			result: job_result({ exitCode: 0 }),
 		});
 		// The model is at step 1 when the browser stream has not saved step 0 yet. Stop then saves
 		// both steps as one partial step at index 0, and the model already saw the finish.
@@ -1995,7 +2005,7 @@ describe("job wakeup", () => {
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: plain.invocationId,
 			workId: plain.workId!,
-			result: job_result(0),
+			result: job_result({ exitCode: 0 }),
 		});
 		// No flag, same message. The wake run answers with the default model.
 		const plainState = await read_thread(f);
@@ -2039,7 +2049,7 @@ describe("job wakeup", () => {
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: job.invocationId,
 			workId: job.workId!,
-			result: job_result(0, "late\n"),
+			result: job_result({ exitCode: 0, stdout: "late\n" }),
 		});
 
 		const { finishes } = await read_thread(f);
@@ -2055,7 +2065,7 @@ describe("job wakeup", () => {
 			await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 				invocationId: job.invocationId,
 				workId: job.workId!,
-				result: job_result(0),
+				result: job_result({ exitCode: 0 }),
 			});
 			await end_runs(f, "job_wakeup");
 		};
@@ -2084,7 +2094,7 @@ describe("job wakeup", () => {
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: placed.invocationId,
 			workId: placed.workId!,
-			result: job_result(0),
+			result: job_result({ exitCode: 0 }),
 		});
 		expect((await read_thread(f)).finishes).toEqual([expect.objectContaining({ wakePending: true })]);
 
@@ -2129,7 +2139,7 @@ describe("job wakeup", () => {
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: job.invocationId,
 			workId: job.workId!,
-			result: job_result(0),
+			result: job_result({ exitCode: 0 }),
 		});
 		const afterViewer = await read_thread(f);
 		expect(afterViewer.finishes).toHaveLength(1);
@@ -2150,7 +2160,7 @@ describe("job wakeup", () => {
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: ask.invocationId,
 			workId: ask.workId!,
-			result: job_result(0),
+			result: job_result({ exitCode: 0 }),
 		});
 		const afterNoRole = await read_thread(f);
 		expect(afterNoRole.finishes).toHaveLength(1);
@@ -2177,7 +2187,7 @@ describe("job wakeup", () => {
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: job.invocationId,
 			workId: job.workId!,
-			result: job_result(0, "real output\n"),
+			result: job_result({ exitCode: 0, stdout: "real output\n" }),
 		});
 		expect((await f.read(job.invocationId)).row).toMatchObject({
 			status: "finished",
@@ -2214,7 +2224,7 @@ describe("job wakeup", () => {
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: job.invocationId,
 			workId: job.workId!,
-			result: job_result(0, "real output\n"),
+			result: job_result({ exitCode: 0, stdout: "real output\n" }),
 		});
 		const woken = await read_thread(f);
 		expect(woken.inbox).toHaveLength(0);
@@ -2229,7 +2239,7 @@ describe("job wakeup", () => {
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: done.invocationId,
 			workId: done.workId!,
-			result: job_result(0),
+			result: job_result({ exitCode: 0 }),
 		});
 		expect(
 			await f.t.mutation(internal.ai_chat_files.arm_bash_job_wakeup, {
@@ -2248,7 +2258,7 @@ describe("job wakeup", () => {
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: job.invocationId,
 			workId: job.workId!,
-			result: job_result(0),
+			result: job_result({ exitCode: 0 }),
 		});
 		const replyId = (await read_thread(f)).wakeRuns[0]!.replyId;
 
@@ -2281,7 +2291,7 @@ describe("job wakeup", () => {
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: job.invocationId,
 			workId: job.workId!,
-			result: job_result(0),
+			result: job_result({ exitCode: 0 }),
 		});
 		const run = (await read_thread(f)).wakeRuns[0]!;
 		const context = await f.t.query(internal.ai_chat.get_job_wakeup_context, { runId: run._id });
@@ -2301,7 +2311,7 @@ describe("job wakeup", () => {
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: plain.invocationId,
 			workId: plain.workId!,
-			result: job_result(0),
+			result: job_result({ exitCode: 0 }),
 		});
 		const plainRunId = (await read_thread(f)).wakeRuns[1]!._id;
 		const plainContext = await f.t.query(internal.ai_chat.get_job_wakeup_context, { runId: plainRunId });
@@ -2346,7 +2356,7 @@ describe("job wakeup", () => {
 			await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 				invocationId: job.invocationId,
 				workId: job.workId!,
-				result: job_result(0),
+				result: job_result({ exitCode: 0 }),
 			});
 
 		// Step 0 claims job 1 and saves it.
@@ -2402,7 +2412,7 @@ describe("job wakeup", () => {
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: first.invocationId,
 			workId: first.workId!,
-			result: job_result(0),
+			result: job_result({ exitCode: 0 }),
 		});
 		const firstRun = (await read_thread(f)).wakeRuns[0]!;
 
@@ -2411,7 +2421,7 @@ describe("job wakeup", () => {
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: second.invocationId,
 			workId: second.workId!,
-			result: job_result(0),
+			result: job_result({ exitCode: 0 }),
 		});
 		let state = await read_thread(f);
 		expect(state.inbox).toHaveLength(1);
@@ -2438,7 +2448,7 @@ describe("job wakeup", () => {
 			await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 				invocationId: first.invocationId,
 				workId: first.workId!,
-				result: job_result(0),
+				result: job_result({ exitCode: 0 }),
 			});
 			// Delete chat or a branch copy starts while the run streams. The run's end starts no more work there.
 			const now = Date.now();
@@ -2454,7 +2464,7 @@ describe("job wakeup", () => {
 			await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 				invocationId: second.invocationId,
 				workId: second.workId!,
-				result: job_result(0),
+				result: job_result({ exitCode: 0 }),
 			});
 
 			const state = await read_thread(f);
@@ -2531,7 +2541,7 @@ describe("timeout_bash_job", () => {
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: job.invocationId,
 			workId: job.workId!,
-			result: job_result(0),
+			result: job_result({ exitCode: 0 }),
 		});
 		vi.setSystemTime(start + PLACEHOLDER_MS);
 		await f.t.mutation(internal.ai_chat_files.timeout_bash_job, {
@@ -2556,7 +2566,7 @@ describe("finish_bash_job", () => {
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: job.invocationId,
 			workId: job.workId!,
-			result: job_result(0, "hi\n"),
+			result: job_result({ exitCode: 0, stdout: "hi\n" }),
 		});
 		const after = await f.read(job.invocationId);
 		expect(after.row).toMatchObject({
@@ -2584,7 +2594,7 @@ describe("finish_bash_job", () => {
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: job.invocationId,
 			workId: job.workId!,
-			result: job_result(exitCode),
+			result: job_result({ exitCode }),
 		});
 		expect((await f.read(job.invocationId)).activity).toMatchObject({ status, errorMessage });
 	});
@@ -2603,7 +2613,7 @@ describe("finish_bash_job", () => {
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: job.invocationId,
 			workId: job.workId!,
-			result: job_result(0, "late\n"),
+			result: job_result({ exitCode: 0, stdout: "late\n" }),
 		});
 		const late = await f.read(job.invocationId);
 		expect(late.row).toMatchObject({ status: "finished", result: { stdout: "late\n" } });
@@ -2615,7 +2625,7 @@ describe("finish_bash_job", () => {
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: job.invocationId,
 			workId: job.workId!,
-			result: job_result(1, "again\n"),
+			result: job_result({ exitCode: 1, stdout: "again\n" }),
 		});
 		const again = await f.read(job.invocationId);
 		expect(again.row).toMatchObject({ result: { stdout: "late\n" } });
@@ -2629,7 +2639,7 @@ describe("finish_bash_job", () => {
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: job.invocationId,
 			workId: job.workId!,
-			result: job_result(0, stdout),
+			result: job_result({ exitCode: 0, stdout }),
 		});
 		const after = await f.read(job.invocationId);
 		expect(after.row?.result?.stdout).toHaveLength(16_384);
@@ -2646,7 +2656,7 @@ describe("finish_bash_job", () => {
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: job.invocationId,
 			workId: job.workId!,
-			result: job_result(0, "x".repeat(1_200 * 1024)),
+			result: job_result({ exitCode: 0, stdout: "x".repeat(1_200 * 1024) }),
 		});
 		const after = await f.read(job.invocationId);
 		// Uncut, this one entry is already over the whole transcript's byte cap, so the trim deletes it
@@ -2669,7 +2679,7 @@ describe("finish_bash_job", () => {
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: job.invocationId,
 			workId: job.workId!,
-			result: job_result(0),
+			result: job_result({ exitCode: 0 }),
 		});
 		// A job result can be 700 KiB, so a finished job row must empty itself on time like a
 		// foreground call does.
@@ -2692,18 +2702,21 @@ describe("finish_bash_job", () => {
 			f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 				invocationId: job.invocationId,
 				workId: job.workId!,
-				result: job_result(0),
+				result: job_result({ exitCode: 0 }),
 			}),
 		).resolves.toBeNull();
 	});
 });
 
 describe("handle_bash_job_complete", () => {
-	const callback = (
-		invocationId: Id<"ai_chat_bash_invocations">,
-		workId: WorkId,
-		kind: "success" | "failed" | "canceled",
-	) => ({
+	const callback = (args: {
+		invocationId: Id<"ai_chat_bash_invocations">;
+		workId: WorkId;
+		kind: "success" | "failed" | "canceled";
+	}) => {
+		const { kind, invocationId, workId} = args;
+
+		return ({
 		workId,
 		context: { invocationId },
 		result:
@@ -2713,6 +2726,7 @@ describe("handle_bash_job_complete", () => {
 					? { kind: "failed" as const, error: "boom" }
 					: { kind: "canceled" as const },
 	});
+	};
 
 	test.each(["success", "failed", "canceled"] as const)(
 		"old %s callbacks and watchdogs leave a finished job unchanged",
@@ -2722,7 +2736,7 @@ describe("handle_bash_job_complete", () => {
 			await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 				invocationId: job.invocationId,
 				workId: job.workId!,
-				result: job_result(0, "kept output"),
+				result: job_result({ exitCode: 0, stdout: "kept output" }),
 			});
 			await f.t.run((ctx) => ctx.db.patch("organizations_workspaces_users", f.db.membershipId, { active: false }));
 			const before = await f.read(job.invocationId);
@@ -2730,7 +2744,7 @@ describe("handle_bash_job_complete", () => {
 			vi.setSystemTime(before.row!.deadlineAt + 1);
 			await f.t.mutation(
 				internal.ai_chat_files.handle_bash_job_complete,
-				callback(job.invocationId, job.workId!, kind),
+				callback({ invocationId: job.invocationId, workId: job.workId!, kind }),
 			);
 			await f.t.mutation(internal.ai_chat_files.timeout_bash_job, {
 				invocationId: job.invocationId,
@@ -2752,7 +2766,7 @@ describe("handle_bash_job_complete", () => {
 		const job = await f.seed_job({ jobNumber: 1, status: "running" });
 		await f.t.mutation(
 			internal.ai_chat_files.handle_bash_job_complete,
-			callback(job.invocationId, job.workId!, "failed"),
+			callback({ invocationId: job.invocationId, workId: job.workId!, kind: "failed" }),
 		);
 		const after = await f.read(job.invocationId);
 		expect(after.row).toMatchObject({ status: "interrupted" });
@@ -2765,7 +2779,7 @@ describe("handle_bash_job_complete", () => {
 		const job = await f.seed_job({ jobNumber: 1, stopRequestedAt: Date.now() });
 		await f.t.mutation(
 			internal.ai_chat_files.handle_bash_job_complete,
-			callback(job.invocationId, job.workId!, "canceled"),
+			callback({ invocationId: job.invocationId, workId: job.workId!, kind: "canceled" }),
 		);
 		const after = await f.read(job.invocationId);
 		expect(after.row).toMatchObject({ status: "interrupted" });
@@ -2801,19 +2815,19 @@ describe("handle_bash_job_complete", () => {
 		const plain = await f.seed_job({ jobNumber: 1, status: "running" });
 		await f.t.mutation(
 			internal.ai_chat_files.handle_bash_job_complete,
-			callback(plain.invocationId, plain.workId!, "success"),
+			callback({ invocationId: plain.invocationId, workId: plain.workId!, kind: "success" }),
 		);
 		expect((await f.read(plain.invocationId)).activity).toMatchObject({ status: "running" });
 
 		const stopped = await f.seed_job({ jobNumber: 2, stopRequestedAt: Date.now() });
 		await f.t.mutation(
 			internal.ai_chat_files.handle_bash_job_complete,
-			callback(stopped.invocationId, "other" as WorkId, "success"),
+			callback({ invocationId: stopped.invocationId, workId: "other" as WorkId, kind: "success" }),
 		);
 		expect((await f.read(stopped.invocationId)).activity).toMatchObject({ status: "stopping" });
 		await f.t.mutation(
 			internal.ai_chat_files.handle_bash_job_complete,
-			callback(stopped.invocationId, stopped.workId!, "success"),
+			callback({ invocationId: stopped.invocationId, workId: stopped.workId!, kind: "success" }),
 		);
 		expect((await f.read(stopped.invocationId)).activity).toMatchObject({ status: "canceled" });
 
@@ -2821,7 +2835,7 @@ describe("handle_bash_job_complete", () => {
 		await expect(
 			f.t.mutation(
 				internal.ai_chat_files.handle_bash_job_complete,
-				callback(plain.invocationId, plain.workId!, "failed"),
+				callback({ invocationId: plain.invocationId, workId: plain.workId!, kind: "failed" }),
 			),
 		).resolves.toBeNull();
 	});
@@ -2846,7 +2860,7 @@ describe("request_bash_job_stop", () => {
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: finished.invocationId,
 			workId: finished.workId!,
-			result: job_result(0),
+			result: job_result({ exitCode: 0 }),
 		});
 		expect(await f.t.mutation(internal.ai_chat_files.request_bash_job_stop, { ...f.scope, jobNumber: 1 })).toBe(false);
 		expect(await f.t.mutation(internal.ai_chat_files.request_bash_job_stop, { ...f.scope, jobNumber: 9 })).toBe(false);
@@ -2979,7 +2993,7 @@ describe("list_live_thread_jobs", () => {
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: done.invocationId,
 			workId: done.workId!,
-			result: job_result(0),
+			result: job_result({ exitCode: 0 }),
 		});
 		const mine = await f.asUser.query(api.ai_chat_files.list_live_thread_jobs, {
 			membershipId: f.db.membershipId,
@@ -3007,7 +3021,7 @@ describe("list_thread_jobs", () => {
 			await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 				invocationId: job.invocationId,
 				workId: job.workId!,
-				result: job_result(0),
+				result: job_result({ exitCode: 0 }),
 			});
 		}
 		expect(await f.t.query(internal.ai_chat_files.list_thread_jobs, { ...f.scope, select: { kind: "live" } })).toEqual([
@@ -3079,7 +3093,7 @@ describe("read_job_output", () => {
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: job.invocationId,
 			workId: job.workId!,
-			result: job_result(0, "out\n"),
+			result: job_result({ exitCode: 0, stdout: "out\n" }),
 		});
 		vi.setSystemTime(start + 7 * 24 * 60 * 60 * 1000 - 1);
 		expect(await f.t.query(internal.ai_chat_files.read_job_output, { ...f.scope, jobNumber: 1 })).toMatchObject({
@@ -3111,7 +3125,7 @@ describe("read_job_exit_codes", () => {
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: timedOut.invocationId,
 			workId: timedOut.workId!,
-			result: job_result(0, "late\n"),
+			result: job_result({ exitCode: 0, stdout: "late\n" }),
 		});
 		// The row really holds the worker's own 0, so the 124 below is the Activity winning over it.
 		expect(await f.t.query(internal.ai_chat_files.read_job_output, { ...f.scope, jobNumber: 1 })).toMatchObject({
@@ -3123,13 +3137,13 @@ describe("read_job_exit_codes", () => {
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: stopped.invocationId,
 			workId: stopped.workId!,
-			result: job_result(143),
+			result: job_result({ exitCode: 143 }),
 		});
 		const failed = await f.seed_job({ jobNumber: 3, status: "running" });
 		await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 			invocationId: failed.invocationId,
 			workId: failed.workId!,
-			result: job_result(5),
+			result: job_result({ exitCode: 5 }),
 		});
 
 		// The stopped twin of job 1, and the only row whose code cannot come from a result: a Stop
@@ -3164,7 +3178,7 @@ describe("read_job_exit_codes", () => {
 			await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 				invocationId: job.invocationId,
 				workId: job.workId!,
-				result: job_result(exitCode!),
+				result: job_result({ exitCode: exitCode! }),
 			});
 		}
 		vi.setSystemTime(start + 7 * 24 * 60 * 60 * 1000);
@@ -3254,7 +3268,7 @@ describe("activities", () => {
 			await f.t.mutation(internal.ai_chat_files.finish_bash_job, {
 				invocationId: job.invocationId,
 				workId: job.workId!,
-				result: job_result(0),
+				result: job_result({ exitCode: 0 }),
 			});
 			jobs.push(job);
 		}

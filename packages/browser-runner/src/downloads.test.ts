@@ -112,7 +112,6 @@ function make_web() {
 				viewedTabId: "tab-1",
 				viewGen: 1,
 				policyRevision: 0,
-				selectionRevision: 0,
 				profileId: "profile_1",
 				agentBlockedHosts: [],
 			},
@@ -234,7 +233,7 @@ function make_web() {
 	const post = async (path: string, value: unknown) => {
 		const defaults =
 			path === "/run/begin"
-				? { tabId: "tab-1", tabGen: 1, policyRevision: 0, selectionRevision: 0 }
+				? { tabId: "tab-1", tabGen: 1, policyRevision: 0 }
 				: path === "/control/to-agent"
 					? { controlGen: (stored.get("session") as { controlGen: number }).controlGen }
 					: {};
@@ -300,17 +299,19 @@ function make_web() {
 	/**
 	 * A paused page response, like Chrome sends it at the `Response` stage.
 	 */
-	const pause = async (
-		requestId: string,
-		headers: Record<string, string>,
-		options: {
+	const pause = async (args: {
+		requestId: string;
+		headers: Record<string, string>;
+		options?: {
 			status?: number;
 			frameId?: string;
 			method?: string;
 			url?: string;
 			errorReason?: string;
-		} = {},
-	) => {
+		};
+	}) => {
+		const { requestId, headers, options = {} } = args;
+
 		hostCdp.emit("Fetch.requestPaused", {
 			requestId,
 			frameId: options.frameId ?? "page-1",
@@ -431,7 +432,7 @@ describe("download capture", () => {
 		const viewer = await web.human();
 		await viewer.click();
 		web.body.reads = ["%PDF", "-1.7"];
-		await web.pause("r1", { ...ATTACHMENT, "Content-Length": "8" });
+		await web.pause({ requestId: "r1", headers: { ...ATTACHMENT, "Content-Length": "8" } });
 
 		expect(
 			web.send.mock.calls
@@ -470,7 +471,7 @@ describe("download capture", () => {
 		const web = make_web();
 		const viewer = await web.human();
 		await viewer.click();
-		await web.pause("r1", headers, options);
+		await web.pause({ requestId: "r1", headers, options });
 		expect(web.answers("r1")).toEqual([["Fetch.continueRequest", { requestId: "r1" }]]);
 		expect(web.send.mock.calls.some(([method]) => method === "Fetch.takeResponseBodyAsStream")).toBe(false);
 	});
@@ -484,7 +485,7 @@ describe("download capture", () => {
 			{ data: "ok", base64Encoded: false, eof: true },
 		];
 		web.body.read = async () => chunks.shift()!;
-		await web.pause("r1", ATTACHMENT);
+		await web.pause({ requestId: "r1", headers: ATTACHMENT });
 		const [download] = web.downloads(viewer.socket);
 		expect(download).toMatchObject({ size: 5 });
 		expect(
@@ -505,7 +506,7 @@ describe("download capture", () => {
 		await viewer.click();
 		// The server dropped the connection after 4 of 8 bytes. The stream still ends with eof.
 		web.body.reads = ["%PDF"];
-		await web.pause("r1", { ...ATTACHMENT, "Content-Length": "8" });
+		await web.pause({ requestId: "r1", headers: { ...ATTACHMENT, "Content-Length": "8" } });
 		expect(web.notices(viewer.socket)).toEqual(["download_failed"]);
 		expect(web.downloads(viewer.socket)).toEqual([]);
 		expect(web.answers("r1")).toEqual([["Fetch.failRequest", { requestId: "r1", errorReason: "Aborted" }]]);
@@ -513,7 +514,7 @@ describe("download capture", () => {
 		// Chrome gives the decoded body, so a gzip length is not compared.
 		await viewer.click();
 		web.body.reads = ["%PDF-1.7"];
-		await web.pause("r2", { ...ATTACHMENT, "Content-Length": "5", "Content-Encoding": "gzip" });
+		await web.pause({ requestId: "r2", headers: { ...ATTACHMENT, "Content-Length": "5", "Content-Encoding": "gzip" } });
 		expect(web.downloads(viewer.socket)).toMatchObject([{ size: 8 }]);
 	});
 
@@ -526,7 +527,7 @@ describe("download capture", () => {
 			return await send(method, params);
 		});
 		await viewer.click();
-		await web.pause("r1", ATTACHMENT);
+		await web.pause({ requestId: "r1", headers: ATTACHMENT });
 		expect(web.notices(viewer.socket)).toEqual(["download_failed"]);
 		expect(web.answers("r1")).toEqual([["Fetch.failRequest", { requestId: "r1", errorReason: "Aborted" }]]);
 	});
@@ -574,7 +575,7 @@ describe("download capture", () => {
 		web.body.read = null;
 		web.body.reads = ["b"];
 		await viewer.click();
-		await web.pause("r3", ATTACHMENT);
+		await web.pause({ requestId: "r3", headers: ATTACHMENT });
 		expect(web.downloads(viewer.socket)).toHaveLength(1);
 	});
 
@@ -597,7 +598,7 @@ describe("download capture", () => {
 		const viewer = await web.human();
 		await viewer.click();
 		web.body.reads = ["a"];
-		await web.pause("r1", { "Content-Type": `${type}; charset=utf-8` });
+		await web.pause({ requestId: "r1", headers: { "Content-Type": `${type}; charset=utf-8` } });
 		expect(web.answers("r1")[0]![0]).toBe(download ? "Fetch.failRequest" : "Fetch.continueRequest");
 		expect(web.downloads(viewer.socket)).toHaveLength(download ? 1 : 0);
 	});
@@ -607,7 +608,11 @@ describe("download capture", () => {
 		const viewer = await web.human();
 		await viewer.click();
 		web.body.reads = ["PK"];
-		await web.pause("r1", { "Content-Type": "application/zip" }, { url: "https://files.example/dl/archive.zip?x=1" });
+		await web.pause({
+			requestId: "r1",
+			headers: { "Content-Type": "application/zip" },
+			options: { url: "https://files.example/dl/archive.zip?x=1" },
+		});
 		expect(web.answers("r1")).toEqual([["Fetch.failRequest", { requestId: "r1", errorReason: "Aborted" }]]);
 		expect(web.downloads(viewer.socket)).toMatchObject([{ name: "archive.zip", contentType: "application/zip" }]);
 	});
@@ -622,12 +627,12 @@ describe("download capture", () => {
 		});
 		await viewer.click();
 		// The read fails inside the capture.
-		await web.pause("r1", ATTACHMENT);
+		await web.pause({ requestId: "r1", headers: ATTACHMENT });
 		// No owner: the gesture is used. Its refusal log fails, so the throw reaches the pause handler.
 		vi.mocked(console.log).mockImplementationOnce(() => {
 			throw new Error("log failed");
 		});
-		await web.pause("r2", ATTACHMENT);
+		await web.pause({ requestId: "r2", headers: ATTACHMENT });
 		expect(web.answers("r1")).toEqual([["Fetch.failRequest", { requestId: "r1", errorReason: "Aborted" }]]);
 		expect(web.answers("r2")).toEqual([["Fetch.failRequest", { requestId: "r2", errorReason: "Aborted" }]]);
 	});
@@ -636,14 +641,14 @@ describe("download capture", () => {
 		const web = make_web();
 		const viewer = await web.human();
 		// No click yet: a page timer started it.
-		await web.pause("r1", ATTACHMENT);
+		await web.pause({ requestId: "r1", headers: ATTACHMENT });
 		expect(web.notices(viewer.socket)).toEqual(["download_blocked"]);
 		expect(web.answers("r1")).toEqual([["Fetch.failRequest", { requestId: "r1", errorReason: "Aborted" }]]);
 		expect(web.send.mock.calls.some(([method]) => method === "Fetch.takeResponseBodyAsStream")).toBe(false);
 
 		await viewer.click();
 		web.body.reads = ["a"];
-		await web.pause("r2", ATTACHMENT);
+		await web.pause({ requestId: "r2", headers: ATTACHMENT });
 		expect(web.downloads(viewer.socket)).toHaveLength(1);
 		// Save the first so the one-unclaimed rule does not decide the next one.
 		await web.post("/download/push", {
@@ -653,14 +658,14 @@ describe("download capture", () => {
 			headers: {},
 		});
 		web.body.reads = ["b"];
-		await web.pause("r3", ATTACHMENT);
+		await web.pause({ requestId: "r3", headers: ATTACHMENT });
 		expect(web.downloads(viewer.socket)).toHaveLength(1);
 		expect(web.notices(viewer.socket)).toEqual(["download_blocked", "download_blocked"]);
 
 		// A gesture older than 10 seconds does not count.
 		await viewer.click();
 		vi.setSystemTime(Date.now() + LIMITS.downloadGestureMs + 1);
-		await web.pause("r4", ATTACHMENT);
+		await web.pause({ requestId: "r4", headers: ATTACHMENT });
 		expect(web.notices(viewer.socket)).toEqual(["download_blocked", "download_blocked", "download_blocked"]);
 	});
 
@@ -668,7 +673,7 @@ describe("download capture", () => {
 		const web = make_web();
 		const viewer = await web.human();
 		await viewer.click();
-		await web.pause("r1", ATTACHMENT, { frameId: "child" });
+		await web.pause({ requestId: "r1", headers: ATTACHMENT, options: { frameId: "child" } });
 		expect(web.notices(viewer.socket)).toEqual(["download_blocked"]);
 		expect(web.downloads(viewer.socket)).toEqual([]);
 	});
@@ -677,11 +682,11 @@ describe("download capture", () => {
 		const web = make_web();
 		const viewer = await web.human();
 		await viewer.input({ kind: "key.press", key: "a" });
-		await web.pause("r1", ATTACHMENT);
+		await web.pause({ requestId: "r1", headers: ATTACHMENT });
 		expect(web.notices(viewer.socket)).toEqual(["download_blocked"]);
 		await viewer.input({ kind: "key.down", key: "Enter" });
 		web.body.reads = ["a"];
-		await web.pause("r2", ATTACHMENT);
+		await web.pause({ requestId: "r2", headers: ATTACHMENT });
 		expect(web.downloads(viewer.socket)).toHaveLength(1);
 		// Save it, so the one-unclaimed rule does not decide the next one.
 		await web.post("/download/push", {
@@ -711,7 +716,7 @@ describe("download capture", () => {
 		);
 		expect(web.send).toHaveBeenCalledWith("Page.navigate", { url: "https://files.example/get/report" });
 		web.body.reads = ["b"];
-		await web.pause("r3", ATTACHMENT);
+		await web.pause({ requestId: "r3", headers: ATTACHMENT });
 		expect(web.downloads(viewer.socket)).toHaveLength(2);
 	});
 
@@ -746,7 +751,11 @@ describe("download capture", () => {
 		const viewer = await web.human();
 		await viewer.click();
 		web.body.reads = ["a"];
-		await web.pause("r1", { "Content-Type": "application/octet-stream", "Content-Disposition": disposition }, { url });
+		await web.pause({
+			requestId: "r1",
+			headers: { "Content-Type": "application/octet-stream", "Content-Disposition": disposition },
+			options: { url },
+		});
 		expect(web.downloads(viewer.socket)).toMatchObject([{ name: expected }]);
 	});
 });
@@ -756,7 +765,10 @@ describe("download caps", () => {
 		const web = make_web();
 		const viewer = await web.human();
 		await viewer.click();
-		await web.pause("r1", { ...ATTACHMENT, "Content-Length": String(LIMITS.downloadHumanBytes + 1) });
+		await web.pause({
+			requestId: "r1",
+			headers: { ...ATTACHMENT, "Content-Length": String(LIMITS.downloadHumanBytes + 1) },
+		});
 		expect(web.notices(viewer.socket)).toEqual(["download_too_large"]);
 		expect(web.send.mock.calls.some(([method]) => method === "Fetch.takeResponseBodyAsStream")).toBe(false);
 		expect(web.answers("r1")).toEqual([["Fetch.failRequest", { requestId: "r1", errorReason: "Aborted" }]]);
@@ -768,7 +780,7 @@ describe("download caps", () => {
 		await viewer.click();
 		const chunk = "x".repeat(MiB);
 		web.body.read = async () => ({ data: chunk, base64Encoded: false, eof: false });
-		await web.pause("r1", ATTACHMENT);
+		await web.pause({ requestId: "r1", headers: ATTACHMENT });
 		expect(web.send.mock.calls.filter(([method]) => method === "IO.read")).toHaveLength(
 			LIMITS.downloadHumanBytes / MiB + 1,
 		);
@@ -783,10 +795,10 @@ describe("download caps", () => {
 		const viewer = await web.human();
 		await viewer.click();
 		web.body.reads = ["a"];
-		await web.pause("r1", ATTACHMENT);
+		await web.pause({ requestId: "r1", headers: ATTACHMENT });
 		await viewer.click();
 		web.body.reads = ["b"];
-		await web.pause("r2", ATTACHMENT);
+		await web.pause({ requestId: "r2", headers: ATTACHMENT });
 		expect(web.downloads(viewer.socket)).toHaveLength(1);
 		expect(web.notices(viewer.socket)).toEqual(["download_busy"]);
 	});
@@ -797,7 +809,7 @@ describe("download caps", () => {
 		const first = Promise.withResolvers<Read>();
 		web.body.read = () => first.promise;
 		await viewer.click();
-		const paused = web.pause("r1", ATTACHMENT);
+		const paused = web.pause({ requestId: "r1", headers: ATTACHMENT });
 		await vi.waitFor(() => expect(web.send).toHaveBeenCalledWith("IO.read", expect.anything()));
 		// A second download with its own gesture: the running capture refuses it.
 		await viewer.click();
@@ -824,11 +836,11 @@ describe("download caps", () => {
 		const finished = await web.run_command(async () => {
 			for (const id of ["r1", "r2", "r3", "r4"]) {
 				web.body.reads = ["a"];
-				await web.pause(id, ATTACHMENT);
+				await web.pause({ requestId: id, headers: ATTACHMENT });
 			}
 			await web.wait(LIMITS.downloadStartWindowMs, viewer.viewerId);
 			web.body.reads = ["b"];
-			await web.pause("r5", ATTACHMENT);
+			await web.pause({ requestId: "r5", headers: ATTACHMENT });
 		});
 		expect((finished.downloads as unknown[]).length).toBe(4);
 		for (const id of ["r1", "r2", "r3", "r4", "r5"])
@@ -842,7 +854,7 @@ describe("download caps", () => {
 			for (let index = 0; index < LIMITS.downloadSessionFiles + 1; index += 1) {
 				if (index % LIMITS.downloadStarts === 0) await web.wait(LIMITS.downloadStartWindowMs, viewer.viewerId);
 				web.body.reads = ["a"];
-				await web.pause(`r${index}`, ATTACHMENT);
+				await web.pause({ requestId: `r${index}`, headers: ATTACHMENT });
 			}
 		});
 		// 8 files fit in the command result. The other 12 are dropped from it, and the 21st never starts.
@@ -864,7 +876,7 @@ describe("download caps", () => {
 				left -= 1;
 				return { data: chunk, base64Encoded: false, eof: left === 0 };
 			};
-			await web.pause(`r${index}`, ATTACHMENT);
+			await web.pause({ requestId: `r${index}`, headers: ATTACHMENT });
 			const last = web.downloads(viewer.socket).at(-1)!;
 			expect(last.size).toBe(25 * MiB);
 			expect(
@@ -880,7 +892,7 @@ describe("download caps", () => {
 		await viewer.click();
 		web.body.read = null;
 		web.body.reads = ["a"];
-		await web.pause("r5", ATTACHMENT);
+		await web.pause({ requestId: "r5", headers: ATTACHMENT });
 		expect(web.notices(viewer.socket)).toEqual(["download_limit"]);
 	});
 });
@@ -893,9 +905,12 @@ describe("agent downloads", () => {
 			for (let index = 0; index < LIMITS.files + 1; index += 1) {
 				if (index % LIMITS.downloadStarts === 0) await web.wait(LIMITS.downloadStartWindowMs, viewer.viewerId);
 				web.body.reads = [`file-${index}`];
-				await web.pause(`r${index}`, {
+				await web.pause({
+					requestId: `r${index}`,
+					headers: {
 					"Content-Type": "text/csv",
 					"Content-Disposition": `attachment; filename="f${index}.csv"`,
+				},
 				});
 			}
 		});
@@ -915,9 +930,9 @@ describe("agent downloads", () => {
 		const chunk = "x".repeat(MiB);
 		const finished = await web.run_command(async () => {
 			web.body.reads = Array.from({ length: 8 }, () => chunk);
-			await web.pause("r1", ATTACHMENT);
+			await web.pause({ requestId: "r1", headers: ATTACHMENT });
 			web.body.reads = ["a"];
-			await web.pause("r2", ATTACHMENT);
+			await web.pause({ requestId: "r2", headers: ATTACHMENT });
 		});
 		expect((finished.downloads as unknown[]).length).toBe(1);
 		expect(finished.downloadsDropped).toBe(1);
@@ -928,10 +943,13 @@ describe("agent downloads", () => {
 		await web.attach();
 		const finished = await web.run_command(async () => {
 			// Over the agent file cap before reading.
-			await web.pause("r1", { ...ATTACHMENT, "Content-Length": String(LIMITS.downloadAgentBytes + 1) });
+			await web.pause({
+				requestId: "r1",
+				headers: { ...ATTACHMENT, "Content-Length": String(LIMITS.downloadAgentBytes + 1) },
+			});
 			// A cut-off body.
 			web.body.reads = ["ab"];
-			await web.pause("r2", { ...ATTACHMENT, "Content-Length": "4" });
+			await web.pause({ requestId: "r2", headers: { ...ATTACHMENT, "Content-Length": "4" } });
 			// A cross-origin link from the safety net.
 			web.hostCdp.emit("Browser.downloadWillBegin", {
 				frameId: "page-1",
@@ -1096,7 +1114,7 @@ describe("agent downloads", () => {
 				resourceType: "Fetch",
 			});
 			web.body.reads = ["a"];
-			await web.pause("r1", ATTACHMENT);
+			await web.pause({ requestId: "r1", headers: ATTACHMENT });
 		});
 		expect(web.answers("q1")).toEqual([["Fetch.failRequest", { requestId: "q1", errorReason: "BlockedByClient" }]]);
 		expect(web.answers("q2")).toEqual([["Fetch.continueRequest", { requestId: "q2" }]]);
@@ -1110,7 +1128,7 @@ describe("download routes", () => {
 		const viewer = await web.human();
 		await viewer.click();
 		web.body.reads = ["data"];
-		await web.pause("r1", ATTACHMENT);
+		await web.pause({ requestId: "r1", headers: ATTACHMENT });
 		const downloadId = web.downloads(viewer.socket)[0]!.downloadId as string;
 		return { web, viewer, downloadId };
 	};
@@ -1226,7 +1244,13 @@ describe("file choosers", () => {
 			url.searchParams.set(key, value);
 		return url;
 	};
-	const put = async (web: ReturnType<typeof make_web>, grantId: string, body: BodyInit) => {
+	const put = async (args: {
+		web: ReturnType<typeof make_web>;
+		grantId: string;
+		body: BodyInit;
+	}) => {
+		const { web, grantId, body } = args;
+
 		// `duplex` lets a stream body through, like a browser upload.
 		const init = { method: "PUT", body, headers: { "Content-Type": "text/plain" }, duplex: "half" } as RequestInit;
 		const response = await web.session.fetch(new Request(upload_url(grantId), init));
@@ -1241,8 +1265,17 @@ describe("file choosers", () => {
 		const opened = messages(viewer.socket).find((message) => message.t === "file-chooser");
 		return { web, viewer, chooser, chooserId: opened?.chooserId as string, opened };
 	};
-	const fill = (web: ReturnType<typeof make_web>, chooserId: string, files: unknown[], controlGen = 2) =>
-		web.post("/upload/fill", { ...SESSION, ...TAB, chooserId, controlGen, files });
+	const fill = (args: {
+		web: ReturnType<typeof make_web>;
+		chooserId: string;
+		files: unknown[];
+		controlGen?: number;
+	}) =>
+		{
+		const { web, chooserId, files, controlGen = 2 } = args;
+
+		return web.post("/upload/fill", { ...SESSION, ...TAB, chooserId, controlGen, files });
+	};
 	const ONE = [{ name: "a.txt", contentType: "text/plain", url: "https://r2.test/a" }];
 
 	it("opens a chooser only in human control", async () => {
@@ -1266,12 +1299,12 @@ describe("file choosers", () => {
 	it("fills the chooser once from signed URLs", async () => {
 		const { web, viewer, chooser, chooserId } = await open();
 		fetchMock.mockResolvedValue(new NativeResponse("hello"));
-		expect(await fill(web, chooserId, ONE)).toEqual({ ok: true });
+		expect(await fill({ web, chooserId, files: ONE })).toEqual({ ok: true });
 		expect(chooser.chooser.setFiles).toHaveBeenCalledWith([
 			{ name: "a.txt", mimeType: "text/plain", buffer: Buffer.from("hello") },
 		]);
 		expect(messages(viewer.socket)).toContainEqual({ ...TAB, t: "file-chooser-closed", chooserId });
-		expect(await fill(web, chooserId, ONE)).toMatchObject({ ok: false, error: { code: "chooser_gone" } });
+		expect(await fill({ web, chooserId, files: ONE })).toMatchObject({ ok: false, error: { code: "chooser_gone" } });
 		expect(chooser.chooser.setFiles).toHaveBeenCalledOnce();
 	});
 
@@ -1310,7 +1343,7 @@ describe("file choosers", () => {
 			web.stored.set("session", record);
 			return fn(chooser.node);
 		});
-		expect(await put(web, granted.grantId as string, "hello")).toEqual({
+		expect(await put({ web, grantId: granted.grantId as string, body: "hello" })).toEqual({
 			status: 409,
 			body: { ok: false, code: "chooser_gone" },
 		});
@@ -1319,7 +1352,7 @@ describe("file choosers", () => {
 
 	it("gives a single chooser exactly one file", async () => {
 		const { web, chooser, chooserId } = await open({ multiple: false });
-		expect(await fill(web, chooserId, [...ONE, ...ONE])).toMatchObject({
+		expect(await fill({ web, chooserId, files: [...ONE, ...ONE] })).toMatchObject({
 			ok: false,
 			error: { code: "too_many_files" },
 		});
@@ -1332,16 +1365,16 @@ describe("file choosers", () => {
 		web.page.emit("framenavigated", web.page.mainFrame());
 		await web.drain();
 		expect(messages(viewer.socket)).toContainEqual({ ...TAB, t: "file-chooser-closed", chooserId });
-		expect(await fill(web, chooserId, ONE)).toMatchObject({ ok: false, error: { code: "chooser_gone" } });
+		expect(await fill({ web, chooserId, files: ONE })).toMatchObject({ ok: false, error: { code: "chooser_gone" } });
 		expect(chooser.chooser.setFiles).not.toHaveBeenCalled();
 	});
 
 	it("refuses a fill after a controlGen change", async () => {
 		const { web, viewer, chooser, chooserId } = await open();
-		expect(await fill(web, chooserId, ONE, 1)).toMatchObject({ ok: false, error: { code: "chooser_gone" } });
+		expect(await fill({ web, chooserId, files: ONE, controlGen: 1 })).toMatchObject({ ok: false, error: { code: "chooser_gone" } });
 		await web.post("/control/to-agent", { ...SESSION, navGen: 1 });
 		await web.post("/control/take-human", { ...SESSION, navGen: 1, viewerId: viewer.viewerId });
-		expect(await fill(web, chooserId, ONE, 4)).toMatchObject({ ok: false, error: { code: "chooser_gone" } });
+		expect(await fill({ web, chooserId, files: ONE, controlGen: 4 })).toMatchObject({ ok: false, error: { code: "chooser_gone" } });
 		expect(chooser.chooser.setFiles).not.toHaveBeenCalled();
 	});
 
@@ -1351,7 +1384,7 @@ describe("file choosers", () => {
 			chooser.node.ownerDocument.location.origin = "https://evil.test";
 			return new NativeResponse("hello");
 		});
-		expect(await fill(web, chooserId, ONE)).toMatchObject({ ok: false, error: { code: "chooser_gone" } });
+		expect(await fill({ web, chooserId, files: ONE })).toMatchObject({ ok: false, error: { code: "chooser_gone" } });
 		expect(chooser.chooser.setFiles).not.toHaveBeenCalled();
 	});
 
@@ -1363,7 +1396,7 @@ describe("file choosers", () => {
 			web.page.emit("framenavigated", web.page.mainFrame());
 			return fn(chooser.node);
 		});
-		expect(await fill(web, chooserId, ONE)).toMatchObject({ ok: false, error: { code: "chooser_gone" } });
+		expect(await fill({ web, chooserId, files: ONE })).toMatchObject({ ok: false, error: { code: "chooser_gone" } });
 		expect(messages(viewer.socket)).toContainEqual({ ...TAB, t: "file-chooser-closed", chooserId });
 		expect(chooser.chooser.setFiles).not.toHaveBeenCalled();
 	});
@@ -1373,7 +1406,7 @@ describe("file choosers", () => {
 		const bodies = [Promise.withResolvers<Response>(), Promise.withResolvers<Response>()];
 		fetchMock.mockImplementationOnce(() => bodies[0]!.promise).mockImplementationOnce(() => bodies[1]!.promise);
 		const two = [ONE[0]!, { name: "b.txt", contentType: "text/plain", url: "https://r2.test/b" }];
-		const filling = fill(web, chooserId, two);
+		const filling = fill({ web, chooserId, files: two });
 		// Both fetches start before either answers.
 		await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
 		bodies[1]!.resolve(new NativeResponse("world"));
@@ -1387,7 +1420,7 @@ describe("file choosers", () => {
 		// Each file is under 20 MiB, but not both together.
 		const next = await open({ multiple: true });
 		fetchMock.mockImplementation(async () => new NativeResponse(new Uint8Array(LIMITS.uploadBytes / 2 + 1)));
-		expect(await fill(next.web, next.chooserId, two)).toMatchObject({ ok: false, error: { code: "too_large" } });
+		expect(await fill({ web: next.web, chooserId: next.chooserId, files: two })).toMatchObject({ ok: false, error: { code: "too_large" } });
 		expect(next.chooser.chooser.setFiles).not.toHaveBeenCalled();
 	});
 
@@ -1401,7 +1434,7 @@ describe("file choosers", () => {
 				}),
 		);
 		let reply: Record<string, unknown> | null = null;
-		const filling = fill(web, chooserId, ONE).then((value) => {
+		const filling = fill({ web, chooserId, files: ONE }).then((value) => {
 			reply = value;
 		});
 		await web.wait(LIMITS.uploadFillMs - LIMITS.uploadSetFilesMs - 5_000, viewer.viewerId);
@@ -1420,7 +1453,7 @@ describe("file choosers", () => {
 			},
 		});
 		const first = await web.post("/upload/grant", { ...SESSION, ...TAB, chooserId, controlGen: 2 });
-		expect(await put(web, first.grantId as string, broken)).toEqual({
+		expect(await put({ web, grantId: first.grantId as string, body: broken })).toEqual({
 			status: 400,
 			body: { ok: false, code: "upload_failed" },
 		});
@@ -1434,13 +1467,13 @@ describe("file choosers", () => {
 			},
 		});
 		const second = await web.post("/upload/grant", { ...SESSION, ...TAB, chooserId, controlGen: 2 });
-		const replied = put(web, second.grantId as string, slow);
+		const replied = put({ web, grantId: second.grantId as string, body: slow });
 		await web.wait(60_000, viewer.viewerId);
 		expect(await replied).toEqual({ status: 400, body: { ok: false, code: "upload_failed" } });
 		expect(cancelled).toBe(true);
 		expect(chooser.chooser.setFiles).not.toHaveBeenCalled();
 		// Each grant works once, even after a failure.
-		expect(await put(web, second.grantId as string, "hello")).toEqual({
+		expect(await put({ web, grantId: second.grantId as string, body: "hello" })).toEqual({
 			status: 403,
 			body: { ok: false, code: "grant_invalid" },
 		});
@@ -1449,10 +1482,10 @@ describe("file choosers", () => {
 	it("refuses a fill over 20 MiB and a failed fetch", async () => {
 		const first = await open({ multiple: true });
 		fetchMock.mockResolvedValue(new NativeResponse(new Uint8Array(LIMITS.uploadBytes + 1)));
-		expect(await fill(first.web, first.chooserId, ONE)).toMatchObject({ ok: false, error: { code: "too_large" } });
+		expect(await fill({ web: first.web, chooserId: first.chooserId, files: ONE })).toMatchObject({ ok: false, error: { code: "too_large" } });
 		const second = await open();
 		fetchMock.mockResolvedValue(new NativeResponse(null, { status: 403 }));
-		expect(await fill(second.web, second.chooserId, ONE)).toMatchObject({ ok: false, error: { code: "fetch_failed" } });
+		expect(await fill({ web: second.web, chooserId: second.chooserId, files: ONE })).toMatchObject({ ok: false, error: { code: "fetch_failed" } });
 	});
 
 	it("uses a grant once for a computer upload, even when the first try fails", async () => {
@@ -1460,17 +1493,17 @@ describe("file choosers", () => {
 		const granted = await web.post("/upload/grant", { ...SESSION, ...TAB, chooserId, controlGen: 2 });
 		expect(granted).toEqual({ ok: true, grantId: expect.any(String), expiresAt: Date.now() + LIMITS.uploadGrantMs });
 		// A failed try keeps the chooser open, so only the used grant can refuse the retry.
-		expect(await put(web, granted.grantId as string, new Uint8Array(LIMITS.uploadBytes + 1))).toMatchObject({
+		expect(await put({ web, grantId: granted.grantId as string, body: new Uint8Array(LIMITS.uploadBytes + 1) })).toMatchObject({
 			status: 413,
 		});
-		expect(await put(web, granted.grantId as string, "hello")).toEqual({
+		expect(await put({ web, grantId: granted.grantId as string, body: "hello" })).toEqual({
 			status: 403,
 			body: { ok: false, code: "grant_invalid" },
 		});
 		expect(chooser.chooser.setFiles).not.toHaveBeenCalled();
 
 		const again = await web.post("/upload/grant", { ...SESSION, ...TAB, chooserId, controlGen: 2 });
-		expect(await put(web, again.grantId as string, "hello")).toEqual({ status: 200, body: { ok: true } });
+		expect(await put({ web, grantId: again.grantId as string, body: "hello" })).toEqual({ status: 200, body: { ok: true } });
 		expect(chooser.chooser.setFiles).toHaveBeenCalledWith([
 			{ name: "notes.txt", mimeType: "text/plain", buffer: Buffer.from("hello") },
 		]);
@@ -1480,7 +1513,7 @@ describe("file choosers", () => {
 		const { web, chooser, chooserId } = await open();
 		const granted = await web.post("/upload/grant", { ...SESSION, ...TAB, chooserId, controlGen: 2 });
 		vi.setSystemTime(Date.now() + LIMITS.uploadGrantMs);
-		expect(await put(web, granted.grantId as string, "hello")).toEqual({
+		expect(await put({ web, grantId: granted.grantId as string, body: "hello" })).toEqual({
 			status: 403,
 			body: { ok: false, code: "grant_invalid" },
 		});
@@ -1490,7 +1523,7 @@ describe("file choosers", () => {
 	it("refuses a computer upload over 20 MiB", async () => {
 		const { web, chooser, chooserId } = await open();
 		const granted = await web.post("/upload/grant", { ...SESSION, ...TAB, chooserId, controlGen: 2 });
-		expect(await put(web, granted.grantId as string, new Uint8Array(LIMITS.uploadBytes + 1))).toEqual({
+		expect(await put({ web, grantId: granted.grantId as string, body: new Uint8Array(LIMITS.uploadBytes + 1) })).toEqual({
 			status: 413,
 			body: { ok: false, code: "too_large" },
 		});
@@ -1503,7 +1536,7 @@ describe("file choosers", () => {
 		await web.drain();
 		expect(chooser.node.dispatchEvent).toHaveBeenCalledWith(expect.objectContaining({ type: "cancel" }));
 		expect(messages(viewer.socket)).toContainEqual({ ...TAB, t: "file-chooser-closed", chooserId });
-		expect(await fill(web, chooserId, ONE)).toMatchObject({ ok: false, error: { code: "chooser_gone" } });
+		expect(await fill({ web, chooserId, files: ONE })).toMatchObject({ ok: false, error: { code: "chooser_gone" } });
 	});
 
 	it("closes the chooser after 5 minutes", async () => {
@@ -1523,7 +1556,7 @@ describe("viewer reconnect", () => {
 		const viewer = await web.human();
 		await viewer.click();
 		web.body.reads = ["a"];
-		await web.pause("r1", ATTACHMENT);
+		await web.pause({ requestId: "r1", headers: ATTACHMENT });
 		const [download] = web.downloads(viewer.socket);
 		web.page.emit("filechooser", make_chooser().chooser);
 		await web.drain();
@@ -1559,11 +1592,11 @@ describe("download and upload logs", () => {
 		const viewer = await web.human();
 		await viewer.click();
 		web.body.reads = ["a"];
-		await web.pause(
-			"r1",
-			{ "Content-Type": "application/zip", "Content-Disposition": 'attachment; filename="secretname.zip"' },
-			{ url: "https://privatesite.test/x" },
-		);
+		await web.pause({
+			requestId: "r1",
+			headers: { "Content-Type": "application/zip", "Content-Disposition": 'attachment; filename="secretname.zip"' },
+			options: { url: "https://privatesite.test/x" },
+		});
 		const downloadId = web.downloads(viewer.socket)[0]!.downloadId;
 		await web.post("/download/push", { ...SESSION, downloadId, url: "https://r2.test/privatekey", headers: {} });
 		const lines = log.mock.calls.map((call) => call.map(String).join(" "));

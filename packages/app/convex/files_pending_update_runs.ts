@@ -542,11 +542,13 @@ async function db_get_planning_run(
 	return Result({ _yay: run });
 }
 
-async function db_hold_selection(
-	ctx: MutationCtx,
-	runId: Id<"files_pending_update_runs">,
-	proposals: Doc<"files_pending_updates">[],
-) {
+async function db_hold_selection(args: {
+	ctx: MutationCtx;
+	runId: Id<"files_pending_update_runs">;
+	proposals: Doc<"files_pending_updates">[];
+}) {
+	const { ctx, runId, proposals } = args;
+
 	for (const proposal of proposals) {
 		const node =
 			proposal.target.kind === "private" ? await ctx.db.get("files_pending_nodes", proposal.target.id) : null;
@@ -721,7 +723,7 @@ export const start = mutation({
 			now,
 		});
 
-		await db_hold_selection(ctx, runId, checked._yay);
+		await db_hold_selection({ ctx, runId, proposals: checked._yay });
 		return Result({ _yay: { runId, activityId } });
 	},
 });
@@ -813,7 +815,7 @@ export const append_items = mutation({
 				expectedDestinationParentPath: null,
 			});
 		}
-		await db_hold_selection(ctx, run._id, checked._yay);
+		await db_hold_selection({ ctx, runId: run._id, proposals: checked._yay });
 
 		const now = Date.now();
 		await ctx.db.patch("files_pending_update_runs", run._id, {
@@ -980,11 +982,13 @@ export const refresh_plan = internalMutation({
 type refresh_plan_Result =
 	typeof refresh_plan extends RegisteredMutation<infer _V, infer _A, infer R> ? Awaited<R> : never;
 
-async function db_plan_progress(
-	ctx: MutationCtx,
-	run: Doc<"files_pending_update_runs">,
-	plan: Doc<"files_pending_update_runs">["plan"],
-) {
+async function db_plan_progress(args: {
+	ctx: MutationCtx;
+	run: Doc<"files_pending_update_runs">;
+	plan: Doc<"files_pending_update_runs">["plan"];
+}) {
+	const { ctx, run, plan } = args;
+
 	const now = Date.now();
 	await ctx.db.patch("files_pending_update_runs", run._id, { plan, updatedAt: now });
 	const activity = await activities_db_require_by_source_id(ctx, run._id);
@@ -1042,11 +1046,15 @@ export const classify_plan_page = internalMutation({
 				expectedPath: context?.path ?? null,
 				expectedDestinationParentPath: context?.destinationParentPath ?? null,
 			});
-		await db_plan_progress(ctx, run, {
+		await db_plan_progress({
+			ctx,
+			run,
+			plan: {
 			...run.plan,
 			atomicItemCount,
 			phase: page.isDone ? "atomic" : "classify",
 			cursor: page.isDone ? null : page.continueCursor,
+		},
 		});
 		return Result({ _yay: (await ctx.db.get("files_pending_update_runs", run._id))! });
 	},
@@ -1055,14 +1063,16 @@ export const classify_plan_page = internalMutation({
 type classify_plan_page_Result =
 	typeof classify_plan_page extends RegisteredMutation<infer _V, infer _A, infer R> ? Awaited<R> : never;
 
-async function db_insert_plan_unit(
-	ctx: MutationCtx,
-	runId: Id<"files_pending_update_runs">,
+async function db_insert_plan_unit(args: {
+	ctx: MutationCtx;
+	runId: Id<"files_pending_update_runs">;
 	unit: Pick<
 		Doc<"files_pending_update_run_units">,
 		"order" | "kind" | "itemCount" | "deleteLast" | "privateDiscardRoots"
-	>,
-) {
+	>;
+}) {
+	const { ctx, unit, runId} = args;
+
 	return await ctx.db.insert("files_pending_update_run_units", {
 		runId,
 		...unit,
@@ -1093,12 +1103,16 @@ export const stage_copy_units_page = internalMutation({
 			.withIndex("by_run_planKind_order", (q) => q.eq("runId", run._id).eq("planKind", "copy"))
 			.paginate({ cursor: run.plan.cursor, numItems: PLAN_PAGE_SIZE });
 		for (const item of page.page) {
-			const unitId = await db_insert_plan_unit(ctx, run._id, {
+			const unitId = await db_insert_plan_unit({
+				ctx,
+				runId: run._id,
+				unit: {
 				order: item.order,
 				kind: "copy",
 				itemCount: 1,
 				deleteLast: false,
 				privateDiscardRoots: [],
+			},
 			});
 			await ctx.db.patch("files_pending_update_run_items", item._id, { unitId });
 		}
@@ -1106,10 +1120,14 @@ export const stage_copy_units_page = internalMutation({
 			unitCount: run.unitCount + page.page.length,
 			plannedItemCount: run.plannedItemCount + page.page.length,
 		});
-		await db_plan_progress(ctx, run, {
+		await db_plan_progress({
+			ctx,
+			run,
+			plan: {
 			...run.plan,
 			phase: page.isDone ? "dependencies" : "copy_units",
 			cursor: page.isDone ? null : page.continueCursor,
+		},
 		});
 		return Result({ _yay: (await ctx.db.get("files_pending_update_runs", run._id))! });
 	},
@@ -1150,11 +1168,15 @@ export const advance_atomic_plan = internalMutation({
 		if (args.done && run.plannedItemCount !== run.plan.atomicItemCount)
 			return Result({ _nay: { name: "invalid_plan", message: "The atomic plan is incomplete." } });
 		for (const item of promote) await ctx.db.patch("files_pending_update_run_items", item._id, { planKind: "atomic" });
-		await db_plan_progress(ctx, run, {
+		await db_plan_progress({
+			ctx,
+			run,
+			plan: {
 			...run.plan,
 			atomicItemCount: run.plan.atomicItemCount + promote.length,
 			phase: args.done ? "copy_units" : "atomic",
 			cursor: args.done || promote.length ? null : args.nextCursor,
+		},
 		});
 		return Result({ _yay: null });
 	},
@@ -1210,12 +1232,16 @@ export const block_atomic_plan_page = internalMutation({
 
 		let unitId = existing?._id;
 		if (!unitId) {
-			unitId = await db_insert_plan_unit(ctx, run._id, {
+			unitId = await db_insert_plan_unit({
+				ctx,
+				runId: run._id,
+				unit: {
 				order: first.order,
 				kind: "atomic",
 				itemCount: run.plan.atomicItemCount,
 				deleteLast: false,
 				privateDiscardRoots: [],
+			},
 			});
 			await ctx.db.patch("files_pending_update_run_units", unitId, {
 				errorCode: "needs_review",
@@ -1231,7 +1257,7 @@ export const block_atomic_plan_page = internalMutation({
 			needsReviewIds: merge_needs_review_ids(run, args.unreviewedIds),
 		});
 		// A replayed page is not progress, so it does not extend the deadline.
-		if (unassigned.length) await db_plan_progress(ctx, run, run.plan);
+		if (unassigned.length) await db_plan_progress({ ctx, run, plan: run.plan });
 		return Result({ _yay: { isDone: page.isDone, continueCursor: page.continueCursor } });
 	},
 });
@@ -1341,12 +1367,14 @@ export const get_dependency_plan_page = internalQuery({
 type get_dependency_plan_page_Result =
 	typeof get_dependency_plan_page extends RegisteredQuery<infer _V, infer _A, infer R> ? Awaited<R> : never;
 
-async function db_get_selected_media(
-	ctx: QueryCtx | MutationCtx,
-	run: Doc<"files_pending_update_runs">,
-	item: Doc<"files_pending_update_run_items">,
-	mediaRefs: string[],
-) {
+async function db_get_selected_media(args: {
+	ctx: QueryCtx | MutationCtx;
+	run: Doc<"files_pending_update_runs">;
+	item: Doc<"files_pending_update_run_items">;
+	mediaRefs: string[];
+}) {
+	const { ctx, run, item, mediaRefs } = args;
+
 	const reviewedArchiveIds = new Set<Id<"files_pending_updates">>();
 	const reader = await files_visible_db_create_reader(ctx, { ...run, readLimit: 4096, reviewedArchiveIds });
 	const selectedItems: Doc<"files_pending_update_run_items">[] = [];
@@ -1425,7 +1453,7 @@ export const get_atomic_media_selection_page = internalQuery({
 		const valid = await db_validate_items(ctx, { ...checked._yay, items: [item] });
 		if (valid._nay) return valid;
 		// Missing media blocks this unit later; still group all of its selected media now.
-		return Result({ _yay: (await db_get_selected_media(ctx, checked._yay, item, args.mediaRefs)).selectedItems });
+		return Result({ _yay: (await db_get_selected_media({ ctx, run: checked._yay, item, mediaRefs: args.mediaRefs })).selectedItems });
 	},
 });
 
@@ -1482,7 +1510,7 @@ export const stage_dependency_plan_page = internalMutation({
 				}
 			}
 			if (args.mediaRefs.length) {
-				const media = await db_get_selected_media(ctx, run, item, args.mediaRefs);
+				const media = await db_get_selected_media({ ctx, run, item, mediaRefs: args.mediaRefs });
 				error ??= media.error;
 				for (const selected of media.selectedItems)
 					if (selected.unitId) prerequisites.push({ unitId: selected.unitId, kind: "media" });
@@ -1517,12 +1545,16 @@ export const stage_dependency_plan_page = internalMutation({
 			});
 		}
 		const itemDone = !item || args.isDone || error !== null;
-		await db_plan_progress(ctx, run, {
+		await db_plan_progress({
+			ctx,
+			run,
+			plan: {
 			...run.plan,
 			phase: itemDone && page.lastItem ? "ready" : "dependencies",
 			cursor: itemDone ? (page.lastItem ? null : page.nextItemCursor) : run.plan.cursor,
 			itemId: itemDone ? null : item!._id,
 			dependencyCursor: itemDone ? null : String(Number(run.plan.dependencyCursor ?? 0) + args.mediaRefs.length),
+		},
 		});
 		return Result({ _yay: null });
 	},
@@ -1531,12 +1563,14 @@ export const stage_dependency_plan_page = internalMutation({
 type stage_dependency_plan_page_Result =
 	typeof stage_dependency_plan_page extends RegisteredMutation<infer _V, infer _A, infer R> ? Awaited<R> : never;
 
-async function action_read_reviewed_media_refs(
-	ctx: ActionCtx,
-	run: Pick<Doc<"files_pending_update_runs">, "kind" | "organizationId" | "workspaceId" | "userId">,
-	item: Doc<"files_pending_update_run_items">,
-	proposal: Doc<"files_pending_updates">,
-) {
+async function action_read_reviewed_media_refs(args: {
+	ctx: ActionCtx;
+	run: Pick<Doc<"files_pending_update_runs">, "kind" | "organizationId" | "workspaceId" | "userId">;
+	item: Doc<"files_pending_update_run_items">;
+	proposal: Doc<"files_pending_updates">;
+}) {
+	const { ctx, run, item, proposal } = args;
+
 	let error: string | null = null;
 	let text: string | null = null;
 	if (run.kind === "accept" && item.mediaDependencySet) {
@@ -1635,7 +1669,7 @@ async function action_plan_dependency_page(
 	const { run, item, proposal } = checked._yay;
 	const media =
 		item && proposal && !checked._yay.error
-			? await action_read_reviewed_media_refs(ctx, run, item, proposal)
+			? await action_read_reviewed_media_refs({ ctx, run, item, proposal })
 			: { refs: [], error: checked._yay.error };
 	// Reviewed edits can add embeds outside the Copy's captured mapping set.
 	const offset = Number(run.plan.dependencyCursor ?? 0);
@@ -1742,9 +1776,13 @@ export const stage_plan_units = internalMutation({
 		const ids = [];
 		for (const unit of args.units) {
 			ids.push(
-				await db_insert_plan_unit(ctx, run._id, {
+				await db_insert_plan_unit({
+					ctx,
+					runId: run._id,
+					unit: {
 					kind: "atomic",
 					...unit,
+				},
 				}),
 			);
 		}
@@ -1833,16 +1871,16 @@ export const seal_plan = internalMutation({
 
 type seal_plan_Result = typeof seal_plan extends RegisteredMutation<infer _V, infer _A, infer R> ? Awaited<R> : never;
 
-async function build_review_dependencies(
-	ctx: ActionCtx,
-	args: {
-		runId: Id<"files_pending_update_runs">;
-		fence: number;
-		revalidation?: { unitId: Id<"files_pending_update_run_units">; attemptFence: number; reviewVersion: number };
-	},
-	kind: "accept" | "discard",
-	selected: NonNullable<get_plan_selection_page_Result["_yay"]>["page"],
-) {
+async function build_review_dependencies(args: {
+	ctx: ActionCtx;
+	runId: Id<"files_pending_update_runs">;
+	fence: number;
+	revalidation?: { unitId: Id<"files_pending_update_run_units">; attemptFence: number; reviewVersion: number };
+	kind: "accept" | "discard";
+	selected: NonNullable<get_plan_selection_page_Result["_yay"]>["page"];
+}) {
+	const { ctx, kind, selected, ...previousArgs } = args;
+
 	const indexById = new Map(selected.map(({ item }, index) => [item.pendingUpdateId, index]));
 	const parents = selected.map((_, index) => index);
 
@@ -1869,11 +1907,13 @@ async function build_review_dependencies(
 		),
 	);
 
-	function projectedPath(
-		path: string | null,
-		savedAncestorPath: string | null,
-		visited = new Set<string>(),
-	): string | null {
+	function projectedPath(args: {
+		path: string | null;
+		savedAncestorPath: string | null;
+		visited?: Set<string>;
+	}): string | null {
+		const { path, savedAncestorPath, visited = new Set<string>() } = args;
+
 		if (path === null || savedAncestorPath === null) return path;
 		let prefix = savedAncestorPath;
 		while (prefix && prefix !== "/") {
@@ -1881,11 +1921,11 @@ async function build_review_dependencies(
 			if (move) {
 				if (visited.has(prefix)) return null;
 				visited.add(prefix);
-				const parent = projectedPath(
-					move.context.destinationParentPath,
-					move.context.destinationSavedAncestorPath,
+				const parent = projectedPath({
+					path: move.context.destinationParentPath,
+					savedAncestorPath: move.context.destinationSavedAncestorPath,
 					visited,
-				);
+				});
 				return parent === null
 					? null
 					: path_join(parent, move.context.proposal.pendingMove!.destName) + path.slice(prefix.length);
@@ -1902,7 +1942,13 @@ async function build_review_dependencies(
 	const archives = new Map<string, Set<number>>();
 	const privateDiscards = new Map<Id<"files_pending_nodes">, number>();
 
-	function add(map: Map<string, Set<number>>, key: string, index: number) {
+	function add(args: {
+		map: Map<string, Set<number>>;
+		key: string;
+		index: number;
+	}) {
+		const { map, key, index } = args;
+
 		const values = map.get(key) ?? new Set<number>();
 		values.add(index);
 		map.set(key, values);
@@ -1911,8 +1957,8 @@ async function build_review_dependencies(
 	for (const [index, { context }] of selected.entries()) {
 		const { proposal } = context;
 		if (kind === "accept") {
-			const projected = projectedPath(context.path, context.savedAncestorPath);
-			const destination = projectedPath(context.destinationPath, context.destinationSavedAncestorPath);
+			const projected = projectedPath({ path: context.path, savedAncestorPath: context.savedAncestorPath });
+			const destination = projectedPath({ path: context.destinationPath, savedAncestorPath: context.destinationSavedAncestorPath });
 			if (projected === null || (context.destinationPath !== null && destination === null)) {
 				return Result({
 					_nay: { name: "needs_review", message: "These moves form a folder cycle. Review their destinations." },
@@ -1932,7 +1978,7 @@ async function build_review_dependencies(
 				for (const path of [context.path, context.destinationPath]) {
 					let parentPath = path?.slice(0, path.lastIndexOf("/")) ?? "";
 					while (parentPath) {
-						add(selectedAncestorPaths, parentPath, index);
+						add({ map: selectedAncestorPaths, key: parentPath, index });
 						parentPath = parentPath.slice(0, parentPath.lastIndexOf("/"));
 					}
 				}
@@ -1940,14 +1986,14 @@ async function build_review_dependencies(
 
 			if (!is_independent_copy(proposal))
 				for (const id of [...context.privateAncestorIds, ...context.destinationPrivateAncestorIds])
-					add(requiredTargets, `private:${id}`, index);
+					add({ map: requiredTargets, key: `private:${id}`, index });
 			const replaced = proposal.pendingMove?.replacesTarget;
-			if (replaced) add(requiredTargets, `${replaced.kind}:${replaced.id}`, index);
-			if (context.destinationPath) add(selectedDestinations, context.destinationPath, index);
-			if (proposal.pendingArchive) add(archives, projected, index);
+			if (replaced) add({ map: requiredTargets, key: `${replaced.kind}:${replaced.id}`, index });
+			if (context.destinationPath) add({ map: selectedDestinations, key: context.destinationPath, index });
+			if (proposal.pendingArchive) add({ map: archives, key: projected, index });
 		} else {
 			if (proposal.target.kind === "private") privateDiscards.set(proposal.target.id, index);
-			if (proposal.pendingMove && context.path) add(selectedMoveSources, context.path, index);
+			if (proposal.pendingMove && context.path) add({ map: selectedMoveSources, key: context.path, index });
 		}
 	}
 
@@ -1961,8 +2007,8 @@ async function build_review_dependencies(
 				for (const index of selectedDestinations.get(context.path) ?? []) indices.add(index);
 
 			for (const path of [
-				projectedPath(context.path, context.savedAncestorPath),
-				projectedPath(context.destinationPath, context.destinationSavedAncestorPath),
+				projectedPath({ path: context.path, savedAncestorPath: context.savedAncestorPath }),
+				projectedPath({ path: context.destinationPath, savedAncestorPath: context.destinationSavedAncestorPath }),
 			]) {
 				if (!path) continue;
 				let prefix = path;
@@ -1993,10 +2039,10 @@ async function build_review_dependencies(
 	// Ordinary documents keep their selected media in the same bounded atomic component.
 	media: for (const [index, { item, context }] of selected.entries()) {
 		if (kind !== "accept" || !item.mediaDependencySet || is_independent_copy(context.proposal)) continue;
-		const media = await action_read_reviewed_media_refs(ctx, { ...context.proposal, kind }, item, context.proposal);
+		const media = await action_read_reviewed_media_refs({ ctx, run: { ...context.proposal, kind }, item, proposal: context.proposal });
 		for (let offset = 0; offset < media.refs.length; offset += PLAN_PAGE_SIZE) {
 			const page = (await ctx.runQuery(internal.files_pending_update_runs.get_atomic_media_selection_page, {
-				...args,
+				...previousArgs,
 				itemId: item._id,
 				mediaRefs: media.refs.slice(offset, offset + PLAN_PAGE_SIZE),
 			})) as get_atomic_media_selection_page_Result;
@@ -2264,7 +2310,7 @@ export const plan = internalAction({
 					return null;
 				}
 
-				const dependencies = await build_review_dependencies(ctx, args, run.kind, selected);
+				const dependencies = await build_review_dependencies({ ctx, ...args, kind: run.kind, selected });
 				if (dependencies._nay) {
 					await fail(dependencies._nay);
 					return null;
@@ -2999,12 +3045,14 @@ export const prepare_unit = internalAction({
 				}
 
 				// This graph contains only this unit. A new link to another unit needs a new review.
-				const dependencies = await build_review_dependencies(
+				const dependencies = await build_review_dependencies({
 					ctx,
-					{ runId: args.runId, fence: args.fence, revalidation },
+					runId: args.runId,
+					fence: args.fence,
+					revalidation,
 					kind,
-					reviewed,
-				);
+					selected: reviewed,
+				});
 				if (dependencies._nay) {
 					await fail(dependencies._nay);
 					return null;
@@ -3254,7 +3302,7 @@ export const commit_unit = internalMutation({
 					proposal.target.id !== node._id
 				)
 					refuse_unit("needs_review", "A reviewed draft changed. Review it again.");
-				await files_pending_nodes_db_fence_discard(ctx, node);
+				await files_pending_nodes_db_fence_discard({ ctx, node });
 				await files_pending_nodes_db_start_cleanup(ctx, node);
 			}
 
@@ -3460,7 +3508,7 @@ export const commit_unit = internalMutation({
 						refuse_unit("needs_review", "The destination folder has private child changes. Review them first.");
 				}
 
-				await files_nodes_db_apply_move(ctx, planned._yay, shareLinkCleanup);
+				await files_nodes_db_apply_move({ ctx, plan: planned._yay, shareLinkCleanup });
 			}
 
 			for (const { item } of contentItems) {

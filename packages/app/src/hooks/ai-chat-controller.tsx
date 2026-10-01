@@ -207,11 +207,11 @@ export type AiChatRuntimeActions = {
 	stop: () => void;
 	setSelectedModelId: (modelId: ai_chat_ModelId) => void;
 	setSelectedModeId: (modeId: ai_chat_ModeId) => void;
-	sendUserText: (
-		threadId: string,
-		value: string,
-		options?: { messageId?: string; attachments?: FileUIPart[] },
-	) => boolean;
+	sendUserText: (args: {
+		threadId: string;
+		value: string;
+		options?: { messageId?: string; attachments?: FileUIPart[] };
+	}) => boolean;
 	regenerate: (threadId: string, messageId: string) => void;
 	branchChat: (threadId: string, messageId?: string) => void;
 	selectBranchAnchor: (threadId: string, anchorId: string | null) => void;
@@ -292,11 +292,7 @@ function ControllerProvider(props: AiChatController_Props) {
 	const { membershipId } = AppTenantProvider.useContext();
 	const preferences = useQuery(app_convex_api.files_browser.current_browser_preferences, { membershipId });
 	const browserIntent = preferences
-		? ({
-				webChoice: preferences.webChoice,
-				selectionRevision: preferences.selectionRevision,
-				policyRevision: preferences.policyRevision,
-			} satisfies browser_Intent)
+		? ({ policyRevision: preferences.policyRevision } satisfies browser_Intent)
 		: preferences;
 
 	const [selectedThreadId, setSelectedThreadIdState] = useState(() =>
@@ -719,7 +715,13 @@ const useStore = ((/* iife */) => {
 					return { threadById };
 				});
 			},
-			saveQueuedUserMessageEdit(threadId: string, messageId: AiChatQueuedUserMessage["id"], text: string) {
+			saveQueuedUserMessageEdit(args: {
+				threadId: string;
+				messageId: AiChatQueuedUserMessage["id"];
+				text: string;
+			}) {
+				const { threadId, messageId, text } = args;
+
 				let didSave = false;
 				store.setState((state) => {
 					const session = state.threadById.get(threadId);
@@ -1092,11 +1094,13 @@ const useStore = ((/* iife */) => {
  * AI SDK clears its internal active response after `onFinish`, so the next
  * queued message must wait for this separate request token.
  */
-function track_chat_request(
-	chat: Chat<ai_chat_UiMessage>,
-	request: Promise<void>,
-	claimedQueuedUserMessageId: AiChatQueuedUserMessage["id"] | null = null,
-) {
+function track_chat_request(args: {
+	chat: Chat<ai_chat_UiMessage>;
+	request: Promise<void>;
+	claimedQueuedUserMessageId?: AiChatQueuedUserMessage["id"] | null;
+}) {
+	const { chat, request, claimedQueuedUserMessageId = null } = args;
+
 	const requestToken = Symbol();
 	const threadId = threadIdByChat.get(chat);
 	if (!threadId) {
@@ -1430,7 +1434,7 @@ const useThreadList = (props?: useThreadList_Props) => {
 				},
 				{ body: { browserIntent } },
 			);
-			track_chat_request(optimisticChat, request);
+			track_chat_request({ chat: optimisticChat, request });
 		}
 
 		return threadId;
@@ -2245,7 +2249,7 @@ const useThreadRuntimeController = () => {
 				},
 				{ body: { browserIntent } },
 			);
-			track_chat_request(optimisticChat, request);
+			track_chat_request({ chat: optimisticChat, request });
 		}
 
 		return threadId;
@@ -2455,7 +2459,7 @@ const useThreadRuntimeController = () => {
 			messageId,
 			body: { browserIntent },
 		});
-		track_chat_request(chat, request);
+		track_chat_request({ chat, request });
 		request.catch((error: unknown) => {
 			console.error("[AiChatController.useThreadRuntime.regenerate] Error regenerating message", {
 				error,
@@ -2513,15 +2517,17 @@ const useThreadRuntimeController = () => {
 		: undefined;
 
 	const sendUserTextNow = useFn(
-		(
-			threadId: string,
-			value: string,
+		(args: {
+			threadId: string;
+			value: string;
 			options?: {
 				messageId?: string;
 				queuedMessage?: AiChatQueuedUserMessage;
 				attachments?: FileUIPart[];
-			},
-		) => {
+			};
+		}) => {
+			const { threadId, value, options } = args;
+
 			if (threadId !== selectedThreadId) {
 				return false;
 			}
@@ -2700,7 +2706,7 @@ const useThreadRuntimeController = () => {
 				},
 				{ body: { browserIntent: threadBrowserIntent } },
 			);
-			track_chat_request(chat, request, options?.queuedMessage?.id ?? null);
+			track_chat_request({ chat, request, claimedQueuedUserMessageId: options?.queuedMessage?.id ?? null });
 
 			useStore.actions.setSession(threadId, (prev) => {
 				if (!prev) {
@@ -2725,7 +2731,13 @@ const useThreadRuntimeController = () => {
 	);
 
 	const sendUserText = useFn(
-		(threadId: string, value: string, options?: { messageId?: string; attachments?: FileUIPart[] }) => {
+		(args: {
+			threadId: string;
+			value: string;
+			options?: { messageId?: string; attachments?: FileUIPart[] };
+		}) => {
+			const { threadId, value, options } = args;
+
 			if (threadId !== selectedThreadId || !browserIntent) {
 				return false;
 			}
@@ -2774,7 +2786,7 @@ const useThreadRuntimeController = () => {
 				return didEnqueue;
 			}
 
-			const didSend = sendUserTextNow(threadId, value, options);
+			const didSend = sendUserTextNow({ threadId, value, options });
 			if (didSend) {
 				setComposerValue(chat, "");
 				setComposerAttachments(chat, []);
@@ -2833,7 +2845,13 @@ const useThreadRuntimeController = () => {
 	});
 
 	const setQueuedUserMessageEditText = useFn(
-		(chat: Chat<ai_chat_UiMessage>, messageId: AiChatQueuedUserMessage["id"], text: string) => {
+		(args: {
+			chat: Chat<ai_chat_UiMessage>;
+			messageId: AiChatQueuedUserMessage["id"];
+			text: string;
+		}) => {
+			const { chat, messageId, text } = args;
+
 			const threadId = threadIdByChat.get(chat);
 			if (!threadId) {
 				return;
@@ -2847,7 +2865,13 @@ const useThreadRuntimeController = () => {
 	);
 
 	const setQueuedUserMessageEditAttachments = useFn(
-		(chat: Chat<ai_chat_UiMessage>, messageId: AiChatQueuedUserMessage["id"], attachments: FileUIPart[]) => {
+		(args: {
+			chat: Chat<ai_chat_UiMessage>;
+			messageId: AiChatQueuedUserMessage["id"];
+			attachments: FileUIPart[];
+		}) => {
+			const { chat, messageId, attachments } = args;
+
 			const threadId = threadIdByChat.get(chat);
 			if (!threadId) {
 				return;
@@ -2861,7 +2885,13 @@ const useThreadRuntimeController = () => {
 	);
 
 	const setQueuedUserMessageEditModelId = useFn(
-		(chat: Chat<ai_chat_UiMessage>, messageId: AiChatQueuedUserMessage["id"], selectedModelId: ai_chat_ModelId) => {
+		(args: {
+			chat: Chat<ai_chat_UiMessage>;
+			messageId: AiChatQueuedUserMessage["id"];
+			selectedModelId: ai_chat_ModelId;
+		}) => {
+			const { chat, messageId, selectedModelId } = args;
+
 			const threadId = threadIdByChat.get(chat);
 			if (!threadId) {
 				return;
@@ -2875,7 +2905,13 @@ const useThreadRuntimeController = () => {
 	);
 
 	const setQueuedUserMessageEditModeId = useFn(
-		(chat: Chat<ai_chat_UiMessage>, messageId: AiChatQueuedUserMessage["id"], selectedModeId: ai_chat_ModeId) => {
+		(args: {
+			chat: Chat<ai_chat_UiMessage>;
+			messageId: AiChatQueuedUserMessage["id"];
+			selectedModeId: ai_chat_ModeId;
+		}) => {
+			const { chat, messageId, selectedModeId } = args;
+
 			const threadId = threadIdByChat.get(chat);
 			if (!threadId) {
 				return;
@@ -2902,7 +2938,7 @@ const useThreadRuntimeController = () => {
 		}
 		const edit = useStore.actions.getSession(selectedThreadId)?.queuedUserMessageEdit;
 		if (edit) useStore.actions.updateQueuedUserMessageEdit(selectedThreadId, { ...edit, browserIntent });
-		return useStore.actions.saveQueuedUserMessageEdit(selectedThreadId, messageId, text);
+		return useStore.actions.saveQueuedUserMessageEdit({ threadId: selectedThreadId, messageId, text });
 	});
 
 	const cancelQueuedUserMessageEdit = useFn((messageId: AiChatQueuedUserMessage["id"]) => {
@@ -2934,8 +2970,12 @@ const useThreadRuntimeController = () => {
 
 		// Resume an error-paused queue by retrying its visible failed turn first.
 		if (failedSendUserMessage?.role === "user") {
-			sendUserTextNow(selectedThreadId, ai_chat_get_message_text(failedSendUserMessage), {
+			sendUserTextNow({
+				threadId: selectedThreadId,
+				value: ai_chat_get_message_text(failedSendUserMessage),
+				options: {
 				messageId: failedSendUserMessage.id,
+			},
 			});
 			return;
 		}
@@ -3192,7 +3232,7 @@ const useThreadRuntimeController = () => {
 			}
 
 			try {
-				const didSend = sendUserTextNow(selectedThreadId, queuedMessage.text, { queuedMessage });
+				const didSend = sendUserTextNow({ threadId: selectedThreadId, value: queuedMessage.text, options: { queuedMessage } });
 				if (!didSend) {
 					useStore.actions.restoreClaimedQueuedUserMessage(selectedThreadId, queuedMessage);
 				}

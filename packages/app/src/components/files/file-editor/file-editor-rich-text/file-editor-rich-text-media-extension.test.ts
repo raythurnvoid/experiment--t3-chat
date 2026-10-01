@@ -84,7 +84,13 @@ async function flush_microtasks() {
 	for (let i = 0; i < 8; i++) await Promise.resolve();
 }
 
-function create_editor(src: string, kind: "image" | "video" = "image", uploadId?: string) {
+function create_editor(args: {
+	src: string;
+	kind?: "image" | "video";
+	uploadId?: string;
+}) {
+	const { kind = "image", src, uploadId} = args;
+
 	const element = document.createElement("div");
 	document.body.append(element);
 	const node = { type: kind, attrs: { src, uploadId, alt: "Capture", title: "Caption", width: 240, align: "center" } };
@@ -147,7 +153,7 @@ describe("file_editor_rich_text_MediaExtension", () => {
 			const src = "bonobo-file://private/private_1";
 			const draft = { ...media_result("private"), contentType: `${kind}/test` };
 			emit_result(src, draft);
-			const { editor, media, dom } = create_editor(src, kind);
+			const { editor, media, dom } = create_editor({ src, kind });
 			await flush_microtasks();
 
 			expect(getFunctionName(watchQuery.mock.calls[0]![0])).toBe("r2:get_media_by_reference");
@@ -180,7 +186,7 @@ describe("file_editor_rich_text_MediaExtension", () => {
 		async (kind) => {
 			const src = kind === "saved" ? "bonobo-file://saved_1" : "bonobo-file://private/private_1";
 			emit_result(src, media_result(kind));
-			const { media, dom } = create_editor(src);
+			const { media, dom } = create_editor({ src });
 			await flush_microtasks();
 			expect(media.hasAttribute("src")).toBe(true);
 
@@ -196,7 +202,7 @@ describe("file_editor_rich_text_MediaExtension", () => {
 		emit_result(src, media_result("saved"));
 		const signed = Promise.withResolvers<{ _yay: { url: string } }>();
 		action.mockReturnValue(signed.promise);
-		const { media, dom } = create_editor(src);
+		const { media, dom } = create_editor({ src });
 		await flush_microtasks();
 		expect(action).toHaveBeenCalled();
 		emit_result(src, null);
@@ -212,7 +218,7 @@ describe("file_editor_rich_text_MediaExtension", () => {
 		emit_result(src, media_result("saved"));
 		const signed = Promise.withResolvers<{ _yay: { url: string } }>();
 		action.mockReturnValue(signed.promise);
-		const { editor, media } = create_editor(src);
+		const { editor, media } = create_editor({ src });
 		await flush_microtasks();
 		expect(action).toHaveBeenCalled();
 		editor.commands.setNodeSelection(1);
@@ -229,7 +235,7 @@ describe("file_editor_rich_text_MediaExtension", () => {
 		emit_result(src, media_result("saved"));
 		const signed = Promise.withResolvers<{ _yay: { url: string } }>();
 		action.mockReturnValue(signed.promise);
-		const { media } = create_editor(src);
+		const { media } = create_editor({ src });
 		await flush_microtasks();
 		expect(action).toHaveBeenCalled();
 		action.mockResolvedValue({ _yay: { url: "https://images.test/new.png" } });
@@ -246,12 +252,12 @@ describe("file_editor_rich_text_MediaExtension", () => {
 	test("does not reuse a private URL when the same reference is opened again", async () => {
 		const src = "bonobo-file://private/private_1";
 		emit_result(src, media_result("private"));
-		const first = create_editor(src);
+		const first = create_editor({ src });
 		await flush_microtasks();
 		expect(first.media.hasAttribute("src")).toBe(true);
 		first.editor.destroy();
 		action.mockResolvedValue({ _nay: { message: "This draft changed. Open it again." } });
-		const second = create_editor(src);
+		const second = create_editor({ src });
 		await flush_microtasks();
 
 		expect(action).toHaveBeenCalledTimes(2);
@@ -264,7 +270,7 @@ describe("file_editor_rich_text_MediaExtension", () => {
 		emit_result(src, media_result("saved"));
 		const signed = Promise.withResolvers<{ _yay: { url: string } }>();
 		action.mockReturnValue(signed.promise);
-		const { editor, media } = create_editor(src);
+		const { editor, media } = create_editor({ src });
 		await flush_microtasks();
 		expect(action).toHaveBeenCalled();
 		editor.destroy();
@@ -281,7 +287,7 @@ describe("file_editor_rich_text_MediaExtension", () => {
 		delete result.asset.r2Key;
 		result.asset.unfinalizedExpiresAt = Date.now() + 2000;
 		emit_result(src, result);
-		const { dom } = create_editor(src);
+		const { dom } = create_editor({ src });
 		await flush_microtasks();
 		expect(dom.textContent).toContain("Processing…");
 		expect(action).not.toHaveBeenCalled();
@@ -292,7 +298,7 @@ describe("file_editor_rich_text_MediaExtension", () => {
 
 	test("waits for the first query answer and can recover from a missing private file", async () => {
 		const src = "bonobo-file://private/private_1";
-		const { media, dom } = create_editor(src);
+		const { media, dom } = create_editor({ src });
 		expect(dom.textContent).toContain("Processing…");
 		expect(action).not.toHaveBeenCalled();
 
@@ -309,7 +315,7 @@ describe("file_editor_rich_text_MediaExtension", () => {
 		emit_result(src, media_result("private"));
 		const signed = Promise.withResolvers<{ _yay: { url: string } }>();
 		action.mockReturnValue(signed.promise);
-		const { media, dom } = create_editor(src);
+		const { media, dom } = create_editor({ src });
 		expect(action).toHaveBeenCalled();
 		get_watch(src).error = new Error("Unauthenticated");
 		emit_result(src, null);
@@ -325,7 +331,7 @@ describe("file_editor_rich_text_MediaExtension", () => {
 		emit_result(src, media_result("private"));
 		const signed = Promise.withResolvers<{ _yay: { url: string } } | { _nay: { message: string } }>();
 		action.mockReturnValueOnce(signed.promise);
-		const { media } = create_editor(src);
+		const { media } = create_editor({ src });
 		expect(getFunctionName(action.mock.calls[0]![0])).toBe("files_pending_updates:create_private_pending_download_url");
 		emit_result(src, media_result("saved"));
 		await flush_microtasks();
@@ -342,7 +348,7 @@ describe("file_editor_rich_text_MediaExtension", () => {
 		const src = "bonobo-file://private/private_1";
 		const first = media_result("private");
 		emit_result(src, first);
-		const { media } = create_editor(src);
+		const { media } = create_editor({ src });
 		await flush_microtasks();
 		const signed = Promise.withResolvers<{ _yay: { url: string } }>();
 		action.mockReturnValueOnce(signed.promise);
@@ -363,7 +369,7 @@ describe("file_editor_rich_text_MediaExtension", () => {
 		emit_result(src, media_result("saved"));
 		const signed = Promise.withResolvers<{ _yay: { url: string } }>();
 		action.mockReturnValue(signed.promise);
-		const { media, dom } = create_editor(src);
+		const { media, dom } = create_editor({ src });
 		emit_result(src, { ...media_result("saved"), contentType: "application/pdf" });
 		signed.resolve({ _yay: { url: "https://images.test/stale.png" } });
 		await flush_microtasks();
@@ -375,7 +381,7 @@ describe("file_editor_rich_text_MediaExtension", () => {
 
 	test("keeps local upload bytes visible until the saved asset is ready", async () => {
 		localUploadGet.mockReturnValue({ status: "uploading", objectUrl: "blob:local-preview" });
-		const { editor, media } = create_editor("", "image", "upload_1");
+		const { editor, media } = create_editor({ src: "", kind: "image", uploadId: "upload_1" });
 		expect(media.getAttribute("src")).toBe("blob:local-preview");
 		expect(watchQuery).not.toHaveBeenCalled();
 		const src = "bonobo-file://saved_1";
@@ -396,7 +402,7 @@ describe("file_editor_rich_text_MediaExtension", () => {
 	});
 
 	test.each(["bonobo-file://private//image", "javascript:alert(1)"])("never loads an unsupported source: %s", (src) => {
-		const { media, dom } = create_editor(src);
+		const { media, dom } = create_editor({ src });
 		expect(media.hasAttribute("src")).toBe(false);
 		expect(dom.textContent).toContain("File not available");
 		expect(watchQuery).not.toHaveBeenCalled();

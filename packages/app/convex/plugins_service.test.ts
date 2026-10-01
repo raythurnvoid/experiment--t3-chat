@@ -132,11 +132,13 @@ async function seed_installation(
  * Mint a page session directly. `mint_page_session` needs a signed-in identity and a passed page in
  * the manifest; neither is what these routes are about, and only the token hash matters here.
  */
-async function seed_page_token(
-	t: ReturnType<typeof test_convex>,
-	fixture: Awaited<ReturnType<typeof seed_installation>>,
-	args: { expiresAt?: number } = {},
-) {
+async function seed_page_token(args: {
+	t: ReturnType<typeof test_convex>;
+	fixture: Awaited<ReturnType<typeof seed_installation>>;
+	expiresAt?: number;
+}) {
+	const { t, fixture } = args;
+
 	const token = `plu_${crypto_random_hex(32)}`;
 	const now = Date.now();
 	await t.run(async (ctx) => {
@@ -163,11 +165,13 @@ async function seed_page_token(
  * It has to be a second member. The organization owner passes every permission check without a grant
  * doc, so nothing can take a content permission away from the seeded fixture user.
  */
-async function seed_member_page_token(
-	t: ReturnType<typeof test_convex>,
-	fixture: Awaited<ReturnType<typeof seed_installation>>,
-	args: { permissions?: ("content.read" | "content.write")[] } = {},
-) {
+async function seed_member_page_token(args: {
+	t: ReturnType<typeof test_convex>;
+	fixture: Awaited<ReturnType<typeof seed_installation>>;
+	permissions?: ("content.read" | "content.write")[];
+}) {
+	const { t, fixture } = args;
+
 	const token = `plu_${crypto_random_hex(32)}`;
 	await t.run(async (ctx) => {
 		const now = Date.now();
@@ -219,10 +223,16 @@ async function read_grants(t: ReturnType<typeof test_convex>) {
 	return await t.run(async (ctx) => await ctx.db.query("plugin_service_grants").collect());
 }
 
-async function exchange(t: ReturnType<typeof test_convex>, pageToken: string, args: { secret?: string | null } = {}) {
+async function exchange(args: {
+	t: ReturnType<typeof test_convex>;
+	pageToken: string;
+	secret?: string | null;
+}) {
+	const { t, pageToken, ...previousArgs } = args;
+
 	return await t.fetch(EXCHANGE_PATH, {
 		method: "POST",
-		headers: service_headers(pageToken, args),
+		headers: service_headers(pageToken, previousArgs),
 		body: JSON.stringify({}),
 	});
 }
@@ -234,8 +244,8 @@ async function exchange_token(
 	t: ReturnType<typeof test_convex>,
 	fixture: Awaited<ReturnType<typeof seed_installation>>,
 ) {
-	const pageToken = await seed_page_token(t, fixture);
-	const response = await exchange(t, pageToken);
+	const pageToken = await seed_page_token({ t, fixture });
+	const response = await exchange({ t, pageToken });
 	if (response.status !== 200) {
 		throw new Error(`Exchange failed with ${response.status}: ${await response.text()}`);
 	}
@@ -251,7 +261,7 @@ describe("/api/v1/plugins/service-grants/exchange", () => {
 			acceptedCapabilities: ["plugin.service.connect", "workspace.files.write"],
 			registration: { scopes: ["files:write"] },
 		});
-		const pageToken = await seed_page_token(t, fixture);
+		const pageToken = await seed_page_token({ t, fixture });
 		const exchanged = await t.fetch(EXCHANGE_PATH, {
 			method: "POST",
 			headers: service_headers(pageToken),
@@ -326,7 +336,7 @@ describe("/api/v1/plugins/service-grants/exchange", () => {
 	test("a lost grant response requires the same request and current service secret", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
-		const pageToken = await seed_page_token(t, fixture);
+		const pageToken = await seed_page_token({ t, fixture });
 		const exchanged = await t.fetch(EXCHANGE_PATH, {
 			method: "POST",
 			headers: service_headers(pageToken),
@@ -370,9 +380,9 @@ describe("/api/v1/plugins/service-grants/exchange", () => {
 	test("trades a live page token for a grant the service can really write with", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
-		const pageToken = await seed_page_token(t, fixture);
+		const pageToken = await seed_page_token({ t, fixture });
 
-		const response = await exchange(t, pageToken);
+		const response = await exchange({ t, pageToken });
 		expect(response.status).toBe(200);
 		const body = (await response.json()) as {
 			token: string;
@@ -411,9 +421,9 @@ describe("/api/v1/plugins/service-grants/exchange", () => {
 	test("refuses a caller with no exchange secret, and mints nothing", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
-		const pageToken = await seed_page_token(t, fixture);
+		const pageToken = await seed_page_token({ t, fixture });
 
-		const response = await exchange(t, pageToken, { secret: null });
+		const response = await exchange({ t, pageToken, secret: null });
 		expect(response.status).toBe(401);
 		expect(await response.json()).toEqual({ message: "Unauthorized" });
 		expect(await read_grants(t)).toHaveLength(0);
@@ -422,11 +432,11 @@ describe("/api/v1/plugins/service-grants/exchange", () => {
 	test("refuses a caller who sends an empty exchange secret, and mints nothing", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
-		const pageToken = await seed_page_token(t, fixture);
+		const pageToken = await seed_page_token({ t, fixture });
 
 		// `Bearer ` with nothing after it must not be read as a secret. If it were, a deployment that
 		// never set the secret would accept exactly this header from anyone.
-		const response = await exchange(t, pageToken, { secret: "" });
+		const response = await exchange({ t, pageToken, secret: "" });
 		expect(response.status).toBe(401);
 		expect(await response.json()).toEqual({ message: "Unauthorized" });
 		expect(await read_grants(t)).toHaveLength(0);
@@ -435,9 +445,9 @@ describe("/api/v1/plugins/service-grants/exchange", () => {
 	test("refuses a caller with the wrong exchange secret, and mints nothing", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
-		const pageToken = await seed_page_token(t, fixture);
+		const pageToken = await seed_page_token({ t, fixture });
 
-		const response = await exchange(t, pageToken, { secret: `${EXCHANGE_SECRET}x` });
+		const response = await exchange({ t, pageToken, secret: `${EXCHANGE_SECRET}x` });
 		expect(response.status).toBe(401);
 		expect(await response.json()).toEqual({ message: "Unauthorized" });
 		expect(await read_grants(t)).toHaveLength(0);
@@ -446,7 +456,7 @@ describe("/api/v1/plugins/service-grants/exchange", () => {
 	test("refuses the raw exchange secret sent without the Bearer scheme, and mints nothing", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
-		const pageToken = await seed_page_token(t, fixture);
+		const pageToken = await seed_page_token({ t, fixture });
 
 		// `get_service_secret` in plugins_service.ts reads only `Bearer `-prefixed header values, so
 		// the correct secret under any other scheme must stay useless.
@@ -467,7 +477,7 @@ describe("/api/v1/plugins/service-grants/exchange", () => {
 	test("refuses a Basic-scheme bearer even with a valid exchange secret, and mints nothing", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
-		const pageToken = await seed_page_token(t, fixture);
+		const pageToken = await seed_page_token({ t, fixture });
 
 		// `get_bearer_token` in plugins_service.ts accepts only the `Bearer ` scheme, so a Basic
 		// credential never reaches the token lookup.
@@ -492,7 +502,7 @@ describe("/api/v1/plugins/service-grants/exchange", () => {
 
 		// A grant that could exchange itself would never need a member to open the page again, which
 		// is the one thing that keeps a leaked exchange secret from being enough on its own.
-		const response = await exchange(t, grantToken);
+		const response = await exchange({ t, pageToken: grantToken });
 		expect(response.status).toBe(401);
 		expect(await response.json()).toEqual({ message: "Unauthorized" });
 		expect(await read_grants(t)).toHaveLength(1);
@@ -503,9 +513,9 @@ describe("/api/v1/plugins/service-grants/exchange", () => {
 		const fixture = await seed_installation(t, {
 			acceptedCapabilities: ["plugin.service.connect", "plugin.data.read", "plugin.data.write"],
 		});
-		const pageToken = await seed_page_token(t, fixture);
+		const pageToken = await seed_page_token({ t, fixture });
 
-		const response = await exchange(t, pageToken);
+		const response = await exchange({ t, pageToken });
 		expect(response.status).toBe(403);
 		expect(await response.json()).toEqual({ message: "Permission denied" });
 		expect(await read_grants(t)).toHaveLength(0);
@@ -521,9 +531,9 @@ describe("/api/v1/plugins/service-grants/exchange", () => {
 				(capability) => capability !== ("workspace.files.create-read-only" satisfies plugins_Capability),
 			),
 		});
-		const pageToken = await seed_page_token(t, fixture);
+		const pageToken = await seed_page_token({ t, fixture });
 
-		const response = await exchange(t, pageToken);
+		const response = await exchange({ t, pageToken });
 		expect(response.status).toBe(200);
 		expect(await read_grants(t)).toHaveLength(1);
 	});
@@ -536,9 +546,9 @@ describe("/api/v1/plugins/service-grants/exchange", () => {
 			acceptedCapabilities: ["plugin.service.connect", "plugin.data.read"],
 			registration: { scopes: ["plugin_data:read"] },
 		});
-		const pageToken = await seed_page_token(t, fixture);
+		const pageToken = await seed_page_token({ t, fixture });
 
-		const response = await exchange(t, pageToken);
+		const response = await exchange({ t, pageToken });
 		expect(response.status).toBe(200);
 		const body = (await response.json()) as { scopes: string[] };
 		expect(body.scopes).toEqual(["plugin_data:read"]);
@@ -551,9 +561,9 @@ describe("/api/v1/plugins/service-grants/exchange", () => {
 		// has no registration, so there is no hash the presented secret could match. The refusal is
 		// the same flat word as a wrong secret.
 		const fixture = await seed_installation(t, { pluginName: "gallery", registration: false });
-		const pageToken = await seed_page_token(t, fixture);
+		const pageToken = await seed_page_token({ t, fixture });
 
-		const response = await exchange(t, pageToken);
+		const response = await exchange({ t, pageToken });
 		expect(response.status).toBe(401);
 		expect(await response.json()).toEqual({ message: "Unauthorized" });
 		expect(await read_grants(t)).toHaveLength(0);
@@ -568,9 +578,9 @@ describe("/api/v1/plugins/service-grants/exchange", () => {
 			pluginName: "gallery",
 			registration: { secret: "pse_gallery_secret" },
 		});
-		const pageToken = await seed_page_token(t, fixture);
+		const pageToken = await seed_page_token({ t, fixture });
 
-		const response = await exchange(t, pageToken);
+		const response = await exchange({ t, pageToken });
 		expect(response.status).toBe(401);
 		expect(await response.json()).toEqual({ message: "Unauthorized" });
 		expect(await read_grants(t)).toHaveLength(0);
@@ -579,9 +589,9 @@ describe("/api/v1/plugins/service-grants/exchange", () => {
 	test("refuses a page token whose session already expired, and mints nothing", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
-		const pageToken = await seed_page_token(t, fixture, { expiresAt: Date.now() - 1000 });
+		const pageToken = await seed_page_token({ t, fixture, expiresAt: Date.now() - 1000 });
 
-		const response = await exchange(t, pageToken);
+		const response = await exchange({ t, pageToken });
 		expect(response.status).toBe(401);
 		expect(await response.json()).toEqual({ message: "Unauthorized" });
 		expect(await read_grants(t)).toHaveLength(0);
@@ -606,7 +616,7 @@ describe("/api/v1/plugins/service-grants/exchange", () => {
 			external_id: fixture.userId,
 		});
 
-		const baseline = await exchange(t, await seed_page_token(t, fixture));
+		const baseline = await exchange({ t, pageToken: await seed_page_token({ t, fixture }) });
 		expect(baseline.status).toBe(200);
 
 		const rotated = await asPublisher.mutation(api.plugins.set_plugin_service_registration, {
@@ -618,10 +628,10 @@ describe("/api/v1/plugins/service-grants/exchange", () => {
 		expect(newSecret.startsWith("pse_")).toBe(true);
 
 		// The old secret dies with the rotation; the new one works at once.
-		const withOld = await exchange(t, await seed_page_token(t, fixture));
+		const withOld = await exchange({ t, pageToken: await seed_page_token({ t, fixture }) });
 		expect(withOld.status).toBe(401);
 		expect(await withOld.json()).toEqual({ message: "Unauthorized" });
-		const withNew = await exchange(t, await seed_page_token(t, fixture), { secret: newSecret });
+		const withNew = await exchange({ t, pageToken: await seed_page_token({ t, fixture }), secret: newSecret });
 		expect(withNew.status).toBe(200);
 
 		// The publisher query reports state without the hash or the secret.
@@ -639,7 +649,7 @@ describe("/api/v1/plugins/service-grants/exchange", () => {
 			pluginName: "council",
 		});
 		expect(removed._nay).toBeUndefined();
-		const afterRemove = await exchange(t, await seed_page_token(t, fixture), { secret: newSecret });
+		const afterRemove = await exchange({ t, pageToken: await seed_page_token({ t, fixture }), secret: newSecret });
 		expect(afterRemove.status).toBe(401);
 	});
 });
@@ -685,7 +695,7 @@ describe("/api/v1/plugins/service-grants/renew", () => {
 	test("refuses a page token, so renewal can never create a grant", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
-		const pageToken = await seed_page_token(t, fixture);
+		const pageToken = await seed_page_token({ t, fixture });
 
 		const response = await t.fetch(RENEW_PATH, {
 			method: "POST",
@@ -895,8 +905,8 @@ describe("/api/v1/plugins/service-grants/verify-live", () => {
 	test("refuses when the member behind the grant may read workspace content but not write it", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
-		const readerPageToken = await seed_member_page_token(t, fixture);
-		const exchanged = await exchange(t, readerPageToken);
+		const readerPageToken = await seed_member_page_token({ t, fixture });
+		const exchanged = await exchange({ t, pageToken: readerPageToken });
 		expect(exchanged.status).toBe(200);
 		const grantToken = ((await exchanged.json()) as { token: string }).token;
 
@@ -927,10 +937,12 @@ describe("/api/v1/plugins/service-grants/verify-live", () => {
 	test("refuses a sealed processing grant claiming files:write once its member lost content.write", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
-		const memberPageToken = await seed_member_page_token(t, fixture, {
+		const memberPageToken = await seed_member_page_token({
+			t,
+			fixture,
 			permissions: ["content.read", "content.write"],
 		});
-		const exchanged = await exchange(t, memberPageToken);
+		const exchanged = await exchange({ t, pageToken: memberPageToken });
 		expect(exchanged.status).toBe(200);
 		const interactive = ((await exchanged.json()) as { token: string }).token;
 
@@ -999,7 +1011,13 @@ describe("/api/v1/plugins/service-grants/verify-live", () => {
 });
 
 describe("/api/v1/plugins/service-grants/seal-processing", () => {
-	async function seal(t: ReturnType<typeof test_convex>, bearer: string, destinationPathPrefix = "/meetings") {
+	async function seal(args: {
+		t: ReturnType<typeof test_convex>;
+		bearer: string;
+		destinationPathPrefix?: string;
+	}) {
+		const { t, bearer, destinationPathPrefix = "/meetings" } = args;
+
 		return await t.fetch(SEAL_PROCESSING_PATH, {
 			method: "POST",
 			headers: service_headers(bearer),
@@ -1013,7 +1031,7 @@ describe("/api/v1/plugins/service-grants/seal-processing", () => {
 		const interactive = await exchange_token(t, fixture);
 
 		const before = Date.now();
-		const response = await seal(t, interactive);
+		const response = await seal({ t, bearer: interactive });
 		expect(response.status).toBe(200);
 		const body = (await response.json()) as {
 			token: string;
@@ -1043,11 +1061,11 @@ describe("/api/v1/plugins/service-grants/seal-processing", () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
 		const interactive = await exchange_token(t, fixture);
-		const sealed = await seal(t, interactive);
+		const sealed = await seal({ t, bearer: interactive });
 		expect(sealed.status).toBe(200);
 		const processingToken = ((await sealed.json()) as { token: string }).token;
 
-		const again = await seal(t, processingToken);
+		const again = await seal({ t, bearer: processingToken });
 		expect(again.status).toBe(403);
 		expect(await again.json()).toEqual({ message: "Permission denied" });
 		expect(await read_grants(t)).toHaveLength(2);
@@ -1056,9 +1074,9 @@ describe("/api/v1/plugins/service-grants/seal-processing", () => {
 	test("refuses a page token where the interactive grant belongs", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
-		const pageToken = await seed_page_token(t, fixture);
+		const pageToken = await seed_page_token({ t, fixture });
 
-		const response = await seal(t, pageToken);
+		const response = await seal({ t, bearer: pageToken });
 		expect(response.status).toBe(401);
 		expect(await read_grants(t)).toHaveLength(0);
 	});
@@ -1068,7 +1086,7 @@ describe("/api/v1/plugins/service-grants/seal-processing", () => {
 		const fixture = await seed_installation(t);
 		const interactive = await exchange_token(t, fixture);
 
-		const response = await seal(t, interactive, "/meetings/");
+		const response = await seal({ t, bearer: interactive, destinationPathPrefix: "/meetings/" });
 		expect(response.status).toBe(400);
 		expect(await read_grants(t)).toHaveLength(1);
 	});
@@ -1081,7 +1099,7 @@ describe("/api/v1/plugins/service-grants/seal-processing", () => {
 		// `/` is its own normalized form and has no segments, so neither neighbouring check sees it.
 		// It has to be named on its own, because a grant sealed to `/` passes the upload routes'
 		// containment test for EVERY path in the workspace — which is the opposite of sealed.
-		const response = await seal(t, interactive, "/");
+		const response = await seal({ t, bearer: interactive, destinationPathPrefix: "/" });
 		expect(response.status).toBe(400);
 		expect(await response.json()).toEqual({ message: "destinationPathPrefix must be a normalized absolute path" });
 		expect(await read_grants(t)).toHaveLength(1);
@@ -1124,7 +1142,7 @@ describe("/api/v1/plugins/service-grants/seal-processing", () => {
 
 		// The host never lowercases for the caller: the Council service must normalize its configured
 		// folder (for example /Meetings -> /meetings) before it seals.
-		const response = await seal(t, interactive, "/Meetings");
+		const response = await seal({ t, bearer: interactive, destinationPathPrefix: "/Meetings" });
 		expect(response.status).toBe(400);
 		expect(await response.json()).toEqual({ message: "destinationPathPrefix contains an invalid folder name" });
 		expect(await read_grants(t)).toHaveLength(1);
@@ -1140,7 +1158,7 @@ describe("/api/v1/plugins/service-grants/seal-processing", () => {
 			});
 		});
 
-		const response = await seal(t, interactive);
+		const response = await seal({ t, bearer: interactive });
 		expect(response.status).toBe(403);
 		expect(await response.json()).toEqual({ message: "Permission denied" });
 		expect(await read_grants(t)).toHaveLength(1);
@@ -1149,15 +1167,15 @@ describe("/api/v1/plugins/service-grants/seal-processing", () => {
 	test("refuses to seal for a member who may read workspace content but not write it", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
-		const readerPageToken = await seed_member_page_token(t, fixture);
-		const exchanged = await exchange(t, readerPageToken);
+		const readerPageToken = await seed_member_page_token({ t, fixture });
+		const exchanged = await exchange({ t, pageToken: readerPageToken });
 		expect(exchanged.status).toBe(200);
 		const interactive = ((await exchanged.json()) as { token: string }).token;
 
 		// The uploads at the end of the meeting are written as this member, and the upload routes
 		// refuse them there. Refusing at the seal is what stops the meeting before it records, instead
 		// of after everyone left and the files cannot land.
-		const response = await seal(t, interactive);
+		const response = await seal({ t, bearer: interactive });
 		expect(response.status).toBe(403);
 		expect(await response.json()).toEqual({ message: "Permission denied" });
 		expect(await read_grants(t)).toHaveLength(1);
@@ -1171,7 +1189,7 @@ describe("/api/v1/plugins/service-grants/seal-processing", () => {
 			await ctx.db.patch("organizations_workspaces_users", fixture.membershipId, { active: false });
 		});
 
-		const response = await seal(t, interactive);
+		const response = await seal({ t, bearer: interactive });
 		expect(response.status).toBe(401);
 		expect(await read_grants(t)).toHaveLength(1);
 	});
@@ -1180,7 +1198,7 @@ describe("/api/v1/plugins/service-grants/seal-processing", () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
 		const interactive = await exchange_token(t, fixture);
-		const sealed = await seal(t, interactive);
+		const sealed = await seal({ t, bearer: interactive });
 		expect(sealed.status).toBe(200);
 		const processingToken = ((await sealed.json()) as { token: string }).token;
 		const grantsBefore = await read_grants(t);

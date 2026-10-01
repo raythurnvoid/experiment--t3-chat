@@ -40,7 +40,6 @@ import {
 } from "./organizations_membership_lifetimes.ts";
 import { access_control_db_authorize_membership } from "./access_control.ts";
 import {
-	files_browser_action_set_choice,
 	files_browser_db_get_preferences,
 	files_browser_db_check_agent_intent,
 } from "./files_browser.ts";
@@ -83,7 +82,6 @@ const runtime_validator = v.object({
 	navRevision: v.number(),
 	controlRevision: v.number(),
 	policyRevision: v.number(),
-	selectionRevision: v.number(),
 	agentAccess: v.boolean(),
 	operations: v.number(),
 	idleExpiresAt: v.number(),
@@ -111,15 +109,18 @@ function enabled() {
 	);
 }
 
-async function member(
-	ctx: QueryCtx | MutationCtx,
-	args: { userId: Id<"users">; membershipId: Id<"organizations_workspaces_users"> },
-	use: boolean,
-) {
+async function member(args: {
+	ctx: QueryCtx | MutationCtx;
+	userId: Id<"users">;
+	membershipId: Id<"organizations_workspaces_users">;
+	use: boolean;
+}) {
+	const { ctx, use, ...previousArgs } = args;
+
 	const user = await ctx.db.get("users", args.userId);
 	if (!user || user.deletedAt !== undefined) return Result({ _nay: { message: "Unauthenticated" } });
 
-	const membership = await organizations_db_get_membership(ctx, args);
+	const membership = await organizations_db_get_membership(ctx, previousArgs);
 	if (!membership) return Result({ _nay: { message: "Unauthorized" } });
 
 	const workspace = await ctx.db.get("organizations_workspaces", membership.workspaceId);
@@ -138,8 +139,14 @@ async function member(
 	return Result({ _yay: membership });
 }
 
-async function connection_access(ctx: QueryCtx | MutationCtx, connection: Doc<"playwriter_connections">, use: boolean) {
-	const checked = await member(ctx, { userId: connection.ownerId, membershipId: connection.membershipId }, use);
+async function connection_access(args: {
+	ctx: QueryCtx | MutationCtx;
+	connection: Doc<"playwriter_connections">;
+	use: boolean;
+}) {
+	const { ctx, connection, use } = args;
+
+	const checked = await member({ ctx, userId: connection.ownerId, membershipId: connection.membershipId, use });
 	if (checked._nay) return checked;
 	const lifetime = await organizations_membership_lifetimes_db_get(ctx, {
 		userId: connection.ownerId,
@@ -197,7 +204,7 @@ export const remote_browser_available = query({
 	returns: v.object({ enabled: v.boolean(), hasSavedConnection: v.boolean() }),
 	handler: async (ctx, args) => {
 		const userId = await current_user(ctx);
-		const checked = await member(ctx, { ...args, userId }, false);
+		const checked = await member({ ctx, ...args, userId, use: false });
 		if (checked._nay) {
 			if (checked._nay.message === "Unauthenticated") throw convex_error(checked._nay);
 			return { enabled: false, hasSavedConnection: false };
@@ -212,7 +219,7 @@ export const remote_browser_available = query({
 			)
 			.order("desc")
 			.first();
-		const allowed = await member(ctx, { ...args, userId }, true);
+		const allowed = await member({ ctx, ...args, userId, use: true });
 		return { enabled: enabled() && !allowed._nay, hasSavedConnection: Boolean(saved?.encryptedShareId) };
 	},
 });
@@ -236,7 +243,7 @@ export const current_connection = query({
 	),
 	handler: async (ctx, args) => {
 		const userId = await current_user(ctx);
-		const checked = await member(ctx, { ...args, userId }, false);
+		const checked = await member({ ctx, ...args, userId, use: false });
 		if (checked._nay) {
 			if (checked._nay.message === "Unauthenticated") throw convex_error(checked._nay);
 			return null;
@@ -280,7 +287,7 @@ export const load_connection = internalQuery({
 		const connection = await ctx.db.get("playwriter_connections", args.connectionId);
 		if (!connection || connection.ownerId !== args.userId || connection.membershipId !== args.membershipId)
 			return Result({ _nay: { message: "Not found" } });
-		const allowed = await connection_access(ctx, connection, args.requireBrowserPermission === true);
+		const allowed = await connection_access({ ctx, connection, use: args.requireBrowserPermission === true });
 		return allowed._nay ? allowed : Result({ _yay: connection });
 	},
 });
@@ -290,11 +297,13 @@ type load_connection_Result =
 /**
  * Forget the credential first. Socket cleanup can retry without the source docs.
  */
-export async function playwriter_browser_db_disconnect(
-	ctx: MutationCtx,
-	connection: Doc<"playwriter_connections">,
-	reason: string,
-) {
+export async function playwriter_browser_db_disconnect(args: {
+	ctx: MutationCtx;
+	connection: Doc<"playwriter_connections">;
+	reason: string;
+}) {
+	const { ctx, connection, reason } = args;
+
 	if (
 		!connection.encryptedShareId &&
 		!connection.active &&
@@ -313,26 +322,6 @@ export async function playwriter_browser_db_disconnect(
 		targets: [],
 		updatedAt: Date.now(),
 	});
-	const preference = await ctx.db
-		.query("files_browser_preferences")
-		.withIndex("by_owner_organization_workspace", (q) =>
-			q
-				.eq("ownerId", connection.ownerId)
-				.eq("organizationId", connection.organizationId)
-				.eq("workspaceId", connection.workspaceId),
-		)
-		.first();
-	if (
-		preference?.webChoice.provider === "playwriter" &&
-		preference.webChoice.connectionId === connection._id &&
-		preference.webChoice.confirmedTargetHandle === connection.confirmedTargetHandle
-	) {
-		await ctx.db.patch("files_browser_preferences", preference._id, {
-			webChoice: { provider: "none" },
-			selectionRevision: preference.selectionRevision + 1,
-			updatedAt: Date.now(),
-		});
-	}
 	const cleanup = await ctx.db
 		.query("playwriter_connection_cleanups")
 		.withIndex("by_connectionId", (q) => q.eq("connectionId", connection._id))
@@ -401,7 +390,7 @@ export const prepare_connect = internalMutation({
 	handler: async (ctx, args) => {
 		if (!enabled()) return Result({ _nay: { message: "Browser unavailable" } });
 
-		const checked = await member(ctx, args, true);
+		const checked = await member({ ctx, ...args, use: true });
 		if (checked._nay) return checked;
 
 		const now = Date.now();
@@ -427,7 +416,7 @@ export const prepare_connect = internalMutation({
 				},
 			});
 		}
-		if (reserved) await playwriter_browser_db_disconnect(ctx, reserved, "idle_expired");
+		if (reserved) await playwriter_browser_db_disconnect({ ctx, connection: reserved, reason: "idle_expired" });
 
 		const existing = await ctx.db
 			.query("playwriter_connections")
@@ -542,7 +531,7 @@ export const commit_runtime = internalMutation({
 			connection.idleExpiresAt <= Date.now()
 		)
 			return false;
-		const allowed = await connection_access(ctx, connection, false);
+		const allowed = await connection_access({ ctx, connection, use: false });
 		if (allowed._nay) return false;
 		if (
 			args.runtime.generation < connection.connectionGeneration ||
@@ -598,7 +587,13 @@ export const commit_runtime = internalMutation({
 	},
 });
 
-async function mirror(ctx: ActionCtx, connection: Doc<"playwriter_connections">, runtime: PlaywriterBrowserRuntime) {
+async function mirror(args: {
+	ctx: ActionCtx;
+	connection: Doc<"playwriter_connections">;
+	runtime: PlaywriterBrowserRuntime;
+}) {
+	const { ctx, connection, runtime } = args;
+
 	return await ctx.runMutation(internal.playwriter_browser.commit_runtime, {
 		connectionId: connection._id,
 		attemptId: connection.connectAttemptId,
@@ -613,7 +608,6 @@ export const get_preferences = internalQuery({
 		webAgentAccess: v.boolean(),
 		agentBlockedHosts: v.array(v.string()),
 		policyRevision: v.number(),
-		selectionRevision: v.number(),
 	}),
 	handler: async (ctx, args) => {
 		const preferences = await files_browser_db_get_preferences(ctx, args);
@@ -621,18 +615,19 @@ export const get_preferences = internalQuery({
 			webAgentAccess: preferences.webAgentAccess,
 			agentBlockedHosts: preferences.agentBlockedHosts,
 			policyRevision: preferences.policyRevision,
-			selectionRevision: preferences.selectionRevision,
 		};
 	},
 });
 
-async function dial(
-	ctx: ActionCtx,
-	connection: Doc<"playwriter_connections">,
-	shareId: string,
-	transition: { route: "connect" | "recover" } | { route: "reconnect"; previousSessionId: string },
-	timeoutMs = 15_000,
-) {
+async function dial(args: {
+	ctx: ActionCtx;
+	connection: Doc<"playwriter_connections">;
+	shareId: string;
+	transition: { route: "connect" | "recover" } | { route: "reconnect"; previousSessionId: string };
+	timeoutMs?: number;
+}) {
+	const { ctx, connection, shareId, transition, timeoutMs = 15_000 } = args;
+
 	const preference = await ctx.runQuery(internal.playwriter_browser.get_preferences, {
 		userId: connection.ownerId,
 		organizationId: connection.organizationId,
@@ -673,7 +668,6 @@ async function dial(
 			agentAccess: preference.webAgentAccess,
 			agentBlockedHosts: preference.agentBlockedHosts,
 			policyRevision: preference.policyRevision,
-			selectionRevision: preference.selectionRevision,
 			controlRevision: connection.controlRevision,
 			sessionId: connection.sessionId,
 			idleExpiresAt: Math.min(connection.idleExpiresAt, totalExpiresAt),
@@ -683,7 +677,7 @@ async function dial(
 		},
 	});
 	if (response._nay) return response;
-	const committed = await mirror(ctx, connection, response._yay.runtime);
+	const committed = await mirror({ ctx, connection, runtime: response._yay.runtime });
 	if (!committed) {
 		await playwriter_runner_call({
 			route: "disconnect",
@@ -705,7 +699,7 @@ export const connect_tab = action({
 				_nay: { message: "Paste the Playwriter ID or its official share link.", name: "invalid_share" },
 			});
 		if (!enabled()) return Result({ _nay: { message: "Browser unavailable" } });
-		const linkFingerprint = await crypto_hmac_sha256_hex(shareId, "playwriter-link", KEY_NAME);
+		const linkFingerprint = await crypto_hmac_sha256_hex({ value: shareId, purpose: "playwriter-link", keyName: KEY_NAME });
 		const prepared = (await ctx.runMutation(internal.playwriter_browser.prepare_connect, {
 			userId,
 			membershipId: args.membershipId,
@@ -715,7 +709,7 @@ export const connect_tab = action({
 		const connection = prepared._yay.connection;
 		if (prepared._yay.reused) return Result({ _yay: { connectionId: connection._id } });
 		try {
-			const encrypted = await crypto_encrypt_secret_value(shareId, secret_scope(connection), KEY_NAME);
+			const encrypted = await crypto_encrypt_secret_value({ value: shareId, additionalData: secret_scope(connection), keyName: KEY_NAME });
 			const stored = await ctx.runMutation(internal.playwriter_browser.store_credential, {
 				connectionId: connection._id,
 				attemptId: connection.connectAttemptId,
@@ -723,8 +717,8 @@ export const connect_tab = action({
 				shareNonce: encrypted.nonce,
 			});
 			if (!stored) return Result({ _nay: { message: "Browser connection changed", name: "stale" } });
-			const connected = await dial(ctx, connection, shareId, { route: "connect" });
-			if (connected._nay)
+			const connected = await dial({ ctx, connection, shareId, transition: { route: "connect" } });
+			if (connected._nay) {
 				await ctx.runMutation(internal.playwriter_browser.forget_connection, {
 					connectionId: connection._id,
 					userId,
@@ -732,7 +726,20 @@ export const connect_tab = action({
 					controlRevision: connection.controlRevision,
 					reason: "connect_failed",
 				});
-			return connected;
+				return connected;
+			}
+
+			// A share ID shares exactly one tab, which the user picked in the extension. Confirm it
+			// for them. With more tabs (popups it opened) the user still chooses one.
+			const dialed = (await ctx.runQuery(internal.playwriter_browser.load_connection, {
+				connectionId: connection._id,
+				membershipId: args.membershipId,
+				userId,
+				requireBrowserPermission: true,
+			})) as load_connection_Result;
+			if (dialed._nay || dialed._yay.state !== "needs_confirmation" || dialed._yay.targets.length !== 1)
+				return connected;
+			return confirm_target({ ctx, connection: dialed._yay, targetHandle: dialed._yay.targets[0]!.handle });
 		} catch {
 			await ctx.runMutation(internal.playwriter_browser.forget_connection, {
 				connectionId: connection._id,
@@ -764,7 +771,7 @@ export const forget_connection = internalMutation({
 			connection.controlRevision !== args.controlRevision
 		)
 			return false;
-		await playwriter_browser_db_disconnect(ctx, connection, args.reason);
+		await playwriter_browser_db_disconnect({ ctx, connection, reason: args.reason });
 		return true;
 	},
 });
@@ -799,10 +806,10 @@ export const prepare_control = internalMutation({
 		if (operation === "disconnect") {
 			const user = await ctx.db.get("users", args.userId);
 			if (!user || user.deletedAt !== undefined) return Result({ _nay: { message: "Unauthenticated" } });
-			await playwriter_browser_db_disconnect(ctx, connection, "disconnected");
+			await playwriter_browser_db_disconnect({ ctx, connection, reason: "disconnected" });
 			return Result({ _yay: connection });
 		}
-		const checked = await connection_access(ctx, connection, operation !== "pause");
+		const checked = await connection_access({ ctx, connection, use: operation !== "pause" });
 		if (checked._nay) return checked;
 		if (operation !== "pause" && !enabled()) return Result({ _nay: { message: "Browser unavailable" } });
 		if (!connection.encryptedShareId || !connection.shareNonce || connection.idleExpiresAt <= Date.now())
@@ -921,20 +928,20 @@ async function control(
 			});
 		}
 		try {
-			const shareId = await crypto_decrypt_secret_value(
-				{ ciphertext: connection.encryptedShareId!, nonce: connection.shareNonce! },
-				secret_scope(connection),
-				KEY_NAME,
-			);
+			const shareId = await crypto_decrypt_secret_value({
+				secret: { ciphertext: connection.encryptedShareId!, nonce: connection.shareNonce! },
+				additionalData: secret_scope(connection),
+				keyName: KEY_NAME,
+			});
 			// Only human Reconnect may start a new budget after the old work drains.
-			return await dial(
+			return await dial({
 				ctx,
 				connection,
 				shareId,
-				status._yay.runtime.sessionId === connection.sessionId
+				transition: status._yay.runtime.sessionId === connection.sessionId
 					? { route: "recover" }
 					: { route: "reconnect", previousSessionId: status._yay.runtime.sessionId },
-			);
+			});
 		} catch {
 			await ctx.runMutation(internal.playwriter_browser.forget_connection, {
 				connectionId: connection._id,
@@ -966,7 +973,7 @@ async function control(
 		// Disconnect has already removed authority and queued safe cleanup.
 		return operation === "disconnect" ? Result({ _yay: { connectionId: connection._id } }) : called;
 	}
-	if (operation !== "disconnect" && !(await mirror(ctx, connection, called._yay.runtime)))
+	if (operation !== "disconnect" && !(await mirror({ ctx, connection, runtime: called._yay.runtime })))
 		return Result({ _nay: { message: "Browser connection changed", name: "stale" } });
 	return Result({ _yay: { connectionId: connection._id } });
 }
@@ -1073,10 +1080,45 @@ export const refresh_connection_status = action({
 				generation: loaded._yay.connectionGeneration,
 				controlRevision: loaded._yay.controlRevision,
 			});
-		else await mirror(ctx, loaded._yay, response._yay.runtime);
+		else await mirror({ ctx, connection: loaded._yay, runtime: response._yay.runtime });
 		return Result({ _yay: { connectionId: args.connectionId } });
 	},
 });
+
+/**
+ * Confirm one shared tab. From then on the agent may use it, while agent access is on.
+ */
+async function confirm_target(args: {
+	ctx: ActionCtx;
+	connection: Doc<"playwriter_connections">;
+	targetHandle: string;
+}) {
+	const { ctx, connection, targetHandle } = args;
+
+	const target = connection.targets.find((item) => item.handle === targetHandle);
+	if (!target)
+		return Result({ _nay: { message: "The shared tab changed. Refresh and choose it again.", name: "stale" } });
+	const preference = await ctx.runQuery(internal.playwriter_browser.get_preferences, {
+		userId: connection.ownerId,
+		organizationId: connection.organizationId,
+		workspaceId: connection.workspaceId,
+	});
+	if (target.url !== "about:blank" && !browser_web_normalize_url(target.url, preference.agentBlockedHosts).ok)
+		return Result({ _nay: { message: "This site is blocked for the agent.", name: "agent_blocked_site" } });
+	const response = await playwriter_runner_call({
+		route: "confirm",
+		body: {
+			...scope(connection),
+			generation: connection.connectionGeneration,
+			targetId: target.targetId,
+			inventoryRevision: connection.inventoryRevision,
+		},
+	});
+	if (response._nay) return response;
+	if (!(await mirror({ ctx, connection, runtime: response._yay.runtime })))
+		return Result({ _nay: { message: "Browser connection changed", name: "stale" } });
+	return Result({ _yay: { connectionId: connection._id } });
+}
 
 export const confirm_tab = action({
 	args: {
@@ -1095,35 +1137,7 @@ export const confirm_tab = action({
 		})) as load_connection_Result;
 		if (loaded._nay) return loaded;
 		if (!enabled()) return Result({ _nay: { message: "Browser unavailable" } });
-		const connection = loaded._yay;
-		const target = connection.targets.find((item) => item.handle === args.targetHandle);
-		if (!target)
-			return Result({ _nay: { message: "The shared tab changed. Refresh and choose it again.", name: "stale" } });
-		const preference = await ctx.runQuery(internal.playwriter_browser.get_preferences, {
-			userId,
-			organizationId: connection.organizationId,
-			workspaceId: connection.workspaceId,
-		});
-		if (target.url !== "about:blank" && !browser_web_normalize_url(target.url, preference.agentBlockedHosts).ok)
-			return Result({ _nay: { message: "This site is blocked for the agent.", name: "agent_blocked_site" } });
-		const response = await playwriter_runner_call({
-			route: "confirm",
-			body: {
-				...scope(connection),
-				generation: connection.connectionGeneration,
-				targetId: target.targetId,
-				inventoryRevision: connection.inventoryRevision,
-			},
-		});
-		if (response._nay) return response;
-		if (!(await mirror(ctx, connection, response._yay.runtime)))
-			return Result({ _nay: { message: "Browser connection changed", name: "stale" } });
-		const selected = await files_browser_action_set_choice(ctx, {
-			membershipId: args.membershipId,
-			webChoice: { provider: "playwriter", connectionId: connection._id, confirmedTargetHandle: target.handle },
-		});
-		if (selected._nay) return selected;
-		return Result({ _yay: { connectionId: connection._id } });
+		return confirm_target({ ctx, connection: loaded._yay, targetHandle: args.targetHandle });
 	},
 });
 
@@ -1134,7 +1148,6 @@ export const sync_policy = internalAction({
 		workspaceId: v.id("organizations_workspaces"),
 		webAgentAccess: v.boolean(),
 		agentBlockedHosts: v.array(v.string()),
-		selectionRevision: v.number(),
 		policyRevision: v.number(),
 	},
 	returns: v_result({ _yay: v.null() }),
@@ -1163,7 +1176,6 @@ export const sync_policy = internalAction({
 					agentAccess: args.webAgentAccess,
 					agentBlockedHosts: args.agentBlockedHosts,
 					policyRevision: args.policyRevision,
-					selectionRevision: args.selectionRevision,
 				},
 			});
 			if (called._nay) return called;
@@ -1171,7 +1183,6 @@ export const sync_policy = internalAction({
 				called._yay.runtime.sessionId !== connection.sessionId ||
 				called._yay.runtime.generation !== status._yay.runtime.generation ||
 				called._yay.runtime.policyRevision !== args.policyRevision ||
-				called._yay.runtime.selectionRevision !== args.selectionRevision ||
 				called._yay.runtime.agentAccess !== args.webAgentAccess
 			)
 				return Result({ _nay: { message: "Browser policy update failed", name: "stale_policy" } });
@@ -1297,11 +1308,13 @@ export const process_cleanups = internalAction({
 	},
 });
 
-async function retire_connection_session(
-	ctx: MutationCtx,
-	connection: Doc<"playwriter_connections">,
-	reason: "agent_closed" | "limit",
-) {
+async function retire_connection_session(args: {
+	ctx: MutationCtx;
+	connection: Doc<"playwriter_connections">;
+	reason: "agent_closed" | "limit";
+}) {
+	const { ctx, connection, reason } = args;
+
 	await ctx.db.patch("playwriter_connections", connection._id, {
 		active: false,
 		state: reason === "limit" ? "limit_reached" : "offline",
@@ -1328,15 +1341,15 @@ export const sweep_connections = internalMutation({
 			.withIndex("by_active", (q) => q.eq("active", true))
 			.take(50);
 		for (const connection of active) {
-			const access = await connection_access(ctx, connection, true);
+			const access = await connection_access({ ctx, connection, use: true });
 			if (!enabled() || connection.idleExpiresAt <= Date.now() || access._nay)
-				await playwriter_browser_db_disconnect(
+				await playwriter_browser_db_disconnect({
 					ctx,
 					connection,
-					!enabled() ? "unavailable" : access._nay ? "access_lost" : "idle_expired",
-				);
+					reason: !enabled() ? "unavailable" : access._nay ? "access_lost" : "idle_expired",
+				});
 			else if (connection.operations >= 120 || (connection.totalExpiresAt ?? 0) <= Date.now())
-				await retire_connection_session(ctx, connection, "limit");
+				await retire_connection_session({ ctx, connection, reason: "limit" });
 		}
 		// Closed history must not fill the saved-link expiry batch.
 		for (const state of ["offline", "limit_reached", "paused"] as const) {
@@ -1346,7 +1359,7 @@ export const sweep_connections = internalMutation({
 					q.eq("active", false).eq("state", state).lte("idleExpiresAt", Date.now()),
 				)
 				.take(50);
-			for (const connection of expired) await playwriter_browser_db_disconnect(ctx, connection, "idle_expired");
+			for (const connection of expired) await playwriter_browser_db_disconnect({ ctx, connection, reason: "idle_expired" });
 			if (expired.length === 50) await ctx.scheduler.runAfter(0, internal.playwriter_browser.sweep_connections, {});
 		}
 		return null;
@@ -1369,6 +1382,23 @@ function remote_resource(connection: Doc<"playwriter_connections">) {
 	};
 }
 
+/**
+ * The newest connection of the chat's user and workspace. `prepare_connect` allows only one live
+ * connection there, so this is the shared tab the agent may use.
+ */
+async function latest_source_connection(
+	ctx: QueryCtx | MutationCtx,
+	source: Infer<typeof ai_chat_browser_source_validator>,
+) {
+	return ctx.db
+		.query("playwriter_connections")
+		.withIndex("by_owner_organization_workspace", (q) =>
+			q.eq("ownerId", source.userId).eq("organizationId", source.organizationId).eq("workspaceId", source.workspaceId),
+		)
+		.order("desc")
+		.first();
+}
+
 async function remote_lease(
 	ctx: QueryCtx | MutationCtx,
 	args: {
@@ -1378,21 +1408,11 @@ async function remote_lease(
 ) {
 	const checked = await files_browser_db_check_agent_intent(ctx, args);
 	if (checked._nay) return checked;
-	const choice = args.browserIntent.webChoice;
-	if (choice.provider !== "playwriter")
-		return Result({ _nay: { message: "No shared tab is selected.", name: "unavailable" } });
-	const connectionId = ctx.db.normalizeId("playwriter_connections", choice.connectionId);
-	const connection = connectionId ? await ctx.db.get("playwriter_connections", connectionId) : null;
-	if (
-		!connection ||
-		connection.ownerId !== args.source.userId ||
-		connection.organizationId !== args.source.organizationId ||
-		connection.workspaceId !== args.source.workspaceId ||
-		connection.confirmedTargetHandle !== choice.confirmedTargetHandle
-	)
-		return Result({ _nay: { message: "Shared browser changed", name: "stale" } });
+	const connection = await latest_source_connection(ctx, args.source);
+	if (!connection?.encryptedShareId)
+		return Result({ _nay: { message: "My browser is not connected.", name: "not_connected" } });
 	if (!enabled()) return Result({ _nay: { message: "Browser unavailable", name: "unavailable" } });
-	const access = await connection_access(ctx, connection, true);
+	const access = await connection_access({ ctx, connection, use: true });
 	if (access._nay) return access;
 	if (!connection.active || connection.idleExpiresAt <= Date.now() || (connection.totalExpiresAt ?? 0) <= Date.now())
 		return Result({ _nay: { message: "The browser session ended. Reconnect in Browser settings.", name: "limit" } });
@@ -1568,7 +1588,6 @@ export const finish_command = internalMutation({
 				generation: v.number(),
 				controlRevision: v.number(),
 				policyRevision: v.number(),
-				selectionRevision: v.number(),
 				confirmedTargetId: v.string(),
 				targetRevision: v.number(),
 				navRevision: v.number(),
@@ -1604,8 +1623,7 @@ export const finish_command = internalMutation({
 			completed.generation === resource.connectionGeneration &&
 			completed.controlRevision === resource.controlRevision &&
 			completed.confirmedTargetId === connection.confirmedTargetId &&
-			completed.policyRevision === invocation.browserIntent.policyRevision &&
-			completed.selectionRevision === invocation.browserIntent.selectionRevision;
+			completed.policyRevision === invocation.browserIntent.policyRevision;
 		const finished = await ai_chat_files_db_finish_browser_invocation(ctx, {
 			invocationId: slot.invocationId,
 			operationHash: slot.operationHash,
@@ -1742,20 +1760,10 @@ export const prepare_source_recovery = internalMutation({
 	handler: async (ctx, args) => {
 		const checked = await files_browser_db_check_agent_intent(ctx, args);
 		if (checked._nay) return checked;
-		const choice = args.browserIntent.webChoice;
-		if (!enabled() || choice.provider !== "playwriter")
-			return Result({ _nay: { message: "Browser unavailable", name: "unavailable" } });
-		const id = ctx.db.normalizeId("playwriter_connections", choice.connectionId);
-		const connection = id ? await ctx.db.get("playwriter_connections", id) : null;
-		if (
-			!connection ||
-			connection.confirmedTargetHandle !== choice.confirmedTargetHandle ||
-			connection.ownerId !== args.source.userId ||
-			connection.workspaceId !== args.source.workspaceId ||
-			connection.organizationId !== args.source.organizationId
-		)
-			return Result({ _nay: { message: "Shared browser changed", name: "stale" } });
-		const allowed = await connection_access(ctx, connection, true);
+		if (!enabled()) return Result({ _nay: { message: "Browser unavailable", name: "unavailable" } });
+		const connection = await latest_source_connection(ctx, args.source);
+		if (!connection) return Result({ _nay: { message: "My browser is not connected.", name: "not_connected" } });
+		const allowed = await connection_access({ ctx, connection, use: true });
 		if (allowed._nay) return allowed;
 		if (
 			args.resource &&
@@ -1816,18 +1824,18 @@ export const recover_for_source = internalAction({
 			if (prepared._nay) return prepared;
 			const connection = prepared._yay;
 			try {
-				const shareId = await crypto_decrypt_secret_value(
-					{ ciphertext: connection.encryptedShareId!, nonce: connection.shareNonce! },
-					secret_scope(connection),
-					KEY_NAME,
-				);
-				const result = await dial(
+				const shareId = await crypto_decrypt_secret_value({
+					secret: { ciphertext: connection.encryptedShareId!, nonce: connection.shareNonce! },
+					additionalData: secret_scope(connection),
+					keyName: KEY_NAME,
+				});
+				const result = await dial({
 					ctx,
 					connection,
 					shareId,
-					{ route: "recover" },
-					Math.max(1, Math.min(15_000, end - Date.now())),
-				);
+					transition: { route: "recover" },
+					timeoutMs: Math.max(1, Math.min(15_000, end - Date.now())),
+				});
 				if (!result._nay) return Result({ _yay: null });
 				if (result._nay.name !== "transport") return result;
 			} catch {
@@ -1877,7 +1885,7 @@ export const retire_session = internalMutation({
 			connection.pauseReason === "human"
 		)
 			return Result({ _nay: { message: "Browser changed or is busy.", name: "busy" } });
-		await retire_connection_session(ctx, connection, "agent_closed");
+		await retire_connection_session({ ctx, connection, reason: "agent_closed" });
 		return Result({ _yay: connection });
 	},
 });

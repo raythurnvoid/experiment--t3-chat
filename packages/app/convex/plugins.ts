@@ -3225,11 +3225,11 @@ async function db_upsert_publisher_repository_secret(
 		now: number;
 	},
 ) {
-	const encrypted = await crypto_encrypt_secret_value(
-		args.value,
-		`${args.repository.ownerUserId}:${args.name}`,
-		"PLUGIN_SECRETS_ENCRYPTION_KEY",
-	);
+	const encrypted = await crypto_encrypt_secret_value({
+		value: args.value,
+		additionalData: `${args.repository.ownerUserId}:${args.name}`,
+		keyName: "PLUGIN_SECRETS_ENCRYPTION_KEY",
+	});
 	const existing = await ctx.db
 		.query("plugins_publisher_repository_secrets")
 		.withIndex("by_repository_name", (q) => q.eq("repositoryId", args.repository._id).eq("name", args.name))
@@ -4960,11 +4960,11 @@ async function db_upsert_installation_secret(
 		now: number;
 	},
 ) {
-	const encrypted = await crypto_encrypt_secret_value(
-		args.value,
-		`${args.installation._id}:${args.name}`,
-		"PLUGIN_SECRETS_ENCRYPTION_KEY",
-	);
+	const encrypted = await crypto_encrypt_secret_value({
+		value: args.value,
+		additionalData: `${args.installation._id}:${args.name}`,
+		keyName: "PLUGIN_SECRETS_ENCRYPTION_KEY",
+	});
 	const existing = await ctx.db
 		.query("plugins_workspace_installation_secrets")
 		.withIndex("by_installation_name", (q) => q.eq("installationId", args.installation._id).eq("name", args.name))
@@ -5368,7 +5368,7 @@ export const decrypt_secret_for_runtime = internalAction({
 					? `${args.resolved.secret.installationId}:${args.resolved.secret.name}`
 					: `${args.resolved.secret.ownerUserId}:${args.resolved.secret.name}`;
 			return Result({
-				_yay: await crypto_decrypt_secret_value(args.resolved.secret, additionalData, "PLUGIN_SECRETS_ENCRYPTION_KEY"),
+				_yay: await crypto_decrypt_secret_value({ secret: args.resolved.secret, additionalData, keyName: "PLUGIN_SECRETS_ENCRYPTION_KEY" }),
 			});
 		} catch (error) {
 			return Result({ _nay: { message: error instanceof Error ? error.message : String(error) } });
@@ -6242,7 +6242,8 @@ export const get_installation_storage_usage = query({
 			return null;
 		}
 
-		const counts = await plugins_data_db_count_installation_docs(ctx, {
+		const counts = await plugins_data_db_count_installation_docs({
+			ctx,
 			organizationId: installation.organizationId,
 			workspaceId: installation.workspaceId,
 			installationId: installation._id,
@@ -6741,15 +6742,13 @@ export const preview_hard_delete_registered_plugin = internalQuery({
 					volumeR2Assets += assets.length;
 					for (const asset of assets) if (asset.r2Key) r2ObjectKeys.add(asset.r2Key);
 				}
-				const pluginData = await plugins_data_db_count_installation_docs(
+				const pluginData = await plugins_data_db_count_installation_docs({
 					ctx,
-					{
-						organizationId: installation.organizationId,
-						workspaceId: installation.workspaceId,
-						installationId: installation._id,
-					},
-					childDocBudget,
-				);
+					organizationId: installation.organizationId,
+					workspaceId: installation.workspaceId,
+					installationId: installation._id,
+					previewBudget: childDocBudget,
+				});
 				pluginDataUsageDocs += pluginData.usageDocs;
 				pluginDataDocuments += pluginData.documents;
 				pluginDataLiveReservations += pluginData.liveReservations;
@@ -6948,7 +6947,7 @@ export const hard_delete_plugin_from_registry = internalMutation({
 					.withIndex("by_run", (q) => q.eq("runId", pluginRun._id))
 					.first();
 				if (stage) {
-					await public_api_db_cleanup_file_write_stage(ctx, stage);
+					await public_api_db_cleanup_file_write_stage({ ctx, stage });
 					return { done: false, deleted: 1 };
 				}
 				const calls = await ctx.db

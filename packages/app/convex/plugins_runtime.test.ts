@@ -231,7 +231,13 @@ async function start_run(f: Awaited<ReturnType<typeof fixture>>, runId: Id<"plug
 	return { token, tokenHash, run: started._yay.pluginRun };
 }
 
-async function follow_up(f: Awaited<ReturnType<typeof fixture>>, token: string, state: string) {
+async function follow_up(args: {
+	f: Awaited<ReturnType<typeof fixture>>;
+	token: string;
+	state: string;
+}) {
+	const { f, token, state} = args;
+
 	return await f.t.fetch("/api/v1/plugin-runs/follow-up", {
 		method: "POST",
 		headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
@@ -552,7 +558,7 @@ describe("request_follow_up", () => {
 		const { token, run } = await start_run(f, root._id);
 		if (run.apiTokenExpiresAt === undefined) throw new Error("Expected a live run token deadline");
 		vi.setSystemTime(run.apiTokenExpiresAt);
-		expect((await follow_up(f, token, '{"cursor":1}')).status, "an expired follow-up token must return 401").toBe(401);
+		expect((await follow_up({ f, token, state: '{"cursor":1}' })).status, "an expired follow-up token must return 401").toBe(401);
 		const saved = await f.t.run((ctx) => ctx.db.get("plugins_event_runs", root._id));
 		expect(saved?.followUpState).toBeUndefined();
 		expect(saved?.apiCallCount).toBe(0);
@@ -564,8 +570,8 @@ describe("request_follow_up", () => {
 		const f = await fixture();
 		const root = await root_run(f);
 		const { token } = await start_run(f, root._id);
-		expect((await follow_up(f, token, '{"page":2}')).status).toBe(200);
-		const duplicate = await follow_up(f, token, '{"page":3}');
+		expect((await follow_up({ f, token, state: '{"page":2}' })).status).toBe(200);
+		const duplicate = await follow_up({ f, token, state: '{"page":3}' });
 		expect(duplicate.status).toBe(409);
 		expect(await duplicate.json(), "duplicate refusal must expose follow_up_already_requested").toEqual({
 			message: "A follow-up is already requested",
@@ -613,7 +619,7 @@ describe("request_follow_up", () => {
 			const f = await fixture();
 			const root = await root_run(f);
 			const { token } = await start_run(f, root._id);
-			expect((await follow_up(f, token, state)).status).toBe(400);
+			expect((await follow_up({ f, token, state })).status).toBe(400);
 			expect((await f.t.run((ctx) => ctx.db.get("plugins_event_runs", root._id)))?.followUpState).toBeUndefined();
 		},
 	);
@@ -622,7 +628,7 @@ describe("request_follow_up", () => {
 		const f = await fixture();
 		const root = await root_run(f);
 		const { token } = await start_run(f, root._id);
-		expect((await follow_up(f, token, "null")).status).toBe(200);
+		expect((await follow_up({ f, token, state: "null" })).status).toBe(200);
 		await f.t.mutation(internal.plugins_runtime.finish_event_run, { runId: root._id, outcome: successful_outcome });
 		const runs = await f.t.run((ctx) => ctx.db.query("plugins_event_runs").collect());
 		expect(runs.find((run) => run._id !== root._id)?.chainInputState).toBe("null");
@@ -634,7 +640,7 @@ describe("request_follow_up", () => {
 		let current = root;
 		for (let i = 0; i < 19; i += 1) {
 			const { token } = await start_run(f, current._id);
-			expect((await follow_up(f, token, JSON.stringify({ cursor: i + 1 }))).status).toBe(200);
+			expect((await follow_up({ f, token, state: JSON.stringify({ cursor: i + 1 }) })).status).toBe(200);
 			await f.t.mutation(internal.plugins_runtime.finish_event_run, {
 				runId: current._id,
 				outcome: successful_outcome,
@@ -650,7 +656,7 @@ describe("request_follow_up", () => {
 		}
 		const { token } = await start_run(f, current._id);
 		expect(current.chainIndex).toBe(19);
-		const exhausted = await follow_up(f, token, "{}");
+		const exhausted = await follow_up({ f, token, state: "{}" });
 		expect(exhausted.status, "the chain must stop at twenty runs").toBe(409);
 		expect(await exhausted.json()).toEqual({ message: "Plugin run chain limit exceeded", errorCode: "chain_limit" });
 		expect(
@@ -675,7 +681,7 @@ describe("request_follow_up", () => {
 		const f = await fixture();
 		const root = await root_run(f);
 		const { token } = await start_run(f, root._id);
-		expect((await follow_up(f, token, '{"cursor":1}')).status).toBe(200);
+		expect((await follow_up({ f, token, state: '{"cursor":1}' })).status).toBe(200);
 		await f.t.mutation(internal.plugins_runtime.finish_event_run, {
 			runId: root._id,
 			outcome: { kind: "failed", errorMessage: "Runner failed" },
@@ -688,7 +694,7 @@ describe("request_follow_up", () => {
 		const f = await fixture();
 		const root = await root_run(f);
 		const { token } = await start_run(f, root._id);
-		expect((await follow_up(f, token, "{}")).status).toBe(200);
+		expect((await follow_up({ f, token, state: "{}" })).status).toBe(200);
 		await f.t.run((ctx) =>
 			ctx.db.patch("plugins_workspace_installations", f.installationId, { scheduledRunGrantId: undefined }),
 		);
@@ -706,7 +712,7 @@ describe("request_follow_up", () => {
 		const root = await root_run(f);
 		const { token } = await start_run(f, root._id);
 		await f.t.run((ctx) => ctx.db.patch("plugins_event_runs", root._id, { chainStartedAt: Date.now() - 29 * 60_000 }));
-		expect((await follow_up(f, token, "{}")).status).toBe(200);
+		expect((await follow_up({ f, token, state: "{}" })).status).toBe(200);
 		await f.t.mutation(internal.plugins_runtime.finish_event_run, { runId: root._id, outcome: successful_outcome });
 		const child = (await f.t.run((ctx) => ctx.db.query("plugins_event_runs").collect())).find(
 			(run) => run._id !== root._id,
@@ -731,7 +737,7 @@ describe("scheduled cancellation and retention", () => {
 		const f = await fixture();
 		const root = await root_run(f);
 		const { token } = await start_run(f, root._id);
-		expect((await follow_up(f, token, '{"private":true}')).status).toBe(200);
+		expect((await follow_up({ f, token, state: '{"private":true}' })).status).toBe(200);
 		const consumed = await f.t.mutation(internal.plugins_runtime.consume_run_api_call, {
 			runId: root._id,
 			kind: "outbound_fetch",
@@ -798,7 +804,7 @@ describe("scheduled cancellation and retention", () => {
 		const staleRead = await f.t.fetch("/api/v1/plugin-data/read", request);
 		expect(staleRead.status, "revoked_member_token_cannot_read_kv").toBe(401);
 		expect(await staleRead.json()).toEqual({ message: "Unauthenticated" });
-		const staleFollowUp = await follow_up(f, token, '{"late":true}');
+		const staleFollowUp = await follow_up({ f, token, state: '{"late":true}' });
 		expect(staleFollowUp.status, "revoked_member_token_cannot_request_follow_up").toBe(401);
 		expect(await staleFollowUp.json()).toEqual({ message: "Unauthenticated" });
 		const saved = await f.t.run(async (ctx) => ({
@@ -1102,7 +1108,7 @@ describe("scheduled human changes", () => {
 		expect((await f.t.query(internal.public_api.resolve_principal, { presented: token }))._yay?.kind).toBe(
 			"plugin_run",
 		);
-		expect((await follow_up(f, token, "{}")).status).toBe(200);
+		expect((await follow_up({ f, token, state: "{}" })).status).toBe(200);
 		await f.t.mutation(internal.plugins_runtime.finish_event_run, { runId: root._id, outcome: successful_outcome });
 		const runs = await f.t.run((ctx) => ctx.db.query("plugins_event_runs").collect());
 		expect(runs.find((run) => run._id !== root._id)).toMatchObject({
@@ -1122,7 +1128,7 @@ describe("list_run_history", () => {
 		const member = await assign_member(f);
 		const root = await root_run(f);
 		const { token } = await start_run(f, root._id);
-		expect((await follow_up(f, token, '{"cursor":"private-chain-state"}')).status).toBe(200);
+		expect((await follow_up({ f, token, state: '{"cursor":"private-chain-state"}' })).status).toBe(200);
 		vi.setSystemTime(Date.now() + 1_000);
 		await f.t.mutation(internal.plugins_runtime.finish_event_run, { runId: root._id, outcome: successful_outcome });
 		const child = await f.t.run((ctx) =>
@@ -1285,7 +1291,7 @@ describe("get_installation_schedule", () => {
 			runId: root._id,
 			status: "running",
 		});
-		expect((await follow_up(f, token, "{}")).status).toBe(200);
+		expect((await follow_up({ f, token, state: "{}" })).status).toBe(200);
 		vi.setSystemTime(Date.now() + 1_000);
 		await f.t.mutation(internal.plugins_runtime.finish_event_run, { runId: root._id, outcome: successful_outcome });
 		const child = await f.t.run((ctx) =>
@@ -1415,7 +1421,7 @@ describe("scheduled runner host calls", () => {
 		const root = await root_run(f);
 		const { token } = await start_run(f, root._id);
 		await f.t.run((ctx) => ctx.db.patch("plugins_event_runs", root._id, { event: "users.account.deleted" }));
-		expect((await follow_up(f, token, "{}")).status).toBe(403);
+		expect((await follow_up({ f, token, state: "{}" })).status).toBe(403);
 	});
 });
 

@@ -223,11 +223,15 @@ async function seed_member_share_door(t: ReturnType<typeof test_convex>) {
 /**
  * One document as it was stored before the per-member share existed: no `chargedTo`, no `machineBytes`.
  */
-async function seed_pre_share_document(
-	t: ReturnType<typeof test_convex>,
-	fixture: Awaited<ReturnType<typeof seed_member_share_door>>,
-	args: { key: string; collection: string; byteSize: number },
-) {
+async function seed_pre_share_document(args: {
+	t: ReturnType<typeof test_convex>;
+	fixture: Awaited<ReturnType<typeof seed_member_share_door>>;
+	key: string;
+	collection: string;
+	byteSize: number;
+}) {
+	const { t, fixture } = args;
+
 	return await t.run(
 		async (ctx) =>
 			await ctx.db.insert("plugins_data", {
@@ -258,8 +262,8 @@ describe("backfill_plugins_data_charged_to", () => {
 		// `MEMBER_MAX_BYTES` in plugins_data.ts is 1600 KiB. Two documents that together fill it
 		// exactly, so the member is at their ceiling and the next byte is one too many.
 		const documentIds = await Promise.all([
-			seed_pre_share_document(t, fixture, { key: "m:1", collection: "messages", byteSize: 800 * 1024 }),
-			seed_pre_share_document(t, fixture, { key: "m:2", collection: "messages", byteSize: 800 * 1024 }),
+			seed_pre_share_document({ t, fixture, key: "m:1", collection: "messages", byteSize: 800 * 1024 }),
+			seed_pre_share_document({ t, fixture, key: "m:2", collection: "messages", byteSize: 800 * 1024 }),
 		]);
 
 		// One document per batch, so the second one has to read the member row the first one wrote.
@@ -326,7 +330,9 @@ describe("remove_plugins_data_charged_to_and_machine_bytes", () => {
 		const t = test_convex();
 		component.register(t);
 		const fixture = await seed_member_share_door(t);
-		const documentId = await seed_pre_share_document(t, fixture, {
+		const documentId = await seed_pre_share_document({
+			t,
+			fixture,
 			key: "m:1",
 			collection: "messages",
 			byteSize: 128,
@@ -412,19 +418,30 @@ describe("backfill_plugin_scope_append_activity", () => {
 		const seeded = await t.run(async (ctx) => {
 			const membershipRevision = 123;
 			const secondUserId = await ctx.db.insert("users", { clerkUserId: null });
-			const keyAt = (prefix: string, at: number, suffix: string) =>
-				`${prefix}${String(9_999_999_999_999 - at).padStart(13, "0")}:${suffix}`;
-			const insertScope = async (
-				scopeId: string,
-				collection: string,
+			const keyAt = (args: {
+				prefix: string;
+				at: number;
+				suffix: string;
+			}) =>
+				{
+				const { prefix, at, suffix } = args;
+
+				return `${prefix}${String(9_999_999_999_999 - at).padStart(13, "0")}:${suffix}`;
+			};
+			const insertScope = async (args: {
+				scopeId: string;
+				collection: string;
 				lastAppend?: {
 					at: number;
 					key: string;
 					createdByUserId: typeof fixture.userId;
-				} | null,
-				appendSequence?: number,
-			) =>
-				await ctx.db.insert("plugins_data_scopes", {
+				} | null;
+				appendSequence?: number;
+			}) =>
+				{
+				const { scopeId, lastAppend, appendSequence, collection} = args;
+
+				return await ctx.db.insert("plugins_data_scopes", {
 					organizationId: fixture.organizationId,
 					workspaceId: fixture.workspaceId,
 					installationId: fixture.installationId,
@@ -437,6 +454,7 @@ describe("backfill_plugin_scope_append_activity", () => {
 					...(appendSequence === undefined ? {} : { appendSequence }),
 					updatedAt: membershipRevision,
 				});
+			};
 			const insertDocument = async (args: {
 				scopeId?: string;
 				collection: string;
@@ -468,26 +486,26 @@ describe("backfill_plugin_scope_append_activity", () => {
 							}),
 				});
 
-			await insertScope("live", "messages");
-			await insertScope("live", "replies");
-			await insertScope("live", "channels", undefined, 1.5);
+			await insertScope({ scopeId: "live", collection: "messages" });
+			await insertScope({ scopeId: "live", collection: "replies" });
+			await insertScope({ scopeId: "live", collection: "channels", lastAppend: undefined, appendSequence: 1.5 });
 			const preservedMarker = {
 				at: 300,
-				key: keyAt("live/", 300, "0001"),
+				key: keyAt({ prefix: "live/", at: 300, suffix: "0001" }),
 				createdByUserId: fixture.userId,
 			};
-			await insertScope("live", "reactions", preservedMarker, 4);
+			await insertScope({ scopeId: "live", collection: "reactions", lastAppend: preservedMarker, appendSequence: 4 });
 			const markerOnly = {
 				at: 250,
-				key: keyAt("marker-only/", 250, "0001"),
+				key: keyAt({ prefix: "marker-only/", at: 250, suffix: "0001" }),
 				createdByUserId: fixture.userId,
 			};
-			await insertScope("marker-only", "messages", markerOnly, 0);
+			await insertScope({ scopeId: "marker-only", collection: "messages", lastAppend: markerOnly, appendSequence: 0 });
 
-			const olderMessageKey = keyAt("live/", 100, "0001");
-			const tiedMessageKey = keyAt("live/", 200, "0001");
-			const winningTiedMessageKey = keyAt("live/", 200, "000f");
-			const replyKey = keyAt("live/", 150, "0002");
+			const olderMessageKey = keyAt({ prefix: "live/", at: 100, suffix: "0001" });
+			const tiedMessageKey = keyAt({ prefix: "live/", at: 200, suffix: "0001" });
+			const winningTiedMessageKey = keyAt({ prefix: "live/", at: 200, suffix: "000f" });
+			const replyKey = keyAt({ prefix: "live/", at: 150, suffix: "0002" });
 			await insertDocument({
 				scopeId: "live",
 				collection: "messages",
@@ -515,8 +533,8 @@ describe("backfill_plugin_scope_append_activity", () => {
 			});
 
 			// These rows look close to append history but are public, non-append, malformed, or released.
-			await insertDocument({ collection: "messages", key: keyAt("public/", 400, "0001"), requestId: "public" });
-			await insertDocument({ scopeId: "live", collection: "channels", key: keyAt("live/", 450, "0001") });
+			await insertDocument({ collection: "messages", key: keyAt({ prefix: "public/", at: 400, suffix: "0001" }), requestId: "public" });
+			await insertDocument({ scopeId: "live", collection: "channels", key: keyAt({ prefix: "live/", at: 450, suffix: "0001" }) });
 			await insertDocument({
 				scopeId: "live",
 				collection: "channels",
@@ -526,7 +544,7 @@ describe("backfill_plugin_scope_append_activity", () => {
 			await insertDocument({
 				scopeId: "released",
 				collection: "messages",
-				key: keyAt("released/", 500, "0001"),
+				key: keyAt({ prefix: "released/", at: 500, suffix: "0001" }),
 				requestId: "released",
 			});
 			for (let index = 0; index < 21; index += 1) {

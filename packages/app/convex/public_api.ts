@@ -3432,11 +3432,13 @@ export const publish_file_write = internalMutation({
 		}
 
 		if (activeNode) {
-			await files_nodes_db_archive_nodes(
+			await files_nodes_db_archive_nodes({
 				ctx,
-				{ nodeIds: [activeNode._id], updatedBy: stage.userId, now },
-				files_share_links_create_cleanup_state(),
-			);
+				nodeIds: [activeNode._id],
+				updatedBy: stage.userId,
+				now,
+				shareLinkCleanup: files_share_links_create_cleanup_state(),
+			});
 		}
 		const pluginName = revalidated._yay.installation?.pluginName;
 		const created = await files_nodes_db_create_node_recursively_at_path(ctx, {
@@ -4607,15 +4609,13 @@ export const create_file_upload_targets = internalMutation({
 			// Uploading over a name archives whatever holds it, like create_upload_node, so re-runs
 			// replace the previous upload instead of failing.
 			if (item.collidingNodeId) {
-				await files_nodes_db_archive_nodes(
+				await files_nodes_db_archive_nodes({
 					ctx,
-					{
-						nodeIds: [item.collidingNodeId],
-						updatedBy: args.userId,
-						now,
-					},
+					nodeIds: [item.collidingNodeId],
+					updatedBy: args.userId,
+					now,
 					shareLinkCleanup,
-				);
+				});
 			}
 
 			const assetId = await ctx.db.insert("files_r2_assets", {
@@ -4695,11 +4695,13 @@ type create_file_upload_targets_Result =
  * Clean up a write that did not publish. Create R2 deletion jobs before deleting its temporary
  * docs. A published write has no stage doc, so this cleanup cannot delete published files.
  */
-export async function public_api_db_cleanup_file_write_stage(
-	ctx: MutationCtx,
-	stage: Doc<"public_api_file_write_stages">,
-	orphanedKeys: string[] = [],
-) {
+export async function public_api_db_cleanup_file_write_stage(args: {
+	ctx: MutationCtx;
+	stage: Doc<"public_api_file_write_stages">;
+	orphanedKeys?: string[];
+}) {
+	const { ctx, stage, orphanedKeys = [] } = args;
+
 	const stagedAssetIds = [stage.yjsSnapshotAssetId, stage.contentSnapshotAssetId];
 	const keys = new Set(orphanedKeys);
 	for (const assetId of stagedAssetIds) {
@@ -4771,7 +4773,7 @@ export const cleanup_file_write_stage = internalMutation({
 	handler: async (ctx, args) => {
 		const stage = await ctx.db.get("public_api_file_write_stages", args.stageId);
 		if (stage) {
-			await public_api_db_cleanup_file_write_stage(ctx, stage, args.orphanedKeys);
+			await public_api_db_cleanup_file_write_stage({ ctx, stage, orphanedKeys: args.orphanedKeys });
 		} else if (args.orphanedKeys?.length) {
 			if (!args.orphanedScope) {
 				throw should_never_happen("orphaned file write keys without their stage scope", {
@@ -4813,7 +4815,7 @@ export const cleanup_expired_file_write_stages = internalMutation({
 			.withIndex("by_expiresAt", (q) => q.lt("expiresAt", now))
 			.take(batchSize);
 		for (const stage of expired) {
-			await public_api_db_cleanup_file_write_stage(ctx, stage);
+			await public_api_db_cleanup_file_write_stage({ ctx, stage });
 		}
 
 		const done = expired.length < batchSize;
@@ -5480,8 +5482,16 @@ const read_file_body_validator = z.object({
 
 export type public_api_http_read_file_Body = z.infer<typeof read_file_body_validator>;
 
-export async function public_api_http_read_file(ctx: ActionCtx, request: Request, path: "/api/v1/files/read") {
-	const auth = await public_api_authorize_request(ctx, request, {
+export async function public_api_http_read_file(args: {
+	ctx: ActionCtx;
+	request: Request;
+	path: "/api/v1/files/read";
+}) {
+	const { ctx, request, path } = args;
+
+	const auth = await public_api_authorize_request({
+		ctx,
+		request,
 		requiredScope: "files:read" satisfies public_api_Scope,
 		allowedKinds: ["user_api_key", "public_api_grant", "plugin_ui", "plugin_run"],
 		route: path,
@@ -5614,8 +5624,16 @@ const read_many_body_validator = z.object({
 
 export type public_api_http_read_many_Body = z.infer<typeof read_many_body_validator>;
 
-export async function public_api_http_read_many(ctx: ActionCtx, request: Request, path: "/api/v1/files/read-many") {
-	const auth = await public_api_authorize_request(ctx, request, {
+export async function public_api_http_read_many(args: {
+	ctx: ActionCtx;
+	request: Request;
+	path: "/api/v1/files/read-many";
+}) {
+	const { ctx, request, path } = args;
+
+	const auth = await public_api_authorize_request({
+		ctx,
+		request,
 		requiredScope: "files:read" satisfies public_api_Scope,
 		allowedKinds: ["user_api_key", "public_api_grant"],
 		route: path,
@@ -5733,8 +5751,16 @@ const read_bytes_body_validator = z
 
 export type public_api_http_read_bytes_Body = z.infer<typeof read_bytes_body_validator>;
 
-export async function public_api_http_read_bytes(ctx: ActionCtx, request: Request, path: "/api/v1/files/read-bytes") {
-	const auth = await public_api_authorize_request(ctx, request, {
+export async function public_api_http_read_bytes(args: {
+	ctx: ActionCtx;
+	request: Request;
+	path: "/api/v1/files/read-bytes";
+}) {
+	const { ctx, request, path } = args;
+
+	const auth = await public_api_authorize_request({
+		ctx,
+		request,
 		requiredScope: "files:download",
 		allowedKinds: ["user_api_key", "public_api_grant"],
 		route: path,
@@ -5904,12 +5930,16 @@ const get_file_write_policy_body_validator = z.object({ nodeId: z.string() });
 
 export type public_api_http_get_file_write_policy_Body = z.infer<typeof get_file_write_policy_body_validator>;
 
-export async function public_api_http_get_file_write_policy(
-	ctx: ActionCtx,
-	request: Request,
-	path: "/api/v1/files/write-policy/get",
-) {
-	const auth = await public_api_authorize_request(ctx, request, {
+export async function public_api_http_get_file_write_policy(args: {
+	ctx: ActionCtx;
+	request: Request;
+	path: "/api/v1/files/write-policy/get";
+}) {
+	const { ctx, request, path } = args;
+
+	const auth = await public_api_authorize_request({
+		ctx,
+		request,
 		requiredScope: "files:read",
 		allowedKinds: ["user_api_key"],
 		route: path,
@@ -5960,12 +5990,16 @@ const set_file_write_policy_body_validator = z.object({
 
 export type public_api_http_set_file_write_policy_Body = z.infer<typeof set_file_write_policy_body_validator>;
 
-export async function public_api_http_set_file_write_policy(
-	ctx: ActionCtx,
-	request: Request,
-	path: "/api/v1/files/write-policy/set",
-) {
-	const auth = await public_api_authorize_request(ctx, request, {
+export async function public_api_http_set_file_write_policy(args: {
+	ctx: ActionCtx;
+	request: Request;
+	path: "/api/v1/files/write-policy/set";
+}) {
+	const { ctx, request, path } = args;
+
+	const auth = await public_api_authorize_request({
+		ctx,
+		request,
 		requiredScope: "files:permissions",
 		allowedKinds: ["user_api_key"],
 		route: path,
@@ -6064,8 +6098,16 @@ export function public_api_is_valid_write_file_name(name: string) {
 	return !normalized._nay && normalized._yay === name;
 }
 
-export async function public_api_http_write_file(ctx: ActionCtx, request: Request, path: "/api/v1/files/write") {
-	const auth = await public_api_authorize_request(ctx, request, {
+export async function public_api_http_write_file(args: {
+	ctx: ActionCtx;
+	request: Request;
+	path: "/api/v1/files/write";
+}) {
+	const { ctx, request, path } = args;
+
+	const auth = await public_api_authorize_request({
+		ctx,
+		request,
 		requiredScope: "files:write" satisfies public_api_Scope,
 		allowedKinds: ["user_api_key", "plugin_run", "plugin_service"],
 		route: path,
@@ -6488,10 +6530,18 @@ const write_many_body_validator = z.object({
 
 export type public_api_http_write_many_Body = z.infer<typeof write_many_body_validator>;
 
-export async function public_api_http_write_many(ctx: ActionCtx, request: Request, path: "/api/v1/files/write-many") {
+export async function public_api_http_write_many(args: {
+	ctx: ActionCtx;
+	request: Request;
+	path: "/api/v1/files/write-many";
+}) {
+	const { ctx, request, path } = args;
+
 	// Authenticate before buffering: the request cap is large (many files), so only
 	// a valid write credential gets to make the server read that much body.
-	const auth = await public_api_authorize_request(ctx, request, {
+	const auth = await public_api_authorize_request({
+		ctx,
+		request,
 		requiredScope: "files:write" satisfies public_api_Scope,
 		allowedKinds: ["user_api_key"],
 		route: path,
@@ -6710,8 +6760,16 @@ const touch_files_body_validator = z.object({
 
 export type public_api_http_touch_files_Body = z.infer<typeof touch_files_body_validator>;
 
-export async function public_api_http_touch_files(ctx: ActionCtx, request: Request, path: "/api/v1/files/touch") {
-	const auth = await public_api_authorize_request(ctx, request, {
+export async function public_api_http_touch_files(args: {
+	ctx: ActionCtx;
+	request: Request;
+	path: "/api/v1/files/touch";
+}) {
+	const { ctx, request, path } = args;
+
+	const auth = await public_api_authorize_request({
+		ctx,
+		request,
 		requiredScope: "files:write" satisfies public_api_Scope,
 		allowedKinds: ["user_api_key", "plugin_run"],
 		route: path,
@@ -7066,11 +7124,13 @@ const download_urls_body_validator = z.object({
 
 export type public_api_http_download_urls_Body = z.infer<typeof download_urls_body_validator>;
 
-export async function public_api_http_download_urls(
-	ctx: ActionCtx,
-	request: Request,
-	path: "/api/v1/files/download-urls",
-) {
+export async function public_api_http_download_urls(args: {
+	ctx: ActionCtx;
+	request: Request;
+	path: "/api/v1/files/download-urls";
+}) {
+	const { ctx, request, path } = args;
+
 	const declaredBytes = Number(request.headers.get("content-length"));
 	if (Number.isFinite(declaredBytes) && declaredBytes > FILES_DOWNLOAD_URLS_MAX_REQUEST_BYTES) {
 		return { status: 400, body: { message: "Request body is too large" } } as const;
@@ -7094,7 +7154,9 @@ export async function public_api_http_download_urls(
 		return { status: 400, body: { message: "fileNodeIds must be unique" } } as const;
 	}
 
-	const auth = await public_api_authorize_request(ctx, request, {
+	const auth = await public_api_authorize_request({
+		ctx,
+		request,
 		requiredScope: "files:download" satisfies public_api_Scope,
 		allowedKinds: ["user_api_key", "plugin_run", "plugin_ui"],
 		route: path,
@@ -7403,10 +7465,18 @@ const upload_urls_body_validator = z.object({
 
 export type public_api_http_upload_urls_Body = z.infer<typeof upload_urls_body_validator>;
 
-export async function public_api_http_upload_urls(ctx: ActionCtx, request: Request, path: "/api/v1/files/upload-urls") {
+export async function public_api_http_upload_urls(args: {
+	ctx: ActionCtx;
+	request: Request;
+	path: "/api/v1/files/upload-urls";
+}) {
+	const { ctx, request, path } = args;
+
 	// User keys only: plugin runs have their own sibling-write constraints and call
 	// accounting, and grants and UI sessions are read-only by design.
-	const auth = await public_api_authorize_request(ctx, request, {
+	const auth = await public_api_authorize_request({
+		ctx,
+		request,
 		requiredScope: "files:write" satisfies public_api_Scope,
 		allowedKinds: ["user_api_key"],
 		route: path,
@@ -7499,12 +7569,16 @@ const start_activity_body_validator = z.object({
 
 export type public_api_http_start_activity_Body = z.infer<typeof start_activity_body_validator>;
 
-export async function public_api_http_start_activity(
-	ctx: ActionCtx,
-	request: Request,
-	path: "/api/v1/activities/start",
-) {
-	const auth = await public_api_authorize_request(ctx, request, {
+export async function public_api_http_start_activity(args: {
+	ctx: ActionCtx;
+	request: Request;
+	path: "/api/v1/activities/start";
+}) {
+	const { ctx, request, path } = args;
+
+	const auth = await public_api_authorize_request({
+		ctx,
+		request,
 		requiredScope: "activities:write" satisfies public_api_Scope,
 		allowedKinds: ["plugin_run"],
 		route: path,
@@ -7585,8 +7659,14 @@ export async function public_api_http_start_activity(
  * that scope. A key minted for plugin documents alone would look broken. This route asks for no
  * scope and reports the ones the key still has.
  */
-export async function public_api_http_verify_key(ctx: ActionCtx, request: Request, path: "/api/v1/auth/verify") {
-	const auth = await public_api_authorize_key_inspection(ctx, request, { route: path });
+export async function public_api_http_verify_key(args: {
+	ctx: ActionCtx;
+	request: Request;
+	path: "/api/v1/auth/verify";
+}) {
+	const { ctx, request, path } = args;
+
+	const auth = await public_api_authorize_key_inspection({ ctx, request, route: path });
 	if (auth._nay) {
 		return auth._nay;
 	}

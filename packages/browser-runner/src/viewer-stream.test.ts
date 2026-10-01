@@ -10,10 +10,9 @@ const PROFILE = {
 	profileKey: Buffer.alloc(32, 7).toString("base64"),
 	agentBlockedHosts: [] as string[],
 	policyRevision: 0,
-	selectionRevision: 0,
 };
 const NativeResponse = Response;
-type SessionRecord = Parameters<typeof session_can_run>[0];
+type SessionRecord = Parameters<typeof session_can_run>[0]["record"];
 const TIMINGS = {
 	queueMs: expect.any(Number),
 	authorizeMs: expect.any(Number),
@@ -218,7 +217,6 @@ function web_record(record: SessionRecord, agentAccess = true): SessionRecord {
 		viewedTabId: "tab-1",
 		viewGen: 1,
 		policyRevision: 0,
-		selectionRevision: 0,
 		profileId: "profile_1",
 		agentBlockedHosts: [],
 	};
@@ -326,7 +324,6 @@ function make_session(options: { web?: boolean } = {}) {
 				: path === "/agent-access"
 					? {
 							policyRevision: current.mode === "web" ? current.policyRevision + 1 : 1,
-							selectionRevision: 0,
 							agentBlockedHosts: [],
 						}
 					: path === "/run/begin" && current.mode === "web"
@@ -334,7 +331,6 @@ function make_session(options: { web?: boolean } = {}) {
 								tabId: current.tabId,
 								tabGen: current.tabs[current.tabId]!.tabGen,
 								policyRevision: current.policyRevision,
-								selectionRevision: current.selectionRevision,
 							}
 						: {};
 		const response = await session.fetch(
@@ -537,7 +533,6 @@ describe("BrowserSession viewer stream", () => {
 			viewGen: 1,
 			viewedTabId: "session-1",
 			policyRevision: 0,
-			selectionRevision: 0,
 			tabs: [{ tabId: "session-1", tabGen: 1, navGen: 1, title: "Preview", url: "" }],
 			t: "hello",
 			viewerId: second.viewerId,
@@ -1582,11 +1577,13 @@ describe("BrowserSession viewer stream", () => {
 });
 
 describe("BrowserSession web mode", () => {
-	function tab_input(
-		record: Extract<SessionRecord, { mode: "web" }>,
-		operationId: string,
-		extra: Record<string, unknown> = {},
-	) {
+	function tab_input(args: {
+		record: Extract<SessionRecord, { mode: "web" }>;
+		operationId: string;
+		extra?: Record<string, unknown>;
+	}) {
+		const { record, operationId, extra = {} } = args;
+
 		return {
 			sessionId: record.sessionId,
 			operationId,
@@ -1599,10 +1596,8 @@ describe("BrowserSession web mode", () => {
 				tabId: record.tabId,
 				tabGen: record.tabs[record.tabId]!.tabGen,
 				policyRevision: record.policyRevision,
-				selectionRevision: record.selectionRevision,
 			},
 			policyRevision: record.policyRevision,
-			selectionRevision: record.selectionRevision,
 			...extra,
 		};
 	}
@@ -1610,7 +1605,7 @@ describe("BrowserSession web mode", () => {
 	it("creates one tab headlessly and replays its receipt without switching the viewer", async () => {
 		const { post, stored, newPage } = make_session({ web: true });
 		const initial = stored.get("session") as Extract<SessionRecord, { mode: "web" }>;
-		const input = tab_input(initial, "new-tab", { url: null });
+		const input = tab_input({ record: initial, operationId: "new-tab", extra: { url: null } });
 		const created = await post("/tab-new", input);
 		expect(created).toMatchObject({
 			ok: true,
@@ -1633,7 +1628,11 @@ describe("BrowserSession web mode", () => {
 		const { post, stored, attach, drain, newPage, page } = make_session({ web: true });
 		const created = await post(
 			"/tab-new",
-			tab_input(stored.get("session") as Extract<SessionRecord, { mode: "web" }>, "new-tab", { url: null }),
+			tab_input({
+				record: stored.get("session") as Extract<SessionRecord, { mode: "web" }>,
+				operationId: "new-tab",
+				extra: { url: null },
+			}),
 		);
 		const addedTabId = (created.result as { tabId: string }).tabId;
 		const first = await attach();
@@ -1675,7 +1674,7 @@ describe("BrowserSession web mode", () => {
 	it("refuses a ninth tab and a blocked address before creating a native page", async () => {
 		const { post, stored, newPage } = make_session({ web: true });
 		const initial = stored.get("session") as Extract<SessionRecord, { mode: "web" }>;
-		expect(await post("/tab-new", tab_input(initial, "blocked", { url: "https://blocked.test/" }))).toMatchObject({
+		expect(await post("/tab-new", tab_input({ record: initial, operationId: "blocked", extra: { url: "https://blocked.test/" } }))).toMatchObject({
 			status: "refused",
 			result: { reason: "address_blocked", cleanup: "complete" },
 		});
@@ -1683,7 +1682,7 @@ describe("BrowserSession web mode", () => {
 		for (let index = 2; index <= 8; index += 1)
 			current.tabs[`tab-${index}`] = { ...current.tabs["tab-1"]!, targetId: `page-${index}` };
 		stored.set("session", current);
-		expect(await post("/tab-new", tab_input(current, "ninth", { url: null }))).toMatchObject({
+		expect(await post("/tab-new", tab_input({ record: current, operationId: "ninth", extra: { url: null } }))).toMatchObject({
 			status: "refused",
 			result: { reason: "tab_limit", cleanup: "complete" },
 		});
@@ -1694,10 +1693,18 @@ describe("BrowserSession web mode", () => {
 		const { post, stored, newPage } = make_session({ web: true });
 		const created = await post(
 			"/tab-new",
-			tab_input(stored.get("session") as Extract<SessionRecord, { mode: "web" }>, "new-tab", { url: null }),
+			tab_input({
+				record: stored.get("session") as Extract<SessionRecord, { mode: "web" }>,
+				operationId: "new-tab",
+				extra: { url: null },
+			}),
 		);
 		const tabId = (created.result as { tabId: string }).tabId;
-		const input = tab_input(stored.get("session") as Extract<SessionRecord, { mode: "web" }>, "close-tab", { tabId });
+		const input = tab_input({
+			record: stored.get("session") as Extract<SessionRecord, { mode: "web" }>,
+			operationId: "close-tab",
+			extra: { tabId },
+		});
 		const closed = await post("/tab-close", input);
 		expect(closed).toMatchObject({
 			status: "completed",
@@ -1711,7 +1718,11 @@ describe("BrowserSession web mode", () => {
 		const { post, stored, newPage } = make_session({ web: true });
 		const created = await post(
 			"/tab-new",
-			tab_input(stored.get("session") as Extract<SessionRecord, { mode: "web" }>, "new-tab", { url: null }),
+			tab_input({
+				record: stored.get("session") as Extract<SessionRecord, { mode: "web" }>,
+				operationId: "new-tab",
+				extra: { url: null },
+			}),
 		);
 		const tabId = (created.result as { tabId: string }).tabId;
 		const page = await newPage.mock.results[0]!.value;
@@ -1725,7 +1736,11 @@ describe("BrowserSession web mode", () => {
 		});
 		const pending = post(
 			"/tab-close",
-			tab_input(stored.get("session") as Extract<SessionRecord, { mode: "web" }>, "close-tab", { tabId }),
+			tab_input({
+				record: stored.get("session") as Extract<SessionRecord, { mode: "web" }>,
+				operationId: "close-tab",
+				extra: { tabId },
+			}),
 		);
 		try {
 			await closing.promise;
@@ -1757,7 +1772,11 @@ describe("BrowserSession web mode", () => {
 		const { post, stored, newPage } = make_session({ web: true });
 		const created = await post(
 			"/tab-new",
-			tab_input(stored.get("session") as Extract<SessionRecord, { mode: "web" }>, "new-tab", { url: null }),
+			tab_input({
+				record: stored.get("session") as Extract<SessionRecord, { mode: "web" }>,
+				operationId: "new-tab",
+				extra: { url: null },
+			}),
 		);
 		const tabId = (created.result as { tabId: string }).tabId;
 		const page = await newPage.mock.results[0]!.value;
@@ -1771,7 +1790,11 @@ describe("BrowserSession web mode", () => {
 		});
 		const pending = post(
 			"/tab-close",
-			tab_input(stored.get("session") as Extract<SessionRecord, { mode: "web" }>, "close-tab", { tabId }),
+			tab_input({
+				record: stored.get("session") as Extract<SessionRecord, { mode: "web" }>,
+				operationId: "close-tab",
+				extra: { tabId },
+			}),
 		);
 		try {
 			await closing.promise;
@@ -1813,7 +1836,13 @@ describe("BrowserSession web mode", () => {
 		return [mocked.hostCdp, ...mocked.viewerCdps].flatMap((cdp) => cdp.send.mock.calls);
 	}
 
-	function make_popup(url: string, lateUrl?: string, opener: unknown = null) {
+	function make_popup(args: {
+		url: string;
+		lateUrl?: string;
+		opener?: unknown;
+	}) {
+		const { url, lateUrl, opener = null } = args;
+
 		let current = url;
 		return Object.assign(new EventEmitter(), {
 			url: () => current,
@@ -1860,7 +1889,6 @@ describe("BrowserSession web mode", () => {
 			"navGen",
 			"pageNonce",
 			"policyRevision",
-			"selectionRevision",
 			"sessionId",
 			"tabCount",
 			"tabGen",
@@ -1919,8 +1947,12 @@ describe("BrowserSession web mode", () => {
 			if (anotherTab) {
 				const created = await mocked.post(
 					"/tab-new",
-					tab_input(mocked.stored.get("session") as Extract<SessionRecord, { mode: "web" }>, "preferred-agent-tab", {
+					tab_input({
+						record: mocked.stored.get("session") as Extract<SessionRecord, { mode: "web" }>,
+						operationId: "preferred-agent-tab",
+						extra: {
 						url: null,
+					},
 					}),
 				);
 				expect(created.status).toBe("completed");
@@ -2025,8 +2057,12 @@ describe("BrowserSession web mode", () => {
 		} else
 			pending = mocked.post(
 				"/tab-new",
-				tab_input(mocked.stored.get("session") as Extract<SessionRecord, { mode: "web" }>, "new-tab-url", {
+				tab_input({
+					record: mocked.stored.get("session") as Extract<SessionRecord, { mode: "web" }>,
+					operationId: "new-tab-url",
+					extra: {
 					url: address,
+				},
 				}),
 			);
 		let finished = false;
@@ -2356,7 +2392,7 @@ describe("BrowserSession web mode", () => {
 		await vi.waitFor(() =>
 			expect(messages(viewer.socket)).toContainEqual({ t: "input-ack", timings: TIMINGS, seq: 1, ok: true }),
 		);
-		const popup = Object.assign(make_popup("about:blank", "https://example.com/popup", page), {
+		const popup = Object.assign(make_popup({ url: "about:blank", lateUrl: "https://example.com/popup", opener: page }), {
 			context: () => context,
 			mainFrame: () => ({ url: () => "https://example.com/popup", parentFrame: () => null }),
 			setViewportSize: vi.fn(async () => {}),
@@ -2395,7 +2431,7 @@ describe("BrowserSession web mode", () => {
 				commandId: "command-1",
 			}),
 		).toMatchObject({ ok: true });
-		const popup = make_popup("https://example.com/popup");
+		const popup = make_popup({ url: "https://example.com/popup" });
 		context.emit("page", popup);
 		await drain();
 		expect(popup.close).toHaveBeenCalledOnce();
@@ -2430,7 +2466,7 @@ describe("BrowserSession web mode", () => {
 		await vi.waitFor(() =>
 			expect(messages(viewer.socket)).toContainEqual({ t: "input-ack", timings: TIMINGS, seq: 1, ok: true }),
 		);
-		const popup = make_popup("https://blocked.test/steal", undefined, page);
+		const popup = make_popup({ url: "https://blocked.test/steal", lateUrl: undefined, opener: page });
 		context.emit("page", popup);
 		await drain();
 		expect(popup.close).toHaveBeenCalledOnce();
@@ -2522,7 +2558,6 @@ describe("BrowserSession web mode", () => {
 					tabId: "tab-1",
 					tabGen: 1,
 					policyRevision: 1,
-					selectionRevision: 0,
 				},
 			}),
 		).toMatchObject({ ok: false, error: { code: "agent_access_off" } });
@@ -2617,7 +2652,6 @@ describe("BrowserSession web mode", () => {
 			tabId: "tab-1",
 			tabGen: 1,
 			policyRevision: 0,
-			selectionRevision: 0,
 		};
 		const reloaded = await mocked.post("/reload", {
 			mode: "web",
@@ -2722,7 +2756,6 @@ describe("BrowserSession web mode", () => {
 			tabId: "tab-1",
 			tabGen: 1,
 			policyRevision: 0,
-			selectionRevision: 0,
 		};
 		const pending = mocked.post("/reload", { mode: "web", sessionId: "session-1", navGen: 1, expectedAgentLease });
 		try {
@@ -2829,10 +2862,10 @@ describe("BrowserSession web mode", () => {
 		await vi.waitFor(() =>
 			expect(messages(viewer.socket).filter((message) => message.t === "nav-ack")).toHaveLength(2),
 		);
-		mocked.context.emit("page", make_popup("https://blocked.test/popup"));
+		mocked.context.emit("page", make_popup({ url: "https://blocked.test/popup" }));
 		await mocked.drain();
 		await mocked.post("/control/to-agent", { sessionId: "session-1", navGen: 1 });
-		mocked.context.emit("page", make_popup("https://example.com/popup"));
+		mocked.context.emit("page", make_popup({ url: "https://example.com/popup" }));
 		await mocked.drain();
 		mocked.stored.clear();
 		vi.spyOn(provider, "acquire").mockResolvedValue({ sessionId: "provider-2" } as Awaited<

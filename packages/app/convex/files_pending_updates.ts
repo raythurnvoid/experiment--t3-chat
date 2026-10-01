@@ -586,10 +586,14 @@ export async function files_pending_updates_db_mark_content_for_rebase(
 			const rootKind = pendingUpdate.contentRebaseRootKind ?? args.rootKind;
 			if (pendingUpdate.contentNeedsRebase && pendingUpdate.contentRebaseRootKind === rootKind) return;
 			// Restores and mode changes keep the owner's existing expiry deadline.
-			await files_db_patch_pending_update(ctx, pendingUpdate._id, {
+			await files_db_patch_pending_update({
+				ctx,
+				pendingUpdateId: pendingUpdate._id,
+				value: {
 				revision: pendingUpdate.revision + 1,
 				contentNeedsRebase: true,
 				contentRebaseRootKind: rootKind,
+			},
 			});
 			// Old indexes stay hidden until preparation rebuilds them. Do not rewrite every owner's text here.
 		}),
@@ -630,13 +634,16 @@ export async function files_pending_updates_db_drop_content_for_node(
 
 			// Nothing else was proposed, so the whole doc goes.
 			if (!pendingUpdate.pendingMove && !pendingUpdate.pendingArchive) {
-				await Promise.all([...retireStatesAndChunks, files_db_delete_pending_update(ctx, pendingUpdate._id)]);
+				await Promise.all([...retireStatesAndChunks, files_db_delete_pending_update({ ctx, pendingUpdateId: pendingUpdate._id })]);
 				return;
 			}
 
 			await Promise.all([
 				...retireStatesAndChunks,
-				files_db_patch_pending_update(ctx, pendingUpdate._id, {
+				files_db_patch_pending_update({
+					ctx,
+					pendingUpdateId: pendingUpdate._id,
+					value: {
 					revision: pendingUpdate.revision + 1,
 					content: undefined,
 					contentNeedsRebase: undefined,
@@ -644,6 +651,7 @@ export async function files_pending_updates_db_drop_content_for_node(
 					copiedFrom: undefined,
 					size: 0,
 					updatedAt: now,
+				},
 				}),
 			]);
 		}),
@@ -819,10 +827,14 @@ export async function files_pending_update_db_settle_move_row(
 	if (files_pending_update_content_of(pendingUpdate) || pendingUpdate.copiedFrom) {
 		const now = Date.now();
 		await Promise.all([
-			files_db_patch_pending_update(ctx, pendingUpdate._id, {
+			files_db_patch_pending_update({
+				ctx,
+				pendingUpdateId: pendingUpdate._id,
+				value: {
 				revision: pendingUpdate.revision + 1,
 				pendingMove: undefined,
 				updatedAt: now,
+			},
 			}),
 			files_pending_update_db_update_index_revision(ctx, {
 				pendingUpdateId: pendingUpdate._id,
@@ -834,7 +846,7 @@ export async function files_pending_update_db_settle_move_row(
 			files_pending_update_db_delete_chunks(ctx, {
 				pendingUpdateId: pendingUpdate._id,
 			}),
-			files_db_delete_pending_update(ctx, pendingUpdate._id),
+			files_db_delete_pending_update({ ctx, pendingUpdateId: pendingUpdate._id }),
 		]);
 	}
 }
@@ -852,10 +864,14 @@ async function files_pending_update_db_settle_archive_row(
 	if (files_pending_update_content_of(pendingUpdate) || pendingUpdate.copiedFrom) {
 		const now = Date.now();
 		await Promise.all([
-			files_db_patch_pending_update(ctx, pendingUpdate._id, {
+			files_db_patch_pending_update({
+				ctx,
+				pendingUpdateId: pendingUpdate._id,
+				value: {
 				revision: pendingUpdate.revision + 1,
 				pendingArchive: undefined,
 				updatedAt: now,
+			},
 			}),
 			files_pending_update_db_update_index_revision(ctx, {
 				pendingUpdateId: pendingUpdate._id,
@@ -867,7 +883,7 @@ async function files_pending_update_db_settle_archive_row(
 			files_pending_update_db_delete_chunks(ctx, {
 				pendingUpdateId: pendingUpdate._id,
 			}),
-			files_db_delete_pending_update(ctx, pendingUpdate._id),
+			files_db_delete_pending_update({ ctx, pendingUpdateId: pendingUpdate._id }),
 		]);
 	}
 }
@@ -2435,7 +2451,7 @@ export const remove_fenced_private_pending_update = internalMutation({
 		for (const assetId of assetIds) await files_pending_update_db_release_replacement_asset(ctx, { ...scope, assetId });
 		await files_db_retire_pending_update_yjs_states(ctx, { ...scope, pendingUpdateId: pendingUpdate._id });
 		await files_pending_update_db_delete_chunks(ctx, { pendingUpdateId: pendingUpdate._id });
-		await files_db_delete_pending_update(ctx, pendingUpdate._id, { reviewAlreadyFenced: true });
+		await files_db_delete_pending_update({ ctx, pendingUpdateId: pendingUpdate._id, options: { reviewAlreadyFenced: true } });
 		return null;
 	},
 });
@@ -2465,11 +2481,13 @@ const EXPIRY_CHECK_RECOVERY_BATCH_SIZE = 32;
  * Point the check at a new job that runs at `checkAt`. This does not cancel the old job. A caller
  * that moves a check away from a job that may still run must cancel that job itself.
  */
-async function db_schedule_expiry_check(
-	ctx: MutationCtx,
-	check: app_convex_Doc<"files_pending_update_expiry_checks">,
-	checkAt: number,
-) {
+async function db_schedule_expiry_check(args: {
+	ctx: MutationCtx;
+	check: app_convex_Doc<"files_pending_update_expiry_checks">;
+	checkAt: number;
+}) {
+	const { ctx, check, checkAt } = args;
+
 	const scheduledFunctionId = await ctx.scheduler.runAt(
 		checkAt,
 		internal.files_pending_updates.expire_file_pending_updates,
@@ -2521,7 +2539,7 @@ export const expire_file_pending_updates = internalMutation({
 		]);
 		const activeUntil = lastActive && membership ? lastActive.lastActiveAt + files_DRAFT_IDLE_EXPIRY_MS : 0;
 		if (activeUntil > now) {
-			await db_schedule_expiry_check(ctx, check, activeUntil);
+			await db_schedule_expiry_check({ ctx, check, checkAt: activeUntil });
 			return null;
 		}
 
@@ -2556,7 +2574,7 @@ export const expire_file_pending_updates = internalMutation({
 						});
 					}
 					await Promise.all([
-						files_db_delete_pending_update(ctx, pendingUpdate._id),
+						files_db_delete_pending_update({ ctx, pendingUpdateId: pendingUpdate._id }),
 						files_db_retire_pending_update_yjs_states(ctx, {
 							organizationId: pendingUpdate.organizationId,
 							workspaceId: pendingUpdate.workspaceId,
@@ -2595,7 +2613,7 @@ export const expire_file_pending_updates = internalMutation({
 
 		// A full or cut batch may have more due drafts behind it.
 		if (handledCount < dueDrafts.length || dueDrafts.length === EXPIRY_CHECK_BATCH_SIZE) {
-			await db_schedule_expiry_check(ctx, check, now);
+			await db_schedule_expiry_check({ ctx, check, checkAt: now });
 			return null;
 		}
 
@@ -2606,7 +2624,7 @@ export const expire_file_pending_updates = internalMutation({
 			)
 			.first();
 		if (nextDraft) {
-			await db_schedule_expiry_check(ctx, check, nextDraft.expiresAt);
+			await db_schedule_expiry_check({ ctx, check, checkAt: nextDraft.expiresAt });
 		} else {
 			await ctx.db.delete("files_pending_update_expiry_checks", check._id);
 		}
@@ -2629,7 +2647,7 @@ export const recover_file_pending_update_expiry_checks = internalMutation({
 			.take(EXPIRY_CHECK_RECOVERY_BATCH_SIZE);
 		for (const check of checks) {
 			await files_db_cancel_scheduled_function_if_present(ctx, check.scheduledFunctionId);
-			await db_schedule_expiry_check(ctx, check, now);
+			await db_schedule_expiry_check({ ctx, check, checkAt: now });
 		}
 		if (checks.length === EXPIRY_CHECK_RECOVERY_BATCH_SIZE)
 			await ctx.scheduler.runAfter(0, internal.files_pending_updates.recover_file_pending_update_expiry_checks, {});
@@ -2911,7 +2929,10 @@ export const settle_file_pending_update_no_change_in_db = internalMutation({
 			// describes this doc, so clear `copiedFrom`.
 			const now = Date.now();
 			await Promise.all([
-				files_db_patch_pending_update(ctx, pendingUpdate._id, {
+				files_db_patch_pending_update({
+					ctx,
+					pendingUpdateId: pendingUpdate._id,
+					value: {
 					revision: pendingUpdate.revision + 1,
 					content: undefined,
 					contentNeedsRebase: undefined,
@@ -2919,6 +2940,7 @@ export const settle_file_pending_update_no_change_in_db = internalMutation({
 					copiedFrom: undefined,
 					size: 0,
 					updatedAt: now,
+				},
 				}),
 				files_db_retire_pending_update_yjs_states(ctx, {
 					organizationId: args.organizationId,
@@ -2947,7 +2969,7 @@ export const settle_file_pending_update_no_change_in_db = internalMutation({
 			files_pending_update_db_delete_chunks(ctx, {
 				pendingUpdateId: pendingUpdate._id,
 			}),
-			files_db_delete_pending_update(ctx, pendingUpdate._id),
+			files_db_delete_pending_update({ ctx, pendingUpdateId: pendingUpdate._id }),
 		]);
 
 		return Result({ _yay: { pendingUpdate: null, currentYjsLastSequenceId: file.yjsLastSequenceId ?? null } });
@@ -3052,10 +3074,14 @@ export const refresh_file_pending_update_in_db = internalMutation({
 				: undefined;
 		const now = Date.now();
 		await Promise.all([
-			files_db_patch_pending_update(ctx, pendingUpdate._id, {
+			files_db_patch_pending_update({
+				ctx,
+				pendingUpdateId: pendingUpdate._id,
+				value: {
 				revision: pendingUpdate.revision + 1,
 				...(nextThreadIds ? { threadIds: nextThreadIds } : {}),
 				updatedAt: now,
+			},
 			}),
 			files_pending_update_db_update_index_revision(ctx, {
 				pendingUpdateId: pendingUpdate._id,
@@ -3393,7 +3419,10 @@ export const commit_file_pending_update_upsert_in_db = internalMutation({
 			});
 		} else {
 			pendingUpdateId = existingPendingUpdate._id;
-			await files_db_patch_pending_update(ctx, pendingUpdateId, {
+			await files_db_patch_pending_update({
+				ctx,
+				pendingUpdateId,
+				value: {
 				revision: existingPendingUpdate.revision + 1,
 				content,
 				// The newest structural intent wins: a later cp re-records where the content comes from.
@@ -3401,6 +3430,7 @@ export const commit_file_pending_update_upsert_in_db = internalMutation({
 				...(nextThreadIds ? { threadIds: nextThreadIds } : {}),
 				...(args.unstagedBranchChanged ? { size: unstagedSize } : {}),
 				updatedAt: now,
+			},
 			});
 		}
 
@@ -3461,19 +3491,19 @@ type commit_file_pending_update_upsert_in_db_Base =
 		? Args["base"]
 		: never;
 
-export async function files_pending_updates_action_stage_private_state_family(
-	ctx: ActionCtx,
-	args: {
-		organizationId: Id<"organizations">;
-		workspaceId: Id<"organizations_workspaces">;
-		userId: Id<"users">;
-		operationBatchId: Id<"files_pending_update_operation_batches">;
-		base: ArrayBuffer;
-		staged: ArrayBuffer;
-		unstaged: ArrayBuffer;
-	},
-	abortSignal?: AbortSignal,
-) {
+export async function files_pending_updates_action_stage_private_state_family(args: {
+	ctx: ActionCtx;
+	organizationId: Id<"organizations">;
+	workspaceId: Id<"organizations_workspaces">;
+	userId: Id<"users">;
+	operationBatchId: Id<"files_pending_update_operation_batches">;
+	base: ArrayBuffer;
+	staged: ArrayBuffer;
+	unstaged: ArrayBuffer;
+	abortSignal?: AbortSignal;
+}) {
+	const { ctx, abortSignal, ...previousArgs } = args;
+
 	const states = new Map<
 		"base" | "staged" | "unstaged",
 		{ stateId: Id<"files_pending_update_yjs_states">; digest: string }
@@ -3481,8 +3511,8 @@ export async function files_pending_updates_action_stage_private_state_family(
 
 	for (const role of ["base", "staged", "unstaged"] as const) {
 		abortSignal?.throwIfAborted();
-		const bytes = new Uint8Array(args[role]);
-		const checked = files_pending_update_check_whole_state_bytes({ stateBytes: args[role] });
+		const bytes = new Uint8Array(previousArgs[role]);
+		const checked = files_pending_update_check_whole_state_bytes({ stateBytes: previousArgs[role] });
 		if (checked._nay) return Result({ _nay: { message: checked._nay.message } });
 
 		for (let pageIndex = 0; pageIndex * files_MAX_YJS_WIRE_BYTES < bytes.byteLength; pageIndex++) {
@@ -3606,7 +3636,10 @@ export async function files_pending_updates_db_commit_private_file(
 	}
 
 	const now = Date.now();
-	await files_db_patch_pending_update(ctx, pendingUpdate._id, {
+	await files_db_patch_pending_update({
+		ctx,
+		pendingUpdateId: pendingUpdate._id,
+		value: {
 		revision: pendingUpdate.revision + 1,
 		content: {
 			base: { kind: "new" },
@@ -3619,6 +3652,7 @@ export async function files_pending_updates_db_commit_private_file(
 			: {}),
 		size: files_get_utf8_byte_size(args.unstagedText),
 		updatedAt: now,
+	},
 	});
 
 	await db_swap_canonical_states_and_consume_batch(ctx, {
@@ -3772,7 +3806,8 @@ async function action_upsert_private_file_pending_update(
 		const unstagedText = files_yjs_doc_get_text({ yjsDoc: docs[2]!, rootKind });
 		if (unstagedText._nay) return Result({ _nay: { message: unstagedText._nay.message } });
 
-		const family = await files_pending_updates_action_stage_private_state_family(ctx, {
+		const family = await files_pending_updates_action_stage_private_state_family({
+			ctx,
 			...args,
 			base: files_pending_update_encode_yjs_state_update({ yjsDoc: docs[0]! }),
 			staged: files_pending_update_encode_yjs_state_update({ yjsDoc: docs[1]! }),
@@ -4540,7 +4575,10 @@ export const upsert_file_pending_move_in_db = internalMutation({
 					name: args.destName,
 					structuralRevision: source.entry.node.structuralRevision + 1,
 				});
-				await files_db_patch_pending_update(ctx, pendingUpdate._id, {
+				await files_db_patch_pending_update({
+					ctx,
+					pendingUpdateId: pendingUpdate._id,
+					value: {
 					revision: pendingUpdate.revision + 1,
 					updatedAt: now,
 					threadIds,
@@ -4553,6 +4591,7 @@ export const upsert_file_pending_move_in_db = internalMutation({
 								replacesContentVersion: replaced.replacesContentVersion,
 							}
 						: undefined,
+				},
 				});
 
 				await files_pending_update_db_update_index_revision(ctx, {
@@ -4736,11 +4775,15 @@ export const upsert_file_pending_move_in_db = internalMutation({
 		} else {
 			// mv after write_file makes the doc content-plus-move; mv after mv replaces the proposal.
 			await Promise.all([
-				files_db_patch_pending_update(ctx, existingPendingUpdate._id, {
+				files_db_patch_pending_update({
+					ctx,
+					pendingUpdateId: existingPendingUpdate._id,
+					value: {
 					revision: existingPendingUpdate.revision + 1,
 					pendingMove,
 					...(nextThreadIds ? { threadIds: nextThreadIds } : {}),
 					updatedAt: now,
+				},
 				}),
 				files_pending_update_db_update_index_revision(ctx, {
 					pendingUpdateId: existingPendingUpdate._id,
@@ -4915,12 +4958,16 @@ export const upsert_file_pending_archive_in_db = internalMutation({
 			// rm after mv replaces the move (a delete supersedes it); rm after write keeps the
 			// content branches on the doc (ignored on accept, restored as a Modified row on discard).
 			await Promise.all([
-				files_db_patch_pending_update(ctx, existingPendingUpdate._id, {
+				files_db_patch_pending_update({
+					ctx,
+					pendingUpdateId: existingPendingUpdate._id,
+					value: {
 					revision: existingPendingUpdate.revision + 1,
 					pendingArchive: { fromPath: node.path },
 					pendingMove: undefined,
 					...(nextThreadIds ? { threadIds: nextThreadIds } : {}),
 					updatedAt: now,
+				},
 				}),
 				files_pending_update_db_update_index_revision(ctx, {
 					pendingUpdateId: existingPendingUpdate._id,
@@ -5086,7 +5133,7 @@ export async function files_pending_updates_db_apply_archive(
 			files_pending_update_db_delete_chunks(ctx, {
 				pendingUpdateId: pendingUpdate._id,
 			}),
-			files_db_delete_pending_update(ctx, pendingUpdate._id),
+			files_db_delete_pending_update({ ctx, pendingUpdateId: pendingUpdate._id }),
 		]);
 		return Result({ _yay: null });
 	}
@@ -5213,7 +5260,7 @@ export async function files_pending_updates_db_remove_archived_node_proposal(
 		files_pending_update_db_delete_chunks(ctx, {
 			pendingUpdateId: pendingUpdate._id,
 		}),
-		files_db_delete_pending_update(ctx, pendingUpdate._id),
+		files_db_delete_pending_update({ ctx, pendingUpdateId: pendingUpdate._id }),
 	]);
 }
 
@@ -5272,7 +5319,7 @@ export async function files_pending_updates_db_discard_saved(
 		});
 	await files_db_retire_pending_update_yjs_states(ctx, { ...scope, pendingUpdateId: pendingUpdate._id });
 	await files_pending_update_db_delete_chunks(ctx, { pendingUpdateId: pendingUpdate._id });
-	await files_db_delete_pending_update(ctx, pendingUpdate._id);
+	await files_db_delete_pending_update({ ctx, pendingUpdateId: pendingUpdate._id });
 	return Result({ _yay: null });
 }
 
@@ -5371,7 +5418,7 @@ export const discard_file_pending_structural = mutation({
 				files_pending_update_db_delete_chunks(ctx, {
 					pendingUpdateId: pendingUpdate._id,
 				}),
-				files_db_delete_pending_update(ctx, pendingUpdate._id),
+				files_db_delete_pending_update({ ctx, pendingUpdateId: pendingUpdate._id }),
 			]);
 			return Result({ _yay: null });
 		}
@@ -5385,10 +5432,14 @@ export const discard_file_pending_structural = mutation({
 			// Content-plus-move doc: drop the move proposal, keep the content proposal.
 			const now = Date.now();
 			await Promise.all([
-				files_db_patch_pending_update(ctx, pendingUpdate._id, {
+				files_db_patch_pending_update({
+					ctx,
+					pendingUpdateId: pendingUpdate._id,
+					value: {
 					revision: pendingUpdate.revision + 1,
 					pendingMove: undefined,
 					updatedAt: now,
+				},
 				}),
 				files_pending_update_db_update_index_revision(ctx, {
 					pendingUpdateId: pendingUpdate._id,
@@ -5400,7 +5451,7 @@ export const discard_file_pending_structural = mutation({
 				files_pending_update_db_delete_chunks(ctx, {
 					pendingUpdateId: pendingUpdate._id,
 				}),
-				files_db_delete_pending_update(ctx, pendingUpdate._id),
+				files_db_delete_pending_update({ ctx, pendingUpdateId: pendingUpdate._id }),
 			]);
 		}
 
@@ -5487,12 +5538,16 @@ export const discard_file_pending_content = mutation({
 			if (pendingUpdate.pendingMove) {
 				const now = Date.now();
 				await Promise.all([
-					files_db_patch_pending_update(ctx, pendingUpdate._id, {
+					files_db_patch_pending_update({
+						ctx,
+						pendingUpdateId: pendingUpdate._id,
+						value: {
 						revision: pendingUpdate.revision + 1,
 						pendingReplacement: undefined,
 						copiedFrom: undefined,
 						size: 0,
 						updatedAt: now,
+					},
 					}),
 					files_pending_update_db_delete_chunks(ctx, { pendingUpdateId: pendingUpdate._id }),
 				]);
@@ -5500,7 +5555,7 @@ export const discard_file_pending_content = mutation({
 			}
 			await Promise.all([
 				files_pending_update_db_delete_chunks(ctx, { pendingUpdateId: pendingUpdate._id }),
-				files_db_delete_pending_update(ctx, pendingUpdate._id),
+				files_db_delete_pending_update({ ctx, pendingUpdateId: pendingUpdate._id }),
 			]);
 			return Result({ _yay: null });
 		}
@@ -5575,7 +5630,10 @@ export const discard_file_pending_content = mutation({
 			if (pendingUpdate.pendingMove || pendingUpdate.pendingArchive) {
 				const now = Date.now();
 				await Promise.all([
-					files_db_patch_pending_update(ctx, pendingUpdate._id, {
+					files_db_patch_pending_update({
+						ctx,
+						pendingUpdateId: pendingUpdate._id,
+						value: {
 						revision: pendingUpdate.revision + 1,
 						content: undefined,
 						contentNeedsRebase: undefined,
@@ -5583,6 +5641,7 @@ export const discard_file_pending_content = mutation({
 						copiedFrom: undefined,
 						size: 0,
 						updatedAt: now,
+					},
 					}),
 					files_db_retire_pending_update_yjs_states(ctx, {
 						organizationId: membership.organizationId,
@@ -5605,7 +5664,7 @@ export const discard_file_pending_content = mutation({
 				files_pending_update_db_delete_chunks(ctx, {
 					pendingUpdateId: pendingUpdate._id,
 				}),
-				files_db_delete_pending_update(ctx, pendingUpdate._id),
+				files_db_delete_pending_update({ ctx, pendingUpdateId: pendingUpdate._id }),
 			]);
 			return Result({ _yay: null });
 		}
@@ -5633,11 +5692,15 @@ export const discard_file_pending_content = mutation({
 			ctx.db.patch("files_pending_update_yjs_states", content.unstagedStateId, {
 				owner: { kind: "retired", cleanupTaskId },
 			}),
-			files_db_patch_pending_update(ctx, pendingUpdate._id, {
+			files_db_patch_pending_update({
+				ctx,
+				pendingUpdateId: pendingUpdate._id,
+				value: {
 				revision: pendingUpdate.revision + 1,
 				content: { ...content, unstagedStateId: newUnstagedState._yay },
 				size: files_get_utf8_byte_size(stagedText._yay),
 				updatedAt: now,
+			},
 			}),
 			ctx.scheduler.runAfter(0, internal.files_pending_updates.cleanup_expired_pending_state_rows, {}),
 		]);
@@ -5874,7 +5937,10 @@ export const commit_file_pending_update_rebase_in_db = internalMutation({
 			await files_pending_update_db_delete_chunks(ctx, { pendingUpdateId: existingPendingUpdate._id });
 
 			if (existingPendingUpdate.pendingMove || existingPendingUpdate.pendingArchive) {
-				await files_db_patch_pending_update(ctx, existingPendingUpdate._id, {
+				await files_db_patch_pending_update({
+					ctx,
+					pendingUpdateId: existingPendingUpdate._id,
+					value: {
 					revision: existingPendingUpdate.revision + 1,
 					content: undefined,
 					contentNeedsRebase: undefined,
@@ -5882,6 +5948,7 @@ export const commit_file_pending_update_rebase_in_db = internalMutation({
 					copiedFrom: undefined,
 					size: 0,
 					updatedAt: now,
+				},
 				});
 
 				return Result({
@@ -5889,11 +5956,14 @@ export const commit_file_pending_update_rebase_in_db = internalMutation({
 				});
 			}
 
-			await files_db_delete_pending_update(ctx, existingPendingUpdate._id);
+			await files_db_delete_pending_update({ ctx, pendingUpdateId: existingPendingUpdate._id });
 			return Result({ _yay: { pendingUpdate: null } });
 		}
 
-		await files_db_patch_pending_update(ctx, existingPendingUpdate._id, {
+		await files_db_patch_pending_update({
+			ctx,
+			pendingUpdateId: existingPendingUpdate._id,
+			value: {
 			revision: existingPendingUpdate.revision + 1,
 			content: {
 				base:
@@ -5908,6 +5978,7 @@ export const commit_file_pending_update_rebase_in_db = internalMutation({
 			contentRebaseRootKind: undefined,
 			size: files_get_utf8_byte_size(args.unstagedText),
 			updatedAt: now,
+		},
 		});
 
 		await db_swap_canonical_states_and_consume_batch(ctx, {
@@ -7278,11 +7349,13 @@ export const get_file_pending_update_internal = internalQuery({
  * Decide whether the Pending list draws this proposal as its own row. The list query and every
  * pending count use this one check, so they always agree.
  */
-async function db_pending_update_is_listed(
-	ctx: QueryCtx,
-	pendingUpdate: app_convex_Doc<"files_pending_updates">,
-	threadId: Id<"ai_chat_threads"> | undefined,
-) {
+async function db_pending_update_is_listed(args: {
+	ctx: QueryCtx;
+	pendingUpdate: app_convex_Doc<"files_pending_updates">;
+	threadId: Id<"ai_chat_threads"> | undefined;
+}) {
+	const { ctx, pendingUpdate, threadId } = args;
+
 	if (threadId !== undefined && !pendingUpdate.threadIds?.includes(threadId)) return false;
 	if (pendingUpdate.target.kind === "saved") return true;
 	const privateNodeId = pendingUpdate.target.id;
@@ -7362,7 +7435,7 @@ export const list_files_pending_updates = query({
 			.withIndex("by_organization_workspace_user_target", (q) =>
 				q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId).eq("userId", scope.userId),
 			)
-			.filterWith(async (pendingUpdate) => await db_pending_update_is_listed(ctx, pendingUpdate, threadId))
+			.filterWith(async (pendingUpdate) => await db_pending_update_is_listed({ ctx, pendingUpdate, threadId }))
 			.paginate({
 				...args.paginationOpts,
 				numItems: Math.min(5, args.paginationOpts.numItems),
@@ -7460,11 +7533,13 @@ export const get_pending_source_summary = query({
 	},
 });
 
-async function db_get_files_pending_updates_summary(
-	ctx: QueryCtx,
-	membership: app_convex_Doc<"organizations_workspaces_users">,
-	threadId?: Id<"ai_chat_threads">,
-) {
+async function db_get_files_pending_updates_summary(args: {
+	ctx: QueryCtx;
+	membership: app_convex_Doc<"organizations_workspaces_users">;
+	threadId?: Id<"ai_chat_threads">;
+}) {
+	const { ctx, membership, threadId } = args;
+
 	const pendingUpdates = await ctx.db
 		.query("files_pending_updates")
 		.withIndex("by_organization_workspace_user_target", (q) =>
@@ -7476,7 +7551,7 @@ async function db_get_files_pending_updates_summary(
 		.take(501);
 	let count = 0;
 	for (const pendingUpdate of pendingUpdates.slice(0, 500)) {
-		if (await db_pending_update_is_listed(ctx, pendingUpdate, threadId)) count++;
+		if (await db_pending_update_is_listed({ ctx, pendingUpdate, threadId })) count++;
 	}
 	return { count, truncated: pendingUpdates.length > 500 };
 }
@@ -7494,7 +7569,7 @@ export const get_files_pending_updates_summary = query({
 		if (!membership) return { count: 0, truncated: false };
 		const threadId = args.threadId === undefined ? undefined : ctx.db.normalizeId("ai_chat_threads", args.threadId);
 		if (threadId === null) return { count: 0, truncated: false };
-		return await db_get_files_pending_updates_summary(ctx, membership, threadId);
+		return await db_get_files_pending_updates_summary({ ctx, membership, threadId });
 	},
 });
 
@@ -7576,7 +7651,7 @@ export const get_chat_pending_updates_summary = query({
 				workspace: root.workspace,
 				organizationName: access._yay.organization.name,
 				workspaceName: workspace.name,
-				...(await db_get_files_pending_updates_summary(ctx, root.membership, threadId)),
+				...(await db_get_files_pending_updates_summary({ ctx, membership: root.membership, threadId })),
 			});
 		}
 		return summaries;
@@ -7703,36 +7778,32 @@ export async function files_pending_updates_db_commit_prepared_content(
 	if (prepared.kind === "saved_yjs") {
 		const text = prepared.partial ? await readText(prepared.partial.unstagedTextInputId, "unstaged") : null;
 		if (text?._nay) return text;
-		const saved = await files_pending_updates_db_save_yjs(
+		const saved = await files_pending_updates_db_save_yjs({
 			ctx,
-			{
-				...prepared,
-				expectedRevision: prepared.reviewedRevision,
-				operationBatchId: prepared.operationBatchIds[0],
-				reviewedPendingUpdateIds: args.reviewedPendingUpdateIds,
-				reviewRunId: args.reviewRunId,
-				partial: prepared.partial ? { ...prepared.partial, unstagedText: text!._yay! } : undefined,
-			},
+			...prepared,
+			expectedRevision: prepared.reviewedRevision,
+			operationBatchId: prepared.operationBatchIds[0],
+			reviewedPendingUpdateIds: args.reviewedPendingUpdateIds,
+			reviewRunId: args.reviewRunId,
+			partial: prepared.partial ? { ...prepared.partial, unstagedText: text!._yay! } : undefined,
 			actor,
-		);
+		});
 		return saved._nay ? Result({ _nay: saved._nay }) : Result({ _yay: { ...saved._yay, target } });
 	}
 
 	if (prepared.kind === "saved_asset") {
 		const text = prepared.publish ? await readText(prepared.publish.textInputId, "staged") : null;
 		if (text?._nay) return text;
-		const saved = await files_pending_updates_db_save_asset(
+		const saved = await files_pending_updates_db_save_asset({
 			ctx,
-			{
-				...prepared,
-				expectedRevision: prepared.reviewedRevision,
-				operationBatchId: prepared.operationBatchIds[0],
-				reviewedPendingUpdateIds: args.reviewedPendingUpdateIds,
-				reviewRunId: args.reviewRunId,
-				publish: prepared.publish ? { ...prepared.publish, text: text!._yay! } : null,
-			},
+			...prepared,
+			expectedRevision: prepared.reviewedRevision,
+			operationBatchId: prepared.operationBatchIds[0],
+			reviewedPendingUpdateIds: args.reviewedPendingUpdateIds,
+			reviewRunId: args.reviewRunId,
+			publish: prepared.publish ? { ...prepared.publish, text: text!._yay! } : null,
 			actor,
-		);
+		});
 		return saved._nay
 			? saved
 			: Result({ _yay: { target, newSequence: null, pendingUpdateRevision: saved._yay.revision } });
@@ -7743,40 +7814,36 @@ export async function files_pending_updates_db_commit_prepared_content(
 		const unstagedText = prepared.partial ? await readText(prepared.partial.unstagedTextInputId, "unstaged") : null;
 		if (text?._nay) return text;
 		if (unstagedText?._nay) return unstagedText;
-		return await files_pending_updates_db_save_private(
+		return await files_pending_updates_db_save_private({
 			ctx,
-			{
-				...prepared,
-				operationBatchId: prepared.operationBatchIds[0],
-				reviewedPendingUpdateIds: args.reviewedPendingUpdateIds,
-				reviewRunId: args.reviewRunId,
-				shareLinkCleanup: args.shareLinkCleanup,
-				prepared: prepared.prepared ? { ...prepared.prepared, text: text!._yay! } : undefined,
-				partial: prepared.partial ? { family: prepared.partial.family, unstagedText: unstagedText!._yay! } : undefined,
-			},
+			...prepared,
+			operationBatchId: prepared.operationBatchIds[0],
+			reviewedPendingUpdateIds: args.reviewedPendingUpdateIds,
+			reviewRunId: args.reviewRunId,
+			shareLinkCleanup: args.shareLinkCleanup,
+			prepared: prepared.prepared ? { ...prepared.prepared, text: text!._yay! } : undefined,
+			partial: prepared.partial ? { family: prepared.partial.family, unstagedText: unstagedText!._yay! } : undefined,
 			actor,
-		);
+		});
 	}
 
 	const text = prepared.textInputId ? await readText(prepared.textInputId, "staged") : null;
 	if (text?._nay) return text;
 	if (prepared.operationBatchIds.length !== 1) return Result({ _nay: { message: "Invalid Save preparation" } });
 
-	const saved = await files_nodes_content_db_finalize_pending_replacement(
+	const saved = await files_nodes_content_db_finalize_pending_replacement({
 		ctx,
-		{
-			...scope,
-			...prepared,
-			expectedRevision: prepared.reviewedRevision,
-			text: text?._yay,
-		},
-		{
+		...scope,
+		...prepared,
+		expectedRevision: prepared.reviewedRevision,
+		text: text?._yay,
+		actor: {
 			...actor,
 			publicationBatchId: prepared.operationBatchIds[0],
 			reviewedPendingUpdateIds: args.reviewedPendingUpdateIds,
 			reviewRunId: args.reviewRunId,
 		},
-	);
+	});
 	return saved._nay ? saved : Result({ _yay: { target, newSequence: null } });
 }
 
@@ -7895,31 +7962,31 @@ export const save_file_pending_update_in_db = internalMutation({
 		}
 		const actor = await db_get_pending_save_actor(ctx, { membershipId: args.membershipId, userId: userAuth.id });
 		if (actor._nay) return actor;
-		return await files_pending_updates_db_save_yjs(ctx, args, actor._yay);
+		return await files_pending_updates_db_save_yjs({ ctx, ...args, actor: actor._yay });
 	},
 });
 
-async function files_pending_updates_db_save_yjs(
-	ctx: MutationCtx,
-	args: {
-		membershipId: Id<"organizations_workspaces_users">;
-		nodeId: Id<"files_nodes">;
-		pendingUpdateId: Id<"files_pending_updates">;
-		expectedRevision: number;
-		baseYjsSequence: number;
-		baseLineageGeneration: number;
-		expectedYjsLastSequenceId: Id<"files_yjs_docs_last_sequences">;
-		operationBatchId?: Id<"files_pending_update_operation_batches">;
-		reviewedPendingUpdateIds?: ReadonlySet<Id<"files_pending_updates">>;
-		reviewRunId?: Id<"files_pending_update_runs">;
-		trustedStageId?: Id<"files_yjs_trusted_update_stages">;
-		partial?: Infer<typeof files_pending_prepared_state_family_validator> & {
+async function files_pending_updates_db_save_yjs(args: {
+	ctx: MutationCtx;
+	membershipId: Id<"organizations_workspaces_users">;
+	nodeId: Id<"files_nodes">;
+	pendingUpdateId: Id<"files_pending_updates">;
+	expectedRevision: number;
+	baseYjsSequence: number;
+	baseLineageGeneration: number;
+	expectedYjsLastSequenceId: Id<"files_yjs_docs_last_sequences">;
+	operationBatchId?: Id<"files_pending_update_operation_batches">;
+	reviewedPendingUpdateIds?: ReadonlySet<Id<"files_pending_updates">>;
+	reviewRunId?: Id<"files_pending_update_runs">;
+	trustedStageId?: Id<"files_yjs_trusted_update_stages">;
+	partial?: Infer<typeof files_pending_prepared_state_family_validator> & {
 			unstagedText: string;
 			unstagedTextChanged: boolean;
 		};
-	},
-	actor: { userId: Id<"users">; billedUserId: Id<"users">; validatedMedia?: files_pending_media_ValidatedSave },
-) {
+	actor: { userId: Id<"users">; billedUserId: Id<"users">; validatedMedia?: files_pending_media_ValidatedSave };
+}) {
+	const { ctx, actor } = args;
+
 	const userAuth = { id: actor.userId };
 
 	const user = await ctx.db.get("users", userAuth.id);
@@ -8259,7 +8326,10 @@ async function files_pending_updates_db_save_yjs(
 					lastSequenceSaved: nextBaseYjsSequence,
 					updatedAt: now,
 				}),
-				files_db_patch_pending_update(ctx, pendingUpdate._id, {
+				files_db_patch_pending_update({
+					ctx,
+					pendingUpdateId: pendingUpdate._id,
+					value: {
 					revision: pendingUpdate.revision + 1,
 					content: undefined,
 					contentNeedsRebase: undefined,
@@ -8267,6 +8337,7 @@ async function files_pending_updates_db_save_yjs(
 					copiedFrom: undefined,
 					size: 0,
 					updatedAt: now,
+				},
 				}),
 				files_db_retire_pending_update_yjs_states(ctx, {
 					organizationId: membership.organizationId,
@@ -8302,7 +8373,7 @@ async function files_pending_updates_db_save_yjs(
 			files_pending_update_db_delete_chunks(ctx, {
 				pendingUpdateId: pendingUpdate._id,
 			}),
-			files_db_delete_pending_update(ctx, pendingUpdate._id),
+			files_db_delete_pending_update({ ctx, pendingUpdateId: pendingUpdate._id }),
 		]);
 
 		return Result({
@@ -8321,7 +8392,10 @@ async function files_pending_updates_db_save_yjs(
 		return Result({ _nay: { message: "Not found" } });
 	}
 	await Promise.all([
-		files_db_patch_pending_update(ctx, pendingUpdate._id, {
+		files_db_patch_pending_update({
+			ctx,
+			pendingUpdateId: pendingUpdate._id,
+			value: {
 			revision: pendingUpdate.revision + 1,
 			content: {
 				base: { kind: "yjs", sequence: nextBaseYjsSequence, lineageGeneration: args.baseLineageGeneration },
@@ -8332,6 +8406,7 @@ async function files_pending_updates_db_save_yjs(
 			copiedFrom: undefined,
 			...(partial.unstagedTextChanged ? { size: files_get_utf8_byte_size(partial.unstagedText) } : {}),
 			updatedAt: now,
+		},
 		}),
 		files_pending_update_upsert_last_sequence_saved(ctx, {
 			organizationId: membership.organizationId,
@@ -8438,26 +8513,26 @@ export const save_file_pending_update_non_collaborative_in_db = internalMutation
 		}
 		const actor = await db_get_pending_save_actor(ctx, { membershipId: args.membershipId, userId: userAuth.id });
 		if (actor._nay) return actor;
-		return await files_pending_updates_db_save_asset(ctx, args, actor._yay);
+		return await files_pending_updates_db_save_asset({ ctx, ...args, actor: actor._yay });
 	},
 });
 
-async function files_pending_updates_db_save_asset(
-	ctx: MutationCtx,
-	args: {
-		membershipId: Id<"organizations_workspaces_users">;
-		nodeId: Id<"files_nodes">;
-		pendingUpdateId: Id<"files_pending_updates">;
-		expectedRevision: number;
-		operationBatchId?: Id<"files_pending_update_operation_batches">;
-		reviewedPendingUpdateIds?: ReadonlySet<Id<"files_pending_updates">>;
-		reviewRunId?: Id<"files_pending_update_runs">;
-		publish: { text: string; textSize: number; versionSnapshotAssetId: Id<"files_r2_assets"> } | null;
-		partial?: Infer<typeof files_pending_prepared_state_family_validator>;
-		unchanged?: true;
-	},
-	actor: { userId: Id<"users">; billedUserId: Id<"users">; validatedMedia?: files_pending_media_ValidatedSave },
-) {
+async function files_pending_updates_db_save_asset(args: {
+	ctx: MutationCtx;
+	membershipId: Id<"organizations_workspaces_users">;
+	nodeId: Id<"files_nodes">;
+	pendingUpdateId: Id<"files_pending_updates">;
+	expectedRevision: number;
+	operationBatchId?: Id<"files_pending_update_operation_batches">;
+	reviewedPendingUpdateIds?: ReadonlySet<Id<"files_pending_updates">>;
+	reviewRunId?: Id<"files_pending_update_runs">;
+	publish: { text: string; textSize: number; versionSnapshotAssetId: Id<"files_r2_assets"> } | null;
+	partial?: Infer<typeof files_pending_prepared_state_family_validator>;
+	unchanged?: true;
+	actor: { userId: Id<"users">; billedUserId: Id<"users">; validatedMedia?: files_pending_media_ValidatedSave };
+}) {
+	const { ctx, actor } = args;
+
 	const userAuth = { id: actor.userId };
 
 	const user = await ctx.db.get("users", userAuth.id);
@@ -8730,7 +8805,10 @@ async function files_pending_updates_db_save_asset(
 		if (pendingUpdate.pendingMove) {
 			// Save publishes the content only; the move proposal survives as a move-only doc.
 			await Promise.all([
-				files_db_patch_pending_update(ctx, pendingUpdate._id, {
+				files_db_patch_pending_update({
+					ctx,
+					pendingUpdateId: pendingUpdate._id,
+					value: {
 					revision: pendingUpdate.revision + 1,
 					content: undefined,
 					contentNeedsRebase: undefined,
@@ -8738,6 +8816,7 @@ async function files_pending_updates_db_save_asset(
 					copiedFrom: undefined,
 					size: 0,
 					updatedAt: now,
+				},
 				}),
 				files_db_retire_pending_update_yjs_states(ctx, {
 					organizationId: membership.organizationId,
@@ -8761,7 +8840,7 @@ async function files_pending_updates_db_save_asset(
 			files_pending_update_db_delete_chunks(ctx, {
 				pendingUpdateId: pendingUpdate._id,
 			}),
-			files_db_delete_pending_update(ctx, pendingUpdate._id),
+			files_db_delete_pending_update({ ctx, pendingUpdateId: pendingUpdate._id }),
 		]);
 
 		return Result({ _yay: { revision: null } });
@@ -8775,7 +8854,10 @@ async function files_pending_updates_db_save_asset(
 		return Result({ _nay: { message: "Not found" } });
 	}
 	await Promise.all([
-		files_db_patch_pending_update(ctx, pendingUpdate._id, {
+		files_db_patch_pending_update({
+			ctx,
+			pendingUpdateId: pendingUpdate._id,
+			value: {
 			revision: pendingUpdate.revision + 1,
 			content: {
 				base: { kind: "asset", assetId: args.publish ? args.publish.versionSnapshotAssetId : content.base.assetId },
@@ -8785,6 +8867,7 @@ async function files_pending_updates_db_save_asset(
 			},
 			copiedFrom: undefined,
 			updatedAt: now,
+		},
 		}),
 		files_pending_update_db_update_index_revision(ctx, {
 			pendingUpdateId: pendingUpdate._id,
@@ -9416,32 +9499,33 @@ export const save_private_file_pending_update_in_db = internalMutation({
 		if (!membership?.active) return Result({ _nay: { message: "Unauthorized" } });
 		const actor = await db_get_pending_save_actor(ctx, { membershipId: args.membershipId, userId: membership.userId });
 		if (actor._nay) return actor;
-		return await files_pending_updates_db_save_private(
+		return await files_pending_updates_db_save_private({
 			ctx,
-			{ ...args, shareLinkCleanup: files_share_links_create_cleanup_state() },
-			actor._yay,
-		);
+			...args,
+			shareLinkCleanup: files_share_links_create_cleanup_state(),
+			actor: actor._yay,
+		});
 	},
 });
 
-async function files_pending_updates_db_save_private(
-	ctx: MutationCtx,
-	args: {
-		membershipId: Id<"organizations_workspaces_users">;
-		privateNodeId: Id<"files_pending_nodes">;
-		pendingUpdateId: Id<"files_pending_updates">;
-		reviewedRevision: number;
-		creationGeneration: number;
-		structuralRevision: number;
-		reviewedPendingUpdateIds?: Set<Id<"files_pending_updates">>;
-		reviewRunId?: Id<"files_pending_update_runs">;
-		operationBatchId?: Id<"files_pending_update_operation_batches">;
-		prepared?: { text: string; contentAssetId: Id<"files_r2_assets">; yjsSnapshotAssetId?: Id<"files_r2_assets"> };
-		partial?: { family: Infer<typeof files_pending_prepared_state_family_validator>; unstagedText: string };
-		shareLinkCleanup: files_share_links_CleanupState;
-	},
-	actor: { userId: Id<"users">; billedUserId: Id<"users">; validatedMedia?: files_pending_media_ValidatedSave },
-) {
+async function files_pending_updates_db_save_private(args: {
+	ctx: MutationCtx;
+	membershipId: Id<"organizations_workspaces_users">;
+	privateNodeId: Id<"files_pending_nodes">;
+	pendingUpdateId: Id<"files_pending_updates">;
+	reviewedRevision: number;
+	creationGeneration: number;
+	structuralRevision: number;
+	reviewedPendingUpdateIds?: Set<Id<"files_pending_updates">>;
+	reviewRunId?: Id<"files_pending_update_runs">;
+	operationBatchId?: Id<"files_pending_update_operation_batches">;
+	prepared?: { text: string; contentAssetId: Id<"files_r2_assets">; yjsSnapshotAssetId?: Id<"files_r2_assets"> };
+	partial?: { family: Infer<typeof files_pending_prepared_state_family_validator>; unstagedText: string };
+	shareLinkCleanup: files_share_links_CleanupState;
+	actor: { userId: Id<"users">; billedUserId: Id<"users">; validatedMedia?: files_pending_media_ValidatedSave };
+}) {
+	const { ctx, actor } = args;
+
 	const membership = await organizations_db_get_membership(ctx, {
 		membershipId: args.membershipId,
 		userId: actor.userId,
@@ -9608,7 +9692,10 @@ async function files_pending_updates_db_save_private(
 			});
 		}
 
-		await files_db_patch_pending_update(ctx, pendingUpdate._id, {
+		await files_db_patch_pending_update({
+			ctx,
+			pendingUpdateId: pendingUpdate._id,
+			value: {
 			target: published._yay.target,
 			revision: pendingUpdate.revision + 1,
 			createIntent: undefined,
@@ -9622,6 +9709,7 @@ async function files_pending_updates_db_save_private(
 			},
 			size: files_get_utf8_byte_size(args.partial.unstagedText),
 			updatedAt: now,
+		},
 		});
 
 		const chunks = await files_pending_update_db_replace_chunks(ctx, {
@@ -9639,7 +9727,7 @@ async function files_pending_updates_db_save_private(
 	} else {
 		await files_db_retire_pending_update_yjs_states(ctx, { ...scope, pendingUpdateId: pendingUpdate._id });
 		await files_pending_update_db_delete_chunks(ctx, { pendingUpdateId: pendingUpdate._id });
-		await files_db_delete_pending_update(ctx, pendingUpdate._id);
+		await files_db_delete_pending_update({ ctx, pendingUpdateId: pendingUpdate._id });
 		if (args.operationBatchId)
 			await files_db_expire_pending_update_operation_batch(ctx, { operationBatchId: args.operationBatchId });
 	}
@@ -9653,19 +9741,19 @@ async function files_pending_updates_db_save_private(
 	});
 }
 
-async function action_save_private_file_pending_update(
-	ctx: ActionCtx,
-	args: {
-		membershipId: Id<"organizations_workspaces_users">;
-		target: Extract<files_PendingTarget, { kind: "private" }>;
-		pendingUpdateId: Id<"files_pending_updates">;
-		reviewedRevision: number;
-		billedUserId: Id<"users">;
-		selectedContentStateId: Id<"files_pending_update_yjs_states"> | null;
-		reviewedPrivateParentIds: Id<"files_pending_nodes">[];
-	},
-	data: NonNullable<get_file_pending_target_Result> & { entry: Extract<files_VisibleEntry, { kind: "private" }> },
-): Promise<files_pending_updates_PrepareContentResult> {
+async function action_save_private_file_pending_update(args: {
+	ctx: ActionCtx;
+	membershipId: Id<"organizations_workspaces_users">;
+	target: Extract<files_PendingTarget, { kind: "private" }>;
+	pendingUpdateId: Id<"files_pending_updates">;
+	reviewedRevision: number;
+	billedUserId: Id<"users">;
+	selectedContentStateId: Id<"files_pending_update_yjs_states"> | null;
+	reviewedPrivateParentIds: Id<"files_pending_nodes">[];
+	data: NonNullable<get_file_pending_target_Result> & { entry: Extract<files_VisibleEntry, { kind: "private" }> };
+}): Promise<files_pending_updates_PrepareContentResult> {
+	const { ctx, data } = args;
+
 	const { node, pendingUpdate } = data.entry;
 	if (pendingUpdate._id !== args.pendingUpdateId) return Result({ _nay: { message: "Not found" } });
 	if (pendingUpdate.revision !== args.reviewedRevision)
@@ -9724,7 +9812,8 @@ async function action_save_private_file_pending_update(
 
 			if (stagedText._yay !== unstagedText._yay) {
 				// Keep the staged state's CRDT IDs as the saved snapshot and the residual base.
-				const family = await files_pending_updates_action_stage_private_state_family(ctx, {
+				const family = await files_pending_updates_action_stage_private_state_family({
+					ctx,
 					...scope,
 					operationBatchId,
 					base: files_u8_to_array_buffer(staged._yay),
@@ -9964,11 +10053,14 @@ export async function files_pending_updates_action_prepare_content(
 	if (args.target.kind === "private") {
 		const data = scope._yay.view;
 		if (!data || data.entry.kind !== "private") return Result({ _nay: { message: "Not found" } });
-		return await action_save_private_file_pending_update(
+		return await action_save_private_file_pending_update({
 			ctx,
-			{ ...args, target: args.target, billedUserId, selectedContentStateId },
-			{ ...data, entry: data.entry },
-		);
+			...args,
+			target: args.target,
+			billedUserId,
+			selectedContentStateId,
+			data: { ...data, entry: data.entry },
+		});
 	}
 	const nodeId = args.target.id;
 	if (scope._yay.view.entry.pendingUpdate?.pendingReplacement) {

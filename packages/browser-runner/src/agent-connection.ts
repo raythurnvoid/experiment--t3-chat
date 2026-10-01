@@ -619,7 +619,7 @@ export class AgentConnection {
 		const allowedScope = sessionId
 			? !!session && (session.kind !== "worker" || WORKER_METHODS.has(method))
 			: ROOT_METHODS.has(method);
-		if (!fields || !allowedScope || !shape(params, fields) || !this.allowed_params(method, params, session)) {
+		if (!fields || !allowedScope || !shape(params, fields) || !this.allowed_params({ method, params, session })) {
 			this.reply({
 				id: message.id,
 				...(sessionId ? { sessionId } : {}),
@@ -675,7 +675,13 @@ export class AgentConnection {
 		this.send(message.id, { method, params: forwarded, sessionId, source: "child" });
 	}
 
-	private allowed_params(method: string, params: Params, session: Session | undefined) {
+	private allowed_params(args: {
+		method: string;
+		params: Params;
+		session: Session | undefined;
+	}) {
+		const { method, params, session } = args;
+
 		if (method === "Browser.getWindowForTarget" || method === "Target.getTargetInfo") {
 			if (params.targetId !== undefined && params.targetId !== this.input.targetId) return false;
 		}
@@ -703,7 +709,7 @@ export class AgentConnection {
 			this.pending.set(id, request);
 		}
 		const session = request.sessionId ? this.sessions.get(request.sessionId) : undefined;
-		if (session && request.source === "child") this.track_input(request.method, request.params, session);
+		if (session && request.source === "child") this.track_input({ method: request.method, params: request.params, session });
 		if (this.unsafeReason) return;
 		try {
 			this.input.upstream.send(
@@ -719,7 +725,13 @@ export class AgentConnection {
 		}
 	}
 
-	private track_input(method: string, params: Params, session: Session) {
+	private track_input(args: {
+		method: string;
+		params: Params;
+		session: Session;
+	}) {
+		const { method, params, session } = args;
+
 		if (method === "Input.dispatchKeyEvent") {
 			const key = `${String(params.code ?? "")}:${String(params.key ?? "")}`;
 			if (params.type === "keyUp") session.keys.delete(key);

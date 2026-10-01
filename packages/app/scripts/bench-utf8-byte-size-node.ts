@@ -113,7 +113,8 @@ const implementations = [
 	{ name: "TextEncoder.encodeInto", getByteSize: create_text_encoder_encode_into_byte_size() },
 ] satisfies ByteSizeImplementation[];
 
-function run_for_duration(implementation: ByteSizeImplementation, content: string, durationMs: number) {
+function run_for_duration(args: { implementation: ByteSizeImplementation; content: string; durationMs: number }) {
+	const { implementation, content, durationMs } = args;
 	let iterations = 0;
 	let checksum = 0;
 	const startedAt = performance.now();
@@ -133,17 +134,18 @@ function median(values: number[]) {
 	return sortedValues[Math.floor(sortedValues.length / 2)] ?? 0;
 }
 
-function benchmark_implementation(implementation: ByteSizeImplementation, content: string, expectedBytes: number) {
+function benchmark_implementation(args: { implementation: ByteSizeImplementation; content: string; expectedBytes: number }) {
+	const { implementation, content, expectedBytes } = args;
 	const actualBytes = implementation.getByteSize(content);
 	if (actualBytes !== expectedBytes) {
 		throw new Error(`${implementation.name} returned ${actualBytes} bytes, expected ${expectedBytes}`);
 	}
 
-	run_for_duration(implementation, content, WARMUP_DURATION_MS);
+	run_for_duration({ implementation, content, durationMs: WARMUP_DURATION_MS });
 
 	const mbPerSecondSamples = [];
 	for (let sampleIndex = 0; sampleIndex < SAMPLE_COUNT; sampleIndex++) {
-		const result = run_for_duration(implementation, content, SAMPLE_DURATION_MS);
+		const result = run_for_duration({ implementation, content, durationMs: SAMPLE_DURATION_MS });
 		if (result.checksum === 0 && expectedBytes !== 0) {
 			throw new Error(`${implementation.name} produced an impossible checksum`);
 		}
@@ -161,7 +163,7 @@ for (const corpusSeed of corpusSeeds) {
 		const expectedBytes = Buffer.byteLength(content, "utf8");
 		const results = implementations.map((implementation) => ({
 			implementation: implementation.name,
-			mbPerSecond: benchmark_implementation(implementation, content, expectedBytes),
+			mbPerSecond: benchmark_implementation({ implementation, content, expectedBytes }),
 		}));
 		const customMbPerSecond = results.find((result) => result.implementation === "custom loop")?.mbPerSecond ?? 0;
 

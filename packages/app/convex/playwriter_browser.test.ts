@@ -100,11 +100,13 @@ function runtime(
 	};
 }
 
-function completed_lease(
-	connection: Doc<"playwriter_connections">,
-	navRevision = connection.navRevision,
-	targetRevision = connection.targetRevision,
-) {
+function completed_lease(args: {
+	connection: Doc<"playwriter_connections">;
+	navRevision?: number;
+	targetRevision?: number;
+}) {
+	const { connection, navRevision = connection.navRevision, targetRevision = connection.targetRevision } = args;
+
 	return {
 		generation: connection.connectionGeneration,
 		controlRevision: connection.controlRevision,
@@ -124,11 +126,11 @@ async function connection(f: Awaited<ReturnType<typeof fixture>>, ready = true) 
 	});
 	if (prepared._nay) throw new Error(prepared._nay.message);
 	const doc = prepared._yay.connection;
-	const encrypted = await crypto_encrypt_secret_value(
-		"a".repeat(32),
-		JSON.stringify(["playwriter-share", doc._id, doc.ownerId, doc.organizationId, doc.workspaceId]),
-		"BROWSER_REMOTE_SECRETS_ENCRYPTION_KEY",
-	);
+	const encrypted = await crypto_encrypt_secret_value({
+		value: "a".repeat(32),
+		additionalData: JSON.stringify(["playwriter-share", doc._id, doc.ownerId, doc.organizationId, doc.workspaceId]),
+		keyName: "BROWSER_REMOTE_SECRETS_ENCRYPTION_KEY",
+	});
 	await f.t.mutation(internal.playwriter_browser.store_credential, {
 		connectionId: doc._id,
 		attemptId: doc.connectAttemptId,
@@ -496,7 +498,7 @@ describe("commit_runtime", () => {
 			result: { status: "succeeded", reason: null },
 			fenced: true,
 			runtime: runtime(running),
-			completedLease: completed_lease(running),
+			completedLease: completed_lease({ connection: running }),
 		});
 		vi.mocked(fetch).mockResolvedValue(
 			Response.json({
@@ -1473,7 +1475,7 @@ describe("reconnect_connection", () => {
 				result: { status: "succeeded", reason: null },
 				fenced: true,
 				runtime: { ...runtime(running), selectionRevision: c.browserIntent.selectionRevision },
-				completedLease: completed_lease(running),
+				completedLease: completed_lease({ connection: running }),
 			}),
 		).toBe(true);
 		const previous = (await f.t.run((ctx) => ctx.db.get("playwriter_connections", c.saved._id)))!;
@@ -1564,7 +1566,7 @@ describe("reconnect_connection", () => {
 						selectionRevision: c.browserIntent.selectionRevision,
 						idleExpiresAt: Math.min(running.idleExpiresAt, running.totalExpiresAt!),
 					},
-					completedLease: completed_lease(running),
+					completedLease: completed_lease({ connection: running }),
 				}),
 			).toBe(true);
 		}
@@ -1864,9 +1866,9 @@ describe("disconnect_connection", () => {
 		const f = await fixture();
 		const c = await connection(f);
 		await f.t.run(async (ctx) => {
-			await playwriter_browser_db_disconnect(ctx, c.saved, "disconnected");
+			await playwriter_browser_db_disconnect({ ctx, connection: c.saved, reason: "disconnected" });
 			const current = await ctx.db.get("playwriter_connections", c.saved._id);
-			await playwriter_browser_db_disconnect(ctx, current!, "disconnected");
+			await playwriter_browser_db_disconnect({ ctx, connection: current!, reason: "disconnected" });
 		});
 		expect(await f.t.run((ctx) => ctx.db.query("playwriter_connection_cleanups").collect())).toHaveLength(1);
 	});
@@ -1876,7 +1878,7 @@ describe("process_cleanups", () => {
 	test.each([true, false])("the authenticated forgotten-scope proof completes cleanup: forget %s", async (forget) => {
 		const f = await fixture();
 		const c = await connection(f);
-		if (forget) await f.t.run((ctx) => playwriter_browser_db_disconnect(ctx, c.saved, "connect_again"));
+		if (forget) await f.t.run((ctx) => playwriter_browser_db_disconnect({ ctx, connection: c.saved, reason: "connect_again" }));
 		else
 			await f.t.mutation(internal.playwriter_browser.retire_session, {
 				source: f.source,
@@ -1904,7 +1906,7 @@ describe("process_cleanups", () => {
 	test("a normal runtime reply cannot prove credential Forget", async () => {
 		const f = await fixture();
 		const c = await connection(f);
-		await f.t.run((ctx) => playwriter_browser_db_disconnect(ctx, c.saved, "connect_again"));
+		await f.t.run((ctx) => playwriter_browser_db_disconnect({ ctx, connection: c.saved, reason: "connect_again" }));
 		vi.mocked(fetch).mockResolvedValue(
 			Response.json({
 				ok: true,
@@ -1926,7 +1928,7 @@ describe("process_cleanups", () => {
 		async (code) => {
 			const f = await fixture();
 			const c = await connection(f);
-			await f.t.run((ctx) => playwriter_browser_db_disconnect(ctx, c.saved, "connect_again"));
+			await f.t.run((ctx) => playwriter_browser_db_disconnect({ ctx, connection: c.saved, reason: "connect_again" }));
 			vi.mocked(fetch).mockResolvedValue(
 				Response.json({ ok: false, error: { code, message: "fixed refusal" } }, { status: 409 }),
 			);
@@ -2124,7 +2126,7 @@ describe("reserve_command", () => {
 				identity: saved.unresolvedCommand!,
 				result: { status: "succeeded", reason: null },
 				runtime: runtime(saved),
-				completedLease: completed_lease(saved),
+				completedLease: completed_lease({ connection: saved }),
 				fenced: true,
 			}),
 		).toBe(true);
@@ -2233,7 +2235,7 @@ describe("finish_command", () => {
 					identity: running.unresolvedCommand!,
 					result: { status: "succeeded", reason: null },
 					runtime: { ...runtime(running), navRevision },
-					completedLease: completed_lease(running, navRevision),
+					completedLease: completed_lease({ connection: running, navRevision }),
 					fenced: true,
 				}),
 			).toBe(true);
@@ -2324,7 +2326,7 @@ describe("finish_command", () => {
 				result: { status: "succeeded", reason: null },
 				fenced: true,
 				runtime: { ...runtime(saved), navRevision: 2, targetRevision: 3 },
-				completedLease: completed_lease(saved, 1, 2),
+				completedLease: completed_lease({ connection: saved, navRevision: 1, targetRevision: 2 }),
 			}),
 		).toBe(true);
 		const receipt = await f.t.run((ctx) =>
@@ -2377,7 +2379,7 @@ describe("finish_command", () => {
 				identity: saved.unresolvedCommand!,
 				result: { status: "succeeded", reason: null },
 				runtime: runtime(saved),
-				completedLease: completed_lease(saved),
+				completedLease: completed_lease({ connection: saved }),
 				fenced: true,
 			}),
 		).toBe(true);

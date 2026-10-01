@@ -63,7 +63,13 @@ async function fixture(personal = false) {
 	const workspaces = captured._yay;
 	const agentSource = { ...db, threadId: thread._yay.threadId, membershipLifetime: workspaces.membershipLifetime };
 	const scope = { source: agentSource };
-	async function create(path: string, textContent: string, workspace: "current" | "personal" = "current") {
+	async function create(args: {
+		path: string;
+		textContent: string;
+		workspace?: "current" | "personal";
+	}) {
+		const { workspace = "current", path, textContent} = args;
+
 		return await test_create_saved_text_file(t, {
 			membershipId: workspaces[workspace].membershipId,
 			path,
@@ -125,11 +131,13 @@ async function fixture(personal = false) {
 		};
 	}
 
-	async function move(
-		nodeId: Id<"files_nodes">,
-		destParentId: Id<"files_nodes"> | typeof files_ROOT_ID,
-		destName: string,
-	) {
+	async function move(args: {
+		nodeId: Id<"files_nodes">;
+		destParentId: Id<"files_nodes"> | typeof files_ROOT_ID;
+		destName: string;
+	}) {
+		const { nodeId, destParentId, destName} = args;
+
 		const moved = await t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
@@ -156,12 +164,12 @@ const skillText = "---\nname: example\ndescription: Saved description\n---\nSKIL
 describe("discover_sources", () => {
 	test("discovers both roots but no third workspace or another user's home", async () => {
 		const f = await fixture();
-		await f.create("/.agents/skills/example/SKILL.md", skillText);
-		await f.create(
-			"/.agents/skills/example/SKILL.md",
-			skillText.replace("Saved description", "Home description"),
-			"personal",
-		);
+		await f.create({ path: "/.agents/skills/example/SKILL.md", textContent: skillText });
+		await f.create({
+			path: "/.agents/skills/example/SKILL.md",
+			textContent: skillText.replace("Saved description", "Home description"),
+			workspace: "personal",
+		});
 		const third = await f.t.run((ctx) =>
 			test_mocks_fill_db_with.membership(ctx, { userId: f.db.userId, organizationName: "third-team" }),
 		);
@@ -191,8 +199,8 @@ describe("discover_sources", () => {
 
 	test("scans personal home once when it is also current", async () => {
 		const f = await fixture(true);
-		await f.create("/.agents/skills/example/SKILL.md", skillText);
-		await f.create("/AGENTS.md", "ONE_HOME_RULE");
+		await f.create({ path: "/.agents/skills/example/SKILL.md", textContent: skillText });
+		await f.create({ path: "/AGENTS.md", textContent: "ONE_HOME_RULE" });
 		const found = await f.t.query(internal.ai_chat_context.discover_sources, f.scope);
 		expect(found._yay?.workspaces).toHaveLength(1);
 		expect(found._yay?.skills).toEqual([{ workspace: "current", path: "/.agents/skills/example/SKILL.md" }]);
@@ -234,7 +242,7 @@ describe("discover_sources", () => {
 	test("uses one twenty-page scan budget across both roots", async () => {
 		const f = await fixture();
 		for (const workspace of ["current", "personal"] as const) {
-			const nodeId = await f.create("/.agents/skills/example/noise-0000.md", "Not a skill", workspace);
+			const nodeId = await f.create({ path: "/.agents/skills/example/noise-0000.md", textContent: "Not a skill", workspace });
 			// Clone a valid file header: discovery reads paths, not these noise files' content.
 			await f.t.run(async (ctx) => {
 				const node = (await ctx.db.get("files_nodes", nodeId))!;
@@ -245,7 +253,11 @@ describe("discover_sources", () => {
 					await ctx.db.insert("files_nodes", { ...fields, name, path, treePath: path });
 				}
 			});
-			await f.create("/.agents/skills/z-late/SKILL.md", "---\nname: z-late\ndescription: Late\n---\n", workspace);
+			await f.create({
+				path: "/.agents/skills/z-late/SKILL.md",
+				textContent: "---\nname: z-late\ndescription: Late\n---\n",
+				workspace,
+			});
 		}
 		const found = await f.t.query(internal.ai_chat_context.discover_sources, f.scope);
 		expect(found._yay?.skills).toEqual([]);
@@ -254,10 +266,10 @@ describe("discover_sources", () => {
 
 	test("discovers exact skill paths without scanning nested instructions or resources", async () => {
 		const f = await fixture();
-		await f.create("/.agents/skills/example/SKILL.md", skillText);
-		await f.create("/elsewhere/SKILL.md", skillText);
-		await f.create("/.agents/skills/example/references/details.md", "RESOURCE_BODY");
-		await f.create("/invoices/AGENTS.md", "SIBLING_BODY");
+		await f.create({ path: "/.agents/skills/example/SKILL.md", textContent: skillText });
+		await f.create({ path: "/elsewhere/SKILL.md", textContent: skillText });
+		await f.create({ path: "/.agents/skills/example/references/details.md", textContent: "RESOURCE_BODY" });
+		await f.create({ path: "/invoices/AGENTS.md", textContent: "SIBLING_BODY" });
 		expect((await f.t.query(internal.ai_chat_context.discover_sources, f.scope))._yay?.skills).toEqual([
 			{ workspace: "current", path: "/.agents/skills/example/SKILL.md" },
 		]);
@@ -267,9 +279,9 @@ describe("discover_sources", () => {
 
 	test("finds an ordinary file renamed to SKILL.md before save", async () => {
 		const f = await fixture();
-		const nodeId = await f.create("/.agents/skills/example/draft.md", skillText);
+		const nodeId = await f.create({ path: "/.agents/skills/example/draft.md", textContent: skillText });
 		const node = await f.t.run((ctx) => ctx.db.get("files_nodes", nodeId));
-		await f.move(nodeId, node!.parentId, "SKILL.md");
+		await f.move({ nodeId, destParentId: node!.parentId, destName: "SKILL.md" });
 		expect((await f.t.query(internal.ai_chat_context.discover_sources, f.scope))._yay?.skills).toEqual([
 			{ workspace: "current", path: "/.agents/skills/example/SKILL.md" },
 		]);
@@ -278,12 +290,12 @@ describe("discover_sources", () => {
 
 	test("projects skills when their parent folder moves into the catalog", async () => {
 		const f = await fixture();
-		const nodeId = await f.create("/outside/example/SKILL.md", skillText);
-		const anchor = await f.create("/.agents/skills/anchor.txt", "anchor");
+		const nodeId = await f.create({ path: "/outside/example/SKILL.md", textContent: skillText });
+		const anchor = await f.create({ path: "/.agents/skills/anchor.txt", textContent: "anchor" });
 		const [node, root] = await f.t.run(async (ctx) =>
 			Promise.all([ctx.db.get("files_nodes", nodeId), ctx.db.get("files_nodes", anchor)]),
 		);
-		await f.move(node!.parentId as Id<"files_nodes">, root!.parentId, "example");
+		await f.move({ nodeId: node!.parentId as Id<"files_nodes">, destParentId: root!.parentId, destName: "example" });
 		expect((await f.t.query(internal.ai_chat_context.discover_sources, f.scope))._yay?.skills).toEqual([
 			{ workspace: "current", path: "/.agents/skills/example/SKILL.md" },
 		]);
@@ -292,8 +304,8 @@ describe("discover_sources", () => {
 
 	test("hides pending deletes and does not apply another user's pending move", async () => {
 		const f = await fixture();
-		const nodeId = await f.create("/.agents/skills/example/SKILL.md", skillText);
-		await f.move(nodeId, files_ROOT_ID, "other.md");
+		const nodeId = await f.create({ path: "/.agents/skills/example/SKILL.md", textContent: skillText });
+		await f.move({ nodeId, destParentId: files_ROOT_ID, destName: "other.md" });
 		expect((await f.t.query(internal.ai_chat_context.discover_sources, f.scope))._yay?.skills).toEqual([]);
 		const second = await f.member(true);
 		expect((await f.t.query(internal.ai_chat_context.discover_sources, second))._yay?.skills).toEqual([
@@ -324,7 +336,7 @@ describe("discover_sources", () => {
 
 	test("does not let an organization owner use another person's chat as the source", async () => {
 		const f = await fixture();
-		await f.create("/.agents/skills/example/SKILL.md", skillText, "personal");
+		await f.create({ path: "/.agents/skills/example/SKILL.md", textContent: skillText, workspace: "personal" });
 		const other = await f.member(true);
 		expect((await f.t.query(internal.ai_chat_context.discover_sources, f.scope))._yay?.skills).toHaveLength(1);
 		const found = await f.t.query(internal.ai_chat_context.discover_sources, {
@@ -336,8 +348,8 @@ describe("discover_sources", () => {
 
 	test("filters restricted file paths before exposing names or invalid-source warnings", async () => {
 		const f = await fixture();
-		const secret = await f.create("/.agents/skills/secret/SKILL.md", "PRIVATE_INVALID");
-		await f.create("/.agents/skills/example/SKILL.md", skillText);
+		const secret = await f.create({ path: "/.agents/skills/secret/SKILL.md", textContent: "PRIVATE_INVALID" });
+		await f.create({ path: "/.agents/skills/example/SKILL.md", textContent: skillText });
 		await f.t.run((ctx) => ctx.db.patch("files_nodes", secret, { restrictedScopeNodeId: secret }));
 		const second = await f.member(true);
 		const found = await f.t.query(internal.ai_chat_context.discover_sources, second);
@@ -350,11 +362,11 @@ describe("discover_sources", () => {
 		vi.spyOn(RateLimiter.prototype, "limit").mockResolvedValue({ ok: true, retryAfter: 0 });
 		const f = await fixture();
 		for (let index = 0; index < 101; index++) {
-			await f.create(
-				`/.agents/skills/skill-${index}/SKILL.md`,
-				`---\nname: skill-${index}\ndescription: Skill\n---\n`,
-				index < 60 ? "current" : "personal",
-			);
+			await f.create({
+				path: `/.agents/skills/skill-${index}/SKILL.md`,
+				textContent: `---\nname: skill-${index}\ndescription: Skill\n---\n`,
+				workspace: index < 60 ? "current" : "personal",
+			});
 		}
 		const found = await f.t.query(internal.ai_chat_context.discover_sources, f.scope);
 		expect(found._yay?.skills).toHaveLength(100);
@@ -367,7 +379,7 @@ describe("discover_sources", () => {
 describe("ai_chat_context_create", () => {
 	test("uses pending skill text through the same reader as normal files", async () => {
 		const f = await fixture();
-		const nodeId = await f.create("/.agents/skills/example/SKILL.md", skillText);
+		const nodeId = await f.create({ path: "/.agents/skills/example/SKILL.md", textContent: skillText });
 		const written = await f.t.action((ctx) =>
 			files_agent_write_file_text(ctx, {
 				agentSource: f.agentSource,
@@ -419,9 +431,9 @@ describe("ai_chat_context_create", () => {
 
 	test("loads pending root instructions and only current visible ancestors", async () => {
 		const f = await fixture();
-		const rootId = await f.create("/AGENTS.md", "SAVED_ROOT\n");
-		const nestedId = await f.create("/old/AGENTS.md", "NESTED_RULE\n");
-		await f.create("/invoices/AGENTS.md", "SIBLING_RULE\n");
+		const rootId = await f.create({ path: "/AGENTS.md", textContent: "SAVED_ROOT\n" });
+		const nestedId = await f.create({ path: "/old/AGENTS.md", textContent: "NESTED_RULE\n" });
+		await f.create({ path: "/invoices/AGENTS.md", textContent: "SIBLING_RULE\n" });
 		const written = await f.t.action((ctx) =>
 			files_agent_write_file_text(ctx, {
 				agentSource: f.agentSource,
@@ -434,18 +446,26 @@ describe("ai_chat_context_create", () => {
 		);
 		expect(written._nay).toBeUndefined();
 		const nested = await f.t.run((ctx) => ctx.db.get("files_nodes", nestedId));
-		await f.move(nested!.parentId as Id<"files_nodes">, files_ROOT_ID, "new");
+		await f.move({ nodeId: nested!.parentId as Id<"files_nodes">, destParentId: files_ROOT_ID, destName: "new" });
 		const result = await f.t.action(async (ctx) => {
 			const created = await ai_chat_context_create(ctx, f.scope);
 			if (created._nay) throw new Error(created._nay.message);
 			return {
 				system: created._yay.system,
-				old: await ai_chat_context_read_instructions(ctx, created._yay.context, [
+				old: await ai_chat_context_read_instructions({
+					ctx,
+					context: created._yay.context,
+					paths: [
 					{ workspace: "current", path: "/old/file.md" },
-				]),
-				current: await ai_chat_context_read_instructions(ctx, created._yay.context, [
+				],
+				}),
+				current: await ai_chat_context_read_instructions({
+					ctx,
+					context: created._yay.context,
+					paths: [
 					{ workspace: "current", path: "/new/file.md" },
-				]),
+				],
+				}),
 			};
 		});
 		expect(result.system).toContain("PENDING_ROOT");

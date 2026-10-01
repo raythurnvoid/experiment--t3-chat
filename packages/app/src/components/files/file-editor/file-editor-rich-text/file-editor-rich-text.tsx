@@ -627,7 +627,9 @@ const FileEditorRichTextBubble = memo(function FileEditorRichTextBubble(props: F
 			editor.on("selectionUpdate", handleSelectionUpdate);
 
 			// Clear the pointer gate on lift, cancel, or blur.
-			const clearPointerSelectingEndListeners = global_event_listen_all(["pointerup", "pointercancel", "blur"], () => {
+			const clearPointerSelectingEndListeners = global_event_listen_all({
+				events: ["pointerup", "pointercancel", "blur"],
+				handler: () => {
 				const wasSelecting = isPointerSelectingRef.current;
 				isPointerSelectingRef.current = false;
 
@@ -635,12 +637,13 @@ const FileEditorRichTextBubble = memo(function FileEditorRichTextBubble(props: F
 				if (wasSelecting) {
 					bubbleMenuReevaluateVisibility(editor);
 				}
+			},
 			});
 
 			// Track editor pointer gestures.
-			const clearEventListeners = global_event_listen_all(
-				["keydown", "pointerdown"],
-				(event) => {
+			const clearEventListeners = global_event_listen_all({
+				events: ["keydown", "pointerdown"],
+				handler: (event) => {
 					if (
 						event.type === "pointerdown" &&
 						event instanceof PointerEvent &&
@@ -698,8 +701,8 @@ const FileEditorRichTextBubble = memo(function FileEditorRichTextBubble(props: F
 						}
 					}
 				},
-				{ capture: true },
-			);
+				options: { capture: true },
+			});
 
 			return () => {
 				clearPointerSelectingEndListeners();

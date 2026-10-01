@@ -96,17 +96,17 @@ const gallery_manifest_base = {
 	],
 };
 
-async function register_gallery_plugin(
-	t: ReturnType<typeof test_convex>,
-	userId: Id<"users">,
-	args: {
-		version?: string;
-		capabilities?: plugins_Capability[];
-		uiOutboundOrigins?: string[];
-		pages?: { id: string; title: string; entry: string; navItem: { label: string; icon: string } | null }[];
-		fileViews?: { id: string; title: string; entry: string; contentTypes: string[] }[];
-	} = {},
-) {
+async function register_gallery_plugin(args: {
+	t: ReturnType<typeof test_convex>;
+	userId: Id<"users">;
+	version?: string;
+	capabilities?: plugins_Capability[];
+	uiOutboundOrigins?: string[];
+	pages?: { id: string; title: string; entry: string; navItem: { label: string; icon: string } | null }[];
+	fileViews?: { id: string; title: string; entry: string; contentTypes: string[] }[];
+}) {
+	const { t, userId } = args;
+
 	const version = args.version ?? "0.1.0";
 	const repositoryId = await t.run(async (ctx) => {
 		const repositoryUrl = "https://github.com/bonobo/gallery-plugin";
@@ -191,7 +191,9 @@ async function install_gallery_plugin(
 	} = {},
 ) {
 	const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-	const registered = await register_gallery_plugin(t, membership.userId, {
+	const registered = await register_gallery_plugin({
+		t,
+		userId: membership.userId,
 		capabilities: args.capabilities,
 		uiOutboundOrigins: args.uiOutboundOrigins,
 		fileViews: args.fileViews,
@@ -313,11 +315,13 @@ function defer_materialization_upload() {
 	return { started, release: () => release?.() };
 }
 
-async function seed_pending_markdown_node(
-	t: ReturnType<typeof test_convex>,
-	fixture: Awaited<ReturnType<typeof install_gallery_plugin>>,
-	filename: string,
-) {
+async function seed_pending_markdown_node(args: {
+	t: ReturnType<typeof test_convex>;
+	fixture: Awaited<ReturnType<typeof install_gallery_plugin>>;
+	filename: string;
+}) {
+	const { t, fixture, filename } = args;
+
 	const created = await fixture.asOwner.action(api.files_nodes_content.create_text_node, {
 		membershipId: fixture.membership.membershipId,
 		parentId: files_ROOT_ID,
@@ -365,17 +369,20 @@ async function get_newest_version_snapshot_r2_key(t: ReturnType<typeof test_conv
 }
 
 // Direct seeding sidesteps the per-user files_tree_write rate limit (capacity 2 per test user).
-async function seed_upload_node(
-	t: ReturnType<typeof test_convex>,
+async function seed_upload_node(args: {
+	t: ReturnType<typeof test_convex>;
 	fixture: {
 		membership: {
 			organizationId: Id<"organizations">;
 			workspaceId: Id<"organizations_workspaces">;
 			userId: Id<"users">;
 		};
-	},
-	args: { filename: string; contentType: string },
-) {
+	};
+	filename: string;
+	contentType: string;
+}) {
+	const { t, fixture } = args;
+
 	return await t.run(async (ctx) => {
 		const now = Date.now();
 		const assetId = await ctx.db.insert("files_r2_assets", {
@@ -406,11 +413,13 @@ async function seed_upload_node(
 }
 
 // Direct seeding sidesteps the per-user mint rate limit (capacity 2 per test user).
-async function seed_sibling_gallery_installation(
-	ctx: MutationCtx,
-	fixture: Awaited<ReturnType<typeof install_gallery_plugin>>,
-	name: string,
-) {
+async function seed_sibling_gallery_installation(args: {
+	ctx: MutationCtx;
+	fixture: Awaited<ReturnType<typeof install_gallery_plugin>>;
+	name: string;
+}) {
+	const { ctx, fixture, name } = args;
+
 	const { _id, _creationTime, ...version } = (await ctx.db.get("plugins_versions", fixture.pluginVersionId))!;
 	const original = (await ctx.db.get("plugins_workspace_installations", fixture.installationId))!;
 	const { _id: installationId, _creationTime: installationTime, ...installation } = original;
@@ -431,12 +440,14 @@ async function seed_sibling_gallery_installation(
 	return (await ctx.db.get("plugins_workspace_installations", id))!;
 }
 
-async function seed_session_token(
-	t: ReturnType<typeof test_convex>,
-	fixture: Awaited<ReturnType<typeof install_gallery_plugin>>,
-	tokenSeed: string,
-	args: { expiresInMs?: number } = {},
-) {
+async function seed_session_token(args: {
+	t: ReturnType<typeof test_convex>;
+	fixture: Awaited<ReturnType<typeof install_gallery_plugin>>;
+	tokenSeed: string;
+	expiresInMs?: number;
+}) {
+	const { t, fixture, tokenSeed } = args;
+
 	const token = `plu_${tokenSeed.repeat(64).slice(0, 64)}`;
 	await t.run(async (ctx) => {
 		const now = Date.now();
@@ -456,7 +467,13 @@ async function seed_session_token(
 }
 
 // Default to the frame's own origin, derived from the env exactly like the handler derives it.
-async function exchange_session_jwt(t: ReturnType<typeof test_convex>, token: string, origin?: string) {
+async function exchange_session_jwt(args: {
+	t: ReturnType<typeof test_convex>;
+	token: string;
+	origin?: string;
+}) {
+	const { t, origin, token} = args;
+
 	return await t.fetch("/plugins-ui/session-jwt", {
 		method: "POST",
 		headers: {
@@ -630,7 +647,7 @@ describe("plugin ui sessions", () => {
 	test("registers a frontend-only version with pages persisted", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const registered = await register_gallery_plugin(t, membership.userId);
+		const registered = await register_gallery_plugin({ t, userId: membership.userId });
 
 		const version = await t.run((ctx) => ctx.db.get("plugins_versions", registered.pluginVersionId));
 		expect(version?.backendEntrypointFile).toBeNull();
@@ -710,7 +727,7 @@ describe("plugin ui sessions", () => {
 	test("excludes pages-less versions from list_ui_pages and mint_page_session", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const registered = await register_gallery_plugin(t, membership.userId, { pages: [] });
+		const registered = await register_gallery_plugin({ t, userId: membership.userId, pages: [] });
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 		const installed = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
@@ -758,7 +775,7 @@ describe("plugin ui sessions", () => {
 	test("minted token lists and reads files but can never write", async () => {
 		const t = test_convex();
 		const fixture = await install_gallery_plugin(t);
-		await seed_upload_node(t, fixture, { filename: "photo.png", contentType: "image/png" });
+		await seed_upload_node({ t, fixture, filename: "photo.png", contentType: "image/png" });
 
 		const session = await mint_session_token(fixture);
 		expect(session.token).toMatch(/^plu_[0-9a-f]{64}$/u);
@@ -983,7 +1000,7 @@ describe("plugin ui sessions", () => {
 		const isolatedToken = `plu_${"f".repeat(64)}`;
 		await t.run(async (ctx) => {
 			const now = Date.now();
-			const sibling = await seed_sibling_gallery_installation(ctx, fixture, "gallery-copy");
+			const sibling = await seed_sibling_gallery_installation({ ctx, fixture, name: "gallery-copy" });
 			const installationId = sibling._id;
 			await ctx.db.insert("plugins_ui_sessions", {
 				serviceAccountId: sibling.serviceAccountId,
@@ -1132,11 +1149,11 @@ describe("plugin ui sessions", () => {
 	test("issues download urls whose ttl is clamped to the session expiry", async () => {
 		const t = test_convex();
 		const fixture = await install_gallery_plugin(t);
-		const seeded = await seed_upload_node(t, fixture, { filename: "photo.png", contentType: "image/png" });
+		const seeded = await seed_upload_node({ t, fixture, filename: "photo.png", contentType: "image/png" });
 		await t.run((ctx) => ctx.db.patch("files_r2_assets", seeded.assetId, { r2Key: "test/photo.png" }));
 
 		// The session has 45 seconds left and the URL ceiling is 15 minutes: the shorter session expiry must win.
-		const token = await seed_session_token(t, fixture, "4", { expiresInMs: 45_000 });
+		const token = await seed_session_token({ t, fixture, tokenSeed: "4", expiresInMs: 45_000 });
 		const response = await t.fetch("/api/v1/files/download-urls", {
 			method: "POST",
 			headers: auth_headers(token),
@@ -1165,7 +1182,7 @@ describe("plugin ui sessions", () => {
 		vi.spyOn(Date, "now").mockImplementation(() => now);
 		const t = test_convex();
 		const fixture = await install_gallery_plugin(t);
-		const pending = await seed_pending_markdown_node(t, fixture, "download.md");
+		const pending = await seed_pending_markdown_node({ t, fixture, filename: "download.md" });
 		const session = await mint_session_token(fixture);
 		const authorityExpiresAt = startedAt + 10_000;
 		await t.run((ctx) => ctx.db.patch("plugins_ui_sessions", session.sessionId, { expiresAt: authorityExpiresAt }));
@@ -1200,7 +1217,7 @@ describe("plugin ui sessions", () => {
 	test("pins the stored content type and an inline filename into signed download urls", async () => {
 		const t = test_convex();
 		const fixture = await install_gallery_plugin(t);
-		const seeded = await seed_upload_node(t, fixture, { filename: "it's clip video.mp4", contentType: "video/mp4" });
+		const seeded = await seed_upload_node({ t, fixture, filename: "it's clip video.mp4", contentType: "video/mp4" });
 		await t.run((ctx) => ctx.db.patch("files_r2_assets", seeded.assetId, { r2Key: "test/clip.mp4" }));
 		const session = await mint_session_token(fixture);
 		const signerCalls: Array<{ key: string; options: Record<string, unknown> | undefined }> = [];
@@ -1229,7 +1246,7 @@ describe("plugin ui sessions", () => {
 	test("pins an attachment filename for an explicit media download", async () => {
 		const t = test_convex();
 		const fixture = await install_gallery_plugin(t);
-		const seeded = await seed_upload_node(t, fixture, { filename: "it's photo.png", contentType: "image/png" });
+		const seeded = await seed_upload_node({ t, fixture, filename: "it's photo.png", contentType: "image/png" });
 		await t.run((ctx) => ctx.db.patch("files_r2_assets", seeded.assetId, { r2Key: "test/photo.png" }));
 		const session = await mint_session_token(fixture);
 		const signerCalls: Array<{ key: string; options: Record<string, unknown> | undefined }> = [];
@@ -1253,7 +1270,7 @@ describe("plugin ui sessions", () => {
 	test("refuses a non-boolean download option before signing", async () => {
 		const t = test_convex();
 		const fixture = await install_gallery_plugin(t);
-		const seeded = await seed_upload_node(t, fixture, { filename: "photo.png", contentType: "image/png" });
+		const seeded = await seed_upload_node({ t, fixture, filename: "photo.png", contentType: "image/png" });
 		await t.run((ctx) => ctx.db.patch("files_r2_assets", seeded.assetId, { r2Key: "test/photo.png" }));
 		const session = await mint_session_token(fixture);
 		const signer = vi.spyOn(R2.prototype, "getUrl");
@@ -1270,8 +1287,8 @@ describe("plugin ui sessions", () => {
 	test("mints batch download URLs with per-id errors", async () => {
 		const t = test_convex();
 		const fixture = await install_gallery_plugin(t);
-		const first = await seed_upload_node(t, fixture, { filename: "one.png", contentType: "image/png" });
-		const second = await seed_upload_node(t, fixture, { filename: "two.png", contentType: "image/png" });
+		const first = await seed_upload_node({ t, fixture, filename: "one.png", contentType: "image/png" });
+		const second = await seed_upload_node({ t, fixture, filename: "two.png", contentType: "image/png" });
 		await t.run(async (ctx) => {
 			await ctx.db.patch("files_r2_assets", first.assetId, { r2Key: "test/one.png" });
 			await ctx.db.patch("files_r2_assets", second.assetId, { r2Key: "test/two.png" });
@@ -1294,7 +1311,7 @@ describe("plugin ui sessions", () => {
 	test("suppresses signed urls when content.read is revoked during signing", async () => {
 		const t = test_convex();
 		const fixture = await install_gallery_plugin(t);
-		const seeded = await seed_upload_node(t, fixture, { filename: "photo.png", contentType: "image/png" });
+		const seeded = await seed_upload_node({ t, fixture, filename: "photo.png", contentType: "image/png" });
 		await t.run((ctx) => ctx.db.patch("files_r2_assets", seeded.assetId, { r2Key: "test/photo.png" }));
 		const reader = await mint_reader_session(t, fixture);
 		const positive = await t.fetch("/api/v1/files/download-urls", {
@@ -1326,8 +1343,8 @@ describe("plugin ui sessions", () => {
 	test("suppresses every batch url when its session expires during signing", async () => {
 		const t = test_convex();
 		const fixture = await install_gallery_plugin(t);
-		const first = await seed_upload_node(t, fixture, { filename: "one.png", contentType: "image/png" });
-		const second = await seed_upload_node(t, fixture, { filename: "two.png", contentType: "image/png" });
+		const first = await seed_upload_node({ t, fixture, filename: "one.png", contentType: "image/png" });
+		const second = await seed_upload_node({ t, fixture, filename: "two.png", contentType: "image/png" });
 		await t.run(async (ctx) => {
 			await ctx.db.patch("files_r2_assets", first.assetId, { r2Key: "test/one.png" });
 			await ctx.db.patch("files_r2_assets", second.assetId, { r2Key: "test/two.png" });
@@ -1357,12 +1374,12 @@ describe("plugin ui sessions", () => {
 	] as const)("suppresses batch urls when the %s during signing", async (change) => {
 		const t = test_convex();
 		const fixture = await install_gallery_plugin(t);
-		const seeded = await seed_upload_node(t, fixture, { filename: "photo.png", contentType: "image/png" });
+		const seeded = await seed_upload_node({ t, fixture, filename: "photo.png", contentType: "image/png" });
 		await t.run((ctx) => ctx.db.patch("files_r2_assets", seeded.assetId, { r2Key: "test/photo.png" }));
 		const session = await mint_session_token(fixture);
 		const nextVersion =
 			change === "installation upgraded"
-				? await register_gallery_plugin(t, fixture.membership.userId, { version: "0.2.0" })
+				? await register_gallery_plugin({ t, userId: fixture.membership.userId, version: "0.2.0" })
 				: null;
 		const signing = defer_download_urls();
 
@@ -1490,21 +1507,19 @@ describe("plugin ui sessions", () => {
 	test("never signs a file from another workspace in a batch", async () => {
 		const t = test_convex();
 		const fixture = await install_gallery_plugin(t);
-		const local = await seed_upload_node(t, fixture, { filename: "local.png", contentType: "image/png" });
+		const local = await seed_upload_node({ t, fixture, filename: "local.png", contentType: "image/png" });
 		const foreignMembership = await t.run((ctx) =>
 			test_mocks_fill_db_with.membership(ctx, {
 				organizationName: "foreign-organization",
 				workspaceName: "foreign-workspace",
 			}),
 		);
-		const foreign = await seed_upload_node(
+		const foreign = await seed_upload_node({
 			t,
-			{ membership: foreignMembership },
-			{
-				filename: "foreign.png",
-				contentType: "image/png",
-			},
-		);
+			fixture: { membership: foreignMembership },
+			filename: "foreign.png",
+			contentType: "image/png",
+		});
 		await t.run(async (ctx) => {
 			await ctx.db.patch("files_r2_assets", local.assetId, { r2Key: "test/local.png" });
 			await ctx.db.patch("files_r2_assets", foreign.assetId, { r2Key: "test/foreign.png" });
@@ -1526,7 +1541,7 @@ describe("plugin ui sessions", () => {
 	test("returns 403 on read-many, which plugin ui principals never get", async () => {
 		const t = test_convex();
 		const fixture = await install_gallery_plugin(t);
-		await seed_upload_node(t, fixture, { filename: "photo.png", contentType: "image/png" });
+		await seed_upload_node({ t, fixture, filename: "photo.png", contentType: "image/png" });
 		const session = await mint_session_token(fixture);
 
 		const response = await t.fetch("/api/v1/files/read-many", {
@@ -1560,7 +1575,7 @@ describe("plugin ui sessions", () => {
 				body: JSON.stringify({ recursive: true }),
 			});
 
-		const disabled = await seed_session_token(t, fixture, "1");
+		const disabled = await seed_session_token({ t, fixture, tokenSeed: "1" });
 		await t.run((ctx) =>
 			ctx.db.patch("plugins_workspace_installations", fixture.installationId, { status: "disabled" }),
 		);
@@ -1569,8 +1584,8 @@ describe("plugin ui sessions", () => {
 			ctx.db.patch("plugins_workspace_installations", fixture.installationId, { status: "enabled" }),
 		);
 
-		const upgraded = await seed_session_token(t, fixture, "2");
-		const nextVersion = await register_gallery_plugin(t, fixture.membership.userId, { version: "0.2.0" });
+		const upgraded = await seed_session_token({ t, fixture, tokenSeed: "2" });
+		const nextVersion = await register_gallery_plugin({ t, userId: fixture.membership.userId, version: "0.2.0" });
 		await t.run((ctx) =>
 			ctx.db.patch("plugins_workspace_installations", fixture.installationId, {
 				pluginVersionId: nextVersion.pluginVersionId,
@@ -1583,7 +1598,7 @@ describe("plugin ui sessions", () => {
 			}),
 		);
 
-		const expired = await seed_session_token(t, fixture, "3");
+		const expired = await seed_session_token({ t, fixture, tokenSeed: "3" });
 		await t.run(async (ctx) => {
 			const sessions = await ctx.db.query("plugins_ui_sessions").collect();
 			await Promise.all(
@@ -1598,7 +1613,7 @@ describe("plugin ui sessions", () => {
 		const fixture = await install_gallery_plugin(t);
 		const siblingInstallationId = await t.run(async (ctx) => {
 			const now = Date.now();
-			const sibling = await seed_sibling_gallery_installation(ctx, fixture, "gallery-sibling");
+			const sibling = await seed_sibling_gallery_installation({ ctx, fixture, name: "gallery-sibling" });
 			const installationId = sibling._id;
 			for (let index = 0; index < 300; index += 1) {
 				await ctx.db.insert("plugins_ui_sessions", {
@@ -1684,10 +1699,10 @@ describe("plugin ui sessions", () => {
 	test("cleanup cron deletes expired sessions in batches and keeps live ones", async () => {
 		const t = test_convex();
 		const fixture = await install_gallery_plugin(t);
-		await seed_session_token(t, fixture, "a", { expiresInMs: -60_000 });
-		await seed_session_token(t, fixture, "b", { expiresInMs: -60_000 });
-		await seed_session_token(t, fixture, "c", { expiresInMs: -60_000 });
-		const live = await seed_session_token(t, fixture, "d");
+		await seed_session_token({ t, fixture, tokenSeed: "a", expiresInMs: -60_000 });
+		await seed_session_token({ t, fixture, tokenSeed: "b", expiresInMs: -60_000 });
+		await seed_session_token({ t, fixture, tokenSeed: "c", expiresInMs: -60_000 });
+		const live = await seed_session_token({ t, fixture, tokenSeed: "d" });
 
 		// A full batch reports done:false (the production path reschedules itself on that signal).
 		const first = await t.mutation(internal.plugins_ui.cleanup_expired_ui_sessions, {
@@ -1800,7 +1815,7 @@ describe("plugin ui file view sessions", () => {
 	test("lists file views with the installation creation time and mints a working session", async () => {
 		const t = test_convex();
 		const fixture = await install_gallery_plugin(t, { fileViews: [video_file_view] });
-		const seeded = await seed_upload_node(t, fixture, { filename: "clip.mp4", contentType: "video/mp4" });
+		const seeded = await seed_upload_node({ t, fixture, filename: "clip.mp4", contentType: "video/mp4" });
 
 		const listed = await fixture.asOwner.query(api.plugins_ui.list_file_views, {
 			membershipId: fixture.membership.membershipId,
@@ -1841,7 +1856,7 @@ describe("plugin ui file view sessions", () => {
 	test("excludes file-view-less versions from list_file_views and refuses their mint", async () => {
 		const t = test_convex();
 		const fixture = await install_gallery_plugin(t);
-		const seeded = await seed_upload_node(t, fixture, { filename: "clip.mp4", contentType: "video/mp4" });
+		const seeded = await seed_upload_node({ t, fixture, filename: "clip.mp4", contentType: "video/mp4" });
 
 		const listed = await fixture.asOwner.query(api.plugins_ui.list_file_views, {
 			membershipId: fixture.membership.membershipId,
@@ -1855,8 +1870,8 @@ describe("plugin ui file view sessions", () => {
 	test("refuses mint for an unknown view id and for a content-type mismatch", async () => {
 		const t = test_convex();
 		const fixture = await install_gallery_plugin(t, { fileViews: [video_file_view] });
-		const video = await seed_upload_node(t, fixture, { filename: "clip.mp4", contentType: "video/mp4" });
-		const image = await seed_upload_node(t, fixture, { filename: "photo.png", contentType: "image/png" });
+		const video = await seed_upload_node({ t, fixture, filename: "clip.mp4", contentType: "video/mp4" });
+		const image = await seed_upload_node({ t, fixture, filename: "photo.png", contentType: "image/png" });
 
 		expect(await mint_file_view(fixture, { fileNodeId: video.nodeId })).toMatchObject({
 			_yay: expect.any(Object),
@@ -1872,7 +1887,7 @@ describe("plugin ui file view sessions", () => {
 	test("excludes non-passed and non-ready versions from file view listing and minting", async () => {
 		const t = test_convex();
 		const fixture = await install_gallery_plugin(t, { fileViews: [video_file_view] });
-		const seeded = await seed_upload_node(t, fixture, { filename: "clip.mp4", contentType: "video/mp4" });
+		const seeded = await seed_upload_node({ t, fixture, filename: "clip.mp4", contentType: "video/mp4" });
 
 		expect(await mint_file_view(fixture, { fileNodeId: seeded.nodeId })).toMatchObject({
 			_yay: expect.any(Object),
@@ -1900,7 +1915,7 @@ describe("plugin ui file view sessions", () => {
 	test("refuses to mint for a disabled installation", async () => {
 		const t = test_convex();
 		const fixture = await install_gallery_plugin(t, { fileViews: [video_file_view] });
-		const seeded = await seed_upload_node(t, fixture, { filename: "clip.mp4", contentType: "video/mp4" });
+		const seeded = await seed_upload_node({ t, fixture, filename: "clip.mp4", contentType: "video/mp4" });
 		await t.run((ctx) =>
 			ctx.db.patch("plugins_workspace_installations", fixture.installationId, { status: "disabled" }),
 		);
@@ -1913,7 +1928,7 @@ describe("plugin ui file view sessions", () => {
 	test("refuses to mint for a restricted file the user cannot read", async () => {
 		const t = test_convex();
 		const fixture = await install_gallery_plugin(t, { fileViews: [video_file_view] });
-		const seeded = await seed_upload_node(t, fixture, { filename: "clip.mp4", contentType: "video/mp4" });
+		const seeded = await seed_upload_node({ t, fixture, filename: "clip.mp4", contentType: "video/mp4" });
 		const reader = await seed_member_reader(t, fixture);
 		const asReader = t.withIdentity(user_identity(reader.userId));
 		const mint_as_reader = () =>
@@ -1934,7 +1949,7 @@ describe("plugin ui file view sessions", () => {
 	test("refreshes a file-view session only while the file stays readable", async () => {
 		const t = test_convex();
 		const fixture = await install_gallery_plugin(t, { fileViews: [video_file_view] });
-		const seeded = await seed_upload_node(t, fixture, { filename: "clip.mp4", contentType: "video/mp4" });
+		const seeded = await seed_upload_node({ t, fixture, filename: "clip.mp4", contentType: "video/mp4" });
 		const reader = await seed_member_reader(t, fixture);
 		const asReader = t.withIdentity(user_identity(reader.userId));
 		const minted = await asReader.action(api.plugins_ui.mint_file_view_session, {
@@ -1963,7 +1978,7 @@ describe("plugin ui file view sessions", () => {
 	test("refuses to refresh a file-view session after its file node is deleted", async () => {
 		const t = test_convex();
 		const fixture = await install_gallery_plugin(t, { fileViews: [video_file_view] });
-		const seeded = await seed_upload_node(t, fixture, { filename: "clip.mp4", contentType: "video/mp4" });
+		const seeded = await seed_upload_node({ t, fixture, filename: "clip.mp4", contentType: "video/mp4" });
 		const minted = await mint_file_view(fixture, { fileNodeId: seeded.nodeId });
 		if (minted._nay) {
 			throw new Error(minted._nay.message);
@@ -1985,7 +2000,7 @@ describe("plugin ui file view sessions", () => {
 	test("rate limits file view mints on their own bucket", async () => {
 		const t = test_convex();
 		const fixture = await install_gallery_plugin(t, { fileViews: [video_file_view] });
-		const seeded = await seed_upload_node(t, fixture, { filename: "clip.mp4", contentType: "video/mp4" });
+		const seeded = await seed_upload_node({ t, fixture, filename: "clip.mp4", contentType: "video/mp4" });
 
 		// Bucket capacity is 8: browsing a handful of files in a row must work, the ninth burst mint hits the limit.
 		for (let mint = 0; mint < 8; mint += 1) {
@@ -2008,7 +2023,7 @@ describe("plugin ui file view sessions", () => {
 	test("a rate limited file view mint answers with the wait the frame shows", async () => {
 		const t = test_convex();
 		const fixture = await install_gallery_plugin(t, { fileViews: [video_file_view] });
-		const seeded = await seed_upload_node(t, fixture, { filename: "clip.mp4", contentType: "video/mp4" });
+		const seeded = await seed_upload_node({ t, fixture, filename: "clip.mp4", contentType: "video/mp4" });
 
 		// Fill the eight tokens this bucket holds, so the next mint is the refused one.
 		for (let mint = 0; mint < 8; mint += 1) {
@@ -2036,7 +2051,7 @@ describe("plugin ui file view sessions", () => {
 	test("a rate limited rotation answers with the wait the frame pauses for", async () => {
 		const t = test_convex();
 		const fixture = await install_gallery_plugin(t, { fileViews: [video_file_view] });
-		const seeded = await seed_upload_node(t, fixture, { filename: "clip.mp4", contentType: "video/mp4" });
+		const seeded = await seed_upload_node({ t, fixture, filename: "clip.mp4", contentType: "video/mp4" });
 		const minted = await mint_file_view(fixture, { fileNodeId: seeded.nodeId });
 		if (minted._nay) {
 			throw new Error(minted._nay.message);
@@ -2165,7 +2180,7 @@ describe("plugin session jwt in mint and refresh", () => {
 				{ id: "player", title: "Video player", entry: "dist/frontend/index.html", contentTypes: ["video/mp4"] },
 			],
 		});
-		const seeded = await seed_upload_node(t, fixture, { filename: "clip.mp4", contentType: "video/mp4" });
+		const seeded = await seed_upload_node({ t, fixture, filename: "clip.mp4", contentType: "video/mp4" });
 
 		const minted = await fixture.asOwner.action(api.plugins_ui.mint_file_view_session, {
 			membershipId: fixture.membership.membershipId,
@@ -2211,7 +2226,7 @@ describe("plugin session jwt exchange", () => {
 		const fixture = await install_gallery_plugin(t);
 		const session = await mint_session_token(fixture);
 
-		const response = await exchange_session_jwt(t, session.token);
+		const response = await exchange_session_jwt({ t, token: session.token });
 		expect(response.status).toBe(200);
 		const body = (await response.json()) as { _yay?: { jwt: string; sessionExpiresAt: number } };
 		if (!body._yay) {
@@ -2244,7 +2259,7 @@ describe("plugin session jwt exchange", () => {
 		const nearExpiry = Date.now() + 2 * 60 * 1000;
 		await t.run((ctx) => ctx.db.patch("plugins_ui_sessions", session.sessionId, { expiresAt: nearExpiry }));
 
-		const response = await exchange_session_jwt(t, session.token);
+		const response = await exchange_session_jwt({ t, token: session.token });
 		expect(response.status).toBe(200);
 		const body = (await response.json()) as { _yay?: { jwt: string; sessionExpiresAt: number } };
 		if (!body._yay) {
@@ -2267,10 +2282,10 @@ describe("plugin session jwt exchange", () => {
 
 		// A cross-origin browser call with a live token: only the Origin guard stands between a
 		// foreign page and a readable JWT.
-		const crossOrigin = await exchange_session_jwt(t, session.token, "https://evil.example");
+		const crossOrigin = await exchange_session_jwt({ t, token: session.token, origin: "https://evil.example" });
 		expect(crossOrigin.status).toBe(403);
 		// A sandboxed iframe without allow-same-origin sends the literal "null" Origin.
-		const nullOrigin = await exchange_session_jwt(t, session.token, "null");
+		const nullOrigin = await exchange_session_jwt({ t, token: session.token, origin: "null" });
 		expect(nullOrigin.status).toBe(403);
 
 		// A request with no Origin header at all is allowed: non-browser callers send none, and
@@ -2290,7 +2305,7 @@ describe("plugin session jwt exchange", () => {
 		});
 		expect(noToken.status).toBe(400);
 
-		const garbage = await exchange_session_jwt(t, `plu_${"0".repeat(64)}`);
+		const garbage = await exchange_session_jwt({ t, token: `plu_${"0".repeat(64)}` });
 		expect(garbage.status).toBe(401);
 
 		// A real user API key resolves to a principal, but not a plugin_ui one — it must never
@@ -2307,17 +2322,17 @@ describe("plugin session jwt exchange", () => {
 		if (created._nay) {
 			throw new Error(created._nay.message);
 		}
-		const apiKey = await exchange_session_jwt(t, created._yay.credential);
+		const apiKey = await exchange_session_jwt({ t, token: created._yay.credential });
 		expect(apiKey.status).toBe(401);
 
 		// Expired session: resolve_principal leaves the expiry verdict to this route.
 		await t.run((ctx) => ctx.db.patch("plugins_ui_sessions", session.sessionId, { expiresAt: Date.now() - 1000 }));
-		const expired = await exchange_session_jwt(t, session.token);
+		const expired = await exchange_session_jwt({ t, token: session.token });
 		expect(expired.status).toBe(401);
 
 		// Revoked session: the token no longer resolves at all.
 		await t.run((ctx) => ctx.db.delete("plugins_ui_sessions", session.sessionId));
-		const revoked = await exchange_session_jwt(t, session.token);
+		const revoked = await exchange_session_jwt({ t, token: session.token });
 		expect(revoked.status).toBe(401);
 	});
 
@@ -2328,9 +2343,9 @@ describe("plugin session jwt exchange", () => {
 
 		// Capacity 6 per session id; the seventh call in a burst must be refused.
 		for (let index = 0; index < 6; index += 1) {
-			expect((await exchange_session_jwt(t, session.token)).status).toBe(200);
+			expect((await exchange_session_jwt({ t, token: session.token })).status).toBe(200);
 		}
-		const refused = await exchange_session_jwt(t, session.token);
+		const refused = await exchange_session_jwt({ t, token: session.token });
 		expect(refused.status).toBe(429);
 		const body = (await refused.json()) as { retryAfterMs?: number };
 		expect(body.retryAfterMs).toBeGreaterThan(0);
@@ -2345,7 +2360,7 @@ describe("plugin session jwt exchange", () => {
 		const session = await mint_session_token(fixture);
 		vi.stubEnv("PLUGINS_UI_DEV_EXCHANGE_ORIGIN", "");
 
-		const refused = await exchange_session_jwt(t, session.token, "http://localhost:5174");
+		const refused = await exchange_session_jwt({ t, token: session.token, origin: "http://localhost:5174" });
 		expect(refused.status).toBe(403);
 		expect(refused.headers.get("Access-Control-Allow-Origin")).toBeNull();
 
@@ -2364,7 +2379,7 @@ describe("plugin session jwt exchange", () => {
 		vi.stubEnv("PLUGINS_UI_DEV_EXCHANGE_ORIGIN", "http://localhost:5174");
 
 		// The exact configured origin exchanges and may read the response through CORS.
-		const accepted = await exchange_session_jwt(t, session.token, "http://localhost:5174");
+		const accepted = await exchange_session_jwt({ t, token: session.token, origin: "http://localhost:5174" });
 		expect(accepted.status).toBe(200);
 		expect(accepted.headers.get("Access-Control-Allow-Origin")).toBe("http://localhost:5174");
 		expect(accepted.headers.get("Access-Control-Allow-Methods")).toBe("POST");
@@ -2378,17 +2393,17 @@ describe("plugin session jwt exchange", () => {
 
 		// The frame's own asset origin stays valid while the variable is set, so enabling the dev
 		// exception cannot break the published-frame flow.
-		const siteCaller = await exchange_session_jwt(t, session.token);
+		const siteCaller = await exchange_session_jwt({ t, token: session.token });
 		expect(siteCaller.status).toBe(200);
 
 		// A different port or scheme must not ride along, and never sees CORS headers.
 		for (const foreignOrigin of ["http://localhost:5175", "https://localhost:5174"]) {
-			const foreign = await exchange_session_jwt(t, session.token, foreignOrigin);
+			const foreign = await exchange_session_jwt({ t, token: session.token, origin: foreignOrigin });
 			expect(foreign.status).toBe(403);
 			expect(foreign.headers.get("Access-Control-Allow-Origin")).toBeNull();
 		}
 		// "null" stays refused even when it is a substring of the configured value.
-		const nullOrigin = await exchange_session_jwt(t, session.token, "null");
+		const nullOrigin = await exchange_session_jwt({ t, token: session.token, origin: "null" });
 		expect(nullOrigin.status).toBe(403);
 
 		// A server-to-server call (no Origin header) keeps working and still gains no CORS headers,
@@ -2427,14 +2442,14 @@ describe("plugin session jwt exchange", () => {
 
 		// An invalid configured value behaves as unset rather than opening the guard.
 		vi.stubEnv("PLUGINS_UI_DEV_EXCHANGE_ORIGIN", "localhost:5174");
-		const invalidConfigured = await exchange_session_jwt(t, session.token, "localhost:5174");
+		const invalidConfigured = await exchange_session_jwt({ t, token: session.token, origin: "localhost:5174" });
 		expect(invalidConfigured.status).toBe(403);
 
 		// The most likely typo is a scheme-less value, and new URL("localhost:5174").origin does not
 		// throw — it serializes to the string "null". That is also the literal Origin header every
 		// sandboxed iframe or data: page sends, so the parser must refuse the value outright or the
 		// guard would open to every opaque origin on the web.
-		const opaqueOrigin = await exchange_session_jwt(t, session.token, "null");
+		const opaqueOrigin = await exchange_session_jwt({ t, token: session.token, origin: "null" });
 		expect(opaqueOrigin.status).toBe(403);
 		expect(opaqueOrigin.headers.get("Access-Control-Allow-Origin")).toBeNull();
 	});
@@ -2508,7 +2523,7 @@ describe("plugin ui assets", () => {
 			capabilities: ["workspace.files.read", "ui.outbound.fetch"],
 			uiOutboundOrigins: ["https://council.example.com"],
 		});
-		const quiet = await register_gallery_plugin(t, talker.membership.userId, { version: "0.2.0" });
+		const quiet = await register_gallery_plugin({ t, userId: talker.membership.userId, version: "0.2.0" });
 		r2Objects.set("plugins/gallery/0.2.0/dist/frontend/index.html", "<!doctype html><title>Gallery</title>");
 
 		const response = await t.fetch(`/plugins-ui/${quiet.pluginVersionId}/dist/frontend/index.html`, {

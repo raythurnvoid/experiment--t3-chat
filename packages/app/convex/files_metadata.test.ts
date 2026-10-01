@@ -34,8 +34,15 @@ async function fixture(options: Parameters<typeof test_convex>[0] = { transactio
 		return { userId, membershipId };
 	});
 	const asViewer = t.withIdentity({ issuer: "https://clerk.test", external_id: viewer.userId });
-	const child = (name: string, entries: files_metadata_Entry[] = [], folderId = parentId) =>
-		t.run(async (ctx) => {
+	const child = (args: {
+		name: string;
+		entries?: files_metadata_Entry[];
+		folderId?: Id<"files_nodes">;
+	}) =>
+		{
+		const { name, entries = [], folderId = parentId } = args;
+
+		return t.run(async (ctx) => {
 			const parent = await ctx.db.get("files_nodes", folderId);
 			if (!parent) throw new Error("Expected parent");
 			const path = `${parent.path}/${name}`;
@@ -58,6 +65,7 @@ async function fixture(options: Parameters<typeof test_convex>[0] = { transactio
 			await files_metadata_db_write_entries(ctx, { fileNode, entries });
 			return nodeId;
 		});
+	};
 	const frontmatter = (nodeId: Id<"files_nodes">, yaml: string) =>
 		t.run((ctx) =>
 			files_metadata_db_insert_committed(ctx, { ...owner, nodeId, markdownContent: `---\n${yaml}\n---\n` }),
@@ -204,15 +212,15 @@ describe("table metadata caller", () => {
 describe("list_folder_fields", () => {
 	test("lists direct children beyond row 50 and excludes a sibling and descendants", async () => {
 		const { t, owner, parentId, child, catalog } = await fixture();
-		for (let i = 0; i < 51; i++) await child(`child-${i}.md`, i === 50 ? [{ key: "late", value: true }] : []);
+		for (let i = 0; i < 51; i++) await child({ name: `child-${i}.md`, entries: i === 50 ? [{ key: "late", value: true }] : [] });
 		for (const path of ["/other", "/table/nested"]) {
 			const created = await t.mutation(internal.files_nodes.create_folder_node_by_path, { ...owner, path });
 			if (created._nay) throw new Error(created._nay.message);
-			await child(
-				"unique.md",
-				[{ key: path === "/other" ? "sibling" : "descendant", value: true }],
-				created._yay.nodeId,
-			);
+			await child({
+				name: "unique.md",
+				entries: [{ key: path === "/other" ? "sibling" : "descendant", value: true }],
+				folderId: created._yay.nodeId,
+			});
 		}
 		expect(parentId).toBeTruthy();
 		expect(await catalog()).toEqual({ fields: ["metadata.late"], afterField: "metadata.late", isDone: true });
@@ -220,10 +228,10 @@ describe("list_folder_fields", () => {
 
 	test("does not expose a hidden child's key or let it change a member's page", async () => {
 		const { scope, asOwner, viewer, asViewer, parentId, child } = await fixture();
-		await child("public.md", [{ key: "public", value: true }]);
+		await child({ name: "public.md", entries: [{ key: "public", value: true }] });
 		const args = { membershipId: viewer.membershipId, parentId, afterField: null };
 		const before = await asViewer.query(api.files_metadata.list_folder_fields, args);
-		const hidden = await child("hidden.md", [{ key: "hidden", value: "secret" }]);
+		const hidden = await child({ name: "hidden.md", entries: [{ key: "hidden", value: "secret" }] });
 		expect(
 			(await asOwner.mutation(api.files_sharing.restrict_node, { membershipId: scope.membershipId, nodeId: hidden }))
 				._nay,
@@ -239,7 +247,7 @@ describe("list_folder_fields", () => {
 
 	test("fails on a stale field restriction flag instead of exposing the key", async () => {
 		const { t, scope, asOwner, child, catalog } = await fixture();
-		const nodeId = await child("hidden.md", [{ key: "hidden", value: true }]);
+		const nodeId = await child({ name: "hidden.md", entries: [{ key: "hidden", value: true }] });
 		await asOwner.mutation(api.files_sharing.restrict_node, { membershipId: scope.membershipId, nodeId });
 		await t.run(async (ctx) => {
 			const field = await ctx.db
@@ -286,7 +294,7 @@ describe("list_folder_fields", () => {
 
 	test("returns empty for a readable archived or caller-hidden folder", async () => {
 		const { t, owner, parentId, child, catalog } = await fixture();
-		await child("value.md", [{ key: "status", value: "open" }]);
+		await child({ name: "value.md", entries: [{ key: "status", value: "open" }] });
 		await t.run((ctx) => ctx.db.patch("files_nodes", parentId, { archiveOperationId: "archived" }));
 		expect(await catalog()).toEqual({ fields: [], afterField: null, isDone: true });
 		await t.run(async (ctx) => {
@@ -306,10 +314,10 @@ describe("list_folder_fields", () => {
 
 	test("pages distinct keys and advances across invalid keys", async () => {
 		const { child, frontmatter, catalog } = await fixture();
-		const node = await child(
-			"fields.md",
-			Array.from({ length: 60 }, (_, i) => ({ key: `field_${String(i).padStart(2, "0")}`, value: i })),
-		);
+		const node = await child({
+			name: "fields.md",
+			entries: Array.from({ length: 60 }, (_, i) => ({ key: `field_${String(i).padStart(2, "0")}`, value: i })),
+		});
 		await frontmatter(node, Array.from({ length: 50 }, (_, i) => `${"a".repeat(300)}${i}: true`).join("\n"));
 		const first = await catalog();
 		expect(first).toMatchObject({ fields: [], isDone: false });
@@ -326,7 +334,7 @@ describe("list_folder_fields", () => {
 describe("list_node_fields", () => {
 	test("skips all 400 list items with one distinct key seek", async () => {
 		const { child, frontmatter, asOwner, scope } = await fixture({ transactionLimits: { databaseQueries: 60 } });
-		const nodeId = await child("list.md");
+		const nodeId = await child({ name: "list.md" });
 		await frontmatter(nodeId, `items: [${Array.from({ length: 400 }, (_, i) => `item${i}`).join(", ")}]`);
 		expect(
 			await asOwner.query(api.files_metadata.list_node_fields, {
@@ -373,8 +381,8 @@ describe("list_node_fields", () => {
 
 	test("rejects a cursor from another target", async () => {
 		const { scope, asOwner, child } = await fixture();
-		const one = await child("one.md", [{ key: "one", value: 1 }]);
-		const two = await child("two.md", [{ key: "two", value: 2 }]);
+		const one = await child({ name: "one.md", entries: [{ key: "one", value: 1 }] });
+		const two = await child({ name: "two.md", entries: [{ key: "two", value: 2 }] });
 		const first = await asOwner.query(api.files_metadata.list_node_fields, {
 			membershipId: scope.membershipId,
 			target: { kind: "saved", id: one },
@@ -406,11 +414,14 @@ describe("list_node_fields", () => {
 describe("get_field_values", () => {
 	test("preserves typed false, zero, empty strings, first list values, and missing parents", async () => {
 		const { scope, asOwner, child, frontmatter } = await fixture();
-		const nodeId = await child("values.md", [
+		const nodeId = await child({
+			name: "values.md",
+			entries: [
 			{ key: "zero", value: 0 },
 			{ key: "false", value: false },
 			{ key: "empty", value: "" },
-		]);
+		],
+		});
 		await frontmatter(nodeId, "date: 2026-09-29\nitems: [false, 2]\nmap: {child: 3}\nempty: []");
 		const fields = [
 			"frontmatter.date",
@@ -503,7 +514,7 @@ describe("get_field_values", () => {
 
 	test("keeps committed frontmatter while the owner has a pending content edit", async () => {
 		const { t, scope, owner, asOwner, child, frontmatter } = await fixture();
-		const nodeId = await child("saved.md");
+		const nodeId = await child({ name: "saved.md" });
 		await frontmatter(nodeId, "status: committed");
 		await t.run(async (ctx) => {
 			const pendingUpdateId = await ctx.db.insert("files_pending_updates", {
@@ -537,7 +548,7 @@ describe("get_field_values", () => {
 
 	test("returns null for a hidden target, grants access, then removes it on revocation", async () => {
 		const { scope, asOwner, viewer, asViewer, child } = await fixture();
-		const nodeId = await child("hidden.md", [{ key: "status", value: "secret" }]);
+		const nodeId = await child({ name: "hidden.md", entries: [{ key: "status", value: "secret" }] });
 		await asOwner.mutation(api.files_sharing.restrict_node, { membershipId: scope.membershipId, nodeId });
 		const args = {
 			membershipId: viewer.membershipId,
@@ -582,7 +593,7 @@ describe("get_field_values", () => {
 				afterField: null,
 			}),
 		).toBeNull();
-		const nodeId = await child("scoped.md", [{ key: "status", value: true }]);
+		const nodeId = await child({ name: "scoped.md", entries: [{ key: "status", value: true }] });
 		const other = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx, { organizationName: "foreign" }));
 		const asOther = t.withIdentity({ issuer: "https://clerk.test", external_id: other.userId });
 		const args = {
@@ -610,7 +621,7 @@ describe("get_field_values", () => {
 		].map((fields) => ({ fields })),
 	)("rejects invalid selected fields $fields", async ({ fields }) => {
 		const { scope, asOwner, child } = await fixture();
-		const nodeId = await child("args.md");
+		const nodeId = await child({ name: "args.md" });
 		await expect(
 			asOwner.query(api.files_metadata.get_field_values, {
 				membershipId: scope.membershipId,
@@ -623,7 +634,7 @@ describe("get_field_values", () => {
 
 	test("rejects a value cursor outside the selected fields", async () => {
 		const { scope, asOwner, child } = await fixture();
-		const nodeId = await child("args.md");
+		const nodeId = await child({ name: "args.md" });
 		await expect(
 			asOwner.query(api.files_metadata.get_field_values, {
 				membershipId: scope.membershipId,
@@ -637,10 +648,10 @@ describe("get_field_values", () => {
 	test("splits large copied paths without skipping a requested field", async () => {
 		const { scope, asOwner, child, catalog } = await fixture();
 		const fields = Array.from({ length: 7 }, (_, i) => `metadata.field${i}`);
-		const nodeId = await child(
-			`${"x".repeat(180_000)}.md`,
-			fields.map((field, i) => ({ key: field.slice(9), value: i })),
-		);
+		const nodeId = await child({
+			name: `${"x".repeat(180_000)}.md`,
+			entries: fields.map((field, i) => ({ key: field.slice(9), value: i })),
+		});
 		let afterField: string | null = null;
 		const values: Array<{ field: string; value: string | number | boolean | null }> = [];
 		let pages = 0;
@@ -688,7 +699,7 @@ describe("get_field_values", () => {
 
 	test("fails clearly when auth leaves no headroom for the first field", async () => {
 		const { scope, asOwner, child, parentId } = await fixture({ transactionLimits: { bytesRead: 800_000 } });
-		const nodeId = await child("budget.md", [{ key: "status", value: true }]);
+		const nodeId = await child({ name: "budget.md", entries: [{ key: "status", value: true }] });
 		const target = { kind: "saved" as const, id: nodeId };
 		await expect(
 			asOwner.query(api.files_metadata.get_field_values, {

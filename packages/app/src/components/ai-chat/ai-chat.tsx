@@ -5,7 +5,7 @@ import { memo, useState, useEffect, useRef, useDeferredValue, useMemo } from "re
 import { useFn, useLiveRef, useStateRef, useThrottle } from "@/hooks/utils-hooks.ts";
 import { CatchBoundary, type ErrorComponentProps } from "@tanstack/react-router";
 import { useQuery } from "convex/react";
-import { isToolOrDynamicToolUIPart } from "ai";
+import { isToolOrDynamicToolUIPart, type FileUIPart } from "ai";
 import { ArrowDown, PanelLeft } from "lucide-react";
 
 import { MyButton } from "@/components/my-button.tsx";
@@ -466,11 +466,17 @@ export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props
 			setSelectedModeId: (modeId) => {
 				controllerRef.current.setSelectedModeId(modeId);
 			},
-			sendUserText: (threadId, value, options) => {
+			sendUserText: (args: {
+				threadId: string;
+				value: string;
+				options?: { messageId?: string; attachments?: FileUIPart[] };
+			}) => {
+				const { threadId, value, options } = args;
+
 				if (isThreadRunning(threadId)) {
 					return false;
 				}
-				return controllerRef.current.sendUserText(threadId, value, options);
+				return controllerRef.current.sendUserText({ threadId, value, options });
 			},
 			regenerate: (threadId, messageId) => {
 				if (isThreadRunning(threadId)) {
@@ -534,7 +540,7 @@ export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props
 		if (!composerChat || !queuedUserMessageEdit) {
 			return;
 		}
-		controller.setQueuedUserMessageEditText(composerChat, queuedUserMessageEdit.id, value);
+		controller.setQueuedUserMessageEditText({ chat: composerChat, messageId: queuedUserMessageEdit.id, text: value });
 	};
 
 	const handleDraftComposerAttachmentsChange: AiChatComposer_Props["onAttachmentsChange"] = (attachments) => {
@@ -548,12 +554,20 @@ export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props
 		if (!composerChat || !queuedUserMessageEdit) {
 			return;
 		}
-		controller.setQueuedUserMessageEditAttachments(composerChat, queuedUserMessageEdit.id, attachments);
+		controller.setQueuedUserMessageEditAttachments({
+			chat: composerChat,
+			messageId: queuedUserMessageEdit.id,
+			attachments,
+		});
 	};
 
 	const handleSelectedModelIdChange = useFn<AiChatComposer_Props["onSelectedModelIdChange"]>((value) => {
 		if (composerChat && queuedUserMessageEdit) {
-			controller.setQueuedUserMessageEditModelId(composerChat, queuedUserMessageEdit.id, value);
+			controller.setQueuedUserMessageEditModelId({
+				chat: composerChat,
+				messageId: queuedUserMessageEdit.id,
+				selectedModelId: value,
+			});
 			return;
 		}
 		controller.setSelectedModelId(value);
@@ -561,7 +575,11 @@ export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props
 
 	const handleSelectedModeIdChange = useFn<AiChatComposer_Props["onSelectedModeIdChange"]>((value) => {
 		if (composerChat && queuedUserMessageEdit) {
-			controller.setQueuedUserMessageEditModeId(composerChat, queuedUserMessageEdit.id, value);
+			controller.setQueuedUserMessageEditModeId({
+				chat: composerChat,
+				messageId: queuedUserMessageEdit.id,
+				selectedModeId: value,
+			});
 			return;
 		}
 		controller.setSelectedModeId(value);
@@ -583,7 +601,7 @@ export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props
 		}
 
 		if (selectedThreadId) {
-			return controller.sendUserText(selectedThreadId, value, { attachments });
+			return controller.sendUserText({ threadId: selectedThreadId, value, options: { attachments } });
 		}
 		return controller.startNewChat(value, attachments) !== undefined;
 	});
@@ -641,7 +659,7 @@ export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props
 		}
 
 		if (selectedThreadId) {
-			controller.sendUserText(selectedThreadId, action);
+			controller.sendUserText({ threadId: selectedThreadId, value: action });
 		} else {
 			controller.startNewChat(action);
 		}
@@ -827,7 +845,7 @@ export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props
 							break;
 						}
 						const targetElement =
-							dom_find_first_element_overflowing_element(scrollEl, userMessageElements, "up") ??
+							dom_find_first_element_overflowing_element({ scrollEl, elements: userMessageElements, direction: "up" }) ??
 							userMessageElements.at(0) ??
 							null;
 						targetMessageEl = targetElement instanceof HTMLElement ? targetElement : null;
@@ -837,7 +855,7 @@ export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props
 							break;
 						}
 						const targetElement =
-							dom_find_first_element_overflowing_element(scrollEl, userMessageElements, "down") ??
+							dom_find_first_element_overflowing_element({ scrollEl, elements: userMessageElements, direction: "down" }) ??
 							userMessageElements.at(-1) ??
 							null;
 						targetMessageEl = targetElement instanceof HTMLElement ? targetElement : null;

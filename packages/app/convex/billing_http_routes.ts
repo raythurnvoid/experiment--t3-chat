@@ -13,7 +13,7 @@ export function billing_http_routes(router: { route: HttpRouter["route"] }) {
 		method: "POST",
 		handler: httpAction(async (ctx, request) => {
 			const { billing_http_handle_request } = await import("./billing_http.ts");
-			return await billing_http_handle_request(ctx, request, POLAR_WEBHOOK_SECRET);
+			return await billing_http_handle_request({ ctx, request, webhookSecret: POLAR_WEBHOOK_SECRET });
 		}),
 	});
 }

@@ -1804,7 +1804,7 @@ const FileNodeViewPrivateFolder = memo(function FileNodeViewPrivateFolder(props:
 }) {
 	const { folderPath, onNavigateTarget } = props;
 	const { membershipId } = AppTenantProvider.useContext();
-	const { entries: children, isFailed } = useFilesVisibleEntries(membershipId, folderPath, "children");
+	const { entries: children, isFailed } = useFilesVisibleEntries({ membershipId, folderPath, mode: "children" });
 
 	return isFailed ? (
 		<p role="alert">This folder could not be loaded.</p>
@@ -6625,7 +6625,13 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 		});
 	});
 	const handleEditorTargetChange = useFn(
-		(sourceKey: string, target: files_PendingTarget, options?: { keepReview: boolean }) => {
+		(args: {
+			sourceKey: string;
+			target: files_PendingTarget;
+			options?: { keepReview: boolean };
+		}) => {
+			const { sourceKey, target, options } = args;
+
 			// A completed Save must not replace a different file opened while it was running.
 			if (sourceKey !== `${membershipId}:${selectionKey}`) return;
 			onNavigateSearch(
@@ -6643,11 +6649,11 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 		// A chat link may still name the private node after Save. Switch the editor to its saved target.
 		// The query answers with the saved file the draft became: a publish receipt links the two ids.
 		if (searchPrivateNodeId && privateTargetView?.entry.kind === "saved") {
-			handleEditorTargetChange(
-				`${membershipId}:private:${searchPrivateNodeId}`,
-				{ kind: "saved", id: privateTargetView.entry.node._id },
-				{ keepReview: false },
-			);
+			handleEditorTargetChange({
+				sourceKey: `${membershipId}:private:${searchPrivateNodeId}`,
+				target: { kind: "saved", id: privateTargetView.entry.node._id },
+				options: { keepReview: false },
+			});
 		}
 	}, [membershipId, searchPrivateNodeId, privateTargetView, handleEditorTargetChange]);
 
@@ -6975,9 +6981,9 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 	// Jump straight to the files search so a copied path, id, or link can be pasted and opened
 	// without reaching for the sidebar. `ignoreInputs: false` keeps it working while the editor
 	// or another input has focus, which is where users are when they paste a reference.
-	AppHotkeysProvider.useHotkey(
-		"Mod+K",
-		useFn(() => {
+	AppHotkeysProvider.useHotkey({
+		hotkey: "Mod+K",
+		callback: useFn(() => {
 			setFilesSidebarOpen(true);
 
 			// The sidebar panel unmounts while closed, so wait for the commit that mounts the input.
@@ -6990,8 +6996,8 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 				searchInput?.select();
 			});
 		}),
-		{ ignoreInputs: false },
-	);
+		options: { ignoreInputs: false },
+	});
 
 	// Restore the exact saved/private target only when the URL has no selection.
 	useEffect(() => {
@@ -7036,11 +7042,13 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 				}
 			: undefined;
 
-	const renderContent = (
-		presenceProps: Parameters<FileEditorPresenceSupplier_Props["children"]>[0],
-		toolbarPortalHost: HTMLElement,
-		viewSelectPortalHost: HTMLElement,
-	) => {
+	const renderContent = (args: {
+		presenceProps: Parameters<FileEditorPresenceSupplier_Props["children"]>[0];
+		toolbarPortalHost: HTMLElement;
+		viewSelectPortalHost: HTMLElement;
+	}) => {
+		const { presenceProps, toolbarPortalHost, viewSelectPortalHost } = args;
+
 		if (searchPrivateNodeId) {
 			return privateEntry && privateTargetView ? (
 				<FileNodeViewPrivateContent
@@ -7059,7 +7067,7 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 					onAutomaticEditorModeChange={handleAutomaticEditorModeChange}
 					onFileViewChange={handleFileViewChange}
 					onTargetChange={(target, options) =>
-						handleEditorTargetChange(`${membershipId}:${selectionKey}`, target, options)
+						handleEditorTargetChange({ sourceKey: `${membershipId}:${selectionKey}`, target, options })
 					}
 					onNavigateTarget={navigateToTarget}
 					onNavigateNode={navigateToNode}
@@ -7220,10 +7228,10 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 									userId={authenticated.userId}
 									target={activeEditorTarget}
 								>
-									{(presenceProps) => renderContent(presenceProps, toolbarPortalHost, viewSelectPortalHost)}
+									{(presenceProps) => renderContent({ presenceProps, toolbarPortalHost, viewSelectPortalHost })}
 								</FileEditorPresenceSupplier>
 							) : toolbarPortalHost && viewSelectPortalHost ? (
-								renderContent({ presenceStore: null, onlineUsers: [] }, toolbarPortalHost, viewSelectPortalHost)
+								renderContent({ presenceProps: { presenceStore: null, onlineUsers: [] }, toolbarPortalHost, viewSelectPortalHost })
 							) : null}
 						</MyPanel>
 						<MyPanelResizeHandle

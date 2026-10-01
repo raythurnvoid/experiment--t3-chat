@@ -61,7 +61,13 @@ function denied_host_entries() {
 /**
  * Return the parsed URL when Press may send a request to it, or `null` when it must not.
  */
-function allowed_url(rawUrl: string, testAllowLocalHttp: boolean, allowedPressHost: string | null) {
+function allowed_url(args: {
+	rawUrl: string;
+	testAllowLocalHttp: boolean;
+	allowedPressHost: string | null;
+}) {
+	const { rawUrl, testAllowLocalHttp, allowedPressHost } = args;
+
 	if (!URL.canParse(rawUrl)) return null;
 	const url = new URL(rawUrl);
 	if (testAllowLocalHttp && url.protocol === "http:" && ["localhost", "127.0.0.1"].includes(url.hostname)) return url;
@@ -96,7 +102,7 @@ function allowed_url(rawUrl: string, testAllowLocalHttp: boolean, allowedPressHo
  * the authorization endpoint the member's browser opens.
  */
 export function mcp_guarded_fetch_is_allowed_url(rawUrl: string) {
-	return allowed_url(rawUrl, false, null) !== null;
+	return allowed_url({ rawUrl, testAllowLocalHttp: false, allowedPressHost: null }) !== null;
 }
 
 /**
@@ -163,7 +169,7 @@ export function mcp_guarded_fetch_create(
 				return new Error(`Guarded fetch refused the request: ${failure}`);
 			};
 
-			let url = allowed_url(String(input), options.testAllowLocalHttp === true, allowedPressHost);
+			let url = allowed_url({ rawUrl: String(input), testAllowLocalHttp: options.testAllowLocalHttp === true, allowedPressHost });
 			if (!url) throw refuse("url_blocked");
 
 			const method = (init?.method ?? "GET").toUpperCase();
@@ -260,11 +266,11 @@ export function mcp_guarded_fetch_create(
 							throw refuse("bad_response");
 						}
 
-						const next = allowed_url(
-							new URL(location, url).href,
-							options.testAllowLocalHttp === true,
+						const next = allowed_url({
+							rawUrl: new URL(location, url).href,
+							testAllowLocalHttp: options.testAllowLocalHttp === true,
 							allowedPressHost,
-						);
+						});
 						if (!next) throw refuse("url_blocked");
 						if (next.origin !== url.origin) {
 							for (const name of CREDENTIAL_HEADER_NAMES) headers.delete(name);

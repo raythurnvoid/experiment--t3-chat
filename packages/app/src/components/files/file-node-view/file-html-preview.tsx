@@ -401,7 +401,13 @@ export const FileHtmlPreview = memo(function FileHtmlPreview(props: {
 		(selectedSource !== "proposed_changes" || snapshot.pendingId === pendingUpdate?._id);
 	const updatesAvailable = canShowSnapshot && snapshot.contentKey !== contentKey;
 
-	const isCurrentRequest = useFn((request: number, capturedScope: string, source: FileHtmlPreview_Source) => {
+	const isCurrentRequest = useFn((args: {
+		request: number;
+		capturedScope: string;
+		source: FileHtmlPreview_Source;
+	}) => {
+		const { request, capturedScope, source } = args;
+
 		return requestRef.current === request && scope === capturedScope && selectedSource === source;
 	});
 	const isCurrentContent = useFn((capturedKey: string) => !sourceError && capturedKey === contentKey);
@@ -423,12 +429,12 @@ export const FileHtmlPreview = memo(function FileHtmlPreview(props: {
 			draft: readEditorSnapshot(),
 			pendingUpdate,
 		}).catch((cause: unknown) => {
-			if (isCurrentRequest(request, capturedScope, source)) {
+			if (isCurrentRequest({ request, capturedScope, source })) {
 				setError(cause instanceof Error ? cause.message : "Preview could not load. Refresh to try again.");
 			}
 			return null;
 		});
-		if (!isCurrentRequest(request, capturedScope, source)) return;
+		if (!isCurrentRequest({ request, capturedScope, source })) return;
 		setLoading(false);
 		if (html === null) return;
 		if (!isCurrentContent(capturedKey)) {

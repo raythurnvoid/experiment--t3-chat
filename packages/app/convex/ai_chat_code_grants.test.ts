@@ -111,15 +111,29 @@ async function fixture(personal = false) {
 		},
 	};
 	const mint = () => t.mutation(internal.public_api.create_code_grants, mintArgs);
-	const request = (workspace: "current" | "personal", route: string, body: Record<string, unknown>) =>
-		t.fetch(`/api/v1/files/${route}`, {
+	const request = (args: {
+		workspace: "current" | "personal";
+		route: string;
+		body: Record<string, unknown>;
+	}) =>
+		{
+		const { workspace, route, body } = args;
+
+		return t.fetch(`/api/v1/files/${route}`, {
 			method: "POST",
 			headers: { Authorization: `Bearer ${tokens[workspace]}`, "Content-Type": "application/json" },
 			body: JSON.stringify(body),
 		});
+	};
 	const read = (workspace: "current" | "personal", length = 6) =>
-		request(workspace, "read-bytes", { path: "/data.txt", offset: 0, length, revision: null });
-	async function file(workspace: "current" | "personal", textContent: string = workspace, stored = false) {
+		request({ workspace, route: "read-bytes", body: { path: "/data.txt", offset: 0, length, revision: null } });
+	async function file(args: {
+		workspace: "current" | "personal";
+		textContent?: string;
+		stored?: boolean;
+	}) {
+		const { workspace, textContent = workspace, stored = false } = args;
+
 		const nodeId = await test_create_saved_text_file(t, {
 			membershipId: roots[workspace].membershipId,
 			path: "/data.txt",
@@ -168,7 +182,7 @@ describe("two-root code grants", () => {
 		const third = await f.t.run((ctx) =>
 			test_mocks_fill_db_with.membership(ctx, { userId: f.actor.userId, organizationName: "third" }),
 		);
-		const nodeIds = { current: await f.file("current"), personal: await f.file("personal") };
+		const nodeIds = { current: await f.file({ workspace: "current" }), personal: await f.file({ workspace: "personal" }) };
 		const before = Date.now();
 		expect(await f.mint()).toEqual({ _yay: { personalIsCurrent: false } });
 		const grants = await f.t.run((ctx) => ctx.db.query("public_api_grants").collect());
@@ -198,22 +212,22 @@ describe("two-root code grants", () => {
 			remainingReadBytes: 8 * 1024 * 1024,
 		});
 		for (const workspace of ["current", "personal"] as const) {
-			const read = await f.request(workspace, "read", { path: "/data.txt" });
+			const read = await f.request({ workspace, route: "read", body: { path: "/data.txt" } });
 			expect(read.status).toBe(200);
 			expect(await read.json()).toMatchObject({ content: workspace });
-			const many = await f.request(workspace, "read-many", { paths: ["/data.txt"] });
+			const many = await f.request({ workspace, route: "read-many", body: { paths: ["/data.txt"] } });
 			expect(many.status).toBe(200);
 			expect(await many.json()).toMatchObject({ files: [{ content: workspace }] });
-			const list = await f.request(workspace, "list", { path: "/" });
+			const list = await f.request({ workspace, route: "list", body: { path: "/" } });
 			expect(list.status).toBe(200);
 			expect(await list.json()).toMatchObject({ items: [{ path: "/data.txt" }] });
-			expect((await f.request(workspace, "download-urls", { fileNodeIds: [nodeIds[workspace]] })).status).toBe(403);
+			expect((await f.request({ workspace, route: "download-urls", body: { fileNodeIds: [nodeIds[workspace]] } })).status).toBe(403);
 		}
 	});
 
 	test("home uses one grant and ignores the unused personal token", async () => {
 		const f = await fixture(true);
-		await f.file("current");
+		await f.file({ workspace: "current" });
 		expect(await f.mint()).toEqual({ _yay: { personalIsCurrent: true } });
 		expect(await f.t.run((ctx) => ctx.db.query("public_api_grants").collect())).toHaveLength(1);
 		expect(await f.t.run((ctx) => ctx.db.query("ai_chat_code_read_budgets").collect())).toHaveLength(1);
@@ -255,7 +269,7 @@ describe("two-root code grants", () => {
 
 	test("old home authority stays revoked after source removal and re-invitation", async () => {
 		const f = await fixture();
-		await f.file("personal");
+		await f.file({ workspace: "personal" });
 		await f.mint();
 		expect((await f.read("personal")).status).toBe(200);
 		expect(
@@ -267,12 +281,16 @@ describe("two-root code grants", () => {
 		for (const route of ["read", "read-many", "list", "read-bytes"]) {
 			expect(
 				(
-					await f.request("personal", route, {
+					await f.request({
+						workspace: "personal",
+						route,
+						body: {
 						path: "/data.txt",
 						paths: ["/data.txt"],
 						offset: 0,
 						length: 6,
 						revision: null,
+					},
 					})
 				).status,
 			).toBe(401);
@@ -307,8 +325,8 @@ describe("two-root code grants", () => {
 
 	test("both roots atomically share eight range reservations under concurrent HTTP reads", async () => {
 		const f = await fixture();
-		await f.file("current", "abcdef", true);
-		await f.file("personal", "ghijkl", true);
+		await f.file({ workspace: "current", textContent: "abcdef", stored: true });
+		await f.file({ workspace: "personal", textContent: "ghijkl", stored: true });
 		await f.mint();
 		const reads = await Promise.all(
 			Array.from({ length: 9 }, (_, index) => f.read(index % 2 ? "personal" : "current", 1024 * 1024)),
@@ -320,7 +338,7 @@ describe("two-root code grants", () => {
 
 	test("failed range fetches keep their shared charge", async () => {
 		const f = await fixture();
-		await f.file("personal", "abcdef", true);
+		await f.file({ workspace: "personal", textContent: "abcdef", stored: true });
 		await f.mint();
 		vi.mocked(fetch).mockResolvedValueOnce(new Response(null, { status: 500 }));
 		expect((await f.read("personal")).status).toBe(502);
@@ -331,7 +349,7 @@ describe("two-root code grants", () => {
 
 	test("rechecks the source after an in-flight byte read", async () => {
 		const f = await fixture();
-		await f.file("personal", "abcdef", true);
+		await f.file({ workspace: "personal", textContent: "abcdef", stored: true });
 		await f.mint();
 		const started = Promise.withResolvers<void>();
 		const released = Promise.withResolvers<void>();
@@ -354,7 +372,7 @@ describe("two-root code grants", () => {
 
 	test.each(["read", "read-many"] as const)("rechecks source at the %s response boundary", async (route) => {
 		const f = await fixture();
-		await f.file("personal", "abcdef");
+		await f.file({ workspace: "personal", textContent: "abcdef" });
 		await f.mint();
 		const started = Promise.withResolvers<void>();
 		const released = Promise.withResolvers<void>();
@@ -374,8 +392,8 @@ describe("two-root code grants", () => {
 				body: JSON.stringify(route === "read" ? { path: "/data.txt" } : { paths: ["/data.txt"] }),
 			});
 			return route === "read"
-				? await public_api_http_read_file({ ...ctx, runAction }, request, "/api/v1/files/read")
-				: await public_api_http_read_many({ ...ctx, runAction }, request, "/api/v1/files/read-many");
+				? await public_api_http_read_file({ ctx: { ...ctx, runAction }, request, path: "/api/v1/files/read" })
+				: await public_api_http_read_many({ ctx: { ...ctx, runAction }, request, path: "/api/v1/files/read-many" });
 		});
 		await started.promise;
 		await f.t.run((ctx) => ctx.db.patch("organizations_workspaces_users", f.source.membershipId, { active: false }));
@@ -389,7 +407,7 @@ describe("two-root code grants", () => {
 		"list checks source after its page and asset reads: %s",
 		async (change) => {
 			const f = await fixture();
-			const nodeId = await f.file("personal", "private contents");
+			const nodeId = await f.file({ workspace: "personal", textContent: "private contents" });
 			await f.mint();
 			const started = Promise.withResolvers<void>();
 			const released = Promise.withResolvers<void>();
@@ -402,7 +420,7 @@ describe("two-root code grants", () => {
 					await released.promise;
 				},
 			);
-			const response = f.request("personal", "list", { path: "/" });
+			const response = f.request({ workspace: "personal", route: "list", body: { path: "/" } });
 			await started.promise;
 			try {
 				if (change === "leave" || change === "reinvite") await f.leave(change === "reinvite");
@@ -458,8 +476,8 @@ describe("two-root code grants", () => {
 					body: JSON.stringify(route === "read" ? { path: "/missing.txt" } : { paths: ["/missing.txt"] }),
 				});
 				return route === "read"
-					? await public_api_http_read_file({ ...ctx, runAction }, request, "/api/v1/files/read")
-					: await public_api_http_read_many({ ...ctx, runAction }, request, "/api/v1/files/read-many");
+					? await public_api_http_read_file({ ctx: { ...ctx, runAction }, request, path: "/api/v1/files/read" })
+					: await public_api_http_read_many({ ctx: { ...ctx, runAction }, request, path: "/api/v1/files/read-many" });
 			});
 			await started.promise;
 			try {
@@ -475,7 +493,7 @@ describe("two-root code grants", () => {
 		"byte reads suppress %s results after source re-invitation",
 		async (phase) => {
 			const f = await fixture();
-			await f.file("personal", "abcdef", true);
+			await f.file({ workspace: "personal", textContent: "abcdef", stored: true });
 			await f.mint();
 			const started = Promise.withResolvers<void>();
 			const released = Promise.withResolvers<void>();
@@ -492,9 +510,9 @@ describe("two-root code grants", () => {
 					}
 					return result;
 				};
-				const result = await public_api_http_read_bytes(
-					{ ...ctx, runQuery },
-					new Request("https://app.test/api/v1/files/read-bytes", {
+				const result = await public_api_http_read_bytes({
+					ctx: { ...ctx, runQuery },
+					request: new Request("https://app.test/api/v1/files/read-bytes", {
 						method: "POST",
 						headers: { Authorization: `Bearer ${tokens.personal}`, "Content-Type": "application/json" },
 						body: JSON.stringify({
@@ -504,8 +522,8 @@ describe("two-root code grants", () => {
 							revision: phase === "revision" ? "0".repeat(64) : null,
 						}),
 					}),
-					"/api/v1/files/read-bytes",
-				);
+					path: "/api/v1/files/read-bytes",
+				});
 				return { ...result, body: result.status === 200 ? new TextDecoder().decode(result.body) : result.body };
 			});
 			await started.promise;
@@ -522,7 +540,7 @@ describe("two-root code grants", () => {
 		"byte reads hide %s storage errors after source re-invitation",
 		async (failure) => {
 			const f = await fixture();
-			await f.file("personal", "abcdef", true);
+			await f.file({ workspace: "personal", textContent: "abcdef", stored: true });
 			await f.mint();
 			const started = Promise.withResolvers<void>();
 			const released = Promise.withResolvers<void>();
@@ -550,7 +568,7 @@ describe("two-root code grants", () => {
 
 	test("code grants cannot get signed URLs or service replay responses", async () => {
 		const f = await fixture();
-		const nodeId = await f.file("personal", "abcdef", true);
+		const nodeId = await f.file({ workspace: "personal", textContent: "abcdef", stored: true });
 		await f.mint();
 		const getUrl = vi.spyOn(R2.prototype, "getUrl");
 		getUrl.mockClear();
@@ -560,13 +578,13 @@ describe("two-root code grants", () => {
 			{ route: "service-uploads/finalize", body: { idempotencyKey: "previous", targetKey: "previous" } },
 		];
 		for (const { route, body } of requests) {
-			const response = await f.request("personal", route, body);
+			const response = await f.request({ workspace: "personal", route, body });
 			expect(response.status).toBe(403);
 			expect(await response.json()).toEqual({ message: "Permission denied" });
 		}
 		await f.leave(true);
 		for (const { route, body } of requests) {
-			const response = await f.request("personal", route, body);
+			const response = await f.request({ workspace: "personal", route, body });
 			expect(response.status).toBe(401);
 			expect(response.headers.get("Location")).toBeNull();
 			expect(await response.json()).toEqual({ message: "Unauthenticated" });
@@ -576,7 +594,7 @@ describe("two-root code grants", () => {
 
 	test("ordinary grants keep their own byte counter and no code source", async () => {
 		const f = await fixture();
-		await f.file("current", "abcdef", true);
+		await f.file({ workspace: "current", textContent: "abcdef", stored: true });
 		await f.t.mutation(internal.public_api.create_grant, {
 			organizationId: f.source.organizationId,
 			workspaceId: f.source.workspaceId,
@@ -645,7 +663,7 @@ describe("two-root code grants", () => {
 		}
 		expect(await f.t.run((ctx) => ctx.db.get("data_deletion_requests", requestId))).toBeNull();
 		expect(await f.t.run((ctx) => ctx.db.query("ai_chat_code_read_budgets").collect())).toEqual([]);
-		expect((await f.request("personal", "list", {})).status).toBe(401);
+		expect((await f.request({ workspace: "personal", route: "list", body: {} })).status).toBe(401);
 	});
 
 	test("user finalization drains budgets even without their source thread", async () => {

@@ -296,11 +296,11 @@ export function bash_textgrep_command_create(ctx: ActionCtx, dbFilesRoots: bash_
 								...allItems.map((item) => {
 									const textChunk = item.textChunk ?? "";
 									return [
-										`${pathResolution.renderShellPath(item.path)} (lines ${item.lineStart}-${item.lineEnd}, chars ${item.startIndex}-${item.endIndex}, chunk #${item.chunkIndex})${bash_search_command_exact_query_note(
+										`${pathResolution.renderShellPath(item.path)} (lines ${item.lineStart}-${item.lineEnd}, chars ${item.startIndex}-${item.endIndex}, chunk #${item.chunkIndex})${bash_search_command_exact_query_note({
 											exactQueryFilter,
-											pattern,
+											query: pattern,
 											textChunk,
-										)}`,
+										})}`,
 										textChunk,
 									].join("\n");
 								}),

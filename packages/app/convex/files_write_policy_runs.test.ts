@@ -65,16 +65,14 @@ async function folder(f: Fixture, path: string) {
  */
 async function hide(f: Fixture, nodeId: Id<"files_nodes">) {
 	await f.t.run((ctx) =>
-		files_nodes_db_set_restricted_scope(
+		files_nodes_db_set_restricted_scope({
 			ctx,
-			{
-				organizationId: f.db.organizationId,
-				workspaceId: f.db.workspaceId,
-				nodeId,
-				restrictedScopeNodeId: nodeId,
-			},
-			files_share_links_create_cleanup_state(),
-		),
+			organizationId: f.db.organizationId,
+			workspaceId: f.db.workspaceId,
+			nodeId,
+			restrictedScopeNodeId: nodeId,
+			shareLinkCleanup: files_share_links_create_cleanup_state(),
+		}),
 	);
 }
 
@@ -84,7 +82,13 @@ async function restrict(f: Fixture, nodeId: Id<"files_nodes">) {
 	).toEqual({ _yay: null });
 }
 
-async function grant(f: Fixture, nodeId: Id<"files_nodes">, level: "read" | "manage") {
+async function grant(args: {
+	f: Fixture;
+	nodeId: Id<"files_nodes">;
+	level: "read" | "manage";
+}) {
+	const { f, level, nodeId} = args;
+
 	expect(
 		await f.asOwner.mutation(api.files_sharing.set_node_share_grant, {
 			membershipId: f.db.membershipId,
@@ -291,7 +295,7 @@ describe("advance", () => {
 		const shown = await folder(f, "/box/shown");
 		const hidden = await folder(f, "/box/hidden");
 		await restrict(f, shown);
-		await grant(f, shown, "read");
+		await grant({ f, nodeId: shown, level: "read" });
 		await restrict(f, hidden);
 
 		const activityId = await start_as_member(f, box);
@@ -317,7 +321,7 @@ describe("advance", () => {
 		await folder(f, "/box/open");
 		const shown = await folder(f, "/box/shown");
 		await restrict(f, shown);
-		await grant(f, shown, "read");
+		await grant({ f, nodeId: shown, level: "read" });
 
 		expect((await run_to_end(f, await start_as_member(f, box))).status).toBe("partial");
 		const rerun = await run_to_end(f, await start_as_member(f, box));
@@ -334,7 +338,7 @@ describe("advance", () => {
 		// `g` is shared with the member, so they could change it on its own. Its hidden parent still
 		// hides it from this job, like `chmod -R` skips a folder it cannot read.
 		await restrict(f, inner);
-		await grant(f, inner, "manage");
+		await grant({ f, nodeId: inner, level: "manage" });
 		await restrict(f, hidden);
 
 		const finished = await run_to_end(f, await start_as_member(f, box));
@@ -441,7 +445,7 @@ describe("advance", () => {
 		const inner = await folder(f, "/box/i/g");
 		const after = await folder(f, "/box/z");
 		await restrict(f, inner);
-		await grant(f, inner, "manage");
+		await grant({ f, nodeId: inner, level: "manage" });
 		await restrict(f, hidden);
 
 		const activityId = await start_as_member(f, box);

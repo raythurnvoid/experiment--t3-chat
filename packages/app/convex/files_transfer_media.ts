@@ -36,11 +36,13 @@ export function files_transfer_media_dependencies_equal(
 	);
 }
 
-export async function files_transfer_media_db_get_ready_media(
-	ctx: QueryCtx | MutationCtx,
-	entry: files_VisibleEntry,
-	membership: Doc<"organizations_workspaces_users">,
-) {
+export async function files_transfer_media_db_get_ready_media(args: {
+	ctx: QueryCtx | MutationCtx;
+	entry: files_VisibleEntry;
+	membership: Doc<"organizations_workspaces_users">;
+}) {
+	const { ctx, entry, membership } = args;
+
 	if (entry.node.kind !== "file" || entry.pendingUpdate?.preparation) return null;
 	const version = await files_transfer_db_get_entry_version(ctx, entry);
 	if (
@@ -135,7 +137,7 @@ export async function files_transfer_media_db_map_refs(
 			return Result({ _nay: { message: "A linked media file is not available" } });
 
 		if (run.sourceScope.workspaceId === run.destinationScope.workspaceId) {
-			const ready = await files_transfer_media_db_get_ready_media(ctx, source, sourceMembership);
+			const ready = await files_transfer_media_db_get_ready_media({ ctx, entry: source, membership: sourceMembership });
 			if (!ready) return Result({ _nay: { message: "A linked media file is not available" } });
 			const sourceSetPin = args.validateOnly ? undefined : args.prepared.item.capture?.mediaSourceSet;
 			const sourceSet = sourceSetPin ? await ctx.db.get("files_media_dependency_sets", sourceSetPin.setId) : null;
@@ -189,7 +191,7 @@ export async function files_transfer_media_db_map_refs(
 		});
 		const destination = output ? await destinationReader.resolveTarget(output) : null;
 		const ready = destination
-			? await files_transfer_media_db_get_ready_media(ctx, destination, destinationMembership)
+			? await files_transfer_media_db_get_ready_media({ ctx, entry: destination, membership: destinationMembership })
 			: null;
 		if (!ready) return Result({ _nay: { message: "A copied media file is no longer ready or readable" } });
 		// Saving unchanged media keeps its asset; a later replacement must not become this copy's output.

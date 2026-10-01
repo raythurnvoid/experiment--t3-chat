@@ -169,11 +169,13 @@ async function list_mount_file_paths(t: ReturnType<typeof test_convex>, mount: s
 }
 
 /** File paths inside one commit root only. */
-async function list_root_file_paths(
-	t: ReturnType<typeof test_convex>,
-	mount: string,
-	commitSha: string,
-): Promise<string[]> {
+async function list_root_file_paths(args: {
+	t: ReturnType<typeof test_convex>;
+	mount: string;
+	commitSha: string;
+}): Promise<string[]> {
+	const { t, mount, commitSha } = args;
+
 	const paths = await list_mount_file_paths(t, mount);
 	return paths.filter((path) => path.startsWith(`/${mount}/${commitSha}/`));
 }
@@ -459,8 +461,8 @@ describe("clear_pending_root_batch", () => {
 			if (batch.done) break;
 		}
 
-		expect(await list_root_file_paths(t, MOUNT, COMMIT_2)).toEqual([]);
-		expect(await list_root_file_paths(t, MOUNT, COMMIT_1)).toEqual([`/${MOUNT}/${COMMIT_1}/README.md`]);
+		expect(await list_root_file_paths({ t, mount: MOUNT, commitSha: COMMIT_2 })).toEqual([]);
+		expect(await list_root_file_paths({ t, mount: MOUNT, commitSha: COMMIT_1 })).toEqual([`/${MOUNT}/${COMMIT_1}/README.md`]);
 		expect(await list_mount_file_paths(t, `${MOUNT}-extra`)).toEqual([`/${MOUNT}-extra/keep.md`]);
 
 		// Only the surviving files' assets remain (active-root README + the extra mount's file).
@@ -626,9 +628,9 @@ describe("gc_sweep_mount_roots", () => {
 			if (batch.done) break;
 		}
 
-		expect(await list_root_file_paths(t, MOUNT, COMMIT_1)).toEqual([`/${MOUNT}/${COMMIT_1}/README.md`]);
-		expect(await list_root_file_paths(t, MOUNT, COMMIT_2)).toEqual([`/${MOUNT}/${COMMIT_2}/README.md`]);
-		expect(await list_root_file_paths(t, MOUNT, COMMIT_3)).toEqual([]);
+		expect(await list_root_file_paths({ t, mount: MOUNT, commitSha: COMMIT_1 })).toEqual([`/${MOUNT}/${COMMIT_1}/README.md`]);
+		expect(await list_root_file_paths({ t, mount: MOUNT, commitSha: COMMIT_2 })).toEqual([`/${MOUNT}/${COMMIT_2}/README.md`]);
+		expect(await list_root_file_paths({ t, mount: MOUNT, commitSha: COMMIT_3 })).toEqual([]);
 
 		// Once the run is no longer running, its pending root loses protection and gets collected too.
 		await t.run((ctx) => ctx.db.patch("github_mounts", mountId, { status: "idle" }));
@@ -636,8 +638,8 @@ describe("gc_sweep_mount_roots", () => {
 			const batch = await t.mutation(internal.github_mounts.gc_sweep_mount_roots, { mountId });
 			if (batch.done) break;
 		}
-		expect(await list_root_file_paths(t, MOUNT, COMMIT_1)).toEqual([`/${MOUNT}/${COMMIT_1}/README.md`]);
-		expect(await list_root_file_paths(t, MOUNT, COMMIT_2)).toEqual([]);
+		expect(await list_root_file_paths({ t, mount: MOUNT, commitSha: COMMIT_1 })).toEqual([`/${MOUNT}/${COMMIT_1}/README.md`]);
+		expect(await list_root_file_paths({ t, mount: MOUNT, commitSha: COMMIT_2 })).toEqual([]);
 	});
 });
 
@@ -783,11 +785,11 @@ describe("sync_mount", () => {
 
 		// Immediately after the flip the old root still exists (readers pinned to it keep working);
 		// the delayed sweep has not fired yet.
-		expect((await list_root_file_paths(t, MOUNT, COMMIT_1)).sort()).toEqual([
+		expect((await list_root_file_paths({ t, mount: MOUNT, commitSha: COMMIT_1 })).sort()).toEqual([
 			`/${MOUNT}/${COMMIT_1}/README.md`,
 			`/${MOUNT}/${COMMIT_1}/src/old.ts`,
 		]);
-		expect((await list_root_file_paths(t, MOUNT, COMMIT_2)).sort()).toEqual([
+		expect((await list_root_file_paths({ t, mount: MOUNT, commitSha: COMMIT_2 })).sort()).toEqual([
 			`/${MOUNT}/${COMMIT_2}/README.md`,
 			`/${MOUNT}/${COMMIT_2}/src/new.ts`,
 		]);
@@ -804,8 +806,8 @@ describe("sync_mount", () => {
 
 		// After the GC delay the sweep collects the orphaned old root; the active root survives.
 		await drain_gc_sweep(t);
-		expect(await list_root_file_paths(t, MOUNT, COMMIT_1)).toEqual([]);
-		expect((await list_root_file_paths(t, MOUNT, COMMIT_2)).sort()).toEqual([
+		expect(await list_root_file_paths({ t, mount: MOUNT, commitSha: COMMIT_1 })).toEqual([]);
+		expect((await list_root_file_paths({ t, mount: MOUNT, commitSha: COMMIT_2 })).sort()).toEqual([
 			`/${MOUNT}/${COMMIT_2}/README.md`,
 			`/${MOUNT}/${COMMIT_2}/src/new.ts`,
 		]);

@@ -77,12 +77,14 @@ const CALLBACKS = {
 	blockedHosts: (): string[] => [],
 };
 
-function attachment_event(
-	sessionId: string,
-	targetInfo: Record<string, unknown>,
-	parent: string | null = "page-session",
-	waitingForDebugger = false,
-) {
+function attachment_event(args: {
+	sessionId: string;
+	targetInfo: Record<string, unknown>;
+	parent?: string | null;
+	waitingForDebugger?: boolean;
+}) {
+	const { sessionId, targetInfo, parent = "page-session", waitingForDebugger = false } = args;
+
 	return JSON.stringify({
 		method: "forwardCDPEvent",
 		params: {
@@ -115,22 +117,30 @@ function make_transport(
 		onUnsafe,
 		onEvent,
 	});
-	const emit = (method: string, params: unknown, sessionId: string | null = "page-session") =>
-		extension.send(
+	const emit = (args: {
+		method: string;
+		params: unknown;
+		sessionId?: string | null;
+	}) =>
+		{
+		const { method, params, sessionId = "page-session" } = args;
+
+		return extension.send(
 			JSON.stringify({
 				method: "forwardCDPEvent",
 				params: { method, params, ...(sessionId ? { sessionId } : {}) },
 			}),
 		);
+	};
 	const reply = (id: number, result: unknown = {}) => extension.send(JSON.stringify({ id, result }));
 	if (options.autoReply !== false)
 		extension.addEventListener("message", () => {
 			const request = commands(extension).at(-1);
 			if (!request) return;
 			if (request.method === "Runtime.enable" && options.runtimeContext !== false)
-				emit(
-					"Runtime.executionContextCreated",
-					{
+				emit({
+					method: "Runtime.executionContextCreated",
+					params: {
 						context: {
 							id: 1,
 							name: "",
@@ -138,8 +148,8 @@ function make_transport(
 							auxData: { isDefault: true, frameId: "main-frame" },
 						},
 					},
-					request.sessionId,
-				);
+					sessionId: request.sessionId,
+				});
 			const result =
 				request.method === "Page.getFrameTree"
 					? { frameTree: { frame: { id: "main-frame" }, childFrames: [{ frame: { id: "inner-frame" } }] } }
@@ -156,18 +166,24 @@ function make_transport(
 		const connection = transport.create_child({ deadline: Date.now() + 30_000 });
 		const child = connection.webSocket as unknown as Socket;
 		let id = 0;
-		const send = (
-			method: string,
-			params: unknown = {},
-			sessionId: string | null = "page-session",
-			requestId?: number,
-		) => {
+		const send = (args: {
+			method: string;
+			params?: unknown;
+			sessionId?: string | null;
+			requestId?: number;
+		}) => {
+			const { method, params = {}, sessionId = "page-session", requestId } = args;
+
 			const nextId = requestId ?? ++id;
 			child.send(JSON.stringify({ id: nextId, method, params, ...(sessionId ? { sessionId } : {}) }));
 			return nextId;
 		};
 		const start = () =>
-			send("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: true, flatten: true }, null);
+			send({
+				method: "Target.setAutoAttach",
+				params: { autoAttach: true, waitForDebuggerOnStart: true, flatten: true },
+				sessionId: null,
+			});
 		return { connection, child, send, start };
 	};
 	return { transport, socket, extension, onUnsafe, onEvent, emit, reply, create_child };
@@ -188,11 +204,11 @@ afterEach(() => {
 describe("PlaywriterTargetInventory", () => {
 	it("hands a worker before frame before root to the real transport in parent order", async () => {
 		const inventory = new PlaywriterTargetInventory();
-		expect(inventory.consume(attachment_event("worker-session", WORKER_TARGET, "iframe-session"))).toBe(true);
+		expect(inventory.consume(attachment_event({ sessionId: "worker-session", targetInfo: WORKER_TARGET, parent: "iframe-session" }))).toBe(true);
 		expect(inventory.ready).toBe(false);
-		expect(inventory.consume(attachment_event("iframe-session", FRAME_TARGET))).toBe(true);
+		expect(inventory.consume(attachment_event({ sessionId: "iframe-session", targetInfo: FRAME_TARGET }))).toBe(true);
 		expect(inventory.ready).toBe(false);
-		expect(inventory.consume(attachment_event("page-session", TARGET, null))).toBe(true);
+		expect(inventory.consume(attachment_event({ sessionId: "page-session", targetInfo: TARGET, parent: null }))).toBe(true);
 		expect(inventory.ready).toBe(true);
 		const snapshot = inventory.snapshot({ targetId: "assigned-page", sessionId: "page-session" });
 		expect(snapshot.targetInfo).not.toHaveProperty("ignoredSecret");
@@ -231,9 +247,13 @@ describe("PlaywriterTargetInventory", () => {
 
 	it("removes descendants when the detached parent was never announced", () => {
 		const inventory = new PlaywriterTargetInventory();
-		inventory.consume(attachment_event("worker-session", WORKER_TARGET, "missing-frame"));
+		inventory.consume(attachment_event({ sessionId: "worker-session", targetInfo: WORKER_TARGET, parent: "missing-frame" }));
 		inventory.consume(
-			attachment_event("nested-worker", { ...WORKER_TARGET, targetId: "nested-worker-target" }, "worker-session"),
+			attachment_event({
+				sessionId: "nested-worker",
+				targetInfo: { ...WORKER_TARGET, targetId: "nested-worker-target" },
+				parent: "worker-session",
+			}),
 		);
 		expect(inventory.ready).toBe(false);
 		expect(
@@ -244,16 +264,16 @@ describe("PlaywriterTargetInventory", () => {
 				}),
 			),
 		).toBe(true);
-		inventory.consume(attachment_event("page-session", TARGET, null));
+		inventory.consume(attachment_event({ sessionId: "page-session", targetInfo: TARGET, parent: null }));
 		expect(inventory.snapshot({ targetId: TARGET.targetId, sessionId: "page-session" }).initialEvents).toHaveLength(1);
 	});
 
 	it("removes a root subtree while keeping another root private", () => {
 		const inventory = new PlaywriterTargetInventory();
-		inventory.consume(attachment_event("page-session", TARGET, null));
-		inventory.consume(attachment_event("iframe-session", FRAME_TARGET));
-		inventory.consume(attachment_event("worker-session", WORKER_TARGET, "iframe-session"));
-		inventory.consume(attachment_event("peer-session", { ...TARGET, targetId: "peer-target" }, null));
+		inventory.consume(attachment_event({ sessionId: "page-session", targetInfo: TARGET, parent: null }));
+		inventory.consume(attachment_event({ sessionId: "iframe-session", targetInfo: FRAME_TARGET }));
+		inventory.consume(attachment_event({ sessionId: "worker-session", targetInfo: WORKER_TARGET, parent: "iframe-session" }));
+		inventory.consume(attachment_event({ sessionId: "peer-session", targetInfo: { ...TARGET, targetId: "peer-target" }, parent: null }));
 		inventory.consume(
 			JSON.stringify({
 				method: "forwardCDPEvent",
@@ -281,17 +301,17 @@ describe("PlaywriterTargetInventory", () => {
 
 	it("replaces valid repeats with current native title and URL", () => {
 		const inventory = new PlaywriterTargetInventory();
-		inventory.consume(attachment_event("page-session", TARGET, null));
-		inventory.consume(attachment_event("iframe-session", FRAME_TARGET));
+		inventory.consume(attachment_event({ sessionId: "page-session", targetInfo: TARGET, parent: null }));
+		inventory.consume(attachment_event({ sessionId: "iframe-session", targetInfo: FRAME_TARGET }));
 		const root = { ...TARGET, title: "Current", url: "https://fixture.test/current" };
 		const frame = { ...FRAME_TARGET, title: "Current frame", url: "https://frame.test/current" };
-		expect(inventory.consume(attachment_event("page-session", root, null))).toBe(true);
-		expect(inventory.consume(attachment_event("iframe-session", frame))).toBe(true);
+		expect(inventory.consume(attachment_event({ sessionId: "page-session", targetInfo: root, parent: null }))).toBe(true);
+		expect(inventory.consume(attachment_event({ sessionId: "iframe-session", targetInfo: frame }))).toBe(true);
 		const snapshot = inventory.snapshot({ targetId: TARGET.targetId, sessionId: "page-session" });
 		expect(snapshot.targetInfo).toMatchObject({ title: root.title, url: root.url });
 		expect(snapshot.initialEvents).toEqual([
-			attachment_event("page-session", root, null),
-			attachment_event("iframe-session", frame),
+			attachment_event({ sessionId: "page-session", targetInfo: root, parent: null }),
+			attachment_event({ sessionId: "iframe-session", targetInfo: frame }),
 		]);
 	});
 
@@ -301,22 +321,32 @@ describe("PlaywriterTargetInventory", () => {
 		["unsupported type", { ...FRAME_TARGET, type: "service_worker" }, "page-session"],
 		["context", { ...FRAME_TARGET, browserContextId: "changed-context" }, "page-session"],
 		["parent", FRAME_TARGET, "changed-parent"],
-	])("makes changed %s identity unusable", (_name, targetInfo, parent) => {
+	])("makes changed %s identity unusable", (args: {
+		_name: any;
+		targetInfo: any;
+		parent: any;
+	}) => {
+		const { targetInfo, parent } = args;
+
 		const inventory = new PlaywriterTargetInventory();
-		inventory.consume(attachment_event("page-session", TARGET, null));
-		inventory.consume(attachment_event("iframe-session", FRAME_TARGET));
+		inventory.consume(attachment_event({ sessionId: "page-session", targetInfo: TARGET, parent: null }));
+		inventory.consume(attachment_event({ sessionId: "iframe-session", targetInfo: FRAME_TARGET }));
 		expect(
-			inventory.consume(attachment_event("iframe-session", targetInfo as Record<string, unknown>, String(parent))),
+			inventory.consume(attachment_event({
+				sessionId: "iframe-session",
+				targetInfo: targetInfo as Record<string, unknown>,
+				parent: String(parent),
+			})),
 		).toBe(false);
 		expect(inventory.ready).toBe(false);
 		expect(inventory.roots).toEqual([]);
-		expect(inventory.consume(attachment_event("page-session", TARGET, null))).toBe(false);
+		expect(inventory.consume(attachment_event({ sessionId: "page-session", targetInfo: TARGET, parent: null }))).toBe(false);
 	});
 
 	it("rejects a reused target under a second session", () => {
 		const inventory = new PlaywriterTargetInventory();
-		inventory.consume(attachment_event("page-session", TARGET, null));
-		expect(inventory.consume(attachment_event("new-page-session", TARGET, null))).toBe(false);
+		inventory.consume(attachment_event({ sessionId: "page-session", targetInfo: TARGET, parent: null }));
+		expect(inventory.consume(attachment_event({ sessionId: "new-page-session", targetInfo: TARGET, parent: null }))).toBe(false);
 	});
 
 	it.each([
@@ -329,7 +359,7 @@ describe("PlaywriterTargetInventory", () => {
 		["opener access", { ...FRAME_TARGET, canAccessOpener: 1 }],
 	])("rejects malformed supported target %s", (_name, targetInfo) => {
 		const inventory = new PlaywriterTargetInventory();
-		expect(inventory.consume(attachment_event("iframe-session", targetInfo))).toBe(false);
+		expect(inventory.consume(attachment_event({ sessionId: "iframe-session", targetInfo }))).toBe(false);
 		expect(inventory.ready).toBe(false);
 	});
 
@@ -351,8 +381,8 @@ describe("PlaywriterTargetInventory", () => {
 
 	it("updates targets by target ID without adopting event ancestry", () => {
 		const inventory = new PlaywriterTargetInventory();
-		inventory.consume(attachment_event("page-session", TARGET, null));
-		inventory.consume(attachment_event("iframe-session", FRAME_TARGET));
+		inventory.consume(attachment_event({ sessionId: "page-session", targetInfo: TARGET, parent: null }));
+		inventory.consume(attachment_event({ sessionId: "iframe-session", targetInfo: FRAME_TARGET }));
 		const targetInfo = { ...FRAME_TARGET, title: "Changed", url: "https://frame.test/changed" };
 		expect(
 			inventory.consume(
@@ -376,7 +406,7 @@ describe("PlaywriterTargetInventory", () => {
 		{ ...FRAME_TARGET, browserContextId: "changed-context" },
 	])("rejects identity changes in known target updates %#", (targetInfo) => {
 		const inventory = new PlaywriterTargetInventory();
-		inventory.consume(attachment_event("iframe-session", FRAME_TARGET));
+		inventory.consume(attachment_event({ sessionId: "iframe-session", targetInfo: FRAME_TARGET }));
 		expect(
 			inventory.consume(
 				JSON.stringify({
@@ -400,23 +430,23 @@ describe("PlaywriterTargetInventory", () => {
 				}),
 			),
 		).toBe(true);
-		inventory.consume(attachment_event("page-session", TARGET, null));
-		inventory.consume(attachment_event("iframe-session", FRAME_TARGET));
+		inventory.consume(attachment_event({ sessionId: "page-session", targetInfo: TARGET, parent: null }));
+		inventory.consume(attachment_event({ sessionId: "iframe-session", targetInfo: FRAME_TARGET }));
 		expect(inventory.snapshot({ targetId: TARGET.targetId, sessionId: "page-session" }).initialEvents[1]).toBe(
-			attachment_event("iframe-session", FRAME_TARGET),
+			attachment_event({ sessionId: "iframe-session", targetInfo: FRAME_TARGET }),
 		);
 	});
 
 	it.each([
-		[attachment_event("iframe-session", FRAME_TARGET, "missing-parent")],
+		[attachment_event({ sessionId: "iframe-session", targetInfo: FRAME_TARGET, parent: "missing-parent" })],
 		[
-			attachment_event("iframe-session", FRAME_TARGET, "worker-session"),
-			attachment_event("worker-session", WORKER_TARGET, "iframe-session"),
+			attachment_event({ sessionId: "iframe-session", targetInfo: FRAME_TARGET, parent: "worker-session" }),
+			attachment_event({ sessionId: "worker-session", targetInfo: WORKER_TARGET, parent: "iframe-session" }),
 		],
-		[attachment_event("iframe-session", FRAME_TARGET, null)],
+		[attachment_event({ sessionId: "iframe-session", targetInfo: FRAME_TARGET, parent: null })],
 	])("blocks unresolved or cyclic links %#", (...packets) => {
 		const inventory = new PlaywriterTargetInventory();
-		inventory.consume(attachment_event("page-session", TARGET, null));
+		inventory.consume(attachment_event({ sessionId: "page-session", targetInfo: TARGET, parent: null }));
 		for (const packet of packets) expect(inventory.consume(packet)).toBe(true);
 		expect(inventory.ready).toBe(false);
 		expect(() => inventory.snapshot({ targetId: TARGET.targetId, sessionId: "page-session" })).toThrow("not ready");
@@ -424,17 +454,21 @@ describe("PlaywriterTargetInventory", () => {
 
 	it("selects only the exact root and its real descendants", () => {
 		const inventory = new PlaywriterTargetInventory();
-		inventory.consume(attachment_event("page-session", TARGET, null));
-		inventory.consume(attachment_event("iframe-session", FRAME_TARGET));
+		inventory.consume(attachment_event({ sessionId: "page-session", targetInfo: TARGET, parent: null }));
+		inventory.consume(attachment_event({ sessionId: "iframe-session", targetInfo: FRAME_TARGET }));
 		inventory.consume(
-			attachment_event("peer-session", { ...TARGET, targetId: "peer-target", url: "https://private-peer.test/" }, null),
+			attachment_event({
+				sessionId: "peer-session",
+				targetInfo: { ...TARGET, targetId: "peer-target", url: "https://private-peer.test/" },
+				parent: null,
+			}),
 		);
 		inventory.consume(
-			attachment_event(
-				"peer-frame",
-				{ ...FRAME_TARGET, targetId: "peer-frame-target", browserContextId: TARGET.browserContextId },
-				"peer-session",
-			),
+			attachment_event({
+				sessionId: "peer-frame",
+				targetInfo: { ...FRAME_TARGET, targetId: "peer-frame-target", browserContextId: TARGET.browserContextId },
+				parent: "peer-session",
+			}),
 		);
 		const snapshot = inventory.snapshot({ targetId: TARGET.targetId, sessionId: "page-session" });
 		expect(snapshot.initialEvents).toHaveLength(2);
@@ -454,10 +488,10 @@ describe("PlaywriterTargetInventory", () => {
 	it("keeps native missing-context fields and separates a new socket inventory", () => {
 		const inventory = new PlaywriterTargetInventory();
 		const { browserContextId: _context, ...target } = TARGET;
-		inventory.consume(attachment_event("page-session", target, null));
+		inventory.consume(attachment_event({ sessionId: "page-session", targetInfo: target, parent: null }));
 		expect(inventory.roots[0].targetInfo).not.toHaveProperty("browserContextId");
 		expect(inventory.snapshot({ targetId: TARGET.targetId, sessionId: "page-session" }).initialEvents[0]).toBe(
-			attachment_event("page-session", target, null),
+			attachment_event({ sessionId: "page-session", targetInfo: target, parent: null }),
 		);
 		const next = new PlaywriterTargetInventory();
 		expect(next.ready).toBe(false);
@@ -466,8 +500,13 @@ describe("PlaywriterTargetInventory", () => {
 
 	it("preserves a native debugger wait for the transport to refuse", () => {
 		const inventory = new PlaywriterTargetInventory();
-		inventory.consume(attachment_event("page-session", TARGET, null));
-		const waited = attachment_event("worker-session", WORKER_TARGET, "page-session", true);
+		inventory.consume(attachment_event({ sessionId: "page-session", targetInfo: TARGET, parent: null }));
+		const waited = attachment_event({
+			sessionId: "worker-session",
+			targetInfo: WORKER_TARGET,
+			parent: "page-session",
+			waitingForDebugger: true,
+		});
 		inventory.consume(waited);
 		const snapshot = inventory.snapshot({ targetId: TARGET.targetId, sessionId: "page-session" });
 		expect(snapshot.initialEvents).toContain(waited);
@@ -481,15 +520,15 @@ describe("PlaywriterTargetInventory", () => {
 
 	it("counts unresolved children and reclaims detached session slots", () => {
 		const inventory = new PlaywriterTargetInventory();
-		inventory.consume(attachment_event("page-session", TARGET, null));
+		inventory.consume(attachment_event({ sessionId: "page-session", targetInfo: TARGET, parent: null }));
 		for (let index = 0; index < 63; index++)
 			expect(
 				inventory.consume(
-					attachment_event(
-						`worker-${index}`,
-						{ ...WORKER_TARGET, targetId: `worker-target-${index}` },
-						"missing-parent",
-					),
+					attachment_event({
+						sessionId: `worker-${index}`,
+						targetInfo: { ...WORKER_TARGET, targetId: `worker-target-${index}` },
+						parent: "missing-parent",
+					}),
 				),
 			).toBe(true);
 		inventory.consume(
@@ -500,18 +539,18 @@ describe("PlaywriterTargetInventory", () => {
 		);
 		for (let index = 0; index < 63; index++)
 			expect(
-				inventory.consume(attachment_event(`frame-${index}`, { ...FRAME_TARGET, targetId: `frame-target-${index}` })),
+				inventory.consume(attachment_event({ sessionId: `frame-${index}`, targetInfo: { ...FRAME_TARGET, targetId: `frame-target-${index}` } })),
 			).toBe(true);
 		expect(inventory.ready).toBe(true);
-		expect(inventory.consume(attachment_event("overflow", { ...FRAME_TARGET, targetId: "overflow-target" }))).toBe(
+		expect(inventory.consume(attachment_event({ sessionId: "overflow", targetInfo: { ...FRAME_TARGET, targetId: "overflow-target" } }))).toBe(
 			false,
 		);
 	});
 
 	it("replaces packet costs and reclaims bytes on updates and detaches", () => {
 		const inventory = new PlaywriterTargetInventory();
-		inventory.consume(attachment_event("page-session", TARGET, null));
-		const large = attachment_event("iframe-session", { ...FRAME_TARGET, ignored: "x".repeat(600_000) });
+		inventory.consume(attachment_event({ sessionId: "page-session", targetInfo: TARGET, parent: null }));
+		const large = attachment_event({ sessionId: "iframe-session", targetInfo: { ...FRAME_TARGET, ignored: "x".repeat(600_000) } });
 		for (let index = 0; index < 4; index++) expect(inventory.consume(large)).toBe(true);
 		expect(
 			inventory.consume(
@@ -523,7 +562,11 @@ describe("PlaywriterTargetInventory", () => {
 		).toBe(true);
 		expect(
 			inventory.consume(
-				attachment_event("worker-session", { ...WORKER_TARGET, ignored: "x".repeat(800_000) }, "iframe-session"),
+				attachment_event({
+					sessionId: "worker-session",
+					targetInfo: { ...WORKER_TARGET, ignored: "x".repeat(800_000) },
+					parent: "iframe-session",
+				}),
 			),
 		).toBe(true);
 		inventory.consume(
@@ -534,7 +577,11 @@ describe("PlaywriterTargetInventory", () => {
 		);
 		expect(
 			inventory.consume(
-				attachment_event("worker-session", { ...WORKER_TARGET, ignored: "x".repeat(800_000) }, "iframe-session"),
+				attachment_event({
+					sessionId: "worker-session",
+					targetInfo: { ...WORKER_TARGET, ignored: "x".repeat(800_000) },
+					parent: "iframe-session",
+				}),
 			),
 		).toBe(true);
 		expect(inventory.snapshot({ targetId: TARGET.targetId, sessionId: "page-session" }).initialEvents).toHaveLength(3);
@@ -542,20 +589,20 @@ describe("PlaywriterTargetInventory", () => {
 
 	it("bounds the total current packet bytes at exactly one MiB", () => {
 		const inventory = new PlaywriterTargetInventory();
-		const root = attachment_event("page-session", TARGET, null);
-		const empty = attachment_event("iframe-session", { ...FRAME_TARGET, ignored: "" });
+		const root = attachment_event({ sessionId: "page-session", targetInfo: TARGET, parent: null });
+		const empty = attachment_event({ sessionId: "iframe-session", targetInfo: { ...FRAME_TARGET, ignored: "" } });
 		const padding = 1_048_576 - new TextEncoder().encode(root).byteLength - new TextEncoder().encode(empty).byteLength;
 		inventory.consume(root);
 		expect(
-			inventory.consume(attachment_event("iframe-session", { ...FRAME_TARGET, ignored: "x".repeat(padding) })),
+			inventory.consume(attachment_event({ sessionId: "iframe-session", targetInfo: { ...FRAME_TARGET, ignored: "x".repeat(padding) } })),
 		).toBe(true);
 		expect(inventory.ready).toBe(true);
-		expect(inventory.consume(attachment_event("worker-session", WORKER_TARGET, "iframe-session"))).toBe(false);
+		expect(inventory.consume(attachment_event({ sessionId: "worker-session", targetInfo: WORKER_TARGET, parent: "iframe-session" }))).toBe(false);
 	});
 
 	it("counts UTF-8 attachment bytes and caps physical provider packets", () => {
 		const utf8 = new PlaywriterTargetInventory();
-		expect(utf8.consume(attachment_event("iframe-session", { ...FRAME_TARGET, ignored: "界".repeat(350_000) }))).toBe(
+		expect(utf8.consume(attachment_event({ sessionId: "iframe-session", targetInfo: { ...FRAME_TARGET, ignored: "界".repeat(350_000) } }))).toBe(
 			false,
 		);
 		const provider = new PlaywriterTargetInventory();
@@ -566,7 +613,7 @@ describe("PlaywriterTargetInventory", () => {
 
 	it("ignores Runtime history and unsupported targets", () => {
 		const inventory = new PlaywriterTargetInventory();
-		inventory.consume(attachment_event("page-session", TARGET, null));
+		inventory.consume(attachment_event({ sessionId: "page-session", targetInfo: TARGET, parent: null }));
 		expect(
 			inventory.consume(
 				JSON.stringify({
@@ -579,9 +626,9 @@ describe("PlaywriterTargetInventory", () => {
 				}),
 			),
 		).toBe(true);
-		expect(inventory.consume(attachment_event("unsupported", { ...WORKER_TARGET, type: "service_worker" }))).toBe(true);
+		expect(inventory.consume(attachment_event({ sessionId: "unsupported", targetInfo: { ...WORKER_TARGET, type: "service_worker" } }))).toBe(true);
 		expect(inventory.snapshot({ targetId: TARGET.targetId, sessionId: "page-session" }).initialEvents).toEqual([
-			attachment_event("page-session", TARGET, null),
+			attachment_event({ sessionId: "page-session", targetInfo: TARGET, parent: null }),
 		]);
 	});
 });
@@ -591,11 +638,14 @@ describe("PlaywriterTransport", () => {
 		const fixture = make_transport();
 		const { connection, child, send, start } = fixture.create_child();
 		start();
-		send("Page.getFrameTree");
-		fixture.emit("Runtime.executionContextCreated", {
+		send({ method: "Page.getFrameTree" });
+		fixture.emit({
+			method: "Runtime.executionContextCreated",
+			params: {
 			context: { id: 1, auxData: { isDefault: true, frameId: "main-frame" } },
+		},
 		});
-		const id = send("Runtime.addBinding", { name: "__page_binding", executionContextId: 1 });
+		const id = send({ method: "Runtime.addBinding", params: { name: "__page_binding", executionContextId: 1 } });
 		expect(messages(child).find((message) => message.id === id)).toHaveProperty("error");
 		expect(commands(fixture.extension).some((request) => request.method === "Runtime.addBinding")).toBe(false);
 		expect(await connection.settle(1000)).toEqual({ safe: true, reason: null });
@@ -604,9 +654,9 @@ describe("PlaywriterTransport", () => {
 	it("shows only the confirmed page and scopes auto-attach without debugger waits", async () => {
 		const { extension, create_child } = make_transport();
 		const { connection, child, send, start } = create_child();
-		send("Browser.getVersion", {}, null);
+		send({ method: "Browser.getVersion", params: {}, sessionId: null });
 		start();
-		send("Target.getTargets", {}, null);
+		send({ method: "Target.getTargets", params: {}, sessionId: null });
 		expect(commands(extension)).toEqual([
 			{
 				id: 1,
@@ -637,19 +687,19 @@ describe("PlaywriterTransport", () => {
 		const { extension, create_child } = make_transport();
 		const { connection, child, send, start } = create_child();
 		start();
-		send(
-			"Browser.setDownloadBehavior",
-			{ behavior: "allowAndName", downloadPath: "/private", eventsEnabled: true },
-			null,
-		);
-		send("Browser.getWindowForTarget");
-		send("Browser.setWindowBounds", { windowId: 1, bounds: { width: 1296, height: 854 } });
-		send("Browser.getWindowBounds", { windowId: 1 });
-		send("Network.enable");
-		send("Emulation.setFocusEmulationEnabled", { enabled: true });
-		send("Emulation.setEmulatedMedia", { media: "", features: [] });
-		send("Page.setFontFamilies", { fontFamilies: { standard: "Times New Roman" } });
-		send("Runtime.runIfWaitingForDebugger");
+		send({
+			method: "Browser.setDownloadBehavior",
+			params: { behavior: "allowAndName", downloadPath: "/private", eventsEnabled: true },
+			sessionId: null,
+		});
+		send({ method: "Browser.getWindowForTarget" });
+		send({ method: "Browser.setWindowBounds", params: { windowId: 1, bounds: { width: 1296, height: 854 } } });
+		send({ method: "Browser.getWindowBounds", params: { windowId: 1 } });
+		send({ method: "Network.enable" });
+		send({ method: "Emulation.setFocusEmulationEnabled", params: { enabled: true } });
+		send({ method: "Emulation.setEmulatedMedia", params: { media: "", features: [] } });
+		send({ method: "Page.setFontFamilies", params: { fontFamilies: { standard: "Times New Roman" } } });
+		send({ method: "Runtime.runIfWaitingForDebugger" });
 		expect(messages(child).filter((message) => message.error)).toEqual([]);
 		expect(messages(child)).toContainEqual(
 			expect.objectContaining({ result: { bounds: { width: 1296, height: 854 } } }),
@@ -677,7 +727,7 @@ describe("PlaywriterTransport", () => {
 		const { extension, create_child } = make_transport();
 		const { connection, send, start } = create_child();
 		start();
-		send(method);
+		send({ method });
 		expect(commands(extension).map((request) => request.method)).toEqual(["Target.setAutoAttach"]);
 		expect((await connection.settle(1000)).safe).toBe(true);
 	});
@@ -690,7 +740,7 @@ describe("PlaywriterTransport", () => {
 		const { extension, create_child } = make_transport();
 		const { connection, child, send, start } = create_child();
 		start();
-		const id = send(String(method), params);
+		const id = send({ method: String(method), params });
 		expect(messages(child).at(-1)).toMatchObject({ id, error: { message: "Browser command is not allowed." } });
 		expect(commands(extension).map((request) => request.method)).toEqual(["Target.setAutoAttach"]);
 		expect(await connection.settle(1000)).toEqual({ safe: true, reason: null });
@@ -701,17 +751,23 @@ describe("PlaywriterTransport", () => {
 		const { connection, child, send, start } = create_child();
 		start();
 		reply(commands(extension).at(-1)!.id);
-		send("Page.getFrameTree");
+		send({ method: "Page.getFrameTree" });
 		reply(commands(extension).at(-1)!.id, { frameTree: { frame: { id: "main-frame" } } });
-		const id = send("Runtime.enable");
+		const id = send({ method: "Runtime.enable" });
 		const wireId = commands(extension).at(-1)!.id;
 		reply(wireId);
-		emit("Runtime.executionContextCreated", {
+		emit({
+			method: "Runtime.executionContextCreated",
+			params: {
 			context: { id: 2, auxData: { isDefault: true, frameId: "other-frame" } },
+		},
 		});
 		expect(messages(child).find((message) => message.id === id)).toBeUndefined();
-		emit("Runtime.executionContextCreated", {
+		emit({
+			method: "Runtime.executionContextCreated",
+			params: {
 			context: { id: 1, auxData: { isDefault: true, frameId: "main-frame" } },
+		},
 		});
 		expect(
 			messages(child)
@@ -726,13 +782,16 @@ describe("PlaywriterTransport", () => {
 		const { connection, child, send, start } = create_child();
 		start();
 		reply(commands(extension).at(-1)!.id);
-		const id = send("Runtime.enable");
+		const id = send({ method: "Runtime.enable" });
 		reply(commands(extension).at(-1)!.id);
-		emit("Runtime.executionContextCreated", {
+		emit({
+			method: "Runtime.executionContextCreated",
+			params: {
 			context: { id: 1, auxData: { isDefault: true, frameId: "main-frame" } },
+		},
 		});
 		expect(messages(child).find((message) => message.id === id)).toBeUndefined();
-		send("Page.getFrameTree");
+		send({ method: "Page.getFrameTree" });
 		reply(commands(extension).at(-1)!.id, { frameTree: { frame: { id: "main-frame" } } });
 		expect(messages(child).find((message) => message.id === id)).toMatchObject({ result: {} });
 		expect((await connection.settle(1000)).safe).toBe(true);
@@ -742,8 +801,8 @@ describe("PlaywriterTransport", () => {
 		const { transport, create_child, onUnsafe } = make_transport({ runtimeContext: false });
 		const { connection, send, start } = create_child();
 		start();
-		send("Page.getFrameTree");
-		send("Runtime.enable");
+		send({ method: "Page.getFrameTree" });
+		send({ method: "Runtime.enable" });
 		await vi.advanceTimersByTimeAsync(3000);
 		expect(onUnsafe).toHaveBeenCalledWith("runtime_not_ready");
 		const settled = connection.settle(1000);
@@ -756,14 +815,26 @@ describe("PlaywriterTransport", () => {
 		const { extension, create_child } = make_transport();
 		const { connection, child, send, start } = create_child();
 		start();
-		send("Target.attachToBrowserTarget", {}, null);
+		send({ method: "Target.attachToBrowserTarget", params: {}, sessionId: null });
 		const browserSession = (messages(child).at(-1)?.result as { sessionId: string }).sessionId;
-		send("Target.attachToTarget", { targetId: "assigned-page", flatten: true }, browserSession);
+		send({
+			method: "Target.attachToTarget",
+			params: { targetId: "assigned-page", flatten: true },
+			sessionId: browserSession,
+		});
 		const captureSession = (messages(child).at(-1)?.result as { sessionId: string }).sessionId;
 		expect(captureSession).not.toBe("page-session");
-		const id = send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false }, captureSession);
+		const id = send({
+			method: "Page.captureScreenshot",
+			params: { format: "png", captureBeyondViewport: false },
+			sessionId: captureSession,
+		});
 		expect(messages(child).at(-1)).toEqual({ id, sessionId: captureSession, result: { data: PNG_DATA } });
-		send("Target.detachFromTarget", { sessionId: captureSession }, browserSession);
+		send({
+			method: "Target.detachFromTarget",
+			params: { sessionId: captureSession },
+			sessionId: browserSession,
+		});
 		expect(commands(extension).map((request) => request.method)).toEqual([
 			"Target.setAutoAttach",
 			"Page.captureScreenshot",
@@ -777,7 +848,7 @@ describe("PlaywriterTransport", () => {
 		const { connection, child, send, start } = create_child();
 		start();
 		reply(commands(extension).at(-1)!.id);
-		const id = send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
+		const id = send({ method: "Page.captureScreenshot", params: { format: "png", captureBeyondViewport: false } });
 		const bytes = Uint8Array.from(atob(PNG_DATA), (char) => char.charCodeAt(0));
 		new DataView(bytes.buffer).setUint32(16, 8193);
 		reply(commands(extension).at(-1)!.id, { data: btoa(String.fromCharCode(...bytes)) });
@@ -796,7 +867,7 @@ describe("PlaywriterTransport", () => {
 		const first = create_child();
 		first.start();
 		reply(commands(extension).at(-1)!.id);
-		first.send("Page.enable", {}, "page-session", 10);
+		first.send({ method: "Page.enable", params: {}, sessionId: "page-session", requestId: 10 });
 		const oldWireId = commands(extension).at(-1)!.id;
 		reply(oldWireId);
 		expect((await first.connection.settle(1000)).safe).toBe(true);
@@ -804,7 +875,7 @@ describe("PlaywriterTransport", () => {
 		const second = create_child();
 		second.start();
 		reply(commands(extension).at(-1)!.id);
-		second.send("Page.enable", {}, "page-session", 10);
+		second.send({ method: "Page.enable", params: {}, sessionId: "page-session", requestId: 10 });
 		const nextWireId = commands(extension).at(-1)!.id;
 		expect(nextWireId).toBeGreaterThan(oldWireId);
 		reply(oldWireId);
@@ -818,10 +889,16 @@ describe("PlaywriterTransport", () => {
 		const { extension, create_child, socket } = make_transport();
 		const { connection, child, send, start } = create_child();
 		start();
-		send("Page.addScriptToEvaluateOnNewDocument", { source: "", worldName: "utility" });
-		send("Runtime.addBinding", { name: "our-binding" });
-		send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", modifiers: 0 });
-		send("Input.dispatchMouseEvent", { type: "mousePressed", button: "left", x: 10, y: 20 });
+		send({ method: "Page.addScriptToEvaluateOnNewDocument", params: { source: "", worldName: "utility" } });
+		send({ method: "Runtime.addBinding", params: { name: "our-binding" } });
+		send({
+			method: "Input.dispatchKeyEvent",
+			params: { type: "keyDown", key: "Enter", code: "Enter", modifiers: 0 },
+		});
+		send({
+			method: "Input.dispatchMouseEvent",
+			params: { type: "mousePressed", button: "left", x: 10, y: 20 },
+		});
 		child.close();
 		expect(await connection.settle(1000)).toEqual({ safe: true, reason: null });
 		expect(socket.readyState).toBe(1);
@@ -843,10 +920,10 @@ describe("PlaywriterTransport", () => {
 		const { connection, child, send, start } = create_child();
 		start();
 		reply(commands(extension).at(-1)!.id);
-		send("Page.addScriptToEvaluateOnNewDocument", { source: "", worldName: "utility" });
+		send({ method: "Page.addScriptToEvaluateOnNewDocument", params: { source: "", worldName: "utility" } });
 		const scriptId = commands(extension).at(-1)!.id;
 		connection.revoke();
-		const id = send("Page.enable");
+		const id = send({ method: "Page.enable" });
 		expect(messages(child).at(-1)).toMatchObject({ id, error: { message: "Browser command is not allowed." } });
 		const settled = connection.settle(1000);
 		reply(scriptId, { identifier: "our-script" });
@@ -864,7 +941,7 @@ describe("PlaywriterTransport", () => {
 		const { connection, send, start } = create_child();
 		start();
 		reply(commands(extension).at(-1)!.id);
-		send("Page.enable");
+		send({ method: "Page.enable" });
 		const settled = connection.settle(1000);
 		await vi.advanceTimersByTimeAsync(1000);
 		expect(await settled).toEqual({ safe: false, reason: "drain_timeout" });
@@ -878,7 +955,7 @@ describe("PlaywriterTransport", () => {
 		const { connection, send, start } = create_child();
 		start();
 		reply(commands(extension).at(-1)!.id);
-		send("Page.enable");
+		send({ method: "Page.enable" });
 		extension.close();
 		expect(await connection.settle(1000)).toEqual({ safe: false, reason: "connection_lost" });
 		expect(commands(extension).map((request) => request.method)).toEqual(["Target.setAutoAttach", "Page.enable"]);
@@ -889,7 +966,9 @@ describe("PlaywriterTransport", () => {
 		const { create_child, emit } = make_transport();
 		const first = create_child();
 		first.start();
-		emit("Target.attachedToTarget", {
+		emit({
+			method: "Target.attachedToTarget",
+			params: {
 			sessionId: "iframe-session",
 			targetInfo: {
 				targetId: "iframe-target",
@@ -899,74 +978,84 @@ describe("PlaywriterTransport", () => {
 				parentFrameId: "main-frame",
 			},
 			waitingForDebugger: false,
+		},
 		});
-		emit(
-			"Target.attachedToTarget",
-			{
+		emit({
+			method: "Target.attachedToTarget",
+			params: {
 				sessionId: "worker-session",
 				targetInfo: { targetId: "worker-target", type: "worker", title: "", url: "https://frame.test/worker.js" },
 				waitingForDebugger: false,
 			},
-			"iframe-session",
-		);
+			sessionId: "iframe-session",
+		});
 		expect(messages(first.child).filter((message) => message.method === "Target.attachedToTarget").length).toBe(3);
 		expect((await first.connection.settle(1000)).safe).toBe(true);
 		const second = create_child();
 		second.start();
-		second.send(
-			"Target.setAutoAttach",
-			{ autoAttach: true, waitForDebuggerOnStart: true, flatten: true },
-			"iframe-session",
-		);
+		second.send({
+			method: "Target.setAutoAttach",
+			params: { autoAttach: true, waitForDebuggerOnStart: true, flatten: true },
+			sessionId: "iframe-session",
+		});
 		expect(messages(second.child).filter((message) => message.method === "Target.attachedToTarget").length).toBe(3);
-		emit("Target.detachedFromTarget", { sessionId: "iframe-session", targetId: "iframe-target" });
-		second.send("Runtime.enable", {}, "worker-session");
+		emit({
+			method: "Target.detachedFromTarget",
+			params: { sessionId: "iframe-session", targetId: "iframe-target" },
+		});
+		second.send({ method: "Runtime.enable", params: {}, sessionId: "worker-session" });
 		expect(messages(second.child).at(-1)?.error).toBeDefined();
 		expect((await second.connection.settle(1000)).safe).toBe(true);
 	});
 
 	it("starts with existing frames and workers captured before confirmation", async () => {
 		const initialEvents = [
-			attachment_event("iframe-session", {
+			attachment_event({
+				sessionId: "iframe-session",
+				targetInfo: {
 				targetId: "iframe-target",
 				type: "iframe",
 				title: "",
 				url: "https://frame.test/",
+			},
 			}),
-			attachment_event(
-				"worker-session",
-				{ targetId: "worker-target", type: "worker", title: "", url: "https://frame.test/worker.js" },
-				"iframe-session",
-			),
+			attachment_event({
+				sessionId: "worker-session",
+				targetInfo: { targetId: "worker-target", type: "worker", title: "", url: "https://frame.test/worker.js" },
+				parent: "iframe-session",
+			}),
 		];
 		const { create_child, emit } = make_transport({ initialEvents });
 		const first = create_child();
 		first.start();
-		first.send(
-			"Target.setAutoAttach",
-			{ autoAttach: true, waitForDebuggerOnStart: true, flatten: true },
-			"iframe-session",
-		);
+		first.send({
+			method: "Target.setAutoAttach",
+			params: { autoAttach: true, waitForDebuggerOnStart: true, flatten: true },
+			sessionId: "iframe-session",
+		});
 		const attached = messages(first.child).filter((message) => message.method === "Target.attachedToTarget");
 		expect(attached.map((message) => (message.params as { sessionId: string }).sessionId)).toEqual([
 			"page-session",
 			"iframe-session",
 			"worker-session",
 		]);
-		emit("Target.attachedToTarget", {
+		emit({
+			method: "Target.attachedToTarget",
+			params: {
 			sessionId: "iframe-session",
 			targetInfo: { targetId: "iframe-target", type: "iframe", title: "", url: "https://frame.test/" },
 			waitingForDebugger: false,
+		},
 		});
 		expect(messages(first.child).filter((message) => message.method === "Target.attachedToTarget")).toEqual(attached);
 		expect(await first.connection.settle(1000)).toEqual({ safe: true, reason: null });
 		const second = create_child();
 		second.start();
-		second.send(
-			"Target.setAutoAttach",
-			{ autoAttach: true, waitForDebuggerOnStart: true, flatten: true },
-			"iframe-session",
-		);
+		second.send({
+			method: "Target.setAutoAttach",
+			params: { autoAttach: true, waitForDebuggerOnStart: true, flatten: true },
+			sessionId: "iframe-session",
+		});
 		expect(messages(second.child).filter((message) => message.method === "Target.attachedToTarget")).toEqual(attached);
 		expect(await second.connection.settle(1000)).toEqual({ safe: true, reason: null });
 	});
@@ -974,19 +1063,34 @@ describe("PlaywriterTransport", () => {
 	it("keeps frame and context state when a live attachment repeats the snapshot", async () => {
 		const target = { targetId: "iframe-target", type: "iframe", title: "", url: "https://frame.test/" };
 		const { create_child, emit, extension } = make_transport({
-			initialEvents: [attachment_event("iframe-session", target)],
+			initialEvents: [attachment_event({ sessionId: "iframe-session", targetInfo: target })],
 		});
 		const { connection, child, send, start } = create_child();
 		start();
-		send("Page.getFrameTree", {}, "iframe-session");
-		send("Page.createIsolatedWorld", { frameId: "inner-frame", worldName: "utility" }, "iframe-session");
-		emit("Target.attachedToTarget", {
+		send({ method: "Page.getFrameTree", params: {}, sessionId: "iframe-session" });
+		send({
+			method: "Page.createIsolatedWorld",
+			params: { frameId: "inner-frame", worldName: "utility" },
+			sessionId: "iframe-session",
+		});
+		emit({
+			method: "Target.attachedToTarget",
+			params: {
 			sessionId: "iframe-session",
 			targetInfo: { ...target, title: "Frame" },
 			waitingForDebugger: false,
+		},
 		});
-		send("Runtime.evaluate", { expression: "1", contextId: 9 }, "iframe-session");
-		send("Page.createIsolatedWorld", { frameId: "inner-frame", worldName: "utility" }, "iframe-session");
+		send({
+			method: "Runtime.evaluate",
+			params: { expression: "1", contextId: 9 },
+			sessionId: "iframe-session",
+		});
+		send({
+			method: "Page.createIsolatedWorld",
+			params: { frameId: "inner-frame", worldName: "utility" },
+			sessionId: "iframe-session",
+		});
 		expect(messages(child).filter((message) => message.error)).toEqual([]);
 		expect(messages(child).filter((message) => message.method === "Target.attachedToTarget")).toHaveLength(2);
 		expect(
@@ -1011,36 +1115,39 @@ describe("PlaywriterTransport", () => {
 		[
 			"missing parent",
 			[
-				attachment_event(
-					"worker-session",
-					{ targetId: "worker-target", type: "worker", title: "", url: "https://frame.test/worker.js" },
-					"missing-session",
-				),
+				attachment_event({
+					sessionId: "worker-session",
+					targetInfo: { targetId: "worker-target", type: "worker", title: "", url: "https://frame.test/worker.js" },
+					parent: "missing-session",
+				}),
 			],
 		],
-		["unrelated page", [attachment_event("other-page-session", { ...TARGET, targetId: "other-page" }, null)]],
+		["unrelated page", [attachment_event({ sessionId: "other-page-session", targetInfo: { ...TARGET, targetId: "other-page" }, parent: null })]],
 		[
 			"debugger wait",
 			[
-				attachment_event(
-					"iframe-session",
-					{ targetId: "iframe-target", type: "iframe", title: "", url: "https://frame.test/" },
-					"page-session",
-					true,
-				),
+				attachment_event({
+					sessionId: "iframe-session",
+					targetInfo: { targetId: "iframe-target", type: "iframe", title: "", url: "https://frame.test/" },
+					parent: "page-session",
+					waitingForDebugger: true,
+				}),
 			],
 		],
-		["too many events", Array.from({ length: 65 }, () => attachment_event("page-session", TARGET, null))],
+		["too many events", Array.from({ length: 65 }, () => attachment_event({ sessionId: "page-session", targetInfo: TARGET, parent: null }))],
 		["too many bytes", [" ".repeat(1_048_577)]],
 		[
 			"too many UTF-8 bytes",
 			[
-				attachment_event("iframe-session", {
+				attachment_event({
+					sessionId: "iframe-session",
+					targetInfo: {
 					targetId: "iframe-target",
 					type: "iframe",
 					title: "",
 					url: "https://frame.test/",
 					ignored: "界".repeat(350_000),
+				},
 				}),
 			],
 		],
@@ -1053,11 +1160,14 @@ describe("PlaywriterTransport", () => {
 	it("closes the socket when a snapshot attachment contains a reply ID", () => {
 		const [socket] = socket_pair();
 		const event = JSON.parse(
-			attachment_event("iframe-session", {
+			attachment_event({
+				sessionId: "iframe-session",
+				targetInfo: {
 				targetId: "iframe-target",
 				type: "iframe",
 				title: "",
 				url: "https://frame.test/",
+			},
 			}),
 		);
 		expect(
@@ -1080,12 +1190,15 @@ describe("PlaywriterTransport", () => {
 	])("fences a malformed live target %s before creating a child", (field, value) => {
 		const targetInfo = { targetId: "iframe-target", type: "iframe", title: "", url: "https://frame.test/" };
 		const { create_child, emit, socket, onUnsafe } = make_transport({
-			initialEvents: [attachment_event("iframe-session", targetInfo)],
+			initialEvents: [attachment_event({ sessionId: "iframe-session", targetInfo })],
 		});
-		emit("Target.attachedToTarget", {
+		emit({
+			method: "Target.attachedToTarget",
+			params: {
 			sessionId: "iframe-session",
 			targetInfo: { ...targetInfo, [String(field).toLowerCase()]: value },
 			waitingForDebugger: false,
+		},
 		});
 		expect(socket.readyState).toBe(3);
 		expect(onUnsafe).toHaveBeenCalledWith("invalid_target");
@@ -1095,15 +1208,20 @@ describe("PlaywriterTransport", () => {
 	it("ignores unsupported native target types without losing the checked frame", async () => {
 		const { create_child, emit, socket } = make_transport({
 			initialEvents: [
-				attachment_event("iframe-session", {
+				attachment_event({
+					sessionId: "iframe-session",
+					targetInfo: {
 					targetId: "iframe-target",
 					type: "iframe",
 					title: "",
 					url: "https://frame.test/",
+				},
 				}),
 			],
 		});
-		emit("Target.attachedToTarget", {
+		emit({
+			method: "Target.attachedToTarget",
+			params: {
 			sessionId: "unsupported-session",
 			targetInfo: {
 				targetId: "unsupported-target",
@@ -1112,6 +1230,7 @@ describe("PlaywriterTransport", () => {
 				url: "https://frame.test/sw.js",
 			},
 			waitingForDebugger: false,
+		},
 		});
 		const { connection, child, start } = create_child();
 		start();
@@ -1138,8 +1257,8 @@ describe("PlaywriterTransport", () => {
 					sessionId: "page-session",
 					targetInfo: TARGET,
 					initialEvents: [
-						attachment_event("iframe-session", targetInfo),
-						attachment_event("iframe-session", targetInfo),
+						attachment_event({ sessionId: "iframe-session", targetInfo }),
+						attachment_event({ sessionId: "iframe-session", targetInfo }),
 					],
 				}),
 		).toThrow("Invalid browser attachment snapshot");
@@ -1148,7 +1267,11 @@ describe("PlaywriterTransport", () => {
 
 	it("fences root loss before admitting the first child", () => {
 		const { create_child, emit, socket, onEvent } = make_transport();
-		emit("Target.detachedFromTarget", { sessionId: "page-session", targetId: "assigned-page" }, null);
+		emit({
+			method: "Target.detachedFromTarget",
+			params: { sessionId: "page-session", targetId: "assigned-page" },
+			sessionId: null,
+		});
 		expect(socket.readyState).toBe(3);
 		expect(onEvent).toHaveBeenCalledWith("target_lost");
 		expect(() => create_child()).toThrow("offline");
@@ -1158,22 +1281,31 @@ describe("PlaywriterTransport", () => {
 		["target", { targetId: "different-target", type: "iframe", title: "", url: "https://frame.test/" }, "page-session"],
 		["type", { targetId: "iframe-target", type: "worker", title: "", url: "https://frame.test/" }, "page-session"],
 		["parent", { targetId: "iframe-target", type: "iframe", title: "", url: "https://frame.test/" }, "other-parent"],
-	])("fences changed %s before a child exists", (_name, targetInfo, parent) => {
+	])("fences changed %s before a child exists", (args: {
+		_name: any;
+		targetInfo: any;
+		parent: any;
+	}) => {
+		const { targetInfo, parent } = args;
+
 		const { create_child, emit, socket, onUnsafe } = make_transport({
 			initialEvents: [
-				attachment_event("iframe-session", {
+				attachment_event({
+					sessionId: "iframe-session",
+					targetInfo: {
 					targetId: "iframe-target",
 					type: "iframe",
 					title: "",
 					url: "https://frame.test/",
+				},
 				}),
 			],
 		});
-		emit(
-			"Target.attachedToTarget",
-			{ sessionId: "iframe-session", targetInfo, waitingForDebugger: false },
-			String(parent),
-		);
+		emit({
+			method: "Target.attachedToTarget",
+			params: { sessionId: "iframe-session", targetInfo, waitingForDebugger: false },
+			sessionId: String(parent),
+		});
 		expect(socket.readyState).toBe(3);
 		expect(onUnsafe).toHaveBeenCalledWith("target_changed");
 		expect(() => create_child()).toThrow("offline");
@@ -1182,24 +1314,30 @@ describe("PlaywriterTransport", () => {
 	it("removes a detached subtree before admitting the first child", async () => {
 		const { create_child, emit } = make_transport({
 			initialEvents: [
-				attachment_event("iframe-session", {
+				attachment_event({
+					sessionId: "iframe-session",
+					targetInfo: {
 					targetId: "iframe-target",
 					type: "iframe",
 					title: "",
 					url: "https://frame.test/",
+				},
 				}),
-				attachment_event(
-					"worker-session",
-					{ targetId: "worker-target", type: "worker", title: "", url: "https://frame.test/worker.js" },
-					"iframe-session",
-				),
+				attachment_event({
+					sessionId: "worker-session",
+					targetInfo: { targetId: "worker-target", type: "worker", title: "", url: "https://frame.test/worker.js" },
+					parent: "iframe-session",
+				}),
 			],
 		});
-		emit("Target.detachedFromTarget", { sessionId: "iframe-session", targetId: "iframe-target" });
+		emit({
+			method: "Target.detachedFromTarget",
+			params: { sessionId: "iframe-session", targetId: "iframe-target" },
+		});
 		const { connection, child, send, start } = create_child();
 		start();
 		expect(messages(child).filter((message) => message.method === "Target.attachedToTarget")).toHaveLength(1);
-		send("Runtime.enable", {}, "worker-session");
+		send({ method: "Runtime.enable", params: {}, sessionId: "worker-session" });
 		expect(messages(child).at(-1)?.error).toBeDefined();
 		expect(await connection.settle(1000)).toEqual({ safe: true, reason: null });
 	});
@@ -1209,11 +1347,14 @@ describe("PlaywriterTransport", () => {
 		old.transport.close();
 		old.socket.dispatchEvent(
 			new MessageEvent("message", {
-				data: attachment_event("iframe-session", {
+				data: attachment_event({
+					sessionId: "iframe-session",
+					targetInfo: {
 					targetId: "iframe-target",
 					type: "iframe",
 					title: "",
 					url: "https://frame.test/",
+				},
 				}),
 			}),
 		);
@@ -1229,11 +1370,11 @@ describe("PlaywriterTransport", () => {
 		const { create_child, emit, onEvent, extension } = make_transport();
 		const { connection, child, start } = create_child();
 		start();
-		emit(
-			"Target.attachedToTarget",
-			{ sessionId: "popup-session", targetInfo: { ...TARGET, targetId: "popup-target" }, waitingForDebugger: false },
-			null,
-		);
+		emit({
+			method: "Target.attachedToTarget",
+			params: { sessionId: "popup-session", targetInfo: { ...TARGET, targetId: "popup-target" }, waitingForDebugger: false },
+			sessionId: null,
+		});
 		expect(onEvent.mock.calls.map(([reason]) => reason)).toEqual(["popup"]);
 		expect(messages(child).filter((message) => message.method === "Target.attachedToTarget").length).toBe(1);
 		expect(commands(extension).map((request) => request.method)).toEqual(["Target.setAutoAttach"]);
@@ -1244,10 +1385,13 @@ describe("PlaywriterTransport", () => {
 		const { create_child, emit, extension, onEvent } = make_transport();
 		const { connection, start } = create_child();
 		start();
-		emit("Target.attachedToTarget", {
+		emit({
+			method: "Target.attachedToTarget",
+			params: {
 			sessionId: "worker-session",
 			targetInfo: { targetId: "worker-target", type: "worker", title: "", url: "https://fixture.test/worker.js" },
 			waitingForDebugger: true,
+		},
 		});
 		expect(onEvent).toHaveBeenCalledWith("debugger_conflict");
 		expect(await connection.settle(1000)).toEqual({ safe: false, reason: "debugger_conflict" });
@@ -1269,7 +1413,7 @@ describe("PlaywriterTransport", () => {
 				},
 			}),
 		);
-		const id = send("Page.enable");
+		const id = send({ method: "Page.enable" });
 		extension.send(JSON.stringify({ id: commands(extension).at(-1)!.id, error: "A secret URL in an upstream error" }));
 		expect(messages(child).at(-1)).toEqual({
 			id,
@@ -1284,9 +1428,12 @@ describe("PlaywriterTransport", () => {
 		const { extension, create_child, emit, onUnsafe } = make_transport();
 		const { connection, child, send, start } = create_child();
 		start();
-		emit("Page.screencastFrame", { data: "private screencast image", sessionId: 1, metadata: { timestamp: 1 } });
-		emit("Page.screencastVisibilityChanged", { visible: true });
-		const id = send("Page.enable");
+		emit({
+			method: "Page.screencastFrame",
+			params: { data: "private screencast image", sessionId: 1, metadata: { timestamp: 1 } },
+		});
+		emit({ method: "Page.screencastVisibilityChanged", params: { visible: true } });
+		const id = send({ method: "Page.enable" });
 		expect(child.received.join("")).not.toContain("private screencast image");
 		expect(messages(child).some((message) => String(message.method).startsWith("Page.screencast"))).toBe(false);
 		expect(messages(child).at(-1)).toEqual({ id, sessionId: "page-session", result: {} });
@@ -1299,15 +1446,22 @@ describe("PlaywriterTransport", () => {
 		const { extension, create_child } = make_transport();
 		const { connection, child, send, start } = create_child();
 		start();
-		send("Page.captureScreenshot", {
+		send({
+			method: "Page.captureScreenshot",
+			params: {
 			format: "png",
 			captureBeyondViewport: false,
 			clip: { x: 0, y: 0, width: 8192, height: 8192, scale: 1 },
+		},
 		});
-		send("Runtime.evaluate", { expression: "1", contextId: 99 });
-		send("Page.navigate", { url: "file:///private" });
-		send("Browser.setWindowBounds", { windowId: 99, bounds: { width: 100, height: 100 } });
-		send("Target.attachToTarget", { targetId: "other-page", flatten: true }, null);
+		send({ method: "Runtime.evaluate", params: { expression: "1", contextId: 99 } });
+		send({ method: "Page.navigate", params: { url: "file:///private" } });
+		send({ method: "Browser.setWindowBounds", params: { windowId: 99, bounds: { width: 100, height: 100 } } });
+		send({
+			method: "Target.attachToTarget",
+			params: { targetId: "other-page", flatten: true },
+			sessionId: null,
+		});
 		expect(messages(child).filter((message) => message.error).length).toBe(5);
 		expect(commands(extension).map((request) => request.method)).toEqual(["Target.setAutoAttach"]);
 		expect((await connection.settle(1000)).safe).toBe(true);
@@ -1331,9 +1485,9 @@ describe("PlaywriterTransport script commands", () => {
 		const { connection, child, send, start } = create_child();
 		start();
 		reply(commands(extension).at(-1)!.id);
-		const readId = send("Runtime.getProperties", { objectId: "endless-read" });
+		const readId = send({ method: "Runtime.getProperties", params: { objectId: "endless-read" } });
 		const read = commands(extension).at(-1)!;
-		send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 1, y: 1 });
+		send({ method: "Input.dispatchMouseEvent", params: { type: "mouseMoved", x: 1, y: 1 } });
 		const input = commands(extension).at(-1)!;
 		await vi.advanceTimersByTimeAsync(30_000);
 		expect(messages(child).find((message) => message.id === readId)).toMatchObject({
@@ -1351,13 +1505,19 @@ describe("PlaywriterTransport script commands", () => {
 		const { create_child, emit } = make_transport({ blockedHosts: ["blocked.test"] });
 		const { connection, child, send, start } = create_child();
 		start();
-		emit("Page.frameNavigated", {
+		emit({
+			method: "Page.frameNavigated",
+			params: {
 			frame: { id: "inner-frame", parentId: "main-frame", url: "https://blocked.test/" },
+		},
 		});
-		emit("Page.frameNavigated", {
+		emit({
+			method: "Page.frameNavigated",
+			params: {
 			frame: { id: "inner-frame", parentId: "main-frame", url: "https://fixture.test/" },
+		},
 		});
-		const id = send("Page.enable");
+		const id = send({ method: "Page.enable" });
 		expect(messages(child).find((message) => message.id === id)).toHaveProperty("error");
 		expect(
 			messages(child).some((message) => message.method === "Page.frameNavigated"),
@@ -1373,7 +1533,7 @@ describe("PlaywriterTransport script commands", () => {
 		start();
 		// Answer Fetch.enable and Target.setAutoAttach.
 		for (const request of commands(extension)) reply(request.id);
-		const id = send("Page.getFrameTree");
+		const id = send({ method: "Page.getFrameTree" });
 		reply(commands(extension).at(-1)!.id, {
 			frameTree: {
 				frame: { id: "main-frame", url: "https://fixture.test/" },
@@ -1399,10 +1559,16 @@ describe("PlaywriterTransport script commands", () => {
 			params: { patterns: [{ urlPattern: "*blocked.test*", requestStage: "Request" }] },
 		});
 		start();
-		emit("Fetch.requestPaused", { requestId: "blocked-request", request: { url: "https://blocked.test/x" } });
-		emit("Fetch.requestPaused", {
+		emit({
+			method: "Fetch.requestPaused",
+			params: { requestId: "blocked-request", request: { url: "https://blocked.test/x" } },
+		});
+		emit({
+			method: "Fetch.requestPaused",
+			params: {
 			requestId: "allowed-request",
 			request: { url: "https://fixture.test/?q=blocked.test" },
+		},
 		});
 		expect(commands(extension).slice(-2)).toMatchObject([
 			{ method: "Fetch.failRequest", params: { requestId: "blocked-request", errorReason: "BlockedByClient" } },
@@ -1418,13 +1584,22 @@ describe("PlaywriterTransport script commands", () => {
 		["Meta+V", "Input.dispatchKeyEvent", { type: "keyDown", modifiers: 4, key: "v", code: "KeyV" }],
 		["Shift+Insert", "Input.dispatchKeyEvent", { type: "keyDown", modifiers: 8, key: "Insert", code: "Insert" }],
 		["middle click", "Input.dispatchMouseEvent", { type: "mousePressed", button: "middle", x: 1, y: 1 }],
-	])("refuses a paste from the user's clipboard: %s", async (_name, method, params) => {
+	])("refuses a paste from the user's clipboard: %s", async (args: {
+		_name: any;
+		method: any;
+		params: any;
+	}) => {
+		const { method, params } = args;
+
 		const { create_child, extension } = make_transport();
 		const { connection, child, send, start } = create_child();
 		start();
-		const id = send(method, params);
+		const id = send({ method, params });
 		expect(messages(child).find((message) => message.id === id)).toHaveProperty("error");
-		send("Input.dispatchKeyEvent", { type: "keyDown", modifiers: 0, key: "v", code: "KeyV" });
+		send({
+			method: "Input.dispatchKeyEvent",
+			params: { type: "keyDown", modifiers: 0, key: "v", code: "KeyV" },
+		});
 		expect(commands(extension).map((request) => request.method)).toEqual([
 			"Target.setAutoAttach",
 			"Input.dispatchKeyEvent",
@@ -1438,7 +1613,7 @@ describe("PlaywriterTransport script commands", () => {
 		start();
 		// Answer Fetch.enable and Target.setAutoAttach.
 		for (const request of commands(extension)) reply(request.id);
-		const id = send("Page.getNavigationHistory");
+		const id = send({ method: "Page.getNavigationHistory" });
 		reply(commands(extension).at(-1)!.id, {
 			currentIndex: 2,
 			entries: [
@@ -1456,9 +1631,9 @@ describe("PlaywriterTransport script commands", () => {
 				],
 			},
 		});
-		const blocked = send("Page.navigateToHistoryEntry", { entryId: 1 });
-		const unknown = send("Page.navigateToHistoryEntry", { entryId: 99 });
-		send("Page.navigateToHistoryEntry", { entryId: 2 });
+		const blocked = send({ method: "Page.navigateToHistoryEntry", params: { entryId: 1 } });
+		const unknown = send({ method: "Page.navigateToHistoryEntry", params: { entryId: 99 } });
+		send({ method: "Page.navigateToHistoryEntry", params: { entryId: 2 } });
 		expect(messages(child).find((message) => message.id === blocked)).toHaveProperty("error");
 		expect(messages(child).find((message) => message.id === unknown)).toHaveProperty("error");
 		expect(commands(extension).at(-1)).toMatchObject({
@@ -1477,11 +1652,11 @@ describe("PlaywriterTransport script commands", () => {
 		const { connection, child, send, start } = create_child();
 		const dialog = { type: "confirm", message: "Fixture", defaultPrompt: "", url: "https://fixture.test/" };
 		start();
-		emit("Page.javascriptDialogOpening", dialog);
+		emit({ method: "Page.javascriptDialogOpening", params: dialog });
 		expect(messages(child).some((message) => message.method === "Page.javascriptDialogOpening")).toBe(true);
-		send("Page.handleJavaScriptDialog", { accept: true });
-		emit("Page.javascriptDialogClosed", { result: true, userInput: "" });
-		emit("Page.javascriptDialogOpening", dialog);
+		send({ method: "Page.handleJavaScriptDialog", params: { accept: true } });
+		emit({ method: "Page.javascriptDialogClosed", params: { result: true, userInput: "" } });
+		emit({ method: "Page.javascriptDialogOpening", params: dialog });
 		expect(await connection.settle(1000)).toEqual({ safe: true, reason: null });
 		expect(onEvent).not.toHaveBeenCalled();
 		expect(

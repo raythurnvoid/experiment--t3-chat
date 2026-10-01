@@ -59,7 +59,7 @@ const FilesSearchPaletteContent = memo(function FilesSearchPaletteContent(props:
 	const inputRef = useRef<HTMLInputElement>(null);
 	const firstResultRef = useRef<HTMLButtonElement>(null);
 	const resultsRef = useRef<HTMLDivElement>(null);
-	const { entries, isFailed: isEntriesFailed } = useFilesVisibleEntries(membershipId, "/", "subtree");
+	const { entries, isFailed: isEntriesFailed } = useFilesVisibleEntries({ membershipId, folderPath: "/", mode: "subtree" });
 	const treeItems = useMemo(
 		() =>
 			entries?.map((entry) => ({
@@ -73,7 +73,7 @@ const FilesSearchPaletteContent = memo(function FilesSearchPaletteContent(props:
 		searchServerTargetKeys,
 		isSearchLoading: isServerFilterLoading,
 		isSearchFailed: isServerFilterFailed,
-	} = useFilesSearchServerFilters(membershipId, debouncedQuery, treeItems);
+	} = useFilesSearchServerFilters({ membershipId, searchQuery: debouncedQuery, treeItemsList: treeItems });
 	const parsed = useMemo(() => files_search_query_parse(debouncedQuery), [debouncedQuery]);
 	const text = `${parsed.text.replace(/"/gu, "").trim()}`;
 	const textQuery = detect_search_query_mode(text);
@@ -335,11 +335,11 @@ const FilesSearchPaletteContent = memo(function FilesSearchPaletteContent(props:
 
 const FilesSearchPalette = memo(function FilesSearchPalette() {
 	const [isOpen, setIsOpen] = useState(false);
-	AppHotkeysProvider.useHotkey(
-		"Mod+Shift+F",
-		useFn(() => setIsOpen(true)),
-		{ ignoreInputs: false },
-	);
+	AppHotkeysProvider.useHotkey({
+		hotkey: "Mod+Shift+F",
+		callback: useFn(() => setIsOpen(true)),
+		options: { ignoreInputs: false },
+	});
 	return (
 		<>
 			<MyIconButton variant="ghost-highlightable" tooltip="Search files (Ctrl+Shift+F)" onClick={() => setIsOpen(true)}>

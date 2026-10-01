@@ -58,21 +58,23 @@ const animations_cache = new WeakMap<HTMLElement, Map<string, WeakRef<Animation>
  * @param keyframes - Equivalent to CSS `@keyframes`.
  * @param options - Equivalent to CSS `animation` properties.
  */
-export function simple_animations_animate_and_cache(
+export function simple_animations_animate_and_cache(args: {
 	/**
 	 * Element to animate.
 	 */
-	element: HTMLElement,
+	element: HTMLElement;
 	/**
 	 * Unique identifier for the animation.
 	 */
-	id: string,
+	id: string;
 	/**
 	 * Equivalent to CSS `@keyframes`.
 	 */
-	keyframes: Keyframe[],
-	options: simple_animations_AnimateOptions,
-) {
+	keyframes: Keyframe[];
+	options: simple_animations_AnimateOptions;
+}) {
+	const { element, id, keyframes, options } = args;
+
 	if (!animations_cache.has(element)) {
 		animations_cache.set(element, new Map());
 	}
@@ -119,9 +121,14 @@ function create_group_noop_cached_animation(
 		duration: number;
 	},
 ) {
-	return simple_animations_animate_and_cache(document.body, id, [{}], {
+	return simple_animations_animate_and_cache({
+		element: document.body,
+		id,
+		keyframes: [{}],
+		options: {
 		duration: options.duration,
 		fill: "none",
+	},
 	});
 }
 
@@ -195,11 +202,9 @@ export function simple_animations_create_id(label: string) {
 // 	>
 // >();
 
-export function simple_animations_register_animation(
-	element: HTMLElement,
-	id: string /**
-	 * Equivalent to CSS `@keyframes`.
-	 */,
-	keyframes: Keyframe[],
-	options: simple_animations_AnimateOptions,
-) {}
+export function simple_animations_register_animation(args: {
+	element: HTMLElement;
+	id: string;
+	keyframes: Keyframe[];
+	options: simple_animations_AnimateOptions;
+}) {}

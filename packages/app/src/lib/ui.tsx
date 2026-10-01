@@ -206,16 +206,18 @@ type useUiInteractedOutside_Options = {
  * @param options.allowedAreas Extra inside areas excluded from outside detection.
  * @param options.enable Enables or disables outside interaction handling.
  */
-export function useUiInteractedOutside(
-	container: HTMLElement | RefObject<HTMLElement | null> | null,
-	callback: ((event: FocusEvent | PointerEvent) => void) | undefined,
-	options?: useUiInteractedOutside_Options,
-) {
+export function useUiInteractedOutside(args: {
+	container: HTMLElement | RefObject<HTMLElement | null> | null;
+	callback: ((event: FocusEvent | PointerEvent) => void) | undefined;
+	options?: useUiInteractedOutside_Options;
+}) {
+	const { container, callback, options } = args;
+
 	const { allowedAreas = [], enable = true } = options ?? {};
 
-	useGlobalEventList(
-		["pointerdown", "focusin"],
-		(event) => {
+	useGlobalEventList({
+		events: ["pointerdown", "focusin"],
+		handler: (event) => {
 			const containerElement =
 				container && typeof container === "object" && "current" in container ? container.current : container;
 			if (!enable || !containerElement || !callback) {
@@ -234,7 +236,7 @@ export function useUiInteractedOutside(
 
 			callback(event);
 		},
-		{ capture: true },
-	);
+		options: { capture: true },
+	});
 }
 // #endregion useUiInteractedOutside

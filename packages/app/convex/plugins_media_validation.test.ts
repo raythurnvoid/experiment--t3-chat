@@ -192,11 +192,13 @@ async function snapshot(f: Awaited<ReturnType<typeof fixture>>) {
 	}));
 }
 
-async function expect_clock(
-	f: Awaited<ReturnType<typeof fixture>>,
-	before: Awaited<ReturnType<typeof snapshot>>,
-	changed: boolean,
-) {
+async function expect_clock(args: {
+	f: Awaited<ReturnType<typeof fixture>>;
+	before: Awaited<ReturnType<typeof snapshot>>;
+	changed: boolean;
+}) {
+	const { f, before, changed } = args;
+
 	const after = await snapshot(f);
 	const previous = before.clocks.find((clock) => clock.workspaceId === f.db.workspaceId)!;
 	const current = after.clocks.find((clock) => clock._id === previous._id)!;
@@ -310,7 +312,7 @@ describe("plugin file media validation clocks", () => {
 		expect(after.nodes).toHaveLength(1);
 		expect(file_grants(after, f.nodeId)).toEqual(file_grants(before, f.nodeId));
 		expect(after.bindings).toMatchObject([{ nodeId: f.nodeId, scopeId: "empty" }]);
-		await expect_clock(f, before, true);
+		await expect_clock({ f, before, changed: true });
 	});
 
 	test("advances the workspace clock for initial mirrored readers and preserves account grants", async () => {
@@ -323,7 +325,7 @@ describe("plugin file media validation clocks", () => {
 			{ userId: f.db.userId, permission: "content.read" },
 		]);
 		expect(grants.filter((grant) => grant.principalKind === "service_account")).toEqual(file_grants(before, f.nodeId));
-		await expect_clock(f, before, true);
+		await expect_clock({ f, before, changed: true });
 	});
 
 	test.each(["add", "remove"])("advances the workspace clock for grant-only binding %s", async (change) => {
@@ -358,7 +360,7 @@ describe("plugin file media validation clocks", () => {
 		expect(grants.filter((grant) => grant.principalKind === "service_account")).toEqual(
 			file_grants(before, f.nodeId).filter((grant) => grant.principalKind === "service_account"),
 		);
-		await expect_clock(f, before, true);
+		await expect_clock({ f, before, changed: true });
 	});
 
 	test.each(["same", "detach", "absent", "denied", "missing-scope"])(
@@ -380,7 +382,7 @@ describe("plugin file media validation clocks", () => {
 			expect(after.nodes).toEqual(before.nodes);
 			expect(after.grants).toEqual(before.grants);
 			if (change === "detach" || change === "absent") expect(after.bindings).toEqual([]);
-			await expect_clock(f, before, false);
+			await expect_clock({ f, before, changed: false });
 		},
 	);
 
@@ -428,7 +430,7 @@ describe("plugin file media validation clocks", () => {
 			);
 			expect(after.nodes).toEqual(before.nodes);
 			if (["delete", "leave", "cleanup"].includes(change)) expect(after.bindings).toEqual([]);
-			await expect_clock(f, before, true);
+			await expect_clock({ f, before, changed: true });
 		},
 	);
 
@@ -454,7 +456,7 @@ describe("plugin file media validation clocks", () => {
 			const after = await snapshot(f);
 			expect(file_grants(after, f.nodeId)).toEqual(file_grants(before, f.nodeId));
 			expect(after.nodes).toEqual(before.nodes);
-			await expect_clock(f, before, false);
+			await expect_clock({ f, before, changed: false });
 		},
 	);
 
@@ -473,7 +475,7 @@ describe("plugin file media validation clocks", () => {
 		const after = await snapshot(f);
 		expect(after.nodes).toEqual(before.nodes);
 		expect(after.grants).toEqual(before.grants);
-		await expect_clock(f, before, false);
+		await expect_clock({ f, before, changed: false });
 	});
 
 	test("initial external leaf restriction advances the workspace clock beyond the ordinary create", async () => {
@@ -497,7 +499,7 @@ describe("plugin file media validation clocks", () => {
 				[],
 			);
 			expect(after.externalBindings).toHaveLength(privateRoot ? 1 : 0);
-			await expect_clock(f, before, true);
+			await expect_clock({ f, before, changed: true });
 			deltas.push(
 				after.clocks.find((clock) => clock.workspaceId === f.db.workspaceId)!.revision -
 					before.clocks.find((clock) => clock.workspaceId === f.db.workspaceId)!.revision,
@@ -534,7 +536,7 @@ describe("plugin file media validation clocks", () => {
 			expect(grants.filter((grant) => grant.principalKind === "user")[0]?._id).not.toBe(
 				oldGrants.find((grant) => grant.principalKind === "user")?._id,
 			);
-		await expect_clock(f, before, true);
+		await expect_clock({ f, before, changed: true });
 	});
 
 	test.each(["empty", "replay", "denied", "stale-lifetime", "ensure-replay"])(
@@ -575,7 +577,7 @@ describe("plugin file media validation clocks", () => {
 			const after = await snapshot(f);
 			expect(after.grants).toEqual(before.grants);
 			expect(after.nodes).toEqual(before.nodes);
-			await expect_clock(f, before, false);
+			await expect_clock({ f, before, changed: false });
 		},
 	);
 
@@ -595,7 +597,7 @@ describe("plugin file media validation clocks", () => {
 		expect(after.nodes).toEqual(before.nodes);
 		expect(after.grants).toEqual(before.grants);
 		expect(after.externalBindings).toEqual(before.externalBindings);
-		await expect_clock(f, before, false);
+		await expect_clock({ f, before, changed: false });
 	});
 
 	test.each(["cancel", "denied"])("keeps the workspace clock for reader rollback %s", async (change) => {
@@ -622,7 +624,7 @@ describe("plugin file media validation clocks", () => {
 		expect(after.nodes).toEqual(before.nodes);
 		expect(after.grants).toEqual(before.grants);
 		expect(after.externalBindings).toEqual(before.externalBindings);
-		await expect_clock(f, before, false);
+		await expect_clock({ f, before, changed: false });
 	});
 
 	test("rollback restores human readers, keeps account grants, and advances the workspace clock once per real undo", async () => {
@@ -655,9 +657,9 @@ describe("plugin file media validation clocks", () => {
 		expect(grants.filter((grant) => grant.principalKind === "service_account")).toEqual(
 			file_grants(before, writer.folderNodeId),
 		);
-		await expect_clock(f, before, true);
+		await expect_clock({ f, before, changed: true });
 		expect(await f.t.mutation(internal.plugins_external_file_readers.rollback, args)).toEqual(result);
 		expect((await snapshot(f)).grants).toEqual(after.grants);
-		await expect_clock(f, after, false);
+		await expect_clock({ f, before: after, changed: false });
 	});
 });

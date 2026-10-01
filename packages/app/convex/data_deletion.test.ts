@@ -1713,11 +1713,11 @@ describe("init_user_deletion", () => {
 			]);
 		});
 
-		const sharedPresenceRoomId = files_create_room_id(
-			sharedOrganization.organizationId,
-			sharedOrganization.extraWorkspaceId,
-			"phase-one-shared-presence-page",
-		);
+		const sharedPresenceRoomId = files_create_room_id({
+			organizationId: sharedOrganization.organizationId,
+			workspaceId: sharedOrganization.extraWorkspaceId,
+			nodeId: "phase-one-shared-presence-page",
+		});
 		await t.run(async (ctx) => {
 			await Promise.all([
 				ctx.runMutation(components.presence.public.heartbeat, {

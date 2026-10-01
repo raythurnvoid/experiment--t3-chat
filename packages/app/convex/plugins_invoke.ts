@@ -63,7 +63,13 @@ async function read_request_text_bounded(request: Request, maxBytes: number) {
 	return new TextDecoder().decode(bytes);
 }
 
-async function parse_request_json<T>(request: Request, schema: z.ZodSchema<T>, maxBytes: number) {
+async function parse_request_json<T>(args: {
+	request: Request;
+	schema: z.ZodSchema<T>;
+	maxBytes: number;
+}) {
+	const { request, schema, maxBytes } = args;
+
 	const declaredBytes = Number(request.headers.get("content-length") ?? Number.NaN);
 	if (Number.isFinite(declaredBytes) && declaredBytes > maxBytes) {
 		return { _nay: { message: "Request body is too large" } } as const;
@@ -96,12 +102,16 @@ const invoke_body_validator = z
 
 export type plugins_invoke_http_invoke_Body = z.infer<typeof invoke_body_validator>;
 
-export async function plugins_invoke_http_invoke(
-	ctx: ActionCtx,
-	request: Request,
-	path: "/api/v1/plugin-backend/invoke",
-) {
-	const auth = await public_api_authorize_request(ctx, request, {
+export async function plugins_invoke_http_invoke(args: {
+	ctx: ActionCtx;
+	request: Request;
+	path: "/api/v1/plugin-backend/invoke";
+}) {
+	const { ctx, request, path } = args;
+
+	const auth = await public_api_authorize_request({
+		ctx,
+		request,
 		requiredScope: "backend:invoke" satisfies public_api_Scope,
 		allowedKinds: ["plugin_ui"],
 		route: path,
@@ -111,7 +121,7 @@ export async function plugins_invoke_http_invoke(
 	}
 	const principal = auth._yay.principal;
 
-	const body = await parse_request_json(request, invoke_body_validator, INVOKE_REQUEST_MAX_BYTES);
+	const body = await parse_request_json({ request, schema: invoke_body_validator, maxBytes: INVOKE_REQUEST_MAX_BYTES });
 	if (body._nay) {
 		return { status: 400, body: { message: body._nay.message } } as const;
 	}

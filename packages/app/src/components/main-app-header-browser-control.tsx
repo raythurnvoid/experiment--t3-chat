@@ -128,14 +128,8 @@ export const MainAppHeaderBrowserControl = memo(function MainAppHeaderBrowserCon
 				"data-agent-access": preferences?.webAgentAccess ? "on" : "off",
 			} satisfies MainAppHeaderBrowserControl_CustomAttributes)}
 		>
-			{preferences?.webChoice.provider === "playwriter" ||
-			(remoteAvailable?.hasSavedConnection && !remoteAvailable.enabled) ? (
-				<MainAppHeaderPlaywriterBrowserControl />
-			) : preferences?.webChoice.provider === "cloud" ? (
-				<MainAppHeaderCloudBrowserControl />
-			) : preferences?.webChoice.provider === "none" ? (
-				<span role="status">No browser selected</span>
-			) : null}
+			{cloudAvailable?.enabled && <MainAppHeaderCloudBrowserControl />}
+			{(remoteAvailable?.enabled || remoteAvailable?.hasSavedConnection) && <MainAppHeaderPlaywriterBrowserControl />}
 			{preferences && !preferences.webAgentAccess && <span>Agent access off</span>}
 			<MyButton variant="ghost" onClick={() => setSettingsOpen(true)}>
 				Browser settings

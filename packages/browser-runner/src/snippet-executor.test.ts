@@ -8,7 +8,13 @@ import {
 } from "./snippet-executor";
 
 describe("build_executor_module", () => {
-	function run_snippet(code: string, budgetMs = 1000, state: string | null = null) {
+	function run_snippet(args: {
+		code: string;
+		budgetMs?: number;
+		state?: string | null;
+	}) {
+		const { code, budgetMs = 1000, state = null } = args;
+
 		const screenshot = Uint8Array.from(
 			Buffer.from(
 				"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+Xf6sAAAAASUVORK5CYII=",
@@ -62,24 +68,28 @@ describe("build_executor_module", () => {
 	it.each([undefined, null, "", "home", "CURRENT", 1])(
 		"rejects workspace %s inside the browser harness",
 		async (workspace) => {
-			const result = await run_snippet(`
+			const result = await run_snippet({
+				code: `
 			emitFile({ workspace: "personal", path: "/first.bin", bytes: new Uint8Array([1]) });
 			emitFile({ workspace: ${JSON.stringify(workspace)}, path: "/bad.bin", bytes: new Uint8Array([2]) });
-		`);
+		`,
+			});
 			expect(result).toMatchObject({ ok: false, error: { message: "emitFile workspace must be current or personal" } });
 			expect(result.files).toBeUndefined();
 		},
 	);
 
 	it("emits a screenshot and arbitrary binary bytes through the same helper", async () => {
-		const result = await run_snippet(`
+		const result = await run_snippet({
+			code: `
 			const source = new Uint8Array([99, 0, 255, 128, 99]);
 			emitFile({ workspace: "current", path: "/reports/slice.bin", bytes: source.subarray(1, 4) });
 			emitFile({ workspace: "personal", path: "/reports/buffer.bin", bytes: source.buffer, contentType: "application/x-custom" });
 			emitFile({ workspace: "current", path: "/reports/empty", bytes: new ArrayBuffer(0) });
 			emitFile({ workspace: "personal", path: "/reports/page.png", bytes: await page.screenshot() });
 			source.fill(5);
-		`);
+		`,
+		});
 		expect(result.ok).toBe(true);
 		expect(result.files?.slice(0, 3)).toEqual([
 			{ workspace: "current", path: "/reports/slice.bin", bytes: new Uint8Array([0, 255, 128]) },
@@ -96,9 +106,9 @@ describe("build_executor_module", () => {
 	});
 
 	it("allows the exact file and byte budgets", async () => {
-		const result = await run_snippet(
-			`for (let i = 0; i < ${LIMITS.files}; i++) emitFile({ workspace: i % 2 ? "personal" : "current", path: "/reports/" + i, bytes: new Uint8Array(${LIMITS.fileBytes / LIMITS.files}) });`,
-		);
+		const result = await run_snippet({
+			code: `for (let i = 0; i < ${LIMITS.files}; i++) emitFile({ workspace: i % 2 ? "personal" : "current", path: "/reports/" + i, bytes: new Uint8Array(${LIMITS.fileBytes / LIMITS.files}) });`,
+		});
 		expect(result.ok).toBe(true);
 		expect(result.files).toHaveLength(LIMITS.files);
 		expect(result.files?.reduce((sum, file) => sum + file.bytes.byteLength, 0)).toBe(LIMITS.fileBytes);
@@ -112,9 +122,9 @@ describe("build_executor_module", () => {
 		`emitFile({ workspace: "current", path: "/reports/bad", contentType: null, bytes: new Uint8Array() });`,
 		`throw new Error("failed");`,
 	])("drops all emitted files when the snippet fails", async (failure) => {
-		const result = await run_snippet(
-			`emitFile({ workspace: "current", path: "/reports/first", bytes: new Uint8Array([1]) }); ${failure}`,
-		);
+		const result = await run_snippet({
+			code: `emitFile({ workspace: "current", path: "/reports/first", bytes: new Uint8Array([1]) }); ${failure}`,
+		});
 		expect(result.ok).toBe(false);
 		expect(result.files).toBeUndefined();
 	});
@@ -122,14 +132,14 @@ describe("build_executor_module", () => {
 	it("drops emitted files on timeout and clears the timer after success", async () => {
 		vi.useFakeTimers();
 		try {
-			const pending = run_snippet(
-				'emitFile({ workspace: "current", path: "/reports/first", bytes: new Uint8Array([1]) }); await new Promise(() => {});',
-				50,
-			);
+			const pending = run_snippet({
+				code: 'emitFile({ workspace: "current", path: "/reports/first", bytes: new Uint8Array([1]) }); await new Promise(() => {});',
+				budgetMs: 50,
+			});
 			await vi.advanceTimersByTimeAsync(50);
 			expect(await pending).toMatchObject({ ok: false, timedOut: true, error: { message: "Execution timed out" } });
 			expect((await pending).files).toBeUndefined();
-			expect((await run_snippet("return 1;")).ok).toBe(true);
+			expect((await run_snippet({ code: "return 1;" })).ok).toBe(true);
 			expect(vi.getTimerCount()).toBe(0);
 		} finally {
 			vi.useRealTimers();
@@ -242,7 +252,7 @@ describe("build_executor_module", () => {
 		"async function main({ page }) {\n\treturn 1;\n}",
 		"return async ({ page }) => 1;",
 	])("refuses a snippet that only defines or returns a function: %s", async (code) => {
-		expect(await run_snippet(code)).toMatchObject({
+		expect(await run_snippet({ code })).toMatchObject({
 			ok: false,
 			error: { message: "Your code returned a function. Write the function body only, do not wrap it in a function." },
 		});
@@ -258,7 +268,7 @@ describe("build_executor_module", () => {
 		],
 		["const run = async () => 3;\nreturn await run();", "3"],
 	])("runs a snippet that uses its own functions: %s", async (code, resultJson) => {
-		expect(await run_snippet(code)).toMatchObject({ ok: true, resultJson });
+		expect(await run_snippet({ code })).toMatchObject({ ok: true, resultJson });
 	});
 
 	it("wraps user code with the registered page harness", () => {
@@ -274,17 +284,17 @@ describe("build_executor_module", () => {
 	});
 
 	it("keeps plain JSON state between calls, even when the snippet throws", async () => {
-		const first = await run_snippet("state.count = (state.count ?? 0) + 1; return state.count;", 1000, null);
+		const first = await run_snippet({ code: "state.count = (state.count ?? 0) + 1; return state.count;", budgetMs: 1000, state: null });
 		expect(first).toMatchObject({ ok: true, resultJson: "1", stateJson: '{"count":1}', stateWarnings: [] });
 
-		const second = await run_snippet('state.count += 1; throw new Error("failed");', 1000, first.stateJson);
+		const second = await run_snippet({ code: 'state.count += 1; throw new Error("failed");', budgetMs: 1000, state: first.stateJson });
 		expect(second).toMatchObject({ ok: false, stateJson: '{"count":2}' });
 	});
 
 	it("drops browser objects and other non-JSON values from state with a warning", async () => {
-		const result = await run_snippet(
-			"state.page = page; state.when = new Date(0); state.list = [1, () => 2]; state.n = 1; state.self = state;",
-		);
+		const result = await run_snippet({
+			code: "state.page = page; state.when = new Date(0); state.list = [1, () => 2]; state.n = 1; state.self = state;",
+		});
 		expect(JSON.parse(result.stateJson!)).toEqual({ list: [1, null], n: 1 });
 		expect(result.stateWarnings.map((warning) => warning.split(" ")[0])).toEqual([
 			"state.page",
@@ -295,7 +305,7 @@ describe("build_executor_module", () => {
 	});
 
 	it("does not save state over the size limit", async () => {
-		const result = await run_snippet(`state.big = "x".repeat(${LIMITS.stateBytes});`);
+		const result = await run_snippet({ code: `state.big = "x".repeat(${LIMITS.stateBytes});` });
 		expect(result.stateJson).toBeNull();
 		expect(result.stateWarnings[0]).toContain("larger than");
 	});

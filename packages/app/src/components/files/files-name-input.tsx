@@ -77,7 +77,13 @@ export type FilesNameInputControl_Props = Omit<
 export const FilesNameInputControl = memo(function FilesNameInputControl(props: FilesNameInputControl_Props) {
 	const { kind, onValueChange, onEditStart, ...rest } = props;
 
-	const syncInputValue = useFn((element: HTMLInputElement, nextValue: string, nextSelectionStart?: number) => {
+	const syncInputValue = useFn((args: {
+		element: HTMLInputElement;
+		nextValue: string;
+		nextSelectionStart?: number;
+	}) => {
+		const { element, nextValue, nextSelectionStart } = args;
+
 		if (element.value !== nextValue) {
 			// Update the DOM immediately because beforeinput/paste handlers prevent the browser default.
 			element.value = nextValue;
@@ -131,7 +137,7 @@ export const FilesNameInputControl = memo(function FilesNameInputControl(props: 
 		}
 
 		// Place the caret at the end of the inserted normalized fragment.
-		syncInputValue(element, nextValue, selectionStart + normalizedInsertedText.length);
+		syncInputValue({ element, nextValue, nextSelectionStart: selectionStart + normalizedInsertedText.length });
 	});
 
 	const applyInputValue = useFn((element: HTMLInputElement) => {
@@ -143,7 +149,7 @@ export const FilesNameInputControl = memo(function FilesNameInputControl(props: 
 		});
 
 		// Push the fully sanitized fallback value into the DOM and the consumer's state.
-		syncInputValue(element, nextValue, selectionStart);
+		syncInputValue({ element, nextValue, nextSelectionStart: selectionStart });
 	});
 
 	const handleBeforeInput = useFn<NonNullable<ComponentProps<"input">["onBeforeInput"]>>((event) => {

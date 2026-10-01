@@ -139,8 +139,8 @@ function create_runner(currentWorkspacePath = homePath, allowDbFilesMkdir = true
 			})),
 		}),
 		customCommands: [
-			bash_cp_command_create(ctx, dbFilesRoots, transferContext),
-			bash_mv_command_create(ctx, dbFilesRoots, transferContext),
+			bash_cp_command_create({ ctx, dbFilesRoots, transferContext }),
+			bash_mv_command_create({ ctx, dbFilesRoots, transferContext }),
 		],
 	});
 	return {

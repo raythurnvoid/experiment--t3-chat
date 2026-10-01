@@ -625,11 +625,13 @@ class BashTmpFs implements IFileSystem {
 	 * runtimes flushed; the collected baseline powers the end-of-call delta
 	 * flush.
 	 */
-	static async create(
-		ctx: ActionCtx,
-		threadId: Id<"ai_chat_threads">,
-		invocationId: Id<"ai_chat_bash_invocations">,
-	): Promise<BashTmpFs> {
+	static async create(args: {
+		ctx: ActionCtx;
+		threadId: Id<"ai_chat_threads">;
+		invocationId: Id<"ai_chat_bash_invocations">;
+	}): Promise<BashTmpFs> {
+		const { ctx, invocationId, threadId} = args;
+
 		const loaded = (await ctx.runQuery(internal.ai_chat_files.load_thread_tmp_files, {
 			threadId,
 			invocationId,
@@ -681,11 +683,13 @@ class BashTmpFs implements IFileSystem {
 	}
 
 	async writeFile(path: string, content: FileContent, options?: Parameters<IFileSystem["writeFile"]>[2]) {
+
 		await this.fs.writeFile(path, content, options);
 		this.markDirty(path);
 	}
 
 	async appendFile(path: string, content: FileContent, options?: Parameters<IFileSystem["appendFile"]>[2]) {
+
 		await this.fs.appendFile(path, content, options);
 		this.markDirty(path);
 	}
@@ -713,6 +717,7 @@ class BashTmpFs implements IFileSystem {
 	}
 
 	async cp(src: string, dest: string, options?: CpOptions) {
+
 		await this.fs.cp(src, dest, options);
 		this.markDirty(dest);
 	}
@@ -759,6 +764,7 @@ class BashTmpFs implements IFileSystem {
 	}
 
 	async utimes(path: string, atime: Date, mtime: Date) {
+
 		await this.fs.utimes(path, atime, mtime);
 		this.markDirty(path);
 	}
@@ -802,6 +808,7 @@ class ReadOnlyBaseFs implements IFileSystem {
 	}
 
 	async writeFile(path: string, _content: FileContent, _options?: Parameters<IFileSystem["writeFile"]>[2]) {
+
 		if (bash_normalize_path(path) === bash_DEV_NULL_PATH) {
 			return;
 		}
@@ -809,6 +816,7 @@ class ReadOnlyBaseFs implements IFileSystem {
 	}
 
 	async appendFile(path: string, _content: FileContent, _options?: Parameters<IFileSystem["appendFile"]>[2]) {
+
 		if (bash_normalize_path(path) === bash_DEV_NULL_PATH) {
 			return;
 		}
@@ -869,6 +877,7 @@ class ReadOnlyBaseFs implements IFileSystem {
 	}
 
 	async cp(_src: string, dest: string, _options?: CpOptions) {
+
 		throw new ReadOnlyFileSystemError(dest);
 	}
 
@@ -911,6 +920,7 @@ class ReadOnlyBaseFs implements IFileSystem {
 	}
 
 	async utimes(path: string, _atime: Date, _mtime: Date) {
+
 		throw new ReadOnlyFileSystemError(path);
 	}
 }
@@ -932,10 +942,12 @@ class ReadOnlyInMemoryFs implements IFileSystem {
 	}
 
 	async writeFile(path: string, _content: FileContent, _options?: Parameters<IFileSystem["writeFile"]>[2]) {
+
 		throw new ReadOnlyFileSystemError(path);
 	}
 
 	async appendFile(path: string, _content: FileContent, _options?: Parameters<IFileSystem["appendFile"]>[2]) {
+
 		throw new ReadOnlyFileSystemError(path);
 	}
 
@@ -963,6 +975,7 @@ class ReadOnlyInMemoryFs implements IFileSystem {
 	}
 
 	async cp(_src: string, dest: string, _options?: CpOptions) {
+
 		throw new ReadOnlyFileSystemError(dest);
 	}
 
@@ -1003,6 +1016,7 @@ class ReadOnlyInMemoryFs implements IFileSystem {
 	}
 
 	async utimes(path: string, _atime: Date, _mtime: Date) {
+
 		throw new ReadOnlyFileSystemError(path);
 	}
 }
@@ -1137,7 +1151,7 @@ async function bash_fs_create(args: {
 	});
 	if (personal._nay) throw new Error(personal._nay.message);
 
-	const tmpFs = await BashTmpFs.create(args.ctx, args.threadId, args.jobContext.invocationId);
+	const tmpFs = await BashTmpFs.create({ ctx: args.ctx, threadId: args.threadId, invocationId: args.jobContext.invocationId });
 
 	// `/shells/<name>/transcript` loads on first read. The engine also loads a lazy file on `stat`
 	// (it needs a size), so `ls -l`, `find`, `wc -c` and `test -s` on a transcript run the query;
@@ -1552,9 +1566,9 @@ function bash_shell_create(
 			bash_textgrep_command_create(ctx, dbFilesRoots),
 			// App readers.
 			bash_cat_command_create(ctx, dbFilesRoots),
-			bash_head_tail_wc_command_create(ctx, dbFilesRoots, "head"),
-			bash_head_tail_wc_command_create(ctx, dbFilesRoots, "tail"),
-			bash_head_tail_wc_command_create(ctx, dbFilesRoots, "wc"),
+			bash_head_tail_wc_command_create({ ctx, dbFilesRoots, command: "head" }),
+			bash_head_tail_wc_command_create({ ctx, dbFilesRoots, command: "tail" }),
+			bash_head_tail_wc_command_create({ ctx, dbFilesRoots, command: "wc" }),
 			bash_stat_command_create(ctx, dbFilesRoots),
 			...stream_utility_command_create_all(dbFilesRoots),
 			bash_sed_command_create(ctx, dbFilesRoots),
@@ -1563,8 +1577,8 @@ function bash_shell_create(
 			...(dbFilesRoots.app.fs.readOnlySource == null
 				? [
 						bash_rm_command_create(ctx, dbFilesRoots),
-						bash_cp_command_create(ctx, dbFilesRoots, args.transferContext),
-						bash_mv_command_create(ctx, dbFilesRoots, args.transferContext),
+						bash_cp_command_create({ ctx, dbFilesRoots, transferContext: args.transferContext }),
+						bash_mv_command_create({ ctx, dbFilesRoots, transferContext: args.transferContext }),
 					]
 				: []),
 			bash_tee_command_create(dbFilesRoots),
@@ -3092,7 +3106,13 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 	});
 
 	describe("tmp_fs_evict_to_limits", () => {
-		const set_mtime = async (tmpFs: BashTmpFs, path: string, mtime: number) => {
+		const set_mtime = async (args: {
+			tmpFs: BashTmpFs;
+			path: string;
+			mtime: number;
+		}) => {
+			const { tmpFs, path, mtime } = args;
+
 			const date = new Date(mtime);
 			await tmpFs.utimes(path, date, date);
 		};
@@ -3115,13 +3135,13 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const tmpFs = new BashTmpFs();
 			await tmpFs.mkdir("/dir");
 			await tmpFs.writeFile("/dir/child.txt", "child");
-			await set_mtime(tmpFs, "/dir", 1);
-			await set_mtime(tmpFs, "/dir/child.txt", 2);
+			await set_mtime({ tmpFs, path: "/dir", mtime: 1 });
+			await set_mtime({ tmpFs, path: "/dir/child.txt", mtime: 2 });
 
 			for (let index = 0; index < BASH_TMP_SESSION_MAX_PATHS - 1; index++) {
 				const path = `/new-${index}.txt`;
 				await tmpFs.writeFile(path, "x");
-				await set_mtime(tmpFs, path, 100 + index);
+				await set_mtime({ tmpFs, path, mtime: 100 + index });
 			}
 
 			const result = await tmp_fs_evict_to_limits(tmpFs);
@@ -3137,13 +3157,13 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const tmpFs = new BashTmpFs();
 			await tmpFs.mkdir("/dir");
 			await tmpFs.writeFile("/dir/child.txt", "child");
-			await set_mtime(tmpFs, "/dir", 1);
-			await set_mtime(tmpFs, "/dir/child.txt", 2);
+			await set_mtime({ tmpFs, path: "/dir", mtime: 1 });
+			await set_mtime({ tmpFs, path: "/dir/child.txt", mtime: 2 });
 
 			for (let index = 0; index < BASH_TMP_SESSION_MAX_PATHS; index++) {
 				const path = `/new-${index}.txt`;
 				await tmpFs.writeFile(path, "x");
-				await set_mtime(tmpFs, path, 100 + index);
+				await set_mtime({ tmpFs, path, mtime: 100 + index });
 			}
 
 			const result = await tmp_fs_evict_to_limits(tmpFs);

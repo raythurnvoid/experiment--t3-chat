@@ -312,7 +312,13 @@ async function restore(f: Fixture, nodeIds: Array<Id<"files_nodes">>) {
 	return await f.asOwner.mutation(api.files_nodes.unarchive_nodes, { membershipId: f.db.membershipId, nodeIds });
 }
 
-async function lock(f: Fixture, nodeId: Id<"files_nodes">, locked: boolean) {
+async function lock(args: {
+	f: Fixture;
+	nodeId: Id<"files_nodes">;
+	locked: boolean;
+}) {
+	const { f, locked, nodeId} = args;
+
 	expect(
 		await f.asOwner.mutation(api.files_nodes.set_node_write_policy, {
 			membershipId: f.db.membershipId,
@@ -342,7 +348,7 @@ async function read_node(f: Fixture, nodeId: Id<"files_nodes">) {
  */
 async function lock_archived(f: Fixture, nodeId: Id<"files_nodes">) {
 	const lockedFolder = await folder(f, `/locked-${nodeId}`);
-	await lock(f, lockedFolder, true);
+	await lock({ f, nodeId: lockedFolder, locked: true });
 	const writePolicy = (await read_node(f, lockedFolder)).writePolicy;
 	await f.t.run((ctx) => ctx.db.patch("files_nodes", nodeId, { writePolicy }));
 }
@@ -351,7 +357,13 @@ async function lock_archived(f: Fixture, nodeId: Id<"files_nodes">) {
  * Copy the file's metadata doc `count` more times. With 2,000 extra docs the file has more side docs
  * than a move may write in one mutation.
  */
-async function add_metadata_docs(f: Fixture, fileNodeId: Id<"files_nodes">, count: number) {
+async function add_metadata_docs(args: {
+	f: Fixture;
+	fileNodeId: Id<"files_nodes">;
+	count: number;
+}) {
+	const { f, fileNodeId, count } = args;
+
 	await f.t.run(async (ctx) => {
 		const metadata = (await ctx.db
 			.query("files_metadata_docs")
@@ -371,11 +383,13 @@ async function add_metadata_docs(f: Fixture, fileNodeId: Id<"files_nodes">, coun
  * the job queued itself. The empty folders get `archiveOperationId`. Clearing all of them needs more
  * reads than one mutation may do.
  */
-async function queue_empty_folders_first(
-	f: Fixture,
-	runId: Id<"files_archive_runs">,
-	archiveOperationId: string | null,
-) {
+async function queue_empty_folders_first(args: {
+	f: Fixture;
+	runId: Id<"files_archive_runs">;
+	archiveOperationId: string | null;
+}) {
+	const { f, runId, archiveOperationId} = args;
+
 	const opId = await f.t.run(
 		async (ctx) =>
 			(await ctx.db
@@ -546,7 +560,7 @@ describe("archive_nodes", () => {
 		const archived = await archive(f, [tree.topId]);
 		const job = archived._yay!;
 		expect((await read_node(f, tree.fileIds.at(-1)!)).archiveOperationId).toBeNull();
-		await lock(f, tree.fileIds.at(-1)!, true);
+		await lock({ f, nodeId: tree.fileIds.at(-1)!, locked: true });
 
 		const ended = await run_to_end(f, job);
 		expect(ended.activity.status).toBe("succeeded");
@@ -557,10 +571,10 @@ describe("archive_nodes", () => {
 		const f = await fixture();
 		const tree = await seed_tree(f, { name: "checked", folderCount: 6, filesPerFolder: 100 });
 		// The check reads 500 nodes inside the request, and the walk reaches this file last.
-		await lock(f, tree.fileIds.at(-1)!, true);
+		await lock({ f, nodeId: tree.fileIds.at(-1)!, locked: true });
 
 		const small = await seed_tree(f, { name: "checked-small", folderCount: 1, filesPerFolder: 2 });
-		await lock(f, small.fileIds[1]!, true);
+		await lock({ f, nodeId: small.fileIds[1]!, locked: true });
 		const refused = await archive(f, [small.topId]);
 		expect(refused._nay?.name).toBe("read_only");
 		expect(await f.t.run((ctx) => ctx.db.query("files_archive_runs").collect())).toEqual([]);
@@ -582,7 +596,7 @@ describe("archive_nodes", () => {
 		const f = await fixture();
 		const kept = await seed_tree(f, { name: "kept", folderCount: 1, filesPerFolder: 2 });
 		const refused = await seed_tree(f, { name: "refused", folderCount: 1, filesPerFolder: 2 });
-		await lock(f, refused.fileIds[1]!, true);
+		await lock({ f, nodeId: refused.fileIds[1]!, locked: true });
 
 		// The file inside the refused folder is named too. It stays active with its folder.
 		const archived = await archive(f, [kept.topId, refused.topId, refused.fileIds[0]!]);
@@ -621,7 +635,7 @@ describe("archive_nodes", () => {
 		const big = await seed_tree(f, { name: "big-refused", folderCount: 6, filesPerFolder: 100 });
 		const after = await seed_tree(f, { name: "after", folderCount: 1, filesPerFolder: 1 });
 		// The check reads 500 nodes in each step, and the walk reaches this file last.
-		await lock(f, big.fileIds.at(-1)!, true);
+		await lock({ f, nodeId: big.fileIds.at(-1)!, locked: true });
 
 		// The request checks 500 nodes and does not reach the read-only file yet.
 		const archived = await archive(f, [before.topId, big.topId, after.topId]);
@@ -640,8 +654,8 @@ describe("archive_nodes", () => {
 		const f = await fixture();
 		const first = await seed_tree(f, { name: "first-refused", folderCount: 1, filesPerFolder: 1 });
 		const second = await seed_tree(f, { name: "second-refused", folderCount: 1, filesPerFolder: 1 });
-		await lock(f, first.topId, true);
-		await lock(f, second.fileIds[0]!, true);
+		await lock({ f, nodeId: first.topId, locked: true });
+		await lock({ f, nodeId: second.fileIds[0]!, locked: true });
 
 		const refused = await archive(f, [first.topId, second.topId]);
 		expect(refused._nay?.message).toBe(
@@ -655,7 +669,7 @@ describe("archive_nodes", () => {
 		const f = await fixture();
 		const big = await seed_tree(f, { name: "big-alone", folderCount: 6, filesPerFolder: 100 });
 		const small = await seed_tree(f, { name: "small-archived", folderCount: 1, filesPerFolder: 1 });
-		await lock(f, big.fileIds.at(-1)!, true);
+		await lock({ f, nodeId: big.fileIds.at(-1)!, locked: true });
 
 		const archived = await archive(f, [big.topId, small.topId]);
 		// Somebody archives the small tree on their own before the check reaches it.
@@ -720,7 +734,7 @@ describe("archive_nodes", () => {
 		// so the request stops right after it refuses it, with its row still in the queue.
 		const first = await seed_tree(f, { name: "first-passed", folderCount: 6, filesPerFolder: 82 });
 		const refused = await seed_tree(f, { name: "second-refused", folderCount: 0, filesPerFolder: 0 });
-		await lock(f, refused.topId, true);
+		await lock({ f, nodeId: refused.topId, locked: true });
 
 		const archived = await f.t
 			.withIdentity({ issuer: "https://clerk.test", external_id: member.userId })
@@ -902,7 +916,7 @@ describe("archive_nodes", () => {
 		const job = (await archive(f, [tree.topId]))._yay!;
 		let run = (await f.t.run((ctx) => ctx.db.get("files_archive_runs", job.runId)))!;
 		while (run.phase !== "apply") run = (await step(f, job.runId))!;
-		const opId = await queue_empty_folders_first(f, job.runId, run.archiveOperationId);
+		const opId = await queue_empty_folders_first({ f, runId: job.runId, archiveOperationId: run.archiveOperationId });
 
 		await expect(step(f, job.runId)).resolves.toMatchObject({ active: true });
 		expect(await count_queue(f, opId)).toBeGreaterThan(0);
@@ -1326,7 +1340,7 @@ describe("unarchive_nodes", () => {
 		const f = await fixture();
 		const tree = await seed_tree(f, { name: "heavy", folderCount: 1, filesPerFolder: 1 });
 		expect(await archive(f, [tree.fileIds[0]!])).toEqual({ _yay: null });
-		await add_metadata_docs(f, tree.fileIds[0]!, 2000);
+		await add_metadata_docs({ f, fileNodeId: tree.fileIds[0]!, count: 2000 });
 		expect(await archive(f, [tree.folderIds[0]!])).toEqual({ _yay: null });
 		expect(await archive(f, [tree.topId])).toEqual({ _yay: null });
 
@@ -1346,7 +1360,7 @@ describe("unarchive_nodes", () => {
 		const job = (await restore(f, [tree.topId]))._yay!;
 		let run = (await f.t.run((ctx) => ctx.db.get("files_archive_runs", job.runId)))!;
 		while (run.phase !== "apply") run = (await step(f, job.runId))!;
-		const opId = await queue_empty_folders_first(f, job.runId, null);
+		const opId = await queue_empty_folders_first({ f, runId: job.runId, archiveOperationId: null });
 
 		await expect(step(f, job.runId)).resolves.toMatchObject({ active: true });
 		expect(await count_queue(f, opId)).toBeGreaterThan(0);
@@ -1469,13 +1483,13 @@ describe("unarchive_nodes", () => {
 			const f = await fixture();
 			const tree = await seed_tree(f, { name: "ro-active", folderCount: 1, filesPerFolder: 2 });
 			expect(await archive(f, [tree.fileIds[0]!])).toEqual({ _yay: null });
-			await lock(f, tree.folderIds[0]!, true);
+			await lock({ f, nodeId: tree.folderIds[0]!, locked: true });
 
 			const refused = await restore(f, [tree.fileIds[0]!]);
 			expect(refused._nay?.name).toBe("read_only");
 			expect((await read_node(f, tree.fileIds[0]!)).archiveOperationId).not.toBeNull();
 
-			await lock(f, tree.folderIds[0]!, false);
+			await lock({ f, nodeId: tree.folderIds[0]!, locked: false });
 			expect(await restore(f, [tree.fileIds[0]!])).toEqual({ _yay: null });
 			expect((await read_node(f, tree.fileIds[0]!)).archiveOperationId).toBeNull();
 		});
@@ -1485,13 +1499,13 @@ describe("unarchive_nodes", () => {
 			const tree = await seed_tree(f, { name: "ro-archived", folderCount: 1, filesPerFolder: 2 });
 			expect(await archive(f, [tree.fileIds[0]!])).toEqual({ _yay: null });
 			expect(await archive(f, [tree.folderIds[0]!])).toEqual({ _yay: null });
-			await lock(f, tree.folderIds[0]!, true);
+			await lock({ f, nodeId: tree.folderIds[0]!, locked: true });
 
 			const refused = await restore(f, [tree.fileIds[0]!]);
 			expect(refused._nay?.name).toBe("read_only");
 			expect((await read_node(f, tree.fileIds[0]!)).archiveOperationId).not.toBeNull();
 
-			await lock(f, tree.folderIds[0]!, false);
+			await lock({ f, nodeId: tree.folderIds[0]!, locked: false });
 			expect(await restore(f, [tree.fileIds[0]!])).toEqual({ _yay: null });
 			expect(await read_node(f, tree.fileIds[0]!)).toMatchObject({ archiveOperationId: null, path: "/f000.md" });
 		});
@@ -1507,7 +1521,7 @@ describe("unarchive_nodes", () => {
 			}
 			expect((await read_node(f, tree.fileIds[100]!)).archiveOperationId).not.toBeNull();
 
-			await lock(f, tree.folderIds[1]!, true);
+			await lock({ f, nodeId: tree.folderIds[1]!, locked: true });
 
 			expect((await run_to_end(f, job)).activity.status).toBe("failed");
 			expect((await read_node(f, tree.fileIds[100]!)).archiveOperationId).not.toBeNull();
@@ -1540,15 +1554,17 @@ describe("unarchive_nodes", () => {
 			return (await f.t.run((ctx) => ctx.db.get("files_archive_runs", runId)))!;
 		}
 
-		async function resolve(
-			f: Fixture,
-			runId: Id<"files_archive_runs">,
-			choice: "keep_both" | "skip" | "replace",
-			applyToRemaining: { file: null | "keep_both" | "skip" | "replace"; folder: null | "keep_both" | "skip" } = {
+		async function resolve(args: {
+			f: Fixture;
+			runId: Id<"files_archive_runs">;
+			choice: "keep_both" | "skip" | "replace";
+			applyToRemaining?: { file: null | "keep_both" | "skip" | "replace"; folder: null | "keep_both" | "skip" };
+		}) {
+			const { f, runId, applyToRemaining = {
 				file: null,
 				folder: null,
-			},
-		) {
+			} , choice} = args;
+
 			const run = await read_run(f, runId);
 			return await f.asOwner.mutation(api.files_archive_runs.resolve_conflicts, {
 				membershipId: f.db.membershipId,
@@ -1562,7 +1578,13 @@ describe("unarchive_nodes", () => {
 		/**
 		 * Run steps until `nodeId` is back.
 		 */
-		async function step_until_restored(f: Fixture, runId: Id<"files_archive_runs">, nodeId: Id<"files_nodes">) {
+		async function step_until_restored(args: {
+			f: Fixture;
+			runId: Id<"files_archive_runs">;
+			nodeId: Id<"files_nodes">;
+		}) {
+			const { f, runId, nodeId } = args;
+
 			for (let count = 0; (await read_node(f, nodeId)).archiveOperationId !== null; count++) {
 				if (count === 20) throw new Error("The node did not come back");
 				await step(f, runId);
@@ -1578,7 +1600,7 @@ describe("unarchive_nodes", () => {
 			const tree = await seed_tree(f, { name: "inside", folderCount: 2, filesPerFolder: 100 });
 			await archive_to_end(f, tree.topId);
 			const job = (await restore(f, [tree.topId]))._yay!;
-			await step_until_restored(f, job.runId, tree.folderIds[1]!);
+			await step_until_restored({ f, runId: job.runId, nodeId: tree.folderIds[1]! });
 			expect((await read_node(f, tree.fileIds[100]!)).archiveOperationId).not.toBeNull();
 
 			const occupants = await seed_tree(f, { name: "occupants", folderCount: 1, filesPerFolder: 100 });
@@ -1652,7 +1674,7 @@ describe("unarchive_nodes", () => {
 			const f = await fixture();
 			const { tree, job } = await seed_clash(f);
 
-			expect(await resolve(f, job.runId, "keep_both")).toEqual({ _yay: null });
+			expect(await resolve({ f, runId: job.runId, choice: "keep_both" })).toEqual({ _yay: null });
 			expect((await read_activity(f, job.activityId)).status).toBe("running");
 			const ended = await run_to_end(f, job);
 
@@ -1668,7 +1690,7 @@ describe("unarchive_nodes", () => {
 			const f = await fixture();
 			const { tree, job } = await seed_clash(f);
 
-			expect(await resolve(f, job.runId, "keep_both", { file: "keep_both", folder: null })).toEqual({ _yay: null });
+			expect(await resolve({ f, runId: job.runId, choice: "keep_both", applyToRemaining: { file: "keep_both", folder: null } })).toEqual({ _yay: null });
 			const ended = await run_to_end(f, job);
 
 			expect(ended.activity.status).toBe("succeeded");
@@ -1679,7 +1701,7 @@ describe("unarchive_nodes", () => {
 			const f = await fixture();
 			const { tree, job } = await seed_clash(f);
 
-			expect(await resolve(f, job.runId, "skip", { file: "skip", folder: null })).toEqual({ _yay: null });
+			expect(await resolve({ f, runId: job.runId, choice: "skip", applyToRemaining: { file: "skip", folder: null } })).toEqual({ _yay: null });
 			const ended = await run_to_end(f, job);
 
 			expect(ended.activity.status).toBe("succeeded");
@@ -1697,7 +1719,7 @@ describe("unarchive_nodes", () => {
 				const run = (await ctx.db.get("files_archive_runs", job.runId))!;
 				await ctx.db.patch("files_archive_runs", job.runId, { skipOperationId: run.archiveOperationId });
 			});
-			expect(await resolve(f, job.runId, "skip", { file: "skip", folder: null })).toEqual({ _yay: null });
+			expect(await resolve({ f, runId: job.runId, choice: "skip", applyToRemaining: { file: "skip", folder: null } })).toEqual({ _yay: null });
 
 			await expect(step(f, job.runId)).rejects.toThrow("Restore pull found no new top item");
 		});
@@ -1706,7 +1728,7 @@ describe("unarchive_nodes", () => {
 			const f = await fixture();
 			const { tree, occupants, job } = await seed_clash(f);
 
-			expect(await resolve(f, job.runId, "replace", { file: "replace", folder: null })).toEqual({ _yay: null });
+			expect(await resolve({ f, runId: job.runId, choice: "replace", applyToRemaining: { file: "replace", folder: null } })).toEqual({ _yay: null });
 			const ended = await run_to_end(f, job);
 
 			expect(ended.activity.status).toBe("succeeded");
@@ -1737,7 +1759,7 @@ describe("unarchive_nodes", () => {
 			const job = restored._yay!;
 
 			expect((await run_to_end(f, job)).activity.status).toBe("awaiting_input");
-			expect(await resolve(f, job.runId, "replace", { file: "replace", folder: null })).toEqual({ _yay: null });
+			expect(await resolve({ f, runId: job.runId, choice: "replace", applyToRemaining: { file: "replace", folder: null } })).toEqual({ _yay: null });
 			await step(f, job.runId);
 
 			// A step may change 75 nodes. Each Replace changes two: the restored file and the one in the way.
@@ -1760,7 +1782,7 @@ describe("unarchive_nodes", () => {
 					?.conflict,
 			).toMatchObject({ kind: "file", name: "f050.md", occupantPath: "/inside/d1/f050.md", canReplace: true });
 
-			expect(await resolve(f, job.runId, "keep_both")).toEqual({ _yay: null });
+			expect(await resolve({ f, runId: job.runId, choice: "keep_both" })).toEqual({ _yay: null });
 			const ended = await run_to_end(f, job);
 			expect(ended.activity.status).toBe("succeeded");
 			expect(ended.activity.progress).toMatchObject({ total: 203, completed: 203, skipped: 0 });
@@ -1778,13 +1800,13 @@ describe("unarchive_nodes", () => {
 			const f = await fixture();
 			const { tree, occupantIds, job } = await seed_clash_inside(f, ["f050.md", "f080.md"]);
 
-			expect(await resolve(f, job.runId, "skip")).toEqual({ _yay: null });
+			expect(await resolve({ f, runId: job.runId, choice: "skip" })).toEqual({ _yay: null });
 			expect((await run_to_end(f, job)).activity.status).toBe("awaiting_input");
 			expect((await read_run(f, job.runId)).conflict).toEqual({
 				nodeId: tree.fileIds[180],
 				occupantId: occupantIds[1],
 			});
-			expect(await resolve(f, job.runId, "replace")).toEqual({ _yay: null });
+			expect(await resolve({ f, runId: job.runId, choice: "replace" })).toEqual({ _yay: null });
 			const ended = await run_to_end(f, job);
 
 			expect(ended.activity.status).toBe("succeeded");
@@ -1804,7 +1826,7 @@ describe("unarchive_nodes", () => {
 			const f = await fixture();
 			const { tree, job } = await seed_clash_inside(f, ["f050.md", "f080.md"]);
 
-			expect(await resolve(f, job.runId, "keep_both", { file: "keep_both", folder: null })).toEqual({ _yay: null });
+			expect(await resolve({ f, runId: job.runId, choice: "keep_both", applyToRemaining: { file: "keep_both", folder: null } })).toEqual({ _yay: null });
 			const ended = await run_to_end(f, job);
 
 			expect(ended.activity.status).toBe("succeeded");
@@ -1821,7 +1843,7 @@ describe("unarchive_nodes", () => {
 			await archive_to_end(f, tree.topId);
 			const job = (await restore(f, [tree.topId]))._yay!;
 			// A step restores 75 folders, so `d50` comes back in a later step, in the middle of a page.
-			await step_until_restored(f, job.runId, tree.topId);
+			await step_until_restored({ f, runId: job.runId, nodeId: tree.topId });
 			expect((await read_node(f, tree.folderIds[50]!)).archiveOperationId).not.toBeNull();
 			const occupant = await folder(f, "/many/d50");
 
@@ -1840,7 +1862,7 @@ describe("unarchive_nodes", () => {
 			});
 			expect(new Set(queued).size).toBe(queued.length);
 
-			expect(await resolve(f, job.runId, "keep_both")).toEqual({ _yay: null });
+			expect(await resolve({ f, runId: job.runId, choice: "keep_both" })).toEqual({ _yay: null });
 			const ended = await run_to_end(f, job);
 			expect(ended.activity.status).toBe("succeeded");
 			expect(ended.activity.progress).toMatchObject({ total: 201, completed: 201, skipped: 0 });
@@ -1853,7 +1875,7 @@ describe("unarchive_nodes", () => {
 			const tree = await seed_tree(f, { name: "many", folderCount: 200, filesPerFolder: 1 });
 			await archive_to_end(f, tree.topId);
 			const job = (await restore(f, [tree.topId]))._yay!;
-			await step_until_restored(f, job.runId, tree.topId);
+			await step_until_restored({ f, runId: job.runId, nodeId: tree.topId });
 			await folder(f, "/many/d50");
 			expect((await run_to_end(f, job)).activity.status).toBe("awaiting_input");
 			expect((await read_run(f, job.runId)).conflict?.nodeId).toBe(tree.folderIds[50]);
@@ -1882,12 +1904,12 @@ describe("unarchive_nodes", () => {
 			).toEqual({ _yay: null });
 
 			// A choice counts only until the next clash. So `d50` must come back before that clash asks.
-			expect(await resolve(f, job.runId, "keep_both")).toEqual({ _yay: null });
+			expect(await resolve({ f, runId: job.runId, choice: "keep_both" })).toEqual({ _yay: null });
 			expect((await run_to_end(f, job)).activity.status).toBe("awaiting_input");
 			expect(await read_node(f, tree.folderIds[50]!)).toMatchObject({ archiveOperationId: null, path: "/many/d50-2" });
 			expect((await read_run(f, job.runId)).conflict?.nodeId).toBe(queuedFileId);
 
-			expect(await resolve(f, job.runId, "keep_both")).toEqual({ _yay: null });
+			expect(await resolve({ f, runId: job.runId, choice: "keep_both" })).toEqual({ _yay: null });
 			const ended = await run_to_end(f, job);
 			expect(ended.activity.status).toBe("succeeded");
 			expect(ended.activity.progress).toMatchObject({ total: 401, completed: 401, skipped: 0 });
@@ -1903,7 +1925,7 @@ describe("unarchive_nodes", () => {
 			await expect_consistent(f);
 			const job = restored._yay!;
 			expect((await read_activity(f, job.activityId)).status).toBe("awaiting_input");
-			expect(await resolve(f, job.runId, "keep_both", { file: "keep_both", folder: null })).toEqual({ _yay: null });
+			expect(await resolve({ f, runId: job.runId, choice: "keep_both", applyToRemaining: { file: "keep_both", folder: null } })).toEqual({ _yay: null });
 			expect((await run_to_end(f, job)).activity.status).toBe("succeeded");
 
 			const names = await Promise.all(same.fileIds.map(async (fileId) => (await read_node(f, fileId)).name));
@@ -1935,7 +1957,7 @@ describe("unarchive_nodes", () => {
 
 			const restored = await restore(f, [tree.folderIds[0]!]);
 			const job = restored._yay!;
-			expect(await resolve(f, job.runId, "replace")).toEqual({ _yay: null });
+			expect(await resolve({ f, runId: job.runId, choice: "replace" })).toEqual({ _yay: null });
 			// The lock comes after the choice.
 			await lock_archived(f, inside);
 			await step(f, job.runId);
@@ -1962,7 +1984,7 @@ describe("unarchive_nodes", () => {
 			// The check before the pause already passed. The lock comes while the job waits.
 			await lock_archived(f, tree.fileIds[0]!);
 
-			expect(await resolve(f, job.runId, "skip")).toEqual({ _yay: null });
+			expect(await resolve({ f, runId: job.runId, choice: "skip" })).toEqual({ _yay: null });
 			await step(f, job.runId);
 
 			expect((await read_activity(f, job.activityId)).status).toBe("failed");
@@ -1984,7 +2006,7 @@ describe("unarchive_nodes", () => {
 				runId: job.runId,
 			});
 			expect(shown?.conflict?.canReplace).toBe(false);
-			expect((await resolve(f, job.runId, "replace"))._nay?.message).toBe(
+			expect((await resolve({ f, runId: job.runId, choice: "replace" }))._nay?.message).toBe(
 				"Replace needs the same kind, an empty folder, and write access to the item in the way and everything inside it.",
 			);
 
@@ -2017,7 +2039,7 @@ describe("unarchive_nodes", () => {
 
 			const restored = await restore(f, [tree.folderIds[0]!]);
 			const job = restored._yay!;
-			expect(await resolve(f, job.runId, "replace")).toEqual({ _yay: null });
+			expect(await resolve({ f, runId: job.runId, choice: "replace" })).toEqual({ _yay: null });
 			// The lock comes after the choice, so the restore of `d0` is refused when the step runs.
 			await lock_archived(f, tree.folderIds[0]!);
 			await step(f, job.runId);
@@ -2037,7 +2059,7 @@ describe("unarchive_nodes", () => {
 			const restored = await restore(f, [tree.folderIds[0]!]);
 			const job = restored._yay!;
 			const run = await read_run(f, job.runId);
-			expect(await resolve(f, job.runId, "replace")).toEqual({ _yay: null });
+			expect(await resolve({ f, runId: job.runId, choice: "replace" })).toEqual({ _yay: null });
 			await folder(f, "/folders/d0/kept");
 			await step(f, job.runId);
 

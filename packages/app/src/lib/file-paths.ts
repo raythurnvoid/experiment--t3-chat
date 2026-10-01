@@ -63,12 +63,14 @@ function truncate_middle_labels(args: {
  * prefix that keeps its `…` is always wider). It does not hold across segments in `keep` mode, so
  * `truncate_middle_segments` runs one search per cut segment instead of one over all of them.
  */
-function find_max_fitting<Candidate>(
-	min: number,
-	max: number,
-	buildCandidate: (visibleCount: number) => Candidate,
-	fits: (candidate: Candidate) => boolean,
-) {
+function find_max_fitting<Candidate>(args: {
+	min: number;
+	max: number;
+	buildCandidate: (visibleCount: number) => Candidate;
+	fits: (candidate: Candidate) => boolean;
+}) {
+	const { min, max, buildCandidate, fits } = args;
+
 	let best: Candidate | null = null;
 	let low = min;
 	let high = max;
@@ -109,16 +111,16 @@ function truncate_middle_segments(args: {
 
 	for (let wholeCount = middleGraphemes.length; wholeCount >= 0; wholeCount -= 1) {
 		const cutGraphemes = middleGraphemes[wholeCount];
-		const best = find_max_fitting(
-			0,
-			cutGraphemes ? Math.max(0, cutGraphemes.length - 1) : 0,
-			(prefixCount) => [
+		const best = find_max_fitting({
+			min: 0,
+			max: cutGraphemes ? Math.max(0, cutGraphemes.length - 1) : 0,
+			buildCandidate: (prefixCount) => [
 				args.firstSegment,
 				...truncate_middle_labels({ middleGraphemes, wholeCount, prefixCount, collapse: args.collapse }),
 				...args.tailSegments,
 			],
-			args.fits,
-		);
+			fits: args.fits,
+		});
 		if (best) return best;
 	}
 
@@ -129,20 +131,22 @@ function truncate_middle_segments(args: {
  * Shorten one segment to the longest prefix (plus `…`) whose labels fit. Fall back to its first
  * grapheme when even that does not fit. `wrap` places the label among the other labels of the shape.
  */
-function truncate_segment_prefix(
-	graphemes: string[],
-	wrap: (label: string) => string[],
-	fits: (labels: string[]) => boolean,
-) {
+function truncate_segment_prefix(args: {
+	graphemes: string[];
+	wrap: (label: string) => string[];
+	fits: (labels: string[]) => boolean;
+}) {
+	const { graphemes, wrap, fits } = args;
+
 	if (graphemes.length === 0) return wrap("");
 
-	const best = find_max_fitting(
-		1,
-		Math.max(1, graphemes.length - 1),
-		(visibleCount) =>
+	const best = find_max_fitting({
+		min: 1,
+		max: Math.max(1, graphemes.length - 1),
+		buildCandidate: (visibleCount) =>
 			wrap(`${graphemes.slice(0, visibleCount).join("")}${visibleCount < graphemes.length ? ELLIPSIS : ""}`),
 		fits,
-	);
+	});
 
 	return best ?? wrap(`${graphemes[0]}${graphemes.length > 1 ? ELLIPSIS : ""}`);
 }
@@ -167,7 +171,7 @@ export function files_truncate_path_segments(args: {
 	if (args.fits(args.segments)) return args.segments;
 	if (args.segments.length === 0) return args.segments;
 	if (args.segments.length === 1) {
-		return truncate_segment_prefix(segment_graphemes(args.segments[0] ?? ""), (label) => [label], args.fits);
+		return truncate_segment_prefix({ graphemes: segment_graphemes(args.segments[0] ?? ""), wrap: (label) => [label], fits: args.fits });
 	}
 
 	const firstSegment = args.segments[0] ?? "";
@@ -208,18 +212,18 @@ export function files_truncate_path_segments(args: {
 	// An empty first segment has nothing to show. `drop` leaves its label out too, so the joined
 	// path does not start with a doubled separator.
 	if (firstGraphemes.length === 0) {
-		return truncate_segment_prefix(
-			lastGraphemes,
-			(label) => (args.collapse === "drop" ? [label] : ["", ...middleLabels, label]),
-			args.fits,
-		);
+		return truncate_segment_prefix({
+			graphemes: lastGraphemes,
+			wrap: (label) => (args.collapse === "drop" ? [label] : ["", ...middleLabels, label]),
+			fits: args.fits,
+		});
 	}
 
 	if (firstGraphemes.length > 4) {
-		const middleFirstSegment = find_max_fitting(
-			4,
-			firstGraphemes.length - 1,
-			(visibleCount) => {
+		const middleFirstSegment = find_max_fitting({
+			min: 4,
+			max: firstGraphemes.length - 1,
+			buildCandidate: (visibleCount) => {
 				const startCount = Math.ceil(visibleCount / 2);
 				const endCount = Math.floor(visibleCount / 2);
 				return [
@@ -228,18 +232,18 @@ export function files_truncate_path_segments(args: {
 					lastSegment,
 				];
 			},
-			args.fits,
-		);
+			fits: args.fits,
+		});
 		if (middleFirstSegment) return middleFirstSegment;
 	}
 
 	if (firstGraphemes.length > 2) {
-		const firstPrefix = find_max_fitting(
-			2,
-			firstGraphemes.length - 1,
-			(visibleCount) => [`${firstGraphemes.slice(0, visibleCount).join("")}${ELLIPSIS}`, ...middleLabels, lastSegment],
-			args.fits,
-		);
+		const firstPrefix = find_max_fitting({
+			min: 2,
+			max: firstGraphemes.length - 1,
+			buildCandidate: (visibleCount) => [`${firstGraphemes.slice(0, visibleCount).join("")}${ELLIPSIS}`, ...middleLabels, lastSegment],
+			fits: args.fits,
+		});
 		if (firstPrefix) return firstPrefix;
 	}
 
@@ -251,7 +255,11 @@ export function files_truncate_path_segments(args: {
 	// Last, shorten the last segment. `truncate_segment_prefix` falls back to its first grapheme plus
 	// `…`, the smallest shape that still shows both ends of the path. If even that does not fit, let
 	// it overflow instead of hiding both ends behind a bare ellipsis.
-	return truncate_segment_prefix(lastGraphemes, (label) => [firstGraphemeLabel, ...middleLabels, label], args.fits);
+	return truncate_segment_prefix({
+		graphemes: lastGraphemes,
+		wrap: (label) => [firstGraphemeLabel, ...middleLabels, label],
+		fits: args.fits,
+	});
 }
 
 export function files_truncate_path_for_width(args: {

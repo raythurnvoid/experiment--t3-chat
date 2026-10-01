@@ -120,19 +120,19 @@ async function setup() {
  * Insert a plugin version with one MCP server `tracker`, its installation in the membership's
  * workspace, and the server doc install writes.
  */
-async function install_mcp_plugin(
-	t: TestConvex,
-	membership: Membership,
-	args: {
-		url: string;
-		headers?: Array<{ name: string; secret: string; value: string }>;
-		tools?: string[] | null;
-		/**
+async function install_mcp_plugin(args: {
+	t: TestConvex;
+	membership: Membership;
+	url: string;
+	headers?: Array<{ name: string; secret: string; value: string }>;
+	tools?: string[] | null;
+	/**
 		 * A sign-in server pin. Without it the server uses the headers, or nothing.
 		 */
-		oauth?: { issuer: string; scopes: string[] };
-	},
-) {
+	oauth?: { issuer: string; scopes: string[] };
+}) {
+	const { t, membership } = args;
+
 	const now = Date.now();
 	const { organizationId, workspaceId, userId } = membership;
 	const headers = args.headers ?? [];
@@ -222,11 +222,11 @@ async function install_mcp_plugin(
 			unhealthyUntil: null,
 		});
 		for (const header of headers) {
-			const encrypted = await crypto_encrypt_secret_value(
-				header.value,
-				`${installationId}:${header.secret}`,
-				"PLUGIN_SECRETS_ENCRYPTION_KEY",
-			);
+			const encrypted = await crypto_encrypt_secret_value({
+				value: header.value,
+				additionalData: `${installationId}:${header.secret}`,
+				keyName: "PLUGIN_SECRETS_ENCRYPTION_KEY",
+			});
 			await ctx.db.insert("plugins_workspace_installation_secrets", {
 				organizationId,
 				workspaceId,
@@ -302,7 +302,13 @@ async function reopen_route_runs(t: TestConvex) {
  * Run one captured tool the way the SDK does. MCP calls use timers, which convex-test allows only
  * inside an action.
  */
-async function run_tool(t: TestConvex, name: string, input: unknown) {
+async function run_tool(args: {
+	t: TestConvex;
+	name: string;
+	input: unknown;
+}) {
+	const { t, name, input } = args;
+
 	const execute = last_call().tools?.[name]?.execute;
 	if (!execute) throw new Error(`Expected tool ${name}`);
 	await reopen_route_runs(t);
@@ -343,7 +349,7 @@ function tools_calls() {
 describe("/api/chat MCP tool loading", () => {
 	test("offers an installed server's tools in Agent mode, with the untrusted-result rule", async () => {
 		const { t, asUser, membership, threadId } = await setup();
-		await install_mcp_plugin(t, membership, { url: MODERN_BASIC_URL });
+		await install_mcp_plugin({ t, membership, url: MODERN_BASIC_URL });
 
 		const response = await chat(asUser, { membershipId: membership.membershipId, threadId });
 		expect(response.status, response.body).toBe(200);
@@ -359,7 +365,7 @@ describe("/api/chat MCP tool loading", () => {
 
 	test("keeps only the tools of the manifest allowlist", async () => {
 		const { t, asUser, membership, threadId } = await setup();
-		await install_mcp_plugin(t, membership, { url: MODERN_BASIC_URL, tools: ["echo"] });
+		await install_mcp_plugin({ t, membership, url: MODERN_BASIC_URL, tools: ["echo"] });
 
 		expect((await chat(asUser, { membershipId: membership.membershipId, threadId })).status).toBe(200);
 
@@ -369,7 +375,7 @@ describe("/api/chat MCP tool loading", () => {
 
 	test("keeps the tool definitions of a turn under 128 KiB", async () => {
 		const { t, asUser, membership, threadId } = await setup();
-		await install_mcp_plugin(t, membership, { url: "https://big.fixtures.test/wide-schemas" });
+		await install_mcp_plugin({ t, membership, url: "https://big.fixtures.test/wide-schemas" });
 
 		expect((await chat(asUser, { membershipId: membership.membershipId, threadId })).status).toBe(200);
 
@@ -382,8 +388,8 @@ describe("/api/chat MCP tool loading", () => {
 
 	test("a server with big tools leaves an equal share of the 128 KiB to the next server", async () => {
 		const { t, asUser, membership, threadId } = await setup();
-		await install_mcp_plugin(t, membership, { url: "https://big.fixtures.test/wide-schemas" });
-		const { serverDocId } = await install_mcp_plugin(t, membership, { url: "https://big.fixtures.test/wide-schemas" });
+		await install_mcp_plugin({ t, membership, url: "https://big.fixtures.test/wide-schemas" });
+		const { serverDocId } = await install_mcp_plugin({ t, membership, url: "https://big.fixtures.test/wide-schemas" });
 		await t.run((ctx) => ctx.db.patch("plugins_mcp_servers", serverDocId, { toolPrefix: "tracker-b" }));
 
 		expect((await chat(asUser, { membershipId: membership.membershipId, threadId })).status).toBe(200);
@@ -394,7 +400,7 @@ describe("/api/chat MCP tool loading", () => {
 
 	test("loads nothing in Ask mode and makes no outside request", async () => {
 		const { t, asUser, membership, threadId } = await setup();
-		await install_mcp_plugin(t, membership, { url: MODERN_BASIC_URL });
+		await install_mcp_plugin({ t, membership, url: MODERN_BASIC_URL });
 
 		expect((await chat(asUser, { membershipId: membership.membershipId, threadId, mode: "ask" })).status).toBe(200);
 
@@ -410,7 +416,7 @@ describe("/api/chat MCP tool loading", () => {
 		const member = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const asOwner = t.withIdentity({ issuer: "https://clerk.test", external_id: owner.userId });
 		const asMember = t.withIdentity({ issuer: "https://clerk.test", external_id: member.userId });
-		await install_mcp_plugin(t, owner, { url: MODERN_BASIC_URL });
+		await install_mcp_plugin({ t, membership: owner, url: MODERN_BASIC_URL });
 		expect(
 			await asOwner.mutation(api.organizations.invite_user_to_organization_workspace, {
 				organizationId: owner.organizationId,
@@ -459,10 +465,10 @@ describe("/api/chat MCP tool loading", () => {
 describe("/api/chat MCP tool calls", () => {
 	test("runs a call with no approval and writes one ledger doc without arguments or output", async () => {
 		const { t, asUser, membership, threadId } = await setup();
-		const { installationId } = await install_mcp_plugin(t, membership, { url: MODERN_BASIC_URL });
+		const { installationId } = await install_mcp_plugin({ t, membership, url: MODERN_BASIC_URL });
 		expect((await chat(asUser, { membershipId: membership.membershipId, threadId })).status).toBe(200);
 
-		const result = await run_tool(t, "mcp__tracker__echo", { text: "LEDGER_PRIVATE_TEXT" });
+		const result = await run_tool({ t, name: "mcp__tracker__echo", input: { text: "LEDGER_PRIVATE_TEXT" } });
 
 		expect(result.error).toBeNull();
 		expect(result.output).toEqual({
@@ -486,10 +492,10 @@ describe("/api/chat MCP tool calls", () => {
 
 	test("hands a tool error to the model as text and records it as tool_error", async () => {
 		const { t, asUser, membership, threadId } = await setup();
-		await install_mcp_plugin(t, membership, { url: MODERN_BASIC_URL });
+		await install_mcp_plugin({ t, membership, url: MODERN_BASIC_URL });
 		expect((await chat(asUser, { membershipId: membership.membershipId, threadId })).status).toBe(200);
 
-		const result = await run_tool(t, "mcp__tracker__echo", { text: "fail" });
+		const result = await run_tool({ t, name: "mcp__tracker__echo", input: { text: "fail" } });
 
 		expect(result.output).toMatchObject({
 			output: "The tool reported an error:\nboom",
@@ -500,10 +506,10 @@ describe("/api/chat MCP tool calls", () => {
 
 	test("stores a long output in full and gives the model its head and tail", async () => {
 		const { t, asUser, membership, threadId } = await setup();
-		await install_mcp_plugin(t, membership, { url: "https://big.fixtures.test/long-text" });
+		await install_mcp_plugin({ t, membership, url: "https://big.fixtures.test/long-text" });
 		expect((await chat(asUser, { membershipId: membership.membershipId, threadId })).status).toBe(200);
 
-		const result = await run_tool(t, "mcp__tracker__echo", { text: "ok" });
+		const result = await run_tool({ t, name: "mcp__tracker__echo", input: { text: "ok" } });
 
 		const output = result.output as ai_chat_McpToolOutput;
 		if (output.metadata.kind !== "mcp_result" || !output.metadata.output) throw new Error("Expected a stored result");
@@ -525,10 +531,10 @@ describe("/api/chat MCP tool calls", () => {
 
 	test("stores a deeply nested structured result inside its reservation", async () => {
 		const { t, asUser, membership, threadId } = await setup();
-		await install_mcp_plugin(t, membership, { url: "https://big.fixtures.test/deep-structured" });
+		await install_mcp_plugin({ t, membership, url: "https://big.fixtures.test/deep-structured" });
 		expect((await chat(asUser, { membershipId: membership.membershipId, threadId })).status).toBe(200);
 
-		const result = await run_tool(t, "mcp__tracker__echo", { text: "ok" });
+		const result = await run_tool({ t, name: "mcp__tracker__echo", input: { text: "ok" } });
 
 		const output = result.output as ai_chat_McpToolOutput;
 		if (output.metadata.kind !== "mcp_result" || !output.metadata.output) throw new Error("Expected a stored result");
@@ -542,10 +548,10 @@ describe("/api/chat MCP tool calls", () => {
 
 	test("repairs half characters from the server and never cuts a character in half", async () => {
 		const { t, asUser, membership, threadId } = await setup();
-		await install_mcp_plugin(t, membership, { url: "https://big.fixtures.test/broken-text" });
+		await install_mcp_plugin({ t, membership, url: "https://big.fixtures.test/broken-text" });
 		expect((await chat(asUser, { membershipId: membership.membershipId, threadId })).status).toBe(200);
 
-		const result = await run_tool(t, "mcp__tracker__echo", { text: "hi" });
+		const result = await run_tool({ t, name: "mcp__tracker__echo", input: { text: "hi" } });
 
 		const output = result.output as { output: string; metadata: { truncated: boolean } };
 		expect(output.metadata.truncated).toBe(true);
@@ -557,7 +563,9 @@ describe("/api/chat MCP tool calls", () => {
 	test("sends the header secret only to the server and masks it and token-shaped text in the output", async () => {
 		const { t, asUser, membership, threadId } = await setup();
 		const headerValue = "HEADER_SECRET_VALUE_1234";
-		await install_mcp_plugin(t, membership, {
+		await install_mcp_plugin({
+			t,
+			membership,
 			url: MODERN_BASIC_URL,
 			headers: [{ name: "X-Api-Key", secret: "api_key", value: headerValue }],
 		});
@@ -565,7 +573,7 @@ describe("/api/chat MCP tool calls", () => {
 		expect(fixtures.wire[0]?.headers.get("x-api-key")).toBe(headerValue);
 
 		const token = `sk-${"a".repeat(24)}`;
-		const result = await run_tool(t, "mcp__tracker__echo", { text: `key ${headerValue} token ${token}` });
+		const result = await run_tool({ t, name: "mcp__tracker__echo", input: { text: `key ${headerValue} token ${token}` } });
 
 		expect(result.output).toMatchObject({ output: "key [secret] token [secret]" });
 		expect(tools_calls()[0]?.headers.get("x-api-key")).toBe(headerValue);
@@ -575,7 +583,9 @@ describe("/api/chat MCP tool calls", () => {
 		const { t, asUser, membership, threadId } = await setup();
 		const secret =
 			kind === "number" ? "123456789" : kind === "exponent" ? "10000000000000000000000" : 'PRIVATE_HEADER_"quoted"\\value';
-		await install_mcp_plugin(t, membership, {
+		await install_mcp_plugin({
+			t,
+			membership,
 			url: MODERN_BASIC_URL,
 			headers: [{ name: "X-Api-Key", secret: "api_key", value: secret }],
 		});
@@ -622,16 +632,16 @@ describe("/api/chat MCP tool calls", () => {
 
 	test("refuses a call over the per-member server rate limit", async () => {
 		const { t, asUser, membership, threadId } = await setup();
-		await install_mcp_plugin(t, membership, { url: MODERN_BASIC_URL });
+		await install_mcp_plugin({ t, membership, url: MODERN_BASIC_URL });
 		expect((await chat(asUser, { membershipId: membership.membershipId, threadId })).status).toBe(200);
 
 		// The bucket holds 60 calls and refills 2 per second. Freeze the clock so nothing refills, and
 		// the 61st call is refused before any request.
 		vi.useFakeTimers({ toFake: ["Date"] });
 		for (let index = 0; index < 60; index++) {
-			expect((await run_tool(t, "mcp__tracker__echo", { text: "ok" })).error).toBeNull();
+			expect((await run_tool({ t, name: "mcp__tracker__echo", input: { text: "ok" } })).error).toBeNull();
 		}
-		const refused = await run_tool(t, "mcp__tracker__echo", { text: "ok" });
+		const refused = await run_tool({ t, name: "mcp__tracker__echo", input: { text: "ok" } });
 
 		expect(refused.error).toBe("Rate limit exceeded");
 		expect(tools_calls()).toHaveLength(60);
@@ -639,7 +649,7 @@ describe("/api/chat MCP tool calls", () => {
 
 	test("gives each server of one plugin its own rate limit bucket", async () => {
 		const { t, asUser, membership, threadId } = await setup();
-		const installed = await install_mcp_plugin(t, membership, { url: MODERN_BASIC_URL });
+		const installed = await install_mcp_plugin({ t, membership, url: MODERN_BASIC_URL });
 		await t.run(async (ctx) => {
 			const version = (await ctx.db.get("plugins_versions", installed.pluginVersionId))!;
 			const serverDoc = (await ctx.db.get("plugins_mcp_servers", installed.serverDocId))!;
@@ -661,20 +671,20 @@ describe("/api/chat MCP tool calls", () => {
 
 		vi.useFakeTimers({ toFake: ["Date"] });
 		for (let index = 0; index < 60; index++) {
-			expect((await run_tool(t, "mcp__tracker__echo", { text: "ok" })).error).toBeNull();
+			expect((await run_tool({ t, name: "mcp__tracker__echo", input: { text: "ok" } })).error).toBeNull();
 		}
-		expect((await run_tool(t, "mcp__tracker__echo", { text: "ok" })).error).toBe("Rate limit exceeded");
-		expect((await run_tool(t, "mcp__second__echo", { text: "ok" })).error).toBeNull();
+		expect((await run_tool({ t, name: "mcp__tracker__echo", input: { text: "ok" } })).error).toBe("Rate limit exceeded");
+		expect((await run_tool({ t, name: "mcp__second__echo", input: { text: "ok" } })).error).toBeNull();
 		expect(tools_calls()).toHaveLength(61);
 	});
 
 	test("refuses a call after the installation is disabled, before any request", async () => {
 		const { t, asUser, membership, threadId } = await setup();
-		const { installationId } = await install_mcp_plugin(t, membership, { url: MODERN_BASIC_URL });
+		const { installationId } = await install_mcp_plugin({ t, membership, url: MODERN_BASIC_URL });
 		expect((await chat(asUser, { membershipId: membership.membershipId, threadId })).status).toBe(200);
 		await t.run((ctx) => ctx.db.patch("plugins_workspace_installations", installationId, { status: "disabled" }));
 
-		const result = await run_tool(t, "mcp__tracker__echo", { text: "ok" });
+		const result = await run_tool({ t, name: "mcp__tracker__echo", input: { text: "ok" } });
 
 		expect(result.error).toBe("This MCP server is no longer available.");
 		expect(tools_calls()).toEqual([]);
@@ -683,12 +693,12 @@ describe("/api/chat MCP tool calls", () => {
 
 	test("refuses a call after the chat run lease ends, before any request", async () => {
 		const { t, asUser, membership, threadId } = await setup();
-		await install_mcp_plugin(t, membership, { url: MODERN_BASIC_URL });
+		await install_mcp_plugin({ t, membership, url: MODERN_BASIC_URL });
 		expect((await chat(asUser, { membershipId: membership.membershipId, threadId })).status).toBe(200);
 
 		vi.useFakeTimers({ toFake: ["Date"] });
 		vi.setSystemTime(Date.now() + 11 * 60 * 1000);
-		const result = await run_tool(t, "mcp__tracker__echo", { text: "late" });
+		const result = await run_tool({ t, name: "mcp__tracker__echo", input: { text: "late" } });
 
 		expect(result.error).toBe("This chat run has no time left for an MCP call.");
 		expect(tools_calls()).toEqual([]);
@@ -710,7 +720,7 @@ describe("/api/chat MCP tool calls", () => {
 			if (created._nay) throw new Error(created._nay.message);
 			other = { ...membership, workspaceId: created._yay.workspaceId };
 		}
-		const installed = await install_mcp_plugin(t, other, { url: MODERN_BASIC_URL });
+		const installed = await install_mcp_plugin({ t, membership: other, url: MODERN_BASIC_URL });
 		const captured = await t.mutation(internal.ai_chat_workspaces.capture, {
 			userId: membership.userId,
 			membershipId: membership.membershipId,
@@ -726,9 +736,9 @@ describe("/api/chat MCP tool calls", () => {
 				signal: new AbortController().signal,
 			});
 			if (listed._nay) throw new Error(listed._nay.message);
-			const tools = await ai_chat_tool_create_mcp_tools(
+			const tools = await ai_chat_tool_create_mcp_tools({
 				ctx,
-				{
+				ctxData: {
 					organizationId: membership.organizationId,
 					workspaceId: membership.workspaceId,
 					userId: membership.userId,
@@ -740,7 +750,7 @@ describe("/api/chat MCP tool calls", () => {
 					getModelCallId: () => null,
 					runDeadline: Date.now() + 60_000,
 				},
-				[
+				servers: [
 					{
 						kind: "plugin",
 						target: { kind: "plugin", installationId: installed.installationId, serverId: "tracker" },
@@ -760,7 +770,7 @@ describe("/api/chat MCP tool calls", () => {
 						tools: listed._yay.tools,
 					},
 				],
-			);
+			});
 			return await Promise.resolve(
 				tools.mcp__tracker__echo!.execute!({ text: "ok" }, { toolCallId: "cross", messages: [] }),
 			).then(
@@ -776,7 +786,7 @@ describe("/api/chat MCP tool calls", () => {
 
 	test("runs 5 calls at once and queues a 6th until one finishes", async () => {
 		const { t, asUser, membership, threadId } = await setup();
-		await install_mcp_plugin(t, membership, { url: MODERN_BASIC_URL });
+		await install_mcp_plugin({ t, membership, url: MODERN_BASIC_URL });
 		expect((await chat(asUser, { membershipId: membership.membershipId, threadId })).status).toBe(200);
 		const execute = last_call().tools!.mcp__tracker__echo!.execute!;
 		await reopen_route_runs(t);
@@ -806,7 +816,7 @@ describe("/api/chat MCP organization policy", () => {
 	test("leaves out a blocked server and refuses a call once the owner removes it", async () => {
 		const { t, asUser, membership, threadId } = await setup();
 		vi.useFakeTimers({ toFake: ["Date"] });
-		const installed = await install_mcp_plugin(t, membership, { url: MODERN_BASIC_URL });
+		const installed = await install_mcp_plugin({ t, membership, url: MODERN_BASIC_URL });
 		const version = (await t.run((ctx) => ctx.db.get("plugins_versions", installed.pluginVersionId)))!;
 		const entry = (
 			mcpServers: Doc<"organizations_integration_policies">["plugins"]["allowlist"][number]["mcpServers"],
@@ -843,11 +853,11 @@ describe("/api/chat MCP organization policy", () => {
 		await setAllowlist(allowed);
 		vi.setSystemTime(Date.now() + 60_000);
 		expect((await chat(asUser, { membershipId: membership.membershipId, threadId })).status).toBe(200);
-		expect((await run_tool(t, "mcp__tracker__echo", { text: "ok" })).error).toBeNull();
+		expect((await run_tool({ t, name: "mcp__tracker__echo", input: { text: "ok" } })).error).toBeNull();
 
 		// The owner removes the server while the turn still holds its tools.
 		await setAllowlist([]);
-		const refused = await run_tool(t, "mcp__tracker__echo", { text: "ok" });
+		const refused = await run_tool({ t, name: "mcp__tracker__echo", input: { text: "ok" } });
 
 		expect(refused.error).toBe("Your organization's MCP policy blocks this server.");
 		expect(tools_calls()).toHaveLength(1);
@@ -865,7 +875,7 @@ describe("/api/chat MCP organization policy", () => {
 			lastMessageAt: Date.now(),
 		});
 		if (thread._nay) throw new Error(thread._nay.message);
-		await install_mcp_plugin(t, personal, { url: MODERN_BASIC_URL });
+		await install_mcp_plugin({ t, membership: personal, url: MODERN_BASIC_URL });
 
 		expect((await chat(asUser, { membershipId: personal.membershipId, threadId: thread._yay.threadId })).status).toBe(
 			200,
@@ -878,17 +888,17 @@ describe("/api/chat MCP custom servers", () => {
 	/**
 	 * Save the member's own server through the page door, so its secret is encrypted like in the app.
 	 */
-	async function save_custom_server(
-		asUser: ReturnType<TestConvex["withIdentity"]>,
-		membershipId: Id<"organizations_workspaces_users">,
-		args: {
-			name: string;
-			url?: string;
-			headers?: Record<string, string>;
-			secretValues?: Array<{ name: string; value: string }>;
-			customServerId?: Id<"mcp_custom_servers">;
-		},
-	) {
+	async function save_custom_server(args: {
+		asUser: ReturnType<TestConvex["withIdentity"]>;
+		membershipId: Id<"organizations_workspaces_users">;
+		name: string;
+		url?: string;
+		headers?: Record<string, string>;
+		secretValues?: Array<{ name: string; value: string }>;
+		customServerId?: Id<"mcp_custom_servers">;
+	}) {
+		const { asUser, membershipId} = args;
+
 		const saved = await asUser.action(api.mcp_custom_servers.save, {
 			membershipId,
 			customServerId: args.customServerId ?? null,
@@ -912,7 +922,7 @@ describe("/api/chat MCP custom servers", () => {
 
 	test("loads only the member's own servers of this workspace", async () => {
 		const { t, asUser, membership, threadId } = await setup();
-		await save_custom_server(asUser, membership.membershipId, { name: "Fixture Server" });
+		await save_custom_server({ asUser, membershipId: membership.membershipId, name: "Fixture Server" });
 		await t.run(async (ctx) => {
 			// Another member's server in the same workspace, and this member's server in their home workspace.
 			const otherUserId = await ctx.db.insert("users", { clerkUserId: null });
@@ -936,10 +946,10 @@ describe("/api/chat MCP custom servers", () => {
 	test("leaves the member's server out after 20 plugin servers", async () => {
 		const { t, asUser, membership, threadId } = await setup();
 		for (let index = 0; index < 20; index++) {
-			const { serverDocId } = await install_mcp_plugin(t, membership, { url: MODERN_BASIC_URL, tools: ["echo"] });
+			const { serverDocId } = await install_mcp_plugin({ t, membership, url: MODERN_BASIC_URL, tools: ["echo"] });
 			await t.run((ctx) => ctx.db.patch("plugins_mcp_servers", serverDocId, { toolPrefix: `tracker-${index}` }));
 		}
-		await save_custom_server(asUser, membership.membershipId, { name: "fixture" });
+		await save_custom_server({ asUser, membershipId: membership.membershipId, name: "fixture" });
 
 		expect((await chat(asUser, { membershipId: membership.membershipId, threadId })).status).toBe(200);
 
@@ -952,7 +962,9 @@ describe("/api/chat MCP custom servers", () => {
 	test("sends the header only to the server, masks its echo, and stores custom metadata", async () => {
 		const { t, asUser, membership, threadId } = await setup();
 		const headerValue = "CUSTOM_HEADER_VALUE_1234";
-		const customServerId = await save_custom_server(asUser, membership.membershipId, {
+		const customServerId = await save_custom_server({
+			asUser,
+			membershipId: membership.membershipId,
 			name: "fixture",
 			headers: { Authorization: "Bearer ${API_KEY}" },
 			secretValues: [{ name: "API_KEY", value: headerValue }],
@@ -963,7 +975,7 @@ describe("/api/chat MCP custom servers", () => {
 			`Bearer ${headerValue}`,
 		]);
 
-		const result = await run_tool(t, "mcp__my-fixture__echo", { text: `key ${headerValue}` });
+		const result = await run_tool({ t, name: "mcp__my-fixture__echo", input: { text: `key ${headerValue}` } });
 
 		expect(result.error).toBeNull();
 		expect(result.output).toEqual({
@@ -991,7 +1003,7 @@ describe("/api/chat MCP custom servers", () => {
 
 	test.each([false, true])("ignores an old tool list after a server moves (success: %s)", async (ok) => {
 		const { t, asUser, membership, threadId } = await setup();
-		const customServerId = await save_custom_server(asUser, membership.membershipId, { name: "fixture" });
+		const customServerId = await save_custom_server({ asUser, membershipId: membership.membershipId, name: "fixture" });
 		await t.run((ctx) => ctx.db.patch("mcp_custom_servers", customServerId, { failures: 1 }));
 		const listStarted = Promise.withResolvers<void>();
 		const releaseList = Promise.withResolvers<void>();
@@ -1009,7 +1021,9 @@ describe("/api/chat MCP custom servers", () => {
 		const running = chat(asUser, { membershipId: membership.membershipId, threadId });
 		await listStarted.promise;
 		try {
-			await save_custom_server(asUser, membership.membershipId, {
+			await save_custom_server({
+				asUser,
+				membershipId: membership.membershipId,
 				name: "fixture",
 				url: `${MODERN_BASIC_URL}moved`,
 				customServerId,
@@ -1029,7 +1043,7 @@ describe("/api/chat MCP custom servers", () => {
 	test("refuses a call after the member turns the server off or moves it, before any request", async () => {
 		const { t, asUser, membership, threadId } = await setup();
 		vi.useFakeTimers({ toFake: ["Date"] });
-		const customServerId = await save_custom_server(asUser, membership.membershipId, { name: "fixture" });
+		const customServerId = await save_custom_server({ asUser, membershipId: membership.membershipId, name: "fixture" });
 		const set_enabled = (enabled: boolean) =>
 			asUser.mutation(api.mcp_custom_servers.set_enabled, {
 				membershipId: membership.membershipId,
@@ -1039,19 +1053,21 @@ describe("/api/chat MCP custom servers", () => {
 
 		expect((await chat(asUser, { membershipId: membership.membershipId, threadId })).status).toBe(200);
 		expect(await set_enabled(false)).toEqual({ _yay: null });
-		expect((await run_tool(t, "mcp__my-fixture__echo", { text: "ok" })).error).toBe(
+		expect((await run_tool({ t, name: "mcp__my-fixture__echo", input: { text: "ok" } })).error).toBe(
 			"This MCP server is no longer available.",
 		);
 
 		expect(await set_enabled(true)).toEqual({ _yay: null });
 		vi.setSystemTime(Date.now() + 60_000);
 		expect((await chat(asUser, { membershipId: membership.membershipId, threadId })).status).toBe(200);
-		await save_custom_server(asUser, membership.membershipId, {
+		await save_custom_server({
+			asUser,
+			membershipId: membership.membershipId,
 			name: "fixture",
 			url: `${MODERN_BASIC_URL}moved`,
 			customServerId,
 		});
-		expect((await run_tool(t, "mcp__my-fixture__echo", { text: "ok" })).error).toBe("The server changed; try again.");
+		expect((await run_tool({ t, name: "mcp__my-fixture__echo", input: { text: "ok" } })).error).toBe("The server changed; try again.");
 
 		expect(tools_calls()).toEqual([]);
 	});
@@ -1059,7 +1075,7 @@ describe("/api/chat MCP custom servers", () => {
 	test("leaves out a blocked server and refuses a call once the owner blocks it", async () => {
 		const { t, asUser, membership, threadId } = await setup();
 		vi.useFakeTimers({ toFake: ["Date"] });
-		await save_custom_server(asUser, membership.membershipId, { name: "fixture" });
+		await save_custom_server({ asUser, membershipId: membership.membershipId, name: "fixture" });
 		const setMode = (mode: "allowlist" | "allow_all") =>
 			t.run(async (ctx) => {
 				const policy = await ctx.db
@@ -1080,11 +1096,11 @@ describe("/api/chat MCP custom servers", () => {
 		await setMode("allow_all");
 		vi.setSystemTime(Date.now() + 60_000);
 		expect((await chat(asUser, { membershipId: membership.membershipId, threadId })).status).toBe(200);
-		expect((await run_tool(t, "mcp__my-fixture__echo", { text: "ok" })).error).toBeNull();
+		expect((await run_tool({ t, name: "mcp__my-fixture__echo", input: { text: "ok" } })).error).toBeNull();
 
 		// The owner blocks the server while the turn still holds its tools.
 		await setMode("allowlist");
-		const refused = await run_tool(t, "mcp__my-fixture__echo", { text: "ok" });
+		const refused = await run_tool({ t, name: "mcp__my-fixture__echo", input: { text: "ok" } });
 
 		expect(refused.error).toBe("Your organization's MCP policy blocks this server.");
 		expect(tools_calls()).toHaveLength(1);
@@ -1092,18 +1108,18 @@ describe("/api/chat MCP custom servers", () => {
 
 	test("gives each custom server its own rate limit bucket", async () => {
 		const { t, asUser, membership, threadId } = await setup();
-		await save_custom_server(asUser, membership.membershipId, { name: "first" });
-		await save_custom_server(asUser, membership.membershipId, { name: "second" });
+		await save_custom_server({ asUser, membershipId: membership.membershipId, name: "first" });
+		await save_custom_server({ asUser, membershipId: membership.membershipId, name: "second" });
 		expect((await chat(asUser, { membershipId: membership.membershipId, threadId })).status).toBe(200);
 
 		// Freeze the clock so the 60-call bucket does not refill.
 		vi.useFakeTimers({ toFake: ["Date"] });
 		for (let index = 0; index < 60; index++) {
-			expect((await run_tool(t, "mcp__my-first__echo", { text: "ok" })).error).toBeNull();
+			expect((await run_tool({ t, name: "mcp__my-first__echo", input: { text: "ok" } })).error).toBeNull();
 		}
 
-		expect((await run_tool(t, "mcp__my-first__echo", { text: "ok" })).error).toBe("Rate limit exceeded");
-		expect((await run_tool(t, "mcp__my-second__echo", { text: "ok" })).error).toBeNull();
+		expect((await run_tool({ t, name: "mcp__my-first__echo", input: { text: "ok" } })).error).toBe("Rate limit exceeded");
+		expect((await run_tool({ t, name: "mcp__my-second__echo", input: { text: "ok" } })).error).toBeNull();
 	});
 });
 
@@ -1121,7 +1137,9 @@ describe("/api/chat MCP server health", () => {
 			const { t, asUser, membership, threadId } = await setup();
 			vi.useFakeTimers({ toFake: ["Date"] });
 			vi.spyOn(console, "warn").mockImplementation(() => {});
-			const { serverDocId } = await install_mcp_plugin(t, membership, {
+			const { serverDocId } = await install_mcp_plugin({
+				t,
+				membership,
 				url: `https://http-status.fixtures.test/${variant}`,
 			});
 
@@ -1145,7 +1163,7 @@ describe("/api/chat MCP server health", () => {
 
 	test("clears a pause when it ends, and keeps the failure count", async () => {
 		const { t, membership } = await setup();
-		const { serverDocId, installationId } = await install_mcp_plugin(t, membership, { url: MODERN_BASIC_URL });
+		const { serverDocId, installationId } = await install_mcp_plugin({ t, membership, url: MODERN_BASIC_URL });
 		const target = { kind: "plugin" as const, installationId, serverId: "tracker" };
 		vi.useFakeTimers();
 
@@ -1164,7 +1182,7 @@ describe("/api/chat MCP server health", () => {
 
 	test("does not count a tool list that Stop aborted", async () => {
 		const { t, asUser, membership, threadId } = await setup();
-		const { serverDocId } = await install_mcp_plugin(t, membership, { url: "https://slow.fixtures.test/list" });
+		const { serverDocId } = await install_mcp_plugin({ t, membership, url: "https://slow.fixtures.test/list" });
 
 		const stop = new AbortController();
 		setTimeout(() => stop.abort(), 100);
@@ -1176,15 +1194,15 @@ describe("/api/chat MCP server health", () => {
 
 	test("clears the count after a good tool list, and never counts failed tool calls", async () => {
 		const { t, asUser, membership, threadId } = await setup();
-		const { serverDocId } = await install_mcp_plugin(t, membership, { url: MODERN_BASIC_URL });
+		const { serverDocId } = await install_mcp_plugin({ t, membership, url: MODERN_BASIC_URL });
 		await t.run((ctx) => ctx.db.patch("plugins_mcp_servers", serverDocId, { failures: 2, unhealthyUntil: 1 }));
 
 		expect((await chat(asUser, { membershipId: membership.membershipId, threadId })).status).toBe(200);
 		expect(await server_doc(t, serverDocId)).toMatchObject({ failures: 0, unhealthyUntil: null });
 
 		for (let index = 0; index < 3; index++) {
-			await run_tool(t, "mcp__tracker__echo", { text: "fail" });
-			await run_tool(t, "mcp__tracker__echo", { text: 1 });
+			await run_tool({ t, name: "mcp__tracker__echo", input: { text: "fail" } });
+			await run_tool({ t, name: "mcp__tracker__echo", input: { text: 1 } });
 		}
 		expect(await server_doc(t, serverDocId)).toMatchObject({ failures: 0, unhealthyUntil: null });
 	});
@@ -1205,13 +1223,15 @@ describe("/api/chat MCP logs", () => {
 			vi.spyOn(console, level).mockImplementation(() => {}),
 		);
 		const headerValue = "HEADER_SECRET_VALUE_5678";
-		await install_mcp_plugin(t, membership, {
+		await install_mcp_plugin({
+			t,
+			membership,
 			url,
 			headers: [{ name: "X-Api-Key", secret: "api_key", value: headerValue }],
 		});
 		expect((await chat(asUser, { membershipId: membership.membershipId, threadId })).status).toBe(200);
 
-		const result = await run_tool(t, "mcp__tracker__echo", { text });
+		const result = await run_tool({ t, name: "mcp__tracker__echo", input: { text } });
 
 		expect(result.error).toBe(error);
 		const logged = JSON.stringify(logs.flatMap((spy) => spy.mock.calls));
@@ -1263,7 +1283,7 @@ describe("/api/chat MCP parts in history", () => {
 		"refuses a request message with a %s MCP part before the model runs or any server is called",
 		async (partType) => {
 			const { t, asUser, membership, threadId } = await setup();
-			await install_mcp_plugin(t, membership, { url: MODERN_BASIC_URL });
+			await install_mcp_plugin({ t, membership, url: MODERN_BASIC_URL });
 
 			const response = await chat(asUser, {
 				membershipId: membership.membershipId,
@@ -1316,7 +1336,7 @@ describe("/api/chat MCP parts in history", () => {
 
 	test("saves the reply of a real tool loop with its MCP part, also when the run is stopped", async () => {
 		const { t, asUser, membership, threadId } = await setup();
-		await install_mcp_plugin(t, membership, { url: MODERN_BASIC_URL });
+		await install_mcp_plugin({ t, membership, url: MODERN_BASIC_URL });
 		const actualAi = await vi.importActual<typeof import("ai")>("ai");
 		const stop = new AbortController();
 		let step = 0;
@@ -1377,7 +1397,9 @@ describe("/api/chat MCP sign-in notice", () => {
 	const OAUTH_SERVER_URL = "https://mcp-a.oauth.test/mcp";
 
 	async function install_oauth_server(t: TestConvex, membership: Membership) {
-		const installed = await install_mcp_plugin(t, membership, {
+		const installed = await install_mcp_plugin({
+			t,
+			membership,
 			url: OAUTH_SERVER_URL,
 			oauth: { issuer: oauthFixtures.issuer(), scopes: [] },
 		});
@@ -1460,11 +1482,13 @@ describe("/api/chat MCP sign-in notice", () => {
 		});
 	});
 
-	async function connect(
-		asUser: ReturnType<TestConvex["withIdentity"]>,
-		membership: Membership,
-		target: FunctionArgs<typeof api.plugins_mcp_oauth.start>["target"],
-	) {
+	async function connect(args: {
+		asUser: ReturnType<TestConvex["withIdentity"]>;
+		membership: Membership;
+		target: FunctionArgs<typeof api.plugins_mcp_oauth.start>["target"];
+	}) {
+		const { asUser, membership, target} = args;
+
 		const started = await asUser.action(api.plugins_mcp_oauth.start, {
 			membershipId: membership.membershipId,
 			target,
@@ -1485,7 +1509,7 @@ describe("/api/chat MCP sign-in notice", () => {
 	test("a working grant loads the tools with the member's token, and the reply has no notice", async () => {
 		const { t, asUser, membership, threadId } = await setup();
 		const target = await install_oauth_server(t, membership);
-		await connect(asUser, membership, target);
+		await connect({ asUser, membership, target });
 
 		expect((await chat(asUser, { membershipId: membership.membershipId, threadId })).status).toBe(200);
 
@@ -1500,7 +1524,7 @@ describe("/api/chat MCP sign-in notice", () => {
 		const { t, asUser, membership, threadId } = await setup();
 		const target = await install_oauth_server(t, membership);
 		oauthFixtures.switches.tokenIncludeRefresh = false;
-		await connect(asUser, membership, target);
+		await connect({ asUser, membership, target });
 		expect((await chat(asUser, { membershipId: membership.membershipId, threadId })).status).toBe(200);
 		const before = (await t.run((ctx) => ctx.db.query("plugins_mcp_oauth_grants").collect()))[0]!;
 		const refusedRequest = Promise.withResolvers<void>();
@@ -1526,7 +1550,7 @@ describe("/api/chat MCP sign-in notice", () => {
 		const running =
 			operation === "list"
 				? chat(asUser, { membershipId: membership.membershipId, threadId })
-				: run_tool(t, "mcp__tracker__echo", { text: "ok" });
+				: run_tool({ t, name: "mcp__tracker__echo", input: { text: "ok" } });
 		await refusedRequest.promise;
 		try {
 			expect(
@@ -1537,7 +1561,7 @@ describe("/api/chat MCP sign-in notice", () => {
 			await vi.waitFor(async () =>
 				expect(await t.run((ctx) => ctx.db.query("plugins_mcp_oauth_revocations").collect())).toEqual([]),
 			);
-			await connect(asUser, membership, target);
+			await connect({ asUser, membership, target });
 		} finally {
 			releaseRefusal.resolve();
 		}
@@ -1554,7 +1578,7 @@ describe("/api/chat MCP sign-in notice", () => {
 		const { t, asUser, membership, threadId } = await setup();
 		const target = await install_oauth_server(t, membership);
 		oauthFixtures.switches.tokenExpiresIn = 120;
-		await connect(asUser, membership, target);
+		await connect({ asUser, membership, target });
 		expect((await chat(asUser, { membershipId: membership.membershipId, threadId })).status).toBe(200);
 
 		// The token has expired, but the run lease has not. The refresh then takes the rest of the lease.
@@ -1567,7 +1591,7 @@ describe("/api/chat MCP sign-in notice", () => {
 			return response;
 		};
 		oauthFixtures.wire.length = 0;
-		const result = await run_tool(t, "mcp__tracker__echo", { text: "late" });
+		const result = await run_tool({ t, name: "mcp__tracker__echo", input: { text: "late" } });
 
 		expect(result.error).toBe("This chat run has no time left for an MCP call.");
 		expect(oauthFixtures.wire.map((entry) => entry.path)).toEqual(["/token"]);
@@ -1577,7 +1601,7 @@ describe("/api/chat MCP sign-in notice", () => {
 		const { t, asUser, membership, threadId } = await setup();
 		const target = await install_oauth_server(t, membership);
 		oauthFixtures.switches.tokenExpiresIn = 120;
-		await connect(asUser, membership, target);
+		await connect({ asUser, membership, target });
 		expect((await chat(asUser, { membershipId: membership.membershipId, threadId })).status).toBe(200);
 		vi.useFakeTimers({ toFake: ["Date"] });
 		vi.setSystemTime(Date.now() + 3 * 60 * 1000);
@@ -1594,7 +1618,7 @@ describe("/api/chat MCP sign-in notice", () => {
 			return await fixtureFetch(request);
 		};
 		oauthFixtures.wire.length = 0;
-		const running = run_tool(t, "mcp__tracker__echo", { text: "blocked" });
+		const running = run_tool({ t, name: "mcp__tracker__echo", input: { text: "blocked" } });
 		await refreshStarted.promise;
 		try {
 			expect(
@@ -1617,7 +1641,7 @@ describe("/api/chat MCP sign-in notice", () => {
 		const { t, asUser, membership, threadId } = await setup();
 		vi.spyOn(console, "warn").mockImplementation(() => {});
 		const target = await install_oauth_server(t, membership);
-		await connect(asUser, membership, target);
+		await connect({ asUser, membership, target });
 		oauthFixtures.switches.serverErrorWithToken = true;
 
 		expect((await chat(asUser, { membershipId: membership.membershipId, threadId })).status).toBe(200);
@@ -1639,7 +1663,7 @@ describe("/api/chat MCP sign-in notice", () => {
 			fill: { name: "mine", urlFields: [], notSecretHeaders: [], secretValues: [], keptSecretNames: [] },
 		});
 		if (saved._nay) throw new Error(saved._nay.message);
-		await connect(asUser, membership, { kind: "custom", customServerId: saved._yay.customServerId });
+		await connect({ asUser, membership, target: { kind: "custom", customServerId: saved._yay.customServerId } });
 		oauthFixtures.switches.serverErrorWithToken = true;
 
 		expect((await chat(asUser, { membershipId: membership.membershipId, threadId })).status).toBe(200);

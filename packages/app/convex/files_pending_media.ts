@@ -224,11 +224,11 @@ export const advance_validation = internalMutation({
 			}
 			// An unselected replacement does not replace the saved media used by this document.
 			const useSaved = entry.kind === "saved" && (!media || !reviewed.has(media._id));
-			const ready = await files_transfer_media_db_get_ready_media(
+			const ready = await files_transfer_media_db_get_ready_media({
 				ctx,
-				useSaved ? { ...entry, kind: "saved", node: entry.node, pendingUpdate: null } : entry,
-				data.membership,
-			);
+				entry: useSaved ? { ...entry, kind: "saved", node: entry.node, pendingUpdate: null } : entry,
+				membership: data.membership,
+			});
 			if (!ready || (entry.kind === "private" && !reviewed.has(entry.pendingUpdate._id)) || media?.pendingArchive)
 				return refusal;
 			if (

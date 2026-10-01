@@ -81,7 +81,13 @@ const secret_crypto_key = ((/* iife */) => {
  * AES-GCM additional data binds a ciphertext to its owning scope and name, so a
  * row copied onto another installation/publisher or renamed fails to decrypt.
  */
-export async function crypto_encrypt_secret_value(value: string, additionalData: string, keyName: SecretKeyName) {
+export async function crypto_encrypt_secret_value(args: {
+	value: string;
+	additionalData: string;
+	keyName: SecretKeyName;
+}) {
+	const { value, additionalData, keyName } = args;
+
 	const nonce = crypto.getRandomValues(new Uint8Array(12));
 	const ciphertext = await crypto.subtle.encrypt(
 		{ name: "AES-GCM", iv: nonce, additionalData: text_encoder.encode(additionalData) },
@@ -94,11 +100,13 @@ export async function crypto_encrypt_secret_value(value: string, additionalData:
 	};
 }
 
-export async function crypto_decrypt_secret_value(
-	secret: { ciphertext: ArrayBuffer; nonce: ArrayBuffer },
-	additionalData: string,
-	keyName: SecretKeyName,
-) {
+export async function crypto_decrypt_secret_value(args: {
+	secret: { ciphertext: ArrayBuffer; nonce: ArrayBuffer };
+	additionalData: string;
+	keyName: SecretKeyName;
+}) {
+	const { secret, additionalData, keyName } = args;
+
 	const plaintext = await crypto.subtle.decrypt(
 		{ name: "AES-GCM", iv: secret.nonce, additionalData: text_encoder.encode(additionalData) },
 		await secret_crypto_key(keyName),
@@ -110,7 +118,13 @@ export async function crypto_decrypt_secret_value(
 /**
  * Keep link fingerprints separate from encryption and other HMAC uses.
  */
-export async function crypto_hmac_sha256_hex(value: string, purpose: string, keyName: SecretKeyName) {
+export async function crypto_hmac_sha256_hex(args: {
+	value: string;
+	purpose: string;
+	keyName: SecretKeyName;
+}) {
+	const { value, purpose, keyName } = args;
+
 	const secret = process.env[keyName];
 	if (!secret) {
 		throw convex_error({ message: `${keyName} is not set in Convex env` });

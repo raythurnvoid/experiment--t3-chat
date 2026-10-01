@@ -19,79 +19,12 @@ import {
 	MyModalPopover,
 	MyModalScrollableArea,
 } from "@/components/my-modal.tsx";
-import {
-	MySelect,
-	MySelectItem,
-	MySelectItemIndicator,
-	MySelectOpenIndicator,
-	MySelectPopover,
-	MySelectPopoverContent,
-	MySelectTrigger,
-} from "@/components/my-select.tsx";
 import { MySwitch } from "@/components/my-switch.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { useConvex, useQuery } from "convex/react";
 import { memo, useRef, useState, type FormEvent } from "react";
-import { toast } from "sonner";
-
-type BrowserProviderSelect_Props = {
-	provider: "none" | "cloud" | "playwriter";
-	onProviderChange: (provider: "cloud" | "playwriter") => void;
-};
-
-/**
- * Selecting Playwriter opens Connect. Its exact tab becomes the choice only after confirmation.
- */
-export const BrowserProviderSelect = memo(function BrowserProviderSelect(props: BrowserProviderSelect_Props) {
-	const { provider, onProviderChange } = props;
-	const { membershipId } = AppTenantProvider.useContext();
-	const convex = useConvex();
-	const [pending, setPending] = useState(false);
-	const handleSelect = useFn((value: string | string[]) => {
-		if (value !== "cloud" && value !== "playwriter") return;
-		if (value === "playwriter") {
-			onProviderChange(value);
-			return;
-		}
-		setPending(true);
-		convex
-			.action(app_convex_api.files_browser.set_browser_choice, { membershipId, webChoice: { provider: "cloud" } })
-			.then((result) => {
-				if (result._nay) toast.error(result._nay.message);
-				else onProviderChange("cloud");
-			})
-			.catch(() => {
-				// Browser errors may contain share IDs. Show only this fixed message.
-				toast.error("Could not change the browser. Try again.");
-			})
-			.finally(() => setPending(false));
-	});
-
-	return (
-		<MySelect value={provider} setValue={handleSelect}>
-			<MySelectTrigger aria-label="Browser provider" disabled={pending}>
-				<MyButton variant="outline">
-					{provider === "cloud"
-						? "Cloud browser"
-						: provider === "playwriter"
-							? "My browser (Playwriter)"
-							: "Choose a browser"}
-					<MySelectOpenIndicator />
-				</MyButton>
-			</MySelectTrigger>
-			<MySelectPopover>
-				<MySelectPopoverContent>
-					<MySelectItem value="cloud">Cloud browser{provider === "cloud" && <MySelectItemIndicator />}</MySelectItem>
-					<MySelectItem value="playwriter">
-						My browser (Playwriter){provider === "playwriter" && <MySelectItemIndicator />}
-					</MySelectItem>
-				</MySelectPopoverContent>
-			</MySelectPopover>
-		</MySelect>
-	);
-});
 
 type BrowserSettings_ClassNames =
 	| "BrowserSettings"
@@ -113,16 +46,9 @@ export const BrowserSettings = memo(function BrowserSettings(props: BrowserSetti
 	const convex = useConvex();
 	const preferences = useQuery(app_convex_api.files_browser.current_browser_preferences, { membershipId });
 	const inputRef = useRef<HTMLInputElement>(null);
-	const [providerDraft, setProviderDraft] = useState<{ provider: "playwriter"; revision: number | undefined } | null>(
-		null,
-	);
 	const [blockedDraft, setBlockedDraft] = useState("");
 	const [pending, setPending] = useState(false);
 	const [error, setError] = useState<string | null>(null);
-	const provider =
-		(providerDraft?.revision === preferences?.selectionRevision ? providerDraft?.provider : null) ??
-		preferences?.webChoice.provider ??
-		"none";
 	const hosts = preferences?.agentBlockedHosts ?? [];
 
 	const handleAccessChange = useFn((enabled: boolean) => {
@@ -179,27 +105,12 @@ export const BrowserSettings = memo(function BrowserSettings(props: BrowserSetti
 						</p>
 					)}
 					<section className={"BrowserSettings-section" satisfies BrowserSettings_ClassNames}>
-						<BrowserProviderSelect
-							provider={provider}
-							onProviderChange={(nextProvider) =>
-								setProviderDraft(
-									nextProvider === "playwriter"
-										? { provider: nextProvider, revision: preferences?.selectionRevision }
-										: null,
-								)
-							}
-						/>
-						{provider === "playwriter" ? (
-							<PlaywriterBrowserConnection />
-						) : provider === "cloud" ? (
-							<p className={"BrowserSettings-text" satisfies BrowserSettings_ClassNames}>
-								Your agent can start and reuse the cloud browser from any chat. Cloud browser time is billed per minute.
-							</p>
-						) : (
-							<p className={"BrowserSettings-text" satisfies BrowserSettings_ClassNames}>
-								No browser selected. Choose a browser to continue.
-							</p>
-						)}
+						<p className={"BrowserSettings-text" satisfies BrowserSettings_ClassNames}>
+							Your agent can use two kinds of web tabs and picks the one it needs. It can start the cloud
+							browser from any chat. Cloud browser time is billed per minute. It can also use one tab that
+							you share from your own browser.
+						</p>
+						<PlaywriterBrowserConnection />
 					</section>
 					<section className={"BrowserSettings-section" satisfies BrowserSettings_ClassNames}>
 						<label className={"BrowserSettings-access" satisfies BrowserSettings_ClassNames}>

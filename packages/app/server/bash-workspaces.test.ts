@@ -53,8 +53,15 @@ async function fixture() {
 		membershipLifetime: captured._yay.membershipLifetime,
 	};
 	let toolCallNumber = 0;
-	const runRuntime = (command: string, agent = true, shellName = "default") =>
-		t.action(internal.bash.run, {
+	const runRuntime = (args: {
+		command: string;
+		agent?: boolean;
+		shellName?: string;
+	}) =>
+		{
+		const { agent = true, shellName = "default", command} = args;
+
+		return t.action(internal.bash.run, {
 			...agentSource,
 			organizationName: "team",
 			workspaceName: "home",
@@ -66,6 +73,7 @@ async function fixture() {
 			output: null,
 			run: null,
 		});
+	};
 	const run = (script: string, agent = true) =>
 		t.action(async (ctx) => {
 			const roots: bash_DbFilesRoots = {
@@ -105,9 +113,9 @@ async function fixture() {
 					bash_resolve_command_create(ctx, roots),
 					bash_rm_command_create(ctx, roots),
 					bash_stat_command_create(ctx, roots),
-					bash_head_tail_wc_command_create(ctx, roots, "head"),
-					bash_head_tail_wc_command_create(ctx, roots, "tail"),
-					bash_head_tail_wc_command_create(ctx, roots, "wc"),
+					bash_head_tail_wc_command_create({ ctx, dbFilesRoots: roots, command: "head" }),
+					bash_head_tail_wc_command_create({ ctx, dbFilesRoots: roots, command: "tail" }),
+					bash_head_tail_wc_command_create({ ctx, dbFilesRoots: roots, command: "wc" }),
 					bash_tee_command_create(roots),
 					bash_touch_command_create(roots),
 					bash_nested_shell_command_create("bash", roots),
@@ -124,13 +132,13 @@ describe("Bash workspace runtime", () => {
 	test("relative find prefixes and retry hints follow a personal cwd", async () => {
 		const f = await fixture();
 		expect(
-			(await f.runRuntime(`mkdir ${homePath}/docs; printf home > ${homePath}/docs/notes.txt; cd ${homePath}`)).metadata
+			(await f.runRuntime({ command: `mkdir ${homePath}/docs; printf home > ${homePath}/docs/notes.txt; cd ${homePath}` })).metadata
 				.exitCode,
 		).toBe(0);
-		const found = await f.runRuntime("find --prefix docs -type f", false);
+		const found = await f.runRuntime({ command: "find --prefix docs -type f", agent: false });
 		expect(found).toMatchObject({ stderr: "", metadata: { exitCode: 0 } });
 		expect(found.stdout).toContain(`${homePath}/docs/notes.txt`);
-		const hint = await f.runRuntime("find -name '*notes*'", false);
+		const hint = await f.runRuntime({ command: "find -name '*notes*'", agent: false });
 		expect(hint.metadata.exitCode).not.toBe(0);
 		expect(hint.stderr).toContain(homePath);
 		expect(hint.stderr).not.toContain(teamPath);
@@ -142,17 +150,17 @@ describe("Bash workspace runtime", () => {
 		"printf '%s\\n' 'false && value=$(cat docs/missing.txt); echo done' | xargs -I {} bash -c '{}'",
 	])("does not record personal paths from safety probes: %s", async (command) => {
 		const f = await fixture();
-		expect((await f.runRuntime(`printf home > ${homePath}/notes.txt; cd ${homePath}`)).metadata.exitCode).toBe(0);
-		const result = await f.runRuntime(`cat notes.txt > /tmp/read; ${command}`, false);
+		expect((await f.runRuntime({ command: `printf home > ${homePath}/notes.txt; cd ${homePath}` })).metadata.exitCode).toBe(0);
+		const result = await f.runRuntime({ command: `cat notes.txt > /tmp/read; ${command}`, agent: false });
 		expect(result).toMatchObject({ stdout: "done\n", stderr: "", metadata: { exitCode: 0 } });
 		expect(result.metadata.observedPaths).toEqual([{ workspace: "personal", path: "/notes.txt" }]);
 	});
 
 	test("mounts both workspaces and keeps matching paths distinct", async () => {
 		const f = await fixture();
-		const result = await f.runRuntime(
-			`printf team > notes.txt; printf home > ${homePath}/notes.txt; cat notes.txt; cat ${homePath}/notes.txt; cat notes.txt`,
-		);
+		const result = await f.runRuntime({
+			command: `printf team > notes.txt; printf home > ${homePath}/notes.txt; cat notes.txt; cat ${homePath}/notes.txt; cat notes.txt`,
+		});
 		expect(result).toMatchObject({ stdout: "teamhometeam", stderr: "", metadata: { exitCode: 0 } });
 		expect(result.metadata.observedPaths).toEqual([
 			{ workspace: "current", path: "/notes.txt" },
@@ -164,7 +172,7 @@ describe("Bash workspace runtime", () => {
 				expect.objectContaining({ workspaceId: f.home.workspaceId, userId: f.team.userId, name: "notes.txt" }),
 			]),
 		);
-		expect(await f.runRuntime(`cat ${homePath}/notes.txt; cat notes.txt`, false, "ask")).toMatchObject({
+		expect(await f.runRuntime({ command: `cat ${homePath}/notes.txt; cat notes.txt`, agent: false, shellName: "ask" })).toMatchObject({
 			stdout: "hometeam",
 			stderr: "",
 			metadata: { exitCode: 0 },
@@ -173,7 +181,7 @@ describe("Bash workspace runtime", () => {
 
 	test("restores a personal cwd across calls and a pending folder rename", async () => {
 		const f = await fixture();
-		expect((await f.runRuntime(`mkdir ${homePath}/notes; cd ${homePath}/notes`)).metadata.exitCode).toBe(0);
+		expect((await f.runRuntime({ command: `mkdir ${homePath}/notes; cd ${homePath}/notes` })).metadata.exitCode).toBe(0);
 		const folder = await f.t.run((ctx) => ctx.db.query("files_pending_nodes").first());
 		if (!folder) throw new Error("Expected a personal folder");
 		expect(
@@ -186,7 +194,7 @@ describe("Bash workspace runtime", () => {
 				destName: "renamed",
 			}),
 		).toMatchObject({ _yay: expect.anything() });
-		const result = await f.runRuntime("pwd; printf private > draft.txt");
+		const result = await f.runRuntime({ command: "pwd; printf private > draft.txt" });
 		expect(result).toMatchObject({
 			stdout: `${homePath}/renamed\n`,
 			stderr: "",
@@ -209,7 +217,7 @@ describe("Bash workspace runtime", () => {
 		const f = await fixture();
 		const paths = Array.from({ length: 120 }, (_, i) => `${i % 2 ? teamPath : homePath}/missing-${i}.txt`);
 		const commands = Array.from({ length: 12 }, (_, i) => `stat ${paths.slice(i * 10, i * 10 + 10).join(" ")}`);
-		const result = await f.runRuntime(commands.join("; "), false);
+		const result = await f.runRuntime({ command: commands.join("; "), agent: false });
 		expect(result.metadata).toMatchObject({ observedPathsTruncated: true });
 		expect(result.metadata.observedPaths).toHaveLength(100);
 		expect(new Set(result.metadata.observedPaths.map((entry) => entry.workspace))).toEqual(
@@ -220,7 +228,7 @@ describe("Bash workspace runtime", () => {
 	test("does not create files outside the allowed pair", async () => {
 		const f = await fixture();
 		for (const path of ["/home/cloud-usr/w/team/other/notes.txt", `${homePath}/../other/notes.txt`]) {
-			const result = await f.runRuntime(`printf private > ${path}`);
+			const result = await f.runRuntime({ command: `printf private > ${path}` });
 			expect(result.metadata.exitCode).not.toBe(0);
 		}
 		expect(await f.t.run((ctx) => ctx.db.query("files_pending_nodes").collect())).toEqual([]);

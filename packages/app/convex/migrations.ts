@@ -169,11 +169,13 @@ const rebrand_cleanup_tables = [
 	"organizations",
 ] as const satisfies readonly RebrandCleanupTableName[];
 
-async function delete_rebrand_cleanup_batch<TableName extends RebrandCleanupTableName>(
-	ctx: MutationCtx,
-	tableName: TableName,
-	batchSize: number,
-) {
+async function delete_rebrand_cleanup_batch<TableName extends RebrandCleanupTableName>(args: {
+	ctx: MutationCtx;
+	tableName: TableName;
+	batchSize: number;
+}) {
+	const { ctx, tableName, batchSize } = args;
+
 	const docs = await ctx.db.query(tableName).take(batchSize);
 	await Promise.all(docs.map((doc) => ctx.db.delete(tableName, doc._id)));
 	return docs.length;
@@ -1252,14 +1254,12 @@ export const delete_stranded_plugin_data_scopes = app_migrations.define({
 
 		// A migration has no hook per batch, so each scope doc gets its own cleanup state. Each state can load
 		// up to 500 link docs. For a workspace with many links, run this repair with a small `batchSize`.
-		const managed = await plugins_data_db_keep_scope_managed(
+		const managed = await plugins_data_db_keep_scope_managed({
 			ctx,
-			{
-				installation,
-				scopes,
-			},
-			files_share_links_create_cleanup_state(),
-		);
+			installation,
+			scopes,
+			shareLinkCleanup: files_share_links_create_cleanup_state(),
+		});
 		if (managed.promoted) {
 			// Keep a healthy scope stable. Only a repair that changed access gets a new revision.
 			const membershipRevision = Math.max(Date.now(), ...scopes.map((scope) => scope.updatedAt + 1));
@@ -1405,7 +1405,7 @@ export const dev_cleanup_rebrand_preserve_clerk_accounts = internalMutation({
 		const batchSize = args.batchSize ?? 200;
 
 		for (const tableName of rebrand_cleanup_tables) {
-			const deletedCount = await delete_rebrand_cleanup_batch(ctx, tableName, batchSize);
+			const deletedCount = await delete_rebrand_cleanup_batch({ ctx, tableName, batchSize });
 			if (deletedCount > 0) {
 				return {
 					done: false,

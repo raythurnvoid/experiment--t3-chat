@@ -1087,7 +1087,13 @@ function count_table_doc(budget: { readBytes: number }, metadataDoc: object | nu
 	if (metadataDoc) budget.readBytes += files_get_utf8_byte_size(JSON.stringify(metadataDoc)) + 128;
 }
 
-async function fits_table_read_budget(ctx: QueryCtx, budget: { readBytes: number }, reserve = false) {
+async function fits_table_read_budget(args: {
+	ctx: QueryCtx;
+	budget: { readBytes: number };
+	reserve?: boolean;
+}) {
+	const { ctx, budget, reserve = false } = args;
+
 	// Keep room for one max-sized doc. Metrics also count auth and access reads.
 	const metrics = await ctx.meta.getTransactionMetrics();
 	const bytes = reserve ? TABLE_FIELDS_BYTE_RESERVE : 0;
@@ -1213,7 +1219,7 @@ export const list_folder_fields = query({
 		let completed = 0;
 		let isDone = false;
 		for (let count = 0; count < TABLE_FIELDS_MAX_CANDIDATES; count++) {
-			if (!(await fits_table_read_budget(ctx, budget, true))) break;
+			if (!(await fits_table_read_budget({ ctx, budget, reserve: true }))) break;
 			const after = afterField;
 			const metadataDoc = await ctx.db
 				.query("files_metadata_docs")
@@ -1234,11 +1240,11 @@ export const list_folder_fields = query({
 				isDone = true;
 				break;
 			}
-			if (!(await fits_table_read_budget(ctx, budget, true))) break;
+			if (!(await fits_table_read_budget({ ctx, budget, reserve: true }))) break;
 			const node =
 				metadataDoc.sourceKind === "committed" ? await ctx.db.get("files_nodes", metadataDoc.fileNodeId) : null;
 			count_table_doc(budget, node);
-			if (!(await fits_table_read_budget(ctx, budget))) break;
+			if (!(await fits_table_read_budget({ ctx, budget }))) break;
 			// This partition is readable only while its copied scope flag matches the real node.
 			if (
 				!node ||
@@ -1298,7 +1304,7 @@ export const list_node_fields = query({
 		let completed = 0;
 		let isDone = false;
 		for (let count = 0; count < TABLE_FIELDS_MAX_CANDIDATES; count++) {
-			if (!(await fits_table_read_budget(ctx, budget, true))) break;
+			if (!(await fits_table_read_budget({ ctx, budget, reserve: true }))) break;
 			const after = afterField;
 			const metadataDoc =
 				entry.kind === "saved"
@@ -1321,7 +1327,7 @@ export const list_node_fields = query({
 							})
 							.first();
 			count_table_doc(budget, metadataDoc);
-			if (!(await fits_table_read_budget(ctx, budget))) break;
+			if (!(await fits_table_read_budget({ ctx, budget }))) break;
 			if (!metadataDoc) {
 				isDone = true;
 				break;
@@ -1380,7 +1386,7 @@ export const get_field_values = query({
 		let afterField = args.afterField;
 		const start = afterField === null ? 0 : args.fields.indexOf(afterField) + 1;
 		for (const field of args.fields.slice(start)) {
-			if (!(await fits_table_read_budget(ctx, budget, true))) break;
+			if (!(await fits_table_read_budget({ ctx, budget, reserve: true }))) break;
 			let value: string | number | boolean | null = null;
 			let complete = true;
 			if (entry.kind === "saved") {
@@ -1411,7 +1417,7 @@ export const get_field_values = query({
 					[Symbol.asyncIterator]();
 				try {
 					while (true) {
-						if (!(await fits_table_read_budget(ctx, budget, true))) {
+						if (!(await fits_table_read_budget({ ctx, budget, reserve: true }))) {
 							complete = false;
 							break;
 						}
@@ -1427,7 +1433,7 @@ export const get_field_values = query({
 					await iterator.return?.();
 				}
 			}
-			if (!complete || !(await fits_table_read_budget(ctx, budget))) break;
+			if (!complete || !(await fits_table_read_budget({ ctx, budget }))) break;
 			values.push({ field, value });
 			afterField = field;
 		}
@@ -2045,7 +2051,7 @@ export const update_entries_by_path = internalMutation({
 			const revision = entry.pendingUpdate.revision + 1;
 			const updatedAt = Date.now();
 			const createIntent = { ...entry.pendingUpdate.createIntent!, metadata: validated._yay.entries };
-			await files_db_patch_pending_update(ctx, entry.pendingUpdate._id, { createIntent, revision, updatedAt });
+			await files_db_patch_pending_update({ ctx, pendingUpdateId: entry.pendingUpdate._id, value: { createIntent, revision, updatedAt } });
 			await files_pending_update_db_update_index_revision(ctx, {
 				pendingUpdateId: entry.pendingUpdate._id,
 				proposalRevision: revision,

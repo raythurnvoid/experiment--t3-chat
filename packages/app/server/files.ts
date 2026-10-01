@@ -254,11 +254,13 @@ export async function files_db_insert_pending_update(
 	return pendingUpdateId;
 }
 
-export async function files_db_patch_pending_update(
-	ctx: MutationCtx,
-	pendingUpdateId: Id<"files_pending_updates">,
-	value: Partial<Omit<WithoutSystemFields<Doc<"files_pending_updates">>, "expiresAt">>,
-) {
+export async function files_db_patch_pending_update(args: {
+	ctx: MutationCtx;
+	pendingUpdateId: Id<"files_pending_updates">;
+	value: Partial<Omit<WithoutSystemFields<Doc<"files_pending_updates">>, "expiresAt">>;
+}) {
+	const { ctx, pendingUpdateId, value } = args;
+
 	const proposal = await ctx.db.get("files_pending_updates", pendingUpdateId);
 	if (!proposal) throw should_never_happen("Pending update disappeared before its write", { pendingUpdateId });
 	await files_db_advance_pending_review_version(ctx, proposal);
@@ -276,11 +278,13 @@ export async function files_db_patch_pending_update(
 	);
 }
 
-export async function files_db_delete_pending_update(
-	ctx: MutationCtx,
-	pendingUpdateId: Id<"files_pending_updates">,
-	options?: { reviewAlreadyFenced: true },
-) {
+export async function files_db_delete_pending_update(args: {
+	ctx: MutationCtx;
+	pendingUpdateId: Id<"files_pending_updates">;
+	options?: { reviewAlreadyFenced: true };
+}) {
+	const { ctx, pendingUpdateId, options } = args;
+
 	const proposal = await ctx.db.get("files_pending_updates", pendingUpdateId);
 	if (!proposal) return;
 	// Paged cleanup follows the root's logical Discard, which already changed this clock.

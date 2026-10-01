@@ -50,7 +50,13 @@ async function fixture(homeChat = false) {
 	});
 	if (created._nay) throw new Error(created._nay.message);
 	const threadId = created._yay.threadId;
-	async function folder(root: typeof home, path: string, fromChat = true) {
+	async function folder(args: {
+		root: typeof home;
+		path: string;
+		fromChat?: boolean;
+	}) {
+		const { root, fromChat = true, path} = args;
+
 		const result = await t.mutation(internal.files_nodes.create_private_node_by_path, {
 			organizationId: root.organizationId,
 			workspaceId: root.workspaceId,
@@ -196,7 +202,7 @@ describe("pending source summaries", () => {
 
 	test("discloses the current team destination for a private home Copy", async () => {
 		const f = await fixture();
-		const source = await f.folder(f.home, "/personal-source");
+		const source = await f.folder({ root: f.home, path: "/personal-source" });
 		const destination = await f.asOwner.mutation(api.files_nodes.create_folder_node, {
 			membershipId: f.owner.membershipId,
 			parentId: "root",
@@ -309,7 +315,7 @@ describe("pending source summaries", () => {
 		"hides a source after %s while its home proposal stays reviewable",
 		async (change) => {
 			const f = await fixture();
-			const draft = await f.folder(f.home, "/kept");
+			const draft = await f.folder({ root: f.home, path: "/kept" });
 			if (change === "leave") {
 				expect(
 					await f.asUser.mutation(api.organizations.remove_user_from_organization, {
@@ -385,15 +391,15 @@ describe("pending source summaries", () => {
 describe("chat pending destination counts", () => {
 	test("counts only this owner's chat in current and own home, with real routes", async () => {
 		const f = await fixture();
-		await f.folder(f.current, "/current");
-		await f.folder(f.home, "/home-one");
-		await f.folder(f.home, "/home-two");
-		await f.folder(f.home, "/manual", false);
-		await f.folder(f.owner, "/other-owner", false);
+		await f.folder({ root: f.current, path: "/current" });
+		await f.folder({ root: f.home, path: "/home-one" });
+		await f.folder({ root: f.home, path: "/home-two" });
+		await f.folder({ root: f.home, path: "/manual", fromChat: false });
+		await f.folder({ root: f.owner, path: "/other-owner", fromChat: false });
 		const third = await f.t.run((ctx) =>
 			test_mocks_fill_db_with.membership(ctx, { userId: f.home.userId, organizationName: "third" }),
 		);
-		await f.folder(third, "/third");
+		await f.folder({ root: third, path: "/third" });
 		expect(await f.counts()).toEqual([
 			{
 				workspace: "current",
@@ -413,7 +419,7 @@ describe("chat pending destination counts", () => {
 
 	test("counts a folder draft that holds a draft as part of that draft", async () => {
 		const f = await fixture();
-		await f.folder(f.current, "/nest/inner");
+		await f.folder({ root: f.current, path: "/nest/inner" });
 		expect(await f.counts()).toEqual([
 			{
 				workspace: "current",
@@ -428,7 +434,7 @@ describe("chat pending destination counts", () => {
 
 	test("deduplicates a home chat's two roots", async () => {
 		const f = await fixture(true);
-		await f.folder(f.home, "/home");
+		await f.folder({ root: f.home, path: "/home" });
 		expect(await f.counts()).toEqual([
 			{ workspace: "current", organizationName: "personal", workspaceName: "home", count: 1, truncated: false },
 		]);
@@ -450,7 +456,7 @@ describe("chat pending destination counts", () => {
 				if (result._nay) throw new Error(result._nay.message);
 			}
 		});
-		await f.folder(f.home, "/home");
+		await f.folder({ root: f.home, path: "/home" });
 		expect(await f.counts()).toEqual([
 			{
 				workspace: "current",
@@ -465,7 +471,7 @@ describe("chat pending destination counts", () => {
 
 	test("refuses other creators, foreign current workspaces, and optimistic ids", async () => {
 		const f = await fixture();
-		await f.folder(f.current, "/current");
+		await f.folder({ root: f.current, path: "/current" });
 		expect(
 			await f.asOwner.query(api.files_pending_updates.get_chat_pending_updates_summary, {
 				membershipId: f.owner.membershipId,
@@ -488,8 +494,8 @@ describe("chat pending destination counts", () => {
 
 	test("omits a home root without live access and counts archived chats", async () => {
 		const f = await fixture();
-		await f.folder(f.current, "/current");
-		await f.folder(f.home, "/home");
+		await f.folder({ root: f.current, path: "/current" });
+		await f.folder({ root: f.home, path: "/home" });
 		await f.t.run(async (ctx) => {
 			await ctx.db.patch("organizations_workspaces_users", f.home.membershipId, { active: false });
 			await ctx.db.patch("ai_chat_threads", f.threadId, { archived: true });

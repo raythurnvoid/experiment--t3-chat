@@ -47,11 +47,13 @@ export function global_custom_event_dispatch<K extends keyof global_custom_event
 	window.dispatchEvent(new global_custom_event_Event(event, { detail: payload }));
 }
 
-export function global_custom_event_listen<K extends keyof global_custom_event_Event["__map"]>(
-	event: K,
-	handler: (event: global_custom_event_Event["__map"][K]) => void,
-	options?: { signal?: AbortSignal },
-) {
+export function global_custom_event_listen<K extends keyof global_custom_event_Event["__map"]>(args: {
+	event: K;
+	handler: (event: global_custom_event_Event["__map"][K]) => void;
+	options?: { signal?: AbortSignal };
+}) {
+	const { event, handler, options } = args;
+
 	window.addEventListener(event, handler, options);
 
 	return function cleanup() {
@@ -66,17 +68,19 @@ export function useGlobalCustomEvent<K extends keyof global_custom_event_Event["
 	const handlerRef = useLiveRef(handler);
 
 	useEffect(() => {
-		return global_custom_event_listen(name, (event) => handlerRef.current(event));
+		return global_custom_event_listen({ event: name, handler: (event) => handlerRef.current(event) });
 	}, [name]);
 }
 // #endregion custom events
 
 // #region global events
-export function global_event_listen<K extends keyof GlobalEventHandlersEventMap>(
-	event: K,
-	handler: (event: GlobalEventHandlersEventMap[K]) => void,
-	options?: AddEventListenerOptions,
-) {
+export function global_event_listen<K extends keyof GlobalEventHandlersEventMap>(args: {
+	event: K;
+	handler: (event: GlobalEventHandlersEventMap[K]) => void;
+	options?: AddEventListenerOptions;
+}) {
+	const { event, handler, options } = args;
+
 	window.addEventListener(event, handler, options);
 
 	return function cleanup() {
@@ -84,11 +88,13 @@ export function global_event_listen<K extends keyof GlobalEventHandlersEventMap>
 	};
 }
 
-export function global_event_listen_all<K extends keyof GlobalEventHandlersEventMap>(
-	events: K[],
-	handler: (event: GlobalEventHandlersEventMap[K]) => void,
-	options?: AddEventListenerOptions,
-) {
+export function global_event_listen_all<K extends keyof GlobalEventHandlersEventMap>(args: {
+	events: K[];
+	handler: (event: GlobalEventHandlersEventMap[K]) => void;
+	options?: AddEventListenerOptions;
+}) {
+	const { events, handler, options } = args;
+
 	events.forEach((event) => {
 		window.addEventListener(event, handler, options);
 	});
@@ -100,27 +106,31 @@ export function global_event_listen_all<K extends keyof GlobalEventHandlersEvent
 	};
 }
 
-export function useGlobalEvent<K extends keyof GlobalEventHandlersEventMap>(
-	event: K,
-	handler: (event: GlobalEventHandlersEventMap[K]) => void,
-	options?: AddEventListenerOptions,
-) {
+export function useGlobalEvent<K extends keyof GlobalEventHandlersEventMap>(args: {
+	event: K;
+	handler: (event: GlobalEventHandlersEventMap[K]) => void;
+	options?: AddEventListenerOptions;
+}) {
+	const { event, handler, options } = args;
+
 	const handlerRef = useLiveRef(handler);
 
 	useEffect(() => {
-		return global_event_listen(event, (e) => handlerRef.current(e), options);
+		return global_event_listen({ event, handler: (e) => handlerRef.current(e), options });
 	}, [event]);
 }
 
-export function useGlobalEventList<K extends keyof GlobalEventHandlersEventMap>(
-	events: K[],
-	handler: (event: GlobalEventHandlersEventMap[K]) => void,
-	options?: AddEventListenerOptions,
-) {
+export function useGlobalEventList<K extends keyof GlobalEventHandlersEventMap>(args: {
+	events: K[];
+	handler: (event: GlobalEventHandlersEventMap[K]) => void;
+	options?: AddEventListenerOptions;
+}) {
+	const { events, handler, options } = args;
+
 	const handlerRef = useLiveRef(handler);
 
 	useEffect(() => {
-		return global_event_listen_all(events, (e) => handlerRef.current(e), options);
+		return global_event_listen_all({ events, handler: (e) => handlerRef.current(e), options });
 	}, [events]);
 }
 // #endregion global events

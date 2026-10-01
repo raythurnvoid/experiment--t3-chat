@@ -566,12 +566,14 @@ const SCHEDULE = {
 	lastRun: { runId: "run_1", status: "failed", updatedAt: 1_700_000_000_000, errorMessage: "Source was unavailable" },
 };
 
-function setQueries(
-	plugin: ReturnType<typeof published_plugin>,
-	installations: unknown[] = [],
-	publisherPlugin: unknown = null,
-	canManageAccounts = true,
-) {
+function setQueries(args: {
+	plugin: ReturnType<typeof published_plugin>;
+	installations?: unknown[];
+	publisherPlugin?: unknown;
+	canManageAccounts?: boolean;
+}) {
+	const { plugin, installations = [], publisherPlugin = null, canManageAccounts = true } = args;
+
 	paramsMock.mockReturnValue({ organizationName: "team", workspaceName: "home", pluginName: plugin.name });
 	useQueryMock.mockImplementation((query: string) => {
 		switch (query) {
@@ -630,7 +632,7 @@ describe("RoutePluginsPluginConsentModal", () => {
 	});
 
 	test("promises the upload baseline for a plugin that can get a run", () => {
-		setQueries(published_plugin({ name: "media", canProcessFiles: true }));
+		setQueries({ plugin: published_plugin({ name: "media", canProcessFiles: true }) });
 
 		render(<PageComponent />);
 		fireEvent.click(screen.getByRole("button", { name: "Install" }));
@@ -640,7 +642,7 @@ describe("RoutePluginsPluginConsentModal", () => {
 
 	test("installs a fresh empty account without account management permission", async () => {
 		const plugin = published_plugin({ name: "media", canProcessFiles: true });
-		setQueries(plugin, [], null, false);
+		setQueries({ plugin, installations: [], publisherPlugin: null, canManageAccounts: false });
 		mutationMock.mockResolvedValue({ _yay: { installationId: "installation_1" } });
 
 		render(<PageComponent />);
@@ -667,7 +669,7 @@ describe("RoutePluginsPluginConsentModal", () => {
 		const plugin = published_plugin({ name: "media", canProcessFiles: true, canInstall: false });
 		const installed = installed_item(plugin);
 		installed.version.version = "0.1.0";
-		setQueries(plugin, [installed], null, false);
+		setQueries({ plugin, installations: [installed], publisherPlugin: null, canManageAccounts: false });
 		mutationMock.mockResolvedValue({ _yay: { installationId: "installation_1" } });
 
 		render(<PageComponent />);
@@ -684,7 +686,7 @@ describe("RoutePluginsPluginConsentModal", () => {
 		const plugin = published_plugin({ name: "media", canProcessFiles: true });
 		const installed = installed_item(plugin);
 		installed.version.version = "0.1.0";
-		setQueries(plugin, [installed]);
+		setQueries({ plugin, installations: [installed] });
 		mutationMock.mockResolvedValue({ _yay: null });
 		render(<PageComponent />);
 		fireEvent.click(screen.getByRole("button", { name: "Update" }));
@@ -703,7 +705,7 @@ describe("RoutePluginsPluginConsentModal", () => {
 		const plugin = published_plugin({ name: "media", canProcessFiles: true });
 		const installed = installed_item(plugin);
 		installed.version.version = "0.1.0";
-		setQueries(plugin, [installed]);
+		setQueries({ plugin, installations: [installed] });
 		mutationMock.mockResolvedValue({ _yay: null });
 		render(<PageComponent />);
 		fireEvent.click(screen.getByRole("button", { name: "Update" }));
@@ -720,7 +722,7 @@ describe("RoutePluginsPluginConsentModal", () => {
 
 	test("rebinds only through the explicit account action", async () => {
 		const plugin = published_plugin({ name: "media", canProcessFiles: true });
-		setQueries(plugin, [installed_item(plugin)]);
+		setQueries({ plugin, installations: [installed_item(plugin)] });
 		mutationMock.mockResolvedValue({ _yay: null });
 		render(<PageComponent />);
 		fireEvent.click(screen.getByRole("combobox", { name: "Replacement service account" }));
@@ -740,7 +742,7 @@ describe("RoutePluginsPluginConsentModal", () => {
 	test("does not promise the upload baseline for a page-only plugin", () => {
 		// Council's shape: no backend entrypoint and no declared events, so no run ever starts and its
 		// page token carries no write scope. Telling an admin otherwise overstates the grant.
-		setQueries(published_plugin({ name: "council", canProcessFiles: false }));
+		setQueries({ plugin: published_plugin({ name: "council", canProcessFiles: false }) });
 
 		render(<PageComponent />);
 		fireEvent.click(screen.getByRole("button", { name: "Install" }));
@@ -755,15 +757,15 @@ describe("RoutePluginsPluginConsentModal", () => {
 		// Video Player's shape: no pages, one file view. A file view runs the same frame on a session
 		// token with the same workspace-wide scopes as a page, so an admin must be shown the surface
 		// and the same warning. Gating either one on `pages` hides both for this plugin.
-		setQueries(
-			published_plugin({
+		setQueries({
+			plugin: published_plugin({
 				name: "video-player",
 				canProcessFiles: false,
 				fileViews: [
 					{ id: "player", title: "Video player", entry: "dist/frontend/index.html", contentTypes: ["video/mp4"] },
 				],
 			}),
-		);
+		});
 
 		render(<PageComponent />);
 		fireEvent.click(screen.getByRole("button", { name: "Install" }));
@@ -778,8 +780,8 @@ describe("RoutePluginsPluginConsentModal", () => {
 		// The mirror of the test above, and the case every shipped plugin is in: Council, Gallery and
 		// Chitchat all ship pages and no file views. Gating the warning on `fileViews` alone would drop
 		// it for all of them, and only this direction catches that.
-		setQueries(
-			published_plugin({
+		setQueries({
+			plugin: published_plugin({
 				name: "gallery",
 				canProcessFiles: false,
 				pages: [
@@ -791,7 +793,7 @@ describe("RoutePluginsPluginConsentModal", () => {
 					},
 				],
 			}),
-		);
+		});
 
 		render(<PageComponent />);
 		fireEvent.click(screen.getByRole("button", { name: "Install" }));
@@ -806,14 +808,14 @@ describe("RoutePluginsPluginConsentModal", () => {
 		// frame closes. This one hands a frame's access to the publisher's own server, which keeps
 		// using it while nobody has the plugin open, so the dialog must say so before an admin accepts.
 		// A file view starts that exchange exactly as a page does, so the copy must name both surfaces.
-		setQueries(
-			published_plugin({
+		setQueries({
+			plugin: published_plugin({
 				name: "council",
 				canProcessFiles: false,
 				capabilities: ["plugin.data.read", "plugin.service.connect"],
 				pages: [{ id: "room", title: "Council room", entry: "dist/frontend/index.html", navItem: null }],
 			}),
-		);
+		});
 
 		render(<PageComponent />);
 		fireEvent.click(screen.getByRole("button", { name: "Install" }));
@@ -827,7 +829,7 @@ describe("RoutePluginsPluginConsentModal", () => {
 	});
 
 	test("lists MCP servers and skills with the MCP warning", () => {
-		setQueries(published_plugin({ name: "tracker", canProcessFiles: false, ...mcp_plugin_parts }));
+		setQueries({ plugin: published_plugin({ name: "tracker", canProcessFiles: false, ...mcp_plugin_parts }) });
 
 		render(<PageComponent />);
 		fireEvent.click(screen.getByRole("button", { name: "Install" }));
@@ -859,7 +861,7 @@ describe("RoutePluginsPlugin scheduled runs", () => {
 	});
 
 	test("requires explicit Me consent and submits the edited first-install YAML", async () => {
-		setQueries(scheduled_plugin());
+		setQueries({ plugin: scheduled_plugin() });
 		render(<PageComponent />);
 		fireEvent.click(screen.getByRole("button", { name: "Install" }));
 		const dialog = screen.getByRole("dialog");
@@ -892,7 +894,7 @@ describe("RoutePluginsPlugin scheduled runs", () => {
 
 	test("requires fresh Me consent after cancel and reopen with mounted dialog children", async () => {
 		modalOptions.keepMounted = true;
-		setQueries(scheduled_plugin());
+		setQueries({ plugin: scheduled_plugin() });
 		render(<PageComponent />);
 		fireEvent.click(screen.getByRole("button", { name: "Install" }));
 		fireEvent.click(screen.getByRole("checkbox", { name: "Allow this plugin to run as me while I am signed out." }));
@@ -921,7 +923,7 @@ describe("RoutePluginsPlugin scheduled runs", () => {
 			const installation = installed_item(plugin);
 			installation.installation.configurationYaml = plugin.configuration!.defaultYaml;
 			if (form === "enable") installation.installation.status = "disabled";
-			setQueries(plugin, [installation]);
+			setQueries({ plugin, installations: [installation] });
 			setQueryResult("plugins.get_installation_schedule", { ...SCHEDULE, status: installation.installation.status });
 			let eligibleUsers: Array<{ userId: string; grantId: string; displayName: string; scopes: string[] }> = [];
 			let status = "CanLoadMore";
@@ -980,7 +982,7 @@ describe("RoutePluginsPlugin scheduled runs", () => {
 			version: "0.3.0",
 			mounts: [],
 		};
-		setQueries(plugin, [installation]);
+		setQueries({ plugin, installations: [installation] });
 		render(<PageComponent />);
 		fireEvent.click(screen.getByRole("button", { name: "Update" }));
 		const warning = within(screen.getByRole("dialog")).getByRole("alert");
@@ -990,7 +992,7 @@ describe("RoutePluginsPlugin scheduled runs", () => {
 	});
 
 	test("explains ordinary billing for a mount-only plugin", () => {
-		setQueries({ ...scheduled_plugin(), capabilities: ["workspace.volumes.write"], events: [] });
+		setQueries({ plugin: { ...scheduled_plugin(), capabilities: ["workspace.volumes.write"], events: [] } });
 		render(<PageComponent />);
 		fireEvent.click(screen.getByRole("button", { name: "Install" }));
 		const dialog = screen.getByRole("dialog");
@@ -1000,7 +1002,7 @@ describe("RoutePluginsPlugin scheduled runs", () => {
 	});
 
 	test("keeps invalid schedule YAML out of the install request", async () => {
-		setQueries(scheduled_plugin());
+		setQueries({ plugin: scheduled_plugin() });
 		render(<PageComponent />);
 		fireEvent.click(screen.getByRole("button", { name: "Install" }));
 		const dialog = screen.getByRole("dialog");
@@ -1018,7 +1020,7 @@ describe("RoutePluginsPlugin scheduled runs", () => {
 	});
 
 	test("shows an install permission refusal inline and keeps consent open", async () => {
-		setQueries(scheduled_plugin());
+		setQueries({ plugin: scheduled_plugin() });
 		mutationMock.mockResolvedValue({ _nay: { message: "Permission denied" } });
 		render(<PageComponent />);
 		fireEvent.click(screen.getByRole("button", { name: "Install" }));
@@ -1035,7 +1037,7 @@ describe("RoutePluginsPlugin scheduled runs", () => {
 
 	test("lets a member reach only their run permissions through the public installation ID", async () => {
 		const plugin = { ...scheduled_plugin(), installationId: "installation_1", canInstall: false, canManage: false };
-		setQueries(plugin);
+		setQueries({ plugin });
 		setQueryResult("plugins_access.get_my_run_as_grant", {
 			pluginName: "importer",
 			displayName: "Importer",
@@ -1063,7 +1065,7 @@ describe("RoutePluginsPlugin scheduled runs", () => {
 
 	test("repairs an invalid actor with another person's own grant and separates the payer", async () => {
 		const plugin = scheduled_plugin();
-		setQueries(plugin, [installed_item(plugin)]);
+		setQueries({ plugin, installations: [installed_item(plugin)] });
 		setQueryResult("plugins.get_installation_schedule", {
 			...SCHEDULE,
 			assignmentError: "The scheduled user must grant access again",
@@ -1100,7 +1102,7 @@ describe("RoutePluginsPlugin scheduled runs", () => {
 		const plugin = scheduled_plugin();
 		const installation = installed_item(plugin);
 		installation.installation.configurationYaml = plugin.configuration!.defaultYaml;
-		setQueries(plugin, [installation]);
+		setQueries({ plugin, installations: [installation] });
 		setQueryResult("plugins.get_installation_schedule", SCHEDULE);
 		usePaginatedQueryMock.mockImplementation((query: string) =>
 			query === "plugins_access.list_eligible_run_users"
@@ -1146,7 +1148,7 @@ describe("RoutePluginsPlugin scheduled runs", () => {
 
 	test("queues Run now once and displays a live permission refusal", async () => {
 		const plugin = scheduled_plugin();
-		setQueries(plugin, [installed_item(plugin)]);
+		setQueries({ plugin, installations: [installed_item(plugin)] });
 		setQueryResult("plugins.get_installation_schedule", SCHEDULE);
 		let finish: ((value: { _nay: { message: string } }) => void) | undefined;
 		mutationMock.mockImplementation(
@@ -1169,7 +1171,7 @@ describe("RoutePluginsPlugin scheduled runs", () => {
 		const plugin = scheduled_plugin();
 		const installation = installed_item(plugin);
 		installation.installation.configurationYaml = plugin.configuration!.defaultYaml;
-		setQueries(plugin, [installation]);
+		setQueries({ plugin, installations: [installation] });
 		render(<PageComponent />);
 		fireEvent.click(screen.getByRole("button", { name: "Disable" }));
 		await waitFor(() =>
@@ -1179,7 +1181,7 @@ describe("RoutePluginsPlugin scheduled runs", () => {
 			}),
 		);
 		installation.installation.status = "disabled";
-		setQueries(plugin, [installation]);
+		setQueries({ plugin, installations: [installation] });
 		fireEvent.click(screen.getByRole("button", { name: "Enable" }));
 		expect(screen.getByRole("button", { name: "Accept and enable" })).toHaveProperty("disabled", true);
 		expect(screen.getByRole("textbox", { name: "Configuration YAML" })).toHaveProperty(
@@ -1193,7 +1195,7 @@ describe("RoutePluginsPlugin scheduled runs", () => {
 		const plugin = scheduled_plugin();
 		const installation = installed_item(plugin);
 		installation.installation.configurationYaml = plugin.configuration!.defaultYaml;
-		setQueries(plugin, [installation]);
+		setQueries({ plugin, installations: [installation] });
 		setQueryResult("plugins.get_installation_schedule", SCHEDULE);
 		let eligibleUsers = [{ userId: "user_3", grantId: "grant_3", displayName: "Grace", scopes: [] }];
 		usePaginatedQueryMock.mockImplementation((query: string) =>
@@ -1270,7 +1272,7 @@ describe("RoutePluginsPlugin scheduled runs", () => {
 
 	test("keeps a draft during schedule refresh but clears it when the saved grant changes", async () => {
 		const plugin = scheduled_plugin();
-		setQueries(plugin, [installed_item(plugin)]);
+		setQueries({ plugin, installations: [installed_item(plugin)] });
 		setQueryResult("plugins.get_installation_schedule", SCHEDULE);
 		usePaginatedQueryMock.mockImplementation((query: string) =>
 			query === "plugins_access.list_eligible_run_users"
@@ -1301,7 +1303,7 @@ describe("RoutePluginsPlugin scheduled runs", () => {
 
 	test("renders mount copies, deletion, shared visibility, and storage limits", () => {
 		const plugin = scheduled_plugin();
-		setQueries(plugin, [installed_item(plugin)]);
+		setQueries({ plugin, installations: [installed_item(plugin)] });
 		setQueryResult("plugins.get_installation_mounts", {
 			mounts: [{ mountId: "source", name: "sources" }],
 			volumes: [
@@ -1347,7 +1349,7 @@ describe("RoutePluginsPlugin scheduled runs", () => {
 
 	test("pages retained history and loads bounded API calls only on expansion", async () => {
 		const plugin = scheduled_plugin();
-		setQueries(plugin, [installed_item(plugin)]);
+		setQueries({ plugin, installations: [installed_item(plugin)] });
 		const loadMore = vi.fn();
 		usePaginatedQueryMock.mockImplementation((query: string) =>
 			query === "plugins.list_run_history"
@@ -1441,7 +1443,9 @@ describe("RoutePluginsPluginAccess", () => {
 	test.each([true, false])("shows the account-deletion trigger only with an active handler: %s", (active) => {
 		const plugin = published_plugin({ name: "account-listener", canProcessFiles: false });
 		const installed = installed_item(plugin);
-		setQueries(plugin, [
+		setQueries({
+			plugin,
+			installations: [
 			{
 				...installed,
 				version: {
@@ -1450,7 +1454,8 @@ describe("RoutePluginsPluginAccess", () => {
 				},
 				handlers: active ? [{ event: "users.account.deleted" }] : [],
 			},
-		]);
+		],
+		});
 
 		render(<PageComponent />);
 
@@ -1462,15 +1467,15 @@ describe("RoutePluginsPluginAccess", () => {
 		// Video Player's shape: no pages, one file view. Its session is minted from the same table as a
 		// page session and gets the same workspace-wide file scopes, so an admin reviewing this screen
 		// must be shown the same warning. Gating it on `pages` hid it for exactly this plugin.
-		setQueries(
-			published_plugin({
+		setQueries({
+			plugin: published_plugin({
 				name: "video-player",
 				canProcessFiles: false,
 				fileViews: [
 					{ id: "player", title: "Video player", entry: "dist/frontend/index.html", contentTypes: ["video/mp4"] },
 				],
 			}),
-		);
+		});
 
 		render(<PageComponent />);
 
@@ -1486,8 +1491,8 @@ describe("RoutePluginsPluginAccess", () => {
 		// The mirror of the test above. Council, Gallery and Chitchat all ship pages and no file views,
 		// so a gate on `fileViews` alone hides this warning on every plugin that exists today, and only
 		// this direction catches that.
-		setQueries(
-			published_plugin({
+		setQueries({
+			plugin: published_plugin({
 				name: "gallery",
 				canProcessFiles: false,
 				pages: [
@@ -1499,7 +1504,7 @@ describe("RoutePluginsPluginAccess", () => {
 					},
 				],
 			}),
-		);
+		});
 
 		render(<PageComponent />);
 
@@ -1513,7 +1518,7 @@ describe("RoutePluginsPluginAccess", () => {
 	});
 
 	test("stays silent about frame trust for a plugin with neither surface", () => {
-		setQueries(published_plugin({ name: "media", canProcessFiles: true }));
+		setQueries({ plugin: published_plugin({ name: "media", canProcessFiles: true }) });
 
 		render(<PageComponent />);
 
@@ -1527,8 +1532,8 @@ describe("RoutePluginsPluginAccess", () => {
 	test("names both frame surfaces on the origins a member's browser can call", () => {
 		// One `uiOutboundOrigins` list is set on the version and applied to every plugin asset response,
 		// so it widens a file view's policy exactly as it widens a page's.
-		setQueries(
-			published_plugin({
+		setQueries({
+			plugin: published_plugin({
 				name: "video-player",
 				canProcessFiles: false,
 				fileViews: [
@@ -1536,7 +1541,7 @@ describe("RoutePluginsPluginAccess", () => {
 				],
 				uiOutboundOrigins: ["https://cdn.example.com"],
 			}),
-		);
+		});
 
 		render(<PageComponent />);
 
@@ -1548,7 +1553,7 @@ describe("RoutePluginsPluginAccess", () => {
 
 	test("lists MCP servers with their policy and sign-in, skills, and the MCP warning", () => {
 		const plugin = published_plugin({ name: "tracker", canProcessFiles: false, ...mcp_plugin_parts });
-		setQueries(plugin, [installed_item(plugin)]);
+		setQueries({ plugin, installations: [installed_item(plugin)] });
 		const queries = useQueryMock.getMockImplementation()!;
 		useQueryMock.mockImplementation((query: string, ...args: unknown[]) =>
 			query === "plugins_mcp.get_installation_mcp_status"
@@ -1577,7 +1582,7 @@ describe("RoutePluginsPluginAccess", () => {
 		},
 	])("an allowed sign-in server offers $button", async ({ connection, button }) => {
 		const plugin = published_plugin({ name: "tracker", canProcessFiles: false, ...mcp_plugin_parts });
-		setQueries(plugin, [installed_item(plugin)]);
+		setQueries({ plugin, installations: [installed_item(plugin)] });
 		const queries = useQueryMock.getMockImplementation()!;
 		useQueryMock.mockImplementation((query: string, ...args: unknown[]) =>
 			query === "plugins_mcp.get_installation_mcp_status"
@@ -1630,7 +1635,7 @@ describe("RoutePluginsPluginSecretsModalPanel", () => {
 	// health or configuration sections, and the modal holds a single untabbed panel.
 	function open_publisher_secrets_form() {
 		const plugin = published_plugin({ name: "media", canProcessFiles: true });
-		setQueries(plugin, [], publisher_plugin_fixture());
+		setQueries({ plugin, installations: [], publisherPlugin: publisher_plugin_fixture() });
 
 		render(<PageComponent />);
 		fireEvent.click(screen.getByRole("button", { name: "Manage secrets" }));
@@ -1738,7 +1743,7 @@ describe("RoutePluginsPluginConfiguration", () => {
 
 	test("a save keeps its button focusable and lands the focus on the saved status line", async () => {
 		const plugin = published_plugin({ name: "gallery", canProcessFiles: true });
-		setQueries(plugin, [installed_item(plugin)]);
+		setQueries({ plugin, installations: [installed_item(plugin)] });
 		let resolveSave!: (value: unknown) => void;
 		mutationMock.mockReturnValue(
 			new Promise((resolve) => {
@@ -1774,7 +1779,7 @@ describe("RoutePluginsPluginConfiguration", () => {
 
 	test("a save that settles after the member moved on leaves focus where it is", async () => {
 		const plugin = published_plugin({ name: "gallery", canProcessFiles: true });
-		setQueries(plugin, [installed_item(plugin)]);
+		setQueries({ plugin, installations: [installed_item(plugin)] });
 		let resolveSave!: (value: unknown) => void;
 		mutationMock.mockReturnValue(
 			new Promise((resolve) => {
@@ -1823,7 +1828,7 @@ describe("RoutePluginsPlugin", () => {
 			canManage: false,
 			capabilities: ["plugin.secrets.read"],
 		});
-		setQueries(plugin);
+		setQueries({ plugin });
 
 		render(<PageComponent />);
 
@@ -1840,7 +1845,9 @@ describe("RoutePluginsPlugin", () => {
 	});
 
 	test("says why the organization policy blocks an install and disables Install", () => {
-		setQueries(published_plugin({ name: "media", canProcessFiles: true, organizationPolicy: "needs_approval" }));
+		setQueries({
+			plugin: published_plugin({ name: "media", canProcessFiles: true, organizationPolicy: "needs_approval" }),
+		});
 
 		const { container } = render(<PageComponent />);
 
@@ -1853,7 +1860,7 @@ describe("RoutePluginsPlugin", () => {
 		const plugin = published_plugin({ name: "media", canProcessFiles: true });
 		const installed = installed_item(plugin);
 		installed.installation.status = "disabled";
-		setQueries(plugin, [installed]);
+		setQueries({ plugin, installations: [installed] });
 		mutationMock.mockResolvedValue({ _yay: { installationId: "installation_1" } });
 
 		render(<PageComponent />);
@@ -1870,7 +1877,7 @@ describe("RoutePluginsPlugin", () => {
 
 	test("allows a service registration with no data or Files scopes", async () => {
 		const plugin = published_plugin({ name: "media", canProcessFiles: true });
-		setQueries(plugin, [], publisher_plugin_fixture());
+		setQueries({ plugin, installations: [], publisherPlugin: publisher_plugin_fixture() });
 		const previousQuery = useQueryMock.getMockImplementation()!;
 		useQueryMock.mockImplementation((query: string) =>
 			query === "plugins.get_plugin_service_registration"
@@ -1914,13 +1921,13 @@ describe("RoutePluginsPlugin", () => {
 				resolveInstall = resolve;
 			}),
 		);
-		setQueries(pluginA, [], publisher_plugin_fixture());
+		setQueries({ plugin: pluginA, installations: [], publisherPlugin: publisher_plugin_fixture() });
 		const view = render(<RemountingPageComponent />);
 
 		fireEvent.click(screen.getByRole("button", { name: "Install" }));
 		fireEvent.click(screen.getByRole("button", { name: "Accept and install" }));
 
-		setQueries(pluginB, [], publisher_plugin_fixture());
+		setQueries({ plugin: pluginB, installations: [], publisherPlugin: publisher_plugin_fixture() });
 		view.rerender(<RemountingPageComponent />);
 
 		expect(screen.queryByRole("dialog")).toBeNull();
@@ -1949,11 +1956,19 @@ describe("RoutePluginsPlugin", () => {
 				resolveUninstall = resolve;
 			}),
 		);
-		setQueries(pluginA, [installed_item(pluginA)], publisher_plugin_fixture());
+		setQueries({
+			plugin: pluginA,
+			installations: [installed_item(pluginA)],
+			publisherPlugin: publisher_plugin_fixture(),
+		});
 		const view = render(<RemountingPageComponent />);
 
 		fireEvent.click(screen.getByRole("button", { name: "Uninstall" }));
-		setQueries(pluginB, [installed_item(pluginB)], publisher_plugin_fixture());
+		setQueries({
+			plugin: pluginB,
+			installations: [installed_item(pluginB)],
+			publisherPlugin: publisher_plugin_fixture(),
+		});
 		view.rerender(<RemountingPageComponent />);
 
 		const uninstallButton = screen.getByRole("button", { name: "Uninstall" }) as HTMLButtonElement;
@@ -1977,13 +1992,13 @@ describe("RoutePluginsPlugin", () => {
 				resolveRemove = resolve;
 			}),
 		);
-		setQueries(pluginA, [], publisher_plugin_fixture());
+		setQueries({ plugin: pluginA, installations: [], publisherPlugin: publisher_plugin_fixture() });
 		const view = render(<RemountingPageComponent />);
 
 		fireEvent.click(screen.getByRole("menuitem", { name: "Remove claim" }));
-		setQueries(pluginB);
+		setQueries({ plugin: pluginB });
 		view.rerender(<RemountingPageComponent />);
-		setQueries(pluginA, [], publisher_plugin_fixture());
+		setQueries({ plugin: pluginA, installations: [], publisherPlugin: publisher_plugin_fixture() });
 		view.rerender(<RemountingPageComponent />);
 
 		// Remount must clear plugin-local removing state. Without it the label stays on
@@ -1994,7 +2009,7 @@ describe("RoutePluginsPlugin", () => {
 		const replacementTrigger = screen.getByRole("button", { name: "More actions" });
 		act(() => replacementTrigger.focus());
 		await act(async () => resolveRemove({ _yay: null }));
-		setQueries(pluginA);
+		setQueries({ plugin: pluginA });
 		view.rerender(<RemountingPageComponent />);
 
 		const title = screen.getByRole("heading", { level: 1, name: "media-a" });
@@ -2032,11 +2047,11 @@ describe("RoutePluginsPlugin", () => {
 			)
 			.mockResolvedValueOnce({ _yay: { sourceCommitSha: nextHeadSha } })
 			.mockResolvedValueOnce({ _yay: { sourceCommitSha: nextHeadSha } });
-		setQueries(pluginA, [], publisherA);
+		setQueries({ plugin: pluginA, installations: [], publisherPlugin: publisherA });
 		const view = render(<PageComponent />);
 
 		fireEvent.click(screen.getByRole("button", { name: "Publish ray/bonobo-plugin-media" }));
-		setQueries(pluginB, [], publisherB);
+		setQueries({ plugin: pluginB, installations: [], publisherPlugin: publisherB });
 		view.rerender(<PageComponent />);
 		expect(screen.getByRole("heading", { level: 1, name: "media-b" })).toBeTruthy();
 		expect(screen.queryByRole("button", { name: "Publish ray/bonobo-plugin-media" })).toBeNull();
@@ -2080,7 +2095,7 @@ describe("RoutePluginsPlugin", () => {
 				finishHead = resolve;
 			}),
 		);
-		setQueries(plugin, [], publisher_plugin_fixture());
+		setQueries({ plugin, installations: [], publisherPlugin: publisher_plugin_fixture() });
 		const view = render(<PageComponent />);
 
 		fireEvent.click(screen.getByRole("button", { name: "Publish ray/bonobo-plugin-media" }));
@@ -2134,14 +2149,14 @@ describe("RoutePluginsPlugin", () => {
 				rejectPublish = reject;
 			}),
 		);
-		setQueries(pluginA, [], publisherA);
+		setQueries({ plugin: pluginA, installations: [], publisherPlugin: publisherA });
 		const view = render(<PageComponent />);
 
 		fireEvent.click(screen.getByRole("button", { name: "Publish ray/bonobo-plugin-media" }));
 		fireEvent.change(await screen.findByRole("textbox"), { target: { value: headSha } });
 		fireEvent.click(screen.getByRole("button", { name: "Publish reviewed commit" }));
 
-		setQueries(pluginB, [], publisherB);
+		setQueries({ plugin: pluginB, installations: [], publisherPlugin: publisherB });
 		view.rerender(<PageComponent />);
 		await act(async () => rejectPublish(new Error("network down")));
 		expect((await screen.findByRole("alert")).textContent).toBe("Failed to publish plugin");
@@ -2158,7 +2173,7 @@ describe("RoutePluginsPlugin", () => {
 		const plugin = published_plugin({ name: "media", canProcessFiles: true });
 		const installedItem = installed_item(plugin);
 		installedItem.version.version = "0.1.0";
-		setQueries(plugin, [installedItem], publisher_plugin_fixture());
+		setQueries({ plugin, installations: [installedItem], publisherPlugin: publisher_plugin_fixture() });
 		let resolveHead!: (value: unknown) => void;
 		actionMock.mockReturnValue(
 			new Promise((resolve) => {
@@ -2190,7 +2205,7 @@ describe("RoutePluginsPlugin", () => {
 
 	test("an install in flight keeps its own control enabled and blocks publish and claim removal", async () => {
 		const plugin = published_plugin({ name: "media", canProcessFiles: true });
-		setQueries(plugin, [], publisher_plugin_fixture());
+		setQueries({ plugin, installations: [], publisherPlugin: publisher_plugin_fixture() });
 		let resolveInstall!: (value: unknown) => void;
 		mutationMock.mockReturnValue(
 			new Promise((resolve) => {
@@ -2219,7 +2234,7 @@ describe("RoutePluginsPlugin", () => {
 
 	test("an uninstall in flight keeps its button enabled and blocks publish and claim removal", async () => {
 		const plugin = published_plugin({ name: "media", canProcessFiles: true });
-		setQueries(plugin, [installed_item(plugin)], publisher_plugin_fixture());
+		setQueries({ plugin, installations: [installed_item(plugin)], publisherPlugin: publisher_plugin_fixture() });
 		let resolveUninstall!: (value: unknown) => void;
 		mutationMock.mockReturnValue(
 			new Promise((resolve) => {
@@ -2248,7 +2263,7 @@ describe("RoutePluginsPlugin", () => {
 
 	test("a finished install lands the fallen focus on the plugin title", async () => {
 		const plugin = published_plugin({ name: "media", canProcessFiles: true });
-		setQueries(plugin);
+		setQueries({ plugin });
 		let resolveInstall!: (value: unknown) => void;
 		mutationMock.mockReturnValue(
 			new Promise((resolve) => {
@@ -2271,7 +2286,7 @@ describe("RoutePluginsPlugin", () => {
 		// before it.
 		expect(document.activeElement).toBe(document.body);
 
-		setQueries(plugin, [installed_item(plugin)]);
+		setQueries({ plugin, installations: [installed_item(plugin)] });
 		rerender(<PageComponent />);
 
 		expect(document.activeElement).toBe(screen.getByRole("heading", { level: 1, name: "media" }));
@@ -2279,7 +2294,7 @@ describe("RoutePluginsPlugin", () => {
 
 	test("remove claim keeps the trigger focusable, guards re-entry, and lands the focus", async () => {
 		const plugin = published_plugin({ name: "media", canProcessFiles: true });
-		setQueries(plugin, [], publisher_plugin_fixture());
+		setQueries({ plugin, installations: [], publisherPlugin: publisher_plugin_fixture() });
 		let resolveRemove!: (value: unknown) => void;
 		mutationMock.mockReturnValue(
 			new Promise((resolve) => {
@@ -2310,7 +2325,7 @@ describe("RoutePluginsPlugin", () => {
 		// the unmounting trigger drops it in the real app, so this pins the app's landing effect.
 		expect(document.activeElement).toBe(document.body);
 
-		setQueries(plugin, [], null);
+		setQueries({ plugin, installations: [], publisherPlugin: null });
 		rerender(<PageComponent />);
 
 		await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("heading", { level: 1, name: "media" })));
@@ -2362,7 +2377,7 @@ describe("RoutePluginsPlugin", () => {
 
 	test("an install the backend refuses keeps the consent modal open while the request runs", async () => {
 		const plugin = published_plugin({ name: "media", canProcessFiles: true });
-		setQueries(plugin);
+		setQueries({ plugin });
 		let resolveInstall!: (value: unknown) => void;
 		mutationMock.mockReturnValue(
 			new Promise((resolve) => {
@@ -2392,7 +2407,7 @@ describe("RoutePluginsPlugin", () => {
 
 	test("an install that fails outright keeps the consent modal and its focus the same way", async () => {
 		const plugin = published_plugin({ name: "media", canProcessFiles: true });
-		setQueries(plugin);
+		setQueries({ plugin });
 		let rejectInstall!: (error: unknown) => void;
 		mutationMock.mockReturnValue(
 			new Promise((_resolve, reject) => {
