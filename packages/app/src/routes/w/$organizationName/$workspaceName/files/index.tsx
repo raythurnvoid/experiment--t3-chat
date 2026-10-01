@@ -6,6 +6,10 @@ import { createFileRoute } from "@tanstack/react-router";
 import { zodValidator } from "@tanstack/zod-adapter";
 import { memo } from "react";
 import { z } from "zod";
+import {
+	files_folder_table_query_clean,
+	files_folder_table_query_MAX_LENGTH,
+} from "../../../../../../shared/files-folder-table-query.ts";
 
 const RouteFiles = memo(function RouteFiles() {
 	const navigate = Route.useNavigate();
@@ -52,6 +56,32 @@ const Route = createFileRoute("/w/$organizationName/$workspaceName/files/")({
 					// as a number. The box wants the text.
 					(value) => (typeof value === "number" || typeof value === "boolean" ? String(value) : value),
 					z.string().max(2000),
+				)
+				.optional()
+				.catch(undefined),
+			/**
+			 * The committed filter and sort tokens of the folder table bar, like `file.name:contains:report`
+			 * or `sort_by:file.updated:desc`.
+			 *
+			 * The cleaner drops every token that cannot run, so a hand-edited link still opens. A value
+			 * over the length cap is ignored. An empty result is the same as no value.
+			 **/
+			filter: z
+				.preprocess(
+					(value) => (typeof value === "number" || typeof value === "boolean" ? String(value) : value),
+					z.string().max(files_folder_table_query_MAX_LENGTH),
+				)
+				.transform((value) => files_folder_table_query_clean(value) || undefined)
+				.optional()
+				.catch(undefined),
+			/**
+			 * The text the user is still typing in the folder table bar. It is not parsed, so it can hold
+			 * a half-typed token. It keeps the text across a refresh.
+			 **/
+			view_q: z
+				.preprocess(
+					(value) => (typeof value === "number" || typeof value === "boolean" ? String(value) : value),
+					z.string().max(files_folder_table_query_MAX_LENGTH),
 				)
 				.optional()
 				.catch(undefined),

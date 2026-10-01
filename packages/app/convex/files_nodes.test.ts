@@ -12577,6 +12577,9 @@ test("set_entries accepts folders and refuses bad YAML and read-only nodes", asy
 	expect(await setEntries(nodeId, "with space: yes\n")).toMatchObject({
 		_nay: { message: expect.stringContaining("may contain only letters") },
 	});
+	expect(await setEntries(nodeId, '"slack:message-id": yes\n')).toMatchObject({
+		_nay: { message: expect.stringContaining("may contain only letters") },
+	});
 
 	const folder = await asUser.mutation(api.files_nodes.create_folder_node, {
 		membershipId: db.membershipId,
@@ -16366,12 +16369,12 @@ describe("search box doors", () => {
 				{ op: "eq", fieldPath: "frontmatter.priority", value: 3 },
 			]),
 		).toEqual(new Set([seeded.openTaskId]));
-		// The plans the box really sends: a bare number or boolean chip carries one plan per metadata
-		// kind and value kind, four in all, and the door must take that many.
+		// The plans the box really sends: a number or boolean chip carries one plan per value kind (the
+		// number or boolean, and the same text), and the door must take both.
 		const chipPlans = (query: string) => files_search_query_to_plans(files_search_query_parse(query).filters[0]!);
-		expect(chipPlans("priority:3")).toHaveLength(4);
-		expect(await search(chipPlans("priority:3"))).toEqual(new Set([seeded.openTaskId]));
-		expect(await search(chipPlans("regression:true"))).toEqual(new Set([seeded.openTaskId]));
+		expect(chipPlans("frontmatter.priority:3")).toHaveLength(2);
+		expect(await search(chipPlans("frontmatter.priority:3"))).toEqual(new Set([seeded.openTaskId]));
+		expect(await search(chipPlans("frontmatter.regression:true"))).toEqual(new Set([seeded.openTaskId]));
 		expect(await search([{ op: "range", fieldPath: "frontmatter.priority", valueKind: "number", gte: 2 }])).toEqual(
 			new Set([seeded.openTaskId, seeded.fixedTaskId]),
 		);
@@ -16397,8 +16400,8 @@ describe("search box doors", () => {
 			]),
 		).toEqual(new Set([seeded.openTaskId]));
 		// A date with a time asks for its instant, so one plan sets both bounds on one index line.
-		expect(await search(chipPlans("reported:2026-09-04T00:00:00Z"))).toEqual(new Set([seeded.openTaskId]));
-		expect(await search(chipPlans("reported:2026-09-04T00:01:00Z"))).toEqual(new Set());
+		expect(await search(chipPlans("frontmatter.reported:2026-09-04T00:00:00Z"))).toEqual(new Set([seeded.openTaskId]));
+		expect(await search(chipPlans("frontmatter.reported:2026-09-04T00:01:00Z"))).toEqual(new Set());
 		// The folder scope applies to an exists plan too.
 		expect(await search([{ op: "exists", fieldPath: "frontmatter.legacy" }], "/tasks")).toEqual(new Set());
 		expect(await search([{ op: "exists", fieldPath: "frontmatter.legacy" }], "/tasks-archive")).toEqual(

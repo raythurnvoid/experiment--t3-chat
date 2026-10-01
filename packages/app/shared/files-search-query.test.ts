@@ -2,10 +2,11 @@ import { describe, expect, test } from "vitest";
 import {
 	files_search_query_file_updated_matches,
 	files_search_query_folder_path,
-	files_search_query_format_key,
 	files_search_query_format_value,
 	files_search_query_MAX_FILTERS,
 	files_search_query_parse,
+	files_search_query_parse_field,
+	files_search_query_quote,
 	files_search_query_field_path_is_valid,
 	files_search_query_field_paths,
 	files_search_query_serialize,
@@ -22,15 +23,15 @@ function parse_one(query: string): files_search_query_Filter {
 
 describe("files_search_query_parse", () => {
 	test("splits filters from free text and keeps the raw token", () => {
-		const parsed = files_search_query_parse("  recall status:open  bot ");
+		const parsed = files_search_query_parse("  recall metadata.status:open  bot ");
 
 		expect(parsed.text).toBe("recall bot");
 		expect(parsed.openQuote).toBe(false);
 		expect(parsed.filters).toEqual([
 			{
-				raw: "status:open",
+				raw: "metadata.status:open",
 				negated: false,
-				key: { namespace: "any", name: "status" },
+				key: { namespace: "metadata", name: "status" },
 				match: { op: "eq", value: "open", quoted: false },
 				problem: null,
 			},
@@ -38,44 +39,52 @@ describe("files_search_query_parse", () => {
 	});
 
 	test("reads every value form", () => {
-		expect(parse_one("status:*").match).toEqual({ op: "exists" });
-		expect(parse_one("title:Recall*").match).toEqual({ op: "prefix", value: "Recall" });
-		expect(parse_one("priority:>2").match).toEqual({ op: "range", comparator: "gt", value: "2" });
-		expect(parse_one("priority:>=2").match).toEqual({ op: "range", comparator: "gte", value: "2" });
-		expect(parse_one("due:<2026-10-01").match).toEqual({ op: "range", comparator: "lt", value: "2026-10-01" });
-		expect(parse_one("due:<=2026-09-30").match).toEqual({ op: "range", comparator: "lte", value: "2026-09-30" });
-		expect(parse_one('assignee:"Denys Voloshyn"').match).toEqual({
+		expect(parse_one("metadata.status:*").match).toEqual({ op: "exists" });
+		expect(parse_one("metadata.title:Recall*").match).toEqual({ op: "prefix", value: "Recall" });
+		expect(parse_one("metadata.priority:>2").match).toEqual({ op: "range", comparator: "gt", value: "2" });
+		expect(parse_one("metadata.priority:>=2").match).toEqual({ op: "range", comparator: "gte", value: "2" });
+		expect(parse_one("metadata.due:<2026-10-01").match).toEqual({ op: "range", comparator: "lt", value: "2026-10-01" });
+		expect(parse_one("metadata.due:<=2026-09-30").match).toEqual({
+			op: "range",
+			comparator: "lte",
+			value: "2026-09-30",
+		});
+		expect(parse_one('metadata.assignee:"Denys Voloshyn"').match).toEqual({
 			op: "eq",
 			value: "Denys Voloshyn",
 			quoted: true,
 		});
-		expect(parse_one('note:"say \\"hi\\""').match).toEqual({ op: "eq", value: 'say "hi"', quoted: true });
+		expect(parse_one('metadata.note:"say \\"hi\\""').match).toEqual({ op: "eq", value: 'say "hi"', quoted: true });
 	});
 
 	test("reads negation and the reserved namespaces", () => {
-		const negated = parse_one("!status:done");
+		const negated = parse_one("!metadata.status:done");
 		expect(negated.negated).toBe(true);
-		expect(negated.raw).toBe("!status:done");
+		expect(negated.raw).toBe("!metadata.status:done");
 
 		expect(parse_one("frontmatter.status:open").key).toEqual({ namespace: "frontmatter", name: "status" });
 		expect(parse_one("metadata.status:open").key).toEqual({ namespace: "metadata", name: "status" });
 		expect(parse_one("file.path:/tasks").key).toEqual({ namespace: "file", name: "path" });
-		expect(parse_one("sender.name:Alice").key).toEqual({ namespace: "any", name: "sender.name" });
-		// A bare key spelled like a namespace is still a bare key. Only the dotted form is reserved.
-		expect(parse_one("file:x").key).toEqual({ namespace: "any", name: "file" });
 	});
 
-	test("quotes a key that holds a colon", () => {
-		const filter = parse_one('"slack:message-id":123');
-		expect(filter.key).toEqual({ namespace: "any", name: "slack:message-id" });
-		expect(filter.match).toEqual({ op: "eq", value: "123", quoted: false });
-		expect(filter.problem).toBeNull();
-		// The `!` sits before the quote, like before a bare key.
-		const negated = parse_one('!"slack:message-id":123');
-		expect(negated.negated).toBe(true);
-		expect(negated.key).toEqual({ namespace: "any", name: "slack:message-id" });
-		expect(negated.match).toEqual({ op: "eq", value: "123", quoted: false });
-		expect(negated.problem).toBeNull();
+	test("a key with no namespace is free text", () => {
+		for (const token of ["status:open", "sender.name:Alice", "file:x", "!status:done", "http:x"]) {
+			const parsed = files_search_query_parse(token);
+			expect(parsed.filters).toEqual([]);
+			expect(parsed.text).toBe(token);
+		}
+	});
+
+	test("a key holds no colon, so a quoted key is free text", () => {
+		for (const token of ['metadata."slack:message-id":123', '"metadata.slack:message-id":123']) {
+			const parsed = files_search_query_parse(token);
+			expect(parsed.filters).toEqual([]);
+			expect(parsed.text).toBe(token);
+		}
+		// The first colon ends the key, so the rest is the value.
+		const filter = parse_one("metadata.slack:message-id");
+		expect(filter.key).toEqual({ namespace: "metadata", name: "slack" });
+		expect(filter.match).toEqual({ op: "eq", value: "message-id", quoted: false });
 	});
 
 	test("keeps text that only looks like a filter as free text", () => {
@@ -88,13 +97,15 @@ describe("files_search_query_parse", () => {
 			openQuote: false,
 		});
 		// A link pasted after a chip is still a link, not a filter on the key `http`.
-		const withChip = files_search_query_parse("status:open https://localhost:5173/w/personal/home/files?nodeId=abc");
-		expect(withChip.filters.map((filter) => filter.raw)).toEqual(["status:open"]);
+		const withChip = files_search_query_parse(
+			"metadata.status:open https://localhost:5173/w/personal/home/files?nodeId=abc",
+		);
+		expect(withChip.filters.map((filter) => filter.raw)).toEqual(["metadata.status:open"]);
 		expect(withChip.text).toBe("https://localhost:5173/w/personal/home/files?nodeId=abc");
 	});
 
 	test("caps the number of filters and keeps the extra ones as problems", () => {
-		const tokens = Array.from({ length: files_search_query_MAX_FILTERS + 1 }, (_, index) => `k${index}:v`);
+		const tokens = Array.from({ length: files_search_query_MAX_FILTERS + 1 }, (_, index) => `metadata.k${index}:v`);
 		const parsed = files_search_query_parse(tokens.join(" "));
 
 		expect(parsed.filters).toHaveLength(files_search_query_MAX_FILTERS + 1);
@@ -106,19 +117,21 @@ describe("files_search_query_parse", () => {
 	});
 
 	test("reports why a filter cannot run and still keeps it", () => {
-		// `status: open` is the YAML habit. The message says where the value has to go.
-		expect(parse_one("status:").problem).toBe("Filter needs a value right after the colon. Use * for any value");
-		expect(parse_one("priority:>high").problem).toBe(
+		// `metadata.status: open` is the YAML habit. The message says where the value has to go.
+		expect(parse_one("metadata.status:").problem).toBe(
+			"Filter needs a value right after the colon. Use * for any value",
+		);
+		expect(parse_one("metadata.priority:>high").problem).toBe(
 			"Ranges need a number or a date like 2026-09-04. Quote the value to search it as text",
 		);
 		// The generic range hint says to quote the value, so a bound that already is gets its own message.
-		expect(parse_one('due:>"2026-09-04"').problem).toBe(
-			"Ranges take the number or the date without quotes, like priority:>2",
+		expect(parse_one('metadata.due:>"2026-09-04"').problem).toBe(
+			"Ranges take the number or the date without quotes, like metadata.priority:>2",
 		);
-		expect(parse_one("due:>'2026-09-04'").problem).toBe(
-			"Ranges take the number or the date without quotes, like priority:>2",
+		expect(parse_one("metadata.due:>'2026-09-04'").problem).toBe(
+			"Ranges take the number or the date without quotes, like metadata.priority:>2",
 		);
-		expect(parse_one("due:>2026-09-04").problem).toBeNull();
+		expect(parse_one("metadata.due:>2026-09-04").problem).toBeNull();
 		expect(parse_one("file.size:3").problem).toBe(
 			"Unknown file field. Use file.path, file.name, file.ext, file.kind, file.updated, file.link",
 		);
@@ -127,7 +140,10 @@ describe("files_search_query_parse", () => {
 			"Unknown file field. Use file.path, file.name, file.ext, file.kind, file.updated, file.link",
 		);
 		const capped = files_search_query_parse(
-			[...Array.from({ length: files_search_query_MAX_FILTERS }, (_, index) => `k${index}:v`), "file.size:"].join(" "),
+			[
+				...Array.from({ length: files_search_query_MAX_FILTERS }, (_, index) => `metadata.k${index}:v`),
+				"file.size:",
+			].join(" "),
 		);
 		expect(capped.filters[files_search_query_MAX_FILTERS]!.problem).toBe(
 			`At most ${files_search_query_MAX_FILTERS} filters in one search`,
@@ -153,21 +169,19 @@ describe("files_search_query_parse", () => {
 		expect(parse_one("frontmatter.a..b:x").problem).toBe(
 			"Frontmatter keys use letters, digits, _ and -, joined by dots",
 		);
-		expect(parse_one("metadata.a.b:x").problem).toBe("Metadata keys use letters, digits, _, - and :");
-		// Quoting a key the grammar refuses does not help, so no message says to quote it.
-		expect(parse_one('"a b":x').problem).toBe(
-			"Keys use letters, digits, _, - and :. Dots join the parts of a frontmatter key",
+		expect(parse_one("metadata.a.b:x").problem).toBe("Metadata keys use letters, digits, _ and -");
+		expect(parse_one("metadata..b:x").problem).toBe("Metadata keys use letters, digits, _ and -");
+		expect(parse_one('metadata.status:"open"x').problem).toBe("Nothing can follow the closing quote");
+		expect(parse_one("metadata.assignee:'Denys").problem).toBe('Use double quotes, like metadata.status:"in progress"');
+		expect(parse_one("metadata.status:!done").problem).toBe("Put ! before the key, like !metadata.status:done");
+		expect(parse_one("metadata.status:!=done").problem).toBe("Put ! before the key, like !metadata.status:done");
+		expect(parse_one("metadata.priority:=2").problem).toBe(
+			"Drop the =. A plain value is an exact match, like metadata.priority:2",
 		);
-		expect(parse_one("a..b:x").problem).toBe(
-			"Keys use letters, digits, _, - and :. Dots join the parts of a frontmatter key",
+		// `metadata.priority:> 2` ends the token at the space, so the bound is missing.
+		expect(parse_one("metadata.priority:>=").problem).toBe(
+			"Put the number or the date right after >=, like metadata.priority:>=2",
 		);
-		expect(parse_one('status:"open"x').problem).toBe("Nothing can follow the closing quote");
-		expect(parse_one("assignee:'Denys").problem).toBe('Use double quotes, like status:"in progress"');
-		expect(parse_one("status:!done").problem).toBe("Put ! before the key, like !status:done");
-		expect(parse_one("status:!=done").problem).toBe("Put ! before the key, like !status:done");
-		expect(parse_one("priority:=2").problem).toBe("Drop the =. A plain value is an exact match, like priority:2");
-		// `priority:> 2` ends the token at the space, so the bound is missing.
-		expect(parse_one("priority:>=").problem).toBe("Put the number or the date right after >=, like priority:>=2");
 		// A file field explains its own empty value, instead of "use *" that the field then refuses.
 		expect(parse_one("file.kind:").problem).toBe("file.kind needs a value");
 		expect(parse_one("file.path:").problem).toBe("file.path needs a value");
@@ -201,17 +215,20 @@ describe("files_search_query_parse", () => {
 	});
 
 	test("closes an open quote in the last token and still flags it", () => {
-		const parsed = files_search_query_parse('status:open assignee:"Denys Vol');
+		const parsed = files_search_query_parse('metadata.status:open metadata.assignee:"Denys Vol');
 		expect(parsed.openQuote).toBe(true);
-		expect(parsed.filters.map((filter) => filter.raw)).toEqual(["status:open", 'assignee:"Denys Vol"']);
+		expect(parsed.filters.map((filter) => filter.raw)).toEqual([
+			"metadata.status:open",
+			'metadata.assignee:"Denys Vol"',
+		]);
 		expect(parsed.filters[1]!.match).toEqual({ op: "eq", value: "Denys Vol", quoted: true });
-		expect(files_search_query_parse('"hi status:open').text).toBe('"hi status:open"');
+		expect(files_search_query_parse('"hi metadata.status:open').text).toBe('"hi metadata.status:open"');
 		// A backslash right before the added quote would escape it, so it is escaped first.
-		expect(parse_one('note:"abc\\').raw).toBe('note:"abc\\\\"');
-		expect(parse_one('note:"abc\\').match).toEqual({ op: "eq", value: "abc\\", quoted: true });
+		expect(parse_one('metadata.note:"abc\\').raw).toBe('metadata.note:"abc\\\\"');
+		expect(parse_one('metadata.note:"abc\\').match).toEqual({ op: "eq", value: "abc\\", quoted: true });
 		// Two backslashes are one escaped backslash, so the added quote stays a quote.
-		expect(parse_one('note:"abc\\\\').raw).toBe('note:"abc\\\\"');
-		expect(parse_one('note:"abc\\\\').match).toEqual({ op: "eq", value: "abc\\", quoted: true });
+		expect(parse_one('metadata.note:"abc\\\\').raw).toBe('metadata.note:"abc\\\\"');
+		expect(parse_one('metadata.note:"abc\\\\').match).toEqual({ op: "eq", value: "abc\\", quoted: true });
 	});
 
 	test("keeps the quotes around free text", () => {
@@ -219,30 +236,20 @@ describe("files_search_query_parse", () => {
 	});
 
 	test("splits on tabs and newlines, and an empty quoted key is free text", () => {
-		const parsed = files_search_query_parse("status:open\tbot\nnote");
-		expect(parsed.filters.map((filter) => filter.raw)).toEqual(["status:open"]);
+		const parsed = files_search_query_parse("metadata.status:open\tbot\nnote");
+		expect(parsed.filters.map((filter) => filter.raw)).toEqual(["metadata.status:open"]);
 		expect(parsed.text).toBe("bot note");
 		expect(files_search_query_parse('"":x').filters).toEqual([]);
 		expect(files_search_query_parse('"":x').text).toBe('"":x');
 	});
 
-	test("a quoted key may carry its namespace inside or outside the quotes", () => {
-		for (const query of ['"metadata.slack:message-id":123', 'metadata."slack:message-id":123']) {
-			const filter = parse_one(query);
-			expect(filter.key).toEqual({ namespace: "metadata", name: "slack:message-id" });
-			expect(filter.problem).toBeNull();
-		}
-		// A frontmatter path cannot hold a colon, so the same key under frontmatter has a problem.
-		expect(parse_one('frontmatter."a:b":x').problem).not.toBeNull();
-	});
-
 	test("only a quote and a backslash are escapes inside a quoted value", () => {
-		expect(parse_one('path:"C:\\Program Files"').match).toEqual({
+		expect(parse_one('metadata.path:"C:\\Program Files"').match).toEqual({
 			op: "eq",
 			value: "C:\\Program Files",
 			quoted: true,
 		});
-		expect(parse_one('note:"say \\"hi\\" \\\\ end"').match).toEqual({
+		expect(parse_one('metadata.note:"say \\"hi\\" \\\\ end"').match).toEqual({
 			op: "eq",
 			value: 'say "hi" \\ end',
 			quoted: true,
@@ -250,34 +257,34 @@ describe("files_search_query_parse", () => {
 	});
 
 	test("a star after the closing quote asks for a prefix with spaces", () => {
-		expect(parse_one('title:"Recall the"*').match).toEqual({ op: "prefix", value: "Recall the" });
-		expect(parse_one('title:"Recall the"*').problem).toBeNull();
+		expect(parse_one('metadata.title:"Recall the"*').match).toEqual({ op: "prefix", value: "Recall the" });
+		expect(parse_one('metadata.title:"Recall the"*').problem).toBeNull();
 		// Inside the quotes the star is text.
-		expect(parse_one('title:"Recall the*"').match).toEqual({ op: "eq", value: "Recall the*", quoted: true });
-		expect(parse_one('title:""*').problem).toBe("Nothing can follow the closing quote");
+		expect(parse_one('metadata.title:"Recall the*"').match).toEqual({ op: "eq", value: "Recall the*", quoted: true });
+		expect(parse_one('metadata.title:""*').problem).toBe("Nothing can follow the closing quote");
 	});
 
 	test("accepts unicode keys", () => {
-		expect(parse_one("città:Roma").key).toEqual({ namespace: "any", name: "città" });
-		expect(parse_one("città:Roma").problem).toBeNull();
+		expect(parse_one("metadata.città:Roma").key).toEqual({ namespace: "metadata", name: "città" });
+		expect(parse_one("metadata.città:Roma").problem).toBeNull();
 	});
 });
 
 describe("files_search_query_serialize", () => {
 	test("writes chips first and the text last", () => {
-		const parsed = files_search_query_parse("recall status:open !type:bug");
-		expect(files_search_query_serialize(parsed)).toBe("status:open !type:bug recall");
+		const parsed = files_search_query_parse("recall metadata.status:open !metadata.type:bug");
+		expect(files_search_query_serialize(parsed)).toBe("metadata.status:open !metadata.type:bug recall");
 	});
 
 	test("serializing the parsed text a second time gives the same text", () => {
 		for (const query of [
-			'  status:open   assignee:"Denys Voloshyn"  recall  ',
-			'"slack:message-id":123 città:Roma',
-			"priority:>high file.size:3 status:",
-			'assignee:"open quote',
-			'assignee:"Den\\',
-			'assignee:"Den\\\\',
-			'path:"C:\\Program Files" title:"Recall the"*',
+			'  metadata.status:open   metadata.assignee:"Denys Voloshyn"  recall  ',
+			"metadata.slack-message-id:123 metadata.città:Roma",
+			"metadata.priority:>high file.size:3 metadata.status:",
+			'metadata.assignee:"open quote',
+			'metadata.assignee:"Den\\',
+			'metadata.assignee:"Den\\\\',
+			'metadata.path:"C:\\Program Files" metadata.title:"Recall the"*',
 			'"raw media" notes',
 			"http://localhost:5173/w/personal/home/files?nodeId=abc",
 			"",
@@ -295,11 +302,11 @@ describe("files_search_query_serialize", () => {
 
 	test("a chip made from an open quote does not swallow the chips after it", () => {
 		const filters = [
-			...files_search_query_parse('assignee:"Denys').filters,
-			...files_search_query_parse("status:open").filters,
+			...files_search_query_parse('metadata.assignee:"Denys').filters,
+			...files_search_query_parse("metadata.status:open").filters,
 		];
 		const reparsed = files_search_query_parse(files_search_query_serialize({ filters, text: "" }));
-		expect(reparsed.filters.map((filter) => filter.raw)).toEqual(['assignee:"Denys"', "status:open"]);
+		expect(reparsed.filters.map((filter) => filter.raw)).toEqual(['metadata.assignee:"Denys"', "metadata.status:open"]);
 	});
 });
 
@@ -321,7 +328,8 @@ describe("files_search_query_typing_token", () => {
 describe("files_search_query_field_path_is_valid", () => {
 	test("accepts the fields the grammar can name and nothing else", () => {
 		expect(files_search_query_field_path_is_valid("frontmatter.source.channel")).toBe(true);
-		expect(files_search_query_field_path_is_valid("metadata.slack:message-id")).toBe(true);
+		expect(files_search_query_field_path_is_valid("metadata.slack-message-id")).toBe(true);
+		expect(files_search_query_field_path_is_valid("metadata.slack:message-id")).toBe(false);
 		expect(files_search_query_field_path_is_valid("frontmatter.a..b")).toBe(false);
 		expect(files_search_query_field_path_is_valid("metadata.a.b")).toBe(false);
 		expect(files_search_query_field_path_is_valid("status")).toBe(false);
@@ -412,12 +420,42 @@ describe("files_search_query_folder_path", () => {
 	});
 });
 
-describe("files_search_query_format_key", () => {
-	test("quotes only a key the grammar rejects", () => {
-		expect(files_search_query_format_key("status")).toBe("status");
-		expect(files_search_query_format_key("sender.name")).toBe("sender.name");
-		expect(files_search_query_format_key("slack:message-id")).toBe('"slack:message-id"');
-		expect(parse_one(`${files_search_query_format_key("slack:message-id")}:1`).key.name).toBe("slack:message-id");
+describe("files_search_query_parse_field", () => {
+	const fileFields = ["name", "ext"];
+
+	test("reads a namespace and a name, and returns null without a namespace", () => {
+		expect(files_search_query_parse_field("file.name", fileFields)).toEqual({
+			key: { namespace: "file", name: "name" },
+			problem: null,
+		});
+		expect(files_search_query_parse_field("metadata.plugin-name", fileFields)).toEqual({
+			key: { namespace: "metadata", name: "plugin-name" },
+			problem: null,
+		});
+		expect(files_search_query_parse_field("frontmatter.a.b", fileFields)).toEqual({
+			key: { namespace: "frontmatter", name: "a.b" },
+			problem: null,
+		});
+		expect(files_search_query_parse_field("status", fileFields)).toBeNull();
+	});
+
+	test("checks the file names against the list the caller gives", () => {
+		expect(files_search_query_parse_field("file.size", fileFields)?.problem).toBe(
+			"Unknown file field. Use file.name, file.ext",
+		);
+		expect(files_search_query_parse_field("file.size", ["size"])?.problem).toBeNull();
+	});
+
+	test("refuses a metadata key with a colon", () => {
+		expect(files_search_query_parse_field("metadata.a:b", fileFields)?.problem).toBe(
+			"Metadata keys use letters, digits, _ and -",
+		);
+	});
+});
+
+describe("files_search_query_quote", () => {
+	test("escapes a quote and a backslash", () => {
+		expect(files_search_query_quote('say "hi" \\ end')).toBe('"say \\"hi\\" \\\\ end"');
 	});
 });
 
@@ -438,7 +476,7 @@ describe("files_search_query_format_value", () => {
 			"C:\\Program Files\\",
 			'a\\"b',
 		]) {
-			const filter = parse_one(`status:${files_search_query_format_value(value)}`);
+			const filter = parse_one(`metadata.status:${files_search_query_format_value(value)}`);
 			expect(filter.problem).toBeNull();
 			expect(filter.match).toMatchObject({ op: "eq", value });
 		}
@@ -448,18 +486,11 @@ describe("files_search_query_format_value", () => {
 });
 
 describe("files_search_query_field_paths", () => {
-	test("asks both metadata kinds for a bare key and one for an explicit key", () => {
-		expect(files_search_query_field_paths({ namespace: "any", name: "status" })).toEqual([
-			"frontmatter.status",
-			"metadata.status",
-		]);
-		expect(files_search_query_field_paths({ namespace: "any", name: "sender.name" })).toEqual([
+	test("names the qualified field, and no field for a file key", () => {
+		expect(files_search_query_field_paths({ namespace: "metadata", name: "status" })).toEqual(["metadata.status"]);
+		expect(files_search_query_field_paths({ namespace: "frontmatter", name: "sender.name" })).toEqual([
 			"frontmatter.sender.name",
 		]);
-		expect(files_search_query_field_paths({ namespace: "any", name: "slack:message-id" })).toEqual([
-			"metadata.slack:message-id",
-		]);
-		expect(files_search_query_field_paths({ namespace: "metadata", name: "status" })).toEqual(["metadata.status"]);
 		expect(files_search_query_field_paths({ namespace: "file", name: "path" })).toEqual([]);
 	});
 });
@@ -523,7 +554,7 @@ describe("files_search_query_to_plans", () => {
 		expect(files_search_query_to_plans(parse_one("frontmatter.count:>0x10"))).toEqual([
 			{ op: "range", fieldPath: "frontmatter.count", valueKind: "number", gt: 16 },
 		]);
-		expect(parse_one("weight:>.5").problem).toBeNull();
+		expect(parse_one("metadata.weight:>.5").problem).toBeNull();
 	});
 
 	test("a date without a time keeps the whole day inside a range", () => {
@@ -565,12 +596,12 @@ describe("files_search_query_to_plans", () => {
 		expect(files_search_query_to_plans(parse_one('frontmatter.due:"2026-09-04T10:00Z"'))).toEqual([
 			{ op: "eq", fieldPath: "frontmatter.due", value: "2026-09-04T10:00Z" },
 		]);
-		expect(files_search_query_to_plans(parse_one("due:2026-09-04T10:00Z"))).toHaveLength(4);
+		expect(files_search_query_to_plans(parse_one("metadata.due:2026-09-04T10:00Z"))).toHaveLength(2);
 	});
 
 	test("a negated filter asks the same plans as the positive one", () => {
-		expect(files_search_query_to_plans(parse_one("!status:open"))).toEqual(
-			files_search_query_to_plans(parse_one("status:open")),
+		expect(files_search_query_to_plans(parse_one("!metadata.status:open"))).toEqual(
+			files_search_query_to_plans(parse_one("metadata.status:open")),
 		);
 	});
 
@@ -589,20 +620,14 @@ describe("files_search_query_to_plans", () => {
 		]);
 	});
 
-	test("a bare key with a number or date literal gives four plans at most", () => {
-		const plans = files_search_query_to_plans(parse_one("priority:3"));
-		expect(plans).toHaveLength(4);
-		expect(plans.map((plan) => plan.fieldPath)).toEqual([
-			"frontmatter.priority",
-			"frontmatter.priority",
-			"metadata.priority",
-			"metadata.priority",
-		]);
-		expect(files_search_query_to_plans(parse_one("reported:2026-09-04"))).toHaveLength(4);
+	test("a number or date literal gives two plans", () => {
+		const plans = files_search_query_to_plans(parse_one("metadata.priority:3"));
+		expect(plans.map((plan) => plan.fieldPath)).toEqual(["metadata.priority", "metadata.priority"]);
+		expect(files_search_query_to_plans(parse_one("metadata.reported:2026-09-04"))).toHaveLength(2);
 	});
 
 	test("an invalid filter and a file filter give no plans", () => {
-		expect(files_search_query_to_plans(parse_one("priority:>high"))).toEqual([]);
+		expect(files_search_query_to_plans(parse_one("metadata.priority:>high"))).toEqual([]);
 		expect(files_search_query_to_plans(parse_one("file.path:/tasks"))).toEqual([]);
 	});
 });

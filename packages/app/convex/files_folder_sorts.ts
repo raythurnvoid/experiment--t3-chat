@@ -11,7 +11,7 @@ import { Result } from "common/errors-as-values-utils.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { files_ROOT_ID } from "../shared/files.ts";
-import { files_sort_DEFAULT, files_sort_is_valid } from "../shared/files-sort.ts";
+import { files_sort_DEFAULT, files_sort_is_valid, files_sort_MAX_CLAUSES } from "../shared/files-sort.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
 // Does NOT work for http actions (see http.ts). No mutable module-level state allowed here.
@@ -194,7 +194,7 @@ export const set_folder_sort = mutation({
 		}
 
 		if (!files_sort_is_valid(args.sort)) {
-			return Result({ _nay: { message: "Use 1 to 3 different sort fields." } });
+			return Result({ _nay: { message: `Use 1 to ${files_sort_MAX_CLAUSES} different sort fields.` } });
 		}
 
 		const now = Date.now();

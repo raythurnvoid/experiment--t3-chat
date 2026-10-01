@@ -406,6 +406,10 @@ describe("files_metadata_parse_entries_yaml", () => {
 		expect(files_metadata_parse_entries_yaml("with space: 1")._nay?.message).toBe(
 			'Metadata key "with space" may contain only letters, numbers, "_" and "-"',
 		);
+		// A colon splits the table filter and search tokens, so no key may hold one.
+		expect(files_metadata_parse_entries_yaml('"slack:message-id": 1')._nay?.message).toBe(
+			'Metadata key "slack:message-id" may contain only letters, numbers, "_" and "-"',
+		);
 	});
 
 	test("refuses a document over the byte cap before parsing it", () => {

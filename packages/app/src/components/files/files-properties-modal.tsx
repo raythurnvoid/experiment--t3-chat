@@ -1490,10 +1490,10 @@ const METADATA_HELP_TYPES = [
  * Search box filters that work on metadata. See `shared/files-search-query.ts` for the language.
  */
 const METADATA_HELP_SEARCHES = [
-	["status:done", "Status is done"],
-	['owner:"Jane Doe"', "Quote a value with spaces"],
-	["due-date:<2026-11-01", "Due before November 2026"],
-	["owner:*", "Has an owner"],
+	["metadata.status:done", "Status is done"],
+	['metadata.owner:"Jane Doe"', "Quote a value with spaces"],
+	["metadata.due-date:<2026-11-01", "Due before November 2026"],
+	["metadata.owner:*", "Has an owner"],
 ] as const;
 
 /**

@@ -280,8 +280,8 @@ describe("FilesSearchPalette", () => {
 				preparing: false,
 			},
 		]);
-		metadataResults.set("!status:open", { targets: [], truncated: true });
-		await open_search("!status:open");
+		metadataResults.set("!metadata.status:open", { targets: [], truncated: true });
+		await open_search("!metadata.status:open");
 		expect(await screen.findByText("Search failed. Try changing your query.")).toBeTruthy();
 		expect(screen.queryByRole("button", { name: /Draft/ })).toBeNull();
 		expect(contentArgsSeen.current).toEqual([]);

@@ -48,12 +48,17 @@ async function fixture() {
 }
 
 describe("set_folder_sort", () => {
-	test("saves the full ordered list and keeps fields after Name", async () => {
+	test("saves the full ordered list, up to the clause limit, and keeps fields after Name", async () => {
 		const { scope, asOwner, viewer, asViewer, read_rows } = await fixture();
 		const sort: files_sort_Sort = [
 			{ field: "metadata.status", direction: "desc" },
 			{ field: "name", direction: "asc" },
 			{ field: "created", direction: "desc" },
+			{ field: "size", direction: "asc" },
+			{ field: "updated", direction: "asc" },
+			{ field: "type", direction: "asc" },
+			{ field: "metadata.rank", direction: "asc" },
+			{ field: "metadata.owner", direction: "asc" },
 		];
 		expect(
 			(
@@ -87,10 +92,15 @@ describe("set_folder_sort", () => {
 				{ field: "name", direction: "asc" as const },
 				{ field: "name", direction: "desc" as const },
 			],
-			["name", "size", "updated", "type"].map((field) => ({ field, direction: "asc" as const })),
+			["name", "size", "updated", "type", "created", "metadata.a", "metadata.b", "metadata.c", "metadata.d"].map(
+				(field) => ({
+					field,
+					direction: "asc" as const,
+				}),
+			),
 		]) {
 			expect((await asOwner.mutation(api.files_folder_sorts.set_folder_sort, { ...args, sort }))._nay?.message).toBe(
-				"Use 1 to 3 different sort fields.",
+				"Use 1 to 8 different sort fields.",
 			);
 			expect(await read_rows()).toEqual(before);
 		}
@@ -220,7 +230,7 @@ describe("set_folder_sort", () => {
 			folderId,
 			sort: [{ field: "metadata.bad key", direction: "asc" }],
 		});
-		expect(badField._nay?.message).toBe("Use 1 to 3 different sort fields.");
+		expect(badField._nay?.message).toBe("Use 1 to 8 different sort fields.");
 
 		await t.run(async (ctx) => ctx.db.patch("files_nodes", folderId, { kind: "file" }));
 		const notFolder = await asOwner.mutation(api.files_folder_sorts.set_folder_sort, {

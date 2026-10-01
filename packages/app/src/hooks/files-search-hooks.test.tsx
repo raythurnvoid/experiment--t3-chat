@@ -1751,10 +1751,10 @@ describe("useFilesSearchServerFilters", () => {
 
 	test("waits for the link list and for metadata chips together", () => {
 		search.nodes = { targets: [], truncated: false };
-		const { result, rerender } = render_search("status:open file.link:public");
+		const { result, rerender } = render_search("metadata.status:open file.link:public");
 
 		// The metadata chip answered, but the link list is still loading.
-		expect(result.current.searchServerTargetKeys.has("status:open")).toBe(true);
+		expect(result.current.searchServerTargetKeys.has("metadata.status:open")).toBe(true);
 		expect(result.current.searchServerTargetKeys.has("file.link:public")).toBe(false);
 		expect(result.current.isSearchLoading).toBe(true);
 

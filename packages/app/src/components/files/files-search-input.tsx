@@ -37,22 +37,16 @@ import { app_convex_api } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import type { files_TreeItem } from "@/lib/files.ts";
 import { cn } from "@/lib/utils.ts";
-import {
-	files_metadata_FRONTMATTER_FIELD_PREFIX,
-	files_metadata_METADATA_FIELD_PREFIX,
-	type files_metadata_Value,
-} from "../../../shared/files-metadata.ts";
+import { files_metadata_FRONTMATTER_FIELD_PREFIX, type files_metadata_Value } from "../../../shared/files-metadata.ts";
 import {
 	files_search_query_FILE_FIELDS,
 	files_search_query_folder_path,
-	files_search_query_format_key,
 	files_search_query_format_value,
 	files_search_query_parse,
 	files_search_query_field_paths,
 	files_search_query_serialize,
 	files_search_query_typing_token,
 	type files_search_query_Filter,
-	type files_search_query_Key,
 } from "../../../shared/files-search-query.ts";
 
 // #region search filter chip
@@ -86,9 +80,7 @@ const FilesSearchInputFilterChip = memo(function FilesSearchInputFilterChip(prop
 	const keyLabel =
 		filter.key.namespace === "file"
 			? (FilesSearchInput_FILE_FIELD_LABELS[filter.key.name] ?? `file.${filter.key.name}`)
-			: filter.key.namespace === "any"
-				? filter.key.name
-				: `${filter.key.namespace}.${filter.key.name}`;
+			: `${filter.key.namespace}.${filter.key.name}`;
 	const valueLabel =
 		filter.match.op === "exists"
 			? "any value"
@@ -182,14 +174,6 @@ const FilesSearchInput_VALUE_KIND_LABELS = {
 } satisfies Record<files_metadata_Value["valueKind"], string>;
 
 /**
- * Write a parsed key back the way the user typed it, so a picked value keeps the `frontmatter.`
- * or `metadata.` spelling the user chose.
- */
-function search_key_text(key: files_search_query_Key) {
-	return files_search_query_format_key(key.namespace === "any" ? key.name : `${key.namespace}.${key.name}`);
-}
-
-/**
  * Search box with filter chips and suggestions.
  *
  * The URL `q` param holds one string. The box splits it into committed `key:value` chips and the
@@ -245,63 +229,29 @@ export const FilesSearchInput = memo(function FilesSearchInput(props: FilesSearc
 	// The token being typed decides the suggestions: keys while it has no colon, values after it.
 	const typing = files_search_query_typing_token(text);
 	const typingFilter = files_search_query_parse(typing.token).filters[0] ?? null;
-	// A typed namespace narrows the key rows to that metadata kind, and an opening quote is the
-	// start of a quoted key, not part of its name.
-	const typedNamespace = /^!?(frontmatter|metadata)\./u.exec(typing.token)?.[1] ?? null;
-	const typedKey = typing.token.replace(/^!?"?(?:frontmatter\.|metadata\.)?"?/u, "").toLowerCase();
+	const typedKey = typing.token.replace(/^!/u, "").toLowerCase();
 	const typedValue =
 		typingFilter === null || typingFilter.match.op === "exists" || typingFilter.match.op === "range"
 			? ""
 			: typingFilter.match.value;
 	const typedValueDebounced = useDebounce(typedValue, 150);
 
-	// Fold the two metadata kinds into one row per bare key: the user types `status`, not
-	// `frontmatter.status`, and the row says where the key was found.
-	const catalogKeys = ((/* iife */) => {
-		const byName = new Map<
-			string,
-			{ name: string; metadataKinds: string[]; valueKinds: Set<files_metadata_Value["valueKind"]> }
-		>();
-		for (const field of searchFields ?? []) {
-			const metadataKind = field.fieldPath.startsWith(files_metadata_FRONTMATTER_FIELD_PREFIX)
-				? "frontmatter"
-				: "metadata";
-			const bareName = field.fieldPath.slice(
-				metadataKind === "frontmatter"
-					? files_metadata_FRONTMATTER_FIELD_PREFIX.length
-					: files_metadata_METADATA_FIELD_PREFIX.length,
-			);
-			// A key named like a namespace (`file`, `metadata`, `frontmatter.x`) would read as that
-			// namespace when typed bare, so its row keeps its own namespace.
-			const name = /^(?:file|frontmatter|metadata)(?:\.|$)/u.test(bareName) ? field.fieldPath : bareName;
+	// One row per qualified field, so the row text is the key the user must type.
+	const catalogKeys = (searchFields ?? []).map((field) => ({
+		fieldPath: field.fieldPath,
+		metadataKind: field.fieldPath.startsWith(files_metadata_FRONTMATTER_FIELD_PREFIX) ? "frontmatter" : "metadata",
+		valueKinds: new Set(field.valueKinds),
+	}));
 
-			const row = byName.get(name) ?? { name, metadataKinds: [], valueKinds: new Set() };
-			row.metadataKinds.push(metadataKind);
-			for (const valueKind of field.valueKinds) {
-				row.valueKinds.add(valueKind);
-			}
-			byName.set(name, row);
-		}
-
-		return [...byName.values()];
-	})();
-
-	// A key that holds a colon, like `slack:message-id`, reads as the key `slack` plus a value while
-	// it is typed. The key rows keep listing it as long as a catalog key contains the typed text.
 	const matchingKeys = catalogKeys
-		.filter(
-			(key) =>
-				key.name.toLowerCase().includes(typedKey) &&
-				(typedNamespace === null || key.metadataKinds.includes(typedNamespace)),
-		)
+		.filter((key) => key.fieldPath.toLowerCase().includes(typedKey))
 		.slice(0, FilesSearchInput_SUGGESTIONS_MAX_ROWS);
 	const matchingFileFields =
-		typingFilter === null && typedNamespace === null
+		typingFilter === null
 			? files_search_query_FILE_FIELDS.map((field) => `file.${field}`).filter((field) => field.includes(typedKey))
 			: [];
 	// A plain search word stays in the query when the user adds a filter.
-	const isNewFilter =
-		typingFilter === null && typedNamespace === null && matchingKeys.length === 0 && matchingFileFields.length === 0;
+	const isNewFilter = typingFilter === null && matchingKeys.length === 0 && matchingFileFields.length === 0;
 	const keyRows = isNewFilter ? catalogKeys.slice(0, FilesSearchInput_SUGGESTIONS_MAX_ROWS) : matchingKeys;
 	const fileFieldRows = isNewFilter
 		? files_search_query_FILE_FIELDS.map((field) => `file.${field}`)
@@ -400,7 +350,11 @@ export const FilesSearchInput = memo(function FilesSearchInput(props: FilesSearc
 		if (typedValue.length === 0) {
 			push("*", "* (any value)");
 		}
-		if (catalogKeys.find((key) => key.name === typingFilter.key.name)?.valueKinds.has("boolean")) {
+		if (
+			catalogKeys
+				.find((key) => key.fieldPath === `${typingFilter.key.namespace}.${typingFilter.key.name}`)
+				?.valueKinds.has("boolean")
+		) {
 			push("true");
 			push("false");
 		}
@@ -467,10 +421,7 @@ export const FilesSearchInput = memo(function FilesSearchInput(props: FilesSearc
 
 	const pickKey = (keyText: string) => {
 		const negation = !isNewFilter && typing.token.startsWith("!") ? "!" : "";
-		// Keep the namespace the user already typed, so `frontmatter.sta` picks `frontmatter.status`.
-		const namespace =
-			typedNamespace === null || /^(?:file|frontmatter|metadata)\./u.test(keyText) ? "" : `${typedNamespace}.`;
-		setText(`${isNewFilter ? `${text} ` : text.slice(0, typing.start)}${negation}${namespace}${keyText}:`);
+		setText(`${isNewFilter ? `${text} ` : text.slice(0, typing.start)}${negation}${keyText}:`);
 	};
 
 	const pickValue = (value: string) => {
@@ -480,7 +431,7 @@ export const FilesSearchInput = memo(function FilesSearchInput(props: FilesSearc
 
 		const negation = typingFilter.negated ? "!" : "";
 		const valueText = value === "*" ? "*" : files_search_query_format_value(value);
-		const raw = `${negation}${search_key_text(typingFilter.key)}:${valueText}`;
+		const raw = `${negation}${typingFilter.key.namespace}.${typingFilter.key.name}:${valueText}`;
 		commitFilters(files_search_query_parse(raw).filters, text.slice(0, typing.start));
 	};
 
@@ -520,7 +471,7 @@ export const FilesSearchInput = memo(function FilesSearchInput(props: FilesSearc
 			return;
 		}
 
-		// Space commits the complete filters typed so far, so `status:open` becomes a chip as soon
+		// Space commits the complete filters typed so far, so `metadata.status:open` becomes a chip as soon
 		// as the user moves on. A filter with a problem stays in the text next to the free text, so
 		// the user can fix it. An open quote keeps the space, so the user can keep typing, and so
 		// does a caret that is not at the end, because the commit rewrites the whole text.
@@ -726,16 +677,16 @@ export const FilesSearchInput = memo(function FilesSearchInput(props: FilesSearc
 								<MyComboboxGroup heading="Properties">
 									{keyRows.map((key) => (
 										<MyComboboxItem
-											key={key.name}
-											value={key.name}
+											key={key.fieldPath}
+											value={key.fieldPath}
 											hideOnClick={false}
 											setValueOnClick={false}
 											className={cn("FilesSearchInput-suggestion" satisfies FilesSearchInput_ClassNames)}
-											title={`${[...key.valueKinds].map((kind) => FilesSearchInput_VALUE_KIND_LABELS[kind]).join(", ")} · ${key.metadataKinds.join(", ")}`}
-											onClick={() => pickKey(files_search_query_format_key(key.name))}
+											title={`${[...key.valueKinds].map((kind) => FilesSearchInput_VALUE_KIND_LABELS[kind]).join(", ")} · ${key.metadataKind}`}
+											onClick={() => pickKey(key.fieldPath)}
 										>
 											<span className={cn("FilesSearchInput-suggestion-label" satisfies FilesSearchInput_ClassNames)}>
-												{key.name}
+												{key.fieldPath}
 											</span>
 											<span className={cn("FilesSearchInput-suggestion-hint" satisfies FilesSearchInput_ClassNames)}>
 												{[...key.valueKinds].map((kind) => FilesSearchInput_VALUE_KIND_LABELS[kind]).join(", ")}
@@ -786,26 +737,24 @@ export const FilesSearchInput = memo(function FilesSearchInput(props: FilesSearc
 					</MyComboboxList>
 					<div className={cn("FilesSearchInput-syntax" satisfies FilesSearchInput_ClassNames)}>
 						{typingFilter === null
-							? "Choose a filter, or type key:value"
+							? "Choose a filter, or type metadata.key:value"
 							: "Choose a value, or type one and press Enter"}
 						<div>Esc to close · Ctrl+Space to show filters</div>
 						<details>
 							<summary>Filter syntax</summary>
 							<dl>
 								<dt>Exact value</dt>
-								<dd>status:open</dd>
+								<dd>metadata.status:open</dd>
 								<dt>Any value</dt>
-								<dd>status:*</dd>
+								<dd>metadata.status:*</dd>
 								<dt>Starts with</dt>
-								<dd>title:Rec*</dd>
+								<dd>metadata.title:Rec*</dd>
 								<dt>Number or date</dt>
-								<dd>priority:&gt;=2</dd>
+								<dd>metadata.priority:&gt;=2</dd>
 								<dt>Exclude</dt>
-								<dd>!status:done</dd>
+								<dd>!metadata.status:done</dd>
 								<dt>Spaces in values</dt>
-								<dd>key:"two words"</dd>
-								<dt>Colon in keys</dt>
-								<dd>"a:b":value</dd>
+								<dd>metadata.key:"two words"</dd>
 								<dt>Folder</dt>
 								<dd>file.path:/tasks</dd>
 							</dl>

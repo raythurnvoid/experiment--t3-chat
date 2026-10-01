@@ -3276,6 +3276,8 @@ const FilesSidebarHeader = memo(function FilesSidebarHeader(props: FilesSidebarH
 							// param here would leave the URL disagreeing with what the user still sees.
 							search={(prev) => ({
 								...prev,
+								filter: undefined,
+								view_q: undefined,
 								nodeId: files_ROOT_ID,
 								pendingNodeId: undefined,
 								view,
@@ -8545,10 +8547,10 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		const filters = (query: string) => files_search_query_parse(query).filters;
 
 		test("takes the first plain file.path chip and skips a negated, prefixed, or broken one", () => {
-			expect(search_path_filter(filters("!file.path:/tasks status:open"))).toBeNull();
-			expect(search_path_filter(filters("file.path:tasks* status:open"))).toBeNull();
-			expect(search_path_filter(filters("file.path: status:open"))).toBeNull();
-			expect(search_path_filter(filters("status:open file.path:/a file.path:/b"))).toEqual({
+			expect(search_path_filter(filters("!file.path:/tasks metadata.status:open"))).toBeNull();
+			expect(search_path_filter(filters("file.path:tasks* metadata.status:open"))).toBeNull();
+			expect(search_path_filter(filters("file.path: metadata.status:open"))).toBeNull();
+			expect(search_path_filter(filters("metadata.status:open file.path:/a file.path:/b"))).toEqual({
 				raw: "file.path:/a",
 				value: "/a",
 			});
@@ -8747,7 +8749,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 		test("Enter opens the folder the text names exactly, or the one file left under a metadata filter", () => {
 			expect(search("/tasks").topMatchId).toBe("tasks");
-			expect(search("/tasks status:open", new Map([["status:open", new Set(["task"])]])).topMatchId).toBe("task");
+			expect(search("/tasks metadata.status:open", new Map([["metadata.status:open", new Set(["task"])]])).topMatchId).toBe("task");
 		});
 
 		test("a pasted link with a node id names that one node", () => {
@@ -8762,16 +8764,16 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		test("a metadata filter matches the node ids its query returned, and negation keeps other files and folders", () => {
 			// `FilesSidebar` keys the results by the raw token, so a negated chip has its own entry.
 			const serverTargetKeys = new Map<string, Set<string>>([
-				["status:open", new Set(["task"])],
-				["!status:open", new Set(["task"])],
+				["metadata.status:open", new Set(["task"])],
+				["!metadata.status:open", new Set(["task"])],
 			]);
 
-			expect(search("status:open", serverTargetKeys)).toEqual({
+			expect(search("metadata.status:open", serverTargetKeys)).toEqual({
 				visible: [files_ROOT_ID, "task", "tasks"].sort(),
 				topMatchId: "task",
 				matchCount: 1,
 			});
-			expect(search("!status:open", serverTargetKeys)).toEqual({
+			expect(search("!metadata.status:open", serverTargetKeys)).toEqual({
 				visible: [files_ROOT_ID, "tasks", "archive", "old_task", "note", "backup"].sort(),
 				topMatchId: null,
 				matchCount: 5,
@@ -8789,17 +8791,17 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("a metadata filter with no result yet matches nothing, even when negated", () => {
-			expect(search("status:open")).toEqual({ visible: [], topMatchId: null, matchCount: 0 });
-			expect(search("!status:open")).toEqual({ visible: [], topMatchId: null, matchCount: 0 });
+			expect(search("metadata.status:open")).toEqual({ visible: [], topMatchId: null, matchCount: 0 });
+			expect(search("!metadata.status:open")).toEqual({ visible: [], topMatchId: null, matchCount: 0 });
 		});
 
 		test("a metadata filter whose query failed matches nothing, even when negated", () => {
-			expect(search("status:open", new Map([["status:open", null]]))).toEqual({
+			expect(search("metadata.status:open", new Map([["metadata.status:open", null]]))).toEqual({
 				visible: [],
 				topMatchId: null,
 				matchCount: 0,
 			});
-			expect(search("!status:open", new Map([["!status:open", null]]))).toEqual({
+			expect(search("!metadata.status:open", new Map([["!metadata.status:open", null]]))).toEqual({
 				visible: [],
 				topMatchId: null,
 				matchCount: 0,
@@ -8807,13 +8809,13 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("an archived file never matches a metadata filter, not even a negated one", () => {
-			// The archived file has no search docs, so the server never returns it for `status:open`
+			// The archived file has no search docs, so the server never returns it for `metadata.status:open`
 			// and a negated chip must not show it either. Without a metadata filter it matches.
-			expect(search("!status:open", new Map([["!status:open", new Set(["task"])]])).visible).not.toContain("done_task");
+			expect(search("!metadata.status:open", new Map([["!metadata.status:open", new Set(["task"])]])).visible).not.toContain("done_task");
 			expect(search("file.path:/tasks done").visible).toContain("done_task");
 		});
 
-		test.each(["status:open", "!status:open"])("an archived folder never matches %s", (searchQuery) => {
+		test.each(["metadata.status:open", "!metadata.status:open"])("an archived folder never matches %s", (searchQuery) => {
 			const archivedFolder = { ...doneTask, kind: "folder" as const };
 			const result = get_search_matches({
 				treeItems: {
@@ -8823,14 +8825,14 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				},
 				searchQuery,
 				serverTargetKeys: new Map([
-					[searchQuery, new Set(searchQuery === "status:open" ? [`saved:${archivedFolder._id}`] : ["saved:task"])],
+					[searchQuery, new Set(searchQuery === "metadata.status:open" ? [`saved:${archivedFolder._id}`] : ["saved:task"])],
 				]),
 			});
 			expect(result.visibleFileIds.has(archivedFolder._id)).toBe(false);
 		});
 
 		test("an invalid filter blocks results until it is fixed or removed", () => {
-			expect(search("priority:>high notes")).toEqual({
+			expect(search("metadata.priority:>high notes")).toEqual({
 				visible: [],
 				topMatchId: null,
 				matchCount: 0,

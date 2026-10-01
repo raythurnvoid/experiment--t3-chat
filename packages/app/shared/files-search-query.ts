@@ -3,18 +3,17 @@
 // rules (name, path, node id, pasted link) in the sidebar.
 //
 // Filters:
-// - `status:open` equality. `status:*` the key exists. `title:Recall*` string prefix, and
-//   `title:"Recall the"*` for a prefix with spaces.
-// - `priority:>2`, `due:<=2026-09-30` ranges on numbers or ISO dates.
-// - `!status:done` negation. `assignee:"Denys Voloshyn"` quotes a value with spaces.
-// - `"slack:message-id":123` quotes a key that holds a colon.
+// - `metadata.status:open` equality. `metadata.status:*` the key exists. `metadata.title:Recall*`
+//   string prefix, and `metadata.title:"Recall the"*` for a prefix with spaces.
+// - `metadata.priority:>2`, `frontmatter.due:<=2026-09-30` ranges on numbers or ISO dates.
+// - `!metadata.status:done` negation. `metadata.assignee:"Denys Voloshyn"` quotes a value with spaces.
 // - `file.path:/tasks`, `file.name:x`, `file.ext:md`, `file.kind:folder`, `file.updated:>DATE`
-//   filter on file fields. `frontmatter.x` and `metadata.x` name one namespace. A bare key asks
-//   both metadata kinds.
+//   filter on file fields. `frontmatter.x` and `metadata.x` name one metadata kind.
 // - `file.link:public` lists the files that have a public link. It takes no other value.
 //
-// The first dotted segment `file`, `frontmatter` and `metadata` is reserved. A frontmatter key
-// literally named `file` is written `frontmatter.file`.
+// Every key starts with its namespace: `file.`, `frontmatter.` or `metadata.`. A token like
+// `status:open` has no namespace, so it is free text. A key holds no colon, so it never needs quotes.
+// The folder table bar reads the same field names (`files-folder-table-query.ts`).
 //
 // A query holds at most `files_search_query_MAX_FILTERS` filters. The search box runs one server
 // query per filter, so a pasted link with thousands of `key:value` tokens must not open thousands
@@ -39,10 +38,7 @@ export const files_search_query_FIELD_PATH_MAX_LENGTH = 160;
 export const files_search_query_FILE_FIELDS = ["path", "name", "ext", "kind", "updated", "link"] as const;
 
 export type files_search_query_Key = {
-	/**
-	 * `any` is a bare key: it asks `frontmatter.<name>` and `metadata.<name>` together.
-	 */
-	namespace: "file" | "frontmatter" | "metadata" | "any";
+	namespace: "file" | "frontmatter" | "metadata";
 	name: string;
 };
 
@@ -88,6 +84,7 @@ type ParsedQuery = {
 };
 
 const KEY_REGEX = /^[\p{L}\p{N}_][\p{L}\p{N}_.-]*$/u;
+const FIELD_NAMESPACE_REGEX = /^(?:file|frontmatter|metadata)\./u;
 // The YAML core schema's number and boolean spellings, so a value the frontmatter parser stored as
 // a number or a boolean (`.5`, `1e3`, `0x10`, `True`) can be typed the same way in a filter.
 // `Number()` reads every spelling here, the hex and octal ones included.
@@ -112,7 +109,6 @@ const RANGE_COMPARATORS = [
 	["gt", ">"],
 	["lt", "<"],
 ] as const;
-const FILE_FIELDS = new Set<string>(files_search_query_FILE_FIELDS);
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 
 // #region tokenizer
@@ -120,7 +116,7 @@ const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 /**
  * Split on whitespace, keeping quoted runs together. Each token keeps its exact source text.
  */
-function split_tokens(query: string) {
+export function files_search_query_split_tokens(query: string) {
 	const tokens: string[] = [];
 	let start = -1;
 	let inQuote = false;
@@ -165,7 +161,7 @@ function split_tokens(query: string) {
  * Read one quoted string that starts at `start`. Returns the unescaped text and the index right
  * after the closing quote. An unterminated quote runs to the end of the token.
  */
-function read_quoted(token: string, start: number) {
+export function files_search_query_read_quoted(token: string, start: number) {
 	let text = "";
 	let index = start + 1;
 	while (index < token.length) {
@@ -190,53 +186,30 @@ function read_quoted(token: string, start: number) {
  * Close a quote the user left open, for the last token of a query. A backslash right before the
  * added quote would escape it, so an unescaped trailing backslash is escaped first.
  */
-function close_open_quote(token: string) {
+export function files_search_query_close_open_quote(token: string) {
 	const trailingBackslashes = /\\*$/u.exec(token)![0].length;
 	return trailingBackslashes % 2 === 1 ? `${token}\\"` : `${token}"`;
 }
 
 /**
  * Split a token into its key part and value part, or return null when it is free text. The key
- * is either a quoted string or a run of key characters, and it must be followed by `:`.
+ * is a run of key characters that starts with `file.`, `frontmatter.` or `metadata.`, and it must
+ * be followed by `:`. A key without a namespace, like `status`, is free text.
  */
 function split_key_value(token: string) {
-	// A pasted app link is free text. The sidebar unwraps it into the node id or path it carries,
-	// and the `:` after `http` must not turn it into a filter on the key `http`.
-	if (token.startsWith("http://") || token.startsWith("https://")) {
-		return null;
-	}
-
 	const negated = token.startsWith("!");
-	let index = negated ? 1 : 0;
-	let key: string;
-
-	// A quoted key skips the key grammar here: quotes exist for keys that hold a colon, and
-	// `parse_key` still checks the name against each metadata kind's own grammar. The quotes may
-	// wrap the whole key or only the part after a typed namespace: `"metadata.a:b":x` and
-	// `metadata."a:b":x` are the same filter.
-	const quotedNamespace = /^(?:frontmatter|metadata)\.(?=")/u.exec(token.slice(index))?.[0] ?? "";
-	const quotedKey = token[index + quotedNamespace.length] === '"';
-	if (quotedKey) {
-		const quoted = read_quoted(token, index + quotedNamespace.length);
-		key = `${quotedNamespace}${quoted.text}`;
-		index = quoted.end;
-	} else {
-		const colonIndex = token.indexOf(":", index);
-		if (colonIndex < 0) {
-			return null;
-		}
-		key = token.slice(index, colonIndex);
-		if (!KEY_REGEX.test(key)) {
-			return null;
-		}
-		index = colonIndex;
-	}
-
-	if (key.length === 0 || token[index] !== ":") {
+	const keyStart = negated ? 1 : 0;
+	const colonIndex = token.indexOf(":", keyStart);
+	if (colonIndex < 0) {
 		return null;
 	}
 
-	return { negated, key, value: token.slice(index + 1) };
+	const key = token.slice(keyStart, colonIndex);
+	if (!KEY_REGEX.test(key) || !FIELD_NAMESPACE_REGEX.test(key)) {
+		return null;
+	}
+
+	return { negated, key, value: token.slice(colonIndex + 1) };
 }
 
 // #endregion tokenizer
@@ -265,38 +238,39 @@ export function files_search_query_field_path_is_valid(fieldPath: string) {
 	return false;
 }
 
-function parse_key(key: string): { key: files_search_query_Key; problem: string | null } {
-	if (key.startsWith(FILE_FIELD_PREFIX)) {
-		const name = key.slice(FILE_FIELD_PREFIX.length);
+/**
+ * Read a field name such as `file.name`, `metadata.status` or `frontmatter.due`. `fileFields` is the
+ * list of `file.` names the caller accepts, because the sidebar and the folder table differ. Returns
+ * null for a name with no namespace. A known namespace with a bad name returns a problem.
+ */
+export function files_search_query_parse_field(
+	field: string,
+	fileFields: readonly string[],
+): { key: files_search_query_Key; problem: string | null } | null {
+	if (field.startsWith(FILE_FIELD_PREFIX)) {
+		const name = field.slice(FILE_FIELD_PREFIX.length);
 		return {
 			key: { namespace: "file", name },
-			problem: FILE_FIELDS.has(name)
+			problem: fileFields.includes(name)
 				? null
-				: `Unknown file field. Use ${files_search_query_FILE_FIELDS.map((field) => `file.${field}`).join(", ")}`,
+				: `Unknown file field. Use ${fileFields.map((fileField) => `file.${fileField}`).join(", ")}`,
 		};
 	}
-	if (key.startsWith(files_metadata_FRONTMATTER_FIELD_PREFIX)) {
-		const name = key.slice(files_metadata_FRONTMATTER_FIELD_PREFIX.length);
+	if (field.startsWith(files_metadata_FRONTMATTER_FIELD_PREFIX)) {
+		const name = field.slice(files_metadata_FRONTMATTER_FIELD_PREFIX.length);
 		return {
 			key: { namespace: "frontmatter", name },
 			problem: frontmatter_name_is_valid(name) ? null : "Frontmatter keys use letters, digits, _ and -, joined by dots",
 		};
 	}
-	if (key.startsWith(files_metadata_METADATA_FIELD_PREFIX)) {
-		const name = key.slice(files_metadata_METADATA_FIELD_PREFIX.length);
+	if (field.startsWith(files_metadata_METADATA_FIELD_PREFIX)) {
+		const name = field.slice(files_metadata_METADATA_FIELD_PREFIX.length);
 		return {
 			key: { namespace: "metadata", name },
-			problem: metadata_name_is_valid(name) ? null : "Metadata keys use letters, digits, _, - and :",
+			problem: metadata_name_is_valid(name) ? null : "Metadata keys use letters, digits, _ and -",
 		};
 	}
-	// Quoting a key the grammar refuses does not help, so the message never says to quote it.
-	return {
-		key: { namespace: "any", name: key },
-		problem:
-			frontmatter_name_is_valid(key) || metadata_name_is_valid(key)
-				? null
-				: "Keys use letters, digits, _, - and :. Dots join the parts of a frontmatter key",
-	};
+	return null;
 }
 
 function parse_value(value: string): { match: FilterMatch; problem: string | null } {
@@ -315,10 +289,10 @@ function parse_value(value: string): { match: FilterMatch; problem: string | nul
 		if (!isNumber && !isDate) {
 			// `priority:> 2` ends the token at the space, so the bound is missing, not wrong.
 			if (literal.length === 0) {
-				problem = `Put the number or the date right after ${symbol}, like priority:${symbol}2`;
+				problem = `Put the number or the date right after ${symbol}, like metadata.priority:${symbol}2`;
 			} else if (literal.startsWith('"') || literal.startsWith("'")) {
 				// The generic hint says to quote the value. That points the wrong way when it already is.
-				problem = `Ranges take the number or the date without quotes, like priority:${symbol}2`;
+				problem = `Ranges take the number or the date without quotes, like metadata.priority:${symbol}2`;
 			} else {
 				problem = "Ranges need a number or a date like 2026-09-04. Quote the value to search it as text";
 			}
@@ -332,24 +306,24 @@ function parse_value(value: string): { match: FilterMatch; problem: string | nul
 	if (value.startsWith("'")) {
 		return {
 			match: { op: "eq", value, quoted: false },
-			problem: 'Use double quotes, like status:"in progress"',
+			problem: 'Use double quotes, like metadata.status:"in progress"',
 		};
 	}
 	if (value.startsWith("!")) {
 		return {
 			match: { op: "eq", value, quoted: false },
-			problem: "Put ! before the key, like !status:done",
+			problem: "Put ! before the key, like !metadata.status:done",
 		};
 	}
 	if (value.startsWith("=")) {
 		return {
 			match: { op: "eq", value, quoted: false },
-			problem: "Drop the =. A plain value is an exact match, like priority:2",
+			problem: "Drop the =. A plain value is an exact match, like metadata.priority:2",
 		};
 	}
 
 	if (value.startsWith('"')) {
-		const quoted = read_quoted(value, 0);
+		const quoted = files_search_query_read_quoted(value, 0);
 		// A `*` right after the closing quote asks for a prefix, like `Recall*` does for one word.
 		if (quoted.text.length > 0 && quoted.end === value.length - 1 && value[quoted.end] === "*") {
 			return { match: { op: "prefix", value: quoted.text }, problem: null };
@@ -438,14 +412,14 @@ function file_field_problem(name: string, match: FilterMatch) {
 // #region query text
 
 export function files_search_query_parse(query: string): ParsedQuery {
-	const { tokens, openQuote } = split_tokens(query.trim());
+	const { tokens, openQuote } = files_search_query_split_tokens(query.trim());
 	const filters: files_search_query_Filter[] = [];
 	const textTokens: string[] = [];
 
 	for (const [index, token] of tokens.entries()) {
 		// A quote left open runs to the end of the query. Close it in the token, so a chip made from
 		// it stays one token when the chips are joined and read back.
-		const closedToken = openQuote && index === tokens.length - 1 ? close_open_quote(token) : token;
+		const closedToken = openQuote && index === tokens.length - 1 ? files_search_query_close_open_quote(token) : token;
 		const keyValue = split_key_value(closedToken);
 		if (!keyValue) {
 			// Free text keeps its quotes, so the text reads back as typed. The sidebar's name search
@@ -454,7 +428,8 @@ export function files_search_query_parse(query: string): ParsedQuery {
 			continue;
 		}
 
-		const parsedKey = parse_key(keyValue.key);
+		// `split_key_value` only returns a key with a namespace, so the field always parses.
+		const parsedKey = files_search_query_parse_field(keyValue.key, files_search_query_FILE_FIELDS)!;
 		const parsedValue = parse_value(keyValue.value);
 		// A file field explains its own value first, so `file.kind:` does not say "use *" while
 		// `file.kind:*` says "needs a value".
@@ -482,16 +457,11 @@ export function files_search_query_serialize(parsed: Pick<ParsedQuery, "filters"
 		.join(" ");
 }
 
-function quote(text: string) {
-	return `"${text.replace(/\\/gu, "\\\\").replace(/"/gu, '\\"')}"`;
-}
-
 /**
- * Write a key the way the parser reads it back: bare when the key grammar accepts it, quoted
- * otherwise (a flat metadata key like `slack:message-id` holds a colon).
+ * Wrap a text in double quotes. A backslash and a double quote inside it are escaped.
  */
-export function files_search_query_format_key(name: string) {
-	return KEY_REGEX.test(name) ? name : quote(name);
+export function files_search_query_quote(text: string) {
+	return `"${text.replace(/\\/gu, "\\\\").replace(/"/gu, '\\"')}"`;
 }
 
 /**
@@ -501,7 +471,7 @@ export function files_search_query_format_key(name: string) {
  */
 export function files_search_query_format_value(value: string) {
 	if (value.length === 0 || /[\s"]/u.test(value) || value.endsWith("*") || /^[<>'!=]/u.test(value)) {
-		return quote(value);
+		return files_search_query_quote(value);
 	}
 
 	return value;
@@ -512,7 +482,7 @@ export function files_search_query_format_value(value: string) {
  * token. Quoted runs count as one token, so a value like `"Denys V` keeps its value suggestions.
  */
 export function files_search_query_typing_token(text: string) {
-	const { tokens, openQuote } = split_tokens(text);
+	const { tokens, openQuote } = files_search_query_split_tokens(text);
 	const lastToken = tokens[tokens.length - 1];
 	if (lastToken === undefined || (!openQuote && /[ \t\n\r]$/u.test(text))) {
 		return { start: text.length, token: "" };
@@ -632,9 +602,7 @@ export function files_search_query_folder_path(value: string) {
 }
 
 /**
- * The qualified fields a filter asks the metadata index for. A bare key asks both metadata kinds,
- * but only the kinds whose key grammar accepts the name: `sender.name` cannot be a flat metadata key.
- * `file.*` keys never reach the index.
+ * The qualified field a filter asks the metadata index for. `file.*` keys never reach the index.
  */
 export function files_search_query_field_paths(key: files_search_query_Key) {
 	switch (key.namespace) {
@@ -644,27 +612,17 @@ export function files_search_query_field_paths(key: files_search_query_Key) {
 			return [`${files_metadata_FRONTMATTER_FIELD_PREFIX}${key.name}`];
 		case "metadata":
 			return [`${files_metadata_METADATA_FIELD_PREFIX}${key.name}`];
-		case "any": {
-			const fields: string[] = [];
-			if (frontmatter_name_is_valid(key.name)) {
-				fields.push(`${files_metadata_FRONTMATTER_FIELD_PREFIX}${key.name}`);
-			}
-			if (metadata_name_is_valid(key.name)) {
-				fields.push(`${files_metadata_METADATA_FIELD_PREFIX}${key.name}`);
-			}
-			return fields;
-		}
 	}
 }
 
 /**
- * Turn one valid metadata filter into index search plans, one per qualified field and value
- * kind. An unquoted literal asks every kind it could be: `3` is the number 3 or the text "3",
- * `true` is a boolean or text, `2026-09-04` is text or any maybe_date inside that UTC day, and
- * `2026-09-04T10:00Z` is text or the maybe_date at that instant. A kind the key never used has no
- * docs, so an extra plan never adds a wrong file.
+ * Turn one valid metadata filter into index search plans, one per value kind. A qualified key
+ * names exactly one field. An unquoted literal asks every kind it could be: `3` is the number 3
+ * or the text "3", `true` is a boolean or text, `2026-09-04` is text or any maybe_date inside that
+ * UTC day, and `2026-09-04T10:00Z` is text or the maybe_date at that instant. A kind the key never
+ * used has no docs, so an extra plan never adds a wrong file.
  *
- * At most 2 fields x 2 kinds = 4 plans.
+ * At most 2 plans.
  */
 export function files_search_query_to_plans(filter: files_search_query_Filter): files_metadata_SearchPlan[] {
 	const plans: files_metadata_SearchPlan[] = [];

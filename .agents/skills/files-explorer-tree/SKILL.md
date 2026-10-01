@@ -170,7 +170,7 @@ Tree-item components:
 ## Search
 
 - Shared controls live in `components/files/files-search-input.tsx`, field matching in `lib/files-search.ts`, and metadata subscriptions in `hooks/files-search-hooks.ts`. Both search surfaces use them.
-- The search box is `FilesSearchInput`: a combobox (`MyCombobox`, from `native-popovers/combobox`) inside a `MyInput`, with the committed filters shown as chips (`FilesSearchInputFilterChip`, a `MyChip` inside a `MyChipRow`) above the input. The chips wrap within a scroll area capped at 96px. A query is whitespace-separated tokens: a `key:value` token is a filter, everything else is free text. The language (parser, serializer, plans) lives in `packages/app/shared/files-search-query.ts`; the `file-metadata` skill describes it and the three Convex doors under "Search Box".
+- The search box is `FilesSearchInput`: a combobox (`MyCombobox`, from `native-popovers/combobox`) inside a `MyInput`, with the committed filters shown as chips (`FilesSearchInputFilterChip`, a `MyChip` inside a `MyChipRow`) above the input. The chips wrap within a scroll area capped at 96px. A query is whitespace-separated tokens: a `metadata.key:value`, `frontmatter.path:value`, or `file.field:value` token is a filter, everything else is free text (a bare `status:open` is free text). The language (parser, serializer, plans) lives in `packages/app/shared/files-search-query.ts`; the `file-metadata` skill describes it and the three Convex doors under "Search Box".
 - The input sets `autoCapitalize="none"`, `autoCorrect="off"` and `spellCheck={false}`: keys and metadata values are exact-case, so a phone keyboard must not capitalize `status` into `Status` or correct a value.
 - Search input is debounced and consumed through a deferred query value.
 - Visible IDs are computed from matches plus ancestor chain inclusion.
@@ -185,9 +185,8 @@ Tree-item components:
 - The first positive `file.path:` chip is also sent as `pathPrefix` (`searchPathPrefix`): the stored path of the tree node the typed path names in any case, so the server scans only that subtree with an exact index range, unless that node is a file: a file has nothing under it, so nothing is sent and the tree filter keeps the file by its own path.
 - The free text loses its quotes before `detect_search_query_mode`, and a text of quotes alone matches nothing.
 - Both `useQueries` argument objects are wrapped in `useMemo` on purpose: `useQueries` resubscribes on object identity and calls setState during render, so a fresh object every render is "Too many re-renders". `searchServerTargetKeys` and `searchMatches` are memoized for the same kind of reason: the tree rebuild layout effect keys on the `visibleFileIds` identity.
-- Suggestions: while the box is focused, the popover lists keys from `files_metadata.list_search_fields` (read once per focus with `convex.query`, not subscribed, so a metadata write elsewhere does not rerun the catalog walk; bare keys fold both metadata kinds, with a short value-kind hint and the metadata kind in the hover title), the `file.*` fields, and values from `list_search_values` (or `true`/`false` for a boolean key, `* (any value)`, and extensions or folder paths for `file.*` keys; a folder is listed when its path contains the typed text without the leading slash the filter adds, so `tasks` lists `/projects/tasks` and `arch` lists `/tasks-archive`). Picking a key writes `key:` into the input; picking a value commits the chip. The final token comes from `files_search_query_typing_token`, so a quoted value with spaces still gets value suggestions. A typed `frontmatter.` or `metadata.` narrows the key rows to that kind, hides the `file.*` rows, and stays in the text when a key is picked; a typed `"` starts a quoted key, so `"slack` and `metadata."slack` still list `slack:message-id`. A typed `file.path` value is read as a folder path (`tasks` lists `/tasks`) and a typed `file.ext` value drops its leading dot. Metadata value rows match the typed prefix in exact case, the same rule as the server walk, so a row never shows for a prefix the server will not confirm; file value rows ignore case like their filters. A catalog key named like a namespace (`file`, `metadata`, `frontmatter.x`) is listed with its own namespace, because typed bare it would read as that namespace. A short hint sits below the list. The expandable Filter syntax section shows every token form, the quoted key included.
-- A key that holds a colon, like `slack:message-id`, parses as the key `slack` plus a value while it is typed, so the key rows do not stop at the colon: they keep listing every catalog key that contains the typed text, and picking the row writes the quoted key (`"slack:message-id":`).
-- Keyboard: Enter commits the typed filters, or opens the top match when only free text is typed. Space commits the complete filters typed so far, but only when the caret is at the end of the text, because the commit rewrites the whole text; a filter with a problem stays in the text next to the free text, so the user can fix it. An open quote is closed on commit: `assignee:"Denys` becomes the chip `assignee:"Denys"`. A key pressed while an IME composes text (`nativeEvent.isComposing`, or Safari's `keyCode` 229 on the key that ends a composition) is left to the composition. Removing a chip re-parses the chips left, so a chip past the 20-filter cap becomes valid once there is room. Escape closes suggestions and keeps the text and chips. Ctrl+Space reopens suggestions without changing the text or selection. Plain typing and Space do not reopen a dismissed menu. Backspace on an empty input focuses the last chip's remove button; after a removal the chip row moves focus to the next chip, else the previous one, else back to the input. The chip row comes before the input in the Tab order. Tab from the input reaches Add search filter, then Clear. A filter the parser cannot run becomes a chip on Enter, with the `-invalid` class, a `title`, and an `aria-describedby` reason; it matches nothing.
+- Suggestions: while the box is focused, the popover lists keys from `files_metadata.list_search_fields` (read once per focus with `convex.query`, not subscribed, so a metadata write elsewhere does not rerun the catalog walk; each key row is one qualified key such as `metadata.status`, with a short value-kind hint), the `file.*` fields, and values from `list_search_values` (or `true`/`false` for a boolean key, `* (any value)`, and extensions or folder paths for `file.*` keys; a folder is listed when its path contains the typed text without the leading slash the filter adds, so `tasks` lists `/projects/tasks` and `arch` lists `/tasks-archive`). Picking a key writes `key:` into the input; picking a value commits the chip. The final token comes from `files_search_query_typing_token`, so a quoted value with spaces still gets value suggestions. Key rows match the typed text anywhere in the qualified key, so `meta` lists every `metadata.` key. A typed `file.path` value is read as a folder path (`tasks` lists `/tasks`) and a typed `file.ext` value drops its leading dot. Metadata value rows match the typed prefix in exact case, the same rule as the server walk, so a row never shows for a prefix the server will not confirm; file value rows ignore case like their filters. A short hint sits below the list. The expandable Filter syntax section shows every token form.
+- Keyboard: Enter commits the typed filters, or opens the top match when only free text is typed. Space commits the complete filters typed so far, but only when the caret is at the end of the text, because the commit rewrites the whole text; a filter with a problem stays in the text next to the free text, so the user can fix it. An open quote is closed on commit: `metadata.assignee:"Denys` becomes the chip `metadata.assignee:"Denys"`. A key pressed while an IME composes text (`nativeEvent.isComposing`, or Safari's `keyCode` 229 on the key that ends a composition) is left to the composition. Removing a chip re-parses the chips left, so a chip past the 20-filter cap becomes valid once there is room. Escape closes suggestions and keeps the text and chips. Ctrl+Space reopens suggestions without changing the text or selection. Plain typing and Space do not reopen a dismissed menu. Backspace on an empty input focuses the last chip's remove button; after a removal the chip row moves focus to the next chip, else the previous one, else back to the input. The chip row comes before the input in the Tab order. Tab from the input reaches Add search filter, then Clear. A filter the parser cannot run becomes a chip on Enter, with the `-invalid` class, a `title`, and an `aria-describedby` reason; it matches nothing.
 - The sr-only `role="status"` line reads "Added filter …", "Removed filter …", or "Filter … cannot run. <reason>", followed by "Searching…" or "N matches".
 - Chips show a muted key and a separate value. File fields use short labels such as Path and Extension. Negation, ranges, and quoted values stay visible; the raw token remains in the URL, hover title, and remove-button name.
 - Suggestions use `MyComboboxPopover` with the shared `MyFloatingSurface` colors and border. Menu content padding belongs inside the scrolling list, so no padding sits to the right of its scrollbar. Rows and separators use the alternative base color scale.
@@ -253,8 +252,8 @@ folder (`FileNodeViewPrivateFolder`) still lists its children through `useFilesV
   are missing. Multi-sort uses the remaining clauses to order folders. Type uses its raw lowercase
   extension; files with no extension are missing. Dates and file sizes use numeric values.
 - New fields start with Updated and Date created newest first, Size largest first, and everything
-  else A to Z. A header click applies one field; a second click flips its direction. Picking a field
-  in the Sort popover changes the draft. Apply changes the table sort.
+  else A to Z. A header click applies one field; a second click flips its direction. A header click
+  writes the sort into the URL as `sort_by:` tokens (see "Table filter and sort bar").
 
 ### Saved sort
 
@@ -264,13 +263,14 @@ folder (`FileNodeViewPrivateFolder`) still lists its children through `useFilesV
   gets Name, A to Z and cannot save. Saving the one-clause Name asc default deletes the sort doc.
 - The table waits for the saved sort before it loads rows, so it never loads by name and then sorts
   again.
-- A writer (`canSave: true`) saves with `set_folder_sort`. The table shows the new order at once from
-  a local sort, then follows the saved sort again when the save ends. A failed save goes back to the
-  saved sort and shows the toast "The sort could not be saved. Try again." Other members' tables
-  follow the saved sort live.
-- A reader (`canSave: false`) gets the same controls, but the sort is local only, keyed by folder,
-  and resets when they open another folder. The popover says "Only for your view". Who may save is
-  in the `access-control` skill.
+- A sort in the URL (`sort_by:` tokens) wins over the saved sort. With no sort token the table uses
+  the saved sort. A writer (`canSave: true`) sees "Save sort for everyone" while the URL has a sort.
+  It calls `set_folder_sort` with the URL sort and shows the toast "Sort saved for everyone." The
+  tokens stay in the bar after the save. A failed save shows "The sort could not be saved. Try
+  again." Other members' tables follow the saved sort live.
+- A reader (`canSave: false`) gets the same bar and header clicks, but no Save button. The sort lives
+  only in their URL. A different folder starts without it. Who may save is in the `access-control`
+  skill.
 - The sidebar still lists children in name order (`list_tree_children`). Its order is separate from the table.
 
 ### Data path
@@ -357,8 +357,8 @@ folder (`FileNodeViewPrivateFolder`) still lists its children through `useFilesV
     refreshes keep their old slot count and frozen limits outside that allowance. They cannot add
     slots or refill a match goal. Their work is measured separately.
   - While a new sort or a page loads, the last settled rows stay, with `aria-busy="true"` on the
-    table. `rowsSort` keeps their header arrows and table sort attributes. The Sort control shows
-    the requested sort.
+    table. `rowsSort` keeps their header arrows and table sort attributes. The `Applying sort…` notice
+    names the requested sort.
     Columns stay outside the paging scope. `sideTargets` includes the full checked side set for field discovery.
   - `loadMore()` loads the first shown segment that can load more.
   - With a filter, all supported side targets get stable `get_table_filter_match` queries. Only
@@ -372,8 +372,8 @@ folder (`FileNodeViewPrivateFolder`) still lists its children through `useFilesV
   Type, Size, and qualified metadata/frontmatter fields. Name and Actions stay visible.
   Allow at most eight data columns, including Name. Actions is outside that count.
   Sorting a hidden field does not show it. Built-in sortable headers keep their sort buttons.
-- The toolbar order is Filter, Clear filter (only while a filter is applied), Sort, then the
-  Columns icon button. Filter and Sort are outline buttons whose label names the applied state.
+- The toolbar holds the filter and sort bar (`FileNodeViewFolderFilterBar`), then "Save sort for
+  everyone" (writers, only while the URL has a sort), then the Columns icon button.
 - The Columns popover uses visible labels and native checkboxes, grouped as Built-in and
   Metadata. Its catalog covers readable
   direct children, plus the full bounded side set. Search checks loaded keys. Show more fields
@@ -391,20 +391,13 @@ folder (`FileNodeViewPrivateFolder`) still lists its children through `useFilesV
   This bound covers cell display only; side catalog and sort queries use the full supported side set.
 - An empty readable folder keeps its toolbar and header. Show the empty message only after all
   pages finish without an error or cap. Wide tables scroll horizontally inside the table region.
-- The Sort popover edits an ordered draft of at most three unique fields. Each row reads
-  "Sort by" or "then by", then a field picker, a direction picker, and icon buttons to move up,
-  move down, and remove. Apply saves the draft; Cancel leaves the applied
-  list unchanged. Reset to Name makes a one-clause Name asc draft. Catalog reads stay live while
-  open. Saved and draft keys stay offered after their last witness disappears.
-  The note says "Saved for everyone who can read this folder" or "Only for your view".
-- The Sort summary stays on one line. Hover or keyboard focus shows the full list in a tooltip.
-  Long field names wrap there so the tooltip fits the screen.
 - The table carries `data-sort-fields` for the displayed full list. Sorted headers carry
   `data-sort-priority` and `data-sort-direction`. A header click makes one clause.
   Header text shows the order number only when two or more fields sort.
 - Each header has a column menu. Sortable columns offer both directions (each replaces the whole
-  sort), Add to sort (appends the field while under three fields), and Filter by, which opens the
-  filter on that field. Every column except Name offers Hide column.
+  sort), Add to sort (appends the field while under `files_sort_MAX_CLAUSES`, 8, fields), and Filter by,
+  which puts `file.<field>:` or the metadata key in the bar and opens its operations. Every column
+  except Name offers Hide column.
 - A supported sort limit keeps completed rows and offers Reset to Name.
   Forward `workPaused` offers Keep searching. A frozen refresh that cannot rebuild offers Reload table.
   Neither state repeats the same cursor or raises a frozen work limit by itself.
@@ -415,21 +408,39 @@ folder (`FileNodeViewPrivateFolder`) still lists its children through `useFilesV
 - Private rows show Added or Preparing and link with `pendingNodeId`.
 - Saved row actions use the real saved document and its current permission data. Never create a fake saved document for a private row. Private folders use tagged children and owner review actions.
 
-### One local filter
+### Table filter and sort bar
 
-- Add filter opens a field menu with built-ins and the same qualified-key catalog as Columns.
-  Allow one applied filter. It stays local to membership and folder and clears on a scope change.
-  It does not change saved sort, columns, sidebar search, or browser storage.
-- Name offers contains and starts with. Type offers is and missing. Dates offer on, before, and
-  after one local calendar day. Size offers is, at least, at most, and missing. Metadata offers
-  text is, starts with, present, and missing. An applied key can stay hidden as a column.
+- The bar (`file-node-view-folder-filter-bar.tsx`) is one input with chips, copied from
+  `FilesSearchInput`. The URL owns the state. The `filter` search param holds the committed tokens,
+  and `view_q` holds the text still being typed (debounced 300 ms, never parsed). The folder keeps no
+  local filter or sort copy, so a refresh, a copied link, and Back all restore the table.
+- One token is `<field>:<op>[:<value>]` for a filter, or `sort_by:<field>:<asc|desc>` for a sort.
+  Fields are `file.name`, `file.updated`, `file.created`, `file.ext`, `file.size`,
+  `metadata.<key>`, and `frontmatter.<path>`. A metadata key never contains `:`. There is no
+  negation. The grammar and the cleaner live in `shared/files-folder-table-query.ts`.
+- Allow one filter and at most 8 sorts (`files_sort_MAX_CLAUSES`) with no repeated sort field. A
+  typed token that breaks a rule stays in the input and the bar shows why (`role="alert"`). A URL
+  that breaks a rule is cleaned: `validateSearch` in the files route keeps the first filter and the
+  first valid sorts, drops the rest, and the router rewrites the address bar. Bare words are not
+  structure and are never parsed.
+- Enter and Space commit whole tokens. Ctrl+Space or the slider button opens the menu. Menu groups:
+  Sort, Filter by, Sort by, Direction, How to compare, Values. Value suggestions for metadata and
+  frontmatter fields come from `files_metadata.list_search_values`. Backspace on empty text focuses
+  the last chip. The Clear button removes every token. Typing `sort` offers `sort_by` and a metadata
+  key named `sort_by` side by side. The menu stops offering `sort_by` at 8 sorts.
+- Every same-node navigation (view, editor mode, `q`) carries `filter` and `view_q`. Every link to
+  another node drops them, so a child folder opens clean and Back restores the bar. The `files::open_browser` event opens a file, which has no table, so it drops them too.
+- Operations per field: Name offers contains and starts with. Type (`file.ext`) offers is and
+  missing. Dates (`file.updated`, `file.created`) offer on, before, and after one local calendar
+  day, written `2026-09-04`. Size offers is, at least, at most, and missing. Metadata offers text
+  is, starts with, present, and missing. An applied key can stay hidden as a column.
 - Text comparisons ignore case and accents, keep digit runs, and use the whole text. Type uses
   the lowercase extension. A leading dot is ordinary input and does not match an extension.
   Dates use checked half-open day bounds. Size is a nonnegative whole number; folders have no size.
-- Apply waits for five matches. First Show more asks for 50; later presses first reveal loaded
+- A new filter shows five matches. First Show more asks for 50; later presses first reveal loaded
   matches, then ask for 50 more. Show less keeps five and stops forward work. Searching text stays
   until the goal or a limit is reached. Empty continuing pages do not show a final empty state.
-- Apply, Show more, and Keep searching each get a 1,000-work action allowance. Each custom page
+- A new filter, Show more, and Keep searching each get a 1,000-work action allowance. Each custom page
   reserves its frozen work limit before dispatch. One new forward scan runs at a time across all
   segments. Its first result charges `workCount` once and releases unused reserve. A dropped or
   failed request with no count spends its full reserve. Old reactive results do not charge again.
@@ -791,7 +802,7 @@ Do not call `parent.getChildren()` for this check in each row: it loads every si
 - Search keeps ancestor chain for matching files/folders.
 - Search-open expands relevant branches and search-close restores prior expansion.
 - Search matches a name fragment, a path, a node id, and a pasted app link, and Enter opens the top match for each.
-- `status:open`, `!status:done`, `priority:>2`, and `file.path:/tasks status:open` show the files and folders whose own metadata matches, plus their ancestors, and `/tasks-archive` stays out of `file.path:/tasks`.
+- `metadata.status:open`, `!metadata.status:done`, `metadata.priority:>2`, and `file.path:/tasks metadata.status:open` show the files and folders whose own metadata matches, plus their ancestors, and `/tasks-archive` stays out of `file.path:/tasks`.
 - A member with no read access on a restricted folder never sees its files, keys, or values in the results or in the suggestions, while the owner sees them (second identity).
 - A file with a public link shows the badge and `data-file-public-link="on"` for the owner and for a second member who can read it. `file.link:public` lists it even inside a folder that is not expanded, and Enter right after typing the chip waits for the link list.
 - Breaking `search_nodes` on purpose empties every metadata chip while `file.name:` and free text keep matching, which proves the browser runs the Convex working tree.
@@ -804,7 +815,7 @@ Do not call `parent.getChildren()` for this check in each row: it loads every si
   preserves a newer clipboard, and marks rows accessibly. Normal text shortcuts still work.
 - Conflict choices carry the current revision. Hide does not stop a run; Activity can reopen it.
   Stop keeps completed copies, reports an unconfirmed request, and waits for the server result.
-- The folder table sorts by each built-in field and a metadata key in both directions, with folders first and missing values last. A writer's sort shows live for a second member; a reader's sort stays local and resets on another folder. A restricted child the member cannot read never shows, and Show more pages without repeats.
+- The folder table sorts by each built-in field and a metadata key in both directions, with folders first and missing values last. A writer's saved sort shows live for a second member; a sort in the URL stays with that URL and a different folder starts without it. A restricted child the member cannot read never shows, and Show more pages without repeats.
 - Selection modes and anchor behavior are correct.
 - A tree with thousands of visible rows mounts only the viewport plus active rows. Home/End and
   arrow keys scroll and focus correctly. Scrolling keeps an active rename, menu, drag, or dialog

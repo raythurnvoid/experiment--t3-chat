@@ -49,15 +49,7 @@ import {
 } from "@/components/my-grid-table.tsx";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
 import { MyIcon } from "@/components/my-icon.tsx";
-import {
-	MyInput,
-	MyInputArea,
-	MyInputBackground,
-	MyInputBox,
-	MyInputControl,
-	MyInputHelperText,
-	MyInputLabel,
-} from "@/components/my-input.tsx";
+import { MyInput, MyInputArea, MyInputControl } from "@/components/my-input.tsx";
 import { MyLink, MyLinkIcon } from "@/components/my-link.tsx";
 import { MyPopover, MyPopoverContent, MyPopoverTrigger } from "@/components/my-popover.tsx";
 import { MyTooltip, MyTooltipContent, MyTooltipTrigger } from "@/components/my-tooltip.tsx";
@@ -84,14 +76,6 @@ import {
 	MySearchSelectSearch,
 	MySearchSelectTrigger,
 } from "@/components/my-search-select.tsx";
-import {
-	MySelect,
-	MySelectItem,
-	MySelectOpenIndicator,
-	MySelectPopover,
-	MySelectPopoverContent,
-	MySelectTrigger,
-} from "@/components/my-select.tsx";
 import { MySeparator } from "@/components/my-separator.tsx";
 import { MySkeleton } from "@/components/my-skeleton.tsx";
 import { MySpinner } from "@/components/my-spinner.tsx";
@@ -145,9 +129,7 @@ import type { FunctionReturnType } from "convex/server";
 import { usePaginatedQuery } from "convex-helpers/react";
 import {
 	Archive,
-	ArrowDown,
 	ArrowDownWideNarrow,
-	ArrowUp,
 	ArrowUpNarrowWide,
 	BookOpen,
 	ChevronDown,
@@ -170,15 +152,18 @@ import {
 	Lock,
 	LockKeyhole,
 	PanelLeftOpen,
-	Plus,
 	Users,
-	X,
 } from "lucide-react";
-import React, { memo, useEffect, useId, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { ReactNode, Ref, RefObject } from "react";
+import React, { memo, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode, RefObject } from "react";
 import { createPortal } from "react-dom";
 import { toast } from "sonner";
 import { FilesSidebar } from "../files-sidebar.tsx";
+import {
+	FileNodeViewFolderFilterBar,
+	type FileNodeViewFolderFilterBar_Props,
+	type FileNodeViewFolderFilterBar_Ref,
+} from "./file-node-view-folder-filter-bar.tsx";
 import {
 	files_metadata_FRONTMATTER_FIELD_PREFIX,
 	files_metadata_MAX_FRONTMATTER_FIELDS,
@@ -186,10 +171,17 @@ import {
 	files_metadata_METADATA_FIELD_PREFIX,
 } from "../../../../shared/files-metadata.ts";
 import {
+	files_folder_table_query_parse,
+	files_folder_table_query_to_filter,
+	files_folder_table_query_to_sort,
+	files_folder_table_query_with_sort,
+} from "../../../../shared/files-folder-table-query.ts";
+import {
 	files_sort_BUILT_IN_FIELDS,
 	files_sort_DEFAULT,
 	files_sort_field_is_built_in,
 	files_sort_field_is_valid,
+	files_sort_MAX_CLAUSES,
 	type files_sort_Clause,
 	type files_sort_Sort,
 } from "../../../../shared/files-sort.ts";
@@ -519,6 +511,9 @@ const FileNodeViewHeaderBreadcrumbPath = memo(function FileNodeViewHeaderBreadcr
 												// Keep `q` (functional form) so the URL stays in step with the sidebar search box.
 												search={(prev) => ({
 													...prev,
+													// The table bar belongs to the node it was made for.
+													filter: undefined,
+													view_q: undefined,
 													nodeId: crumb.target === "saved" ? crumb.id : undefined,
 													pendingNodeId: crumb.target === "private" ? crumb.id : undefined,
 													view: undefined,
@@ -820,6 +815,8 @@ const FileNodeViewHeader = memo(function FileNodeViewHeader(props: FileNodeViewH
 									params={{ organizationName, workspaceName }}
 									search={(prev) => ({
 										...prev,
+										filter: undefined,
+										view_q: undefined,
 										nodeId: files_ROOT_ID,
 										pendingNodeId: undefined,
 										view: undefined,
@@ -864,6 +861,8 @@ const FileNodeViewHeader = memo(function FileNodeViewHeader(props: FileNodeViewH
 									// Drop `view` so the target node opens on its own default editor.
 									search={(prev) => ({
 										...prev,
+										filter: undefined,
+										view_q: undefined,
 										nodeId: files_ROOT_ID,
 										pendingNodeId: undefined,
 										view: undefined,
@@ -2986,6 +2985,15 @@ type FileNodeViewFolder_Props = {
 	commentsPortalHost: HTMLElement | null;
 	toolbarPortalHost: HTMLElement;
 	viewSelectPortalHost: HTMLElement;
+	/**
+	 * The committed filter and sort tokens of the table bar. They come from the URL `filter` param.
+	 */
+	committedQuery: string;
+	/**
+	 * The text typed in the table bar. It comes from the URL `view_q` param.
+	 */
+	viewQuery: string;
+	onQueryChange: FileNodeViewFolderFilterBar_Props["onChange"];
 	onEditorModeChange: (mode: FileEditor_Mode, options?: { replace?: boolean }) => void;
 };
 
@@ -3005,6 +3013,9 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 		commentsPortalHost,
 		toolbarPortalHost,
 		viewSelectPortalHost,
+		committedQuery,
+		viewQuery,
+		onQueryChange,
 		onEditorModeChange,
 	} = props;
 
@@ -3021,33 +3032,21 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 		`app_state::files_folder_columns::scope::${membershipId}`,
 	);
 	const columns = get_folder_columns(columnPreferences[folderItemId] ?? files_table_DEFAULT_COLUMNS);
-	const [fieldPopover, setFieldPopover] = useState({ scope: folderScope, columns: false, filter: false, sort: false });
+	const [fieldCatalogRequests, setFieldCatalogRequests] = useState({ scope: folderScope, columns: false, bar: false });
 	const [activeTargets, setActiveTargets] = useState({ scope: folderScope, keys: [] as string[] });
-	const [localFilter, setLocalFilter] = useState<{
-		scope: string;
-		current: FileNodeViewFolderFilterSelection | null;
-		held: FileNodeViewFolderFilterSelection | null;
-	}>({ scope: folderScope, current: null, held: null });
-	// A reader's own sort, or a writer's new sort while it saves. Keep it in this member's folder.
-	const [localSort, setLocalSort] = useState<{
-		scope: string;
-		sort: files_sort_Sort;
-	} | null>(null);
-	const sort = (localSort?.scope === folderScope ? localSort.sort : null) ?? folderSort?.sort ?? null;
-	const filterSelection = localFilter.scope === folderScope ? localFilter.current : null;
-	const filter = filterSelection?.filter ?? null;
+	const [isSavingSort, setIsSavingSort] = useState(false);
+	// The URL holds the filter and the sort tokens. The sort tokens win over the folder's saved sort,
+	// so a viewer can sort without changing the folder for others.
+	const parsedQuery = files_folder_table_query_parse(committedQuery);
+	const urlSort = files_folder_table_query_to_sort(parsedQuery);
+	const sort = urlSort ?? folderSort?.sort ?? null;
+	const filter = files_folder_table_query_to_filter(parsedQuery.filter, get_folder_filter_day_bounds);
 	const sortedChildren = useFilesSortedChildren({ membershipId, folderId: folderItemId, sort, filter });
 	const isFolderFailed = folderSort === null || sortedChildren.isFolderRefused;
 	const isShowingHeldRows =
 		sortedChildren.rows !== undefined &&
 		(JSON.stringify(sortedChildren.rowsFilter) !== JSON.stringify(filter) ||
 			JSON.stringify(sortedChildren.rowsSort) !== JSON.stringify(sort));
-	const rowsFilterSelection =
-		localFilter.scope === folderScope
-			? ([localFilter.current, localFilter.held].find(
-					(selection) => JSON.stringify(selection?.filter ?? null) === JSON.stringify(sortedChildren.rowsFilter),
-				) ?? null)
-			: null;
 	// A table row can be on a page the tree store has not loaded, so the move checks read both lists.
 	const savedNodesList = [
 		...(fileNodesList ?? []),
@@ -3118,8 +3117,8 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 		targets: sortedChildren.sideTargets,
 		open:
 			!isFolderFailed &&
-			fieldPopover.scope === folderScope &&
-			(fieldPopover.columns || fieldPopover.filter || fieldPopover.sort),
+			fieldCatalogRequests.scope === folderScope &&
+			(fieldCatalogRequests.columns || fieldCatalogRequests.bar),
 	});
 	const valueTargets = visibleChildItems.flatMap((row) =>
 		activeTargets.scope === folderScope && activeTargets.keys.includes(get_folder_target_key(row.target))
@@ -3173,76 +3172,70 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 		});
 	});
 	const handleColumnsOpenChange = useFn((open: boolean) => {
-		setFieldPopover((current) => ({
+		setFieldCatalogRequests((current) => ({
 			scope: folderScope,
 			columns: open,
-			filter: current.scope === folderScope && current.filter,
-			sort: current.scope === folderScope && current.sort,
+			bar: current.scope === folderScope && current.bar,
 		}));
 	});
-	const handleFilterOpenChange = useFn((open: boolean) => {
-		setFieldPopover((current) => ({
+	const handleBarActiveChange = useFn((active: boolean) => {
+		setFieldCatalogRequests((current) => ({
 			scope: folderScope,
 			columns: current.scope === folderScope && current.columns,
-			filter: open,
-			sort: current.scope === folderScope && current.sort,
+			bar: active,
 		}));
 	});
-	const handleFilterChange = useFn((selection: FileNodeViewFolderFilterSelection | null) => {
-		// Keep the old day and time zone with held rows, even after several quick Apply clicks.
-		setLocalFilter({ scope: folderScope, current: selection, held: rowsFilterSelection });
-		setShowAllItems(false);
-		if (JSON.stringify(selection?.filter ?? null) === JSON.stringify(filter)) sortedChildren.reload();
+	const handleQueryChange = useFn<FileNodeViewFolderFilterBar_Props["onChange"]>((change) => {
+		// A new filter or sort starts the table again from the first rows.
+		if (change.committedQuery !== undefined) setShowAllItems(false);
+		onQueryChange(change);
 	});
 	const handleReloadTable = useFn(() => {
 		setShowAllItems(false);
 		sortedChildren.reload();
 	});
-	const handleSortOpenChange = useFn((open: boolean) => {
-		setFieldPopover((current) => ({
-			scope: folderScope,
-			columns: current.scope === folderScope && current.columns,
-			filter: current.scope === folderScope && current.filter,
-			sort: open,
-		}));
-	});
 	const handleActiveTargetsChange = useFn((keys: string[]) => setActiveTargets({ scope: folderScope, keys }));
 
-	// A writer saves the sort for everyone and sees it at once. A reader sorts only their own view.
+	// A sort from a column header or menu becomes sort tokens in the bar. It stays in this viewer's URL.
 	const handleSortChange = useFn((nextSort: files_sort_Sort) => {
-		setLocalSort({ scope: folderScope, sort: nextSort });
-		setShowAllItems(false);
-		if (!folderSort?.canSave) {
+		handleQueryChange({ committedQuery: files_folder_table_query_with_sort(committedQuery, nextSort) });
+	});
+
+	// Only a writer can save. The tokens stay in the bar, so the viewer sees what was saved.
+	const handleSaveSort = useFn(() => {
+		if (urlSort === null) {
 			return;
 		}
 
+		setIsSavingSort(true);
 		convex
 			.mutation(app_convex_api.files_folder_sorts.set_folder_sort, {
 				membershipId,
 				folderId: folderItemId,
-				sort: nextSort,
+				sort: urlSort,
 			})
 			.then((result) => {
 				if (result._nay) {
-					console.error("[FileNodeViewFolder.handleSortChange] Failed to save the folder sort", {
+					console.error("[FileNodeViewFolder.handleSaveSort] Failed to save the folder sort", {
 						result,
 						folderItemId,
 					});
 					toast.error("The sort could not be saved. Try again.");
+					return;
 				}
+
+				toast.success("Sort saved for everyone.");
 			})
 			.catch((error) => {
-				console.error("[FileNodeViewFolder.handleSortChange] Error saving the folder sort", {
+				console.error("[FileNodeViewFolder.handleSaveSort] Error saving the folder sort", {
 					error,
 					folderItemId,
 				});
 				toast.error("The sort could not be saved. Try again.");
 			})
-			// Follow the saved sort again once this save is done, unless a newer sort was chosen meanwhile.
-			// Convex updates the saved sort query before the mutation promise resolves.
-			.finally(() =>
-				setLocalSort((current) => (current?.scope === folderScope && current.sort === nextSort ? null : current)),
-			);
+			.finally(() => {
+				setIsSavingSort(false);
+			});
 	});
 
 	const handleShowLessClick = useFn(() => {
@@ -3377,8 +3370,6 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 	// Collapse the folder table again when navigating into a different folder.
 	useEffect(() => {
 		setShowAllItems(false);
-		setLocalSort(null);
-		setLocalFilter({ scope: folderScope, current: null, held: null });
 	}, [folderScope]);
 
 	const folderBrowserContent = (
@@ -3391,10 +3382,11 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 					hasMoreChildItems={hiddenChildItemsCount > 0 || (sortedChildren.rows !== undefined && !sortedChildren.isDone)}
 					isDone={sortedChildren.isDone}
 					columns={columns}
-					columnsOpen={fieldPopover.scope === folderScope && fieldPopover.columns}
-					filterSelection={filterSelection}
-					rowsFilterSelection={rowsFilterSelection}
-					filterOpen={fieldPopover.scope === folderScope && fieldPopover.filter}
+					columnsOpen={fieldCatalogRequests.scope === folderScope && fieldCatalogRequests.columns}
+					committedQuery={committedQuery}
+					viewQuery={viewQuery}
+					filter={filter}
+					rowsFilter={sortedChildren.rowsFilter}
 					isShowingHeldRows={isShowingHeldRows}
 					isFilterFailed={sortedChildren.isFailed}
 					filterSearching={sortedChildren.searching}
@@ -3408,9 +3400,9 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 					activeValueTargetCount={valueTargets.length}
 					valueQueryCount={columnValues.queryCount}
 					sort={sort ?? files_sort_DEFAULT}
-					sortOpen={fieldPopover.scope === folderScope && fieldPopover.sort}
 					rowsSort={sortedChildren.rowsSort}
-					canSaveSort={folderSort?.canSave === true}
+					canSaveSort={folderSort?.canSave === true && urlSort !== null}
+					isSavingSort={isSavingSort}
 					isSortBusy={sortedChildren.isBusy}
 					tooManyShared={sortedChildren.tooManyShared}
 					tooManyPending={sortedChildren.tooManyPending}
@@ -3424,13 +3416,13 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 					onMoveFileNodesToParent={handleMoveFileNodesToParent}
 					onColumnsChange={handleColumnsChange}
 					onColumnsOpenChange={handleColumnsOpenChange}
-					onFilterChange={handleFilterChange}
-					onFilterOpenChange={handleFilterOpenChange}
+					onQueryChange={handleQueryChange}
+					onBarActiveChange={handleBarActiveChange}
 					onContinueSearch={sortedChildren.continueSearch}
 					onReloadTable={handleReloadTable}
 					onRetryFilter={sortedChildren.retry}
 					onSortChange={handleSortChange}
-					onSortOpenChange={handleSortOpenChange}
+					onSaveSort={handleSaveSort}
 					onActiveTargetsChange={handleActiveTargetsChange}
 					onRetryValues={columnValues.onRetry}
 					onShowMoreClick={handleShowMoreClick}
@@ -4169,6 +4161,8 @@ const FileNodeViewFolderExplorerRow = memo(function FileNodeViewFolderExplorerRo
 					// Drop `view` so the target node opens on its own default editor.
 					search={(prev) => ({
 						...prev,
+						filter: undefined,
+						view_q: undefined,
 						nodeId: child._id,
 						pendingNodeId: undefined,
 						view: undefined,
@@ -4289,6 +4283,8 @@ const FileNodeViewFolderExplorerPrivateRow = memo(function FileNodeViewFolderExp
 					params={{ organizationName, workspaceName }}
 					search={(prev) => ({
 						...prev,
+						filter: undefined,
+						view_q: undefined,
 						nodeId: row.target.kind === "saved" ? row.target.id : undefined,
 						pendingNodeId: row.target.kind === "private" ? row.target.id : undefined,
 						view: undefined,
@@ -4488,58 +4484,6 @@ const FileNodeViewFolderExplorerColumns = memo(function FileNodeViewFolderExplor
 // #endregion folder explorer columns
 
 // #region folder explorer filter
-type FileNodeViewFolderFilterSelection = {
-	filter: files_table_Filter;
-	day: string | null;
-	timeZone: string | null;
-};
-
-type FileNodeViewFolderExplorerFilter_ClassNames =
-	| "FileNodeViewFolderExplorerFilter-trigger"
-	| "FileNodeViewFolderExplorerFilter-tooltip"
-	| "FileNodeViewFolderExplorerFilter-popover"
-	| "FileNodeViewFolderExplorerFilter-form"
-	| "FileNodeViewFolderExplorerFilter-row"
-	| "FileNodeViewFolderExplorerFilter-label"
-	| "FileNodeViewFolderExplorerFilter-field"
-	| "FileNodeViewFolderExplorerFilter-field-trigger"
-	| "FileNodeViewFolderExplorerFilter-fields-popover"
-	| "FileNodeViewFolderExplorerFilter-note"
-	| "FileNodeViewFolderExplorerFilter-footer"
-	| "FileNodeViewFolderExplorerFilter-actions";
-
-function get_folder_filter_operations(field: string) {
-	if (field === "name")
-		return [
-			{ value: "contains", label: "Contains" },
-			{ value: "starts_with", label: "Starts with" },
-		] as const;
-	if (field === "type")
-		return [
-			{ value: "is", label: "Is" },
-			{ value: "missing", label: "Has no value" },
-		] as const;
-	if (field === "updated" || field === "created")
-		return [
-			{ value: "on", label: "On" },
-			{ value: "before", label: "Before" },
-			{ value: "after", label: "After" },
-		] as const;
-	if (field === "size")
-		return [
-			{ value: "is", label: "Is" },
-			{ value: "at_least", label: "At least" },
-			{ value: "at_most", label: "At most" },
-			{ value: "missing", label: "Has no value" },
-		] as const;
-	return [
-		{ value: "is", label: "Is" },
-		{ value: "starts_with", label: "Starts with" },
-		{ value: "present", label: "Has value" },
-		{ value: "missing", label: "Has no value" },
-	] as const;
-}
-
 function get_folder_filter_day_bounds(day: string) {
 	if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return null;
 	const [year, month, date] = day.split("-").map(Number) as [number, number, number];
@@ -4562,381 +4506,23 @@ function get_folder_filter_day_bounds(day: string) {
 	return { start: start.getTime(), end: end.getTime() };
 }
 
-function validate_folder_filter_value(field: string, rawValue: string) {
-	let validationMessage: string | undefined;
-	if (field === "size") {
-		const value = Number(rawValue);
-		if (rawValue.length === 0 || !Number.isFinite(value) || !Number.isInteger(value) || value < 0)
-			validationMessage = "Enter a whole number of bytes, zero or more.";
-	} else if (field === "updated" || field === "created") {
-		if (get_folder_filter_day_bounds(rawValue) === null) validationMessage = "Enter a valid calendar day.";
-	} else if (rawValue.length === 0 || rawValue.length > 1024) {
-		validationMessage = "Enter 1 to 1,024 characters.";
-	}
-	return { validationMessage };
+/**
+ * The filter in words, for the note that names the filter of the rows on screen. A date shows the
+ * local day the filter was made for.
+ */
+function get_folder_filter_label(filter: files_table_Filter | null) {
+	if (filter === null) return "No filter";
+	const value =
+		filter.kind === "date"
+			? new Date(filter.start).toLocaleDateString("en-CA")
+			: "value" in filter
+				? String(filter.value)
+				: "";
+	return `${get_folder_sort_field_label(filter.field)} ${filter.op.replace("_", " ")}${value ? ` ${value}` : ""}`;
 }
-
-function get_folder_filter_label(selection: FileNodeViewFolderFilterSelection | null) {
-	if (!selection) return "No filter";
-	const { filter, day, timeZone } = selection;
-	const operation = get_folder_filter_operations(filter.field)
-		.find((item) => item.value === filter.op)!
-		.label.toLowerCase();
-	const value = filter.kind === "date" ? `${day} (${timeZone})` : "value" in filter ? String(filter.value) : "";
-	return `${get_folder_sort_field_label(filter.field)} ${operation}${value ? ` ${value}` : ""}`;
-}
-
-type FileNodeViewFolderExplorerFilter_Ref = {
-	/**
-	 * Open the filter with a draft for this field. The column header menu uses it.
-	 */
-	openWithField: (field: string) => void;
-};
-
-const FileNodeViewFolderExplorerFilter = memo(function FileNodeViewFolderExplorerFilter(props: {
-	ref: Ref<FileNodeViewFolderExplorerFilter_Ref>;
-	selection: FileNodeViewFolderFilterSelection | null;
-	open: boolean;
-	catalog: FileNodeViewFolderCatalog;
-	triggerRef: RefObject<HTMLButtonElement | null>;
-	onChange: (selection: FileNodeViewFolderFilterSelection | null) => void;
-	onOpenChange: (open: boolean) => void;
-}) {
-	const { ref, selection, open, catalog, triggerRef, onChange, onOpenChange } = props;
-	const id = `FileNodeViewFolderExplorerFilter-${useId()}`;
-	const valueInputRef = useRef<HTMLInputElement>(null);
-	const isValueDirty = useRef(false);
-	const [field, setField] = useState("name");
-	const [operation, setOperation] = useState<files_table_Filter["op"]>("contains");
-	const [rawValue, setRawValue] = useState("");
-	const [searchText, setSearchText] = useState("");
-	const [validationMessage, setValidationMessage] = useState<string>();
-	const [displayValidationMessage, setDisplayValidationMessage] = useState<string>();
-	const operations = get_folder_filter_operations(field);
-	const needsValue = operation !== "present" && operation !== "missing";
-	const isDate = field === "updated" || field === "created";
-	const fields = [
-		...new Set([...files_sort_BUILT_IN_FIELDS, ...catalog.fields, field, selection?.filter.field]),
-	].filter((value): value is string => typeof value === "string" && files_sort_field_is_valid(value));
-	const shownFields = fields.filter((value) =>
-		get_folder_sort_field_label(value).toLowerCase().includes(searchText.trim().toLowerCase()),
-	);
-	const resetValidation = useFn(() => {
-		isValueDirty.current = false;
-		setValidationMessage(undefined);
-		setDisplayValidationMessage(undefined);
-	});
-	const handleOpenChange = useFn((nextOpen: boolean) => {
-		setField(nextOpen && selection ? selection.filter.field : "name");
-		setOperation(nextOpen && selection ? selection.filter.op : "contains");
-		setRawValue(
-			nextOpen && selection
-				? (selection.day ?? ("value" in selection.filter ? String(selection.filter.value) : ""))
-				: "",
-		);
-		setSearchText("");
-		resetValidation();
-		onOpenChange(nextOpen);
-	});
-	const handleFieldChange = useFn((value: string) => {
-		setField(value);
-		setOperation(get_folder_filter_operations(value)[0].value);
-		setRawValue("");
-		setSearchText("");
-		resetValidation();
-	});
-	const handleOperationChange = useFn((value: string) => {
-		const next = operations.find((item) => item.value === value);
-		if (!next) return;
-		setOperation(next.value);
-		setRawValue("");
-		resetValidation();
-	});
-	const handleValueInput = useFn((event: React.FormEvent<HTMLInputElement>) => {
-		isValueDirty.current = true;
-		setRawValue(event.currentTarget.value);
-		const result = validate_folder_filter_value(field, event.currentTarget.value);
-		setValidationMessage(result.validationMessage);
-		if (displayValidationMessage !== undefined) setDisplayValidationMessage(result.validationMessage);
-	});
-	const handleValueBlur = useFn((event: React.FocusEvent<HTMLInputElement>) => {
-		const result = validate_folder_filter_value(field, event.currentTarget.value);
-		setValidationMessage(result.validationMessage);
-		// Keep a pressed form button in place until its click handles validation or closes the form.
-		if (
-			isValueDirty.current &&
-			!(event.relatedTarget instanceof HTMLButtonElement && event.relatedTarget.form === event.currentTarget.form)
-		)
-			setDisplayValidationMessage(result.validationMessage);
-	});
-	const handleSubmit = useFn((event: React.FormEvent<HTMLFormElement>) => {
-		event.preventDefault();
-		const result = needsValue ? validate_folder_filter_value(field, rawValue) : { validationMessage: undefined };
-		setValidationMessage(result.validationMessage);
-		setDisplayValidationMessage(result.validationMessage);
-		if (!event.currentTarget.checkValidity() || result.validationMessage !== undefined) {
-			valueInputRef.current?.focus();
-			return;
-		}
-		let filter: files_table_Filter;
-		let day: string | null = null;
-		let timeZone: string | null = null;
-		if (field === "name" && (operation === "contains" || operation === "starts_with")) {
-			filter = { kind: "name", field, op: operation, value: rawValue };
-		} else if (field === "type" && (operation === "is" || operation === "missing")) {
-			filter =
-				operation === "missing"
-					? { kind: "type", field, op: operation }
-					: { kind: "type", field, op: operation, value: rawValue.toLowerCase() };
-		} else if (isDate && (operation === "on" || operation === "before" || operation === "after")) {
-			const bounds = get_folder_filter_day_bounds(rawValue);
-			if (!bounds) return;
-			filter = { kind: "date", field, op: operation, ...bounds };
-			day = rawValue;
-			timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-		} else if (
-			field === "size" &&
-			(operation === "is" || operation === "at_least" || operation === "at_most" || operation === "missing")
-		) {
-			filter =
-				operation === "missing"
-					? { kind: "size", field, op: operation }
-					: { kind: "size", field, op: operation, value: Number(rawValue) };
-		} else if (
-			!files_sort_field_is_built_in(field) &&
-			(operation === "is" || operation === "starts_with" || operation === "present" || operation === "missing")
-		) {
-			filter =
-				operation === "present" || operation === "missing"
-					? { kind: "text", field, op: operation }
-					: { kind: "text", field, op: operation, value: rawValue };
-		} else return;
-		onChange({ filter, day, timeZone });
-		handleOpenChange(false);
-	});
-	const filterLabel = selection ? `Filter: ${get_folder_filter_label(selection)}` : "Filter";
-	const operationLabel = operations.find((item) => item.value === operation)!.label;
-
-	useImperativeHandle(
-		ref,
-		() => ({
-			openWithField: (value) => {
-				handleOpenChange(true);
-				// Keep the applied draft when it already uses this field.
-				if (selection?.filter.field !== value) handleFieldChange(value);
-			},
-		}),
-		[selection, handleOpenChange, handleFieldChange],
-	);
-
-	return (
-		<MyPopover open={open} setOpen={handleOpenChange}>
-			{/* Keep the tip from taking Escape while Filter is open. The plain Filter label needs no tip. */}
-			<MyTooltip placement="bottom" open={open || !selection ? false : undefined}>
-				<MyTooltipTrigger>
-					<MyPopoverTrigger ref={triggerRef}>
-						<MyButton
-							variant="outline"
-							aria-label={filterLabel}
-							className={cn(
-								"FileNodeViewFolderExplorerFilter-trigger" satisfies FileNodeViewFolderExplorerFilter_ClassNames,
-								"FileNodeViewViewSelect-trigger" satisfies FileNodeViewViewSelect_ClassNames,
-							)}
-						>
-							<span>{filterLabel}</span>
-						</MyButton>
-					</MyPopoverTrigger>
-				</MyTooltipTrigger>
-				<MyTooltipContent
-					unmountOnHide
-					className={"FileNodeViewFolderExplorerFilter-tooltip" satisfies FileNodeViewFolderExplorerFilter_ClassNames}
-				>
-					{filterLabel}
-				</MyTooltipContent>
-			</MyTooltip>
-			<MyPopoverContent
-				unmountOnHide
-				aria-label="Filter"
-				className={"FileNodeViewFolderExplorerFilter-popover" satisfies FileNodeViewFolderExplorerFilter_ClassNames}
-			>
-				<form
-					noValidate
-					onSubmit={handleSubmit}
-					className={"FileNodeViewFolderExplorerFilter-form" satisfies FileNodeViewFolderExplorerFilter_ClassNames}
-				>
-					<div className={"FileNodeViewFolderExplorerFilter-row" satisfies FileNodeViewFolderExplorerFilter_ClassNames}>
-						<div
-							className={"FileNodeViewFolderExplorerFilter-field" satisfies FileNodeViewFolderExplorerFilter_ClassNames}
-						>
-							<label
-								htmlFor={`${id}-field`}
-								className={
-									"FileNodeViewFolderExplorerFilter-label" satisfies FileNodeViewFolderExplorerFilter_ClassNames
-								}
-							>
-								Field
-							</label>
-							<MySearchSelect value={field} setValue={handleFieldChange} setOpen={() => setSearchText("")}>
-								<MySearchSelectTrigger
-									id={`${id}-field`}
-									aria-label={`Field: ${get_folder_sort_field_label(field)}`}
-									typeahead={false}
-									data-autofocus
-								>
-									<MyButton
-										variant="outline"
-										className={
-											"FileNodeViewFolderExplorerFilter-field-trigger" satisfies FileNodeViewFolderExplorerFilter_ClassNames
-										}
-									>
-										{get_folder_sort_field_label(field)}
-										<MySelectOpenIndicator />
-									</MyButton>
-								</MySearchSelectTrigger>
-								<MySearchSelectPopover
-									aria-label="Filter fields"
-									className={cn(
-										"FileNodeViewFolderExplorerFilter-fields-popover" satisfies FileNodeViewFolderExplorerFilter_ClassNames,
-										"FileNodeViewViewSelect-popover" satisfies FileNodeViewViewSelect_ClassNames,
-									)}
-								>
-									<MySearchSelectPopoverScrollableArea>
-										<MySearchSelectPopoverContent>
-											<MySearchSelectSearch
-												aria-label="Search filter fields"
-												placeholder="Search fields"
-												value={searchText}
-												onChange={(event) => setSearchText(event.currentTarget.value)}
-											/>
-											<MySearchSelectList aria-label="Filter fields">
-												{shownFields.map((value) => (
-													<MySearchSelectItem key={value} value={value}>
-														{get_folder_sort_field_label(value)}
-													</MySearchSelectItem>
-												))}
-											</MySearchSelectList>
-											{shownFields.length === 0 && (
-												<p role="status">{catalog.hasMore ? "No loaded fields match" : "No fields match"}</p>
-											)}
-											<FileNodeViewFolderExplorerFieldsStatus catalog={catalog} />
-										</MySearchSelectPopoverContent>
-									</MySearchSelectPopoverScrollableArea>
-								</MySearchSelectPopover>
-							</MySearchSelect>
-						</div>
-						<div
-							className={"FileNodeViewFolderExplorerFilter-field" satisfies FileNodeViewFolderExplorerFilter_ClassNames}
-						>
-							<label
-								htmlFor={`${id}-operation`}
-								className={
-									"FileNodeViewFolderExplorerFilter-label" satisfies FileNodeViewFolderExplorerFilter_ClassNames
-								}
-							>
-								Operation
-							</label>
-							<MySelect value={operation} setValue={handleOperationChange}>
-								<MySelectTrigger id={`${id}-operation`} aria-label={`Operation: ${operationLabel}`}>
-									<MyButton
-										variant="outline"
-										className={
-											"FileNodeViewFolderExplorerFilter-field-trigger" satisfies FileNodeViewFolderExplorerFilter_ClassNames
-										}
-									>
-										{operationLabel}
-										<MySelectOpenIndicator />
-									</MyButton>
-								</MySelectTrigger>
-								<MySelectPopover>
-									<MySelectPopoverContent>
-										{operations.map((item) => (
-											<MySelectItem key={item.value} value={item.value}>
-												{item.label}
-											</MySelectItem>
-										))}
-									</MySelectPopoverContent>
-								</MySelectPopover>
-							</MySelect>
-						</div>
-						{needsValue && (
-							<MyInput
-								key={`${field}:${operation}`}
-								layout="stacked"
-								displayValidationMessage={displayValidationMessage}
-							>
-								<MyInputLabel>{isDate ? "Day" : field === "size" ? "Bytes" : "Value"}</MyInputLabel>
-								<MyInputBackground />
-								<MyInputArea>
-									<MyInputControl
-										ref={valueInputRef}
-										validationMessage={validationMessage}
-										type={isDate ? "date" : field === "size" ? "number" : "text"}
-										value={rawValue}
-										required
-										min={isDate ? "0001-01-01" : field === "size" ? 0 : undefined}
-										max={isDate ? "9999-12-31" : undefined}
-										step={field === "size" ? 1 : undefined}
-										minLength={!isDate && field !== "size" ? 1 : undefined}
-										maxLength={!isDate && field !== "size" ? 1024 : undefined}
-										placeholder={field === "type" ? "md" : undefined}
-										onInput={handleValueInput}
-										onChange={handleValueInput}
-										onBlur={handleValueBlur}
-										onInvalid={(event) => event.preventDefault()}
-									/>
-								</MyInputArea>
-								<MyInputBox />
-								<MyInputHelperText>
-									{displayValidationMessage ??
-										(field === "type"
-											? "Enter an extension without its dot."
-											: field === "size"
-												? "Use whole bytes, zero or more."
-												: "")}
-								</MyInputHelperText>
-							</MyInput>
-						)}
-					</div>
-					{!files_sort_field_is_built_in(field) && (
-						<p
-							className={"FileNodeViewFolderExplorerFilter-note" satisfies FileNodeViewFolderExplorerFilter_ClassNames}
-						>
-							Lists use the first plain value
-						</p>
-					)}
-					<div
-						className={"FileNodeViewFolderExplorerFilter-footer" satisfies FileNodeViewFolderExplorerFilter_ClassNames}
-					>
-						<MyButton variant="outline" onClick={() => handleOpenChange(false)}>
-							Cancel
-						</MyButton>
-						<MyButton type="submit" variant="accent">
-							Apply
-						</MyButton>
-					</div>
-				</form>
-			</MyPopoverContent>
-		</MyPopover>
-	);
-});
 // #endregion folder explorer filter
 
-// #region folder explorer sort select
-type FileNodeViewFolderExplorerSortSelect_ClassNames =
-	| "FileNodeViewFolderExplorerSortSelect-trigger"
-	| "FileNodeViewFolderExplorerSortSelect-tooltip"
-	| "FileNodeViewFolderExplorerSortSelect-popover"
-	| "FileNodeViewFolderExplorerSortSelect-form"
-	| "FileNodeViewFolderExplorerSortSelect-row"
-	| "FileNodeViewFolderExplorerSortSelect-priority"
-	| "FileNodeViewFolderExplorerSortSelect-field"
-	| "FileNodeViewFolderExplorerSortSelect-field-trigger"
-	| "FileNodeViewFolderExplorerSortSelect-fields-popover"
-	| "FileNodeViewFolderExplorerSortSelect-row-actions"
-	| "FileNodeViewFolderExplorerSortSelect-actions"
-	| "FileNodeViewFolderExplorerSortSelect-footer"
-	| "FileNodeViewFolderExplorerSortSelect-note";
-
+// #region folder explorer sort
 const FILE_NODE_VIEW_FOLDER_SORT_BUILT_IN_LABELS = {
 	name: "Name",
 	updated: "Updated",
@@ -4985,370 +4571,7 @@ function get_folder_sort_label(sort: files_sort_Sort) {
 		.map((clause) => `${get_folder_sort_field_label(clause.field)} ${clause.direction === "asc" ? "↑" : "↓"}`)
 		.join(", then ");
 }
-
-const FileNodeViewFolderExplorerSortRow = memo(function FileNodeViewFolderExplorerSortRow(props: {
-	draftId: number;
-	priority: number;
-	count: number;
-	clause: files_sort_Clause;
-	fields: string[];
-	catalog: FileNodeViewFolderCatalog;
-	onChange: (id: number, clause: files_sort_Clause) => void;
-	onMove: (id: number, offset: -1 | 1) => void;
-	onRemove: (id: number) => void;
-	onRegisterField: (id: number, element: HTMLElement | null) => void;
-}) {
-	const { draftId, priority, count, clause, fields, catalog, onChange, onMove, onRemove, onRegisterField } = props;
-	const [searchText, setSearchText] = useState("");
-	const fieldLabel = get_folder_sort_field_label(clause.field);
-	const shownFields = fields.filter((field) =>
-		get_folder_sort_field_label(field).toLowerCase().includes(searchText.trim().toLowerCase()),
-	);
-	const handleFieldChange = useFn((field: string) => {
-		if (field !== clause.field) onChange(draftId, { field, direction: get_folder_sort_first_direction(field) });
-	});
-	const handleDirectionChange = useFn((direction: string) => {
-		if (direction === "asc" || direction === "desc") onChange(draftId, { ...clause, direction });
-	});
-	const registerField = useFn((element: HTMLElement | null) => onRegisterField(draftId, element));
-
-	return (
-		<div
-			data-sort-draft-id={draftId}
-			className={"FileNodeViewFolderExplorerSortSelect-row" satisfies FileNodeViewFolderExplorerSortSelect_ClassNames}
-		>
-			<span
-				className={
-					"FileNodeViewFolderExplorerSortSelect-priority" satisfies FileNodeViewFolderExplorerSortSelect_ClassNames
-				}
-			>
-				{priority === 1 ? "Sort by" : "then by"}
-			</span>
-			<div
-				className={
-					"FileNodeViewFolderExplorerSortSelect-field" satisfies FileNodeViewFolderExplorerSortSelect_ClassNames
-				}
-			>
-				<MySearchSelect value={clause.field} setValue={handleFieldChange} setOpen={() => setSearchText("")}>
-					<MySearchSelectTrigger
-						ref={registerField}
-						aria-label={`Sort field ${priority}: ${fieldLabel}`}
-						typeahead={false}
-						data-autofocus={priority === 1 ? "" : undefined}
-					>
-						<MyButton
-							variant="outline"
-							className={
-								"FileNodeViewFolderExplorerSortSelect-field-trigger" satisfies FileNodeViewFolderExplorerSortSelect_ClassNames
-							}
-						>
-							{fieldLabel}
-							<MySelectOpenIndicator />
-						</MyButton>
-					</MySearchSelectTrigger>
-					<MySearchSelectPopover
-						aria-label={`Sort fields ${priority}`}
-						className={cn(
-							"FileNodeViewFolderExplorerSortSelect-fields-popover" satisfies FileNodeViewFolderExplorerSortSelect_ClassNames,
-							"FileNodeViewViewSelect-popover" satisfies FileNodeViewViewSelect_ClassNames,
-						)}
-					>
-						<MySearchSelectPopoverScrollableArea>
-							<MySearchSelectPopoverContent>
-								<MySearchSelectSearch
-									aria-label={`Search sort fields ${priority}`}
-									placeholder="Search fields"
-									value={searchText}
-									onChange={(event) => setSearchText(event.currentTarget.value)}
-								/>
-								<MySearchSelectList aria-label={`Sort fields ${priority}`}>
-									{shownFields.map((field) => (
-										<MySearchSelectItem key={field} value={field}>
-											{get_folder_sort_field_label(field)}
-										</MySearchSelectItem>
-									))}
-								</MySearchSelectList>
-								{shownFields.length === 0 && (
-									<p role="status">{catalog.hasMore ? "No loaded fields match" : "No fields match"}</p>
-								)}
-								<FileNodeViewFolderExplorerFieldsStatus catalog={catalog} />
-							</MySearchSelectPopoverContent>
-						</MySearchSelectPopoverScrollableArea>
-					</MySearchSelectPopover>
-				</MySearchSelect>
-			</div>
-			<div
-				className={
-					"FileNodeViewFolderExplorerSortSelect-field" satisfies FileNodeViewFolderExplorerSortSelect_ClassNames
-				}
-			>
-				<MySelect value={clause.direction} setValue={handleDirectionChange}>
-					<MySelectTrigger
-						aria-label={`Direction ${priority}: ${get_folder_sort_direction_label(clause)}`}
-						typeahead={false}
-					>
-						<MyButton
-							variant="outline"
-							className={
-								"FileNodeViewFolderExplorerSortSelect-field-trigger" satisfies FileNodeViewFolderExplorerSortSelect_ClassNames
-							}
-						>
-							{get_folder_sort_direction_label(clause)}
-							<MySelectOpenIndicator />
-						</MyButton>
-					</MySelectTrigger>
-					<MySelectPopover>
-						<MySelectPopoverContent>
-							{(["asc", "desc"] as const).map((direction) => (
-								<MySelectItem key={direction} value={direction}>
-									{get_folder_sort_direction_label({ ...clause, direction })}
-								</MySelectItem>
-							))}
-						</MySelectPopoverContent>
-					</MySelectPopover>
-				</MySelect>
-			</div>
-			<div
-				className={
-					"FileNodeViewFolderExplorerSortSelect-row-actions" satisfies FileNodeViewFolderExplorerSortSelect_ClassNames
-				}
-			>
-				<MyIconButton
-					variant="ghost-highlightable"
-					tooltip="Move up"
-					aria-label={`Move ${fieldLabel} up`}
-					disabled={priority === 1}
-					onClick={() => onMove(draftId, -1)}
-				>
-					<MyIconButtonIcon>
-						<ArrowUp />
-					</MyIconButtonIcon>
-				</MyIconButton>
-				<MyIconButton
-					variant="ghost-highlightable"
-					tooltip="Move down"
-					aria-label={`Move ${fieldLabel} down`}
-					disabled={priority === count}
-					onClick={() => onMove(draftId, 1)}
-				>
-					<MyIconButtonIcon>
-						<ArrowDown />
-					</MyIconButtonIcon>
-				</MyIconButton>
-				<MyIconButton
-					variant="ghost-highlightable"
-					tooltip="Remove"
-					aria-label={`Remove ${fieldLabel}`}
-					onClick={() => onRemove(draftId)}
-				>
-					<MyIconButtonIcon>
-						<X />
-					</MyIconButtonIcon>
-				</MyIconButton>
-			</div>
-		</div>
-	);
-});
-
-type FileNodeViewFolderExplorerSortSelect_Props = {
-	sort: files_sort_Sort;
-	open: boolean;
-	canSaveSort: boolean;
-	catalog: FileNodeViewFolderCatalog;
-	onOpenChange: (open: boolean) => void;
-	onSortChange: (sort: files_sort_Sort) => void;
-};
-
-const FileNodeViewFolderExplorerSortSelect = memo(function FileNodeViewFolderExplorerSortSelect(
-	props: FileNodeViewFolderExplorerSortSelect_Props,
-) {
-	const { sort, open, canSaveSort, catalog, onOpenChange, onSortChange } = props;
-	// Draft ids keep each field mounted through edits and moves. Apply saves only its clause.
-	const [draftRows, setDraftRows] = useState(() =>
-		sort.map((clause, draftId) => ({ id: draftId, clause: { ...clause } })),
-	);
-	const nextDraftId = useRef(sort.length);
-	const fieldTriggers = useRef(new Map<number, HTMLElement>());
-	const pendingFocusId = useRef<number | null>(null);
-	const sortLabel = `Sort: ${get_folder_sort_label(sort)}`;
-	// Keep saved and draft choices offered after their last catalog witness disappears.
-	const fields = [
-		...files_sort_BUILT_IN_FIELDS,
-		...[
-			...new Set([
-				...catalog.fields,
-				...sort.map((clause) => clause.field),
-				...draftRows.map((row) => row.clause.field),
-			]),
-		]
-			.filter((field) => files_sort_field_is_valid(field) && !files_sort_field_is_built_in(field))
-			.sort(),
-	];
-	useLayoutEffect(() => {
-		if (pendingFocusId.current !== null) {
-			fieldTriggers.current.get(pendingFocusId.current)?.focus();
-			pendingFocusId.current = null;
-		}
-	}, [draftRows]);
-	const handleOpenChange = useFn((nextOpen: boolean) => {
-		if (nextOpen) setDraftRows(sort.map((clause) => ({ id: nextDraftId.current++, clause: { ...clause } })));
-		onOpenChange(nextOpen);
-	});
-	const handleChange = useFn((draftId: number, clause: files_sort_Clause) => {
-		setDraftRows((current) => current.map((row) => (row.id === draftId ? { ...row, clause } : row)));
-	});
-	const handleAdd = useFn(() => {
-		if (draftRows.length === 3) return;
-		const field = fields.find((field) => !draftRows.some((row) => row.clause.field === field))!;
-		const draftId = nextDraftId.current++;
-		pendingFocusId.current = draftId;
-		setDraftRows([...draftRows, { id: draftId, clause: { field, direction: get_folder_sort_first_direction(field) } }]);
-	});
-	const handleMove = useFn((draftId: number, offset: -1 | 1) => {
-		const index = draftRows.findIndex((row) => row.id === draftId);
-		const next = [...draftRows];
-		[next[index], next[index + offset]] = [next[index + offset]!, next[index]!];
-		pendingFocusId.current = draftId;
-		setDraftRows(next);
-	});
-	const handleRemove = useFn((draftId: number) => {
-		const index = draftRows.findIndex((row) => row.id === draftId);
-		const next =
-			draftRows.length === 1
-				? [{ id: draftId, clause: { ...files_sort_DEFAULT[0]! } }]
-				: draftRows.filter((row) => row.id !== draftId);
-		pendingFocusId.current = next[Math.min(index, next.length - 1)]!.id;
-		setDraftRows(next);
-	});
-	const handleReset = useFn(() => {
-		pendingFocusId.current = draftRows[0]!.id;
-		setDraftRows([{ id: draftRows[0]!.id, clause: { ...files_sort_DEFAULT[0]! } }]);
-	});
-	const registerField = useFn((draftId: number, element: HTMLElement | null) => {
-		if (element) fieldTriggers.current.set(draftId, element);
-		else fieldTriggers.current.delete(draftId);
-	});
-	const handleSubmit = useFn((event: React.FormEvent<HTMLFormElement>) => {
-		event.preventDefault();
-		onSortChange(draftRows.map((row) => ({ ...row.clause })));
-		handleOpenChange(false);
-	});
-
-	return (
-		<MyPopover open={open} setOpen={handleOpenChange}>
-			{/* Keep the tip from taking Escape while Sort is open. */}
-			<MyTooltip placement="bottom" open={open ? false : undefined}>
-				<MyTooltipTrigger>
-					<MyPopoverTrigger>
-						<MyButton
-							variant="outline"
-							aria-label={sortLabel}
-							className={cn(
-								"FileNodeViewFolderExplorerSortSelect-trigger" satisfies FileNodeViewFolderExplorerSortSelect_ClassNames,
-								"FileNodeViewViewSelect-trigger" satisfies FileNodeViewViewSelect_ClassNames,
-							)}
-						>
-							<span>{sortLabel}</span>
-						</MyButton>
-					</MyPopoverTrigger>
-				</MyTooltipTrigger>
-				<MyTooltipContent
-					unmountOnHide
-					className={
-						"FileNodeViewFolderExplorerSortSelect-tooltip" satisfies FileNodeViewFolderExplorerSortSelect_ClassNames
-					}
-				>
-					{sortLabel}
-				</MyTooltipContent>
-			</MyTooltip>
-			<MyPopoverContent
-				unmountOnHide
-				aria-label="Sort"
-				className={
-					"FileNodeViewFolderExplorerSortSelect-popover" satisfies FileNodeViewFolderExplorerSortSelect_ClassNames
-				}
-			>
-				<form
-					onSubmit={handleSubmit}
-					className={
-						"FileNodeViewFolderExplorerSortSelect-form" satisfies FileNodeViewFolderExplorerSortSelect_ClassNames
-					}
-				>
-					{draftRows.map((row, index) => (
-						<FileNodeViewFolderExplorerSortRow
-							key={row.id}
-							draftId={row.id}
-							priority={index + 1}
-							count={draftRows.length}
-							clause={row.clause}
-							fields={fields.filter(
-								(field) => field === row.clause.field || !draftRows.some((other) => other.clause.field === field),
-							)}
-							catalog={catalog}
-							onChange={handleChange}
-							onMove={handleMove}
-							onRemove={handleRemove}
-							onRegisterField={registerField}
-						/>
-					))}
-					{draftRows.length === 3 && (
-						<p
-							className={
-								"FileNodeViewFolderExplorerSortSelect-note" satisfies FileNodeViewFolderExplorerSortSelect_ClassNames
-							}
-						>
-							Use up to 3 sort fields
-						</p>
-					)}
-					{draftRows.length > 1 && draftRows[0]!.clause.field === "name" && (
-						<p
-							className={
-								"FileNodeViewFolderExplorerSortSelect-note" satisfies FileNodeViewFolderExplorerSortSelect_ClassNames
-							}
-						>
-							Name first already gives each row its order
-						</p>
-					)}
-					<div
-						className={
-							"FileNodeViewFolderExplorerSortSelect-actions" satisfies FileNodeViewFolderExplorerSortSelect_ClassNames
-						}
-					>
-						<MyButton variant="ghost-highlightable" disabled={draftRows.length === 3} onClick={handleAdd}>
-							<MyButtonIcon aria-hidden>
-								<Plus />
-							</MyButtonIcon>
-							Add sort field
-						</MyButton>
-						<MyButton variant="ghost-highlightable" onClick={handleReset}>
-							Reset to Name
-						</MyButton>
-					</div>
-					<div
-						className={
-							"FileNodeViewFolderExplorerSortSelect-footer" satisfies FileNodeViewFolderExplorerSortSelect_ClassNames
-						}
-					>
-						<p
-							className={
-								"FileNodeViewFolderExplorerSortSelect-note" satisfies FileNodeViewFolderExplorerSortSelect_ClassNames
-							}
-						>
-							{canSaveSort ? "Saved for everyone who can read this folder" : "Only for your view"}
-						</p>
-						<MyButton variant="outline" onClick={() => handleOpenChange(false)}>
-							Cancel
-						</MyButton>
-						<MyButton type="submit" variant="accent">
-							Apply
-						</MyButton>
-					</div>
-				</form>
-			</MyPopoverContent>
-		</MyPopover>
-	);
-});
-// #endregion folder explorer sort select
+// #endregion folder explorer sort
 
 // #region folder explorer column menu
 type FileNodeViewFolderExplorerColumnMenu_ClassNames = "FileNodeViewFolderExplorerColumnMenu-trigger";
@@ -5399,7 +4622,7 @@ const FileNodeViewFolderExplorerColumnMenu = memo(function FileNodeViewFolderExp
 								</MyMenuItem>
 							))}
 							<MyMenuItem
-								disabled={sort.length === 3 || sort.some((clause) => clause.field === field)}
+								disabled={sort.length >= files_sort_MAX_CLAUSES || sort.some((clause) => clause.field === field)}
 								hideOnClick
 								onClick={() => onSortChange([...sort, { field, direction: get_folder_sort_first_direction(field) }])}
 							>
@@ -5443,7 +4666,9 @@ const FileNodeViewFolderExplorerColumnMenu = memo(function FileNodeViewFolderExp
 type FileNodeViewFolderExplorer_ClassNames =
 	| "FileNodeViewFolderExplorer"
 	| "FileNodeViewFolderExplorer-toolbar"
+	| "FileNodeViewFolderExplorer-toolbar-actions"
 	| "FileNodeViewFolderExplorer-notice"
+	| "FileNodeViewFolderExplorer-actions"
 	| "FileNodeViewFolderExplorer-table-scroll"
 	| "FileNodeViewFolderExplorer-table"
 	| "FileNodeViewFolderExplorer-header-row"
@@ -5461,20 +4686,36 @@ type FileNodeViewFolderExplorer_Props = {
 	 * Rows are hidden behind "Show more", or the server has more pages.
 	 */
 	hasMoreChildItems: boolean;
+	/**
+	 * The sort the table asks for: the sort tokens of the bar, else the folder's saved sort.
+	 */
 	sort: files_sort_Sort;
-	sortOpen: boolean;
 	/**
 	 * The sort of the shown rows, including held rows while a new sort loads. Null until the first result settles.
 	 */
 	rowsSort: files_sort_Sort | null;
+	/**
+	 * True when the viewer can save the bar's sort tokens as the folder's sort for everyone.
+	 */
 	canSaveSort: boolean;
+	isSavingSort: boolean;
 	isSortBusy: boolean;
 	isDone: boolean;
 	columns: string[];
 	columnsOpen: boolean;
-	filterSelection: FileNodeViewFolderFilterSelection | null;
-	rowsFilterSelection: FileNodeViewFolderFilterSelection | null;
-	filterOpen: boolean;
+	/**
+	 * The committed tokens of the bar, as the URL `filter` param holds them.
+	 */
+	committedQuery: string;
+	/**
+	 * The text the user is typing in the bar, as the URL `view_q` param holds it.
+	 */
+	viewQuery: string;
+	filter: files_table_Filter | null;
+	/**
+	 * The filter of the shown rows, including held rows while a new filter loads.
+	 */
+	rowsFilter: files_table_Filter | null;
 	isShowingHeldRows: boolean;
 	isFilterFailed: boolean;
 	filterSearching: boolean;
@@ -5508,13 +4749,13 @@ type FileNodeViewFolderExplorer_Props = {
 	}) => void;
 	onColumnsChange: (columns: string[]) => void;
 	onColumnsOpenChange: (open: boolean) => void;
-	onFilterChange: (selection: FileNodeViewFolderFilterSelection | null) => void;
-	onFilterOpenChange: (open: boolean) => void;
+	onQueryChange: FileNodeViewFolderFilterBar_Props["onChange"];
+	onBarActiveChange: FileNodeViewFolderFilterBar_Props["onActiveChange"];
 	onContinueSearch: () => void;
 	onReloadTable: () => void;
 	onRetryFilter: () => void;
 	onSortChange: (sort: files_sort_Sort) => void;
-	onSortOpenChange: (open: boolean) => void;
+	onSaveSort: () => void;
 	onActiveTargetsChange: (keys: string[]) => void;
 	onRetryValues: (key: string) => void;
 	onShowMoreClick: () => void;
@@ -5527,16 +4768,17 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 		visibleChildItems,
 		hasMoreChildItems,
 		sort,
-		sortOpen,
 		rowsSort,
 		canSaveSort,
+		isSavingSort,
 		isSortBusy,
 		isDone,
 		columns,
 		columnsOpen,
-		filterSelection,
-		rowsFilterSelection,
-		filterOpen,
+		committedQuery,
+		viewQuery,
+		filter,
+		rowsFilter,
 		isShowingHeldRows,
 		isFilterFailed,
 		filterSearching,
@@ -5561,20 +4803,20 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 		onMoveFileNodesToParent,
 		onColumnsChange,
 		onColumnsOpenChange,
-		onFilterChange,
-		onFilterOpenChange,
+		onQueryChange,
+		onBarActiveChange,
 		onContinueSearch,
 		onReloadTable,
 		onRetryFilter,
 		onSortChange,
-		onSortOpenChange,
+		onSaveSort,
 		onActiveTargetsChange,
 		onRetryValues,
 		onShowMoreClick,
 		canShowLess,
 		onShowLessClick,
 	} = props;
-	const hasFilter = filterSelection !== null || rowsFilterSelection !== null;
+	const hasFilter = filter !== null || rowsFilter !== null;
 	const displayedSort = rowsSort ?? sort;
 	const isApplyingSort = rowsSort === null || JSON.stringify(sort) !== JSON.stringify(rowsSort);
 	const sortState =
@@ -5629,8 +4871,7 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 	const nearbyRows = useRef(new Set<HTMLElement>());
 	const rowObserver = useRef<IntersectionObserver | null>(null);
 	const activeKeysText = useRef("");
-	const filterTriggerRef = useRef<HTMLButtonElement>(null);
-	const filterRef = useRef<FileNodeViewFolderExplorerFilter_Ref>(null);
+	const filterBarRef = useRef<FileNodeViewFolderFilterBar_Ref>(null);
 	const hasMetadataColumns = columns.some((field) => !FILE_NODE_VIEW_FOLDER_COLUMNS.includes(field));
 
 	useLayoutEffect(() => {
@@ -5720,13 +4961,8 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 			},
 		]);
 	};
-	const handleClearFilter = useFn(() => {
-		onFilterChange(null);
-		onFilterOpenChange(false);
-		filterTriggerRef.current?.focus();
-	});
 	const handleFilterField = useFn((field: string) => {
-		filterRef.current?.openWithField(field);
+		filterBarRef.current?.startFilter(field);
 	});
 	const handleHideColumn = useFn((field: string) => {
 		onColumnsChange(columns.filter((column) => column !== field));
@@ -5743,46 +4979,33 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 			className={"FileNodeViewFolderExplorer" satisfies FileNodeViewFolderExplorer_ClassNames}
 		>
 			<div className={"FileNodeViewFolderExplorer-toolbar" satisfies FileNodeViewFolderExplorer_ClassNames}>
-				<FileNodeViewFolderExplorerFilter
-					ref={filterRef}
-					selection={filterSelection}
-					open={filterOpen}
-					catalog={columnCatalog}
-					triggerRef={filterTriggerRef}
-					onChange={onFilterChange}
-					onOpenChange={onFilterOpenChange}
+				<FileNodeViewFolderFilterBar
+					ref={filterBarRef}
+					committedQuery={committedQuery}
+					viewQuery={viewQuery}
+					fields={columnCatalog.fields.filter(files_sort_field_is_valid)}
+					fieldsState={columnCatalog.state}
+					onActiveChange={onBarActiveChange}
+					onChange={onQueryChange}
 				/>
-				{filterSelection && (
-					<MyIconButton
-						variant="ghost-highlightable"
-						tooltip="Clear filter"
-						data-filter-field={filterSelection.filter.field}
-						onClick={handleClearFilter}
-					>
-						<MyIconButtonIcon>
-							<X />
-						</MyIconButtonIcon>
-					</MyIconButton>
-				)}
-				<FileNodeViewFolderExplorerSortSelect
-					sort={sort}
-					open={sortOpen}
-					canSaveSort={canSaveSort}
-					catalog={columnCatalog}
-					onOpenChange={onSortOpenChange}
-					onSortChange={onSortChange}
-				/>
-				<FileNodeViewFolderExplorerColumns
-					columns={columns}
-					open={columnsOpen}
-					catalog={columnCatalog}
-					onColumnsChange={onColumnsChange}
-					onOpenChange={onColumnsOpenChange}
-				/>
+				<div className={"FileNodeViewFolderExplorer-toolbar-actions" satisfies FileNodeViewFolderExplorer_ClassNames}>
+					{canSaveSort && (
+						<MyButton variant="outline" disabled={isSavingSort} onClick={onSaveSort}>
+							Save sort for everyone
+						</MyButton>
+					)}
+					<FileNodeViewFolderExplorerColumns
+						columns={columns}
+						open={columnsOpen}
+						catalog={columnCatalog}
+						onColumnsChange={onColumnsChange}
+						onOpenChange={onColumnsOpenChange}
+					/>
+				</div>
 			</div>
 			{(isShowingHeldRows || filterRefreshing || filterRecovery === "reload" || sortLimit !== null) && (
 				<p className={"FileNodeViewFolderExplorer-notice" satisfies FileNodeViewFolderExplorer_ClassNames}>
-					Showing: {get_folder_filter_label(rowsFilterSelection)}. Sort: {get_folder_sort_label(displayedSort)}.
+					Showing: {get_folder_filter_label(rowsFilter)}. Sort: {get_folder_sort_label(displayedSort)}.
 				</p>
 			)}
 			{sortState === "applying" && (
@@ -5794,9 +5017,7 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 				</p>
 			)}
 			{sortLimit !== null && (
-				<div
-					className={"FileNodeViewFolderExplorerFilter-actions" satisfies FileNodeViewFolderExplorerFilter_ClassNames}
-				>
+				<div className={"FileNodeViewFolderExplorer-actions" satisfies FileNodeViewFolderExplorer_ClassNames}>
 					<p
 						role="alert"
 						className={"FileNodeViewFolderExplorer-notice" satisfies FileNodeViewFolderExplorer_ClassNames}
@@ -5840,9 +5061,7 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 				</p>
 			)}
 			{filterState === "paused" && (
-				<div
-					className={"FileNodeViewFolderExplorerFilter-actions" satisfies FileNodeViewFolderExplorerFilter_ClassNames}
-				>
+				<div className={"FileNodeViewFolderExplorer-actions" satisfies FileNodeViewFolderExplorer_ClassNames}>
 					<p role="status">Search paused. Keep searching to check more rows.</p>
 					<MyButton variant="outline" onClick={onContinueSearch}>
 						Keep searching
@@ -5850,9 +5069,7 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 				</div>
 			)}
 			{filterState === "failed" && (
-				<div
-					className={"FileNodeViewFolderExplorerFilter-actions" satisfies FileNodeViewFolderExplorerFilter_ClassNames}
-				>
+				<div className={"FileNodeViewFolderExplorer-actions" satisfies FileNodeViewFolderExplorer_ClassNames}>
 					<p role="alert">
 						{filterRecovery === "reload"
 							? "Rows could not be refreshed."
@@ -6203,6 +5420,9 @@ type FileNodeViewContent_Props = {
 	onAutomaticEditorModeChange: FileEditor_Props["onEditorModeChange"];
 	onFileViewChange: (view: string, options?: { replace?: boolean }) => void;
 	onNavigateNode: FileNodeViewHeader_Props["onNavigateNode"];
+	committedQuery: FileNodeViewFolder_Props["committedQuery"];
+	viewQuery: FileNodeViewFolder_Props["viewQuery"];
+	onTableQueryChange: FileNodeViewFolder_Props["onQueryChange"];
 };
 
 const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeViewContent_Props) {
@@ -6229,6 +5449,9 @@ const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeVie
 		onAutomaticEditorModeChange,
 		onFileViewChange,
 		onNavigateNode,
+		committedQuery,
+		viewQuery,
+		onTableQueryChange,
 	} = props;
 
 	if (selectedNodeId === files_ROOT_ID) {
@@ -6258,6 +5481,9 @@ const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeVie
 					commentsPortalHost={commentsPortalHost}
 					toolbarPortalHost={toolbarPortalHost}
 					viewSelectPortalHost={viewSelectPortalHost}
+					committedQuery={committedQuery}
+					viewQuery={viewQuery}
+					onQueryChange={onTableQueryChange}
 					onEditorModeChange={onEditorModeChange}
 				/>
 			</>
@@ -6295,6 +5521,9 @@ const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeVie
 					commentsPortalHost={commentsPortalHost}
 					toolbarPortalHost={toolbarPortalHost}
 					viewSelectPortalHost={viewSelectPortalHost}
+					committedQuery={committedQuery}
+					viewQuery={viewQuery}
+					onQueryChange={onTableQueryChange}
 					onEditorModeChange={onEditorModeChange}
 				/>
 			</>
@@ -6385,6 +5614,14 @@ export type FileNodeView_SearchParams = {
 	view?: files_EditorView;
 	fileView?: string;
 	q?: string;
+	/**
+	 * The committed filter and sort tokens of the folder table bar.
+	 */
+	filter?: string;
+	/**
+	 * The text typed in the folder table bar.
+	 */
+	view_q?: string;
 };
 
 export type FileNodeView_Props = {
@@ -6541,6 +5778,8 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 		view: fileView === undefined && activeEditorTarget && !isHtmlFile ? effectiveView : searchParams.view,
 		fileView,
 		q: searchParams.q,
+		filter: searchParams.filter,
+		view_q: searchParams.view_q,
 	});
 	const shownViewSearch = get_view_search(selectedFileView === "default" ? undefined : selectedFileView);
 
@@ -6602,6 +5841,19 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 			: "skip",
 	);
 
+	// The filter bar writes through the router. Typing replaces the history entry, and a committed
+	// token adds one, so Back undoes it. An empty value drops the param.
+	const handleTableQueryChange = useFn<FileNodeViewContent_Props["onTableQueryChange"]>((change) => {
+		onNavigateSearch(
+			{
+				...searchParams,
+				...(change.committedQuery !== undefined && { filter: change.committedQuery || undefined }),
+				...(change.viewQuery !== undefined && { view_q: change.viewQuery || undefined }),
+			},
+			{ replace: change.committedQuery === undefined },
+		);
+	});
+
 	/**
 	 * Carry `q` through navigation.
 	 * The sidebar keeps its filter when a result is opened, so the URL
@@ -6625,11 +5877,7 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 		});
 	});
 	const handleEditorTargetChange = useFn(
-		(args: {
-			sourceKey: string;
-			target: files_PendingTarget;
-			options?: { keepReview: boolean };
-		}) => {
+		(args: { sourceKey: string; target: files_PendingTarget; options?: { keepReview: boolean } }) => {
 			const { sourceKey, target, options } = args;
 
 			// A completed Save must not replace a different file opened while it was running.
@@ -6684,6 +5932,8 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 					view: nextView,
 					fileView: searchParams.fileView,
 					q: searchParams.q,
+					filter: searchParams.filter,
+					view_q: searchParams.view_q,
 				},
 				options,
 			);
@@ -6696,6 +5946,8 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 				...(searchPrivateNodeId ? { pendingNodeId: searchPrivateNodeId } : { nodeId: searchNodeId ?? files_ROOT_ID }),
 				view: nextView,
 				q: searchParams.q,
+				filter: searchParams.filter,
+				view_q: searchParams.view_q,
 			},
 			options,
 		);
@@ -6721,6 +5973,8 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 					view: searchParams.view,
 					fileView: searchParams.fileView,
 					q,
+					filter: searchParams.filter,
+					view_q: searchParams.view_q,
 				},
 				{ replace: true },
 			);
@@ -7114,6 +6368,9 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 					onAutomaticEditorModeChange={handleAutomaticEditorModeChange}
 					onFileViewChange={handleFileViewChange}
 					onNavigateNode={navigateToNode}
+					committedQuery={searchParams.filter ?? ""}
+					viewQuery={searchParams.view_q ?? ""}
+					onTableQueryChange={handleTableQueryChange}
 				/>
 			</>
 		) : searchNodeId ? (

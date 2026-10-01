@@ -31,11 +31,11 @@ describe("FilesSearchInput", () => {
 		const view = render(
 			<FilesSearchInput {...props} initialQuery="file.path:/old draft" onSearchQueryChange={onChange} />,
 		);
-		view.rerender(<FilesSearchInput {...props} initialQuery="status:open notes" onSearchQueryChange={onChange} />);
+		view.rerender(<FilesSearchInput {...props} initialQuery="metadata.status:open notes" onSearchQueryChange={onChange} />);
 		expect(screen.queryByRole("button", { name: "Remove filter file.path:/old" })).toBeNull();
-		expect(screen.getByRole("button", { name: "Remove filter status:open" })).toBeTruthy();
+		expect(screen.getByRole("button", { name: "Remove filter metadata.status:open" })).toBeTruthy();
 		expect(screen.getByRole("combobox").getAttribute("value")).toBe("notes");
-		await waitFor(() => expect(onChange).toHaveBeenLastCalledWith("status:open notes"));
+		await waitFor(() => expect(onChange).toHaveBeenLastCalledWith("metadata.status:open notes"));
 	});
 
 	test("its own debounced query does not turn a typed filter into a chip", async () => {
@@ -45,19 +45,19 @@ describe("FilesSearchInput", () => {
 		}
 		render(<Consumer />);
 		const input = screen.getByRole("combobox");
-		fireEvent.change(input, { target: { value: "status:open" } });
+		fireEvent.change(input, { target: { value: "metadata.status:open" } });
 		await new Promise((resolve) => setTimeout(resolve, 350));
-		expect(screen.queryByRole("button", { name: "Remove filter status:open" })).toBeNull();
-		expect(input.getAttribute("value")).toBe("status:open");
+		expect(screen.queryByRole("button", { name: "Remove filter metadata.status:open" })).toBeNull();
+		expect(input.getAttribute("value")).toBe("metadata.status:open");
 		fireEvent.keyDown(input, { key: "Enter" });
-		expect(await screen.findByRole("button", { name: "Remove filter status:open" })).toBeTruthy();
+		expect(await screen.findByRole("button", { name: "Remove filter metadata.status:open" })).toBeTruthy();
 	});
 
 	test("clear removes filters and returns focus to the input", async () => {
 		const onChange = vi.fn();
-		render(<FilesSearchInput {...props} initialQuery="status:open notes" onSearchQueryChange={onChange} />);
+		render(<FilesSearchInput {...props} initialQuery="metadata.status:open notes" onSearchQueryChange={onChange} />);
 		fireEvent.click(screen.getByRole("button", { name: "Clear search" }));
-		expect(screen.queryByRole("button", { name: "Remove filter status:open" })).toBeNull();
+		expect(screen.queryByRole("button", { name: "Remove filter metadata.status:open" })).toBeNull();
 		expect(document.activeElement).toBe(screen.getByRole("combobox"));
 		await waitFor(() => expect(onChange).toHaveBeenLastCalledWith(""));
 	});
@@ -66,7 +66,7 @@ describe("FilesSearchInput", () => {
 		test("opens on entry, respects Escape while typing, and reopens with Ctrl+Space", async () => {
 			const onChange = vi.fn();
 			render(
-				<FilesSearchInput {...props} variant={variant} initialQuery="status:open" onSearchQueryChange={onChange} />,
+				<FilesSearchInput {...props} variant={variant} initialQuery="metadata.status:open" onSearchQueryChange={onChange} />,
 			);
 			const input = screen.getByRole<HTMLInputElement>("combobox");
 			act(() => input.focus());
@@ -75,11 +75,11 @@ describe("FilesSearchInput", () => {
 			fireEvent.keyDown(input, { key: "Escape" });
 			await waitFor(() => expect(input.getAttribute("aria-expanded")).toBe("false"));
 			expect(input.value).toBe("notes");
-			expect(screen.getByRole("button", { name: "Remove filter status:open" })).toBeTruthy();
+			expect(screen.getByRole("button", { name: "Remove filter metadata.status:open" })).toBeTruthy();
 			fireEvent.keyDown(input, { key: " " });
 			fireEvent.change(input, { target: { value: "notes draft" } });
 			expect(input.getAttribute("aria-expanded")).toBe("false");
-			await waitFor(() => expect(onChange).toHaveBeenLastCalledWith("status:open notes draft"));
+			await waitFor(() => expect(onChange).toHaveBeenLastCalledWith("metadata.status:open notes draft"));
 			input.setSelectionRange(2, 2);
 			fireEvent.keyDown(input, { key: " ", ctrlKey: true });
 			expect(await screen.findByRole("option", { name: "Path file.path" })).toBeTruthy();
@@ -112,7 +112,7 @@ describe("FilesSearchInput", () => {
 				return (
 					<>
 						<button>Outside search</button>
-						<FilesSearchInput {...props} variant={variant} initialQuery="status:open" resultsRef={resultsRef} />
+						<FilesSearchInput {...props} variant={variant} initialQuery="metadata.status:open" resultsRef={resultsRef} />
 						<div ref={resultsRef}>
 							<button>Search result</button>
 						</div>
@@ -125,7 +125,7 @@ describe("FilesSearchInput", () => {
 			await screen.findByRole("option", { name: "Path file.path" });
 			fireEvent.keyDown(input, { key: "Escape" });
 			await waitFor(() => expect(input.getAttribute("aria-expanded")).toBe("false"));
-			act(() => screen.getByRole("button", { name: "Remove filter status:open" }).focus());
+			act(() => screen.getByRole("button", { name: "Remove filter metadata.status:open" }).focus());
 			act(() => input.focus());
 			expect(input.getAttribute("aria-expanded")).toBe("false");
 			act(() => screen.getByRole("button", { name: "Search result" }).focus());

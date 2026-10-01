@@ -1,0 +1,135 @@
+@layer components {
+	/* #region folder filter bar chip */
+	.FileNodeViewFolderFilterBarChip {
+		max-width: 100%;
+
+		.MyChipLabel {
+			max-width: 280px;
+		}
+	}
+
+	.FileNodeViewFolderFilterBarChip-key {
+		color: var(--color-fg-08);
+		font-weight: 400;
+	}
+	/* #endregion folder filter bar chip */
+
+	/* #region folder filter bar */
+	.FileNodeViewFolderFilterBar {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+
+		/* Take the free room of the toolbar, and wrap below the buttons on a narrow screen. */
+		flex: 1 1 320px;
+		min-width: 0;
+	}
+
+	.FileNodeViewFolderFilterBar-filters {
+		max-height: 96px;
+		padding: 2px;
+		overflow: hidden auto;
+
+		& > li {
+			max-width: 100%;
+		}
+	}
+
+	.FileNodeViewFolderFilterBar-area {
+		padding-right: 4px;
+	}
+
+	.FileNodeViewFolderFilterBar-icon-button {
+		width: 28px;
+		height: 28px;
+		flex-shrink: 0;
+	}
+
+	.FileNodeViewFolderFilterBar-error {
+		margin: 0;
+
+		font-size: 0.9375rem;
+		color: var(--color-red-11);
+		overflow-wrap: anywhere;
+	}
+
+	.FileNodeViewFolderFilterBar-popover {
+		display: flex;
+		flex-direction: column;
+
+		width: min(380px, calc(100vw - 32px));
+		/* The browser flips the popover to the other side of the input when it does not fit below. */
+		max-height: 480px;
+	}
+
+	.FileNodeViewFolderFilterBar-popover-scrollable-area {
+		display: flex;
+		flex-direction: column;
+		min-height: 0;
+
+		.MyComboboxList {
+			min-height: 0;
+
+			/* Hide the empty list, or its padding shows as a blank band above the hint text. */
+			&:has(> .MyComboboxPopoverContent:empty) {
+				display: none;
+			}
+		}
+	}
+
+	.FileNodeViewFolderFilterBar-suggestion {
+		gap: 12px;
+		min-height: 32px;
+	}
+
+	.FileNodeViewFolderFilterBar-suggestion-label {
+		min-width: 0;
+		overflow: hidden;
+
+		white-space: nowrap;
+		text-overflow: ellipsis;
+	}
+
+	.FileNodeViewFolderFilterBar-suggestion-hint {
+		margin-inline-start: auto;
+		flex-shrink: 0;
+
+		font-size: 0.9375rem;
+		color: var(--color-fg-08);
+	}
+
+	.FileNodeViewFolderFilterBar-syntax {
+		flex-shrink: 0;
+		padding: 8px 16px;
+		border-top: 1px solid var(--color-base-alt-1-10);
+
+		font-size: 0.9375rem;
+		line-height: 1.4;
+		color: var(--color-fg-08);
+
+		p {
+			margin: 0 0 4px;
+		}
+
+		summary {
+			width: fit-content;
+			min-height: 24px;
+			padding-top: 4px;
+			cursor: pointer;
+		}
+
+		dl {
+			display: grid;
+			grid-template-columns: auto minmax(0, 1fr);
+			gap: 4px 12px;
+			margin: 8px 0 4px;
+		}
+
+		dd {
+			margin: 0;
+			color: var(--color-fg-10);
+			overflow-wrap: anywhere;
+		}
+	}
+	/* #endregion folder filter bar */
+}

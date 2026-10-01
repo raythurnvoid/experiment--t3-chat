@@ -32,4 +32,17 @@ describe("validateSearch", () => {
 		expect(withNode.nodeId).toBe("k57");
 		expect(withNode.q).toBeUndefined();
 	});
+
+	test("cleans the folder table filter and keeps the typed text up to the cap", () => {
+		const validateSearch = Route.options.validateSearch as {
+			parse: (input: unknown) => { filter?: string; view_q?: string };
+		};
+		// The cleaner keeps one filter and drops what cannot run.
+		expect(
+			validateSearch.parse({ filter: "junk file.name:contains:a file.size:is:1 sort_by:file.name:desc" }).filter,
+		).toBe("file.name:contains:a sort_by:file.name:desc");
+		expect(validateSearch.parse({ filter: "junk" }).filter).toBeUndefined();
+		expect(validateSearch.parse({ view_q: "file.na" }).view_q).toBe("file.na");
+		expect(validateSearch.parse({ view_q: "a".repeat(2001) }).view_q).toBeUndefined();
+	});
 });
