@@ -38,6 +38,14 @@ Only the main text is bright. Everything else is grey, so the eye goes to what m
 
 Do not make a description as bright as its label. If everything is bright, nothing stands out.
 
+Choice buttons (`MyRadioButton` and `MyCheckboxButton` with a label and a description) follow the same idea:
+
+- The chosen button has the bright label (`--color-fg-11`), the accent ring, and the accent dot or filled box.
+- The other buttons have a dimmer label (`--color-fg-09`). It turns `--color-fg-10` on hover.
+- The description is `--color-fg-08` in both states. Do not dim it more, because it would be too hard to read.
+- Use `MyRadioButtonLabel` and `MyRadioButtonDescription`, or `MyCheckboxButtonContent`, `MyCheckboxButtonLabel` and `MyCheckboxButtonDescription`. Do not write a local label class for them.
+- A disabled button dims its label and description with the rest of the button.
+
 ## Checks for a UI change
 
 - No sentence is smaller than 15px. No text at all is smaller than 13px.

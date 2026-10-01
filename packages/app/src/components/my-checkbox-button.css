@@ -6,6 +6,62 @@
 	}
 	/* #endregion icon */
 
+	/* #region content */
+	.MyCheckboxButtonContent {
+		display: grid;
+		gap: 4px;
+
+		/* Fill the row. The button centers its items, so a narrow text column would sit in the middle. */
+		flex: 1;
+		min-width: 0;
+	}
+	/* #endregion content */
+
+	/* #region label */
+	/* Keep the label and description colors in sync with `my-radio-button.css`. The label of the chosen
+	   button is the bright text. The labels of the other buttons are dimmer, so the eye goes to the choice. */
+	.MyCheckboxButtonLabel {
+		font-size: 16px;
+		font-weight: 500;
+		color: var(--color-fg-09);
+	}
+
+	.MyCheckboxButton:where(:has(> .MyCheckboxButton-control:checked), .MyCheckboxButton-state-checked)
+		.MyCheckboxButtonLabel {
+		color: var(--color-fg-11);
+	}
+
+	.MyCheckboxButton:not(:is(.MyButton-state-disabled, .MyCheckboxButton-state-disabled)):hover .MyCheckboxButtonLabel {
+		color: var(--color-fg-10);
+	}
+
+	.MyCheckboxButton:where(:has(> .MyCheckboxButton-control:checked), .MyCheckboxButton-state-checked):not(
+			:is(.MyButton-state-disabled, .MyCheckboxButton-state-disabled)
+		):hover
+		.MyCheckboxButtonLabel {
+		color: var(--color-fg-11);
+	}
+
+	.MyCheckboxButton:is(.MyButton-state-disabled, .MyCheckboxButton-state-disabled) .MyCheckboxButtonLabel {
+		color: inherit;
+	}
+	/* #endregion label */
+
+	/* #region description */
+	.MyCheckboxButtonDescription {
+		font-size: 15px;
+		font-weight: 400;
+		line-height: 1.4;
+		color: var(--color-fg-08);
+
+		text-wrap: pretty;
+	}
+
+	.MyCheckboxButton:is(.MyButton-state-disabled, .MyCheckboxButton-state-disabled) .MyCheckboxButtonDescription {
+		color: inherit;
+	}
+	/* #endregion description */
+
 	/* #region root */
 	/* Keep the look in sync with `my-radio-button.css`. A checkbox button and a radio button sit side by
 	   side, so they must look the same. */
@@ -80,6 +136,21 @@
 		border-color: currentColor;
 	}
 
+	/* The outline checkbox draws its box like the radio draws its circle: the same border color and
+	   background, and the same gap to the text. The border does not follow the text color on hover. */
+	.MyCheckboxButton.MyButton-variant-outline {
+		gap: 10px;
+
+		& > .MyCheckboxButton-box {
+			width: 18px;
+			height: 18px;
+			margin-right: 0;
+			border-color: var(--color-fg-07);
+
+			background: var(--color-base-1-03);
+		}
+	}
+
 	.MyCheckboxButton-check {
 		width: 14px;
 		height: 14px;
@@ -98,6 +169,29 @@
 		filter: opacity(1);
 		visibility: visible;
 		transform: scale(1);
+	}
+
+	/* The checked outline button gets the same accent ring, tint, and filled box as the checked radio
+	   button. The selectors are as strong as the outline button hover rule, and they come later, so the
+	   checked look stays under the pointer too. */
+	.MyCheckboxButton.MyButton-variant-outline:is(
+			:has(> .MyCheckboxButton-control:checked),
+			.MyCheckboxButton-state-checked
+		) {
+		background: linear-gradient(
+			color-mix(in oklch, var(--color-accent-07) 10%, var(--color-base-1-04)),
+			color-mix(in oklch, var(--color-accent-07) 10%, var(--color-base-1-03))
+		);
+		box-shadow:
+			inset 0 0 0 2px var(--color-accent-06),
+			inset 0 1px 0 color-mix(in oklch, var(--color-fg-11) 8%, transparent),
+			inset 0 -1px 0 color-mix(in oklch, var(--color-base-1-02) 50%, transparent),
+			0 2px 4px black;
+
+		& > .MyCheckboxButton-box {
+			border-color: var(--color-accent-06);
+			background: var(--color-accent-06);
+		}
 	}
 	/* #endregion root */
 }

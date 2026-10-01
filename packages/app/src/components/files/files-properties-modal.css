@@ -233,29 +233,6 @@
 		text-align: start;
 	}
 
-	.FilesPropertiesModalWritePolicy-apply-text {
-		display: flex;
-		flex-direction: column;
-		gap: 2px;
-
-		flex: 1;
-		min-width: 0;
-	}
-
-	.FilesPropertiesModalWritePolicy-apply-label {
-		font-size: 16px;
-		font-weight: 500;
-	}
-
-	.FilesPropertiesModalWritePolicy-apply-description {
-		font-size: 15px;
-		line-height: 1.4;
-		font-weight: 400;
-		color: var(--color-fg-08);
-
-		text-wrap: pretty;
-	}
-
 	.FilesPropertiesModalWriterSummary {
 		display: flex;
 		flex-direction: column;
@@ -301,20 +278,6 @@
 
 		white-space: normal;
 		text-align: start;
-	}
-
-	.FilesPropertiesModalCollaboration-text {
-		display: flex;
-		flex-direction: column;
-		gap: 2px;
-
-		flex: 1;
-		min-width: 0;
-	}
-
-	.FilesPropertiesModalCollaboration-label {
-		font-size: 16px;
-		font-weight: 500;
 	}
 
 	.FilesPropertiesModalCollaboration-description {

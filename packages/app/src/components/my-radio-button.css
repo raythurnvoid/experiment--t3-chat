@@ -1,9 +1,30 @@
 @layer common_components {
 	/* #region label */
+	/* Keep the label and description colors in sync with `my-checkbox-button.css`. The label of the chosen
+	   button is the bright text. The labels of the other buttons are dimmer, so the eye goes to the choice. */
 	.MyRadioButtonLabel {
 		font-size: 16px;
 		font-weight: 500;
+		color: var(--color-fg-09);
+	}
+
+	.MyRadioButton:where(:has(> .MyRadioButton-control:checked), .MyRadioButton-state-checked) .MyRadioButtonLabel {
 		color: var(--color-fg-11);
+	}
+
+	.MyRadioButton:not(:is(.MyButton-state-disabled, .MyRadioButton-state-disabled)):hover .MyRadioButtonLabel {
+		color: var(--color-fg-10);
+	}
+
+	.MyRadioButton:where(:has(> .MyRadioButton-control:checked), .MyRadioButton-state-checked):not(
+			:is(.MyButton-state-disabled, .MyRadioButton-state-disabled)
+		):hover
+		.MyRadioButtonLabel {
+		color: var(--color-fg-11);
+	}
+
+	.MyRadioButton:is(.MyButton-state-disabled, .MyRadioButton-state-disabled) .MyRadioButtonLabel {
+		color: inherit;
 	}
 	/* #endregion label */
 
@@ -15,6 +36,10 @@
 		color: var(--color-fg-08);
 
 		text-wrap: pretty;
+	}
+
+	.MyRadioButton:is(.MyButton-state-disabled, .MyRadioButton-state-disabled) .MyRadioButtonDescription {
+		color: inherit;
 	}
 	/* #endregion description */
 

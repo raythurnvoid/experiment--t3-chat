@@ -36,6 +36,63 @@ export const MyCheckboxButtonIcon = memo(function MyCheckboxButtonIcon(props: My
 });
 // #endregion icon
 
+// #region content
+export type MyCheckboxButtonContent_ClassNames = "MyCheckboxButtonContent";
+
+export type MyCheckboxButtonContent_Props = ComponentPropsWithRef<"span">;
+
+/**
+ * The text column of a checkbox that carries a label and a description. It is the same as the text
+ * column inside `MyRadioButton`.
+ */
+export const MyCheckboxButtonContent = memo(function MyCheckboxButtonContent(props: MyCheckboxButtonContent_Props) {
+	const { className, children, ...rest } = props;
+
+	return (
+		<span className={cn("MyCheckboxButtonContent" satisfies MyCheckboxButtonContent_ClassNames, className)} {...rest}>
+			{children}
+		</span>
+	);
+});
+// #endregion content
+
+// #region label
+export type MyCheckboxButtonLabel_ClassNames = "MyCheckboxButtonLabel";
+
+export type MyCheckboxButtonLabel_Props = ComponentPropsWithRef<"span">;
+
+export const MyCheckboxButtonLabel = memo(function MyCheckboxButtonLabel(props: MyCheckboxButtonLabel_Props) {
+	const { className, children, ...rest } = props;
+
+	return (
+		<span className={cn("MyCheckboxButtonLabel" satisfies MyCheckboxButtonLabel_ClassNames, className)} {...rest}>
+			{children}
+		</span>
+	);
+});
+// #endregion label
+
+// #region description
+export type MyCheckboxButtonDescription_ClassNames = "MyCheckboxButtonDescription";
+
+export type MyCheckboxButtonDescription_Props = ComponentPropsWithRef<"span">;
+
+export const MyCheckboxButtonDescription = memo(function MyCheckboxButtonDescription(
+	props: MyCheckboxButtonDescription_Props,
+) {
+	const { className, children, ...rest } = props;
+
+	return (
+		<span
+			className={cn("MyCheckboxButtonDescription" satisfies MyCheckboxButtonDescription_ClassNames, className)}
+			{...rest}
+		>
+			{children}
+		</span>
+	);
+});
+// #endregion description
+
 // #region root
 export type MyCheckboxButton_ClassNames =
 	| "MyCheckboxButton"
@@ -67,7 +124,8 @@ export type MyCheckboxButton_Props = Omit<
 };
 
 /**
- * One checkbox drawn as a button.
+ * One checkbox drawn as a button. For a label with a description, put `MyCheckboxButtonContent`, `MyCheckboxButtonLabel`
+ * and `MyCheckboxButtonDescription` inside, the same way `MyRadioButton` is used.
  *
  * Keep this in sync with `MyRadioButton` in `my-radio-button.tsx`. They sit side by side in the same
  * forms, so they must look the same: same outline button, border, padding, hover, focus, and disabled

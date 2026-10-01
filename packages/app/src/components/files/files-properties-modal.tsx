@@ -9,7 +9,12 @@ import { toast } from "sonner";
 
 import { MyButton } from "@/components/my-button.tsx";
 import { MyChipOverflowRow } from "@/components/my-chip.tsx";
-import { MyCheckboxButton } from "@/components/my-checkbox-button.tsx";
+import {
+	MyCheckboxButton,
+	MyCheckboxButtonContent,
+	MyCheckboxButtonDescription,
+	MyCheckboxButtonLabel,
+} from "@/components/my-checkbox-button.tsx";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
 import { MyRadioButton, MyRadioButtonDescription, MyRadioButtonLabel } from "@/components/my-radio-button.tsx";
 import {
@@ -226,10 +231,7 @@ type FilesPropertiesModalWritePolicy_ClassNames =
 	| "FilesPropertiesModalWritePolicy-description"
 	| "FilesPropertiesModalWritePolicy-error"
 	| "FilesPropertiesModalWritePolicy-new-items"
-	| "FilesPropertiesModalWritePolicy-apply"
-	| "FilesPropertiesModalWritePolicy-apply-text"
-	| "FilesPropertiesModalWritePolicy-apply-label"
-	| "FilesPropertiesModalWritePolicy-apply-description";
+	| "FilesPropertiesModalWritePolicy-apply";
 
 type PolicyDraft = {
 	mode: "editable" | "read_only" | "writer";
@@ -759,30 +761,14 @@ const FilesPropertiesModalWritePolicy = memo(function FilesPropertiesModalWriteP
 							}
 						}}
 					>
-						<span
-							className={
-								"FilesPropertiesModalWritePolicy-apply-text" satisfies FilesPropertiesModalWritePolicy_ClassNames
-							}
-						>
-							<span
-								id={applyLabelId}
-								className={
-									"FilesPropertiesModalWritePolicy-apply-label" satisfies FilesPropertiesModalWritePolicy_ClassNames
-								}
-							>
-								Also apply it to the items already inside
-							</span>
-							<span
-								id={applyDescriptionId}
-								className={
-									"FilesPropertiesModalWritePolicy-apply-description" satisfies FilesPropertiesModalWritePolicy_ClassNames
-								}
-							>
+						<MyCheckboxButtonContent>
+							<MyCheckboxButtonLabel id={applyLabelId}>Also apply it to the items already inside</MyCheckboxButtonLabel>
+							<MyCheckboxButtonDescription id={applyDescriptionId}>
 								{applyUnavailable
 									? "Some chosen writers are no longer available, so this is off. Change the writers first."
 									: "Without this, only new items get the rule."}
-							</span>
-						</span>
+							</MyCheckboxButtonDescription>
+						</MyCheckboxButtonContent>
 					</MyCheckboxButton>
 					{applyResult ? (
 						<p
@@ -843,8 +829,6 @@ const FilesPropertiesModalWritePolicy = memo(function FilesPropertiesModalWriteP
 type FilesPropertiesModalCollaboration_ClassNames =
 	| "FilesPropertiesModalCollaboration"
 	| "FilesPropertiesModalCollaboration-checkbox"
-	| "FilesPropertiesModalCollaboration-text"
-	| "FilesPropertiesModalCollaboration-label"
 	| "FilesPropertiesModalCollaboration-description"
 	| "FilesPropertiesModalCollaboration-confirm-modal"
 	| "FilesPropertiesModalCollaboration-confirm-body"
@@ -1005,24 +989,13 @@ const FilesPropertiesModalCollaboration = memo(function FilesPropertiesModalColl
 				aria-busy={isRunning || undefined}
 				onCheckedChange={handleCheckedChange}
 			>
-				<span
-					className={"FilesPropertiesModalCollaboration-text" satisfies FilesPropertiesModalCollaboration_ClassNames}
-				>
-					<span
-						className={"FilesPropertiesModalCollaboration-label" satisfies FilesPropertiesModalCollaboration_ClassNames}
-					>
-						Collaborative editing
-					</span>
-					<span
-						id={descriptionId}
-						className={
-							"FilesPropertiesModalCollaboration-description" satisfies FilesPropertiesModalCollaboration_ClassNames
-						}
-					>
+				<MyCheckboxButtonContent>
+					<MyCheckboxButtonLabel>Collaborative editing</MyCheckboxButtonLabel>
+					<MyCheckboxButtonDescription id={descriptionId}>
 						{description}
 						{blockedReason ? ` ${blockedReason}` : null}
-					</span>
-				</span>
+					</MyCheckboxButtonDescription>
+				</MyCheckboxButtonContent>
 			</MyCheckboxButton>
 
 			{cleanupBlocksCollaboration === true ? (

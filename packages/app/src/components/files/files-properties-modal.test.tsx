@@ -626,10 +626,9 @@ describe("FilesPropertiesModalCollaboration", () => {
 		renderModal();
 
 		expect(collaborationCheckbox().disabled).toBe(true);
-		// Read the collaboration section's own reason.
-		expect(document.querySelector(".FilesPropertiesModalCollaboration-description")?.textContent).toContain(
-			expectedText,
-		);
+		// Read the collaboration section's own reason through the box's description.
+		const descriptionId = collaborationCheckbox().getAttribute("aria-describedby") ?? "";
+		expect(document.getElementById(descriptionId)?.textContent).toContain(expectedText);
 		fireEvent.click(collaborationCheckbox());
 		expect(mutationMock).not.toHaveBeenCalled();
 	});
