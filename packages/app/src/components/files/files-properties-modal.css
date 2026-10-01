@@ -86,6 +86,13 @@
 			outline-color: var(--app-readonly-focus-ring);
 		}
 
+		/* The editor sets `renderLineHighlight: "none"`, but Monaco still draws an empty cursor line box
+		   in the left margin, and `app.css` paints every such box. That left a dark patch on the cursor
+		   line. This text is read-only, so draw no cursor line highlight at all. */
+		& .margin-view-overlays .current-line {
+			background-color: transparent;
+		}
+
 		/* Hide Monaco's read-only bubble here too. Same reason as the metadata editor. */
 		.monaco-editor-overlaymessage {
 			display: none !important;
