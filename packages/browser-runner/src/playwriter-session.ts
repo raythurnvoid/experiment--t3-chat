@@ -1154,7 +1154,8 @@ export class PlaywriterSession {
 			const command = this.command;
 			const safe = await this.settle(command.request.commandId);
 			const receipt = this.receipts.get(command.request.commandId);
-			if (receipt) {
+			// Finish can wait for the same child drain and write its result first. Keep that result.
+			if (receipt?.status === "in_progress") {
 				receipt.status = "unknown";
 				receipt.result = { ...unknown_result, inputSent: command.used, cleanup: safe ? "complete" : "unknown" };
 			}

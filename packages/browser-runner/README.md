@@ -143,10 +143,12 @@ The shared Zod contracts are in `packages/common/src/playwriter-browser.ts`.
   stays current. Human changes during or after cleanup cannot become the
   completed command's authority. Other outcomes have `completedLease: null`.
 - Pause, access revocation, and disconnect stop new work and drain a live
-  command. Several callers, for example finish, fence, and Pause, can wait for
-  the same drain, and each one gets the same result. A successful drain stays
-  cleanup proof even when Pause makes the page effect unknown. After a failed
-  drain, only the first waiter closes the old socket and advances generation.
+  command. Several callers, for example finish, fence, Pause, and the command
+  deadline alarm, can wait for the same drain, and each one gets the same
+  result. The first result written to the receipt stays. A successful drain
+  stays cleanup proof even when Pause makes the page effect unknown. After a
+  failed drain, only the first waiter closes the old socket and advances
+  generation.
   Resume needs the current control revision. Human pause survives
   disconnect and recovery. Idle expiry closes the owned extension connection
   and its command socket. The native browser and tab stay open.

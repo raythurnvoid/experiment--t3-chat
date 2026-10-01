@@ -1885,6 +1885,81 @@ describe("PlaywriterSession", () => {
 		});
 	});
 
+	it("keeps a finished receipt when the deadline alarm waits for the same native drain", async () => {
+		vi.stubGlobal("WebSocketPair", ChildSocketPair);
+		vi.stubGlobal("Response", SocketResponse);
+		const mocked = make_session();
+		const socket = new NativeSocket();
+		const connected = await connect_session(mocked, socket);
+		const command = { ...command_request(connected, "finish-alarm-drain"), operation: { kind: "read" } };
+		expect((await mocked.post("/run/begin", command)).reply.execute).toBe(true);
+		const response = await mocked.session.fetch(
+			new Request(`https://do/command-socket?commandId=${command.commandId}&generation=${connected.generation}`, {
+				headers: { Upgrade: "websocket" },
+			}),
+		);
+		const child = response.webSocket as unknown as ChildSocket;
+		child.send(
+			JSON.stringify({
+				id: 1,
+				method: "Target.setAutoAttach",
+				params: { autoAttach: true, waitForDebuggerOnStart: false, flatten: true },
+			}),
+		);
+		child.send(
+			JSON.stringify({
+				id: 2,
+				method: "Page.addScriptToEvaluateOnNewDocument",
+				sessionId: "native-session",
+				params: { source: "", worldName: "utility" },
+			}),
+		);
+		socket.holdCleanup = true;
+
+		// Finish waits for native script removal. The deadline alarm then waits for the same child drain.
+		const finishing = mocked.post("/run/finish", {
+			...SCOPE,
+			request: receipt_identity(command),
+			output: { result: { ok: true, reason: null, inputSent: false, cleanup: "complete" } },
+		});
+		await vi.waitFor(() => expect(socket.cleanupReply).not.toBeNull());
+		vi.setSystemTime(command.deadline);
+		const alarming = mocked.session.alarm();
+		await vi.advanceTimersByTimeAsync(10);
+		socket.packet({ id: socket.cleanupReply, result: {} });
+		expect((await finishing).reply).toMatchObject({ status: "completed", result: { ok: true, cleanup: "complete" } });
+		await alarming;
+
+		expect(
+			(await mocked.post("/command-status", receipt_identity(command))).reply,
+			"The deadline alarm must not replace a receipt that finish already wrote",
+		).toMatchObject({ status: "completed", result: { ok: true, cleanup: "complete" } });
+	});
+
+	it("marks a command unknown when its deadline alarm runs before finish", async () => {
+		const mocked = make_session();
+		const connected = await connect_session(mocked, new NativeSocket());
+		const command = { ...command_request(connected, "alarm-before-finish"), operation: { kind: "read" } };
+		expect((await mocked.post("/run/begin", command)).reply.execute).toBe(true);
+
+		vi.setSystemTime(command.deadline);
+		await mocked.session.alarm();
+
+		expect(
+			(await mocked.post("/command-status", receipt_identity(command))).reply,
+			"The deadline alarm must end a command that is still running",
+		).toMatchObject({ status: "unknown", result: { ok: false, cleanup: "complete" } });
+		expect(
+			(
+				await mocked.post("/run/finish", {
+					...SCOPE,
+					request: receipt_identity(command),
+					output: { result: { ok: true, reason: null, inputSent: false, cleanup: "complete" } },
+				})
+			).reply,
+		).toMatchObject({ status: "unknown" });
+	});
+
 	it("reports unknown for a lost boot instead of not started", async () => {
 		const { post } = make_session();
 		const request = { ...receipt(), generation: 5 };
