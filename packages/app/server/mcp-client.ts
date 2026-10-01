@@ -695,7 +695,8 @@ async function list_tools_once(args: {
 				);
 				rawTools.push(...result.tools);
 
-				// A repeated cursor means the server does not end its pages. Stop like the SDK does.
+				// A repeated cursor means the server does not end its pages, so stop. This is stricter than the
+				// SDK's modern walk, which stops only on a repeated page and refuses a longer loop at its page limit.
 				if (result.nextCursor === undefined || seenCursors.has(result.nextCursor)) break;
 				seenCursors.add(result.nextCursor);
 				cursor = result.nextCursor;

@@ -84,8 +84,7 @@ vi.mock("convex/react", async (importOriginal) => {
 				() => hookMocks.messagesDenied,
 			);
 
-			if (getFunctionName(query) === "files_browser:current_browser_preferences")
-				return { webChoice: { provider: "cloud" }, selectionRevision: 0, policyRevision: 0 };
+			if (getFunctionName(query) === "files_browser:current_browser_preferences") return { policyRevision: 0 };
 			if (args !== "skip" && messagesDenied) return null;
 			return getFunctionName(query) === "ai_chat_runs:branch_page"
 				? branch_page(args as { anchorId: string | null })

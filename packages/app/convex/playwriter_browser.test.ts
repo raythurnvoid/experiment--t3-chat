@@ -8,6 +8,7 @@ import { files_browser_db_purge_workspace_batch } from "./files_browser.ts";
 import { crypto_encrypt_secret_value } from "../server/crypto-utils.ts";
 import {
 	playwriter_browser_connect_schema,
+	playwriter_browser_confirm_schema,
 	playwriter_browser_access_schema,
 	playwriter_browser_control_schema,
 	playwriter_browser_disconnect_schema,
@@ -91,7 +92,6 @@ function runtime(
 		navRevision: connection.navRevision,
 		controlRevision: connection.controlRevision,
 		policyRevision: 0,
-		selectionRevision: 0,
 		agentAccess: true,
 		operations: connection.operations,
 		idleExpiresAt: connection.idleExpiresAt,
@@ -111,7 +111,6 @@ function completed_lease(args: {
 		generation: connection.connectionGeneration,
 		controlRevision: connection.controlRevision,
 		policyRevision: 0,
-		selectionRevision: 1,
 		confirmedTargetId: connection.confirmedTargetId!,
 		navRevision,
 		targetRevision,
@@ -145,15 +144,7 @@ async function connection(f: Awaited<ReturnType<typeof fixture>>, ready = true) 
 	});
 	const saved = await f.t.run((ctx) => ctx.db.get("playwriter_connections", doc._id));
 	if (!saved) throw new Error("Missing connection");
-	const browserIntent = {
-		webChoice: {
-			provider: "playwriter" as const,
-			connectionId: saved._id,
-			confirmedTargetHandle: saved.confirmedTargetHandle!,
-		},
-		selectionRevision: 1,
-		policyRevision: 0,
-	};
+	const browserIntent = { policyRevision: 0 };
 	if (ready)
 		await f.t.run((ctx) =>
 			ctx.db.insert("files_browser_preferences", {
@@ -179,14 +170,21 @@ async function connection(f: Awaited<ReturnType<typeof fixture>>, ready = true) 
 	return { saved, browserIntent, resource };
 }
 
-async function connect_response(f: Awaited<ReturnType<typeof fixture>>, body: unknown) {
-	const input = playwriter_browser_connect_schema.parse(JSON.parse(String(body)));
+/**
+ * Answer `/connect` with the one shared tab. `connect_tab` then confirms that tab by itself, so
+ * also answer its `/confirm` call.
+ */
+async function connect_response(f: Awaited<ReturnType<typeof fixture>>, url: unknown, body: unknown) {
+	const confirming = String(url).endsWith("/confirm");
+	const input = (confirming ? playwriter_browser_confirm_schema : playwriter_browser_connect_schema).parse(
+		JSON.parse(String(body)),
+	);
 	const doc = await f.t.run(async (ctx) => {
 		const id = ctx.db.normalizeId("playwriter_connections", input.connectionId);
 		return id ? ctx.db.get("playwriter_connections", id) : null;
 	});
 	if (!doc) throw new Error("Missing admitted connection");
-	return Response.json({ ok: true, runtime: runtime(doc, "awaiting_confirmation") });
+	return Response.json({ ok: true, runtime: runtime(doc, confirming ? "connected" : "awaiting_confirmation") });
 }
 
 describe("remote_browser_available", () => {
@@ -278,8 +276,8 @@ describe("connect_tab", () => {
 			(item) => item.organizationId === f.db.organizationId && item.workspaceId !== f.db.workspaceId,
 		)!;
 		vi.mocked(fetch).mockImplementation(async (url, options) =>
-			String(url).endsWith("/connect")
-				? connect_response(f, options?.body)
+			/\/(connect|confirm)$/.test(String(url))
+				? connect_response(f, url, options?.body)
 				: Response.json({ ok: false, error: { code: "cleanup_unknown", message: "cleanup pending" } }, { status: 409 }),
 		);
 		expect(
@@ -323,7 +321,7 @@ describe("connect_tab", () => {
 				started();
 				return await proof;
 			}
-			return connect_response(f, options?.body);
+			return connect_response(f, url, options?.body);
 		});
 		const cleanup = f.t.action(internal.playwriter_browser.process_cleanups, {});
 		await began;
@@ -363,8 +361,8 @@ describe("connect_tab", () => {
 			(item) => item.organizationId === f.db.organizationId && item.workspaceId !== f.db.workspaceId,
 		)!;
 		vi.mocked(fetch).mockImplementation(async (url, options) =>
-			String(url).endsWith("/connect")
-				? connect_response(f, options?.body)
+			/\/(connect|confirm)$/.test(String(url))
+				? connect_response(f, url, options?.body)
 				: Response.json({ ok: false, error: { code: "cleanup_unknown", message: "cleanup pending" } }, { status: 409 }),
 		);
 		await f.asUser.action(api.playwriter_browser.disconnect_connection, {
@@ -394,7 +392,7 @@ describe("connect_tab", () => {
 		).toBeTruthy();
 
 		vi.mocked(fetch).mockImplementation(async (url, options) => {
-			if (String(url).endsWith("/connect")) return connect_response(f, options?.body);
+			if (/\/(connect|confirm)$/.test(String(url))) return connect_response(f, url, options?.body);
 			const input = playwriter_browser_disconnect_schema.parse(JSON.parse(String(options?.body)));
 			const code = input.generation === undefined ? "connection_forgotten" : "cleanup_unknown";
 			return Response.json({ ok: false, error: { code, message: "fixed cleanup result" } }, { status: 410 });
@@ -417,8 +415,8 @@ describe("connect_tab", () => {
 
 		vi.setSystemTime(Date.now() + 60_001);
 		vi.mocked(fetch).mockImplementation(async (url, options) =>
-			String(url).endsWith("/connect")
-				? connect_response(f, options?.body)
+			/\/(connect|confirm)$/.test(String(url))
+				? connect_response(f, url, options?.body)
 				: Response.json(
 						{ ok: false, error: { code: "connection_forgotten", message: "connection forgotten" } },
 						{ status: 410 },
@@ -438,8 +436,8 @@ describe("connect_tab", () => {
 	test("counts distinct pending sockets beyond a duplicate cleanup prefix", async () => {
 		const f = await fixture();
 		vi.mocked(fetch).mockImplementation(async (url, options) =>
-			String(url).endsWith("/connect")
-				? connect_response(f, options?.body)
+			/\/(connect|confirm)$/.test(String(url))
+				? connect_response(f, url, options?.body)
 				: Response.json({ ok: false, error: { code: "cleanup_unknown", message: "cleanup pending" } }, { status: 409 }),
 		);
 		for (let i = 0; i < 10; i++) {
@@ -477,6 +475,53 @@ describe("connect_tab", () => {
 		expect(refused._nay?.name, "Connect must count distinct pending sockets across duplicate cleanup prefixes").toBe(
 			"limit",
 		);
+	});
+
+	test.each([1, 2])("confirms the shared tab by itself only when the runner reports one: %i tabs", async (count) => {
+		const f = await fixture();
+		const popup = { targetId: "native-tab-popup", title: "Popup", url: "https://example.com/popup" };
+		vi.mocked(fetch).mockImplementation(async (url) => {
+			const doc = (await f.t.run((ctx) => ctx.db.query("playwriter_connections").first()))!;
+			const base = runtime(doc, String(url).endsWith("/confirm") ? "connected" : "awaiting_confirmation");
+			return Response.json({
+				ok: true,
+				runtime: { ...base, targets: count === 1 ? base.targets : [...base.targets, popup] },
+			});
+		});
+		const connected = await f.asUser.action(api.playwriter_browser.connect_tab, {
+			membershipId: f.db.membershipId,
+			share: "b".repeat(32),
+		});
+		expect(connected._yay).toBeTruthy();
+		expect(
+			vi.mocked(fetch).mock.calls.map(([url]) => new URL(String(url)).pathname.split("/").at(-1)),
+			"Connect confirms by itself only a single shared tab",
+		).toEqual(count === 1 ? ["connect", "confirm"] : ["connect"]);
+		const current = await f.asUser.query(api.playwriter_browser.current_connection, {
+			membershipId: f.db.membershipId,
+		});
+		expect(current).toMatchObject(
+			count === 1
+				? { state: "ready", target: { handle: current!.targets[0]!.handle } }
+				: { state: "needs_confirmation", target: null },
+		);
+	});
+
+	test("keeps the connection for a manual choice when the auto-confirm fails", async () => {
+		const f = await fixture();
+		vi.mocked(fetch).mockImplementation(async (url) => {
+			if (String(url).endsWith("/confirm")) throw new Error("Lost network reply");
+			const doc = (await f.t.run((ctx) => ctx.db.query("playwriter_connections").first()))!;
+			return Response.json({ ok: true, runtime: runtime(doc, "awaiting_confirmation") });
+		});
+		const connected = await f.asUser.action(api.playwriter_browser.connect_tab, {
+			membershipId: f.db.membershipId,
+			share: "b".repeat(32),
+		});
+		expect(connected._yay, "A failed auto-confirm must not fail a working Connect").toBeTruthy();
+		expect(
+			await f.asUser.query(api.playwriter_browser.current_connection, { membershipId: f.db.membershipId }),
+		).toMatchObject({ state: "needs_confirmation", target: null });
 	});
 });
 
@@ -601,7 +646,6 @@ describe("confirm_tab", () => {
 					...(String(url).endsWith("/agent-access")
 						? ((input) => ({
 								policyRevision: input.policyRevision,
-								selectionRevision: input.selectionRevision,
 								agentAccess: input.agentAccess,
 							}))(playwriter_browser_access_schema.parse(JSON.parse(String(options?.body))))
 						: {}),
@@ -634,10 +678,6 @@ describe("confirm_tab", () => {
 		});
 		expect(current).toMatchObject({ state: "ready", target: { handle, url: "about:blank" } });
 		expect(JSON.stringify(current)).not.toContain("native-tab-private");
-		expect(
-			(await f.asUser.query(api.files_browser.current_browser_preferences, { membershipId: f.db.membershipId }))
-				?.webChoice,
-		).toEqual({ provider: "playwriter", connectionId: c.saved._id, confirmedTargetHandle: handle });
 	});
 
 	test.each(["about:blank#fragment", "chrome://newtab/", "file:///C:/private.txt", "https://blocked.example/private"])(
@@ -786,7 +826,6 @@ describe("resume_connection", () => {
 					controlRevision: input.controlRevision,
 					state: humanPaused ? "paused" : "connected",
 					policyRevision: input.policyRevision,
-					selectionRevision: input.selectionRevision,
 					agentAccess: input.agentAccess,
 					operations: input.operations,
 					idleExpiresAt: input.idleExpiresAt,
@@ -1002,9 +1041,6 @@ describe("reconnect_connection", () => {
 			idleExpiresAt: c.saved.idleExpiresAt,
 		});
 		expect(await f.t.run((ctx) => ctx.db.query("playwriter_connection_cleanups").collect())).toHaveLength(0);
-		expect(await f.t.run((ctx) => ctx.db.query("files_browser_preferences").collect())).toMatchObject([
-			{ webChoice: c.browserIntent.webChoice },
-		]);
 		expect((await f.asUser.action(api.playwriter_browser.reconnect_connection, args))._yay).toEqual({
 			connectionId: c.saved._id,
 		});
@@ -1306,7 +1342,6 @@ describe("reconnect_connection", () => {
 						state: input.paused ? "paused" : "connected",
 						controlRevision: input.controlRevision,
 						policyRevision: input.policyRevision,
-						selectionRevision: input.selectionRevision,
 						agentAccess: input.agentAccess,
 						sessionId: input.sessionId,
 						operations: input.operations,
@@ -1371,7 +1406,7 @@ describe("reconnect_connection", () => {
 		)!;
 		let proved = false;
 		vi.mocked(fetch).mockImplementation(async (url, options) => {
-			if (String(url).endsWith("/connect")) return connect_response(f, options?.body);
+			if (/\/(connect|confirm)$/.test(String(url))) return connect_response(f, url, options?.body);
 			if (String(url).endsWith("/disconnect"))
 				return Response.json(
 					{
@@ -1400,7 +1435,6 @@ describe("reconnect_connection", () => {
 					generation: c.saved.connectionGeneration + 2,
 					controlRevision: input.controlRevision,
 					policyRevision: input.policyRevision,
-					selectionRevision: input.selectionRevision,
 					agentAccess: input.agentAccess,
 					sessionId: input.sessionId,
 					operations: input.operations,
@@ -1474,7 +1508,7 @@ describe("reconnect_connection", () => {
 				identity: running.unresolvedCommand!,
 				result: { status: "succeeded", reason: null },
 				fenced: true,
-				runtime: { ...runtime(running), selectionRevision: c.browserIntent.selectionRevision },
+				runtime: runtime(running),
 				completedLease: completed_lease({ connection: running }),
 			}),
 		).toBe(true);
@@ -1490,7 +1524,6 @@ describe("reconnect_connection", () => {
 					generation: previous.connectionGeneration + 1,
 					controlRevision: input.controlRevision,
 					policyRevision: input.policyRevision,
-					selectionRevision: input.selectionRevision,
 					agentAccess: input.agentAccess,
 					sessionId: input.sessionId,
 					operations: input.operations,
@@ -1563,7 +1596,6 @@ describe("reconnect_connection", () => {
 					fenced: true,
 					runtime: {
 						...runtime(running),
-						selectionRevision: c.browserIntent.selectionRevision,
 						idleExpiresAt: Math.min(running.idleExpiresAt, running.totalExpiresAt!),
 					},
 					completedLease: completed_lease({ connection: running }),
@@ -1593,7 +1625,6 @@ describe("reconnect_connection", () => {
 				totalExpiresAt: input.totalExpiresAt,
 				controlRevision: input.controlRevision,
 				policyRevision: input.policyRevision,
-				selectionRevision: input.selectionRevision,
 				agentAccess: input.agentAccess,
 			};
 			return Response.json({ ok: true, runtime: native });
@@ -1773,7 +1804,6 @@ describe("pause_connection", () => {
 						sessionId: input.sessionId,
 						controlRevision: input.controlRevision,
 						policyRevision: input.policyRevision,
-						selectionRevision: input.selectionRevision,
 						agentAccess: input.agentAccess,
 						operations: input.operations,
 						idleExpiresAt: input.idleExpiresAt,
@@ -1878,7 +1908,8 @@ describe("process_cleanups", () => {
 	test.each([true, false])("the authenticated forgotten-scope proof completes cleanup: forget %s", async (forget) => {
 		const f = await fixture();
 		const c = await connection(f);
-		if (forget) await f.t.run((ctx) => playwriter_browser_db_disconnect({ ctx, connection: c.saved, reason: "connect_again" }));
+		if (forget)
+			await f.t.run((ctx) => playwriter_browser_db_disconnect({ ctx, connection: c.saved, reason: "connect_again" }));
 		else
 			await f.t.mutation(internal.playwriter_browser.retire_session, {
 				source: f.source,
@@ -2075,17 +2106,29 @@ describe("get_remote_lease", () => {
 			)._nay,
 		).toBeTruthy();
 	});
-	test("rejects an old saved browser choice", async () => {
+	test("leases the newest connection of the chat's workspace", async () => {
 		const f = await fixture();
-		const c = await connection(f);
-		expect(
-			(
-				await f.t.query(internal.playwriter_browser.get_remote_lease, {
-					source: f.source,
-					browserIntent: { ...c.browserIntent, selectionRevision: 0 },
-				})
-			)._nay?.name,
-		).toBe("browser_intent_changed");
+		const lease = () =>
+			f.t.query(internal.playwriter_browser.get_remote_lease, {
+				source: f.source,
+				browserIntent: { policyRevision: 0 },
+			});
+		expect((await lease())._nay?.name, "A user with no connection must get not_connected").toBe("not_connected");
+
+		// Close an older connection. The newest connection then has no saved link.
+		const old = await connection(f, false);
+		await f.t.run((ctx) => playwriter_browser_db_disconnect({ ctx, connection: old.saved, reason: "disconnected" }));
+		vi.mocked(fetch).mockResolvedValue(
+			Response.json(
+				{ ok: false, error: { code: "connection_forgotten", message: "connection forgotten" } },
+				{ status: 410 },
+			),
+		);
+		await f.t.action(internal.playwriter_browser.process_cleanups, {});
+		expect((await lease())._nay?.name, "A closed newest connection must get not_connected").toBe("not_connected");
+
+		const newer = await connection(f);
+		expect((await lease())._yay, "The lease must use the newest connection").toEqual(newer.resource);
 	});
 });
 
@@ -2462,7 +2505,7 @@ describe("resolve_command", () => {
 			Response.json({
 				ok: true,
 				status: "unknown",
-				runtime: { ...runtime(saved), selectionRevision: 1, navRevision: saved.navRevision + 1 },
+				runtime: { ...runtime(saved), navRevision: saved.navRevision + 1 },
 				completedLease: null,
 				result: { ok: false, reason: "outcome_unknown", inputSent: true, cleanup: "complete" },
 			}),
@@ -2568,7 +2611,7 @@ describe("sync_policy", () => {
 		});
 	});
 
-	test("an offline runner cannot keep cloud intent blocked by a policy update", async () => {
+	test("an offline runner cannot keep a policy update pending", async () => {
 		const f = await fixture();
 		const c = await connection(f);
 		vi.mocked(fetch).mockImplementation(async () =>
@@ -2577,11 +2620,11 @@ describe("sync_policy", () => {
 				runtime: { ...runtime(c.saved), state: "disconnected", generation: c.saved.connectionGeneration + 1 },
 			}),
 		);
-		const synced = await f.asUser.action(api.files_browser.set_browser_choice, {
+		const synced = await f.asUser.action(api.files_browser.set_browser_agent_access, {
 			membershipId: f.db.membershipId,
-			webChoice: { provider: "cloud" },
+			enabled: false,
 		});
-		expect(synced._yay).toMatchObject({ syncPending: false, webChoice: { provider: "cloud" } });
+		expect(synced._yay).toMatchObject({ syncPending: false, webAgentAccess: false });
 		expect(vi.mocked(fetch).mock.calls.map(([url]) => new URL(String(url)).pathname.split("/").at(-1))).toEqual([
 			"status",
 		]);
@@ -2611,7 +2654,6 @@ describe("sync_policy", () => {
 					...(input
 						? {
 								policyRevision: input.policyRevision,
-								selectionRevision: input.selectionRevision,
 								agentAccess: input.agentAccess,
 							}
 						: {}),
@@ -2624,7 +2666,6 @@ describe("sync_policy", () => {
 			workspaceId: f.db.workspaceId,
 			webAgentAccess: false,
 			agentBlockedHosts: [],
-			selectionRevision: 1,
 			policyRevision: 1,
 		});
 		expect(syncGenerations, "Policy sync must use the runner's checked generation").toEqual([generation]);
@@ -2671,7 +2712,6 @@ describe("sync_policy", () => {
 					...(input
 						? {
 								policyRevision: input.policyRevision,
-								selectionRevision: input.selectionRevision,
 								agentAccess: input.agentAccess,
 							}
 						: {}),

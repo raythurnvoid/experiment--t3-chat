@@ -24,8 +24,9 @@ afterEach(() => {
 
 /**
  * A fake chat call: the turn doors keep their state in memory, and every other door answers by name.
+ * `tabs` says which web tabs are live: the my browser tab, a cloud tab, or both.
  */
-function fixture(provider: "playwriter" | "cloud") {
+function fixture(tabs: "playwriter" | "cloud" | "both") {
 	const source = {
 		organizationId: "org" as Id<"organizations">,
 		workspaceId: "workspace" as Id<"organizations_workspaces">,
@@ -39,11 +40,6 @@ function fixture(provider: "playwriter" | "cloud") {
 	const browser: bash_BrowserContext = {
 		source,
 		browserIntent: {
-			webChoice:
-				provider === "playwriter"
-					? { provider: "playwriter", connectionId: "connection", confirmedTargetHandle: "opaque-tab" }
-					: { provider: "cloud" },
-			selectionRevision: 1,
 			policyRevision: 0,
 		},
 		run: { runId: "run" as Id<"ai_chat_runs">, generation: 1 },
@@ -54,6 +50,8 @@ function fixture(provider: "playwriter" | "cloud") {
 		nextCommandNumber: () => commandNumber++,
 	};
 	const turn = { bindings: [] as BrowserResource[], revoked: false, operations: 0 };
+	// A test sets it to act like a dropped my browser connection. A reconnect clears it.
+	const remoteState = { offline: false };
 
 	const runtime = {
 		generation: 1,
@@ -64,7 +62,6 @@ function fixture(provider: "playwriter" | "cloud") {
 		navRevision: 0,
 		controlRevision: 0,
 		policyRevision: 0,
-		selectionRevision: 1,
 		agentAccess: true,
 		operations: 1,
 		idleExpiresAt: Date.now() + 600_000,
@@ -89,6 +86,7 @@ function fixture(provider: "playwriter" | "cloud") {
 		connectAttemptId: "dial",
 		controlRevision: 0,
 		confirmedTargetId: "native-private",
+		targets: [{ targetId: "native-private", handle: "opaque-tab", title: "Inbox", url: "https://mail.example" }],
 		pendingAcknowledgement: null,
 	} as Partial<Doc<"playwriter_connections">> as Doc<"playwriter_connections">;
 	const cloudTab = {
@@ -110,17 +108,21 @@ function fixture(provider: "playwriter" | "cloud") {
 		if (name === "files_browser:check_browser_source") return { _yay: null };
 		// The lease follows the runtime, as the doors write it after each command.
 		if (name === "playwriter_browser:get_remote_lease")
-			return {
-				_yay: {
-					...remote,
-					navRevision: runtime.navRevision,
-					targetRevision: runtime.targetRevision,
-					controlRevision: runtime.controlRevision,
-				},
-			};
+			return tabs === "cloud"
+				? { _nay: { name: "not_connected", message: "My browser is not connected." } }
+				: remoteState.offline
+					? { _nay: { name: "offline", message: "The shared browser is offline or needs attention." } }
+					: {
+							_yay: {
+								...remote,
+								navRevision: runtime.navRevision,
+								targetRevision: runtime.targetRevision,
+								controlRevision: runtime.controlRevision,
+							},
+						};
 		if (name === "playwriter_browser:load_connection") return { _yay: connection };
 		if (name === "files_browser:get_agent_browser_catalog")
-			return { _yay: { browsers: provider === "cloud" ? [{ resource: cloudTab }] : [] } };
+			return { _yay: { browsers: tabs === "playwriter" ? [] : [{ resource: cloudTab }] } };
 		if (name === "files_browser:check_browser_session_access")
 			return { ...cloudAccess, runnerSessionId: "private-runner" };
 		// No runner session id, so the check skips the runner status call.
@@ -177,7 +179,25 @@ function fixture(provider: "playwriter" | "cloud") {
 		}
 		return { _yay: null };
 	});
-	const runAction = vi.fn();
+	const runAction = vi.fn(async (ref, _args): Promise<unknown> => {
+		const name = getFunctionName(ref);
+		// The cloud tab list. The session lease stays the same, as for any list.
+		if (name === "files_browser:agent_browser_tabs")
+			return {
+				_yay: {
+					status: "completed",
+					result: { reason: null, tabId: null },
+					session: { sessionId: cloudTab.sessionId, controlGen: 1, loadGen: 1 },
+					tabs: [{ tabId: cloudTab.tabId, tabGen: 2, navGen: 2, url: "https://example.com/", title: "Example" }],
+					viewedTabId: cloudTab.tabId,
+				},
+			};
+		if (name === "playwriter_browser:recover_for_source") {
+			remoteState.offline = false;
+			return { _yay: null };
+		}
+		throw new Error(`Unexpected action ${name}`);
+	});
 	const ctx = { runQuery, runMutation, runAction } as unknown as ActionCtx;
 
 	/**
@@ -189,7 +209,6 @@ function fixture(provider: "playwriter" | "cloud") {
 			generation: runtime.generation,
 			controlRevision: runtime.controlRevision,
 			policyRevision: runtime.policyRevision,
-			selectionRevision: runtime.selectionRevision,
 			confirmedTargetId: runtime.confirmedTargetId,
 			navRevision: runtime.navRevision,
 			targetRevision: runtime.targetRevision,
@@ -245,6 +264,8 @@ function fixture(provider: "playwriter" | "cloud") {
 		browser,
 		turn,
 		runtime,
+		remoteState,
+		runAction,
 		cloudAccess,
 		requests,
 		runMutation,
@@ -419,7 +440,6 @@ describe("bash_browser_command_create", () => {
 				viewGen: 1,
 				tabCount: 1,
 				agentAccess: true,
-				selectionRevision: 1,
 				policyRevision: 0,
 				idleUntil: Date.now() + 60_000,
 				totalUntil: Date.now() + 600_000,
@@ -451,6 +471,27 @@ describe("bash_browser_command_create", () => {
 		expect(f.requests.filter((request) => request.route === "run")).toEqual([]);
 	});
 
+	test("lists cloud and my browser tabs with their kind, and runs in the tab --tab names", async () => {
+		const f = fixture("both");
+		expect(await f.exec(["run", "-e", "return 1;"])).toMatchObject({
+			stderr: expect.stringContaining(
+				"this turn knows 2 web tabs. Name one with --tab: tab-1234 (cloud), opaque-t (my browser).",
+			),
+			exitCode: 2,
+		});
+
+		expect(await f.exec(["tabs"])).toEqual({
+			stdout:
+				"tab-1234  cloud  https://example.com/  Example  (the user sees this tab)\n" +
+				"opaque-t  my browser  https://mail.example  Inbox  (the user's own tab)\n",
+			stderr: "",
+			exitCode: 0,
+		});
+
+		expect((await f.exec(["run", "--tab", "opaque-t", "-e", "return 1;"])).exitCode).toBe(0);
+		expect(f.requests.find((request) => request.route === "run")?.body).toMatchObject({ targetId: "native-private" });
+	});
+
 	test.each([
 		{ args: ["status", "-e", "return 1;"], text: "-e works only with run" },
 		{ args: ["run", "--tab", "ab"], text: "--tab needs a tab id of at least 4 characters" },
@@ -462,6 +503,19 @@ describe("bash_browser_command_create", () => {
 		expect(result.exitCode).toBe(2);
 		expect(result.stderr).toContain(text);
 		expect(f.runMutation).not.toHaveBeenCalled();
+	});
+
+	test("reconnects a dropped my browser tab only for a command that needs it", async () => {
+		const f = fixture("playwriter");
+		f.remoteState.offline = true;
+		const recovers = () =>
+			f.runAction.mock.calls.filter(([ref]) => getFunctionName(ref) === "playwriter_browser:recover_for_source");
+
+		expect((await f.exec(["status"])).stdout).toContain("my browser: offline.");
+		expect(recovers(), "status must not use the user's connect budget").toHaveLength(0);
+
+		expect((await f.exec(["run", "-e", "return 1;"])).exitCode).toBe(0);
+		expect(recovers()).toHaveLength(1);
 	});
 
 	test("does not start a run that could outlast the Bash call", async () => {

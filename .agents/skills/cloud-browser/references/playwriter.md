@@ -22,14 +22,18 @@ Paths above start at the repository root.
 
 ## User flow
 
-Choose **My browser (Playwriter)** on the Browser page or in **Browser settings**.
+Open **Browser settings** (on the Browser page). The agent sees
+cloud tabs and the My browser tab and picks one.
 Paste a share ID or an official `https://playwriter.dev/remote-control#<id>` link.
 The ID has exactly 32 lower-case hex characters. Other URLs and commands fail.
 
-Connect lists the shared tabs. **Use this tab** confirms one exact native target.
-The model never sees the native target ID or link. The `browser` command uses
-the one confirmed tab. A changed or closed target needs confirmation again. No fallback tab is
-picked. Cloud tab creation is separate from this one-tab connection.
+Connect lists the shared tabs. When the share holds exactly one tab, Connect
+confirms it on its own. With more tabs, **Use this tab** confirms one exact
+native target.
+The model never sees the native target ID or link. The `browser` command lists
+the one confirmed tab as `my browser`, with an id made from the first 8
+characters of the app's random target handle. A changed or closed target needs
+confirmation again. No fallback tab is picked. Cloud tab creation is separate from this one-tab connection.
 An exact `about:blank` tab can be confirmed. Other browser pages still refuse.
 Web tab addresses keep only the origin in the app's stored list.
 
@@ -60,7 +64,7 @@ fingerprint reserves a link for one owner/workspace across the deployment.
 Key changes make old links unreadable; the app forgets them and asks for Connect.
 
 Every action checks the original persisted user message, live chat, owner,
-membership lifetime, `workspace.browser.use`, saved choice, settings revisions,
+membership lifetime, `workspace.browser.use`, the policy revision,
 and exact target/control/navigation revisions. Another tab or newer human lease
 cannot silently replace that authority. Membership loss and deletion revoke
 authority and queue cleanup without needing the source chat to survive.
@@ -119,7 +123,7 @@ release that lock early. Cleanup jobs keep their own owner/workspace/generation
 scope and can run while feature flags are off.
 
 Recovery makes at most three dials within 30 seconds. It keeps the exact target,
-Pause, Off, session budgets, and saved choice. It does not run an offline retry
+Pause, Off, and session budgets. It does not run an offline retry
 loop. After a successful reconnect, the turn keeps its binding only when the
 control revision and confirmed tab are unchanged; otherwise browser access ends
 for the turn. Recovery drops old-generation acknowledgements. A late old completion cannot
@@ -145,7 +149,7 @@ ID uses same-session recovery. An ended old ID uses the explicit new-session
 route. Missing proof asks for Connect again and retires only that exact attempt.
 A late failure cannot forget a newer Reconnect or Pause, or mark a later Resume
 offline.
-A temporary status error keeps the saved link and choice for a later Reconnect.
+A temporary status error keeps the saved link for a later Reconnect.
 
 Credential Forget saves a permanent connection ID fence before draining old
 work. Only the runner's fixed `connection_forgotten` reply proves that cleanup.
@@ -163,7 +167,7 @@ cleans up. So a succeeded script adopts the runtime navigation and target
 revisions, not only its completed lease. Otherwise every such late navigation
 would end browser access for the turn. A person's navigation in that same short
 window is adopted too; this is accepted. A changed control revision, policy,
-selection, or confirmed tab still ends browser access for the turn.
+or confirmed tab still ends browser access for the turn.
 An uncertain page effect stays `outcome_unknown`. After the runner settles the
 child or closes its socket, it advances the generation to prevent any more
 dispatch. Convex releases the command slot, and Reconnect can use the same saved
@@ -220,7 +224,7 @@ Object. Ship the fixed child bundle with the Worker. Use official extension
 builds. No local extension patch is required.
 
 QA lives in `app-playwriter-harness/references/web-browser.md`. Check Connect,
-exact confirmation, `browser run` scripts in a background tab, Pause, Off,
+auto-confirm of a one-tab share, exact confirmation, `browser run` scripts in a background tab, Pause, Off,
 Reconnect, Disconnect, stale target refusal, lost replies, and stored history.
 Keep native viewport and window settings unchanged. Do not claim support for
 minimized-window input from a background-tab check.

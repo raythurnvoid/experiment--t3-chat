@@ -114,7 +114,7 @@ async function post_chat(
 			trigger: "submit-message",
 			threadId: args.threadId,
 			membershipId: args.membershipId,
-			browserIntent: { webChoice: { provider: "cloud" }, selectionRevision: 0, policyRevision: 0 },
+			browserIntent: { policyRevision: 0 },
 		}),
 	});
 	return { status: response.status, body: await response.text() };

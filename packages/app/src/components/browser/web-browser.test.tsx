@@ -7,8 +7,6 @@ import type {
 	files_browser_StreamNav,
 } from "@/lib/files-browser-stream.ts";
 import { WebBrowser } from "./web-browser.tsx";
-import { BrowserSettings } from "./browser-settings.tsx";
-import type { browser_Intent } from "../../../shared/browser-intent.ts";
 
 const mocks = vi.hoisted(() => ({
 	action: vi.fn(),
@@ -32,8 +30,6 @@ const mocks = vi.hoisted(() => ({
 	available: { enabled: true, paidPlan: true } as { enabled: boolean; paidPlan: boolean } | undefined,
 	profile: null as { exists: boolean; lastUsedAt: number | null; agentBlockedHosts: string[] } | null,
 	preferences: {
-		webChoice: { provider: "cloud" } as browser_Intent["webChoice"],
-		selectionRevision: 0,
 		policyRevision: 0,
 		webAgentAccess: true,
 		agentBlockedHosts: [] as string[],
@@ -132,7 +128,6 @@ function webSession(control: string) {
 		viewGen: 1,
 		tabCount: 1,
 		policyRevision: 0,
-		selectionRevision: 0,
 		agentAccess: true,
 		idleUntil: Date.now() + 540_000,
 		totalUntil: Date.now() + 3_000_000,
@@ -167,8 +162,6 @@ beforeEach(() => {
 	mocks.mutation.mockResolvedValue({ _yay: null });
 	mocks.profile = { exists: false, lastUsedAt: null, agentBlockedHosts: [] };
 	mocks.preferences = {
-		webChoice: { provider: "cloud" },
-		selectionRevision: 0,
 		policyRevision: 0,
 		webAgentAccess: true,
 		agentBlockedHosts: [],
@@ -196,7 +189,6 @@ async function connectViewer(control: string) {
 			viewedTabId: "tab_1",
 			tabs: TABS,
 			policyRevision: 0,
-			selectionRevision: 0,
 		}),
 	);
 	act(() =>
@@ -465,116 +457,6 @@ describe("WebBrowser", () => {
 			).toEqual({ membershipId: "membership_1", sessionId: "session_web", tabId: "tab_2", viewerId: "viewer_1" }),
 		);
 		await waitFor(() => expect(screen.queryByRole("tab", { name: "Other page" })).toBeNull());
-	});
-
-	test("remote mode mounts no cloud viewer, profile, or session query", () => {
-		mocks.preferences = {
-			...mocks.preferences,
-			webChoice: { provider: "playwriter", connectionId: "connection_1", confirmedTargetHandle: "target_1" },
-		};
-		render(<WebBrowser />);
-		expect(screen.getByRole("region", { name: "My browser connection" })).toBeTruthy();
-		expect(mocks.events).toBeNull();
-		expect(mocks.action).not.toHaveBeenCalled();
-		expect([...mocks.queries]).not.toContain("files_browser:current_browser_session");
-		expect([...mocks.queries]).not.toContain("files_browser:current_browser_profile");
-		expect([...mocks.queries]).not.toContain("files_browser:web_browser_available");
-	});
-
-	test("a saved none choice mounts no cloud Start card or hooks", () => {
-		mocks.preferences = { ...mocks.preferences, webChoice: { provider: "none" } };
-		render(<WebBrowser />);
-		expect(screen.getByRole("combobox", { name: "Browser provider" }).textContent).toContain("Choose a browser");
-		expect(screen.getByText("No browser selected. Choose a browser to continue.")).toBeTruthy();
-		expect(screen.queryByRole("button", { name: "Start web browser" })).toBeNull();
-		expect(mocks.events).toBeNull();
-		expect(mocks.action).not.toHaveBeenCalled();
-		expect([...mocks.queries]).not.toContain("files_browser:current_browser_session");
-		expect([...mocks.queries]).not.toContain("files_browser:current_browser_profile");
-		expect([...mocks.queries]).not.toContain("files_browser:web_browser_available");
-	});
-
-	test("an explicit Cloud choice restores the Start card after it is saved", async () => {
-		mocks.preferences = { ...mocks.preferences, webChoice: { provider: "none" } };
-		let finishChoice: (result: unknown) => void = () => {};
-		mocks.action.mockImplementation(
-			() =>
-				new Promise((resolve) => {
-					finishChoice = resolve;
-				}),
-		);
-		render(<WebBrowser />);
-		fireEvent.click(screen.getByRole("combobox", { name: "Browser provider" }));
-		fireEvent.click(screen.getByRole("option", { name: "Cloud browser" }));
-		expect(getFunctionName(mocks.action.mock.calls[0]![0])).toBe("files_browser:set_browser_choice");
-		expect(mocks.action.mock.calls[0]![1]).toEqual({ membershipId: "membership_1", webChoice: { provider: "cloud" } });
-		expect(screen.queryByRole("button", { name: "Start web browser" })).toBeNull();
-		await act(async () => {
-			mocks.preferences = { ...mocks.preferences, webChoice: { provider: "cloud" }, selectionRevision: 1 };
-			for (const listener of mocks.sessionListeners) listener();
-			finishChoice({ _yay: mocks.preferences });
-		});
-		expect(screen.getByRole("combobox", { name: "Browser provider" }).textContent).toContain("Cloud browser");
-		expect(screen.getByRole("button", { name: "Start web browser" })).toBeTruthy();
-	});
-
-	test("a saved Disconnect replaces an old provider draft", () => {
-		mocks.preferences = {
-			...mocks.preferences,
-			webChoice: { provider: "playwriter", connectionId: "connection_1", confirmedTargetHandle: "target_1" },
-		};
-		render(<WebBrowser />);
-		fireEvent.click(screen.getByRole("combobox", { name: "Browser provider" }));
-		fireEvent.click(screen.getByRole("option", { name: "My browser (Playwriter)" }));
-		act(() => {
-			mocks.preferences = { ...mocks.preferences, webChoice: { provider: "none" }, selectionRevision: 1 };
-			for (const listener of mocks.sessionListeners) listener();
-		});
-		expect(screen.getByRole("combobox", { name: "Browser provider" }).textContent).toContain("Choose a browser");
-		expect(screen.queryByRole("region", { name: "My browser connection" })).toBeNull();
-		expect(screen.queryByRole("button", { name: "Start web browser" })).toBeNull();
-		expect([...mocks.queries]).not.toContain("files_browser:current_browser_session");
-	});
-});
-
-describe("BrowserSettings", () => {
-	test("a saved none choice does not promise Cloud access", () => {
-		mocks.preferences = { ...mocks.preferences, webChoice: { provider: "none" } };
-		render(<BrowserSettings onClose={vi.fn()} />);
-		expect(screen.getByRole("combobox", { name: "Browser provider" }).textContent).toContain("Choose a browser");
-		expect(screen.getByText("No browser selected. Choose a browser to continue.")).toBeTruthy();
-		expect(screen.queryByText(/Your agent can start and reuse the cloud browser/)).toBeNull();
-	});
-
-	test("an explicit Cloud choice restores the Cloud description", async () => {
-		mocks.preferences = { ...mocks.preferences, webChoice: { provider: "none" } };
-		mocks.action.mockResolvedValueOnce({ _yay: null });
-		render(<BrowserSettings onClose={vi.fn()} />);
-		expect(screen.queryByText(/Your agent can start and reuse the cloud browser/)).toBeNull();
-		fireEvent.click(screen.getByRole("combobox", { name: "Browser provider" }));
-		fireEvent.click(screen.getByRole("option", { name: "Cloud browser" }));
-		act(() => {
-			mocks.preferences = { ...mocks.preferences, webChoice: { provider: "cloud" }, selectionRevision: 1 };
-			for (const listener of mocks.sessionListeners) listener();
-		});
-		await waitFor(() => expect(screen.getByText(/Your agent can start and reuse the cloud browser/)).toBeTruthy());
-		expect(getFunctionName(mocks.action.mock.calls[0]![0])).toBe("files_browser:set_browser_choice");
-	});
-
-	test("a saved Disconnect replaces an old provider draft", () => {
-		mocks.preferences = {
-			...mocks.preferences,
-			webChoice: { provider: "playwriter", connectionId: "connection_1", confirmedTargetHandle: "target_1" },
-		};
-		render(<BrowserSettings onClose={vi.fn()} />);
-		fireEvent.click(screen.getByRole("combobox", { name: "Browser provider" }));
-		fireEvent.click(screen.getByRole("option", { name: "My browser (Playwriter)" }));
-		act(() => {
-			mocks.preferences = { ...mocks.preferences, webChoice: { provider: "none" }, selectionRevision: 1 };
-			for (const listener of mocks.sessionListeners) listener();
-		});
-		expect(screen.getByRole("combobox", { name: "Browser provider" }).textContent).toContain("Choose a browser");
-		expect(screen.queryByRole("region", { name: "My browser connection" })).toBeNull();
 	});
 });
 

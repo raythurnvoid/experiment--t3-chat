@@ -2734,7 +2734,7 @@ describe("enforcement", () => {
 				trigger: "submit-message",
 				threadId,
 				membershipId,
-				browserIntent: { webChoice: { provider: "cloud" }, selectionRevision: 0, policyRevision: 0 },
+				browserIntent: { policyRevision: 0 },
 			}),
 		});
 		expect(replied.status).toBe(403);
@@ -2798,7 +2798,7 @@ describe("enforcement", () => {
 				trigger: "submit-message",
 				clientGeneratedThreadId: `thread-${mode}`,
 				membershipId: fixture.memberMembershipId,
-				browserIntent: { webChoice: { provider: "cloud" }, selectionRevision: 0, policyRevision: 0 },
+				browserIntent: { policyRevision: 0 },
 			});
 		const headers = { "Content-Type": "application/json" };
 
@@ -2871,7 +2871,7 @@ describe("enforcement", () => {
 					trigger: "submit-message",
 					clientGeneratedThreadId: threadId,
 					membershipId: fixture.memberMembershipId,
-					browserIntent: { webChoice: { provider: "cloud" }, selectionRevision: 0, policyRevision: 0 },
+					browserIntent: { policyRevision: 0 },
 				}),
 			});
 
@@ -2965,7 +2965,7 @@ describe("enforcement", () => {
 						trigger,
 						threadId,
 						membershipId,
-						browserIntent: { webChoice: { provider: "cloud" }, selectionRevision: 0, policyRevision: 0 },
+						browserIntent: { policyRevision: 0 },
 					}),
 				});
 

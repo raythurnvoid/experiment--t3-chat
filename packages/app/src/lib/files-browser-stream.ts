@@ -78,7 +78,6 @@ export type files_browser_StreamHelloMessage = {
 	controlGen: number;
 	viewedTabId: string;
 	policyRevision: number;
-	selectionRevision: number;
 	tabs: files_browser_StreamTab[];
 } & files_browser_StreamTabIdentity;
 
@@ -214,9 +213,6 @@ function parse_hello(value: unknown): files_browser_StreamHelloMessage | null {
 		typeof value.policyRevision !== "number" ||
 		!Number.isSafeInteger(value.policyRevision) ||
 		value.policyRevision < 0 ||
-		typeof value.selectionRevision !== "number" ||
-		!Number.isSafeInteger(value.selectionRevision) ||
-		value.selectionRevision < 0 ||
 		value.viewedTabId !== tab.tabId
 	) {
 		return null;
@@ -243,7 +239,6 @@ function parse_hello(value: unknown): files_browser_StreamHelloMessage | null {
 		...tab,
 		...tabs,
 		policyRevision: value.policyRevision,
-		selectionRevision: value.selectionRevision,
 	};
 }
 

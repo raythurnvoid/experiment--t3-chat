@@ -88,7 +88,7 @@ async function send_text_reply(args: {
 			trigger: "submit-message",
 			threadId,
 			membershipId: home.membershipId,
-			browserIntent: { webChoice: { provider: "cloud" }, selectionRevision: 0, policyRevision: 0 },
+			browserIntent: { policyRevision: 0 },
 		}),
 	});
 	// A failed reply save rethrows inside the SDK's finish step, so reading the stream fails.

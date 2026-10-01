@@ -11,7 +11,6 @@ const runtime = {
 	navRevision: 0,
 	controlRevision: 0,
 	policyRevision: 0,
-	selectionRevision: 0,
 	agentAccess: true,
 	operations: 0,
 	idleExpiresAt: Date.now() + 600_000,

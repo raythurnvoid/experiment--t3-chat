@@ -12,7 +12,7 @@ const messages = [
 		attachments: [],
 		selectedModelId: "gpt-6-luna",
 		selectedModeId: "agent",
-		browserIntent: { webChoice: { provider: "cloud" }, selectionRevision: 0, policyRevision: 0 },
+		browserIntent: { policyRevision: 0 },
 	},
 	{
 		id: "ai_message-second",
@@ -20,7 +20,7 @@ const messages = [
 		attachments: [],
 		selectedModelId: "gpt-6-luna",
 		selectedModeId: "ask",
-		browserIntent: { webChoice: { provider: "cloud" }, selectionRevision: 0, policyRevision: 0 },
+		browserIntent: { policyRevision: 0 },
 	},
 	{
 		id: "ai_message-third",
@@ -28,7 +28,7 @@ const messages = [
 		attachments: [],
 		selectedModelId: "gpt-6-luna",
 		selectedModeId: "ask",
-		browserIntent: { webChoice: { provider: "cloud" }, selectionRevision: 0, policyRevision: 0 },
+		browserIntent: { policyRevision: 0 },
 	},
 ] satisfies readonly AiChatQueuedUserMessage[];
 

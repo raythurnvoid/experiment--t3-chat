@@ -133,7 +133,7 @@ The shared Zod contracts are in `packages/common/src/playwriter-browser.ts`.
   Recovery accepts only the saved confirmed native target. A changed target
   needs human confirmation. Titles and URLs remain transient status data.
 - Run takes one fixed operation, exact generation and target/control/policy/
-  selection/navigation revisions, command ID, operation hash, source identity,
+  navigation revisions, command ID, operation hash, source identity,
   deadlines, and the current trusted `allowedVersions` list. The actual socket's
   hello version must still be allowed before new work. This list is outside the
   receipt identity and hash; duplicate receipts and cleanup still work after a
@@ -214,7 +214,7 @@ Operational outcomes return HTTP 200 with `{ ok: true }` or
 - `POST /internal/browser/run` — run one Playwright snippet. Body: owner
   triple, session/nav/load/control ids, command id, source identity, deadline,
   receipt-resolution deadline, and code (20 KB max). Web calls also require
-  `tabId`, `tabGen`, `policyRevision`, and `selectionRevision`. Returns
+  `tabId`, `tabGen`, and `policyRevision`. Returns
   `succeeded` with result, files, popups, console/page errors, logs, and
   `stateWarnings`; or `errored`, `timed_out`, or `tainted` (target escape: the
   session is closed and the result is discarded). `timed_out` keeps the session
@@ -279,7 +279,7 @@ Operational outcomes return HTTP 200 with `{ ok: true }` or
 - `POST /internal/browser/control-resume` — require the exact paused `controlGen`, end human input, and
   ready the agent side for a fresh request lease.
 - `POST /internal/browser/agent-access` — web mode only. Body: owner triple,
-  `sessionId`, `on`, `agentBlockedHosts`, `policyRevision`, and `selectionRevision`.
+  `sessionId`, `on`, `agentBlockedHosts`, and `policyRevision`.
   Older revisions are refused. Every real change bumps `controlGen`, so a late reply cannot
   undo it in Convex. Turning it off also revokes a running command's bridge. New
   agent commands and agent reloads get `agent_access_off`.
@@ -345,7 +345,7 @@ Operational outcomes return HTTP 200 with `{ ok: true }` or
    The object checks that the URL, hello, and stored session have the same ids.
 2. The object owns all viewer sockets and answers
    `{ t: "hello", mode, viewerId, viewport, control, controlGen, loadGen, tabId, tabGen,
-   viewGen, viewedTabId, policyRevision, selectionRevision, tabs }`. One shared CDP
+   viewGen, viewedTabId, policyRevision, tabs }`. One shared CDP
    screencast produces JPEG frames for all viewers. Provider credentials and
    raw CDP commands never reach the client.
 3. Each `{ t: "frame", seq, loadGen, tabId, tabGen, viewGen }` is immediately followed by its binary
@@ -437,7 +437,7 @@ Socket close codes: 4401 bad grant, 4404 session gone, 4408 grant expired,
 
 Open with `mode: "web"`, positive `navGen`, `startUrl` (string or null),
 `agentAccess`, `profileId` (the Convex profile doc id), `profileKey` (32 bytes,
-base64), `policyRevision`, `selectionRevision`, and `agentBlockedHosts`
+base64), `policyRevision`, and `agentBlockedHosts`
 (up to 50 hosts, 253 characters each). An open reuses the existing web slot.
 A web session holds up to eight real tabs on the open internet. The viewer shows
 the shared selected tab. Agent commands name their own exact tab.

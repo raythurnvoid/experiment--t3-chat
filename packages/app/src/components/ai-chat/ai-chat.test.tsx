@@ -174,7 +174,7 @@ describe("AiChatThread", () => {
 			attachments: [],
 			selectedModelId: "gpt-6-luna",
 			selectedModeId: "agent",
-			browserIntent: { webChoice: { provider: "cloud" }, selectionRevision: 0, policyRevision: 0 },
+			browserIntent: { policyRevision: 0 },
 		} as const;
 		const controller = makeController({
 			selectedThreadId: "ai_thread-optimistic",
@@ -299,7 +299,7 @@ describe("AiChatThread", () => {
 							attachments: [],
 							selectedModelId: "gpt-6-luna",
 							selectedModeId: "agent",
-							browserIntent: { webChoice: { provider: "cloud" }, selectionRevision: 0, policyRevision: 0 },
+							browserIntent: { policyRevision: 0 },
 						},
 					],
 					canQueueUserText: true,
@@ -334,7 +334,7 @@ describe("AiChatThread", () => {
 			attachments: [],
 			selectedModelId: "gpt-6-luna",
 			selectedModeId: "ask",
-			browserIntent: { webChoice: { provider: "cloud" }, selectionRevision: 0, policyRevision: 0 },
+			browserIntent: { policyRevision: 0 },
 		} as const;
 		const saveQueuedUserMessageEdit = vi.fn(() => true);
 		const cancelQueuedUserMessageEdit = vi.fn();
@@ -399,7 +399,7 @@ describe("AiChatThread", () => {
 			attachments: [],
 			selectedModelId: "gpt-6-luna",
 			selectedModeId: "ask",
-			browserIntent: { webChoice: { provider: "cloud" }, selectionRevision: 0, policyRevision: 0 },
+			browserIntent: { policyRevision: 0 },
 		} as const;
 		const cancelQueuedUserMessageEdit = vi.fn();
 		const sendUserText = vi.fn();
@@ -449,7 +449,7 @@ describe("AiChatThread", () => {
 			attachments: [],
 			selectedModelId: "gpt-6-luna",
 			selectedModeId: "agent",
-			browserIntent: { webChoice: { provider: "cloud" }, selectionRevision: 0, policyRevision: 0 },
+			browserIntent: { policyRevision: 0 },
 		} as const;
 		const secondQueuedMessage = {
 			id: "ai_message-second",
@@ -457,7 +457,7 @@ describe("AiChatThread", () => {
 			attachments: [],
 			selectedModelId: "gpt-6-luna",
 			selectedModeId: "ask",
-			browserIntent: { webChoice: { provider: "cloud" }, selectionRevision: 0, policyRevision: 0 },
+			browserIntent: { policyRevision: 0 },
 		} as const;
 		const view = render(
 			<AiChatThread

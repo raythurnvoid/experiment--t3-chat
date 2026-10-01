@@ -11242,7 +11242,6 @@ describe("saved browser profiles", () => {
 				tabCount: 1,
 				tabs: [{ tabId: "tab-1", tabGen: 1, navGen: 1 }],
 				policyRevision: 0,
-				selectionRevision: 0,
 				createdAt: now,
 				updatedAt: now,
 			};

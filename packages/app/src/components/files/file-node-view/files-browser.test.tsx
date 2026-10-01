@@ -168,7 +168,6 @@ async function connectViewer() {
 				},
 			],
 			policyRevision: 0,
-			selectionRevision: 0,
 		}),
 	);
 	const frame = screen.getByRole("application");
@@ -206,7 +205,6 @@ describe("FilesBrowser", () => {
 				viewedTabId: mocks.sessionId,
 				tabs: [{ tabId: mocks.sessionId, tabGen: 1, navGen: 1, title: "Preview", url: "" }],
 				policyRevision: 0,
-				selectionRevision: 0,
 			}),
 		);
 		await act(async () => {
@@ -392,7 +390,6 @@ describe("FilesBrowser", () => {
 					},
 				],
 				policyRevision: 0,
-				selectionRevision: 0,
 			}),
 		);
 		expect(screen.getByRole("button", { name: "Take control" })).toHaveProperty("disabled", false);

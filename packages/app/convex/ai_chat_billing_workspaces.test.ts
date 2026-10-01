@@ -171,7 +171,7 @@ describe("/api/chat billing across workspaces", () => {
 					trigger: "submit-message",
 					threadId,
 					membershipId: membership._id,
-					browserIntent: { webChoice: { provider: "cloud" }, selectionRevision: 0, policyRevision: 0 },
+					browserIntent: { policyRevision: 0 },
 				}),
 			});
 			const body = await response.text();

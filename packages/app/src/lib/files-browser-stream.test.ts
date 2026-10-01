@@ -62,7 +62,6 @@ const serverHello = {
 	...tab,
 	viewedTabId: tab.tabId,
 	policyRevision: 0,
-	selectionRevision: 0,
 	tabs: [{ tabId: tab.tabId, tabGen: 1, navGen: 1, title: "Example", url: "https://example.com/" }],
 };
 
@@ -218,7 +217,6 @@ describe("files_browser_stream_connect", () => {
 			...tab,
 			viewedTabId: tab.tabId,
 			policyRevision: 0,
-			selectionRevision: 0,
 			tabs: serverHello.tabs,
 			viewerId: "v-1",
 			viewport: { width: 1280, height: 900 },

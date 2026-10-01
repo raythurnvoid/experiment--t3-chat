@@ -1475,7 +1475,6 @@ describe("reload_browser", () => {
 			tabId: "tab-1",
 			tabGen: 1,
 			policyRevision: 0,
-			selectionRevision: 0,
 		};
 		runnerQueue.push(runner_web_session({ navGen: 2, tabGen: 2 }));
 		const reloaded = await authed(t, fixture.userId).action(api.files_browser.reload_browser, {
@@ -1514,7 +1513,6 @@ describe("reload_browser", () => {
 					tabId: "tab-1",
 					tabGen: 1,
 					policyRevision: 0,
-					selectionRevision: 0,
 				},
 			});
 			expect(reloaded._nay?.name).toBe("stale");
@@ -1591,7 +1589,7 @@ describe("sync_browser_session", () => {
 		if (started._nay) throw new Error(started._nay.message);
 		const sessionId = started._yay.session.sessionId;
 		const source = await seed_browser_chat_source(t, fixture);
-		const browserIntent = { webChoice: { provider: "cloud" as const }, selectionRevision: 0, policyRevision: 0 };
+		const browserIntent = { policyRevision: 0 };
 		const base = vi.mocked(fetch).getMockImplementation()!;
 		let releaseRenew!: () => void;
 		let startedRenew!: () => void;
@@ -1627,7 +1625,6 @@ describe("sync_browser_session", () => {
 				tabId: "tab-1",
 				tabGen: 1,
 				policyRevision: 0,
-				selectionRevision: 0,
 			},
 		});
 		expect(reloaded._yay).toMatchObject({ navGen: 2, tabGen: 2 });
@@ -1741,7 +1738,7 @@ describe("sync_browser_tab_identities", () => {
 				threadId: source.threadId,
 				sourceMessageId: source.sourceMessageId,
 			},
-			browserIntent: { webChoice: { provider: "cloud" }, selectionRevision: 0, policyRevision: 0 },
+			browserIntent: { policyRevision: 0 },
 			run,
 			canWriteFiles: false,
 			invocationId: "bash-call" as Id<"ai_chat_bash_invocations">,
@@ -1899,13 +1896,7 @@ describe("/api/chat browser availability", () => {
 		const preference = await asUser.query(api.files_browser.current_browser_preferences, {
 			membershipId: fixture.membershipId,
 		});
-		const browserIntent = preference
-			? {
-					webChoice: preference.webChoice,
-					selectionRevision: preference.selectionRevision,
-					policyRevision: preference.policyRevision,
-				}
-			: null;
+		const browserIntent = preference ? { policyRevision: preference.policyRevision } : null;
 		const thread = await asUser.mutation(api.ai_chat.thread_create, {
 			membershipId: fixture.membershipId,
 			clientGeneratedId: "browser-thread",
@@ -1937,7 +1928,7 @@ describe("/api/chat browser availability", () => {
 		const call = await send_chat(t, viewer);
 		expect(call.tools).toHaveProperty("bash");
 		const source = await seed_browser_chat_source(t, viewer);
-		const browserIntent = { webChoice: { provider: "cloud" as const }, selectionRevision: 0, policyRevision: 0 };
+		const browserIntent = { policyRevision: 0 };
 		expect((await t.query(internal.files_browser.check_browser_source, { source, browserIntent }))._nay?.message).toBe(
 			"Permission denied",
 		);
@@ -1957,7 +1948,7 @@ describe("/api/chat browser availability", () => {
 		const t = test_convex();
 		const fixture = await seed_html_file(t);
 		const call = await send_chat(t, fixture);
-		expect(call.tools?.bash?.description).toContain("Browser: browser drives the web browser the user chose");
+		expect(call.tools?.bash?.description).toContain("Browser: browser drives web tabs and the cloud file preview");
 		expect(call.tools).not.toHaveProperty("browser_run");
 		expect(call.tools).not.toHaveProperty("edit_file");
 		expect(runnerCalls).toEqual([]);
@@ -1982,7 +1973,7 @@ describe("/api/chat browser availability", () => {
 		const sessionId = started._yay.session.sessionId;
 		await t.mutation(internal.files_browser.finish_close_browser_session, { sessionId });
 		const call = await send_chat(t, fixture);
-		expect(call.tools?.bash?.description).toContain("Browser: browser drives the web browser the user chose");
+		expect(call.tools?.bash?.description).toContain("Browser: browser drives web tabs and the cloud file preview");
 		expect(runnerCalls.map((entry) => entry.route)).toEqual(["open"]);
 	});
 });
@@ -3064,7 +3055,6 @@ function runner_web_session(overrides: Record<string, unknown> = {}) {
 			viewGen: 1,
 			tabCount: 1,
 			policyRevision: 0,
-			selectionRevision: 0,
 			pageNonce: "nonce-1",
 			commandCount: 0,
 			idleUntil: Date.now() + 300_000,
@@ -3138,8 +3128,7 @@ async function start_web_session(args: {
 	runnerQueue.push(
 		runner_web_session({
 			policyRevision: preference?.policyRevision ?? 0,
-			selectionRevision: preference?.selectionRevision ?? 0,
-			agentAccess: preference?.webAgentAccess !== false && preference?.webChoice.provider !== "none",
+			agentAccess: preference?.webAgentAccess !== false,
 		}),
 	);
 	return await authed(t, fixture.userId).action(api.files_browser.start_web_browser, {
@@ -3157,9 +3146,9 @@ describe("current_browser_preferences", () => {
 		const asMember = authed(t, member.userId);
 		expect(
 			(
-				await asMember.action(api.files_browser.set_browser_choice, {
+				await asMember.action(api.files_browser.set_browser_agent_access, {
 					membershipId: member.membershipId,
-					webChoice: { provider: "none" },
+					enabled: false,
 				})
 			)._nay,
 		).toBeUndefined();
@@ -3176,18 +3165,17 @@ describe("current_browser_preferences", () => {
 		expect(
 			await asMember.query(api.files_browser.current_browser_preferences, { membershipId: member.membershipId }),
 		).toMatchObject({
-			webChoice: { provider: "none" },
-			selectionRevision: 1,
-			policyRevision: 0,
+			webAgentAccess: false,
+			policyRevision: 1,
 		});
 		expect(
 			await asMember.query(api.files_browser.current_browser_preferences, { membershipId: owner.membershipId }),
 		).toBeNull();
 		expect(
 			(
-				await asMember.action(api.files_browser.set_browser_choice, {
+				await asMember.action(api.files_browser.set_browser_agent_access, {
 					membershipId: member.membershipId,
-					webChoice: { provider: "cloud" },
+					enabled: true,
 				})
 			)._nay?.message,
 		).toBe("Permission denied");
@@ -3290,7 +3278,7 @@ describe("agent_open_browser", () => {
 			await t.run((ctx) => ctx.db.patch("users", fixture.userId, { clerkUserId: "user_browser_control" }));
 			const asUser = authed(t, fixture.userId);
 			const source = await seed_browser_chat_source(t, fixture);
-			const browserIntent = { webChoice: { provider: "cloud" as const }, selectionRevision: 0, policyRevision: 0 };
+			const browserIntent = { policyRevision: 0 };
 			const path = "/control.html";
 			const nodeId =
 				kind === "reused file"
@@ -3846,7 +3834,6 @@ describe("web browser access", () => {
 				tabId: "tab-1",
 				tabGen: 1,
 				policyRevision: 0,
-				selectionRevision: 0,
 			},
 		});
 		expect(runnerCalls.at(-1)?.body).toMatchObject({ saveProfile: false, reason: "agent_close" });
@@ -4056,7 +4043,6 @@ describe("browser billing", () => {
 				tabCount: 0,
 				tabs: [],
 				policyRevision: 0,
-				selectionRevision: 0,
 				closedAt: now - 60_000,
 				createdAt: now - 60_000,
 			};

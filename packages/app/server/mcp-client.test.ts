@@ -323,13 +323,18 @@ describe("mcp_client_list_tools", () => {
 		expect(result._nay?.name).toBe("too_large");
 	});
 
-	test.each([
-		["empty-cursor", ["a"]],
-		["loop", ["a", "b", "c"]],
-	])("stops on a repeated cursor (%s)", async (variant, names) => {
-		const result = await list({ fixture: "big", variant });
+	test("stops when a page repeats the last cursor and tools", async () => {
+		const result = await list({ fixture: "big", variant: "empty-cursor" });
 
-		expect(result._yay?.tools.map((tool) => tool.name)).toEqual(names);
+		expect(result._yay?.tools.map((tool) => tool.name)).toEqual(["a"]);
+	});
+
+	test("refuses a cursor loop at the page limit", async () => {
+		// Since SDK 2.2.0 a server may send an old cursor again for a new page. So a longer loop ends only at
+		// the page limit.
+		const result = await list({ fixture: "big", variant: "loop" });
+
+		expect(result._nay?.name).toBe("too_large");
 	});
 
 	test("times out a slow list", async () => {

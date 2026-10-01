@@ -24,7 +24,6 @@ describe("playwriter_browser_reconnect_schema", () => {
 			agentBlockedHosts: [],
 			agentAccess: false,
 			policyRevision: 1,
-			selectionRevision: 1,
 			controlRevision: 1,
 		};
 		expect(playwriter_browser_connect_schema.safeParse(input).success).toBe(true);
@@ -49,7 +48,6 @@ describe("playwriter_browser_run_schema", () => {
 			receiptResolutionDeadline: 2,
 			controlRevision: 1,
 			policyRevision: 1,
-			selectionRevision: 1,
 			targetRevision: 1,
 			navRevision: 1,
 			targetId: "target",

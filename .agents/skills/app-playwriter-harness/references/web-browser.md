@@ -3,7 +3,7 @@
 Recipes for the workspace web browser route `/w/<org>/<ws>/browser`. The file mode browser inside
 Files has its own recipe in [files.md](files.md) under "Shared Cloud Browser End To End". Product
 rules and limits live in `.agents/skills/cloud-browser/SKILL.md`. The older cloud checks were verified
-2026-09-23. The provider and tab checks below describe the new UI; run them before release.
+2026-09-23. The My browser and tab checks below describe the new UI; run them before release.
 
 ## Before you start
 
@@ -26,12 +26,11 @@ rules and limits live in `.agents/skills/cloud-browser/SKILL.md`. The older clou
 
 ## Selectors
 
-- Provider: combobox `Browser provider`, with `Cloud browser` and `My browser (Playwriter)`.
-  Open it with Enter, then focus its listbox. Use Home for Cloud or End for Playwriter,
-  then Enter. Keep keyboard focus on the listbox, rather than an option.
+- The Browser page always shows the cloud panel. My browser is connected in `Browser settings`.
+  The agent sees both kinds of web tabs and picks one.
 - Cloud panel: `getByRole("region", { name: "Web browser" })` with `data-browser-mode="web"`.
-- Remote panel: region `My browser connection`, with `data-browser-provider="playwriter"` and
-  `data-connection-state`. Status and safe tab summaries are plain DOM text.
+- Remote panel (inside the `Browser settings` dialog): region `My browser connection`, with
+  `data-browser-provider="playwriter"` and `data-connection-state`. Status and safe tab summaries are plain DOM text.
 - Shared settings: button and dialog `Browser settings`. It has the switch `Agent can use web
   browser`, the `Sites the agent may not use` list, and the `Add a site` input.
 - Start card: button `Start web browser`. A user without a paid plan sees `The browser needs a Pay As
@@ -50,18 +49,19 @@ rules and limits live in `.agents/skills/cloud-browser/SKILL.md`. The older clou
 - Viewer: `role=application` inside the region, with an `img` whose natural size is 1280x800.
 - Agent panel on the same route: `section[aria-label="Agent"]`.
 
-## Provider and hidden-panel checks
+## My browser and hidden-panel checks
 
-- Select `My browser (Playwriter)`. Check that no viewer application, image, cloud viewer grant,
-  cloud session query, or profile query starts. Use the native shared tab to watch the agent.
-- Open `Browser settings` from the app header while Chat or Files is visible. Change agent access
+- Connect My browser from `Browser settings`. Check that no viewer application, image, cloud
+  viewer grant, or profile query starts for it. Use the native shared tab to watch the agent.
+- Open `Browser settings` on the Browser page. Change agent access
   and add or remove a blocked site. The saved settings apply to both providers. Closing the dialog
   keeps the connection and native tab open.
 - Paste a share ID or its exact Remote control link in `Share ID or Remote control link`. Never
   print the value, put it in chat, or copy it into QA logs. Connect clears the local field before
   the action settles. A copied CLI command must be reduced to the value after `--remote`.
-- If Connect returns `Choose a tab`, select the intended row with `Use this tab`. Check the exact
-  title and safe URL first. Do not select the first row by default.
+- A share with exactly one tab is confirmed by Connect on its own (`data-connection-state` goes to
+  `ready`). If Connect returns `Choose a tab`, select the intended row with `Use this tab`.
+  Check the exact title and safe URL first. Do not select the first row by default.
 - The extension's remote toolbar can appear in `snapshot()` while page role locators cannot reach
   it. Read its exact control with `Accessibility.getFullAXTree` through `getCDPSession(page)`.
   Use that node's `backendDOMNodeId` with `DOM.getBoxModel`, then click its current center with
@@ -71,15 +71,26 @@ rules and limits live in `.agents/skills/cloud-browser/SKILL.md`. The older clou
   and `Start remote control` controls, then copy its new ID into the local Connect field. Never
   print it or restart the shared browser or relay. A successful renewal does not prove why the old
   share failed.
+- The UI shows only `Browser request refused`. To read the refusal name, listen to the Convex socket
+  before Connect: `cdp.on("Network.webSocketFrameReceived", ...)` through `getCDPSession`, and keep
+  only the `"name":"..."` matches of frames that contain that message. Never log the frame.
+  `canceled` after about 8 s means the playwriter.dev tunnel answered and then closed before the
+  extension said hello: nobody shares that ID any more. This happens after the extension
+  disconnects from the local relay, even when the share looked fine earlier. Ask for a new share ID.
+  Checked 2026-10-01.
+- A runner that types the share ID must call the CLI with the code on one line. Through
+  `vp.exe env exec pnpx playwriter -e`, a multi-line `-e` value runs nothing and prints nothing.
 - After `Start remote control` and its `Share` confirm, the clipboard holds the longer agent
   prompt, not the ID. Open `Remote control options`, choose `Copy id`, focus the app's share field,
   and press `Control+V`. Check only the value's length and hex pattern, never the value. Verified
   2026-09-30.
 - Check `Pause`, `Resume`, `Reconnect`, `Refresh status`, and `Disconnect`. With the feature off,
   an existing connection still has `Refresh status` and `Disconnect`.
-- With remote access enabled, `Disconnect` shows `No browser selected` and `Choose a browser`.
-  Cloud Start appears only after an explicit `Cloud browser` choice is saved. A Disconnect from
-  another view also clears an old Connect draft.
+- `Disconnect` returns the region to the Connect form. The cloud Start card stays on the Browser
+  page. A Disconnect from another view also clears an old Connect draft.
+- Agent picks the tab: with a cloud tab and My browser both live, ask the agent to run
+  `browser tabs`. Expect one `cloud` line and one `my browser` line. A `browser run` without
+  `--tab` exits 2 and lists both ids; `run --tab <my browser id>` runs in the native tab.
 - For background remote checks, disable focus emulation from the local QA client on the owned
   fixture tab first: `cdp.send("Emulation.setFocusEmulationEnabled", { enabled: false })`.
   Then check `document.hidden`, `document.visibilityState`, and `document.hasFocus()`. The local
@@ -99,8 +110,8 @@ rules and limits live in `.agents/skills/cloud-browser/SKILL.md`. The older clou
   `2` (so `state` survived), and `Closed the cloud browser.` Read the stored outputs from
   `convex data ai_chat_run_steps --format jsonArray --limit 8 --order desc`: the `tool-bash` parts
   hold the same terminal text and `metadata.exitCode`, with no `data:image` and no runner ids.
-- Queue a message, then change the provider. Automatic drain keeps its saved intent. Explicit
-  Resume refreshes intent for messages still waiting. Retry, edit, and regenerate refresh only the
+- Queue a message, then change agent access or a blocked site. Automatic drain keeps its saved
+  intent. Explicit Resume refreshes intent for messages still waiting. Retry, edit, and regenerate refresh only the
   requested turn. Attachments and Files sources stay attached.
 - Start a file preview and a web session together. End only sessions created by the QA run.
 
@@ -315,7 +326,7 @@ Verified 2026-09-23 on runner version `ac58f65d`.
   gone without printing `profileKey`, keep only the `There are no documents in this table.` line
   of `convex data files_browser_profiles`. Then Start again on the private
   page; it must show `LOGGED OUT`.
-- Clear all saved data keeps common browser choice, access, and blocked hosts.
+- Clear all saved data keeps agent access and blocked hosts.
 - Member removal: the owner's `Remove` on the Users page has no confirm step. To restore the member,
   invite the same email again. The new membership has a new id.
 - Account deletion: `Manage account` > `Security` > delete account, then type `delete`. This deletes
@@ -487,7 +498,7 @@ print the copied share ID. Keep it in private memory or encrypted task scratch.
   and once with human control.
 - With control, the audit reports one `blockedHitTarget` on the viewer `role=application`. That is a
   false positive: the element at its center is its own `img`.
-- Tab walk with control starts with provider settings and cloud tabs, then `Reload`, `Address`,
+- Tab walk with control starts with `Browser settings` and cloud tabs, then `Reload`, `Address`,
   `Go`, `Resume agent`, `Manage saved data`, `Keep open`, `End browser`, and the viewer. The
   access switch is in Browser settings. `Back` and `Forward` are skipped while disabled. The
   Address focus ring is drawn on its `MyInputBox` wrapper, not on the `input`.

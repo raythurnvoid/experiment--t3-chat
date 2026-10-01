@@ -256,7 +256,7 @@ describe("/api/chat tool call repair", () => {
 				trigger: "submit-message",
 				threadId,
 				membershipId: membership.membershipId,
-				browserIntent: { webChoice: { provider: "cloud" }, selectionRevision: 0, policyRevision: 0 },
+				browserIntent: { policyRevision: 0 },
 			}),
 		});
 		const body = await response.text();
@@ -415,7 +415,7 @@ describe("/api/chat run access", () => {
 					trigger: "submit-message",
 					threadId,
 					membershipId: membership._id,
-					browserIntent: { webChoice: { provider: "cloud" }, selectionRevision: 0, policyRevision: 0 },
+					browserIntent: { policyRevision: 0 },
 				}),
 			});
 			let streamError: unknown;
@@ -507,7 +507,7 @@ describe("/api/chat run access", () => {
 					trigger: "submit-message",
 					threadId,
 					membershipId: membership.membershipId,
-					browserIntent: { webChoice: { provider: "cloud" }, selectionRevision: 0, policyRevision: 0 },
+					browserIntent: { policyRevision: 0 },
 				}),
 			});
 			const body = await response.text().catch((error: unknown) => {
@@ -662,7 +662,7 @@ describe("/api/chat private observations", () => {
 				trigger: "submit-message",
 				threadId,
 				membershipId: membership.membershipId,
-				browserIntent: { webChoice: { provider: "cloud" }, selectionRevision: 0, policyRevision: 0 },
+				browserIntent: { policyRevision: 0 },
 			}),
 		});
 		const bodyPromise = response.text();
@@ -811,7 +811,7 @@ describe("/api/chat private observations", () => {
 				trigger: "submit-message",
 				threadId,
 				membershipId: membership.membershipId,
-				browserIntent: { webChoice: { provider: "cloud" }, selectionRevision: 0, policyRevision: 0 },
+				browserIntent: { policyRevision: 0 },
 			}),
 		});
 		const body = await response.text();
@@ -959,7 +959,7 @@ describe("/api/chat workspace instructions", () => {
 				trigger: "submit-message",
 				threadId,
 				membershipId: membership.membershipId,
-				browserIntent: { webChoice: { provider: "cloud" }, selectionRevision: 0, policyRevision: 0 },
+				browserIntent: { policyRevision: 0 },
 			}),
 		});
 		const body = await response.text();
@@ -1054,7 +1054,7 @@ describe("/api/chat workspace instructions", () => {
 				trigger: "submit-message",
 				threadId,
 				membershipId: membership.membershipId,
-				browserIntent: { webChoice: { provider: "cloud" }, selectionRevision: 0, policyRevision: 0 },
+				browserIntent: { policyRevision: 0 },
 			}),
 		});
 		const body = await response.text();
@@ -1120,7 +1120,7 @@ describe("/api/chat workspace instructions", () => {
 				trigger: "submit-message",
 				threadId,
 				membershipId: membership.membershipId,
-				browserIntent: { webChoice: { provider: "cloud" }, selectionRevision: 0, policyRevision: 0 },
+				browserIntent: { policyRevision: 0 },
 			}),
 		});
 		const body = await response.text();
@@ -1183,7 +1183,7 @@ describe("/api/chat workspace instructions", () => {
 				trigger: "submit-message",
 				threadId,
 				membershipId: membership.membershipId,
-				browserIntent: { webChoice: { provider: "cloud" }, selectionRevision: 0, policyRevision: 0 },
+				browserIntent: { policyRevision: 0 },
 			}),
 		});
 		const body = await response.text();

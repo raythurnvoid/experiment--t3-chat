@@ -59,7 +59,7 @@ vi.mock("convex/react", async (importOriginal) => {
 			if (args === "skip") return undefined;
 			switch (getFunctionName(query)) {
 				case "files_browser:current_browser_preferences":
-					return { webChoice: { provider: "cloud" }, selectionRevision: 0, policyRevision: 0 };
+					return { policyRevision: 0 };
 				case "ai_chat_runs:branch_page":
 					if (messageStatusByThreadId[args.threadId!] === "denied") return null;
 					if (messageStatusByThreadId[args.threadId!] === "loading") return undefined;

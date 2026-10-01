@@ -39,10 +39,7 @@ import {
 	organizations_membership_lifetimes_db_get,
 } from "./organizations_membership_lifetimes.ts";
 import { access_control_db_authorize_membership } from "./access_control.ts";
-import {
-	files_browser_db_get_preferences,
-	files_browser_db_check_agent_intent,
-} from "./files_browser.ts";
+import { files_browser_db_get_preferences, files_browser_db_check_agent_intent } from "./files_browser.ts";
 import {
 	ai_chat_files_db_authorize_file_output,
 	ai_chat_files_db_begin_browser_invocation,
@@ -699,7 +696,11 @@ export const connect_tab = action({
 				_nay: { message: "Paste the Playwriter ID or its official share link.", name: "invalid_share" },
 			});
 		if (!enabled()) return Result({ _nay: { message: "Browser unavailable" } });
-		const linkFingerprint = await crypto_hmac_sha256_hex({ value: shareId, purpose: "playwriter-link", keyName: KEY_NAME });
+		const linkFingerprint = await crypto_hmac_sha256_hex({
+			value: shareId,
+			purpose: "playwriter-link",
+			keyName: KEY_NAME,
+		});
 		const prepared = (await ctx.runMutation(internal.playwriter_browser.prepare_connect, {
 			userId,
 			membershipId: args.membershipId,
@@ -709,7 +710,11 @@ export const connect_tab = action({
 		const connection = prepared._yay.connection;
 		if (prepared._yay.reused) return Result({ _yay: { connectionId: connection._id } });
 		try {
-			const encrypted = await crypto_encrypt_secret_value({ value: shareId, additionalData: secret_scope(connection), keyName: KEY_NAME });
+			const encrypted = await crypto_encrypt_secret_value({
+				value: shareId,
+				additionalData: secret_scope(connection),
+				keyName: KEY_NAME,
+			});
 			const stored = await ctx.runMutation(internal.playwriter_browser.store_credential, {
 				connectionId: connection._id,
 				attemptId: connection.connectAttemptId,
@@ -739,7 +744,20 @@ export const connect_tab = action({
 			})) as load_connection_Result;
 			if (dialed._nay || dialed._yay.state !== "needs_confirmation" || dialed._yay.targets.length !== 1)
 				return connected;
-			return confirm_target({ ctx, connection: dialed._yay, targetHandle: dialed._yay.targets[0]!.handle });
+			// The connect already worked. If this confirm fails (a blocked site, a runner error), keep the
+			// connection, so the user can still choose the tab by hand and see why it is refused.
+			const confirmed = await confirm_target({
+				ctx,
+				connection: dialed._yay,
+				targetHandle: dialed._yay.targets[0]!.handle,
+			}).catch((error: unknown) => {
+				// Log only the error name. Runner errors may contain the share ID.
+				console.error("Failed to confirm the shared tab after connect", {
+					errorName: error instanceof Error ? error.name : null,
+				});
+				return connected;
+			});
+			return confirmed._nay ? connected : confirmed;
 		} catch {
 			await ctx.runMutation(internal.playwriter_browser.forget_connection, {
 				connectionId: connection._id,
@@ -938,9 +956,10 @@ async function control(
 				ctx,
 				connection,
 				shareId,
-				transition: status._yay.runtime.sessionId === connection.sessionId
-					? { route: "recover" }
-					: { route: "reconnect", previousSessionId: status._yay.runtime.sessionId },
+				transition:
+					status._yay.runtime.sessionId === connection.sessionId
+						? { route: "recover" }
+						: { route: "reconnect", previousSessionId: status._yay.runtime.sessionId },
 			});
 		} catch {
 			await ctx.runMutation(internal.playwriter_browser.forget_connection, {
@@ -1359,7 +1378,8 @@ export const sweep_connections = internalMutation({
 					q.eq("active", false).eq("state", state).lte("idleExpiresAt", Date.now()),
 				)
 				.take(50);
-			for (const connection of expired) await playwriter_browser_db_disconnect({ ctx, connection, reason: "idle_expired" });
+			for (const connection of expired)
+				await playwriter_browser_db_disconnect({ ctx, connection, reason: "idle_expired" });
 			if (expired.length === 50) await ctx.scheduler.runAfter(0, internal.playwriter_browser.sweep_connections, {});
 		}
 		return null;

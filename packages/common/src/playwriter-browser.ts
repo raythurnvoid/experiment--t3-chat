@@ -39,7 +39,6 @@ export const playwriter_browser_connect_schema = z
 		agentBlockedHosts: z.array(z.string().min(1).max(253)).max(100),
 		agentAccess: z.boolean(),
 		policyRevision: revision,
-		selectionRevision: revision,
 		controlRevision: revision,
 	})
 	.strict();
@@ -61,7 +60,6 @@ export const playwriter_browser_access_schema = z
 		generation: revision,
 		agentAccess: z.boolean(),
 		policyRevision: revision,
-		selectionRevision: revision,
 		agentBlockedHosts: z.array(z.string().min(1).max(253)).max(100),
 	})
 	.strict();
@@ -73,7 +71,6 @@ export const playwriter_browser_run_schema = z
 		...command_identity,
 		controlRevision: revision,
 		policyRevision: revision,
-		selectionRevision: revision,
 		targetRevision: revision,
 		navRevision: revision,
 		targetId: id,
@@ -105,7 +102,6 @@ const playwriter_browser_runtime_schema = z
 		confirmedTargetId: id.nullable(),
 		controlRevision: revision,
 		policyRevision: revision,
-		selectionRevision: revision,
 		agentAccess: z.boolean(),
 		operations: revision,
 		idleExpiresAt: time,
@@ -121,7 +117,6 @@ const completed_lease = z
 		generation: revision,
 		controlRevision: revision,
 		policyRevision: revision,
-		selectionRevision: revision,
 		confirmedTargetId: id,
 		targetRevision: revision,
 		navRevision: revision,

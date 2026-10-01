@@ -70,9 +70,7 @@ const hookMocks = vi.hoisted(() => {
 		renderRuntime: vi.fn(),
 		chatInstances: [] as MockChatInstance[],
 		holdChatRequests: false,
-		preferences: { webChoice: { provider: "cloud" }, selectionRevision: 0, policyRevision: 0 } as
-			| browser_Intent
-			| undefined,
+		preferences: { policyRevision: 0 } as browser_Intent | undefined,
 		preferenceListeners: new Set<() => void>(),
 		startNewChatList: null as ((message: string) => string | undefined) | null,
 		startNewChatRuntime: null as ((message: string) => string | undefined) | null,
@@ -1093,7 +1091,7 @@ function FullPageSurface(props: { children: ReactNode; initialSelectedThreadId?:
 
 describe("AiChatController", () => {
 	beforeEach(() => {
-		hookMocks.preferences = { webChoice: { provider: "cloud" }, selectionRevision: 0, policyRevision: 0 };
+		hookMocks.preferences = { policyRevision: 0 };
 		hookMocks.tenant.membershipId = `membership_${crypto.randomUUID()}`;
 		hookMocks.tenant.organizationId = "organization_test";
 		hookMocks.tenant.workspaceId = "workspace_test";
@@ -1430,8 +1428,8 @@ describe("AiChatController", () => {
 			return (preparedRequest as { body: Record<string, unknown> }).body;
 		};
 
-		const frozenIntent: browser_Intent = { webChoice: { provider: "cloud" }, selectionRevision: 1, policyRevision: 1 };
-		const currentIntent: browser_Intent = { webChoice: { provider: "none" }, selectionRevision: 2, policyRevision: 2 };
+		const frozenIntent: browser_Intent = { policyRevision: 1 };
+		const currentIntent: browser_Intent = { policyRevision: 2 };
 		const bound = await preparedBody({
 			messages: [
 				{
@@ -1904,7 +1902,7 @@ describe("AiChatController", () => {
 			expect(screen.getByTestId("runtime-selected").textContent).toMatch(/^ai_thread-/);
 		});
 
-		setBrowserIntent({ webChoice: { provider: "cloud" }, selectionRevision: 1, policyRevision: 1 });
+		setBrowserIntent({ policyRevision: 1 });
 		fireEvent.click(screen.getByRole("button", { name: "send first" }));
 
 		const chat = hookMocks.chatInstances.find((chat) => chat.sendMessage.mock.calls.length === 1);
@@ -1923,54 +1921,7 @@ describe("AiChatController", () => {
 			expect(screen.getByTestId("runtime-failed-message").textContent).toBe("ai_message_mock_0");
 		});
 
-		const currentIntent: browser_Intent = {
-			webChoice: { provider: "playwriter", connectionId: "connection-live", confirmedTargetHandle: "target-live" },
-			selectionRevision: 2,
-			policyRevision: 2,
-		};
-		setBrowserIntent(currentIntent);
-		fireEvent.click(screen.getByRole("button", { name: "retry latest" }));
-
-		expect(chat.sendMessage).toHaveBeenCalledTimes(2);
-		const retried = chat.sendMessage.mock.calls[1]?.[0] as { metadata?: Record<string, unknown> };
-		expect(retried?.metadata?.browserIntent).toEqual(currentIntent);
-	});
-
-	test("a human retry can change from no browser to cloud", async () => {
-		const storageKey: `app_state::ai_chat_last_open::scope::${string}` = `app_state::ai_chat_last_open::scope::${hookMocks.tenant.membershipId}`;
-
-		render(
-			<ControllerSurface storageKey={storageKey}>
-				<RuntimeSendProbe />
-			</ControllerSurface>,
-		);
-
-		fireEvent.click(screen.getByRole("button", { name: "new runtime" }));
-
-		await waitFor(() => {
-			expect(screen.getByTestId("runtime-selected").textContent).toMatch(/^ai_thread-/);
-		});
-
-		setBrowserIntent({ webChoice: { provider: "none" }, selectionRevision: 1, policyRevision: 1 });
-		fireEvent.click(screen.getByRole("button", { name: "send first" }));
-
-		const chat = hookMocks.chatInstances.find((chat) => chat.sendMessage.mock.calls.length === 1);
-		expect(chat).toBeDefined();
-		if (!chat) {
-			throw new Error("Expected selected chat to send first message");
-		}
-
-		await waitFor(() => {
-			expect(screen.getByTestId("runtime-latest-message").textContent).toBe("ai_message_mock_0");
-		});
-
-		fireEvent.click(screen.getByRole("button", { name: "mark failed" }));
-
-		await waitFor(() => {
-			expect(screen.getByTestId("runtime-failed-message").textContent).toBe("ai_message_mock_0");
-		});
-
-		const currentIntent: browser_Intent = { webChoice: { provider: "cloud" }, selectionRevision: 2, policyRevision: 2 };
+		const currentIntent: browser_Intent = { policyRevision: 2 };
 		setBrowserIntent(currentIntent);
 		fireEvent.click(screen.getByRole("button", { name: "retry latest" }));
 
@@ -2014,9 +1965,9 @@ describe("AiChatController", () => {
 		expect(chat.messages).toHaveLength(1);
 	});
 
-	test.each(["cloud", "none"] as const)("drains a queued message with frozen browser choice %s", async (provider) => {
+	test("drains a queued message with its frozen browser intent", async () => {
 		hookMocks.holdChatRequests = true;
-		const threadId = `thread_queue_browser_${provider}`;
+		const threadId = "thread_queue_browser";
 		render(
 			<FullPageSurface initialSelectedThreadId={threadId}>
 				<RuntimeQueueProbe />
@@ -2027,7 +1978,7 @@ describe("AiChatController", () => {
 			expect(screen.getByTestId("queue-session").textContent).toBe("session");
 		});
 
-		const frozenIntent: browser_Intent = { webChoice: { provider }, selectionRevision: 1, policyRevision: 1 };
+		const frozenIntent: browser_Intent = { policyRevision: 1 };
 		setBrowserIntent(frozenIntent);
 		fireEvent.click(screen.getByRole("button", { name: "send first queue probe" }));
 		fireEvent.click(screen.getByRole("button", { name: "send second queue probe" }));
@@ -2040,12 +1991,8 @@ describe("AiChatController", () => {
 		expect(chat.sendMessage).toHaveBeenCalledTimes(1);
 		expect(screen.getByTestId("queue-texts").textContent).toBe("Second");
 
-		// The live selection moves on while the message waits; the drain must keep the freeze.
-		setBrowserIntent({
-			webChoice: { provider: "playwriter", connectionId: "connection-live", confirmedTargetHandle: "target-live" },
-			selectionRevision: 2,
-			policyRevision: 2,
-		});
+		// The live policy moves on while the message waits. The drain must keep the frozen intent.
+		setBrowserIntent({ policyRevision: 2 });
 		fireEvent.click(screen.getByRole("button", { name: "complete client response queue probe" }));
 
 		await waitFor(() => {
@@ -3436,15 +3383,7 @@ describe("AiChatController", () => {
 		expect(screen.getByTestId("queue-paused").textContent).toBe("yes");
 
 		fireEvent.click(screen.getByRole("button", { name: "settle stopped request with empty assistant queue probe" }));
-		const resumedIntent: browser_Intent = {
-			webChoice: {
-				provider: "playwriter",
-				connectionId: "connection-resumed",
-				confirmedTargetHandle: "target-resumed",
-			},
-			selectionRevision: 3,
-			policyRevision: 4,
-		};
+		const resumedIntent: browser_Intent = { policyRevision: 4 };
 		setBrowserIntent(resumedIntent);
 		fireEvent.click(screen.getByRole("button", { name: "resume queue probe" }));
 

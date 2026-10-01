@@ -6343,7 +6343,7 @@ describe("bash_run_command", () => {
 				wakeAgent: null,
 				output: null,
 				run: runner.chatRun,
-				browserIntent: { webChoice: { provider: "cloud" }, selectionRevision: 0, policyRevision: 0 },
+				browserIntent: { policyRevision: 0 },
 				sourceMessageId: thread!.newestNodeId!,
 			});
 			expect(result.stdout, result.stderr).toBe("/usr/bin/browser\n");
@@ -6361,7 +6361,7 @@ describe("bash_run_command", () => {
 				wakeAgent: null,
 				output: null,
 				run: runner.chatRun,
-				browserIntent: { webChoice: { provider: "cloud" }, selectionRevision: 0, policyRevision: 0 },
+				browserIntent: { policyRevision: 0 },
 				sourceMessageId: thread!.newestNodeId!,
 			});
 			expect(launched.metadata.launchedJobNumbers, launched.stderr).toEqual([1, 2]);

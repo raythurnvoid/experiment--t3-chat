@@ -135,7 +135,7 @@ async function send(
 			trigger: "submit-message",
 			threadId: fx.threadId,
 			membershipId: fx.membership.membershipId,
-			browserIntent: { webChoice: { provider: "cloud" }, selectionRevision: 0, policyRevision: 0 },
+			browserIntent: { policyRevision: 0 },
 		}),
 	});
 	const body = await response.text();

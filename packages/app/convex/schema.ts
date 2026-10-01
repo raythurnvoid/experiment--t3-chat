@@ -101,19 +101,10 @@ export const ai_chat_workspaces_source_validator = v.object({
 	run: v.optional(v.union(ai_chat_run_fence_validator, v.null())),
 });
 
-export const browser_choice_validator = v.union(
-	v.object({ provider: v.literal("none") }),
-	v.object({ provider: v.literal("cloud") }),
-	v.object({
-		provider: v.literal("playwriter"),
-		connectionId: v.string(),
-		confirmedTargetHandle: v.string(),
-	}),
-);
-
+/**
+ * The browser policy as it was when the user sent the message. Every agent browser door checks it.
+ */
 export const browser_intent_validator = v.object({
-	webChoice: browser_choice_validator,
-	selectionRevision: v.number(),
 	policyRevision: v.number(),
 });
 
@@ -3207,7 +3198,6 @@ const app_convex_schema = defineSchema({
 				tabCount: v.number(),
 				tabs: v.array(v.object({ tabId: v.string(), tabGen: v.number(), navGen: v.number() })),
 				policyRevision: v.number(),
-				selectionRevision: v.number(),
 			}),
 		),
 	)
@@ -3218,14 +3208,12 @@ const app_convex_schema = defineSchema({
 		.index("by_startingExpiresAt", ["startingExpiresAt"]),
 
 	/**
-	 * Saved web choice and policy survive browser and cookie cleanup.
+	 * Saved agent browser policy survives browser and cookie cleanup.
 	 */
 	files_browser_preferences: defineTable({
 		ownerId: v.id("users"),
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
-		webChoice: browser_choice_validator,
-		selectionRevision: v.number(),
 		webAgentAccess: v.boolean(),
 		policyRevision: v.number(),
 		agentBlockedHosts: v.array(v.string()),

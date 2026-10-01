@@ -51,7 +51,7 @@ async function fixture() {
 		sourceMessageId,
 		membershipLifetime: captured._yay.membershipLifetime,
 	};
-	const browserIntent = { webChoice: { provider: "cloud" as const }, selectionRevision: 0, policyRevision: 0 };
+	const browserIntent = { policyRevision: 0 };
 	const identity = { source, browserIntent, toolCallId: "open-1", operationHash: "a".repeat(64), resource: null };
 	const begin = (changes: Partial<typeof identity> = {}) =>
 		t.mutation(internal.ai_chat_files.begin_browser_invocation, {
@@ -168,7 +168,7 @@ describe("begin_browser_invocation", () => {
 });
 
 describe("browser preferences", () => {
-	test("has one cloud-enabled default without creating a profile or session", async () => {
+	test("has one agent-enabled default without creating a profile or session", async () => {
 		const f = await fixture();
 		expect(
 			await f.asUser.query(api.files_browser.current_browser_preferences, { membershipId: f.db.membershipId }),
@@ -194,7 +194,6 @@ describe("browser preferences", () => {
 		await f.t.mutation(internal.files_browser.finish_browser_preferences_sync, {
 			preferenceId: changed._yay._id,
 			policyRevision: 1,
-			selectionRevision: 0,
 		});
 		const newIntent = { ...f.browserIntent, policyRevision: 1 };
 		expect((await f.begin({ browserIntent: newIntent }))._nay?.name).toBe("agent_access_off");
@@ -222,33 +221,8 @@ describe("browser preferences", () => {
 			await f.t.mutation(internal.files_browser.finish_browser_preferences_sync, {
 				preferenceId: changed._yay._id,
 				policyRevision: 0,
-				selectionRevision: 0,
 			}),
 		).toBe(false);
-	});
-
-	test("a new send uses the new saved choice while the queued send stays refused", async () => {
-		const f = await fixture();
-		const changed = await f.t.mutation(internal.files_browser.change_browser_preferences, {
-			userId: f.db.userId,
-			membershipId: f.db.membershipId,
-			change: { kind: "choice", webChoice: { provider: "none" } },
-		});
-		if (changed._nay) throw new Error(changed._nay.message);
-		await f.t.mutation(internal.files_browser.finish_browser_preferences_sync, {
-			preferenceId: changed._yay._id,
-			policyRevision: 0,
-			selectionRevision: 1,
-		});
-		expect((await f.begin())._nay?.name).toBe("browser_intent_changed");
-		expect(
-			(
-				await f.t.query(internal.files_browser.check_browser_source, {
-					source: f.source,
-					browserIntent: { webChoice: { provider: "none" }, policyRevision: 0, selectionRevision: 1 },
-				})
-			)._yay,
-		).toBeNull();
 	});
 });
 
@@ -325,7 +299,6 @@ describe("update_browser_turn", () => {
 				tabCount: 1,
 				tabs: [{ tabId: "tab-1", tabGen: 1, navGen: 1 }],
 				policyRevision: 0,
-				selectionRevision: 0,
 				createdAt: Date.now(),
 				updatedAt: Date.now(),
 			}),
@@ -412,7 +385,6 @@ describe("resolve_cloud_browser_invocation", () => {
 				tabCount: 1,
 				tabs: [{ tabId: "tab-1", tabGen: 1, navGen: 1 }],
 				policyRevision: 0,
-				selectionRevision: 0,
 				createdAt: Date.now(),
 				updatedAt: Date.now(),
 			}),
@@ -509,7 +481,6 @@ describe("resolve_cloud_browser_invocation", () => {
 				tabCount: 0,
 				tabs: [],
 				policyRevision: 0,
-				selectionRevision: 0,
 				startingExpiresAt: Date.now() + 1_000,
 				createdAt: Date.now(),
 				updatedAt: Date.now(),
@@ -546,7 +517,6 @@ describe("resolve_cloud_browser_invocation", () => {
 					viewGen: 1,
 					tabCount: 1,
 					policyRevision: 0,
-					selectionRevision: 0,
 					idleUntil: Date.now() + 300_000,
 					totalUntil: Date.now() + 1_200_000,
 				},
@@ -602,7 +572,6 @@ describe("Delete chat browser calls", () => {
 				tabCount: 1,
 				tabs: [{ tabId: "tab-1", tabGen: 1, navGen: 1 }],
 				policyRevision: 0,
-				selectionRevision: 0,
 				createdAt: Date.now(),
 				updatedAt: Date.now(),
 			}),

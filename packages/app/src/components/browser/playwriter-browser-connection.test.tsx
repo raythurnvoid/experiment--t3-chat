@@ -7,7 +7,6 @@ const mocks = vi.hoisted(() => ({
 	action: vi.fn(),
 	available: { enabled: true, hasSavedConnection: false },
 	connection: null as Record<string, unknown> | null,
-	preferences: { webChoice: { provider: "cloud" } },
 }));
 
 vi.mock("@/lib/app-tenant-context.tsx", () => ({
@@ -25,8 +24,6 @@ vi.mock("convex/react", () => ({
 				return mocks.available;
 			case "playwriter_browser:current_connection":
 				return mocks.connection;
-			case "files_browser:current_browser_preferences":
-				return mocks.preferences;
 			default:
 				return null;
 		}
