@@ -1,7 +1,7 @@
 import "./files-properties-modal.css";
 
 import { Editor, type EditorProps } from "@monaco-editor/react";
-import { Check, CircleAlert, CircleHelp, Plug, User, X } from "lucide-react";
+import { Check, CircleHelp, Plug, User, X } from "lucide-react";
 import { useQuery } from "convex/react";
 import { editor as monaco_editor } from "monaco-editor";
 import { Fragment, memo, useEffect, useId, useRef, useState, type ReactNode, type RefObject } from "react";
@@ -44,10 +44,14 @@ import { users_SYSTEM_AUTHOR } from "../../../shared/users.ts";
  * nothing to save.
  *
  * `save` answers `true` when the write worked. The section shows its own error when it did not.
+ *
+ * A section whose save cannot be undone sets `confirm`. Then Save first opens a dialog with these
+ * words, and nothing is written until the person confirms.
  */
 type SaveState = {
 	dirty: boolean;
 	invalid: boolean;
+	confirm: { title: string; text: string; action: string } | null;
 	save: () => Promise<boolean>;
 };
 
@@ -220,11 +224,12 @@ type FilesPropertiesModalWritePolicy_ClassNames =
 	| "FilesPropertiesModalWritePolicy-option"
 	| "FilesPropertiesModalWritePolicy-option-picker"
 	| "FilesPropertiesModalWritePolicy-description"
-	| "FilesPropertiesModalWritePolicy-actions"
 	| "FilesPropertiesModalWritePolicy-error"
-	| "FilesPropertiesModalWritePolicy-confirm"
-	| "FilesPropertiesModalWritePolicy-confirm-text"
-	| "FilesPropertiesModalWritePolicy-new-items";
+	| "FilesPropertiesModalWritePolicy-new-items"
+	| "FilesPropertiesModalWritePolicy-apply"
+	| "FilesPropertiesModalWritePolicy-apply-text"
+	| "FilesPropertiesModalWritePolicy-apply-label"
+	| "FilesPropertiesModalWritePolicy-apply-description";
 
 type PolicyDraft = {
 	mode: "editable" | "read_only" | "writer";
@@ -381,7 +386,7 @@ const POLICY_LABELS = {
 } satisfies Record<(typeof POLICY_MODES)[number], string>;
 
 /**
- * Words for the three blocks: the item's own rule, and, for a folder, the rule for new items. A person
+ * Words for the three blocks: the item's own rule, and, for a folder, the rule for items inside. A person
  * sees a plugin where the code says service account, because "service account" means nothing to them.
  */
 const POLICY_COPY = {
@@ -394,23 +399,24 @@ const POLICY_COPY = {
 	},
 	folder: {
 		title: "Who can change this folder",
-		helper: "Controls adding, removing, and renaming items in this folder. Each item keeps its own protection.",
-		editable: "Anyone with edit access can change this folder.",
-		read_only: "The folder can be read, but not changed.",
-		writer: "Only the people and plugins you choose can edit.",
+		helper: "Choose who can change this folder. Each item inside keeps its own rule.",
+		editable: "Anyone with edit access can add, remove, and rename items.",
+		read_only: "The folder can be read, but items cannot be added, removed, or renamed.",
+		writer: "Only the people and plugins you choose can add, remove, and rename items.",
 	},
 	default: {
-		title: "Rule for new items",
-		helper: "Copied once onto each new file and subfolder. Existing items are not changed.",
-		editable: "New items can be changed by anyone with edit access.",
-		read_only: "New items start read-only.",
-		writer: "New items start with only the people and plugins you choose as editors.",
+		title: "Rule for items inside",
+		helper: "Choose the rule for files and subfolders in this folder.",
+		editable: "Anyone with edit access can edit the items.",
+		read_only: "The items can be read, but not changed.",
+		writer: "Only the people and plugins you choose can edit the items.",
 	},
 } satisfies Record<string, { title: string; helper: string } & Record<(typeof POLICY_MODES)[number], string>>;
 
 /**
- * Edit this item's own rule and, for folders, the starting rule for new items.
- * Choosing Editable unlocks only this item. Saving never touches other items.
+ * Edit this item's own rule and, for folders, the rule for items inside. New items get that rule when
+ * they are created. Saving changes the items already inside only when the person also checks "Also
+ * apply it to the items already inside" and confirms.
  */
 const FilesPropertiesModalWritePolicy = memo(function FilesPropertiesModalWritePolicy(
 	props: FilesPropertiesModalWritePolicy_Props,
@@ -420,7 +426,8 @@ const FilesPropertiesModalWritePolicy = memo(function FilesPropertiesModalWriteP
 	const { membershipId } = AppTenantProvider.useContext();
 	const policyGroupId = `FilesPropertiesModalWritePolicy-${useId()}`;
 	const defaultGroupId = `FilesPropertiesModalWritePolicy-default-${useId()}`;
-	const applyCancelRef = useRef<HTMLButtonElement>(null);
+	const applyLabelId = useId();
+	const applyDescriptionId = useId();
 	const [isRunning, setIsRunning] = useState(false);
 	const [isDefaultRunning, setIsDefaultRunning] = useState(false);
 	const [isApplying, setIsApplying] = useState(false);
@@ -428,7 +435,7 @@ const FilesPropertiesModalWritePolicy = memo(function FilesPropertiesModalWriteP
 	const [defaultError, setDefaultError] = useState<string | null>(null);
 	const [applyError, setApplyError] = useState<string | null>(null);
 	const [applyResult, setApplyResult] = useState<string | null>(null);
-	const [applyConfirm, setApplyConfirm] = useState<SavedPolicy | undefined>(undefined);
+	const [applyToContents, setApplyToContents] = useState(false);
 	const [draft, setDraft] = useState<PolicyDraft | null>(null);
 	const [defaultDraft, setDefaultDraft] = useState<PolicyDraft | null>(null);
 	// Which rule the writers dialog edits, or `null` while it is closed.
@@ -451,8 +458,10 @@ const FilesPropertiesModalWritePolicy = memo(function FilesPropertiesModalWriteP
 	// A Custom rule with nobody chosen cannot be saved yet.
 	const policyInvalid = policyUnsaved && choice.mode === "writer" && choice.writers.length === 0;
 	const defaultInvalid = defaultUnsaved && defaultChoice.mode === "writer" && defaultChoice.writers.length === 0;
-	// Bulk apply copies the saved rule. It cannot copy writers that are hidden from this person.
-	const applyUnavailable = policy_hidden_writer_count(savedPolicy) > 0;
+	// Applying copies the rule for items inside. It cannot copy writers that are hidden from this person,
+	// so it stays off until the person replaces those writers.
+	const applyUnavailable = policy_hidden_writer_count(savedDefault) > 0 && !defaultUnsaved;
+	const applyRuleLabel = applyToContents ? policy_choice_label(saved_policy_from_draft(defaultChoice)) : null;
 
 	const savePolicy = () => {
 		const writePolicy = saved_policy_from_draft(choice);
@@ -518,6 +527,37 @@ const FilesPropertiesModalWritePolicy = memo(function FilesPropertiesModalWriteP
 			});
 	};
 
+	const applyToItemsInside = (writePolicy: SavedPolicy) => {
+		setApplyError(null);
+		setApplyResult(null);
+		setIsApplying(true);
+
+		return app_convex
+			.mutation(app_convex_api.files_write_policy_runs.start, { membershipId, nodeId, writePolicy })
+			.then((result) => {
+				if (result._nay) {
+					setApplyError(result._nay.message);
+					return false;
+				}
+
+				// A big folder takes many steps, so the job runs in the background and reports in Activity.
+				setApplyResult("Updating the items inside in the background. Track it in Activity.");
+				setApplyToContents(false);
+				return true;
+			})
+			.catch((caughtError: unknown) => {
+				console.error("[FilesPropertiesModalWritePolicy.applyToItemsInside] Failed to apply the rule", {
+					error: caughtError,
+					nodeId,
+				});
+				setApplyError("Failed to apply the rule to the items inside");
+				return false;
+			})
+			.finally(() => {
+				setIsApplying(false);
+			});
+	};
+
 	// The footer Save button calls this. It writes only the rules that changed, and the two rules
 	// are independent, so they run together.
 	const save = useFn(() => {
@@ -528,66 +568,48 @@ const FilesPropertiesModalWritePolicy = memo(function FilesPropertiesModalWriteP
 		if (canManage && defaultUnsaved && !defaultInvalid && !isDefaultRunning) {
 			writes.push(saveDefault());
 		}
+		// Read the rule now. The save below clears the draft, but the job must copy what the person saw.
+		const applyPolicy = saved_policy_from_draft(defaultChoice);
 
-		return Promise.all(writes).then((results) => results.every(Boolean));
+		return Promise.all(writes).then((results) => {
+			// Start copying the rule only after both rules are saved. If a save failed, the person
+			// should fix it first instead of getting a half-done change.
+			if (!results.every(Boolean)) {
+				return false;
+			}
+			if (canManage && applyToContents && !applyUnavailable && !isApplying) {
+				return applyToItemsInside(applyPolicy);
+			}
+			return true;
+		});
 	});
-
-	const handleOpenApplyConfirm = () => {
-		if (isApplying || !canManage || policyUnsaved || applyUnavailable) {
-			return;
-		}
-
-		// Capture the saved rule now. A rule saved elsewhere while confirming does not leak in.
-		setApplyError(null);
-		setApplyResult(null);
-		setApplyConfirm(saved_policy_from_draft(policy_draft_from_visible(savedPolicy)));
-	};
-
-	const handleApplyToContents = () => {
-		if (isApplying || !canManage || applyConfirm === undefined) {
-			return;
-		}
-		const writePolicy = applyConfirm;
-
-		setApplyError(null);
-		setIsApplying(true);
-
-		app_convex
-			.mutation(app_convex_api.files_write_policy_runs.start, { membershipId, nodeId, writePolicy })
-			.then((result) => {
-				if (result._nay) {
-					setApplyError(result._nay.message);
-					return;
-				}
-				// A big folder takes many steps, so the job runs in the background and reports in Activity.
-				setApplyResult("Updating protection in the background. Track it in Activity.");
-				setApplyConfirm(undefined);
-			})
-			.catch((caughtError: unknown) => {
-				console.error("[FilesPropertiesModalWritePolicy.handleApplyToContents] Failed to apply protection", {
-					error: caughtError,
-					nodeId,
-				});
-				setApplyError("Failed to apply protection");
-			})
-			.finally(() => {
-				setIsApplying(false);
-			});
-	};
-
-	useEffect(() => {
-		if (applyConfirm !== undefined) {
-			applyCancelRef.current?.focus();
-		}
-	}, [applyConfirm]);
 
 	useEffect(() => {
 		onSaveStateChange({
-			dirty: policyUnsaved || defaultUnsaved,
-			invalid: policyInvalid || defaultInvalid,
+			dirty: policyUnsaved || defaultUnsaved || applyToContents,
+			invalid: policyInvalid || defaultInvalid || (applyToContents && applyUnavailable),
+			// Applying replaces the rules of many items and cannot be undone, so Save asks first.
+			confirm:
+				applyRuleLabel === null
+					? null
+					: {
+							title: "Change the rule of all items inside?",
+							text: `Every file and subfolder in this folder that you can manage gets “${applyRuleLabel}”. This replaces their current rule, including chosen writers. Archived items are not changed. You cannot undo this.`,
+							action: "Save and apply",
+						},
 			save,
 		});
-	}, [policyUnsaved, defaultUnsaved, policyInvalid, defaultInvalid, save, onSaveStateChange]);
+	}, [
+		policyUnsaved,
+		defaultUnsaved,
+		applyToContents,
+		applyUnavailable,
+		policyInvalid,
+		defaultInvalid,
+		applyRuleLabel,
+		save,
+		onSaveStateChange,
+	]);
 
 	const renderChoices = (
 		choiceValue: PolicyDraft,
@@ -692,84 +714,12 @@ const FilesPropertiesModalWritePolicy = memo(function FilesPropertiesModalWriteP
 					onManage={() => setWritersDialog("policy")}
 				/>,
 			)}
-			{/* The rule itself is saved by the Save button in the dialog footer. Applying it to the contents is
-			    a separate action, so it keeps its own button here. */}
-			{nodeKind === "folder" ? (
-				<div className={"FilesPropertiesModalWritePolicy-actions" satisfies FilesPropertiesModalWritePolicy_ClassNames}>
-					<MyButton
-						variant="ghost"
-						disabled={!canManage || isApplying || policyUnsaved || applyUnavailable}
-						aria-busy={isApplying || undefined}
-						onClick={handleOpenApplyConfirm}
-					>
-						Apply to contents…
-					</MyButton>
-				</div>
-			) : null}
-			{applyUnavailable ? (
-				<p
-					className={"FilesPropertiesModalWritePolicy-description" satisfies FilesPropertiesModalWritePolicy_ClassNames}
-				>
-					Some chosen writers are no longer available, so bulk apply is off. Change the writers and save first.
-				</p>
-			) : null}
-			{/* Mark this step as dangerous with a red edge, because it replaces the protection of many items. */}
-			{applyConfirm !== undefined && nodeKind === "folder" ? (
-				<div className={"FilesPropertiesModalWritePolicy-confirm" satisfies FilesPropertiesModalWritePolicy_ClassNames}>
-					<CircleAlert aria-hidden />
-					<div>
-						<p
-							className={
-								"FilesPropertiesModalWritePolicy-confirm-text" satisfies FilesPropertiesModalWritePolicy_ClassNames
-							}
-						>
-							Set all non-archived files and subfolders you can manage inside this folder to “
-							{policy_choice_label(applyConfirm)}”? This replaces their current protection, including chosen writers.
-							New-item defaults stay unchanged.
-						</p>
-						<div
-							className={"FilesPropertiesModalWritePolicy-actions" satisfies FilesPropertiesModalWritePolicy_ClassNames}
-						>
-							<MyButton variant="outline" disabled={isApplying} onClick={handleApplyToContents}>
-								{isApplying ? "Applying…" : "Apply"}
-							</MyButton>
-							<MyButton
-								variant="ghost"
-								ref={applyCancelRef}
-								disabled={isApplying}
-								onClick={() => {
-									setApplyConfirm(undefined);
-									setApplyError(null);
-								}}
-							>
-								Cancel
-							</MyButton>
-						</div>
-					</div>
-				</div>
-			) : null}
-			{applyResult ? (
-				<p
-					className={"FilesPropertiesModalWritePolicy-description" satisfies FilesPropertiesModalWritePolicy_ClassNames}
-				>
-					{applyResult}
-				</p>
-			) : null}
-
 			{error ? (
 				<p
 					className={"FilesPropertiesModalWritePolicy-error" satisfies FilesPropertiesModalWritePolicy_ClassNames}
 					role="alert"
 				>
 					{error}
-				</p>
-			) : null}
-			{applyError ? (
-				<p
-					className={"FilesPropertiesModalWritePolicy-error" satisfies FilesPropertiesModalWritePolicy_ClassNames}
-					role="alert"
-				>
-					{applyError}
 				</p>
 			) : null}
 
@@ -790,6 +740,68 @@ const FilesPropertiesModalWritePolicy = memo(function FilesPropertiesModalWriteP
 							onManage={() => setWritersDialog("default")}
 						/>,
 					)}
+					{/* Copying the rule onto the items already inside is one step of the next Save, not a setting
+					    that stays on. Do not disable the box while the job starts, or the browser throws a
+					    keyboard user out of the dialog. */}
+					<MyCheckboxButton
+						className={"FilesPropertiesModalWritePolicy-apply" satisfies FilesPropertiesModalWritePolicy_ClassNames}
+						variant="outline"
+						checked={applyToContents}
+						disabled={!canManage || applyUnavailable}
+						aria-labelledby={applyLabelId}
+						aria-describedby={applyDescriptionId}
+						aria-busy={isApplying || undefined}
+						onCheckedChange={(checked) => {
+							if (!isApplying) {
+								setApplyToContents(checked);
+								setApplyError(null);
+								setApplyResult(null);
+							}
+						}}
+					>
+						<span
+							className={
+								"FilesPropertiesModalWritePolicy-apply-text" satisfies FilesPropertiesModalWritePolicy_ClassNames
+							}
+						>
+							<span
+								id={applyLabelId}
+								className={
+									"FilesPropertiesModalWritePolicy-apply-label" satisfies FilesPropertiesModalWritePolicy_ClassNames
+								}
+							>
+								Also apply it to the items already inside
+							</span>
+							<span
+								id={applyDescriptionId}
+								className={
+									"FilesPropertiesModalWritePolicy-apply-description" satisfies FilesPropertiesModalWritePolicy_ClassNames
+								}
+							>
+								{applyUnavailable
+									? "Some chosen writers are no longer available, so this is off. Change the writers first."
+									: "Without this, only new items get the rule."}
+							</span>
+						</span>
+					</MyCheckboxButton>
+					{applyResult ? (
+						<p
+							className={
+								"FilesPropertiesModalWritePolicy-description" satisfies FilesPropertiesModalWritePolicy_ClassNames
+							}
+							role="status"
+						>
+							{applyResult}
+						</p>
+					) : null}
+					{applyError ? (
+						<p
+							className={"FilesPropertiesModalWritePolicy-error" satisfies FilesPropertiesModalWritePolicy_ClassNames}
+							role="alert"
+						>
+							{applyError}
+						</p>
+					) : null}
 					{defaultError ? (
 						<p
 							className={"FilesPropertiesModalWritePolicy-error" satisfies FilesPropertiesModalWritePolicy_ClassNames}
@@ -808,7 +820,7 @@ const FilesPropertiesModalWritePolicy = memo(function FilesPropertiesModalWriteP
 						setWritersDialog(null);
 					}
 				}}
-				title={writersDialog === "default" ? "Writers for new items" : "Writers"}
+				title={writersDialog === "default" ? "Writers for items inside" : "Writers"}
 				subtitle={POLICY_COPY[writersDialog === "default" ? "default" : nodeKind].writer}
 				writers={writersDialog === "default" ? defaultChoice.writers : choice.writers}
 				hiddenWriterCount={policy_hidden_writer_count(writersDialog === "default" ? savedDefault : savedPolicy)}
@@ -1098,7 +1110,9 @@ const FilesPropertiesModalCollaboration = memo(function FilesPropertiesModalColl
 type FilesPropertiesModalMetadata_ClassNames =
 	| "FilesPropertiesModalMetadata"
 	| "FilesPropertiesModalMetadata-header"
+	| "FilesPropertiesModalMetadata-heading"
 	| "FilesPropertiesModalMetadata-description"
+	| "FilesPropertiesModalMetadata-help"
 	| "FilesPropertiesModalMetadata-editor"
 	| "FilesPropertiesModalMetadata-skeleton"
 	| "FilesPropertiesModalMetadata-placeholder"
@@ -1333,7 +1347,7 @@ const FilesPropertiesModalMetadata = memo(function FilesPropertiesModalMetadata(
 	}, [saving, editable]);
 
 	useEffect(() => {
-		onSaveStateChange({ dirty: dirty && editable, invalid: false, save: handleSave });
+		onSaveStateChange({ dirty: dirty && editable, invalid: false, confirm: null, save: handleSave });
 	}, [dirty, editable, handleSave, onSaveStateChange]);
 
 	useEffect(() => {
@@ -1383,12 +1397,23 @@ const FilesPropertiesModalMetadata = memo(function FilesPropertiesModalMetadata(
 
 	return (
 		<div className={"FilesPropertiesModalMetadata" satisfies FilesPropertiesModalMetadata_ClassNames}>
-			{/* Put the help button at the end of this line, above the editor's right edge. */}
+			{/* The heading and the description stack in the first column. The help button sits in the top
+			    right corner and spans both rows, so it does not make any row taller. */}
 			<div className={"FilesPropertiesModalMetadata-header" satisfies FilesPropertiesModalMetadata_ClassNames}>
+				<h3
+					className={cn(
+						"FilesPropertiesModalMetadata-heading" satisfies FilesPropertiesModalMetadata_ClassNames,
+						"FilesPropertiesModal-section-heading" satisfies FilesPropertiesModal_ClassNames,
+					)}
+				>
+					Metadata
+				</h3>
 				<p className={"FilesPropertiesModalMetadata-description" satisfies FilesPropertiesModalMetadata_ClassNames}>
 					Add your own fields to this item. Select the help button to see how.
 				</p>
-				<FilesPropertiesModalMetadataHelp />
+				<div className={"FilesPropertiesModalMetadata-help" satisfies FilesPropertiesModalMetadata_ClassNames}>
+					<FilesPropertiesModalMetadataHelp />
+				</div>
 			</div>
 
 			<div className={"FilesPropertiesModalMetadata-editor" satisfies FilesPropertiesModalMetadata_ClassNames}>
@@ -1743,7 +1768,9 @@ type FilesPropertiesModal_ClassNames =
 	| "FilesPropertiesModal-section"
 	| "FilesPropertiesModal-section-heading"
 	| "FilesPropertiesModal-unsaved"
-	| "FilesPropertiesModal-footer-spacer";
+	| "FilesPropertiesModal-footer-spacer"
+	| "FilesPropertiesModal-confirm-modal"
+	| "FilesPropertiesModal-confirm-text";
 
 export type FilesPropertiesModal_Props = {
 	nodeId: app_convex_Id<"files_nodes"> | null;
@@ -1760,6 +1787,9 @@ export const FilesPropertiesModal = memo(function FilesPropertiesModal(props: Fi
 	const [policySaveState, setPolicySaveState] = useState<SaveState | null>(null);
 	const [metadataSaveState, setMetadataSaveState] = useState<SaveState | null>(null);
 	const [saving, setSaving] = useState(false);
+	const [isConfirmingSave, setIsConfirmingSave] = useState(false);
+	const confirmSaveTextId = useId();
+	const cancelSaveRef = useRef<HTMLButtonElement>(null);
 
 	// The sections below read these same queries. Nothing else in the app subscribes to them before
 	// the modal opens, so the first answer needs a server round trip. Wait for it here and show the
@@ -1782,12 +1812,9 @@ export const FilesPropertiesModal = memo(function FilesPropertiesModal(props: Fi
 	const saveStates = [policySaveState, metadataSaveState];
 	const dirty = saveStates.some((saveState) => saveState?.dirty);
 	const invalid = saveStates.some((saveState) => saveState?.invalid);
+	const saveConfirm = saveStates.find((saveState) => saveState?.dirty && saveState.confirm)?.confirm ?? null;
 
-	const handleSave = useFn(() => {
-		if (saving || !dirty || invalid) {
-			return;
-		}
-
+	const runSave = () => {
 		setSaving(true);
 
 		Promise.all(saveStates.map((saveState) => (saveState?.dirty ? saveState.save() : Promise.resolve(true))))
@@ -1797,11 +1824,41 @@ export const FilesPropertiesModal = memo(function FilesPropertiesModal(props: Fi
 				}
 			})
 			.catch((error: unknown) => {
-				console.error("[FilesPropertiesModal.handleSave] Unexpected async error", { error });
+				console.error("[FilesPropertiesModal.runSave] Unexpected async error", { error });
 			})
 			.finally(() => {
 				setSaving(false);
+				// A failed save shows its error in its own section, so close the confirm dialog either way.
+				setIsConfirmingSave(false);
 			});
+	};
+
+	const handleSave = useFn(() => {
+		if (saving || !dirty || invalid) {
+			return;
+		}
+
+		if (saveConfirm) {
+			setIsConfirmingSave(true);
+			return;
+		}
+
+		runSave();
+	});
+
+	const handleConfirmSave = useFn(() => {
+		if (saving) {
+			return;
+		}
+
+		runSave();
+	});
+
+	const handleConfirmSaveOpenChange = useFn((open: boolean) => {
+		// Escape and the backdrop cannot close the dialog while the save runs.
+		if (!open && !saving) {
+			setIsConfirmingSave(false);
+		}
 	});
 
 	const handleClose = useFn(() => {
@@ -1810,6 +1867,7 @@ export const FilesPropertiesModal = memo(function FilesPropertiesModal(props: Fi
 		// from the file that was just closed.
 		setPolicySaveState(null);
 		setMetadataSaveState(null);
+		setIsConfirmingSave(false);
 		onClose();
 		queueMicrotask(() => returnFocusRef?.current?.focus());
 	});
@@ -1867,9 +1925,6 @@ export const FilesPropertiesModal = memo(function FilesPropertiesModal(props: Fi
 									aria-label="Metadata"
 									className={"FilesPropertiesModal-section" satisfies FilesPropertiesModal_ClassNames}
 								>
-									<h3 className={"FilesPropertiesModal-section-heading" satisfies FilesPropertiesModal_ClassNames}>
-										Metadata
-									</h3>
 									<FilesPropertiesModalMetadata nodeId={nodeId} onSaveStateChange={setMetadataSaveState} />
 								</section>
 							</>
@@ -1893,6 +1948,46 @@ export const FilesPropertiesModal = memo(function FilesPropertiesModal(props: Fi
 					</MyButton>
 				</MyModalFooter>
 				<MyModalCloseTrigger />
+
+				{/* A save that cannot be undone asks in its own dialog. Start on Cancel, the safe choice. */}
+				<MyModal open={isConfirmingSave && saveConfirm !== null} setOpen={handleConfirmSaveOpenChange}>
+					<MyModalPopover
+						className={"FilesPropertiesModal-confirm-modal" satisfies FilesPropertiesModal_ClassNames}
+						initialFocus={cancelSaveRef}
+						aria-describedby={confirmSaveTextId}
+					>
+						<MyModalHeader>
+							<MyModalHeading>{saveConfirm?.title}</MyModalHeading>
+						</MyModalHeader>
+						<MyModalScrollableArea>
+							<p
+								id={confirmSaveTextId}
+								className={"FilesPropertiesModal-confirm-text" satisfies FilesPropertiesModal_ClassNames}
+							>
+								{saveConfirm?.text}
+							</p>
+						</MyModalScrollableArea>
+						<MyModalFooter>
+							<MyButton
+								ref={cancelSaveRef}
+								variant="ghost"
+								disabled={saving}
+								onClick={() => setIsConfirmingSave(false)}
+							>
+								Cancel
+							</MyButton>
+							<MyButton
+								variant="destructive"
+								disabled={saving}
+								aria-busy={saving || undefined}
+								onClick={handleConfirmSave}
+							>
+								{saving ? "Saving…" : saveConfirm?.action}
+							</MyButton>
+						</MyModalFooter>
+						<MyModalCloseTrigger disabled={saving} />
+					</MyModalPopover>
+				</MyModal>
 			</MyModalPopover>
 		</MyModal>
 	);

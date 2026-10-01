@@ -480,27 +480,30 @@ describe("FilesPropertiesModalWritePolicy", () => {
 		expect(onClose).not.toHaveBeenCalled();
 	});
 
-	test("starts Apply to contents as a background job with the saved folder rule", async () => {
+	test("applies the rule for items inside to existing items only after the Save confirm", async () => {
 		mockQueries({
-			management: { ...WRITABLE_POLICY, localPolicy: { mode: "read_only" } },
+			management: { ...WRITABLE_POLICY, localDefault: { mode: "read_only" } },
 			node: { ...NODE, kind: "folder", name: "docs", path: "/docs" },
 			entries: [],
 			canWrite: true,
 		});
 		mutationMock.mockResolvedValue({ _yay: { activityId: "activity_1" } });
 		renderModal({ nodeKind: "folder", nodeName: "docs" });
-		fireEvent.click(screen.getByRole("button", { name: "Apply to contents…" }));
+		fireEvent.click(screen.getByRole("checkbox", { name: "Also apply it to the items already inside" }));
+		fireEvent.click(screen.getByRole("button", { name: /^Save$/ }));
+		expect(await screen.findByRole("dialog", { name: "Change the rule of all items inside?" })).toBeTruthy();
 		expect(mutationMock).not.toHaveBeenCalled();
 		await act(async () => {
-			fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+			fireEvent.click(screen.getByRole("button", { name: "Save and apply" }));
 		});
 		expect(mutationMock).toHaveBeenCalledWith("files_write_policy_runs.start", {
 			membershipId: MEMBERSHIP_ID,
 			nodeId: NODE_ID,
 			writePolicy: { mode: "read_only" },
 		});
-		expect(screen.getByText("Updating protection in the background. Track it in Activity.")).toBeTruthy();
-		expect(screen.queryByRole("button", { name: "Apply" })).toBeNull();
+		expect(
+			(screen.getByRole("checkbox", { name: "Also apply it to the items already inside" }) as HTMLInputElement).checked,
+		).toBe(false);
 	});
 
 	test("restores focus to the control that opened the dialog", async () => {

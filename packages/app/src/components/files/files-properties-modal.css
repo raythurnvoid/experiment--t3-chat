@@ -53,6 +53,20 @@
 	.FilesPropertiesModal-footer-spacer {
 		flex: 1;
 	}
+
+	.FilesPropertiesModal-confirm-modal {
+		width: min(92vw, 540px);
+	}
+
+	.FilesPropertiesModal-confirm-text {
+		margin: 0;
+
+		font-size: 16px;
+		line-height: 1.5;
+		color: var(--color-fg-11);
+
+		text-wrap: pretty;
+	}
 	/* #endregion root */
 
 	/* #region facts */
@@ -186,47 +200,11 @@
 		text-wrap: pretty;
 	}
 
-	.FilesPropertiesModalWritePolicy-actions {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 8px;
-	}
-
 	.FilesPropertiesModalWritePolicy-error {
 		margin: 0;
 
 		font-size: 15px;
 		color: var(--color-red-11);
-	}
-	/* Mark the apply step as dangerous with a red edge, so it does not read like one more option. */
-	.FilesPropertiesModalWritePolicy-confirm {
-		display: flex;
-		align-items: start;
-		gap: 12px;
-
-		padding: 12px;
-
-		border: 1px solid var(--color-red-07);
-		border-radius: 8px;
-
-		& > svg {
-			flex: none;
-
-			width: 18px;
-			height: 18px;
-
-			color: var(--color-red-10);
-		}
-	}
-
-	.FilesPropertiesModalWritePolicy-confirm-text {
-		margin: 0 0 10px;
-
-		font-size: 15px;
-		line-height: 1.45;
-		color: var(--color-fg-11);
-
-		text-wrap: pretty;
 	}
 
 	/* Split the two blocks of a folder with the same thin line as the dialog sections. */
@@ -238,6 +216,44 @@
 		padding-top: 14px;
 
 		border-top: 1px solid var(--color-base-1-05);
+	}
+
+	/* Look like the collaboration checkbox. `.MyButton` expects a short centered label, and this one
+	   carries a sentence, so let it wrap. */
+	.FilesPropertiesModalWritePolicy-apply {
+		align-items: start;
+
+		height: auto;
+
+		/* Keep a bigger gap above the box than between the radios, so it does not read as a fourth choice. */
+		margin-top: 10px;
+		padding: 12px;
+
+		white-space: normal;
+		text-align: start;
+	}
+
+	.FilesPropertiesModalWritePolicy-apply-text {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+
+		flex: 1;
+		min-width: 0;
+	}
+
+	.FilesPropertiesModalWritePolicy-apply-label {
+		font-size: 16px;
+		font-weight: 500;
+	}
+
+	.FilesPropertiesModalWritePolicy-apply-description {
+		font-size: 15px;
+		line-height: 1.4;
+		font-weight: 400;
+		color: var(--color-fg-08);
+
+		text-wrap: pretty;
 	}
 
 	.FilesPropertiesModalWriterSummary {
@@ -344,14 +360,24 @@
 		gap: 10px;
 	}
 
+	/* Two rows in the first column: the heading and the description. The help button takes the second
+	   column and spans both rows, so its height never adds to a row. The heading keeps the bottom margin
+	   of `.FilesPropertiesModal-section-heading`, so the gap below it matches the other sections. */
 	.FilesPropertiesModalMetadata-header {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 12px;
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) auto;
+		column-gap: 12px;
+	}
+
+	.FilesPropertiesModalMetadata-heading {
+		grid-column: 1;
+		grid-row: 1;
 	}
 
 	.FilesPropertiesModalMetadata-description {
+		grid-column: 1;
+		grid-row: 2;
+
 		margin: 0;
 
 		font-size: 16px;
@@ -359,6 +385,12 @@
 		color: var(--color-fg-08);
 
 		text-wrap: pretty;
+	}
+
+	.FilesPropertiesModalMetadata-help {
+		grid-column: 2;
+		grid-row: 1 / span 2;
+		align-self: start;
 	}
 
 	.FilesPropertiesModalMetadata-editor {

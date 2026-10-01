@@ -143,7 +143,8 @@ rename and move-out of its direct children (see above). Each restricted child ke
 `content.permissions.manage` for its own rule.
 
 The setter requires current actor and optional account `content.permissions.manage` on the actual
-target. Apply to contents never runs from Save. Every listed user must be an active workspace
+target. Apply to contents runs from Save only when the person checks it and confirms (see UI
+Capability Model). Every listed user must be an active workspace
 member, and every listed account must be active in the same workspace, or the save refuses with
 "Writer is not available". A stored writer who left or was revoked stays in the stored rule and
 still counts for the write check. The management state hides it (see UI Capability Model), so a
@@ -496,12 +497,14 @@ says "plugin" where the code says service account. Custom shows the chosen write
 "Manage writers" button. The button opens the writers dialog (`files-write-policy-writers-modal.tsx`):
 one search field, no type menu, and People and Plugins lists. The field menu opens on focus and Ctrl+Space,
 lists everyone who is not added yet, and `people:` or `plugin:` in the text narrows it. Choosing Custom
-with nobody chosen opens the dialog. The dialog only changes the draft; the footer Save writes it. Folders also have a "Rule for new items" block with
-the same cards. There is no inherited text and no Open parent policy. The shared management state
+with nobody chosen opens the dialog. The dialog only changes the draft; the footer Save writes it. Folders also have a "Rule for items inside" block with
+the same cards. It is the folder's `newChildWritePolicy`. There is no inherited text and no Open parent policy. The shared management state
 returns `canManage`, safe `localPolicy`, `localDefault`, and write access. A writer policy there is
 `{ mode: "writer", writers, hiddenWriterCount }`: `writers` holds only the writers the caller may see,
-with names, and `hiddenWriterCount` counts the hidden or revoked ones without their ids. Apply to contents uses the saved folder policy,
-confirms first, never runs from Save, and then says the job runs in the background. Its progress and
+with names, and `hiddenWriterCount` counts the hidden or revoked ones without their ids. Apply to contents copies the rule for items inside, not the folder's
+own rule. Under that block, the person checks "Also apply it to the items already inside". Save then
+asks in a confirm dialog ("Change the rule of all items inside?", "Save and apply"). After the changed
+rules save, it starts the job, clears the box, and says the job runs in the background. Its progress and
 result show in Activity: "Updated N items so far", "Updated N items, M already set, K not allowed",
 "Stopped. N items were updated.", or "No items could be changed. K are not allowed."
 

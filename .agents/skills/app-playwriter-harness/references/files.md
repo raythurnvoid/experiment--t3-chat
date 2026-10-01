@@ -1234,18 +1234,21 @@ One dialog holding the file's facts, its write policy, and the flat key-value ma
   After a native click, wait for the saved UI state before readback; the click can finish before its
   mutation. A selected human can edit when their access permits it. Revoking a selected account keeps
   the file protected and shows `Protected file. The selected writer is unavailable.`
-- `Apply to contents…` (folders only, verified 2026-09-24) copies the folder's SAVED rule, so save the
-  folder first. If the folder already has the rule, `Save policy` stays disabled; skip it. Click
-  `Apply to contents…`, then `Apply` (exact name) in the inline confirm. The dialog then shows
-  `Updating protection in the background. Track it in Activity.` The job is an Activity titled
+- Apply to contents (folders only, verified 2026-10-01) copies the "Rule for items inside" rule,
+  not the folder's own rule. Pick that rule, then check `Also apply it to the items already inside`.
+  The input is hidden and `.click()` on the label can hang, so mouse-click the middle of
+  `.FilesPropertiesModalWritePolicy-apply`. Save then opens the dialog `Change the rule of all items
+  inside?`; click `Save and apply`. The Properties dialog then shows
+  `Updating the items inside in the background. Track it in Activity.` The job is an Activity titled
   `Apply protection to folder contents` with source kind `files_write_policy_run`. Poll it with
   `activities.list_page` over both `active` and `history`. Pick the row by `startedAt` after your
   click, not only "newest": `app_convex.query` can answer from its cache, and an older finished run
   then ends the poll at once. About 1,250 items finish in 7–9 s on dev, in steps of 50.
   The Activity row text is `Updated N items, M already set, K not allowed.` After Stop, a timeout, or
   a failed access check it is `Stopped. N items were updated.` To test Stop, open `Notifications` and click
-  `Stop Apply protection to folder contents` within about 2 s of Apply.
-  To clean up a Read-only fixture, set the folder to `Editable` and apply that to contents first.
+  `Stop Apply protection to folder contents` within about 2 s of `Save and apply`.
+  To clean up a Read-only fixture, set "Rule for items inside" to `Everyone with access` and apply
+  it to the items inside first.
   `archive_nodes` refuses a read-only subtree with `This item is read-only.`
 - Archive and restore jobs (verified 2026-09-25). Call `archive_nodes` / `unarchive_nodes` through the
   page-context `app_convex` client, or use the Archive dialog and the sidebar row menu `Restore` (turn on
