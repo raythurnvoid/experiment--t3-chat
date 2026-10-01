@@ -1,8 +1,9 @@
-import { defineCommand, type CommandContext } from "just-bash/browser";
+import { defineCommand } from "just-bash/browser";
 import { Result } from "common/errors-as-values-utils.ts";
 import {
 	type bash_DbFilesRoots,
 	bash_command_loads_disallowed_shell_code,
+	bash_decode_stdin_as_utf8,
 	bash_disallowed_shell_code_error,
 	bash_shell_arg_quote,
 	bash_COMMAND_EXIT_CANNOT_EXECUTE,
@@ -12,7 +13,6 @@ import {
 	bash_WHITESPACE_RUN_REGEX,
 } from "./bash-utils.ts";
 
-const fatalTextDecoder = new TextDecoder("utf-8", { fatal: true });
 const XARGS_DELIMITER_NEWLINE_ESCAPE_REGEX = /\\n/gu;
 const XARGS_DELIMITER_TAB_ESCAPE_REGEX = /\\t/gu;
 const XARGS_DELIMITER_NUL_ESCAPE_REGEX = /\\0/gu;
@@ -21,28 +21,6 @@ const XARGS_COMBINED_BOOLEAN_FLAGS_REGEX = /^-[0rt]{2,}$/u;
 const XARGS_SINGLE_TRAILING_NEWLINE_REGEX = /\n$/u;
 const XARGS_USAGE =
 	"Supported: xargs [-n N|--max-args N|--max-args=N] [-I REPLACE|--replace[=REPLACE]] [-d DELIM|--delimiter DELIM|--delimiter=DELIM] [-P 0|1] [-0] [-t] [-r] [--] [COMMAND [ARGS...]]\n";
-
-/**
- * Decode Just Bash's latin1-shaped byte stdin into Unicode text for commands
- * that parse text instead of forwarding raw bytes.
- */
-function decode_bash_stdin_as_utf8(stdin: CommandContext["stdin"] | undefined) {
-	if (stdin == null) {
-		return "";
-	}
-	const bytes = String(stdin);
-	// Just Bash exposes stdin as a ByteString: one JS code unit per raw byte.
-	const buffer = new Uint8Array(bytes.length);
-	for (let index = 0; index < bytes.length; index++) {
-		buffer[index] = bytes.charCodeAt(index) & 0xff;
-	}
-	try {
-		return fatalTextDecoder.decode(buffer);
-	} catch {
-		// If stdin was already normal JS text, preserve it instead of making xargs fail.
-		return bytes;
-	}
-}
 
 function parse_delimiter(value: string) {
 	return value
@@ -258,7 +236,7 @@ export function bash_xargs_command_create(dbFilesRoots: bash_DbFilesRoots) {
 		const command = parsed._yay.command.length === 0 ? ["echo"] : parsed._yay.command;
 
 		// xargs parses stdin as text, so decode the byte-shaped shell stream before splitting records.
-		const stdinText = decode_bash_stdin_as_utf8(commandCtx.stdin);
+		const stdinText = bash_decode_stdin_as_utf8(commandCtx.stdin);
 		let items: string[];
 		if (nullSeparated) {
 			items = stdinText.split("\0").filter(Boolean);

@@ -17,37 +17,10 @@ import {
  * Before each model step, check the exact source again. Chat history never rebuilds this map.
  */
 export type ai_chat_Observation = {
-	toolName:
-		| "view_image"
-		| "browser_run"
-		| "browser_reload"
-		| "browser_status"
-		| "browser_open"
-		| "browser_tabs"
-		| "browser_new_tab"
-		| "browser_close_tab"
-		| "playwriter_read"
-		| "playwriter_act"
-		| "playwriter_navigate"
-		| "playwriter_capture";
+	toolName: "view_image";
 	output: ToolResultPart["output"];
-	safeResult?: Pick<ReturnType<typeof ai_chat_file_result>["metadata"], "status" | "reason">;
 	isCurrent: () => Promise<boolean>;
 };
-
-export function ai_chat_observation_expire(observation: ai_chat_Observation) {
-	if (!observation.safeResult) return null;
-	const { status, reason } = observation.safeResult;
-	return {
-		toolName: observation.toolName,
-		output: {
-			type: "text" as const,
-			value: `${observation.toolName}: ${status}.${reason ? ` Reason: ${reason}.` : ""} (Private observation unavailable. The earlier tool result is unchanged.)`,
-		},
-		safeResult: observation.safeResult,
-		isCurrent: async () => false,
-	};
-}
 
 const IMAGE_MAX_EDGE = 8192;
 const IMAGE_MAX_PIXELS = 16_000_000;

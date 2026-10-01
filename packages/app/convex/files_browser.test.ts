@@ -2,6 +2,7 @@
 import { R2 } from "@convex-dev/r2";
 import { Workpool } from "@convex-dev/workpool";
 import { getFunctionName } from "convex/server";
+import { createCommandContext, InMemoryFs } from "just-bash/browser";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { streamText } from "ai";
 import { encodeStateAsUpdate } from "yjs";
@@ -14,13 +15,9 @@ import {
 import { test_convex, test_create_saved_text_file, test_mocks_fill_db_with } from "./setup.test.ts";
 import type { Id } from "./_generated/dataModel.js";
 import { files_yjs_doc_create_from_text } from "../shared/files-tiptap.ts";
-import { ai_chat_file_result_schema } from "../shared/ai-chat-files.ts";
 import { files_u8_to_array_buffer } from "../server/files.ts";
-import {
-	ai_chat_tool_browser_check_bindings,
-	ai_chat_tool_create_browser_management,
-	type ai_chat_tool_BrowserTurnContext,
-} from "../server/ai-chat-browser-tools.ts";
+import { bash_browser_command_create, type bash_BrowserContext } from "../server/bash-browser-command.ts";
+import { ai_chat_DEFAULT_MODEL_ID } from "../shared/ai-chat.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 import { quotas_db_ensure } from "./quotas.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
@@ -1690,48 +1687,63 @@ describe("sync_browser_tab_identities", () => {
 		const fixture = await seed_web_member(t);
 		await t.run((ctx) => ctx.db.patch("users", fixture.userId, { clerkUserId: "user_browser_tabs" }));
 		const source = await seed_browser_chat_source(t, fixture);
-		const turn: ai_chat_tool_BrowserTurnContext = {
-			...fixture,
-			organizationName: "test-organization",
-			workspaceName: "test-workspace",
-			membershipLifetime: source.membershipLifetime,
-			getThreadId: () => source.threadId,
-			getSourceMessageId: () => source.sourceMessageId,
-			getRun: () => null,
+		const begun = await t.mutation(internal.ai_chat.thread_run_begin, {
+			source: {
+				organizationId: source.organizationId,
+				workspaceId: source.workspaceId,
+				userId: source.userId,
+				threadId: source.threadId,
+				membershipId: source.membershipId,
+				membershipLifetime: source.membershipLifetime,
+			},
+			parentId: null,
+			messages: [{ clientGeneratedMessageId: "run-user", content: { id: "run-user", role: "user", parts: [] } }],
+			modeId: "ask",
+			modelId: ai_chat_DEFAULT_MODEL_ID,
+		});
+		if (begun._nay) throw new Error(begun._nay.message);
+		const run = { runId: begun._yay.runId, generation: begun._yay.generation };
+		let commandNumber = 0;
+		const browser: bash_BrowserContext = {
+			source: {
+				organizationId: source.organizationId,
+				workspaceId: source.workspaceId,
+				userId: source.userId,
+				membershipId: source.membershipId,
+				membershipLifetime: source.membershipLifetime,
+				threadId: source.threadId,
+				sourceMessageId: source.sourceMessageId,
+			},
 			browserIntent: { webChoice: { provider: "cloud" }, selectionRevision: 0, policyRevision: 0 },
-			browsers: new Map(),
-			observations: new Map(),
-			pendingPlaywriterCommands: new Map(),
-			revocation: { revoked: false },
+			run,
 			canWriteFiles: false,
+			invocationId: "bash-call" as Id<"ai_chat_bash_invocations">,
+			deadlineAt: Date.now() + 240_000,
+			signal: new AbortController().signal,
+			nextCommandNumber: () => commandNumber++,
 		};
 		await t.action(async (ctx) => {
-			const tools = ai_chat_tool_create_browser_management(ctx, turn);
+			const command = bash_browser_command_create(ctx, browser);
+			const exec = (args: string[]) => command.execute(args, createCommandContext({ fs: new InMemoryFs(), cwd: "/" }));
 			runnerQueue.push(runner_web_session());
-			const opened = ai_chat_file_result_schema.parse(
-				await tools.browser_open.execute!({ mode: "web" }, { toolCallId: "tabs-open", messages: [] }),
-			);
-			expect(opened.metadata.status).toBe("succeeded");
-			const browser = [...turn.browsers.values()][0]!;
-			if (browser.provider !== "cloud") throw new Error("Expected the cloud browser");
-			const sessionId = browser.sessionId;
+			expect(await exec(["open"])).toMatchObject({ exitCode: 0 });
+			const turn = await ctx.runQuery(internal.ai_chat_files.get_browser_turn, { run, userId: source.userId });
+			const opened = turn._yay?.bindings[0];
+			if (opened?.provider !== "cloud") throw new Error("Expected the cloud browser");
+			const sessionId = opened.sessionId;
 			const tabs = [
 				{ tabId: "tab-1", tabGen: 1, navGen: 1, title: "A", url: "https://example.com/a" },
 				{ tabId: "tab-2", tabGen: 1, navGen: 1, title: "B", url: "https://example.com/b" },
 			];
+			// Each command first checks its bindings with a runner status call.
+			runnerQueue.push({ ...runner_web_session(), alive: true, profileStored: false });
 			runnerQueue.push({
 				...runner_web_session({ controlGen: 2, tabCount: 2 }),
 				tabs,
 				status: "completed",
 				result: { tabId: "tab-2", reason: null, cleanup: "complete" },
 			});
-			const newTab = ai_chat_file_result_schema.parse(
-				await tools.browser_new_tab.execute!(
-					{ browserRef: sessionId, url: "https://example.com/b" },
-					{ toolCallId: "tabs-new", messages: [] },
-				),
-			);
-			expect(newTab.metadata.status).toBe("succeeded");
+			expect(await exec(["tab", "new", "https://example.com/b"])).toMatchObject({ exitCode: 0 });
 
 			const base = vi.mocked(fetch).getMockImplementation()!;
 			let releaseTabs!: () => void;
@@ -1782,17 +1794,15 @@ describe("sync_browser_tab_identities", () => {
 			});
 			await reached;
 			try {
-				const navigated = ai_chat_file_result_schema.parse(
-					await tools.browser_run.execute!(
-						{
-							browserRef: sessionId,
-							tabRef: "tab-2",
-							code: "await page.goto('https://example.com/next'); return await page.title();",
-						},
-						{ toolCallId: "tabs-navigate-b", messages: [] },
-					),
-				);
-				expect(navigated.metadata.status).toBe("succeeded");
+				expect(
+					await exec([
+						"run",
+						"--tab",
+						"tab-2",
+						"-e",
+						"await page.goto('https://example.com/next'); return await page.title();",
+					]),
+				).toEqual({ stdout: "B\n", stderr: "", exitCode: 0 });
 				const completed = await t.run((readCtx) => readCtx.db.get("files_browser_sessions", sessionId));
 				if (completed?.mode !== "web") throw new Error("Expected the completed web navigation");
 				expect(completed.tabs.find((tab) => tab.tabId === "tab-2")).toEqual({
@@ -1817,15 +1827,16 @@ describe("sync_browser_tab_identities", () => {
 				navGen: 2,
 			});
 			expect(stored).toMatchObject({ tabId: "tab-1", viewedTabId: "tab-1", controlGen: 2 });
-			expect(await ai_chat_tool_browser_check_bindings(ctx, turn)).toBe(true);
-			expect(turn.revocation.revoked).toBe(false);
-			const read = ai_chat_file_result_schema.parse(
-				await tools.browser_run.execute!(
-					{ browserRef: sessionId, tabRef: "tab-2", code: "return await page.title();" },
-					{ toolCallId: "tabs-read-b", messages: [] },
-				),
-			);
-			expect(read.metadata.status).toBe("succeeded");
+
+			// The late listing is not a person's change, so the turn keeps its access.
+			expect(await exec(["run", "--tab", "tab-2", "-e", "return await page.title();"])).toEqual({
+				stdout: "B\n",
+				stderr: "",
+				exitCode: 0,
+			});
+			expect(
+				(await ctx.runQuery(internal.ai_chat_files.get_browser_turn, { run, userId: source.userId }))._yay?.revoked,
+			).toBe(false);
 			expect(runnerCalls.filter((call) => call.route === "run").at(-1)?.body).toMatchObject({
 				tabId: "tab-2",
 				tabGen: 2,
@@ -1915,14 +1926,12 @@ describe("/api/chat browser availability", () => {
 		expect(runnerCalls).toEqual([]);
 	});
 
-	test("offers browser tools before a browser exists in Ask mode", async () => {
+	test("offers the browser command before a browser exists in Ask mode", async () => {
 		const t = test_convex();
 		const fixture = await seed_html_file(t);
 		const call = await send_chat(t, fixture);
-		expect(call.tools).toHaveProperty("browser_run");
-		expect(call.tools).toHaveProperty("browser_open");
-		expect(call.tools).toHaveProperty("browser_new_tab");
-		expect(call.tools).toHaveProperty("playwriter_read");
+		expect(call.tools?.bash?.description).toContain("Browser: browser drives the web browser the user chose");
+		expect(call.tools).not.toHaveProperty("browser_run");
 		expect(call.tools).not.toHaveProperty("edit_file");
 		expect(runnerCalls).toEqual([]);
 	});
@@ -1933,13 +1942,12 @@ describe("/api/chat browser availability", () => {
 		const started = await start_saved_session(t, fixture);
 		const sessionId = started._yay!.sessionId;
 		await t.mutation(internal.files_browser.set_browser_control, { sessionId, control: "human", controlGen: 2 });
-		const call = await send_chat(t, fixture);
-		expect(call.tools).toHaveProperty("browser_status");
+		await send_chat(t, fixture);
 		expect((await t.run((ctx) => ctx.db.get("files_browser_sessions", sessionId)))?.control).toBe("human");
 		expect(runnerCalls.map((entry) => entry.route)).toEqual(["open"]);
 	});
 
-	test("keeps discovery tools available after a browser ends", async () => {
+	test("keeps the browser command available after a browser ends", async () => {
 		const t = test_convex();
 		const fixture = await seed_html_file(t);
 		const started = await start_web_session(t, fixture);
@@ -1947,8 +1955,7 @@ describe("/api/chat browser availability", () => {
 		const sessionId = started._yay.session.sessionId;
 		await t.mutation(internal.files_browser.finish_close_browser_session, { sessionId });
 		const call = await send_chat(t, fixture);
-		expect(call.tools).toHaveProperty("browser_status");
-		expect(call.tools).toHaveProperty("browser_open");
+		expect(call.tools?.bash?.description).toContain("Browser: browser drives the web browser the user chose");
 		expect(runnerCalls.map((entry) => entry.route)).toEqual(["open"]);
 	});
 });

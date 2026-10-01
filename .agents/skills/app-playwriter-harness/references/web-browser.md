@@ -89,8 +89,16 @@ rules and limits live in `.agents/skills/cloud-browser/SKILL.md`. The older clou
   warning and send no message. `Remove share ID` removes the value. A bare 32-character ID can be
   sent only after `This is another ID` and a second Send.
 - With the Browser panel hidden, ask the agent to open the cloud browser, list tabs, create a tab,
-  run in that tab, reload it, and close it. Test both Ask and Agent modes. Browser tools must be
-  present before a session exists.
+  run in that tab, reload it, and close it. Test both Ask and Agent modes. The Bash `browser`
+  command must work before a session exists.
+- Quick command smoke (verified 2026-10-01, cloud browser, about 40 s and one short session): send
+  one prompt that lists `browser status`, `browser open https://example.com`,
+  `browser run -e 'state.n = (state.n ?? 0) + 1; console.log(await page.title()); return state.n'`,
+  the same run without the log, and `browser close`. Put each command in its own paragraph and ask
+  for one Bash call each, with no retry. Expect exit 0 everywhere, `Example Domain` then `1`, then
+  `2` (so `state` survived), and `Closed the cloud browser.` Read the stored outputs from
+  `convex data ai_chat_run_steps --format jsonArray --limit 8 --order desc`: the `tool-bash` parts
+  hold the same terminal text and `metadata.exitCode`, with no `data:image` and no runner ids.
 - Queue a message, then change the provider. Automatic drain keeps its saved intent. Explicit
   Resume refreshes intent for messages still waiting. Retry, edit, and regenerate refresh only the
   requested turn. Attachments and Files sources stay attached.
@@ -196,12 +204,12 @@ test site `login`, the `Log in` button is at about (210, 18).
   - `http://user:pw@example.com` → `Remove the user name and password from the address.`
   - `localhost:5173` or an app, Convex, or Clerk host → `This address is blocked.`
 - Popups on `/site/links`: `target=_blank` and `window.open` add tabs while the tab cap allows them.
-- Agent: Resume works without a selected chat. A tool called during human control returns a safe
-  refusal. Press `Resume agent` before the turn that must run. For a screenshot use the snippet
-  from files.md with path `/qa-web-<runId>/page.png`. Send a second turn and check its Browser run card.
-- Two chats: start a long `browser_run` in chat A (for example `await page.waitForTimeout(24000)`),
-  wait for its card to be `aria-busy="true"`, then send in chat B. Chat B's card must fail with
-  `Another chat is using the browser. Try again later.` Chat sends share a rate limit (a new token
+- Agent: Resume works without a selected chat. A `browser` command run during human control
+  exits 1 with a fixed refusal line on stderr. Press `Resume agent` before the turn that must run. For a screenshot use the snippet
+  from files.md with path `/qa-web-<runId>/page.png`. Send a second turn and check its Bash output.
+- Two chats: start a long `browser run` in chat A (for example `await page.waitForTimeout(24000)`),
+  wait for its Bash card to be `aria-busy="true"`, then send in chat B. Chat B's `browser run` must exit 1 with
+  `browser: another chat is using the browser. Try again later.` Chat sends share a rate limit (a new token
   every 15 s), so a send in B right after A waits about 15 s before its tool call. Send B about 14 s
   after A. Keep A's wait under 30 s: a command that times out closes the session.
 - Agent access switch in `Browser settings`: it is an `input type=checkbox role=switch`. Focus it,
@@ -214,9 +222,9 @@ test site `login`, the `Log in` button is at about (210, 18).
 ## Agent result traps
 
 - The model can wrap the code in `async ({ page }) => { ... }`. That only defines a function, so the
-  runner refuses it: the card shows `errored` with "Your code returned a function. Write the function
-  body only, do not wrap it in a function." The model usually retries without the wrapper. Read the
-  card's `Result` block, not the model's reply.
+  runner refuses it: `browser run` exits 1 and its stderr says "Your code returned a function. Write
+  the function body only, do not wrap it in a function." The model usually retries without the
+  wrapper. Read the Bash terminal output, not the model's reply.
 - For close reasons, tail the dev runner while you test:
   `vp env exec pnpx wrangler tail bonobo-senate-browser-runner-dev --format json > <scratch>/tail.jsonl`.
   Lines tagged `browser_runner` carry `route` and `reason` (for example `run` `tainted`/`settle`,
@@ -259,7 +267,7 @@ Verified 2026-09-23 on runner version `ac58f65d`.
   real `runnerSessionId`. Keep the runner secret in a variable and never print it.
 - The runner tail logs only counts: `profile_restore` with `cookies`, and `profile_save` with
   `cookies` and `truncated`. A human End logs `profile_save` before `close`.
-- Agent cookie probe: ask for one `browser_run` that returns `document.cookie`,
+- Agent cookie probe: ask for one `browser run` that returns `document.cookie`,
   `page.context().cookies()`, `page.context().newCDPSession(page)`, and request and response headers
   from `page.on("request"/"response")` plus `allHeaders()` during a fresh login. Expected:
   `document.cookie` holds only the non-HttpOnly `sesscookie=1`; `cookies()` and `page.request` fail
@@ -296,7 +304,7 @@ Verified 2026-09-23 on runner version `ac58f65d`.
   with `removed`; `Clear all saved data` asks for `Clear all` / `Cancel`, then shows `All saved
   data is cleared.` and moves focus to the `Clear all saved data` heading.
 - Blocked site check: add the site's host in Browser settings, Start on that site, and ask for one
-  `browser_run`. The tool card must fail with `This site is on the list of sites the agent may not
+  `browser run`. It must exit 1 with `browser: this site is on the list of sites the agent may not
   use.` and hold no page text. The runner tail logs `run_begin` refused with `agent_blocked_site`.
   Remove the host at the end.
 - Clear all, member removal, and account deletion all delete the profile row and ask the runner to
@@ -353,12 +361,12 @@ nothing. On the test site `links` page the remote pixels are: `attach` (27, 18),
 - What each link gives: `pdf` shows inline (no toast), but the PDF viewer's own download button
   (1175, 28) saves `pdf.pdf`. `blob`/`blobkeep` give nothing. `/site/links?size=31457280` then
   `attach` gives the notice `Download not saved: over 25 MB.` in under 1 s.
-- Page timer download: ask the agent for one `browser_run` that sets
+- Page timer download: ask the agent for one `browser run` that sets
   `setTimeout(() => { location.href = "/site/attach?size=10"; }, 8000)` and returns. Use 8 s, not
   3 s, so the timer fires after the command has ended; inside the command it would be an agent
   download. Expected notice: `A download started without a click was blocked.`
-- Agent download: a `browser_run` that clicks `#attach` and waits 3 s. The card lists
-  `/.system/downloads/<name> · Pending review`; read the bytes with the pending recipe in
+- Agent download: a `browser run` that clicks `#attach` and waits 3 s. Its stderr lists
+  `pending file /.system/downloads/<name>`; read the bytes with the pending recipe in
   [files.md](files.md). Go to `/site/links` in the same snippet, or the agent gets the 30 MiB link.
 - Runner tail lines: `download` with `owner` `human`/`agent` and `bytes`, `download` `refused`
   (`download_blocked`, `download_too_large`), `download_push`, `file_chooser` with `multiple`,
@@ -453,15 +461,19 @@ fixture link and form in the visible viewport; the trusted input guard refuses
 offscreen nodes. Keep iframes out of this fixture so the accepted extension
 replay limit does not hide the navigation result.
 
-- Ask the app agent to Read, click a link that loads a new document, then Read
-  again in the same turn. Check the native URL, the completed tool card, the
-  finished invocation, and the released connection slot.
-- Repeat with a link whose normal handler calls `history.pushState`. The second
-  Read must see the new page state without Reconnect.
+- Ask the app agent for one `browser run` that reads the page, a second that clicks
+  a link that loads a new document, then a third that reads again, in the same
+  turn. Check the native URL, the finished Bash card, the finished invocation, and
+  the released connection slot.
+- Repeat with a link whose normal handler calls `history.pushState`. The next run
+  must see the new page state without Reconnect.
 - Repeat with Enter in a normal form. Check that it submits once and that a fresh
-  Read works. Do not repeat an action after an unknown result.
+  run works. Do not repeat an action after an unknown result.
+- In Agent mode, a run that calls `emitFile` with `await page.screenshot()` prints
+  `pending file <path>` on stderr; `view_image` on that path shows the shared tab.
+  In Ask mode the same run prints `saving files needs Agent mode` and exits 1.
 - Pause through the app UI. Expect a plain sentence, not `human`. Resume while
-  the transport is live, then Read. After a closed socket, expect Reconnect and
+  the transport is live, then run again. After a closed socket, expect Reconnect and
   Refresh status; Resume must not leave the UI stuck in Recovering.
 
 The native extension toolbar uses a closed shadow root. If a DOM role locator

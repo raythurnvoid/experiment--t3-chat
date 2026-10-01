@@ -1,6 +1,11 @@
 import { describe, it, expect, vi } from "vitest";
 import { runInNewContext } from "node:vm";
-import { build_executor_module, snippet_executor_check_state, snippet_executor_LIMITS as LIMITS } from "./snippet-executor";
+import {
+	build_executor_module,
+	snippet_executor_check_files,
+	snippet_executor_check_state,
+	snippet_executor_LIMITS as LIMITS,
+} from "./snippet-executor";
 
 describe("build_executor_module", () => {
 	function run_snippet(code: string, budgetMs = 1000, state: string | null = null) {
@@ -176,7 +181,7 @@ describe("build_executor_module", () => {
 		).toBeLessThanOrEqual(LIMITS.consoleBytes);
 	});
 
-	it("gives web and shared-tab snippets the main frame without waiting for a preview frame", async () => {
+	it("gives web and shared-tab snippets the main frame and emitFile", async () => {
 		const mainFrame = { childFrames: () => [] };
 		const setViewportSize = vi.fn(async () => {});
 		const page = {
@@ -187,7 +192,7 @@ describe("build_executor_module", () => {
 		};
 		const source =
 			build_executor_module(
-				'try { emitFile({ workspace: "current", path: "/a", bytes: new Uint8Array() }); } catch (e) { return e.message; }\nreturn frame === page.mainFrame();',
+				'emitFile({ workspace: "current", path: "/a.png", bytes: new Uint8Array([1]) });\nreturn frame === page.mainFrame();',
 			)
 				.replace(/^import .*;$/gm, "")
 				.replace("export default class", "class") + "\nSnippetExecutor;";
@@ -210,13 +215,13 @@ describe("build_executor_module", () => {
 			viewport: { width: 1280, height: 900 },
 			budgetMs: 1000,
 		});
-		expect(result).toMatchObject({ ok: true, resultJson: "true" });
+		const emitted = { ok: true, resultJson: "true", files: [expect.objectContaining({ path: "/a.png" })] };
+		expect(result).toMatchObject(emitted);
 		expect(setViewportSize).toHaveBeenCalledTimes(1);
-		// The shared tab keeps the user's window size and cannot save files yet.
-		expect(await new Executor().evaluate({ endpointId: "fixture", mode: "shared", budgetMs: 1000 })).toMatchObject({
-			ok: true,
-			resultJson: JSON.stringify("Saving files from the shared tab is not available yet."),
-		});
+		// The shared tab keeps the user's window size. Its files go back to the app like cloud files.
+		expect(await new Executor().evaluate({ endpointId: "fixture", mode: "shared", budgetMs: 1000 })).toMatchObject(
+			emitted,
+		);
 		expect(setViewportSize).toHaveBeenCalledTimes(1);
 		// Only web mode may skip the runtime origin.
 		await expect(
@@ -306,5 +311,92 @@ describe("snippet_executor_check_state", () => {
 		[JSON.stringify({ big: "x".repeat(LIMITS.stateBytes) }), null],
 	])("accepts only a plain JSON object under the size limit (case %#)", (value, expected) => {
 		expect(snippet_executor_check_state(value)).toBe(expected);
+	});
+});
+
+describe("snippet_executor_check_files", () => {
+	it.each([undefined, null, "", "home", "CURRENT", 1])("refuses missing or invalid workspace %s", (workspace) => {
+		expect(
+			snippet_executor_check_files([
+				{ workspace: "current", path: "/first.bin", bytes: new Uint8Array([1]) },
+				{ workspace, path: "/bad.bin", bytes: new Uint8Array([2]) },
+			]),
+		).toEqual({ ok: false, reason: "files_shape" });
+	});
+
+	it("preserves arbitrary, empty, and sliced bytes without a forced content type", () => {
+		const source = new Uint8Array([99, 0, 255, 128, 99]);
+		expect(
+			snippet_executor_check_files([
+				{
+					workspace: "current",
+					path: "/reports/custom",
+					contentType: "application/x-custom",
+					bytes: source.subarray(1, 4),
+				},
+				{ workspace: "personal", path: "/reports/empty", bytes: new Uint8Array() },
+			]),
+		).toEqual({
+			ok: true,
+			fileBytes: 3,
+			files: [
+				{ workspace: "current", path: "/reports/custom", contentType: "application/x-custom", dataBase64: "AP+A" },
+				{ workspace: "personal", path: "/reports/empty", dataBase64: "" },
+			],
+		});
+	});
+
+	it("allows exactly eight files and 8 MiB across both workspaces", () => {
+		const files = Array.from({ length: LIMITS.files }, (_, index) => ({
+			workspace: index % 2 ? "personal" : "current",
+			path: "/reports/" + index,
+			bytes: new Uint8Array(LIMITS.fileBytes / LIMITS.files).fill(index),
+		}));
+		const result = snippet_executor_check_files(files);
+		expect(result.ok).toBe(true);
+		if (!result.ok) throw new Error(result.reason);
+		expect(result.fileBytes).toBe(LIMITS.fileBytes);
+		for (const [index, file] of result.files.entries()) {
+			expect(file.workspace).toBe(files[index].workspace);
+			expect(Buffer.from(file.dataBase64, "base64").equals(Buffer.from(files[index].bytes))).toBe(true);
+		}
+		expect(JSON.stringify(result).length).toBeLessThan(12 * 1024 * 1024);
+	});
+
+	it.each([
+		[null, "files_shape"],
+		[[{ workspace: "current", path: "", bytes: new Uint8Array() }], "files_shape"],
+		[[{ workspace: "current", path: "/reports/file", bytes: [1, 2] }], "files_shape"],
+		[[{ workspace: "current", path: "/reports/file", contentType: null, bytes: new Uint8Array() }], "files_shape"],
+		[[{ workspace: "current", path: "x".repeat(LIMITS.filePathChars + 1), bytes: new Uint8Array() }], "files_shape"],
+		[
+			[
+				{
+					workspace: "current",
+					path: "/reports/file",
+					contentType: "x".repeat(LIMITS.fileContentTypeChars + 1),
+					bytes: new Uint8Array(),
+				},
+			],
+			"files_shape",
+		],
+		[
+			Array.from({ length: LIMITS.files + 1 }, (_, index) => ({
+				workspace: index % 2 ? "personal" : "current",
+				path: "/reports/file",
+				bytes: new Uint8Array(),
+			})),
+			"files_count",
+		],
+		[[{ workspace: "current", path: "/reports/file", bytes: new Uint8Array(LIMITS.fileBytes + 1) }], "files_bytes"],
+		[
+			[
+				{ workspace: "current", path: "/reports/one", bytes: new Uint8Array(LIMITS.fileBytes) },
+				{ workspace: "personal", path: "/reports/two", bytes: new Uint8Array([1]) },
+			],
+			"files_bytes",
+		],
+	])("refuses malformed or over-limit output", (files, reason) => {
+		expect(snippet_executor_check_files(files)).toEqual({ ok: false, reason });
 	});
 });

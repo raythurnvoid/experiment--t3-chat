@@ -8,12 +8,11 @@ open a router port. The app does not connect to a local browser IP.
 
 - `packages/app/convex/playwriter_browser.ts`: owner checks, encrypted link,
   connection limits, command claims, recovery, and cleanup.
-- `packages/app/server/ai-chat-browser-tools.ts`: fixed tools and private results.
+- `packages/app/server/bash-browser-command.ts`: the Bash `browser` command (script runs, receipts, turn bindings).
 - `packages/app/server/playwriter-browser.ts`: checked HTTP client.
 - `packages/common/src/playwriter-browser.ts`: strict request and response shapes.
 - `packages/browser-runner/src/playwriter-session.ts`: remote session and receipts.
 - `packages/browser-runner/src/playwriter-transport.ts`: one-target protocol bridge.
-- `packages/browser-runner/src/playwriter-executor.ts`: trusted fixed actions.
 - `packages/browser-runner/src/snippet-executor.ts`: the `script` executor, shared with the cloud browser.
 - `packages/app/src/components/browser/playwriter-browser-connection.tsx`: connection UI.
 - `references-submodules/playwriter`: pinned upstream reference only. Never import
@@ -28,8 +27,8 @@ Paste a share ID or an official `https://playwriter.dev/remote-control#<id>` lin
 The ID has exactly 32 lower-case hex characters. Other URLs and commands fail.
 
 Connect lists the shared tabs. **Use this tab** confirms one exact native target.
-The model receives an opaque browser reference, never the native target ID or
-link. A changed or closed target needs confirmation again. No fallback tab is
+The model never sees the native target ID or link. The `browser` command uses
+the one confirmed tab. A changed or closed target needs confirmation again. No fallback tab is
 picked. Cloud tab creation is separate from this one-tab connection.
 An exact `about:blank` tab can be confirmed. Other browser pages still refuse.
 Web tab addresses keep only the origin in the app's stored list.
@@ -66,22 +65,25 @@ and exact target/control/navigation revisions. Another tab or newer human lease
 cannot silently replace that authority. Membership loss and deletion revoke
 authority and queue cleanup without needing the source chat to survive.
 
-Only fixed Read, Click, Fill, Press, Scroll, Navigate, and Capture operations are
-exposed. The model cannot send JavaScript, CSS selectors, CDP, cookies, storage
-calls, network calls, or a raw relay URL. Credential fields refuse input.
-Page text is untrusted. Sending, buying, publishing, and deleting still need the
-user's request or approval.
+The app sends model-written Playwright code through the runner's `script`
+operation: `browser run` in Bash. The model cannot send CDP, cookies, storage
+calls, or a raw relay URL. Page text is untrusted. Sending, buying, publishing,
+and deleting still need the user's request or approval.
 
-The runner also has a `script` operation for model-written Playwright code. The
-app does not send it yet. A script gets no Read private fields, no click guard,
-and the same `state` rules as the cloud browser. It may navigate, reload, use
-history, and answer dialogs; dialogs it leaves open are dismissed at the end.
-While it runs, the transport fails requests to blocked sites with `Fetch`, and
-any frame on a blocked site revokes it. Such a command ends `blocked_site` with
-no output and no saved `state`. History entries show only the current url, and
-paste keys and middle clicks are refused. A human navigation does not stop a
-script; only leaving the allowed sites does. Page code that a script leaves
-behind keeps running after the command and after Pause, by design.
+`script` is the runner's only Playwriter operation.
+
+A script gets no Read private fields, no click guard, and the same `state` rules
+as the cloud browser. It may navigate, reload, use history, and answer dialogs;
+dialogs it leaves open are dismissed at the end. While it runs, the transport
+fails requests to blocked sites with `Fetch`, and any frame on a blocked site
+revokes it. Such a command ends `blocked_site` with no output and no saved
+`state`. History entries show only the current url, and paste keys and middle
+clicks are refused. A human navigation does not stop a script; only leaving the
+allowed sites does. Page code that a script leaves behind keeps running after
+the command and after Pause, by design.
+
+A thrown or timed out script still completes its receipt. The command takes its
+exit code from the script status: 0 succeeded, 1 errored, 124 timed out.
 
 The tab uses the user's real browser profile and network. In production the
 shared host policy does not block Press. The agent can open Press as the already
@@ -91,24 +93,36 @@ pages that the user's computer can reach. The cloud provider's private-network
 boundary does not apply. This behavior is accepted; user site blocks remain
 best effort and are not a network firewall.
 
-Raw inputs, text, accessibility output, URLs, and image bytes stay in the current
-turn's private observation map. Shared tool cards, history, title generation,
-and command receipts keep only fixed status and reason text. Capture is one
-bounded PNG/JPEG for the model; it creates no Files output or video stream.
+Script output is normal Bash output: the snippet's logs and return value on
+stdout, page console lines, page errors, and the error on stderr. It is saved with
+the chat like any other command (the user's choice), after the command caps it
+and redacts inline image data. Command receipts keep only fixed status and reason
+text.
+
+In Agent mode a script may call `emitFile`, with the same eight-file and 8 MiB
+limits as the cloud browser. The runner validates the files and returns them
+only in the Worker reply, never in its stored state, and only for a succeeded
+script. The app saves them through `playwriter_browser.prepare_file_output` and
+`finalize_file_output`. Both check the chat and the exact connection lease the
+script used, so a Pause or a new tab after the script refuses the save. The
+receipt is already complete then, so a refused save shows only on stderr and in
+exit code 1. Ask mode refuses with `saving files needs Agent mode`.
 
 ## Recovery and limits
 
 One durable identity combines the original message, tool call ID, and operation
 hash. An exact retry returns a safe receipt and never repeats the action.
-A lost reply remains busy until the runner proves dispatch and cleanup stopped.
-Deleting the source cannot release that lock early. Cleanup jobs keep their own
-owner/workspace/generation scope and can run while feature flags are off.
+A lost reply prints the fixed `unknown` text and stays with the scheduled
+receipt resolver. The command never runs it again. Later commands get `busy`
+until the runner proves dispatch and cleanup stopped. Deleting the source cannot
+release that lock early. Cleanup jobs keep their own owner/workspace/generation
+scope and can run while feature flags are off.
 
 Recovery makes at most three dials within 30 seconds. It keeps the exact target,
 Pause, Off, session budgets, and saved choice. It does not run an offline retry
-loop. After a successful reconnect, old page data and lease checks are removed.
-Text calls keep only their fixed status and reason. Captures are removed.
-Recovery drops old-generation acknowledgements. A late old completion cannot
+loop. After a successful reconnect, the turn keeps its binding only when the
+control revision and confirmed tab are unchanged; otherwise browser access ends
+for the turn. Recovery drops old-generation acknowledgements. A late old completion cannot
 restore one. Same-generation status keeps its pending acknowledgement.
 
 Human Reconnect reads runner status. It can start a new session after agent Close
@@ -144,18 +158,16 @@ deletion, can turn a queued exact-generation cleanup into Forget while the old
 reply is still on its way. That old reply cannot finish or delay the job. The
 next cleanup run sends generationless Forget.
 
-Click or Enter can navigate by loading a new document or changing an SPA route.
-A completed trusted input event, settled native input, unchanged authority, and
-a checked allowed address let that exact command return success with its new
-navigation lease. Old page observations are dropped. A fresh Read can run in
-the same turn without Reconnect. The action is never repeated.
-Without that proof the page effect stays `outcome_unknown`. After the runner
-settles the child or closes its socket, it advances the generation to prevent
-any more dispatch. Convex releases the command slot, and Reconnect can use the
-same saved link. Explicit Navigate keeps its own checked navigation path.
-A changed lease keeps proven cleanup, while the action result stays unknown.
-It returns no page data or completed lease.
-The tool keeps that unknown warning even after navigation changes.
+A script's click often navigates after the script returns, while the runner
+cleans up. So a succeeded script adopts the runtime navigation and target
+revisions, not only its completed lease. Otherwise every such late navigation
+would end browser access for the turn. A person's navigation in that same short
+window is adopted too; this is accepted. A changed control revision, policy,
+selection, or confirmed tab still ends browser access for the turn.
+An uncertain page effect stays `outcome_unknown`. After the runner settles the
+child or closes its socket, it advances the generation to prevent any more
+dispatch. Convex releases the command slot, and Reconnect can use the same saved
+link. The action is never repeated.
 
 Limits are 20 browser operations per turn, 120 remote operations per session,
 30 seconds per operation, 15 seconds per dial, 10 idle minutes, and 60 total
@@ -208,7 +220,7 @@ Object. Ship the fixed child bundle with the Worker. Use official extension
 builds. No local extension patch is required.
 
 QA lives in `app-playwriter-harness/references/web-browser.md`. Check Connect,
-exact confirmation, background Read and actions, one-shot Capture, Pause, Off,
+exact confirmation, `browser run` scripts in a background tab, Pause, Off,
 Reconnect, Disconnect, stale target refusal, lost replies, and stored history.
 Keep native viewport and window settings unchanged. Do not claim support for
 minimized-window input from a background-tab check.

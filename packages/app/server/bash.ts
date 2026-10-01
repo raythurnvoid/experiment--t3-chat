@@ -92,6 +92,7 @@ import {
 	bash_wait_command_create,
 	type bash_JobContext,
 } from "./bash-jobs-command.ts";
+import { bash_browser_command_create, type bash_BrowserContext } from "./bash-browser-command.ts";
 import { bash_nested_shell_command_create } from "./bash-nested-shell-command.ts";
 import { bash_head_tail_wc_command_create } from "./bash-head-tail-wc-command.ts";
 import { bash_resolve_command_create } from "./bash-resolve-command.ts";
@@ -1093,6 +1094,10 @@ async function bash_fs_create(args: {
 	volumeMounts: plugins_list_bash_volume_mounts_Result;
 	transferContext: bash_TransferContext;
 	jobContext: bash_JobContext;
+	/**
+	 * Present only in a chat call or a job started from a turn that may browse.
+	 */
+	browserContext?: bash_BrowserContext;
 	shells: { _id: Id<"ai_chat_bash_shells">; name: string }[];
 	/**
 	 * The run fence of a chat call: its file writes are refused after Stop. A job passes null,
@@ -1413,6 +1418,7 @@ async function bash_fs_create(args: {
 		rememberCwd: remember_cwd,
 		transferContext: args.transferContext,
 		jobContext: args.jobContext,
+		browserContext: args.browserContext,
 		onBackground,
 		restoreState: args.restoreState,
 		onExecEnd: args.onExecEnd,
@@ -1483,6 +1489,11 @@ function bash_shell_create(
 		 * `jobs`, `wait` or `kill`, and its `&` runs inline.
 		 */
 		jobContext?: bash_JobContext;
+		/**
+		 * Present only in a chat call or a job started from a turn that may browse. The
+		 * plugin-review shell has none, so it gets no `browser`.
+		 */
+		browserContext?: bash_BrowserContext;
 		onBackground?: NonNullable<ExecOptions["onBackground"]>;
 		/**
 		 * A job may raise the statement count only. `maxOutputSize` stays: the transcript-entry
@@ -1565,12 +1576,14 @@ function bash_shell_create(
 						bash_kill_command_create(ctx, args.jobContext),
 					]
 				: []),
+			// Browser.
+			...(args.browserContext ? [bash_browser_command_create(ctx, args.browserContext)] : []),
 			// Nested execution.
 			bash_nested_shell_command_create("bash", dbFilesRoots),
 			bash_nested_shell_command_create("sh", dbFilesRoots),
 			// xargs/which.
 			bash_xargs_command_create(dbFilesRoots),
-			bash_which_command_create(),
+			bash_which_command_create({ browser: Boolean(args.browserContext) }),
 			// Native /tmp wrappers.
 			...native_just_bash_tmp_command_create_all(dbFilesRoots),
 		].map(record_app_command_diagnostics),
@@ -1901,6 +1914,28 @@ export async function bash_run_command(
 			wakeAgent: args.wakeAgent,
 			waitingJobNumbers: [],
 		};
+		// The browser state of a turn lives on its run doc, so a call needs the run fence too.
+		const browserContext: bash_BrowserContext | undefined =
+			args.browserIntent && args.sourceMessageId && args.run && process.env.AI_CHAT_BROWSER_ENABLED === "true"
+				? {
+						source: {
+							organizationId: args.organizationId,
+							workspaceId: args.workspaceId,
+							userId: args.userId,
+							membershipId: args.membershipId,
+							membershipLifetime: args.membershipLifetime,
+							threadId: args.threadId,
+							sourceMessageId: args.sourceMessageId,
+						},
+						browserIntent: args.browserIntent,
+						run: args.run,
+						canWriteFiles: args.allowDbFilesMkdir,
+						invocationId: invocation.invocationId,
+						deadlineAt: invocation.transferDeadlineAt,
+						signal: abort.signal,
+						nextCommandNumber: () => commandNumber++,
+					}
+				: undefined;
 		const bashFs = await bash_fs_create({
 			ctx,
 			organizationId: args.organizationId,
@@ -1927,6 +1962,7 @@ export async function bash_run_command(
 				jobId: null,
 			},
 			jobContext,
+			browserContext,
 			shells: invocation.shells,
 			run: args.run,
 			toolOutputRunId: args.output?.runId ?? null,
@@ -2604,6 +2640,29 @@ export async function bash_run_job(
 				wakeAgent: null,
 				waitingJobNumbers: [],
 			},
+			// A job may browse only while the run that started it still runs. Its commands share that
+			// run's browser state and operation count with the chat call.
+			browserContext:
+				row.browserIntent && row.sourceMessageId && job.browserRun && process.env.AI_CHAT_BROWSER_ENABLED === "true"
+					? {
+							source: {
+								organizationId: row.organizationId,
+								workspaceId: row.workspaceId,
+								userId: row.userId,
+								membershipId: row.membershipId,
+								membershipLifetime: row.membershipLifetime,
+								threadId: row.threadId,
+								sourceMessageId: row.sourceMessageId,
+							},
+							browserIntent: row.browserIntent,
+							run: job.browserRun,
+							canWriteFiles: job.allowDbFilesMkdir,
+							invocationId: row._id,
+							deadlineAt: row.transferDeadlineAt,
+							signal: abort.signal,
+							nextCommandNumber: () => commandNumber++,
+						}
+					: undefined,
 			shells,
 			run: null,
 			toolOutputRunId: null,

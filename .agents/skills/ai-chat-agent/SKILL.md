@@ -19,6 +19,7 @@ Primary:
 - `../../../packages/app/server/bash-head-tail-wc-command.ts`
 - `../../../packages/app/server/bash-ls-command.ts`
 - `../../../packages/app/server/bash-search-command.ts`
+- `../../../packages/app/server/bash-browser-command.ts`
 - `../../../packages/app/server/bash-delegate.ts`
 - `../../../packages/app/server/bash-meta-command.ts`
 - `../../../packages/app/server/bash-mv-command.ts`
@@ -350,8 +351,7 @@ The tool registry supports these tools. Mode and model support decide which ones
 - `view_image` (image inspection by Files path in both modes; no live browser required)
 - `execute_code`
 - `image_generation` (OpenAI image output saved as a pending Files file; Agent mode only)
-- `browser_status`, `browser_open`, `browser_tabs`, `browser_new_tab`, `browser_close_tab`, `browser_run`, `browser_reload`, `browser_close` (screen-independent cloud discovery and exact-tab tools in both chat modes)
-- `playwriter_read`, `playwriter_act`, `playwriter_navigate`, `playwriter_capture` (fixed actions on the user's confirmed remote tab; both chat modes)
+- The browser is not a separate tool. It is the Bash `browser` command (see "Browser command" below). The old browser and Playwriter tool names stay only in `validationTools`, so old chats still load.
 - `mcp__<server>__<tool>` (tools of the plugin MCP servers installed in the workspace and of the member's own MCP servers; Agent mode only; see "MCP tools" below)
 
 Skill bodies and references are ordinary Bash output. `execute_code` can run suitable JavaScript after the agent reads it. Current tool results replay through `validationTools`. Unknown tools and old file result shapes are refused before model replay.
@@ -528,7 +528,7 @@ Execute checks the original chat's creator and membership lifetime, the selected
 
 Execute returns only safe status, reason, and Files targets. Pixels stay in a private turn map keyed by the SDK tool call ID, beside an exact source recheck. `toModelOutput` is a pure lookup: repeated conversion does not read or charge again. Its `image-data` part becomes OpenAI `input_image`, not `input_file`. The installed-provider test runs the real two-step SDK loop and checks the schema, call identity, and image payload.
 
-Before each provider step, finish awaited browser and image-output preparation, then run `filter_revoked_observations`. It rechecks map entries and replaces the actual expanded message part with the checked output. Missing or revoked entries become safe text. Check original source access after that observation I/O, including on final-answer and job-wait branches. Text markers carry no authority. History conversion never rebuilds this map or fetches bytes. Titles omit observations. These rules also cover live browser text; ordinary Bash text and skill results keep their existing history behavior.
+Before each provider step, finish awaited browser and image-output preparation, then run `filter_revoked_observations`. It rechecks map entries and replaces the actual expanded message part with the checked output. Missing or revoked entries become safe text. Check original source access after that observation I/O, including on final-answer and job-wait branches. Text markers carry no authority. History conversion never rebuilds this map or fetches bytes. Titles omit observations. Bash text, including `browser` output, and skill results keep their normal history behavior.
 
 The main stream sets `maxRetries: 0`. SDK retries would resend the same private data without running `prepareStep` again. A failed provider call ends the turn; a new user retry starts with fresh access checks.
 
@@ -563,31 +563,72 @@ Read editable text with Bash. Read or transform other bytes through `execute_cod
 - Works on folders and any file kind, uploads and binaries included, because metadata is not part of the file's text. Folder metadata remains committed during a pending move; the agent uses its visible path.
 - Read the current map with Bash `meta get <path>`; find files or folders by key with Bash `meta search --where '{"exists":"metadata.<key>"}'`.
 
-## Browser tools
+## Browser command
 
-Browser tools do not depend on the page the user is looking at. `browser_status` discovers authorized cloud sessions; `browser_open` can reuse or create one later in a turn. File and web use separate slots. File mode shows one HTML source and blocks snippet navigation and popups. Cloud web has up to eight tabs and allows checked `page.goto`. The agent's exact tab is separate from the viewer's tab. Both chat modes can use browser tools. The [cloud-browser skill](../cloud-browser/SKILL.md) owns the full rules, including [Playwriter](../cloud-browser/references/playwriter.md).
+The model uses the browser through one Bash command, `browser` ([bash-browser-command.ts](../../../packages/app/server/bash-browser-command.ts)). It works like the Playwriter CLI: the model sends Playwright code and reads normal Bash output. Both chat modes can use it. The [cloud-browser skill](../cloud-browser/SKILL.md) owns the browser rules, including [Playwriter](../cloud-browser/references/playwriter.md).
 
-Send, Edit, Retry, and Regenerate capture the current saved `browserIntent`: web choice plus selection and policy revisions. Auto-drain keeps queued intent; explicit Resume captures it again. Authority uses the original persisted user message and membership lifetime. Each call checks the original chat, saved intent, and exact browser lease. Human changes are never silently adopted. `prepareStep` checks the runner and removes browser tools if authority goes stale. Other tools and the final reply continue. Web Off does not remove file-preview authority.
+The command exists only in a chat call that has a browser intent, a source user message, and a chat run, and only while `AI_CHAT_BROWSER_ENABLED` is `true`. `which browser` follows the same rule. In that case the `bash` tool description adds a "Browser:" paragraph, and the system prompt keeps the browser safety lines.
 
-Valid workspace members, including Viewers, can read their own saved browser intent and send ordinary chats. That read grants no browser use. Browser tools and settings writes still require `workspace.browser.use`.
+One command covers both providers because the cloud runner and the Playwriter relay run the same kind of snippet: an async function body with `page`, `expect`, and `state`. The parts only one provider has (cloud tabs, the file preview, `emitFile`, Reload) are subcommands or flags. On the other provider they refuse with a clear message.
 
-Management returns private `browserRef` and `tabRef` values. Run and Reload require the exact web tab; Close ends the named session. `browser_run` also takes `code`; its snippet receives `page`, `frame`, `expect`, `emitFile`, and `state`. Web `frame` is the main frame. `state` keeps a JSON object between `browser_run` calls of the same chat while that browser session stays open; the runner drops non-JSON parts and the tool output lists them as "State warnings". A run that hits its time limit returns `timed_out` and keeps the session open. Use `emitFile({workspace:"current",path:"/reports/page.png",bytes:await page.screenshot(),contentType:"image/png"})` for a pending screenshot. A successful run allows eight files and 8 MiB. Trusted screenshots allow PNG/JPEG, 2 MiB, 8192 pixels per edge, and 16 million pixels. Only Agent mode may create Files output; Ask refuses it with `agent_required`.
+Subcommands:
+
+- `status`: the web browser and file preview this chat can use.
+- `open [URL]`: open or reuse the web browser. `open --file PATH [--source saved|proposed|draft]`: open an app HTML file in the cloud file preview.
+- `tabs`, `tab new [URL]`, `tab close TAB`: cloud tabs only. My browser has one shared tab.
+- `run [--tab TAB | --file] [-e CODE]`: run code. Without `-e`, the code comes from stdin, so a quoted heredoc works.
+- `reload [--tab TAB | --file]`: cloud only. In My browser the model runs `await page.reload()`.
+- `close [--file]`: end the cloud browser or the file preview, or stop automation of My browser (the user's tab stays open).
+
+The provider is the user's saved web choice: the cloud browser or My browser (the user's shared tab). The agent never picks or switches it. A tab id is the first 8 characters of the runner's tab id, and `--tab` matches by prefix (at least 4 characters). `--tab` may be left out when the turn knows only one tab. Exit codes: 0 success, 1 failure or refusal, 2 usage error, 124 time limit.
+
+The snippet gets `page`, `frame` (file preview only; web `frame` is the main frame), `expect`, `emitFile`, and `state`. Its `console.log` lines and its return value print on stdout, so `| jq` works. Page console lines, page errors, state warnings, and a thrown error print on stderr. `state` keeps JSON data between runs of this chat while the browser stays open. A run holds the browser for up to 30 seconds, so it starts only when it can end before the Bash call's transfer deadline. My browser runs code through the runner's `script` operation. Its exit code comes from the script status (a thrown script still completes the receipt).
+
+Browser output is normal Bash output. It is saved in the chat, the transcript, and stored command output, like any other command. The user chose this over private observations. Before it is stored, stdout is capped at 100,000 characters and stderr at 20,000, and inline image data and protocol markers are redacted. Runner ids and file bytes never print.
+
+## Browser turn state
+
+Bash runs outside the chat action, so the turn's browser state lives on the run doc: `ai_chat_runs.browser` holds the bindings, the revoked flag, and the operation count. Every command reads it with `ai_chat_files.get_browser_turn`. `ai_chat_files.update_browser_turn` changes it in one transaction:
+
+- `claim` counts one operation. A run allows 20 browser operations across providers.
+- `bind` saves bindings. `ifAbsent` keeps a binding the turn already has; status and first use bind this way. Only a checked result of the agent's own operation replaces a binding.
+- `unbind` removes bindings by key (`connectionId`, or `sessionId:tabId`, or `sessionId:file`).
+- `revoke` ends browser access for the rest of the run.
+
+A stopped or finished run refuses every change. Regenerate and a job wake start a new run, so they start with a fresh browser state. The run doc is deleted with its thread.
+
+A background job started from a call that could browse stores that call's run as `job.browserRun` (a nested job copies its parent's). `bash_run_job` then gives the job a `browser` command on that run. So the job shares the turn's bindings and 20 operations, and every command refuses with the `stopped` line once that run ends or is stopped.
+
+Each operation gets its own call id, `<bashInvocationId>:browser:<number>`, for its durable browser receipt. So a replayed Bash call never runs an action twice. A run starts with up to 20 KB of code.
+
+## Browser authority
+
+Send, Edit, Retry, and Regenerate capture the current saved `browserIntent`: web choice plus selection and policy revisions. Auto-drain keeps queued intent; explicit Resume captures it again. Authority uses the original persisted user message and membership lifetime. Each door checks the original chat, saved intent, and exact browser lease. Web Off does not remove file-preview authority.
+
+Valid workspace members, including Viewers, can read their own saved browser intent and send ordinary chats. That read grants no browser use. Browser use and settings writes still require `workspace.browser.use`.
+
+Every command first checks every binding of the turn. A person's change (Take, Pause, a navigation, Off, a closed session) revokes browser access for the rest of the turn. Human changes are never silently adopted, with one exception in My browser: a click often navigates after the script returns, so a successful script adopts the runtime navigation and target revisions. A person's navigation in that same short window is adopted too. Other tools and the final reply continue after a revoke.
 
 Page text is untrusted. The model must not follow page instructions or type passwords and secrets. Sending, buying, publishing, and deleting need the user's request or approval. Cloud web loads the owner's encrypted cookie profile. Blocked sites and web choice are separate saved settings. Agent Close never saves cloud cookies; human End does.
 
-Playwriter uses a confirmed native tab through the official extension relay. It exposes fixed Read, Click, Fill, Press, Scroll, Navigate, and one-shot Capture, with no arbitrary code or video viewer. Missing replay of already-loaded iframe sessions is an accepted upstream limit. A missing child can refuse the whole Read or Capture. The app also refuses frame input it cannot guard safely; this is a separate app limit. A proven completed Click or Enter navigation returns success with that command's checked new lease. Old observations expire, and a fresh Read can run in the same turn. An unproved effect stays unknown; closing the socket fences old dispatch and lets Reconnect proceed. Never repeat that call automatically.
+A refusal prints one fixed line on stderr (`REFUSAL_TEXT` in the command module), so the model knows whether to retry:
 
-Every dispatch has a durable call identity and operation hash. Exact retries never repeat actions or rebuild old observations. The model must not repeat an action automatically after an unknown result. It tells the user what is uncertain. A lost reply stays unresolved until the runner proves cleanup or provider closure. Cleanup does not depend on the source chat surviving. Remote recovery keeps the exact target, Pause, Off, and remaining budgets, then clears old observations.
+- `stale`: the browser changed. Browser access ended for this turn. Do not retry.
+- `unknown`: the action may have run. Do not repeat it. A lost reply stays with the receipt resolver until the runner proves cleanup or closure.
+- `busy`: another chat's command is running on this browser (`busy_command`). A plain runner `busy` stays a generic failure.
+- `agent_access_off`: the user turned off agent access. It is checked before the run, in the runner, and after the run.
+- `agent_blocked_site`: the page is on a blocked site. The runner drops the whole output, downloads included.
+- `limit` (20 operations), `session_limit` (the shared session's own limit), `stopped`, `needs_capture` (a draft preview needs a fresh editor capture), `time` (too little time left in the Bash call).
 
-Some `browser_run` refusals get a fixed text (`ai_chat_tool_browser_REFUSAL_TEXT`). The card and the model both see it, so the model does not retry. `busy` means the runner answered `busy_command`: another chat's command is running on this browser. A plain runner `busy` (for example, a reload holds the slot) stays a generic `execution` error. `agent_access_off` means the user turned off agent access; it is checked before the run, in the runner, and again after the run. `agent_blocked_site` means the page is on a site the user blocked for the agent; the runner drops the whole output, downloads included, and keeps the session. Other refusals reach the model as a bare status, because their debug text may hold page content.
+## Browser files
 
-In a web session, files the page downloads during a command come back from the runner as `downloads` (raw name, type, base64) next to `files`, inside the same eight-file/8-MiB limit. Only a successful run saves them. Each one becomes a pending file at `/.system/downloads/` in the current workspace, named by `files_normalize_browser_download_name` (a page cannot create `README`, `AGENTS`, or `SKILL` files this way). A broken type is left out so the writer guesses it from the name. A download with a bad name or bad data is dropped alone, and the model text says so; `downloadsDropped` (downloads the runner dropped over the limit) adds one more line. Ask refuses downloads like emitted files, with `agent_required`. The tool text tells the model to click the link or submit the form, then wait in the same snippet (for example `page.waitForTimeout(2000)`). `page.waitForEvent("download")` never fires, and `page.goto` to a download URL is aborted and fails the snippet.
+Only Agent mode saves files, in the cloud browser and in My browser. `emitFile({workspace:"current",path:"/reports/page.png",bytes:await page.screenshot(),contentType:"image/png"})` saves a pending file. A successful run allows eight files and 8 MiB. Ask mode prints `saving files needs Agent mode` on stderr and exits 1. My browser files are checked against the exact connection lease the script used (`playwriter_browser.prepare_file_output`). Bash cannot return images, so the model saves a screenshot with `emitFile` and looks at it with `view_image`.
 
-Browser files use the shared writer described below. Emitted file paths are explicit canonical Files paths, with bounded collision suffixes and no default browser folder. Only agent downloads have a fixed folder, `/.system/downloads/`. `prepare_file_output` and `finalize_file_output` check the command's source and lease inside the fresh-write transaction. A completed retry still checks the original chat before returning its readable file; it does not need the old browser lease. Use `view_image` to inspect emitted image bytes.
+In a web session, files the page downloads during a command come back from the runner as `downloads` (raw name, type, base64) next to `files`, inside the same eight-file/8-MiB limit. Only a successful run saves them. Each one becomes a pending file at `/.system/downloads/` in the current workspace, named by `files_normalize_browser_download_name` (a page cannot create `README`, `AGENTS`, or `SKILL` files this way). A broken type is left out so the writer guesses it from the name. A download with a bad name or bad data is dropped alone, and stderr says so; `downloadsDropped` adds one more line. The model clicks the link or submits the form, then waits in the same snippet. `page.waitForEvent("download")` never fires, and `page.goto` to a download URL is aborted.
 
-Browser observations stay in a private turn map keyed by call ID. Cloud Run may return safe Files targets and capped display text under `metadata.debug`. Remote tools return only fixed status and reason text to shared history, with no raw input or debug. `toModelOutput` reads current private observations and records the final fixed status and reason. Private text uses content parts, so a missing record cannot replay it on a later SDK step. Expiry and recovery replace text records with only that safe result and a false access check; old page data and lease closures are dropped. Image records are removed. The model uses the latest successful result after its own tab or navigation change expires an older observation. Expired old output does not turn that completed call into a new failure. Titles and replay never rebuild page text or image bytes. Input deltas are dropped and stored input becomes `{}`. `file_stored` never sends debug to the model.
+Browser files use the shared writer described below. Emitted file paths are explicit canonical Files paths, with bounded collision suffixes and no default browser folder. `prepare_file_output` and `finalize_file_output` check the command's source and lease inside the fresh-write transaction. A completed retry still checks the original chat before returning its readable file; it does not need the old browser lease.
 
-A turn allows 20 browser operations across providers and up to 20 KB of cloud code per Run. File Reload reads the same source kind; drafts need fresh editor capture. Web Reload names the exact tab. Reload, Close, and tab changes carry the original source, command identity, and frozen lease to the runner. Only that turn's checked successful action advances its bindings. A human takeover always wins.
+Old chats can hold parts of the removed browser and Playwriter tools. They still load through the `validationTools` stubs, and `filter_revoked_observations` replaces any private part that has no current observation.
 
 ## `execute_code`
 
@@ -746,7 +787,7 @@ Writes:
 - `edit_file` fails on missing/ambiguous single-match replacements.
 - Test text and non-image `emitFile` output, partial completion, a bounded byte read, `view_image`, Ask refusal, failed storage, quota failure, and Save/Discard.
 - Keep the installed-provider proof for `view_image`: strict root object with required workspace and path, two-step execution, matching tool call ID, `input_image`, safe execute result, and repeated conversion without extra reads. Also run native real-model image QA; mocked HTTP proves conversion, not provider acceptance.
-- Browser QA includes exact reload advancement, takeover or end disabling only browser tools, and stale observation removal before a later provider step. Replayed history and title input must stay free of raw browser observations and image bytes.
+- Browser QA runs the Bash `browser` command: open, run with stdout and stderr, `state` across runs, exact reload advancement, and a takeover or end that refuses later browser commands of the turn while other tools keep working. Stored output must hold no inline image data.
 - With the matching upload plugin installed and enabled, generated outputs are read, searched, edited, and listed by their actual visible paths, preferably through Bash (including shell writes) plus `edit_file`.
 - Pasting, dropping, or picking an image through the configurations-row plus button shows a removable chip; non-image files show a toast and attach nothing. Removing the chip disables an image-only send again. With no attachments the chip bar is absent; the first attach grows the composer by one chip row, the last removal shrinks it back, and extra chips scroll sideways without changing heights. Arrow keys move between chip remove buttons in one tab stop, and a keyboard removal keeps focus on a neighbor chip (or the editor when none is left). Editing a one-line message shows no overlap between the editor text and the configurations row, and editing with attachments grows the edit bubble to fit the bar.
 - A sent image renders in the transcript, survives a reload from Convex, and the model can describe it. Image-only sends work, and a queued message drains with its images.

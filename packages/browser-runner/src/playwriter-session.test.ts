@@ -1,8 +1,20 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { handle_playwriter_request, PlaywriterSession } from "./playwriter-session";
 import { playwriter_browser_response_schema } from "common/playwriter-browser.ts";
-import { PLAYWRITER_EXECUTOR_REVISION } from "./playwriter-executor";
 import { SNIPPET_EXECUTOR_REVISION } from "./snippet-executor";
+
+const SCRIPT = { kind: "script", code: "return 1" };
+const SCRIPT_RESULT = {
+	ok: true,
+	resultJson: "1",
+	logs: [],
+	logsTruncated: false,
+	consoleEntries: [],
+	pageErrors: [],
+	stateJson: '{"n":1}',
+	stateWarnings: [],
+	files: [],
+};
 
 const SCOPE = { connectionId: "connection", ownerId: "owner", organizationId: "org", workspaceId: "workspace" };
 const runtime = {
@@ -141,11 +153,9 @@ function make_session(existingRecords?: Map<string, unknown>) {
 			get: () => ({ fetch: (request: Request): Promise<Response> => session.fetch(request) }),
 		},
 		LOADER: {
-			load: vi.fn((options: { modules: Record<string, string> }) => ({
+			load: vi.fn((_options: { modules: Record<string, string> }) => ({
 				getEntrypoint: () => ({
-					// Both executors use the same main module name. Only the fixed one ships `playwright.js`.
-					revision: async () =>
-						"playwright.js" in options.modules ? PLAYWRITER_EXECUTOR_REVISION : SNIPPET_EXECUTOR_REVISION,
+					revision: async () => SNIPPET_EXECUTOR_REVISION,
 					evaluate,
 				}),
 			})),
@@ -285,7 +295,7 @@ describe("PlaywriterSession", () => {
 	it("keeps a successor command when an exact policy sync is retried", async () => {
 		const mocked = make_session();
 		const connected = await connect_session(mocked);
-		const command = { ...command_request(connected, "during-policy-retry"), operation: { kind: "read" } };
+		const command = { ...command_request(connected, "during-policy-retry"), operation: SCRIPT };
 		expect((await mocked.post("/run/begin", command)).reply.execute).toBe(true);
 		expect(
 			(
@@ -304,7 +314,7 @@ describe("PlaywriterSession", () => {
 				await mocked.post("/run/finish", {
 					...SCOPE,
 					request: receipt_identity(command),
-					output: { result: { ok: true, reason: null, inputSent: false, cleanup: "complete" } },
+					output: { script: { status: "succeeded", stateJson: null } },
 				})
 			).reply,
 			"An unchanged settings retry must not revoke an admitted successor",
@@ -364,7 +374,7 @@ describe("PlaywriterSession", () => {
 			})
 		).reply.runtime as typeof runtime;
 		const reply = (
-			await mocked.remote("/run", { ...command_request(synced, "system-policy"), operation: { kind: "read" } })
+			await mocked.remote("/run", { ...command_request(synced, "system-policy"), operation: SCRIPT })
 		).reply;
 		expect(reply, "A user policy sync must not remove the current system deny").toMatchObject({
 			status: "refused",
@@ -374,59 +384,28 @@ describe("PlaywriterSession", () => {
 		expect(mocked.records.get("session")).toMatchObject({ blockedHosts: [] });
 	});
 
-	it("supplies current system and saved user denies without storing system entries", async () => {
+	it("applies current system and saved user denies without storing system entries", async () => {
 		const mocked = make_session();
 		mocked.env.BROWSER_WEB_DENIED_HOSTS = " system.test, , ";
-		const connected = await connect_session(mocked, new NativeSocket(), {
-			...connect_request(),
-			agentBlockedHosts: ["user.test"],
-		});
-		mocked.evaluate.mockResolvedValue({ result: { ok: true, reason: null, inputSent: false, cleanup: "complete" } });
-		await mocked.remote("/run", { ...command_request(connected, "first-policy"), operation: { kind: "read" } });
-		expect(
-			mocked.evaluate.mock.calls.at(-1)![0],
-			"The child must receive current system and user denies",
-		).toMatchObject({ blockedHosts: ["user.test", "system.test"] });
-		mocked.env.BROWSER_WEB_DENIED_HOSTS = "new-system.test";
-		await mocked.remote("/run", { ...command_request(connected, "next-policy"), operation: { kind: "read" } });
-		expect(mocked.evaluate.mock.calls.at(-1)![0]).toMatchObject({ blockedHosts: ["user.test", "new-system.test"] });
+		const socket = new NativeSocket();
+		await connect_session(mocked, socket, { ...connect_request(), agentBlockedHosts: ["user.test"] });
 		expect(mocked.records.get("session")).toMatchObject({ blockedHosts: ["user.test"] });
-	});
-
-	it("refuses system-denied Navigate before loading a second child", async () => {
-		const mocked = make_session();
-		mocked.env.BROWSER_WEB_DENIED_HOSTS = "blocked.test";
-		const connected = await connect_session(mocked);
-		mocked.evaluate.mockImplementation(async (input) => ({
-			result: { ok: true, reason: null, inputSent: false, cleanup: "complete" },
-			observation: {
-				kind: "read",
-				observationRevision: (input as { observationRevision: string }).observationRevision,
-				url: "https://fixture.test/",
-				title: "Fixture",
-				text: "Fixture",
-				accessibility: "",
-				frames: [],
-			},
-		}));
-		const read = (
-			await mocked.remote("/run", { ...command_request(connected, "policy-read"), operation: { kind: "read" } })
-		).reply;
-		const reply = (
-			await mocked.remote("/run", {
-				...command_request(connected, "policy-navigate"),
-				operation: {
-					kind: "navigate",
-					url: "https://login.blocked.test./",
-					lastObservationRevision: (read.observation as { observationRevision: string }).observationRevision,
+		for (const host of ["user.test", "system.test"]) {
+			socket.packet({
+				method: "forwardCDPEvent",
+				params: {
+					method: "Page.frameNavigated",
+					sessionId: "native-session",
+					params: { frame: { id: "main-frame", url: `https://${host}/` } },
 				},
-			})
-		).reply;
-		expect(reply, "A system-denied Navigate must not reach a child").toMatchObject({
-			status: "refused",
-			result: { reason: "blocked_site", inputSent: false },
-		});
-		expect(mocked.evaluate).toHaveBeenCalledOnce();
+			});
+			const current = (await mocked.remote("/status", SCOPE)).reply.runtime as typeof runtime;
+			expect(
+				(await mocked.remote("/run", { ...command_request(current, host), operation: SCRIPT })).reply,
+				"A page on a system or user denied site must refuse new scripts",
+			).toMatchObject({ status: "refused", result: { reason: "blocked_site" } });
+		}
+		expect(mocked.env.LOADER.load).not.toHaveBeenCalled();
 	});
 
 	it("keeps a blank native root available under system host rules", async () => {
@@ -435,9 +414,9 @@ describe("PlaywriterSession", () => {
 		const socket = new NativeSocket();
 		socket.url = "about:blank";
 		const connected = await connect_session(mocked, socket);
-		mocked.evaluate.mockResolvedValue({ result: { ok: true, reason: null, inputSent: false, cleanup: "complete" } });
+		mocked.evaluate.mockResolvedValue(SCRIPT_RESULT);
 		expect(
-			(await mocked.remote("/run", { ...command_request(connected, "blank-read"), operation: { kind: "read" } })).reply,
+			(await mocked.remote("/run", { ...command_request(connected, "blank-read"), operation: SCRIPT })).reply,
 		).toMatchObject({ status: "completed" });
 	});
 
@@ -445,12 +424,12 @@ describe("PlaywriterSession", () => {
 		const mocked = make_session();
 		const socket = new NativeSocket();
 		const connected = await connect_session(mocked, socket);
-		mocked.evaluate.mockResolvedValue({ result: { ok: true, reason: null, inputSent: false, cleanup: "complete" } });
+		mocked.evaluate.mockResolvedValue(SCRIPT_RESULT);
 		const reply = (
 			await mocked.remote("/run", {
 				...command_request(connected, "removed-version"),
 				allowedVersions: ["0.7.0"],
-				operation: { kind: "read" },
+				operation: SCRIPT,
 			})
 		).reply;
 		expect(reply, "A removed live version must not load or dispatch new work").toMatchObject({
@@ -464,8 +443,8 @@ describe("PlaywriterSession", () => {
 	it("keeps exact duplicate receipts and cleanup after version removal", async () => {
 		const mocked = make_session();
 		const connected = await connect_session(mocked);
-		mocked.evaluate.mockResolvedValue({ result: { ok: true, reason: null, inputSent: false, cleanup: "complete" } });
-		const command = { ...command_request(connected, "version-receipt"), operation: { kind: "read" } };
+		mocked.evaluate.mockResolvedValue(SCRIPT_RESULT);
+		const command = { ...command_request(connected, "version-receipt"), operation: SCRIPT };
 		expect((await mocked.remote("/run", command)).reply.status).toBe("completed");
 		expect(
 			(await mocked.remote("/run", { ...command, allowedVersions: ["0.7.0"] })).reply,
@@ -503,7 +482,7 @@ describe("PlaywriterSession", () => {
 			navRevision: 3,
 			targetId: "native-tab",
 			allowedVersions: ["0.5.0"],
-			operation: { kind: "read" },
+			operation: SCRIPT,
 		});
 		expect(result.reply.status).toBe("not_started");
 		expect(result.reply).not.toHaveProperty("execute");
@@ -515,19 +494,8 @@ describe("PlaywriterSession", () => {
 		async (path) => {
 			const mocked = make_session();
 			const connected = await connect_session(mocked);
-			mocked.evaluate.mockImplementation(async (input) => ({
-				result: { ok: true, reason: null, inputSent: false, cleanup: "complete" },
-				observation: {
-					kind: "read",
-					observationRevision: (input as { observationRevision: string }).observationRevision,
-					url: "https://fixture.test/",
-					title: "Fixture",
-					text: "Private page text",
-					accessibility: "",
-					frames: [],
-				},
-			}));
-			const command = { ...command_request(connected, "late-completed"), operation: { kind: "read" } };
+			mocked.evaluate.mockResolvedValue(SCRIPT_RESULT);
+			const command = { ...command_request(connected, "late-completed"), operation: SCRIPT };
 			expect((await mocked.remote("/run", command)).reply.status).toBe("completed");
 			vi.setSystemTime(command.receiptResolutionDeadline + 1);
 			const reply = (await mocked.remote(path, receipt_identity(command))).reply;
@@ -536,7 +504,7 @@ describe("PlaywriterSession", () => {
 				completedLease: null,
 				result: { ok: false, reason: "outcome_unknown", cleanup: "complete" },
 			});
-			expect(reply).not.toHaveProperty("observation");
+			expect(reply).not.toHaveProperty("script");
 			expect(playwriter_browser_response_schema.safeParse(reply).success).toBe(true);
 			expect(mocked.evaluate).toHaveBeenCalledOnce();
 		},
@@ -550,7 +518,7 @@ describe("PlaywriterSession", () => {
 			const mocked = make_session();
 			const socket = new NativeSocket();
 			const connected = await connect_session(mocked, socket);
-			const command = { ...command_request(connected, "late-retained"), operation: { kind: "read" } };
+			const command = { ...command_request(connected, "late-retained"), operation: SCRIPT };
 			expect((await mocked.post("/run/begin", command)).reply.execute).toBe(true);
 			const response = await mocked.session.fetch(
 				new Request(`https://do/command-socket?commandId=${command.commandId}&generation=${connected.generation}`, {
@@ -609,165 +577,6 @@ describe("PlaywriterSession", () => {
 		}
 	});
 
-	it.each(["click", "navigate"])("uses the latest public Capture revision for %s", async (action) => {
-		const mocked = make_session();
-		const connected = await connect_session(mocked);
-		mocked.evaluate.mockImplementation(async (input) => {
-			const request = input as { observationRevision: string; operation: { kind: string } };
-			return {
-				result: { ok: true, reason: null, inputSent: request.operation.kind !== "capture", cleanup: "complete" },
-				...(request.operation.kind === "capture"
-					? {
-							observation: {
-								kind: "capture",
-								observationRevision: request.observationRevision,
-								format: "png",
-								data: "image",
-							},
-						}
-					: {}),
-			};
-		});
-		const captured = (
-			await mocked.remote("/run", {
-				...command_request(connected, "capture"),
-				operation: { kind: "capture", format: "png" },
-			})
-		).reply;
-		const observation = captured.observation as { observationRevision: string };
-		expect(captured.status).toBe("completed");
-		const operation =
-			action === "click"
-				? {
-						kind: "act",
-						action: "click",
-						locator: { by: "text", text: "Click" },
-						lastObservationRevision: observation.observationRevision,
-					}
-				: {
-						kind: "navigate",
-						url: "https://fixture.test/next",
-						lastObservationRevision: observation.observationRevision,
-					};
-		const reply = (await mocked.remote("/run", { ...command_request(connected, action), operation })).reply;
-		expect(reply, "The latest Capture must be usable by the next action").toMatchObject({
-			status: "completed",
-			result: { ok: true },
-		});
-		expect(mocked.evaluate).toHaveBeenCalledTimes(2);
-	});
-
-	it.each([false, true])(
-		"keeps checked Read fields across Capture only in the same document (Read: %s)",
-		async (readFirst) => {
-			const mocked = make_session();
-			const socket = new NativeSocket();
-			const connected = await connect_session(mocked, socket);
-			const fields = [{ tag: "INPUT", type: "text", value: "before", label: "Name" }];
-			mocked.evaluate.mockImplementation(async (input) => {
-				const request = input as { observationRevision: string; operation: { kind: string }; privateFields: unknown[] };
-				const observation =
-					request.operation.kind === "read"
-						? {
-								kind: "read",
-								observationRevision: request.observationRevision,
-								url: "https://fixture.test/",
-								title: "Fixture",
-								text: "Fixture",
-								accessibility: "",
-								frames: [],
-							}
-						: request.operation.kind === "capture"
-							? { kind: "capture", observationRevision: request.observationRevision, format: "png", data: "image" }
-							: undefined;
-				return {
-					result: { ok: true, reason: null, inputSent: false, cleanup: "complete" },
-					...(observation ? { observation } : {}),
-					...(request.operation.kind === "read" ? { privateFields: fields } : {}),
-				};
-			});
-			if (readFirst)
-				await mocked.remote("/run", { ...command_request(connected, "read-fields"), operation: { kind: "read" } });
-			const captured = (
-				await mocked.remote("/run", {
-					...command_request(connected, "capture-fields"),
-					operation: { kind: "capture", format: "png" },
-				})
-			).reply;
-			const revision = (captured.observation as { observationRevision: string }).observationRevision;
-			const fill = {
-				...command_request(connected, "fill-fields"),
-				operation: {
-					kind: "act",
-					action: "fill",
-					locator: { by: "label", label: "Name" },
-					value: "after",
-					lastObservationRevision: revision,
-				},
-			};
-			expect((await mocked.remote("/run", fill)).reply.status).toBe("completed");
-			expect(mocked.evaluate.mock.calls.at(-1)![0]).toMatchObject({ privateFields: readFirst ? fields : [] });
-			socket.navigate();
-			const current = (await mocked.remote("/status", SCOPE)).reply.runtime as typeof runtime;
-			const stale = (
-				await mocked.remote("/run", {
-					...command_request(current, "capture-after-navigation"),
-					operation: fill.operation,
-				})
-			).reply;
-			expect(stale).toMatchObject({ status: "refused", result: { reason: "stale_observation" } });
-		},
-	);
-
-	it("keeps the last successful observation when Capture is refused", async () => {
-		const mocked = make_session();
-		const connected = await connect_session(mocked);
-		mocked.evaluate.mockImplementationOnce(async (input) => ({
-			result: { ok: true, reason: null, inputSent: false, cleanup: "complete" },
-			observation: {
-				kind: "read",
-				observationRevision: (input as { observationRevision: string }).observationRevision,
-				url: "https://fixture.test/",
-				title: "Fixture",
-				text: "Fixture",
-				accessibility: "",
-				frames: [],
-			},
-		}));
-		const read = (
-			await mocked.remote("/run", {
-				...command_request(connected, "read-before-refused-capture"),
-				operation: { kind: "read" },
-			})
-		).reply;
-		const revision = (read.observation as { observationRevision: string }).observationRevision;
-		mocked.evaluate.mockResolvedValueOnce({
-			result: { ok: false, reason: "iframe_unsupported", inputSent: false, cleanup: "complete" },
-		});
-		expect(
-			(
-				await mocked.remote("/run", {
-					...command_request(connected, "refused-capture"),
-					operation: { kind: "capture", format: "png" },
-				})
-			).reply.status,
-		).toBe("refused");
-		mocked.evaluate.mockResolvedValueOnce({ result: { ok: true, reason: null, inputSent: true, cleanup: "complete" } });
-		expect(
-			(
-				await mocked.remote("/run", {
-					...command_request(connected, "act-after-refused-capture"),
-					operation: {
-						kind: "act",
-						action: "click",
-						locator: { by: "text", text: "Click" },
-						lastObservationRevision: revision,
-					},
-				})
-			).reply.status,
-		).toBe("completed");
-	});
-
 	it("allows only a fresh trusted human Reconnect to reset the ended session", async () => {
 		const mocked = make_session();
 		const connected = await connect_session(mocked);
@@ -812,14 +621,12 @@ describe("PlaywriterSession", () => {
 			};
 			const connected = await connect_session(mocked, socket, input);
 			if (limit === "operation limit") {
-				mocked.evaluate.mockResolvedValue({
-					result: { ok: true, reason: null, inputSent: false, cleanup: "complete" },
-				});
+				mocked.evaluate.mockResolvedValue(SCRIPT_RESULT);
 				expect(
 					(
 						await mocked.remote("/run", {
 							...command_request(connected, "last-budgeted-read"),
-							operation: { kind: "read" },
+							operation: SCRIPT,
 						})
 					).reply,
 				).toMatchObject({ status: "completed", runtime: { operations: 120 } });
@@ -889,7 +696,7 @@ describe("PlaywriterSession", () => {
 			});
 			const preparedPauseRevision = connected.controlRevision + 1;
 			if (order === "cleanup before Pause") {
-				const command = { ...command_request(connected, "last-before-retirement"), operation: { kind: "read" } };
+				const command = { ...command_request(connected, "last-before-retirement"), operation: SCRIPT };
 				expect((await mocked.post("/run/begin", command)).reply.execute).toBe(true);
 				const response = await mocked.session.fetch(
 					new Request(`https://do/command-socket?commandId=${command.commandId}&generation=${connected.generation}`, {
@@ -983,7 +790,7 @@ describe("PlaywriterSession", () => {
 				(
 					await mocked.post("/run/begin", {
 						...command_request(paused, "blocked-by-human-pause"),
-						operation: { kind: "read" },
+						operation: SCRIPT,
 					})
 				).reply,
 			).toMatchObject({ status: "refused", result: { reason: "agent_unavailable" } });
@@ -1000,7 +807,7 @@ describe("PlaywriterSession", () => {
 				(
 					await mocked.post("/run/begin", {
 						...command_request(resumed, "read-after-explicit-resume"),
-						operation: { kind: "read" },
+						operation: SCRIPT,
 					})
 				).reply.execute,
 			).toBe(true);
@@ -1061,7 +868,7 @@ describe("PlaywriterSession", () => {
 			completedLease: null,
 			runtime: { generation: fresh.generation },
 		});
-		expect((await mocked.remote("/run", { ...command, operation: { kind: "read" } })).reply).toMatchObject({
+		expect((await mocked.remote("/run", { ...command, operation: SCRIPT })).reply).toMatchObject({
 			error: { code: "stale_generation" },
 		});
 		expect(mocked.evaluate).not.toHaveBeenCalled();
@@ -1075,7 +882,7 @@ describe("PlaywriterSession", () => {
 			const mocked = make_session();
 			const socket = new NativeSocket();
 			const connected = await connect_session(mocked, socket, { ...connect_request(), operations: 119 });
-			const command = { ...command_request(connected, "last-active-command"), operation: { kind: "read" } };
+			const command = { ...command_request(connected, "last-active-command"), operation: SCRIPT };
 			expect((await mocked.post("/run/begin", command)).reply.execute).toBe(true);
 			const response = await mocked.session.fetch(
 				new Request(`https://do/command-socket?commandId=${command.commandId}&generation=${connected.generation}`, {
@@ -1143,644 +950,13 @@ describe("PlaywriterSession", () => {
 		},
 	);
 
-	it.each([
-		{ name: "after completion", duringCleanup: false },
-		{ name: "during cleanup", duringCleanup: true },
-	])("keeps completed navigation authority when human navigation happens $name", async ({ duringCleanup }) => {
-		vi.stubGlobal("WebSocketPair", ChildSocketPair);
-		vi.stubGlobal("Response", SocketResponse);
-		const { post, session } = make_session();
-		const socket = new NativeSocket();
-		vi.stubGlobal(
-			"fetch",
-			vi.fn(async () => ({ status: 101, webSocket: socket })),
-		);
-		const connecting = post("/recover", {
-			...SCOPE,
-			shareId: "a".repeat(32),
-			attemptId: "new-attempt",
-			expectedTargetId: "native-tab",
-			paused: false,
-			idleExpiresAt: Date.now() + 600_000,
-			totalExpiresAt: Date.now() + 3_600_000,
-			sessionId: "session",
-			operations: 0,
-			allowedVersions: ["0.5.0"],
-			agentBlockedHosts: [],
-			agentAccess: true,
-			policyRevision: 1,
-			selectionRevision: 1,
-			controlRevision: 4,
-		});
-		await vi.advanceTimersByTimeAsync(300);
-		const connected = (await connecting).reply.runtime as typeof runtime;
-		expect(connected.state).toBe("connected");
-		const command = {
-			...receipt(),
-			generation: connected.generation,
-			controlRevision: connected.controlRevision,
-			policyRevision: connected.policyRevision,
-			selectionRevision: connected.selectionRevision,
-			targetRevision: connected.targetRevision,
-			navRevision: connected.navRevision,
-			targetId: "native-tab",
-			allowedVersions: ["0.5.0"],
-		};
-		const read = await post("/run/begin", { ...command, operation: { kind: "read" } });
-		expect(read.reply.execute).toBe(true);
-		await post("/run/finish", {
-			...SCOPE,
-			request: receipt_identity(command),
-			output: {
-				result: { ok: true, reason: null, inputSent: false, cleanup: "complete" },
-				observation: {
-					kind: "read",
-					observationRevision: String(read.reply.observationRevision),
-					url: "https://fixture.test/",
-					title: "Fixture",
-					text: "Fixture",
-					accessibility: "",
-					frames: [],
-				},
-			},
-		});
-		const navigation = { ...command, commandId: "navigation" };
-		expect(
-			(
-				await post("/run/begin", {
-					...navigation,
-					operation: {
-						kind: "navigate",
-						url: "https://fixture.test/next",
-						lastObservationRevision: String(read.reply.observationRevision),
-					},
-				})
-			).reply.execute,
-		).toBe(true);
-		if (duringCleanup) {
-			const response = await session.fetch(
-				new Request(`https://do/command-socket?commandId=navigation&generation=${connected.generation}`, {
-					headers: { Upgrade: "websocket" },
-				}),
-			);
-			expect(response.status).toBe(101);
-			const child = response.webSocket as unknown as ChildSocket;
-			child.send(
-				JSON.stringify({
-					id: 1,
-					method: "Target.setAutoAttach",
-					params: { autoAttach: true, waitForDebuggerOnStart: false, flatten: true },
-				}),
-			);
-			child.send(
-				JSON.stringify({
-					id: 2,
-					method: "Page.addScriptToEvaluateOnNewDocument",
-					sessionId: "native-session",
-					params: { source: "", worldName: "utility" },
-				}),
-			);
-			socket.holdCleanup = true;
-		}
-		socket.navigate();
-		const finishing = post("/run/finish", {
-			...SCOPE,
-			request: receipt_identity(navigation),
-			output: { result: { ok: true, reason: null, inputSent: true, cleanup: "complete" } },
-		});
-		if (duringCleanup) {
-			await vi.waitFor(() => expect(socket.cleanupReply).not.toBeNull());
-			socket.navigate();
-			socket.packet({ id: socket.cleanupReply, result: {} });
-		}
-		const finished = await finishing;
-		expect(finished.reply).toMatchObject({
-			status: "completed",
-			completedLease: { navRevision: connected.navRevision + 1 },
-		});
-		socket.navigate();
-		const status = (await post("/command-status", receipt_identity(navigation))).reply;
-		expect(status).toMatchObject({
-			status: "completed",
-			completedLease: { navRevision: connected.navRevision + 1 },
-			runtime: { navRevision: connected.navRevision + 2 + Number(duringCleanup) },
-		});
-		expect(playwriter_browser_response_schema.safeParse(status).success).toBe(true);
-		expect(JSON.stringify(status.completedLease)).not.toMatch(/url|title|text/);
-	});
-
-	it.each(["act", "navigate"] as const)(
-		"blocks stale Act utility work and keeps explicit Navigate usable (operation: %s)",
-		async (kind) => {
-			vi.stubGlobal("WebSocketPair", ChildSocketPair);
-			vi.stubGlobal("Response", SocketResponse);
-			const mocked = make_session();
-			const socket = new NativeSocket();
-			const connected = await connect_session(mocked, socket);
-			mocked.evaluate.mockImplementationOnce(async (input) => ({
-				result: { ok: true, reason: null, inputSent: false, cleanup: "complete" },
-				observation: {
-					kind: "read",
-					observationRevision: (input as { observationRevision: string }).observationRevision,
-					url: "https://fixture.test/",
-					title: "Fixture",
-					text: "Fixture",
-					accessibility: "",
-					frames: [],
-				},
-			}));
-			const read = (
-				await mocked.remote("/run", {
-					...command_request(connected, "read-before-held-context"),
-					operation: { kind: "read" },
-				})
-			).reply;
-			const revision = (read.observation as { observationRevision: string }).observationRevision;
-			let worldReply: number | null = null;
-			let nativeEffects = 0;
-			const send = socket.send.bind(socket);
-			vi.spyOn(socket, "send").mockImplementation((data) => {
-				const packet = JSON.parse(data) as { id: number; params?: { method: string } };
-				if (packet.params?.method === "Page.getFrameTree") {
-					socket.packet({
-						id: packet.id,
-						result: { frameTree: { frame: { id: "main-frame", url: "https://fixture.test/" } } },
-					});
-					return;
-				}
-				if (packet.params?.method === "Page.createIsolatedWorld") {
-					worldReply = packet.id;
-					return;
-				}
-				if (packet.params?.method === "Runtime.evaluate") nativeEffects += 1;
-				send(data);
-			});
-			mocked.evaluate.mockImplementationOnce(async (input) => {
-				const commandId = (input as { commandId: string }).commandId;
-				const response = await mocked.session.fetch(
-					new Request(`https://do/command-socket?commandId=${commandId}&generation=${connected.generation}`, {
-						headers: { Upgrade: "websocket" },
-					}),
-				);
-				expect(response.status).toBe(101);
-				const child = response.webSocket as unknown as ChildSocket;
-				const context = Promise.withResolvers<void>();
-				const effect = Promise.withResolvers<{ error?: unknown }>();
-				child.addEventListener("message", (event) => {
-					const reply = JSON.parse((event as MessageEvent<string>).data) as { id?: number; error?: unknown };
-					if (reply.id === 3) context.resolve();
-					if (reply.id === 4) effect.resolve(reply);
-				});
-				child.send(
-					JSON.stringify({
-						id: 1,
-						method: "Target.setAutoAttach",
-						params: { autoAttach: true, waitForDebuggerOnStart: false, flatten: true },
-					}),
-				);
-				child.send(JSON.stringify({ id: 2, method: "Page.getFrameTree", sessionId: "native-session", params: {} }));
-				child.send(
-					JSON.stringify({
-						id: 3,
-						method: "Page.createIsolatedWorld",
-						sessionId: "native-session",
-						params: { frameId: "main-frame", worldName: "utility" },
-					}),
-				);
-				await context.promise;
-				// A late utility context must not let the old Act scroll the new document.
-				child.send(
-					JSON.stringify({
-						id: 4,
-						method: "Runtime.evaluate",
-						sessionId: "native-session",
-						params: { contextId: 77, expression: "window.scrollBy(0,100)", returnByValue: true },
-					}),
-				);
-				const reply = await effect.promise;
-				return {
-					result: {
-						ok: !reply.error,
-						reason: reply.error ? "outcome_unknown" : null,
-						inputSent: !reply.error,
-						cleanup: "complete",
-					},
-				};
-			});
-			const operation =
-				kind === "act"
-					? { kind, action: "scroll", deltaX: 0, deltaY: 100, lastObservationRevision: revision }
-					: { kind, url: "https://fixture.test/next", lastObservationRevision: revision };
-			const command = { ...command_request(connected, "held-context"), operation };
-			const pending = mocked.remote("/run", command);
-			await vi.waitFor(() => expect(worldReply, "The utility lookup must reach the native socket").not.toBeNull());
-			socket.navigate();
-			socket.packet({ id: worldReply, result: { executionContextId: 77 } });
-			const finished = (await pending).reply;
-			expect(nativeEffects, "A human navigation must block the old Act's Runtime effect").toBe(kind === "act" ? 0 : 1);
-			expect(finished.status).toBe(kind === "act" ? "unknown" : "completed");
-			if (kind === "act") expect(finished.completedLease).toBeNull();
-			else expect(finished.completedLease).toMatchObject({ navRevision: connected.navRevision + 1 });
-			const replay = (await mocked.remote("/run", command)).reply;
-			expect(replay).not.toHaveProperty("execute");
-			expect(nativeEffects).toBe(kind === "act" ? 0 : 1);
-			expect(mocked.evaluate).toHaveBeenCalledTimes(2);
-			expect(socket.readyState).toBe(1);
-		},
-	);
-
-	it.each([
-		{ action: "click", confirmed: false },
-		{ action: "press", confirmed: false },
-		{ action: "click", confirmed: true },
-	] as const)(
-		"keeps $action navigation unknown without another input dispatch (outcome confirmed: $confirmed)",
-		async ({ action, confirmed }) => {
-			vi.stubGlobal("WebSocketPair", ChildSocketPair);
-			vi.stubGlobal("Response", SocketResponse);
-			const { post, session } = make_session();
-			const socket = new NativeSocket();
-			vi.stubGlobal(
-				"fetch",
-				vi.fn(async () => ({ status: 101, webSocket: socket })),
-			);
-			const connecting = post("/recover", {
-				...SCOPE,
-				shareId: "a".repeat(32),
-				attemptId: "new-attempt",
-				expectedTargetId: "native-tab",
-				paused: false,
-				idleExpiresAt: Date.now() + 600_000,
-				totalExpiresAt: Date.now() + 3_600_000,
-				sessionId: "session",
-				operations: 0,
-				allowedVersions: ["0.5.0"],
-				agentBlockedHosts: [],
-				agentAccess: true,
-				policyRevision: 1,
-				selectionRevision: 1,
-				controlRevision: 4,
-			});
-			await vi.advanceTimersByTimeAsync(300);
-			const connected = (await connecting).reply.runtime as typeof runtime;
-			expect(connected.state).toBe("connected");
-			const command = {
-				...receipt(),
-				generation: connected.generation,
-				controlRevision: connected.controlRevision,
-				policyRevision: connected.policyRevision,
-				selectionRevision: connected.selectionRevision,
-				targetRevision: connected.targetRevision,
-				navRevision: connected.navRevision,
-				targetId: "native-tab",
-				allowedVersions: ["0.5.0"],
-			};
-			const read = await post("/run/begin", { ...command, operation: { kind: "read" } });
-			expect(read.reply.execute).toBe(true);
-			await post("/run/finish", {
-				...SCOPE,
-				request: receipt_identity(command),
-				output: {
-					result: { ok: true, reason: null, inputSent: false, cleanup: "complete" },
-					observation: {
-						kind: "read",
-						observationRevision: String(read.reply.observationRevision),
-						url: "https://fixture.test/",
-						title: "Fixture",
-						text: "Fixture",
-						accessibility: "",
-						frames: [],
-					},
-				},
-			});
-			const act = {
-				...command,
-				commandId: "act-navigation",
-				operation: {
-					kind: "act",
-					action,
-					...(action === "press" ? { key: "Enter" } : {}),
-					locator: { by: "text", text: "Next" },
-					lastObservationRevision: String(read.reply.observationRevision),
-				},
-			};
-			expect((await post("/run/begin", act)).reply.execute).toBe(true);
-			const response = await session.fetch(
-				new Request(`https://do/command-socket?commandId=act-navigation&generation=${connected.generation}`, {
-					headers: { Upgrade: "websocket" },
-				}),
-			);
-			expect(response.status).toBe(101);
-			const child = response.webSocket as unknown as ChildSocket;
-			child.send(
-				JSON.stringify({
-					id: 1,
-					method: "Target.setAutoAttach",
-					params: { autoAttach: true, waitForDebuggerOnStart: false, flatten: true },
-				}),
-			);
-			child.send(
-				JSON.stringify({
-					id: 2,
-					sessionId: "native-session",
-					method: action === "click" ? "Input.dispatchMouseEvent" : "Input.dispatchKeyEvent",
-					params: action === "click" ? { type: "mouseMoved", x: 10, y: 20 } : { type: "char", text: "\n" },
-				}),
-			);
-			expect(socket.inputCalls).toBe(1);
-			socket.navigate();
-			const finished = (
-				await post("/run/finish", {
-					...SCOPE,
-					request: receipt_identity(act),
-					output: {
-						result: {
-							ok: confirmed,
-							reason: confirmed ? null : "outcome_unknown",
-							inputSent: true,
-							cleanup: confirmed ? "complete" : "unknown",
-						},
-					},
-				})
-			).reply;
-			expect(finished, "A changed lease must retain proven cleanup without confirming the action").toMatchObject({
-				status: "unknown",
-				completedLease: null,
-				result: { ok: false, reason: "outcome_unknown", inputSent: true, cleanup: confirmed ? "complete" : "unknown" },
-			});
-			const calls = socket.inputCalls;
-			const replay = (await post("/run/begin", act)).reply;
-			expect(replay).toMatchObject({ status: "unknown", completedLease: null, runtime: { operations: 2 } });
-			expect(replay).not.toHaveProperty("execute");
-			expect(socket.inputCalls).toBe(calls);
-			if (confirmed) {
-				for (const path of ["/command-status", "/command-fence", "/command-ack"]) {
-					const receipt = (await post(path, receipt_identity(act))).reply;
-					expect(receipt).toMatchObject({
-						completedLease: null,
-						result: { ok: false, reason: "outcome_unknown", cleanup: "complete" },
-					});
-					expect(receipt).not.toHaveProperty("observation");
-				}
-				const current = (await post("/status", SCOPE)).reply.runtime as typeof runtime;
-				expect(
-					(await post("/run/begin", { ...command_request(current, "fresh-read"), operation: { kind: "read" } })).reply
-						.execute,
-				).toBe(true);
-				expect(socket.inputCalls).toBe(calls);
-			}
-		},
-	);
-
-	it.each([
-		"document click",
-		"SPA click",
-		"Enter submit",
-		"navigation during cleanup",
-		"Pause during cleanup",
-		"blocked redirect",
-		"human Pause",
-		"forged guard",
-	] as const)("keeps only an authorized witnessed %s navigation usable without replay", async (kind) => {
-		vi.stubGlobal("WebSocketPair", ChildSocketPair);
-		vi.stubGlobal("Response", SocketResponse);
-		const mocked = make_session();
-		const socket = new NativeSocket();
-		const connected = await connect_session(mocked, socket);
-		if (kind === "blocked redirect") mocked.env.BROWSER_WEB_DENIED_HOSTS = "blocked.test";
-		const nextUrl = kind === "blocked redirect" ? "https://blocked.test/next" : "https://fixture.test/next";
-		const duringCleanup = kind === "navigation during cleanup" || kind === "Pause during cleanup";
-		const navigate = () => {
-			if (kind !== "SPA click")
-				socket.packet({
-					method: "forwardCDPEvent",
-					params: { method: "Runtime.executionContextsCleared", sessionId: "native-session", params: {} },
-				});
-			socket.packet({
-				method: "forwardCDPEvent",
-				params: {
-					method: kind === "SPA click" ? "Page.navigatedWithinDocument" : "Page.frameNavigated",
-					sessionId: "native-session",
-					params:
-						kind === "SPA click"
-							? { frameId: "main-frame", url: nextUrl }
-							: { frame: { id: "main-frame", url: nextUrl } },
-				},
-			});
-		};
-		const first = command_request(connected, "navigation-read");
-		const read = await mocked.post("/run/begin", { ...first, operation: { kind: "read" } });
-		await mocked.post("/run/finish", {
-			...SCOPE,
-			request: receipt_identity(first),
-			output: {
-				result: { ok: true, reason: null, inputSent: false, cleanup: "complete" },
-				observation: {
-					kind: "read",
-					observationRevision: String(read.reply.observationRevision),
-					url: "https://fixture.test/",
-					title: "Fixture",
-					text: "Fixture",
-					accessibility: "",
-					frames: [],
-				},
-			},
-		});
-		const action = kind === "Enter submit" ? { action: "press", key: "Enter" } : { action: "click" };
-		const command = {
-			...command_request(connected, "witnessed-navigation"),
-			operation: {
-				kind: "act",
-				...action,
-				locator: { by: "text", text: "Next" },
-				lastObservationRevision: String(read.reply.observationRevision),
-			},
-		};
-		const started = await mocked.post("/run/begin", command);
-		expect(started.reply.execute).toBe(true);
-		const binding = `__bonobo_guard_${String(started.reply.observationRevision)}`;
-		const send = socket.send.bind(socket);
-		vi.spyOn(socket, "send").mockImplementation((data) => {
-			const packet = JSON.parse(data) as { id: number; params?: { method: string } };
-			if (packet.params?.method === "Page.getFrameTree") {
-				socket.packet({ id: packet.id, result: { frameTree: { frame: { id: "main-frame", url: socket.url } } } });
-				return;
-			}
-			if (packet.params?.method === "Page.createIsolatedWorld") {
-				socket.packet({ id: packet.id, result: { executionContextId: 77 } });
-				return;
-			}
-			if (packet.params?.method.startsWith("Input.")) {
-				socket.packet({
-					method: "forwardCDPEvent",
-					params: {
-						method: "Runtime.bindingCalled",
-						sessionId: "native-session",
-						params: { name: binding, executionContextId: kind === "forged guard" ? 78 : 77, payload: "complete" },
-					},
-				});
-				if (!duringCleanup) navigate();
-			}
-			send(data);
-		});
-		const response = await mocked.session.fetch(
-			new Request(`https://do/command-socket?commandId=witnessed-navigation&generation=${connected.generation}`, {
-				headers: { Upgrade: "websocket" },
-			}),
-		);
-		expect(response.status).toBe(101);
-		const child = response.webSocket as unknown as ChildSocket;
-		child.send(
-			JSON.stringify({
-				id: 1,
-				method: "Target.setAutoAttach",
-				params: { autoAttach: true, waitForDebuggerOnStart: false, flatten: true },
-			}),
-		);
-		child.send(JSON.stringify({ id: 2, method: "Page.getFrameTree", sessionId: "native-session", params: {} }));
-		child.send(
-			JSON.stringify({
-				id: 3,
-				method: "Page.createIsolatedWorld",
-				sessionId: "native-session",
-				params: { frameId: "main-frame", worldName: "utility" },
-			}),
-		);
-		child.send(
-			JSON.stringify({
-				id: 4,
-				method: "Runtime.addBinding",
-				sessionId: "native-session",
-				params: { name: binding, executionContextId: 77 },
-			}),
-		);
-		child.send(
-			JSON.stringify({
-				id: 5,
-				sessionId: "native-session",
-				method: kind === "Enter submit" ? "Input.dispatchKeyEvent" : "Input.dispatchMouseEvent",
-				params:
-					kind === "Enter submit"
-						? { type: "keyDown", key: "Enter", code: "Enter" }
-						: { type: "mouseReleased", button: "left", x: 70, y: 50 },
-			}),
-		);
-		if (duringCleanup) {
-			child.send(
-				JSON.stringify({
-					id: 6,
-					method: "Page.addScriptToEvaluateOnNewDocument",
-					sessionId: "native-session",
-					params: { source: "", worldName: "utility" },
-				}),
-			);
-			socket.holdCleanup = true;
-		}
-		const sent = socket.inputCalls;
-		if (!duringCleanup) {
-			child.send(
-				JSON.stringify({
-					id: 7,
-					method: "Input.insertText",
-					sessionId: "native-session",
-					params: { text: "Must not reach the new page" },
-				}),
-			);
-			expect(socket.inputCalls, "Navigation must block another old-lease input").toBe(sent);
-		}
-		if (kind === "human Pause")
-			await mocked.post("/pause", {
-				...SCOPE,
-				generation: connected.generation,
-				controlRevision: connected.controlRevision + 1,
-			});
-		const finishing = mocked.post("/run/finish", {
-			...SCOPE,
-			request: receipt_identity(command),
-			output: {
-				result: {
-					ok: kind === "SPA click" || duringCleanup,
-					reason: kind === "SPA click" || duringCleanup ? null : "outcome_unknown",
-					inputSent: true,
-					cleanup: kind === "SPA click" || duringCleanup ? "complete" : "unknown",
-				},
-			},
-		});
-		if (duringCleanup) {
-			await vi.waitFor(() => expect(socket.cleanupReply).not.toBeNull());
-			navigate();
-			const paused =
-				kind === "Pause during cleanup"
-					? mocked.post("/pause", {
-							...SCOPE,
-							generation: connected.generation,
-							controlRevision: connected.controlRevision + 1,
-						})
-					: null;
-			if (paused)
-				await vi.waitFor(async () =>
-					expect((await mocked.post("/status", SCOPE)).reply).toMatchObject({
-						runtime: { controlRevision: connected.controlRevision + 1, state: "paused" },
-					}),
-				);
-			socket.navigate();
-			socket.packet({ id: socket.cleanupReply, result: {} });
-			await paused;
-		}
-		const finished = (await finishing).reply;
-		if (["blocked redirect", "human Pause", "Pause during cleanup", "forged guard"].includes(kind)) {
-			expect(
-				finished,
-				"A witness must not override blocked hosts, human control, or a wrong utility context",
-			).toMatchObject({ status: "unknown", completedLease: null, result: { ok: false, reason: "outcome_unknown" } });
-			expect(finished).not.toHaveProperty("observation");
-			return;
-		}
-		expect(finished, "A witnessed input and checked navigation must return a known receipt").toMatchObject({
-			status: "completed",
-			result: { ok: true, reason: null, cleanup: "complete" },
-			runtime: { state: "connected", generation: connected.generation },
-			completedLease: {
-				generation: connected.generation,
-				navRevision: connected.navRevision + (kind === "SPA click" ? 1 : 2),
-			},
-		});
-		expect(finished).not.toHaveProperty("observation");
-		expect(socket.readyState, "Known navigation must keep the native socket").toBe(1);
-		const inputCalls = socket.inputCalls;
-		expect((await mocked.post("/run/begin", command)).reply).toMatchObject({ status: "completed" });
-		expect(socket.inputCalls, "An exact retry must never repeat input").toBe(inputCalls);
-		const current = finished.runtime as typeof runtime;
-		if (duringCleanup) {
-			expect(
-				(
-					await mocked.post("/run/begin", {
-						...command_request(current, "stale-first-navigation"),
-						navRevision: connected.navRevision + 2,
-						operation: { kind: "read" },
-					})
-				).reply,
-				"A later human navigation must not be adopted by the completed binding",
-			).toMatchObject({ status: "refused", result: { reason: "stale_lease" } });
-		}
-		expect(
-			(
-				await mocked.post("/run/begin", {
-					...command_request(current, "read-after-navigation"),
-					operation: { kind: "read" },
-				})
-			).reply.execute,
-			"A fresh Read must work without Reconnect",
-		).toBe(true);
-	});
-
 	it.each(["safe", "unsafe"] as const)("keeps one %s native drain shared by finish and Pause", async (drain) => {
 		vi.stubGlobal("WebSocketPair", ChildSocketPair);
 		vi.stubGlobal("Response", SocketResponse);
 		const mocked = make_session();
 		const socket = new NativeSocket();
 		const connected = await connect_session(mocked, socket);
-		const command = { ...command_request(connected, "finish-pause-drain"), operation: { kind: "read" } };
+		const command = { ...command_request(connected, "finish-pause-drain"), operation: SCRIPT };
 		expect((await mocked.post("/run/begin", command)).reply.execute).toBe(true);
 		const response = await mocked.session.fetch(
 			new Request(`https://do/command-socket?commandId=${command.commandId}&generation=${connected.generation}`, {
@@ -1809,7 +985,7 @@ describe("PlaywriterSession", () => {
 		const finishing = mocked.post("/run/finish", {
 			...SCOPE,
 			request: receipt_identity(command),
-			output: { result: { ok: true, reason: null, inputSent: false, cleanup: "complete" } },
+			output: { script: { status: "succeeded", stateJson: null } },
 		});
 		await vi.waitFor(() => expect(socket.cleanupReply).not.toBeNull());
 		const pausing = mocked.post("/pause", {
@@ -1857,7 +1033,7 @@ describe("PlaywriterSession", () => {
 				(
 					await mocked.post("/run/begin", {
 						...command_request(resumed, "read-after-pause"),
-						operation: { kind: "read" },
+						operation: SCRIPT,
 					})
 				).reply.execute,
 				"The released command slot must accept a fresh Read after Resume",
@@ -1901,7 +1077,7 @@ describe("PlaywriterSession", () => {
 		const mocked = make_session();
 		const socket = new NativeSocket();
 		const connected = await connect_session(mocked, socket);
-		const command = { ...command_request(connected, "finish-alarm-drain"), operation: { kind: "read" } };
+		const command = { ...command_request(connected, "finish-alarm-drain"), operation: SCRIPT };
 		expect((await mocked.post("/run/begin", command)).reply.execute).toBe(true);
 		const response = await mocked.session.fetch(
 			new Request(`https://do/command-socket?commandId=${command.commandId}&generation=${connected.generation}`, {
@@ -1930,7 +1106,7 @@ describe("PlaywriterSession", () => {
 		const finishing = mocked.post("/run/finish", {
 			...SCOPE,
 			request: receipt_identity(command),
-			output: { result: { ok: true, reason: null, inputSent: false, cleanup: "complete" } },
+			output: { script: { status: "succeeded", stateJson: null } },
 		});
 		await vi.waitFor(() => expect(socket.cleanupReply).not.toBeNull());
 		vi.setSystemTime(command.deadline);
@@ -1949,7 +1125,7 @@ describe("PlaywriterSession", () => {
 	it("marks a command unknown when its deadline alarm runs before finish", async () => {
 		const mocked = make_session();
 		const connected = await connect_session(mocked, new NativeSocket());
-		const command = { ...command_request(connected, "alarm-before-finish"), operation: { kind: "read" } };
+		const command = { ...command_request(connected, "alarm-before-finish"), operation: SCRIPT };
 		expect((await mocked.post("/run/begin", command)).reply.execute).toBe(true);
 
 		vi.setSystemTime(command.deadline);
@@ -1964,7 +1140,7 @@ describe("PlaywriterSession", () => {
 				await mocked.post("/run/finish", {
 					...SCOPE,
 					request: receipt_identity(command),
-					output: { result: { ok: true, reason: null, inputSent: false, cleanup: "complete" } },
+					output: { script: { status: "succeeded", stateJson: null } },
 				})
 			).reply,
 		).toMatchObject({ status: "unknown" });
@@ -2107,7 +1283,7 @@ describe("PlaywriterSession", () => {
 		const mocked = make_session();
 		const socket = new NativeSocket();
 		const connected = await connect_session(mocked, socket);
-		const command = { ...command_request(connected, "unsettled-forget"), operation: { kind: "read" } };
+		const command = { ...command_request(connected, "unsettled-forget"), operation: SCRIPT };
 		expect((await mocked.post("/run/begin", command)).reply.execute).toBe(true);
 		const response = await mocked.session.fetch(
 			new Request(`https://do/command-socket?commandId=${command.commandId}&generation=${connected.generation}`, {
@@ -2207,7 +1383,7 @@ describe("PlaywriterSession", () => {
 			const mocked = make_session();
 			const socket = new NativeSocket();
 			const connected = await connect_session(mocked, socket);
-			const command = { ...command_request(connected, "failed-before-forget"), operation: { kind: "read" } };
+			const command = { ...command_request(connected, "failed-before-forget"), operation: SCRIPT };
 			expect((await mocked.post("/run/begin", command)).reply.execute).toBe(true);
 			const response = await mocked.session.fetch(
 				new Request(`https://do/command-socket?commandId=${command.commandId}&generation=${connected.generation}`, {
@@ -2236,7 +1412,7 @@ describe("PlaywriterSession", () => {
 					? mocked.post(path, {
 							...SCOPE,
 							request: receipt_identity(command),
-							output: { result: { ok: true, reason: null, inputSent: false, cleanup: "complete" } },
+							output: { script: { status: "succeeded", stateJson: null } },
 						})
 					: mocked.remote(path, receipt_identity(command));
 			await vi.advanceTimersByTimeAsync(5100);
@@ -2270,7 +1446,7 @@ describe("PlaywriterSession", () => {
 				(
 					await mocked.post("/run/begin", {
 						...command_request(recovered, "read-after-fence"),
-						operation: { kind: "read" },
+						operation: SCRIPT,
 					})
 				).reply.execute,
 			).toBe(true);
@@ -2311,17 +1487,6 @@ describe("PlaywriterSession", () => {
 });
 
 describe("PlaywriterSession scripts", () => {
-	const SCRIPT_RESULT = {
-		ok: true,
-		resultJson: "1",
-		logs: [],
-		logsTruncated: false,
-		consoleEntries: [],
-		pageErrors: [],
-		stateJson: '{"n":1}',
-		stateWarnings: [],
-	};
-
 	function script_request(connected: typeof runtime, commandId: string, chatId = "chat") {
 		const request = command_request(connected, commandId);
 		return {
@@ -2335,14 +1500,25 @@ describe("PlaywriterSession scripts", () => {
 		const mocked = make_session();
 		const socket = new NativeSocket();
 		const connected = await connect_session(mocked, socket);
-		// A script may navigate during its command, unlike the fixed kinds.
+		// A script may navigate during its command. Its emitted files come back with the completed receipt.
 		mocked.evaluate.mockImplementationOnce(async () => {
 			socket.navigate();
-			return SCRIPT_RESULT;
+			return {
+				...SCRIPT_RESULT,
+				files: [{ workspace: "current", path: "/shot.png", contentType: "image/png", bytes: new Uint8Array([1, 2, 3]) }],
+			};
 		});
 		mocked.evaluate.mockResolvedValue(SCRIPT_RESULT);
 		const first = (await mocked.remote("/run", script_request(connected, "first-script"))).reply;
-		expect(first).toMatchObject({ status: "completed", script: { status: "succeeded", resultJson: "1" } });
+		expect(first).toMatchObject({
+			status: "completed",
+			script: {
+				status: "succeeded",
+				resultJson: "1",
+				files: [{ workspace: "current", path: "/shot.png", contentType: "image/png", dataBase64: "AQID" }],
+			},
+		});
+		expect(playwriter_browser_response_schema.safeParse(first).success).toBe(true);
 		expect(mocked.evaluate.mock.calls.at(-1)![0]).toEqual({
 			endpointId: "first-script",
 			mode: "shared",

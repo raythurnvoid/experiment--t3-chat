@@ -62,7 +62,8 @@ export async function playwriter_runner_call(args: {
 			const next = await reader.read();
 			if (next.done) break;
 			bytes += next.value.byteLength;
-			if (bytes > 4 * 1024 * 1024) {
+			// A run reply can carry 8 MiB of script files as base64, about 11 MiB, plus the text output.
+			if (bytes > 16 * 1024 * 1024) {
 				await reader.cancel();
 				return Result({ _nay: { message: "Browser response exceeded its limit", name: "invalid_response" } });
 			}

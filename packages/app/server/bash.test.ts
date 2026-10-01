@@ -6304,6 +6304,54 @@ describe("bash_run_command", () => {
 			expect(known.stdout).toBe("/usr/bin/jobs\n/usr/bin/kill\n");
 			expect((await runner.run("which wait")).metadata.exitCode).not.toBe(0);
 		});
+
+		test("which knows browser only in a chat call that may browse", async () => {
+			const runner = await create_bash_runner();
+			expect((await runner.run("which browser")).metadata.exitCode).not.toBe(0);
+
+			const thread = await runner.t.run((ctx) => ctx.db.get("ai_chat_threads", runner.threadId));
+			const result = await bash_run_command(runner.ctx, {
+				...runner.ctxData,
+				toolCallId: "which-browser",
+				command: "which browser",
+				allowDbFilesMkdir: true,
+				shellName: "default",
+				wakeAgent: null,
+				output: null,
+				run: runner.chatRun,
+				browserIntent: { webChoice: { provider: "cloud" }, selectionRevision: 0, policyRevision: 0 },
+				sourceMessageId: thread!.newestNodeId!,
+			});
+			expect(result.stdout, result.stderr).toBe("/usr/bin/browser\n");
+		});
+
+		test("a job from a call that may browse gets browser only while that run runs", async () => {
+			const runner = await create_bash_runner();
+			const thread = await runner.t.run((ctx) => ctx.db.get("ai_chat_threads", runner.threadId));
+			const launched = await bash_run_command(runner.ctx, {
+				...runner.ctxData,
+				toolCallId: "browser-jobs",
+				command: "which browser & browser open &",
+				allowDbFilesMkdir: true,
+				shellName: "default",
+				wakeAgent: null,
+				output: null,
+				run: runner.chatRun,
+				browserIntent: { webChoice: { provider: "cloud" }, selectionRevision: 0, policyRevision: 0 },
+				sourceMessageId: thread!.newestNodeId!,
+			});
+			expect(launched.metadata.launchedJobNumbers, launched.stderr).toEqual([1, 2]);
+			expect((await job_row(runner, 1)).job?.browserRun).toEqual(runner.chatRun);
+			expect((await run_job(runner, 1)).result?.stdout).toBe("/usr/bin/browser\n");
+
+			// The chat run ends while job 2 still waits in the pool.
+			await runner.t.run((ctx) => ctx.db.patch("ai_chat_runs", runner.chatRun.runId, { status: "ended" }));
+			const finished = await run_job(runner, 2);
+			expect(finished.result?.metadata.exitCode).toBe(1);
+			expect(finished.result?.stderr).toBe(
+				"browser: the chat turn was stopped or has ended. This command did not run.\n",
+			);
+		});
 	});
 
 	describe("resolve", () => {

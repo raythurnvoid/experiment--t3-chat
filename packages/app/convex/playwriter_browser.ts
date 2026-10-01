@@ -1,4 +1,4 @@
-import { v } from "convex/values";
+import { v, type Infer } from "convex/values";
 import type { RegisteredMutation, RegisteredQuery } from "convex/server";
 import { doc } from "convex-helpers/validators";
 import { Result } from "common/errors-as-values-utils.ts";
@@ -17,6 +17,7 @@ import {
 	type QueryCtx,
 } from "./_generated/server.js";
 import app_schema, {
+	ai_chat_workspaces_source_validator,
 	ai_chat_browser_source_validator,
 	ai_chat_run_fence_validator,
 	ai_chat_browser_resource_validator,
@@ -44,9 +45,19 @@ import {
 	files_browser_db_check_agent_intent,
 } from "./files_browser.ts";
 import {
+	ai_chat_files_db_authorize_file_output,
 	ai_chat_files_db_begin_browser_invocation,
 	ai_chat_files_db_finish_browser_invocation,
 } from "./ai_chat_files.ts";
+import {
+	files_ingestion_db_finalize_file,
+	files_ingestion_db_prepare_file,
+	files_ingestion_file_validator,
+	files_ingestion_finalize_args_validator,
+	files_ingestion_prepare_args_validator,
+	files_ingestion_prepare_result_validator,
+	files_ingestion_scope_validator,
+} from "./files_ingestion.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 
 const IDLE_MS = 10 * 60 * 1000;
@@ -1358,41 +1369,104 @@ function remote_resource(connection: Doc<"playwriter_connections">) {
 	};
 }
 
+async function remote_lease(
+	ctx: QueryCtx | MutationCtx,
+	args: {
+		source: Infer<typeof ai_chat_browser_source_validator>;
+		browserIntent: Infer<typeof browser_intent_validator>;
+	},
+) {
+	const checked = await files_browser_db_check_agent_intent(ctx, args);
+	if (checked._nay) return checked;
+	const choice = args.browserIntent.webChoice;
+	if (choice.provider !== "playwriter")
+		return Result({ _nay: { message: "No shared tab is selected.", name: "unavailable" } });
+	const connectionId = ctx.db.normalizeId("playwriter_connections", choice.connectionId);
+	const connection = connectionId ? await ctx.db.get("playwriter_connections", connectionId) : null;
+	if (
+		!connection ||
+		connection.ownerId !== args.source.userId ||
+		connection.organizationId !== args.source.organizationId ||
+		connection.workspaceId !== args.source.workspaceId ||
+		connection.confirmedTargetHandle !== choice.confirmedTargetHandle
+	)
+		return Result({ _nay: { message: "Shared browser changed", name: "stale" } });
+	if (!enabled()) return Result({ _nay: { message: "Browser unavailable", name: "unavailable" } });
+	const access = await connection_access(ctx, connection, true);
+	if (access._nay) return access;
+	if (!connection.active || connection.idleExpiresAt <= Date.now() || (connection.totalExpiresAt ?? 0) <= Date.now())
+		return Result({ _nay: { message: "The browser session ended. Reconnect in Browser settings.", name: "limit" } });
+	if (connection.pauseReason === "human" || connection.state === "paused")
+		return Result({ _nay: { message: "The user paused the shared browser.", name: "paused" } });
+	if (connection.state !== "ready" || !connection.confirmedTargetId || !connection.confirmedTargetHandle)
+		return Result({
+			_nay: {
+				message: "The shared browser is offline or needs attention.",
+				name: connection.state === "offline" ? "offline" : "unavailable",
+			},
+		});
+	return Result({ _yay: remote_resource(connection) });
+}
+
 export const get_remote_lease = internalQuery({
 	args: { source: ai_chat_browser_source_validator, browserIntent: browser_intent_validator },
 	returns: v_result({ _yay: remote_resource_validator }),
-	handler: async (ctx, args) => {
-		const checked = await files_browser_db_check_agent_intent(ctx, args);
-		if (checked._nay) return checked;
-		const choice = args.browserIntent.webChoice;
-		if (choice.provider !== "playwriter")
-			return Result({ _nay: { message: "No shared tab is selected.", name: "unavailable" } });
-		const connectionId = ctx.db.normalizeId("playwriter_connections", choice.connectionId);
-		const connection = connectionId ? await ctx.db.get("playwriter_connections", connectionId) : null;
-		if (
-			!connection ||
-			connection.ownerId !== args.source.userId ||
-			connection.organizationId !== args.source.organizationId ||
-			connection.workspaceId !== args.source.workspaceId ||
-			connection.confirmedTargetHandle !== choice.confirmedTargetHandle
-		)
-			return Result({ _nay: { message: "Shared browser changed", name: "stale" } });
-		if (!enabled()) return Result({ _nay: { message: "Browser unavailable", name: "unavailable" } });
-		const access = await connection_access(ctx, connection, true);
-		if (access._nay) return access;
-		if (!connection.active || connection.idleExpiresAt <= Date.now() || (connection.totalExpiresAt ?? 0) <= Date.now())
-			return Result({ _nay: { message: "The browser session ended. Reconnect in Browser settings.", name: "limit" } });
-		if (connection.pauseReason === "human" || connection.state === "paused")
-			return Result({ _nay: { message: "The user paused the shared browser.", name: "paused" } });
-		if (connection.state !== "ready" || !connection.confirmedTargetId || !connection.confirmedTargetHandle)
-			return Result({
-				_nay: {
-					message: "The shared browser is offline or needs attention.",
-					name: connection.state === "offline" ? "offline" : "unavailable",
-				},
-			});
-		return Result({ _yay: remote_resource(connection) });
+	handler: (ctx, args) => remote_lease(ctx, args),
+});
+
+const file_output_scope_validator = v.object({
+	...files_ingestion_scope_validator.fields,
+	agentSource: ai_chat_workspaces_source_validator,
+	threadId: v.id("ai_chat_threads"),
+	modeId: v.union(v.literal("ask"), v.literal("agent")),
+	source: ai_chat_browser_source_validator,
+	browserIntent: browser_intent_validator,
+	expectedLease: remote_resource_validator,
+});
+
+/**
+ * Refuse a file from a script when the shared tab is no longer the one the script ran in, or the
+ * user paused it or turned agent access off. Both prepare and finalize check it, because the
+ * upload happens in between.
+ */
+async function authorize_file_output(ctx: MutationCtx, args: Infer<typeof file_output_scope_validator>) {
+	const chat = await ai_chat_files_db_authorize_file_output(ctx, args);
+	if (chat._nay) return chat;
+	const lease = await remote_lease(ctx, args);
+	const expected = args.expectedLease;
+	if (
+		lease._nay ||
+		lease._yay.connectionId !== expected.connectionId ||
+		lease._yay.connectionGeneration !== expected.connectionGeneration ||
+		lease._yay.controlRevision !== expected.controlRevision ||
+		lease._yay.targetRevision !== expected.targetRevision ||
+		lease._yay.navRevision !== expected.navRevision ||
+		lease._yay.confirmedTargetHandle !== expected.confirmedTargetHandle
+	)
+		return Result({ _nay: { message: "Browser session changed. Run the capture again." } });
+	return Result({ _yay: null });
+}
+
+/**
+ * Prepare and finalize one file that a script in the shared tab emitted, for example a screenshot.
+ * A retry whose receipt already completed returns the existing Files target before this check runs.
+ */
+export const prepare_file_output = internalMutation({
+	args: {
+		...files_ingestion_prepare_args_validator.fields,
+		...file_output_scope_validator.fields,
 	},
+	returns: v_result({ _yay: files_ingestion_prepare_result_validator }),
+	handler: (ctx, args) => files_ingestion_db_prepare_file(ctx, args, () => authorize_file_output(ctx, args)),
+});
+
+export const finalize_file_output = internalMutation({
+	args: {
+		...files_ingestion_finalize_args_validator.fields,
+		...file_output_scope_validator.fields,
+	},
+	returns: v_result({ _yay: files_ingestion_file_validator }),
+	handler: (ctx, args) => files_ingestion_db_finalize_file(ctx, args, () => authorize_file_output(ctx, args)),
 });
 
 export const reserve_command = internalMutation({

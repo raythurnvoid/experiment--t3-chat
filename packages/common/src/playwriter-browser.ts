@@ -4,80 +4,12 @@ const id = z.string().min(1).max(256);
 const revision = z.number().int().nonnegative();
 const time = z.number().int().positive();
 
-export const playwriter_browser_locator_schema = z.discriminatedUnion("by", [
-	z
-		.object({
-			by: z.literal("role"),
-			role: z.enum([
-				"button",
-				"link",
-				"textbox",
-				"checkbox",
-				"radio",
-				"combobox",
-				"option",
-				"menuitem",
-				"tab",
-				"switch",
-				"slider",
-				"spinbutton",
-			]),
-			name: z.string().min(1).max(500),
-		})
-		.strict(),
-	z.object({ by: z.literal("label"), label: z.string().min(1).max(500) }).strict(),
-	z.object({ by: z.literal("text"), text: z.string().min(1).max(500) }).strict(),
-]);
-
-const action_base = {
-	kind: z.literal("act"),
-	lastObservationRevision: id,
-	frameRef: id.optional(),
-};
-export const playwriter_browser_operation_schema = z.union([
-	z.object({ kind: z.literal("read") }).strict(),
-	z.object({ ...action_base, action: z.literal("click"), locator: playwriter_browser_locator_schema }).strict(),
-	z
-		.object({
-			...action_base,
-			action: z.literal("fill"),
-			locator: playwriter_browser_locator_schema,
-			value: z.string().max(16_384),
-		})
-		.strict(),
-	z
-		.object({
-			...action_base,
-			action: z.literal("press"),
-			locator: playwriter_browser_locator_schema,
-			key: z.enum([
-				"Enter",
-				"Escape",
-				"ArrowUp",
-				"ArrowDown",
-				"ArrowLeft",
-				"ArrowRight",
-				"Home",
-				"End",
-				"PageUp",
-				"PageDown",
-			]),
-		})
-		.strict(),
-	z
-		.object({
-			...action_base,
-			action: z.literal("scroll"),
-			deltaX: z.number().int().min(-2000).max(2000),
-			deltaY: z.number().int().min(-2000).max(2000),
-		})
-		.strict(),
-	z.object({ kind: z.literal("navigate"), url: z.string().min(1).max(8192), lastObservationRevision: id }).strict(),
-	z.object({ kind: z.literal("capture"), format: z.enum(["png", "jpeg"]) }).strict(),
-	// A free Playwright script. No tool sends it yet.
-	z.object({ kind: z.literal("script"), code: z.string().min(1).max(20_000) }).strict(),
-]);
-export type PlaywriterBrowserOperation = z.infer<typeof playwriter_browser_operation_schema>;
+/**
+ * The one command kind: a free Playwright script, like the cloud browser runs.
+ */
+export const playwriter_browser_operation_schema = z
+	.object({ kind: z.literal("script"), code: z.string().min(1).max(20_000) })
+	.strict();
 
 const playwriter_browser_source_schema = z.object({ chatId: id, sourceMessageId: id, toolCallId: id }).strict();
 const base = { connectionId: id, ownerId: id, organizationId: id, workspaceId: id };
@@ -197,7 +129,7 @@ const completed_lease = z
 	.strict();
 export type PlaywriterBrowserCompletedLease = z.infer<typeof completed_lease>;
 
-export const playwriter_browser_result_schema = z
+const playwriter_browser_result_schema = z
 	.object({
 		ok: z.boolean(),
 		reason: z.string().max(128).nullable(),
@@ -206,28 +138,6 @@ export const playwriter_browser_result_schema = z
 	})
 	.strict();
 export type PlaywriterBrowserResult = z.infer<typeof playwriter_browser_result_schema>;
-
-export const playwriter_browser_observation_schema = z.discriminatedUnion("kind", [
-	z
-		.object({
-			kind: z.literal("read"),
-			observationRevision: id,
-			url: z.string().max(8192),
-			title: z.string().max(1024),
-			text: z.string().max(24_000),
-			accessibility: z.string().max(24_000),
-			frames: z.array(z.object({ frameRef: id, url: z.string().max(8192) }).strict()).max(64),
-		})
-		.strict(),
-	z
-		.object({
-			kind: z.literal("capture"),
-			observationRevision: id,
-			format: z.enum(["png", "jpeg"]),
-			data: z.string().max(2_796_208),
-		})
-		.strict(),
-]);
 
 /**
  * What a `script` command gives back. The runner sends it only with a `completed` receipt. The
@@ -244,6 +154,20 @@ const script_output = z
 		consoleEntries: z.array(z.string().max(4096)).max(50),
 		pageErrors: z.array(z.string().max(4096)).max(50),
 		stateWarnings: z.array(z.string().max(400)).max(20),
+		// Files the script emitted, for example a screenshot. Only a succeeded script has any. The
+		// runner keeps them within 8 files and 8 MiB, and base64 turns every 3 bytes into 4 characters.
+		files: z
+			.array(
+				z
+					.object({
+						workspace: z.enum(["current", "personal"]),
+						path: z.string().min(1).max(1024),
+						contentType: z.string().min(1).max(255).optional(),
+						dataBase64: z.string().max(4 * Math.ceil((8 * 1024 * 1024) / 3)),
+					})
+					.strict(),
+			)
+			.max(8),
 	})
 	.strict();
 export type PlaywriterBrowserScriptOutput = z.infer<typeof script_output>;
@@ -257,7 +181,6 @@ export const playwriter_browser_response_schema = z.union([
 			runtime: playwriter_browser_runtime_schema,
 			completedLease: completed_lease.nullable(),
 			result: playwriter_browser_result_schema.nullable(),
-			observation: playwriter_browser_observation_schema.optional(),
 			script: script_output.optional(),
 			consumedAck: playwriter_browser_receipt_request_schema.optional(),
 		})

@@ -14,7 +14,6 @@ import {
 	session_is_expired,
 	session_next_alarm,
 	validate_gate_request,
-	validate_snippet_files,
 	handle_gate_request,
 	type Env,
 } from "./index";
@@ -2108,93 +2107,6 @@ describe("validate_gate_request", () => {
 		expect(url.pathname).toBe("/run/stream");
 		expect(Object.fromEntries(url.searchParams)).toEqual({ ...OWNERS, sessionId: "sess-1", commandId: "c1" });
 		expect(Object.fromEntries(seen[0]!.headers)).toEqual({ upgrade: "websocket" });
-	});
-});
-
-describe("validate_snippet_files", () => {
-	it.each([undefined, null, "", "home", "CURRENT", 1])("refuses missing or invalid workspace %s", (workspace) => {
-		expect(
-			validate_snippet_files([
-				{ workspace: "current", path: "/first.bin", bytes: new Uint8Array([1]) },
-				{ workspace, path: "/bad.bin", bytes: new Uint8Array([2]) },
-			]),
-		).toEqual({ ok: false, reason: "files_shape" });
-	});
-
-	it("preserves arbitrary, empty, and sliced bytes without a forced content type", () => {
-		const source = new Uint8Array([99, 0, 255, 128, 99]);
-		expect(
-			validate_snippet_files([
-				{
-					workspace: "current",
-					path: "/reports/custom",
-					contentType: "application/x-custom",
-					bytes: source.subarray(1, 4),
-				},
-				{ workspace: "personal", path: "/reports/empty", bytes: new Uint8Array() },
-			]),
-		).toEqual({
-			ok: true,
-			fileBytes: 3,
-			files: [
-				{ workspace: "current", path: "/reports/custom", contentType: "application/x-custom", dataBase64: "AP+A" },
-				{ workspace: "personal", path: "/reports/empty", dataBase64: "" },
-			],
-		});
-	});
-
-	it("allows exactly eight files and 8 MiB across both workspaces", () => {
-		const files = Array.from({ length: LIMITS.files }, (_, index) => ({
-			workspace: index % 2 ? "personal" : "current",
-			path: "/reports/" + index,
-			bytes: new Uint8Array(LIMITS.fileBytes / LIMITS.files).fill(index),
-		}));
-		const result = validate_snippet_files(files);
-		expect(result.ok).toBe(true);
-		if (!result.ok) throw new Error(result.reason);
-		expect(result.fileBytes).toBe(LIMITS.fileBytes);
-		for (const [index, file] of result.files.entries()) {
-			expect(file.workspace).toBe(files[index].workspace);
-			expect(Buffer.from(file.dataBase64, "base64").equals(Buffer.from(files[index].bytes))).toBe(true);
-		}
-		expect(JSON.stringify(result).length).toBeLessThan(12 * 1024 * 1024);
-	});
-
-	it.each([
-		[null, "files_shape"],
-		[[{ workspace: "current", path: "", bytes: new Uint8Array() }], "files_shape"],
-		[[{ workspace: "current", path: "/reports/file", bytes: [1, 2] }], "files_shape"],
-		[[{ workspace: "current", path: "/reports/file", contentType: null, bytes: new Uint8Array() }], "files_shape"],
-		[[{ workspace: "current", path: "x".repeat(LIMITS.filePathChars + 1), bytes: new Uint8Array() }], "files_shape"],
-		[
-			[
-				{
-					workspace: "current",
-					path: "/reports/file",
-					contentType: "x".repeat(LIMITS.fileContentTypeChars + 1),
-					bytes: new Uint8Array(),
-				},
-			],
-			"files_shape",
-		],
-		[
-			Array.from({ length: LIMITS.files + 1 }, (_, index) => ({
-				workspace: index % 2 ? "personal" : "current",
-				path: "/reports/file",
-				bytes: new Uint8Array(),
-			})),
-			"files_count",
-		],
-		[[{ workspace: "current", path: "/reports/file", bytes: new Uint8Array(LIMITS.fileBytes + 1) }], "files_bytes"],
-		[
-			[
-				{ workspace: "current", path: "/reports/one", bytes: new Uint8Array(LIMITS.fileBytes) },
-				{ workspace: "personal", path: "/reports/two", bytes: new Uint8Array([1]) },
-			],
-			"files_bytes",
-		],
-	])("refuses malformed or over-limit output", (files, reason) => {
-		expect(validate_snippet_files(files)).toEqual({ ok: false, reason });
 	});
 });
 

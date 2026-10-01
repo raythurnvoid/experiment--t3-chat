@@ -329,6 +329,30 @@ export function bash_text_well_formed(text: string) {
 	return text.replace(LONE_SURROGATE_REGEX, "�");
 }
 
+const fatalTextDecoder = new TextDecoder("utf-8", { fatal: true });
+
+/**
+ * Decode Just Bash's latin1-shaped byte stdin into Unicode text for commands
+ * that parse text instead of forwarding raw bytes.
+ */
+export function bash_decode_stdin_as_utf8(stdin: CommandContext["stdin"] | undefined) {
+	if (stdin == null) {
+		return "";
+	}
+	const bytes = String(stdin);
+	// Just Bash exposes stdin as a ByteString: one JS code unit per raw byte.
+	const buffer = new Uint8Array(bytes.length);
+	for (let index = 0; index < bytes.length; index++) {
+		buffer[index] = bytes.charCodeAt(index) & 0xff;
+	}
+	try {
+		return fatalTextDecoder.decode(buffer);
+	} catch {
+		// If stdin was already normal JS text, preserve it instead of making the command fail.
+		return bytes;
+	}
+}
+
 /**
  * Walk only plain objects and arrays. Repair every string value. Leave every other value as it
  * is, so file bytes and ids reach the backend untouched. Leave object field names as they are

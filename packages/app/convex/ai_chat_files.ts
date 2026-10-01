@@ -763,7 +763,11 @@ export async function ai_chat_files_db_begin_browser_invocation(
 }
 
 export const begin_browser_invocation = internalMutation({
-	args: { ...browser_invocation_identity, timeoutMs: v.number(), run: v.optional(v.union(ai_chat_run_fence_validator, v.null())) },
+	args: {
+		...browser_invocation_identity,
+		timeoutMs: v.number(),
+		run: v.optional(v.union(ai_chat_run_fence_validator, v.null())),
+	},
 	returns: v_result({ _yay: browser_invocation_result }),
 	handler: async (ctx, args): Promise<BrowserInvocationResult<Infer<typeof browser_invocation_result>>> =>
 		ai_chat_files_db_begin_browser_invocation(ctx, args),
@@ -856,6 +860,87 @@ export const finish_browser_invocation = internalMutation({
 	returns: v_result({ _yay: browser_invocation_result }),
 	handler: async (ctx, args): Promise<BrowserInvocationResult<Infer<typeof browser_invocation_result>>> =>
 		ai_chat_files_db_finish_browser_invocation(ctx, args),
+});
+
+/**
+ * One binding per shared tab, cloud tab, or file preview.
+ */
+export function ai_chat_files_browser_resource_key(resource: Infer<typeof ai_chat_browser_resource_validator>) {
+	return resource.provider === "playwriter"
+		? resource.connectionId
+		: `${resource.sessionId}:${resource.tabId ?? "file"}`;
+}
+
+const browser_turn_result = v.object({
+	bindings: v.array(ai_chat_browser_resource_validator),
+	revoked: v.boolean(),
+	operations: v.number(),
+});
+
+/**
+ * The browser state of one run, read by the Bash `browser` command at the start of each command.
+ */
+export const get_browser_turn = internalQuery({
+	args: { run: ai_chat_run_fence_validator, userId: v.id("users") },
+	returns: v_result({ _yay: browser_turn_result }),
+	handler: async (ctx, args): Promise<BrowserInvocationResult<Infer<typeof browser_turn_result>>> => {
+		const run = await ctx.db.get("ai_chat_runs", args.run.runId);
+		if (!run || run.userId !== args.userId) return Result({ _nay: { message: "Not found" } });
+		return Result({ _yay: run.browser ?? { bindings: [], revoked: false, operations: 0 } });
+	},
+});
+
+/**
+ * Change the browser state of one run. Each change is one transaction, so two Bash calls of the
+ * same turn cannot lose a count or a binding. A stopped run refuses every change.
+ */
+export const update_browser_turn = internalMutation({
+	args: {
+		run: ai_chat_run_fence_validator,
+		userId: v.id("users"),
+		change: v.union(
+			v.object({ kind: v.literal("claim") }),
+			v.object({
+				kind: v.literal("bind"),
+				bindings: v.array(ai_chat_browser_resource_validator),
+				// Status and first use must not move a binding the turn already has. Only a checked
+				// result of the agent's own operation replaces one.
+				ifAbsent: v.boolean(),
+			}),
+			v.object({ kind: v.literal("unbind"), keys: v.array(v.string()) }),
+			v.object({ kind: v.literal("revoke") }),
+		),
+	},
+	returns: v_result({ _yay: browser_turn_result }),
+	handler: async (ctx, args): Promise<BrowserInvocationResult<Infer<typeof browser_turn_result>>> => {
+		const run = await ctx.db.get("ai_chat_runs", args.run.runId);
+		if (!run || run.userId !== args.userId) return Result({ _nay: { message: "Not found" } });
+		if (!(await ai_chat_runs_db_is_current(ctx, args.run)))
+			return Result({ _nay: { name: "stopped", message: "Stopped. This call was not run." } });
+
+		const turn = run.browser ?? { bindings: [], revoked: false, operations: 0 };
+		if (args.change.kind === "revoke") {
+			turn.revoked = true;
+		} else if (turn.revoked) {
+			return Result({ _nay: { name: "stale", message: "Browser access ended for this turn" } });
+		} else if (args.change.kind === "claim") {
+			if (turn.operations >= 20) return Result({ _nay: { name: "limit", message: "Browser operation limit reached" } });
+			turn.operations++;
+		} else if (args.change.kind === "bind") {
+			for (const binding of args.change.bindings) {
+				const key = ai_chat_files_browser_resource_key(binding);
+				const index = turn.bindings.findIndex((item) => ai_chat_files_browser_resource_key(item) === key);
+				if (index === -1) turn.bindings.push(binding);
+				else if (!args.change.ifAbsent) turn.bindings[index] = binding;
+			}
+		} else {
+			const keys = new Set(args.change.keys);
+			turn.bindings = turn.bindings.filter((item) => !keys.has(ai_chat_files_browser_resource_key(item)));
+		}
+
+		await ctx.db.patch("ai_chat_runs", run._id, { browser: turn });
+		return Result({ _yay: turn });
+	},
 });
 
 export const interrupt_browser_invocation = internalMutation({
@@ -2415,6 +2500,8 @@ export const start_bash_job = internalMutation({
 				watchdogId: null,
 				stopRequestedAt: null,
 				wakeAgent: args.wakeAgent,
+				// A nested job keeps the run of the call at the top of its chain.
+				browserRun: parent.browserIntent ? (parent.job ? parent.job.browserRun : (parent.run ?? undefined)) : undefined,
 			},
 		});
 		await activities_db_start(ctx, {

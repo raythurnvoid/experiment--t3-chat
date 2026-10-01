@@ -33,6 +33,7 @@ import {
 	SNIPPET_EXECUTOR_MAIN_MODULE,
 	SNIPPET_EXECUTOR_SOFT_MARGIN_MS,
 	snippet_executor_cap_message,
+	snippet_executor_check_files,
 	snippet_executor_check_state,
 	snippet_executor_check_state_warnings,
 	snippet_executor_LIMITS,
@@ -1167,62 +1168,6 @@ export class BrowserConnectionGateway extends WorkerEntrypoint<Env, BrowserConne
 	connect(): never {
 		throw new Error("TCP connect is not allowed.");
 	}
-}
-
-// Snippet file validation
-//
-// The child shares its harness with untrusted code. Check the transport shape
-// and raw byte budget again here. The app owns Files path and MIME rules.
-// The workspace selects a file destination, not a browser session or access grant.
-
-export function validate_snippet_files(
-	files: unknown,
-):
-	| {
-			ok: true;
-			files: Array<{ workspace: "current" | "personal"; path: string; contentType?: string; dataBase64: string }>;
-			fileBytes: number;
-	  }
-	| { ok: false; reason: string } {
-	if (!Array.isArray(files)) return { ok: false, reason: "files_shape" };
-	if (files.length > LIMITS.files) return { ok: false, reason: "files_count" };
-	const validated: Array<{
-		workspace: "current" | "personal";
-		path: string;
-		contentType?: string;
-		dataBase64: string;
-	}> = [];
-	let fileBytes = 0;
-	for (const file of files) {
-		if (
-			!is_record(file) ||
-			typeof file.path !== "string" ||
-			file.path.length < 1 ||
-			file.path.length > LIMITS.filePathChars ||
-			(file.workspace !== "current" && file.workspace !== "personal") ||
-			!(file.bytes instanceof Uint8Array) ||
-			(file.contentType !== undefined &&
-				(typeof file.contentType !== "string" ||
-					file.contentType.length < 1 ||
-					file.contentType.length > LIMITS.fileContentTypeChars))
-		) {
-			return { ok: false, reason: "files_shape" };
-		}
-		fileBytes += file.bytes.byteLength;
-		if (fileBytes > LIMITS.fileBytes) return { ok: false, reason: "files_bytes" };
-		// Encode whole three-byte groups so concatenated chunks retain valid base64.
-		const parts: string[] = [];
-		for (let offset = 0; offset < file.bytes.byteLength; offset += 3 * 8192) {
-			parts.push(btoa(String.fromCharCode(...file.bytes.subarray(offset, offset + 3 * 8192))));
-		}
-		validated.push({
-			workspace: file.workspace,
-			path: file.path,
-			...(file.contentType === undefined ? {} : { contentType: file.contentType }),
-			dataBase64: parts.join(""),
-		});
-	}
-	return { ok: true, files: validated, fileBytes };
 }
 
 // Session transitions
@@ -7718,7 +7663,7 @@ async function execute_browser_command(args: {
 	// Trust nothing from the isolate: re-check every bound on the host.
 	const resultJson = typeof sandbox.resultJson === "string" ? sandbox.resultJson : "null";
 	const resultBytes = byte_length(resultJson);
-	const files = validate_snippet_files(sandbox.files);
+	const files = snippet_executor_check_files(sandbox.files);
 	if (!files.ok) {
 		await finish(true, { resultBytes, fileCount: 0, fileBytes: 0, viewport: null });
 		log_browser({ route: "run", commandId, status: "tainted", reason: files.reason });

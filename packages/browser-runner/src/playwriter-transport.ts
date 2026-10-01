@@ -1,4 +1,4 @@
-// Translate the extension protocol for one fixed Playwright child at a time.
+// Translate the extension protocol for one Playwright script child at a time.
 // The caller owns dial, hello/version checks, target confirmation, and command receipts.
 
 import { browser_web_normalize_url, browser_web_url_host_matches } from "common/browser-web-url.ts";
@@ -49,12 +49,10 @@ type Child = {
 	windowBounds: { width: number; height: number };
 	scripts: Map<string, Set<string>>;
 	bindings: Map<string, Set<string>>;
-	guardBinding: string | null;
 	/**
-	 * A free `script` command. It may handle dialogs, its requests to blocked sites fail, and any
-	 * frame on a blocked site stops it.
+	 * Set once any frame showed a blocked site. That stops the script, and its command cannot end as
+	 * a success.
 	 */
-	script: boolean;
 	blockedSeen: boolean;
 	/**
 	 * Real history entry urls from the last `Page.getNavigationHistory` reply. The child only sees
@@ -69,10 +67,6 @@ type Child = {
 	 * Sessions where the transport turned on `Fetch` to fail requests to blocked sites.
 	 */
 	fetchSessions: Set<string>;
-	guardContext: number | null;
-	guardComplete: boolean;
-	guardDestroyed: boolean;
-	navigated: boolean;
 	keys: Map<string, Map<string, Params>>;
 	buttons: Map<string, Map<string, Params>>;
 	waiters: Set<() => void>;
@@ -686,7 +680,11 @@ export class PlaywriterTransport {
 		}
 	}
 
-	create_child(input: { deadline: number; guardBinding?: string; script?: boolean }) {
+	/**
+	 * Start the bridge for one `script` command. The script may handle dialogs, its requests to
+	 * blocked sites fail, and any frame on a blocked site stops it.
+	 */
+	create_child(input: { deadline: number }) {
 		if (this.closed || this.input.socket.readyState !== 1 || !this.sessions.has(this.input.sessionId))
 			throw new Error("Shared browser is offline.");
 		if (this.child) throw new Error("Shared browser is busy.");
@@ -709,16 +707,10 @@ export class PlaywriterTransport {
 			windowBounds: { width: 1280, height: 720 },
 			scripts: new Map(),
 			bindings: new Map(),
-			guardBinding: input.guardBinding ?? null,
-			script: input.script === true,
 			blockedSeen: false,
 			history: new Map(),
 			dialogs: new Set(),
 			fetchSessions: new Set(),
-			guardContext: null,
-			guardComplete: false,
-			guardDestroyed: false,
-			navigated: false,
 			keys: new Map(),
 			buttons: new Map(),
 			waiters: new Set(),
@@ -737,12 +729,7 @@ export class PlaywriterTransport {
 		return {
 			webSocket: pair[0],
 			revoke: () => this.revoke_child(child),
-			outcome: () => ({
-				guarded: child.guardComplete,
-				destroyed: child.guardDestroyed,
-				navigated: child.navigated,
-				blocked: child.blockedSeen,
-			}),
+			blocked: () => child.blockedSeen,
 			settle: (timeoutMs: number) => {
 				this.revoke_child(child);
 				clearTimeout(child.timer);
@@ -777,7 +764,7 @@ export class PlaywriterTransport {
 	 */
 	private enable_fetch(child: Child, sessionId: string) {
 		const hosts = this.input.blockedHosts();
-		if (!child.script || hosts.length === 0 || child.fetchSessions.has(sessionId)) return;
+		if (hosts.length === 0 || child.fetchSessions.has(sessionId)) return;
 		if (this.sessions.get(sessionId)?.target.type === "worker") return;
 		child.fetchSessions.add(sessionId);
 		// A wide pattern is fine: the requestPaused handler checks the host and continues the rest.
@@ -792,7 +779,7 @@ export class PlaywriterTransport {
 	 */
 	private check_frame_url(url: unknown) {
 		const child = this.child;
-		if (!child?.script || child.blockedSeen || typeof url !== "string") return;
+		if (!child || child.blockedSeen || typeof url !== "string") return;
 		if (!browser_web_url_host_matches(url, this.input.blockedHosts())) return;
 		child.blockedSeen = true;
 		this.revoke_child(child);
@@ -930,8 +917,6 @@ export class PlaywriterTransport {
 			!this.input.canSendInput()
 		)
 			return this.refuse(child, id, childSessionId);
-		// Only a script child gets dialogs, so only it may answer one.
-		if (method === "Page.handleJavaScriptDialog" && !child.script) return this.refuse(child, id, childSessionId);
 		if (
 			(method === "Input.dispatchKeyEvent" &&
 				["keyDown", "rawKeyDown"].includes(String(params.type)) &&
@@ -940,18 +925,6 @@ export class PlaywriterTransport {
 			(method === "Input.dispatchMouseEvent" &&
 				params.button === "middle" &&
 				(params.type === "mousePressed" || params.type === "mouseReleased"))
-		)
-			return this.refuse(child, id, childSessionId);
-		// After guarded navigation, only old guard cleanup may continue.
-		if (
-			child.navigated &&
-			child.guardComplete &&
-			![
-				"Runtime.callFunctionOn",
-				"Runtime.releaseObject",
-				"Runtime.removeBinding",
-				"Page.removeScriptToEvaluateOnNewDocument",
-			].includes(method)
 		)
 			return this.refuse(child, id, childSessionId);
 		const sessionId = childSessionId ? (child.aliases.get(childSessionId) ?? childSessionId) : this.input.sessionId;
@@ -971,15 +944,7 @@ export class PlaywriterTransport {
 			(method === "DOM.resolveNode" && !session?.contexts.has(Number(params.executionContextId)))
 		)
 			return this.refuse(child, id, childSessionId);
-		if (
-			method === "Runtime.addBinding" &&
-			params.executionContextId !== undefined &&
-			(params.name !== child.guardBinding ||
-				sessionId !== this.input.sessionId ||
-				!session?.mainFrameId ||
-				session.contexts.get(Number(params.executionContextId))?.frameId !== session.mainFrameId ||
-				session.contexts.get(Number(params.executionContextId))?.isDefault !== false)
-		)
+		if (method === "Runtime.addBinding" && params.executionContextId !== undefined)
 			return this.refuse(child, id, childSessionId);
 
 		if (method === "Browser.getVersion" && browserScope) {
@@ -1267,8 +1232,6 @@ export class PlaywriterTransport {
 				if (bindings.size >= 128) return this.fail_child(request.child, "binding_limit");
 				bindings.add(String(request.params.name));
 				request.child.bindings.set(request.sessionId, bindings);
-				if (request.params.name === request.child.guardBinding && is_integer(request.params.executionContextId))
-					request.child.guardContext = request.params.executionContextId;
 			}
 			if (request.method === "Runtime.removeBinding")
 				request.child.bindings.get(request.sessionId)?.delete(String(request.params.name));
@@ -1405,7 +1368,7 @@ export class PlaywriterTransport {
 			return;
 		}
 		if (method === "Fetch.requestPaused") {
-			// Only the transport turns on Fetch, for a script. Answer every paused request, also after the
+			// Only the transport turns on Fetch. Answer every paused request, also after the
 			// command ended, so the user's page never hangs. The child never sees these events.
 			if (!is_id(params.requestId) || !is_record(params.request) || typeof params.request.url !== "string") return;
 			const blocked = browser_web_url_host_matches(params.request.url, this.input.blockedHosts());
@@ -1448,39 +1411,7 @@ export class PlaywriterTransport {
 			}
 			session.contexts.delete(params.executionContextId);
 		}
-		if (method === "Runtime.executionContextsCleared") {
-			session.contexts.clear();
-			// All old document handles are gone, including the guard and original element.
-			if (child && child.guardContext !== null && sessionId === this.input.sessionId) child.guardDestroyed = true;
-		}
-		if (
-			method === "Runtime.bindingCalled" &&
-			child &&
-			sessionId === this.input.sessionId &&
-			params.name === child.guardBinding
-		) {
-			// Page-world bindings and unrelated human events cannot prove this command.
-			const context = session.contexts.get(Number(params.executionContextId));
-			if (
-				params.payload === "complete" &&
-				params.executionContextId === child.guardContext &&
-				context?.isDefault === false &&
-				context.frameId === session.mainFrameId &&
-				[...this.pending.values()].some(
-					(request) =>
-						request.child === child &&
-						request.sessionId === sessionId &&
-						((request.method === "Input.dispatchMouseEvent" &&
-							request.params.type === "mouseReleased" &&
-							request.params.button === "left") ||
-							(request.method === "Input.dispatchKeyEvent" &&
-								["keyDown", "rawKeyDown"].includes(String(request.params.type)) &&
-								request.params.key === "Enter")),
-				)
-			)
-				child.guardComplete = true;
-			return;
-		}
+		if (method === "Runtime.executionContextsCleared") session.contexts.clear();
 		if (method === "Page.frameNavigated" && is_record(params.frame)) this.check_frame_url(params.frame.url);
 		const committed =
 			sessionId === this.input.sessionId &&
@@ -1490,7 +1421,6 @@ export class PlaywriterTransport {
 			const url = method === "Page.frameNavigated" && is_record(params.frame) ? params.frame.url : params.url;
 			if (typeof url !== "string" || url.length > 8192) return this.fail_extension("invalid_navigation");
 			session.target.url = url;
-			if (child) child.navigated = true;
 		}
 		if (
 			sessionId === this.input.sessionId &&
@@ -1512,8 +1442,7 @@ export class PlaywriterTransport {
 			// A script handles dialogs itself, like Playwright does by default. Only a dialog of an allowed
 			// frame reaches it. Any other dialog still asks the human.
 			if (
-				child?.script &&
-				child.accepting &&
+				child?.accepting &&
 				sessionId &&
 				child.announced.has(sessionId) &&
 				!browser_web_url_host_matches(session.target.url, this.input.blockedHosts())

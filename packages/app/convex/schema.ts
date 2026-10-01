@@ -893,6 +893,18 @@ const app_convex_schema = defineSchema({
 		completedSteps: v.number(),
 		leaseExpiresAt: v.number(),
 		endedAt: v.union(v.number(), v.null()),
+		/**
+		 * The browser state of this turn, for the Bash `browser` command. `bindings` are the exact
+		 * browser leases the agent learned in this run. A human change revokes the whole turn, and a
+		 * turn allows 20 browser operations. Missing until the first `browser` command.
+		 */
+		browser: v.optional(
+			v.object({
+				bindings: v.array(ai_chat_browser_resource_validator),
+				revoked: v.boolean(),
+				operations: v.number(),
+			}),
+		),
 	})
 		.index("by_thread_status", ["threadId", "status"])
 		.index("by_status_leaseExpiresAt", ["status", "leaseExpiresAt"])
@@ -1374,6 +1386,12 @@ const app_convex_schema = defineSchema({
 				 * message does not need this.
 				 */
 				wakeAgent: v.optional(v.object({ modelId: ai_chat_model_id_validator })),
+				/**
+				 * The run of the chat call that started this job, or of its parent job. Present only
+				 * when that call could browse. The job's `browser` commands use this run's browser
+				 * state, so they refuse once the run ends or is stopped.
+				 */
+				browserRun: v.optional(ai_chat_run_fence_validator),
 			}),
 		),
 	})

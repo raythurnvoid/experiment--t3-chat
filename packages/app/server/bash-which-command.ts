@@ -22,7 +22,7 @@ const APP_SHELL_COMMAND_NAMES = new Set<string>([...bash_ALLOWED_COMMANDS, ...AP
  * shell, but are not executable synthetic files in nested Native Just Bash
  * `/tmp` command instances.
  */
-export function bash_which_command_create() {
+export function bash_which_command_create(options: { browser: boolean }) {
 	return defineCommand("which", async (args) => {
 		let silent = false;
 		let showAll = false;
@@ -79,7 +79,8 @@ export function bash_which_command_create() {
 			// `which` answers for the outer app shell, so it includes app-only
 			// commands even though the restricted Native Just Bash PATH exposes
 			// only `bash_ALLOWED_COMMANDS`.
-			if (APP_SHELL_COMMAND_NAMES.has(name)) {
+			// `browser` exists only in a chat call of a turn that may browse.
+			if (APP_SHELL_COMMAND_NAMES.has(name) || (name === "browser" && options.browser)) {
 				if (!silent) {
 					stdout += `/usr/bin/${name}\n`;
 					if (showAll) {

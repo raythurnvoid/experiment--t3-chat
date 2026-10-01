@@ -98,7 +98,6 @@ function make_transport(
 		autoReply?: boolean;
 		runtimeContext?: boolean;
 		initialEvents?: readonly string[];
-		holdInput?: boolean;
 		blockedHosts?: string[];
 	} = {},
 ) {
@@ -128,7 +127,6 @@ function make_transport(
 		extension.addEventListener("message", () => {
 			const request = commands(extension).at(-1);
 			if (!request) return;
-			if (options.holdInput && request.method.startsWith("Input.")) return;
 			if (request.method === "Runtime.enable" && options.runtimeContext !== false)
 				emit(
 					"Runtime.executionContextCreated",
@@ -154,8 +152,8 @@ function make_transport(
 								: {};
 			reply(request.id, result);
 		});
-	const create_child = (guardBinding?: string, script = false) => {
-		const connection = transport.create_child({ deadline: Date.now() + 30_000, guardBinding, script });
+	const create_child = () => {
+		const connection = transport.create_child({ deadline: Date.now() + 30_000 });
 		const child = connection.webSocket as unknown as Socket;
 		let id = 0;
 		const send = (
@@ -589,49 +587,15 @@ describe("PlaywriterTargetInventory", () => {
 });
 
 describe("PlaywriterTransport", () => {
-	it.each(["complete", "page context", "wrong name", "wrong payload", "no input", "mouse move"])(
-		"accepts only an owned final guard witness: %s",
-		async (kind) => {
-			const fixture = make_transport({ holdInput: true });
-			const binding = "__bonobo_guard_command";
-			const { connection, send, start } = fixture.create_child(binding);
-			start();
-			send("Page.getFrameTree");
-			fixture.emit("Runtime.executionContextCreated", {
-				context: { id: 1, auxData: { isDefault: true, frameId: "main-frame" } },
-			});
-			send("Page.createIsolatedWorld", { frameId: "main-frame", worldName: "utility" });
-			send("Runtime.addBinding", { name: binding, executionContextId: 9 });
-			if (kind !== "no input")
-				send("Input.dispatchMouseEvent", {
-					type: kind === "mouse move" ? "mouseMoved" : "mouseReleased",
-					button: "left",
-					x: 70,
-					y: 50,
-				});
-			fixture.emit("Runtime.bindingCalled", {
-				name: kind === "wrong name" ? "__bonobo_guard_other" : binding,
-				executionContextId: kind === "page context" ? 1 : 9,
-				payload: kind === "wrong payload" ? "success from the page" : "complete",
-			});
-			expect(
-				connection.outcome().guarded,
-				"Only this command's trusted final event in its isolated main-frame world may prove input",
-			).toBe(kind === "complete");
-			if (kind !== "no input") fixture.reply(commands(fixture.extension).at(-1)!.id);
-			expect(await connection.settle(1000)).toEqual({ safe: true, reason: null });
-		},
-	);
-
-	it("refuses a guard binding in the page world", async () => {
+	it("refuses a binding for one execution context", async () => {
 		const fixture = make_transport();
-		const { connection, child, send, start } = fixture.create_child("__bonobo_guard_command");
+		const { connection, child, send, start } = fixture.create_child();
 		start();
 		send("Page.getFrameTree");
 		fixture.emit("Runtime.executionContextCreated", {
 			context: { id: 1, auxData: { isDefault: true, frameId: "main-frame" } },
 		});
-		const id = send("Runtime.addBinding", { name: "__bonobo_guard_command", executionContextId: 1 });
+		const id = send("Runtime.addBinding", { name: "__page_binding", executionContextId: 1 });
 		expect(messages(child).find((message) => message.id === id)).toHaveProperty("error");
 		expect(commands(fixture.extension).some((request) => request.method === "Runtime.addBinding")).toBe(false);
 		expect(await connection.settle(1000)).toEqual({ safe: true, reason: null });
@@ -1261,23 +1225,16 @@ describe("PlaywriterTransport", () => {
 		expect(await connection.settle(1000)).toEqual({ safe: true, reason: null });
 	});
 
-	it("reports native dialogs and quarantines popups without closing them", async () => {
+	it("quarantines popups without closing them", async () => {
 		const { create_child, emit, onEvent, extension } = make_transport();
-		const { connection, child, send, start } = create_child();
+		const { connection, child, start } = create_child();
 		start();
-		emit("Page.javascriptDialogOpening", {
-			type: "alert",
-			message: "Fixture",
-			defaultPrompt: "",
-			url: "https://fixture.test/",
-		});
-		send("Page.handleJavaScriptDialog", { accept: false });
 		emit(
 			"Target.attachedToTarget",
 			{ sessionId: "popup-session", targetInfo: { ...TARGET, targetId: "popup-target" }, waitingForDebugger: false },
 			null,
 		);
-		expect(onEvent.mock.calls.map(([reason]) => reason)).toEqual(["dialog", "popup"]);
+		expect(onEvent.mock.calls.map(([reason]) => reason)).toEqual(["popup"]);
 		expect(messages(child).filter((message) => message.method === "Target.attachedToTarget").length).toBe(1);
 		expect(commands(extension).map((request) => request.method)).toEqual(["Target.setAutoAttach"]);
 		expect((await connection.settle(1000)).safe).toBe(true);
@@ -1371,7 +1328,7 @@ describe("PlaywriterTransport", () => {
 describe("PlaywriterTransport script commands", () => {
 	it("stops waiting for page reads at the deadline but still drains input", async () => {
 		const { extension, create_child, reply, onUnsafe, socket } = make_transport({ autoReply: false });
-		const { connection, child, send, start } = create_child(undefined, true);
+		const { connection, child, send, start } = create_child();
 		start();
 		reply(commands(extension).at(-1)!.id);
 		const readId = send("Runtime.getProperties", { objectId: "endless-read" });
@@ -1392,7 +1349,7 @@ describe("PlaywriterTransport script commands", () => {
 
 	it("stops a script when any frame shows a blocked site and keeps it blocked", async () => {
 		const { create_child, emit } = make_transport({ blockedHosts: ["blocked.test"] });
-		const { connection, child, send, start } = create_child(undefined, true);
+		const { connection, child, send, start } = create_child();
 		start();
 		emit("Page.frameNavigated", {
 			frame: { id: "inner-frame", parentId: "main-frame", url: "https://blocked.test/" },
@@ -1406,13 +1363,13 @@ describe("PlaywriterTransport script commands", () => {
 			messages(child).some((message) => message.method === "Page.frameNavigated"),
 			"A revoked script must not see events that could carry the blocked page",
 		).toBe(false);
-		expect(connection.outcome().blocked).toBe(true);
+		expect(connection.blocked()).toBe(true);
 		expect((await connection.settle(1000)).safe).toBe(true);
 	});
 
 	it("hides a frame tree reply that shows a blocked frame", async () => {
 		const { extension, create_child, reply } = make_transport({ autoReply: false, blockedHosts: ["blocked.test"] });
-		const { connection, child, send, start } = create_child(undefined, true);
+		const { connection, child, send, start } = create_child();
 		start();
 		// Answer Fetch.enable and Target.setAutoAttach.
 		for (const request of commands(extension)) reply(request.id);
@@ -1426,20 +1383,16 @@ describe("PlaywriterTransport script commands", () => {
 		expect(messages(child).find((message) => message.id === id)).toMatchObject({
 			error: { message: "Browser access was revoked." },
 		});
-		expect(connection.outcome().blocked).toBe(true);
+		expect(connection.blocked()).toBe(true);
 		const settled = connection.settle(1000);
 		await vi.advanceTimersByTimeAsync(0);
 		reply(commands(extension).at(-1)!.id); // Fetch.disable
 		expect((await settled).safe).toBe(true);
 	});
 
-	it("fails only a script's requests to blocked sites and never shows them to it", async () => {
+	it("fails only requests to blocked sites and never shows them to the script", async () => {
 		const { create_child, emit, extension } = make_transport({ blockedHosts: ["blocked.test"] });
-		const command = create_child();
-		expect((await command.connection.settle(1000)).safe).toBe(true);
-		expect(commands(extension).some((request) => request.method === "Fetch.enable")).toBe(false);
-
-		const { connection, child, start } = create_child(undefined, true);
+		const { connection, child, start } = create_child();
 		expect(commands(extension).at(-1)).toMatchObject({
 			method: "Fetch.enable",
 			sessionId: "page-session",
@@ -1467,7 +1420,7 @@ describe("PlaywriterTransport script commands", () => {
 		["middle click", "Input.dispatchMouseEvent", { type: "mousePressed", button: "middle", x: 1, y: 1 }],
 	])("refuses a paste from the user's clipboard: %s", async (_name, method, params) => {
 		const { create_child, extension } = make_transport();
-		const { connection, child, send, start } = create_child(undefined, true);
+		const { connection, child, send, start } = create_child();
 		start();
 		const id = send(method, params);
 		expect(messages(child).find((message) => message.id === id)).toHaveProperty("error");
@@ -1481,7 +1434,7 @@ describe("PlaywriterTransport script commands", () => {
 
 	it("shows only the current history url and checks the real url of an entry", async () => {
 		const { extension, create_child, reply } = make_transport({ autoReply: false, blockedHosts: ["blocked.test"] });
-		const { connection, child, send, start } = create_child(undefined, true);
+		const { connection, child, send, start } = create_child();
 		start();
 		// Answer Fetch.enable and Target.setAutoAttach.
 		for (const request of commands(extension)) reply(request.id);
@@ -1521,7 +1474,7 @@ describe("PlaywriterTransport script commands", () => {
 
 	it("lets a script answer dialogs and dismisses one it leaves open", async () => {
 		const { create_child, emit, onEvent, extension } = make_transport();
-		const { connection, child, send, start } = create_child(undefined, true);
+		const { connection, child, send, start } = create_child();
 		const dialog = { type: "confirm", message: "Fixture", defaultPrompt: "", url: "https://fixture.test/" };
 		start();
 		emit("Page.javascriptDialogOpening", dialog);

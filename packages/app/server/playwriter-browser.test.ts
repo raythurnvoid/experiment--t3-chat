@@ -103,7 +103,7 @@ describe("playwriter_runner_call", () => {
 	});
 
 	test("oversized HTTP output is refused before JSON parsing", async () => {
-		vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("x".repeat(4 * 1024 * 1024 + 1))));
+		vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("x".repeat(16 * 1024 * 1024 + 1))));
 		expect((await playwriter_runner_call({ route: "status", body: {} }))._nay?.name).toBe("invalid_response");
 	});
 });

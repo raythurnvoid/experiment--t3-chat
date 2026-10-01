@@ -26,7 +26,7 @@ export const snippet_executor_LIMITS = {
 	stateWarnings: 20,
 };
 
-export const SNIPPET_EXECUTOR_REVISION = "snippet-2026-10-01-v1";
+export const SNIPPET_EXECUTOR_REVISION = "snippet-2026-10-01-v2";
 export const SNIPPET_EXECUTOR_MAIN_MODULE = "executor.js";
 const BUNDLE_MODULE = "pw.js";
 
@@ -98,7 +98,6 @@ export default class SnippetExecutor extends WorkerEntrypoint {
     console.warn = function () { pushLog("[warn] " + Array.prototype.map.call(arguments, String).join(" ")); };
     console.error = function () { pushLog("[error] " + Array.prototype.map.call(arguments, String).join(" ")); };
     function emitFile(file) {
-      if (input.mode === "shared") throw new Error("Saving files from the shared tab is not available yet.");
       if (!filesOpen) throw new Error("Execution has already finished");
       if (!file || typeof file !== "object" || typeof file.path !== "string" ||
           file.path.length < 1 || file.path.length > ${snippet_executor_LIMITS.filePathChars}) {
@@ -356,6 +355,62 @@ export function snippet_executor_check_state_warnings(value: unknown) {
 				.slice(0, snippet_executor_LIMITS.stateWarnings)
 				.map((item) => item.slice(0, 400))
 		: [];
+}
+
+/**
+ * Check the files a snippet emitted. The child shares its harness with untrusted code, so check the
+ * transport shape and the byte budget again here. The app owns Files path and MIME rules. The
+ * workspace picks a file destination, not a browser session or access grant.
+ */
+export function snippet_executor_check_files(
+	files: unknown,
+):
+	| {
+			ok: true;
+			files: Array<{ workspace: "current" | "personal"; path: string; contentType?: string; dataBase64: string }>;
+			fileBytes: number;
+	  }
+	| { ok: false; reason: string } {
+	if (!Array.isArray(files)) return { ok: false, reason: "files_shape" };
+	if (files.length > snippet_executor_LIMITS.files) return { ok: false, reason: "files_count" };
+	const validated: Array<{
+		workspace: "current" | "personal";
+		path: string;
+		contentType?: string;
+		dataBase64: string;
+	}> = [];
+	let fileBytes = 0;
+	for (const file of files) {
+		if (
+			typeof file !== "object" ||
+			file === null ||
+			typeof file.path !== "string" ||
+			file.path.length < 1 ||
+			file.path.length > snippet_executor_LIMITS.filePathChars ||
+			(file.workspace !== "current" && file.workspace !== "personal") ||
+			!(file.bytes instanceof Uint8Array) ||
+			(file.contentType !== undefined &&
+				(typeof file.contentType !== "string" ||
+					file.contentType.length < 1 ||
+					file.contentType.length > snippet_executor_LIMITS.fileContentTypeChars))
+		) {
+			return { ok: false, reason: "files_shape" };
+		}
+		fileBytes += file.bytes.byteLength;
+		if (fileBytes > snippet_executor_LIMITS.fileBytes) return { ok: false, reason: "files_bytes" };
+		// Encode whole three-byte groups so concatenated chunks retain valid base64.
+		const parts: string[] = [];
+		for (let offset = 0; offset < file.bytes.byteLength; offset += 3 * 8192) {
+			parts.push(btoa(String.fromCharCode(...file.bytes.subarray(offset, offset + 3 * 8192))));
+		}
+		validated.push({
+			workspace: file.workspace,
+			path: file.path,
+			...(file.contentType === undefined ? {} : { contentType: file.contentType }),
+			dataBase64: parts.join(""),
+		});
+	}
+	return { ok: true, files: validated, fileBytes };
 }
 
 /**

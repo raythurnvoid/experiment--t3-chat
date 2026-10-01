@@ -22,14 +22,12 @@ Mocked tests also cover connection replay, drain failures, and late cleanup.
 ### Playwriter remote browser
 
 `src/playwriter-session.ts` owns the remote connection, routes, receipts, and
-private command socket. `src/playwriter-executor.ts` contains fixed read, act,
-navigate, and capture templates. The model supplies data only. It cannot send
-JavaScript, CDP, a share key, or a socket URL.
-
-The runner also accepts a `script` operation (code up to 20,000 characters). It
-runs in the same snippet executor as the cloud browser (`src/snippet-executor.ts`),
-with `page`, `frame`, `expect`, and `state`. `emitFile` throws there for now. The
-app does not send `script` yet. Script rules in the shared tab:
+private command socket. Every command is a `script` operation (code up to 20,000
+characters). It runs in the same snippet executor as the cloud browser
+(`src/snippet-executor.ts`), with `page`, `frame`, `expect`, `state`, and
+`emitFile`. The model cannot send CDP, a share key, or a socket URL. Files and
+text output go back only in the Worker reply. The Durable Object never stores them.
+Script rules in the shared tab:
 
 - The script may navigate, reload, go back, and answer dialogs. Dialogs it leaves
   open are dismissed when the command ends.
@@ -47,10 +45,6 @@ extension messages for one confirmed native page and its real frames/workers.
 Each command gets a fresh child socket. The caller keeps the physical remote
 socket and owns hello/version checks, tab confirmation, deadlines, and receipts.
 The official extension is used as installed. There is no extension fork.
-The fixed executor revision is `guarded-navigation-2026-09-29-v3`. The host checks
-the same child's revision before it calls `evaluate`. The revision check and
-execution share the command deadline. `POST /internal/playwriter/revision`
-returns that fixed marker after the normal bearer and scope checks.
 
 Start a fresh `PlaywriterTargetInventory` before accepting each physical socket.
 Pass every message to `consume`; a false result requires closing that socket.

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import type { FunctionArgs } from "convex/server";
 import { api, internal } from "./_generated/api.js";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import { ai_chat_DEFAULT_MODEL_ID } from "../shared/ai-chat.ts";
@@ -85,9 +86,7 @@ describe("begin_browser_invocation", () => {
 				membershipLifetime: f.source.membershipLifetime,
 			},
 			parentId: null,
-			messages: [
-				{ clientGeneratedMessageId: "run-user", content: { id: "run-user", role: "user", parts: [] } },
-			],
+			messages: [{ clientGeneratedMessageId: "run-user", content: { id: "run-user", role: "user", parts: [] } }],
 			modeId: "agent",
 			modelId: ai_chat_DEFAULT_MODEL_ID,
 		});
@@ -280,6 +279,112 @@ describe("finish_browser_invocation", () => {
 				})
 			)._yay?.result,
 		).toEqual(finish.result);
+	});
+});
+
+describe("update_browser_turn", () => {
+	async function turn_fixture() {
+		const f = await fixture();
+		const begun = await f.t.mutation(internal.ai_chat.thread_run_begin, {
+			source: {
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				userId: f.db.userId,
+				threadId: f.source.threadId,
+				membershipId: f.db.membershipId,
+				membershipLifetime: f.source.membershipLifetime,
+			},
+			parentId: null,
+			messages: [{ clientGeneratedMessageId: "run-user", content: { id: "run-user", role: "user", parts: [] } }],
+			modeId: "agent",
+			modelId: ai_chat_DEFAULT_MODEL_ID,
+		});
+		if (begun._nay) throw new Error(begun._nay.message);
+		const run = { runId: begun._yay.runId, generation: begun._yay.generation };
+		const update = (change: FunctionArgs<typeof internal.ai_chat_files.update_browser_turn>["change"]) =>
+			f.t.mutation(internal.ai_chat_files.update_browser_turn, { run, userId: f.db.userId, change });
+		// The turn stores bindings without reading the session, but the validator needs a real id.
+		const sessionId = await f.t.run((ctx) =>
+			ctx.db.insert("files_browser_sessions", {
+				mode: "web",
+				ownerId: f.db.userId,
+				billedUserId: f.db.userId,
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				navigationGeneration: 1,
+				loadGen: 1,
+				controlGen: 1,
+				control: "ready",
+				billing: { state: "pending" },
+				runnerSessionId: "runner-1",
+				agentAccess: true,
+				tabId: "tab-1",
+				tabGen: 1,
+				viewedTabId: "tab-1",
+				viewGen: 1,
+				tabCount: 1,
+				tabs: [{ tabId: "tab-1", tabGen: 1, navGen: 1 }],
+				policyRevision: 0,
+				selectionRevision: 0,
+				createdAt: Date.now(),
+				updatedAt: Date.now(),
+			}),
+		);
+		const tab = (tabId: string, navGen: number) => ({
+			provider: "cloud" as const,
+			mode: "web" as const,
+			sessionId,
+			controlGen: 1,
+			loadGen: 1,
+			navGen,
+			tabId,
+			tabGen: 1,
+		});
+		return { ...f, run, update, tab };
+	}
+
+	test("counts 20 operations per run and refuses the 21st", async () => {
+		const f = await turn_fixture();
+		for (let index = 0; index < 20; index++) expect((await f.update({ kind: "claim" }))._nay).toBeUndefined();
+		expect((await f.update({ kind: "claim" }))._nay?.name).toBe("limit");
+		expect(
+			(await f.t.query(internal.ai_chat_files.get_browser_turn, { run: f.run, userId: f.db.userId }))._yay?.operations,
+		).toBe(20);
+	});
+
+	test("first use keeps a known binding, and only the agent's own result replaces it", async () => {
+		const f = await turn_fixture();
+		await f.update({ kind: "bind", bindings: [f.tab("tab-1", 1)], ifAbsent: true });
+		expect((await f.update({ kind: "bind", bindings: [f.tab("tab-1", 2)], ifAbsent: true }))._yay?.bindings).toEqual([
+			f.tab("tab-1", 1),
+		]);
+		expect((await f.update({ kind: "bind", bindings: [f.tab("tab-1", 3)], ifAbsent: false }))._yay?.bindings).toEqual([
+			f.tab("tab-1", 3),
+		]);
+		await f.update({ kind: "bind", bindings: [f.tab("tab-2", 1)], ifAbsent: true });
+		expect((await f.update({ kind: "unbind", keys: [`${f.tab("tab-1", 1).sessionId}:tab-1`] }))._yay?.bindings).toEqual(
+			[f.tab("tab-2", 1)],
+		);
+	});
+
+	test("a revoked turn refuses every later change", async () => {
+		const f = await turn_fixture();
+		await f.update({ kind: "revoke" });
+		expect((await f.update({ kind: "claim" }))._nay?.name).toBe("stale");
+		expect((await f.update({ kind: "bind", bindings: [f.tab("tab-1", 1)], ifAbsent: true }))._nay?.name).toBe("stale");
+		expect(
+			(await f.t.query(internal.ai_chat_files.get_browser_turn, { run: f.run, userId: f.db.userId }))._yay,
+		).toEqual({ bindings: [], revoked: true, operations: 0 });
+	});
+
+	test("a stopped run refuses a new operation", async () => {
+		const f = await turn_fixture();
+		await f.asUser.mutation(api.ai_chat_runs.stop, {
+			membershipId: f.db.membershipId,
+			threadId: f.source.threadId,
+			replyId: null,
+		});
+		expect((await f.update({ kind: "claim" }))._nay?.name).toBe("stopped");
 	});
 });
 

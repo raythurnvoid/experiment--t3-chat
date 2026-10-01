@@ -7,10 +7,8 @@ import {
 	playwriter_browser_connect_schema,
 	playwriter_browser_control_schema,
 	playwriter_browser_disconnect_schema,
-	playwriter_browser_observation_schema,
 	playwriter_browser_receipt_request_schema,
 	playwriter_browser_reconnect_schema,
-	playwriter_browser_result_schema,
 	playwriter_browser_run_schema,
 	playwriter_browser_status_schema,
 	type PlaywriterBrowserConnect,
@@ -21,14 +19,13 @@ import {
 	type PlaywriterBrowserRuntime,
 	type PlaywriterBrowserScriptOutput,
 } from "common/playwriter-browser.ts";
-import { CHILD_BUNDLE_JS } from "./child-bundle.gen";
-import { PLAYWRITER_EXECUTOR_JS, PLAYWRITER_EXECUTOR_REVISION } from "./playwriter-executor";
 import { PlaywriterTargetInventory, PlaywriterTransport } from "./playwriter-transport";
 import {
 	SNIPPET_EXECUTOR_MAIN_MODULE,
 	SNIPPET_EXECUTOR_REVISION,
 	SNIPPET_EXECUTOR_SOFT_MARGIN_MS,
 	snippet_executor_cap_message,
+	snippet_executor_check_files,
 	snippet_executor_check_state,
 	snippet_executor_check_state_warnings,
 	snippet_executor_LIMITS,
@@ -93,24 +90,10 @@ type ScriptState = { sessionId: string; json: string; savedAt: number };
 const SCRIPT_STATE_KEY_PREFIX = "scriptState:";
 const SCRIPT_STATE_MAX_CHATS = 8;
 
-const private_fields_schema = z
-	.array(
-		z
-			.object({
-				tag: z.string().max(16),
-				type: z.string().max(64).nullable(),
-				value: z.string().max(16_384),
-				label: z.string().max(500),
-			})
-			.strict(),
-	)
-	.max(128);
 const finish_schema = z
 	.object({
-		result: playwriter_browser_result_schema,
-		observation: playwriter_browser_observation_schema.optional(),
-		privateFields: private_fields_schema.optional(),
-		// A `script` sends only its status and `state`. Its text output stays in the Worker reply.
+		// A script sends only its status and `state`. Its text output and files stay in the Worker reply.
+		// No script means the Worker got no checked output.
 		script: z
 			.object({
 				status: z.enum(["succeeded", "errored", "timed_out"]),
@@ -134,6 +117,7 @@ const script_result_schema = z.object({
 	pageErrors: z.array(z.string()).max(snippet_executor_LIMITS.consoleEntries),
 	stateJson: z.unknown(),
 	stateWarnings: z.unknown(),
+	files: z.unknown(),
 });
 const unknown_result: PlaywriterBrowserResult = {
 	ok: false,
@@ -221,12 +205,8 @@ export class PlaywriterSession {
 		request: PlaywriterBrowserRun;
 		used: boolean;
 		child: ReturnType<PlaywriterTransport["create_child"]> | null;
-		observationRevision: string;
-		completedNavRevision: number | null;
 	} | null = null;
 	private receipts = new Map<string, Receipt>();
-	private observation: { revision: string; navRevision: number; fields: z.infer<typeof private_fields_schema> } | null =
-		null;
 	private dialAttempts: number[] = [];
 
 	constructor(
@@ -314,7 +294,6 @@ export class PlaywriterSession {
 		this.transport = null;
 		this.inventory = null;
 		this.version = null;
-		this.observation = null;
 		if (this.ping) clearInterval(this.ping);
 		this.ping = null;
 		// Script `state` lives only as long as its shared-tab session.
@@ -384,11 +363,9 @@ export class PlaywriterSession {
 			request.policyRevision === runtime.policyRevision &&
 			request.selectionRevision === runtime.selectionRevision &&
 			request.targetRevision === runtime.targetRevision &&
-			// A script owns every navigation during its command. The DO cannot tell an agent navigation
-			// from a human one, and the target check below still stops it on a blocked site.
-			(request.operation.kind === "navigate" ||
-				request.operation.kind === "script" ||
-				request.navRevision === runtime.navRevision) &&
+			// A script owns every navigation during its command, so the nav revision is not checked. The
+			// DO cannot tell an agent navigation from a human one, and the target check below still stops
+			// it on a blocked site.
 			this.target_allowed()
 		);
 	}
@@ -396,20 +373,13 @@ export class PlaywriterSession {
 	private invalidate_navigation() {
 		if (!this.saved) return;
 		this.saved.runtime.navRevision += 1;
-		this.observation = null;
 		// Stop a script only when the tab left the allowed sites. Skip the save: finish saves, and a
 		// page that calls pushState in a loop would otherwise write storage thousands of times. A DO
 		// restart moves every revision on anyway.
-		if (this.command?.request.operation.kind === "script") {
+		if (this.command) {
 			if (!this.target_allowed()) this.command.child?.revoke();
 			return;
 		}
-		const outcome = this.command?.child?.outcome();
-		if (this.command && this.command.completedNavRevision === null && outcome?.guarded && outcome.navigated)
-			this.command.completedNavRevision = this.saved.runtime.navRevision;
-		// Stop old utility work before a late context reply can resume it.
-		if (this.command?.request.operation.kind !== "navigate" && !this.command?.child?.outcome().guarded)
-			this.command?.child?.revoke();
 		this.state.waitUntil(this.persist());
 	}
 
@@ -760,7 +730,6 @@ export class PlaywriterSession {
 	}
 
 	private async retire_command() {
-		this.observation = null;
 		const command = this.command;
 		if (!command) return !this.cleanupUnknown;
 		const receipt = this.receipts.get(command.request.commandId);
@@ -790,15 +759,7 @@ export class PlaywriterSession {
 				return error("forbidden", 403);
 			this.command!.used = true;
 			try {
-				// A script gets no click guard: the guarded-click credit is only for the fixed `act` kind.
-				this.command!.child = this.transport.create_child(
-					this.command!.request.operation.kind === "script"
-						? { deadline: this.command!.request.deadline, script: true }
-						: {
-								deadline: this.command!.request.deadline,
-								guardBinding: `__bonobo_guard_${this.command!.observationRevision}`,
-							},
-				);
+				this.command!.child = this.transport.create_child({ deadline: this.command!.request.deadline });
 			} catch {
 				return error("connection_unavailable");
 			}
@@ -807,11 +768,11 @@ export class PlaywriterSession {
 		if (request.method !== "POST") return error("method", 405);
 		let input: unknown;
 		try {
-			// Screenshots need the large finish limit. JSON escaping can grow a 20,000-character script
-			// well past 64 KB.
+			// JSON escaping can double the 256 KB script `state` that finish carries, and it can grow a
+			// 20,000-character script well past 64 KB.
 			input = await body(
 				request,
-				url.pathname === "/run/finish" ? 3_000_000 : url.pathname === "/run/begin" ? 262_144 : 64_000,
+				url.pathname === "/run/finish" ? 1_000_000 : url.pathname === "/run/begin" ? 262_144 : 64_000,
 			);
 		} catch {
 			return error("invalid_body", 400);
@@ -979,7 +940,7 @@ export class PlaywriterSession {
 				return Response.json({ ok: true, status: "unknown", runtime, completedLease: null, result: unknown_result });
 			let receipt = this.receipts.get(parsed.data.commandId);
 			if (receipt && identity(receipt.identity) !== identity(parsed.data)) return error("receipt_mismatch");
-			// Late replies can prove cleanup, never recover an old action or observation.
+			// Late replies can prove cleanup, never recover an old action or its output.
 			if (Date.now() > parsed.data.receiptResolutionDeadline) {
 				if (receipt) {
 					receipt.status = "unknown";
@@ -992,7 +953,6 @@ export class PlaywriterSession {
 					if (this.command?.request.commandId === parsed.data.commandId) {
 						receipt.result.inputSent = this.command.used;
 						if (await this.settle(parsed.data.commandId)) receipt.result.cleanup = "complete";
-						this.observation = null;
 						await this.persist();
 					}
 				}
@@ -1010,7 +970,6 @@ export class PlaywriterSession {
 				receipt.status = "unknown";
 				receipt.result = { ...unknown_result, inputSent: this.command?.used ?? false };
 				if (await this.settle(parsed.data.commandId)) receipt.result = { ...receipt.result, cleanup: "complete" };
-				this.observation = null;
 				await this.persist();
 			}
 			if (url.pathname === "/command-ack") {
@@ -1059,8 +1018,7 @@ export class PlaywriterSession {
 			if (!receipt) return error("receipt_capacity");
 			receipt.payload = await payload;
 			const stateKey = `${SCRIPT_STATE_KEY_PREFIX}${command.source.chatId}`;
-			const savedState =
-				command.operation.kind === "script" ? await this.state.storage.get<ScriptState>(stateKey) : undefined;
+			const savedState = await this.state.storage.get<ScriptState>(stateKey);
 			// A value from an older shared-tab session counts as empty.
 			if (savedState && savedState.sessionId !== runtime.sessionId) await this.state.storage.delete(stateKey);
 			const refuse = (reason: string) => {
@@ -1094,25 +1052,7 @@ export class PlaywriterSession {
 				return refuse("stale_lease");
 			if (!this.target_allowed()) return refuse("blocked_site");
 			if (runtime.operations >= 120) return refuse("operation_limit");
-			if (
-				(command.operation.kind === "act" || command.operation.kind === "navigate") &&
-				(!this.observation ||
-					this.observation.navRevision !== runtime.navRevision ||
-					this.observation.revision !== command.operation.lastObservationRevision)
-			)
-				return refuse("stale_observation");
-			if (
-				command.operation.kind === "navigate" &&
-				!browser_web_normalize_url(command.operation.url, this.blocked_hosts()).ok
-			)
-				return refuse("blocked_site");
-			this.command = {
-				request: command,
-				used: false,
-				child: null,
-				observationRevision: crypto.randomUUID(),
-				completedNavRevision: null,
-			};
+			this.command = { request: command, used: false, child: null };
 			runtime.operations += 1;
 			runtime.idleExpiresAt = Math.min(Date.now() + 600_000, runtime.totalExpiresAt);
 			await this.persist();
@@ -1120,13 +1060,7 @@ export class PlaywriterSession {
 				ok: true,
 				execute: true,
 				runtime,
-				observationRevision: this.command.observationRevision,
-				// A script never gets the private field values that Read kept.
-				privateFields: command.operation.kind === "script" ? [] : (this.observation?.fields ?? []),
-				blockedHosts: this.blocked_hosts(),
-				...(command.operation.kind === "script"
-					? { scriptState: savedState?.sessionId === runtime.sessionId ? savedState.json : null }
-					: {}),
+				scriptState: savedState?.sessionId === runtime.sessionId ? savedState.json : null,
 				...(consumedAck ? { consumedAck } : {}),
 			});
 		}
@@ -1157,16 +1091,6 @@ export class PlaywriterSession {
 						};
 			const settled = await this.settle(command.request.commandId);
 			if (receipt.status !== "in_progress") return this.response(receipt);
-			const script = command.request.operation.kind === "script";
-			const guarded = command.child?.outcome();
-			const navigated =
-				command.request.operation.kind === "act" &&
-				(command.request.operation.action === "click" ||
-					(command.request.operation.action === "press" && command.request.operation.key === "Enter")) &&
-				guarded?.guarded &&
-				guarded.navigated &&
-				(guarded.destroyed || output.result.cleanup === "complete") &&
-				output.result.reason !== "blocked_site";
 			const safe =
 				settled &&
 				!!this.transport &&
@@ -1178,41 +1102,26 @@ export class PlaywriterSession {
 				runtime.policyRevision === command.request.policyRevision &&
 				runtime.selectionRevision === command.request.selectionRevision &&
 				runtime.targetRevision === command.request.targetRevision &&
-				this.target_allowed() &&
-				(command.request.operation.kind === "navigate" ||
-					script ||
-					navigated ||
-					runtime.navRevision === command.request.navRevision);
+				this.target_allowed();
 			// A script that saw a blocked site, or ends on one, returns nothing. This holds even when it
 			// went back to an allowed page.
 			const url = this.transport?.url;
 			const blocked =
-				guarded?.blocked === true ||
+				command.child?.blocked() === true ||
 				(!!url && url !== "about:blank" && !browser_web_normalize_url(url, this.blocked_hosts()).ok);
 			// A changed lease invalidates the outcome, not completed cleanup.
-			const result: PlaywriterBrowserResult = script
-				? blocked
-					? { ok: false, reason: "blocked_site", inputSent: command.used, cleanup: settled ? "complete" : "unknown" }
-					: safe && output.script
-						? {
-								// Like the cloud browser, a script that threw or timed out still completed.
-								ok: true,
-								reason: output.script.status === "succeeded" ? null : "command_failed",
-								inputSent: command.used,
-								cleanup: "complete",
-							}
-						: // No checked script output, for example a hung script. A clean drain keeps the connection.
-							{ ...unknown_result, inputSent: command.used, cleanup: settled ? "complete" : "unknown" }
-				: safe && navigated
-					? { ok: true, reason: null, inputSent: true, cleanup: "complete" }
-					: safe
-						? output.result
-						: {
-								...output.result,
-								ok: false,
-								reason: "outcome_unknown",
-								cleanup: settled ? output.result.cleanup : "unknown",
-							};
+			const result: PlaywriterBrowserResult = blocked
+				? { ok: false, reason: "blocked_site", inputSent: command.used, cleanup: settled ? "complete" : "unknown" }
+				: safe && output.script
+					? {
+							// Like the cloud browser, a script that threw or timed out still completed.
+							ok: true,
+							reason: output.script.status === "succeeded" ? null : "command_failed",
+							inputSent: command.used,
+							cleanup: "complete",
+						}
+					: // No checked script output, for example a hung script. A clean drain keeps the connection.
+						{ ...unknown_result, inputSent: command.used, cleanup: settled ? "complete" : "unknown" };
 			receipt.result = result;
 			receipt.status =
 				result.cleanup === "unknown" || result.reason === "outcome_unknown"
@@ -1220,53 +1129,17 @@ export class PlaywriterSession {
 					: result.ok
 						? "completed"
 						: "refused";
-			if (receipt.status === "completed")
-				receipt.completedLease =
-					completedLease && navigated && command.completedNavRevision !== null
-						? { ...completedLease, navRevision: command.completedNavRevision }
-						: completedLease;
+			if (receipt.status === "completed") receipt.completedLease = completedLease;
 			if (result.cleanup === "unknown" && settled) {
 				this.close_socket("disconnected");
 				// Fence dispatch without turning unknown native effects into success.
 				runtime.generation += 1;
-				await this.persist();
 			}
-			if (script) {
-				this.observation = null;
-				// Save `state` only together with output the model gets back.
-				if (receipt.status === "completed" && output.script?.stateJson)
-					await this.save_script_state(receipt.identity.source.chatId, output.script.stateJson);
-				await this.persist();
-			}
-			const observation =
-				safe &&
-				receipt.status === "completed" &&
-				runtime.state === "connected" &&
-				command.request.navRevision === runtime.navRevision
-					? output.observation
-					: undefined;
-			if (
-				observation &&
-				observation.kind === command.request.operation.kind &&
-				observation.observationRevision === command.observationRevision
-			) {
-				// Capture can keep checked Read fields only in this same document.
-				const fields =
-					observation.kind === "read"
-						? (output.privateFields ?? [])
-						: this.observation?.navRevision === runtime.navRevision
-							? this.observation.fields
-							: [];
-				this.observation = { revision: observation.observationRevision, navRevision: runtime.navRevision, fields };
-			}
-			return Response.json({
-				ok: true,
-				status: receipt.status,
-				runtime,
-				completedLease: receipt.completedLease,
-				result: receipt.result,
-				...(observation ? { observation } : {}),
-			});
+			// Save `state` only together with output the model gets back.
+			if (receipt.status === "completed" && output.script?.stateJson)
+				await this.save_script_state(receipt.identity.source.chatId, output.script.stateJson);
+			await this.persist();
+			return this.response(receipt);
 		}
 		return error("not_found", 404);
 	}
@@ -1283,7 +1156,6 @@ export class PlaywriterSession {
 				receipt.status = "unknown";
 				receipt.result = { ...unknown_result, inputSent: command.used, cleanup: safe ? "complete" : "unknown" };
 			}
-			this.observation = null;
 		}
 		if (Date.now() < Math.min(this.saved.runtime.idleExpiresAt, this.saved.runtime.totalExpiresAt)) {
 			await this.persist();
@@ -1330,7 +1202,6 @@ export async function handle_playwriter_request(request: Request, env: RemoteEnv
 	}
 	const scope = playwriter_browser_status_schema.strip().safeParse(input);
 	if (!scope.success) return error("invalid_body", 400);
-	if (path === "/revision") return Response.json({ ok: true, revision: PLAYWRITER_EXECUTOR_REVISION });
 	const stub = env.PLAYWRITER_SESSIONS.get(env.PLAYWRITER_SESSIONS.idFromName(object_name(scope.data)));
 	const forward = (route: string, payload: unknown) =>
 		stub.fetch(
@@ -1349,17 +1220,13 @@ export async function handle_playwriter_request(request: Request, env: RemoteEnv
 			ok: z.literal(true),
 			execute: z.literal(true),
 			runtime: z.object({ generation: z.number().int() }).passthrough(),
-			observationRevision: z.string(),
-			privateFields: private_fields_schema,
-			blockedHosts: z.array(z.string()),
-			scriptState: z.string().nullable().optional(),
+			scriptState: z.string().nullable(),
 			consumedAck: playwriter_browser_receipt_request_schema.optional(),
 		})
 		.strict();
 	const start = startSchema.safeParse(await began.clone().json());
 	if (!start.success) return began;
-	const script = parsed.data.operation.kind === "script" ? parsed.data.operation : null;
-	let output: z.infer<typeof finish_schema> = { result: unknown_result };
+	let output: z.infer<typeof finish_schema> = {};
 	let scriptOutput: PlaywriterBrowserScriptOutput | null = null;
 	try {
 		const gateway = ctx?.exports?.PlaywriterConnectionGateway;
@@ -1367,10 +1234,8 @@ export async function handle_playwriter_request(request: Request, env: RemoteEnv
 		const worker = env.LOADER.load({
 			compatibilityDate: "2026-09-19",
 			compatibilityFlags: ["nodejs_compat"],
-			mainModule: script ? SNIPPET_EXECUTOR_MAIN_MODULE : "executor.js",
-			modules: script
-				? snippet_executor_modules(script.code)
-				: { "executor.js": PLAYWRITER_EXECUTOR_JS, "playwright.js": CHILD_BUNDLE_JS },
+			mainModule: SNIPPET_EXECUTOR_MAIN_MODULE,
+			modules: snippet_executor_modules(parsed.data.operation.code),
 			env: {
 				BROWSER: gateway({
 					props: { ...scope.data, generation: parsed.data.generation, commandId: parsed.data.commandId },
@@ -1384,75 +1249,59 @@ export async function handle_playwriter_request(request: Request, env: RemoteEnv
 			(async () => {
 				if (
 					!entrypoint.revision ||
-					(await entrypoint.revision()) !== (script ? SNIPPET_EXECUTOR_REVISION : PLAYWRITER_EXECUTOR_REVISION) ||
+					(await entrypoint.revision()) !== SNIPPET_EXECUTOR_REVISION ||
 					Date.now() >= parsed.data.deadline
 				)
 					throw new Error("revision_changed");
-				return entrypoint.evaluate(
-					script
-						? {
-								endpointId: parsed.data.commandId,
-								mode: "shared",
-								// Stop the script early, so the drain and checks still fit before the deadline.
-								budgetMs: parsed.data.deadline - SNIPPET_EXECUTOR_SOFT_MARGIN_MS - Date.now(),
-								state: start.data.scriptState ?? null,
-							}
-						: {
-								commandId: parsed.data.commandId,
-								deadline: parsed.data.deadline,
-								operation: parsed.data.operation,
-								observationRevision: start.data.observationRevision,
-								privateFields: start.data.privateFields,
-								blockedHosts: start.data.blockedHosts,
-							},
-				);
+				return entrypoint.evaluate({
+					endpointId: parsed.data.commandId,
+					mode: "shared",
+					// Stop the script early, so the drain and checks still fit before the deadline.
+					budgetMs: parsed.data.deadline - SNIPPET_EXECUTOR_SOFT_MARGIN_MS - Date.now(),
+					state: start.data.scriptState,
+				});
 			})(),
 			Math.max(1, parsed.data.deadline - Date.now()),
 		);
-		if (script) {
-			const checked = script_result_schema.safeParse(result);
-			// Output over the executor's own limits means the isolate misbehaved. Treat it as no output.
-			if (
-				checked.success &&
-				utf8_bytes(checked.data.logs) <= snippet_executor_LIMITS.logBytes &&
-				utf8_bytes([...checked.data.consoleEntries, ...checked.data.pageErrors]) <=
-					snippet_executor_LIMITS.consoleBytes
-			) {
-				const sandbox = checked.data;
-				const status = sandbox.ok ? "succeeded" : sandbox.timedOut ? "timed_out" : "errored";
-				const resultJson = sandbox.ok ? (sandbox.resultJson ?? "null") : null;
-				const resultTruncated = resultJson !== null && utf8_bytes([resultJson]) > 16_384;
-				output = {
-					result: unknown_result,
-					script: { status, stateJson: snippet_executor_check_state(sandbox.stateJson) },
-				};
-				scriptOutput = {
-					status,
-					resultJson: resultTruncated ? null : resultJson,
-					resultTruncated,
-					error:
-						status === "succeeded"
-							? null
-							: status === "timed_out"
-								? {
-										name: "TimeoutError",
-										message:
-											"The script was stopped at its time limit. Actions before that may have happened. The tab is still shared.",
-									}
-								: {
-										name: (sandbox.error?.name ?? "Error").slice(0, 128),
-										message: snippet_executor_cap_message(sandbox.error?.message ?? "Unknown error"),
-									},
-					logs: sandbox.logs,
-					logsTruncated: sandbox.logsTruncated,
-					consoleEntries: sandbox.consoleEntries,
-					pageErrors: sandbox.pageErrors,
-					stateWarnings: snippet_executor_check_state_warnings(sandbox.stateWarnings),
-				};
-			}
-		} else {
-			const checked = finish_schema.safeParse(result);
-			if (checked.success) output = checked.data;
+		const checked = script_result_schema.safeParse(result);
+		// Only a succeeded script keeps its files, like the cloud browser.
+		const files = checked.success && checked.data.ok ? snippet_executor_check_files(checked.data.files) : null;
+		// Output over the executor's own limits means the isolate misbehaved. Treat it as no output.
+		if (
+			checked.success &&
+			files?.ok !== false &&
+			utf8_bytes(checked.data.logs) <= snippet_executor_LIMITS.logBytes &&
+			utf8_bytes([...checked.data.consoleEntries, ...checked.data.pageErrors]) <= snippet_executor_LIMITS.consoleBytes
+		) {
+			const sandbox = checked.data;
+			const status = sandbox.ok ? "succeeded" : sandbox.timedOut ? "timed_out" : "errored";
+			const resultJson = sandbox.ok ? (sandbox.resultJson ?? "null") : null;
+			const resultTruncated = resultJson !== null && utf8_bytes([resultJson]) > 16_384;
+			output = { script: { status, stateJson: snippet_executor_check_state(sandbox.stateJson) } };
+			scriptOutput = {
+				status,
+				resultJson: resultTruncated ? null : resultJson,
+				resultTruncated,
+				error:
+					status === "succeeded"
+						? null
+						: status === "timed_out"
+							? {
+									name: "TimeoutError",
+									message:
+										"The script was stopped at its time limit. Actions before that may have happened. The tab is still shared.",
+								}
+							: {
+									name: (sandbox.error?.name ?? "Error").slice(0, 128),
+									message: snippet_executor_cap_message(sandbox.error?.message ?? "Unknown error"),
+								},
+				logs: sandbox.logs,
+				logsTruncated: sandbox.logsTruncated,
+				consoleEntries: sandbox.consoleEntries,
+				pageErrors: sandbox.pageErrors,
+				stateWarnings: snippet_executor_check_state_warnings(sandbox.stateWarnings),
+				files: files?.ok ? files.files : [],
+			};
 		}
 	} catch {
 		/* Safe fixed result. No raw child errors or page data enter logs. */
