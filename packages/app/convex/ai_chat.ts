@@ -2424,10 +2424,11 @@ const COMPACTION_REQUEST = [
 	"- what the user asked for and still wants, with their exact words when they matter;",
 	"- decisions, rules and limits the user set;",
 	"- files, paths, ids, names and values that matter, written exactly;",
+	"- everything the user asked you to remember, such as code words, names and numbers, written exactly;",
 	"- what the agent did with tools and what it found;",
 	"- errors and how they were solved;",
 	"- work that is still open.",
-	"Do not include passwords, API keys or access tokens. Write plain text, at most about 2000 words.",
+	"Leave out only real credentials: passwords, API keys and access tokens. A code word that the user asked you to remember is not a credential, so keep it. A fact that an earlier summary in the chat already holds stays in your summary. Write plain text, at most about 2000 words.",
 ].join("\n");
 
 /**
@@ -2575,6 +2576,10 @@ async function compact_history(args: {
 		return null;
 	}
 
+	// TODO: When one run makes the history far larger than 1 MiB, this walk is cut before it reaches an
+	// older summary. Then the new summary does not read the older one, and the oldest context is lost
+	// for good. Fix it by walking on without adding messages until the nearest summary is found, and
+	// put that summary in the input of the summary call.
 	// Keep the newest messages word for word, at least from the newest user message on. The summary
 	// replaces the node just before them and everything older.
 	const newestUserIndex = history.messages.findLastIndex((message) => message.role === "user");
