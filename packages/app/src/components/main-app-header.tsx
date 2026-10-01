@@ -10,7 +10,6 @@ import { AppNotifications } from "@/components/app-notifications.tsx";
 import { AppAuthProvider } from "@/components/app-auth.tsx";
 import { FilesSearchPalette } from "@/components/files/files-search-palette.tsx";
 import { MainAppHeaderBillingIndicator } from "@/components/main-app-header-billing-indicator.tsx";
-import { MainAppHeaderBrowserControl } from "@/components/main-app-header-browser-control.tsx";
 import {
 	MainAppHeaderOrganizationSwitcherModal,
 	type MainAppHeaderOrganizationSwitcherModal_ListItem,
@@ -813,7 +812,6 @@ export const MainAppHeader = memo(function MainAppHeader(props: MainAppHeader_Pr
 			<div className={"MainAppHeader-actions" satisfies MainAppHeader_ClassNames}>
 				<FilesSearchPalette />
 				<AppNotifications />
-				<MainAppHeaderBrowserControl />
 				{!isFilesRoute && <MainAppHeaderBillingIndicator />}
 			</div>
 		</header>
