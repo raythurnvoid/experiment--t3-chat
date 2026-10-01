@@ -217,6 +217,7 @@ type FilesPropertiesModalWritePolicy_ClassNames =
 	| "FilesPropertiesModalWritePolicy"
 	| "FilesPropertiesModalWritePolicy-heading"
 	| "FilesPropertiesModalWritePolicy-choices"
+	| "FilesPropertiesModalWritePolicy-option"
 	| "FilesPropertiesModalWritePolicy-option-picker"
 	| "FilesPropertiesModalWritePolicy-description"
 	| "FilesPropertiesModalWritePolicy-actions"
@@ -307,6 +308,7 @@ function policy_hidden_writer_count(policy: VisiblePolicy) {
 
 type FilesPropertiesModalWriterSummary_ClassNames =
 	| "FilesPropertiesModalWriterSummary"
+	| "FilesPropertiesModalWriterSummary-empty"
 	| "FilesPropertiesModalWriterSummary-note";
 
 type FilesPropertiesModalWriterSummary_Props = {
@@ -342,14 +344,16 @@ const FilesPropertiesModalWriterSummary = memo(function FilesPropertiesModalWrit
 					leading={manageButton}
 				/>
 			) : (
-				<>
+				<div
+					className={"FilesPropertiesModalWriterSummary-empty" satisfies FilesPropertiesModalWriterSummary_ClassNames}
+				>
+					{manageButton}
 					<p
 						className={"FilesPropertiesModalWriterSummary-note" satisfies FilesPropertiesModalWriterSummary_ClassNames}
 					>
-						Nobody is chosen yet. Add at least one person or plugin.
+						Nobody is chosen yet, so this works like read-only.
 					</p>
-					{manageButton}
-				</>
+				</div>
 			)}
 			{hiddenWriterCount > 0 ? (
 				<p className={"FilesPropertiesModalWriterSummary-note" satisfies FilesPropertiesModalWriterSummary_ClassNames}>
@@ -623,7 +627,12 @@ const FilesPropertiesModalWritePolicy = memo(function FilesPropertiesModalWriteP
 						const optionDescriptionId = `${groupId}-${mode}-description`;
 
 						return (
-							<div key={mode}>
+							<div
+								key={mode}
+								className={
+									"FilesPropertiesModalWritePolicy-option" satisfies FilesPropertiesModalWritePolicy_ClassNames
+								}
+							>
 								<MyRadioButton
 									name={groupId}
 									checked={choiceValue.mode === mode}
@@ -649,7 +658,8 @@ const FilesPropertiesModalWritePolicy = memo(function FilesPropertiesModalWriteP
 									<MyRadioButtonLabel id={labelId}>{POLICY_LABELS[mode]}</MyRadioButtonLabel>
 									<MyRadioButtonDescription id={optionDescriptionId}>{copy[mode]}</MyRadioButtonDescription>
 								</MyRadioButton>
-								{/* The radio button is one click target, so the picker sits right under the Custom button. */}
+								{/* The picker is a sibling of the radio button, not a child, so a button is never inside a label. The
+							    grid draws it inside the radio button's border. */}
 								{mode === "writer" && choiceValue.mode === "writer" ? (
 									<div
 										className={

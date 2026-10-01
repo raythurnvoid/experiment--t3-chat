@@ -132,10 +132,46 @@
 		border: 0;
 	}
 
-	/* Sit under the Custom button, lined up with its text: button padding 12px, circle 18px, gap 10px. */
+	/* One grid per choice. The radio button spans two rows and the picker sits in the second row, on top of
+	   the radio button. So the picker looks like it is inside the radio button's border, while in the
+	   page the two are separate siblings and no button is nested in a label. The radio button uses
+	   subgrid, so its circle and text still line up with the picker's column. */
+	.FilesPropertiesModalWritePolicy-option {
+		display: grid;
+		grid-template-columns: auto minmax(0, 1fr);
+		column-gap: 10px;
+
+		& > .MyRadioButton.MyButton {
+			display: grid;
+			grid-template-columns: subgrid;
+			grid-template-rows: subgrid;
+			grid-column: 1 / -1;
+			grid-row: 1 / span 2;
+			gap: normal;
+
+			/* The spacing moves to the circle and the text, so the picker row can sit under the text. */
+			padding: 0;
+
+			& > .MyRadioSurface {
+				margin: 13px 0 0 12px;
+			}
+
+			& > .MyRadioButton-content {
+				margin: 12px 12px 12px 0;
+			}
+		}
+	}
+
 	.FilesPropertiesModalWritePolicy-option-picker {
-		margin-block-start: 8px;
-		margin-inline-start: 40px;
+		grid-column: 2;
+		grid-row: 2;
+
+		/* The radio button gets a higher z-index on hover, so keep the picker above it. */
+		position: relative;
+		z-index: 2;
+
+		min-width: 0;
+		margin: 0 12px 12px 0;
 	}
 
 	.FilesPropertiesModalWritePolicy-description {
@@ -211,6 +247,13 @@
 		& > .MyChipOverflowRow {
 			align-self: stretch;
 		}
+	}
+
+	/* The button and the message sit on one line when nobody is chosen. */
+	.FilesPropertiesModalWriterSummary-empty {
+		display: flex;
+		align-items: center;
+		gap: 10px;
 	}
 
 	.FilesPropertiesModalWriterSummary-note {
