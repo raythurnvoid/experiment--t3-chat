@@ -6453,7 +6453,7 @@ describe("bash_run_command", () => {
 			const finished = await run_job(runner, 2);
 			expect(finished.result?.metadata.exitCode).toBe(1);
 			expect(finished.result?.stderr).toBe(
-				"browser: the chat turn was stopped or has ended. This command did not run.\n",
+				"browser: the chat turn was stopped or has ended. This command did not run.\nCause: stopped: Stopped. This call was not run.\n",
 			);
 		});
 	});
