@@ -433,7 +433,7 @@ describe("PlaywriterSession", () => {
 		).reply;
 		expect(reply, "A removed live version must not load or dispatch new work").toMatchObject({
 			status: "refused",
-			result: { reason: "agent_unavailable", inputSent: false, cleanup: "complete" },
+			result: { reason: "unsupported_version", inputSent: false, cleanup: "complete" },
 		});
 		expect(mocked.env.LOADER.load).not.toHaveBeenCalled();
 		expect(socket.inputCalls).toBe(0);
@@ -793,7 +793,7 @@ describe("PlaywriterSession", () => {
 						operation: SCRIPT,
 					})
 				).reply,
-			).toMatchObject({ status: "refused", result: { reason: "agent_unavailable" } });
+			).toMatchObject({ status: "refused", result: { reason: "paused" } });
 			expect(newerSocket.inputCalls).toBe(0);
 			const resumed = (
 				await mocked.remote("/resume", {
@@ -1567,6 +1567,23 @@ describe("PlaywriterSession scripts", () => {
 		expect(mocked.records.has("scriptState:chat")).toBe(false);
 	});
 
+	it("returns the error of a script that threw", async () => {
+		const mocked = make_session();
+		const connected = await connect_session({ mocked });
+		// The executor sends no files for a script that threw.
+		const { files: _files, resultJson: _resultJson, ...failed } = SCRIPT_RESULT;
+		mocked.evaluate.mockResolvedValue({
+			...failed,
+			ok: false,
+			error: { name: "SyntaxError", message: "bad selector" },
+		});
+		const reply = (await mocked.remote("/run", script_request({ connected, commandId: "thrown-script" }))).reply;
+		expect(reply).toMatchObject({
+			status: "completed",
+			script: { status: "errored", error: { name: "SyntaxError", message: "bad selector" } },
+		});
+	});
+
 	it("keeps the connection when a script never answers", async () => {
 		const mocked = make_session();
 		const connected = await connect_session({ mocked });
@@ -1580,7 +1597,12 @@ describe("PlaywriterSession scripts", () => {
 		await began;
 		await vi.advanceTimersByTimeAsync(20_000);
 		const reply = (await pending).reply;
-		expect(reply).toMatchObject({ status: "unknown", result: { reason: "outcome_unknown", cleanup: "complete" } });
+		expect(reply).toMatchObject({
+			status: "unknown",
+			result: { reason: "outcome_unknown", cleanup: "complete" },
+			outputError: { name: "TimeoutError", message: "The script did not answer before the command deadline." },
+		});
+		expect(playwriter_browser_response_schema.safeParse(reply).success, "The app must accept the cause").toBe(true);
 		expect(reply).not.toHaveProperty("script");
 		expect(((await mocked.remote("/status", SCOPE)).reply.runtime as typeof runtime).state).toBe("connected");
 	});

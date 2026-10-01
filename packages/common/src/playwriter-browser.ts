@@ -177,6 +177,9 @@ export const playwriter_browser_response_schema = z.union([
 			completedLease: completed_lease.nullable(),
 			result: playwriter_browser_result_schema.nullable(),
 			script: script_output.optional(),
+			// Why the Worker got no checked script output, for example an isolate error. Sent only with an
+			// `unknown` receipt, so the model can tell the user what went wrong.
+			outputError: z.object({ name: z.string().max(128), message: z.string().max(1001) }).strict().optional(),
 			consumedAck: playwriter_browser_receipt_request_schema.optional(),
 		})
 		.strict(),

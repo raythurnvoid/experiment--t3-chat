@@ -8058,7 +8058,7 @@ async function handle_browser_run(args: { request: Request; env: Env; ctx?: Brow
 			},
 		});
 		return json_response({ ...result, session: runState.session }, response.status);
-	} catch {
+	} catch (error) {
 		return json_response(
 			{
 				ok: true,
@@ -8067,6 +8067,11 @@ async function handle_browser_run(args: { request: Request; env: Env; ctx?: Brow
 				codeHash,
 				session: null,
 				result: { cleanup: "unknown", reason: "outcome_unknown" },
+				// Say why, so the model can tell the user. The message is cleaned like a script error.
+				error:
+					error instanceof WallTimeoutError
+						? { name: "TimeoutError", message: "The command did not finish before its deadline." }
+						: sanitize_error(error),
 			},
 			200,
 		);

@@ -296,7 +296,7 @@ export async function files_browser_refresh_session(
 		// The runner is still closing the provider browser, so its end time is not known yet.
 		// Keep the doc as it is; the next check or the settle cron finishes it.
 		if (parsed.data.closing) {
-			return Result({ _nay: { message: "Browser is closing" } });
+			return Result({ _nay: { message: "Browser is closing", name: "closing" } });
 		}
 		await ctx.runMutation(internal.files_browser.settle_browser_usage, {
 			sessionId: session._id,

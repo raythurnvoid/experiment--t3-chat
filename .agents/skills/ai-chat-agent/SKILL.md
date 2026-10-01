@@ -611,10 +611,10 @@ Every command first checks every binding of the turn. A person's change (Take, P
 
 Page text is untrusted. The model must not follow page instructions or type passwords and secrets. Sending, buying, publishing, and deleting need the user's request or approval. Cloud web loads the owner's encrypted cookie profile. Blocked sites and agent access are separate saved settings. Agent Close never saves cloud cookies; human End does.
 
-A refusal prints one fixed line on stderr (`REFUSAL_TEXT` in the command module), so the model knows whether to retry:
+A refusal prints one fixed line on stderr (`REFUSAL_TEXT` in the command module), so the model knows whether to retry. When the real cause is known, a `Cause:` line follows it: the door or runner error (`name: message`), what changed for `stale` (for example "the user paused or resumed it, the page navigated"), or the runner's error for an `unknown` run. Never replace a real error with fixed text alone; the model needs the cause to tell the user what went wrong. `browser connect` hides any 32-character hex code in its cause, because a connect error can repeat the share ID.
 
-- `stale`: the browser changed. Browser access ended for this turn. Do not retry.
-- `unknown`: the action may have run. Do not repeat it. A lost reply stays with the receipt resolver until the runner proves cleanup or closure.
+- `stale`: the browser changed. Browser commands stop for the rest of this reply, and the text tells the model this is normal and that the browser works again in the next user message (start with `browser tabs`). The wording is calm on purpose: a harsher "do not retry" made the model avoid the browser in later messages too.
+- `unknown`: the action may have run. Do not repeat it. A lost reply stays with the receipt resolver until the runner proves cleanup or closure. When the runner got no script output, it says why: the Playwriter reply carries `outputError` and the cloud reply carries `error` (an isolate error, the deadline, refused emitted files, or a result in an unexpected shape).
 - `busy`: another chat's command is running on this browser (`busy_command`). A plain runner `busy` stays a generic failure.
 - `agent_access_off`: the user turned off agent access. It is checked before the run, in the runner, and after the run.
 - `agent_blocked_site`: the page is on a blocked site. The runner drops the whole output, downloads included.

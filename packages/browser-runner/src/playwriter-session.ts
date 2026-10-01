@@ -117,7 +117,8 @@ const script_result_schema = z.object({
 	pageErrors: z.array(z.string()).max(snippet_executor_LIMITS.consoleEntries),
 	stateJson: z.unknown(),
 	stateWarnings: z.unknown(),
-	files: z.unknown(),
+	// The executor sends files only when the script succeeded. A thrown or timed-out script has none.
+	files: z.unknown().optional(),
 });
 const unknown_result: PlaywriterBrowserResult = {
 	ok: false,
@@ -1017,14 +1018,11 @@ export class PlaywriterSession {
 				receipt.status !== "in_progress"
 			)
 				return refuse("stale_command");
-			if (
-				runtime.state !== "connected" ||
-				!runtime.agentAccess ||
-				!this.transport ||
-				!this.version ||
-				!command.allowedVersions.includes(this.version)
-			)
-				return refuse("agent_unavailable");
+			// Name the exact cause. The model prints it, so the user learns what to fix.
+			if (runtime.state === "paused") return refuse("paused");
+			if (runtime.state !== "connected" || !this.transport) return refuse("not_connected");
+			if (!runtime.agentAccess) return refuse("agent_access_off");
+			if (!this.version || !command.allowedVersions.includes(this.version)) return refuse("unsupported_version");
 			if (
 				command.targetId !== runtime.confirmedTargetId ||
 				command.controlRevision !== runtime.controlRevision ||
@@ -1211,6 +1209,8 @@ export async function handle_playwriter_request(args: { request: Request; env: R
 	if (!start.success) return began;
 	let output: z.infer<typeof finish_schema> = {};
 	let scriptOutput: PlaywriterBrowserScriptOutput | null = null;
+	// Why there is no script output. The model gets it with an unknown receipt.
+	let outputError: { name: string; message: string } | null = null;
 	try {
 		const gateway = ctx?.exports?.PlaywriterConnectionGateway;
 		if (!gateway) throw new Error("gateway_unavailable");
@@ -1285,9 +1285,34 @@ export async function handle_playwriter_request(args: { request: Request; env: R
 				stateWarnings: snippet_executor_check_state_warnings(sandbox.stateWarnings),
 				files: files?.ok ? files.files : [],
 			};
+		} else if (!checked.success) {
+			const issues = checked.error.issues.slice(0, 5).map((issue) => `${issue.path.join(".")}: ${issue.code}`);
+			outputError = {
+				name: "InvalidResult",
+				message: `The script runner sent a result in an unexpected shape (${issues.join(", ")}).`,
+			};
+			// Log only the field paths and codes. No values from the page enter logs.
+			console.error("[handle_playwriter_request] Script result has an unexpected shape", { issues });
+		} else if (files?.ok === false) {
+			outputError = {
+				name: "FileError",
+				message: `The files the script emitted were refused (${files.reason}). Emit at most ${snippet_executor_LIMITS.files} files and ${snippet_executor_LIMITS.fileBytes / 1024 / 1024} MiB in total. Each file needs workspace "current" or "personal", a path, and bytes as a Uint8Array.`,
+			};
+		} else {
+			outputError = { name: "OutputLimitError", message: "The script output was larger than the runner allows." };
+			console.error("[handle_playwriter_request] Script output is over the limits");
 		}
-	} catch {
-		/* Safe fixed result. No raw child errors or page data enter logs. */
+	} catch (error) {
+		// The isolate failed or the deadline passed. The model gets the error, but logs keep only its
+		// name, because a message can hold page data.
+		outputError =
+			error instanceof Error && error.message === "deadline"
+				? { name: "TimeoutError", message: "The script did not answer before the command deadline." }
+				: {
+						name: (error instanceof Error ? error.name : "Error").slice(0, 128),
+						message: snippet_executor_cap_message(error instanceof Error ? error.message : String(error)),
+					};
+		console.error("[handle_playwriter_request] Script gave no output", { errorName: outputError.name });
 	}
 	const receiptRequest = playwriter_browser_receipt_request_schema.parse({
 		connectionId: parsed.data.connectionId,
@@ -1302,15 +1327,22 @@ export async function handle_playwriter_request(args: { request: Request; env: R
 		receiptResolutionDeadline: parsed.data.receiptResolutionDeadline,
 	});
 	const finished = await forward("/run/finish", { ...scope.data, request: receiptRequest, output });
-	if (!start.data.consumedAck && !scriptOutput) return finished;
+	if (!start.data.consumedAck && !scriptOutput && !outputError) return finished;
 	const reply: unknown = await finished.json();
 	if (typeof reply !== "object" || reply === null) return error("invalid_result", 502);
 	// Release the script output only with a completed receipt. A blocked site or an unknown outcome
-	// returns nothing.
+	// returns nothing. An unknown outcome still says why the script gave no output.
 	const completed = "status" in reply && reply.status === "completed";
+	// A blocked site with unknown cleanup is also an unknown receipt. It must return nothing, not even
+	// the error.
+	const unknown =
+		"status" in reply &&
+		reply.status === "unknown" &&
+		!z.object({ result: z.object({ reason: z.literal("blocked_site") }) }).safeParse(reply).success;
 	return Response.json({
 		...reply,
 		...(scriptOutput && completed ? { script: scriptOutput } : {}),
+		...(outputError && unknown ? { outputError } : {}),
 		...(start.data.consumedAck ? { consumedAck: start.data.consumedAck } : {}),
 	});
 }

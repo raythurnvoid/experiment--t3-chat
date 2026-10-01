@@ -11,6 +11,9 @@ import { bash_browser_command_create, type bash_BrowserContext } from "./bash-br
 
 type BrowserResource = Infer<typeof ai_chat_browser_resource_validator>;
 
+// A fake share ID whose connect fails with an error that repeats it.
+const LEAKY_SHARE = "fedcba9876543210fedcba9876543210";
+
 beforeEach(() => {
 	vi.stubEnv("AI_CHAT_BROWSER_ENABLED", "true");
 	vi.stubEnv("AI_CHAT_PLAYWRITER_ENABLED", "true");
@@ -122,7 +125,7 @@ function fixture(tabs: "playwriter" | "cloud" | "both") {
 						};
 		if (name === "playwriter_browser:load_connection") return { _yay: connection };
 		if (name === "files_browser:get_agent_browser_catalog")
-			return { _yay: { browsers: tabs === "playwriter" ? [] : [{ resource: cloudTab }] } };
+			return { _yay: { browsers: tabs === "playwriter" || !cloudAccess.ok ? [] : [{ resource: cloudTab }] } };
 		if (name === "files_browser:check_browser_session_access")
 			return { ...cloudAccess, runnerSessionId: "private-runner" };
 		// No runner session id, so the check skips the runner status call.
@@ -197,8 +200,8 @@ function fixture(tabs: "playwriter" | "cloud" | "both") {
 			return { _yay: null };
 		}
 		if (name === "playwriter_browser:connect_tab_for_agent")
-			return _args.share === "leaky"
-				? { _nay: { message: "runner failed for leaky", name: "connect_failed" } }
+			return _args.share === LEAKY_SHARE
+				? { _nay: { message: `runner failed for ${LEAKY_SHARE}`, name: "dial_failed" } }
 				: { _yay: { connectionId: "connection" } };
 		throw new Error(`Unexpected action ${name}`);
 	});
@@ -383,12 +386,12 @@ describe("bash_browser_command_create", () => {
 		const result = await f.exec(["run", "-e", "return document.body.innerText;"]);
 		expect(result.exitCode).toBe(1);
 		expect(result.stdout).toBe("");
-		expect(result.stderr).toContain("Browser access ended for this turn. Do not retry.");
+		expect(result.stderr).toContain("Browser commands are paused until the user's next message");
 		expect(f.turn.revoked).toBe(true);
 
 		// The next command refuses before it reaches the runner.
 		const runs = f.requests.filter((request) => request.route === "run").length;
-		expect((await f.exec(["run", "-e", "return 1;"])).stderr).toContain("Do not retry.");
+		expect((await f.exec(["run", "-e", "return 1;"])).stderr).toContain("Browser commands are paused");
 		expect(f.requests.filter((request) => request.route === "run")).toHaveLength(runs);
 	});
 
@@ -403,11 +406,26 @@ describe("bash_browser_command_create", () => {
 		expect(mutation_names(f)).not.toContain("playwriter_browser:finish_command");
 	});
 
+	test("an unknown run prints why the runner got no script output", async () => {
+		const f = fixture("playwriter");
+		f.setReply(async () => ({
+			ok: true,
+			status: "unknown",
+			runtime: f.runtime,
+			completedLease: null,
+			result: { ok: false, reason: "outcome_unknown", inputSent: false, cleanup: "complete" },
+			outputError: { name: "FileError", message: "The files the script emitted were refused (files_count)." },
+		}));
+		expect((await f.exec(["run", "-e", "return 1;"])).stderr).toBe(
+			"browser: the result is unknown, and the action may have run. Do not repeat it. Tell the user what is uncertain.\nCause: FileError: The files the script emitted were refused (files_count).\n",
+		);
+	});
+
 	test("refuses the 21st browser operation of a turn before reserving it", async () => {
 		const f = fixture("playwriter");
 		f.turn.operations = 20;
 		expect((await f.exec(["run", "-e", "return 1;"])).stderr).toBe(
-			"browser: this turn used all 20 browser operations.\n",
+			"browser: this turn used all 20 browser operations.\nCause: limit: Browser operation limit reached\n",
 		);
 		expect(mutation_names(f)).not.toContain("playwriter_browser:reserve_command");
 		expect(f.requests.filter((request) => request.route === "run")).toEqual([]);
@@ -470,7 +488,7 @@ describe("bash_browser_command_create", () => {
 		f.cloudAccess.controlGen = 2;
 		const result = await f.exec(["run", "-e", "return 1;"]);
 		expect(result.exitCode).toBe(1);
-		expect(result.stderr).toContain("Browser access ended for this turn.");
+		expect(result.stderr).toContain("Browser commands are paused until the user's next message");
 		expect(f.turn.revoked).toBe(true);
 		expect(f.requests.filter((request) => request.route === "run")).toEqual([]);
 	});
@@ -494,6 +512,15 @@ describe("bash_browser_command_create", () => {
 
 		expect((await f.exec(["run", "--tab", "opaque-t", "-e", "return 1;"])).exitCode).toBe(0);
 		expect(f.requests.find((request) => request.route === "run")?.body).toMatchObject({ targetId: "native-private" });
+	});
+
+	test("a cloud browser that closed does not stop the my browser tab", async () => {
+		const f = fixture("both");
+		await f.exec(["tabs"]);
+		Object.assign(f.cloudAccess, { ok: false, reason: "closed" });
+
+		expect((await f.exec(["run", "--tab", "opaque-t", "-e", "return 1;"])).exitCode).toBe(0);
+		expect(f.turn.revoked).toBe(false);
 	});
 
 	test.each([
@@ -523,23 +550,27 @@ describe("bash_browser_command_create", () => {
 	});
 
 	test("connects the tab a user shared in chat, and never prints the share ID", async () => {
-		const f = fixture("playwriter");
-		const share = "9f77b26e102c904301e51ce61d01ec9f";
+		const f = fixture("both");
+		const share = "0123456789abcdef0123456789abcdef";
 
-		const connected = await f.exec(["connect", share]);
-		expect(connected.exitCode).toBe(0);
-		expect(connected.stdout).toContain("my browser connected.");
-		expect(connected.stdout).not.toContain(share);
+		// Print only the connected tab, so a cloud browser that is closing cannot fail the connect.
+		expect(await f.exec(["connect", share])).toEqual({
+			stdout: "my browser connected.\nopaque-t  my browser  https://mail.example  Inbox  (the user's own tab)\n",
+			stderr: "",
+			exitCode: 0,
+		});
 		expect(f.runAction).toHaveBeenCalledWith(expect.anything(), {
 			userId: f.browser.source.userId,
 			membershipId: f.browser.source.membershipId,
 			share,
 		});
 
-		const refused = await f.exec(["connect", "leaky"]);
+		// The real error is shown, but never the share ID inside it.
+		const refused = await f.exec(["connect", LEAKY_SHARE]);
 		expect(refused.exitCode).toBe(1);
-		expect(refused.stderr).toContain("could not be connected");
-		expect(refused.stderr).not.toContain("leaky");
+		expect(refused.stderr).toBe(
+			"browser: the my browser tab could not be connected.\nCause: dial_failed: runner failed for [share ID]\n",
+		);
 	});
 
 	test("does not start a run that could outlast the Bash call", async () => {

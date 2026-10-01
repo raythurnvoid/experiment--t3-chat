@@ -102,7 +102,7 @@ Exit codes: 0 success, 1 failure or refusal, 2 usage error, 124 time limit.
  */
 const REFUSAL_TEXT = {
 	stale:
-		"the browser changed since this chat last used it (a person used it, or it was paused, turned off or closed). Browser access ended for this turn. Do not retry. Tell the user.",
+		"the browser changed since this reply last used it, for example a person used the page, or it was paused or closed. This is normal. Browser commands are paused until the user's next message, so stop using the browser for now and tell the user what you could not finish. In the next message the browser works again: start with browser tabs.",
 	unknown: "the result is unknown, and the action may have run. Do not repeat it. Tell the user what is uncertain.",
 	busy: "another chat is using the browser. Try again later.",
 	agent_access_off: "the user turned off agent access to this browser.",
@@ -176,8 +176,31 @@ const run_schema = z.object({
 	session: files_browser_runner_session_schema.optional(),
 });
 
-function refuse(reason: BrowserReason, prefix = "") {
-	return { stdout: prefix, stderr: `browser: ${REFUSAL_TEXT[reason]}\n`, exitCode: bash_COMMAND_EXIT_FAILURE };
+/**
+ * A run the runner lost track of. Its `error` says why, cleaned like a script error.
+ */
+const run_unknown_schema = z.object({
+	status: z.literal("unknown"),
+	error: z.object({ name: z.string(), message: z.string() }).optional(),
+});
+
+/**
+ * Print the fixed text of a failure. When the real cause is known, print it on the next line, so the
+ * model can tell the user what went wrong.
+ */
+function refuse(reason: BrowserReason, cause: string | null = null) {
+	return {
+		stdout: "",
+		stderr: `browser: ${REFUSAL_TEXT[reason]}\n${cause ? `Cause: ${redact(cause).slice(0, 1000)}\n` : ""}`,
+		exitCode: bash_COMMAND_EXIT_FAILURE,
+	};
+}
+
+/**
+ * The `Cause:` text of a door or runner refusal.
+ */
+function nay_cause(nay: { name?: string; message: string }) {
+	return nay.name ? `${nay.name}: ${nay.message}` : nay.message;
 }
 
 function usage_error(text: string) {
@@ -195,6 +218,8 @@ function safe_reason(name: string | undefined | null): BrowserReason {
 		return "stale";
 	if (name === "agent_access_off" || name === "limit" || name === "needs_capture" || name === "unavailable")
 		return name;
+	if (name === "not_connected") return "unavailable";
+	if (name === "operation_limit") return "session_limit";
 	return "execution";
 }
 
@@ -286,9 +311,10 @@ async function update_turn(args: {
 }
 
 /**
- * Whether the browser still has exactly the lease this turn learned.
+ * What changed since this turn learned the browser lease, in words the model can repeat to the user.
+ * Null when the browser still has exactly that lease.
  */
-async function binding_current(args: { ctx: ActionCtx; browser: bash_BrowserContext; binding: BrowserResource }) {
+async function binding_change(args: { ctx: ActionCtx; browser: bash_BrowserContext; binding: BrowserResource }) {
 	const { ctx, browser, binding } = args;
 
 	const allowed = await ctx.runQuery(internal.files_browser.check_browser_source, {
@@ -296,21 +322,24 @@ async function binding_current(args: { ctx: ActionCtx; browser: bash_BrowserCont
 		browserIntent: browser.browserIntent,
 		...(binding.provider === "cloud" ? { mode: binding.mode } : {}),
 	});
-	if (allowed._nay) return false;
+	if (allowed._nay) return nay_cause(allowed._nay);
 	if (binding.provider === "playwriter") {
 		const lease = await ctx.runQuery(internal.playwriter_browser.get_remote_lease, {
 			source: browser.source,
 			browserIntent: browser.browserIntent,
 		});
-		return (
-			!lease._nay &&
-			lease._yay.connectionId === binding.connectionId &&
-			lease._yay.connectionGeneration === binding.connectionGeneration &&
-			lease._yay.controlRevision === binding.controlRevision &&
-			lease._yay.targetRevision === binding.targetRevision &&
-			lease._yay.navRevision === binding.navRevision &&
-			lease._yay.confirmedTargetHandle === binding.confirmedTargetHandle
-		);
+		if (lease._nay) return nay_cause(lease._nay);
+		const changes = [
+			lease._yay.connectionId !== binding.connectionId ||
+			lease._yay.connectionGeneration !== binding.connectionGeneration
+				? "the my browser tab reconnected"
+				: null,
+			lease._yay.controlRevision !== binding.controlRevision ? "the user paused or resumed it" : null,
+			lease._yay.confirmedTargetHandle !== binding.confirmedTargetHandle ? "the user shared another tab" : null,
+			lease._yay.targetRevision !== binding.targetRevision ? "its tabs changed, for example a popup" : null,
+			lease._yay.navRevision !== binding.navRevision ? "the page navigated" : null,
+		].filter((change) => change !== null);
+		return changes.length > 0 ? changes.join(", ") : null;
 	}
 	const access = await ctx.runQuery(internal.files_browser.check_browser_session_access, {
 		organizationId: browser.source.organizationId,
@@ -320,28 +349,31 @@ async function binding_current(args: { ctx: ActionCtx; browser: bash_BrowserCont
 		sessionId: binding.sessionId,
 		...(binding.mode === "web" ? { tabId: binding.tabId! } : {}),
 	});
-	return (
-		access.ok &&
-		access.control === "ready" &&
-		access.controlGen === binding.controlGen &&
-		access.loadGen === binding.loadGen &&
-		access.navGen === binding.navGen &&
-		(binding.mode === "file" || (access.mode === "web" && access.tabGen === binding.tabGen))
-	);
+	if (!access.ok) return `the cloud browser is not available (${access.reason})`;
+	const changes = [
+		access.control !== "ready" ? `the cloud browser is in the "${access.control}" state, not ready` : null,
+		access.controlGen !== binding.controlGen ? "the user took or returned control" : null,
+		access.loadGen !== binding.loadGen ? "the file preview loaded again" : null,
+		access.navGen !== binding.navGen ? "the page navigated" : null,
+		binding.mode === "web" && (access.mode !== "web" || access.tabGen !== binding.tabGen) ? "the tab changed" : null,
+	].filter((change) => change !== null);
+	return changes.length > 0 ? changes.join(", ") : null;
 }
 
 /**
  * Check every binding of this turn before a command. A live lease is never silently rebound: a
- * change by a person ends browser access for the turn. Returns the bindings to keep, or null after
- * revoking the turn.
+ * change by a person ends browser access for the turn. Returns the bindings to keep, or the cause
+ * that ends browser access for the turn.
  */
 async function check_bindings(args: { ctx: ActionCtx; browser: bash_BrowserContext; bindings: BrowserResource[] }) {
 	const { ctx, browser, bindings } = args;
 
 	const checked: BrowserResource[] = [];
 	const refreshed = new Set<string>();
+	const ended = new Set<string>();
 	for (const binding of bindings) {
 		const ref = binding.provider === "playwriter" ? binding.connectionId : binding.sessionId;
+		if (ended.has(ref)) continue;
 		if (!refreshed.has(ref)) {
 			refreshed.add(ref);
 			if (binding.provider === "cloud") {
@@ -352,14 +384,23 @@ async function check_bindings(args: { ctx: ActionCtx; browser: bash_BrowserConte
 					membershipId: browser.source.membershipId,
 					sessionId: binding.sessionId,
 				});
-				if (loaded._nay || (await files_browser_refresh_session(ctx, loaded._yay))._nay) return null;
+				if (loaded._nay) return { _nay: nay_cause(loaded._nay) };
+
+				const session = await files_browser_refresh_session(ctx, loaded._yay);
+				// A cloud browser that is closing, for example at its idle limit, has no page a person
+				// could change. Drop its tabs and keep the other browsers of this turn.
+				if (session._nay?.name === "closing") {
+					ended.add(ref);
+					continue;
+				}
+				if (session._nay) return { _nay: nay_cause(session._nay) };
 			} else {
 				const loaded = await ctx.runQuery(internal.playwriter_browser.load_connection, {
 					connectionId: binding.connectionId,
 					userId: browser.source.userId,
 					membershipId: browser.source.membershipId,
 				});
-				if (loaded._nay) return null;
+				if (loaded._nay) return { _nay: nay_cause(loaded._nay) };
 
 				const connection = loaded._yay;
 				const status = await playwriter_runner_call({
@@ -383,25 +424,25 @@ async function check_bindings(args: { ctx: ActionCtx; browser: bash_BrowserConte
 						browserIntent: browser.browserIntent,
 						resource: binding,
 					});
-					if (recovered._nay) return null;
+					if (recovered._nay) return { _nay: `the my browser tab could not reconnect: ${nay_cause(recovered._nay)}` };
 
 					const lease = await ctx.runQuery(internal.playwriter_browser.get_remote_lease, {
 						source: browser.source,
 						browserIntent: browser.browserIntent,
 					});
+					if (lease._nay) return { _nay: nay_cause(lease._nay) };
 					if (
-						lease._nay ||
 						lease._yay.controlRevision !== binding.controlRevision ||
 						lease._yay.confirmedTargetHandle !== binding.confirmedTargetHandle
 					)
-						return null;
+						return { _nay: "the user paused the my browser tab or shared another tab while it reconnected" };
 
 					checked.push(lease._yay);
 					continue;
 				}
 
+				if (status._nay) return { _nay: nay_cause(status._nay) };
 				if (
-					status._nay ||
 					!(await ctx.runMutation(internal.playwriter_browser.commit_runtime, {
 						connectionId: connection._id,
 						attemptId: connection.connectAttemptId,
@@ -409,14 +450,28 @@ async function check_bindings(args: { ctx: ActionCtx; browser: bash_BrowserConte
 						runtime: status._yay.runtime,
 					}))
 				)
-					return null;
+					return { _nay: "the my browser connection changed while it was checked" };
 			}
 		}
 
-		if (!(await binding_current({ ctx, browser, binding }))) return null;
+		// The same goes for a cloud browser or tab that already closed: drop it and keep the rest.
+		if (binding.provider === "cloud") {
+			const access = await ctx.runQuery(internal.files_browser.check_browser_session_access, {
+				organizationId: browser.source.organizationId,
+				workspaceId: browser.source.workspaceId,
+				userId: browser.source.userId,
+				membershipId: browser.source.membershipId,
+				sessionId: binding.sessionId,
+				...(binding.mode === "web" ? { tabId: binding.tabId! } : {}),
+			});
+			if (!access.ok && (access.reason === "closed" || access.reason === "tab_closed")) continue;
+		}
+
+		const change = await binding_change({ ctx, browser, binding });
+		if (change !== null) return { _nay: change };
 		checked.push(binding);
 	}
-	return checked;
+	return { _yay: checked };
 }
 
 /**
@@ -434,7 +489,7 @@ async function claim(args: {
 	const { ctx, browser } = args;
 
 	const claimed = await update_turn({ ctx, browser, change: { kind: "claim" } });
-	if (claimed._nay) return { _nay: turn_reason(claimed._nay.name) };
+	if (claimed._nay) return { _nay: turn_reason(claimed._nay.name), cause: nay_cause(claimed._nay) };
 
 	const toolCallId = `${browser.invocationId}:browser:${browser.nextCommandNumber()}`;
 	const begun = await ctx.runMutation(internal.ai_chat_files.begin_browser_invocation, {
@@ -450,7 +505,11 @@ async function claim(args: {
 		...(args.mode ? { mode: args.mode } : {}),
 	});
 	// A begin refusal means agent access, a blocked site, or the lease changed, or the chat was stopped.
-	if (begun._nay) return { _nay: begun._nay.message.startsWith("Stopped") ? ("stopped" as const) : ("stale" as const) };
+	if (begun._nay)
+		return {
+			_nay: begun._nay.message.startsWith("Stopped") ? ("stopped" as const) : ("stale" as const),
+			cause: nay_cause(begun._nay),
+		};
 	return { _yay: { ...begun._yay, toolCallId, operationHash: args.operationHash } };
 }
 
@@ -510,7 +569,7 @@ async function target_binding(args: {
 		}
 		if (live.length > 0) {
 			const bound = await update_turn({ ctx, browser, change: { kind: "bind", bindings: live, ifAbsent: true } });
-			if (bound._nay) return { _nay: "stale" as const };
+			if (bound._nay) return { _nay: "stale" as const, cause: nay_cause(bound._nay) };
 			candidates = matching(bound._yay.bindings);
 		}
 	}
@@ -626,7 +685,7 @@ async function command_status(ctx: ActionCtx, browser: bash_BrowserContext) {
 
 	if (resources.length > 0) {
 		const bound = await update_turn({ ctx, browser, change: { kind: "bind", bindings: resources, ifAbsent: true } });
-		if (bound._nay) return refuse(turn_reason(bound._nay.name));
+		if (bound._nay) return refuse(turn_reason(bound._nay.name), nay_cause(bound._nay));
 	}
 	return { stdout: `${web}\n${file}\n`, stderr: "", exitCode: 0 };
 }
@@ -634,13 +693,8 @@ async function command_status(ctx: ActionCtx, browser: bash_BrowserContext) {
 /**
  * Connect the tab a user shared in chat. The result never repeats the share ID.
  */
-async function command_connect(args: {
-	ctx: ActionCtx;
-	browser: bash_BrowserContext;
-	bindings: BrowserResource[];
-	share: string;
-}) {
-	const { ctx, browser, bindings, share } = args;
+async function command_connect(args: { ctx: ActionCtx; browser: bash_BrowserContext; share: string }) {
+	const { ctx, browser, share } = args;
 
 	const connected = await ctx.runAction(internal.playwriter_browser.connect_tab_for_agent, {
 		userId: browser.source.userId,
@@ -650,7 +704,8 @@ async function command_connect(args: {
 	if (connected._nay)
 		return {
 			stdout: "",
-			// Only these refusals carry a fixed message. Other runner errors may contain the share ID.
+			// Only these refusals carry a fixed message. Other errors may contain the share ID, so their
+			// cause hides every 32-character hex code.
 			stderr: `browser: ${
 				connected._nay.name === "invalid_share" ||
 				connected._nay.name === "link_reserved" ||
@@ -658,17 +713,26 @@ async function command_connect(args: {
 				connected._nay.name === "rate_limit" ||
 				connected._nay.name === "limit"
 					? connected._nay.message
-					: "the my browser tab could not be connected."
-			}
-`,
+					: `the my browser tab could not be connected.\nCause: ${nay_cause(connected._nay).replace(/[0-9a-f]{32}/giu, "[share ID]")}`
+			}\n`,
 			exitCode: bash_COMMAND_EXIT_FAILURE,
 		};
 
-	const tabs = await command_tabs({ ctx, browser, bindings, input: { operation: "tabs", url: null, tab: null } });
+	// Print only the connected tab. A full tab list would also touch cloud tabs, and one that is
+	// closing at that moment would fail this command although the connect worked.
+	const mine = await my_browser_lease({ ctx, browser, recover: false });
+	if (mine._nay)
+		return {
+			stdout: `my browser connected, but it is not ready yet (${mine._nay.name ?? "unavailable"}). Run: browser tabs\n`,
+			stderr: "",
+			exitCode: 0,
+		};
+	const bound = await update_turn({ ctx, browser, change: { kind: "bind", bindings: [mine._yay], ifAbsent: true } });
+	if (bound._nay) return refuse(turn_reason(bound._nay.name), nay_cause(bound._nay));
 	return {
-		...tabs,
-		stdout: `my browser connected.
-${tabs.stdout}`,
+		stdout: `my browser connected.\n${redact(await my_browser_tab_line({ ctx, browser, mine: mine._yay }))}`,
+		stderr: "",
+		exitCode: 0,
 	};
 }
 
@@ -686,9 +750,9 @@ async function command_open(args: {
 		resource: null,
 		...(input.file ? { mode: "file" as const } : {}),
 	});
-	if (claimed._nay) return refuse(claimed._nay);
+	if (claimed._nay) return refuse(claimed._nay, claimed.cause);
 	const invocation = claimed._yay;
-	if (!invocation.isNew) return refuse("unknown");
+	if (!invocation.isNew) return refuse("unknown", "this Bash call was replayed, and the command was already sent once");
 
 	if (input.file) {
 		const opened = await ctx.runAction(internal.files_browser.agent_open_file_browser, {
@@ -703,7 +767,7 @@ async function command_open(args: {
 		if (opened._nay) {
 			const reason = safe_reason(opened._nay.name);
 			await finish({ ctx, invocation, status: "errored", reason });
-			return refuse(reason);
+			return refuse(reason, nay_cause(opened._nay));
 		}
 		const session = opened._yay.session;
 		const binding: BrowserResource = {
@@ -733,7 +797,7 @@ async function command_open(args: {
 		const reason = safe_reason(opened._nay.name);
 		await finish({ ctx, invocation, status: "errored", reason });
 		if (reason === "stale") await update_turn({ ctx, browser, change: { kind: "revoke" } });
-		return refuse(reason);
+		return refuse(reason, nay_cause(opened._nay));
 	}
 	const session = opened._yay.session;
 	const binding: BrowserResource = {
@@ -783,7 +847,7 @@ async function command_tabs(args: {
 	);
 	if (live.length > 0) {
 		const bound = await update_turn({ ctx, browser, change: { kind: "bind", bindings: live, ifAbsent: true } });
-		if (bound._nay) return refuse(turn_reason(bound._nay.name));
+		if (bound._nay) return refuse(turn_reason(bound._nay.name), nay_cause(bound._nay));
 		bindings = bound._yay.bindings;
 	}
 	const mine = bindings.find((item) => item.provider === "playwriter");
@@ -825,10 +889,10 @@ async function command_tabs(args: {
 	});
 	if (claimed._nay) {
 		if (claimed._nay === "stale") await update_turn({ ctx, browser, change: { kind: "revoke" } });
-		return refuse(claimed._nay);
+		return refuse(claimed._nay, claimed.cause);
 	}
 	const invocation = claimed._yay;
-	if (!invocation.isNew) return refuse("unknown");
+	if (!invocation.isNew) return refuse("unknown", "this Bash call was replayed, and the command was already sent once");
 
 	const result = await ctx.runAction(internal.files_browser.agent_browser_tabs, {
 		source: browser.source,
@@ -845,7 +909,7 @@ async function command_tabs(args: {
 	if (result._nay) {
 		const reason = safe_reason(result._nay.name);
 		await finish({ ctx, invocation, status: "errored", reason });
-		return refuse(reason);
+		return refuse(reason, nay_cause(result._nay));
 	}
 	if (result._yay.status !== "completed") {
 		const reason =
@@ -853,7 +917,7 @@ async function command_tabs(args: {
 				? "unknown"
 				: safe_reason(result._yay.result.reason);
 		await finish({ ctx, invocation, status: "errored", reason });
-		return refuse(reason);
+		return refuse(reason, `${result._yay.status}: ${result._yay.result.reason ?? "no reason given"}`);
 	}
 
 	const listed = result._yay.session;
@@ -861,7 +925,7 @@ async function command_tabs(args: {
 	if (listed && listed.controlGen !== session.controlGen + (input.operation === "tabs" ? 0 : 1)) {
 		await finish({ ctx, invocation, status: "errored", reason: "stale" });
 		await update_turn({ ctx, browser, change: { kind: "revoke" } });
-		return refuse("stale");
+		return refuse("stale", "the user took or returned control of the cloud browser");
 	}
 
 	// Move this session's bindings to the listing. A late listing must not undo a run that already
@@ -925,10 +989,10 @@ async function command_reload(args: { ctx: ActionCtx; browser: bash_BrowserConte
 	});
 	if (claimed._nay) {
 		if (claimed._nay === "stale") await update_turn({ ctx, browser, change: { kind: "revoke" } });
-		return refuse(claimed._nay);
+		return refuse(claimed._nay, claimed.cause);
 	}
 	const invocation = claimed._yay;
-	if (!invocation.isNew) return refuse("unknown");
+	if (!invocation.isNew) return refuse("unknown", "this Bash call was replayed, and the command was already sent once");
 
 	const reloaded = await ctx.runAction(internal.files_browser.agent_reload_browser, {
 		source: browser.source,
@@ -942,7 +1006,7 @@ async function command_reload(args: { ctx: ActionCtx; browser: bash_BrowserConte
 	if (reloaded._nay) {
 		const reason = safe_reason(reloaded._nay.name);
 		await finish({ ctx, invocation, status: "errored", reason });
-		return refuse(reason);
+		return refuse(reason, nay_cause(reloaded._nay));
 	}
 	if (
 		reloaded._yay.mode !== binding.mode ||
@@ -951,7 +1015,7 @@ async function command_reload(args: { ctx: ActionCtx; browser: bash_BrowserConte
 	) {
 		await finish({ ctx, invocation, status: "errored", reason: "stale" });
 		await update_turn({ ctx, browser, change: { kind: "revoke" } });
-		return refuse("stale");
+		return refuse("stale", "the user took or returned control, or the tab changed, during the reload");
 	}
 
 	const next: CloudResource = {
@@ -981,10 +1045,10 @@ async function command_close(args: {
 	});
 	if (claimed._nay) {
 		if (claimed._nay === "stale") await update_turn({ ctx, browser, change: { kind: "revoke" } });
-		return refuse(claimed._nay);
+		return refuse(claimed._nay, claimed.cause);
 	}
 	const invocation = claimed._yay;
-	if (!invocation.isNew) return refuse("unknown");
+	if (!invocation.isNew) return refuse("unknown", "this Bash call was replayed, and the command was already sent once");
 
 	if (binding.provider === "playwriter") {
 		const retired = await ctx.runMutation(internal.playwriter_browser.retire_session, {
@@ -995,7 +1059,7 @@ async function command_close(args: {
 		if (retired._nay) {
 			const reason = safe_reason(retired._nay.name);
 			await finish({ ctx, invocation, status: "errored", reason });
-			return refuse(reason);
+			return refuse(reason, nay_cause(retired._nay));
 		}
 		const closed = await playwriter_runner_call({
 			route: "disconnect",
@@ -1014,7 +1078,7 @@ async function command_close(args: {
 			status: closed._nay ? "errored" : "succeeded",
 			reason: closed._nay ? "execution" : null,
 		});
-		if (closed._nay) return refuse("execution");
+		if (closed._nay) return refuse("execution", nay_cause(closed._nay));
 		return {
 			stdout: "Stopped automation of the my browser tab. The user's tab stays open.\n",
 			stderr: "",
@@ -1034,7 +1098,7 @@ async function command_close(args: {
 	if (closed._nay) {
 		const reason = safe_reason(closed._nay.name);
 		await finish({ ctx, invocation, status: "errored", reason });
-		return refuse(reason);
+		return refuse(reason, nay_cause(closed._nay));
 	}
 	await finish({ ctx, invocation, status: "succeeded", reason: null });
 	await update_turn({
@@ -1153,10 +1217,10 @@ async function run_cloud(args: { ctx: ActionCtx; browser: bash_BrowserContext; b
 	const claimed = await claim({ ctx, browser, operationHash: codeHash, resource: binding, operationKind: "run" });
 	if (claimed._nay) {
 		if (claimed._nay === "stale") await update_turn({ ctx, browser, change: { kind: "revoke" } });
-		return refuse(claimed._nay);
+		return refuse(claimed._nay, claimed.cause);
 	}
 	const invocation = claimed._yay;
-	if (!invocation.isNew) return refuse("unknown");
+	if (!invocation.isNew) return refuse("unknown", "this Bash call was replayed, and the command was already sent once");
 
 	const access = await ctx.runQuery(internal.files_browser.check_browser_session_access, readArgs);
 	if (!access.ok && access.reason === "agent_access_off") {
@@ -1172,7 +1236,7 @@ async function run_cloud(args: { ctx: ActionCtx; browser: bash_BrowserContext; b
 	) {
 		await finish({ ctx, invocation, status: "errored", reason: "stale" });
 		await update_turn({ ctx, browser, change: { kind: "revoke" } });
-		return refuse("stale");
+		return refuse("stale", await binding_change({ ctx, browser, binding }));
 	}
 
 	const response = await files_browser_runner_call({
@@ -1208,24 +1272,33 @@ async function run_cloud(args: { ctx: ActionCtx; browser: bash_BrowserContext; b
 
 	// The runner did not report a session for this command, so it may still have run. The receipt
 	// resolver settles it from the runner. These refusals only pick the text the model sees.
-	if (!response) return refuse("unknown");
+	if (!response) return refuse("unknown", "the chat stopped while the command ran");
 	// `busy_command` means another chat's command is running on this browser right now.
 	if (response._nay?.name === "busy_command") return refuse("busy");
 	if (response._nay?.name === "agent_access_off") return refuse("agent_access_off");
 	// The page is on a site the user blocked for the agent. The runner dropped the whole output.
 	if (response._nay?.name === "agent_blocked_site") return refuse("agent_blocked_site");
-	if (response._nay) return refuse("unknown");
+	if (response._nay) return refuse("unknown", nay_cause(response._nay));
 
+	// The runner lost track of the command, for example when it threw. It sends the error it caught.
+	const lost = run_unknown_schema.safeParse(response._yay);
+	if (lost.success)
+		return refuse("unknown", lost.data.error ? `${lost.data.error.name}: ${lost.data.error.message}` : null);
 	const parsed = run_schema.safeParse(response._yay);
-	if (
-		!parsed.success ||
-		parsed.data.commandId !== invocation.commandId ||
-		parsed.data.codeHash !== codeHash ||
-		(parsed.data.status !== "succeeded" && parsed.data.files.length > 0)
-	)
-		return refuse("invalid_result");
+	if (!parsed.success)
+		return refuse(
+			"invalid_result",
+			parsed.error.issues
+				.slice(0, 5)
+				.map((issue) => `${issue.path.join(".")}: ${issue.code}`)
+				.join(", "),
+		);
+	if (parsed.data.commandId !== invocation.commandId || parsed.data.codeHash !== codeHash)
+		return refuse("invalid_result", "the reply belongs to another command");
+	if (parsed.data.status !== "succeeded" && parsed.data.files.length > 0)
+		return refuse("invalid_result", "a run that did not succeed sent files");
 	const outcome = parsed.data;
-	if (!outcome.session) return refuse("unknown");
+	if (!outcome.session) return refuse("unknown", "the runner reported no browser session for this command");
 
 	// Only this run may advance the lease. A changed mode, control, or tab means a person took over.
 	const runner = outcome.session;
@@ -1236,7 +1309,7 @@ async function run_cloud(args: { ctx: ActionCtx; browser: bash_BrowserContext; b
 	) {
 		await finish({ ctx, invocation, status: "errored", reason: "stale" });
 		await update_turn({ ctx, browser, change: { kind: "revoke" } });
-		return refuse("stale");
+		return refuse("stale", "the user took or returned control, or the tab changed, during the run");
 	}
 	const synced = await ctx.runMutation(internal.files_browser.sync_browser_session, {
 		sessionId: binding.sessionId,
@@ -1254,7 +1327,10 @@ async function run_cloud(args: { ctx: ActionCtx; browser: bash_BrowserContext; b
 		const reason = !after.ok && after.reason === "agent_access_off" ? "agent_access_off" : "stale";
 		await finish({ ctx, invocation, status: "errored", reason });
 		if (reason === "stale") await update_turn({ ctx, browser, change: { kind: "revoke" } });
-		return refuse(reason);
+		return refuse(
+			reason,
+			synced._nay ? nay_cause(synced._nay) : !after.ok ? after.reason : "the browser changed after the run",
+		);
 	}
 	await update_turn({ ctx, browser, change: { kind: "bind", bindings: [next], ifAbsent: false } });
 
@@ -1352,7 +1428,12 @@ async function run_cloud(args: { ctx: ActionCtx; browser: bash_BrowserContext; b
 		consoleEntries: outcome.consoleEntries,
 		pageErrors: outcome.pageErrors,
 		stateWarnings: outcome.stateWarnings ?? [],
-		errorText: error && typeof error.message === "string" ? error.message : null,
+		errorText:
+			error && typeof error.message === "string"
+				? typeof error.name === "string"
+					? `${error.name}: ${error.message}`
+					: error.message
+				: null,
 		notes,
 	});
 	return {
@@ -1383,7 +1464,7 @@ async function run_playwriter(args: {
 	const operationHash = await crypto_sha256_hex(`browser_script\n${JSON.stringify(operation)}`);
 
 	const claimed = await update_turn({ ctx, browser, change: { kind: "claim" } });
-	if (claimed._nay) return refuse(turn_reason(claimed._nay.name));
+	if (claimed._nay) return refuse(turn_reason(claimed._nay.name), nay_cause(claimed._nay));
 
 	const toolCallId = `${browser.invocationId}:browser:${browser.nextCommandNumber()}`;
 	const reserved = await ctx.runMutation(internal.playwriter_browser.reserve_command, {
@@ -1406,10 +1487,10 @@ async function run_playwriter(args: {
 						? "stopped"
 						: "stale";
 		if (reason === "stale") await update_turn({ ctx, browser, change: { kind: "revoke" } });
-		return refuse(reason);
+		return refuse(reason, nay_cause(reserved._nay));
 	}
 	const { connection, invocation, allowedVersions } = reserved._yay;
-	if (!invocation.isNew) return refuse("unknown");
+	if (!invocation.isNew) return refuse("unknown", "this Bash call was replayed, and the command was already sent once");
 
 	const identity = {
 		generation: binding.connectionGeneration,
@@ -1463,7 +1544,14 @@ async function run_playwriter(args: {
 		response._yay.status === "in_progress" ||
 		response._yay.status === "acknowledged"
 	)
-		return refuse("unknown");
+		return refuse(
+			"unknown",
+			response._nay
+				? nay_cause(response._nay)
+				: "status" in response._yay
+					? `the runner reported the command as ${response._yay.status}`
+					: "the runner sent no command status",
+		);
 
 	const run = response._yay;
 	const safeStatus =
@@ -1491,7 +1579,7 @@ async function run_playwriter(args: {
 			commandId: run.consumedAck.commandId,
 			generation: run.consumedAck.generation,
 		});
-	if (!finished) return refuse("unknown");
+	if (!finished) return refuse("unknown", "the app could not save the command result, because its record changed");
 	const acknowledged = await playwriter_runner_call({
 		route: "command-ack",
 		body: { ...base, ...receipt },
@@ -1504,10 +1592,22 @@ async function run_playwriter(args: {
 			generation: identity.generation,
 		});
 
-	// Cleanup does not prove whether an uncertain action ran.
-	if (safeStatus === "unknown") return refuse("unknown");
+	// Cleanup does not prove whether an uncertain action ran. Without script output the runner says
+	// why. With output, the runner dropped it because the tab or its cleanup could not be trusted.
+	if (safeStatus === "unknown")
+		return refuse(
+			"unknown",
+			run.outputError
+				? `${run.outputError.name}: ${run.outputError.message}`
+				: run.result?.cleanup === "unknown"
+					? "the runner could not confirm that the script stopped using the tab"
+					: "the tab disconnected, or the user paused or changed it, while the script ran, so its output was dropped",
+		);
 	if (safeStatus !== "succeeded")
-		return refuse(safeStatus === "not_started" ? "not_started" : safe_reason(run.result?.reason));
+		return refuse(
+			safeStatus === "not_started" ? "not_started" : safe_reason(run.result?.reason),
+			run.result?.reason ?? null,
+		);
 
 	const completed = run.completedLease;
 	if (
@@ -1522,7 +1622,10 @@ async function run_playwriter(args: {
 		completed.confirmedTargetId !== connection.confirmedTargetId
 	) {
 		await update_turn({ ctx, browser, change: { kind: "revoke" } });
-		return refuse("stale");
+		return refuse(
+			"stale",
+			"the my browser tab reconnected, or the user paused it, changed its settings, or shared another tab, during the run",
+		);
 	}
 
 	// A script's click often navigates after the script returns, while the runner cleans up. Adopt
@@ -1533,15 +1636,18 @@ async function run_playwriter(args: {
 		navRevision: run.runtime.navRevision,
 		targetRevision: run.runtime.targetRevision,
 	};
-	if (!(await binding_current({ ctx, browser, binding: next }))) {
+	const change = await binding_change({ ctx, browser, binding: next });
+	if (change !== null) {
 		await update_turn({ ctx, browser, change: { kind: "revoke" } });
-		return refuse("stale");
+		return refuse("stale", change);
 	}
 	await update_turn({ ctx, browser, change: { kind: "bind", bindings: [next], ifAbsent: false } });
 
 	// A thrown or timed out script still completes the receipt. Its own status decides the exit code.
 	const script: PlaywriterBrowserScriptOutput | undefined = run.script;
-	if (!script || (script.status !== "succeeded" && script.files.length > 0)) return refuse("invalid_result");
+	if (!script) return refuse("invalid_result", "the runner completed the command but sent no script output");
+	if (script.status !== "succeeded" && script.files.length > 0)
+		return refuse("invalid_result", "a script that did not succeed sent files");
 
 	// The receipt already completed above, so a failed save shows only in the exit code and the notes.
 	const browserScope = {
@@ -1665,12 +1771,15 @@ export function bash_browser_command_create(ctx: ActionCtx, browser: bash_Browse
 			run: browser.run,
 			userId: browser.source.userId,
 		});
-		if (turn._nay || turn._yay.revoked) return refuse("stale");
-		const bindings = await check_bindings({ ctx, browser, bindings: turn._yay.bindings });
-		if (!bindings) {
+		if (turn._nay) return refuse("stale", nay_cause(turn._nay));
+		// The first refused command of this reply already printed the cause.
+		if (turn._yay.revoked) return refuse("stale", "an earlier browser command in this reply found the change");
+		const checked = await check_bindings({ ctx, browser, bindings: turn._yay.bindings });
+		if (checked._nay !== undefined) {
 			await update_turn({ ctx, browser, change: { kind: "revoke" } });
-			return refuse("stale");
+			return refuse("stale", checked._nay);
 		}
+		const bindings = checked._yay;
 		if (bindings.some((item, index) => item !== turn._yay.bindings[index]))
 			await update_turn({ ctx, browser, change: { kind: "bind", bindings, ifAbsent: false } });
 
@@ -1692,7 +1801,7 @@ export function bash_browser_command_create(ctx: ActionCtx, browser: bash_Browse
 
 		if (subcommand === "connect") {
 			if (positionals.length !== 1) return usage_error("connect takes one share ID or link");
-			return command_connect({ ctx, browser, bindings, share: positionals[0]! });
+			return command_connect({ ctx, browser, share: positionals[0]! });
 		}
 
 		if (subcommand === "tab") {
@@ -1707,7 +1816,7 @@ export function bash_browser_command_create(ctx: ActionCtx, browser: bash_Browse
 		if (positionals.length > 0) return usage_error(`${subcommand} takes no positional arguments`);
 
 		const target = await target_binding({ ctx, browser, bindings, target: { file, tab } });
-		if (target._nay === "stale") return refuse("stale");
+		if (target._nay === "stale") return refuse("stale", target.cause);
 		if (target._nay === "usage") return usage_error(target.text);
 		if (target._nay === "none")
 			return {
