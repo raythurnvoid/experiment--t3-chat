@@ -115,18 +115,21 @@ vp env exec pnpx playwriter session new --browser $browserKey
 
 ## Recover Missing Extension Connection
 
-Use this when the Playwriter extension looks active in the browser but `vp env exec pnpx playwriter browser list` says `No browsers detected`.
+Use this when the Playwriter extension looks active in the browser but `vp env exec pnpx playwriter browser list` says `No browsers detected` or `Extension did not connect within timeout`.
+
+`--replace` kills the old relay and every session on it, so ask first when other agents have sessions (`session list`).
 
 ```powershell
 $vpExecutable = (Get-Command vp -ErrorAction Stop).Source
 Start-Process -FilePath $vpExecutable -ArgumentList @(
-	"env", "exec", "pnpx", "playwriter", "serve", "--host", "localhost", "--replace"
+	"env", "exec", "pnpx", "playwriter", "serve", "--host", "127.0.0.1", "--replace"
 ) -WorkingDirectory (Get-Location) -WindowStyle Hidden
-Start-Sleep -Seconds 3
-vp env exec pnpx playwriter browser list --host localhost
+Start-Sleep -Seconds 8
+netstat -ano | Select-String ":19988" | Select-String "LISTENING"
+vp env exec pnpx playwriter browser list
 ```
 
-Include `--host localhost` on later Playwriter commands that use this restarted relay.
+Use `127.0.0.1`, not `localhost`. On this machine `--host localhost` binds only `[::1]`, and the extension connects over IPv4, so the extension never connects. Verified 2026-10-01: `localhost` showed no Edge, and the same command with `127.0.0.1` listed it in about 8 seconds. The `netstat` line must show `127.0.0.1:19988`. If an old `[::1]:19988` relay is still listening, stop its process. Then no `--host` flag is needed on later commands.
 
 If no extension is still detected and Edge must be restarted, load `C:/Users/rt0/.cursor/skills/edge-remote-debugging-mcp/SKILL.md` and follow its profile validation and bundled-script workflow. Do not invent a profile path or Edge launch command here.
 

@@ -275,15 +275,18 @@ const FilesShareModalLink = memo(function FilesShareModalLink(props: FilesShareM
 			)}
 			{...({ "data-share-link": link ? "on" : "off" } satisfies FilesShareModalLink_CustomAttributes)}
 		>
-			{/* The heading and the sentence stack in the first column. The level picker and Copy sit in the
-			    second column, as the help button does in the Properties modal. */}
+			{/* The level picker and Copy sit beside the text, as the help button does in the Properties modal. */}
 			<div className={"FilesShareModal-section-header" satisfies FilesShareModal_ClassNames}>
-				<h3 className={"FilesShareModal-section-heading" satisfies FilesShareModal_ClassNames}>Anyone with the link</h3>
-				<p className={"FilesShareModal-section-text" satisfies FilesShareModal_ClassNames}>
-					{link
-						? "Anyone who has the link can view this file without signing in."
-						: "Only people with access can open this file."}
-				</p>
+				<div className={"FilesShareModal-section-main" satisfies FilesShareModal_ClassNames}>
+					<h3 className={"FilesShareModal-section-heading" satisfies FilesShareModal_ClassNames}>
+						Anyone with the link
+					</h3>
+					<p className={"FilesShareModal-section-text" satisfies FilesShareModal_ClassNames}>
+						{link
+							? "Anyone who has the link can view this file without signing in."
+							: "Only people with access can open this file."}
+					</p>
+				</div>
 
 				<div className={"FilesShareModal-section-actions" satisfies FilesShareModal_ClassNames}>
 					<MySelect
@@ -349,6 +352,7 @@ type FilesShareModal_ClassNames =
 	| "FilesShareModal-body"
 	| "FilesShareModal-section"
 	| "FilesShareModal-section-header"
+	| "FilesShareModal-section-main"
 	| "FilesShareModal-section-heading"
 	| "FilesShareModal-section-text"
 	| "FilesShareModal-section-actions"
@@ -761,20 +765,22 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 								data-share-scope={scope ? (scope.isSelf ? "self" : "inherited") : "open"}
 							>
 								<div className={"FilesShareModal-section-header" satisfies FilesShareModal_ClassNames}>
-									<h3 className={"FilesShareModal-section-heading" satisfies FilesShareModal_ClassNames}>
-										{!scope
-											? "Everyone in this workspace"
-											: scope.isSelf
-												? "Restricted"
-												: `Shared through ${scope.name}`}
-									</h3>
-									<p className={"FilesShareModal-section-text" satisfies FilesShareModal_ClassNames}>
-										{!scope
-											? `Anybody whose role lets them read workspace content can open this ${nodeKindText}.`
-											: scope.isSelf
-												? "A workspace role does not open this on its own. Only the people, roles, and service accounts listed below, plus the organization owner."
-												: `The folder ${scope.path} decides who can open this ${nodeKindText}.`}
-									</p>
+									<div className={"FilesShareModal-section-main" satisfies FilesShareModal_ClassNames}>
+										<h3 className={"FilesShareModal-section-heading" satisfies FilesShareModal_ClassNames}>
+											{!scope
+												? "Everyone in this workspace"
+												: scope.isSelf
+													? "Restricted"
+													: `Shared through ${scope.name}`}
+										</h3>
+										<p className={"FilesShareModal-section-text" satisfies FilesShareModal_ClassNames}>
+											{!scope
+												? `Anybody whose role lets them read workspace content can open this ${nodeKindText}.`
+												: scope.isSelf
+													? "A workspace role does not open this on its own. Only the people, roles, and service accounts listed below, plus the organization owner."
+													: `The folder ${scope.path} decides who can open this ${nodeKindText}.`}
+										</p>
+									</div>
 
 									{shareState.canManage ? (
 										<div className={"FilesShareModal-section-actions" satisfies FilesShareModal_ClassNames}>

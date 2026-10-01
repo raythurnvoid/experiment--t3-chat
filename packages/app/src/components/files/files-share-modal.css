@@ -59,13 +59,22 @@
 		}
 	}
 
-	/* The heading and the sentence stack in the first column. The actions sit in the second column and
-	   span both rows, so their height never adds to a row. */
+	/* The heading and the sentence sit on the left. The actions sit on the right while they fit. When the
+	   text is long (a deep folder name) the actions drop below it, so the text keeps a readable width. */
 	.FilesShareModal-section-header {
-		display: grid;
-		grid-template-columns: minmax(0, 1fr) auto;
-		column-gap: 12px;
-		row-gap: 10px;
+		display: flex;
+		flex-wrap: wrap;
+		align-items: start;
+		gap: 10px 12px;
+	}
+
+	.FilesShareModal-section-main {
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
+
+		min-width: 0;
+		flex: 1 1 22rem;
 	}
 
 	.FilesShareModal-section-heading {
@@ -75,19 +84,13 @@
 		font-weight: 600;
 		letter-spacing: 0.01em;
 		color: var(--color-fg-11);
-	}
 
-	.FilesShareModal-section-header > .FilesShareModal-section-heading {
-		grid-column: 1;
-		grid-row: 1;
+		overflow-wrap: anywhere;
 	}
 
 	/* A folder path or a creator's name can be one long word, so it has to be allowed to break. Without
 	   this it pushes the buttons out of the dialog. */
 	.FilesShareModal-section-text {
-		grid-column: 1;
-		grid-row: 2;
-
 		margin: 0;
 
 		font-size: 16px;
@@ -101,13 +104,11 @@
 	.FilesShareModal-section-actions {
 		display: flex;
 		align-items: center;
-		justify-content: end;
 		flex-wrap: wrap;
 		gap: 8px;
 
-		grid-column: 2;
-		grid-row: 1 / span 2;
-		align-self: start;
+		max-width: 100%;
+		flex: none;
 	}
 	/* #endregion section */
 
@@ -265,17 +266,6 @@
 	/* #endregion entry row */
 
 	@media (max-width: 640px) {
-		/* Put the actions under the sentence, so the sentence keeps the full width. */
-		.FilesShareModal-section-header {
-			grid-template-columns: minmax(0, 1fr);
-		}
-
-		.FilesShareModal-section-actions {
-			grid-column: 1;
-			grid-row: 3;
-			justify-content: start;
-		}
-
 		.FilesShareModal-add {
 			flex-wrap: wrap;
 		}
