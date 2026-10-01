@@ -6250,18 +6250,17 @@ describe("bash_run_command", () => {
 			const done = await run_job(runner, 1);
 			await runner.t.run((ctx) => ctx.db.patch("ai_chat_bash_invocations", done._id, { result: undefined }));
 
-			// The placeholder watchdog settles a job that never ran as timed out, with no result.
+			// The placeholder watchdog settles a job that never ran as timed out, with no result. Move the
+			// job's deadline into the past instead of faking the clock. A fake clock 10 minutes ahead
+			// makes the job-finish work that the settle schedules treat the chat run as expired, and
+			// that work runs on a real timer, so it can end the run between two calls of this test.
 			const queued = await job_row(runner, 2);
-			vi.useFakeTimers({ toFake: ["Date"] });
-			try {
-				vi.setSystemTime(queued.deadlineAt + 1);
-				await runner.t.mutation(internal.ai_chat_files.timeout_bash_job, {
-					invocationId: queued._id,
-					expectedDeadlineAt: queued.deadlineAt,
-				});
-			} finally {
-				vi.useRealTimers();
-			}
+			const deadlineAt = Date.now() - 1;
+			await runner.t.run((ctx) => ctx.db.patch("ai_chat_bash_invocations", queued._id, { deadlineAt }));
+			await runner.t.mutation(internal.ai_chat_files.timeout_bash_job, {
+				invocationId: queued._id,
+				expectedDeadlineAt: deadlineAt,
+			});
 			expect(await activity_of(runner, 2)).toMatchObject({ status: "timed_out" });
 
 			expect((await runner.run("wait 1")).metadata.exitCode).toBe(0);
