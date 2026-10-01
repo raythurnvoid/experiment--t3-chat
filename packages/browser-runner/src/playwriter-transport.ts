@@ -1,7 +1,7 @@
 // Translate the extension protocol for one fixed Playwright child at a time.
 // The caller owns dial, hello/version checks, target confirmation, and command receipts.
 
-import { browser_web_normalize_url } from "common/browser-web-url.ts";
+import { browser_web_normalize_url, browser_web_url_host_matches } from "common/browser-web-url.ts";
 
 type Params = Record<string, unknown>;
 type Check = (value: unknown) => boolean;
@@ -50,6 +50,25 @@ type Child = {
 	scripts: Map<string, Set<string>>;
 	bindings: Map<string, Set<string>>;
 	guardBinding: string | null;
+	/**
+	 * A free `script` command. It may handle dialogs, its requests to blocked sites fail, and any
+	 * frame on a blocked site stops it.
+	 */
+	script: boolean;
+	blockedSeen: boolean;
+	/**
+	 * Real history entry urls from the last `Page.getNavigationHistory` reply. The child only sees
+	 * the current entry's url.
+	 */
+	history: Map<number, string>;
+	/**
+	 * Sessions with an open dialog that the script child saw.
+	 */
+	dialogs: Set<string>;
+	/**
+	 * Sessions where the transport turned on `Fetch` to fail requests to blocked sites.
+	 */
+	fetchSessions: Set<string>;
 	guardContext: number | null;
 	guardComplete: boolean;
 	guardDestroyed: boolean;
@@ -84,6 +103,20 @@ const MAX_SCREENSHOT_BYTES = 2_097_152;
 const MAX_SCREENSHOT_EDGE = 8192;
 const MAX_SCREENSHOT_PIXELS = 16_000_000;
 const LOCAL_WINDOW_ID = 1;
+/**
+ * Page reads that only return data. At revoke the bridge stops waiting for them, because page code
+ * can keep them open forever. They change nothing the settle cleanup must undo.
+ */
+const ABANDONED_READS = new Set([
+	"Runtime.evaluate",
+	"Runtime.callFunctionOn",
+	"Runtime.getProperties",
+	"DOM.describeNode",
+	"DOM.getBoxModel",
+	"DOM.getContentQuads",
+	"DOM.getFrameOwner",
+	"DOM.resolveNode",
+]);
 
 function is_record(value: unknown): value is Params {
 	return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -119,6 +152,18 @@ function shape(value: unknown, fields: Record<string, Check>): value is Params {
 		Object.keys(value).every((key) => Object.hasOwn(fields, key)) &&
 		Object.entries(fields).every(([key, check]) => check(value[key]))
 	);
+}
+
+/**
+ * True for a key press that pastes: Ctrl+V or Meta+V, or Shift+Insert. Chrome picks paste by the
+ * key code, so check the code and the key names. The shared tab is the user's own browser, so a
+ * paste would put the user's clipboard into the page.
+ */
+function is_paste_key(params: Params) {
+	const modifiers = Number(params.modifiers ?? 0);
+	const v = params.windowsVirtualKeyCode === 86 || params.key === "v" || params.key === "V" || params.code === "KeyV";
+	const insert = params.windowsVirtualKeyCode === 45 || params.key === "Insert" || params.code === "Insert";
+	return ((modifiers & 2) !== 0 && v) || ((modifiers & 4) !== 0 && v) || ((modifiers & 8) !== 0 && insert);
 }
 
 const PARAMS: Record<string, Record<string, Check>> = {
@@ -168,8 +213,22 @@ const PARAMS: Record<string, Record<string, Check>> = {
 	"Page.captureScreenshot": {
 		format: (value) => value === "png" || value === "jpeg",
 		quality: optional((value) => is_integer(value) && value <= 100),
-		captureBeyondViewport: (value) => value === false,
+		captureBeyondViewport: optional(is_boolean),
+		clip: optional(
+			(value) =>
+				shape(value, {
+					x: is_number,
+					y: is_number,
+					width: (width) => is_number(width) && width > 0 && width <= 8192,
+					height: (height) => is_number(height) && height > 0 && height <= 8192,
+					scale: (scale) => is_number(scale) && scale > 0 && scale <= 4,
+				}) && Number(value.width) * Number(value.height) * Number(value.scale) ** 2 <= 16_000_000,
+		),
 	},
+	"Page.handleJavaScriptDialog": { accept: is_boolean, promptText: optional(is_text) },
+	"Page.reload": { ignoreCache: optional(is_boolean) },
+	"Page.getNavigationHistory": {},
+	"Page.navigateToHistoryEntry": { entryId: is_integer },
 	"Page.navigate": {
 		url: is_text,
 		referrer: optional(is_text),
@@ -230,7 +289,7 @@ const PARAMS: Record<string, Record<string, Check>> = {
 		text: optional(is_text),
 		unmodifiedText: optional(is_text),
 		windowsVirtualKeyCode: optional(is_integer),
-		modifiers: optional((value) => value === 0),
+		modifiers: optional((value) => is_integer(value) && value <= 15),
 		location: optional(is_integer),
 		autoRepeat: optional(is_boolean),
 		isKeypad: optional(is_boolean),
@@ -241,7 +300,7 @@ const PARAMS: Record<string, Record<string, Check>> = {
 		type: (value) => ["mousePressed", "mouseReleased", "mouseMoved", "mouseWheel"].includes(String(value)),
 		x: is_number,
 		y: is_number,
-		modifiers: optional((value) => value === 0),
+		modifiers: optional((value) => is_integer(value) && value <= 15),
 		buttons: optional(is_integer),
 		button: optional((value) => ["none", "left", "middle", "right"].includes(String(value))),
 		clickCount: optional(is_integer),
@@ -587,6 +646,10 @@ export class PlaywriterTransport {
 			onEvent: (reason: "dialog" | "popup" | "target_lost" | "debugger_conflict") => void;
 			onNavigation: () => void;
 			canSendInput: () => boolean;
+			/**
+			 * The current blocked sites. Off and blocked-site updates change them at run time.
+			 */
+			blockedHosts: () => readonly string[];
 		},
 	) {
 		const target = read_target(input.targetInfo);
@@ -623,7 +686,7 @@ export class PlaywriterTransport {
 		}
 	}
 
-	create_child(input: { deadline: number; guardBinding?: string }) {
+	create_child(input: { deadline: number; guardBinding?: string; script?: boolean }) {
 		if (this.closed || this.input.socket.readyState !== 1 || !this.sessions.has(this.input.sessionId))
 			throw new Error("Shared browser is offline.");
 		if (this.child) throw new Error("Shared browser is busy.");
@@ -647,6 +710,11 @@ export class PlaywriterTransport {
 			scripts: new Map(),
 			bindings: new Map(),
 			guardBinding: input.guardBinding ?? null,
+			script: input.script === true,
+			blockedSeen: false,
+			history: new Map(),
+			dialogs: new Set(),
+			fetchSessions: new Set(),
 			guardContext: null,
 			guardComplete: false,
 			guardDestroyed: false,
@@ -654,9 +722,11 @@ export class PlaywriterTransport {
 			keys: new Map(),
 			buttons: new Map(),
 			waiters: new Set(),
-			timer: setTimeout(() => this.fail_child(child, "deadline"), Math.max(0, input.deadline - Date.now())),
+			// At the deadline, stop the script but keep the tab. The settle then proves the cleanup.
+			timer: setTimeout(() => this.revoke_child(child), Math.max(0, input.deadline - Date.now())),
 		};
 		this.child = child;
+		this.enable_fetch(child, this.input.sessionId);
 		child.socket.addEventListener("message", (event) => this.from_child(child, event.data));
 		child.socket.addEventListener("close", () => {
 			child.accepting = false;
@@ -666,18 +736,80 @@ export class PlaywriterTransport {
 		});
 		return {
 			webSocket: pair[0],
-			revoke: () => {
-				child.accepting = false;
-			},
-			outcome: () => ({ guarded: child.guardComplete, destroyed: child.guardDestroyed, navigated: child.navigated }),
+			revoke: () => this.revoke_child(child),
+			outcome: () => ({
+				guarded: child.guardComplete,
+				destroyed: child.guardDestroyed,
+				navigated: child.navigated,
+				blocked: child.blockedSeen,
+			}),
 			settle: (timeoutMs: number) => {
-				child.accepting = false;
+				this.revoke_child(child);
 				clearTimeout(child.timer);
 				if (!child.settlement)
 					child.settlement = this.finish(child, Date.now() + Math.min(5000, Math.max(0, timeoutMs)));
 				return child.settlement;
 			},
 		};
+	}
+
+	private revoke_child(child: Child) {
+		child.accepting = false;
+		// A page read can wait forever on page code, like an endless `page.evaluate` after a
+		// timed-out script. Stop waiting for it, so the drain still ends. A late reply finds no pending
+		// request and is dropped. Input and navigation replies are still awaited.
+		for (const [id, request] of this.pending) {
+			if (request.child !== child || request.childId === undefined || !ABANDONED_READS.has(request.method)) continue;
+			if (request.timer) clearTimeout(request.timer);
+			this.pending.delete(id);
+			this.reply(child, {
+				id: request.childId,
+				...(request.childSessionId ? { sessionId: request.childSessionId } : {}),
+				error: { code: -32000, message: "Browser access was revoked." },
+			});
+			this.wake(child);
+		}
+	}
+
+	/**
+	 * Fail a script's requests to blocked sites in this session, like the cloud browser does. Only
+	 * requests that name a blocked host pause, so the user's other traffic is not slowed down.
+	 */
+	private enable_fetch(child: Child, sessionId: string) {
+		const hosts = this.input.blockedHosts();
+		if (!child.script || hosts.length === 0 || child.fetchSessions.has(sessionId)) return;
+		if (this.sessions.get(sessionId)?.target.type === "worker") return;
+		child.fetchSessions.add(sessionId);
+		// A wide pattern is fine: the requestPaused handler checks the host and continues the rest.
+		this.send(child, sessionId, "Fetch.enable", {
+			patterns: hosts.map((host) => ({ urlPattern: `*${host}*`, requestStage: "Request" })),
+		});
+	}
+
+	/**
+	 * Stop a script as soon as any frame shows a blocked site. The flag stays set, so the command
+	 * cannot end as a success even when the page goes back to an allowed site.
+	 */
+	private check_frame_url(url: unknown) {
+		const child = this.child;
+		if (!child?.script || child.blockedSeen || typeof url !== "string") return;
+		if (!browser_web_url_host_matches(url, this.input.blockedHosts())) return;
+		child.blockedSeen = true;
+		this.revoke_child(child);
+	}
+
+	/**
+	 * Send a command nobody waits for. A late reply finds no pending request and is dropped.
+	 */
+	private send_untracked(sessionId: string, method: string, params: Params) {
+		if (this.closed || this.nextId >= Number.MAX_SAFE_INTEGER) return;
+		try {
+			this.input.socket.send(
+				JSON.stringify({ id: ++this.nextId, method: "forwardCDPCommand", params: { method, sessionId, params } }),
+			);
+		} catch {
+			this.socket_lost();
+		}
 	}
 
 	private wake(child: Child) {
@@ -748,10 +880,11 @@ export class PlaywriterTransport {
 	}
 
 	private announce(child: Child, sessionId: string) {
-		if (child.announced.has(sessionId)) return;
+		if (child.announced.has(sessionId) || !child.accepting) return;
 		const session = this.sessions.get(sessionId);
 		if (!session || (session.parent && !child.announced.has(session.parent))) return;
 		child.announced.add(sessionId);
+		this.enable_fetch(child, sessionId);
 		this.reply(child, {
 			method: "Target.attachedToTarget",
 			...(session.parent ? { sessionId: session.parent } : {}),
@@ -788,7 +921,26 @@ export class PlaywriterTransport {
 		const fields = Object.hasOwn(PARAMS, method) ? PARAMS[method] : undefined;
 		const params = is_record(message.params) ? message.params : {};
 		if (!fields || !shape(params, fields)) return this.refuse(child, id, childSessionId);
-		if ((method.startsWith("Input.") || method === "Page.navigate") && !this.input.canSendInput())
+		if (
+			(method.startsWith("Input.") ||
+				method === "Page.navigate" ||
+				method === "Page.reload" ||
+				method === "Page.navigateToHistoryEntry" ||
+				method === "Page.handleJavaScriptDialog") &&
+			!this.input.canSendInput()
+		)
+			return this.refuse(child, id, childSessionId);
+		// Only a script child gets dialogs, so only it may answer one.
+		if (method === "Page.handleJavaScriptDialog" && !child.script) return this.refuse(child, id, childSessionId);
+		if (
+			(method === "Input.dispatchKeyEvent" &&
+				["keyDown", "rawKeyDown"].includes(String(params.type)) &&
+				is_paste_key(params)) ||
+			// On Linux a middle click pastes the user's selected text.
+			(method === "Input.dispatchMouseEvent" &&
+				params.button === "middle" &&
+				(params.type === "mousePressed" || params.type === "mouseReleased"))
+		)
 			return this.refuse(child, id, childSessionId);
 		// After guarded navigation, only old guard cleanup may continue.
 		if (
@@ -923,9 +1075,15 @@ export class PlaywriterTransport {
 		}
 		if (method === "Page.createIsolatedWorld") forwarded = { ...params, grantUniveralAccess: false };
 		if (method === "Page.navigate") {
-			const normalized = browser_web_normalize_url(String(params.url), []);
+			const normalized = browser_web_normalize_url(String(params.url), this.input.blockedHosts());
 			if (!normalized.ok) return this.refuse(child, id, childSessionId);
 			forwarded = { ...params, url: normalized.url };
+		}
+		// An entry may lead anywhere in the user's history. Check its real url like a new address.
+		if (method === "Page.navigateToHistoryEntry") {
+			const url = child.history.get(Number(params.entryId));
+			if (url === undefined || !browser_web_normalize_url(url, this.input.blockedHosts()).ok)
+				return this.refuse(child, id, childSessionId);
 		}
 		this.send(child, sessionId, method, forwarded, id, childSessionId);
 	}
@@ -1002,6 +1160,7 @@ export class PlaywriterTransport {
 		)
 			return false;
 		session.frames.add(value.frame.id);
+		this.check_frame_url(value.frame.url);
 		if (value.childFrames === undefined) return true;
 		return (
 			Array.isArray(value.childFrames) &&
@@ -1017,7 +1176,10 @@ export class PlaywriterTransport {
 			this.reply(request.child, {
 				id: request.childId,
 				...(request.childSessionId ? { sessionId: request.childSessionId } : {}),
-				result: request.result,
+				// A reply after a blocked site could carry that site's data.
+				...(request.child.blockedSeen
+					? { error: { code: -32000, message: "Browser access was revoked." } }
+					: { result: request.result }),
 			});
 		this.wake(request.child);
 	}
@@ -1056,6 +1218,8 @@ export class PlaywriterTransport {
 					return this.fail_child(request.child, "invalid_extension_reply");
 				this.pending.delete(message.id);
 				if (request.timer) clearTimeout(request.timer);
+				if (request.childId === undefined && request.method === "Page.handleJavaScriptDialog")
+					this.input.onEvent("dialog");
 				if (request.childId === undefined || request.method.startsWith("Input."))
 					this.fail_child(request.child, "command_failed");
 				if (request.childId !== undefined)
@@ -1108,6 +1272,25 @@ export class PlaywriterTransport {
 			}
 			if (request.method === "Runtime.removeBinding")
 				request.child.bindings.get(request.sessionId)?.delete(String(request.params.name));
+			if (request.method === "Page.getNavigationHistory") {
+				const entries = message.result.entries;
+				const currentIndex = message.result.currentIndex;
+				if (!is_integer(currentIndex) || !Array.isArray(entries) || entries.length > 1024)
+					return this.fail_child(request.child, "invalid_history");
+				request.child.history.clear();
+				const visible: Params[] = [];
+				for (const [index, entry] of entries.entries()) {
+					if (!is_record(entry) || !is_integer(entry.id) || typeof entry.url !== "string")
+						return this.fail_child(request.child, "invalid_history");
+					request.child.history.set(entry.id, entry.url);
+					// Playwright only reads the entry ids. Show only the current entry's url, so the script
+					// cannot list the user's whole history at once.
+					visible.push(index === currentIndex ? entry : { ...entry, url: "", userTypedURL: "", title: "" });
+				}
+				request.result = { ...message.result, entries: visible };
+				this.complete(message.id, request);
+				return;
+			}
 			if (request.method === "Page.captureScreenshot") {
 				const check = screenshot_check(message.result.data, request.params.format);
 				if (check === "invalid") return this.fail_child(request.child, "invalid_screenshot");
@@ -1184,6 +1367,8 @@ export class PlaywriterTransport {
 			}
 			if (this.sessions.size >= MAX_SESSIONS) return this.fail_extension("target_limit");
 			this.sessions.set(params.sessionId, { target, parent: sessionId, contexts: new Map(), frames: new Set() });
+			// An out-of-process iframe reports its url here first.
+			this.check_frame_url(target.url);
 			if (child) this.announce(child, params.sessionId);
 			return;
 		}
@@ -1217,6 +1402,18 @@ export class PlaywriterTransport {
 				this.input.onEvent("target_lost");
 				return this.fail_extension("target_lost");
 			}
+			return;
+		}
+		if (method === "Fetch.requestPaused") {
+			// Only the transport turns on Fetch, for a script. Answer every paused request, also after the
+			// command ended, so the user's page never hangs. The child never sees these events.
+			if (!is_id(params.requestId) || !is_record(params.request) || typeof params.request.url !== "string") return;
+			const blocked = browser_web_url_host_matches(params.request.url, this.input.blockedHosts());
+			this.send_untracked(
+				sessionId ?? this.input.sessionId,
+				blocked ? "Fetch.failRequest" : "Fetch.continueRequest",
+				blocked ? { requestId: params.requestId, errorReason: "BlockedByClient" } : { requestId: params.requestId },
+			);
 			return;
 		}
 		if (!session || !EVENTS.has(method)) return;
@@ -1284,6 +1481,7 @@ export class PlaywriterTransport {
 				child.guardComplete = true;
 			return;
 		}
+		if (method === "Page.frameNavigated" && is_record(params.frame)) this.check_frame_url(params.frame.url);
 		const committed =
 			sessionId === this.input.sessionId &&
 			((method === "Page.frameNavigated" && is_record(params.frame) && params.frame.parentId === undefined) ||
@@ -1311,14 +1509,29 @@ export class PlaywriterTransport {
 		if (method === "Page.frameDetached" && params.reason !== "swap" && is_id(params.frameId))
 			session.frames.delete(params.frameId);
 		if (method === "Page.javascriptDialogOpening") {
-			this.input.onEvent("dialog");
-			if (child) child.accepting = false;
+			// A script handles dialogs itself, like Playwright does by default. Only a dialog of an allowed
+			// frame reaches it. Any other dialog still asks the human.
+			if (
+				child?.script &&
+				child.accepting &&
+				sessionId &&
+				child.announced.has(sessionId) &&
+				!browser_web_url_host_matches(session.target.url, this.input.blockedHosts())
+			)
+				child.dialogs.add(sessionId);
+			else {
+				this.input.onEvent("dialog");
+				if (child) child.accepting = false;
+			}
 		}
+		if (method === "Page.javascriptDialogClosed" && sessionId) child?.dialogs.delete(sessionId);
 		if (method === "Page.windowOpen") {
 			this.input.onEvent("popup");
 			if (child) child.accepting = false;
 		}
-		if (child && sessionId && child.announced.has(sessionId)) this.reply(child, { method, sessionId, params });
+		// A revoked child gets no events. After a blocked site they could carry its page data.
+		if (child?.accepting && sessionId && child.announced.has(sessionId))
+			this.reply(child, { method, sessionId, params });
 		// Playwright must receive the context event before its Runtime.enable reply.
 		if (method === "Runtime.executionContextCreated" && sessionId) this.complete_runtime(sessionId);
 	}
@@ -1366,6 +1579,10 @@ export class PlaywriterTransport {
 	}
 
 	private async finish(child: Child, deadline: number) {
+		// The input that opened a dialog only finishes after the dialog closes. So close the dialogs
+		// the script left open before the drain.
+		for (const sessionId of child.dialogs)
+			if (this.sessions.has(sessionId)) this.send(child, sessionId, "Page.handleJavaScriptDialog", { accept: false });
 		await this.drain(child, deadline);
 		if (!this.closed && Date.now() < deadline) {
 			for (const [sessionId] of this.sessions) {
@@ -1377,6 +1594,7 @@ export class PlaywriterTransport {
 					this.send(child, sessionId, "Input.dispatchKeyEvent", params);
 				for (const params of child.buttons.get(sessionId)?.values() ?? [])
 					this.send(child, sessionId, "Input.dispatchMouseEvent", params);
+				if (child.fetchSessions.has(sessionId)) this.send(child, sessionId, "Fetch.disable", {});
 				if (this.pending.size >= 64) await this.drain(child, deadline);
 			}
 			await this.drain(child, deadline);

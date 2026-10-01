@@ -28,8 +28,16 @@ import { WorkerEntrypoint } from "cloudflare:workers";
 import { Buffer } from "node:buffer";
 import { acquire, connect, errors, sessions } from "@cloudflare/playwright";
 import type { CDPSession, FileChooser, Page } from "@cloudflare/playwright";
-import { CHILD_BUNDLE_JS } from "./child-bundle.gen";
 import { AgentConnection } from "./agent-connection";
+import {
+	SNIPPET_EXECUTOR_MAIN_MODULE,
+	SNIPPET_EXECUTOR_SOFT_MARGIN_MS,
+	snippet_executor_cap_message,
+	snippet_executor_check_state,
+	snippet_executor_check_state_warnings,
+	snippet_executor_LIMITS,
+	snippet_executor_modules,
+} from "./snippet-executor";
 import { handle_playwriter_request, type PlaywriterGatewayProps } from "./playwriter-session";
 export { PlaywriterSession, PlaywriterConnectionGateway } from "./playwriter-session";
 import {
@@ -67,9 +75,12 @@ type SnippetEvaluateResult =
 			pageErrors: string[];
 			logs: string[];
 			logsTruncated: boolean;
+			stateJson?: unknown;
+			stateWarnings?: unknown;
 	  }
 	| {
 			ok: false;
+			timedOut?: boolean;
 			error: { name: string; message: string };
 			viewport: { width: number; height: number } | null;
 			popups: { blocked: number; urls: string[] };
@@ -77,6 +88,8 @@ type SnippetEvaluateResult =
 			pageErrors: string[];
 			logs: string[];
 			logsTruncated: boolean;
+			stateJson?: unknown;
+			stateWarnings?: unknown;
 	  };
 
 type SnippetWorkerStub = {
@@ -201,6 +214,7 @@ type CommandReceipt = {
 	result: { cleanup: "complete" | "unknown"; reason: string | null };
 	session: Record<string, unknown> | null;
 };
+type ScriptState = { sessionId: string; json: string; savedAt: number };
 
 type SessionRecordBase = {
 	version: 1;
@@ -306,6 +320,7 @@ type RegistryRecord = {
 // Limits / constants
 
 export const LIMITS = {
+	...snippet_executor_LIMITS,
 	webTabs: 8,
 	bodyBytes: 6_291_456,
 	htmlBytes: 900_000,
@@ -313,15 +328,7 @@ export const LIMITS = {
 	loadCount: 32,
 	codeBytes: 20_480,
 	textOutBytes: 16_384,
-	files: 8,
-	fileBytes: 8_388_608,
-	filePathChars: 1024,
-	fileContentTypeChars: 255,
 	viewerFrameBytes: 2_097_152,
-	consoleEntries: 50,
-	consoleBytes: 4096,
-	logLines: 100,
-	logBytes: 16_384,
 	commandTimeoutMs: 30_000,
 	childWallMs: 31_000,
 	childCpuMs: 30_000,
@@ -401,12 +408,14 @@ function mode_limits(mode: SessionMode) {
 
 const COMPAT_DATE = "2026-09-19";
 const CHILD_COMPAT_DATE = "2026-09-19";
-const CHILD_ENTRY_MODULE = "executor.js";
-const CHILD_BUNDLE_MODULE = "pw.js";
 const CONTROLLER_ORIGIN = "https://controller.browser.invalid";
 const CONTROLLER_URL = `${CONTROLLER_ORIGIN}/`;
 const SESSION_KEY = "session";
 const USAGE_KEY_PREFIX = "usage:";
+// One `state` value per chat, kept only while its browser session is open. The chat id comes
+// from the server-set command receipt, so a script cannot read another chat's value.
+const SCRIPT_STATE_KEY_PREFIX = "scriptState:";
+const SCRIPT_STATE_MAX_CHATS = 8;
 const PROFILE_BLOB_KEY = "profile";
 const PROFILE_DELETE_AT_KEY = "profileDeleteAt";
 const PROFILE_DELETED_KEY_PREFIX = "profileDeleted:";
@@ -676,12 +685,6 @@ function is_agent_lease(value: unknown): value is AgentLease {
 	);
 }
 
-function cap_message(message: string): string {
-	// Drop URL query and fragment: page URLs can carry tokens, and this text reaches Convex.
-	const text = message.replace(/(https?:\/\/[^\s?#"'<>]*)[?#][^\s"'<>]*/giu, "$1");
-	return text.length > 1000 ? `${text.slice(0, 1000)}…` : text;
-}
-
 /**
  * Read the deny list from the comma list in `BROWSER_WEB_DENIED_HOSTS`.
  */
@@ -697,10 +700,10 @@ function sanitize_error(error: unknown): { name: string; message: string } {
 		const e = error as { name?: unknown; message?: unknown };
 		return {
 			name: typeof e.name === "string" ? e.name : "Error",
-			message: cap_message(typeof e.message === "string" ? e.message : String(error)),
+			message: snippet_executor_cap_message(typeof e.message === "string" ? e.message : String(error)),
 		};
 	}
-	return { name: "Error", message: cap_message(String(error)) };
+	return { name: "Error", message: snippet_executor_cap_message(String(error)) };
 }
 
 /**
@@ -1100,221 +1103,6 @@ export function build_controller_html(input: {
 </body>
 </html>
 `;
-}
-
-// Snippet harness
-//
-// The executor resolves the one registered page and its inner preview frame,
-// then runs the agent code with `(page, frame, expect, emitFile)`. In web mode
-// there is no preview frame: `frame` is the page's main frame. Console and
-// page errors are collected separately from tool output. File bytes the snippet
-// emits cross RPC directly, and the host checks their count and total size. The
-// app owns Files path and MIME rules. Screenshots travel the other way: the
-// trusted bridge checks a provider screenshot reply before the child receives it.
-
-const EXECUTOR_PREFIX = `import { WorkerEntrypoint } from "cloudflare:workers";
-import { connect, expect } from "./${CHILD_BUNDLE_MODULE}";
-
-export default class SnippetExecutor extends WorkerEntrypoint {
-  async evaluate(input) {
-    if (!input || typeof input.sessionId !== "string" || !input.sessionId) {
-      throw new Error("Missing browser session.");
-    }
-    if (input.mode !== "file" && input.mode !== "web") {
-      throw new Error("Missing session mode.");
-    }
-    if (input.mode === "file" && (typeof input.runtimeOrigin !== "string" || !input.runtimeOrigin)) {
-      throw new Error("Missing runtime origin.");
-    }
-    if (!input.viewport || typeof input.viewport.width !== "number" || typeof input.viewport.height !== "number") {
-      throw new Error("Missing viewport.");
-    }
-    var timeoutMs = typeof input.timeoutMs === "number" && input.timeoutMs > 0 ? input.timeoutMs : ${LIMITS.commandTimeoutMs};
-    var files = [];
-    var fileBytes = 0;
-    var filesOpen = true;
-    var timer;
-    var consoleEntries = [];
-    var pageErrors = [];
-    var consoleBytes = 0;
-    var textEncoder = new TextEncoder();
-    function utf8Prefix(text, maxBytes) {
-      return text.slice(0, textEncoder.encodeInto(text, new Uint8Array(maxBytes)).read);
-    }
-    function pushBounded(list, line) {
-      if (list.length >= ${LIMITS.consoleEntries}) return;
-      var room = ${LIMITS.consoleBytes} - consoleBytes;
-      if (room <= 0) return;
-      var text = utf8Prefix(String(line), room);
-      consoleBytes += textEncoder.encode(text).length;
-      list.push(text);
-    }
-    var logs = [];
-    var logBytes = 0;
-    var logsTruncated = false;
-    function pushLog(line) {
-      if (logsTruncated) return;
-      if (logs.length >= ${LIMITS.logLines}) { logsTruncated = true; return; }
-      var text = String(line);
-      if (logBytes + textEncoder.encode(text).length > ${LIMITS.logBytes}) {
-        text = utf8Prefix(text, Math.max(0, ${LIMITS.logBytes} - logBytes));
-        logsTruncated = true;
-      }
-      logBytes += textEncoder.encode(text).length;
-      logs.push(text);
-    }
-    console.log = function () { pushLog(Array.prototype.map.call(arguments, String).join(" ")); };
-    console.info = console.log;
-    console.debug = console.log;
-    console.warn = function () { pushLog("[warn] " + Array.prototype.map.call(arguments, String).join(" ")); };
-    console.error = function () { pushLog("[error] " + Array.prototype.map.call(arguments, String).join(" ")); };
-    function emitFile(file) {
-      if (!filesOpen) throw new Error("Execution has already finished");
-      if (!file || typeof file !== "object" || typeof file.path !== "string" ||
-          file.path.length < 1 || file.path.length > ${LIMITS.filePathChars}) {
-        throw new TypeError("emitFile requires a path of 1-${LIMITS.filePathChars} characters");
-      }
-      if (file.workspace !== "current" && file.workspace !== "personal") {
-        throw new TypeError("emitFile workspace must be current or personal");
-      }
-      if (file.contentType !== undefined && (typeof file.contentType !== "string" ||
-          file.contentType.length < 1 || file.contentType.length > ${LIMITS.fileContentTypeChars})) {
-        throw new TypeError("emitFile contentType must be 1-${LIMITS.fileContentTypeChars} characters");
-      }
-      if (!(file.bytes instanceof Uint8Array) && !(file.bytes instanceof ArrayBuffer)) {
-        throw new TypeError("emitFile bytes must be a Uint8Array or ArrayBuffer");
-      }
-      if (files.length >= ${LIMITS.files} || fileBytes + file.bytes.byteLength > ${LIMITS.fileBytes}) {
-        throw new Error("File output limit exceeded");
-      }
-      // Copy now, including only the selected typed-array range.
-      var bytes = new Uint8Array(file.bytes instanceof ArrayBuffer ? new Uint8Array(file.bytes) : file.bytes);
-      fileBytes += bytes.byteLength;
-      files.push({ workspace: file.workspace, path: file.path, ...(file.contentType === undefined ? {} : { contentType: file.contentType }), bytes });
-    }
-    function readViewport() {
-      try {
-        var size = page.viewportSize();
-        if (size && typeof size.width === "number" && typeof size.height === "number") {
-          return { width: size.width, height: size.height };
-        }
-      } catch (e) {}
-      return null;
-    }
-    var browser;
-    try {
-      // The gate resolves this app session id through the trusted command bridge.
-      var endpoint = "http://fake.host/v1/devtools/browser/" + input.sessionId + "?persistent=true&browser_binding=BROWSER";
-      browser = await connect(endpoint);
-      var contexts = browser.contexts();
-      if (contexts.length !== 1) throw new Error("Unexpected browser contexts: " + contexts.length);
-      var pages = contexts[0].pages();
-      if (pages.length !== 1) throw new Error("Unexpected browser pages: " + pages.length);
-      var page = pages[0];
-      page.on("console", function (message) {
-        try { pushBounded(consoleEntries, message.type() + ": " + message.text().slice(0, 500)); } catch (e) {}
-      });
-      page.on("pageerror", function (error) {
-        try { pushBounded(pageErrors, String((error && error.message) || error).slice(0, 500)); } catch (e) {}
-      });
-      var runtimeOrigin = input.runtimeOrigin;
-      function findOuter() {
-        return page.mainFrame().childFrames().find(function (candidate) {
-          try { return new URL(candidate.url()).origin === runtimeOrigin; } catch (e) { return false; }
-        }) || null;
-      }
-      // Child frames attach after the fresh connection; poll briefly instead
-      // of reading the tree once.
-      async function waitForFrame(find, timeoutMs, label) {
-        var deadline = Date.now() + timeoutMs;
-        while (true) {
-          var found = find();
-          if (found) return found;
-          if (Date.now() >= deadline) {
-            var kids = [];
-            try {
-              kids = page.mainFrame().childFrames().map(function (candidate) {
-                try { return candidate.name() + "|" + candidate.url(); } catch (e) { return "<unreadable>"; }
-              });
-            } catch (e) {}
-            var mainUrl = "";
-            try { mainUrl = page.mainFrame().url(); } catch (e) {}
-            var domIframes = "?";
-            try { domIframes = String(await page.evaluate("document.querySelectorAll('iframe').length")); } catch (e) {}
-            throw new Error(label + " main=" + mainUrl + " kids=" + JSON.stringify(kids) + " domIframes=" + domIframes);
-          }
-          await new Promise(function (resolve) { setTimeout(resolve, 100); });
-        }
-      }
-      var frame;
-      if (input.mode === "web") {
-        frame = page.mainFrame();
-      } else {
-        var outer = await waitForFrame(findOuter, 10000, "Preview frame not found.");
-        frame = await waitForFrame(function () {
-          var kids = outer.childFrames();
-          return kids.length === 1 ? kids[0] : null;
-        }, 10000, "Preview content not ready.");
-      }
-      // The viewport is per-connection server-side: re-apply the session size
-      // on every fresh connection before user code runs.
-      await page.setViewportSize({ width: input.viewport.width, height: input.viewport.height });
-      var __result = await Promise.race([
-        // A regular function called with undefined receiver: user code must
-        // not inherit the entrypoint this value (which exposes the loader env).
-        (async function __snippet(page, frame, expect, emitFile) {
-`;
-
-const EXECUTOR_SUFFIX = `
-        }).call(undefined, page, frame, expect, emitFile),
-        new Promise(function (_, reject) { timer = setTimeout(function () { reject(new Error("Execution timed out")); }, timeoutMs); }),
-      ]);
-      filesOpen = false;
-      // The model often sends a whole function instead of its body. That code only defines the
-      // function, so nothing runs. Say so instead of reporting an empty success.
-      if (typeof __result === "function" || (__result === undefined && __SNIPPET_IS_FUNCTION__)) {
-        return { ok: false, error: { name: "TypeError", message: "Your code returned a function. Write the function body only, do not wrap it in a function." }, consoleEntries: consoleEntries, pageErrors: pageErrors, logs: logs, logsTruncated: logsTruncated };
-      }
-      var __resultJson;
-      try {
-        __resultJson = __result === undefined ? "null" : JSON.stringify(__result);
-      } catch (e) {
-        return { ok: false, error: { name: "TypeError", message: "Result is not JSON-serializable" }, consoleEntries: consoleEntries, pageErrors: pageErrors, logs: logs, logsTruncated: logsTruncated };
-      }
-      if (typeof __resultJson !== "string") __resultJson = "null";
-      return { ok: true, resultJson: __resultJson, files: files, viewport: readViewport(), popups: { blocked: 0, urls: [] }, consoleEntries: consoleEntries, pageErrors: pageErrors, logs: logs, logsTruncated: logsTruncated };
-    } catch (err) {
-      var __name = err && err.name ? String(err.name) : "Error";
-      var __message = err && err.message ? String(err.message) : String(err);
-      return { ok: false, error: { name: __name, message: __message }, viewport: readViewport(), popups: { blocked: 0, urls: [] }, consoleEntries: consoleEntries, pageErrors: pageErrors, logs: logs, logsTruncated: logsTruncated };
-    } finally {
-      filesOpen = false;
-      clearTimeout(timer);
-      try { if (browser) await browser.close(); } catch (e) {}
-    }
-  }
-}
-`;
-
-/**
- * True when the snippet is one function and nothing else, like `async ({ page }) => { ... }`.
- * Such code only defines the function, so it never runs. A named function that the code uses
- * again (a helper it calls) is fine.
- */
-function snippet_is_function(code: string) {
-	// Skip leading blank lines and comments.
-	const start = code.replace(/^(?:\s|\/\/[^\n]*(?:\n|$)|\/\*[\s\S]*?\*\/)*/u, "");
-	if (/^(?:async\s+)?(?:\([^()]*\)|[A-Za-z_$][\w$]*)\s*=>/u.test(start)) return true;
-	const name = /^(?:async\s+)?function\s*\*?\s*([A-Za-z_$][\w$]*)\s*\(/u.exec(start)?.[1];
-	return name !== undefined && start.split(/[^\w$]+/u).filter((word) => word === name).length === 1;
-}
-
-export function build_executor_module(user_code: string): string {
-	return (
-		EXECUTOR_PREFIX +
-		user_code +
-		EXECUTOR_SUFFIX.replace("__SNIPPET_IS_FUNCTION__", String(snippet_is_function(user_code)))
-	);
 }
 
 // One-session connection gate
@@ -5135,6 +4923,13 @@ export class BrowserSession {
 			record = current;
 		}
 
+		// A value saved by an older browser session of the same chat counts as empty.
+		await this.commandReceiptsReady;
+		const chatId = this.commandReceipts.get(input.commandId)?.source.chatId;
+		const scriptState = chatId
+			? await this.state.storage.get<ScriptState>(`${SCRIPT_STATE_KEY_PREFIX}${chatId}`)
+			: undefined;
+
 		if (input.deadline !== undefined && Date.now() >= input.deadline)
 			return operation_refused("expired", "The command deadline passed.");
 		record.command = {
@@ -5155,6 +4950,7 @@ export class BrowserSession {
 					mode: record.mode,
 					viewport: record.mode === "web" ? record.tabs[input.tabId!]!.viewport : record.viewport,
 					timeoutMs: LIMITS.commandTimeoutMs,
+					scriptState: scriptState?.sessionId === record.sessionId ? scriptState.json : null,
 				},
 			},
 			200,
@@ -5169,6 +4965,7 @@ export class BrowserSession {
 		fileCount: number;
 		fileBytes: number;
 		viewport: { width: number; height: number } | null;
+		stateJson?: string;
 	}): Promise<Response> {
 		let record = await this.load();
 		if (!record || record.control === "closed") return json_response({ ok: true, state: "closed" }, 200);
@@ -5230,6 +5027,9 @@ export class BrowserSession {
 		} else if (record.control === "agent") {
 			record.control = "ready";
 		}
+		await this.commandReceiptsReady;
+		const chatId = this.commandReceipts.get(input.commandId)?.source.chatId;
+		if (input.stateJson !== undefined && chatId) await this.save_script_state(record.sessionId, chatId, input.stateJson);
 		await this.save(record);
 		if (
 			this.profile?.sessionId === record.sessionId &&
@@ -5269,6 +5069,19 @@ export class BrowserSession {
 			},
 			200,
 		);
+	}
+
+	private async save_script_state(sessionId: string, chatId: string, json: string): Promise<void> {
+		await this.state.storage.put(`${SCRIPT_STATE_KEY_PREFIX}${chatId}`, {
+			sessionId,
+			json,
+			savedAt: Date.now(),
+		} satisfies ScriptState);
+
+		// Keep the most recent chats only. 8 values of 256 KiB stay far below the storage limits.
+		const saved = [...(await this.state.storage.list<ScriptState>({ prefix: SCRIPT_STATE_KEY_PREFIX }))];
+		saved.sort((a, b) => b[1].savedAt - a[1].savedAt);
+		for (const [key] of saved.slice(SCRIPT_STATE_MAX_CHATS)) await this.state.storage.delete(key);
 	}
 
 	private async reload(
@@ -5456,6 +5269,9 @@ export class BrowserSession {
 			await this.state.storage.put(`${USAGE_KEY_PREFIX}${current.sessionId}`, receipt);
 		}
 		await this.state.storage.delete(SESSION_KEY);
+		// Script `state` lives only as long as its browser session.
+		const scriptStates = await this.state.storage.list({ prefix: SCRIPT_STATE_KEY_PREFIX });
+		for (const key of scriptStates.keys()) await this.state.storage.delete(key);
 		// Keep the saved profile's 100-day delete time, if there is one.
 		await this.schedule_alarm(null);
 		// Convex settles within minutes. Keep receipts for 7 days, then delete them.
@@ -7040,7 +6856,9 @@ export class BrowserSession {
 				typeof body.resultBytes !== "number" ||
 				typeof body.fileCount !== "number" ||
 				typeof body.fileBytes !== "number" ||
-				(body.viewport !== null && !is_record(body.viewport))
+				(body.viewport !== null && !is_record(body.viewport)) ||
+				(body.stateJson !== undefined &&
+					(typeof body.stateJson !== "string" || byte_length(body.stateJson) > LIMITS.stateBytes))
 			) {
 				return json_response({ ok: false, error: { code: "invalid_request" } }, 400);
 			}
@@ -7056,6 +6874,7 @@ export class BrowserSession {
 					viewport && is_positive_int(viewport.width) && is_positive_int(viewport.height)
 						? { width: viewport.width, height: viewport.height }
 						: null,
+				...(typeof body.stateJson === "string" ? { stateJson: body.stateJson } : {}),
 			});
 		}
 		if (url.pathname === "/reload") {
@@ -7654,6 +7473,8 @@ async function evaluate_snippet(input: {
 	runtimeOrigin: string | null;
 	viewport: { width: number; height: number };
 	code: string;
+	deadline: number;
+	state: string | null;
 }): Promise<SnippetEvaluateResult> {
 	const gateway = input.ctx?.exports?.BrowserConnectionGateway;
 	if (!gateway) throw new Error("Browser connection gateway is unavailable.");
@@ -7661,11 +7482,8 @@ async function evaluate_snippet(input: {
 	const worker = input.env.LOADER.load({
 		compatibilityDate: CHILD_COMPAT_DATE,
 		compatibilityFlags: ["nodejs_compat"],
-		mainModule: CHILD_ENTRY_MODULE,
-		modules: {
-			[CHILD_ENTRY_MODULE]: build_executor_module(input.code),
-			[CHILD_BUNDLE_MODULE]: CHILD_BUNDLE_JS,
-		},
+		mainModule: SNIPPET_EXECUTOR_MAIN_MODULE,
+		modules: snippet_executor_modules(input.code),
 		env: {
 			BROWSER: gateway({ props: input.connection }),
 		},
@@ -7675,13 +7493,15 @@ async function evaluate_snippet(input: {
 	const entrypoint = worker.getEntrypoint();
 	return await with_wall_timeout(
 		entrypoint.evaluate({
-			sessionId: input.connection.sessionId,
+			endpointId: input.connection.sessionId,
 			mode: input.mode,
 			runtimeOrigin: input.runtimeOrigin,
 			viewport: input.viewport,
-			timeoutMs: LIMITS.commandTimeoutMs,
+			// The snippet stops itself before the command deadline, so the host can still drain and check.
+			budgetMs: input.deadline - SNIPPET_EXECUTOR_SOFT_MARGIN_MS - Date.now(),
+			state: input.state,
 		}),
-		LIMITS.childWallMs,
+		Math.max(1, input.deadline - Date.now()),
 	);
 }
 
@@ -7692,6 +7512,7 @@ async function execute_browser_command(args: {
 	commandId: string;
 	lease: Record<string, unknown>;
 	connection: BrowserConnectionGatewayProps;
+	deadline: number;
 	settle: () => Promise<unknown>;
 	finish: (
 		tainted: boolean,
@@ -7700,6 +7521,7 @@ async function execute_browser_command(args: {
 			fileCount: number;
 			fileBytes: number;
 			viewport: { width: number; height: number } | null;
+			stateJson?: string;
 		},
 	) => Promise<unknown>;
 }): Promise<Response> {
@@ -7769,6 +7591,8 @@ async function execute_browser_command(args: {
 			runtimeOrigin: mode === "file" ? CONTROLLER_ORIGIN : null,
 			viewport: { width: leaseViewport.width, height: leaseViewport.height },
 			code: body.code,
+			deadline: args.deadline,
+			state: typeof lease.scriptState === "string" ? lease.scriptState : null,
 		});
 	} catch (error) {
 		const elapsedMs = Date.now() - started;
@@ -7800,31 +7624,10 @@ async function execute_browser_command(args: {
 
 	const elapsedMs = Date.now() - started;
 
-	const timedOut = !sandbox.ok && sandbox.error?.message === "Execution timed out";
-	// A timeout does not prove that the snippet stopped. Close before releasing its lease.
-	if (timedOut) {
-		await finish(true, { resultBytes: 0, fileCount: 0, fileBytes: 0, viewport: null });
-		log_browser({ route: "run", commandId, status: "timed_out", reason: "timeout" });
-		return json_response(
-			{
-				ok: true,
-				status: "timed_out",
-				commandId,
-				codeHash,
-				elapsedMs,
-				result: null,
-				resultTruncated: false,
-				files: [],
-				popups: { blocked: 0, urls: [] },
-				consoleEntries: [],
-				pageErrors: [],
-				logs: [],
-				logsTruncated: false,
-				error: { name: "TimeoutError", message: "Execution timed out. The browser session was closed." },
-			},
-			200,
-		);
-	}
+	// The snippet stopped itself at its soft limit, but its code may still be running. The settle
+	// below revokes the bridge, and the gateway allows one connection per command, so that code can
+	// no longer reach the browser. The session stays open when the settle succeeds.
+	const timedOut = !sandbox.ok && sandbox.timedOut === true;
 
 	// Stop command access and drain accepted protocol work before checking the target.
 	const check = await args.settle();
@@ -7865,14 +7668,26 @@ async function execute_browser_command(args: {
 		);
 	}
 
+	// Save `state` only together with output the model gets back: never after a blocked site or a
+	// result the host could not check.
+	const stateJson = snippet_executor_check_state(sandbox.stateJson);
+	const stateWarnings = snippet_executor_check_state_warnings(sandbox.stateWarnings);
+
 	if (!sandbox.ok) {
-		await finish(false, { resultBytes: 0, fileCount: 0, fileBytes: 0, viewport: snippetViewport(sandbox.viewport) });
-		log_browser({ route: "run", commandId, status: "errored", elapsedMs });
+		// Files and downloads of a failed or timed-out command are dropped.
+		await finish(false, {
+			resultBytes: 0,
+			fileCount: 0,
+			fileBytes: 0,
+			viewport: snippetViewport(sandbox.viewport),
+			...(stateJson === null ? {} : { stateJson }),
+		});
+		log_browser({ route: "run", commandId, status: timedOut ? "timed_out" : "errored", elapsedMs });
 		const text = cap_snippet_text(sandbox);
 		return json_response(
 			{
 				ok: true,
-				status: "errored",
+				status: timedOut ? "timed_out" : "errored",
 				commandId,
 				codeHash,
 				elapsedMs,
@@ -7884,10 +7699,17 @@ async function execute_browser_command(args: {
 				pageErrors: text.pageErrors,
 				logs: text.logs,
 				logsTruncated: text.logsTruncated,
-				error: {
-					name: sandbox.error?.name ?? "Error",
-					message: cap_message(sandbox.error?.message ?? "Unknown error"),
-				},
+				stateWarnings,
+				error: timedOut
+					? {
+							name: "TimeoutError",
+							message:
+								"The script was stopped at its time limit. Actions before that may have happened. The browser is still open.",
+						}
+					: {
+							name: sandbox.error?.name ?? "Error",
+							message: snippet_executor_cap_message(sandbox.error?.message ?? "Unknown error"),
+						},
 			},
 			200,
 		);
@@ -7937,6 +7759,7 @@ async function execute_browser_command(args: {
 		fileCount: files.files.length,
 		fileBytes: files.fileBytes,
 		viewport: snippetViewport(sandbox.viewport),
+		...(stateJson === null ? {} : { stateJson }),
 	});
 	// Web mode: the files the page downloaded during the command. They share the 8-file, 8 MiB
 	// output limit with `emitFile` files, which come first. Downloads over the limit are dropped.
@@ -7994,6 +7817,7 @@ async function execute_browser_command(args: {
 			pageErrors: text.pageErrors,
 			logs: text.logs,
 			logsTruncated: text.logsTruncated,
+			stateWarnings,
 			error: null,
 		},
 		200,
@@ -8100,6 +7924,7 @@ async function handle_browser_run(request: Request, env: Env, ctx?: BrowserRunne
 			fileCount: number;
 			fileBytes: number;
 			viewport: { width: number; height: number } | null;
+			stateJson?: string;
 		},
 	) => {
 		const finished = await object_json(stub, "/run/finish", {
@@ -8132,6 +7957,7 @@ async function handle_browser_run(request: Request, env: Env, ctx?: BrowserRunne
 					workspaceId: owners.workspaceId,
 					commandId,
 				},
+				deadline: body.deadline,
 				settle: () => object_json(stub, "/run/settle", { sessionId: body.sessionId, commandId }),
 			}),
 			Math.max(1, body.deadline - Date.now()),

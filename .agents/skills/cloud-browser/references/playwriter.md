@@ -14,6 +14,7 @@ open a router port. The app does not connect to a local browser IP.
 - `packages/browser-runner/src/playwriter-session.ts`: remote session and receipts.
 - `packages/browser-runner/src/playwriter-transport.ts`: one-target protocol bridge.
 - `packages/browser-runner/src/playwriter-executor.ts`: trusted fixed actions.
+- `packages/browser-runner/src/snippet-executor.ts`: the `script` executor, shared with the cloud browser.
 - `packages/app/src/components/browser/playwriter-browser-connection.tsx`: connection UI.
 - `references-submodules/playwriter`: pinned upstream reference only. Never import
   it into the app or add it to the workspace.
@@ -70,6 +71,17 @@ exposed. The model cannot send JavaScript, CSS selectors, CDP, cookies, storage
 calls, network calls, or a raw relay URL. Credential fields refuse input.
 Page text is untrusted. Sending, buying, publishing, and deleting still need the
 user's request or approval.
+
+The runner also has a `script` operation for model-written Playwright code. The
+app does not send it yet. A script gets no Read private fields, no click guard,
+and the same `state` rules as the cloud browser. It may navigate, reload, use
+history, and answer dialogs; dialogs it leaves open are dismissed at the end.
+While it runs, the transport fails requests to blocked sites with `Fetch`, and
+any frame on a blocked site revokes it. Such a command ends `blocked_site` with
+no output and no saved `state`. History entries show only the current url, and
+paste keys and middle clicks are refused. A human navigation does not stop a
+script; only leaving the allowed sites does. Page code that a script leaves
+behind keeps running after the command and after Pause, by design.
 
 The tab uses the user's real browser profile and network. In production the
 shared host policy does not block Press. The agent can open Press as the already

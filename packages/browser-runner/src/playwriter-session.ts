@@ -19,10 +19,21 @@ import {
 	type PlaywriterBrowserResult,
 	type PlaywriterBrowserRun,
 	type PlaywriterBrowserRuntime,
+	type PlaywriterBrowserScriptOutput,
 } from "common/playwriter-browser.ts";
 import { CHILD_BUNDLE_JS } from "./child-bundle.gen";
 import { PLAYWRITER_EXECUTOR_JS, PLAYWRITER_EXECUTOR_REVISION } from "./playwriter-executor";
 import { PlaywriterTargetInventory, PlaywriterTransport } from "./playwriter-transport";
+import {
+	SNIPPET_EXECUTOR_MAIN_MODULE,
+	SNIPPET_EXECUTOR_REVISION,
+	SNIPPET_EXECUTOR_SOFT_MARGIN_MS,
+	snippet_executor_cap_message,
+	snippet_executor_check_state,
+	snippet_executor_check_state_warnings,
+	snippet_executor_LIMITS,
+	snippet_executor_modules,
+} from "./snippet-executor";
 
 type Scope = Pick<PlaywriterBrowserConnect, "connectionId" | "ownerId" | "organizationId" | "workspaceId">;
 type Namespace = {
@@ -31,6 +42,7 @@ type Namespace = {
 };
 type Storage = {
 	get: <T>(key: string) => Promise<T | undefined>;
+	list: <T>(options: { prefix: string }) => Promise<Map<string, T>>;
 	put: (key: string, value: unknown) => Promise<void>;
 	delete: (key: string) => Promise<unknown>;
 	setAlarm: (time: number) => Promise<void>;
@@ -74,6 +86,12 @@ type Receipt = {
 	result: PlaywriterBrowserResult | null;
 	completedLease: PlaywriterBrowserCompletedLease | null;
 };
+type ScriptState = { sessionId: string; json: string; savedAt: number };
+
+// One `state` value per chat, kept only while its shared-tab session is open. The chat id comes
+// from the server-set command source, so a script cannot read another chat's value.
+const SCRIPT_STATE_KEY_PREFIX = "scriptState:";
+const SCRIPT_STATE_MAX_CHATS = 8;
 
 const private_fields_schema = z
 	.array(
@@ -92,8 +110,31 @@ const finish_schema = z
 		result: playwriter_browser_result_schema,
 		observation: playwriter_browser_observation_schema.optional(),
 		privateFields: private_fields_schema.optional(),
+		// A `script` sends only its status and `state`. Its text output stays in the Worker reply.
+		script: z
+			.object({
+				status: z.enum(["succeeded", "errored", "timed_out"]),
+				stateJson: z.string().max(snippet_executor_LIMITS.stateBytes).nullable(),
+			})
+			.strict()
+			.optional(),
 	})
 	.strict();
+/**
+ * The snippet executor's reply. The isolate is not trusted, so check each part again here.
+ */
+const script_result_schema = z.object({
+	ok: z.boolean(),
+	timedOut: z.literal(true).optional(),
+	resultJson: z.string().optional(),
+	error: z.object({ name: z.string(), message: z.string() }).optional(),
+	logs: z.array(z.string()).max(snippet_executor_LIMITS.logLines),
+	logsTruncated: z.boolean(),
+	consoleEntries: z.array(z.string()).max(snippet_executor_LIMITS.consoleEntries),
+	pageErrors: z.array(z.string()).max(snippet_executor_LIMITS.consoleEntries),
+	stateJson: z.unknown(),
+	stateWarnings: z.unknown(),
+});
 const unknown_result: PlaywriterBrowserResult = {
 	ok: false,
 	reason: "outcome_unknown",
@@ -152,6 +193,10 @@ async function bounded<T>(work: Promise<T>, timeout: number): Promise<T> {
 	} finally {
 		clearTimeout(timer);
 	}
+}
+
+function utf8_bytes(lines: string[]) {
+	return lines.reduce((total, line) => total + new TextEncoder().encode(line).byteLength, 0);
 }
 
 async function payload_hash(value: string) {
@@ -225,6 +270,7 @@ export class PlaywriterSession {
 			this.dialAttempts = [];
 			await this.state.storage.delete("session");
 			await this.state.storage.delete("dialAttempts");
+			await this.delete_script_states();
 			await this.state.storage.deleteAlarm();
 			return;
 		}
@@ -271,6 +317,8 @@ export class PlaywriterSession {
 		this.observation = null;
 		if (this.ping) clearInterval(this.ping);
 		this.ping = null;
+		// Script `state` lives only as long as its shared-tab session.
+		this.state.waitUntil(this.delete_script_states());
 		try {
 			socket?.close(1000, "connection ended");
 		} catch {
@@ -281,6 +329,24 @@ export class PlaywriterSession {
 			this.saved.runtime.targets = [];
 			this.saved.runtime.inventoryRevision += 1;
 		}
+	}
+
+	private async delete_script_states() {
+		const saved = await this.state.storage.list<ScriptState>({ prefix: SCRIPT_STATE_KEY_PREFIX });
+		for (const key of saved.keys()) await this.state.storage.delete(key);
+	}
+
+	private async save_script_state(chatId: string, json: string) {
+		await this.state.storage.put(`${SCRIPT_STATE_KEY_PREFIX}${chatId}`, {
+			sessionId: this.runtime().sessionId,
+			json,
+			savedAt: Date.now(),
+		} satisfies ScriptState);
+
+		// Keep the most recent chats only.
+		const saved = [...(await this.state.storage.list<ScriptState>({ prefix: SCRIPT_STATE_KEY_PREFIX }))];
+		saved.sort((a, b) => b[1].savedAt - a[1].savedAt);
+		for (const [key] of saved.slice(SCRIPT_STATE_MAX_CHATS)) await this.state.storage.delete(key);
 	}
 
 	private blocked_hosts() {
@@ -318,7 +384,11 @@ export class PlaywriterSession {
 			request.policyRevision === runtime.policyRevision &&
 			request.selectionRevision === runtime.selectionRevision &&
 			request.targetRevision === runtime.targetRevision &&
-			(request.operation.kind === "navigate" || request.navRevision === runtime.navRevision) &&
+			// A script owns every navigation during its command. The DO cannot tell an agent navigation
+			// from a human one, and the target check below still stops it on a blocked site.
+			(request.operation.kind === "navigate" ||
+				request.operation.kind === "script" ||
+				request.navRevision === runtime.navRevision) &&
 			this.target_allowed()
 		);
 	}
@@ -327,6 +397,13 @@ export class PlaywriterSession {
 		if (!this.saved) return;
 		this.saved.runtime.navRevision += 1;
 		this.observation = null;
+		// Stop a script only when the tab left the allowed sites. Skip the save: finish saves, and a
+		// page that calls pushState in a loop would otherwise write storage thousands of times. A DO
+		// restart moves every revision on anyway.
+		if (this.command?.request.operation.kind === "script") {
+			if (!this.target_allowed()) this.command.child?.revoke();
+			return;
+		}
 		const outcome = this.command?.child?.outcome();
 		if (this.command && this.command.completedNavRevision === null && outcome?.guarded && outcome.navigated)
 			this.command.completedNavRevision = this.saved.runtime.navRevision;
@@ -363,6 +440,7 @@ export class PlaywriterSession {
 			},
 			onNavigation: () => this.invalidate_navigation(),
 			canSendInput: () => this.command_allowed(),
+			blockedHosts: () => this.blocked_hosts(),
 		});
 		if (this.socket !== socket) {
 			transport.close();
@@ -712,10 +790,15 @@ export class PlaywriterSession {
 				return error("forbidden", 403);
 			this.command!.used = true;
 			try {
-				this.command!.child = this.transport.create_child({
-					deadline: this.command!.request.deadline,
-					guardBinding: `__bonobo_guard_${this.command!.observationRevision}`,
-				});
+				// A script gets no click guard: the guarded-click credit is only for the fixed `act` kind.
+				this.command!.child = this.transport.create_child(
+					this.command!.request.operation.kind === "script"
+						? { deadline: this.command!.request.deadline, script: true }
+						: {
+								deadline: this.command!.request.deadline,
+								guardBinding: `__bonobo_guard_${this.command!.observationRevision}`,
+							},
+				);
 			} catch {
 				return error("connection_unavailable");
 			}
@@ -724,7 +807,12 @@ export class PlaywriterSession {
 		if (request.method !== "POST") return error("method", 405);
 		let input: unknown;
 		try {
-			input = await body(request, url.pathname === "/run/finish" ? 3_000_000 : 64_000);
+			// Screenshots need the large finish limit. JSON escaping can grow a 20,000-character script
+			// well past 64 KB.
+			input = await body(
+				request,
+				url.pathname === "/run/finish" ? 3_000_000 : url.pathname === "/run/begin" ? 262_144 : 64_000,
+			);
 		} catch {
 			return error("invalid_body", 400);
 		}
@@ -970,6 +1058,11 @@ export class PlaywriterSession {
 			const receipt = this.reserve(command, "pending");
 			if (!receipt) return error("receipt_capacity");
 			receipt.payload = await payload;
+			const stateKey = `${SCRIPT_STATE_KEY_PREFIX}${command.source.chatId}`;
+			const savedState =
+				command.operation.kind === "script" ? await this.state.storage.get<ScriptState>(stateKey) : undefined;
+			// A value from an older shared-tab session counts as empty.
+			if (savedState && savedState.sessionId !== runtime.sessionId) await this.state.storage.delete(stateKey);
 			const refuse = (reason: string) => {
 				receipt.status = "refused";
 				receipt.result = { ok: false, reason, inputSent: false, cleanup: "complete" };
@@ -1028,8 +1121,12 @@ export class PlaywriterSession {
 				execute: true,
 				runtime,
 				observationRevision: this.command.observationRevision,
-				privateFields: this.observation?.fields ?? [],
+				// A script never gets the private field values that Read kept.
+				privateFields: command.operation.kind === "script" ? [] : (this.observation?.fields ?? []),
 				blockedHosts: this.blocked_hosts(),
+				...(command.operation.kind === "script"
+					? { scriptState: savedState?.sessionId === runtime.sessionId ? savedState.json : null }
+					: {}),
 				...(consumedAck ? { consumedAck } : {}),
 			});
 		}
@@ -1060,6 +1157,7 @@ export class PlaywriterSession {
 						};
 			const settled = await this.settle(command.request.commandId);
 			if (receipt.status !== "in_progress") return this.response(receipt);
+			const script = command.request.operation.kind === "script";
 			const guarded = command.child?.outcome();
 			const navigated =
 				command.request.operation.kind === "act" &&
@@ -1082,11 +1180,30 @@ export class PlaywriterSession {
 				runtime.targetRevision === command.request.targetRevision &&
 				this.target_allowed() &&
 				(command.request.operation.kind === "navigate" ||
+					script ||
 					navigated ||
 					runtime.navRevision === command.request.navRevision);
+			// A script that saw a blocked site, or ends on one, returns nothing. This holds even when it
+			// went back to an allowed page.
+			const url = this.transport?.url;
+			const blocked =
+				guarded?.blocked === true ||
+				(!!url && url !== "about:blank" && !browser_web_normalize_url(url, this.blocked_hosts()).ok);
 			// A changed lease invalidates the outcome, not completed cleanup.
-			const result: PlaywriterBrowserResult =
-				safe && navigated
+			const result: PlaywriterBrowserResult = script
+				? blocked
+					? { ok: false, reason: "blocked_site", inputSent: command.used, cleanup: settled ? "complete" : "unknown" }
+					: safe && output.script
+						? {
+								// Like the cloud browser, a script that threw or timed out still completed.
+								ok: true,
+								reason: output.script.status === "succeeded" ? null : "command_failed",
+								inputSent: command.used,
+								cleanup: "complete",
+							}
+						: // No checked script output, for example a hung script. A clean drain keeps the connection.
+							{ ...unknown_result, inputSent: command.used, cleanup: settled ? "complete" : "unknown" }
+				: safe && navigated
 					? { ok: true, reason: null, inputSent: true, cleanup: "complete" }
 					: safe
 						? output.result
@@ -1112,6 +1229,13 @@ export class PlaywriterSession {
 				this.close_socket("disconnected");
 				// Fence dispatch without turning unknown native effects into success.
 				runtime.generation += 1;
+				await this.persist();
+			}
+			if (script) {
+				this.observation = null;
+				// Save `state` only together with output the model gets back.
+				if (receipt.status === "completed" && output.script?.stateJson)
+					await this.save_script_state(receipt.identity.source.chatId, output.script.stateJson);
 				await this.persist();
 			}
 			const observation =
@@ -1200,7 +1324,7 @@ export async function handle_playwriter_request(request: Request, env: RemoteEnv
 	const path = new URL(request.url).pathname.replace("/internal/playwriter", "");
 	let input: unknown;
 	try {
-		input = await body(request);
+		input = await body(request, path === "/run" ? 262_144 : 64_000);
 	} catch {
 		return error("invalid_body", 400);
 	}
@@ -1228,20 +1352,25 @@ export async function handle_playwriter_request(request: Request, env: RemoteEnv
 			observationRevision: z.string(),
 			privateFields: private_fields_schema,
 			blockedHosts: z.array(z.string()),
+			scriptState: z.string().nullable().optional(),
 			consumedAck: playwriter_browser_receipt_request_schema.optional(),
 		})
 		.strict();
 	const start = startSchema.safeParse(await began.clone().json());
 	if (!start.success) return began;
+	const script = parsed.data.operation.kind === "script" ? parsed.data.operation : null;
 	let output: z.infer<typeof finish_schema> = { result: unknown_result };
+	let scriptOutput: PlaywriterBrowserScriptOutput | null = null;
 	try {
 		const gateway = ctx?.exports?.PlaywriterConnectionGateway;
 		if (!gateway) throw new Error("gateway_unavailable");
 		const worker = env.LOADER.load({
 			compatibilityDate: "2026-09-19",
 			compatibilityFlags: ["nodejs_compat"],
-			mainModule: "executor.js",
-			modules: { "executor.js": PLAYWRITER_EXECUTOR_JS, "playwright.js": CHILD_BUNDLE_JS },
+			mainModule: script ? SNIPPET_EXECUTOR_MAIN_MODULE : "executor.js",
+			modules: script
+				? snippet_executor_modules(script.code)
+				: { "executor.js": PLAYWRITER_EXECUTOR_JS, "playwright.js": CHILD_BUNDLE_JS },
 			env: {
 				BROWSER: gateway({
 					props: { ...scope.data, generation: parsed.data.generation, commandId: parsed.data.commandId },
@@ -1255,23 +1384,76 @@ export async function handle_playwriter_request(request: Request, env: RemoteEnv
 			(async () => {
 				if (
 					!entrypoint.revision ||
-					(await entrypoint.revision()) !== PLAYWRITER_EXECUTOR_REVISION ||
+					(await entrypoint.revision()) !== (script ? SNIPPET_EXECUTOR_REVISION : PLAYWRITER_EXECUTOR_REVISION) ||
 					Date.now() >= parsed.data.deadline
 				)
 					throw new Error("revision_changed");
-				return entrypoint.evaluate({
-					commandId: parsed.data.commandId,
-					deadline: parsed.data.deadline,
-					operation: parsed.data.operation,
-					observationRevision: start.data.observationRevision,
-					privateFields: start.data.privateFields,
-					blockedHosts: start.data.blockedHosts,
-				});
+				return entrypoint.evaluate(
+					script
+						? {
+								endpointId: parsed.data.commandId,
+								mode: "shared",
+								// Stop the script early, so the drain and checks still fit before the deadline.
+								budgetMs: parsed.data.deadline - SNIPPET_EXECUTOR_SOFT_MARGIN_MS - Date.now(),
+								state: start.data.scriptState ?? null,
+							}
+						: {
+								commandId: parsed.data.commandId,
+								deadline: parsed.data.deadline,
+								operation: parsed.data.operation,
+								observationRevision: start.data.observationRevision,
+								privateFields: start.data.privateFields,
+								blockedHosts: start.data.blockedHosts,
+							},
+				);
 			})(),
 			Math.max(1, parsed.data.deadline - Date.now()),
 		);
-		const checked = finish_schema.safeParse(result);
-		if (checked.success) output = checked.data;
+		if (script) {
+			const checked = script_result_schema.safeParse(result);
+			// Output over the executor's own limits means the isolate misbehaved. Treat it as no output.
+			if (
+				checked.success &&
+				utf8_bytes(checked.data.logs) <= snippet_executor_LIMITS.logBytes &&
+				utf8_bytes([...checked.data.consoleEntries, ...checked.data.pageErrors]) <=
+					snippet_executor_LIMITS.consoleBytes
+			) {
+				const sandbox = checked.data;
+				const status = sandbox.ok ? "succeeded" : sandbox.timedOut ? "timed_out" : "errored";
+				const resultJson = sandbox.ok ? (sandbox.resultJson ?? "null") : null;
+				const resultTruncated = resultJson !== null && utf8_bytes([resultJson]) > 16_384;
+				output = {
+					result: unknown_result,
+					script: { status, stateJson: snippet_executor_check_state(sandbox.stateJson) },
+				};
+				scriptOutput = {
+					status,
+					resultJson: resultTruncated ? null : resultJson,
+					resultTruncated,
+					error:
+						status === "succeeded"
+							? null
+							: status === "timed_out"
+								? {
+										name: "TimeoutError",
+										message:
+											"The script was stopped at its time limit. Actions before that may have happened. The tab is still shared.",
+									}
+								: {
+										name: (sandbox.error?.name ?? "Error").slice(0, 128),
+										message: snippet_executor_cap_message(sandbox.error?.message ?? "Unknown error"),
+									},
+					logs: sandbox.logs,
+					logsTruncated: sandbox.logsTruncated,
+					consoleEntries: sandbox.consoleEntries,
+					pageErrors: sandbox.pageErrors,
+					stateWarnings: snippet_executor_check_state_warnings(sandbox.stateWarnings),
+				};
+			}
+		} else {
+			const checked = finish_schema.safeParse(result);
+			if (checked.success) output = checked.data;
+		}
 	} catch {
 		/* Safe fixed result. No raw child errors or page data enter logs. */
 	}
@@ -1288,9 +1470,15 @@ export async function handle_playwriter_request(request: Request, env: RemoteEnv
 		receiptResolutionDeadline: parsed.data.receiptResolutionDeadline,
 	});
 	const finished = await forward("/run/finish", { ...scope.data, request: receiptRequest, output });
-	if (!start.data.consumedAck) return finished;
+	if (!start.data.consumedAck && !scriptOutput) return finished;
 	const reply: unknown = await finished.json();
-	return typeof reply === "object" && reply !== null
-		? Response.json({ ...reply, consumedAck: start.data.consumedAck })
-		: error("invalid_result", 502);
+	if (typeof reply !== "object" || reply === null) return error("invalid_result", 502);
+	// Release the script output only with a completed receipt. A blocked site or an unknown outcome
+	// returns nothing.
+	const completed = "status" in reply && reply.status === "completed";
+	return Response.json({
+		...reply,
+		...(scriptOutput && completed ? { script: scriptOutput } : {}),
+		...(start.data.consumedAck ? { consumedAck: start.data.consumedAck } : {}),
+	});
 }

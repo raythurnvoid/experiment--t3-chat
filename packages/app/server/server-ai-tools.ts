@@ -2362,6 +2362,8 @@ const ai_chat_tool_browser_run_schema = z.object({
 	pageErrors: z.array(z.string()),
 	logs: z.array(z.string()),
 	logsTruncated: z.boolean(),
+	// The parts of `state` the runner could not save, for example a page handle or a Date.
+	stateWarnings: z.array(z.string()).optional(),
 	error: z.unknown(),
 	session: files_browser_runner_session_schema.optional(),
 });
@@ -2384,6 +2386,9 @@ function browser_run_output_text(run: z.infer<typeof ai_chat_tool_browser_run_sc
 	}
 	if (run.pageErrors.length > 0) {
 		lines.push(`Page errors: ${capped(run.pageErrors)}`);
+	}
+	if (run.stateWarnings && run.stateWarnings.length > 0) {
+		lines.push(`State warnings: ${capped(run.stateWarnings)}`);
 	}
 	if (run.error && typeof run.error === "object" && typeof (run.error as { message?: unknown }).message === "string") {
 		lines.push(`Error: ${(run.error as { message: string }).message.slice(0, 1000)}`);

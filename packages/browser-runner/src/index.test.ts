@@ -1,13 +1,11 @@
 import { afterEach, describe, it, expect, vi } from "vitest";
 import { EventEmitter } from "node:events";
-import { runInNewContext } from "node:vm";
 import * as provider from "@cloudflare/playwright";
 import {
 	BrowserRegistry,
 	BrowserSession,
 	LIMITS,
 	build_controller_html,
-	build_executor_module,
 	cap_snippet_string_lists,
 	handle_request,
 	parse_viewer_hello,
@@ -1267,7 +1265,7 @@ describe("execute_browser_command", () => {
 			timeout: true,
 			lost: false,
 			status: "timed_out",
-			tainted: true,
+			tainted: false,
 		},
 		{ name: "a lost isolate call", changed: false, timeout: false, lost: true, status: "errored", tainted: true },
 	])("checks or closes after $name", async ({ changed, timeout, lost, status, tainted }) => {
@@ -1296,7 +1294,9 @@ describe("execute_browser_command", () => {
 						if (lost) throw new Error("Isolate disconnected");
 						return {
 							ok: false,
-							error: { name: "Error", message: timeout ? "Execution timed out" : "test failure" },
+							...(timeout ? { timedOut: true } : {}),
+							error: { name: timeout ? "TimeoutError" : "Error", message: timeout ? "Execution timed out" : "test failure" },
+							stateJson: '{"step":1}',
 							viewport: null,
 							popups: { blocked: 0, urls: [] },
 							consoleEntries: ["private output"],
@@ -1330,10 +1330,15 @@ describe("execute_browser_command", () => {
 		expect(result.status).toBe(status);
 		expect(result.files).toEqual([]);
 		expect(finishes).toEqual([expect.objectContaining({ tainted })]);
+		// Keep `state` only with output the model gets back.
+		if (tainted) expect(finishes[0]).not.toHaveProperty("stateJson");
+		else expect(finishes[0]).toMatchObject({ stateJson: '{"step":1}' });
 		expect(result.consoleEntries).toEqual(tainted ? [] : ["private output"]);
-		expect(calls).toEqual(
-			timeout || lost ? ["/run/begin", "/run/finish"] : ["/run/begin", "/run/settle", "/run/finish"],
-		);
+		if (timeout)
+			expect(result.error.message).toBe(
+				"The script was stopped at its time limit. Actions before that may have happened. The browser is still open.",
+			);
+		expect(calls).toEqual(lost ? ["/run/begin", "/run/finish"] : ["/run/begin", "/run/settle", "/run/finish"]);
 	});
 
 	it("waits for trusted settlement before finishing and returning results", async () => {
@@ -1405,12 +1410,17 @@ describe("execute_browser_command", () => {
 			props: { ...OWNERS, mode: "file", sessionId: "session-1", commandId: "command-1" },
 		});
 		expect(evaluate).toHaveBeenCalledWith({
-			sessionId: "session-1",
+			endpointId: "session-1",
 			mode: "file",
 			runtimeOrigin: "https://controller.browser.invalid",
 			viewport: { width: 1280, height: 900 },
-			timeoutMs: LIMITS.commandTimeoutMs,
+			budgetMs: expect.any(Number),
+			state: null,
 		});
+		// The snippet stops 3 s before the 30 s command deadline, so the host can still settle.
+		const { budgetMs } = (evaluate.mock.calls[0] as unknown as [{ budgetMs: number }])[0];
+		expect(budgetMs).toBeGreaterThan(26_000);
+		expect(budgetMs).toBeLessThanOrEqual(27_000);
 		settled.resolve();
 		const result = await (await pending).json();
 		expect(result).toMatchObject({ status: "succeeded", result: 42, popups: { blocked: 2, urls: [] } });
@@ -1592,11 +1602,12 @@ describe("execute_browser_command", () => {
 		);
 		const result = await response.json();
 		expect(evaluate).toHaveBeenCalledWith({
-			sessionId: "session-1",
+			endpointId: "session-1",
 			mode: "web",
 			runtimeOrigin: null,
 			viewport: { width: 1280, height: 900 },
-			timeoutMs: LIMITS.commandTimeoutMs,
+			budgetMs: expect.any(Number),
+			state: null,
 		});
 		expect(result.status).toBe("errored");
 		expect(result.error.message).toBe("Timeout while loading https://example.com/login after 5s");
@@ -2247,257 +2258,6 @@ describe("build_controller_html", () => {
 	});
 });
 
-describe("build_executor_module", () => {
-	function run_snippet(code: string, timeoutMs = 1000) {
-		const screenshot = Uint8Array.from(
-			Buffer.from(
-				"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+Xf6sAAAAASUVORK5CYII=",
-				"base64",
-			),
-		);
-		const outer = { url: () => "https://controller.browser.invalid/v0", childFrames: () => [{}] };
-		const page = {
-			on: () => {},
-			mainFrame: () => ({ childFrames: () => [outer] }),
-			setViewportSize: async () => {},
-			viewportSize: () => ({ width: 1280, height: 900 }),
-			screenshot: async () => screenshot,
-		};
-		const source =
-			build_executor_module(code)
-				.replace(/^import .*;$/gm, "")
-				.replace("export default class", "class") + "\nSnippetExecutor;";
-		const Executor = runInNewContext(source, {
-			WorkerEntrypoint: class {},
-			TextEncoder,
-			URL,
-			Uint8Array,
-			ArrayBuffer,
-			console: {},
-			expect: () => {},
-			setTimeout,
-			clearTimeout,
-			connect: async () => ({ contexts: () => [{ pages: () => [page] }], close: async () => {} }),
-		}) as new () => {
-			evaluate: (input: unknown) => Promise<{
-				ok: boolean;
-				files?: Array<{ workspace: "current" | "personal"; path: string; contentType?: string; bytes: Uint8Array }>;
-				error?: { message: string };
-			}>;
-		};
-		return new Executor().evaluate({
-			sessionId: "fixture",
-			mode: "file",
-			runtimeOrigin: "https://controller.browser.invalid",
-			viewport: { width: 1280, height: 900 },
-			timeoutMs,
-		});
-	}
-
-	it.each([undefined, null, "", "home", "CURRENT", 1])(
-		"rejects workspace %s inside the browser harness",
-		async (workspace) => {
-			const result = await run_snippet(`
-			emitFile({ workspace: "personal", path: "/first.bin", bytes: new Uint8Array([1]) });
-			emitFile({ workspace: ${JSON.stringify(workspace)}, path: "/bad.bin", bytes: new Uint8Array([2]) });
-		`);
-			expect(result).toMatchObject({ ok: false, error: { message: "emitFile workspace must be current or personal" } });
-			expect(result.files).toBeUndefined();
-		},
-	);
-
-	it("emits a screenshot and arbitrary binary bytes through the same helper", async () => {
-		const result = await run_snippet(`
-			const source = new Uint8Array([99, 0, 255, 128, 99]);
-			emitFile({ workspace: "current", path: "/reports/slice.bin", bytes: source.subarray(1, 4) });
-			emitFile({ workspace: "personal", path: "/reports/buffer.bin", bytes: source.buffer, contentType: "application/x-custom" });
-			emitFile({ workspace: "current", path: "/reports/empty", bytes: new ArrayBuffer(0) });
-			emitFile({ workspace: "personal", path: "/reports/page.png", bytes: await page.screenshot() });
-			source.fill(5);
-		`);
-		expect(result.ok).toBe(true);
-		expect(result.files?.slice(0, 3)).toEqual([
-			{ workspace: "current", path: "/reports/slice.bin", bytes: new Uint8Array([0, 255, 128]) },
-			{
-				workspace: "personal",
-				path: "/reports/buffer.bin",
-				bytes: new Uint8Array([99, 0, 255, 128, 99]),
-				contentType: "application/x-custom",
-			},
-			{ workspace: "current", path: "/reports/empty", bytes: new Uint8Array() },
-		]);
-		expect(result.files?.[3]?.bytes.slice(0, 8)).toEqual(new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]));
-		expect(result.files?.[3]?.workspace).toBe("personal");
-	});
-
-	it("allows the exact file and byte budgets", async () => {
-		const result = await run_snippet(
-			`for (let i = 0; i < ${LIMITS.files}; i++) emitFile({ workspace: i % 2 ? "personal" : "current", path: "/reports/" + i, bytes: new Uint8Array(${LIMITS.fileBytes / LIMITS.files}) });`,
-		);
-		expect(result.ok).toBe(true);
-		expect(result.files).toHaveLength(LIMITS.files);
-		expect(result.files?.reduce((sum, file) => sum + file.bytes.byteLength, 0)).toBe(LIMITS.fileBytes);
-	});
-
-	it.each([
-		`for (let i = 0; i < ${LIMITS.files}; i++) emitFile({ workspace: i % 2 ? "personal" : "current", path: "/reports/" + i, bytes: new Uint8Array() });`,
-		`emitFile({ workspace: "personal", path: "/reports/large", bytes: new Uint8Array(${LIMITS.fileBytes}) });`,
-		`emitFile({ workspace: "current", path: "/reports/bad", bytes: "text" });`,
-		`emitFile({ workspace: "current", path: "", bytes: new Uint8Array() });`,
-		`emitFile({ workspace: "current", path: "/reports/bad", contentType: null, bytes: new Uint8Array() });`,
-		`throw new Error("failed");`,
-	])("drops all emitted files when the snippet fails", async (failure) => {
-		const result = await run_snippet(
-			`emitFile({ workspace: "current", path: "/reports/first", bytes: new Uint8Array([1]) }); ${failure}`,
-		);
-		expect(result.ok).toBe(false);
-		expect(result.files).toBeUndefined();
-	});
-
-	it("drops emitted files on timeout and clears the timer after success", async () => {
-		vi.useFakeTimers();
-		try {
-			const pending = run_snippet(
-				'emitFile({ workspace: "current", path: "/reports/first", bytes: new Uint8Array([1]) }); await new Promise(() => {});',
-				50,
-			);
-			await vi.advanceTimersByTimeAsync(50);
-			expect(await pending).toMatchObject({ ok: false, error: { message: "Execution timed out" } });
-			expect((await pending).files).toBeUndefined();
-			expect((await run_snippet("return 1;")).ok).toBe(true);
-			expect(vi.getTimerCount()).toBe(0);
-		} finally {
-			vi.useRealTimers();
-		}
-	});
-
-	it("caps Unicode console and log output in the running harness", async () => {
-		const inner = {};
-		const outer = { url: () => "https://controller.browser.invalid/v0", childFrames: () => [inner] };
-		const page = {
-			on: (event: string, callback: (message: { type: () => string; text: () => string }) => void) => {
-				if (event === "console")
-					for (let i = 0; i < 10; i++) callback({ type: () => "log", text: () => "€".repeat(500) });
-			},
-			mainFrame: () => ({ childFrames: () => [outer] }),
-			setViewportSize: async () => {},
-			viewportSize: () => ({ width: 1280, height: 900 }),
-		};
-		const source =
-			build_executor_module('console.log("€".repeat(6000)); return 42;')
-				.replace(/^import .*;$/gm, "")
-				.replace("export default class", "class") + "\nSnippetExecutor;";
-		const Executor = runInNewContext(source, {
-			WorkerEntrypoint: class {},
-			TextEncoder,
-			URL,
-			console: {},
-			expect: () => {},
-			setTimeout: () => 0,
-			clearTimeout: () => {},
-			connect: async () => ({ contexts: () => [{ pages: () => [page] }], close: async () => {} }),
-		}) as new () => {
-			evaluate: (
-				input: unknown,
-			) => Promise<{ ok: boolean; logs: string[]; consoleEntries: string[]; logsTruncated: boolean }>;
-		};
-		const result = await new Executor().evaluate({
-			sessionId: "fixture",
-			mode: "file",
-			runtimeOrigin: "https://controller.browser.invalid",
-			viewport: { width: 1280, height: 900 },
-		});
-		expect(result.ok).toBe(true);
-		expect(result.logsTruncated).toBe(true);
-		expect(result.logs).toEqual(["€".repeat(5461)]);
-		expect(
-			result.consoleEntries.reduce((sum, line) => sum + new TextEncoder().encode(line).length, 0),
-		).toBeLessThanOrEqual(LIMITS.consoleBytes);
-	});
-
-	it("gives web snippets the main frame without waiting for a preview frame", async () => {
-		const mainFrame = { childFrames: () => [] };
-		const page = {
-			on: () => {},
-			mainFrame: () => mainFrame,
-			setViewportSize: async () => {},
-			viewportSize: () => ({ width: 1280, height: 900 }),
-		};
-		const source =
-			build_executor_module("return frame === page.mainFrame();")
-				.replace(/^import .*;$/gm, "")
-				.replace("export default class", "class") + "\nSnippetExecutor;";
-		const Executor = runInNewContext(source, {
-			WorkerEntrypoint: class {},
-			TextEncoder,
-			URL,
-			Uint8Array,
-			ArrayBuffer,
-			console: {},
-			expect: () => {},
-			setTimeout,
-			clearTimeout,
-			connect: async () => ({ contexts: () => [{ pages: () => [page] }], close: async () => {} }),
-		}) as new () => { evaluate: (input: unknown) => Promise<{ ok: boolean; resultJson?: string }> };
-		const result = await new Executor().evaluate({
-			sessionId: "fixture",
-			mode: "web",
-			runtimeOrigin: null,
-			viewport: { width: 1280, height: 900 },
-			timeoutMs: 1000,
-		});
-		expect(result).toMatchObject({ ok: true, resultJson: "true" });
-		// Only web mode may skip the runtime origin.
-		await expect(
-			new Executor().evaluate({
-				sessionId: "fixture",
-				mode: "file",
-				runtimeOrigin: null,
-				viewport: { width: 1280, height: 900 },
-				timeoutMs: 1000,
-			}),
-		).rejects.toThrow("Missing runtime origin.");
-	});
-
-	it.each([
-		"async ({ page }) => {\n\tawait page.title();\n\treturn 1;\n}",
-		"// Read the title.\nasync (page) => page.title()",
-		"page => 1",
-		"async function main({ page }) {\n\treturn 1;\n}",
-		"return async ({ page }) => 1;",
-	])("refuses a snippet that only defines or returns a function: %s", async (code) => {
-		expect(await run_snippet(code)).toMatchObject({
-			ok: false,
-			error: { message: "Your code returned a function. Write the function body only, do not wrap it in a function." },
-		});
-	});
-
-	it.each([
-		["return 1;", "1"],
-		["(async () => 1)();", "null"],
-		["async function helper() { return 2; }\nawait helper();", "null"],
-		[
-			'function helper() {}\nemitFile({ workspace: "current", path: "/a", bytes: new Uint8Array() });\nhelper();',
-			"null",
-		],
-		["const run = async () => 3;\nreturn await run();", "3"],
-	])("runs a snippet that uses its own functions: %s", async (code, resultJson) => {
-		expect(await run_snippet(code)).toMatchObject({ ok: true, resultJson });
-	});
-
-	it("wraps user code with the registered page harness", () => {
-		const module = build_executor_module("return 42;");
-		expect(module).toContain("return 42;");
-		expect(module).toContain('from "./pw.js"');
-		expect(module).toContain("persistent=true&browser_binding=BROWSER");
-		expect(module).not.toContain("providerSessionId");
-		expect(module).toContain("setViewportSize");
-		expect(module).toContain(".call(undefined, page, frame, expect, emitFile)");
-		expect(module).toContain("Preview frame not found");
-		expect(module).toContain("emitFile");
-	});
-});
-
 describe("session transitions", () => {
 	const lease = { sessionId: "session-1", navGen: 1, loadGen: 1, controlGen: 1 };
 
@@ -2760,9 +2520,12 @@ describe("BrowserSession alarm", () => {
 				providerSessionId: null,
 				pageNonce: null,
 			}),
+			"scriptState:chat-a": { sessionId: "session-1", json: '{"n":1}', savedAt: Date.now() },
 		});
 		await session.alarm();
 		expect(storage.map.has("session")).toBe(false);
+		// Script state ends with its browser session.
+		expect(storage.map.has("scriptState:chat-a")).toBe(false);
 	});
 
 	it("force-deletes a closing record past its retry budget", async () => {
@@ -3409,6 +3172,55 @@ describe("BrowserSession viewer", () => {
 			viewport: null,
 		})) as { state: string };
 		expect(finish.state).toBe("human");
+	});
+
+	// Chat B only has a value from an older browser session, so it starts empty.
+	it.each([
+		["c1", '{"n":1}'],
+		["c2", null],
+	])("keeps script state per chat for the open browser session only (%s)", async (nextCommandId, scriptState) => {
+		const now = Date.now();
+		const receipt = (commandId: string, chatId: string) => [
+			commandId,
+			{
+				sessionId: "session-1",
+				commandId,
+				codeHash: "hash",
+				source: { chatId, sourceMessageId: "message", toolCallId: commandId },
+				deadline: now + 30_000,
+				receiptResolutionDeadline: now + 35_000,
+				payloadHash: null,
+				status: "in_progress",
+				result: { cleanup: "unknown", reason: null },
+				session: null,
+			},
+		];
+		const { storage, session } = make_session({
+			session: live_record({ control: "agent", command: { id: "c1", startedAt: now, connection: "settled" } }),
+			commandReceipts: [receipt("c1", "chat-a"), receipt("c2", "chat-b")],
+			"scriptState:chat-b": { sessionId: "old-session", json: '{"old":true}', savedAt: now },
+		});
+
+		await post(session, "/run/finish", {
+			sessionId: "session-1",
+			commandId: "c1",
+			tainted: false,
+			resultBytes: 0,
+			fileCount: 0,
+			fileBytes: 0,
+			viewport: null,
+			stateJson: '{"n":1}',
+		});
+		expect(storage.map.get("scriptState:chat-a")).toMatchObject({ sessionId: "session-1", json: '{"n":1}' });
+
+		const begin = await post(session, "/run/begin", {
+			sessionId: "session-1",
+			navGen: 1,
+			loadGen: 1,
+			controlGen: 1,
+			commandId: nextCommandId,
+		});
+		expect(begin).toMatchObject({ ok: true, lease: { scriptState } });
 	});
 
 	it("refuses reload while a command holds the slot", async () => {

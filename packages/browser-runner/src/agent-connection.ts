@@ -400,6 +400,20 @@ const WORKER_METHODS = new Set([
 	"Network.getResponseBody",
 ]);
 /**
+ * Page reads that only return data. At revoke the bridge stops waiting for them, because page code
+ * can keep them open forever. They change nothing the settle cleanup must undo.
+ */
+const ABANDONED_READS = new Set([
+	"Runtime.evaluate",
+	"Runtime.callFunctionOn",
+	"Runtime.getProperties",
+	"DOM.describeNode",
+	"DOM.getBoxModel",
+	"DOM.getContentQuads",
+	"DOM.getFrameOwner",
+	"DOM.resolveNode",
+]);
+/**
  * Worker targets the child never gets. Chrome attaches service and shared workers to Playwright's
  * browser-wide auto-attach, and real sites run them. The bridge detaches them instead of closing
  * the session. Any other unknown target type still closes it.
@@ -462,6 +476,11 @@ export class AgentConnection {
 	 * closes the worker session first, Chrome never answers the resume call. A late reply is dropped.
 	 */
 	private detaching = new Set<number>();
+	/**
+	 * Ids of the snippet's page reads that the bridge stopped waiting for at revoke. A late reply is
+	 * dropped.
+	 */
+	private abandoned = new Set<number>();
 	private sessions = new Map<string, Session>();
 	private detachedSessions = new Set<string>();
 	private frames = new Set<string>();
@@ -755,7 +774,7 @@ export class AgentConnection {
 			if (typeof message.id !== "number") return this.fail("invalid_provider_reply");
 			// A worker detach reply may be an error or come on the root session (the worker already
 			// ended). Nothing waits for it.
-			if (this.detaching.delete(message.id)) return;
+			if (this.detaching.delete(message.id) || this.abandoned.delete(message.id)) return;
 			const request = this.pending.get(message.id);
 			if (!request || request.sessionId !== sessionId) return this.fail("unknown_provider_reply");
 			if (!is_record(message.result) && !is_record(message.error)) return this.fail("invalid_provider_reply");
@@ -983,6 +1002,20 @@ export class AgentConnection {
 
 	revoke() {
 		this.accepting = false;
+		// A page read can wait forever on page code, like an endless `page.evaluate` after a timed-out
+		// snippet. Stop waiting for it, so the drain still ends. Input and navigation replies are still
+		// awaited, because the cleanup must know they finished.
+		for (const [id, request] of this.pending) {
+			if (request.source !== "child" || !ABANDONED_READS.has(request.method)) continue;
+			this.pending.delete(id);
+			this.abandoned.add(id);
+			this.reply({
+				id,
+				...(request.sessionId ? { sessionId: request.sessionId } : {}),
+				error: { code: -32000, message: "Browser access was revoked." },
+			});
+			this.wake();
+		}
 	}
 
 	settle(timeoutMs: number) {

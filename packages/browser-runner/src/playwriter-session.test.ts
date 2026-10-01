@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { handle_playwriter_request, PlaywriterSession } from "./playwriter-session";
 import { playwriter_browser_response_schema } from "common/playwriter-browser.ts";
 import { PLAYWRITER_EXECUTOR_REVISION } from "./playwriter-executor";
+import { SNIPPET_EXECUTOR_REVISION } from "./snippet-executor";
 
 const SCOPE = { connectionId: "connection", ownerId: "owner", organizationId: "org", workspaceId: "workspace" };
 const runtime = {
@@ -140,13 +141,22 @@ function make_session(existingRecords?: Map<string, unknown>) {
 			get: () => ({ fetch: (request: Request): Promise<Response> => session.fetch(request) }),
 		},
 		LOADER: {
-			load: vi.fn(() => ({ getEntrypoint: () => ({ revision: async () => PLAYWRITER_EXECUTOR_REVISION, evaluate }) })),
+			load: vi.fn((options: { modules: Record<string, string> }) => ({
+				getEntrypoint: () => ({
+					// Both executors use the same main module name. Only the fixed one ships `playwright.js`.
+					revision: async () =>
+						"playwright.js" in options.modules ? PLAYWRITER_EXECUTOR_REVISION : SNIPPET_EXECUTOR_REVISION,
+					evaluate,
+				}),
+			})),
 		},
 	};
 	const session = new PlaywriterSession(
 		{
 			storage: {
 				get: async <T>(key: string) => records.get(key) as T | undefined,
+				list: async <T>(options: { prefix: string }) =>
+					new Map([...records].filter(([key]) => key.startsWith(options.prefix))) as Map<string, T>,
 				put,
 				delete: async (key: string) => records.delete(key),
 				setAlarm: async () => {},
@@ -2297,5 +2307,99 @@ describe("PlaywriterSession", () => {
 			error: { code: "connection_forgotten" },
 		});
 		expect(fetch).toHaveBeenCalledOnce();
+	});
+});
+
+describe("PlaywriterSession scripts", () => {
+	const SCRIPT_RESULT = {
+		ok: true,
+		resultJson: "1",
+		logs: [],
+		logsTruncated: false,
+		consoleEntries: [],
+		pageErrors: [],
+		stateJson: '{"n":1}',
+		stateWarnings: [],
+	};
+
+	function script_request(connected: typeof runtime, commandId: string, chatId = "chat") {
+		const request = command_request(connected, commandId);
+		return {
+			...request,
+			source: { ...request.source, chatId },
+			operation: { kind: "script", code: "state.n = (state.n ?? 0) + 1; return state.n;" },
+		};
+	}
+
+	it("keeps script state per chat while the shared tab stays open", async () => {
+		const mocked = make_session();
+		const socket = new NativeSocket();
+		const connected = await connect_session(mocked, socket);
+		// A script may navigate during its command, unlike the fixed kinds.
+		mocked.evaluate.mockImplementationOnce(async () => {
+			socket.navigate();
+			return SCRIPT_RESULT;
+		});
+		mocked.evaluate.mockResolvedValue(SCRIPT_RESULT);
+		const first = (await mocked.remote("/run", script_request(connected, "first-script"))).reply;
+		expect(first).toMatchObject({ status: "completed", script: { status: "succeeded", resultJson: "1" } });
+		expect(mocked.evaluate.mock.calls.at(-1)![0]).toEqual({
+			endpointId: "first-script",
+			mode: "shared",
+			budgetMs: expect.any(Number),
+			state: null,
+		});
+
+		const current = (await mocked.remote("/status", SCOPE)).reply.runtime as typeof runtime;
+		await mocked.remote("/run", script_request(current, "second-script"));
+		expect(mocked.evaluate.mock.calls.at(-1)![0]).toMatchObject({ state: '{"n":1}' });
+		await mocked.remote("/run", script_request(current, "other-chat", "other"));
+		expect(mocked.evaluate.mock.calls.at(-1)![0], "Another chat must not read this chat's state").toMatchObject({
+			state: null,
+		});
+
+		socket.close();
+		await vi.advanceTimersByTimeAsync(0);
+		expect([...mocked.records.keys()].filter((key) => key.startsWith("scriptState:"))).toEqual([]);
+	});
+
+	it("returns nothing and saves no state when a script ends on a blocked site", async () => {
+		const mocked = make_session();
+		mocked.env.BROWSER_WEB_DENIED_HOSTS = "blocked.test";
+		const socket = new NativeSocket();
+		const connected = await connect_session(mocked, socket);
+		mocked.evaluate.mockImplementation(async () => {
+			socket.packet({
+				method: "forwardCDPEvent",
+				params: {
+					method: "Page.frameNavigated",
+					sessionId: "native-session",
+					params: { frame: { id: "main-frame", url: "https://blocked.test/" } },
+				},
+			});
+			return SCRIPT_RESULT;
+		});
+		const reply = (await mocked.remote("/run", script_request(connected, "blocked-script"))).reply;
+		expect(reply).toMatchObject({ status: "refused", result: { reason: "blocked_site" } });
+		expect(reply).not.toHaveProperty("script");
+		expect(mocked.records.has("scriptState:chat")).toBe(false);
+	});
+
+	it("keeps the connection when a script never answers", async () => {
+		const mocked = make_session();
+		const connected = await connect_session(mocked);
+		let started!: () => void;
+		const began = new Promise<void>((resolve) => (started = resolve));
+		mocked.evaluate.mockImplementation(() => {
+			started();
+			return new Promise(() => {});
+		});
+		const pending = mocked.remote("/run", script_request(connected, "hung-script"));
+		await began;
+		await vi.advanceTimersByTimeAsync(20_000);
+		const reply = (await pending).reply;
+		expect(reply).toMatchObject({ status: "unknown", result: { reason: "outcome_unknown", cleanup: "complete" } });
+		expect(reply).not.toHaveProperty("script");
+		expect(((await mocked.remote("/status", SCOPE)).reply.runtime as typeof runtime).state).toBe("connected");
 	});
 });

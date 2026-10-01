@@ -2718,6 +2718,18 @@ describe("browser tools", () => {
 		expect(observation.length).toBeLessThan(10_000);
 	});
 
+	test("shows the state parts the runner could not save", async () => {
+		const { ctx } = makeCtx(async () => accessOk);
+		runnerQueue.push(runner_run_result({ stateWarnings: ["state.page was not saved: browser objects are not kept."] }));
+		await ai_chat_tool_create_browser_run(ctx, browserCtxData).execute?.(
+			{ code: "state.page = page;" },
+			{ toolCallId: "t", messages: [] },
+		);
+		expect(JSON.stringify(browserCtxData.observations.get("t")?.output)).toContain(
+			"State warnings: state.page was not saved",
+		);
+	});
+
 	test.each([
 		{ name: "malformed", reply: { ok: true } },
 		{ name: "wrong command", reply: runner_run_result({ commandId: "other" }) },

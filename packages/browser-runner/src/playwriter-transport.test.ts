@@ -69,7 +69,13 @@ const WORKER_TARGET = {
 	url: "https://frame.test/worker.js",
 };
 const PNG_DATA = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+Xf6sAAAAASUVORK5CYII=";
-const CALLBACKS = { onUnsafe: () => {}, onEvent: () => {}, onNavigation: () => {}, canSendInput: () => true };
+const CALLBACKS = {
+	onUnsafe: () => {},
+	onEvent: () => {},
+	onNavigation: () => {},
+	canSendInput: () => true,
+	blockedHosts: (): string[] => [],
+};
 
 function attachment_event(
 	sessionId: string,
@@ -93,6 +99,7 @@ function make_transport(
 		runtimeContext?: boolean;
 		initialEvents?: readonly string[];
 		holdInput?: boolean;
+		blockedHosts?: string[];
 	} = {},
 ) {
 	const [socket, extension] = socket_pair();
@@ -105,6 +112,7 @@ function make_transport(
 		sessionId: "page-session",
 		targetInfo: TARGET,
 		initialEvents: options.initialEvents,
+		blockedHosts: () => options.blockedHosts ?? [],
 		onUnsafe,
 		onEvent,
 	});
@@ -146,8 +154,8 @@ function make_transport(
 								: {};
 			reply(request.id, result);
 		});
-	const create_child = (guardBinding?: string) => {
-		const connection = transport.create_child({ deadline: Date.now() + 30_000, guardBinding });
+	const create_child = (guardBinding?: string, script = false) => {
+		const connection = transport.create_child({ deadline: Date.now() + 30_000, guardBinding, script });
 		const child = connection.webSocket as unknown as Socket;
 		let id = 0;
 		const send = (
@@ -1330,14 +1338,14 @@ describe("PlaywriterTransport", () => {
 		expect(await connection.settle(1000)).toEqual({ safe: true, reason: null });
 	});
 
-	it("rejects clipped screenshots and invalid parameter scope before dispatch", async () => {
+	it("rejects oversized screenshot clips and invalid parameter scope before dispatch", async () => {
 		const { extension, create_child } = make_transport();
 		const { connection, child, send, start } = create_child();
 		start();
 		send("Page.captureScreenshot", {
 			format: "png",
 			captureBeyondViewport: false,
-			clip: { x: 0, y: 0, width: 1, height: 1, scale: 1 },
+			clip: { x: 0, y: 0, width: 8192, height: 8192, scale: 1 },
 		});
 		send("Runtime.evaluate", { expression: "1", contextId: 99 });
 		send("Page.navigate", { url: "file:///private" });
@@ -1357,5 +1365,176 @@ describe("PlaywriterTransport", () => {
 		expect((await connection.settle(1000)).safe).toBe(true);
 		transport.close();
 		expect(() => create_child()).toThrow("offline");
+	});
+});
+
+describe("PlaywriterTransport script commands", () => {
+	it("stops waiting for page reads at the deadline but still drains input", async () => {
+		const { extension, create_child, reply, onUnsafe, socket } = make_transport({ autoReply: false });
+		const { connection, child, send, start } = create_child(undefined, true);
+		start();
+		reply(commands(extension).at(-1)!.id);
+		const readId = send("Runtime.getProperties", { objectId: "endless-read" });
+		const read = commands(extension).at(-1)!;
+		send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 1, y: 1 });
+		const input = commands(extension).at(-1)!;
+		await vi.advanceTimersByTimeAsync(30_000);
+		expect(messages(child).find((message) => message.id === readId)).toMatchObject({
+			error: { message: "Browser access was revoked." },
+		});
+		const settled = connection.settle(1000);
+		reply(read.id, { result: [] });
+		reply(input.id);
+		expect(await settled).toEqual({ safe: true, reason: null });
+		expect(onUnsafe).not.toHaveBeenCalled();
+		expect(socket.readyState).toBe(1);
+	});
+
+	it("stops a script when any frame shows a blocked site and keeps it blocked", async () => {
+		const { create_child, emit } = make_transport({ blockedHosts: ["blocked.test"] });
+		const { connection, child, send, start } = create_child(undefined, true);
+		start();
+		emit("Page.frameNavigated", {
+			frame: { id: "inner-frame", parentId: "main-frame", url: "https://blocked.test/" },
+		});
+		emit("Page.frameNavigated", {
+			frame: { id: "inner-frame", parentId: "main-frame", url: "https://fixture.test/" },
+		});
+		const id = send("Page.enable");
+		expect(messages(child).find((message) => message.id === id)).toHaveProperty("error");
+		expect(
+			messages(child).some((message) => message.method === "Page.frameNavigated"),
+			"A revoked script must not see events that could carry the blocked page",
+		).toBe(false);
+		expect(connection.outcome().blocked).toBe(true);
+		expect((await connection.settle(1000)).safe).toBe(true);
+	});
+
+	it("hides a frame tree reply that shows a blocked frame", async () => {
+		const { extension, create_child, reply } = make_transport({ autoReply: false, blockedHosts: ["blocked.test"] });
+		const { connection, child, send, start } = create_child(undefined, true);
+		start();
+		// Answer Fetch.enable and Target.setAutoAttach.
+		for (const request of commands(extension)) reply(request.id);
+		const id = send("Page.getFrameTree");
+		reply(commands(extension).at(-1)!.id, {
+			frameTree: {
+				frame: { id: "main-frame", url: "https://fixture.test/" },
+				childFrames: [{ frame: { id: "inner-frame", url: "https://blocked.test/secret" } }],
+			},
+		});
+		expect(messages(child).find((message) => message.id === id)).toMatchObject({
+			error: { message: "Browser access was revoked." },
+		});
+		expect(connection.outcome().blocked).toBe(true);
+		const settled = connection.settle(1000);
+		await vi.advanceTimersByTimeAsync(0);
+		reply(commands(extension).at(-1)!.id); // Fetch.disable
+		expect((await settled).safe).toBe(true);
+	});
+
+	it("fails only a script's requests to blocked sites and never shows them to it", async () => {
+		const { create_child, emit, extension } = make_transport({ blockedHosts: ["blocked.test"] });
+		const command = create_child();
+		expect((await command.connection.settle(1000)).safe).toBe(true);
+		expect(commands(extension).some((request) => request.method === "Fetch.enable")).toBe(false);
+
+		const { connection, child, start } = create_child(undefined, true);
+		expect(commands(extension).at(-1)).toMatchObject({
+			method: "Fetch.enable",
+			sessionId: "page-session",
+			params: { patterns: [{ urlPattern: "*blocked.test*", requestStage: "Request" }] },
+		});
+		start();
+		emit("Fetch.requestPaused", { requestId: "blocked-request", request: { url: "https://blocked.test/x" } });
+		emit("Fetch.requestPaused", {
+			requestId: "allowed-request",
+			request: { url: "https://fixture.test/?q=blocked.test" },
+		});
+		expect(commands(extension).slice(-2)).toMatchObject([
+			{ method: "Fetch.failRequest", params: { requestId: "blocked-request", errorReason: "BlockedByClient" } },
+			{ method: "Fetch.continueRequest", params: { requestId: "allowed-request" } },
+		]);
+		expect(messages(child).some((message) => message.method === "Fetch.requestPaused")).toBe(false);
+		expect(await connection.settle(1000)).toEqual({ safe: true, reason: null });
+		expect(commands(extension).at(-1)).toMatchObject({ method: "Fetch.disable", sessionId: "page-session" });
+	});
+
+	it.each([
+		["Ctrl+V by key code", "Input.dispatchKeyEvent", { type: "rawKeyDown", modifiers: 2, windowsVirtualKeyCode: 86 }],
+		["Meta+V", "Input.dispatchKeyEvent", { type: "keyDown", modifiers: 4, key: "v", code: "KeyV" }],
+		["Shift+Insert", "Input.dispatchKeyEvent", { type: "keyDown", modifiers: 8, key: "Insert", code: "Insert" }],
+		["middle click", "Input.dispatchMouseEvent", { type: "mousePressed", button: "middle", x: 1, y: 1 }],
+	])("refuses a paste from the user's clipboard: %s", async (_name, method, params) => {
+		const { create_child, extension } = make_transport();
+		const { connection, child, send, start } = create_child(undefined, true);
+		start();
+		const id = send(method, params);
+		expect(messages(child).find((message) => message.id === id)).toHaveProperty("error");
+		send("Input.dispatchKeyEvent", { type: "keyDown", modifiers: 0, key: "v", code: "KeyV" });
+		expect(commands(extension).map((request) => request.method)).toEqual([
+			"Target.setAutoAttach",
+			"Input.dispatchKeyEvent",
+		]);
+		expect((await connection.settle(1000)).safe).toBe(true);
+	});
+
+	it("shows only the current history url and checks the real url of an entry", async () => {
+		const { extension, create_child, reply } = make_transport({ autoReply: false, blockedHosts: ["blocked.test"] });
+		const { connection, child, send, start } = create_child(undefined, true);
+		start();
+		// Answer Fetch.enable and Target.setAutoAttach.
+		for (const request of commands(extension)) reply(request.id);
+		const id = send("Page.getNavigationHistory");
+		reply(commands(extension).at(-1)!.id, {
+			currentIndex: 2,
+			entries: [
+				{ id: 1, url: "https://blocked.test/", userTypedURL: "https://blocked.test/", title: "Blocked" },
+				{ id: 2, url: "https://private.test/", userTypedURL: "https://private.test/", title: "Private" },
+				{ id: 3, url: "https://fixture.test/", userTypedURL: "https://fixture.test/", title: "Fixture" },
+			],
+		});
+		expect(messages(child).find((message) => message.id === id)).toMatchObject({
+			result: {
+				entries: [
+					{ id: 1, url: "", userTypedURL: "", title: "" },
+					{ id: 2, url: "", userTypedURL: "", title: "" },
+					{ id: 3, url: "https://fixture.test/", title: "Fixture" },
+				],
+			},
+		});
+		const blocked = send("Page.navigateToHistoryEntry", { entryId: 1 });
+		const unknown = send("Page.navigateToHistoryEntry", { entryId: 99 });
+		send("Page.navigateToHistoryEntry", { entryId: 2 });
+		expect(messages(child).find((message) => message.id === blocked)).toHaveProperty("error");
+		expect(messages(child).find((message) => message.id === unknown)).toHaveProperty("error");
+		expect(commands(extension).at(-1)).toMatchObject({
+			method: "Page.navigateToHistoryEntry",
+			params: { entryId: 2 },
+		});
+		reply(commands(extension).at(-1)!.id);
+		const settled = connection.settle(1000);
+		await vi.advanceTimersByTimeAsync(0);
+		reply(commands(extension).at(-1)!.id); // Fetch.disable
+		expect((await settled).safe).toBe(true);
+	});
+
+	it("lets a script answer dialogs and dismisses one it leaves open", async () => {
+		const { create_child, emit, onEvent, extension } = make_transport();
+		const { connection, child, send, start } = create_child(undefined, true);
+		const dialog = { type: "confirm", message: "Fixture", defaultPrompt: "", url: "https://fixture.test/" };
+		start();
+		emit("Page.javascriptDialogOpening", dialog);
+		expect(messages(child).some((message) => message.method === "Page.javascriptDialogOpening")).toBe(true);
+		send("Page.handleJavaScriptDialog", { accept: true });
+		emit("Page.javascriptDialogClosed", { result: true, userInput: "" });
+		emit("Page.javascriptDialogOpening", dialog);
+		expect(await connection.settle(1000)).toEqual({ safe: true, reason: null });
+		expect(onEvent).not.toHaveBeenCalled();
+		expect(
+			commands(extension)
+				.filter((request) => request.method === "Page.handleJavaScriptDialog")
+				.map((request) => request.params.accept),
+		).toEqual([true, false]);
 	});
 });

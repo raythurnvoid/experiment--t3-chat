@@ -26,6 +26,22 @@ private command socket. `src/playwriter-executor.ts` contains fixed read, act,
 navigate, and capture templates. The model supplies data only. It cannot send
 JavaScript, CDP, a share key, or a socket URL.
 
+The runner also accepts a `script` operation (code up to 20,000 characters). It
+runs in the same snippet executor as the cloud browser (`src/snippet-executor.ts`),
+with `page`, `frame`, `expect`, and `state`. `emitFile` throws there for now. The
+app does not send `script` yet. Script rules in the shared tab:
+
+- The script may navigate, reload, go back, and answer dialogs. Dialogs it leaves
+  open are dismissed when the command ends.
+- Requests to blocked sites fail (`Fetch` with `BlockedByClient`). Any frame on a
+  blocked site stops the script, and the command returns `blocked_site` with no
+  output and no saved `state`, even when the page went back to an allowed site.
+- History entries show only the current url. Going to an entry checks its real url.
+- Paste keys (Ctrl+V, Meta+V, Shift+Insert) and middle clicks are refused, so a
+  script cannot read the user's clipboard.
+- A script that hits its time limit still completes with `command_failed`. A script
+  that never answers ends `unknown`; a clean drain keeps the connection.
+
 `src/playwriter-transport.ts` is the remote protocol bridge. It translates
 extension messages for one confirmed native page and its real frames/workers.
 Each command gets a fresh child socket. The caller keeps the physical remote
@@ -205,9 +221,10 @@ Operational outcomes return HTTP 200 with `{ ok: true }` or
   triple, session/nav/load/control ids, command id, source identity, deadline,
   receipt-resolution deadline, and code (20 KB max). Web calls also require
   `tabId`, `tabGen`, `policyRevision`, and `selectionRevision`. Returns
-  `succeeded` with result, files, popups, console/page errors, and logs; or
-  `errored`, `timed_out`, or `tainted` (target escape: the session is closed
-  and the result is discarded). `succeeded` also has `downloads` (always `[]`
+  `succeeded` with result, files, popups, console/page errors, logs, and
+  `stateWarnings`; or `errored`, `timed_out`, or `tainted` (target escape: the
+  session is closed and the result is discarded). `timed_out` keeps the session
+  open (see Script state). `succeeded` also has `downloads` (always `[]`
   in file mode; see Downloads and uploads). Refusals: `busy`, `control`, `stale_*`,
   `expired`, `closed`, `session_limit`, `busy_command`, `not_ready`, and in
   web mode `agent_access_off` and `agent_blocked_site`.
@@ -624,6 +641,23 @@ error and leaves the connection usable. A malformed provider reply closes it.
 The header check bounds image dimensions; it does not decode the full image.
 There is no two-capture limit. Generic file exports do not use image checks.
 
+## Script state
+
+Snippets get a `state` object. Its JSON value is kept between calls of the same
+chat while the browser session stays open. Each chat has its own value; the chat
+id comes from the server-set command source. The runner keeps at most 256 KiB per
+chat and the 8 most recent chats, and deletes them all when the session ends.
+
+Only plain JSON is saved. Pages, handles, functions, class instances such as
+`Date`, and cycles are dropped, and `stateWarnings` names each dropped path. An
+oversized value is not saved and gets a warning. `state` is saved only together
+with output the model gets back: a blocked site, a tainted run, or an unknown
+outcome saves nothing. A failed or timed-out run still saves it.
+
+The snippet stops itself 3 seconds before the command deadline (soft limit). The
+host then still has time to drain and check the browser, so `timed_out` keeps the
+session open. Only a hard timeout of the isolate closes the session.
+
 ## Isolation posture
 
 - **One-command gate.** The snippet's only binding allows exactly
@@ -642,7 +676,10 @@ There is no two-capture limit. Generic file exports do not use image checks.
 - **Command lifetime.** The connection moves from available to consumed,
   revoked, then settled. Revocation refuses new calls. The bridge drains
   accepted calls, removes its scripts and bindings, releases held input, and
-  stops its screencast. The trusted host then checks provider context/target
+  stops its screencast. Page reads (`Runtime.evaluate`, `callFunctionOn`,
+  `getProperties`, and DOM reads) that are still waiting are answered with an
+  error at revocation, so an endless `page.evaluate` cannot block the drain.
+  Input and navigation replies are still awaited. The trusted host then checks provider context/target
   inventory, controller URL, and page nonce before marking the command settled.
   Only a settled command may release its slot without closing the browser.
 - **No snippet network.** `globalOutbound: null` makes fetch/connect throw.
@@ -650,8 +687,8 @@ There is no two-capture limit. Generic file exports do not use image checks.
 - **No ambient authority.** User code runs with an undefined receiver, so it
   cannot reach the loader env. The provider session id never leaves the
   runner; both callers and the child use the opaque app session id.
-- **Bounded child.** CPU/subrequest loader limits, an in-snippet timeout, and
-  a parent wall clock. Infinite loops map to `timed_out`.
+- **Bounded child.** CPU/subrequest loader limits, an in-snippet soft timeout,
+  and a parent wall clock. Infinite loops map to `timed_out`.
 - **Network egress.** Acquisition guardrails latch `["esm.sh"]` for the
   session lifetime. They cover HTTP/HTTPS navigation and subresources outside
   that list, even when a snippet removes its Playwright routes. A blocked

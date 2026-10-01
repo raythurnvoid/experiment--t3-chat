@@ -74,6 +74,8 @@ export const playwriter_browser_operation_schema = z.union([
 		.strict(),
 	z.object({ kind: z.literal("navigate"), url: z.string().min(1).max(8192), lastObservationRevision: id }).strict(),
 	z.object({ kind: z.literal("capture"), format: z.enum(["png", "jpeg"]) }).strict(),
+	// A free Playwright script. No tool sends it yet.
+	z.object({ kind: z.literal("script"), code: z.string().min(1).max(20_000) }).strict(),
 ]);
 export type PlaywriterBrowserOperation = z.infer<typeof playwriter_browser_operation_schema>;
 
@@ -227,6 +229,25 @@ export const playwriter_browser_observation_schema = z.discriminatedUnion("kind"
 		.strict(),
 ]);
 
+/**
+ * What a `script` command gives back. The runner sends it only with a `completed` receipt. The
+ * limits match the cloud browser.
+ */
+const script_output = z
+	.object({
+		status: z.enum(["succeeded", "errored", "timed_out"]),
+		resultJson: z.string().max(16_384).nullable(),
+		resultTruncated: z.boolean(),
+		error: z.object({ name: z.string().max(128), message: z.string().max(1001) }).strict().nullable(),
+		logs: z.array(z.string().max(16_384)).max(100),
+		logsTruncated: z.boolean(),
+		consoleEntries: z.array(z.string().max(4096)).max(50),
+		pageErrors: z.array(z.string().max(4096)).max(50),
+		stateWarnings: z.array(z.string().max(400)).max(20),
+	})
+	.strict();
+export type PlaywriterBrowserScriptOutput = z.infer<typeof script_output>;
+
 export const playwriter_browser_response_schema = z.union([
 	z.object({ ok: z.literal(true), runtime: playwriter_browser_runtime_schema }).strict(),
 	z
@@ -237,6 +258,7 @@ export const playwriter_browser_response_schema = z.union([
 			completedLease: completed_lease.nullable(),
 			result: playwriter_browser_result_schema.nullable(),
 			observation: playwriter_browser_observation_schema.optional(),
+			script: script_output.optional(),
 			consumedAck: playwriter_browser_receipt_request_schema.optional(),
 		})
 		.strict(),

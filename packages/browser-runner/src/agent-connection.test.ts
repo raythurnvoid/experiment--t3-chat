@@ -315,9 +315,19 @@ describe("AgentConnection", () => {
 		expect(messages(child).find((message) => message.id === 2)).toEqual({ id: 2, sessionId: "page-session", error: { code: -32000, message: "Browser access was revoked." } });
 	});
 
-	it.each([false, true])("marks undrained work unsafe with child error=%s", async (childError) => {
+	it("stops waiting for a page read at revoke and drops its late reply", async () => {
+		const { bridge, send, child, reply, onUnsafe } = make_connection({ autoReply: false });
+		const read = send("Runtime.callFunctionOn", { functionDeclaration: "() => new Promise(() => {})", objectId: "o1" });
+		bridge.revoke();
+		expect(messages(child).at(-1)).toMatchObject({ id: read.id, error: { message: "Browser access was revoked." } });
+		reply(read, { result: { value: "late" } });
+		expect(await bridge.settle(1000)).toMatchObject({ safe: true });
+		expect(onUnsafe).not.toHaveBeenCalled();
+	});
+
+	it.each([false, true])("marks undrained input unsafe with child error=%s", async (childError) => {
 		const { bridge, send, downstream, onUnsafe } = make_connection({ autoReply: false });
-		send("Runtime.evaluate", { expression: "pending", contextId: 1 });
+		send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 1, y: 2 });
 		if (childError) downstream.dispatchEvent(new Event("error"));
 		const settlement = bridge.settle(1000);
 		await vi.advanceTimersByTimeAsync(1000);
