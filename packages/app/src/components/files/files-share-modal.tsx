@@ -1,7 +1,7 @@
 import "./files-share-modal.css";
 
 import { usePaginatedQuery, useQueries, useQuery } from "convex/react";
-import { Globe, Link, Lock, Plus, ShieldCheck, Trash2 } from "lucide-react";
+import { Lock, Plus, ShieldCheck, Trash2 } from "lucide-react";
 import { memo, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
@@ -42,7 +42,7 @@ import {
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { format_time } from "@/lib/date.ts";
 import { url_share_link } from "@/lib/urls.ts";
-import { compute_fallback_user_name } from "@/lib/utils.ts";
+import { cn, compute_fallback_user_name } from "@/lib/utils.ts";
 import {
 	access_control_FILE_SHARE_LEVEL_KEYS,
 	access_control_FILE_SHARE_LEVELS,
@@ -242,13 +242,8 @@ const FilesShareModalEntry = memo(function FilesShareModalEntry(props: FilesShar
 // #region link
 type FilesShareModalLink_ClassNames =
 	| "FilesShareModalLink"
-	| "FilesShareModalLink-icon"
-	| "FilesShareModalLink-main"
-	| "FilesShareModalLink-title"
-	| "FilesShareModalLink-text"
-	| "FilesShareModalLink-notes"
+	| "FilesShareModalLink-created"
 	| "FilesShareModalLink-error"
-	| "FilesShareModalLink-actions"
 	| "FilesShareModalLink-level-trigger";
 
 type FilesShareModalLink_CustomAttributes = {
@@ -272,98 +267,78 @@ const FilesShareModalLink = memo(function FilesShareModalLink(props: FilesShareM
 	const levelLabel = link ? access_control_FILE_SHARE_LEVELS.read.label : "No access";
 
 	return (
-		<div
-			className={"FilesShareModalLink" satisfies FilesShareModalLink_ClassNames}
+		<section
+			aria-label="Anyone with the link"
+			className={cn(
+				"FilesShareModal-section" satisfies FilesShareModal_ClassNames,
+				"FilesShareModalLink" satisfies FilesShareModalLink_ClassNames,
+			)}
 			{...({ "data-share-link": link ? "on" : "off" } satisfies FilesShareModalLink_CustomAttributes)}
 		>
-			<div className={"FilesShareModalLink-icon" satisfies FilesShareModalLink_ClassNames} aria-hidden>
-				<Link />
+			{/* The heading and the sentence stack in the first column. The level picker and Copy sit in the
+			    second column, as the help button does in the Properties modal. */}
+			<div className={"FilesShareModal-section-header" satisfies FilesShareModal_ClassNames}>
+				<h3 className={"FilesShareModal-section-heading" satisfies FilesShareModal_ClassNames}>Anyone with the link</h3>
+				<p className={"FilesShareModal-section-text" satisfies FilesShareModal_ClassNames}>
+					{link
+						? "Anyone who has the link can view this file without signing in."
+						: "Only people with access can open this file."}
+				</p>
+
+				<div className={"FilesShareModal-section-actions" satisfies FilesShareModal_ClassNames}>
+					<MySelect
+						value={link ? "on" : "off"}
+						setValue={(value) => {
+							const enabled = value === "on";
+							// Choosing the level it already has changes nothing, so it sends nothing.
+							if (enabled !== Boolean(link)) {
+								onEnabledChange(enabled);
+							}
+						}}
+					>
+						{/* Stays enabled while its own write runs, same reason as a row's level trigger. */}
+						<MySelectTrigger disabled={busy && !pending}>
+							<MyButton
+								type="button"
+								variant="outline"
+								className={"FilesShareModalLink-level-trigger" satisfies FilesShareModalLink_ClassNames}
+								aria-label="Anyone with the link"
+								aria-busy={pending || undefined}
+							>
+								<span>{pending ? "Saving..." : levelLabel}</span>
+								<MySelectOpenIndicator />
+							</MyButton>
+						</MySelectTrigger>
+						<MySelectPopover unmountOnHide>
+							<MySelectPopoverContent>
+								<MySelectItem value="off">
+									No access
+									{!link ? <MySelectItemIndicator /> : null}
+								</MySelectItem>
+								<MySelectItem value="on">
+									{access_control_FILE_SHARE_LEVELS.read.label}
+									{link ? <MySelectItemIndicator /> : null}
+								</MySelectItem>
+							</MySelectPopoverContent>
+						</MySelectPopover>
+					</MySelect>
+
+					{link ? <CopyIconButton text={url_share_link({ token: link.token })} tooltipCopy="Copy link" /> : null}
+				</div>
 			</div>
 
-			<div className={"FilesShareModalLink-main" satisfies FilesShareModalLink_ClassNames}>
-				<span className={"FilesShareModalLink-title" satisfies FilesShareModalLink_ClassNames}>
-					Anyone with the link
-				</span>
-				{link ? (
-					<>
-						<span className={"FilesShareModalLink-text" satisfies FilesShareModalLink_ClassNames}>
-							Anyone who has the link can view this file without signing in. Visitors see saved changes, including
-							frontmatter and author text.
-						</span>
-						<span className={"FilesShareModalLink-text" satisfies FilesShareModalLink_ClassNames}>
-							Saved edits from people, APIs, and plugins appear here, including allowed images and videos.
-						</span>
-						<span className={"FilesShareModalLink-text" satisfies FilesShareModalLink_ClassNames}>
-							Link created by {link.creatorName} on {format_time(link.createdAt)}.
-						</span>
-						<ul className={"FilesShareModalLink-notes" satisfies FilesShareModalLink_ClassNames}>
-							<li>
-								Turning it off stops new visits. Images and videos that a visitor already opened may keep working for up
-								to 15 minutes.
-							</li>
-							<li>Moving this file to another folder turns off its public link.</li>
-							<li>Replacing this file with a new upload turns off its public link.</li>
-							<li>
-								Restricting or unrestricting this file turns off its public link. A change like this on a parent folder
-								does the same.
-							</li>
-							<li>Removing an integration's ability to edit this file turns off its public link.</li>
-							<li>An integration may publish an image here even if it cannot download it directly.</li>
-						</ul>
-					</>
-				) : (
-					<span className={"FilesShareModalLink-text" satisfies FilesShareModalLink_ClassNames}>
-						Only people with access can open this file.
-					</span>
-				)}
-				{error ? (
-					<span className={"FilesShareModalLink-error" satisfies FilesShareModalLink_ClassNames} role="alert">
-						{error}
-					</span>
-				) : null}
-			</div>
+			{link ? (
+				<p className={"FilesShareModalLink-created" satisfies FilesShareModalLink_ClassNames}>
+					Link created by {link.creatorName} on {format_time(link.createdAt)}.
+				</p>
+			) : null}
 
-			<div className={"FilesShareModalLink-actions" satisfies FilesShareModalLink_ClassNames}>
-				<MySelect
-					value={link ? "on" : "off"}
-					setValue={(value) => {
-						const enabled = value === "on";
-						// Choosing the level it already has changes nothing, so it sends nothing.
-						if (enabled !== Boolean(link)) {
-							onEnabledChange(enabled);
-						}
-					}}
-				>
-					{/* Stays enabled while its own write runs, same reason as a row's level trigger. */}
-					<MySelectTrigger disabled={busy && !pending}>
-						<MyButton
-							type="button"
-							variant="outline"
-							className={"FilesShareModalLink-level-trigger" satisfies FilesShareModalLink_ClassNames}
-							aria-label="Anyone with the link"
-							aria-busy={pending || undefined}
-						>
-							<span>{pending ? "Saving..." : levelLabel}</span>
-							<MySelectOpenIndicator />
-						</MyButton>
-					</MySelectTrigger>
-					<MySelectPopover unmountOnHide>
-						<MySelectPopoverContent>
-							<MySelectItem value="off">
-								No access
-								{!link ? <MySelectItemIndicator /> : null}
-							</MySelectItem>
-							<MySelectItem value="on">
-								{access_control_FILE_SHARE_LEVELS.read.label}
-								{link ? <MySelectItemIndicator /> : null}
-							</MySelectItem>
-						</MySelectPopoverContent>
-					</MySelectPopover>
-				</MySelect>
-
-				{link ? <CopyIconButton text={url_share_link({ token: link.token })} tooltipCopy="Copy link" /> : null}
-			</div>
-		</div>
+			{error ? (
+				<p className={"FilesShareModalLink-error" satisfies FilesShareModalLink_ClassNames} role="alert">
+					{error}
+				</p>
+			) : null}
+		</section>
 	);
 });
 // #endregion link
@@ -372,12 +347,11 @@ const FilesShareModalLink = memo(function FilesShareModalLink(props: FilesShareM
 type FilesShareModal_ClassNames =
 	| "FilesShareModal"
 	| "FilesShareModal-body"
-	| "FilesShareModal-status"
-	| "FilesShareModal-status-icon"
-	| "FilesShareModal-status-main"
-	| "FilesShareModal-status-title"
-	| "FilesShareModal-status-text"
-	| "FilesShareModal-status-actions"
+	| "FilesShareModal-section"
+	| "FilesShareModal-section-header"
+	| "FilesShareModal-section-heading"
+	| "FilesShareModal-section-text"
+	| "FilesShareModal-section-actions"
 	| "FilesShareModal-add"
 	| "FilesShareModal-add-principal-trigger"
 	| "FilesShareModal-add-level-trigger"
@@ -781,62 +755,59 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 						<div className={"FilesShareModal-body" satisfies FilesShareModal_ClassNames}>
 							{/* `data-share-scope` says which of the three states this is, so a browser test never has
 							    to read the wording. */}
-							<div
-								className={"FilesShareModal-status" satisfies FilesShareModal_ClassNames}
+							<section
+								aria-label="Access"
+								className={"FilesShareModal-section" satisfies FilesShareModal_ClassNames}
 								data-share-scope={scope ? (scope.isSelf ? "self" : "inherited") : "open"}
 							>
-								<div className={"FilesShareModal-status-icon" satisfies FilesShareModal_ClassNames} aria-hidden>
-									{scope ? <Lock /> : <Globe />}
-								</div>
-
-								<div className={"FilesShareModal-status-main" satisfies FilesShareModal_ClassNames}>
-									<span className={"FilesShareModal-status-title" satisfies FilesShareModal_ClassNames}>
+								<div className={"FilesShareModal-section-header" satisfies FilesShareModal_ClassNames}>
+									<h3 className={"FilesShareModal-section-heading" satisfies FilesShareModal_ClassNames}>
 										{!scope
 											? "Everyone in this workspace"
 											: scope.isSelf
 												? "Restricted"
 												: `Shared through ${scope.name}`}
-									</span>
-									<span className={"FilesShareModal-status-text" satisfies FilesShareModal_ClassNames}>
+									</h3>
+									<p className={"FilesShareModal-section-text" satisfies FilesShareModal_ClassNames}>
 										{!scope
 											? `Anybody whose role lets them read workspace content can open this ${nodeKindText}.`
 											: scope.isSelf
 												? "A workspace role does not open this on its own. Only the people, roles, and service accounts listed below, plus the organization owner."
 												: `The folder ${scope.path} decides who can open this ${nodeKindText}.`}
-									</span>
-								</div>
+									</p>
 
-								{shareState.canManage ? (
-									<div className={"FilesShareModal-status-actions" satisfies FilesShareModal_ClassNames}>
-										{/* `canRestrict`, not `canManage`: restricting gives the caller a `manage` grant, and
-										    the mutation refuses somebody who could not hand that level to anybody else. */}
-										{!scope ? (
-											<MyButton
-												disabled={busy || !shareState.canRestrict}
-												aria-busy={pendingKey === "restrict" || undefined}
-												onClick={handleRestrict}
-											>
-												<Lock aria-hidden />
-												{pendingKey === "restrict" ? "Restricting..." : "Restrict access"}
-											</MyButton>
-										) : !scope.isSelf ? (
-											<>
-												<MyButton variant="outline" disabled={busy} onClick={handleStepIntoScope}>
-													Manage {scope.name}
-												</MyButton>
+									{shareState.canManage ? (
+										<div className={"FilesShareModal-section-actions" satisfies FilesShareModal_ClassNames}>
+											{/* `canRestrict`, not `canManage`: restricting gives the caller a `manage` grant, and
+											    the mutation refuses somebody who could not hand that level to anybody else. */}
+											{!scope ? (
 												<MyButton
-													variant="outline"
-													disabled={busy}
+													disabled={busy || !shareState.canRestrict}
 													aria-busy={pendingKey === "restrict" || undefined}
 													onClick={handleRestrict}
 												>
-													{pendingKey === "restrict" ? "Restricting..." : "Restrict separately"}
+													<Lock aria-hidden />
+													{pendingKey === "restrict" ? "Restricting..." : "Restrict access"}
 												</MyButton>
-											</>
-										) : null}
-									</div>
-								) : null}
-							</div>
+											) : !scope.isSelf ? (
+												<>
+													<MyButton variant="outline" disabled={busy} onClick={handleStepIntoScope}>
+														Manage {scope.name}
+													</MyButton>
+													<MyButton
+														variant="outline"
+														disabled={busy}
+														aria-busy={pendingKey === "restrict" || undefined}
+														onClick={handleRestrict}
+													>
+														{pendingKey === "restrict" ? "Restricting..." : "Restrict separately"}
+													</MyButton>
+												</>
+											) : null}
+										</div>
+									) : null}
+								</div>
+							</section>
 
 							{/* A link opens one file, never a folder, and only a manager may turn it on or off. */}
 							{shareState.nodeKind === "file" && shareState.canManage ? (
@@ -857,194 +828,205 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 								/>
 							) : null}
 
-							{canEditList ? (
-								<div className={"FilesShareModal-add" satisfies FilesShareModal_ClassNames}>
-									<MySelect value={addPrincipalValue} setValue={(value) => setAddPrincipalValue(value as string)}>
-										{/* Stays enabled while its own add runs, same reason as a row's level trigger:
-										    `handleAdd` puts focus back here, and a disabled button cannot take it. */}
-										<MySelectTrigger disabled={busy && pendingKey !== "add"}>
-											<MyButton
-												ref={addPrincipalTriggerRef}
-												type="button"
-												variant="outline"
-												className={"FilesShareModal-add-principal-trigger" satisfies FilesShareModal_ClassNames}
-												aria-label="Person, role, or service account to add"
-												data-share-add-principal={addPrincipalValue}
-											>
-												<span>{selectedCandidateName ?? "Add a person, role, or account"}</span>
-												<MySelectOpenIndicator />
-											</MyButton>
-										</MySelectTrigger>
-										<MySelectPopover unmountOnHide sameWidth>
-											<MySelectPopoverScrollableArea>
-												<MySelectPopoverContent>
-													{shareState.canShareWithServiceAccounts ? (
-														<MySelectItemsGroup>
-															<MySelectItemsGroupText>Service accounts</MySelectItemsGroupText>
-															{serviceAccounts.results
-																.filter((account) => !takenPrincipalValues.has(`service_account:${account._id}`))
-																.map((account) => (
-																	<MySelectItem
-																		key={account._id}
-																		value={`service_account:${account._id}`}
-																		data-share-principal={`service_account:${account._id}`}
-																	>
-																		{account.name}
-																	</MySelectItem>
-																))}
-														</MySelectItemsGroup>
-													) : null}
-													<MySelectItemsGroup>
-														<MySelectItemsGroupText>People</MySelectItemsGroupText>
-														{candidateUsers.length === 0 ? (
-															<MySelectItem value="" disabled>
-																Everyone is already on the list
-															</MySelectItem>
-														) : (
-															candidateUsers.map((candidate) => {
-																const value = files_share_principal_value({
-																	kind: "user",
-																	userId: candidate.userId,
-																});
-
-																return (
-																	<MySelectItem key={value} value={value} data-share-principal={value}>
-																		{candidate.name}
-																		{addPrincipalValue === value ? <MySelectItemIndicator /> : null}
-																	</MySelectItem>
-																);
-															})
-														)}
-													</MySelectItemsGroup>
-													<MySelectItemsGroup separator>
-														<MySelectItemsGroupText>Roles</MySelectItemsGroupText>
-														{candidateRoles.length === 0 ? (
-															<MySelectItem value="" disabled>
-																{/* Empty for two different reasons. A caller who does not manage roles is offered no
-																    role at all, so the "already on the list" wording would be untrue for them. */}
-																{shareState.canShareWithRoles
-																	? "Every role is already on the list"
-																	: "Only people who manage roles can share with a role"}
-															</MySelectItem>
-														) : (
-															candidateRoles.map((candidate) => {
-																const value = files_share_principal_value({
-																	kind: "role",
-																	role: candidate.role,
-																});
-
-																return (
-																	<MySelectItem key={value} value={value} data-share-principal={value}>
-																		{candidate.name}
-																		{addPrincipalValue === value ? <MySelectItemIndicator /> : null}
-																	</MySelectItem>
-																);
-															})
-														)}
-													</MySelectItemsGroup>
-												</MySelectPopoverContent>
-											</MySelectPopoverScrollableArea>
-										</MySelectPopover>
-									</MySelect>
-
-									{shareState.canShareWithServiceAccounts &&
-									(serviceAccounts.status === "CanLoadMore" || serviceAccounts.status === "LoadingMore") ? (
-										<MyButton
-											variant="ghost"
-											disabled={serviceAccounts.status === "LoadingMore"}
-											onClick={() => serviceAccounts.loadMore(50)}
-										>
-											Load more accounts
-										</MyButton>
-									) : null}
-									<MySelect value={addLevel} setValue={(value) => setAddLevel(value as access_control_FileShareLevel)}>
-										<MySelectTrigger disabled={busy}>
-											<MyButton
-												type="button"
-												variant="outline"
-												className={"FilesShareModal-add-level-trigger" satisfies FilesShareModal_ClassNames}
-												aria-label="Access level for the new person, role, or account"
-												data-share-level={addLevel}
-											>
-												<span>{access_control_FILE_SHARE_LEVELS[addLevel].label}</span>
-												<MySelectOpenIndicator />
-											</MyButton>
-										</MySelectTrigger>
-										<MySelectPopover unmountOnHide>
-											<MySelectPopoverContent>
-												{access_control_FILE_SHARE_LEVEL_KEYS.map((levelKey) => (
-													<MySelectItem
-														key={levelKey}
-														value={levelKey}
-														data-share-level={levelKey}
-														disabled={
-															selectedPrincipal?.kind === "service_account" &&
-															!shareState.serviceGrantableLevels.includes(levelKey)
-														}
-													>
-														{access_control_FILE_SHARE_LEVELS[levelKey].label}
-														{addLevel === levelKey ? <MySelectItemIndicator /> : null}
-													</MySelectItem>
-												))}
-											</MySelectPopoverContent>
-										</MySelectPopover>
-									</MySelect>
-
-									<MyButton disabled={addDisabled} aria-busy={pendingKey === "add" || undefined} onClick={handleAdd}>
-										<Plus aria-hidden />
-										{pendingKey === "add" ? "Adding..." : "Add"}
-									</MyButton>
-								</div>
-							) : null}
-
 							{scope ? (
-								<ul
-									ref={listRef}
-									// Not reachable by Tab, but `handleRemove` can put focus here once the row a user
-									// was standing on is removed.
-									tabIndex={-1}
-									className={"FilesShareModal-list" satisfies FilesShareModal_ClassNames}
-									aria-label="People, roles, and service accounts with access"
+								<section
+									aria-label="People with access"
+									className={"FilesShareModal-section" satisfies FilesShareModal_ClassNames}
 								>
-									<FilesShareModalEntry
-										principal={{ kind: "user", userId: shareState.organizationOwnerUserId }}
-										name={read_display_name(userAnagraphicDict[shareState.organizationOwnerUserId])}
-										meta="Organization owner"
-										level={null}
-										editable={false}
-										pending={false}
-										busy={busy}
-										canRaiseRoleLevel={shareState.canShareWithRoles}
-										onLevelChange={handleLevelChange}
-										onRemove={handleRemove}
-									/>
+									<h3 className={"FilesShareModal-section-heading" satisfies FilesShareModal_ClassNames}>
+										People with access
+									</h3>
 
-									{entries.map((entry) => (
-										<FilesShareModalEntry
-											key={files_share_principal_value(entry.principal)}
-											principal={entry.principal}
-											name={entry.name}
-											meta={
-												entry.principal.kind === "role"
-													? `Everyone with the ${entry.name} role`
-													: access_control_FILE_SHARE_LEVELS[entry.level].description
-											}
-											level={entry.level}
-											editable={
-												canEditList &&
-												(entry.principal.kind !== "service_account" || shareState.canShareWithServiceAccounts)
-											}
-											grantableLevels={
-												entry.principal.kind === "service_account" ? shareState.serviceGrantableLevels : undefined
-											}
-											pending={pendingKey === files_share_principal_value(entry.principal)}
-											busy={busy}
-											canRaiseRoleLevel={shareState.canShareWithRoles}
-											onLevelChange={handleLevelChange}
-											onRemove={handleRemove}
-										/>
-									))}
-								</ul>
+									{canEditList ? (
+										<div className={"FilesShareModal-add" satisfies FilesShareModal_ClassNames}>
+											<MySelect value={addPrincipalValue} setValue={(value) => setAddPrincipalValue(value as string)}>
+												{/* Stays enabled while its own add runs, same reason as a row's level trigger:
+												    `handleAdd` puts focus back here, and a disabled button cannot take it. */}
+												<MySelectTrigger disabled={busy && pendingKey !== "add"}>
+													<MyButton
+														ref={addPrincipalTriggerRef}
+														type="button"
+														variant="outline"
+														className={"FilesShareModal-add-principal-trigger" satisfies FilesShareModal_ClassNames}
+														aria-label="Person, role, or service account to add"
+														data-share-add-principal={addPrincipalValue}
+													>
+														<span>{selectedCandidateName ?? "Add a person, role, or account"}</span>
+														<MySelectOpenIndicator />
+													</MyButton>
+												</MySelectTrigger>
+												<MySelectPopover unmountOnHide sameWidth>
+													<MySelectPopoverScrollableArea>
+														<MySelectPopoverContent>
+															{shareState.canShareWithServiceAccounts ? (
+																<MySelectItemsGroup>
+																	<MySelectItemsGroupText>Service accounts</MySelectItemsGroupText>
+																	{serviceAccounts.results
+																		.filter((account) => !takenPrincipalValues.has(`service_account:${account._id}`))
+																		.map((account) => (
+																			<MySelectItem
+																				key={account._id}
+																				value={`service_account:${account._id}`}
+																				data-share-principal={`service_account:${account._id}`}
+																			>
+																				{account.name}
+																			</MySelectItem>
+																		))}
+																</MySelectItemsGroup>
+															) : null}
+															<MySelectItemsGroup>
+																<MySelectItemsGroupText>People</MySelectItemsGroupText>
+																{candidateUsers.length === 0 ? (
+																	<MySelectItem value="" disabled>
+																		Everyone is already on the list
+																	</MySelectItem>
+																) : (
+																	candidateUsers.map((candidate) => {
+																		const value = files_share_principal_value({
+																			kind: "user",
+																			userId: candidate.userId,
+																		});
+
+																		return (
+																			<MySelectItem key={value} value={value} data-share-principal={value}>
+																				{candidate.name}
+																				{addPrincipalValue === value ? <MySelectItemIndicator /> : null}
+																			</MySelectItem>
+																		);
+																	})
+																)}
+															</MySelectItemsGroup>
+															<MySelectItemsGroup separator>
+																<MySelectItemsGroupText>Roles</MySelectItemsGroupText>
+																{candidateRoles.length === 0 ? (
+																	<MySelectItem value="" disabled>
+																		{/* Empty for two different reasons. A caller who does not manage roles is offered no
+																		    role at all, so the "already on the list" wording would be untrue for them. */}
+																		{shareState.canShareWithRoles
+																			? "Every role is already on the list"
+																			: "Only people who manage roles can share with a role"}
+																	</MySelectItem>
+																) : (
+																	candidateRoles.map((candidate) => {
+																		const value = files_share_principal_value({
+																			kind: "role",
+																			role: candidate.role,
+																		});
+
+																		return (
+																			<MySelectItem key={value} value={value} data-share-principal={value}>
+																				{candidate.name}
+																				{addPrincipalValue === value ? <MySelectItemIndicator /> : null}
+																			</MySelectItem>
+																		);
+																	})
+																)}
+															</MySelectItemsGroup>
+														</MySelectPopoverContent>
+													</MySelectPopoverScrollableArea>
+												</MySelectPopover>
+											</MySelect>
+
+											{shareState.canShareWithServiceAccounts &&
+											(serviceAccounts.status === "CanLoadMore" || serviceAccounts.status === "LoadingMore") ? (
+												<MyButton
+													variant="ghost"
+													disabled={serviceAccounts.status === "LoadingMore"}
+													onClick={() => serviceAccounts.loadMore(50)}
+												>
+													Load more accounts
+												</MyButton>
+											) : null}
+											<MySelect value={addLevel} setValue={(value) => setAddLevel(value as access_control_FileShareLevel)}>
+												<MySelectTrigger disabled={busy}>
+													<MyButton
+														type="button"
+														variant="outline"
+														className={"FilesShareModal-add-level-trigger" satisfies FilesShareModal_ClassNames}
+														aria-label="Access level for the new person, role, or account"
+														data-share-level={addLevel}
+													>
+														<span>{access_control_FILE_SHARE_LEVELS[addLevel].label}</span>
+														<MySelectOpenIndicator />
+													</MyButton>
+												</MySelectTrigger>
+												<MySelectPopover unmountOnHide>
+													<MySelectPopoverContent>
+														{access_control_FILE_SHARE_LEVEL_KEYS.map((levelKey) => (
+															<MySelectItem
+																key={levelKey}
+																value={levelKey}
+																data-share-level={levelKey}
+																disabled={
+																	selectedPrincipal?.kind === "service_account" &&
+																	!shareState.serviceGrantableLevels.includes(levelKey)
+																}
+															>
+																{access_control_FILE_SHARE_LEVELS[levelKey].label}
+																{addLevel === levelKey ? <MySelectItemIndicator /> : null}
+															</MySelectItem>
+														))}
+													</MySelectPopoverContent>
+												</MySelectPopover>
+											</MySelect>
+
+											<MyButton disabled={addDisabled} aria-busy={pendingKey === "add" || undefined} onClick={handleAdd}>
+												<Plus aria-hidden />
+												{pendingKey === "add" ? "Adding..." : "Add"}
+											</MyButton>
+										</div>
+									) : null}
+
+									{scope ? (
+										<ul
+											ref={listRef}
+											// Not reachable by Tab, but `handleRemove` can put focus here once the row a user
+											// was standing on is removed.
+											tabIndex={-1}
+											className={"FilesShareModal-list" satisfies FilesShareModal_ClassNames}
+											aria-label="People, roles, and service accounts with access"
+										>
+											<FilesShareModalEntry
+												principal={{ kind: "user", userId: shareState.organizationOwnerUserId }}
+												name={read_display_name(userAnagraphicDict[shareState.organizationOwnerUserId])}
+												meta="Organization owner"
+												level={null}
+												editable={false}
+												pending={false}
+												busy={busy}
+												canRaiseRoleLevel={shareState.canShareWithRoles}
+												onLevelChange={handleLevelChange}
+												onRemove={handleRemove}
+											/>
+
+											{entries.map((entry) => (
+												<FilesShareModalEntry
+													key={files_share_principal_value(entry.principal)}
+													principal={entry.principal}
+													name={entry.name}
+													meta={
+														entry.principal.kind === "role"
+															? `Everyone with the ${entry.name} role`
+															: access_control_FILE_SHARE_LEVELS[entry.level].description
+													}
+													level={entry.level}
+													editable={
+														canEditList &&
+														(entry.principal.kind !== "service_account" || shareState.canShareWithServiceAccounts)
+													}
+													grantableLevels={
+														entry.principal.kind === "service_account" ? shareState.serviceGrantableLevels : undefined
+													}
+													pending={pendingKey === files_share_principal_value(entry.principal)}
+													busy={busy}
+													canRaiseRoleLevel={shareState.canShareWithRoles}
+													onLevelChange={handleLevelChange}
+													onRemove={handleRemove}
+												/>
+											))}
+										</ul>
+									) : null}
+								</section>
 							) : null}
 						</div>
 					)}
@@ -1064,7 +1046,7 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 							<div className={"FilesShareModal-footer-spacer" satisfies FilesShareModal_ClassNames} />
 						</>
 					) : null}
-					<MyButton variant="ghost" disabled={busy} onClick={handleClose}>
+					<MyButton disabled={busy} onClick={handleClose}>
 						Done
 					</MyButton>
 				</MyModalFooter>

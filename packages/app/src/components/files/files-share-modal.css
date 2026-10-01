@@ -17,7 +17,6 @@
 	.FilesShareModal-body {
 		display: flex;
 		flex-direction: column;
-		gap: 16px;
 	}
 
 	.FilesShareModal-loading {
@@ -38,150 +37,99 @@
 	}
 	/* #endregion root */
 
-	/* #region status */
-	.FilesShareModal-status {
-		display: flex;
-		align-items: start;
-		gap: 12px;
-
-		padding: 14px 16px;
-		border: 1px solid var(--color-base-1-07);
-		border-radius: 10px;
-
-		background: var(--color-base-1-03);
-	}
-
-	.FilesShareModal-status-icon {
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		flex: none;
-
-		width: 32px;
-		height: 32px;
-		border-radius: 999px;
-
-		background: var(--color-base-1-05);
-		color: var(--color-fg-10);
-	}
-
-	.FilesShareModal-status-icon > svg {
-		width: 16px;
-		height: 16px;
-	}
-
-	.FilesShareModal-status-main {
+	/* #region section */
+	/* Separate the groups with one thin line, instead of putting a card around each group. Same as the
+	   Properties modal. */
+	.FilesShareModal-section {
 		display: flex;
 		flex-direction: column;
-		gap: 2px;
+		gap: 10px;
 
-		min-width: 0;
-		flex: 1;
+		padding: 14px 0;
+
+		border-top: 1px solid var(--color-base-1-05);
+
+		&:first-child {
+			padding-top: 0;
+			border-top: none;
+		}
+
+		&:last-child {
+			padding-bottom: 0;
+		}
 	}
 
-	.FilesShareModal-status-title {
-		font-size: 14px;
+	/* The heading and the sentence stack in the first column. The actions sit in the second column and
+	   span both rows, so their height never adds to a row. */
+	.FilesShareModal-section-header {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) auto;
+		column-gap: 12px;
+		row-gap: 10px;
+	}
+
+	.FilesShareModal-section-heading {
+		margin: 0;
+
+		font-size: 18px;
 		font-weight: 600;
-		color: var(--color-fg-12);
-	}
-
-	/* A folder path can be one long word, so it has to be allowed to break. Without this it pushes the
-	   buttons off the card. */
-	.FilesShareModal-status-text {
-		font-size: 13px;
-		line-height: 1.45;
-		color: var(--color-fg-08);
-		overflow-wrap: anywhere;
-	}
-
-	.FilesShareModal-status-actions {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		flex: none;
-		flex-wrap: wrap;
-		justify-content: end;
-	}
-	/* #endregion status */
-
-	/* #region link */
-	.FilesShareModalLink {
-		display: flex;
-		align-items: start;
-		gap: 12px;
-
-		padding: 14px 16px;
-		border: 1px solid var(--color-base-1-07);
-		border-radius: 10px;
-	}
-
-	.FilesShareModalLink-icon {
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		flex: none;
-
-		width: 32px;
-		height: 32px;
-		border-radius: 999px;
-
-		background: var(--color-base-1-05);
-		color: var(--color-fg-10);
-	}
-
-	.FilesShareModalLink-icon > svg {
-		width: 16px;
-		height: 16px;
-	}
-
-	.FilesShareModalLink-main {
-		display: flex;
-		flex-direction: column;
-		gap: 4px;
-
-		min-width: 0;
-		flex: 1;
-	}
-
-	.FilesShareModalLink-title {
-		font-size: 16px;
-		font-weight: 500;
+		letter-spacing: 0.01em;
 		color: var(--color-fg-11);
 	}
 
-	/* A creator's display name is free text, so it has to be allowed to break. */
-	.FilesShareModalLink-text {
-		font-size: 15px;
-		line-height: 1.45;
-		color: var(--color-fg-08);
-		overflow-wrap: anywhere;
+	.FilesShareModal-section-header > .FilesShareModal-section-heading {
+		grid-column: 1;
+		grid-row: 1;
 	}
 
-	.FilesShareModalLink-notes {
-		display: flex;
-		flex-direction: column;
-		gap: 2px;
+	/* A folder path or a creator's name can be one long word, so it has to be allowed to break. Without
+	   this it pushes the buttons out of the dialog. */
+	.FilesShareModal-section-text {
+		grid-column: 1;
+		grid-row: 2;
 
-		margin: 4px 0 0;
-		padding-inline-start: 18px;
+		margin: 0;
+
+		font-size: 16px;
+		line-height: 1.45;
+		color: var(--color-fg-08);
+
+		overflow-wrap: anywhere;
+		text-wrap: pretty;
+	}
+
+	.FilesShareModal-section-actions {
+		display: flex;
+		align-items: center;
+		justify-content: end;
+		flex-wrap: wrap;
+		gap: 8px;
+
+		grid-column: 2;
+		grid-row: 1 / span 2;
+		align-self: start;
+	}
+	/* #endregion section */
+
+	/* #region link */
+	.FilesShareModalLink-created {
+		margin: 0;
 
 		font-size: 15px;
 		line-height: 1.4;
 		color: var(--color-fg-08);
-	}
 
-	.FilesShareModalLink-error {
-		font-size: 15px;
-		line-height: 1.45;
-		color: var(--color-red-11);
 		overflow-wrap: anywhere;
 	}
 
-	.FilesShareModalLink-actions {
-		display: flex;
-		align-items: center;
-		gap: 4px;
-		flex: none;
+	.FilesShareModalLink-error {
+		margin: 0;
+
+		font-size: 15px;
+		line-height: 1.45;
+		color: var(--color-red-11);
+
+		overflow-wrap: anywhere;
 	}
 
 	.FilesShareModalLink-level-trigger {
@@ -289,14 +237,14 @@
 
 	/* A display name and a custom role name are both free text, so both have to be allowed to break. */
 	.FilesShareModalEntry-name {
-		font-size: 14px;
+		font-size: 16px;
 		font-weight: 500;
-		color: var(--color-fg-12);
+		color: var(--color-fg-11);
 		overflow-wrap: anywhere;
 	}
 
 	.FilesShareModalEntry-meta {
-		font-size: 12px;
+		font-size: 15px;
 		line-height: 1.4;
 		color: var(--color-fg-08);
 		overflow-wrap: anywhere;
@@ -317,21 +265,15 @@
 	/* #endregion entry row */
 
 	@media (max-width: 640px) {
-		.FilesShareModal-status {
-			flex-wrap: wrap;
+		/* Put the actions under the sentence, so the sentence keeps the full width. */
+		.FilesShareModal-section-header {
+			grid-template-columns: minmax(0, 1fr);
 		}
 
-		.FilesShareModal-status-actions {
-			width: 100%;
+		.FilesShareModal-section-actions {
+			grid-column: 1;
+			grid-row: 3;
 			justify-content: start;
-		}
-
-		.FilesShareModalLink {
-			flex-wrap: wrap;
-		}
-
-		.FilesShareModalLink-actions {
-			width: 100%;
 		}
 
 		.FilesShareModal-add {
