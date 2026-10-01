@@ -95,6 +95,10 @@ frontmatter until preparation rebuilds it.
 - **Key grammar** is `/^[\p{L}\p{N}_:-]+$/u`: letters (in any language), numbers, `_`, `-` and `:`. A
   colon is part of the key, so `slack:message-id` is one key. The dot is left out, because
   `metadata.a.b` would read like the real nesting `frontmatter.a.b` means.
+- **Design direction.** The search and filter grammar is being tuned so a whole query is a plain
+  string that is easy to put in a URL (like `?q=`). Prefer characters that need no escaping, and keep
+  `:` and `-` free for the grammar where we can. A "not" operator is not planned for now. Check this
+  note before changing the key grammar or adding syntax.
 - `packages/app/server/bash-meta-command.ts` repeats that grammar for `meta search`. **Change both
   together**, or a key a user can write becomes a key nobody can search for.
 
