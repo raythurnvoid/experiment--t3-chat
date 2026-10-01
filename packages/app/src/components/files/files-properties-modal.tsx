@@ -58,7 +58,7 @@ type FilesPropertiesModalFacts_CssVars = {
 	"--FilesPropertiesModalFacts-height": string;
 };
 
-const FACTS_LINE_HEIGHT = 19;
+const FACTS_LINE_HEIGHT = 22;
 const FACTS_PADDING = 10;
 
 // The editor only shows the facts, so it has no scrolling, cursor line, or minimap. Its height fits
@@ -70,7 +70,7 @@ const FACTS_EDITOR_OPTIONS = {
 	// Let Tab move focus on to the next control instead of staying in this block.
 	tabFocusMode: true,
 	automaticLayout: true,
-	fontSize: 13,
+	fontSize: 16,
 	lineHeight: FACTS_LINE_HEIGHT,
 	minimap: { enabled: false },
 	lineNumbers: "off",
@@ -1204,10 +1204,14 @@ const FilesPropertiesModalMetadata = memo(function FilesPropertiesModalMetadata(
 			// use tabs for indentation anyway.
 			tabFocusMode: true,
 			automaticLayout: true,
-			fontSize: 13,
-			lineHeight: 19,
+			fontSize: 16,
+			lineHeight: 22,
 			minimap: { enabled: false },
 			lineNumbers: "off",
+			// Start the text 14px from the left and draw no gutter. The placeholder is placed at the same 14px.
+			lineDecorationsWidth: 14,
+			folding: false,
+			glyphMargin: false,
 			padding: { top: 10, bottom: 10 },
 			scrollBeyondLastLine: false,
 			wordWrap: "on",

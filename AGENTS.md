@@ -946,6 +946,8 @@ Model intended absence explicitly with `T | null` or a discriminated union. Low-
 
 ## Component styles
 
+For font sizes and text colors, follow the design principles in [.agents/skills/ui-design/SKILL.md](.agents/skills/ui-design/SKILL.md). Readability comes first: main text is 16px, no sentence below 15px, nothing below 13px, and only the main text is bright.
+
 ### Class contracts and ownership
 
 - Give each rendered component one `<ComponentName>_ClassNames` union for every class string it owns.

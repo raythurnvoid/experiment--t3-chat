@@ -1,7 +1,9 @@
 @layer components {
 	/* #region root */
 	.FilesWritePolicyWritersModal {
-		width: min(34rem, calc(100vw - 2rem));
+		/* Wider to match the bigger text. `MyModalPopover` caps every modal at 600px, so lift that cap. */
+		width: min(42rem, calc(100vw - 2rem));
+		max-width: none;
 	}
 	/* #endregion root */
 
@@ -40,7 +42,7 @@
 	.FilesWritePolicyWritersModalContent-suggestion-hint {
 		flex: none;
 
-		font-size: 12px;
+		font-size: 15px;
 		color: var(--color-fg-08);
 	}
 
@@ -49,7 +51,7 @@
 	.FilesWritePolicyWritersModalContent-empty {
 		margin: 0;
 
-		font-size: 12px;
+		font-size: 15px;
 		line-height: 1.4;
 		color: var(--color-fg-08);
 
@@ -74,7 +76,7 @@
 	.FilesWritePolicyWritersModalContent-group-heading {
 		margin: 0;
 
-		font-size: 13px;
+		font-size: 18px;
 		font-weight: 600;
 		color: var(--color-fg-11);
 	}
@@ -135,7 +137,7 @@
 		text-overflow: ellipsis;
 		white-space: nowrap;
 
-		font-size: 13px;
+		font-size: 16px;
 		color: var(--color-fg-11);
 	}
 	/* #endregion content */
