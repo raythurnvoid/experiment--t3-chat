@@ -96,9 +96,8 @@ rules and limits live in `.agents/skills/cloud-browser/SKILL.md`. The older clou
   Then check `document.hidden`, `document.visibilityState`, and `document.hasFocus()`. The local
   Playwright client can otherwise make a hidden tab report visible. Never enable emulation to
   make a failed remote action pass. A background check does not prove minimized-window support.
-- A pasted Remote control link or copied `--remote` command in chat must show the local share
-  warning and send no message. `Remove share ID` removes the value. A bare 32-character ID can be
-  sent only after `This is another ID` and a second Send.
+- Chat has no share ID check. A pasted share ID, Remote control link, or `--remote` command sends
+  like any other message.
 - With the Browser panel hidden, ask the agent to open the cloud browser, list tabs, create a tab,
   run in that tab, reload it, and close it. Test both Ask and Agent modes. The Bash `browser`
   command must work before a session exists.

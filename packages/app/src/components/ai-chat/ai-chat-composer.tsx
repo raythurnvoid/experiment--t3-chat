@@ -20,7 +20,6 @@ import Text from "@tiptap/extension-text";
 import { ArrowUp, Check, Plus, Square, X } from "lucide-react";
 import { toast } from "sonner";
 import { Result } from "common/errors-as-values-utils.ts";
-import { playwriter_share_text_kind } from "../../../shared/playwriter-browser.ts";
 
 import { MyButton } from "@/components/my-button.tsx";
 import { MyChip, MyChipLabel, MyChipMedia, MyChipRemove, MyChipRow } from "@/components/my-chip.tsx";
@@ -86,7 +85,6 @@ export type AiChatComposer_ClassNames =
 	| "AiChatComposer-editor-content-container"
 	| "AiChatComposer-editor-content"
 	| "AiChatComposer-attachments"
-	| "AiChatComposer-share-warning"
 	| "AiChatComposer-actions"
 	| "AiChatComposer-configurations"
 	| "AiChatComposer-configurations-attach"
@@ -312,8 +310,6 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 	const composerTextRef = useRef(initialValue);
 
 	const [composerText, setComposerText] = useState(initialValue);
-	const [shareWarning, setShareWarning] = useState<"share" | "possible" | null>(null);
-	const [allowedPossibleText, setAllowedPossibleText] = useState<string | null>(null);
 	const isEmpty = composerText.trim().length === 0;
 
 	const [attachments, setAttachments] = useState<AiChatComposerAttachment[]>(() =>
@@ -630,13 +626,6 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 			}
 		}
 
-		const shareKind = playwriter_share_text_kind(nextComposerText);
-		if (shareKind && (shareKind === "share" || allowedPossibleText !== nextComposerText)) {
-			setShareWarning(shareKind);
-			return;
-		}
-		setShareWarning(null);
-		setAllowedPossibleText(null);
 		const wasAccepted = onSubmit(
 			nextComposerText,
 			attachmentsRef.current.map((item) => item.part),
@@ -655,20 +644,6 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 		if (currentEditor) {
 			currentEditor.commands.setContent(files_tiptap_empty_doc_json(), { emitUpdate: false });
 		}
-	};
-
-	const handleRemoveShare = () => {
-		const currentEditor = editorRef.current ?? editor;
-		const text = currentEditor ? get_composer_plain_text(currentEditor) : composerText;
-		const next = text
-			.replace(/https:\/\/playwriter\.dev\/remote-control#[a-f0-9]{32}\b/g, "")
-			.replace(/--remote(?:\s+|=)[a-f0-9]{32}\b/g, "")
-			.replace(/\b[a-f0-9]{32}\b/g, "")
-			.trim();
-		currentEditor?.commands.setContent(convert_plain_text_to_tiptap_json(next));
-		syncComposerText(next);
-		setShareWarning(null);
-		currentEditor?.commands.focus();
 	};
 
 	const handleCancel = () => {
@@ -985,29 +960,6 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 					)}
 				</MyIconButton>
 			</div>
-			{shareWarning && (
-				<div className={"AiChatComposer-share-warning" satisfies AiChatComposer_ClassNames} role="alert">
-					<p>
-						{shareWarning === "share"
-							? "Keep the browser share ID out of chat. Paste it in Browser settings, under Connect my browser."
-							: "This text may contain a browser share ID. If it is a share ID, use Browser settings. Other IDs can be sent."}
-					</p>
-					<MyButton variant="outline" onClick={handleRemoveShare}>
-						Remove share ID
-					</MyButton>
-					{shareWarning === "possible" && (
-						<MyButton
-							variant="ghost"
-							onClick={() => {
-								setAllowedPossibleText(composerTextRef.current);
-								setShareWarning(null);
-							}}
-						>
-							This is another ID
-						</MyButton>
-					)}
-				</div>
-			)}
 		</form>
 	);
 });
