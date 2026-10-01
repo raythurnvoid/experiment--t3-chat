@@ -2841,6 +2841,37 @@ const app_convex_schema = defineSchema({
 		updatedAt: v.number(),
 	}).index("by_organization_workspace_folder", ["organizationId", "workspaceId", "folderId"]),
 
+	/**
+	 * "Anyone with the link can view" for one file. At most one doc per file. Turning the link off
+	 * deletes the doc, and turning it on again makes a new token, so an old link never works again.
+	 * Lifecycle events that change who can see the file delete the doc too (`files_share_links_db.ts`).
+	 */
+	files_share_links: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		nodeId: v.id("files_nodes"),
+		/**
+		 * 32 random bytes as hex. Stored as plain text so a manager can copy the link again. Never log it.
+		 */
+		token: v.string(),
+		/**
+		 * The file's live restricted scope when the link was turned on. The view refuses when it differs.
+		 */
+		restrictedScopeNodeId: v.union(v.id("files_nodes"), v.null()),
+		/**
+		 * The file's ancestors from its parent up to the workspace root, from the live walk. A reparent
+		 * deletes this doc before they can go stale. Never returned to a visitor or by `list_workspace_links`.
+		 */
+		ancestorNodeIds: v.array(v.id("files_nodes")),
+		/**
+		 * Display and audit data only. The link does not depend on this user's membership.
+		 */
+		createdBy: v.id("users"),
+		createdAt: v.number(),
+	})
+		.index("by_token", ["token"])
+		.index("by_organization_workspace_node", ["organizationId", "workspaceId", "nodeId"]),
+
 	/** Exact text chunks for committed Yjs materializations and per-user pending updates. */
 	files_text_chunks: defineTable(
 		v.union(

@@ -70,6 +70,15 @@ function busy_tree_paths(op: Doc<"files_subtree_ops">) {
 }
 
 /**
+ * Whether one tree path holds the other. Only a folder's `treePath` ends with "/", and only a folder
+ * holds other paths. So a file `/docs` never overlaps a folder `/docs-archive/`.
+ */
+function tree_paths_overlap(left: string, right: string) {
+	const holds = (outer: string, inner: string) => outer === inner || (outer.endsWith("/") && inner.startsWith(outer));
+	return holds(left, right) || holds(right, left);
+}
+
+/**
  * The op that a new op on `treePaths` must wait for, or null. `waiter` is a queued op that asks
  * again: only running ops and ops queued before it count, so two waiters never wait for each other.
  */
@@ -93,15 +102,53 @@ export async function files_subtree_ops_db_find_blocker(
 		) {
 			continue;
 		}
-		// Only a folder's `treePath` ends with "/", and only a folder holds other paths. So a file `/docs`
-		// never overlaps a folder `/docs-archive/`.
-		const holds = (outer: string, inner: string) => outer === inner || (outer.endsWith("/") && inner.startsWith(outer));
 		const overlaps = busy_tree_paths(op).some((busyPath) =>
-			args.treePaths.some((treePath) => holds(busyPath, treePath) || holds(treePath, busyPath)),
+			args.treePaths.some((treePath) => tree_paths_overlap(busyPath, treePath)),
 		);
 		if (overlaps) return op;
 	}
 	return null;
+}
+
+/**
+ * For each of `treePaths`, whether a running or queued op overlaps it.
+ *
+ * `files_subtree_ops_db_find_blocker` stops at the first op that blocks any path, so it cannot tell
+ * which other paths a later op blocks. This reads every op of the workspace once instead. It returns
+ * null past `maxOps` ops, because a partial scan could miss a blocker.
+ *
+ * `beforeNextRead` is called before each read, with the op read last or null before the first read.
+ * When it returns false, the scan stops and returns null.
+ */
+export async function files_subtree_ops_db_find_blocked_paths(
+	ctx: QueryCtx | MutationCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		treePaths: readonly string[];
+		maxOps: number;
+		beforeNextRead?: (lastOp: Doc<"files_subtree_ops"> | null) => boolean;
+	},
+) {
+	const blocked = args.treePaths.map(() => false);
+	let opCount = 0;
+	if (args.beforeNextRead?.(null) === false) return null;
+	for await (const op of ctx.db
+		.query("files_subtree_ops")
+		.withIndex("by_organization_workspace_kind", (q) =>
+			q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId),
+		)) {
+		opCount += 1;
+		if (opCount > args.maxOps) return null;
+
+		const busyPaths = busy_tree_paths(op);
+		for (const [index, treePath] of args.treePaths.entries()) {
+			blocked[index] ||= busyPaths.some((busyPath) => tree_paths_overlap(busyPath, treePath));
+		}
+
+		if (args.beforeNextRead?.(op) === false) return null;
+	}
+	return blocked;
 }
 
 async function db_require_walk(ctx: QueryCtx | MutationCtx, opId: Id<"files_subtree_ops">) {

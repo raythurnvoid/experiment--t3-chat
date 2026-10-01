@@ -120,11 +120,11 @@ describe("files_search_query_parse", () => {
 		);
 		expect(parse_one("due:>2026-09-04").problem).toBeNull();
 		expect(parse_one("file.size:3").problem).toBe(
-			"Unknown file field. Use file.path, file.name, file.ext, file.kind, file.updated",
+			"Unknown file field. Use file.path, file.name, file.ext, file.kind, file.updated, file.link",
 		);
 		// The key problem comes before the value problem, and the cap before both.
 		expect(parse_one("file.size:").problem).toBe(
-			"Unknown file field. Use file.path, file.name, file.ext, file.kind, file.updated",
+			"Unknown file field. Use file.path, file.name, file.ext, file.kind, file.updated, file.link",
 		);
 		const capped = files_search_query_parse(
 			[...Array.from({ length: files_search_query_MAX_FILTERS }, (_, index) => `k${index}:v`), "file.size:"].join(" "),
@@ -183,6 +183,21 @@ describe("files_search_query_parse", () => {
 		expect(parse_one("file.kind:Folder").problem).toBeNull();
 		expect(parse_one("file.updated:2026-09-04").problem).toBeNull();
 		expect(parse_one("file.updated:>2026-09-04T10:00").problem).toBeNull();
+	});
+
+	test("file.link takes only public, in any case", () => {
+		expect(parse_one("file.link:public").problem).toBeNull();
+		expect(parse_one("file.link:Public").problem).toBeNull();
+		expect(parse_one("file.link:PUBLIC").problem).toBeNull();
+		expect(parse_one("!file.link:public").negated).toBe(true);
+		expect(parse_one("file.link:pub*").problem).toBe("file.link takes public, like file.link:public");
+		expect(parse_one("file.link:public*").problem).toBe("file.link takes public, like file.link:public");
+		expect(parse_one("file.link:private").problem).toBe("file.link takes public, like file.link:public");
+		expect(parse_one("file.link:*").problem).toBe("file.link needs a value");
+		expect(parse_one("file.link:").problem).toBe("file.link needs a value");
+		expect(parse_one("file.link:>public").problem).toBe("file.link does not support ranges");
+		// A link filter never asks the metadata index.
+		expect(files_search_query_to_plans(parse_one("file.link:public"))).toEqual([]);
 	});
 
 	test("closes an open quote in the last token and still flags it", () => {

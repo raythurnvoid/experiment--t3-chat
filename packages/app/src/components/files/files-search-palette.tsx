@@ -12,7 +12,7 @@ import { MyButton } from "@/components/my-button.tsx";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
 import { MyModal, MyModalPopover } from "@/components/my-modal.tsx";
 import { MySpinner } from "@/components/my-spinner.tsx";
-import { useFilesVisibleEntries, useFilesSearchMetadata } from "@/hooks/files-search-hooks.ts";
+import { useFilesVisibleEntries, useFilesSearchServerFilters } from "@/hooks/files-search-hooks.ts";
 import { useDebounce, useFn } from "@/hooks/utils-hooks.ts";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
@@ -70,10 +70,10 @@ const FilesSearchPaletteContent = memo(function FilesSearchPaletteContent(props:
 		[entries],
 	);
 	const {
-		searchMetadataTargetKeys,
-		isSearchLoading: isMetadataLoading,
-		isSearchFailed: isMetadataFailed,
-	} = useFilesSearchMetadata(membershipId, debouncedQuery, treeItems);
+		searchServerTargetKeys,
+		isSearchLoading: isServerFilterLoading,
+		isSearchFailed: isServerFilterFailed,
+	} = useFilesSearchServerFilters(membershipId, debouncedQuery, treeItems);
 	const parsed = useMemo(() => files_search_query_parse(debouncedQuery), [debouncedQuery]);
 	const text = `${parsed.text.replace(/"/gu, "").trim()}`;
 	const textQuery = detect_search_query_mode(text);
@@ -92,11 +92,11 @@ const FilesSearchPaletteContent = memo(function FilesSearchPaletteContent(props:
 								filter,
 								item,
 								targetKey: `${item.target.kind}:${item.target.id}`,
-								metadataTargetKeys: searchMetadataTargetKeys,
+								serverTargetKeys: searchServerTargetKeys,
 							}) === true,
 					),
 			),
-		[treeItems, hasInvalidFilter, parsed.filters, searchMetadataTargetKeys],
+		[treeItems, hasInvalidFilter, parsed.filters, searchServerTargetKeys],
 	);
 
 	// Filter the content query before its page limit, including when no candidate matches.
@@ -112,8 +112,8 @@ const FilesSearchPaletteContent = memo(function FilesSearchPaletteContent(props:
 		text.length >= 2 &&
 		text.length <= 200 &&
 		!hasInvalidFilter &&
-		!isMetadataLoading &&
-		!isMetadataFailed &&
+		!isServerFilterLoading &&
+		!isServerFilterFailed &&
 		!isEntriesFailed &&
 		textQuery.mode === "name" &&
 		treeItems !== undefined;
@@ -146,7 +146,7 @@ const FilesSearchPaletteContent = memo(function FilesSearchPaletteContent(props:
 	> = Object.values(useQueries(contentQueries));
 
 	const isFailed =
-		isEntriesFailed || isMetadataFailed || contentResponses.some((response) => response instanceof Error);
+		isEntriesFailed || isServerFilterFailed || contentResponses.some((response) => response instanceof Error);
 	const isTruncated = contentResponses.some(
 		(response) => response !== undefined && !(response instanceof Error) && response.truncated,
 	);
@@ -155,7 +155,7 @@ const FilesSearchPaletteContent = memo(function FilesSearchPaletteContent(props:
 		!isFailed &&
 		(searchQuery !== debouncedQuery ||
 			treeItems === undefined ||
-			isMetadataLoading ||
+			isServerFilterLoading ||
 			(canSearchContent && contentResponses.some((response) => response === undefined)));
 
 	const contentResults = contentResponses.flatMap((response) =>

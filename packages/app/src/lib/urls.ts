@@ -71,6 +71,27 @@ export function url_parse_file_link(
 	return { path: `/${path_extract_segments_from(linkPath).join("/")}` };
 }
 
+/**
+ * Build the full browser URL of a public file link.
+ *
+ * Unlike the `url_path_*` helpers, this includes the app base path, because people paste it outside
+ * the app. Every share URL comes from here, so a later move to a share domain changes one place.
+ */
+export function url_share_link(args: { token: string }) {
+	return new URL(`share/${args.token}`, new URL(import.meta.env.BASE_URL, window.location.origin)).href;
+}
+
+/**
+ * Tell whether a router pathname belongs to the public share page.
+ *
+ * Pass the router's own pathname: it has no base path and its static segments are already decoded.
+ * The share page loads without sign-in, so `main.tsx` and the root route use this to skip every
+ * private provider.
+ */
+export function url_is_share_path(pathname: string) {
+	return /^\/share(\/|$)/i.test(pathname);
+}
+
 export function url_path_api_keys(args: { organizationName: string; workspaceName: string }) {
 	return `/w/${args.organizationName}/${args.workspaceName}/api-keys`;
 }

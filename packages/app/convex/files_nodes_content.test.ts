@@ -25,6 +25,7 @@ import { files_yjs_doc_get_text } from "../shared/files-tiptap.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { files_nodes_db_hard_delete_node } from "./files_nodes.ts";
 import { files_nodes_content_db_publish_private_node } from "./files_nodes_content.ts";
+import { files_share_links_create_cleanup_state } from "./files_share_links_db.ts";
 import { files_media_validation_db_capture_versions } from "./files_media_validation.ts";
 import { files_pending_nodes_db_create, files_pending_nodes_db_discard } from "./files_pending_nodes.ts";
 import { files_private_storage_db_reserve } from "./files_private_storage.ts";
@@ -532,7 +533,12 @@ describe("files_nodes_content_db_publish_private_node", () => {
 				}
 				expect(await ctx.db.query("files_nodes").collect()).toEqual([]);
 			});
-			const result = await t.run(async (ctx) => files_nodes_content_db_publish_private_node(ctx, prepared));
+			const result = await t.run(async (ctx) =>
+				files_nodes_content_db_publish_private_node(ctx, {
+					...prepared,
+					shareLinkCleanup: files_share_links_create_cleanup_state(),
+				}),
+			);
 			if (result._nay) throw new Error(result._nay.message);
 			await t.run(async (ctx) => {
 				const node = await ctx.db.get("files_nodes", result._yay.target.id);
@@ -586,7 +592,12 @@ describe("files_nodes_content_db_publish_private_node", () => {
 			path: "/private.txt",
 		});
 		expect(occupant._nay).toBeUndefined();
-		const result = await t.run(async (ctx) => files_nodes_content_db_publish_private_node(ctx, prepared));
+		const result = await t.run(async (ctx) =>
+			files_nodes_content_db_publish_private_node(ctx, {
+				...prepared,
+				shareLinkCleanup: files_share_links_create_cleanup_state(),
+			}),
+		);
 		expect(result._nay).toBeDefined();
 		await t.run(async (ctx) => {
 			expect(await ctx.db.query("files_nodes").collect()).toHaveLength(1);
@@ -609,7 +620,12 @@ describe("files_nodes_content_db_publish_private_node", () => {
 		await t.run(async (ctx) =>
 			ctx.db.patch("files_r2_assets", prepared.prepared.contentAssetId, { uploadRetiredAt: Date.now() }),
 		);
-		const result = await t.run(async (ctx) => files_nodes_content_db_publish_private_node(ctx, prepared));
+		const result = await t.run(async (ctx) =>
+			files_nodes_content_db_publish_private_node(ctx, {
+				...prepared,
+				shareLinkCleanup: files_share_links_create_cleanup_state(),
+			}),
+		);
 		expect(result._nay?.name).toBe("target_changed");
 		expect(await t.run(async (ctx) => ctx.db.query("files_nodes").collect())).toEqual([]);
 		expect(await t.run(async (ctx) => ctx.db.query("files_pending_node_publish_receipts").collect())).toEqual([]);

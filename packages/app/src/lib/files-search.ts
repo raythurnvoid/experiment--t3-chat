@@ -39,19 +39,21 @@ export function detect_search_query_mode(rawQuery: string): { mode: SearchMode; 
 }
 
 /**
- * One filter against one tree item. `null` means the answer is not known: a metadata filter whose
- * server query has not answered, or whose query failed. Negation flips a known answer only.
+ * One filter against one tree item. `null` means the answer is not known: a metadata or `file.link`
+ * filter whose server query has not answered, or whose query failed. Negation flips a known answer only.
  */
 export function search_filter_matches_item(args: {
 	filter: files_search_query_Filter;
 	item: Pick<files_TreeItem, "name" | "path" | "kind" | "updatedAt" | "lowercaseExtension">;
 	targetKey: string;
-	metadataTargetKeys: ReadonlyMap<string, ReadonlySet<string> | null>;
+	serverTargetKeys: ReadonlyMap<string, ReadonlySet<string> | null>;
 }): boolean | null {
 	const { filter, item } = args;
 	const matches = ((/* iife */) => {
-		if (filter.key.namespace !== "file") {
-			const targetKeys = args.metadataTargetKeys.get(filter.raw);
+		// The server answers `file.link` too, with the workspace list of public links, under the chip's raw
+		// token like a metadata chip.
+		if (filter.key.namespace !== "file" || filter.key.name === "link") {
+			const targetKeys = args.serverTargetKeys.get(filter.raw);
 			return targetKeys ? targetKeys.has(args.targetKey) : null;
 		}
 

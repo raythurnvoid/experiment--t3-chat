@@ -102,6 +102,15 @@ const rate_limiter_CONFIG = {
 		capacity: 300,
 	},
 	files_pending_update_write: BULK_FILES_WRITE,
+	// Signed URLs for one public link, charged per target and keyed by the link doc, never by its
+	// token. Every visitor of the link shares it, so one page can load its file, or up to 50 images
+	// and videos, a few times in a row. A popular link waits for the refill while its text stays on screen.
+	files_share_link_download: {
+		kind: "token bucket",
+		rate: 200,
+		period: MINUTE,
+		capacity: 200,
+	},
 	// Sharing is bursty in the same way as `roles_write`: somebody restricts a folder and then adds
 	// three people to it in a few seconds. It gets its own bucket so that sharing several files does
 	// not eat the budget for managing organization roles, and the other way round.

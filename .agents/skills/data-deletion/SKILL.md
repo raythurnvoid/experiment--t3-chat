@@ -285,6 +285,12 @@ Current purge coverage includes:
   Every external upload uses a signed create-only PUT to its canonical key. Its job keeps
   `putMayArriveUntil` through `uploadUrlExpiresAt` plus the normal margin. An early delete makes
   the signed URL usable again, so this guard remains necessary.
+- `files_share_links` (public "Anyone with the link" docs) after the asset pass and before file
+  grants and `files_nodes`, because each doc points at a file node by id. This pass also runs for
+  data-only reset. Visitors lose access earlier: an organization or workspace deletion request, or
+  the workspace purge fence, already makes the public page answer "does not work". A single node
+  purge deletes its link too: `files_nodes_db_hard_delete_node` calls
+  `files_share_links_db_delete_for_node` before it deletes the node's other docs.
 - `access_control_permission_grants` before their file scope nodes. This purge step also runs for data-only reset, where the preserved home workspace never reaches structure deletion.
 - `files_nodes` after their assets and grants
 - Service destinations, `plugin_service_storage_attempts`, and targets after files and assets, through

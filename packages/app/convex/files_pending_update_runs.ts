@@ -56,6 +56,7 @@ import {
 	type get_file_pending_update_state_page_internal_Result,
 } from "./files_pending_updates.ts";
 import { files_nodes_db_apply_move, files_nodes_db_preflight_move } from "./files_nodes.ts";
+import { files_share_links_create_cleanup_state } from "./files_share_links_db.ts";
 import { files_db_get_pending_update, files_pending_update_yjs_state_digest } from "../server/files.ts";
 import { path_join, server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
@@ -3267,6 +3268,8 @@ export const commit_unit = internalMutation({
 			);
 			const moveIds = new Set(moves.map(({ proposal }) => proposal.target.id));
 			const reviewedPendingUpdateIds = new Set(selected.map(({ proposal }) => proposal._id));
+			// Share one public link cleanup across every move, publish, and archive in this unit.
+			const shareLinkCleanup = files_share_links_create_cleanup_state();
 			const replacedIds = new Set(
 				selected.flatMap(({ proposal }) =>
 					!proposal.pendingArchive && proposal.pendingMove?.replacesTarget?.kind === "saved"
@@ -3393,6 +3396,7 @@ export const commit_unit = internalMutation({
 					prepared: item.prepared,
 					reviewedPendingUpdateIds,
 					reviewRunId: run._id,
+					shareLinkCleanup,
 				});
 				if (saved._nay) refuse_unit(saved._nay.name ?? "needs_review", saved._nay.message);
 			}
@@ -3456,7 +3460,7 @@ export const commit_unit = internalMutation({
 						refuse_unit("needs_review", "The destination folder has private child changes. Review them first.");
 				}
 
-				await files_nodes_db_apply_move(ctx, planned._yay);
+				await files_nodes_db_apply_move(ctx, planned._yay, shareLinkCleanup);
 			}
 
 			for (const { item } of contentItems) {
@@ -3466,6 +3470,7 @@ export const commit_unit = internalMutation({
 					reviewedPendingUpdateIds,
 					reviewRunId: run._id,
 					validatedMedia: validatedMedia.get(item.prepared!.operationBatchIds[0]!),
+					shareLinkCleanup,
 				});
 				if (saved._nay) refuse_unit(saved._nay.name ?? "needs_review", saved._nay.message);
 				if (item.prepared!.kind === "private" && item.prepared!.partial) {
@@ -3509,6 +3514,7 @@ export const commit_unit = internalMutation({
 					membership,
 					pendingUpdate: current,
 					reviewedPendingUpdateIds,
+					shareLinkCleanup,
 				});
 				if (archived._nay) refuse_unit(archived._nay.name ?? "needs_review", archived._nay.message);
 			}

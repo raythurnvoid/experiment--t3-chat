@@ -11,6 +11,7 @@
 // - `file.path:/tasks`, `file.name:x`, `file.ext:md`, `file.kind:folder`, `file.updated:>DATE`
 //   filter on file fields. `frontmatter.x` and `metadata.x` name one namespace. A bare key asks
 //   both metadata kinds.
+// - `file.link:public` lists the files that have a public link. It takes no other value.
 //
 // The first dotted segment `file`, `frontmatter` and `metadata` is reserved. A frontmatter key
 // literally named `file` is written `frontmatter.file`.
@@ -35,7 +36,7 @@ export const files_search_query_MAX_FILTERS = 20;
  */
 export const files_search_query_FIELD_PATH_MAX_LENGTH = 160;
 
-export const files_search_query_FILE_FIELDS = ["path", "name", "ext", "kind", "updated"] as const;
+export const files_search_query_FILE_FIELDS = ["path", "name", "ext", "kind", "updated", "link"] as const;
 
 export type files_search_query_Key = {
 	/**
@@ -388,8 +389,8 @@ function local_day_bounds(value: string) {
 }
 
 /**
- * File fields have their own rules: a path is a folder, a kind is one of two words, and the
- * updated time is a day or a range.
+ * File fields have their own rules: a path is a folder, a kind is one of two words, a link is
+ * `public`, and the updated time is a day or a range.
  */
 function file_field_problem(name: string, match: FilterMatch) {
 	// Elsewhere a range bound can be a number or a date. An updated time is always a date, so
@@ -423,6 +424,11 @@ function file_field_problem(name: string, match: FilterMatch) {
 	}
 	if (name === "path" && match.op === "prefix") {
 		return "file.path takes a folder path, without *";
+	}
+	// The Files tree knows only one link state, so `public` is the only value. Case does not matter,
+	// like `file.kind`.
+	if (name === "link" && (match.op === "prefix" || match.value.toLowerCase() !== "public")) {
+		return "file.link takes public, like file.link:public";
 	}
 	return null;
 }

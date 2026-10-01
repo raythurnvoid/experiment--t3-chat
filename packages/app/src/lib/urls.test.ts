@@ -1,11 +1,14 @@
-import { describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
+import { createMemoryHistory, createRootRoute, createRouter } from "@tanstack/react-router";
 
 import {
 	app_tenant_default_workspace_for_organization,
 	app_tenant_defaults_from_organization_list,
 	app_tenant_primary_workspace_for_organization,
+	url_is_share_path,
 	url_parse_file_link,
 	url_path_file_by_node_id,
+	url_share_link,
 } from "./urls.ts";
 
 describe("url_parse_file_link", () => {
@@ -53,6 +56,83 @@ describe("url_parse_file_link", () => {
 		expect(url_parse_file_link("api.md")).toBeNull();
 		expect(url_parse_file_link("https://app.test/w/acme/main/chat")).toBeNull();
 		expect(url_parse_file_link("not a url at all")).toBeNull();
+	});
+});
+
+/**
+ * The pathname a real router gives for a browser path, like `app_router()` does with the app base.
+ */
+function router_pathname(args: { basepath: string; browserPath: string }) {
+	const router = createRouter({
+		routeTree: createRootRoute(),
+		basepath: args.basepath,
+		history: createMemoryHistory({ initialEntries: [args.browserPath] }),
+	});
+	return router.state.location.pathname;
+}
+
+describe("url_share_link", () => {
+	afterEach(() => {
+		vi.unstubAllEnvs();
+	});
+
+	test("builds the full URL at the root base", () => {
+		expect(url_share_link({ token: "abc123" })).toBe(`${window.location.origin}/share/abc123`);
+	});
+
+	test("keeps a non-root base in the URL", () => {
+		vi.stubEnv("BASE_URL", "/experiment--t3-chat/");
+
+		expect(url_share_link({ token: "abc123" })).toBe(`${window.location.origin}/experiment--t3-chat/share/abc123`);
+	});
+
+	test("gives a URL that the router of the same base sees as a share path", () => {
+		for (const basepath of ["/", "/experiment--t3-chat/"]) {
+			vi.stubEnv("BASE_URL", basepath);
+			const url = new URL(url_share_link({ token: "abc123" }));
+
+			const pathname = router_pathname({ basepath, browserPath: url.pathname });
+			expect(pathname).toBe("/share/abc123");
+			expect(url_is_share_path(pathname)).toBe(true);
+		}
+	});
+});
+
+describe("url_is_share_path", () => {
+	test("matches the share prefix in any case", () => {
+		expect(url_is_share_path("/share")).toBe(true);
+		expect(url_is_share_path("/share/")).toBe(true);
+		expect(url_is_share_path("/share/abc123")).toBe(true);
+		expect(url_is_share_path("/SHARE/abc123")).toBe(true);
+		// A path with more segments is still public. The router then shows the share not-found message.
+		expect(url_is_share_path("/share/abc123/extra")).toBe(true);
+	});
+
+	test("does not match other routes", () => {
+		expect(url_is_share_path("/")).toBe(false);
+		expect(url_is_share_path("/share-other")).toBe(false);
+		expect(url_is_share_path("/shared/abc123")).toBe(false);
+		expect(url_is_share_path("/w/acme/main/files")).toBe(false);
+		expect(url_is_share_path("/w/acme/main/share/abc123")).toBe(false);
+	});
+
+	test("reads the router pathname at both bases", () => {
+		for (const basepath of ["/", "/experiment--t3-chat/"]) {
+			const prefix = basepath === "/" ? "" : "/experiment--t3-chat";
+
+			// The router decodes an encoded static segment, so `%73hare` is the share route too.
+			expect(url_is_share_path(router_pathname({ basepath, browserPath: `${prefix}/%73hare/abc123` }))).toBe(true);
+			expect(url_is_share_path(router_pathname({ basepath, browserPath: `${prefix}/Share/abc123/` }))).toBe(true);
+			expect(url_is_share_path(router_pathname({ basepath, browserPath: `${prefix}/share` }))).toBe(true);
+			expect(url_is_share_path(router_pathname({ basepath, browserPath: `${prefix}/share/%ZZ` }))).toBe(true);
+			expect(url_is_share_path(router_pathname({ basepath, browserPath: `${prefix}/w/acme/main/files` }))).toBe(false);
+			expect(url_is_share_path(router_pathname({ basepath, browserPath: `${prefix}/share-other` }))).toBe(false);
+
+			// The router's `decodeURI` keeps an encoded slash, so this is one segment, not the share prefix.
+			const encodedSlash = router_pathname({ basepath, browserPath: `${prefix}/share%2Fabc123` });
+			expect(encodedSlash).toBe("/share%2Fabc123");
+			expect(url_is_share_path(encodedSlash)).toBe(false);
+		}
 	});
 });
 

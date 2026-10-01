@@ -31,6 +31,7 @@ import {
 	files_tail_lines_from_text,
 	yjs_reserve_and_increment_last_sequence,
 } from "./files_nodes.ts";
+import { files_share_links_create_cleanup_state } from "./files_share_links_db.ts";
 import {
 	db_insert_file_text_content,
 	files_nodes_create_yjs_snapshot_update_from_text,
@@ -2176,7 +2177,7 @@ describe("files_nodes_db_preflight_move", () => {
 			if (result._nay) throw new Error(result._nay.message);
 			expect(inserts).not.toHaveBeenCalled();
 			expect(patches).not.toHaveBeenCalled();
-			await files_nodes_db_apply_move(ctx, result._yay);
+			await files_nodes_db_apply_move(ctx, result._yay, files_share_links_create_cleanup_state());
 			const createdFolders = await ctx.db
 				.query("files_nodes")
 				.filter((q) => q.or(q.eq(q.field("name"), "new"), q.eq(q.field("name"), "shared")))
@@ -2313,7 +2314,7 @@ describe("files_nodes_db_preflight_move", () => {
 			if (result._nay) throw new Error(result._nay.message);
 			expect(result._yay.moved).toHaveLength(3);
 			expect(new Set(result._yay.nodePatches.map((patch) => patch.id)).size).toBe(result._yay.nodePatches.length);
-			await files_nodes_db_apply_move(ctx, result._yay);
+			await files_nodes_db_apply_move(ctx, result._yay, files_share_links_create_cleanup_state());
 		});
 		await t.run(async (ctx) => {
 			expect(await ctx.db.get("files_nodes", child._id)).toMatchObject({
@@ -2372,7 +2373,7 @@ describe("files_nodes_db_preflight_move", () => {
 				],
 			});
 			if (result._nay) throw new Error(result._nay.message);
-			await files_nodes_db_apply_move(ctx, result._yay);
+			await files_nodes_db_apply_move(ctx, result._yay, files_share_links_create_cleanup_state());
 			expect(await ctx.db.get("files_nodes", parent._id)).toMatchObject({
 				parentId: child._id,
 				path: `/${child.name}/${parent.name}`,
@@ -2656,7 +2657,7 @@ describe("files_nodes_db_preflight_move", () => {
 				});
 				if (result._nay) throw new Error(result._nay.message);
 				expect(result._yay.nodePatches.filter((patch) => patch.id === occupant._id)).toHaveLength(1);
-				await files_nodes_db_apply_move(ctx, result._yay);
+				await files_nodes_db_apply_move(ctx, result._yay, files_share_links_create_cleanup_state());
 				const archived = (await ctx.db.get("files_nodes", occupant._id))!;
 				const path = `/moved-parent/${occupant.name}`;
 				expect(archived).toMatchObject({ path, assetId });
@@ -2724,7 +2725,7 @@ describe("files_nodes_db_preflight_move", () => {
 						},
 					],
 				});
-				if (plan._yay) await files_nodes_db_apply_move(ctx, plan._yay);
+				if (plan._yay) await files_nodes_db_apply_move(ctx, plan._yay, files_share_links_create_cleanup_state());
 				return plan;
 			});
 			if (childState === "archived") {

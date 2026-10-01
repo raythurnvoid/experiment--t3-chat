@@ -223,6 +223,8 @@ The root layout waits for:
 
 It renders the main app only when App auth and Convex auth are both authenticated. After loading, an unhealthy auth state throws `Failed to start session` to the route error boundary.
 
+The public share page skips this gating. See "The share page is public" below.
+
 ## MCP sign-in is not Press auth
 
 Members can sign in to outside MCP servers with OAuth (`convex/plugins_mcp_oauth.ts`, `server/mcp-oauth.ts`; full flow in [the MCP host spec](../mcp-host/SKILL.md)). That sign-in never creates a Press identity and never replaces one:
@@ -331,9 +333,26 @@ When an anonymous user is created:
 
 ## Public vs private semantics
 
-### “Public” is link-only
+### “Public” means holding a link token
 
-Public access is implemented by possessing the asset id in a URL (not indexable content, no separate share token).
+Public access to a file works through a separate random token, never through the file id. File ids appear in URLs, embeds, API answers, and logs, and former members keep them, so an id is never a secret and opens nothing. The link doc, its live checks, and the events that end it are specified in the access-control skill ("Public file links").
+
+- Today one kind of public access exists: "Anyone with the link can view" for one saved file. A manager turns it on in the share dialog (`files_sharing.set_node_share_link`).
+- The server makes the token: 32 random bytes as hex. The link is `<origin><BASE_URL>share/<token>`, built only by `url_share_link` in `src/lib/urls.ts`.
+- Turning the link off deletes the token. Turning it on again makes a new token, so an old link never works again.
+- An anonymous user cannot turn a link on. So the upgrade rules below never have to find and secure links.
+- A link is not a public grant. Nothing writes `principalKind: "public"`.
+
+### The share page is public
+
+`/share/<token>` needs no sign-in and creates no account. It uses a separate public boundary:
+
+- `main.tsx` builds the router once and checks `router.state.location.pathname` with `url_is_share_path` (`/share` or `/share/...`, any case). The router has already removed the base path and decoded the path. For a share path, `main.tsx` renders only `ThemeProvider`, `ConvexProvider`, `RouterProvider`, and `AppToaster`. It skips `AppHotkeysProvider`, `ClerkProvider`, `AppAuthProvider`, and `ConvexProviderWithAuth`. The Convex client stays unauthenticated, so the page makes no auth request and mints no anonymous user.
+- The Clerk DNS-prefetch and preconnect hints are added only in the private branch of `main.tsx`, not in `index.html`. So the share page never contacts Clerk.
+- `__root.tsx` reads the same router pathname with the same helper. A share path renders `RootLayoutPublic`: the outlet and the hoisting container only. It has no auth or billing wait, no plugin session provider, no dev tools, and no `data-app-ready`. Every other path renders `RootLayoutPrivate` with the normal gating below.
+- On a share path, the root error and not-found components show the same generic share message, and `onCatch` logs nothing. Errors there can hold the token or the shared text.
+- The route `src/routes/share/$token.tsx` renders `FilesSharePage`. The page calls only the public doors `files_share_links.get_share_link_view` and `files_share_links.create_share_link_download_urls`. They never read `ctx.auth`. The token is their only authority, and every refusal looks the same to the visitor.
+- Moving between the share page and the app always loads a new document (a plain `<a>` or a location change), never a router navigation, because the two sides use different provider stacks.
 
 ### Public organization/workspace
 
@@ -344,12 +363,9 @@ If the organization/workspace is public:
 
 ### Public asset
 
-If an asset is public:
+A public link lets anyone who holds it open one file without an invite (see "“Public” means holding a link token" above). Today the link can only view.
 
-- it can be accessed by anonymous users without an invite
-- the owner can choose whether anonymous users can write or only read
-
-Important: “public write” means anyone who knows the asset id can write (shared edit capability).
+Planned, not built: the owner could choose whether link holders can also write. “Public write” would mean anyone who holds the link can edit the file.
 
 ## Granular permissions system
 

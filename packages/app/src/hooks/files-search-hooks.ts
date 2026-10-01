@@ -1039,7 +1039,7 @@ export function useFilesSortedChildren(props: useFilesSortedChildren_Props) {
 	};
 }
 
-export function useFilesSearchMetadata(
+export function useFilesSearchServerFilters(
 	membershipId: app_convex_Id<"organizations_workspaces_users">,
 	searchQuery: string,
 	treeItemsList: Pick<files_TreeItem, "kind" | "path">[] | undefined,
@@ -1086,9 +1086,28 @@ export function useFilesSearchMetadata(
 		);
 	}, [membershipId, searchQuery, searchPathPrefix]);
 	const searchNodeResults = useQueries(searchNodeQueries);
+	// Every valid `file.link` chip reads one workspace list of public links, so it is loaded once.
+	// It is workspace-wide, so a `file.path` chip does not change it. Keep manual `useMemo` for the
+	// same reason as above.
+	const searchLinkRequest = useMemo(() => {
+		const raws = files_search_query_parse(searchQuery)
+			.filters.filter(
+				(filter) => filter.problem === null && filter.key.namespace === "file" && filter.key.name === "link",
+			)
+			.map((filter) => filter.raw);
+		return {
+			raws,
+			queries: Object.fromEntries(
+				raws.length === 0
+					? []
+					: [["links", { query: app_convex_api.files_share_links.list_workspace_links, args: { membershipId } }]],
+			),
+		};
+	}, [membershipId, searchQuery]);
+	const searchLinkResults = useQueries(searchLinkRequest.queries);
 	// The tree rebuild effect below keys on the identity of `visibleFileIds`, so the matches and
 	// this map must keep their identity until a result changes.
-	const searchMetadataTargetKeys = useMemo(() => {
+	const searchServerTargetKeys = useMemo(() => {
 		const targetKeysByRaw = new Map<string, Set<string> | null>();
 		for (const raw of Object.keys(searchNodeQueries)) {
 			const result: FunctionReturnType<typeof app_convex_api.files_metadata.search_nodes> | Error | undefined =
@@ -1103,10 +1122,26 @@ export function useFilesSearchMetadata(
 			}
 		}
 
-		return targetKeysByRaw;
-	}, [searchNodeQueries, searchNodeResults]);
-	const isSearchLoading = Object.keys(searchNodeQueries).some((raw) => !searchMetadataTargetKeys.has(raw));
-	const isSearchFailed = [...searchMetadataTargetKeys.values()].some((targetKeys) => targetKeys === null);
+		// The list holds only saved files. `null` means the membership was refused, so the answer is
+		// unknown like a failed query, not an empty list.
+		const linkResult:
+			| FunctionReturnType<typeof app_convex_api.files_share_links.list_workspace_links>
+			| Error
+			| undefined = searchLinkResults.links;
+		for (const raw of searchLinkRequest.raws) {
+			if (linkResult instanceof Error || linkResult === null) {
+				targetKeysByRaw.set(raw, null);
+			} else if (linkResult !== undefined) {
+				targetKeysByRaw.set(raw, new Set(linkResult.map((link) => `saved:${link.nodeId}`)));
+			}
+		}
 
-	return { searchMetadataTargetKeys, isSearchLoading, isSearchFailed };
+		return targetKeysByRaw;
+	}, [searchNodeQueries, searchNodeResults, searchLinkRequest, searchLinkResults]);
+	const isSearchLoading = [...Object.keys(searchNodeQueries), ...searchLinkRequest.raws].some(
+		(raw) => !searchServerTargetKeys.has(raw),
+	);
+	const isSearchFailed = [...searchServerTargetKeys.values()].some((targetKeys) => targetKeys === null);
+
+	return { searchServerTargetKeys, isSearchLoading, isSearchFailed };
 }

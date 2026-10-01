@@ -5,7 +5,12 @@ import { api, components, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
 import { presence } from "./presence.ts";
-import { test_convex, test_mocks_cancel_pending_home_file_seeds, test_mocks_fill_db_with } from "./setup.test.ts";
+import {
+	test_convex,
+	test_mocks,
+	test_mocks_cancel_pending_home_file_seeds,
+	test_mocks_fill_db_with,
+} from "./setup.test.ts";
 import { data_deletion_db_request } from "./data_deletion_requests.ts";
 import { activities_db_require_by_source_id, activities_db_start } from "./activities_db.ts";
 import { organizations_membership_lifetimes_db_ensure } from "./organizations_membership_lifetimes.ts";
@@ -4041,6 +4046,58 @@ describe("process_workspace_deletion_request", () => {
 		expect(done).toBe(true);
 		expect(await t.run((ctx) => ctx.db.get("ai_chat_bash_invocation_transfers", linkId))).toBeNull();
 		expect(await t.run((ctx) => ctx.db.get("ai_chat_bash_invocations", invocation._yay.invocationId))).toBeNull();
+	});
+
+	test("deletes public links before the files they point at", async () => {
+		const t = test_convex();
+		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const { requestId, nodeId, linkId } = await t.run(async (ctx) => {
+			const nodeId = await ctx.db.insert("files_nodes", {
+				...test_mocks.files.base(),
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				createdBy: db.userId,
+				updatedBy: db.userId,
+				name: "doc.md",
+				sortName: files_sort_text_key("doc.md"),
+				path: "/doc.md",
+				treePath: "/doc.md",
+			});
+			const linkId = await ctx.db.insert("files_share_links", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				nodeId,
+				token: "a".repeat(64),
+				restrictedScopeNodeId: null,
+				ancestorNodeIds: [],
+				createdBy: db.userId,
+				createdAt: Date.now(),
+			});
+			const requestId = await data_deletion_db_request(ctx, {
+				userId: db.userId,
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				scope: "workspace",
+				eligibleAt: 0,
+			});
+			return { requestId, nodeId, linkId };
+		});
+
+		let done = false;
+		for (let index = 0; index < 100 && !done; index += 1) {
+			const step = await t.mutation(internal.data_deletion.process_workspace_deletion_request, {
+				requestId,
+				_test_batchSize: 1,
+			});
+			done = step.done;
+			await t.run(async (ctx) => {
+				if (await ctx.db.get("files_share_links", linkId)) {
+					expect(await ctx.db.get("files_nodes", nodeId)).not.toBeNull();
+				}
+			});
+		}
+		expect(done).toBe(true);
+		expect(await t.run((ctx) => ctx.db.get("files_share_links", linkId))).toBeNull();
 	});
 
 	test("purges a Bash job through its Activity and job-less calls as a batch", async () => {

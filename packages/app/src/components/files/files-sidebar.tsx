@@ -1,6 +1,6 @@
 import "./files-sidebar.css";
 import { FilesSearchInput, type FilesSearchInput_Props } from "./files-search-input.tsx";
-import { useFilesSearchMetadata } from "@/hooks/files-search-hooks.ts";
+import { useFilesSearchServerFilters } from "@/hooks/files-search-hooks.ts";
 import { detect_search_query_mode, search_filter_matches_item, search_path_filter } from "@/lib/files-search.ts";
 import React, {
 	createContext,
@@ -36,6 +36,7 @@ import {
 	FolderUp,
 	Hash,
 	Info,
+	Link,
 	Link2,
 	LockKeyhole,
 	Route,
@@ -907,11 +908,13 @@ async function run_folder_import(args: {
 type FilesSidebarTreeItemIcon_ClassNames =
 	| "FilesSidebarTreeItemIcon"
 	| "FilesSidebarTreeItemIcon-restricted-folder"
-	| "FilesSidebarTreeItemIcon-restricted-folder-person";
+	| "FilesSidebarTreeItemIcon-restricted-folder-person"
+	| "FilesSidebarTreeItemIcon-public-link";
 
 type FilesSidebarTreeItemIcon_Props = {
 	kind: files_TreeItem["kind"];
 	isRestricted?: boolean;
+	hasPublicLink?: boolean;
 };
 
 /**
@@ -929,9 +932,12 @@ type FilesSidebarTreeItemIcon_Props = {
  * `Folder` and `UserRound` instead of hand-drawing an SVG we would then have to keep in step with
  * lucide. Both halves inherit `currentColor`, so the mark keeps the row's contrast in every state
  * and stays visible under forced colors.
+ *
+ * A public link is a small badge over the corner, not a second icon, so a restricted file with a
+ * link shows both marks.
  */
 const FilesSidebarTreeItemIcon = memo(function FilesSidebarTreeItemIcon(props: FilesSidebarTreeItemIcon_Props) {
-	const { kind, isRestricted } = props;
+	const { kind, isRestricted, hasPublicLink } = props;
 
 	// Decoration only. The row's accessible name already ends in "restricted" and its tooltip spells
 	// out what that means, so announcing it here would say the same thing twice.
@@ -964,6 +970,11 @@ const FilesSidebarTreeItemIcon = memo(function FilesSidebarTreeItemIcon(props: F
 			{...restrictedAttributes}
 		>
 			{kind === "folder" ? <Folder /> : isRestricted ? <FileUser /> : <FileText />}
+			{hasPublicLink ? (
+				<span className={"FilesSidebarTreeItemIcon-public-link" satisfies FilesSidebarTreeItemIcon_ClassNames}>
+					<Link />
+				</span>
+			) : null}
 		</MyIcon>
 	);
 });
@@ -1504,6 +1515,7 @@ type FilesSidebarTreeItemPrimaryContent_Props = {
 	nodeId: app_convex_Id<"files_nodes"> | null;
 	renameInputProps: FilesSidebarTreeItemTitle_Props["renameInputProps"];
 	isRestricted: boolean;
+	hasPublicLink: boolean;
 	isUploading: boolean;
 	readOnlyTooltip: string | null;
 	renameError: string | undefined;
@@ -1519,6 +1531,7 @@ const FilesSidebarTreeItemPrimaryContent = memo(function FilesSidebarTreeItemPri
 		nodeId,
 		renameInputProps,
 		isRestricted,
+		hasPublicLink,
 		isUploading,
 		readOnlyTooltip,
 		renameError,
@@ -1531,7 +1544,7 @@ const FilesSidebarTreeItemPrimaryContent = memo(function FilesSidebarTreeItemPri
 
 	return (
 		<div className={"FilesSidebarTreeItemPrimaryContent" satisfies FilesSidebarTreeItemPrimaryContent_ClassNames}>
-			<FilesSidebarTreeItemIcon kind={kind} isRestricted={isRestricted} />
+			<FilesSidebarTreeItemIcon kind={kind} isRestricted={isRestricted} hasPublicLink={hasPublicLink} />
 			<FilesSidebarTreeItemTitle
 				renameInputProps={renameInputProps}
 				title={title}
@@ -1592,6 +1605,7 @@ type FilesSidebarTreeItemPrimaryAction_Props = {
 	isPending: boolean;
 	isSelected: boolean;
 	isRestricted: boolean;
+	hasPublicLink: boolean;
 	isDropZoneIncluded: boolean;
 	isTreeDragging: boolean;
 	isFocused: boolean;
@@ -1622,17 +1636,23 @@ const FilesSidebarTreeItemPrimaryAction = memo(function FilesSidebarTreeItemPrim
 		isPending,
 		isSelected,
 		isRestricted,
+		hasPublicLink,
 		isDropZoneIncluded,
 		isTreeDragging,
 		isFocused,
 	} = props;
 
-	// The sharing mark takes no pointer events, so it cannot host its own tooltip; a restricted row
-	// explains itself here instead. The row itself shows no updated-when/by text, so this tooltip is
-	// the only place that exposes it.
-	const tooltipContent = isRestricted
-		? "Only chosen people and roles can open this"
-		: `Updated ${format_relative_time(updatedAt, { prefixForDatesPast7Days: "the" })} by ${updatedByDisplayName}`;
+	// The sharing marks take no pointer events, so they cannot host their own tooltip. So this tooltip
+	// explains a restricted or public row. The row itself shows no updated-when/by text, so this
+	// tooltip is the only place that exposes it.
+	const updatedText = `Updated ${format_relative_time(updatedAt, { prefixForDatesPast7Days: "the" })} by ${updatedByDisplayName}`;
+	// A public file can also be restricted: the link reaches anyone, while Files still limits who sees
+	// the file in the tree.
+	const tooltipContent = hasPublicLink
+		? `Anyone with the link can view. ${isRestricted ? "In Files, only chosen people and roles have access." : updatedText}`
+		: isRestricted
+			? "Only chosen people and roles can open this"
+			: updatedText;
 
 	return (
 		<MyTooltip timeout={2000} placement="bottom" open={isTreeDragging ? false : undefined}>
@@ -1887,6 +1907,7 @@ type FilesSidebarTreeItem_Props = {
 	canWriteRoot: boolean;
 	hasVisibleProtectedDescendant: boolean;
 	protectedDescendantIds: ReadonlySet<app_convex_Id<"files_nodes">>;
+	hasPublicLink: boolean;
 	/** The folder is open and its first page has not arrived yet. */
 	isFolderLoading: boolean;
 	onCreateNode: (parentNodeId: string, kind: files_TreeItem["kind"]) => void;
@@ -1976,6 +1997,13 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 	);
 });
 
+type FilesSidebarTreeRow_CustomAttributes = {
+	/**
+	 * Set only on a file that has a public link, so a browser test reads the mark without a screenshot.
+	 */
+	"data-file-public-link": "on";
+};
+
 type FilesSidebarTreeRow_Props = Omit<
 	FilesSidebarTreeItem_Props,
 	"tree" | "displayNameByUserId" | "selectedNodeId" | "pendingActionNodeIds"
@@ -2052,6 +2080,7 @@ const FilesSidebarTreeRow = memo(
 			canWriteRoot,
 			hasVisibleProtectedDescendant,
 			protectedDescendantIds,
+			hasPublicLink,
 			isFolderLoading,
 			onCreateNode,
 			onStartRename,
@@ -2167,7 +2196,7 @@ const FilesSidebarTreeRow = memo(
 			writeBlockedReason: itemData.writeBlockedReason,
 			writePolicyState: itemData.writePolicyState,
 		});
-		const label = `${itemData.name}${isRestricted ? " restricted" : ""}${readOnlyLabels ? `, ${readOnlyLabels.description}` : ""}${isArchived ? " archived" : ""}${isCut ? ", ready to move" : ""}${isUploading ? ", uploading" : ""}`;
+		const label = `${itemData.name}${isRestricted ? " restricted" : ""}${readOnlyLabels ? `, ${readOnlyLabels.description}` : ""}${isArchived ? " archived" : ""}${isCut ? ", ready to move" : ""}${isUploading ? ", uploading" : ""}${hasPublicLink ? ", public link" : ""}`;
 
 		const handleCreateFileClick = useFn<FilesSidebarTreeItemSecondaryAction_Props["onClick"]>(() => {
 			onCreateNode(itemId, "file");
@@ -2340,7 +2369,10 @@ const FilesSidebarTreeRow = memo(
 							{...({
 								"data-files-sidebar-tree-context": "",
 								"data-file-id": itemId,
-							} satisfies Partial<CustomAttributes & FilesSidebarTreeItem_CustomAttributes>)}
+								...(hasPublicLink ? { "data-file-public-link": "on" } : {}),
+							} satisfies Partial<
+								CustomAttributes & FilesSidebarTreeItem_CustomAttributes & FilesSidebarTreeRow_CustomAttributes
+							>)}
 						>
 							<FilesSidebarTreeItemPrimaryAction
 								interactionProps={itemInteractionProps}
@@ -2351,6 +2383,7 @@ const FilesSidebarTreeRow = memo(
 								isPending={isPending}
 								isSelected={isSelected || isMenuOpen}
 								isRestricted={isRestricted}
+								hasPublicLink={hasPublicLink}
 								isDropZoneIncluded={isDropZoneIncluded}
 								isTreeDragging={isTreeDragging}
 								isFocused={isFocused}
@@ -2369,6 +2402,7 @@ const FilesSidebarTreeRow = memo(
 								nodeId={files_is_node(itemData) ? (itemId as app_convex_Id<"files_nodes">) : null}
 								renameInputProps={renameInputProps}
 								isRestricted={isRestricted}
+								hasPublicLink={hasPublicLink}
 								isUploading={isUploading}
 								readOnlyTooltip={readOnlyLabels?.tooltip ?? null}
 								renameError={renameError}
@@ -2749,6 +2783,11 @@ type FilesSidebarTree_Props = {
 	canUnarchiveItem: (item: files_TreeItem) => boolean;
 	canWriteRoot: boolean;
 	protectedDescendantIds: ReadonlySet<app_convex_Id<"files_nodes">>;
+	/**
+	 * Files with a public link. Empty while the list loads or when it is refused, because the mark is
+	 * only a hint.
+	 */
+	publicLinkNodeIds: ReadonlySet<string>;
 	/** How far each open folder has loaded, or `null` while a search shows the full list. */
 	folderStatusById: ReadonlyMap<string, "loading" | "more" | "done"> | null;
 	onLoadMore: (folderId: string) => void;
@@ -2792,6 +2831,7 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 		canUnarchiveItem,
 		canWriteRoot,
 		protectedDescendantIds,
+		publicLinkNodeIds,
 		folderStatusById,
 		onLoadMore,
 		onCreateNode,
@@ -3149,6 +3189,7 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 										canWriteRoot={canWriteRoot}
 										hasVisibleProtectedDescendant={files_is_node(itemData) && protectedDescendantIds.has(itemData._id)}
 										protectedDescendantIds={protectedDescendantIds}
+										hasPublicLink={publicLinkNodeIds.has(itemId)}
 										isFolderLoading={
 											item.isExpanded() &&
 											(folderStatusById?.get(itemId) === "loading" ||
@@ -4119,10 +4160,11 @@ function get_tree_items_list_after_optimistic_rename(args: {
 /**
  * Match a search query against the tree.
  *
- * The free text matches by its shape (see `detect_search_query_mode`). A `file.*` filter matches a tree
- * field. A metadata filter matches the target keys its server query returned, looked up by the
- * filter's raw token in `metadataTargetKeys`. A filter with no entry yet matches nothing, and the
- * tree says "Searching…" until every entry is there. Files and folders match their own metadata.
+ * The free text matches by its shape (see `detect_search_query_mode`). A `file.*` filter matches a
+ * tree field. A metadata filter and a `file.link` filter match the target keys the server returned,
+ * looked up by the filter's raw token in `serverTargetKeys`. A filter with no entry yet matches
+ * nothing, and the tree says "Searching…" until every entry is there. Files and folders match their
+ * own metadata.
  * Archived nodes and synthetic folders cannot be direct metadata matches.
  *
  * `visibleFileIds` keeps every match plus its ancestor chain so results render as a pruned tree.
@@ -4135,7 +4177,7 @@ function get_tree_items_list_after_optimistic_rename(args: {
 function get_search_matches(args: {
 	treeItems: TreeItems;
 	searchQuery: string;
-	metadataTargetKeys: ReadonlyMap<string, ReadonlySet<string> | null>;
+	serverTargetKeys: ReadonlyMap<string, ReadonlySet<string> | null>;
 }) {
 	const parsed = files_search_query_parse(args.searchQuery);
 	const filters = parsed.filters;
@@ -4194,7 +4236,7 @@ function get_search_matches(args: {
 						filter,
 						item,
 						targetKey: `saved:${item._id}`,
-						metadataTargetKeys: args.metadataTargetKeys,
+						serverTargetKeys: args.serverTargetKeys,
 					}) === true,
 			)
 		) {
@@ -4326,7 +4368,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	// The full list has every parent, so a row with a missing parent there was shared on its own.
 	const hoistedTreeItemIds = isSearchActive ? null : treeFolders.hoistedIds;
 
-	const { searchMetadataTargetKeys, isSearchLoading, isSearchFailed } = useFilesSearchMetadata(
+	const { searchServerTargetKeys, isSearchLoading, isSearchFailed } = useFilesSearchServerFilters(
 		membershipId,
 		searchQueryDeferred,
 		treeItemsList,
@@ -4377,6 +4419,9 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		membershipId,
 		permission: "content.write",
 	});
+	// The `file.link` search chip reads the same query, so Convex shares one subscription.
+	const workspaceLinks = useQuery(app_convex_api.files_share_links.list_workspace_links, { membershipId });
+	const publicLinkNodeIds = new Set<string>(workspaceLinks?.map((link) => link.nodeId));
 	// Keep manual `useMemo` in this group. Convex `useQueries` re-subscribes with a
 	// render-phase setState whenever the queries object identity changes, and the React
 	// Compiler leaves these hook arguments unmemoized (checked in the served compiled
@@ -4622,10 +4667,10 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 				? get_search_matches({
 						treeItems,
 						searchQuery: searchQueryDeferred,
-						metadataTargetKeys: searchMetadataTargetKeys,
+						serverTargetKeys: searchServerTargetKeys,
 					})
 				: null,
-		[treeItems, isSearchActive, searchQueryDeferred, searchMetadataTargetKeys],
+		[treeItems, isSearchActive, searchQueryDeferred, searchServerTargetKeys],
 	);
 	const visibleFileIds = searchMatches?.visibleFileIds ?? treeItems?.itemsIds ?? new Set<string>();
 
@@ -6054,23 +6099,25 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 
 		// Match on the value the input holds right now. `searchMatches` lags behind it by the
 		// debounce plus the deferred render, so Enter right after a paste would use the old query.
-		// The metadata results belong to the deferred query, so a chip without a result yet cannot
-		// be matched. Say so instead of opening a wrong node.
+		// The server results (metadata and `file.link`) belong to the deferred query, so a chip without a
+		// result yet cannot be matched. Say so instead of opening a wrong node.
 		const liveFilters = files_search_query_parse(searchQuery).filters;
-		const liveMetadataFilters = liveFilters.filter(
-			(filter) => filter.problem === null && filter.key.namespace !== "file",
+		const liveServerFilters = liveFilters.filter(
+			(filter) => filter.problem === null && (filter.key.namespace !== "file" || filter.key.name === "link"),
 		);
-		// A query with no metadata chip needs only the tree, so it never waits.
-		if (liveMetadataFilters.length > 0) {
-			if (isSearchLoading || liveMetadataFilters.some((filter) => !searchMetadataTargetKeys.has(filter.raw))) {
+		// A query with no server chip needs only the tree, so it never waits.
+		if (liveServerFilters.length > 0) {
+			if (isSearchLoading || liveServerFilters.some((filter) => !searchServerTargetKeys.has(filter.raw))) {
 				return false;
 			}
 			// The metadata results were fetched inside the folder of the `file.path` chip the deferred
 			// query had. Right after that chip is removed or changed, the results still belong to the
 			// old folder, so Enter must wait for the new ones instead of opening a node from that folder.
+			// The link list is for the whole workspace, so a `file.link` chip alone does not wait here.
 			if (
+				liveServerFilters.some((filter) => filter.key.namespace !== "file") &&
 				search_path_filter(liveFilters)?.raw !==
-				search_path_filter(files_search_query_parse(searchQueryDeferred).filters)?.raw
+					search_path_filter(files_search_query_parse(searchQueryDeferred).filters)?.raw
 			) {
 				return false;
 			}
@@ -6079,7 +6126,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		const topMatchId = get_search_matches({
 			treeItems,
 			searchQuery,
-			metadataTargetKeys: searchMetadataTargetKeys,
+			serverTargetKeys: searchServerTargetKeys,
 		}).topMatchId;
 		const topMatchItem = topMatchId ? treeItems.itemById.get(topMatchId) : undefined;
 		if (topMatchId && topMatchItem) {
@@ -6645,6 +6692,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 					canUnarchiveItem={canUnarchiveItem}
 					canWriteRoot={canWriteRoot}
 					protectedDescendantIds={protectedDescendantIds}
+					publicLinkNodeIds={publicLinkNodeIds}
 					folderStatusById={isSearchActive ? null : treeFolders.statusByFolderId}
 					onLoadMore={handleLoadMore}
 					onCreateNode={handleCreateNodeClick}
@@ -7591,6 +7639,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				canWrite?: boolean;
 				isBusy?: boolean;
 				pendingActionNodeIds?: Set<string>;
+				publicLinkNodeIds?: Set<string>;
 			}) {
 				const scrollElementRef = useRef<HTMLDivElement | null>(null);
 
@@ -7647,6 +7696,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 										canUnarchiveItem={() => true}
 										canWriteRoot={props.canWrite ?? true}
 										protectedDescendantIds={new Set()}
+										publicLinkNodeIds={props.publicLinkNodeIds ?? new Set()}
 										folderStatusById={props.folderStatusById ?? null}
 										onLoadMore={handleLoadMore}
 										onCreateNode={handleAction}
@@ -8493,7 +8543,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				filter: files_search_query_parse(query).filters[0]!,
 				item,
 				targetKey: `saved:${item._id}`,
-				metadataTargetKeys: new Map(),
+				serverTargetKeys: new Map(),
 			});
 
 		test("file.ext never matches a folder, even one with a dot in its name", () => {
@@ -8503,6 +8553,29 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(matches("file.ext:2*", folder)).toBe(false);
 			expect(matches("file.ext:2", file)).toBe(true);
 			expect(matches("file.ext:2*", file)).toBe(true);
+		});
+
+		test("file.link reads the link list, and an unknown answer stays unknown under negation", () => {
+			const file = test_node({ id: "public_file", parentId: files_ROOT_ID, kind: "file", name: "a.md" });
+			const folder = test_node({ id: "docs", parentId: files_ROOT_ID, kind: "folder", name: "docs" });
+			// `undefined` is a list that has not answered yet, and `null` is a failed one.
+			const link_matches = (query: string, item: files_TreeItem, answer: Set<string> | null | undefined) =>
+				search_filter_matches_item({
+					filter: files_search_query_parse(query).filters[0]!,
+					item,
+					targetKey: `saved:${item._id}`,
+					serverTargetKeys: answer === undefined ? new Map() : new Map([[query, answer]]),
+				});
+			const links = new Set(["saved:public_file"]);
+
+			expect(link_matches("file.link:public", file, links)).toBe(true);
+			expect(link_matches("file.link:Public", file, links)).toBe(true);
+			expect(link_matches("file.link:public", folder, links)).toBe(false);
+			expect(link_matches("file.link:public", file, new Set())).toBe(false);
+			expect(link_matches("!file.link:public", folder, links)).toBe(true);
+			expect(link_matches("!file.link:public", file, links)).toBe(false);
+			expect(link_matches("!file.link:public", file, null)).toBeNull();
+			expect(link_matches("!file.link:public", file, undefined)).toBeNull();
 		});
 	});
 
@@ -8553,12 +8626,12 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			itemById: new Map<string, files_TreeItem>(list.map((item) => [item._id, item])),
 		} satisfies TreeItems;
 
-		const search = (searchQuery: string, metadataTargetKeys = new Map<string, Set<string> | null>()) => {
+		const search = (searchQuery: string, serverTargetKeys = new Map<string, Set<string> | null>()) => {
 			const result = get_search_matches({
 				treeItems,
 				searchQuery,
-				metadataTargetKeys: new Map(
-					[...metadataTargetKeys].map(([raw, ids]) => [
+				serverTargetKeys: new Map(
+					[...serverTargetKeys].map(([raw, ids]) => [
 						raw,
 						ids === null ? null : new Set([...ids].map((id) => `saved:${id}`)),
 					]),
@@ -8661,17 +8734,17 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 		test("a metadata filter matches the node ids its query returned, and negation keeps other files and folders", () => {
 			// `FilesSidebar` keys the results by the raw token, so a negated chip has its own entry.
-			const metadataTargetKeys = new Map<string, Set<string>>([
+			const serverTargetKeys = new Map<string, Set<string>>([
 				["status:open", new Set(["task"])],
 				["!status:open", new Set(["task"])],
 			]);
 
-			expect(search("status:open", metadataTargetKeys)).toEqual({
+			expect(search("status:open", serverTargetKeys)).toEqual({
 				visible: [files_ROOT_ID, "task", "tasks"].sort(),
 				topMatchId: "task",
 				matchCount: 1,
 			});
-			expect(search("!status:open", metadataTargetKeys)).toEqual({
+			expect(search("!status:open", serverTargetKeys)).toEqual({
 				visible: [files_ROOT_ID, "tasks", "archive", "old_task", "note", "backup"].sort(),
 				topMatchId: null,
 				matchCount: 5,
@@ -8722,7 +8795,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					itemById: new Map(treeItems.itemById).set(archivedFolder._id, archivedFolder),
 				},
 				searchQuery,
-				metadataTargetKeys: new Map([
+				serverTargetKeys: new Map([
 					[searchQuery, new Set(searchQuery === "status:open" ? [`saved:${archivedFolder._id}`] : ["saved:task"])],
 				]),
 			});

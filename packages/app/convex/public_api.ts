@@ -78,6 +78,7 @@ import {
 	type files_nodes_read_file_content_from_chunks_Result,
 	type get_file_content_materialization_state_Result,
 } from "./files_nodes.ts";
+import { files_share_links_create_cleanup_state } from "./files_share_links_db.ts";
 import { files_metadata_db_read_entry } from "./files_metadata.ts";
 import {
 	files_nodes_create_yjs_snapshot_update_from_text,
@@ -3431,7 +3432,11 @@ export const publish_file_write = internalMutation({
 		}
 
 		if (activeNode) {
-			await files_nodes_db_archive_nodes(ctx, { nodeIds: [activeNode._id], updatedBy: stage.userId, now });
+			await files_nodes_db_archive_nodes(
+				ctx,
+				{ nodeIds: [activeNode._id], updatedBy: stage.userId, now },
+				files_share_links_create_cleanup_state(),
+			);
 		}
 		const pluginName = revalidated._yay.installation?.pluginName;
 		const created = await files_nodes_db_create_node_recursively_at_path(ctx, {
@@ -4596,15 +4601,21 @@ export const create_file_upload_targets = internalMutation({
 			uploadUrl: string;
 			headers: Record<string, string>;
 		}> = [];
+		// Share one link cleanup across the replaced files, so the workspace links load only once.
+		const shareLinkCleanup = files_share_links_create_cleanup_state();
 		for (const item of validated) {
 			// Uploading over a name archives whatever holds it, like create_upload_node, so re-runs
 			// replace the previous upload instead of failing.
 			if (item.collidingNodeId) {
-				await files_nodes_db_archive_nodes(ctx, {
-					nodeIds: [item.collidingNodeId],
-					updatedBy: args.userId,
-					now,
-				});
+				await files_nodes_db_archive_nodes(
+					ctx,
+					{
+						nodeIds: [item.collidingNodeId],
+						updatedBy: args.userId,
+						now,
+					},
+					shareLinkCleanup,
+				);
 			}
 
 			const assetId = await ctx.db.insert("files_r2_assets", {

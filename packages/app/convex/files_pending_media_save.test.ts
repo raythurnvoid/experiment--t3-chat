@@ -11,6 +11,7 @@ import {
 	files_pending_updates_action_prepare_content,
 	files_pending_updates_db_commit_prepared_content,
 } from "./files_pending_updates.ts";
+import { files_share_links_create_cleanup_state } from "./files_share_links_db.ts";
 import {
 	files_pending_media_db_require_validation,
 	files_pending_media_db_validate_prepared,
@@ -400,6 +401,7 @@ describe("paged Save media proof", () => {
 			const published = await files_pending_updates_db_commit_prepared_content(ctx, {
 				userId: f.scope.userId,
 				prepared: preparedImage._yay,
+				shareLinkCleanup: files_share_links_create_cleanup_state(),
 			});
 			if (published._nay) throw new Error(published._nay.message);
 			expect(published._yay.target.kind).toBe("saved");

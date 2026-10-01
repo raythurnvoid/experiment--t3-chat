@@ -444,6 +444,17 @@ the upload. A later policy change does not cancel publication or processing. The
 - Every asset is born with `unfinalizedExpiresAt` (now + 24 h). Publication clears it. Recovery inspects the direct object hourly for 30 hours after its URL was issued, then weekly. After eight days, a missing ordinary upload loses its placeholder and asset after an exact-key deletion handoff, even when locked. A pending service upload keeps its placeholder and target but retires that asset; a retry uses a new asset. The deletion ledger remains through the signed URL's write window. Non-upload assets retain their existing reference checks and retry policy.
 - Known residual: a presigned PUT url outlives key revocation for its TTL, and the finalizer records the real object size without a cap check (declared size is a mint-time check only).
 
+# Public file links
+
+A member can give one file an "Anyone with the link can view" link. The link doc, its live checks, and every event that ends it are specified in `../access-control/SKILL.md` ("Public file links"). API and plugin writes follow this approved product rule:
+
+- An in-place write keeps the link and its token. This covers `write` and `write-many` fills of an existing editable file (`publish_file_fill`), plugin run and invoke fills, and sealed service fills. `publish_file_fill` has no link hook on purpose. A write staged before the link was turned on and published after it keeps that token. Failed writes, `skipIfUnchanged` no-ops, and receipt-only retries keep it too.
+- An archive-and-create write ends the old file's link: `write` over a stored (non-editable) file, `upload-urls` replacing an existing path, plugin archive-and-recreate, `plugin-archive`, and the service-upload delete and archive doors. The new file has no link.
+- Images and videos that an in-place API or plugin write adds to a linked document publish on its public page when the embed rules allow them: the image has the same live audience as the document, and every service account with an exact write grant on an open document can read the image. Credential download limits do not apply to that page. A key with `files:write` but no `files:download`, a plugin run whose downloads are source-only, or a plugin service grant can add an eligible image, and the document's visitors then see it. This wider access is accepted, not a bug. The public view has no credential-scope filter.
+- Private API scope checks do not change. The same key still gets 403 from `/api/v1/files/download-urls`, and a file id alone never opens a file. The link token is a separate authority.
+- No `/api/v1` route and no API or plugin credential can turn a link on or off or read its token.
+- Coverage: `convex/files_share_links.test.ts`, test "publishes an image that an API key without download scope adds, and only that one".
+
 # API-keys page quick-start
 
 The workspace `API keys` page (`packages/app/src/routes/w/$organizationName/$workspaceName/api-keys/index.tsx`) explains the scopes and generates runnable samples:

@@ -364,6 +364,33 @@ describe("RouteRoles", () => {
 		expect(read?.querySelector('input[type="checkbox"]')).not.toBeNull();
 	});
 
+	test("Edit and Manage sharing always include View in the editor", () => {
+		renderRoute();
+		fireEvent.click(screen.getByRole("button", { name: "New role" }));
+
+		const checkbox = (permission: string) =>
+			document.querySelector(`[data-permission="${permission}"] input`) as HTMLInputElement;
+
+		fireEvent.click(checkbox("content.write"));
+		expect(checkbox("content.write").checked).toBe(true);
+		expect(checkbox("content.read").checked).toBe(true);
+
+		fireEvent.click(checkbox("content.permissions.manage"));
+		expect(checkbox("content.permissions.manage").checked).toBe(true);
+
+		// Unchecking View also unchecks what needs it.
+		fireEvent.click(checkbox("content.read"));
+		expect(checkbox("content.read").checked).toBe(false);
+		expect(checkbox("content.write").checked).toBe(false);
+		expect(checkbox("content.permissions.manage").checked).toBe(false);
+
+		// Manage sharing alone checks View too, and unchecking Manage leaves View alone.
+		fireEvent.click(checkbox("content.permissions.manage"));
+		expect(checkbox("content.read").checked).toBe(true);
+		fireEvent.click(checkbox("content.permissions.manage"));
+		expect(checkbox("content.read").checked).toBe(true);
+	});
+
 	test("create sends the trimmed name, description and picked permissions", async () => {
 		mutationMock.mockResolvedValue({ _yay: { roleId: "role_new" } });
 		renderRoute();

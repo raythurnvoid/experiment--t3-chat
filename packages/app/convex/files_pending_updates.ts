@@ -63,6 +63,7 @@ import {
 import { files_pending_holds_db_check_expiry } from "./files_pending_holds.ts";
 import { files_visible_db_create_reader } from "./files_visible.ts";
 import { files_db_resolve_scope } from "./files_scopes.ts";
+import { files_share_links_create_cleanup_state, type files_share_links_CleanupState } from "./files_share_links_db.ts";
 import { path_extract_segments_from } from "../shared/paths.ts";
 import { organizations_is_global_organization_id } from "../shared/organizations.ts";
 import {
@@ -5027,7 +5028,12 @@ export const apply_file_pending_archive = mutation({
 			// Already settled (another tab accepted or discarded it): a no-op success.
 			return Result({ _yay: null });
 		}
-		return await files_pending_updates_db_apply_archive(ctx, { userAuth, membership, pendingUpdate });
+		return await files_pending_updates_db_apply_archive(ctx, {
+			userAuth,
+			membership,
+			pendingUpdate,
+			shareLinkCleanup: files_share_links_create_cleanup_state(),
+		});
 	},
 });
 
@@ -5041,6 +5047,7 @@ export async function files_pending_updates_db_apply_archive(
 		membership: app_convex_Doc<"organizations_workspaces_users">;
 		pendingUpdate: app_convex_Doc<"files_pending_updates">;
 		reviewedPendingUpdateIds?: ReadonlySet<Id<"files_pending_updates">>;
+		shareLinkCleanup: files_share_links_CleanupState;
 	},
 ) {
 	const { userAuth, membership, pendingUpdate } = args;
@@ -5106,6 +5113,7 @@ export async function files_pending_updates_db_apply_archive(
 		},
 		budget: { nodes: files_archive_runs_STEP_MAX_NODES, hasPaginated: false },
 		previousRunId: null,
+		shareLinkCleanup: args.shareLinkCleanup,
 	});
 	if (started._nay) return started;
 
@@ -7643,6 +7651,7 @@ export async function files_pending_updates_db_commit_prepared_content(
 		reviewedPendingUpdateIds?: Set<Id<"files_pending_updates">>;
 		reviewRunId?: Id<"files_pending_update_runs">;
 		validatedMedia?: files_pending_media_ValidatedSave;
+		shareLinkCleanup: files_share_links_CleanupState;
 	},
 ): Promise<save_file_pending_update_Result> {
 	const prepared = args.prepared;
@@ -7741,6 +7750,7 @@ export async function files_pending_updates_db_commit_prepared_content(
 				operationBatchId: prepared.operationBatchIds[0],
 				reviewedPendingUpdateIds: args.reviewedPendingUpdateIds,
 				reviewRunId: args.reviewRunId,
+				shareLinkCleanup: args.shareLinkCleanup,
 				prepared: prepared.prepared ? { ...prepared.prepared, text: text!._yay! } : undefined,
 				partial: prepared.partial ? { family: prepared.partial.family, unstagedText: unstagedText!._yay! } : undefined,
 			},
@@ -7820,7 +7830,10 @@ export async function files_pending_updates_db_retire_prepared_content(
 export const commit_prepared_content = internalMutation({
 	args: { userId: v.id("users"), prepared: files_pending_prepared_content_validator },
 	handler: async (ctx, args) => {
-		const result = await files_pending_updates_db_commit_prepared_content(ctx, args);
+		const result = await files_pending_updates_db_commit_prepared_content(ctx, {
+			...args,
+			shareLinkCleanup: files_share_links_create_cleanup_state(),
+		});
 		if (!result._nay) await files_pending_updates_db_retire_prepared_content(ctx, args.prepared);
 		return result;
 	},
@@ -9403,7 +9416,11 @@ export const save_private_file_pending_update_in_db = internalMutation({
 		if (!membership?.active) return Result({ _nay: { message: "Unauthorized" } });
 		const actor = await db_get_pending_save_actor(ctx, { membershipId: args.membershipId, userId: membership.userId });
 		if (actor._nay) return actor;
-		return await files_pending_updates_db_save_private(ctx, args, actor._yay);
+		return await files_pending_updates_db_save_private(
+			ctx,
+			{ ...args, shareLinkCleanup: files_share_links_create_cleanup_state() },
+			actor._yay,
+		);
 	},
 });
 
@@ -9421,6 +9438,7 @@ async function files_pending_updates_db_save_private(
 		operationBatchId?: Id<"files_pending_update_operation_batches">;
 		prepared?: { text: string; contentAssetId: Id<"files_r2_assets">; yjsSnapshotAssetId?: Id<"files_r2_assets"> };
 		partial?: { family: Infer<typeof files_pending_prepared_state_family_validator>; unstagedText: string };
+		shareLinkCleanup: files_share_links_CleanupState;
 	},
 	actor: { userId: Id<"users">; billedUserId: Id<"users">; validatedMedia?: files_pending_media_ValidatedSave },
 ) {
@@ -9565,6 +9583,7 @@ async function files_pending_updates_db_save_private(
 		prepared: args.prepared,
 		billedUserId: actor.billedUserId,
 		reviewedPendingUpdateIds: args.reviewedPendingUpdateIds,
+		shareLinkCleanup: args.shareLinkCleanup,
 	});
 	if (published._nay) return published;
 

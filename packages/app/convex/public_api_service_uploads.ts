@@ -34,6 +34,7 @@ import {
 	files_nodes_db_set_write_policy,
 	type files_nodes_WriteContext,
 } from "./files_nodes.ts";
+import { files_share_links_create_cleanup_state } from "./files_share_links_db.ts";
 import { files_metadata_db_read_entry } from "./files_metadata.ts";
 import { quotas_db_ensure, quotas_db_get } from "./quotas.ts";
 import {
@@ -1726,11 +1727,15 @@ export const delete_upload_target = internalMutation({
 				}
 			}
 			// Archive every committed match together, like one member delete action.
-			await files_nodes_db_archive_nodes(ctx, {
-				nodeIds: committedNodes.map((node) => node._id),
-				updatedBy: args.principal.actorUserId,
-				now,
-			});
+			await files_nodes_db_archive_nodes(
+				ctx,
+				{
+					nodeIds: committedNodes.map((node) => node._id),
+					updatedBy: args.principal.actorUserId,
+					now,
+				},
+				files_share_links_create_cleanup_state(),
+			);
 		}
 
 		for (const match of matches) {
@@ -2139,11 +2144,15 @@ export const archive_destination = internalMutation({
 			}
 		}
 
-		await files_nodes_db_archive_nodes(ctx, {
-			nodeIds: [destination._id, ...activeDescendants.map((descendant) => descendant._id)],
-			updatedBy: args.principal.actorUserId,
-			now,
-		});
+		await files_nodes_db_archive_nodes(
+			ctx,
+			{
+				nodeIds: [destination._id, ...activeDescendants.map((descendant) => descendant._id)],
+				updatedBy: args.principal.actorUserId,
+				now,
+			},
+			files_share_links_create_cleanup_state(),
+		);
 
 		return Result({ _yay: { archivedNodes: activeDescendants.length + 1 } });
 	},

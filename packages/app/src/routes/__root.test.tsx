@@ -1,12 +1,15 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import type { ErrorComponentProps } from "@tanstack/react-router";
 
-const { useAuthMock, useConvexAuthMock, useQueryMock } = vi.hoisted(() => {
+const { useAuthMock, useConvexAuthMock, useQueryMock, routerState } = vi.hoisted(() => {
 	return {
 		useAuthMock: vi.fn(),
 		useConvexAuthMock: vi.fn(),
 		useQueryMock: vi.fn(),
+		// The router's own pathname, with no base path. `useRouterState` and `app_router()` both read it.
+		routerState: { location: { pathname: "/" } },
 	};
 });
 
@@ -14,7 +17,15 @@ vi.mock("@tanstack/react-router", () => ({
 	Outlet: function Outlet() {
 		return <div>App ready</div>;
 	},
+	DefaultGlobalNotFound: function DefaultGlobalNotFound() {
+		return <div>Not Found</div>;
+	},
 	createRootRoute: (options: unknown) => ({ options }),
+	useRouterState: (options: { select: (state: typeof routerState) => unknown }) => options.select(routerState),
+}));
+
+vi.mock("../lib/app-router.ts", () => ({
+	app_router: () => ({ state: routerState }),
 }));
 
 vi.mock("convex/react", async (importOriginal) => {
@@ -53,7 +64,7 @@ vi.mock("../components/app-tanstack-router-dev-tools.tsx", () => ({
 
 vi.mock("../components/app-route-error.tsx", () => ({
 	AppRouteError: function AppRouteError() {
-		return null;
+		return <div>App route error</div>;
 	},
 }));
 
@@ -128,6 +139,7 @@ function mockBillingQueries(args: {
 
 describe("RootLayout", () => {
 	beforeEach(() => {
+		routerState.location.pathname = "/";
 		useAuthMock.mockReset();
 		useConvexAuthMock.mockReset();
 		useQueryMock.mockReset();
@@ -233,5 +245,84 @@ describe("RootLayout", () => {
 
 		expect(screen.getByText("App ready")).not.toBeNull();
 		expect(screen.queryByText("Preparing organization")).toBeNull();
+	});
+});
+
+describe("RootLayout on the share page", () => {
+	const shareErrorProps = { error: new Error("secret-token-abc"), reset: () => {} } as unknown as ErrorComponentProps;
+
+	beforeEach(() => {
+		routerState.location.pathname = "/share/abc123";
+		useAuthMock.mockReset();
+		useConvexAuthMock.mockReset();
+		useQueryMock.mockReset();
+	});
+
+	afterEach(() => {
+		cleanup();
+		vi.restoreAllMocks();
+		document.documentElement.removeAttribute("data-app-ready");
+	});
+
+	test("renders the route without any private auth or billing hook", () => {
+		const RootLayout = Route.options.component as () => JSX.Element;
+		render(<RootLayout />);
+
+		expect(screen.getByText("App ready")).not.toBeNull();
+		expect(useAuthMock).not.toHaveBeenCalled();
+		expect(useConvexAuthMock).not.toHaveBeenCalled();
+		expect(useQueryMock).not.toHaveBeenCalled();
+		expect(document.documentElement.hasAttribute("data-app-ready")).toBe(false);
+	});
+
+	test("shows the generic share message for an error, without its details", () => {
+		const RootRouteError = Route.options.errorComponent as (props: ErrorComponentProps) => JSX.Element;
+		const { container } = render(<RootRouteError {...shareErrorProps} />);
+
+		expect(screen.getByText("This link does not work.")).not.toBeNull();
+		expect(screen.queryByText("App route error")).toBeNull();
+		expect(container.textContent).not.toContain("secret-token-abc");
+		expect(useAuthMock).not.toHaveBeenCalled();
+	});
+
+	test("shows the generic share message for an unknown path under the share prefix", () => {
+		routerState.location.pathname = "/SHARE/abc123/extra";
+		const RootRouteNotFound = Route.options.notFoundComponent as () => JSX.Element;
+		render(<RootRouteNotFound />);
+
+		expect(screen.getByText("This link does not work.")).not.toBeNull();
+		expect(screen.queryByText("Not Found")).toBeNull();
+	});
+
+	test("keeps the app error and not-found pages for other paths", () => {
+		routerState.location.pathname = "/share-other";
+		const RootRouteError = Route.options.errorComponent as (props: ErrorComponentProps) => JSX.Element;
+		const RootRouteNotFound = Route.options.notFoundComponent as () => JSX.Element;
+		render(
+			<>
+				<RootRouteError {...shareErrorProps} />
+				<RootRouteNotFound />
+			</>,
+		);
+
+		expect(screen.getByText("App route error")).not.toBeNull();
+		expect(screen.getByText("Not Found")).not.toBeNull();
+		expect(screen.queryByText("This link does not work.")).toBeNull();
+	});
+
+	test("logs no error for the share page, and still logs it for the app", async () => {
+		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+		const onCatch = Route.options.onCatch as (error: unknown) => void;
+
+		// The log runs after a lazy import of the router. Let it finish before the path changes.
+		onCatch(new Error("secret-token-abc"));
+		await import("../lib/app-router.ts");
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(consoleError).not.toHaveBeenCalled();
+
+		routerState.location.pathname = "/w/acme/main/files";
+		onCatch(new Error("app failure"));
+		await vi.waitFor(() => expect(consoleError).toHaveBeenCalledTimes(1));
+		expect(consoleError.mock.calls[0]?.[1]).toEqual({ args: new Error("app failure") });
 	});
 });

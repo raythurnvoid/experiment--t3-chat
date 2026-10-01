@@ -10,18 +10,21 @@ import {
 	type files_sort_Sort,
 } from "../../shared/files-sort.ts";
 import type { files_table_Filter } from "../../shared/files-table.ts";
-import { useFilesSortedChildren, useFilesVisibleEntries } from "./files-search-hooks.ts";
+import { useFilesSearchServerFilters, useFilesSortedChildren, useFilesVisibleEntries } from "./files-search-hooks.ts";
 
 type VisibleResult = FunctionReturnType<typeof app_convex_api.files_visible.list>;
 type SortedPage = FunctionReturnType<typeof app_convex_api.files_nodes.list_tree_children_sorted>;
 type SortedRow = SortedPage["page"][number];
 type SideRows = FunctionReturnType<typeof app_convex_api.files_nodes.list_tree_children_sort_side_rows>;
 type SideRow = NonNullable<SideRows>["rows"][number];
+type SearchNodes = FunctionReturnType<typeof app_convex_api.files_metadata.search_nodes>;
+type WorkspaceLinks = FunctionReturnType<typeof app_convex_api.files_share_links.list_workspace_links>;
 
 // `sorted` holds every row of each sorted segment, keyed by its full folder and sort scope. A metadata
 // key's missing segment is keyed by its pages instead, because its cursor can end a page early.
 // `loadingFields` keeps every query of a sort loading. `loadingKeys` keeps one segment loading.
-const { cursorsSeen, requestsSeen, batchesSeen, keysSeen, enumsSeen, sorted } = vi.hoisted(() => ({
+// `search` answers the search box queries: `undefined` is loading.
+const { cursorsSeen, requestsSeen, batchesSeen, keysSeen, enumsSeen, sorted, search } = vi.hoisted(() => ({
 	cursorsSeen: [] as string[],
 	requestsSeen: [] as Array<{ id: string; args: SortedArgs }>,
 	batchesSeen: [] as Array<Array<{ id: string; args: SortedArgs }>>,
@@ -40,6 +43,11 @@ const { cursorsSeen, requestsSeen, batchesSeen, keysSeen, enumsSeen, sorted } = 
 		seen: new Set<string>(),
 		revision: 0,
 		listeners: new Set<() => void>(),
+	},
+	search: {
+		nodes: undefined as SearchNodes | Error | undefined,
+		links: undefined as WorkspaceLinks | Error | undefined,
+		linkRequests: [] as Array<Record<string, unknown>>,
 	},
 }));
 
@@ -117,6 +125,13 @@ vi.mock("convex/react", async (importOriginal) => {
 				() =>
 					Object.fromEntries(
 						Object.entries(queries).map(([key, request]) => {
+							if (getFunctionName(request.query) === "files_metadata:search_nodes") {
+								return [key, search.nodes];
+							}
+							if (getFunctionName(request.query) === "files_share_links:list_workspace_links") {
+								search.linkRequests.push(request.args);
+								return [key, search.links];
+							}
 							if (getFunctionName(request.query) === "files_nodes:list_tree_children_sort_side_rows") {
 								const args = request.args as {
 									membershipId: typeof MEMBERSHIP_ID;
@@ -308,6 +323,9 @@ beforeEach(() => {
 		sortLimit: null,
 		workPaused: false,
 	});
+	search.nodes = undefined;
+	search.links = undefined;
+	search.linkRequests.length = 0;
 });
 
 afterEach(() => {
@@ -1632,5 +1650,71 @@ describe("useFilesSortedChildren", () => {
 		});
 		await waitFor(() => expect(result.current.isBusy).toBe(false));
 		expect(result.current.rowsSort).toEqual(sort);
+	});
+});
+
+describe("useFilesSearchServerFilters", () => {
+	const render_search = (query: string) =>
+		renderHook(() => useFilesSearchServerFilters(MEMBERSHIP_ID, query, undefined));
+	const LINK = {
+		nodeId: "node_1" as app_convex_Id<"files_nodes">,
+		createdBy: "user_1" as app_convex_Id<"users">,
+		createdAt: 1,
+	};
+
+	test("answers every file.link chip from one workspace link list", () => {
+		search.links = [LINK];
+		const { result } = render_search("file.link:public !file.link:PUBLIC");
+
+		expect(result.current.searchServerTargetKeys).toEqual(
+			new Map([
+				["file.link:public", new Set(["saved:node_1"])],
+				["!file.link:PUBLIC", new Set(["saved:node_1"])],
+			]),
+		);
+		expect(result.current.isSearchLoading).toBe(false);
+		expect(result.current.isSearchFailed).toBe(false);
+		expect(search.linkRequests.at(-1)).toEqual({ membershipId: MEMBERSHIP_ID });
+	});
+
+	test("asks for no link list without a valid file.link chip", () => {
+		search.links = [LINK];
+		const { result } = render_search("file.link:pub* file.kind:file notes");
+
+		expect(search.linkRequests).toEqual([]);
+		expect(result.current.searchServerTargetKeys.size).toBe(0);
+		expect(result.current.isSearchLoading).toBe(false);
+	});
+
+	test("waits for the link list and for metadata chips together", () => {
+		search.nodes = { targets: [], truncated: false };
+		const { result, rerender } = render_search("status:open file.link:public");
+
+		// The metadata chip answered, but the link list is still loading.
+		expect(result.current.searchServerTargetKeys.has("status:open")).toBe(true);
+		expect(result.current.searchServerTargetKeys.has("file.link:public")).toBe(false);
+		expect(result.current.isSearchLoading).toBe(true);
+
+		// An empty list is a real answer: no file has a public link.
+		search.links = [];
+		act(() => notify_sorted());
+		rerender();
+		expect(result.current.searchServerTargetKeys.get("file.link:public")).toEqual(new Set());
+		expect(result.current.isSearchLoading).toBe(false);
+		expect(result.current.isSearchFailed).toBe(false);
+	});
+
+	test("treats a refused or failed link list as unknown, not as empty", () => {
+		search.links = null;
+		const refused = render_search("!file.link:public");
+		expect(refused.result.current.searchServerTargetKeys.get("!file.link:public")).toBeNull();
+		expect(refused.result.current.isSearchLoading).toBe(false);
+		expect(refused.result.current.isSearchFailed).toBe(true);
+		cleanup();
+
+		search.links = new Error("failed");
+		const failed = render_search("file.link:public");
+		expect(failed.result.current.searchServerTargetKeys.get("file.link:public")).toBeNull();
+		expect(failed.result.current.isSearchFailed).toBe(true);
 	});
 });

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { Lexer, Tokenizer } from "marked";
 import {
 	files_collect_protected_descendant_ids,
 	files_find_file_stem_end_index,
@@ -1464,6 +1465,343 @@ describe("files_parse_markdown_to_html", () => {
 		}
 
 		expect(oneTrailingSpace._yay).not.toBe(noTrailingSpace._yay);
+	});
+
+	test.each([
+		["an ordered list", "1. a\n2. b\n\npara"],
+		["a task list", "- [ ] a\n- [x] b\n\npara"],
+	])("keeps the paragraph after %s", (_name, markdown) => {
+		const html = files_parse_markdown_to_html(markdown);
+		if (html._nay) throw new Error("Expected markdown parse to succeed", { cause: html._nay });
+
+		expect(html._yay).toContain("<p>para</p>");
+	});
+
+	test("keeps the text of a paragraph inside an ordered list item", () => {
+		const html = files_parse_markdown_to_html("1. a\n   para text here\n");
+		if (html._nay) throw new Error("Expected markdown parse to succeed", { cause: html._nay });
+
+		expect(html._yay).toContain("<p>para text here</p>");
+	});
+
+	test("keeps an unclosed link tag in a list item out of the other paragraphs", () => {
+		const html = files_parse_markdown_to_html(
+			'see https://example.com first\n\n1. Open <a href="https://example.com/q">it\n',
+		);
+		if (html._nay) throw new Error("Expected markdown parse to succeed", { cause: html._nay });
+
+		expect(html._yay).toContain('<p>see <a href="https://example.com">https://example.com</a> first</p>');
+	});
+
+	test("lets a close tag inside a highlight end the open link", () => {
+		const html = files_parse_markdown_to_html(
+			'<a href="https://example.com/a">a ==</a>== then https://example.com/b\n',
+		);
+		if (html._nay) throw new Error("Expected markdown parse to succeed", { cause: html._nay });
+
+		expect(html._yay).toContain('<a href="https://example.com/b">https://example.com/b</a>');
+	});
+
+	test("reads more text of an ordered item in a bullet item as a paragraph", () => {
+		const html = files_parse_markdown_to_html("- outer\n  1. inner one\n    inner more\n");
+		if (html._nay) throw new Error("Expected markdown parse to succeed", { cause: html._nay });
+
+		expect(html._yay).toContain("<p>inner more</p>");
+	});
+
+	test("splits a video line out of a paragraph", () => {
+		const html = files_parse_markdown_to_html('Intro\n<video src="bonobo-file://k17abcdef"></video>\nOutro');
+		if (html._nay) throw new Error("Expected markdown parse to succeed", { cause: html._nay });
+
+		expect(html._yay).toBe('<p>Intro</p>\n<video src="bonobo-file://k17abcdef"></video><p>Outro</p>\n');
+	});
+
+	test("refuses Markdown that needs more work than the limit", () => {
+		// Each `*` with no closing `*` makes Marked scan the rest of the paragraph.
+		const html = files_parse_markdown_to_html("*a ".repeat(20_000), { cache: false, workLimit: 150_000_000 });
+
+		expect(html._nay?.message).toBe("Markdown needs too much work to parse");
+	});
+
+	test("refuses paragraphs where each character is its own step", () => {
+		// Marked ends a step at each `<`, and each step tries about a dozen patterns.
+		const html = files_parse_markdown_to_html(("<".repeat(150) + "\n\n").repeat(3_400), {
+			cache: false,
+			workLimit: 150_000_000,
+		});
+
+		expect(html._nay?.message).toBe("Markdown needs too much work to parse");
+	});
+
+	test("refuses a long line that Marked reads again at each step to look for an email address", () => {
+		const html = files_parse_markdown_to_html("a!".repeat(12_000), { cache: false, workLimit: 150_000_000 });
+
+		expect(html._nay?.message).toBe("Markdown needs too much work to parse");
+	});
+
+	test("keeps paragraphs full of `=` or `+` under the limit", () => {
+		// The highlight and underline search stops at the next `<`, so it does not read the rest of the
+		// paragraph at each step like Tiptap's own search.
+		const highlight = files_parse_markdown_to_html(("x" + "=<".repeat(1_000) + "\n\n").repeat(40), {
+			cache: false,
+			workLimit: 150_000_000,
+		});
+		const underline = files_parse_markdown_to_html(("x" + "+<".repeat(1_000) + "\n\n").repeat(40), {
+			cache: false,
+			workLimit: 150_000_000,
+		});
+
+		expect(highlight._nay).toBeUndefined();
+		expect(underline._nay).toBeUndefined();
+	});
+
+	test.each([
+		[
+			"after other marks and code",
+			"*a* ==b== _c_ ++d++ `e` ==f==",
+			"<em>a</em> <mark>b</mark> <em>c</em> <u>d</u> <code>e</code> <mark>f</mark>",
+		],
+		["after a leading `~~` run", "~~a ++b++", "~~a <u>b</u>"],
+		["inside an email-like word", "a b!c==d==@e", "a b!c<mark>d</mark>@e"],
+		["inside a code span", "``==a==``", "<code>==a==</code>"],
+	])("finds highlight and underline %s", (_name, markdown, paragraph) => {
+		const html = files_parse_markdown_to_html(markdown, { cache: false, workLimit: 150_000_000 });
+		if (html._nay) throw new Error("Expected markdown parse to succeed", { cause: html._nay });
+
+		expect(html._yay).toBe(`<p>${paragraph}</p>\n`);
+	});
+
+	test("refuses open links that Marked reads to the end of the paragraph at each step", () => {
+		// With no space, the link destination runs to the end of the paragraph.
+		const html = files_parse_markdown_to_html(("x" + "[a](".repeat(1_250) + "\n\n").repeat(20), {
+			cache: false,
+			workLimit: 150_000_000,
+		});
+
+		expect(html._nay?.message).toBe("Markdown needs too much work to parse");
+	});
+
+	test("refuses text full of characters that the renderer escapes", () => {
+		const html = files_parse_markdown_to_html('"'.repeat(1_500_000), { cache: false, workLimit: 150_000_000 });
+
+		expect(html._nay?.message).toBe("Markdown needs too much work to parse");
+	});
+
+	test("refuses URLs that Marked reads to the end of the paragraph at each step", () => {
+		// Marked reads each URL to the next space, and reads it again to drop trailing punctuation.
+		const html = files_parse_markdown_to_html(("x" + "http://a(".repeat(2_222) + "\n\n").repeat(4), {
+			cache: false,
+			workLimit: 150_000_000,
+		});
+
+		expect(html._nay?.message).toBe("Markdown needs too much work to parse");
+	});
+
+	test("refuses a URL full of entities that Marked drops one at a time", () => {
+		// Marked's backpedal pattern reads the whole URL again for each `&b;` it drops from the end.
+		const html = files_parse_markdown_to_html("www.a" + "&b;".repeat(6_000) + "\n", {
+			cache: false,
+			workLimit: 150_000_000,
+		});
+
+		expect(html._nay?.message).toBe("Markdown needs too much work to parse");
+	});
+
+	test("refuses code spans that never close", () => {
+		// Each run of backticks has a new length, so Marked reads the rest of the paragraph for its closing run.
+		let markdown = "x ";
+		for (let length = 1; length <= 300; length++) {
+			markdown += "`".repeat(length) + ",".repeat(2_500);
+		}
+		const html = files_parse_markdown_to_html(markdown, { cache: false, workLimit: 150_000_000 });
+
+		expect(html._nay?.message).toBe("Markdown needs too much work to parse");
+	});
+
+	test("refuses many link definitions with many table cells", () => {
+		// Marked lists every link definition again for each table cell.
+		const definitions = Array.from({ length: 5_000 }, (_, i) => `[k${i}]: u`).join("\n");
+		const table = "|a".repeat(30) + "|\n" + "|-".repeat(30) + "|\n" + ("|a".repeat(30) + "|\n").repeat(100);
+		const html = files_parse_markdown_to_html(`${definitions}\n\n${table}`, { cache: false, workLimit: 150_000_000 });
+
+		expect(html._nay?.message).toBe("Markdown needs too much work to parse");
+	});
+
+	test("keeps each task item once after blank lines", () => {
+		// Tiptap's task list skipped the blank lines before an item but left them out of its token.
+		const html = files_parse_markdown_to_html("- [ ] a\n\n\n\n- [ ] b\n");
+		if (html._nay) throw new Error("Expected markdown parse to succeed", { cause: html._nay });
+
+		expect(html._yay).toBe(
+			'<ul data-type="taskList"><li data-type="taskItem" data-checked="false"><p>a</p></li></ul>' +
+				'<ul data-type="taskList"><li data-type="taskItem" data-checked="false"><p>b</p></li></ul>',
+		);
+	});
+
+	test("refuses many blank lines inside a task item", () => {
+		// Tiptap copies the rest of the list at each blank line inside an item.
+		const html = files_parse_markdown_to_html("- [ ] a" + "\n".repeat(8_000) + "  b\n", {
+			cache: false,
+			workLimit: 150_000_000,
+		});
+
+		expect(html._nay?.message).toBe("Markdown needs too much work to parse");
+	});
+
+	test("refuses a very deep task list", () => {
+		// Tiptap parses each item's nested items again without Marked.
+		const markdown = Array.from({ length: 940 }, (_, i) => "  ".repeat(i) + "- [ ] x").join("\n");
+		const html = files_parse_markdown_to_html(markdown, { cache: false, workLimit: 150_000_000 });
+
+		expect(html._nay?.message).toBe("Markdown needs too much work to parse");
+	});
+
+	test("keeps a task list with outdented lines under the limit", () => {
+		// Tiptap's task list ends before a line that is not indented under the item.
+		const html = files_parse_markdown_to_html("  - [ ] a\n b\n".repeat(3_846), {
+			cache: false,
+			workLimit: 150_000_000,
+		});
+
+		expect(html._nay).toBeUndefined();
+	});
+
+	test("keeps paragraphs that end at headings under the limit", () => {
+		// The video start search reads only the paragraph that Marked reads next.
+		const html = files_parse_markdown_to_html(("a".repeat(40) + "\n# " + "h".repeat(40) + "\n").repeat(10_714), {
+			cache: false,
+			workLimit: 150_000_000,
+		});
+
+		expect(html._nay).toBeUndefined();
+	});
+
+	test("ends a paragraph where a table starts", () => {
+		const html = files_parse_markdown_to_html("a\n|x|y|\n|-|-|\n|1|2|\nb\n");
+		if (html._nay) throw new Error("Expected markdown parse to succeed", { cause: html._nay });
+
+		expect(html._yay).toMatch(/^<p>a<\/p>\n<table>/);
+		expect(html._yay).toContain("<td>1</td>");
+	});
+
+	test("parses a paragraph of header and align lines quickly", () => {
+		// Marked's paragraph rule read every later line at each line, to look for table rows. That took
+		// about 9 seconds for this accepted input. The short table check only reads the next two lines.
+		const markdown = "x\n" + ("<?" + "a".repeat(100) + "?>\n-|-\n").repeat(11_700);
+		const start = performance.now();
+		const html = files_parse_markdown_to_html(markdown, { cache: false, workLimit: 150_000_000 });
+		const elapsed = performance.now() - start;
+
+		expect(html._nay).toBeUndefined();
+		expect(elapsed).toBeLessThan(1_500);
+	});
+
+	test("refuses a long paragraph inside a list item", () => {
+		// Marked tries its setext heading pattern at every line of a list item.
+		const html = files_parse_markdown_to_html("- a\n" + ("  " + "b".repeat(40) + "\n").repeat(2_400), {
+			cache: false,
+			workLimit: 150_000_000,
+		});
+
+		expect(html._nay?.message).toBe("Markdown needs too much work to parse");
+	});
+
+	test("refuses quote lines mixed with lazy lines", () => {
+		// Marked copies the rest of a blockquote's lines for each run of `>` lines.
+		const html = files_parse_markdown_to_html(("> h\n" + "a".repeat(40) + "\n").repeat(5_000), {
+			cache: false,
+			workLimit: 150_000_000,
+		});
+
+		expect(html._nay?.message).toBe("Markdown needs too much work to parse");
+	});
+
+	test("refuses a quoted list with long lazy lines before it parses the rest again", () => {
+		// In a quoted list, Marked joins and parses all the remaining text again for each run of `>` lines.
+		const list = vi.spyOn(Tokenizer.prototype, "list");
+		const html = files_parse_markdown_to_html(("> - x\n" + "y".repeat(1_000) + "\n").repeat(500), {
+			cache: false,
+			workLimit: 150_000_000,
+		});
+		const listCalls = list.mock.calls.length;
+		list.mockRestore();
+
+		expect(html._nay?.message).toBe("Markdown needs too much work to parse");
+		expect(listCalls).toBeLessThan(100);
+	});
+
+	test("refuses many short lines inside a list item", () => {
+		// Marked tries its setext heading pattern at every line, and each try tests many patterns per line.
+		const html = files_parse_markdown_to_html("- a\n" + "  |x\n".repeat(3_000), {
+			cache: false,
+			workLimit: 150_000_000,
+		});
+
+		expect(html._nay?.message).toBe("Markdown needs too much work to parse");
+	});
+
+	test("refuses a wide table before it splits the rows", () => {
+		// Marked pads every row to the header's column count, so 1,000 columns over 1,000 short rows
+		// make 1,000,000 cells from 2 KB of rows.
+		const inline = vi.spyOn(Lexer.prototype, "inline");
+		const html = files_parse_markdown_to_html(
+			"|a".repeat(1_000) + "|\n" + "|-".repeat(1_000) + "|\n" + "a\n".repeat(1_000),
+			{
+				cache: false,
+				workLimit: 150_000_000,
+			},
+		);
+		const inlineCalls = inline.mock.calls.length;
+		inline.mockRestore();
+
+		expect(html._nay?.message).toBe("Markdown needs too much work to parse");
+		expect(inlineCalls).toBeLessThan(1_000);
+	});
+
+	test("refuses many references to one long link definition", () => {
+		// Each `[a]` copies the whole URL into the HTML. 50 KB of text would make 20 MB of HTML.
+		const html = files_parse_markdown_to_html(`[a]: http://x.y/${"a".repeat(50_000)}\n\n` + "[a]\n".repeat(400), {
+			cache: false,
+			workLimit: 150_000_000,
+		});
+
+		expect(html._nay?.message).toBe("Markdown needs too much work to parse");
+	});
+
+	test("refuses a deep ordered list with a long last item", () => {
+		// Tiptap copies the text below each level of an ordered list. 190 KB here would copy about 15M
+		// characters and use over 64 MB, which is past a Convex query's memory.
+		const markdown =
+			Array.from({ length: 300 }, (_, i) => "  ".repeat(i) + "1. " + (i === 299 ? "Њ".repeat(50_000) : "Њ")).join(
+				"\n",
+			) + "\n";
+		const html = files_parse_markdown_to_html(markdown, { cache: false, workLimit: 150_000_000 });
+
+		expect(html._nay?.message).toBe("Markdown needs too much work to parse");
+	});
+
+	test("keeps link definitions of one file out of the next file", () => {
+		// Tiptap once kept one lexer across parses, so one file's link definitions reached the next file.
+		files_parse_markdown_to_html("- [ ] a\n  [foo]: https://attacker.example/x\n", {
+			cache: false,
+			workLimit: 150_000_000,
+		});
+		const html = files_parse_markdown_to_html("- [ ] read [foo] now\n", { cache: false, workLimit: 150_000_000 });
+		if (html._nay) throw new Error("Expected markdown parse to succeed", { cause: html._nay });
+
+		expect(html._yay).not.toContain("attacker.example");
+	});
+
+	test("gives the same HTML with a work limit", () => {
+		const markdown = "# Title\n\n1. **a**\n2. ==b==\n\n- [ ] task\n\n`code` and [link](https://example.com)\n";
+		const withLimit = files_parse_markdown_to_html(markdown, { cache: false, workLimit: 150_000_000 });
+		const withoutLimit = files_parse_markdown_to_html(markdown);
+		if (withLimit._nay) throw new Error("Expected markdown parse to succeed", { cause: withLimit._nay });
+		if (withoutLimit._nay) throw new Error("Expected markdown parse to succeed", { cause: withoutLimit._nay });
+
+		expect(withLimit._yay).toBe(withoutLimit._yay);
+		// A limited parse must not read or fill the private cache, which keeps every text for the process life.
+		expect(withoutLimit).not.toBe(withLimit);
 	});
 });
 

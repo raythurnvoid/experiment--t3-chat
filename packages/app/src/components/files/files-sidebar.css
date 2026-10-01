@@ -577,6 +577,35 @@
 			height: 9px;
 		}
 	}
+
+	/* The public link badge sits over the icon's corner, so a restricted file can show both marks. Its
+	   filled circle keeps it readable over the file outline in every row state. */
+	.FilesSidebarTreeItemIcon:has(> .FilesSidebarTreeItemIcon-public-link) {
+		position: relative;
+	}
+
+	.FilesSidebarTreeItemIcon-public-link {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+
+		position: absolute;
+		right: -4px;
+		bottom: -3px;
+
+		width: 10px;
+		height: 10px;
+		border-radius: 999px;
+
+		background: var(--color-accent-07);
+		color: var(--color-base-1-01);
+
+		> svg {
+			width: 7px;
+			height: 7px;
+			stroke-width: 3;
+		}
+	}
 	/* #endregion tree item icon */
 
 	/* #region tree item title */

@@ -107,6 +107,12 @@ import { convex_error, v_result } from "../server/convex-utils.ts";
 import { organizations_db_get_membership } from "./organizations.ts";
 import { ai_chat_workspaces_db_authorize_file_scope } from "./ai_chat_workspaces.ts";
 import { files_db_resolve_scope } from "./files_scopes.ts";
+import {
+	files_share_links_create_cleanup_state,
+	files_share_links_db_delete_for_node,
+	files_share_links_db_delete_for_roots,
+	type files_share_links_CleanupState,
+} from "./files_share_links_db.ts";
 import { files_db_authorize_file_read } from "./files_volume_access.ts";
 import {
 	access_control_db_authorize_membership,
@@ -705,6 +711,13 @@ export async function files_nodes_db_resolve_parent_restricted_scope(
  * The folder table indexes split rows by `isRestrictedScopeRoot`, so the node and its committed
  * metadata field docs get the new flag in the same transaction. Archived docs too, because a restore
  * does not rewrite the flag.
+ *
+ * A scope change also deletes the public links on this node and below it, now. The scope op reaches
+ * the items inside later, and a restrict then unrestrict before it gets there must not bring an old
+ * link back.
+ *
+ * Pass `null` as `shareLinkCleanup` only for a folder this mutation just created. It has no links, so
+ * this skips the link scan.
  */
 export async function files_nodes_db_set_restricted_scope(
 	ctx: MutationCtx,
@@ -714,7 +727,17 @@ export async function files_nodes_db_set_restricted_scope(
 		nodeId: Id<"files_nodes">;
 		restrictedScopeNodeId: Id<"files_nodes"> | null;
 	},
+	shareLinkCleanup: files_share_links_CleanupState | null,
 ) {
+	const node = await ctx.db.get("files_nodes", args.nodeId);
+	if (shareLinkCleanup && node?.restrictedScopeNodeId !== args.restrictedScopeNodeId) {
+		await files_share_links_db_delete_for_roots(
+			ctx,
+			{ organizationId: args.organizationId, workspaceId: args.workspaceId, rootNodeIds: [args.nodeId] },
+			shareLinkCleanup,
+		);
+	}
+
 	const isRestrictedScopeRoot = args.restrictedScopeNodeId === args.nodeId;
 	await ctx.db.patch("files_nodes", args.nodeId, {
 		restrictedScopeNodeId: args.restrictedScopeNodeId,
@@ -2673,6 +2696,9 @@ export type files_nodes_create_private_node_by_path_Result =
  * metadata docs, and R2 asset (object + doc, gated on `r2Key`) BEFORE the node doc itself, so a
  * crash never orphans children. Asset and node deletion are one budget unit pair so a node never
  * commits with a missing asset reference. Callers drive this to `done: true` by calling repeatedly.
+ *
+ * This deletes no public links. Every caller deletes a global or plugin-volume tree, and those files
+ * can never get a link. Add link cleanup before a workspace caller uses this.
  */
 export async function files_nodes_db_delete_subtree_batch(
 	ctx: MutationCtx,
@@ -2884,6 +2910,8 @@ export async function files_nodes_db_hard_delete_node(
 		console.error(errorMessage, errorData);
 		throw should_never_happen(errorMessage, errorData);
 	}
+
+	await files_share_links_db_delete_for_node(ctx, args);
 
 	const [
 		plainTextChunks,
@@ -3348,11 +3376,15 @@ export const create_upload_node = mutation({
 				return occupantWritable;
 			}
 
-			await files_nodes_db_archive_nodes(ctx, {
-				nodeIds: [existingNode._id],
-				updatedBy: userAuth.id,
-				now,
-			});
+			await files_nodes_db_archive_nodes(
+				ctx,
+				{
+					nodeIds: [existingNode._id],
+					updatedBy: userAuth.id,
+					now,
+				},
+				files_share_links_create_cleanup_state(),
+			);
 		}
 
 		const assetId = await ctx.db.insert("files_r2_assets", {
@@ -3651,6 +3683,8 @@ export const create_upload_nodes = mutation({
 		const now = Date.now();
 		const skipped: Array<{ relativePath: string; reason: "conflict" | "path_blocked" }> = [];
 		const runnable: typeof validated = [];
+		// Share one link cleanup across the replaced files, so the workspace links load only once.
+		const shareLinkCleanup = files_share_links_create_cleanup_state();
 
 		// Conflicts with nodes that already exist in the workspace are per-item skips, never call
 		// failures. The walk below also asks `content.write` about every folder that already
@@ -3785,11 +3819,15 @@ export const create_upload_nodes = mutation({
 
 				// Safe to archive now: every folder on the way passed the walk above, so the create
 				// below cannot refuse this item after the old file is already gone.
-				await files_nodes_db_archive_nodes(ctx, {
-					nodeIds: [existingNode._id],
-					updatedBy: userAuth.id,
-					now,
-				});
+				await files_nodes_db_archive_nodes(
+					ctx,
+					{
+						nodeIds: [existingNode._id],
+						updatedBy: userAuth.id,
+						now,
+					},
+					shareLinkCleanup,
+				);
 			}
 
 			runnable.push(item);
@@ -4501,7 +4539,7 @@ export async function files_nodes_db_apply_pending_move(
 		}
 	}
 
-	await files_nodes_db_apply_move(ctx, plan._yay);
+	await files_nodes_db_apply_move(ctx, plan._yay, files_share_links_create_cleanup_state());
 	return Result({ _yay: { destPath: plan._yay.moved.find((moved) => moved.nodeId === node._id)?.path ?? node.path } });
 }
 
@@ -4660,7 +4698,7 @@ export const rename_node = mutation({
 			],
 		});
 		if (plan._nay) return plan;
-		await files_nodes_db_apply_move(ctx, plan._yay);
+		await files_nodes_db_apply_move(ctx, plan._yay, files_share_links_create_cleanup_state());
 
 		return Result({ _yay: null });
 	},
@@ -5655,6 +5693,10 @@ export async function files_nodes_db_preflight_move(
 			moved,
 			unchangedNodeIds,
 			archivedNodeIds: [...archiveNodes.keys()],
+			// A move to another folder or a replaced occupant ends the public links on it and below it.
+			// A rename in the same folder keeps them. A planned new parent has no id yet, so this list is
+			// built here from the intents.
+			shareLinkRootNodeIds: [...reparentedTrees.map((node) => node._id), ...archiveNodes.keys()],
 			// The folders whose descendants need a new path or scope. The job after the request walks them.
 			walkRoots: nodePatches
 				.filter((patch) => nodesById.get(patch.id)!.kind === "folder" && !archiveNodes.has(patch.id))
@@ -5674,7 +5716,14 @@ export async function files_nodes_db_preflight_move(
 export async function files_nodes_db_apply_move(
 	ctx: MutationCtx,
 	plan: NonNullable<Awaited<ReturnType<typeof files_nodes_db_preflight_move>>["_yay"]>,
+	shareLinkCleanup: files_share_links_CleanupState,
 ) {
+	await files_share_links_db_delete_for_roots(
+		ctx,
+		{ organizationId: plan.organizationId, workspaceId: plan.workspaceId, rootNodeIds: plan.shareLinkRootNodeIds },
+		shareLinkCleanup,
+	);
+
 	const folderIds = new Map<string, Id<"files_nodes">>();
 	for (const folder of plan.folderInserts) {
 		const parentId = folder.parentKey ? folderIds.get(folder.parentKey)! : folder.node.parentId;
@@ -5738,6 +5787,17 @@ export async function files_nodes_db_rebuild_node(
 		node.restrictedScopeNodeId === fields.restrictedScopeNodeId
 	) {
 		return false;
+	}
+
+	// A new scope ends the node's public link. A new path alone keeps it here. For a rename that is right,
+	// because a rename keeps links. For a move to another folder, `files_nodes_db_apply_move` already
+	// deleted the moved links before this job runs.
+	if (node.restrictedScopeNodeId !== fields.restrictedScopeNodeId) {
+		await files_share_links_db_delete_for_node(ctx, {
+			organizationId: node.organizationId,
+			workspaceId: node.workspaceId,
+			nodeId: node._id,
+		});
 	}
 
 	await ctx.db.patch("files_nodes", node._id, fields);
@@ -5863,7 +5923,7 @@ export async function files_nodes_db_move_nodes(
 	});
 	if (plan._nay) return plan;
 
-	await files_nodes_db_apply_move(ctx, plan._yay);
+	await files_nodes_db_apply_move(ctx, plan._yay, files_share_links_create_cleanup_state());
 	return Result({ _yay: { moved: plan._yay.moved, unchangedNodeIds: plan._yay.unchangedNodeIds } });
 }
 
@@ -5912,6 +5972,9 @@ export const move_nodes = mutation({
 /**
  * Archive one node and its side docs under `archiveOperationId`, in the same mutation.
  * The caller advances the media validation version once after its writes.
+ *
+ * It also deletes the node's own public link. A folder's links below it are the caller's job, because
+ * this archives only the one node.
  */
 export async function files_nodes_db_archive_node(
 	ctx: MutationCtx,
@@ -5922,6 +5985,11 @@ export async function files_nodes_db_archive_node(
 		now: number;
 	},
 ) {
+	await files_share_links_db_delete_for_node(ctx, {
+		organizationId: args.node.organizationId,
+		workspaceId: args.node.workspaceId,
+		nodeId: args.node._id,
+	});
 	await ctx.db.patch("files_nodes", args.node._id, {
 		archiveOperationId: args.archiveOperationId,
 		updatedBy: args.updatedBy,
@@ -5960,6 +6028,12 @@ export async function files_nodes_db_restore_node(
 	const restrictedScopeNodeId =
 		args.node.restrictedScopeNodeId === args.node._id ? args.node._id : (args.parent?.restrictedScopeNodeId ?? null);
 
+	// A restored file comes back without a public link. Turning it on again makes a new token.
+	await files_share_links_db_delete_for_node(ctx, {
+		organizationId: args.node.organizationId,
+		workspaceId: args.node.workspaceId,
+		nodeId: args.node._id,
+	});
 	await ctx.db.patch("files_nodes", args.node._id, {
 		archiveOperationId: null,
 		parentId,
@@ -5992,24 +6066,41 @@ export async function files_nodes_db_archive_nodes(
 		updatedBy: Id<"users">;
 		now: number;
 	},
+	shareLinkCleanup: files_share_links_CleanupState,
 ) {
 	const archiveOperationId = crypto.randomUUID();
+	const fileNodes = (await Promise.all(args.nodeIds.map((nodeId) => ctx.db.get("files_nodes", nodeId)))).filter(
+		(fileNode) => fileNode !== null,
+	);
 	const archivedWorkspaces = new Map<Doc<"files_nodes">["workspaceId"], Doc<"files_nodes">["organizationId"]>();
+	for (const fileNode of fileNodes) {
+		archivedWorkspaces.set(fileNode.workspaceId, fileNode.organizationId);
+	}
+
+	// Archive stamps only the named nodes. Delete the public links below them too, once per workspace.
+	for (const [workspaceId, organizationId] of archivedWorkspaces) {
+		await files_share_links_db_delete_for_roots(
+			ctx,
+			{
+				organizationId,
+				workspaceId,
+				rootNodeIds: fileNodes
+					.filter((fileNode) => fileNode.workspaceId === workspaceId)
+					.map((fileNode) => fileNode._id),
+			},
+			shareLinkCleanup,
+		);
+	}
 
 	await Promise.all(
-		args.nodeIds.map(async (nodeId) => {
-			const fileNode = await ctx.db.get("files_nodes", nodeId);
-			if (!fileNode) {
-				return;
-			}
-			archivedWorkspaces.set(fileNode.workspaceId, fileNode.organizationId);
-			await files_nodes_db_archive_node(ctx, {
+		fileNodes.map((fileNode) =>
+			files_nodes_db_archive_node(ctx, {
 				node: fileNode,
 				archiveOperationId,
 				updatedBy: args.updatedBy,
 				now: args.now,
-			});
-		}),
+			}),
+		),
 	);
 
 	// Advance each workspace once, after its parallel Archive writes finish.
@@ -6158,6 +6249,7 @@ export const archive_nodes = mutation({
 			pendingUpdateCleanup: null,
 			budget: { nodes: files_archive_runs_STEP_MAX_NODES, hasPaginated: false },
 			previousRunId: null,
+			shareLinkCleanup: files_share_links_create_cleanup_state(),
 		});
 		if (started._nay || !started._yay) return started;
 
@@ -6293,6 +6385,7 @@ export const unarchive_nodes = mutation({
 		}
 
 		const budget = { nodes: files_archive_runs_STEP_MAX_NODES, hasPaginated: false };
+		const shareLinkCleanup = files_share_links_create_cleanup_state();
 		let firstJob = null;
 		let previousJob = null;
 		for (const [archiveOperationId, topTreePath] of [...topTreePathByOperationId].toSorted((a, b) =>
@@ -6310,6 +6403,7 @@ export const unarchive_nodes = mutation({
 				pendingUpdateCleanup: null,
 				budget,
 				previousRunId: previousJob?.runId ?? null,
+				shareLinkCleanup,
 			});
 			if (started._nay) {
 				return started;
@@ -6522,8 +6616,13 @@ const SUBTREE_FILTER_MAX_ROWS_READ = 10_000;
  * workspace-wide read can still have been given one folder, and showing them that folder is the
  * whole point of sharing. Only "Permission denied" means this grant-only mode. Other permission
  * refusals return `null`. Missing current-user auth throws before membership is read.
+ *
+ * The public link list uses it too, so it answers the same members as the tree.
  */
-async function db_get_tree_reader(ctx: QueryCtx, args: { membershipId: Id<"organizations_workspaces_users"> }) {
+export async function files_nodes_db_get_tree_reader(
+	ctx: QueryCtx,
+	args: { membershipId: Id<"organizations_workspaces_users"> },
+) {
 	const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
 	const user = userAuth ? await ctx.db.get("users", userAuth.id) : null;
 	if (!userAuth || !user || (userAuth.kind === "anonymous" && user.deletedAt !== undefined)) {
@@ -6745,7 +6844,7 @@ export const list_tree = query({
 		}),
 	),
 	handler: async (ctx, args) => {
-		const reader = await db_get_tree_reader(ctx, { membershipId: args.membershipId });
+		const reader = await files_nodes_db_get_tree_reader(ctx, { membershipId: args.membershipId });
 		if (!reader) {
 			return { page: [], isDone: true, continueCursor: args.paginationOpts.cursor ?? "" };
 		}
@@ -6810,7 +6909,7 @@ export const list_tree_children = query({
 		// parent would tell the caller that a hidden folder exists.
 		const refused = { page: [], isDone: true, continueCursor: "" };
 
-		const reader = await db_get_tree_reader(ctx, { membershipId: args.membershipId });
+		const reader = await files_nodes_db_get_tree_reader(ctx, { membershipId: args.membershipId });
 		if (!reader) {
 			return refused;
 		}
@@ -7041,7 +7140,7 @@ async function db_get_table_scalar(
 async function db_list_custom_table_children(
 	ctx: QueryCtx,
 	args: {
-		reader: NonNullable<Awaited<ReturnType<typeof db_get_tree_reader>>>;
+		reader: NonNullable<Awaited<ReturnType<typeof files_nodes_db_get_tree_reader>>>;
 		membershipId: Id<"organizations_workspaces_users">;
 		parentId: Id<"files_nodes"> | "root";
 		kind: "file" | "folder";
@@ -7408,7 +7507,7 @@ async function db_list_custom_table_children(
 async function db_list_multi_sorted_table_children(
 	ctx: QueryCtx,
 	args: {
-		reader: NonNullable<Awaited<ReturnType<typeof db_get_tree_reader>>>;
+		reader: NonNullable<Awaited<ReturnType<typeof files_nodes_db_get_tree_reader>>>;
 		membershipId: Id<"organizations_workspaces_users">;
 		parentId: Id<"files_nodes"> | "root";
 		kind: "file" | "folder";
@@ -8078,7 +8177,7 @@ export const list_tree_children_sorted = query({
 			workPaused: false,
 		};
 
-		const reader = await db_get_tree_reader(ctx, { membershipId: args.membershipId });
+		const reader = await files_nodes_db_get_tree_reader(ctx, { membershipId: args.membershipId });
 		if (!reader) {
 			return refused;
 		}
@@ -8493,7 +8592,7 @@ export const list_tree_children_sort_side_rows = query({
 		}),
 	),
 	handler: async (ctx, args) => {
-		const reader = await db_get_tree_reader(ctx, { membershipId: args.membershipId });
+		const reader = await files_nodes_db_get_tree_reader(ctx, { membershipId: args.membershipId });
 		if (!reader) {
 			return null;
 		}
@@ -8726,7 +8825,7 @@ export const get_table_sort_key = query({
 	},
 	returns: v.union(files_sort_row_key_validator, v.null()),
 	handler: async (ctx, args): Promise<files_sort_RowKey | null> => {
-		const reader = await db_get_tree_reader(ctx, { membershipId: args.membershipId });
+		const reader = await files_nodes_db_get_tree_reader(ctx, { membershipId: args.membershipId });
 		if (!reader || !files_sort_is_valid(args.sort)) return null;
 		if (args.parentId !== files_ROOT_ID && !(await db_get_readable_tree_node(ctx, { reader, nodeId: args.parentId })))
 			return null;
@@ -8812,7 +8911,7 @@ export const get_table_filter_match = query({
 	},
 	returns: v.union(v.object({ matches: v.boolean(), preparing: v.boolean() }), v.null()),
 	handler: async (ctx, args) => {
-		const reader = await db_get_tree_reader(ctx, { membershipId: args.membershipId });
+		const reader = await files_nodes_db_get_tree_reader(ctx, { membershipId: args.membershipId });
 		if (!reader) return null;
 		if (!files_table_filter_is_valid(args.filter)) throw convex_error({ message: "Invalid table filter." });
 		if (args.parentId !== files_ROOT_ID && !(await db_get_readable_tree_node(ctx, { reader, nodeId: args.parentId })))
@@ -8929,7 +9028,7 @@ export const get_tree_ancestors = query({
 		}),
 	),
 	handler: async (ctx, args) => {
-		const reader = await db_get_tree_reader(ctx, { membershipId: args.membershipId });
+		const reader = await files_nodes_db_get_tree_reader(ctx, { membershipId: args.membershipId });
 		if (!reader) {
 			return null;
 		}
@@ -8992,7 +9091,7 @@ export const list_tree_shared_roots = query({
 		truncated: v.boolean(),
 	}),
 	handler: async (ctx, args) => {
-		const reader = await db_get_tree_reader(ctx, { membershipId: args.membershipId });
+		const reader = await files_nodes_db_get_tree_reader(ctx, { membershipId: args.membershipId });
 		if (!reader || reader.isOwner) {
 			return { rows: [], truncated: false };
 		}
@@ -9073,7 +9172,7 @@ export const get_folder_readme = query({
 		}),
 	),
 	handler: async (ctx, args) => {
-		const reader = await db_get_tree_reader(ctx, { membershipId: args.membershipId });
+		const reader = await files_nodes_db_get_tree_reader(ctx, { membershipId: args.membershipId });
 		if (!reader) {
 			return null;
 		}

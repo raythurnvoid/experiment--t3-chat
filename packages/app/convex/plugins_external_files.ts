@@ -15,6 +15,7 @@ import {
 	files_nodes_db_set_restricted_scope,
 	files_nodes_db_archive_nodes,
 } from "./files_nodes.ts";
+import { files_share_links_create_cleanup_state } from "./files_share_links_db.ts";
 import { files_subtree_ops_db_start_rebuild, files_subtree_ops_STEP_MAX_NODES } from "./files_subtree_ops.ts";
 import { files_metadata_db_read_entry } from "./files_metadata.ts";
 import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
@@ -284,13 +285,18 @@ export const ensure_writer = internalMutation({
 			updatedAt: Date.now(),
 		});
 
+		// Readers are refused on an existing folder above, so this folder is new and has no links.
 		if (args.readers) {
-			await files_nodes_db_set_restricted_scope(ctx, {
-				organizationId: installation.organizationId,
-				workspaceId: installation.workspaceId,
-				nodeId,
-				restrictedScopeNodeId: nodeId,
-			});
+			await files_nodes_db_set_restricted_scope(
+				ctx,
+				{
+					organizationId: installation.organizationId,
+					workspaceId: installation.workspaceId,
+					nodeId,
+					restrictedScopeNodeId: nodeId,
+				},
+				null,
+			);
 			const scopeRoot = (await ctx.db.get("files_nodes", nodeId))!;
 			await files_subtree_ops_db_start_rebuild(ctx, {
 				kind: "scope",
@@ -598,11 +604,15 @@ export const change_scope = internalMutation({
 			nodeId = node._id;
 			// An earlier Files archive already did the work. Keep its identity and dates.
 			if (node.archiveOperationId === null)
-				await files_nodes_db_archive_nodes(ctx, {
-					nodeIds: [nodeId],
-					updatedBy: facts._yay.serviceGrant.actorUserId,
-					now: Date.now(),
-				});
+				await files_nodes_db_archive_nodes(
+					ctx,
+					{
+						nodeIds: [nodeId],
+						updatedBy: facts._yay.serviceGrant.actorUserId,
+						now: Date.now(),
+					},
+					files_share_links_create_cleanup_state(),
+				);
 		}
 
 		const id = await ctx.db.insert("plugins_external_file_receipts", {

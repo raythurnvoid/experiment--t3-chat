@@ -4,6 +4,10 @@
 	   focus, so focus moves to the dialog itself. `MyModalPopover` clears its outline for every modal,
 	   so the ring is put back here only, the same way the footer spacer below is. */
 	.FilesShareModal {
+		/* Widen with the link text, as in the Properties modal. */
+		width: min(46rem, calc(100vw - 2rem));
+		max-width: none;
+
 		&[data-focus-visible] {
 			outline: 2px solid var(--color-fg-12);
 			outline-offset: 2px;
@@ -99,6 +103,93 @@
 		justify-content: end;
 	}
 	/* #endregion status */
+
+	/* #region link */
+	.FilesShareModalLink {
+		display: flex;
+		align-items: start;
+		gap: 12px;
+
+		padding: 14px 16px;
+		border: 1px solid var(--color-base-1-07);
+		border-radius: 10px;
+	}
+
+	.FilesShareModalLink-icon {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		flex: none;
+
+		width: 32px;
+		height: 32px;
+		border-radius: 999px;
+
+		background: var(--color-base-1-05);
+		color: var(--color-fg-10);
+	}
+
+	.FilesShareModalLink-icon > svg {
+		width: 16px;
+		height: 16px;
+	}
+
+	.FilesShareModalLink-main {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+
+		min-width: 0;
+		flex: 1;
+	}
+
+	.FilesShareModalLink-title {
+		font-size: 16px;
+		font-weight: 500;
+		color: var(--color-fg-11);
+	}
+
+	/* A creator's display name is free text, so it has to be allowed to break. */
+	.FilesShareModalLink-text {
+		font-size: 15px;
+		line-height: 1.45;
+		color: var(--color-fg-08);
+		overflow-wrap: anywhere;
+	}
+
+	.FilesShareModalLink-notes {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+
+		margin: 4px 0 0;
+		padding-inline-start: 18px;
+
+		font-size: 15px;
+		line-height: 1.4;
+		color: var(--color-fg-08);
+	}
+
+	.FilesShareModalLink-error {
+		font-size: 15px;
+		line-height: 1.45;
+		color: var(--color-red-11);
+		overflow-wrap: anywhere;
+	}
+
+	.FilesShareModalLink-actions {
+		display: flex;
+		align-items: center;
+		gap: 4px;
+		flex: none;
+	}
+
+	.FilesShareModalLink-level-trigger {
+		justify-content: space-between;
+
+		min-width: 130px;
+	}
+	/* #endregion link */
 
 	/* #region add row */
 	.FilesShareModal-add {
@@ -233,6 +324,14 @@
 		.FilesShareModal-status-actions {
 			width: 100%;
 			justify-content: start;
+		}
+
+		.FilesShareModalLink {
+			flex-wrap: wrap;
+		}
+
+		.FilesShareModalLink-actions {
+			width: 100%;
 		}
 
 		.FilesShareModal-add {

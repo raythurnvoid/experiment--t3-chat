@@ -9,6 +9,7 @@ type ContentArgs = FunctionArgs<typeof app_convex_api.files_nodes.search_content
 type ContentResult = FunctionReturnType<typeof app_convex_api.files_nodes.search_content>;
 type VisibleResult = FunctionReturnType<typeof app_convex_api.files_visible.list>;
 type MetadataResult = FunctionReturnType<typeof app_convex_api.files_metadata.search_nodes>;
+type LinksResult = FunctionReturnType<typeof app_convex_api.files_share_links.list_workspace_links>;
 
 // The 9,001-file fixture loads 181 owner pages before content search can start.
 const SEARCH_TIMEOUT = 15_000;
@@ -20,6 +21,7 @@ const {
 	contentResults,
 	visibleResults,
 	metadataResults,
+	linksResult,
 	queryPushListeners,
 	navigateMock,
 } = vi.hoisted(() => ({
@@ -29,6 +31,8 @@ const {
 	contentResults: new Map<string, ContentResult | Error | undefined>(),
 	visibleResults: new Map<string, VisibleResult | Error | undefined>(),
 	metadataResults: new Map<string, MetadataResult | Error | undefined>(),
+	// The workspace list of public links. `undefined` is loading.
+	linksResult: { current: [] as LinksResult | Error | undefined },
 	queryPushListeners: new Set<() => void>(),
 	navigateMock: vi.fn().mockResolvedValue(undefined),
 }));
@@ -85,6 +89,7 @@ vi.mock("convex/react", async (importOriginal) => {
 					}
 					if (name === "files_metadata:search_nodes")
 						return [key, metadataResults.get(key) ?? { targets: [], truncated: false }];
+					if (name === "files_share_links:list_workspace_links") return [key, linksResult.current];
 					if (name !== "files_nodes:search_content") return [key, []];
 					const args = request.args as ContentArgs;
 					if ((args.targets?.length ?? 0) > 8192) return [key, new Error("ArrayTooLong")];
@@ -122,6 +127,7 @@ beforeEach(() => {
 	visibleResults.clear();
 	visibleCursorsSeen.clear();
 	metadataResults.clear();
+	linksResult.current = [];
 	queryPushListeners.clear();
 	navigateMock.mockClear();
 	visibleEntriesMock.mockReset().mockReturnValue(
@@ -279,5 +285,60 @@ describe("FilesSearchPalette", () => {
 		expect(await screen.findByText("Search failed. Try changing your query.")).toBeTruthy();
 		expect(screen.queryByRole("button", { name: /Draft/ })).toBeNull();
 		expect(contentArgsSeen.current).toEqual([]);
+	});
+
+	// The palette runs outside the Files route too, for example from Chat, so it loads the link list
+	// itself.
+	test("file.link:public lists public files and waits for the link list before Enter", async () => {
+		visibleEntriesMock.mockReturnValue(
+			["public.md", "other.md"].map((name, index) => ({
+				target: { kind: "saved", id: `node_${index}` },
+				name,
+				path: `/deep/folder/${name}`,
+				kind: "file",
+				updatedAt: 1,
+				updatedBy: "user_1",
+				contentType: "text/markdown",
+				preparing: false,
+			})),
+		);
+		linksResult.current = undefined;
+		await open_search("file.link:public");
+		const input = screen.getByRole("combobox");
+		await waitFor(() =>
+			expect(screen.getByRole("list", { name: "Search results" }).getAttribute("aria-busy")).toBe("true"),
+		);
+		// The first Enter turns the typed filter into a chip. The second one has to wait.
+		fireEvent.keyDown(input, { key: "Enter" });
+		fireEvent.keyDown(input, { key: "Enter" });
+		expect(navigateMock).not.toHaveBeenCalled();
+		expect(screen.getByText(/Still searching/)).toBeTruthy();
+
+		act(() => {
+			linksResult.current = [
+				{
+					nodeId: "node_0" as app_convex_Id<"files_nodes">,
+					createdBy: "user_1" as app_convex_Id<"users">,
+					createdAt: 1,
+				},
+			];
+			queryPushListeners.forEach((listener) => listener());
+		});
+		expect(await screen.findByRole("button", { name: /public\.md/ })).toBeTruthy();
+		expect(screen.queryByRole("button", { name: /other\.md/ })).toBeNull();
+		fireEvent.keyDown(input, { key: "Enter" });
+		expect(navigateMock.mock.calls.at(-1)?.[0].search({ q: "file.link:public" })).toEqual({
+			q: "file.link:public",
+			nodeId: "node_0",
+		});
+	});
+
+	test("does not show a negated file.link result when the link list failed", async () => {
+		linksResult.current = new Error("failed");
+		await open_search("!file.link:public");
+		expect(
+			await screen.findByText("Search failed. Try changing your query.", {}, { timeout: SEARCH_TIMEOUT }),
+		).toBeTruthy();
+		expect(screen.queryByRole("button", { name: /file-0\.md/ })).toBeNull();
 	});
 });

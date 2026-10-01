@@ -47,6 +47,11 @@ import {
 	files_pending_updates_db_require_reviewed_archive_node,
 } from "./files_pending_updates.ts";
 import {
+	files_share_links_create_cleanup_state,
+	files_share_links_db_delete_for_roots,
+	type files_share_links_CleanupState,
+} from "./files_share_links_db.ts";
+import {
 	files_subtree_ops_db_delete,
 	files_subtree_ops_db_enqueue_nodes,
 	files_subtree_ops_db_find_blocker,
@@ -144,6 +149,11 @@ type StepArgs = {
 	 * The restricted scopes already checked in this step. The key "" stands for no scope.
 	 */
 	checkedScopes: Map<string, boolean>;
+	/**
+	 * Public link cleanup for this mutation. A pending Save passes its own, so its archive shares one
+	 * link load with the moves before it. A scheduled step makes a new one.
+	 */
+	shareLinkCleanup: files_share_links_CleanupState;
 	isWritten: boolean;
 };
 
@@ -1262,6 +1272,17 @@ async function db_step(ctx: MutationCtx, args: StepArgs): Promise<StepOutcome> {
 		// top items itself.
 		if (args.run.kind === "archive") {
 			await files_subtree_ops_db_reserve_sequences(ctx, { opId: args.opId, count: args.run.rootNodeIds.length });
+			// End the public links under the items the check kept, before the first stamp. A queued, refused,
+			// or stopped check never gets here, so its links stay.
+			await files_share_links_db_delete_for_roots(
+				ctx,
+				{
+					organizationId: args.run.organizationId,
+					workspaceId: args.run.workspaceId,
+					rootNodeIds: args.run.rootNodeIds,
+				},
+				args.shareLinkCleanup,
+			);
 		}
 	}
 
@@ -1403,6 +1424,7 @@ export async function files_archive_runs_db_start(
 		 * at a time, so their steps do not write the same docs at the same moment.
 		 */
 		previousRunId: Id<"files_archive_runs"> | null;
+		shareLinkCleanup: files_share_links_CleanupState;
 	},
 ) {
 	if (args.kind === "restore") {
@@ -1508,6 +1530,7 @@ export async function files_archive_runs_db_start(
 		now,
 		budget: args.budget,
 		checkedScopes: new Map(),
+		shareLinkCleanup: args.shareLinkCleanup,
 		isWritten: false,
 	};
 	const outcome = blocker ? null : await db_step(ctx, stepArgs);
@@ -1594,6 +1617,7 @@ export async function files_archive_runs_db_advance(
 					now: args.now,
 					budget: { nodes: files_archive_runs_STEP_MAX_NODES, hasPaginated: false },
 					checkedScopes: new Map(),
+					shareLinkCleanup: files_share_links_create_cleanup_state(),
 					isWritten: false,
 				});
 

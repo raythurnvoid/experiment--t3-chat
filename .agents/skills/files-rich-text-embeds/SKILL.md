@@ -15,6 +15,9 @@ description: Spec for image and video embeds in rich text documents — the bono
 - `../../../packages/app/convex/r2.ts` (`get_media_by_reference`, current media access)
 - `../../../packages/app/src/lib/files-image-compression.ts` (client-side image compression, shared with the sidebar)
 - `../../../packages/app/convex/files_nodes.ts` (`create_upload_node`, `discard_failed_upload_node`, `get_authorized_by_path`)
+- `../../../packages/app/convex/files_share_links.ts` (public link page: media checks and signed URLs)
+- `../../../packages/app/shared/files-share-rich-text.ts` (public schema, media map, alt rules)
+- `../../../packages/app/src/components/files/files-share-page.tsx` (public media node views)
 
 # Reference Format
 
@@ -138,6 +141,83 @@ items keep an http(s)-only gate as the required second gate at insertion time.
 
 Multi-file batches run sequentially so collision suffixes stay deterministic. Deleting a
 document does not delete its assets folder — no repair or cleanup logic exists on purpose.
+
+# Public Link Page
+
+A document shared with "Anyone with the link can view" shows its images and videos only through
+its own link. The page never calls `get_media_by_reference` and never uses the editor node views.
+One server preparation (`db_prepare_share_link_view`) builds a media map, and the browser names a
+media only by its index in that map.
+
+The media map (`files_share_rich_text_prepare`):
+
+- Only the decoded `src` of a real image or video element adds an entry. Plain text, code,
+  frontmatter, and ordinary links never do. A link to a `bonobo-file://` address becomes the text
+  `[file reference]`.
+- The key is the media kind plus the exact reference. Indexes 0 to 49 follow document order, and
+  the same pair reuses its index. An image and a video with the same reference are two entries.
+- After 50 entries, and for a malformed or unsupported reference, the node gets a null index and
+  shows as unavailable.
+- An external `http(s)` image or video becomes a plain link. The page never loads a third-party
+  resource by itself.
+- Public image and video nodes carry only `index` and `alt`. They have no `src`, `title`, width, or
+  upload ID.
+
+An embed shows only when all of these hold (`db_read_media_node`, `db_check_media_node`):
+
+1. It resolves to a saved file in the same organization and workspace. `bonobo-file://<id>` is
+   normalized with `ctx.db.normalizeId`. `bonobo-file://private/<id>` resolves only through the
+   permanent saved origin: `files_pending_nodes_db_resolve_read_target` must return `kind: "saved"`.
+   An unsaved draft never shows, and no draft bytes are read. The owner-only branch of
+   `get_media_by_reference` is never used, because a visitor has no identity.
+2. The file is not archived. Its content type is in the inline-served media set
+   (`files_is_inline_media_content_type`) and matches the node: an image node needs `image/*`, and a
+   video node needs `video/*`. SVG and other types are unavailable.
+3. It passes the same live checks as the shared document: no archived folder above it, no plugin
+   binding on it or on a folder above it, no queued or running subtree job on its path, and a
+   finished asset.
+4. Same audience: its live restricted scope equals the document's live restricted scope. Both are
+   open to the workspace, or both sit inside the same restricted folder.
+5. No narrow writers, open scope only. Every service account with an exact `content.write` grant on
+   the document must be live (not revoked, same tenant) and able to read the media file, through a
+   workspace `content.read` grant or an exact file `content.read` grant. A revoked or missing account
+   is never skipped. More than 50 such grants on either file makes the media unavailable.
+
+Otherwise the view returns `{ index, available: false }`, with no type, name, ID, or reason. The page
+shows a gray box, "This image is not shared" or "This video is not shared", from the node's own kind.
+The editor often fills alt with the real file name, so only an available media keeps its alt, after
+reference redaction. Every other media node has `alt: null`. When the document falls back to plain
+text, the page has fixed `[image]` and `[video]` labels and no media at all.
+
+The normal case works: uploads land in the `assets` folder next to the document (Upload Flow, step 4),
+so they share its scope. An image from a more private or a differently restricted folder is
+unavailable. A document inside a restricted folder that embeds an image from an open folder is also
+unavailable, because people with only the folder grant may not read the whole workspace. This is
+expected, not a bug. The fix is to move or copy the image next to the document.
+
+Narrow-writer changes:
+
+- Removing or downgrading a service account's exact `content.write` grant on the document ends the
+  document's link for good (`access_control_db_set_service_account_grant`). The account may have added
+  media while it could write, and the check no longer sees it.
+- Revoking the account keeps its grant. So its media check fails and every media under rule 5 becomes
+  unavailable, while the page itself stays.
+- Recovery is a manager action: remove the revoked account's write grant, then turn the link on again.
+  That creates a new token. The old token never works again.
+- A new write grant needs no hook. The next view checks the new account.
+
+Saved human, API, and plugin edits update the page. New media show when the rules above allow them.
+A credential's download scope does not limit this: a key with `files:write` but no `files:download`
+can add a readable image of the same audience, and the link then serves it. This is an approved rule.
+No file becomes public just because someone knows its ID.
+
+`create_share_link_download_urls({ token, revision, targets })` signs 1 to 50 unique targets. It
+charges the `files_share_link_download` bucket (200 targets per minute, keyed by the link doc, shared
+by all visitors) before the full preparation, and answers `stale` for an old revision. Media are
+signed under a neutral name such as `image.png`, because the file's own name can be private. URLs
+work for 15 minutes. A URL signed before the link was turned off, or before the media became
+unavailable, keeps working until it expires. The page drops old URLs when the revision changes or a
+media becomes unavailable, and asks for a new URL at most once per expired URL.
 
 # Insertion UI (slash menu)
 

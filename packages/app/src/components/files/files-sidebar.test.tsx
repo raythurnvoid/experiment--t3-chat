@@ -18,28 +18,57 @@ import { AppActivitiesProvider } from "@/lib/app-activities-context.tsx";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { global_custom_event_dispatch } from "@/lib/global-event.tsx";
 
-const { treeState, tenantState, createNode } = vi.hoisted(() => ({
+const { treeState, tenantState, linkState, createNode } = vi.hoisted(() => ({
 	treeState: { nodes: [] as files_VisibleTreeNode[], listeners: new Set<() => void>() },
 	// The mocked tenant hook subscribes here. Like a real membership change, a notify re-renders
 	// every component that called it. A parent rerender alone does not, because the React Compiler
 	// keeps its output when props are unchanged.
 	tenantState: { membershipId: "membership", listeners: new Set<() => void>() },
+	// The workspace list of public links. `undefined` is loading, `null` is refused. `results` is what
+	// the search chips read through `useQueries`; it is a new object only when the list changes.
+	linkState: {
+		links: [] as unknown,
+		results: { links: [] } as Record<string, unknown>,
+		listeners: new Set<() => void>(),
+	},
 	createNode: vi.fn(),
 }));
+
+function set_links(links: unknown) {
+	linkState.links = links;
+	linkState.results = { links };
+	for (const listener of linkState.listeners) listener();
+}
+
+function link(nodeId: string) {
+	return { nodeId, createdBy: "user", createdAt: 1 };
+}
 
 vi.mock("convex/react", async (importOriginal) => {
 	const original = await importOriginal<typeof import("convex/react")>();
 	const { getFunctionName } = await import("convex/server");
+	const { useSyncExternalStore } = await import("react");
 	const queryResults = {};
+	const subscribeLinks = (listener: () => void) => {
+		linkState.listeners.add(listener);
+		return () => {
+			linkState.listeners.delete(listener);
+		};
+	};
 	return {
 		...original,
 		useConvex: () => ({ query: async () => [], mutation: createNode, action: createNode }),
 		useQuery: (query: FunctionReference<"query">, args: unknown) => {
+			const links = useSyncExternalStore(subscribeLinks, () => linkState.links);
 			if (args === "skip") return undefined;
 			if (getFunctionName(query) === "files_transfer:get") return null;
+			if (getFunctionName(query) === "files_share_links:list_workspace_links") return links;
 			return getFunctionName(query) === "access_control:get_current_user_workspace_permission" ? true : [];
 		},
-		useQueries: () => queryResults,
+		useQueries: (queries: Record<string, unknown>) => {
+			const linkResults = useSyncExternalStore(subscribeLinks, () => linkState.results);
+			return "links" in queries ? linkResults : queryResults;
+		},
 		usePaginatedQuery: () => ({ results: [], status: "Exhausted", isLoading: false, loadMore: () => {} }),
 	};
 });
@@ -121,6 +150,7 @@ vi.mock("@/lib/activities.ts", () => ({ useFileNodeActivities: () => [] }));
 beforeEach(() => {
 	createNode.mockReset();
 	tenantState.membershipId = "membership";
+	set_links([]);
 	treeState.nodes = ["alpha", "bravo", "charlie", "delta"].map((name) => ({
 		...files_SYNTHETIC_ROOT_FOLDER,
 		_id: name as app_convex_Id<"files_nodes">,
@@ -146,10 +176,15 @@ afterEach(() => {
 	vi.restoreAllMocks();
 	treeState.listeners.clear();
 	tenantState.listeners.clear();
+	linkState.listeners.clear();
 });
 
 describe("FilesSidebar", () => {
-	function CreateSidebar(props: { router: AnyRouter; selectedNodeId: string }) {
+	function CreateSidebar(props: {
+		router: AnyRouter;
+		selectedNodeId: string;
+		onPrimaryAction?: (nodeId: string, kind: string) => void;
+	}) {
 		const handleAction = () => {};
 		const { membershipId } = AppTenantProvider.useContext();
 		return (
@@ -168,7 +203,7 @@ describe("FilesSidebar", () => {
 							initialSearchQuery=""
 							onClose={handleAction}
 							onArchive={handleAction}
-							onPrimaryAction={handleAction}
+							onPrimaryAction={props.onPrimaryAction ?? handleAction}
 							onSearchQueryChange={handleAction}
 						/>
 					</FilesClipboardProvider>
@@ -900,5 +935,116 @@ describe("FilesSidebar", () => {
 		);
 		const bravo = await view.findByRole("treeitem", { name: "bravo" });
 		await waitFor(() => expect(document.activeElement).toBe(bravo), { timeout: 5_000 });
+	});
+
+	test("marks public files in the tree and names the link in the label and tooltip", async () => {
+		treeState.nodes = treeState.nodes.map((node) =>
+			node._id === "bravo"
+				? { ...node, kind: "file" }
+				: node._id === "charlie"
+					? { ...node, kind: "file", restrictedScopeNodeId: node._id }
+					: node._id === "delta"
+						? { ...node, kind: "file", canWrite: false }
+						: node,
+		);
+		set_links([link("bravo"), link("charlie"), link("delta")]);
+		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
+		const view = render(<CreateSidebar router={router} selectedNodeId="alpha" />);
+
+		const bravo = await view.findByRole("treeitem", { name: "bravo, public link" });
+		const charlie = view.getByRole("treeitem", { name: "charlie restricted, public link" });
+		view.getByRole("treeitem", { name: "delta, read-only, public link" });
+		const alpha = view.getByRole("treeitem", { name: "alpha" });
+		expect(bravo.getAttribute("data-file-public-link")).toBe("on");
+		expect(alpha.hasAttribute("data-file-public-link")).toBe(false);
+		expect(bravo.querySelector(".FilesSidebarTreeItemIcon-public-link")).not.toBeNull();
+		expect(alpha.querySelector(".FilesSidebarTreeItemIcon-public-link")).toBeNull();
+		// A restricted file shows both marks.
+		expect(charlie.querySelector("[data-file-restricted='self'] .FilesSidebarTreeItemIcon-public-link")).not.toBeNull();
+
+		// The link comes first in the row tooltip. The restricted row keeps its Files access note.
+		const bravoAction = bravo.querySelector(".FilesSidebarTreeItemPrimaryAction")!;
+		fireEvent.pointerEnter(bravoAction);
+		fireEvent.pointerMove(bravoAction);
+		expect((await within(document.body).findByRole("tooltip", {}, { timeout: 4_000 })).textContent).toMatch(
+			/^Anyone with the link can view\. Updated .+ by /,
+		);
+		fireEvent.pointerLeave(bravoAction);
+		await waitFor(() => expect(within(document.body).queryByRole("tooltip")).toBeNull(), { timeout: 4_000 });
+		const charlieAction = charlie.querySelector(".FilesSidebarTreeItemPrimaryAction")!;
+		fireEvent.pointerEnter(charlieAction);
+		fireEvent.pointerMove(charlieAction);
+		expect((await within(document.body).findByRole("tooltip", {}, { timeout: 4_000 })).textContent).toBe(
+			"Anyone with the link can view. In Files, only chosen people and roles have access.",
+		);
+
+		// Turning a link off removes its mark.
+		act(() => set_links([link("charlie")]));
+		await view.findByRole("treeitem", { name: "bravo" });
+		expect(view.getByRole("treeitem", { name: "bravo" }).hasAttribute("data-file-public-link")).toBe(false);
+	});
+
+	test("file.link:public finds a public file in a closed folder, and Enter waits for the link list", async () => {
+		treeState.nodes = treeState.nodes.map((node) =>
+			node._id === "bravo"
+				? {
+						...node,
+						kind: "file",
+						parentId: "alpha" as app_convex_Id<"files_nodes">,
+						path: "/alpha/bravo",
+						treePath: "/alpha/bravo/",
+						pathDepth: 2,
+					}
+				: node._id === "charlie"
+					? { ...node, kind: "file" }
+					: node,
+		);
+		set_links(undefined);
+		const handlePrimaryAction = vi.fn();
+		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
+		const view = render(<CreateSidebar router={router} selectedNodeId="delta" onPrimaryAction={handlePrimaryAction} />);
+		expect((await view.findByRole("treeitem", { name: "alpha" })).getAttribute("aria-expanded")).toBe("false");
+
+		// Enter right away cannot open anything while the link list is loading. The first Enter turns the
+		// typed filter into a chip, and the second one has to wait.
+		const searchInput = view.getByRole("combobox");
+		act(() => searchInput.focus());
+		fireEvent.change(searchInput, { target: { value: "file.link:public" } });
+		fireEvent.keyDown(searchInput, { key: "Enter", code: "Enter" });
+		fireEvent.keyDown(searchInput, { key: "Enter", code: "Enter" });
+		expect(handlePrimaryAction).not.toHaveBeenCalled();
+		expect(view.getByText(/Still searching/)).toBeTruthy();
+
+		act(() => set_links([link("bravo")]));
+		await waitFor(() => expect(view.queryByRole("treeitem", { name: "bravo, public link" })).not.toBeNull(), {
+			timeout: 5_000,
+		});
+		expect(view.queryByRole("treeitem", { name: "charlie" })).toBeNull();
+		fireEvent.keyDown(searchInput, { key: "Enter", code: "Enter" });
+		expect(handlePrimaryAction).toHaveBeenCalledWith("bravo", "file");
+	});
+
+	test("!file.link:public shows nothing while the link list failed, then every file without a link", async () => {
+		treeState.nodes = treeState.nodes.map((node) =>
+			node._id === "bravo" || node._id === "charlie" ? { ...node, kind: "file" } : node,
+		);
+		set_links(null);
+		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
+		const view = render(<CreateSidebar router={router} selectedNodeId="delta" />);
+		await view.findByRole("treeitem", { name: "charlie" });
+
+		const searchInput = view.getByRole("combobox");
+		act(() => searchInput.focus());
+		fireEvent.change(searchInput, { target: { value: "!file.link:public" } });
+		// A failed answer is unknown, so the negated chip must not turn it into a match.
+		await waitFor(() => expect(view.queryAllByRole("treeitem")).toHaveLength(0), { timeout: 5_000 });
+
+		act(() => set_links([]));
+		await waitFor(() => expect(view.queryByRole("treeitem", { name: "charlie" })).not.toBeNull(), { timeout: 5_000 });
+		act(() => set_links([link("charlie")]));
+		await waitFor(() => expect(view.queryByRole("treeitem", { name: "charlie, public link" })).toBeNull(), {
+			timeout: 5_000,
+		});
+		expect(view.queryByRole("treeitem", { name: "bravo" })).not.toBeNull();
 	});
 });

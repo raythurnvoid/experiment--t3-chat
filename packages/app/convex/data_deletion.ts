@@ -1289,6 +1289,19 @@ async function db_purge_organization_workspace_content_batch(
 		return { done: false, deletedCount: assets.length };
 	}
 
+	// Public links point at file nodes by id. Delete them before the file-node pass too. The purge
+	// fence above already hides them from visitors.
+	const shareLinks = await ctx.db
+		.query("files_share_links")
+		.withIndex("by_organization_workspace_node", (q) =>
+			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
+		)
+		.take(batchSize);
+	if (shareLinks.length > 0) {
+		await Promise.all(shareLinks.map((doc) => ctx.db.delete("files_share_links", doc._id)));
+		return { done: false, deletedCount: shareLinks.length };
+	}
+
 	// File grants point at scope nodes by id. Delete them before the final file-node pass, including
 	// when data-only reset keeps the workspace structure and never runs the structure purge.
 	const permissionGrants = await ctx.db

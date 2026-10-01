@@ -67,6 +67,7 @@ const FilesSearchInput_FILE_FIELD_LABELS: Record<string, string> = {
 	ext: "Extension",
 	kind: "Type",
 	updated: "Updated",
+	link: "Link",
 };
 
 type FilesSearchInputFilterChip_Props = {
@@ -371,6 +372,8 @@ export const FilesSearchInput = memo(function FilesSearchInput(props: FilesSearc
 			if (typingFilter.key.name === "kind") {
 				push("file");
 				push("folder");
+			} else if (typingFilter.key.name === "link") {
+				push("public");
 			} else if (typingFilter.key.name === "ext") {
 				const extensions = new Set<string>();
 				for (const item of treeItemsList ?? []) {

@@ -1,0 +1,241 @@
+@layer components {
+	/* #region media */
+	.FilesSharePageMedia {
+		display: inline-block;
+
+		max-width: 100%;
+
+		vertical-align: bottom;
+
+		&.FilesSharePageMedia-kind-video {
+			display: block;
+
+			margin: 8px 0;
+		}
+	}
+
+	.FilesSharePageMedia-element {
+		display: block;
+
+		max-width: 100%;
+		height: auto;
+	}
+
+	/* Keep a fixed height while loading or refused, so the text does not jump when media arrives. */
+	.FilesSharePageMedia-box {
+		display: inline-flex;
+		flex-wrap: wrap;
+		align-items: center;
+		justify-content: center;
+		gap: 8px;
+
+		width: min(100%, 344px);
+		min-height: 180px;
+		padding: 12px;
+
+		border-radius: 8px;
+
+		background: var(--color-base-1-05);
+
+		font-size: 15px;
+		color: var(--color-fg-08);
+		text-align: center;
+	}
+
+	.FilesSharePageMedia[data-share-media-state="failed"] .FilesSharePageMedia-box {
+		color: var(--color-red-11);
+	}
+	/* #endregion media */
+
+	/* #region rich text */
+	.FilesSharePageRichText {
+		min-width: 0;
+
+		/* Long words and URLs wrap instead of widening the page. */
+		overflow-wrap: anywhere;
+
+		/* A wide table scrolls sideways in its own box. The editor's fixed layout squeezed every column
+		   on a phone until words broke one letter per line. `break-word` keeps whole words, because
+		   `anywhere` would let the table squeeze a column to one letter again. */
+		& table {
+			display: block;
+			max-width: 100%;
+			overflow-x: auto;
+
+			table-layout: auto;
+			overflow-wrap: break-word;
+		}
+
+		/* The private editor's rules for these blocks are scoped to the editor, so copy them here. A quote
+		   must not look like the author's own text. */
+		& code {
+			padding: 0.125em 0.35em;
+
+			border-radius: 4px;
+
+			background: var(--color-base-1-05);
+
+			font-family: var(--app-font-monospace);
+			font-size: 16px;
+			color: var(--color-fg-11);
+		}
+
+		& mark {
+			padding: 0.125em 0.2em;
+
+			border-radius: 3px;
+
+			background: var(--color-base-1-08);
+
+			color: inherit;
+		}
+
+		& blockquote {
+			margin: 16px 0;
+			padding: 12px 16px;
+
+			border: 1px solid var(--color-base-1-07);
+			border-left: 3px solid var(--color-fg-07);
+			border-radius: 6px;
+
+			background: var(--color-base-1-03);
+
+			& blockquote {
+				margin: 8px 0 0;
+				padding: 4px 12px;
+
+				border-width: 0 0 0 2px;
+				border-radius: 0;
+
+				background: transparent;
+			}
+
+			& > :first-child {
+				margin-top: 0;
+			}
+
+			& > :last-child {
+				margin-bottom: 0;
+			}
+		}
+
+		& pre:not([data-frontmatter]) {
+			margin: 12px 0 16px;
+			padding: 16px;
+
+			border: 1px solid var(--color-base-1-07);
+			border-radius: 6px;
+
+			background: var(--color-base-1-03);
+
+			font-family: var(--app-font-monospace);
+			font-size: 16px;
+			line-height: 22px;
+			color: var(--color-fg-11);
+			tab-size: 4;
+		}
+
+		& pre code {
+			padding: 0;
+
+			border-radius: 0;
+
+			background: transparent;
+
+			font: inherit;
+			color: inherit;
+		}
+
+		& pre[data-frontmatter] {
+			margin: 0 0 24px 0;
+			padding: 12px 16px;
+
+			border: 1px solid var(--color-base-1-07);
+			border-radius: 10px;
+
+			background-color: var(--color-base-1-03);
+
+			font-family: var(--app-font-monospace);
+			font-size: 16px;
+			line-height: 22px;
+			white-space: pre-wrap;
+			color: var(--color-fg-11);
+
+			/* Show it as document metadata, not as a code block. */
+			& .FilesSharePageRichText-frontmatter-label {
+				display: block;
+
+				margin: -12px -16px 12px -16px;
+				padding: 8px 16px;
+
+				border-bottom: 1px solid var(--color-base-1-06);
+				border-radius: 9px 9px 0 0;
+
+				background-color: var(--color-base-1-02);
+
+				font-family: var(--app-font-sans);
+				font-size: 16px;
+				font-weight: 500;
+				line-height: 1;
+				white-space: normal;
+				color: var(--color-fg-11);
+			}
+		}
+	}
+	/* #endregion rich text */
+
+	/* #region download */
+	.FilesSharePageDownload {
+		display: flex;
+		flex-direction: column;
+		align-items: start;
+		gap: 12px;
+	}
+
+	.FilesSharePageDownload-message {
+		font-size: 15px;
+		color: var(--color-fg-08);
+
+		&[role="alert"] {
+			color: var(--color-red-11);
+		}
+	}
+	/* #endregion download */
+
+	/* #region page */
+	.FilesSharePageContent-title {
+		font-size: 1.5rem;
+		font-weight: 600;
+		line-height: 1.3;
+
+		overflow-wrap: anywhere;
+	}
+
+	.FilesSharePageContent-notice {
+		padding: 8px 12px;
+
+		border-radius: 8px;
+
+		background: var(--color-base-1-05);
+
+		font-size: 15px;
+		color: var(--color-fg-08);
+	}
+
+	.FilesSharePageContent-plain-text {
+		max-width: 100%;
+		margin: 0;
+		padding: 12px;
+		overflow-x: auto;
+
+		border: 1px solid var(--color-base-1-06);
+		border-radius: 8px;
+
+		background: var(--color-base-1-03);
+
+		font-size: 16px;
+		line-height: 22px;
+		white-space: pre;
+	}
+	/* #endregion page */
+}

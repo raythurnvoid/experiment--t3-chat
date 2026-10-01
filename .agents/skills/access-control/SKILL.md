@@ -167,6 +167,15 @@ Two names, used everywhere in this subsystem. Nothing else should be called "ext
 - **Custom roles** are `access_control_roles` docs, organization-wide, capped per organization by
   `MAX_CUSTOM_ROLES` in `convex/access_control.ts`. Users compose them from the fixed permission
   catalog; they can never invent a permission.
+- **Edit includes view.** A custom role with `content.write` or `content.permissions.manage` must
+  also have `content.read`. `validate_role_permissions` refuses any other list, for both
+  `create_role` and `update_role`, with `"<label>" needs "View workspace content"`. Why: somebody
+  who can edit but not read could put an open file they cannot read into a document that has a
+  public link, and the link would show that file (see "Public file links"). The role editor keeps
+  its checkboxes in a valid state: checking Edit or Manage file sharing also checks View, and
+  unchecking View also unchecks both. The server rule is the real guard. System roles and file
+  share levels already follow this rule. A custom role without Edit or Manage may still leave out
+  View.
 - An assignment's `role` field is either a system role key or a custom role doc id.
 
 # Tables
@@ -466,6 +475,13 @@ exception, and they touch none of the five. `/api/v1/files/download-urls` signs 
 that answers with bytes. Keep `visibilityUserId` a required argument, so a later caller cannot forget
 to pass it. Count the readers before you trust this list: a sixth one added later is a sixth door.
 
+**The public link reader is separate on purpose.** `db_prepare_share_link_view` in
+`convex/files_share_links.ts` reads a linked file's committed chunks and media assets for a visitor
+with no account. It uses none of the five readers above, because there is no user to check. Its
+authority is the link token plus the live checks in "Public file links" below. Both
+`get_share_link_view` and the signer `create_share_link_download_urls` go through it. Do not call it
+from a member-facing door, and do not add a member reader that skips the five.
+
 **Plugin activities answer to the files they name.** `db_filter_visible_activities` in `convex/activities.ts`
 is the one rule, used by `list_page`, `archive_activity` and `archive_all_activities`. One
 unreadable target hides the whole activity, because the title usually carries the file's name. A
@@ -669,7 +685,7 @@ product decision, so record the answer here before changing the behaviour. An en
   assignment's own workspace** is the exception, and is demoted instead: default-workspace rows drop to
   `viewer`, workspace role rows are deleted. That demotion is a role hand-out like any other, so it
   takes the same ceiling — the delete is refused when the caller cannot hand out what `viewer` grants,
-  which is reachable because nothing forces a custom role to include `content.read`. Full reasoning
+  which is reachable because a role without Edit or Manage may leave out `content.read`. Full reasoning
   lives in the code comment above the demotion.
 
 ## Assignment
@@ -719,10 +735,11 @@ product decision, so record the answer here before changing the behaviour. An en
 ## Files tree reads
 
 The sidebar loads the tree one open folder at a time through four `files_nodes` queries. All of them
-resolve the reader with `db_get_tree_reader` and filter every row with
+resolve the reader with `files_nodes_db_get_tree_reader` and filter every row with
 `access_control_db_filter_readable_file_nodes`, so they never show more than `list_tree` does.
+`files_share_links.list_workspace_links` resolves its reader with the same helper.
 
-- `db_get_tree_reader` requires a live `users` doc before reading membership. Missing auth or a
+- `files_nodes_db_get_tree_reader` requires a live `users` doc before reading membership. Missing auth or a
   missing user throws `Unauthenticated`. An anonymous user with `deletedAt` does too, even when
   the supplied membership is inactive. The helper keeps the caller's auth kind.
   It returns `null` for an inactive or foreign membership and for every refusal
@@ -852,12 +869,14 @@ resolve the reader with `db_get_tree_reader` and filter every row with
 
 ## File sharing
 
-`convex/files_sharing.ts` owns the whole surface. Four mutations plus one query:
+`convex/files_sharing.ts` owns member sharing. Five mutations plus one query:
 `get_node_share_state`, `restrict_node`, `unrestrict_node`, `set_node_share_grant`,
-`remove_node_share_grant`. The four writes take `content.permissions.manage` **on the node**, and the
-`files_sharing_write` bucket first. `get_node_share_state` only takes `content.read` on the node: the
-dialog opens for anybody who can see the file, and `canManage` in its answer is what hides the
-controls from a reader.
+`remove_node_share_grant`, `set_node_share_link`. The five writes take `content.permissions.manage`
+**on the node**, and the `files_sharing_write` bucket first. `get_node_share_state` only takes
+`content.read` on the node: the dialog opens for anybody who can see the file, and `canManage` in its
+answer is what hides the controls from a reader.
+`set_node_share_link` turns a file's public link on and off. The public doors that serve the link
+live in `convex/files_share_links.ts`. See "Public file links" below.
 
 The model:
 
@@ -899,6 +918,247 @@ Five rules that look like details and are not:
   reaches somebody who can act on it — share with the people instead — rather than an inviter who
   can fix nothing. Changing a level the role already has on a node writes no new share and is not
   counted.
+
+## Public file links
+
+"Anyone with the link can view" publishes one saved file to people with no account. The code:
+`convex/files_share_links.ts` (public view, signer, `list_workspace_links`, live checks),
+`convex/files_share_links_db.ts` (lifecycle delete helpers), `set_node_share_link` and
+`get_node_share_state` in `convex/files_sharing.ts`, and `shared/files-share-rich-text.ts` (safe
+content). The share page is `/share/<token>`; the auth skill describes its public boundary.
+
+### The link doc and its token
+
+- A link is one `files_share_links` doc. A file has at most one. The doc holds a random `token`:
+  32 random bytes as lowercase hex, from `crypto_random_hex`.
+- The token is the only authority. A file id is not a secret and opens nothing. Ids appear in
+  URLs, embeds, tree rows, API answers, and logs, and former members keep them.
+- The public doors find the doc by exact token on `by_token`. They never take a node id. A token
+  that is not 64 lowercase hex characters makes the view return null and the signer return
+  `Not found`. Both stop before any read.
+- Turning the link off deletes the doc. Turning it on again makes a new token, so an old link never
+  works again. Turning it on while a link exists keeps the first token.
+- The token is stored as plain text, so a manager can copy the link again. Never log it. The
+  signer's rate limit key is the doc `_id`, never the token.
+- A link is not a `public` grant. It does not use `principalKind: "public"` or `allowPublic`. A
+  grant would not work here: the checker reads grants on the restricted scope node, so a grant on
+  one file inside a restricted folder would never match, and a grant on the folder would open
+  every file in it.
+- The doc also stores `restrictedScopeNodeId` (the file's live scope when the link was turned on)
+  and `ancestorNodeIds` (the folders from the parent up to the root, at most 64). The lifecycle
+  helpers use the ancestor list to find links under a folder without loading nodes. Neither field
+  leaves the server.
+- `createdBy` and `createdAt` are display data. The link does not depend on the creator's
+  membership, role, or account.
+- A workspace has at most 500 links (`files_share_links_MAX_PER_WORKSPACE`). This is a code bound
+  on query and cleanup cost, not a quota.
+
+### Turning it on and off
+
+`files_sharing.set_node_share_link({ membershipId, nodeId, enabled })` returns a Result.
+
+- It charges `files_sharing_write` first.
+- Both On and Off need an active membership and `content.permissions.manage` on the file's
+  **live** scope. `files_share_links_db_resolve_live_scope` walks `parentId` up to the root (at most
+  64 folders) and finds the nearest restricted root. The stored scope can be old while a scope job
+  runs, and a manager must not publish a file inside a folder that was just restricted.
+- On also needs all of these:
+  - a signed-in user, not an anonymous one ("Sign in to create a public link"). So an anonymous
+    upgrade never has to find and secure links;
+  - `content.read` on the live scope. Nobody publishes what they cannot read;
+  - every check in `files_share_links_db_check_live_file`: the node is a file, not a folder; it
+    and every folder above it are not archived; the organization and workspace are live (see
+    check 4 below); no plugin binding on the file or a folder above it; a finished asset; a
+    supported text shape; and no queued or running subtree job on the file's path;
+  - fewer than 500 links in the workspace.
+- Off needs only the live manage permission. It skips On's file checks, so a manager can turn a
+  link off while a job runs or after the file is archived. A missing link is a success.
+- Agents, bash tools, API keys, and `/api/v1` never reach this mutation.
+- `get_node_share_state` returns `link: { token, createdBy, createdAt } | null`. Only a caller with
+  live `content.permissions.manage` gets the link. Every other reader gets `link: null`.
+
+### What the public view checks on every read
+
+`files_share_links.get_share_link_view({ token })` never reads `ctx.auth`. Every refusal answers
+`null`, so a wrong token, a turned-off link, an archived file, and a deleted workspace look the
+same. Stored fields are not enough, because a background job updates the items inside a folder
+later. A file can still store "open" while a folder above it is already restricted or archived. So
+every read checks the live state again:
+
+1. The doc exists. Its node exists, is a file of the doc's organization and workspace, and is not
+   archived.
+2. Every folder above the file, read by `parentId` up to the root (at most 64), exists, is a folder
+   of the same tenant, and is not archived. The live scope must equal the doc's
+   `restrictedScopeNodeId`.
+3. The file and every folder above it have no `plugins_file_access_bindings` doc and no attached
+   `plugins_external_file_bindings` doc (`detachedAt === null`). A plugin reader list would be
+   bypassed by a public link.
+4. The organization and workspace exist, the workspace has no `pluginDataPurgeStartedAt`, and
+   `data_deletion_requests` has no doc for the organization and no doc for this workspace. Both
+   are exact lookups: a deletion of another workspace in the organization does not hide the file.
+5. The file's asset belongs to the same tenant, has an `r2Key`, and has no
+   `unfinalizedExpiresAt`. The stored text shape matches the content type. A stored blob with an
+   editable text type and `textKind: null` cannot be shared.
+6. No queued or running subtree job overlaps the file's path. `files_subtree_ops_db_find_blocked_paths`
+   reads the workspace's jobs once for the file and every embed. More than 500 jobs refuses the
+   view, because a partial scan could miss the blocking job.
+7. The whole view stays inside a read budget (1,500 calls, 16,000 docs, 8 MiB) and returns at most
+   1,000,000 bytes. Past a budget the view refuses, or the rest of the embeds show as unavailable.
+
+The query is reactive. A change to the doc, the file, a folder above it, an embed, or a workspace
+job runs it again, and an open page clears when the answer turns `null`.
+
+### What the visitor sees
+
+The view returns only the file name, `textKind`, `contentType`, size, the content, at most 50 embed
+descriptors, and an opaque `revision`. The revision is a SHA-256 hash, so it shows no ids. The
+content is one of:
+
+- `{ kind: "rich_text", json }`: JSON for a small fixed schema. The browser never gets HTML or
+  Markdown.
+- `{ kind: "plain_text", text, formattingFallback }`: text only. A rich file with too much
+  formatting falls back to its visible text, with `formattingFallback: true` and no embeds.
+- `{ kind: "binary" }`: no bytes. The page asks the signer below.
+
+Rules for that content:
+
+- The view reads only committed chunks. It never reads a pending draft, a branch, or the live Yjs
+  head. So visitors see saved changes, usually a few seconds behind live edits.
+- The server removes comment marks. It replaces visible `bonobo-file://` references with
+  `[file reference]` and literal `data-lb-thread-id` text with `[comment reference]`.
+- The view never returns the path, parent or folder ids or names, organization or workspace ids or
+  names, people, metadata docs, version history, comments, presence, or pending changes.
+- Frontmatter and body text are shown. The author chose them. The server does not try to find ids
+  or secrets typed as ordinary text.
+- Editable text is never downloaded. The visitor sees only the safe content.
+
+### Signed URLs
+
+`create_share_link_download_urls({ token, revision, targets })` is a public action. A target is
+`{ kind: "file" }` (the shared file) or `{ kind: "embed", index }` (one embed of the page). The
+visitor never sends a node id, an asset id, or a file name.
+
+- It takes 1 to 50 unique targets. An embed index is an integer from 0 to 49.
+- It charges the `files_share_link_download` bucket (200 per minute) once per target, before the
+  costly preparation. The key is the link doc id, so all visitors of one link share it.
+- Then `prepare_share_link_download` prepares the whole view again, with every check above. A
+  revision that differs from the page's answers `stale` with no URLs. A rate-limited call answers
+  `_nay` with `retryAfterMs`. Every other refusal answers the same `Not found`.
+- A text file's bytes are never signed. Other files download their original bytes through
+  `files_get_signed_download_serving`, as attachments unless they are inline-safe media.
+- Embeds are signed under a neutral name such as `image.png`, because the media file's own name
+  can be private.
+- Signed URLs work for 15 minutes. Turning the link off, or any lifecycle event below, stops new
+  URLs at once. A URL that was already issued keeps working until it expires, for up to 15
+  minutes after the link ends. The same is true when an embed stops being available.
+- The R2 key in a signed URL shows the organization, workspace, and asset ids, the R2 endpoint,
+  and the signing access key ID. These are not secrets and give no access alone. The secret access
+  key never leaves the server.
+
+### Images and videos in a shared document
+
+An embed E inside the shared document D shows only when all of these hold. Otherwise the page
+shows a gray box, and the descriptor is `{ index, available: false }`, which tells nothing about E.
+
+1. E is a real image or video source in D's committed content. One server preparation builds the
+   media map. Text, code, frontmatter, and ordinary links never become embeds.
+2. E is a saved file in D's organization and workspace. `bonobo-file://<id>` is normalized as a
+   `files_nodes` id. `bonobo-file://private/<id>` shows only through the saved file it was
+   published as (`files_pending_nodes_db_resolve_read_target` answers `kind: "saved"`), never
+   through a draft.
+3. E's content type is an inline-safe image or video type (`files_is_inline_media_content_type`),
+   and it matches the node: an image node needs an image file, a video node needs a video file.
+4. E passes the same live checks as D: not archived, live folders, no plugin binding, no running
+   job on its path, and a finished asset.
+5. **Same audience:** E's live restricted scope equals D's live restricted scope. Both are open to
+   the workspace, or both sit inside the same restricted folder. Everyone who can read or write D
+   can then read E: inside a restricted folder all grants sit on the scope node and write includes
+   read, and in an open scope members read every open file through their roles. Without this rule,
+   a writer of D could embed a restricted file whose id they know and publish it.
+6. **No narrow writers (open scope only):** a service account can hold `content.write` on one exact
+   open file without reading others. So when D is open, every service account with an exact
+   `content.write` grant on D must be live (not revoked), belong to this workspace, and read E
+   through an exact `content.read` grant on E or a workspace `content.read` grant. A revoked or
+   missing account is never skipped: E stays hidden. More than 50 grants hides E.
+
+Rule 5 relies on "edit includes view" for custom roles (see "Roles"). A document inside a
+restricted folder that embeds an image from an open folder shows the gray box too. Move or copy the
+image next to the document. E having its own public link does not help: that would make file ids
+secrets again.
+
+**Automatic publishing (approved product rule).** A successful in-place edit of D keeps D's link and
+token. This holds for human saves, API writes, and plugin writes. Images and videos that the edit
+adds publish through D's link when rules 1 to 6 allow them. Credential download limits do not limit
+these embeds on the public page: a key or plugin run without `files:download`, or one whose direct
+downloads are source-only, can still add an eligible image that visitors of D then see. This is a
+deliberate wider access, not a bug. The public view has no credential-scope filter and tracks no
+per-embed writer history. Private API scope checks do not change: the same key still gets 403 from
+`/api/v1/files/download-urls`. No file becomes public just because somebody knows its id, and no
+link is created for E. Removing the reference, archiving E, turning D off, or an access change that
+makes E fail rules 1 to 6 stops new URLs for E.
+
+### Lifecycle: what ends a link
+
+A link publishes one file in its current place. When the file's access situation changes, the
+lifecycle helper deletes the link doc for good. Turning it on again is a new decision with a new
+token. There are two helpers in `files_share_links_db.ts`:
+
+- `files_share_links_db_delete_for_node` deletes the link of one exact file.
+- `files_share_links_db_delete_for_roots` deletes every link on a set of roots or below them. It
+  matches `nodeId` and `ancestorNodeIds` in memory and never loads file nodes. A
+  `files_share_links_CleanupState` belongs to one mutation. It loads each workspace's link docs at
+  most once, so a batch does not reload 500 links per item. Never keep it in a module cache.
+
+Both skip global, plugin-volume, and reserved scopes, which never hold links. The module imports no
+lifecycle or access-control module, so every caller can import it without a cycle.
+
+| Event | Where the delete runs |
+| --- | --- |
+| Turn the link off | `set_node_share_link` with `enabled: false` |
+| Restrict or unrestrict the file or a folder above it | `files_nodes_db_set_restricted_scope`, for the node and everything below, only when the scope really changes, before the patch. This covers `restrict_node`, `unrestrict_node`, and plugin bindings. A restrict then unrestrict before the scope job reaches the file does not bring the link back |
+| A scope job gives the file a new scope | `files_nodes_db_rebuild_node`, only when the scope changes. A new path alone (a folder above was renamed) keeps the link |
+| Move to another folder, including move-overwrite and a move into a folder created by the same move | `files_nodes_db_apply_move`, for the reparented roots and the archived occupants, before any patch. This covers `move_nodes`, a rename that changes the parent, and an accepted pending Save move. A move ends the link even when the new folder has the same audience |
+| Archive | `files_nodes_db_archive_node` (the exact node), `files_nodes_db_archive_nodes` (the named roots and below, once per workspace), and the archive job when its check passes, for the roots the check kept. A queued, refused, or stopped check keeps the links |
+| Restore from the archive | `files_nodes_db_restore_node`. A restored file comes back with no link |
+| Archive-and-create replacement | The archive helpers above. This covers a replacing upload (`create_upload_node`, `create_upload_nodes`, `/api/v1/files/upload-urls`, `data_import`), `/api/v1/files/write` over a stored file, and plugin and service paths that archive and recreate. The new file has no link |
+| Remove a failed file creation | `files_nodes_db_hard_delete_node` |
+| A plugin reader list takes over the file or a folder above it, or lets go of it | `plugins_data_db_apply_file_access_binding`, even when the node was already restricted |
+| A plugin binding is detached or cleaned up | `db_detach_file_access_binding` (a manual sharing change), `db_sync_file_access_bindings` with `removeUserIds: "all"` (scope deletion and stranded-scope cleanup), and the uninstall binding drain. A detach never brings a link back |
+| An exact service-account `content.write` grant on the file is removed or lowered to View | `access_control_db_set_service_account_grant`, before it deletes the grant. Rule 6 no longer sees that account after the grant goes, but the account may have added images before |
+| Workspace or organization purge | The `data_deletion.ts` content purge drains `files_share_links` in batches, before grants and file nodes. The deletion request, or `pluginDataPurgeStartedAt` for a preserved-home data reset, already hides every link before the purge starts |
+
+What keeps a link:
+
+- In-place content edits: human saves, `/api/v1/files/write` fills of an editable file
+  (`publish_file_fill`), and plugin fills (`db_install_file_content_replacement`). Failed or
+  skipped writes keep it too. A write staged before the link was turned on and published after it
+  keeps the new token.
+- A rename that keeps the parent, and a rename of a folder above.
+- Metadata and write-policy edits.
+- Human or role share grant changes that do not restrict or unrestrict anything, and role or
+  membership changes. These change who can read the file in Files, not the public link.
+- Service-account grant changes other than losing an exact `content.write` grant on the file.
+  Revoking an account keeps its grants and the link, but rule 6 then hides embeds that depend on
+  it.
+- The creator leaving, losing rights, or deleting their account.
+- Copies. A copy is a new file with no link.
+
+A file node that is gone or archived without a hook still shows nothing, because the view checks
+the live state on every read.
+
+### Seeing links inside Files
+
+`files_share_links.list_workspace_links({ membershipId })` returns
+`{ nodeId, createdBy, createdAt }[]` for the linked files the caller can read. It feeds the link
+mark in the Files tree and the `file.link:public` search filter.
+
+- Missing current-user auth throws `Unauthenticated`. A bad membership or tenant answers `null`.
+- A member with only file grants (no workspace `content.read`) is allowed, like the tree reader:
+  on "Permission denied" it filters with `hasWorkspaceRead: false`.
+- It filters the docs with `access_control_db_filter_readable_file_nodes`, using the scope stored
+  on each link. It does not load the nodes: the hooks that change a file's scope delete its link
+  in the same write.
+- It never returns the token or names. Only a manager gets the token, from `get_node_share_state`.
 
 # Write paths that create an assignment
 
@@ -1066,6 +1326,8 @@ Public grant docs are capability-like access, not membership.
 - Check them only on flows that intentionally support link or public access.
 - `allowPublic` must be explicit at the call site. Never default public write on.
 - For an anonymous user, prefer `principalKind: "user"` with their Convex `users` id over `public`.
+- "Anyone with the link can view" does not use public grants. It uses a token doc in
+  `files_share_links`; see "Public file links".
 
 Anonymous upgrade semantics live in `../auth-system/SKILL.md`.
 
@@ -1122,6 +1384,7 @@ Consequences the UI has to carry, each of which is a server rule and not a style
 - `packages/app/convex/schema.ts`
 - `packages/app/convex/organizations.ts`
 - `packages/app/convex/data_deletion.ts`
+- `packages/app/convex/files_share_links.ts`, `packages/app/convex/files_share_links_db.ts` (+ `files_share_links.test.ts`)
 - `packages/app/convex/access_control.test.ts`
 - `packages/app/convex/organizations.test.ts`
 - `packages/app/convex/data_deletion.test.ts`

@@ -147,6 +147,18 @@ importers:
       '@tiptap/core':
         specifier: workspace:*
         version: link:vendor/tiptap/packages/core
+      '@tiptap/extension-blockquote':
+        specifier: workspace:*
+        version: link:vendor/tiptap/packages/extension-blockquote
+      '@tiptap/extension-bold':
+        specifier: workspace:*
+        version: link:vendor/tiptap/packages/extension-bold
+      '@tiptap/extension-code':
+        specifier: workspace:*
+        version: link:vendor/tiptap/packages/extension-code
+      '@tiptap/extension-code-block':
+        specifier: workspace:*
+        version: link:vendor/tiptap/packages/extension-code-block
       '@tiptap/extension-collaboration':
         specifier: workspace:*
         version: link:vendor/tiptap/packages/extension-collaboration
@@ -162,12 +174,24 @@ importers:
       '@tiptap/extension-hard-break':
         specifier: workspace:*
         version: link:vendor/tiptap/packages/extension-hard-break
+      '@tiptap/extension-heading':
+        specifier: workspace:*
+        version: link:vendor/tiptap/packages/extension-heading
       '@tiptap/extension-highlight':
         specifier: workspace:*
         version: link:vendor/tiptap/packages/extension-highlight
       '@tiptap/extension-horizontal-rule':
         specifier: workspace:*
         version: link:vendor/tiptap/packages/extension-horizontal-rule
+      '@tiptap/extension-italic':
+        specifier: workspace:*
+        version: link:vendor/tiptap/packages/extension-italic
+      '@tiptap/extension-link':
+        specifier: workspace:*
+        version: link:vendor/tiptap/packages/extension-link
+      '@tiptap/extension-list':
+        specifier: workspace:*
+        version: link:vendor/tiptap/packages/extension-list
       '@tiptap/extension-mention':
         specifier: workspace:*
         version: link:vendor/tiptap/packages/extension-mention
@@ -177,6 +201,9 @@ importers:
       '@tiptap/extension-placeholder':
         specifier: workspace:*
         version: link:vendor/tiptap/packages-deprecated/extension-placeholder
+      '@tiptap/extension-strike':
+        specifier: workspace:*
+        version: link:vendor/tiptap/packages/extension-strike
       '@tiptap/extension-table':
         specifier: workspace:*
         version: link:vendor/tiptap/packages/extension-table
@@ -267,6 +294,9 @@ importers:
       hono:
         specifier: ^4.9.11
         version: 4.11.3
+      htmlparser2:
+        specifier: 10.1.0
+        version: 10.1.0
       jose:
         specifier: ^6.2.12
         version: 6.2.12

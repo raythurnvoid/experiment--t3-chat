@@ -614,10 +614,19 @@ function RouteRoles() {
 	const handleTogglePermission = useFn((permission: access_control_Permission, checked: boolean) => {
 		setEditorPermissions((current) => {
 			const next = new Set(current);
+			// Edit and Manage sharing always include View. The server refuses a role that breaks this,
+			// so keep the checkboxes in a state it accepts.
 			if (checked) {
 				next.add(permission);
+				if (permission === "content.write" || permission === "content.permissions.manage") {
+					next.add("content.read");
+				}
 			} else {
 				next.delete(permission);
+				if (permission === "content.read") {
+					next.delete("content.write");
+					next.delete("content.permissions.manage");
+				}
 			}
 			return next;
 		});

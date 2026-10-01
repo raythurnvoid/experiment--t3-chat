@@ -95,6 +95,17 @@ describe("FilesSearchInput", () => {
 			expect(await screen.findByRole("option", { name: "Path file.path" })).toBeTruthy();
 		});
 
+		test("suggests public for file.link without any tree rows and names the chip Link", async () => {
+			render(<FilesSearchInput {...props} variant={variant} />);
+			const input = screen.getByRole<HTMLInputElement>("combobox");
+			act(() => input.focus());
+			fireEvent.click(await screen.findByRole("option", { name: "Link file.link" }));
+			expect(input.value).toBe("file.link:");
+			fireEvent.click(await screen.findByRole("option", { name: "public" }));
+			const remove = await screen.findByRole("button", { name: "Remove filter file.link:public" });
+			expect(remove.closest(".FilesSearchInputFilterChip")?.textContent).toContain("Link public");
+		});
+
 		test("reopens on a new visit but keeps dismissal when returning from chips or results", async () => {
 			function Consumer() {
 				const resultsRef = useRef<HTMLDivElement>(null);

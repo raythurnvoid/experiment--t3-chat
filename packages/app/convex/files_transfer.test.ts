@@ -11,6 +11,7 @@ import { organizations_membership_lifetimes_db_ensure } from "./organizations_me
 import { test_convex, test_create_saved_text_file, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import { files_nodes_db_set_restricted_scope } from "./files_nodes.ts";
+import { files_share_links_create_cleanup_state } from "./files_share_links_db.ts";
 import { files_ROOT_ID } from "../shared/files.ts";
 import { r2_create_asset_key, r2_server_side_copy } from "./r2_client.ts";
 
@@ -3589,12 +3590,16 @@ describe("move", () => {
 		const member = await add_member(fixture);
 		// Restrict /shared the way a big folder is restricted: the folder now, its children later.
 		await t.run(async (ctx) => {
-			await files_nodes_db_set_restricted_scope(ctx, {
-				organizationId: db.organizationId,
-				workspaceId: db.workspaceId,
-				nodeId: folders.get("/shared")!,
-				restrictedScopeNodeId: folders.get("/shared")!,
-			});
+			await files_nodes_db_set_restricted_scope(
+				ctx,
+				{
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					nodeId: folders.get("/shared")!,
+					restrictedScopeNodeId: folders.get("/shared")!,
+				},
+				files_share_links_create_cleanup_state(),
+			);
 			await files_subtree_ops_db_insert(ctx, {
 				op: {
 					kind: "scope",

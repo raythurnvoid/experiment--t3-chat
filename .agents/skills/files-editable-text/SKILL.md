@@ -14,6 +14,41 @@ The root names live in `files_YJS_DOC_KEYS` (`packages/app/shared/files.ts`). Ma
 
 Each Markdown editor gets its own Marked parser in the shared extension's `onBeforeCreate` hook (`packages/app/shared/files-tiptap.ts`). Tiptap adds tokenizers when it creates an editor. Reusing one parser adds those callbacks again for every editor and search chunk, which can make a valid text write exceed Convex's CPU limit. Standalone Markdown-to-HTML parsing keeps a separate parser and registers the shared Tiptap tokenizers once. Keep frontmatter, task lists, inline marks, and media parsing equal in both paths. Every custom Tiptap token needs a matching HTML renderer: `taskList`, `underline` (`++text++`), and `highlight` (`==text==`). Missing a renderer can make a file fail during search indexing, even when its full Markdown page parses.
 
+The standalone parser gives each parse a new Marked lexer and its own tokenizer. Tiptap's list and
+task tokenizers parse item text with that running lexer, so link definitions and open HTML state
+never reach the next file. The vendored `MarkdownManager` carries this from upstream Tiptap
+(75a912ae0). Before it, Tiptap kept one lexer for its whole life, and the text of a paragraph inside
+a list item was lost. The vendored copy also changes two things for block tokenizers only:
+- After the first line of a Tiptap ordered or task item, it puts back Marked's open-link flag. So an
+  unclosed `<a>` there does not stop links in other paragraphs.
+- It reads nested blocks as top-level blocks, like Marked's blockquote. So more lines of an ordered
+  item inside a `-` item become a paragraph.
+
+Inline tokenizers (`==`, `++`) keep Marked's normal order, so a close tag inside them still counts.
+A plain `-` item or a paragraph still carries an unclosed `<a>` forward, as in Marked.
+
+Marked stops escaping text after an unclosed `<code>`, `<kbd>`, `<pre>`, or `<script>`. Then a typed
+`a<b` became a tag that took in the next link, and a shared page showed the file name. So the
+standalone parser's `text` renderer always escapes text.
+
+A tokenizer remembers the lexer that used it last, so a new lexer made to test a tokenizer's start gets
+its own counting tokenizer. `files_parse_markdown_to_html` also takes an optional
+`{ cache: false, workLimit, hiddenLinkText }`. Only the public link reader passes it (see "Public Link
+Reader" below): it skips the module cache and stops a parse that needs too much work with `Markdown
+needs too much work to parse`. Every other caller keeps the cache and has no work limit.
+`hiddenLinkText` is the reader's `hidden_link_text`. The reader hides a link whose address holds a file
+reference, a comment attribute, or `!%5B`. For such a link, the `link` renderer writes the returned text
+instead of the link's label, and drops the link's title. Author-typed HTML can still take in a link's tag (a line `<div x="`, a no-break
+space inside a tag). Then the address is lost, and without this the file name would show as plain text.
+
+Every standalone parse runs through faster copies of some Marked and Tiptap steps in
+`shared/files-tiptap.ts`. `PARAGRAPH_REGEX` is Marked's paragraph rule with a shorter table check.
+`bound_tiptap_tokenizers` wraps Tiptap's list tokenizers with `cut_list_block`, and its highlight
+and underline `start` with `find_marker_starts`. These copies were tuned against Marked 17.0.6 and the
+vendored Tiptap 3.8.0. Guards check the patterns they copy, at module load and on the first parse, and
+throw `should_never_happen` when a new version changes them. So re-check these copies on every Marked
+or Tiptap upgrade.
+
 Rich text documents support GFM tables. The shared extension set in `packages/app/shared/files-tiptap.ts` (`#region tables`) registers the four table nodes for both the browser and the server, so the two schemas stay identical. The serializer writes GFM pipe tables: no column padding, alignment colons read from the first row, `\|` escaping with the backslash run in front of a pipe doubled, `<br>` for newlines inside a cell, and an empty header row when the document's first row holds body cells. Merged cells, column widths, and multiple blocks inside a cell are not representable in GFM: they are flattened once on the first save and are stable afterwards. One special spelling: a code span in a cell that holds a backslash right before a pipe is written as an HTML `<code>` element with numeric character references (`&#92;`, `&#124;`), because the backtick form would grow its backslash run on every save. Cells accept `paragraph+` only, so members cannot create lists, headings, or code blocks inside a cell.
 
 # The Content Type Policy
@@ -145,7 +180,7 @@ The two toggles answer a permission refusal with different words, and that is no
 Creation, Properties, and whole-file replacement choose the mode:
 
 - `POST /api/v1/files/write` and `/write-many` accept an optional `nonCollaborative` boolean in the body. It is read only when the write CREATES the file; a write over a file that already exists keeps the mode that file has. See the `public-api` skill.
-- The Collaboration checkbox in the Properties dialog (`packages/app/src/components/files/files-properties-modal.tsx`). Both confirmations say that proposals waiting for review are kept and must be reviewed again. They warn that only last-saved text is used and ask the user to save open editor changes first. OFF also names the deleted history and comments; ON warns that Markdown formatting may change. A proposal review can stay mounted across the toggle, so it must block old pane writes and reload the prepared branches.
+- The Collaboration checkbox in the Properties dialog (`packages/app/src/components/files/files-properties-modal.tsx`). Turning it ON has no confirm step. Turning it OFF asks first and names the deleted history and comments. The checkbox text says in plain words what the mode gives: changes show in real time, edits save as you type, and you see what teammates edit. A proposal review can stay mounted across the toggle, so it must block old pane writes and reload the prepared branches.
 - A sealed service `create-target` request with required `nonCollaborative: true`. The declared
   `contentType` must be an editable text type, or the request is refused. The choice stays on the
   service target while the empty placeholder is a blob, then successful conversion publishes the flag.
@@ -258,6 +293,106 @@ These six Convex functions serve both rich Markdown and plain-text files. Their 
 - `match_text_file_lines` (`files_nodes.ts`)
 
 Exact content uses `files_text_chunks.textChunk` for both document shapes. Search rows link to those chunks through `files_plain_text_chunks.textChunkId`.
+
+# Public Link Reader
+
+"Anyone with the link can view" shows one file to visitors who have no account
+(`packages/app/convex/files_share_links.ts`, `get_share_link_view`). For editable text it follows
+these rules.
+
+- It reads only committed text. It reads the `sourceKind: "committed"` docs of `files_text_chunks`
+  for the file, by the `by_organization_workspace_source_fileNode_yjsSeq_chunk` prefix, and joins
+  them with `files_merge_contiguous_chunks`. It never reads pending chunks, proposal branches,
+  unsaved editor text, or the live Yjs head, and it never asks for materialization. So a
+  collaborative file shows its last materialized text, usually a few seconds behind live typing. A
+  file with collaboration off shows its last save. A chunk without `yjsSequence` is valid.
+- A file with no chunks and an asset size of 0 is empty text. A non-empty file with no chunks, or
+  with a gap between chunks, shows the generic unavailable page.
+- Supported shapes (`has_shareable_text_shape`): a file whose `textKind` equals the shape of its
+  content type (`files_editable_text_shape_of`), or a file with null `textKind` whose content type is
+  not editable text. A stored blob with an editable text content type and null `textKind` has no
+  committed text to read, so it cannot get a link. If a later replacement produces that state, the
+  existing link shows the unavailable page.
+- `rich_text` goes through `files_share_rich_text_prepare` in
+  `packages/app/shared/files-share-rich-text.ts`. It turns Markdown into HTML with
+  `{ cache: false, workLimit, hiddenLinkText }`, checks that HTML with a callback-only `htmlparser2`
+  pass, then builds a data-only `linkedom` DOM and reduces it to a small public ProseMirror schema. The
+  browser gets that schema's JSON, never HTML or Markdown. `plain_text` files, HTML files included, are
+  only redacted and shown as plain text. HTML is never rendered.
+- Both paths replace visible `bonobo-file://` references with `[file reference]` and literal
+  `data-lb-thread-id` assignments with `[comment reference]`. When in doubt, more text is hidden.
+  Comment marks never reach the page. Frontmatter is part of the file and is shown.
+  - A link to a `bonobo-file://` address, even with leading spaces, becomes `[file reference]` in the
+    rich view and in the plain-text fallback.
+  - A link that holds a reference or `!%5B` later in its address comes from a second save that merged
+    a file link or image into a typed URL. The name can start in an earlier link's label or go on
+    after it. So the link becomes an open file address, and its whole line is hidden.
+  - Link or image syntax that stayed text, like `![name](bonobo-file://x)` or
+    `<img src="bonobo-file://x" alt="name">` in code or after a typed URL, is replaced whole with
+    `[file reference]`, `[image]`, or `[video]`. Its label, `alt`, or title is often the file name.
+  - Any `(` right before the address counts as Markdown, because saving the text again can turn `](`
+    into `)(` or `%5D(`. A Markdown one hides from the line start, or from the end of an earlier file
+    reference on the line. The label is not searched for: it can hold `[`, `]`, or `)`, Marked may have
+    removed its escapes, and a merged copy can put a typed `[` after the name. So text before the
+    syntax on the same line is hidden too.
+  - A Markdown one ends at the address only when `)` or `>)` follows right away, which is what the
+    editor writes. A title or broken syntax hides the rest of the line. An HTML one always hides the
+    rest of the line, because Marked may have decoded a `&gt;` in its `alt` to `>`.
+  - The rich view and the plain-text fallback both remove `<script>`, `<style>`, `<title>`,
+    `<textarea>`, and `<xmp>` with everything in them. `htmlparser2` reads the text after an unclosed
+    one as raw text. That text is the page's HTML source, and the text rules above cannot hide names in
+    it. So a typed `<xmp>` removes the rest of the page.
+  - Typed HTML with an open quote can make an image or video tag take in the next tag. Then the tag
+    can get the other image's `alt`, often a private file name. So an image or video with a `<` in any
+    attribute name or value shows no `alt`. The preflight checks every raw attribute before repeated
+    ones are dropped, and matches the media by its tag and first decoded source. Other copies with
+    that same tag and source lose their `alt` too. A real `alt` with a `<` in it is hidden too.
+  - A name has no length limit, so there is no fixed window. The look-back is linear in the text
+    length. An image in the line counts as `[image]` text in both paths, so the look-back goes past
+    it. A hard break or a video ends the line.
+  - A comment attribute value stops before `bonobo-file:`, so it cannot hide a file reference from
+    these rules.
+  - A visible `!%5B` hides the rest of its line as `[image]`, and a link or external media URL that
+    holds it is dropped. A second save can pull the image into the URL before it, with the start of
+    the name and without the file address.
+  - A link whose text a replaced range touches loses its address, because a typed URL can run into
+    the name. Its text stays. An image that a range touches becomes text too.
+- A public link or external media URL must be absolute HTTP(S) with no user name or password, at most
+  8 KiB long, with a host part of at most 255 characters, and with no reference text in it. Any other
+  link is dropped and its label stays as text. The page does not parse the server's link again. It
+  checks only its shape: printable ASCII, HTTP(S), and no `@` before the path. A browser's URL parser
+  can refuse a host that Node accepted, and that would otherwise break the whole page.
+- Limits.
+  - These refuse the text: Markdown parse work above 40,000,000 units (`MAX_MARKDOWN_WORK`), HTML
+    above 8 MiB, parser nesting above 256, more than 128 attributes on one tag, or more than 256
+    open SVG/MathML contexts.
+  - Nested ordered and task lists that make Tiptap copy more than 2,000,000 characters of lower
+    items (`MARKDOWN_MAX_LIST_COPIED_CHARS`) also refuse it. Those copies cost memory, not time.
+  - These fall back to plain text: a rich document above 2,000 nodes or 32 levels, above 900,000
+    characters of text and attribute strings, or with JSON above 900,000 bytes. A link's URL
+    counts once per text node it covers. HTML that the DOM parser cannot read falls back too.
+  - The fallback shows the full visible text as plain text, with `formattingFallback: true` and the
+    note "Shown as plain text because this file has a lot of formatting." It shows no media.
+  - Plain text above 900,000 bytes after redaction is refused. The whole view must fit in
+    1,000,000 bytes (`getConvexSize`).
+  - A refusal shows the generic unavailable page. The reader never returns partly processed or cut
+    text.
+- `revision` is an opaque SHA-256 hex digest. It covers a format version, the link doc, the file's
+  asset id, key, and size, its name, content type, `textKind`, `collaborationEnabled`, the ids,
+  indexes, and sequences of its committed chunks, and every media entry with its availability. A
+  saved edit, a replacement, a mode toggle, or a media change gives a new revision. The live Yjs head
+  is never part of it. `create_share_link_download_urls` answers `stale` for an old revision.
+- There are no public text downloads. The page has no Download button for text, and
+  `create_share_link_download_urls` refuses the `file` target when `textKind` is not null. It never
+  signs the text object or a version snapshot. Other files download their original bytes as
+  attachments through `files_get_signed_download_serving`. Only inline-safe images and videos show
+  in a viewer.
+
+A content save in place keeps the link, because it is the same file with new text: Yjs pushes,
+`replace_file_content`, both collaboration toggles, version restore, pending Save, a pending copy
+accepted onto a saved file, and in-place API or plugin fills. A replacement that archives the file
+and creates a new node ends the old link. The new node has no link. The full lifecycle is in
+`../access-control/SKILL.md`.
 
 # Related Skills
 

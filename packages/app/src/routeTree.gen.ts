@@ -10,6 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as ShareTokenRouteImport } from './routes/share/$token'
 import { Route as OauthMcpCallbackRouteImport } from './routes/oauth/mcp/callback'
 import { Route as WOrganizationNameWorkspaceNameRouteRouteImport } from './routes/w/$organizationName/$workspaceName/route'
 import { Route as WOrganizationNameWorkspaceNameApiKeysIndexRouteImport } from './routes/w/$organizationName/$workspaceName/api-keys/index'
@@ -30,6 +31,11 @@ import { Route as WOrganizationNameWorkspaceNamePluginsPluginNamePagesPageIdRout
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ShareTokenRoute = ShareTokenRouteImport.update({
+  id: '/share/$token',
+  path: '/share/$token',
   getParentRoute: () => rootRouteImport,
 } as any)
 const OauthMcpCallbackRoute = OauthMcpCallbackRouteImport.update({
@@ -130,6 +136,7 @@ const WOrganizationNameWorkspaceNamePluginsPluginNamePagesPageIdRoute =
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/share/$token': typeof ShareTokenRoute
   '/w/$organizationName/$workspaceName': typeof WOrganizationNameWorkspaceNameRouteRouteWithChildren
   '/oauth/mcp/callback': typeof OauthMcpCallbackRoute
   '/w/$organizationName/$workspaceName/files/$': typeof WOrganizationNameWorkspaceNameFilesSplatRoute
@@ -149,6 +156,7 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/share/$token': typeof ShareTokenRoute
   '/w/$organizationName/$workspaceName': typeof WOrganizationNameWorkspaceNameRouteRouteWithChildren
   '/oauth/mcp/callback': typeof OauthMcpCallbackRoute
   '/w/$organizationName/$workspaceName/files/$': typeof WOrganizationNameWorkspaceNameFilesSplatRoute
@@ -169,6 +177,7 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/share/$token': typeof ShareTokenRoute
   '/w/$organizationName/$workspaceName': typeof WOrganizationNameWorkspaceNameRouteRouteWithChildren
   '/oauth/mcp/callback': typeof OauthMcpCallbackRoute
   '/w/$organizationName/$workspaceName/files/$': typeof WOrganizationNameWorkspaceNameFilesSplatRoute
@@ -190,6 +199,7 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/share/$token'
     | '/w/$organizationName/$workspaceName'
     | '/oauth/mcp/callback'
     | '/w/$organizationName/$workspaceName/files/$'
@@ -209,6 +219,7 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/share/$token'
     | '/w/$organizationName/$workspaceName'
     | '/oauth/mcp/callback'
     | '/w/$organizationName/$workspaceName/files/$'
@@ -228,6 +239,7 @@ export interface FileRouteTypes {
   id:
     | '__root__'
     | '/'
+    | '/share/$token'
     | '/w/$organizationName/$workspaceName'
     | '/oauth/mcp/callback'
     | '/w/$organizationName/$workspaceName/files/$'
@@ -248,6 +260,7 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  ShareTokenRoute: typeof ShareTokenRoute
   WOrganizationNameWorkspaceNameRouteRoute: typeof WOrganizationNameWorkspaceNameRouteRouteWithChildren
   OauthMcpCallbackRoute: typeof OauthMcpCallbackRoute
 }
@@ -259,6 +272,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/share/$token': {
+      id: '/share/$token'
+      path: '/share/$token'
+      fullPath: '/share/$token'
+      preLoaderRoute: typeof ShareTokenRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/oauth/mcp/callback': {
@@ -432,6 +452,7 @@ const WOrganizationNameWorkspaceNameRouteRouteWithChildren =
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  ShareTokenRoute: ShareTokenRoute,
   WOrganizationNameWorkspaceNameRouteRoute:
     WOrganizationNameWorkspaceNameRouteRouteWithChildren,
   OauthMcpCallbackRoute: OauthMcpCallbackRoute,

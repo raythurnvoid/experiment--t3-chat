@@ -1,10 +1,11 @@
 import "./files-share-modal.css";
 
 import { usePaginatedQuery, useQueries, useQuery } from "convex/react";
-import { Globe, Lock, Plus, ShieldCheck, Trash2 } from "lucide-react";
+import { Globe, Link, Lock, Plus, ShieldCheck, Trash2 } from "lucide-react";
 import { memo, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
+import { CopyIconButton } from "@/components/copy-icon-button.tsx";
 import { MyAvatar, MyAvatarFallback, MyAvatarImage } from "@/components/my-avatar.tsx";
 import { MyBadge } from "@/components/my-badge.tsx";
 import { MyButton } from "@/components/my-button.tsx";
@@ -39,6 +40,8 @@ import {
 	type app_convex_Id,
 } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
+import { format_time } from "@/lib/date.ts";
+import { url_share_link } from "@/lib/urls.ts";
 import { compute_fallback_user_name } from "@/lib/utils.ts";
 import {
 	access_control_FILE_SHARE_LEVEL_KEYS,
@@ -236,6 +239,135 @@ const FilesShareModalEntry = memo(function FilesShareModalEntry(props: FilesShar
 });
 // #endregion entry row
 
+// #region link
+type FilesShareModalLink_ClassNames =
+	| "FilesShareModalLink"
+	| "FilesShareModalLink-icon"
+	| "FilesShareModalLink-main"
+	| "FilesShareModalLink-title"
+	| "FilesShareModalLink-text"
+	| "FilesShareModalLink-notes"
+	| "FilesShareModalLink-error"
+	| "FilesShareModalLink-actions"
+	| "FilesShareModalLink-level-trigger";
+
+type FilesShareModalLink_CustomAttributes = {
+	"data-share-link": "on" | "off";
+};
+
+type FilesShareModalLink_Props = {
+	link: { token: string; createdAt: number; creatorName: string } | null;
+	/** The link write is the one being saved. */
+	pending: boolean;
+	/** A write is running somewhere in the dialog, so this control may not start a second one. */
+	busy: boolean;
+	/** Why the last write was refused. Shown here, beside the control, instead of in a toast. */
+	error: string | null;
+	onEnabledChange: (enabled: boolean) => void;
+};
+
+const FilesShareModalLink = memo(function FilesShareModalLink(props: FilesShareModalLink_Props) {
+	const { link, pending, busy, error, onEnabledChange } = props;
+
+	const levelLabel = link ? access_control_FILE_SHARE_LEVELS.read.label : "No access";
+
+	return (
+		<div
+			className={"FilesShareModalLink" satisfies FilesShareModalLink_ClassNames}
+			{...({ "data-share-link": link ? "on" : "off" } satisfies FilesShareModalLink_CustomAttributes)}
+		>
+			<div className={"FilesShareModalLink-icon" satisfies FilesShareModalLink_ClassNames} aria-hidden>
+				<Link />
+			</div>
+
+			<div className={"FilesShareModalLink-main" satisfies FilesShareModalLink_ClassNames}>
+				<span className={"FilesShareModalLink-title" satisfies FilesShareModalLink_ClassNames}>
+					Anyone with the link
+				</span>
+				{link ? (
+					<>
+						<span className={"FilesShareModalLink-text" satisfies FilesShareModalLink_ClassNames}>
+							Anyone who has the link can view this file without signing in. Visitors see saved changes, including
+							frontmatter and author text.
+						</span>
+						<span className={"FilesShareModalLink-text" satisfies FilesShareModalLink_ClassNames}>
+							Saved edits from people, APIs, and plugins appear here, including allowed images and videos.
+						</span>
+						<span className={"FilesShareModalLink-text" satisfies FilesShareModalLink_ClassNames}>
+							Link created by {link.creatorName} on {format_time(link.createdAt)}.
+						</span>
+						<ul className={"FilesShareModalLink-notes" satisfies FilesShareModalLink_ClassNames}>
+							<li>
+								Turning it off stops new visits. Images and videos that a visitor already opened may keep working for up
+								to 15 minutes.
+							</li>
+							<li>Moving this file to another folder turns off its public link.</li>
+							<li>Replacing this file with a new upload turns off its public link.</li>
+							<li>
+								Restricting or unrestricting this file turns off its public link. A change like this on a parent folder
+								does the same.
+							</li>
+							<li>Removing an integration's ability to edit this file turns off its public link.</li>
+							<li>An integration may publish an image here even if it cannot download it directly.</li>
+						</ul>
+					</>
+				) : (
+					<span className={"FilesShareModalLink-text" satisfies FilesShareModalLink_ClassNames}>
+						Only people with access can open this file.
+					</span>
+				)}
+				{error ? (
+					<span className={"FilesShareModalLink-error" satisfies FilesShareModalLink_ClassNames} role="alert">
+						{error}
+					</span>
+				) : null}
+			</div>
+
+			<div className={"FilesShareModalLink-actions" satisfies FilesShareModalLink_ClassNames}>
+				<MySelect
+					value={link ? "on" : "off"}
+					setValue={(value) => {
+						const enabled = value === "on";
+						// Choosing the level it already has changes nothing, so it sends nothing.
+						if (enabled !== Boolean(link)) {
+							onEnabledChange(enabled);
+						}
+					}}
+				>
+					{/* Stays enabled while its own write runs, same reason as a row's level trigger. */}
+					<MySelectTrigger disabled={busy && !pending}>
+						<MyButton
+							type="button"
+							variant="outline"
+							className={"FilesShareModalLink-level-trigger" satisfies FilesShareModalLink_ClassNames}
+							aria-label="Anyone with the link"
+							aria-busy={pending || undefined}
+						>
+							<span>{pending ? "Saving..." : levelLabel}</span>
+							<MySelectOpenIndicator />
+						</MyButton>
+					</MySelectTrigger>
+					<MySelectPopover unmountOnHide>
+						<MySelectPopoverContent>
+							<MySelectItem value="off">
+								No access
+								{!link ? <MySelectItemIndicator /> : null}
+							</MySelectItem>
+							<MySelectItem value="on">
+								{access_control_FILE_SHARE_LEVELS.read.label}
+								{link ? <MySelectItemIndicator /> : null}
+							</MySelectItem>
+						</MySelectPopoverContent>
+					</MySelectPopover>
+				</MySelect>
+
+				{link ? <CopyIconButton text={url_share_link({ token: link.token })} tooltipCopy="Copy link" /> : null}
+			</div>
+		</div>
+	);
+});
+// #endregion link
+
 // #region root
 type FilesShareModal_ClassNames =
 	| "FilesShareModal"
@@ -284,6 +416,8 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 	const [addLevel, setAddLevel] = useState<access_control_FileShareLevel>("read");
 	/** The one row, or button, waiting for an answer. Every write here is a single small call. */
 	const [pendingKey, setPendingKey] = useState<string | null>(null);
+	/** Why the last public link write was refused, kept with the node it was about. */
+	const [linkError, setLinkError] = useState<{ nodeId: app_convex_Id<"files_nodes">; message: string } | null>(null);
 	const listRef = useRef<HTMLUListElement>(null);
 	/** Where focus goes when the write a button started replaces the branch that button lived in. */
 	const dialogRef = useRef<HTMLDivElement>(null);
@@ -317,6 +451,10 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 				if (entry.principal.kind === "user") {
 					userIds.add(entry.principal.userId);
 				}
+			}
+			// The link keeps working after its creator leaves, and the dialog still names them.
+			if (shareState.link) {
+				userIds.add(shareState.link.createdBy);
 			}
 		}
 
@@ -353,6 +491,7 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 		setScopeStep(null);
 		setAddPrincipalValue("");
 		setAddLevel("read");
+		setLinkError(null);
 		onClose();
 	});
 
@@ -364,6 +503,8 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 			successMessage: string;
 			/** Runs only when the server said yes, so a refusal leaves the form as the user left it. */
 			onDone?: () => void;
+			/** Shows a refusal beside its control instead of in a toast. */
+			onRefused?: (message: string) => void;
 		}) => {
 			setPendingKey(args.key);
 			args.request
@@ -376,7 +517,11 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 						});
 						// The server message is the real reason: the last manager, a level the caller cannot give
 						// away, or a person who left the workspace. A generic "Failed" would leave them stuck.
-						toast.error(result._nay.message);
+						if (args.onRefused) {
+							args.onRefused(result._nay.message);
+						} else {
+							toast.error(result._nay.message);
+						}
 						return;
 					}
 
@@ -483,6 +628,26 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 			// keyboard user would be left outside the dialog. The list is the nearest thing still there,
 			// and it announces itself by its label.
 			onDone: () => listRef.current?.focus(),
+		});
+	});
+
+	const handleLinkEnabledChange = useFn((enabled: boolean) => {
+		if (!viewNodeId || pendingKey) {
+			return;
+		}
+
+		setLinkError(null);
+		runShareWrite({
+			key: "link",
+			request: app_convex.mutation(app_convex_api.files_sharing.set_node_share_link, {
+				membershipId,
+				nodeId: viewNodeId,
+				enabled,
+			}),
+			successMessage: enabled ? "Public link created" : "Public link turned off",
+			// Turning a link on can be refused for this file only (a running job, or the workspace cap). Keep
+			// that reason next to the select, so the user sees why it stayed off.
+			onRefused: (message) => setLinkError({ nodeId: viewNodeId, message }),
 		});
 	});
 
@@ -672,6 +837,25 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 									</div>
 								) : null}
 							</div>
+
+							{/* A link opens one file, never a folder, and only a manager may turn it on or off. */}
+							{shareState.nodeKind === "file" && shareState.canManage ? (
+								<FilesShareModalLink
+									link={
+										shareState.link
+											? {
+													token: shareState.link.token,
+													createdAt: shareState.link.createdAt,
+													creatorName: read_display_name(userAnagraphicDict[shareState.link.createdBy]),
+												}
+											: null
+									}
+									pending={pendingKey === "link"}
+									busy={busy}
+									error={linkError?.nodeId === viewNodeId ? linkError.message : null}
+									onEnabledChange={handleLinkEnabledChange}
+								/>
+							) : null}
 
 							{canEditList ? (
 								<div className={"FilesShareModal-add" satisfies FilesShareModal_ClassNames}>

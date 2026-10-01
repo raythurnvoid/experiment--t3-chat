@@ -170,6 +170,8 @@ Ensure applies requested access only when it creates the final folder. A reused 
 
 Scope deletion and account/org teardown remove attached mirrored grants and bindings; the node stays restricted. Uninstall instead removes bindings and preserves file grants. Reinstall may reuse matching labels after the old binding drains, but does not restore old sharing through ensure. The organization owner still reads everything. Plugins must disclose that Files managers control transcript readers, including later updates. These file rules do not change the plugin document store's separate `ownership` field.
 
+Public file links ("Anyone with the link can view", `files_share_links`) never go around a plugin reader list. A file on or under a node with a `plugins_file_access_bindings` doc, or with a `plugins_external_file_bindings` doc whose `detachedAt` is null, cannot get a link, and an existing link shows the unavailable page. When a plugin takes over a node, `plugins_data_db_apply_file_access_binding` deletes the links on that node and below it before it binds, even when the node is already restricted and no scope op starts. Every way a binding ends deletes those links too: explicit `readScopeId: null`, a human sharing change (`db_detach_file_access_binding`), scope deletion (`db_sync_file_access_bindings` with `removeUserIds: "all"`), `cleanup_stranded_scopes`, and the uninstall or purge drain. A deleted link is gone for good. Detaching never brings it back, and a manager must turn it on again, which creates a new token. `plugins_external_files.ensure_writer` adds no link work: it binds readers only on the new folder it creates, and a new folder has no links.
+
 ## Plugin run lifecycle
 
 Every upload, manual, account-deletion, invoke, and scheduled run creates one hidden Activity in the same
@@ -561,6 +563,16 @@ Both invoke and conditional service writes pin `expectedParentNodeId`. Their fin
 the exact active parent. A missing, moved, archived, or replaced pinned parent refuses the write.
 Conditional writes also check saved root/folder IDs, labels, writer generation, current
 authority, file policies, and content/reader revisions. Its receipt commits with the file change.
+
+A plugin write in place keeps the file's public link ("Anyone with the link can view"). A text update
+or fill keeps the node, so the link and its token stay, and the page shows the new committed text.
+A write that archives the old file and creates a new node ends the old link, and the new node has no
+link. A plugin archive or delete ends the link too. Images and videos that an in-place write adds to
+a linked document show on its page when the embed rules in `../files-rich-text-embeds/SKILL.md`
+("Public Link Page") allow them. This holds for plugin runs and plugin service grants without
+`files:download`, and for runs whose direct downloads are limited to their source file. This is an
+approved rule: the link token is a separate authority. Media inside a plugin-bound folder never show,
+because the page refuses every node on or under a binding.
 
 These file updates are one-way. Chitchat's native database is the source of chat. A message and its
 transcript job commit together; a later Files refusal does not undo the message. Transcript status

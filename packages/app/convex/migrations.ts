@@ -21,6 +21,7 @@ import {
 	plugins_data_max_last_append,
 	plugins_data_parse_append_key_at,
 } from "./plugins_data.ts";
+import { files_share_links_create_cleanup_state } from "./files_share_links_db.ts";
 
 const app_migrations = new Migrations<DataModel>(components.migrations, {
 	internalMutation,
@@ -1249,10 +1250,16 @@ export const delete_stranded_plugin_data_scopes = app_migrations.define({
 			return;
 		}
 
-		const managed = await plugins_data_db_keep_scope_managed(ctx, {
-			installation,
-			scopes,
-		});
+		// A migration has no hook per batch, so each scope doc gets its own cleanup state. Each state can load
+		// up to 500 link docs. For a workspace with many links, run this repair with a small `batchSize`.
+		const managed = await plugins_data_db_keep_scope_managed(
+			ctx,
+			{
+				installation,
+				scopes,
+			},
+			files_share_links_create_cleanup_state(),
+		);
 		if (managed.promoted) {
 			// Keep a healthy scope stable. Only a repair that changed access gets a new revision.
 			const membershipRevision = Math.max(Date.now(), ...scopes.map((scope) => scope.updatedAt + 1));

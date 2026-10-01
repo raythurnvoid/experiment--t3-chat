@@ -22,6 +22,11 @@ import { plugins_db_get_live_service_account } from "./plugins_service_accounts.
 import { plugins_scheduled_access_db_authorize_assignment } from "./plugins_scheduled_access.ts";
 import { plugins_volumes_db_drain_batch } from "./plugins_volumes.ts";
 import { files_nodes_db_set_restricted_scope } from "./files_nodes.ts";
+import {
+	files_share_links_create_cleanup_state,
+	files_share_links_db_delete_for_roots,
+	type files_share_links_CleanupState,
+} from "./files_share_links_db.ts";
 import { files_subtree_ops_db_start_rebuild, files_subtree_ops_STEP_MAX_NODES } from "./files_subtree_ops.ts";
 import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
 import type { access_control_Permission } from "../shared/access-control.ts";
@@ -3932,7 +3937,8 @@ function db_binding_file_grants(
  * `removeUserIds: "all"` is the teardown form, used when the scope itself was deleted. It also
  * deletes the binding docs, because a binding pointing at a dead scope is a dangling doc. It
  * does NOT un-restrict the bound nodes: the reader list is gone, so the nodes end with zero
- * readers and stay restricted — fail closed.
+ * readers and stay restricted — fail closed. It also ends the public links on and under the bound
+ * nodes.
  */
 async function db_sync_file_access_bindings(
 	ctx: MutationCtx,
@@ -3942,6 +3948,7 @@ async function db_sync_file_access_bindings(
 		addUserIds: Id<"users">[];
 		removeUserIds: Id<"users">[] | "all";
 	},
+	shareLinkCleanup: files_share_links_CleanupState,
 ) {
 	const bindings = await ctx.db
 		.query("plugins_file_access_bindings")
@@ -3949,6 +3956,18 @@ async function db_sync_file_access_bindings(
 			q.eq("installationId", args.installation._id).eq("scopeId", args.scopeId),
 		)
 		.collect();
+
+	if (args.removeUserIds === "all") {
+		await files_share_links_db_delete_for_roots(
+			ctx,
+			{
+				organizationId: args.installation.organizationId,
+				workspaceId: args.installation.workspaceId,
+				rootNodeIds: bindings.map((binding) => binding.nodeId),
+			},
+			shareLinkCleanup,
+		);
+	}
 
 	const now = Date.now();
 	let readersChanged = false;
@@ -4072,24 +4091,39 @@ export async function plugins_data_db_apply_file_access_binding(
 ) {
 	const now = Date.now();
 	const { existingBinding, readScopeId } = args.prepared;
+	const shareLinkCleanup = files_share_links_create_cleanup_state();
+	const shareLinkRoots = {
+		organizationId: args.node.organizationId,
+		workspaceId: args.node.workspaceId,
+		rootNodeIds: [args.node._id],
+	};
 	if (readScopeId === null) {
 		// A detached binding leaves the member's sharing unchanged.
 		if (!existingBinding) {
 			return;
 		}
+		await files_share_links_db_delete_for_roots(ctx, shareLinkRoots, shareLinkCleanup);
 		await ctx.db.delete("plugins_file_access_bindings", existingBinding._id);
 		return;
 	}
 
+	// The plugin now decides who reads this node and everything under it, so end their public links.
+	// Do it even when the node is already restricted and no scope op starts.
+	await files_share_links_db_delete_for_roots(ctx, shareLinkRoots, shareLinkCleanup);
+
 	let accessChanged = false;
 	// Restrict the node on itself and start a scope op for the items inside, like the member share door does.
 	if (args.node.restrictedScopeNodeId !== args.node._id) {
-		await files_nodes_db_set_restricted_scope(ctx, {
-			organizationId: args.node.organizationId,
-			workspaceId: args.node.workspaceId,
-			nodeId: args.node._id,
-			restrictedScopeNodeId: args.node._id,
-		});
+		await files_nodes_db_set_restricted_scope(
+			ctx,
+			{
+				organizationId: args.node.organizationId,
+				workspaceId: args.node.workspaceId,
+				nodeId: args.node._id,
+				restrictedScopeNodeId: args.node._id,
+			},
+			shareLinkCleanup,
+		);
 		await files_subtree_ops_db_start_rebuild(ctx, {
 			kind: "scope",
 			organizationId: args.installation.organizationId,
@@ -4194,6 +4228,7 @@ export async function plugins_data_db_keep_scope_managed(
 		excludeUserId?: Id<"users">;
 		deleteIfEmpty?: boolean;
 	},
+	shareLinkCleanup: files_share_links_CleanupState,
 ) {
 	const [first] = args.scopes;
 	if (!first) {
@@ -4217,12 +4252,16 @@ export async function plugins_data_db_keep_scope_managed(
 		// Account deletion and organization member drain reach scope teardown only through this
 		// branch (via cleanup_stranded_scopes), so a binding not synced here would keep mirrored
 		// `content.read` grants alive on a file whose scope no longer exists.
-		await db_sync_file_access_bindings(ctx, {
-			installation: args.installation,
-			scopeId: first.scopeId,
-			addUserIds: [],
-			removeUserIds: "all",
-		});
+		await db_sync_file_access_bindings(
+			ctx,
+			{
+				installation: args.installation,
+				scopeId: first.scopeId,
+				addUserIds: [],
+				removeUserIds: "all",
+			},
+			shareLinkCleanup,
+		);
 		return { deleted: true, hasActivePrincipal: false, promoted: false };
 	}
 
@@ -4291,6 +4330,8 @@ export const cleanup_stranded_scopes = internalMutation({
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
+		// Share one public link cleanup across every scope this batch deletes.
+		const shareLinkCleanup = files_share_links_create_cleanup_state();
 		for (const pair of args.scopes.slice(0, SCOPE_CLEANUP_BATCH_SIZE)) {
 			const scopes = await ctx.db
 				.query("plugins_data_scopes")
@@ -4311,10 +4352,14 @@ export const cleanup_stranded_scopes = internalMutation({
 				continue;
 			}
 
-			const managed = await plugins_data_db_keep_scope_managed(ctx, {
-				installation,
-				scopes,
-			});
+			const managed = await plugins_data_db_keep_scope_managed(
+				ctx,
+				{
+					installation,
+					scopes,
+				},
+				shareLinkCleanup,
+			);
 			if (!managed.deleted) {
 				// This job follows a removed direct grant, so even a scope that still had another
 				// manager needs a new membership revision.
@@ -4411,6 +4456,8 @@ export const user_manage_scope = mutation({
 			return authorized;
 		}
 		const { installation, userId, organization, workspace } = authorized._yay;
+		// Share one link cleanup across every scope change below, so the workspace links load only once.
+		const shareLinkCleanup = files_share_links_create_cleanup_state();
 		let creatingRateLimitChecked = false;
 		const chargeCreatingAttempt = async () => {
 			if (creatingRateLimitChecked) {
@@ -4913,11 +4960,15 @@ export const user_manage_scope = mutation({
 				});
 			}
 
-			const managed = await plugins_data_db_keep_scope_managed(ctx, {
-				installation,
-				scopes: existing,
-				excludeUserId: userId,
-			});
+			const managed = await plugins_data_db_keep_scope_managed(
+				ctx,
+				{
+					installation,
+					scopes: existing,
+					excludeUserId: userId,
+				},
+				shareLinkCleanup,
+			);
 			if (managed.deleted) {
 				return Result({ _yay: { scopeId: scopeId._yay, deleted: true, membershipRevision } });
 			}
@@ -4930,12 +4981,16 @@ export const user_manage_scope = mutation({
 				level: null,
 				now,
 			});
-			await db_sync_file_access_bindings(ctx, {
-				installation,
-				scopeId: scopeId._yay,
-				addUserIds: [],
-				removeUserIds: [userId],
-			});
+			await db_sync_file_access_bindings(
+				ctx,
+				{
+					installation,
+					scopeId: scopeId._yay,
+					addUserIds: [],
+					removeUserIds: [userId],
+				},
+				shareLinkCleanup,
+			);
 			await Promise.all(
 				existing.map((scope) => ctx.db.patch("plugins_data_scopes", scope._id, { updatedAt: membershipRevision })),
 			);
@@ -4969,12 +5024,16 @@ export const user_manage_scope = mutation({
 
 		if (args.action.kind === "delete") {
 			await plugins_data_db_delete_scope(ctx, existing);
-			await db_sync_file_access_bindings(ctx, {
-				installation,
-				scopeId: scopeId._yay,
-				addUserIds: [],
-				removeUserIds: "all",
-			});
+			await db_sync_file_access_bindings(
+				ctx,
+				{
+					installation,
+					scopeId: scopeId._yay,
+					addUserIds: [],
+					removeUserIds: "all",
+				},
+				shareLinkCleanup,
+			);
 			return Result({ _yay: { scopeId: scopeId._yay, deleted: true, membershipRevision } });
 		}
 
@@ -4986,12 +5045,16 @@ export const user_manage_scope = mutation({
 			if (principals.size === 1 && principals.has(target)) {
 				return Result({ _nay: { message: "The last person must leave this private space themselves" } });
 			}
-			const managed = await plugins_data_db_keep_scope_managed(ctx, {
-				installation,
-				scopes: existing,
-				excludeUserId: target,
-				deleteIfEmpty: false,
-			});
+			const managed = await plugins_data_db_keep_scope_managed(
+				ctx,
+				{
+					installation,
+					scopes: existing,
+					excludeUserId: target,
+					deleteIfEmpty: false,
+				},
+				shareLinkCleanup,
+			);
 			if (!managed.hasActivePrincipal) {
 				return Result({ _nay: { message: "The last person must leave this private space themselves" } });
 			}
@@ -5003,12 +5066,16 @@ export const user_manage_scope = mutation({
 				level: null,
 				now,
 			});
-			await db_sync_file_access_bindings(ctx, {
-				installation,
-				scopeId: scopeId._yay,
-				addUserIds: [],
-				removeUserIds: [target],
-			});
+			await db_sync_file_access_bindings(
+				ctx,
+				{
+					installation,
+					scopeId: scopeId._yay,
+					addUserIds: [],
+					removeUserIds: [target],
+				},
+				shareLinkCleanup,
+			);
 			await Promise.all(
 				existing.map((scope) => ctx.db.patch("plugins_data_scopes", scope._id, { updatedAt: membershipRevision })),
 			);
@@ -5053,12 +5120,16 @@ export const user_manage_scope = mutation({
 		}
 
 		if (args.action.level === "member") {
-			const managed = await plugins_data_db_keep_scope_managed(ctx, {
-				installation,
-				scopes: existing,
-				excludeUserId: target,
-				deleteIfEmpty: false,
-			});
+			const managed = await plugins_data_db_keep_scope_managed(
+				ctx,
+				{
+					installation,
+					scopes: existing,
+					excludeUserId: target,
+					deleteIfEmpty: false,
+				},
+				shareLinkCleanup,
+			);
 			if (!managed.hasActivePrincipal) {
 				return Result({ _nay: { message: "Add another person before lowering the last manager's access" } });
 			}
@@ -5073,12 +5144,16 @@ export const user_manage_scope = mutation({
 			now,
 		});
 		// A level change for an existing member makes this an idempotent no-op.
-		await db_sync_file_access_bindings(ctx, {
-			installation,
-			scopeId: scopeId._yay,
-			addUserIds: [target],
-			removeUserIds: [],
-		});
+		await db_sync_file_access_bindings(
+			ctx,
+			{
+				installation,
+				scopeId: scopeId._yay,
+				addUserIds: [target],
+				removeUserIds: [],
+			},
+			shareLinkCleanup,
+		);
 		await Promise.all(
 			existing.map((scope) => ctx.db.patch("plugins_data_scopes", scope._id, { updatedAt: membershipRevision })),
 		);
@@ -6598,6 +6673,15 @@ export async function plugins_data_db_drain_batch(
 		})
 		.take(args.batchSize);
 	if (fileAccessBindings.length > 0) {
+		await files_share_links_db_delete_for_roots(
+			ctx,
+			{
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				rootNodeIds: fileAccessBindings.map((doc) => doc.nodeId),
+			},
+			files_share_links_create_cleanup_state(),
+		);
 		await Promise.all(fileAccessBindings.map((doc) => ctx.db.delete("plugins_file_access_bindings", doc._id)));
 		return { done: false, deletedCount: fileAccessBindings.length };
 	}

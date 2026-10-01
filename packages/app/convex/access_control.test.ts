@@ -2815,22 +2815,21 @@ describe("enforcement", () => {
 		await viewerAsk.text();
 	});
 
-	test("/api/chat refuses agent mode to a role that can write but cannot read", async () => {
+	test("/api/chat refuses ask and agent mode to a role that cannot read", async () => {
 		const t = test_convex();
 		const fixture = await access_control_test_seed_enforcement_fixture(t, {
-			name: "chat-writeonly-org",
-			suffix: "chat-writeonly",
+			name: "chat-noread-org",
+			suffix: "chat-noread",
 		});
 
-		// The catalog lets an owner build a role with write but no read, and the rule inside
-		// `create_role` does not stop that. Such a role was always refused in the end, because
-		// `thread_get` and `thread_create` ask for `content.read`. But they answer 400, which looks like
-		// a broken request. The route now checks by itself and answers 403.
+		// A role cannot hold `content.write` without `content.read`, so this role holds neither.
+		// `thread_get` and `thread_create` ask for `content.read`, but they answer 400, which looks like a
+		// broken request. The route checks by itself and answers 403.
 		const role = await fixture.asOwner.mutation(api.access_control.create_role, {
 			organizationId: fixture.organizationId,
-			name: "Write only",
+			name: "No content",
 			description: "",
-			permissions: ["content.write"],
+			permissions: ["workspace.create"],
 		});
 		expect(role._nay).toBeUndefined();
 
@@ -2844,24 +2843,23 @@ describe("enforcement", () => {
 		});
 		expect(assigned._nay).toBeUndefined();
 
-		// The role really does have `content.write`, so the 403 below cannot mean "this member has
-		// nothing". Without this call the same 403 could come from a test setup that failed to give the
-		// role at all, and the test would keep passing even if the read check was removed.
+		// The role really was given, so the 403 below cannot come from a test setup that failed to give
+		// it. Without this call the test would keep passing even if the read check was removed.
 		expect(
-			await fixture.asMember.query(api.access_control.get_current_user_workspace_permission, {
-				membershipId: fixture.memberMembershipId,
-				permission: "content.write",
+			await fixture.asMember.query(api.access_control.get_current_user_organization_permission, {
+				organizationId: fixture.organizationId,
+				permission: "workspace.create",
 			}),
 		).toBe(true);
 
-		const post_chat = (threadId: string) =>
+		const post_chat = (threadId: string, mode: "ask" | "agent") =>
 			fixture.asMember.fetch("/api/chat", {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify({
 					messages: [{ id: `msg-${threadId}`, role: "user", parts: [{ type: "text", text: "Hi" }] }],
 					parentId: null,
-					mode: "agent",
+					mode,
 					model: "gpt-6-luna",
 					trigger: "submit-message",
 					clientGeneratedThreadId: threadId,
@@ -2870,11 +2868,14 @@ describe("enforcement", () => {
 				}),
 			});
 
-		const refused = await post_chat("thread-writeonly");
-		expect(refused.status).toBe(403);
-		expect(await refused.json()).toMatchObject({ message: "Permission denied" });
+		for (const mode of ["ask", "agent"] as const) {
+			await access_control_test_reset_write_rate_limit(t, fixture.memberId);
+			const refused = await post_chat(`thread-noread-${mode}`, mode);
+			expect(refused.status).toBe(403);
+			expect(await refused.json()).toMatchObject({ message: "Permission denied" });
+		}
 
-		// Control: the only thing that changed is `content.read`. So some other check earlier in the
+		// Control: the only thing that changed is content access. So some other check earlier in the
 		// route cannot be what produced the 403 above.
 		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
 		const widened = await fixture.asOwner.mutation(api.access_control.update_role, {
@@ -2883,7 +2884,12 @@ describe("enforcement", () => {
 		});
 		expect(widened._nay).toBeUndefined();
 
-		expect((await post_chat("thread-writeonly-allowed")).status).not.toBe(403);
+		for (const mode of ["ask", "agent"] as const) {
+			await access_control_test_reset_write_rate_limit(t, fixture.memberId);
+			const allowed = await post_chat(`thread-read-${mode}`, mode);
+			expect(allowed.status).toBe(200);
+			await allowed.text();
+		}
 	});
 
 	test.each(["owner", "admin", "member", "viewer"] as const)(
@@ -3484,7 +3490,7 @@ describe("custom roles", () => {
 			organizationId: organization.organizationId,
 			name: "File sharer",
 			description: "",
-			permissions: ["content.permissions.manage"],
+			permissions: ["content.read", "content.permissions.manage"],
 		});
 		expect(result._nay).toBeUndefined();
 	});
@@ -5940,32 +5946,27 @@ describe("file sharing", () => {
 		const grants = await t.run(async (ctx) => await ctx.db.query("access_control_permission_grants").collect());
 		expect(grants).toEqual([]);
 
-		// The other way round: write and manage, no read. `manage` carries all three, so every one of them
-		// has to be asked about, not only the one this test happened to leave out first.
+		// The other way round, write and manage without read, cannot exist: Edit and Manage sharing always
+		// include View. Both role doors refuse it.
 		const blind = await fixture.asOwner.mutation(api.access_control.create_role, {
 			organizationId: fixture.organizationId,
 			name: "Blind editor",
 			description: "",
 			permissions: ["content.write", "content.permissions.manage"],
 		});
-		expect(blind._nay).toBeUndefined();
+		expect(blind._nay?.message).toBe('"Edit workspace content" needs "View workspace content"');
 
-		const reassigned = await fixture.asOwner.mutation(api.access_control.set_user_role, {
-			organizationId: fixture.organizationId,
-			workspaceId: fixture.defaultWorkspaceId,
-			userId: fixture.memberId,
-			role: blind._yay!.roleId,
+		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
+		const narrowed = await fixture.asOwner.mutation(api.access_control.update_role, {
+			roleId: role._yay!.roleId,
+			permissions: ["content.permissions.manage"],
 		});
-		expect(reassigned._nay).toBeUndefined();
+		expect(narrowed._nay?.message).toBe('"Manage file sharing" needs "View workspace content"');
 
-		await access_control_test_reset_write_rate_limit(t, fixture.memberId);
-		const restrictedBlind = await fixture.asMember.mutation(api.files_sharing.restrict_node, {
-			membershipId: fixture.memberMembershipId,
-			nodeId: folderId,
-		});
-		expect(restrictedBlind._nay?.message).toBe(
-			'You cannot give "Can manage" here: you do not have "View workspace content" on it',
-		);
+		const curator = await t.run(async (ctx) => await ctx.db.get("access_control_roles", role._yay!.roleId));
+		expect(curator?.permissions).toEqual(["content.read", "content.permissions.manage"]);
+		const roleCount = await t.run(async (ctx) => (await ctx.db.query("access_control_roles").collect()).length);
+		expect(roleCount).toBe(1);
 
 		// The owner can still restrict it, so the refusal is the ceiling and not a broken mutation.
 		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
@@ -10266,13 +10267,12 @@ describe("file sharing", () => {
 			expect(archived._nay).toBeUndefined();
 		}
 
-		// Write without read is a role somebody can really build: nothing makes read a part of write. It
-		// gets past the check at the top of the restore, which asks for write, and then reaches the clash.
+		// The member starts the restore with read and write, so it reaches the clash.
 		const role = await fixture.asOwner.mutation(api.access_control.create_role, {
 			organizationId: fixture.organizationId,
-			name: "Blind editor",
+			name: "Editor",
 			description: "",
-			permissions: ["content.write"],
+			permissions: ["content.read", "content.write"],
 		});
 		expect(role._nay).toBeUndefined();
 
@@ -10292,17 +10292,27 @@ describe("file sharing", () => {
 		expect(unarchived._nay).toBeUndefined();
 		const runId = unarchived._yay!.runId;
 
+		// Then the role loses content access while the run waits. The requester still owns the run, but
+		// its conflict no longer names either item.
+		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
+		const narrowed = await fixture.asOwner.mutation(api.access_control.update_role, {
+			roleId: role._yay!.roleId,
+			permissions: ["workspace.create"],
+		});
+		expect(narrowed._nay).toBeUndefined();
+
 		const blind = await fixture.asMember.query(api.files_archive_runs.get, {
 			membershipId: fixture.memberMembershipId,
 			runId,
 		});
 		expect(blind?.conflict).toMatchObject({ name: null, path: null, occupantPath: null });
 
-		// With read added to the role, the same query names both items. So the nulls above are the read
-		// check and not fields the dialog never gets.
+		// With read given back, the same query names both items. So the nulls above are the read check and
+		// not fields the dialog never gets.
+		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
 		const updated = await fixture.asOwner.mutation(api.access_control.update_role, {
 			roleId: role._yay!.roleId,
-			permissions: ["content.write", "content.read"],
+			permissions: ["content.read", "content.write"],
 		});
 		expect(updated._nay).toBeUndefined();
 

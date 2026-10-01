@@ -19,6 +19,7 @@ import { doc } from "convex-helpers/validators";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import { mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server.js";
 import {
+	access_control_db_authorize_membership,
 	access_control_db_authorize_node,
 	access_control_db_authorize_service_account_grant,
 	access_control_db_caller_cannot_share_with_role,
@@ -27,12 +28,20 @@ import {
 	access_control_db_set_service_account_grant,
 } from "./access_control.ts";
 import { files_nodes_db_set_restricted_scope, files_nodes_db_resolve_parent_restricted_scope } from "./files_nodes.ts";
+import { files_share_links_db_check_live_file, files_share_links_db_resolve_live_scope } from "./files_share_links.ts";
+import {
+	files_share_links_create_cleanup_state,
+	files_share_links_db_delete_for_roots,
+	files_share_links_MAX_PER_WORKSPACE,
+	type files_share_links_CleanupState,
+} from "./files_share_links_db.ts";
 import { files_subtree_ops_db_start_rebuild, files_subtree_ops_STEP_MAX_NODES } from "./files_subtree_ops.ts";
 import { organizations_db_get_membership } from "./organizations.ts";
 import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import app_convex_schema from "./schema.ts";
 import { v_result } from "../server/convex-utils.ts";
+import { crypto_random_hex } from "../server/crypto-utils.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import {
@@ -179,20 +188,35 @@ async function caller_can_hand_out_level(
 /**
  * A manual sharing change takes over the reader list without removing its grants.
  * Call only after a real change; saving the same sharing must keep plugin reader sync.
+ *
+ * Detaching also deletes the public links on the node and below it. A bound node cannot get a link,
+ * so this only deletes links an old attach did not reach. A detach never brings a link back.
  */
-async function db_detach_file_access_binding(ctx: MutationCtx, nodeId: Id<"files_nodes">) {
+async function db_detach_file_access_binding(
+	ctx: MutationCtx,
+	node: Doc<"files_nodes">,
+	shareLinkCleanup: files_share_links_CleanupState,
+) {
 	const binding = await ctx.db
 		.query("plugins_file_access_bindings")
-		.withIndex("by_node", (q) => q.eq("nodeId", nodeId))
+		.withIndex("by_node", (q) => q.eq("nodeId", node._id))
 		.first();
+	const externalBinding = await ctx.db
+		.query("plugins_external_file_bindings")
+		.withIndex("by_node", (q) => q.eq("nodeId", node._id))
+		.first();
+	if (binding || externalBinding?.detachedAt === null) {
+		await files_share_links_db_delete_for_roots(
+			ctx,
+			{ organizationId: node.organizationId, workspaceId: node.workspaceId, rootNodeIds: [node._id] },
+			shareLinkCleanup,
+		);
+	}
+
 	if (binding) {
 		await ctx.db.delete("plugins_file_access_bindings", binding._id);
 	}
 
-	const externalBinding = await ctx.db
-		.query("plugins_external_file_bindings")
-		.withIndex("by_node", (q) => q.eq("nodeId", nodeId))
-		.first();
 	if (externalBinding && externalBinding.detachedAt === null) {
 		await ctx.db.patch("plugins_external_file_bindings", externalBinding._id, {
 			detachedAt: Date.now(),
@@ -206,7 +230,7 @@ async function db_detach_file_access_binding(ctx: MutationCtx, nodeId: Id<"files
 					.eq("organizationId", externalBinding.organizationId)
 					.eq("workspaceId", externalBinding.workspaceId)
 					.eq("resourceKind", "file")
-					.eq("resourceId", String(nodeId)),
+					.eq("resourceId", String(node._id)),
 			)
 			.take(MAX_FILE_SHARE_GRANT_DOCS);
 		let changed = false;
@@ -233,8 +257,9 @@ async function db_detach_file_access_binding(ctx: MutationCtx, nodeId: Id<"files
 const share_level_validator = v.union(v.literal("read"), v.literal("write"), v.literal("manage"));
 
 /**
- * Who a share entry is about. `public` is missing on purpose: link access needs `allowPublic` at
- * every read call site and is its own milestone, so nothing here can write a public grant.
+ * Who a share entry is about. `public` is missing on purpose, so nothing here can write a public grant.
+ * A public grant on a restricted folder would open every file inside it. Public file links use their own
+ * token table instead (`files_share_links`, see `set_node_share_link`).
  */
 const share_principal_validator = v.union(
 	v.object({ kind: v.literal("user"), userId: v.id("users") }),
@@ -568,6 +593,18 @@ export const get_node_share_state = query({
 			),
 			/** The owner always gets in, and holds no grant, so the dialog shows them as a fixed row. */
 			organizationOwnerUserId: v.id("users"),
+			/**
+			 * The file's public link. Only a live manager of the file gets it, because the token opens the
+			 * file to anyone who has it.
+			 */
+			link: v.union(
+				v.null(),
+				v.object({
+					token: doc(app_convex_schema, "files_share_links").fields.token,
+					createdBy: doc(app_convex_schema, "files_share_links").fields.createdBy,
+					createdAt: doc(app_convex_schema, "files_share_links").fields.createdAt,
+				}),
+			),
 		}),
 	),
 	handler: async (ctx, args) => {
@@ -655,6 +692,30 @@ export const get_node_share_state = query({
 			}
 		}
 
+		// Ask about the live scope, like `set_node_share_link`. The stored scope can be old while a scope
+		// op runs, and an admin must not read the token of a file inside a folder that was just restricted.
+		const liveScope = node.kind === "file" ? await files_share_links_db_resolve_live_scope(ctx, { node }) : null;
+		const canManageLink =
+			liveScope !== null &&
+			(await access_control_db_has_permission(ctx, {
+				organizationId: organization._id,
+				workspaceId: membership.workspaceId,
+				defaultWorkspaceId,
+				organizationOwnerUserId: organization.ownerUserId,
+				resource: { kind: "file", id: String(node._id), restrictedScopeNodeId: liveScope.restrictedScopeNodeId },
+				permission: "content.permissions.manage",
+				userId: userAuth.id,
+			}));
+		const linkDoc = canManageLink
+			? await ctx.db
+					.query("files_share_links")
+					.withIndex("by_organization_workspace_node", (q) =>
+						q.eq("organizationId", organization._id).eq("workspaceId", membership.workspaceId).eq("nodeId", node._id),
+					)
+					.first()
+			: null;
+		const link = linkDoc ? { token: linkDoc.token, createdBy: linkDoc.createdBy, createdAt: linkDoc.createdAt } : null;
+
 		// A pointer at a node that was deleted, or that is no longer restricted, means this node uses
 		// workspace access again. Reading the scope node here, instead of trusting the pointer, keeps the
 		// dialog saying the same thing the permission check does.
@@ -694,6 +755,7 @@ export const get_node_share_state = query({
 				serviceGrantableLevels,
 				entries,
 				organizationOwnerUserId: organization.ownerUserId,
+				link,
 			};
 		}
 
@@ -714,6 +776,7 @@ export const get_node_share_state = query({
 			serviceGrantableLevels,
 			entries,
 			organizationOwnerUserId: organization.ownerUserId,
+			link,
 		};
 	},
 });
@@ -898,7 +961,7 @@ export const set_node_share_grant = mutation({
 			now: Date.now(),
 		});
 		if (changed) {
-			await db_detach_file_access_binding(ctx, node._id);
+			await db_detach_file_access_binding(ctx, node, files_share_links_create_cleanup_state());
 		}
 
 		return Result({ _yay: null });
@@ -993,7 +1056,7 @@ export const remove_node_share_grant = mutation({
 			now: Date.now(),
 		});
 		if (changed) {
-			await db_detach_file_access_binding(ctx, node._id);
+			await db_detach_file_access_binding(ctx, node, files_share_links_create_cleanup_state());
 		}
 
 		return Result({ _yay: null });
@@ -1063,13 +1126,18 @@ export const restrict_node = mutation({
 		}
 
 		const now = Date.now();
-		await db_detach_file_access_binding(ctx, node._id);
-		await files_nodes_db_set_restricted_scope(ctx, {
-			organizationId: membership.organizationId,
-			workspaceId: membership.workspaceId,
-			nodeId: node._id,
-			restrictedScopeNodeId: node._id,
-		});
+		const shareLinkCleanup = files_share_links_create_cleanup_state();
+		await db_detach_file_access_binding(ctx, node, shareLinkCleanup);
+		await files_nodes_db_set_restricted_scope(
+			ctx,
+			{
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				nodeId: node._id,
+				restrictedScopeNodeId: node._id,
+			},
+			shareLinkCleanup,
+		);
 		// The root changes even when the folder is empty and no op starts.
 		await files_media_validation_db_advance_version(ctx, {
 			organizationId: membership.organizationId,
@@ -1147,13 +1215,18 @@ export const unrestrict_node = mutation({
 			parentId: node.parentId,
 		});
 
-		await db_detach_file_access_binding(ctx, node._id);
-		await files_nodes_db_set_restricted_scope(ctx, {
-			organizationId: membership.organizationId,
-			workspaceId: membership.workspaceId,
-			nodeId: node._id,
-			restrictedScopeNodeId: parentScopeNodeId,
-		});
+		const shareLinkCleanup = files_share_links_create_cleanup_state();
+		await db_detach_file_access_binding(ctx, node, shareLinkCleanup);
+		await files_nodes_db_set_restricted_scope(
+			ctx,
+			{
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				nodeId: node._id,
+				restrictedScopeNodeId: parentScopeNodeId,
+			},
+			shareLinkCleanup,
+		);
 		await files_media_validation_db_advance_version(ctx, {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
@@ -1185,3 +1258,146 @@ export const unrestrict_node = mutation({
 });
 
 // #endregion scope restriction
+
+// #region public link
+
+/**
+ * Turn the "anyone with the link can view" link of one file on or off.
+ *
+ * Both need "manage sharing" on the file's live scope. The stored scope can be old while a scope op
+ * runs, and an admin must not publish a file inside a folder that was just restricted.
+ *
+ * Off only removes access, so it skips the checks On runs on the file. A manager can turn a link off
+ * while a job runs or after the file is archived.
+ */
+export const set_node_share_link = mutation({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		nodeId: v.id("files_nodes"),
+		enabled: v.boolean(),
+	},
+	returns: v_result({ _yay: v.null() }),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_sharing_write", key: userAuth.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+
+		// An anonymous account cannot publish. So upgrading it never has to find and secure its links.
+		if (args.enabled && userAuth.isAnonymous) {
+			return Result({ _nay: { message: "Sign in to create a public link" } });
+		}
+
+		const membership = await organizations_db_get_membership(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return Result({ _nay: { message: "Unauthorized" } });
+		}
+
+		const node = await ctx.db.get("files_nodes", args.nodeId);
+		const liveScope =
+			node && node.organizationId === membership.organizationId && node.workspaceId === membership.workspaceId
+				? await files_share_links_db_resolve_live_scope(ctx, { node })
+				: null;
+		if (!node || !liveScope) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth,
+			membership,
+			permission: "content.permissions.manage",
+			fileNode: { ...node, restrictedScopeNodeId: liveScope.restrictedScopeNodeId },
+		});
+		if (authorized._nay) {
+			return authorized;
+		}
+		const { organization, defaultWorkspaceId } = authorized._yay;
+
+		const link = await ctx.db
+			.query("files_share_links")
+			.withIndex("by_organization_workspace_node", (q) =>
+				q
+					.eq("organizationId", membership.organizationId)
+					.eq("workspaceId", membership.workspaceId)
+					.eq("nodeId", node._id),
+			)
+			.first();
+		if (!args.enabled) {
+			if (link) {
+				await ctx.db.delete("files_share_links", link._id);
+			}
+			return Result({ _yay: null });
+		}
+
+		// Turning it on twice keeps the first token, so a double click does not break a copied link.
+		if (link) {
+			return Result({ _yay: null });
+		}
+
+		// Nobody publishes content they cannot read themselves.
+		const canRead = await access_control_db_has_permission(ctx, {
+			organizationId: organization._id,
+			workspaceId: membership.workspaceId,
+			defaultWorkspaceId,
+			organizationOwnerUserId: organization.ownerUserId,
+			resource: { kind: "file", id: String(node._id), restrictedScopeNodeId: liveScope.restrictedScopeNodeId },
+			permission: "content.read",
+			userId: userAuth.id,
+		});
+		if (!canRead) {
+			return Result({
+				_nay: {
+					message: `You need "${access_control_PERMISSION_CATALOG["content.read"].label}" on this file to create a public link`,
+				},
+			});
+		}
+
+		const live = await files_share_links_db_check_live_file(ctx, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			node,
+			ancestors: liveScope.ancestors,
+		});
+		if (live._nay) {
+			return live;
+		}
+
+		// Link cleanup loads at most this many links of one workspace, so no more may exist.
+		const workspaceLinks = await ctx.db
+			.query("files_share_links")
+			.withIndex("by_organization_workspace_node", (q) =>
+				q.eq("organizationId", membership.organizationId).eq("workspaceId", membership.workspaceId),
+			)
+			.take(files_share_links_MAX_PER_WORKSPACE);
+		if (workspaceLinks.length >= files_share_links_MAX_PER_WORKSPACE) {
+			return Result({
+				_nay: {
+					message: `One workspace can have at most ${files_share_links_MAX_PER_WORKSPACE} public links. Turn off a link you no longer need.`,
+				},
+			});
+		}
+
+		await ctx.db.insert("files_share_links", {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			nodeId: node._id,
+			token: crypto_random_hex(32),
+			restrictedScopeNodeId: liveScope.restrictedScopeNodeId,
+			ancestorNodeIds: liveScope.ancestors.map((ancestor) => ancestor._id),
+			createdBy: userAuth.id,
+			createdAt: Date.now(),
+		});
+
+		return Result({ _yay: null });
+	},
+});
+
+// #endregion public link

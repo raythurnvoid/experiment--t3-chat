@@ -554,6 +554,14 @@ function files_content_disposition(kind: "inline" | "attachment", fileName: stri
 }
 
 /**
+ * Whether a signed download may serve this content type inline, as an image or a video.
+ */
+export function files_is_inline_media_content_type(contentType: string | null | undefined) {
+	const essence = contentType == null ? null : (files_parse_content_type(contentType)?.essence ?? null);
+	return essence !== null && FILES_INLINE_SERVED_MEDIA_CONTENT_TYPES.has(essence);
+}
+
+/**
  * The response headers every signed R2 download URL must pin, derived from the stored content
  * type. The name only fills the disposition file name. `download` forces media to download too.
  *

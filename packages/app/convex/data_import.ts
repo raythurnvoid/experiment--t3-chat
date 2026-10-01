@@ -26,6 +26,7 @@ import {
 	files_nodes_db_archive_nodes,
 	files_nodes_db_create_node_recursively_at_path,
 } from "./files_nodes.ts";
+import { files_share_links_create_cleanup_state } from "./files_share_links_db.ts";
 import { r2, r2_create_asset_key, r2_UNFINALIZED_ASSET_TTL_MS } from "./r2_client.ts";
 
 /**
@@ -206,15 +207,21 @@ export const create_upload_targets = internalMutation({
 			uploadUrl: string;
 			headers: Record<string, string>;
 		}> = [];
+		// Share one link cleanup across the replaced files, so the workspace links load only once.
+		const shareLinkCleanup = files_share_links_create_cleanup_state();
 		for (const item of validated) {
 			// Importing over a name archives whatever holds it, like create_upload_node, so re-runs
 			// replace the previous import instead of failing.
 			if (item.collidingNodeId) {
-				await files_nodes_db_archive_nodes(ctx, {
-					nodeIds: [item.collidingNodeId],
-					updatedBy: args.createdBy,
-					now,
-				});
+				await files_nodes_db_archive_nodes(
+					ctx,
+					{
+						nodeIds: [item.collidingNodeId],
+						updatedBy: args.createdBy,
+						now,
+					},
+					shareLinkCleanup,
+				);
 			}
 
 			const assetId = await ctx.db.insert("files_r2_assets", {

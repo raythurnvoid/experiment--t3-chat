@@ -31,6 +31,7 @@ import {
 	files_pending_updates_db_commit_prepared_content,
 	files_pending_updates_db_retire_prepared_content,
 } from "./files_pending_updates.ts";
+import { files_share_links_create_cleanup_state } from "./files_share_links_db.ts";
 
 const test = baseTest;
 import { billing_event } from "../server/billing.ts";
@@ -1669,7 +1670,11 @@ describe("files_pending_updates_action_prepare_content", () => {
 				);
 			const commit = draft.t.run(async (ctx) => {
 				for (const prepared of [preparedParent._yay, preparedChild._yay]) {
-					const saved = await files_pending_updates_db_commit_prepared_content(ctx, { userId: draft.userId, prepared });
+					const saved = await files_pending_updates_db_commit_prepared_content(ctx, {
+						userId: draft.userId,
+						prepared,
+						shareLinkCleanup: files_share_links_create_cleanup_state(),
+					});
 					if (saved._nay) throw new Error(saved._nay.message);
 					await files_pending_updates_db_retire_prepared_content(ctx, prepared);
 				}
@@ -21361,6 +21366,7 @@ describe("pending update read-only checks", () => {
 					pendingUpdate: seeded.pendingUpdate,
 					billedUserId: db.userId,
 					prepared: { text, contentAssetId: seeded.contentAssetId },
+					shareLinkCleanup: files_share_links_create_cleanup_state(),
 				}),
 			);
 

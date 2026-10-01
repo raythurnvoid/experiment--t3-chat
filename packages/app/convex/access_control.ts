@@ -31,6 +31,7 @@ import { server_convex_get_user_fallback_to_anonymous } from "../server/server-u
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { access_control_changes_db_record } from "./access_control_changes.ts";
 import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
+import { files_share_links_db_delete_for_node } from "./files_share_links_db.ts";
 import {
 	organizations_membership_lifetimes_db_get,
 	organizations_membership_lifetimes_db_record,
@@ -694,6 +695,16 @@ export async function access_control_db_set_service_account_grant(
 			});
 			changed = true;
 		} else if (!wanted.has(permission) && existing) {
+			// The public view shows an image in this file only when every account that can write the file
+			// can also read the image. After a write grant goes away, that check no longer sees the account,
+			// but the account may have added images before. So end the file's public link for good.
+			if (args.resource.kind === "file" && permission === "content.write") {
+				await files_share_links_db_delete_for_node(ctx, {
+					organizationId: args.organizationId,
+					workspaceId: args.workspaceId,
+					nodeId: args.resource.nodeId,
+				});
+			}
 			await ctx.db.delete("access_control_permission_grants", existing._id);
 			changed = true;
 		}
@@ -2517,6 +2528,21 @@ function validate_role_permissions(
 	if (notEnforced) {
 		return Result({
 			_nay: { message: `"${access_control_PERMISSION_CATALOG[notEnforced].label}" is not available yet` },
+		});
+	}
+
+	// Edit and Manage sharing always include View. Otherwise a holder could put an open file they
+	// cannot read into a document that has a public link, and the link would show that file.
+	const needsRead = unique.find(
+		(permission) =>
+			(permission === "content.write" || permission === "content.permissions.manage") &&
+			!unique.includes("content.read"),
+	);
+	if (needsRead) {
+		return Result({
+			_nay: {
+				message: `"${access_control_PERMISSION_CATALOG[needsRead].label}" needs "${access_control_PERMISSION_CATALOG["content.read"].label}"`,
+			},
 		});
 	}
 

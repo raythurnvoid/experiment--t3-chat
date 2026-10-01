@@ -206,6 +206,7 @@ import { files_private_storage_db_release, files_private_storage_db_reserve } fr
 import { files_visible_db_create_reader } from "./files_visible.ts";
 import { ai_chat_workspaces_db_authorize_file_scope } from "./ai_chat_workspaces.ts";
 import { files_db_resolve_scope } from "./files_scopes.ts";
+import type { files_share_links_CleanupState } from "./files_share_links_db.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
@@ -1265,6 +1266,7 @@ export async function files_nodes_content_db_publish_private_node(
 			contentAssetId: Id<"files_r2_assets">;
 			yjsSnapshotAssetId?: Id<"files_r2_assets">;
 		};
+		shareLinkCleanup: files_share_links_CleanupState;
 	},
 ) {
 	const { membership, node, pendingUpdate, prepared } = args;
@@ -1437,7 +1439,7 @@ export async function files_nodes_content_db_publish_private_node(
 		});
 
 		if (replacementPlan._nay) return replacementPlan;
-		await files_nodes_db_apply_move(ctx, replacementPlan._yay);
+		await files_nodes_db_apply_move(ctx, replacementPlan._yay, args.shareLinkCleanup);
 	}
 
 	const created = await files_nodes_db_create_node_recursively_at_path(ctx, {
