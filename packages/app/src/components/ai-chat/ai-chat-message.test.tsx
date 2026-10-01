@@ -247,9 +247,13 @@ describe("AiChatMessage", () => {
 			isEditing: true,
 		});
 		fireEvent.click(screen.getByRole("button", { name: "Save message" }));
-		expect(hookMocks.actions.sendUserText).toHaveBeenCalledWith("thread_1", "Can you summarize my workspace notes?", {
-			messageId: message.id,
-			attachments: [],
+		expect(hookMocks.actions.sendUserText).toHaveBeenCalledWith({
+			threadId: "thread_1",
+			value: "Can you summarize my workspace notes?",
+			options: {
+				messageId: message.id,
+				attachments: [],
+			},
 		});
 	});
 
@@ -270,8 +274,10 @@ describe("AiChatMessage", () => {
 
 		fireEvent.click(screen.getByRole("button", { name: "Retry" }));
 
-		expect(hookMocks.actions.sendUserText).toHaveBeenCalledWith("thread_1", "Can you summarize my workspace notes?", {
-			messageId: "msg_user_failed",
+		expect(hookMocks.actions.sendUserText).toHaveBeenCalledWith({
+			threadId: "thread_1",
+			value: "Can you summarize my workspace notes?",
+			options: { messageId: "msg_user_failed" },
 		});
 	});
 

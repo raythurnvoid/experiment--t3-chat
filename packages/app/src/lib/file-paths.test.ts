@@ -13,8 +13,7 @@ const { measureCandidateMock, measureLineStatsMock, prepareWithSegmentsMock } = 
 				maxLineWidth: measuredWidth,
 			};
 		}),
-		prepareWithSegmentsMock: vi.fn((args: { candidate: string; font: string; options: unknown }) => {
-			const { candidate, font, options } = args;
+		prepareWithSegmentsMock: vi.fn((candidate: string, font: string, options: unknown) => {
 			return {
 				candidate,
 				font,

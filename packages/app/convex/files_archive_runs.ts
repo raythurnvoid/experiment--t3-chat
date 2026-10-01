@@ -154,7 +154,11 @@ type StepArgs = {
 	 * link load with the moves before it. A scheduled step makes a new one.
 	 */
 	shareLinkCleanup: files_share_links_CleanupState;
-	isWritten: boolean;
+	/**
+	 * Turns true when this step changes a node. Helpers get a copy of these args, so this stays an object
+	 * that every copy shares. A plain boolean set on a copy would never reach `db_step`.
+	 */
+	writeState: { isWritten: boolean };
 };
 
 type StepOutcome =
@@ -556,7 +560,7 @@ async function db_archive_node(
 			nodeId: node._id,
 		});
 	}
-	args.isWritten = true;
+	args.writeState.isWritten = true;
 	args.progress.completed += 1;
 	args.budget.nodes -= 1;
 }
@@ -1014,7 +1018,7 @@ async function db_restore_top(
 			updatedBy: args.userAuth.id,
 			now: args.now,
 		});
-		args.isWritten = true;
+		args.writeState.isWritten = true;
 		progress.skipped += 1;
 		return null;
 	}
@@ -1098,7 +1102,7 @@ async function db_land_node(
 				updatedBy: args.userAuth.id,
 				now: args.now,
 			});
-			args.isWritten = true;
+			args.writeState.isWritten = true;
 			progress.skipped += 1;
 			return null;
 		}
@@ -1130,7 +1134,7 @@ async function db_land_node(
 		});
 		args.budget.nodes -= 1;
 	}
-	args.isWritten = true;
+	args.writeState.isWritten = true;
 	progress.completed += 1;
 	return null;
 }
@@ -1275,12 +1279,12 @@ async function db_apply_restore(ctx: MutationCtx, args: StepArgs): Promise<StepO
 				}
 				// Count only the items the step writes, not the ones it reads.
 				args.budget.nodes -= 1;
-				args.isWritten = true;
+				args.writeState.isWritten = true;
 			}
 			// A folder of another archive that kept its path keeps the paths inside too. Skip its walk.
 			else if (await files_nodes_db_rebuild_node(ctx, { node: child, parent: folder })) {
 				args.budget.nodes -= 1;
-				args.isWritten = true;
+				args.writeState.isWritten = true;
 			} else {
 				isWalked = false;
 			}
@@ -1331,7 +1335,7 @@ async function db_step(ctx: MutationCtx, args: StepArgs): Promise<StepOutcome> {
 	}
 
 	const outcome = args.run.kind === "archive" ? await db_apply_archive(ctx, args) : await db_apply_restore(ctx, args);
-	if (args.isWritten) await files_media_validation_db_advance_version(ctx, args.run);
+	if (args.writeState.isWritten) await files_media_validation_db_advance_version(ctx, args.run);
 	// The check counted items that somebody else archived, deleted or moved out before the apply reached
 	// them. The apply leaves them as they are, so count them as skipped. Then the counts add up to the total.
 	if (args.run.kind === "archive" && outcome.kind === "done" && args.progress.total !== null) {
@@ -1583,12 +1587,15 @@ export async function files_archive_runs_db_start(
 		budget: args.budget,
 		checkedScopes: new Map(),
 		shareLinkCleanup: args.shareLinkCleanup,
-		isWritten: false,
+		writeState: { isWritten: false },
 	};
 	const outcome = blocker ? null : await db_step(ctx, stepArgs);
 	// Work that ended inside the request, or a refusal before the first write, leaves no job. Work that
 	// refused a named item keeps its job, so its Activity can list what was not archived.
-	if ((outcome?.kind === "done" && progress.blocked === 0) || (outcome?.kind === "failed" && !stepArgs.isWritten)) {
+	if (
+		(outcome?.kind === "done" && progress.blocked === 0) ||
+		(outcome?.kind === "failed" && !stepArgs.writeState.isWritten)
+	) {
 		await files_subtree_ops_db_delete(ctx, { opId, now });
 		await ctx.db.delete("files_archive_runs", runId);
 		return outcome.kind === "done" ? Result({ _yay: null }) : Result({ _nay: outcome.nay });
@@ -1670,7 +1677,7 @@ export async function files_archive_runs_db_advance(
 					budget: { nodes: files_archive_runs_STEP_MAX_NODES, hasPaginated: false },
 					checkedScopes: new Map(),
 					shareLinkCleanup: files_share_links_create_cleanup_state(),
-					isWritten: false,
+					writeState: { isWritten: false },
 				});
 
 	await db_settle_step(ctx, {

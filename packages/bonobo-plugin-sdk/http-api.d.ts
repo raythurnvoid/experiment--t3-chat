@@ -8,7 +8,7 @@
  * (`pnpm run generate:plugin-sdk-types`), and the app lint fails when it is stale.
  */
 export type BonoboHttpApi = {
-	"/api/v1/plugin-data/list": {
+	"/api/v1/plugin-data/read": {
 		POST: {
 			pathParams: never;
 			searchParams: never;
@@ -17,11 +17,7 @@ export type BonoboHttpApi = {
 			};
 			body: {
 				collection: string;
-				keyPrefix?: string | undefined;
-				keyStartExclusive?: string | undefined;
-				keyEndInclusive?: string | undefined;
-				cursor?: string | null | undefined;
-				limit?: number | undefined;
+				key: string;
 				installationId?: string | undefined;
 			};
 			response: {
@@ -30,7 +26,7 @@ export type BonoboHttpApi = {
 						"Cache-Control": "no-store";
 					};
 					body: {
-						documents: {
+						document: {
 							createdBy: import("convex/values").GenericId<"users">;
 							updatedBy: import("convex/values").GenericId<"users">;
 							updatedAt: number;
@@ -44,9 +40,7 @@ export type BonoboHttpApi = {
 							collection: string;
 							writeMode: "normal" | "versioned";
 							ownership: "shared" | "owned";
-						}[];
-						cursor: string | null;
-						isDone: boolean;
+						} | null;
 					};
 				};
 				400: {
@@ -110,7 +104,7 @@ export type BonoboHttpApi = {
 			};
 		};
 	};
-	"/api/v1/plugin-data/read": {
+	"/api/v1/plugin-data/list": {
 		POST: {
 			pathParams: never;
 			searchParams: never;
@@ -119,7 +113,11 @@ export type BonoboHttpApi = {
 			};
 			body: {
 				collection: string;
-				key: string;
+				keyPrefix?: string | undefined;
+				keyStartExclusive?: string | undefined;
+				keyEndInclusive?: string | undefined;
+				cursor?: string | null | undefined;
+				limit?: number | undefined;
 				installationId?: string | undefined;
 			};
 			response: {
@@ -128,7 +126,7 @@ export type BonoboHttpApi = {
 						"Cache-Control": "no-store";
 					};
 					body: {
-						document: {
+						documents: {
 							createdBy: import("convex/values").GenericId<"users">;
 							updatedBy: import("convex/values").GenericId<"users">;
 							updatedAt: number;
@@ -142,7 +140,9 @@ export type BonoboHttpApi = {
 							collection: string;
 							writeMode: "normal" | "versioned";
 							ownership: "shared" | "owned";
-						} | null;
+						}[];
+						cursor: string | null;
+						isDone: boolean;
 					};
 				};
 				400: {
