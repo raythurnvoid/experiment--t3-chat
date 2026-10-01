@@ -372,7 +372,10 @@ folder (`FileNodeViewPrivateFolder`) still lists its children through `useFilesV
   Type, Size, and qualified metadata/frontmatter fields. Name and Actions stay visible.
   Allow at most eight data columns, including Name. Actions is outside that count.
   Sorting a hidden field does not show it. Built-in sortable headers keep their sort buttons.
-- The Columns popover uses visible labels and native checkboxes. Its catalog covers readable
+- The toolbar order is Filter, Clear filter (only while a filter is applied), Sort, then the
+  Columns icon button. Filter and Sort are outline buttons whose label names the applied state.
+- The Columns popover uses visible labels and native checkboxes, grouped as Built-in and
+  Metadata. Its catalog covers readable
   direct children, plus the full bounded side set. Search checks loaded keys. Show more fields
   requests another page from unfinished sources. An absent selected key stays removable.
 - Column choices use `app_state::files_folder_columns::scope::${membershipId}` in browser storage.
@@ -388,8 +391,9 @@ folder (`FileNodeViewPrivateFolder`) still lists its children through `useFilesV
   This bound covers cell display only; side catalog and sort queries use the full supported side set.
 - An empty readable folder keeps its toolbar and header. Show the empty message only after all
   pages finish without an error or cap. Wide tables scroll horizontally inside the table region.
-- The Sort popover edits an ordered draft of at most three unique fields. Each row has a field
-  picker, direction, move buttons, and remove. Apply saves the draft; Cancel leaves the applied
+- The Sort popover edits an ordered draft of at most three unique fields. Each row reads
+  "Sort by" or "then by", then a field picker, a direction picker, and icon buttons to move up,
+  move down, and remove. Apply saves the draft; Cancel leaves the applied
   list unchanged. Reset to Name makes a one-clause Name asc draft. Catalog reads stay live while
   open. Saved and draft keys stay offered after their last witness disappears.
   The note says "Saved for everyone who can read this folder" or "Only for your view".
@@ -397,6 +401,10 @@ folder (`FileNodeViewPrivateFolder`) still lists its children through `useFilesV
   Long field names wrap there so the tooltip fits the screen.
 - The table carries `data-sort-fields` for the displayed full list. Sorted headers carry
   `data-sort-priority` and `data-sort-direction`. A header click makes one clause.
+  Header text shows the order number only when two or more fields sort.
+- Each header has a column menu. Sortable columns offer both directions (each replaces the whole
+  sort), Add to sort (appends the field while under three fields), and Filter by, which opens the
+  filter on that field. Every column except Name offers Hide column.
 - A supported sort limit keeps completed rows and offers Reset to Name.
   Forward `workPaused` offers Keep searching. A frozen refresh that cannot rebuild offers Reload table.
   Neither state repeats the same cursor or raises a frozen work limit by itself.

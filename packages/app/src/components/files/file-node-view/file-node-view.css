@@ -840,20 +840,22 @@
 
 	/* #region folder explorer sort select */
 	/* Keep the summary in one row. The tooltip shows the full list. */
-	.FileNodeViewFolderExplorerSortSelect-trigger {
+	.FileNodeViewFolderExplorerSortSelect-trigger,
+	.FileNodeViewFolderExplorerFilter-trigger {
 		max-width: min(240px, 100%);
 		min-width: 36px;
 		height: 36px;
 		text-align: start;
 	}
 
-	.FileNodeViewFolderExplorerSortSelect-tooltip {
+	.FileNodeViewFolderExplorerSortSelect-tooltip,
+	.FileNodeViewFolderExplorerFilter-tooltip {
 		max-width: min(320px, calc(100vw - 32px));
 		overflow-wrap: anywhere;
 	}
 
 	.FileNodeViewFolderExplorerSortSelect-popover {
-		width: min(480px, calc(100vw - 24px));
+		width: min(560px, calc(100vw - 24px));
 		max-height: min(640px, calc(100dvh - 32px));
 		padding: 12px;
 		overflow-y: auto;
@@ -866,28 +868,22 @@
 		min-width: 0;
 	}
 
+	/* One row reads like a sentence: "Sort by [field] [direction]", then the row buttons. */
 	.FileNodeViewFolderExplorerSortSelect-row {
 		display: grid;
-		grid-template-columns: 24px minmax(0, 1fr) minmax(0, 1fr);
-		align-items: start;
+		grid-template-columns: 64px minmax(0, 1fr) minmax(0, 1fr) auto;
+		align-items: center;
 		gap: 8px;
 		min-width: 0;
-		padding: 10px 0;
-		border-top: 1px solid var(--color-fg-03);
 	}
 
 	.FileNodeViewFolderExplorerSortSelect-priority {
-		padding-top: 24px;
-		font-size: 0.875rem;
-		font-weight: 500;
+		font-size: 0.9375rem;
+		color: var(--color-fg-08);
 	}
 
 	.FileNodeViewFolderExplorerSortSelect-field {
-		display: flex;
-		flex-direction: column;
-		gap: 6px;
 		min-width: 0;
-		font-size: 0.875rem;
 	}
 
 	.FileNodeViewFolderExplorerSortSelect-field-trigger {
@@ -905,41 +901,48 @@
 		width: min(360px, calc(100vw - 24px));
 	}
 
-	.FileNodeViewFolderExplorerSortSelect-actions {
+	.FileNodeViewFolderExplorerSortSelect-row-actions {
+		display: flex;
+		gap: 2px;
+	}
+
+	.FileNodeViewFolderExplorerSortSelect-actions,
+	.FileNodeViewFolderExplorerSortSelect-footer {
 		display: flex;
 		flex-wrap: wrap;
 		align-items: center;
 		gap: 8px;
 		min-width: 0;
-		grid-column: 2 / -1;
+	}
 
-		& > .MyButton {
-			max-width: 100%;
-			min-height: 36px;
-			height: auto;
-			white-space: normal;
-			overflow-wrap: anywhere;
+	.FileNodeViewFolderExplorerSortSelect-footer {
+		padding-top: 12px;
+		border-top: 1px solid var(--color-fg-03);
+
+		.FileNodeViewFolderExplorerSortSelect-note {
+			flex: 1 1 160px;
 		}
 	}
 
 	.FileNodeViewFolderExplorerSortSelect-note {
 		margin: 0;
-		font-size: 0.875rem;
-		color: var(--color-fg-09);
+		font-size: 0.9375rem;
+		color: var(--color-fg-08);
 		overflow-wrap: anywhere;
 	}
 
-	@media (max-width: 400px) {
+	@media (max-width: 480px) {
 		.FileNodeViewFolderExplorerSortSelect-row {
-			grid-template-columns: 24px minmax(0, 1fr);
-		}
-
-		.FileNodeViewFolderExplorerSortSelect-field {
-			grid-column: 2;
+			grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
 		}
 
 		.FileNodeViewFolderExplorerSortSelect-priority {
-			grid-row: 1 / 3;
+			grid-column: 1 / -1;
+		}
+
+		.FileNodeViewFolderExplorerSortSelect-row-actions {
+			grid-column: 1 / -1;
+			justify-content: end;
 		}
 	}
 	/* #endregion folder explorer sort select */
@@ -957,6 +960,7 @@
 	.FileNodeViewFolderExplorer-toolbar {
 		display: flex;
 		flex-wrap: wrap;
+		align-items: center;
 		gap: 8px;
 		justify-content: end;
 
@@ -1018,6 +1022,7 @@
 	}
 
 	.FileNodeViewFolderExplorer-sort-button {
+		min-width: 0;
 		min-height: 24px;
 
 		display: inline-flex;
@@ -1041,6 +1046,20 @@
 		&:focus-visible {
 			outline: 2px solid var(--color-fg-12);
 			outline-offset: 2px;
+		}
+	}
+
+	.FileNodeViewFolderExplorerColumnMenu-trigger.MyIconButton.MyButton {
+		width: 24px;
+		height: 24px;
+		margin-inline-start: auto;
+		padding: 4px;
+
+		color: var(--color-fg-06);
+
+		.FileNodeViewFolderExplorer-column-header:hover &,
+		&[aria-expanded="true"] {
+			color: var(--color-fg-10);
 		}
 	}
 
@@ -1184,19 +1203,31 @@
 		overflow-y: auto;
 	}
 
-	.FileNodeViewFolderExplorerColumns-fields {
+	.FileNodeViewFolderExplorerColumns-group {
 		display: flex;
 		flex-direction: column;
 		gap: 6px;
 	}
 
-	.FileNodeViewFolderExplorerColumns-field {
-		display: flex;
-		align-items: center;
-		gap: 8px;
+	.FileNodeViewFolderExplorerColumns-group-title {
+		margin: 0;
+		font-size: 0.875rem;
+		font-weight: 500;
+		color: var(--color-fg-08);
+	}
 
+	.FileNodeViewFolderExplorerColumns-fields {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+	}
+
+	.FileNodeViewFolderExplorerColumns-field {
 		.MyCheckboxButton {
+			width: 100%;
 			min-width: 0;
+			min-height: 36px;
+			height: auto;
 			justify-content: start;
 			overflow-wrap: anywhere;
 		}
@@ -1204,8 +1235,8 @@
 
 	.FileNodeViewFolderExplorerColumns-note {
 		margin: 0;
-		font-size: 0.875rem;
-		color: var(--color-fg-07);
+		font-size: 0.9375rem;
+		color: var(--color-fg-08);
 	}
 
 	.FileNodeViewFolderExplorerColumns-actions {
@@ -1216,7 +1247,7 @@
 	}
 
 	.FileNodeViewFolderExplorerFilter-popover {
-		width: min(360px, calc(100vw - 24px));
+		width: min(560px, calc(100vw - 24px));
 		max-height: min(600px, calc(100dvh - 32px));
 		padding: 12px;
 		overflow-y: auto;
@@ -1229,12 +1260,28 @@
 		min-width: 0;
 	}
 
+	/* One row reads like a sentence: field, operation, value. */
+	.FileNodeViewFolderExplorerFilter-row {
+		display: grid;
+		grid-template-columns: repeat(3, minmax(0, 1fr));
+		align-items: start;
+		gap: 8px;
+	}
+
 	.FileNodeViewFolderExplorerFilter-field {
 		display: flex;
 		flex-direction: column;
-		gap: 6px;
 		min-width: 0;
+	}
+
+	/* Match MyInputLabel, so the three labels in the row look the same. */
+	.FileNodeViewFolderExplorerFilter-label {
+		padding-bottom: 6px;
+
 		font-size: 0.875rem;
+		font-weight: 500;
+		line-height: 1.25;
+		color: var(--color-fg-08);
 	}
 
 	.FileNodeViewFolderExplorerFilter-field-trigger {
@@ -1251,12 +1298,17 @@
 
 	.FileNodeViewFolderExplorerFilter-note {
 		margin: 0;
-		font-size: 0.875rem;
-		color: var(--color-fg-07);
+		font-size: 0.9375rem;
+		color: var(--color-fg-08);
 	}
 
-	.FileNodeViewFolderExplorerFilter-actions,
-	.FileNodeViewFolderExplorerFilter-active {
+	.FileNodeViewFolderExplorerFilter-footer {
+		display: flex;
+		justify-content: end;
+		gap: 8px;
+	}
+
+	.FileNodeViewFolderExplorerFilter-actions {
 		display: flex;
 		flex-wrap: wrap;
 		align-items: center;
@@ -1267,9 +1319,10 @@
 		overflow-wrap: anywhere;
 	}
 
-	.FileNodeViewFolderExplorerFilter-active {
-		flex-basis: 100%;
-		justify-content: end;
+	@media (max-width: 480px) {
+		.FileNodeViewFolderExplorerFilter-row {
+			grid-template-columns: minmax(0, 1fr);
+		}
 	}
 
 	.FileNodeViewFolderExplorer-more-action {

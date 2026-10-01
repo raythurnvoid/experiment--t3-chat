@@ -32,7 +32,12 @@ import { MainAppHeaderBillingIndicator } from "@/components/main-app-header-bill
 import { MainAppSidebarToggle } from "@/components/main-app-sidebar-toggle.tsx";
 import { CopyIconButton } from "@/components/copy-icon-button.tsx";
 import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
-import { MyCheckboxButton } from "@/components/my-checkbox-button.tsx";
+import {
+	MyCheckboxButton,
+	MyCheckboxButtonContent,
+	MyCheckboxButtonDescription,
+	MyCheckboxButtonLabel,
+} from "@/components/my-checkbox-button.tsx";
 import { MyFloatingSurface } from "@/components/my-floating-surface.tsx";
 import {
 	MyGridTable,
@@ -63,6 +68,7 @@ import {
 	MyMenuItemContentIcon,
 	MyMenuItemContentPrimary,
 	MyMenuItemsGroup,
+	MyMenuItemsGroupText,
 	MyMenuPopover,
 	MyMenuPopoverContent,
 	MyMenuTrigger,
@@ -81,7 +87,6 @@ import {
 import {
 	MySelect,
 	MySelectItem,
-	MySelectLabel,
 	MySelectOpenIndicator,
 	MySelectPopover,
 	MySelectPopoverContent,
@@ -140,12 +145,18 @@ import type { FunctionReturnType } from "convex/server";
 import { usePaginatedQuery } from "convex-helpers/react";
 import {
 	Archive,
+	ArrowDown,
+	ArrowDownWideNarrow,
+	ArrowUp,
+	ArrowUpNarrowWide,
 	BookOpen,
 	ChevronDown,
 	CircleAlert,
+	Columns3,
 	Download,
 	EllipsisVertical,
 	ExternalLink,
+	EyeOff,
 	FileDigit,
 	FilePlus,
 	FileText,
@@ -154,13 +165,17 @@ import {
 	Hash,
 	Home,
 	Link2,
+	ListFilter,
+	ListPlus,
 	Lock,
 	LockKeyhole,
 	PanelLeftOpen,
+	Plus,
 	Users,
+	X,
 } from "lucide-react";
-import React, { memo, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { ReactNode, RefObject } from "react";
+import React, { memo, useEffect, useId, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode, Ref, RefObject } from "react";
 import { createPortal } from "react-dom";
 import { toast } from "sonner";
 import { FilesSidebar } from "../files-sidebar.tsx";
@@ -4310,6 +4325,8 @@ const FileNodeViewFolderExplorerPrivateRow = memo(function FileNodeViewFolderExp
 // #region folder explorer columns
 type FileNodeViewFolderExplorerColumns_ClassNames =
 	| "FileNodeViewFolderExplorerColumns-popover"
+	| "FileNodeViewFolderExplorerColumns-group"
+	| "FileNodeViewFolderExplorerColumns-group-title"
 	| "FileNodeViewFolderExplorerColumns-fields"
 	| "FileNodeViewFolderExplorerColumns-field"
 	| "FileNodeViewFolderExplorerColumns-note"
@@ -4360,6 +4377,10 @@ const FileNodeViewFolderExplorerColumns = memo(function FileNodeViewFolderExplor
 	const shownFields = fields.filter((field) =>
 		get_folder_column_label(field).toLowerCase().includes(normalizedSearchText),
 	);
+	const fieldGroups = [
+		{ title: "Built-in", fields: shownFields.filter((field) => FILE_NODE_VIEW_FOLDER_COLUMNS.includes(field)) },
+		{ title: "Metadata", fields: shownFields.filter((field) => !FILE_NODE_VIEW_FOLDER_COLUMNS.includes(field)) },
+	].filter((group) => group.fields.length > 0);
 	const handleOpenChange = useFn((nextOpen: boolean) => {
 		setSelectedAtOpen(nextOpen ? columns : []);
 		setSearchText("");
@@ -4369,7 +4390,11 @@ const FileNodeViewFolderExplorerColumns = memo(function FileNodeViewFolderExplor
 	return (
 		<MyPopover open={open} setOpen={handleOpenChange}>
 			<MyPopoverTrigger>
-				<MyButton variant="outline">Columns</MyButton>
+				<MyIconButton variant="outline" tooltip="Columns">
+					<MyIconButtonIcon>
+						<Columns3 />
+					</MyIconButtonIcon>
+				</MyIconButton>
 			</MyPopoverTrigger>
 			<MyPopoverContent
 				unmountOnHide
@@ -4387,32 +4412,54 @@ const FileNodeViewFolderExplorerColumns = memo(function FileNodeViewFolderExplor
 						/>
 					</MyInputArea>
 				</MyInput>
-				<div
-					className={"FileNodeViewFolderExplorerColumns-fields" satisfies FileNodeViewFolderExplorerColumns_ClassNames}
-				>
-					{shownFields.map((field) => (
-						<div
-							key={field}
-							data-column-field={field}
+				{fieldGroups.map((group) => (
+					<div
+						key={group.title}
+						role="group"
+						aria-label={group.title}
+						className={"FileNodeViewFolderExplorerColumns-group" satisfies FileNodeViewFolderExplorerColumns_ClassNames}
+					>
+						<p
 							className={
-								"FileNodeViewFolderExplorerColumns-field" satisfies FileNodeViewFolderExplorerColumns_ClassNames
+								"FileNodeViewFolderExplorerColumns-group-title" satisfies FileNodeViewFolderExplorerColumns_ClassNames
 							}
 						>
-							<MyCheckboxButton
-								name={id}
-								variant="outline"
-								checked={columns.includes(field)}
-								disabled={field === "name" || (!columns.includes(field) && columns.length >= files_table_MAX_COLUMNS)}
-								onCheckedChange={(checked) =>
-									onColumnsChange(checked ? [...columns, field] : columns.filter((column) => column !== field))
-								}
-							>
-								{get_folder_column_label(field)}
-							</MyCheckboxButton>
-							{field === "name" && <span>Always shown</span>}
+							{group.title}
+						</p>
+						<div
+							className={
+								"FileNodeViewFolderExplorerColumns-fields" satisfies FileNodeViewFolderExplorerColumns_ClassNames
+							}
+						>
+							{group.fields.map((field) => (
+								<div
+									key={field}
+									data-column-field={field}
+									className={
+										"FileNodeViewFolderExplorerColumns-field" satisfies FileNodeViewFolderExplorerColumns_ClassNames
+									}
+								>
+									<MyCheckboxButton
+										name={id}
+										variant="outline"
+										checked={columns.includes(field)}
+										disabled={
+											field === "name" || (!columns.includes(field) && columns.length >= files_table_MAX_COLUMNS)
+										}
+										onCheckedChange={(checked) =>
+											onColumnsChange(checked ? [...columns, field] : columns.filter((column) => column !== field))
+										}
+									>
+										<MyCheckboxButtonContent>
+											<MyCheckboxButtonLabel>{get_folder_column_label(field)}</MyCheckboxButtonLabel>
+											{field === "name" && <MyCheckboxButtonDescription>Always shown</MyCheckboxButtonDescription>}
+										</MyCheckboxButtonContent>
+									</MyCheckboxButton>
+								</div>
+							))}
 						</div>
-					))}
-				</div>
+					</div>
+				))}
 				{shownFields.length === 0 && catalog.state !== "failed" && (
 					<p role="status">{catalog.hasMore ? "No loaded fields match" : "No fields match"}</p>
 				)}
@@ -4448,14 +4495,18 @@ type FileNodeViewFolderFilterSelection = {
 };
 
 type FileNodeViewFolderExplorerFilter_ClassNames =
+	| "FileNodeViewFolderExplorerFilter-trigger"
+	| "FileNodeViewFolderExplorerFilter-tooltip"
 	| "FileNodeViewFolderExplorerFilter-popover"
 	| "FileNodeViewFolderExplorerFilter-form"
+	| "FileNodeViewFolderExplorerFilter-row"
+	| "FileNodeViewFolderExplorerFilter-label"
 	| "FileNodeViewFolderExplorerFilter-field"
 	| "FileNodeViewFolderExplorerFilter-field-trigger"
 	| "FileNodeViewFolderExplorerFilter-fields-popover"
 	| "FileNodeViewFolderExplorerFilter-note"
-	| "FileNodeViewFolderExplorerFilter-actions"
-	| "FileNodeViewFolderExplorerFilter-active";
+	| "FileNodeViewFolderExplorerFilter-footer"
+	| "FileNodeViewFolderExplorerFilter-actions";
 
 function get_folder_filter_operations(field: string) {
 	if (field === "name")
@@ -4535,7 +4586,15 @@ function get_folder_filter_label(selection: FileNodeViewFolderFilterSelection | 
 	return `${get_folder_sort_field_label(filter.field)} ${operation}${value ? ` ${value}` : ""}`;
 }
 
+type FileNodeViewFolderExplorerFilter_Ref = {
+	/**
+	 * Open the filter with a draft for this field. The column header menu uses it.
+	 */
+	openWithField: (field: string) => void;
+};
+
 const FileNodeViewFolderExplorerFilter = memo(function FileNodeViewFolderExplorerFilter(props: {
+	ref: Ref<FileNodeViewFolderExplorerFilter_Ref>;
 	selection: FileNodeViewFolderFilterSelection | null;
 	open: boolean;
 	catalog: FileNodeViewFolderCatalog;
@@ -4543,7 +4602,7 @@ const FileNodeViewFolderExplorerFilter = memo(function FileNodeViewFolderExplore
 	onChange: (selection: FileNodeViewFolderFilterSelection | null) => void;
 	onOpenChange: (open: boolean) => void;
 }) {
-	const { selection, open, catalog, triggerRef, onChange, onOpenChange } = props;
+	const { ref, selection, open, catalog, triggerRef, onChange, onOpenChange } = props;
 	const id = `FileNodeViewFolderExplorerFilter-${useId()}`;
 	const valueInputRef = useRef<HTMLInputElement>(null);
 	const isValueDirty = useRef(false);
@@ -4655,11 +4714,46 @@ const FileNodeViewFolderExplorerFilter = memo(function FileNodeViewFolderExplore
 		onChange({ filter, day, timeZone });
 		handleOpenChange(false);
 	});
+	const filterLabel = selection ? `Filter: ${get_folder_filter_label(selection)}` : "Filter";
+	const operationLabel = operations.find((item) => item.value === operation)!.label;
+
+	useImperativeHandle(
+		ref,
+		() => ({
+			openWithField: (value) => {
+				handleOpenChange(true);
+				// Keep the applied draft when it already uses this field.
+				if (selection?.filter.field !== value) handleFieldChange(value);
+			},
+		}),
+		[selection, handleOpenChange, handleFieldChange],
+	);
+
 	return (
 		<MyPopover open={open} setOpen={handleOpenChange}>
-			<MyPopoverTrigger ref={triggerRef}>
-				<MyButton variant="outline">Filter</MyButton>
-			</MyPopoverTrigger>
+			{/* Keep the tip from taking Escape while Filter is open. The plain Filter label needs no tip. */}
+			<MyTooltip placement="bottom" open={open || !selection ? false : undefined}>
+				<MyTooltipTrigger>
+					<MyPopoverTrigger ref={triggerRef}>
+						<MyButton
+							variant="outline"
+							aria-label={filterLabel}
+							className={cn(
+								"FileNodeViewFolderExplorerFilter-trigger" satisfies FileNodeViewFolderExplorerFilter_ClassNames,
+								"FileNodeViewViewSelect-trigger" satisfies FileNodeViewViewSelect_ClassNames,
+							)}
+						>
+							<span>{filterLabel}</span>
+						</MyButton>
+					</MyPopoverTrigger>
+				</MyTooltipTrigger>
+				<MyTooltipContent
+					unmountOnHide
+					className={"FileNodeViewFolderExplorerFilter-tooltip" satisfies FileNodeViewFolderExplorerFilter_ClassNames}
+				>
+					{filterLabel}
+				</MyTooltipContent>
+			</MyTooltip>
 			<MyPopoverContent
 				unmountOnHide
 				aria-label="Filter"
@@ -4670,119 +4764,139 @@ const FileNodeViewFolderExplorerFilter = memo(function FileNodeViewFolderExplore
 					onSubmit={handleSubmit}
 					className={"FileNodeViewFolderExplorerFilter-form" satisfies FileNodeViewFolderExplorerFilter_ClassNames}
 				>
-					<div
-						className={"FileNodeViewFolderExplorerFilter-field" satisfies FileNodeViewFolderExplorerFilter_ClassNames}
-					>
-						<label htmlFor={`${id}-field`}>Field</label>
-						<MySearchSelect value={field} setValue={handleFieldChange} setOpen={() => setSearchText("")}>
-							<MySearchSelectTrigger
-								id={`${id}-field`}
-								aria-label={`Field: ${get_folder_sort_field_label(field)}`}
-								typeahead={false}
-								data-autofocus
+					<div className={"FileNodeViewFolderExplorerFilter-row" satisfies FileNodeViewFolderExplorerFilter_ClassNames}>
+						<div
+							className={"FileNodeViewFolderExplorerFilter-field" satisfies FileNodeViewFolderExplorerFilter_ClassNames}
+						>
+							<label
+								htmlFor={`${id}-field`}
+								className={
+									"FileNodeViewFolderExplorerFilter-label" satisfies FileNodeViewFolderExplorerFilter_ClassNames
+								}
 							>
-								<MyButton
-									variant="outline"
-									className={
-										"FileNodeViewFolderExplorerFilter-field-trigger" satisfies FileNodeViewFolderExplorerFilter_ClassNames
-									}
+								Field
+							</label>
+							<MySearchSelect value={field} setValue={handleFieldChange} setOpen={() => setSearchText("")}>
+								<MySearchSelectTrigger
+									id={`${id}-field`}
+									aria-label={`Field: ${get_folder_sort_field_label(field)}`}
+									typeahead={false}
+									data-autofocus
 								>
-									{get_folder_sort_field_label(field)}
-									<MySelectOpenIndicator />
-								</MyButton>
-							</MySearchSelectTrigger>
-							<MySearchSelectPopover
-								aria-label="Filter fields"
-								className={cn(
-									"FileNodeViewFolderExplorerFilter-fields-popover" satisfies FileNodeViewFolderExplorerFilter_ClassNames,
-									"FileNodeViewViewSelect-popover" satisfies FileNodeViewViewSelect_ClassNames,
-								)}
+									<MyButton
+										variant="outline"
+										className={
+											"FileNodeViewFolderExplorerFilter-field-trigger" satisfies FileNodeViewFolderExplorerFilter_ClassNames
+										}
+									>
+										{get_folder_sort_field_label(field)}
+										<MySelectOpenIndicator />
+									</MyButton>
+								</MySearchSelectTrigger>
+								<MySearchSelectPopover
+									aria-label="Filter fields"
+									className={cn(
+										"FileNodeViewFolderExplorerFilter-fields-popover" satisfies FileNodeViewFolderExplorerFilter_ClassNames,
+										"FileNodeViewViewSelect-popover" satisfies FileNodeViewViewSelect_ClassNames,
+									)}
+								>
+									<MySearchSelectPopoverScrollableArea>
+										<MySearchSelectPopoverContent>
+											<MySearchSelectSearch
+												aria-label="Search filter fields"
+												placeholder="Search fields"
+												value={searchText}
+												onChange={(event) => setSearchText(event.currentTarget.value)}
+											/>
+											<MySearchSelectList aria-label="Filter fields">
+												{shownFields.map((value) => (
+													<MySearchSelectItem key={value} value={value}>
+														{get_folder_sort_field_label(value)}
+													</MySearchSelectItem>
+												))}
+											</MySearchSelectList>
+											{shownFields.length === 0 && (
+												<p role="status">{catalog.hasMore ? "No loaded fields match" : "No fields match"}</p>
+											)}
+											<FileNodeViewFolderExplorerFieldsStatus catalog={catalog} />
+										</MySearchSelectPopoverContent>
+									</MySearchSelectPopoverScrollableArea>
+								</MySearchSelectPopover>
+							</MySearchSelect>
+						</div>
+						<div
+							className={"FileNodeViewFolderExplorerFilter-field" satisfies FileNodeViewFolderExplorerFilter_ClassNames}
+						>
+							<label
+								htmlFor={`${id}-operation`}
+								className={
+									"FileNodeViewFolderExplorerFilter-label" satisfies FileNodeViewFolderExplorerFilter_ClassNames
+								}
 							>
-								<MySearchSelectPopoverScrollableArea>
-									<MySearchSelectPopoverContent>
-										<MySearchSelectSearch
-											aria-label="Search filter fields"
-											placeholder="Search fields"
-											value={searchText}
-											onChange={(event) => setSearchText(event.currentTarget.value)}
-										/>
-										<MySearchSelectList aria-label="Filter fields">
-											{shownFields.map((value) => (
-												<MySearchSelectItem key={value} value={value}>
-													{get_folder_sort_field_label(value)}
-												</MySearchSelectItem>
-											))}
-										</MySearchSelectList>
-										{shownFields.length === 0 && (
-											<p role="status">{catalog.hasMore ? "No loaded fields match" : "No fields match"}</p>
-										)}
-										<FileNodeViewFolderExplorerFieldsStatus catalog={catalog} />
-									</MySearchSelectPopoverContent>
-								</MySearchSelectPopoverScrollableArea>
-							</MySearchSelectPopover>
-						</MySearchSelect>
+								Operation
+							</label>
+							<MySelect value={operation} setValue={handleOperationChange}>
+								<MySelectTrigger id={`${id}-operation`} aria-label={`Operation: ${operationLabel}`}>
+									<MyButton
+										variant="outline"
+										className={
+											"FileNodeViewFolderExplorerFilter-field-trigger" satisfies FileNodeViewFolderExplorerFilter_ClassNames
+										}
+									>
+										{operationLabel}
+										<MySelectOpenIndicator />
+									</MyButton>
+								</MySelectTrigger>
+								<MySelectPopover>
+									<MySelectPopoverContent>
+										{operations.map((item) => (
+											<MySelectItem key={item.value} value={item.value}>
+												{item.label}
+											</MySelectItem>
+										))}
+									</MySelectPopoverContent>
+								</MySelectPopover>
+							</MySelect>
+						</div>
+						{needsValue && (
+							<MyInput
+								key={`${field}:${operation}`}
+								layout="stacked"
+								displayValidationMessage={displayValidationMessage}
+							>
+								<MyInputLabel>{isDate ? "Day" : field === "size" ? "Bytes" : "Value"}</MyInputLabel>
+								<MyInputBackground />
+								<MyInputArea>
+									<MyInputControl
+										ref={valueInputRef}
+										validationMessage={validationMessage}
+										type={isDate ? "date" : field === "size" ? "number" : "text"}
+										value={rawValue}
+										required
+										min={isDate ? "0001-01-01" : field === "size" ? 0 : undefined}
+										max={isDate ? "9999-12-31" : undefined}
+										step={field === "size" ? 1 : undefined}
+										minLength={!isDate && field !== "size" ? 1 : undefined}
+										maxLength={!isDate && field !== "size" ? 1024 : undefined}
+										placeholder={field === "type" ? "md" : undefined}
+										onInput={handleValueInput}
+										onChange={handleValueInput}
+										onBlur={handleValueBlur}
+										onInvalid={(event) => event.preventDefault()}
+									/>
+								</MyInputArea>
+								<MyInputBox />
+								<MyInputHelperText>
+									{displayValidationMessage ??
+										(field === "type"
+											? "Enter an extension without its dot."
+											: field === "size"
+												? "Use whole bytes, zero or more."
+												: "")}
+								</MyInputHelperText>
+							</MyInput>
+						)}
 					</div>
-					<div
-						className={"FileNodeViewFolderExplorerFilter-field" satisfies FileNodeViewFolderExplorerFilter_ClassNames}
-					>
-						<MySelect value={operation} setValue={handleOperationChange}>
-							<MySelectLabel>Operation</MySelectLabel>
-							<MySelectTrigger>
-								<MyButton
-									variant="outline"
-									className={
-										"FileNodeViewFolderExplorerFilter-field-trigger" satisfies FileNodeViewFolderExplorerFilter_ClassNames
-									}
-								>
-									{operations.find((item) => item.value === operation)!.label}
-									<MySelectOpenIndicator />
-								</MyButton>
-							</MySelectTrigger>
-							<MySelectPopover>
-								<MySelectPopoverContent>
-									{operations.map((item) => (
-										<MySelectItem key={item.value} value={item.value}>
-											{item.label}
-										</MySelectItem>
-									))}
-								</MySelectPopoverContent>
-							</MySelectPopover>
-						</MySelect>
-					</div>
-					{needsValue && (
-						<MyInput key={`${field}:${operation}`} layout="stacked" displayValidationMessage={displayValidationMessage}>
-							<MyInputLabel>{isDate ? "Day" : field === "size" ? "Bytes" : "Value"}</MyInputLabel>
-							<MyInputBackground />
-							<MyInputArea>
-								<MyInputControl
-									ref={valueInputRef}
-									validationMessage={validationMessage}
-									type={isDate ? "date" : field === "size" ? "number" : "text"}
-									value={rawValue}
-									required
-									min={isDate ? "0001-01-01" : field === "size" ? 0 : undefined}
-									max={isDate ? "9999-12-31" : undefined}
-									step={field === "size" ? 1 : undefined}
-									minLength={!isDate && field !== "size" ? 1 : undefined}
-									maxLength={!isDate && field !== "size" ? 1024 : undefined}
-									placeholder={field === "type" ? "md" : undefined}
-									onInput={handleValueInput}
-									onChange={handleValueInput}
-									onBlur={handleValueBlur}
-									onInvalid={(event) => event.preventDefault()}
-								/>
-							</MyInputArea>
-							<MyInputBox />
-							<MyInputHelperText>
-								{displayValidationMessage ??
-									(field === "type"
-										? "Enter an extension without its dot."
-										: field === "size"
-											? "Use whole bytes, zero or more."
-											: "")}
-							</MyInputHelperText>
-						</MyInput>
-					)}
 					{!files_sort_field_is_built_in(field) && (
 						<p
 							className={"FileNodeViewFolderExplorerFilter-note" satisfies FileNodeViewFolderExplorerFilter_ClassNames}
@@ -4791,7 +4905,7 @@ const FileNodeViewFolderExplorerFilter = memo(function FileNodeViewFolderExplore
 						</p>
 					)}
 					<div
-						className={"FileNodeViewFolderExplorerFilter-actions" satisfies FileNodeViewFolderExplorerFilter_ClassNames}
+						className={"FileNodeViewFolderExplorerFilter-footer" satisfies FileNodeViewFolderExplorerFilter_ClassNames}
 					>
 						<MyButton variant="outline" onClick={() => handleOpenChange(false)}>
 							Cancel
@@ -4818,7 +4932,9 @@ type FileNodeViewFolderExplorerSortSelect_ClassNames =
 	| "FileNodeViewFolderExplorerSortSelect-field"
 	| "FileNodeViewFolderExplorerSortSelect-field-trigger"
 	| "FileNodeViewFolderExplorerSortSelect-fields-popover"
+	| "FileNodeViewFolderExplorerSortSelect-row-actions"
 	| "FileNodeViewFolderExplorerSortSelect-actions"
+	| "FileNodeViewFolderExplorerSortSelect-footer"
 	| "FileNodeViewFolderExplorerSortSelect-note";
 
 const FILE_NODE_VIEW_FOLDER_SORT_BUILT_IN_LABELS = {
@@ -4871,7 +4987,6 @@ function get_folder_sort_label(sort: files_sort_Sort) {
 }
 
 const FileNodeViewFolderExplorerSortRow = memo(function FileNodeViewFolderExplorerSortRow(props: {
-	formId: string;
 	draftId: number;
 	priority: number;
 	count: number;
@@ -4883,9 +4998,7 @@ const FileNodeViewFolderExplorerSortRow = memo(function FileNodeViewFolderExplor
 	onRemove: (id: number) => void;
 	onRegisterField: (id: number, element: HTMLElement | null) => void;
 }) {
-	const { formId, draftId, priority, count, clause, fields, catalog, onChange, onMove, onRemove, onRegisterField } =
-		props;
-	const id = `${formId}-row-${useId()}`;
+	const { draftId, priority, count, clause, fields, catalog, onChange, onMove, onRemove, onRegisterField } = props;
 	const [searchText, setSearchText] = useState("");
 	const fieldLabel = get_folder_sort_field_label(clause.field);
 	const shownFields = fields.filter((field) =>
@@ -4909,18 +5022,16 @@ const FileNodeViewFolderExplorerSortRow = memo(function FileNodeViewFolderExplor
 					"FileNodeViewFolderExplorerSortSelect-priority" satisfies FileNodeViewFolderExplorerSortSelect_ClassNames
 				}
 			>
-				{priority}
+				{priority === 1 ? "Sort by" : "then by"}
 			</span>
 			<div
 				className={
 					"FileNodeViewFolderExplorerSortSelect-field" satisfies FileNodeViewFolderExplorerSortSelect_ClassNames
 				}
 			>
-				<label htmlFor={`${id}-field`}>Field</label>
 				<MySearchSelect value={clause.field} setValue={handleFieldChange} setOpen={() => setSearchText("")}>
 					<MySearchSelectTrigger
 						ref={registerField}
-						id={`${id}-field`}
 						aria-label={`Sort field ${priority}: ${fieldLabel}`}
 						typeahead={false}
 						data-autofocus={priority === 1 ? "" : undefined}
@@ -4972,7 +5083,6 @@ const FileNodeViewFolderExplorerSortRow = memo(function FileNodeViewFolderExplor
 				}
 			>
 				<MySelect value={clause.direction} setValue={handleDirectionChange}>
-					<MySelectLabel>Direction</MySelectLabel>
 					<MySelectTrigger
 						aria-label={`Direction ${priority}: ${get_folder_sort_direction_label(clause)}`}
 						typeahead={false}
@@ -5000,28 +5110,41 @@ const FileNodeViewFolderExplorerSortRow = memo(function FileNodeViewFolderExplor
 			</div>
 			<div
 				className={
-					"FileNodeViewFolderExplorerSortSelect-actions" satisfies FileNodeViewFolderExplorerSortSelect_ClassNames
+					"FileNodeViewFolderExplorerSortSelect-row-actions" satisfies FileNodeViewFolderExplorerSortSelect_ClassNames
 				}
 			>
-				<MyButton
-					variant="outline"
+				<MyIconButton
+					variant="ghost-highlightable"
+					tooltip="Move up"
 					aria-label={`Move ${fieldLabel} up`}
 					disabled={priority === 1}
 					onClick={() => onMove(draftId, -1)}
 				>
-					Move up
-				</MyButton>
-				<MyButton
-					variant="outline"
+					<MyIconButtonIcon>
+						<ArrowUp />
+					</MyIconButtonIcon>
+				</MyIconButton>
+				<MyIconButton
+					variant="ghost-highlightable"
+					tooltip="Move down"
 					aria-label={`Move ${fieldLabel} down`}
 					disabled={priority === count}
 					onClick={() => onMove(draftId, 1)}
 				>
-					Move down
-				</MyButton>
-				<MyButton variant="ghost" aria-label={`Remove ${fieldLabel}`} onClick={() => onRemove(draftId)}>
-					Remove
-				</MyButton>
+					<MyIconButtonIcon>
+						<ArrowDown />
+					</MyIconButtonIcon>
+				</MyIconButton>
+				<MyIconButton
+					variant="ghost-highlightable"
+					tooltip="Remove"
+					aria-label={`Remove ${fieldLabel}`}
+					onClick={() => onRemove(draftId)}
+				>
+					<MyIconButtonIcon>
+						<X />
+					</MyIconButtonIcon>
+				</MyIconButton>
 			</div>
 		</div>
 	);
@@ -5040,7 +5163,6 @@ const FileNodeViewFolderExplorerSortSelect = memo(function FileNodeViewFolderExp
 	props: FileNodeViewFolderExplorerSortSelect_Props,
 ) {
 	const { sort, open, canSaveSort, catalog, onOpenChange, onSortChange } = props;
-	const id = `FileNodeViewFolderExplorerSortSelect-${useId()}`;
 	// Draft ids keep each field mounted through edits and moves. Apply saves only its clause.
 	const [draftRows, setDraftRows] = useState(() =>
 		sort.map((clause, draftId) => ({ id: draftId, clause: { ...clause } })),
@@ -5152,17 +5274,9 @@ const FileNodeViewFolderExplorerSortSelect = memo(function FileNodeViewFolderExp
 						"FileNodeViewFolderExplorerSortSelect-form" satisfies FileNodeViewFolderExplorerSortSelect_ClassNames
 					}
 				>
-					<p
-						className={
-							"FileNodeViewFolderExplorerSortSelect-note" satisfies FileNodeViewFolderExplorerSortSelect_ClassNames
-						}
-					>
-						{canSaveSort ? "Saved for everyone who can read this folder" : "Only for your view"}
-					</p>
 					{draftRows.map((row, index) => (
 						<FileNodeViewFolderExplorerSortRow
 							key={row.id}
-							formId={id}
 							draftId={row.id}
 							priority={index + 1}
 							count={draftRows.length}
@@ -5200,18 +5314,28 @@ const FileNodeViewFolderExplorerSortSelect = memo(function FileNodeViewFolderExp
 							"FileNodeViewFolderExplorerSortSelect-actions" satisfies FileNodeViewFolderExplorerSortSelect_ClassNames
 						}
 					>
-						<MyButton variant="outline" disabled={draftRows.length === 3} onClick={handleAdd}>
+						<MyButton variant="ghost-highlightable" disabled={draftRows.length === 3} onClick={handleAdd}>
+							<MyButtonIcon aria-hidden>
+								<Plus />
+							</MyButtonIcon>
 							Add sort field
 						</MyButton>
-						<MyButton variant="ghost" onClick={handleReset}>
+						<MyButton variant="ghost-highlightable" onClick={handleReset}>
 							Reset to Name
 						</MyButton>
 					</div>
 					<div
 						className={
-							"FileNodeViewFolderExplorerSortSelect-actions" satisfies FileNodeViewFolderExplorerSortSelect_ClassNames
+							"FileNodeViewFolderExplorerSortSelect-footer" satisfies FileNodeViewFolderExplorerSortSelect_ClassNames
 						}
 					>
+						<p
+							className={
+								"FileNodeViewFolderExplorerSortSelect-note" satisfies FileNodeViewFolderExplorerSortSelect_ClassNames
+							}
+						>
+							{canSaveSort ? "Saved for everyone who can read this folder" : "Only for your view"}
+						</p>
 						<MyButton variant="outline" onClick={() => handleOpenChange(false)}>
 							Cancel
 						</MyButton>
@@ -5226,6 +5350,95 @@ const FileNodeViewFolderExplorerSortSelect = memo(function FileNodeViewFolderExp
 });
 // #endregion folder explorer sort select
 
+// #region folder explorer column menu
+type FileNodeViewFolderExplorerColumnMenu_ClassNames = "FileNodeViewFolderExplorerColumnMenu-trigger";
+
+const FileNodeViewFolderExplorerColumnMenu = memo(function FileNodeViewFolderExplorerColumnMenu(props: {
+	field: string;
+	sort: files_sort_Sort;
+	onSortChange: (sort: files_sort_Sort) => void;
+	onFilterField: (field: string) => void;
+	onHide: (field: string) => void;
+}) {
+	const { field, sort, onSortChange, onFilterField, onHide } = props;
+	const label = get_folder_column_label(field);
+	// Some columns, such as Updated by, have no sort or filter. They only offer Hide column.
+	const isSortable = files_sort_field_is_valid(field);
+
+	return (
+		<MyMenu placement="bottom-start">
+			<MyMenuTrigger>
+				<MyIconButton
+					variant="ghost-highlightable"
+					tooltip="Column options"
+					aria-label={`Column options for ${label}`}
+					className={
+						"FileNodeViewFolderExplorerColumnMenu-trigger" satisfies FileNodeViewFolderExplorerColumnMenu_ClassNames
+					}
+				>
+					<MyIconButtonIcon>
+						<ChevronDown />
+					</MyIconButtonIcon>
+				</MyIconButton>
+			</MyMenuTrigger>
+			<MyMenuPopover unmountOnHide>
+				<MyMenuPopoverContent>
+					{isSortable && (
+						<MyMenuItemsGroup>
+							<MyMenuItemsGroupText>Sort</MyMenuItemsGroupText>
+							{(["asc", "desc"] as const).map((direction) => (
+								<MyMenuItem key={direction} hideOnClick onClick={() => onSortChange([{ field, direction }])}>
+									<MyMenuItemContent>
+										<MyMenuItemContentIcon>
+											{direction === "asc" ? <ArrowUpNarrowWide /> : <ArrowDownWideNarrow />}
+										</MyMenuItemContentIcon>
+										<MyMenuItemContentPrimary>
+											{get_folder_sort_direction_label({ field, direction })}
+										</MyMenuItemContentPrimary>
+									</MyMenuItemContent>
+								</MyMenuItem>
+							))}
+							<MyMenuItem
+								disabled={sort.length === 3 || sort.some((clause) => clause.field === field)}
+								hideOnClick
+								onClick={() => onSortChange([...sort, { field, direction: get_folder_sort_first_direction(field) }])}
+							>
+								<MyMenuItemContent>
+									<MyMenuItemContentIcon>
+										<ListPlus />
+									</MyMenuItemContentIcon>
+									<MyMenuItemContentPrimary>Add to sort</MyMenuItemContentPrimary>
+								</MyMenuItemContent>
+							</MyMenuItem>
+						</MyMenuItemsGroup>
+					)}
+					<MyMenuItemsGroup separator={isSortable}>
+						{isSortable && (
+							<MyMenuItem hideOnClick onClick={() => onFilterField(field)}>
+								<MyMenuItemContent>
+									<MyMenuItemContentIcon>
+										<ListFilter />
+									</MyMenuItemContentIcon>
+									<MyMenuItemContentPrimary>Filter by {label}</MyMenuItemContentPrimary>
+								</MyMenuItemContent>
+							</MyMenuItem>
+						)}
+						<MyMenuItem disabled={field === "name"} hideOnClick onClick={() => onHide(field)}>
+							<MyMenuItemContent>
+								<MyMenuItemContentIcon>
+									<EyeOff />
+								</MyMenuItemContentIcon>
+								<MyMenuItemContentPrimary>Hide column</MyMenuItemContentPrimary>
+							</MyMenuItemContent>
+						</MyMenuItem>
+					</MyMenuItemsGroup>
+				</MyMenuPopoverContent>
+			</MyMenuPopover>
+		</MyMenu>
+	);
+});
+// #endregion folder explorer column menu
+
 // #region folder explorer
 type FileNodeViewFolderExplorer_ClassNames =
 	| "FileNodeViewFolderExplorer"
@@ -5237,6 +5450,7 @@ type FileNodeViewFolderExplorer_ClassNames =
 	| "FileNodeViewFolderExplorer-column-header"
 	| "FileNodeViewFolderExplorer-column-header-actions"
 	| "FileNodeViewFolderExplorer-sort-button"
+	| "FileNodeViewFolderExplorer-sort-indicator"
 	| "FileNodeViewFolderExplorer-show-more"
 	| "FileNodeViewFolderExplorer-show-less"
 	| "FileNodeViewFolderExplorer-show-less-cover";
@@ -5416,6 +5630,7 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 	const rowObserver = useRef<IntersectionObserver | null>(null);
 	const activeKeysText = useRef("");
 	const filterTriggerRef = useRef<HTMLButtonElement>(null);
+	const filterRef = useRef<FileNodeViewFolderExplorerFilter_Ref>(null);
 	const hasMetadataColumns = columns.some((field) => !FILE_NODE_VIEW_FOLDER_COLUMNS.includes(field));
 
 	useLayoutEffect(() => {
@@ -5510,6 +5725,12 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 		onFilterOpenChange(false);
 		filterTriggerRef.current?.focus();
 	});
+	const handleFilterField = useFn((field: string) => {
+		filterRef.current?.openWithField(field);
+	});
+	const handleHideColumn = useFn((field: string) => {
+		onColumnsChange(columns.filter((column) => column !== field));
+	});
 	const gridColumns = [
 		...columns.map((field) => (field === "name" ? "minmax(12rem, 1fr)" : "minmax(8rem, 15rem)")),
 		"max-content",
@@ -5522,14 +5743,8 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 			className={"FileNodeViewFolderExplorer" satisfies FileNodeViewFolderExplorer_ClassNames}
 		>
 			<div className={"FileNodeViewFolderExplorer-toolbar" satisfies FileNodeViewFolderExplorer_ClassNames}>
-				<FileNodeViewFolderExplorerColumns
-					columns={columns}
-					open={columnsOpen}
-					catalog={columnCatalog}
-					onColumnsChange={onColumnsChange}
-					onOpenChange={onColumnsOpenChange}
-				/>
 				<FileNodeViewFolderExplorerFilter
+					ref={filterRef}
 					selection={filterSelection}
 					open={filterOpen}
 					catalog={columnCatalog}
@@ -5537,6 +5752,18 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 					onChange={onFilterChange}
 					onOpenChange={onFilterOpenChange}
 				/>
+				{filterSelection && (
+					<MyIconButton
+						variant="ghost-highlightable"
+						tooltip="Clear filter"
+						data-filter-field={filterSelection.filter.field}
+						onClick={handleClearFilter}
+					>
+						<MyIconButtonIcon>
+							<X />
+						</MyIconButtonIcon>
+					</MyIconButton>
+				)}
 				<FileNodeViewFolderExplorerSortSelect
 					sort={sort}
 					open={sortOpen}
@@ -5545,17 +5772,13 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 					onOpenChange={onSortOpenChange}
 					onSortChange={onSortChange}
 				/>
-				{filterSelection && (
-					<div
-						data-filter-field={filterSelection.filter.field}
-						className={"FileNodeViewFolderExplorerFilter-active" satisfies FileNodeViewFolderExplorerFilter_ClassNames}
-					>
-						<span>{get_folder_filter_label(filterSelection)}</span>
-						<MyButton variant="ghost" onClick={handleClearFilter}>
-							Clear filter
-						</MyButton>
-					</div>
-				)}
+				<FileNodeViewFolderExplorerColumns
+					columns={columns}
+					open={columnsOpen}
+					catalog={columnCatalog}
+					onColumnsChange={onColumnsChange}
+					onOpenChange={onColumnsOpenChange}
+				/>
 			</div>
 			{(isShowingHeldRows || filterRefreshing || filterRecovery === "reload" || sortLimit !== null) && (
 				<p className={"FileNodeViewFolderExplorer-notice" satisfies FileNodeViewFolderExplorer_ClassNames}>
@@ -5707,14 +5930,27 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 											>
 												{get_folder_column_label(field)}
 												{clause && (
-													<span>
-														{priority + 1} {clause.direction === "asc" ? "↑" : "↓"}
+													<span
+														className={
+															"FileNodeViewFolderExplorer-sort-indicator" satisfies FileNodeViewFolderExplorer_ClassNames
+														}
+													>
+														{/* The order number only matters when more than one column sorts. */}
+														{displayedSort.length > 1 && `${priority + 1} `}
+														{clause.direction === "asc" ? "↑" : "↓"}
 													</span>
 												)}
 											</button>
 										) : (
-											get_folder_column_label(field)
+											<span>{get_folder_column_label(field)}</span>
 										)}
+										<FileNodeViewFolderExplorerColumnMenu
+											field={field}
+											sort={sort}
+											onSortChange={onSortChange}
+											onFilterField={handleFilterField}
+											onHide={handleHideColumn}
+										/>
 									</MyGridTableColumnHeader>
 								);
 							})}

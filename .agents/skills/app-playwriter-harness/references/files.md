@@ -80,11 +80,20 @@ Use this file as a quick testing map for `/files`. Keep it short and selector-or
   or `limited`. Read both the state and real status text before checking settled rows.
 - Sorted headers carry `data-sort-priority` (starting at 1) and `data-sort-direction` (`asc` / `desc`).
   Only the first field has `aria-sort`. A visible field's header button applies a one-field sort.
+  The header text shows the order number only when two or more fields sort (`Name 1 ↑`); one field
+  shows only the arrow (`Name ↑`). Read `data-sort-priority`, not the text, for the order.
+- Column header menu: each header has an icon button named `Column options for <label>`. Its menu has
+  a `Sort` group (`A to Z` / `Z to A`, or the field's own direction words, both replace the whole
+  sort), `Add to sort` (appends the field; disabled at three fields or when already sorted), `Filter by
+  <label>` (opens the Filter dialog with that field), and `Hide column` (disabled for Name). Columns
+  that cannot sort, such as Updated by, show only `Hide column`. Add to sort saves a shared sort for a
+  writer, like Apply.
 - Folder table sort form: `getByRole("button", { name: /^Sort: / })` opens the `Sort` dialog.
   The full name reads like `Sort: Name ↑, then Updated ↓`. Field and direction controls are named
   `Sort field 1: Name` and `Direction 1: A to Z`. Metadata labels keep their namespace.
 - Folder table row names in order: the overlay links, `getAllByRole("link", { name: /^Open / })`.
-- Folder columns: `getByRole("button", { name: "Columns", exact: true })` opens the `Columns` dialog.
+- Folder columns: `getByRole("button", { name: "Columns", exact: true })` (an icon button at the end of
+  the toolbar) opens the `Columns` dialog.
   Headers and cells carry `data-column-field`; value cells also carry `data-value-state`.
   A sort does not add its field as a visible column. Select it in Columns before checking its cells.
 - Value query counts: the `Folder contents` table carries `data-value-target-count` and
@@ -620,8 +629,9 @@ run reused `/qa-sort-0924` and `/qa-sort-0924-r` without new files, metadata, mo
 
 - **Form and drafts.** Open `Sort: <full summary>`, then the `Sort` dialog. Field controls are named
   `Sort field <priority>: <label>`; direction controls are `Direction <priority>: <words>`. The field
-  picker is `Sort fields <priority>` with `Search sort fields <priority>`. Use `Add sort field`,
-  `Move <label> up`, `Move <label> down` and `Remove <label>`. Up to three distinct fields are allowed.
+  picker is `Sort fields <priority>` with `Search sort fields <priority>`. Each row reads `Sort by` or
+  `then by`. Use `Add sort field`, and the row icon buttons `Move <label> up`, `Move <label> down`
+  and `Remove <label>` (their tooltips say Move up, Move down, Remove). Up to three distinct fields are allowed.
   Add and move focus the relevant field; Remove focuses a remaining field. Last Remove resets the draft
   to Name ascending. Stable `data-sort-draft-id` values survive edits and moves and are never saved.
   Form `Reset to Name`, Cancel and Escape change no applied sort or saved data. Only Apply commits
@@ -681,7 +691,8 @@ Verified 2026-09-29. Use the current QA inventory. A large real folder can stay 
 column choices need to change. Do not write file metadata or shared sorts for this check.
 
 - **Controls.** `Columns` opens a dialog named `Columns`; its input is `Search columns`.
-  Name is checked and locked. Actions is always shown. Up to eight columns may be selected, including Name;
+  Fields sit in groups named `Built-in` and `Metadata`. Name is checked and locked; its checkbox
+  name is `Name Always shown`. Actions is always shown. Up to eight columns may be selected, including Name;
   Actions does not count. The order is fixed: built-ins first, then full qualified field keys.
   Choose fields in a different click order and check the same order after reload. `Reset columns` restores
   Name, Updated by and Updated. Column changes must keep row ids, row order and paging unchanged.
@@ -750,9 +761,11 @@ column choices need to change. Do not write file metadata or shared sorts for th
 Verified 2026-09-29 on a read-only `/people` folder. Use its current bounded field catalog and readable
 scalar sample. Do not assume a Status field exists. No new fixture is needed for the normal flow.
 
-- **Controls.** `Filter` opens a dialog named `Filter`. Field is a combobox named `Field: <label>`.
+- **Controls.** The trigger is named `Filter` with no filter and `Filter: <label>` with one, for
+  example `Filter: Name contains report`; match it with `/^Filter/`. It opens a dialog named `Filter`.
+  Field, Operation and Value sit in one row. Field is a combobox named `Field: <label>`.
   Its picker is `Filter fields`; the search input has role `combobox` and name `Search filter fields`.
-  Operation is a combobox named `Operation`. The value label is `Value`, `Bytes` or `Day`.
+  Operation is a combobox named `Operation: <label>`. The value label is `Value`, `Bytes` or `Day`.
   Use the label to find Value; the dialog also contains a picker input. Apply changes the local filter.
   Cancel and Escape drop draft edits and return focus to Filter. Reopening starts from the applied choice.
   Field and operation changes clear the draft value and its old error. Clear filter keeps sort and columns.
@@ -770,7 +783,7 @@ scalar sample. Do not assume a Status field exists. No new fixture is needed for
 - **Native fields.** Compare shown rows with their actual cached row facts. Name folds case and accents.
   Type submits lowercase and keeps a typed dot literal. `Has no value` for Type or Size includes folders
   and shows no value input. Size compares whole byte counts. Date uses local midnight and the next calendar
-  day; its chip shows the day and browser time zone. Test On, Before and After. In Europe/London, the 2026
+  day; the Filter trigger shows the day and browser time zone. Test On, Before and After. In Europe/London, the 2026
   spring and fall change days have 23 and 25 hours. No matching timestamp is needed to check those bounds.
 - **Hidden metadata.** Pick a qualified field that exists now. Is and Starts with use its plain scalar;
   Has value and Has no value need no input. Lists use the first plain value. Leave that field hidden as a
@@ -778,7 +791,8 @@ scalar sample. Do not assume a Status field exists. No new fixture is needed for
   settle, require zero displayed-value subscriptions and unchanged columns. Count real active descriptors
   as in the Columns recipe. A hidden filter must not add displayed-value queries.
 - **State and work.** The explorer has `data-filter-state`: `applying`, `searching`, `refreshing`, `ready`,
-  `paused` or `failed`. It is absent on a normal unfiltered table. The active chip has `data-filter-field`.
+  `paused` or `failed`. It is absent on a normal unfiltered table. The `Clear filter` icon button next
+  to the trigger has `data-filter-field`.
   Read the real empty and status text. Empty non-final pages must keep searching, with a cursor boundary.
   A paused prefix cannot say `No rows match this filter`. Read settled page results through
   `watchQuery(...).localQueryResult()` without adding a subscription. Check each `workCount` against its

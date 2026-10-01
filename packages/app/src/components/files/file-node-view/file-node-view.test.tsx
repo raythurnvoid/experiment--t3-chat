@@ -1732,7 +1732,7 @@ describe("FileNodeView folder sort", () => {
 		fireEvent.click(within(table).getByRole("button", { name: /^Updated/ }));
 		expect(
 			within(table)
-				.getByRole("columnheader", { name: /^Updated 1/ })
+				.getByRole("columnheader", { name: /^Updated ↓/ })
 				.getAttribute("aria-sort"),
 		).toBe("descending");
 		expect(within(table).getByRole("columnheader", { name: /^Name/ }).getAttribute("aria-sort")).toBeNull();
@@ -1786,6 +1786,33 @@ describe("FileNodeView folder sort", () => {
 		fireEvent.submit(dialog.querySelector("form")!);
 		expect(await screen.findByRole("button", { name: "Sort: Size ↓" })).toBeTruthy();
 		expect(mutationMock.mock.calls.length).toBe(0);
+	});
+
+	test("the column menu adds a sort field, opens the filter on its field, and hides the column", async () => {
+		node = { ...NODE, _id: "folder_1", name: "Docs", path: "/Docs", kind: "folder" };
+		treeNodes = [node, { ...NODE, _id: "a.html", name: "a.html", path: "/Docs/a.html", parentId: node._id }];
+		folderSort = { sort: [{ field: "name", direction: "asc" }], canSave: false };
+		renderFileView({ nodeId: node._id });
+
+		const table = await screen.findByRole("table", { name: "Folder contents" });
+		fireEvent.click(within(table).getByRole("button", { name: "Column options for Updated" }));
+		fireEvent.click(await screen.findByRole("menuitem", { name: "Add to sort" }));
+		expect(await screen.findByRole("button", { name: "Sort: Name ↑, then Updated ↓" })).toBeTruthy();
+
+		fireEvent.click(within(table).getByRole("button", { name: "Column options for Updated" }));
+		fireEvent.click(await screen.findByRole("menuitem", { name: "Filter by Updated" }));
+		const filter = await screen.findByRole("dialog", { name: "Filter" });
+		expect(within(filter).getByRole("combobox", { name: "Field: Updated" })).toBeTruthy();
+		fireEvent.click(within(filter).getByRole("button", { name: "Cancel" }));
+		await waitFor(() => expect(screen.queryByRole("dialog", { name: "Filter" })).toBeNull());
+
+		fireEvent.click(within(table).getByRole("button", { name: "Column options for Updated" }));
+		fireEvent.click(await screen.findByRole("menuitem", { name: "Hide column" }));
+		expect(
+			within(table)
+				.getAllByRole("columnheader")
+				.map((cell) => cell.getAttribute("data-column-field")),
+		).toEqual(["name", "updated_by", "actions"]);
 	});
 
 	test("sorting does not add a hidden column, and a chosen Size column reads row facts", async () => {
@@ -2246,7 +2273,7 @@ describe("FileNodeView folder sort form", () => {
 		fireEvent.click(within(dialog).getByRole("button", { name: "Move Name up" }));
 		fireEvent.submit(dialog.querySelector("form")!);
 		expect(sortedChildrenMock.mock.calls.at(-1)![0].filter).toEqual(filter);
-		expect(screen.getByText("Name contains file")).toBeTruthy();
+		expect(screen.getByRole("button", { name: "Filter: Name contains file" })).toBeTruthy();
 		expect(within(table).getAllByRole("link", { name: /^Open / })).toHaveLength(5);
 		expect(loadMorePendingMock).not.toHaveBeenCalled();
 		expect(mutationMock).not.toHaveBeenCalled();
@@ -2303,7 +2330,7 @@ describe("FileNodeView folder sort form", () => {
 		expect(screen.getByRole("button", { name: "Clear filter" })).toBeTruthy();
 		fireEvent.click(screen.getByRole("button", { name: "Reset to Name" }));
 		expect(sortedChildrenMock.mock.calls.at(-1)![0].filter).toEqual(filter);
-		expect(screen.getByText("Name contains absent")).toBeTruthy();
+		expect(screen.getByRole("button", { name: "Filter: Name contains absent" })).toBeTruthy();
 	});
 
 	test.each([
@@ -2480,8 +2507,8 @@ describe("FileNodeView folder columns", () => {
 		const trigger = screen.getByRole("button", { name: "Columns" });
 		fireEvent.click(trigger);
 		const chooser = await screen.findByRole("dialog", { name: "Columns" });
-		expect(within(chooser).getByRole("checkbox", { name: "Name" })).toHaveProperty("disabled", true);
-		expect(within(chooser).getByRole("checkbox", { name: "Name" })).toHaveProperty("checked", true);
+		expect(within(chooser).getByRole("checkbox", { name: "Name Always shown" })).toHaveProperty("disabled", true);
+		expect(within(chooser).getByRole("checkbox", { name: "Name Always shown" })).toHaveProperty("checked", true);
 		expect(within(chooser).getByText("Actions is always shown")).toBeTruthy();
 		for (const field of ["zeta (metadata)", "Size", "alpha (metadata)", "Type", "Date created"]) {
 			fireEvent.click(within(chooser).getByRole("checkbox", { name: field }));
@@ -2946,7 +2973,7 @@ describe("FileNodeView folder filter", () => {
 	});
 
 	async function openFilter() {
-		fireEvent.click(await screen.findByRole("button", { name: "Filter" }));
+		fireEvent.click(await screen.findByRole("button", { name: /^Filter/ }));
 		return await screen.findByRole("dialog", { name: "Filter" });
 	}
 
@@ -2956,7 +2983,7 @@ describe("FileNodeView folder filter", () => {
 	}
 
 	async function selectOperation(dialog: HTMLElement, name: string) {
-		fireEvent.click(within(dialog).getByRole("combobox", { name: "Operation" }));
+		fireEvent.click(within(dialog).getByRole("combobox", { name: /^Operation: / }));
 		fireEvent.click(await screen.findByRole("option", { name }));
 	}
 
@@ -2987,7 +3014,7 @@ describe("FileNodeView folder filter", () => {
 		});
 		expect(within(table).getAllByRole("link", { name: /^Open / })).toHaveLength(1);
 		expect(screen.getByRole("link", { name: "Open file-2.html" })).toBeTruthy();
-		expect(document.activeElement).toBe(screen.getByRole("button", { name: "Filter" }));
+		expect(document.activeElement).toBe(screen.getByRole("button", { name: "Filter: Name contains file-2" }));
 
 		const reopened = await openFilter();
 		expect(within(reopened).getByRole("textbox", { name: "Value" })).toHaveProperty("value", "file-2");
@@ -3000,7 +3027,7 @@ describe("FileNodeView folder filter", () => {
 		fireEvent.change(edited, { target: { value: "also discard" } });
 		fireEvent.keyDown(edited, { key: "Escape", code: "Escape" });
 		await waitFor(() => expect(screen.queryByRole("dialog", { name: "Filter" })).toBeNull());
-		expect(document.activeElement).toBe(screen.getByRole("button", { name: "Filter" }));
+		expect(document.activeElement).toBe(screen.getByRole("button", { name: "Filter: Name contains file-2" }));
 		expect(sortedChildrenMock.mock.calls.at(-1)![0].filter).toEqual(filter);
 
 		fireEvent.click(screen.getByRole("button", { name: "Clear filter" }));
@@ -3175,7 +3202,7 @@ describe("FileNodeView folder filter", () => {
 			end,
 		});
 		expect(end - start).toBe(hours * 60 * 60 * 1000);
-		expect(screen.getByText(`Date created on ${day} (Europe/London)`)).toBeTruthy();
+		expect(screen.getByRole("button", { name: `Filter: Date created on ${day} (Europe/London)` })).toBeTruthy();
 		const reopened = await openFilter();
 		expect(within(reopened).getByLabelText("Day")).toHaveProperty("value", day);
 	});
@@ -3230,7 +3257,7 @@ describe("FileNodeView folder filter", () => {
 			await selectField(dialog, "Name");
 			fireEvent.change(within(dialog).getByRole("textbox", { name: "Value" }), { target: { value } });
 			fireEvent.submit(dialog.querySelector("form")!);
-			expect(screen.getByText(`Name contains ${value}`)).toBeTruthy();
+			expect(screen.getByRole("button", { name: `Filter: Name contains ${value}` })).toBeTruthy();
 			expect(screen.getByText("Showing: Updated on 2026-10-25 (Europe/London). Sort: Name ↑.")).toBeTruthy();
 			expect(screen.getByText("Applying filter…")).toBeTruthy();
 			const table = screen.getByRole("table", { name: "Folder contents" });
@@ -3286,7 +3313,8 @@ describe("FileNodeView folder filter", () => {
 		expect(table.closest(".FileNodeViewFolderExplorer")!.getAttribute("data-filter-state")).toBe(state);
 		expect(screen.getByText(message)).toBeTruthy();
 		expect(within(table).getAllByRole("columnheader")).toHaveLength(4);
-		for (const name of ["Columns", "Filter", "Clear filter"]) expect(screen.getByRole("button", { name })).toBeTruthy();
+		for (const name of ["Columns", /^Filter: /, "Clear filter"])
+			expect(screen.getByRole("button", { name })).toBeTruthy();
 		expect(screen.getByRole("button", { name: "Sort: Name ↑" })).toBeTruthy();
 		if (message !== "No rows match this filter") expect(screen.queryByText("No rows match this filter")).toBeNull();
 		if (overrides.preparing) expect(screen.getByText("Some drafts are preparing")).toBeTruthy();
