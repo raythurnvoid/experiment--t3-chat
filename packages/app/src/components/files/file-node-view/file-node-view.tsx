@@ -4325,7 +4325,6 @@ type FileNodeViewFolderExplorerColumns_ClassNames =
 	| "FileNodeViewFolderExplorerColumns-group-title"
 	| "FileNodeViewFolderExplorerColumns-fields"
 	| "FileNodeViewFolderExplorerColumns-field"
-	| "FileNodeViewFolderExplorerColumns-note"
 	| "FileNodeViewFolderExplorerColumns-actions";
 
 type FileNodeViewFolderCatalog = ReturnType<typeof useFolderColumnCatalog>;
@@ -4459,13 +4458,7 @@ const FileNodeViewFolderExplorerColumns = memo(function FileNodeViewFolderExplor
 				{shownFields.length === 0 && catalog.state !== "failed" && (
 					<p role="status">{catalog.hasMore ? "No loaded fields match" : "No fields match"}</p>
 				)}
-				{catalog.state === "ready" && !catalog.hasMore && catalog.fields.length === 0 && !searchText && (
-					<p role="status">No metadata fields found</p>
-				)}
 				<FileNodeViewFolderExplorerFieldsStatus catalog={catalog} />
-				<p className={"FileNodeViewFolderExplorerColumns-note" satisfies FileNodeViewFolderExplorerColumns_ClassNames}>
-					Actions is always shown
-				</p>
 				{columns.length >= files_table_MAX_COLUMNS && <p>Show up to 8 columns. Hide one to add another.</p>}
 				<div
 					className={"FileNodeViewFolderExplorerColumns-actions" satisfies FileNodeViewFolderExplorerColumns_ClassNames}

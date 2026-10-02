@@ -2273,7 +2273,6 @@ describe("FileNodeView folder columns", () => {
 		const chooser = await screen.findByRole("dialog", { name: "Columns" });
 		expect(within(chooser).getByRole("checkbox", { name: "Name Always shown" })).toHaveProperty("disabled", true);
 		expect(within(chooser).getByRole("checkbox", { name: "Name Always shown" })).toHaveProperty("checked", true);
-		expect(within(chooser).getByText("Actions is always shown")).toBeTruthy();
 		for (const field of ["zeta (metadata)", "Size", "alpha (metadata)", "Type", "Date created"]) {
 			fireEvent.click(within(chooser).getByRole("checkbox", { name: field }));
 		}

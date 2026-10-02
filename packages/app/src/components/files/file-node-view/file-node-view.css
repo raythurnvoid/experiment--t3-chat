@@ -1117,21 +1117,74 @@
 	.FileNodeViewFolderExplorerColumns-fields {
 		display: flex;
 		flex-direction: column;
-		gap: 4px;
+		gap: 2px;
 	}
 
+	/* Columns are a list of toggles, so they look like menu rows, not like choice cards: no ring and no
+	   tint. The filled box and the bright label show which columns are on. */
 	.FileNodeViewFolderExplorerColumns-field {
-		.MyCheckboxButton {
+		.MyCheckboxButton.MyButton-variant-outline {
 			width: 100%;
 			min-width: 0;
 			min-height: 36px;
 			height: auto;
 			justify-content: start;
 			overflow-wrap: anywhere;
+			padding: 6px 12px;
+			border-radius: 4px;
+
+			background: transparent;
+			box-shadow: none;
+			/* Like a menu item, the highlight shows keyboard focus, so the ring is not needed. */
+			outline: none;
+
+			/* Same highlight and pressed look as `MyMenuItem` and `MyComboboxItem`. Menus show it for the
+			   pointer and for the arrow keys, so it is used here for hover and for keyboard focus. */
+			&:not(.MyButton-state-disabled) {
+				&:is(:hover, :has(> .MyCheckboxButton-control:focus-visible)) {
+					background: linear-gradient(var(--color-base-alt-1-11), var(--color-base-alt-1-09));
+				}
+
+				&:active {
+					background: linear-gradient(var(--color-base-alt-1-12), var(--color-base-alt-1-11));
+					box-shadow:
+						inset 0 2px 4px color-mix(in oklch, black 32%, transparent),
+						inset 0 -1px 0 color-mix(in oklch, var(--color-fg-11) 5%, transparent);
+				}
+			}
+		}
+
+		.MyCheckboxButtonContent {
+			grid-auto-flow: column;
+			justify-content: space-between;
+			align-items: baseline;
+			gap: 12px;
+		}
+
+		.MyCheckboxButtonDescription {
+			color: var(--color-fg-08);
+		}
+
+		/* A column that cannot be added now, because the table is full. */
+		.MyCheckboxButton.MyButton-state-disabled {
+			color: var(--color-fg-06);
 		}
 	}
 
-	.FileNodeViewFolderExplorerColumns-note {
+	/* Name is always shown. It reads as a locked row, not as a faded one: a grey checked box and a
+	   normal label. */
+	.FileNodeViewFolderExplorerColumns-field[data-column-field="name"] {
+		.MyCheckboxButton.MyButton-state-disabled {
+			color: var(--color-fg-09);
+
+			& > .MyCheckboxButton-box {
+				border-color: var(--color-fg-06);
+				background: var(--color-fg-06);
+			}
+		}
+	}
+
+	.FileNodeViewFolderExplorerColumns-popover > p[role="status"] {
 		margin: 0;
 		font-size: 0.9375rem;
 		color: var(--color-fg-08);
