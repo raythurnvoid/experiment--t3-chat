@@ -64,7 +64,7 @@ export function files_sort_is_valid(sort: files_sort_Sort) {
 }
 
 /**
- * Folders miss file.extension and file.size. Name's full key is unique, so later fields cannot change its order.
+ * Folders miss file.extension and file.size. file.name's full key is unique, so later fields cannot change its order.
  * Keep the original clauses for saved choices, keys and cursor scopes.
  */
 export function files_sort_execution_fields(sort: files_sort_Sort, kind: "folder" | "file") {
@@ -162,7 +162,7 @@ export function files_sort_key_of(args: {
 								: facts.contentByteSize
 							: (metadataParts.get(clause.field) ?? null);
 		if (scalar === null) return null;
-		// A one-field sort keeps its exact index suffix. Created has no name suffix.
+		// A one-field sort keeps its exact index suffix. file.created has no name suffix.
 		return sort.length === 1 && clause.field !== "created" ? [scalar, ...nameKey] : [scalar];
 	});
 	return { parts, nameKey };
@@ -183,7 +183,7 @@ export function files_sort_compare(args: { a: files_sort_RowKey; b: files_sort_R
 		const result = compareValues(aPart, bPart);
 		if (result !== 0) return clause.direction === "asc" ? result : -result;
 	}
-	// Single Created keeps native equal-time ties. Single missing values use Name asc.
+	// Single file.created keeps native equal-time ties. Single missing values use file.name asc.
 	if (sort.length === 1 && a.parts[0] !== null && b.parts[0] !== null) return 0;
 	return compareValues(a.nameKey, b.nameKey);
 }

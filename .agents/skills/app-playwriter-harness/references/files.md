@@ -86,7 +86,7 @@ Use this file as a quick testing map for `/files`. Keep it short and selector-or
   a `Sort` group (`A to Z` / `Z to A`, or the field's own direction words, both replace the whole
   sort), `Add to sort` (appends the field; disabled at 8 fields or when already sorted), `Filter by
   <label>` (puts `file.<field>:` or the metadata key in the table bar), and `Hide column` (disabled for
-  Name). Columns that cannot sort, such as `file.updated_by`, show only `Hide column`. Every header, chooser row, sort label and chip shows the field name (`file.name`, `file.extension`, `metadata.<key>`), never a second label. Add to sort writes
+  file.name). Columns that cannot sort, such as `file.updated_by`, show only `Hide column`. Every header, chooser row, sort label and chip shows the field name (`file.name`, `file.extension`, `metadata.<key>`), never a second label. Add to sort writes
   `sort_by:` tokens into the URL. It saves nothing.
 - Folder table bar: the combobox `Filter and sort this folder` (inside the group `Table filter and
   sort`) holds the typed text. Chips are the committed tokens. The menu is `Table filter and sort
@@ -640,7 +640,7 @@ rows, limits, held labels and work allowance still hold.
   reading options, or the list still shows the old rows.
 - **Save for everyone.** The button `Save sort for everyone` shows only for a writer and only while the
   URL has a sort. After the click, read the toast `Sort saved for everyone.`, then read the doc with the
-  page's Convex client (`files_folder_sorts.get_folder_sort`). A one-clause Name asc sort deletes the
+  page's Convex client (`files_folder_sorts.get_folder_sort`). A one-clause file.name asc sort deletes the
   doc, so that is also the cleanup. A reader never sees the button.
 - **Navigation.** Click a child folder row: the new URL has no `filter` or `view_q`. Press Back: the bar
   comes back. A sidebar `q` change keeps `filter` and `view_q`.
@@ -682,10 +682,10 @@ run reused `/qa-sort-0924` and `/qa-sort-0924-r` without new files, metadata, mo
   allowance. Count retained-page refreshes separately. Preserve `sortLimit`, `workPaused`,
   `workCount`, `scannedCount` and actual request allowances in receipts. Created/rank packed 50 file
   candidates in one response; a revealed table may also include folders. Hidden sort fields add no
-  displayed-value queries. Metadata after Name needs no sort-key queries. Side enumeration returns
+  displayed-value queries. Metadata after file.name needs no sort-key queries. Side enumeration returns
   facts without sort args or inline keys; `get_table_sort_key` returns a full `RowKey` or null.
   file.extension/file.size positions stay null for folders.
-- **Filter and preview.** Combine a Name filter with the full sort list. Check preview five, Show more,
+- **Filter and preview.** Combine a file.name filter with the full sort list. Check preview five, Show more,
   Show less and exact ordered ids. First Show more requests at least 50 and reveals all loaded rows;
   later requests add 50 to the loaded count. Show less returns to five without a new scan.
 - **Limit coverage.** A bounded authenticated read of `list_tree_children_sorted` on `/people` with
@@ -693,12 +693,12 @@ run reused `/qa-sort-0924` and `/qa-sort-0924-r` without new files, metadata, mo
   saved sort. Native limit/recovery UI stayed unverified because `canSave` was true. Registered tests
   cover the limit message, immediate limit `Reset to file.name`, private/two-metadata groups, byte/call/work
   caps, hidden claims and permission loss. Do not create or change large fixtures just to repeat them.
-- **Named source proof.** Pin a two-field reader-local array and its exact rows. Name as the second
+- **Named source proof.** Pin a two-field reader-local array and its exact rows. file.name as the second
   field must have priority 2 and no `aria-sort`. Name the assertion `secondary_header_priority` before
   changing source. On a coordinated temporary first-clause-only header lookup, prove the served module
   and require that assertion to fail. Restore the exact source, reload only the owned tab, apply the
   same local array and run the unchanged assertion green. A shell/auth setup failure is not the red.
-- **Cleanup.** Reset both approved fixtures to Name through normal controls and require no saved-sort
+- **Cleanup.** Reset both approved fixtures to file.name through normal controls and require no saved-sort
   docs. Archive their roots again and compare all child ids, parents, paths, archive flags and raw
   grants with the backup. Restore only touched personal entries and viewport/sidebar settings. Detach
   owned observers and CDP listeners, remove exact HTTP routes, and close owned scratch pages to retire

@@ -106,6 +106,25 @@ describe("FilesSearchInput", () => {
 			expect(remove.closest(".FilesSearchInputFilterChip")?.textContent).toContain("file.link public");
 		});
 
+		test("suggests the tree extensions for file.extension and reads a typed dot", async () => {
+			const treeItemsList = [
+				{ kind: "file", path: "/a.md", lowercaseExtension: "md" },
+				{ kind: "file", path: "/b.txt", lowercaseExtension: "txt" },
+				{ kind: "folder", path: "/docs", lowercaseExtension: null },
+			] as unknown as FilesSearchInput_Props["treeItemsList"];
+			render(<FilesSearchInput {...props} variant={variant} treeItemsList={treeItemsList} />);
+			const input = screen.getByRole<HTMLInputElement>("combobox");
+			act(() => input.focus());
+			fireEvent.click(await screen.findByRole("option", { name: "file.extension" }));
+			expect(input.value).toBe("file.extension:");
+			expect(await screen.findByRole("option", { name: "md" })).toBeTruthy();
+			expect(screen.getByRole("option", { name: "txt" })).toBeTruthy();
+			expect(screen.getByText("Values for file.extension")).toBeTruthy();
+			fireEvent.change(input, { target: { value: "file.extension:.m" } });
+			await waitFor(() => expect(screen.queryByRole("option", { name: "txt" })).toBeNull());
+			expect(screen.getByRole("option", { name: "md" })).toBeTruthy();
+		});
+
 		test("reopens on a new visit but keeps dismissal when returning from chips or results", async () => {
 			function Consumer() {
 				const resultsRef = useRef<HTMLDivElement>(null);

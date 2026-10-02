@@ -15,7 +15,7 @@ describe("files_table_column_is_valid", () => {
 		"accepts %s",
 		(field) => expect(files_table_column_is_valid(field)).toBe(true),
 	);
-	test.each(["actions", "rank", "metadata.", "metadata.invalid key", "metadata." + "a".repeat(300)])(
+	test.each(["actions", "rank", "type", "metadata.", "metadata.invalid key", "metadata." + "a".repeat(300)])(
 		"rejects %s",
 		(field) => expect(files_table_column_is_valid(field)).toBe(false),
 	);
@@ -58,7 +58,7 @@ describe("files_table_filter_is_valid", () => {
 });
 
 describe("files_table_filter_matches", () => {
-	test("matches Name case and accents without changing digits or cutting text", () => {
+	test("matches file.name case and accents without changing digits or cutting text", () => {
 		expect(
 			files_table_filter_matches({
 				filter: { kind: "name", field: "name", op: "contains", value: "RESUME 007" },
@@ -97,7 +97,7 @@ describe("files_table_filter_matches", () => {
 		).toBe(true);
 	});
 
-	test("compares lower-case Type without removing a leading dot", () => {
+	test("compares lower-case file.extension without removing a leading dot", () => {
 		expect(
 			files_table_filter_matches({ filter: { kind: "extension", field: "extension", op: "is", value: "MD" }, facts: FACTS }),
 		).toBe(true);
@@ -134,7 +134,7 @@ describe("files_table_filter_matches", () => {
 		expect(files_table_filter_matches({ filter: { ...filter, op: "after" }, facts: at(200) })).toBe(true);
 	});
 
-	test("compares Size and keeps unknown values separate from zero", () => {
+	test("compares file.size and keeps unknown values separate from zero", () => {
 		for (const op of ["is", "at_least", "at_most"] as const) {
 			expect(files_table_filter_matches({ filter: { kind: "size", field: "size", op, value: 42 }, facts: FACTS })).toBe(
 				true,

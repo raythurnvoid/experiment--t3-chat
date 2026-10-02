@@ -8272,7 +8272,7 @@ export const list_tree_children_sorted = query({
 				workCount: number;
 			}
 		> => {
-			// Name has no missing value. Folders have no size, so they sort by name.
+			// file.name has no missing value. Folders have no size, so they sort by name.
 			if (field === "name" || (field === "size" && args.kind === "folder")) {
 				if (args.segment === "missing") {
 					return refused;

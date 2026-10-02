@@ -702,7 +702,7 @@ export const FilesSearchInput = memo(function FilesSearchInput(props: FilesSearc
 								</MyComboboxGroup>
 							) : null}
 							{valueRows.length > 0 ? (
-								<MyComboboxGroup heading={`Values for ${typingFilter?.key.name}`}>
+								<MyComboboxGroup heading={`Values for ${typingFilter?.key.namespace}.${typingFilter?.key.name}`}>
 									{valueRows.map((row) => (
 										<MyComboboxItem
 											key={row.value}

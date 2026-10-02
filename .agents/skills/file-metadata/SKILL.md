@@ -264,7 +264,7 @@ map. So do not copy them into the map. A copy would go stale the moment the uplo
 replaces the bytes or a `cp` gives the file another type, and the user could delete or edit it,
 because everything in the map is the user's to change.
 
-The node keeps its own copy of the byte size in `files_nodes.contentByteSize`, for the table's Size
+The node keeps its own copy of the byte size in `files_nodes.contentByteSize`, for the table's file.size
 sort. The writers that change `assetId` keep it current. It is not part of the map either.
 
 The map holds member-defined labels and details recorded by creation flows.
@@ -388,7 +388,7 @@ first plain primitive and checks every consumed doc's tenant, target, owner, pro
 Preparation makes metadata sort parts null. It remains unknown for metadata filters.
 
 The row key is `{ parts, nameKey }` from `shared/files-sort.ts`. Missing parts are null and stay
-last in either direction. Multi-sort ends ties by Name asc. A unique Name clause makes later
+last in either direction. Multi-sort ends ties by file.name asc. A unique file.name clause makes later
 metadata irrelevant, so it needs no value read. Folder `file.extension` and `file.size` are null. For multi-sort,
 the server drops those clauses only from index selection, while keeping the original list and key positions.
 

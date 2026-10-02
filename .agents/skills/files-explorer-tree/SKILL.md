@@ -241,8 +241,8 @@ folder (`FileNodeViewPrivateFolder`) still lists its children through `useFilesV
   `file.size`, or any `metadata.*` / `frontmatter.*` key. Each field has one name. The key, the
   column label, the sort label and the chip all show that same text. The extension field id is
   `extension`; the Convex column `lowercaseExtension` and its indexes keep their names. Each clause has its own direction. Folders always come first.
-  Missing values stay last at each clause in both directions. Multi-sort ends ties by Name A to Z.
-  A unique Name clause makes later clauses irrelevant.
+  Missing values stay last at each clause in both directions. Multi-sort ends ties by file.name A to Z.
+  A unique file.name clause makes later clauses irrelevant.
 - Metadata values sort as text through `files_sort_text_key` in `packages/app/shared/files-sort.ts`:
   case and accents are ignored, and digit runs compare by value (`file2` before `file10`). A number
   sorts as `String(value)`, a boolean as `true`/`false`, a list by its first item. The raw name
@@ -260,9 +260,12 @@ folder (`FileNodeViewPrivateFolder`) still lists its children through `useFilesV
 ### Saved sort
 
 - Each folder, and the root, has one saved clause list in `files_folder_sorts`, shared by every member.
-  `files_folder_sorts.get_folder_sort` returns `{ sort, canSave }` with Name, A to Z filled in when
+  `files_folder_sorts.get_folder_sort` returns `{ sort, canSave }` with file.name, A to Z filled in when
   there is no sort doc, or null when the caller cannot read the folder. A grant-only member at the root
-  gets Name, A to Z and cannot save. Saving the one-clause Name asc default deletes the sort doc.
+  gets file.name, A to Z and cannot save. Saving the one-clause file.name asc default deletes the sort doc.
+  The stored field for file.extension is `extension`. A doc that still holds the old field `type` is
+  invalid: `get_folder_sort` throws "Invalid saved sort." and the folder view can fail to load. There is no
+  migration, so read the table (`convex data files_folder_sorts`) on a deployment before you ship to it.
 - The table waits for the saved sort before it loads rows, so it never loads by name and then sorts
   again.
 - A sort in the URL (`sort_by:` tokens) wins over the saved sort. With no sort token the table uses
@@ -301,7 +304,7 @@ folder (`FileNodeViewPrivateFolder`) still lists its children through `useFilesV
     A cursor includes the full index suffix and the exact folder, kind, segment, sort, and filter.
     It advances only after a whole candidate finishes. With one clause, no first progress throws a
     work error.
-  - Multi-sort uses custom streams even without a filter. Name first uses its index. Primary plus
+  - Multi-sort uses custom streams even without a filter. file.name first uses its index. Primary plus
     Name seeks a distinct primary value, then walks that equality range in Name's direction.
     Other secondary fields require a complete primary group, capped at 200 candidates with a
     201st overflow probe. Created groups use this path because its index has no Name suffix.
@@ -375,7 +378,7 @@ folder (`FileNodeViewPrivateFolder`) still lists its children through `useFilesV
   fields. `file.name` and Actions stay visible. A column shows its field name as its label, with no
   second label ("Date created", "Type" and "(metadata)" are gone). One shared helper,
   `files_folder_table_query_field_text`, gives that name.
-  Allow at most eight data columns, including Name. Actions is outside that count.
+  Allow at most eight data columns, including file.name. Actions is outside that count.
   Sorting a hidden field does not show it. Built-in sortable headers keep their sort buttons.
 - The toolbar holds the filter and sort bar (`FileNodeViewFolderFilterBar`), then "Save sort for
   everyone" (writers, only while the URL has a sort), then the Columns icon button.
@@ -404,7 +407,7 @@ folder (`FileNodeViewPrivateFolder`) still lists its children through `useFilesV
 - Each header has a column menu. Sortable columns offer both directions (each replaces the whole
   sort), Add to sort (appends the field while under `files_sort_MAX_CLAUSES`, 8, fields), and Filter by,
   which puts `file.<field>:` or the metadata key in the bar and opens its operations. Every column
-  except Name offers Hide column.
+  except file.name offers Hide column.
 - A supported sort limit keeps completed rows and offers Reset to file.name.
   Forward `workPaused` offers Keep searching. A frozen refresh that cannot rebuild offers Reload table.
   Neither state repeats the same cursor or raises a frozen work limit by itself.
@@ -460,7 +463,7 @@ folder (`FileNodeViewPrivateFolder`) still lists its children through `useFilesV
   too. A failed or no-progress refresh offers Reload table. Retry also resets a failed unfiltered
   side query or manual metadata query. Clear stays available. A preparing private metadata check
   keeps the result incomplete.
-  A Name contains filter may need many bounded pages before a later match is found.
+  A file.name contains filter may need many bounded pages before a later match is found.
 
 ## File Cut, Copy, And Paste
 

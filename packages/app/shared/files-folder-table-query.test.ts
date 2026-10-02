@@ -47,9 +47,11 @@ describe("files_folder_table_query_parse_token", () => {
 	test("names every field once, and refuses the old file.ext", () => {
 		expect(parse_filter("file.extension:is:md")).toMatchObject({ field: "extension", op: "is", value: "md" });
 		expect(files_folder_table_query_parse_token("file.ext:is:md").problem).toContain("Unknown file field");
-		expect(files_folder_table_query_field_text("extension")).toBe("file.extension");
-		expect(files_folder_table_query_field_text("updated_by")).toBe("file.updated_by");
+		for (const field of ["name", "extension", "size", "created", "updated", "updated_by"]) {
+			expect(files_folder_table_query_field_text(field)).toBe(`file.${field}`);
+		}
 		expect(files_folder_table_query_field_text("metadata.status")).toBe("metadata.status");
+		expect(files_folder_table_query_field_text("frontmatter.title")).toBe("frontmatter.title");
 	});
 
 	test("keeps a colon in the value, and reads a quoted value", () => {

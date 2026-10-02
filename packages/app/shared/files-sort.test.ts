@@ -125,7 +125,7 @@ describe("files_sort_compare", () => {
 		});
 	};
 
-	test.each(["asc", "desc"] as const)("keeps Name independent of a %s primary direction", (direction) => {
+	test.each(["asc", "desc"] as const)("keeps file.name independent of a %s primary direction", (direction) => {
 		const sort: files_sort_Sort = [
 			{ field: "metadata.status", direction },
 			{ field: "name", direction: "desc" },
@@ -169,7 +169,7 @@ describe("files_sort_compare", () => {
 		).toBe(-1);
 	});
 
-	test("uses the third clause before final Name asc", () => {
+	test("uses the third clause before final file.name asc", () => {
 		const sort: files_sort_Sort = [
 			{ field: "metadata.status", direction: "desc" },
 			{ field: "metadata.priority", direction: "desc" },
@@ -184,7 +184,7 @@ describe("files_sort_compare", () => {
 		).toBe(1);
 	});
 
-	test("reverses a single present suffix but keeps single missing Name asc", () => {
+	test("reverses a single present suffix but keeps single missing file.name asc", () => {
 		const sort: files_sort_Sort = [{ field: "metadata.status", direction: "desc" }];
 		expect(files_sort_compare({ a: key({ sort, name: "a" }), b: key({ sort, name: "b" }), sort })).toBe(1);
 		expect(
@@ -196,7 +196,7 @@ describe("files_sort_compare", () => {
 		).toBe(-1);
 	});
 
-	test("keeps single Created equal-time ties", () => {
+	test("keeps single file.created equal-time ties", () => {
 		const sort: files_sort_Sort = [{ field: "created", direction: "desc" }];
 		expect(files_sort_compare({ a: key({ sort, name: "a" }), b: key({ sort, name: "b" }), sort })).toBe(0);
 	});
@@ -205,7 +205,7 @@ describe("files_sort_compare", () => {
 describe("files_sort_key_of", () => {
 	const facts = { kind: "file" as const, name: "File2.10", createdAt: 1, updatedAt: 2, extension: "10", contentByteSize: 0 };
 
-	test("keeps raw Type and exact one-clause suffixes", () => {
+	test("keeps raw file.extension and exact one-clause suffixes", () => {
 		expect(files_sort_key_of({ sort: [{ field: "extension", direction: "asc" }], facts, metadataParts: new Map() })).toEqual(
 			{
 				parts: [["10", "file012.0210", "File2.10"]],
@@ -220,7 +220,7 @@ describe("files_sort_key_of", () => {
 		).toEqual([[0, "file012.0210", "File2.10"]]);
 	});
 
-	test("keeps metadata encoded and scalar parts before a later Name", () => {
+	test("keeps metadata encoded and scalar parts before a later file.name", () => {
 		const sort: files_sort_Sort = [
 			{ field: "metadata.x", direction: "desc" },
 			{ field: "name", direction: "asc" },
@@ -233,7 +233,7 @@ describe("files_sort_key_of", () => {
 		]);
 	});
 
-	test("keeps folder Type and Size missing at their original positions", () => {
+	test("keeps folder file.extension and file.size missing at their original positions", () => {
 		const sort: files_sort_Sort = [
 			{ field: "extension", direction: "desc" },
 			{ field: "size", direction: "asc" },
@@ -299,6 +299,7 @@ describe("files_sort_is_valid", () => {
 				{ field: "name", direction: "desc" as const },
 			],
 			[{ field: "bad", direction: "asc" as const }],
+			[{ field: "type", direction: "asc" as const }],
 		]) {
 			expect(files_sort_is_valid(sort)).toBe(false);
 		}
@@ -306,7 +307,7 @@ describe("files_sort_is_valid", () => {
 });
 
 describe("files_sort_execution_fields", () => {
-	test("removes multi-sort folder Type/Size without changing the saved list", () => {
+	test("removes multi-sort folder file.extension/file.size without changing the saved list", () => {
 		const sort: files_sort_Sort = [
 			{ field: "extension", direction: "desc" },
 			{ field: "size", direction: "asc" },
@@ -318,7 +319,7 @@ describe("files_sort_execution_fields", () => {
 		expect(files_sort_execution_fields(sort.slice(0, 2), "folder")).toEqual([]);
 	});
 
-	test("stops after Name and keeps single-field choices", () => {
+	test("stops after file.name and keeps single-field choices", () => {
 		const sort: files_sort_Sort = [
 			{ field: "name", direction: "desc" },
 			{ field: "metadata.x", direction: "asc" },

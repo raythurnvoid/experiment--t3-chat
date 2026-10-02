@@ -268,7 +268,7 @@ type useFilesSortedChildren_Props = {
 /**
  * The children of one folder for the folder table, in the order of `sort`. Folders come first. In
  * each kind, every clause has its own direction and missing values stay last. A one-field sort's
- * missing values use Name A to Z.
+ * missing values use file.name A to Z.
  *
  * Each of these segments has its own pager. A missing segment starts only after its value segment is
  * exhausted, and stays started for that sort. The side rows (restricted children, and this user's
