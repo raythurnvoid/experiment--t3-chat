@@ -39,6 +39,20 @@
 		padding-right: 4px;
 	}
 
+	.FileNodeViewFolderFilterBar-hotkey {
+		flex-shrink: 0;
+		padding: 1px 6px;
+		border: 1px solid var(--color-base-alt-1-10);
+		border-radius: 4px;
+
+		font-family: inherit;
+		font-size: 0.8125rem;
+		line-height: 1.4;
+		color: var(--color-fg-08);
+		/* A click on the hint falls through to the area, which focuses the input. */
+		pointer-events: none;
+	}
+
 	.FileNodeViewFolderFilterBar-icon-button {
 		width: 28px;
 		height: 28px;
@@ -98,7 +112,8 @@
 		color: var(--color-fg-08);
 	}
 
-	.FileNodeViewFolderFilterBar-syntax {
+	/* Status and limit notes. The box is empty, and hidden, when there is nothing to say. */
+	.FileNodeViewFolderFilterBar-notes {
 		flex-shrink: 0;
 		padding: 8px 16px;
 		border-top: 1px solid var(--color-base-alt-1-10);
@@ -107,28 +122,12 @@
 		line-height: 1.4;
 		color: var(--color-fg-08);
 
+		&:empty {
+			display: none;
+		}
+
 		p {
-			margin: 0 0 4px;
-		}
-
-		summary {
-			width: fit-content;
-			min-height: 24px;
-			padding-top: 4px;
-			cursor: pointer;
-		}
-
-		dl {
-			display: grid;
-			grid-template-columns: auto minmax(0, 1fr);
-			gap: 4px 12px;
-			margin: 8px 0 4px;
-		}
-
-		dd {
 			margin: 0;
-			color: var(--color-fg-10);
-			overflow-wrap: anywhere;
 		}
 	}
 	/* #endregion folder filter bar */

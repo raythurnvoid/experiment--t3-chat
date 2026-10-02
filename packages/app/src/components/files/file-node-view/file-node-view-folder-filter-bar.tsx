@@ -106,6 +106,7 @@ type FileNodeViewFolderFilterBar_ClassNames =
 	| "FileNodeViewFolderFilterBar"
 	| "FileNodeViewFolderFilterBar-filters"
 	| "FileNodeViewFolderFilterBar-area"
+	| "FileNodeViewFolderFilterBar-hotkey"
 	| "FileNodeViewFolderFilterBar-icon-button"
 	| "FileNodeViewFolderFilterBar-error"
 	| "FileNodeViewFolderFilterBar-popover"
@@ -113,7 +114,7 @@ type FileNodeViewFolderFilterBar_ClassNames =
 	| "FileNodeViewFolderFilterBar-suggestion"
 	| "FileNodeViewFolderFilterBar-suggestion-label"
 	| "FileNodeViewFolderFilterBar-suggestion-hint"
-	| "FileNodeViewFolderFilterBar-syntax";
+	| "FileNodeViewFolderFilterBar-notes";
 
 export type FileNodeViewFolderFilterBar_Ref = {
 	/**
@@ -372,17 +373,6 @@ export const FileNodeViewFolderFilterBar = memo(function FileNodeViewFolderFilte
 		applyCommit(plan_commit(committedQuery, [raw], "enter"), text.slice(0, typing.start).trimEnd());
 	};
 
-	const hintText =
-		stage.kind === "key"
-			? "Choose a field, or type a token like file.name:contains:report"
-			: stage.kind === "sort_field"
-				? "Choose the field to sort by"
-				: stage.kind === "sort_direction"
-					? "Choose asc or desc"
-					: stage.kind === "operation"
-						? "Choose how to compare"
-						: "Type a value and press Enter";
-
 	const handleTextChange = useFn<NonNullable<MyCombobox_Props["setValue"]>>((nextText) => {
 		setText(nextText);
 		setProblem(null);
@@ -549,6 +539,15 @@ export const FileNodeViewFolderFilterBar = memo(function FileNodeViewFolderFilte
 							onFocus={handleInputFocus}
 							onBlur={handleInputBlur}
 						/>
+						{/* The hotkey works only in the focused input, and focus opens the menu, which already lists it. So the hint shows only when the input is focused and the menu is closed. */}
+						{isFocused && !isSuggestionsOpen ? (
+							<kbd
+								aria-hidden
+								className={cn("FileNodeViewFolderFilterBar-hotkey" satisfies FileNodeViewFolderFilterBar_ClassNames)}
+							>
+								Ctrl+Space
+							</kbd>
+						) : null}
 						{hasContent ? (
 							<MyIconButton
 								variant="ghost-highlightable"
@@ -779,7 +778,7 @@ export const FileNodeViewFolderFilterBar = memo(function FileNodeViewFolderFilte
 							) : null}
 						</MyComboboxPopoverContent>
 					</MyComboboxList>
-					<div className={cn("FileNodeViewFolderFilterBar-syntax" satisfies FileNodeViewFolderFilterBar_ClassNames)}>
+					<div className={cn("FileNodeViewFolderFilterBar-notes" satisfies FileNodeViewFolderFilterBar_ClassNames)}>
 						{fieldsState === "loading" ? <p role="status">Loading fields…</p> : null}
 						{fieldsState === "failed" ? <p role="status">Fields could not be loaded</p> : null}
 						{stage.kind === "key" && !canAddFilter ? (
@@ -788,23 +787,6 @@ export const FileNodeViewFolderFilterBar = memo(function FileNodeViewFolderFilte
 						{stage.kind === "key" && !canAddSort ? (
 							<p>The table sorts by up to {files_sort_MAX_CLAUSES} fields.</p>
 						) : null}
-						<p>{hintText}</p>
-						<p>Esc to close · Ctrl+Space to show suggestions</p>
-						<details>
-							<summary>Syntax</summary>
-							<dl>
-								<dt>Filter</dt>
-								<dd>file.name:contains:report</dd>
-								<dt>Folder field</dt>
-								<dd>metadata.status:is:open</dd>
-								<dt>Has a value</dt>
-								<dd>metadata.status:present</dd>
-								<dt>Sort</dt>
-								<dd>sort_by:file.updated:desc</dd>
-								<dt>Spaces in values</dt>
-								<dd>metadata.title:is:"two words"</dd>
-							</dl>
-						</details>
 					</div>
 				</MyComboboxPopoverScrollableArea>
 			</MyComboboxPopover>
