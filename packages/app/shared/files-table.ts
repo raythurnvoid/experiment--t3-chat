@@ -5,8 +5,8 @@ export const files_table_MAX_COLUMNS = 8;
 
 export type files_table_Filter =
 	| { kind: "name"; field: "name"; op: "contains" | "starts_with"; value: string }
-	| { kind: "type"; field: "type"; op: "is"; value: string }
-	| { kind: "type"; field: "type"; op: "missing" }
+	| { kind: "extension"; field: "extension"; op: "is"; value: string }
+	| { kind: "extension"; field: "extension"; op: "missing" }
 	| { kind: "date"; field: "updated" | "created"; op: "on" | "before" | "after"; start: number; end: number }
 	| { kind: "size"; field: "size"; op: "is" | "at_least" | "at_most"; value: number }
 	| { kind: "size"; field: "size"; op: "missing" }
@@ -21,9 +21,9 @@ export function files_table_filter_is_valid(filter: files_table_Filter) {
 	switch (filter.kind) {
 		case "name":
 			return filter.field === "name" && filter.value.length >= 1 && filter.value.length <= 1024;
-		case "type":
+		case "extension":
 			return (
-				filter.field === "type" &&
+				filter.field === "extension" &&
 				(filter.op === "missing" || (filter.value.length >= 1 && filter.value.length <= 1024))
 			);
 		case "date":
@@ -56,7 +56,7 @@ function fold_filter_text(value: string) {
 
 export function files_table_filter_matches(args: {
 	filter: files_table_Filter;
-	facts: { name: string; createdAt: number; updatedAt: number; type: string | null; contentByteSize: number | null };
+	facts: { name: string; createdAt: number; updatedAt: number; extension: string | null; contentByteSize: number | null };
 	scalar?: string | number | boolean | null;
 }) {
 	const { filter, facts, scalar = null } = args;
@@ -67,8 +67,8 @@ export function files_table_filter_matches(args: {
 			const value = fold_filter_text(filter.value);
 			return filter.op === "contains" ? name.includes(value) : name.startsWith(value);
 		}
-		case "type":
-			return filter.op === "missing" ? facts.type === null : facts.type === filter.value.toLowerCase();
+		case "extension":
+			return filter.op === "missing" ? facts.extension === null : facts.extension === filter.value.toLowerCase();
 		case "date": {
 			const time = filter.field === "created" ? facts.createdAt : facts.updatedAt;
 			return filter.op === "before"

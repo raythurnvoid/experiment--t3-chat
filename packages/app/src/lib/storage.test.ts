@@ -33,16 +33,32 @@ describe("files_folder_columns", () => {
 		const key = "app_state::files_folder_columns::scope::valid_choices";
 		localStorage.setItem(key, JSON.stringify({
 			root: ["name", "metadata.rank", "frontmatter.rank"],
-			folder: ["name", "updated_by", "created", "type", "size"],
+			folder: ["name", "updated_by", "created", "extension", "size"],
 			missingName: ["updated"],
 			repeats: ["name", "name"],
 			badField: ["name", "rank"],
-			tooMany: ["name", "updated_by", "updated", "created", "type", "size", "metadata.a", "metadata.b", "metadata.c"],
+			tooMany: [
+				"name",
+				"updated_by",
+				"updated",
+				"created",
+				"extension",
+				"size",
+				"metadata.a",
+				"metadata.b",
+				"metadata.c",
+			],
 		}));
 		expect(app_local_storage_get_value(key)).toEqual({
 			root: ["name", "metadata.rank", "frontmatter.rank"],
-			folder: ["name", "updated_by", "created", "type", "size"],
+			folder: ["name", "updated_by", "created", "extension", "size"],
 		});
+	});
+
+	test("reads the old type column as extension", () => {
+		const key = "app_state::files_folder_columns::scope::old_type_column";
+		localStorage.setItem(key, JSON.stringify({ folder: ["name", "type", "size"] }));
+		expect(app_local_storage_get_value(key)).toEqual({ folder: ["name", "extension", "size"] });
 	});
 
 	test.each(["bad JSON", "null", "[]", "4"])("uses no stored choices for %s", (raw) => {

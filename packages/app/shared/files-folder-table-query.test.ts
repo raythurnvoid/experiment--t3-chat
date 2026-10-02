@@ -44,9 +44,11 @@ describe("files_folder_table_query_parse_token", () => {
 		expect(parse_filter("frontmatter.a.b:starts_with:x")).toMatchObject({ field: "frontmatter.a.b", value: "x" });
 	});
 
-	test("maps the extension to the type field", () => {
-		expect(parse_filter("file.ext:is:md")).toMatchObject({ field: "type", op: "is", value: "md" });
-		expect(files_folder_table_query_field_text("type")).toBe("file.ext");
+	test("names every field once, and refuses the old file.ext", () => {
+		expect(parse_filter("file.extension:is:md")).toMatchObject({ field: "extension", op: "is", value: "md" });
+		expect(files_folder_table_query_parse_token("file.ext:is:md").problem).toContain("Unknown file field");
+		expect(files_folder_table_query_field_text("extension")).toBe("file.extension");
+		expect(files_folder_table_query_field_text("updated_by")).toBe("file.updated_by");
 		expect(files_folder_table_query_field_text("metadata.status")).toBe("metadata.status");
 	});
 
@@ -78,7 +80,7 @@ describe("files_folder_table_query_parse_token", () => {
 		expect(problems("!file.name:contains:x")).toBe("Not is not available in the folder table");
 		expect(problems("status:is:open")).toBe("Start the field with file., metadata. or frontmatter.");
 		expect(problems("file.path:is:x")).toBe(
-			"Unknown file field. Use file.name, file.updated, file.created, file.ext, file.size",
+			"Unknown file field. Use file.name, file.updated, file.created, file.extension, file.size",
 		);
 		expect(problems("metadata.a:b:is:x")).toBe("Use one of is, starts_with, present, missing");
 		expect(problems("file.name:is:x")).toBe("Use one of contains, starts_with");
@@ -98,7 +100,7 @@ describe("files_folder_table_query_parse_token", () => {
 
 	test("updated_by is a column only", () => {
 		expect(files_folder_table_query_parse_token("file.updated_by:is:x").problem).toBe(
-			"Unknown file field. Use file.name, file.updated, file.created, file.ext, file.size",
+			"Unknown file field. Use file.name, file.updated, file.created, file.extension, file.size",
 		);
 		expect(files_folder_table_query_parse_token("sort_by:file.updated_by:asc").token).toBeNull();
 	});
@@ -189,15 +191,17 @@ describe("files_folder_table_query_with_filter and with_sort", () => {
 	test("replace one part and keep the other", () => {
 		const query = "file.name:contains:a sort_by:file.size:desc";
 
-		expect(files_folder_table_query_with_filter(query, "file.ext:is:md")).toBe("file.ext:is:md sort_by:file.size:desc");
+		expect(files_folder_table_query_with_filter(query, "file.extension:is:md")).toBe(
+			"file.extension:is:md sort_by:file.size:desc",
+		);
 		expect(files_folder_table_query_with_filter(query, null)).toBe("sort_by:file.size:desc");
 
 		expect(
 			files_folder_table_query_with_sort(query, [
-				{ field: "type", direction: "asc" },
+				{ field: "extension", direction: "asc" },
 				{ field: "metadata.status", direction: "desc" },
 			]),
-		).toBe("file.name:contains:a sort_by:file.ext:asc sort_by:metadata.status:desc");
+		).toBe("file.name:contains:a sort_by:file.extension:asc sort_by:metadata.status:desc");
 		expect(files_folder_table_query_with_sort(query, [])).toBe("file.name:contains:a");
 		// Only the first clauses up to the limit are kept.
 		const manyClauses = Array.from({ length: files_sort_MAX_CLAUSES + 1 }, (_, index) => ({
@@ -214,9 +218,11 @@ describe("files_folder_table_query_to_sort", () => {
 	test("is null with no sort token, and the clauses otherwise", () => {
 		expect(files_folder_table_query_to_sort(files_folder_table_query_parse("file.name:contains:a"))).toBeNull();
 		expect(
-			files_folder_table_query_to_sort(files_folder_table_query_parse("sort_by:file.ext:asc sort_by:file.name:desc")),
+			files_folder_table_query_to_sort(
+				files_folder_table_query_parse("sort_by:file.extension:asc sort_by:file.name:desc"),
+			),
 		).toEqual([
-			{ field: "type", direction: "asc" },
+			{ field: "extension", direction: "asc" },
 			{ field: "name", direction: "desc" },
 		]);
 	});
@@ -226,8 +232,8 @@ describe("files_folder_table_query_to_filter", () => {
 	test("builds a filter the table accepts for each kind", () => {
 		const cases: Array<[string, unknown]> = [
 			["file.name:starts_with:Rep", { kind: "name", field: "name", op: "starts_with", value: "Rep" }],
-			["file.ext:is:md", { kind: "type", field: "type", op: "is", value: "md" }],
-			["file.ext:missing", { kind: "type", field: "type", op: "missing" }],
+			["file.extension:is:md", { kind: "extension", field: "extension", op: "is", value: "md" }],
+			["file.extension:missing", { kind: "extension", field: "extension", op: "missing" }],
 			[
 				"file.updated:on:2026-09-04",
 				{ kind: "date", field: "updated", op: "on", start: Date.UTC(2026, 8, 4), end: Date.UTC(2026, 8, 5) },
@@ -261,7 +267,7 @@ describe("files_folder_table_query_operations", () => {
 		const ops = (field: string) => files_folder_table_query_operations(field).map((operation) => operation.op);
 
 		expect(ops("name")).toEqual(["contains", "starts_with"]);
-		expect(ops("type")).toEqual(["is", "missing"]);
+		expect(ops("extension")).toEqual(["is", "missing"]);
 		expect(ops("updated")).toEqual(["on", "before", "after"]);
 		expect(ops("size")).toEqual(["is", "at_least", "at_most", "missing"]);
 		expect(ops("metadata.x")).toEqual(["is", "starts_with", "present", "missing"]);

@@ -8567,13 +8567,13 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				serverTargetKeys: new Map(),
 			});
 
-		test("file.ext never matches a folder, even one with a dot in its name", () => {
+		test("file.extension never matches a folder, even one with a dot in its name", () => {
 			const folder = test_node({ id: "release", parentId: files_ROOT_ID, kind: "folder", name: "v1.2" });
 			const file = test_node({ id: "release_notes", parentId: files_ROOT_ID, kind: "file", name: "v1.2" });
-			expect(matches("file.ext:2", folder)).toBe(false);
-			expect(matches("file.ext:2*", folder)).toBe(false);
-			expect(matches("file.ext:2", file)).toBe(true);
-			expect(matches("file.ext:2*", file)).toBe(true);
+			expect(matches("file.extension:2", folder)).toBe(false);
+			expect(matches("file.extension:2*", folder)).toBe(false);
+			expect(matches("file.extension:2", file)).toBe(true);
+			expect(matches("file.extension:2*", file)).toBe(true);
 		});
 
 		test("file.link reads the link list, and an unknown answer stays unknown under negation", () => {
@@ -8674,7 +8674,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		};
 
 		test("scopes by folder path and file fields, keeping the ancestors", () => {
-			expect(search("file.path:/tasks file.ext:md")).toEqual({
+			expect(search("file.path:/tasks file.extension:md")).toEqual({
 				visible: [files_ROOT_ID, "task", "tasks"].sort(),
 				topMatchId: "task",
 				matchCount: 1,
@@ -8718,20 +8718,20 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(search("file.updated:2026-09-05").matchCount).toBe(0);
 		});
 
-		test("quotes in the free text only group words, and file.ext takes a dot or a prefix", () => {
+		test("quotes in the free text only group words, and file.extension takes a dot or a prefix", () => {
 			expect(search('"raw-media"').matchCount).toBe(1);
 			expect(search('""').matchCount).toBe(0);
-			expect(search("file.ext:.md").matchCount).toBe(2);
-			expect(search("file.ext:t*").matchCount).toBe(2);
+			expect(search("file.extension:.md").matchCount).toBe(2);
+			expect(search("file.extension:t*").matchCount).toBe(2);
 			// A whole extension matches the end of the name, so a two-part one works. A prefix
 			// matches the last part only.
-			expect(search("file.ext:tar.gz").matchCount).toBe(1);
-			expect(search("file.ext:.tar.gz").matchCount).toBe(1);
-			expect(search("file.ext:gz").matchCount).toBe(1);
-			expect(search("file.ext:tar*").matchCount).toBe(0);
+			expect(search("file.extension:tar.gz").matchCount).toBe(1);
+			expect(search("file.extension:.tar.gz").matchCount).toBe(1);
+			expect(search("file.extension:gz").matchCount).toBe(1);
+			expect(search("file.extension:tar*").matchCount).toBe(0);
 			// A middle part is neither the end of the name nor the start of the last part.
-			expect(search("file.ext:tar").matchCount).toBe(0);
-			expect(search("file.ext:z*").matchCount).toBe(0);
+			expect(search("file.extension:tar").matchCount).toBe(0);
+			expect(search("file.extension:z*").matchCount).toBe(0);
 		});
 
 		test("a negated file filter keeps the other nodes, and file.kind ignores case", () => {
@@ -8740,11 +8740,11 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(search("file.kind:Folder").matchCount).toBe(2);
 		});
 
-		test("file.name and file.ext ignore case, and a name prefix is a prefix", () => {
+		test("file.name and file.extension ignore case, and a name prefix is a prefix", () => {
 			expect(search("file.name:RAW").matchCount).toBe(1);
 			expect(search("file.name:raw*").matchCount).toBe(1);
 			expect(search("file.name:media*").matchCount).toBe(0);
-			expect(search("file.ext:.MD").matchCount).toBe(2);
+			expect(search("file.extension:.MD").matchCount).toBe(2);
 		});
 
 		test("Enter opens the folder the text names exactly, or the one file left under a metadata filter", () => {

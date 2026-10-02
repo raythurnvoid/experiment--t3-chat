@@ -177,7 +177,7 @@ Tree-item components:
 - Ancestors of matched files/folders remain visible.
 - Search-open snapshots expansion state and auto-expands relevant parents; search-close restores prior expansion.
 - The free text keeps its shape rules, so users paste what they copied without learning a prefix syntax. `detect_search_query_mode` decides: a pasted app link is unwrapped into the `nodeId` search param or the `/files/<path>` splat it carries; a long lowercase alphanumeric string is a node id; anything containing `/` matches `path`; everything else matches `name`. There is no `>`/`#` prefix syntax.
-- Filters run in two places. `file.*` filters (`path`, `name`, `ext`, `kind`, `updated`) match tree fields on the client in `search_filter_matches_item` (every field ignores case; a whole `file.ext` value matches the end of a file's name so `tar.gz` works and a folder never matches `file.ext`, a prefix matches the stored `lowercaseExtension`, and a leading dot is ignored; `file.updated` goes through `files_search_query_file_updated_matches`, where a day literal means the whole local day, like the dates the tree shows).
+- Filters run in two places. `file.*` filters (`path`, `name`, `extension`, `kind`, `updated`) match tree fields on the client in `search_filter_matches_item` (every field ignores case; a whole `file.extension` value matches the end of a file's name so `tar.gz` works and a folder never matches `file.extension`, a prefix matches the stored `lowercaseExtension`, and a leading dot is ignored; `file.updated` goes through `files_search_query_file_updated_matches`, where a day literal means the whole local day, like the dates the tree shows).
 - Every other filter, except `file.link`, is one `files_metadata.search_nodes` query per chip (`useQueries`, keyed by the filter's raw token); `get_search_matches` ANDs the answers, applies `!` negation, and lets files and folders match their own metadata. Synthetic folders do not match metadata filters.
 - `file.link:public` is answered by the server too, but with one `files_share_links.list_workspace_links` query for all its chips. The answer is stored under each chip's raw token like a metadata answer, so loading, failed, and negated chips follow the same rules as metadata chips. The list covers the whole workspace, so a linked file inside a folder that is not expanded still matches. The `file-metadata` skill has the full rule.
 - A filter whose answer has not arrived matches nothing, and the tree shows "Searching…" instead of "No files match your search." A filter whose query threw is unknown too: `searchServerTargetKeys` stores `null` for it, it matches nothing negated or not, and it ends the "Searching…" state; `isSearchFailed` (any `null` answer) then shows "Search failed" in the status line and "The search failed. Change a filter to try again." in the tree.
@@ -185,10 +185,10 @@ Tree-item components:
 - The first positive `file.path:` chip is also sent as `pathPrefix` (`searchPathPrefix`): the stored path of the tree node the typed path names in any case, so the server scans only that subtree with an exact index range, unless that node is a file: a file has nothing under it, so nothing is sent and the tree filter keeps the file by its own path.
 - The free text loses its quotes before `detect_search_query_mode`, and a text of quotes alone matches nothing.
 - Both `useQueries` argument objects are wrapped in `useMemo` on purpose: `useQueries` resubscribes on object identity and calls setState during render, so a fresh object every render is "Too many re-renders". `searchServerTargetKeys` and `searchMatches` are memoized for the same kind of reason: the tree rebuild layout effect keys on the `visibleFileIds` identity.
-- Suggestions: while the box is focused, the popover lists keys from `files_metadata.list_search_fields` (read once per focus with `convex.query`, not subscribed, so a metadata write elsewhere does not rerun the catalog walk; each key row is one qualified key such as `metadata.status`, with a short value-kind hint), the `file.*` fields, and values from `list_search_values` (or `true`/`false` for a boolean key, `* (any value)`, and extensions or folder paths for `file.*` keys; a folder is listed when its path contains the typed text without the leading slash the filter adds, so `tasks` lists `/projects/tasks` and `arch` lists `/tasks-archive`). Picking a key writes `key:` into the input; picking a value commits the chip. The final token comes from `files_search_query_typing_token`, so a quoted value with spaces still gets value suggestions. Key rows match the typed text anywhere in the qualified key, so `meta` lists every `metadata.` key. A typed `file.path` value is read as a folder path (`tasks` lists `/tasks`) and a typed `file.ext` value drops its leading dot. Metadata value rows match the typed prefix in exact case, the same rule as the server walk, so a row never shows for a prefix the server will not confirm; file value rows ignore case like their filters. A short hint sits below the list. The expandable Filter syntax section shows every token form.
+- Suggestions: while the box is focused, the popover lists keys from `files_metadata.list_search_fields` (read once per focus with `convex.query`, not subscribed, so a metadata write elsewhere does not rerun the catalog walk; each key row is one qualified key such as `metadata.status`, with a short value-kind hint), the `file.*` fields (each row shows only its key, such as `file.extension`, the same text the chip shows; there is no second label), and values from `list_search_values` (or `true`/`false` for a boolean key, `* (any value)`, and extensions or folder paths for `file.*` keys; a folder is listed when its path contains the typed text without the leading slash the filter adds, so `tasks` lists `/projects/tasks` and `arch` lists `/tasks-archive`). Picking a key writes `key:` into the input; picking a value commits the chip. The final token comes from `files_search_query_typing_token`, so a quoted value with spaces still gets value suggestions. Key rows match the typed text anywhere in the qualified key, so `meta` lists every `metadata.` key. A typed `file.path` value is read as a folder path (`tasks` lists `/tasks`) and a typed `file.extension` value drops its leading dot. The old spelling `file.ext` is not a field any more; the chip shows the reason. Metadata value rows match the typed prefix in exact case, the same rule as the server walk, so a row never shows for a prefix the server will not confirm; file value rows ignore case like their filters. A short hint sits below the list. The expandable Filter syntax section shows every token form.
 - Keyboard: Enter commits the typed filters, or opens the top match when only free text is typed. Space commits the complete filters typed so far, but only when the caret is at the end of the text, because the commit rewrites the whole text; a filter with a problem stays in the text next to the free text, so the user can fix it. An open quote is closed on commit: `metadata.assignee:"Denys` becomes the chip `metadata.assignee:"Denys"`. A key pressed while an IME composes text (`nativeEvent.isComposing`, or Safari's `keyCode` 229 on the key that ends a composition) is left to the composition. Removing a chip re-parses the chips left, so a chip past the 20-filter cap becomes valid once there is room. Escape closes suggestions and keeps the text and chips. Ctrl+Space reopens suggestions without changing the text or selection. Plain typing and Space do not reopen a dismissed menu. Backspace on an empty input focuses the last chip's remove button; after a removal the chip row moves focus to the next chip, else the previous one, else back to the input. The chip row comes before the input in the Tab order. Tab from the input reaches Add search filter, then Clear. A filter the parser cannot run becomes a chip on Enter, with the `-invalid` class, a `title`, and an `aria-describedby` reason; it matches nothing.
 - The sr-only `role="status"` line reads "Added filter …", "Removed filter …", or "Filter … cannot run. <reason>", followed by "Searching…" or "N matches".
-- Chips show a muted key and a separate value. File fields use short labels such as Path and Extension. Negation, ranges, and quoted values stay visible; the raw token remains in the URL, hover title, and remove-button name.
+- Chips show a muted key and a separate value. A file field shows its key, such as `file.path` or `file.extension`, with no short label. Negation, ranges, and quoted values stay visible; the raw token remains in the URL, hover title, and remove-button name.
 - Suggestions use `MyComboboxPopover` with the shared `MyFloatingSurface` colors and border. Menu content padding belongs inside the scrolling list, so no padding sits to the right of its scrollbar. Rows and separators use the alternative base color scale.
 - Both search inputs show fields on entry. Returning from chips, suggestions, or the global result list keeps the menu state. Add search filter and Ctrl+Space open the same suggestions. Opening the menu leaves the query unchanged. A matching field prefix is completed; otherwise choosing a field adds it after the plain search text. Choosing a key keeps the menu open for values; committing a filter closes it. The visible summary shows the match count or loading/failure state. Clear search removes the text and all chips, closes suggestions, and returns focus to the input. Invalid filters show their reason below the summary.
 - The top section uses content height so wrapped chips cannot overlap the tree. Keep the chip area's height cap so a long query still leaves room for results.
@@ -237,8 +237,10 @@ folder (`FileNodeViewPrivateFolder`) still lists its children through `useFilesV
 
 ### Sort rules
 
-- Sort by one to three unique fields: Name, Updated, Date created, Type, Size, or any
-  `metadata.*` / `frontmatter.*` key. Each clause has its own direction. Folders always come first.
+- Sort by one to three unique fields: `file.name`, `file.updated`, `file.created`, `file.extension`,
+  `file.size`, or any `metadata.*` / `frontmatter.*` key. Each field has one name. The key, the
+  column label, the sort label and the chip all show that same text. The extension field id is
+  `extension`; the Convex column `lowercaseExtension` and its indexes keep their names. Each clause has its own direction. Folders always come first.
   Missing values stay last at each clause in both directions. Multi-sort ends ties by Name A to Z.
   A unique Name clause makes later clauses irrelevant.
 - Metadata values sort as text through `files_sort_text_key` in `packages/app/shared/files-sort.ts`:
@@ -248,10 +250,10 @@ folder (`FileNodeViewPrivateFolder`) still lists its children through `useFilesV
 - Known limits of text sort: decimals compare digit run by digit run (`1.5` after `1.25`), a minus
   sign is text (`-5` is not below `3`), and dates sort in time order only when they use the same
   format and time zone. Locale alphabets are not handled (Swedish `å` sorts with `a`, not after `z`).
-- A one-clause Size sort keeps folders by Name A to Z in both directions. Folder Type and Size
-  are missing. Multi-sort uses the remaining clauses to order folders. Type uses its raw lowercase
-  extension; files with no extension are missing. Dates and file sizes use numeric values.
-- New fields start with Updated and Date created newest first, Size largest first, and everything
+- A one-clause `file.size` sort keeps folders by `file.name` A to Z in both directions. Folder
+  `file.extension` and `file.size` are missing. Multi-sort uses the remaining clauses to order
+  folders. `file.extension` uses its raw lowercase extension; files with no extension are missing. Dates and file sizes use numeric values.
+- New fields start with `file.updated` and `file.created` newest first, `file.size` largest first, and everything
   else A to Z. A header click applies one field; a second click flips its direction. A header click
   writes the sort into the URL as `sort_by:` tokens (see "Table filter and sort bar").
 
@@ -310,7 +312,7 @@ folder (`FileNodeViewPrivateFolder`) still lists its children through `useFilesV
     A cumulative stop returns a safe completed prefix, even with zero matching rows. A fresh full
     allowance that cannot prove one group returns `sortLimit`; a smaller allowance returns
     `workPaused`. A true 201st overflow remains a limit even after a prefix.
-  - Multi folder Type/Size primaries use the original missing segment. Execution removes those
+  - Multi folder `file.extension`/`file.size` primaries use the original missing segment. Execution removes those
     clauses only to choose an index. An effective metadata primary carries its value/missing phase
     inside the checked cursor. Original clauses, row key positions, and scope stay unchanged.
   - Every result returns `scanBoundary`, `scannedCount`, `workCount`, `sortLimit`, and `workPaused`. Native pages count their
@@ -368,8 +370,11 @@ folder (`FileNodeViewPrivateFolder`) still lists its children through `useFilesV
 
 ### Table UI
 
-- Default columns are Name, Updated by, Updated, then Actions. Columns may show Date created,
-  Type, Size, and qualified metadata/frontmatter fields. Name and Actions stay visible.
+- Default columns are `file.name`, `file.updated_by`, `file.updated`, then Actions. Columns may show
+  `file.created`, `file.extension`, `file.size`, and qualified `metadata.<key>` / `frontmatter.<path>`
+  fields. `file.name` and Actions stay visible. A column shows its field name as its label, with no
+  second label ("Date created", "Type" and "(metadata)" are gone). One shared helper,
+  `files_folder_table_query_field_text`, gives that name.
   Allow at most eight data columns, including Name. Actions is outside that count.
   Sorting a hidden field does not show it. Built-in sortable headers keep their sort buttons.
 - The toolbar holds the filter and sort bar (`FileNodeViewFolderFilterBar`), then "Save sort for
@@ -380,7 +385,9 @@ folder (`FileNodeViewPrivateFolder`) still lists its children through `useFilesV
   requests another page from unfinished sources. An absent selected key stays removable.
 - Column choices use `app_state::files_folder_columns::scope::${membershipId}` in browser storage.
   Each folder id, or `root`, has its own list. Keep at most 100 recent folder choices per membership.
-  A folder rename keeps its choice. Another membership starts with its own choices.
+  A folder rename keeps its choice. Another membership starts with its own choices. A list saved
+  before the rename may hold `type`. The reader maps it to `extension`, and the key is written
+  again only at the next column change.
 - Cells read their own row facts or `files_metadata.get_field_values`. Saved rows use committed
   values; private rows use their current proposal. Lists show the first plain value. Only a
   checked missing value shows `—`. Loading, deferred, preparing, and failed reads have real text.
@@ -398,7 +405,7 @@ folder (`FileNodeViewPrivateFolder`) still lists its children through `useFilesV
   sort), Add to sort (appends the field while under `files_sort_MAX_CLAUSES`, 8, fields), and Filter by,
   which puts `file.<field>:` or the metadata key in the bar and opens its operations. Every column
   except Name offers Hide column.
-- A supported sort limit keeps completed rows and offers Reset to Name.
+- A supported sort limit keeps completed rows and offers Reset to file.name.
   Forward `workPaused` offers Keep searching. A frozen refresh that cannot rebuild offers Reload table.
   Neither state repeats the same cursor or raises a frozen work limit by itself.
 - Cap notices: "Too many shared items here to sort. Some are not shown." and "Too many pending
@@ -415,7 +422,7 @@ folder (`FileNodeViewPrivateFolder`) still lists its children through `useFilesV
   and `view_q` holds the text still being typed (debounced 300 ms, never parsed). The folder keeps no
   local filter or sort copy, so a refresh, a copied link, and Back all restore the table.
 - One token is `<field>:<op>[:<value>]` for a filter, or `sort_by:<field>:<asc|desc>` for a sort.
-  Fields are `file.name`, `file.updated`, `file.created`, `file.ext`, `file.size`,
+  Fields are `file.name`, `file.updated`, `file.created`, `file.extension`, `file.size`,
   `metadata.<key>`, and `frontmatter.<path>`. A metadata key never contains `:`. There is no
   negation. The grammar and the cleaner live in `shared/files-folder-table-query.ts`.
 - Allow one filter and at most 8 sorts (`files_sort_MAX_CLAUSES`) with no repeated sort field. A
@@ -430,11 +437,11 @@ folder (`FileNodeViewPrivateFolder`) still lists its children through `useFilesV
   key named `sort_by` side by side. The menu stops offering `sort_by` at 8 sorts.
 - Every same-node navigation (view, editor mode, `q`) carries `filter` and `view_q`. Every link to
   another node drops them, so a child folder opens clean and Back restores the bar. The `files::open_browser` event opens a file, which has no table, so it drops them too.
-- Operations per field: Name offers contains and starts with. Type (`file.ext`) offers is and
+- Operations per field: `file.name` offers contains and starts with. `file.extension` offers is and
   missing. Dates (`file.updated`, `file.created`) offer on, before, and after one local calendar
-  day, written `2026-09-04`. Size offers is, at least, at most, and missing. Metadata offers text
+  day, written `2026-09-04`. `file.size` offers is, at least, at most, and missing. Metadata offers text
   is, starts with, present, and missing. An applied key can stay hidden as a column.
-- Text comparisons ignore case and accents, keep digit runs, and use the whole text. Type uses
+- Text comparisons ignore case and accents, keep digit runs, and use the whole text. `file.extension` uses
   the lowercase extension. A leading dot is ordinary input and does not match an extension.
   Dates use checked half-open day bounds. Size is a nonnegative whole number; folders have no size.
 - A new filter shows five matches. First Show more asks for 50; later presses first reveal loaded

@@ -117,7 +117,7 @@ describe("files_sort_compare", () => {
 
 		return files_sort_key_of({
 			sort,
-			facts: { kind: "file", name, createdAt: 1, updatedAt: 2, type: "md", contentByteSize: 3 },
+			facts: { kind: "file", name, createdAt: 1, updatedAt: 2, extension: "md", contentByteSize: 3 },
 			metadataParts: new Map([
 				["metadata.status", status],
 				["metadata.priority", priority],
@@ -203,10 +203,10 @@ describe("files_sort_compare", () => {
 });
 
 describe("files_sort_key_of", () => {
-	const facts = { kind: "file" as const, name: "File2.10", createdAt: 1, updatedAt: 2, type: "10", contentByteSize: 0 };
+	const facts = { kind: "file" as const, name: "File2.10", createdAt: 1, updatedAt: 2, extension: "10", contentByteSize: 0 };
 
 	test("keeps raw Type and exact one-clause suffixes", () => {
-		expect(files_sort_key_of({ sort: [{ field: "type", direction: "asc" }], facts, metadataParts: new Map() })).toEqual(
+		expect(files_sort_key_of({ sort: [{ field: "extension", direction: "asc" }], facts, metadataParts: new Map() })).toEqual(
 			{
 				parts: [["10", "file012.0210", "File2.10"]],
 				nameKey: ["file012.0210", "File2.10"],
@@ -235,7 +235,7 @@ describe("files_sort_key_of", () => {
 
 	test("keeps folder Type and Size missing at their original positions", () => {
 		const sort: files_sort_Sort = [
-			{ field: "type", direction: "desc" },
+			{ field: "extension", direction: "desc" },
 			{ field: "size", direction: "asc" },
 			{ field: "updated", direction: "desc" },
 		];
@@ -256,11 +256,11 @@ describe("files_sort_key_of", () => {
 	test("raw numeric and accented extensions agree with the index in both directions", () => {
 		for (const direction of ["asc", "desc"] as const) {
 			const sort: files_sort_Sort = [
-				{ field: "type", direction },
+				{ field: "extension", direction },
 				{ field: "name", direction: "asc" },
 			];
-			const make = (type: string) =>
-				files_sort_key_of({ sort, facts: { ...facts, name: `a.${type}`, type }, metadataParts: new Map() });
+			const make = (extension: string) =>
+				files_sort_key_of({ sort, facts: { ...facts, name: `a.${extension}`, extension }, metadataParts: new Map() });
 			expect(files_sort_compare({ a: make("10"), b: make("2"), sort })).toBe(direction === "asc" ? -1 : 1);
 			expect(Math.sign(files_sort_compare({ a: make("é"), b: make("e"), sort }))).toBe(direction === "asc" ? 1 : -1);
 		}
@@ -308,7 +308,7 @@ describe("files_sort_is_valid", () => {
 describe("files_sort_execution_fields", () => {
 	test("removes multi-sort folder Type/Size without changing the saved list", () => {
 		const sort: files_sort_Sort = [
-			{ field: "type", direction: "desc" },
+			{ field: "extension", direction: "desc" },
 			{ field: "size", direction: "asc" },
 			{ field: "updated", direction: "desc" },
 		];

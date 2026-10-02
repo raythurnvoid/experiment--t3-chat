@@ -80,13 +80,13 @@ Use this file as a quick testing map for `/files`. Keep it short and selector-or
   or `limited`. Read both the state and real status text before checking settled rows.
 - Sorted headers carry `data-sort-priority` (starting at 1) and `data-sort-direction` (`asc` / `desc`).
   Only the first field has `aria-sort`. A visible field's header button applies a one-field sort.
-  The header text shows the order number only when two or more fields sort (`Name 1 ↑`); one field
-  shows only the arrow (`Name ↑`). Read `data-sort-priority`, not the text, for the order.
+  The header text shows the order number only when two or more fields sort (`file.name 1 ↑`); one field
+  shows only the arrow (`file.name ↑`). Read `data-sort-priority`, not the text, for the order.
 - Column header menu: each header has an icon button named `Column options for <label>`. Its menu has
   a `Sort` group (`A to Z` / `Z to A`, or the field's own direction words, both replace the whole
   sort), `Add to sort` (appends the field; disabled at 8 fields or when already sorted), `Filter by
   <label>` (puts `file.<field>:` or the metadata key in the table bar), and `Hide column` (disabled for
-  Name). Columns that cannot sort, such as Updated by, show only `Hide column`. Add to sort writes
+  Name). Columns that cannot sort, such as `file.updated_by`, show only `Hide column`. Every header, chooser row, sort label and chip shows the field name (`file.name`, `file.extension`, `metadata.<key>`), never a second label. Add to sort writes
   `sort_by:` tokens into the URL. It saves nothing.
 - Folder table bar: the combobox `Filter and sort this folder` (inside the group `Table filter and
   sort`) holds the typed text. Chips are the committed tokens. The menu is `Table filter and sort
@@ -673,9 +673,9 @@ run reused `/qa-sort-0924` and `/qa-sort-0924-r` without new files, metadata, mo
 - **Order and labels.** Read `data-sort-fields`, ordered row ids and sorted header priority/direction.
   Only the primary header has `aria-sort`. During an uncached change, held rows keep their full old
   array and `Showing: <filter>. Sort: <full list>.` notice; the `Applying sort…` notice names the requested list.
-  Check all four Type/metadata.rank direction pairs against an order derived independently from
-  bounded fixture facts. Also check Type/Size/rank with folders and Created/rank with unique times.
-  The checked fixture has tied Updated values, so Updated cannot prove its direction there.
+  Check all four file.extension/metadata.rank direction pairs against an order derived independently from
+  bounded fixture facts. Also check file.extension/file.size/rank with folders and file.created/rank with unique times.
+  The checked fixture has tied file.updated values, so file.updated cannot prove its direction there.
 - **Actual query work.** Inspect active `list_tree_children_sorted` descriptors and settled responses
   with `watchQuery(...).localQueryResult()`; do not add subscriptions just to count them. Each forward
   action gives new custom scans at most 1,000 work in total. Check each response against its request
@@ -684,14 +684,14 @@ run reused `/qa-sort-0924` and `/qa-sort-0924-r` without new files, metadata, mo
   candidates in one response; a revealed table may also include folders. Hidden sort fields add no
   displayed-value queries. Metadata after Name needs no sort-key queries. Side enumeration returns
   facts without sort args or inline keys; `get_table_sort_key` returns a full `RowKey` or null.
-  Type/Size positions stay null for folders.
+  file.extension/file.size positions stay null for folders.
 - **Filter and preview.** Combine a Name filter with the full sort list. Check preview five, Show more,
   Show less and exact ordered ids. First Show more requests at least 50 and reveals all loaded rows;
   later requests add 50 to the loaded count. Show less returns to five without a new scan.
 - **Limit coverage.** A bounded authenticated read of `list_tree_children_sorted` on `/people` with
   metadata.source/Updated returned `group_rows`, zero candidates and 202 work. It changed no UI or
   saved sort. Native limit/recovery UI stayed unverified because `canSave` was true. Registered tests
-  cover the limit message, immediate limit `Reset to Name`, private/two-metadata groups, byte/call/work
+  cover the limit message, immediate limit `Reset to file.name`, private/two-metadata groups, byte/call/work
   caps, hidden claims and permission loss. Do not create or change large fixtures just to repeat them.
 - **Named source proof.** Pin a two-field reader-local array and its exact rows. Name as the second
   field must have priority 2 and no `aria-sort`. Name the assertion `secondary_header_priority` before
@@ -710,11 +710,11 @@ Verified 2026-09-29. Use the current QA inventory. A large real folder can stay 
 column choices need to change. Do not write file metadata or shared sorts for this check.
 
 - **Controls.** `Columns` opens a dialog named `Columns`; its input is `Search columns`.
-  Fields sit in groups named `Built-in` and `Metadata`. Name is checked and locked; its checkbox
-  name is `Name Always shown`. Actions is always shown. Up to eight columns may be selected, including Name;
+  Fields sit in groups named `Built-in` and `Metadata`. file.name is checked and locked; its checkbox
+  name is `file.name Always shown`. Actions is always shown. Up to eight columns may be selected, including file.name;
   Actions does not count. The order is fixed: built-ins first, then full qualified field keys.
   Choose fields in a different click order and check the same order after reload. `Reset columns` restores
-  Name, Updated by and Updated. Column changes must keep row ids, row order and paging unchanged.
+  file.name, file.updated_by and file.updated. Column changes must keep row ids, row order and paging unchanged.
 - **Checkboxes.** The native input is visually hidden and does not take pointer clicks. Click the visible
   label inside `.FileNodeViewFolderExplorerColumns-field[data-column-field="<field>"]`, or focus its
   checkbox and press Space. Do not force-click the input. Tab scrolls clipped fields into view.
@@ -783,9 +783,9 @@ column choices need to change. Do not write file metadata or shared sorts for th
 Verified 2026-09-29 on a read-only `/people` folder. Use its current bounded field catalog and readable
 scalar sample. Do not assume a Status field exists. No new fixture is needed for the normal flow.
 
-- **Native fields.** Compare shown rows with their actual cached row facts. Name folds case and accents.
-  Type submits lowercase and keeps a typed dot literal. `Has no value` for Type or Size includes folders
-  and shows no value input. Size compares whole byte counts. Date uses local midnight and the next calendar
+- **Native fields.** Compare shown rows with their actual cached row facts. file.name folds case and accents.
+  file.extension submits lowercase and keeps a typed dot literal. `Has no value` for file.extension or file.size includes folders
+  and shows no value input. file.size compares whole byte counts. Date uses local midnight and the next calendar
   day. Test On, Before and After. In Europe/London, the 2026
   spring and fall change days have 23 and 25 hours. No matching timestamp is needed to check those bounds.
 - **Hidden metadata.** Pick a qualified field that exists now. Is and Starts with use its plain scalar;

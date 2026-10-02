@@ -74,7 +74,7 @@ export function search_filter_matches_item(args: {
 				}
 				return match.op === "prefix" && item.name.toLowerCase().startsWith(match.value.toLowerCase());
 			}
-			case "ext": {
+			case "extension": {
 				// A folder has no extension, even when its name holds a dot.
 				if (match.op === "exists" || item.kind !== "file") {
 					return false;

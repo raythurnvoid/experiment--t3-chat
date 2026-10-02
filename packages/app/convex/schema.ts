@@ -466,8 +466,8 @@ export const files_table_filter_validator = v.union(
 		op: v.union(v.literal("contains"), v.literal("starts_with")),
 		value: v.string(),
 	}),
-	v.object({ kind: v.literal("type"), field: v.literal("type"), op: v.literal("is"), value: v.string() }),
-	v.object({ kind: v.literal("type"), field: v.literal("type"), op: v.literal("missing") }),
+	v.object({ kind: v.literal("extension"), field: v.literal("extension"), op: v.literal("is"), value: v.string() }),
+	v.object({ kind: v.literal("extension"), field: v.literal("extension"), op: v.literal("missing") }),
 	v.object({
 		kind: v.literal("date"),
 		field: v.union(v.literal("updated"), v.literal("created")),

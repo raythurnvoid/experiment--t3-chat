@@ -133,11 +133,13 @@ describe("files_search_query_parse", () => {
 		);
 		expect(parse_one("metadata.due:>2026-09-04").problem).toBeNull();
 		expect(parse_one("file.size:3").problem).toBe(
-			"Unknown file field. Use file.path, file.name, file.ext, file.kind, file.updated, file.link",
+			"Unknown file field. Use file.path, file.name, file.extension, file.kind, file.updated, file.link",
 		);
+		// The old spelling file.ext is not a field any more.
+		expect(parse_one("file.ext:md").problem).toContain("Unknown file field");
 		// The key problem comes before the value problem, and the cap before both.
 		expect(parse_one("file.size:").problem).toBe(
-			"Unknown file field. Use file.path, file.name, file.ext, file.kind, file.updated, file.link",
+			"Unknown file field. Use file.path, file.name, file.extension, file.kind, file.updated, file.link",
 		);
 		const capped = files_search_query_parse(
 			[
@@ -151,7 +153,9 @@ describe("files_search_query_parse", () => {
 		expect(parse_one("file.name:*.md").problem).toBe(
 			"file.name finds names that contain the value. Put * only at the end",
 		);
-		expect(parse_one("file.ext:*.md").problem).toBe("file.ext takes an extension like md. Put * only at the end");
+		expect(parse_one("file.extension:*.md").problem).toBe(
+			"file.extension takes an extension like md. Put * only at the end",
+		);
 		expect(parse_one("file.kind:image").problem).toBe("file.kind is file or folder");
 		expect(parse_one("file.name:>2").problem).toBe("file.name does not support ranges");
 		expect(parse_one("file.path:tasks*").problem).toBe("file.path takes a folder path, without *");
@@ -187,7 +191,7 @@ describe("files_search_query_parse", () => {
 		expect(parse_one("file.path:").problem).toBe("file.path needs a value");
 		// A prefix is refused even when it is a whole kind name: the matcher compares whole kinds.
 		expect(parse_one("file.kind:file*").problem).toBe("file.kind is file or folder");
-		expect(parse_one("file.ext:m*").problem).toBeNull();
+		expect(parse_one("file.extension:m*").problem).toBeNull();
 		expect(parse_one("file.updated:2026-02-31").problem).toBe(
 			"file.updated needs a day like file.updated:2026-09-04 or a range like file.updated:>2026-09-01",
 		);
@@ -421,7 +425,7 @@ describe("files_search_query_folder_path", () => {
 });
 
 describe("files_search_query_parse_field", () => {
-	const fileFields = ["name", "ext"];
+	const fileFields = ["name", "extension"];
 
 	test("reads a namespace and a name, and returns null without a namespace", () => {
 		expect(files_search_query_parse_field("file.name", fileFields)).toEqual({
@@ -441,7 +445,7 @@ describe("files_search_query_parse_field", () => {
 
 	test("checks the file names against the list the caller gives", () => {
 		expect(files_search_query_parse_field("file.size", fileFields)?.problem).toBe(
-			"Unknown file field. Use file.name, file.ext",
+			"Unknown file field. Use file.name, file.extension",
 		);
 		expect(files_search_query_parse_field("file.size", ["size"])?.problem).toBeNull();
 	});

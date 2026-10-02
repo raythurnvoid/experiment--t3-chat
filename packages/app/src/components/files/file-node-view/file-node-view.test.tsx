@@ -497,7 +497,7 @@ beforeEach(() => {
 											name: item.name,
 											createdAt: item._creationTime,
 											updatedAt: item.updatedAt,
-											type:
+											extension:
 												item.kind === "file" && dot > 0 && dot < item.name.length - 1
 													? item.name.slice(dot + 1).toLowerCase()
 													: null,
@@ -515,7 +515,7 @@ beforeEach(() => {
 											name: item.name,
 											createdAt: item._creationTime,
 											updatedAt: item.updatedAt,
-											type: item.name.includes(".") ? item.name.split(".").at(-1)!.toLowerCase() : null,
+											extension: item.name.includes(".") ? item.name.split(".").at(-1)!.toLowerCase() : null,
 											contentByteSize: item.contentByteSize,
 										},
 										metadataParts: new Map([["metadata.status", files_sort_text_key("Open")]]),
@@ -1733,15 +1733,15 @@ describe("FileNodeView folder sort", () => {
 		const { onNavigateSearch } = renderFileView({ nodeId: node._id });
 
 		const table = await screen.findByRole("table", { name: "Folder contents" });
-		expect(within(table).getByRole("columnheader", { name: /^Name/ }).getAttribute("aria-sort")).toBe("ascending");
+		expect(within(table).getByRole("columnheader", { name: /^file\.name/ }).getAttribute("aria-sort")).toBe("ascending");
 
-		fireEvent.click(within(table).getByRole("button", { name: /^Updated/ }));
+		fireEvent.click(within(table).getByRole("button", { name: /^file\.updated/ }));
 		expect(
 			within(table)
-				.getByRole("columnheader", { name: /^Updated ↓/ })
+				.getByRole("columnheader", { name: /^file\.updated ↓/ })
 				.getAttribute("aria-sort"),
 		).toBe("descending");
-		expect(within(table).getByRole("columnheader", { name: /^Name/ }).getAttribute("aria-sort")).toBeNull();
+		expect(within(table).getByRole("columnheader", { name: /^file\.name/ }).getAttribute("aria-sort")).toBeNull();
 		expect(table.getAttribute("data-sort-fields")).toBe(JSON.stringify([{ field: "updated", direction: "desc" }]));
 		expect(onNavigateSearch).toHaveBeenLastCalledWith(
 			expect.objectContaining({ filter: "sort_by:file.updated:desc" }),
@@ -1791,8 +1791,8 @@ describe("FileNodeView folder sort", () => {
 		renderFileView({ nodeId: node._id });
 
 		const table = await screen.findByRole("table", { name: "Folder contents" });
-		fireEvent.click(within(table).getByRole("button", { name: /^Name/ }));
-		expect(within(table).getByRole("columnheader", { name: /^Name/ }).getAttribute("aria-sort")).toBe("descending");
+		fireEvent.click(within(table).getByRole("button", { name: /^file\.name/ }));
+		expect(within(table).getByRole("columnheader", { name: /^file\.name/ }).getAttribute("aria-sort")).toBe("descending");
 		expect(screen.queryByRole("button", { name: "Save sort for everyone" })).toBeNull();
 		expect(mutationMock.mock.calls.length).toBe(0);
 	});
@@ -1804,7 +1804,7 @@ describe("FileNodeView folder sort", () => {
 		renderFileView({ nodeId: node._id });
 
 		const table = await screen.findByRole("table", { name: "Folder contents" });
-		fireEvent.click(within(table).getByRole("button", { name: "Column options for Updated" }));
+		fireEvent.click(within(table).getByRole("button", { name: "Column options for file.updated" }));
 		fireEvent.click(await screen.findByRole("menuitem", { name: "Add to sort" }));
 		expect(table.getAttribute("data-sort-fields")).toBe(
 			JSON.stringify([
@@ -1813,14 +1813,14 @@ describe("FileNodeView folder sort", () => {
 			]),
 		);
 
-		fireEvent.click(within(table).getByRole("button", { name: "Column options for Updated" }));
-		fireEvent.click(await screen.findByRole("menuitem", { name: "Filter by Updated" }));
+		fireEvent.click(within(table).getByRole("button", { name: "Column options for file.updated" }));
+		fireEvent.click(await screen.findByRole("menuitem", { name: "Filter by file.updated" }));
 		expect(screen.getByRole("combobox", { name: "Filter and sort this folder" })).toHaveProperty(
 			"value",
 			"file.updated:",
 		);
 
-		fireEvent.click(within(table).getByRole("button", { name: "Column options for Updated" }));
+		fireEvent.click(within(table).getByRole("button", { name: "Column options for file.updated" }));
 		fireEvent.click(await screen.findByRole("menuitem", { name: "Hide column" }));
 		expect(
 			within(table)
@@ -1854,11 +1854,11 @@ describe("FileNodeView folder sort", () => {
 		renderFileView({ nodeId: node._id });
 
 		const table = await screen.findByRole("table", { name: "Folder contents" });
-		expect(within(table).queryByRole("columnheader", { name: /^Size/ })).toBeNull();
+		expect(within(table).queryByRole("columnheader", { name: /^file\.size/ })).toBeNull();
 		fireEvent.click(screen.getByRole("button", { name: "Columns" }));
-		fireEvent.click(await screen.findByRole("checkbox", { name: "Size" }));
+		fireEvent.click(await screen.findByRole("checkbox", { name: "file.size" }));
 		fireEvent.click(screen.getByRole("button", { name: "Done" }));
-		expect(within(table).getByRole("columnheader", { name: /^Size/ }).getAttribute("aria-sort")).toBe("descending");
+		expect(within(table).getByRole("columnheader", { name: /^file\.size/ }).getAttribute("aria-sort")).toBe("descending");
 		const [folderRow, fileRow] = within(table).getAllByRole("row").slice(1);
 		expect(
 			within(folderRow!)
@@ -1877,13 +1877,13 @@ describe("FileNodeView folder sort", () => {
 		const file = { ...NODE, _id: "a.html", name: "a.html", path: "/Docs/a.html", parentId: node._id };
 		const folder = { ...NODE, _id: "sub", name: "Sub", path: "/Docs/Sub", kind: "folder", parentId: node._id };
 		treeNodes = [node, file, folder];
-		folderSort = { sort: [{ field: "type", direction: "asc" }], canSave: true };
+		folderSort = { sort: [{ field: "extension", direction: "asc" }], canSave: true };
 		const query = queryMock.getMockImplementation()!;
 		queryMock.mockImplementation((reference: never, args: { kind?: string; segment?: string }) => {
 			if (getFunctionName(reference) !== "files_nodes:list_tree_children_sorted") {
 				return query(reference, args);
 			}
-			// Folders have no type, so they are all in the missing segment, keyed by name.
+			// Folders have no file.extension, so they are all in the missing segment, keyed by name.
 			if (args.kind === "folder") {
 				return args.segment === "missing" ? [{ ...folder, sortKey: { parts: [null], nameKey: ["sub", "Sub"] } }] : [];
 			}
@@ -1895,9 +1895,9 @@ describe("FileNodeView folder sort", () => {
 
 		const table = await screen.findByRole("table", { name: "Folder contents" });
 		fireEvent.click(screen.getByRole("button", { name: "Columns" }));
-		fireEvent.click(await screen.findByRole("checkbox", { name: "Type" }));
+		fireEvent.click(await screen.findByRole("checkbox", { name: "file.extension" }));
 		fireEvent.click(screen.getByRole("button", { name: "Done" }));
-		expect(within(table).getByRole("columnheader", { name: /^Type/ })).toBeTruthy();
+		expect(within(table).getByRole("columnheader", { name: /^file\.extension/ })).toBeTruthy();
 		await waitFor(() => expect(within(table).getAllByRole("row")).toHaveLength(3));
 		const [folderRow, fileRow] = within(table).getAllByRole("row").slice(1);
 		expect(
@@ -1998,9 +1998,9 @@ describe("FileNodeView folder sort limits and states", () => {
 		};
 		renderFileView({ nodeId: node._id });
 		const table = await screen.findByRole("table", { name: "Folder contents" });
-		fireEvent.click(within(table).getByRole("button", { name: /^Updated/ }));
+		fireEvent.click(within(table).getByRole("button", { name: /^file\.updated/ }));
 		expect(sortedChildrenMock.mock.calls.at(-1)![0].sort).toEqual([{ field: "updated", direction: "desc" }]);
-		fireEvent.click(within(table).getByRole("button", { name: /^Updated/ }));
+		fireEvent.click(within(table).getByRole("button", { name: /^file\.updated/ }));
 		expect(sortedChildrenMock.mock.calls.at(-1)![0].sort).toEqual([{ field: "updated", direction: "asc" }]);
 		expect(mutationMock).not.toHaveBeenCalled();
 	});
@@ -2017,21 +2017,21 @@ describe("FileNodeView folder sort limits and states", () => {
 		expect(table.getAttribute("data-sort-fields")).toBe(JSON.stringify(sort));
 		expect(table.querySelector('[data-column-field="metadata.status"]')).toBeNull();
 		expect(table.querySelector("[aria-sort]")).toBeNull();
-		const updated = within(table).getByRole("columnheader", { name: /^Updated 2/ });
+		const updated = within(table).getByRole("columnheader", { name: /^file\.updated 2/ });
 		expect(updated.getAttribute("data-sort-priority")).toBe("2");
 		expect(updated.getAttribute("data-sort-direction")).toBe("asc");
-		const name = within(table).getByRole("columnheader", { name: /^Name 3/ });
+		const name = within(table).getByRole("columnheader", { name: /^file\.name 3/ });
 		expect(name.getAttribute("data-sort-direction")).toBe("desc");
 		expect(
 			queryMock.mock.calls.filter(([reference]) => getFunctionName(reference) === "files_metadata:get_field_values"),
 		).toHaveLength(0);
 		fireEvent.click(screen.getByRole("button", { name: "Columns" }));
-		fireEvent.click(await screen.findByRole("checkbox", { name: "status (metadata)" }));
+		fireEvent.click(await screen.findByRole("checkbox", { name: "metadata.status" }));
 		fireEvent.click(screen.getByRole("button", { name: "Done" }));
 		expect(table.querySelectorAll("[aria-sort]")).toHaveLength(1);
 		expect(
 			within(table)
-				.getByRole("columnheader", { name: /status \(metadata\) 1/ })
+				.getByRole("columnheader", { name: /metadata\.status 1/ })
 				.getAttribute("aria-sort"),
 		).toBe("descending");
 	});
@@ -2045,15 +2045,15 @@ describe("FileNodeView folder sort limits and states", () => {
 		renderFileView({ nodeId: node._id });
 		const table = await screen.findByRole("table", { name: "Folder contents" });
 		result = { rowsSort: oldSort, rows: [rows[0]!], isBusy: true, isDone: false };
-		for (const field of ["Updated", "Name"]) {
+		for (const field of ["file.updated", "file.name"]) {
 			fireEvent.click(within(table).getByRole("button", { name: new RegExp(`^${field}`) }));
 			expect(table.getAttribute("data-sort-fields")).toBe(JSON.stringify(oldSort));
 			expect(table.closest(".FileNodeViewFolderExplorer")!.getAttribute("data-sort-state")).toBe("applying");
-			expect(screen.getByText("Showing: No filter. Sort: status (metadata) ↓, then Name ↑.")).toBeTruthy();
+			expect(screen.getByText("Showing: No filter. Sort: metadata.status ↓, then file.name ↑.")).toBeTruthy();
 			expect(screen.getByText(new RegExp(`^Applying sort… ${field}`))).toBeTruthy();
 			expect(
 				within(table)
-					.getByRole("columnheader", { name: /^Name 2/ })
+					.getByRole("columnheader", { name: /^file\.name 2/ })
 					.getAttribute("data-sort-priority"),
 			).toBe("2");
 			expect(table.querySelector("[aria-sort]")).toBeNull();
@@ -2085,7 +2085,7 @@ describe("FileNodeView folder sort limits and states", () => {
 		expect(requestMatches).toHaveBeenLastCalledWith(57);
 		fireEvent.click(screen.getByRole("button", { name: "Show less" }));
 		expect(requestMatches).toHaveBeenLastCalledWith(5);
-		fireEvent.click(within(table).getByRole("button", { name: /^Name/ }));
+		fireEvent.click(within(table).getByRole("button", { name: /^file\.name/ }));
 		expect(sortedChildrenMock.mock.calls.at(-1)![0].filter).toEqual(filter);
 		expect(within(table).getAllByRole("link", { name: /^Open / })).toHaveLength(5);
 		expect(loadMorePendingMock).not.toHaveBeenCalled();
@@ -2097,7 +2097,7 @@ describe("FileNodeView folder sort limits and states", () => {
 		{ reason: "scan_work", message: "The scan cap was reached." },
 		{ reason: "bytes", message: "The byte limit was reached." },
 		{ reason: "calls", message: "The DB-call limit was reached." },
-	] as const)("shows the $reason limit and keeps correct rows and Reset to Name", async ({ reason, message }) => {
+	] as const)("shows the $reason limit and keeps correct rows and Reset to file.name", async ({ reason, message }) => {
 		const sort: files_sort_Sort = [
 			{ field: "metadata.status", direction: "asc" },
 			{ field: "size", direction: "desc" },
@@ -2108,7 +2108,7 @@ describe("FileNodeView folder sort limits and states", () => {
 		const table = await screen.findByRole("table", { name: "Folder contents" });
 		expect(table.closest(".FileNodeViewFolderExplorer")!.getAttribute("data-sort-state")).toBe("limited");
 		expect(screen.getByRole("alert").textContent).toContain(
-			"These sort fields need too much work for this group. Use Name next, or use one sort field.",
+			"These sort fields need too much work for this group. Use file.name next, or use one sort field.",
 		);
 		expect(screen.getByRole("alert").textContent).toContain(message);
 		expect(screen.getByRole("link", { name: "Open file-0.html" })).toBeTruthy();
@@ -2117,7 +2117,7 @@ describe("FileNodeView folder sort limits and states", () => {
 		expect(screen.getByRole("button", { name: "Columns" })).toHaveProperty("disabled", false);
 		expect(screen.getByRole("combobox", { name: "Filter and sort this folder" })).toBeTruthy();
 		expect(screen.queryByText("This folder is empty")).toBeNull();
-		fireEvent.click(screen.getByRole("button", { name: "Reset to Name" }));
+		fireEvent.click(screen.getByRole("button", { name: "Reset to file.name" }));
 		expect(sortedChildrenMock.mock.calls.at(-1)![0].sort).toEqual([{ field: "name", direction: "asc" }]);
 		expect(mutationMock).not.toHaveBeenCalled();
 	});
@@ -2137,7 +2137,7 @@ describe("FileNodeView folder sort limits and states", () => {
 		expect(filter).toEqual({ kind: "name", field: "name", op: "contains", value: "absent" });
 		expect(screen.queryByText("No rows match this filter")).toBeNull();
 		expect(screen.queryByText("This folder is empty")).toBeNull();
-		fireEvent.click(screen.getByRole("button", { name: "Reset to Name" }));
+		fireEvent.click(screen.getByRole("button", { name: "Reset to file.name" }));
 		expect(sortedChildrenMock.mock.calls.at(-1)![0].filter).toEqual(filter);
 		expect(sortedChildrenMock.mock.calls.at(-1)![0].sort).toEqual([{ field: "name", direction: "asc" }]);
 	});
@@ -2271,13 +2271,13 @@ describe("FileNodeView folder columns", () => {
 		const trigger = screen.getByRole("button", { name: "Columns" });
 		fireEvent.click(trigger);
 		const chooser = await screen.findByRole("dialog", { name: "Columns" });
-		expect(within(chooser).getByRole("checkbox", { name: "Name Always shown" })).toHaveProperty("disabled", true);
-		expect(within(chooser).getByRole("checkbox", { name: "Name Always shown" })).toHaveProperty("checked", true);
-		for (const field of ["zeta (metadata)", "Size", "alpha (metadata)", "Type", "Date created"]) {
+		expect(within(chooser).getByRole("checkbox", { name: "file.name Always shown" })).toHaveProperty("disabled", true);
+		expect(within(chooser).getByRole("checkbox", { name: "file.name Always shown" })).toHaveProperty("checked", true);
+		for (const field of ["metadata.zeta", "file.size", "metadata.alpha", "file.extension", "file.created"]) {
 			fireEvent.click(within(chooser).getByRole("checkbox", { name: field }));
 		}
 		expect(within(chooser).getByText("Show up to 8 columns. Hide one to add another.")).toBeTruthy();
-		expect(within(chooser).getByRole("checkbox", { name: "beta (metadata)" })).toHaveProperty("disabled", true);
+		expect(within(chooser).getByRole("checkbox", { name: "metadata.beta" })).toHaveProperty("disabled", true);
 		expect(
 			within(table)
 				.getAllByRole("columnheader")
@@ -2287,7 +2287,7 @@ describe("FileNodeView folder columns", () => {
 			"updated_by",
 			"updated",
 			"created",
-			"type",
+			"extension",
 			"size",
 			"metadata.alpha",
 			"metadata.zeta",
@@ -2307,7 +2307,7 @@ describe("FileNodeView folder columns", () => {
 			"updated_by",
 			"updated",
 			"created",
-			"type",
+			"extension",
 			"size",
 			"metadata.alpha",
 			"metadata.zeta",
@@ -2339,7 +2339,7 @@ describe("FileNodeView folder columns", () => {
 		const trigger = await screen.findByRole("button", { name: "Columns" });
 		fireEvent.click(trigger);
 		const chooser = await screen.findByRole("dialog", { name: "Columns" });
-		const field = within(chooser).getByRole("checkbox", { name: "old (metadata)" });
+		const field = within(chooser).getByRole("checkbox", { name: "metadata.old" });
 		field.focus();
 		fireEvent.click(field);
 		expect(field).toHaveProperty("checked", false);
@@ -2365,7 +2365,7 @@ describe("FileNodeView folder columns", () => {
 		renderFileView({ nodeId: node._id });
 		fireEvent.click(await screen.findByRole("button", { name: "Columns" }));
 		const chooser = await screen.findByRole("dialog", { name: "Columns" });
-		expect(within(chooser).getByRole("checkbox", { name: "alpha (metadata)" })).toBeTruthy();
+		expect(within(chooser).getByRole("checkbox", { name: "metadata.alpha" })).toBeTruthy();
 		expect(
 			queryMock.mock.calls.some(
 				([reference, args]) =>
@@ -2377,7 +2377,7 @@ describe("FileNodeView folder columns", () => {
 		fireEvent.change(within(chooser).getByRole("textbox", { name: "Search columns" }), { target: { value: "" } });
 		fireEvent.click(within(chooser).getByRole("button", { name: "Show more fields" }));
 		expect(await within(chooser).findByText("Fields could not be loaded")).toBeTruthy();
-		expect(within(chooser).queryByRole("checkbox", { name: "alpha (metadata)" })).toBeNull();
+		expect(within(chooser).queryByRole("checkbox", { name: "metadata.alpha" })).toBeNull();
 		const callsAtFailure = queryMock.mock.calls.filter(
 			([reference]) => getFunctionName(reference) === "files_metadata:list_folder_fields",
 		).length;
@@ -2391,7 +2391,7 @@ describe("FileNodeView folder columns", () => {
 		querySetsMock.mockClear();
 		failed = false;
 		fireEvent.click(within(chooser).getByRole("button", { name: "Retry" }));
-		expect(await within(chooser).findByRole("checkbox", { name: "beta (metadata)" })).toBeTruthy();
+		expect(await within(chooser).findByRole("checkbox", { name: "metadata.beta" })).toBeTruthy();
 		expect(querySetsMock.mock.calls.some(([id, queries]) => id === hookId && Object.keys(queries).length === 0)).toBe(
 			true,
 		);
@@ -2443,7 +2443,7 @@ describe("FileNodeView folder columns", () => {
 		fireEvent.click(await screen.findByRole("button", { name: "Columns" }));
 		const chooser = await screen.findByRole("dialog", { name: "Columns" });
 		fireEvent.click(within(chooser).getByRole("button", { name: "Show more fields" }));
-		expect(await within(chooser).findByRole("checkbox", { name: "old_more (metadata)" })).toBeTruthy();
+		expect(await within(chooser).findByRole("checkbox", { name: "metadata.old_more" })).toBeTruthy();
 		secondToken = "proposal:2";
 		pushQueryChanges();
 		await waitFor(() => expect(within(chooser).queryByRole("checkbox", { name: /^old/ })).toBeNull());
@@ -2451,7 +2451,7 @@ describe("FileNodeView folder columns", () => {
 		expect(within(chooser).getByText("Loading fields…")).toBeTruthy();
 		firstToken = "proposal:2";
 		pushQueryChanges();
-		expect(await within(chooser).findByRole("checkbox", { name: "new_more (metadata)" })).toBeTruthy();
+		expect(await within(chooser).findByRole("checkbox", { name: "metadata.new_more" })).toBeTruthy();
 		expect(within(chooser).queryByRole("checkbox", { name: /^old/ })).toBeNull();
 	});
 
@@ -2739,7 +2739,7 @@ describe("FileNodeView folder filter", () => {
 		const sort: files_sort_Sort = [{ field: "updated", direction: "desc" }];
 		folderSort = { sort, canSave: false };
 		app_local_storage_set_value("app_state::files_folder_columns::scope::membership_1", {
-			folder_1: ["name", "type"],
+			folder_1: ["name", "extension"],
 		});
 		const filter: files_table_Filter = { kind: "name", field: "name", op: "contains", value: "file-2" };
 		rowsByScope.set(JSON.stringify(["membership_1", node._id, sort, filter]), [rows[2]!]);
@@ -2762,7 +2762,7 @@ describe("FileNodeView folder filter", () => {
 			within(table)
 				.getAllByRole("columnheader")
 				.map((cell) => cell.getAttribute("data-column-field")),
-		).toEqual(["name", "type", "actions"]);
+		).toEqual(["name", "extension", "actions"]);
 		expect(mutationMock).not.toHaveBeenCalled();
 		expect(actionMock).not.toHaveBeenCalled();
 	});
@@ -2811,8 +2811,8 @@ describe("FileNodeView folder filter", () => {
 
 		// "Filter by" drops the committed filter and keeps its field in the text.
 		const table = await screen.findByRole("table", { name: "Folder contents" });
-		fireEvent.click(within(table).getByRole("button", { name: "Column options for Updated" }));
-		fireEvent.click(await screen.findByRole("menuitem", { name: "Filter by Updated" }));
+		fireEvent.click(within(table).getByRole("button", { name: "Column options for file.updated" }));
+		fireEvent.click(await screen.findByRole("menuitem", { name: "Filter by file.updated" }));
 		expect(onNavigateSearch).toHaveBeenLastCalledWith(expect.objectContaining({ filter: undefined }), {
 			replace: false,
 		});
@@ -2881,7 +2881,7 @@ describe("FileNodeView folder filter", () => {
 					onNavigateSearch={view.onNavigateSearch}
 				/>,
 			);
-			expect(screen.getByText("Showing: Updated on 2026-10-25. Sort: Name ↑.")).toBeTruthy();
+			expect(screen.getByText("Showing: file.updated on 2026-10-25. Sort: file.name ↑.")).toBeTruthy();
 			expect(screen.getByText("Applying filter…")).toBeTruthy();
 			const table = screen.getByRole("table", { name: "Folder contents" });
 			expect(table.closest(".FileNodeViewFolderExplorer")!.getAttribute("data-filter-state")).toBe("applying");

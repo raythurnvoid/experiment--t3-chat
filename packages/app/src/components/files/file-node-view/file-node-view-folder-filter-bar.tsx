@@ -154,7 +154,7 @@ const FileNodeViewFolderFilterBar_FILE_FIELD_HINTS = {
 	name: "text",
 	updated: "date",
 	created: "date",
-	ext: "text",
+	extension: "text",
 	size: "number",
 } satisfies Record<(typeof files_folder_table_query_FILE_FIELDS)[number], string>;
 

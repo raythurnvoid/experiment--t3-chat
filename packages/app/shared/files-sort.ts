@@ -10,7 +10,7 @@ import {
 const TEXT_KEY_MAX_CODE_POINTS = 256;
 const DIGIT_RUN_MAX_LENGTH = 99;
 
-export const files_sort_BUILT_IN_FIELDS = ["name", "updated", "created", "type", "size"] as const;
+export const files_sort_BUILT_IN_FIELDS = ["name", "updated", "created", "extension", "size"] as const;
 
 /**
  * The most clauses one sort can hold. Each extra clause adds reads to the same table work limit.
@@ -64,13 +64,13 @@ export function files_sort_is_valid(sort: files_sort_Sort) {
 }
 
 /**
- * Folders miss Type and Size. Name's full key is unique, so later fields cannot change its order.
+ * Folders miss file.extension and file.size. Name's full key is unique, so later fields cannot change its order.
  * Keep the original clauses for saved choices, keys and cursor scopes.
  */
 export function files_sort_execution_fields(sort: files_sort_Sort, kind: "folder" | "file") {
 	const fields: files_sort_Sort = [];
 	for (const clause of sort) {
-		if (sort.length > 1 && kind === "folder" && (clause.field === "type" || clause.field === "size")) continue;
+		if (sort.length > 1 && kind === "folder" && (clause.field === "extension" || clause.field === "size")) continue;
 		fields.push(clause);
 		if (clause.field === "name") break;
 	}
@@ -132,7 +132,7 @@ export function files_sort_key_of(args: {
 		name: string;
 		createdAt: number;
 		updatedAt: number;
-		type: string | null;
+		extension: string | null;
 		contentByteSize: number | null;
 	};
 	metadataParts: ReadonlyMap<string, string | null>;
@@ -152,10 +152,10 @@ export function files_sort_key_of(args: {
 				? facts.createdAt
 				: clause.field === "updated"
 					? facts.updatedAt
-					: clause.field === "type"
+					: clause.field === "extension"
 						? facts.kind === "folder"
 							? null
-							: facts.type
+							: facts.extension
 						: clause.field === "size"
 							? facts.kind === "folder"
 								? null

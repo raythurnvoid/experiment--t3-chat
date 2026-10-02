@@ -13584,8 +13584,8 @@ describe("list_tree_children_sorted", () => {
 			"readme",
 			"file2.md",
 		]);
-		// Folders and files without an extension have no type, so they sort by name after the others.
-		expect(await read_table({ field: "type", direction: "asc" })).toEqual([
+		// Folders and files without an extension have no file.extension, so they sort by name after the others.
+		expect(await read_table({ field: "extension", direction: "asc" })).toEqual([
 			"alpha",
 			"beta",
 			"b.md",
@@ -13594,7 +13594,7 @@ describe("list_tree_children_sorted", () => {
 			"a.txt",
 			"readme",
 		]);
-		expect(await read_table({ field: "type", direction: "desc" })).toEqual([
+		expect(await read_table({ field: "extension", direction: "desc" })).toEqual([
 			"alpha",
 			"beta",
 			"a.txt",
@@ -13981,7 +13981,7 @@ describe("list_tree_children_sorted filter", () => {
 				});
 		}
 		const filter = { kind: "name", field: "name", op: "contains", value: "row" } as const;
-		for (const field of ["name", "created", "updated", "type", "size", "metadata.status", "frontmatter.absent"]) {
+		for (const field of ["name", "created", "updated", "extension", "size", "metadata.status", "frontmatter.absent"]) {
 			for (const direction of ["asc", "desc"] as const) {
 				expect(await read_table({ field, direction }, filter)).toEqual(await read_table({ field, direction }));
 			}
@@ -14525,14 +14525,21 @@ describe("get_table_filter_match", () => {
 		expect(
 			await match({
 				target,
-				filter: { kind: "type", field: "type", op: "is", value: "MD" },
+				filter: { kind: "extension", field: "extension", op: "is", value: "MD" },
 				folderId: destination._yay.nodeId,
 			}),
 		).toEqual({ matches: true, preparing: false });
 		expect(
 			await match({
 				target,
-				filter: { kind: "type", field: "type", op: "is", value: ".md" },
+				filter: { kind: "extension", field: "extension", op: "is", value: ".md" },
+				folderId: destination._yay.nodeId,
+			}),
+		).toEqual({ matches: false, preparing: false });
+		expect(
+			await match({
+				target,
+				filter: { kind: "extension", field: "extension", op: "missing" },
 				folderId: destination._yay.nodeId,
 			}),
 		).toEqual({ matches: false, preparing: false });
@@ -14911,14 +14918,14 @@ describe("list_tree_children_sorted multi", () => {
 				}
 	});
 
-	test("Type keeps raw extension order instead of encoded number order", async () => {
+	test("file.extension keeps raw extension order instead of encoded number order", async () => {
 		const { insert_child, read } = await seed_multi();
 		await insert_child({ name: "two.2", kind: "file", updatedAt: 1, lowercaseExtension: "2" });
 		await insert_child({ name: "ten.10", kind: "file", updatedAt: 1, lowercaseExtension: "10" });
 		for (const direction of ["asc", "desc"] as const) {
 			const result = await read({
 				sort: [
-				{ field: "type", direction },
+				{ field: "extension", direction },
 				{ field: "name", direction: "asc" },
 			],
 			});
@@ -15138,7 +15145,7 @@ describe("list_tree_children_sorted multi", () => {
 		);
 	});
 
-	test("folder Type and Size keep original null parts while execution uses Updated and Name", async () => {
+	test("folder file.extension and file.size keep original null parts while execution uses file.updated and file.name", async () => {
 		const { add, read, walk } = await seed_multi();
 		for (let index = 0; index < 250; index++)
 			await add({
@@ -15148,7 +15155,7 @@ describe("list_tree_children_sorted multi", () => {
 				status: undefined,
 				kind: "folder",
 			});
-		for (const field of ["type", "size"]) {
+		for (const field of ["extension", "size"]) {
 			const sort: files_sort_Sort = [
 				{ field, direction: "desc" },
 				{ field: "updated", direction: "desc" },
@@ -15162,7 +15169,7 @@ describe("list_tree_children_sorted multi", () => {
 		}
 		const noFields = await walk(
 			[
-				{ field: "type", direction: "desc" },
+				{ field: "extension", direction: "desc" },
 				{ field: "size", direction: "desc" },
 			],
 			{ kind: "folder", segment: "missing" },
@@ -15178,7 +15185,7 @@ describe("list_tree_children_sorted multi", () => {
 		await add({ name: "c", updatedAt: 1, size: undefined, status: "closed", kind: "folder" });
 		const pages = await walk(
 			[
-				{ field: "type", direction: "desc" },
+				{ field: "extension", direction: "desc" },
 				{ field: "metadata.status", direction: "desc" },
 			],
 			{ kind: "folder", segment: "missing" },
@@ -15382,7 +15389,7 @@ describe("get_table_sort_key", () => {
 			await key({
 				target: { kind: "saved", id: nodeId },
 				sort: [
-				{ field: "type", direction: "asc" },
+				{ field: "extension", direction: "asc" },
 				{ field: "frontmatter.status", direction: "desc" },
 			],
 			}),
@@ -15722,12 +15729,12 @@ describe("list_tree_children_sort_side_rows", () => {
 						result.rows.map(async (row) => {
 							const sort = [args.sort];
 							const dot = row.name.lastIndexOf(".");
-							const type =
+							const extension =
 								row.kind === "file" && dot > 0 && dot < row.name.length - 1
 									? row.name.slice(dot + 1).toLowerCase()
 									: null;
-							const sortKey = ["name", "created", "updated", "type", "size"].includes(args.sort.field)
-								? files_sort_key_of({ sort, facts: { ...row, type }, metadataParts: new Map() })
+							const sortKey = ["name", "created", "updated", "extension", "size"].includes(args.sort.field)
+								? files_sort_key_of({ sort, facts: { ...row, extension }, metadataParts: new Map() })
 								: await args.as.query(api.files_nodes.get_table_sort_key, {
 										membershipId: args.membershipId,
 										parentId: args.parentId ?? parentId,
@@ -15774,7 +15781,7 @@ describe("list_tree_children_sort_side_rows", () => {
 		const byType = await side_rows({
 			as: asOwner,
 			membershipId: db.membershipId,
-			sort: { field: "type", direction: "asc" },
+			sort: { field: "extension", direction: "asc" },
 		});
 		expect(byType).toEqual({ rows: expect.any(Array), nameClaims: [], tooManyShared: false, tooManyPending: false });
 		expect(

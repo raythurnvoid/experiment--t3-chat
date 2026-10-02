@@ -69,6 +69,7 @@ import { files_metadata_apply_set_and_remove, type files_metadata_Entry } from "
 import {
 	files_sort_compare,
 	files_sort_execution_fields,
+	files_sort_field_is_built_in,
 	files_sort_key_of,
 	files_sort_is_valid,
 	files_sort_text_key,
@@ -7173,7 +7174,7 @@ async function db_list_custom_table_children(
 	const field = sort.field;
 	const byName = field === "name" || (field === "size" && args.kind === "folder");
 	if (args.segment === "missing" && (byName || field === "created" || field === "updated")) return refused;
-	const metadata = !["name", "created", "updated", "type", "size"].includes(field);
+	const metadata = !files_sort_field_is_built_in(field);
 	const metadataMissing = metadata && args.segment === "missing";
 	const direction = args.segment === "missing" || (field === "size" && args.kind === "folder") ? "asc" : sort.direction;
 	const scope = JSON.stringify([
@@ -7259,7 +7260,7 @@ async function db_list_custom_table_children(
 					.eq("kind", args.kind),
 			)
 			.order(direction);
-	} else if (field === "type") {
+	} else if (field === "extension") {
 		primary = nodes
 			.withIndex("by_org_ws_parent_archive_restricted_kind_ext_sortName_name", (q) => {
 				const range = q
@@ -7464,7 +7465,7 @@ async function db_list_custom_table_children(
 						name: node.name,
 						createdAt: node._creationTime,
 						updatedAt: node.updatedAt,
-						type: files_lowercase_extension(node.name, node.kind),
+						extension: files_lowercase_extension(node.name, node.kind),
 						contentByteSize: node.kind === "folder" ? null : node.contentByteSize,
 					},
 					scalar,
@@ -7476,7 +7477,7 @@ async function db_list_custom_table_children(
 				name: node.name,
 				createdAt: node._creationTime,
 				updatedAt: node.updatedAt,
-				type: node.lowercaseExtension,
+				extension: node.lowercaseExtension,
 				contentByteSize: node.contentByteSize,
 			},
 			metadataParts: new Map([[field, metadataMissing ? null : (primaryField?.sortValue ?? null)]]),
@@ -7539,8 +7540,8 @@ async function db_list_multi_sorted_table_children(
 	const executionFields = files_sort_execution_fields(args.sort, args.kind);
 	const primaryClause = executionFields[0] ?? { field: "name", direction: "asc" as const };
 	const field = primaryClause.field;
-	const metadata = !["name", "created", "updated", "type", "size"].includes(field);
-	const invariantPrimary = args.kind === "folder" && ["type", "size"].includes(args.sort[0]!.field);
+	const metadata = !files_sort_field_is_built_in(field);
+	const invariantPrimary = args.kind === "folder" && ["extension", "size"].includes(args.sort[0]!.field);
 	if (
 		invariantPrimary
 			? args.segment === "value"
@@ -7688,7 +7689,7 @@ async function db_list_multi_sorted_table_children(
 						.eq("kind", args.kind),
 				)
 				.order(direction);
-		if (field === "type")
+		if (field === "extension")
 			return nodes
 				.withIndex("by_org_ws_parent_archive_restricted_kind_ext_sortName_name", (q) => {
 					const prefix = q
@@ -7761,7 +7762,7 @@ async function db_list_multi_sorted_table_children(
 		let scalar: string | number | boolean | null = null;
 		const fields = new Set(
 			executionFields
-				.filter((clause) => !["name", "created", "updated", "type", "size"].includes(clause.field))
+				.filter((clause) => !files_sort_field_is_built_in(clause.field))
 				.map((clause) => clause.field),
 		);
 		if (!positional && args.filter?.kind === "text") fields.add(args.filter.field);
@@ -7793,7 +7794,7 @@ async function db_list_multi_sorted_table_children(
 					name: node.name,
 					createdAt: node._creationTime,
 					updatedAt: node.updatedAt,
-					type: node.lowercaseExtension,
+					extension: node.lowercaseExtension,
 					contentByteSize: node.contentByteSize,
 				},
 				metadataParts: parts,
@@ -7846,7 +7847,7 @@ async function db_list_multi_sorted_table_children(
 						name: node.name,
 						createdAt: node._creationTime,
 						updatedAt: node.updatedAt,
-						type: files_lowercase_extension(node.name, node.kind),
+						extension: files_lowercase_extension(node.name, node.kind),
 						contentByteSize: node.kind === "folder" ? null : node.contentByteSize,
 					},
 					scalar: candidate.scalar,
@@ -7899,7 +7900,7 @@ async function db_list_multi_sorted_table_children(
 					? "_creationTime"
 					: field === "updated"
 						? "updatedAt"
-						: field === "type"
+						: field === "extension"
 							? "lowercaseExtension"
 							: field === "size"
 								? "contentByteSize"
@@ -8216,7 +8217,7 @@ export const list_tree_children_sorted = query({
 		const sort = args.sort[0]!;
 		if (
 			args.filter !== null ||
-			(!["name", "created", "updated", "type", "size"].includes(sort.field) && args.segment === "missing")
+			(!files_sort_field_is_built_in(sort.field) && args.segment === "missing")
 		) {
 			return await db_list_custom_table_children(ctx, { ...args, reader });
 		}
@@ -8253,7 +8254,7 @@ export const list_tree_children_sorted = query({
 								name: result.page.at(-1)!.name,
 								createdAt: result.page.at(-1)!._creationTime,
 								updatedAt: result.page.at(-1)!.updatedAt,
-								type: result.page.at(-1)!.lowercaseExtension,
+								extension: result.page.at(-1)!.lowercaseExtension,
 								contentByteSize: result.page.at(-1)!.contentByteSize,
 							},
 							metadataParts: new Map(),
@@ -8343,7 +8344,7 @@ export const list_tree_children_sorted = query({
 			}
 
 			// Null means no extension or no known size. Those rows are the missing segment, by name.
-			if (field === "type") {
+			if (field === "extension") {
 				return args.segment === "value"
 					? node_rows(
 							await ctx.db
@@ -8876,7 +8877,7 @@ export const get_table_sort_key = query({
 				(entry.pendingUpdate.createIntent.kind === "text" && entry.pendingUpdate.content?.base.kind !== "new"));
 		const metadataParts = new Map<string, string | null>();
 		for (const clause of files_sort_execution_fields(args.sort, entry.node.kind)) {
-			if (["name", "created", "updated", "type", "size"].includes(clause.field)) continue;
+			if (files_sort_field_is_built_in(clause.field)) continue;
 			if (preparing) {
 				metadataParts.set(clause.field, null);
 				continue;
@@ -8901,7 +8902,7 @@ export const get_table_sort_key = query({
 				name,
 				createdAt: entry.node._creationTime,
 				updatedAt: entry.kind === "saved" ? entry.node.updatedAt : entry.pendingUpdate.updatedAt,
-				type: files_lowercase_extension(name, entry.node.kind),
+				extension: files_lowercase_extension(name, entry.node.kind),
 				contentByteSize: entry.node.kind === "folder" ? null : size,
 			},
 			metadataParts,
@@ -8985,7 +8986,7 @@ export const get_table_filter_match = query({
 					name,
 					createdAt: entry.node._creationTime,
 					updatedAt: entry.kind === "saved" ? entry.node.updatedAt : entry.pendingUpdate.updatedAt,
-					type: files_lowercase_extension(name, entry.node.kind),
+					extension: files_lowercase_extension(name, entry.node.kind),
 					contentByteSize: entry.node.kind === "folder" ? null : size,
 				},
 				scalar,

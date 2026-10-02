@@ -8,10 +8,10 @@ import {
 	type files_table_Filter,
 } from "./files-table.ts";
 
-const FACTS = { name: "Résumé 007.md", createdAt: 100, updatedAt: 200, type: "md", contentByteSize: 42 };
+const FACTS = { name: "Résumé 007.md", createdAt: 100, updatedAt: 200, extension: "md", contentByteSize: 42 };
 
 describe("files_table_column_is_valid", () => {
-	test.each(["name", "updated_by", "updated", "created", "type", "size", "metadata.rank", "frontmatter.rank"])(
+	test.each(["name", "updated_by", "updated", "created", "extension", "size", "metadata.rank", "frontmatter.rank"])(
 		"accepts %s",
 		(field) => expect(files_table_column_is_valid(field)).toBe(true),
 	);
@@ -29,8 +29,8 @@ describe("files_table_filter_is_valid", () => {
 	test.each<files_table_Filter>([
 		{ kind: "name", field: "name", op: "contains", value: "x" },
 		{ kind: "name", field: "name", op: "starts_with", value: "x".repeat(1024) },
-		{ kind: "type", field: "type", op: "is", value: "MD" },
-		{ kind: "type", field: "type", op: "missing" },
+		{ kind: "extension", field: "extension", op: "is", value: "MD" },
+		{ kind: "extension", field: "extension", op: "missing" },
 		{ kind: "date", field: "created", op: "on", start: 0, end: 23 * 60 * 60 * 1000 },
 		{ kind: "date", field: "updated", op: "after", start: 0, end: 25 * 60 * 60 * 1000 },
 		{ kind: "size", field: "size", op: "is", value: 0 },
@@ -41,7 +41,7 @@ describe("files_table_filter_is_valid", () => {
 
 	test.each<files_table_Filter>([
 		{ kind: "name", field: "name", op: "contains", value: "" },
-		{ kind: "type", field: "type", op: "is", value: "x".repeat(1025) },
+		{ kind: "extension", field: "extension", op: "is", value: "x".repeat(1025) },
 		{ kind: "text", field: "name", op: "missing" },
 		{ kind: "text", field: "status", op: "missing" },
 		{ kind: "text", field: "metadata.", op: "present" },
@@ -99,24 +99,24 @@ describe("files_table_filter_matches", () => {
 
 	test("compares lower-case Type without removing a leading dot", () => {
 		expect(
-			files_table_filter_matches({ filter: { kind: "type", field: "type", op: "is", value: "MD" }, facts: FACTS }),
+			files_table_filter_matches({ filter: { kind: "extension", field: "extension", op: "is", value: "MD" }, facts: FACTS }),
 		).toBe(true);
 		expect(
-			files_table_filter_matches({ filter: { kind: "type", field: "type", op: "is", value: ".md" }, facts: FACTS }),
+			files_table_filter_matches({ filter: { kind: "extension", field: "extension", op: "is", value: ".md" }, facts: FACTS }),
 		).toBe(false);
-		expect(files_table_filter_matches({ filter: { kind: "type", field: "type", op: "missing" }, facts: FACTS })).toBe(
+		expect(files_table_filter_matches({ filter: { kind: "extension", field: "extension", op: "missing" }, facts: FACTS })).toBe(
 			false,
 		);
 		expect(
 			files_table_filter_matches({
-				filter: { kind: "type", field: "type", op: "missing" },
-				facts: { ...FACTS, type: null },
+				filter: { kind: "extension", field: "extension", op: "missing" },
+				facts: { ...FACTS, extension: null },
 			}),
 		).toBe(true);
 		expect(
 			files_table_filter_matches({
-				filter: { kind: "type", field: "type", op: "is", value: "md" },
-				facts: { ...FACTS, type: null },
+				filter: { kind: "extension", field: "extension", op: "is", value: "md" },
+				facts: { ...FACTS, extension: null },
 			}),
 		).toBe(false);
 	});

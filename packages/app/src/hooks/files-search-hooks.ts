@@ -283,9 +283,10 @@ export function useFilesSortedChildren(props: useFilesSortedChildren_Props) {
 	const field = sort?.[0].field ?? null;
 	const isMetadata = field !== null && !files_sort_field_is_built_in(field);
 	const customScan = filter !== null || (sort !== null && sort.length > 1);
-	// A single Size sort keeps folders in the value segment. Multi-sort folders miss Type and Size.
-	const hasFolderMissing = field === "type" || (field === "size" && sort!.length > 1) || isMetadata;
-	const hasFileMissing = field === "type" || field === "size" || isMetadata;
+	// A single file.size sort keeps folders in the value segment. Multi-sort folders miss file.extension
+	// and file.size.
+	const hasFolderMissing = field === "extension" || (field === "size" && sort!.length > 1) || isMetadata;
+	const hasFileMissing = field === "extension" || field === "size" || isMetadata;
 
 	const segmentArgs = (kind: app_convex_Doc<"files_nodes">["kind"]) =>
 		sort === null
@@ -370,17 +371,17 @@ export function useFilesSortedChildren(props: useFilesSortedChildren_Props) {
 		sort === null || customScan || currentScan.retrying ? "skip" : { ...segmentArgs("file")!, segment: "value" },
 		{ initialNumItems: FILES_SORTED_CHILDREN_PAGE_SIZE },
 	);
-	// Rows without a type or a size have a native cursor. A metadata key's missing rows use a cursor chain.
+	// Rows without a file.extension or a file.size have a native cursor. A metadata key's missing rows use a cursor chain.
 	const folderMissing = usePaginatedQuery(
 		app_convex_api.files_nodes.list_tree_children_sorted,
-		!customScan && !currentScan.retrying && field === "type" && started.folder
+		!customScan && !currentScan.retrying && field === "extension" && started.folder
 			? { ...segmentArgs("folder")!, segment: "missing" }
 			: "skip",
 		{ initialNumItems: FILES_SORTED_CHILDREN_PAGE_SIZE },
 	);
 	const fileMissing = usePaginatedQuery(
 		app_convex_api.files_nodes.list_tree_children_sorted,
-		!customScan && !currentScan.retrying && (field === "type" || field === "size") && started.file
+		!customScan && !currentScan.retrying && (field === "extension" || field === "size") && started.file
 			? { ...segmentArgs("file")!, segment: "missing" }
 			: "skip",
 		{ initialNumItems: FILES_SORTED_CHILDREN_PAGE_SIZE },
@@ -458,7 +459,7 @@ export function useFilesSortedChildren(props: useFilesSortedChildren_Props) {
 						sort,
 						facts: {
 							...row,
-							type: dot > 0 && dot < row.name.length - 1 ? row.name.slice(dot + 1).toLowerCase() : null,
+							extension: dot > 0 && dot < row.name.length - 1 ? row.name.slice(dot + 1).toLowerCase() : null,
 						},
 						metadataParts: new Map(),
 					});

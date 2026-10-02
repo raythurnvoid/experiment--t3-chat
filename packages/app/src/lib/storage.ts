@@ -196,6 +196,12 @@ const storage_local_schema = {
 				if (typeof value !== "object" || value === null || Array.isArray(value)) return {};
 				return Object.fromEntries(
 					Object.entries(value)
+						// The extension column was once saved as "type". Read it as "extension",
+						// so users keep their columns. Remove this map when no saved list holds "type".
+						.map(([folderId, columns]) => [
+							folderId,
+							Array.isArray(columns) ? columns.map((field) => (field === "type" ? "extension" : field)) : columns,
+						])
 						.filter(
 							([folderId, columns]) =>
 								folderId.length > 0 &&

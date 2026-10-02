@@ -171,15 +171,14 @@ import {
 	files_metadata_METADATA_FIELD_PREFIX,
 } from "../../../../shared/files-metadata.ts";
 import {
+	files_folder_table_query_field_text,
 	files_folder_table_query_parse,
 	files_folder_table_query_to_filter,
 	files_folder_table_query_to_sort,
 	files_folder_table_query_with_sort,
 } from "../../../../shared/files-folder-table-query.ts";
 import {
-	files_sort_BUILT_IN_FIELDS,
 	files_sort_DEFAULT,
-	files_sort_field_is_built_in,
 	files_sort_field_is_valid,
 	files_sort_MAX_CLAUSES,
 	type files_sort_Clause,
@@ -2661,7 +2660,7 @@ type FileNodeViewFolder_ClassNames = "FileNodeViewFolder" | "FileNodeViewFolder-
 
 type FileNodeViewFolderRow = NonNullable<ReturnType<typeof useFilesSortedChildren>["rows"]>[number];
 
-const FILE_NODE_VIEW_FOLDER_COLUMNS = ["name", "updated_by", "updated", "created", "type", "size"];
+const FILE_NODE_VIEW_FOLDER_COLUMNS = ["name", "updated_by", "updated", "created", "extension", "size"];
 
 function get_folder_columns(columns: readonly string[]) {
 	return [
@@ -3883,7 +3882,7 @@ const FileNodeViewFolderExplorerColumnCells = memo(function FileNodeViewFolderEx
 			else if (field === "created") value = format_relative_time(row.createdAt);
 			else if (field === "size")
 				value = row.kind === "file" && row.contentByteSize !== null ? files_format_size(row.contentByteSize) : null;
-			else if (field === "type") {
+			else if (field === "extension") {
 				// Keep the same leading/trailing-dot rule as the indexed file extension.
 				const dotIndex = row.name.lastIndexOf(".");
 				value =
@@ -4370,7 +4369,7 @@ const FileNodeViewFolderExplorerColumns = memo(function FileNodeViewFolderExplor
 	]);
 	const normalizedSearchText = searchText.trim().toLowerCase();
 	const shownFields = fields.filter((field) =>
-		get_folder_column_label(field).toLowerCase().includes(normalizedSearchText),
+		files_folder_table_query_field_text(field).toLowerCase().includes(normalizedSearchText),
 	);
 	const fieldGroups = [
 		{ title: "Built-in", fields: shownFields.filter((field) => FILE_NODE_VIEW_FOLDER_COLUMNS.includes(field)) },
@@ -4446,7 +4445,7 @@ const FileNodeViewFolderExplorerColumns = memo(function FileNodeViewFolderExplor
 										}
 									>
 										<MyCheckboxButtonContent>
-											<MyCheckboxButtonLabel>{get_folder_column_label(field)}</MyCheckboxButtonLabel>
+											<MyCheckboxButtonLabel>{files_folder_table_query_field_text(field)}</MyCheckboxButtonLabel>
 											{field === "name" && <MyCheckboxButtonDescription>Always shown</MyCheckboxButtonDescription>}
 										</MyCheckboxButtonContent>
 									</MyCheckboxButton>
@@ -4511,36 +4510,11 @@ function get_folder_filter_label(filter: files_table_Filter | null) {
 			: "value" in filter
 				? String(filter.value)
 				: "";
-	return `${get_folder_sort_field_label(filter.field)} ${filter.op.replace("_", " ")}${value ? ` ${value}` : ""}`;
+	return `${files_folder_table_query_field_text(filter.field)} ${filter.op.replace("_", " ")}${value ? ` ${value}` : ""}`;
 }
 // #endregion folder explorer filter
 
 // #region folder explorer sort
-const FILE_NODE_VIEW_FOLDER_SORT_BUILT_IN_LABELS = {
-	name: "Name",
-	updated: "Updated",
-	created: "Date created",
-	type: "Type",
-	size: "Size",
-} satisfies Record<(typeof files_sort_BUILT_IN_FIELDS)[number], string>;
-
-/**
- * The field name, with its namespace so equal metadata and frontmatter names stay distinct.
- */
-function get_folder_sort_field_label(field: string) {
-	if (files_sort_field_is_built_in(field)) {
-		return FILE_NODE_VIEW_FOLDER_SORT_BUILT_IN_LABELS[field];
-	}
-
-	return field.startsWith(files_metadata_METADATA_FIELD_PREFIX)
-		? `${field.slice(files_metadata_METADATA_FIELD_PREFIX.length)} (metadata)`
-		: `${field.slice(files_metadata_FRONTMATTER_FIELD_PREFIX.length)} (frontmatter)`;
-}
-
-function get_folder_column_label(field: string) {
-	return field === "updated_by" ? "Updated by" : get_folder_sort_field_label(field);
-}
-
 function get_folder_sort_direction_label(sort: files_sort_Clause) {
 	const [ascending, descending] =
 		sort.field === "updated" || sort.field === "created"
@@ -4561,7 +4535,7 @@ function get_folder_sort_first_direction(field: string): files_sort_Clause["dire
 
 function get_folder_sort_label(sort: files_sort_Sort) {
 	return sort
-		.map((clause) => `${get_folder_sort_field_label(clause.field)} ${clause.direction === "asc" ? "↑" : "↓"}`)
+		.map((clause) => `${files_folder_table_query_field_text(clause.field)} ${clause.direction === "asc" ? "↑" : "↓"}`)
 		.join(", then ");
 }
 // #endregion folder explorer sort
@@ -4577,8 +4551,8 @@ const FileNodeViewFolderExplorerColumnMenu = memo(function FileNodeViewFolderExp
 	onHide: (field: string) => void;
 }) {
 	const { field, sort, onSortChange, onFilterField, onHide } = props;
-	const label = get_folder_column_label(field);
-	// Some columns, such as Updated by, have no sort or filter. They only offer Hide column.
+	const label = files_folder_table_query_field_text(field);
+	// Some columns, such as file.updated_by, have no sort or filter. They only offer Hide column.
 	const isSortable = files_sort_field_is_valid(field);
 
 	return (
@@ -5015,7 +4989,7 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 						role="alert"
 						className={"FileNodeViewFolderExplorer-notice" satisfies FileNodeViewFolderExplorer_ClassNames}
 					>
-						These sort fields need too much work for this group. Use Name next, or use one sort field.{" "}
+						These sort fields need too much work for this group. Use file.name next, or use one sort field.{" "}
 						{sortLimit.reason === "group_rows"
 							? "This group has more than 200 candidates."
 							: sortLimit.reason === "scan_work"
@@ -5025,7 +4999,7 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 									: "The DB-call limit was reached."}
 					</p>
 					<MyButton variant="outline" onClick={() => onSortChange(files_sort_DEFAULT.map((clause) => ({ ...clause })))}>
-						Reset to Name
+						Reset to file.name
 					</MyButton>
 				</div>
 			)}
@@ -5138,7 +5112,7 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 												}
 												onClick={() => handleColumnSortClick(field)}
 											>
-												{get_folder_column_label(field)}
+												{files_folder_table_query_field_text(field)}
 												{clause && (
 													<span
 														className={
@@ -5152,7 +5126,7 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 												)}
 											</button>
 										) : (
-											<span>{get_folder_column_label(field)}</span>
+											<span>{files_folder_table_query_field_text(field)}</span>
 										)}
 										<FileNodeViewFolderExplorerColumnMenu
 											field={field}

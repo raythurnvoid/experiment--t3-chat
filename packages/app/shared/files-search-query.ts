@@ -7,7 +7,7 @@
 //   string prefix, and `metadata.title:"Recall the"*` for a prefix with spaces.
 // - `metadata.priority:>2`, `frontmatter.due:<=2026-09-30` ranges on numbers or ISO dates.
 // - `!metadata.status:done` negation. `metadata.assignee:"Denys Voloshyn"` quotes a value with spaces.
-// - `file.path:/tasks`, `file.name:x`, `file.ext:md`, `file.kind:folder`, `file.updated:>DATE`
+// - `file.path:/tasks`, `file.name:x`, `file.extension:md`, `file.kind:folder`, `file.updated:>DATE`
 //   filter on file fields. `frontmatter.x` and `metadata.x` name one metadata kind.
 // - `file.link:public` lists the files that have a public link. It takes no other value.
 //
@@ -35,7 +35,7 @@ export const files_search_query_MAX_FILTERS = 20;
  */
 export const files_search_query_FIELD_PATH_MAX_LENGTH = 160;
 
-export const files_search_query_FILE_FIELDS = ["path", "name", "ext", "kind", "updated", "link"] as const;
+export const files_search_query_FILE_FIELDS = ["path", "name", "extension", "kind", "updated", "link"] as const;
 
 export type files_search_query_Key = {
 	namespace: "file" | "frontmatter" | "metadata";
@@ -390,8 +390,8 @@ function file_field_problem(name: string, match: FilterMatch) {
 	if (name === "name" && match.value.startsWith("*")) {
 		return "file.name finds names that contain the value. Put * only at the end";
 	}
-	if (name === "ext" && match.value.startsWith("*")) {
-		return "file.ext takes an extension like md. Put * only at the end";
+	if (name === "extension" && match.value.startsWith("*")) {
+		return "file.extension takes an extension like md. Put * only at the end";
 	}
 	if (name === "kind" && (match.op === "prefix" || !["file", "folder"].includes(match.value.toLowerCase()))) {
 		return "file.kind is file or folder";

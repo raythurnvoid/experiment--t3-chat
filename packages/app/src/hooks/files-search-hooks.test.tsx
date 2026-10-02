@@ -496,18 +496,18 @@ describe("useFilesSortedChildren", () => {
 
 	test("Show more loads only a segment that is shown", () => {
 		sorted.rows.set(
-			sorted_fixture_key({ kind: "file", segment: "value", field: "type", direction: "asc" }),
+			sorted_fixture_key({ kind: "file", segment: "value", field: "extension", direction: "asc" }),
 			file_names(60).map((name) => saved_row({ kind: "file", name, part: ["md", name] })),
 		);
-		// No folder has a type, so the folders' missing rows start at once. Keep that page loading.
-		sorted.loadingKeys.add(sorted_fixture_key({ kind: "folder", segment: "missing", field: "type", direction: "asc" }));
-		const { result, rerender } = render_sorted([{ field: "type", direction: "asc" }]);
+		// No folder has a file.extension, so the folders' missing rows start at once. Keep that page loading.
+		sorted.loadingKeys.add(sorted_fixture_key({ kind: "folder", segment: "missing", field: "extension", direction: "asc" }));
+		const { result, rerender } = render_sorted([{ field: "extension", direction: "asc" }]);
 		expect(result.current.isBusy).toBe(true);
 
 		act(() => result.current.loadMore());
 		sorted.loadingKeys.clear();
 		act(notify_sorted);
-		rerender({ sort: [{ field: "type", direction: "asc" }] });
+		rerender({ sort: [{ field: "extension", direction: "asc" }] });
 		expect(result.current.rows?.map((row) => row.name)).toEqual(file_names(50));
 		expect(result.current.isDone).toBe(false);
 	});
@@ -640,7 +640,7 @@ describe("useFilesSortedChildren", () => {
 	});
 
 	test("shares one action allowance across all four segments and retains it across cached renders", async () => {
-		const sort: files_sort_Sort = [{ field: "type", direction: "asc" }];
+		const sort: files_sort_Sort = [{ field: "extension", direction: "asc" }];
 		sorted.filtered = (args) => {
 			if (args.kind === "folder" && args.segment === "value") return filter_page({});
 			if (args.kind === "file" && args.segment === "missing")
@@ -1357,7 +1357,7 @@ describe("useFilesSortedChildren", () => {
 
 	test("multi-sort without a filter uses one scan and one allowance across all segments", async () => {
 		const sort: files_sort_Sort = [
-			{ field: "type", direction: "desc" },
+			{ field: "extension", direction: "desc" },
 			{ field: "updated", direction: "asc" },
 		];
 		sorted.filtered = (args) => {
@@ -1445,7 +1445,7 @@ describe("useFilesSortedChildren", () => {
 		const draft = side_row("draft.md");
 		sorted.sideRows = { rows: [draft], nameClaims: [], tooManyShared: false, tooManyPending: false };
 		const key = JSON.stringify([MEMBERSHIP_ID, FOLDER_ID, draft.target, sort]);
-		const freshKey = files_sort_key_of({ sort, facts: { ...draft, type: "md" }, metadataParts: new Map() });
+		const freshKey = files_sort_key_of({ sort, facts: { ...draft, extension: "md" }, metadataParts: new Map() });
 		sorted.keys.set(key, freshKey);
 		let renewed = false;
 		sorted.filtered = (args) =>
@@ -1518,7 +1518,7 @@ describe("useFilesSortedChildren", () => {
 		for (const draft of drafts.slice(0, -1))
 			sorted.keys.set(
 				JSON.stringify([MEMBERSHIP_ID, FOLDER_ID, draft.target, sort]),
-				files_sort_key_of({ sort, facts: { ...draft, type: "md" }, metadataParts: new Map([["metadata.status", "same"]]) }),
+				files_sort_key_of({ sort, facts: { ...draft, extension: "md" }, metadataParts: new Map([["metadata.status", "same"]]) }),
 			);
 		const { result } = render_sorted(sort);
 		expect(keysSeen).toHaveLength(400);
@@ -1527,7 +1527,7 @@ describe("useFilesSortedChildren", () => {
 		act(() => {
 			sorted.keys.set(
 				JSON.stringify([MEMBERSHIP_ID, FOLDER_ID, last.target, sort]),
-				files_sort_key_of({ sort, facts: { ...last, type: "md" }, metadataParts: new Map([["metadata.status", "same"]]) }),
+				files_sort_key_of({ sort, facts: { ...last, extension: "md" }, metadataParts: new Map([["metadata.status", "same"]]) }),
 			);
 			notify_sorted();
 		});
@@ -1547,7 +1547,7 @@ describe("useFilesSortedChildren", () => {
 			targetKey,
 			files_sort_key_of({
 				sort,
-				facts: { ...draft, updatedAt: 100, type: "md" },
+				facts: { ...draft, updatedAt: 100, extension: "md" },
 				metadataParts: new Map([["metadata.status", "same"]]),
 			}),
 		);
@@ -1555,7 +1555,7 @@ describe("useFilesSortedChildren", () => {
 			...saved_row({ kind: "file", name: "other.md" }),
 			sortKey: files_sort_key_of({
 				sort,
-				facts: { ...draft, name: "other.md", updatedAt: 2, type: "md" },
+				facts: { ...draft, name: "other.md", updatedAt: 2, extension: "md" },
 				metadataParts: new Map([["metadata.status", "same"]]),
 			}),
 		};
@@ -1586,11 +1586,11 @@ describe("useFilesSortedChildren", () => {
 		for (const draft of [before, after])
 			sorted.keys.set(
 				JSON.stringify([MEMBERSHIP_ID, FOLDER_ID, draft.target, sort]),
-				files_sort_key_of({ sort, facts: { ...draft, type: "md" }, metadataParts: new Map([["metadata.status", "same"]]) }),
+				files_sort_key_of({ sort, facts: { ...draft, extension: "md" }, metadataParts: new Map([["metadata.status", "same"]]) }),
 			);
 		const boundary = files_sort_key_of({
 			sort,
-			facts: { ...before, name: "boundary.md", updatedAt: 5, type: "md" },
+			facts: { ...before, name: "boundary.md", updatedAt: 5, extension: "md" },
 			metadataParts: new Map([["metadata.status", "same"]]),
 		});
 		sorted.filtered = (args) =>
@@ -1707,7 +1707,7 @@ describe("useFilesSortedChildren", () => {
 		act(() => {
 			sorted.keys.set(
 				JSON.stringify([MEMBERSHIP_ID, FOLDER_ID, draft.target, sort]),
-				files_sort_key_of({ sort, facts: { ...draft, type: "md" }, metadataParts: new Map() }),
+				files_sort_key_of({ sort, facts: { ...draft, extension: "md" }, metadataParts: new Map() }),
 			);
 			notify_sorted();
 		});

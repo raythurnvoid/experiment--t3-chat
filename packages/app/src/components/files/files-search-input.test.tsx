@@ -70,7 +70,7 @@ describe("FilesSearchInput", () => {
 			);
 			const input = screen.getByRole<HTMLInputElement>("combobox");
 			act(() => input.focus());
-			expect(await screen.findByRole("option", { name: "Path file.path" })).toBeTruthy();
+			expect(await screen.findByRole("option", { name: "file.path" })).toBeTruthy();
 			fireEvent.change(input, { target: { value: "notes" } });
 			fireEvent.keyDown(input, { key: "Escape" });
 			await waitFor(() => expect(input.getAttribute("aria-expanded")).toBe("false"));
@@ -82,28 +82,28 @@ describe("FilesSearchInput", () => {
 			await waitFor(() => expect(onChange).toHaveBeenLastCalledWith("metadata.status:open notes draft"));
 			input.setSelectionRange(2, 2);
 			fireEvent.keyDown(input, { key: " ", ctrlKey: true });
-			expect(await screen.findByRole("option", { name: "Path file.path" })).toBeTruthy();
+			expect(await screen.findByRole("option", { name: "file.path" })).toBeTruthy();
 			expect(input.value).toBe("notes draft");
 			expect(input.selectionStart).toBe(2);
-			fireEvent.click(screen.getByRole("option", { name: "Type file.kind" }));
+			fireEvent.click(screen.getByRole("option", { name: "file.kind" }));
 			expect(input.value).toBe("notes draft file.kind:");
 			fireEvent.click(await screen.findByRole("option", { name: "folder" }));
 			expect(await screen.findByRole("button", { name: "Remove filter file.kind:folder" })).toBeTruthy();
 			expect(input.value).toBe("notes draft ");
 			await waitFor(() => expect(input.getAttribute("aria-expanded")).toBe("false"));
 			fireEvent.click(screen.getByRole("button", { name: "Add search filter" }));
-			expect(await screen.findByRole("option", { name: "Path file.path" })).toBeTruthy();
+			expect(await screen.findByRole("option", { name: "file.path" })).toBeTruthy();
 		});
 
-		test("suggests public for file.link without any tree rows and names the chip Link", async () => {
+		test("suggests public for file.link without any tree rows and names the chip file.link", async () => {
 			render(<FilesSearchInput {...props} variant={variant} />);
 			const input = screen.getByRole<HTMLInputElement>("combobox");
 			act(() => input.focus());
-			fireEvent.click(await screen.findByRole("option", { name: "Link file.link" }));
+			fireEvent.click(await screen.findByRole("option", { name: "file.link" }));
 			expect(input.value).toBe("file.link:");
 			fireEvent.click(await screen.findByRole("option", { name: "public" }));
 			const remove = await screen.findByRole("button", { name: "Remove filter file.link:public" });
-			expect(remove.closest(".FilesSearchInputFilterChip")?.textContent).toContain("Link public");
+			expect(remove.closest(".FilesSearchInputFilterChip")?.textContent).toContain("file.link public");
 		});
 
 		test("reopens on a new visit but keeps dismissal when returning from chips or results", async () => {
@@ -122,7 +122,7 @@ describe("FilesSearchInput", () => {
 			render(<Consumer />);
 			const input = screen.getByRole<HTMLInputElement>("combobox");
 			act(() => input.focus());
-			await screen.findByRole("option", { name: "Path file.path" });
+			await screen.findByRole("option", { name: "file.path" });
 			fireEvent.keyDown(input, { key: "Escape" });
 			await waitFor(() => expect(input.getAttribute("aria-expanded")).toBe("false"));
 			act(() => screen.getByRole("button", { name: "Remove filter metadata.status:open" }).focus());
@@ -133,14 +133,14 @@ describe("FilesSearchInput", () => {
 			expect(input.getAttribute("aria-expanded")).toBe("false");
 			act(() => screen.getByRole("button", { name: "Outside search" }).focus());
 			act(() => input.focus());
-			expect(await screen.findByRole("option", { name: "Path file.path" })).toBeTruthy();
+			expect(await screen.findByRole("option", { name: "file.path" })).toBeTruthy();
 		});
 
 		test("Ctrl+Space leaves typed filters uncommitted and ignores IME composition", async () => {
 			render(<FilesSearchInput {...props} variant={variant} />);
 			const input = screen.getByRole<HTMLInputElement>("combobox");
 			act(() => input.focus());
-			await screen.findByRole("option", { name: "Path file.path" });
+			await screen.findByRole("option", { name: "file.path" });
 			fireEvent.keyDown(input, { key: "Escape" });
 			await waitFor(() => expect(input.getAttribute("aria-expanded")).toBe("false"));
 			fireEvent.change(input, { target: { value: "file.kind:folder" } });

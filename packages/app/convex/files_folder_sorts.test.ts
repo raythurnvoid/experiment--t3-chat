@@ -56,7 +56,7 @@ describe("set_folder_sort", () => {
 			{ field: "created", direction: "desc" },
 			{ field: "size", direction: "asc" },
 			{ field: "updated", direction: "asc" },
-			{ field: "type", direction: "asc" },
+			{ field: "extension", direction: "asc" },
 			{ field: "metadata.rank", direction: "asc" },
 			{ field: "metadata.owner", direction: "asc" },
 		];
@@ -92,7 +92,7 @@ describe("set_folder_sort", () => {
 				{ field: "name", direction: "asc" as const },
 				{ field: "name", direction: "desc" as const },
 			],
-			["name", "size", "updated", "type", "created", "metadata.a", "metadata.b", "metadata.c", "metadata.d"].map(
+			["name", "size", "updated", "extension", "created", "metadata.a", "metadata.b", "metadata.c", "metadata.d"].map(
 				(field) => ({
 					field,
 					direction: "asc" as const,
@@ -196,7 +196,7 @@ describe("set_folder_sort", () => {
 		const refused = await asViewer.mutation(api.files_folder_sorts.set_folder_sort, {
 			membershipId: viewer.membershipId,
 			folderId,
-			sort: [{ field: "type", direction: "asc" }],
+			sort: [{ field: "extension", direction: "asc" }],
 		});
 		expect(refused._nay?.message).toBe("Permission denied");
 		expect(await read_rows()).toEqual([

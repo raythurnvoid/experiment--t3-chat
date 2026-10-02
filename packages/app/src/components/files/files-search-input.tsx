@@ -55,15 +55,6 @@ type FilesSearchInputFilterChip_ClassNames =
 	| "FilesSearchInputFilterChip-key"
 	| "FilesSearchInputFilterChip-invalid";
 
-const FilesSearchInput_FILE_FIELD_LABELS: Record<string, string> = {
-	path: "Path",
-	name: "Name",
-	ext: "Extension",
-	kind: "Type",
-	updated: "Updated",
-	link: "Link",
-};
-
 type FilesSearchInputFilterChip_Props = {
 	filter: files_search_query_Filter;
 	onRemove: () => void;
@@ -77,10 +68,7 @@ const FilesSearchInputFilterChip = memo(function FilesSearchInputFilterChip(prop
 	const { filter, onRemove } = props;
 
 	const problemId = useId();
-	const keyLabel =
-		filter.key.namespace === "file"
-			? (FilesSearchInput_FILE_FIELD_LABELS[filter.key.name] ?? `file.${filter.key.name}`)
-			: `${filter.key.namespace}.${filter.key.name}`;
+	const keyLabel = `${filter.key.namespace}.${filter.key.name}`;
 	const valueLabel =
 		filter.match.op === "exists"
 			? "any value"
@@ -297,7 +285,7 @@ export const FilesSearchInput = memo(function FilesSearchInput(props: FilesSearc
 				? typedValue
 				: typingFilter.key.name === "path"
 					? files_search_query_folder_path(typedValue)
-					: typingFilter.key.name === "ext"
+					: typingFilter.key.name === "extension"
 						? typedValue.replace(/^\./u, "")
 						: typedValue;
 		const typedValueLower = typedFileValue.toLowerCase();
@@ -324,7 +312,7 @@ export const FilesSearchInput = memo(function FilesSearchInput(props: FilesSearc
 				push("folder");
 			} else if (typingFilter.key.name === "link") {
 				push("public");
-			} else if (typingFilter.key.name === "ext") {
+			} else if (typingFilter.key.name === "extension") {
 				const extensions = new Set<string>();
 				for (const item of treeItemsList ?? []) {
 					if (item.lowercaseExtension !== null) {
@@ -707,9 +695,6 @@ export const FilesSearchInput = memo(function FilesSearchInput(props: FilesSearc
 											onClick={() => pickKey(field)}
 										>
 											<span className={cn("FilesSearchInput-suggestion-label" satisfies FilesSearchInput_ClassNames)}>
-												{FilesSearchInput_FILE_FIELD_LABELS[field.slice(5)]}
-											</span>
-											<span className={cn("FilesSearchInput-suggestion-hint" satisfies FilesSearchInput_ClassNames)}>
 												{field}
 											</span>
 										</MyComboboxItem>

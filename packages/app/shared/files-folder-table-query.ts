@@ -7,7 +7,7 @@
 // - Sort: `sort_by:<field>:<asc|desc>`, like `sort_by:file.updated:desc`.
 //
 // A field starts with its namespace, like in the search box (`files-search-query.ts`):
-// `file.name`, `file.updated`, `file.created`, `file.ext`, `file.size`, `metadata.<key>` or
+// `file.name`, `file.updated`, `file.created`, `file.extension`, `file.size`, `metadata.<key>` or
 // `frontmatter.<path>`. A key holds no colon, so a field never needs quotes.
 //
 // The browser turns a day into a start and an end, because a day is a local calendar day. So the
@@ -20,7 +20,12 @@ import {
 	files_search_query_read_quoted,
 	files_search_query_split_tokens,
 } from "./files-search-query.ts";
-import { files_sort_field_is_valid, files_sort_MAX_CLAUSES, type files_sort_Sort } from "./files-sort.ts";
+import {
+	files_sort_field_is_built_in,
+	files_sort_field_is_valid,
+	files_sort_MAX_CLAUSES,
+	type files_sort_Sort,
+} from "./files-sort.ts";
 import { files_table_filter_is_valid, type files_table_Filter } from "./files-table.ts";
 
 const SORT_KEY = "sort_by";
@@ -38,18 +43,10 @@ const WHOLE_NUMBER_REGEX = /^\d+$/u;
 const OPEN_VALUE_QUOTE_REGEX = /(?:^|:)"(?:[^"\\]|\\.)*$/u;
 
 /**
- * The `file.` names the table accepts, and the field id each one stands for. The extension is the
- * `type` field of the table and its sort.
+ * The `file.` names the table accepts. Each one is also the id of its table field, so `file.extension`
+ * is the `extension` field.
  */
-export const files_folder_table_query_FILE_FIELDS = ["name", "updated", "created", "ext", "size"] as const;
-
-const FILE_FIELD_IDS = {
-	name: "name",
-	updated: "updated",
-	created: "created",
-	ext: "type",
-	size: "size",
-} as const satisfies Record<(typeof files_folder_table_query_FILE_FIELDS)[number], string>;
+export const files_folder_table_query_FILE_FIELDS = ["name", "updated", "created", "extension", "size"] as const;
 
 export type files_folder_table_query_Operation = {
 	op: string;
@@ -60,7 +57,7 @@ export type files_folder_table_query_FilterToken = {
 	kind: "filter";
 	raw: string;
 	/**
-	 * The table field id: `name`, `updated`, `created`, `type`, `size`, `metadata.<key>` or
+	 * The table field id: `name`, `updated`, `created`, `extension`, `size`, `metadata.<key>` or
 	 * `frontmatter.<path>`.
 	 */
 	field: string;
@@ -109,7 +106,7 @@ export function files_folder_table_query_operations(field: string): files_folder
 			{ op: "starts_with", needsValue: true },
 		];
 	}
-	if (field === "type") {
+	if (field === "extension") {
 		return [
 			{ op: "is", needsValue: true },
 			{ op: "missing", needsValue: false },
@@ -139,11 +136,12 @@ export function files_folder_table_query_operations(field: string): files_folder
 }
 
 /**
- * The text a table field has in a token: `type` is `file.ext`, `metadata.x` stays as it is.
+ * The one name of a table field. The key and the label the user sees are this same text: `extension`
+ * is `file.extension`, `metadata.x` stays as it is. The file.updated_by column has no token, but it
+ * has this name.
  */
 export function files_folder_table_query_field_text(field: string) {
-	const fileName = Object.entries(FILE_FIELD_IDS).find(([, id]) => id === field)?.[0];
-	return fileName === undefined ? field : `file.${fileName}`;
+	return files_sort_field_is_built_in(field) || field === "updated_by" ? `file.${field}` : field;
 }
 
 /**
@@ -169,10 +167,7 @@ export function files_folder_table_query_parse_field(
 		return { field: null, problem: parsed.problem };
 	}
 
-	const field =
-		parsed.key.namespace === "file"
-			? FILE_FIELD_IDS[parsed.key.name as keyof typeof FILE_FIELD_IDS]
-			: `${parsed.key.namespace}.${parsed.key.name}`;
+	const field = parsed.key.namespace === "file" ? parsed.key.name : `${parsed.key.namespace}.${parsed.key.name}`;
 	if (!files_sort_field_is_valid(field)) {
 		return { field: null, problem: "This field name is too long" };
 	}
@@ -414,8 +409,9 @@ export function files_folder_table_query_to_filter(
 	let filter: files_table_Filter | null = null;
 	if (field === "name") {
 		filter = { kind: "name", field, op: op as "contains" | "starts_with", value: value! };
-	} else if (field === "type") {
-		filter = op === "missing" ? { kind: "type", field, op } : { kind: "type", field, op: "is", value: value! };
+	} else if (field === "extension") {
+		filter =
+			op === "missing" ? { kind: "extension", field, op } : { kind: "extension", field, op: "is", value: value! };
 	} else if (field === "updated" || field === "created") {
 		const bounds = getDayBounds(value!);
 		filter = bounds && { kind: "date", field, op: op as "on" | "before" | "after", ...bounds };
