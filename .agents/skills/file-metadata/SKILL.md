@@ -381,7 +381,7 @@ pages still pack at most 50 processed candidates.
 
 # Folder Table Sort Keys
 
-A saved sort is an ordered list of one to three unique clauses. A metadata clause uses the
+A saved sort is an ordered list of one to eight unique clauses (`files_sort_MAX_CLAUSES`). A metadata clause uses the
 committed field doc's encoded `sortValue`. Pending edits on saved nodes do not replace it.
 Private rows use only their current create proposal. Their bounded scalar read stops at the
 first plain primitive and checks every consumed doc's tenant, target, owner, proposal and revision.

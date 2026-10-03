@@ -237,7 +237,7 @@ folder (`FileNodeViewPrivateFolder`) still lists its children through `useFilesV
 
 ### Sort rules
 
-- Sort by one to three unique fields: `file.name`, `file.updated`, `file.created`, `file.extension`,
+- Sort by one to eight unique fields (`files_sort_MAX_CLAUSES`): `file.name`, `file.updated`, `file.created`, `file.extension`,
   `file.size`, or any `metadata.*` / `frontmatter.*` key. Each field has one name. The key, the
   column label, the sort label and the chip all show that same text. The extension field id is
   `extension`; the Convex column `lowercaseExtension` and its indexes keep their names. Each clause has its own direction. Folders always come first.

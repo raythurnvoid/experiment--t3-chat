@@ -14918,6 +14918,35 @@ describe("list_tree_children_sorted multi", () => {
 				}
 	});
 
+	test("resumes the next page of a sort with more than three clauses", async () => {
+		const { add, walk } = await seed_multi();
+		for (let index = 0; index < 55; index++) await add({ name: `entry-${String(index).padStart(2, "0")}.md`, updatedAt: index });
+		for (const sort of [
+			[
+				{ field: "updated", direction: "asc" },
+				{ field: "size", direction: "asc" },
+				{ field: "frontmatter.status", direction: "asc" },
+				{ field: "name", direction: "asc" },
+			],
+			[
+				{ field: "updated", direction: "asc" },
+				{ field: "size", direction: "asc" },
+				{ field: "frontmatter.a", direction: "asc" },
+				{ field: "frontmatter.b", direction: "asc" },
+				{ field: "frontmatter.c", direction: "asc" },
+				{ field: "metadata.d", direction: "asc" },
+				{ field: "extension", direction: "asc" },
+				{ field: "name", direction: "asc" },
+			],
+		] satisfies files_sort_Sort[]) {
+			const pages = await walk(sort);
+			expect(pages.length).toBeGreaterThan(1);
+			expect(pages.flatMap((page) => page.page.map((row) => row.name))).toEqual(
+				Array.from({ length: 55 }, (_, index) => `entry-${String(index).padStart(2, "0")}.md`),
+			);
+		}
+	});
+
 	test("file.extension keeps raw extension order instead of encoded number order", async () => {
 		const { insert_child, read } = await seed_multi();
 		await insert_child({ name: "two.2", kind: "file", updatedAt: 1, lowercaseExtension: "2" });

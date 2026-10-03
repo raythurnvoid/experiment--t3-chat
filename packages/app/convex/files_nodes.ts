@@ -72,6 +72,7 @@ import {
 	files_sort_field_is_built_in,
 	files_sort_key_of,
 	files_sort_is_valid,
+	files_sort_MAX_CLAUSES,
 	files_sort_text_key,
 	type files_sort_Key,
 	type files_sort_RowKey,
@@ -6987,6 +6988,7 @@ const multi_table_cursor_schema = z.object({
 	after: table_cursor_schema.shape.after.nullable(),
 	key: z
 		.object({
+			// One part per sort clause, so the cap must follow the clause cap.
 			parts: z
 				.array(
 					z
@@ -6994,7 +6996,7 @@ const multi_table_cursor_schema = z.object({
 						.max(3)
 						.nullable(),
 				)
-				.max(3),
+				.max(files_sort_MAX_CLAUSES),
 			nameKey: z.tuple([z.string().max(TABLE_FILTER_BYTE_RESERVE), z.string().max(TABLE_FILTER_BYTE_RESERVE)]),
 		})
 		.nullable(),
