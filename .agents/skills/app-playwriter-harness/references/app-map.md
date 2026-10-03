@@ -22,6 +22,14 @@ Use this file for stable app browser facts that are worth reusing across Playwri
 - Collapsed main sidebar state uses `.MainAppSidebar-state-collapsed`.
 - The collapsed main sidebar hides the logo link with `visibility: hidden`. The `.Logo` node stays in the DOM, but `waitFor()` on it times out and snapshots skip it. To see or capture the logo, click the `Expand sidebar` button first, then click `Minimize sidebar` to restore the user's layout.
 
+## Account Modal
+
+- The account dialog root is `.MainAppAccountManagement`, with the heading `Manage account` and tabs `Profile`, `Billing`, and `Security`.
+- Scope the `Close` button to this dialog. The Files sidebar has another button with the same name, even while the dialog is open.
+- For height checks, inspect the dialog root, `.MainAppAccountManagement-body`, and `.MainAppAccountManagement-panels`. The root sets the total height; the body and panels can shrink and scroll inside it.
+- The root keeps its 874px height when space allows and caps it at `calc(100dvh - 100px)`. Keep the body's `max-height: none`, so it can fill the space below the header. Check short, narrow, and tall screens: all tabs and Close must stay visible, and long content must scroll to the end.
+- Compare bounds with `Page.getLayoutMetrics().cssVisualViewport`. The raw `layoutViewport` can use different units when browser zoom is active.
+
 ## Organization / Workspace Switcher
 
 - Header switcher button accessible name starts with `Open organization and workspace switcher`.

@@ -8,7 +8,6 @@
 		width: min(96vw, 982px);
 		height: 874px;
 		max-height: calc(100dvh - 100px);
-		max-height: none;
 	}
 
 	.MainAppAccountManagement-header-content {
