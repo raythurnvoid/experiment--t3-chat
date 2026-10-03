@@ -148,11 +148,7 @@ export const get_folder_sort = query({
 			db_authorize_sort_write(ctx, { userAuth, membership, folder: folder._yay }),
 		]);
 
-		// The extension field was once saved as "type". Read it as "extension" so old rows still load.
-		// Remove this map when no saved sort holds "type".
-		const sort =
-			sortDoc?.sort.map((clause) => (clause.field === "type" ? { ...clause, field: "extension" } : clause)) ??
-			files_sort_DEFAULT;
+		const sort = sortDoc?.sort ?? files_sort_DEFAULT;
 		if (!files_sort_is_valid(sort)) {
 			throw convex_error({ message: "Invalid saved sort." });
 		}
