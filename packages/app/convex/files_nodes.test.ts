@@ -14065,7 +14065,37 @@ describe("list_tree_children_sorted filter", () => {
 			paginationOpts: { numItems: 1, cursor: first.continueCursor },
 		});
 		expect(next.page.map((row) => row.name)).toEqual(["task-b.md"]);
-		const refused = {
+		for (const changed of [
+			{ filter: { ...base.filter, value: "TASK" } },
+			{ sort: [{ field: "created", direction: "desc" as const }] },
+			{ kind: "folder" as const },
+			{ parentId: "root" as const },
+		])
+			await expect(
+				asOwner.query(api.files_nodes.list_tree_children_sorted, {
+					...base,
+					...changed,
+					paginationOpts: { numItems: 1, cursor: first.continueCursor },
+				}),
+			).rejects.toThrow("InvalidCursor");
+		for (const cursor of [
+			"not-json",
+			JSON.stringify({ scope: JSON.parse(first.continueCursor).scope, after: ["bad", firstId] }),
+		])
+			await expect(
+				asOwner.query(api.files_nodes.list_tree_children_sorted, {
+					...base,
+					paginationOpts: { numItems: 1, cursor },
+				}),
+			).rejects.toThrow("InvalidCursor");
+		// file.created has no missing segment, so this request is refused before the cursor is read.
+		expect(
+			await asOwner.query(api.files_nodes.list_tree_children_sorted, {
+				...base,
+				segment: "missing",
+				paginationOpts: { numItems: 1, cursor: first.continueCursor },
+			}),
+		).toEqual({
 			page: [],
 			isDone: true,
 			continueCursor: "",
@@ -14074,36 +14104,7 @@ describe("list_tree_children_sorted filter", () => {
 			workCount: 0,
 			sortLimit: null,
 			workPaused: false,
-		};
-		for (const changed of [
-			{ filter: { ...base.filter, value: "TASK" } },
-			{ sort: [{ field: "created", direction: "desc" as const }] },
-			{ kind: "folder" as const },
-			{ segment: "missing" as const },
-			{ parentId: "root" as const },
-		])
-			expect(
-				await asOwner.query(api.files_nodes.list_tree_children_sorted, {
-					...base,
-					...changed,
-					paginationOpts: { numItems: 1, cursor: first.continueCursor },
-				}),
-			).toEqual(refused);
-		expect(
-			await asOwner.query(api.files_nodes.list_tree_children_sorted, {
-				...base,
-				paginationOpts: { numItems: 1, cursor: "not-json" },
-			}),
-		).toEqual(refused);
-		expect(
-			await asOwner.query(api.files_nodes.list_tree_children_sorted, {
-				...base,
-				paginationOpts: {
-					numItems: 1,
-					cursor: JSON.stringify({ scope: JSON.parse(first.continueCursor).scope, after: ["bad", firstId] }),
-				},
-			}),
-		).toEqual(refused);
+		});
 	});
 
 	test("fails clearly when a missing proof cannot complete its first candidate", async () => {
@@ -14945,6 +14946,25 @@ describe("list_tree_children_sorted multi", () => {
 				Array.from({ length: 55 }, (_, index) => `entry-${String(index).padStart(2, "0")}.md`),
 			);
 		}
+	});
+
+	test("throws InvalidCursor for a cursor that does not match the request", async () => {
+		const { add, read } = await seed_multi();
+		for (let index = 0; index < 55; index++) await add({ name: `entry-${String(index).padStart(2, "0")}.md`, updatedAt: index });
+		const sort: files_sort_Sort = [
+			{ field: "updated", direction: "asc" },
+			{ field: "size", direction: "asc" },
+		];
+		const first = await read({ sort });
+		expect(first.isDone).toBe(false);
+		const cursor = JSON.parse(first.continueCursor);
+		for (const args of [
+			{ sort: [sort[0]!, { field: "size", direction: "desc" }] satisfies files_sort_Sort, cursor: first.continueCursor },
+			{ sort, cursor: "not-json" },
+			{ sort, cursor: JSON.stringify({ ...cursor, key: { ...cursor.key, parts: [...cursor.key.parts, null] } }) },
+			{ sort, cursor: JSON.stringify({ ...cursor, group: "not-a-number" }) },
+		])
+			await expect(read(args)).rejects.toThrow("InvalidCursor");
 	});
 
 	test("file.extension keeps raw extension order instead of encoded number order", async () => {

@@ -6974,6 +6974,15 @@ export const list_tree_children = query({
 	},
 });
 
+/**
+ * Like Convex's own paginated queries, a cursor that does not match the request throws an error with
+ * `InvalidCursor` in its message, so the table pagers start again from the first page. An empty, done
+ * page would look like the end of the folder and hide the rest of the rows.
+ */
+function table_invalid_cursor_error() {
+	return convex_error({ message: "InvalidCursor: this table page cursor does not match the request." });
+}
+
 const table_cursor_schema = z.object({
 	scope: z.string().max(8192),
 	// A raw Name suffix follows the stored document size limit.
@@ -7199,9 +7208,9 @@ async function db_list_custom_table_children(
 		try {
 			parsed = table_cursor_schema.safeParse(JSON.parse(args.paginationOpts.cursor));
 		} catch {
-			return refused;
+			throw table_invalid_cursor_error();
 		}
-		if (!parsed.success || parsed.data.scope !== scope) return refused;
+		if (!parsed.success || parsed.data.scope !== scope) throw table_invalid_cursor_error();
 		after = parsed.data.after;
 		const nameSuffix = byName || args.segment === "missing";
 		const count = nameSuffix ? 4 : field === "created" ? 2 : 5;
@@ -7218,7 +7227,7 @@ async function db_list_custom_table_children(
 					typeof after[2] !== "string" ||
 					(field === "updated" || field === "size" ? typeof after[0] !== "number" : typeof after[0] !== "string")))
 		)
-			return refused;
+			throw table_invalid_cursor_error();
 	}
 
 	const nodes = stream(ctx.db, app_convex_schema).query("files_nodes");
@@ -7563,31 +7572,33 @@ async function db_list_multi_sorted_table_children(
 		groupDone: false,
 	};
 	if (args.paginationOpts.cursor) {
+		let parsed;
 		try {
-			const parsed = multi_table_cursor_schema.safeParse(JSON.parse(args.paginationOpts.cursor));
-			if (
-				!parsed.success ||
-				parsed.data.scope !== scope ||
-				(parsed.data.key && parsed.data.key.parts.length !== args.sort.length)
-			)
-				return refused;
-			last = parsed.data;
+			parsed = multi_table_cursor_schema.safeParse(JSON.parse(args.paginationOpts.cursor));
 		} catch {
-			return refused;
+			throw table_invalid_cursor_error();
 		}
+		if (
+			!parsed.success ||
+			parsed.data.scope !== scope ||
+			(parsed.data.key && parsed.data.key.parts.length !== args.sort.length)
+		)
+			throw table_invalid_cursor_error();
+		last = parsed.data;
 	}
+	// Without a cursor `last` always passes these checks, so a failure here comes from the cursor.
 	if (
 		(!invariantPrimary && last.phase !== args.segment) ||
 		(last.phase === "missing" && ["name", "created", "updated"].includes(field))
 	)
-		return refused;
+		throw table_invalid_cursor_error();
 	if (
 		last.group !== null &&
 		(field === "created" || field === "updated" || field === "size"
 			? typeof last.group !== "number"
 			: typeof last.group !== "string")
 	)
-		return refused;
+		throw table_invalid_cursor_error();
 	if (last.after) {
 		const nameSuffix = field === "name" || last.phase === "missing";
 		const length = nameSuffix ? 4 : field === "created" ? 2 : 5;
@@ -7601,7 +7612,7 @@ async function db_list_multi_sorted_table_children(
 			) ||
 			(nameSuffix && (typeof last.after[0] !== "string" || typeof last.after[1] !== "string"))
 		)
-			return refused;
+			throw table_invalid_cursor_error();
 	}
 	const budget = { readBytes: 0 };
 	let workCount = 0;

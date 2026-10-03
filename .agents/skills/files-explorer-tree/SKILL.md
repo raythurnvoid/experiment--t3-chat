@@ -320,8 +320,15 @@ folder (`FileNodeViewPrivateFolder`) still lists its children through `useFilesV
     inside the checked cursor. Original clauses, row key positions, and scope stay unchanged.
   - Every result returns `scanBoundary`, `scannedCount`, `workCount`, `sortLimit`, and `workPaused`. Native pages count their
     raw rows before pending hides and use `workCount: 0`. Custom boundaries include completed
-    readable rows that did not match. An empty matching page may still continue. Refusals are done
-    with a null boundary, zero counts, null limit, and no pause. Only `isDone` ends a segment.
+    readable rows that did not match. An empty matching page may still continue. Refusals (no
+    access, or a segment the sort does not have) are done with a null boundary, zero counts, null
+    limit, and no pause. Only `isDone` ends a segment.
+  - A custom cursor that does not match its request (bad JSON, another folder, kind, segment, sort or
+    filter, or a wrong shape) throws an error with `InvalidCursor` in its message, like Convex's own
+    paginated queries. It never comes back as an empty, done page, because that would hide the rest
+    of the rows. The client pagers then show their error state. A cursor that only went stale is
+    replaced without an error: both custom pagers reload later pages when an earlier page's
+    `continueCursor` changes.
     The boundary is a full RowKey. A metadata-missing indexed Name walk may use the last completed
     raw Name position, with a null primary part, even when that raw node had the primary value.
     Rejected nodes need no filter or irrelevant secondary reads for that positional boundary.
