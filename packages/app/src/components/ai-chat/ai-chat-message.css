@@ -161,7 +161,6 @@
 
 	.AiChatMessageUser-content-composer {
 		--AiChatComposer-editor-area-padding: 10px 0px 48px 0px;
-		--AiChatComposer-configurations-padding: 0px 0px 10px 0px;
 
 		min-width: 100%;
 		max-width: 100%;
