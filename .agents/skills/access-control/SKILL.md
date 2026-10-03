@@ -776,7 +776,7 @@ resolve the reader with `files_nodes_db_get_tree_reader` and filter every row wi
     count raw rows before pending hides and use `workCount: 0`. Custom pages advance only after a
     whole candidate is checked. Rejected readable candidates still advance the boundary.
     Refusals return an empty, done page with a null boundary and zero counts.
-  - A sort has one to three ordered clauses. Multi-sort proves only readable ordinary groups.
+  - A sort has one to eight ordered clauses (`files_sort_MAX_CLAUSES`). Multi-sort proves only readable ordinary groups.
     It uses the primary index and a Name range when that index supports the next clause. Other
     groups are limited to 200 candidates, with a 201st probe. Hidden restricted children never
     affect that proof, its cap, cursor, bytes, or work count. Complete groups pack up to 50
