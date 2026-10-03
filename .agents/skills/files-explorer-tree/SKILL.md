@@ -264,8 +264,8 @@ folder (`FileNodeViewPrivateFolder`) still lists its children through `useFilesV
   there is no sort doc, or null when the caller cannot read the folder. A grant-only member at the root
   gets file.name, A to Z and cannot save. Saving the one-clause file.name asc default deletes the sort doc.
   The stored field for file.extension is `extension`. A doc that still holds the old field `type` is
-  invalid: `get_folder_sort` throws "Invalid saved sort." and the folder view can fail to load. There is no
-  migration, so read the table (`convex data files_folder_sorts`) on a deployment before you ship to it.
+  read as `extension` by `get_folder_sort` (a map in the query, no migration). The row keeps `type` until
+  the next save. Remove the map when `convex data files_folder_sorts` shows no `type` on any deployment.
 - The table waits for the saved sort before it loads rows, so it never loads by name and then sorts
   again.
 - A sort in the URL (`sort_by:` tokens) wins over the saved sort. With no sort token the table uses

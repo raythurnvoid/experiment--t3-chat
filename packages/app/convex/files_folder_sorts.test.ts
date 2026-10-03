@@ -322,6 +322,40 @@ describe("get_folder_sort", () => {
 		).toEqual({ sort: [{ field: "name", direction: "asc" }], canSave: false });
 	});
 
+	test("reads a saved sort that still stores type as extension", async () => {
+		const { t, scope, asOwner, read_rows } = await fixture();
+		// Rows saved before the rename hold the field `type`.
+		await t.run(async (ctx) => {
+			await ctx.db.insert("files_folder_sorts", {
+				organizationId: scope.organizationId,
+				workspaceId: scope.workspaceId,
+				folderId: files_ROOT_ID,
+				sort: [
+					{ field: "type", direction: "desc" },
+					{ field: "name", direction: "asc" },
+				],
+				updatedBy: scope.userId,
+				updatedAt: Date.now(),
+			});
+		});
+		const before = await read_rows();
+
+		expect(
+			await asOwner.query(api.files_folder_sorts.get_folder_sort, {
+				membershipId: scope.membershipId,
+				folderId: files_ROOT_ID,
+			}),
+		).toEqual({
+			sort: [
+				{ field: "extension", direction: "desc" },
+				{ field: "name", direction: "asc" },
+			],
+			canSave: true,
+		});
+		// A read changes nothing.
+		expect(await read_rows()).toEqual(before);
+	});
+
 	test("throws without a signed-in user", async () => {
 		const { t, scope } = await fixture();
 		await expect(
