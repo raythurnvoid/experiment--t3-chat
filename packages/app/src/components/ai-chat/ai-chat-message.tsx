@@ -2068,7 +2068,9 @@ const AiChatMessageUser = memo(function AiChatMessageUser(props: AiChatMessageUs
 					isEditing && editBubbleLayout
 						? sx({
 								width: `${editBubbleLayout.width}px`,
-								height: `${editBubbleLayout.height}px`,
+								// A min height, not a fixed one: the bubble keeps its size on edit start,
+								// then grows with the text so the text never goes under the actions.
+								minHeight: `${editBubbleLayout.height}px`,
 							})
 						: undefined
 				}
