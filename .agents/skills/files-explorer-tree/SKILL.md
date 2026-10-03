@@ -369,8 +369,8 @@ folder (`FileNodeViewPrivateFolder`) still lists its children through `useFilesV
     refreshes keep their old slot count and frozen limits outside that allowance. They cannot add
     slots or refill a match goal. Their work is measured separately.
   - While a new sort or a page loads, the last settled rows stay, with `aria-busy="true"` on the
-    table. `rowsSort` keeps their header arrows and table sort attributes. The `Applying sort…` notice
-    names the requested sort.
+    table. `rowsSort` keeps the table's `data-sort-fields`; the header arrows already show the
+    requested sort. A sort change shows no notice.
     Columns stay outside the paging scope. `sideTargets` includes the full checked side set for field discovery.
   - `loadMore()` loads the first shown segment that can load more.
   - With a filter, all supported side targets get stable `get_table_filter_match` queries. Only
@@ -408,9 +408,17 @@ folder (`FileNodeViewPrivateFolder`) still lists its children through `useFilesV
   This bound covers cell display only; side catalog and sort queries use the full supported side set.
 - An empty readable folder keeps its toolbar and header. Show the empty message only after all
   pages finish without an error or cap. Wide tables scroll horizontally inside the table region.
-- The table carries `data-sort-fields` for the displayed full list. Sorted headers carry
-  `data-sort-priority` and `data-sort-direction`. A header click makes one clause.
+- The table carries `data-sort-fields` for the sort of the shown rows (`rowsSort`, held while a new
+  sort loads). Headers follow the requested sort at once: sorted headers carry `data-sort-priority`,
+  `data-sort-direction`, the arrow, and `aria-sort` for the new sort before its rows arrive. A sort
+  change alone shows no notice; the table only sets `aria-busy` and `data-sort-state="applying"`.
+  `Showing: …` appears only for a filter change, a refresh, Reload table, or a sort limit.
+  A header click makes one clause: the field's first direction, then later clicks flip it.
   Header text shows the order number only when two or more fields sort.
+- A sortable header is one `<button>` stretched over the whole cell with a `::after` overlay, so a
+  click anywhere in the cell sorts and the focus ring wraps the cell. The column options button sits
+  on top at the right edge and opens its menu without sorting. Only sortable headers get the hover
+  background and pointer. A column that cannot sort (`file.updated_by`) has no sort button and no hover.
 - Each header has a column menu. Sortable columns offer both directions (each replaces the whole
   sort), Add to sort (appends the field while under `files_sort_MAX_CLAUSES`, 8, fields), and Filter by,
   which puts `file.<field>:` or the metadata key in the bar and opens its operations. Every column

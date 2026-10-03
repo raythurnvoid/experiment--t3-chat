@@ -4970,17 +4970,14 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 					/>
 				</div>
 			</div>
-			{(isShowingHeldRows || filterRefreshing || filterRecovery === "reload" || sortLimit !== null) && (
+			{/* A sort change alone shows no notice. The header already shows the new sort, and the busy table
+			    keeps the old rows until the new ones arrive. */}
+			{((isShowingHeldRows && JSON.stringify(rowsFilter) !== JSON.stringify(filter)) ||
+				filterRefreshing ||
+				filterRecovery === "reload" ||
+				sortLimit !== null) && (
 				<p className={"FileNodeViewFolderExplorer-notice" satisfies FileNodeViewFolderExplorer_ClassNames}>
 					Showing: {get_folder_filter_label(rowsFilter)}. Sort: {get_folder_sort_label(displayedSort)}.
-				</p>
-			)}
-			{sortState === "applying" && (
-				<p
-					role="status"
-					className={"FileNodeViewFolderExplorer-notice" satisfies FileNodeViewFolderExplorer_ClassNames}
-				>
-					Applying sort… {get_folder_sort_label(sort)}
 				</p>
 			)}
 			{sortLimit !== null && (
@@ -5091,8 +5088,9 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 							className={"FileNodeViewFolderExplorer-header-row" satisfies FileNodeViewFolderExplorer_ClassNames}
 						>
 							{columns.map((field) => {
-								const priority = displayedSort.findIndex((clause) => clause.field === field);
-								const clause = displayedSort[priority];
+								// The header shows the sort the user asked for right away, even while the old rows stay.
+								const priority = sort.findIndex((clause) => clause.field === field);
+								const clause = sort[priority];
 								return (
 									<MyGridTableColumnHeader
 										key={field}
@@ -5120,7 +5118,7 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 														}
 													>
 														{/* The order number only matters when more than one column sorts. */}
-														{displayedSort.length > 1 && `${priority + 1} `}
+														{sort.length > 1 && `${priority + 1} `}
 														{clause.direction === "asc" ? "↑" : "↓"}
 													</span>
 												)}

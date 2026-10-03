@@ -1804,6 +1804,12 @@ describe("FileNodeView folder sort", () => {
 		renderFileView({ nodeId: node._id });
 
 		const table = await screen.findByRole("table", { name: "Folder contents" });
+		// file.updated_by cannot sort, so its header has no sort button, only the column options.
+		expect(
+			within(within(table).getByRole("columnheader", { name: /^file\.updated_by/ }))
+				.getAllByRole("button")
+				.map((button) => button.getAttribute("aria-label")),
+		).toEqual(["Column options for file.updated_by"]);
 		fireEvent.click(within(table).getByRole("button", { name: "Column options for file.updated" }));
 		fireEvent.click(await screen.findByRole("menuitem", { name: "Add to sort" }));
 		expect(table.getAttribute("data-sort-fields")).toBe(
@@ -2036,7 +2042,7 @@ describe("FileNodeView folder sort limits and states", () => {
 		).toBe("descending");
 	});
 
-	test("keeps the held full list and hidden primary labels during newer sort requests", async () => {
+	test("keeps the held full list and shows the requested sort in the header during newer sort requests", async () => {
 		const oldSort: files_sort_Sort = [
 			{ field: "metadata.status", direction: "desc" },
 			{ field: "name", direction: "asc" },
@@ -2045,18 +2051,22 @@ describe("FileNodeView folder sort limits and states", () => {
 		renderFileView({ nodeId: node._id });
 		const table = await screen.findByRole("table", { name: "Folder contents" });
 		result = { rowsSort: oldSort, rows: [rows[0]!], isBusy: true, isDone: false };
-		for (const field of ["file.updated", "file.name"]) {
+		for (const [field, arrow, ariaSort] of [
+			["file.updated", "↓", "descending"],
+			["file.name", "↑", "ascending"],
+		] as const) {
 			fireEvent.click(within(table).getByRole("button", { name: new RegExp(`^${field}`) }));
 			expect(table.getAttribute("data-sort-fields")).toBe(JSON.stringify(oldSort));
 			expect(table.closest(".FileNodeViewFolderExplorer")!.getAttribute("data-sort-state")).toBe("applying");
-			expect(screen.getByText("Showing: No filter. Sort: metadata.status ↓, then file.name ↑.")).toBeTruthy();
-			expect(screen.getByText(new RegExp(`^Applying sort… ${field}`))).toBeTruthy();
+			// A sort change alone shows no notice.
+			expect(screen.queryByText(/^Showing:/)).toBeNull();
+			expect(screen.queryByText(/^Applying sort…/)).toBeNull();
+			expect(table.querySelectorAll("[aria-sort]")).toHaveLength(1);
 			expect(
 				within(table)
-					.getByRole("columnheader", { name: /^file\.name 2/ })
-					.getAttribute("data-sort-priority"),
-			).toBe("2");
-			expect(table.querySelector("[aria-sort]")).toBeNull();
+					.getByRole("columnheader", { name: new RegExp(`^${field} ${arrow}`) })
+					.getAttribute("aria-sort"),
+			).toBe(ariaSort);
 			expect(screen.getByRole("button", { name: "Show more" })).toHaveProperty("disabled", true);
 		}
 		result = {};

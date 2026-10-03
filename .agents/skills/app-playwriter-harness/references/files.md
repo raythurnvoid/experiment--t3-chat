@@ -672,7 +672,7 @@ run reused `/qa-sort-0924` and `/qa-sort-0924-r` without new files, metadata, mo
   true despite the QA policy.
 - **Order and labels.** Read `data-sort-fields`, ordered row ids and sorted header priority/direction.
   Only the primary header has `aria-sort`. During an uncached change, held rows keep their full old
-  array and `Showing: <filter>. Sort: <full list>.` notice; the `Applying sort…` notice names the requested list.
+  `data-sort-fields` array while the headers already show the requested list. A sort change alone shows no notice.
   Check all four file.extension/metadata.rank direction pairs against an order derived independently from
   bounded fixture facts. Also check file.extension/file.size/rank with folders and file.created/rank with unique times.
   The checked fixture has tied file.updated values, so file.updated cannot prove its direction there.

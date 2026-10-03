@@ -904,6 +904,9 @@
 	.FileNodeViewFolderExplorer-column-header {
 		grid-row: 1;
 
+		/* The sort button covers the whole cell from inside it, so the cell is its positioning parent. */
+		position: relative;
+
 		display: flex;
 		align-items: center;
 		gap: 4px;
@@ -913,6 +916,11 @@
 
 		font-weight: 500;
 		white-space: nowrap;
+
+		/* Only a column that can sort reacts to the mouse. file.updated_by has no sort button. */
+		&:has(.FileNodeViewFolderExplorer-sort-button):hover {
+			background: var(--color-base-1-05);
+		}
 	}
 
 	.FileNodeViewFolderExplorer-column-header-actions {
@@ -937,13 +945,29 @@
 		background: none;
 		cursor: pointer;
 
+		/* Stretch the click area over the whole header cell, so a click anywhere in the cell sorts. It stays
+		   one button, so it is still one tab stop. The column options button comes later in the HTML and
+		   is positioned too, so it paints on top and keeps its own clicks. */
+		&::after {
+			content: "";
+			position: absolute;
+			inset: 0;
+
+			border-radius: 6px;
+		}
+
 		&:hover {
 			color: var(--color-fg-11);
 		}
 
+		/* Draw the focus ring around the whole cell, the same area a click covers. */
 		&:focus-visible {
+			outline: none;
+		}
+
+		&:focus-visible::after {
 			outline: 2px solid var(--color-fg-12);
-			outline-offset: 2px;
+			outline-offset: -2px;
 		}
 	}
 
