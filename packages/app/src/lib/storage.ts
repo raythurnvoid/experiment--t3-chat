@@ -135,6 +135,24 @@ const storage_local_schema = {
 		defaultValue: true,
 	}),
 
+	"app_state::sidebar::channels_open": define_field<"app_state::sidebar::channels_open", boolean>({
+		parse: (raw) => raw !== "0",
+		serialize: (value) => (value ? "1" : "0"),
+		defaultValue: true,
+	}),
+
+	"app_state::channels_sidebar_width": define_field<"app_state::channels_sidebar_width", number>({
+		parse: (raw) => (raw !== null && Number.isFinite(Number(raw)) ? Math.max(220, Math.min(320, Number(raw))) : 240),
+		serialize: (value) => String(value),
+		defaultValue: 240,
+	}),
+
+	"app_state::channels_thread_width": define_field<"app_state::channels_thread_width", number>({
+		parse: (raw) => (raw !== null && Number.isFinite(Number(raw)) ? Math.max(360, Math.min(480, Number(raw))) : 380),
+		serialize: (value) => String(value),
+		defaultValue: 380,
+	}),
+
 	"app_state::resizable_panel::file_editor_panel": define_field<
 		"app_state::resizable_panel::file_editor_panel",
 		number[] | null

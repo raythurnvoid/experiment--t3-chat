@@ -22,28 +22,38 @@
 		flex-direction: column;
 		gap: 8px;
 		padding: 12px;
-		border: 1px solid var(--color-base-1-05);
-		border-radius: 8px;
+		border: 1px solid var(--color-base-1-07);
+		border-radius: 6px;
+		background: var(--color-base-1-03);
 		overflow-wrap: anywhere;
 		& .AiChatMarkdown {
 			font-size: 16px;
 		}
 		& h2 {
 			font-size: 16px;
-			font-weight: 650;
+			font-weight: 600;
 		}
 	}
 	.ChannelsPosts-heading {
 		display: flex;
 		flex-wrap: wrap;
-		gap: 6px;
+		gap: 8px;
+		align-items: center;
 		font-size: 15px;
+		& > strong {
+			font-size: 16px;
+			font-weight: 600;
+		}
 		& time {
 			color: var(--color-fg-08);
 		}
 		& span {
 			color: var(--color-fg-08);
 		}
+	}
+	.ChannelsPosts-avatar {
+		width: 36px;
+		height: 36px;
 	}
 	.ChannelsPosts-excerpt {
 		padding-left: 12px;

@@ -91,8 +91,10 @@ describe("ChannelsMessage", () => {
 		const props = fixture();
 		props.row.message.body = '[@ id="user:0"] [unsafe](javascript:alert(1)) <script>alert(1)</script>';
 		props.row.mentionNames = ["Ana [click](javascript:alert(2))"];
+		props.row.message.mentionUserIds = ["author" as app_convex_Id<"users">];
 		const { container } = render(<ChannelsMessage {...props} />);
 		expect(container.textContent).toContain("@Ana [click](javascript:alert(2))");
+		expect(container.querySelector('[data-user-id="author"]')?.textContent).toBe("@Ana [click](javascript:alert(2))");
 		expect(container.querySelector("script"), "message text must not become a script").toBeNull();
 		expect(container.querySelector('a[href^="javascript:"]'), "message text must not create an unsafe link").toBeNull();
 	});
@@ -104,7 +106,7 @@ describe("ChannelsMessage", () => {
 		const { container } = render(<ChannelsMessage {...props} />);
 		expect(screen.getByText("This message was deleted")).toBeTruthy();
 		expect(container.textContent).not.toContain("Removed private text");
-		expect(screen.queryByRole("button", { name: "Reply" })).toBeNull();
+		expect(screen.queryByRole("button", { name: "Add reaction" })).toBeNull();
 		fireEvent.keyDown(screen.getByRole("article"), { key: "e" });
 		fireEvent.keyDown(screen.getByRole("article"), { key: "Delete" });
 		expect(props.onEdit).not.toHaveBeenCalled();
@@ -127,7 +129,7 @@ describe("ChannelsMessage", () => {
 		expect(props.onJump).toHaveBeenCalledWith("message", null);
 		fireEvent.keyDown(screen.getByRole("article"), { key: "r" });
 		expect(props.onReply).toHaveBeenCalledWith(props.row, null);
-		fireEvent.keyDown(screen.getByRole("button", { name: "Reply" }), { key: "e" });
+		fireEvent.keyDown(screen.getByRole("button", { name: "Reply in thread" }), { key: "e" });
 		expect(props.onEdit).not.toHaveBeenCalled();
 		fireEvent.keyDown(screen.getByRole("article"), { key: "e" });
 		expect(props.onEdit).toHaveBeenCalledWith(props.row);

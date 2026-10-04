@@ -105,7 +105,7 @@ describe("ChannelsFeedMessage", () => {
 		mocks.channel = { channel: { kind: "file", layout: "posts" }, file: { path: "/notes.md" } };
 		const view = render(<ChannelsFeedMessage row={row} people={[]} unread />);
 		expect(screen.getByRole("link", { name: "Open context" }).getAttribute("href")).toContain("thread=root");
-		expect(screen.getByText("New")).toBeTruthy();
+		expect(screen.getByTitle("Unread")).toBeTruthy();
 		mocks.channel = null;
 		view.rerender(<ChannelsFeedMessage row={row} people={[]} unread />);
 		expect(screen.queryByText("Checked preview"), "lost channel access must remove the cached preview").toBeNull();

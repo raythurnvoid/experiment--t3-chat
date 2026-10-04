@@ -1,20 +1,12 @@
 import "./channels.css";
-import { memo, useEffect, useState, type ComponentProps, type ReactNode } from "react";
+import { memo, useEffect, useRef, useState, type ComponentProps, type ReactNode } from "react";
+import type { ImperativePanelHandle } from "react-resizable-panels";
 import { CatchBoundary, type ErrorComponentProps } from "@tanstack/react-router";
 import { useConvexConnectionState, usePaginatedQuery, useQuery } from "convex/react";
-import { Menu } from "lucide-react";
 import { AppHotkeysProvider } from "@/components/app-hotkeys.tsx";
 import { MyButton } from "@/components/my-button.tsx";
-import { MyIconButton } from "@/components/my-icon-button.tsx";
 import { MyInput, MyInputArea, MyInputBackground, MyInputBox, MyInputControl } from "@/components/my-input.tsx";
-import {
-	MyModal,
-	MyModalCloseTrigger,
-	MyModalHeader,
-	MyModalHeading,
-	MyModalPopover,
-	MyModalScrollableArea,
-} from "@/components/my-modal.tsx";
+import { MyModal, MyModalPopover, MyModalScrollableArea } from "@/components/my-modal.tsx";
 import { MyPanel, MyPanelGroup, MyPanelResizeHandle } from "@/components/my-resizable-panel-group.tsx";
 import { app_convex, app_convex_api, app_convex_is_id_like, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
@@ -28,13 +20,11 @@ import { ChannelsDialogs, type ChannelsDialogKind } from "./channels-dialogs.tsx
 import { ChannelsConversation } from "./channels-conversation.tsx";
 import { useChannelsPeople } from "./channels-people.ts";
 import { ChannelsActivity, ChannelsThreads } from "./channels-feed.tsx";
+import { ChannelsLayoutContext } from "./channels-layout-context.ts";
+import { ChannelsPaneHeader } from "./channels-pane-header.tsx";
 
 export type ChannelsSearch = { thread?: string; message?: string };
-type ChannelsContent_ClassNames =
-	| "ChannelsContent"
-	| "ChannelsContent-header"
-	| "ChannelsContent-empty"
-	| "ChannelsContent-status";
+type ChannelsContent_ClassNames = "ChannelsContent" | "ChannelsContent-empty" | "ChannelsContent-status";
 type ChannelsContent_CustomAttributes = { "data-channel-access": "allowed" | "missing" | "none" };
 
 export const Channels = memo(function Channels(props: ComponentProps<typeof ChannelsContent>) {
@@ -89,8 +79,31 @@ const ChannelsContent = memo(function ChannelsContent(props: {
 	);
 	const [dialog, setDialog] = useState<ChannelsDialogKind | null>(null);
 	const [drawer, setDrawer] = useState(false);
-	const [sidebarOpen, setSidebarOpen] = useState(true);
-	const [narrow, setNarrow] = useState(() => matchMedia("(max-width: 899px)").matches);
+	const [sidebarOpen, setSidebarOpen] = useAppLocalStorageStateValue("app_state::sidebar::channels_open");
+	const [sidebarWidth, setSidebarWidth] = useAppLocalStorageStateValue("app_state::channels_sidebar_width");
+	const region = useRef<HTMLDivElement>(null);
+	const sidebarPanel = useRef<ImperativePanelHandle>(null);
+	const sidebarLayout = useRef(0);
+	const [width, setWidth] = useState(0);
+	const hasThread =
+		view === "messages" &&
+		!!(
+			search.thread ||
+			(search.message &&
+				channel &&
+				(channel.channel.kind === "file" ||
+					((channel.channel.kind === "public" || channel.channel.kind === "private") &&
+						channel.channel.layout === "posts")))
+		);
+	const sidebarVisible = sidebarOpen && width >= 820 && !(hasThread && width >= 940 && width < 1200);
+	const available = Math.max(1, width - (sidebarVisible ? 2 : 0));
+	const minimumContent = hasThread && width >= 1200 ? 922 : 560;
+	const maximumSidebar = Math.min(320, Math.max(220, available - minimumContent));
+	const actualSidebarWidth = Math.min(sidebarWidth, maximumSidebar);
+	const contentWidth = width - (sidebarVisible ? actualSidebarWidth + 2 : 0);
+	const openSidebar = useFn(() =>
+		width < 820 || (hasThread && width >= 940 && width < 1200) ? setDrawer(true) : setSidebarOpen(true),
+	);
 	const open = useFn((id: app_convex_Id<"channels">, query?: ChannelsSearch) => {
 		setDrawer(false);
 		onNavigate(id, query);
@@ -101,6 +114,7 @@ const ChannelsContent = memo(function ChannelsContent(props: {
 			channelList={channelList}
 			states={states}
 			people={people}
+			onClose={() => (drawer ? setDrawer(false) : setSidebarOpen(false))}
 			onDialog={setDialog}
 			onNavigate={() => setDrawer(false)}
 		/>
@@ -108,11 +122,15 @@ const ChannelsContent = memo(function ChannelsContent(props: {
 	AppHotkeysProvider.useHotkey({ hotkey: "Mod+K", callback: useFn(() => setDialog("quick")) });
 
 	useEffect(() => {
-		const media = matchMedia("(max-width: 899px)");
-		const change = () => setNarrow(media.matches);
-		media.addEventListener("change", change);
-		return () => media.removeEventListener("change", change);
+		const element = region.current;
+		if (!element) return;
+		const observer = new ResizeObserver(([entry]) => setWidth(entry!.contentRect.width));
+		observer.observe(element);
+		return () => observer.disconnect();
 	}, []);
+	useEffect(() => {
+		if (sidebarVisible) sidebarPanel.current?.resize((actualSidebarWidth / available) * 100);
+	}, [sidebarVisible, actualSidebarWidth, available]);
 	useEffect(() => {
 		if (lastChannel) open(lastChannel.channel._id);
 	}, [lastChannel, open]);
@@ -138,7 +156,8 @@ const ChannelsContent = memo(function ChannelsContent(props: {
 				state={state}
 				people={people}
 				search={search}
-				narrow={narrow}
+				narrow={width < 940}
+				width={contentWidth}
 				onNavigate={open}
 				onDialog={setDialog}
 			/>
@@ -161,50 +180,84 @@ const ChannelsContent = memo(function ChannelsContent(props: {
 		);
 	return (
 		<div
+			ref={region}
 			className={"ChannelsContent" satisfies ChannelsContent_ClassNames}
+			data-layout={
+				width < 820
+					? "single"
+					: hasThread && width < 940
+						? "sidebar-thread"
+						: hasThread && width < 1200
+							? "conversation-thread"
+							: "wide"
+			}
 			{...({
 				"data-channel-access": channel ? "allowed" : channelId ? "missing" : "none",
 			} satisfies ChannelsContent_CustomAttributes)}
 		>
-			<header className={"ChannelsContent-header" satisfies ChannelsContent_ClassNames}>
-				<MyIconButton
-					tooltip={narrow ? "Open channels" : sidebarOpen ? "Hide channels" : "Show channels"}
-					aria-expanded={narrow ? drawer : sidebarOpen}
-					onClick={() => (narrow ? setDrawer(true) : setSidebarOpen(!sidebarOpen))}
-				>
-					<Menu />
-				</MyIconButton>
-				<span>Messages</span>
-			</header>
 			{!connection.isWebSocketConnected && (
 				<p role="status" className={"ChannelsContent-status" satisfies ChannelsContent_ClassNames}>
 					Connecting… Your draft is saved on this device.
 				</p>
 			)}
-			{narrow ? (
-				content
-			) : (
-				<MyPanelGroup direction="horizontal" defaultLayout={[24, 76]}>
-					<MyPanel order={1} isOpen={sidebarOpen} defaultSize={24} minSize={15} maxSize={40}>
+			<ChannelsLayoutContext value={{ sidebarVisible, drawerOpen: drawer, openSidebar }}>
+				<MyPanelGroup
+					direction="horizontal"
+					defaultLayout={[(240 / available) * 100, 100 - (240 / available) * 100]}
+					onLayout={(layout) => {
+						sidebarLayout.current = layout[0]!;
+					}}
+				>
+					<MyPanel
+						ref={sidebarPanel}
+						order={1}
+						isOpen={sidebarVisible}
+						closeBehavior="hidden"
+						defaultSize={sidebarVisible ? (actualSidebarWidth / available) * 100 : 25}
+						minSize={sidebarVisible ? (220 / available) * 100 : 0}
+						maxSize={sidebarVisible ? (maximumSidebar / available) * 100 : 100}
+					>
 						{sidebar}
 					</MyPanel>
-					<MyPanelResizeHandle isOpen={sidebarOpen} />
-					<MyPanel order={2} defaultSize={76} minSize={40}>
+					<MyPanelResizeHandle
+						isOpen={sidebarVisible}
+						closeBehavior="hidden"
+						onKeyUp={(event) => {
+							if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key))
+								setSidebarWidth(Math.max(220, Math.min(maximumSidebar, (sidebarLayout.current * available) / 100)));
+						}}
+						onDragging={(dragging) => {
+							if (!dragging)
+								setSidebarWidth(Math.max(220, Math.min(maximumSidebar, (sidebarLayout.current * available) / 100)));
+						}}
+					/>
+					<MyPanel order={2} minSize={sidebarVisible ? (minimumContent / available) * 100 : 0}>
+						{!(channel && state && view === "messages") && (
+							<ChannelsPaneHeader
+								title={
+									<h1>
+										{view === "messages"
+											? "Messages"
+											: view === "activity"
+												? "Activity"
+												: view === "threads"
+													? "Threads"
+													: view === "search"
+														? "Search messages"
+														: "Browse channels"}
+									</h1>
+								}
+							/>
+						)}
 						{content}
 					</MyPanel>
 				</MyPanelGroup>
-			)}
-			{narrow && (
 				<MyModal open={drawer} setOpen={setDrawer}>
-					<MyModalPopover aria-label="Channels">
-						<MyModalHeader>
-							<MyModalHeading>Messages</MyModalHeading>
-							<MyModalCloseTrigger />
-						</MyModalHeader>
+					<MyModalPopover aria-label="Channels" className="ChannelsContent-drawer">
 						<MyModalScrollableArea>{sidebar}</MyModalScrollableArea>
 					</MyModalPopover>
 				</MyModal>
-			)}
+			</ChannelsLayoutContext>
 			{dialog && (
 				<ChannelsDialogs
 					key={`${dialog}:${selectedId}`}
@@ -250,7 +303,6 @@ const ChannelsBrowse = memo(function ChannelsBrowse(props: { onNavigate: (id: ap
 			className={cn("ChannelsBrowse" satisfies ChannelsBrowse_ClassNames, "app-scrollable" satisfies AppClassName)}
 			aria-label="Browse channels"
 		>
-			<h1>Browse channels</h1>
 			<MyInput>
 				<MyInputBackground />
 				<MyInputArea>

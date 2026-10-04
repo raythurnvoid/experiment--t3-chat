@@ -1,9 +1,15 @@
 @layer components {
+	.ChannelsFeedMessage-unread {
+		color: var(--color-accent-09);
+		font-size: 13px;
+	}
 	.ChannelsActivity,
 	.ChannelsThreads {
 		min-width: 0;
 		height: 100%;
-		padding: 20px;
+		padding: 16px;
+		min-height: 0;
+		background: var(--color-base-1-02);
 		overflow: auto;
 		color: var(--color-fg-11);
 		font-size: 16px;
@@ -30,19 +36,16 @@
 	.ChannelsActivity-list,
 	.ChannelsThreads-list {
 		display: grid;
-		gap: 12px;
+		gap: 0;
 		margin: 12px 0;
 	}
 	.ChannelsFeedMessage {
 		min-width: 0;
-		padding: 12px;
-		border: 1px solid var(--color-fg-03);
-		border-radius: 8px;
-		background: var(--color-base-1-04);
+		padding: 16px 0;
+		border-bottom: 1px solid var(--color-fg-02);
 		overflow-wrap: anywhere;
 		font-size: 16px;
 		&[data-unread="true"] {
-			border-color: var(--color-accent-08);
 			& strong {
 				font-weight: 600;
 			}
@@ -63,15 +66,26 @@
 		}
 		& > a {
 			margin-left: auto;
-			min-height: 24px;
+			min-height: 36px;
 		}
 	}
 	.ChannelsFeedMessage-meta {
 		color: var(--color-fg-08);
 	}
 	.ChannelsFeedMessage-preview {
-		max-height: 240px;
+		display: -webkit-box;
+		-webkit-box-orient: vertical;
+		-webkit-line-clamp: 4;
 		margin-top: 8px;
-		overflow: auto;
+		overflow: hidden;
+		max-height: 96px;
+		line-height: 24px;
+		& .ChannelsUpload-preview {
+			display: none;
+		}
+		& .AiChatMarkdown {
+			font-size: 16px;
+			line-height: 24px;
+		}
 	}
 }

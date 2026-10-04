@@ -1,14 +1,14 @@
 import "./channels-message.css";
 import { lazy, memo, Suspense, useState, type KeyboardEvent } from "react";
 import { useQuery } from "convex/react";
-import { Check, CornerUpLeft, MessageSquare, MoreHorizontal, SmilePlus } from "lucide-react";
+import { Check, CornerUpLeft, FileText, MessageSquare, MoreHorizontal, SmilePlus } from "lucide-react";
 import { AppAuthProvider } from "@/components/app-auth.tsx";
-import { AiChatMarkdown } from "@/components/ai-chat/ai-chat-markdown.tsx";
+import { AiChatMarkdown, AiChatMarkdownLink } from "@/components/ai-chat/ai-chat-markdown.tsx";
 import { FileQuote } from "@/components/file-quotes/file-quote.tsx";
 import { MyAvatar, MyAvatarFallback, MyAvatarImage } from "@/components/my-avatar.tsx";
 import { MyButton } from "@/components/my-button.tsx";
 import { MyIconButton } from "@/components/my-icon-button.tsx";
-import { MyMenu, MyMenuItem, MyMenuPopover, MyMenuTrigger } from "@/components/my-menu.tsx";
+import { MyMenu, MyMenuItem, MyMenuItemsGroup, MyMenuPopover, MyMenuTrigger } from "@/components/my-menu.tsx";
 import { MyPopover, MyPopoverContent, MyPopoverTrigger } from "@/components/my-popover.tsx";
 import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
@@ -34,7 +34,47 @@ type ChannelsMessage_ClassNames =
 	| "ChannelsMessage-attachments"
 	| "ChannelsMessage-reactions"
 	| "ChannelsMessage-deleted"
-	| "ChannelsMessage-thread";
+	| "ChannelsMessage-thread"
+	| "ChannelsMessage-body"
+	| "ChannelsMessage-time"
+	| "ChannelsMessage-person-mention"
+	| "ChannelsMessage-file-icon";
+
+type ChannelsMentionNode = { type: string; value?: string; url?: string; children?: ChannelsMentionNode[] };
+
+function remark_channels_people_mentions({ names, ids }: { names: readonly string[]; ids: readonly string[] }) {
+	// Streamdown caches plugins by name and options, so pass mention data as options.
+	// Only stored mention tokens become highlights. Code keeps plain mention text.
+	return (tree: ChannelsMentionNode) => {
+		const visit = (node: ChannelsMentionNode) => {
+			if (node.type === "code" || node.type === "inlineCode") {
+				node.value = channels_render_people_mentions(node.value ?? "", names);
+				return;
+			}
+			node.children = node.children?.flatMap((child) => {
+				if (child.type !== "text") {
+					visit(child);
+					return [child];
+				}
+				const text = child.value ?? "";
+				const parts: ChannelsMentionNode[] = [];
+				let start = 0;
+				for (const match of text.matchAll(/\[@ id="user:(\d+)"\]/g)) {
+					parts.push({ type: "text", value: text.slice(start, match.index) });
+					const index = Number(match[1]);
+					const mention = { type: "text", value: `@${names[index] ?? "Person"}` };
+					parts.push(
+						ids[index] ? { type: "link", url: `#channels-person-${ids[index]}`, children: [mention] } : mention,
+					);
+					start = match.index + match[0].length;
+				}
+				parts.push({ type: "text", value: text.slice(start) });
+				return parts;
+			});
+		};
+		visit(tree);
+	};
+}
 
 export const ChannelsMessageContent = memo(function ChannelsMessageContent(props: { row: ChannelsMessageData }) {
 	const { row } = props;
@@ -42,7 +82,7 @@ export const ChannelsMessageContent = memo(function ChannelsMessageContent(props
 	const parts = file_quotes_parse_draft(
 		channels_file_quotes_to_draft(
 			channels_render_file_mentions(
-				channels_render_people_mentions(row.message.body, row.mentionNames),
+				row.message.body,
 				row.fileMentions.map((file) =>
 					file.kind === "file"
 						? {
@@ -64,7 +104,44 @@ export const ChannelsMessageContent = memo(function ChannelsMessageContent(props
 					part.type === "data-file-quote" ? (
 						<FileQuote key={index} quote={part.data} />
 					) : (
-						<AiChatMarkdown key={index} markdown={part.text} />
+						<AiChatMarkdown
+							key={index}
+							className={"ChannelsMessage-body" satisfies ChannelsMessage_ClassNames}
+							markdown={part.text}
+							remarkPlugins={[
+								[remark_channels_people_mentions, { names: row.mentionNames, ids: row.message.mentionUserIds }],
+							]}
+							components={{
+								a: ({ href, children, ...rest }) => {
+									const personId = row.message.mentionUserIds.find((id) => href === `#channels-person-${id}`);
+									if (personId)
+										return (
+											<span
+												className={"ChannelsMessage-person-mention" satisfies ChannelsMessage_ClassNames}
+												data-user-id={personId}
+											>
+												{children}
+											</span>
+										);
+									const file = row.fileMentions.find(
+										(file) =>
+											file.kind === "file" &&
+											href === url_path_file_by_node_id({ organizationName, workspaceName, nodeId: file.fileNodeId }),
+									);
+									return (
+										<AiChatMarkdownLink {...rest} href={href}>
+											{file && (
+												<FileText
+													className={"ChannelsMessage-file-icon" satisfies ChannelsMessage_ClassNames}
+													size={16}
+												/>
+											)}
+											{children}
+										</AiChatMarkdownLink>
+									);
+								},
+							}}
+						/>
 					),
 				)
 			)}
@@ -110,6 +187,7 @@ export const ChannelsMessage = memo(function ChannelsMessage(props: {
 	canPost: boolean;
 	canManage: boolean;
 	resolvable: boolean;
+	hideThreadSummary?: boolean;
 	onFocus?: () => void;
 	onReply: (row: ChannelsMessageData, quote: string | null) => void;
 	onThread: (rootMessageId: app_convex_Id<"channels_messages">) => void;
@@ -133,6 +211,7 @@ export const ChannelsMessage = memo(function ChannelsMessage(props: {
 		canPost,
 		canManage,
 		resolvable,
+		hideThreadSummary = false,
 		onFocus,
 		onReply,
 		onThread,
@@ -165,11 +244,13 @@ export const ChannelsMessage = memo(function ChannelsMessage(props: {
 		thread ? { membershipId, rootMessageId: message._id } : "skip",
 	);
 	const [emojiOpen, setEmojiOpen] = useState(false);
+	const [menuOpen, setMenuOpen] = useState(false);
 	const mine = userId === message.authorUserId;
 	const deleted = message.deletedAt !== null;
 	const rootId = message.threadRootId ?? message._id;
 	const date = new Date(message._creationTime);
 	const fullTime = date.toLocaleString();
+	const clock = date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
 	const reply = () => {
 		const selection = window.getSelection();
 		const body = selection?.anchorNode?.parentElement?.closest(".AiChatMarkdown");
@@ -216,6 +297,7 @@ export const ChannelsMessage = memo(function ChannelsMessage(props: {
 				"data-reply-count": thread?.replyCount ?? 0,
 			} satisfies ChannelsMessage_CustomAttributes)}
 			aria-label={`${authorName}, ${fullTime}`}
+			data-actions-open={String(menuOpen || emojiOpen)}
 			tabIndex={tabIndex}
 			onFocus={onFocus}
 			onKeyDown={keydown}
@@ -226,12 +308,22 @@ export const ChannelsMessage = memo(function ChannelsMessage(props: {
 					<MyAvatarFallback>{authorName.slice(0, 2)}</MyAvatarFallback>
 				</MyAvatar>
 			)}
+			{grouped && (
+				<time
+					className={"ChannelsMessage-time" satisfies ChannelsMessage_ClassNames}
+					dateTime={date.toISOString()}
+					title={fullTime}
+					tabIndex={0}
+				>
+					{clock}
+				</time>
+			)}
 			<div className={"ChannelsMessage-content" satisfies ChannelsMessage_ClassNames}>
 				{!grouped && (
 					<header className={"ChannelsMessage-header" satisfies ChannelsMessage_ClassNames}>
-						<strong>{authorName}</strong>
-						<time dateTime={date.toISOString()} title={fullTime}>
-							{format_relative_time(message._creationTime)}
+						<strong title={authorName}>{authorName}</strong>
+						<time dateTime={date.toISOString()} title={fullTime} tabIndex={0}>
+							{clock}
 						</time>
 						{message.editedAt !== null && <span>(edited)</span>}
 					</header>
@@ -252,12 +344,12 @@ export const ChannelsMessage = memo(function ChannelsMessage(props: {
 					</MyButton>
 				)}
 				<ChannelsMessageContent row={row} />
-				{!deleted && (
+				{!deleted && !!reactions?.length && (
 					<div className={"ChannelsMessage-reactions" satisfies ChannelsMessage_ClassNames}>
 						{(reactions ?? []).map((reaction) => (
 							<MyButton
 								key={reaction.emoji}
-								variant="ghost-highlightable"
+								variant="outline"
 								aria-pressed={reaction.mine}
 								tooltip={reaction.names.join(", ")}
 								disabled={!canPost}
@@ -268,7 +360,7 @@ export const ChannelsMessage = memo(function ChannelsMessage(props: {
 						))}
 					</div>
 				)}
-				{thread && thread.replyCount > 0 && (
+				{!hideThreadSummary && thread && thread.replyCount > 0 && (
 					<MyButton
 						variant="link"
 						className={"ChannelsMessage-thread" satisfies ChannelsMessage_ClassNames}
@@ -307,31 +399,38 @@ export const ChannelsMessage = memo(function ChannelsMessage(props: {
 								)}
 							</MyPopoverContent>
 						</MyPopover>
-						<MyIconButton tooltip="Reply" variant="ghost-highlightable" disabled={!canPost} onClick={reply}>
-							<CornerUpLeft />
-						</MyIconButton>
 					</>
 				)}
 				<MyIconButton tooltip="Reply in thread" variant="ghost-highlightable" onClick={() => onThread(rootId)}>
 					<MessageSquare />
 				</MyIconButton>
-				<MyMenu>
+				<MyMenu open={menuOpen} setOpen={setMenuOpen}>
 					<MyMenuTrigger>
 						<MyIconButton tooltip="More message actions" variant="ghost-highlightable">
 							<MoreHorizontal />
 						</MyIconButton>
 					</MyMenuTrigger>
 					<MyMenuPopover aria-label="Message actions">
-						{mine && canPost && !deleted && <MyMenuItem onClick={() => onEdit(row)}>Edit</MyMenuItem>}
-						{(mine || canManage) && canPost && !deleted && (
-							<MyMenuItem variant="destructive" onClick={() => onDelete(row)}>
-								Delete
-							</MyMenuItem>
+						{/* Let More close before moving focus or opening another popup. */}
+						{canPost && !deleted && <MyMenuItem onClick={() => requestAnimationFrame(reply)}>Quote reply</MyMenuItem>}
+						<MyMenuItem onClick={() => requestAnimationFrame(() => onThread(rootId))}>Reply in thread</MyMenuItem>
+						{canPost && !deleted && (
+							<MyMenuItem onClick={() => requestAnimationFrame(() => setEmojiOpen(true))}>Add reaction</MyMenuItem>
+						)}
+						{mine && canPost && !deleted && (
+							<MyMenuItem onClick={() => requestAnimationFrame(() => onEdit(row))}>Edit</MyMenuItem>
 						)}
 						<MyMenuItem onClick={() => onCopyLink(row)}>Copy link</MyMenuItem>
 						<MyMenuItem onClick={() => onUnread(message._id)}>Mark unread</MyMenuItem>
 						{resolvable && thread && canPost && (
 							<MyMenuItem onClick={() => onResolve(row)}>{thread.isResolved ? "Reopen" : "Resolve"}</MyMenuItem>
+						)}
+						{(mine || canManage) && canPost && !deleted && (
+							<MyMenuItemsGroup separator>
+								<MyMenuItem variant="destructive" onClick={() => requestAnimationFrame(() => onDelete(row))}>
+									Delete
+								</MyMenuItem>
+							</MyMenuItemsGroup>
 						)}
 					</MyMenuPopover>
 				</MyMenu>

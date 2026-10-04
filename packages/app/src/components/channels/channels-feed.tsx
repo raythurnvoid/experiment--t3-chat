@@ -64,7 +64,11 @@ export const ChannelsFeedMessage = memo(function ChannelsFeedMessage(props: {
 			<header className={"ChannelsFeedMessage-header" satisfies ChannelsFeedMessage_ClassNames}>
 				<strong>{name}</strong>
 				{label && <span>{label}</span>}
-				{unread && <strong>New</strong>}
+				{unread && (
+					<span className="ChannelsFeedMessage-unread" title="Unread">
+						●
+					</span>
+				)}
 				<Link
 					to="/w/$organizationName/$workspaceName/messages/$channelId"
 					params={{ organizationName, workspaceName, channelId: row.message.channelId }}
@@ -113,7 +117,7 @@ export const ChannelsActivity = memo(function ChannelsActivity(props: { compact?
 			aria-label={compact ? "Message activity" : "Activity"}
 			{...({ "data-compact": String(compact) } satisfies ChannelsActivity_CustomAttributes)}
 		>
-			{compact ? <h2>Messages</h2> : <h1>Activity</h1>}
+			{compact && <h2>Messages</h2>}
 			<p title="This count covers loaded inbox items">
 				Unread in loaded items: {inboxUnreadCount}
 				{inboxHasMore ? "+" : ""}
@@ -161,7 +165,6 @@ export const ChannelsThreads = memo(function ChannelsThreads() {
 			className={cn("ChannelsThreads" satisfies ChannelsThreads_ClassNames, "app-scrollable" satisfies AppClassName)}
 			aria-label="Followed threads"
 		>
-			<h1>Threads</h1>
 			<p title="This count covers loaded followed threads">
 				Unread in loaded threads: {threadsUnreadCount}
 				{threadsHasMore ? "+" : ""}
@@ -182,6 +185,8 @@ export const ChannelsThreads = memo(function ChannelsThreads() {
 								? ` · ${entry.root.thread!.lastReplySequence - entry.follower.readReplySequence} new replies`
 								: ""}
 							{entry.follower.pendingRootMention ? " · New mention" : ""}
+							{entry.follower.following ? " · Following" : ""}
+							{entry.root.thread!.isResolved ? " · Resolved" : ""}
 						</p>
 					</ChannelsFeedMessage>
 				))}

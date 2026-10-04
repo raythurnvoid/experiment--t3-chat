@@ -1,0 +1,54 @@
+@layer components {
+	.ChannelsPaneHeader {
+		display: flex;
+		align-items: center;
+		gap: 4px;
+		flex: 0 0 auto;
+		min-height: 44px;
+		padding: 4px 16px;
+		background: var(--color-base-1-03);
+		border-bottom: 1px solid var(--color-fg-02);
+		color: var(--color-fg-11);
+		& > .MyButton,
+		& > .MyIconButton {
+			flex-shrink: 0;
+		}
+	}
+	.ChannelsPaneHeader-title {
+		flex: 1;
+		min-width: 0;
+		font-size: 18px;
+		font-weight: 600;
+		color: var(--color-fg-12);
+		& > h1,
+		& > strong {
+			font: inherit;
+		}
+		& > .MyButton {
+			max-width: 100%;
+			font: inherit;
+			color: var(--color-fg-12);
+			& > span {
+				overflow: hidden;
+				text-overflow: ellipsis;
+				white-space: nowrap;
+			}
+		}
+		& > strong {
+			display: block;
+			overflow: hidden;
+			text-overflow: ellipsis;
+			white-space: nowrap;
+		}
+	}
+	@media (pointer: coarse) {
+		.ChannelsPaneHeader .MyIconButton,
+		.ChannelsPaneHeader .MyButton {
+			min-height: 44px;
+		}
+		.ChannelsPaneHeader .MyIconButton {
+			width: 44px;
+			height: 44px;
+		}
+	}
+}

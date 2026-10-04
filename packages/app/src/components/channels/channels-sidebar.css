@@ -3,14 +3,59 @@
 		height: 100%;
 		display: flex;
 		flex-direction: column;
-		gap: 8px;
-		padding: 12px;
-		overflow: auto;
+		min-height: 0;
+		min-width: 0;
+		background: var(--color-base-1-03);
 		color: var(--color-fg-11);
-		font-size: 0.9375rem;
-		> a {
-			padding: 8px;
+		font-size: 16px;
+	}
+	.ChannelsSidebar-header {
+		min-height: 44px;
+		padding: 4px 12px;
+		gap: 4px;
+		border-bottom: 1px solid var(--color-fg-02);
+		flex-shrink: 0;
+		& h1 {
+			flex: 1;
+		}
+	}
+	.ChannelsSidebar-content {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+		min-height: 0;
+		overflow: auto;
+		padding: 12px 8px;
+		& > a,
+		& > .MyButton {
+			display: flex;
+			align-items: center;
+			gap: 8px;
+			min-height: 36px;
+			padding: 4px 8px;
+			border-radius: 8px;
 			color: var(--color-fg-08);
+			font-size: 16px;
+		}
+		& > a > span:first-of-type {
+			flex: 1;
+		}
+		& kbd {
+			margin-left: auto;
+			font-size: 13px;
+			color: var(--color-fg-08);
+		}
+		& > a:hover {
+			background: linear-gradient(var(--color-base-1-05), var(--color-base-1-04));
+		}
+		& > a[aria-current="page"] {
+			color: var(--color-fg-11);
+			background: linear-gradient(var(--color-base-1-06), var(--color-base-1-05));
+			box-shadow: inset 3px 0 var(--color-accent-07);
+		}
+		& > a:focus-visible {
+			outline: 2px solid var(--color-fg-12);
+			outline-offset: -2px;
 		}
 	}
 	.ChannelsSidebar-header,
@@ -19,8 +64,9 @@
 		align-items: center;
 		justify-content: space-between;
 		h1 {
-			font-size: 1rem;
+			font-size: 18px;
 			font-weight: 600;
+			color: var(--color-fg-12);
 		}
 		h2 {
 			font-size: 0.8125rem;
@@ -31,6 +77,14 @@
 	.ChannelsSidebar-section {
 		display: grid;
 		gap: 4px;
+		margin-top: 8px;
+		& .MySidebarList {
+			padding: 0;
+			gap: 0;
+		}
+		& .MyButton {
+			font-size: 15px;
+		}
 	}
 	.ChannelsSidebarRow {
 		display: grid;
@@ -41,17 +95,43 @@
 		}
 		> .MyMenuTrigger {
 			opacity: 0;
+			pointer-events: none;
 		}
 		&:hover > .MyMenuTrigger,
 		&:focus-within > .MyMenuTrigger {
 			opacity: 1;
+			pointer-events: auto;
+		}
+		& .MySidebarListItemPrimaryActionLink {
+			color: var(--color-fg-08);
+			font-size: 16px;
+			border-radius: 8px;
+			min-width: 0;
+		}
+		& .MySidebarListItemTitle {
+			flex: 1;
+			overflow: hidden;
+		}
+		& .MySidebarListItemPrimaryActionLink:hover {
+			background: linear-gradient(var(--color-base-1-05), var(--color-base-1-04));
+		}
+		& .MySidebarListItemPrimaryActionLink[aria-current="page"] {
+			color: var(--color-fg-11);
+			background: linear-gradient(var(--color-base-1-06), var(--color-base-1-05));
+			box-shadow: inset 3px 0 var(--color-accent-07);
+		}
+		& .MySidebarListItemPrimaryActionLink:focus-visible {
+			outline: 2px solid var(--color-fg-12);
+			outline-offset: -2px;
 		}
 	}
 	.ChannelsSidebarRow-count {
 		padding: 1px 6px;
 		border-radius: 10px;
-		background: var(--color-accent-04);
-		color: white;
+		background: var(--color-base-1-06);
+		color: var(--color-fg-11);
+		font-size: 13px;
+		flex-shrink: 0;
 	}
 	.ChannelsSidebar-empty {
 		display: grid;
@@ -62,6 +142,13 @@
 	@media (hover: none) {
 		.ChannelsSidebarRow > .MyMenuTrigger {
 			opacity: 1;
+			pointer-events: auto;
+		}
+	}
+	@media (pointer: coarse) {
+		.ChannelsSidebar .MyIconButton {
+			width: 44px;
+			height: 44px;
 		}
 	}
 }

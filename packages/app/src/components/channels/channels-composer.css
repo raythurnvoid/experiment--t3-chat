@@ -2,32 +2,73 @@
 	.ChannelsComposer {
 		display: grid;
 		grid-template-columns: minmax(0, 1fr) auto;
+		grid-template-rows: auto minmax(60px, 1fr) auto 44px;
+		min-width: 0;
+		min-height: 104px;
+		max-height: 35cqh;
 		> .MyInputArea {
-			grid-column: 1;
-			grid-row: 1;
+			grid-column: 1 / -1;
+			grid-row: 2;
+			min-width: 0;
+			min-height: 0;
+			overflow: hidden;
 		}
 		> .MyInputActions {
 			grid-column: 2;
-			grid-row: 1;
+			grid-row: 4;
+			padding: 4px 8px;
 		}
 		> .ChannelsComposerAttachments {
-			grid-row: 2;
+			display: contents;
 		}
+		&:focus-within > .MyInputBox {
+			outline-color: var(--color-fg-12);
+		}
+	}
+	.ChannelsComposer-context {
+		grid-column: 1 / -1;
+		grid-row: 1;
+		padding: 8px 12px 0;
 	}
 	/* #region control */
 	.ChannelsComposerControl {
 		align-self: start;
+		height: 100%;
 
 		width: 100%;
 
 		> div,
 		.ChannelsComposerControl-editor {
 			width: inherit;
+			height: 100%;
 		}
 
 		.ChannelsComposerControl-editor {
 			white-space: pre-wrap;
+			min-height: 60px;
+			max-height: 240px;
+			overflow: auto;
+			overflow-wrap: anywhere;
+			padding: 12px;
+			font-size: 16px;
+			line-height: 24px;
+			color: var(--color-fg-11);
+			outline: none;
+			border: 0;
+			resize: none;
 		}
 	}
 	/* #endregion control */
+	@media (pointer: coarse) {
+		.ChannelsComposer {
+			grid-template-rows: auto minmax(60px, 1fr) auto 52px;
+			& .MyInputActions .MyButton {
+				min-height: 44px;
+			}
+			& .ChannelsComposerAttachments-tools .MyIconButton {
+				width: 44px;
+				height: 44px;
+			}
+		}
+	}
 }

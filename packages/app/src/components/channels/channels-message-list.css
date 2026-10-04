@@ -7,19 +7,28 @@
 		padding-block: 12px;
 	}
 	.ChannelsMessageList-pagination {
-		position: sticky;
-		top: 0;
-		z-index: 1;
 		/* Keep the empty strip from covering message actions. */
 		width: fit-content;
 		max-width: 100%;
 		margin-inline: auto;
-		background: var(--color-base-1-01);
 		display: flex;
 		justify-content: center;
 		flex-wrap: wrap;
 		gap: 8px;
-		padding: 4px 12px 12px;
+		padding: 4px 12px;
+		font-size: 15px;
+		color: var(--color-fg-08);
+		&:empty {
+			display: none;
+		}
+	}
+	.ChannelsMessageList-latest {
+		position: sticky;
+		bottom: 8px;
+		z-index: 2;
+		width: fit-content;
+		max-width: 100%;
+		margin: 8px auto 0;
 	}
 	.ChannelsMessageList-status {
 		padding: 24px;
@@ -29,18 +38,27 @@
 		gap: 12px;
 	}
 	.ChannelsMessageList-day {
-		text-align: center;
+		display: flex;
+		align-items: center;
+		gap: 12px;
 		padding: 16px 12px 8px;
 		color: var(--color-fg-08);
-		font-size: 0.8125rem;
+		font-size: 15px;
+		&::before,
+		&::after {
+			content: "";
+			height: 1px;
+			background: var(--color-fg-02);
+			flex: 1;
+		}
 	}
 	.ChannelsMessageList-new {
 		display: flex;
 		align-items: center;
 		gap: 8px;
 		padding: 8px 20px;
-		color: var(--color-accent-07);
-		font-size: 0.8125rem;
+		color: var(--color-accent-11);
+		font-size: 15px;
 		&::before,
 		&::after {
 			content: "";

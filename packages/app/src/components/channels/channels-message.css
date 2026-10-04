@@ -1,10 +1,21 @@
 @layer components {
+	.ChannelsMessage-person-mention {
+		background: var(--color-accent-03);
+		color: var(--color-accent-11);
+		border-radius: 4px;
+		padding-inline: 2px;
+	}
+	.ChannelsMessage-file-icon {
+		display: inline;
+		vertical-align: text-bottom;
+		margin-right: 4px;
+	}
 	.ChannelsMessage {
 		position: relative;
 		display: grid;
-		grid-template-columns: 36px minmax(0, 1fr);
-		gap: 12px;
-		padding: 12px 20px;
+		grid-template-columns: 44px minmax(0, 1fr);
+		gap: 8px;
+		padding: 8px 20px 4px;
 		font-size: 1rem;
 		color: var(--color-fg-11);
 		&:hover,
@@ -12,11 +23,11 @@
 			background: var(--color-base-1-03);
 		}
 		&:focus-visible {
-			outline: 2px solid var(--color-accent-07);
+			outline: 2px solid var(--color-fg-12);
 			outline-offset: -2px;
 		}
 		&[data-grouped="true"] {
-			padding-block: 4px;
+			padding-block: 2px;
 		}
 	}
 	.ChannelsMessage-avatar {
@@ -27,46 +38,96 @@
 		grid-column: 2;
 		min-width: 0;
 		display: grid;
-		gap: 6px;
-		> .AiChatMarkdown {
-			font-size: 1rem;
+		gap: 4px;
+		overflow-wrap: anywhere;
+	}
+	.ChannelsMessage-body {
+		font-size: 1rem;
+		line-height: 24px;
+		& p {
+			margin-block: 0;
+		}
+		& pre {
+			max-width: 100%;
+			overflow-x: auto;
+			background: var(--color-base-1-03);
+			border: 1px solid var(--color-base-1-07);
+			border-radius: 6px;
+			font-size: 16px;
+			line-height: 22px;
+		}
+		& blockquote {
+			background: var(--color-base-1-03);
+			border-color: var(--color-base-1-07);
+		}
+		& :not(pre) > code {
+			background: var(--color-base-1-05);
+			border-radius: 4px;
 		}
 	}
 	.ChannelsMessage-header {
 		display: flex;
 		gap: 8px;
 		align-items: baseline;
-		flex-wrap: wrap;
 		> strong {
 			min-width: 0;
-			overflow-wrap: anywhere;
+			overflow: hidden;
+			text-overflow: ellipsis;
+			white-space: nowrap;
+			font-weight: 600;
 		}
 		> time,
 		> span {
 			color: var(--color-fg-08);
-			font-size: 0.8125rem;
+			font-size: 15px;
+			flex-shrink: 0;
 		}
 	}
 	.ChannelsMessage-actions {
 		position: absolute;
 		right: 12px;
-		top: -10px;
+		top: 0;
 		display: flex;
-		border: 1px solid var(--color-base-alt-1-09);
+		gap: 4px;
+		border: 1px solid var(--color-base-1-07);
 		border-radius: 6px;
-		background: var(--color-base-alt-1-05);
+		background: var(--color-base-1-03);
 		opacity: 0;
+		pointer-events: none;
+		z-index: 1;
+		& svg {
+			width: 16px;
+			height: 16px;
+		}
 	}
 	.ChannelsMessage:hover > .ChannelsMessage-actions,
-	.ChannelsMessage:focus-within > .ChannelsMessage-actions {
+	.ChannelsMessage:focus-within > .ChannelsMessage-actions,
+	.ChannelsMessage[data-actions-open="true"] > .ChannelsMessage-actions {
 		opacity: 1;
+		pointer-events: auto;
+	}
+	.ChannelsMessage-time {
+		grid-column: 1;
+		grid-row: 1;
+		font-size: 15px;
+		line-height: 24px;
+		color: var(--color-fg-08);
+		opacity: 0;
+		pointer-events: none;
+	}
+	.ChannelsMessage:hover > .ChannelsMessage-time,
+	.ChannelsMessage:focus-within > .ChannelsMessage-time {
+		opacity: 1;
+		pointer-events: auto;
 	}
 	.ChannelsMessage-reply {
 		justify-self: start;
 		min-width: 0;
 		max-width: 100%;
-		font-size: 0.875rem;
+		font-size: 15px;
 		color: var(--color-fg-08);
+		border-left: 2px solid var(--color-base-1-07);
+		border-radius: 0;
 		> span {
 			min-width: 0;
 			overflow: hidden;
@@ -83,16 +144,24 @@
 	.ChannelsMessage-attachments > a,
 	.ChannelsMessage-attachments > span {
 		padding: 4px 8px;
-		border: 1px solid var(--color-base-alt-1-09);
+		border: 1px solid var(--color-base-1-07);
 		border-radius: 6px;
-		font-size: 0.875rem;
+		font-size: 15px;
+		min-width: 0;
+		overflow-wrap: anywhere;
+	}
+	.ChannelsMessage-reactions .MyButton {
+		border: 1px solid var(--color-base-1-07);
+		background: var(--color-base-1-03);
+		border-radius: 18px;
+		min-height: 36px;
 	}
 	.ChannelsMessage-reactions [aria-pressed="true"] {
-		background: var(--color-base-1-05);
-		outline: 1px solid var(--color-accent-07);
+		background: var(--color-base-1-06);
+		border-color: var(--color-fg-12);
 	}
 	.ChannelsMessage-deleted {
-		color: var(--color-fg-06);
+		color: var(--color-fg-08);
 		font-style: italic;
 	}
 	.ChannelsMessage-thread {
@@ -100,8 +169,8 @@
 		max-width: 100%;
 		flex-wrap: wrap;
 		white-space: normal;
-		color: var(--color-fg-09);
-		font-size: 0.875rem;
+		color: var(--color-fg-08);
+		font-size: 15px;
 	}
 	.ChannelsMessageReplier {
 		width: 20px;
@@ -114,6 +183,30 @@
 			opacity: 1;
 			grid-column: 2;
 			justify-self: end;
+			pointer-events: auto;
+			& > .MyIconButton:not(.MyMenuTrigger),
+			& > .MyPopoverTrigger {
+				display: none;
+			}
+			& > .MyPopoverTrigger[aria-expanded="true"] {
+				display: block;
+			}
+			& .MyIconButton {
+				width: 44px;
+				height: 44px;
+			}
+		}
+		.ChannelsMessage-reactions .MyButton {
+			min-height: 44px;
+		}
+	}
+	@media (max-width: 600px) {
+		.ChannelsMessage {
+			padding-inline: 8px;
+			grid-template-columns: 36px minmax(0, 1fr);
+		}
+		.ChannelsMessage-time {
+			font-size: 13px;
 		}
 	}
 }

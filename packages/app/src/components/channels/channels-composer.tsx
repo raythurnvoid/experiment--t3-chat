@@ -5,8 +5,7 @@ import { Placeholder } from "@tiptap/extension-placeholder";
 import { Paragraph } from "@tiptap/extension-paragraph";
 import { Document } from "@tiptap/extension-document";
 import { Text } from "@tiptap/extension-text";
-import { memo, useEffect, useRef, useState, useImperativeHandle, type Ref } from "react";
-import { ArrowUp } from "lucide-react";
+import { memo, useEffect, useRef, useState, useImperativeHandle, type Ref, type ReactNode } from "react";
 import { cn } from "@/lib/utils.ts";
 import { useFn, useLiveRef } from "@/hooks/utils-hooks.ts";
 import { file_quote_extension } from "@/components/file-quotes/file-quote-extension.tsx";
@@ -25,7 +24,7 @@ import {
 	type MyInput_Props,
 } from "../my-input.tsx";
 import type { MyInputTextAreaControl_ClassNames } from "../my-input.tsx";
-import { MyIconButton, MyIconButtonIcon } from "../my-icon-button.tsx";
+import { MyButton } from "../my-button.tsx";
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
 import {
 	ChannelsMentionContext,
@@ -200,13 +199,15 @@ const ChannelsComposerControl = memo(function ChannelsComposerControl(props: Cha
 			},
 			onCreate: ({ editor }) => {
 				try {
-					if (!initialValue) return;
-
-					// Use this editor's parser so private mention and quote nodes survive restore.
-					editor.commands.setContent(initialValue, { contentType: "markdown" });
+					if (initialValue) {
+						// Use this editor's parser so private mention and quote nodes survive restore.
+						editor.commands.setContent(initialValue, { contentType: "markdown" });
+					}
 				} catch (error) {
 					console.error("[ChannelsComposerControl.onCreate] Failed to set initial value:", error);
 				}
+				// Empty drafts do not emit an update when restored after an edit.
+				onChangeRef.current?.();
 			},
 		};
 	});
@@ -345,6 +346,7 @@ export type ChannelsComposer_Props = {
 	autoFocus?: FocusPosition;
 	disabled?: boolean;
 	submitTooltip: string;
+	submitLabel?: string;
 	submitDisabled: boolean;
 	ariaLabel: string;
 	attachmentTarget?: ChannelsComposerAttachmentTarget;
@@ -355,6 +357,7 @@ export type ChannelsComposer_Props = {
 	mentionItems?: readonly ChannelsMentionItem[];
 	quoteRequest?: file_quotes_Quote | null;
 	onQuoteInserted?: () => void;
+	children?: ReactNode;
 };
 
 export const ChannelsComposer = memo(function ChannelsComposer(props: ChannelsComposer_Props) {
@@ -367,6 +370,7 @@ export const ChannelsComposer = memo(function ChannelsComposer(props: ChannelsCo
 		autoFocus,
 		disabled,
 		submitTooltip,
+		submitLabel = "Send",
 		submitDisabled,
 		ariaLabel,
 		attachmentTarget,
@@ -377,6 +381,7 @@ export const ChannelsComposer = memo(function ChannelsComposer(props: ChannelsCo
 		mentionItems,
 		quoteRequest,
 		onQuoteInserted,
+		children,
 	} = props;
 	const attachments = useRef<ChannelsComposerAttachments_Ref>(null);
 	const [pendingUploads, setPendingUploads] = useState(false);
@@ -408,6 +413,7 @@ export const ChannelsComposer = memo(function ChannelsComposer(props: ChannelsCo
 				}}
 			>
 				<MyInputBackground />
+				{children && <div className="ChannelsComposer-context">{children}</div>}
 				<MyInputArea>
 					<ChannelsComposerControl
 						ref={controlRef}
@@ -427,16 +433,14 @@ export const ChannelsComposer = memo(function ChannelsComposer(props: ChannelsCo
 					/>
 				</MyInputArea>
 				<MyInputActions>
-					<MyIconButton
+					<MyButton
 						type="submit"
-						variant="default-embedded"
 						tooltip={submitTooltip}
+						aria-label={submitTooltip}
 						disabled={submitDisabled || pendingUploads}
 					>
-						<MyIconButtonIcon>
-							<ArrowUp />
-						</MyIconButtonIcon>
-					</MyIconButton>
+						{submitLabel}
+					</MyButton>
 				</MyInputActions>
 				{attachmentTarget && (
 					<ChannelsComposerAttachments

@@ -1,7 +1,20 @@
 import "./channels-sidebar.css";
-import { memo } from "react";
+import { memo, useState } from "react";
 import { useQuery, type UsePaginatedQueryReturnType } from "convex/react";
-import { FileText, Hash, Lock, MessageCircle, MoreHorizontal, Plus, Search, Star } from "lucide-react";
+import {
+	Bell,
+	ChevronDown,
+	ChevronRight,
+	FileText,
+	Hash,
+	Lock,
+	MessageCircle,
+	MoreHorizontal,
+	PanelLeftClose,
+	Plus,
+	Search,
+	Star,
+} from "lucide-react";
 import { Link } from "@tanstack/react-router";
 import { toast } from "sonner";
 import {
@@ -42,10 +55,12 @@ export const ChannelsSidebar = memo(function ChannelsSidebar(props: {
 	channelList: UsePaginatedQueryReturnType<typeof app_convex_api.channels.list_my_channels>;
 	states: Record<string, ChannelState | Error | undefined>;
 	people: readonly ChannelsPerson[];
+	onClose: () => void;
 	onDialog: (dialog: "create" | "direct" | "quick") => void;
 	onNavigate: () => void;
 }) {
-	const { channelId, channelList, states, people, onDialog, onNavigate } = props;
+	const { channelId, channelList, states, people, onClose, onDialog, onNavigate } = props;
+	const [collapsed, setCollapsed] = useState<string[]>([]);
 	const { membershipId, organizationName, workspaceName } = AppTenantProvider.useContext();
 	const { inboxUnreadCount, threadsUnreadCount, inboxHasMore, threadsHasMore } = AppChannelsProvider.useContext();
 	const { results: channels, status, loadMore } = channelList;
@@ -105,94 +120,146 @@ export const ChannelsSidebar = memo(function ChannelsSidebar(props: {
 		{ title: "Files", channels: unstarred.filter((channel) => channel.kind === "file"), action: null },
 	];
 	return (
-		<aside
-			aria-label="Channels"
-			className={cn("ChannelsSidebar" satisfies ChannelsSidebar_ClassNames, "app-scrollable" satisfies AppClassName)}
-		>
+		<aside aria-label="Channels" className={"ChannelsSidebar" satisfies ChannelsSidebar_ClassNames}>
 			<header className={"ChannelsSidebar-header" satisfies ChannelsSidebar_ClassNames}>
 				<h1>Messages</h1>
-				<MyIconButton tooltip="Find a channel (Ctrl+K)" onClick={() => onDialog("quick")}>
-					<Search />
+				<MyMenu>
+					<MyMenuTrigger>
+						<MyIconButton tooltip="New conversation">
+							<Plus />
+						</MyIconButton>
+					</MyMenuTrigger>
+					<MyMenuPopover aria-label="New conversation">
+						<MyMenuItem onClick={() => requestAnimationFrame(() => onDialog("create"))}>Create channel</MyMenuItem>
+						<MyMenuItem onClick={() => requestAnimationFrame(() => onDialog("direct"))}>Message someone</MyMenuItem>
+					</MyMenuPopover>
+				</MyMenu>
+				<MyIconButton tooltip="Hide channels" onClick={onClose}>
+					<PanelLeftClose />
 				</MyIconButton>
 			</header>
-			<MyButton variant="ghost-highlightable" onClick={() => onDialog("quick")}>
-				Find a channel <kbd>Ctrl+K</kbd>
-			</MyButton>
-			<Link
-				to="/w/$organizationName/$workspaceName/messages/activity"
-				params={{ organizationName, workspaceName }}
-				onClick={onNavigate}
-				title="Unread in loaded inbox items"
-			>
-				Activity{inboxUnreadCount > 0 || inboxHasMore ? ` (${inboxUnreadCount}${inboxHasMore ? "+" : ""})` : ""}
-			</Link>
-			<Link
-				to="/w/$organizationName/$workspaceName/messages/threads"
-				params={{ organizationName, workspaceName }}
-				onClick={onNavigate}
-				title="Unread in loaded followed threads"
-			>
-				Threads{threadsUnreadCount > 0 || threadsHasMore ? ` (${threadsUnreadCount}${threadsHasMore ? "+" : ""})` : ""}
-			</Link>
-			<Link
-				to="/w/$organizationName/$workspaceName/messages/search"
-				params={{ organizationName, workspaceName }}
-				onClick={onNavigate}
-			>
-				Search messages
-			</Link>
-			<Link
-				to={"/w/$organizationName/$workspaceName/messages/browse"}
-				params={{ organizationName, workspaceName }}
-				onClick={onNavigate}
-			>
-				Browse channels
-			</Link>
-			{status === "LoadingFirstPage" ? (
-				<p>Loading channels…</p>
-			) : channels.length === 0 ? (
-				<div className={"ChannelsSidebar-empty" satisfies ChannelsSidebar_ClassNames}>
-					<p>No channels yet</p>
-					<MyButton onClick={() => onDialog("create")}>Create channel</MyButton>
-					<MyButton onClick={() => onDialog("direct")}>Message someone</MyButton>
-				</div>
-			) : null}
-			{groups.map((group) => (
-				<section
-					key={group.title}
-					aria-label={group.title}
-					className={"ChannelsSidebar-section" satisfies ChannelsSidebar_ClassNames}
+			<div className={cn("ChannelsSidebar-content", "app-scrollable" satisfies AppClassName)}>
+				<MyButton variant="ghost-highlightable" onClick={() => onDialog("quick")}>
+					<Search size={16} />
+					Find a channel <kbd>Ctrl+K</kbd>
+				</MyButton>
+				<Link
+					to="/w/$organizationName/$workspaceName/messages/activity"
+					params={{ organizationName, workspaceName }}
+					onClick={onNavigate}
+					activeProps={{ "aria-current": "page" }}
+					aria-label="Activity"
 				>
-					<div className={"ChannelsSidebar-section-header" satisfies ChannelsSidebar_ClassNames}>
-						<h2>{group.title}</h2>
-						{group.action && (
-							<MyIconButton
-								tooltip={group.action === "create" ? "Create channel" : "Message someone"}
-								onClick={() => onDialog(group.action!)}
-							>
-								<Plus />
-							</MyIconButton>
-						)}
+					<Bell size={16} />
+					<span>Activity</span>
+					{(inboxUnreadCount > 0 || inboxHasMore) && (
+						<span
+							className="ChannelsSidebarRow-count"
+							title={inboxHasMore ? "Unread in loaded items; more items available." : "Unread in loaded items"}
+						>
+							{inboxUnreadCount}
+							{inboxHasMore ? "+" : ""}
+						</span>
+					)}
+				</Link>
+				<Link
+					to="/w/$organizationName/$workspaceName/messages/threads"
+					params={{ organizationName, workspaceName }}
+					onClick={onNavigate}
+					activeProps={{ "aria-current": "page" }}
+					aria-label="Threads"
+				>
+					<MessageCircle size={16} />
+					<span>Threads</span>
+					{(threadsUnreadCount > 0 || threadsHasMore) && (
+						<span
+							className="ChannelsSidebarRow-count"
+							title={threadsHasMore ? "Unread in loaded items; more items available." : "Unread in loaded items"}
+						>
+							{threadsUnreadCount}
+							{threadsHasMore ? "+" : ""}
+						</span>
+					)}
+				</Link>
+				<Link
+					to="/w/$organizationName/$workspaceName/messages/search"
+					params={{ organizationName, workspaceName }}
+					onClick={onNavigate}
+					activeProps={{ "aria-current": "page" }}
+				>
+					<Search size={16} />
+					<span>Search messages</span>
+				</Link>
+				{status === "LoadingFirstPage" ? (
+					<p>Loading channels…</p>
+				) : channels.length === 0 ? (
+					<div className={"ChannelsSidebar-empty" satisfies ChannelsSidebar_ClassNames}>
+						<p>No channels yet</p>
+						<MyButton onClick={() => onDialog("create")}>Create channel</MyButton>
+						<MyButton onClick={() => onDialog("direct")}>Message someone</MyButton>
 					</div>
-					<MySidebarList>
-						{group.channels.map((channel) => {
-							const state = states[channel._id];
-							return (
-								<ChannelsSidebarRow
-									key={channel._id}
-									channel={channel}
-									state={state instanceof Error ? null : state}
-									people={people}
-									selected={channel._id === channelId}
-									onNavigate={onNavigate}
-									onChange={(operation) => void change(channel, operation)}
-								/>
-							);
-						})}
-					</MySidebarList>
-				</section>
-			))}
-			{status === "CanLoadMore" && <MyButton onClick={() => loadMore(50)}>Load more channels</MyButton>}
+				) : null}
+				{groups.map((group) => (
+					<section
+						key={group.title}
+						aria-label={group.title}
+						className={"ChannelsSidebar-section" satisfies ChannelsSidebar_ClassNames}
+					>
+						<div className={"ChannelsSidebar-section-header" satisfies ChannelsSidebar_ClassNames}>
+							<MyButton
+								variant="ghost"
+								aria-expanded={!collapsed.includes(group.title)}
+								onClick={() =>
+									setCollapsed((previous) =>
+										previous.includes(group.title)
+											? previous.filter((title) => title !== group.title)
+											: [...previous, group.title],
+									)
+								}
+							>
+								{collapsed.includes(group.title) ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
+								{group.title}
+							</MyButton>
+							{group.action && (
+								<MyIconButton
+									tooltip={group.action === "create" ? "Create channel" : "Message someone"}
+									onClick={() => onDialog(group.action!)}
+								>
+									<Plus />
+								</MyIconButton>
+							)}
+						</div>
+						{!collapsed.includes(group.title) && (
+							<MySidebarList>
+								{group.channels.map((channel) => {
+									const state = states[channel._id];
+									return (
+										<ChannelsSidebarRow
+											key={channel._id}
+											channel={channel}
+											state={state instanceof Error ? null : state}
+											people={people}
+											selected={channel._id === channelId}
+											onNavigate={onNavigate}
+											onChange={(operation) => void change(channel, operation)}
+										/>
+									);
+								})}
+							</MySidebarList>
+						)}
+					</section>
+				))}
+				{status === "CanLoadMore" && <MyButton onClick={() => loadMore(50)}>Load more channels</MyButton>}
+				<Link
+					to="/w/$organizationName/$workspaceName/messages/browse"
+					params={{ organizationName, workspaceName }}
+					activeProps={{ "aria-current": "page" }}
+					onClick={onNavigate}
+				>
+					<Hash size={16} />
+					<span>Browse channels</span>
+				</Link>
+			</div>
 		</aside>
 	);
 });
@@ -216,6 +283,7 @@ const ChannelsSidebarRow = memo(function ChannelsSidebarRow(props: {
 	const { channel, state, people, selected, onNavigate, onChange } = props;
 	const { membershipId, organizationName, workspaceName } = AppTenantProvider.useContext();
 	const { userId } = AppAuthProvider.useAuthenticated();
+	const [menuOpen, setMenuOpen] = useState(false);
 	const file = useQuery(
 		app_convex_api.channels.get_channel,
 		channel.kind === "file" ? { membershipId, channelId: channel._id } : "skip",
@@ -244,7 +312,8 @@ const ChannelsSidebarRow = memo(function ChannelsSidebarRow(props: {
 				variant="button"
 				to={path}
 				aria-current={selected ? "page" : undefined}
-				tooltip={file?.file?.path}
+				tooltip={file?.file?.path ?? name}
+				aria-label={file?.file?.path ?? name}
 				onClick={onNavigate}
 			>
 				<MySidebarListItemIcon>
@@ -265,7 +334,7 @@ const ChannelsSidebarRow = memo(function ChannelsSidebarRow(props: {
 					</span>
 				)}
 			</MySidebarListItemPrimaryActionLink>
-			<MyMenu>
+			<MyMenu open={menuOpen} setOpen={setMenuOpen}>
 				<MyMenuTrigger>
 					<MyIconButton tooltip={`Actions for ${name}`} variant="ghost-highlightable">
 						<MoreHorizontal />

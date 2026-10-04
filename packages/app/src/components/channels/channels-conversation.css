@@ -5,16 +5,12 @@
 		height: 100%;
 		min-width: 0;
 		min-height: 0;
+		background: var(--color-base-1-02);
 	}
-	.ChannelsConversation-header {
-		display: flex;
-		align-items: center;
-		gap: 12px;
-		padding: 12px 16px;
-		border-bottom: 1px solid var(--color-base-1-05);
-		& > strong {
-			flex: 1;
-		}
+	.ChannelsConversation-direct-avatar {
+		width: 24px;
+		height: 24px;
+		font-size: 13px;
 	}
 	.ChannelsConversation-thread {
 		display: flex;
@@ -24,28 +20,10 @@
 		min-height: 0;
 		min-width: 0;
 	}
-	.ChannelsConversation-name {
-		flex: 1;
-		min-width: 0;
-		& h1 {
-			font-size: 18px;
-			font-weight: 650;
-			overflow: hidden;
-			text-overflow: ellipsis;
-			white-space: nowrap;
-		}
-		& p {
-			font-size: 15px;
-			color: var(--color-fg-08);
-			overflow: hidden;
-			text-overflow: ellipsis;
-			white-space: nowrap;
-		}
-	}
 	.ChannelsConversation-notice {
 		font-size: 16px;
 		padding: 8px 16px;
-		color: var(--color-fg-09);
+		color: var(--color-fg-08);
 		background: var(--color-base-1-03);
 	}
 	.ChannelsConversationPane {
@@ -55,43 +33,52 @@
 		height: 100%;
 		min-height: 0;
 		min-width: 0;
+		container-type: size;
+		background: var(--color-base-1-02);
 	}
 	.ChannelsConversationPane-root {
-		flex-shrink: 0;
-		max-height: 32%;
-		overflow: auto;
-		border-bottom: 1px solid var(--color-base-1-05);
+		min-width: 0;
 	}
-	.ChannelsConversationPane-thread-controls {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 6px;
-		align-items: center;
-		padding: 8px 12px;
-		font-size: 14px;
-		& form {
-			display: flex;
-			gap: 6px;
-			min-width: 0;
-		}
-		& .MyInput {
-			width: 140px;
+	.ChannelsConversationPane-reply-count {
+		margin: 12px 20px;
+		padding-bottom: 8px;
+		border-bottom: 1px solid var(--color-fg-02);
+		font-size: 15px;
+		color: var(--color-fg-08);
+	}
+	.ChannelsConversationPane-indicator {
+		font-size: 13px;
+		color: var(--color-fg-08);
+		@container (max-width: 430px) {
+			display: none;
 		}
 	}
 	.ChannelsConversationPane-composer {
 		flex-shrink: 0;
 		padding: 8px 16px 12px;
-		border-top: 1px solid var(--color-base-1-05);
+		min-width: 0;
+		& > p[role="status"] {
+			font-size: 15px;
+			color: var(--color-fg-08);
+		}
 	}
 	.ChannelsConversationPane-tools {
 		display: flex;
 		gap: 8px;
 		align-items: center;
+		flex-wrap: wrap;
 		margin-top: 6px;
 		& > span {
 			margin-left: auto;
 			font-size: 13px;
-			color: var(--color-fg-07);
+			color: var(--color-fg-08);
+		}
+		& label {
+			display: flex;
+			align-items: center;
+			gap: 6px;
+			min-height: 36px;
+			font-size: 15px;
 		}
 	}
 	.ChannelsConversationPane-reply {
@@ -99,7 +86,7 @@
 		gap: 8px;
 		align-items: center;
 		padding-bottom: 6px;
-		font-size: 14px;
+		font-size: 15px;
 		& > span {
 			flex: 1;
 			overflow: hidden;
@@ -109,7 +96,7 @@
 	}
 	.ChannelsConversationPane-error {
 		font-size: 16px;
-		color: var(--color-red-09);
+		color: var(--color-red-11);
 		margin-top: 6px;
 	}
 	@media (max-width: 899px) {

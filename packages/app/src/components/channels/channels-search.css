@@ -2,7 +2,9 @@
 	.ChannelsSearchView {
 		height: 100%;
 		min-width: 0;
-		padding: 20px;
+		padding: 16px;
+		min-height: 0;
+		background: var(--color-base-1-02);
 		overflow: auto;
 		color: var(--color-fg-11);
 		font-size: 16px;
@@ -14,12 +16,19 @@
 	.ChannelsSearchView-form {
 		display: grid;
 		gap: 16px;
-		margin: 16px 0;
+		margin: 0 0 16px;
 	}
 	.ChannelsSearchView-filters {
 		display: grid;
 		grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
 		gap: 16px;
+		width: min(520px, calc(100vw - 24px));
+		max-height: 75dvh;
+		overflow: auto;
+		padding: 16px;
+		& input[type="date"] {
+			color-scheme: dark;
+		}
 	}
 	.ChannelsSearchView-field {
 		display: flex;
@@ -57,7 +66,13 @@
 	}
 	.ChannelsSearchView-results {
 		display: grid;
-		gap: 12px;
+		gap: 0;
+	}
+	.ChannelsSearchView-actions,
+	.ChannelsSearchView-chips {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 4px;
 	}
 	.ChannelsSearchView > p,
 	.ChannelsSearchView-results > p {

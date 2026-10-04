@@ -2,6 +2,7 @@ import "./channels-posts.css";
 import { memo, useEffect, useRef, useState, type FormEvent } from "react";
 import { useConvexConnectionState, useQuery } from "convex/react";
 import { MyButton } from "@/components/my-button.tsx";
+import { MyAvatar, MyAvatarFallback, MyAvatarImage } from "@/components/my-avatar.tsx";
 import { MyInput, MyInputArea, MyInputBackground, MyInputBox, MyInputControl } from "@/components/my-input.tsx";
 import {
 	app_convex,
@@ -25,6 +26,7 @@ type ChannelsPosts_ClassNames =
 	| "ChannelsPosts-form"
 	| "ChannelsPosts-card"
 	| "ChannelsPosts-heading"
+	| "ChannelsPosts-avatar"
 	| "ChannelsPosts-excerpt"
 	| "ChannelsPosts-status";
 type ChannelsPosts_CustomAttributes = { "data-post-id": string; "data-post-new": string; "data-post-resolved": string };
@@ -36,7 +38,12 @@ const ChannelsPost = memo(function ChannelsPost(props: {
 	onThread: (id: app_convex_Id<"channels_messages">) => void;
 }) {
 	const { row, isNew, markMissing, onThread } = props;
-	const { membershipId } = AppTenantProvider.useContext();
+	const { membershipId, organizationId, workspaceId } = AppTenantProvider.useContext();
+	const profile = useQuery(app_convex_api.users.get_workspace_member_anagraphic, {
+		organizationId,
+		workspaceId,
+		userId: row.message.authorUserId,
+	});
 	const state = useQuery(app_convex_api.channels_messages.get_thread_state, {
 		membershipId,
 		rootMessageId: row.message._id,
@@ -52,7 +59,11 @@ const ChannelsPost = memo(function ChannelsPost(props: {
 			} satisfies ChannelsPosts_CustomAttributes)}
 		>
 			<header className={"ChannelsPosts-heading" satisfies ChannelsPosts_ClassNames}>
-				<strong>{row.authorName}</strong>
+				<MyAvatar className={"ChannelsPosts-avatar" satisfies ChannelsPosts_ClassNames}>
+					<MyAvatarImage src={profile?.avatarUrl} alt="" />
+					<MyAvatarFallback>{row.authorName.slice(0, 2)}</MyAvatarFallback>
+				</MyAvatar>
+				<strong title={row.authorName}>{row.authorName}</strong>
 				<time dateTime={new Date(row.thread?.lastActivityAt ?? row.message._creationTime).toISOString()}>
 					{format_relative_time(row.thread?.lastActivityAt ?? row.message._creationTime)}
 				</time>
@@ -289,6 +300,7 @@ export const ChannelsPosts = memo(function ChannelsPosts(props: {
 						attachmentTarget={fileNodeId ? { kind: "file", fileNodeId } : { kind: "channel", channelId: channelId! }}
 						disabled={busy}
 						submitTooltip="Send comment (Enter)"
+						submitLabel={busy ? "Sending…" : "Send"}
 						submitDisabled={busy || empty || !connection.isWebSocketConnected}
 						onChange={change}
 						onEnter={submit}
@@ -298,6 +310,7 @@ export const ChannelsPosts = memo(function ChannelsPosts(props: {
 						autoFocus="end"
 					/>
 					{error && <p role="alert">{error}</p>}
+					{!connection.isWebSocketConnected && <p role="status">Connecting… Your draft is saved on this device.</p>}
 				</form>
 			)}
 			{channelId && posts === undefined ? (

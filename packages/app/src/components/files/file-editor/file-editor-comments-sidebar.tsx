@@ -4,6 +4,7 @@ import { useQuery } from "convex/react";
 import { toast } from "sonner";
 import { ChannelsPosts } from "@/components/channels/channels-posts.tsx";
 import { ChannelsConversationPane } from "@/components/channels/channels-conversation.tsx";
+import { ChannelsPaneHeader } from "@/components/channels/channels-pane-header.tsx";
 import { useChannelsMentionPeople, useChannelsPeople } from "@/components/channels/channels-people.ts";
 import { MyButton, type MyButton_ClassNames } from "@/components/my-button.tsx";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
@@ -86,7 +87,6 @@ export function FileEditorCommentsSidebar(props: {
 			</header>
 			{rootId ? (
 				<>
-					<MyButton onClick={() => setRootId(null)}>Back to comments</MyButton>
 					<div className={"FileEditorCommentsSidebar-thread" satisfies FileEditorCommentsSidebar_ClassNames}>
 						{channel && thread?.root.message.channelId === channel.channel._id ? (
 							<ChannelsConversationPane
@@ -99,11 +99,17 @@ export function FileEditorCommentsSidebar(props: {
 								onQuoteInserted={() => setQuoteRequest(null)}
 								jumpMessageId={undefined}
 								resolvable={true}
+								onClose={() => setRootId(null)}
+								back
+								backLabel="Back to comments"
 								onThread={setRootId}
 								onJump={(id, root) => setRootId(root ?? id)}
 							/>
 						) : (
-							<p>{thread === undefined ? "Loading comment…" : "Comment not found"}</p>
+							<>
+								<ChannelsPaneHeader title="Thread" onBack={() => setRootId(null)} backLabel="Back to comments" />
+								<p>{thread === undefined ? "Loading comment…" : "Comment not found"}</p>
+							</>
 						)}
 					</div>
 				</>

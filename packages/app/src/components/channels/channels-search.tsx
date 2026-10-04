@@ -4,6 +4,7 @@ import { CatchBoundary, type ErrorComponentProps } from "@tanstack/react-router"
 import { usePaginatedQuery, useQuery } from "convex/react";
 import { z } from "zod";
 import { MyButton } from "@/components/my-button.tsx";
+import { MyPopover, MyPopoverContent, MyPopoverTrigger } from "@/components/my-popover.tsx";
 import {
 	MyInput,
 	MyInputArea,
@@ -128,6 +129,7 @@ export const ChannelsSearchView = memo(function ChannelsSearchView(props: {
 		until: filters.until ?? "",
 	});
 	const [showErrors, setShowErrors] = useState(false);
+	const [filtersOpen, setFiltersOpen] = useState(false);
 	const query = channels_search_query_schema.safeParse(draft.q);
 	const validationMessage = query.success ? undefined : query.error.issues[0]!.message;
 	const dateValidationMessage =
@@ -162,7 +164,6 @@ export const ChannelsSearchView = memo(function ChannelsSearchView(props: {
 			)}
 			aria-label="Search messages"
 		>
-			<h1>Search messages</h1>
 			<form noValidate className={"ChannelsSearchView-form" satisfies ChannelsSearchView_ClassNames} onSubmit={submit}>
 				<MyInput layout="stacked" displayValidationMessage={showErrors ? validationMessage : undefined}>
 					<MyInputLabel>Search words</MyInputLabel>
@@ -182,66 +183,106 @@ export const ChannelsSearchView = memo(function ChannelsSearchView(props: {
 						{showErrors ? validationMessage : "Search message text with 1–16 words"}
 					</MyInputHelperText>
 				</MyInput>
-				<div className={"ChannelsSearchView-filters" satisfies ChannelsSearchView_ClassNames}>
-					<SearchFilter
-						label="Channel"
-						value={draft.channel}
-						options={[
-							{ value: "", label: "All readable channels" },
-							...channelList.results.map((channel) => ({
-								value: channel._id,
-								label: <SearchChannelName channelId={channel._id} people={people} />,
-							})),
-						]}
-						onChange={(channel) => setDraft({ ...draft, channel })}
-					/>
-					<SearchFilter
-						label="Person"
-						value={draft.from}
-						options={[
-							{ value: "", label: "Anyone" },
-							...people.map((person) => ({ value: person.id, label: person.name })),
-						]}
-						onChange={(from) => setDraft({ ...draft, from })}
-					/>
-					<SearchFilter
-						label="Attachments"
-						value={draft.attachments}
-						options={[
-							{ value: "", label: "Any" },
-							{ value: "true", label: "With attachments" },
-							{ value: "false", label: "Without attachments" },
-						]}
-						onChange={(attachments) => setDraft({ ...draft, attachments })}
-					/>
-					<MyInput layout="stacked">
-						<MyInputLabel>Since (UTC)</MyInputLabel>
-						<MyInputBackground />
-						<MyInputArea>
-							<MyInputControl
-								type="date"
-								value={draft.since}
-								onChange={(event) => setDraft({ ...draft, since: event.target.value })}
+				<div className="ChannelsSearchView-actions">
+					<MyButton type="submit">Search</MyButton>
+					<MyPopover open={filtersOpen} setOpen={setFiltersOpen}>
+						<MyPopoverTrigger>
+							<MyButton aria-expanded={filtersOpen}>Filters</MyButton>
+						</MyPopoverTrigger>
+						<MyPopoverContent
+							aria-label="Search filters"
+							className={"ChannelsSearchView-filters" satisfies ChannelsSearchView_ClassNames}
+						>
+							<SearchFilter
+								label="Channel"
+								value={draft.channel}
+								options={[
+									{ value: "", label: "All readable channels" },
+									...channelList.results.map((channel) => ({
+										value: channel._id,
+										label: <SearchChannelName channelId={channel._id} people={people} />,
+									})),
+								]}
+								onChange={(channel) => setDraft({ ...draft, channel })}
 							/>
-						</MyInputArea>
-						<MyInputBox />
-					</MyInput>
-					<MyInput layout="stacked" displayValidationMessage={showErrors ? dateValidationMessage : undefined}>
-						<MyInputLabel>Until (UTC, exclusive)</MyInputLabel>
-						<MyInputBackground />
-						<MyInputArea>
-							<MyInputControl
-								type="date"
-								value={draft.until}
-								validationMessage={dateValidationMessage}
-								onChange={(event) => setDraft({ ...draft, until: event.target.value })}
+							<SearchFilter
+								label="Person"
+								value={draft.from}
+								options={[
+									{ value: "", label: "Anyone" },
+									...people.map((person) => ({ value: person.id, label: person.name })),
+								]}
+								onChange={(from) => setDraft({ ...draft, from })}
 							/>
-						</MyInputArea>
-						<MyInputBox />
-						<MyInputHelperText>{showErrors ? dateValidationMessage : undefined}</MyInputHelperText>
-					</MyInput>
+							<SearchFilter
+								label="Attachments"
+								value={draft.attachments}
+								options={[
+									{ value: "", label: "Any" },
+									{ value: "true", label: "With attachments" },
+									{ value: "false", label: "Without attachments" },
+								]}
+								onChange={(attachments) => setDraft({ ...draft, attachments })}
+							/>
+							<MyInput layout="stacked">
+								<MyInputLabel>Since (UTC)</MyInputLabel>
+								<MyInputBackground />
+								<MyInputArea>
+									<MyInputControl
+										type="date"
+										value={draft.since}
+										onChange={(event) => setDraft({ ...draft, since: event.target.value })}
+									/>
+								</MyInputArea>
+								<MyInputBox />
+							</MyInput>
+							<MyInput layout="stacked" displayValidationMessage={showErrors ? dateValidationMessage : undefined}>
+								<MyInputLabel>Until (UTC, exclusive)</MyInputLabel>
+								<MyInputBackground />
+								<MyInputArea>
+									<MyInputControl
+										type="date"
+										value={draft.until}
+										validationMessage={dateValidationMessage}
+										onChange={(event) => setDraft({ ...draft, until: event.target.value })}
+									/>
+								</MyInputArea>
+								<MyInputBox />
+							</MyInput>
+							<MyButton onClick={() => setFiltersOpen(false)}>Done</MyButton>
+						</MyPopoverContent>
+					</MyPopover>
 				</div>
-				<MyButton type="submit">Search</MyButton>
+				{showErrors && dateValidationMessage && <p role="alert">{dateValidationMessage}</p>}
+				<div className="ChannelsSearchView-chips">
+					{(["channel", "from", "attachments", "since", "until"] as const)
+						.filter((key) => filters[key])
+						.map((key) => (
+							<MyButton
+								key={key}
+								aria-label={`Remove ${key} filter`}
+								onClick={() => {
+									setDraft({ ...draft, [key]: "" });
+									onSearch({ ...filters, [key]: undefined });
+								}}
+							>
+								{key === "channel" ? (
+									<SearchChannelName channelId={filters.channel as app_convex_Id<"channels">} people={people} />
+								) : key === "from" ? (
+									`From ${people.find((person) => person.id === filters.from)?.name ?? "Unavailable"}`
+								) : key === "attachments" ? (
+									filters.attachments === "true" ? (
+										"With attachments"
+									) : (
+										"Without attachments"
+									)
+								) : (
+									`${key === "since" ? "Since" : "Until"} ${filters[key]}`
+								)}{" "}
+								×
+							</MyButton>
+						))}
+				</div>
 			</form>
 			<CatchBoundary getResetKey={resetKey} onCatch={catchError} errorComponent={SearchError}>
 				<SearchResults key={JSON.stringify(filters)} filters={filters} people={people} />

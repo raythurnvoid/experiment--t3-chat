@@ -1,6 +1,9 @@
 @layer components {
 	.RootLayout {
 		--RootLayout-header-height: 48px;
+		@media (max-width: 640px) {
+			--RootLayout-header-height: 96px;
+		}
 
 		display: grid;
 		grid-template:

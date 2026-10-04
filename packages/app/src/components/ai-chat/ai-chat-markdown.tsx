@@ -1,6 +1,6 @@
 import "./ai-chat-markdown.css";
 
-import { isValidElement, memo, type ComponentPropsWithoutRef, type ReactNode } from "react";
+import { isValidElement, memo, type ComponentProps, type ComponentPropsWithoutRef, type ReactNode } from "react";
 import remarkBreaks from "remark-breaks";
 import { defaultRehypePlugins, defaultRemarkPlugins, Streamdown, type Components } from "streamdown";
 import { CopyIconButton } from "@/components/copy-icon-button.tsx";
@@ -241,7 +241,7 @@ function link_opens_in_new_tab(href: string | undefined) {
 	return (url.protocol === "http:" || url.protocol === "https:") && url.origin !== window.location.origin;
 }
 
-function AiChatMarkdownLink(props: ComponentPropsWithoutRef<"a"> & { node?: unknown }) {
+export function AiChatMarkdownLink(props: ComponentPropsWithoutRef<"a"> & { node?: unknown }) {
 	const { className, children, href, node: _node, ...rest } = props;
 	const isIncomplete = href === INCOMPLETE_LINK_HREF;
 	const openInNewTab = link_opens_in_new_tab(href);
@@ -376,14 +376,16 @@ export type AiChatMarkdown_Props = {
 	className?: string;
 	contentClassName?: string;
 	markdown: string;
+	components?: Components;
+	remarkPlugins?: ComponentProps<typeof Streamdown>["remarkPlugins"];
 };
 
 export const AiChatMarkdown = memo(function AiChatMarkdown(props: AiChatMarkdown_Props) {
-	const { markdown, className, contentClassName } = props;
+	const { markdown, className, contentClassName, components, remarkPlugins: extraRemarkPlugins = [] } = props;
 
 	// remark-breaks renders soft line breaks as <br> like chat UIs do, since
 	// model output relies on single newlines for line separation.
-	const remarkPlugins = [...Object.values(defaultRemarkPlugins), remarkBreaks];
+	const remarkPlugins = [...Object.values(defaultRemarkPlugins), remarkBreaks, ...extraRemarkPlugins];
 	const rehypePlugins = [...Object.values(defaultRehypePlugins), rehype_untrusted_images_to_links];
 
 	return (
@@ -400,7 +402,7 @@ export const AiChatMarkdown = memo(function AiChatMarkdown(props: AiChatMarkdown
 				)}
 				remarkPlugins={remarkPlugins}
 				rehypePlugins={rehypePlugins}
-				components={ai_chat_markdown_components}
+				components={{ ...ai_chat_markdown_components, ...components }}
 			>
 				{markdown}
 			</Streamdown>

@@ -1,11 +1,22 @@
 import "./channels-conversation.css";
-import { memo, useEffect, useRef, useState, type ComponentProps, type FormEvent } from "react";
+import {
+	memo,
+	useContext,
+	useEffect,
+	useRef,
+	useState,
+	type ComponentProps,
+	type FormEvent,
+	type ReactNode,
+} from "react";
 import { useConvexConnectionState, usePaginatedQuery, useQuery } from "convex/react";
-import { ArrowLeft, Users, X } from "lucide-react";
+import { FileText, Hash, Lock, Menu, MoreHorizontal, Users, X } from "lucide-react";
+import type { ImperativePanelHandle } from "react-resizable-panels";
 import { toast } from "sonner";
 import { AppAuthProvider } from "@/components/app-auth.tsx";
 import { MyButton, type MyButton_ClassNames } from "@/components/my-button.tsx";
-import { MyCheckboxButton } from "@/components/my-checkbox-button.tsx";
+import { MyAvatar, MyAvatarFallback, MyAvatarImage } from "@/components/my-avatar.tsx";
+import { MyMenu, MyMenuItem, MyMenuPopover, MyMenuTrigger } from "@/components/my-menu.tsx";
 import { MyIconButton } from "@/components/my-icon-button.tsx";
 import { MyInput, MyInputArea, MyInputBackground, MyInputBox, MyInputControl } from "@/components/my-input.tsx";
 import {
@@ -26,7 +37,11 @@ import {
 	type app_convex_Id,
 } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
-import { app_local_storage_get_value, app_local_storage_set_value } from "@/lib/storage.ts";
+import {
+	app_local_storage_get_value,
+	app_local_storage_set_value,
+	useAppLocalStorageStateValue,
+} from "@/lib/storage.ts";
 import { url_path_file_by_node_id, url_path_messages } from "@/lib/urls.ts";
 import { useFn } from "@/hooks/utils-hooks.ts";
 import { cn } from "@/lib/utils.ts";
@@ -42,13 +57,14 @@ import type { ChannelsDialogKind } from "./channels-dialogs.tsx";
 import type { ChannelsSearch } from "./channels.tsx";
 import { ChannelsPosts } from "./channels-posts.tsx";
 import type { file_quotes_Quote } from "../../../shared/file-quotes.ts";
+import { ChannelsLayoutContext } from "./channels-layout-context.ts";
+import { ChannelsPaneHeader } from "./channels-pane-header.tsx";
 
 type Channel = NonNullable<app_convex_FunctionReturnType<typeof app_convex_api.channels.get_channel>>;
 type ChannelState = NonNullable<app_convex_FunctionReturnType<typeof app_convex_api.channels.get_channel_state>>;
 type ChannelsConversation_ClassNames =
 	| "ChannelsConversation"
-	| "ChannelsConversation-header"
-	| "ChannelsConversation-name"
+	| "ChannelsConversation-direct-avatar"
 	| "ChannelsConversation-thread"
 	| "ChannelsConversation-notice";
 type ChannelsConversation_CustomAttributes = {
@@ -62,10 +78,17 @@ export const ChannelsConversation = memo(function ChannelsConversation(props: {
 	people: readonly ChannelsPerson[];
 	search: ChannelsSearch;
 	narrow: boolean;
+	width: number;
 	onNavigate: (id: app_convex_Id<"channels">, search?: ChannelsSearch) => void;
 	onDialog: (kind: ChannelsDialogKind) => void;
 }) {
-	const { channel, state, people, search, narrow, onNavigate, onDialog } = props;
+	const { channel, state, people, search, narrow, width, onNavigate, onDialog } = props;
+	const region = useRef<HTMLElement>(null);
+	const threadPanel = useRef<ImperativePanelHandle>(null);
+	const opener = useRef<HTMLElement | null>(null);
+	const [paneWidth, setPaneWidth] = useState(width);
+	const [threadWidth, setThreadWidth] = useAppLocalStorageStateValue("app_state::channels_thread_width");
+	const threadLayout = useRef(0);
 	const { membershipId, organizationName, workspaceName } = AppTenantProvider.useContext();
 	const { userId } = AppAuthProvider.useAuthenticated();
 	const document = channel.channel;
@@ -119,8 +142,15 @@ export const ChannelsConversation = memo(function ChannelsConversation(props: {
 				: [],
 		),
 	];
-	const openThread = useFn((id: app_convex_Id<"channels_messages">) => onNavigate(document._id, { thread: id }));
-	const closeThread = useFn(() => onNavigate(document._id));
+	const openThread = useFn((id: app_convex_Id<"channels_messages">) => {
+		opener.current =
+			globalThis.document.activeElement instanceof HTMLElement ? globalThis.document.activeElement : null;
+		onNavigate(document._id, { thread: id });
+	});
+	const closeThread = useFn(() => {
+		onNavigate(document._id);
+		requestAnimationFrame(() => opener.current?.focus({ preventScroll: true }));
+	});
 	const jump = useFn(
 		(messageId: app_convex_Id<"channels_messages">, threadRootId: app_convex_Id<"channels_messages"> | null) =>
 			onNavigate(document._id, {
@@ -132,31 +162,125 @@ export const ChannelsConversation = memo(function ChannelsConversation(props: {
 	useEffect(() => {
 		if (members.status === "CanLoadMore") members.loadMore(50);
 	}, [members.status, members.loadMore]);
-	const main = posts ? (
-		<div className={"app-scrollable" satisfies AppClassName}>
-			<ChannelsPosts
-				key={document._id}
-				channelId={document._id}
-				fileNodeId={document.kind === "file" ? document.fileNodeId : undefined}
-				state={state}
-				canPost={channel.canPost}
-				mentionItems={mentionItems}
-				onThread={openThread}
-			/>
-		</div>
-	) : (
-		<ChannelsConversationPane
-			key={document._id}
-			channel={channel}
-			name={name}
-			root={null}
-			readSequence={state.readSequence}
-			mentionItems={mentionItems}
-			jumpMessageId={!rootId ? search.message : undefined}
-			resolvable={resolvable}
-			onThread={openThread}
-			onJump={jump}
-		/>
+	useEffect(() => {
+		if (!region.current) return;
+		const observer = new ResizeObserver(([entry]) => setPaneWidth(entry!.contentRect.width));
+		observer.observe(region.current);
+		return () => observer.disconnect();
+	}, []);
+	const split = !!rootId && !narrow && paneWidth >= 922;
+	const available = Math.max(1, paneWidth - 2);
+	const maximumThread = Math.min(480, Math.max(360, available - 560));
+	const actualThreadWidth = Math.min(threadWidth, maximumThread);
+	useEffect(() => {
+		if (split) threadPanel.current?.resize((actualThreadWidth / available) * 100);
+	}, [split, actualThreadWidth, available]);
+	const header = (
+		<ChannelsPaneHeader
+			title={
+				<MyButton
+					variant="ghost"
+					tooltip={name}
+					aria-label={`Details for ${name}`}
+					onClick={() => onDialog("settings")}
+				>
+					{document.kind === "private" ? (
+						<Lock size={16} />
+					) : document.kind === "file" ? (
+						<FileText size={16} />
+					) : document.kind === "public" ? (
+						<Hash size={16} />
+					) : (
+						<MyAvatar className={"ChannelsConversation-direct-avatar" satisfies ChannelsConversation_ClassNames}>
+							<MyAvatarImage
+								src={
+									people.find(
+										(person) =>
+											document.kind === "direct" &&
+											document.participantUserIds.filter((id) => id !== userId)[0] === person.id,
+									)?.avatarUrl
+								}
+								alt=""
+							/>
+							<MyAvatarFallback>{directName.slice(0, 2)}</MyAvatarFallback>
+						</MyAvatar>
+					)}
+					<span>{document.kind === "public" || document.kind === "private" ? document.name : name}</span>
+				</MyButton>
+			}
+		>
+			{document.kind === "file" && channel.file && (
+				<a
+					className={cn(
+						"MyButton" satisfies MyButton_ClassNames,
+						"MyButton-variant-default" satisfies MyButton_ClassNames,
+					)}
+					href={url_path_file_by_node_id({ organizationName, workspaceName, nodeId: document.fileNodeId })}
+				>
+					Open file
+				</a>
+			)}
+			<MyButton aria-label={`Members of ${name}: ${members.results.length}`} onClick={() => onDialog("members")}>
+				<Users size={16} />
+				{members.results.length}
+				{members.status === "CanLoadMore" ? "+" : ""}
+			</MyButton>
+			<MyMenu>
+				<MyMenuTrigger>
+					<MyIconButton tooltip={`More for ${name}`}>
+						<MoreHorizontal />
+					</MyIconButton>
+				</MyMenuTrigger>
+				<MyMenuPopover aria-label="Conversation actions">
+					<MyMenuItem onClick={() => requestAnimationFrame(() => onDialog("settings"))}>Channel details</MyMenuItem>
+					<MyMenuItem onClick={() => requestAnimationFrame(() => onDialog("members"))}>Members</MyMenuItem>
+				</MyMenuPopover>
+			</MyMenu>
+		</ChannelsPaneHeader>
+	);
+	const notice = (
+		<>
+			{(document.kind === "private" || document.kind === "direct") && (
+				<p className={"ChannelsConversation-notice" satisfies ChannelsConversation_ClassNames}>
+					The organization owner can read this {document.kind === "direct" ? "conversation" : "channel"}.
+				</p>
+			)}
+			{!channel.canPost && (
+				<p className={"ChannelsConversation-notice" satisfies ChannelsConversation_ClassNames}>{channel.postRefusal}</p>
+			)}
+		</>
+	);
+	const main = (
+		<>
+			{header}
+			{notice}
+			{posts ? (
+				<div className={"app-scrollable" satisfies AppClassName}>
+					<ChannelsPosts
+						key={document._id}
+						channelId={document._id}
+						fileNodeId={document.kind === "file" ? document.fileNodeId : undefined}
+						state={state}
+						canPost={channel.canPost}
+						mentionItems={mentionItems}
+						onThread={openThread}
+					/>
+				</div>
+			) : (
+				<ChannelsConversationPane
+					key={document._id}
+					channel={channel}
+					name={name}
+					root={null}
+					readSequence={state.readSequence}
+					mentionItems={mentionItems}
+					jumpMessageId={!rootId ? search.message : undefined}
+					resolvable={resolvable}
+					onThread={openThread}
+					onJump={jump}
+				/>
+			)}
+		</>
 	);
 	const replies =
 		thread?.root.message.channelId === document._id ? (
@@ -169,16 +293,30 @@ export const ChannelsConversation = memo(function ChannelsConversation(props: {
 				mentionItems={mentionItems}
 				jumpMessageId={search.message}
 				resolvable={resolvable}
+				onClose={closeThread}
+				back={!split}
+				notice={!split ? notice : undefined}
 				onThread={openThread}
 				onJump={jump}
 			/>
 		) : (
-			<p className={"ChannelsConversation-notice" satisfies ChannelsConversation_ClassNames}>
-				{thread === undefined ? "Loading thread…" : "Thread not found"}
-			</p>
+			<>
+				<ChannelsPaneHeader title="Thread" showSidebarToggle={false} onBack={!split ? closeThread : undefined}>
+					{split && (
+						<MyIconButton tooltip="Close thread" onClick={closeThread}>
+							<X />
+						</MyIconButton>
+					)}
+				</ChannelsPaneHeader>
+				{!split && notice}
+				<p className={"ChannelsConversation-notice" satisfies ChannelsConversation_ClassNames}>
+					{thread === undefined ? "Loading thread…" : "Thread not found"}
+				</p>
+			</>
 		);
 	return (
 		<section
+			ref={region}
 			className={"ChannelsConversation" satisfies ChannelsConversation_ClassNames}
 			aria-label={name}
 			{...({
@@ -186,83 +324,50 @@ export const ChannelsConversation = memo(function ChannelsConversation(props: {
 				"data-can-post": String(channel.canPost),
 			} satisfies ChannelsConversation_CustomAttributes)}
 		>
-			<header className={"ChannelsConversation-header" satisfies ChannelsConversation_ClassNames}>
-				<div className={"ChannelsConversation-name" satisfies ChannelsConversation_ClassNames}>
-					<h1 title={channel.file?.path}>{name}</h1>
-					{(document.kind === "public" || document.kind === "private") && document.topic && <p>{document.topic}</p>}
-				</div>
-				<MyButton aria-label={`Members of ${name}: ${members.results.length}`} onClick={() => onDialog("members")}>
-					<Users size={16} />
-					{members.results.length}
-					{members.status === "CanLoadMore" ? "+" : ""}
-				</MyButton>
-				{document.kind === "file" && channel.file && (
-					<a
-						className={cn(
-							"MyButton" satisfies MyButton_ClassNames,
-							"MyButton-variant-default" satisfies MyButton_ClassNames,
-						)}
-						href={url_path_file_by_node_id({
-							organizationName,
-							workspaceName,
-							nodeId: document.fileNodeId,
-						})}
-					>
-						Open file
-					</a>
-				)}
-				<MyButton onClick={() => onDialog("settings")}>Details</MyButton>
-			</header>
-			{(document.kind === "private" || document.kind === "direct") && (
-				<p className={"ChannelsConversation-notice" satisfies ChannelsConversation_ClassNames}>
-					The organization owner can read this {document.kind === "direct" ? "conversation" : "channel"}.
-				</p>
-			)}
-			{!channel.canPost && (
-				<p className={"ChannelsConversation-notice" satisfies ChannelsConversation_ClassNames}>{channel.postRefusal}</p>
-			)}
-			{rootId ? (
-				narrow ? (
+			<MyPanelGroup
+				direction="horizontal"
+				defaultLayout={[100 - (380 / available) * 100, (380 / available) * 100]}
+				onLayout={(layout) => {
+					threadLayout.current = layout[1]!;
+				}}
+			>
+				<MyPanel
+					order={1}
+					isOpen={!rootId || split}
+					closeBehavior="hidden"
+					minSize={split ? (560 / available) * 100 : 0}
+				>
+					{main}
+				</MyPanel>
+				<MyPanelResizeHandle
+					isOpen={split}
+					closeBehavior="hidden"
+					onKeyUp={(event) => {
+						if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key))
+							setThreadWidth(Math.max(360, Math.min(maximumThread, (threadLayout.current * available) / 100)));
+					}}
+					onDragging={(dragging) => {
+						if (!dragging)
+							setThreadWidth(Math.max(360, Math.min(maximumThread, (threadLayout.current * available) / 100)));
+					}}
+				/>
+				<MyPanel
+					ref={threadPanel}
+					order={2}
+					isOpen={!!rootId}
+					closeBehavior="hidden"
+					defaultSize={split ? (actualThreadWidth / available) * 100 : 40}
+					minSize={split ? (360 / available) * 100 : 0}
+					maxSize={split ? (maximumThread / available) * 100 : 100}
+				>
 					<aside
 						aria-label="Thread"
 						className={"ChannelsConversation-thread" satisfies ChannelsConversation_ClassNames}
 					>
-						<header className={"ChannelsConversation-header" satisfies ChannelsConversation_ClassNames}>
-							<MyButton onClick={closeThread}>
-								<ArrowLeft size={16} />
-								Back to channel
-							</MyButton>
-							<MyIconButton tooltip="Close thread" onClick={closeThread}>
-								<X />
-							</MyIconButton>
-						</header>
 						{replies}
 					</aside>
-				) : (
-					<MyPanelGroup direction="horizontal" defaultLayout={[60, 40]}>
-						<MyPanel defaultSize={60} minSize={30}>
-							{main}
-						</MyPanel>
-						<MyPanelResizeHandle />
-						<MyPanel defaultSize={40} minSize={25}>
-							<aside
-								aria-label="Thread"
-								className={"ChannelsConversation-thread" satisfies ChannelsConversation_ClassNames}
-							>
-								<header className={"ChannelsConversation-header" satisfies ChannelsConversation_ClassNames}>
-									<strong>Thread</strong>
-									<MyIconButton tooltip="Close thread" onClick={closeThread}>
-										<X />
-									</MyIconButton>
-								</header>
-								{replies}
-							</aside>
-						</MyPanel>
-					</MyPanelGroup>
-				)
-			) : (
-				main
-			)}
+				</MyPanel>
+			</MyPanelGroup>
 		</section>
 	);
 });
@@ -270,7 +375,8 @@ export const ChannelsConversation = memo(function ChannelsConversation(props: {
 type ChannelsConversationPane_ClassNames =
 	| "ChannelsConversationPane"
 	| "ChannelsConversationPane-root"
-	| "ChannelsConversationPane-thread-controls"
+	| "ChannelsConversationPane-indicator"
+	| "ChannelsConversationPane-reply-count"
 	| "ChannelsConversationPane-composer"
 	| "ChannelsConversationPane-tools"
 	| "ChannelsConversationPane-reply"
@@ -290,6 +396,10 @@ export const ChannelsConversationPane = memo(function ChannelsConversationPane(p
 	onQuoteInserted?: () => void;
 	jumpMessageId: string | undefined;
 	resolvable: boolean;
+	notice?: ReactNode;
+	onClose?: () => void;
+	back?: boolean;
+	backLabel?: string;
 	onThread: ComponentProps<typeof ChannelsMessage>["onThread"];
 	onJump: ComponentProps<typeof ChannelsMessage>["onJump"];
 }) {
@@ -303,6 +413,10 @@ export const ChannelsConversationPane = memo(function ChannelsConversationPane(p
 		onQuoteInserted,
 		jumpMessageId,
 		resolvable,
+		notice,
+		onClose,
+		back = false,
+		backLabel,
 		onThread,
 		onJump,
 	} = props;
@@ -342,6 +456,8 @@ export const ChannelsConversationPane = memo(function ChannelsConversationPane(p
 	const [error, setError] = useState("");
 	const [deleteMessage, setDeleteMessage] = useState<Message | null>(null);
 	const [title, setTitle] = useState(root?.thread?.title ?? "");
+	const [renaming, setRenaming] = useState(false);
+	const layout = useContext(ChannelsLayoutContext);
 	const retry = useRef<{ signature: string; id: string } | null>(null);
 	const editing = window.editingMessage;
 	const changeDraft = useFn(() => {
@@ -582,6 +698,7 @@ export const ChannelsConversationPane = memo(function ChannelsConversationPane(p
 			})
 			.then((result) => {
 				if (result._nay) toast.error(result._nay.message);
+				else setRenaming(false);
 			})
 			.catch((error: unknown) => {
 				console.error("[ChannelsConversationPane.saveTitle] Failed to save title", { error });
@@ -622,59 +739,65 @@ export const ChannelsConversationPane = memo(function ChannelsConversationPane(p
 			>)}
 		>
 			{root && (
-				<>
-					<div
-						className={cn(
-							"ChannelsConversationPane-root" satisfies ChannelsConversationPane_ClassNames,
-							"app-scrollable" satisfies AppClassName,
-						)}
-						{...({ "data-thread-root": rootMessageId } satisfies Pick<
-							ChannelsConversationPane_CustomAttributes,
-							"data-thread-root"
-						>)}
-					>
-						<ChannelsMessage
-							row={root}
-							grouped={false}
-							unread={false}
-							tabIndex={0}
-							sequence={0}
-							canPost={channel.canPost}
-							canManage={channel.canManage}
-							resolvable={resolvable}
-							{...actions}
-						/>
-					</div>
-					<div className={"ChannelsConversationPane-thread-controls" satisfies ChannelsConversationPane_ClassNames}>
-						<MyButton aria-pressed={threadState?.follower?.following ?? false} onClick={follow}>
-							{threadState?.follower?.following ? "Following" : "Follow thread"}
-						</MyButton>
-						{resolvable && channel.canPost && (
-							<MyButton onClick={() => resolve(root)}>{root.thread?.isResolved ? "Reopen" : "Resolve"}</MyButton>
-						)}
-						{channel.canPost && (root.message.authorUserId === userId || channel.canManage) ? (
-							<form onSubmit={saveTitle}>
-								<MyInput>
-									<MyInputBackground />
-									<MyInputArea>
-										<MyInputControl
-											aria-label="Thread title"
-											maxLength={200}
-											value={title}
-											onChange={(event) => setTitle(event.target.value)}
-											placeholder="Thread title"
-										/>
-									</MyInputArea>
-									<MyInputBox />
-								</MyInput>
-								<MyButton type="submit">Save title</MyButton>
-							</form>
-						) : (
-							root.thread?.title && <strong>{root.thread.title}</strong>
-						)}
-					</div>
-				</>
+				<ChannelsPaneHeader
+					showSidebarToggle={false}
+					title={
+						<strong title={root.thread?.title ?? (back ? name : "Thread")}>
+							Thread{root.thread?.title ? ` · ${root.thread.title}` : back ? ` · ${name}` : ""}
+						</strong>
+					}
+					onBack={back ? onClose : undefined}
+					backLabel={backLabel}
+				>
+					{threadState?.follower?.following && (
+						<span className={"ChannelsConversationPane-indicator" satisfies ChannelsConversationPane_ClassNames}>
+							Following
+						</span>
+					)}
+					{root.thread?.isResolved && (
+						<span className={"ChannelsConversationPane-indicator" satisfies ChannelsConversationPane_ClassNames}>
+							Resolved
+						</span>
+					)}
+					<MyMenu>
+						<MyMenuTrigger>
+							<MyIconButton tooltip="More thread actions">
+								<MoreHorizontal />
+							</MyIconButton>
+						</MyMenuTrigger>
+						<MyMenuPopover aria-label="Thread actions">
+							<MyMenuItem onClick={follow}>
+								{threadState?.follower?.following ? "Unfollow thread" : "Follow thread"}
+							</MyMenuItem>
+							{channel.canPost && (root.message.authorUserId === userId || channel.canManage) && (
+								<MyMenuItem
+									onClick={() => {
+										setTitle(root.thread?.title ?? "");
+										requestAnimationFrame(() => setRenaming(true));
+									}}
+								>
+									Rename thread
+								</MyMenuItem>
+							)}
+							{resolvable && channel.canPost && (
+								<MyMenuItem onClick={() => resolve(root)}>{root.thread?.isResolved ? "Reopen" : "Resolve"}</MyMenuItem>
+							)}
+							{back && layout && (
+								<MyMenuItem onClick={() => requestAnimationFrame(layout.openSidebar)}>
+									<Menu size={16} />
+									Open channels
+								</MyMenuItem>
+							)}
+						</MyMenuPopover>
+					</MyMenu>
+					{onClose && !back && (
+						<MyIconButton tooltip="Close thread" onClick={onClose}>
+							<X />
+						</MyIconButton>
+					)}
+				</ChannelsPaneHeader>
 			)}
+			{notice}
 			<ChannelsMessageList
 				window={window}
 				name={name}
@@ -686,24 +809,39 @@ export const ChannelsConversationPane = memo(function ChannelsConversationPane(p
 				resolvable={resolvable}
 				onRead={markRead}
 				{...actions}
-			/>
+			>
+				{root && (
+					<>
+						<div
+							className={"ChannelsConversationPane-root" satisfies ChannelsConversationPane_ClassNames}
+							data-thread-root={rootMessageId}
+						>
+							<ChannelsMessage
+								row={root}
+								grouped={false}
+								unread={false}
+								tabIndex={0}
+								sequence={0}
+								canPost={channel.canPost}
+								canManage={channel.canManage}
+								resolvable={resolvable}
+								hideThreadSummary
+								{...actions}
+							/>
+						</div>
+						<div className={"ChannelsConversationPane-reply-count" satisfies ChannelsConversationPane_ClassNames}>
+							{root.thread?.replyCount
+								? `${root.thread.replyCount} ${root.thread.replyCount === 1 ? "reply" : "replies"}`
+								: "No replies yet"}
+						</div>
+					</>
+				)}
+			</ChannelsMessageList>
 			{channel.canPost && (
 				<form
 					className={"ChannelsConversationPane-composer" satisfies ChannelsConversationPane_ClassNames}
 					onSubmit={submit}
 				>
-					{(reply || editing) && (
-						<div className={"ChannelsConversationPane-reply" satisfies ChannelsConversationPane_ClassNames}>
-							<span>
-								{editing
-									? "Editing message"
-									: `Replying to ${reply!.row.authorName}: ${reply!.quote ?? reply!.row.message.body.slice(0, 160)}`}
-							</span>
-							<MyIconButton tooltip={editing ? "Cancel edit" : "Cancel reply"} onClick={cancel}>
-								<X />
-							</MyIconButton>
-						</div>
-					)}
 					<ChannelsComposer
 						key={editing?.message._id ?? "draft"}
 						controlRef={composer}
@@ -720,9 +858,10 @@ export const ChannelsConversationPane = memo(function ChannelsConversationPane(p
 						placeholder={root ? "Reply to thread…" : `Message ${name}…`}
 						ariaLabel={editing ? "Edit message" : root ? "Thread reply" : "Message"}
 						attachmentTarget={editing ? undefined : { kind: "channel", channelId }}
-						autoFocus={editing ? "end" : false}
+						autoFocus={editing || (root && !jumpMessageId) ? "end" : false}
 						disabled={busy}
 						submitTooltip={editing ? "Save edit (Enter)" : "Send (Enter)"}
+						submitLabel={busy ? "Sending…" : editing ? "Save changes" : "Send"}
 						submitDisabled={busy || !connection.isWebSocketConnected || empty}
 						onChange={changeDraft}
 						onEnter={submit}
@@ -736,12 +875,30 @@ export const ChannelsConversationPane = memo(function ChannelsConversationPane(p
 						mentionItems={mentionItems}
 						quoteRequest={editing ? null : quoteRequest}
 						onQuoteInserted={onQuoteInserted}
-					/>
+					>
+						{(reply || editing) && (
+							<div className={"ChannelsConversationPane-reply" satisfies ChannelsConversationPane_ClassNames}>
+								<span>
+									{editing
+										? "Editing message"
+										: `Replying to ${reply!.row.authorName}: ${reply!.quote ?? reply!.row.message.body.slice(0, 160)}`}
+								</span>
+								<MyIconButton tooltip={editing ? "Cancel edit" : "Cancel reply"} onClick={cancel}>
+									<X />
+								</MyIconButton>
+							</div>
+						)}
+					</ChannelsComposer>
 					<div className={"ChannelsConversationPane-tools" satisfies ChannelsConversationPane_ClassNames}>
 						{root && channel.channel.kind !== "file" && (
-							<MyCheckboxButton checked={alsoInChannel} onCheckedChange={setAlsoInChannel} variant="outline">
+							<label>
+								<input
+									type="checkbox"
+									checked={alsoInChannel}
+									onChange={(event) => setAlsoInChannel(event.target.checked)}
+								/>{" "}
 								Also send to channel
-							</MyCheckboxButton>
+							</label>
 						)}
 						<span>Enter to send · Shift+Enter for a new line</span>
 					</div>
@@ -750,8 +907,37 @@ export const ChannelsConversationPane = memo(function ChannelsConversationPane(p
 							{error}
 						</p>
 					)}
+					{!connection.isWebSocketConnected && <p role="status">Connecting… Your draft is saved on this device.</p>}
 				</form>
 			)}
+			<MyModal open={renaming} setOpen={setRenaming}>
+				<MyModalPopover aria-label="Rename thread">
+					<form onSubmit={saveTitle}>
+						<MyModalHeader>
+							<MyModalHeading>Rename thread</MyModalHeading>
+							<MyModalCloseTrigger />
+						</MyModalHeader>
+						<MyModalScrollableArea>
+							<MyInput>
+								<MyInputBackground />
+								<MyInputArea>
+									<MyInputControl
+										aria-label="Thread title"
+										maxLength={200}
+										value={title}
+										onChange={(event) => setTitle(event.target.value)}
+									/>
+								</MyInputArea>
+								<MyInputBox />
+							</MyInput>
+						</MyModalScrollableArea>
+						<MyModalFooter>
+							<MyButton onClick={() => setRenaming(false)}>Cancel</MyButton>
+							<MyButton type="submit">Save title</MyButton>
+						</MyModalFooter>
+					</form>
+				</MyModalPopover>
+			</MyModal>
 			<MyModal
 				open={deleteMessage !== null}
 				setOpen={(open) => {

@@ -94,8 +94,23 @@ There is no second notification producer or message-item read flag.
 
 UI modules live in `src/components/channels`. The sidebar has starred channels, public/private
 channels, direct conversations, and followed files. Settings and member actions follow the backend
-permissions. Private and direct headers disclose the owner read rule. Narrow screens use a channel
-drawer and replace the main pane with the thread. Lists have named landmarks and message ids.
+permissions. Private and direct headers disclose the owner read rule. Lists have named landmarks
+and message ids. Pane headers and neutral surfaces follow Files. There is no extra Messages bar.
+
+Measure the Messages region after the global navigation. At 1200px and above, show the sidebar,
+channel and open thread. At 940–1199px, an open thread moves the sidebar into a drawer. At
+820–939px, show the sidebar and thread. Below 820px, show one conversation with a channel drawer.
+The sidebar defaults to 240px (220–320px); the thread defaults to 380px (360–480px). Split channels
+keep at least 560px. Save the two widths separately. Hidden channel panes stay mounted so drafts,
+attachments and the visible message survive thread opens and resize. The root and replies share
+one scroll area. Back or Close returns focus to the opener when it is still present.
+
+Rows show local 24-hour timestamps, with the full date on focus or hover. Keep the existing
+five-minute grouping and entry unread boundary. Reply in thread is separate from Quote reply
+in More; R still quotes. More holds thread follow, rename and resolve actions. Rename opens a form.
+Touch exposes More without hover. Person mentions use current names; file mentions stay inline.
+Activity and search use flat rows with four-line previews and no preview scrollbar. Search filters
+open from Filters; applied filters can be removed. Never invent a search total or match range.
 
 `ChannelsComposer` is shared with Files comments. People chips store neutral Markdown positions
 with ids in `mentionUserIds`. Render names from current profiles. The sender's local draft keeps raw
@@ -206,7 +221,10 @@ Sign GET for at most 15 minutes using the Files safe type and disposition helper
 release uploads with an immediate cleanup deadline. Discard and stale-anchor cleanup do the same.
 The existing R2 cleanup removes both docs and queues exact-key deletion. Deletion gives no refund.
 
-The shared composer owns existing Files attachments, the Upload files button, paste and drop.
+The shared composer owns existing Files attachments, the Attach files menu, paste and drop.
+Attach files offers Upload from computer and Attach from workspace. Text, quote/edit context,
+attachments and a visible Send button share one input box. The editor scrolls when it grows.
+File Comments use this same composer and thread pane, with Back to comments.
 Each local upload shows its name, progress, Ready or its error, and Remove. Failed uploads have
 Retry. Pending and failed uploads block Send, Enter and form submit. Attachment-only messages
 work in channels, replies, posts and file comments. A successful send clears the local files.

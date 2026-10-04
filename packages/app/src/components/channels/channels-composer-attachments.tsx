@@ -2,6 +2,9 @@ import "./channels-composer-attachments.css";
 import { memo, useEffect, useImperativeHandle, useRef, useState, type Ref } from "react";
 import { useQuery } from "convex/react";
 import { toast } from "sonner";
+import { Paperclip } from "lucide-react";
+import { MyIconButton } from "@/components/my-icon-button.tsx";
+import { MyMenu, MyMenuItem, MyMenuPopover, MyMenuTrigger } from "@/components/my-menu.tsx";
 import { MyButton } from "@/components/my-button.tsx";
 import { MyCheckboxButton } from "@/components/my-checkbox-button.tsx";
 import { MyInput, MyInputArea, MyInputBackground, MyInputBox, MyInputControl } from "@/components/my-input.tsx";
@@ -268,12 +271,17 @@ export const ChannelsComposerAttachments = memo(function ChannelsComposerAttachm
 				</div>
 			)}
 			<div className={"ChannelsComposerAttachments-tools" satisfies ChannelsComposerAttachments_ClassNames}>
-				<MyButton disabled={disabled || items.length >= 20} onClick={() => setPicker(true)}>
-					Attach an existing file
-				</MyButton>
-				<MyButton disabled={disabled || items.length >= 20} onClick={() => input.current?.click()}>
-					Upload files
-				</MyButton>
+				<MyMenu>
+					<MyMenuTrigger>
+						<MyIconButton tooltip="Attach files" disabled={disabled || items.length >= 20}>
+							<Paperclip />
+						</MyIconButton>
+					</MyMenuTrigger>
+					<MyMenuPopover aria-label="Attach files">
+						<MyMenuItem onClick={() => input.current?.click()}>Upload from computer</MyMenuItem>
+						<MyMenuItem onClick={() => requestAnimationFrame(() => setPicker(true))}>Attach from workspace</MyMenuItem>
+					</MyMenuPopover>
+				</MyMenu>
 				<input
 					ref={input}
 					type="file"
