@@ -7,6 +7,10 @@ import { internalMutation, internalQuery, type MutationCtx, type QueryCtx } from
 import { quotas } from "../shared/quotas.ts";
 import { path_extract_segments_from } from "../shared/paths.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
+import { organizations_is_global_organization_id } from "../shared/organizations.ts";
+import { files_sort_text_key } from "../shared/files-sort.ts";
+import { files_table_updated_by_text } from "../shared/files-table.ts";
+import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
 import { plugins_mcp_destination_fingerprint } from "./plugins_mcp.ts";
 import { access_control_db_ensure_organization_member_role } from "./access_control.ts";
 import {
@@ -17,6 +21,8 @@ import {
 	plugins_data_parse_append_key_at,
 } from "./plugins_data.ts";
 import { files_share_links_create_cleanup_state } from "./files_share_links_db.ts";
+import { files_db_resolve_scope } from "./files_scopes.ts";
+import { files_updated_by_db_sync_node } from "./files_updated_by.ts";
 
 const app_migrations = new Migrations<DataModel>(components.migrations, {
 	internalMutation,
@@ -526,6 +532,124 @@ export const backfill_files_nodes_lowercase_extension = app_migrations.define({
 		}
 
 		await ctx.db.patch("files_nodes", fileNode._id, { lowercaseExtension });
+	},
+});
+
+/**
+ * Give every file node updated by a real user its updater sort doc. New writes already sync their
+ * node, so this only fills nodes written before the sync existed. `files_updated_by_db_sync_node`
+ * skips unchanged docs, so a rerun writes nothing.
+ */
+export const backfill_files_updated_by_docs = app_migrations.define({
+	table: "files_nodes",
+	migrateOne: async (ctx, fileNode) => {
+		await files_updated_by_db_sync_node(ctx, { nodeId: fileNode._id });
+	},
+});
+
+const FILES_UPDATED_BY_AUDIT_PAGE_SIZE = 100;
+
+/**
+ * Count file nodes whose updater sort doc is missing, duplicated or should not exist. Before the
+ * backfill, `outsideWorkspaceCount` finds the real-user nodes the backfill would stop on. After it,
+ * every count must be 0. It returns one count per problem, so one walk shows all of them.
+ */
+export const audit_files_updated_by_nodes_page = internalQuery({
+	args: { cursor: v.union(v.null(), v.string()) },
+	returns: v.object({
+		outsideWorkspaceCount: v.number(),
+		missingDocCount: v.number(),
+		duplicateDocCount: v.number(),
+		systemDocCount: v.number(),
+		continueCursor: v.string(),
+		isDone: v.boolean(),
+	}),
+	handler: async (ctx, args) => {
+		const page = await ctx.db
+			.query("files_nodes")
+			.paginate({ cursor: args.cursor, numItems: FILES_UPDATED_BY_AUDIT_PAGE_SIZE });
+		let outsideWorkspaceCount = 0;
+		let missingDocCount = 0;
+		let duplicateDocCount = 0;
+		let systemDocCount = 0;
+		for (const node of page.page) {
+			const docs = await ctx.db
+				.query("files_updated_by_docs")
+				.withIndex("by_fileNode", (q) => q.eq("fileNodeId", node._id))
+				.take(2);
+			if (node.updatedBy === users_SYSTEM_AUTHOR) {
+				systemDocCount += docs.length > 0 ? 1 : 0;
+			} else if (
+				organizations_is_global_organization_id(node.organizationId) ||
+				files_db_resolve_scope(ctx, node.workspaceId).kind !== "workspace"
+			) {
+				outsideWorkspaceCount += 1;
+			} else if (docs.length === 0) {
+				missingDocCount += 1;
+			} else if (docs.length > 1) {
+				duplicateDocCount += 1;
+			}
+		}
+
+		return {
+			outsideWorkspaceCount,
+			missingDocCount,
+			duplicateDocCount,
+			systemDocCount,
+			continueCursor: page.continueCursor,
+			isDone: page.isDone,
+		};
+	},
+});
+
+/**
+ * Count updater sort docs whose node is gone, whose copies differ from the node, or whose sort key
+ * differs from the updater's current name. Every count must be 0. A sort key lags while a name drain
+ * runs, so wait for the drains and run it again before reading `staleKeyCount` as an error.
+ */
+export const audit_files_updated_by_docs_page = internalQuery({
+	args: { cursor: v.union(v.null(), v.string()) },
+	returns: v.object({
+		missingNodeCount: v.number(),
+		wrongCopyCount: v.number(),
+		staleKeyCount: v.number(),
+		continueCursor: v.string(),
+		isDone: v.boolean(),
+	}),
+	handler: async (ctx, args) => {
+		const page = await ctx.db
+			.query("files_updated_by_docs")
+			.paginate({ cursor: args.cursor, numItems: FILES_UPDATED_BY_AUDIT_PAGE_SIZE });
+		let missingNodeCount = 0;
+		let wrongCopyCount = 0;
+		let staleKeyCount = 0;
+		for (const doc of page.page) {
+			const node = await ctx.db.get("files_nodes", doc.fileNodeId);
+			if (!node) {
+				missingNodeCount += 1;
+				continue;
+			}
+			if (
+				doc.organizationId !== node.organizationId ||
+				doc.workspaceId !== node.workspaceId ||
+				doc.userId !== node.updatedBy ||
+				doc.archiveOperationId !== (node.archiveOperationId ?? undefined) ||
+				doc.parentId !== node.parentId ||
+				doc.nodeKind !== node.kind ||
+				doc.isRestrictedScopeRoot !== (node.restrictedScopeNodeId === node._id) ||
+				doc.name !== node.name ||
+				doc.sortName !== files_sort_text_key(node.name)
+			) {
+				wrongCopyCount += 1;
+			}
+			const user = await ctx.db.get("users", doc.userId);
+			const anagraphic = user?.anagraphic ? await ctx.db.get("users_anagraphics", user.anagraphic) : null;
+			if (doc.sortUserName !== files_sort_text_key(files_table_updated_by_text(anagraphic?.displayName ?? null))) {
+				staleKeyCount += 1;
+			}
+		}
+
+		return { missingNodeCount, wrongCopyCount, staleKeyCount, continueCursor: page.continueCursor, isDone: page.isDone };
 	},
 });
 
@@ -1537,6 +1661,9 @@ export const run_backfill_files_nodes_path_depth = app_migrations.runner(
 );
 export const run_backfill_files_nodes_lowercase_extension = app_migrations.runner(
 	internal.migrations.backfill_files_nodes_lowercase_extension,
+);
+export const run_backfill_files_updated_by_docs = app_migrations.runner(
+	internal.migrations.backfill_files_updated_by_docs,
 );
 export const run_backfill_files_plain_text_chunk_scope = app_migrations.runner(
 	internal.migrations.backfill_files_plain_text_chunk_scope,

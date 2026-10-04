@@ -6,6 +6,13 @@ import { v } from "convex/values";
 import { convexTest } from "convex-test";
 import { api, components, internal } from "./_generated/api.js";
 import { test_convex, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
+import { files_updated_by_db_sync_node } from "./files_updated_by.ts";
+import { files_sort_text_key } from "../shared/files-sort.ts";
+import {
+	organizations_GLOBAL_ORGANIZATION_ID,
+	organizations_GLOBAL_PLUGINS_WORKSPACE_ID,
+} from "../shared/organizations.ts";
+import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
 
 const migrations_test_modules = import.meta.glob("./**/*.ts");
 
@@ -250,6 +257,82 @@ async function seed_pre_share_document(args: {
 				updatedBy: fixture.userId,
 				updatedAt: Date.now(),
 			}),
+	);
+}
+
+// Written straight to the table, like nodes from before the updater sort doc sync existed.
+async function seed_pre_sync_file_nodes(t: ReturnType<typeof test_convex>) {
+	return await t.run(async (ctx) => {
+		const db = await test_mocks_fill_db_with.membership(ctx);
+		const anagraphic = await ctx.db.insert("users_anagraphics", {
+			userId: db.userId,
+			displayName: "Backfill User",
+			email: "backfill@example.com",
+			updatedAt: Date.now(),
+		});
+		await ctx.db.patch("users", db.userId, { anagraphic });
+		const base = {
+			...test_mocks.files.base(),
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			createdBy: db.userId,
+			updatedBy: db.userId,
+		};
+		const [activeId, archivedId, systemId] = await Promise.all(
+			["active.md", "archived.md", "system.md"].map((name) =>
+				ctx.db.insert("files_nodes", {
+					...base,
+					kind: "file",
+					name,
+					sortName: files_sort_text_key(name),
+					path: `/${name}`,
+					treePath: `/${name}/`,
+				}),
+			),
+		);
+		await ctx.db.patch("files_nodes", archivedId, { archiveOperationId: "archive-backfill" });
+		await ctx.db.patch("files_nodes", systemId, { updatedBy: users_SYSTEM_AUTHOR });
+		const restrictedId = await ctx.db.insert("files_nodes", {
+			...base,
+			kind: "folder",
+			name: "restricted",
+			sortName: files_sort_text_key("restricted"),
+			path: "/restricted",
+			treePath: "/restricted/",
+		});
+		await ctx.db.patch("files_nodes", restrictedId, {
+			restrictedScopeNodeId: restrictedId,
+			isRestrictedScopeRoot: true,
+		});
+		// Real SYSTEM nodes live in the GLOBAL trees. A real-user node must not be there.
+		const globalSystemId = await ctx.db.insert("files_nodes", {
+			...base,
+			organizationId: organizations_GLOBAL_ORGANIZATION_ID,
+			workspaceId: organizations_GLOBAL_PLUGINS_WORKSPACE_ID,
+			createdBy: users_SYSTEM_AUTHOR,
+			updatedBy: users_SYSTEM_AUTHOR,
+			kind: "file",
+			name: "global.md",
+			sortName: files_sort_text_key("global.md"),
+			path: "/global.md",
+			treePath: "/global.md/",
+		});
+		return { activeId, archivedId, systemId, restrictedId, globalSystemId };
+	});
+}
+
+async function read_updated_by_docs(t: ReturnType<typeof test_convex>) {
+	const docs = await t.run((ctx) => ctx.db.query("files_updated_by_docs").collect());
+	return new Map(docs.map((doc) => [doc.fileNodeId, doc]));
+}
+
+// One node per batch, so the pass has to resume from the cursor of each batch.
+async function run_updated_by_backfill(t: ReturnType<typeof test_convex>, cursor?: null) {
+	await t.run((ctx) =>
+		runToCompletion(ctx, components.migrations, internal.migrations.backfill_files_updated_by_docs, {
+			cursor,
+			batchSize: 1,
+		}),
 	);
 }
 
@@ -1645,6 +1728,134 @@ describe("backfill_files_nodes_lowercase_extension", () => {
 		expect(result.markdownFile).toMatchObject({ lowercaseExtension: "md" });
 		expect(result.folder).toMatchObject({ lowercaseExtension: null });
 		expect(result.extensionlessFile).toMatchObject({ lowercaseExtension: null });
+	});
+});
+
+describe("updater sort doc backfill and audits", () => {
+	test("gives old real-user nodes a doc, skips SYSTEM nodes, and a rerun writes only repairs", async () => {
+		const t = test_convex();
+		component.register(t);
+		const seeded = await seed_pre_sync_file_nodes(t);
+		expect((await read_updated_by_docs(t)).size).toBe(0);
+
+		await run_updated_by_backfill(t);
+		const docs = await read_updated_by_docs(t);
+
+		expect(docs.size).toBe(3);
+		expect(docs.get(seeded.activeId)).toMatchObject({
+			name: "active.md",
+			nodeKind: "file",
+			sortUserName: files_sort_text_key("Backfill User"),
+		});
+		expect(docs.get(seeded.archivedId)).toMatchObject({ archiveOperationId: "archive-backfill" });
+		expect(docs.get(seeded.restrictedId)).toMatchObject({ nodeKind: "folder", isRestrictedScopeRoot: true });
+		expect(docs.has(seeded.systemId), "SYSTEM node doc").toBe(false);
+		expect(docs.has(seeded.globalSystemId), "GLOBAL SYSTEM node doc").toBe(false);
+
+		// The backfill only runs the sync on each node. The migration also writes its own state, so count
+		// the sync's writes alone.
+		const cleanSyncWrites = await t.run(async (ctx) => {
+			for (const nodeId of Object.values(seeded)) {
+				await files_updated_by_db_sync_node(ctx, { nodeId });
+			}
+			return (await ctx.meta.getTransactionMetrics()).documentsWritten.used;
+		});
+		expect(cleanSyncWrites, "doc writes of a second sync").toBe(0);
+
+		// `cursor: null` restarts the finished migration. Without it, a rerun returns at once.
+		await t.run((ctx) => ctx.db.patch("files_updated_by_docs", docs.get(seeded.activeId)!._id, { name: "stale.md" }));
+		await run_updated_by_backfill(t, null);
+		expect(await read_updated_by_docs(t), "docs after the second pass").toEqual(docs);
+	});
+
+	test("stops on a real-user node outside a workspace, which the node audit finds first", async () => {
+		const t = test_convex();
+		component.register(t);
+		await t.run(async (ctx) => {
+			const db = await test_mocks_fill_db_with.membership(ctx);
+			await ctx.db.insert("files_nodes", {
+				...test_mocks.files.base(),
+				organizationId: organizations_GLOBAL_ORGANIZATION_ID,
+				workspaceId: organizations_GLOBAL_PLUGINS_WORKSPACE_ID,
+				createdBy: db.userId,
+				updatedBy: db.userId,
+				kind: "file",
+				name: "global.md",
+				sortName: files_sort_text_key("global.md"),
+				path: "/global.md",
+				treePath: "/global.md/",
+			});
+		});
+		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		expect(await t.query(internal.migrations.audit_files_updated_by_nodes_page, { cursor: null })).toMatchObject({
+			outsideWorkspaceCount: 1,
+			isDone: true,
+		});
+		await expect(run_updated_by_backfill(t)).rejects.toThrow("A real user updated a file node outside a workspace");
+		expect((await read_updated_by_docs(t)).size).toBe(0);
+		consoleError.mockRestore();
+	});
+
+	test("the audits count a missing, duplicate, SYSTEM, orphan, wrong or stale doc", async () => {
+		const t = test_convex();
+		component.register(t);
+		const seeded = await seed_pre_sync_file_nodes(t);
+		await run_updated_by_backfill(t);
+		const read_audits = async () => ({
+			nodes: await t.query(internal.migrations.audit_files_updated_by_nodes_page, { cursor: null }),
+			docs: await t.query(internal.migrations.audit_files_updated_by_docs_page, { cursor: null }),
+		});
+
+		expect(await read_audits(), "audits after the backfill").toMatchObject({
+			nodes: { outsideWorkspaceCount: 0, missingDocCount: 0, duplicateDocCount: 0, systemDocCount: 0, isDone: true },
+			docs: { missingNodeCount: 0, wrongCopyCount: 0, staleKeyCount: 0, isDone: true },
+		});
+
+		await t.run(async (ctx) => {
+			const docs = await ctx.db.query("files_updated_by_docs").collect();
+			const fields_of = (nodeId: typeof seeded.activeId) => {
+				const { _id, _creationTime, ...fields } = docs.find((doc) => doc.fileNodeId === nodeId)!;
+				return { _id, fields };
+			};
+			const archived = fields_of(seeded.archivedId);
+			// The active doc loses its node, and the restricted folder loses its doc.
+			await ctx.db.delete("files_nodes", seeded.activeId);
+			await ctx.db.delete("files_updated_by_docs", fields_of(seeded.restrictedId)._id);
+			// A second archived doc with an old key, and a SYSTEM node doc that copies another node.
+			await ctx.db.insert("files_updated_by_docs", { ...archived.fields, sortUserName: "stale" });
+			await ctx.db.insert("files_updated_by_docs", { ...archived.fields, fileNodeId: seeded.systemId });
+		});
+
+		expect(await read_audits(), "audits after the damage").toMatchObject({
+			nodes: { outsideWorkspaceCount: 0, missingDocCount: 1, duplicateDocCount: 1, systemDocCount: 1 },
+			docs: { missingNodeCount: 1, wrongCopyCount: 1, staleKeyCount: 1 },
+		});
+	});
+
+	test("the doc audit counts a doc with any one wrong copy", async () => {
+		const t = test_convex();
+		component.register(t);
+		const seeded = await seed_pre_sync_file_nodes(t);
+		await run_updated_by_backfill(t);
+		const other = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx, { organizationName: "other" }));
+		const { _id, _creationTime, ...fields } = (await read_updated_by_docs(t)).get(seeded.activeId)!;
+
+		for (const wrongCopy of [
+			{ organizationId: other.organizationId },
+			{ workspaceId: other.workspaceId },
+			{ userId: other.userId },
+			{ archiveOperationId: "archive-wrong" },
+			{ parentId: seeded.restrictedId },
+			{ nodeKind: "folder" as const },
+			{ isRestrictedScopeRoot: true },
+			{ name: "wrong.md" },
+			{ sortName: files_sort_text_key("wrong.md") },
+		]) {
+			await t.run((ctx) => ctx.db.replace("files_updated_by_docs", _id, { ...fields, ...wrongCopy }));
+			const audit = await t.query(internal.migrations.audit_files_updated_by_docs_page, { cursor: null });
+			expect(audit.wrongCopyCount, `wrong ${Object.keys(wrongCopy)[0]}`).toBe(1);
+		}
 	});
 });
 
