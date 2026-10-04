@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { usePaginatedQuery, useQueries } from "convex/react";
+import { usePaginatedQuery as useHelpersPaginatedQuery } from "convex-helpers/react";
 import type { FunctionReturnType } from "convex/server";
 import { useFn } from "./utils-hooks.ts";
 import { app_convex_api, type app_convex_Doc, type app_convex_Id } from "@/lib/app-convex-client.ts";
@@ -146,118 +147,6 @@ type FilesSortedChildrenScan = {
 	retrying: boolean;
 };
 
-/**
- * Page the missing segment of a metadata key. Its cursor is not pinned like a native Convex cursor:
- * when a row before the end of a page changes, the page ends somewhere else. So keep a chain of
- * cursors like `useFilesVisibleEntries`. When an earlier page ends somewhere else, drop the later
- * pages and load them again up to the same count.
- */
-function useFilesSortedMissingPages(
-	request: {
-		membershipId: app_convex_Id<"organizations_workspaces_users">;
-		parentId: app_convex_Doc<"files_nodes">["parentId"];
-		kind: app_convex_Doc<"files_nodes">["kind"];
-		sort: files_sort_Sort;
-	} | null,
-) {
-	const scope = JSON.stringify(request);
-	const [pages, setPages] = useState({ scope, cursors: [null] as Array<string | null>, pageCount: 1 });
-	const cursors = useMemo(() => (pages.scope === scope ? pages.cursors : [null]), [scope, pages]);
-	const pageCount = pages.scope === scope ? pages.pageCount : 1;
-
-	// Keep this manual memo. Convex `useQueries` subscribes again whenever the queries object changes
-	// identity.
-	const queries = useMemo(() => {
-		const parsed = JSON.parse(scope) as typeof request;
-		return parsed === null
-			? {}
-			: Object.fromEntries(
-					cursors.map((cursor, index) => [
-						index,
-						{
-							query: app_convex_api.files_nodes.list_tree_children_sorted,
-							args: {
-								...parsed,
-								filter: null,
-								workLimit: FILES_SORTED_CHILDREN_ACTION_WORK,
-								segment: "missing" as const,
-								paginationOpts: { numItems: FILES_SORTED_CHILDREN_PAGE_SIZE, cursor },
-							},
-						},
-					]),
-				);
-	}, [cursors, scope]);
-
-	const responses = useQueries(queries);
-
-	const progress = useMemo(() => {
-		const rows: Array<FilesSortedChildrenPage["page"][number]> = [];
-		let nextCursors: Array<string | null> | null = null;
-		let moreCursor: string | null = null;
-		let status: FilesSortedChildrenSegmentStatus = scope === "null" ? "inactive" : "loading";
-
-		for (let index = 0; index < cursors.length && status !== "inactive"; index++) {
-			const response: FilesSortedChildrenPage | Error | undefined = responses[index];
-			if (response === undefined) {
-				status = "loading";
-				break;
-			}
-			if (response instanceof Error) {
-				status = "failed";
-				break;
-			}
-
-			rows.push(...response.page);
-			if (response.isDone) {
-				status = "done";
-				if (index + 1 < cursors.length) nextCursors = cursors.slice(0, index + 1);
-				break;
-			}
-			// Wait for `loadMore()` before asking for more pages than were asked for.
-			if (index + 1 >= pageCount) {
-				status = "more";
-				moreCursor = response.continueCursor;
-				break;
-			}
-			if (response.continueCursor !== cursors[index + 1]) {
-				status = "loading";
-				nextCursors = [...cursors.slice(0, index + 1), response.continueCursor];
-				break;
-			}
-		}
-
-		const lastPage = responses[cursors.length - 1];
-		return {
-			rows,
-			status,
-			nextCursors,
-			moreCursor,
-			// Most children can have the key, so a page can be empty while more children remain.
-			isLastPageEmpty:
-				status === "more" && lastPage !== undefined && !(lastPage instanceof Error) && lastPage.page.length === 0,
-		};
-	}, [cursors, pageCount, responses, scope]);
-
-	useEffect(() => {
-		if (pages.scope === scope && !progress.nextCursors) return;
-		setPages({ scope, cursors: progress.nextCursors ?? cursors, pageCount });
-	}, [cursors, scope, pages.scope, pageCount, progress.nextCursors]);
-
-	const loadMore = useFn(() => {
-		if (progress.moreCursor === null) return;
-		setPages({ scope, cursors: [...cursors, progress.moreCursor], pageCount: cursors.length + 1 });
-	});
-
-	// Ask for the next page by itself when the last page came back empty.
-	useEffect(() => {
-		if (progress.isLastPageEmpty) {
-			loadMore();
-		}
-	}, [progress.isLastPageEmpty, loadMore]);
-
-	return { rows: progress.rows, status: progress.status, loadMore };
-}
-
 type useFilesSortedChildren_Props = {
 	membershipId: app_convex_Id<"organizations_workspaces_users">;
 	folderId: app_convex_Doc<"files_nodes">["parentId"];
@@ -371,7 +260,9 @@ export function useFilesSortedChildren(props: useFilesSortedChildren_Props) {
 		sort === null || customScan || currentScan.retrying ? "skip" : { ...segmentArgs("file")!, segment: "value" },
 		{ initialNumItems: FILES_SORTED_CHILDREN_PAGE_SIZE },
 	);
-	// Rows without a file.extension or a file.size have a native cursor. A metadata key's missing rows use a cursor chain.
+	// Rows without a file.extension or a file.size have a native cursor. A metadata key's missing rows
+	// use the convex-helpers hook, which pins each loaded page with `endCursor`, so a page keeps its
+	// rows when an earlier row changes.
 	const folderMissing = usePaginatedQuery(
 		app_convex_api.files_nodes.list_tree_children_sorted,
 		!customScan && !currentScan.retrying && field === "extension" && started.folder
@@ -386,11 +277,19 @@ export function useFilesSortedChildren(props: useFilesSortedChildren_Props) {
 			: "skip",
 		{ initialNumItems: FILES_SORTED_CHILDREN_PAGE_SIZE },
 	);
-	const folderMissingPages = useFilesSortedMissingPages(
-		!customScan && !currentScan.retrying && isMetadata && started.folder ? segmentArgs("folder") : null,
+	const folderMetadataMissing = useHelpersPaginatedQuery(
+		app_convex_api.files_nodes.list_tree_children_sorted,
+		!customScan && !currentScan.retrying && isMetadata && started.folder
+			? { ...segmentArgs("folder")!, segment: "missing" }
+			: "skip",
+		{ initialNumItems: FILES_SORTED_CHILDREN_PAGE_SIZE },
 	);
-	const fileMissingPages = useFilesSortedMissingPages(
-		!customScan && !currentScan.retrying && isMetadata && started.file ? segmentArgs("file") : null,
+	const fileMetadataMissing = useHelpersPaginatedQuery(
+		app_convex_api.files_nodes.list_tree_children_sorted,
+		!customScan && !currentScan.retrying && isMetadata && started.file
+			? { ...segmentArgs("file")!, segment: "missing" }
+			: "skip",
+		{ initialNumItems: FILES_SORTED_CHILDREN_PAGE_SIZE },
 	);
 	const sideScope = JSON.stringify([membershipId, folderId, sort !== null]);
 	const sideRequests = useMemo(() => {
@@ -559,7 +458,7 @@ export function useFilesSortedChildren(props: useFilesSortedChildren_Props) {
 		segments.push({
 			kind: "folder",
 			segment: "missing",
-			...(isMetadata ? folderMissingPages : pagerOf(folderMissing, started.folder)),
+			...pagerOf(isMetadata ? folderMetadataMissing : folderMissing, started.folder),
 		});
 	}
 	segments.push({ kind: "file", segment: "value", ...pagerOf(fileValues, sort !== null) });
@@ -567,7 +466,7 @@ export function useFilesSortedChildren(props: useFilesSortedChildren_Props) {
 		segments.push({
 			kind: "file",
 			segment: "missing",
-			...(isMetadata ? fileMissingPages : pagerOf(fileMissing, started.file)),
+			...pagerOf(isMetadata ? fileMetadataMissing : fileMissing, started.file),
 		});
 	}
 	let sortLimit: FilesSortedChildrenPage["sortLimit"] = null;

@@ -712,6 +712,12 @@ run reused `/qa-sort-0924` and `/qa-sort-0924-r` without new files, metadata, mo
   displayed-value queries. Metadata after file.name needs no sort-key queries. Side enumeration returns
   facts without sort args or inline keys; `get_table_sort_key` returns a full `RowKey` or null.
   file.extension/file.size positions stay null for folders.
+  Metadata missing pages come from the convex-helpers hook. After the first Show more, the loaded
+  page's descriptor has `paginationOpts.endCursor` and the next page starts from that cursor. Dev
+  StrictMode can leave duplicate subscriptions with the same args, so group descriptors by exact
+  args first. `useFilesSortedChildren` removes duplicate row ids before render, so check raw page
+  responses: pages share no ids, each pinned page ends with `continueCursor === endCursor`, and the
+  pages put together in order equal the loaded rows.
 - **Filter and preview.** Combine a file.name filter with the full sort list. Check preview five, Show more,
   Show less and exact ordered ids. First Show more requests at least 50 and reveals all loaded rows;
   later requests add 50 to the loaded count. Show less returns to five without a new scan.

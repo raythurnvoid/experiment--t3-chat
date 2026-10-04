@@ -21,19 +21,21 @@ type SideRow = NonNullable<SideRows>["rows"][number];
 type SearchNodes = FunctionReturnType<typeof app_convex_api.files_metadata.search_nodes>;
 type WorkspaceLinks = FunctionReturnType<typeof app_convex_api.files_share_links.list_workspace_links>;
 
-// `sorted` holds every row of each sorted segment, keyed by its full folder and sort scope. A metadata
-// key's missing segment is keyed by its pages instead, because its cursor can end a page early.
+// `sorted` holds every row of each sorted segment, keyed by its full folder and sort scope.
+// `paginatedArgsSeen` records the args of every active paginated query, and `helpersArgsSeen` only
+// the ones that go through the convex-helpers hook.
 // `loadingFields` keeps every query of a sort loading. `loadingKeys` keeps one segment loading.
 // `search` answers the search box queries: `undefined` is loading.
-const { cursorsSeen, requestsSeen, batchesSeen, keysSeen, enumsSeen, sorted, search } = vi.hoisted(() => ({
+const { cursorsSeen, paginatedArgsSeen, helpersArgsSeen, requestsSeen, batchesSeen, keysSeen, enumsSeen, sorted, search } = vi.hoisted(() => ({
 	cursorsSeen: [] as string[],
+	paginatedArgsSeen: [] as SortedArgs[],
+	helpersArgsSeen: [] as SortedArgs[],
 	requestsSeen: [] as Array<{ id: string; args: SortedArgs }>,
 	batchesSeen: [] as Array<Array<{ id: string; args: SortedArgs }>>,
 	keysSeen: [] as Array<Record<string, unknown>>,
 	enumsSeen: [] as Array<Record<string, unknown>>,
 	sorted: {
 		rows: new Map<string, SortedRow[]>(),
-		missingPages: new Map<string, SortedRow[][]>(),
 		sideRows: undefined as SideRows | undefined,
 		loadingFields: new Set<string>(),
 		loadingKeys: new Set<string>(),
@@ -110,8 +112,7 @@ const match_key = (args: {
 	return JSON.stringify([membershipId, parentId, target, filter]);
 };
 
-// Answer each page at once. A cursor is the index of the page's first entry, or of the page itself for
-// a metadata key's missing segment.
+// Answer each page at once. A cursor is the index of the page's first entry.
 vi.mock("convex/react", async (importOriginal) => {
 	const { useState, useMemo, useSyncExternalStore } = await import("react");
 	const subscribe = (listener: () => void) => {
@@ -180,29 +181,12 @@ vi.mock("convex/react", async (importOriginal) => {
 							}
 							if (getFunctionName(request.query) === "files_nodes:list_tree_children_sorted") {
 								const args = request.args as SortedArgs;
-								if (args.filter !== null || args.sort.length > 1) {
-									const issuedKey = JSON.stringify([key, args]);
-									if (!sorted.seen.has(issuedKey)) {
-										sorted.seen.add(issuedKey);
-										requestsSeen.push({ id: key, args });
-									}
-									return [key, sorted.filtered!(args)];
+								const issuedKey = JSON.stringify([key, args]);
+								if (!sorted.seen.has(issuedKey)) {
+									sorted.seen.add(issuedKey);
+									requestsSeen.push({ id: key, args });
 								}
-								const cursor = args.paginationOpts!.cursor;
-								cursorsSeen.push(`${args.kind}:${cursor}`);
-								const pages = sorted.missingPages.get(sorted_key(args)) ?? [[]];
-								const index = Number(cursor ?? "0");
-								const result: SortedPage = {
-									page: pages[index]!,
-									isDone: index + 1 >= pages.length,
-									continueCursor: String(index + 1),
-									scanBoundary: pages[index]!.at(-1)?.sortKey ?? null,
-									scannedCount: pages[index]!.length,
-									workCount: pages[index]!.length,
-									sortLimit: null,
-									workPaused: false,
-								};
-								return [key, result];
+								return [key, sorted.filtered!(args)];
 							}
 
 							const cursor = String(request.args.cursor ?? "0");
@@ -229,6 +213,7 @@ vi.mock("convex/react", async (importOriginal) => {
 		) => {
 			useSyncExternalStore(subscribe, () => sorted.revision);
 			const key = args === "skip" ? "skip" : sorted_key(args);
+			if (args !== "skip") paginatedArgsSeen.push(args);
 			const [loaded, setLoaded] = useState({ key, numItems: options.initialNumItems });
 			const numItems = loaded.key === key ? loaded.numItems : options.initialNumItems;
 			if (args === "skip" || sorted.loadingFields.has(args.sort[0].field) || sorted.loadingKeys.has(key)) {
@@ -241,6 +226,17 @@ vi.mock("convex/react", async (importOriginal) => {
 				status: numItems >= rows.length ? "Exhausted" : "CanLoadMore",
 				loadMore: (more: number) => setLoaded({ key, numItems: numItems + more }),
 			};
+		},
+	};
+});
+
+// A metadata key's missing rows use the convex-helpers hook. Serve it from the same mock as the other segments.
+vi.mock("convex-helpers/react", async () => {
+	const { usePaginatedQuery } = await import("convex/react");
+	return {
+		usePaginatedQuery: (query: FunctionReference<"query">, args: SortedArgs | "skip", options: { initialNumItems: number }) => {
+			if (args !== "skip") helpersArgsSeen.push(args);
+			return usePaginatedQuery(query, args, options);
 		},
 	};
 });
@@ -325,8 +321,9 @@ const filter_page = (args: {
 
 beforeEach(() => {
 	cursorsSeen.length = 0;
+	paginatedArgsSeen.length = 0;
+	helpersArgsSeen.length = 0;
 	sorted.rows.clear();
-	sorted.missingPages.clear();
 	sorted.sideRows = { rows: [], nameClaims: [], tooManyShared: false, tooManyPending: false };
 	sorted.loadingFields.clear();
 	sorted.loadingKeys.clear();
@@ -518,27 +515,34 @@ describe("useFilesSortedChildren", () => {
 		expect(result.current).toMatchObject({ rows: undefined, isBusy: true, isDone: false });
 	});
 
-	test("starts a metadata key's missing rows after its values, and loads past an empty page by itself", async () => {
+	test("starts a metadata key's missing rows after its values", () => {
 		const sort: files_sort_Sort = [{ field: "metadata.status", direction: "asc" }];
-		sorted.rows.set(sorted_fixture_key({ kind: "file", segment: "value", field: "metadata.status", direction: "asc" }), [
-			saved_row({ kind: "file", name: "a.md", part: ["open", "a.md"] }),
-		]);
-		sorted.missingPages.set(sorted_fixture_key({ kind: "file", segment: "missing", field: "metadata.status", direction: "asc" }), [
-			[],
-			[saved_row({ kind: "file", name: "b.md" })],
-			[saved_row({ kind: "file", name: "c.md" })],
-		]);
+		const missingKey = sorted_fixture_key({ kind: "file", segment: "missing", field: "metadata.status", direction: "asc" });
+		sorted.rows.set(
+			sorted_fixture_key({ kind: "file", segment: "value", field: "metadata.status", direction: "asc" }),
+			file_names(60, "open").map((name) => saved_row({ kind: "file", name, part: ["open", name] })),
+		);
+		sorted.rows.set(missingKey, file_names(60).map((name) => saved_row({ kind: "file", name })));
 		const { result } = render_sorted(sort);
 
-		await waitFor(() => expect(result.current.rows?.map((row) => row.name)).toEqual(["a.md", "b.md"]));
-		expect(result.current.isDone).toBe(false);
-		expect(cursorsSeen.filter((cursor) => cursor.startsWith("file:"))).toEqual(
-			expect.arrayContaining(["file:null", "file:1"]),
-		);
-		expect(cursorsSeen).not.toContain("file:2");
+		expect(result.current.rows?.map((row) => row.name)).toEqual(file_names(50, "open"));
+		// The rows cannot show this: an inactive segment hides the rows of a query that started too early.
+		expect(
+			paginatedArgsSeen.some((args) => sorted_key(args) === missingKey),
+			"no active missing call",
+		).toBe(false);
 
 		act(() => result.current.loadMore());
-		await waitFor(() => expect(result.current.rows?.map((row) => row.name)).toEqual(["a.md", "b.md", "c.md"]));
+		// The convex-helpers hook pins each page's end, so live changes cannot skip or repeat rows.
+		expect(
+			helpersArgsSeen.some((args) => sorted_key(args) === missingKey),
+			"missing call uses the convex-helpers hook",
+		).toBe(true);
+		expect(result.current.rows?.map((row) => row.name)).toEqual([...file_names(60, "open"), ...file_names(50)]);
+		expect(result.current.isDone).toBe(false);
+
+		act(() => result.current.loadMore());
+		expect(result.current.rows?.map((row) => row.name)).toEqual([...file_names(60, "open"), ...file_names(60)]);
 		expect(result.current.isDone).toBe(true);
 	});
 

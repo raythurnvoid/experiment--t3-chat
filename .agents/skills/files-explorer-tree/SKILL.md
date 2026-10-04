@@ -295,7 +295,11 @@ folder (`FileNodeViewPrivateFolder`) still lists its children through `useFilesV
     node and permission joins also use transaction reads. An error must not skip unchecked rows.
     The metadata missing segment walks nodes and field docs in name order with a checked JSON
     cursor and at most 1,000 candidate/proof visits. Each new field witness is checked against its
-    current ordinary node. A page can be short or empty.
+    current ordinary node. A page can be short or empty. A pinned page (`endCursor`, sent by the
+    convex-helpers hook) ignores `numItems`, returns every row up to its end, and keeps
+    `continueCursor === endCursor`. When a cap stops it first, it returns `SplitRequired` with a
+    middle `splitCursor` from its completed candidates. With no completed candidate, it throws the
+    work-limit error instead.
   - With one clause, a filter uses a custom stream over the same primary index, with at most 50
     candidate/proof visits per query. `workLimit` is fixed per request and checked from 1 to 1,000.
     All joins count toward whole-query byte/call checks: 4 MiB and 1,000 calls, with 1 MiB and 16 calls reserved.
@@ -324,9 +328,11 @@ folder (`FileNodeViewPrivateFolder`) still lists its children through `useFilesV
   - A custom cursor that does not match its request (bad JSON, another folder, kind, segment, sort or
     filter, or a wrong shape) throws an error with `InvalidCursor` in its message, like Convex's own
     paginated queries. It never comes back as an empty, done page, because that would hide the rest
-    of the rows. The client pagers then show their error state. A cursor that only went stale is
-    replaced without an error: both custom pagers reload later pages when an earlier page's
-    `continueCursor` changes.
+    of the rows. Its data has `isConvexSystemError` and `paginationError: "InvalidCursor"`, so the
+    metadata missing pager (the convex-helpers hook) restarts from page 1. The hook checks the
+    message or the data. The filter and multi-sort pager shows its error state. A cursor that only
+    went stale is replaced without an error: that pager reloads later pages when an earlier
+    page's `continueCursor` changes.
     The boundary is a full RowKey. A metadata-missing indexed Name walk may use the last completed
     raw Name position, with a null primary part, even when that raw node had the primary value.
     Rejected nodes need no filter or irrelevant secondary reads for that positional boundary.
@@ -353,8 +359,10 @@ folder (`FileNodeViewPrivateFolder`) still lists its children through `useFilesV
     segment shows only after every earlier one is done, so the next folder page never pushes
     files down.
   - A missing segment starts when its value segment is done and stays started for that sort.
-    Metadata missing pages use a cursor chain (`useFilesSortedMissingPages`) that reloads later
-    pages when an earlier page's end changes, and loads the next page by itself after an empty one.
+    Metadata missing pages use `usePaginatedQuery` from `convex-helpers/react` as it is. It pins
+    each loaded page with `endCursor`, so a page keeps its rows when an earlier row changes. An
+    empty page that is not done needs another Show more click, and a page error reaches the root
+    error page.
   - A side row shows once its segment is done or the loaded boundary sorts at or after it. A filter
     uses the last fully scanned boundary, even when there was no matching main row. So
     side rows never jump.
@@ -838,7 +846,7 @@ Do not call `parent.getChildren()` for this check in each row: it loads every si
   preserves a newer clipboard, and marks rows accessibly. Normal text shortcuts still work.
 - Conflict choices carry the current revision. Hide does not stop a run; Activity can reopen it.
   Stop keeps completed copies, reports an unconfirmed request, and waits for the server result.
-- The folder table sorts by each built-in field and a metadata key in both directions, with folders first and missing values last. A writer's saved sort shows live for a second member; a sort in the URL stays with that URL and a different folder starts without it. A restricted child the member cannot read never shows, and Show more pages without repeats.
+- The folder table sorts by each built-in field and a metadata key in both directions, with folders first and missing values last. A writer's saved sort shows live for a second member; a sort in the URL stays with that URL and a different folder starts without it. A restricted child the member cannot read never shows, and Show more pages without repeats. Loaded rows stay in place when an earlier row changes.
 - Selection modes and anchor behavior are correct.
 - A tree with thousands of visible rows mounts only the viewport plus active rows. Home/End and
   arrow keys scroll and focus correctly. Scrolling keeps an active rename, menu, drag, or dialog
