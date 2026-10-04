@@ -1966,6 +1966,60 @@ describe("AiChatController", () => {
 	});
 
 	describe("pending saved parents", () => {
+		test("keeps the branch linked while a parent moves from its client ID to its saved ID", async () => {
+			const threadId = "thread_parent_sync";
+			const { rerender } = render(
+				<FullPageSurface initialSelectedThreadId={threadId}>
+					<RuntimeSendProbe />
+				</FullPageSurface>,
+			);
+			await waitFor(() => expect(screen.getByTestId("runtime-session").textContent).toBe("session"));
+			const chat = hookMocks.chatInstances.find((item) => item.id === threadId);
+			if (!chat) throw new Error("Expected parent sync chat");
+			chat.messages = [
+				{
+					id: "client_parent",
+					role: "user",
+					parts: [{ type: "text", text: "Parent" }],
+					metadata: { convexId: "saved_parent", convexParentId: null, parentClientGeneratedId: null },
+				},
+				{
+					id: "client_reply",
+					role: "assistant",
+					parts: [{ type: "text", text: "Reply" }],
+					metadata: { convexParentId: "saved_parent", parentClientGeneratedId: "client_parent" },
+				},
+			] satisfies ai_chat_UiMessage[];
+			fireEvent.click(screen.getByRole("button", { name: "mark failed" }));
+			expect(AiChatController.useStore.getState().activeMessageIdsByThreadId.get(threadId)).toEqual([
+				"client_parent",
+				"client_reply",
+			]);
+			expect(AiChatController.useStore.getState().branchSiblingIdsByMessageId.get("client_parent")).toEqual([
+				"client_parent",
+			]);
+
+			hookMocks.threadMessages = [
+				createPersistedMessage({
+					id: "saved_parent",
+					clientGeneratedMessageId: "client_parent",
+					content: chat.messages[0] as ai_chat_UiMessage,
+				}),
+			];
+			rerender(
+				<FullPageSurface initialSelectedThreadId={threadId}>
+					<RuntimeSendProbe />
+				</FullPageSurface>,
+			);
+			expect(AiChatController.useStore.getState().activeMessageIdsByThreadId.get(threadId)).toEqual([
+				"saved_parent",
+				"client_reply",
+			]);
+			expect(AiChatController.useStore.getState().branchSiblingIdsByMessageId.get("saved_parent")).toEqual([
+				"saved_parent",
+			]);
+		});
+
 		test("keeps separate branch counts and the Retry parent outside the loaded page", async () => {
 			const threadId = "thread_paged_edit";
 			render(
@@ -2001,6 +2055,7 @@ describe("AiChatController", () => {
 			fireEvent.click(screen.getByRole("button", { name: "mark failed" }));
 			await waitFor(() => expect(screen.getByTestId("runtime-failed-message").textContent).toBe("edited_pending"));
 			const state = AiChatController.useStore.getState();
+			expect(state.activeMessageIdsByThreadId.get(threadId)).toEqual(["saved_root", "saved_parent", "edited_pending"]);
 			expect(state.branchSiblingIdsByMessageId.get("saved_root")).toEqual(["saved_root"]);
 			expect(state.branchSiblingIdsByMessageId.get("saved_parent")).toEqual(["saved_parent"]);
 			expect(state.branchSiblingIdsByMessageId.get("edited_pending")).toEqual(["edited_pending"]);

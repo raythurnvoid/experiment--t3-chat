@@ -194,8 +194,10 @@ older page starts in `historyFromIds`; the chat shows "Load older messages" whil
 null. Opening or cancelling a message edit keeps the current branch and loaded history. An accepted
 edit clears the selected anchor. The pending message then chooses its branch from its original
 parent, including after a failed send from older history. A rejected send keeps the editor and draft.
-Keep the upward parent walk and `pendingMessagesLookup.childrenByParentId` aligned. Resolve saved
-parent ids from the loaded page or the SDK messages. A parent outside the page is not a root.
+The upward parent walk and `pendingMessagesLookup.childrenByParentId` share `get_message_parent`.
+Build the full pending map before grouping children. Resolve saved parent ids from the loaded page
+or the SDK messages, then use the pending client id while saved data arrives. A parent outside the
+page is not a root.
 When merging saved `siblingIds` with pending child ids, keep each id once in the existing order.
 The model reads the internal
 `ai_chat_runs.history_page`, which walks up from the trigger

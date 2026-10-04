@@ -472,6 +472,23 @@ function get_message_selected_mode_id(message?: ai_chat_UiMessage | null) {
 	return selectedModeId;
 }
 
+function get_message_parent(args: {
+	message: ai_chat_UiMessage;
+	pendingMessagesById: Map<string, ai_chat_UiMessage>;
+	persistedMessagesById: Map<string, ai_chat_UiMessage> | undefined;
+}) {
+	const convexParentId = args.message.metadata?.convexParentId;
+	// An older edit can keep saved parents in the SDK outside the loaded page.
+	if (convexParentId) {
+		const parent = args.pendingMessagesById.get(convexParentId) ?? args.persistedMessagesById?.get(convexParentId);
+		if (parent) return parent;
+	}
+
+	// The saved parent may not have arrived through the query yet.
+	const parentClientGeneratedId = args.message.metadata?.parentClientGeneratedId;
+	return parentClientGeneratedId ? args.pendingMessagesById.get(parentClientGeneratedId) : undefined;
+}
+
 const thread_session_create = (args?: {
 	chat?: Chat<ai_chat_UiMessage> | null;
 	chatArgs?: ThreadChatArgs | undefined;
@@ -2052,7 +2069,6 @@ const useThreadRuntimeController = () => {
 			 */
 			liveReplyByConvexId: new Map<string, ai_chat_UiMessage>(),
 		};
-		const chatMessageIds = new Set(chat.messages.map((message) => message.id));
 
 		// Read messages from the newest to the oldest.
 		for (const message of chat.messages.toReversed()) {
@@ -2087,26 +2103,18 @@ const useThreadRuntimeController = () => {
 			result.list.push(message);
 
 			result.mapById.set(message.id, message);
+		}
 
-			const parentIdOrRoot = ((/* iife */) => {
-				let parentId = undefined;
-
-				if (message.metadata?.convexParentId) {
-					// An older edit can keep saved parents in the SDK outside the loaded page.
-					parentId =
-						persistedMessagesLookup?.mapById.get(message.metadata.convexParentId)?.id ??
-						(chatMessageIds.has(message.metadata.convexParentId) ? message.metadata.convexParentId : undefined);
-				}
-
-				// When the parent message is persisted but convex is not synced yet
-				// we have to fallback to associate this message to the clientGeneratedId
-				// of the parent because the parent message is not yet coming from
-				// the `persistedMessagesLookup` but is present only in the
-				// AI SDK chat object, therefore it displays still as a pending message.
-				if (!parentId) parentId = message.metadata?.parentClientGeneratedId;
-
-				return parentId ?? null;
-			})();
+		// Build the full map first because children come before their parents.
+		for (const message of result.list) {
+			const parentIdOrRoot =
+				get_message_parent({
+					message,
+					pendingMessagesById: result.mapById,
+					persistedMessagesById: persistedMessagesLookup?.mapById,
+				})?.id ??
+				message.metadata?.parentClientGeneratedId ??
+				null;
 
 			if (result.childrenByParentId.has(parentIdOrRoot)) {
 				result.childrenByParentId.get(parentIdOrRoot)?.push(message);
@@ -2137,25 +2145,11 @@ const useThreadRuntimeController = () => {
 			while (current) {
 				mapById.set(current.id, current);
 				tail.push(current);
-				current = ((/* iife */) => {
-					let parentMessage = undefined;
-
-					if (current.metadata?.convexParentId) {
-						parentMessage = pendingMessagesLookup.mapById.get(current.metadata.convexParentId);
-						if (!parentMessage) parentMessage = persistedMessagesLookup?.mapById.get(current.metadata.convexParentId);
-					}
-
-					// When sending a user message, in the convex BE we save it
-					// immidiately, the assistant message will stream with a convex id
-					// already set but the convex sync engine might not have synced it yed
-					// so we need to fallback to the client-generated id to get it from
-					// the pending messages lookup.
-					if (current.metadata?.parentClientGeneratedId && !parentMessage) {
-						parentMessage = pendingMessagesLookup.mapById.get(current.metadata.parentClientGeneratedId);
-					}
-
-					return parentMessage;
-				})();
+				current = get_message_parent({
+					message: current,
+					pendingMessagesById: pendingMessagesLookup.mapById,
+					persistedMessagesById: persistedMessagesLookup.mapById,
+				});
 			}
 		}
 
