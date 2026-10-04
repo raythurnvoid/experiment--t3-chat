@@ -203,3 +203,6 @@
 [submodule "references-submodules/playwriter"]
 	path = references-submodules/playwriter
 	url = https://github.com/remorses/playwriter.git
+[submodule "plugins/bonobo-plugin-gmail"]
+	path = plugins/bonobo-plugin-gmail
+	url = https://github.com/raythurnvoid/bonobo-plugin-gmail.git
