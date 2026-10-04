@@ -5,6 +5,7 @@ import {
 	files_table_MAX_COLUMNS,
 	files_table_filter_is_valid,
 	files_table_filter_matches,
+	files_table_updated_by_text,
 	type files_table_Filter,
 } from "./files-table.ts";
 
@@ -22,6 +23,13 @@ describe("files_table_column_is_valid", () => {
 	test("keeps the default three data columns within the cap", () => {
 		expect(files_table_DEFAULT_COLUMNS).toEqual(["name", "updated_by", "updated"]);
 		expect(files_table_MAX_COLUMNS).toBe(8);
+	});
+});
+
+describe("files_table_updated_by_text", () => {
+	test("shows the name, or Unknown when no name is found", () => {
+		expect(files_table_updated_by_text("Ada Lovelace")).toBe("Ada Lovelace");
+		expect(files_table_updated_by_text(null)).toBe("Unknown");
 	});
 });
 

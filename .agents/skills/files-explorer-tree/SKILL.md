@@ -408,6 +408,9 @@ folder (`FileNodeViewPrivateFolder`) still lists its children through `useFilesV
   values; private rows use their current proposal. Lists show the first plain value. Only a
   checked missing value shows `—`. Loading, deferred, preparing, and failed reads have real text.
   Retry values belongs in Actions, so it does not open the row link.
+- A `file.updated_by` cell reads `users.get_anagraphic` for the row's updater and shows
+  `files_table_updated_by_text`: the name, or "Unknown" when no name is found. It shows
+  "Loading…" with the `loading` state until the query answers, never the raw user id.
 - Metadata display keeps at most 100 active targets and 700 value page descriptors. One observer
   uses the editor scroll box with a 400px vertical margin. Focused rows come first, then visible
   rows, then nearby rows. Scrolling and resizing update that order. Offscreen payloads are dropped.

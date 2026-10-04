@@ -393,6 +393,7 @@ let pendingChildren: unknown[];
 let header: HTMLDivElement;
 let appHoistingContainer: HTMLDivElement;
 let browserSession: unknown;
+let anagraphic: unknown;
 
 function pushQueryChanges() {
 	act(() => queryPushListeners.forEach((listener) => listener()));
@@ -421,6 +422,7 @@ beforeEach(() => {
 	sideRows = undefined;
 	folderSort = { sort: [{ field: "name", direction: "asc" }], canSave: true };
 	browserSession = null;
+	anagraphic = null;
 	tenantContextMock.mockReturnValue({
 		membershipId: "membership_1",
 		organizationId: "organization_1",
@@ -584,6 +586,8 @@ beforeEach(() => {
 			case "files_transfer:get":
 			case "files_pending_update_runs:get":
 				return null;
+			case "users:get_anagraphic":
+				return anagraphic;
 			case "plugins_ui:list_file_views":
 				return plugins;
 			case "r2:get_asset_by_file_node_id":
@@ -2463,6 +2467,25 @@ describe("FileNodeView folder columns", () => {
 		pushQueryChanges();
 		expect(await within(chooser).findByRole("checkbox", { name: "metadata.new_more" })).toBeTruthy();
 		expect(within(chooser).queryByRole("checkbox", { name: /^old/ })).toBeNull();
+	});
+
+	test("shows the updater's name, Loading… while it loads, and Unknown when no name is found", async () => {
+		node = { ...NODE, _id: "folder_1", name: "Docs", path: "/Docs", kind: "folder" };
+		treeNodes = [node, { ...NODE, _id: "a.html", name: "a.html", parentId: node._id }];
+		anagraphic = undefined;
+		renderFileView({ nodeId: node._id });
+		const table = await screen.findByRole("table", { name: "Folder contents" });
+		const cell = () => within(table).getAllByRole("row")[1]!.querySelector('[data-column-field="updated_by"]');
+		expect(cell()).toHaveProperty("textContent", "Loading…");
+		expect(cell()?.getAttribute("data-value-state")).toBe("loading");
+		anagraphic = { displayName: "Ada Lovelace" };
+		pushQueryChanges();
+		// The name replaces the raw user id.
+		expect(cell()).toHaveProperty("textContent", "Ada Lovelace");
+		expect(cell()?.getAttribute("data-value-state")).toBe("ready");
+		anagraphic = null;
+		pushQueryChanges();
+		expect(cell()).toHaveProperty("textContent", "Unknown");
 	});
 
 	test("loads real scalar cells through the editor observer and puts Retry values in Actions", async () => {

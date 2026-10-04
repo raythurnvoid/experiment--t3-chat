@@ -187,6 +187,7 @@ import {
 import {
 	files_table_DEFAULT_COLUMNS,
 	files_table_MAX_COLUMNS,
+	files_table_updated_by_text,
 	type files_table_Filter,
 } from "../../../../shared/files-table.ts";
 import { plugins_list_file_view_matches } from "../../../../shared/plugins.ts";
@@ -3872,13 +3873,20 @@ const FileNodeViewFolderExplorerColumnCells = memo(function FileNodeViewFolderEx
 	columnValues: FileNodeViewFolderColumnValues | undefined;
 }) {
 	const { row, columns, columnValues } = props;
+	// Convex shares one subscription between rows with the same updater.
+	const updatedByAnagraphic = useQuery(
+		app_convex_api.users.get_anagraphic,
+		columns.includes("updated_by") ? { userId: row.updatedBy } : "skip",
+	);
 	return columns
 		.filter((field) => field !== "name")
 		.map((field) => {
 			let value: string | number | boolean | null = null;
 			let state: FileNodeViewFolderColumnValues["state"] | "deferred" = "ready";
-			if (field === "updated_by") value = row.updatedBy || "Unknown";
-			else if (field === "updated") value = format_relative_time(row.updatedAt);
+			if (field === "updated_by") {
+				if (updatedByAnagraphic === undefined) state = "loading";
+				else value = files_table_updated_by_text(updatedByAnagraphic?.displayName ?? null);
+			} else if (field === "updated") value = format_relative_time(row.updatedAt);
 			else if (field === "created") value = format_relative_time(row.createdAt);
 			else if (field === "size")
 				value = row.kind === "file" && row.contentByteSize !== null ? files_format_size(row.contentByteSize) : null;

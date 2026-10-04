@@ -17,6 +17,13 @@ export function files_table_column_is_valid(field: string) {
 	return field === "updated_by" || files_sort_field_is_valid(field);
 }
 
+/**
+ * The text of a file.updated_by cell. With no name found, it shows "Unknown".
+ */
+export function files_table_updated_by_text(displayName: string | null) {
+	return displayName ?? "Unknown";
+}
+
 export function files_table_filter_is_valid(filter: files_table_Filter) {
 	switch (filter.kind) {
 		case "name":
