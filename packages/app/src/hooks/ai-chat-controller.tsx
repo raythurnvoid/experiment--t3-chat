@@ -2052,6 +2052,7 @@ const useThreadRuntimeController = () => {
 			 */
 			liveReplyByConvexId: new Map<string, ai_chat_UiMessage>(),
 		};
+		const chatMessageIds = new Set(chat.messages.map((message) => message.id));
 
 		// Read messages from the newest to the oldest.
 		for (const message of chat.messages.toReversed()) {
@@ -2091,10 +2092,10 @@ const useThreadRuntimeController = () => {
 				let parentId = undefined;
 
 				if (message.metadata?.convexParentId) {
-					// When the parent message is persisted but convex is not synced yet,
-					// the `convexParentId` is valorized but it will not resolve to any message,
-					// to be sure it resolve to a message we check into `persistedMessagesLookup.mapById`
-					parentId = persistedMessagesLookup?.mapById.get(message.metadata.convexParentId)?.id;
+					// An older edit can keep saved parents in the SDK outside the loaded page.
+					parentId =
+						persistedMessagesLookup?.mapById.get(message.metadata.convexParentId)?.id ??
+						(chatMessageIds.has(message.metadata.convexParentId) ? message.metadata.convexParentId : undefined);
 				}
 
 				// When the parent message is persisted but convex is not synced yet
@@ -2198,7 +2199,8 @@ const useThreadRuntimeController = () => {
 		}
 
 		for (const [parentId, children] of pendingMessagesLookup.childrenByParentId.entries()) {
-			result.set(parentId, [...(result.get(parentId) ?? []), ...children.toReversed().map((child) => child.id)]);
+			// Saved SDK ancestors can already be listed among another branch's siblings.
+			result.set(parentId, [...new Set([...(result.get(parentId) ?? []), ...children.toReversed().map((child) => child.id)])]);
 		}
 
 		return result;

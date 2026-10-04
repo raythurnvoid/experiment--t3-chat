@@ -80,7 +80,16 @@ stay present. Disconnect the observer when done.
 On submit, the branch may change. In a reusable QA chat, edit a message whose parent
 is above the current branch anchor and send a short reply request. Check that the new
 user message and reply appear on that branch. Opening the editor alone must not change
-the `ai_chat_runs:branch_page` query's `anchorId`; submitting selects the edited message's parent.
+the `ai_chat_runs:branch_page` query's `anchorId`. An accepted submit clears that anchor;
+the request still uses the edited message's original parent. A rejected submit keeps the editor,
+draft, and branch.
+
+Also use the long chat in the QA catalog. Select its older long sibling and load older messages.
+Edit a user message more than 50 nodes behind the leaf. Fail the first `/api/chat` request before
+it reaches the server. Require the edited text and Retry on that failed user, then retry normally.
+Check branch counts too: saved ancestors must not count as root siblings or appear twice.
+Both requests must use the same original parent. Require one saved replacement and reply after
+reload. Remove the failure route when done. This catches missing parents that short chats cannot.
 
 ## Private chat and access-loss check
 

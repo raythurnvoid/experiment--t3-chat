@@ -132,6 +132,8 @@ to a `chitchat-qa` workspace unless the check is about the upload plugins.
 `personal/home` already has about 410 chats. For an agent check where chat history does not
 matter, continue a chat you already made for the same task instead of starting a new one.
 
+Reuse `QA paged message edit` in `chitchat-qa/home` (`n175v5tanrcx2363yz4478h0w58fn2nc`) for loading older history and editing or retrying messages more than 50 nodes behind the leaf. It has two long branches with 56 and 58 short fixture nodes.
+
 Reuse `QA native-popovers mount 0928` in `personal/home` (`n17e1df2cqn1p6m8kkac9nq8d58f8674`) for this Mount's Bash checks. The saved first turn lists the Mount and reads its README without changing files.
 
 Use saved chat `n174jx56n9dhr2eahg93prek198fba90` in `personal/home` as evidence for natural Mount discovery and later web search. It used GPT-6 Luna in Agent mode. Its first turn had no chat history or supplied path. Stored Bash calls read the README and `AGENTS.md`; the next turn used web search.
@@ -159,3 +161,4 @@ Only the original Chitchat installation was present.
 - 2026-10-01: archived all 31 public-link QA and performance nodes. Exact ids, parents, paths, owners and assets match the cleanup backup. All nine links are Off; both task keys return 401. Reused media and text fixtures are restored. Scratch accounts are signed out and their Chrome processes are closed. Local scratch-folder removal was blocked by automatic approval review; those folders remain outside the repo.
 - 2026-10-04: added 15 small root Markdown files in `chitchat-qa/home` for creation timing. Five use the temporary split action. All loaded their Welcome text; the ten comparison files also passed a node id, path, parent, and stored text-kind readback.
 - 2026-10-04: added 15 small Markdown files and 26 empty folders in `chitchat-qa/home` to compare the combined creation module. One batch had HMR and was repeated. Every node passed authenticated readback; the sidebar folder check used the temporary mutation and focused rename.
+- 2026-10-04: added a reusable chat with 56- and 58-node branches. Older edits, failed sends, Retry, branch counts, and saved replies passed Playwriter checks.

@@ -1965,6 +1965,99 @@ describe("AiChatController", () => {
 		expect(chat.messages).toHaveLength(1);
 	});
 
+	describe("pending saved parents", () => {
+		test("keeps separate branch counts and the Retry parent outside the loaded page", async () => {
+			const threadId = "thread_paged_edit";
+			render(
+				<FullPageSurface initialSelectedThreadId={threadId}>
+					<RuntimeSendProbe />
+				</FullPageSurface>,
+			);
+			await waitFor(() => expect(screen.getByTestId("runtime-session").textContent).toBe("session"));
+			const chat = hookMocks.chatInstances.find((item) => item.id === threadId);
+			if (!chat) throw new Error("Expected paged edit chat");
+
+			// The SDK keeps these saved ancestors after the query moves to another page.
+			chat.messages = [
+				{
+					id: "saved_root",
+					role: "user",
+					parts: [{ type: "text", text: "Root" }],
+					metadata: { convexId: "saved_root", convexParentId: null, parentClientGeneratedId: null },
+				},
+				{
+					id: "saved_parent",
+					role: "assistant",
+					parts: [{ type: "text", text: "Parent" }],
+					metadata: { convexId: "saved_parent", convexParentId: "saved_root", parentClientGeneratedId: null },
+				},
+				{
+					id: "edited_pending",
+					role: "user",
+					parts: [{ type: "text", text: "Edited text" }],
+					metadata: { convexParentId: "saved_parent", parentClientGeneratedId: null },
+				},
+			] satisfies ai_chat_UiMessage[];
+			fireEvent.click(screen.getByRole("button", { name: "mark failed" }));
+			await waitFor(() => expect(screen.getByTestId("runtime-failed-message").textContent).toBe("edited_pending"));
+			const state = AiChatController.useStore.getState();
+			expect(state.branchSiblingIdsByMessageId.get("saved_root")).toEqual(["saved_root"]);
+			expect(state.branchSiblingIdsByMessageId.get("saved_parent")).toEqual(["saved_parent"]);
+			expect(state.branchSiblingIdsByMessageId.get("edited_pending")).toEqual(["edited_pending"]);
+
+			fireEvent.click(screen.getByRole("button", { name: "retry failed" }));
+			expect(chat.sendMessage).toHaveBeenCalledTimes(1);
+			const retried = chat.sendMessage.mock.calls[0]?.[0] as ai_chat_UiMessage;
+			expect(retried.metadata?.convexParentId).toBe("saved_parent");
+		});
+
+		test("counts a saved sibling once when it remains in the SDK on another branch", async () => {
+			const threadId = "thread_paged_siblings";
+			const saved = [
+				{ id: "saved_root", parentId: null, role: "user" },
+				{ id: "saved_parent", parentId: "saved_root", role: "assistant" },
+				{ id: "saved_a", parentId: "saved_parent", role: "user" },
+				{ id: "saved_a_reply", parentId: "saved_a", role: "assistant" },
+				{ id: "saved_b", parentId: "saved_parent", role: "user" },
+				{ id: "saved_b_reply", parentId: "saved_b", role: "assistant" },
+			] as const;
+			hookMocks.threadMessages = saved.map((message) =>
+				createPersistedMessage({
+					...message,
+					content: { id: message.id, role: message.role, parts: [{ type: "text", text: message.id }] },
+				}),
+			);
+			render(
+				<FullPageSurface initialSelectedThreadId={threadId}>
+					<RuntimeSendProbe />
+				</FullPageSurface>,
+			);
+			await waitFor(() => expect(screen.getByTestId("runtime-session").textContent).toBe("session"));
+			const chat = hookMocks.chatInstances.find((item) => item.id === threadId);
+			if (!chat) throw new Error("Expected paged sibling chat");
+			chat.messages = [
+				...saved.slice(0, 4).map((message) => ({
+					id: message.id,
+					role: message.role,
+					parts: [{ type: "text" as const, text: message.id }],
+					metadata: { convexId: message.id, convexParentId: message.parentId, parentClientGeneratedId: null },
+				})),
+				{
+					id: "edited_pending",
+					role: "user",
+					parts: [{ type: "text", text: "Edited text" }],
+					metadata: { convexParentId: "saved_a_reply", parentClientGeneratedId: null },
+				},
+			] satisfies ai_chat_UiMessage[];
+			fireEvent.click(screen.getByRole("button", { name: "mark failed" }));
+			await waitFor(() => expect(screen.getByTestId("runtime-failed-message").textContent).toBe("edited_pending"));
+			expect(AiChatController.useStore.getState().branchSiblingIdsByMessageId.get("saved_a")).toEqual([
+				"saved_a",
+				"saved_b",
+			]);
+		});
+	});
+
 	test("drains a queued message with its frozen browser intent", async () => {
 		hookMocks.holdChatRequests = true;
 		const threadId = "thread_queue_browser";

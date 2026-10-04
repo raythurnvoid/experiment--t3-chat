@@ -35,6 +35,7 @@ const hookMocks = vi.hoisted(() => {
 		messageById: new Map<string, ai_chat_UiMessage>(),
 		branchSiblingIdsByMessageId: new Map<string, readonly string[]>(),
 		editingMessageId: null as string | null,
+		composerSubmitResult: vi.fn(),
 		sendErrorMessageId: null as string | null,
 		sendErrorDetails: null as string | null,
 		files: new Map<
@@ -54,7 +55,7 @@ const hookMocks = vi.hoisted(() => {
 			stop: vi.fn(),
 			setSelectedModelId: vi.fn(),
 			setSelectedModeId: vi.fn(),
-			sendUserText: vi.fn(),
+			sendUserText: vi.fn(() => true),
 			regenerate: vi.fn(),
 			branchChat: vi.fn(),
 			selectBranchAnchor: vi.fn(),
@@ -101,7 +102,7 @@ vi.mock("@/components/ai-chat/ai-chat-composer.tsx", () => ({
 	AiChatComposer: function AiChatComposer(props: AiChatComposer_Props) {
 		return (
 			<form data-testid="message-composer">
-				<button type="button" onClick={() => props.onSubmit(props.initialValue, [])}>
+				<button type="button" onClick={() => hookMocks.composerSubmitResult(props.onSubmit(props.initialValue, []))}>
 					Save message
 				</button>
 				<button type="button" onClick={props.onClose}>
@@ -243,7 +244,7 @@ describe("AiChatMessage", () => {
 		hookMocks.mcpConnectable.clear();
 	});
 
-	test.each([null, "msg_assistant_parent"])("selects parent %s before sending an inline edit", (parentId) => {
+	test.each([null, "msg_assistant_parent"])("clears the anchor after sending an edit with parent %s", (parentId) => {
 		const userMessage = createUserMessage();
 		const message = { ...userMessage, metadata: { ...userMessage.metadata, convexParentId: parentId } };
 		renderMessage({
@@ -251,8 +252,8 @@ describe("AiChatMessage", () => {
 			isEditing: true,
 		});
 		fireEvent.click(screen.getByRole("button", { name: "Save message" }));
-		expect(hookMocks.actions.selectBranchAnchor).toHaveBeenCalledWith("thread_1", parentId);
-		expect(hookMocks.actions.selectBranchAnchor.mock.invocationCallOrder[0]).toBeLessThan(
+		expect(hookMocks.actions.selectBranchAnchor).toHaveBeenCalledWith("thread_1", null);
+		expect(hookMocks.actions.selectBranchAnchor.mock.invocationCallOrder[0]).toBeGreaterThan(
 			hookMocks.actions.sendUserText.mock.invocationCallOrder[0]!,
 		);
 		expect(hookMocks.actions.sendUserText).toHaveBeenCalledWith({
@@ -263,6 +264,18 @@ describe("AiChatMessage", () => {
 				attachments: [],
 			},
 		});
+	});
+
+	test("keeps the branch and editor when an inline edit cannot send", () => {
+		hookMocks.actions.sendUserText.mockReturnValueOnce(false);
+		renderMessage({ message: createUserMessage(), isEditing: true });
+
+		fireEvent.click(screen.getByRole("button", { name: "Save message" }));
+
+		expect(hookMocks.actions.sendUserText).toHaveBeenCalledOnce();
+		expect(hookMocks.composerSubmitResult).toHaveBeenCalledWith(false);
+		expect(hookMocks.actions.selectBranchAnchor).not.toHaveBeenCalled();
+		expect(hookMocks.actions.setEditingMessageId).not.toHaveBeenCalled();
 	});
 
 	test("cancels an inline edit without changing the branch or sending", () => {

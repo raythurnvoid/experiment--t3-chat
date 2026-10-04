@@ -1876,7 +1876,7 @@ type AiChatMessageUser_Props = ComponentPropsWithRef<"div"> & {
 	onSelectedModeIdChange: AiChatComposer_Props["onSelectedModeIdChange"];
 	onEditStart: (args: { messageId: string }) => void;
 	onEditCancel: () => void;
-	onEditSubmit: (args: { value: string; attachments: FileUIPart[] }) => void;
+	onEditSubmit: (args: { value: string; attachments: FileUIPart[] }) => boolean;
 	onMessageRetrySend: (args: { threadId: string; messageId: string; value: string }) => void;
 	onSelectBranchAnchor: (threadId: string, anchorId: string) => void;
 };
@@ -2008,7 +2008,7 @@ const AiChatMessageUser = memo(function AiChatMessageUser(props: AiChatMessageUs
 	});
 
 	const handleEditSubmit = useFn<AiChatComposer_Props["onSubmit"]>((value, attachments) => {
-		onEditSubmit({ value, attachments });
+		return onEditSubmit({ value, attachments });
 	});
 	const handleEditValueChange = useFn<AiChatComposer_Props["onValueChange"]>(() => {});
 
@@ -2520,13 +2520,11 @@ export const AiChatMessage = memo(function AiChatMessage(props: AiChatMessage_Pr
 
 	const handleEditSubmit = useFn((args: { value: string; attachments: FileUIPart[] }) => {
 		if (!selectedThreadId || (!args.value && args.attachments.length === 0)) {
-			return;
+			return false;
 		}
 
-		// Keep the current branch while editing. Select the new branch only when sending.
-		actions.selectBranchAnchor(selectedThreadId, message?.metadata?.convexParentId ?? null);
 		// Pass the attachments explicitly: the user may have removed images while editing.
-		actions.sendUserText({
+		const didSend = actions.sendUserText({
 			threadId: selectedThreadId,
 			value: args.value,
 			options: {
@@ -2534,7 +2532,13 @@ export const AiChatMessage = memo(function AiChatMessage(props: AiChatMessage_Pr
 				attachments: args.attachments,
 			},
 		});
+		if (!didSend) {
+			return false;
+		}
+		// Let the pending edit choose the branch even when its parent is outside the loaded page.
+		actions.selectBranchAnchor(selectedThreadId, null);
 		actions.setEditingMessageId(selectedThreadId, null);
+		return true;
 	});
 
 	const handleMessageRegenerate = useFn((args: { threadId: string; messageId: string }) => {
