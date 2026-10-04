@@ -57,6 +57,19 @@ function run_check(configName = "tsconfig.json") {
 	return { status: result.status, output: result.stdout + result.stderr };
 }
 
+function write_app_configs() {
+	// Keep the real app configs, but use small libraries for these fixtures.
+	write_fixture("tsconfig.base.json", fs.readFileSync(path.join(appRoot, "tsconfig.app.json"), "utf8"));
+	write_fixture(
+		"tsconfig.app.json",
+		JSON.stringify({
+			extends: "./tsconfig.base.json",
+			compilerOptions: { types: [], lib: ["ES5"] },
+		}),
+	);
+	write_fixture("tsconfig.lint.json", fs.readFileSync(path.join(appRoot, "tsconfig.lint.json"), "utf8"));
+}
+
 describe("typecheck", () => {
 	beforeEach(() => {
 		fs.mkdirSync(scratchRoot, { recursive: true });
@@ -68,6 +81,64 @@ describe("typecheck", () => {
 	afterEach(() => {
 		expect(fixtureRoot.startsWith(scratchRoot + path.sep)).toBe(true);
 		fs.rmSync(fixtureRoot, { recursive: true, force: true });
+	});
+
+	test("leaves test errors to the full check and keeps separate caches", () => {
+		write_app_configs();
+		for (const fileName of [
+			"src/value.test.ts",
+			"src/value.browser.test.tsx",
+			"server/value.test-d.ts",
+			"shared/value.edge.bench.ts",
+			"src/test-stubs/value.ts",
+			"scripts/typecheck.scope.test.ts",
+		]) {
+			write_fixture(fileName, 'export const value: number = "test";\n');
+		}
+		for (let check = 0; check < 2; check++) {
+			const lint = run_check("tsconfig.lint.json");
+			expect(lint.status, lint.output).toBe(0);
+			expect(lint.output).toContain("Visible errors: 0, suppressed errors: 0");
+			const full = run_check("tsconfig.app.json");
+			expect(full.status, full.output).toBe(2);
+			expect(full.output).toContain("TS2322");
+			expect(full.output).toContain("Visible errors: 6, suppressed errors: 0");
+		}
+		for (const name of ["app", "lint"]) {
+			expect(
+				fs.statSync(path.join(fixtureRoot, `node_modules/.tmp/tsconfig.${name}.tsbuildinfo`)).size,
+			).toBeGreaterThan(0);
+		}
+	});
+
+	test("reports app errors in both checks and clears them after a fix", () => {
+		write_app_configs();
+		write_fixture("src/index.ts", 'export const value: number = "app";\n');
+		for (const config of ["tsconfig.lint.json", "tsconfig.app.json"]) {
+			const result = run_check(config);
+			expect(result.status, result.output).toBe(2);
+			expect(result.output).toContain("src/index.ts");
+			expect(result.output).toContain("TS2322");
+		}
+		write_fixture("src/index.ts", "export const value: number = 1;\n");
+		for (const config of ["tsconfig.lint.json", "tsconfig.app.json"]) {
+			expect(run_check(config).status).toBe(0);
+		}
+	});
+
+	test("checks excluded files imported by app code and tracks their changes", () => {
+		write_app_configs();
+		write_fixture("src/value.test.ts", "export const value = 1;\n");
+		write_fixture("src/index.ts", 'import { value } from "./value.test.ts";\nexport const result: number = value;\n');
+		expect(run_check("tsconfig.lint.json").status).toBe(0);
+		write_fixture("src/value.test.ts", 'export const value = "changed";\nexport const other: number = "test";\n');
+		for (const config of ["tsconfig.lint.json", "tsconfig.app.json"]) {
+			const result = run_check(config);
+			expect(result.status, result.output).toBe(2);
+			expect(result.output).toContain("src/index.ts");
+			expect(result.output).toContain("src/value.test.ts");
+			expect(result.output).toContain("Visible errors: 2, suppressed errors: 0");
+		}
 	});
 
 	test("skips vendor type errors on fresh and cached checks and emits only the cache", () => {

@@ -1,10 +1,10 @@
 import "./setup-env.test.ts";
 import { afterEach } from "vitest";
-import { convexTest } from "convex-test";
+import { convexTest, type TestConvexRoot } from "convex-test";
 import schema from "./schema.ts";
 import { faker } from "@faker-js/faker";
 import { make } from "../src/lib/utils.ts";
-import type { Doc, Id, TableNames } from "./_generated/dataModel";
+import type { DataModel, Doc, Id, TableNames } from "./_generated/dataModel";
 import { files_ROOT_ID } from "../server/files.ts";
 import type { MutationCtx } from "./_generated/server";
 import polar_test from "@convex-dev/polar/test";
@@ -68,11 +68,12 @@ afterEach(async () => {
 	}
 });
 
+// Keep the named return type; inferring it makes the full type check slower.
 export function test_convex(
 	options: {
 		transactionLimits?: Parameters<typeof convexTest>[0]["transactionLimits"];
 	} = {},
-) {
+): TestConvexRoot<DataModel> {
 	const t = convexTest({ schema, modules: convex_test_modules, transactionLimits: options.transactionLimits });
 	test_convex_instances.push(t);
 	const withIdentity = t.withIdentity.bind(t);
