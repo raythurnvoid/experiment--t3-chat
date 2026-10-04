@@ -88,7 +88,7 @@ Execute iteratively:
 3. Fix failures before broadening scope.
 4. Use subagents to review the slice when the surface is broad or security-sensitive.
 5. Repeat for the next slice.
-6. Run broader scoped lint/typecheck/tests after all slices pass, per the verification standard below.
+6. Run broader checks only when the verification standard below calls for them.
 7. Verify in the running app when the repo has one and the change reaches it, per the verification standard's running-app and deployment rules below. Not only for UI work: backend changes the app can reach deserve the same check. When nothing runnable exists or the change does not reach the app, skip this step and say so.
 8. For broad or security-sensitive work, finish independent subagent correctness reviews of the completed code and separate uniformity reviews. A slice's author must not be its only correctness reviewer. Follow the uniformity pass below, including its vocabulary audit on broad or multi-file diffs. Resolve findings and repeat affected checks after fixes.
 9. Re-read the final diff.
@@ -130,7 +130,7 @@ Verification should match risk and blast radius.
 - For schema, route, or deployment-adjacent changes: commands that push, deploy, or regenerate files change shared state, so do not run them as read-only analysis. Push or deploy only when the task requires that check and it is authorized: when the repo deploys through a dev watcher, the running watcher already covers the working tree; an explicit request to implement the change authorizes the configured dev target; shared or production targets always require asking. Follow the repo's own deployment skill or docs for the exact command when it has one. Whenever any check, at any point in any loop, needs a push that is not authorized: ask once, and if the run must continue without an answer, skip the check and say so.
 - For tooling or infrastructure packages: focused tests first, then package-scoped typecheck and tests when the change's blast radius justifies them.
 - For anything a running app can reach, UI or backend: verify in the app itself, not only in tests — exercise it through its native interface (browser for web apps, HTTP for services, the command line for CLIs), prefer the user's existing session where one exists, and assert observable output (for web apps, DOM state over screenshots) plus, when the change persists anything, persisted state (stored-data readback). Use the repo's QA or browser-automation skill when it has one; without a runnable app, this bullet does not apply.
-- For broad changes: decide which broader checks are justified by the affected surface. Always use focused checks first, then follow the repo's full lint and test rules. Run full lint whenever running a broad test pass. On broad or multi-file diffs in a git repo, run `git diff --check`; the vocabulary audit belongs to implementation step 8.
+- For broad changes: use broader checks when focused checks cannot cover the likely impact, or a failure points to a wider problem. Choose lint and test scope separately. Commit and push requests do not change the scope of verification. On broad or multi-file diffs in a git repo, run `git diff --check`; the vocabulary audit belongs to implementation step 8.
 
 Always say which checks ran and which were intentionally skipped.
 
