@@ -4946,21 +4946,16 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 			className={"FileNodeViewFolderExplorer" satisfies FileNodeViewFolderExplorer_ClassNames}
 		>
 			<div className={"FileNodeViewFolderExplorer-toolbar" satisfies FileNodeViewFolderExplorer_ClassNames}>
-				<FileNodeViewFolderFilterBar
-					ref={filterBarRef}
-					committedQuery={committedQuery}
-					viewQuery={viewQuery}
-					fields={columnCatalog.fields.filter(files_sort_field_is_valid)}
-					fieldsState={columnCatalog.state}
-					onActiveChange={onBarActiveChange}
-					onChange={onQueryChange}
-				/>
 				<div className={"FileNodeViewFolderExplorer-toolbar-actions" satisfies FileNodeViewFolderExplorer_ClassNames}>
-					{canSaveSort && (
-						<MyButton variant="outline" disabled={isSavingSort} onClick={onSaveSort}>
-							Save sort for everyone
-						</MyButton>
-					)}
+					<FileNodeViewFolderFilterBar
+						ref={filterBarRef}
+						committedQuery={committedQuery}
+						viewQuery={viewQuery}
+						fields={columnCatalog.fields.filter(files_sort_field_is_valid)}
+						fieldsState={columnCatalog.state}
+						onActiveChange={onBarActiveChange}
+						onChange={onQueryChange}
+					/>
 					<FileNodeViewFolderExplorerColumns
 						columns={columns}
 						open={columnsOpen}
@@ -4969,6 +4964,11 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 						onOpenChange={onColumnsOpenChange}
 					/>
 				</div>
+				{canSaveSort && (
+					<MyButton variant="outline" disabled={isSavingSort} onClick={onSaveSort}>
+						Save sort for everyone
+					</MyButton>
+				)}
 			</div>
 			{/* A sort change alone shows no notice. The header already shows the new sort, and the busy table
 			    keeps the old rows until the new ones arrive. */}

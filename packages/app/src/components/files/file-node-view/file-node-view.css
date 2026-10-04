@@ -859,10 +859,11 @@
 
 	.FileNodeViewFolderExplorer-toolbar-actions {
 		display: flex;
-		flex-wrap: wrap;
-		align-items: center;
+		/* Keep the filter and Columns together when Save sort wraps. */
+		flex: 1 1 320px;
+		min-width: 0;
+		align-items: end;
 		gap: 8px;
-		margin-inline-start: auto;
 	}
 
 	.FileNodeViewFolderExplorer-notice {

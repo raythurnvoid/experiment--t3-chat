@@ -20,8 +20,8 @@
 		flex-direction: column;
 		gap: 6px;
 
-		/* Take the free room of the toolbar, and wrap below the buttons on a narrow screen. */
-		flex: 1 1 320px;
+		/* Shrink the filter so the toolbar buttons stay on the same row. */
+		flex: 1;
 		min-width: 0;
 	}
 
