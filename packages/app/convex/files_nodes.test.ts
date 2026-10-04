@@ -101,6 +101,7 @@ import {
 import { files_sort_text_key, files_sort_key_of, type files_sort_Sort } from "../shared/files-sort.ts";
 import type { files_table_Filter } from "../shared/files-table.ts";
 import { files_subtree_ops_STEP_MAX_NODES } from "./files_subtree_ops.ts";
+import { files_updated_by_db_delete_for_node } from "./files_updated_by.ts";
 
 const generateTextMock = vi.hoisted(() => vi.fn());
 const streamTextMock = vi.hoisted(() => vi.fn());
@@ -9713,6 +9714,50 @@ describe("non-collaborative files", () => {
 			mode: { kind: "full", maxBytes: 100_000 },
 		});
 		expect(readBack?.content).toBe(nextText);
+	});
+
+	test("files_nodes_db_commit_text_replacement syncs the updater sort doc", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Replace Sync User",
+		});
+		test_setup_r2_capture();
+		const { nodeId } = await seed_non_collaborative_file({ t, db, path: "/replace-sync.md", markdown: "# Old\n" });
+		await t.run(async (ctx) => {
+			await files_updated_by_db_delete_for_node(ctx, { nodeId });
+			const doc = await ctx.db
+				.query("files_updated_by_docs")
+				.withIndex("by_fileNode", (q) => q.eq("fileNodeId", nodeId))
+				.first();
+			expect(doc).toBeNull();
+		});
+
+		// `replace_file_content` reaches the writer through `finalize_file_content_replacement`.
+		const saved = await asUser.action(api.files_nodes_content.replace_file_content, {
+			membershipId: db.membershipId,
+			nodeId,
+			text: "# New\n",
+		});
+		expect(saved._nay).toBeUndefined();
+
+		await t.run(async (ctx) => {
+			const node = await ctx.db.get("files_nodes", nodeId);
+			const doc = await ctx.db
+				.query("files_updated_by_docs")
+				.withIndex("by_fileNode", (q) => q.eq("fileNodeId", nodeId))
+				.first();
+			expect(doc, "files_nodes_db_commit_text_replacement syncs the updater doc").toMatchObject({
+				userId: node?.updatedBy,
+				name: node?.name,
+				parentId: node?.parentId,
+				nodeKind: node?.kind,
+			});
+			expect(doc?.archiveOperationId).toBeUndefined();
+		});
 	});
 
 	test.each([false, true])("last write wins for two saves (overlapping uploads: %s)", async (overlap) => {
@@ -20960,6 +21005,74 @@ describe("yjs_reserve_and_increment_last_sequence", () => {
 			}),
 		).rejects.toThrow(/compacted/);
 	});
+
+	test("files_nodes_db_fill_text_node_content syncs the updater sort doc", async () => {
+		const t = test_convex();
+		const { db, nodeId } = await create_reserve_fixture(t, "/fill-sync.md");
+		const staged = await t.mutation(internal.files_pending_updates.stage_trusted_yjs_update, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			nodeId,
+			kind: "public_fill",
+			update: files_u8_to_array_buffer(
+				encodeStateAsUpdate(files_yjs_doc_create_from_text({ rootKind: "rich_text", text: "fill" }) as YjsDoc),
+			),
+		});
+		if (staged._nay) throw new Error(staged._nay.message);
+		await t.run(async (ctx) => {
+			await files_updated_by_db_delete_for_node(ctx, { nodeId });
+			const doc = await ctx.db
+				.query("files_updated_by_docs")
+				.withIndex("by_fileNode", (q) => q.eq("fileNodeId", nodeId))
+				.first();
+			expect(doc).toBeNull();
+		});
+
+		// Its only caller is `public_api.publish_file_fill`, so call the writer the same way the
+		// reserve-gate test above does.
+		await t.run(async (ctx) => {
+			const fileNode = await ctx.db.get("files_nodes", nodeId);
+			if (!files_node_has_editable_yjs_state(fileNode)) {
+				throw new Error("Expected an editable file node");
+			}
+			const contentSnapshotAssetId = await ctx.db.insert("files_r2_assets", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				kind: "content_snapshot",
+				r2Bucket: "test-files-bucket",
+				size: 4,
+				createdBy: db.userId,
+				updatedAt: Date.now(),
+			});
+			await files_nodes_db_fill_text_node_content(ctx, {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				fileNode,
+				userId: db.userId,
+				textContent: "fill",
+				contentSnapshotAssetId,
+				contentSize: 4,
+				fillUpdateStageId: staged._yay.stageId,
+				expectedYjsLastSequenceId: fileNode.yjsLastSequenceId,
+			});
+		});
+
+		await t.run(async (ctx) => {
+			const node = await ctx.db.get("files_nodes", nodeId);
+			const doc = await ctx.db
+				.query("files_updated_by_docs")
+				.withIndex("by_fileNode", (q) => q.eq("fileNodeId", nodeId))
+				.first();
+			expect(doc, "files_nodes_db_fill_text_node_content syncs the updater doc").toMatchObject({
+				userId: node?.updatedBy,
+				name: node?.name,
+				parentId: node?.parentId,
+				nodeKind: node?.kind,
+			});
+			expect(doc?.archiveOperationId).toBeUndefined();
+		});
+	});
 });
 
 describe("files_nodes.get_file_next_yjs_update", () => {
@@ -21715,6 +21828,87 @@ describe("files_nodes_content.repair_file_yjs_state_from_visible_text", () => {
 				)
 				.collect();
 			expect(chunks.map((chunk) => chunk.plainTextChunk).join("")).toContain("Small again");
+		});
+	});
+
+	test("finalize_file_yjs_repair syncs the updater sort doc", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const r2Writes = new Map<string, BodyInit>();
+		generateUploadUrlSpy.mockImplementation(async (customKey?: string) => {
+			const key = customKey ?? "test-upload-key";
+			return { key, url: `https://r2.test/upload?key=${encodeURIComponent(key)}` };
+		});
+		vi.spyOn(R2.prototype, "getUrl").mockImplementation(
+			async (key: string) => `https://r2.test/object?key=${encodeURIComponent(key)}`,
+		);
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+				const urlString = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
+				if (urlString.startsWith("https://r2.test/upload") && init?.method === "PUT") {
+					const key = decodeURIComponent(urlString.slice("https://r2.test/upload?key=".length));
+					r2Writes.set(key, init.body ?? "");
+					return new Response(null, { status: 200 });
+				}
+				if (urlString.startsWith("https://r2.test/object?key=")) {
+					const key = decodeURIComponent(urlString.slice("https://r2.test/object?key=".length));
+					const body = r2Writes.get(key);
+					return body === undefined ? new Response(null, { status: 404 }) : new Response(body, { status: 200 });
+				}
+				return new Response(null, { status: 404 });
+			}),
+		);
+
+		const nodeId = await test_create_saved_text_file(t, {
+			membershipId: db.membershipId,
+			path: "/repair-sync.md",
+			textContent: "# Repair me\n\nBody text\n",
+		});
+		const materialized = await t.action(internal.files_nodes_content.materialize_file_content, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			nodeId,
+			userId: db.userId,
+			targetSequence: 0,
+		});
+		if (materialized._nay) {
+			throw new Error(materialized._nay.message);
+		}
+		await t.run(async (ctx) => {
+			await ctx.db.patch("files_nodes", nodeId, { contentShapeMismatchAt: Date.now() });
+			await files_updated_by_db_delete_for_node(ctx, { nodeId });
+			const doc = await ctx.db
+				.query("files_updated_by_docs")
+				.withIndex("by_fileNode", (q) => q.eq("fileNodeId", nodeId))
+				.first();
+			expect(doc).toBeNull();
+		});
+
+		// The repair action reaches the writer through `finalize_file_yjs_repair`.
+		const repaired = await t.action(internal.files_nodes_content.repair_file_yjs_state_from_visible_text, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			nodeId,
+			authorUserId: db.userId,
+		});
+		if (repaired._nay) {
+			throw new Error(repaired._nay.message);
+		}
+
+		await t.run(async (ctx) => {
+			const node = await ctx.db.get("files_nodes", nodeId);
+			const doc = await ctx.db
+				.query("files_updated_by_docs")
+				.withIndex("by_fileNode", (q) => q.eq("fileNodeId", nodeId))
+				.first();
+			expect(doc, "finalize_file_yjs_repair syncs the updater doc").toMatchObject({
+				userId: node?.updatedBy,
+				name: node?.name,
+				parentId: node?.parentId,
+				nodeKind: node?.kind,
+			});
+			expect(doc?.archiveOperationId).toBeUndefined();
 		});
 	});
 });

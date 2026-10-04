@@ -114,6 +114,7 @@ import {
 	files_share_links_db_delete_for_roots,
 	type files_share_links_CleanupState,
 } from "./files_share_links_db.ts";
+import { files_updated_by_db_delete_for_node, files_updated_by_db_sync_node } from "./files_updated_by.ts";
 import { files_db_authorize_file_read } from "./files_volume_access.ts";
 import {
 	access_control_db_authorize_membership,
@@ -749,6 +750,7 @@ export async function files_nodes_db_set_restricted_scope(args: {
 		nodeId: args.nodeId,
 		isRestrictedScopeRoot,
 	});
+	await files_updated_by_db_sync_node(ctx, { nodeId: args.nodeId });
 }
 
 // #region write-policy
@@ -1937,6 +1939,7 @@ async function db_insert_node(
 		}),
 	);
 	await files_media_validation_db_advance_version(ctx, args);
+	await files_updated_by_db_sync_node(ctx, { nodeId });
 
 	if (args.kind === "folder") {
 		return Result({ _yay: nodeId });
@@ -2916,6 +2919,7 @@ export async function files_nodes_db_hard_delete_node(
 	}
 
 	await files_share_links_db_delete_for_node(ctx, args);
+	await files_updated_by_db_delete_for_node(ctx, { nodeId: node._id });
 
 	const [
 		plainTextChunks,
@@ -5571,6 +5575,8 @@ export async function files_nodes_db_preflight_move(
 	let writeBytes = 0;
 	let writeDocumentCount = 0;
 
+	// Updater sort docs are not counted. Each node patch and inserted folder adds at most one doc
+	// write and two index reads.
 	function fitsWriteBudget(value: object) {
 		writeDocumentCount += 1;
 		writeBytes += files_get_utf8_byte_size(JSON.stringify(value)) + 128;
@@ -5749,6 +5755,10 @@ export async function files_nodes_db_apply_move(args: {
 			...metadata.patch,
 			...(metadata.parentKey ? { parentId: folderIds.get(metadata.parentKey)! } : {}),
 		});
+	// After all patches, so folders the move created have real ids. Replaced destinations are in
+	// `nodePatches` too.
+	for (const nodeId of [...folderIds.values(), ...plan.nodePatches.map((node) => node.id)])
+		await files_updated_by_db_sync_node(ctx, { nodeId });
 	if (plan.folderInserts.length > 0 || plan.nodePatches.length > 0)
 		await files_media_validation_db_advance_version(ctx, plan);
 
@@ -6011,6 +6021,7 @@ export async function files_nodes_db_archive_node(
 		kind: args.node.kind,
 		archiveOperationId: args.archiveOperationId,
 	});
+	await files_updated_by_db_sync_node(ctx, { nodeId: args.node._id });
 }
 
 /**
@@ -6066,6 +6077,7 @@ export async function files_nodes_db_restore_node(
 		parentId,
 		...(args.name !== args.node.name ? { name: args.name } : {}),
 	});
+	await files_updated_by_db_sync_node(ctx, { nodeId: args.node._id });
 }
 
 export async function files_nodes_db_archive_nodes(args: {

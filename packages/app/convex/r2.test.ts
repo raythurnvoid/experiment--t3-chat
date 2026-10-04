@@ -17,6 +17,7 @@ import {
 	r2_server_side_copy,
 } from "./r2_client.ts";
 import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
+import { files_updated_by_db_delete_for_node } from "./files_updated_by.ts";
 import {
 	organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 	organizations_GLOBAL_ORGANIZATION_ID,
@@ -4539,6 +4540,52 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 		expect(replayed.snapshots).toHaveLength(1);
 		expect(replayed.yjsSnapshots).toHaveLength(1);
 		expect(replayed.jobs).toEqual([]);
+	});
+
+	test("finalize_text_file_node_from_r2_assets syncs the updater sort doc", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const upload = await create_upload_fixture({
+			t,
+			db,
+			filename: "sync.md",
+			contentType: "text/markdown;charset=utf-8",
+		});
+		await confirm_upload_put({ t, upload, content: "# Sync conversion", messageId: "message_sync_conversion" });
+		// Delete after the upload steps, so only the finalize step can bring the doc back.
+		await t.run(async (ctx) => {
+			await files_updated_by_db_delete_for_node(ctx, { nodeId: upload.nodeId });
+			const doc = await ctx.db
+				.query("files_updated_by_docs")
+				.withIndex("by_fileNode", (q) => q.eq("fileNodeId", upload.nodeId))
+				.first();
+			expect(doc).toBeNull();
+		});
+
+		// The conversion action reaches the writer through `finalize_text_file_node_from_r2_assets`.
+		await t.action(internal.r2.finalize_uploaded_text_file, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			assetId: upload.assetId,
+			eventId: "event_sync_conversion",
+		});
+
+		await t.run(async (ctx) => {
+			const node = await ctx.db.get("files_nodes", upload.nodeId);
+			// The node now points at the published text, so the finalize step ran.
+			expect(node?.yjsSnapshotId).toEqual(expect.any(String));
+			const doc = await ctx.db
+				.query("files_updated_by_docs")
+				.withIndex("by_fileNode", (q) => q.eq("fileNodeId", upload.nodeId))
+				.first();
+			expect(doc, "finalize_text_file_node_from_r2_assets syncs the updater doc").toMatchObject({
+				userId: node?.updatedBy,
+				name: node?.name,
+				parentId: node?.parentId,
+				nodeKind: node?.kind,
+			});
+			expect(doc?.archiveOperationId).toBeUndefined();
+		});
 	});
 
 	test("finishes when the node locks during conversion", async () => {

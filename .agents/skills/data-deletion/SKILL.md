@@ -266,6 +266,12 @@ Current purge coverage includes:
   needed: user folders are archived, never hard-deleted, and a row keyed by an archived folder id
   comes back with the folder on restore. The GLOBAL GitHub and plugin trees that `delete_subtree_batch`
   removes belong to no membership, so no member can save a sort there.
+- `files_updated_by_docs` (updater sort docs: the folder table's copy of each node's updater
+  name). The workspace purge deletes them through the tenant prefix of
+  `by_org_ws_archive_parent_restricted_kind_sort`.
+  `files_nodes_db_hard_delete_node` deletes the node's doc. `delete_subtree_batch` and the volume
+  drain need no pass: their SYSTEM-authored nodes have no doc. The retained rebrand reset lists the
+  table before `files_nodes`.
 - `files_content_materialization_jobs` with Workpool job cancellation
 - `files_yjs_cleanup_tasks` in bounded batches before the generic asset pass. Hand each task to `files_nodes_db_handoff_yjs_cleanup_task`, which preserves its exact asset key and `putMayArriveUntil` in the deletion ledger before removing the task. The asset doc stays for the generic pass. Drain both pending-history and asset-only tasks.
 - `files_r2_assets` with upload-conversion job cancellation and durable exact-key R2 cleanup.

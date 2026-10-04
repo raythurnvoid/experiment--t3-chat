@@ -11,6 +11,7 @@ import { files_sort_text_key } from "../shared/files-sort.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import { access_control_db_authorize_membership, access_control_db_authorize_node } from "./access_control.ts";
 import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
+import { files_updated_by_db_sync_node } from "./files_updated_by.ts";
 import { r2_create_asset_key, r2_enqueue_object_deletion_job, r2_PUT_MAY_ARRIVE_MARGIN_MS } from "./r2_client.ts";
 
 async function db_has_write_permission(
@@ -185,6 +186,7 @@ export async function files_nodes_create_db_create_node(
 			updatedAt: now,
 		});
 		await files_media_validation_db_advance_version(ctx, membership);
+		await files_updated_by_db_sync_node(ctx, { nodeId });
 		if (index === missingNames.length - 1) {
 			return Result({ _yay: { nodeId } });
 		}

@@ -333,6 +333,8 @@ async function db_upsert_anagraphic(
 		await ctx.db.patch("users", args.userId, { anagraphic: anagraphicId });
 	}
 	if (previous?.displayName !== args.displayName) {
+		// Outside the member check: files can name an updater who has no memberships now.
+		await ctx.scheduler.runAfter(0, internal.files_updated_by.drain_user_name, { userId: args.userId });
 		const member = await ctx.db
 			.query("organizations_membership_lifetimes")
 			.withIndex("by_user", (q) => q.eq("userId", args.userId))
@@ -1455,6 +1457,8 @@ export const purge_deleted_user_tombstone = internalMutation({
 		}
 
 		await ctx.db.delete("users", args.userId);
+		// Files this user updated that still exist now sort as "Unknown".
+		await ctx.scheduler.runAfter(0, internal.files_updated_by.drain_user_name, { userId: args.userId });
 
 		return null;
 	},

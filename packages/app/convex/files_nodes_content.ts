@@ -186,6 +186,7 @@ import {
 	files_media_validation_db_versions_match,
 } from "./files_media_validation.ts";
 import { files_transfer_media_db_map_refs, files_transfer_media_dependencies_equal } from "./files_transfer_media.ts";
+import { files_updated_by_db_sync_node } from "./files_updated_by.ts";
 import {
 	files_media_dependencies_PAGE_SIZE,
 	files_media_dependencies_db_create,
@@ -5070,6 +5071,7 @@ export async function files_nodes_db_fill_text_node_content(
 			updatedAt: now,
 		}),
 	]);
+	await files_updated_by_db_sync_node(ctx, { nodeId: args.fileNode._id });
 
 	// A non-collaborative file leaves this undefined: its committed chunks belong to no sequence.
 	let yjsSequence: number | undefined;
@@ -6310,6 +6312,7 @@ export async function files_nodes_db_commit_text_replacement(
 		console.error(errorMessage, { dbWriteResult, nodeId: fileNode._id });
 		throw convex_error({ message: errorMessage, cause: dbWriteResult._nay });
 	}
+	await files_updated_by_db_sync_node(ctx, { nodeId: fileNode._id });
 }
 
 export const finalize_file_content_replacement = internalMutation({
@@ -6817,6 +6820,7 @@ async function db_install_file_content_replacement(
 		updatedBy: user._id,
 		updatedAt: now,
 	});
+	await files_updated_by_db_sync_node(ctx, { nodeId });
 	await files_media_validation_db_advance_version(ctx, membership);
 
 	// The committed text docs follow the node's new shape (the chunk helper reads it back).
@@ -7511,6 +7515,7 @@ export const restore_snapshot = internalMutation({
 					})
 				: Promise.resolve(null),
 		]);
+		await files_updated_by_db_sync_node(ctx, { nodeId: fileNode._id });
 
 		// Throw, do not return `_nay`: the asset patches above already pointed the node at the
 		// restored snapshot in this same mutation, so a returned refusal would commit that
@@ -8830,6 +8835,7 @@ export const finalize_file_yjs_repair = internalMutation({
 				cause: repairWriteResult._nay,
 			});
 		}
+		await files_updated_by_db_sync_node(ctx, { nodeId: args.nodeId });
 
 		// The previous content asset stays owned by its files_snapshots history doc under normal
 		// retention. Only the superseded Yjs asset is reference-checked and durably removed, in
@@ -9195,6 +9201,7 @@ export const set_file_non_collaborative = mutation({
 				nodeId: args.nodeId,
 			}),
 		]);
+		await files_updated_by_db_sync_node(ctx, { nodeId: args.nodeId });
 
 		// The update log can be long, so a bounded continuation deletes it and then removes the
 		// superseded Yjs snapshot asset. The updates are unreachable already: nothing points at
@@ -9759,6 +9766,7 @@ export const finalize_file_collaboration_enable = internalMutation({
 			// `_nay` would commit a node pointing at a document whose chunks failed to write.
 			throw convex_error({ message: errorMessage, cause: enableWriteResult._nay });
 		}
+		await files_updated_by_db_sync_node(ctx, { nodeId: args.nodeId });
 
 		// Review rebuilds the kept branches on this new document before they can be accepted.
 		await files_pending_updates_db_mark_content_for_rebase(ctx, {

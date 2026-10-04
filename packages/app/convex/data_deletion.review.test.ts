@@ -712,6 +712,7 @@ const review_workspace_tables = [
 	"files_snapshots",
 	"file_stats",
 	"files_folder_sorts",
+	"files_updated_by_docs",
 	"files_content_materialization_jobs",
 	"files_r2_assets",
 	"access_control_permission_grants",
@@ -1300,6 +1301,17 @@ async function review_seed_all_workspace_content(
 			sort: [{ field: "updated", direction: "desc" }],
 			updatedBy: args.userId,
 			updatedAt: now,
+		});
+		await ctx.db.insert("files_updated_by_docs", {
+			...tenant,
+			fileNodeId: node._id,
+			userId: args.userId,
+			parentId: "root",
+			nodeKind: "file",
+			isRestrictedScopeRoot: false,
+			name: node.name,
+			sortName: node.sortName,
+			sortUserName: "reviewer",
 		});
 		await ctx.db.insert("public_api_file_write_stages", {
 			...tenant,

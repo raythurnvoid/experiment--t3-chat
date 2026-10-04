@@ -2851,6 +2851,49 @@ const app_convex_schema = defineSchema({
 	}).index("by_organization_workspace_folder", ["organizationId", "workspaceId", "folderId"]),
 
 	/**
+	 * Updater sort docs: one per committed file node whose updater is a real user, so the folder table
+	 * can sort a folder's children by the updater's name. Each doc copies the node's parent, kind, name,
+	 * archive id and restricted-root flag, like `files_metadata_committed_sort_fields`. SYSTEM-authored
+	 * nodes have no doc.
+	 */
+	files_updated_by_docs: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		fileNodeId: v.id("files_nodes"),
+		/** The node's `updatedBy`. */
+		userId: v.id("users"),
+		/** Copy of the node's field. Unset while the node is active. */
+		archiveOperationId: v.optional(v.string()),
+		/** The node's parent folder. */
+		parentId: v.union(v.id("files_nodes"), v.literal("root")),
+		nodeKind: v.union(v.literal("folder"), v.literal("file")),
+		/** Copy of the node's flag. See `files_nodes.isRestrictedScopeRoot`. */
+		isRestrictedScopeRoot: v.boolean(),
+		name: v.string(),
+		/** `files_sort_text_key(name)`. */
+		sortName: v.string(),
+		/**
+		 * `files_sort_text_key(files_table_updated_by_text(displayName))`. Always set. A name change
+		 * updates it later, in batches.
+		 */
+		sortUserName: v.string(),
+	})
+		.index("by_fileNode", ["fileNodeId"])
+		.index("by_user_sort", ["userId", "sortUserName", "fileNodeId"])
+		// The children of one folder by updater name. The workspace purge uses its tenant prefix.
+		.index("by_org_ws_archive_parent_restricted_kind_sort", [
+			"organizationId",
+			"workspaceId",
+			"archiveOperationId",
+			"parentId",
+			"isRestrictedScopeRoot",
+			"nodeKind",
+			"sortUserName",
+			"sortName",
+			"name",
+		]),
+
+	/**
 	 * "Anyone with the link can view" for one file. At most one doc per file. Turning the link off
 	 * deletes the doc, and turning it on again makes a new token, so an old link never works again.
 	 * Lifecycle events that change who can see the file delete the doc too (`files_share_links_db.ts`).

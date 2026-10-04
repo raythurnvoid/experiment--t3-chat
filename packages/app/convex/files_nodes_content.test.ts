@@ -31,6 +31,7 @@ import { files_pending_nodes_db_create, files_pending_nodes_db_discard } from ".
 import { files_private_storage_db_reserve } from "./files_private_storage.ts";
 import { activities_db_require_by_source_id, activities_db_start } from "./activities_db.ts";
 import { organizations_membership_lifetimes_db_ensure } from "./organizations_membership_lifetimes.ts";
+import { files_updated_by_db_delete_for_node } from "./files_updated_by.ts";
 import type { Doc, Id } from "./_generated/dataModel.js";
 
 const objects = new Map<string, BodyInit>();
@@ -2132,6 +2133,86 @@ describe("cleanup_file_yjs_task", () => {
 		});
 	});
 
+	test("set_file_non_collaborative syncs the updater sort doc", async () => {
+		const { t, db, asUser, nodeId } = await create_file_fixture();
+		await t.run(async (ctx) => {
+			await files_updated_by_db_delete_for_node(ctx, { nodeId });
+			const doc = await ctx.db
+				.query("files_updated_by_docs")
+				.withIndex("by_fileNode", (q) => q.eq("fileNodeId", nodeId))
+				.first();
+			expect(doc).toBeNull();
+		});
+
+		expect(
+			(
+				await asUser.mutation(api.files_nodes_content.set_file_non_collaborative, {
+					membershipId: db.membershipId,
+					nodeId,
+					acknowledgeDropCollaborativeHistory: true,
+				})
+			)._nay,
+		).toBeUndefined();
+
+		await t.run(async (ctx) => {
+			const node = await ctx.db.get("files_nodes", nodeId);
+			const doc = await ctx.db
+				.query("files_updated_by_docs")
+				.withIndex("by_fileNode", (q) => q.eq("fileNodeId", nodeId))
+				.first();
+			expect(doc, "set_file_non_collaborative syncs the updater doc").toMatchObject({
+				userId: node?.updatedBy,
+				name: node?.name,
+				parentId: node?.parentId,
+				nodeKind: node?.kind,
+			});
+			expect(doc?.archiveOperationId).toBeUndefined();
+		});
+	});
+
+	test("finalize_file_collaboration_enable syncs the updater sort doc", async () => {
+		const { t, db, asUser, nodeId } = await create_file_fixture();
+		expect(
+			(
+				await asUser.mutation(api.files_nodes_content.set_file_non_collaborative, {
+					membershipId: db.membershipId,
+					nodeId,
+					acknowledgeDropCollaborativeHistory: true,
+				})
+			)._nay,
+		).toBeUndefined();
+		// Delete after the OFF step, so only the ON step can bring the doc back.
+		await t.run(async (ctx) => {
+			await files_updated_by_db_delete_for_node(ctx, { nodeId });
+			const doc = await ctx.db
+				.query("files_updated_by_docs")
+				.withIndex("by_fileNode", (q) => q.eq("fileNodeId", nodeId))
+				.first();
+			expect(doc).toBeNull();
+		});
+
+		// `set_file_collaborative` reaches the writer through `finalize_file_collaboration_enable`.
+		expect(
+			(await asUser.action(api.files_nodes_content.set_file_collaborative, { membershipId: db.membershipId, nodeId }))
+				._nay,
+		).toBeUndefined();
+
+		await t.run(async (ctx) => {
+			const node = await ctx.db.get("files_nodes", nodeId);
+			const doc = await ctx.db
+				.query("files_updated_by_docs")
+				.withIndex("by_fileNode", (q) => q.eq("fileNodeId", nodeId))
+				.first();
+			expect(doc, "finalize_file_collaboration_enable syncs the updater doc").toMatchObject({
+				userId: node?.updatedBy,
+				name: node?.name,
+				parentId: node?.parentId,
+				nodeKind: node?.kind,
+			});
+			expect(doc?.archiveOperationId).toBeUndefined();
+		});
+	});
+
 	test("asset-only cleanup preserves an asset referenced by a live snapshot", async () => {
 		const { t, db, nodeId, pointers } = await create_file_fixture();
 		const task = await t.run(async (ctx) => {
@@ -2429,6 +2510,104 @@ describe("materialize_file_content", () => {
 });
 
 describe("restore_snapshot_r2", () => {
+	test("restore_snapshot syncs the updater sort doc", async () => {
+		vi.useFakeTimers();
+		const { t, db, asUser, nodeId, snapshotId } = await create_file_fixture();
+		await t.run(async (ctx) => {
+			await files_updated_by_db_delete_for_node(ctx, { nodeId });
+			const doc = await ctx.db
+				.query("files_updated_by_docs")
+				.withIndex("by_fileNode", (q) => q.eq("fileNodeId", nodeId))
+				.first();
+			expect(doc).toBeNull();
+		});
+
+		// A same-shape text version on a collaborative file goes through `restore_snapshot`.
+		expect(
+			(
+				await asUser.action(api.files_nodes_content.restore_snapshot_r2, {
+					membershipId: db.membershipId,
+					nodeId,
+					snapshotId,
+					sessionId: "restore-sync",
+				})
+			)._nay,
+		).toBeUndefined();
+
+		await t.run(async (ctx) => {
+			const node = await ctx.db.get("files_nodes", nodeId);
+			const doc = await ctx.db
+				.query("files_updated_by_docs")
+				.withIndex("by_fileNode", (q) => q.eq("fileNodeId", nodeId))
+				.first();
+			expect(doc, "restore_snapshot syncs the updater doc").toMatchObject({
+				userId: node?.updatedBy,
+				name: node?.name,
+				parentId: node?.parentId,
+				nodeKind: node?.kind,
+			});
+			expect(doc?.archiveOperationId).toBeUndefined();
+		});
+	});
+
+	test("db_install_file_content_replacement syncs the updater sort doc", async () => {
+		vi.useFakeTimers();
+		const { t, db, asUser, nodeId, snapshotId } = await create_file_fixture();
+		expect(
+			(
+				await asUser.mutation(api.files_nodes_content.set_file_non_collaborative, {
+					membershipId: db.membershipId,
+					nodeId,
+					acknowledgeDropCollaborativeHistory: true,
+				})
+			)._nay,
+		).toBeUndefined();
+		const size = await t.run(async (ctx) => {
+			const snapshot = await ctx.db.get("files_snapshots", snapshotId);
+			await ctx.db.patch("files_snapshots", snapshotId, { yjsRootKind: null, collaborationEnabled: false });
+			return (await ctx.db.get("files_r2_assets", snapshot!.assetId))!.size;
+		});
+		vi.spyOn(r2_server_side_copy, "copy_object").mockResolvedValue({ outcome: "copied", size, etag: "stored-sync" });
+		// Delete after the OFF step, so only the restore can bring the doc back.
+		await t.run(async (ctx) => {
+			await files_updated_by_db_delete_for_node(ctx, { nodeId });
+			const doc = await ctx.db
+				.query("files_updated_by_docs")
+				.withIndex("by_fileNode", (q) => q.eq("fileNodeId", nodeId))
+				.first();
+			expect(doc).toBeNull();
+		});
+
+		// A stored version goes through `finalize_snapshot_restore_replacement`, which installs it.
+		expect(
+			(
+				await asUser.action(api.files_nodes_content.restore_snapshot_r2, {
+					membershipId: db.membershipId,
+					nodeId,
+					snapshotId,
+					sessionId: "stored-sync",
+				})
+			)._nay,
+		).toBeUndefined();
+
+		await t.run(async (ctx) => {
+			const node = await ctx.db.get("files_nodes", nodeId);
+			// Only the install path turns the file into stored bytes.
+			expect(node?.textKind).toBeNull();
+			const doc = await ctx.db
+				.query("files_updated_by_docs")
+				.withIndex("by_fileNode", (q) => q.eq("fileNodeId", nodeId))
+				.first();
+			expect(doc, "db_install_file_content_replacement syncs the updater doc").toMatchObject({
+				userId: node?.updatedBy,
+				name: node?.name,
+				parentId: node?.parentId,
+				nodeKind: node?.kind,
+			});
+			expect(doc?.archiveOperationId).toBeUndefined();
+		});
+	});
+
 	test("uses the saved type for download and same-shape restore after the current type changes", async () => {
 		vi.useFakeTimers();
 		const { t, db, asUser, nodeId, snapshotId, pointers } = await create_file_fixture();

@@ -1221,6 +1221,17 @@ async function db_purge_organization_workspace_content_batch(
 		return { done: false, deletedCount: folderSorts.length };
 	}
 
+	const updatedByDocs = await ctx.db
+		.query("files_updated_by_docs")
+		.withIndex("by_org_ws_archive_parent_restricted_kind_sort", (q) =>
+			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
+		)
+		.take(batchSize);
+	if (updatedByDocs.length > 0) {
+		await Promise.all(updatedByDocs.map((doc) => ctx.db.delete("files_updated_by_docs", doc._id)));
+		return { done: false, deletedCount: updatedByDocs.length };
+	}
+
 	// Cancel materialization jobs before deleting their tracking docs.
 	const materializationJobs = await ctx.db
 		.query("files_content_materialization_jobs")
@@ -3027,6 +3038,8 @@ async function db_finalize_deleted_user(
 			...(user.anagraphic ? [ctx.db.delete("users_anagraphics", user.anagraphic)] : []),
 			ctx.db.delete("users", user._id),
 		]);
+		// Files this user updated that still exist now sort as "Unknown".
+		await ctx.scheduler.runAfter(0, internal.files_updated_by.drain_user_name, { userId: user._id });
 		return;
 	}
 

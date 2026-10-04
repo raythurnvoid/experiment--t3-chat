@@ -62,6 +62,7 @@ import type * as files_sharing from "../files_sharing.js";
 import type * as files_subtree_ops from "../files_subtree_ops.js";
 import type * as files_transfer from "../files_transfer.js";
 import type * as files_transfer_media from "../files_transfer_media.js";
+import type * as files_updated_by from "../files_updated_by.js";
 import type * as files_visible from "../files_visible.js";
 import type * as files_volume_access from "../files_volume_access.js";
 import type * as files_write_policy_runs from "../files_write_policy_runs.js";
@@ -187,6 +188,7 @@ declare const fullApi: ApiFromModules<{
   files_subtree_ops: typeof files_subtree_ops;
   files_transfer: typeof files_transfer;
   files_transfer_media: typeof files_transfer_media;
+  files_updated_by: typeof files_updated_by;
   files_visible: typeof files_visible;
   files_volume_access: typeof files_volume_access;
   files_write_policy_runs: typeof files_write_policy_runs;

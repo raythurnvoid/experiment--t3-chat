@@ -858,6 +858,9 @@ resolve the reader with `files_nodes_db_get_tree_reader` and filter every row wi
   `content.write` on the folder and a folder whose write policy lets the user write. At the root only
   the workspace permission applies. The saved sort is shared by every member; a reader's own sort is
   never stored.
+- No query returns `files_updated_by_docs` (updater sort docs) yet. Their name keys can lag behind a
+  name change until `drain_user_name` reaches them; that delay is accepted, because cells read the
+  live name.
 - `get_folder_readme` uses the same folder gate as `list_tree_children`. Known limit: it reads at most
   50 active files per case variant of the prefix `rea`, so a folder with 50+ names like `reaction-*.md`
   before `README.md` shows no README in the Files table.

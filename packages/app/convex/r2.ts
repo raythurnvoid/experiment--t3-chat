@@ -70,6 +70,7 @@ import { db_insert_file_text_content } from "./files_nodes_content.ts";
 import { files_pending_nodes_db_resolve_read_target } from "./files_pending_nodes.ts";
 import { files_visible_db_create_reader } from "./files_visible.ts";
 import { files_db_resolve_scope } from "./files_scopes.ts";
+import { files_updated_by_db_sync_node } from "./files_updated_by.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
 // Does NOT work for http actions (see http.ts). Do not keep request state in module-level values.
@@ -987,6 +988,7 @@ async function db_finalize_editable_text_file_node_from_r2_assets(
 			collaborationEnabled: args.yjsSnapshot !== null,
 		}),
 	]);
+	await files_updated_by_db_sync_node(ctx, { nodeId: args.fileNodeId });
 
 	return Result({ _yay: null });
 }

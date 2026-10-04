@@ -411,6 +411,13 @@ folder (`FileNodeViewPrivateFolder`) still lists its children through `useFilesV
 - A `file.updated_by` cell reads `users.get_anagraphic` for the row's updater and shows
   `files_table_updated_by_text`: the name, or "Unknown" when no name is found. It shows
   "Loading…" with the `loading` state until the query answers, never the raw user id.
+- `files_updated_by_docs` keeps one updater sort doc per file node with a real user updater: its
+  parent, kind, name, archive id, restricted-root flag and the updater's name key. Nothing reads
+  it yet; the updater sort comes later. Every node write calls `files_updated_by_db_sync_node`
+  after it: insert, move, archive, restore, restrict, the member create door, the content writers
+  in `files_nodes_content.ts` and the R2 text finalize. Hard delete removes the doc. A name change
+  runs `internal.files_updated_by.drain_user_name`, which patches the user's stale keys in
+  batches, so the key can lag behind the name a cell shows.
 - Metadata display keeps at most 100 active targets and 700 value page descriptors. One observer
   uses the editor scroll box with a 400px vertical margin. Focused rows come first, then visible
   rows, then nearby rows. Scrolling and resizing update that order. Offscreen payloads are dropped.
