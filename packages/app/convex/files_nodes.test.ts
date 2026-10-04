@@ -13721,6 +13721,304 @@ describe("list_tree_children_sorted", () => {
 		expect(first.page[0]).not.toHaveProperty("sortFieldValue");
 	});
 
+	test("a pinned missing page keeps its rows and its exact end, and the next page is unchanged", async () => {
+		const { t, db, asOwner, parentId, insert_child } = await seed_folder_table();
+		const ids = new Map<string, Id<"files_nodes">>();
+		for (const name of ["d.md", "f.md", "h.md", "j.md"]) {
+			ids.set(name, await insert_child({ name, kind: "file", updatedAt: 1 }));
+		}
+		const read = (paginationOpts: { numItems: number; cursor: string | null; endCursor?: string }) =>
+			asOwner.query(api.files_nodes.list_tree_children_sorted, {
+				membershipId: db.membershipId,
+				parentId,
+				kind: "file",
+				sort: [{ field: "metadata.status", direction: "asc" }],
+				filter: null,
+				workLimit: 1000,
+				segment: "missing",
+				paginationOpts,
+			});
+		const names = (result: { page: Array<{ name: string }> }) => result.page.map((row) => row.name);
+
+		const first = await read({ numItems: 2, cursor: null });
+		expect(names(first)).toEqual(["d.md", "f.md"]);
+		// A live page never asks the hook to split.
+		expect(first).not.toHaveProperty("pageStatus");
+		expect(first).not.toHaveProperty("splitCursor");
+		const end = first.continueCursor;
+		expect(names(await read({ numItems: 2, cursor: end }))).toEqual(["h.md", "j.md"]);
+
+		for (const name of ["a.md", "b.md", "c.md"]) {
+			ids.set(name, await insert_child({ name, kind: "file", updatedAt: 1 }));
+		}
+		const pinned = await read({ numItems: 2, cursor: null, endCursor: end });
+		expect(names(pinned)).toEqual(["a.md", "b.md", "c.md", "d.md", "f.md"]);
+		expect(pinned).toMatchObject({ continueCursor: end, isDone: false });
+		expect(names(await read({ numItems: 2, cursor: end }))).toEqual(["h.md", "j.md"]);
+
+		// The end row itself can go: the page keeps the exact end and reads no row after it.
+		await t.run((ctx) => ctx.db.delete("files_nodes", ids.get("f.md")!));
+		const shrunk = await read({ numItems: 2, cursor: null, endCursor: end });
+		expect(names(shrunk)).toEqual(["a.md", "b.md", "c.md", "d.md"]);
+		expect(shrunk).toMatchObject({ continueCursor: end, isDone: false });
+
+		await t.run(async (ctx) => {
+			for (const name of ["a.md", "b.md", "c.md", "d.md"]) await ctx.db.delete("files_nodes", ids.get(name)!);
+		});
+		expect(await read({ numItems: 2, cursor: null, endCursor: end })).toMatchObject({
+			page: [],
+			continueCursor: end,
+			isDone: false,
+		});
+	});
+
+	test("a pinned first missing page stays inside its folder and kind", async () => {
+		const { t, db, asOwner, parentId, insert_child } = await seed_folder_table();
+		// Files sort before folders in both indexes, and these files' field docs sort before the folders'.
+		for (const name of ["a.md", "b.md"]) {
+			const nodeId = await insert_child({ name, kind: "file", updatedAt: 1 });
+			await t.run(async (ctx) =>
+				files_metadata_db_write_entries(ctx, {
+					fileNode: (await ctx.db.get("files_nodes", nodeId))!,
+					entries: [{ key: "status", value: "ready" }],
+				}),
+			);
+		}
+		await insert_child({ name: "c.md", kind: "file", updatedAt: 1 });
+		for (const name of ["m", "n"]) await insert_child({ name, kind: "folder", updatedAt: 1 });
+		const read = (paginationOpts: { numItems: number; cursor: string | null; endCursor?: string }) =>
+			asOwner.query(api.files_nodes.list_tree_children_sorted, {
+				membershipId: db.membershipId,
+				parentId,
+				kind: "folder",
+				sort: [{ field: "metadata.status", direction: "asc" }],
+				filter: null,
+				workLimit: 1000,
+				segment: "missing",
+				paginationOpts,
+			});
+
+		const first = await read({ numItems: 1, cursor: null });
+		const pinned = await read({ numItems: 1, cursor: null, endCursor: first.continueCursor });
+		expect(pinned.page.map((row) => [row.kind, row.name])).toEqual([["folder", "m"]]);
+		expect(pinned.continueCursor).toBe(first.continueCursor);
+	});
+
+	test("a descending metadata sort pins its missing pages in Name order", async () => {
+		const { db, asOwner, parentId, insert_child } = await seed_folder_table();
+		for (const name of ["a.md", "b.md", "c.md", "d.md", "e.md"])
+			await insert_child({ name, kind: "file", updatedAt: 1 });
+		const read = (paginationOpts: { numItems: number; cursor: string | null; endCursor?: string }) =>
+			asOwner.query(api.files_nodes.list_tree_children_sorted, {
+				membershipId: db.membershipId,
+				parentId,
+				kind: "file",
+				sort: [{ field: "metadata.status", direction: "desc" }],
+				filter: null,
+				workLimit: 1000,
+				segment: "missing",
+				paginationOpts,
+			});
+
+		const first = await read({ numItems: 2, cursor: null });
+		const second = await read({ numItems: 2, cursor: first.continueCursor });
+		const pinnedFirst = await read({ numItems: 2, cursor: null, endCursor: first.continueCursor });
+		const pinnedSecond = await read({ numItems: 2, cursor: first.continueCursor, endCursor: second.continueCursor });
+		expect(pinnedFirst.page.map((row) => row.name)).toEqual(["a.md", "b.md"]);
+		expect(pinnedFirst.continueCursor).toBe(first.continueCursor);
+		expect(pinnedSecond.page.map((row) => row.name)).toEqual(["c.md", "d.md"]);
+		expect(pinnedSecond.continueCursor).toBe(second.continueCursor);
+	});
+
+	test("a pinned missing page that outgrew its work limit splits until every half fits", async () => {
+		const { t, db, asOwner, parentId, insert_child, walk } = await seed_folder_table();
+		for (const name of ["b.md", "c.md", "d.md", "e.md", "f.md", "h.md"]) {
+			const nodeId = await insert_child({ name, kind: "file", updatedAt: 1 });
+			if (name === "c.md" || name === "e.md")
+				await t.run(async (ctx) =>
+					files_metadata_db_write_entries(ctx, {
+						fileNode: (await ctx.db.get("files_nodes", nodeId))!,
+						entries: [{ key: "status", value: "ready" }],
+					}),
+				);
+		}
+		const read = (paginationOpts: { numItems: number; cursor: string | null; endCursor?: string }) =>
+			asOwner.query(api.files_nodes.list_tree_children_sorted, {
+				membershipId: db.membershipId,
+				parentId,
+				kind: "file",
+				sort: [{ field: "metadata.status", direction: "asc" }],
+				filter: null,
+				workLimit: 6,
+				segment: "missing",
+				paginationOpts,
+			});
+		// Read a pinned range like the convex-helpers hook: split it until each half reaches its end.
+		const read_range = async (cursor: string | null, end: string, depth = 0): Promise<string[]> => {
+			// A split that does not shrink the range would recurse forever, past the test timeout.
+			if (depth > 10) throw new Error("The pinned range did not stop splitting");
+			const result = await read({ numItems: 50, cursor, endCursor: end });
+			if (result.pageStatus === "SplitRequired") {
+				return [
+					...(await read_range(cursor, result.splitCursor!, depth + 1)),
+					...(await read_range(result.splitCursor!, end, depth + 1)),
+				];
+			}
+			expect(result).toMatchObject({ continueCursor: end, isDone: false });
+			return result.page.map((row) => row.name);
+		};
+
+		const first = await read({ numItems: 50, cursor: null });
+		expect(first.isDone).toBe(false);
+		const end = first.continueCursor;
+		for (const name of ["a1.md", "b1.md", "c1.md"]) await insert_child({ name, kind: "file", updatedAt: 1 });
+		const pinned = await read({ numItems: 50, cursor: null, endCursor: end });
+		expect(pinned.pageStatus).toBe("SplitRequired");
+		expect(pinned.splitCursor).toEqual(expect.any(String));
+		expect(pinned.splitCursor).not.toBe(end);
+		expect(pinned.continueCursor).toBe(end);
+
+		const rows = await read_range(null, end);
+		let cursor = end;
+		for (let index = 0; index < 20; index++) {
+			const result = await read({ numItems: 50, cursor });
+			rows.push(...result.page.map((row) => row.name));
+			if (result.isDone) break;
+			cursor = result.continueCursor;
+		}
+		const full = await walk({
+			as: asOwner,
+			membershipId: db.membershipId,
+			kind: "file",
+			sort: { field: "metadata.status", direction: "asc" },
+			segment: "missing",
+			numItems: 50,
+		});
+		expect(rows).toEqual(full.flat());
+		expect(rows).toEqual(["a1.md", "b.md", "b1.md", "c1.md", "d.md", "f.md", "h.md"]);
+	});
+
+	test("a pinned missing page splits after a complete candidate that gives no row", async () => {
+		const { t, db, asOwner, parentId, insert_child } = await seed_folder_table();
+		for (const name of ["z", "zz"]) await insert_child({ name, kind: "folder", updatedAt: 1 });
+		const read = (paginationOpts: { numItems: number; cursor: string | null; endCursor?: string }) =>
+			asOwner.query(api.files_nodes.list_tree_children_sorted, {
+				membershipId: db.membershipId,
+				parentId,
+				kind: "folder",
+				sort: [{ field: "metadata.status", direction: "asc" }],
+				filter: null,
+				workLimit: 2,
+				segment: "missing",
+				paginationOpts,
+			});
+
+		const first = await read({ numItems: 1, cursor: null });
+		expect(first.page.map((row) => row.name)).toEqual(["z"]);
+		const end = first.continueCursor;
+		const a = await insert_child({ name: "a", kind: "folder", updatedAt: 1 });
+		await t.run(async (ctx) =>
+			files_metadata_db_write_entries(ctx, {
+				fileNode: (await ctx.db.get("files_nodes", a))!,
+				entries: [{ key: "status", value: "ready" }],
+			}),
+		);
+
+		// Node "a" and its field doc use both work units. "a" completes, but it is not a missing row.
+		const pinned = await read({ numItems: 1, cursor: null, endCursor: end });
+		expect(pinned).toMatchObject({
+			page: [],
+			scannedCount: 1,
+			pageStatus: "SplitRequired",
+			continueCursor: end,
+			isDone: false,
+		});
+		const split = pinned.splitCursor!;
+		expect(JSON.parse(split).after.slice(0, 2)).toEqual(["a", "a"]);
+		const firstHalf = await read({ numItems: 1, cursor: null, endCursor: split });
+		// "a" is the half's own end, so a cap that stops right there still reaches the end.
+		expect(firstHalf.pageStatus).toBeUndefined();
+		expect(firstHalf.continueCursor).toBe(split);
+		const secondHalf = await read({ numItems: 1, cursor: split, endCursor: end });
+		const tail = await read({ numItems: 1, cursor: end });
+		expect([...firstHalf.page, ...secondHalf.page, ...tail.page].map((row) => row.name)).toEqual(["z", "zz"]);
+	});
+
+	test("rejects a bad endCursor with InvalidCursor data", async () => {
+		const { db, asOwner, parentId, insert_child } = await seed_folder_table();
+		for (const name of ["a.md", "b.md", "c.md"]) await insert_child({ name, kind: "file", updatedAt: 1 });
+		const read = (
+			paginationOpts: { numItems: number; cursor: string | null; endCursor?: string },
+			field = "metadata.status",
+		) =>
+			asOwner.query(api.files_nodes.list_tree_children_sorted, {
+				membershipId: db.membershipId,
+				parentId,
+				kind: "file",
+				sort: [{ field, direction: "asc" }],
+				filter: null,
+				workLimit: 1000,
+				segment: "missing",
+				paginationOpts,
+			});
+		const first = await read({ numItems: 1, cursor: null });
+		const second = await read({ numItems: 1, cursor: first.continueCursor });
+		const other = await read({ numItems: 1, cursor: null }, "metadata.other");
+		const { scope } = JSON.parse(first.continueCursor);
+
+		for (const [cursor, endCursor] of [
+			[null, other.continueCursor],
+			[null, "not-json"],
+			[null, JSON.stringify({ scope, after: ["a.md", "a.md"] })],
+			[first.continueCursor, first.continueCursor],
+			[second.continueCursor, first.continueCursor],
+		] as const)
+			await expect(read({ numItems: 1, cursor, endCursor })).rejects.toThrow("InvalidCursor");
+		// Production hides the message, so the hook also reads these data fields.
+		await expect(read({ numItems: 1, cursor: null, endCursor: "not-json" })).rejects.toMatchObject({
+			data: { isConvexSystemError: true, paginationError: "InvalidCursor" },
+		});
+	});
+
+	test("a missing page checks the field doc of a new node that reuses the cursor's name", async () => {
+		const { t, db, asOwner, parentId, insert_child } = await seed_folder_table();
+		const oldA = await insert_child({ name: "a", kind: "folder", updatedAt: 1 });
+		for (const name of ["b", "c"]) await insert_child({ name, kind: "folder", updatedAt: 1 });
+		const read = (paginationOpts: { numItems: number; cursor: string | null; endCursor?: string }) =>
+			asOwner.query(api.files_nodes.list_tree_children_sorted, {
+				membershipId: db.membershipId,
+				parentId,
+				kind: "folder",
+				sort: [{ field: "metadata.status", direction: "asc" }],
+				filter: null,
+				workLimit: 1000,
+				segment: "missing",
+				paginationOpts,
+			});
+		const first = await read({ numItems: 1, cursor: null });
+		const second = await read({ numItems: 1, cursor: first.continueCursor });
+		expect([...first.page, ...second.page].map((row) => row.name)).toEqual(["a", "b"]);
+
+		// Archive the old "a" and create a new "a". Its full suffix follows the old cursor, but its field doc
+		// has the same name pair.
+		await t.run((ctx) => ctx.db.patch("files_nodes", oldA, { archiveOperationId: "archive-test" }));
+		const newA = await insert_child({ name: "a", kind: "folder", updatedAt: 1 });
+		const set_status = (entries: Array<{ key: string; value: string }>) =>
+			t.run(async (ctx) =>
+				files_metadata_db_write_entries(ctx, { fileNode: (await ctx.db.get("files_nodes", newA))!, entries }),
+			);
+		const read_ids = async () => [
+			(await read({ numItems: 2, cursor: first.continueCursor })).page.map((row) => row._id),
+			(await read({ numItems: 2, cursor: first.continueCursor, endCursor: second.continueCursor })).page.map(
+				(row) => row._id,
+			),
+		];
+		await set_status([{ key: "status", value: "ready" }]);
+		for (const ids of await read_ids()) expect(ids).not.toContain(newA);
+		await set_status([]);
+		for (const ids of await read_ids()) expect(ids[0]).toBe(newA);
+	});
+
 	test("large metadata values keep native byte splits and leave display values out of the page", async () => {
 		const { t, db, asOwner, parentId, insert_child } = await seed_folder_table({ transactionLimits: true });
 		const names = Array.from({ length: 8 }, (_, index) => `large-${index}.md`);
@@ -14048,6 +14346,60 @@ describe("list_tree_children_sorted filter", () => {
 			paginationOpts: { numItems: 1, cursor: missing.continueCursor },
 		});
 		expect(next.page.map((row) => row.name)).toEqual(["b.md"]);
+	});
+
+	test("a filtered descending page pins its exact range", async () => {
+		const { db, asOwner, parentId, insert_child } = await seed_folder_table();
+		for (const [name, updatedAt] of [
+			["task-1.md", 10],
+			["other-1.md", 15],
+			["task-2.md", 20],
+			["other-2.md", 25],
+			["task-3.md", 30],
+			["other-3.md", 35],
+			["task-4.md", 40],
+			["task-5.md", 50],
+		] as const) {
+			await insert_child({ name, kind: "file", updatedAt });
+		}
+		const read = (paginationOpts: { numItems: number; cursor: string | null; endCursor?: string }, workLimit = 50) =>
+			asOwner.query(api.files_nodes.list_tree_children_sorted, {
+				membershipId: db.membershipId,
+				parentId,
+				kind: "file",
+				sort: [{ field: "updated", direction: "desc" }],
+				filter: { kind: "name", field: "name", op: "contains", value: "task" },
+				workLimit,
+				segment: "value",
+				paginationOpts,
+			});
+		const names = (result: { page: Array<{ name: string }> }) => result.page.map((row) => row.name);
+
+		const first = await read({ numItems: 2, cursor: null });
+		const second = await read({ numItems: 2, cursor: first.continueCursor });
+		expect([names(first), names(second)]).toEqual([
+			["task-5.md", "task-4.md"],
+			["task-3.md", "task-2.md"],
+		]);
+		await insert_child({ name: "task-6.md", kind: "file", updatedAt: 27 });
+		const pinnedFirst = await read({ numItems: 2, cursor: null, endCursor: first.continueCursor });
+		const pinnedSecond = await read({ numItems: 2, cursor: first.continueCursor, endCursor: second.continueCursor });
+		expect(names(pinnedFirst)).toEqual(["task-5.md", "task-4.md"]);
+		expect(pinnedFirst.continueCursor).toBe(first.continueCursor);
+		expect(names(pinnedSecond)).toEqual(["task-3.md", "task-6.md", "task-2.md"]);
+		expect(pinnedSecond.continueCursor).toBe(second.continueCursor);
+		const tail = await read({ numItems: 2, cursor: second.continueCursor });
+		expect(names(tail)).toEqual(["task-1.md"]);
+		expect(tail.isDone).toBe(true);
+
+		// A page that scanned only a non-matching row still has an end, and its pinned range reaches it.
+		const empty = await read({ numItems: 2, cursor: first.continueCursor }, 1);
+		expect(empty.page).toEqual([]);
+		expect(await read({ numItems: 2, cursor: first.continueCursor, endCursor: empty.continueCursor })).toMatchObject({
+			page: [],
+			continueCursor: empty.continueCursor,
+			isDone: false,
+		});
 	});
 
 	test("binds the exact filter and sort to a checked full cursor suffix", async () => {

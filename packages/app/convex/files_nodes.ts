@@ -31,7 +31,7 @@ import {
 	path_tree_prefix_upper_bound,
 	string_prefix_upper_bound,
 } from "../server/server-utils.ts";
-import { compareValues, v, type Infer } from "convex/values";
+import { compareValues, ConvexError, v, type Infer } from "convex/values";
 import { stream, type IndexKey, type QueryStream } from "convex-helpers/server/stream";
 import { z } from "zod";
 import {
@@ -6978,9 +6978,16 @@ export const list_tree_children = query({
  * Like Convex's own paginated queries, a cursor that does not match the request throws an error with
  * `InvalidCursor` in its message, so the table pagers start again from the first page. An empty, done
  * page would look like the end of the folder and hide the rest of the rows.
+ * The `isConvexSystemError` and `paginationError` data fields match the convex-helpers hook's data check,
+ * which still works in production, where Convex hides error messages. `convex_error` would nest them
+ * under `data`, so this builds the `ConvexError` directly.
  */
 function table_invalid_cursor_error() {
-	return convex_error({ message: "InvalidCursor: this table page cursor does not match the request." });
+	return new ConvexError({
+		message: "InvalidCursor: this table page cursor does not match the request.",
+		isConvexSystemError: true,
+		paginationError: "InvalidCursor",
+	});
 }
 
 const table_cursor_schema = z.object({
@@ -7202,16 +7209,15 @@ async function db_list_custom_table_children(
 					"end" in args.filter ? args.filter.end : null,
 				],
 	]);
-	let after: Array<string | number | null> | null = null;
-	if (args.paginationOpts.cursor) {
+	const parse_after = (cursor: string) => {
 		let parsed;
 		try {
-			parsed = table_cursor_schema.safeParse(JSON.parse(args.paginationOpts.cursor));
+			parsed = table_cursor_schema.safeParse(JSON.parse(cursor));
 		} catch {
 			throw table_invalid_cursor_error();
 		}
 		if (!parsed.success || parsed.data.scope !== scope) throw table_invalid_cursor_error();
-		after = parsed.data.after;
+		const after = parsed.data.after;
 		const nameSuffix = byName || args.segment === "missing";
 		const count = nameSuffix ? 4 : field === "created" ? 2 : 5;
 		const idTable = metadata && !metadataMissing ? "files_metadata_docs" : "files_nodes";
@@ -7228,7 +7234,15 @@ async function db_list_custom_table_children(
 					(field === "updated" || field === "size" ? typeof after[0] !== "number" : typeof after[0] !== "string")))
 		)
 			throw table_invalid_cursor_error();
-	}
+		return after;
+	};
+	const after = args.paginationOpts.cursor ? parse_after(args.paginationOpts.cursor) : null;
+	// A pinned page (`endCursor`, sent by the convex-helpers hook) must reach its end, or the rows between an
+	// early stop and the old end never load. Like `stream.paginate`, it ignores `numItems` and splits when a
+	// hard cap stops it first.
+	const endAfter = args.paginationOpts.endCursor ? parse_after(args.paginationOpts.endCursor) : null;
+	if (after && endAfter && compareValues(endAfter, after) * (direction === "asc" ? 1 : -1) <= 0)
+		throw table_invalid_cursor_error();
 
 	const nodes = stream(ctx.db, app_convex_schema).query("files_nodes");
 	let primary: QueryStream<Doc<"files_nodes">> | QueryStream<Doc<"files_metadata_docs">>;
@@ -7313,13 +7327,19 @@ async function db_list_custom_table_children(
 			.order(direction);
 	}
 	const prefix = primary.getEqualityIndexFilter();
-	if (after)
+	if (after || endAfter) {
+		// An empty bound side must be inclusive. `narrow` treats an empty exclusive key as past the base
+		// bound, so the stream would leave this folder and kind.
+		const start = after ? { key: [...prefix, ...after], inclusive: false } : { key: [], inclusive: true };
+		const end = endAfter ? { key: [...prefix, ...endAfter], inclusive: true } : { key: [], inclusive: true };
+		const [lower, upper] = direction === "asc" ? [start, end] : [end, start];
 		primary = primary.narrow({
-			lowerBound: direction === "asc" ? [...prefix, ...after] : [],
-			lowerBoundInclusive: direction !== "asc",
-			upperBound: direction === "desc" ? [...prefix, ...after] : [],
-			upperBoundInclusive: direction !== "desc",
+			lowerBound: lower.key,
+			lowerBoundInclusive: lower.inclusive,
+			upperBound: upper.key,
+			upperBoundInclusive: upper.inclusive,
 		});
+	}
 	let fields: QueryStream<Doc<"files_metadata_docs">> | null = metadataMissing
 		? stream(ctx.db, app_convex_schema)
 				.query("files_metadata_docs")
@@ -7337,15 +7357,9 @@ async function db_list_custom_table_children(
 				)
 				.order("asc")
 		: null;
-	if (fields && after)
-		fields = fields.narrow({
-			lowerBound: [...fields.getEqualityIndexFilter(), after[0]!, after[1]!],
-			lowerBoundInclusive: false,
-			upperBound: [],
-			upperBoundInclusive: true,
-		});
 	const iterator = primary.iterWithKeys(true)[Symbol.asyncIterator]();
-	const fieldIterator = fields?.iterWithKeys(true)[Symbol.asyncIterator]();
+	// Created after the first node is read, because its start depends on that node.
+	let fieldIterator: AsyncIterator<[Doc<"files_metadata_docs"> | null, IndexKey, number], undefined> | undefined;
 	let fieldDoc: Extract<Doc<"files_metadata_docs">, { sourceKind: "committed" }> | null = null;
 	let fieldsDone = false;
 	const budget = { readBytes: 0 };
@@ -7354,13 +7368,15 @@ async function db_list_custom_table_children(
 		args.filter ? TABLE_FILTER_MAX_CANDIDATES : TREE_CHILDREN_SORT_MISSING_MAX_SCAN,
 	);
 	const maxRows = Math.min(
-		args.paginationOpts.numItems,
+		endAfter ? Infinity : args.paginationOpts.numItems,
 		args.filter ? TABLE_FILTER_MAX_CANDIDATES : TREE_CHILDREN_MAX_ITEMS,
 	);
 	let workCount = 0;
 	let scannedCount = 0;
 	let scanBoundary: files_sort_RowKey | null = null;
 	let last = after;
+	// Suffixes of the complete candidates, to split a pinned page in the middle.
+	const committed: Array<Array<string | number | null>> = [];
 	let isDone = false;
 	const page: Array<Awaited<ReturnType<typeof db_get_tree_rows>>[number] & { sortKey: files_sort_RowKey }> = [];
 	const canWriteContentByScope = new Map<Id<"files_nodes"> | null, Promise<boolean>>();
@@ -7396,7 +7412,22 @@ async function db_list_custom_table_children(
 		check_table_node(node);
 		const by_name: files_sort_Key = [node.sortName, node.name];
 		let eligible = true;
-		if (fieldIterator) {
+		if (fields) {
+			if (!fieldIterator) {
+				// A new node can reuse the name of an archived row at the cursor. Its full key comes after the
+				// cursor, but its field doc has the same name pair. So the start includes that pair only when the
+				// first node has it. Otherwise the start stays exclusive, so the next page does not read the old
+				// end's field doc again.
+				const fieldPrefix = fields.getEqualityIndexFilter();
+				if (after || endAfter)
+					fields = fields.narrow({
+						lowerBound: after ? [...fieldPrefix, after[0]!, after[1]!] : [],
+						lowerBoundInclusive: after ? after[0] === node.sortName && after[1] === node.name : true,
+						upperBound: endAfter ? [...fieldPrefix, endAfter[0]!, endAfter[1]!] : [],
+						upperBoundInclusive: true,
+					});
+				fieldIterator = fields.iterWithKeys(true)[Symbol.asyncIterator]();
+			}
 			while (!fieldsDone && (!fieldDoc || compareValues([fieldDoc.sortName!, fieldDoc.name!], by_name) < 0)) {
 				if (workCount >= maxWork || !(await fits_table_read_budget({ ctx, budget, reserve: true }))) break;
 				workCount++;
@@ -7498,6 +7529,7 @@ async function db_list_custom_table_children(
 		if (!(await fits_table_read_budget({ ctx, budget }))) break;
 		// Commit only a complete candidate. A stopped join is reread on the next page.
 		last = indexKey.slice(prefix.length) as Array<string | number | null>;
+		committed.push(last);
 		scanBoundary = sortKey;
 		scannedCount++;
 		if (treeRow)
@@ -7507,11 +7539,27 @@ async function db_list_custom_table_children(
 				sortKey,
 			});
 	}
-	if (!isDone && scannedCount === 0) throw convex_error({ message: "Table filter exceeded its work limit." });
+	// A pinned page that committed its own end row reached its end, even when a cap stopped it there.
+	const reachedEnd = isDone || (endAfter !== null && last !== null && compareValues(last, endAfter) === 0);
+	if (!reachedEnd && scannedCount === 0) throw convex_error({ message: "Table filter exceeded its work limit." });
+	// A pinned page is never the last page, so it is never done, and it keeps its exact end.
+	const pinned = args.paginationOpts.endCursor
+		? {
+				isDone: false,
+				continueCursor: args.paginationOpts.endCursor,
+				...(!reachedEnd && {
+					// Split at the middle complete candidate. It is strictly inside the page, so both halves are
+					// smaller, even when no candidate became a row.
+					pageStatus: "SplitRequired" as const,
+					splitCursor: JSON.stringify({ scope, after: committed[Math.floor((committed.length - 1) / 2)] }),
+				}),
+			}
+		: null;
 	return {
 		page,
 		isDone,
 		continueCursor: last ? JSON.stringify({ scope, after: last }) : "",
+		...pinned,
 		scanBoundary,
 		scannedCount,
 		workCount,
