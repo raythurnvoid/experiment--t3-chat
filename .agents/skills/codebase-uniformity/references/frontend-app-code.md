@@ -45,6 +45,8 @@ Use this reference for `packages/app/src/**` React components and frontend lib u
 - Use named types for exported API, repeated prop/class-name/context/result shapes, recursive structures, derived external API types, or app concepts that are clearer with a concrete name.
 - Keep React props in clear groups. Put refs and normal values first. Put `on...` callbacks after the values. Put render slots and `children` last when the component has them. Follow a stronger nearby order when one exists.
 - Use the same prop order in the prop type, the `props` destructuring, and the JSX call. Do not append a new value after the callbacks only to make the diff smaller.
+- When a caller uses a callback's result, keep that result through every wrapper and prop type. `AiChatComposer.onSubmit` uses `false` to keep the draft. Calling the callback without returning its result changes that behavior, even when a `void` type compiles.
+- When changing callback arguments, check the wrappers as well as direct callers. Optional arguments can be dropped without a type error. Forward the arguments that the changed behavior needs.
 
 ## Comments
 

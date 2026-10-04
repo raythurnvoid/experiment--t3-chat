@@ -15,6 +15,7 @@ Use this reference when adding, moving, or reviewing tests.
 ## Review
 
 - Test through public or registered entrypoints unless production design already exposes a natural helper.
+- Make mocks return the values that the real caller uses. If a submit result controls draft cleanup, assert that result or use the real composer. A mock that records only calls can pass while the real editor loses text or images.
 - Keep test comments precise when domain vocabulary overlaps. For example, use `chunk metadata` when the test is about chunk offsets, not frontmatter metadata.
 - Do not add defensive test guards for required schema fields. Load the required value directly and let TypeScript/schema-backed fixtures keep the invariant obvious.
 - When a storage refactor removes duplicated fields, prefer behavior tests through the public query/mutation plus the smallest direct fixture seed that exercises the missing edge case.
