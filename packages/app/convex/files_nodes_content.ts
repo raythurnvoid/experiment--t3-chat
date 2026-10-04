@@ -208,6 +208,13 @@ import { ai_chat_workspaces_db_authorize_file_scope } from "./ai_chat_workspaces
 import { files_db_resolve_scope } from "./files_scopes.ts";
 import type { files_share_links_CleanupState } from "./files_share_links_db.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
+import {
+	files_nodes_db_insert_committed_text_chunks,
+	files_nodes_db_hand_unpublished_assets_to_deletion_ledger,
+	files_nodes_db_finalize_editable_text_node_creation,
+	files_compute_wc_counts,
+	files_nodes_snapshot_fields,
+} from "./files_nodes_create_db.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
 // Does NOT work for http actions (see http.ts). No mutable module-level state allowed here.
@@ -238,82 +245,6 @@ async function db_get_active_membership_in_workspace(
 				.eq("active", true),
 		)
 		.first();
-}
-
-/**
- * Insert a paired set of committed `files_text_chunks` + `files_plain_text_chunks` for one file node.
- * Editable Markdown materialization passes a real `yjsSequence`; read-only text materialization omits it.
- * Caller supplies the already-computed chunk array and the denormalized `path`/`archiveOperationId` for the
- * plain-text docs. Does not touch `file_stats` or `files_metadata_docs` — callers own those.
- */
-async function db_insert_committed_text_chunks(
-	ctx: MutationCtx,
-	args: {
-		organizationId: Doc<"files_nodes">["organizationId"];
-		workspaceId: Doc<"files_nodes">["workspaceId"];
-		nodeId: Id<"files_nodes">;
-		path: string;
-		archiveOperationId?: string;
-		yjsSequence?: number;
-		chunks: ReadonlyArray<{
-			chunkIndex: number;
-			textChunk: string;
-			plainTextChunk: string;
-			startIndex: number;
-			endIndex: number;
-			lineStart: number;
-			lineEnd: number;
-			chunkFlags: number;
-		}>;
-	},
-) {
-	// Large plain text can have more chunks than Convex allows in one I/O batch.
-	for (let start = 0; start < args.chunks.length; start += 100) {
-		const chunks = args.chunks.slice(start, start + 100);
-		const textChunkIds = await Promise.all(
-			chunks.map(async (chunk) => {
-				const shared = {
-					organizationId: args.organizationId,
-					workspaceId: args.workspaceId,
-					fileNodeId: args.nodeId,
-					sourceKind: "committed" as const,
-					...(args.yjsSequence === undefined ? {} : { yjsSequence: args.yjsSequence }),
-					chunkIndex: chunk.chunkIndex,
-					startIndex: chunk.startIndex,
-					endIndex: chunk.endIndex,
-					lineStart: chunk.lineStart,
-					lineEnd: chunk.lineEnd,
-					chunkFlags: chunk.chunkFlags,
-				};
-				return await ctx.db.insert("files_text_chunks", { ...shared, textChunk: chunk.textChunk });
-			}),
-		);
-
-		await Promise.all(
-			chunks.map((chunk, index) =>
-				ctx.db.insert("files_plain_text_chunks", {
-					organizationId: args.organizationId,
-					workspaceId: args.workspaceId,
-					fileNodeId: args.nodeId,
-					sourceKind: "committed",
-					...(args.yjsSequence === undefined ? {} : { yjsSequence: args.yjsSequence }),
-					textChunkId: textChunkIds[index]!,
-					chunkIndex: chunk.chunkIndex,
-					path: args.path,
-					archiveOperationId: args.archiveOperationId ?? undefined,
-					plainTextChunk: chunk.plainTextChunk,
-					textChunk: chunk.textChunk,
-					startIndex: chunk.startIndex,
-					endIndex: chunk.endIndex,
-					lineStart: chunk.lineStart,
-					lineEnd: chunk.lineEnd,
-					chunkFlags: chunk.chunkFlags,
-					hasChunkAbove: start + index > 0,
-					hasChunkBelow: start + index < args.chunks.length - 1,
-				}),
-			),
-		);
-	}
 }
 
 export async function db_insert_file_text_content(
@@ -350,7 +281,7 @@ export async function db_insert_file_text_content(
 		return chunks;
 	}
 
-	await db_insert_committed_text_chunks(ctx, {
+	await files_nodes_db_insert_committed_text_chunks(ctx, {
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
 		nodeId: args.nodeId,
@@ -700,47 +631,6 @@ export async function files_nodes_db_insert_file_content_docs(
 }
 
 /**
- * Create a deletion job for each unpublished R2 asset. Then delete the asset docs.
- * Do both in the transaction that refuses the write, so a crash cannot lose the cleanup work.
- * The action already finished each R2 upload to its known key, even when `r2Key` is not set.
- * Do not touch an asset that is missing or already published. Save preparation keeps its
- * late-upload deadline on the job.
- */
-async function db_hand_unpublished_assets_to_deletion_ledger(
-	ctx: MutationCtx,
-	args: {
-		organizationId: Id<"organizations">;
-		workspaceId: Id<"organizations_workspaces">;
-		assetIds: ReadonlyArray<Id<"files_r2_assets">>;
-		reason: "failed_create" | "read_only_create" | "read_only_snapshot_restore" | "read_only_yjs_repair";
-	},
-) {
-	for (const assetId of args.assetIds) {
-		const asset = await ctx.db.get("files_r2_assets", assetId);
-		if (!asset || asset.r2Key !== undefined) {
-			continue;
-		}
-
-		// Add the job before deleting the doc. Both changes save together.
-		// The deletion job now owns this R2 file.
-		await r2_enqueue_object_deletion_job(ctx, {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			r2Key: r2_create_asset_key({
-				organizationId: asset.organizationId,
-				workspaceId: asset.workspaceId,
-				assetId: asset._id,
-			}),
-			reason: args.reason,
-			...(asset.uploadUrlExpiresAt !== undefined
-				? { putMayArriveUntil: asset.uploadUrlExpiresAt + r2_PUT_MAY_ARRIVE_MARGIN_MS }
-				: {}),
-		});
-		await ctx.db.delete("files_r2_assets", asset._id);
-	}
-}
-
-/**
  * Find the current lock for a new file path.
  * Walk active children under `parentId`, like the create function does.
  *
@@ -974,7 +864,7 @@ export const create_file_node = internalMutation({
 		// A later crash cannot lose those jobs.
 		const refuse = async (nay: { name?: string; message: string }) => {
 			if (args.unpublishedAssetIds && authorOrganizationId && authorWorkspaceId) {
-				await db_hand_unpublished_assets_to_deletion_ledger(ctx, {
+				await files_nodes_db_hand_unpublished_assets_to_deletion_ledger(ctx, {
 					organizationId: authorOrganizationId,
 					workspaceId: authorWorkspaceId,
 					assetIds: args.unpublishedAssetIds,
@@ -1180,74 +1070,6 @@ export const create_file_node = internalMutation({
 		});
 	},
 });
-
-/**
- * Publish an editable text file and its first version snapshot.
- * `node.assetId` points to the first version snapshot. Editable files have no current-content asset.
- * Set `r2Key` and size on both assets, then add the snapshot doc.
- * Call this inside the final publish mutation. Reserved scopes cannot call it.
- */
-export async function files_nodes_db_finalize_editable_text_node_creation(
-	ctx: MutationCtx,
-	args: {
-		organizationId: Id<"organizations">;
-		workspaceId: Id<"organizations_workspaces">;
-		nodeId: Id<"files_nodes">;
-		userId: Id<"users">;
-		/**
-		 * Absent for a non-collaborative file. That file has no Yjs document, so there is no
-		 * snapshot object to publish and no asset to point at one.
-		 */
-		yjsSnapshot?: { assetId: Id<"files_r2_assets">; size: number };
-		versionSnapshotAssetId: Id<"files_r2_assets">;
-		versionSnapshotSize: number;
-	},
-) {
-	const now = Date.now();
-	const yjsSnapshot = args.yjsSnapshot;
-	// The node and its content docs were inserted earlier in this same mutation, so the read
-	// sees them. The version row copies the type, shape, and mode the node was created with.
-	const fileNode = await ctx.db.get("files_nodes", args.nodeId);
-	if (!fileNode) {
-		throw should_never_happen("Editable text node creation finalized for a missing node", { nodeId: args.nodeId });
-	}
-
-	await Promise.all([
-		yjsSnapshot
-			? ctx.db.patch("files_r2_assets", yjsSnapshot.assetId, {
-					r2Key: r2_create_asset_key({
-						organizationId: args.organizationId,
-						workspaceId: args.workspaceId,
-						assetId: yjsSnapshot.assetId,
-					}),
-					size: yjsSnapshot.size,
-					unfinalizedExpiresAt: undefined,
-					updatedAt: now,
-				})
-			: Promise.resolve(null),
-		ctx.db.patch("files_r2_assets", args.versionSnapshotAssetId, {
-			r2Key: r2_create_asset_key({
-				organizationId: args.organizationId,
-				workspaceId: args.workspaceId,
-				assetId: args.versionSnapshotAssetId,
-			}),
-			size: args.versionSnapshotSize,
-			unfinalizedExpiresAt: undefined,
-			updatedAt: now,
-		}),
-		ctx.db.insert("files_snapshots", {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			fileNodeId: args.nodeId,
-			assetId: args.versionSnapshotAssetId,
-			createdBy: args.userId,
-			archivedAt: -1,
-			...file_node_snapshot_fields(fileNode),
-		}),
-	]);
-
-	return Result({ _yay: null });
-}
 
 /**
  * Publish one prepared private node. The caller checks the reviewed proposal and output states
@@ -1588,7 +1410,7 @@ export const cleanup_file_node_creation_assets = internalMutation({
 	returns: v.null(),
 	handler: async (ctx, args) => {
 		if (args.durableTenantScope) {
-			await db_hand_unpublished_assets_to_deletion_ledger(ctx, {
+			await files_nodes_db_hand_unpublished_assets_to_deletion_ledger(ctx, {
 				...args.durableTenantScope,
 				assetIds: args.assetIds,
 				reason: "failed_create",
@@ -4732,27 +4554,6 @@ export type files_nodes_get_file_last_available_text_content_by_path_Result =
 // comment next to `files_READ_RANGE_MAX_LINES` in files_nodes.ts).
 const files_READ_RANGE_SCAN_MAX_BYTES = 8 * 1024;
 
-/**
- * Compute `wc` counts for a full text in one pass: lineCount = newline count (`wc -l`), wordCount =
- * whitespace-delimited words (`wc -w`), charCount = Unicode code points (`wc -m`, not UTF-16 units,
- * so emoji/astral chars count as one). Used both at materialization (to store exact counts on the
- * node) and on the windowed fallback (lower-bound counts for unmaterialized content), so the two
- * paths share identical semantics. Allocation-free except the word split.
- */
-function files_compute_wc_counts(text: string) {
-	let lineCount = 0;
-	let charCount = 0;
-	for (let index = 0; index < text.length; index++) {
-		const code = text.charCodeAt(index);
-		if (code === 10) lineCount++; // "\n"
-		// Skip the trailing half of a surrogate pair so the pair counts as one code point.
-		if (code < 0xdc00 || code > 0xdfff) charCount++;
-	}
-	const trimmed = text.trim();
-	const wordCount = trimmed.length === 0 ? 0 : trimmed.split(/\s+/u).length;
-	return { lineCount, wordCount, charCount };
-}
-
 async function files_resolve_readable_content_or_window(
 	ctx: ActionCtx,
 	args: {
@@ -5129,21 +4930,6 @@ function yjs_create_state_update_from_tiptap_editor(args: { tiptapEditor: Editor
 
 // #region snapshots
 
-function file_node_snapshot_fields(fileNode: Doc<"files_nodes">) {
-	if (fileNode.contentType === null) {
-		const errorMessage = "A file snapshot requires a content type";
-		const errorData = { nodeId: fileNode._id };
-		console.error(errorMessage, errorData);
-		throw should_never_happen(errorMessage, errorData);
-	}
-
-	return {
-		contentType: fileNode.contentType,
-		yjsRootKind: fileNode.textKind,
-		collaborationEnabled: fileNode.collaborationEnabled === true,
-	};
-}
-
 const store_version_snapshot_args_schema = v.object({
 	organizationId: v.id("organizations"),
 	workspaceId: v.id("organizations_workspaces"),
@@ -5275,7 +5061,7 @@ export async function files_nodes_db_fill_text_node_content(
 			nodeId: args.fileNode._id,
 			assetId: args.contentSnapshotAssetId,
 			userId: args.userId,
-			...file_node_snapshot_fields(args.fileNode),
+			...files_nodes_snapshot_fields(args.fileNode),
 		}),
 		ctx.db.patch("files_nodes", args.fileNode._id, {
 			assetId: args.contentSnapshotAssetId,
@@ -5451,7 +5237,7 @@ export const finalize_file_content_materialization = internalMutation({
 			args.sequence !== args.targetSequence ||
 			header.yjsSnapshotDoc.assetId !== args.expectedYjsSnapshotAssetId
 		) {
-			await db_hand_unpublished_assets_to_deletion_ledger(ctx, {
+			await files_nodes_db_hand_unpublished_assets_to_deletion_ledger(ctx, {
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
 				assetIds: [args.yjsSnapshotAssetId, args.versionSnapshotAssetId],
@@ -5521,7 +5307,7 @@ export const finalize_file_content_materialization = internalMutation({
 					nodeId: args.nodeId,
 					assetId: args.versionSnapshotAssetId,
 					userId: args.userId,
-					...file_node_snapshot_fields(header.fileNode),
+					...files_nodes_snapshot_fields(header.fileNode),
 				}),
 			]),
 		);
@@ -6514,7 +6300,7 @@ export async function files_nodes_db_commit_text_replacement(
 				nodeId: fileNode._id,
 				assetId: args.versionSnapshotAssetId,
 				userId: args.userId,
-				...file_node_snapshot_fields(fileNode),
+				...files_nodes_snapshot_fields(fileNode),
 			}),
 		]),
 	);
@@ -6840,7 +6626,7 @@ async function db_install_file_content_replacement(
 			nodeId,
 			assetId: args.backup.assetId,
 			userId: user._id,
-			...file_node_snapshot_fields(fileNode),
+			...files_nodes_snapshot_fields(fileNode),
 		});
 	} else {
 		// A stored file has no version row for its current asset yet. An editable file already has
@@ -6862,7 +6648,7 @@ async function db_install_file_content_replacement(
 				nodeId,
 				assetId: args.previousAssetId,
 				userId: user._id,
-				...file_node_snapshot_fields(fileNode),
+				...files_nodes_snapshot_fields(fileNode),
 			});
 		}
 	}
@@ -7558,7 +7344,7 @@ export const restore_snapshot = internalMutation({
 			fileNode.yjsLastSequenceId !== args.expectedYjsLastSequenceId ||
 			currentLastSequence?.lastSequence !== args.expectedLastSequence
 		) {
-			await db_hand_unpublished_assets_to_deletion_ledger(ctx, {
+			await files_nodes_db_hand_unpublished_assets_to_deletion_ledger(ctx, {
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
 				assetIds: [args.currentSnapshotAssetId, args.restoredSnapshotAssetId],
@@ -7572,7 +7358,7 @@ export const restore_snapshot = internalMutation({
 		// The staged restore update expires through its normal cleanup.
 		const writable = await files_nodes_db_require_user_writable(ctx, { node: fileNode, userId: userAuth.id });
 		if (writable._nay) {
-			await db_hand_unpublished_assets_to_deletion_ledger(ctx, {
+			await files_nodes_db_hand_unpublished_assets_to_deletion_ledger(ctx, {
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
 				assetIds: [args.currentSnapshotAssetId, args.restoredSnapshotAssetId],
@@ -7656,7 +7442,7 @@ export const restore_snapshot = internalMutation({
 		const now = Date.now();
 		const userId = userAuth.id;
 		// The version brings its own type back.
-		const snapshotFields = file_node_snapshot_fields(fileNode);
+		const snapshotFields = files_nodes_snapshot_fields(fileNode);
 		const restoredContentType = snapshotContent.contentType;
 
 		// Restoring is destructive, so the current state is stored as a backup the user can revert to.
@@ -8885,7 +8671,7 @@ export const finalize_file_yjs_repair = internalMutation({
 			userId: args.authorUserId,
 		});
 		if (writable._nay) {
-			await db_hand_unpublished_assets_to_deletion_ledger(ctx, {
+			await files_nodes_db_hand_unpublished_assets_to_deletion_ledger(ctx, {
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
 				assetIds: [args.yjsSnapshotAssetId, args.contentSnapshotAssetId],
@@ -9024,7 +8810,7 @@ export const finalize_file_yjs_repair = internalMutation({
 					nodeId: args.nodeId,
 					assetId: args.contentSnapshotAssetId,
 					userId: args.authorUserId,
-					...file_node_snapshot_fields(state.fileNode),
+					...files_nodes_snapshot_fields(state.fileNode),
 				}),
 				db_replace_file_chunks(ctx, {
 					organizationId: args.organizationId,
@@ -9960,7 +9746,7 @@ export const finalize_file_collaboration_enable = internalMutation({
 					nodeId: args.nodeId,
 					assetId: args.contentSnapshotAssetId,
 					userId: user._id,
-					...file_node_snapshot_fields(fileNode),
+					...files_nodes_snapshot_fields(fileNode),
 					// The node is collaborative from this version on.
 					collaborationEnabled: true,
 				}),

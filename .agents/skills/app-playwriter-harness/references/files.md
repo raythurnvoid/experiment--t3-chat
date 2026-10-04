@@ -455,6 +455,11 @@ WebSocket send function. Check the actual path and response in CDP frames. Alter
 and split actions with the same starting view. Exclude runs with HMR or server restarts. The
 normal sidebar still uses the current action.
 
+The temporary action saves its fixed Welcome document through
+`files_nodes_create_finalize:finalize_text_node_creation`. That final transaction has no editor
+or Markdown chunker imports. General text and mount/import creation still use the current
+content module. Keep query cache hits separate from new server executions when comparing them.
+
 The temporary folder mutation is `files_nodes_create:create_folder_node`. Its control is
 `files_nodes:create_folder_node`. The same owned-tab rewrite works for its outgoing Mutation.
 Use the sidebar selector `.FilesSidebarTopSection-actions-icon-button[aria-label="New folder"]`

@@ -79,11 +79,11 @@ import {
 	type get_file_content_materialization_state_Result,
 } from "./files_nodes.ts";
 import { files_share_links_create_cleanup_state } from "./files_share_links_db.ts";
+import { files_nodes_db_finalize_editable_text_node_creation } from "./files_nodes_create_db.ts";
 import { files_metadata_db_read_entry } from "./files_metadata.ts";
 import {
 	files_nodes_create_yjs_snapshot_update_from_text,
 	files_nodes_db_fill_text_node_content,
-	files_nodes_db_finalize_editable_text_node_creation,
 	files_nodes_db_insert_file_content_docs,
 	type files_nodes_get_file_byte_read_source_Result,
 } from "./files_nodes_content.ts";
