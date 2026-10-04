@@ -8,7 +8,7 @@
 		"dev": "vite",
 		"build": "vite build",
 		"lint": "pnpm lint:tsc && pnpm lint:oxlint && pnpm check:plugin-sdk-types",
-		"lint:tsc": "tsc-silent --project tsconfig.app.json --suppress @vendor @node_modules",
+		"lint:tsc": "tsx scripts/typecheck.ts",
 		"lint:oxlint": "oxlint --type-aware src server shared convex --ignore-pattern convex/_generated/**",
 		"generate:plugin-sdk-types": "tsx scripts/generate-plugin-sdk-types.ts",
 		"check:plugin-sdk-types": "tsx scripts/generate-plugin-sdk-types.ts --check",

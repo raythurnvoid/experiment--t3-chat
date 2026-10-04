@@ -23,7 +23,7 @@ import * as ts from "typescript";
 // resolve that schema first; its JSDoc explains the type rules.
 //
 // Use the compiler directly so declaration emit can proceed despite vendor diagnostics.
-// A declaration bundler checks its own program, while app lint uses `tsc-silent` to suppress them.
+// A declaration bundler checks its own program, while app lint filters vendor diagnostics.
 
 const CHECK_FLAG = "--check";
 

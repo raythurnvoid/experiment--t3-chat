@@ -11,7 +11,6 @@
     "oxfmt": "^0.71.0",
     "oxlint": "^1.86.0",
     "oxlint-tsgolint": "^7.0.2003",
-    "tsc-silent": "^1.2.2",
     "typescript": "~6.0.3",
     "yargs": "15.4.1"
   },

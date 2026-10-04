@@ -30,6 +30,14 @@ export default defineConfig({
 		projects: [
 			{
 				extends: true,
+				test: {
+					include: ["scripts/**/*.test.ts"],
+					name: "scripts",
+					environment: "node",
+				},
+			},
+			{
+				extends: true,
 				plugins: [
 					// Run the React Compiler like the app and the browser project do, so src tests run the same compiled code.
 					// Some bugs only happen in compiled code. Keep these settings in sync with vite.config.ts.
