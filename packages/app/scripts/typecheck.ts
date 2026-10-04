@@ -42,19 +42,27 @@ const builder = ts.createIncrementalProgram({
 });
 
 // Read diagnostics through the builder so unchanged files reuse cached checks.
+const skipSourceFile = (file: ts.SourceFile) => /vendor|node_modules/.test(file.fileName);
+// Process changed dependencies before reading cached app errors.
+while (builder.getSemanticDiagnosticsOfNextAffectedFile(undefined, skipSourceFile)) {
+	// The builder advances its changed-file list in the loop condition.
+}
+const semanticDiagnostics = builder
+	.getSourceFiles()
+	.filter((file) => !skipSourceFile(file))
+	.flatMap((file) => builder.getSemanticDiagnostics(file));
 const configDiagnostics = [...builder.getConfigFileParsingDiagnostics(), ...builder.getOptionsDiagnostics()];
 const diagnostics = ts.sortAndDeduplicateDiagnostics([
 	...configDiagnostics,
 	...builder.getSyntacticDiagnostics(),
 	...builder.getGlobalDiagnostics(),
-	...builder.getSemanticDiagnostics(),
+	...semanticDiagnostics,
 	// noEmit still writes the build info used by the next check.
 	...builder.emit().diagnostics,
 ]);
 // Keep the same path filters as the old lint:tsc command.
 const visibleDiagnostics = diagnostics.filter(
-	(diagnostic) =>
-		configDiagnostics.includes(diagnostic) || !diagnostic.file || !/vendor|node_modules/.test(diagnostic.file.fileName),
+	(diagnostic) => configDiagnostics.includes(diagnostic) || !diagnostic.file || !skipSourceFile(diagnostic.file),
 );
 if (visibleDiagnostics.length > 0) {
 	console.error(ts.formatDiagnosticsWithColorAndContext(visibleDiagnostics, formatHost));

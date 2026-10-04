@@ -70,13 +70,13 @@ describe("typecheck", () => {
 		fs.rmSync(fixtureRoot, { recursive: true, force: true });
 	});
 
-	test("hides vendor errors on fresh and cached checks and emits only the cache", () => {
+	test("skips vendor type errors on fresh and cached checks and emits only the cache", () => {
 		write_fixture("vendor/index.ts", 'export const vendorValue: number = "vendor";\n');
 		write_fixture("node_modules/sample/index.ts", 'export const packageValue: number = "package";\n');
 		for (let check = 0; check < 2; check++) {
 			const result = run_check();
 			expect(result.status).toBe(0);
-			expect(result.output).toContain("Visible errors: 0, suppressed errors: 2");
+			expect(result.output).toContain("Visible errors: 0, suppressed errors: 0");
 			expect(result.output).not.toContain("TS2322");
 		}
 		expect(fs.statSync(path.join(fixtureRoot, "cache.tsbuildinfo")).size).toBeGreaterThan(0);
@@ -106,6 +106,35 @@ describe("typecheck", () => {
 		const changed = run_check();
 		expect(changed.status).toBe(2);
 		expect(changed.output).toContain("src/index.ts");
+		expect(changed.output).toContain("TS2322");
+	});
+
+	test.each(["vendor", "node_modules/sample"])("tracks inferred return types through %s imports", (directory) => {
+		write_fixture(`${directory}/value.ts`, "export function get_value() { return 1; }\n");
+		write_fixture(`${directory}/index.ts`, 'export { get_value } from "./value";\n');
+		write_fixture(
+			"src/index.ts",
+			`import { get_value } from "../${directory}/index";\nexport const result: number = get_value();\n`,
+		);
+		expect(run_check().status).toBe(0);
+		write_fixture(`${directory}/value.ts`, 'export function get_value() { return "changed"; }\n');
+		for (let check = 0; check < 2; check++) {
+			const changed = run_check();
+			expect(changed.status, changed.output).toBe(2);
+			expect(changed.output).toContain("src/index.ts");
+			expect(changed.output).toContain("TS2322");
+		}
+		write_fixture(`${directory}/value.ts`, "export function get_value() { return 2; }\n");
+		expect(run_check().status).toBe(0);
+	});
+
+	test("rechecks app files when an ignored dependency changes a global type", () => {
+		write_fixture("vendor/globals.ts", "declare global { var externalValue: number; }\nexport {};\n");
+		write_fixture("src/index.ts", "export const result: number = externalValue;\n");
+		expect(run_check().status).toBe(0);
+		write_fixture("vendor/globals.ts", "declare global { var externalValue: string; }\nexport {};\n");
+		const changed = run_check();
+		expect(changed.status, changed.output).toBe(2);
 		expect(changed.output).toContain("TS2322");
 	});
 

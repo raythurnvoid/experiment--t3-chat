@@ -5,8 +5,13 @@
 Run `vp env exec pnpm --dir packages/app run lint:tsc`.
 
 `typecheck.ts` uses the installed TypeScript 6 compiler. It checks the whole app and
-keeps the existing error filters for paths containing `vendor` or `node_modules`.
-App errors and config errors still fail the command.
+loads dependency types. It skips direct type checks for paths containing `vendor`
+or `node_modules`, while still tracking changes to their types. App errors and
+config errors still fail the command. Syntax and global checks still run, with the
+same path filters as before.
+
+The suppressed error count covers only collected errors. Skipped vendor type
+errors are not collected or counted.
 
 The app config enables incremental checks. TypeScript saves its previous work in
 the configured `tsBuildInfoFile` and rechecks files affected by an edit. Deleting
@@ -27,8 +32,9 @@ Run the CLI tests:
 vp env exec pnpm --dir packages/app exec vitest run --project scripts scripts/typecheck.test.ts
 ```
 
-They check both fresh and cached runs, hidden vendor errors, visible app errors,
-changed dependencies, and config errors. The app's normal test command includes
-this project.
+They check both fresh and cached runs, skipped vendor type errors, visible app
+errors, changed dependency types, and config errors. Dependency tests cover types
+inferred from function returns, re-exported types, and global types. The app's
+normal test command includes this project.
 
 The plugin SDK generator has its own compiler program and does not use this cache.
