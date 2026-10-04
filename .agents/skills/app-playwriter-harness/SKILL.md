@@ -34,21 +34,22 @@ if (-not $session) { $session = ($sessionOutput | Select-Object -Last 1).Trim() 
 
 For this project, use the Edge install whose profile the user reserved for QA. The profile name is personal, so it is deliberately not written in this repo — read it from the user's private global agent rules (`~/.claude/CLAUDE.md`), and never copy it into a committed file. Match it by the profile column in `browser list`, not by a remembered key — key ids change. Use whatever account is signed in there; do not sign in or out. If the profile choice is ever unclear, no command lists tabs per browser before a session exists: create a session on the most likely key and probe `context.pages().map((p) => p.url())`; if the target tab is not there, create a session on the next key and delete the wrong one with `session delete <id>`. If your shell does not keep variables between calls, inline the printed session id into later commands. After creating the session, run `vp env exec pnpx playwriter session list` and check the CWD column: `/home/rt0/C:\...` means the relay is running in WSL and no sandbox `fs` path will reach the Windows disk — follow the relay-topology recovery in `references/known-hazards.md` before continuing.
 
-3. Install the helper namespace in that session. Pass the script with `-f` and an absolute path — the CLI reads the file from the real disk before the sandbox starts. Do not use `-e` with `fs.readFileSync`: the sandbox filesystem cannot read repo files reliably (see `references/known-hazards.md`):
+3. Install the helper namespace in that session. Pass the script with `-f` and an absolute path — the CLI reads the file from the real disk before the sandbox starts. Do not use `-e` with `fs.readFileSync`: the sandbox filesystem cannot read repo files reliably (see `references/known-hazards.md`). Code execution calls need `--timeout 5000` or less. Metadata commands above do not accept that flag. See the user's timeout rules for known slow steps.
 
 ```powershell
-vp env exec pnpx playwriter -s $session -f "C:/Users/rt0/Documents/workspace/rt0/t3-chat/.agents/skills/app-playwriter-harness/scripts/install-harness.js"
+vp env exec pnpx playwriter -s $session --timeout 5000 -f "C:/workspace/rt0/experiment--t3-chat/.agents/skills/app-playwriter-harness/scripts/install-harness.js"
 ```
 
 4. Bind to the target app tab before acting. Use PowerShell single quotes around `-e` with double quotes inside the JavaScript — the `--%` stop-parsing token does not survive `vp env exec`, and the CLI then misreads the JavaScript as a command name:
 
 ```powershell
-vp env exec pnpx playwriter -s $session -e 'await state.appPlaywriterHarness.bindOpenTab({ urlIncludes: "/w/personal/home/files" });'
+vp env exec pnpx playwriter -s $session --timeout 5000 -e 'await state.appPlaywriterHarness.bindOpenTab({ urlIncludes: "/w/personal/home/files" });'
 ```
 
 # Workflow
 
 - Before a run creates any data (files, drafts, uploads, chats, users, workspaces), load the `qa-data` skill and test with the existing files in its catalog. Create new data only when nothing fits, and add it to the catalog.
+- When paging or branch selection matters, use a fixture that crosses the page limit and has another branch. A short history cannot prove that older parents and saved siblings stay linked. The chat recipe is in `references/agent-panel.md`.
 - Observe before acting: print the URL and call `state.appPlaywriterHarness.observe(...)` or raw `snapshot({ page: state.page })`.
 - Prefer Playwriter accessibility locators and normal clicks. Do not use `{ force: true }`, `dispatchEvent`, or `element.click()` to bypass blockers.
 - Use `state.appPlaywriterHarness.inspectElement(...)` or `hitTest(...)` for layout and clickability bugs before trying alternate clicks.
@@ -58,6 +59,7 @@ vp env exec pnpx playwriter -s $session -e 'await state.appPlaywriterHarness.bin
 - Use `state.appPlaywriterHarness.auditAccessibility({ selector, minTargetSize, frame })` as a quick accessibility screen for a route or region. Pass `frame` to screen inside an iframe — a cross-origin plugin frame runs in its own process, so without it the audit reads the host page and reports a clean route it never looked at. It skips controls hidden by an ancestor or a closed disclosure, skips the pointer checks for visually hidden (`sr-only`) controls and for points a scroll container clips, then reports unlabeled controls, hit targets blocked by overlapping elements, targets smaller than `minTargetSize` (default 24px), and controls with negative `tabIndex` that need review. It is not a full accessibility audit. Also check keyboard access, focus order and management, semantics, labels and errors, contrast, zoom and responsive fit, target size, and reduced motion. For rule-level findings, inject axe-core with the recipe in `references/snippets.md`; for what assistive tech actually receives (accessible name, description, `focusable`/`disabled` state), read the browser's own tree with `Accessibility.queryAXTree` over `getCDPSession(...)` rather than trusting DOM attributes. Project rule: automation first. Report screen-reader-only gaps; fix them only when the user asks.
 - For route-specific checks, read the relevant reference recipe and run it with generic helpers instead of adding a new helper function.
 - Keep each execute call focused on one observation or one action, then observe again.
+- After a timeout or failed assertion, stop the dependent steps. Read the live URL and a small DOM result before acting again: the timed-out action may have completed. A setup or selector failure does not prove a product bug.
 - Prefer small observe-act-observe scripts over bundled multi-step runners during interactive debugging and eval inspection. Batch only when the user explicitly asks for a runner or the flow is already stable and repeatable.
 - For stateful UI such as drag/drop, resize, or inline rename, test success, cancellation, and re-entry. Check cleanup immediately and again after 200-400 ms, then try nearby keyboard and pointer controls. A delayed callback can bring back a mode that appeared to close correctly.
 - During drag/drop, check that target indicators stay stable while hovering, clear after leaving or cancelling, and do not trigger hover tooltips. Check selection at drag start separately from the final drop result.

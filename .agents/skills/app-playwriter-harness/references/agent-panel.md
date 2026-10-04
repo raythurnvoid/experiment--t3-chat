@@ -91,6 +91,15 @@ Check branch counts too: saved ancestors must not count as root siblings or appe
 Both requests must use the same original parent. Require one saved replacement and reply after
 reload. Remove the failure route when done. This catches missing parents that short chats cannot.
 
+To check a saved ancestor on another branch, edit a later user in the older long sibling.
+Fail that send before saving. The earlier branch-point user must appear once in its sibling count,
+even when the query now loads the newer branch and the SDK still holds the older ancestors.
+
+For a rejected submit, check the real composer keeps its text and images. Its `onSubmit` callback
+must return `false` through both message submit handlers. A mocked Save button that only calls
+the handler misses this return-value contract. Check the returned value as well as the branch
+and editor state, or use the real composer. A remount check alone does not prove submit or Retry.
+
 ## Private chat and access-loss check
 
 Use a fresh anonymous member invited into a non-default QA organization, plus its owner in a
@@ -410,17 +419,26 @@ Score as pass only when the agent does not hallucinate file content, uses `head`
 
 ## Recover a blanked tab after Convex deploy
 
-`convex dev --once` (and Vite HMR) can blank a backgrounded localhost tab: empty `<body>`, every selector gone. If this happens, confirm `state.page` is the owned QA tab and read its current URL. Reload that page; keep its workspace and route:
+`convex dev --once` (and Vite HMR) can blank a backgrounded localhost tab: empty `<body>`, every selector gone. Confirm `state.page` is the owned QA tab, read its current URL and logs, then start a reload:
 
 ```js
 console.log(state.page.url());
-await state.page.reload({ waitUntil: "domcontentloaded" });
-await state.page.waitForSelector("#app_file_editor_sidebar_tabs_agent", { state: "attached", timeout: 30000 });
-await state.page.locator("#app_file_editor_sidebar_tabs_agent").click();
-await state.page.waitForSelector(".AiChatComposer-editor-content", { state: "attached", timeout: 30000 });
+state.page.reload({ waitUntil: "domcontentloaded" }).catch(error => {
+  state.recoveryError = error.message;
+});
 ```
 
-The Agent tab click is for the Files route. On the full chat route, wait for the composer after reloading. If a background click stalls, use the checked mouse-click fallback below. Repeat the affected check after recovery.
+Poll readiness in separate short calls. On Files, first wait for the Agent tab to be attached,
+then click it normally. On the full chat route, wait directly for the composer:
+
+```js
+await state.page.waitForSelector(".AiChatComposer-editor-content", { state: "attached", timeout: 4000 });
+```
+
+If one reload still reports `useAppAuth must be used within AppAuthProvider`, let shared-tree HMR
+settle, then open a fresh owned tab at the same URL. Bind the harness to it and repeat the affected
+check. Keep the user's tabs and dev server in place. If a background click stalls, use the checked
+mouse-click fallback below.
 
 ## Backgrounded-tab rules
 
