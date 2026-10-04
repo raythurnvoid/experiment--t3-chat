@@ -18,6 +18,9 @@ crons.cron("cleanup extra notifications", "0 4 * * *", internal.notifications.cl
 // Once daily at 04:30 UTC.
 crons.cron("cleanup expired value store entries", "30 4 * * *", internal.value_store.cleanup_expired, {});
 
+// Once hourly — remove comment roots whose document mark was never saved.
+crons.cron("cleanup unconfirmed comments", "10 * * * *", internal.channels_messages.delete_unconfirmed_comments, {});
+
 // Once daily at 05:00 UTC.
 crons.cron("cleanup old snapshots", "0 5 * * *", internal.files_nodes.cleanup_old_snapshots, {});
 

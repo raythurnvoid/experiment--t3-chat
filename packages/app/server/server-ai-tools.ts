@@ -60,7 +60,6 @@ import {
 	bash_text_well_formed,
 	files_agent_write_file_text,
 } from "./bash-utils.ts";
-
 /**
  * Advanced replace utility mirroring OpenCode's edit replacer pipeline.
  *
@@ -631,6 +630,7 @@ export function ai_chat_tool_create_bash(args: {
 			When retrying a /tmp command option, prefer doing related scratch work in one call when convenient, but previous /tmp files are available in later calls in the same chat.
 			When a user names an app-root path like /docs, run it as ${currentWorkspacePath}/docs or cd ${currentWorkspacePath} and use docs; do not treat /docs as a host-root path.
 			Supported app-file inspection commands include pwd, cd, ls, find, search, cat, head, tail, wc, stat, single-file grep, and tree.
+			Messages use the read-only channels command in Ask and Agent modes. Run channels ls [--workspace current|home] [--kind public|private|direct|file] to list readable conversations. Run channels members '<reference>' for member or follower user ids, and channels read '<reference>' [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--thread ROOT_ID] [--format text|json] for messages in time order, including replies. Run channels search <words> [--in reference] [--from USER_ID] [--attachments true|false] [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--format text|json] to search readable message bodies. Use 1–16 words and at most 512 characters. Until is exclusive; dates use UTC. A reference is a channel id, #public-name, file:<printed shell path>, file:<node id>, or a full Messages app URL. Only the current workspace and the user's personal home are available. Limits are capped at 50; continue with the printed Next page command or the JSON nextCursor, even after an empty page. Inaccessible channels and files return Not found. The command cannot send or change messages.
 			When reporting Bash results, treat app-only flags such as --limit, --cursor, --path-query, and --extension as supported app Bash syntax; do not warn that a successful app command is non-standard.
 			Printed Next page commands use short cursor ids without an @ prefix; run the exact printed command to continue. If the user asks for exactly one continuation, one continuation, or one next page, run only the first printed continuation and then stop even if that page prints another Next page command. If the user asked for continuations from multiple commands, continue each requested command before summarizing.
 			If a failed Bash command prints a Try: command that directly matches the user's request, run that Try: command next instead of only reporting the failure.

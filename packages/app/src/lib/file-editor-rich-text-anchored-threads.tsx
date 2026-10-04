@@ -1,5 +1,5 @@
 // Adapted from `references-submodules/liveblocks/packages/liveblocks-react-tiptap/src/comments/AnchoredThreads.tsx`. Threads come
-// from Convex now, so the thread type is the app's own `chat_messages_Thread`.
+// from Convex channels now, so each thread contains its shaped root message.
 //
 // The `lb-tiptap-*` class names and the `--lb-tiptap-anchored-threads-top` variable are kept: the variable is
 // read by `file-editor-rich-text-comments.css` to position each thread.
@@ -9,7 +9,7 @@ import { createContext, use, useEffect, useEffectEvent, useLayoutEffect, useMemo
 
 import { files_THREADS_PLUGIN_KEY } from "../../shared/files-tiptap-comments.ts";
 import { file_editor_rich_text_get_rect_from_coords } from "@/lib/file-editor-rich-text-utils.ts";
-import type { chat_messages_Thread } from "@/lib/chat-messages.ts";
+import type { ChannelsMessage } from "@/components/channels/channels-message-window.ts";
 import { cn } from "@/lib/utils.ts";
 
 function readThreadElementDataset(element: HTMLElement) {
@@ -71,7 +71,7 @@ const FileEditorRichTextAnchoredThreadsItemContext =
 
 export type FileEditorRichTextAnchoredThreadsItem_Props = ComponentPropsWithRef<"div"> & {
 	className?: string;
-	thread: chat_messages_Thread;
+	thread: ChannelsMessage;
 	children: ReactNode;
 };
 
@@ -84,8 +84,8 @@ export function FileEditorRichTextAnchoredThreadsItem(props: FileEditorRichTextA
 			"FileEditorRichTextAnchoredThreadsItem must be used within a FileEditorRichTextAnchoredThreads component",
 		);
 
-	const threadId = thread.id;
-	const isActive = Boolean(context.selectedThreadId) && context.selectedThreadId === thread.id;
+	const threadId = thread.message._id;
+	const isActive = Boolean(context.selectedThreadId) && context.selectedThreadId === thread.message._id;
 
 	return (
 		<FileEditorRichTextAnchoredThreadsItemContext.Provider value={{ isActive }}>
@@ -119,7 +119,7 @@ export type FileEditorRichTextAnchoredThreads_CssVars = {
 };
 
 type ThreadWithEditorPosition = {
-	thread: chat_messages_Thread;
+	thread: ChannelsMessage;
 	position: { from: number; to: number };
 };
 
@@ -127,7 +127,7 @@ export interface FileEditorRichTextAnchoredThreads_Props extends ComponentPropsW
 	/**
 	 * The threads to display.
 	 */
-	threads: chat_messages_Thread[];
+	threads: ChannelsMessage[];
 
 	/**
 	 * The Tiptap editor.
@@ -158,7 +158,9 @@ export function FileEditorRichTextAnchoredThreads(props: FileEditorRichTextAncho
 			elementsHeights.set(child, child.getBoundingClientRect().height);
 			const elDataset = readThreadElementDataset(child);
 			if (elDataset.threadId != null) {
-				const threadWithEditorPosition = threadsWithEditorPosition.find((t) => t.thread.id === elDataset.threadId);
+				const threadWithEditorPosition = threadsWithEditorPosition.find(
+					(t) => t.thread.message._id === elDataset.threadId,
+				);
 
 				if (threadWithEditorPosition) {
 					elementsThreadsEditorPositionMap.set(child, threadWithEditorPosition);
@@ -233,7 +235,7 @@ export function FileEditorRichTextAnchoredThreads(props: FileEditorRichTextAncho
 			threadId,
 			position,
 		})).reduce((acc, { threadId, position }) => {
-			const thread = threads.find((thread) => thread.id === threadId && !thread.isArchived);
+			const thread = threads.find((thread) => thread.message._id === threadId && !thread.thread?.isResolved);
 			if (!thread) return acc;
 			acc.push({ thread, position });
 			return acc;

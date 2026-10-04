@@ -12,7 +12,7 @@ description: Organizations, workspaces, default personal/home tenant, membership
 - **Billing mode** lives on `organizations.billingMode`. Default/personal organizations always behave as `"user"` billing. Non-personal organizations are created with `"user"` billing by default and the organization owner may switch them to `"organization_owner"`.
 - `organizations.ownerUserId` is the billing payer only when `organizations.billingMode === "organization_owner"`. In `"user"` mode, the actor/member remains the payer.
 - Ownership transfer changes future owner-billed usage only. It does not rewrite historical usage, move snapshots, transfer credits, or affect `"user"` mode billing.
-- Tenant-scoped APIs should take `membershipId` whenever the caller is operating inside a current organization/workspace. Derive `organizationId` and `workspaceId` from the active membership doc instead of trusting client-provided scope strings. Comment APIs (`chat_messages.*`) follow this rule for create/add/archive/list/get.
+- Tenant-scoped APIs should take `membershipId` whenever the caller is operating inside a current organization/workspace. Derive `organizationId` and `workspaceId` from the active membership doc instead of trusting client-provided scope strings. Human messages and file comments use `channels.*` and `channels_messages.*` with this rule.
 - The **public API** (`api.organizations.*` mutations/queries and Convex helpers they call) is the contract. The **database schema** is wider (optional fields, flags) so migrations and edge docs can exist; do not assume “schema allows it ⇒ product allows it.” Enforce invariants in Convex handlers and in `packages/app/convex/organizations.ts`.
 
 # Comment terminology
@@ -184,6 +184,13 @@ Workspace-scope queue docs own content-lifecycle state after `organizations.dele
 Before the first bounded workspace content purge step, it sets the optional `organizations_workspaces.pluginDataPurgeStartedAt` fence. It disables enabled installations later, before plugin-owned rows drain. Plugin install and re-enable refuse while the fence is set, and every central plugin UI, store, service, and runtime gate requires the workspace doc to exist without the fence. A data-only reset clears the preserved home workspace fence only after the full reset finishes; a real workspace deletion removes it with the workspace doc, and that missing doc keeps the gates closed.
 
 ## Content purge coverage (`process_organization_deletion_request` / `process_workspace_deletion_request`)
+
+Human channels belong to one workspace. Private and direct member docs pin access to the workspace
+membership doc id. Organization removal drains channel members, read states, thread followers, and
+inbox items in batches before it deletes the inactive memberships. Account retention keeps those
+channel docs; restoring the same membership restores access. Final account cleanup drains the same
+personal state. Messages and reactions stay as workspace content. Workspace purge removes channel
+children before the channels. See [Channels](../channels/SKILL.md).
 
 This purge includes activities; pending updates; AI files, threads, messages, shells, transcripts, and job-note cursors; public API credentials, grants, and write stages; plugin runs, handlers, installations, secrets, and UI sessions; chat messages; file metadata, chunks, Yjs state, snapshots, stats, materialization jobs, R2 assets and objects; file permission grants; and file nodes last. Treat [data-deletion: Workspace Content Purge Coverage](../data-deletion/SKILL.md#workspace-content-purge-coverage) as the ordered list.
 

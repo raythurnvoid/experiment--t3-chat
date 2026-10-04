@@ -16,6 +16,7 @@ import {
 	ai_chat_files_db_request_job_stop,
 } from "./ai_chat_files.ts";
 import { organizations_membership_lifetimes_db_record } from "./organizations_membership_lifetimes.ts";
+import { channels_db_drain_member_batch, channels_db_purge_workspace_batch } from "./channels.ts";
 import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
 import {
 	internalAction,
@@ -1107,18 +1108,8 @@ async function db_purge_organization_workspace_content_batch(
 		return { done: false, deletedCount: 1 };
 	}
 
-	// Legacy chat messages are still workspace-scoped content and are purged with
-	// the same per-call deletion limit.
-	const chatMessages = await ctx.db
-		.query("chat_messages")
-		.withIndex("by_organization_workspace_thread", (q) =>
-			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
-		)
-		.take(batchSize);
-	if (chatMessages.length > 0) {
-		await Promise.all(chatMessages.map((doc) => ctx.db.delete("chat_messages", doc._id)));
-		return { done: false, deletedCount: chatMessages.length };
-	}
+	const deletedChannels = await channels_db_purge_workspace_batch(ctx, { organizationId, workspaceId, batchSize });
+	if (deletedChannels > 0) return { done: false, deletedCount: deletedChannels };
 
 	// File-derived content and snapshot docs are removed before jobs, assets,
 	// and file nodes, which are cleaned up at the end of this helper.
@@ -1398,8 +1389,7 @@ async function db_purge_organization_workspace_content_batch(
 	// still settle accepted bytes during a workspace's retention window. A preserved data-reset
 	// workspace also starts with fresh upload budgets after its content has been cleared.
 	for (const quotaName of [
-		"public_api_upload_bytes",
-		"plugin_service_storage_bytes",
+		"stored_file_bytes",
 		"files_private_user_bytes",
 		"files_private_workspace_bytes",
 		"files_private_nodes",
@@ -2461,6 +2451,8 @@ async function db_drain_user_plugin_publisher_docs_batch(
  * actor sit in another user's inbox and stay.
  */
 async function db_drain_user_inbox_batch(ctx: MutationCtx, args: { userId: Id<"users">; batchSize: number }) {
+	const channels = await channels_db_drain_member_batch(ctx, { userId: args.userId });
+	if (channels.drainedAny) return 1;
 	const activityStates = await ctx.db
 		.query("activities_user_states")
 		.withIndex("by_user_activity", (q) => q.eq("userId", args.userId))

@@ -1,0 +1,40 @@
+@layer components {
+	.ChannelsEmojiPicker {
+		width: min(320px, calc(100vw - 40px));
+		height: 340px;
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+		font-size: 0.9375rem;
+	}
+	.ChannelsEmojiPicker-search {
+		padding: 8px;
+		background: var(--color-base-1-05);
+		border-radius: 4px;
+		color: var(--color-fg-11);
+	}
+	.ChannelsEmojiPicker-viewport {
+		flex: 1;
+		min-height: 0;
+		position: relative;
+	}
+	.ChannelsEmojiPicker [frimousse-category-header] {
+		padding: 8px;
+		background: var(--color-base-alt-1-05);
+		color: var(--color-fg-08);
+		font-size: 0.8125rem;
+	}
+	.ChannelsEmojiPicker [frimousse-row] {
+		padding-inline: 4px;
+		scroll-margin-block: 4px;
+	}
+	.ChannelsEmojiPicker [frimousse-emoji] {
+		width: 36px;
+		height: 36px;
+		border-radius: 4px;
+		font-size: 1.375rem;
+		&[data-active] {
+			background: var(--color-base-1-05);
+		}
+	}
+}

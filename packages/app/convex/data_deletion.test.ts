@@ -1011,15 +1011,12 @@ async function data_deletion_test_seed_workspace_content_bulk(
 				fileNodeId: aiFileNodeId,
 				bytes: new ArrayBuffer(0),
 			}),
-			ctx.db.insert("chat_messages", {
+			test_mocks_fill_db_with.file_comment(ctx, {
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
 				fileNodeId,
-				threadId: null,
-				parentId: null,
-				isArchived: false,
-				createdBy: args.userId,
-				content: `${args.tag} ${i}`,
+				userId: args.userId,
+				body: `${args.tag} ${i}`,
 			}),
 			ctx.db.insert("api_credentials", {
 				serviceAccountId: null,
@@ -1147,7 +1144,7 @@ async function data_deletion_test_count_workspace_content(
 		ctx.db.query("api_credentials").collect(),
 		ctx.db.query("public_api_grants").collect(),
 		ctx.db.query("access_control_permission_grants").collect(),
-		ctx.db.query("chat_messages").collect(),
+		ctx.db.query("channels_messages").collect(),
 	]);
 	const inWorkspace = (row: { organizationId: string; workspaceId: string }) =>
 		row.organizationId === args.organizationId && row.workspaceId === args.workspaceId;
@@ -1213,7 +1210,8 @@ async function data_deletion_test_process_organization_request_until_done(
 	t: ReturnType<typeof test_convex>,
 	args: { requestId: Id<"data_deletion_requests">; batchSize?: number },
 ) {
-	for (let i = 0; i < 300; i += 1) {
+	// Channel state adds more batches to the large tenant fixtures.
+	for (let i = 0; i < 500; i += 1) {
 		const result = await t.run((ctx) =>
 			ctx.runMutation(internal.data_deletion.process_organization_deletion_request, {
 				requestId: args.requestId,
@@ -4742,7 +4740,7 @@ describe("process_workspace_deletion_request", () => {
 			});
 			const quotaId = await quotas_db_ensure(ctx, {
 				...scope,
-				quotaName: "plugin_service_storage_bytes",
+				quotaName: "stored_file_bytes",
 				now: Date.now(),
 			});
 			const requestId = await data_deletion_db_request(ctx, {
@@ -5973,7 +5971,7 @@ describe("process_organization_deletion_request", () => {
 				tag: "organization-request-extra-page",
 			});
 			await quotas_db_ensure(ctx, {
-				quotaName: "plugin_service_storage_bytes",
+				quotaName: "stored_file_bytes",
 				organizationId: organization.organizationId,
 				workspaceId: extraWorkspace.workspaceId,
 				now: Date.now(),
@@ -6525,20 +6523,13 @@ describe("hard_delete_user_data", () => {
 				tag: "reset-default-page",
 			});
 			const now = Date.now();
-			const serviceStorageQuotaId = await quotas_db_ensure(ctx, {
-				quotaName: "plugin_service_storage_bytes",
+			const storedFileQuotaId = await quotas_db_ensure(ctx, {
+				quotaName: "stored_file_bytes",
 				organizationId: user.defaultOrganizationId,
 				workspaceId: user.defaultWorkspaceId,
 				now,
 			});
-			await ctx.db.patch("quotas", serviceStorageQuotaId, { usedCount: 123, updatedAt: now });
-			const publicUploadQuotaId = await quotas_db_ensure(ctx, {
-				quotaName: "public_api_upload_bytes",
-				organizationId: user.defaultOrganizationId,
-				workspaceId: user.defaultWorkspaceId,
-				now,
-			});
-			await ctx.db.patch("quotas", publicUploadQuotaId, { usedCount: 456, updatedAt: now });
+			await ctx.db.patch("quotas", storedFileQuotaId, { usedCount: 456, updatedAt: now });
 			const defaultCustomRoleId = await ctx.db.insert("access_control_roles", {
 				organizationId: user.defaultOrganizationId,
 				name: "Reset reader",
@@ -6692,8 +6683,7 @@ describe("hard_delete_user_data", () => {
 				personalWorkspaceQuota,
 				userOrganizationQuota,
 				activeApiCredentialQuota,
-				serviceStorageQuota,
-				publicUploadQuota,
+				storedFileQuota,
 				userRequest,
 				defaultOrganizationRequest,
 				defaultWorkspaceRequest,
@@ -6763,13 +6753,7 @@ describe("hard_delete_user_data", () => {
 				ctx.db
 					.query("quotas")
 					.withIndex("by_workspace_quotaName", (q) =>
-						q.eq("workspaceId", user.defaultWorkspaceId).eq("quotaName", "plugin_service_storage_bytes"),
-					)
-					.first(),
-				ctx.db
-					.query("quotas")
-					.withIndex("by_workspace_quotaName", (q) =>
-						q.eq("workspaceId", user.defaultWorkspaceId).eq("quotaName", "public_api_upload_bytes"),
+						q.eq("workspaceId", user.defaultWorkspaceId).eq("quotaName", "stored_file_bytes"),
 					)
 					.first(),
 				ctx.db.get("data_deletion_requests", seeded.userRequestId),
@@ -6797,8 +6781,7 @@ describe("hard_delete_user_data", () => {
 				personalWorkspaceQuota,
 				userOrganizationQuota,
 				activeApiCredentialQuota,
-				serviceStorageQuota,
-				publicUploadQuota,
+				storedFileQuota,
 				userRequest,
 				defaultOrganizationRequest,
 				defaultWorkspaceRequest,
@@ -6826,8 +6809,7 @@ describe("hard_delete_user_data", () => {
 		expect(after.personalWorkspaceQuota?.usedCount).toBe(0);
 		expect(after.userOrganizationQuota?.usedCount).toBe(0);
 		expect(after.activeApiCredentialQuota?.usedCount).toBe(0);
-		expect(after.serviceStorageQuota).toBeNull();
-		expect(after.publicUploadQuota).toBeNull();
+		expect(after.storedFileQuota).toBeNull();
 		expect(after.userRequest).toBeNull();
 		expect(after.defaultOrganizationRequest).toBeNull();
 		expect(after.defaultWorkspaceRequest).toBeNull();

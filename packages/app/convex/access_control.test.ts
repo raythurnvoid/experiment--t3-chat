@@ -38,6 +38,7 @@ import { files_sort_text_key } from "../shared/files-sort.ts";
 import { organizations_membership_lifetimes_db_ensure } from "./organizations_membership_lifetimes.ts";
 import { ai_chat_runs_db_insert_node } from "./ai_chat_runs.ts";
 import { ai_chat_DEFAULT_MODEL_ID } from "../shared/ai-chat.ts";
+import type { FunctionArgs } from "convex/server";
 
 type TestConvex = ReturnType<typeof test_convex>;
 
@@ -64,7 +65,8 @@ async function access_control_test_bootstrap_user(t: TestConvex, args: { clerkUs
 async function access_control_test_reset_write_rate_limit(t: TestConvex, userId: Id<"users">) {
 	await t.run(async (ctx) => {
 		const names = [
-			"comments_write",
+			"channels_message_write",
+			"channels_write",
 			"organizations_write",
 			"roles_write",
 			"ai_chat_http",
@@ -410,7 +412,7 @@ async function access_control_test_demote_to_viewer(
 	expect(demoted._nay).toBeUndefined();
 }
 
-/** A folder nothing restricts, so a comment on it answers to the workspace and not to a share list. */
+/** An open folder for ordinary file and permission tests. */
 async function access_control_test_seed_open_folder(
 	fixture: Awaited<ReturnType<typeof access_control_test_seed_enforcement_fixture>>,
 	args: { name: string },
@@ -422,6 +424,52 @@ async function access_control_test_seed_open_folder(
 	});
 	expect(folder._nay).toBeUndefined();
 	return folder._yay!.nodeId;
+}
+
+async function access_control_test_seed_comment_file(
+	t: TestConvex,
+	fixture: Awaited<ReturnType<typeof access_control_test_seed_enforcement_fixture>>,
+	parentId: Id<"files_nodes"> | "root" = "root",
+) {
+	return t.run(async (ctx) => {
+		const parent = parentId === "root" ? null : await ctx.db.get("files_nodes", parentId);
+		const path = `${parent?.path ?? ""}/comments.md`;
+		return ctx.db.insert("files_nodes", {
+			...test_mocks.files.base(),
+			organizationId: fixture.organizationId,
+			workspaceId: fixture.defaultWorkspaceId,
+			kind: "file",
+			textKind: "rich_text",
+			name: "comments.md",
+			path,
+			treePath: path,
+			parentId,
+			restrictedScopeNodeId: parent?.restrictedScopeNodeId ?? null,
+			createdBy: fixture.ownerId,
+			updatedBy: fixture.ownerId,
+		});
+	});
+}
+
+function access_control_test_send_comment(
+	fixture: Awaited<ReturnType<typeof access_control_test_seed_enforcement_fixture>>,
+	caller: "owner" | "member",
+	target: FunctionArgs<typeof api.channels_messages.send_message>["target"],
+	body: string,
+) {
+	return (caller === "owner" ? fixture.asOwner : fixture.asMember).mutation(api.channels_messages.send_message, {
+		membershipId: caller === "owner" ? fixture.ownerMembershipId : fixture.memberMembershipId,
+		target,
+		body,
+		clientMessageId: crypto.randomUUID(),
+		mentionUserIds: [],
+		fileMentionIds: [],
+		fileQuotes: [],
+		attachments: [],
+		replyTo: null,
+		alsoInChannel: false,
+		title: null,
+	});
 }
 
 describe("access_control_db_set_service_account_grant", () => {
@@ -1831,6 +1879,7 @@ describe("enforcement", () => {
 		});
 		expect(folder._nay).toBeUndefined();
 
+		const commentFileId = await access_control_test_seed_comment_file(t, fixture, folder._yay!.nodeId);
 		const [{ page: tree }, thread, comment] = await Promise.all([
 			fixture.asMember.query(api.files_nodes.list_tree, {
 				membershipId: fixture.memberMembershipId,
@@ -1841,11 +1890,12 @@ describe("enforcement", () => {
 				clientGeneratedId: "thread-member-work",
 				lastMessageAt: 1,
 			}),
-			fixture.asMember.mutation(api.chat_messages.chat_messages_threads_create, {
-				membershipId: fixture.memberMembershipId,
-				fileNodeId: folder._yay!.nodeId,
-				content: "Looks good to me",
-			}),
+			access_control_test_send_comment(
+				fixture,
+				"member",
+				{ kind: "file_comment", fileNodeId: commentFileId, anchorExcerpt: null },
+				"Looks good to me",
+			),
 		]);
 
 		expect(tree.length).toBeGreaterThan(0);
@@ -1983,7 +2033,7 @@ describe("enforcement", () => {
 		});
 
 		// Created before the demotion, because the viewer below may not create anything.
-		const commentFolderId = await access_control_test_seed_open_folder(fixture, { name: "comments-on" });
+		const commentFileId = await access_control_test_seed_comment_file(t, fixture);
 
 		await access_control_test_demote_to_viewer(fixture);
 
@@ -1994,11 +2044,12 @@ describe("enforcement", () => {
 				clientGeneratedId: "thread-viewer",
 				lastMessageAt: 1,
 			}),
-			fixture.asMember.mutation(api.chat_messages.chat_messages_threads_create, {
-				membershipId: fixture.memberMembershipId,
-				fileNodeId: commentFolderId,
-				content: "A comment is content",
-			}),
+			access_control_test_send_comment(
+				fixture,
+				"member",
+				{ kind: "file_comment", fileNodeId: commentFileId, anchorExcerpt: null },
+				"A comment is content",
+			),
 			fixture.asMember.mutation(api.activities.archive_all_activities, {
 				membershipId: fixture.memberMembershipId,
 				cursor: null,
@@ -2090,23 +2141,26 @@ describe("enforcement", () => {
 		expect(stillActive?.status).toBe("succeeded");
 	});
 
-	test("a role without content.read cannot read comments through any of their queries", async () => {
+	test("a role without content.read cannot read file comments", async () => {
 		const t = test_convex();
 		const fixture = await access_control_test_seed_enforcement_fixture(t, {
 			name: "comment-read-org",
 			suffix: "comment-read",
 		});
-
-		const commentFolderId = await access_control_test_seed_open_folder(fixture, { name: "comments-on" });
-
-		const thread = await fixture.asOwner.mutation(api.chat_messages.chat_messages_threads_create, {
+		const fileNodeId = await access_control_test_seed_comment_file(t, fixture);
+		const sent = await access_control_test_send_comment(
+			fixture,
+			"owner",
+			{ kind: "file_comment", fileNodeId, anchorExcerpt: null },
+			"A private file discussion",
+		);
+		expect(sent._nay).toBeUndefined();
+		const rootMessageId = sent._yay!.rootMessageId;
+		const ownerRoot = await fixture.asOwner.query(api.channels_messages.get_message, {
 			membershipId: fixture.ownerMembershipId,
-			fileNodeId: commentFolderId,
-			content: "A comment nobody without read may see",
+			messageId: rootMessageId,
 		});
-		expect(thread._nay).toBeUndefined();
-		const threadId = thread._yay!.threadId;
-
+		const channelId = ownerRoot!.message.channelId;
 		const role = await fixture.asOwner.mutation(api.access_control.create_role, {
 			organizationId: fixture.organizationId,
 			name: "Workspace maker",
@@ -2114,9 +2168,7 @@ describe("enforcement", () => {
 			permissions: ["workspace.create"],
 		});
 		expect(role._nay).toBeUndefined();
-
 		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
-
 		const assigned = await fixture.asOwner.mutation(api.access_control.set_user_role, {
 			organizationId: fixture.organizationId,
 			workspaceId: fixture.defaultWorkspaceId,
@@ -2124,94 +2176,70 @@ describe("enforcement", () => {
 			role: role._yay!.roleId,
 		});
 		expect(assigned._nay).toBeUndefined();
-
-		// Three separate handlers, each with its own permission check and its own empty answer. Covering
-		// one of them says nothing about the other two.
-		const [listed, got, heads] = await Promise.all([
-			fixture.asMember.query(api.chat_messages.chat_messages_list, {
+		const [message, thread, posts, channel] = await Promise.all([
+			fixture.asMember.query(api.channels_messages.get_message, {
 				membershipId: fixture.memberMembershipId,
-				threadId,
-				limit: 10,
+				messageId: rootMessageId,
 			}),
-			fixture.asMember.query(api.chat_messages.chat_messages_get, {
+			fixture.asMember.query(api.channels_messages.get_thread_by_root, {
 				membershipId: fixture.memberMembershipId,
-				messageId: threadId,
+				rootMessageId,
 			}),
-			fixture.asMember.query(api.chat_messages.chat_messages_threads_list, {
+			fixture.asMember.query(api.channels_messages.list_posts, {
 				membershipId: fixture.memberMembershipId,
-				threadIds: [String(threadId)],
+				channelId,
+				filter: "all",
+				paginationOpts: { cursor: null, numItems: 50 },
 			}),
+			fixture.asMember.query(api.channels.get_file_channel, { membershipId: fixture.memberMembershipId, fileNodeId }),
 		]);
-
-		expect(listed).toEqual({ messages: [] });
-		expect(got).toBeNull();
-		expect(heads).toEqual({ threads: [] });
-
-		// The owner calls the same three handlers and gets data, so the empty answers above come from the
-		// permission check and not from an empty workspace.
-		const [ownerListed, ownerGot, ownerHeads] = await Promise.all([
-			fixture.asOwner.query(api.chat_messages.chat_messages_list, {
-				membershipId: fixture.ownerMembershipId,
-				threadId,
-				limit: 10,
-			}),
-			fixture.asOwner.query(api.chat_messages.chat_messages_get, {
-				membershipId: fixture.ownerMembershipId,
-				messageId: threadId,
-			}),
-			fixture.asOwner.query(api.chat_messages.chat_messages_threads_list, {
-				membershipId: fixture.ownerMembershipId,
-				threadIds: [String(threadId)],
-			}),
-		]);
-
-		expect(ownerListed.messages).toHaveLength(1);
-		expect(ownerGot?._id).toBe(threadId);
-		expect(ownerHeads.threads).toHaveLength(1);
+		expect(message).toBeNull();
+		expect(thread).toBeNull();
+		expect(posts.page).toEqual([]);
+		expect(channel).toBeNull();
+		expect(
+			(
+				await fixture.asOwner.query(api.channels_messages.list_posts, {
+					membershipId: fixture.ownerMembershipId,
+					channelId,
+					filter: "all",
+					paginationOpts: { cursor: null, numItems: 50 },
+				})
+			).page,
+		).toHaveLength(1);
 	});
 
-	test("a viewer cannot reply to or archive a comment", async () => {
+	test("a viewer cannot reply to or resolve a file comment", async () => {
 		const t = test_convex();
 		const fixture = await access_control_test_seed_enforcement_fixture(t, {
 			name: "comment-write-org",
 			suffix: "comment-write",
 		});
-
-		const commentFolderId = await access_control_test_seed_open_folder(fixture, { name: "comments-on" });
-
-		const thread = await fixture.asOwner.mutation(api.chat_messages.chat_messages_threads_create, {
-			membershipId: fixture.ownerMembershipId,
-			fileNodeId: commentFolderId,
-			content: "Owner comment",
-		});
-		expect(thread._nay).toBeUndefined();
-		const threadId = thread._yay!.threadId;
-
+		const fileNodeId = await access_control_test_seed_comment_file(t, fixture);
+		const sent = await access_control_test_send_comment(
+			fixture,
+			"owner",
+			{ kind: "file_comment", fileNodeId, anchorExcerpt: null },
+			"Owner comment",
+		);
+		expect(sent._nay).toBeUndefined();
+		const rootMessageId = sent._yay!.rootMessageId;
 		await access_control_test_demote_to_viewer(fixture);
-
-		// `comments_write` is a STRICT_WRITE limit with room for 2 calls, and both mutations below take a
-		// token *before* the permission check. Without this reset the two calls sit exactly at the
-		// limit, so any earlier comment write in this test would turn one "Permission denied" into
-		// "Rate limit exceeded".
-		await access_control_test_reset_write_rate_limit(t, fixture.memberId);
-
-		const [replied, archived] = await Promise.all([
-			fixture.asMember.mutation(api.chat_messages.chat_messages_add, {
+		const [replied, resolved] = await Promise.all([
+			access_control_test_send_comment(fixture, "member", { kind: "thread", rootMessageId }, "A reply is content too"),
+			fixture.asMember.mutation(api.channels_messages.resolve_thread, {
 				membershipId: fixture.memberMembershipId,
-				rootId: threadId,
-				content: "A reply is content too",
-			}),
-			fixture.asMember.mutation(api.chat_messages.chat_messages_archive, {
-				membershipId: fixture.memberMembershipId,
-				messageId: threadId,
+				rootMessageId,
 			}),
 		]);
-
-		expect(replied._nay?.message).toBe("Permission denied");
-		expect(archived._nay?.message).toBe("Permission denied");
-
-		const untouched = await t.run((ctx) => ctx.db.get("chat_messages", threadId));
-		expect(untouched?.isArchived).toBe(false);
+		expect(replied._nay?.message).toBe("You have view-only access");
+		expect(resolved._nay?.message).toBe("You have view-only access");
+		const untouched = await fixture.asOwner.query(api.channels_messages.get_thread_by_root, {
+			membershipId: fixture.ownerMembershipId,
+			rootMessageId,
+		});
+		expect(untouched?.thread?.isResolved).toBe(false);
+		expect(untouched?.thread?.replyCount).toBe(0);
 	});
 
 	test.each(["owner", "admin", "member", "viewer"] as const)(
@@ -3159,6 +3187,7 @@ describe("system roles", () => {
 				"workspace.delete",
 				"workspace.members.manage",
 				"workspace.browser.use",
+				"workspace.channels.manage",
 				"workspace.mcp.use",
 				"workspace.service_accounts.manage",
 				"workspace.update",
@@ -8820,53 +8849,48 @@ describe("file sharing", () => {
 		expect(visible?._id).toBe(loose._yay!.nodeId);
 	});
 
-	test("comments on a restricted folder follow the folder, not the workspace", async () => {
+	test("file comments follow the inherited file share, not the workspace", async () => {
 		const t = test_convex();
 		const fixture = await access_control_test_seed_enforcement_fixture(t, {
 			name: "comment-scope-org",
 			suffix: "comment-scope",
 		});
 		const { folderId } = await seed_restricted_folder({ t, fixture, name: "closed" });
-
-		const thread = await fixture.asOwner.mutation(api.chat_messages.chat_messages_threads_create, {
+		const fileNodeId = await access_control_test_seed_comment_file(t, fixture, folderId);
+		const sent = await access_control_test_send_comment(
+			fixture,
+			"owner",
+			{ kind: "file_comment", fileNodeId, anchorExcerpt: null },
+			"The payroll numbers are wrong",
+		);
+		expect(sent._nay).toBeUndefined();
+		const rootMessageId = sent._yay!.rootMessageId;
+		const root = await fixture.asOwner.query(api.channels_messages.get_message, {
 			membershipId: fixture.ownerMembershipId,
-			fileNodeId: folderId,
-			content: "The payroll numbers are wrong",
+			messageId: rootMessageId,
 		});
-		expect(thread._nay).toBeUndefined();
-		const threadId = thread._yay!.threadId;
-
-		// The member holds workspace read and write, which used to be the whole question. It is not the
-		// question any more: the folder is, and they are not on its share list.
-		const [listed, got, heads] = await Promise.all([
-			fixture.asMember.query(api.chat_messages.chat_messages_list, {
+		const channelId = root!.message.channelId;
+		const [message, thread, posts, reply] = await Promise.all([
+			fixture.asMember.query(api.channels_messages.get_message, {
 				membershipId: fixture.memberMembershipId,
-				threadId,
-				limit: 10,
+				messageId: rootMessageId,
 			}),
-			fixture.asMember.query(api.chat_messages.chat_messages_get, {
+			fixture.asMember.query(api.channels_messages.get_thread_by_root, {
 				membershipId: fixture.memberMembershipId,
-				messageId: threadId,
+				rootMessageId,
 			}),
-			fixture.asMember.query(api.chat_messages.chat_messages_threads_list, {
+			fixture.asMember.query(api.channels_messages.list_posts, {
 				membershipId: fixture.memberMembershipId,
-				threadIds: [String(threadId)],
+				channelId,
+				filter: "all",
+				paginationOpts: { cursor: null, numItems: 50 },
 			}),
+			access_control_test_send_comment(fixture, "member", { kind: "thread", rootMessageId }, "Let me look"),
 		]);
-		expect(listed).toEqual({ messages: [] });
-		expect(got).toBeNull();
-		expect(heads).toEqual({ threads: [] });
-
-		const replied = await fixture.asMember.mutation(api.chat_messages.chat_messages_add, {
-			membershipId: fixture.memberMembershipId,
-			rootId: threadId,
-			content: "Let me look",
-		});
-		expect(replied._nay?.message).toBe("Permission denied");
-
-		await access_control_test_reset_write_rate_limit(t, fixture.memberId);
-
-		// A read share is enough to follow the discussion, and not enough to join it.
+		expect(message).toBeNull();
+		expect(thread).toBeNull();
+		expect(posts.page).toEqual([]);
+		expect(reply._nay?.message).toBe("Not found");
 		const granted = await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, {
 			membershipId: fixture.ownerMembershipId,
 			nodeId: folderId,
@@ -8874,21 +8898,15 @@ describe("file sharing", () => {
 			level: "read",
 		});
 		expect(granted._nay).toBeUndefined();
-
-		const [readerListed, readerReplied] = await Promise.all([
-			fixture.asMember.query(api.chat_messages.chat_messages_list, {
+		const [readerMessage, readerReply] = await Promise.all([
+			fixture.asMember.query(api.channels_messages.get_message, {
 				membershipId: fixture.memberMembershipId,
-				threadId,
-				limit: 10,
+				messageId: rootMessageId,
 			}),
-			fixture.asMember.mutation(api.chat_messages.chat_messages_add, {
-				membershipId: fixture.memberMembershipId,
-				rootId: threadId,
-				content: "Let me look",
-			}),
+			access_control_test_send_comment(fixture, "member", { kind: "thread", rootMessageId }, "Let me look"),
 		]);
-		expect(readerListed.messages).toHaveLength(1);
-		expect(readerReplied._nay?.message).toBe("Permission denied");
+		expect(readerMessage?.message._id).toBe(rootMessageId);
+		expect(readerReply._nay?.message).toBe("You have view-only access");
 	});
 
 	test("a role can only be on so many share lists", async () => {
@@ -10920,60 +10938,58 @@ describe("file write policy management", () => {
 		expect(assigned._nay).toBeUndefined();
 	}
 
-	test("direct comment sidecars stay under comment ACL while the file is locked", async () => {
+	test("general file comments ignore the file lock and resolve does not write the file", async () => {
 		const t = test_convex();
 		const fixture = await access_control_test_seed_enforcement_fixture(t, {
 			name: "lock-comments-org",
 			suffix: "lock-comments",
 		});
-
-		const folderId = await access_control_test_seed_open_folder(fixture, { name: "comments" });
-		const thread = await fixture.asOwner.mutation(api.chat_messages.chat_messages_threads_create, {
-			membershipId: fixture.ownerMembershipId,
-			fileNodeId: folderId,
-			content: "Before lock",
-		});
-		expect(thread._nay).toBeUndefined();
-
+		const fileNodeId = await access_control_test_seed_comment_file(t, fixture);
+		const target = { kind: "file_comment" as const, fileNodeId, anchorExcerpt: null };
+		const sent = await access_control_test_send_comment(fixture, "owner", target, "Before lock");
+		expect(sent._nay).toBeUndefined();
+		const rootMessageId = sent._yay!.rootMessageId;
 		const locked = await fixture.asOwner.mutation(api.files_nodes.set_node_write_policy, {
 			writePolicy: { mode: "read_only" },
 			membershipId: fixture.ownerMembershipId,
-			nodeId: folderId,
+			nodeId: fileNodeId,
 		});
 		expect(locked._nay).toBeUndefined();
-
-		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
-		const created = await fixture.asOwner.mutation(api.chat_messages.chat_messages_threads_create, {
-			membershipId: fixture.ownerMembershipId,
-			fileNodeId: folderId,
-			content: "Created after lock",
-		});
+		const before = await t.run((ctx) => ctx.db.get("files_nodes", fileNodeId));
+		const created = await access_control_test_send_comment(fixture, "owner", target, "Created after lock");
 		expect(created._nay).toBeUndefined();
-
-		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
-		const replied = await fixture.asOwner.mutation(api.chat_messages.chat_messages_add, {
-			membershipId: fixture.ownerMembershipId,
-			rootId: thread._yay!.threadId,
-			content: "Reply after lock",
-		});
+		const replied = await access_control_test_send_comment(
+			fixture,
+			"owner",
+			{ kind: "thread", rootMessageId },
+			"Reply after lock",
+		);
 		expect(replied._nay).toBeUndefined();
-
-		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
-		const archived = await fixture.asOwner.mutation(api.chat_messages.chat_messages_archive, {
+		const resolved = await fixture.asOwner.mutation(api.channels_messages.resolve_thread, {
 			membershipId: fixture.ownerMembershipId,
-			messageId: thread._yay!.threadId,
+			rootMessageId,
 		});
-		expect(archived._nay).toBeUndefined();
-
-		const state = await t.run(async (ctx) => {
-			const root = await ctx.db.get("chat_messages", thread._yay!.threadId);
-			const messages = (await ctx.db.query("chat_messages").collect()).filter(
-				(message) => message.fileNodeId === folderId,
-			);
-			return { root, contents: messages.map((message) => message.content).sort() };
+		expect(resolved._nay).toBeUndefined();
+		const root = await fixture.asOwner.query(api.channels_messages.get_thread_by_root, {
+			membershipId: fixture.ownerMembershipId,
+			rootMessageId,
 		});
-		expect(state.root?.isArchived).toBe(true);
-		expect(state.contents).toEqual(["Before lock", "Created after lock", "Reply after lock"]);
+		expect(root?.thread?.isResolved).toBe(true);
+		const messages = await t.run((ctx) =>
+			ctx.db
+				.query("channels_messages")
+				.withIndex("by_channel", (q) => q.eq("channelId", root!.root.message.channelId))
+				.collect(),
+		);
+		expect(messages.map((message) => message.body).sort()).toEqual([
+			"Before lock",
+			"Created after lock",
+			"Reply after lock",
+		]);
+		expect(
+			await t.run((ctx) => ctx.db.get("files_nodes", fileNodeId)),
+			"resolve must not change the stored file",
+		).toEqual(before);
 	});
 
 	test("locking takes content.permissions.manage: manager and owner pass, writer and viewer do not", async () => {

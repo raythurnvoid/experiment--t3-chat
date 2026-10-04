@@ -317,7 +317,7 @@ A reply can have up to 25 model steps. To prove how many steps ran, or how big a
 stored steps, not the cards. A reply node in `ai_chat_threads_messages_aisdk_5` holds no parts: each
 model step is one row in `ai_chat_run_steps` (`messageId` = the reply node, `stepIndex`, `status`
 `done` or `partial`, `parts`, `bytes`). The reply node's own `bytes` counts its content plus its
-steps. The table `chat_messages` holds file comments. Export a few recent rows to the task folder,
+steps. Human messages and file comments use `channels_messages`. Export a few recent step rows to the task folder,
 then count the rows per `messageId` and the tool parts in each row's `parts`:
 
 ```powershell

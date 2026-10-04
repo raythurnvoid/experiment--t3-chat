@@ -212,6 +212,23 @@ describe("inspect_polar_billing_page", () => {
 		expect(result).toMatchObject({ _yay: { events: { page: 5, items: [{ customerId: CUSTOMER_ID }] } } });
 	});
 
+	test("reads a stored upload's amount and bytes", async () => {
+		const t = test_convex();
+		const userId = await seed_user(t);
+		const metadata = { name: "file_upload", amount: 2, bytes: 20 * 1024 * 1024 + 1, billedUserId: userId };
+		vi.spyOn(globalThis, "fetch")
+			.mockResolvedValueOnce(json_response(customer_response(userId)))
+			.mockResolvedValueOnce(
+				json_response({ items: [{ ...event_response(userId), metadata }], pagination: { has_next_page: false } }),
+			);
+		expect(
+			await t.action(internal.billing.inspect_polar_billing_page, {
+				...request_args(userId),
+				events: { page: 1, metadata: { name: "file_upload" } },
+			}),
+		).toMatchObject({ _yay: { events: { items: [{ metadata }] } } });
+	});
+
 	test("wrong external payer is refused", async () => {
 		const t = test_convex();
 		const userId = await seed_user(t);
@@ -314,6 +331,10 @@ describe("inspect_polar_billing_page", () => {
 		{ metadata: { name: "unknown_event", amount: 1 } },
 		{ metadata: { name: "manual_credit", amount: "1" } },
 		{ metadata: { name: "manual_credit" } },
+		{ metadata: { name: "file_upload", amount: 2 } },
+		{ metadata: { name: "file_upload", amount: 2, bytes: "20971521" } },
+		{ metadata: { name: "file_upload", amount: 2, bytes: -1 } },
+		{ metadata: { name: "file_upload", amount: 2, bytes: 1.5 } },
 	])("refuses malformed event fields %j", async (change) => {
 		const t = test_convex();
 		const userId = await seed_user(t);

@@ -1367,8 +1367,8 @@ export type BonoboConvexApi = {
 		watch_recent: import("convex/server").FunctionReference<"query", "public", {
 			order?: "asc" | "desc" | undefined;
 			scopeId?: string | undefined;
-			before?: number | undefined;
 			since?: number | undefined;
+			before?: number | undefined;
 			collection: string;
 			limit: number;
 		}, {

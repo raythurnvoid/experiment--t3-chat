@@ -288,6 +288,75 @@ describe("/api/chat tool call repair", () => {
 	});
 });
 
+describe("/api/chat file quotes", () => {
+	test("hands the model selected text and keeps file details out of model input", async () => {
+		const { t, asUser, membership, threadId } = await setup();
+		const fileNodeId = await test_create_saved_text_file(t, {
+			membershipId: membership.membershipId,
+			path: "/protected-source.md",
+			textContent: "Source text",
+		});
+		const response = await asUser.fetch("/api/chat", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				messages: [
+					{
+						id: "quote-request",
+						role: "user",
+						parts: [
+							{ type: "text", text: "Explain " },
+							{ type: "data-file-quote", data: { fileNodeId, text: "These selected words" } },
+						],
+					},
+				],
+				parentId: null,
+				mode: "ask",
+				model: "gpt-6-luna",
+				trigger: "submit-message",
+				threadId,
+				membershipId: membership.membershipId,
+				browserIntent: { policyRevision: 0 },
+			}),
+		});
+		const body = await response.text();
+		expect(response.status, body).toBe(200);
+		const call = model.streamText.mock.calls[0]![0] as Parameters<typeof streamText>[0];
+		expect(JSON.stringify(call.messages), "model input must include selected quote text").toContain(
+			"These selected words",
+		);
+		expect(JSON.stringify(call.messages)).not.toContain(fileNodeId);
+		expect(JSON.stringify(call.messages)).not.toContain("protected-source.md");
+	});
+
+	test("rejects copied paths and bad quote fields before the model runs", async () => {
+		const { asUser, membership, threadId } = await setup();
+		const response = await asUser.fetch("/api/chat", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				messages: [
+					{
+						id: "bad-quote",
+						role: "user",
+						parts: [{ type: "data-file-quote", data: { fileNodeId: null, text: "Selected", path: "/secret.md" } }],
+					},
+				],
+				parentId: null,
+				mode: "ask",
+				model: "gpt-6-luna",
+				trigger: "submit-message",
+				threadId,
+				membershipId: membership.membershipId,
+				browserIntent: { policyRevision: 0 },
+			}),
+		});
+		expect(response.status).toBe(400);
+		expect(await response.text()).toContain("Invalid file quotes");
+		expect(model.streamText).not.toHaveBeenCalled();
+	});
+});
+
 describe("/api/chat run access", () => {
 	test.each([
 		{ preparation: "chat", revoked: false },

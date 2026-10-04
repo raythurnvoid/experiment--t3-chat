@@ -46,6 +46,9 @@ function upload_failure(failure: { name?: string; message: string }) {
 	if (failure.name === REFUSAL_CONFLICT) {
 		return { status: 409, body: { message } } as const;
 	}
+	if (failure.name === ("oversized_upload" satisfies public_api_service_uploads_RefusalName)) {
+		return { status: 409, body: { message } } as const;
+	}
 	if (failure.name === REFUSAL_STORAGE_FULL) {
 		return { status: 403, body: { message } } as const;
 	}

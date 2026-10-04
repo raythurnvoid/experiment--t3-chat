@@ -9,10 +9,16 @@ import { useEffect } from "react";
 import type { app_convex_Id } from "./app-convex-client.ts";
 import { useLiveRef } from "../hooks/utils-hooks.ts";
 import { XCustomEvent } from "./utils.ts";
+import type { file_quotes_Quote } from "../../shared/file-quotes.ts";
 
 // #region custom events
 export class global_custom_event_Event extends XCustomEvent<{
 	"files::review_all_pending": { membershipId: app_convex_Id<"organizations_workspaces_users"> };
+	"files::quote_selection": {
+		membershipId: app_convex_Id<"organizations_workspaces_users">;
+		target: "agent" | "comments";
+		quote: file_quotes_Quote;
+	};
 	"files::open_browser": {
 		membershipId: app_convex_Id<"organizations_workspaces_users">;
 		nodeId: string;

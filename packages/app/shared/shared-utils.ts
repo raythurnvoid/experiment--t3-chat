@@ -182,6 +182,14 @@ export type AppCompositeIds = {
 				version: string,
 		  ]
 		| [
+				kind: "file_upload",
+				billedUserId: string,
+				actorUserId: string,
+				organizationId: string,
+				workspaceId: string,
+				chargeKey: string,
+		  ]
+		| [
 				kind: "plugin_volume_file_write",
 				billedUserId: string,
 				actorUserId: string,

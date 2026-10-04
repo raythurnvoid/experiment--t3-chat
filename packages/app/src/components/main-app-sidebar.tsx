@@ -12,6 +12,7 @@ import {
 	Images,
 	KeyRound,
 	MessageSquare,
+	MessagesSquare,
 	Monitor,
 	Moon,
 	PanelLeftClose,
@@ -26,6 +27,7 @@ import {
 import { Link, useRouterState, type RegisteredRouter } from "@tanstack/react-router";
 import { useQuery } from "convex/react";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
+import { AppChannelsProvider } from "@/lib/app-channels-context.tsx";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
 import {
 	url_path_api_keys,
@@ -33,6 +35,7 @@ import {
 	url_path_chat,
 	url_path_files,
 	url_path_mcp_servers,
+	url_path_messages,
 	url_path_plugin_page,
 	url_path_plugins,
 	url_path_roles,
@@ -140,19 +143,25 @@ const ProfileSection = memo(function ProfileSection() {
 // #endregion profile section
 
 // #region item
-type MainAppSidebarItem_ClassNames = "MainAppSidebarItem" | "MainAppSidebarItem-trigger" | "MainAppSidebarItem-title";
+type MainAppSidebarItem_ClassNames =
+	| "MainAppSidebarItem"
+	| "MainAppSidebarItem-trigger"
+	| "MainAppSidebarItem-title"
+	| "MainAppSidebarItem-unread";
+type MainAppSidebarItem_CustomAttributes = { "data-unread": string | undefined };
 
 type MainAppSidebarItem_Props = {
 	to: string;
 	label: string;
 	icon: LucideIcon;
 	tooltip?: string;
+	unread?: boolean;
 	/** Subpaths matching this do not make the item active — used when a descendant route has its own nav item. */
 	subpathExcludePattern?: RegExp;
 };
 
 const MainAppSidebarItem = memo(function MainAppSidebarItem(props: MainAppSidebarItem_Props) {
-	const { to, label, icon: Icon, tooltip, subpathExcludePattern } = props;
+	const { to, label, icon: Icon, tooltip, unread, subpathExcludePattern } = props;
 
 	const pathname = useRouterState<RegisteredRouter, string>({
 		select: (state) => state.location.pathname,
@@ -174,6 +183,9 @@ const MainAppSidebarItem = memo(function MainAppSidebarItem(props: MainAppSideba
 				to={to}
 				className={"MainAppSidebarItem-trigger" satisfies MainAppSidebarItem_ClassNames}
 				data-selected={isActive ? "true" : undefined}
+				{...({
+					"data-unread": unread === undefined ? undefined : String(unread),
+				} satisfies MainAppSidebarItem_CustomAttributes)}
 				tooltip={tooltip}
 				tooltipPlacement={tooltip ? "right" : undefined}
 			>
@@ -183,6 +195,11 @@ const MainAppSidebarItem = memo(function MainAppSidebarItem(props: MainAppSideba
 				<MySidebarListItemTitle className={"MainAppSidebarItem-title" satisfies MainAppSidebarItem_ClassNames}>
 					{label}
 				</MySidebarListItemTitle>
+				{unread && (
+					<span className={"MainAppSidebarItem-unread" satisfies MainAppSidebarItem_ClassNames} title="Unread mentions">
+						•
+					</span>
+				)}
 			</MySidebarListItemPrimaryActionLink>
 		</MySidebarListItem>
 	);
@@ -427,6 +444,7 @@ export const MainAppSidebar = memo(function MainAppSidebar(props: MainAppSidebar
 	const { ref, id, className } = props;
 
 	const { membershipId, organizationId, organizationName, workspaceId, workspaceName } = AppTenantProvider.useContext();
+	const { unreadMentions } = AppChannelsProvider.useContext();
 	const organizationList = useQuery(app_convex_api.organizations.list);
 	const pluginPages = useQuery(app_convex_api.plugins_ui.list_ui_pages, { membershipId });
 	const organization = organizationList?.organizations.find((organization) => organization._id === organizationId);
@@ -447,6 +465,7 @@ export const MainAppSidebar = memo(function MainAppSidebar(props: MainAppSidebar
 	const mcpAvailable = useQuery(app_convex_api.plugins_mcp.mcp_available, { membershipId });
 
 	const chatPath = url_path_chat({ organizationName, workspaceName });
+	const messagesPath = url_path_messages({ organizationName, workspaceName });
 	const filesPath = url_path_files({ organizationName, workspaceName });
 	const browserPath = url_path_browser({ organizationName, workspaceName });
 	const apiKeysPath = url_path_api_keys({ organizationName, workspaceName });
@@ -517,6 +536,13 @@ export const MainAppSidebar = memo(function MainAppSidebar(props: MainAppSidebar
 						label="Chat"
 						icon={MessageSquare}
 						tooltip={mainAppSidebarCollapsed ? "AI Chat" : undefined}
+					/>
+					<MainAppSidebarItem
+						to={messagesPath}
+						label="Messages"
+						icon={MessagesSquare}
+						tooltip={mainAppSidebarCollapsed ? "Messages" : undefined}
+						unread={unreadMentions > 0}
 					/>
 					<MainAppSidebarItem
 						to={filesPath}

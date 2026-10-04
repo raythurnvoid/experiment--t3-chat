@@ -15,7 +15,7 @@ import {
 	Star,
 	X,
 } from "lucide-react";
-import { AiChatThread } from "@/components/ai-chat/ai-chat.tsx";
+import { AiChatThread, type AiChatThread_Props } from "@/components/ai-chat/ai-chat.tsx";
 import { FileEditorSidebarPendingStrip } from "@/components/files/file-editor/file-editor-sidebar/file-editor-sidebar-pending-strip.tsx";
 import { MyContextMenu, MyContextMenuPopover, MyContextMenuTrigger } from "@/components/my-context-menu.tsx";
 import { MyIcon } from "@/components/my-icon.tsx";
@@ -866,8 +866,10 @@ type FileEditorSidebarAgent_ClassNames =
 
 const FileEditorSidebarAgentChatThread = memo(function FileEditorSidebarAgentChatThread(props: {
 	scrollableContainer: HTMLElement | null;
+	quoteRequest: AiChatThread_Props["quoteRequest"];
+	onQuoteInserted: AiChatThread_Props["onQuoteInserted"];
 }) {
-	const { scrollableContainer } = props;
+	const { scrollableContainer, quoteRequest, onQuoteInserted } = props;
 	const controller = AiChatController.useThreadRuntime();
 
 	return (
@@ -875,6 +877,8 @@ const FileEditorSidebarAgentChatThread = memo(function FileEditorSidebarAgentCha
 			controller={controller}
 			scrollableContainer={scrollableContainer}
 			composerTopSlot={<FileEditorSidebarPendingStrip threadId={controller.selectedThreadId} />}
+			quoteRequest={quoteRequest}
+			onQuoteInserted={onQuoteInserted}
 		/>
 	);
 });
@@ -884,6 +888,8 @@ export type FileEditorSidebarAgent_Props = {
 	 * True while this agent panel is visible. A new chat starts on its own only while it is active.
 	 */
 	isActive: boolean;
+	quoteRequest?: AiChatThread_Props["quoteRequest"];
+	onQuoteInserted?: AiChatThread_Props["onQuoteInserted"];
 };
 
 export const FileEditorSidebarAgent = memo(function FileEditorSidebarAgent(props: FileEditorSidebarAgent_Props) {
@@ -1170,7 +1176,11 @@ const FileEditorSidebarAgentContent = memo(function FileEditorSidebarAgentConten
 						)}
 						tabId={selectedChatTabId}
 					>
-						<FileEditorSidebarAgentChatThread scrollableContainer={scrollableContainer} />
+						<FileEditorSidebarAgentChatThread
+							scrollableContainer={scrollableContainer}
+							quoteRequest={props.quoteRequest}
+							onQuoteInserted={props.onQuoteInserted}
+						/>
 					</MyTabsPanel>
 				</MyTabsPanels>
 			</MyTabs>

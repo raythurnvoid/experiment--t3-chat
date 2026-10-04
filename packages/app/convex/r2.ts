@@ -43,9 +43,10 @@ import {
 	access_control_db_filter_readable_file_nodes,
 } from "./access_control.ts";
 import { plugins_runtime_db_enqueue_upload_completed_runs } from "./plugins_runtime.ts";
+import { billing_pick_billed_user_id } from "./billing_db.ts";
+import { files_stored_uploads_db_settle } from "./files_stored_uploads.ts";
 import {
 	public_api_service_uploads_db_get_target_by_asset,
-	public_api_service_uploads_db_record_untracked_asset_bytes,
 	public_api_service_uploads_db_settle_canonicalized_asset,
 } from "./public_api_service_uploads.ts";
 import {
@@ -1303,6 +1304,75 @@ const upload_conversion_workpool = new Workpool(components.files_upload_conversi
 	} as const,
 });
 
+export const settle_channel_upload_asset = internalMutation({
+	args: {
+		assetId: v.id("files_r2_assets"),
+		r2Key: v.string(),
+		size: v.number(),
+		etag: v.optional(v.string()),
+		eventId: v.optional(v.string()),
+	},
+	returns: v_result({ _yay: v.null() }),
+	handler: async (ctx, args) => {
+		const asset = await ctx.db.get("files_r2_assets", args.assetId);
+		if (!asset || asset.kind !== "channel_upload") return Result({ _nay: { message: "Not found" } });
+		if (args.r2Key !== r2_create_asset_key({ ...asset, assetId: asset._id }))
+			return Result({ _nay: { message: "Not found" } });
+		if (asset.r2Key !== undefined) return Result({ _yay: null });
+		if (!Number.isSafeInteger(args.size) || args.size < 0)
+			return Result({ _nay: { message: "Invalid stored file size" } });
+		const upload = await ctx.db
+			.query("channels_uploads")
+			.withIndex("by_asset", (q) => q.eq("assetId", asset._id))
+			.unique();
+		if (!upload || upload.organizationId !== asset.organizationId || upload.workspaceId !== asset.workspaceId)
+			return Result({ _nay: { message: "Not found" } });
+		const scope = r2_require_real_scope({ ctx, organizationId: asset.organizationId, workspaceId: asset.workspaceId });
+		const organization = await ctx.db.get("organizations", scope.organizationId);
+		if (!organization) {
+			const errorMessage = "Upload organization not found";
+			console.error(errorMessage, scope);
+			throw should_never_happen(errorMessage, scope);
+		}
+		const settled = await files_stored_uploads_db_settle(ctx, {
+			...scope,
+			assetId: asset._id,
+			declaredBytes: asset.size,
+			actualBytes: args.size,
+			actorUserId: upload.uploaderUserId,
+			billedUserId: billing_pick_billed_user_id({ userId: upload.uploaderUserId, organization }),
+			nodeId: null,
+			chargeKey: asset._id,
+			chargeable: true,
+		});
+		if (settled._nay) {
+			await r2_enqueue_object_deletion_job(ctx, {
+				...scope,
+				r2Key: args.r2Key,
+				reason: "untracked_asset_event",
+				putMayArriveUntil: (asset.uploadUrlExpiresAt ?? Date.now()) + r2_PUT_MAY_ARRIVE_MARGIN_MS,
+				r2EventId: args.eventId,
+			});
+			await ctx.db.delete("channels_uploads", upload._id);
+			await ctx.db.delete("files_r2_assets", asset._id);
+			return settled;
+		}
+		// Only a message reference clears the unattached upload's cleanup deadline.
+		await ctx.db.patch("files_r2_assets", asset._id, {
+			r2Key: args.r2Key,
+			size: args.size,
+			etag: args.etag,
+			updatedAt: Date.now(),
+		});
+		return Result({ _yay: null });
+	},
+});
+
+type settle_channel_upload_asset_Result =
+	typeof settle_channel_upload_asset extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
 export const process_uploaded_asset_event = internalMutation({
 	args: {
 		assetId: v.id("files_r2_assets"),
@@ -1353,12 +1423,6 @@ export const process_uploaded_asset_event = internalMutation({
 				organizationId: asset.organizationId,
 				workspaceId: asset.workspaceId,
 			});
-			await public_api_service_uploads_db_record_untracked_asset_bytes(ctx, {
-				...scope,
-				assetId: asset._id,
-				observedBytes: args.size,
-				now,
-			});
 			await r2_enqueue_object_deletion_job(ctx, {
 				...scope,
 				r2Key: args.r2Key,
@@ -1370,12 +1434,51 @@ export const process_uploaded_asset_event = internalMutation({
 			return Result({ _yay: null });
 		}
 
-		await public_api_service_uploads_db_settle_canonicalized_asset(ctx, {
-			assetId: asset._id,
-			actualBytes: args.size,
-			nodePath: fileNode.path,
-			now,
-		});
+		if (serviceTarget) {
+			const settled = await public_api_service_uploads_db_settle_canonicalized_asset(ctx, {
+				asset,
+				actualBytes: args.size,
+				nodePath: fileNode.path,
+				now,
+			});
+			if (settled._nay) return Result({ _yay: null });
+		} else if (asset.kind === "upload") {
+			const scope = r2_require_real_scope({
+				ctx,
+				organizationId: asset.organizationId,
+				workspaceId: asset.workspaceId,
+			});
+			const actorUserId = r2_require_real_author(asset.createdBy);
+			const organization = await ctx.db.get("organizations", scope.organizationId);
+			if (!organization) {
+				const errorMessage = "Upload organization not found";
+				console.error(errorMessage, scope);
+				throw should_never_happen(errorMessage, scope);
+			}
+			const settled = await files_stored_uploads_db_settle(ctx, {
+				...scope,
+				assetId: asset._id,
+				declaredBytes: asset.size,
+				actualBytes: args.size,
+				actorUserId,
+				billedUserId: billing_pick_billed_user_id({ userId: actorUserId, organization }),
+				nodeId: fileNode._id,
+				chargeKey: asset._id,
+				chargeable: asset.uploadBillingExempt !== true,
+			});
+			if (settled._nay) {
+				// Keep the signed-URL window before deleting the placeholder and its asset.
+				await r2_enqueue_object_deletion_job(ctx, {
+					...scope,
+					r2Key: args.r2Key,
+					reason: "untracked_asset_event",
+					putMayArriveUntil: (asset.uploadUrlExpiresAt ?? now + UPLOAD_SIGNED_URL_TTL_MS) + r2_PUT_MAY_ARRIVE_MARGIN_MS,
+					r2EventId: args.eventId,
+				});
+				await files_nodes_db_hard_delete_node(ctx, { ...scope, nodeId: fileNode._id });
+				return Result({ _yay: null });
+			}
+		}
 
 		// An accepted upload always finishes. A later lock stops new writes, not this one.
 		await ctx.db.patch("files_r2_assets", asset._id, {
@@ -1575,13 +1678,6 @@ async function db_record_untracked_asset_event(
 	const now = Date.now();
 	// The deleted asset may have held the URL expiry. Keep a full window when it is unknown.
 	const putMayArriveUntil = (asset?.uploadUrlExpiresAt ?? now + UPLOAD_SIGNED_URL_TTL_MS) + r2_PUT_MAY_ARRIVE_MARGIN_MS;
-	await public_api_service_uploads_db_record_untracked_asset_bytes(ctx, {
-		organizationId,
-		workspaceId: realWorkspaceId,
-		assetId,
-		observedBytes: args.size,
-		now,
-	});
 	await r2_enqueue_object_deletion_job(ctx, {
 		organizationId,
 		workspaceId: realWorkspaceId,
@@ -1797,10 +1893,17 @@ export const cleanup_expired_unfinalized_assets = internalMutation({
 					r2Key: asset.r2Key ?? deterministicKey,
 					reason: "untracked_asset_event",
 					putMayArriveUntil:
-						asset.kind === "upload"
+						asset.uploadUrlExpiresAt !== undefined || asset.kind === "upload"
 							? (asset.uploadUrlExpiresAt ?? asset.unfinalizedExpiresAt ?? now) + r2_PUT_MAY_ARRIVE_MARGIN_MS
 							: undefined,
 				});
+			}
+			if (asset.kind === "channel_upload") {
+				const upload = await ctx.db
+					.query("channels_uploads")
+					.withIndex("by_asset", (q) => q.eq("assetId", asset._id))
+					.unique();
+				if (upload) await ctx.db.delete("channels_uploads", upload._id);
 			}
 			await ctx.db.delete("files_r2_assets", asset._id);
 			deletedCount += 1;
@@ -1958,7 +2061,7 @@ export async function r2_http_event(ctx: ActionCtx, request: Request) {
 			} as const;
 		}
 
-		if (asset._yay.kind !== "upload" || asset._yay.r2Key !== undefined) {
+		if ((asset._yay.kind !== "upload" && asset._yay.kind !== "channel_upload") || asset._yay.r2Key !== undefined) {
 			return { status: 204, body: {} } as const;
 		}
 		if (asset._yay.uploadRetiredAt !== undefined) {
@@ -1976,13 +2079,24 @@ export async function r2_http_event(ctx: ActionCtx, request: Request) {
 			return { status: 204, body: {} } as const;
 		}
 
-		await ctx.runMutation(internal.r2.process_uploaded_asset_event, {
-			assetId: asset._yay._id,
-			r2Key: body._yay.event.object.key,
-			size: metadata.size,
-			etag: metadata.etag,
-			eventId: body._yay.cloudflareMessageId,
-		});
+		if (asset._yay.kind === "channel_upload") {
+			const settled = (await ctx.runMutation(internal.r2.settle_channel_upload_asset, {
+				assetId: asset._yay._id,
+				r2Key: body._yay.event.object.key,
+				size: metadata.size,
+				etag: metadata.etag,
+				eventId: body._yay.cloudflareMessageId,
+			})) as settle_channel_upload_asset_Result;
+			if (settled._nay) console.warn("Channel upload was not published", { assetId: asset._yay._id, reason: settled._nay });
+		} else {
+			await ctx.runMutation(internal.r2.process_uploaded_asset_event, {
+				assetId: asset._yay._id,
+				r2Key: body._yay.event.object.key,
+				size: metadata.size,
+				etag: metadata.etag,
+				eventId: body._yay.cloudflareMessageId,
+			});
+		}
 
 		// The database update ignores duplicate events and starts any needed upload work.
 		return {

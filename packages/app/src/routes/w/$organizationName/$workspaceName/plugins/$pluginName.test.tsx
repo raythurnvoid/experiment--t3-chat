@@ -2441,7 +2441,9 @@ describe("app.css normalize summary", () => {
 	// council plugin's app.test.tsx reads its css off disk. Vitest's root is packages/app, so
 	// process.cwd() reaches src/app.css directly; a css import would be stubbed to an empty string.
 	test("keeps the summary outline restorable by the global focus ring", () => {
-		const css = readFileSync(join(process.cwd(), "src", "app.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+		const css = readFileSync(join(process.cwd(), "src", "app.css"), "utf8")
+			.replace(/\r\n/g, "\n")
+			.replace(/\/\*[\s\S]*?\*\//g, "");
 
 		// Match the whole one-tab-indented `summary { ... }` block, including its nested marker
 		// rule. Assert the match first so a renamed block fails here instead of passing vacuously.

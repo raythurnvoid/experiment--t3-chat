@@ -20,6 +20,12 @@ import { Route as WOrganizationNameWorkspaceNameFilesIndexRouteImport } from './
 import { Route as WOrganizationNameWorkspaceNameFilesSplatRouteImport } from './routes/w/$organizationName/$workspaceName/files/$'
 import { Route as WOrganizationNameWorkspaceNameFilesBrowserRouteImport } from './routes/w/$organizationName/$workspaceName/files/browser'
 import { Route as WOrganizationNameWorkspaceNameMcpServersIndexRouteImport } from './routes/w/$organizationName/$workspaceName/mcp-servers/index'
+import { Route as WOrganizationNameWorkspaceNameMessagesIndexRouteImport } from './routes/w/$organizationName/$workspaceName/messages/index'
+import { Route as WOrganizationNameWorkspaceNameMessagesChannelIdRouteImport } from './routes/w/$organizationName/$workspaceName/messages/$channelId'
+import { Route as WOrganizationNameWorkspaceNameMessagesActivityRouteImport } from './routes/w/$organizationName/$workspaceName/messages/activity'
+import { Route as WOrganizationNameWorkspaceNameMessagesBrowseRouteImport } from './routes/w/$organizationName/$workspaceName/messages/browse'
+import { Route as WOrganizationNameWorkspaceNameMessagesSearchRouteImport } from './routes/w/$organizationName/$workspaceName/messages/search'
+import { Route as WOrganizationNameWorkspaceNameMessagesThreadsRouteImport } from './routes/w/$organizationName/$workspaceName/messages/threads'
 import { Route as WOrganizationNameWorkspaceNamePluginsIndexRouteImport } from './routes/w/$organizationName/$workspaceName/plugins/index'
 import { Route as WOrganizationNameWorkspaceNamePluginsPluginNameRouteImport } from './routes/w/$organizationName/$workspaceName/plugins/$pluginName'
 import { Route as WOrganizationNameWorkspaceNameRolesIndexRouteImport } from './routes/w/$organizationName/$workspaceName/roles/index'
@@ -91,6 +97,42 @@ const WOrganizationNameWorkspaceNameMcpServersIndexRoute =
     path: '/mcp-servers/',
     getParentRoute: () => WOrganizationNameWorkspaceNameRouteRoute,
   } as any)
+const WOrganizationNameWorkspaceNameMessagesIndexRoute =
+  WOrganizationNameWorkspaceNameMessagesIndexRouteImport.update({
+    id: '/messages/',
+    path: '/messages/',
+    getParentRoute: () => WOrganizationNameWorkspaceNameRouteRoute,
+  } as any)
+const WOrganizationNameWorkspaceNameMessagesChannelIdRoute =
+  WOrganizationNameWorkspaceNameMessagesChannelIdRouteImport.update({
+    id: '/messages/$channelId',
+    path: '/messages/$channelId',
+    getParentRoute: () => WOrganizationNameWorkspaceNameRouteRoute,
+  } as any)
+const WOrganizationNameWorkspaceNameMessagesActivityRoute =
+  WOrganizationNameWorkspaceNameMessagesActivityRouteImport.update({
+    id: '/messages/activity',
+    path: '/messages/activity',
+    getParentRoute: () => WOrganizationNameWorkspaceNameRouteRoute,
+  } as any)
+const WOrganizationNameWorkspaceNameMessagesBrowseRoute =
+  WOrganizationNameWorkspaceNameMessagesBrowseRouteImport.update({
+    id: '/messages/browse',
+    path: '/messages/browse',
+    getParentRoute: () => WOrganizationNameWorkspaceNameRouteRoute,
+  } as any)
+const WOrganizationNameWorkspaceNameMessagesSearchRoute =
+  WOrganizationNameWorkspaceNameMessagesSearchRouteImport.update({
+    id: '/messages/search',
+    path: '/messages/search',
+    getParentRoute: () => WOrganizationNameWorkspaceNameRouteRoute,
+  } as any)
+const WOrganizationNameWorkspaceNameMessagesThreadsRoute =
+  WOrganizationNameWorkspaceNameMessagesThreadsRouteImport.update({
+    id: '/messages/threads',
+    path: '/messages/threads',
+    getParentRoute: () => WOrganizationNameWorkspaceNameRouteRoute,
+  } as any)
 const WOrganizationNameWorkspaceNamePluginsIndexRoute =
   WOrganizationNameWorkspaceNamePluginsIndexRouteImport.update({
     id: '/plugins/',
@@ -141,12 +183,18 @@ export interface FileRoutesByFullPath {
   '/oauth/mcp/callback': typeof OauthMcpCallbackRoute
   '/w/$organizationName/$workspaceName/files/$': typeof WOrganizationNameWorkspaceNameFilesSplatRoute
   '/w/$organizationName/$workspaceName/files/browser': typeof WOrganizationNameWorkspaceNameFilesBrowserRoute
+  '/w/$organizationName/$workspaceName/messages/$channelId': typeof WOrganizationNameWorkspaceNameMessagesChannelIdRoute
+  '/w/$organizationName/$workspaceName/messages/activity': typeof WOrganizationNameWorkspaceNameMessagesActivityRoute
+  '/w/$organizationName/$workspaceName/messages/browse': typeof WOrganizationNameWorkspaceNameMessagesBrowseRoute
+  '/w/$organizationName/$workspaceName/messages/search': typeof WOrganizationNameWorkspaceNameMessagesSearchRoute
+  '/w/$organizationName/$workspaceName/messages/threads': typeof WOrganizationNameWorkspaceNameMessagesThreadsRoute
   '/w/$organizationName/$workspaceName/plugins/$pluginName': typeof WOrganizationNameWorkspaceNamePluginsPluginNameRoute
   '/w/$organizationName/$workspaceName/api-keys/': typeof WOrganizationNameWorkspaceNameApiKeysIndexRoute
   '/w/$organizationName/$workspaceName/browser/': typeof WOrganizationNameWorkspaceNameBrowserIndexRoute
   '/w/$organizationName/$workspaceName/chat/': typeof WOrganizationNameWorkspaceNameChatIndexRoute
   '/w/$organizationName/$workspaceName/files/': typeof WOrganizationNameWorkspaceNameFilesIndexRoute
   '/w/$organizationName/$workspaceName/mcp-servers/': typeof WOrganizationNameWorkspaceNameMcpServersIndexRoute
+  '/w/$organizationName/$workspaceName/messages/': typeof WOrganizationNameWorkspaceNameMessagesIndexRoute
   '/w/$organizationName/$workspaceName/plugins/': typeof WOrganizationNameWorkspaceNamePluginsIndexRoute
   '/w/$organizationName/$workspaceName/roles/': typeof WOrganizationNameWorkspaceNameRolesIndexRoute
   '/w/$organizationName/$workspaceName/service-accounts/': typeof WOrganizationNameWorkspaceNameServiceAccountsIndexRoute
@@ -161,12 +209,18 @@ export interface FileRoutesByTo {
   '/oauth/mcp/callback': typeof OauthMcpCallbackRoute
   '/w/$organizationName/$workspaceName/files/$': typeof WOrganizationNameWorkspaceNameFilesSplatRoute
   '/w/$organizationName/$workspaceName/files/browser': typeof WOrganizationNameWorkspaceNameFilesBrowserRoute
+  '/w/$organizationName/$workspaceName/messages/$channelId': typeof WOrganizationNameWorkspaceNameMessagesChannelIdRoute
+  '/w/$organizationName/$workspaceName/messages/activity': typeof WOrganizationNameWorkspaceNameMessagesActivityRoute
+  '/w/$organizationName/$workspaceName/messages/browse': typeof WOrganizationNameWorkspaceNameMessagesBrowseRoute
+  '/w/$organizationName/$workspaceName/messages/search': typeof WOrganizationNameWorkspaceNameMessagesSearchRoute
+  '/w/$organizationName/$workspaceName/messages/threads': typeof WOrganizationNameWorkspaceNameMessagesThreadsRoute
   '/w/$organizationName/$workspaceName/plugins/$pluginName': typeof WOrganizationNameWorkspaceNamePluginsPluginNameRoute
   '/w/$organizationName/$workspaceName/api-keys': typeof WOrganizationNameWorkspaceNameApiKeysIndexRoute
   '/w/$organizationName/$workspaceName/browser': typeof WOrganizationNameWorkspaceNameBrowserIndexRoute
   '/w/$organizationName/$workspaceName/chat': typeof WOrganizationNameWorkspaceNameChatIndexRoute
   '/w/$organizationName/$workspaceName/files': typeof WOrganizationNameWorkspaceNameFilesIndexRoute
   '/w/$organizationName/$workspaceName/mcp-servers': typeof WOrganizationNameWorkspaceNameMcpServersIndexRoute
+  '/w/$organizationName/$workspaceName/messages': typeof WOrganizationNameWorkspaceNameMessagesIndexRoute
   '/w/$organizationName/$workspaceName/plugins': typeof WOrganizationNameWorkspaceNamePluginsIndexRoute
   '/w/$organizationName/$workspaceName/roles': typeof WOrganizationNameWorkspaceNameRolesIndexRoute
   '/w/$organizationName/$workspaceName/service-accounts': typeof WOrganizationNameWorkspaceNameServiceAccountsIndexRoute
@@ -182,12 +236,18 @@ export interface FileRoutesById {
   '/oauth/mcp/callback': typeof OauthMcpCallbackRoute
   '/w/$organizationName/$workspaceName/files/$': typeof WOrganizationNameWorkspaceNameFilesSplatRoute
   '/w/$organizationName/$workspaceName/files/browser': typeof WOrganizationNameWorkspaceNameFilesBrowserRoute
+  '/w/$organizationName/$workspaceName/messages/$channelId': typeof WOrganizationNameWorkspaceNameMessagesChannelIdRoute
+  '/w/$organizationName/$workspaceName/messages/activity': typeof WOrganizationNameWorkspaceNameMessagesActivityRoute
+  '/w/$organizationName/$workspaceName/messages/browse': typeof WOrganizationNameWorkspaceNameMessagesBrowseRoute
+  '/w/$organizationName/$workspaceName/messages/search': typeof WOrganizationNameWorkspaceNameMessagesSearchRoute
+  '/w/$organizationName/$workspaceName/messages/threads': typeof WOrganizationNameWorkspaceNameMessagesThreadsRoute
   '/w/$organizationName/$workspaceName/plugins/$pluginName': typeof WOrganizationNameWorkspaceNamePluginsPluginNameRoute
   '/w/$organizationName/$workspaceName/api-keys/': typeof WOrganizationNameWorkspaceNameApiKeysIndexRoute
   '/w/$organizationName/$workspaceName/browser/': typeof WOrganizationNameWorkspaceNameBrowserIndexRoute
   '/w/$organizationName/$workspaceName/chat/': typeof WOrganizationNameWorkspaceNameChatIndexRoute
   '/w/$organizationName/$workspaceName/files/': typeof WOrganizationNameWorkspaceNameFilesIndexRoute
   '/w/$organizationName/$workspaceName/mcp-servers/': typeof WOrganizationNameWorkspaceNameMcpServersIndexRoute
+  '/w/$organizationName/$workspaceName/messages/': typeof WOrganizationNameWorkspaceNameMessagesIndexRoute
   '/w/$organizationName/$workspaceName/plugins/': typeof WOrganizationNameWorkspaceNamePluginsIndexRoute
   '/w/$organizationName/$workspaceName/roles/': typeof WOrganizationNameWorkspaceNameRolesIndexRoute
   '/w/$organizationName/$workspaceName/service-accounts/': typeof WOrganizationNameWorkspaceNameServiceAccountsIndexRoute
@@ -204,12 +264,18 @@ export interface FileRouteTypes {
     | '/oauth/mcp/callback'
     | '/w/$organizationName/$workspaceName/files/$'
     | '/w/$organizationName/$workspaceName/files/browser'
+    | '/w/$organizationName/$workspaceName/messages/$channelId'
+    | '/w/$organizationName/$workspaceName/messages/activity'
+    | '/w/$organizationName/$workspaceName/messages/browse'
+    | '/w/$organizationName/$workspaceName/messages/search'
+    | '/w/$organizationName/$workspaceName/messages/threads'
     | '/w/$organizationName/$workspaceName/plugins/$pluginName'
     | '/w/$organizationName/$workspaceName/api-keys/'
     | '/w/$organizationName/$workspaceName/browser/'
     | '/w/$organizationName/$workspaceName/chat/'
     | '/w/$organizationName/$workspaceName/files/'
     | '/w/$organizationName/$workspaceName/mcp-servers/'
+    | '/w/$organizationName/$workspaceName/messages/'
     | '/w/$organizationName/$workspaceName/plugins/'
     | '/w/$organizationName/$workspaceName/roles/'
     | '/w/$organizationName/$workspaceName/service-accounts/'
@@ -224,12 +290,18 @@ export interface FileRouteTypes {
     | '/oauth/mcp/callback'
     | '/w/$organizationName/$workspaceName/files/$'
     | '/w/$organizationName/$workspaceName/files/browser'
+    | '/w/$organizationName/$workspaceName/messages/$channelId'
+    | '/w/$organizationName/$workspaceName/messages/activity'
+    | '/w/$organizationName/$workspaceName/messages/browse'
+    | '/w/$organizationName/$workspaceName/messages/search'
+    | '/w/$organizationName/$workspaceName/messages/threads'
     | '/w/$organizationName/$workspaceName/plugins/$pluginName'
     | '/w/$organizationName/$workspaceName/api-keys'
     | '/w/$organizationName/$workspaceName/browser'
     | '/w/$organizationName/$workspaceName/chat'
     | '/w/$organizationName/$workspaceName/files'
     | '/w/$organizationName/$workspaceName/mcp-servers'
+    | '/w/$organizationName/$workspaceName/messages'
     | '/w/$organizationName/$workspaceName/plugins'
     | '/w/$organizationName/$workspaceName/roles'
     | '/w/$organizationName/$workspaceName/service-accounts'
@@ -244,12 +316,18 @@ export interface FileRouteTypes {
     | '/oauth/mcp/callback'
     | '/w/$organizationName/$workspaceName/files/$'
     | '/w/$organizationName/$workspaceName/files/browser'
+    | '/w/$organizationName/$workspaceName/messages/$channelId'
+    | '/w/$organizationName/$workspaceName/messages/activity'
+    | '/w/$organizationName/$workspaceName/messages/browse'
+    | '/w/$organizationName/$workspaceName/messages/search'
+    | '/w/$organizationName/$workspaceName/messages/threads'
     | '/w/$organizationName/$workspaceName/plugins/$pluginName'
     | '/w/$organizationName/$workspaceName/api-keys/'
     | '/w/$organizationName/$workspaceName/browser/'
     | '/w/$organizationName/$workspaceName/chat/'
     | '/w/$organizationName/$workspaceName/files/'
     | '/w/$organizationName/$workspaceName/mcp-servers/'
+    | '/w/$organizationName/$workspaceName/messages/'
     | '/w/$organizationName/$workspaceName/plugins/'
     | '/w/$organizationName/$workspaceName/roles/'
     | '/w/$organizationName/$workspaceName/service-accounts/'
@@ -344,6 +422,48 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof WOrganizationNameWorkspaceNameMcpServersIndexRouteImport
       parentRoute: typeof WOrganizationNameWorkspaceNameRouteRoute
     }
+    '/w/$organizationName/$workspaceName/messages/': {
+      id: '/w/$organizationName/$workspaceName/messages/'
+      path: '/messages'
+      fullPath: '/w/$organizationName/$workspaceName/messages/'
+      preLoaderRoute: typeof WOrganizationNameWorkspaceNameMessagesIndexRouteImport
+      parentRoute: typeof WOrganizationNameWorkspaceNameRouteRoute
+    }
+    '/w/$organizationName/$workspaceName/messages/$channelId': {
+      id: '/w/$organizationName/$workspaceName/messages/$channelId'
+      path: '/messages/$channelId'
+      fullPath: '/w/$organizationName/$workspaceName/messages/$channelId'
+      preLoaderRoute: typeof WOrganizationNameWorkspaceNameMessagesChannelIdRouteImport
+      parentRoute: typeof WOrganizationNameWorkspaceNameRouteRoute
+    }
+    '/w/$organizationName/$workspaceName/messages/activity': {
+      id: '/w/$organizationName/$workspaceName/messages/activity'
+      path: '/messages/activity'
+      fullPath: '/w/$organizationName/$workspaceName/messages/activity'
+      preLoaderRoute: typeof WOrganizationNameWorkspaceNameMessagesActivityRouteImport
+      parentRoute: typeof WOrganizationNameWorkspaceNameRouteRoute
+    }
+    '/w/$organizationName/$workspaceName/messages/browse': {
+      id: '/w/$organizationName/$workspaceName/messages/browse'
+      path: '/messages/browse'
+      fullPath: '/w/$organizationName/$workspaceName/messages/browse'
+      preLoaderRoute: typeof WOrganizationNameWorkspaceNameMessagesBrowseRouteImport
+      parentRoute: typeof WOrganizationNameWorkspaceNameRouteRoute
+    }
+    '/w/$organizationName/$workspaceName/messages/search': {
+      id: '/w/$organizationName/$workspaceName/messages/search'
+      path: '/messages/search'
+      fullPath: '/w/$organizationName/$workspaceName/messages/search'
+      preLoaderRoute: typeof WOrganizationNameWorkspaceNameMessagesSearchRouteImport
+      parentRoute: typeof WOrganizationNameWorkspaceNameRouteRoute
+    }
+    '/w/$organizationName/$workspaceName/messages/threads': {
+      id: '/w/$organizationName/$workspaceName/messages/threads'
+      path: '/messages/threads'
+      fullPath: '/w/$organizationName/$workspaceName/messages/threads'
+      preLoaderRoute: typeof WOrganizationNameWorkspaceNameMessagesThreadsRouteImport
+      parentRoute: typeof WOrganizationNameWorkspaceNameRouteRoute
+    }
     '/w/$organizationName/$workspaceName/plugins/': {
       id: '/w/$organizationName/$workspaceName/plugins/'
       path: '/plugins'
@@ -399,12 +519,18 @@ declare module '@tanstack/react-router' {
 interface WOrganizationNameWorkspaceNameRouteRouteChildren {
   WOrganizationNameWorkspaceNameFilesSplatRoute: typeof WOrganizationNameWorkspaceNameFilesSplatRoute
   WOrganizationNameWorkspaceNameFilesBrowserRoute: typeof WOrganizationNameWorkspaceNameFilesBrowserRoute
+  WOrganizationNameWorkspaceNameMessagesChannelIdRoute: typeof WOrganizationNameWorkspaceNameMessagesChannelIdRoute
+  WOrganizationNameWorkspaceNameMessagesActivityRoute: typeof WOrganizationNameWorkspaceNameMessagesActivityRoute
+  WOrganizationNameWorkspaceNameMessagesBrowseRoute: typeof WOrganizationNameWorkspaceNameMessagesBrowseRoute
+  WOrganizationNameWorkspaceNameMessagesSearchRoute: typeof WOrganizationNameWorkspaceNameMessagesSearchRoute
+  WOrganizationNameWorkspaceNameMessagesThreadsRoute: typeof WOrganizationNameWorkspaceNameMessagesThreadsRoute
   WOrganizationNameWorkspaceNamePluginsPluginNameRoute: typeof WOrganizationNameWorkspaceNamePluginsPluginNameRoute
   WOrganizationNameWorkspaceNameApiKeysIndexRoute: typeof WOrganizationNameWorkspaceNameApiKeysIndexRoute
   WOrganizationNameWorkspaceNameBrowserIndexRoute: typeof WOrganizationNameWorkspaceNameBrowserIndexRoute
   WOrganizationNameWorkspaceNameChatIndexRoute: typeof WOrganizationNameWorkspaceNameChatIndexRoute
   WOrganizationNameWorkspaceNameFilesIndexRoute: typeof WOrganizationNameWorkspaceNameFilesIndexRoute
   WOrganizationNameWorkspaceNameMcpServersIndexRoute: typeof WOrganizationNameWorkspaceNameMcpServersIndexRoute
+  WOrganizationNameWorkspaceNameMessagesIndexRoute: typeof WOrganizationNameWorkspaceNameMessagesIndexRoute
   WOrganizationNameWorkspaceNamePluginsIndexRoute: typeof WOrganizationNameWorkspaceNamePluginsIndexRoute
   WOrganizationNameWorkspaceNameRolesIndexRoute: typeof WOrganizationNameWorkspaceNameRolesIndexRoute
   WOrganizationNameWorkspaceNameServiceAccountsIndexRoute: typeof WOrganizationNameWorkspaceNameServiceAccountsIndexRoute
@@ -419,6 +545,16 @@ const WOrganizationNameWorkspaceNameRouteRouteChildren: WOrganizationNameWorkspa
       WOrganizationNameWorkspaceNameFilesSplatRoute,
     WOrganizationNameWorkspaceNameFilesBrowserRoute:
       WOrganizationNameWorkspaceNameFilesBrowserRoute,
+    WOrganizationNameWorkspaceNameMessagesChannelIdRoute:
+      WOrganizationNameWorkspaceNameMessagesChannelIdRoute,
+    WOrganizationNameWorkspaceNameMessagesActivityRoute:
+      WOrganizationNameWorkspaceNameMessagesActivityRoute,
+    WOrganizationNameWorkspaceNameMessagesBrowseRoute:
+      WOrganizationNameWorkspaceNameMessagesBrowseRoute,
+    WOrganizationNameWorkspaceNameMessagesSearchRoute:
+      WOrganizationNameWorkspaceNameMessagesSearchRoute,
+    WOrganizationNameWorkspaceNameMessagesThreadsRoute:
+      WOrganizationNameWorkspaceNameMessagesThreadsRoute,
     WOrganizationNameWorkspaceNamePluginsPluginNameRoute:
       WOrganizationNameWorkspaceNamePluginsPluginNameRoute,
     WOrganizationNameWorkspaceNameApiKeysIndexRoute:
@@ -431,6 +567,8 @@ const WOrganizationNameWorkspaceNameRouteRouteChildren: WOrganizationNameWorkspa
       WOrganizationNameWorkspaceNameFilesIndexRoute,
     WOrganizationNameWorkspaceNameMcpServersIndexRoute:
       WOrganizationNameWorkspaceNameMcpServersIndexRoute,
+    WOrganizationNameWorkspaceNameMessagesIndexRoute:
+      WOrganizationNameWorkspaceNameMessagesIndexRoute,
     WOrganizationNameWorkspaceNamePluginsIndexRoute:
       WOrganizationNameWorkspaceNamePluginsIndexRoute,
     WOrganizationNameWorkspaceNameRolesIndexRoute:

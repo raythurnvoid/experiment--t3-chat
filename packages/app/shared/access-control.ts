@@ -139,6 +139,12 @@ export const access_control_PERMISSION_CATALOG = {
 		group: "Content",
 		scope: "workspace",
 	},
+	"workspace.channels.manage": {
+		label: "Manage channels",
+		description: "Archive, rename, and moderate public channels.",
+		group: "Content",
+		scope: "workspace",
+	},
 	"workspace.service_accounts.manage": {
 		label: "Manage service accounts",
 		description: "Create service accounts and manage their access.",
@@ -277,6 +283,7 @@ export const access_control_SYSTEM_ROLE_MATRIX = {
 			"content.read",
 			"content.write",
 			"content.permissions.manage",
+			"workspace.channels.manage",
 			"workspace.service_accounts.manage",
 			"workspace.browser.use",
 			"workspace.mcp.use",

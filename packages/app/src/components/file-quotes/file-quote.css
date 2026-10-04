@@ -1,0 +1,24 @@
+@layer components {
+	.FileQuote {
+		display: block;
+		margin-block: 8px;
+		padding: 8px 12px;
+		border-left: 3px solid var(--color-fg-08);
+		background: var(--color-base-1-03);
+		border-radius: 4px;
+		font-size: 1rem;
+		line-height: 1.5;
+		overflow-wrap: anywhere;
+	}
+	.FileQuote-file {
+		display: block;
+		margin-bottom: 4px;
+		color: var(--color-fg-11);
+		font-size: 0.9375rem;
+		text-decoration: underline;
+	}
+	.FileQuote-text {
+		display: block;
+		white-space: pre-wrap;
+	}
+}

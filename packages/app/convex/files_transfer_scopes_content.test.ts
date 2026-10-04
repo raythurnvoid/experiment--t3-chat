@@ -931,23 +931,24 @@ describe("copy_transfer_file scopes", () => {
 			await ctx.db.patch("files_r2_assets", source._yay.assetId, { r2Key: key, unfinalizedExpiresAt: undefined });
 			await test_mocks_fill_db_with.plan(ctx, { userId: f.personal.userId, plan: "Free" });
 		});
-		const copy = await start_copy({
-			f,
-			source: { kind: "saved", id: source._yay.nodeId },
-			sourceWorkspace: "current",
-			destinationWorkspace: "personal",
-		});
 		const before = vi.mocked(globalThis.fetch).mock.calls.length;
-		await f.t.action(internal.files_nodes_content.copy_transfer_file, {
-			itemId: copy.item._id,
-			attempt: copy.item.attempt,
-		});
+		const beforeQuotas = await f.t.run((ctx) => ctx.db.query("quotas").collect());
+		await expect(
+			start_copy({
+				f,
+				source: { kind: "saved", id: source._yay.nodeId },
+				sourceWorkspace: "current",
+				destinationWorkspace: "personal",
+			}),
+		).rejects.toThrow("This workspace's plan does not include file uploads");
 		expect(vi.mocked(globalThis.fetch).mock.calls).toHaveLength(before);
-		expect(await f.t.run((ctx) => ctx.db.get("files_transfer_items", copy.item._id))).toMatchObject({
+		expect(await f.t.run((ctx) => ctx.db.query("files_transfer_items").first())).toMatchObject({
 			state: "failed",
 			errorMessage: "This workspace's plan does not include file uploads",
 		});
 		expect(await f.t.run((ctx) => ctx.db.query("files_r2_assets").collect())).toHaveLength(1);
+		expect(await f.t.run((ctx) => ctx.db.query("files_pending_nodes").collect())).toEqual([]);
+		expect(await f.t.run((ctx) => ctx.db.query("quotas").collect())).toEqual(beforeQuotas);
 	});
 
 	test("cleans source captures and destination allocations in their own scopes after a storage refusal", async () => {

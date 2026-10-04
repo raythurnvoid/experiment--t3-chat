@@ -5,7 +5,10 @@ import {
 	FileEditorRichTextAnchoredThreadsItem,
 } from "@/lib/file-editor-rich-text-anchored-threads.tsx";
 import type { Editor } from "@tiptap/react";
-import type { chat_messages_Thread } from "../../../../lib/chat-messages.ts";
+import type { ChannelsMessage } from "@/components/channels/channels-message-window.ts";
+import { useChannelsMentionPeople, useChannelsPeople } from "@/components/channels/channels-people.ts";
+import type { ChannelsMentionItem } from "@/components/channels/channels-composer-mention.tsx";
+import type { app_convex_Id } from "@/lib/app-convex-client.ts";
 import {
 	FileEditorCommentsFilterInput,
 	FileEditorCommentsThread,
@@ -16,12 +19,13 @@ import { useState } from "react";
 // #region thread
 type FileEditorRichTextAnchoredCommentsThread_Props = {
 	thread: FileEditorCommentsThread_Props["thread"];
-	canResolve: boolean;
-	onClick: FileEditorCommentsThread_Props["onClick"];
+	mentionItems: readonly ChannelsMentionItem[];
+	onActivate: FileEditorCommentsThread_Props["onActivate"];
+	onClose: () => void;
 };
 
 function FileEditorRichTextAnchoredCommentsThread(props: FileEditorRichTextAnchoredCommentsThread_Props) {
-	const { thread, canResolve, onClick } = props;
+	const { thread, mentionItems, onActivate, onClose } = props;
 
 	const context = FileEditorRichTextAnchoredThreadsItem.useContext();
 
@@ -30,8 +34,11 @@ function FileEditorRichTextAnchoredCommentsThread(props: FileEditorRichTextAncho
 			thread={thread}
 			open={context.isActive}
 			hidden={false}
-			canResolve={canResolve}
-			onClick={onClick}
+			mentionItems={mentionItems}
+			onActivate={onActivate}
+			onToggle={(event) => {
+				if (!event.currentTarget.open && context.isActive) onClose();
+			}}
 		/>
 	);
 }
@@ -40,16 +47,17 @@ function FileEditorRichTextAnchoredCommentsThread(props: FileEditorRichTextAncho
 // #region threads list
 type FileEditorRichTextAnchoredCommentsThreadsList_Props = {
 	threads: FileEditorRichTextAnchoredCommentsThread_Props["thread"][];
-	canResolve: boolean;
+	mentionItems: readonly ChannelsMentionItem[];
 	onClick: (threadId: string) => void;
+	onClose: () => void;
 };
 
 function FileEditorRichTextAnchoredCommentsThreadsList(props: FileEditorRichTextAnchoredCommentsThreadsList_Props) {
-	const { threads, canResolve, onClick } = props;
+	const { threads, mentionItems, onClick, onClose } = props;
 
 	const context = FileEditorRichTextAnchoredThreads.useContext();
 
-	const threadsById = new Map(threads.map((thread) => [thread.id as string, thread]));
+	const threadsById = new Map(threads.map((thread) => [thread.message._id as string, thread]));
 	const orderedThreads = Array.from(context.threadPositions.keys())
 		.map((threadId) => threadsById.get(threadId))
 		.filter((v) => v != null);
@@ -58,7 +66,7 @@ function FileEditorRichTextAnchoredCommentsThreadsList(props: FileEditorRichText
 		<>
 			{orderedThreads.map((thread) => (
 				<FileEditorRichTextAnchoredThreadsItem
-					key={thread.id}
+					key={thread.message._id}
 					className={
 						"FileEditorRichTextAnchoredComments-thread-container" satisfies FileEditorRichTextAnchoredComments_ClassNames
 					}
@@ -66,8 +74,9 @@ function FileEditorRichTextAnchoredCommentsThreadsList(props: FileEditorRichText
 				>
 					<FileEditorRichTextAnchoredCommentsThread
 						thread={thread}
-						canResolve={canResolve}
-						onClick={() => onClick(thread.id)}
+						mentionItems={mentionItems}
+						onActivate={() => onClick(thread.message._id)}
+						onClose={onClose}
 					/>
 				</FileEditorRichTextAnchoredThreadsItem>
 			))}
@@ -85,12 +94,14 @@ export type FileEditorRichTextAnchoredComments_ClassNames =
 
 export type FileEditorRichTextAnchoredComments_Props = {
 	editor: Editor;
-	editable: boolean;
-	threads: chat_messages_Thread[] | undefined;
+	fileNodeId: app_convex_Id<"files_nodes">;
+	threads: ChannelsMessage[] | undefined;
 };
 
 export function FileEditorRichTextAnchoredComments(props: FileEditorRichTextAnchoredComments_Props) {
-	const { editor, editable, threads } = props;
+	const { editor, fileNodeId, threads } = props;
+	const { people } = useChannelsPeople();
+	const mentionItems = useChannelsMentionPeople({ fileNodeId }, people);
 
 	const [query, setQuery] = useState("");
 
@@ -113,7 +124,7 @@ export function FileEditorRichTextAnchoredComments(props: FileEditorRichTextAnch
 				<div
 					className={"FileEditorRichTextAnchoredComments-empty" satisfies FileEditorRichTextAnchoredComments_ClassNames}
 				>
-					No comments yet
+					No comments on selected text yet
 				</div>
 			) : (
 				<>
@@ -127,8 +138,9 @@ export function FileEditorRichTextAnchoredComments(props: FileEditorRichTextAnch
 					>
 						<FileEditorRichTextAnchoredCommentsThreadsList
 							threads={filteredThreads}
-							canResolve={editable}
+							mentionItems={mentionItems}
 							onClick={handleThreadClick}
+							onClose={() => editor.commands.selectThread(null)}
 						/>
 					</FileEditorRichTextAnchoredThreads>
 				</>

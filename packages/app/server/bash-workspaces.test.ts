@@ -8,6 +8,7 @@ import { bash_head_tail_wc_command_create } from "./bash-head-tail-wc-command.ts
 import { bash_ls_command_create } from "./bash-ls-command.ts";
 import { bash_nested_shell_command_create } from "./bash-nested-shell-command.ts";
 import { bash_resolve_command_create } from "./bash-resolve-command.ts";
+import { bash_channels_command_create } from "./bash-channels-command.ts";
 import { bash_rm_command_create } from "./bash-rm-command.ts";
 import { bash_stat_command_create } from "./bash-stat-command.ts";
 import { bash_tee_command_create } from "./bash-tee-command.ts";
@@ -106,6 +107,7 @@ async function fixture() {
 					bash_cat_command_create(ctx, roots),
 					bash_ls_command_create(ctx, roots),
 					bash_resolve_command_create(ctx, roots),
+					bash_channels_command_create(ctx, roots),
 					bash_rm_command_create(ctx, roots),
 					bash_stat_command_create(ctx, roots),
 					bash_head_tail_wc_command_create({ ctx, dbFilesRoots: roots, command: "head" }),
@@ -122,6 +124,143 @@ async function fixture() {
 		});
 	return { t, team, home, asUser, run, runRuntime };
 }
+
+describe("channels", () => {
+	test("reads current and home channels and accepts a home Messages URL", async () => {
+		const f = await fixture();
+		const channelIds = [];
+		for (const [workspace, name] of [
+			[f.team, "team"],
+			[f.home, "personal"],
+		] as const) {
+			const created = await f.asUser.mutation(api.channels.create_channel, {
+				membershipId: workspace.membershipId,
+				kind: "public",
+				name: "general",
+				topic: "",
+				layout: "messages",
+			});
+			if (created._nay) throw new Error(created._nay.message);
+			channelIds.push(created._yay.channelId);
+			const sent = await f.asUser.mutation(api.channels_messages.send_message, {
+				membershipId: workspace.membershipId,
+				target: { kind: "channel", channelId: created._yay.channelId },
+				clientMessageId: workspace.workspaceId,
+				body: `${name} conversation`,
+				mentionUserIds: [],
+				fileMentionIds: [],
+				fileQuotes: [],
+				replyTo: null,
+				attachments: [],
+				alsoInChannel: false,
+				title: null,
+			});
+			expect(sent._nay).toBeUndefined();
+		}
+		expect((await f.run("channels read '#general'", false)).stdout).toContain("team conversation");
+		expect((await f.run("channels read '#general' --workspace home", false)).stdout).toContain("personal conversation");
+		expect(
+			(await f.run("channels search team conversation --in '#general' --attachments false", false)).stdout,
+		).toContain("team conversation");
+		expect(
+			(await f.run(`channels search personal --workspace home --from ${f.team.userId} --format json`, false)).stdout,
+		).toContain("personal conversation");
+		expect((await f.run("channels search personal", false)).stdout).not.toContain("personal conversation");
+		const homeUrl = `https://app.example/w/personal/home/messages/${channelIds[1]}?message=ignored`;
+		expect((await f.run(`channels read '${homeUrl}' --format json`, false)).stdout).toContain("personal conversation");
+		expect(
+			(await f.run(`channels read 'https://app.example/w/third/home/messages/${channelIds[1]}'`, false)).stderr,
+		).toContain("Not found");
+		expect((await f.run("channels read 'file:/.mounts/source/file.md'", false)).stderr).toContain("Not found");
+		const registered = await f.runRuntime({ command: "channels ls --workspace home", agent: false });
+		expect(registered.metadata.exitCode, "the real Bash runtime must register channels").toBe(0);
+		expect(registered.stdout).toContain(channelIds[1]);
+	});
+	test("keeps a short cursor bound to its workspace and filters", async () => {
+		const f = await fixture();
+		for (const name of ["first", "second"]) {
+			const created = await f.asUser.mutation(api.channels.create_channel, {
+				membershipId: f.team.membershipId,
+				kind: "public",
+				name,
+				topic: "",
+				layout: "messages",
+			});
+			expect(created._nay).toBeUndefined();
+		}
+		const first = await f.run("channels ls --kind public --limit 1", false);
+		expect(first.stdout).toContain("#first");
+		const next = first.stdout.split("Next page: ")[1]!.trim();
+		expect((await f.run(next, false)).stdout).toContain("#second");
+		expect(
+			(await f.run(`${next} --workspace home`, false)).stderr,
+			"a copied cursor must not reach another workspace",
+		).toContain("another command");
+	});
+	test("binds search continuation to its query and filters", async () => {
+		const f = await fixture();
+		const created = await f.asUser.mutation(api.channels.create_channel, {
+			membershipId: f.team.membershipId,
+			kind: "public",
+			name: "general",
+			topic: "",
+			layout: "messages",
+		});
+		if (created._nay) throw new Error(created._nay.message);
+		for (const word of ["first", "second"]) {
+			const sent = await f.asUser.mutation(api.channels_messages.send_message, {
+				membershipId: f.team.membershipId,
+				target: { kind: "channel", channelId: created._yay.channelId },
+				clientMessageId: word,
+				body: `Needle ${word}`,
+				mentionUserIds: [],
+				fileMentionIds: [],
+				fileQuotes: [],
+				replyTo: null,
+				attachments: [],
+				alsoInChannel: false,
+				title: null,
+			});
+			expect(sent._nay).toBeUndefined();
+		}
+		const first = await f.run("channels search Needle --in '#general' --attachments false --limit 1", false);
+		const next = first.stdout.split("Next page: ")[1]!.trim();
+		expect((await f.run(next, false)).stdout).toContain("Needle second");
+		for (const changed of [
+			next.replace("Needle", "Other"),
+			next.replace("#general", "#other"),
+			next.replace("false", "true"),
+			`${next} --from ${f.team.userId}`,
+			`${next} --since 2026-10-01`,
+			`${next} --workspace home`,
+		]) {
+			expect((await f.run(changed, false)).stderr, "search cursors must keep their original scope").toContain(
+				"another command",
+			);
+		}
+	});
+	test("refuses bad dates, duplicate flags, and write commands", async () => {
+		const f = await fixture();
+		for (const command of [
+			"channels read '#general' --since 2026-02-30",
+			"channels read '#general' --until 2026-09",
+			"channels read '#general' --since 2026-10-03 --until 2026-10-02",
+			"channels ls --workspace third",
+			"channels ls --limit nope",
+			"channels ls --limit 1 --limit 2",
+			"channels send '#general' hello",
+			"channels search",
+			"channels search !!!",
+			"channels search words --attachments yes",
+			"channels search words --since 2026-02-30",
+			"channels search words --in '#general' --in '#other'",
+		]) {
+			const result = await f.run(command, false);
+			expect(result.exitCode, command).toBe(2);
+			expect(result.stdout).toBe("");
+		}
+	});
+});
 
 describe("Bash workspace runtime", () => {
 	test("relative find prefixes and retry hints follow a personal cwd", async () => {

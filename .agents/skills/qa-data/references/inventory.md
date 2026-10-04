@@ -59,7 +59,7 @@ Sign-in steps for the `qa.perm.*` accounts are in
 | File/folder module timing | In `chitchat-qa/home`, root paths `creation-perf-file_only-{folder_current,file_only}-01` through `-05`, and `creation-perf-{combined,combined_repeat}-{folder_current,folder_combined,file_combined}-01` through `-05`. The three file variants end in `.md`; all 15 have collaboration on. The 25 folders are empty. `/new-folder` is the real sidebar check. All 41 nodes passed exact id, path, parent, kind, and stored-type readback. Reuse these for read and editor checks. |
 | Final creation transaction timing | In `chitchat-qa/home`, root paths `final-create-perf-20261004-{file_current,file_split,folder_current,folder_split}-1` through `-7`. The file paths end in `.md` and have the initial Welcome text with collaboration on. The 14 folders are empty. All 28 passed exact id, path, parent, kind, and stored-type readback. `/new-file-15.md` is the sidebar check of the temporary action and its lean final transaction. |
 | Small Files permission check | `qa-browser/home:/qa-search-0905/tasks/public-task.md` and `/qa-search-0905/private/secret-task.md`. Saved API text is 52 bytes; the Yjs rich-text read is 53 bytes with final LF. The private folder stays restricted. Use the [scheduled Files recipe](../../app-playwriter-harness/references/plugin-backend-execution.md#scheduled-permission-checks) and restore shares after testing. |
-| Markdown, collaboration off | `personal/home:/qa-noncollab/notes.md`, `chitchat-qa/xfer-qa-0914:/u23p/my-file.md` (and the rest of `/u23p`) |
+| Markdown, collaboration off | `personal/home:/qa/qa-noncollab/notes.md`, `chitchat-qa/xfer-qa-0914:/u23p/my-file.md` (and the rest of `/u23p`) |
 | Long Markdown (scrolling) | `chitchat-qa/home:/qa-long-scroll.md` (about 50 KB). Read-only 97 KB files: `chitchat-qa/home:/chitchat-ad04c6c85ea7daf62a10960d/qa-rollover-1012299.md` |
 | Markdown with frontmatter | `personal/home:/frontmatter-demo.md` |
 | Medium Markdown with sections | `personal/home:/activity-ui-fixture.md` (about 1 KB) |
@@ -84,6 +84,8 @@ Sign-in steps for the `qa.perm.*` accounts are in
 | Audio | `personal/home:/meetings/15f1649a-d06c-4af3-be03-c5255c9180de/recording-audio.m4a` (read-only); two `.webm` files in `personal/home:/meetings/a610f275-3582-4c51-957f-4d37d1a9212b/` |
 | Word, Excel, PowerPoint, CSV, XLS | `sybill-demo/demo:/email-attachments/` (35 docx, 10 xlsx, 6 pptx, 10 csv, 2 xls). Read-only. |
 | Binary or no extension | `personal/home:/binary-qa-20260920-1546/empty` (0 B), `/binary-qa-20260920-1546/nested/opaque` |
+| Shared upload price | `chitchat-qa/home:/upload-rule-qa/upload-small.bin` (8 B, one cent) and `/upload-rule-qa/upload-20mib-plus-one.bin` (20,971,521 B, two cents). Both settled through the normal R2 event on 2026-10-03. Reuse these files for reads; upload again only when checking publication. |
+| Exact 50 MiB upload price | `chitchat-qa/home:/upload-rule-qa/upload-50mib.bin` (52,428,800 B, three cents). The normal R2 event settled it on 2026-10-04. Replaying settlement kept the same asset, quota and single sandbox event. Reuse for reads; it was sent as a browser File through the Files sidebar input because the tool's native transfer limit is 50 MB. |
 
 ### Folders
 
@@ -130,6 +132,76 @@ to a `chitchat-qa` workspace unless the check is about the upload plugins.
 
 ### Chats
 
+Human Messages checks reuse public channel `channels-qa` in `chitchat-qa/home`. It has a short root
+and reply from the phase 1 backend check. Continue this channel for Messages UI checks.
+
+Public `channels-page-qa` in the same workspace has 51 short plain messages, `Page check 1` through
+`Page check 51`. Reuse it for the 50-message head and Load older checks. The existing paid QA
+viewer can read it. Its channel id is `ts7qvkrkvmp8zs3y5nnqmmre7d8fjxaw`.
+
+Public `channels-qa` has upload roots `v97rmx9836ygkwdx3rbpvsxxdx8fkptd` (8-byte binary) and
+`v97vxsrhxk55b77g1da2250tm98fj3t2` (shapes.png and speakers.mp4). The binary's normal Files copy
+is `/upload-small.bin`. Its temporary `thread-drop.bin` reply was deleted and its asset cleaned.
+An unattached `paste-check.bin` has its normal 24-hour deadline; do not reuse it after expiry.
+
+Root `v97h20zabbfd418wt1tpjehne58fmapp` in `channels-qa` has `Phase five native message`.
+The native composer mentioned `qa.perm.viewer` and `/r2-upload-sample.pdf`. Reuse it for inbox
+and search checks. The matching general PDF comment below uses the same mention primitive.
+
+Root `v97jwwep6mbq0hrnpv0r91yagd8fnkyv` in the same paid public channel has
+`Phase five attachment search`. It attaches the existing `/upload-small.bin` file and is by the
+QA viewer. Reuse it for author, attachment and October 4 UTC date filters. It made no new upload.
+
+Private `channels-upload-private-qa` in `chitchat-qa/home` is owner-only. It has one 8-byte upload
+root `v97sj5r0ryz5bhgqxqb7txn1ch8fk53r`. The existing `qa.perm.viewer` account is also a member
+of this paid workspace. It was added to and then removed from this private channel for access QA.
+Reuse that account for paid upload read checks; it has no private channel access.
+
+Two-account channel checks reuse `qa-browser/home`: public `channels-qa`, private
+`channels-private-qa`, private `channels-owner-private-qa`, and the direct conversation between
+`qa.perm.owner` and `qa.perm.viewer`. The viewer-named account is currently a workspace member.
+The owner-private channel has native mention root `v97m6k6n5a24vt1b75vj4gvzyh8fmvd7`, with
+`Phase five access search`, and broadcast reply `v97zcp06kgbwdxnpgk8g3e2gfn8fnhxs`. Viewer root
+`v97m062qwz76q747vdztxrrz118fmxwj` has inline reply `v97mr4yy6zxcnnx42xb7mnp3rd8fntbt`.
+Both accounts are members again; the owner is manager, the viewer is member with All notifications.
+The viewer read these items. Reuse them for search, Activity, Threads and live access-loss checks.
+
+UI checks also reuse public `channels-ui-qa` and private `channels-ui-private-qa` in that workspace.
+The private channel allows resolve and has `Private UI title`, replies, a reaction, and a people
+mention. Both QA accounts are members. The direct picker reuses the existing conversation.
+The owner also joined the public UI channel. `qa.perm.member` is a workspace viewer here for
+later non-participant checks.
+
+Channel agent checks reuse chat `n178qh29w0n8sk7yjxjfky7d8n8fjnd8` in `chitchat-qa/home`.
+Its Bash calls list channels and members, then read the saved root and reply in a UTC date range.
+Its saved search turn checks author, attachments, UTC dates, text/JSON output, an exact Next page
+command, `--workspace home`, and refusal of a foreign workspace URL. It used the real paid agent.
+
+File comments reuse these saved files and roots. Open them in Files or Messages:
+
+| File | Channel | Root | State |
+| --- | --- | --- | --- |
+| `qa-browser/home:/two-roots-qa-0921.txt` | `ts7zw3nfjr34thgt4mhz440mt98fk8q2` | `v97x2csrr5z067d4jwcph8r3zn8fjv0e` | General comment, one reply, resolved. Both QA accounts can read it. |
+| `qa-browser/home:/two-roots-qa-0921.txt` | `ts7zw3nfjr34thgt4mhz440mt98fk8q2` | `v97p6fm4q6xe39y9vgrgejp7dx8fkvyh` | Closed tab check, open. Verified the unread badge and New marker in Code view. |
+| `chitchat-qa/home:/r2-upload-sample.pdf` | `ts7wvnhvhnm0s4z86krf8jnta18fjd0x` | `v97xsqbsgnd1xd6vqgqqrbxwnd8fjbb8` | General PDF comment, open. |
+| `chitchat-qa/home:/r2-upload-sample.pdf` | `ts7wvnhvhnm0s4z86krf8jnta18fjd0x` | `v97smz0hrfwmxsan9kkwven7bn8fk6xe` | Attachment-only comment with comment-paste.bin and comment-drop.bin, both 8 B. File access was restored to unrestricted, with no grants, public link or plugin binding. |
+| `chitchat-qa/home:/r2-upload-sample.pdf` | `ts7wvnhvhnm0s4z86krf8jnta18fjd0x` | `v97xqsefpvggk9txp6pj6zdh0d8fmp75` | General comment with `Phase five native comment`. Native people and file mentions match the Messages fixture above. |
+| `chitchat-qa/home:/upload-small.bin` | `ts7meayx1tx53k8apay3hecz2h8fng4e` | `v97gyfp8ga9pcbyyqxq48w90n98fnf3r`, `v97hwetp4tanme9eqtg8nm5yjx8fnasf` | Two first comments sent from two tabs. Both use this one file channel, with main sequences 1 and 2. The original 8-byte file is unchanged. |
+| `personal/home:/qa/qa-noncollab/notes.md` | `ts7j6hbckx8vp8g6ae8hqr5kvd8fk0k7` | `v97vwh25wjkggr985jr5mfqnvd8fj6d7` | Saved mark on `Non collaborative`, open. |
+| `personal/home:/documents/notes.md` | `ts7hpnwgb4j4m4a10t4j7y0vs98fj626` | `v97h3temt3e1kayr4p44np78jn8fkn77` | Saved collaborative mark on `MOVE-MARKER-4411`, open. |
+| `personal/home:/documents/notes.md` | `ts7hpnwgb4j4m4a10t4j7y0vs98fj626` | `v97v7x28vby3kp4r4xp938tsgd8fk0v3` | Saved overlapping mark on `MOVE-MARKER-4411`, open. Public head stayed 1 while confirmation waited, then became 2. |
+| `personal/home:/aaa-closing-qa-dest-mu6ynzn5/aaa-closing-qa-mu6ygix9.md` | `ts7qb663jk5y1myk2yn5v4nq0h8fk3k5` | `v97mek727ht4rfqhr3jk937kh98fkx5j` | General comment, resolved. The file stays read-only and its saved text stayed unchanged. |
+| `qa-browser/home:/chitchat/general.md` | `ts7wtgbxq25qmthesbe4kr6ses8fjv35` | `v97hf5tv517vzbc1p2jgn0negn8fkwxv` | General comment quotes `general`, with `READONLY-QUOTE-COMMENT-Q1`. The quote and file link survived reload. The editor stays read-only. |
+
+`qa-browser/home:/qa-search-0905/tasks/public-task.md` has an empty file channel
+`ts7tf4pt69pnbm53ewrr43aae18fkpea`. Its failed anchor was discarded after the free account's
+content save was refused. Reuse that file for save-refusal checks; do not count it as a saved anchor.
+
+Public `channels-qa` in `qa-browser/home` has root `v97jpw71ze1ze0rvs8v8a7mzcx8fjakt`.
+It quotes and mentions `/two-roots-qa-0921.txt`. The supported API sent this root. Restricting the
+file hid its id, name, path and link from the other account, while keeping the selected text.
+The file's original unrestricted scope and empty grant list were restored.
+
 `personal/home` already has about 410 chats. For an agent check where chat history does not
 matter, continue a chat you already made for the same task instead of starting a new one.
 
@@ -146,6 +218,17 @@ Mount isolation checks. Its saved Bash call found both plugin Mount paths absent
 Only the original Chitchat installation was present.
 
 ## Change Log
+
+- 2026-10-04: checked the real agent search in its existing chat. Added two first comments on the existing binary file and one exact 50 MiB upload-price fixture. The upload charged three cents once; settlement replay changed nothing. No new tenant or user.
+- 2026-10-04: added native private search, broadcast and inline-reply fixtures, and an existing-file attachment search root. Restored private membership and notification settings. No new tenant, user or upload.
+- 2026-10-04: added one native Messages mention and one matching PDF comment. Both mention the existing QA viewer and PDF. No new tenant, user or file.
+- 2026-10-04: added upload roots, one paid private channel, and two PDF comment uploads. Invited the existing QA viewer into the paid workspace. The file access check is restored; the temporary upload reply and its asset are removed. No new tenant or user.
+- 2026-10-03: added two binary upload-price fixtures in `chitchat-qa/home`. An oversized test placeholder was removed by normal upload cleanup. No new tenant or user.
+- 2026-10-03: added the saved read-only quote comment and public quote access fixture. The file restriction used for the access check is restored.
+- 2026-10-03: added the reusable `channels-qa` human channel in `chitchat-qa/home`. No new tenant or user.
+- 2026-10-03: added four reusable channels in `qa-browser/home` for two-account access and Messages checks.
+- 2026-10-03: added two channels through the Messages UI in the same workspace. Reuse them for UI checks.
+- 2026-10-03: added file-channel comments on the existing plain text, PDF and rich text fixtures above.
 
 - 2026-09-24: first catalog from a full refresh.
 - 2026-09-28: Data Probe 0.3.0 (MCP fixture) installed in `chitchat-qa/copy-qa-0922`.

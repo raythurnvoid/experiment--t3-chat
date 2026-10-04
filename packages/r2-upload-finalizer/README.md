@@ -45,6 +45,12 @@ The Worker retries only network errors and retryable HTTP statuses: `408`, `409`
 
 Convex owns asset lookup, upload-kind filtering, idempotency, conversion queueing, and finalization. The Worker should stay a narrow event forwarder.
 
+Channel uploads use the same key and event contract. Convex settles their real size and shared
+upload charge through `settle_channel_upload_asset`. The client's settlement action is the first
+path; the R2 event is the backup. Repeats do not count or charge twice. Channel bytes never enter
+Files conversion or upload-completed plugins. Their 24-hour cleanup deadline stays until a message
+attaches them. An oversized object is deleted and acknowledged with 204, without a charge.
+
 Creating the file node, asset doc, and signed target accepts the upload. If the node or its folder
 becomes read-only later, Convex still publishes the upload. It also finishes text conversion when
 needed and starts upload-completed plugins. The finished node keeps its lock. New changes stay

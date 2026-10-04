@@ -8,6 +8,7 @@ import { app_convex, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { AiChatMessage, AiChatMessagePendingAssistant, type AiChatMessage_Props } from "./ai-chat-message.tsx";
 import type { AiChatComposer_Props } from "./ai-chat-composer.tsx";
 import type { ai_chat_McpTarget } from "../../../shared/ai-chat-files.ts";
+import { file_quotes_serialize_draft } from "../../../shared/file-quotes.ts";
 
 vi.mock("@/lib/files-tree-context.tsx", () => ({
 	FilesTreeProvider: (props: { children: ReactNode }) => props.children,
@@ -17,16 +18,27 @@ vi.mock("@/components/files/files-clipboard.tsx", () => ({
 	FilesClipboardProvider: (props: { children: ReactNode }) => props.children,
 }));
 
+vi.mock("@/lib/app-channels-context.tsx", () => ({
+	AppChannelsProvider: (props: { children: ReactNode }) => props.children,
+}));
+
 vi.mock("convex/react", async (importOriginal) => {
 	const actual = (await importOriginal()) as Record<string, unknown>;
 	return {
 		...actual,
 		// Files answers one target at a time: undefined while the query loads, and null when this reader
 		// may not open that file. An MCP target has no `id`, and `can_connect` answers whether it still exists.
-		useQuery: (_reference: unknown, args: { target: { id: string } | ai_chat_McpTarget }) =>
-			"id" in args.target
+		useQuery: (
+			_reference: unknown,
+			args: { target?: { id: string } | ai_chat_McpTarget; fileNodeId?: string } | "skip",
+		) => {
+			if (args === "skip") return undefined;
+			if (args.fileNodeId) return null;
+			if (!args.target) return undefined;
+			return "id" in args.target
 				? hookMocks.files.get(args.target.id)
-				: hookMocks.mcpConnectable.get(JSON.stringify(args.target)),
+				: hookMocks.mcpConnectable.get(JSON.stringify(args.target));
+		},
 	};
 });
 
@@ -230,6 +242,18 @@ function withTenant(ui: ReactNode, tenant = { organizationName: "personal", work
 }
 
 describe("AiChatMessage", () => {
+	test("a quote-only message stays readable and retries as a quote node", () => {
+		const quote = { fileNodeId: null, text: "Selected words" };
+		const message: ai_chat_UiMessage = { ...createUserMessage(), parts: [{ type: "data-file-quote", data: quote }] };
+		renderMessage({ message, sendError: true });
+		expect(screen.getByText(quote.text)).toBeTruthy();
+		expect(document.querySelector(".FileQuote a")).toBeNull();
+		fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+		expect(hookMocks.actions.sendUserText).toHaveBeenCalledWith(
+			expect.objectContaining({ value: file_quotes_serialize_draft(quote) }),
+		);
+	});
+
 	const bashWorkspaceMount = "/home/cloud-usr/w/personal/home";
 
 	afterEach(() => {

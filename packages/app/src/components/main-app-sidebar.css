@@ -139,6 +139,17 @@
 
 	/* #endregion root */
 
+	.MainAppSidebarItem-trigger {
+		position: relative;
+	}
+	.MainAppSidebarItem-unread {
+		position: absolute;
+		top: 0;
+		right: 4px;
+		color: var(--color-accent-09);
+		font-size: 18px;
+	}
+
 	/* #region presence control */
 	.MainAppSidebarPresenceControl {
 		display: grid;

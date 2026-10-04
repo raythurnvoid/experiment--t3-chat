@@ -142,7 +142,6 @@ const rebrand_cleanup_tables = [
 	"api_credentials",
 	"billing_cancel_polar_subscription_jobs",
 	"billing_usage_snapshots",
-	"chat_messages",
 	"clerk_webhook_receipts",
 	"data_deletion_requests",
 	"file_stats",

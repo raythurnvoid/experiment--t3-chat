@@ -1,0 +1,38 @@
+@layer components {
+	.ChannelsComposerMention {
+		color: var(--color-fg-11);
+		background: var(--color-base-1-05);
+		border-radius: 4px;
+		padding: 1px 4px;
+	}
+	.ChannelsComposerMentionList {
+		z-index: 10;
+		min-width: 220px;
+		max-width: 340px;
+		max-height: 280px;
+		overflow: auto;
+		padding: 4px;
+		font-size: 0.9375rem;
+	}
+	.ChannelsComposerMentionList-item {
+		display: flex;
+		gap: 8px;
+		align-items: center;
+		padding: 8px;
+		border-radius: 4px;
+		cursor: pointer;
+		&[aria-selected="true"] {
+			background: var(--color-base-1-05);
+		}
+	}
+	.ChannelsComposerMentionList-status {
+		padding: 8px;
+		color: var(--color-fg-08);
+	}
+	.ChannelsComposerMentionList-path {
+		display: block;
+		color: var(--color-fg-08);
+		font-size: 0.8125rem;
+		overflow-wrap: anywhere;
+	}
+}

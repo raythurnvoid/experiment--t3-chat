@@ -161,6 +161,47 @@ export async function billing_db_emit_file_save(
 	});
 }
 
+export async function billing_db_emit_file_upload(
+	ctx: MutationCtx,
+	args: {
+		billedUser: Doc<"users">;
+		actorUserId: Id<"users">;
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		nodeId: Id<"files_nodes"> | null;
+		assetId: Id<"files_r2_assets">;
+		chargeKey: string;
+		amount: number;
+		bytes: number;
+	},
+) {
+	const event: billing_Event = {
+		name: "file_upload",
+		externalCustomerId: args.billedUser._id,
+		externalMemberId: args.actorUserId,
+		externalId: composite_id(
+			"billing",
+			"file_upload",
+			args.billedUser._id,
+			args.actorUserId,
+			args.organizationId,
+			args.workspaceId,
+			args.chargeKey,
+		),
+		metadata: {
+			amount: args.amount,
+			actorUserId: args.actorUserId,
+			billedUserId: args.billedUser._id,
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			nodeId: args.nodeId,
+			assetId: args.assetId,
+			bytes: args.bytes,
+		},
+	};
+	await billing_ingest_events(ctx, { billedUserEvents: [{ billedUser: args.billedUser, event }] });
+}
+
 export async function billing_db_emit_plugin_volume_file_writes(
 	ctx: MutationCtx,
 	args: {

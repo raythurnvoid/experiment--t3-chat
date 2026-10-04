@@ -4,12 +4,15 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import type { AppTenantContextValue } from "@/lib/app-tenant-context.tsx";
 
-const { tenantContextMock, localStorageSetterMock, useQueryMock, pathnameMock } = vi.hoisted(() => ({
-	tenantContextMock: vi.fn(),
-	localStorageSetterMock: vi.fn(),
-	useQueryMock: vi.fn(),
-	pathnameMock: vi.fn(),
-}));
+const { tenantContextMock, localStorageSetterMock, useQueryMock, pathnameMock, channelContextMock } = vi.hoisted(
+	() => ({
+		tenantContextMock: vi.fn(),
+		localStorageSetterMock: vi.fn(),
+		useQueryMock: vi.fn(),
+		pathnameMock: vi.fn(),
+		channelContextMock: vi.fn(() => ({ unreadMentions: 0 })),
+	}),
+);
 
 vi.mock("@tanstack/react-router", () => ({
 	Link: function Link(props: { to: string; className?: string; children?: ReactNode }) {
@@ -28,6 +31,8 @@ vi.mock("@/lib/app-tenant-context.tsx", () => ({
 		useContext: () => tenantContextMock(),
 	},
 }));
+
+vi.mock("@/lib/app-channels-context.tsx", () => ({ AppChannelsProvider: { useContext: () => channelContextMock() } }));
 
 vi.mock("convex/react", () => ({
 	useQuery: (...args: unknown[]) => useQueryMock(...args),
@@ -200,9 +205,15 @@ vi.mock("@/components/my-sidebar.tsx", () => ({
 		className?: string;
 		to: string;
 		"data-selected"?: string;
+		"data-unread"?: string;
 	}) {
 		return (
-			<a href={props.to} className={props.className} data-selected={props["data-selected"]}>
+			<a
+				href={props.to}
+				className={props.className}
+				data-selected={props["data-selected"]}
+				data-unread={props["data-unread"]}
+			>
 				{props.children}
 			</a>
 		);
@@ -287,6 +298,12 @@ function mockQueries(args: {
 }
 
 describe("MainAppSidebar", () => {
+	test("keeps the Messages mention dot live on Files", () => {
+		channelContextMock.mockReturnValueOnce({ unreadMentions: 2 });
+		pathnameMock.mockReturnValueOnce("/w/team/home/files");
+		render(<MainAppSidebar />);
+		expect(screen.getByRole("link", { name: /Messages/ }).getAttribute("data-unread")).toBe("true");
+	});
 	beforeEach(() => {
 		tenantContextMock.mockReturnValue(createTenantContext());
 		pathnameMock.mockReturnValue("/w/team/home/files");

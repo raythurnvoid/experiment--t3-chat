@@ -52,6 +52,7 @@ const access_control_permission_validator = v.union(
 	v.literal("content.read"),
 	v.literal("content.write"),
 	v.literal("content.permissions.manage"),
+	v.literal("workspace.channels.manage"),
 	v.literal("workspace.service_accounts.manage"),
 	v.literal("workspace.browser.use"),
 	v.literal("workspace.mcp.use"),
@@ -316,6 +317,8 @@ export const files_content_version_validator = v.union(
 		collaborationEnabled: v.literal(true),
 	}),
 );
+
+export const file_quote_validator = v.object({ fileNodeId: v.union(v.string(), v.null()), text: v.string() });
 
 export const files_pending_target_validator = v.union(
 	v.object({ kind: v.literal("saved"), id: v.id("files_nodes") }),
@@ -3476,7 +3479,13 @@ const app_convex_schema = defineSchema({
 			v.literal(organizations_GLOBAL_GITHUB_WORKSPACE_ID),
 			v.literal(organizations_GLOBAL_PLUGINS_WORKSPACE_ID),
 		),
-		kind: v.union(v.literal("upload"), v.literal("content"), v.literal("yjs_snapshot"), v.literal("content_snapshot")),
+		kind: v.union(
+			v.literal("upload"),
+			v.literal("channel_upload"),
+			v.literal("content"),
+			v.literal("yjs_snapshot"),
+			v.literal("content_snapshot"),
+		),
 		r2Bucket: v.string(),
 		/**
 		 * The final R2 key. Usually set after R2 confirms the file exists.
@@ -3485,6 +3494,10 @@ const app_convex_schema = defineSchema({
 		r2Key: v.optional(v.string()),
 		size: v.number(),
 		etag: v.optional(v.string()),
+		/**
+		 * Only trusted operator imports may skip upload billing and the stored-file counter.
+		 */
+		uploadBillingExempt: v.optional(v.literal(true)),
 		/**
 		 * Upload processing state. Undefined means not started. A work id means running.
 		 * Null means finished.
@@ -5454,7 +5467,8 @@ const app_convex_schema = defineSchema({
 		 */
 		actualBytes: v.union(v.number(), v.null()),
 		/**
-		 * Largest observed attempt size. Superseded attempts can still increase this charge.
+		 * Confirmed bytes counted for the committed attempt. Old settled targets may include
+		 * superseded attempts; that history is never used for billing.
 		 */
 		chargedBytes: v.number(),
 		nodeId: v.id("files_nodes"),
@@ -5466,6 +5480,7 @@ const app_convex_schema = defineSchema({
 		 * charged stay charged either way.
 		 */
 		state: v.union(v.literal("pending"), v.literal("committed"), v.literal("released")),
+		releaseReason: v.optional(v.literal("oversized")),
 		/**
 		 * Set after the file leaves this service door through a member move or service destination archive.
 		 */
@@ -5992,51 +6007,262 @@ const app_convex_schema = defineSchema({
 
 	// #endregion activities
 
-	// #region chat messages
-	/**
-	 * Chat messages table - a single table that represents both threads and messages.
-	 * Root messages have `threadId = null`.
-	 * Child messages have `threadId = rootId`.
-	 *
-	 * Any message can also be the root of a descendant thread by using that message id as
-	 * the thread id for future children.
-	 *
-	 * Every row is a comment on one file. `fileNodeId` says which one, and that file answers the
-	 * permission question for reading and writing the comment: a comment quotes the document, so
-	 * somebody who may not open the file may not read what was said about it either.
-	 */
-	chat_messages: defineTable({
-		/** Organization ID for multi-tenant scoping */
-		organizationId: v.string(),
-		/** Workspace ID for multi-tenant scoping */
-		workspaceId: v.string(),
-		/**
-		 * The file this comment is about, and the thing every read and write of it is checked against.
-		 *
-		 * Required, so a row can never exist without a permission subject. Children copy it from their
-		 * root, so a whole thread always answers to one file.
-		 */
-		fileNodeId: v.id("files_nodes"),
-		/**
-		 * null → this row is a top-level root message.
-		 * non-null → this row is a child message belonging to the message whose id is threadId.
-		 */
-		threadId: v.union(v.id("chat_messages"), v.null()),
-		/**
-		 * null for roots.
-		 * For children: points to the parent/root message that this message directly replies to.
-		 */
-		parentId: v.union(v.id("chat_messages"), v.null()),
-		/** Soft delete / hide flag, especially for root messages */
-		isArchived: v.boolean(),
-		/** User ID who created this message */
-		createdBy: v.string(),
-		/**
-		 * Markdown content. It is produced from TipTap rich text on submit.
-		 */
-		content: v.string(),
-	}).index("by_organization_workspace_thread", ["organizationId", "workspaceId", "threadId"]),
-	// #endregion chat messages
+	// #region channels
+	channels: defineTable(
+		v.union(
+			v.object({
+				kind: v.union(v.literal("public"), v.literal("private")),
+				organizationId: v.id("organizations"),
+				workspaceId: v.id("organizations_workspaces"),
+				name: v.string(),
+				topic: v.string(),
+				layout: v.union(v.literal("messages"), v.literal("posts")),
+				resolvableThreads: v.boolean(),
+				createdBy: v.id("users"),
+				createdAt: v.number(),
+				archivedAt: v.union(v.number(), v.null()),
+			}),
+			v.object({
+				kind: v.literal("direct"),
+				organizationId: v.id("organizations"),
+				workspaceId: v.id("organizations_workspaces"),
+				/** Use membership doc ids so a re-invite cannot reopen old history. */
+				directKey: v.string(),
+				/** Keep the fixed list so departed people can still be shown as left. */
+				participantUserIds: v.array(v.id("users")),
+				createdBy: v.id("users"),
+				createdAt: v.number(),
+			}),
+			v.object({
+				kind: v.literal("file"),
+				organizationId: v.id("organizations"),
+				workspaceId: v.id("organizations_workspaces"),
+				fileNodeId: v.id("files_nodes"),
+				createdBy: v.id("users"),
+				createdAt: v.number(),
+			}),
+		),
+	)
+		.index("by_organization_workspace_kind_name", ["organizationId", "workspaceId", "kind", "name"])
+		.index("by_organization_workspace_directKey", ["organizationId", "workspaceId", "directKey"])
+		.index("by_organization_workspace_fileNode", ["organizationId", "workspaceId", "fileNodeId"])
+		.index("by_organization_workspace_kind_archivedAt_name", [
+			"organizationId",
+			"workspaceId",
+			"kind",
+			"archivedAt",
+			"name",
+		]),
+
+	channels_activity: defineTable({
+		channelId: v.id("channels"),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		lastMainSequence: v.number(),
+		lastChannelSequence: v.number(),
+		lastMessageAt: v.number(),
+		memberCount: v.number(),
+	})
+		.index("by_channel", ["channelId"])
+		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
+
+	channels_members: defineTable({
+		channelId: v.id("channels"),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		/** Pin access to this membership. Account restore keeps it; re-invite does not. */
+		workspaceMembershipId: v.id("organizations_workspaces_users"),
+		level: v.union(v.literal("member"), v.literal("manager")),
+		addedBy: v.union(v.id("users"), v.null()),
+		notify: v.union(v.literal("all"), v.literal("mentions"), v.literal("none")),
+		starred: v.boolean(),
+		hiddenAtMainSequence: v.union(v.number(), v.null()),
+		joinedAt: v.number(),
+	})
+		.index("by_channel_user", ["channelId", "userId"])
+		.index("by_channel_level", ["channelId", "level"])
+		.index("by_organization_workspace_user_channel", ["organizationId", "workspaceId", "userId", "channelId"])
+		.index("by_organization_user", ["organizationId", "userId"])
+		.index("by_user", ["userId"]),
+
+	channels_read_states: defineTable({
+		channelId: v.id("channels"),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		/** Read mainSequence in messages layout and channelSequence in posts layout. */
+		readSequence: v.number(),
+		updatedAt: v.number(),
+	})
+		.index("by_channel_user", ["channelId", "userId"])
+		.index("by_organization_user", ["organizationId", "userId"])
+		.index("by_user", ["userId"])
+		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
+
+	channels_messages: defineTable({
+		channelId: v.id("channels"),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		authorUserId: v.id("users"),
+		channelSequence: v.number(),
+		mainSequence: v.union(v.number(), v.null()),
+		threadRootId: v.union(v.id("channels_messages"), v.null()),
+		threadSequence: v.union(v.number(), v.null()),
+		replyTo: v.union(
+			v.object({ messageId: v.id("channels_messages"), quote: v.union(v.string(), v.null()) }),
+			v.null(),
+		),
+		body: v.string(),
+		mentionUserIds: v.array(v.id("users")),
+		fileMentionIds: v.array(v.id("files_nodes")),
+		fileQuotes: v.array(file_quote_validator),
+		attachments: v.array(
+			v.union(
+				v.object({ kind: v.literal("file"), fileNodeId: v.id("files_nodes") }),
+				v.object({ kind: v.literal("upload"), uploadId: v.id("channels_uploads") }),
+			),
+		),
+		hasAttachments: v.boolean(),
+		clientMessageId: v.string(),
+		revision: v.number(),
+		editedAt: v.union(v.number(), v.null()),
+		deletedAt: v.union(v.number(), v.null()),
+	})
+		.index("by_channel_mainSequence", ["channelId", "mainSequence"])
+		.index("by_threadRoot_threadSequence", ["threadRootId", "threadSequence"])
+		.index("by_channel", ["channelId"])
+		.index("by_author_clientMessageId", ["authorUserId", "clientMessageId"])
+		.index("by_organization_workspace", ["organizationId", "workspaceId"])
+		.searchIndex("search_body", {
+			searchField: "body",
+			filterFields: ["organizationId", "workspaceId", "channelId", "authorUserId", "hasAttachments"],
+		}),
+
+	channels_threads: defineTable({
+		channelId: v.id("channels"),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		rootMessageId: v.id("channels_messages"),
+		title: v.union(v.string(), v.null()),
+		/** Hide an anchored comment from others until its document mark is saved. */
+		anchor: v.union(
+			v.object({ kind: v.literal("text_mark"), excerpt: v.string(), confirmedAt: v.union(v.number(), v.null()) }),
+			v.null(),
+		),
+		lastReplySequence: v.number(),
+		lastActivitySequence: v.number(),
+		replyCount: v.number(),
+		recentReplierUserIds: v.array(v.id("users")),
+		lastActivityAt: v.number(),
+		isResolved: v.boolean(),
+		resolvedAt: v.union(v.number(), v.null()),
+		resolvedBy: v.union(v.id("users"), v.null()),
+		followerSyncPending: v.boolean(),
+	})
+		.index("by_rootMessage", ["rootMessageId"])
+		.index("by_anchor_confirmedAt", ["anchor.confirmedAt"])
+		.index("by_channel_isResolved_lastActivityAt", ["channelId", "isResolved", "lastActivityAt"])
+		.index("by_channel_lastActivityAt", ["channelId", "lastActivityAt"])
+		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
+
+	channels_thread_followers: defineTable({
+		threadId: v.id("channels_threads"),
+		rootMessageId: v.id("channels_messages"),
+		channelId: v.id("channels"),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		readReplySequence: v.number(),
+		following: v.boolean(),
+		/** Clear this only when the post is opened or its root mention is removed. */
+		pendingRootMention: v.boolean(),
+		threadLastActivityAt: v.number(),
+		followedAt: v.number(),
+	})
+		.index("by_thread_user", ["threadId", "userId"])
+		.index("by_thread", ["threadId"])
+		.index("by_organization_workspace", ["organizationId", "workspaceId"])
+		.index("by_user_channel_pendingRootMention", ["userId", "channelId", "pendingRootMention"])
+		.index("by_organization_workspace_user_following_threadLastActivityAt", [
+			"organizationId",
+			"workspaceId",
+			"userId",
+			"following",
+			"threadLastActivityAt",
+		])
+		.index("by_organization_user", ["organizationId", "userId"])
+		.index("by_user", ["userId"]),
+
+	channels_reactions: defineTable({
+		messageId: v.id("channels_messages"),
+		channelId: v.id("channels"),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		emoji: v.string(),
+	})
+		.index("by_message_emoji_user", ["messageId", "emoji", "userId"])
+		.index("by_message", ["messageId"])
+		.index("by_organization_user", ["organizationId", "userId"])
+		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
+
+	channels_reaction_counts: defineTable({
+		messageId: v.id("channels_messages"),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		emoji: v.string(),
+		count: v.number(),
+	})
+		.index("by_message_emoji", ["messageId", "emoji"])
+		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
+
+	channels_inbox: defineTable({
+		recipientUserId: v.id("users"),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		channelId: v.id("channels"),
+		messageId: v.id("channels_messages"),
+		kind: v.union(v.literal("mention"), v.literal("reply")),
+		mainSequence: v.union(v.number(), v.null()),
+		threadRootId: v.union(v.id("channels_messages"), v.null()),
+		threadSequence: v.union(v.number(), v.null()),
+		createdAt: v.number(),
+	})
+		.index("by_recipient_organization_workspace_createdAt", [
+			"recipientUserId",
+			"organizationId",
+			"workspaceId",
+			"createdAt",
+		])
+		.index("by_recipient_channel_kind_threadRoot_mainSequence", [
+			"recipientUserId",
+			"channelId",
+			"kind",
+			"threadRootId",
+			"mainSequence",
+		])
+		.index("by_message", ["messageId"])
+		.index("by_recipient", ["recipientUserId"])
+		.index("by_organization_recipient", ["organizationId", "recipientUserId"])
+		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
+
+	channels_uploads: defineTable({
+		channelId: v.id("channels"),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		assetId: v.id("files_r2_assets"),
+		uploaderUserId: v.id("users"),
+		name: v.string(),
+		contentType: v.string(),
+		/** Attaching clears the asset's 24-hour cleanup deadline. */
+		messageId: v.union(v.id("channels_messages"), v.null()),
+		createdAt: v.number(),
+	})
+		.index("by_asset", ["assetId"])
+		.index("by_channel", ["channelId"])
+		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
+	// #endregion channels
 
 	// #region data deletion
 	data_deletion_requests: defineTable({
@@ -6384,8 +6610,7 @@ const app_convex_schema = defineSchema({
 			v.literal("extra_organizations"),
 			v.literal("extra_workspaces"),
 			v.literal("active_api_credentials"),
-			v.literal("public_api_upload_bytes"),
-			v.literal("plugin_service_storage_bytes"),
+			v.literal("stored_file_bytes"),
 			v.literal("files_private_user_bytes"),
 			v.literal("files_private_workspace_bytes"),
 			v.literal("files_private_nodes"),

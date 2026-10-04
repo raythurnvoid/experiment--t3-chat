@@ -43,7 +43,7 @@ Use this file as a quick testing map for `/files`. Keep it short and selector-or
   `.FileEditorRichTextNonCollab-editor-content` instead. **Never use bare `.ProseMirror` and never
   `main`.** The route mounts at least three ProseMirror editors — the file, the AI chat composer
   (`.AiChatComposer-editor-content`), and the comment composer
-  (`.FileEditorCommentsComposerControl-editor`) — so `querySelector(".ProseMirror")` can answer
+  (`.ChannelsComposerControl-editor`) — so `querySelector(".ProseMirror")` can answer
   with the composer, and `main.innerText` returns the file text glued to the whole agent panel
   transcript. Either way a `text.includes(marker)` check reads as a pass on content the file does
   not hold. Verified 2026-09-01 while proving a Chitchat transcript write; non-collab class checked
@@ -201,6 +201,34 @@ vp env exec node -e "require('node:fs').writeFileSync('../t3-chat-+personal/+ai/
 That is ~5.4 MB. Any text upload over `files_MAX_TEXT_CONTENT_BYTES` (900,000 bytes) keeps the stored blob: the conversion checks the declared asset size before its GET, so it settles without fetching the bucket bytes at all.
 
 The two frontmatter fixtures prove conversion, not refusal: an over-cap frontmatter `.md` still converts to an editable rich-text document — it commits WITHOUT the metadata index and with the `contentFrontmatterTooLarge*` marker pair set. `qa-frontmatter-overcap.md` trips the 128-field cap; `qa-frontmatter-values-overcap.md` trips the 512 index-document cap through one 600-value array. Uploading either requires the upload frontmatter preflight in `convex/r2.ts` (landed 2026-08-10) to be deployed. Without it the conversion throws in the infinite-retry workpool: the upload never publishes and every retry re-uploads both R2 objects. Check the deployment before uploading them.
+
+### Shared Stored Upload Rules
+
+Stored uploads require a paid workspace payer. The declared size must be a safe integer from zero
+through 2 GiB. Admission reads the workspace's `stored_file_bytes` counter before creating a node,
+asset, or quota doc. Valid publication counts real bytes and costs one cent per started 20 MiB,
+with a one-cent minimum. Repeated events and recovery must not count or charge again.
+
+Use a QA folder in `chitchat-qa`, where uploads do not start the user's upload plugins.
+Drive `.FilesSidebar input[type=file]:not([webkitdirectory])` with one absolute file path per call.
+Keep fixtures in the personal task folder. A large `setInputFiles` can exceed five seconds after it
+has started the upload. After a timeout, inspect the folder and backend before retrying.
+
+Read the published asset and counter, then use the bounded `billing.inspect_polar_billing_page`
+operator door to check sandbox `file_upload` events and their amount and bytes. Follow the billing
+skill's deployment, user, customer, and server guards. A completed queue may already be empty;
+record that limit instead of claiming that a live queued payload was captured.
+
+The exact 50 MiB price check needs 52,428,800 bytes, one event with amount 3, and a counter increase
+of that many bytes. Reuse the catalog fixture for reads. To check publication again, use the same
+folder and keep the real R2 size, asset id, counter and sandbox event in the receipt. Replay the
+normal settlement door only on that published QA asset; follow `convex-admin-ops`. Require an
+unchanged asset and counter, and the same single provider event after the replay.
+
+For an oversized check, mint a normal QA target through the signed-in app, then PUT one extra byte
+from the personal task folder. Keep its signed URL private. Assert that the node and asset disappear,
+the exact-key deletion job keeps the signed PUT window, and the counter and provider events stay
+unchanged. Use the recovery action tests for the lost-event case when the normal live event arrives.
 
 ### Upload Conversion Proof By Bytes
 
@@ -408,6 +436,48 @@ Use this after changing rich-text comments layout.
 - Set `.FileNodeView-editor-area.scrollTop` to a larger value.
 - Verify the filter `y` stays stable while `.FileEditorRichTextAnchoredComments-thread-container` moves.
 - Verify the filter has an opaque background so comments do not show underneath it.
+
+### File Channel Comments
+
+Use the existing comment fixtures in the `qa-data` catalog. Comments now use file channels.
+The saved mark stores the root message id in `data-lb-thread-id`.
+
+- Open `Comments`. General posts have Open, Resolved and All filters, New comment, Follow comments,
+  and Open in Messages. Stored files such as PDF have the same panel. Pending private files do not.
+- For a general post, choose New comment, fill the textbox named `New comment`, then press
+  `Send comment (Enter)`. It opens the shared thread pane. Reply, resolve and reopen there.
+- For two first comments, pick a saved QA file whose `channels.get_file_channel` is null. Open
+  Comments in two owned tabs, fill different New comment drafts, then start both native sends.
+  Read `get_file_channel` again and `channels_messages.list_posts`. Require one channel id,
+  both roots, and sequences 1 and 2. Both Open in Messages links must name that same channel.
+  Save the ids in the QA catalog. An existing file channel cannot prove first creation again.
+- For an anchor, click the real `[contenteditable=true]` inside the `File editor` region. Use
+  Control+Home and Shift+End to select the first line. Read `window.getSelection().toString()`.
+  Choose Add comment, fill `Add comment to selection`, and choose Submit comment.
+- Collaborative rich text has no textbox role on its file editor. The snapshot's synthetic
+  textbox label is not a Playwright role selector. The shared comment composer has a real role.
+- Wait for the saved mark and confirmed thread. Read `channels_messages.get_thread_by_root`
+  with `rootMessageId`, not `rootId`. Reload and require the same root id and selected text.
+- Resolve must set `data-hidden` on the mark and leave the saved Yjs sequence unchanged.
+  The mark stays in the document. Reopen clears `data-hidden`. General posts and comments whose
+  marks are gone appear in the post list; the latter show their saved excerpt.
+- An unsaved anchor is hidden from other people. A save refusal removes only the new mark,
+  discards that root, and keeps the composer and draft. Do not count a free-account content-save
+  refusal as a successful anchor check.
+  Check again after Retry. Send becomes disabled during the save and can drop focus to the page;
+  the outer selection menu must keep the open comment popover.
+  The public activity head must stay unchanged until confirmation, then advance once.
+- A closed Comments tab must mark nothing read. A visible list captures its entry sequence once.
+  New replies during that visit stay unread. Opening a thread marks its own replies read.
+- For a narrow check, close the file tree and widen Comments with the resize handle. Use a pointer
+  y inside the viewport; this handle's tall box can put its center outside the window.
+
+Verified 2026-10-03: native general comments on plain text and PDF; a second account read and
+resolved the plain comment; anchors saved and survived reload in both rich text modes; resolve
+left the collaborative sequence at 2 and hid the mark; reopen restored it. A locked-file general
+comment and resolve left the saved text unchanged. In Code view, a closed Comments tab kept a new
+post unread; opening it cleared the badge but kept New for that visit. A slow save refusal and Retry
+kept the selection popover and draft.
 
 ### Sticky Agent Panel
 
@@ -1997,7 +2067,36 @@ Use two identities: a member who owns an unsaved draft under a saved folder, and
 
 The app's hidden Monaco hoisting container also matches `.monaco-editor`. Read the mounted editor with `.monaco-editor[data-uri]`, and scope further when a diff has two models.
 
+## Shared file mentions and selection quotes
+
+Messages and Files Comments use the same `ChannelsComposer`. Its textbox names are New comment,
+Thread reply, Message, or Edit message. Type `@` to open People and files. Pick a saved file by
+its full option name, which includes the path. Enter picks a row before it sends. A restored draft
+shows the current file name. Sent file references use neutral Markdown positions. Check a people
+chip followed by a file chip in the same draft; the browser may insert a non-breaking space.
+
+Select rich file text, wait for Quote in Agent or Quote in Comments, and click one. The target
+tab opens. The quote appends to the current draft. Comments can open its first post composer;
+Agent can start its first chat. Read-only rich text shows only the quote actions. Code view has
+no selection menu. Private pending files have no quote action.
+
+Check `.FileQuote[data-file-quote-state]`, its visible text, and its link. Readable quotes have a
+current file name and file link. Unreadable quotes keep only selected text. Test message edit,
+draft reload, a failed send, first-chat creation, and a queued edit that keeps the quote pending.
+After access loss, also check the full backend message, reply preview, and agent output for ids,
+names, and paths. A hidden link alone does not prove a safe response.
+
+Rich editor landmarks can be nested. Scope the selection to `.FileEditor .ProseMirror` after
+reading the live DOM. Bring the browser to the front before a native selection. On a read-only
+file, double-click actual text rather than the center of a wide heading. A native selection
+lost to another window is not a successful quote check. Keep the target window focused until the
+picker or selection action finishes; a blur closes the mention popup.
+
 ## Script Pattern
+
+File comments share the upload recipe in [Messages](app-map.md#messages-route). Test the post
+composer and a thread reply. Anchored comments also need a saved mark before another reader can
+download their uploads. A failed mark save must keep local files for Retry with fresh upload ids.
 
 For anything longer than a one-liner, keep the runner in a dated personal AI folder:
 

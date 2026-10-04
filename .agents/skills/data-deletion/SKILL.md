@@ -175,9 +175,9 @@ Deleted-account recovery is handled in `users.resolve_user`.
 
 - Only owns workspace-scope request docs.
 - Requires both `organizationId` and `workspaceId`; invalid docs are removed.
-- Calls `db_purge_organization_workspace_content_batch`. After service targets, assets, and files are gone, that content purge deletes `public_api_upload_bytes` and `plugin_service_storage_bytes`. This ordering keeps service settlement valid during retention and resets a preserved admin-data-reset workspace to fresh upload budgets.
+- Calls `db_purge_organization_workspace_content_batch`. After service targets, assets, and files are gone, that content purge deletes the `stored_file_bytes` quota doc. This ordering keeps upload settlement valid during retention and resets a preserved admin-data-reset workspace to a fresh stored-file budget.
 - Keeps the queue doc while content remains.
-- Does not delete the remaining workspace structure. The UI-facing `organizations.delete_workspace` path already removed memberships, role assignments, active API credential quota docs, released one `extra_workspaces` usage unit, and deleted the workspace doc during phase 1. The content purge itself removes the two workspace upload-budget docs last. Use `db_delete_workspace_batch` only from flows that still need full content-plus-structure workspace deletion.
+- Does not delete the remaining workspace structure. The UI-facing `organizations.delete_workspace` path already removed memberships, role assignments, active API credential quota docs, released one `extra_workspaces` usage unit, and deleted the workspace doc during phase 1. The content purge itself removes the stored-file budget doc last. Use `db_delete_workspace_batch` only from flows that still need full content-plus-structure workspace deletion.
 
 ## Organization Delete
 
@@ -256,7 +256,11 @@ Current purge coverage includes:
   `activities_db_delete` removes at most 50 dismissal docs per pass. Transfer cleanup uses the
   same helper after its items are gone. Shared recovery can run between purge passes, so no pass
   may leave an Activity pointing to a deleted run. See the [Activity spec](../activities/SKILL.md).
-- `chat_messages`
+- Human channel reactions, reaction counts, inbox items, thread followers, upload links, threads, messages,
+  read states, members, activity, then channels. `channels_db_purge_workspace_batch` deletes one
+  bounded table batch per call. User finalization drains members, reads, followers, and inbox through
+  `channels_db_drain_member_batch` before removing memberships. Messages, reactions and uploads remain in
+  surviving workspaces. Account retention does not run this drain; restore keeps the membership pin.
 - `files_metadata_docs`
 - `files_plain_text_chunks`, `files_text_chunks`
 - `files_yjs_snapshots`, `files_yjs_updates`, `files_yjs_docs_last_sequences`
@@ -278,6 +282,9 @@ Current purge coverage includes:
   Agent output uses ordinary `content` assets owned by Files. Pending output keeps its private
   storage hold until Save or confirmed deletion. Unattached assets keep their
   `unfinalizedExpiresAt` deadline for `cleanup_expired_unfinalized_assets`.
+  Channel upload settlement keeps this deadline until a message attaches it. Message delete,
+  failed anchor discard and stale-anchor cleanup restore an immediate deadline. Normal asset
+  cleanup also removes the upload link. Workspace asset purge still owns the exact R2 deletion.
   A referenced upload retries for at most eight days after its latest signed
   URL. The terminal action checks the object once more before removing an ordinary failed
   placeholder and handing its canonical key to the deletion ledger. A pending plugin service upload
@@ -325,15 +332,11 @@ tenant or asset docs. Each job stays until its processor confirms the R2 file is
 signed URL can no longer be used. The job's final confirm (`settle_object_deletion_job`) is also where a
 plugin service upload target is retired: deleting its current canonical `assets/<assetId>` object
 marks a committed target released. The target and its attempt receipts remain for replay and accounting
-until workspace purge. Deleting an older losing attempt cannot release the current target. Nothing is refunded — the
-`plugin_service_storage_bytes` quota only grows.
+until workspace purge. Deleting an older losing attempt cannot release the current target. Nothing is refunded.
+`stored_file_bytes` only grows. Workspace purge removes it after upload targets, assets, and files.
 
-An R2 event can arrive after an attempt was superseded, cancelled, or discarded. In the same
-transaction, `record_untracked_asset_event` queues its exact canonical key and charges known service
-attempts through their retained receipts. The target's `chargedBytes` is the largest observed attempt
-size; only an increase is charged. `actualBytes` remains the exact winning size. An old event cannot
-change the current pointers, publish a file, or emit another file-save event. Duplicate and smaller
-events add no charge. Missing-asset events refresh a conservative upload window on the cleanup job.
+An R2 event can arrive after an attempt was superseded, canceled, or discarded. Its retained receipt prevents it from becoming a normal upload. `record_untracked_asset_event` queues only exact-key deletion. It never changes the counter or emits a billing event.
+Missing-asset events refresh a conservative upload window on the cleanup job.
 After workspace purge removes receipts and targets, such events may create cleanup jobs but never
 recreate accounting or tenant docs. Queue failures still need dead-letter inspection; the arrival
 margin is an operational bound, not a promise of infallible event delivery.

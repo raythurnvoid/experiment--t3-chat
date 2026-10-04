@@ -1,0 +1,33 @@
+@layer components {
+	.ChannelsComposer {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) auto;
+		> .MyInputArea {
+			grid-column: 1;
+			grid-row: 1;
+		}
+		> .MyInputActions {
+			grid-column: 2;
+			grid-row: 1;
+		}
+		> .ChannelsComposerAttachments {
+			grid-row: 2;
+		}
+	}
+	/* #region control */
+	.ChannelsComposerControl {
+		align-self: start;
+
+		width: 100%;
+
+		> div,
+		.ChannelsComposerControl-editor {
+			width: inherit;
+		}
+
+		.ChannelsComposerControl-editor {
+			white-space: pre-wrap;
+		}
+	}
+	/* #endregion control */
+}

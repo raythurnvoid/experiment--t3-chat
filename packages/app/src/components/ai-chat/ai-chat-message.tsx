@@ -28,6 +28,7 @@ import {
 import type { ExtractStrict } from "type-fest";
 import {
 	ai_chat_get_message_text,
+	ai_chat_get_message_draft,
 	type ai_chat_UiMessage,
 	type ai_chat_UiTools,
 	type ai_chat_ModelId,
@@ -35,6 +36,7 @@ import {
 } from "@/lib/ai-chat.ts";
 
 import { CopyIconButton } from "@/components/copy-icon-button.tsx";
+import { FileQuote } from "@/components/file-quotes/file-quote.tsx";
 import { MyIconButton } from "@/components/my-icon-button.tsx";
 import { AiChatController, type AiChatRuntimeActions, type AiChatThreadRuntime } from "@/hooks/ai-chat-controller.tsx";
 import { AiChatComposer, type AiChatComposer_Props } from "@/components/ai-chat/ai-chat-composer.tsx";
@@ -1538,6 +1540,7 @@ const AiChatMessagePartInner = memo(function AiChatMessagePartInner(props: AiCha
 	if (part.type === "data-job-finish") {
 		return <AiChatMessagePartTextUser text={part.data.text} />;
 	}
+	if (part.type === "data-file-quote") return <FileQuote quote={part.data} />;
 
 	if (isDataUIPart(part)) {
 		return null;
@@ -1699,7 +1702,10 @@ const AiChatMessageContent = memo(function AiChatMessageContent(props: AiChatMes
 		: ai_chat_message_content_get_display_items({
 				message,
 				parts: parts.filter(
-					(part) => part.type === "data-job-finish" || (!part.type.startsWith("data-") && part.type !== "step-start"),
+					(part) =>
+						part.type === "data-job-finish" ||
+						part.type === "data-file-quote" ||
+						(!part.type.startsWith("data-") && part.type !== "step-start"),
 				),
 				isChatRunning,
 			});
@@ -1714,7 +1720,7 @@ const AiChatMessageContent = memo(function AiChatMessageContent(props: AiChatMes
 			className={cn("AiChatMessageContent" satisfies AiChatMessageContent_ClassNames, className)}
 			{...rest}
 		>
-			{/* Every other data part stays hidden. The sign-in notice is the one the member must see. */}
+			{/* Sign-in notices sit above the message parts. */}
 			{!children &&
 				parts.map((part, index) =>
 					part.type === "data-mcp-auth-needed" ? (
@@ -1910,6 +1916,7 @@ const AiChatMessageUser = memo(function AiChatMessageUser(props: AiChatMessageUs
 	} = props;
 
 	const text = ai_chat_get_message_text(message);
+	const draft = ai_chat_get_message_draft(message);
 	const messageFileParts = message.parts.filter((part) => isFileUIPart(part));
 
 	const canEdit = !isRunning && (Boolean(text) || messageFileParts.length > 0);
@@ -2019,7 +2026,7 @@ const AiChatMessageUser = memo(function AiChatMessageUser(props: AiChatMessageUs
 			return;
 		}
 
-		onMessageRetrySend({ threadId: selectedThreadId, messageId: message.id, value: text });
+		onMessageRetrySend({ threadId: selectedThreadId, messageId: message.id, value: draft });
 	});
 
 	const handleBranchSwitch = (direction: "prev" | "next") => {
@@ -2094,7 +2101,7 @@ const AiChatMessageUser = memo(function AiChatMessageUser(props: AiChatMessageUs
 								canSend={true}
 								isQueueing={false}
 								isRunning={false}
-								initialValue={text ?? ""}
+								initialValue={draft}
 								initialAttachments={messageFileParts}
 								selectedModelId={selectedModelId}
 								selectedModeId={selectedModeId}

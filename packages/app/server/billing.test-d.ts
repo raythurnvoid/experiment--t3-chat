@@ -4,7 +4,13 @@ import { billing_event, type billing_Event } from "./billing.ts";
 
 test("billing_Event exposes the full event name union", () => {
 	expectTypeOf<billing_Event["name"]>().toEqualTypeOf<
-		"manual_credit" | "file_save" | "plugin_volume_file_write" | "monthly_credit" | "ai_usage" | "browser_usage"
+		| "manual_credit"
+		| "file_save"
+		| "file_upload"
+		| "plugin_volume_file_write"
+		| "monthly_credit"
+		| "ai_usage"
+		| "browser_usage"
 	>();
 });
 

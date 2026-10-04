@@ -2,7 +2,7 @@ import { describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 import { ai_chat_runs_db_insert_node, ai_chat_runs_LEASE_MS } from "./ai_chat_runs.ts";
-import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
+import { test_convex, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
 import { ai_chat_DEFAULT_MODEL_ID } from "../shared/ai-chat.ts";
 
 async function fixture() {
@@ -79,6 +79,93 @@ async function answer_turn(args: {
 }
 
 describe("thread_run_begin", () => {
+	test("checks quote file access before writes and preserves selected text after the file is archived", async () => {
+		const fx = await fixture();
+		const fileNodeId = await fx.t.run((ctx) =>
+			ctx.db.insert("files_nodes", {
+				...test_mocks.files.base(),
+				...{ organizationId: fx.db.organizationId, workspaceId: fx.db.workspaceId },
+				kind: "file",
+				name: "private-quote.md",
+				path: "/private-quote.md",
+				treePath: "/private-quote.md",
+				createdBy: fx.db.userId,
+				updatedBy: fx.db.userId,
+			}),
+		);
+		const args = {
+			source: fx.source,
+			parentId: null,
+			modeId: "ask" as const,
+			modelId: ai_chat_DEFAULT_MODEL_ID,
+			messages: [
+				{
+					clientGeneratedMessageId: "quoted-user",
+					content: {
+						id: "quoted-user",
+						role: "user",
+						parts: [{ type: "data-file-quote", data: { fileNodeId, text: "Selected words" } }],
+					},
+				},
+			],
+		};
+		await fx.t.run((ctx) => ctx.db.patch("files_nodes", fileNodeId, { archiveOperationId: "archived" }));
+		const refused = await fx.t.mutation(internal.ai_chat.thread_run_begin, args);
+		expect(refused._nay?.message, "AI quotes must check current file access before saving").toBe("File unavailable");
+		expect(await fx.t.run((ctx) => ctx.db.query("ai_chat_threads_messages_aisdk_5").collect())).toEqual([]);
+		await fx.t.run((ctx) => ctx.db.patch("files_nodes", fileNodeId, { archiveOperationId: null }));
+		const sent = await fx.t.mutation(internal.ai_chat.thread_run_begin, args);
+		expect(sent._nay).toBeUndefined();
+		await answer_turn({ fx, run: sent._yay!, text: "Answer" });
+		await fx.t.run((ctx) => ctx.db.patch("files_nodes", fileNodeId, { archiveOperationId: "archived" }));
+		const branch = await fx.asUser.query(api.ai_chat_runs.branch_page, {
+			membershipId: fx.db.membershipId,
+			threadId: fx.source.threadId,
+			fromId: null,
+			anchorId: null,
+			stopId: null,
+		});
+		const history = await fx.t.query(internal.ai_chat_runs.history_page, {
+			threadId: fx.source.threadId,
+			fromId: sent._yay!.replyId,
+			usedBytes: 0,
+			maxBytes: 100_000,
+			hasUserMessage: false,
+		});
+		for (const value of [branch, history]) {
+			expect(JSON.stringify(value), "AI history must hide a lost file id").not.toContain(fileNodeId);
+			expect(JSON.stringify(value)).not.toContain("private-quote.md");
+			expect(JSON.stringify(value)).toContain("Selected words");
+		}
+		const retry = await fx.t.mutation(internal.ai_chat.thread_run_begin, args);
+		expect(retry._yay?.triggerId).toBe(sent._yay!.triggerId);
+	});
+
+	test("refuses malformed quote data before inserting any turn", async () => {
+		const fx = await fixture();
+		for (const data of [
+			{ fileNodeId: null, text: "Copied", path: "/secret.md" },
+			{ fileNodeId: null, text: " " },
+			{ fileNodeId: null, text: "🙂".repeat(1_025) },
+		]) {
+			const refused = await fx.t.mutation(internal.ai_chat.thread_run_begin, {
+				source: fx.source,
+				parentId: null,
+				modeId: "ask",
+				modelId: ai_chat_DEFAULT_MODEL_ID,
+				messages: [
+					{
+						clientGeneratedMessageId: "bad-quote",
+						content: { role: "user", parts: [{ type: "data-file-quote", data }] },
+					},
+				],
+			});
+			expect(refused._nay?.message).toBe("Invalid file quotes");
+		}
+		expect(await fx.t.run((ctx) => ctx.db.query("ai_chat_runs").collect())).toEqual([]);
+		expect(await fx.t.run((ctx) => ctx.db.query("ai_chat_threads_messages_aisdk_5").collect())).toEqual([]);
+	});
+
 	test("saves the message and a streaming reply, and refuses a second run while the first is live", async () => {
 		const fx = await fixture();
 		const first = await begin_turn(fx, { messageId: "user-1", parentId: null });

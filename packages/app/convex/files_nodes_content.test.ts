@@ -25,6 +25,7 @@ import { files_yjs_doc_get_text } from "../shared/files-tiptap.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { files_nodes_db_hard_delete_node } from "./files_nodes.ts";
 import { files_nodes_content_db_publish_private_node } from "./files_nodes_content.ts";
+import { quotas_db_ensure } from "./quotas.ts";
 import { files_share_links_create_cleanup_state } from "./files_share_links_db.ts";
 import { files_media_validation_db_capture_versions } from "./files_media_validation.ts";
 import { files_pending_nodes_db_create, files_pending_nodes_db_discard } from "./files_pending_nodes.ts";
@@ -2510,6 +2511,110 @@ describe("materialize_file_content", () => {
 });
 
 describe("restore_snapshot_r2", () => {
+	test.each(["Free", "full"] as const)("refuses stored restore on %s before allocating assets", async (state) => {
+		vi.useFakeTimers();
+		const { t, db, asUser, nodeId, snapshotId } = await create_file_fixture();
+		await t.run(async (ctx) => {
+			await ctx.db.patch("files_snapshots", snapshotId, { yjsRootKind: null, collaborationEnabled: false });
+			if (state === "Free") await test_mocks_fill_db_with.plan(ctx, { userId: db.userId, plan: "Free" });
+			else {
+				const quotaId = await quotas_db_ensure(ctx, { ...db, quotaName: "stored_file_bytes", now: Date.now() });
+				await ctx.db.patch("quotas", quotaId, { usedCount: 10, maxCount: 10 });
+			}
+		});
+		const before = await t.run(async (ctx) => ({
+			assets: await ctx.db.query("files_r2_assets").collect(),
+			quotas: await ctx.db.query("quotas").collect(),
+			node: await ctx.db.get("files_nodes", nodeId),
+		}));
+		const result = await asUser.action(api.files_nodes_content.restore_snapshot_r2, {
+			membershipId: db.membershipId,
+			nodeId,
+			snapshotId,
+			sessionId: "stored-refusal",
+		});
+		expect(result._nay?.name).toBe(state === "Free" ? "plan_required" : "storage_full");
+		expect(
+			await t.run(async (ctx) => ({
+				assets: await ctx.db.query("files_r2_assets").collect(),
+				quotas: await ctx.db.query("quotas").collect(),
+				node: await ctx.db.get("files_nodes", nodeId),
+			})),
+		).toEqual(before);
+	});
+
+	test("stored restore bills two cents for 20 MiB plus one byte and counts it once", async () => {
+		vi.useFakeTimers();
+		const { t, db, asUser, nodeId, snapshotId } = await create_file_fixture();
+		expect(
+			(
+				await asUser.mutation(api.files_nodes_content.set_file_non_collaborative, {
+					membershipId: db.membershipId,
+					nodeId,
+					acknowledgeDropCollaborativeHistory: true,
+				})
+			)._nay,
+		).toBeUndefined();
+		const size = 20 * 1024 * 1024 + 1;
+		await t.run(async (ctx) => {
+			const snapshot = await ctx.db.get("files_snapshots", snapshotId);
+			await ctx.db.patch("files_snapshots", snapshotId, { yjsRootKind: null, collaborationEnabled: false });
+			await ctx.db.patch("files_r2_assets", snapshot!.assetId, { size });
+		});
+		vi.spyOn(r2_server_side_copy, "copy_object").mockResolvedValue({ outcome: "copied", size, etag: "stored-version" });
+		const before = await t.run((ctx) => ctx.db.query("billing_usage_snapshots").first());
+		const result = await asUser.action(api.files_nodes_content.restore_snapshot_r2, {
+			membershipId: db.membershipId,
+			nodeId,
+			snapshotId,
+			sessionId: "stored-charge",
+		});
+		expect(result._nay).toBeUndefined();
+		const after = await t.run(async (ctx) => ({
+			node: await ctx.db.get("files_nodes", nodeId),
+			quota: await ctx.db
+				.query("quotas")
+				.withIndex("by_workspace_quotaName", (q) =>
+					q.eq("workspaceId", db.workspaceId).eq("quotaName", "stored_file_bytes"),
+				)
+				.first(),
+			usage: await ctx.db.query("billing_usage_snapshots").first(),
+		}));
+		expect(after.quota?.usedCount).toBe(size);
+		expect(after.usage?.meter?.balance).toBe(before!.meter!.balance - 2);
+		await asUser.mutation(internal.files_nodes_content.finalize_snapshot_restore_replacement, {
+			membershipId: db.membershipId,
+			billedUserId: db.userId,
+			nodeId,
+			snapshotId,
+			expectedAssetId: after.node!.assetId!,
+			contentAssetId: after.node!.assetId!,
+			contentSize: size,
+			contentType: "application/octet-stream",
+		});
+		expect(await t.run((ctx) => ctx.db.get("quotas", after.quota!._id))).toEqual(after.quota);
+		expect(await t.run((ctx) => ctx.db.query("billing_usage_snapshots").first())).toEqual(after.usage);
+	});
+
+	test("a full stored-file cap still allows a text snapshot restore", async () => {
+		vi.useFakeTimers();
+		const { t, db, asUser, nodeId, snapshotId } = await create_file_fixture();
+		await t.run(async (ctx) => {
+			const quotaId = await quotas_db_ensure(ctx, { ...db, quotaName: "stored_file_bytes", now: Date.now() });
+			await ctx.db.patch("quotas", quotaId, { maxCount: 0 });
+		});
+		expect(
+			(
+				await asUser.action(api.files_nodes_content.restore_snapshot_r2, {
+					membershipId: db.membershipId,
+					nodeId,
+					snapshotId,
+					sessionId: "text-full-cap",
+				})
+			)._nay,
+		).toBeUndefined();
+	});
+
 	test("restore_snapshot syncs the updater sort doc", async () => {
 		vi.useFakeTimers();
 		const { t, db, asUser, nodeId, snapshotId } = await create_file_fixture();

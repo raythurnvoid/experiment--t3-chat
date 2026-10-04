@@ -82,6 +82,7 @@ import { bash_find_command_create } from "./bash-find-command.ts";
 import { bash_grep_command_create } from "./bash-grep-command.ts";
 import { bash_ls_command_create } from "./bash-ls-command.ts";
 import { bash_meta_command_create } from "./bash-meta-command.ts";
+import { bash_channels_command_create } from "./bash-channels-command.ts";
 import { bash_mv_command_create } from "./bash-mv-command.ts";
 import { bash_transfer_command_prepare, type bash_TransferContext } from "./bash-transfer-command.ts";
 import {
@@ -1551,6 +1552,7 @@ function bash_shell_create(
 			bash_resolve_command_create(ctx, dbFilesRoots),
 			bash_search_command_create(ctx, dbFilesRoots),
 			bash_meta_command_create(ctx, dbFilesRoots),
+			bash_channels_command_create(ctx, dbFilesRoots),
 			bash_ls_command_create(ctx, dbFilesRoots),
 			bash_find_command_create(ctx, dbFilesRoots),
 			bash_tree_command_create(ctx, dbFilesRoots),

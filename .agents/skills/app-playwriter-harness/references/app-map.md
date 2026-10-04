@@ -83,6 +83,67 @@ Use the Clerk fixture recipe when the signed-in account has no organization quot
 - **`getByLabel("Name")` is ambiguous while the TanStack router devtools panel is open** — its match rows carry `aria-label="Open match details for /w/$organizationName/…"`, so the query resolves to ~16 elements and fails strict mode. Scope every dialog query to `.RouteRolesEditorModal` and index the plain inputs (`0` = Name, `1` = Description).
 - Save is `Create role` or `Save role`, and is disabled until the name is non-empty and at least one permission is picked. While a request is in flight the button reads `Saving...`, `Cancel` is really disabled, and Escape does not close the dialog.
 
+## Messages Route
+
+- `/messages/activity`, `/messages/threads`, and `/messages/search` use the same channel shell.
+  Activity and Followed threads are named regions. Feed articles carry `data-message-id` and
+  `data-unread`; New is visible text. Open context includes the post/root id for a thread.
+  The active sidebar link has `aria-current="page"`.
+- The shared workspace provider keeps the main Messages link's `data-unread` and tab title live
+  on Files too. Title counts channels with mentions. Activity, Threads and the bell show unread
+  loaded items, with `+` while older pages remain. Load more must work on an empty readable page.
+- Notifications has a Message activity section and View Activity. It uses the same inbox as the
+  Activity route. Open context closes the bell and opens the real channel/thread; normal visible
+  content advances read positions. Dismiss jobs and invites does not clear message items.
+- Search words is a searchbox. Channel, Person and Attachments are named comboboxes. Since (UTC)
+  and Until (UTC, exclusive) are date inputs. Pick options, then Search; all filters stay in the URL.
+  Search results is a named region. Empty results can still have Load more results. Errors keep
+  the form and offer Retry. Check private/direct/file access with a reader, including access loss.
+  Input labels are stacked above their fields. Long selected names stay in the button, with their
+  full text still in the DOM. Click visible checkbox labels in attachment/member dialogs; their
+  native input is hidden. Scope Channel members Close to its labelled header button or footer.
+- Route: `/w/:organizationName/:workspaceName/messages/:channelId`. `thread` uses a root message id;
+  `message` jumps to a message. Missing and hidden ids show the same `Channel not found` state.
+- The sidebar is `complementary "Channels"`. The thread is `complementary "Thread"`.
+  Below 900 px, the thread replaces the channel pane; use `Back to channel`.
+- Channel rows have `data-channel-id`, `data-channel-kind`, `data-unread`, and `data-mention-count`.
+  The active link has `aria-current="page"`. Articles have `data-message-id` and reply root ids.
+- Create with `Create channel`; start a direct chat with `Message someone`. Both use named dialogs.
+  Details owns topic, resolving threads, and archive. The member-count button opens `Channel members`.
+- Composers are contenteditable elements named `Message`, `Thread reply`, or `Edit message`.
+  People and file suggestions are `listbox "People and files"`; channel links use `listbox "Channels"`.
+  Enter selects an active suggestion before sending. Shift+Enter adds a line. Escape closes the popup first.
+- Message actions include `Reply`, `Reply in thread`, `Add reaction`, and `More message actions`.
+  The emoji search is `searchbox "Find emoji"`; emoji options use `gridcell`, not button role.
+- A private/direct header names the owner read rule. Drafts survive reload by membership and stream.
+- Check DOM state after mutations in a new short call. A click returning does not mean its write has completed.
+- Shared upload controls have `Upload files`, `Attach an existing file`, and a hidden input
+  named `Choose files to upload`. Click Upload files and handle `filechooser` with real fixture
+  paths. Scope controls to the composer or `[data-pane="thread"]` when two are mounted.
+- Upload chips have `data-upload-state`: `uploading`, `ready`, or `failed`. Read the visible
+  filename, progress and error. Retry and Remove have the full filename in their accessible name.
+  Send and Enter must stay blocked until every local upload is ready or removed.
+- Sent uploads have `data-upload-id`, Download and Save to Files. Check a real image's loaded
+  dimensions and a video's ready state. Do not print signed URLs. For a real download, wait for
+  `download`, check its name and failure, and hash only that newly downloaded fixture.
+- Save to Files uses the named dialog, `Find folder`, `Destination folder`, and `Save file`.
+  Test a writable folder, the workspace root, and a name conflict. A conflict must keep the old
+  file. The copy has a separate asset and ordinary Files upload charge.
+- Use two users to check private and file access loss. Confirm both missing upload DOM and a
+  refused checked URL action. Restore any file restriction or grant used for the check.
+- Paste/drop event probes prove the browser event path only. Report OS clipboard and drag checks
+  separately. Keep all calls at 5 seconds or less and inspect after each action.
+- Offline check: use an owned isolated browser. `context.setOffline(true)` can leave its existing
+  Convex WebSocket connected, so that call alone proves nothing. Before going offline, import the
+  app client and keep a temporary reference on that page. In the installed Convex version, the live
+  socket is `app_convex.sync.webSocketManager.socket.ws`; close it after setting offline. Do not
+  change the client connection flags. Read `connectionState().isWebSocketConnected` and the DOM in
+  short calls: it must be false, the `Connecting… Your draft is saved on this device.` status must
+  show, Send must be disabled, and the draft must stay. Restore online even if a check fails. Wait
+  for the real connection to return, then check enabled Send and the same draft. Restore the old
+  draft and remove the temporary reference. Verify the installed socket fields before reusing this
+  recipe. Do not apply it to the user's primary browser.
+
 ## Files Route Landmarks And Tabs
 
 - `/files` renders exactly one `<main class="MyPanelGroup FileNodeView">` — since 2026-08-08 the outer panel group is the main landmark, wrapping `<aside class="FilesSidebar">`, both resize handles, and the editor area. `.FileNodeView-editor-area` is a plain scrollable `div` inside it (it was the `main` before). axe `landmark-one-main`, `landmark-no-duplicate-main`, and `region` all PASS on `/files`.

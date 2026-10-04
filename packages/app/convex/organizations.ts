@@ -43,6 +43,7 @@ import { data_deletion_db_request } from "./data_deletion_requests.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { plugins_data_db_get_scope_cleanup_pairs } from "./plugins_data.ts";
 import { plugins_mcp_db_drain_member_batch } from "./plugins_mcp.ts";
+import { channels_db_drain_member_batch } from "./channels.ts";
 import { files_browser_db_delete_profile } from "./files_browser.ts";
 import { playwriter_browser_db_disconnect } from "./playwriter_browser.ts";
 
@@ -1339,6 +1340,12 @@ export const continue_remove_user_from_organization = internalMutation({
 			return null;
 		}
 
+		const drainedChannels = await channels_db_drain_member_batch(ctx, args);
+		if (drainedChannels.drainedAny) {
+			await ctx.scheduler.runAfter(0, internal.organizations.continue_remove_user_from_organization, args);
+			return null;
+		}
+
 		// Delete only the memberships this organization-removal flow marked. Ordinary inactive
 		// memberships still belong to account-deletion retention and recovery.
 		await Promise.all(
@@ -1602,8 +1609,15 @@ export const remove_user_from_organization = mutation({
 						userId: args.userIdToRemove,
 						workspaceIds: memberships.map((membership) => membership.workspaceId),
 					});
+		const drainedChannels =
+			drainedPermissionGrants.drainedAny || drainedPluginServiceGrants.drainedAny || drainedMcp.drainedAny
+				? { drainedAny: false }
+				: await channels_db_drain_member_batch(ctx, { organizationId: organization._id, userId: args.userIdToRemove });
 		const cleanupPending =
-			drainedPermissionGrants.drainedAny || drainedPluginServiceGrants.drainedAny || drainedMcp.drainedAny;
+			drainedPermissionGrants.drainedAny ||
+			drainedPluginServiceGrants.drainedAny ||
+			drainedMcp.drainedAny ||
+			drainedChannels.drainedAny;
 
 		await Promise.all([
 			...memberships.map((membership) =>

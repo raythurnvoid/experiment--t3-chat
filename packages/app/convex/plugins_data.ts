@@ -90,6 +90,7 @@ const MAX_DOCUMENT_SLOTS = 10_000;
  * reads as Free, the same way every billing gate treats unknown state.
  */
 const PAID_MAX_DOCUMENT_SLOTS = 100_000;
+// Starting values, not product rules. They protect the system. Raise them step by step as needed.
 const PLAN_MAX_DOCUMENT_SLOTS = {
 	Free: MAX_DOCUMENT_SLOTS,
 	"Pay As You Go": PAID_MAX_DOCUMENT_SLOTS,

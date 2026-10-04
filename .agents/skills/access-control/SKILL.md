@@ -498,13 +498,12 @@ finishes, without workspace-wide write permission. These activities contain no f
 The conflict dialog separately checks current source access before showing either. See
 [Files transfer runs](../files-explorer-tree/references/transfer.md#stop-activity-and-cleanup).
 
-**Comments answer to their file.** Every `chat_messages` row carries a required `fileNodeId`, and all
-six handlers in `convex/chat_messages.ts` check that node instead of the workspace: `content.write`
-to start a thread, reply, or resolve, `content.read` to list or get. A comment quotes the document, so
-somebody who may not open a restricted file may not read what was said about it either. Children copy
-`fileNodeId` from their root, so one thread always answers to one file. `chat_messages_threads_list`
-asks per thread, because the caller passes ids from a file's Tiptap marks and nothing stops them
-passing ids from another file.
+**Comments answer to their file channel.** `channels_db_get_access` checks the channel's saved file:
+`content.write` starts a post, replies, or resolves; `content.read` lists or gets comments. Current
+file shares apply to every read. General comments and resolve ignore the file's write policy.
+New text anchors also require permission to change the file. A hidden anchor becomes public only
+after its mark is saved. File editors read each marked root and check that it belongs to this file.
+See the [Channels spec](../channels/SKILL.md).
 
 ## The raw checker
 
@@ -610,6 +609,13 @@ of a restricted folder has to be able to share what the grant gave them and noth
   scopes. The organization one gates invite, remove and role changes. The workspace one gates only
   role changes inside one workspace — its holder cannot invite or remove anyone. The catalog label
   says so; the key does not.
+- Human Messages channels use `channels_db_get_access` in `convex/channels.ts`. Public channels use
+  workspace read/write access. Private and direct channels also pin each participant to their current
+  workspace membership doc id. The owner can read both, but can post in a direct channel only as a
+  participant. File channels check the live file ACL; their comments ignore the file write policy.
+- `workspace.channels.manage` lets a holder rename, archive, and moderate public channels. It is in
+  the admin role. It gives no extra private, direct, or file access. Role and invite ceilings compare
+  the full list, so an admin-like custom role also needs this permission before it can grant admin.
 - Chat threads are private to their creator. Every read and change also needs current workspace
   `content.read` (`THREAD_PERMISSION` in `ai_chat.ts`). Team owners, admins, and writers have no
   override. Lists and branch title numbering use a creator-filtered index. Direct reads return

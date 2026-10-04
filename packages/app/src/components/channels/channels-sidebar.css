@@ -1,0 +1,67 @@
+@layer components {
+	.ChannelsSidebar {
+		height: 100%;
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+		padding: 12px;
+		overflow: auto;
+		color: var(--color-fg-11);
+		font-size: 0.9375rem;
+		> a {
+			padding: 8px;
+			color: var(--color-fg-08);
+		}
+	}
+	.ChannelsSidebar-header,
+	.ChannelsSidebar-section-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		h1 {
+			font-size: 1rem;
+			font-weight: 600;
+		}
+		h2 {
+			font-size: 0.8125rem;
+			font-weight: 500;
+			color: var(--color-fg-08);
+		}
+	}
+	.ChannelsSidebar-section {
+		display: grid;
+		gap: 4px;
+	}
+	.ChannelsSidebarRow {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) auto;
+		align-items: center;
+		&[data-unread="true"] {
+			font-weight: 600;
+		}
+		> .MyMenuTrigger {
+			opacity: 0;
+		}
+		&:hover > .MyMenuTrigger,
+		&:focus-within > .MyMenuTrigger {
+			opacity: 1;
+		}
+	}
+	.ChannelsSidebarRow-count {
+		padding: 1px 6px;
+		border-radius: 10px;
+		background: var(--color-accent-04);
+		color: white;
+	}
+	.ChannelsSidebar-empty {
+		display: grid;
+		gap: 8px;
+		padding-block: 12px;
+		color: var(--color-fg-08);
+	}
+	@media (hover: none) {
+		.ChannelsSidebarRow > .MyMenuTrigger {
+			opacity: 1;
+		}
+	}
+}

@@ -111,7 +111,7 @@ export const create_upload_targets = internalMutation({
 				}
 			}
 
-			if (item.size > files_MAX_UPLOADS_BYTES) {
+			if (!Number.isSafeInteger(item.size) || item.size < 0 || item.size > files_MAX_UPLOADS_BYTES) {
 				return Result({ _nay: { message: "File too large", data: { path: item.path } } });
 			}
 
@@ -231,6 +231,7 @@ export const create_upload_targets = internalMutation({
 				// Settle processing up front: the finalizer must record the R2 object without
 				// starting conversion or plugin runs for imported content.
 				processingWorkId: null,
+				uploadBillingExempt: true,
 				createdBy: args.createdBy,
 				unfinalizedExpiresAt: now + r2_UNFINALIZED_ASSET_TTL_MS,
 				updatedAt: now,

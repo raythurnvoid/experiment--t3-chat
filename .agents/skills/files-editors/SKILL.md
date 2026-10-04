@@ -95,9 +95,41 @@ When opening file B shows file A's text, compare the route's `nodeId`, the hook'
 
 # Comment Anchors
 
-Comment marks hold thread ids inside rich text. Message content lives in Convex `chat_messages`. The shared extension is `packages/app/shared/files-tiptap-comments.ts`; the browser integration is `packages/app/src/lib/file-editor-rich-text-extension.ts`.
+Comment marks hold `channels_messages` root ids inside rich text. Comment content and state use file channels. The shared extension is `packages/app/shared/files-tiptap-comments.ts`. The Comments sidebar uses the same composer, message renderer, and thread pane as Messages.
 
-The rich editor reads thread ids from editor state. Monaco views call `files_get_comment_thread_ids_from_markdown` in `packages/app/src/lib/files.ts`, which uses a headless Tiptap editor for rich text and skips plain-text document shapes. `file-editor-comments-sidebar.tsx` loads the matching threads through `chat_messages.chat_messages_threads_list`.
+The rich editor reads root ids from editor state and calls `channels_messages.get_thread_by_root` per mark. Monaco and diff keep reading mark ids through `files_get_comment_thread_ids_from_markdown` for anchor information. Their list comes from `channels_messages.list_posts`, including general comments. Saved plain text, code, and stored files all have comments. Private pending files do not.
+
+Anchored roots start hidden from other people. They do not advance public read positions. Add the returned root id as a mark, wait for Yjs to save it or save a non-collaborative file, then confirm the anchor. Confirmation assigns the next public sequence. A failed mark is removed and the hidden root is discarded. Non-collaborative anchors still require a clean editor before send. General comments ignore the local read-only policy, but still require content-write permission.
+
+Keep the selection menu while its comment popover is open. Disabling Send can drop focus to the page during a slow save. That must not close the composer or lose its draft.
+
+Comments use the shared Messages attachment controls too: existing Files, Upload files, paste
+and drop. Pending or failed uploads block Send and Enter. Attachment-only comments are allowed.
+Anchored uploads stay author-only until the mark is saved and confirmed. If saving the mark
+fails, discard the hidden root and reset the upload targets and message retry id. Keep the local
+files for Retry. The discarded upload ids cannot be attached again.
+
+People mentions in Comments and Messages use the same typed data and `channels_inbox` producer.
+They appear in the bell and Messages Activity through the same checked preview. Opening a file
+channel does not clear a post-root mention; opening its post does. Lost file access hides the
+whole comment item. The bell's dismiss action only archives jobs and invites.
+
+The rich selection menu also has Quote in Agent and Quote in Comments. Both use the shared quote
+shape, view, and Tiptap extension from `shared/file-quotes.ts` and `src/components/file-quotes`.
+They carry only a saved file id and selected plain text, at most 4,096 UTF-8 bytes. Names and links
+come from the current file query. Lost file access keeps the sent text and hides file details.
+
+`files::quote_selection` carries membership, target, and quote. The sidebar selects Agent or
+Comments. Each target keeps the request until its normal composer is ready, then appends it once
+without replacing the draft. A first AI chat must exist before its composer accepts the quote.
+Message edits and queued AI edits keep the quote pending for the normal draft.
+
+Read-only rich editors show a quote-only selection menu. Quote in Comments still needs file
+content-write permission, even when a local read-only policy blocks text edits. Write actions
+remain hidden. Private pending files have no quote action. Code view has no selection bubble,
+so it does not add a quote toolbar.
+
+Resolve and reopen never write file content. `setCommentThreads` changes plugin metadata to show only open marks. The document has no orphan attribute. Missing confirmed marks appear in the list with their saved excerpt. The old comment table and doors are removed.
 
 For missing or misplaced rich-text comments, read:
 

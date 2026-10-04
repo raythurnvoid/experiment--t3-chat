@@ -5,12 +5,23 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import type { ComponentPropsWithRef, ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
-const { mutationMock, useQueriesMock, useQueryMock, usePaginatedQueryMock, openRunMock } = vi.hoisted(() => ({
-	mutationMock: vi.fn(),
-	useQueriesMock: vi.fn(),
-	useQueryMock: vi.fn(),
-	usePaginatedQueryMock: vi.fn(),
-	openRunMock: vi.fn(),
+const { mutationMock, useQueriesMock, useQueryMock, usePaginatedQueryMock, openRunMock, channelContextMock } =
+	vi.hoisted(() => ({
+		mutationMock: vi.fn(),
+		useQueriesMock: vi.fn(),
+		useQueryMock: vi.fn(),
+		usePaginatedQueryMock: vi.fn(),
+		openRunMock: vi.fn(),
+		channelContextMock: vi.fn(() => ({
+			inbox: { results: [] as unknown[] },
+			inboxUnreadCount: 0,
+			inboxHasMore: false,
+		})),
+	}));
+
+vi.mock("@/lib/app-channels-context.tsx", () => ({ AppChannelsProvider: { useContext: () => channelContextMock() } }));
+vi.mock("@/components/channels/channels-feed.tsx", () => ({
+	ChannelsActivity: (props: { onOpen?: () => void }) => <button onClick={props.onOpen}>Open message context</button>,
 }));
 
 vi.mock("@/components/files/files-clipboard.tsx", () => ({
@@ -226,6 +237,15 @@ describe("AppNotifications", () => {
 		cleanup();
 		vi.clearAllMocks();
 		vi.useRealTimers();
+	});
+
+	test("counts loaded channel items and keeps their open action separate from dismiss", () => {
+		channelContextMock.mockReturnValueOnce({ inbox: { results: [{}] }, inboxUnreadCount: 2, inboxHasMore: true });
+		render(<TestNotifications />);
+		expect(screen.getByText("2+")).toBeTruthy();
+		expect(screen.getByRole("button", { name: "Dismiss jobs and invites" })).toBeTruthy();
+		fireEvent.click(screen.getByRole("button", { name: "Open message context" }));
+		expect(mutationMock, "opening channel context must not archive invitations or jobs").not.toHaveBeenCalled();
 	});
 
 	test("names the popover dialog after its visible title", () => {

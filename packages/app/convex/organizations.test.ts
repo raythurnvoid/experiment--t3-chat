@@ -287,15 +287,12 @@ async function organizations_test_seed_workspace_scoped_rows(
 		bytes: 0,
 	});
 
-	await ctx.db.insert("chat_messages", {
+	await test_mocks_fill_db_with.file_comment(ctx, {
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
 		fileNodeId: nodeId,
-		threadId: null,
-		parentId: null,
-		isArchived: false,
-		createdBy: args.userId,
-		content: `${args.tag} chat`,
+		userId: args.userId,
+		body: `${args.tag} chat`,
 	});
 }
 
@@ -5789,13 +5786,7 @@ describe("delete_workspace", () => {
 				tag: "delete-ws",
 			});
 			await quotas_db_ensure(ctx, {
-				quotaName: "plugin_service_storage_bytes",
-				organizationId: created._yay!.organizationId,
-				workspaceId: extraWorkspace._yay!.workspaceId,
-				now: Date.now(),
-			});
-			await quotas_db_ensure(ctx, {
-				quotaName: "public_api_upload_bytes",
+				quotaName: "stored_file_bytes",
 				organizationId: created._yay!.organizationId,
 				workspaceId: extraWorkspace._yay!.workspaceId,
 				now: Date.now(),
@@ -5849,7 +5840,7 @@ describe("delete_workspace", () => {
 				ctx.db.query("files_r2_assets").collect(),
 				ctx.db.query("ai_chat_threads").collect(),
 				ctx.db.query("ai_chat_threads_messages_aisdk_5").collect(),
-				ctx.db.query("chat_messages").collect(),
+				ctx.db.query("channels_messages").collect(),
 				ctx.db
 					.query("notifications")
 					.withIndex("by_organization_workspace_user", (q) =>
@@ -5903,11 +5894,8 @@ describe("delete_workspace", () => {
 		expect(after_delete.aiMessages).toHaveLength(1);
 		expect(after_delete.chatMessages).toHaveLength(1);
 		expect(after_delete.organizationQuota?.usedCount).toBe(0);
-		// The service budget stays through retention so a late R2 event can still settle its target.
-		expect(after_delete.workspaceQuotaDocs.map((doc) => doc.quotaName)).toEqual([
-			"plugin_service_storage_bytes",
-			"public_api_upload_bytes",
-		]);
+		// Keep the counter during retention so accepted uploads can still settle.
+		expect(after_delete.workspaceQuotaDocs.map((doc) => doc.quotaName)).toEqual(["stored_file_bytes"]);
 		expect(after_delete.roleAssignments).toHaveLength(0);
 		expect(after_delete.permissionGrants).toHaveLength(0);
 		expect(after_delete.user?.defaultOrganizationId).toBe(personalDefaultIds.organizationId);
@@ -6204,7 +6192,7 @@ describe("delete_organization", () => {
 				ctx.db.query("files_nodes").collect(),
 				ctx.db.query("ai_chat_threads").collect(),
 				ctx.db.query("ai_chat_threads_messages_aisdk_5").collect(),
-				ctx.db.query("chat_messages").collect(),
+				ctx.db.query("channels_messages").collect(),
 				ctx.db
 					.query("notifications")
 					.withIndex("by_organization_user_archivedAt", (q) => q.eq("organizationId", created._yay!.organizationId))
@@ -6426,7 +6414,7 @@ describe("process_workspace_deletion_request", () => {
 				ctx.db.query("files_r2_assets").collect(),
 				ctx.db.query("ai_chat_threads").collect(),
 				ctx.db.query("ai_chat_threads_messages_aisdk_5").collect(),
-				ctx.db.query("chat_messages").collect(),
+				ctx.db.query("channels_messages").collect(),
 			]);
 
 			return {

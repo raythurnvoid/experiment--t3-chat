@@ -125,12 +125,8 @@ import {
 	access_control_db_resolve_role_refs,
 } from "./access_control.ts";
 import type { access_control_Permission } from "../shared/access-control.ts";
-import {
-	billing_db_check_credits,
-	billing_db_check_paid_plan,
-	billing_pick_billed_user_id,
-	billing_ingest_events,
-} from "./billing_db.ts";
+import { billing_db_check_credits, billing_pick_billed_user_id, billing_ingest_events } from "./billing_db.ts";
+import { files_stored_uploads_db_admit } from "./files_stored_uploads.ts";
 import { rate_limiter_check_by_key, rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import {
 	files_normalize_file_rename_name,
@@ -3212,10 +3208,6 @@ export const create_upload_node = mutation({
 			return authorized;
 		}
 
-		// Keeping a file in the bucket costs real money every month, and the byte counters can only
-		// bill what R2 already stored. So the plan is the only door that can refuse an upload. This
-		// asks the plan of whoever pays for this workspace, which in an owner-billed organization is
-		// the owner and not the member uploading. Writing and saving text is not affected.
 		const organization = await ctx.db.get("organizations", membership.organizationId);
 		if (!organization) {
 			const errorMessage = "membership.organizationId points to a missing organizations doc";
@@ -3228,20 +3220,13 @@ export const create_upload_node = mutation({
 			throw should_never_happen(errorMessage, errorData);
 		}
 
-		const paidPlan = await billing_db_check_paid_plan(ctx, {
-			userId: billing_pick_billed_user_id({ userId: userAuth.id, organization }),
+		const admission = await files_stored_uploads_db_admit(ctx, {
+			organization,
+			actorUserId: userAuth.id,
+			workspaceId: membership.workspaceId,
+			declaredBytes: [args.size],
 		});
-		if (!paidPlan.hasPaidPlan) {
-			return Result({ _nay: { message: "This workspace's plan does not include file uploads" } });
-		}
-
-		if (args.size > files_MAX_UPLOADS_BYTES) {
-			return Result({
-				_nay: {
-					message: "File too large",
-				},
-			});
-		}
+		if (admission._nay) return admission;
 
 		// The stored type decides how the upload is processed and opened, so settle it before any
 		// write. The caller's type wins when it is valid. The name is only a hint when no type was
@@ -3567,9 +3552,6 @@ export const create_upload_nodes = mutation({
 			return authorized;
 		}
 
-		// Same plan door as the single upload above, for the same reason: the byte counters can only
-		// bill bytes R2 already stored, so the plan is what refuses. It answers for the whole import,
-		// before any node is created.
 		const organization = await ctx.db.get("organizations", membership.organizationId);
 		if (!organization) {
 			const errorMessage = "membership.organizationId points to a missing organizations doc";
@@ -3580,13 +3562,6 @@ export const create_upload_nodes = mutation({
 			};
 			console.error(errorMessage, errorData);
 			throw should_never_happen(errorMessage, errorData);
-		}
-
-		const paidPlan = await billing_db_check_paid_plan(ctx, {
-			userId: billing_pick_billed_user_id({ userId: userAuth.id, organization }),
-		});
-		if (!paidPlan.hasPaidPlan) {
-			return Result({ _nay: { message: "This workspace's plan does not include file uploads" } });
 		}
 
 		let parentPath = "/";
@@ -3664,9 +3639,7 @@ export const create_upload_nodes = mutation({
 				});
 			}
 
-			// `v.number()` lets `NaN` through, and `NaN >= 0` is false, so this double-negative
-			// form rejects `NaN` along with negative sizes.
-			if (!(item.size >= 0)) {
+			if (!Number.isSafeInteger(item.size) || item.size < 0) {
 				return Result({ _nay: { message: "Invalid file size", data: { path: item.relativePath } } });
 			}
 			if (item.size > files_MAX_UPLOADS_BYTES) {
@@ -3690,7 +3663,7 @@ export const create_upload_nodes = mutation({
 
 		const now = Date.now();
 		const skipped: Array<{ relativePath: string; reason: "conflict" | "path_blocked" }> = [];
-		const runnable: typeof validated = [];
+		const runnable: Array<(typeof validated)[number] & { existingNodeId: Id<"files_nodes"> | null }> = [];
 		// Share one link cleanup across the replaced files, so the workspace links load only once.
 		const shareLinkCleanup = files_share_links_create_cleanup_state();
 
@@ -3824,20 +3797,19 @@ export const create_upload_nodes = mutation({
 					skipped.push({ relativePath: item.relativePath, reason: "conflict" });
 					continue;
 				}
-
-				// Safe to archive now: every folder on the way passed the walk above, so the create
-				// below cannot refuse this item after the old file is already gone.
-				await files_nodes_db_archive_nodes({
-					ctx,
-					nodeIds: [existingNode._id],
-					updatedBy: userAuth.id,
-					now,
-					shareLinkCleanup,
-				});
 			}
 
-			runnable.push(item);
+			runnable.push({ ...item, existingNodeId: existingNode?._id ?? null });
 		}
+
+		// Admit only accepted items, before replacing any existing file.
+		const admission = await files_stored_uploads_db_admit(ctx, {
+			organization,
+			actorUserId: userAuth.id,
+			workspaceId: membership.workspaceId,
+			declaredBytes: runnable.map((item) => item.size),
+		});
+		if (admission._nay) return admission;
 
 		const created: Array<{
 			relativePath: string;
@@ -3847,6 +3819,15 @@ export const create_upload_nodes = mutation({
 			headers: Record<string, string>;
 		}> = [];
 		for (const item of runnable) {
+			if (item.existingNodeId) {
+				await files_nodes_db_archive_nodes({
+					ctx,
+					nodeIds: [item.existingNodeId],
+					updatedBy: userAuth.id,
+					now,
+					shareLinkCleanup,
+				});
+			}
 			const assetId = await ctx.db.insert("files_r2_assets", {
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
@@ -7831,9 +7812,7 @@ async function db_list_multi_sorted_table_children(
 		const parts = new Map<string, string | null>();
 		let scalar: string | number | boolean | null = null;
 		const fields = new Set(
-			executionFields
-				.filter((clause) => !files_sort_field_is_built_in(clause.field))
-				.map((clause) => clause.field),
+			executionFields.filter((clause) => !files_sort_field_is_built_in(clause.field)).map((clause) => clause.field),
 		);
 		if (!positional && args.filter?.kind === "text") fields.add(args.filter.field);
 		for (const key of fields) {
@@ -8285,10 +8264,7 @@ export const list_tree_children_sorted = query({
 
 		if (args.sort.length > 1) return await db_list_multi_sorted_table_children(ctx, { ...args, reader });
 		const sort = args.sort[0]!;
-		if (
-			args.filter !== null ||
-			(!files_sort_field_is_built_in(sort.field) && args.segment === "missing")
-		) {
+		if (args.filter !== null || (!files_sort_field_is_built_in(sort.field) && args.segment === "missing")) {
 			return await db_list_custom_table_children(ctx, { ...args, reader });
 		}
 

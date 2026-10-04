@@ -109,6 +109,7 @@ import {
 	billing_ingest_events,
 } from "./billing_db.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
+import { files_stored_uploads_db_admit, files_stored_uploads_db_settle } from "./files_stored_uploads.ts";
 import {
 	files_metadata_db_delete_committed_frontmatter,
 	files_metadata_db_insert_committed,
@@ -1346,37 +1347,53 @@ export async function files_nodes_content_db_publish_private_node(
 	}
 
 	if (billedUser) {
-		await billing_ingest_events(ctx, {
-			billedUserEvents: [
-				{
-					billedUser,
-					event: billing_event({
-						name: "file_save",
-						externalCustomerId: billedUser._id,
-						externalMemberId: node.userId,
-						externalId: composite_id(
-							"billing",
-							"file_save",
-							billedUser._id,
-							node.userId,
-							node.organizationId,
-							node.workspaceId,
-							nodeId,
-							assets[0]!._id,
-						),
-						metadata: {
-							amount: 1,
-							actorUserId: node.userId,
-							billedUserId: billedUser._id,
-							organizationId: node.organizationId,
-							workspaceId: node.workspaceId,
-							nodeId,
-							version: assets[0]!._id,
-						},
-					}),
-				},
-			],
-		});
+		if (createIntent.kind === "stored") {
+			const settled = await files_stored_uploads_db_settle(ctx, {
+				organizationId: node.organizationId,
+				workspaceId: node.workspaceId,
+				actorUserId: node.userId,
+				billedUserId: billedUser._id,
+				nodeId,
+				assetId: createIntent.assetId,
+				declaredBytes: createIntent.size,
+				actualBytes: assets[0]!.size,
+				chargeKey: createIntent.assetId,
+				chargeable: true,
+			});
+			if (settled._nay) throw convex_error(settled._nay);
+		} else {
+			await billing_ingest_events(ctx, {
+				billedUserEvents: [
+					{
+						billedUser,
+						event: billing_event({
+							name: "file_save",
+							externalCustomerId: billedUser._id,
+							externalMemberId: node.userId,
+							externalId: composite_id(
+								"billing",
+								"file_save",
+								billedUser._id,
+								node.userId,
+								node.organizationId,
+								node.workspaceId,
+								nodeId,
+								assets[0]!._id,
+							),
+							metadata: {
+								amount: 1,
+								actorUserId: node.userId,
+								billedUserId: billedUser._id,
+								organizationId: node.organizationId,
+								workspaceId: node.workspaceId,
+								nodeId,
+								version: assets[0]!._id,
+							},
+						}),
+					},
+				],
+			});
+		}
 	}
 
 	await files_pending_nodes_db_publish(ctx, { node, pendingUpdate, savedNodeId: nodeId });
@@ -1817,6 +1834,8 @@ async function db_resolve_transfer_copy_billed_user(
 		userId: Id<"users">;
 		item: Doc<"files_transfer_items">;
 		storedFile: boolean;
+		workspaceId: Id<"organizations_workspaces">;
+		admissionBytes?: number;
 	},
 ) {
 	const organization = await ctx.db.get("organizations", args.organizationId);
@@ -1828,7 +1847,16 @@ async function db_resolve_transfer_copy_billed_user(
 
 	const credits = await billing_db_check_credits(ctx, { userId: billedUserId, minimumRequiredCents: 1 });
 	if (!credits.hasCredits) return Result({ _nay: { message: "Insufficient funds" } });
-	if (args.storedFile && !(await billing_db_check_paid_plan(ctx, { userId: billedUserId })).hasPaidPlan) {
+	if (args.admissionBytes !== undefined) {
+		const admitted = await files_stored_uploads_db_admit(ctx, {
+			organization,
+			actorUserId: args.userId,
+			workspaceId: args.workspaceId,
+			declaredBytes: [args.admissionBytes],
+			billedUserId,
+		});
+		if (admitted._nay) return admitted;
+	} else if (args.storedFile && !(await billing_db_check_paid_plan(ctx, { userId: billedUserId })).hasPaidPlan) {
 		return Result({ _nay: { message: "This workspace's plan does not include file uploads" } });
 	}
 
@@ -1941,14 +1969,6 @@ export const get_transfer_file_copy_data = internalMutation({
 			}
 		}
 
-		const billed = await db_resolve_transfer_copy_billed_user(ctx, {
-			organizationId: run.destinationScope.organizationId,
-			userId: run.userId,
-			item,
-			storedFile: version._yay.textKind === null,
-		});
-		if (billed._nay) return await fail(billed._nay.message);
-
 		const intent = sourceEntry.pendingUpdate?.createIntent;
 		const sourceAssetId =
 			version._yay.kind === "pending"
@@ -1970,6 +1990,16 @@ export const get_transfer_file_copy_data = internalMutation({
 
 		if (asset && asset.size > (version._yay.textKind === null ? files_MAX_UPLOADS_BYTES : files_MAX_TEXT_CONTENT_BYTES))
 			return await fail("This file is too large to copy");
+
+		const billed = await db_resolve_transfer_copy_billed_user(ctx, {
+			organizationId: run.destinationScope.organizationId,
+			workspaceId: run.destinationScope.workspaceId,
+			userId: run.userId,
+			item,
+			storedFile: version._yay.textKind === null,
+			admissionBytes: version._yay.textKind === null ? asset!.size : undefined,
+		});
+		if (billed._nay) return await fail(billed._nay.message);
 
 		let capture = item.capture;
 		let text: string | undefined;
@@ -2427,9 +2457,11 @@ export const stage_transfer_file_copy_assets = internalMutation({
 
 		const billed = await db_resolve_transfer_copy_billed_user(ctx, {
 			organizationId: run.destinationScope.organizationId,
+			workspaceId: run.destinationScope.workspaceId,
 			userId: run.userId,
 			item,
 			storedFile: textKind === null,
+			admissionBytes: textKind === null ? args.contentSize : undefined,
 		});
 		if (billed._nay) return billed;
 
@@ -2922,6 +2954,7 @@ export const finalize_transfer_file_copy = internalMutation({
 
 		const billed = await db_resolve_transfer_copy_billed_user(ctx, {
 			organizationId: run.destinationScope.organizationId,
+			workspaceId: run.destinationScope.workspaceId,
 			userId: run.userId,
 			item,
 			storedFile: textKind === null,
@@ -3412,38 +3445,53 @@ export const finalize_transfer_file_copy = internalMutation({
 			});
 		}
 
-		await billing_ingest_events(ctx, {
-			billedUserEvents: [
-				{
-					billedUser: billed._yay,
-					event: billing_event({
-						name: "file_save",
-						externalCustomerId: billed._yay._id,
-						externalMemberId: run.userId,
-						externalId: composite_id(
-							"billing",
-							"file_save",
-							billed._yay._id,
-							run.userId,
-							run.destinationScope.organizationId,
-							run.destinationScope.workspaceId,
-							nodeId,
-							contentAsset._id,
-						),
-						metadata: {
-							amount: 1,
-							actorUserId: run.userId,
-							billedUserId: billed._yay._id,
-							organizationId: run.destinationScope.organizationId,
-							workspaceId: run.destinationScope.workspaceId,
-							nodeId,
-							version: contentAsset._id,
-						},
-					}),
-				},
-			],
-		});
-
+		if (textKind === null) {
+			const settled = await files_stored_uploads_db_settle(ctx, {
+				organizationId: run.destinationScope.organizationId,
+				workspaceId: run.destinationScope.workspaceId,
+				actorUserId: run.userId,
+				billedUserId: billed._yay._id,
+				nodeId,
+				assetId: contentAsset._id,
+				declaredBytes: contentAsset.size,
+				actualBytes: contentAsset.size,
+				chargeKey: contentAsset._id,
+				chargeable: true,
+			});
+			if (settled._nay) throw convex_error(settled._nay);
+		} else {
+			await billing_ingest_events(ctx, {
+				billedUserEvents: [
+					{
+						billedUser: billed._yay,
+						event: billing_event({
+							name: "file_save",
+							externalCustomerId: billed._yay._id,
+							externalMemberId: run.userId,
+							externalId: composite_id(
+								"billing",
+								"file_save",
+								billed._yay._id,
+								run.userId,
+								run.destinationScope.organizationId,
+								run.destinationScope.workspaceId,
+								nodeId,
+								contentAsset._id,
+							),
+							metadata: {
+								amount: 1,
+								actorUserId: run.userId,
+								billedUserId: billed._yay._id,
+								organizationId: run.destinationScope.organizationId,
+								workspaceId: run.destinationScope.workspaceId,
+								nodeId,
+								version: contentAsset._id,
+							},
+						}),
+					},
+				],
+			});
+		}
 		if (mediaSet)
 			await files_media_dependencies_db_retire(ctx, {
 				setId: mediaSet._id,
@@ -6544,6 +6592,8 @@ async function db_install_file_content_replacement(
 ) {
 	const { membership, user, billedUser, fileNode } = args;
 	const nodeId = fileNode._id;
+	// A repeated publication must not count the same stored content twice.
+	if (fileNode.assetId === args.contentAssetId) return Result({ _yay: null });
 
 	// Removing shared history uses the existing warning and acknowledgement in Properties.
 	if (files_node_has_editable_yjs_state(fileNode) && args.yjsRootKind === undefined) {
@@ -6875,38 +6925,53 @@ async function db_install_file_content_replacement(
 		});
 	}
 
-	await billing_ingest_events(ctx, {
-		billedUserEvents: [
-			{
-				billedUser,
-				event: billing_event({
-					name: "file_save",
-					externalCustomerId: billedUser._id,
-					externalMemberId: user._id,
-					externalId: composite_id(
-						"billing",
-						"file_save",
-						billedUser._id,
-						user._id,
-						membership.organizationId,
-						membership.workspaceId,
-						nodeId,
-						args.contentAssetId,
-					),
-					metadata: {
-						amount: 1,
-						actorUserId: user._id,
-						billedUserId: billedUser._id,
-						organizationId: fileNode.organizationId,
-						workspaceId: fileNode.workspaceId,
-						nodeId,
-						version: args.contentAssetId,
-					},
-				}),
-			},
-		],
-	});
-
+	if (args.yjsRootKind === undefined) {
+		const settled = await files_stored_uploads_db_settle(ctx, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			actorUserId: user._id,
+			billedUserId: billedUser._id,
+			nodeId,
+			assetId: args.contentAssetId,
+			declaredBytes: contentAsset.size,
+			actualBytes: args.contentSize,
+			chargeKey: args.contentAssetId,
+			chargeable: true,
+		});
+		if (settled._nay) throw convex_error(settled._nay);
+	} else {
+		await billing_ingest_events(ctx, {
+			billedUserEvents: [
+				{
+					billedUser,
+					event: billing_event({
+						name: "file_save",
+						externalCustomerId: billedUser._id,
+						externalMemberId: user._id,
+						externalId: composite_id(
+							"billing",
+							"file_save",
+							billedUser._id,
+							user._id,
+							membership.organizationId,
+							membership.workspaceId,
+							nodeId,
+							args.contentAssetId,
+						),
+						metadata: {
+							amount: 1,
+							actorUserId: user._id,
+							billedUserId: billedUser._id,
+							organizationId: fileNode.organizationId,
+							workspaceId: fileNode.workspaceId,
+							nodeId,
+							version: args.contentAssetId,
+						},
+					}),
+				},
+			],
+		});
+	}
 	return Result({ _yay: null });
 }
 
@@ -7639,6 +7704,7 @@ type restore_snapshot_r2_Result =
 export const finalize_snapshot_restore_replacement = internalMutation({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
+		billedUserId: v.id("users"),
 		nodeId: v.id("files_nodes"),
 		snapshotId: v.id("files_snapshots"),
 		/**
@@ -7747,7 +7813,7 @@ export const finalize_snapshot_restore_replacement = internalMutation({
 			console.error(errorMessage, errorData);
 			throw should_never_happen(errorMessage, errorData);
 		}
-		const billedUserId = billing_pick_billed_user_id({ userId: userAuth.id, organization });
+		const billedUserId = args.billedUserId;
 		const billedUser = await ctx.db.get("users", billedUserId);
 		if (!billedUser) {
 			const errorMessage = "billedUserId points to a missing users doc";
@@ -7791,6 +7857,7 @@ export const get_data_for_restore_snapshot = internalQuery({
 	returns: v.union(
 		v.object({
 			membership: doc(app_convex_schema, "organizations_workspaces_users"),
+			uploadAdmission: v_result({ _yay: v.object({ billedUserId: v.id("users") }) }),
 			snapshotContent: v.union(
 				v.object({
 					asset: doc(app_convex_schema, "files_r2_assets"),
@@ -7840,8 +7907,22 @@ export const get_data_for_restore_snapshot = internalQuery({
 			}),
 		]);
 
+		const organization = await ctx.db.get("organizations", membership.organizationId);
+		if (!organization) return null;
+		const billedUserId = billing_pick_billed_user_id({ userId: args.userId, organization });
+		const uploadAdmission =
+			snapshotContent?.yjsRootKind === null
+				? await files_stored_uploads_db_admit(ctx, {
+						organization,
+						actorUserId: args.userId,
+						workspaceId: membership.workspaceId,
+						declaredBytes: [snapshotContent.asset.size],
+						billedUserId,
+					})
+				: Result({ _yay: { billedUserId } });
 		return {
 			membership,
+			uploadAdmission,
 			snapshotContent,
 			materializationState,
 			fileNode: authorized._yay.fileNode,
@@ -7864,6 +7945,7 @@ async function action_restore_snapshot_as_replacement(
 	ctx: ActionCtx,
 	args: {
 		userId: Id<"users">;
+		billedUserId: Id<"users">;
 		membershipId: Id<"organizations_workspaces_users">;
 		nodeId: Id<"files_nodes">;
 		snapshotId: Id<"files_snapshots">;
@@ -8054,6 +8136,7 @@ async function action_restore_snapshot_as_replacement(
 
 	const finalized = (await ctx.runMutation(internal.files_nodes_content.finalize_snapshot_restore_replacement, {
 		membershipId: args.membershipId,
+		billedUserId: args.billedUserId,
 		nodeId: args.nodeId,
 		snapshotId: args.snapshotId,
 		expectedAssetId: args.expectedAssetId,
@@ -8100,7 +8183,7 @@ export const restore_snapshot_r2 = action({
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
 
-		const { membership, snapshotContent, materializationState, fileNode } = data;
+		const { membership, snapshotContent, materializationState, fileNode, uploadAdmission } = data;
 		if (!snapshotContent || fileNode.kind !== "file" || fileNode.assetId === null) {
 			return Result({ _nay: { name: "nay", message: "Not found" } });
 		}
@@ -8116,9 +8199,9 @@ export const restore_snapshot_r2 = action({
 		if (nodeWritable._nay) {
 			return nodeWritable;
 		}
+		if (uploadAdmission._nay) return uploadAdmission;
 		const creditCheck = await ctx.runQuery(internal.billing.check_credits, {
-			userId: userAuth.id,
-			organizationId: membership.organizationId,
+			userId: uploadAdmission._yay.billedUserId,
 			minimumRequiredCents: 1,
 		});
 		if (!creditCheck.hasCredits) {
@@ -8148,6 +8231,7 @@ export const restore_snapshot_r2 = action({
 			!version.collaborationEnabled
 		) {
 			return await action_restore_snapshot_as_replacement(ctx, {
+				billedUserId: uploadAdmission._yay.billedUserId,
 				userId: userAuth.id,
 				membershipId: args.membershipId,
 				nodeId: args.nodeId,

@@ -13,6 +13,7 @@ import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 import { organizations_db_get_membership } from "./organizations.ts";
 import { access_control_db_authorize_membership, access_control_db_authorize_node } from "./access_control.ts";
 import { billing_db_check_paid_plan, billing_ingest_events, billing_pick_billed_user_id } from "./billing_db.ts";
+import { files_stored_uploads_db_admit } from "./files_stored_uploads.ts";
 // Type-only, like `billing_db.ts`: a value import would load the Polar SDK here.
 import type { billing_Event } from "../server/billing.ts";
 import { composite_id, should_never_happen } from "../shared/shared-utils.ts";
@@ -5902,14 +5903,13 @@ export const create_browser_download_node = internalMutation({
 			return Result({ _nay: { message: rateLimit.message } });
 		}
 
-		// Stored bytes cost money every month, so uploads need the payer's paid plan, like
-		// `create_upload_node`. The browser needs the same plan, so this refuses only after a downgrade.
-		const paidPlan = await billing_db_check_paid_plan(ctx, {
-			userId: billing_pick_billed_user_id({ userId: args.userId, organization }),
+		const admission = await files_stored_uploads_db_admit(ctx, {
+			organization,
+			actorUserId: args.userId,
+			workspaceId: membership.workspaceId,
+			declaredBytes: [args.size],
 		});
-		if (!paidPlan.hasPaidPlan) {
-			return Result({ _nay: { message: "Download not saved: your plan no longer allows the browser." } });
-		}
+		if (admission._nay) return admission;
 
 		// A web server picks the type. A broken type falls back to the name, then to plain bytes,
 		// so a bad header does not lose the download.

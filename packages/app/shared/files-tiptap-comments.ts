@@ -39,10 +39,8 @@ export type files_CommentsCommands<ReturnType = boolean> = {
 	addComment: (id: string) => ReturnType;
 	selectThread: (id: string | null) => ReturnType;
 	addPendingComment: () => ReturnType;
-	/**
-	 * Mark a comment as orphan based on thread ID
-	 */
-	markCommentAsOrphan: (args: { threadId: string; orphan: boolean }) => ReturnType;
+	/** Change visible thread marks without changing the document. */
+	setCommentThreads: (ids: readonly string[]) => ReturnType;
 
 	/** @internal */
 	closePendingComment: () => ReturnType;
@@ -75,8 +73,7 @@ const Comment = Mark.create<{
 	renderMarkdown: (node, helpers) => {
 		const threadId = typeof node.attrs?.threadId === "string" ? node.attrs.threadId : "";
 		if (!threadId) return helpers.renderChildren(node.content || []);
-		const orphan = node.attrs?.orphan === true;
-		return `<span data-type="comment" data-lb-thread-id="${threadId.replaceAll('"', "&quot;")}"${orphan ? ' data-orphan="true"' : ""}>${helpers.renderChildren(node.content || [])}</span>`;
+		return `<span data-type="comment" data-lb-thread-id="${threadId.replaceAll('"', "&quot;")}">${helpers.renderChildren(node.content || [])}</span>`;
 	},
 
 	parseHTML: () => {
@@ -91,17 +88,6 @@ const Comment = Mark.create<{
 	addAttributes() {
 		// Return an object with attribute configuration
 		return {
-			orphan: {
-				parseHTML: (element) => !!element.getAttribute("data-orphan"),
-				renderHTML: (attributes) => {
-					return (attributes as { orphan: boolean }).orphan
-						? {
-								"data-orphan": "true",
-							}
-						: {};
-				},
-				default: false,
-			},
 			threadId: {
 				parseHTML: (element) => element.getAttribute("data-lb-thread-id"),
 				renderHTML: (attributes) => {
@@ -114,7 +100,7 @@ const Comment = Mark.create<{
 		};
 	},
 
-	renderHTML({ HTMLAttributes }: { HTMLAttributes: Record<string, any> }) {
+	renderHTML({ HTMLAttributes }) {
 		const filteredThreads = this.editor
 			? files_FILTERED_THREADS_PLUGIN_KEY.getState(this.editor.state)?.filteredThreads
 			: undefined;
@@ -268,7 +254,7 @@ const Comment = Mark.create<{
 							selectThread(null);
 							return;
 						}
-						const commentMark = node.marks.find((mark) => mark.type === this.type && !mark.attrs.orphan);
+						const commentMark = node.marks.find((mark) => mark.type === this.type);
 						// nothing to select
 						if (!commentMark) {
 							selectThread(null);
@@ -333,31 +319,10 @@ export const files_CommentsExtension = Extension.create<{
 					commands.setMark(files_COMMENT_MARK_TYPE, { threadId: id });
 					return true;
 				},
-			markCommentAsOrphan:
-				(args: { threadId: string; orphan: boolean }) =>
-				({ tr, state }) => {
-					const markType = state.schema.marks[files_COMMENT_MARK_TYPE];
-					if (!markType) {
-						return false;
-					}
-
-					state.doc.descendants((node, pos) => {
-						node.marks.forEach((mark) => {
-							if (mark.type !== markType) return;
-							const threadId = mark.attrs.threadId as string | undefined;
-							if (threadId !== args.threadId) return;
-
-							tr.removeMark(pos, pos + node.nodeSize, mark).addMark(
-								pos,
-								pos + node.nodeSize,
-								markType.create({
-									...mark.attrs,
-									orphan: args.orphan,
-								}),
-							);
-						});
-					});
-
+			setCommentThreads:
+				(ids: readonly string[]) =>
+				({ tr }) => {
+					tr.setMeta(files_FILTERED_THREADS_PLUGIN_KEY, { filteredThreads: new Set(ids) });
 					return true;
 				},
 		};

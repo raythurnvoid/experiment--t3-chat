@@ -418,6 +418,8 @@ export type AiChatThread_Props = {
 	 * column: the queued-messages tray appears below existing slot content.
 	 */
 	composerTopSlot?: ReactNode;
+	quoteRequest?: AiChatComposer_Props["quoteRequest"];
+	onQuoteInserted?: AiChatComposer_Props["onQuoteInserted"];
 };
 
 export type AiChatThread_CustomAttributes = {
@@ -426,7 +428,7 @@ export type AiChatThread_CustomAttributes = {
 };
 
 export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props) {
-	const { controller, scrollableContainer, composerTopSlot } = props;
+	const { controller, scrollableContainer, composerTopSlot, quoteRequest, onQuoteInserted } = props;
 
 	const selectedThreadId = controller.selectedThreadId;
 	const selectedModelId = controller.selectedModelId;
@@ -997,6 +999,9 @@ export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props
 							liveJobs={controller.liveJobs}
 							initialValue={initialComposerValue}
 							initialAttachments={initialComposerAttachments}
+							// Keep the quote pending until the chat and its normal draft are ready.
+							quoteRequest={controller.session && !queuedUserMessageEdit ? quoteRequest : null}
+							onQuoteInserted={onQuoteInserted}
 							inputLabel={queuedUserMessageEdit ? "Edit queued message" : undefined}
 							submitLabel={queuedUserMessageEdit ? "Save queued message" : undefined}
 							selectedModelId={composerSelectedModelId}

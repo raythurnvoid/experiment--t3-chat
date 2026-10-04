@@ -11,6 +11,7 @@ import { organizations_membership_lifetimes_db_ensure } from "./organizations_me
 import { test_convex, test_create_saved_text_file, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import { files_nodes_db_set_restricted_scope } from "./files_nodes.ts";
+import { quotas_db_ensure } from "./quotas.ts";
 import { files_share_links_create_cleanup_state } from "./files_share_links_db.ts";
 import { files_ROOT_ID } from "../shared/files.ts";
 import { r2_create_asset_key, r2_server_side_copy } from "./r2_client.ts";
@@ -1053,6 +1054,252 @@ describe("transfers of a background job", () => {
 });
 
 describe("advance", () => {
+	test.each([
+		["Free", "saved"],
+		["full", "saved"],
+		["Free", "proposal"],
+		["full", "proposal"],
+	] as const)("refuses a stored copy on %s before allocating %s content", async (state, publication) => {
+		const fixture = await create_folder_fixture([]);
+		const { t, db, asUser } = fixture;
+		const created = await asUser.mutation(api.files_nodes.create_upload_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			filename: "source.bin",
+			contentType: "application/octet-stream",
+			size: 8,
+		});
+		if (created._nay) throw new Error(created._nay.message);
+		await t.run(async (ctx) => {
+			await ctx.db.patch("files_r2_assets", created._yay.assetId, {
+				r2Key: r2_create_asset_key({ ...db, assetId: created._yay.assetId }),
+			});
+			if (state === "Free") await test_mocks_fill_db_with.plan(ctx, { userId: db.userId, plan: "Free" });
+			else {
+				const quotaId = await quotas_db_ensure(ctx, { ...db, quotaName: "stored_file_bytes", now: Date.now() });
+				await ctx.db.patch("quotas", quotaId, { usedCount: 10, maxCount: 10 });
+			}
+		});
+		let runId: Id<"files_transfer_runs">;
+		if (publication === "saved") runId = await start_copy(fixture, [created._yay.nodeId]);
+		else {
+			const thread = await asUser.mutation(api.ai_chat.thread_create, {
+				membershipId: db.membershipId,
+				clientGeneratedId: "stored-copy-admission",
+				lastMessageAt: Date.now(),
+			});
+			if (thread._nay) throw new Error(thread._nay.message);
+			const started = await start_agent_transfer(t, {
+				membershipId: db.membershipId,
+				sourceWorkspace: "current",
+				destinationWorkspace: "current",
+				threadId: thread._yay.threadId,
+				requestId: "stored-copy-admission",
+				kind: "copy",
+				sources: [{ kind: "saved", id: created._yay.nodeId }],
+				targetParent: { kind: "saved", id: fixture.folders.get("/target")! },
+				targetPath: "/target",
+				targetName: null,
+				missingParentNames: [],
+				conflictPolicy: { file: "replace", folder: "merge" },
+			});
+			if (started._nay) throw new Error(started._nay.message);
+			runId = started._yay.runId;
+		}
+		const before = await t.run(async (ctx) => ({
+			assets: await ctx.db.query("files_r2_assets").collect(),
+			nodes: await ctx.db.query("files_nodes").collect(),
+			privateNodes: await ctx.db.query("files_pending_nodes").collect(),
+			quotas: await ctx.db.query("quotas").collect(),
+		}));
+		await finish_copy_with_workers(fixture, runId);
+		expect(
+			await t.run(async (ctx) => ({
+				assets: await ctx.db.query("files_r2_assets").collect(),
+				nodes: await ctx.db.query("files_nodes").collect(),
+				privateNodes: await ctx.db.query("files_pending_nodes").collect(),
+				quotas: await ctx.db.query("quotas").collect(),
+			})),
+		).toEqual(before);
+		expect(
+			(
+				await t.run((ctx) =>
+					ctx.db
+						.query("files_transfer_items")
+						.withIndex("by_run_order", (q) => q.eq("runId", runId))
+						.first(),
+				)
+			)?.errorMessage,
+		).toBe(
+			state === "Free"
+				? "This workspace's plan does not include file uploads"
+				: "This workspace has reached its storage limit",
+		);
+	});
+
+	test.each(["saved", "private", "replacement", "review"] as const)(
+		"a stored %s copy charges two cents and counts its 20 MiB plus one byte once",
+		async (publication) => {
+			const fixture = await create_folder_fixture([]);
+			const { t, db, asUser } = fixture;
+			const size = 20 * 1024 * 1024 + 1;
+			const created = await asUser.mutation(api.files_nodes.create_upload_node, {
+				membershipId: db.membershipId,
+				parentId: files_ROOT_ID,
+				filename: "source.bin",
+				contentType: "application/octet-stream",
+				size,
+			});
+			if (created._nay) throw new Error(created._nay.message);
+			const key = r2_create_asset_key({ ...db, assetId: created._yay.assetId });
+			r2Objects.set(key, new Uint8Array(size));
+			await t.run((ctx) =>
+				ctx.db.patch("files_r2_assets", created._yay.assetId, { r2Key: key, unfinalizedExpiresAt: undefined }),
+			);
+			if (publication === "replacement") {
+				const destination = await asUser.mutation(api.files_nodes.create_upload_node, {
+					membershipId: db.membershipId,
+					parentId: fixture.folders.get("/target")!,
+					filename: "source.bin",
+					contentType: "application/octet-stream",
+					size: 8,
+				});
+				if (destination._nay) throw new Error(destination._nay.message);
+				const destinationKey = r2_create_asset_key({ ...db, assetId: destination._yay.assetId });
+				r2Objects.set(destinationKey, new Uint8Array(8));
+				await t.run((ctx) =>
+					ctx.db.patch("files_r2_assets", destination._yay.assetId, {
+						r2Key: destinationKey,
+						unfinalizedExpiresAt: undefined,
+					}),
+				);
+			}
+			vi.spyOn(r2_server_side_copy, "copy_object").mockImplementation(async (_ctx, args) => {
+				const body = r2Objects.get(args.sourceKey)!;
+				r2Objects.set(args.destinationKey, body);
+				return { outcome: "copied", size: (await new Response(body).arrayBuffer()).byteLength, etag: "stored-copy" };
+			});
+			const before = await t.run((ctx) => ctx.db.query("billing_usage_snapshots").first());
+			let runId: Id<"files_transfer_runs">;
+			if (publication === "saved") runId = await start_copy(fixture, [created._yay.nodeId]);
+			else {
+				const thread = await asUser.mutation(api.ai_chat.thread_create, {
+					membershipId: db.membershipId,
+					clientGeneratedId: "stored-copy-charge",
+					lastMessageAt: Date.now(),
+				});
+				if (thread._nay) throw new Error(thread._nay.message);
+				const started = await start_agent_transfer(t, {
+					membershipId: db.membershipId,
+					sourceWorkspace: "current",
+					destinationWorkspace: "current",
+					threadId: thread._yay.threadId,
+					requestId: "stored-copy-charge",
+					kind: "copy",
+					sources: [{ kind: "saved", id: created._yay.nodeId }],
+					targetParent: { kind: "saved", id: fixture.folders.get("/target")! },
+					targetPath: "/target",
+					targetName: null,
+					missingParentNames: [],
+					conflictPolicy: { file: "replace", folder: "merge" },
+				});
+				if (started._nay) throw new Error(started._nay.message);
+				runId = started._yay.runId;
+			}
+			expect((await finish_copy_with_workers(fixture, runId)).activity.status).toBe("succeeded");
+			if (publication !== "saved") {
+				expect(await t.run((ctx) => ctx.db.query("billing_usage_snapshots").first())).toEqual(before);
+				const proposal = await t.run((ctx) => ctx.db.query("files_pending_updates").first());
+				if (!proposal) throw new Error("Expected the prepared copy");
+				if (publication === "review") {
+					// Paid plans may use credit below zero and pay the extra amount later.
+					await t.run((ctx) =>
+						ctx.db.patch("billing_usage_snapshots", before!._id, { meter: { ...before!.meter!, balance: 1 } }),
+					);
+					const started = await asUser.mutation(api.files_pending_update_runs.start, {
+						membershipId: db.membershipId,
+						requestId: "stored-copy-paid-overage",
+						kind: "accept",
+						expectedItemCount: 1,
+						items: [
+							{ pendingUpdateId: proposal!._id, reviewedRevision: proposal!.revision, selectedContentStateId: null },
+						],
+					});
+					if (started._nay) throw new Error(started._nay.message);
+					const reviewRunId = started._yay.runId;
+					expect(
+						await asUser.mutation(api.files_pending_update_runs.seal, {
+							membershipId: db.membershipId,
+							runId: reviewRunId,
+						}),
+					).toEqual({ _yay: null });
+					for (let pass = 0; pass < 30; pass++) {
+						const run = await t.run((ctx) => ctx.db.get("files_pending_update_runs", reviewRunId));
+						if (!run) throw new Error("Expected the review run");
+						if (run.step === "finished") break;
+						if (run.step === "planning")
+							await t.action(internal.files_pending_update_runs.plan, { runId: reviewRunId, fence: run.fence });
+						else {
+							await t.mutation(internal.files_pending_update_runs.advance, { runId: reviewRunId });
+							const unit = await t.run((ctx) =>
+								ctx.db
+									.query("files_pending_update_run_units")
+									.withIndex("by_run_status_deleteLast_order", (q) =>
+										q.eq("runId", reviewRunId).eq("status", "preparing"),
+									)
+									.first(),
+							);
+							if (unit)
+								await t.action(internal.files_pending_update_runs.prepare_unit, {
+									runId: reviewRunId,
+									fence: run.fence,
+									unitId: unit._id,
+									attemptFence: unit.attemptFence,
+								});
+						}
+					}
+					expect(
+						(
+							await asUser.query(api.files_pending_update_runs.get, {
+								membershipId: db.membershipId,
+								runId: reviewRunId,
+							})
+						)?.activity.status,
+					).toBe("succeeded");
+				} else {
+					const saved = await asUser.action(api.files_pending_updates.save_file_pending_update, {
+						membershipId: db.membershipId,
+						target: proposal.target,
+						pendingUpdateId: proposal._id,
+						reviewedRevision: proposal.revision,
+					});
+					if (saved._nay) throw new Error(saved._nay.message);
+				}
+			}
+			const after = await t.run(async (ctx) => ({
+				quota: await ctx.db
+					.query("quotas")
+					.withIndex("by_workspace_quotaName", (q) =>
+						q.eq("workspaceId", db.workspaceId).eq("quotaName", "stored_file_bytes"),
+					)
+					.first(),
+				usage: await ctx.db.query("billing_usage_snapshots").first(),
+				item: await ctx.db
+					.query("files_transfer_items")
+					.withIndex("by_run_order", (q) => q.eq("runId", runId))
+					.first(),
+			}));
+			expect(after.quota?.usedCount).toBe(size);
+			expect(after.usage?.meter?.balance).toBe(publication === "review" ? -1 : before!.meter!.balance - 2);
+			await t.action(internal.files_nodes_content.copy_transfer_file, {
+				itemId: after.item!._id,
+				attempt: after.item!.attempt,
+			});
+			expect(await t.run((ctx) => ctx.db.get("quotas", after.quota!._id))).toEqual(after.quota);
+			expect(await t.run((ctx) => ctx.db.query("billing_usage_snapshots").first())).toEqual(after.usage);
+		},
+	);
+
 	test("finishes canceled when the only preparing leaf is discarded", async () => {
 		const fixture = await create_folder_fixture(["/source"]);
 		const { t, db, asUser, folders } = fixture;
@@ -1522,6 +1769,13 @@ describe("advance", () => {
 			});
 			if (file._nay) throw new Error(file._nay.message);
 			fileIds.push(file._yay.nodeId);
+			if (filename === "second.bin") {
+				await t.run((ctx) =>
+					ctx.db.patch("files_r2_assets", file._yay.assetId, {
+						r2Key: r2_create_asset_key({ ...db, assetId: file._yay.assetId }),
+					}),
+				);
+			}
 		}
 		const runId = await start_copy(fixture, [folders.get("/source")!]);
 		await finish_discovery(fixture, runId);
@@ -2694,6 +2948,12 @@ describe("retry_remaining", () => {
 				size: 8,
 			});
 			if (sourceFile._nay) throw new Error(sourceFile._nay.message);
+			await t.run((ctx) =>
+				ctx.db.patch("files_r2_assets", sourceFile._yay.assetId, {
+					r2Key: r2_create_asset_key({ ...db, assetId: sourceFile._yay.assetId }),
+					unfinalizedExpiresAt: undefined,
+				}),
+			);
 			const thread = await asUser.mutation(api.ai_chat.thread_create, {
 				membershipId: db.membershipId,
 				clientGeneratedId: "retry-leaf-thread",

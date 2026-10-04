@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import type { app_convex_Doc, app_convex_Id } from "@/lib/app-convex-client.ts";
@@ -24,6 +24,10 @@ vi.mock("@/lib/app-tenant-context.tsx", () => ({
 // codegen'd api object is a Proxy; plain-string function refs keep call assertions readable.
 vi.mock("@/lib/app-convex-client.ts", () => ({
 	app_convex_api: {
+		channels: {
+			get_file_channel: "get_file_channel",
+			get_channel_state: "get_channel_state",
+		},
 		r2: {
 			get_asset_by_file_node_id: "get_asset_by_file_node_id",
 		},
@@ -44,6 +48,11 @@ vi.mock("@/components/files/file-editor/file-editor-sidebar/file-editor-sidebar-
 vi.mock("@/components/files/file-editor/file-editor-sidebar/file-editor-sidebar-pending.tsx", () => ({
 	FileEditorSidebarPending: function FileEditorSidebarPending() {
 		return <div data-testid="pending-panel" />;
+	},
+}));
+vi.mock("@/components/files/file-editor/file-editor-comments-sidebar.tsx", () => ({
+	FileEditorCommentsSidebar: function FileEditorCommentsSidebar() {
+		return <div data-testid="comments-panel" />;
 	},
 }));
 vi.mock("@/components/files/file-editor/file-editor-sidebar/file-editor-sidebar-pending-strip.tsx", () => ({
@@ -117,14 +126,14 @@ afterEach(() => {
 });
 
 describe("FileEditorSidebar", () => {
-	test("a plain text node shows Details instead of Comments and selects it by default", () => {
+	test("a plain text node shows Comments by default and keeps Details reachable", () => {
 		const node = makeNode({ id: "node_json", name: "config.json", path: "docs/config.json", textKind: "plain_text" });
 
 		render(<FileEditorSidebar node={node} commentsContainerRef={() => {}} />);
 
+		expect(screen.getByRole("tab", { name: "Comments", selected: true })).toBeTruthy();
+		fireEvent.click(screen.getByRole("tab", { name: "Details" }));
 		expect(screen.getByRole("tab", { name: "Details", selected: true })).toBeTruthy();
-		expect(screen.queryByRole("tab", { name: "Comments" })).toBeNull();
-		// The Details panel content is mounted for the selected tab.
 		expect(screen.getByRole("region", { name: "File details" })).toBeTruthy();
 	});
 
@@ -161,21 +170,23 @@ describe("FileEditorSidebar", () => {
 
 		expect(screen.getByRole("tab", { name: "Comments", selected: true })).toBeTruthy();
 		expect(screen.queryByRole("tab", { name: "Details" })).toBeNull();
+		expect(screen.getByTestId("comments-panel")).toBeTruthy();
 	});
 
-	test("a stored Comments selection falls back to Details without being overwritten", () => {
+	test("a private file falls back from Comments to Details without changing the saved choice", () => {
 		app_local_storage_set_value("app_state::files_last_tab", "app_file_editor_sidebar_tabs_comments");
 		const node = makeNode({ id: "node_yaml", name: "deploy.yaml", path: "ops/deploy.yaml", textKind: "plain_text" });
 
-		render(<FileEditorSidebar node={node} commentsContainerRef={() => {}} />);
+		render(<FileEditorSidebar node={node} isPrivate commentsContainerRef={() => {}} />);
 
 		// The hidden tab falls back to the first available one for this node...
 		expect(screen.getByRole("tab", { name: "Details", selected: true })).toBeTruthy();
+		expect(screen.queryByRole("tab", { name: "Comments" })).toBeNull();
 		// ...but the stored selection stays, so a rich-text file restores the user's real choice.
 		expect(app_local_storage_get_value("app_state::files_last_tab")).toBe("app_file_editor_sidebar_tabs_comments");
 	});
 
-	test("a stored Agent selection survives the plain-text tab swap", () => {
+	test("a stored Agent selection stays selected for a plain text file", () => {
 		app_local_storage_set_value("app_state::files_last_tab", "app_file_editor_sidebar_tabs_agent");
 		const node = makeNode({ id: "node_json", name: "config.json", path: "docs/config.json", textKind: "plain_text" });
 

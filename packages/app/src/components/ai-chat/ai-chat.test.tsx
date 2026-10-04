@@ -40,6 +40,7 @@ vi.mock("@/components/ai-chat/ai-chat-composer.tsx", () => ({
 		isQueueing: boolean;
 		isQueueEditing?: boolean;
 		initialValue: string;
+		quoteRequest?: { text: string } | null;
 		inputLabel?: string;
 		submitLabel?: string;
 		selectedModelId: string;
@@ -55,6 +56,7 @@ vi.mock("@/components/ai-chat/ai-chat-composer.tsx", () => ({
 				data-is-queueing={props.isQueueing}
 				data-is-queue-editing={props.isQueueEditing}
 				data-initial-value={props.initialValue}
+				data-quote-text={props.quoteRequest?.text}
 				data-input-label={props.inputLabel}
 				data-selected-model-id={props.selectedModelId}
 				data-selected-mode-id={props.selectedModeId}
@@ -381,6 +383,7 @@ describe("AiChatThread", () => {
 	});
 
 	test("uses the composer to save a queued edit without sending", () => {
+		const quote = { fileNodeId: null, text: "Keep this selection for the normal draft" };
 		const queuedUserMessageEdit = {
 			id: "ai_message-queued",
 			text: "Edited queued text",
@@ -409,11 +412,13 @@ describe("AiChatThread", () => {
 					sendUserText,
 				})}
 				scrollableContainer={null}
+				quoteRequest={quote}
 			/>,
 		);
 
 		const composer = screen.getByTestId("ai-chat-composer");
 		expect(composer.dataset.initialValue).toBe("Edited queued text");
+		expect(composer.dataset.quoteText).toBeUndefined();
 		expect(composer.dataset.inputLabel).toBe("Edit queued message");
 		expect(composer.dataset.selectedModelId).toBe("gpt-6-luna");
 		expect(composer.dataset.selectedModeId).toBe("ask");
@@ -440,9 +445,11 @@ describe("AiChatThread", () => {
 					sendUserText,
 				})}
 				scrollableContainer={null}
+				quoteRequest={quote}
 			/>,
 		);
 		expect(screen.getByTestId("ai-chat-composer").dataset.initialValue).toBe("Keep this normal draft");
+		expect(screen.getByTestId("ai-chat-composer").dataset.quoteText).toBe(quote.text);
 	});
 
 	test("cancels a queued edit with Escape and restores the normal draft without sending", () => {

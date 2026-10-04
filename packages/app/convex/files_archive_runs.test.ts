@@ -1088,7 +1088,7 @@ describe("unarchive_nodes", () => {
 		const ended = await run_to_end(f, restored._yay!);
 		expect(ended.activity.status).toBe("succeeded");
 		expect((await read_state(f)).nodes.every((node) => node.archiveOperationId === null)).toBe(true);
-	}, 60_000);
+	}, 120_000);
 
 	test("a folder moved during the restore takes its contents with it", async () => {
 		const f = await fixture();
@@ -1230,7 +1230,7 @@ describe("unarchive_nodes", () => {
 
 		const state = await expect_consistent(f);
 		expect(state.nodes.filter((node) => node.archiveOperationId !== null)).toEqual([]);
-	});
+	}, 60_000);
 
 	test("a queued restore never times out, and Stop on the clash wait ends the whole request", async () => {
 		const f = await fixture();

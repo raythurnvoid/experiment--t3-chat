@@ -2455,7 +2455,7 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 			{target.kind === "saved" &&
 				commentsPortalHost &&
 				createPortal(
-					<FileEditorCommentsSidebar threadIds={commentThreadIds} canResolve={editable} />,
+					<FileEditorCommentsSidebar key={target.id} fileNodeId={target.id} threadIds={commentThreadIds} />,
 					commentsPortalHost,
 				)}
 			{isActive && editable && !needsPreparation && !isBranchReloading && !needsDraftReload
@@ -3951,7 +3951,7 @@ const FileEditorDiffNonCollabInner = memo(function FileEditorDiffNonCollabInner(
 			</div>
 			{commentsPortalHost &&
 				createPortal(
-					<FileEditorCommentsSidebar threadIds={commentThreadIds} canResolve={editable} />,
+					<FileEditorCommentsSidebar key={nodeId} fileNodeId={nodeId} threadIds={commentThreadIds} />,
 					commentsPortalHost,
 				)}
 		</>

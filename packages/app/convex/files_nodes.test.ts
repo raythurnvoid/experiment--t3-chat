@@ -32,6 +32,7 @@ import {
 	yjs_reserve_and_increment_last_sequence,
 } from "./files_nodes.ts";
 import { files_share_links_create_cleanup_state } from "./files_share_links_db.ts";
+import { quotas_db_ensure } from "./quotas.ts";
 import {
 	db_insert_file_text_content,
 	files_nodes_create_yjs_snapshot_update_from_text,
@@ -966,27 +967,28 @@ describe("get_tree_ancestors", () => {
 			as: typeof f.asAdmin;
 			membershipId: Id<"organizations_workspaces_users">;
 			nodeId: Id<"files_nodes">;
-		}) =>
-			{
-			const { as, nodeId, membershipId} = args;
+		}) => {
+			const { as, nodeId, membershipId } = args;
 
-			return (await as.query(api.files_nodes.get_tree_ancestors, { membershipId, nodeId: String(nodeId) }))?.ancestors.map(
-				(row) => row.path,
-			);
+			return (
+				await as.query(api.files_nodes.get_tree_ancestors, { membershipId, nodeId: String(nodeId) })
+			)?.ancestors.map((row) => row.path);
 		};
 
 		// The owner shows the full walk, so the shorter answers below come from the stop.
-		expect(await ancestors_of({ as: f.asOwner, membershipId: f.owner.membershipId, nodeId: f.nodes.grantedFileId })).toEqual([
-			"/top",
-			"/top/hidden",
-			"/top/hidden/granted",
-		]);
+		expect(
+			await ancestors_of({ as: f.asOwner, membershipId: f.owner.membershipId, nodeId: f.nodes.grantedFileId }),
+		).toEqual(["/top", "/top/hidden", "/top/hidden/granted"]);
 		// `/top` is readable for the admin, but it sits above the hidden folder, so it stays out too.
-		expect(await ancestors_of({ as: f.asAdmin, membershipId: f.admin.membershipId, nodeId: f.nodes.grantedFileId })).toEqual(["/top/hidden/granted"]);
-		expect(await ancestors_of({ as: f.asGrantOnly, membershipId: f.grantOnly.membershipId, nodeId: f.nodes.grantedFileId })).toEqual([
-			"/top/hidden/granted",
-		]);
-		expect(await ancestors_of({ as: f.asGrantOnly, membershipId: f.grantOnly.membershipId, nodeId: f.nodes.sharedFileId })).toEqual(["/shared"]);
+		expect(
+			await ancestors_of({ as: f.asAdmin, membershipId: f.admin.membershipId, nodeId: f.nodes.grantedFileId }),
+		).toEqual(["/top/hidden/granted"]);
+		expect(
+			await ancestors_of({ as: f.asGrantOnly, membershipId: f.grantOnly.membershipId, nodeId: f.nodes.grantedFileId }),
+		).toEqual(["/top/hidden/granted"]);
+		expect(
+			await ancestors_of({ as: f.asGrantOnly, membershipId: f.grantOnly.membershipId, nodeId: f.nodes.sharedFileId }),
+		).toEqual(["/shared"]);
 	});
 
 	test("returns null for an unreadable, foreign, missing, malformed, or root node id", async () => {
@@ -1184,18 +1186,28 @@ describe("get_folder_readme", () => {
 			membershipId: Id<"organizations_workspaces_users">;
 			folderId: Id<"files_nodes">;
 		}) => {
-			const { as, folderId, membershipId} = args;
+			const { as, folderId, membershipId } = args;
 
 			return as.query(api.files_nodes.get_folder_readme, { membershipId, folderId });
 		};
 
-		expect((await get({ as: f.asOwner, membershipId: f.owner.membershipId, folderId: f.nodes.boxId }))?._id).toBe(ids.hiddenReadmeId);
-		expect((await get({ as: f.asAdmin, membershipId: f.admin.membershipId, folderId: f.nodes.boxId }))?._id).toBe(ids.openReadmeId);
+		expect((await get({ as: f.asOwner, membershipId: f.owner.membershipId, folderId: f.nodes.boxId }))?._id).toBe(
+			ids.hiddenReadmeId,
+		);
+		expect((await get({ as: f.asAdmin, membershipId: f.admin.membershipId, folderId: f.nodes.boxId }))?._id).toBe(
+			ids.openReadmeId,
+		);
 
-		expect((await get({ as: f.asOwner, membershipId: f.owner.membershipId, folderId: f.nodes.hiddenId }))?._id).toBe(ids.grantedReadmeId);
+		expect((await get({ as: f.asOwner, membershipId: f.owner.membershipId, folderId: f.nodes.hiddenId }))?._id).toBe(
+			ids.grantedReadmeId,
+		);
 		expect(await get({ as: f.asAdmin, membershipId: f.admin.membershipId, folderId: f.nodes.hiddenId })).toBeNull();
-		expect(await get({ as: f.asAdmin, membershipId: f.admin.membershipId, folderId: f.nodes.foreignFolderId })).toBeNull();
-		expect(await get({ as: f.asAdmin, membershipId: f.admin.membershipId, folderId: f.nodes.missingNodeId })).toBeNull();
+		expect(
+			await get({ as: f.asAdmin, membershipId: f.admin.membershipId, folderId: f.nodes.foreignFolderId }),
+		).toBeNull();
+		expect(
+			await get({ as: f.asAdmin, membershipId: f.admin.membershipId, folderId: f.nodes.missingNodeId }),
+		).toBeNull();
 		await expect(
 			t.query(api.files_nodes.get_folder_readme, { membershipId: f.admin.membershipId, folderId: f.nodes.boxId }),
 		).rejects.toThrow("Unauthenticated");
@@ -2191,7 +2203,11 @@ describe("files_nodes_db_preflight_move", () => {
 			if (result._nay) throw new Error(result._nay.message);
 			expect(inserts).not.toHaveBeenCalled();
 			expect(patches).not.toHaveBeenCalled();
-			await files_nodes_db_apply_move({ ctx, plan: result._yay, shareLinkCleanup: files_share_links_create_cleanup_state() });
+			await files_nodes_db_apply_move({
+				ctx,
+				plan: result._yay,
+				shareLinkCleanup: files_share_links_create_cleanup_state(),
+			});
 			const createdFolders = await ctx.db
 				.query("files_nodes")
 				.filter((q) => q.or(q.eq(q.field("name"), "new"), q.eq(q.field("name"), "shared")))
@@ -2328,7 +2344,11 @@ describe("files_nodes_db_preflight_move", () => {
 			if (result._nay) throw new Error(result._nay.message);
 			expect(result._yay.moved).toHaveLength(3);
 			expect(new Set(result._yay.nodePatches.map((patch) => patch.id)).size).toBe(result._yay.nodePatches.length);
-			await files_nodes_db_apply_move({ ctx, plan: result._yay, shareLinkCleanup: files_share_links_create_cleanup_state() });
+			await files_nodes_db_apply_move({
+				ctx,
+				plan: result._yay,
+				shareLinkCleanup: files_share_links_create_cleanup_state(),
+			});
 		});
 		await t.run(async (ctx) => {
 			expect(await ctx.db.get("files_nodes", child._id)).toMatchObject({
@@ -2387,7 +2407,11 @@ describe("files_nodes_db_preflight_move", () => {
 				],
 			});
 			if (result._nay) throw new Error(result._nay.message);
-			await files_nodes_db_apply_move({ ctx, plan: result._yay, shareLinkCleanup: files_share_links_create_cleanup_state() });
+			await files_nodes_db_apply_move({
+				ctx,
+				plan: result._yay,
+				shareLinkCleanup: files_share_links_create_cleanup_state(),
+			});
 			expect(await ctx.db.get("files_nodes", parent._id)).toMatchObject({
 				parentId: child._id,
 				path: `/${child.name}/${parent.name}`,
@@ -2671,7 +2695,11 @@ describe("files_nodes_db_preflight_move", () => {
 				});
 				if (result._nay) throw new Error(result._nay.message);
 				expect(result._yay.nodePatches.filter((patch) => patch.id === occupant._id)).toHaveLength(1);
-				await files_nodes_db_apply_move({ ctx, plan: result._yay, shareLinkCleanup: files_share_links_create_cleanup_state() });
+				await files_nodes_db_apply_move({
+					ctx,
+					plan: result._yay,
+					shareLinkCleanup: files_share_links_create_cleanup_state(),
+				});
 				const archived = (await ctx.db.get("files_nodes", occupant._id))!;
 				const path = `/moved-parent/${occupant.name}`;
 				expect(archived).toMatchObject({ path, assetId });
@@ -2739,7 +2767,12 @@ describe("files_nodes_db_preflight_move", () => {
 						},
 					],
 				});
-				if (plan._yay) await files_nodes_db_apply_move({ ctx, plan: plan._yay, shareLinkCleanup: files_share_links_create_cleanup_state() });
+				if (plan._yay)
+					await files_nodes_db_apply_move({
+						ctx,
+						plan: plan._yay,
+						shareLinkCleanup: files_share_links_create_cleanup_state(),
+					});
 				return plan;
 			});
 			if (childState === "archived") {
@@ -5469,6 +5502,32 @@ describe("files_nodes.get_authorized_by_path", () => {
 });
 
 describe("files_nodes.create_upload_node", () => {
+	test.each([-1, NaN, 0.5])("refuses invalid %s bytes before a node, asset, or quota write", async (size) => {
+		const t = test_convex();
+		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const before = await t.run(async (ctx) => ({
+			nodes: await ctx.db.query("files_nodes").collect(),
+			assets: await ctx.db.query("files_r2_assets").collect(),
+			quotas: await ctx.db.query("quotas").collect(),
+		}));
+		const result = await t
+			.withIdentity({ issuer: "https://clerk.test", external_id: db.userId })
+			.mutation(api.files_nodes.create_upload_node, {
+				membershipId: db.membershipId,
+				parentId: files_ROOT_ID,
+				filename: "bad.bin",
+				size,
+			});
+		expect(result._nay?.message).toBe("File too large");
+		expect(
+			await t.run(async (ctx) => ({
+				nodes: await ctx.db.query("files_nodes").collect(),
+				assets: await ctx.db.query("files_r2_assets").collect(),
+				quotas: await ctx.db.query("quotas").collect(),
+			})),
+		).toEqual(before);
+	});
+
 	test("creates a visible R2 node and uses its id in the R2 key", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
@@ -5780,6 +5839,73 @@ describe("files_nodes.create_upload_node", () => {
 });
 
 describe("files_nodes.create_upload_nodes", () => {
+	test("a full storage cap keeps every replaced file and creates no upload assets", async () => {
+		const t = test_convex();
+		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const original = await asUser.mutation(api.files_nodes.create_upload_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			filename: "keep.bin",
+			size: 5,
+		});
+		if (original._nay) throw new Error(original._nay.message);
+		await t.run(async (ctx) => {
+			const quotaId = await quotas_db_ensure(ctx, { ...db, quotaName: "stored_file_bytes", now: Date.now() });
+			await ctx.db.patch("quotas", quotaId, { maxCount: 10, usedCount: 10 });
+		});
+		const before = await t.run(async (ctx) => ({
+			nodes: await ctx.db.query("files_nodes").collect(),
+			assets: await ctx.db.query("files_r2_assets").collect(),
+			quotas: await ctx.db.query("quotas").collect(),
+		}));
+		const result = await asUser.mutation(api.files_nodes.create_upload_nodes, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			onConflict: "replace",
+			items: [
+				{ relativePath: "keep.bin", size: 5 },
+				{ relativePath: "new.bin", size: 6 },
+			],
+		});
+		expect(result._nay?.name).toBe("storage_full");
+		expect(
+			await t.run(async (ctx) => ({
+				nodes: await ctx.db.query("files_nodes").collect(),
+				assets: await ctx.db.query("files_r2_assets").collect(),
+				quotas: await ctx.db.query("quotas").collect(),
+			})),
+		).toEqual(before);
+	});
+
+	test("skipped items do not use storage headroom", async () => {
+		const t = test_convex();
+		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const original = await asUser.mutation(api.files_nodes.create_upload_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			filename: "keep.bin",
+			size: 5,
+		});
+		if (original._nay) throw new Error(original._nay.message);
+		await t.run(async (ctx) => {
+			const quotaId = await quotas_db_ensure(ctx, { ...db, quotaName: "stored_file_bytes", now: Date.now() });
+			await ctx.db.patch("quotas", quotaId, { maxCount: 10, usedCount: 5 });
+		});
+		const result = await asUser.mutation(api.files_nodes.create_upload_nodes, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			onConflict: "skip",
+			items: [
+				{ relativePath: "keep.bin", size: 20 },
+				{ relativePath: "new.bin", size: 5 },
+			],
+		});
+		expect(result._yay?.created.map((item) => item.relativePath)).toEqual(["new.bin"]);
+		expect(result._yay?.skipped).toEqual([{ relativePath: "keep.bin", reason: "conflict" }]);
+	});
+
 	test("creates nested files with presigned urls and reuses folders across calls", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
@@ -6812,7 +6938,13 @@ describe("files_nodes_db_hard_delete_node", () => {
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
 		test_setup_r2_capture();
-		const nodeId = await test_materialize_markdown_file({ t, asUser, db, path: "/delete-cleanup.md", markdown: "# Kept until deletion\n" });
+		const nodeId = await test_materialize_markdown_file({
+			t,
+			asUser,
+			db,
+			path: "/delete-cleanup.md",
+			markdown: "# Kept until deletion\n",
+		});
 
 		// Hold the scheduled worker so deletion must take ownership of its asset.
 		vi.useFakeTimers();
@@ -8197,7 +8329,13 @@ test("materialize_file_content rolls back Convex writes when committed chunking 
 	});
 	const r2Writes = test_setup_r2_capture();
 
-	const nodeId = await test_materialize_markdown_file({ t, asUser, db, path: "/chunk-failure.md", markdown: "# Last good\n" });
+	const nodeId = await test_materialize_markdown_file({
+		t,
+		asUser,
+		db,
+		path: "/chunk-failure.md",
+		markdown: "# Last good\n",
+	});
 	const nextYjsDoc = files_yjs_doc_create_from_text({ rootKind: "rich_text", text: "# Next version\n" });
 	if ("_nay" in nextYjsDoc) {
 		throw new Error(nextYjsDoc._nay.message);
@@ -8307,7 +8445,13 @@ test("materialize_file_content marks over-cap content too large and leaves the n
 	const r2Writes = test_setup_r2_capture();
 
 	const smallMarkdown = "# Small\n";
-	const nodeId = await test_materialize_markdown_file({ t, asUser, db, path: "/too-large.md", markdown: smallMarkdown });
+	const nodeId = await test_materialize_markdown_file({
+		t,
+		asUser,
+		db,
+		path: "/too-large.md",
+		markdown: smallMarkdown,
+	});
 	const beforePush = await t.run(async (ctx) => ({
 		assetCount: (await ctx.db.query("files_r2_assets").collect()).length,
 		assetId: (await ctx.db.get("files_nodes", nodeId))?.assetId,
@@ -8698,13 +8842,8 @@ test("read_committed_file_chunks_line_range/stats match full-text slicing across
 	expect(chunkCount).toBeGreaterThan(1);
 
 	const totalLines = committed.split("\n").length;
-	const readRange = (args: {
-		startLine: number;
-		maxLines: number;
-		fromEnd?: boolean;
-	}) =>
-		{
-		const { fromEnd = false, maxLines, startLine} = args;
+	const readRange = (args: { startLine: number; maxLines: number; fromEnd?: boolean }) => {
+		const { fromEnd = false, maxLines, startLine } = args;
 
 		return asUser.query(internal.files_nodes.read_committed_file_chunks_line_range, {
 			organizationId: db.organizationId,
@@ -9265,13 +9404,8 @@ test("external (reserved) scope reads committed chunks and R2 without Yjs, pendi
 
 	// read_committed_file_chunks_line_range: head / deep mid-document / tail each equal direct slicing.
 	const totalLines = markdown.split("\n").length;
-	const readRange = (args: {
-		startLine: number;
-		maxLines: number;
-		fromEnd?: boolean;
-	}) =>
-		{
-		const { fromEnd = false, maxLines, startLine} = args;
+	const readRange = (args: { startLine: number; maxLines: number; fromEnd?: boolean }) => {
+		const { fromEnd = false, maxLines, startLine } = args;
 
 		return t.query(internal.files_nodes.read_committed_file_chunks_line_range, {
 			...readScope,
@@ -9932,7 +10066,12 @@ describe("non-collaborative files", () => {
 		});
 		const original = "# Final lock\n\noriginal body\n";
 		const nextText = "# Final lock\n\nreplacement body\n";
-		const { nodeId, assetId } = await seed_non_collaborative_file({ t, db, path: "/replacement-final-lock.md", markdown: original });
+		const { nodeId, assetId } = await seed_non_collaborative_file({
+			t,
+			db,
+			path: "/replacement-final-lock.md",
+			markdown: original,
+		});
 
 		const preflight = await t.query(internal.files_nodes_content.get_replace_file_content_preflight, {
 			organizationId: db.organizationId,
@@ -10371,7 +10510,13 @@ describe("non-collaborative files", () => {
 			email: "stale-cleanup-user@example.com",
 		});
 		test_setup_r2_capture();
-		const nodeId = await test_materialize_markdown_file({ t, asUser, db, path: "/stale-cleanup.md", markdown: "# Kept\n" });
+		const nodeId = await test_materialize_markdown_file({
+			t,
+			asUser,
+			db,
+			path: "/stale-cleanup.md",
+			markdown: "# Kept\n",
+		});
 		const oldSnapshot = await t.run(async (ctx) => {
 			const pointers = await ctx.db.get("files_nodes", nodeId);
 			if (!pointers?.yjsSnapshotId) throw new Error("Missing Yjs snapshot");
@@ -10452,7 +10597,13 @@ describe("non-collaborative files", () => {
 			email: "lineage-race-user@example.com",
 		});
 		const r2Writes = test_setup_r2_capture();
-		const nodeId = await test_materialize_markdown_file({ t, asUser, db, path: "/lineage-race.md", markdown: "# Before\n" });
+		const nodeId = await test_materialize_markdown_file({
+			t,
+			asUser,
+			db,
+			path: "/lineage-race.md",
+			markdown: "# Before\n",
+		});
 		const oldLineage = await t.run(async (ctx) => {
 			const node = await ctx.db.get("files_nodes", nodeId);
 			if (!node?.yjsLastSequenceId || !node.yjsSnapshotId) throw new Error("Expected old Yjs pointers");
@@ -10677,7 +10828,12 @@ describe("non-collaborative files", () => {
 			name: "Collaboration Final Lock User",
 		});
 		const text = "# Enable final lock\n\nbody\n";
-		const { nodeId, assetId } = await seed_non_collaborative_file({ t, db, path: "/enable-final-lock.md", markdown: text });
+		const { nodeId, assetId } = await seed_non_collaborative_file({
+			t,
+			db,
+			path: "/enable-final-lock.md",
+			markdown: text,
+		});
 
 		const preflight = await t.query(internal.files_nodes_content.get_set_file_collaborative_preflight, {
 			membershipId: db.membershipId,
@@ -10738,8 +10894,19 @@ describe("non-collaborative files", () => {
 		const r2Writes = test_setup_r2_capture();
 
 		const markdown = "# Toggle acl\n\nbody\n";
-		const collaborativeNodeId = await test_materialize_markdown_file({ t, asUser: asOwner, db, path: "/toggle-acl-on.md", markdown });
-		const { nodeId: nonCollaborativeNodeId } = await seed_non_collaborative_file({ t, db, path: "/toggle-acl-off.md", markdown });
+		const collaborativeNodeId = await test_materialize_markdown_file({
+			t,
+			asUser: asOwner,
+			db,
+			path: "/toggle-acl-on.md",
+			markdown,
+		});
+		const { nodeId: nonCollaborativeNodeId } = await seed_non_collaborative_file({
+			t,
+			db,
+			path: "/toggle-acl-off.md",
+			markdown,
+		});
 		// The seed helper writes the asset doc but never uploads its object, and the ON toggle reads
 		// the committed text back from the bucket. Put it there so the positive control below
 		// reaches the permission check instead of a 404.
@@ -11018,8 +11185,20 @@ describe("non-collaborative files", () => {
 
 		const markdown = "# Pending\n\nbody\n";
 		vi.spyOn(r2_confirmed_object_delete, "delete_object").mockResolvedValue(undefined);
-		const contentOnlyNodeId = await test_materialize_markdown_file({ t, asUser, db, path: "/pending-content.md", markdown });
-		const contentAndMoveNodeId = await test_materialize_markdown_file({ t, asUser, db, path: "/pending-both.md", markdown });
+		const contentOnlyNodeId = await test_materialize_markdown_file({
+			t,
+			asUser,
+			db,
+			path: "/pending-content.md",
+			markdown,
+		});
+		const contentAndMoveNodeId = await test_materialize_markdown_file({
+			t,
+			asUser,
+			db,
+			path: "/pending-both.md",
+			markdown,
+		});
 
 		// Seed one content-only proposal and one content-plus-move proposal. The real upsert flow
 		// needs an operation batch and paged state staging; this test only cares about what the
@@ -11129,8 +11308,18 @@ describe("non-collaborative files", () => {
 		});
 		const r2Writes = test_setup_r2_capture();
 
-		const contentOnly = await seed_non_collaborative_file({ t, db, path: "/off-content.md", markdown: "# Off\n\nbody\n" });
-		const contentAndMove = await seed_non_collaborative_file({ t, db, path: "/off-both.md", markdown: "# Off\n\nbody\n" });
+		const contentOnly = await seed_non_collaborative_file({
+			t,
+			db,
+			path: "/off-content.md",
+			markdown: "# Off\n\nbody\n",
+		});
+		const contentAndMove = await seed_non_collaborative_file({
+			t,
+			db,
+			path: "/off-both.md",
+			markdown: "# Off\n\nbody\n",
+		});
 		// The seed helper writes no R2 object, and the ON toggle reads the committed text from R2.
 		r2Writes.set("content-snapshot/off-content.md", "# Off\n\nbody\n");
 		r2Writes.set("content-snapshot/off-both.md", "# Off\n\nbody\n");
@@ -11215,7 +11404,12 @@ describe("non-collaborative files", () => {
 			name: "Test User",
 			email: "test@example.com",
 		});
-		const { nodeId: markdownNodeId } = await seed_non_collaborative_file({ t, db, path: "/notes.md", markdown: "# Notes\n\nbody\n" });
+		const { nodeId: markdownNodeId } = await seed_non_collaborative_file({
+			t,
+			db,
+			path: "/notes.md",
+			markdown: "# Notes\n\nbody\n",
+		});
 		const { nodeId: plainNodeId } = await seed_non_collaborative_file({ t, db, path: "/data.json", markdown: "{}\n" });
 
 		// The extension may change freely. The stored type does not follow the name, the same
@@ -11323,6 +11517,7 @@ describe("non-collaborative files", () => {
 			});
 			const refused = await asUser.mutation(internal.files_nodes_content.finalize_snapshot_restore_replacement, {
 				membershipId: db.membershipId,
+				billedUserId: db.userId,
 				nodeId,
 				snapshotId: before.snapshot._id,
 				expectedAssetId: sourceOff ? undefined : before.node.assetId,
@@ -11628,7 +11823,13 @@ describe("text_search_files", () => {
 		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
 		test_setup_r2_capture();
 		const path = `/scope/${suffix}folder/inside.md`;
-		const nodeId = await test_materialize_markdown_file({ t, asUser, db, path: "/scope/inside.md", markdown: "prefixneedle" });
+		const nodeId = await test_materialize_markdown_file({
+			t,
+			asUser,
+			db,
+			path: "/scope/inside.md",
+			markdown: "prefixneedle",
+		});
 		// The saved folder door allows a wider alphabet than the agent create door.
 		const folder = await asUser.mutation(api.files_nodes.create_folder_node, {
 			membershipId: db.membershipId,
@@ -11680,13 +11881,8 @@ test("text_search_files scopes to a path prefix without sibling-prefix leakage a
 	await test_materialize_markdown_file({ t, asUser, db, path: "/scope/inside.md", markdown: body("inside") });
 	await test_materialize_markdown_file({ t, asUser, db, path: "/scope-other/collide.md", markdown: body("collide") });
 
-	const search = (args: {
-		pathPrefix: string | undefined;
-		numItems: number;
-		cursor?: string | null;
-	}) =>
-		{
-		const { cursor = null, numItems, pathPrefix} = args;
+	const search = (args: { pathPrefix: string | undefined; numItems: number; cursor?: string | null }) => {
+		const { cursor = null, numItems, pathPrefix } = args;
 
 		return asUser.query(internal.files_nodes.text_search_files, {
 			organizationId: db.organizationId,
@@ -11708,7 +11904,11 @@ test("text_search_files scopes to a path prefix without sibling-prefix leakage a
 	expect(firstUnscopedPage.items).toHaveLength(1);
 	expect(firstUnscopedPage.isDone).toBe(false);
 	expect(firstUnscopedPage.continueCursor).not.toBe("");
-	const secondUnscopedPage = await search({ pathPrefix: undefined, numItems: 50, cursor: firstUnscopedPage.continueCursor });
+	const secondUnscopedPage = await search({
+		pathPrefix: undefined,
+		numItems: 50,
+		cursor: firstUnscopedPage.continueCursor,
+	});
 	expect(secondUnscopedPage.isDone).toBe(true);
 	expect(new Set([...firstUnscopedPage.items, ...secondUnscopedPage.items].map((i) => i.path))).toEqual(
 		new Set(["/scope/inside.md", "/scope-other/collide.md"]),
@@ -12618,7 +12818,13 @@ test("set_entries accepts folders and refuses bad YAML and read-only nodes", asy
 	});
 	test_setup_r2_capture();
 
-	const nodeId = await test_materialize_markdown_file({ t, asUser, db, path: "/file-metadata-refusal/note.md", markdown: "Body\n" });
+	const nodeId = await test_materialize_markdown_file({
+		t,
+		asUser,
+		db,
+		path: "/file-metadata-refusal/note.md",
+		markdown: "Body\n",
+	});
 	const setEntries = (fileNodeId: Id<"files_nodes">, metadataYaml: string) =>
 		asUser.mutation(api.files_metadata.set_entries, { membershipId: db.membershipId, fileNodeId, metadataYaml });
 
@@ -13436,10 +13642,10 @@ describe("folder table sort fields", () => {
 			parentId: files_ROOT_ID,
 			filename: "scan.png",
 			contentType: "image/png",
-			size: 10,
+			size: 4096,
 		});
 		if (upload._nay) throw new Error(upload._nay.message);
-		expect((await read_sort_fields(t, upload._yay.nodeId)).node.contentByteSize).toBe(10);
+		expect((await read_sort_fields(t, upload._yay.nodeId)).node.contentByteSize).toBe(4096);
 		await t.mutation(internal.r2.process_uploaded_asset_event, {
 			assetId: upload._yay.assetId,
 			r2Key: r2_create_asset_key({
@@ -14705,9 +14911,8 @@ describe("get_table_filter_match", () => {
 			target: files_PendingTarget;
 			filter: files_table_Filter;
 			folderId?: Id<"files_nodes"> | "root";
-		}) =>
-			{
-			const { folderId = parentId, filter, target} = args;
+		}) => {
+			const { folderId = parentId, filter, target } = args;
 
 			return asOwner.query(api.files_nodes.get_table_filter_match, {
 				membershipId: db.membershipId,
@@ -14828,7 +15033,10 @@ describe("get_table_filter_match", () => {
 			}),
 		);
 		expect(await match({ target: draft.target, filter })).toEqual({ matches: false, preparing: false });
-		expect(await match({ target: draft.target, filter: { ...filter, value: "new" } })).toEqual({ matches: true, preparing: false });
+		expect(await match({ target: draft.target, filter: { ...filter, value: "new" } })).toEqual({
+			matches: true,
+			preparing: false,
+		});
 	});
 
 	test("reports missing intent and missing new text base as preparing only for metadata", async () => {
@@ -14928,7 +15136,10 @@ describe("get_table_filter_match", () => {
 		const target = { kind: "saved" as const, id: nodeId };
 		const filter = { kind: "name", field: "name", op: "contains", value: "task" } as const;
 		expect(await match({ target, filter })).toBeNull();
-		expect(await match({ target, filter, folderId: destination._yay.nodeId })).toEqual({ matches: true, preparing: false });
+		expect(await match({ target, filter, folderId: destination._yay.nodeId })).toEqual({
+			matches: true,
+			preparing: false,
+		});
 		expect(
 			await match({
 				target,
@@ -15190,7 +15401,7 @@ describe("list_tree_children_sorted multi", () => {
 			status?: string;
 			kind?: "file" | "folder";
 		}) => {
-			const { size = undefined, status, kind = "file", updatedAt, name} = args;
+			const { size = undefined, status, kind = "file", updatedAt, name } = args;
 
 			const nodeId = await seeded.insert_child({ name, kind, updatedAt, contentByteSize: size });
 			if (status !== undefined && kind === "folder")
@@ -15220,9 +15431,8 @@ describe("list_tree_children_sorted multi", () => {
 				workLimit?: number;
 				filter?: files_table_Filter | null;
 			};
-		}) =>
-			{
-			const { cursor = null, options = {}, sort} = args;
+		}) => {
+			const { cursor = null, options = {}, sort } = args;
 
 			return seeded.asOwner.query(api.files_nodes.list_tree_children_sorted, {
 				membershipId: seeded.db.membershipId,
@@ -15254,7 +15464,8 @@ describe("list_tree_children_sorted multi", () => {
 
 	test("candidate 51 can sort first after a whole group is proved", async () => {
 		const { add, read, walk } = await seed_multi();
-		for (let index = 0; index < 61; index++) await add({ name: `entry-${String(index).padStart(2, "0")}.md`, updatedAt: 1, size: 61 - index });
+		for (let index = 0; index < 61; index++)
+			await add({ name: `entry-${String(index).padStart(2, "0")}.md`, updatedAt: 1, size: 61 - index });
 		const sort: files_sort_Sort = [
 			{ field: "updated", direction: "asc" },
 			{ field: "size", direction: "asc" },
@@ -15310,10 +15521,10 @@ describe("list_tree_children_sorted multi", () => {
 				for (const third of ["asc", "desc"] as const) {
 					const result = await read({
 						sort: [
-						{ field: "updated", direction: primary },
-						{ field: "frontmatter.status", direction: secondary },
-						{ field: "size", direction: third },
-					],
+							{ field: "updated", direction: primary },
+							{ field: "frontmatter.status", direction: secondary },
+							{ field: "size", direction: third },
+						],
 					});
 					const open1 = third === "asc" ? ["b.md", "a.md"] : ["a.md", "b.md"];
 					const open2 = third === "asc" ? ["e.md", "f.md"] : ["f.md", "e.md"];
@@ -15327,7 +15538,8 @@ describe("list_tree_children_sorted multi", () => {
 
 	test("resumes the next page of a sort with more than three clauses", async () => {
 		const { add, walk } = await seed_multi();
-		for (let index = 0; index < 55; index++) await add({ name: `entry-${String(index).padStart(2, "0")}.md`, updatedAt: index });
+		for (let index = 0; index < 55; index++)
+			await add({ name: `entry-${String(index).padStart(2, "0")}.md`, updatedAt: index });
 		for (const sort of [
 			[
 				{ field: "updated", direction: "asc" },
@@ -15356,7 +15568,8 @@ describe("list_tree_children_sorted multi", () => {
 
 	test("throws InvalidCursor for a cursor that does not match the request", async () => {
 		const { add, read } = await seed_multi();
-		for (let index = 0; index < 55; index++) await add({ name: `entry-${String(index).padStart(2, "0")}.md`, updatedAt: index });
+		for (let index = 0; index < 55; index++)
+			await add({ name: `entry-${String(index).padStart(2, "0")}.md`, updatedAt: index });
 		const sort: files_sort_Sort = [
 			{ field: "updated", direction: "asc" },
 			{ field: "size", direction: "asc" },
@@ -15365,7 +15578,10 @@ describe("list_tree_children_sorted multi", () => {
 		expect(first.isDone).toBe(false);
 		const cursor = JSON.parse(first.continueCursor);
 		for (const args of [
-			{ sort: [sort[0]!, { field: "size", direction: "desc" }] satisfies files_sort_Sort, cursor: first.continueCursor },
+			{
+				sort: [sort[0]!, { field: "size", direction: "desc" }] satisfies files_sort_Sort,
+				cursor: first.continueCursor,
+			},
 			{ sort, cursor: "not-json" },
 			{ sort, cursor: JSON.stringify({ ...cursor, key: { ...cursor.key, parts: [...cursor.key.parts, null] } }) },
 			{ sort, cursor: JSON.stringify({ ...cursor, group: "not-a-number" }) },
@@ -15380,9 +15596,9 @@ describe("list_tree_children_sorted multi", () => {
 		for (const direction of ["asc", "desc"] as const) {
 			const result = await read({
 				sort: [
-				{ field: "extension", direction },
-				{ field: "name", direction: "asc" },
-			],
+					{ field: "extension", direction },
+					{ field: "name", direction: "asc" },
+				],
 			});
 			expect(result.page.map((row) => row.name)).toEqual(
 				direction === "asc" ? ["ten.10", "two.2"] : ["two.2", "ten.10"],
@@ -15402,9 +15618,9 @@ describe("list_tree_children_sorted multi", () => {
 			});
 		const result = await read({
 			sort: [
-			{ field: "created", direction: "asc" },
-			{ field: "frontmatter.status", direction: "asc" },
-		],
+				{ field: "created", direction: "asc" },
+				{ field: "frontmatter.status", direction: "asc" },
+			],
 		});
 		expect(result.page).toHaveLength(50);
 		expect(result.scannedCount).toBe(50);
@@ -15414,7 +15630,8 @@ describe("list_tree_children_sorted multi", () => {
 
 	test("packs short indexed Name ranges to 50 candidates under one budget", async () => {
 		const { add, read } = await seed_multi();
-		for (let index = 0; index < 70; index++) await add({ name: `updated-${String(index).padStart(2, "0")}.md`, updatedAt: index });
+		for (let index = 0; index < 70; index++)
+			await add({ name: `updated-${String(index).padStart(2, "0")}.md`, updatedAt: index });
 		const sort: files_sort_Sort = [
 			{ field: "updated", direction: "desc" },
 			{ field: "name", direction: "asc" },
@@ -15491,7 +15708,8 @@ describe("list_tree_children_sorted multi", () => {
 	test("whole-query call limits stop proof after a prefix without skipping the next group", async () => {
 		const { add, read } = await seed_multi({ transactionLimits: { databaseQueries: 50 } });
 		await add({ name: "prefix.md", updatedAt: 0, size: 0 });
-		for (let index = 0; index < 20; index++) await add({ name: `group-${String(index).padStart(2, "0")}.md`, updatedAt: 1, size: index });
+		for (let index = 0; index < 20; index++)
+			await add({ name: `group-${String(index).padStart(2, "0")}.md`, updatedAt: 1, size: index });
 		const sort: files_sort_Sort = [
 			{ field: "updated", direction: "asc" },
 			{ field: "size", direction: "asc" },
@@ -15509,12 +15727,13 @@ describe("list_tree_children_sorted multi", () => {
 
 	test("a fresh full allowance reports a byte limit for one unproved group", async () => {
 		const { add, read } = await seed_multi({ transactionLimits: true });
-		for (let index = 0; index < 5; index++) await add({ name: `large-${index}.md`, updatedAt: 1, size: undefined, status: "x".repeat(800_000) });
+		for (let index = 0; index < 5; index++)
+			await add({ name: `large-${index}.md`, updatedAt: 1, size: undefined, status: "x".repeat(800_000) });
 		const result = await read({
 			sort: [
-			{ field: "updated", direction: "asc" },
-			{ field: "frontmatter.status", direction: "asc" },
-		],
+				{ field: "updated", direction: "asc" },
+				{ field: "frontmatter.status", direction: "asc" },
+			],
 		});
 		expect(result).toMatchObject({
 			page: [],
@@ -15529,12 +15748,13 @@ describe("list_tree_children_sorted multi", () => {
 
 	test("a fresh full allowance reports a call limit before publishing a small group", async () => {
 		const { add, read } = await seed_multi({ transactionLimits: { databaseQueries: 50 } });
-		for (let index = 0; index < 50; index++) await add({ name: `group-${String(index).padStart(2, "0")}.md`, updatedAt: 1, size: index });
+		for (let index = 0; index < 50; index++)
+			await add({ name: `group-${String(index).padStart(2, "0")}.md`, updatedAt: 1, size: index });
 		const result = await read({
 			sort: [
-			{ field: "updated", direction: "asc" },
-			{ field: "size", direction: "asc" },
-		],
+				{ field: "updated", direction: "asc" },
+				{ field: "size", direction: "asc" },
+			],
 		});
 		expect(result).toMatchObject({
 			page: [],
@@ -15571,12 +15791,13 @@ describe("list_tree_children_sorted multi", () => {
 	test("candidate 201 proves a true group limit while completed prefix rows remain", async () => {
 		const { add, read } = await seed_multi();
 		await add({ name: "prefix.md", updatedAt: 0, size: 0 });
-		for (let index = 0; index < 201; index++) await add({ name: `group-${String(index).padStart(3, "0")}.md`, updatedAt: 1, size: index });
+		for (let index = 0; index < 201; index++)
+			await add({ name: `group-${String(index).padStart(3, "0")}.md`, updatedAt: 1, size: index });
 		const result = await read({
 			sort: [
-			{ field: "updated", direction: "asc" },
-			{ field: "size", direction: "asc" },
-		],
+				{ field: "updated", direction: "asc" },
+				{ field: "size", direction: "asc" },
+			],
 		});
 		expect(result.page.map((row) => row.name)).toEqual(["prefix.md"]);
 		expect(result).toMatchObject({
@@ -15590,7 +15811,8 @@ describe("list_tree_children_sorted multi", () => {
 
 	test("a 200-row arbitrary group stays supported and splits by its full ordered key", async () => {
 		const { add, walk } = await seed_multi();
-		for (let index = 0; index < 200; index++) await add({ name: `group-${String(index).padStart(3, "0")}.md`, updatedAt: 1, size: 199 - index });
+		for (let index = 0; index < 200; index++)
+			await add({ name: `group-${String(index).padStart(3, "0")}.md`, updatedAt: 1, size: 199 - index });
 		const pages = await walk([
 			{ field: "updated", direction: "desc" },
 			{ field: "size", direction: "asc" },
@@ -15687,9 +15909,9 @@ describe("list_tree_children_sorted multi", () => {
 		}
 		const result = await read({
 			sort: [
-			{ field: "updated", direction: "asc" },
-			{ field: "size", direction: "desc" },
-		],
+				{ field: "updated", direction: "asc" },
+				{ field: "size", direction: "desc" },
+			],
 		});
 		expect(result.page.map((row) => row._id)).toEqual([kept]);
 		expect(result).toMatchObject({ scannedCount: 1, sortLimit: null, isDone: true });
@@ -15764,9 +15986,8 @@ describe("get_table_sort_key", () => {
 			target: files_PendingTarget;
 			sort: files_sort_Sort;
 			parentId?: Id<"files_nodes"> | "root";
-		}) =>
-			{
-			const { parentId = seeded.parentId, sort, target} = args;
+		}) => {
+			const { parentId = seeded.parentId, sort, target } = args;
 
 			return seeded.asOwner.query(api.files_nodes.get_table_sort_key, {
 				membershipId: seeded.db.membershipId,
@@ -15834,19 +16055,19 @@ describe("get_table_sort_key", () => {
 		const result = await key({
 			target: { kind: "saved", id: nodeId },
 			sort: [
-			{ field: "frontmatter.status", direction: "desc" },
-			{ field: "updated", direction: "asc" },
-			{ field: "size", direction: "desc" },
-		],
+				{ field: "frontmatter.status", direction: "desc" },
+				{ field: "updated", direction: "asc" },
+				{ field: "size", direction: "desc" },
+			],
 		});
 		expect(result).toEqual({ parts: [["open"], [9], [8]], nameKey: ["after.txt", "after.txt"] });
 		expect(
 			await key({
 				target: { kind: "saved", id: nodeId },
 				sort: [
-				{ field: "extension", direction: "asc" },
-				{ field: "frontmatter.status", direction: "desc" },
-			],
+					{ field: "extension", direction: "asc" },
+					{ field: "frontmatter.status", direction: "desc" },
+				],
 			}),
 		).toEqual({ parts: [["txt"], ["open"]], nameKey: ["after.txt", "after.txt"] });
 	});
@@ -16001,9 +16222,9 @@ describe("get_table_sort_key", () => {
 	test("whole-query exhaustion is an error rather than refusal or missing metadata", async () => {
 		const { insert_child, key } = await seed_key({ transactionLimits: { bytesRead: 800_000 } });
 		const nodeId = await insert_child({ name: "saved.md", kind: "file", updatedAt: 1 });
-		await expect(key({ target: { kind: "saved", id: nodeId }, sort: [{ field: "metadata.status", direction: "asc" }] })).rejects.toThrow(
-			"Table sort exceeded its work limit.",
-		);
+		await expect(
+			key({ target: { kind: "saved", id: nodeId }, sort: [{ field: "metadata.status", direction: "asc" }] }),
+		).rejects.toThrow("Table sort exceeded its work limit.");
 	});
 
 	test.each([true, false])(
@@ -16111,12 +16332,7 @@ describe("list_tree_children_sort_side_rows", () => {
 		 * Insert folders `shared-<index>` in the table folder, or `root-shared-<index>` at the root. Each
 		 * one is its own restricted root.
 		 */
-		const insert_shared = (args: {
-			from: number;
-			to: number;
-			parent?: "table" | "root";
-		}) =>
-			{
+		const insert_shared = (args: { from: number; to: number; parent?: "table" | "root" }) => {
 			const { from, to, parent = "table" } = args;
 
 			return t.run(async (ctx) => {
@@ -17817,7 +18033,7 @@ describe("create-time metadata", () => {
 		}
 	});
 
-	test("the upload publish merges the real size and media type into the create-time keys", async () => {
+	test("the upload keeps its create-time keys after publication", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 		const asUser = t.withIdentity({
@@ -17831,8 +18047,8 @@ describe("create-time metadata", () => {
 			parentId: files_ROOT_ID,
 			filename: "scan.png",
 			contentType: "image/png",
-			// The client declares one size. The R2 event below reports another one.
-			size: 10,
+			// A smaller confirmed size still preserves the create-time keys.
+			size: 4096,
 		});
 		if (upload._nay) throw new Error(upload._nay.message);
 
@@ -17876,8 +18092,20 @@ test("text_search_files scopes pending hits to a path prefix without sibling-pre
 
 	const insidePath = "/scope-pending/inside.md";
 	const collidePath = "/scope-pending-other/collide.md";
-	const insideNodeId = await test_materialize_markdown_file({ t, asUser, db, path: insidePath, markdown: "# Inside\n\nbase content." });
-	const collideNodeId = await test_materialize_markdown_file({ t, asUser, db, path: collidePath, markdown: "# Collide\n\nbase content." });
+	const insideNodeId = await test_materialize_markdown_file({
+		t,
+		asUser,
+		db,
+		path: insidePath,
+		markdown: "# Inside\n\nbase content.",
+	});
+	const collideNodeId = await test_materialize_markdown_file({
+		t,
+		asUser,
+		db,
+		path: collidePath,
+		markdown: "# Collide\n\nbase content.",
+	});
 
 	for (const [nodeId, label] of [
 		[insideNodeId, "Inside"],
@@ -17987,7 +18215,13 @@ test("text_search_files updates unified search scope when files are renamed and 
 		path: "/rename-source.md",
 		markdown: "# Rename\n\nscopecommittedneedle before rename.",
 	});
-	const moveNodeId = await test_materialize_markdown_file({ t, asUser, db, path: "/move-source.md", markdown: "# Move\n\nbase content." });
+	const moveNodeId = await test_materialize_markdown_file({
+		t,
+		asUser,
+		db,
+		path: "/move-source.md",
+		markdown: "# Move\n\nbase content.",
+	});
 	const targetFolderId = await t.run(async (ctx) =>
 		ctx.db.insert("files_nodes", {
 			contentType: null,
@@ -18123,7 +18357,13 @@ test("text_search_files paginates unified pending and committed chunks with the 
 
 	const pendingPath = "/paging/pending.md";
 	const committedPath = "/paging/committed.md";
-	const pendingNodeId = await test_materialize_markdown_file({ t, asUser, db, path: pendingPath, markdown: "# Pending\n\nbase content." });
+	const pendingNodeId = await test_materialize_markdown_file({
+		t,
+		asUser,
+		db,
+		path: pendingPath,
+		markdown: "# Pending\n\nbase content.",
+	});
 	await test_materialize_markdown_file({
 		t,
 		asUser,
@@ -18617,7 +18857,7 @@ describe("restore_snapshot_r2 whole-file restore", () => {
 		nodeId: Id<"files_nodes">;
 		text: string;
 	}) {
-		const { t, asUser, db, nodeId, text} = args;
+		const { t, asUser, db, nodeId, text } = args;
 
 		const yjsDoc = files_yjs_doc_create_from_text({ rootKind: "rich_text", text });
 		if ("_nay" in yjsDoc) {
@@ -18696,13 +18936,13 @@ describe("restore_snapshot_r2 whole-file restore", () => {
 			r2Objects,
 			db,
 			version: {
-			nodeId,
-			body: versionText,
-			kind: "content_snapshot",
-			contentType: "text/plain;charset=utf-8",
-			yjsRootKind: "plain_text",
-			collaborationEnabled: true,
-		},
+				nodeId,
+				body: versionText,
+				kind: "content_snapshot",
+				contentType: "text/plain;charset=utf-8",
+				yjsRootKind: "plain_text",
+				collaborationEnabled: true,
+			},
 		});
 
 		const restored = await asUser.action(api.files_nodes_content.restore_snapshot_r2, {
@@ -18788,13 +19028,13 @@ describe("restore_snapshot_r2 whole-file restore", () => {
 			r2Objects,
 			db,
 			version: {
-			nodeId,
-			body: "plain version\n",
-			kind: "content_snapshot",
-			contentType: "text/plain;charset=utf-8",
-			yjsRootKind: "plain_text",
-			collaborationEnabled: true,
-		},
+				nodeId,
+				body: "plain version\n",
+				kind: "content_snapshot",
+				contentType: "text/plain;charset=utf-8",
+				yjsRootKind: "plain_text",
+				collaborationEnabled: true,
+			},
 		});
 
 		const restored = await asUser.action(api.files_nodes_content.restore_snapshot_r2, {
@@ -18844,13 +19084,13 @@ describe("restore_snapshot_r2 whole-file restore", () => {
 				r2Objects,
 				db,
 				version: {
-				nodeId,
-				body: "plain version\n",
-				kind: "content_snapshot",
-				contentType: "text/plain;charset=utf-8",
-				yjsRootKind: "plain_text",
-				collaborationEnabled: true,
-			},
+					nodeId,
+					body: "plain version\n",
+					kind: "content_snapshot",
+					contentType: "text/plain;charset=utf-8",
+					yjsRootKind: "plain_text",
+					collaborationEnabled: true,
+				},
 			});
 
 			const versionsBefore = await read_versions(t, nodeId);
@@ -18931,10 +19171,10 @@ describe("restore_snapshot_r2 whole-file restore", () => {
 		},
 	);
 
-	test("a stored version of a stored file comes back as a byte copy with its own type", async () => {
+	test.each(["Free", "Pro"] as const)("a stored version of a stored file requires a paid plan: %s", async (plan) => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
-		await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
+		if (plan === "Free") await t.run((ctx) => test_mocks_fill_db_with.plan(ctx, { userId: db.userId, plan }));
 		const asUser = t.withIdentity({
 			issuer: "https://clerk.test",
 			external_id: db.userId,
@@ -19010,21 +19250,38 @@ describe("restore_snapshot_r2 whole-file restore", () => {
 			r2Objects,
 			db,
 			version: {
-			nodeId,
-			body: pngBytes,
-			kind: "content",
-			contentType: "image/png",
-			yjsRootKind: null,
-			collaborationEnabled: false,
-		},
+				nodeId,
+				body: pngBytes,
+				kind: "content",
+				contentType: "image/png",
+				yjsRootKind: null,
+				collaborationEnabled: false,
+			},
 		});
 
+		const before = await t.run(async (ctx) => ({
+			node: await ctx.db.get("files_nodes", nodeId),
+			assets: await ctx.db.query("files_r2_assets").collect(),
+			quotas: await ctx.db.query("quotas").collect(),
+		}));
 		const restored = await asUser.action(api.files_nodes_content.restore_snapshot_r2, {
 			membershipId: db.membershipId,
 			nodeId,
 			snapshotId: version.snapshotId,
 			sessionId: "restore-stored-session",
 		});
+		if (plan === "Free") {
+			expect(restored._nay).toMatchObject({ name: "plan_required" });
+			expect(copyCalls).toEqual([]);
+			expect(
+				await t.run(async (ctx) => ({
+					node: await ctx.db.get("files_nodes", nodeId),
+					assets: await ctx.db.query("files_r2_assets").collect(),
+					quotas: await ctx.db.query("quotas").collect(),
+				})),
+			).toEqual(before);
+			return;
+		}
 		expect(restored._nay).toBeUndefined();
 
 		// The bytes were copied on the R2 side into a new asset, and the file is a PNG again.
@@ -19860,7 +20117,9 @@ describe("external/system mount text materialization (Phase D)", () => {
 			path: MOUNT_FILE_PATH,
 			mode: { kind: "lines", startLine: 4, maxLines: 2 },
 		});
-		expect(lineRange?.content).toBe(files_line_range_from_text({ content: MOUNT_RAW_TEXT, startLine: 4, maxLines: 2 }).content);
+		expect(lineRange?.content).toBe(
+			files_line_range_from_text({ content: MOUNT_RAW_TEXT, startLine: 4, maxLines: 2 }).content,
+		);
 
 		// Exact wc/stat from file_stats (read O(1), not estimated).
 		const stats = await t.query(internal.files_nodes.read_committed_file_chunk_stats, {
@@ -20580,7 +20839,7 @@ describe("files_db_yjs_push_update door 1", () => {
 		update: Uint8Array;
 		rootKind: "rich_text" | "plain_text";
 	}) {
-		const { t, db, nodeId, update, rootKind} = args;
+		const { t, db, nodeId, update, rootKind } = args;
 
 		return await t.run(async (ctx) => {
 			const result = await files_db_yjs_push_update(ctx, {
@@ -20711,7 +20970,13 @@ describe("files_db_yjs_push_update door 1", () => {
 		const { db, nodeId } = await create_door_fixture(t, "/door-canonical-noop.md");
 		const before = await read_log_state({ t, db, nodeId });
 
-		const result = await push_bytes({ t, db, nodeId, update: encodeStateAsUpdate(new YjsDoc()), rootKind: "plain_text" });
+		const result = await push_bytes({
+			t,
+			db,
+			nodeId,
+			update: encodeStateAsUpdate(new YjsDoc()),
+			rootKind: "plain_text",
+		});
 
 		expect(result._nay).toBeUndefined();
 		const after = await read_log_state({ t, db, nodeId });
@@ -21636,7 +21901,7 @@ describe("files_nodes_content.repair_file_yjs_state_from_visible_text", () => {
 		db: Awaited<ReturnType<typeof test_mocks_fill_db_with.membership>>;
 		path: string;
 	}) {
-		const { t, asUser, db, path} = args;
+		const { t, asUser, db, path } = args;
 
 		const nodeId = await test_create_saved_text_file(t, {
 			membershipId: db.membershipId,
@@ -21691,7 +21956,12 @@ describe("files_nodes_content.repair_file_yjs_state_from_visible_text", () => {
 		});
 		test_setup_r2_capture();
 
-		const { nodeId, overCapYjsDoc } = await seed_frontmatter_marked_file({ t, asUser, db, path: "/repair-frontmatter-over.md" });
+		const { nodeId, overCapYjsDoc } = await seed_frontmatter_marked_file({
+			t,
+			asUser,
+			db,
+			path: "/repair-frontmatter-over.md",
+		});
 		overCapYjsDoc.destroy();
 
 		// The frontmatter marker alone qualifies for the default source: no acknowledgement flag.
@@ -21758,7 +22028,12 @@ describe("files_nodes_content.repair_file_yjs_state_from_visible_text", () => {
 		});
 		test_setup_r2_capture();
 
-		const { nodeId, overCapYjsDoc } = await seed_frontmatter_marked_file({ t, asUser, db, path: "/repair-frontmatter-fits.md" });
+		const { nodeId, overCapYjsDoc } = await seed_frontmatter_marked_file({
+			t,
+			asUser,
+			db,
+			path: "/repair-frontmatter-fits.md",
+		});
 
 		// The user reduced the frontmatter, but the marker still stands because the fitting
 		// push's materialization has not run (convex-test never runs scheduled functions; in
@@ -23278,7 +23553,7 @@ async function set_read_only_or_throw(args: {
 	membershipId: Id<"organizations_workspaces_users">;
 	nodeId: Id<"files_nodes">;
 }) {
-	const { asUser, membershipId, nodeId} = args;
+	const { asUser, membershipId, nodeId } = args;
 
 	const locked = await asUser.mutation(api.files_nodes.set_node_write_policy, {
 		writePolicy: { mode: "read_only" },
@@ -23296,7 +23571,7 @@ async function set_writable_or_throw(args: {
 	membershipId: Id<"organizations_workspaces_users">;
 	nodeId: Id<"files_nodes">;
 }) {
-	const { asUser, membershipId, nodeId} = args;
+	const { asUser, membershipId, nodeId } = args;
 
 	const unlocked = await asUser.mutation(api.files_nodes.set_node_write_policy, {
 		writePolicy: null,
@@ -26002,7 +26277,7 @@ async function seed_snapshot_restore_target(args: {
 	db: Awaited<ReturnType<typeof test_mocks_fill_db_with.membership>>;
 	path: string;
 }) {
-	const { t, db, path} = args;
+	const { t, db, path } = args;
 
 	const nodeId = await test_create_saved_text_file(t, {
 		membershipId: db.membershipId,
@@ -26276,7 +26551,7 @@ async function seed_repair_finalize_target(args: {
 	db: Awaited<ReturnType<typeof test_mocks_fill_db_with.membership>>;
 	path: string;
 }) {
-	const { t, db, path} = args;
+	const { t, db, path } = args;
 
 	const nodeId = await test_create_saved_text_file(t, {
 		membershipId: db.membershipId,

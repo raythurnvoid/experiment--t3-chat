@@ -6,9 +6,14 @@ import { AiChatComposer, type AiChatComposer_Props } from "./ai-chat-composer.ts
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { useAppGlobalStore } from "@/lib/app-global-store.ts";
+import { file_quotes_serialize_draft } from "../../../shared/file-quotes.ts";
 
 vi.mock("@/components/files/files-clipboard.tsx", () => ({
 	FilesClipboardProvider: (props: { children: ReactNode }) => props.children,
+}));
+
+vi.mock("@/lib/app-channels-context.tsx", () => ({
+	AppChannelsProvider: (props: { children: ReactNode }) => props.children,
 }));
 
 // The mention popup reads the workspace tree through a Convex subscription;
@@ -65,6 +70,58 @@ function render_with_tenant(ui: ReactElement) {
 }
 
 describe("AiChatComposer", () => {
+	test("restores shared quotes and keeps them after a refused send", async () => {
+		const quote = { fileNodeId: null, text: "Chosen\n<script>plain text</script>" };
+		const draft = `Before\n${file_quotes_serialize_draft(quote)} after`;
+		const onSubmit = vi.fn(() => false);
+		const { container } = render_with_tenant(
+			<AiChatComposer
+				canCancel={false}
+				canQueue
+				canSend
+				isQueueing={false}
+				isRunning={false}
+				initialValue={draft}
+				selectedModelId="gpt-6-luna"
+				selectedModeId="ask"
+				onSelectedModelIdChange={vi.fn()}
+				onSelectedModeIdChange={vi.fn()}
+				onSubmit={onSubmit}
+			/>,
+		);
+		await screen.findByText(quote.text, { normalizer: (value) => value });
+		expect(container.querySelector("script")).toBeNull();
+		fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+		expect(onSubmit).toHaveBeenCalledWith(draft, []);
+		expect(screen.getByRole("textbox").textContent).toContain(quote.text);
+	});
+
+	test("inserts a pending quote once without replacing the current AI draft", async () => {
+		const quote = { fileNodeId: null, text: "Selected words" };
+		const inserted = vi.fn();
+		const onSubmit = vi.fn(() => false);
+		const props = {
+			canCancel: false,
+			canQueue: true,
+			canSend: true,
+			isQueueing: false,
+			isRunning: false,
+			initialValue: "Keep this ",
+			quoteRequest: quote,
+			onQuoteInserted: inserted,
+			selectedModelId: "gpt-6-luna" as const,
+			selectedModeId: "ask" as const,
+			onSelectedModelIdChange: vi.fn(),
+			onSelectedModeIdChange: vi.fn(),
+			onSubmit,
+		};
+		render_with_tenant(<AiChatComposer {...props} />);
+		await screen.findByText(quote.text);
+		expect(inserted).toHaveBeenCalledOnce();
+		fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+		expect(onSubmit).toHaveBeenCalledWith(`Keep this ${file_quotes_serialize_draft(quote)} `, []);
+	});
+
 	afterEach(() => {
 		cleanup();
 		// Drop per-test overrides (like the loading state) and restore the tree.

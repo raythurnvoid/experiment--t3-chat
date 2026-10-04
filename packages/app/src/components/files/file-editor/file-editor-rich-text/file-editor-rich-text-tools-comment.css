@@ -5,7 +5,9 @@
 	}
 
 	.FileEditorRichTextToolsComment-popover-content {
-		width: 350px;
+		width: min(350px, calc(100vw - 24px));
+		max-height: min(60dvh, 400px);
+		overflow-y: auto;
 		padding: 0;
 
 		/* Let the floating MyInput box provide chrome, like the link popover. */
@@ -24,7 +26,7 @@
 		width: 100%;
 
 		/* Match link form: MyInput background/box position against the form, not the composer wrapper. */
-		> .FileEditorCommentsComposer {
+		> .ChannelsComposer {
 			flex: 1;
 			contain: style;
 			position: static;

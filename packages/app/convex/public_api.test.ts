@@ -3866,7 +3866,7 @@ describe("files upload-urls", () => {
 		});
 	}
 
-	test("mints upload targets, consumes the byte quota, and skipProcessing skips conversion", async () => {
+	test("mints without counting bytes, then settles once without conversion when skipped", async () => {
 		const t = test_convex();
 		install_r2_object_reads();
 		const enqueueActionSpy = vi
@@ -3921,12 +3921,12 @@ describe("files upload-urls", () => {
 			expect(asset?.unfinalizedExpiresAt).toBeGreaterThan(Date.now());
 		}
 
-		// The quota consumed the declared bytes of the whole batch.
+		// Minting does not seed or consume the published-byte counter.
 		const quota = await asUser.query(api.quotas.get, {
-			quotaName: "public_api_upload_bytes",
+			quotaName: "stored_file_bytes",
 			membershipId: db.membershipId,
 		});
-		expect(quota?.usedCount).toBe(64 + 2048);
+		expect(quota).toBeNull();
 
 		// The finalizer records the .md object without starting Markdown conversion.
 		const mdAsset = assets[0]!;
@@ -3943,11 +3943,22 @@ describe("files upload-urls", () => {
 		expect(finalized?.r2Key).toBeDefined();
 		expect(finalized?.unfinalizedExpiresAt).toBeUndefined();
 		expect(finalized?.processingWorkId).toBeNull();
-		expect(enqueueActionSpy).not.toHaveBeenCalledWith(
-			expect.anything(),
-			internal.r2.finalize_uploaded_text_file,
-			expect.anything(),
+		expect(
+			enqueueActionSpy.mock.calls.filter(
+				(call) => getFunctionName(call[1] as never) === getFunctionName(internal.r2.finalize_uploaded_text_file),
+			),
+		).toHaveLength(0);
+		expect(
+			(await asUser.query(api.quotas.get, { quotaName: "stored_file_bytes", membershipId: db.membershipId }))
+				?.usedCount,
+		).toBe(64);
+		const billingCalls = enqueueActionSpy.mock.calls.filter(
+			(call) => getFunctionName(call[1] as never) === getFunctionName(internal.billing.ingest_events),
 		);
+		expect(billingCalls).toHaveLength(1);
+		expect(billingCalls[0]![2]).toMatchObject({
+			events: [{ name: "file_upload", metadata: { amount: 1, bytes: 64 } }],
+		});
 	});
 
 	test("without skipProcessing an uploaded Markdown file starts conversion", async () => {
@@ -4180,7 +4191,7 @@ describe("files upload-urls", () => {
 			ctx.db
 				.query("quotas")
 				.withIndex("by_workspace_quotaName", (q) =>
-					q.eq("workspaceId", db.workspaceId).eq("quotaName", "public_api_upload_bytes"),
+					q.eq("workspaceId", db.workspaceId).eq("quotaName", "stored_file_bytes"),
 				)
 				.first(),
 		);
@@ -4526,7 +4537,7 @@ describe("files upload-urls", () => {
 		await t.run(async (ctx) => {
 			const now = Date.now();
 			const quotaId = await quotas_db_ensure(ctx, {
-				quotaName: "public_api_upload_bytes",
+				quotaName: "stored_file_bytes",
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
 				now,
@@ -4543,7 +4554,7 @@ describe("files upload-urls", () => {
 			}),
 		});
 		expect(refused.status).toBe(403);
-		expect(await refused.json()).toEqual({ message: "Upload quota exceeded" });
+		expect(await refused.json()).toEqual({ message: "This workspace has reached its storage limit" });
 
 		// The refused batch neither minted a node nor consumed more budget.
 		const after = await t.run(async (ctx) => {
@@ -4560,7 +4571,7 @@ describe("files upload-urls", () => {
 			const quota = await ctx.db
 				.query("quotas")
 				.withIndex("by_workspace_quotaName", (q) =>
-					q.eq("workspaceId", db.workspaceId).eq("quotaName", "public_api_upload_bytes"),
+					q.eq("workspaceId", db.workspaceId).eq("quotaName", "stored_file_bytes"),
 				)
 				.first();
 			return { node, quota };
@@ -4601,7 +4612,7 @@ describe("files upload-urls", () => {
 			const quota = await ctx.db
 				.query("quotas")
 				.withIndex("by_workspace_quotaName", (q) =>
-					q.eq("workspaceId", db.workspaceId).eq("quotaName", "public_api_upload_bytes"),
+					q.eq("workspaceId", db.workspaceId).eq("quotaName", "stored_file_bytes"),
 				)
 				.first();
 			return { node, quota };
@@ -6000,7 +6011,7 @@ describe("files read-only locks", () => {
 		expect(await find_active_node({ t, db: writer.db, path: "/up/fresh.bin" })).toBeNull();
 		// No quota doc was even seeded: the refusal ran before the quota ensure/charge step.
 		const quota = await t.run(async (ctx) =>
-			(await ctx.db.query("quotas").collect()).find((doc) => doc.quotaName === "public_api_upload_bytes"),
+			(await ctx.db.query("quotas").collect()).find((doc) => doc.quotaName === "stored_file_bytes"),
 		);
 		expect(quota?.usedCount ?? 0).toBe(0);
 
@@ -7634,7 +7645,10 @@ describe("service file writes", () => {
 		enqueueActionSpy.mockRestore();
 		const storedNode = await find_active_node({ t, db, path: "/meetings/meeting-1/notes.md" });
 		expect(storedNode).toMatchObject({
-			writePolicy: { mode: "writer", writers: [{ kind: "service_account", serviceAccountId: service.serviceAccountId }] },
+			writePolicy: {
+				mode: "writer",
+				writers: [{ kind: "service_account", serviceAccountId: service.serviceAccountId }],
+			},
 		});
 
 		// The created file has the plugin label, and the live upload target lets this service pass its lock.

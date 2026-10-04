@@ -67,6 +67,7 @@ import { files_yjs_doc_create_from_array_buffer_update } from "../shared/files-y
 import { files_headless_tiptap_editor_create, files_yjs_doc_get_text } from "../shared/files-tiptap.ts";
 import { files_media_parse_src } from "../shared/files-media.ts";
 import { billing_db_check_credits, billing_pick_billed_user_id } from "./billing_db.ts";
+import { files_stored_uploads_cost_cents } from "./files_stored_uploads.ts";
 import { r2_fetch_object_from_bucket } from "./r2_client.ts";
 import { files_visible_db_create_reader } from "./files_visible.ts";
 import {
@@ -3359,7 +3360,7 @@ export const commit_unit = internalMutation({
 
 			// Signed-in events do not debit the local meter. Check this unit's full cost before any write.
 			const costByPayer = new Map<Id<"users">, number>();
-			for (const { item } of contentItems) {
+			for (const { item, proposal } of contentItems) {
 				const prepared = item.prepared;
 				if (!prepared) refuse_unit("preparing", "A reviewed file is still preparing.");
 				if (
@@ -3367,7 +3368,13 @@ export const commit_unit = internalMutation({
 					(prepared.kind === "saved_asset" && !prepared.publish)
 				)
 					continue;
-				costByPayer.set(prepared.billedUserId, (costByPayer.get(prepared.billedUserId) ?? 0) + 1);
+				const cost =
+					prepared.kind === "replacement" && prepared.yjsRootKind === undefined
+						? files_stored_uploads_cost_cents(prepared.contentSize)
+						: prepared.kind === "private" && proposal.createIntent?.kind === "stored"
+							? files_stored_uploads_cost_cents(proposal.createIntent.size)
+							: 1;
+				costByPayer.set(prepared.billedUserId, (costByPayer.get(prepared.billedUserId) ?? 0) + cost);
 			}
 
 			for (const [userId, minimumRequiredCents] of costByPayer) {

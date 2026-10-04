@@ -1,0 +1,119 @@
+@layer components {
+	.ChannelsMessage {
+		position: relative;
+		display: grid;
+		grid-template-columns: 36px minmax(0, 1fr);
+		gap: 12px;
+		padding: 12px 20px;
+		font-size: 1rem;
+		color: var(--color-fg-11);
+		&:hover,
+		&:focus-within {
+			background: var(--color-base-1-03);
+		}
+		&:focus-visible {
+			outline: 2px solid var(--color-accent-07);
+			outline-offset: -2px;
+		}
+		&[data-grouped="true"] {
+			padding-block: 4px;
+		}
+	}
+	.ChannelsMessage-avatar {
+		width: 36px;
+		height: 36px;
+	}
+	.ChannelsMessage-content {
+		grid-column: 2;
+		min-width: 0;
+		display: grid;
+		gap: 6px;
+		> .AiChatMarkdown {
+			font-size: 1rem;
+		}
+	}
+	.ChannelsMessage-header {
+		display: flex;
+		gap: 8px;
+		align-items: baseline;
+		flex-wrap: wrap;
+		> strong {
+			min-width: 0;
+			overflow-wrap: anywhere;
+		}
+		> time,
+		> span {
+			color: var(--color-fg-08);
+			font-size: 0.8125rem;
+		}
+	}
+	.ChannelsMessage-actions {
+		position: absolute;
+		right: 12px;
+		top: -10px;
+		display: flex;
+		border: 1px solid var(--color-base-alt-1-09);
+		border-radius: 6px;
+		background: var(--color-base-alt-1-05);
+		opacity: 0;
+	}
+	.ChannelsMessage:hover > .ChannelsMessage-actions,
+	.ChannelsMessage:focus-within > .ChannelsMessage-actions {
+		opacity: 1;
+	}
+	.ChannelsMessage-reply {
+		justify-self: start;
+		min-width: 0;
+		max-width: 100%;
+		font-size: 0.875rem;
+		color: var(--color-fg-08);
+		> span {
+			min-width: 0;
+			overflow: hidden;
+			text-overflow: ellipsis;
+			white-space: nowrap;
+		}
+	}
+	.ChannelsMessage-attachments,
+	.ChannelsMessage-reactions {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 4px;
+	}
+	.ChannelsMessage-attachments > a,
+	.ChannelsMessage-attachments > span {
+		padding: 4px 8px;
+		border: 1px solid var(--color-base-alt-1-09);
+		border-radius: 6px;
+		font-size: 0.875rem;
+	}
+	.ChannelsMessage-reactions [aria-pressed="true"] {
+		background: var(--color-base-1-05);
+		outline: 1px solid var(--color-accent-07);
+	}
+	.ChannelsMessage-deleted {
+		color: var(--color-fg-06);
+		font-style: italic;
+	}
+	.ChannelsMessage-thread {
+		justify-self: start;
+		max-width: 100%;
+		flex-wrap: wrap;
+		white-space: normal;
+		color: var(--color-fg-09);
+		font-size: 0.875rem;
+	}
+	.ChannelsMessageReplier {
+		width: 20px;
+		height: 20px;
+		font-size: 13px;
+	}
+	@media (hover: none) {
+		.ChannelsMessage-actions {
+			position: static;
+			opacity: 1;
+			grid-column: 2;
+			justify-self: end;
+		}
+	}
+}

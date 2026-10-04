@@ -186,8 +186,7 @@ describe("tenant deletion with many direct file grants", () => {
 					workspaceId: fixture.personalMembership.workspaceId,
 				}),
 			).toMatchObject({ _id: fixture.personalMembership.membershipId, active: true });
-			// convex-test updates every files_nodes index in memory on each write. With the folder table sort
-			// indexes, seeding and deleting 5,400 folders takes about 75 s alone and more in a full run.
-		}, 240_000);
+			// Updating every in-memory file index makes this large fixture slow in a full run.
+		}, 600_000);
 	}
 });

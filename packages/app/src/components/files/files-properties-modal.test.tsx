@@ -566,7 +566,8 @@ describe("FilesPropertiesModalCollaboration", () => {
 		expect(mutationMock).not.toHaveBeenCalled();
 		const warning = screen.getByRole("dialog", { name: "Turn collaboration off?" }).textContent ?? "";
 		expect(warning).toContain("edit history");
-		expect(warning).toContain("comments on text are deleted for everyone");
+		expect(warning).toContain("comment marks are removed for everyone");
+		expect(warning).toContain("Comments and saved versions are kept");
 		// The box still shows the state the server has, not the one the click asked for.
 		expect(collaborationCheckbox().checked).toBe(true);
 

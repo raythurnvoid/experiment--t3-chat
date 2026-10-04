@@ -11,8 +11,7 @@ description: Persisted per-user, per-organization, and per-workspace quota count
 	- `userId` plus `quotaName: "extra_organizations"` for user-level organization creation quota
 	- `organizationId` plus `quotaName: "extra_workspaces"` for organization-level workspace creation quota
 	- `userId`, `organizationId`, and `workspaceId` plus `quotaName: "active_api_credentials"` for a user's active API keys in one workspace
-	- `organizationId` plus `workspaceId` plus `quotaName: "public_api_upload_bytes"` for the workspace's declared upload bytes through the public API
-	- `organizationId` plus `workspaceId` plus `quotaName: "plugin_service_storage_bytes"` for the workspace's plugin service upload storage
+	- `organizationId`, `workspaceId`, and `quotaName: "stored_file_bytes"` for confirmed stored-file bytes
 	- `userId`, `organizationId`, and `workspaceId` for `files_private_user_bytes` and `files_private_nodes`
 	- `organizationId` plus `workspaceId` for `files_private_workspace_bytes`
 	- `userId`, `organizationId`, and `workspaceId` for `ai_chat_output_user_bytes`; `organizationId` plus `workspaceId` for `ai_chat_output_workspace_bytes` and `ai_chat_output_workspace_objects`
@@ -20,8 +19,7 @@ description: Persisted per-user, per-organization, and per-workspace quota count
 	- each user gets `personal` plus at most **2** extra organizations (**3** total organizations)
 	- each organization gets `home` plus at most **5** extra workspaces (**6** total workspaces)
 	- each user can have at most **20** active API keys in one workspace
-	- each workspace gets a **50 GB** budget of declared upload bytes through the public API; the counter only grows (deleting files does not give bytes back)
-	- each workspace gets **10 GiB** of plugin service storage; this counter only grows, exactly like `public_api_upload_bytes` — deleting a service-uploaded file gives nothing back (see `../public-api/SKILL.md#service-upload-routes`)
+	- `stored_file_bytes` starts at **10 GiB** per workspace. It is a safety cap. Raise it step by step as needed. Deleting or archiving files gives no bytes back.
 	- private prepared content has **1 GiB** per user/workspace and **5 GiB** per workspace; each user/workspace also has **10,000** private new-node slots. These are live capacity counters. Saving or confirmed deletion returns capacity.
 - Default entities do **not** consume quota usage:
 	- default organization `personal`
@@ -38,7 +36,7 @@ description: Persisted per-user, per-organization, and per-workspace quota count
 	- recomputes `usedCount` from live docs
 	- substitutes code `maxCount` defaults when a quota doc is missing
 - Missing required quota docs in write flows should fail intentionally via `should_never_happen(...)` so bootstrap bugs stay visible.
-- Exception: upload and private storage counters have no bootstrap owner, so the first consumer seeds them with `quotas_db_ensure`. A missing doc means nothing was consumed yet, and the public `quotas.get` arm returns the doc or `null` instead of failing. Private storage uses `files_private_storage_db_reserve`; the existing public upload and service upload doors still seed their own counters.
+- Exception: upload and private storage counters have no bootstrap owner, so the first consumer seeds them with `quotas_db_ensure`. A missing doc means nothing was consumed yet, and the public `quotas.get` arm returns the doc or `null` instead of failing. Private storage uses `files_private_storage_db_reserve`. Stored-file admission reads a missing counter as zero without writing. Settlement seeds it when charged bytes publish.
 - Public quota queries may return `null` for stale identities or unauthorized quota scopes. Missing quota docs for authorized scopes fail intentionally.
 
 # Schema
@@ -64,8 +62,7 @@ description: Persisted per-user, per-organization, and per-workspace quota count
 	- `quotas.extra_organizations`
 	- `quotas.extra_workspaces`
 	- `quotas.active_api_credentials`
-	- `quotas.public_api_upload_bytes`
-	- `quotas.plugin_service_storage_bytes`
+	- `quotas.stored_file_bytes`
 	- `quotas.files_private_user_bytes`
 	- `quotas.files_private_workspace_bytes`
 	- `quotas.files_private_nodes`
@@ -97,20 +94,16 @@ description: Persisted per-user, per-organization, and per-workspace quota count
 - `public_api.api_credential_rotate` revokes one credential and creates one credential in the same mutation, so the active counter does not change.
 - Do not count active credential docs at create time. The persisted quota is the runtime source of truth.
 
-## Public API upload minting
+## Stored-file admission and settlement
 
-- Before this quota is touched at all, `public_api.create_file_upload_targets` refuses a workspace that does not pay for usage, exactly like the service route below: `billing_db_check_paid_plan` on the billed user, `"This workspace's plan does not include file uploads"` → 403 for `Free`, for an anonymous payer, and for a payer with no billing state. A refusing mutation still commits what it already wrote, so that gate must run before the lazy seeding below. A test asserts the refused call leaves no quota doc behind, which is what pins the order.
-- `public_api.create_file_upload_targets` (the mutation behind `/api/v1/files/upload-urls`) ensures the workspace `"public_api_upload_bytes"` quota lazily with `quotas_db_ensure`, refuses the whole batch when the declared bytes would cross `maxCount`, and consumes them in the same mutation that creates the nodes and assets.
-- The counter is monotonic on purpose: deleting files does not decrement it. It is a coarse declared-bytes ceiling, not an exact storage meter (the finalizer records the real object size without refunding the difference).
-
-## Plugin service upload storage
-
-- Before this quota is touched at all, `public_api_service_uploads.create_upload_target` refuses a workspace that does not pay for usage: `billing_db_check_paid_plan` on the billed user, `plan_required` → 403 for `Free`, for an anonymous payer, and for a payer with no billing state. A refusing mutation still commits what it already wrote, so that gate must run before the lazy seeding below. The gate is the door that stops an upload; this quota can only bill one.
-- `public_api_service_uploads.create_upload_target` ensures the workspace `"plugin_service_storage_bytes"` quota lazily and charges nothing. The `size` in the request is only the service's guess, and a signed PUT does not bind how many bytes actually arrive, so billing it would charge a number nobody can be held to. The door only refuses a workspace whose `usedCount` already reached `maxCount` (`storage_full` → 403), which stops the next file rather than the current one.
-- This counter only grows, exactly like `public_api_upload_bytes`. Nothing refunds: not an upload the service abandoned, not a cancelled placeholder, not archiving a committed service file, and not a later physical deletion of its canonical R2 object. The service `delete` route archives committed files and releases their target tombstones. It hard-deletes only pending placeholders.
-- The R2 event is what charges. It settles the target and bills the confirmed stored size, so `usedCount` may exceed `maxCount` (precedent: the forced ownership handoff above). A signed PUT does not bind the object's length, so the quota can only bill what was stored, never prevent it. Finalize reports this settlement and can reconcile an older canonical asset.
-- `chargedBytes` is the largest stored object confirmed across a logical target's accepted attempts. The quota charges only a positive increase. `actualBytes` is the winning file's exact size, or null before publication. Late superseded or cancelled attempts can raise `chargedBytes` after a newer file commits, but cannot change `actualBytes` or emit another file-save event. For A=12 MB and newer B=5 MB, the quota is charged for 12 MB and finalize reports 5 MB in either event order. Nothing refunds bytes.
-- `plugin_service_storage_attempts` receipts retain each old asset's target after the asset is deleted. Target and receipt tombstones remain until workspace purge. Preserve existing quota totals when backfilling `chargedBytes`; older target retirement may have removed charged target docs, so surviving docs are not the complete historical total. A target whose uploads never reached R2 has charged nothing.
+- All stored-file paths use `convex/files_stored_uploads.ts`: Files uploads, public API uploads, service uploads, browser downloads, stored producer output, copies, and stored snapshot restores.
+- Admission checks the payer's paid plan before any node, asset, or quota write. It accepts safe integer sizes from zero through 2 GiB. Service uploads require at least one byte.
+- Admission checks the full accepted batch's declared bytes against remaining `stored_file_bytes` capacity. Skipped conflicts use no capacity. It reserves and charges nothing.
+- Settlement checks real bytes against declared bytes before publication. A larger object is deleted and never published. Service finalize returns `oversized_upload` → HTTP 409.
+- Valid publication adds real bytes and emits one `file_upload` event in the same transaction. Accepted uploads may settle after the cap fills. Publication receipts guard both the event and counter from replay.
+- Late superseded or canceled service attempts only queue exact-key deletion. They add no bytes and emit no event. `chargedBytes` records the winning target's counted size; `actualBytes` records its published size.
+- Operator imports alone may mint `uploadBillingExempt: true`. They still check size, but add no bytes and emit no event. Text saves keep `file_save` and do not read this cap.
+- A new cap in `shared/quotas.ts` applies to new docs. Raising an existing cap also needs an audited update of that doc's `maxCount`. Never recalculate `usedCount` from current files.
 
 ## Private prepared storage
 
@@ -124,7 +117,7 @@ description: Persisted per-user, per-organization, and per-workspace quota count
 - Account and tenant cleanup use `quotas_db_delete`. A private quota with held receipts gets `retiredAt`; the normal cleanup index then skips it. Final settlement deletes a retired counter only when no held resources remain, including zero-byte resources. Cleanup uses the retained quota IDs after the user or workspace is gone.
 - Account and workspace purge remove private proposals, pages, inputs, batches, and private identities before releasing their DB storage holds. Children go before private parents. Failed Save assets go to exact-key deletion jobs with their last upload deadline. Their bytes remain held until remote deletion settles. Published files are outside user-private cleanup.
 - A recovered account or preserved reset workspace may use the same scope again. `quotas_db_ensure` reuses and reactivates its retained quota, including bytes still awaiting deletion. It never starts a second zero counter while the old hold remains.
-- Byte counts cover payloads, not database encoding or index overhead. Private storage limits are separate from usage billing and the monotonic public/service upload quotas.
+- Byte counts cover payloads, not database encoding or index overhead. Private storage limits are separate from usage billing and the monotonic stored-file counter.
 
 ## Chat stored tool output
 
@@ -137,7 +130,7 @@ description: Persisted per-user, per-organization, and per-workspace quota count
 ## Delete flows
 
 - `delete_workspace` reads the organization extra-workspace quota and decrements `usedCount` directly when deleting a non-default workspace.
-- The immediate `delete_workspace` phase deletes active API credential quota docs but keeps `public_api_upload_bytes` and `plugin_service_storage_bytes` through retention. The queued content purge deletes those two budgets only after service targets, assets, and files are gone, so late accepted R2 events can still settle first. Internal workspace structural deletion removes any remaining workspace quota docs. Admin data-only reset keeps the current user's active API credential quota doc and sets its `usedCount` to `0`, while the content purge removes the two upload budgets so their next use starts fresh.
+- Immediate workspace deletion keeps `stored_file_bytes` through retention. Content purge removes it after targets, assets, and files are gone. A data-only reset also removes it, so the next charged publication starts at zero.
 - `delete_organization` reads the owner from `organizations.ownerUserId`, decrements that owner's extra-organization quota directly, and defers deleting the organization quota doc until `data_deletion.process_organization_deletion_request`.
 - Account deletion uses the same direct owner quota decrement when the backend queues a still-owned organization for deletion instead of the frontend transferring it first.
 - `data_deletion.process_organization_deletion_request` and `data_deletion.process_user_deletion_request` delete their scoped quota docs, except private counters retained for outstanding cleanup as described above.
@@ -156,8 +149,7 @@ description: Persisted per-user, per-organization, and per-workspace quota count
 - Use `api.quotas.get({ quotaName: "extra_organizations", userId })` for user quotas.
 - Use `api.quotas.get({ quotaName: "extra_workspaces", organizationId })` for organization quotas.
 - Use `api.quotas.get({ quotaName: "active_api_credentials", membershipId })` for the current user's active API credential quota in that membership's workspace.
-- Use `api.quotas.get({ quotaName: "public_api_upload_bytes", membershipId })` for that membership workspace's declared upload-byte budget; it returns `null` until the first mint seeds the doc.
-- Use `api.quotas.get({ quotaName: "plugin_service_storage_bytes", membershipId })` for that membership workspace's plugin service storage; it returns `null` until the first upload target seeds the doc.
+- Use `api.quotas.get({ quotaName: "stored_file_bytes", membershipId })` for confirmed stored bytes. It returns `null` until the first charged publication.
 - The three `files_private_*` quotas and the three `ai_chat_output_*` quotas also take `membershipId` and return `null` before first use. User quotas always resolve the authenticated user; workspace bytes require the caller's active membership. Passing another user's membership cannot reveal that user's counter.
 - Returned objects are the persisted quota docs. Frontend callers derive remaining capacity from `usedCount` and `maxCount`, and use `packages/app/shared/quotas.ts` for quota-specific display copy.
 
@@ -165,7 +157,7 @@ description: Persisted per-user, per-organization, and per-workspace quota count
 
 - Main coverage lives in `packages/app/convex/organizations.test.ts`.
 - API credential counter coverage lives in `packages/app/convex/public_api.test.ts`.
-- Plugin service storage quota coverage (create charges nothing, full-workspace refusal, R2 event settlement, late-event billing, deletion settlement, and abandoned-placeholder cleanup) lives in `packages/app/convex/public_api_service_uploads.test.ts`.
+- Shared admission and settlement tests live in `convex/files_stored_uploads.test.ts`. Each upload door also tests admission, publication, and replay. Service tests cover terminal oversized refusal and late-attempt cleanup.
 - Account-deletion quota behavior is also covered in `packages/app/convex/data_deletion.test.ts` and `packages/app/convex/users.test.ts`.
 - Tests and setup must seed quota docs through `quotas_db_ensure(...)` or the real user/membership bootstrap path before exercising the related quota write flow.
 - Focused verification for this feature is:

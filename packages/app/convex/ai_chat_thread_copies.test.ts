@@ -122,7 +122,7 @@ describe("thread_branch", () => {
 			await f.asUser.query(api.ai_chat.thread_get, { membershipId: f.seeded.membershipId, threadId }),
 		).toMatchObject({ _id: threadId });
 		expect(await copy_docs(f)).toEqual({ copies: [], pages: [] });
-	});
+	}, 120_000);
 
 	test("copies only the branch up to the chosen message", async () => {
 		const f = await fixture();

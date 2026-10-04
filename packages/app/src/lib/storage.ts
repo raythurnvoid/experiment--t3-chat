@@ -231,6 +231,35 @@ const storage_local_schema = {
 		serialize: (value) => value,
 		defaultValue: null,
 	}),
+
+	"app_state::channels_last_open::scope::${membershipId}": define_field<
+		`app_state::channels_last_open::scope::${string}`,
+		string | null
+	>({
+		parse: (value) => value,
+		serialize: (value) => value,
+		defaultValue: null,
+	}),
+
+	"app_state::channels_drafts::scope::${membershipId}": define_field<
+		`app_state::channels_drafts::scope::${string}`,
+		Record<string, string>
+	>({
+		parse: (raw) => {
+			try {
+				const value: unknown = JSON.parse(raw ?? "{}");
+				if (typeof value !== "object" || value === null || Array.isArray(value)) return {};
+				return Object.fromEntries(
+					Object.entries(value).filter(([key, draft]) => key.length > 0 && typeof draft === "string"),
+				);
+			} catch {
+				return {};
+			}
+		},
+		serialize: (value) => JSON.stringify(value),
+		defaultValue: {},
+		equals: (left, right) => left === right || objects_equal_deep(left, right),
+	}),
 } as const;
 
 /**

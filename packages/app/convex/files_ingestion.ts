@@ -13,6 +13,7 @@ import { files_db_expire_pending_update_operation_batch, files_db_get_pending_up
 import { files_editable_text_shape_of, files_normalize_content_type } from "../shared/files.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import { billing_db_check_paid_plan, billing_pick_billed_user_id } from "./billing_db.ts";
+import { files_stored_uploads_db_admit } from "./files_stored_uploads.ts";
 import { organizations_db_get_membership } from "./organizations.ts";
 import { files_nodes_db_create_private_node_by_path, files_nodes_db_plan_private_node_by_path } from "./files_nodes.ts";
 import { files_pending_nodes_db_discard, files_pending_nodes_db_resolve_read_target } from "./files_pending_nodes.ts";
@@ -344,8 +345,20 @@ export async function files_ingestion_db_prepare_file(
 		return Result({ _yay: prepared_result(existing) });
 	}
 
-	const writable = await authorize_write(ctx, args);
-	if (writable._nay) return writable;
+	if (args.content.kind === "text") {
+		const writable = await authorize_write(ctx, args);
+		if (writable._nay) return writable;
+	} else {
+		const organization = await ctx.db.get("organizations", args.organizationId);
+		if (!organization) return Result({ _nay: { message: "Unauthorized" } });
+		const admission = await files_stored_uploads_db_admit(ctx, {
+			organization,
+			actorUserId: args.userId,
+			workspaceId: args.workspaceId,
+			declaredBytes: [args.size],
+		});
+		if (admission._nay) return admission;
+	}
 
 	if (beforeCreate) {
 		const checked = await beforeCreate();

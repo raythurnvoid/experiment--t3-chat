@@ -327,6 +327,146 @@ const test_plan_product_ids: Record<keyof typeof billing_PRODUCTS, string> = {
 };
 
 export const test_mocks_fill_db_with = {
+	/** A saved file comment for deletion tests, without running the live send door. */
+	file_comment: async (
+		ctx: MutationCtx,
+		args: {
+			organizationId: Id<"organizations">;
+			workspaceId: Id<"organizations_workspaces">;
+			userId: Id<"users">;
+			fileNodeId: Id<"files_nodes">;
+			body: string;
+		},
+	) => {
+		const { organizationId, workspaceId, userId, fileNodeId, body } = args;
+		const now = Date.now();
+		const channelId = await ctx.db.insert("channels", {
+			kind: "file",
+			organizationId,
+			workspaceId,
+			fileNodeId,
+			createdBy: userId,
+			createdAt: now,
+		});
+		await ctx.db.insert("channels_activity", {
+			channelId,
+			organizationId,
+			workspaceId,
+			lastMainSequence: 0,
+			lastChannelSequence: 1,
+			lastMessageAt: now,
+			memberCount: 1,
+		});
+		const rootMessageId = await ctx.db.insert("channels_messages", {
+			channelId,
+			organizationId,
+			workspaceId,
+			authorUserId: userId,
+			channelSequence: 1,
+			mainSequence: null,
+			threadRootId: null,
+			threadSequence: null,
+			replyTo: null,
+			body,
+			mentionUserIds: [],
+			fileMentionIds: [],
+			fileQuotes: [],
+			attachments: [],
+			hasAttachments: false,
+			clientMessageId: crypto.randomUUID(),
+			revision: 0,
+			editedAt: null,
+			deletedAt: null,
+		});
+		const threadId = await ctx.db.insert("channels_threads", {
+			channelId,
+			organizationId,
+			workspaceId,
+			rootMessageId,
+			title: null,
+			anchor: null,
+			lastReplySequence: 0,
+			lastActivitySequence: 1,
+			replyCount: 0,
+			recentReplierUserIds: [],
+			lastActivityAt: now,
+			isResolved: false,
+			resolvedAt: null,
+			resolvedBy: null,
+			followerSyncPending: false,
+		});
+		const membership = await ctx.db
+			.query("organizations_workspaces_users")
+			.withIndex("by_workspace_user_active", (q) =>
+				q.eq("workspaceId", workspaceId).eq("userId", userId).eq("active", true),
+			)
+			.unique();
+		if (!membership) throw new Error("The file-comment fixture needs a workspace membership");
+		await Promise.all([
+			ctx.db.insert("channels_members", {
+				channelId,
+				organizationId,
+				workspaceId,
+				userId,
+				workspaceMembershipId: membership._id,
+				level: "member",
+				addedBy: null,
+				notify: "mentions",
+				starred: false,
+				hiddenAtMainSequence: null,
+				joinedAt: now,
+			}),
+			ctx.db.insert("channels_read_states", {
+				channelId,
+				organizationId,
+				workspaceId,
+				userId,
+				readSequence: 0,
+				updatedAt: now,
+			}),
+			ctx.db.insert("channels_thread_followers", {
+				threadId,
+				rootMessageId,
+				channelId,
+				organizationId,
+				workspaceId,
+				userId,
+				readReplySequence: 0,
+				following: true,
+				pendingRootMention: false,
+				threadLastActivityAt: now,
+				followedAt: now,
+			}),
+			ctx.db.insert("channels_reactions", {
+				channelId,
+				organizationId,
+				workspaceId,
+				userId,
+				messageId: rootMessageId,
+				emoji: "👍",
+			}),
+			ctx.db.insert("channels_reaction_counts", {
+				organizationId,
+				workspaceId,
+				messageId: rootMessageId,
+				emoji: "👍",
+				count: 1,
+			}),
+			ctx.db.insert("channels_inbox", {
+				recipientUserId: userId,
+				organizationId,
+				workspaceId,
+				channelId,
+				messageId: rootMessageId,
+				kind: "mention",
+				mainSequence: null,
+				threadRootId: rootMessageId,
+				threadSequence: 0,
+				createdAt: now,
+			}),
+		]);
+		return { channelId, rootMessageId };
+	},
 	/**
 	 * Put one user on a plan: a synced Polar product plus the usage snapshot that points at it.
 	 * This is what the billing gates read.

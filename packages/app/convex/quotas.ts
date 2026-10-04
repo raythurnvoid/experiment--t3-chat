@@ -33,8 +33,7 @@ type QuotaScope =
 	  }
 	| {
 			quotaName:
-				| "public_api_upload_bytes"
-				| "plugin_service_storage_bytes"
+				| "stored_file_bytes"
 				| "files_private_workspace_bytes"
 				| "ai_chat_output_workspace_bytes"
 				| "ai_chat_output_workspace_objects";
@@ -260,8 +259,7 @@ export const get = query({
 
 		// Upload, private storage and chat output counters start at their first use.
 		if (
-			args.quotaName === "public_api_upload_bytes" ||
-			args.quotaName === "plugin_service_storage_bytes" ||
+			args.quotaName === "stored_file_bytes" ||
 			args.quotaName === "files_private_workspace_bytes" ||
 			args.quotaName === "ai_chat_output_workspace_bytes" ||
 			args.quotaName === "ai_chat_output_workspace_objects"

@@ -711,12 +711,14 @@ const FilesPropertiesModalWritePolicy = memo(function FilesPropertiesModalWriteP
 				groupId: policyGroupId,
 				running: isRunning,
 				groupKind: "policy",
-				writerPicker: <FilesPropertiesModalWriterSummary
-					writers={choice.writers}
-					hiddenWriterCount={policy_hidden_writer_count(savedPolicy)}
-					disabled={!canManage || isRunning}
-					onManage={() => setWritersDialog("policy")}
-				/>,
+				writerPicker: (
+					<FilesPropertiesModalWriterSummary
+						writers={choice.writers}
+						hiddenWriterCount={policy_hidden_writer_count(savedPolicy)}
+						disabled={!canManage || isRunning}
+						onManage={() => setWritersDialog("policy")}
+					/>
+				),
 			})}
 			{error ? (
 				<p
@@ -737,12 +739,14 @@ const FilesPropertiesModalWritePolicy = memo(function FilesPropertiesModalWriteP
 						groupId: defaultGroupId,
 						running: isDefaultRunning,
 						groupKind: "default",
-						writerPicker: <FilesPropertiesModalWriterSummary
-							writers={defaultChoice.writers}
-							hiddenWriterCount={policy_hidden_writer_count(savedDefault)}
-							disabled={!canManage || isDefaultRunning}
-							onManage={() => setWritersDialog("default")}
-						/>,
+						writerPicker: (
+							<FilesPropertiesModalWriterSummary
+								writers={defaultChoice.writers}
+								hiddenWriterCount={policy_hidden_writer_count(savedDefault)}
+								disabled={!canManage || isDefaultRunning}
+								onManage={() => setWritersDialog("default")}
+							/>
+						),
 					})}
 					{/* Copying the rule onto the items already inside is one step of the next Save, not a setting
 					    that stays on. Do not disable the box while the job starts, or the browser throws a
@@ -931,7 +935,7 @@ const FilesPropertiesModalCollaboration = memo(function FilesPropertiesModalColl
 		setError(null);
 
 		// Turning it on loses nothing, so it needs no confirm step. Turning it off deletes the shared
-		// edit history and the text comments, so it asks first.
+		// edit history and the comment marks, so it asks first.
 		if (checked) {
 			runToggle(true);
 		} else {
@@ -1036,7 +1040,7 @@ const FilesPropertiesModalCollaboration = memo(function FilesPropertiesModalColl
 									"FilesPropertiesModalCollaboration-confirm-text" satisfies FilesPropertiesModalCollaboration_ClassNames
 								}
 							>
-								The edit history and the comments on text are deleted for everyone. Saved versions are kept.
+								The edit history and comment marks are removed for everyone. Comments and saved versions are kept.
 							</p>
 							{/* A failed write keeps this dialog open, so show the error here, not behind it. */}
 							{error ? (

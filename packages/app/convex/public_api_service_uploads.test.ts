@@ -10,6 +10,8 @@ import {
 } from "./access_control.ts";
 import { files_metadata_db_read_entry } from "./files_metadata.ts";
 import { files_nodes_db_create_node_recursively_at_path } from "./files_nodes.ts";
+import { quotas_db_ensure } from "./quotas.ts";
+import { quotas } from "../shared/quotas.ts";
 import { public_api_service_uploads_db_drain_batch } from "./public_api_service_uploads.ts";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import { billing_PRODUCTS } from "../shared/billing.ts";
@@ -281,7 +283,7 @@ async function read_quota(t: ReturnType<typeof test_convex>, fixture: Awaited<Re
 		return await ctx.db
 			.query("quotas")
 			.withIndex("by_workspace_quotaName", (q) =>
-				q.eq("workspaceId", fixture.workspaceId).eq("quotaName", "plugin_service_storage_bytes"),
+				q.eq("workspaceId", fixture.workspaceId).eq("quotaName", "stored_file_bytes"),
 			)
 			.first();
 	});
@@ -294,8 +296,10 @@ async function set_quota_used(args: {
 }) {
 	const { t, fixture, usedCount } = args;
 
-	const quota = await read_quota(t, fixture);
-	await t.run(async (ctx) => await ctx.db.patch("quotas", quota!._id, { usedCount }));
+	await t.run(async (ctx) => {
+		const quotaId = await quotas_db_ensure(ctx, { ...fixture, quotaName: "stored_file_bytes", now: Date.now() });
+		await ctx.db.patch("quotas", quotaId, { usedCount });
+	});
 }
 
 async function read_targets(t: ReturnType<typeof test_convex>) {
@@ -770,7 +774,7 @@ describe("service upload authorization", () => {
 });
 
 describe("service upload plan gate", () => {
-	const PLAN_REFUSAL = "This workspace's plan does not include plugin service file storage";
+	const PLAN_REFUSAL = "This workspace's plan does not include file uploads";
 
 	test("refuses a target when the payer is on Free, and writes nothing", async () => {
 		const t = test_convex();
@@ -889,7 +893,7 @@ describe("service upload plan gate", () => {
 		expect(await read_targets(t)).toHaveLength(1);
 	});
 
-	test("an accepted upload still remints and finalizes after the plan drops to Free", async () => {
+	test("an accepted upload finalizes after a downgrade, while remint needs a paid plan", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
 		const sealed = await seal_token({ t, fixture });
@@ -907,7 +911,7 @@ describe("service upload plan gate", () => {
 					body: { idempotencyKey: "meeting-1", targetKey: "recording" },
 				})
 			).status,
-		).toBe(200);
+		).toBe(403);
 		const target = (await read_targets(t))[0]!;
 		await simulate_finalizer({ t, fixture, target, size: 3 * MIB });
 		const finalized = await call({
@@ -937,17 +941,78 @@ describe("service upload plan gate", () => {
 });
 
 describe("service upload quota", () => {
-	test("creating a target charges nothing and refuses only a workspace that is already full", async () => {
+	test("releases an oversized target without charging and allows a fresh key", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const sealed = await seal_token({ t, fixture });
+		const body = target_body({ size: MIB });
+		expect((await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body })).status).toBe(200);
+		const target = (await read_targets(t))[0]!;
+		const meterBefore = await read_meter(t, fixture);
+		const key = await simulate_finalizer({ t, fixture, target, size: 2 * MIB });
+		expect((await read_targets(t))[0]).toMatchObject({
+			state: "released",
+			releaseReason: "oversized",
+			chargedBytes: 0,
+			actualBytes: null,
+		});
+		expect(await t.run((ctx) => ctx.db.get("files_nodes", target.nodeId))).toBeNull();
+		expect(await t.run((ctx) => ctx.db.get("files_r2_assets", target.assetId))).toBeNull();
+		expect(
+			await t.run((ctx) =>
+				ctx.db
+					.query("files_r2_object_deletion_jobs")
+					.withIndex("by_r2_key", (q) => q.eq("r2Key", key))
+					.first(),
+			),
+		).toMatchObject({ reason: "untracked_asset_event", putMayArriveUntil: expect.any(Number) });
+		expect(await read_quota(t, fixture)).toBeNull();
+		expect(await read_meter(t, fixture)).toEqual(meterBefore);
+		for (let replay = 0; replay < 2; replay += 1) {
+			const finalized = await call({
+				t,
+				path: FINALIZE_PATH,
+				bearer: sealed,
+				body: { idempotencyKey: body.idempotencyKey, targetKey: body.targetKey },
+			});
+			expect(finalized.status).toBe(409);
+			expect(await finalized.json()).toEqual({ message: "The stored file is larger than declared" });
+		}
+		expect(
+			(
+				await call({
+					t,
+					path: REMINT_PATH,
+					bearer: sealed,
+					body: { idempotencyKey: body.idempotencyKey, targetKey: body.targetKey },
+				})
+			).status,
+		).toBe(409);
+		expect(
+			(
+				await call({
+					t,
+					path: CREATE_TARGET_PATH,
+					bearer: sealed,
+					body: { ...body, idempotencyKey: "corrected-size", size: 2 * MIB },
+				})
+			).status,
+		).toBe(200);
+		const fresh = (await read_targets(t)).find((item) => item.idempotencyKey === "corrected-size")!;
+		await simulate_finalizer({ t, fixture, target: fresh, size: 2 * MIB });
+		expect((await read_quota(t, fixture))?.usedCount).toBe(2 * MIB);
+		expect((await read_meter(t, fixture)).balance).toBe(meterBefore.balance - 1);
+	});
+
+	test("creating a target charges nothing and refuses a size that would cross the cap", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
 		const sealed = await seal_token({ t, fixture });
 		expect((await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body: target_body() })).status).toBe(200);
-		// The size in the request is only the service's guess, so this door bills nothing for it.
-		expect((await read_quota(t, fixture))?.usedCount).toBe(0);
+		// Mint checks capacity without creating a counter or billing event.
+		expect(await read_quota(t, fixture)).toBeNull();
 
-		// One byte of room is still room. This door stops the next file, not the current one, so a
-		// declared size that would cross the ceiling is accepted.
-		const ceiling = (await read_quota(t, fixture))!.maxCount;
+		const ceiling = quotas.stored_file_bytes.maxCount;
 		await set_quota_used({ t, fixture, usedCount: ceiling - 1 });
 		expect(
 			(
@@ -963,7 +1028,7 @@ describe("service upload quota", () => {
 					}),
 				})
 			).status,
-		).toBe(200);
+		).toBe(403);
 
 		await set_quota_used({ t, fixture, usedCount: ceiling });
 		const refused = await call({
@@ -980,22 +1045,22 @@ describe("service upload quota", () => {
 		expect(refused.status).toBe(403);
 		// Council's `convex-api.ts` matches this exact text by equality to tell the storage ceiling
 		// apart from other 403s and stop retrying, so a reword here would break its fail-fast.
-		expect(await refused.json()).toEqual({ message: "This workspace has used its plugin service storage" });
-		expect(await read_targets(t)).toHaveLength(2);
+		expect(await refused.json()).toEqual({ message: "This workspace has reached its storage limit" });
+		expect(await read_targets(t)).toHaveLength(1);
 		expect((await read_quota(t, fixture))?.usedCount).toBe(ceiling);
 	});
 
-	test("a stored object bigger than declared is charged in full, even past the ceiling", async () => {
+	test("an accepted object settles once even after another upload fills the cap", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
 		const sealed = await seal_token({ t, fixture });
-		expect((await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body: target_body() })).status).toBe(200);
+		expect(
+			(await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body: target_body({ size: 6 * MIB }) })).status,
+		).toBe(200);
 		const target = (await read_targets(t))[0]!;
 
-		// A signed PUT does not bind the object's length, so the service can always store more than
-		// it declared. Sit one byte under the ceiling to prove the settle charges the stored bytes
-		// instead of refusing them: the quota is a budget, not a guard.
-		const ceiling = (await read_quota(t, fixture))!.maxCount;
+		// Capacity is checked at mint. Accepted bytes can settle after the cap fills.
+		const ceiling = quotas.stored_file_bytes.maxCount;
 		await set_quota_used({ t, fixture, usedCount: ceiling - 1 });
 		const meterBefore = await read_meter(t, fixture);
 		const canonicalKey = await simulate_finalizer({ t, fixture, target, size: 6 * MIB });
@@ -1629,11 +1694,11 @@ describe("service upload targets", () => {
 			expect((await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body })).status).toBe(200);
 		}
 		expect(await read_targets(t)).toHaveLength(16);
-		expect((await read_quota(t, fixture))?.usedCount).toBe(0);
+		expect(await read_quota(t, fixture)).toBeNull();
 
 		// The limit bounds new targets, not idempotent retries of a target already inside the run.
 		expect((await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body: bodies[15] })).status).toBe(200);
-		expect((await read_quota(t, fixture))?.usedCount).toBe(0);
+		expect(await read_quota(t, fixture)).toBeNull();
 
 		const refused = await call({
 			t,
@@ -1649,7 +1714,7 @@ describe("service upload targets", () => {
 		expect(refused.status).toBe(400);
 		expect(await refused.json()).toEqual({ message: "An upload run holds at most 16 targets" });
 		expect(await read_targets(t)).toHaveLength(16);
-		expect((await read_quota(t, fixture))?.usedCount).toBe(0);
+		expect(await read_quota(t, fixture)).toBeNull();
 		expect(await t.run(async (ctx) => ctx.db.query("files_r2_assets").collect())).toHaveLength(16);
 		expect(
 			await t.run(async (ctx) =>
@@ -1696,7 +1761,7 @@ describe("service upload targets", () => {
 		const asset = await t.run(async (ctx) => await ctx.db.get("files_r2_assets", targets[0]!.assetId));
 		expect(asset?.processingWorkId).toBeNull();
 
-		expect((await read_quota(t, fixture))?.usedCount).toBe(0);
+		expect(await read_quota(t, fixture)).toBeNull();
 
 		const replay = await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body });
 		expect(replay.status).toBe(200);
@@ -1704,7 +1769,7 @@ describe("service upload targets", () => {
 		expect(replayBody.state).toBe("pending");
 		expect(replayBody.nodeId).toBe(firstBody.nodeId);
 		expect(await read_targets(t)).toHaveLength(1);
-		expect((await read_quota(t, fixture))?.usedCount).toBe(0);
+		expect(await read_quota(t, fixture)).toBeNull();
 
 		// The same target key describing a different file is a conflict, not a second file.
 		const conflicting = await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body: { ...body, size: 5 * MIB } });
@@ -1830,7 +1895,7 @@ describe("service upload targets", () => {
 				putMayArriveUntil: assetBefore!.uploadUrlExpiresAt! + 5 * 60 * 1000,
 			}),
 		]);
-		expect((await read_quota(t, fixture))?.usedCount).toBe(0);
+		expect(await read_quota(t, fixture)).toBeNull();
 		// The URL window moved forward so the next PUT fits inside it.
 		expect(assets[0]!.uploadUrlExpiresAt).toBeGreaterThanOrEqual(assetBefore!.uploadUrlExpiresAt!);
 	});
@@ -1889,10 +1954,10 @@ describe("service upload targets", () => {
 					state: "pending",
 					assetId: newest.assetId,
 					actualBytes: null,
-					chargedBytes: 12 * MIB,
+					chargedBytes: 0,
 				});
 			}
-			await simulate_finalizer({ t, fixture, target: newest, size: 5 * MIB });
+			await simulate_finalizer({ t, fixture, target: newest, size: 3 * MIB });
 			if (order === "after") {
 				await t.mutation(internal.r2.record_untracked_asset_event, lateEvent);
 			}
@@ -1903,13 +1968,13 @@ describe("service upload targets", () => {
 				nodeId: first.nodeId,
 				assetId: newest.assetId,
 				state: "committed",
-				actualBytes: 5 * MIB,
-				chargedBytes: 12 * MIB,
+				actualBytes: 3 * MIB,
+				chargedBytes: 3 * MIB,
 			});
 			expect(await t.run(async (ctx) => ctx.db.get("files_nodes", first.nodeId))).toMatchObject({
 				assetId: newest.assetId,
 			});
-			expect((await read_quota(t, fixture))?.usedCount).toBe(12 * MIB);
+			expect((await read_quota(t, fixture))?.usedCount).toBe(3 * MIB);
 			expect((await read_meter(t, fixture)).balance).toBe(meterBefore.balance - 1);
 			const finalized = await call({
 				t,
@@ -1920,7 +1985,7 @@ describe("service upload targets", () => {
 					targetKey: body.targetKey,
 				},
 			});
-			expect(await finalized.json()).toMatchObject({ state: "committed", actualBytes: 5 * MIB });
+			expect(await finalized.json()).toMatchObject({ state: "committed", actualBytes: 3 * MIB });
 
 			// Deleting the older object cannot retire the target that now owns the newer file.
 			const oldJob = await t.run(async (ctx) =>
@@ -2015,12 +2080,10 @@ describe("service upload targets", () => {
 			await ctx.db.delete("users", fixture.userId);
 		});
 
-		await expect(simulate_finalizer({ t, fixture, target, size: 3 * MIB })).rejects.toThrow(
-			"billedUserId points to a missing users doc",
-		);
+		await expect(simulate_finalizer({ t, fixture, target, size: 3 * MIB })).rejects.toThrow("Upload payer not found");
 
 		expect((await read_targets(t))[0]).toMatchObject({ state: "pending", actualBytes: null });
-		expect((await read_quota(t, fixture))?.usedCount).toBe(0);
+		expect(await read_quota(t, fixture)).toBeNull();
 	});
 
 	test("deleting the stored object retires the target and keeps its bytes charged", async () => {
@@ -2085,7 +2148,7 @@ describe("service upload targets", () => {
 		expect(finalized.status).toBe(200);
 		expect(((await finalized.json()) as { state: string }).state).toBe("released");
 		// The upload never produced a file and no bytes reached R2, so this target charged nothing.
-		expect((await read_quota(t, fixture))?.usedCount).toBe(0);
+		expect(await read_quota(t, fixture)).toBeNull();
 
 		const reminted = await call({
 			t,
@@ -2119,7 +2182,7 @@ describe("service upload targets", () => {
 		});
 		expect((await read_targets(t))[0]).toMatchObject({ state: "pending" });
 		// No bytes ever reached R2, so this target never charged anything.
-		expect((await read_quota(t, fixture))?.usedCount).toBe(0);
+		expect(await read_quota(t, fixture)).toBeNull();
 
 		const jobs = await t.run(async (ctx) => ctx.db.query("files_r2_object_deletion_jobs").collect());
 		expect(jobs).toHaveLength(1);
@@ -2162,9 +2225,9 @@ describe("service upload targets", () => {
 		);
 
 		// The retry finishes. The stored size R2 confirmed is charged once, here.
-		await simulate_finalizer({ t, fixture, target: targetAfterRemint, size: 6 * MIB });
-		expect((await read_targets(t))[0]).toMatchObject({ state: "committed", actualBytes: 6 * MIB });
-		expect((await read_quota(t, fixture))?.usedCount).toBe(6 * MIB);
+		await simulate_finalizer({ t, fixture, target: targetAfterRemint, size: 3 * MIB });
+		expect((await read_targets(t))[0]).toMatchObject({ state: "committed", actualBytes: 3 * MIB });
+		expect((await read_quota(t, fixture))?.usedCount).toBe(3 * MIB);
 
 		// Workspace deletion drains both attempt receipts before destination and target docs.
 		const drainResults = [];
@@ -2624,7 +2687,7 @@ describe("service upload delete", () => {
 		expect(await t.run(async (ctx) => await ctx.db.get("files_r2_assets", target.assetId))).toBeNull();
 		expect((await read_targets(t))[0]).toMatchObject({ state: "released" });
 		// The upload never finished, so there are no stored bytes to charge.
-		expect((await read_quota(t, fixture))?.usedCount).toBe(0);
+		expect(await read_quota(t, fixture)).toBeNull();
 		// The direct key the signed URL could still create has a deletion job.
 		expect(
 			(await t.run(async (ctx) => await ctx.db.query("files_r2_object_deletion_jobs").collect())).length,
@@ -2671,7 +2734,7 @@ describe("service upload delete", () => {
 			message: "A destination holds at most 16 live targets under one target key",
 		});
 		expect((await read_targets(t)).length).toBe(16);
-		expect((await read_quota(t, fixture))?.usedCount).toBe(0);
+		expect(await read_quota(t, fixture)).toBeNull();
 
 		const deleted = await call({
 			t,
@@ -2696,7 +2759,7 @@ describe("service upload delete", () => {
 		expect((await read_targets(t)).filter((target) => target.state === "pending")).toHaveLength(1);
 	});
 
-	test("charges a larger late R2 object after a pending target was cancelled", async () => {
+	test("deletes a late R2 object after a pending target was cancelled without charging", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
 		const sealed = await seal_token({ t, fixture });
@@ -2757,8 +2820,8 @@ describe("service upload delete", () => {
 			size: 6 * MIB,
 			eventId: "late_service_upload_1",
 		});
-		expect((await read_targets(t))[0]).toMatchObject({ state: "released", actualBytes: null, chargedBytes: 6 * MIB });
-		expect((await read_quota(t, fixture))?.usedCount).toBe(6 * MIB);
+		expect((await read_targets(t))[0]).toMatchObject({ state: "released", actualBytes: null, chargedBytes: 0 });
+		expect(await read_quota(t, fixture)).toBeNull();
 		const refreshedCanonicalJob = await t.run(async (ctx) =>
 			ctx.db
 				.query("files_r2_object_deletion_jobs")
@@ -2772,7 +2835,7 @@ describe("service upload delete", () => {
 		});
 		expect(refreshedCanonicalJob!.putMayArriveUntil).toBeGreaterThanOrEqual(firstCanonicalJob.putMayArriveUntil);
 
-		// A duplicate does not charge twice. A later larger PUT charges only its new excess.
+		// Duplicate and larger late PUTs only refresh cleanup.
 		await t.mutation(internal.r2.record_untracked_asset_event, {
 			bucket: asset.r2Bucket,
 			key: canonicalKey,
@@ -2785,14 +2848,14 @@ describe("service upload delete", () => {
 			size: 8 * MIB,
 			eventId: "late_service_upload_2",
 		});
-		expect((await read_targets(t))[0]).toMatchObject({ state: "released", actualBytes: null, chargedBytes: 8 * MIB });
-		expect((await read_quota(t, fixture))?.usedCount).toBe(8 * MIB);
+		expect((await read_targets(t))[0]).toMatchObject({ state: "released", actualBytes: null, chargedBytes: 0 });
+		expect(await read_quota(t, fixture)).toBeNull();
 
 		// Late bytes on a released target never became a saved file, so no charge lands on the meter.
 		expect(await read_meter(t, fixture)).toEqual(meterBefore);
 	});
 
-	test("charges a late R2 object after the member discarded the pending placeholder", async () => {
+	test("deletes a late R2 object after the member discarded the pending placeholder without charging", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
 		const sealed = await seal_token({ t, fixture });
@@ -2831,8 +2894,8 @@ describe("service upload delete", () => {
 			size: 6 * MIB,
 			eventId: "late_after_member_discard",
 		});
-		expect((await read_targets(t))[0]).toMatchObject({ state: "released", actualBytes: null, chargedBytes: 6 * MIB });
-		expect((await read_quota(t, fixture))?.usedCount).toBe(6 * MIB);
+		expect((await read_targets(t))[0]).toMatchObject({ state: "released", actualBytes: null, chargedBytes: 0 });
+		expect(await read_quota(t, fixture)).toBeNull();
 
 		// Late bytes on a released target never became a saved file, so no charge lands on the meter.
 		expect(await read_meter(t, fixture)).toEqual(meterBefore);
@@ -3016,13 +3079,13 @@ describe("service upload delete", () => {
 
 		// Let the R2 event be the first service-side observer of the move. It must set the sticky fence
 		// while it commits and charges the accepted upload.
-		await simulate_finalizer({ t, fixture, target, size: 6 * MIB });
+		await simulate_finalizer({ t, fixture, target, size: 3 * MIB });
 		expect((await read_targets(t))[0]).toMatchObject({
 			state: "committed",
-			actualBytes: 6 * MIB,
+			actualBytes: 3 * MIB,
 			movedOutAt: expect.any(Number),
 		});
-		expect((await read_quota(t, fixture))?.usedCount).toBe(6 * MIB);
+		expect((await read_quota(t, fixture))?.usedCount).toBe(3 * MIB);
 
 		for (const [path, body] of [
 			[CREATE_TARGET_PATH, target_body()],

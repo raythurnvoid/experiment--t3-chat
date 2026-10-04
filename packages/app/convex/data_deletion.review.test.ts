@@ -595,15 +595,12 @@ async function data_deletion_test_seed_workspace_content_bulk(
 				fileNodeId: aiFileNodeId,
 				bytes: new ArrayBuffer(0),
 			}),
-			ctx.db.insert("chat_messages", {
+			test_mocks_fill_db_with.file_comment(ctx, {
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
 				fileNodeId,
-				threadId: null,
-				parentId: null,
-				isArchived: false,
-				createdBy: args.userId,
-				content: `${args.tag} ${i}`,
+				userId: args.userId,
+				body: `${args.tag} ${i}`,
 			}),
 			ctx.db.insert("api_credentials", {
 				serviceAccountId: null,
@@ -702,7 +699,16 @@ const review_workspace_tables = [
 	"plugins_workspace_installations",
 	"activities",
 	"activities_user_states",
-	"chat_messages",
+	"channels",
+	"channels_activity",
+	"channels_members",
+	"channels_read_states",
+	"channels_messages",
+	"channels_threads",
+	"channels_thread_followers",
+	"channels_reactions",
+	"channels_reaction_counts",
+	"channels_inbox",
 	"files_metadata_docs",
 	"files_plain_text_chunks",
 	"files_text_chunks",
@@ -740,7 +746,7 @@ async function review_seed_all_workspace_content(
 			.collect()
 	).filter((node) => node.path === `/${args.tag}-0.md` || node.path === `/${args.tag}-1.md`);
 	if (nodes.length !== 2) throw new Error("Expected both base fixture files");
-	for (const quotaName of ["public_api_upload_bytes", "plugin_service_storage_bytes"] as const) {
+	for (const quotaName of ["stored_file_bytes"] as const) {
 		const quotaId = await quotas_db_ensure(ctx, { ...tenant, quotaName, now });
 		await ctx.db.patch("quotas", quotaId, { usedCount: 100 });
 	}
@@ -1795,9 +1801,7 @@ for (const path of ["workspace", "organization", "reset"] as const) {
 					.query("quotas")
 					.withIndex("by_workspace_quotaName", (q) => q.eq("workspaceId", seeded.workspaceId))
 					.collect()
-			).filter(
-				(row) => row.quotaName === "public_api_upload_bytes" || row.quotaName === "plugin_service_storage_bytes",
-			),
+			).filter((row) => row.quotaName === "stored_file_bytes"),
 		);
 		expect(quotaRows).toEqual([]);
 		if (path === "organization")
@@ -1965,7 +1969,7 @@ describe("organization structure at batch size one", () => {
 			for (const family of [...seeded.workspaceRows, ...seeded.structure]) {
 				expect(family.ids.length, family.table).toBeGreaterThanOrEqual(2);
 			}
-			for (const quotaName of ["public_api_upload_bytes", "plugin_service_storage_bytes"] as const) {
+			for (const quotaName of ["stored_file_bytes"] as const) {
 				expect(
 					await t.run((ctx) =>
 						ctx.db

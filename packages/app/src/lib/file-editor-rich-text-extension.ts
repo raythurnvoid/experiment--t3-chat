@@ -1,8 +1,7 @@
 // Adapted from `references-submodules/liveblocks/packages/liveblocks-react-tiptap/src/LiveblocksExtension.ts`. Collaboration is
 // backed by Convex, so the presence store and the Yjs provider are passed in by the app instead of coming
-// from a Liveblocks Room. The mentions integration, the thread-error recovery listener, and the
-// thread filtering that the Liveblocks Room provided were dropped. Threads come from Convex, and
-// mentions are not wired to Convex at all.
+// from a Liveblocks Room. File comments use Convex channels and the shared comments extension.
+// People mentions live in the comment composer. Document text has no people mention extension.
 
 import type { AnyExtension } from "@tiptap/core";
 import { Extension, Mark } from "@tiptap/core";

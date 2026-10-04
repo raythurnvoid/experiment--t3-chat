@@ -66,6 +66,7 @@ import {
 import { files_db_patch_pending_update, files_db_get_pending_update } from "../server/files.ts";
 import type { upsert_file_pending_move_in_db_Result } from "./files_pending_updates.ts";
 import { files_metadata_db_read_entries } from "./files_metadata.ts";
+import { files_stored_uploads_db_admit } from "./files_stored_uploads.ts";
 import {
 	files_nodes_content_db_discard_transfer_file_attempt,
 	files_nodes_content_db_discard_transfer_file_capture,
@@ -3478,6 +3479,41 @@ export const advance = internalMutation({
 		}
 
 		if (run.publication === "proposal" && !item.preparation && !existing) {
+			const sourceVersion = await files_transfer_db_get_entry_version(ctx, sourceEntry);
+			if (sourceVersion?.textKind === null) {
+				const intent = sourceEntry.pendingUpdate?.createIntent;
+				const assetId =
+					item.capture?.artifact?.contentAssetId ??
+					item.capture?.sourceAssetId ??
+					sourceEntry.pendingUpdate?.pendingReplacement?.assetId ??
+					(intent?.kind === "stored" ? intent.assetId : sourceEntry.kind === "saved" ? sourceEntry.node.assetId : null);
+				const asset = assetId ? await ctx.db.get("files_r2_assets", assetId) : null;
+				const organization = await ctx.db.get("organizations", run.destinationScope.organizationId);
+				if (!organization || !asset?.r2Key) {
+					await files_transfer_db_fail_copy_item(ctx, {
+						itemId: item._id,
+						attempt,
+						message: organization ? "The source file is still saving. Try again." : "Permission denied",
+					});
+					await ctx.scheduler.runAfter(0, internal.files_transfer.advance, args);
+					return null;
+				}
+				// Check stored bytes before private-node creation seeds its quota.
+				const admitted = await files_stored_uploads_db_admit(ctx, {
+					organization,
+					actorUserId: run.userId,
+					workspaceId: run.destinationScope.workspaceId,
+					declaredBytes: [asset.size],
+					billedUserId: item.billedUserId ?? undefined,
+				});
+				if (admitted._nay) {
+					await files_transfer_db_fail_copy_item(ctx, { itemId: item._id, attempt, message: admitted._nay.message });
+					await ctx.scheduler.runAfter(0, internal.files_transfer.advance, args);
+					return null;
+				}
+				if (item.billedUserId === null)
+					await ctx.db.patch("files_transfer_items", item._id, { billedUserId: admitted._yay.billedUserId });
+			}
 			const created = await files_pending_nodes_db_create(ctx, {
 				organizationId: run.destinationScope.organizationId,
 				workspaceId: run.destinationScope.workspaceId,

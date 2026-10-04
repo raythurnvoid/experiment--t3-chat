@@ -1,0 +1,40 @@
+@layer components {
+	.ChannelsUpload {
+		display: grid;
+		gap: 8px;
+		min-width: 0;
+		max-width: 100%;
+		border: 1px solid var(--color-base-alt-1-09);
+		border-radius: 8px;
+		padding: 10px;
+		> [role="alert"] {
+			color: var(--color-red-11);
+			font-size: 15px;
+		}
+	}
+	.ChannelsUpload-name {
+		color: var(--color-fg-11);
+		overflow-wrap: anywhere;
+		font-weight: 500;
+	}
+	.ChannelsUpload-preview {
+		max-width: min(100%, 360px);
+		max-height: 240px;
+		border-radius: 6px;
+		object-fit: contain;
+	}
+	.ChannelsUpload-tools {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 8px;
+	}
+	.ChannelsUpload-status {
+		color: var(--color-fg-08);
+		font-size: 15px;
+	}
+	.ChannelsUpload-folders {
+		display: grid;
+		gap: 8px;
+		margin-top: 12px;
+	}
+}

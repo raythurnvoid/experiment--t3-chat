@@ -1,137 +1,136 @@
 import "./file-editor-comments-sidebar.css";
-import { useRef, useState } from "react";
+import { useState, type ReactNode } from "react";
+import { useQuery } from "convex/react";
+import { toast } from "sonner";
+import { ChannelsPosts } from "@/components/channels/channels-posts.tsx";
+import { ChannelsConversationPane } from "@/components/channels/channels-conversation.tsx";
+import { useChannelsMentionPeople, useChannelsPeople } from "@/components/channels/channels-people.ts";
+import { MyButton, type MyButton_ClassNames } from "@/components/my-button.tsx";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
-import { useStableQuery } from "@/hooks/convex-hooks.ts";
-import { app_convex_api } from "@/lib/app-convex-client.ts";
-import type { AppClassName } from "@/lib/dom-utils.ts";
-import { useGlobalEvent, useGlobalEventList } from "@/lib/global-event.tsx";
-import { cn } from "@/lib/utils.ts";
-import {
-	FileEditorCommentsFilterInput,
-	FileEditorCommentsThread,
-	type FileEditorCommentsThread_Props,
-} from "./file-editor-comments-thread.tsx";
+import { app_convex, app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
+import { url_path_messages } from "@/lib/urls.ts";
+import { useGlobalCustomEvent } from "@/lib/global-event.tsx";
+import type { file_quotes_Quote } from "../../../../shared/file-quotes.ts";
 
-// #region thread
-type FileEditorCommentsSidebarThread_Props = {
-	thread: FileEditorCommentsThread_Props["thread"];
-	hidden: FileEditorCommentsThread_Props["hidden"];
-	canResolve: boolean;
-};
-
-function FileEditorCommentsSidebarThread(props: FileEditorCommentsSidebarThread_Props) {
-	const { thread, hidden, canResolve } = props;
-
-	const [open, setOpen] = useState(false);
-
-	const threadEl = useRef<HTMLDetailsElement>(null);
-
-	const handleToggle: FileEditorCommentsThread_Props["onToggle"] = (e) => {
-		setOpen(e.currentTarget.open);
-	};
-
-	useGlobalEventList({
-		events: ["pointerdown", "focusin"],
-		handler: (e) => {
-			if (threadEl.current && (!e.target || !threadEl.current.contains(e.target as Node))) {
-				setOpen(false);
-			}
-		},
-	});
-
-	useGlobalEvent({
-		event: "keydown",
-		handler: (e) => {
-			if (e.key === "Escape") {
-				setOpen(false);
-			}
-		},
-	});
-
-	return (
-		<FileEditorCommentsThread
-			ref={threadEl}
-			thread={thread}
-			open={open}
-			hidden={hidden}
-			canResolve={canResolve}
-			onToggle={handleToggle}
-		/>
-	);
-}
-// #endregion thread
-
-// #region root
-export type FileEditorCommentsSidebar_ClassNames =
+type FileEditorCommentsSidebar_ClassNames =
 	| "FileEditorCommentsSidebar"
-	| "FileEditorCommentsSidebar-list"
-	| "FileEditorCommentsSidebar-empty";
+	| "FileEditorCommentsSidebar-header"
+	| "FileEditorCommentsSidebar-thread";
 
-export type FileEditorCommentsSidebar_Props = {
-	threadIds: string[];
-	canResolve: boolean;
-};
-
-export function FileEditorCommentsSidebar(props: FileEditorCommentsSidebar_Props) {
-	const { threadIds, canResolve } = props;
-
-	const { membershipId } = AppTenantProvider.useContext();
-
-	const [query, setFilterValue] = useState("");
-
-	const threadsQuery = useStableQuery(
-		app_convex_api.chat_messages.chat_messages_threads_list,
-		threadIds.length > 0
-			? {
-					membershipId,
-					threadIds,
-					isArchived: false,
-				}
-			: "skip",
+export function FileEditorCommentsSidebar(props: {
+	fileNodeId: app_convex_Id<"files_nodes">;
+	threadIds: readonly string[];
+	hideMarkedPosts?: boolean;
+	children?: ReactNode;
+}) {
+	const { fileNodeId, threadIds, hideMarkedPosts, children } = props;
+	const { membershipId, organizationName, workspaceName } = AppTenantProvider.useContext();
+	const file = useQuery(app_convex_api.files_nodes.get_file_node_for_membership, { membershipId, fileNodeId });
+	const ready = useQuery(app_convex_api.channels_messages.get_attachable_files, {
+		membershipId,
+		fileNodeIds: [fileNodeId],
+	});
+	const channelId = useQuery(app_convex_api.channels.get_file_channel, { membershipId, fileNodeId });
+	const channel = useQuery(app_convex_api.channels.get_channel, channelId ? { membershipId, channelId } : "skip");
+	const state = useQuery(app_convex_api.channels.get_channel_state, channelId ? { membershipId, channelId } : "skip");
+	const { people } = useChannelsPeople();
+	const mentionItems = useChannelsMentionPeople({ fileNodeId }, people);
+	const [rootId, setRootId] = useState<app_convex_Id<"channels_messages"> | null>(null);
+	const [quoteRequest, setQuoteRequest] = useState<file_quotes_Quote | null>(null);
+	useGlobalCustomEvent("files::quote_selection", ({ detail }) => {
+		if (detail.membershipId === membershipId && detail.target === "comments" && detail.quote.fileNodeId === fileNodeId)
+			setQuoteRequest(detail.quote);
+	});
+	const thread = useQuery(
+		app_convex_api.channels_messages.get_thread_by_root,
+		rootId ? { membershipId, rootMessageId: rootId } : "skip",
 	);
-
-	const sortedThreads = threadsQuery && threadsQuery.threads.toSorted((a, b) => b.lastMessageAt - a.lastMessageAt);
-
-	const normalizedQuery = sortedThreads ? query.trim().toLowerCase() : null;
-
-	const filteredThreadsIds = ((/* iife */) => {
-		if (!sortedThreads) return sortedThreads;
-
-		return new Set(FileEditorCommentsFilterInput.filterThreads(sortedThreads, query).map((thread) => thread.id));
-	})();
-
+	const canPost =
+		!!file &&
+		file.writeBlockedReason !== "permission" &&
+		file.archiveOperationId === null &&
+		(ready?.includes(fileNodeId) ?? false);
+	const follow = () => {
+		if (!channelId) return;
+		app_convex
+			.mutation(state?.member ? app_convex_api.channels.leave_channel : app_convex_api.channels.join_channel, {
+				membershipId,
+				channelId,
+			})
+			.then((result) => {
+				if (result._nay) toast.error(result._nay.message);
+			})
+			.catch((error: unknown) => {
+				console.error("[FileEditorCommentsSidebar.follow] Failed to change follow", { error });
+				toast.error("Could not change follow");
+			});
+	};
 	return (
 		<aside
-			className={cn(
-				"FileEditorCommentsSidebar" satisfies FileEditorCommentsSidebar_ClassNames,
-				"app-scrollable" satisfies AppClassName,
-			)}
+			className={"FileEditorCommentsSidebar" satisfies FileEditorCommentsSidebar_ClassNames}
+			aria-label="File comments"
 		>
-			<FileEditorCommentsFilterInput value={query} onValueChange={setFilterValue} />
-
-			<div className={"FileEditorCommentsSidebar-list" satisfies FileEditorCommentsSidebar_ClassNames}>
-				{!sortedThreads || sortedThreads.length === 0 ? (
-					<div className={"FileEditorCommentsSidebar-empty" satisfies FileEditorCommentsSidebar_ClassNames}>
-						<i>
-							{sortedThreads === undefined
-								? "Loading comments…"
-								: normalizedQuery
-									? "No comments found"
-									: "No comments yet"}
-						</i>
-					</div>
-				) : (
-					sortedThreads.map((thread) => (
-						<FileEditorCommentsSidebarThread
-							key={`${thread.id}`}
-							thread={thread}
-							hidden={Boolean(filteredThreadsIds?.has(thread.id)) === false}
-							canResolve={canResolve}
-						/>
-					))
+			<header className={"FileEditorCommentsSidebar-header" satisfies FileEditorCommentsSidebar_ClassNames}>
+				{state?.unread && <span aria-label="Unread comments">●</span>}
+				<MyButton onClick={follow} disabled={!channelId} aria-pressed={!!state?.member}>
+					{state?.member ? "Unfollow comments" : "Follow comments"}
+				</MyButton>
+				{channelId && (
+					<a
+						className={"MyButton" satisfies MyButton_ClassNames}
+						href={`${url_path_messages({ organizationName, workspaceName })}/${channelId}`}
+					>
+						Open in Messages
+					</a>
 				)}
-			</div>
+			</header>
+			{rootId ? (
+				<>
+					<MyButton onClick={() => setRootId(null)}>Back to comments</MyButton>
+					<div className={"FileEditorCommentsSidebar-thread" satisfies FileEditorCommentsSidebar_ClassNames}>
+						{channel && thread?.root.message.channelId === channel.channel._id ? (
+							<ChannelsConversationPane
+								channel={channel}
+								name={file?.name ?? "File comments"}
+								root={thread.root}
+								readSequence={0}
+								mentionItems={mentionItems}
+								quoteRequest={quoteRequest}
+								onQuoteInserted={() => setQuoteRequest(null)}
+								jumpMessageId={undefined}
+								resolvable={true}
+								onThread={setRootId}
+								onJump={(id, root) => setRootId(root ?? id)}
+							/>
+						) : (
+							<p>{thread === undefined ? "Loading comment…" : "Comment not found"}</p>
+						)}
+					</div>
+				</>
+			) : (
+				<>
+					{file === undefined || channelId === undefined ? (
+						<p>Loading comments…</p>
+					) : file ? (
+						<ChannelsPosts
+							key={fileNodeId}
+							channelId={channelId}
+							fileNodeId={fileNodeId}
+							state={state}
+							canPost={canPost}
+							mentionItems={mentionItems}
+							quoteRequest={quoteRequest}
+							onQuoteInserted={() => setQuoteRequest(null)}
+							markThreadIds={threadIds}
+							hideMarkedPosts={hideMarkedPosts}
+							onThread={setRootId}
+						/>
+					) : (
+						<p>File not found</p>
+					)}
+					{children}
+				</>
+			)}
 		</aside>
 	);
 }
-// #endregion root

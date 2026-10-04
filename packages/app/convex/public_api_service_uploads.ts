@@ -8,15 +8,8 @@
 // product means archiving it. The separate write and plugin-archive routes also accept sealed
 // grants, with the same current account and file policy checks.
 //
-// Accounting: creating a target charges nothing. The size in the request is only the service's
-// guess, and a signed PUT does not bind how many bytes actually arrive. The workspace is charged
-// for the largest stored size R2 confirms across its attempts. Creating a target refuses a workspace
-// whose `plugin_service_storage_bytes` quota is already full, which stops the next file rather than
-// the current one. That counter only grows: deleting a stored file gives nothing back, exactly like
-// `public_api_upload_bytes` on the normal upload path.
-//
-// The quota is a budget, not a guard. A signed PUT does not bind the object's length, so a service
-// can always store more than it declared; the settle below charges it, it does not prevent it.
+// Creating a target checks the shared upload rules and charges nothing. Publication counts and
+// bills its confirmed bytes once. Oversized objects are deleted and release the target.
 
 import { v } from "convex/values";
 import type { RegisteredMutation } from "convex/server";
@@ -24,7 +17,8 @@ import type { RegisteredMutation } from "convex/server";
 import { internalMutation, type MutationCtx, type QueryCtx } from "./_generated/server.js";
 import type { Doc, Id } from "./_generated/dataModel";
 import { access_control_db_can_act_on_file_node, access_control_db_has_permission } from "./access_control.ts";
-import { billing_db_check_paid_plan, billing_db_emit_file_save, billing_pick_billed_user_id } from "./billing_db.ts";
+import { billing_pick_billed_user_id } from "./billing_db.ts";
+import { files_stored_uploads_db_admit, files_stored_uploads_db_settle } from "./files_stored_uploads.ts";
 import {
 	files_nodes_db_archive_nodes,
 	files_nodes_db_create_node_recursively_at_path,
@@ -36,7 +30,6 @@ import {
 } from "./files_nodes.ts";
 import { files_share_links_create_cleanup_state } from "./files_share_links_db.ts";
 import { files_metadata_db_read_entry } from "./files_metadata.ts";
-import { quotas_db_ensure, quotas_db_get } from "./quotas.ts";
 import {
 	r2_create_asset_key,
 	r2_enqueue_object_deletion_job,
@@ -88,11 +81,11 @@ export type public_api_service_uploads_RefusalName =
 	| "conflict"
 	| "storage_full"
 	| "plan_required"
+	| "oversized_upload"
 	| "outside_destination";
 
 const REFUSAL_CONFLICT: public_api_service_uploads_RefusalName = "conflict";
-const REFUSAL_STORAGE_FULL: public_api_service_uploads_RefusalName = "storage_full";
-const REFUSAL_PLAN_REQUIRED: public_api_service_uploads_RefusalName = "plan_required";
+const REFUSAL_OVERSIZED_UPLOAD: public_api_service_uploads_RefusalName = "oversized_upload";
 const REFUSAL_OUTSIDE_DESTINATION: public_api_service_uploads_RefusalName = "outside_destination";
 
 /**
@@ -621,102 +614,61 @@ export async function public_api_service_uploads_db_get_target_by_asset(
 }
 
 /**
- * Charge the largest stored size confirmed across this target's attempts. A retry or late event
- * only adds the increase. The winning file's size stays separate in `actualBytes`.
- */
-async function db_charge_observed_bytes(
-	ctx: MutationCtx,
-	args: {
-		target: Doc<"plugin_service_storage_targets">;
-		observedBytes: number;
-		now: number;
-	},
-) {
-	const alreadyChargedBytes = args.target.chargedBytes;
-	if (args.observedBytes <= alreadyChargedBytes) {
-		return alreadyChargedBytes;
-	}
-
-	const quota = await quotas_db_get(ctx, {
-		quotaName: "plugin_service_storage_bytes",
-		organizationId: args.target.organizationId,
-		workspaceId: args.target.workspaceId,
-	});
-	// The object already exists, so its bytes are charged even when they cross the ceiling. A signed
-	// PUT cannot be held to a size, so this budget bills what was stored; it cannot prevent it.
-	await ctx.db.patch("quotas", quota._id, {
-		usedCount: quota.usedCount + (args.observedBytes - alreadyChargedBytes),
-		updatedAt: args.now,
-	});
-	await ctx.db.patch("plugin_service_storage_targets", args.target._id, {
-		chargedBytes: args.observedBytes,
-		updatedAt: args.now,
-	});
-
-	return args.observedBytes;
-}
-
-/**
  * Record the canonical object's confirmed size and charge it.
  */
 async function db_settle_canonicalized_target(
 	ctx: MutationCtx,
 	args: {
 		target: Doc<"plugin_service_storage_targets">;
+		asset: Doc<"files_r2_assets">;
 		actualBytes: number;
 		now: number;
 	},
 ) {
-	await db_charge_observed_bytes(ctx, {
-		target: args.target,
-		observedBytes: args.actualBytes,
-		now: args.now,
-	});
-
-	await ctx.db.patch("plugin_service_storage_targets", args.target._id, {
-		state: "committed",
-		actualBytes: args.actualBytes,
-		updatedAt: args.now,
-	});
-
-	// Nothing is free: the stored file bills the workspace payer one cent, once per target.
-	// Every caller refuses a non-pending target before reaching this settle, so the emit runs at
-	// most once; the target id keeps the event's externalId deterministic on top of that.
-	//
-	// A missing organization or payer doc throws, which rolls back the `committed` patch above,
-	// so a service write can never commit without its one billing event; the R2 event retries.
 	const organization = await ctx.db.get("organizations", args.target.organizationId);
 	if (!organization) {
-		throw should_never_happen("target.organizationId points to a missing organizations doc", {
+		const errorMessage = "target.organizationId points to a missing organizations doc";
+		const errorData = {
 			targetId: args.target._id,
 			organizationId: args.target.organizationId,
-		});
+		};
+		console.error(errorMessage, errorData);
+		throw should_never_happen(errorMessage, errorData);
 	}
 
 	const billedUserId = billing_pick_billed_user_id({ userId: args.target.createdBy, organization });
-	const billedUser = await ctx.db.get("users", billedUserId);
-	if (!billedUser) {
-		throw should_never_happen("billedUserId points to a missing users doc", {
-			targetId: args.target._id,
-			userId: args.target.createdBy,
-			billedUserId,
-		});
-	}
-	// An anonymous payer with no usage snapshot would also make this emit throw, and that stays
-	// unguarded on purpose: `create-target` already refused anyone without a paid plan, a paid
-	// plan means a synced snapshot with a meter, and an anonymous user gets a synthetic snapshot
-	// the moment the user doc is created. Whoever weakens the create-target plan gate later must
-	// know it was also holding this up.
-	await billing_db_emit_file_save(ctx, {
-		billedUser,
+	const settled = await files_stored_uploads_db_settle(ctx, {
+		billedUserId,
 		actorUserId: args.target.createdBy,
 		organizationId: args.target.organizationId,
 		workspaceId: args.target.workspaceId,
 		nodeId: args.target.nodeId,
-		version: args.target._id,
+		assetId: args.asset._id,
+		declaredBytes: args.target.declaredBytes,
+		actualBytes: args.actualBytes,
+		chargeKey: args.target._id,
+		chargeable: true,
+	});
+	if (settled._nay) {
+		await r2_enqueue_object_deletion_job(ctx, {
+			organizationId: args.target.organizationId,
+			workspaceId: args.target.workspaceId,
+			r2Key: r2_create_asset_key({ ...args.target, assetId: args.asset._id }),
+			reason: "untracked_asset_event",
+			putMayArriveUntil: (args.asset.uploadUrlExpiresAt ?? args.now + UPLOAD_URL_TTL_MS) + r2_PUT_MAY_ARRIVE_MARGIN_MS,
+		});
+		await ctx.db.patch("files_r2_assets", args.asset._id, { uploadRetiredAt: args.now, updatedAt: args.now });
+		await db_release_expired_target(ctx, { target: args.target, now: args.now, releaseReason: "oversized" });
+		return Result({ _nay: { name: REFUSAL_OVERSIZED_UPLOAD, message: settled._nay.message } });
+	}
+	await ctx.db.patch("plugin_service_storage_targets", args.target._id, {
+		state: "committed",
+		actualBytes: args.actualBytes,
+		chargedBytes: args.actualBytes,
+		updatedAt: args.now,
 	});
 
-	return args.actualBytes;
+	return Result({ _yay: args.actualBytes });
 }
 
 /**
@@ -724,11 +676,11 @@ async function db_settle_canonicalized_target(
  */
 export async function public_api_service_uploads_db_settle_canonicalized_asset(
 	ctx: MutationCtx,
-	args: { assetId: Id<"files_r2_assets">; actualBytes: number; nodePath: string | null; now: number },
+	args: { asset: Doc<"files_r2_assets">; actualBytes: number; nodePath: string | null; now: number },
 ) {
-	const target = await public_api_service_uploads_db_get_target_by_asset(ctx, args.assetId);
-	if (!target || target.assetId !== args.assetId) {
-		return;
+	const target = await public_api_service_uploads_db_get_target_by_asset(ctx, args.asset._id);
+	if (!target || target.assetId !== args.asset._id) {
+		return Result({ _yay: null });
 	}
 	if (
 		target.movedOutAt === undefined &&
@@ -742,50 +694,26 @@ export async function public_api_service_uploads_db_settle_canonicalized_asset(
 	}
 
 	if (target.state !== "pending") {
-		return;
+		return Result({ _yay: null });
 	}
-	await db_settle_canonicalized_target(ctx, { target, actualBytes: args.actualBytes, now: args.now });
-}
-
-/**
- * Charge stored bytes from an old attempt without giving it publication authority.
- */
-export async function public_api_service_uploads_db_record_untracked_asset_bytes(
-	ctx: MutationCtx,
-	args: {
-		organizationId: Id<"organizations">;
-		workspaceId: Id<"organizations_workspaces">;
-		assetId: Id<"files_r2_assets">;
-		observedBytes: number;
-		now: number;
-	},
-) {
-	const target = await public_api_service_uploads_db_get_target_by_asset(ctx, args.assetId);
-	if (!target || target.organizationId !== args.organizationId || target.workspaceId !== args.workspaceId) {
-		return;
-	}
-	// Receipts survive asset deletion. A late old PUT still uses this target's budget, but cannot
-	// change its winning file, state, or one-time file-save charge.
-	await db_charge_observed_bytes(ctx, {
-		target,
-		observedBytes: args.observedBytes,
-		now: args.now,
-	});
+	return await db_settle_canonicalized_target(ctx, { ...args, target });
 }
 
 /**
  * If a pending target has lost its current asset doc, remove its unusable placeholder. Receipts
- * keep any earlier attempt's charge attached to the released target.
+ * keep the released target as the replay answer.
  */
 async function db_release_expired_target(
 	ctx: MutationCtx,
 	args: {
 		target: Doc<"plugin_service_storage_targets">;
 		now: number;
+		releaseReason?: "oversized";
 	},
 ) {
 	await ctx.db.patch("plugin_service_storage_targets", args.target._id, {
 		state: "released",
+		...(args.releaseReason ? { releaseReason: args.releaseReason } : {}),
 		updatedAt: args.now,
 	});
 	await files_nodes_db_hard_delete_node(ctx, {
@@ -858,7 +786,7 @@ export const create_upload_target = internalMutation({
 			}
 		}
 
-		if (!Number.isInteger(args.size) || args.size < 1 || args.size > files_MAX_UPLOADS_BYTES) {
+		if (!Number.isSafeInteger(args.size) || args.size < 1 || args.size > files_MAX_UPLOADS_BYTES) {
 			return Result({ _nay: { message: "File too large" } });
 		}
 		// The service always names the type. It decides how the upload is processed, so a broken
@@ -946,17 +874,19 @@ export const create_upload_target = internalMutation({
 				return Result({ _nay: { name: REFUSAL_CONFLICT, message: "This target's upload expired" } });
 			}
 			if (asset.r2Key !== undefined) {
-				const actualBytes = await db_settle_canonicalized_target(ctx, {
+				const settled = await db_settle_canonicalized_target(ctx, {
 					target: existingTarget,
+					asset,
 					actualBytes: asset.size,
 					now,
 				});
+				if (settled._nay) return settled;
 				return Result({
 					_yay: {
 						state: "committed" as const,
 						path: existingTarget.path,
 						nodeId: String(existingTarget.nodeId),
-						actualBytes,
+						actualBytes: settled._yay,
 					},
 				});
 			}
@@ -1113,48 +1043,13 @@ export const create_upload_target = internalMutation({
 			return Result({ _nay: { message: "A destination holds at most 16 live targets under one target key" } });
 		}
 
-		// Storing files for a service costs real money, so only a workspace that pays for usage may
-		// start one. This is the door that can actually stop an upload: the quota below can only bill
-		// what R2 already stored, because a signed PUT does not bind how many bytes arrive. The plan
-		// belongs to whoever pays for this workspace, which in an owner-billed organization is the
-		// owner and not the member whose grant is presenting.
-		const billedUserId = billing_pick_billed_user_id({
-			userId: args.principal.actorUserId,
+		const admission = await files_stored_uploads_db_admit(ctx, {
 			organization: authorized._yay.organization,
-		});
-		const paidPlan = await billing_db_check_paid_plan(ctx, { userId: billedUserId });
-		if (!paidPlan.hasPaidPlan) {
-			return Result({
-				_nay: {
-					name: REFUSAL_PLAN_REQUIRED,
-					message: "This workspace's plan does not include plugin service file storage",
-				},
-			});
-		}
-
-		// Nothing is charged here. The size in the request is only the service's guess, and a signed
-		// PUT does not bind how many bytes actually arrive, so charging it would bill a number nobody
-		// can hold the caller to. The real size is charged once, when R2 confirms the stored object.
-		//
-		// What this door does is refuse a workspace that is already over its budget, which stops the
-		// next file rather than the current one. Seeded lazily because existing workspaces have no
-		// doc for this quota.
-		const quotaId = await quotas_db_ensure(ctx, {
-			quotaName: "plugin_service_storage_bytes",
-			organizationId: args.principal.organizationId,
+			actorUserId: args.principal.actorUserId,
 			workspaceId: args.principal.workspaceId,
-			now,
+			declaredBytes: [args.size],
 		});
-		const quota = await ctx.db.get("quotas", quotaId);
-		if (!quota) {
-			// Unreachable: quotas_db_ensure returned this id in the same transaction.
-			throw should_never_happen("quotas_db_ensure returned a missing quota doc", { quotaId });
-		}
-		if (quota.usedCount >= quota.maxCount) {
-			return Result({
-				_nay: { name: REFUSAL_STORAGE_FULL, message: "This workspace has used its plugin service storage" },
-			});
-		}
+		if (admission._nay) return admission;
 
 		// A recognized text extension runs the same upload conversion as a member upload, so a
 		// service-uploaded `.md` or `.txt` becomes a normal editable file. Everything else stays a
@@ -1291,6 +1186,15 @@ async function db_remint_pending_target(
 	ctx: MutationCtx,
 	args: { target: Doc<"plugin_service_storage_targets">; asset: Doc<"files_r2_assets">; now: number },
 ) {
+	const organization = await ctx.db.get("organizations", args.target.organizationId);
+	if (!organization) return Result({ _nay: { message: "Not found" } });
+	const admission = await files_stored_uploads_db_admit(ctx, {
+		organization,
+		actorUserId: args.target.createdBy,
+		workspaceId: args.target.workspaceId,
+		declaredBytes: [args.target.declaredBytes],
+	});
+	if (admission._nay) return admission;
 	const uploadUrlExpiresAt = args.now + UPLOAD_URL_TTL_MS;
 	const assetId = await ctx.db.insert("files_r2_assets", {
 		organizationId: args.target.organizationId,
@@ -1421,13 +1325,20 @@ export const remint_upload_target = internalMutation({
 		// The object already reached its canonical key: a fresh URL would be useless, so answer
 		// committed instead, settling the books on the way.
 		if (asset.r2Key !== undefined) {
-			const actualBytes = await db_settle_canonicalized_target(ctx, {
+			const settled = await db_settle_canonicalized_target(ctx, {
 				target,
+				asset,
 				actualBytes: asset.size,
 				now,
 			});
+			if (settled._nay) return settled;
 			return Result({
-				_yay: { state: "committed" as const, path: liveNode._yay.path, nodeId: String(target.nodeId), actualBytes },
+				_yay: {
+					state: "committed" as const,
+					path: liveNode._yay.path,
+					nodeId: String(target.nodeId),
+					actualBytes: settled._yay,
+				},
 			});
 		}
 
@@ -1483,6 +1394,9 @@ export const finalize_upload_target = internalMutation({
 			return Result({ _nay: { message: "Not found" } });
 		}
 		if (target.state === "released" || target.deleteRequestedAt !== undefined) {
+			if (target.releaseReason === "oversized") {
+				return Result({ _nay: { name: REFUSAL_OVERSIZED_UPLOAD, message: "The stored file is larger than declared" } });
+			}
 			return Result({
 				_yay: {
 					state: "released" as const,
@@ -1538,13 +1452,20 @@ export const finalize_upload_target = internalMutation({
 			});
 		}
 
-		const actualBytes = await db_settle_canonicalized_target(ctx, {
+		const settled = await db_settle_canonicalized_target(ctx, {
 			target,
+			asset,
 			actualBytes: asset.size,
 			now,
 		});
+		if (settled._nay) return settled;
 		return Result({
-			_yay: { state: "committed" as const, path: liveNode._yay.path, nodeId: String(target.nodeId), actualBytes },
+			_yay: {
+				state: "committed" as const,
+				path: liveNode._yay.path,
+				nodeId: String(target.nodeId),
+				actualBytes: settled._yay,
+			},
 		});
 	},
 });
@@ -1574,8 +1495,8 @@ export type public_api_service_uploads_finalize_upload_target_Result =
  * instead of refusing while it is still pending.
  *
  * Deleting never gives quota bytes back. The counter only grows, so the bytes this run charged stay
- * charged. `deleteRequestedAt` marks an archived committed target. Late attempts can only raise its
- * charged maximum, never change its winning size. The released target also answers delete replays.
+ * charged. `deleteRequestedAt` marks an archived committed target. Late attempts are deleted without
+ * another charge. The released target also answers delete replays.
  */
 export const delete_upload_target = internalMutation({
 	args: {

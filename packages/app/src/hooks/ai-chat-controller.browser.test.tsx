@@ -279,6 +279,7 @@ describe("AiChatController streaming against the real AI SDK", () => {
 		vi.unstubAllGlobals();
 	});
 
+	// The first browser click can be slow on Windows.
 	test("streams text deltas into one assistant message and returns to ready", async () => {
 		hookMocks.responses.push(() =>
 			sseResponse([
@@ -302,7 +303,7 @@ describe("AiChatController streaming against the real AI SDK", () => {
 		});
 		expect(screen.getByTestId("assistant-text").textContent).toBe("Hello world");
 		expect(screen.getByTestId("error").textContent).toBe("null");
-	});
+	}, 60_000);
 
 	test("sends a new message without skill selections through the real transport", async () => {
 		hookMocks.responses.push(() => sseResponse([{ type: "start" }, { type: "finish" }]));

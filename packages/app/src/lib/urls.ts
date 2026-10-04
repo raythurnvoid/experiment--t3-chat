@@ -104,6 +104,10 @@ export function url_path_chat(args: { organizationName: string; workspaceName: s
 	return `/w/${args.organizationName}/${args.workspaceName}/chat`;
 }
 
+export function url_path_messages(args: { organizationName: string; workspaceName: string }) {
+	return `/w/${args.organizationName}/${args.workspaceName}/messages`;
+}
+
 export function url_path_users(args: { organizationName: string; workspaceName: string }) {
 	return `/w/${args.organizationName}/${args.workspaceName}/users`;
 }

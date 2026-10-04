@@ -19,6 +19,7 @@ import type {
 import type { GeneratedIdPrefix } from "./generated-ids.ts";
 import type { ai_chat_McpAuthNeededData } from "./ai-chat-files.ts";
 import type { browser_Intent } from "./browser-intent.ts";
+import { file_quotes_part_schema, file_quotes_serialize_draft, type file_quotes_Quote } from "./file-quotes.ts";
 
 export type ai_chat_Message = Doc<"ai_chat_threads_messages_aisdk_5">;
 
@@ -199,6 +200,7 @@ export type ai_chat_UiTools = {
 };
 
 export type ai_chat_UiDataParts = {
+	"file-quote": file_quotes_Quote;
 	"thread-id": {
 		threadId: string;
 	};
@@ -294,9 +296,23 @@ export function ai_chat_get_message_text(message: UIMessage) {
 	const parts = message.parts ?? [];
 
 	const textFromParts = parts
-		.filter((part) => part.type === "text")
-		.map((part) => part.text)
+		.flatMap((part) => {
+			if (part.type === "text") return [part.text];
+			const quote = file_quotes_part_schema.safeParse(part);
+			return quote.success ? [quote.data.data.text] : [];
+		})
 		.join("\n");
 
 	return textFromParts;
+}
+
+/** Editing and retry must keep quote nodes, while copy uses readable text. */
+export function ai_chat_get_message_draft(message: UIMessage) {
+	return message.parts
+		.flatMap((part) => {
+			if (part.type === "text") return [part.text];
+			const quote = file_quotes_part_schema.safeParse(part);
+			return quote.success ? [file_quotes_serialize_draft(quote.data.data)] : [];
+		})
+		.join("");
 }

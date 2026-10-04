@@ -1,7 +1,5 @@
-// The composer is a plain text input. User messages must never be changed:
-// no markdown parsing. The message is stored as one string, so the editor
-// keeps all content in one paragraph where every newline is a hard break
-// (a hard break = one "\n" in the string).
+// Text stays plain. Private draft markers restore the shared file quote nodes.
+// Every newline stays a hard break (one "\n" in the draft).
 
 import "./ai-chat-composer.css";
 
@@ -28,6 +26,12 @@ import {
 	ai_chat_composer_file_mention_PLUGIN_KEY,
 } from "@/components/ai-chat/ai-chat-composer-file-mention.tsx";
 import { AiChatJobs } from "@/components/ai-chat/ai-chat-jobs.tsx";
+import { file_quote_extension } from "@/components/file-quotes/file-quote-extension.tsx";
+import {
+	file_quotes_encode_draft_data,
+	file_quotes_parse_draft,
+	type file_quotes_Quote,
+} from "../../../shared/file-quotes.ts";
 import {
 	MySelect,
 	MySelectItem,
@@ -117,12 +121,14 @@ function convert_plain_text_to_tiptap_json(text: string): JSONContent {
 	}
 
 	const content: JSONContent[] = [];
-	for (const [index, line] of text.split("\n").entries()) {
-		if (index > 0) {
-			content.push({ type: "hardBreak" });
+	for (const part of file_quotes_parse_draft(text)) {
+		if (part.type === "data-file-quote") {
+			content.push({ type: "fileQuote", attrs: { data: file_quotes_encode_draft_data(part.data) } });
+			continue;
 		}
-		if (line) {
-			content.push({ type: "text", text: line });
+		for (const [index, line] of part.text.split("\n").entries()) {
+			if (index > 0) content.push({ type: "hardBreak" });
+			if (line) content.push({ type: "text", text: line });
 		}
 	}
 
@@ -248,6 +254,8 @@ export type AiChatComposer_Props = Omit<
 	initialValue: string;
 	/** Image attachments to start with: a saved draft or a message being edited. */
 	initialAttachments?: readonly FileUIPart[];
+	quoteRequest?: file_quotes_Quote | null;
+	onQuoteInserted?: () => void;
 	inputLabel?: string;
 	submitLabel?: string;
 	selectedModelId: ai_chat_ModelId;
@@ -282,6 +290,8 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 		liveJobs,
 		initialValue,
 		initialAttachments,
+		quoteRequest,
+		onQuoteInserted,
 		inputLabel,
 		submitLabel,
 		selectedModelId,
@@ -436,7 +446,7 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 
 	/**
 	 * Editor config, created once. Only plain text extensions: paragraphs,
-	 * text, and hard breaks (Shift+Enter). No marks, no markdown.
+	 * text, hard breaks (Shift+Enter), and shared quote nodes. No marks.
 	 */
 	const [editorProps] = useState<Parameters<typeof useEditor>[0]>(() => {
 		const extensions = [
@@ -444,6 +454,7 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 			Paragraph,
 			Text,
 			HardBreak,
+			file_quote_extension,
 			Placeholder.configure({
 				placeholder,
 			}),
@@ -788,6 +799,24 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 
 		focusEditor();
 	}, [editor]);
+
+	const insertedQuote = useRef<file_quotes_Quote | null>(null);
+	useEffect(() => {
+		if (!editor || !quoteRequest || insertedQuote.current === quoteRequest) return;
+		if (
+			editor
+				.chain()
+				.focus("end")
+				.insertContent([
+					{ type: "fileQuote", attrs: { data: file_quotes_encode_draft_data(quoteRequest) } },
+					{ type: "text", text: " " },
+				])
+				.run()
+		) {
+			insertedQuote.current = quoteRequest;
+			onQuoteInserted?.();
+		}
+	}, [editor, quoteRequest, onQuoteInserted]);
 
 	return (
 		<form

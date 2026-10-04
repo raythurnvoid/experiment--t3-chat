@@ -530,6 +530,7 @@ async function create_upload_fixture(args: {
 	};
 	filename: string;
 	contentType?: string;
+	size?: number;
 }) {
 	const { t, db, contentType = "image/png", filename } = args;
 
@@ -543,7 +544,7 @@ async function create_upload_fixture(args: {
 		parentId: files_ROOT_ID,
 		filename,
 		contentType,
-		size: 1024,
+		size: args.size ?? 1024,
 	});
 	if (created._nay) {
 		throw new Error(created._nay.message);
@@ -3722,7 +3723,153 @@ describe("content pipeline crash orphans", () => {
 	});
 });
 
+describe("recover_unfinalized_upload_publication", () => {
+	test("publishes confirmed bytes once when the upload event is lost", async () => {
+		const t = test_convex();
+		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const size = 20 * 1024 * 1024 + 1;
+		const upload = await create_upload_fixture({ t, db, filename: "recovered.bin", size });
+		r2Objects.set(upload.key, new Uint8Array(size));
+		r2ObjectMetadata.set(upload.key, { size, etag: "recovered-etag" });
+		const before = await t.run((ctx) => ctx.db.query("billing_usage_snapshots").first());
+		const recovery = {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			assetId: upload.assetId,
+		};
+		await t.action(internal.r2.recover_unfinalized_upload_publication, recovery);
+		const settled = await t.run(async (ctx) => ({
+			asset: await ctx.db.get("files_r2_assets", upload.assetId),
+			quota: await ctx.db
+				.query("quotas")
+				.withIndex("by_workspace_quotaName", (q) =>
+					q.eq("workspaceId", db.workspaceId).eq("quotaName", "stored_file_bytes"),
+				)
+				.first(),
+			usage: await ctx.db.query("billing_usage_snapshots").first(),
+		}));
+		expect(settled.asset).toMatchObject({ r2Key: upload.key, size, etag: "recovered-etag" });
+		expect(settled.quota?.usedCount).toBe(size);
+		expect(settled.usage?.meter?.balance).toBe(before!.meter!.balance - 2);
+		await t.action(internal.r2.recover_unfinalized_upload_publication, recovery);
+		await t.mutation(internal.r2.process_uploaded_asset_event, {
+			assetId: upload.assetId,
+			r2Key: upload.key,
+			size,
+			eventId: "late-recovered-event",
+		});
+		expect(await t.run((ctx) => ctx.db.get("quotas", settled.quota!._id))).toEqual(settled.quota);
+		expect(await t.run((ctx) => ctx.db.query("billing_usage_snapshots").first())).toEqual(settled.usage);
+	});
+
+	test("removes an oversized recovery without charging or counting bytes", async () => {
+		const t = test_convex();
+		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const upload = await create_upload_fixture({ t, db, filename: "oversized-recovery.bin", size: 8 });
+		r2Objects.set(upload.key, new Uint8Array(9));
+		r2ObjectMetadata.set(upload.key, { size: 9, etag: "oversized-recovery-etag" });
+		const expiresAt = await t.run(async (ctx) =>
+			(await ctx.db.get("files_r2_assets", upload.assetId))!.uploadUrlExpiresAt!,
+		);
+		const before = await t.run((ctx) => ctx.db.query("billing_usage_snapshots").first());
+		const recovery = {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			assetId: upload.assetId,
+		};
+		await t.action(internal.r2.recover_unfinalized_upload_publication, recovery);
+		expect(await t.run((ctx) => ctx.db.get("files_nodes", upload.nodeId))).toBeNull();
+		expect(await t.run((ctx) => ctx.db.get("files_r2_assets", upload.assetId))).toBeNull();
+		expect(await get_deletion_job_by_key(t, upload.key)).toMatchObject({
+			reason: "untracked_asset_event",
+			putMayArriveUntil: expiresAt + r2_PUT_MAY_ARRIVE_MARGIN_MS,
+		});
+		await t.action(internal.r2.recover_unfinalized_upload_publication, recovery);
+		await t.mutation(internal.r2.process_uploaded_asset_event, {
+			assetId: upload.assetId,
+			r2Key: upload.key,
+			size: 9,
+			eventId: "late-oversized-recovery-event",
+		});
+		expect(
+			await t.run((ctx) =>
+				ctx.db
+					.query("quotas")
+					.withIndex("by_workspace_quotaName", (q) =>
+						q.eq("workspaceId", db.workspaceId).eq("quotaName", "stored_file_bytes"),
+					)
+				.first(),
+			),
+		).toBeNull();
+		expect(await t.run((ctx) => ctx.db.query("billing_usage_snapshots").first())).toEqual(before);
+	});
+});
+
 describe("process_uploaded_asset_event accepted upload", () => {
+	test("charges 50 MiB once and counts only its confirmed bytes", async () => {
+		const t = test_convex();
+		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const size = 50 * 1024 * 1024;
+		const upload = await create_upload_fixture({ t, db, filename: "large.pdf", contentType: "application/pdf", size });
+		const before = await t.run((ctx) => ctx.db.query("billing_usage_snapshots").first());
+		const event = { assetId: upload.assetId, r2Key: upload.key, size, eventId: "large-file" };
+		expect(await t.mutation(internal.r2.process_uploaded_asset_event, event)).toEqual({ _yay: null });
+		const settled = await t.run(async (ctx) => ({
+			quota: await ctx.db
+				.query("quotas")
+				.withIndex("by_workspace_quotaName", (q) =>
+					q.eq("workspaceId", db.workspaceId).eq("quotaName", "stored_file_bytes"),
+				)
+				.first(),
+			usage: await ctx.db.query("billing_usage_snapshots").first(),
+		}));
+		expect(settled.quota?.usedCount).toBe(size);
+		expect(settled.usage?.meter?.balance).toBe(before!.meter!.balance - 3);
+		await t.mutation(internal.r2.process_uploaded_asset_event, event);
+		expect(await t.run((ctx) => ctx.db.get("quotas", settled.quota!._id))).toEqual(settled.quota);
+		expect(await t.run((ctx) => ctx.db.query("billing_usage_snapshots").first())).toEqual(settled.usage);
+	});
+
+	test.each([false, true])("removes an oversized upload without charging, import exempt %s", async (exempt) => {
+		const t = test_convex();
+		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const upload = await create_upload_fixture({
+			t,
+			db,
+			filename: "oversized.pdf",
+			contentType: "application/pdf",
+			size: 10,
+		});
+		const expiresAt = await t.run(async (ctx) => {
+			if (exempt) await ctx.db.patch("files_r2_assets", upload.assetId, { uploadBillingExempt: true });
+			return (await ctx.db.get("files_r2_assets", upload.assetId))!.uploadUrlExpiresAt!;
+		});
+		const before = await t.run((ctx) => ctx.db.query("billing_usage_snapshots").first());
+		await t.mutation(internal.r2.process_uploaded_asset_event, {
+			assetId: upload.assetId,
+			r2Key: upload.key,
+			size: 11,
+			eventId: "oversized-file",
+		});
+		expect(await t.run((ctx) => ctx.db.get("files_nodes", upload.nodeId))).toBeNull();
+		expect(await t.run((ctx) => ctx.db.get("files_r2_assets", upload.assetId))).toBeNull();
+		expect(await get_deletion_job_by_key(t, upload.key)).toMatchObject({
+			reason: "untracked_asset_event",
+			putMayArriveUntil: expiresAt + r2_PUT_MAY_ARRIVE_MARGIN_MS,
+		});
+		expect(
+			await t.run((ctx) =>
+				ctx.db
+					.query("quotas")
+					.withIndex("by_workspace_quotaName", (q) =>
+						q.eq("workspaceId", db.workspaceId).eq("quotaName", "stored_file_bytes"),
+					)
+					.first(),
+			),
+		).toBeNull();
+		expect(await t.run((ctx) => ctx.db.query("billing_usage_snapshots").first())).toEqual(before);
+	});
+
 	test("keeps an older settled HTML upload as stored bytes after another event", async () => {
 		const t = test_convex();
 		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
@@ -3972,6 +4119,7 @@ describe("process_uploaded_asset_event accepted upload", () => {
 			throw new Error(created._nay.message);
 		}
 		const target = created._yay[0]!;
+		const usageBefore = await t.run((ctx) => ctx.db.query("billing_usage_snapshots").first());
 		const bucket = await t.run(async (ctx) => (await ctx.db.get("files_r2_assets", target.assetId))?.r2Bucket ?? "");
 		const key = `organizations/${db.organizationId}/workspaces/${db.workspaceId}/assets/${target.assetId}`;
 
@@ -4001,6 +4149,17 @@ describe("process_uploaded_asset_event accepted upload", () => {
 		expect(docs.asset?.r2Key).toBe(key);
 		expect(docs.asset?.unfinalizedExpiresAt).toBeUndefined();
 		expect(docs.node?.writePolicy).toEqual({ mode: "read_only" });
+		expect(await t.run((ctx) => ctx.db.query("billing_usage_snapshots").first())).toEqual(usageBefore);
+		expect(
+			await t.run((ctx) =>
+				ctx.db
+					.query("quotas")
+					.withIndex("by_workspace_quotaName", (q) =>
+						q.eq("workspaceId", db.workspaceId).eq("quotaName", "stored_file_bytes"),
+					)
+					.first(),
+			),
+		).toBeNull();
 		expect(await get_deletion_job_by_key(t, key)).toBeNull();
 	});
 
@@ -4128,7 +4287,7 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 			}
 			const serviceAccountId = installation.serviceAccountId;
 			await ctx.db.insert("quotas", {
-				quotaName: "plugin_service_storage_bytes",
+				quotaName: "stored_file_bytes",
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
 				usedCount: 0,

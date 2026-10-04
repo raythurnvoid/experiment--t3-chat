@@ -10,6 +10,7 @@ import {
 	EditorBubble,
 } from "novel";
 import { Editor, useEditorState } from "@tiptap/react";
+import { isTextSelection } from "@tiptap/core";
 import { toast } from "sonner";
 import { useFileEditorRichTextExtension } from "@/lib/file-editor-rich-text-extension.ts";
 import type { YjsSyncStatus } from "@liveblocks/core";
@@ -34,6 +35,7 @@ import {
 	file_editor_rich_text_MediaInsertExtension,
 } from "./file-editor-rich-text-media-insert.tsx";
 import { FileEditorRichTextAnchoredComments } from "./file-editor-rich-text-comments.tsx";
+import { FileEditorCommentsSidebar } from "../file-editor-comments-sidebar.tsx";
 import { FileEditorSnapshotsModal } from "../file-editor-snapshots-modal.tsx";
 import { AI_NAME } from "./constants.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
@@ -43,7 +45,7 @@ import type { AppClassName, AppElementId } from "@/lib/dom-utils.ts";
 import { app_fetch_ai_docs_contextual_prompt } from "@/lib/fetch.ts";
 import { MyBadge } from "@/components/my-badge.tsx";
 import { app_convex, app_convex_api } from "@/lib/app-convex-client.ts";
-import type { app_convex_Doc, app_convex_Id } from "@/lib/app-convex-client.ts";
+import type { app_convex_Doc, app_convex_Id, app_convex_FunctionReturnType } from "@/lib/app-convex-client.ts";
 import {
 	files_MAX_TEXT_CONTENT_BYTES,
 	files_PresenceStore,
@@ -54,6 +56,7 @@ import {
 	type files_PendingTarget,
 } from "@/lib/files.ts";
 import { files_tiptap_markdown_to_json } from "../../../../../shared/files-tiptap.ts";
+import { file_quotes_schema } from "../../../../../shared/file-quotes.ts";
 import { usePromiseValue } from "@/lib/async.ts";
 import { MySpinner } from "@/components/my-spinner.tsx";
 import {
@@ -79,11 +82,11 @@ import { FileEditorRichTextDragHandle } from "./file-editor-rich-text-drag-handl
 import type { EditorBubbleProps } from "../../../../../vendor/novel/packages/headless/src/components/editor-bubble.tsx";
 import { bubbleMenuReevaluateVisibility } from "../../../../../vendor/tiptap/packages/extension-bubble-menu/src/index.ts";
 import { useDebounce, useFn, useRenderPromise, useStateRef } from "../../../../hooks/utils-hooks.ts";
-import { useStableQuery } from "@/hooks/convex-hooks.ts";
+import { useQueries, useQuery } from "convex/react";
 import { useFilesYjs } from "@/hooks/files-hooks.ts";
-import type { files_yjs_EditBlockReason } from "@/lib/files-yjs-provider.ts";
+import type { files_yjs_EditBlockReason, files_yjs_PushRefusalReason } from "@/lib/files-yjs-provider.ts";
 import { files_get_thread_ids_from_editor_state } from "../../../../../shared/files-tiptap-comments.ts";
-import { global_event_listen_all } from "../../../../lib/global-event.tsx";
+import { global_custom_event_dispatch, global_event_listen_all } from "../../../../lib/global-event.tsx";
 import { FileEditorRichTextSkeleton } from "./file-editor-rich-text-skeleton.tsx";
 
 type SyncStatus = YjsSyncStatus;
@@ -311,6 +314,7 @@ type FileEditorRichTextBubbleContentActions_ClassNames =
 
 type FileEditorRichTextBubbleContentActions_Props = {
 	editor: Editor;
+	editable: boolean;
 	nodeId: app_convex_Id<"files_nodes"> | null;
 	/**
 	 * See `FileEditorRichTextToolsComment_Props`; the bubble threads this straight down.
@@ -325,7 +329,24 @@ type FileEditorRichTextBubbleContentActions_Props = {
 const FileEditorRichTextBubbleContentActions = memo(function FileEditorRichTextBubbleContentActions(
 	props: FileEditorRichTextBubbleContentActions_Props,
 ) {
-	const { editor, nodeId, commentCommit, onClickAi } = props;
+	const { editor, editable, nodeId, commentCommit, onClickAi } = props;
+	const { membershipId } = AppTenantProvider.useContext();
+	const file = useQuery(
+		app_convex_api.files_nodes.get_file_node_for_membership,
+		nodeId ? { membershipId, fileNodeId: nodeId } : "skip",
+	);
+	const quote = (target: "agent" | "comments") => {
+		const { from, to } = editor.state.selection;
+		const selected = file_quotes_schema.safeParse({
+			fileNodeId: nodeId,
+			text: editor.state.doc.textBetween(from, to, "\n"),
+		});
+		if (!selected.success) {
+			toast.error("Select at most 4,096 bytes of text");
+			return;
+		}
+		global_custom_event_dispatch("files::quote_selection", { membershipId, target, quote: selected.data });
+	};
 
 	const handleActionMouseDown = useFn<MyButton_Props["onMouseDown"]>((event) => {
 		// Keep the editor selection alive while the bubble action handles the click.
@@ -343,7 +364,7 @@ const FileEditorRichTextBubbleContentActions = memo(function FileEditorRichTextB
 				"FileEditorRichTextBubbleContentActions" satisfies FileEditorRichTextBubbleContentActions_ClassNames,
 			)}
 		>
-			{onClickAi != null && (
+			{editable && onClickAi != null && (
 				<MyButton
 					variant="floating"
 					className={cn(
@@ -363,18 +384,44 @@ const FileEditorRichTextBubbleContentActions = memo(function FileEditorRichTextB
 					Ask AI
 				</MyButton>
 			)}
-			<FileEditorRichTextToolsNodeSelector editor={editor} buttonVariant="floating" />
-			<FileEditorRichTextToolsLinkSetter editor={editor} buttonVariant="floating" />
-			<FileEditorRichTextToolsMathToggle editor={editor} buttonVariant="floating" />
-			<FileEditorRichTextToolsTextStyles editor={editor} buttonVariant="floating" />
-			<FileEditorRichTextToolsColorSelector editor={editor} buttonVariant="floating" />
-			{nodeId && (
+			{editable && (
+				<>
+					<FileEditorRichTextToolsNodeSelector editor={editor} buttonVariant="floating" />
+					<FileEditorRichTextToolsLinkSetter editor={editor} buttonVariant="floating" />
+					<FileEditorRichTextToolsMathToggle editor={editor} buttonVariant="floating" />
+					<FileEditorRichTextToolsTextStyles editor={editor} buttonVariant="floating" />
+					<FileEditorRichTextToolsColorSelector editor={editor} buttonVariant="floating" />
+				</>
+			)}
+			{editable && nodeId && (
 				<FileEditorRichTextToolsComment
 					editor={editor}
 					fileNodeId={nodeId}
 					commentCommit={commentCommit}
 					buttonVariant="floating"
 				/>
+			)}
+			{nodeId && file?.archiveOperationId === null && (
+				<>
+					<MyButton
+						variant="floating"
+						onPointerDown={handleActionPointerDown}
+						onMouseDown={handleActionMouseDown}
+						onClick={() => quote("agent")}
+					>
+						Quote in Agent
+					</MyButton>
+					{file.writeBlockedReason !== "permission" && (
+						<MyButton
+							variant="floating"
+							onPointerDown={handleActionPointerDown}
+							onMouseDown={handleActionMouseDown}
+							onClick={() => quote("comments")}
+						>
+							Quote in Comments
+						</MyButton>
+					)}
+				</>
 			)}
 		</div>
 	);
@@ -386,6 +433,7 @@ type FileEditorRichTextBubbleContent_ClassNames = "FileEditorRichTextBubbleConte
 
 type FileEditorRichTextBubbleContent_Props = {
 	editor: Editor;
+	editable: boolean;
 	nodeId: app_convex_Id<"files_nodes"> | null;
 	/**
 	 * See `FileEditorRichTextToolsComment_Props`; the bubble threads this straight down.
@@ -401,7 +449,7 @@ type FileEditorRichTextBubbleContent_Props = {
 const FileEditorRichTextBubbleContent = memo(function FileEditorRichTextBubbleContent(
 	props: FileEditorRichTextBubbleContent_Props,
 ) {
-	const { editor, nodeId, commentCommit, openAi, portalElement, onPortalRef, onClickAi, onDiscardAi } = props;
+	const { editor, editable, nodeId, commentCommit, openAi, portalElement, onPortalRef, onClickAi, onDiscardAi } = props;
 
 	return (
 		<MyFloatingSurface
@@ -412,6 +460,7 @@ const FileEditorRichTextBubbleContent = memo(function FileEditorRichTextBubbleCo
 			{!openAi && portalElement ? (
 				<FileEditorRichTextBubbleContentActions
 					editor={editor}
+					editable={editable}
 					nodeId={nodeId}
 					commentCommit={commentCommit}
 					onClickAi={onClickAi}
@@ -431,6 +480,7 @@ type FileEditorRichTextBubble_ClassNames = "FileEditorRichTextBubble" | "FileEdi
 
 type FileEditorRichTextBubble_Props = {
 	editor: Editor;
+	editable: boolean;
 	nodeId: app_convex_Id<"files_nodes"> | null;
 	/**
 	 * See `FileEditorRichTextToolsComment_Props`; the bubble threads this straight down.
@@ -458,7 +508,7 @@ type FileEditorRichTextBubble_Props = {
  * - The user presses Escape to close a popover in the bubble (popover closes, bubble stays visible)
  */
 const FileEditorRichTextBubble = memo(function FileEditorRichTextBubble(props: FileEditorRichTextBubble_Props) {
-	const { editor, nodeId, commentCommit, showAiAction } = props;
+	const { editor, editable, nodeId, commentCommit, showAiAction } = props;
 
 	const bubbleSurfaceRef = useRef<HTMLDivElement>(null);
 	const isShownRef = useRef(false);
@@ -493,8 +543,17 @@ const FileEditorRichTextBubble = memo(function FileEditorRichTextBubble(props: F
 	});
 
 	const shouldShow = useFn<NonNullable<EditorBubbleProps["shouldShow"]>>((params) => {
+		// A disabled submit button can lose focus while its popover saves.
+		if (
+			bubbleSurfaceRef.current?.querySelector(
+				`.${"MyPopoverContent" satisfies MyPopoverContent_ClassNames}[data-open], .${"MySelectPopover" satisfies MySelectPopover_ClassNames}[data-open]`,
+			)
+		) {
+			return true;
+		}
+
 		// Close the bubble if nothing is focused.
-		if (document.activeElement === document.body) {
+		if (editable && document.activeElement === document.body) {
 			return false;
 		}
 
@@ -520,6 +579,17 @@ const FileEditorRichTextBubble = memo(function FileEditorRichTextBubble(props: F
 			return false;
 		}
 
+		if (!editable) {
+			const selection = params.state.selection;
+			const selectedNode = document.getSelection()?.anchorNode;
+			return (
+				(params.view.hasFocus() ||
+					(selectedNode !== null && selectedNode !== undefined && params.view.dom.contains(selectedNode))) &&
+				isTextSelection(selection) &&
+				!selection.empty &&
+				!!params.state.doc.textBetween(params.from, params.to).trim()
+			);
+		}
 		const novelResult = EditorBubble.novelShouldShowImpl(params);
 
 		return novelResult;
@@ -727,7 +797,7 @@ const FileEditorRichTextBubble = memo(function FileEditorRichTextBubble(props: F
 		placement: "bottom-start",
 		flip: false,
 		shift: {
-			padding: 120,
+			padding: 8,
 		},
 		onHide: handleHide,
 		onShow: handleShow,
@@ -746,6 +816,7 @@ const FileEditorRichTextBubble = memo(function FileEditorRichTextBubble(props: F
 		>
 			<FileEditorRichTextBubbleContent
 				editor={editor}
+				editable={editable}
 				nodeId={nodeId}
 				commentCommit={commentCommit}
 				openAi={openAi}
@@ -763,14 +834,14 @@ const FileEditorRichTextBubble = memo(function FileEditorRichTextBubble(props: F
 type FileEditorRichTextAnchoredCommentsLayer_Props = {
 	commentsPortalHost: HTMLElement | null;
 	editor: Editor;
-	editable: boolean;
+	fileNodeId: app_convex_Id<"files_nodes">;
 	isEditorReady: boolean;
 };
 
 const FileEditorRichTextAnchoredCommentsLayer = memo(function FileEditorRichTextAnchoredCommentsLayer(
 	props: FileEditorRichTextAnchoredCommentsLayer_Props,
 ) {
-	const { commentsPortalHost, editor, editable, isEditorReady } = props;
+	const { commentsPortalHost, editor, fileNodeId, isEditorReady } = props;
 
 	const { membershipId } = AppTenantProvider.useContext();
 
@@ -780,46 +851,53 @@ const FileEditorRichTextAnchoredCommentsLayer = memo(function FileEditorRichText
 			files_get_thread_ids_from_editor_state(currentEditor.state).toSorted().join("\n"),
 	});
 
-	const threadIds = threadIdsKey ? threadIdsKey.split("\n") : [];
-
-	const threadsQuery = useStableQuery(
-		app_convex_api.chat_messages.chat_messages_threads_list,
-		threadIds.length > 0
-			? {
-					membershipId,
-					threadIds,
-					isArchived: false,
-				}
-			: "skip",
+	const threadIds = useMemo(() => (threadIdsKey ? threadIdsKey.split("\n") : []), [threadIdsKey]);
+	const channelId = useQuery(app_convex_api.channels.get_file_channel, { membershipId, fileNodeId });
+	const queries = useMemo(
+		() =>
+			Object.fromEntries(
+				threadIds.map((rootMessageId) => [
+					rootMessageId,
+					{
+						query: app_convex_api.channels_messages.get_thread_by_root,
+						args: { membershipId, rootMessageId },
+					},
+				]),
+			),
+		[threadIds, membershipId],
 	);
+	const results = useQueries(queries) as Record<
+		string,
+		app_convex_FunctionReturnType<typeof app_convex_api.channels_messages.get_thread_by_root> | Error | undefined
+	>;
+	const threads = Object.values(results).flatMap((result) =>
+		result &&
+		!(result instanceof Error) &&
+		result.root.message.channelId === channelId &&
+		!result.root.thread?.isResolved
+			? [result.root]
+			: [],
+	);
+	const openThreadIds = threads
+		.map((thread) => thread.message._id)
+		.toSorted()
+		.join("\n");
 
 	useEffect(() => {
-		if (!isEditorReady || !threadsQuery || threadIds.length === 0) {
+		if (!isEditorReady) {
 			return;
 		}
-
-		const activeThreadIds = new Set(threadsQuery.threads.map((thread) => thread.id as string));
-		const threadsToUpdate = threadIds.map((threadId) => ({
-			threadId,
-			orphan: !activeThreadIds.has(threadId),
-		}));
-
-		if (threadsToUpdate.length > 0) {
-			editor.commands.command(({ commands }) => {
-				threadsToUpdate.forEach(({ threadId, orphan }) => {
-					commands.markCommentAsOrphan({ threadId, orphan });
-				});
-				return true;
-			});
-		}
-	}, [editor, isEditorReady, threadIds, threadsQuery]);
+		editor.commands.setCommentThreads(openThreadIds ? openThreadIds.split("\n") : []);
+	}, [editor, isEditorReady, openThreadIds]);
 
 	if (!commentsPortalHost) {
 		return null;
 	}
 
 	return createPortal(
-		<FileEditorRichTextAnchoredComments editor={editor} editable={editable} threads={threadsQuery?.threads} />,
+		<FileEditorCommentsSidebar key={fileNodeId} fileNodeId={fileNodeId} threadIds={threadIds} hideMarkedPosts>
+			<FileEditorRichTextAnchoredComments editor={editor} fileNodeId={fileNodeId} threads={threads} />
+		</FileEditorCommentsSidebar>,
 		commentsPortalHost,
 	);
 });
@@ -854,6 +932,39 @@ function FileEditorRichTextInner(props: FileEditorRichTextInner_Props) {
 	const [editor, setEditor] = useState<Editor | null>(null);
 
 	const isEditorReady = filesYjs.syncStatus === "synchronizing" || filesYjs.syncStatus === "synchronized";
+	const handleCommitComment = useFn(
+		() =>
+			new Promise<boolean>((resolve) => {
+				const provider = filesYjs.yjsProvider;
+				let settled = false;
+				const finish = (saved: boolean) => {
+					if (settled) return;
+					settled = true;
+					clearTimeout(timeout);
+					provider.off("status", check);
+					provider.off("pushRefused", refused);
+					resolve(saved);
+				};
+				const check = () => {
+					if (provider.pushRefusedReason || !provider.args.editable) finish(false);
+					else if (provider.getStatus() === "synchronized") {
+						// A dropped batch reports its refusal after its status changes.
+						queueMicrotask(() => {
+							if (provider.getStatus() === "synchronized")
+								finish(!provider.pushRefusedReason && provider.args.editable);
+						});
+					}
+				};
+				const refused = (reason: files_yjs_PushRefusalReason | null) => {
+					if (reason) finish(false);
+				};
+				const timeout = setTimeout(() => finish(false), 30_000);
+				provider.on("status", check);
+				provider.on("pushRefused", refused);
+				check();
+			}),
+	);
+	const commentCommit = { disabledReason: null, commit: handleCommitComment };
 
 	const liveblocks = useFileEditorRichTextExtension({
 		field: files_YJS_DOC_KEYS.richText,
@@ -1112,12 +1223,22 @@ function FileEditorRichTextInner(props: FileEditorRichTextInner_Props) {
 					immediatelyRender={false}
 					onCreate={handleCreate}
 					slotAfter={
-						editor && editable ? (
+						editor ? (
 							<>
-								<ImageResizer />
-								<FileEditorRichTextToolsSlashCommand />
-								<FileEditorRichTextDragHandle editor={editor} />
-								<FileEditorRichTextBubble editor={editor} nodeId={nodeId} commentCommit={null} showAiAction={true} />
+								{editable && (
+									<>
+										<ImageResizer />
+										<FileEditorRichTextToolsSlashCommand />
+										<FileEditorRichTextDragHandle editor={editor} />
+									</>
+								)}
+								<FileEditorRichTextBubble
+									editor={editor}
+									editable={editable}
+									nodeId={nodeId}
+									commentCommit={commentCommit}
+									showAiAction={true}
+								/>
 							</>
 						) : null
 					}
@@ -1127,7 +1248,7 @@ function FileEditorRichTextInner(props: FileEditorRichTextInner_Props) {
 				<FileEditorRichTextAnchoredCommentsLayer
 					commentsPortalHost={commentsPortalHost}
 					editor={editor}
-					editable={editable}
+					fileNodeId={nodeId}
 					isEditorReady={isEditorReady}
 				/>
 			)}
@@ -2001,13 +2122,18 @@ const FileEditorRichTextNonCollabInner = memo(function FileEditorRichTextNonColl
 					immediatelyRender={false}
 					onCreate={handleCreate}
 					slotAfter={
-						editor && canEdit ? (
+						editor ? (
 							<>
-								<ImageResizer />
-								<FileEditorRichTextToolsSlashCommand />
-								<FileEditorRichTextDragHandle editor={editor} />
+								{canEdit && (
+									<>
+										<ImageResizer />
+										<FileEditorRichTextToolsSlashCommand />
+										<FileEditorRichTextDragHandle editor={editor} />
+									</>
+								)}
 								<FileEditorRichTextBubble
 									editor={editor}
+									editable={canEdit}
 									nodeId={nodeId}
 									commentCommit={commentCommit}
 									showAiAction={false}
@@ -2021,7 +2147,7 @@ const FileEditorRichTextNonCollabInner = memo(function FileEditorRichTextNonColl
 				<FileEditorRichTextAnchoredCommentsLayer
 					commentsPortalHost={commentsPortalHost}
 					editor={editor}
-					editable={editable}
+					fileNodeId={nodeId}
 					isEditorReady={isEditorReady}
 				/>
 			)}

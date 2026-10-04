@@ -24,12 +24,13 @@ import { app_local_storage_get_value, app_local_storage_set_value, type storage_
 import { should_never_happen } from "@/lib/utils.ts";
 import { generate_id, get_id_generator } from "../../shared/generated-ids.ts";
 import { browser_intent_schema, type browser_Intent } from "../../shared/browser-intent.ts";
+import { file_quotes_parse_draft } from "../../shared/file-quotes.ts";
 import { useFn, useLiveRef } from "./utils-hooks.ts";
 import {
 	type ai_chat_UiMessage,
 	ai_chat_DEFAULT_MODEL_ID,
 	ai_chat_DEFAULT_MODE_ID,
-	ai_chat_get_message_text,
+	ai_chat_get_message_draft,
 	ai_chat_is_model_id,
 	ai_chat_is_mode_id,
 	ai_chat_is_optimistic_thread_id,
@@ -441,7 +442,7 @@ function get_optimistic_thread_list_item(tenant: {
 
 function message_has_visible_parts(message: ai_chat_UiMessage) {
 	return message.parts.some((part) => {
-		if (part.type.startsWith("data-") || part.type === "step-start") {
+		if ((part.type.startsWith("data-") && part.type !== "data-file-quote") || part.type === "step-start") {
 			return false;
 		}
 
@@ -1436,7 +1437,7 @@ const useThreadList = (props?: useThreadList_Props) => {
 				{
 					role: "user",
 					// Image parts go first so the transcript shows the images above the text.
-					parts: [...(attachments ?? []), ...(message?.trim() ? [{ type: "text" as const, text: message }] : [])],
+					parts: [...(attachments ?? []), ...file_quotes_parse_draft(message ?? "")],
 					metadata: {
 						convexParentId: null,
 						parentClientGeneratedId: null,
@@ -2230,7 +2231,7 @@ const useThreadRuntimeController = () => {
 				{
 					role: "user",
 					// Image parts go first so the transcript shows the images above the text.
-					parts: [...(attachments ?? []), ...(message?.trim() ? [{ type: "text" as const, text: message }] : [])],
+					parts: [...(attachments ?? []), ...file_quotes_parse_draft(message ?? "")],
 					metadata: {
 						convexParentId: null,
 						parentClientGeneratedId: null,
@@ -2691,7 +2692,7 @@ const useThreadRuntimeController = () => {
 					...(options?.queuedMessage ? { id: options.queuedMessage.id } : {}),
 					role: "user",
 					// Image parts go first so the transcript shows the images above the text.
-					parts: [...attachmentParts, ...(value.trim() ? [{ type: "text" as const, text: value }] : [])],
+					parts: [...attachmentParts, ...file_quotes_parse_draft(value)],
 					metadata: {
 						convexParentId: parentMessageIds.convexParentId,
 						parentClientGeneratedId: parentMessageIds.parentClientGeneratedId,
@@ -2956,7 +2957,7 @@ const useThreadRuntimeController = () => {
 		if (failedSendUserMessage?.role === "user") {
 			sendUserTextNow({
 				threadId: selectedThreadId,
-				value: ai_chat_get_message_text(failedSendUserMessage),
+				value: ai_chat_get_message_draft(failedSendUserMessage),
 				options: {
 					messageId: failedSendUserMessage.id,
 				},

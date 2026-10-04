@@ -89,7 +89,10 @@ const rate_limiter_CONFIG = {
 		capacity: 10,
 	},
 	billing_action: STRICT_AUTH_OR_BILLING,
-	comments_write: STRICT_WRITE,
+	channels_message_write: { kind: "token bucket", rate: 60, period: MINUTE, capacity: 20 },
+	channels_reaction_write: { kind: "token bucket", rate: 120, period: MINUTE, capacity: 30 },
+	channels_write: { kind: "token bucket", rate: 30, period: MINUTE, capacity: 8 },
+	channels_upload_write: { kind: "token bucket", rate: 30, period: MINUTE, capacity: 10 },
 	// Folder import charges one token per file, so one mutation call can consume many tokens at
 	// once. Capacity covers one typical import in a single burst; a bigger import drains the
 	// refill and the client waits `retryAfterMs` between chunks. Keep the burst modest: every

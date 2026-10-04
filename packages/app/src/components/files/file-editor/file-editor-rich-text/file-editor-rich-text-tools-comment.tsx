@@ -14,30 +14,45 @@ import { cn } from "@/lib/utils.ts";
 import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import {
-	FileEditorCommentsComposer,
-	type FileEditorCommentsComposerControl_Ref,
-	type FileEditorCommentsComposer_Props,
-} from "../file-editor-comments-composer.tsx";
+	ChannelsComposer,
+	type ChannelsComposerControl_Ref,
+	type ChannelsComposer_Props,
+} from "@/components/channels/channels-composer.tsx";
 import { files_COMMENT_MARK_TYPE } from "../../../../../shared/files-tiptap-comments.ts";
+import { useChannelsMentionPeople, useChannelsPeople } from "@/components/channels/channels-people.ts";
+import type { ChannelsMentionItem } from "@/components/channels/channels-composer-mention.tsx";
 
 // #region form
 type FileEditorRichTextToolsCommentForm_ClassNames = "FileEditorRichTextToolsCommentForm";
 
 type FileEditorRichTextToolsCommentForm_Props = {
 	formRef: React.RefObject<HTMLFormElement | null>;
-	composerControlRef: React.RefObject<FileEditorCommentsComposerControl_Ref | null>;
+	composerControlRef: React.RefObject<ChannelsComposerControl_Ref | null>;
+	fileNodeId: app_convex_Id<"files_nodes">;
 	isEmpty: boolean;
 	isSubmitting: boolean;
 	isSelectionEmpty: boolean;
-	onChange: FileEditorCommentsComposer_Props["onChange"];
-	onEnter: FileEditorCommentsComposer_Props["onEnter"];
+	onChange: ChannelsComposer_Props["onChange"];
+	onEnter: ChannelsComposer_Props["onEnter"];
 	onSubmit: ComponentProps<"form">["onSubmit"];
+	mentionItems: readonly ChannelsMentionItem[];
 };
 
 const FileEditorRichTextToolsCommentForm = memo(function FileEditorRichTextToolsCommentForm(
 	props: FileEditorRichTextToolsCommentForm_Props,
 ) {
-	const { formRef, composerControlRef, isEmpty, isSubmitting, isSelectionEmpty, onChange, onEnter, onSubmit } = props;
+	const {
+		formRef,
+		composerControlRef,
+		fileNodeId,
+		isEmpty,
+		isSubmitting,
+		isSelectionEmpty,
+		onChange,
+		onEnter,
+		onSubmit,
+		mentionItems,
+	} = props;
 
 	return (
 		<form
@@ -46,15 +61,17 @@ const FileEditorRichTextToolsCommentForm = memo(function FileEditorRichTextTools
 			aria-label="New document comment"
 			onSubmit={onSubmit}
 		>
-			<FileEditorCommentsComposer
+			<ChannelsComposer
 				variant="floating"
 				controlRef={composerControlRef}
 				disabled={isSelectionEmpty || isSubmitting}
 				submitTooltip="Submit comment"
 				submitDisabled={isEmpty || isSelectionEmpty || isSubmitting}
 				ariaLabel="Add comment to selection"
+				attachmentTarget={{ kind: "file", fileNodeId }}
 				onChange={onChange}
 				onEnter={onEnter}
+				mentionItems={mentionItems}
 			/>
 		</form>
 	);
@@ -71,27 +88,22 @@ export type FileEditorRichTextToolsComment_Props = {
 	editor: Editor;
 	fileNodeId: app_convex_Id<"files_nodes">;
 	/**
-	 * How the new comment mark reaches the stored file, or `null` for a collaborative file.
-	 *
-	 * A collaborative file passes `null`: the Yjs provider syncs the mark on its own. A file with
-	 * collaboration turned off passes both fields, because a mark that only lives in the open
-	 * editor would be gone after a reload.
+	 * Wait until the new mark reaches the stored file. Collaborative files wait for Yjs;
+	 * non-collaborative files save the mark right away.
 	 */
 	commentCommit: {
 		/**
 		 * Why the member cannot comment right now, or `null` when they can.
 		 *
-		 * The file has no live sync, so a comment has to be saved into the file. Saving unsaved
-		 * text edits at the same time would publish work the member did not ask to publish, so
-		 * the button waits until the editor is clean.
+		 * Non-collaborative files must be clean: saving a mark also saves their text.
 		 */
 		disabledReason: string | null;
 		/**
-		 * Save the file right away with the new mark in it. Return `false` when the save failed,
-		 * so the caller can take the mark back out.
+		 * Save the new mark or wait for Yjs to save it. Return `false` on failure,
+		 * so the caller can remove the mark.
 		 */
 		commit: () => Promise<boolean>;
-	} | null;
+	};
 	buttonVariant?: MyButton_Props["variant"];
 };
 
@@ -101,8 +113,7 @@ type FileEditorRichTextToolsCommentInner_Props = FileEditorRichTextToolsComment_
 
 /**
  * Remove only the mark of one thread. `unsetMark` would also drop an older thread's mark
- * wherever the selection overlaps it, and `files_CommentsExtension` has no
- * "remove one comment" command, so walk the document the way `markCommentAsOrphan` does.
+ * wherever the selection overlaps it.
  */
 function remove_comment_mark(editor: Editor, threadId: string) {
 	const markType = editor.schema.marks[files_COMMENT_MARK_TYPE];
@@ -124,15 +135,20 @@ const FileEditorRichTextToolsCommentInner = memo(function FileEditorRichTextTool
 
 	const { membershipId } = AppTenantProvider.useContext();
 
-	const createCommentsThread = useMutation(app_convex_api.chat_messages.chat_messages_threads_create);
+	const sendMessage = useMutation(app_convex_api.channels_messages.send_message);
+	const confirmAnchor = useMutation(app_convex_api.channels_messages.confirm_comment_anchor);
+	const discardComment = useMutation(app_convex_api.channels_messages.discard_unconfirmed_comment);
+	const { people } = useChannelsPeople();
+	const mentionItems = useChannelsMentionPeople({ fileNodeId }, people);
 
 	const [open, setOpen] = useState(false);
 	const [isEmpty, setIsEmpty] = useState(true);
 	const [isSubmitting, setIsSubmitting] = useState(false);
 
 	const formRef = useRef<HTMLFormElement>(null);
-	const composerControlRef = useRef<FileEditorCommentsComposerControl_Ref>(null);
+	const composerControlRef = useRef<ChannelsComposerControl_Ref>(null);
 	const openRef = useRef(false);
+	const retry = useRef<{ signature: string; id: string } | null>(null);
 
 	const doSetOpen = useFn((next: boolean | ((prev: boolean) => boolean)) => {
 		const prev = openRef.current;
@@ -147,13 +163,13 @@ const FileEditorRichTextToolsCommentInner = memo(function FileEditorRichTextTool
 		}
 	});
 
-	const handleChange: FileEditorCommentsComposer_Props["onChange"] = () => {
+	const handleChange: ChannelsComposer_Props["onChange"] = () => {
 		if (!composerControlRef.current) return;
 
 		setIsEmpty(composerControlRef.current.isEmpty());
 	};
 
-	const handleComposerEnter: FileEditorCommentsComposer_Props["onEnter"] = () => {
+	const handleComposerEnter: ChannelsComposer_Props["onEnter"] = () => {
 		if (!formRef.current) return;
 
 		formRef.current.requestSubmit();
@@ -162,7 +178,7 @@ const FileEditorRichTextToolsCommentInner = memo(function FileEditorRichTextTool
 	const handleSubmit = useFn<NonNullable<ComponentProps<"form">["onSubmit"]>>(async (e) => {
 		e.preventDefault();
 
-		if (!composerControlRef.current) {
+		if (!composerControlRef.current || isSubmitting || composerControlRef.current.hasPendingUploads()) {
 			return;
 		}
 
@@ -189,13 +205,37 @@ const FileEditorRichTextToolsCommentInner = memo(function FileEditorRichTextTool
 		const capturedSelection = editor.state.selection;
 
 		const markdownContent = composerControlRef.current.getMarkdownContent();
+		const mentionUserIds = composerControlRef.current.getMentionUserIds();
+		const fileMentionIds = composerControlRef.current.getFileMentionIds();
+		const fileQuotes = composerControlRef.current.getFileQuotes();
+		const attachments = composerControlRef.current.getAttachments();
+		const anchorExcerpt = capturedDoc.textBetween(capturedSelection.from, capturedSelection.to, "\n").slice(0, 280);
+		const signature = JSON.stringify({
+			markdownContent,
+			mentionUserIds,
+			fileMentionIds,
+			fileQuotes,
+			attachments,
+			anchorExcerpt,
+			from: capturedSelection.from,
+			to: capturedSelection.to,
+		});
+		if (retry.current?.signature !== signature) retry.current = { signature, id: crypto.randomUUID() };
 
 		setIsSubmitting(true);
 
-		createCommentsThread({
+		sendMessage({
 			membershipId,
-			fileNodeId,
-			content: markdownContent.trim(),
+			target: { kind: "file_comment", fileNodeId, anchorExcerpt },
+			clientMessageId: retry.current.id,
+			body: markdownContent.trim(),
+			mentionUserIds,
+			fileMentionIds,
+			fileQuotes,
+			replyTo: null,
+			attachments,
+			alsoInChannel: false,
+			title: null,
 		})
 			.then(async (result) => {
 				if (result._nay) {
@@ -203,36 +243,46 @@ const FileEditorRichTextToolsCommentInner = memo(function FileEditorRichTextTool
 					return;
 				}
 
-				// The save-first gate cannot see typing that happened while the mutation was waiting.
-				// On a file that saves the mark right away, a changed document or selection would
-				// anchor the mark to text the member never chose, so refuse and leave the composer
-				// open. The thread row stays unreferenced, which is invisible and accepted.
-				if (commentCommit && (!editor.state.doc.eq(capturedDoc) || !editor.state.selection.eq(capturedSelection))) {
-					toast.error("Save your changes before adding a comment.");
+				const threadId = result._yay.rootMessageId;
+				const discard = async () => {
+					const discarded = await discardComment({ membershipId, rootMessageId: threadId }).catch((error: unknown) => {
+						console.error("[FileEditorRichTextToolsComment.discard] Failed to discard comment", { error });
+						return null;
+					});
+					// Discard releases the linked bytes. Keep the local files ready for a new upload attempt.
+					if (discarded && !discarded._nay) {
+						retry.current = null;
+						composerControlRef.current?.resetUploads();
+					}
+				};
+				// Never move the anchor to text changed while the send was waiting.
+				if (editor.isDestroyed || !editor.state.doc.eq(capturedDoc) || !editor.state.selection.eq(capturedSelection)) {
+					await discard();
+					toast.error("The selected text changed. Select it again.");
 					return;
 				}
-
-				const threadId = result._yay.threadId;
-
-				editor.chain().focus().addComment(threadId).run();
-
-				// A collaborative file syncs the mark through Yjs on its own. A file with
-				// collaboration turned off must save it now, and the popover only closes once the
-				// save is known to have worked, so the member has something to retry in.
-				if (commentCommit) {
-					// A rejected commit (a network drop, not a refusal) must also take the mark
-					// back out, or it would ride along unsaved and publish with the next Save.
-					const committed = await commentCommit.commit().catch((error: unknown) => {
-						console.error(error);
-						toast.error("Failed to save the comment");
-						return false;
-					});
-					if (!committed) {
-						remove_comment_mark(editor, threadId);
-						return;
-					}
+				// Keep the composer open until saving succeeds, so a failed save keeps its draft.
+				if (!editor.chain().addComment(threadId).run()) {
+					await discard();
+					toast.error("Could not add the comment mark");
+					return;
 				}
-
+				const committed = await commentCommit.commit().catch((error: unknown) => {
+					console.error(error);
+					return false;
+				});
+				if (!committed) {
+					if (!editor.isDestroyed) remove_comment_mark(editor, threadId);
+					await discard();
+					toast.error("Could not save the comment mark. Try again.");
+					return;
+				}
+				const confirmed = await confirmAnchor({ membershipId, rootMessageId: threadId });
+				if (confirmed._nay) {
+					toast.error(confirmed._nay.message);
+					return;
+				}
+				retry.current = null;
 				composerControlRef.current?.clear();
 				setIsEmpty(true);
 
@@ -295,9 +345,11 @@ const FileEditorRichTextToolsCommentInner = memo(function FileEditorRichTextTool
 					<FileEditorRichTextToolsCommentForm
 						formRef={formRef}
 						composerControlRef={composerControlRef}
+						fileNodeId={fileNodeId}
 						isEmpty={isEmpty}
 						isSubmitting={isSubmitting}
 						isSelectionEmpty={isSelectionEmpty}
+						mentionItems={mentionItems}
 						onChange={handleChange}
 						onEnter={handleComposerEnter}
 						onSubmit={handleSubmit}

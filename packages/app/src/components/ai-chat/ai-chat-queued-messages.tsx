@@ -10,6 +10,7 @@ import { MyIconButton } from "@/components/my-icon-button.tsx";
 import type { AiChatQueuedUserMessage } from "@/hooks/ai-chat-controller.tsx";
 import type { AppElementId } from "@/lib/dom-utils.ts";
 import { cn } from "@/lib/utils.ts";
+import { file_quotes_draft_to_text } from "../../../shared/file-quotes.ts";
 
 type AiChatQueuedMessages_ClassNames =
 	| "AiChatQueuedMessages"
@@ -207,7 +208,8 @@ export const AiChatQueuedMessages = memo(function AiChatQueuedMessages(props: Ai
 								const attachmentsCount = message.attachments.length;
 								// An image-only queued message has empty text; label it by its images instead.
 								const messageLabel =
-									message.text || `${attachmentsCount} ${attachmentsCount === 1 ? "image" : "images"}`;
+									file_quotes_draft_to_text(message.text) ||
+									`${attachmentsCount} ${attachmentsCount === 1 ? "image" : "images"}`;
 
 								return (
 									<Draggable
@@ -274,7 +276,7 @@ export const AiChatQueuedMessages = memo(function AiChatQueuedMessages(props: Ai
 															</span>
 														)}
 														<span className={"AiChatQueuedMessages-text" satisfies AiChatQueuedMessages_ClassNames}>
-															{message.text}
+															{file_quotes_draft_to_text(message.text)}
 														</span>
 													</MyButton>
 													<MyIconButton

@@ -21,8 +21,9 @@ import {
 	activities_db_add_target,
 	activities_db_require_by_source_id,
 } from "./activities_db.ts";
-import { billing_db_check_paid_plan, billing_db_emit_file_save, billing_pick_billed_user_id } from "./billing_db.ts";
-import { quotas_db_ensure, quotas_db_get } from "./quotas.ts";
+import { billing_db_emit_file_save, billing_pick_billed_user_id } from "./billing_db.ts";
+import { files_stored_uploads_db_admit } from "./files_stored_uploads.ts";
+import { quotas_db_get } from "./quotas.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { crypto_random_hex, crypto_sha256_hex, crypto_timing_safe_equal } from "../server/crypto-utils.ts";
@@ -4345,24 +4346,12 @@ export const create_file_upload_targets = internalMutation({
 		const serviceAccountId =
 			writeContext.writer.kind === "service_account" ? writeContext.writer.serviceAccountId : undefined;
 
-		// Keeping a file in the bucket costs real money every month, and the quota below can only
-		// bill what R2 already stored, so the plan is the only door that can refuse an upload. Ask it
-		// before the quota doc is seeded: a `_nay` return still commits what the mutation already
-		// wrote, and a refused call must leave nothing behind. The key owner is the caller, but the
-		// plan belongs to whoever pays for this workspace.
 		const organization = await ctx.db.get("organizations", args.organizationId);
 		if (!organization) {
 			const errorMessage = "principal organizationId points to a missing organizations doc";
 			const errorData = { organizationId: args.organizationId, workspaceId: args.workspaceId };
 			console.error(errorMessage, errorData);
 			throw should_never_happen(errorMessage, errorData);
-		}
-
-		const paidPlan = await billing_db_check_paid_plan(ctx, {
-			userId: billing_pick_billed_user_id({ userId: args.userId, organization }),
-		});
-		if (!paidPlan.hasPaidPlan) {
-			return Result({ _nay: { message: "This workspace's plan does not include file uploads" } });
 		}
 
 		// Validate the whole batch before any write. A `_nay` return does not roll back earlier
@@ -4405,7 +4394,7 @@ export const create_file_upload_targets = internalMutation({
 				}
 			}
 
-			if (item.size > files_MAX_UPLOADS_BYTES) {
+			if (!Number.isSafeInteger(item.size) || item.size < 0 || item.size > files_MAX_UPLOADS_BYTES) {
 				return Result({ _nay: { message: "File too large", data: { path: item.path } } });
 			}
 
@@ -4573,28 +4562,13 @@ export const create_file_upload_targets = internalMutation({
 			}
 		}
 
-		// Consume the declared bytes for the whole batch up front. The counter is monotonic on
-		// purpose: deletes do not refund it, so it is a coarse per-workspace budget, not storage
-		// accounting. Seeded lazily because existing workspaces have no doc for this quota.
-		const totalDeclaredBytes = validated.reduce((sum, item) => sum + item.size, 0);
-		const quotaId = await quotas_db_ensure(ctx, {
-			quotaName: "public_api_upload_bytes",
-			organizationId: args.organizationId,
+		const admission = await files_stored_uploads_db_admit(ctx, {
+			organization,
+			actorUserId: args.userId,
 			workspaceId: args.workspaceId,
-			now,
+			declaredBytes: validated.map((item) => item.size),
 		});
-		const quota = await ctx.db.get("quotas", quotaId);
-		if (!quota) {
-			// Unreachable: quotas_db_ensure returned this id in the same transaction.
-			throw should_never_happen("quotas_db_ensure returned a missing quota doc", { quotaId });
-		}
-		if (quota.usedCount + totalDeclaredBytes > quota.maxCount) {
-			return Result({ _nay: { message: "Upload quota exceeded" } });
-		}
-		await ctx.db.patch("quotas", quota._id, {
-			usedCount: quota.usedCount + totalDeclaredBytes,
-			updatedAt: now,
-		});
+		if (admission._nay) return admission;
 
 		// Write pass. Items run in order so later items reuse folders created by earlier ones.
 		const targets: Array<{
@@ -7525,8 +7499,8 @@ export async function public_api_http_upload_urls(args: {
 			created._nay.message === "Unauthenticated"
 				? 401
 				: created._nay.message === "Permission denied" ||
-					  created._nay.message === "Upload quota exceeded" ||
-					  created._nay.message === "This workspace's plan does not include file uploads"
+					  created._nay.name === "storage_full" ||
+					  created._nay.name === "plan_required"
 					? 403
 					: isReadOnly ||
 						  created._nay.message === "A file already exists at this path" ||

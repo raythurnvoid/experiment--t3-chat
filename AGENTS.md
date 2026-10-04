@@ -234,6 +234,7 @@ Current spec-style skills include:
 - `.agents/skills/quotas/SKILL.md`
 - `.agents/skills/data-deletion/SKILL.md`
 - `.agents/skills/ai-chat-agent/SKILL.md`
+- `.agents/skills/channels/SKILL.md`
 - `.agents/skills/files-agent-pending-updates/SKILL.md`
 - `.agents/skills/files-editable-text/SKILL.md`
 - `.agents/skills/public-api/SKILL.md`

@@ -1,6 +1,6 @@
 import "@/app.css";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
-import type { MouseEventHandler, ReactNode } from "react";
+import { useState, type MouseEventHandler, type ReactNode } from "react";
 import { getFunctionName, type FunctionReference } from "convex/server";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { userEvent } from "vitest/browser";
@@ -93,6 +93,7 @@ vi.mock("@tanstack/react-router", async (importOriginal) => ({
 import { FileEditorSidebarAgent } from "./file-editor-sidebar-agent.tsx";
 import { AiChatController } from "@/hooks/ai-chat-controller.tsx";
 import { app_local_storage_get_value, app_local_storage_set_value, storage_listen_event } from "@/lib/storage.ts";
+import type { file_quotes_Quote } from "../../../../../shared/file-quotes.ts";
 
 function openSseResponse() {
 	const encoder = new TextEncoder();
@@ -127,6 +128,42 @@ describe("FileEditorSidebarAgent thread upgrade", () => {
 	afterEach(() => {
 		cleanup();
 		vi.unstubAllGlobals();
+	});
+
+	test("keeps a pending quote while opening the first chat", async () => {
+		const inserted = vi.fn();
+		function QuoteSidebar() {
+			const [active, setActive] = useState(false);
+			const [quote, setQuote] = useState<file_quotes_Quote | null>(null);
+			return (
+				<>
+					<button
+						onClick={() => {
+							setActive(true);
+							setQuote({ fileNodeId: null, text: "First selected words" });
+						}}
+					>
+						Quote selection
+					</button>
+					<FileEditorSidebarAgent
+						isActive={active}
+						quoteRequest={quote}
+						onQuoteInserted={() => {
+							inserted();
+							setQuote(null);
+						}}
+					/>
+				</>
+			);
+		}
+		render(<QuoteSidebar />);
+		await screen.findByRole("textbox", { name: "Send a message..." });
+		await userEvent.click(screen.getByRole("button", { name: "Quote selection" }));
+		await waitFor(() => expect(inserted).toHaveBeenCalledOnce());
+		expect(
+			screen.getByRole("textbox", { name: "Send a message..." }).textContent,
+			"first quote must survive chat creation",
+		).toContain("First selected words");
 	});
 
 	test("closes a refused chat without restoring it from sidebar storage and allows access later", async () => {

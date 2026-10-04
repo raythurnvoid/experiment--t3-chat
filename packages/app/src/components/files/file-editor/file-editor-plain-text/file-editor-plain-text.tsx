@@ -1001,7 +1001,7 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 			{target.kind === "saved" &&
 				commentsPortalHost &&
 				createPortal(
-					<FileEditorCommentsSidebar threadIds={commentThreadIds} canResolve={editable} />,
+					<FileEditorCommentsSidebar key={target.id} fileNodeId={target.id} threadIds={commentThreadIds} />,
 					commentsPortalHost,
 				)}
 		</>

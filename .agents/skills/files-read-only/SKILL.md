@@ -119,16 +119,17 @@ The table describes a node whose policy refuses the current writer. ACL still ap
 | Browse or download snapshots | Allow |
 | Restore, archive, or unarchive snapshots | Refuse |
 | Share or change policy | Require management permission separately |
-| Reply to an existing comment | Allow with comment permission |
-| Create or resolve an anchored comment | Refuse; this changes a Yjs mark |
+| General comment, reply, resolve, or reopen | Allow with file `content.write`; these do not change the file |
+| Create an anchored comment | Refuse; this changes a Yjs mark |
 | Discard a whole pending proposal | Allow; retire owned private work and keep saved nodes |
 | Accept, save, or rebase pending work | Refuse |
 | Finish an already accepted upload | Allow; a later lock stops new writes, not this one |
 | Finish committed Yjs materialization | Allow |
 | Delete a tenant, workspace, or account | Use the named deletion workflow |
 
-Direct comment sidecar mutations keep their comment ACL rules. The editor uses content write access
-for anchored Create and Resolve. The Yjs gate checks again if a race reaches the server.
+File comments use the same channel doors and composer as Messages. New anchors require a writable
+file and a saved mark. General posts, replies, resolve, and reopen check file access without changing
+content. Resolve hides the mark through plugin metadata. The Yjs gate checks any new mark again.
 
 # Policy Management
 
@@ -432,7 +433,7 @@ The upload flow is:
 
 1. The signed PUT creates the object at `assets/<assetId>`. Reusing that URL gets 412 while the object exists.
 2. The event action matches the exact stored bucket and canonical key, then reads the object's metadata.
-3. The final mutation rechecks ownership and retirement, publishes size and etag, and starts processing once.
+3. The final mutation rechecks ownership and retirement, then rejects bytes larger than declared. Valid publication counts actual bytes and emits `file_upload` once before processing.
 4. A stale or retired attempt goes to exact-key cleanup. It cannot change a newer node or service target.
 
 An already published event changes no metadata and starts no new work. If notification or publication
@@ -449,8 +450,8 @@ A committed target stays terminal. Only a named tenant, workspace, or account de
 these use `db_purge_organization_workspace_content_batch` in `data_deletion.ts`.
 
 Those retry doors still recheck the target's original destination seal, active current path, and
-current actor/account authority and restricted-file ACL. A later lock does not stop them: remint
-refreshes transport for the same accepted operation.
+current actor/account authority and restricted-file ACL. Fresh attempts also repeat paid-plan and
+stored-cap admission. A later lock alone does not stop them.
 If a service call observes that a member moved the file outside the seal, it closes those doors
 permanently for that target. The accepted R2 event can still finish and charge the file's real size.
 
@@ -458,11 +459,13 @@ The service `delete` route also checks current policy before any write. It archi
 because that file may now hold normal editable state and history. It hard-deletes only a pending
 service placeholder, which has no accepted content yet.
 
-The R2 event settles a service target in the publication transaction. `actualBytes` is the winning
-object's size. `chargedBytes` is the largest observed attempt size; only an increase is charged.
-`plugin_service_storage_attempts` keeps each old asset's target link after asset removal. Late events
-may increase the target's charge, but cannot change its winning size, pointers, or file-save event.
-Duplicate and smaller events add no charge. Cleanup never refunds bytes.
+R2 publication settles a service target once. `actualBytes` is the winning object's size;
+`chargedBytes` is its counted size. Late attempts only queue deletion. They add no bytes or events.
+An oversized object is never published: cleanup removes the placeholder and releases the target
+with `releaseReason: "oversized"`. Finalize returns `oversized_upload`, HTTP 409. It cannot be
+revived by remint. A fresh key with a correct declaration can start another target.
+Only operator import assets may carry `uploadBillingExempt: true`. Their size check still applies.
+Cleanup never refunds bytes.
 
 Failed-placeholder discard queues the canonical key with its signed-URL arrival window before deleting
 the asset and node. It also releases the current service target when present. Missing-asset events

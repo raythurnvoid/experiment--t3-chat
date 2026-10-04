@@ -126,10 +126,11 @@ the same producer with private proposals. `files_pending_updates.ts` and
 - A file whose upload is still saving can fail after its parent folder was copied. Keep completed
   output and show the first item failure reason in progress and Activity. Item failure messages
   must be safe without current source access: fixed text with no source names, paths, or raw errors.
-- Save one payer at the first successful file billing check and keep it through retries. Recheck
-  that payer's live credits and, for stored files, paid plan before publication. Emit one `file_save`
-  event for each saved file. Preparing a private proposal does not bill a file Save. Cut and folder
-  creation have no file-save event.
+- Save one payer at the first successful billing check and keep it through retries. Stored copies
+  check paid plan and `stored_file_bytes` before any private placeholder or asset allocation.
+  Recheck that payer's live credits before publication. Stored files emit one `file_upload` and
+  count real bytes once. Text files emit one `file_save`. Private preparation, Cut, and folders
+  emit no file event.
 
 ## Private publication and review
 

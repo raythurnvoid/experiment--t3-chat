@@ -1,0 +1,67 @@
+@layer components {
+	.ChannelsSearchView {
+		height: 100%;
+		min-width: 0;
+		padding: 20px;
+		overflow: auto;
+		color: var(--color-fg-11);
+		font-size: 16px;
+	}
+	.ChannelsSearchView > h1 {
+		font-size: 18px;
+		font-weight: 600;
+	}
+	.ChannelsSearchView-form {
+		display: grid;
+		gap: 16px;
+		margin: 16px 0;
+	}
+	.ChannelsSearchView-filters {
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+		gap: 16px;
+	}
+	.ChannelsSearchView-field {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+		min-width: 0;
+	}
+	.ChannelsSearchView-field .MySelectLabel,
+	.ChannelsSearchView-form .MyInputLabel {
+		padding: 0;
+		font-size: 16px;
+		font-weight: 500;
+		color: var(--color-fg-08);
+	}
+	.ChannelsSearchView-form .MyInputHelperText {
+		font-size: 15px;
+		color: var(--color-fg-08);
+	}
+	.ChannelsSearchView-form input[type="date"] {
+		/* Input surfaces stay dark in both themes. */
+		color-scheme: dark;
+	}
+	.ChannelsSearchView-field button {
+		width: 100%;
+		min-height: 36px;
+		justify-content: space-between;
+	}
+	.ChannelsSearchView-value {
+		min-width: 0;
+		flex: 1;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		text-align: left;
+	}
+	.ChannelsSearchView-results {
+		display: grid;
+		gap: 12px;
+	}
+	.ChannelsSearchView > p,
+	.ChannelsSearchView-results > p {
+		font-size: 15px;
+		color: var(--color-fg-08);
+	}
+}

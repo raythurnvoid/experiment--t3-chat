@@ -120,6 +120,21 @@ async function stage_text(args: {
 }
 
 describe("prepare_file", () => {
+	test("a full stored-file cap refuses stored bytes but lets text prepare", async () => {
+		const t = test_convex();
+		const scope = await seed_scope(t);
+		await t.run(async (ctx) => {
+			const quotaId = await quotas_db_ensure(ctx, { ...scope, quotaName: "stored_file_bytes", now: Date.now() });
+			await ctx.db.patch("quotas", quotaId, { maxCount: 10, usedCount: 10 });
+		});
+		const before = await t.run((ctx) => ctx.db.query("quotas").collect());
+		const refused = await t.mutation(internal.files_ingestion.prepare_file, { ...scope, ...output });
+		expect(refused._nay?.name).toBe("storage_full");
+		expect(await t.run((ctx) => ctx.db.query("files_r2_assets").collect())).toEqual([]);
+		expect(await t.run((ctx) => ctx.db.query("quotas").collect())).toEqual(before);
+		expect((await prepare_text({ t, scope })).kind).toBe("text");
+	});
+
 	test("replays a lost prepare reply without another asset or hold", async () => {
 		const t = test_convex();
 		const scope = await seed_scope(t);
@@ -246,6 +261,7 @@ describe("finalize_file", () => {
 			target: completed._yay.target,
 		});
 		if (!view?.entry.pendingUpdate) throw new Error("Expected a proposal");
+		const meterBefore = await t.run((ctx) => ctx.db.query("billing_usage_snapshots").first());
 		const saved = await asUser.action(api.files_pending_updates.save_file_pending_update, {
 			membershipId: scope.membershipId,
 			target: completed._yay.target,
@@ -254,6 +270,17 @@ describe("finalize_file", () => {
 		});
 		if (!saved._yay || saved._yay.target.kind !== "saved") throw new Error("Expected a saved file");
 		const savedTarget = saved._yay.target;
+		const quota = await t.run((ctx) =>
+			ctx.db
+				.query("quotas")
+				.withIndex("by_workspace_quotaName", (q) =>
+					q.eq("workspaceId", scope.workspaceId).eq("quotaName", "stored_file_bytes"),
+				)
+				.first(),
+		);
+		expect(quota?.usedCount).toBe(output.size);
+		const settledMeter = await t.run((ctx) => ctx.db.query("billing_usage_snapshots").first());
+		expect(settledMeter?.meter?.balance).toBe(meterBefore!.meter!.balance - 1);
 		expect((await t.mutation(internal.files_ingestion.finalize_file, args))._yay).toEqual({
 			...completed._yay,
 			target: saved._yay.target,
@@ -263,6 +290,8 @@ describe("finalize_file", () => {
 		expect(await t.run((ctx) => ctx.db.get("files_ingestion_receipts", prepared.receiptId))).toBeNull();
 		expect(await t.run((ctx) => ctx.db.get("files_nodes", savedTarget.id))).not.toBeNull();
 		expect(await t.run((ctx) => ctx.db.get("files_r2_assets", prepared.assetId))).not.toBeNull();
+		expect(await t.run((ctx) => ctx.db.get("quotas", quota!._id))).toEqual(quota);
+		expect(await t.run((ctx) => ctx.db.query("billing_usage_snapshots").first())).toEqual(settledMeter);
 	});
 
 	test("creates each file once and gives collisions their own names", async () => {

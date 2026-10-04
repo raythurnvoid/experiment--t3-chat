@@ -84,6 +84,7 @@ describe("data_import.create_upload_targets", () => {
 			size: 1234,
 			createdBy: db.userId,
 			processingWorkId: null,
+			uploadBillingExempt: true,
 		});
 		expect(docs.videoAsset?.r2Key).toBeUndefined();
 		expect(generateUploadUrlSpy).toHaveBeenCalledWith(

@@ -11,6 +11,10 @@ vi.mock("@/components/files/files-clipboard.tsx", () => ({
 	FilesClipboardProvider: (props: { children: ReactNode }) => props.children,
 }));
 
+vi.mock("@/lib/app-channels-context.tsx", () => ({
+	AppChannelsProvider: (props: { children: ReactNode }) => props.children,
+}));
+
 type TestRow = { _id: string; parentId: string; name: string };
 type TestPage = PaginationResult<TestRow | { name: string }>;
 

@@ -31,6 +31,8 @@ import { server_convex_get_user_fallback_to_anonymous } from "../server/server-u
 import { get_id_generator } from "../shared/generated-ids.ts";
 import { ai_chat_DEFAULT_MODEL_ID } from "../shared/ai-chat.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
+import { file_quotes_part_schema } from "../shared/file-quotes.ts";
+import { file_quotes_db_shape } from "./file_quotes.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
 // Does NOT work for http actions (see http.ts). No mutable module-level state allowed here.
@@ -219,13 +221,30 @@ async function db_is_on_branch(
  * The UI message of a node. A reply node has no `parts` in its content: it keeps them in its step
  * docs, in step order. A reply has at most 25 steps.
  */
-async function db_ui_message(ctx: QueryCtx | MutationCtx, node: Doc<"ai_chat_threads_messages_aisdk_5">) {
-	if (Array.isArray(node.content.parts)) return node.content;
-	const steps = await ctx.db
-		.query("ai_chat_run_steps")
-		.withIndex("by_message_stepIndex", (q) => q.eq("messageId", node._id))
-		.collect();
-	return { ...node.content, parts: steps.flatMap((step) => step.parts) };
+async function db_ui_message(
+	ctx: QueryCtx | MutationCtx,
+	node: Doc<"ai_chat_threads_messages_aisdk_5">,
+	membership: Doc<"organizations_workspaces_users"> | null,
+) {
+	const steps = Array.isArray(node.content.parts)
+		? []
+		: await ctx.db
+				.query("ai_chat_run_steps")
+				.withIndex("by_message_stepIndex", (q) => q.eq("messageId", node._id))
+				.collect();
+	const parts: unknown[] = Array.isArray(node.content.parts) ? node.content.parts : steps.flatMap((step) => step.parts);
+	const shapedParts = [];
+	for (const part of parts) {
+		if (typeof part !== "object" || part === null || !("type" in part) || part.type !== "data-file-quote") {
+			shapedParts.push(part);
+			continue;
+		}
+		const quote = file_quotes_part_schema.safeParse(part);
+		if (!quote.success) continue;
+		const [data] = await file_quotes_db_shape(ctx, { membership, quotes: [quote.data.data] });
+		shapedParts.push({ type: "data-file-quote", data });
+	}
+	return { ...node.content, parts: shapedParts };
 }
 
 // #endregion nodes
@@ -1196,7 +1215,7 @@ export const branch_page = query({
 				clientGeneratedMessageId: node.clientGeneratedMessageId,
 				status: node.status,
 				version: node.version,
-				content: await db_ui_message(ctx, node),
+				content: await db_ui_message(ctx, node, membership),
 				siblingIds,
 			});
 			bytes += node.bytes;
@@ -1242,6 +1261,17 @@ export const history_page = internalQuery({
 	}),
 	handler: async (ctx, args) => {
 		const messages = [];
+		const thread = await ctx.db.get("ai_chat_threads", args.threadId);
+		const workspaceId = thread ? ctx.db.normalizeId("organizations_workspaces", thread.workspaceId) : null;
+		const membership =
+			thread && workspaceId
+				? await ctx.db
+						.query("organizations_workspaces_users")
+						.withIndex("by_workspace_user_active", (q) =>
+							q.eq("workspaceId", workspaceId).eq("userId", thread.createdBy).eq("active", true),
+						)
+						.unique()
+				: null;
 		let usedBytes = args.usedBytes;
 		let hasUserMessage = args.hasUserMessage;
 		let full = false;
@@ -1290,7 +1320,7 @@ export const history_page = internalQuery({
 				id: node._id,
 				role: String(node.content.role),
 				bytes: node.bytes,
-				content: await db_ui_message(ctx, node),
+				content: await db_ui_message(ctx, node, membership),
 			});
 			usedBytes += node.bytes;
 			nodeId = node.parentId;

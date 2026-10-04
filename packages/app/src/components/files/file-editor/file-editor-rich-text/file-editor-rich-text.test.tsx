@@ -12,7 +12,7 @@ const {
 	fetchPrivateFilePendingTextMock,
 	savePrivateFilePendingTextMock,
 	startReviewMock,
-	stableQueryMock,
+	threadQueriesMock,
 	editorHarness,
 } = vi.hoisted(() => ({
 	tenantContextMock: vi.fn(),
@@ -21,7 +21,7 @@ const {
 	fetchPrivateFilePendingTextMock: vi.fn(),
 	savePrivateFilePendingTextMock: vi.fn(),
 	startReviewMock: vi.fn(),
-	stableQueryMock: vi.fn(),
+	threadQueriesMock: vi.fn(),
 	// The drag handle is the one mounted child that already receives the Tiptap instance, so the
 	// stub below hands it to the tests. That is how a test types into the real document.
 	// The comment tool stub adds `commentCommit` here, so a test can run the comment save without
@@ -61,13 +61,13 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 		action: (...args: unknown[]) => convexActionMock(...args),
 	},
 	app_convex_api: {
+		files_nodes: { get_file_node_for_membership: "get_file_node_for_membership" },
 		files_nodes_content: {
 			get_non_collaborative_file_content: "get_non_collaborative_file_content",
 			replace_file_content: "replace_file_content",
 		},
-		chat_messages: {
-			chat_messages_threads_list: "chat_messages_threads_list",
-		},
+		channels: { get_file_channel: "get_file_channel" },
+		channels_messages: { get_thread_by_root: "get_thread_by_root" },
 	},
 }));
 
@@ -80,12 +80,13 @@ vi.mock("@/lib/files.ts", async (importOriginal) => {
 	};
 });
 
-// The anchored comments layer asks for its threads through this hook. No thread data is under
-// test, but the arguments show which document the layer is currently reading.
-vi.mock("@/hooks/convex-hooks.ts", () => ({
-	useStableQuery: (...args: unknown[]) => {
-		stableQueryMock(...args);
-		return undefined;
+// The per-mark queries show which document the comments layer is reading.
+vi.mock("convex/react", async (importOriginal) => ({
+	...(await importOriginal<typeof import("convex/react")>()),
+	useQuery: () => null,
+	useQueries: (queries: Record<string, unknown>) => {
+		threadQueriesMock(queries);
+		return {};
 	},
 }));
 
@@ -178,16 +179,10 @@ function comment_markdown(threadId: string, word: string) {
 }
 
 /**
- * The thread ids the anchored comments layer asked for on its last render. The layer passes
- * "skip" instead of arguments while the document carries no comment mark.
+ * The root ids the anchored comments layer asked for on its last render.
  */
 function last_requested_thread_ids() {
-	const lastArgs = stableQueryMock.mock.calls.at(-1)?.[1];
-	if (lastArgs === "skip" || lastArgs == null) {
-		return null;
-	}
-
-	return (lastArgs as { threadIds: string[] }).threadIds;
+	return Object.keys(threadQueriesMock.mock.calls.at(-1)?.[0] ?? {});
 }
 
 /**
@@ -234,7 +229,7 @@ beforeEach(() => {
 	convexActionMock.mockReset();
 	fetchPrivateFilePendingTextMock.mockReset();
 	savePrivateFilePendingTextMock.mockReset();
-	stableQueryMock.mockReset();
+	threadQueriesMock.mockReset();
 	editorHarness.editor = null;
 	editorHarness.commentCommit = null;
 	vi.mocked(toast.error).mockClear();
@@ -293,7 +288,7 @@ describe("FileEditorRichTextNonCollab", () => {
 			expect(convexQueryMock).not.toHaveBeenCalled();
 			expect(screen.queryByRole("button", { name: "Apply snapshot" })).toBeNull();
 			expect(editorHarness.commentCommit).toBeNull();
-			expect(stableQueryMock).not.toHaveBeenCalled();
+			expect(threadQueriesMock).not.toHaveBeenCalled();
 			if (text) await typeIntoEditor(" beta");
 			const saveButton = screen.getByRole("button", { name: "Save" });
 			expect(saveButton.hasAttribute("disabled")).toBe(false);
@@ -483,7 +478,8 @@ describe("FileEditorRichTextNonCollab", () => {
 
 		// A private draft turns editing off during each Save, so this cycle repeats in the app.
 		await setEditable(false);
-		expect(editor.state.plugins.length).toBeLessThan(pluginCount);
+		// The quote menu stays mounted while the file is read-only.
+		expect(editor.state.plugins.length).toBe(pluginCount);
 		await setEditable(true);
 
 		expect(editorHarness.editor).toBe(editor);
@@ -566,6 +562,46 @@ describe("FileEditorRichTextNonCollab", () => {
 		// The block format list unmounts while closed.
 		expect(within(bubble).queryByRole("listbox")).toBeNull();
 		expect(document.querySelector(".FileEditorRichTextBubble-rendered")).not.toBeNull();
+	});
+
+	test("an open bubble popover survives losing focus during a document change", async () => {
+		resolveQueryWithNonCollaborativeContent("alpha beta\n");
+		renderNonCollabRichEditor();
+		await flushEditorMount();
+		const editor = editorHarness.editor;
+		if (!editor) {
+			throw new Error("Expected the mounted editor to be captured");
+		}
+
+		await act(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+		await act(async () => {
+			editor.chain().focus().setTextSelection({ from: 1, to: 6 }).run();
+			await new Promise((resolve) => setTimeout(resolve, 400));
+		});
+		const bubble = document.querySelector<HTMLElement>(".FileEditorRichTextBubble-rendered");
+		if (!bubble) {
+			throw new Error("Expected the bubble to show for the selection");
+		}
+		fireEvent.click(within(bubble).getByRole("combobox", { name: /^Block format:/ }));
+		await act(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+		const list = within(bubble).getByRole("listbox");
+		act(() => {
+			list.focus();
+			// Disabling the comment's Send button drops focus to the page too.
+			list.blur();
+		});
+		expect(document.activeElement).toBe(document.body);
+		await act(async () => {
+			editor.commands.addComment("thread_new");
+			await new Promise((resolve) => setTimeout(resolve, 400));
+		});
+
+		expect(list.isConnected, "a pending popover must stay open when its save changes the document").toBe(true);
+		expect(list.hasAttribute("data-open")).toBe(true);
 	});
 
 	test("a snapshot restore refreshes the comment anchors without waiting for the next edit", async () => {

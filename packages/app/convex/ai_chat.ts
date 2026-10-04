@@ -93,6 +93,8 @@ import { plugins_mcp_custom_header_values, plugins_mcp_decrypt_custom_secrets } 
 import { plugins_mcp_oauth_get_access_token } from "./plugins_mcp_oauth.ts";
 import { ai_chat_tool_create_view_image, type ai_chat_Observation } from "../server/ai-chat-file-tools.ts";
 import { files_ingestion_decode_base64 } from "../server/files-ingestion.ts";
+import { file_quotes_part_schema, file_quotes_validate_parts } from "../shared/file-quotes.ts";
+import { file_quotes_db_validate } from "./file_quotes.ts";
 import app_convex_schema, {
 	ai_chat_workspaces_source_validator,
 	browser_intent_validator,
@@ -2185,6 +2187,14 @@ export const thread_run_begin = internalMutation({
 			),
 		);
 		const newMessageCount = existingMessages.filter((message) => message === null).length;
+		const membership = (await ctx.db.get("organizations_workspaces_users", allowed._yay.membershipId))!;
+		for (const [index, message] of args.messages.entries()) {
+			if (existingMessages[index]) continue;
+			const quotes = file_quotes_validate_parts(message.content.parts);
+			if (quotes._nay) return Result({ _nay: { message: quotes._nay.message, data: { status: 400 as const } } });
+			const readable = await file_quotes_db_validate(ctx, { membership, quotes: quotes._yay });
+			if (readable._nay) return Result({ _nay: { message: readable._nay.message, data: { status: 400 as const } } });
+		}
 		if (newMessageCount > 0) {
 			const rateLimit = await rate_limiter_limit_by_key(ctx, {
 				name: "ai_chat_message_write",
@@ -2461,6 +2471,10 @@ async function build_model_messages(
 		await convertToModelMessages(split_job_finish_parts(uiMessages), {
 			ignoreIncompleteToolCalls: true,
 			tools: validationTools,
+			convertDataPart: (part) => {
+				const quote = file_quotes_part_schema.safeParse(part);
+				return quote.success ? { type: "text", text: quote.data.data.text } : undefined;
+			},
 		}),
 	);
 
@@ -3387,6 +3401,8 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 			if (requestMessage.role !== "user") {
 				return { status: 400, body: { message: "Only user messages can be sent" } } as const;
 			}
+			const quotes = file_quotes_validate_parts(requestMessage.parts);
+			if (quotes._nay) return { status: 400, body: { message: quotes._nay.message } } as const;
 
 			if (!ai_chat_message_fits_storage(requestMessage)) {
 				return {

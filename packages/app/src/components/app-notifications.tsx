@@ -14,6 +14,8 @@ import { MyPopover, MyPopoverContent, MyPopoverTrigger } from "@/components/my-p
 import { MyProgressBar } from "@/components/my-progress-bar.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
 import { AppActivitiesProvider } from "@/lib/app-activities-context.tsx";
+import { AppChannelsProvider } from "@/lib/app-channels-context.tsx";
+import { ChannelsActivity } from "@/components/channels/channels-feed.tsx";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import {
 	app_convex,
@@ -157,16 +159,13 @@ const AppNotificationsList = memo(function AppNotificationsList(props: AppNotifi
 	});
 
 	return (
-		<div
-			className={cn(
-				"AppNotificationsList" satisfies AppNotificationsList_ClassNames,
-				"app-scrollable" satisfies AppClassName,
-			)}
-		>
+		<div className={"AppNotificationsList" satisfies AppNotificationsList_ClassNames}>
 			{notifications === undefined && activities === undefined ? (
 				<div className={"AppNotificationsList-empty" satisfies AppNotificationsList_ClassNames}>Loading...</div>
 			) : feedItems.length === 0 ? (
-				<div className={"AppNotificationsList-empty" satisfies AppNotificationsList_ClassNames}>No notifications</div>
+				<div className={"AppNotificationsList-empty" satisfies AppNotificationsList_ClassNames}>
+					No jobs or invitations
+				</div>
 			) : (
 				feedItems.map((item) => {
 					if (item.kind === "activity") {
@@ -511,11 +510,13 @@ type AppNotifications_ClassNames =
 	| "AppNotifications-badge"
 	| "AppNotifications-popover"
 	| "AppNotifications-header"
+	| "AppNotifications-content"
 	| "AppNotifications-title";
 
 export const AppNotifications = memo(function AppNotifications() {
 	const navigate = useNavigate();
 	const { membershipId, organizationName, workspaceName } = AppTenantProvider.useContext();
+	const { inbox, inboxUnreadCount, inboxHasMore } = AppChannelsProvider.useContext();
 
 	const notifications = useQuery(app_convex_api.notifications.list_current_notifications);
 	const activeActivities = usePaginatedQuery(
@@ -540,7 +541,9 @@ export const AppNotifications = memo(function AppNotifications() {
 	const notificationCount = notificationItems.length;
 	// A job that waits on a name clash also counts, until the person answers it or the job ends.
 	const badgeCount =
-		notificationCount + activeActivities.results.filter((activity) => activity.status === "awaiting_input").length;
+		notificationCount +
+		activeActivities.results.filter((activity) => activity.status === "awaiting_input").length +
+		inboxUnreadCount;
 	const dismissableActivityCount = activities.filter((activity) => activity.controls.canDismiss).length;
 
 	const onArchiveNotification = useFn((notificationId: app_convex_Id<"notifications">) => {
@@ -655,9 +658,12 @@ export const AppNotifications = memo(function AppNotifications() {
 					<MyIconButtonIcon>
 						<Bell />
 					</MyIconButtonIcon>
-					{badgeCount > 0 ? (
-						<span className={"AppNotifications-badge" satisfies AppNotifications_ClassNames}>
-							{badgeCount > 99 ? "99+" : badgeCount}
+					{badgeCount > 0 || inboxHasMore ? (
+						<span
+							className={"AppNotifications-badge" satisfies AppNotifications_ClassNames}
+							title="Jobs and invites plus unread loaded message items"
+						>
+							{badgeCount > 99 ? "99+" : `${badgeCount}${inboxHasMore ? "+" : ""}`}
 						</span>
 					) : null}
 				</MyIconButton>
@@ -678,37 +684,49 @@ export const AppNotifications = memo(function AppNotifications() {
 						}
 						onClick={dismissAll}
 					>
-						{dismissing ? "Dismissing…" : "Dismiss all"}
+						{dismissing
+							? "Dismissing…"
+							: inbox.results.length > 0 || inboxHasMore
+								? "Dismiss jobs and invites"
+								: "Dismiss all"}
 					</MyButton>
 				</header>
 
-				<AppNotificationsList
-					notifications={notifications}
-					activities={activities}
-					organizationList={organizationList}
-					onArchiveNotification={onArchiveNotification}
-					onOpenWorkspace={handleOpenWorkspace}
-					onOpenFile={handleOpenFile}
-					onArchiveActivity={onArchiveActivity}
-				/>
-				{activeActivities.status === "CanLoadMore" || activeActivities.status === "LoadingMore" ? (
-					<MyButton
-						variant="ghost"
-						disabled={activeActivities.status === "LoadingMore"}
-						onClick={() => activeActivities.loadMore(50)}
-					>
-						{activeActivities.status === "LoadingMore" ? "Loading active jobs…" : "Load more active jobs"}
-					</MyButton>
-				) : null}
-				{activityHistory.status === "CanLoadMore" || activityHistory.status === "LoadingMore" ? (
-					<MyButton
-						variant="ghost"
-						disabled={activityHistory.status === "LoadingMore"}
-						onClick={() => activityHistory.loadMore(50)}
-					>
-						{activityHistory.status === "LoadingMore" ? "Loading history…" : "Load more history"}
-					</MyButton>
-				) : null}
+				<div
+					className={cn(
+						"AppNotifications-content" satisfies AppNotifications_ClassNames,
+						"app-scrollable" satisfies AppClassName,
+					)}
+				>
+					<ChannelsActivity compact onOpen={() => setOpen(false)} />
+					<AppNotificationsList
+						notifications={notifications}
+						activities={activities}
+						organizationList={organizationList}
+						onArchiveNotification={onArchiveNotification}
+						onOpenWorkspace={handleOpenWorkspace}
+						onOpenFile={handleOpenFile}
+						onArchiveActivity={onArchiveActivity}
+					/>
+					{activeActivities.status === "CanLoadMore" || activeActivities.status === "LoadingMore" ? (
+						<MyButton
+							variant="ghost"
+							disabled={activeActivities.status === "LoadingMore"}
+							onClick={() => activeActivities.loadMore(50)}
+						>
+							{activeActivities.status === "LoadingMore" ? "Loading active jobs…" : "Load more active jobs"}
+						</MyButton>
+					) : null}
+					{activityHistory.status === "CanLoadMore" || activityHistory.status === "LoadingMore" ? (
+						<MyButton
+							variant="ghost"
+							disabled={activityHistory.status === "LoadingMore"}
+							onClick={() => activityHistory.loadMore(50)}
+						>
+							{activityHistory.status === "LoadingMore" ? "Loading history…" : "Load more history"}
+						</MyButton>
+					) : null}
+				</div>
 			</MyPopoverContent>
 		</MyPopover>
 	);

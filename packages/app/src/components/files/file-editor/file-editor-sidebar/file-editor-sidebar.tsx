@@ -1,22 +1,34 @@
 import "./file-editor-sidebar.css";
-import { memo, type Ref } from "react";
+import { memo, useState, type Ref } from "react";
+import { useQuery } from "convex/react";
 import { MyTabs, MyTabsList, MyTabsPanel, MyTabsPanels, MyTabsTab } from "@/components/my-tabs.tsx";
 import { FileEditorSidebarAgent } from "@/components/files/file-editor/file-editor-sidebar/file-editor-sidebar-agent.tsx";
 import { FileEditorSidebarDetails } from "@/components/files/file-editor/file-editor-sidebar/file-editor-sidebar-details.tsx";
 import { FileEditorSidebarPending } from "@/components/files/file-editor/file-editor-sidebar/file-editor-sidebar-pending.tsx";
+import { FileEditorCommentsSidebar } from "../file-editor-comments-sidebar.tsx";
 import {
 	FILE_EDITOR_SIDEBAR_TAB_ID_PENDING,
 	FileEditorSidebarPendingTabBadge,
 } from "@/components/files/file-editor/file-editor-sidebar/file-editor-sidebar-pending-strip.tsx";
 import { useAppLocalStorageStateValue } from "@/lib/storage.ts";
 import type { AppElementId } from "@/lib/dom-utils.ts";
-import type { app_convex_Doc } from "@/lib/app-convex-client.ts";
+import { app_convex_api, type app_convex_Doc, type app_convex_Id } from "@/lib/app-convex-client.ts";
+import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { files_node_has_editable_text_content, files_node_has_editable_yjs_state } from "@/lib/files.ts";
 import { cn } from "@/lib/utils.ts";
+import { useGlobalCustomEvent } from "@/lib/global-event.tsx";
+import type { file_quotes_Quote } from "../../../../../shared/file-quotes.ts";
 
 const FILE_EDITOR_SIDEBAR_TAB_ID_COMMENTS = "app_file_editor_sidebar_tabs_comments" satisfies AppElementId;
 const FILE_EDITOR_SIDEBAR_TAB_ID_AGENT = "app_file_editor_sidebar_tabs_agent" satisfies AppElementId;
 const FILE_EDITOR_SIDEBAR_TAB_ID_DETAILS = "app_file_editor_sidebar_tabs_details" satisfies AppElementId;
+
+function FileEditorSidebarCommentsBadge(props: { fileNodeId: app_convex_Id<"files_nodes"> }) {
+	const { membershipId } = AppTenantProvider.useContext();
+	const channelId = useQuery(app_convex_api.channels.get_file_channel, { membershipId, fileNodeId: props.fileNodeId });
+	const state = useQuery(app_convex_api.channels.get_channel_state, channelId ? { membershipId, channelId } : "skip");
+	return state?.unread ? <span aria-label="Unread comments">●</span> : null;
+}
 
 // #region root
 export type FileEditorSidebar_ClassNames =
@@ -37,16 +49,21 @@ export type FileEditorSidebar_Props = {
 
 export const FileEditorSidebar = memo(function FileEditorSidebar(props: FileEditorSidebar_Props) {
 	const { node, isPrivate = false, commentsContainerRef } = props;
+	const { membershipId } = AppTenantProvider.useContext();
+	const [quoteRequest, setQuoteRequest] = useState<file_quotes_Quote | null>(null);
 
 	const [storedFilesLastTab, setStoredFilesLastTab] = useAppLocalStorageStateValue("app_state::files_last_tab");
+	useGlobalCustomEvent("files::quote_selection", ({ detail }) => {
+		if (detail.membershipId !== membershipId || detail.quote.fileNodeId !== node?._id || isPrivate) return;
+		setStoredFilesLastTab(
+			detail.target === "agent" ? FILE_EDITOR_SIDEBAR_TAB_ID_AGENT : FILE_EDITOR_SIDEBAR_TAB_ID_COMMENTS,
+		);
+		if (detail.target === "agent") setQuoteRequest(detail.quote);
+	});
 
-	// Comment threads live in Markdown comment marks, so a plain text document cannot have them and
-	// shows Details instead. A non-collaborative Markdown file CAN have them: its marks are saved
-	// with the file and come back on reload, and the anchored-comments layer renders for it too. So
-	// it shows Comments, and it keeps Details next to it, because the stored-file card does not
-	// render for editable nodes and those rows would otherwise have no owner at all.
+	// Every saved file has general comments. Editors add their anchored comments through the portal.
 	const isEditableTextFile = node !== null && node.kind === "file" && files_node_has_editable_text_content(node);
-	const hasCommentsTab = !isPrivate && (!isEditableTextFile || node.textKind !== "plain_text");
+	const hasCommentsTab = !isPrivate;
 	const showsDetailsTab =
 		isEditableTextFile && (node.textKind === "plain_text" || !files_node_has_editable_yjs_state(node));
 	const availableTabIds: AppElementId[] = (
@@ -59,9 +76,7 @@ export const FileEditorSidebar = memo(function FileEditorSidebar(props: FileEdit
 	).filter((tabId) => tabId !== null);
 
 	// If the selected tab is not available for this node, fall back to the first available one.
-	// This covers both a stored selection naming a hidden tab AND the Comments default on a file
-	// that shows Details instead. The stored value stays untouched, so opening a rich-text file again
-	// restores the user's real selection.
+	// Keep the stored choice so another file restores the user's selected tab.
 	const selectedTab =
 		storedFilesLastTab ?? (isPrivate ? FILE_EDITOR_SIDEBAR_TAB_ID_PENDING : FILE_EDITOR_SIDEBAR_TAB_ID_COMMENTS);
 	const filesLastTab = availableTabIds.includes(selectedTab) ? selectedTab : availableTabIds[0];
@@ -82,7 +97,11 @@ export const FileEditorSidebar = memo(function FileEditorSidebar(props: FileEdit
 						className={cn("FileEditorSidebar-tabs-list" satisfies FileEditorSidebar_ClassNames)}
 						aria-label="Sidebar tabs"
 					>
-						{hasCommentsTab ? <MyTabsTab id={FILE_EDITOR_SIDEBAR_TAB_ID_COMMENTS}>Comments</MyTabsTab> : null}
+						{hasCommentsTab ? (
+							<MyTabsTab id={FILE_EDITOR_SIDEBAR_TAB_ID_COMMENTS}>
+								Comments{node?.kind === "file" && <FileEditorSidebarCommentsBadge fileNodeId={node._id} />}
+							</MyTabsTab>
+						) : null}
 						{showsDetailsTab ? <MyTabsTab id={FILE_EDITOR_SIDEBAR_TAB_ID_DETAILS}>Details</MyTabsTab> : null}
 						<MyTabsTab id={FILE_EDITOR_SIDEBAR_TAB_ID_AGENT}>Agent</MyTabsTab>
 						<MyTabsTab id={FILE_EDITOR_SIDEBAR_TAB_ID_PENDING}>
@@ -101,6 +120,9 @@ export const FileEditorSidebar = memo(function FileEditorSidebar(props: FileEdit
 								ref={commentsContainerRef}
 								className={cn("FileEditorSidebar-comments-host" satisfies FileEditorSidebar_ClassNames)}
 							></div>
+							{node?.kind === "file" && !isEditableTextFile && (
+								<FileEditorCommentsSidebar key={node._id} fileNodeId={node._id} threadIds={[]} />
+							)}
 						</MyTabsPanel>
 					) : null}
 					{showsDetailsTab ? (
@@ -119,7 +141,11 @@ export const FileEditorSidebar = memo(function FileEditorSidebar(props: FileEdit
 						className={cn("FileEditorSidebar-panel" satisfies FileEditorSidebar_ClassNames)}
 						tabId={FILE_EDITOR_SIDEBAR_TAB_ID_AGENT}
 					>
-						<FileEditorSidebarAgent isActive={storedFilesLastTab === FILE_EDITOR_SIDEBAR_TAB_ID_AGENT} />
+						<FileEditorSidebarAgent
+							isActive={filesLastTab === FILE_EDITOR_SIDEBAR_TAB_ID_AGENT}
+							quoteRequest={quoteRequest}
+							onQuoteInserted={() => setQuoteRequest(null)}
+						/>
 					</MyTabsPanel>
 					<MyTabsPanel
 						className={cn("FileEditorSidebar-panel" satisfies FileEditorSidebar_ClassNames)}

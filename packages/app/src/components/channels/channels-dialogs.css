@@ -1,0 +1,33 @@
+@layer components {
+	.ChannelsDialogs {
+		width: min(520px, calc(100vw - 24px));
+		max-height: calc(100dvh - 24px);
+	}
+	.ChannelsDialogs-form {
+		display: flex;
+		flex-direction: column;
+		min-height: 0;
+	}
+	.ChannelsDialogs-fields {
+		display: grid;
+		gap: 16px;
+		padding: 16px;
+		font-size: 0.9375rem;
+	}
+	.ChannelsDialogs-list {
+		display: grid;
+		gap: 8px;
+	}
+	.ChannelsDialogs-person {
+		display: flex;
+		gap: 8px;
+		align-items: center;
+		flex-wrap: wrap;
+		> span {
+			flex: 1;
+		}
+	}
+	.ChannelsDialogs-error {
+		color: var(--color-red-09);
+	}
+}
