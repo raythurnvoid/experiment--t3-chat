@@ -587,7 +587,7 @@ export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props
 
 	const handleComposerSubmit = useFn<AiChatComposer_Props["onSubmit"]>((value, attachments) => {
 		if (!value.trim() && attachments.length === 0) {
-			return;
+			return false;
 		}
 
 		if (queuedUserMessageEdit) {

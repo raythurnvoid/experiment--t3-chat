@@ -258,10 +258,10 @@ export type AiChatComposer_Props = Omit<
 	onSelectedModelIdChange: (value: ai_chat_ModelId) => void;
 	onSelectedModeIdChange: (value: ai_chat_ModeId) => void;
 	/**
-	 * Return `false` to keep the composer text when the message was rejected,
+	 * Return `true` when accepted, or `false` to keep the text and images when rejected,
 	 * for example when another surface filled the queue first.
 	 */
-	onSubmit: (value: string, attachments: FileUIPart[]) => boolean | void;
+	onSubmit: (value: string, attachments: FileUIPart[]) => boolean;
 	onCancel?: () => void;
 	onInteractedOutside?: (event: FocusEvent | PointerEvent) => void;
 	onClose?: () => void;

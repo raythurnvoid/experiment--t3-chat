@@ -2,7 +2,7 @@ import type { ReactElement, ReactNode } from "react";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
-import { AiChatComposer } from "./ai-chat-composer.tsx";
+import { AiChatComposer, type AiChatComposer_Props } from "./ai-chat-composer.tsx";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { useAppGlobalStore } from "@/lib/app-global-store.ts";
@@ -85,7 +85,7 @@ describe("AiChatComposer", () => {
 				selectedModeId="agent"
 				onSelectedModelIdChange={vi.fn()}
 				onSelectedModeIdChange={vi.fn()}
-				onSubmit={vi.fn()}
+				onSubmit={vi.fn(() => true)}
 			/>,
 		);
 
@@ -107,7 +107,7 @@ describe("AiChatComposer", () => {
 				selectedModeId="agent"
 				onSelectedModelIdChange={vi.fn()}
 				onSelectedModeIdChange={vi.fn()}
-				onSubmit={vi.fn()}
+				onSubmit={vi.fn(() => true)}
 			/>,
 		);
 
@@ -146,7 +146,7 @@ describe("AiChatComposer", () => {
 
 	test("uses one action for Stop while empty and Queue while text is present", () => {
 		const onCancel = vi.fn();
-		const onSubmit = vi.fn();
+		const onSubmit = vi.fn<AiChatComposer_Props["onSubmit"]>(() => true);
 		render(
 			<AiChatComposer
 				canCancel
@@ -190,7 +190,7 @@ describe("AiChatComposer", () => {
 	});
 
 	test("attaches a pasted image as a removable chip and submits it as a file part", async () => {
-		const onSubmit = vi.fn();
+		const onSubmit = vi.fn<AiChatComposer_Props["onSubmit"]>(() => true);
 		render(
 			<AiChatComposer
 				canCancel={false}
@@ -234,7 +234,7 @@ describe("AiChatComposer", () => {
 	});
 
 	test("removing the attachment chip disables an image-only send again", async () => {
-		const onSubmit = vi.fn();
+		const onSubmit = vi.fn<AiChatComposer_Props["onSubmit"]>(() => true);
 		render(
 			<AiChatComposer
 				canCancel={false}
@@ -286,7 +286,7 @@ describe("AiChatComposer", () => {
 				selectedModeId="agent"
 				onSelectedModelIdChange={vi.fn()}
 				onSelectedModeIdChange={vi.fn()}
-				onSubmit={vi.fn()}
+				onSubmit={vi.fn(() => true)}
 			/>,
 		);
 
@@ -316,7 +316,7 @@ describe("AiChatComposer", () => {
 				selectedModeId="agent"
 				onSelectedModelIdChange={vi.fn()}
 				onSelectedModeIdChange={vi.fn()}
-				onSubmit={vi.fn()}
+				onSubmit={vi.fn(() => true)}
 			/>,
 		);
 
@@ -349,7 +349,7 @@ describe("AiChatComposer", () => {
 				onValueChange={onValueChange}
 				onSelectedModelIdChange={vi.fn()}
 				onSelectedModeIdChange={vi.fn()}
-				onSubmit={vi.fn()}
+				onSubmit={vi.fn(() => true)}
 			/>,
 		);
 
@@ -484,7 +484,7 @@ describe("AiChatComposer", () => {
 				selectedModeId="agent"
 				onSelectedModelIdChange={vi.fn()}
 				onSelectedModeIdChange={vi.fn()}
-				onSubmit={vi.fn()}
+				onSubmit={vi.fn(() => true)}
 				onClose={onClose}
 			/>,
 		);
@@ -513,7 +513,7 @@ describe("AiChatComposer", () => {
 				selectedModeId="agent"
 				onSelectedModelIdChange={vi.fn()}
 				onSelectedModeIdChange={vi.fn()}
-				onSubmit={vi.fn()}
+				onSubmit={vi.fn(() => true)}
 				onClose={onClose}
 			/>,
 		);
@@ -554,7 +554,7 @@ describe("AiChatComposer", () => {
 				selectedModeId="agent"
 				onSelectedModelIdChange={vi.fn()}
 				onSelectedModeIdChange={vi.fn()}
-				onSubmit={vi.fn()}
+				onSubmit={vi.fn(() => true)}
 				onClose={onClose}
 			/>,
 		);
@@ -568,7 +568,7 @@ describe("AiChatComposer", () => {
 	});
 
 	test("opens the mention popup on @ and submits the picked file as a path token", async () => {
-		const onSubmit = vi.fn();
+		const onSubmit = vi.fn<AiChatComposer_Props["onSubmit"]>(() => true);
 		render_with_tenant(
 			<AiChatComposer
 				canCancel={false}
@@ -652,7 +652,7 @@ describe("AiChatComposer", () => {
 					selectedModeId="agent"
 					onSelectedModelIdChange={vi.fn()}
 					onSelectedModeIdChange={vi.fn()}
-					onSubmit={vi.fn()}
+					onSubmit={vi.fn(() => true)}
 					onClose={onClose}
 				/>
 			</div>,
@@ -685,7 +685,7 @@ describe("AiChatComposer", () => {
 	});
 
 	test("inserts a folder mention with a trailing slash on row click", async () => {
-		const onSubmit = vi.fn();
+		const onSubmit = vi.fn<AiChatComposer_Props["onSubmit"]>(() => true);
 		render_with_tenant(
 			<AiChatComposer
 				canCancel={false}
@@ -726,7 +726,7 @@ describe("AiChatComposer", () => {
 	});
 
 	test("does not pick a mention row while IME composition is active", async () => {
-		const onSubmit = vi.fn();
+		const onSubmit = vi.fn<AiChatComposer_Props["onSubmit"]>(() => true);
 		render_with_tenant(
 			<AiChatComposer
 				canCancel={false}
@@ -774,7 +774,7 @@ describe("AiChatComposer", () => {
 				selectedModeId="agent"
 				onSelectedModelIdChange={vi.fn()}
 				onSelectedModeIdChange={vi.fn()}
-				onSubmit={vi.fn()}
+				onSubmit={vi.fn(() => true)}
 				onInteractedOutside={onInteractedOutside}
 			/>,
 		);
@@ -803,7 +803,7 @@ describe("AiChatComposer", () => {
 	});
 
 	test("swallows Enter while the mention popup shows no results", async () => {
-		const onSubmit = vi.fn();
+		const onSubmit = vi.fn<AiChatComposer_Props["onSubmit"]>(() => true);
 		render_with_tenant(
 			<AiChatComposer
 				canCancel={false}
@@ -838,7 +838,7 @@ describe("AiChatComposer", () => {
 	});
 
 	test("shows a loading row while the workspace tree has not arrived", async () => {
-		const onSubmit = vi.fn();
+		const onSubmit = vi.fn<AiChatComposer_Props["onSubmit"]>(() => true);
 		treeNodesMock.mockReturnValue(undefined);
 		render_with_tenant(
 			<AiChatComposer
@@ -884,7 +884,7 @@ describe("AiChatComposer", () => {
 				selectedModeId="agent"
 				onSelectedModelIdChange={vi.fn()}
 				onSelectedModeIdChange={vi.fn()}
-				onSubmit={vi.fn()}
+				onSubmit={vi.fn(() => true)}
 			/>,
 		);
 
@@ -917,7 +917,7 @@ describe("AiChatComposer", () => {
 				selectedModeId="agent"
 				onSelectedModelIdChange={vi.fn()}
 				onSelectedModeIdChange={vi.fn()}
-				onSubmit={vi.fn()}
+				onSubmit={vi.fn(() => true)}
 			/>,
 		);
 
@@ -937,7 +937,7 @@ describe("AiChatComposer", () => {
 	});
 
 	test("reloads a stored mention token as plain text without opening the popup", () => {
-		const onSubmit = vi.fn();
+		const onSubmit = vi.fn<AiChatComposer_Props["onSubmit"]>(() => true);
 		render_with_tenant(
 			<AiChatComposer
 				canCancel={false}
@@ -962,7 +962,7 @@ describe("AiChatComposer", () => {
 	});
 
 	test("does not save a queued edit when Enter confirms IME text", () => {
-		const onSubmit = vi.fn();
+		const onSubmit = vi.fn<AiChatComposer_Props["onSubmit"]>(() => true);
 		render(
 			<AiChatComposer
 				canCancel={false}

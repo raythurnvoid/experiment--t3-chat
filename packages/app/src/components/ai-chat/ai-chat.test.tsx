@@ -4,8 +4,9 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 
 import type { AiChatThreadRuntime } from "@/hooks/ai-chat-controller.tsx";
 import type { ai_chat_UiMessage } from "@/lib/ai-chat.ts";
+import type { AiChatComposer_Props } from "./ai-chat-composer.tsx";
 
-const composerMocks = vi.hoisted(() => ({ submitResults: [] as Array<boolean | void> }));
+const composerMocks = vi.hoisted(() => ({ submitResults: [] as boolean[] }));
 
 // Network boundary: the real hooks talk to a live Convex client.
 vi.mock("convex/react", () => ({
@@ -43,7 +44,7 @@ vi.mock("@/components/ai-chat/ai-chat-composer.tsx", () => ({
 		submitLabel?: string;
 		selectedModelId: string;
 		selectedModeId: string;
-		onSubmit: (value: string, attachments: []) => boolean | void;
+		onSubmit: AiChatComposer_Props["onSubmit"];
 		onClose?: () => void;
 	}) {
 		return (
