@@ -30,6 +30,7 @@ Use the relevant section before measuring latency. To drive the live app in the 
 - Rate-limiter probes consume real tokens. Read the current limiter configuration before a probe and use a throwaway key for that run, never a real user key.
 - Probe mutations that insert data should delete it in the same transaction (net no-op).
 - Dev deployments are noisy; take ≥5-7 samples per variant, interleave variants round-robin, compare medians.
+- Exclude `cachedResult: true` records from execution-cost totals. A cache hit can keep the original execution timestamp and user execution time while reporting zero total time. Use its current `requestId` only to trace the call, not to time new work.
 - Server exec time is only one leg. The client perceives: WS round trip + mutation exec + subscription update pushed to the client + client render. Capture Convex WS frames (CDP `Network.webSocketFrameSent/Received`) to split those legs.
 - Before comparing numbers across dependency versions, verify what actually resolves with `vp env exec pnpm --dir packages/app exec node -p "require('<pkg>/package.json').version"`. A pnpm-workspace `overrides:` entry can pin the whole workspace regardless of package.json ranges.
 

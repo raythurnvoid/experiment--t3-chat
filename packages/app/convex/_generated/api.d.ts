@@ -44,6 +44,7 @@ import type * as files_nodes from "../files_nodes.js";
 import type * as files_nodes_ai from "../files_nodes_ai.js";
 import type * as files_nodes_ai_http_routes from "../files_nodes_ai_http_routes.js";
 import type * as files_nodes_content from "../files_nodes_content.js";
+import type * as files_nodes_create from "../files_nodes_create.js";
 import type * as files_nodes_reconstruct_content from "../files_nodes_reconstruct_content.js";
 import type * as files_pending_holds from "../files_pending_holds.js";
 import type * as files_pending_media from "../files_pending_media.js";
@@ -166,6 +167,7 @@ declare const fullApi: ApiFromModules<{
   files_nodes_ai: typeof files_nodes_ai;
   files_nodes_ai_http_routes: typeof files_nodes_ai_http_routes;
   files_nodes_content: typeof files_nodes_content;
+  files_nodes_create: typeof files_nodes_create;
   files_nodes_reconstruct_content: typeof files_nodes_reconstruct_content;
   files_pending_holds: typeof files_pending_holds;
   files_pending_media: typeof files_pending_media;

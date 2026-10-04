@@ -73,6 +73,37 @@ export function r2_create_asset_key(args: {
  */
 export const r2_UNFINALIZED_ASSET_TTL_MS = 24 * 60 * 60 * 1000;
 
+// Allocate both assets together without loading r2.ts and its upload pipeline.
+export const insert_file_creation_assets = internalMutation({
+	args: {
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		yjsSnapshotSize: doc(app_convex_schema, "files_r2_assets").fields.size,
+		versionSnapshotSize: doc(app_convex_schema, "files_r2_assets").fields.size,
+	},
+	returns: v.object({
+		yjsSnapshotAssetId: v.id("files_r2_assets"),
+		versionSnapshotAssetId: v.id("files_r2_assets"),
+	}),
+	handler: async (ctx, args) => {
+		const now = Date.now();
+		const fields = {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			r2Bucket: r2.config.bucket,
+			createdBy: args.userId,
+			unfinalizedExpiresAt: now + r2_UNFINALIZED_ASSET_TTL_MS,
+			updatedAt: now,
+		};
+		const [yjsSnapshotAssetId, versionSnapshotAssetId] = await Promise.all([
+			ctx.db.insert("files_r2_assets", { ...fields, kind: "yjs_snapshot", size: args.yjsSnapshotSize }),
+			ctx.db.insert("files_r2_assets", { ...fields, kind: "content_snapshot", size: args.versionSnapshotSize }),
+		]);
+		return { yjsSnapshotAssetId, versionSnapshotAssetId };
+	},
+});
+
 export async function r2_put_object(
 	ctx: ActionCtx,
 	args: {

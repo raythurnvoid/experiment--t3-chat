@@ -285,12 +285,25 @@ Editable create publishes the node, Yjs pointers, both live asset references, an
 
 These six Convex functions serve both rich Markdown and plain-text files. Their generic names match that shared role:
 
-- `create_text_node` (`files_nodes_content.ts`, the only public one)
+- `create_text_node` (`files_nodes_content.ts`, used by the sidebar)
 - `get_file_text_content_db_state_by_path` (`files_nodes_content.ts`)
 - `get_file_last_available_text_content_by_path` (`files_nodes_content.ts`)
 - `finalize_text_file_node_from_r2_assets` (`r2.ts`)
 - `finalize_uploaded_text_file` (`r2.ts`)
 - `match_text_file_lines` (`files_nodes.ts`)
+
+`files_nodes_create.create_text_node` is a temporary timing comparison. It keeps the same args,
+auth, rate limit, write preflight, cleanup, and final `create_file_node` transaction. Its action
+does not import the tree, upload, or content modules at runtime. It allocates both unpublished
+assets in one `r2_client.insert_file_creation_assets` mutation, with the usual 24-hour cleanup
+deadline. The sidebar still calls `files_nodes_content.create_text_node`.
+
+The same temporary module also exposes `files_nodes_create.create_folder_node`. It copies the
+ordinary public folder path, including access checks, writer rules, inherited defaults, and
+media versions. It imports the small access helpers, without importing the tree handler module.
+`experimental_reuseContext` lets folder mutations reuse the loaded module; file actions still
+load it for each call. The sidebar still calls `files_nodes.create_folder_node`. Keep the
+temporary copy and its parity tests aligned with that door while the comparison exists.
 
 Exact content uses `files_text_chunks.textChunk` for both document shapes. Search rows link to those chunks through `files_plain_text_chunks.textChunkId`.
 

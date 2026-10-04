@@ -441,6 +441,33 @@ Use this after changing the file header, `files::reveal_node`, or the sidebar's 
 
 The sidebar `New file` button saves a generated `new-file*.md` name, navigates to the new node, and opens inline rename. Read its id from the new route. The older DOM-diff recipe below also works in small trees:
 
+For create latency, load the `perf-profiling` skill and use a separate tab. Start at `nodeId=root`
+with its README loaded. Time the sidebar click inside the page, then match the
+`files_nodes_content:create_text_node` WebSocket action and response by `requestId`. Record the
+new row, enabled rename input, rename focus, and loaded editor text as separate times. The root
+README is already an editor, so an editor selector alone does not prove the new file loaded:
+require a different editor element with the initial text. Match the exact created row id in a
+virtual tree. Keep Playwriter command time out of the results.
+
+The temporary comparison action is `files_nodes_create:create_text_node`. To compare real sidebar
+clicks, replace only that outgoing action path in an owned test tab, then restore the tab's
+WebSocket send function. Check the actual path and response in CDP frames. Alternate the current
+and split actions with the same starting view. Exclude runs with HMR or server restarts. The
+normal sidebar still uses the current action.
+
+The temporary folder mutation is `files_nodes_create:create_folder_node`. Its control is
+`files_nodes:create_folder_node`. The same owned-tab rewrite works for its outgoing Mutation.
+Use the sidebar selector `.FilesSidebarTopSection-actions-icon-button[aria-label="New folder"]`
+when both the sidebar and root view have that button. Match the returned node id and enabled
+rename input. Restore the send function after the check.
+
+For module comparisons, run at least five calls per variant through the signed-in app client.
+Match CDP requests to backend execution logs and exclude cached queries. Report the first
+folder call separately: mutations can reuse a loaded module, while file actions load it each
+time. An empty temporary action in each module can compare that load cost without database or
+R2 work. Remove those probes after capture. Report server time and browser round-trip time
+separately; changing network or local CPU load can hide a small server gain.
+
 Use this DOM-diff recipe only in a small tree where every row is mounted. In a virtual tree, scrolling
 also changes that set. Prefer the new `nodeId` in the route after creation, then confirm the exact row.
 

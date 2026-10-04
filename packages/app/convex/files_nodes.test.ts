@@ -4966,7 +4966,10 @@ test("create_text_node writes server-seeded initial content to R2", async () => 
 	expect(r2Writes.has(yjsSnapshotR2Key)).toBe(true);
 });
 
-test("create_text_node does not publish a file node when initial R2 writes fail", async () => {
+test.each([
+	["current", api.files_nodes_content.create_text_node],
+	["split", api.files_nodes_create.create_text_node],
+])("%s create_text_node does not publish a file node when initial R2 writes fail", async (_name, createTextNode) => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 	const asUser = t.withIdentity({
@@ -4997,7 +5000,7 @@ test("create_text_node does not publish a file node when initial R2 writes fail"
 		}),
 	);
 
-	const creatingFile = asUser.action(api.files_nodes_content.create_text_node, {
+	const creatingFile = asUser.action(createTextNode, {
 		membershipId: db.membershipId,
 		parentId: files_ROOT_ID,
 		path: "broken.md",
@@ -5040,7 +5043,10 @@ test("create_text_node does not publish a file node when initial R2 writes fail"
 	expect(jobs.map((job) => job.r2Key).sort()).toEqual(expected_ledger_keys(db, preparedAssetIds));
 });
 
-test("create_text_node cleans up R2 objects when initial metadata sync fails", async () => {
+test.each([
+	["current", api.files_nodes_content.create_text_node],
+	["split", api.files_nodes_create.create_text_node],
+])("%s create_text_node cleans up R2 objects when initial metadata sync fails", async (_name, createTextNode) => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 	const asUser = t.withIdentity({
@@ -5052,7 +5058,7 @@ test("create_text_node cleans up R2 objects when initial metadata sync fails", a
 	vi.spyOn(R2.prototype, "syncMetadata").mockRejectedValueOnce(new Error("sync failed"));
 	const deleteObjectSpy = vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
 
-	const createdFile = await asUser.action(api.files_nodes_content.create_text_node, {
+	const createdFile = await asUser.action(createTextNode, {
 		membershipId: db.membershipId,
 		parentId: files_ROOT_ID,
 		path: "sync-failure.md",
@@ -5082,7 +5088,10 @@ test("create_text_node cleans up R2 objects when initial metadata sync fails", a
 	expect(jobs.map((job) => job.r2Key).sort()).toEqual(Array.from(r2Writes.keys()).sort());
 });
 
-test("create_text_node refuses a duplicate path at capture, before any upload", async () => {
+test.each([
+	["current", api.files_nodes_content.create_text_node],
+	["split", api.files_nodes_create.create_text_node],
+])("%s create_text_node refuses a duplicate path at capture, before any upload", async (_name, createTextNode) => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 	const asUser = t.withIdentity({
@@ -5123,7 +5132,7 @@ test("create_text_node refuses a duplicate path at capture, before any upload", 
 	});
 	const baselineKeys = Array.from(r2Writes.keys()).sort();
 
-	const duplicate = await asUser.action(api.files_nodes_content.create_text_node, {
+	const duplicate = await asUser.action(createTextNode, {
 		membershipId: db.membershipId,
 		parentId: files_ROOT_ID,
 		path: "duplicate.md",
@@ -22878,7 +22887,10 @@ describe("file parent create doors", () => {
 		expect(await read_active_child({ t, db, parentId: file._yay.nodeId, name: "probe" })).toBeNull();
 	});
 
-	test("create_text_node refuses a file as parent", async () => {
+	test.each([
+		["current", api.files_nodes_content.create_text_node],
+		["split", api.files_nodes_create.create_text_node],
+	])("%s create_text_node refuses a file as parent", async (_name, createTextNode) => {
 		const t = test_convex();
 		const { db, asUser, outerId } = await seed_read_only_lock_tree(t);
 		const file = await asUser.action(api.files_nodes_content.create_text_node, {
@@ -22888,7 +22900,7 @@ describe("file parent create doors", () => {
 		});
 		if (file._nay) throw new Error(file._nay.message);
 
-		const refused = await asUser.action(api.files_nodes_content.create_text_node, {
+		const refused = await asUser.action(createTextNode, {
 			membershipId: db.membershipId,
 			parentId: file._yay.nodeId,
 			path: "probe.md",
@@ -22912,11 +22924,14 @@ describe("archived parent create doors", () => {
 		expect(await read_active_child({ t, db, parentId: frozenId, name: "probe" })).toBeNull();
 	});
 
-	test("create_text_node refuses an archived parent before any R2 work", async () => {
+	test.each([
+		["current", api.files_nodes_content.create_text_node],
+		["split", api.files_nodes_create.create_text_node],
+	])("%s create_text_node refuses an archived parent before any R2 work", async (_name, createTextNode) => {
 		const t = test_convex();
 		const { db, asUser, frozenId } = await seed_read_only_lock_tree(t);
 
-		const refused = await asUser.action(api.files_nodes_content.create_text_node, {
+		const refused = await asUser.action(createTextNode, {
 			membershipId: db.membershipId,
 			parentId: frozenId,
 			path: "probe.md",
@@ -25130,7 +25145,10 @@ describe("files_nodes_content.create_file_node read-only barrier", () => {
 		expect(await read_deletion_jobs(t)).toEqual([]);
 	});
 
-	test("a currently locked destination refuses the prepared create and the action refuses before any upload", async () => {
+	test.each([
+		["current", api.files_nodes_content.create_text_node],
+		["split", api.files_nodes_create.create_text_node],
+	])("%s action refuses a locked destination before any upload", async (_name, createTextNode) => {
 		const t = test_convex();
 		const { db, asUser, siblingId } = await seed_read_only_lock_tree(t);
 
@@ -25149,7 +25167,7 @@ describe("files_nodes_content.create_file_node read-only barrier", () => {
 
 		// The full action refuses at capture time, before creating any asset docs.
 		const assetCountBefore = await t.run(async (ctx) => (await ctx.db.query("files_r2_assets").collect()).length);
-		const actionRefused = await asUser.action(api.files_nodes_content.create_text_node, {
+		const actionRefused = await asUser.action(createTextNode, {
 			membershipId: db.membershipId,
 			parentId: siblingId,
 			path: "action-blocked.md",
