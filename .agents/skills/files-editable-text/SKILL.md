@@ -307,8 +307,8 @@ one whole Markdown chunk and no frontmatter. General text and mount/import creat
 The sidebar still calls `files_nodes_content.create_text_node`.
 
 The same temporary module also exposes `files_nodes_create.create_folder_node`. It copies the
-ordinary public folder path, including access checks, writer rules, inherited defaults, and
-media versions. It shares the ordinary path walk in `files_nodes_create_db` with
+ordinary public folder path, including access checks, writer rules, inherited defaults, media
+versions, and updated-by rows. It shares the ordinary path walk in `files_nodes_create_db` with
 the Welcome finalizer, without importing the tree handler module.
 `experimental_reuseContext` lets folder mutations reuse the loaded module; file actions still
 load it for each call. The sidebar still calls `files_nodes.create_folder_node`. Keep the
