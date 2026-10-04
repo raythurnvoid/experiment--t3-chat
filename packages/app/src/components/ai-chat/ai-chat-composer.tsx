@@ -89,6 +89,7 @@ export type AiChatComposer_ClassNames =
 	| "AiChatComposer-configurations"
 	| "AiChatComposer-configurations-attach"
 	| "AiChatComposer-configurations-attach-icon"
+	| "AiChatComposer-configurations-select-label"
 	| "AiChatComposer-send-icon"
 	| "AiChatComposer-save-icon"
 	| "AiChatComposer-cancel-icon";
@@ -869,7 +870,9 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 				>
 					<MySelectTrigger aria-label={`Chat mode: ${ai_chat_MODE_METADATA[selectedModeId].label}`}>
 						<MyButton type="button" variant="outline">
-							Mode: {ai_chat_MODE_METADATA[selectedModeId].label}
+							<span className={"AiChatComposer-configurations-select-label" satisfies AiChatComposer_ClassNames}>
+								Mode: {ai_chat_MODE_METADATA[selectedModeId].label}
+							</span>
 							<MySelectOpenIndicator />
 						</MyButton>
 					</MySelectTrigger>
@@ -902,7 +905,9 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 				>
 					<MySearchSelectTrigger aria-label={`Chat model: ${selectedModelLabel}`}>
 						<MyButton type="button" variant="outline">
-							{selectedModelLabel}
+							<span className={"AiChatComposer-configurations-select-label" satisfies AiChatComposer_ClassNames}>
+								{selectedModelLabel}
+							</span>
 							<MySelectOpenIndicator />
 						</MyButton>
 					</MySearchSelectTrigger>

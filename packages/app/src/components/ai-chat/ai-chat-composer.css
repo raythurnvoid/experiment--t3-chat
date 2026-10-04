@@ -127,6 +127,13 @@
 		flex-shrink: 1;
 
 		overflow: hidden;
+	}
+
+	/* Only the label shrinks, so the button keeps its padding and chevron
+	   and the label ends with an ellipsis when there is no room. */
+	.AiChatComposer-configurations-select-label {
+		min-width: 0;
+		overflow: hidden;
 		text-overflow: ellipsis;
 	}
 
