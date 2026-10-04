@@ -104,6 +104,9 @@ vi.mock("@/components/ai-chat/ai-chat-composer.tsx", () => ({
 				<button type="button" onClick={() => props.onSubmit(props.initialValue, [])}>
 					Save message
 				</button>
+				<button type="button" onClick={props.onClose}>
+					Cancel edit
+				</button>
 			</form>
 		);
 	},
@@ -240,13 +243,18 @@ describe("AiChatMessage", () => {
 		hookMocks.mcpConnectable.clear();
 	});
 
-	test("saves an inline edit with its message id", () => {
-		const message = createUserMessage();
+	test.each([null, "msg_assistant_parent"])("selects parent %s before sending an inline edit", (parentId) => {
+		const userMessage = createUserMessage();
+		const message = { ...userMessage, metadata: { ...userMessage.metadata, convexParentId: parentId } };
 		renderMessage({
 			message,
 			isEditing: true,
 		});
 		fireEvent.click(screen.getByRole("button", { name: "Save message" }));
+		expect(hookMocks.actions.selectBranchAnchor).toHaveBeenCalledWith("thread_1", parentId);
+		expect(hookMocks.actions.selectBranchAnchor.mock.invocationCallOrder[0]).toBeLessThan(
+			hookMocks.actions.sendUserText.mock.invocationCallOrder[0]!,
+		);
 		expect(hookMocks.actions.sendUserText).toHaveBeenCalledWith({
 			threadId: "thread_1",
 			value: "Can you summarize my workspace notes?",
@@ -255,6 +263,16 @@ describe("AiChatMessage", () => {
 				attachments: [],
 			},
 		});
+	});
+
+	test("cancels an inline edit without changing the branch or sending", () => {
+		renderMessage({ message: createUserMessage(), isEditing: true });
+
+		fireEvent.click(screen.getByRole("button", { name: "Cancel edit" }));
+
+		expect(hookMocks.actions.setEditingMessageId).toHaveBeenCalledWith("thread_1", null);
+		expect(hookMocks.actions.selectBranchAnchor).not.toHaveBeenCalled();
+		expect(hookMocks.actions.sendUserText).not.toHaveBeenCalled();
 	});
 
 	test("shows Thinking without actions before the assistant message exists", () => {
@@ -404,14 +422,14 @@ describe("AiChatMessage", () => {
 		expect(hookMocks.actions.selectBranchAnchor).toHaveBeenCalledWith("thread_1", "msg_assistant_b");
 	});
 
-	test("starts editing a user message on edit click", () => {
+	test.each(["mouseDown", "click"] as const)("starts editing on %s without changing the branch", (eventName) => {
 		renderMessage({
 			message: createUserMessage(),
 		});
 
-		fireEvent.click(screen.getByRole("button", { name: "Edit message" }));
+		fireEvent[eventName](screen.getByRole("button", { name: "Edit message" }));
 
-		expect(hookMocks.actions.selectBranchAnchor).toHaveBeenCalledWith("thread_1", null);
+		expect(hookMocks.actions.selectBranchAnchor).not.toHaveBeenCalled();
 		expect(hookMocks.actions.setEditingMessageId).toHaveBeenCalledWith("thread_1", "msg_user_failed");
 	});
 

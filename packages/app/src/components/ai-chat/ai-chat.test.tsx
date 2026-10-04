@@ -74,7 +74,21 @@ vi.mock("@/components/ai-chat/ai-chat-composer.tsx", () => ({
 
 vi.mock("@/components/ai-chat/ai-chat-message.tsx", () => ({
 	AiChatMessage: function AiChatMessage(props: { message: ai_chat_UiMessage; isRunning: boolean }) {
-		return <div data-testid={`message-${props.message.role}`} data-running={props.isRunning} />;
+		return (
+			<div
+				className="AiChatMessage"
+				data-ai-chat-message-id={props.message.id}
+				data-ai-chat-message-role={props.message.role}
+				data-testid={`message-${props.message.role}`}
+				data-running={props.isRunning}
+			>
+				{props.message.role === "user" && (
+					<button type="button" className="AiChatMessageUser-edit-button" data-ai-chat-message-id={props.message.id}>
+						Edit message
+					</button>
+				)}
+			</div>
+		);
 	},
 	AiChatMessagePendingAssistant: function AiChatMessagePendingAssistant() {
 		return <div>Thinking</div>;
@@ -155,6 +169,44 @@ afterEach(() => {
 });
 
 describe("AiChatThread", () => {
+	test("starts editing with E without changing the branch", () => {
+		const message = {
+			id: "message_user_edit",
+			role: "user",
+			parts: [{ type: "text", text: "Edit this message" }],
+			metadata: {
+				convexParentId: "message_assistant_parent",
+				parentClientGeneratedId: null,
+				selectedModelId: "gpt-6-luna",
+				selectedModeId: "ask",
+			},
+		} satisfies ai_chat_UiMessage;
+		const selectBranchAnchor = vi.fn();
+		const setEditingMessageId = vi.fn();
+		render(
+			<AiChatThread
+				controller={makeController({
+					selectedThreadId: "thread_edit",
+					activeBranchMessages: {
+						list: [message],
+						mapById: new Map([[message.id, message]]),
+						anchorId: "message_assistant_leaf",
+					},
+					selectBranchAnchor,
+					setEditingMessageId,
+				})}
+				scrollableContainer={null}
+			/>,
+		);
+
+		const editButton = screen.getByRole("button", { name: "Edit message" });
+		editButton.focus();
+		fireEvent.keyDown(editButton, { key: "e" });
+
+		expect(setEditingMessageId).toHaveBeenCalledWith("thread_edit", message.id);
+		expect(selectBranchAnchor).not.toHaveBeenCalled();
+	});
+
 	test("keeps the draft when a new chat waits for browser settings", () => {
 		const startNewChat = vi.fn(() => undefined);
 		const controller = makeController({

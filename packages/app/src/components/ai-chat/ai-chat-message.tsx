@@ -1874,7 +1874,7 @@ type AiChatMessageUser_Props = ComponentPropsWithRef<"div"> & {
 	onToolStop: AiChatMessageContent_Props["onToolStop"];
 	onSelectedModelIdChange: AiChatComposer_Props["onSelectedModelIdChange"];
 	onSelectedModeIdChange: AiChatComposer_Props["onSelectedModeIdChange"];
-	onEditStart: (args: { messageId: string; parentId: string | null }) => void;
+	onEditStart: (args: { messageId: string }) => void;
 	onEditCancel: () => void;
 	onEditSubmit: (args: { value: string; attachments: FileUIPart[] }) => void;
 	onMessageRetrySend: (args: { threadId: string; messageId: string; value: string }) => void;
@@ -1991,9 +1991,7 @@ const AiChatMessageUser = memo(function AiChatMessageUser(props: AiChatMessageUs
 		}
 		editBubbleLayoutCapturedOnPointerDownRef.current = false;
 
-		const parentId = message.metadata?.convexParentId ?? null;
-
-		onEditStart({ messageId: message.id, parentId });
+		onEditStart({ messageId: message.id });
 	});
 	const handleEditMouseDown = useFn<ComponentPropsWithRef<"button">["onMouseDown"]>((event) => {
 		if (event.button !== 0) {
@@ -2504,12 +2502,11 @@ export const AiChatMessage = memo(function AiChatMessage(props: AiChatMessage_Pr
 		actions.setSelectedModeId(value);
 	});
 
-	const handleEditStart = useFn((args: { messageId: string; parentId: string | null }) => {
+	const handleEditStart = useFn((args: { messageId: string }) => {
 		if (!selectedThreadId) {
 			return;
 		}
 
-		actions.selectBranchAnchor(selectedThreadId, args.parentId);
 		actions.setEditingMessageId(selectedThreadId, args.messageId);
 	});
 
@@ -2526,6 +2523,8 @@ export const AiChatMessage = memo(function AiChatMessage(props: AiChatMessage_Pr
 			return;
 		}
 
+		// Keep the current branch while editing. Select the new branch only when sending.
+		actions.selectBranchAnchor(selectedThreadId, message?.metadata?.convexParentId ?? null);
 		// Pass the attachments explicitly: the user may have removed images while editing.
 		actions.sendUserText({
 			threadId: selectedThreadId,

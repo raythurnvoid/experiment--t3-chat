@@ -63,6 +63,25 @@ Run the accessibility screen on `.AiChatThread-composer-stack`, not the review l
 The screen checks descendants, so a link used as its root produces zero checked controls.
 Require a non-zero control count before treating its result as evidence.
 
+## Transcript edit switches
+
+Use an idle chat with at least two user messages. Find each row through
+`.AiChatMessage[data-ai-chat-message-role="user"]` and its visible text. Click its
+`getByRole("button", { name: "Edit message", exact: true })`. Switch between the second
+and first messages twice, then cancel with Escape. Also focus an Edit message button
+and press `e` to open the editor, then Escape to cancel.
+
+Before starting, save the `.AiChatMessageList` node and its message nodes in the page.
+Use a `MutationObserver` to record removals and `.AiChatSkeleton` additions.
+The list and all message nodes must stay connected through every switch and cancel.
+The skeleton must never appear. Check that loaded older messages and any paused queue
+stay present. Disconnect the observer when done.
+
+On submit, the branch may change. In a reusable QA chat, edit a message whose parent
+is above the current branch anchor and send a short reply request. Check that the new
+user message and reply appear on that branch. Opening the editor alone must not change
+the `ai_chat_runs:branch_page` query's `anchorId`; submitting selects the edited message's parent.
+
 ## Private chat and access-loss check
 
 Use a fresh anonymous member invited into a non-default QA organization, plus its owner in a

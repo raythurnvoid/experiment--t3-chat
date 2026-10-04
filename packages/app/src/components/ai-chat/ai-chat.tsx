@@ -665,14 +665,13 @@ export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props
 		}
 	});
 
-	const handleEditStart = useFn((args: { messageId: string; parentId: string | null }) => {
+	const handleEditStart = useFn((args: { messageId: string }) => {
 		if (!selectedThreadId) {
 			return;
 		}
 		if (controller.isRunning) {
 			return;
 		}
-		controller.selectBranchAnchor(selectedThreadId, args.parentId);
 		controller.setEditingMessageId(selectedThreadId, args.messageId);
 	});
 
@@ -815,7 +814,6 @@ export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props
 						event.preventDefault();
 						handleEditStart({
 							messageId: focusedMessage.id,
-							parentId: focusedMessage.metadata?.convexParentId ?? null,
 						});
 						break;
 					}
