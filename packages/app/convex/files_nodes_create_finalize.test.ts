@@ -80,6 +80,7 @@ async function fixture(variant: "current" | "split" = "split") {
 			snapshots: await ctx.db.query("files_snapshots").collect(),
 			metadata: await ctx.db.query("files_metadata_docs").collect(),
 			mediaVersions: await ctx.db.query("files_media_validation_versions").collect(),
+			updatedBy: await ctx.db.query("files_updated_by_docs").collect(),
 		}));
 	return {
 		t,
