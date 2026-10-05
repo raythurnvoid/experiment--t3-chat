@@ -5667,11 +5667,17 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 	}
 
 	// Load the shown folder's rows, and the selected node with the folders above it for the breadcrumb.
+	// A draft pins its saved parent instead, so its breadcrumb gets every saved folder above it.
 	// The whole workspace can hold many thousands of nodes, so never load all of them here.
 	const fileNodesList = FilesTreeProvider.useFolders({
 		folderIds: loadedFolderId && !isRootNodeSelected ? [loadedFolderId] : [],
 		archived: false,
-		pinnedNodeIds: searchNodeId && !isRootNodeSelected ? [searchNodeId] : [],
+		pinnedNodeIds:
+			searchNodeId && !isRootNodeSelected
+				? [searchNodeId]
+				: privateTargetView?.savedParentId
+					? [privateTargetView.savedParentId]
+					: [],
 	}).rows;
 
 	// Show the loaded tree node while the query starts. A null answer must still clear the view.

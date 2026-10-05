@@ -149,15 +149,28 @@ vi.mock("@/lib/files-tree-context.tsx", async () => {
 	return {
 		// Serve every tree row at once. The store's paging has its own tests.
 		FilesTreeProvider: {
-			useFolders: () => ({
-				rows: useQuery(api.files_nodes.list_tree, {
-					membershipId: tenantContextMock().membershipId,
+			useFolders: (request: { pinnedNodeIds: string[] }) => {
+				const membershipId = tenantContextMock().membershipId;
+				// The query mock answers this list with plain rows, not pages.
+				const rows = useQuery(api.files_nodes.list_tree, {
+					membershipId,
 					paginationOpts: { numItems: 500, cursor: null },
-				}),
-				statusByFolderId: new Map(),
-				hoistedIds: new Set(),
-				loadMore: () => {},
-			}),
+				}) as unknown as Array<{ _id: string }> | undefined;
+				// Like the store, add the pinned node and its ancestors. The file view pins at most one node.
+				const pin = useQuery(
+					api.files_nodes.get_tree_ancestors,
+					request.pinnedNodeIds[0] ? { membershipId, nodeId: request.pinnedNodeIds[0] } : "skip",
+				);
+				const pinRows = pin
+					? [...pin.ancestors, pin.node].filter((row) => !rows?.some((item) => item._id === row._id))
+					: [];
+				return {
+					rows: rows && [...rows, ...pinRows],
+					statusByFolderId: new Map(),
+					hoistedIds: new Set(),
+					loadMore: () => {},
+				};
+			},
 			useFullList: (enabled: boolean) =>
 				useQuery(
 					api.files_nodes.list_tree,
@@ -364,6 +377,8 @@ const PRIVATE_ENTRY = {
 let node = NODE;
 let nodeQueryStatus: "loading" | "ready" | "missing";
 let treeNodes: (typeof NODE)[] | undefined;
+// Rows in folders the view has not loaded. They show only through a pinned node's ancestors.
+let unloadedTreeNodes: (typeof NODE)[];
 let plugins: (typeof PLUGIN)[] | undefined;
 let pendingUpdates: unknown[];
 let savedPendingUpdate: unknown;
@@ -403,6 +418,7 @@ beforeEach(() => {
 	node = NODE;
 	nodeQueryStatus = "ready";
 	treeNodes = undefined;
+	unloadedTreeNodes = [];
 	plugins = undefined;
 	pendingUpdates = [];
 	savedPendingUpdate = undefined;
@@ -437,6 +453,17 @@ beforeEach(() => {
 		switch (getFunctionName(reference)) {
 			case "files_nodes:list_tree":
 				return treeNodes ?? [node];
+			case "files_nodes:get_tree_ancestors": {
+				const nodes = [...(treeNodes ?? [node]), ...unloadedTreeNodes];
+				const chain: (typeof NODE)[] = [];
+				let row = nodes.find((item) => item._id === (args as { nodeId: string }).nodeId);
+				while (row) {
+					chain.unshift(row);
+					const parentId = row.parentId;
+					row = nodes.find((item) => item._id === parentId);
+				}
+				return chain.length === 0 ? null : { node: chain.at(-1), ancestors: chain.slice(0, -1) };
+			}
 			case "files_nodes:get_folder_readme": {
 				const { folderId } = args as { folderId: string };
 				return (
@@ -4039,5 +4066,41 @@ describe("FileNodeView header breadcrumb", () => {
 				.getAllByRole("menuitem")
 				.map((item) => item.textContent),
 		).toEqual(["Duplicate tab", "Copy node id"]);
+	});
+
+	test("a pending entry gets crumbs for every saved parent when its folders are not loaded", async () => {
+		const a = { ...DOCS, _id: "folder_a", parentId: "root", name: "a", path: "/a" };
+		const b = { ...DOCS, _id: "folder_b", parentId: a._id, name: "b", path: "/a/b" };
+		const c = { ...DOCS, _id: "folder_c", parentId: b._id, name: "c", path: "/a/b/c" };
+		// Only the root folder is loaded, so `b` and `c` come only from pinning the saved parent.
+		treeNodes = [a];
+		unloadedTreeNodes = [b, c];
+		privateView = {
+			...privateView!,
+			entry: { ...PRIVATE_ENTRY, path: "/a/b/c/Drafts/draft.html" },
+			requiredParents: [
+				{
+					target: { kind: "private", id: "private_parent" as app_convex_Id<"files_pending_nodes"> },
+					path: "/a/b/c/Drafts",
+					pendingUpdateId: "pending_parent" as app_convex_Id<"files_pending_updates">,
+					reviewedRevision: 1,
+				},
+			],
+			savedParentId: c._id as app_convex_Id<"files_nodes">,
+		};
+		renderFileView({ pendingNodeId: PRIVATE_ENTRY.node._id });
+		await screen.findByRole("textbox", { name: "Code draft" });
+
+		const [, ancestors] = within(header).getAllByRole("list");
+		expect(
+			within(ancestors!)
+				.getAllByRole("link")
+				.map((link) => [link.getAttribute("aria-label"), link.dataset.nodeId, link.dataset.pendingNodeId]),
+		).toEqual([
+			["a", a._id, undefined],
+			["b", b._id, undefined],
+			["c", c._id, undefined],
+			["Drafts", undefined, "private_parent"],
+		]);
 	});
 });
