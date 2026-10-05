@@ -6930,17 +6930,15 @@ export const list_tree_children = query({
 		const result = args.archived
 			? await ctx.db
 					.query("files_nodes")
-					.withIndex("by_organization_workspace_parent_archiveOperation_kind_name", (q) =>
+					.withIndex("by_organization_workspace_parent_kind_archiveOperation_name", (q) =>
 						q
 							.eq("organizationId", membership.organizationId)
 							.eq("workspaceId", membership.workspaceId)
 							.eq("parentId", args.parentId)
+							.eq("kind", args.kind)
 							.gt("archiveOperationId", null),
 					)
-					// Archived docs sort by archive operation before kind, so kind cannot be an index bound here.
-					// Bound the scan, because one folder can hold many archived docs of the other kind.
-					.filter((q) => q.eq(q.field("kind"), args.kind))
-					.paginate({ ...paginationOpts, maximumRowsRead: 1000, maximumBytesRead: 4 * 1024 * 1024 })
+					.paginate(paginationOpts)
 			: await ctx.db
 					.query("files_nodes")
 					.withIndex("by_organization_workspace_parent_archiveOperation_kind_name", (q) =>
@@ -9464,11 +9462,57 @@ export const list_subtree = internalQuery({
 		const lowerBound = derive_tree_path_for_file_node(normalizedPath, "folder");
 		const upperBound = path_tree_prefix_upper_bound(lowerBound);
 		const baseDepth = files_path_depth(normalizedPath);
-		const minAbsoluteDepth = args.minDepth == null ? null : baseDepth + args.minDepth;
-		const maxAbsoluteDepth = args.maxDepth == null ? null : baseDepth + args.maxDepth;
 
-		const query =
-			lowercaseExtension != null
+		// Direct children use the parent indexes. A depth filter on the subtree range would read every
+		// item under the folder to find the few at depth 1.
+		const directChildren = args.minDepth === 1 && args.maxDepth === 1;
+		const minAbsoluteDepth = args.minDepth == null || directChildren ? null : baseDepth + args.minDepth;
+		const maxAbsoluteDepth = args.maxDepth == null || directChildren ? null : baseDepth + args.maxDepth;
+
+		let parentId: Doc<"files_nodes">["parentId"] = files_ROOT_ID;
+		if (directChildren && normalizedPath !== "/") {
+			const folder = await files_db_get_visible_node_by_path(ctx, { ...args, path: normalizedPath });
+			if (folder?.kind !== "folder") return { page: [], continueCursor: args.cursor ?? "", isDone: true };
+			parentId = folder._id;
+		}
+
+		const query = directChildren
+			? lowercaseExtension != null
+				? ctx.db
+						.query("files_nodes")
+						.withIndex("by_org_ws_parent_archive_kind_ext_name", (q) =>
+							q
+								.eq("organizationId", args.organizationId)
+								.eq("workspaceId", args.workspaceId)
+								.eq("parentId", parentId)
+								.eq("archiveOperationId", null)
+								.eq("kind", "file")
+								.eq("lowercaseExtension", lowercaseExtension),
+						)
+						.order(args.order ?? "asc")
+				: kind == null
+					? ctx.db
+							.query("files_nodes")
+							.withIndex("by_organization_workspace_parent_archiveOperation_name", (q) =>
+								q
+									.eq("organizationId", args.organizationId)
+									.eq("workspaceId", args.workspaceId)
+									.eq("parentId", parentId)
+									.eq("archiveOperationId", null),
+							)
+							.order(args.order ?? "asc")
+					: ctx.db
+							.query("files_nodes")
+							.withIndex("by_organization_workspace_parent_archiveOperation_kind_name", (q) =>
+								q
+									.eq("organizationId", args.organizationId)
+									.eq("workspaceId", args.workspaceId)
+									.eq("parentId", parentId)
+									.eq("archiveOperationId", null)
+									.eq("kind", kind),
+							)
+							.order(args.order ?? "asc")
+			: lowercaseExtension != null
 				? ctx.db
 						.query("files_nodes")
 						.withIndex("by_organization_workspace_archive_kind_lowercaseExtension_tree", (q) =>

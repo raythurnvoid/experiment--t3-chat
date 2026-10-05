@@ -30,6 +30,8 @@ Do not write a substantial plan from memory. Trace the current system first, the
 
 State the objective as claims that can come back false. "Performance is good" and "the UI is beautiful" cannot fail, so work against them never terminates and nobody notices. "10k tree nodes scroll at 60fps on this machine" and "a non-member gets a refusal and no doc is written" can be checked and found wanting.
 
+Check scale before you design. For each read the feature adds or changes, write down the largest data it must handle (this repo: "Reads must scale: no scans" in the root `AGENTS.md`) and the index range that serves it, drafts included. If a read has no index, or the design needs caps, read budgets, or a "too many" error to survive, stop and tell the user the root problem before you plan around it. Name the platform limit that causes it (for example Convex's fixed indexes). A workaround that hides the limit is a design choice for the user to make, not a detail.
+
 When the user sets an open-ended quality bar rather than a spec, read [references/iterating-to-a-bar.md](references/iterating-to-a-bar.md) before planning or implementing. It covers claims, blind comparison, rounds, and the stop condition.
 
 Use subagents during planning when the design is broad or security-sensitive — that phrase is the test, and the usual triggers are: it touches auth, tenancy, billing, or deletion; crosses more than one layer (schema, backend, UI); changes shared modules other features import; or handles untrusted input (a parser of arbitrary input counts, even in a library whose current callers are internal). The same rubric decides "high-risk" everywhere below; "blast radius" is a separate measure — how much surface the change touches. In a harness without subagents, run the lanes yourself, sequentially, except the blind-comparison critic, which has its own fallback in the bar reference. Prefer disjoint lanes:
@@ -56,6 +58,7 @@ The final plan should include, when applicable:
 - current-system context with code references;
 - reference modules and why they matter;
 - persistent docs and API shape;
+- each read path, its largest data size, and the index range that serves it;
 - implementation steps by file/module;
 - security/privacy model;
 - migration and rollback;

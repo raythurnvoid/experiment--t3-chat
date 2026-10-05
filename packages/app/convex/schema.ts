@@ -2698,6 +2698,26 @@ const app_convex_schema = defineSchema({
 			"kind",
 			"name",
 		])
+		// The archived view pages one kind of one folder's archived children. `kind` sits before
+		// `archiveOperationId`, so the archived range never reads the other kind.
+		.index("by_organization_workspace_parent_kind_archiveOperation_name", [
+			"organizationId",
+			"workspaceId",
+			"parentId",
+			"kind",
+			"archiveOperationId",
+			"name",
+		])
+		// The public files list pages one folder's direct files with one extension.
+		.index("by_org_ws_parent_archive_kind_ext_name", [
+			"organizationId",
+			"workspaceId",
+			"parentId",
+			"archiveOperationId",
+			"kind",
+			"lowercaseExtension",
+			"name",
+		])
 		// The folder table sort indexes. Each one pages one kind of one folder's children, and only the
 		// readable ones (`isRestrictedScopeRoot: false`) or only the restricted ones. `sortName, name`
 		// at the end breaks ties by name. The created sort uses `_creationTime`, which Convex appends.
@@ -6131,6 +6151,8 @@ const app_convex_schema = defineSchema({
 	})
 		.index("by_channel_mainSequence", ["channelId", "mainSequence"])
 		.index("by_threadRoot_threadSequence", ["threadRootId", "threadSequence"])
+		// The agent reads one thread's replies in a time window. Convex adds `_creationTime` at the end.
+		.index("by_threadRoot", ["threadRootId"])
 		.index("by_channel", ["channelId"])
 		.index("by_author_clientMessageId", ["authorUserId", "clientMessageId"])
 		.index("by_organization_workspace", ["organizationId", "workspaceId"])

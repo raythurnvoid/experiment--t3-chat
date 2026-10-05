@@ -1492,6 +1492,29 @@ describe("agent_read", () => {
 		});
 		expect(thread._yay!.page.map((row) => row.message.body)).toEqual(["Root body", "Reply body"]);
 	});
+	test("reads a thread without reading the rest of the channel", async () => {
+		const f = await fixture();
+		const channelId = await create(f, "public");
+		const root = await send(f, f.member, { kind: "channel", channelId }, { body: "Root body" });
+		const rootMessageId = root._yay!.messageId as Id<"channels_messages">;
+		// More channel messages than one page, all between the root and its reply.
+		await f.t.run(async (ctx) => {
+			const { _id, _creationTime, ...rootDoc } = (await ctx.db.get("channels_messages", rootMessageId))!;
+			for (let index = 0; index < 60; index++)
+				await ctx.db.insert("channels_messages", { ...rootDoc, body: `Other ${index}`, clientMessageId: `other-${index}` });
+		});
+		await send(f, f.member, { kind: "thread", rootMessageId }, { body: "Reply body" });
+
+		const thread = await f.t.query(internal.channels_messages.agent_read, {
+			...(await agent_context(f)),
+			reference: { kind: "channel", value: channelId },
+			rootMessageId,
+			paginationOpts: { numItems: 50, cursor: null },
+		});
+
+		expect(thread._yay!.page.map((row) => row.message.body)).toEqual(["Root body", "Reply body"]);
+		expect(thread._yay!.isDone).toBe(true);
+	});
 	test("hides private channels and refuses a stale source lifetime", async () => {
 		const f = await fixture();
 		const channelId = await create(f, "private");

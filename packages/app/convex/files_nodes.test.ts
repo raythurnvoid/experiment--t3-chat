@@ -852,6 +852,46 @@ describe("list_tree_children", () => {
 		expect("writePolicy" in activeFiles.page[0]).toBe(false);
 	});
 
+	test("archived mode does not read the archived children of the other kind", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => {
+			const owner = await test_mocks_fill_db_with.membership(ctx);
+			const binId = await insert_tree_node({ ctx, owner, parentId: files_ROOT_ID, path: "/bin", kind: "folder" });
+			// One archive operation, so "file" sorts before "folder" inside it.
+			for (let index = 0; index < 1001; index++)
+				await insert_tree_node({
+					ctx,
+					owner,
+					parentId: binId,
+					path: `/bin/f${index}.md`,
+					kind: "file",
+					archiveOperationId: "op",
+				});
+			const folderId = await insert_tree_node({
+				ctx,
+				owner,
+				parentId: binId,
+				path: "/bin/old",
+				kind: "folder",
+				archiveOperationId: "op",
+			});
+			return { ...owner, binId, folderId };
+		});
+
+		const folders = await t
+			.withIdentity({ issuer: "https://clerk.test", external_id: db.userId })
+			.query(api.files_nodes.list_tree_children, {
+				membershipId: db.membershipId,
+				parentId: db.binId,
+				kind: "folder",
+				archived: true,
+				paginationOpts: { numItems: 50, cursor: null },
+			});
+
+		expect(folders.page.map((row) => row._id)).toEqual([db.folderId]);
+		expect(folders.isDone).toBe(true);
+	});
+
 	test("a folder whose only child is hidden lists nothing", async () => {
 		const t = test_convex();
 		const f = await seed_tree_access_fixture(t);
@@ -1450,6 +1490,40 @@ describe("paginated bash listing queries", () => {
 		expect(filesAtDepthOne.page.map((item) => item.path)).toEqual(["/docs/a.md", "/docs/b.md"]);
 		expect(foldersAtDepthOne.page.map((item) => item.path)).toEqual(["/docs/nested"]);
 		expect(filesAtDepthOne.page.map((item) => item.path)).not.toContain("/docs/nested/c.md");
+	});
+
+	test("lists direct children without reading deeper items", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => {
+			const owner = await test_mocks_fill_db_with.membership(ctx);
+			const docsId = await insert_tree_node({ ctx, owner, parentId: files_ROOT_ID, path: "/docs", kind: "folder" });
+			const deepId = await insert_tree_node({ ctx, owner, parentId: docsId, path: "/docs/a", kind: "folder" });
+			// More deep items than the default read limit of a filtered subtree page.
+			for (let index = 0; index < 1001; index++)
+				await insert_tree_node({ ctx, owner, parentId: deepId, path: `/docs/a/f${index}.md`, kind: "file" });
+			await insert_tree_node({ ctx, owner, parentId: docsId, path: "/docs/z.md", kind: "file" });
+			return owner;
+		});
+		const list = (extension?: string) =>
+			t.query(internal.files_nodes.list_subtree, {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				visibilityUserId: db.userId,
+				folderPath: "/docs",
+				numItems: 10,
+				cursor: null,
+				lowercaseExtension: extension,
+				minDepth: 1,
+				maxDepth: 1,
+			});
+
+		const children = await list();
+		const markdownChildren = await list("md");
+
+		expect(children.page.map((item) => item.path)).toEqual(["/docs/a", "/docs/z.md"]);
+		expect(children.isDone).toBe(true);
+		expect(markdownChildren.page.map((item) => item.path)).toEqual(["/docs/z.md"]);
+		expect(markdownChildren.isDone).toBe(true);
 	});
 
 	test("paginates extension-filtered recursive descendants through the extension index", async () => {

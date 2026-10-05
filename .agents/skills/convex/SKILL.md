@@ -269,7 +269,7 @@ const messages = await ctx.db
 
 # Query Guidelines
 
-- Prefer indexes over `.filter()`. Use `.filter()` only when the predicate cannot be expressed with an index, and follow the pagination semantics in the codebase-specific guidelines.
+- Serve every user-facing read with an index range. `.filter()`, `filterWith`, and JS checks after a read are scans. Follow "Reads must scale: no scans" in the root `AGENTS.md` and the scan rules in the codebase-specific guidelines.
 - Bound potentially unbounded query results with `.take()` or pagination. `.collect()` is allowed when the function genuinely needs every doc from a naturally small set; document that assumption when it is not obvious.
 - Do not use `.collect().length` for a potentially unbounded count. Convex has no built-in count operator, so maintain a denormalized counter when the count must stay efficient at scale. Collecting and counting is acceptable for a clearly small, naturally bounded or operator-scoped set.
 - Convex queries do NOT support `.delete()`. If you need to delete matching documents, read them in bounded batches and call the current two-argument form, such as `ctx.db.delete("messages", doc._id)`.

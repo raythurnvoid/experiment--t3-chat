@@ -1153,6 +1153,7 @@ export const agent_read = internalQuery({
 		if (target._nay) return target;
 		const channelId = target._yay.channel._id;
 		const rootMessageId = args.rootMessageId ? ctx.db.normalizeId("channels_messages", args.rootMessageId) : null;
+		let rootMessage: Doc<"channels_messages"> | null = null;
 		if (args.rootMessageId) {
 			const root = rootMessageId
 				? await get_message_context(ctx, {
@@ -1162,23 +1163,35 @@ export const agent_read = internalQuery({
 				: null;
 			if (!root || root._nay || root._yay.channel._id !== channelId || root._yay.message.threadRootId !== null)
 				return Result({ _nay: { message: "Not found" } });
+			rootMessage = root._yay.message;
 		}
-		const all = ctx.db.query("channels_messages").withIndex("by_channel", (q) =>
-			q
-				.eq("channelId", channelId)
-				.gte("_creationTime", args.since ?? 0)
-				.lt("_creationTime", args.until ?? Number.MAX_SAFE_INTEGER),
-		);
+		const since = args.since ?? 0;
+		const until = args.until ?? Number.MAX_SAFE_INTEGER;
+		// A thread reads only its own replies. The root is not a reply, so the first page adds it in front.
+		// It is older than every reply, so time order stays right.
 		const query = rootMessageId
-			? all.filter((q) => q.or(q.eq(q.field("_id"), rootMessageId), q.eq(q.field("threadRootId"), rootMessageId)))
-			: all;
+			? ctx.db
+					.query("channels_messages")
+					.withIndex("by_threadRoot", (q) =>
+						q.eq("threadRootId", rootMessageId).gte("_creationTime", since).lt("_creationTime", until),
+					)
+			: ctx.db
+					.query("channels_messages")
+					.withIndex("by_channel", (q) =>
+						q.eq("channelId", channelId).gte("_creationTime", since).lt("_creationTime", until),
+					);
+		const rootInPage =
+			rootMessage !== null &&
+			args.paginationOpts.cursor === null &&
+			rootMessage._creationTime >= since &&
+			rootMessage._creationTime < until;
 		const rows = await query.paginate({
 			...args.paginationOpts,
-			numItems: Math.min(50, args.paginationOpts.numItems),
-			maximumRowsRead: 50,
+			numItems: Math.max(1, Math.min(50, args.paginationOpts.numItems) - (rootInPage ? 1 : 0)),
 			maximumBytesRead: channels_LIMITS.pageBytes,
 		});
-		const shaped = await Promise.all(rows.page.map((message) => shape_message(ctx, { ...context._yay, message })));
+		const messages = rootInPage && rootMessage ? [rootMessage, ...rows.page] : rows.page;
+		const shaped = await Promise.all(messages.map((message) => shape_message(ctx, { ...context._yay, message })));
 		return Result({
 			_yay: { ...rows, page: shaped.filter((row) => row !== null) },
 		});

@@ -275,6 +275,28 @@ This app enforces many invariants in its public queries, mutations, routes, and 
 - A state allowed by the schema alone does not justify repair code.
 - Do not silently recreate pointers, memberships, or related records to mask a suspected violation unless the user asks for a repair or migration and there is a concrete product reason.
 
+## Reads must scale: no scans
+
+Design every read for 500k items in one folder and millions in one workspace. A read that a user or the agent waits on must cost about the same for a small folder and a huge one. Its cost may grow with the rows it returns, never with the size of the folder, workspace, channel, or a user's history.
+
+A scan reads rows only to drop them. These are all scans:
+
+- `.filter()` or `filterWith` after an index range;
+- a JS check after a read, or `take(N)` and then a check;
+- a walk with a read budget;
+- `.collect()` on a range that grows with user data;
+- loading a whole list into the browser to search, sort, filter, or pick from it.
+
+Rules:
+
+- Before you build a read, name the index range that serves it. Put it in the plan. Include how drafts appear: private pending nodes and pending moves must come from an index too.
+- If no index can serve the read, stop before you write code. Tell the user the root problem and offer real options: add an index, cut the feature to what an index can serve, or move it to a search engine.
+- Caps do not fix a scan. `maximumRowsRead`, `take(1001)`, read budgets, `truncated` flags, and "too broad" errors turn a slow read into wrong or missing results. Do not ship them as a stopgap.
+- A scan is fine only when a limit enforced on write bounds the range (for example a per-role share limit), when the range is one small owned record (one file's version history), or in a background job no user waits on. Write that bound in a comment next to the read.
+- Prove it with a test. Put more non-matching rows inside the range than one page or read limit, and assert that the first page is full and correct. The test must fail on the scan version.
+
+The Convex guidelines explain the query mechanics: [.agents/skills/convex/references/additional-guidelines.md](.agents/skills/convex/references/additional-guidelines.md).
+
 ## TypeScript return types: prefer inference
 
 Prefer inferred return types for ordinary local functions.

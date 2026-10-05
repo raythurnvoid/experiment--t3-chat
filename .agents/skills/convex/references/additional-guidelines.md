@@ -639,6 +639,19 @@ const results = await ctx.db
 
 Keep both emoji and U+FFFF suffix cases in query regression tests. In `convex-test` 0.0.53, index ranges use UTF-8 `compareValues`, but `.filter()` comparisons use JavaScript's UTF-16 order. That can hide an emoji failure seen in Convex. U+FFFF suffix cases expose the old bound in both orders. Do not change production behavior to match the test mock.
 
+## Scans: when a read may drop rows
+
+Follow "Reads must scale: no scans" in the root `AGENTS.md`. A user-facing read must be one or more index ranges where every row read is a row returned. The tools in the next section (`.filter()`, JS post-filters, `filterWith`, `maximumRowsRead`) are for ranges that a write-time limit already keeps small, or for background jobs. They are not a way to serve a filter or sort that has no index.
+
+Check a design against these questions before you build it:
+
+- Which index serves each filter and each sort order? A sort needs an index whose fields after the equality prefix are the sort fields.
+- A table can hold 32 indexes, and an index 16 fields. A filter or sort the user can combine freely cannot get one index per combination. Cut the scope, or use a search engine.
+- Where do drafts come from? Saved rows from an index plus drafts read some other way give wrong order or missing rows. `files_metadata.search` removed its folder range for this reason: a file the user moved in a draft keeps its old saved path in the index.
+- Does the search index fit? `withSearchIndex` matches whole words and word starts, orders by relevance, and returns at most 1,024 results. It cannot serve "contains", a sort, or a range.
+
+Some older reads still scan: the folder table filters and multi-sort in `files_nodes.ts`, `files_visible` time order and its subtree filters, and the search box, which loads every node into the browser. Do not copy them as patterns.
+
 ## Pagination: `.filter()` semantics, short pages, and empty pages
 
 `.filter()` is never index-backed: the query scans every doc the index range yields and drops non-matches one by one, exactly like filtering in JS afterwards. What differs is the pagination accounting (verified live against a dev deployment):

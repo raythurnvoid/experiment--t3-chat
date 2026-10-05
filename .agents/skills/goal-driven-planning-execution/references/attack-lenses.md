@@ -26,6 +26,10 @@ what redundancy cannot.
 - **Performance** — what is quadratic, what runs per render, what refetches.
   Measure before asserting a number; use the repo's profiling skill when it
   has one.
+- **Scale** — run every read at the largest size the product promises. Which
+  reads drop rows after reading them, walk with a budget, stop at a cap, or
+  load a whole list into the browser? A cap that returns a short page, a
+  "too broad" error, or a `truncated` flag is a scan, not a fix.
 - **Accessibility** — keyboard path, focus order, contrast, accessible names,
   what a screen reader actually announces.
 - **Uniformity** — does this read as though the author of the surrounding
@@ -38,5 +42,5 @@ what redundancy cannot.
   with no positive control, asserting the return but not the side effect, tests
   that pass with the code deleted.
 
-Pick the lenses the work actually has surface for. Running all eleven on a CSS
+Pick the lenses the work actually has surface for. Running all twelve on a CSS
 change wastes a round.
