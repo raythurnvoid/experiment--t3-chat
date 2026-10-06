@@ -2,6 +2,7 @@ import "./channels-composer.css";
 import { EditorContent, useEditor } from "@tiptap/react";
 import { isNodeEmpty, type Editor, type FocusPosition } from "@tiptap/core";
 import { Placeholder } from "@tiptap/extension-placeholder";
+import { CaseSensitive } from "lucide-react";
 import { Paragraph } from "@tiptap/extension-paragraph";
 import { Document } from "@tiptap/extension-document";
 import { Text } from "@tiptap/extension-text";
@@ -25,6 +26,8 @@ import {
 } from "../my-input.tsx";
 import type { MyInputTextAreaControl_ClassNames } from "../my-input.tsx";
 import { MyButton } from "../my-button.tsx";
+import { MyIconButton } from "../my-icon-button.tsx";
+import { ChannelsComposerFormatting } from "./channels-composer-formatting.tsx";
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
 import {
 	ChannelsMentionContext,
@@ -68,6 +71,7 @@ type ChannelsComposerControl_Props = {
 	ariaLabel: string;
 	attachmentsRef: React.RefObject<ChannelsComposerAttachments_Ref | null>;
 	onChange?: () => void;
+	onEditorReady: (editor: Editor | null) => void;
 	onEnter?: () => void;
 	onEscape?: () => void;
 	onEmptyUp?: () => void;
@@ -87,6 +91,7 @@ const ChannelsComposerControl = memo(function ChannelsComposerControl(props: Cha
 		ariaLabel,
 		attachmentsRef,
 		onChange,
+		onEditorReady,
 		onEnter,
 		onEscape,
 		onEmptyUp,
@@ -108,6 +113,17 @@ const ChannelsComposerControl = memo(function ChannelsComposerControl(props: Cha
 		const extensions = [
 			Document,
 			Text,
+			files_get_tiptap_shared_extensions().starterKit.configure({
+				document: false,
+				text: false,
+				paragraph: false,
+				heading: false,
+				hardBreak: false,
+				trailingNode: false,
+				undoRedo: {},
+				listKeymap: {},
+				link: { openOnClick: false },
+			}),
 			file_quote_extension,
 			channels_composer_mention_create_extension({
 				isEnabled: mentionsEnabled,
@@ -213,6 +229,10 @@ const ChannelsComposerControl = memo(function ChannelsComposerControl(props: Cha
 	});
 
 	const editor = useEditor(editorProps, []);
+	useEffect(() => {
+		onEditorReady(editor);
+		return () => onEditorReady(null);
+	}, [editor, onEditorReady]);
 	const getMentionUserIds = () => {
 		const ids: app_convex_Id<"users">[] = [];
 		editor?.state.doc.descendants((node) => {
@@ -384,6 +404,8 @@ export const ChannelsComposer = memo(function ChannelsComposer(props: ChannelsCo
 		children,
 	} = props;
 	const attachments = useRef<ChannelsComposerAttachments_Ref>(null);
+	const [editor, setEditor] = useState<Editor | null>(null);
+	const [showFormatting, setShowFormatting] = useState(false);
 	const [pendingUploads, setPendingUploads] = useState(false);
 	const attachmentsChanged = useFn(() => {
 		setPendingUploads(attachments.current?.hasPendingUploads() ?? false);
@@ -392,12 +414,24 @@ export const ChannelsComposer = memo(function ChannelsComposer(props: ChannelsCo
 	const enter = useFn(() => {
 		if (!attachments.current?.hasPendingUploads()) onEnter?.();
 	});
+	const formattingToggle = (
+		<MyIconButton
+			variant="ghost-highlightable"
+			tooltip="Formatting"
+			aria-expanded={showFormatting}
+			disabled={disabled || !editor}
+			onClick={() => setShowFormatting(!showFormatting)}
+		>
+			<CaseSensitive size={16} />
+		</MyIconButton>
+	);
 
 	return (
 		<ChannelsMentionContext value={mentionItems ?? []}>
 			<MyInput
 				variant={variant}
 				className={cn("ChannelsComposer" satisfies ChannelsComposer_ClassNames, className)}
+				data-formatting={String(showFormatting)}
 				onPasteCapture={(event) => {
 					if (!attachmentTarget || !event.clipboardData.files.length) return;
 					event.preventDefault();
@@ -414,6 +448,7 @@ export const ChannelsComposer = memo(function ChannelsComposer(props: ChannelsCo
 			>
 				<MyInputBackground />
 				{children && <div className="ChannelsComposer-context">{children}</div>}
+				{showFormatting && editor && <ChannelsComposerFormatting editor={editor} disabled={disabled ?? false} />}
 				<MyInputArea>
 					<ChannelsComposerControl
 						ref={controlRef}
@@ -424,6 +459,7 @@ export const ChannelsComposer = memo(function ChannelsComposer(props: ChannelsCo
 						ariaLabel={ariaLabel}
 						attachmentsRef={attachments}
 						onChange={onChange}
+						onEditorReady={setEditor}
 						onEnter={enter}
 						onEscape={onEscape}
 						onEmptyUp={onEmptyUp}
@@ -442,13 +478,17 @@ export const ChannelsComposer = memo(function ChannelsComposer(props: ChannelsCo
 						{submitLabel}
 					</MyButton>
 				</MyInputActions>
-				{attachmentTarget && (
+				{attachmentTarget ? (
 					<ChannelsComposerAttachments
 						ref={attachments}
 						target={attachmentTarget}
 						disabled={disabled ?? false}
 						onChange={attachmentsChanged}
-					/>
+					>
+						{formattingToggle}
+					</ChannelsComposerAttachments>
+				) : (
+					<div className="ChannelsComposer-tools">{formattingToggle}</div>
 				)}
 				<MyInputBox />
 			</MyInput>

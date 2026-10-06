@@ -108,7 +108,8 @@ one scroll area. Back or Close returns focus to the opener when it is still pres
 Rows show local 24-hour timestamps, with the full date on focus or hover. Keep the existing
 five-minute grouping and entry unread boundary. Reply in thread is separate from Quote reply
 in More; R still quotes. More holds thread follow, rename and resolve actions. Rename opens a form.
-Touch exposes More without hover. Person mentions use current names; file mentions stay inline.
+Touch exposes More beside the message, without adding a separate action row. Person mentions
+use current names; file mentions stay inline.
 Activity and search use flat rows with four-line previews and no preview scrollbar. Search filters
 open from Filters; applied filters can be removed. Never invent a search total or match range.
 
@@ -117,9 +118,22 @@ with ids in `mentionUserIds`. Render names from current profiles. The sender's l
 chip ids so it can restore them. Enter chooses a suggestion before sending; Shift+Enter adds a line.
 Escape closes a suggestion first, then cancels reply/edit. Empty Up edits the latest own message.
 
-The `@` popup includes people and saved files or folders. Load the full readable tree only while
-the popup is open. Exclude archived nodes and private drafts. Search by name or path and cap the
-combined list at 50. Messages and Files Comments use this same popup and composer.
+Formatting opens an optional tools row. Bold, Italic, Strike, Link, inline code, code block and
+both list types run real editor commands. Pressed states follow the editor selection. The local
+editor supports undo and keeps these Markdown marks and blocks when restoring a draft or edit.
+The Tiptap Markdown writer keeps edge spaces outside emphasis, so text beside a file quote
+keeps its formatting after send or restore.
+Enter still sends from lists and code blocks; Shift+Enter adds a line. Link addresses use http,
+https or mailto. The link form sits outside the message form and stops its submit event, so Apply
+link and Enter in its field cannot send the message. Files comments share these tools.
+
+The `@` popup includes people and saved files or folders, excluding archived nodes and private
+drafts. Messages and Files Comments use this same popup and composer.
+
+Current scale gaps: the file popup and workspace attachment picker load and filter the readable
+tree in the browser. Browse channels filters only its loaded pages by name. These do not meet
+the no-scan rule in AGENTS.md. Replace them with paginated indexed search before extending their
+search behavior. A browser result cap does not fix either problem.
 
 Both human and AI composers use `components/file-quotes/file-quote-extension.tsx` and `FileQuote`.
 Private local drafts keep encoded quote markers; human sends replace them with neutral quote

@@ -1,5 +1,5 @@
 import "./channels-composer-attachments.css";
-import { memo, useEffect, useImperativeHandle, useRef, useState, type Ref } from "react";
+import { memo, useEffect, useImperativeHandle, useRef, useState, type Ref, type ReactNode } from "react";
 import { useQuery } from "convex/react";
 import { toast } from "sonner";
 import { Paperclip } from "lucide-react";
@@ -71,8 +71,9 @@ export const ChannelsComposerAttachments = memo(function ChannelsComposerAttachm
 	target: ChannelsComposerAttachmentTarget;
 	disabled: boolean;
 	onChange: () => void;
+	children?: ReactNode;
 }) {
-	const { ref, target, disabled, onChange } = props;
+	const { ref, target, disabled, onChange, children } = props;
 	const { membershipId } = AppTenantProvider.useContext();
 	const [items, setItems] = useState<Attachment[]>([]);
 	const itemsRef = useRef<Attachment[]>([]);
@@ -282,6 +283,7 @@ export const ChannelsComposerAttachments = memo(function ChannelsComposerAttachm
 						<MyMenuItem onClick={() => requestAnimationFrame(() => setPicker(true))}>Attach from workspace</MyMenuItem>
 					</MyMenuPopover>
 				</MyMenu>
+				{children}
 				<input
 					ref={input}
 					type="file"

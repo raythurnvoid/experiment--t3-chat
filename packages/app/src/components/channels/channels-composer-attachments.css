@@ -6,7 +6,7 @@
 	}
 	.ChannelsComposerAttachments-items {
 		grid-column: 1 / -1;
-		grid-row: 3;
+		grid-row: 4;
 		display: grid;
 		gap: 4px;
 		padding: 0 12px 4px;
@@ -36,7 +36,7 @@
 	}
 	.ChannelsComposerAttachments-tools {
 		grid-column: 1;
-		grid-row: 4;
+		grid-row: 5;
 		padding: 4px 8px;
 		display: flex;
 		flex-wrap: wrap;

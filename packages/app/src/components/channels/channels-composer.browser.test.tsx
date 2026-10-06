@@ -38,6 +38,138 @@ afterEach(() => {
 });
 
 describe("ChannelsComposer", () => {
+	test("formatting commands keep the selection, update pressed state and survive restore", async () => {
+		const ref = createRef<ChannelsComposerControl_Ref>();
+		const view = render(
+			<ChannelsComposer
+				controlRef={ref}
+				ariaLabel="Write formatted text"
+				submitTooltip="Send"
+				submitDisabled={false}
+			/>,
+		);
+		const editor = await screen.findByLabelText("Write formatted text");
+		await userEvent.fill(editor, "Keep these words");
+		await userEvent.keyboard("{Control>}a{/Control}");
+		await userEvent.click(screen.getByRole("button", { name: "Formatting" }));
+		const bold = screen.getByRole("button", { name: "Bold" });
+		await userEvent.click(bold);
+		await waitFor(() => expect(bold.getAttribute("aria-pressed")).toBe("true"));
+		expect(ref.current?.getMarkdownContent()).toBe("**Keep these words**");
+		await userEvent.click(screen.getByRole("button", { name: "Italic" }));
+		await waitFor(() =>
+			expect(screen.getByRole("button", { name: "Italic" }).getAttribute("aria-pressed")).toBe("true"),
+		);
+		const draft = ref.current!.getDraftContent();
+		view.unmount();
+		const restored = render(
+			<ChannelsComposer
+				controlRef={ref}
+				initialValue={draft}
+				ariaLabel="Restored formatting"
+				submitTooltip="Send"
+				submitDisabled={false}
+			/>,
+		);
+		await waitFor(() =>
+			expect(restored.container.querySelector("strong em, em strong")?.textContent).toBe("Keep these words"),
+		);
+		expect(ref.current?.getDraftContent()).toBe(draft);
+		await userEvent.click(screen.getByRole("button", { name: "Formatting" }));
+		await userEvent.click(screen.getByRole("button", { name: "Bullet list" }));
+		await waitFor(() => expect(restored.container.querySelector("ul li")?.textContent).toBe("Keep these words"));
+		await userEvent.click(screen.getByRole("button", { name: "Numbered list" }));
+		await waitFor(() => expect(restored.container.querySelector("ol li")?.textContent).toBe("Keep these words"));
+		await userEvent.click(screen.getByRole("button", { name: "Numbered list" }));
+		await userEvent.click(screen.getByRole("textbox", { name: "Restored formatting" }));
+		await userEvent.keyboard("{Control>}a{/Control}");
+		await userEvent.click(screen.getByRole("button", { name: "Strikethrough" }));
+		await waitFor(() => expect(restored.container.querySelector("s")?.textContent).toBe("Keep these words"));
+		await userEvent.click(screen.getByRole("button", { name: "Inline code" }));
+		await waitFor(() => expect(restored.container.querySelector("code")?.textContent).toBe("Keep these words"));
+	});
+
+	test("code blocks keep Shift+Enter for a new line and Enter for sending", async () => {
+		const ref = createRef<ChannelsComposerControl_Ref>();
+		const onEnter = vi.fn();
+		const { container } = render(
+			<ChannelsComposer
+				controlRef={ref}
+				ariaLabel="Code message"
+				submitTooltip="Send"
+				submitDisabled={false}
+				onEnter={onEnter}
+			/>,
+		);
+		await userEvent.click(await screen.findByLabelText("Code message"));
+		await userEvent.keyboard("first");
+		await userEvent.click(screen.getByRole("button", { name: "Formatting" }));
+		await userEvent.click(screen.getByRole("button", { name: "Code block" }));
+		await waitFor(() => expect(container.querySelector("pre code")?.textContent).toBe("first"));
+		await userEvent.keyboard("{Shift>}{Enter}{/Shift}second");
+		expect(container.querySelector("pre code")?.textContent).toBe("first\nsecond");
+		expect(onEnter).not.toHaveBeenCalled();
+		await userEvent.keyboard("{Enter}");
+		expect(onEnter).toHaveBeenCalledOnce();
+	});
+
+	test("links validate, preserve selected text and never submit the message form", async () => {
+		const ref = createRef<ChannelsComposerControl_Ref>();
+		const submit = vi.fn((event: React.FormEvent) => event.preventDefault());
+		const { container } = render(
+			<form onSubmit={submit}>
+				<ChannelsComposer controlRef={ref} ariaLabel="Link message" submitTooltip="Send" submitDisabled={false} />
+			</form>,
+		);
+		const editor = await screen.findByLabelText("Link message");
+		await userEvent.fill(editor, "Read this");
+		await userEvent.keyboard("{Control>}a{/Control}");
+		await userEvent.click(screen.getByRole("button", { name: "Formatting" }));
+		await userEvent.click(screen.getByRole("button", { name: "Add link" }));
+		const url = await screen.findByRole("textbox", { name: "Link address" });
+		expect(container.querySelector("form form"), "the link form must sit outside the message form").toBeNull();
+		await userEvent.fill(url, "javascript:alert(1)");
+		await userEvent.click(screen.getByRole("button", { name: "Apply link" }));
+		await screen.findByRole("alert");
+		expect((url as HTMLInputElement).validity.valid).toBe(false);
+		expect(submit).not.toHaveBeenCalled();
+		await userEvent.fill(url, "https://example.com/docs");
+		await userEvent.keyboard("{Enter}");
+		await waitFor(() => expect(screen.queryByRole("dialog", { name: "Message link" })).toBeNull());
+		expect(ref.current?.getMarkdownContent()).toBe("[Read this](https://example.com/docs)");
+		expect(submit).not.toHaveBeenCalled();
+		expect(container.querySelector(".ChannelsComposerControl-editor a")?.textContent).toBe("Read this");
+		await userEvent.click(screen.getByRole("button", { name: "Edit link" }));
+		await userEvent.click(screen.getByRole("button", { name: "Remove link" }));
+		await waitFor(() => expect(ref.current?.getMarkdownContent()).toBe("Read this"));
+	});
+
+	test("restoring a formatted draft keeps its marks, lists and code block", async () => {
+		const ref = createRef<ChannelsComposerControl_Ref>();
+		const { container } = render(
+			<ChannelsComposer
+				controlRef={ref}
+				initialValue={
+					"**Bold** *Italic* ~~Strike~~ [Link](https://example.com) `inline`\n\n- Bullet\n\n1. Numbered\n\n```js\nconst value = 1;\n```"
+				}
+				ariaLabel="Formatted draft"
+				submitTooltip="Send"
+				submitDisabled={false}
+			/>,
+		);
+		await screen.findByLabelText("Formatted draft");
+		await waitFor(() => expect(container.querySelector("strong")?.textContent).toBe("Bold"));
+		expect(container.querySelector("em")?.textContent).toBe("Italic");
+		expect(container.querySelector("s")?.textContent).toBe("Strike");
+		expect(container.querySelector('a[href="https://example.com"]')?.textContent).toBe("Link");
+		expect(container.querySelector("ul li")?.textContent).toBe("Bullet");
+		expect(container.querySelector("ol li")?.textContent).toBe("Numbered");
+		expect(container.querySelector("pre code")?.textContent).toBe("const value = 1;");
+		expect(ref.current?.getMarkdownContent()).toContain("**Bold**");
+		expect(ref.current?.getMarkdownContent()).toContain("[Link](https://example.com)");
+		expect(ref.current?.getMarkdownContent()).toContain("```js\nconst value = 1;\n```");
+	});
+
 	test("pending uploads block Enter and send, then attachment-only content can send", async () => {
 		const requests: {
 			onload: (() => void) | null;
@@ -213,13 +345,15 @@ describe("ChannelsComposer", () => {
 					<button type="button">Add comment</button>
 				</MyPopoverTrigger>
 				<MyPopoverContent aria-label="Comment">
-					<ChannelsComposer
-						controlRef={null}
-						autoFocus="end"
-						submitTooltip="Send"
-						submitDisabled
-						ariaLabel="Comment text"
-					/>
+					<form onSubmit={(event) => event.preventDefault()}>
+						<ChannelsComposer
+							controlRef={null}
+							autoFocus="end"
+							submitTooltip="Send"
+							submitDisabled
+							ariaLabel="Comment text"
+						/>
+					</form>
 				</MyPopoverContent>
 			</MyPopover>,
 		);
@@ -228,6 +362,14 @@ describe("ChannelsComposer", () => {
 		const composer = await screen.findByLabelText("Comment text");
 		await waitFor(() => expect(document.activeElement).toBe(composer));
 
+		await userEvent.click(screen.getByRole("button", { name: "Formatting" }));
+		await userEvent.click(screen.getByRole("button", { name: "Add link" }));
+		await screen.findByRole("textbox", { name: "Link address" });
+		expect(screen.getByRole("dialog", { name: "Comment" })).toBeTruthy();
+		await userEvent.keyboard("{Escape}");
+		await waitFor(() => expect(screen.queryByRole("dialog", { name: "Message link" })).toBeNull());
+		expect(screen.getByRole("dialog", { name: "Comment" })).toBeTruthy();
+		await userEvent.click(composer);
 		await userEvent.keyboard("{Escape}");
 
 		await waitFor(() => expect(screen.queryByRole("dialog", { name: "Comment" })).toBeNull());
@@ -314,6 +456,45 @@ describe("ChannelsComposer", () => {
 		expect(ref.current?.getMarkdownContent()).toBe('Before [file-quote id="0"] between [file-quote id="1"] after');
 		expect(container.querySelector("script")).toBeNull();
 		expect(ref.current?.getDraftContent()).toBe(draft);
+	});
+
+	test("formatting around a file quote keeps both text parts readable", async () => {
+		const ref = createRef<ChannelsComposerControl_Ref>();
+		const quote = { fileNodeId: null, text: "Chosen words" };
+		const draft = `Before ${file_quotes_serialize_draft(quote)} after`;
+		const view = render(
+			<ChannelsComposer
+				controlRef={ref}
+				initialValue={draft}
+				ariaLabel="Format a quote"
+				submitTooltip="Send"
+				submitDisabled
+			/>,
+		);
+		await screen.findByText("Chosen words");
+		await userEvent.click(screen.getByRole("textbox", { name: "Format a quote" }));
+		await userEvent.keyboard("{Control>}a{/Control}");
+		await userEvent.click(screen.getByRole("button", { name: "Formatting" }));
+		await userEvent.click(screen.getByRole("button", { name: "Bold" }));
+		expect(ref.current?.getMarkdownContent()).toBe('**Before** [file-quote id="0"] **after**');
+		expect(ref.current?.getFileQuotes()).toEqual([quote]);
+		const formatted = ref.current!.getDraftContent();
+		view.unmount();
+		const restored = render(
+			<ChannelsComposer
+				controlRef={ref}
+				initialValue={formatted}
+				ariaLabel="Restored quote formatting"
+				submitTooltip="Send"
+				submitDisabled
+			/>,
+		);
+		await screen.findByText("Chosen words");
+		expect(Array.from(restored.container.querySelectorAll("strong"), (node) => node.textContent)).toEqual([
+			"Before",
+			"after",
+		]);
+		expect(ref.current?.getFileQuotes()).toEqual([quote]);
 	});
 
 	test("a pending quote waits for the editor and keeps the existing draft", async () => {

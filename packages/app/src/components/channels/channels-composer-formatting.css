@@ -1,0 +1,44 @@
+@layer components {
+	.ChannelsComposerFormatting {
+		grid-column: 1 / -1;
+		grid-row: 2;
+		display: flex;
+		flex-wrap: wrap;
+		gap: 4px;
+		padding: 4px 8px;
+		max-height: 104px;
+		overflow: auto;
+		border-bottom: 1px solid var(--color-base-1-07);
+		& [aria-pressed="true"] {
+			background: var(--color-base-1-06);
+			color: var(--color-fg-12);
+		}
+	}
+	.ChannelsComposerLink {
+		width: min(320px, calc(100vw - 24px));
+		padding: 12px;
+		& form,
+		& label {
+			display: grid;
+			gap: 8px;
+		}
+		& label {
+			font-size: 16px;
+		}
+		& p {
+			font-size: 15px;
+			color: var(--color-red-11);
+		}
+	}
+	.ChannelsComposerLink-actions {
+		display: flex;
+		justify-content: end;
+		gap: 4px;
+	}
+	@media (pointer: coarse) {
+		.ChannelsComposerFormatting .MyIconButton {
+			width: 44px;
+			height: 44px;
+		}
+	}
+}

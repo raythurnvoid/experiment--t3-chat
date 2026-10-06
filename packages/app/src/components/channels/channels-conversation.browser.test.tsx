@@ -160,6 +160,23 @@ function Conversation(props: { width: number; narrow: boolean }) {
 afterEach(() => cleanup());
 
 describe("ChannelsConversation", () => {
+	test("message actions stay beside the row and opening More does not add height", async () => {
+		await page.viewport(390, 844);
+		const view = render(<Conversation width={340} narrow={true} />);
+		await screen.findByRole("textbox", { name: "Message" });
+		const row = view.container.querySelector<HTMLElement>("article")!;
+		const actions = row.querySelector<HTMLElement>(".ChannelsMessage-actions")!;
+		expect(
+			actions.getBoundingClientRect().top - row.getBoundingClientRect().top,
+			"message actions must share the top row on touch too",
+		).toBeLessThanOrEqual(8);
+		const height = row.getBoundingClientRect().height;
+		await userEvent.click(screen.getAllByRole("button", { name: "More message actions" })[0]!);
+		await screen.findByRole("menuitem", { name: "Quote reply" });
+		expect(row.getBoundingClientRect().height).toBe(height);
+		await userEvent.keyboard("{Escape}");
+	});
+
 	test("cancelling an edit restores an empty draft with Send disabled", async () => {
 		await page.viewport(1000, 900);
 		app_local_storage_set_value("app_state::channels_drafts::scope::membership", {});
@@ -215,9 +232,9 @@ describe("ChannelsConversation", () => {
 			(row) => row.getBoundingClientRect().bottom > list.getBoundingClientRect().top,
 		)!;
 		const savedOffset = anchor.getBoundingClientRect().top - list.getBoundingClientRect().top;
-		const threadAction = list.querySelectorAll<HTMLButtonElement>('button[aria-label="Reply in thread"]')[5]!;
+		const threadAction = list.querySelectorAll<HTMLElement>("article")[5]!;
 		threadAction.focus({ preventScroll: true });
-		await userEvent.keyboard("{Enter}");
+		await userEvent.keyboard("t");
 		await screen.findByRole("textbox", { name: "Thread reply" });
 		expect(screen.getByRole("textbox", { name: "Message" })).toBe(editor);
 		expect(editor.textContent).toBe("Keep this draft");

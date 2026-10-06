@@ -178,10 +178,15 @@
 		font-size: 13px;
 	}
 	@media (hover: none) {
+		.ChannelsMessage {
+			grid-template-columns: 44px minmax(0, 1fr) 44px;
+		}
 		.ChannelsMessage-actions {
 			position: static;
 			opacity: 1;
-			grid-column: 2;
+			grid-column: 3;
+			grid-row: 1;
+			align-self: start;
 			justify-self: end;
 			pointer-events: auto;
 			& > .MyIconButton:not(.MyMenuTrigger),
@@ -207,6 +212,11 @@
 		}
 		.ChannelsMessage-time {
 			font-size: 13px;
+		}
+		@media (hover: none) {
+			.ChannelsMessage {
+				grid-template-columns: 36px minmax(0, 1fr) 44px;
+			}
 		}
 	}
 }
