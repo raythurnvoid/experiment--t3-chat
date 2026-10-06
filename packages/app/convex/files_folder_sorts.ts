@@ -1,7 +1,8 @@
 import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
-import { mutation, query } from "./_generated/server.js";
+import { query } from "./_generated/server.js";
+import { mutation } from "./functions.ts";
 import { files_sort_validator } from "./schema.ts";
 import { access_control_db_authorize_membership } from "./access_control.ts";
 import { files_nodes_db_require_user_writable } from "./files_nodes.ts";

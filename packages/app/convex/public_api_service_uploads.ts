@@ -14,7 +14,8 @@
 import { v } from "convex/values";
 import type { RegisteredMutation } from "convex/server";
 
-import { internalMutation, type MutationCtx, type QueryCtx } from "./_generated/server.js";
+import type { MutationCtx, QueryCtx } from "./_generated/server.js";
+import { internalMutation } from "./functions.ts";
 import type { Doc, Id } from "./_generated/dataModel";
 import { access_control_db_can_act_on_file_node, access_control_db_has_permission } from "./access_control.ts";
 import { billing_pick_billed_user_id } from "./billing_db.ts";

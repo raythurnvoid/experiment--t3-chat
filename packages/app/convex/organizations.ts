@@ -4,14 +4,8 @@ import { internal } from "./_generated/api.js";
 import { access_control_changes_db_record } from "./access_control_changes.ts";
 import { organizations_membership_lifetimes_db_record } from "./organizations_membership_lifetimes.ts";
 import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
-import {
-	internalMutation,
-	internalQuery,
-	mutation,
-	query,
-	type MutationCtx,
-	type QueryCtx,
-} from "./_generated/server.js";
+import { internalQuery, query, type MutationCtx, type QueryCtx } from "./_generated/server.js";
+import { internalMutation, mutation } from "./functions.ts";
 import type { Id } from "./_generated/dataModel";
 import { server_convex_get_user_fallback_to_anonymous, should_never_happen } from "../server/server-utils.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";

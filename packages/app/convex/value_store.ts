@@ -1,7 +1,8 @@
 import { v } from "convex/values";
 import { internal } from "./_generated/api.js";
 import type { Doc } from "./_generated/dataModel.js";
-import { internalMutation, internalQuery, type MutationCtx } from "./_generated/server.js";
+import { internalQuery, type MutationCtx } from "./_generated/server.js";
+import { internalMutation } from "./functions.ts";
 import { convex_error } from "../server/convex-utils.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.

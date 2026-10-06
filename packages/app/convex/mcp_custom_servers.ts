@@ -5,15 +5,8 @@ import { Result } from "common/errors-as-values-utils.ts";
 
 import { internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel";
-import {
-	action,
-	internalMutation,
-	internalQuery,
-	mutation,
-	query,
-	type MutationCtx,
-	type QueryCtx,
-} from "./_generated/server.js";
+import { action, internalQuery, query, type MutationCtx, type QueryCtx } from "./_generated/server.js";
+import { internalMutation, mutation } from "./functions.ts";
 import { access_control_db_authorize_membership } from "./access_control.ts";
 import { organizations_db_get_membership } from "./organizations.ts";
 import { organizations_integration_policy_db_allows_mcp_server } from "./organizations_integration_policy.ts";

@@ -4,7 +4,8 @@ import { doc } from "convex-helpers/validators";
 import { z } from "zod";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
-import { internalMutation, internalQuery, mutation, query } from "./_generated/server.js";
+import { internalQuery, query } from "./_generated/server.js";
+import { internalMutation, mutation } from "./functions.ts";
 import app_convex_schema, {
 	files_pending_target_validator,
 	files_metadata_entries_validator,
@@ -51,13 +52,10 @@ import {
 } from "../shared/files-search-query.ts";
 import { files_sort_text_key, files_sort_value_of } from "../shared/files-sort.ts";
 import { organizations_is_global_organization_id } from "../shared/organizations.ts";
-import {
-	files_db_get_visible_node_by_path,
-	files_db_patch_pending_update,
-	files_pending_update_has_pending_chunks,
-} from "../server/files.ts";
+import { files_db_get_visible_node_by_path, files_db_patch_pending_update } from "../server/files.ts";
 import {
 	files_pending_update_content_is_stale,
+	files_pending_update_has_pending_chunks,
 	files_get_utf8_byte_size,
 	type files_PendingTarget,
 	type files_VisibleEntry,

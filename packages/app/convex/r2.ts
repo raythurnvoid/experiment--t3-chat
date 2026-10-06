@@ -7,13 +7,13 @@ import { components, internal } from "./_generated/api.js";
 import {
 	action,
 	internalAction,
-	internalMutation,
 	internalQuery,
 	query,
 	type ActionCtx,
 	type MutationCtx,
 	type QueryCtx,
 } from "./_generated/server.js";
+import { internalMutation } from "./functions.ts";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import {
 	server_convex_get_user_fallback_to_anonymous,

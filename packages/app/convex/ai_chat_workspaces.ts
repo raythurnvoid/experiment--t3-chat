@@ -1,7 +1,8 @@
 import { Result } from "common/errors-as-values-utils.ts";
 import { v, type Infer } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel.js";
-import { internalMutation, internalQuery, type MutationCtx, type QueryCtx } from "./_generated/server.js";
+import { internalQuery, type MutationCtx, type QueryCtx } from "./_generated/server.js";
+import { internalMutation } from "./functions.ts";
 import { access_control_db_authorize_membership } from "./access_control.ts";
 import { ai_chat_files_db_get_invocation_membership } from "./ai_chat_files.ts";
 import { ai_chat_runs_db_is_current } from "./ai_chat_runs.ts";

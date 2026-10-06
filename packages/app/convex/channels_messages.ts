@@ -3,14 +3,8 @@ import { paginationOptsValidator, paginationResultValidator, type PaginationOpti
 import { doc } from "convex-helpers/validators";
 import { Result } from "common/errors-as-values-utils.ts";
 import { internal } from "./_generated/api.js";
-import {
-	internalMutation,
-	internalQuery,
-	mutation,
-	query,
-	type MutationCtx,
-	type QueryCtx,
-} from "./_generated/server.js";
+import { internalQuery, query, type MutationCtx, type QueryCtx } from "./_generated/server.js";
+import { internalMutation, mutation } from "./functions.ts";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import app_convex_schema, { ai_chat_workspaces_source_validator, file_quote_validator } from "./schema.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";

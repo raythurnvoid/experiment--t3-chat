@@ -4,7 +4,8 @@ import { Result } from "common/errors-as-values-utils.ts";
 
 import { internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel";
-import { internalMutation, internalQuery, query, type MutationCtx, type QueryCtx } from "./_generated/server.js";
+import { internalQuery, query, type MutationCtx, type QueryCtx } from "./_generated/server.js";
+import { internalMutation } from "./functions.ts";
 import { access_control_db_authorize_membership } from "./access_control.ts";
 import { ai_chat_files_db_get_invocation_membership } from "./ai_chat_files.ts";
 import { ai_chat_workspaces_db_resolve, ai_chat_workspaces_SELECTORS } from "./ai_chat_workspaces.ts";

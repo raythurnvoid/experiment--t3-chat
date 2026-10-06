@@ -1,11 +1,12 @@
 import "./setup-env.test.ts";
-import { afterEach } from "vitest";
+import { afterEach, vi } from "vitest";
 import { convexTest, type TestConvexRoot } from "convex-test";
 import schema from "./schema.ts";
 import { faker } from "@faker-js/faker";
 import { make } from "../src/lib/utils.ts";
 import type { DataModel, Doc, Id, TableNames } from "./_generated/dataModel";
 import { files_ROOT_ID } from "../server/files.ts";
+import { files_pending_overlay_db_flush, files_pending_overlay_db_wrap } from "../server/files-pending-overlay.ts";
 import type { MutationCtx } from "./_generated/server";
 import polar_test from "@convex-dev/polar/test";
 import presence_test from "@convex-dev/presence/test";
@@ -109,6 +110,34 @@ export function test_convex(
 	rate_limiter_test.register(t, "rate_limiter");
 	r2_test.register(t as unknown as Parameters<typeof r2_test.register>[0]);
 	return t;
+}
+
+/**
+ * Like `t.run`, but the writes of `fn` go through the overlay capture of the mutation wrapper, and
+ * the pending overlay flushes before the run ends. Run the jobs it schedules with
+ * `t.finishAllScheduledFunctions`.
+ */
+export async function test_run_with_flush<T>(t: TestConvexRoot<DataModel>, fn: (ctx: MutationCtx) => Promise<T>) {
+	return await t.run(async (ctx) => {
+		const wrapped = { ...ctx, ...files_pending_overlay_db_wrap(ctx) };
+		const result = await fn(wrapped);
+		await files_pending_overlay_db_flush(wrapped);
+		return result;
+	});
+}
+
+/**
+ * Wrap a registered mutation's handler for the rest of the test. convex-test runs a function through
+ * its `_handler`, so `wrap` sees each run's ctx and args: it can read metrics inside the transaction
+ * or make one run throw. It calls `handler` to run the real code.
+ */
+export function test_spy_handler(
+	registered: unknown,
+	wrap: (handler: (ctx: MutationCtx, args: unknown) => Promise<null>, ctx: MutationCtx, args: unknown) => Promise<null>,
+) {
+	const target = registered as { _handler: (ctx: MutationCtx, args: unknown) => Promise<null> };
+	const handler = target._handler;
+	vi.spyOn(target, "_handler").mockImplementation(async (ctx, args) => await wrap(handler, ctx, args));
 }
 
 export async function test_get_file_yjs_pointers(t: ReturnType<typeof test_convex>, nodeId: Id<"files_nodes">) {

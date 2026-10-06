@@ -7,7 +7,8 @@ import { Result } from "common/errors-as-values-utils.ts";
 import { encodeStateAsUpdate } from "yjs";
 import { api, internal } from "./_generated/api.js";
 import type { Doc } from "./_generated/dataModel.js";
-import { action, mutation } from "./_generated/server.js";
+import { action } from "./_generated/server.js";
+import { mutation } from "./functions.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import { v_result } from "../server/convex-utils.ts";
 import {

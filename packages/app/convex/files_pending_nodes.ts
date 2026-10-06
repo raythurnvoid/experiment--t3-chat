@@ -3,7 +3,8 @@ import { v } from "convex/values";
 import { paginationOptsValidator } from "convex/server";
 import { internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
-import { internalMutation, type MutationCtx, type QueryCtx } from "./_generated/server.js";
+import type { MutationCtx, QueryCtx } from "./_generated/server.js";
+import { internalMutation } from "./functions.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import {
 	files_private_storage_db_release,

@@ -20,6 +20,7 @@ import {
 } from "./access_control.ts";
 import { organizations_db_get_membership } from "./organizations.ts";
 import { files_db_get_visible_node_by_path } from "../server/files.ts";
+import { files_visible_resolve_db_create } from "../server/files-visible-resolve.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { server_convex_get_user_fallback_to_anonymous, server_path_normalize } from "../server/server-utils.ts";
 import type { files_PendingTarget, files_PendingParent, files_VisibleEntry } from "../shared/files.ts";
@@ -68,18 +69,9 @@ export async function files_visible_db_create_reader(
 		reviewedArchiveIds?: ReadonlySet<Id<"files_pending_updates">>;
 	},
 ) {
-	const budget = { exhausted: false, readCount: 0 };
+	const core = files_visible_resolve_db_create(ctx.db, args);
 
-	async function read<T>(run: () => Promise<T>): Promise<T | null> {
-		if (budget.readCount >= (args.readLimit ?? 512)) {
-			budget.exhausted = true;
-			return null;
-		}
-		budget.readCount++;
-		return await run();
-	}
-
-	const membership = await read(() =>
+	const membership = await core.read(() =>
 		ctx.db
 			.query("organizations_workspaces_users")
 			.withIndex("by_user_organization_workspace_active", (q) =>
@@ -109,180 +101,10 @@ export async function files_visible_db_create_reader(
 		return await readable;
 	}
 
-	async function find_saved_move(parent: files_PendingParent, name: string) {
-		const moves = ctx.db.query("files_pending_updates").withIndex("by_user_pendingMove_destParent_destName", (q) =>
-			q
-				.eq("userId", args.userId)
-				.eq("pendingMove.destParent.kind", parent.kind)
-				.eq("pendingMove.destParent.id", parent.kind === "root" ? undefined : parent.id)
-				.eq("pendingMove.destName", name),
-		);
-		const iterator = moves[Symbol.asyncIterator]();
-		try {
-			while (true) {
-				const next = await read(() => iterator.next());
-				if (!next || next.done) return null;
-				// Root claims share this index across workspaces. Private claims use the active-node
-				// index because discarded proposals can remain until cleanup.
-				if (
-					next.value.organizationId === args.organizationId &&
-					next.value.workspaceId === args.workspaceId &&
-					next.value.target.kind === "saved"
-				)
-					return next.value;
-			}
-		} finally {
-			await iterator.return?.();
-		}
-	}
-
-	const resolving = new Set<string>();
-	const resolved = new Map<string, { entry: files_VisibleEntry; accessNode: Doc<"files_nodes"> | null } | null>();
-
-	async function resolve_parent(
-		parent: files_PendingParent,
-	): Promise<{ path: string; accessNode: Doc<"files_nodes"> | null } | null> {
-		if (parent.kind === "root") return { path: "", accessNode: null };
-		if (parent.kind === "private") {
-			const node = await read(() => ctx.db.get("files_pending_nodes", parent.id));
-			if (
-				node?.state === "published" &&
-				node.userId === args.userId &&
-				node.organizationId === args.organizationId &&
-				node.workspaceId === args.workspaceId
-			) {
-				const receipt = await read(() =>
-					ctx.db
-						.query("files_pending_node_publish_receipts")
-						.withIndex("by_privateNode", (q) => q.eq("privateNodeId", parent.id))
-						.unique(),
-				);
-				if (!receipt) return null;
-				return await resolve_parent({ kind: "saved", id: receipt.savedNodeId });
-			}
-		}
-
-		const result = await resolve(parent);
-		if (!result || result.entry.node.kind !== "folder") return null;
-		return { path: result.entry.path, accessNode: result.accessNode };
-	}
-
-	async function resolve(
-		target: files_PendingTarget,
-	): Promise<{ entry: files_VisibleEntry; accessNode: Doc<"files_nodes"> | null } | null> {
-		const key = `${target.kind}:${target.id}`;
-		if (resolved.has(key)) return resolved.get(key)!;
-		if (resolving.has(key) || resolving.size >= 256) return null;
-		resolving.add(key);
-
-		const pending = await read(() =>
-			ctx.db
-				.query("files_pending_updates")
-				.withIndex("by_user_target", (q) =>
-					q.eq("userId", args.userId).eq("target.kind", target.kind).eq("target.id", target.id),
-				)
-				.unique(),
-		);
-
-		let result: { entry: files_VisibleEntry; accessNode: Doc<"files_nodes"> | null } | null = null;
-		if (!pending?.pendingArchive || args.reviewedArchiveIds?.has(pending._id)) {
-			if (target.kind === "private") {
-				const node = await read(() => ctx.db.get("files_pending_nodes", target.id));
-				if (
-					node &&
-					pending &&
-					node.state === "active" &&
-					node.userId === args.userId &&
-					node.organizationId === args.organizationId &&
-					node.workspaceId === args.workspaceId
-				) {
-					const parent = await resolve_parent(node.parent);
-					if (parent)
-						result = {
-							entry: { kind: "private", node, pendingUpdate: pending, path: `${parent.path}/${node.name}` },
-							accessNode: parent.accessNode,
-						};
-				}
-			} else {
-				const node = await read(() => ctx.db.get("files_nodes", target.id));
-				if (
-					node &&
-					node.archiveOperationId === null &&
-					node.organizationId === args.organizationId &&
-					node.workspaceId === args.workspaceId
-				) {
-					const parentTarget: files_PendingParent =
-						node.parentId === "root" ? { kind: "root" } : { kind: "saved", id: node.parentId };
-					const movedParent = pending?.pendingMove ? await resolve_parent(pending.pendingMove.destParent) : null;
-					const parent = movedParent ?? (await resolve_parent(parentTarget));
-					if (parent) {
-						const name = movedParent && pending?.pendingMove ? pending.pendingMove.destName : node.name;
-						result = {
-							entry: { kind: "saved", node, pendingUpdate: pending, path: `${parent.path}/${name}` },
-							accessNode: node,
-						};
-
-						if (!movedParent) {
-							const parents: files_PendingParent[] = [parentTarget];
-							if (parentTarget.kind === "saved") {
-								const receipt = await read(() =>
-									ctx.db
-										.query("files_pending_node_publish_receipts")
-										.withIndex("by_savedNode", (q) => q.eq("savedNodeId", parentTarget.id))
-										.unique(),
-								);
-								if (receipt?.userId === args.userId) parents.push({ kind: "private", id: receipt.privateNodeId });
-							}
-
-							for (const parent of parents) {
-								const privateClaim = await read(() =>
-									ctx.db
-										.query("files_pending_nodes")
-										.withIndex("by_organization_workspace_user_parent_state_name", (q) =>
-											q
-												.eq("organizationId", args.organizationId)
-												.eq("workspaceId", args.workspaceId)
-												.eq("userId", args.userId)
-												.eq("parent.kind", parent.kind)
-												.eq("parent.id", parent.kind === "root" ? undefined : parent.id)
-												.eq("state", "active")
-												.eq("name", node.name),
-										)
-										.first(),
-								);
-								if (privateClaim) {
-									result = null;
-									break;
-								}
-
-								const moveClaim = await find_saved_move(parent, node.name);
-								if (moveClaim && moveClaim.target.id !== target.id && !moveClaim.pendingArchive) {
-									const claimantTarget = moveClaim.target;
-									const claimant =
-										claimantTarget.kind === "saved"
-											? await read(() => ctx.db.get("files_nodes", claimantTarget.id))
-											: null;
-									if (claimant?.archiveOperationId === null) {
-										result = null;
-										break;
-									}
-								}
-							}
-						}
-					}
-				}
-			}
-		}
-
-		resolving.delete(key);
-		resolved.set(key, result);
-		return result;
-	}
-
 	async function parent_aliases(parent: files_PendingParent) {
 		const parents = [parent];
 		if (parent.kind === "saved") {
-			const receipt = await read(() =>
+			const receipt = await core.read(() =>
 				ctx.db
 					.query("files_pending_node_publish_receipts")
 					.withIndex("by_savedNode", (q) => q.eq("savedNodeId", parent.id))
@@ -296,7 +118,7 @@ export async function files_visible_db_create_reader(
 	async function find_path(path: string) {
 		const segments = server_path_normalize(path).split("/").filter(Boolean);
 		let parent: files_PendingParent = { kind: "root" };
-		let current: Awaited<ReturnType<typeof resolve>> = null;
+		let current: Awaited<ReturnType<typeof core.resolve>> = null;
 
 		for (let index = 0; index < segments.length; index++) {
 			const name = segments[index]!;
@@ -304,7 +126,7 @@ export async function files_visible_db_create_reader(
 			const candidates = new Map<string, files_PendingTarget>();
 			if (parent.kind !== "private") {
 				const parentId = parent.kind === "root" ? "root" : parent.id;
-				const saved = await read(() =>
+				const saved = await core.read(() =>
 					ctx.db
 						.query("files_nodes")
 						.withIndex("by_organization_workspace_parent_archiveOperation_name", (q) =>
@@ -321,7 +143,7 @@ export async function files_visible_db_create_reader(
 			}
 
 			for (const alias of await parent_aliases(parent)) {
-				const privateNode = await read(() =>
+				const privateNode = await core.read(() =>
 					ctx.db
 						.query("files_pending_nodes")
 						.withIndex("by_organization_workspace_user_parent_state_name", (q) =>
@@ -337,7 +159,7 @@ export async function files_visible_db_create_reader(
 						.first(),
 				);
 				if (privateNode) candidates.set(privateNode._id, { kind: "private", id: privateNode._id });
-				const move = await find_saved_move(alias, name);
+				const move = await core.findSavedMove(alias, name);
 				if (move) candidates.set(move.target.id, move.target);
 			}
 
@@ -345,7 +167,7 @@ export async function files_visible_db_create_reader(
 			const expectedPath = `/${segments.slice(0, index + 1).join("/")}`;
 
 			for (const target of candidates.values()) {
-				const result = await resolve(target);
+				const result = await core.resolve(target);
 				if (result?.entry.path !== expectedPath) continue;
 				if (current) return null;
 				current = result;
@@ -364,16 +186,16 @@ export async function files_visible_db_create_reader(
 	return {
 		active: membership !== null,
 		get exhausted() {
-			return budget.exhausted;
+			return core.exhausted;
 		},
-		read,
-		resolve,
+		read: core.read,
+		resolve: core.resolve,
 		findPath: find_path,
 		parentAliases: parent_aliases,
 		canRead: can_read,
 		async resolveTarget(target: files_PendingTarget) {
 			if (!membership) return null;
-			const result = await resolve(target);
+			const result = await core.resolve(target);
 			return result && (await can_read(result.accessNode)) ? result.entry : null;
 		},
 		async resolvePath(path: string) {

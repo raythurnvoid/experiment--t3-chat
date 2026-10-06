@@ -4,7 +4,8 @@ import { doc } from "convex-helpers/validators";
 import { Result } from "common/errors-as-values-utils.ts";
 
 import type { Doc, Id } from "./_generated/dataModel.js";
-import { mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server.js";
+import { query, type MutationCtx, type QueryCtx } from "./_generated/server.js";
+import { mutation } from "./functions.ts";
 import app_convex_schema from "./schema.ts";
 import { access_control_db_caller_cannot_share_with_role, access_control_db_has_permission } from "./access_control.ts";
 import { access_control_changes_db_record } from "./access_control_changes.ts";

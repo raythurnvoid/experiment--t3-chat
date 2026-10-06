@@ -3,7 +3,8 @@ import { paginationOptsValidator, paginationResultValidator } from "convex/serve
 import { doc } from "convex-helpers/validators";
 
 import type { Doc, Id } from "./_generated/dataModel";
-import { mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server.js";
+import { query, type MutationCtx, type QueryCtx } from "./_generated/server.js";
+import { mutation } from "./functions.ts";
 import {
 	access_control_ENFORCED_PERMISSIONS,
 	access_control_FILE_SHARE_LEVELS,

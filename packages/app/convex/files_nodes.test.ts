@@ -3071,8 +3071,8 @@ describe("files_nodes_db_preflight_move budgets", () => {
 	const MAX_MOVE_BYTES = 4 * 1024 * 1024;
 
 	test.each([
-		{ parentCount: 499, nameLength: 1, allowed: true },
-		{ parentCount: 500, nameLength: 1, allowed: false },
+		{ parentCount: 138, nameLength: 1, allowed: true },
+		{ parentCount: 139, nameLength: 1, allowed: false },
 		{ parentCount: 100, nameLength: 500, allowed: false },
 	])(
 		"counts $parentCount new parents with $nameLength-byte names before writing",
@@ -4196,8 +4196,9 @@ describe("files_nodes_db_move_nodes", () => {
 		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const nodeIds = await t.run(async (ctx) => {
 			const ids: Id<"files_nodes">[] = [];
-			for (let index = 0; index < 500; index += 1) {
-				const name = `${"a".repeat(6_000)}-${index}`;
+			// 139 items fit the selection-size cap. Their long names pass the 4 MB read budget part way.
+			for (let index = 0; index < 139; index += 1) {
+				const name = `${"a".repeat(12_000)}-${index}`;
 				ids.push(
 					await ctx.db.insert("files_nodes", {
 						...test_mocks.files.base(),
@@ -4235,11 +4236,11 @@ describe("files_nodes_db_move_nodes", () => {
 	});
 
 	// The selection-size check is the first statement in the function, so it refuses before any read.
-	// The byte-budget test above stops part way through the selection instead. Crossing 500 by one
+	// The byte-budget test above stops part way through the selection instead. Crossing 139 by one
 	// item is what tells the two apart: a `>=` typo in the size check would still pass that test.
 	test.each([
-		{ itemCount: 500, allowed: true },
-		{ itemCount: 501, allowed: false },
+		{ itemCount: 139, allowed: true },
+		{ itemCount: 140, allowed: false },
 	])("moves $itemCount selected files against the selection-size limit", async ({ itemCount, allowed }) => {
 		const t = test_convex();
 		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));

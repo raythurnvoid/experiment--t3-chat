@@ -665,7 +665,17 @@ Rules that follow:
 - Both approaches scan the same docs overall — choose by who pays. Prefer `.filter()` when the consumer wants full pages (fewer round-trips); prefer the JS post-filter only when per-call read cost must stay flat.
 - Either way, `.filter()`/JS filtering is the fallback, not the default: express the predicate on an index (`withIndex` range, search-index `filterFields` equality) whenever the schema allows.
 - When the predicate needs other reads (for example, "does this folder have a child?"), `.filter()` cannot run it. Use `stream(ctx.db, schema).query(...).withIndex(...).filterWith(async (doc) => ...)` from `convex-helpers/server/stream`, then `.paginate({ ...opts, maximumRowsRead })`. It filters before paging, like `.filter()`. A reactive client must page it with `usePaginatedQuery` from `convex-helpers/react`, used as it is. The `convex/react` hook does not pin a stream page's end, so rows can be skipped or repeated when docs are added or removed. Leave out `maximumRowsRead` when the request has an `endCursor`. A pinned page that stops at the read limit returns the stop as its `continueCursor`, the hook splits the page there, and the rows between the stop and the old `endCursor` never load. `files_pending_updates.list_files_pending_updates` is the example.
-- A hand-built page (no `.paginate()`) must keep the same contract for that hook. With an `endCursor`, ignore `numItems`, return every row up to it, and return `continueCursor === endCursor` with `isDone: false`. When a hard cap stops it first, return `pageStatus: "SplitRequired"` with a `splitCursor` strictly inside the page; with no completed candidate to split at, throw a work-limit error. A cursor that does not match the request throws a `ConvexError` with `InvalidCursor` in its message and the data fields `isConvexSystemError: true` and `paginationError: "InvalidCursor"`. The hook restarts from page 1 when it sees either one. Never throw it for a first page with no cursor and no `endCursor`, because the hook would retry that page forever. For a `.paginate()` page that is too big for its per-row reads, see the `SplitRequired` guard in `list_tree_children_sorted` (`files_nodes.ts`).
+- New reads do not build pages by hand. Only `.paginate()` reads an index range for a page: no loop that walks an index, and no new `stream(...).filterWith(...)`. When several ordered streams must merge, each stream is its own query, and the merge runs outside the query (in the browser, or in the agent's action). For a `.paginate()` page that is too big for its per-row reads, see the `SplitRequired` guard in `list_tree_children_sorted` (`files_nodes.ts`).
+- Older hand-built pages (`plugins_data.ts`, near its `endCursor` comments) must keep the hook's contract until they are replaced. With an `endCursor`, ignore `numItems`, return every row up to it, and return `continueCursor === endCursor` with `isDone: false`. A cap that stops the page first returns `pageStatus: "SplitRequired"` with a `splitCursor` strictly inside the page. A cursor that does not match the request throws a `ConvexError` with `InvalidCursor` in its message and the data fields `isConvexSystemError: true` and `paginationError: "InvalidCursor"`. Never throw it for a first page with no cursor and no `endCursor`: the hook would retry that page forever.
+
+## Exact windows: subtract one user's hidden docs from a saved page
+
+An agent read shows saved docs minus the docs the user's drafts hide. Do not read one hide per doc. Read the saved page with `.paginate()`, then read only the hides whose index key lies between the page's first and last key, under the same equality prefix. Drop them with a `Set` of saved node ids.
+
+- The hide table (`files_pending_hides`) mirrors each saved index the read uses, plus `userId`. Use the mirror of the index the page used.
+- Convex bounds one field per range, so a key of several fields needs a split. `files_pending_overlay_window_ranges` in `server/files-pending-overlay.ts` builds the ranges: at most `2k - 1` for `k` key fields. For a `desc` page, the first key is the larger one.
+- Read each range with `.collect()`, and write the bound in a comment there: there is one hide per user and saved doc, a hide exists only while its saved doc is active, and the flush updates hide copies in the same transaction as the saved write. So a window holds at most one hide per page doc, plus ties on the last key field.
+- Agent reads run once from an action and never rerun, so they need no page guard. A browser query with per-row reads still needs the `SplitRequired` guard.
 
 ## Query cache and composition
 
@@ -687,6 +697,14 @@ Practical implication for this repo:
 
 - For the current user's own profile, reuse the current-user-safe profile query from both surfaces. For another user's profile, use only a public-safe display-profile query that enforces the required tenant or audience scope. `users.get_anagraphic` is the worked example: it requires an identity, returns display name and avatar for any `users` id because those render cross-tenant, and blanks `email` for anyone but the caller. Field-level audience beats a second query when only one field has a narrower audience. When a screen needs that withheld field, add a query whose arguments can prove the narrower audience — `users.get_workspace_member_anagraphic` is the Users-page example — instead of widening the generic query.
 
+# Mutation wrapper and leaf modules
+
+Import `mutation` and `internalMutation` from `convex/functions.ts`, never from `_generated/server`. The wrapper captures writes to the pending overlay's source tables and flushes the overlay once, at the end of the same transaction (see the `files-agent-pending-updates` skill, "Pending overlay"). `convex/functions.test.ts` fails on a direct import.
+
+- Write table first: `ctx.db.patch("files_nodes", id, ...)`. An id-only write to a source table throws.
+- `convex/functions.ts` and the flush module `server/files-pending-overlay.ts` are leaf modules. A leaf module imports only `convex/_generated`, `shared/`, `common/`, npm packages and other leaf modules (for example `server/files-visible-resolve.ts`). It never imports another `convex/*.ts` module or `server/files.ts`: every mutation module imports the wrapper, so one app import there pulls dozens of modules into each of them. Move a helper the flush needs to `shared/` first. The same test follows the wrapper's value imports and fails when they reach a `convex/` module.
+- A loop that asks "can I do more?" calls `files_subtree_ops_db_is_near_limits`, which flushes first, so the check counts the overlay's work too.
+
 # Migrations
 
 Load the [Convex migrations skill](../../convex-migrations/SKILL.md) before designing or running a migration. It owns the rollout phases, commands, operator checks, and component API details.
@@ -696,7 +714,7 @@ In this repo, add data migrations to [packages/app/convex/migrations.ts](../../.
 - Define each per-doc migration with `app_migrations.define(...)` and make `migrateOne` idempotent.
 - Export a named runner such as `run_backfill_example = app_migrations.runner(internal.migrations.backfill_example)`.
 - Use a hand-written `internalMutation` only for custom work that the component cannot express.
-- The component handles bounded batches. The current `app_migrations` instance does not pass a `schema` option. Use `customRange` only after wiring the app schema into `Migrations`; indexed custom ranges require it.
+- The component handles bounded batches. `app_migrations` passes the app `schema` and the wrapped `internalMutation` from `convex/functions.ts`, so `customRange` can read through an index, and a migration's writes to the pending overlay's source tables flush like any other mutation.
 - When existing data must remain usable, keep the rollout in separate compatibility, run, and tighten phases. If approved development data is disposable, follow the root clean-slate rule and the `dev-data-reset` skill instead of adding compatibility code. Inspect the target deployment, dry-run risky work, run to completion, and verify stored docs before tightening the schema.
 - Delete children before parents only when the migration actually removes related docs.
 

@@ -10,6 +10,7 @@ import {
 	test_mocks,
 	test_mocks_cancel_pending_home_file_seeds,
 	test_mocks_fill_db_with,
+	test_run_with_flush,
 } from "./setup.test.ts";
 import { data_deletion_db_request } from "./data_deletion_requests.ts";
 import { activities_db_require_by_source_id, activities_db_start } from "./activities_db.ts";
@@ -27,7 +28,7 @@ import { files_create_room_id, files_get_utf8_byte_size } from "../shared/files.
 import { app_presence_GLOBAL_ROOM_ID } from "../shared/shared-presence-constants.ts";
 import { r2, r2_PUT_MAY_ARRIVE_MARGIN_MS, r2_confirmed_object_delete, r2_create_asset_key } from "./r2_client.ts";
 import { files_private_storage_db_reserve } from "./files_private_storage.ts";
-import { files_db_insert_pending_update } from "../server/files.ts";
+import { files_db_insert_pending_update, files_ROOT_ID } from "../server/files.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import { files_subtree_ops_db_start_rebuild } from "./files_subtree_ops.ts";
 import { ai_chat_DEFAULT_MODEL_ID } from "../shared/ai-chat.ts";
@@ -5886,6 +5887,96 @@ describe("process_workspace_deletion_request", () => {
 		}));
 		expect(after.content).toBe(0);
 		expect(after.job).not.toBeNull();
+	});
+
+	test("deletes the pending overlay's derived docs after the drafts and files", async () => {
+		const t = test_convex();
+		const user = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-delete-overlay-workspace",
+				displayName: "Overlay Workspace",
+			}),
+		);
+		const scope = {
+			organizationId: user.defaultOrganizationId,
+			workspaceId: user.defaultWorkspaceId,
+			userId: user.userId,
+		};
+		const nodes = await test_run_with_flush(t, async (ctx) => {
+			const base = {
+				...test_mocks.files.base(),
+				organizationId: scope.organizationId,
+				workspaceId: scope.workspaceId,
+				createdBy: user.userId,
+				updatedBy: user.userId,
+			};
+			const folderId = await ctx.db.insert("files_nodes", {
+				...base,
+				parentId: files_ROOT_ID,
+				name: "p",
+				sortName: files_sort_text_key("p"),
+				kind: "folder",
+				path: "/p",
+				treePath: "/p/",
+				pathDepth: 1,
+			});
+			const fileIds = [];
+			for (const name of ["x.md", "y.md"])
+				fileIds.push(
+					await ctx.db.insert("files_nodes", {
+						...base,
+						parentId: folderId,
+						name,
+						sortName: files_sort_text_key(name),
+						kind: "file",
+						path: `/p/${name}`,
+						treePath: `/p/${name}`,
+						pathDepth: 2,
+						lowercaseExtension: "md",
+					}),
+				);
+			return { folderId, x: fileIds[0]!, y: fileIds[1]! };
+		});
+		// A "replace" draft (draft delete of /p/x.md plus a private /p/x.md) and a draft move.
+		const deleted = await t.mutation(internal.files_pending_updates.upsert_file_pending_archive_in_db, {
+			...scope,
+			target: { kind: "saved", id: nodes.x },
+		});
+		expect(deleted._nay).toBeUndefined();
+		const created = await t.mutation(internal.files_nodes.create_private_node_by_path, {
+			...scope,
+			path: "/p/x.md",
+			kind: "file",
+		});
+		expect(created._nay).toBeUndefined();
+		const moved = await t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
+			...scope,
+			target: { kind: "saved", id: nodes.y },
+			destParent: { kind: "root" },
+			destName: "y.md",
+		});
+		expect(moved._nay).toBeUndefined();
+
+		const count_overlay_docs = () =>
+			t.run(async (ctx) => {
+				const docs = [
+					...(await ctx.db.query("files_pending_hides").collect()),
+					...(await ctx.db.query("files_pending_places").collect()),
+					...(await ctx.db.query("files_pending_place_fields").collect()),
+					...(await ctx.db.query("files_pending_list_rows").collect()),
+					...(await ctx.db.query("files_pending_list_keys").collect()),
+					...(await ctx.db.query("files_pending_overlay_jobs").collect()),
+				];
+				return docs.filter((doc) => doc.workspaceId === scope.workspaceId).length;
+			});
+		expect(await count_overlay_docs()).toBeGreaterThan(0);
+
+		const requestId = await t.run((ctx) =>
+			data_deletion_db_request(ctx, { ...scope, scope: "workspace", eligibleAt: 0 }),
+		);
+		// No scheduled function runs here, so the overlay jobs the purge's own writes start stay queued.
+		await data_deletion_test_process_workspace_request_until_done(t, { requestId });
+		expect(await count_overlay_docs()).toBe(0);
 	});
 });
 

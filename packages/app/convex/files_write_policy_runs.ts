@@ -6,7 +6,8 @@ import { doc } from "convex-helpers/validators";
 import { Result } from "common/errors-as-values-utils.ts";
 import { internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
-import { internalMutation, mutation, type MutationCtx, type QueryCtx } from "./_generated/server.js";
+import type { MutationCtx, QueryCtx } from "./_generated/server.js";
+import { internalMutation, mutation } from "./functions.ts";
 import {
 	access_control_db_authorize_membership,
 	access_control_db_filter_readable_file_nodes,

@@ -10,14 +10,8 @@ import { omit } from "convex-helpers";
 import { doc } from "convex-helpers/validators";
 import { z } from "zod";
 import { Result } from "common/errors-as-values-utils.ts";
-import {
-	internalAction,
-	internalMutation,
-	internalQuery,
-	query,
-	type MutationCtx,
-	type QueryCtx,
-} from "./_generated/server.js";
+import { internalAction, internalQuery, query, type MutationCtx, type QueryCtx } from "./_generated/server.js";
+import { internalMutation } from "./functions.ts";
 import type { Doc, Id } from "./_generated/dataModel";
 import { components, internal } from "./_generated/api.js";
 import app_convex_schema, {

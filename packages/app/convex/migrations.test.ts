@@ -5,6 +5,7 @@ import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 import { convexTest } from "convex-test";
 import { api, components, internal } from "./_generated/api.js";
+import type { Id } from "./_generated/dataModel.js";
 import { test_convex, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
 import { files_updated_by_db_sync_node } from "./files_updated_by.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
@@ -1901,6 +1902,150 @@ describe("trim_files_folder_sorts_to_first_clause", () => {
 		expect(after.single).toEqual(before);
 		// file.name, A to Z shows the same as no doc, but the migration keeps the doc.
 		expect(after.nameFirst?.sort).toEqual([{ field: "name", direction: "asc" }]);
+	});
+});
+
+describe("backfill_files_pending_overlay", () => {
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	test("writes the derived docs of drafts saved before the overlay, and a rerun writes nothing new", async () => {
+		vi.useFakeTimers();
+		const t = test_convex();
+		component.register(t);
+		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const scope = { organizationId: db.organizationId, workspaceId: db.workspaceId, userId: db.userId };
+		const nodes = await t.run(async (ctx) => {
+			const insert = async (
+				parent: { _id: Id<"files_nodes">; path: string } | null,
+				name: string,
+				kind: "file" | "folder",
+			) => {
+				const path = `${parent?.path ?? ""}/${name}`;
+				const nodeId = await ctx.db.insert("files_nodes", {
+					...test_mocks.files.base(),
+					organizationId: scope.organizationId,
+					workspaceId: scope.workspaceId,
+					createdBy: db.userId,
+					updatedBy: db.userId,
+					parentId: parent?._id ?? "root",
+					name,
+					sortName: files_sort_text_key(name),
+					kind,
+					path,
+					treePath: kind === "folder" ? `${path}/` : path,
+					pathDepth: path.split("/").length - 1,
+					lowercaseExtension: kind === "file" ? "md" : null,
+				});
+				return { _id: nodeId, path };
+			};
+			const a = await insert(null, "a", "folder");
+			const b = await insert(null, "b", "folder");
+			return { a, b, x: await insert(a, "x.md", "file"), y: await insert(a, "y.md", "file") };
+		});
+
+		// Drafts: a move, a "replace" (draft delete of /a/y.md plus a private /a/y.md, a name claim), and
+		// a private folder with draft metadata (place fields) and a file inside.
+		const results = [
+			await t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
+				...scope,
+				target: { kind: "saved", id: nodes.x._id },
+				destParent: { kind: "saved", id: nodes.b._id },
+				destName: "x.md",
+			}),
+			await t.mutation(internal.files_pending_updates.upsert_file_pending_archive_in_db, {
+				...scope,
+				target: { kind: "saved", id: nodes.y._id },
+			}),
+			await t.mutation(internal.files_nodes.create_private_node_by_path, { ...scope, path: "/a/y.md", kind: "file" }),
+			await t.mutation(internal.files_nodes.create_private_node_by_path, { ...scope, path: "/p", kind: "folder" }),
+			await t.mutation(internal.files_metadata.update_entries_by_path, {
+				...scope,
+				path: "/p",
+				set: [{ key: "status", value: "draft" }],
+				remove: [],
+			}),
+			await t.mutation(internal.files_nodes.create_private_node_by_path, { ...scope, path: "/p/n.md", kind: "file" }),
+		];
+		for (const result of results) expect(result._nay).toBeUndefined();
+
+		// Before the overlay existed these drafts had no derived docs.
+		const overlayTables = [
+			"files_pending_hides",
+			"files_pending_places",
+			"files_pending_place_fields",
+			"files_pending_list_rows",
+			"files_pending_list_keys",
+			"files_pending_overlay_jobs",
+		] as const;
+		await t.run(async (ctx) => {
+			for (const table of overlayTables)
+				for (const doc of await ctx.db.query(table).collect()) await ctx.db.delete(table, doc._id);
+		});
+
+		/**
+		 * Run the scheduled functions that are due now, one timer at a time. Running every timer would
+		 * jump hours ahead and expire the drafts.
+		 */
+		const settle = async () => {
+			for (let step = 0; step < 1000; step++) {
+				await t.finishInProgressScheduledFunctions();
+				const now = Date.now();
+				const due = await t.run(async (ctx) =>
+					(await ctx.db.system.query("_scheduled_functions").collect()).some(
+						(job) => job.state.kind === "pending" && job.scheduledTime <= now,
+					),
+				);
+				if (!due) return;
+				vi.advanceTimersToNextTimer();
+			}
+			throw new Error("Scheduled functions did not settle");
+		};
+		const check_user = async () => {
+			const differences: string[] = [];
+			let cursor: string | null = null;
+			do {
+				const page: { differences: string[]; cursor: string | null } = await t.query(
+					internal.files_pending_overlay.check_user,
+					{ ...scope, cursor },
+				);
+				differences.push(...page.differences);
+				cursor = page.cursor;
+			} while (cursor);
+			return differences;
+		};
+		const read_overlay_docs = () =>
+			t.run(async (ctx) => {
+				const docs = [];
+				for (const table of overlayTables) docs.push(...(await ctx.db.query(table).collect()));
+				return docs;
+			});
+		expect(await check_user()).not.toEqual([]);
+
+		// Two proposals per batch, so the backfill resumes from its cursor.
+		const backfill = () =>
+			t.run((ctx) =>
+				runToCompletion(ctx, components.migrations, internal.migrations.backfill_files_pending_overlay, {
+					cursor: null,
+					batchSize: 2,
+				}),
+			);
+		await backfill();
+		await settle();
+		expect(await check_user()).toEqual([]);
+		const filled = await read_overlay_docs();
+		// Hides of the moved x.md and of the deleted and claimed y.md.
+		expect(filled.filter((doc) => "savedNodeId" in doc).map((doc) => doc.savedNodeId)).toEqual([
+			nodes.x._id,
+			nodes.y._id,
+		]);
+		expect(filled.filter((doc) => "placeId" in doc).map((doc) => doc.stringValue)).toContain("draft");
+
+		// A rerun writes nothing new: the same docs, with the same ids.
+		await backfill();
+		await settle();
+		expect(await read_overlay_docs()).toEqual(filled);
 	});
 });
 

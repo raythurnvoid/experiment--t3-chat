@@ -28,15 +28,8 @@
 import { ConvexError, v } from "convex/values";
 import type { RegisteredMutation } from "convex/server";
 import { SignJWT } from "jose";
-import {
-	action,
-	internalMutation,
-	internalQuery,
-	mutation,
-	query,
-	type ActionCtx,
-	type QueryCtx,
-} from "./_generated/server.js";
+import { action, internalQuery, query, type ActionCtx, type QueryCtx } from "./_generated/server.js";
+import { internalMutation, mutation } from "./functions.ts";
 import { internal } from "./_generated/api.js";
 import { access_control_changes_db_record } from "./access_control_changes.ts";
 import type { Id } from "./_generated/dataModel.js";

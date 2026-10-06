@@ -6,8 +6,12 @@ import { access_control_db_filter_readable_file_nodes } from "./access_control.t
 import { files_visible_db_create_reader } from "./files_visible.ts";
 import { files_db_resolve_scope } from "./files_scopes.ts";
 import { files_db_authorize_volume_read } from "./files_volume_access.ts";
-import { files_pending_update_has_pending_chunks } from "../server/files.ts";
-import { files_pending_update_content_is_stale, files_ROOT_ID, type files_VisibleEntry } from "../shared/files.ts";
+import {
+	files_pending_update_content_is_stale,
+	files_pending_update_has_pending_chunks,
+	files_ROOT_ID,
+	type files_VisibleEntry,
+} from "../shared/files.ts";
 import { organizations_is_global_organization_id } from "../shared/organizations.ts";
 
 /**

@@ -5,7 +5,8 @@
 // module is the binary door, because the public API has no upload route.
 
 import { v } from "convex/values";
-import { internalMutation, internalQuery } from "./_generated/server.js";
+import { internalQuery } from "./_generated/server.js";
+import { internalMutation } from "./functions.ts";
 import type { Id } from "./_generated/dataModel";
 import { Result } from "common/errors-as-values-utils.ts";
 import { v_result } from "../server/convex-utils.ts";

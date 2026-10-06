@@ -3,16 +3,8 @@
 // This structure allows file-system-like operations such as finding all items under a path (`/docs/*`) or
 // listing folder children and reading file content (`/docs/README.md`).
 
-import {
-	action,
-	internalAction,
-	internalQuery,
-	query,
-	type QueryCtx,
-	type MutationCtx,
-	internalMutation,
-	mutation,
-} from "./_generated/server.js";
+import { action, internalAction, internalQuery, query, type QueryCtx, type MutationCtx } from "./_generated/server.js";
+import { internalMutation, mutation } from "./functions.ts";
 import type { Doc, Id } from "./_generated/dataModel";
 import {
 	paginationOptsValidator,
@@ -124,6 +116,8 @@ import { billing_db_check_credits, billing_pick_billed_user_id, billing_ingest_e
 import { files_stored_uploads_db_admit } from "./files_stored_uploads.ts";
 import { rate_limiter_check_by_key, rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import {
+	files_derive_tree_path_for_file_node,
+	files_lowercase_extension,
 	files_normalize_file_rename_name,
 	files_default_text_shape_for_name,
 	files_get_normalized_node_path_segments,
@@ -174,7 +168,9 @@ const files_content_materialization_workpool = new Workpool(components.files_con
 	} as const,
 });
 
-const MAX_MOVE_NODE_COUNT = 500;
+// Measured with the pending overlay flush: 186 selected items fit the 4,096 index ranges
+// in `files_pending_overlay_limits.test.ts`, so the cap keeps a 25% margin.
+const MAX_MOVE_NODE_COUNT = 139;
 // The subtree write check before an archive or a Replace uses this limit too.
 const MAX_MOVE_DOCUMENT_COUNT = 2000;
 const MAX_MOVE_BYTES = 4 * 1024 * 1024;
@@ -192,22 +188,6 @@ const TREE_SHARED_ROOTS_MAX_GRANTS = 500;
 
 function files_path_depth(path: string) {
 	return path === "/" ? 0 : path_extract_segments_from(path).length;
-}
-
-function files_lowercase_extension(path: string, kind: Doc<"files_nodes">["kind"]) {
-	if (kind !== "file") {
-		return null;
-	}
-	const name = path_extract_segments_from(path).at(-1) ?? "";
-	const dotIndex = name.lastIndexOf(".");
-	if (dotIndex <= 0 || dotIndex === name.length - 1) {
-		return null;
-	}
-	return name.slice(dotIndex + 1).toLowerCase();
-}
-
-function derive_tree_path_for_file_node(path: string, kind: Doc<"files_nodes">["kind"]) {
-	return kind === "folder" && path !== "/" ? `${path}/` : path;
 }
 
 /** -1 in any file_stats count means the content cannot be processed (non-markdown / binary). */
@@ -313,7 +293,7 @@ async function db_patch_node_search_scope(
 		args.kind === "file" ? db_patch_plain_text_chunks_scope(ctx, args) : undefined,
 		files_metadata_db_patch_file_scope(ctx, {
 			...args,
-			...(args.path === undefined ? {} : { treePath: derive_tree_path_for_file_node(args.path, args.kind) }),
+			...(args.path === undefined ? {} : { treePath: files_derive_tree_path_for_file_node(args.path, args.kind) }),
 		}),
 	]);
 }
@@ -1839,7 +1819,7 @@ function node_insert_fields(args: {
 		name: args.name,
 		sortName: files_sort_text_key(args.name),
 		path: args.path,
-		treePath: derive_tree_path_for_file_node(args.path, args.kind),
+		treePath: files_derive_tree_path_for_file_node(args.path, args.kind),
 		pathDepth: files_path_depth(args.path),
 		lowercaseExtension: files_lowercase_extension(args.path, args.kind),
 		contentType: args.contentType ?? null,
@@ -4149,8 +4129,10 @@ async function db_folder_occupant_is_empty(
 				.first(),
 			ctx.db
 				.query("files_pending_updates")
-				.withIndex("by_user_pendingMove_destParent_destName", (q) =>
+				.withIndex("by_org_ws_user_pendingMove_destParent_destName", (q) =>
 					q
+						.eq("organizationId", args.organizationId)
+						.eq("workspaceId", args.workspaceId)
 						.eq("userId", args.userId)
 						.eq("pendingMove.destParent.kind", parent.kind)
 						.eq("pendingMove.destParent.id", parent.kind === "root" ? undefined : parent.id),
@@ -4986,7 +4968,7 @@ export async function files_nodes_db_preflight_move(
 			name,
 			sortName: files_sort_text_key(name),
 			path,
-			treePath: derive_tree_path_for_file_node(path, node.kind),
+			treePath: files_derive_tree_path_for_file_node(path, node.kind),
 			pathDepth: files_path_depth(path),
 			lowercaseExtension: files_lowercase_extension(path, node.kind),
 			restrictedScopeNodeId:
@@ -5770,7 +5752,7 @@ export async function files_nodes_db_rebuild_node(
 	const path = path_join(parent.path, node.name);
 	const fields = {
 		path,
-		treePath: derive_tree_path_for_file_node(path, node.kind),
+		treePath: files_derive_tree_path_for_file_node(path, node.kind),
 		pathDepth: files_path_depth(path),
 		// A child that is its own restricted folder keeps its scope.
 		restrictedScopeNodeId: node.restrictedScopeNodeId === node._id ? node._id : parent.restrictedScopeNodeId,
@@ -6036,7 +6018,7 @@ export async function files_nodes_db_restore_node(
 		name: args.name,
 		sortName: files_sort_text_key(args.name),
 		path,
-		treePath: derive_tree_path_for_file_node(path, args.node.kind),
+		treePath: files_derive_tree_path_for_file_node(path, args.node.kind),
 		pathDepth: files_path_depth(path),
 		lowercaseExtension: files_lowercase_extension(path, args.node.kind),
 		restrictedScopeNodeId,
@@ -8051,7 +8033,7 @@ export const list_subtree = internalQuery({
 		}
 
 		const normalizedPath = server_path_normalize(args.folderPath);
-		const lowerBound = derive_tree_path_for_file_node(normalizedPath, "folder");
+		const lowerBound = files_derive_tree_path_for_file_node(normalizedPath, "folder");
 		const upperBound = path_tree_prefix_upper_bound(lowerBound);
 		const baseDepth = files_path_depth(normalizedPath);
 
@@ -8253,7 +8235,7 @@ export const search_paths = internalQuery({
 		const pathPrefixFilter =
 			args.pathPrefix == null || args.pathPrefix === "/"
 				? null
-				: derive_tree_path_for_file_node(args.pathPrefix, "folder");
+				: files_derive_tree_path_for_file_node(args.pathPrefix, "folder");
 
 		let searchQuery = ctx.db.query("files_nodes").withSearchIndex("search_path", (q) => {
 			const base = q
@@ -12261,20 +12243,6 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			// The next page starts five characters back from the window end, not at it. "needle" is six
 			// characters, so a match sitting across the edge would be missed by both pages otherwise.
 			expect(result.nextStartIndex).toBe(64 - ("needle".length - 1));
-		});
-	});
-
-	describe("derive_tree_path_for_file_node", () => {
-		test("keeps file paths unchanged", () => {
-			expect(derive_tree_path_for_file_node("/docs/readme.md", "file")).toBe("/docs/readme.md");
-		});
-
-		test("adds a trailing slash for non-root folders", () => {
-			expect(derive_tree_path_for_file_node("/docs", "folder")).toBe("/docs/");
-		});
-
-		test("keeps root unchanged", () => {
-			expect(derive_tree_path_for_file_node("/", "folder")).toBe("/");
 		});
 	});
 }

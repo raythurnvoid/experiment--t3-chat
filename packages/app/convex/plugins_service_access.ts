@@ -4,7 +4,8 @@ import type { RegisteredMutation } from "convex/server";
 import { Result } from "common/errors-as-values-utils.ts";
 
 import type { Doc, Id } from "./_generated/dataModel.js";
-import { internalMutation, type MutationCtx, type QueryCtx } from "./_generated/server.js";
+import type { MutationCtx, QueryCtx } from "./_generated/server.js";
+import { internalMutation } from "./functions.ts";
 import schema from "./schema.ts";
 import {
 	organizations_membership_lifetimes_db_ensure as db_ensure_lifetime,

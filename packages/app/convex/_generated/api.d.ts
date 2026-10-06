@@ -54,6 +54,7 @@ import type * as files_nodes_reconstruct_content from "../files_nodes_reconstruc
 import type * as files_pending_holds from "../files_pending_holds.js";
 import type * as files_pending_media from "../files_pending_media.js";
 import type * as files_pending_nodes from "../files_pending_nodes.js";
+import type * as files_pending_overlay from "../files_pending_overlay.js";
 import type * as files_pending_update_runs from "../files_pending_update_runs.js";
 import type * as files_pending_updates from "../files_pending_updates.js";
 import type * as files_private_storage from "../files_private_storage.js";
@@ -70,6 +71,7 @@ import type * as files_updated_by from "../files_updated_by.js";
 import type * as files_visible from "../files_visible.js";
 import type * as files_volume_access from "../files_volume_access.js";
 import type * as files_write_policy_runs from "../files_write_policy_runs.js";
+import type * as functions from "../functions.js";
 import type * as github_mounts from "../github_mounts.js";
 import type * as github_mounts_inventory from "../github_mounts_inventory.js";
 import type * as http from "../http.js";
@@ -184,6 +186,7 @@ declare const fullApi: ApiFromModules<{
   files_pending_holds: typeof files_pending_holds;
   files_pending_media: typeof files_pending_media;
   files_pending_nodes: typeof files_pending_nodes;
+  files_pending_overlay: typeof files_pending_overlay;
   files_pending_update_runs: typeof files_pending_update_runs;
   files_pending_updates: typeof files_pending_updates;
   files_private_storage: typeof files_private_storage;
@@ -200,6 +203,7 @@ declare const fullApi: ApiFromModules<{
   files_visible: typeof files_visible;
   files_volume_access: typeof files_volume_access;
   files_write_policy_runs: typeof files_write_policy_runs;
+  functions: typeof functions;
   github_mounts: typeof github_mounts;
   github_mounts_inventory: typeof github_mounts_inventory;
   http: typeof http;

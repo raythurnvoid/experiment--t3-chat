@@ -18,13 +18,8 @@ import {
 import { organizations_membership_lifetimes_db_record } from "./organizations_membership_lifetimes.ts";
 import { channels_db_drain_member_batch, channels_db_purge_workspace_batch } from "./channels.ts";
 import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
-import {
-	internalAction,
-	internalMutation,
-	internalQuery,
-	type ActionCtx,
-	type MutationCtx,
-} from "./_generated/server.js";
+import { internalAction, internalQuery, type ActionCtx, type MutationCtx } from "./_generated/server.js";
+import { internalMutation } from "./functions.ts";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import app_convex_schema from "./schema.ts";
 import { presence } from "./presence.ts";
@@ -370,6 +365,122 @@ async function db_drain_pending_references_batch(
 	}
 	await ctx.db.delete("files_media_dependency_sets", set._id);
 	return 1;
+}
+
+/**
+ * Delete one batch of the pending overlay's derived docs (`server/files-pending-overlay.ts`). Call it
+ * only after proposals, private nodes and receipts are gone: the flush recomputes derived docs from
+ * the source docs left, so an earlier pass could see them written again. The flush deletes most of
+ * them by itself; this pass removes the rest, for example docs a dashboard edit left behind.
+ */
+async function db_drain_pending_overlay_docs_batch(
+	ctx: MutationCtx,
+	args: (
+		| { userId: Id<"users"> }
+		| { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces"> }
+	) & { batchSize: number },
+) {
+	// A job whose task doc is gone does nothing, so its scheduled run needs no cancel.
+	const jobs =
+		"userId" in args
+			? await ctx.db
+					.query("files_pending_overlay_jobs")
+					.withIndex("by_user", (q) => q.eq("userId", args.userId))
+					.take(args.batchSize)
+			: await ctx.db
+					.query("files_pending_overlay_jobs")
+					.withIndex("by_org_ws", (q) =>
+						q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId),
+					)
+					.take(args.batchSize);
+	if (jobs.length > 0) {
+		for (const job of jobs) await ctx.db.delete("files_pending_overlay_jobs", job._id);
+		return jobs.length;
+	}
+
+	// Place fields point at their place, so they go first.
+	const fields =
+		"userId" in args
+			? await ctx.db
+					.query("files_pending_place_fields")
+					.withIndex("by_user", (q) => q.eq("userId", args.userId))
+					.take(args.batchSize)
+			: await ctx.db
+					.query("files_pending_place_fields")
+					.withIndex("by_org_ws_user_visible_docKind_field_tree", (q) =>
+						q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId),
+					)
+					.take(args.batchSize);
+	if (fields.length > 0) {
+		for (const field of fields) await ctx.db.delete("files_pending_place_fields", field._id);
+		return fields.length;
+	}
+
+	const places =
+		"userId" in args
+			? await ctx.db
+					.query("files_pending_places")
+					.withIndex("by_user", (q) => q.eq("userId", args.userId))
+					.take(args.batchSize)
+			: await ctx.db
+					.query("files_pending_places")
+					.withIndex("by_org_ws_user_ownerTreePath", (q) =>
+						q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId),
+					)
+					.take(args.batchSize);
+	if (places.length > 0) {
+		for (const place of places) await ctx.db.delete("files_pending_places", place._id);
+		return places.length;
+	}
+
+	const hides =
+		"userId" in args
+			? await ctx.db
+					.query("files_pending_hides")
+					.withIndex("by_user", (q) => q.eq("userId", args.userId))
+					.take(args.batchSize)
+			: await ctx.db
+					.query("files_pending_hides")
+					.withIndex("by_org_ws_user_treePath", (q) =>
+						q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId),
+					)
+					.take(args.batchSize);
+	if (hides.length > 0) {
+		for (const hide of hides) await ctx.db.delete("files_pending_hides", hide._id);
+		return hides.length;
+	}
+
+	const listRows =
+		"userId" in args
+			? await ctx.db
+					.query("files_pending_list_rows")
+					.withIndex("by_user", (q) => q.eq("userId", args.userId))
+					.take(args.batchSize)
+			: await ctx.db
+					.query("files_pending_list_rows")
+					.withIndex("by_org_ws_user_listKey_updatedAt", (q) =>
+						q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId),
+					)
+					.take(args.batchSize);
+	if (listRows.length > 0) {
+		for (const row of listRows) await ctx.db.delete("files_pending_list_rows", row._id);
+		return listRows.length;
+	}
+
+	const listKeys =
+		"userId" in args
+			? await ctx.db
+					.query("files_pending_list_keys")
+					.withIndex("by_user", (q) => q.eq("userId", args.userId))
+					.take(args.batchSize)
+			: await ctx.db
+					.query("files_pending_list_keys")
+					.withIndex("by_org_ws_user_listKey", (q) =>
+						q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId),
+					)
+					.take(args.batchSize);
+	for (const key of listKeys) await ctx.db.delete("files_pending_list_keys", key._id);
+	return listKeys.length;
 }
 
 /**
@@ -1371,6 +1482,8 @@ async function db_purge_organization_workspace_content_batch(
 	if (pendingReferenceCount > 0) return { done: false, deletedCount: pendingReferenceCount };
 	const privateIdentityCount = await db_drain_private_node_identities_batch(ctx, { organizationId, workspaceId });
 	if (privateIdentityCount > 0) return { done: false, deletedCount: privateIdentityCount };
+	const overlayDocCount = await db_drain_pending_overlay_docs_batch(ctx, args);
+	if (overlayDocCount > 0) return { done: false, deletedCount: overlayDocCount };
 	const releasedPrivateCount = await files_private_storage_db_release_purged_resources(ctx, args);
 	if (releasedPrivateCount > 0) return { done: false, deletedCount: releasedPrivateCount };
 	const pendingReviewVersions = await ctx.db
@@ -2842,6 +2955,8 @@ async function db_drain_user_finalization_batch(
 	if (pendingReferenceCount > 0) return { done: false, deletedCount: pendingReferenceCount };
 	const privateIdentityCount = await db_drain_private_node_identities_batch(ctx, { userId: args.userId });
 	if (privateIdentityCount > 0) return { done: false, deletedCount: privateIdentityCount };
+	const overlayDocCount = await db_drain_pending_overlay_docs_batch(ctx, args);
+	if (overlayDocCount > 0) return { done: false, deletedCount: overlayDocCount };
 	const releasedPrivateCount = await files_private_storage_db_release_purged_resources(ctx, args);
 	if (releasedPrivateCount > 0) return { done: false, deletedCount: releasedPrivateCount };
 	const pendingReviewVersions = await ctx.db

@@ -1,13 +1,13 @@
 import {
 	action,
 	internalAction,
-	internalMutation,
 	internalQuery,
 	query,
 	type ActionCtx,
 	type MutationCtx,
 	type QueryCtx,
 } from "./_generated/server.js";
+import { internalMutation } from "./functions.ts";
 import { v } from "convex/values";
 import { exportJWK, importPKCS8, importSPKI, SignJWT } from "jose";
 import { internal } from "./_generated/api.js";

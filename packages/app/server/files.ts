@@ -364,14 +364,6 @@ export async function files_db_get_visible_node_by_path(
 }
 
 /**
- * Return the proposal's base and three branch ids, or null for a structural-only doc.
- * Load branch bytes with `files_db_load_pending_update_yjs_state_bytes` or the one-page queries.
- */
-export function files_pending_update_content_of(pendingUpdate: Pick<Doc<"files_pending_updates">, "content">) {
-	return pendingUpdate.content ?? null;
-}
-
-/**
  * Return branches built from a saved Yjs sequence, or null for any other base.
  */
 export function files_pending_update_yjs_content_of(pendingUpdate: Pick<Doc<"files_pending_updates">, "content">) {
@@ -391,17 +383,6 @@ export function files_pending_update_asset_content_of(pendingUpdate: Pick<Doc<"f
 	}
 
 	return pendingUpdate.content;
-}
-
-/**
- * Whether the pending update doc owns pending chunk docs: a content proposal, or a whole-file
- * copy of a text file (its staged text is chunked too). A move-only doc and a copy of a stored
- * file have none, so their file's committed chunks stay the ones to read and search.
- */
-export function files_pending_update_has_pending_chunks(
-	pendingUpdate: Pick<Doc<"files_pending_updates">, "content" | "pendingReplacement">,
-) {
-	return pendingUpdate.content !== undefined || pendingUpdate.pendingReplacement?.yjsRootKind !== undefined;
 }
 
 /**

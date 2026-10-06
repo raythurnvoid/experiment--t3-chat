@@ -6,14 +6,8 @@ import {
 	type RegisteredMutation,
 	type RegisteredQuery,
 } from "convex/server";
-import {
-	internalMutation,
-	internalQuery,
-	mutation,
-	query,
-	type MutationCtx,
-	type QueryCtx,
-} from "./_generated/server.js";
+import { internalQuery, query, type MutationCtx, type QueryCtx } from "./_generated/server.js";
+import { internalMutation, mutation } from "./functions.ts";
 import { components, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel";
 import { access_control_db_has_permission } from "./access_control.ts";

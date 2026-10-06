@@ -2,7 +2,8 @@ import { Result } from "common/errors-as-values-utils.ts";
 import { compareValues, v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import { internal } from "./_generated/api.js";
-import { internalMutation, type MutationCtx } from "./_generated/server.js";
+import type { MutationCtx } from "./_generated/server.js";
+import { internalMutation } from "./functions.ts";
 
 export const files_media_dependencies_PAGE_SIZE = 50;
 

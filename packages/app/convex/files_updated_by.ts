@@ -7,7 +7,8 @@
 import { v } from "convex/values";
 import { internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
-import { internalMutation, type MutationCtx } from "./_generated/server.js";
+import type { MutationCtx } from "./_generated/server.js";
+import { internalMutation } from "./functions.ts";
 import { files_db_resolve_scope } from "./files_scopes.ts";
 import { organizations_is_global_organization_id } from "../shared/organizations.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";

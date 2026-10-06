@@ -9,13 +9,13 @@ import type { Doc, Id } from "./_generated/dataModel.js";
 import {
 	action,
 	internalAction,
-	internalMutation,
 	internalQuery,
 	query,
 	type ActionCtx,
 	type MutationCtx,
 	type QueryCtx,
 } from "./_generated/server.js";
+import { internalMutation } from "./functions.ts";
 import app_schema, {
 	ai_chat_workspaces_source_validator,
 	ai_chat_browser_source_validator,

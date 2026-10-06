@@ -11,16 +11,8 @@ import { createPatch } from "diff";
 
 import type { Doc, Id } from "./_generated/dataModel";
 import type { bash_ReviewScratch } from "./bash.ts";
-import {
-	action,
-	internalAction,
-	internalMutation,
-	internalQuery,
-	mutation,
-	query,
-	type ActionCtx,
-	type MutationCtx,
-} from "./_generated/server.js";
+import { action, internalAction, internalQuery, query, type ActionCtx, type MutationCtx } from "./_generated/server.js";
+import { internalMutation, mutation } from "./functions.ts";
 import { components, internal } from "./_generated/api.js";
 import { access_control_changes_db_record } from "./access_control_changes.ts";
 import { activities_db_delete, activities_db_require_by_source_id, activities_is_active } from "./activities_db.ts";

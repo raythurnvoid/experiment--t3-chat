@@ -22,7 +22,8 @@ import { doc } from "convex-helpers/validators";
 import { components, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import type { ActionCtx, MutationCtx } from "./_generated/server.js";
-import { action, internalAction, internalMutation, internalQuery, query } from "./_generated/server.js";
+import { action, internalAction, internalQuery, query } from "./_generated/server.js";
+import { internalMutation } from "./functions.ts";
 import { Result, Result_try_async } from "common/errors-as-values-utils.ts";
 import {
 	billing_PRODUCTS,

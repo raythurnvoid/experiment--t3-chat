@@ -2,8 +2,10 @@ import { Migrations } from "@convex-dev/migrations";
 import { getFunctionName } from "convex/server";
 import { v } from "convex/values";
 import { components, internal } from "./_generated/api.js";
-import type { DataModel, Doc, Id, TableNames } from "./_generated/dataModel.js";
-import { internalMutation, internalQuery, type MutationCtx, type QueryCtx } from "./_generated/server.js";
+import type { Doc, Id, TableNames } from "./_generated/dataModel.js";
+import { internalQuery, type MutationCtx, type QueryCtx } from "./_generated/server.js";
+import { internalMutation } from "./functions.ts";
+import app_convex_schema from "./schema.ts";
 import { quotas } from "../shared/quotas.ts";
 import { path_extract_segments_from } from "../shared/paths.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
@@ -23,9 +25,12 @@ import {
 import { files_share_links_create_cleanup_state } from "./files_share_links_db.ts";
 import { files_db_resolve_scope } from "./files_scopes.ts";
 import { files_updated_by_db_sync_node } from "./files_updated_by.ts";
+import { files_pending_overlay_db_mark_target } from "../server/files-pending-overlay.ts";
 
-const app_migrations = new Migrations<DataModel>(components.migrations, {
+// The schema lets a migration read through an index with `customRange`.
+const app_migrations = new Migrations(components.migrations, {
 	internalMutation,
+	schema: app_convex_schema,
 });
 
 type LegacyBillingUsageSnapshot = Omit<Doc<"billing_usage_snapshots">, "_id" | "_creationTime"> & {
@@ -560,6 +565,31 @@ export const trim_files_folder_sorts_to_first_clause = app_migrations.define({
 		}
 
 		await ctx.db.patch("files_folder_sorts", sortDoc._id, { sort: [first] });
+	},
+});
+
+/**
+ * Write the pending overlay's derived docs for drafts saved before the overlay existed. It marks
+ * each proposal, and the mutation wrapper's flush recomputes it; claims follow from the recompute.
+ * Derived writes are diffed, so a rerun writes nothing new. Readers switch to the derived docs only
+ * after this ends and `files_pending_overlay.check_user` reports no difference.
+ *
+ * It writes without the per-node cap of other users' docs. Before a prod run, check that no saved
+ * node has drafts of more than 32 users.
+ */
+export const backfill_files_pending_overlay = app_migrations.define({
+	table: "files_pending_updates",
+	// Each user in a batch gets a cold reader, and one for a deep draft can read about 1,500 index
+	// ranges. Two of them fit in Convex's 4,096 ranges.
+	batchSize: 2,
+	migrateOne: async (ctx, pendingUpdate) => {
+		files_pending_overlay_db_mark_target(ctx, {
+			organizationId: pendingUpdate.organizationId,
+			workspaceId: pendingUpdate.workspaceId,
+			userId: pendingUpdate.userId,
+			target: pendingUpdate.target,
+			pendingUpdateId: pendingUpdate._id,
+		});
 	},
 });
 
@@ -1683,6 +1713,9 @@ export const run_backfill_files_updated_by_docs = app_migrations.runner(
 );
 export const run_trim_files_folder_sorts_to_first_clause = app_migrations.runner(
 	internal.migrations.trim_files_folder_sorts_to_first_clause,
+);
+export const run_backfill_files_pending_overlay = app_migrations.runner(
+	internal.migrations.backfill_files_pending_overlay,
 );
 export const run_backfill_files_plain_text_chunk_scope = app_migrations.runner(
 	internal.migrations.backfill_files_plain_text_chunk_scope,

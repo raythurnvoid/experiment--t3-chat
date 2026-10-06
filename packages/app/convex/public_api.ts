@@ -1,13 +1,6 @@
 import { v, type Infer } from "convex/values";
-import {
-	internalMutation,
-	internalQuery,
-	mutation,
-	query,
-	type ActionCtx,
-	type MutationCtx,
-	type QueryCtx,
-} from "./_generated/server.js";
+import { internalQuery, query, type ActionCtx, type MutationCtx, type QueryCtx } from "./_generated/server.js";
+import { internalMutation, mutation } from "./functions.ts";
 import { internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { RegisteredMutation, RegisteredQuery } from "convex/server";

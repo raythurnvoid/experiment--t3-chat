@@ -8,7 +8,8 @@ import { v, type Infer } from "convex/values";
 import type { RegisteredMutation, RegisteredQuery } from "convex/server";
 import { z } from "zod";
 
-import { internalMutation, type ActionCtx, type MutationCtx } from "./_generated/server.js";
+import type { ActionCtx, MutationCtx } from "./_generated/server.js";
+import { internalMutation } from "./functions.ts";
 import { internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel";
 import { access_control_db_can_act_on_file_node, access_control_db_has_permission } from "./access_control.ts";

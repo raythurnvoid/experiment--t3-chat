@@ -2,7 +2,7 @@ import { Result } from "common/errors-as-values-utils.ts";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import type { ActionCtx, MutationCtx } from "./_generated/server.js";
 import { internal } from "./_generated/api.js";
-import { internalMutation } from "./_generated/server.js";
+import { internalMutation } from "./functions.ts";
 import { compareValues, v } from "convex/values";
 import { files_headless_tiptap_editor_create } from "../shared/files-tiptap.ts";
 import { files_media_parse_src } from "../shared/files-media.ts";

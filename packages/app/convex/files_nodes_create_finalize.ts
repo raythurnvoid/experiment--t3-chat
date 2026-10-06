@@ -3,7 +3,7 @@
 
 import { v } from "convex/values";
 import { Result } from "common/errors-as-values-utils.ts";
-import { internalMutation } from "./_generated/server.js";
+import { internalMutation } from "./functions.ts";
 import { v_result } from "../server/convex-utils.ts";
 import { files_INITIAL_CONTENT, files_ROOT_ID } from "../shared/files.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";

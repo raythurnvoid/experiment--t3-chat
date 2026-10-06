@@ -371,9 +371,9 @@ const FILES_CONTENT_TYPE_ESSENCE_REGEX = /^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][
 const FILES_CONTENT_TYPE_MAX_LENGTH = 255;
 
 /**
- * Same extension rule as `files_lowercase_extension` in `convex/files_nodes.ts`, which fills the
- * indexed `lowercaseExtension` field: a leading-dot name like `.gitignore` and a trailing-dot
- * name have no extension. Any other rule would let the hint and the index disagree.
+ * The extension rule of the indexed `lowercaseExtension` field, used by `files_lowercase_extension`
+ * too: a leading-dot name like `.gitignore` and a trailing-dot name have no extension. Any other
+ * rule would let the content type hint and the index disagree.
  */
 function files_extension_of(fileName: string) {
 	const dotIndex = fileName.lastIndexOf(".");
@@ -381,6 +381,16 @@ function files_extension_of(fileName: string) {
 		return null;
 	}
 	return fileName.slice(dotIndex + 1).toLowerCase();
+}
+
+/**
+ * The indexed `lowercaseExtension` of a node. Folders and extensionless files have none.
+ */
+export function files_lowercase_extension(path: string, kind: app_convex_Doc<"files_nodes">["kind"]) {
+	if (kind !== "file") {
+		return null;
+	}
+	return files_extension_of(path_extract_segments_from(path).at(-1) ?? "");
 }
 
 /**
@@ -696,6 +706,13 @@ export function files_is_node(item: files_TreeItem): item is files_VisibleTreeNo
 	return item._id !== files_ROOT_ID;
 }
 
+/**
+ * The indexed `treePath` of a node: its path, plus a trailing `/` for a folder other than root.
+ */
+export function files_derive_tree_path_for_file_node(path: string, kind: app_convex_Doc<"files_nodes">["kind"]) {
+	return kind === "folder" && path !== "/" ? `${path}/` : path;
+}
+
 export function files_create_room_id(args: { organizationId: string; workspaceId: string; nodeId: string }) {
 	const { organizationId, workspaceId, nodeId } = args;
 
@@ -845,6 +862,25 @@ export function files_pending_update_has_content<Row extends FilePendingUpdateFi
 	content: FilePendingUpdateContent;
 } {
 	return row?.content !== undefined;
+}
+
+/**
+ * Return the proposal's base and three branch ids, or null for a structural-only doc.
+ * Load branch bytes with `files_db_load_pending_update_yjs_state_bytes` or the one-page queries.
+ */
+export function files_pending_update_content_of(pendingUpdate: FilePendingUpdateFieldsForContent) {
+	return pendingUpdate.content ?? null;
+}
+
+/**
+ * Whether the pending update doc owns pending chunk docs: a content proposal, or a whole-file
+ * copy of a text file (its staged text is chunked too). A move-only doc and a copy of a stored
+ * file have none, so their file's committed chunks stay the ones to read and search.
+ */
+export function files_pending_update_has_pending_chunks(
+	pendingUpdate: Pick<app_convex_Doc<"files_pending_updates">, "content" | "pendingReplacement">,
+) {
+	return pendingUpdate.content !== undefined || pendingUpdate.pendingReplacement?.yjsRootKind !== undefined;
 }
 
 /**

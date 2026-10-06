@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { Lexer, Tokenizer } from "marked";
 import {
 	files_collect_protected_descendant_ids,
+	files_derive_tree_path_for_file_node,
 	files_find_file_stem_end_index,
 	files_get_read_only_capabilities,
 	files_get_read_only_row_labels,
@@ -429,6 +430,20 @@ describe("files_get_read_only_capabilities", () => {
 			canRelocateOrRename: false,
 			canArchiveOrRestore: false,
 		});
+	});
+});
+
+describe("files_derive_tree_path_for_file_node", () => {
+	test("keeps file paths unchanged", () => {
+		expect(files_derive_tree_path_for_file_node("/docs/readme.md", "file")).toBe("/docs/readme.md");
+	});
+
+	test("adds a trailing slash for non-root folders", () => {
+		expect(files_derive_tree_path_for_file_node("/docs", "folder")).toBe("/docs/");
+	});
+
+	test("keeps root unchanged", () => {
+		expect(files_derive_tree_path_for_file_node("/", "folder")).toBe("/");
 	});
 });
 

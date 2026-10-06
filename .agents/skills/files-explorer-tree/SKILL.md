@@ -690,7 +690,8 @@ Backend rules, limits, billing, cleanup, and Activity privacy are in
   inherited scopes use that saved parent's final position, even when it also moves in the batch.
   Apply inserts the folders from top to bottom and resolves their real IDs without reading again.
 - Move limits (`move_too_large`) bound only the request: the named items, new parent folders, and a
-  replaced empty folder's archived children. That is at most 500 changed or inserted nodes, 2,000
+  replaced empty folder's archived children. That is at most 139 changed or inserted nodes
+  (`MAX_MOVE_NODE_COUNT`, small enough for the pending overlay flush), 2,000
   Files docs read or written, and 4 MiB in each direction. Descendants of a moved folder do not count,
   because the move job writes them. A refusal writes no Files changes. Permission reads and the
   caller's receipt use separate transaction headroom.

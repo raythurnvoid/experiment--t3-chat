@@ -519,6 +519,30 @@ code lives in `files_db_insert_pending_update`,
 - The recovery notice shows `max(expiresAt, lastActiveAt + 4h)`, the earliest time expiry can remove
   the draft.
 
+# Pending Overlay
+
+The pending overlay is a set of derived tables. They copy what each user's drafts change, so agent reads and draft views can page them with indexes. Code: `packages/app/server/files-pending-overlay.ts` (the flush) and `packages/app/convex/files_pending_overlay.ts` (jobs, `check_user`, `repair_user`).
+
+- `files_pending_hides`: one doc per user and saved node that the user's drafts hide (a draft delete, a move away, a private draft that claims the name). It copies the saved node's index fields.
+- `files_pending_places`: one doc per active private node and per saved node with `pendingMove`. It holds where the owner sees the draft (`parent`, `name`, `ownerTreePath`), `isVisible`, `isPathless` (a move cycle or a reader stop), and `accessNodeId`: the saved node whose access decides if the owner may see the draft. Every read of a place checks access on it, because access can change after the place was written.
+- `files_pending_place_fields`: the metadata of places, for `meta search`.
+- `files_pending_list_rows` and `files_pending_list_keys`: the Pending tab list and its chat choices.
+- `files_pending_overlay_jobs`: one task doc per job, with one scheduled run. A 15-minute cron restarts late tasks.
+
+**The flush rule.** Every mutation imports `mutation` or `internalMutation` from `convex/functions.ts`. That wrapper captures writes to the source tables (`files_nodes`, `files_pending_updates`, `files_pending_nodes`, `files_pending_node_publish_receipts`, `files_metadata_docs`) and flushes once at the end, in the same transaction. Derived writes are diffed, so an unchanged doc is not written. Only the flush, its jobs and data deletion write derived tables. Work that grows with the number of other users goes to jobs, so another user's derived docs can lag a few seconds. In tests, `t.run` is raw: seed drafts with `test_run_with_flush` from `convex/setup.test.ts`.
+
+**Derived docs are discovery, not facts.** The flush computes each derived doc from the source docs and the owner's reader. It reads derived docs only to learn what to recompute or delete. A read that uses a derived doc still checks what can change after the write, for example access on `accessNodeId`. Never decide a write from a derived doc alone.
+
+**Drift.** A Convex dashboard edit or `convex import` writes without the wrapper, so derived docs drift. After one, run `files_pending_overlay:check_user` for each affected user (organization, workspace, user, `cursor: null`; call again with the returned cursor until it is null). It returns the differences. `files_pending_overlay:repair_user` with the same args recomputes the user's docs and deletes orphans. QA steps are in `../app-playwriter-harness/references/pending-path-overlay.md`.
+
+**Which reads use drafts.** The agent's bash and file tools read the user's drafts. The Pending tab, the draft folder view, and a draft opened by its link show drafts too. These reads compute drafts from proposals. They switch to the derived docs only after the backfill (`migrations:run_backfill_files_pending_overlay`) has run and `check_user` reports no difference. The UI lists (folder table, sidebar, search box, pickers) show saved files only and must never read hides or places (see "Saved-only lists" in `../files-explorer-tree/SKILL.md`).
+
+**Limits.**
+
+- A move request may change or insert at most 139 nodes (`MAX_MOVE_NODE_COUNT` in `convex/files_nodes.ts`). The flush adds index reads for each moved node: 186 nodes fit the 4,096-range limit, and 139 keeps a 25% margin. More answers `move_too_large`.
+- A user's own draft write may add a hide or place of a saved node only while other users hold fewer than 32 of them. Past that, the flush refuses it with a clean error. Without this cap, one write to a saved node would update every user's copies inline. The user's own draft write is refused, also when it moves or creates a draft onto the name of a crowded saved node (the claim adds a hide). Folder side effects (a broken move cycle, a folder move), jobs, the backfill and the user who accepts or discards never refuse, so a node can pass the cap, for example when a saved file moves onto a name that many users' drafts already hold. Discard, Accept and data deletion never fail on the cap.
+- Data deletion deletes derived docs in a last pass, after the drafts and files (see `../data-deletion/SKILL.md`).
+
 # Architectural Invariants
 
 - Pending updates are per-user docs keyed by organization, workspace, user, and tagged target.

@@ -1,7 +1,8 @@
 import { v } from "convex/values";
 import { internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
-import { internalMutation, type MutationCtx } from "./_generated/server.js";
+import type { MutationCtx } from "./_generated/server.js";
+import { internalMutation } from "./functions.ts";
 import { files_nodes_db_delete_subtree_batch } from "./files_nodes.ts";
 import { r2 } from "./r2_client.ts";
 

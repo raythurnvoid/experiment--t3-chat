@@ -1,6 +1,7 @@
 import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
-import { internalMutation, type MutationCtx, type QueryCtx } from "./_generated/server.js";
+import type { MutationCtx, QueryCtx } from "./_generated/server.js";
+import { internalMutation } from "./functions.ts";
 import { internal } from "./_generated/api.js";
 import { plugins_db_get_live_service_account } from "./plugins_service_accounts.ts";
 import {

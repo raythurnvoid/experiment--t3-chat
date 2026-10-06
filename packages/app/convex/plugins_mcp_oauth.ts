@@ -9,13 +9,12 @@ import {
 	action,
 	type ActionCtx,
 	internalAction,
-	internalMutation,
 	internalQuery,
-	mutation,
 	type MutationCtx,
 	query,
 	type QueryCtx,
 } from "./_generated/server.js";
+import { internalMutation, mutation } from "./functions.ts";
 import { access_control_db_authorize_membership } from "./access_control.ts";
 import {
 	mcp_custom_servers_SIGN_IN_CHANGED_MESSAGE,

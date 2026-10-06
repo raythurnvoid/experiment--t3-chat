@@ -14,16 +14,8 @@ import {
 } from "../shared/ai-chat.ts";
 import { math_clamp } from "../src/lib/utils.ts";
 import { get_id_generator } from "../shared/generated-ids.ts";
-import {
-	query,
-	mutation,
-	action,
-	internalAction,
-	internalMutation,
-	internalQuery,
-	type ActionCtx,
-	type MutationCtx,
-} from "./_generated/server.js";
+import { query, action, internalAction, internalQuery, type ActionCtx, type MutationCtx } from "./_generated/server.js";
+import { mutation, internalMutation } from "./functions.ts";
 import { api, internal } from "./_generated/api.js";
 import {
 	paginationOptsValidator,

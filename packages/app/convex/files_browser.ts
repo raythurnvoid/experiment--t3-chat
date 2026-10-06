@@ -4,7 +4,8 @@ import { type FunctionArgs, type RegisteredMutation, type RegisteredQuery } from
 import { doc } from "convex-helpers/validators";
 import type { Doc, Id } from "./_generated/dataModel";
 import { api, internal } from "./_generated/api.js";
-import { action, internalAction, internalMutation, internalQuery, mutation, query } from "./_generated/server.js";
+import { action, internalAction, internalQuery, query } from "./_generated/server.js";
+import { internalMutation, mutation } from "./functions.ts";
 import type { ActionCtx, MutationCtx, QueryCtx } from "./_generated/server.js";
 import { Result } from "common/errors-as-values-utils.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";

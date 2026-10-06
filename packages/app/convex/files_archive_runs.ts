@@ -19,7 +19,8 @@ import { doc } from "convex-helpers/validators";
 import type { WithoutSystemFields } from "convex/server";
 import { Result } from "common/errors-as-values-utils.ts";
 import type { Doc, Id } from "./_generated/dataModel.js";
-import { mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server.js";
+import { query, type MutationCtx, type QueryCtx } from "./_generated/server.js";
+import { mutation } from "./functions.ts";
 import {
 	access_control_db_authorize_membership,
 	access_control_db_filter_readable_file_nodes,

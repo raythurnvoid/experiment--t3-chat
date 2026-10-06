@@ -6,7 +6,7 @@ Route: an already-open Playwriter-enabled `/w/:organizationName/:workspaceName/f
 
 ## Scope
 
-Covers the user-facing flows around `files_pending_updates` move/copy proposals driven from the Agent chat bash tool, and the Files sidebar pending panel that reviews them. Run it after changes to `packages/app/server/bash-mv-command.ts`, `packages/app/server/bash.ts`, `packages/app/convex/files_pending_updates.ts`, or `file-editor-sidebar-pending.tsx`.
+Covers the user-facing flows around `files_pending_updates` move/copy proposals driven from the Agent chat bash tool, and the Files sidebar pending panel that reviews them. Run it after changes to `packages/app/server/bash-mv-command.ts`, `packages/app/server/bash.ts`, `packages/app/convex/files_pending_updates.ts`, `packages/app/server/files-pending-overlay.ts`, `packages/app/convex/files_pending_overlay.ts`, or `file-editor-sidebar-pending.tsx`.
 
 ## Preflight
 
@@ -134,6 +134,15 @@ Expected result: moving a pending file back to its source cancels the proposal i
 5. Expect: status fires `Accepted changes to /pwl-h.md`, then BOTH rows clear (poll — clearance can lag the status by a few seconds), zero toasts; `pwl-h.md` content is "alpha" (the chain result); `pwl-f.md` AND `pwl-g.md` both leave the active tree and both show under `Show archived items` with aria-label `<name> archived`. The Versions entry for the new content may lag ~30s (async materialization) — do not wait for it.
 
 Regression signature (old bug): accepting the second link left the first file active and silently lost its proposal (only one row consumed).
+
+## Overlay check (`check_user`)
+
+The pending overlay's derived docs (`files_pending_hides`, `files_pending_places` and the rest) must match the drafts. After each scenario, and again after Cleanup, check them for the test user. This is a read-only internal query; run it only on the dev deployment.
+
+1. Get the ids: `vp env exec pnpm --dir packages/app exec convex data files_pending_updates --limit 20 --order desc` prints each draft's `organizationId`, `workspaceId` and `userId`. After a full cleanup there are no drafts; reuse the ids from before.
+2. Run `vp env exec pnpm --dir packages/app exec convex run files_pending_overlay:check_user '{"organizationId":"<org>","workspaceId":"<ws>","userId":"<user>","cursor":null}'`. Put the JSON in a file if PowerShell mangles the quotes.
+3. Expect `differences: []`. While `cursor` is not null, run it again with that cursor; every page must have no differences.
+4. A difference is a bug. Note it with the scenario step, and do not fix data by hand. Overlay jobs may lag a few seconds after a write, so check again once before you report it. `files_pending_overlay:repair_user` (same args) rebuilds the user's docs, but run it only to unblock QA after the bug is noted.
 
 ## Cleanup
 

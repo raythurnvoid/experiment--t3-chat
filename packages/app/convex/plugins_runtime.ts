@@ -17,7 +17,8 @@ import { v } from "convex/values";
 import { z } from "zod";
 
 import { components, internal } from "./_generated/api.js";
-import { internalAction, internalMutation, type ActionCtx, type MutationCtx } from "./_generated/server.js";
+import { internalAction, type ActionCtx, type MutationCtx } from "./_generated/server.js";
+import { internalMutation } from "./functions.ts";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import app_convex_schema from "./schema.ts";
 import { type pluginRunnerApiSchema } from "common/api-schemas.ts";

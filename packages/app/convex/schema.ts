@@ -664,6 +664,25 @@ const files_subtree_op_shared_fields = {
 	treePaths: v.array(v.string()),
 };
 
+const files_pending_overlay_job_fields = {
+	organizationId: v.id("organizations"),
+	workspaceId: v.id("organizations_workspaces"),
+	/**
+	 * Names the job's input inside its kind.
+	 */
+	key: v.string(),
+	/**
+	 * Where the next run goes on. Null at the start.
+	 */
+	cursor: v.union(v.string(), v.null()),
+	nextAttemptAt: v.number(),
+	scheduledFunctionId: v.id("_scheduled_functions"),
+	/**
+	 * Recover cron retries so far.
+	 */
+	attempts: v.number(),
+};
+
 export const files_pending_prepared_state_family_validator = v.object({
 	operationBatchId: v.id("files_pending_update_operation_batches"),
 	baseStateId: v.id("files_pending_update_yjs_states"),
@@ -2164,6 +2183,15 @@ const app_convex_schema = defineSchema({
 			"pendingMove.destParent.id",
 			"pendingMove.destName",
 		])
+		// A root parent has no id, so the workspace must come first to keep root claims in one workspace.
+		.index("by_org_ws_user_pendingMove_destParent_destName", [
+			"organizationId",
+			"workspaceId",
+			"userId",
+			"pendingMove.destParent.kind",
+			"pendingMove.destParent.id",
+			"pendingMove.destName",
+		])
 		.index("by_copiedFrom_target", ["copiedFrom.target.kind", "copiedFrom.target.id"])
 		.index("by_organization_workspace_user_targetKind_updatedAt", [
 			"organizationId",
@@ -2375,6 +2403,324 @@ const app_convex_schema = defineSchema({
 		.index("by_organization_workspace", ["organizationId", "workspaceId"])
 		.index("by_user", ["userId"])
 		.index("by_expiresAt", ["expiresAt"]),
+
+	/**
+	 * Saved nodes that one user's drafts remove from their saved place: moved or renamed away to a
+	 * destination that resolves, deleted in a draft, or name taken by a draft (a claim).
+	 *
+	 * Derived docs: only the overlay flush, its jobs and data deletion write them. One doc per (user,
+	 * saved node) while the saved node is active and a cause holds. The other fields copy the saved
+	 * node, so each index mirrors a saved index that an agent read subtracts from.
+	 */
+	files_pending_hides: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		savedNodeId: v.id("files_nodes"),
+		parentId: v.union(v.id("files_nodes"), v.literal("root")),
+		kind: v.union(v.literal("folder"), v.literal("file")),
+		name: v.string(),
+		updatedAt: v.number(),
+		lowercaseExtension: v.union(v.string(), v.null()),
+		/**
+		 * The saved node's `_creationTime`.
+		 */
+		nodeCreationTime: v.number(),
+		treePath: v.string(),
+	})
+		.index("by_org_ws_user_parent_name", ["organizationId", "workspaceId", "userId", "parentId", "name"])
+		.index("by_org_ws_user_parent_updatedAt", [
+			"organizationId",
+			"workspaceId",
+			"userId",
+			"parentId",
+			"updatedAt",
+			"nodeCreationTime",
+		])
+		.index("by_org_ws_user_treePath", ["organizationId", "workspaceId", "userId", "treePath"])
+		.index("by_org_ws_user_kind_treePath", ["organizationId", "workspaceId", "userId", "kind", "treePath"])
+		.index("by_org_ws_user_kind_ext_treePath", [
+			"organizationId",
+			"workspaceId",
+			"userId",
+			"kind",
+			"lowercaseExtension",
+			"treePath",
+		])
+		.index("by_savedNode_user", ["savedNodeId", "userId"])
+		.index("by_user", ["userId"]),
+
+	/**
+	 * Where one user's draft puts a node: one doc per active private node and per saved node with a
+	 * `pendingMove`. `parent`, `name` and `ownerTreePath` always describe the destination, also while
+	 * the owner does not see the node there (`isVisible` false).
+	 *
+	 * Derived docs: only the overlay flush, its jobs and data deletion write them. Every read of a
+	 * place checks access on `accessNodeId`.
+	 */
+	files_pending_places: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		target: files_pending_target_validator,
+		pendingUpdateId: v.id("files_pending_updates"),
+		/**
+		 * The destination folder. A published private parent is replaced by its saved folder.
+		 */
+		parent: files_pending_parent_validator,
+		name: v.string(),
+		lowercaseExtension: v.union(v.string(), v.null()),
+		kind: v.union(v.literal("folder"), v.literal("file")),
+		updatedAt: v.number(),
+		/**
+		 * True when the reader found no path: a move cycle, a missing ancestor, or the 256-node stop.
+		 * Then `ownerTreePath` holds the saved path only as a placeholder.
+		 */
+		isPathless: v.boolean(),
+		/**
+		 * The tree path at the destination: the own path of `parent` plus `name`.
+		 */
+		ownerTreePath: v.string(),
+		/**
+		 * Folders only: the path the folder's children build on. It is the saved path when a moved
+		 * folder's destination is hidden or does not resolve, like the reader.
+		 */
+		childTreePath: v.union(v.string(), v.null()),
+		/**
+		 * True only when the owner's normal reader shows the target at this place.
+		 */
+		isVisible: v.boolean(),
+		/**
+		 * The saved node whose access decides if the owner may see this place: the moved saved node
+		 * itself, or the nearest saved ancestor of a private node. Null for a private node at the root.
+		 */
+		accessNodeId: v.union(v.id("files_nodes"), v.null()),
+		/**
+		 * Bumped each time the flush schedules the place fields job for this place.
+		 */
+		fieldsVersion: v.number(),
+	})
+		.index("by_org_ws_user_visible_parent_name", [
+			"organizationId",
+			"workspaceId",
+			"userId",
+			"isVisible",
+			"parent.kind",
+			"parent.id",
+			"name",
+		])
+		.index("by_org_ws_user_visible_parent_updatedAt", [
+			"organizationId",
+			"workspaceId",
+			"userId",
+			"isVisible",
+			"parent.kind",
+			"parent.id",
+			"updatedAt",
+		])
+		.index("by_org_ws_user_ownerTreePath", ["organizationId", "workspaceId", "userId", "ownerTreePath"])
+		.index("by_org_ws_user_visible_ownerTreePath", [
+			"organizationId",
+			"workspaceId",
+			"userId",
+			"isVisible",
+			"ownerTreePath",
+		])
+		.index("by_org_ws_user_visible_kind_ownerTreePath", [
+			"organizationId",
+			"workspaceId",
+			"userId",
+			"isVisible",
+			"kind",
+			"ownerTreePath",
+		])
+		.index("by_org_ws_user_visible_kind_ext_ownerTreePath", [
+			"organizationId",
+			"workspaceId",
+			"userId",
+			"isVisible",
+			"kind",
+			"lowercaseExtension",
+			"ownerTreePath",
+		])
+		.index("by_org_ws_user_visible_updatedAt", ["organizationId", "workspaceId", "userId", "isVisible", "updatedAt"])
+		// Holds every user's places, so only the jobs and claim discovery read it, never a user read.
+		.index("by_org_ws_parent_name", ["organizationId", "workspaceId", "parent.kind", "parent.id", "name"])
+		.index("by_target_user", ["target.kind", "target.id", "userId"])
+		.index("by_pendingUpdate", ["pendingUpdateId"])
+		.index("by_org_ws_user_isPathless", ["organizationId", "workspaceId", "userId", "isPathless"])
+		.index("by_user", ["userId"])
+		.searchIndex("search_name", {
+			searchField: "name",
+			filterFields: ["organizationId", "workspaceId", "userId", "kind", "isVisible"],
+		}),
+
+	/**
+	 * Metadata of places, so agent metadata search shows drafts at their new place. One doc per
+	 * metadata doc the owner sees for a place. The other fields copy the place; a read drops a doc
+	 * whose copy no longer matches its place.
+	 *
+	 * Derived docs: only the place fields job and data deletion write them.
+	 */
+	files_pending_place_fields: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		target: files_pending_target_validator,
+		placeId: v.id("files_pending_places"),
+		docKind: files_metadata_index_fields.docKind,
+		fieldPath: files_metadata_index_fields.fieldPath,
+		valueKind: files_metadata_index_fields.valueKind,
+		stringValue: files_metadata_index_fields.stringValue,
+		numberValue: files_metadata_index_fields.numberValue,
+		booleanValue: files_metadata_index_fields.booleanValue,
+		parent: files_pending_parent_validator,
+		ownerTreePath: v.string(),
+		isVisible: v.boolean(),
+		accessNodeId: v.union(v.id("files_nodes"), v.null()),
+		fieldsVersion: v.number(),
+	})
+		.index("by_org_ws_user_visible_docKind_field_tree", [
+			"organizationId",
+			"workspaceId",
+			"userId",
+			"isVisible",
+			"docKind",
+			"fieldPath",
+			"ownerTreePath",
+		])
+		.index("by_org_ws_user_visible_docKind_field_string_tree", [
+			"organizationId",
+			"workspaceId",
+			"userId",
+			"isVisible",
+			"docKind",
+			"fieldPath",
+			"valueKind",
+			"stringValue",
+			"ownerTreePath",
+		])
+		.index("by_org_ws_user_visible_docKind_field_number_tree", [
+			"organizationId",
+			"workspaceId",
+			"userId",
+			"isVisible",
+			"docKind",
+			"fieldPath",
+			"valueKind",
+			"numberValue",
+			"ownerTreePath",
+		])
+		.index("by_org_ws_user_visible_docKind_field_boolean_tree", [
+			"organizationId",
+			"workspaceId",
+			"userId",
+			"isVisible",
+			"docKind",
+			"fieldPath",
+			"valueKind",
+			"booleanValue",
+			"ownerTreePath",
+		])
+		.index("by_place", ["placeId"])
+		.index("by_user", ["userId"]),
+
+	/**
+	 * The Pending tab list: one doc per (proposal, list key) while the proposal is listed.
+	 * `listKey` is `"all"`, `"own"` (no chat touched the proposal) or a chat id.
+	 *
+	 * Derived docs: only the overlay flush, its jobs and data deletion write them.
+	 */
+	files_pending_list_rows: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		listKey: v.union(v.literal("all"), v.literal("own"), v.id("ai_chat_threads")),
+		pendingUpdateId: v.id("files_pending_updates"),
+		/**
+		 * The proposal's `updatedAt`.
+		 */
+		updatedAt: v.number(),
+	})
+		.index("by_org_ws_user_listKey_updatedAt", ["organizationId", "workspaceId", "userId", "listKey", "updatedAt"])
+		.index("by_pendingUpdate", ["pendingUpdateId"])
+		.index("by_user", ["userId"]),
+
+	/**
+	 * The Pending tab chat dropdown: one doc per (user, list key) while the user has list rows with
+	 * that key.
+	 *
+	 * Derived docs: only the overlay flush, its jobs and data deletion write them.
+	 */
+	files_pending_list_keys: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		listKey: v.union(v.literal("all"), v.literal("own"), v.id("ai_chat_threads")),
+		/**
+		 * The newest list row's `updatedAt`.
+		 */
+		lastUpdatedAt: v.number(),
+	})
+		.index("by_org_ws_user_lastUpdatedAt", ["organizationId", "workspaceId", "userId", "lastUpdatedAt"])
+		.index("by_org_ws_user_listKey", ["organizationId", "workspaceId", "userId", "listKey"])
+		.index("by_user", ["userId"]),
+
+	/**
+	 * Durable task docs of the overlay jobs: one doc per (kind, key). A second schedule patches the
+	 * doc and starts its cursor again, never a second chain. A recover cron restarts late docs.
+	 */
+	files_pending_overlay_jobs: defineTable(
+		v.union(
+			v.object({
+				...files_pending_overlay_job_fields,
+				kind: v.literal("saved_node"),
+				savedNodeId: v.id("files_nodes"),
+			}),
+			v.object({
+				...files_pending_overlay_job_fields,
+				kind: v.literal("parent"),
+				parent: files_pending_parent_validator,
+			}),
+			v.object({
+				...files_pending_overlay_job_fields,
+				kind: v.literal("owner_path"),
+				userId: v.id("users"),
+				/**
+				 * One old path of the changed folder. The job walks the owner's places under it.
+				 */
+				prefix: v.string(),
+			}),
+			v.object({
+				...files_pending_overlay_job_fields,
+				kind: v.literal("place_fields"),
+				placeIds: v.array(v.id("files_pending_places")),
+			}),
+			v.object({
+				...files_pending_overlay_job_fields,
+				kind: v.literal("targets"),
+				userId: v.id("users"),
+				/**
+				 * Targets of this user to recompute, sent here by a write to the drafts of many users. Each
+				 * keeps the proposal id that was written, if any: a deleted proposal has no doc left.
+				 */
+				items: v.array(
+					v.object({
+						target: files_pending_target_validator,
+						pendingUpdateId: v.union(v.id("files_pending_updates"), v.null()),
+						/**
+						 * A pending metadata doc of the target changed, so its place fields sync again.
+						 */
+						fieldsChanged: v.boolean(),
+					}),
+				),
+			}),
+		),
+	)
+		.index("by_kind_key", ["kind", "key"])
+		.index("by_nextAttemptAt", ["nextAttemptAt"])
+		.index("by_org_ws", ["organizationId", "workspaceId"])
+		.index("by_user", ["userId"]),
 
 	/**
 	 * Indexed metadata docs for a file. Field docs support existence search for presence-only

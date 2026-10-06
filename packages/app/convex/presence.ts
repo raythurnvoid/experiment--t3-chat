@@ -1,4 +1,5 @@
-import { mutation, query } from "./_generated/server.js";
+import { query } from "./_generated/server.js";
+import { mutation } from "./functions.ts";
 import { components } from "./_generated/api.js";
 import { v, type Infer } from "convex/values";
 import { Presence } from "@convex-dev/presence";

@@ -21,13 +21,8 @@ import { v } from "convex/values";
 import { doc } from "convex-helpers/validators";
 import { components, internal } from "./_generated/api.js";
 import app_convex_schema from "./schema.ts";
-import {
-	internalAction,
-	internalMutation,
-	internalQuery,
-	type ActionCtx,
-	type MutationCtx,
-} from "./_generated/server.js";
+import { internalAction, internalQuery, type ActionCtx, type MutationCtx } from "./_generated/server.js";
+import { internalMutation } from "./functions.ts";
 import type { Doc, Id } from "./_generated/dataModel";
 import {
 	organizations_GLOBAL_ORGANIZATION_ID,

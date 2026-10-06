@@ -6,13 +6,8 @@ import { Result } from "common/errors-as-values-utils.ts";
 
 import { internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
-import {
-	internalMutation,
-	internalQuery,
-	type ActionCtx,
-	type MutationCtx,
-	type QueryCtx,
-} from "./_generated/server.js";
+import { internalQuery, type ActionCtx, type MutationCtx, type QueryCtx } from "./_generated/server.js";
+import { internalMutation } from "./functions.ts";
 import { access_control_db_has_permission } from "./access_control.ts";
 import {
 	billing_db_check_credits,
@@ -783,10 +778,13 @@ async function db_delete_exact_file(ctx: MutationCtx, node: Doc<"files_nodes">) 
 			)
 			.unique(),
 	]);
-	for (const docs of [text, plain, metadata]) {
-		for (let start = 0; start < docs.length; start += 100)
-			await Promise.all(docs.slice(start, start + 100).map((row) => ctx.db.delete(row._id)));
-	}
+	const deletes = [
+		...text.map((row) => () => ctx.db.delete("files_text_chunks", row._id)),
+		...plain.map((row) => () => ctx.db.delete("files_plain_text_chunks", row._id)),
+		...metadata.map((row) => () => ctx.db.delete("files_metadata_docs", row._id)),
+	];
+	for (let start = 0; start < deletes.length; start += 100)
+		await Promise.all(deletes.slice(start, start + 100).map((run) => run()));
 	if (stats) await ctx.db.delete("file_stats", stats._id);
 	if (node.assetId) {
 		const asset = await ctx.db.get("files_r2_assets", node.assetId);

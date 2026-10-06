@@ -9,14 +9,8 @@ import { Result } from "common/errors-as-values-utils.ts";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import { internal } from "./_generated/api.js";
 import app_convex_schema from "./schema.ts";
-import {
-	internalMutation,
-	internalQuery,
-	mutation,
-	query,
-	type MutationCtx,
-	type QueryCtx,
-} from "./_generated/server.js";
+import { internalQuery, query, type MutationCtx, type QueryCtx } from "./_generated/server.js";
+import { internalMutation, mutation } from "./functions.ts";
 import {
 	ai_chat_outputs_db_commit_owners,
 	ai_chat_outputs_db_prepare_reply,

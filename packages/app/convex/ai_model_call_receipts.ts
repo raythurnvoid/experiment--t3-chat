@@ -11,13 +11,8 @@ import { v } from "convex/values";
 import { z } from "zod";
 import { internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
-import {
-	internalAction,
-	internalMutation,
-	internalQuery,
-	type ActionCtx,
-	type MutationCtx,
-} from "./_generated/server.js";
+import { internalAction, internalQuery, type ActionCtx, type MutationCtx } from "./_generated/server.js";
+import { internalMutation } from "./functions.ts";
 import type { RegisteredQuery } from "convex/server";
 // Type-only, so this module does not load the Polar SDK (see `billing_db.ts`).
 import type { billing_Event } from "../server/billing.ts";

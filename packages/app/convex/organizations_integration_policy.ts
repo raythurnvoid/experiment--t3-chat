@@ -4,7 +4,8 @@ import { doc } from "convex-helpers/validators";
 
 import { internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel";
-import { internalMutation, mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server.js";
+import { query, type MutationCtx, type QueryCtx } from "./_generated/server.js";
+import { internalMutation, mutation } from "./functions.ts";
 import { access_control_db_has_permission } from "./access_control.ts";
 import { access_control_changes_db_record } from "./access_control_changes.ts";
 import { plugins_schedules_db_cancel } from "./plugins_schedules_db.ts";

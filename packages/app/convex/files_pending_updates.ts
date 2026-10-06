@@ -2,13 +2,12 @@ import {
 	query,
 	action,
 	internalAction,
-	internalMutation,
 	internalQuery,
-	mutation,
 	type ActionCtx,
 	type MutationCtx,
 	type QueryCtx,
 } from "./_generated/server.js";
+import { internalMutation, mutation } from "./functions.ts";
 import type { Id } from "./_generated/dataModel.js";
 import {
 	paginationOptsValidator,
@@ -62,6 +61,7 @@ import {
 } from "./files_pending_nodes.ts";
 import { files_pending_holds_db_check_expiry } from "./files_pending_holds.ts";
 import { files_visible_db_create_reader } from "./files_visible.ts";
+import { files_pending_overlay_db_pending_update_is_listed } from "../server/files-pending-overlay.ts";
 import { files_db_resolve_scope } from "./files_scopes.ts";
 import { files_share_links_create_cleanup_state, type files_share_links_CleanupState } from "./files_share_links_db.ts";
 import { path_extract_segments_from } from "../shared/paths.ts";
@@ -103,7 +103,6 @@ import {
 	files_db_retire_pending_update_yjs_states,
 	files_node_has_editable_yjs_state,
 	files_pending_update_asset_content_of,
-	files_pending_update_content_of,
 	files_pending_update_yjs_content_of,
 	files_pending_update_yjs_state_digest,
 	files_u8_to_array_buffer,
@@ -140,6 +139,7 @@ import {
 	files_normalize_text_document_input,
 	files_PENDING_UPDATE_STALE_BASE_MESSAGE,
 	files_pending_update_content_is_stale,
+	files_pending_update_content_of,
 	type files_PendingTarget,
 	type files_VisibleEntry,
 	type files_ContentType,
@@ -7352,42 +7352,6 @@ export const get_file_pending_update_internal = internalQuery({
 	},
 });
 
-/**
- * Decide whether the Pending list draws this proposal as its own row. The list query and every
- * pending count use this one check, so they always agree.
- */
-async function db_pending_update_is_listed(args: {
-	ctx: QueryCtx;
-	pendingUpdate: app_convex_Doc<"files_pending_updates">;
-	threadId: Id<"ai_chat_threads"> | undefined;
-}) {
-	const { ctx, pendingUpdate, threadId } = args;
-
-	if (threadId !== undefined && !pendingUpdate.threadIds?.includes(threadId)) return false;
-	if (pendingUpdate.target.kind === "saved") return true;
-	const privateNodeId = pendingUpdate.target.id;
-
-	// A discarded or saved private draft waits for cleanup. It is no longer a change.
-	if ((await ctx.db.get("files_pending_nodes", privateNodeId))?.state !== "active") return false;
-	if (pendingUpdate.createIntent?.kind !== "folder") return true;
-
-	// A folder draft that holds an active draft is not a change of its own, like Git: saving the
-	// draft inside creates the folder too. The folder shows again when its last draft is gone.
-	const child = await ctx.db
-		.query("files_pending_nodes")
-		.withIndex("by_organization_workspace_user_parent_state_name", (q) =>
-			q
-				.eq("organizationId", pendingUpdate.organizationId)
-				.eq("workspaceId", pendingUpdate.workspaceId)
-				.eq("userId", pendingUpdate.userId)
-				.eq("parent.kind", "private")
-				.eq("parent.id", privateNodeId)
-				.eq("state", "active"),
-		)
-		.first();
-	return child === null;
-}
-
 export const list_files_pending_updates = query({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
@@ -7442,7 +7406,10 @@ export const list_files_pending_updates = query({
 			.withIndex("by_organization_workspace_user_target", (q) =>
 				q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId).eq("userId", scope.userId),
 			)
-			.filterWith(async (pendingUpdate) => await db_pending_update_is_listed({ ctx, pendingUpdate, threadId }))
+			.filterWith(
+				async (pendingUpdate) =>
+					await files_pending_overlay_db_pending_update_is_listed({ ctx, pendingUpdate, threadId }),
+			)
 			.paginate({
 				...args.paginationOpts,
 				numItems: Math.min(5, args.paginationOpts.numItems),
@@ -7558,7 +7525,7 @@ async function db_get_files_pending_updates_summary(args: {
 		.take(501);
 	let count = 0;
 	for (const pendingUpdate of pendingUpdates.slice(0, 500)) {
-		if (await db_pending_update_is_listed({ ctx, pendingUpdate, threadId })) count++;
+		if (await files_pending_overlay_db_pending_update_is_listed({ ctx, pendingUpdate, threadId })) count++;
 	}
 	return { count, truncated: pendingUpdates.length > 500 };
 }

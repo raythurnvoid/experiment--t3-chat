@@ -1,6 +1,7 @@
 import { v } from "convex/values";
 import { doc } from "convex-helpers/validators";
-import { internalMutation, internalQuery, type MutationCtx } from "./_generated/server.js";
+import { internalQuery, type MutationCtx } from "./_generated/server.js";
+import { internalMutation } from "./functions.ts";
 import type { Doc, Id } from "./_generated/dataModel";
 import app_convex_schema from "./schema.ts";
 import {

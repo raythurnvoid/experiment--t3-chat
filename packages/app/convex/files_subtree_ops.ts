@@ -18,13 +18,15 @@ import { v } from "convex/values";
 import type { WithoutSystemFields } from "convex/server";
 import { internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
-import { internalMutation, type MutationCtx, type QueryCtx } from "./_generated/server.js";
+import type { MutationCtx, QueryCtx } from "./_generated/server.js";
+import { internalMutation } from "./functions.ts";
 import { activities_db_finish, activities_db_start } from "./activities_db.ts";
 import { files_archive_runs_db_advance, files_archive_runs_db_promote } from "./files_archive_runs.ts";
 import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
 import { files_nodes_db_rebuild_node } from "./files_nodes.ts";
 import { files_transfer_db_promote } from "./files_transfer.ts";
 import { organizations_membership_lifetimes_db_ensure } from "./organizations_membership_lifetimes.ts";
+import { files_pending_overlay_db_flush } from "../server/files-pending-overlay.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
@@ -51,6 +53,8 @@ const PAGE_SIZE = 50;
 export const files_subtree_ops_RECOVER_AFTER_MS = 5 * 60 * 1000;
 
 export async function files_subtree_ops_db_is_near_limits(ctx: MutationCtx) {
+	// Flush first, so a loop that asks "can I do more?" also counts the overlay work of its writes.
+	await files_pending_overlay_db_flush(ctx);
 	const metrics = await ctx.meta.getTransactionMetrics();
 	return [
 		metrics.bytesRead,
@@ -58,6 +62,8 @@ export async function files_subtree_ops_db_is_near_limits(ctx: MutationCtx) {
 		metrics.documentsRead,
 		metrics.documentsWritten,
 		metrics.databaseQueries,
+		// The flush schedules jobs. Convex allows 1,000 scheduled functions per mutation.
+		metrics.functionsScheduled,
 	].some((metric) => metric.remaining < (metric.used + metric.remaining) * METRICS_MIN_REMAINING_SHARE);
 }
 

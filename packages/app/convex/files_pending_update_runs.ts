@@ -13,14 +13,13 @@ import { components, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import {
 	internalAction,
-	internalMutation,
 	internalQuery,
-	mutation,
 	query,
 	type ActionCtx,
 	type MutationCtx,
 	type QueryCtx,
 } from "./_generated/server.js";
+import { internalMutation, mutation } from "./functions.ts";
 import {
 	activities_db_require_by_source_id,
 	activities_db_finish,
@@ -70,6 +69,12 @@ import { billing_db_check_credits, billing_pick_billed_user_id } from "./billing
 import { files_stored_uploads_cost_cents } from "./files_stored_uploads.ts";
 import { r2_fetch_object_from_bucket } from "./r2_client.ts";
 import { files_visible_db_create_reader } from "./files_visible.ts";
+import {
+	files_pending_overlay_DERIVED_TABLES,
+	files_pending_overlay_db_flush,
+	files_pending_overlay_db_set_acting_user,
+	files_pending_overlay_db_skip_inline_owner_paths,
+} from "../server/files-pending-overlay.ts";
 import {
 	files_pending_media_action_validate,
 	files_pending_media_db_validate_prepared,
@@ -228,7 +233,11 @@ function db_with_unit_budget(ctx: MutationCtx) {
 				return new Proxy(method, {
 					async apply(fn, receiver, args: unknown[]) {
 						let value = args.at(-1) as Value;
-						if (property === "patch" || property === "delete") {
+						// The overlay flush read a derived doc just before it writes it, so count no read.
+						if (
+							(property === "patch" || property === "delete") &&
+							!files_pending_overlay_DERIVED_TABLES.has(args[0] as string)
+						) {
 							ranges++;
 							check();
 							const current = (await Reflect.apply(target.get.bind(target), target, args.slice(0, 2))) as Record<
@@ -3258,9 +3267,12 @@ export const commit_unit = internalMutation({
 	returns: v.null(),
 	handler: async (originalCtx, args) => {
 		const ctx = db_with_unit_budget(originalCtx);
+		// Folder changes go to jobs: the size of an Accept must not depend on the owner's other drafts.
+		files_pending_overlay_db_skip_inline_owner_paths(ctx);
 		const checked = await db_get_running_unit(ctx, args);
 		if (checked._nay) refuse_unit(checked._nay.name, checked._nay.message);
 		const { run, unit, membership } = checked._yay;
+		files_pending_overlay_db_set_acting_user(ctx, run.userId);
 		if (unit.validatedReviewVersion === null || (await db_get_review_version(ctx, run)) !== unit.validatedReviewVersion)
 			refuse_unit("review_changed", "Pending changes changed during this check. Trying the same selection again.");
 
@@ -3582,6 +3594,8 @@ export const commit_unit = internalMutation({
 		}
 
 		await db_finish_unit(ctx, { run, unit, status: "completed" });
+		// Count the overlay work of this unit in its budget, so a unit that is too large refuses cleanly.
+		await files_pending_overlay_db_flush(ctx);
 		return null;
 	},
 });

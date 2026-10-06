@@ -7601,9 +7601,14 @@ Expiry pending`,
 		const updatedAt = Date.now();
 		await t.run(async (ctx) => {
 			for (let index = 0; index < 3; index++) {
+				// One draft per target, like real data: the overlay reads a user's draft of a target with `unique()`.
+				const nodeId =
+					index === 0
+						? seeded.nodeId
+						: await seed_folder_node({ ctx, ...scope, path: `/expiry-large-${index}`, name: `expiry-large-${index}` });
 				await files_db_insert_pending_update(ctx, {
 					...scope,
-					target: { kind: "saved", id: seeded.nodeId },
+					target: { kind: "saved", id: nodeId },
 					revision: 1,
 					size: files_MAX_TEXT_CONTENT_BYTES,
 					updatedAt,

@@ -8,14 +8,13 @@
 import {
 	action,
 	internalAction,
-	internalMutation,
 	internalQuery,
-	mutation,
 	query,
 	type ActionCtx,
 	type MutationCtx,
 	type QueryCtx,
 } from "./_generated/server.js";
+import { internalMutation, mutation } from "./functions.ts";
 import type { Doc, Id } from "./_generated/dataModel";
 import { type RegisteredAction, type RegisteredMutation, type RegisteredQuery } from "convex/server";
 import type { Editor } from "@tiptap/core";
@@ -37,7 +36,6 @@ import {
 	files_node_has_editable_text_content,
 	files_node_has_editable_yjs_state,
 	files_pending_update_content_is_stale,
-	files_pending_update_content_of,
 	files_REPLACE_FILE_CONTENT_STALE_MESSAGE,
 	files_db_consume_trusted_yjs_update_stage,
 	files_db_get_pending_update,
@@ -53,7 +51,7 @@ import {
 	type files_SpecialFileName,
 	type files_YjsRootKind,
 } from "../server/files.ts";
-import { files_ROOT_ID } from "../shared/files.ts";
+import { files_pending_update_content_of, files_ROOT_ID } from "../shared/files.ts";
 import {
 	files_yjs_create_empty_state_update,
 	files_yjs_doc_apply_array_buffer_update,
