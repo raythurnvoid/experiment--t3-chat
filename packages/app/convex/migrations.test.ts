@@ -1859,6 +1859,51 @@ describe("updater sort doc backfill and audits", () => {
 	});
 });
 
+describe("trim_files_folder_sorts_to_first_clause", () => {
+	test("keeps the first clause, leaves one-clause docs alone, and deletes no doc", async () => {
+		const t = test_convex();
+		component.register(t);
+		const ids = await t.run(async (ctx) => {
+			const scope = await test_mocks_fill_db_with.membership(ctx);
+			const insert = (sort: Array<{ field: string; direction: "asc" | "desc" }>) =>
+				ctx.db.insert("files_folder_sorts", {
+					organizationId: scope.organizationId,
+					workspaceId: scope.workspaceId,
+					folderId: "root",
+					sort,
+					updatedBy: scope.userId,
+					updatedAt: 100,
+				});
+			return {
+				long: await insert([
+					{ field: "updated", direction: "desc" },
+					{ field: "name", direction: "asc" },
+				]),
+				single: await insert([{ field: "size", direction: "asc" }]),
+				nameFirst: await insert([
+					{ field: "name", direction: "asc" },
+					{ field: "updated", direction: "desc" },
+				]),
+			};
+		});
+		const before = await t.run((ctx) => ctx.db.get("files_folder_sorts", ids.single));
+
+		await t.run((ctx) =>
+			runToCompletion(ctx, components.migrations, internal.migrations.trim_files_folder_sorts_to_first_clause),
+		);
+
+		const after = await t.run(async (ctx) => ({
+			long: await ctx.db.get("files_folder_sorts", ids.long),
+			single: await ctx.db.get("files_folder_sorts", ids.single),
+			nameFirst: await ctx.db.get("files_folder_sorts", ids.nameFirst),
+		}));
+		expect(after.long?.sort).toEqual([{ field: "updated", direction: "desc" }]);
+		expect(after.single).toEqual(before);
+		// file.name, A to Z shows the same as no doc, but the migration keeps the doc.
+		expect(after.nameFirst?.sort).toEqual([{ field: "name", direction: "asc" }]);
+	});
+});
+
 describe("backfill_plugins_versions_endpoints_and_collections", () => {
 	test("patches legacy rows with the manifest-omitted defaults and leaves declared rows alone", async () => {
 		const t = test_convex();

@@ -98,6 +98,10 @@ export type MyMenuItemContentSecondary_ClassNames = "MyMenuItemContentSecondary"
 export type MyMenuItemContentSecondary_Props = {
 	children?: React.ReactNode;
 	className?: string;
+	/**
+	 * Lets the item point at this text with `aria-describedby`.
+	 */
+	id?: string;
 };
 
 export const MyMenuItemContentSecondary = memo(function MyMenuItemContentSecondary(

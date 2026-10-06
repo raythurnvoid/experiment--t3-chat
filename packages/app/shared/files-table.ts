@@ -1,17 +1,17 @@
-import { files_sort_field_is_built_in, files_sort_field_is_valid } from "./files-sort.ts";
+import { files_sort_field_is_built_in, files_sort_field_is_valid, files_sort_text_key } from "./files-sort.ts";
 
 export const files_table_DEFAULT_COLUMNS = ["name", "updated_by", "updated"];
 export const files_table_MAX_COLUMNS = 8;
 
 export type files_table_Filter =
-	| { kind: "name"; field: "name"; op: "contains" | "starts_with"; value: string }
+	| { kind: "name"; field: "name"; op: "starts_with"; value: string }
 	| { kind: "extension"; field: "extension"; op: "is"; value: string }
 	| { kind: "extension"; field: "extension"; op: "missing" }
 	| { kind: "date"; field: "updated" | "created"; op: "on" | "before" | "after"; start: number; end: number }
 	| { kind: "size"; field: "size"; op: "is" | "at_least" | "at_most"; value: number }
 	| { kind: "size"; field: "size"; op: "missing" }
 	| { kind: "text"; field: string; op: "is" | "starts_with"; value: string }
-	| { kind: "text"; field: string; op: "present" | "missing" };
+	| { kind: "text"; field: string; op: "present" };
 
 export function files_table_column_is_valid(field: string) {
 	return field === "updated_by" || files_sort_field_is_valid(field);
@@ -24,10 +24,24 @@ export function files_table_updated_by_text(displayName: string | null) {
 	return displayName ?? "Unknown";
 }
 
+/**
+ * True when a `starts with` value cannot be one index range. The sort key writes a number with its
+ * length first (`2` is `012`, `10` is `0210`), so a prefix that ends in a digit does not match the
+ * longer numbers. Check the key, not the text: accent marks after a digit are dropped from the key.
+ */
+export function files_table_starts_with_ends_in_digit(value: string) {
+	return /[0-9]$/u.test(files_sort_text_key(value));
+}
+
 export function files_table_filter_is_valid(filter: files_table_Filter) {
 	switch (filter.kind) {
 		case "name":
-			return filter.field === "name" && filter.value.length >= 1 && filter.value.length <= 1024;
+			return (
+				filter.field === "name" &&
+				filter.value.length >= 1 &&
+				filter.value.length <= 1024 &&
+				!files_table_starts_with_ends_in_digit(filter.value)
+			);
 		case "extension":
 			return (
 				filter.field === "extension" &&
@@ -50,17 +64,40 @@ export function files_table_filter_is_valid(filter: files_table_Filter) {
 				!files_sort_field_is_built_in(filter.field) &&
 				files_sort_field_is_valid(filter.field) &&
 				(filter.op === "present" ||
-					filter.op === "missing" ||
-					("value" in filter && filter.value.length >= 1 && filter.value.length <= 1024))
+					("value" in filter &&
+						filter.value.length >= 1 &&
+						filter.value.length <= 1024 &&
+						(filter.op === "is" || !files_table_starts_with_ends_in_digit(filter.value))))
 			);
 	}
 }
 
-function fold_filter_text(value: string) {
-	// A filter keeps the full text and its digits; a natural-sort key does neither.
-	return value.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
+/**
+ * The field that orders the table while this filter is on. The filter picks the index, and the
+ * index fixes the order: a range orders by its own field, an "is" filter and `name starts with` by
+ * name. No second path sorts in another order.
+ *
+ * It takes only the field and the operation, so the filter bar parser uses it on its tokens too.
+ */
+export function files_table_filter_order_field(filter: { field: string; op: string }) {
+	if (filter.field === "name" || filter.field === "extension") return "name";
+	if (filter.field === "updated" || filter.field === "created") return filter.field;
+	if (filter.field === "size") return filter.op === "at_least" || filter.op === "at_most" ? "size" : "name";
+	return filter.op === "is" ? "name" : filter.field;
 }
 
+/**
+ * True when `name starts with` can join this filter. Only an "is" filter can: its index keeps the
+ * name right after the value, so the name prefix is one more range on the same index.
+ */
+export function files_table_filter_takes_name_prefix(filter: { field: string; op: string }) {
+	return files_table_filter_order_field(filter) === "name" && filter.field !== "name";
+}
+
+/**
+ * Check one row against a filter the same way the index range does: `is` and `starts with` compare
+ * the stored sort key (`files_sort_text_key`), so case, accents and leading zeros are ignored.
+ */
 export function files_table_filter_matches(args: {
 	filter: files_table_Filter;
 	facts: { name: string; createdAt: number; updatedAt: number; extension: string | null; contentByteSize: number | null };
@@ -69,11 +106,8 @@ export function files_table_filter_matches(args: {
 	const { filter, facts, scalar = null } = args;
 
 	switch (filter.kind) {
-		case "name": {
-			const name = fold_filter_text(facts.name);
-			const value = fold_filter_text(filter.value);
-			return filter.op === "contains" ? name.includes(value) : name.startsWith(value);
-		}
+		case "name":
+			return files_sort_text_key(facts.name).startsWith(files_sort_text_key(filter.value));
 		case "extension":
 			return filter.op === "missing" ? facts.extension === null : facts.extension === filter.value.toLowerCase();
 		case "date": {
@@ -94,10 +128,10 @@ export function files_table_filter_matches(args: {
 								? facts.contentByteSize >= filter.value
 								: facts.contentByteSize <= filter.value);
 		case "text":
-			if (!("value" in filter)) return filter.op === "present" ? scalar !== null : scalar === null;
+			if (!("value" in filter)) return scalar !== null;
 			if (scalar === null) return false;
 			return filter.op === "is"
-				? fold_filter_text(String(scalar)) === fold_filter_text(filter.value)
-				: fold_filter_text(String(scalar)).startsWith(fold_filter_text(filter.value));
+				? files_sort_text_key(String(scalar)) === files_sort_text_key(filter.value)
+				: files_sort_text_key(String(scalar)).startsWith(files_sort_text_key(filter.value));
 	}
 }

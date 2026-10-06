@@ -1,7 +1,9 @@
 // The folder table bar language. A query is a list of whitespace-separated tokens. A token is one
-// filter or one sort. The folder table runs one filter and up to `files_sort_MAX_CLAUSES` sorts.
+// filter or one sort. The folder table runs one filter, or `file.name:starts_with` plus one "is"
+// filter, and one sort. A filter fixes the order (`files_table_filter_order_field`), so a sort for
+// another field is dropped while a filter is on.
 //
-// - Filter: `<field>:<op>` or `<field>:<op>:<value>`, like `file.name:contains:report`,
+// - Filter: `<field>:<op>` or `<field>:<op>:<value>`, like `file.name:starts_with:report`,
 //   `file.size:at_least:1024` or `metadata.status:present`. The value is everything after the
 //   second colon, or one quoted string.
 // - Sort: `sort_by:<field>:<asc|desc>`, like `sort_by:file.updated:desc`.
@@ -26,7 +28,13 @@ import {
 	files_sort_MAX_CLAUSES,
 	type files_sort_Sort,
 } from "./files-sort.ts";
-import { files_table_filter_is_valid, type files_table_Filter } from "./files-table.ts";
+import {
+	files_table_filter_is_valid,
+	files_table_filter_order_field,
+	files_table_filter_takes_name_prefix,
+	files_table_starts_with_ends_in_digit,
+	type files_table_Filter,
+} from "./files-table.ts";
 
 const SORT_KEY = "sort_by";
 const VALUE_MAX_LENGTH = 1024;
@@ -39,7 +47,7 @@ export const files_folder_table_query_MAX_LENGTH = 2000;
 
 const DAY_REGEX = /^\d{4}-\d{2}-\d{2}$/u;
 const WHOLE_NUMBER_REGEX = /^\d+$/u;
-// A quote that starts a value and is not closed yet, like `file.name:contains:"my rep`.
+// A quote that starts a value and is not closed yet, like `file.name:starts_with:"my rep`.
 const OPEN_VALUE_QUOTE_REGEX = /(?:^|:)"(?:[^"\\]|\\.)*$/u;
 
 /**
@@ -83,11 +91,15 @@ export type files_folder_table_query_Parsed = {
 	 */
 	tokens: files_folder_table_query_Token[];
 	/**
-	 * The one kept filter, or null.
+	 * The kept filter, or null. With a name prefix this is the "is" filter.
 	 */
 	filter: files_folder_table_query_FilterToken | null;
 	/**
-	 * The kept sorts, in priority order.
+	 * The `file.name:starts_with` token kept next to an "is" filter, or null.
+	 */
+	namePrefix: files_folder_table_query_FilterToken | null;
+	/**
+	 * The kept sort, at most one.
 	 */
 	sorts: files_folder_table_query_SortToken[];
 	/**
@@ -101,10 +113,7 @@ export type files_folder_table_query_Parsed = {
  */
 export function files_folder_table_query_operations(field: string): files_folder_table_query_Operation[] {
 	if (field === "name") {
-		return [
-			{ op: "contains", needsValue: true },
-			{ op: "starts_with", needsValue: true },
-		];
+		return [{ op: "starts_with", needsValue: true }];
 	}
 	if (field === "extension") {
 		return [
@@ -131,7 +140,6 @@ export function files_folder_table_query_operations(field: string): files_folder
 		{ op: "is", needsValue: true },
 		{ op: "starts_with", needsValue: true },
 		{ op: "present", needsValue: false },
-		{ op: "missing", needsValue: false },
 	];
 }
 
@@ -209,6 +217,9 @@ function parse_value(op: files_folder_table_query_Operation, field: string, text
 	if (value.length === 0 || value.length > VALUE_MAX_LENGTH) {
 		return { value: null, problem: `Enter 1 to ${VALUE_MAX_LENGTH.toLocaleString("en-US")} characters` };
 	}
+	if (op.op === "starts_with" && files_table_starts_with_ends_in_digit(value)) {
+		return { value: null, problem: "'Starts with' cannot end with a number here. Remove the last digits, or use 'is'." };
+	}
 
 	return { value, problem: null };
 }
@@ -241,7 +252,7 @@ export function files_folder_table_query_parse_token(
 	if (fieldEnd < 0) {
 		return {
 			token: null,
-			problem: `Type a filter like file.name:contains:report, or a sort like ${SORT_KEY}:file.updated:desc`,
+			problem: `Type a filter like file.name:starts_with:report, or a sort like ${SORT_KEY}:file.updated:desc`,
 		};
 	}
 	if (raw.startsWith("!")) {
@@ -282,32 +293,49 @@ export function files_folder_table_query_close_open_quote(token: string) {
 }
 
 /**
- * Read a query. A token that is not valid, a second filter, a repeated sort field, and a sort past
- * the limit are all dropped and listed in `rejected`.
+ * Read a query. A token that is not valid, a filter that cannot join the kept ones, a second sort,
+ * and a sort the filter does not allow are all dropped and listed in `rejected`. Filters are read
+ * before sorts, so a filter always wins over a sort for another field.
  */
 export function files_folder_table_query_parse(query: string): files_folder_table_query_Parsed {
 	const { tokens: rawTokens, openQuote } = files_search_query_split_tokens(query.trim());
-	const parsed: files_folder_table_query_Parsed = { tokens: [], filter: null, sorts: [], rejected: [] };
+	const parsed: files_folder_table_query_Parsed = { tokens: [], filter: null, namePrefix: null, sorts: [], rejected: [] };
 
-	for (const [index, rawToken] of rawTokens.entries()) {
+	const results = rawTokens.map((rawToken, index) => {
 		// A quote left open runs to the end of the query. Close it, so the token stays one token.
 		const raw =
 			openQuote && index === rawTokens.length - 1 ? files_folder_table_query_close_open_quote(rawToken) : rawToken;
-		const result = files_folder_table_query_parse_token(raw);
-		const problem = result.problem ?? get_conflict_problem(parsed, result.token);
-		if (problem !== null) {
-			parsed.rejected.push({ raw, problem });
-			continue;
-		}
+		return { raw, result: files_folder_table_query_parse_token(raw) };
+	});
+	const kept = new Set<files_folder_table_query_Token>();
+	for (const pass of ["filter", "sort"] as const) {
+		for (const { raw, result } of results) {
+			// Invalid tokens are reported once, in the filter pass.
+			if ((result.token?.kind ?? "filter") !== pass) continue;
 
-		const token = result.token!;
-		parsed.tokens.push(token);
-		if (token.kind === "filter") {
-			parsed.filter = token;
-		} else {
-			parsed.sorts.push(token);
+			const problem = result.problem ?? get_conflict_problem(parsed, result.token);
+			if (problem !== null) {
+				parsed.rejected.push({ raw, problem });
+				continue;
+			}
+
+			const token = result.token!;
+			kept.add(token);
+			if (token.kind === "sort") {
+				parsed.sorts.push(token);
+			} else if (parsed.filter === null) {
+				parsed.filter = token;
+			} else if (token.field === "name") {
+				parsed.namePrefix = token;
+			} else {
+				// The name prefix came first. The "is" filter is the main one.
+				parsed.namePrefix = parsed.filter;
+				parsed.filter = token;
+			}
 		}
 	}
+	// Keep the tokens in the order they were written.
+	parsed.tokens = results.flatMap(({ result }) => (result.token && kept.has(result.token) ? [result.token] : []));
 
 	return parsed;
 }
@@ -316,19 +344,24 @@ export function files_folder_table_query_parse(query: string): files_folder_tabl
  * Why a valid token cannot join the tokens kept so far, or null when it can.
  */
 function get_conflict_problem(
-	parsed: Pick<files_folder_table_query_Parsed, "filter" | "sorts">,
+	parsed: Pick<files_folder_table_query_Parsed, "filter" | "namePrefix" | "sorts">,
 	token: files_folder_table_query_Token | null,
 ) {
 	if (token === null) {
 		return null;
 	}
 	if (token.kind === "filter") {
-		return parsed.filter === null ? null : "The folder table can use one filter at a time";
+		if (parsed.filter === null) return null;
+		const canPair =
+			parsed.namePrefix === null &&
+			((token.field === "name" && files_table_filter_takes_name_prefix(parsed.filter)) ||
+				(parsed.filter.field === "name" && files_table_filter_takes_name_prefix(token)));
+		return canPair ? null : "Use one filter, or 'name starts with' plus one 'is' filter.";
 	}
-	if (parsed.sorts.some((sort) => sort.field === token.field)) {
-		return "Each sort field can be used once";
+	if (parsed.filter !== null && token.field !== files_table_filter_order_field(parsed.filter)) {
+		return `Remove the filter to sort by ${files_folder_table_query_field_text(token.field)}`;
 	}
-	return parsed.sorts.length >= files_sort_MAX_CLAUSES ? `Use at most ${files_sort_MAX_CLAUSES} sorts` : null;
+	return parsed.sorts.length >= files_sort_MAX_CLAUSES ? "The folder table sorts by one field" : null;
 }
 
 /**
@@ -373,14 +406,15 @@ export function files_folder_table_query_with_filter(query: string, filterRaw: s
 }
 
 /**
- * The query with its sorts replaced. Only the first `files_sort_MAX_CLAUSES` clauses are kept.
+ * The query with its sort replaced. A sort the filter does not allow is dropped.
  */
 export function files_folder_table_query_with_sort(query: string, sort: files_sort_Sort) {
 	const parsed = files_folder_table_query_parse(query);
 	const sortTokens = sort.map(
 		(clause) => `${SORT_KEY}:${files_folder_table_query_field_text(clause.field)}:${clause.direction}`,
 	);
-	return files_folder_table_query_clean([...(parsed.filter ? [parsed.filter.raw] : []), ...sortTokens].join(" "));
+	const filterTokens = [parsed.filter, parsed.namePrefix].flatMap((token) => (token ? [token.raw] : []));
+	return files_folder_table_query_clean([...filterTokens, ...sortTokens].join(" "));
 }
 
 /**
@@ -408,7 +442,7 @@ export function files_folder_table_query_to_filter(
 	const { field, op, value } = token;
 	let filter: files_table_Filter | null = null;
 	if (field === "name") {
-		filter = { kind: "name", field, op: op as "contains" | "starts_with", value: value! };
+		filter = { kind: "name", field, op: "starts_with", value: value! };
 	} else if (field === "extension") {
 		filter =
 			op === "missing" ? { kind: "extension", field, op } : { kind: "extension", field, op: "is", value: value! };
@@ -422,7 +456,7 @@ export function files_folder_table_query_to_filter(
 				: { kind: "size", field, op: op as "is" | "at_least" | "at_most", value: Number(value) };
 	} else {
 		filter =
-			op === "present" || op === "missing"
+			op === "present"
 				? { kind: "text", field, op }
 				: { kind: "text", field, op: op as "is" | "starts_with", value: value! };
 	}

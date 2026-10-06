@@ -11,7 +11,7 @@ import { Result } from "common/errors-as-values-utils.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { files_ROOT_ID } from "../shared/files.ts";
-import { files_sort_DEFAULT, files_sort_is_valid, files_sort_MAX_CLAUSES } from "../shared/files-sort.ts";
+import { files_sort_DEFAULT, files_sort_is_valid } from "../shared/files-sort.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
 // Does NOT work for http actions (see http.ts). No mutable module-level state allowed here.
@@ -148,7 +148,9 @@ export const get_folder_sort = query({
 			db_authorize_sort_write(ctx, { userAuth, membership, folder: folder._yay }),
 		]);
 
-		const sort = sortDoc?.sort ?? files_sort_DEFAULT;
+		// The table sorts by one field. Older docs can hold more clauses until the
+		// `trim_files_folder_sorts_to_first_clause` migration runs, so read only the first one.
+		const sort = sortDoc?.sort.slice(0, 1) ?? files_sort_DEFAULT;
 		if (!files_sort_is_valid(sort)) {
 			throw convex_error({ message: "Invalid saved sort." });
 		}
@@ -193,8 +195,11 @@ export const set_folder_sort = mutation({
 			return authorized;
 		}
 
+		if (args.sort.length !== 1) {
+			return Result({ _nay: { message: "Sort by one field." } });
+		}
 		if (!files_sort_is_valid(args.sort)) {
-			return Result({ _nay: { message: `Use 1 to ${files_sort_MAX_CLAUSES} different sort fields.` } });
+			return Result({ _nay: { message: "This field cannot be sorted." } });
 		}
 
 		const now = Date.now();

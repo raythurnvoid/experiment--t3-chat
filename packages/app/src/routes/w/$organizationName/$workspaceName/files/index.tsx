@@ -60,11 +60,12 @@ const Route = createFileRoute("/w/$organizationName/$workspaceName/files/")({
 				.optional()
 				.catch(undefined),
 			/**
-			 * The committed filter and sort tokens of the folder table bar, like `file.name:contains:report`
+			 * The committed filter and sort tokens of the folder table bar, like `file.name:starts_with:report`
 			 * or `sort_by:file.updated:desc`.
 			 *
-			 * The cleaner drops every token that cannot run, so a hand-edited link still opens. A value
-			 * over the length cap is ignored. An empty result is the same as no value.
+			 * The cleaner drops every token that cannot run, so a hand-edited link still opens. Old links
+			 * lose their `contains` and `missing` filters and their extra sorts. A value over the length
+			 * cap is ignored. An empty result is the same as no value.
 			 **/
 			filter: z
 				.preprocess(

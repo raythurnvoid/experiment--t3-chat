@@ -463,12 +463,7 @@ export const files_sort_row_key_validator = v.object({
 });
 
 export const files_table_filter_validator = v.union(
-	v.object({
-		kind: v.literal("name"),
-		field: v.literal("name"),
-		op: v.union(v.literal("contains"), v.literal("starts_with")),
-		value: v.string(),
-	}),
+	v.object({ kind: v.literal("name"), field: v.literal("name"), op: v.literal("starts_with"), value: v.string() }),
 	v.object({ kind: v.literal("extension"), field: v.literal("extension"), op: v.literal("is"), value: v.string() }),
 	v.object({ kind: v.literal("extension"), field: v.literal("extension"), op: v.literal("missing") }),
 	v.object({
@@ -491,7 +486,7 @@ export const files_table_filter_validator = v.union(
 		op: v.union(v.literal("is"), v.literal("starts_with")),
 		value: v.string(),
 	}),
-	v.object({ kind: v.literal("text"), field: v.string(), op: v.union(v.literal("present"), v.literal("missing")) }),
+	v.object({ kind: v.literal("text"), field: v.string(), op: v.literal("present") }),
 );
 
 const files_pending_create_intent_validator = v.union(
@@ -2461,7 +2456,7 @@ const app_convex_schema = defineSchema({
 			"booleanValue",
 			"treePath",
 		])
-		// Distinct fields on ordinary direct children. Committed field docs only.
+		// Distinct fields on direct children, split by `isRestrictedScopeRoot`. Committed field docs only.
 		.index("by_org_ws_source_archive_docKind_parent_restricted_field", [
 			"organizationId",
 			"workspaceId",
@@ -2484,20 +2479,6 @@ const app_convex_schema = defineSchema({
 			"isRestrictedScopeRoot",
 			"nodeKind",
 			"sortValue",
-			"sortName",
-			"name",
-		])
-		// The same docs by name, so the table can find the children that miss the key.
-		.index("by_org_ws_source_archive_docKind_field_parent_restricted_name", [
-			"organizationId",
-			"workspaceId",
-			"sourceKind",
-			"archiveOperationId",
-			"docKind",
-			"fieldPath",
-			"parentId",
-			"isRestrictedScopeRoot",
-			"nodeKind",
 			"sortName",
 			"name",
 		]),

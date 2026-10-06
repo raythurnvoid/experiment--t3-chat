@@ -289,11 +289,12 @@ A scan reads rows only to drop them. These are all scans:
 
 Rules:
 
-- Before you build a read, name the index range that serves it. Put it in the plan. Include how drafts appear: private pending nodes and pending moves must come from an index too.
+- Before you build a read, name the index range that serves it. Put it in the plan. If the read shows drafts (the agent's bash tools, the Pending tab, the draft views), private pending nodes and pending moves must come from an index too.
 - If no index can serve the read, stop before you write code. Tell the user the root problem and offer real options: add an index, cut the feature to what an index can serve, or move it to a search engine.
 - Caps do not fix a scan. `maximumRowsRead`, `take(1001)`, read budgets, `truncated` flags, and "too broad" errors turn a slow read into wrong or missing results. Do not ship them as a stopgap.
 - A scan is fine only when a limit enforced on write bounds the range (for example a per-role share limit), when the range is one small owned record (one file's version history), or in a background job no user waits on. Write that bound in a comment next to the read.
 - Prove it with a test. Put more non-matching rows inside the range than one page or read limit, and assert that the first page is full and correct. The test must fail on the scan version.
+- UI lists (the folder table, the sidebar, the search box, the pickers) show saved files only. Only the agent's bash tools, the Pending tab and the draft views read a user's drafts. The folder table follows this rule. The search box and the global search still show drafts until they move to saved-only reads. See "Saved-only lists" in the `files-explorer-tree` skill.
 
 The Convex guidelines explain the query mechanics: [.agents/skills/convex/references/additional-guidelines.md](.agents/skills/convex/references/additional-guidelines.md).
 

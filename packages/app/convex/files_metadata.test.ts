@@ -87,33 +87,6 @@ async function fixture(options: Parameters<typeof test_convex>[0] = { transactio
 			});
 			return { ...created._yay, target: { kind: "private" as const, id: created._yay.privateNodeId } };
 		});
-	const private_text = async (text: string) => {
-		const created = await t.mutation(internal.files_nodes.create_private_node_by_path, {
-			...owner,
-			path: "/table/draft.md",
-			kind: "file",
-		});
-		if (created._nay) throw new Error(created._nay.message);
-		const { target, pendingUpdateId, operationBatchId } = created._yay;
-		if (!pendingUpdateId || !operationBatchId) throw new Error("Expected private text batch");
-		for (const role of ["staged", "unstaged"] as const) {
-			const staged = await t.mutation(internal.files_pending_updates.stage_file_pending_update_text_input_internal, {
-				...owner,
-				operationBatchId,
-				role,
-				text,
-			});
-			if (staged._nay) throw new Error(staged._nay.message);
-		}
-		const ready = await t.action(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
-			...owner,
-			target,
-			pendingUpdateId,
-			operationBatchId,
-		});
-		if (ready._nay) throw new Error(ready._nay.message);
-		return { target, pendingUpdateId };
-	};
 	const catalog = (afterField: string | null = null) =>
 		asOwner.query(api.files_metadata.list_folder_fields, { membershipId: scope.membershipId, parentId, afterField });
 	return {
@@ -127,7 +100,6 @@ async function fixture(options: Parameters<typeof test_convex>[0] = { transactio
 		child,
 		frontmatter,
 		private_folder,
-		private_text,
 		catalog,
 	};
 }
@@ -238,7 +210,59 @@ describe("list_folder_fields", () => {
 		expect(
 			(await asOwner.query(api.files_metadata.list_folder_fields, { ...args, membershipId: scope.membershipId }))
 				?.fields,
-		).toEqual(["metadata.public"]);
+		).toEqual(["metadata.hidden", "metadata.public"]);
+	});
+
+	test("merges the owner's restricted children with the open ones in key order", async () => {
+		const { scope, asOwner, viewer, asViewer, parentId, child, catalog } = await fixture();
+		await child({
+			name: "open.md",
+			entries: [
+				{ key: "a", value: 1 },
+				{ key: "c", value: 1 },
+				{ key: "shared", value: 1 },
+			],
+		});
+		const hidden = await child({
+			name: "hidden.md",
+			entries: [
+				{ key: "b", value: 2 },
+				{ key: "d", value: 2 },
+				{ key: "shared", value: 2 },
+			],
+		});
+		expect(
+			(await asOwner.mutation(api.files_sharing.restrict_node, { membershipId: scope.membershipId, nodeId: hidden }))
+				._nay,
+		).toBeUndefined();
+		expect(await catalog()).toEqual({
+			fields: ["metadata.a", "metadata.b", "metadata.c", "metadata.d", "metadata.shared"],
+			afterField: "metadata.shared",
+			isDone: true,
+		});
+		expect((await catalog("metadata.b"))?.fields).toEqual(["metadata.c", "metadata.d", "metadata.shared"]);
+		expect(
+			(
+				await asViewer.query(api.files_metadata.list_folder_fields, {
+					membershipId: viewer.membershipId,
+					parentId,
+					afterField: null,
+				})
+			)?.fields,
+		).toEqual(["metadata.a", "metadata.c", "metadata.shared"]);
+	});
+
+	test("merges the two ranges in index order, not JS string order", async () => {
+		const { scope, asOwner, child, catalog } = await fixture();
+		// U+FF58 comes before U+1D465 in the index, but JS `<` compares UTF-16 units and puts the
+		// surrogate pair of U+1D465 first. Then the open key would be skipped.
+		await child({ name: "open.md", entries: [{ key: "\u{FF58}", value: 1 }] });
+		const hidden = await child({ name: "hidden.md", entries: [{ key: "\u{1D465}", value: 2 }] });
+		expect(
+			(await asOwner.mutation(api.files_sharing.restrict_node, { membershipId: scope.membershipId, nodeId: hidden }))
+				._nay,
+		).toBeUndefined();
+		expect((await catalog())?.fields).toEqual(["metadata.\u{FF58}", "metadata.\u{1D465}"]);
 	});
 
 	test("fails on a stale field restriction flag instead of exposing the key", async () => {
@@ -288,7 +312,7 @@ describe("list_folder_fields", () => {
 		).toBeNull();
 	});
 
-	test("returns empty for a readable archived or caller-hidden folder", async () => {
+	test("returns empty for a readable archived folder and ignores the caller's draft delete", async () => {
 		const { t, owner, parentId, child, catalog } = await fixture();
 		await child({ name: "value.md", entries: [{ key: "status", value: "open" }] });
 		await t.run((ctx) => ctx.db.patch("files_nodes", parentId, { archiveOperationId: "archived" }));
@@ -305,7 +329,7 @@ describe("list_folder_fields", () => {
 				pendingArchive: { fromPath: "/table" },
 			});
 		});
-		expect(await catalog()).toEqual({ fields: [], afterField: null, isDone: true });
+		expect(await catalog()).toEqual({ fields: ["metadata.status"], afterField: "metadata.status", isDone: true });
 	});
 
 	test("pages distinct keys and advances across invalid keys", async () => {
@@ -338,41 +362,27 @@ describe("list_node_fields", () => {
 				target: { kind: "saved", id: nodeId },
 				cursor: null,
 			}),
-		).toMatchObject({ fields: ["frontmatter.items"], isDone: true, sourceToken: "committed" });
+		).toMatchObject({ fields: ["frontmatter.items"], isDone: true });
 	});
 
-	test("pages a private source and restarts after a revision change", async () => {
-		const { t, scope, owner, asOwner, private_folder } = await fixture();
-		const draft = await private_folder(
-			Array.from({ length: 60 }, (_, i) => ({ key: `field_${String(i).padStart(2, "0")}`, value: i })),
-		);
-		const args = { membershipId: scope.membershipId, target: draft.target, cursor: null };
-		const first = await asOwner.query(api.files_metadata.list_node_fields, args);
-		expect(first?.fields).toHaveLength(50);
-		expect(first?.isDone).toBe(false);
+	test("returns null for the caller's own private draft", async () => {
+		const { scope, asOwner, private_folder } = await fixture();
+		const draft = await private_folder([{ key: "status", value: "draft" }]);
 		expect(
-			(await asOwner.query(api.files_metadata.list_node_fields, { ...args, cursor: first!.continueCursor }))?.fields,
-		).toHaveLength(10);
-		await t.run(async (ctx) => {
-			await ctx.db.patch("files_pending_updates", draft.pendingUpdateId, {
-				revision: 2,
-				createIntent: { kind: "folder", metadata: [{ key: "changed", value: true }] },
-			});
-			await files_metadata_db_replace_pending(ctx, {
-				...owner,
+			await asOwner.query(api.files_metadata.list_node_fields, {
+				membershipId: scope.membershipId,
 				target: draft.target,
-				pendingUpdateId: draft.pendingUpdateId,
-				proposalRevision: 2,
-				path: "/table/draft",
-				createMetadata: [{ key: "changed", value: true }],
-			});
-		});
-		const changed = await asOwner.query(api.files_metadata.list_node_fields, {
-			...args,
-			cursor: first!.continueCursor,
-		});
-		expect(changed?.fields).toEqual(["metadata.changed"]);
-		expect(changed?.sourceToken).not.toBe(first?.sourceToken);
+				cursor: null,
+			}),
+		).toBeNull();
+		expect(
+			await asOwner.query(api.files_metadata.get_field_values, {
+				membershipId: scope.membershipId,
+				target: draft.target,
+				fields: ["metadata.status"],
+				afterField: null,
+			}),
+		).toBeNull();
 	});
 
 	test("rejects a cursor from another target", async () => {
@@ -391,19 +401,6 @@ describe("list_node_fields", () => {
 				cursor: first!.continueCursor,
 			}),
 		).rejects.toThrow("Invalid field cursor");
-	});
-
-	test("throws for a wrong-revision witness instead of skipping it", async () => {
-		const { t, scope, asOwner, private_folder } = await fixture();
-		const draft = await private_folder([{ key: "old", value: "secret" }]);
-		await t.run((ctx) => ctx.db.patch("files_pending_updates", draft.pendingUpdateId, { revision: 2 }));
-		await expect(
-			asOwner.query(api.files_metadata.list_node_fields, {
-				membershipId: scope.membershipId,
-				target: draft.target,
-				cursor: null,
-			}),
-		).rejects.toThrow("metadataDoc source is mismatched");
 	});
 });
 
@@ -435,77 +432,9 @@ describe("get_field_values", () => {
 			afterField: null,
 		});
 		expect(result).toMatchObject({
-			preparing: false,
 			isDone: true,
-			sourceToken: "committed",
 			values: fields.map((field, i) => ({ field, value: ["2026-09-29", null, false, null, "", false, 0][i] })),
 		});
-	});
-
-	test("reads the first private primitive without collecting 400 list values", async () => {
-		const { scope, asOwner, private_text } = await fixture({ transactionLimits: { databaseQueries: 80 } });
-		const draft = await private_text(
-			`---\nitems: [${Array.from({ length: 400 }, (_, i) => `item${i}`).join(", ")}]\n---\n`,
-		);
-		expect(
-			await asOwner.query(api.files_metadata.get_field_values, {
-				membershipId: scope.membershipId,
-				target: draft.target,
-				fields: ["frontmatter.items"],
-				afterField: null,
-			}),
-		).toMatchObject({ preparing: false, values: [{ field: "frontmatter.items", value: "item0" }], isDone: true });
-	});
-
-	test.each(["missing intent", "text without content"])(
-		"returns preparing without old values for %s",
-		async (state) => {
-			const { t, scope, asOwner, private_folder } = await fixture();
-			const draft = await private_folder([{ key: "status", value: "old" }]);
-			await t.run((ctx) =>
-				ctx.db.patch("files_pending_updates", draft.pendingUpdateId, {
-					createIntent:
-						state === "missing intent"
-							? undefined
-							: {
-									kind: "text",
-									metadata: [],
-									contentType: "text/markdown",
-									textKind: "rich_text",
-									collaborationEnabled: true,
-								},
-				}),
-			);
-			expect(
-				await asOwner.query(api.files_metadata.get_field_values, {
-					membershipId: scope.membershipId,
-					target: draft.target,
-					fields: ["metadata.status"],
-					afterField: null,
-				}),
-			).toMatchObject({ preparing: true, values: [], isDone: true });
-			expect(
-				await asOwner.query(api.files_metadata.list_node_fields, {
-					membershipId: scope.membershipId,
-					target: draft.target,
-					cursor: null,
-				}),
-			).toMatchObject({ fields: [], isDone: true });
-		},
-	);
-
-	test("throws for old private values and never calls them missing", async () => {
-		const { t, scope, asOwner, private_folder } = await fixture();
-		const draft = await private_folder([{ key: "status", value: "old" }]);
-		await t.run((ctx) => ctx.db.patch("files_pending_updates", draft.pendingUpdateId, { revision: 2 }));
-		await expect(
-			asOwner.query(api.files_metadata.get_field_values, {
-				membershipId: scope.membershipId,
-				target: draft.target,
-				fields: ["metadata.status"],
-				afterField: null,
-			}),
-		).rejects.toThrow("metadataDoc source is mismatched");
 	});
 
 	test("keeps committed frontmatter while the owner has a pending content edit", async () => {

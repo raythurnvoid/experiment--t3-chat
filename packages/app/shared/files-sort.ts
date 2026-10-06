@@ -13,9 +13,10 @@ const DIGIT_RUN_MAX_LENGTH = 99;
 export const files_sort_BUILT_IN_FIELDS = ["name", "updated", "created", "extension", "size"] as const;
 
 /**
- * The most clauses one sort can hold. Each extra clause adds reads to the same table work limit.
+ * The most clauses one sort can hold. Each table stream reads one index range, and an index orders
+ * by one field, so a sort has one clause. The list shape stays for saved docs.
  */
-export const files_sort_MAX_CLAUSES = 8;
+export const files_sort_MAX_CLAUSES = 1;
 
 type files_sort_Direction = "asc" | "desc";
 
@@ -61,20 +62,6 @@ export function files_sort_is_valid(sort: files_sort_Sort) {
 				files_sort_field_is_valid(clause.field) && (clause.direction === "asc" || clause.direction === "desc"),
 		)
 	);
-}
-
-/**
- * Folders miss file.extension and file.size. file.name's full key is unique, so later fields cannot change its order.
- * Keep the original clauses for saved choices, keys and cursor scopes.
- */
-export function files_sort_execution_fields(sort: files_sort_Sort, kind: "folder" | "file") {
-	const fields: files_sort_Sort = [];
-	for (const clause of sort) {
-		if (sort.length > 1 && kind === "folder" && (clause.field === "extension" || clause.field === "size")) continue;
-		fields.push(clause);
-		if (clause.field === "name") break;
-	}
-	return fields;
 }
 
 /**
@@ -140,11 +127,8 @@ export function files_sort_key_of(args: {
 	const { sort, facts, metadataParts } = args;
 
 	const nameKey: [string, string] = [files_sort_text_key(facts.name), facts.name];
-	let hasName = false;
 	const parts = sort.map((clause): files_sort_Key | null => {
-		if (hasName) return null;
 		if (clause.field === "name") {
-			hasName = true;
 			return nameKey;
 		}
 		const scalar =
@@ -162,28 +146,25 @@ export function files_sort_key_of(args: {
 								: facts.contentByteSize
 							: (metadataParts.get(clause.field) ?? null);
 		if (scalar === null) return null;
-		// A one-field sort keeps its exact index suffix. file.created has no name suffix.
-		return sort.length === 1 && clause.field !== "created" ? [scalar, ...nameKey] : [scalar];
+		// The key is the exact index suffix. file.created has no name suffix.
+		return clause.field !== "created" ? [scalar, ...nameKey] : [scalar];
 	});
 	return { parts, nameKey };
 }
 
 /**
- * Missing values stay last in either direction. Multi-sort applies each direction on its own.
+ * Missing values stay last in either direction, in file.name asc order.
  */
 export function files_sort_compare(args: { a: files_sort_RowKey; b: files_sort_RowKey; sort: files_sort_Sort }) {
 	const { a, b, sort } = args;
 
-	for (const [index, clause] of sort.entries()) {
-		const aPart = a.parts[index];
-		const bPart = b.parts[index];
-		if (aPart === null && bPart === null) continue;
-		if (aPart === null) return 1;
-		if (bPart === null) return -1;
-		const result = compareValues(aPart, bPart);
-		if (result !== 0) return clause.direction === "asc" ? result : -result;
-	}
-	// Single file.created keeps native equal-time ties. Single missing values use file.name asc.
-	if (sort.length === 1 && a.parts[0] !== null && b.parts[0] !== null) return 0;
-	return compareValues(a.nameKey, b.nameKey);
+	const aPart = a.parts[0];
+	const bPart = b.parts[0];
+	if (aPart === null && bPart === null) return compareValues(a.nameKey, b.nameKey);
+	if (aPart === null) return 1;
+	if (bPart === null) return -1;
+	const result = compareValues(aPart, bPart);
+	// file.created keeps native equal-time ties.
+	if (result === 0) return 0;
+	return sort[0]!.direction === "asc" ? result : -result;
 }

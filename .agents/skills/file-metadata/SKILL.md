@@ -307,105 +307,94 @@ The table's field catalog is separate from the workspace search suggestions belo
 committed fields on direct children of the open folder. It never finds keys by paging the first
 50 file rows or by scanning another folder.
 
-The three public queries live in the `folder table fields` region of `convex/files_metadata.ts`:
+The three public queries live in the `folder table fields` region of `convex/files_metadata.ts`.
+Like the folder table, they are saved-only: they read committed docs and never pending docs (see
+the `files-explorer-tree` skill, "Saved-only lists").
 
 - `list_folder_fields({ membershipId, parentId, afterField })` returns
   `{ fields, afterField, isDone }`. Its parent-first index reads active committed `field` docs with
   `isRestrictedScopeRoot: false`. Each `.first()` seek uses `gt(fieldPath, afterField)` to skip all
-  copies of the last key. The real node must still belong to that folder and be active and ordinary.
-  A stale scope flag throws instead of publishing a hidden key. Restricted children never change
-  this page's keys or cursor. Their keys come from the single-target query below after a read check.
+  copies of the last key. The owner walks the open range and the restricted range
+  (`isRestrictedScopeRoot: true`) together: each step reads the next key of both and takes the
+  smaller one in index order (`compareValues`, not JS `<`, which compares UTF-16 units), so a key
+  in both shows once. Other callers read the open range only; a member's
+  shared restricted children add their keys through `list_node_fields`. The real node must still
+  belong to that folder, be active, and have a scope flag that matches the range it came from. A
+  stale scope flag throws instead of publishing a hidden key.
 - `list_node_fields({ membershipId, target, cursor })` returns
-  `{ fields, continueCursor, isDone, sourceToken }`. It resolves one saved or private target with
-  the visible reader. It seeks distinct field paths, so a 400-item list costs one key candidate.
-  The cursor belongs to the membership and target. A private revision change starts a new key chain.
+  `{ fields, continueCursor, isDone }`. It seeks distinct committed field paths of one saved node,
+  so a 400-item list costs one key candidate. The cursor belongs to the membership and target.
 - `get_field_values({ membershipId, target, fields, afterField })` returns
-  `{ preparing, values, afterField, isDone, sourceToken }`. Request one to seven distinct qualified
-  fields in ascending text order. `afterField` is null or one of those fields. The query checks the
-  target again; a prior table row or field catalog is not proof of current access.
+  `{ values, afterField, isDone }`. Request one to seven distinct qualified fields in ascending
+  text order. `afterField` is null or one of those fields.
 
-Saved rows use committed metadata and frontmatter even while their owner edits pending text.
+`list_node_fields` and `get_field_values` check the node on every call; a prior table row or field
+catalog is not proof of current access. They load the saved node with
+`files_metadata_db_get_table_node`: it checks the organization, workspace and active state, then
+calls `access_control_db_authorize_membership` with `content.read` and the node. A private target,
+a missing node, or a refusal returns null. Each field value comes from
+`files_metadata_db_get_table_field`, which throws when the committed field doc does not belong to
+the node.
+
+Rows use committed metadata and frontmatter, also while their owner edits pending text.
 The stored field doc's `sortDisplayValue` is the cell value. It preserves `false`, `0`, and `""`.
 A list displays its first plain primitive in extraction order. Date companion docs do not change
-that value. Empty lists, map parents, and absent keys return an explicit `null` cell value.
-
-Private rows use only the owner's current create proposal. Every read doc must match its tenant,
-target, owner, proposal id, and revision. A mismatch throws; it is not an absent value. Their source
-token contains the proposal id and revision. The client replaces old pages when that token changes.
-Preparing drafts return `preparing: true` with no values and an empty key catalog. A draft is
-preparing while preparation is active, its create intent is missing, or a text intent has no new
-content base. No old metadata is shown during that state.
+that value. Empty lists, map parents, and absent keys return an explicit `null` cell value. Every
+read doc must be a committed doc of the same tenant and node; a mismatch throws.
 
 Each catalog reads at most 50 distinct candidates, including invalid keys and an end probe.
 Only search-valid qualified keys are returned. All three queries use whole-query transaction
 metrics and a local doc byte count. They keep a 4 MiB read budget and a 1,000-call budget, with
 1 MiB and 16 calls reserved before the next read. Cell pages advance only after a whole field is
 finished. A budget stop returns the completed prefix; no first progress throws a clear query error.
-Private values use a bounded iterator and stop at the first primitive, rather than collecting a list.
 
 Missing membership or target access returns null. Missing current-user auth throws `Unauthenticated`.
-A grant-only member gets an empty, done ordinary catalog at the root. A readable folder hidden by
-archive or the caller's pending move or delete gets an empty, done catalog too.
+A grant-only member gets an empty, done ordinary catalog at the root. A readable archived folder
+gets an empty, done catalog too.
 
 # Folder Table Filter
 
-The table applies one local structured filter through `files_nodes.list_tree_children_sorted`.
-The shared type and predicate live in `shared/files-table.ts`; the reused Convex validator lives
-in `convex/schema.ts`. This filter is separate from the search language below.
+The table applies one structured filter through `files_nodes.list_tree_children_sorted`: one
+filter, or `name starts with` plus one "is" filter. The shared type and predicate live in
+`shared/files-table.ts`; the reused Convex validator lives in `convex/schema.ts`. This filter is
+separate from the search language below. The `files-explorer-tree` skill lists the operations and
+the order each filter sets.
 
-Metadata filters use the same scalar as the table cell. Saved targets use committed
-`sortDisplayValue`, including while the caller edits pending text. Private targets use only the
-current create proposal and revision. A bounded iterator stops at the first plain primitive and
-skips date companion docs. Empty strings, zero, and false are present. Empty lists, map parents,
-and absent keys are missing. Text comparisons use the whole scalar with case and accents folded.
-They keep digit runs and do not cut text to the sort key's 256-character limit.
+A metadata filter reads only committed field docs, through the same index as a metadata sort,
+`by_org_ws_source_archive_docKind_field_parent_restricted_sort`:
 
-Main filtered rows stay in the readable ordinary index range. A different metadata filter field
-needs one indexed field lookup per candidate. The primary field doc is reused when it is the
-filter field. The metadata-missing walk proves absence before applying the filter and checks every
-new field witness against its current node and ordinary scope.
+- `is` reads one `sortValue` (`files_sort_text_key` of the value), in name order. A
+  `name starts with` next to it is one more range on `sortName`.
+- `starts with` reads a `sortValue` range up to `string_prefix_upper_bound`, in value order. The
+  value cannot end in a digit, because the key writes a number with its length first.
+- `present` reads every doc with a value (`sortValue >= ""`), in value order.
 
-Side rows use the separate `files_nodes.get_table_filter_match` query. It checks one target's
-current auth, access, private owner, and visible parent. A prior cell value is not proof of a match.
-Authorized private metadata still preparing returns `{ matches: false, preparing: true }`.
-Preparation is active, the create intent is missing, or a text intent has no new content base.
-Built-in predicates do not wait for metadata preparation. Refusal returns null; read exhaustion
-throws. It never returns a guessed missing value. Side name claims stay unfiltered.
+There is no metadata `missing` filter: finding the rows without a key would need a scan. Pending
+edits never change a filter result.
 
-Both filter doors check whole-query transaction bytes and calls. Custom main pages commit only
-complete candidates and preserve a continuing cursor after an empty matching page. With one clause,
-a filtered page has at most 50 candidate/proof visits. Custom pages use a 4 MiB read budget and a
-1,000-call budget. The next read reserves 1 MiB and 16 calls. With one clause, a stopped first
-candidate throws a clear error. Multi-sort proofs use the frozen workLimit, up to 1,000, while
-pages still pack at most 50 processed candidates.
+Side rows (a member's shared restricted children) use the separate
+`files_nodes.get_table_filter_match` query. It takes a saved target (a private one gets null),
+loads the node with the same `files_metadata_db_get_table_node`, and then checks the parent. A
+prior cell value is not proof of a match. It reads the committed `sortDisplayValue` and applies
+`files_table_filter_matches`, plus the name prefix. It returns `{ matches }`, or null for a
+refusal.
 
 # Folder Table Sort Keys
 
-A saved sort is an ordered list of one to eight unique clauses (`files_sort_MAX_CLAUSES`). A metadata clause uses the
-committed field doc's encoded `sortValue`. Pending edits on saved nodes do not replace it.
-Private rows use only their current create proposal. Their bounded scalar read stops at the
-first plain primitive and checks every consumed doc's tenant, target, owner, proposal and revision.
-Preparation makes metadata sort parts null. It remains unknown for metadata filters.
+A sort has one clause (`files_sort_MAX_CLAUSES` is 1). A metadata clause uses the committed field
+doc's encoded `sortValue`. Pending edits on saved nodes do not replace it. A metadata sort shows
+only the rows that have the key: its stream reads the field docs with a value, and a side row with
+a null key is hidden.
 
-The row key is `{ parts, nameKey }` from `shared/files-sort.ts`. Missing parts are null and stay
-last in either direction. Multi-sort ends ties by file.name asc. A unique file.name clause makes later
-metadata irrelevant, so it needs no value read. Folder `file.extension` and `file.size` are null. For multi-sort,
-the server drops those clauses only from index selection, while keeping the original list and key positions.
+The row key is `{ parts, nameKey }` from `shared/files-sort.ts`, with one part: the index suffix
+(`[sortValue, sortName, name]` for a metadata key). A null part sorts last in either direction,
+by name A to Z.
 
-`files_nodes.get_table_sort_key({ membershipId, parentId, target, sort })` returns a full fresh
-key or null. It checks current read access and visible parent again. Fresh metadata is never
-joined with old side-list facts. It returns sort keys without metadata display values.
-Byte/call exhaustion throws.
-The side-row list itself has no metadata sort reads or sort argument.
-
-Ordinary multi-sort pages reuse a primary field doc for its sort or filter. Other meaningful
-metadata fields use bounded indexed scalar reads. A complete unindexed group has at most 200
-candidates. The missing proof keeps both Name streams and checks each witness's current ordinary
-node. Proofs, seeks, rereads, joins, and row checks share one 4 MiB/1,000-call response budget.
-Pages pack up to 50 processed candidates. A budget stop publishes only a completed prefix.
-An indexed metadata-missing Name walk may advance across a rejected node with a present primary
-value. Its boundary is a positional Name key with a null primary part. It does not read the
-filter or irrelevant secondary metadata for that rejected node.
+`files_nodes.get_table_sort_key({ membershipId, parentId, target, sort })` returns a fresh key for
+one side row, or null. It reads `sort[0]` only, takes a saved target (a private one gets null),
+and checks the node like `get_table_filter_match`. All parts come from the same read. It returns
+sort keys without metadata display values. The side-row list itself has no metadata reads or sort
+argument.
 
 # Search Box
 

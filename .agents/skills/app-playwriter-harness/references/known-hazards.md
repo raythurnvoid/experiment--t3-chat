@@ -2881,3 +2881,11 @@ then check `convex logs` for other load. After the change, two live moves of the
 and 153–612 docs written. Both moves finished and returned the fixture to its old path. This run
 did not reproduce shared-load failure, so it measured step size but not the retry delay after a
 failure. Hit 2026-09-27.
+
+## `click()` waits forever on an `aria-disabled` button
+
+Playwright treats `aria-disabled="true"` as not enabled, so `locator.click()` retries until the call
+times out. The app keeps some disabled controls focusable on purpose, so they can say why they are
+disabled (for example a folder table header while a filter fixes the order). To test what a user
+gets, focus the control and press Enter: `await button.focus(); await page.keyboard.press("Enter")`.
+Do not use `{ force: true }`. Hit 2026-10-06.

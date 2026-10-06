@@ -546,6 +546,23 @@ export const backfill_files_updated_by_docs = app_migrations.define({
 	},
 });
 
+/**
+ * The folder table sorts by one field. Keep the first clause of each saved sort. A doc left with
+ * file.name, A to Z shows the same as no doc, so it is kept: this migration deletes no data. Remove
+ * this migration after it ran and `get_folder_sort` reads the saved sort strictly again.
+ */
+export const trim_files_folder_sorts_to_first_clause = app_migrations.define({
+	table: "files_folder_sorts",
+	migrateOne: async (ctx, sortDoc) => {
+		const first = sortDoc.sort[0];
+		if (!first || sortDoc.sort.length === 1) {
+			return;
+		}
+
+		await ctx.db.patch("files_folder_sorts", sortDoc._id, { sort: [first] });
+	},
+});
+
 const FILES_UPDATED_BY_AUDIT_PAGE_SIZE = 100;
 
 /**
@@ -1663,6 +1680,9 @@ export const run_backfill_files_nodes_lowercase_extension = app_migrations.runne
 );
 export const run_backfill_files_updated_by_docs = app_migrations.runner(
 	internal.migrations.backfill_files_updated_by_docs,
+);
+export const run_trim_files_folder_sorts_to_first_clause = app_migrations.runner(
+	internal.migrations.trim_files_folder_sorts_to_first_clause,
 );
 export const run_backfill_files_plain_text_chunk_scope = app_migrations.runner(
 	internal.migrations.backfill_files_plain_text_chunk_scope,

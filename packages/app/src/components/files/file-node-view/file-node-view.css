@@ -961,6 +961,12 @@
 			color: var(--color-fg-11);
 		}
 
+		/* A filter fixes the order, so the other columns cannot sort. The button stays focusable to say why. */
+		&[aria-disabled="true"] {
+			cursor: default;
+			color: var(--color-fg-08);
+		}
+
 		/* Draw the focus ring around the whole cell, the same area a click covers. */
 		&:focus-visible {
 			outline: none;

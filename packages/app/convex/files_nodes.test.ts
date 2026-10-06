@@ -42,7 +42,6 @@ import {
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import {
 	files_metadata_db_insert_committed,
-	files_metadata_db_replace_pending,
 	files_metadata_db_write_entries,
 } from "./files_metadata.ts";
 import { files_pending_nodes_db_create } from "./files_pending_nodes.ts";
@@ -96,11 +95,16 @@ import {
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
 import {
 	files_WRITE_POLICY_INVALID_WRITERS_MESSAGE,
-	type files_PendingParent,
 	type files_PendingTarget,
 } from "../shared/files.ts";
-import { files_sort_text_key, files_sort_key_of, type files_sort_Sort } from "../shared/files-sort.ts";
-import type { files_table_Filter } from "../shared/files-table.ts";
+import {
+	files_sort_compare,
+	files_sort_text_key,
+	files_sort_key_of,
+	type files_sort_Clause,
+	type files_sort_Sort,
+} from "../shared/files-sort.ts";
+import { files_table_filter_order_field, type files_table_Filter } from "../shared/files-table.ts";
 import { files_subtree_ops_STEP_MAX_NODES } from "./files_subtree_ops.ts";
 import { files_updated_by_db_delete_for_node } from "./files_updated_by.ts";
 
@@ -13767,91 +13771,169 @@ async function seed_folder_table(options: Parameters<typeof test_convex>[0] = {}
 	if (created._nay) throw new Error(created._nay.message);
 	const parentId = created._yay.nodeId;
 
-	const insert_child = (args: {
+	type Child = {
 		name: string;
 		kind: "file" | "folder";
 		updatedAt: number;
 		lowercaseExtension?: string;
 		contentByteSize?: number;
-	}) =>
-		t.run(async (ctx) =>
-			ctx.db.insert("files_nodes", {
-				...test_mocks.files.base(),
-				organizationId: db.organizationId,
-				workspaceId: db.workspaceId,
-				createdBy: db.userId,
-				updatedBy: db.userId,
-				updatedAt: args.updatedAt,
-				parentId,
-				name: args.name,
-				sortName: files_sort_text_key(args.name),
-				kind: args.kind,
-				path: `/table/${args.name}`,
-				treePath: args.kind === "folder" ? `/table/${args.name}/` : `/table/${args.name}`,
-				pathDepth: 2,
-				lowercaseExtension: args.lowercaseExtension ?? null,
-				contentByteSize: args.contentByteSize ?? null,
-			}),
-		);
+		/**
+		 * Make the child its own restricted root, like `files_sharing.restrict_node`.
+		 */
+		restricted?: boolean;
+	};
+	const db_insert_child = async (ctx: MutationCtx, args: Child) => {
+		const nodeId = await ctx.db.insert("files_nodes", {
+			...test_mocks.files.base(),
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			createdBy: db.userId,
+			updatedBy: db.userId,
+			updatedAt: args.updatedAt,
+			parentId,
+			name: args.name,
+			sortName: files_sort_text_key(args.name),
+			kind: args.kind,
+			path: `/table/${args.name}`,
+			treePath: args.kind === "folder" ? `/table/${args.name}/` : `/table/${args.name}`,
+			pathDepth: 2,
+			lowercaseExtension: args.lowercaseExtension ?? null,
+			contentByteSize: args.contentByteSize ?? null,
+			isRestrictedScopeRoot: args.restricted ?? false,
+		});
+		if (args.restricted) await ctx.db.patch("files_nodes", nodeId, { restrictedScopeNodeId: nodeId });
+		return nodeId;
+	};
+	const insert_child = (args: Child) => t.run((ctx) => db_insert_child(ctx, args));
+	const insert_children = (children: Child[]) =>
+		t.run(async (ctx) => {
+			const nodeIds: Array<Id<"files_nodes">> = [];
+			for (const child of children) nodeIds.push(await db_insert_child(ctx, child));
+			return nodeIds;
+		});
 
-	const walk = async (args: {
-		as: typeof asOwner;
-		membershipId: Id<"organizations_workspaces_users">;
+	/**
+	 * Write committed metadata on saved children. Write it after `restricted` is set: the field docs
+	 * copy the node's flag.
+	 */
+	const set_metadata = (entries: Array<[Id<"files_nodes">, files_metadata_Entry[]]>) =>
+		t.run(async (ctx) => {
+			for (const [nodeId, nodeEntries] of entries) {
+				await files_metadata_db_write_entries(ctx, {
+					fileNode: (await ctx.db.get("files_nodes", nodeId))!,
+					entries: nodeEntries,
+				});
+			}
+		});
+
+	type Stream = {
+		as?: typeof asOwner;
+		membershipId?: Id<"organizations_workspaces_users">;
 		kind: "file" | "folder";
-		sort: { field: string; direction: "asc" | "desc" };
-		segment: "value" | "missing";
-		numItems: number;
+		sort: files_sort_Clause;
+		segment?: "value" | "missing";
 		filter?: files_table_Filter | null;
-		workLimit?: number;
-	}) => {
-		const pages: string[][] = [];
+		namePrefix?: string | null;
+		restricted?: boolean;
+	};
+	type PageArgs = Stream & { paginationOpts: { numItems: number; cursor: string | null; endCursor?: string } };
+	const page_query_args = (args: PageArgs) => ({
+		membershipId: args.membershipId ?? db.membershipId,
+		parentId,
+		kind: args.kind,
+		sort: [args.sort],
+		filter: args.filter ?? null,
+		namePrefix: args.namePrefix ?? null,
+		restricted: args.restricted ?? false,
+		segment: args.segment ?? "value",
+		paginationOpts: args.paginationOpts,
+	});
+	const read_page = (args: PageArgs) =>
+		(args.as ?? asOwner).query(api.files_nodes.list_tree_children_sorted, page_query_args(args));
+
+	/**
+	 * Read one page inside a transaction and return what it cost: index ranges (`databaseQueries`)
+	 * and documents read, from `ctx.meta.getTransactionMetrics()`.
+	 */
+	const read_page_cost = (args: PageArgs) =>
+		(args.as ?? asOwner).run(async (ctx) => {
+			const before = await ctx.meta.getTransactionMetrics();
+			const result = await ctx.runQuery(api.files_nodes.list_tree_children_sorted, page_query_args(args));
+			const after = await ctx.meta.getTransactionMetrics();
+			return {
+				rows: result.page.length,
+				ranges: after.databaseQueries.used - before.databaseQueries.used,
+				documents: after.documentsRead.used - before.documentsRead.used,
+			};
+		});
+
+	/**
+	 * Read one stream to its end. Every page but the last must be full, and the rows must come in
+	 * `sortKey` order.
+	 */
+	const walk = async (args: Stream & { numItems: number }) => {
+		const pages: Page["page"][] = [];
 		let cursor: string | null = null;
-		for (let index = 0; index < 50; index++) {
-			const result: FunctionReturnType<typeof api.files_nodes.list_tree_children_sorted> = await args.as.query(
-				api.files_nodes.list_tree_children_sorted,
-				{
-					membershipId: args.membershipId,
-					parentId,
-					kind: args.kind,
-					sort: [args.sort],
-					filter: args.filter ?? null,
-					workLimit: args.workLimit ?? 1000,
-					segment: args.segment,
-					paginationOpts: { numItems: args.numItems, cursor },
-				},
-			);
-			pages.push(result.page.map((row) => row.name));
-			if (result.isDone) return pages;
+		for (let index = 0; index < 200; index++) {
+			const result: Page = await read_page({ ...args, paginationOpts: { numItems: args.numItems, cursor } });
+			pages.push(result.page);
+			if (result.isDone) {
+				expect(pages.slice(0, -1).every((page) => page.length === args.numItems)).toBe(true);
+				const rows = pages.flat();
+				expect(
+					rows.every(
+						(row, rowIndex) =>
+							rowIndex === 0 ||
+							files_sort_compare({ a: rows[rowIndex - 1]!.sortKey, b: row.sortKey, sort: [args.sort] }) <= 0,
+					),
+				).toBe(true);
+				return pages;
+			}
 			cursor = result.continueCursor;
 		}
-		throw new Error("Expected the segment to end");
+		throw new Error("Expected the stream to end");
 	};
 
-	// The rows in display order: folders, then files, each value segment before its missing one.
+	/**
+	 * The names in display order, like the browser: folders, then files. In each kind the value
+	 * segment comes before the missing one, and each segment merges the open and the restricted
+	 * stream by `sortKey`.
+	 */
 	const read_table = async (
-		sort: { field: string; direction: "asc" | "desc" },
-		filter: files_table_Filter | null = null,
+		sort: files_sort_Clause,
+		options: { filter?: files_table_Filter | null; namePrefix?: string | null; numItems?: number } = {},
 	) => {
-		const rows: string[] = [];
+		const names: string[] = [];
 		for (const kind of ["folder", "file"] as const) {
 			for (const segment of ["value", "missing"] as const) {
-				const pages = await walk({
-					as: asOwner,
-					membershipId: db.membershipId,
-					kind,
-					sort,
-					filter,
-					segment,
-					numItems: 2,
-				});
-				rows.push(...pages.flat());
+				const rows: Page["page"] = [];
+				for (const restricted of [false, true]) {
+					const pages = await walk({ ...options, kind, sort, segment, restricted, numItems: options.numItems ?? 2 });
+					rows.push(...pages.flat());
+				}
+				rows.sort((a, b) => files_sort_compare({ a: a.sortKey, b: b.sortKey, sort: [sort] }));
+				names.push(...rows.map((row) => row.name));
 			}
 		}
-		return rows;
+		return names;
 	};
 
-	return { t, db, asOwner, parentId, insert_child, walk, read_table };
+	return {
+		t,
+		db,
+		asOwner,
+		parentId,
+		insert_child,
+		insert_children,
+		set_metadata,
+		read_page,
+		read_page_cost,
+		walk,
+		read_table,
+	};
 }
+
+type Page = FunctionReturnType<typeof api.files_nodes.list_tree_children_sorted>;
 
 describe("list_tree_children_sorted", () => {
 	test("every built-in field sorts both ways, folders first and missing values last", async () => {
@@ -13958,8 +14040,8 @@ describe("list_tree_children_sorted", () => {
 		]);
 	});
 
-	test("a metadata key sorts its values both ways and puts children without a value last", async () => {
-		const { t, db, asOwner, parentId, read_table, insert_child } = await seed_folder_table();
+	test("a metadata key sorts its values both ways and leaves out children without a value", async () => {
+		const { t, db, asOwner, read_page, read_table, insert_child } = await seed_folder_table();
 		const ids = new Map<string, Id<"files_nodes">>();
 		for (const [name, kind] of [
 			["beta", "folder"],
@@ -13969,11 +14051,6 @@ describe("list_tree_children_sorted", () => {
 			["file10.md", "file"],
 			["readme", "file"],
 			["map.md", "file"],
-			// Three missing files before the others. "C.md" and "c.md" share one sort key, so the second
-			// page resumes inside that tie.
-			["0.md", "file"],
-			["C.md", "file"],
-			["c.md", "file"],
 		] as const) {
 			ids.set(name, await insert_child({ name, kind, updatedAt: 1 }));
 		}
@@ -14009,343 +14086,78 @@ describe("list_tree_children_sorted", () => {
 
 		expect(await read_table({ field: "metadata.status", direction: "asc" })).toEqual([
 			"alpha",
-			"beta",
 			"b.md",
 			"readme",
 			"a.txt",
-			"0.md",
-			"C.md",
-			"c.md",
-			"file10.md",
-			"map.md",
 		]);
 		expect(await read_table({ field: "metadata.status", direction: "desc" })).toEqual([
 			"alpha",
-			"beta",
 			"a.txt",
 			"readme",
 			"b.md",
-			"0.md",
-			"C.md",
-			"c.md",
-			"file10.md",
-			"map.md",
 		]);
+		// A metadata sort has no `missing` segment.
+		expect(
+			await read_page({
+				kind: "file",
+				sort: { field: "metadata.status", direction: "asc" },
+				segment: "missing",
+				paginationOpts: { numItems: 10, cursor: null },
+			}),
+		).toEqual({ page: [], isDone: true, continueCursor: "" });
 
-		const first = await asOwner.query(api.files_nodes.list_tree_children_sorted, {
-			membershipId: db.membershipId,
-			parentId,
+		const first = await read_page({
 			kind: "file",
-			sort: [{ field: "metadata.status", direction: "asc" }],
-			filter: null,
-			workLimit: 1000,
-			segment: "value",
+			sort: { field: "metadata.status", direction: "asc" },
 			paginationOpts: { numItems: 1, cursor: null },
 		});
-		expect(first.page).toEqual([expect.objectContaining({ name: "b.md" })]);
+		expect(first.page).toEqual([
+			expect.objectContaining({ name: "b.md", sortKey: { parts: [["closed", "b.md", "b.md"]], nameKey: ["b.md", "b.md"] } }),
+		]);
 		expect(first.page[0]).not.toHaveProperty("sortFieldValue");
 	});
 
-	test("a pinned missing page keeps its rows and its exact end, and the next page is unchanged", async () => {
-		const { t, db, asOwner, parentId, insert_child } = await seed_folder_table();
-		const ids = new Map<string, Id<"files_nodes">>();
-		for (const name of ["d.md", "f.md", "h.md", "j.md"]) {
-			ids.set(name, await insert_child({ name, kind: "file", updatedAt: 1 }));
-		}
-		const read = (paginationOpts: { numItems: number; cursor: string | null; endCursor?: string }) =>
-			asOwner.query(api.files_nodes.list_tree_children_sorted, {
-				membershipId: db.membershipId,
-				parentId,
-				kind: "file",
-				sort: [{ field: "metadata.status", direction: "asc" }],
-				filter: null,
-				workLimit: 1000,
-				segment: "missing",
-				paginationOpts,
-			});
-		const names = (result: { page: Array<{ name: string }> }) => result.page.map((row) => row.name);
-
-		const first = await read({ numItems: 2, cursor: null });
-		expect(names(first)).toEqual(["d.md", "f.md"]);
-		// A live page never asks the hook to split.
-		expect(first).not.toHaveProperty("pageStatus");
-		expect(first).not.toHaveProperty("splitCursor");
-		const end = first.continueCursor;
-		expect(names(await read({ numItems: 2, cursor: end }))).toEqual(["h.md", "j.md"]);
-
-		for (const name of ["a.md", "b.md", "c.md"]) {
-			ids.set(name, await insert_child({ name, kind: "file", updatedAt: 1 }));
-		}
-		const pinned = await read({ numItems: 2, cursor: null, endCursor: end });
-		expect(names(pinned)).toEqual(["a.md", "b.md", "c.md", "d.md", "f.md"]);
-		expect(pinned).toMatchObject({ continueCursor: end, isDone: false });
-		expect(names(await read({ numItems: 2, cursor: end }))).toEqual(["h.md", "j.md"]);
-
-		// The end row itself can go: the page keeps the exact end and reads no row after it.
-		await t.run((ctx) => ctx.db.delete("files_nodes", ids.get("f.md")!));
-		const shrunk = await read({ numItems: 2, cursor: null, endCursor: end });
-		expect(names(shrunk)).toEqual(["a.md", "b.md", "c.md", "d.md"]);
-		expect(shrunk).toMatchObject({ continueCursor: end, isDone: false });
-
-		await t.run(async (ctx) => {
-			for (const name of ["a.md", "b.md", "c.md", "d.md"]) await ctx.db.delete("files_nodes", ids.get(name)!);
-		});
-		expect(await read({ numItems: 2, cursor: null, endCursor: end })).toMatchObject({
-			page: [],
-			continueCursor: end,
-			isDone: false,
-		});
-	});
-
-	test("a pinned first missing page stays inside its folder and kind", async () => {
-		const { t, db, asOwner, parentId, insert_child } = await seed_folder_table();
-		// Files sort before folders in both indexes, and these files' field docs sort before the folders'.
-		for (const name of ["a.md", "b.md"]) {
-			const nodeId = await insert_child({ name, kind: "file", updatedAt: 1 });
-			await t.run(async (ctx) =>
-				files_metadata_db_write_entries(ctx, {
-					fileNode: (await ctx.db.get("files_nodes", nodeId))!,
-					entries: [{ key: "status", value: "ready" }],
-				}),
-			);
-		}
-		await insert_child({ name: "c.md", kind: "file", updatedAt: 1 });
-		for (const name of ["m", "n"]) await insert_child({ name, kind: "folder", updatedAt: 1 });
-		const read = (paginationOpts: { numItems: number; cursor: string | null; endCursor?: string }) =>
-			asOwner.query(api.files_nodes.list_tree_children_sorted, {
-				membershipId: db.membershipId,
-				parentId,
-				kind: "folder",
-				sort: [{ field: "metadata.status", direction: "asc" }],
-				filter: null,
-				workLimit: 1000,
-				segment: "missing",
-				paginationOpts,
-			});
-
-		const first = await read({ numItems: 1, cursor: null });
-		const pinned = await read({ numItems: 1, cursor: null, endCursor: first.continueCursor });
-		expect(pinned.page.map((row) => [row.kind, row.name])).toEqual([["folder", "m"]]);
-		expect(pinned.continueCursor).toBe(first.continueCursor);
-	});
-
-	test("a descending metadata sort pins its missing pages in Name order", async () => {
-		const { db, asOwner, parentId, insert_child } = await seed_folder_table();
-		for (const name of ["a.md", "b.md", "c.md", "d.md", "e.md"])
-			await insert_child({ name, kind: "file", updatedAt: 1 });
-		const read = (paginationOpts: { numItems: number; cursor: string | null; endCursor?: string }) =>
-			asOwner.query(api.files_nodes.list_tree_children_sorted, {
-				membershipId: db.membershipId,
-				parentId,
-				kind: "file",
-				sort: [{ field: "metadata.status", direction: "desc" }],
-				filter: null,
-				workLimit: 1000,
-				segment: "missing",
-				paginationOpts,
-			});
-
-		const first = await read({ numItems: 2, cursor: null });
-		const second = await read({ numItems: 2, cursor: first.continueCursor });
-		const pinnedFirst = await read({ numItems: 2, cursor: null, endCursor: first.continueCursor });
-		const pinnedSecond = await read({ numItems: 2, cursor: first.continueCursor, endCursor: second.continueCursor });
-		expect(pinnedFirst.page.map((row) => row.name)).toEqual(["a.md", "b.md"]);
-		expect(pinnedFirst.continueCursor).toBe(first.continueCursor);
-		expect(pinnedSecond.page.map((row) => row.name)).toEqual(["c.md", "d.md"]);
-		expect(pinnedSecond.continueCursor).toBe(second.continueCursor);
-	});
-
-	test("a pinned missing page that outgrew its work limit splits until every half fits", async () => {
-		const { t, db, asOwner, parentId, insert_child, walk } = await seed_folder_table();
-		for (const name of ["b.md", "c.md", "d.md", "e.md", "f.md", "h.md"]) {
-			const nodeId = await insert_child({ name, kind: "file", updatedAt: 1 });
-			if (name === "c.md" || name === "e.md")
-				await t.run(async (ctx) =>
-					files_metadata_db_write_entries(ctx, {
-						fileNode: (await ctx.db.get("files_nodes", nodeId))!,
-						entries: [{ key: "status", value: "ready" }],
-					}),
-				);
-		}
-		const read = (paginationOpts: { numItems: number; cursor: string | null; endCursor?: string }) =>
-			asOwner.query(api.files_nodes.list_tree_children_sorted, {
-				membershipId: db.membershipId,
-				parentId,
-				kind: "file",
-				sort: [{ field: "metadata.status", direction: "asc" }],
-				filter: null,
-				workLimit: 6,
-				segment: "missing",
-				paginationOpts,
-			});
-		// Read a pinned range like the convex-helpers hook: split it until each half reaches its end.
-		const read_range = async (cursor: string | null, end: string, depth = 0): Promise<string[]> => {
-			// A split that does not shrink the range would recurse forever, past the test timeout.
-			if (depth > 10) throw new Error("The pinned range did not stop splitting");
-			const result = await read({ numItems: 50, cursor, endCursor: end });
-			if (result.pageStatus === "SplitRequired") {
-				return [
-					...(await read_range(cursor, result.splitCursor!, depth + 1)),
-					...(await read_range(result.splitCursor!, end, depth + 1)),
-				];
-			}
-			expect(result).toMatchObject({ continueCursor: end, isDone: false });
-			return result.page.map((row) => row.name);
-		};
-
-		const first = await read({ numItems: 50, cursor: null });
-		expect(first.isDone).toBe(false);
-		const end = first.continueCursor;
-		for (const name of ["a1.md", "b1.md", "c1.md"]) await insert_child({ name, kind: "file", updatedAt: 1 });
-		const pinned = await read({ numItems: 50, cursor: null, endCursor: end });
-		expect(pinned.pageStatus).toBe("SplitRequired");
-		expect(pinned.splitCursor).toEqual(expect.any(String));
-		expect(pinned.splitCursor).not.toBe(end);
-		expect(pinned.continueCursor).toBe(end);
-
-		const rows = await read_range(null, end);
-		let cursor = end;
-		for (let index = 0; index < 20; index++) {
-			const result = await read({ numItems: 50, cursor });
-			rows.push(...result.page.map((row) => row.name));
-			if (result.isDone) break;
-			cursor = result.continueCursor;
-		}
-		const full = await walk({
-			as: asOwner,
-			membershipId: db.membershipId,
+	test("a page row's sortKey is the key get_table_sort_key gives for it", async () => {
+		const { db, asOwner, parentId, insert_child, set_metadata, walk } = await seed_folder_table();
+		const folderId = await insert_child({ name: "folder", kind: "folder", updatedAt: 2 });
+		const fileId = await insert_child({
+			name: "file2.md",
 			kind: "file",
-			sort: { field: "metadata.status", direction: "asc" },
-			segment: "missing",
-			numItems: 50,
+			updatedAt: 3,
+			lowercaseExtension: "md",
+			contentByteSize: 9,
 		});
-		expect(rows).toEqual(full.flat());
-		expect(rows).toEqual(["a1.md", "b.md", "b1.md", "c1.md", "d.md", "f.md", "h.md"]);
+		await insert_child({ name: "bare", kind: "file", updatedAt: 1 });
+		await set_metadata([
+			[folderId, [{ key: "status", value: "Open" }]],
+			[fileId, [{ key: "status", value: 2 }]],
+		]);
+
+		let checked = 0;
+		for (const field of ["name", "created", "updated", "extension", "size", "metadata.status"]) {
+			for (const kind of ["folder", "file"] as const) {
+				for (const segment of ["value", "missing"] as const) {
+					const sort = { field, direction: "desc" as const };
+					for (const row of (await walk({ kind, sort, segment, numItems: 5 })).flat()) {
+						expect(
+							await asOwner.query(api.files_nodes.get_table_sort_key, {
+								membershipId: db.membershipId,
+								parentId,
+								target: { kind: "saved", id: row._id },
+								sort: [sort],
+							}),
+						).toEqual(row.sortKey);
+						checked++;
+					}
+				}
+			}
+		}
+		// 3 rows for each built-in sort, and the 2 rows with a status.
+		expect(checked).toBe(17);
 	});
 
-	test("a pinned missing page splits after a complete candidate that gives no row", async () => {
-		const { t, db, asOwner, parentId, insert_child } = await seed_folder_table();
-		for (const name of ["z", "zz"]) await insert_child({ name, kind: "folder", updatedAt: 1 });
-		const read = (paginationOpts: { numItems: number; cursor: string | null; endCursor?: string }) =>
-			asOwner.query(api.files_nodes.list_tree_children_sorted, {
-				membershipId: db.membershipId,
-				parentId,
-				kind: "folder",
-				sort: [{ field: "metadata.status", direction: "asc" }],
-				filter: null,
-				workLimit: 2,
-				segment: "missing",
-				paginationOpts,
-			});
-
-		const first = await read({ numItems: 1, cursor: null });
-		expect(first.page.map((row) => row.name)).toEqual(["z"]);
-		const end = first.continueCursor;
-		const a = await insert_child({ name: "a", kind: "folder", updatedAt: 1 });
-		await t.run(async (ctx) =>
-			files_metadata_db_write_entries(ctx, {
-				fileNode: (await ctx.db.get("files_nodes", a))!,
-				entries: [{ key: "status", value: "ready" }],
-			}),
-		);
-
-		// Node "a" and its field doc use both work units. "a" completes, but it is not a missing row.
-		const pinned = await read({ numItems: 1, cursor: null, endCursor: end });
-		expect(pinned).toMatchObject({
-			page: [],
-			scannedCount: 1,
-			pageStatus: "SplitRequired",
-			continueCursor: end,
-			isDone: false,
-		});
-		const split = pinned.splitCursor!;
-		expect(JSON.parse(split).after.slice(0, 2)).toEqual(["a", "a"]);
-		const firstHalf = await read({ numItems: 1, cursor: null, endCursor: split });
-		// "a" is the half's own end, so a cap that stops right there still reaches the end.
-		expect(firstHalf.pageStatus).toBeUndefined();
-		expect(firstHalf.continueCursor).toBe(split);
-		const secondHalf = await read({ numItems: 1, cursor: split, endCursor: end });
-		const tail = await read({ numItems: 1, cursor: end });
-		expect([...firstHalf.page, ...secondHalf.page, ...tail.page].map((row) => row.name)).toEqual(["z", "zz"]);
-	});
-
-	test("rejects a bad endCursor with InvalidCursor data", async () => {
-		const { db, asOwner, parentId, insert_child } = await seed_folder_table();
-		for (const name of ["a.md", "b.md", "c.md"]) await insert_child({ name, kind: "file", updatedAt: 1 });
-		const read = (
-			paginationOpts: { numItems: number; cursor: string | null; endCursor?: string },
-			field = "metadata.status",
-		) =>
-			asOwner.query(api.files_nodes.list_tree_children_sorted, {
-				membershipId: db.membershipId,
-				parentId,
-				kind: "file",
-				sort: [{ field, direction: "asc" }],
-				filter: null,
-				workLimit: 1000,
-				segment: "missing",
-				paginationOpts,
-			});
-		const first = await read({ numItems: 1, cursor: null });
-		const second = await read({ numItems: 1, cursor: first.continueCursor });
-		const other = await read({ numItems: 1, cursor: null }, "metadata.other");
-		const { scope } = JSON.parse(first.continueCursor);
-
-		for (const [cursor, endCursor] of [
-			[null, other.continueCursor],
-			[null, "not-json"],
-			[null, JSON.stringify({ scope, after: ["a.md", "a.md"] })],
-			[first.continueCursor, first.continueCursor],
-			[second.continueCursor, first.continueCursor],
-		] as const)
-			await expect(read({ numItems: 1, cursor, endCursor })).rejects.toThrow("InvalidCursor");
-		// Production hides the message, so the hook also reads these data fields.
-		await expect(read({ numItems: 1, cursor: null, endCursor: "not-json" })).rejects.toMatchObject({
-			data: { isConvexSystemError: true, paginationError: "InvalidCursor" },
-		});
-	});
-
-	test("a missing page checks the field doc of a new node that reuses the cursor's name", async () => {
-		const { t, db, asOwner, parentId, insert_child } = await seed_folder_table();
-		const oldA = await insert_child({ name: "a", kind: "folder", updatedAt: 1 });
-		for (const name of ["b", "c"]) await insert_child({ name, kind: "folder", updatedAt: 1 });
-		const read = (paginationOpts: { numItems: number; cursor: string | null; endCursor?: string }) =>
-			asOwner.query(api.files_nodes.list_tree_children_sorted, {
-				membershipId: db.membershipId,
-				parentId,
-				kind: "folder",
-				sort: [{ field: "metadata.status", direction: "asc" }],
-				filter: null,
-				workLimit: 1000,
-				segment: "missing",
-				paginationOpts,
-			});
-		const first = await read({ numItems: 1, cursor: null });
-		const second = await read({ numItems: 1, cursor: first.continueCursor });
-		expect([...first.page, ...second.page].map((row) => row.name)).toEqual(["a", "b"]);
-
-		// Archive the old "a" and create a new "a". Its full suffix follows the old cursor, but its field doc
-		// has the same name pair.
-		await t.run((ctx) => ctx.db.patch("files_nodes", oldA, { archiveOperationId: "archive-test" }));
-		const newA = await insert_child({ name: "a", kind: "folder", updatedAt: 1 });
-		const set_status = (entries: Array<{ key: string; value: string }>) =>
-			t.run(async (ctx) =>
-				files_metadata_db_write_entries(ctx, { fileNode: (await ctx.db.get("files_nodes", newA))!, entries }),
-			);
-		const read_ids = async () => [
-			(await read({ numItems: 2, cursor: first.continueCursor })).page.map((row) => row._id),
-			(await read({ numItems: 2, cursor: first.continueCursor, endCursor: second.continueCursor })).page.map(
-				(row) => row._id,
-			),
-		];
-		await set_status([{ key: "status", value: "ready" }]);
-		for (const ids of await read_ids()) expect(ids).not.toContain(newA);
-		await set_status([]);
-		for (const ids of await read_ids()) expect(ids[0]).toBe(newA);
-	});
-
-	test("large metadata values keep native byte splits and leave display values out of the page", async () => {
-		const { t, db, asOwner, parentId, insert_child } = await seed_folder_table({ transactionLimits: true });
+	test("a page over the byte limit asks for a split, and the halves give every row once", async () => {
+		const { t, db, insert_child, read_page } = await seed_folder_table({ transactionLimits: true });
 		const names = Array.from({ length: 8 }, (_, index) => `large-${index}.md`);
 		for (const name of names) {
 			const nodeId = await insert_child({ name, kind: "file", updatedAt: 1 });
@@ -14358,31 +14170,31 @@ describe("list_tree_children_sorted", () => {
 				}),
 			);
 		}
+		const sort = { field: "frontmatter.value", direction: "asc" as const };
 
-		const read = (cursor: string | null) =>
-			asOwner.query(api.files_nodes.list_tree_children_sorted, {
-				membershipId: db.membershipId,
-				parentId,
-				kind: "file",
-				sort: [{ field: "frontmatter.value", direction: "asc" }],
-				filter: null,
-				workLimit: 1000,
-				segment: "value",
-				paginationOpts: { numItems: 50, cursor },
-			});
-		const first = await read(null);
-		expect(first.isDone).toBe(false);
-		expect(first.page.length).toBeLessThan(names.length);
-		expect(first.pageStatus).toBe("SplitRequired");
+		// Read a range like `usePaginatedQuery`: split it until each half fits.
+		const read_range = async (cursor: string | null, endCursor: string, depth = 0): Promise<string[]> => {
+			// A split that does not shrink the range would recurse forever, past the test timeout.
+			if (depth > 10) throw new Error("The range did not stop splitting");
+			const result = await read_page({ kind: "file", sort, paginationOpts: { numItems: 50, cursor, endCursor } });
+			if (result.pageStatus !== "SplitRequired") return result.page.map((row) => row.name);
+			expect(result.page).toEqual([]);
+			return [
+				...(await read_range(cursor, result.splitCursor!, depth + 1)),
+				...(await read_range(result.splitCursor!, endCursor, depth + 1)),
+			];
+		};
+
+		const first = await read_page({ kind: "file", sort, paginationOpts: { numItems: 50, cursor: null } });
+		expect(first).toMatchObject({ page: [], isDone: false, pageStatus: "SplitRequired" });
 		expect(first.splitCursor).toEqual(expect.any(String));
-		expect(first.page.every((row) => !("sortFieldValue" in row))).toBe(true);
-		const second = await read(first.continueCursor);
-		expect([...first.page, ...second.page].map((row) => row.name)).toEqual(names);
-		expect(second.isDone).toBe(true);
+		const rest = await read_page({ kind: "file", sort, paginationOpts: { numItems: 50, cursor: first.continueCursor } });
+		expect(rest.isDone).toBe(true);
+		expect([...(await read_range(null, first.continueCursor)), ...rest.page.map((row) => row.name)]).toEqual(names);
 	});
 
-	test("a restricted child the member cannot read never takes a page slot", async () => {
-		const { t, db, asOwner, walk, insert_child, parentId } = await seed_folder_table();
+	test("a member reads only the open stream, and the owner merges in the restricted one", async () => {
+		const { t, db, asOwner, read_page, read_table, walk, insert_child, parentId } = await seed_folder_table();
 		for (const name of ["a", "b", "c", "d"]) {
 			await insert_child({ name, kind: "folder", updatedAt: 1 });
 		}
@@ -14412,73 +14224,190 @@ describe("list_tree_children_sorted", () => {
 		);
 		const asMember = t.withIdentity({ issuer: "https://clerk.test", external_id: member.userId });
 
-		for (const [as, id] of [
-			[asMember, membershipId],
-			[asOwner, db.membershipId],
+		for (const sort of [
+			{ field: "name", direction: "asc" },
+			{ field: "updated", direction: "desc" },
 		] as const) {
-			for (const sort of [
-				{ field: "name", direction: "asc" },
-				{ field: "updated", direction: "desc" },
-			] as const) {
-				const pages = await walk({ as, membershipId: id, kind: "folder", sort, segment: "value", numItems: 1 });
-				// Every page but the last holds exactly one row. The owner gets "b" from the side rows.
-				expect(pages.slice(0, -1).every((page) => page.length === 1)).toBe(true);
-				expect(pages.flat().sort()).toEqual(["a", "c", "d"]);
-			}
+			// `walk` checks that every page but the last holds exactly one row.
+			const memberPages = await walk({ as: asMember, membershipId, kind: "folder", sort, numItems: 1 });
+			expect(
+				memberPages
+					.flat()
+					.map((row) => row.name)
+					.sort(),
+			).toEqual(["a", "c", "d"]);
+			expect(
+				await read_page({
+					as: asMember,
+					membershipId,
+					kind: "folder",
+					sort,
+					restricted: true,
+					paginationOpts: { numItems: 1, cursor: null },
+				}),
+			).toEqual({ page: [], isDone: true, continueCursor: "" });
+			const ownerRestricted = await walk({ kind: "folder", sort, restricted: true, numItems: 1 });
+			expect(ownerRestricted.flat().map((row) => row.name)).toEqual(["b"]);
 		}
+		expect(await read_table({ field: "name", direction: "asc" })).toEqual(["a", "b", "c", "d"]);
 	});
 
-	test("leaves out archived children and this user's pending moves and deletes", async () => {
-		const { t, db, read_table, insert_child } = await seed_folder_table();
+	test("the owner merges 300 restricted children spread by name, with no repeat or gap", async () => {
+		const { insert_children, read_table } = await seed_folder_table();
+		const names = Array.from({ length: 600 }, (_, index) => `n-${String(index).padStart(3, "0")}.md`);
+		await insert_children(
+			names.map((name, index) => ({
+				name,
+				kind: "file" as const,
+				updatedAt: index,
+				lowercaseExtension: "md",
+				contentByteSize: 600 - index,
+				restricted: index % 2 === 1,
+			})),
+		);
+		const reversed = [...names].reverse();
+
+		expect(await read_table({ field: "name", direction: "asc" }, { numItems: 50 })).toEqual(names);
+		expect(await read_table({ field: "name", direction: "desc" }, { numItems: 50 })).toEqual(reversed);
+		expect(await read_table({ field: "updated", direction: "desc" }, { numItems: 50 })).toEqual(reversed);
+		expect(await read_table({ field: "size", direction: "asc" }, { numItems: 50 })).toEqual(reversed);
+		expect(await read_table({ field: "created", direction: "asc" }, { numItems: 50 })).toEqual(names);
+	});
+
+	// convex-test marks any page that reads more than `numItems` + 1 rows, so this proves the split
+	// runs before any row read, not the guard number. The cost test below checks the guard numbers.
+	test.each([
+		{ restricted: false, field: "metadata.status", guard: 1800 },
+		{ restricted: true, field: "metadata.status", guard: 700 },
+		{ restricted: true, field: "name", guard: 1000 },
+	])(
+		"a page whose end cursor holds more than $guard rows asks for a split and reads no row ($field, restricted $restricted)",
+		async ({ restricted, field, guard }) => {
+			const { t, insert_children, set_metadata, read_page } = await seed_folder_table();
+			const names = Array.from({ length: guard + 2 }, (_, index) => `n-${String(index).padStart(4, "0")}.md`);
+			const ids = await insert_children(names.map((name) => ({ name, kind: "file" as const, updatedAt: 1, restricted })));
+			if (field !== "name") await set_metadata(ids.map((id) => [id, [{ key: "status", value: "open" }]]));
+			const sort = { field, direction: "asc" as const };
+
+			// Read `guard` rows, then one more, to get the cursor right after row `guard + 1`.
+			let cursor: string | null = null;
+			let firstCursor: string | null = null;
+			for (let read = 0; read < guard; read += 100) {
+				const page: Page = await read_page({ kind: "file", sort, restricted, paginationOpts: { numItems: 100, cursor } });
+				expect(page.page).toHaveLength(100);
+				cursor = page.continueCursor;
+				firstCursor ??= cursor;
+			}
+			const endCursor = (await read_page({ kind: "file", sort, restricted, paginationOpts: { numItems: 1, cursor } }))
+				.continueCursor;
+
+			// A field doc whose node is gone makes a node read throw, and a SYSTEM author makes the tree
+			// rows throw. So this page proves the guard runs before any row read.
+			await t.run((ctx) =>
+				field === "name"
+					? ctx.db.patch("files_nodes", ids[guard / 2]!, { createdBy: users_SYSTEM_AUTHOR })
+					: ctx.db.delete("files_nodes", ids[guard / 2]!),
+			);
+			expect(
+				await read_page({ kind: "file", sort, restricted, paginationOpts: { numItems: 100, cursor: null, endCursor } }),
+			).toEqual({
+				page: [],
+				isDone: false,
+				continueCursor: endCursor,
+				splitCursor: expect.any(String),
+				pageStatus: "SplitRequired",
+			});
+			// A pinned page under the guard gives its rows.
+			const small = await read_page({
+				kind: "file",
+				sort,
+				restricted,
+				paginationOpts: { numItems: 200, cursor: null, endCursor: firstCursor! },
+			});
+			expect(small.page.map((row) => row.name)).toEqual(names.slice(0, 100));
+		},
+	);
+
+	// Guard = floor(3,000 index ranges / index ranges read by the worst row). Each case fills one
+	// stream with one kind of row, so the cost per row is that stream's worst row.
+	test.each([
+		{ restricted: false, field: "metadata.status", guard: 1800 },
+		{ restricted: true, field: "metadata.status", guard: 700 },
+		{ restricted: true, field: "name", guard: 1000 },
+	])(
+		"the $guard guard fits the measured reads of the worst row ($field, restricted $restricted)",
+		async ({ restricted, field, guard }) => {
+			const { insert_children, set_metadata, read_page_cost } = await seed_folder_table();
+			const ids = await insert_children(
+				Array.from({ length: 6 }, (_, index) => ({ name: `n-${index}.md`, kind: "file" as const, updatedAt: 1, restricted })),
+			);
+			if (field !== "name") await set_metadata(ids.map((id) => [id, [{ key: "status", value: "open" }]]));
+			const sort = { field, direction: "asc" as const };
+
+			// The page cost minus the cost of a one-row page is what the other rows read.
+			const one = await read_page_cost({ kind: "file", sort, restricted, paginationOpts: { numItems: 1, cursor: null } });
+			const six = await read_page_cost({ kind: "file", sort, restricted, paginationOpts: { numItems: 6, cursor: null } });
+			expect([one.rows, six.rows]).toEqual([1, 6]);
+			const perRow = (six.ranges - one.ranges) / 5;
+			expect(perRow).toBeGreaterThan(0);
+			expect(guard).toBeLessThanOrEqual(Math.floor(3000 / perRow));
+		},
+	);
+
+	test("drafts and this user's draft moves and deletes do not change the table", async () => {
+		const { t, db, asOwner, parentId, read_table, insert_child } = await seed_folder_table();
 		await insert_child({ name: "kept.md", kind: "file", updatedAt: 1 });
 		const movedId = await insert_child({ name: "moved.md", kind: "file", updatedAt: 1 });
 		const deletedId = await insert_child({ name: "deleted.md", kind: "file", updatedAt: 1 });
 		const archivedId = await insert_child({ name: "archived.md", kind: "file", updatedAt: 1 });
 		await t.run(async (ctx) => ctx.db.patch("files_nodes", archivedId, { archiveOperationId: "archive-1" }));
+		const owner = { organizationId: db.organizationId, workspaceId: db.workspaceId, userId: db.userId };
+		const elsewhere = await t.mutation(internal.files_nodes.create_folder_node_by_path, { ...owner, path: "/elsewhere" });
+		if (elsewhere._nay) throw new Error(elsewhere._nay.message);
+		const before = await read_table({ field: "name", direction: "asc" });
+		expect(before).toEqual(["deleted.md", "kept.md", "moved.md"]);
 
-		const tenant = { organizationId: db.organizationId, workspaceId: db.workspaceId, userId: db.userId };
-		expect(
-			(
-				await t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
-					...tenant,
-					target: { kind: "saved", id: movedId },
-					destParent: { kind: "root" },
-					destName: "moved.md",
-				})
-			)._nay,
-		).toBeUndefined();
+		await propose_move_for_test(t, { ...owner, nodeId: movedId, destParent: { kind: "root" }, destName: "moved.md" });
+		await propose_move_for_test(t, {
+			...owner,
+			nodeId: elsewhere._yay.nodeId,
+			destParent: { kind: "saved", id: parentId },
+			destName: "moved-in",
+		});
 		expect(
 			(
 				await t.mutation(internal.files_pending_updates.upsert_file_pending_archive_in_db, {
-					...tenant,
+					...owner,
 					target: { kind: "saved", id: deletedId },
 				})
 			)._nay,
 		).toBeUndefined();
+		await t.run(async (ctx) => {
+			const draft = await files_pending_nodes_db_create(ctx, {
+				...owner,
+				parent: { kind: "saved", id: parentId },
+				name: "draft.md",
+				kind: "file",
+			});
+			if (draft._nay) throw new Error(draft._nay.message);
+		});
 
-		expect(await read_table({ field: "name", direction: "asc" })).toEqual(["kept.md"]);
-	});
-
-	test("keeps a row whose pending move points to a folder that is gone, like the Files view", async () => {
-		const { t, db, read_table, insert_child } = await seed_folder_table();
-		const movedId = await insert_child({ name: "moved.md", kind: "file", updatedAt: 1 });
-		const destId = await insert_child({ name: "dest", kind: "folder", updatedAt: 1 });
+		expect(await read_table({ field: "name", direction: "asc" })).toEqual(before);
+		// Every child has the same time, so this order is by name, backward.
+		expect(await read_table({ field: "updated", direction: "desc" })).toEqual([...before].reverse());
 		expect(
-			(
-				await t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
-					organizationId: db.organizationId,
-					workspaceId: db.workspaceId,
-					userId: db.userId,
-					target: { kind: "saved", id: movedId },
-					destParent: { kind: "saved", id: destId },
-					destName: "moved.md",
-				})
-			)._nay,
-		).toBeUndefined();
-		expect(await read_table({ field: "name", direction: "asc" })).toEqual(["dest"]);
-
-		await t.run(async (ctx) => ctx.db.patch("files_nodes", destId, { archiveOperationId: "archive-1" }));
-		expect(await read_table({ field: "name", direction: "asc" })).toEqual(["moved.md"]);
+			await asOwner.query(api.files_nodes.list_tree_children_sort_side_rows, { membershipId: db.membershipId, parentId }),
+		).toEqual({ rows: [], tooManyShared: false });
+		// The point checks follow the saved parent too.
+		const key = (nodeId: Id<"files_nodes">) =>
+			asOwner.query(api.files_nodes.get_table_sort_key, {
+				membershipId: db.membershipId,
+				parentId,
+				target: { kind: "saved", id: nodeId },
+				sort: [{ field: "name", direction: "asc" }],
+			});
+		expect(await key(movedId)).not.toBeNull();
+		expect(await key(elsewhere._yay.nodeId)).toBeNull();
 	});
 
 	test("refuses a folder the caller cannot read and a field that cannot be sorted", async () => {
@@ -14489,20 +14418,12 @@ describe("list_tree_children_sorted", () => {
 			kind: "file" as const,
 			sort: [{ field: "name", direction: "asc" as const }],
 			filter: null,
-			workLimit: 1000,
+			namePrefix: null,
+			restricted: false,
 			segment: "value" as const,
 			paginationOpts: { numItems: 10, cursor: null },
 		};
-		const refused = {
-			page: [],
-			isDone: true,
-			continueCursor: "",
-			scanBoundary: null,
-			scannedCount: 0,
-			workCount: 0,
-			sortLimit: null,
-			workPaused: false,
-		};
+		const refused = { page: [], isDone: true, continueCursor: "" };
 
 		expect(
 			await asOwner.query(api.files_nodes.list_tree_children_sorted, {
@@ -14519,459 +14440,216 @@ describe("list_tree_children_sorted", () => {
 	});
 
 	test("fails loudly on a stale restricted scope root flag", async () => {
-		const { t, db, asOwner, insert_child, parentId } = await seed_folder_table();
+		const { t, insert_child, read_page } = await seed_folder_table();
 		const nodeId = await insert_child({ name: "stale", kind: "folder", updatedAt: 1 });
 		// A direct patch skips the writer that keeps the flag in step.
 		await t.run(async (ctx) => ctx.db.patch("files_nodes", nodeId, { restrictedScopeNodeId: nodeId }));
 
 		await expect(
-			asOwner.query(api.files_nodes.list_tree_children_sorted, {
-				membershipId: db.membershipId,
-				parentId,
-				kind: "folder",
-				sort: [{ field: "name", direction: "asc" }],
-				filter: null,
-				workLimit: 1000,
-				segment: "value",
-				paginationOpts: { numItems: 10, cursor: null },
-			}),
+			read_page({ kind: "folder", sort: { field: "name", direction: "asc" }, paginationOpts: { numItems: 10, cursor: null } }),
 		).rejects.toThrow();
 	});
 });
 
 describe("list_tree_children_sorted filter", () => {
-	test("Name contains task excludes the readable non-task row", async () => {
-		const { db, asOwner, parentId, insert_child } = await seed_folder_table();
-		await insert_child({ name: "other.md", kind: "file", updatedAt: 1 });
-		await insert_child({ name: "Tásk2.md", kind: "file", updatedAt: 2 });
-		const result = await asOwner.query(api.files_nodes.list_tree_children_sorted, {
-			membershipId: db.membershipId,
-			parentId,
-			kind: "file",
-			sort: [{ field: "name", direction: "asc" }],
-			filter: { kind: "name", field: "name", op: "contains", value: "task" },
-			workLimit: 50,
-			segment: "value",
-			paginationOpts: { numItems: 50, cursor: null },
-		});
-		expect(result.page.map((row) => row.name)).toEqual(["Tásk2.md"]);
-		expect(result.scannedCount).toBe(2);
-		expect(result.workCount).toBe(3);
-	});
+	test("each filter reads its rows in its own order, both ways, past 150 rows that do not match", async () => {
+		const { db, asOwner, parentId, insert_children, set_metadata, read_table, read_page_cost } =
+			await seed_folder_table();
+		const DAY = Date.UTC(2026, 8, 4);
+		const HOUR = 60 * 60 * 1000;
+		const fillers = (prefix: string) =>
+			Array.from({ length: 75 }, (_, index) => ({
+				name: `${prefix}-${String(index).padStart(2, "0")}.txt`,
+				extension: "txt",
+				size: null,
+				updatedAt: DAY - (index + 1) * HOUR,
+				entries: [],
+			}));
+		const fillerF = fillers("task-f");
+		const fillerQ = fillers("task-q");
+		// Three matches, with 150 rows between them by name that match none of the filters below.
+		const children: Array<{
+			name: string;
+			extension: string | null;
+			size: number | null;
+			updatedAt: number;
+			entries: files_metadata_Entry[];
+		}> = [
+			{
+				name: "task-a.md",
+				extension: "md",
+				size: 30,
+				updatedAt: DAY + 3 * HOUR,
+				entries: [
+					{ key: "status", value: "open" },
+					{ key: "note", value: "alpha" },
+				],
+			},
+			...fillerF,
+			{
+				name: "task-m.md",
+				extension: "md",
+				size: 20,
+				updatedAt: DAY + HOUR,
+				entries: [
+					{ key: "status", value: "open" },
+					{ key: "note", value: "alps" },
+				],
+			},
+			...fillerQ,
+			{
+				name: "task-z.md",
+				extension: "md",
+				size: 25,
+				updatedAt: DAY + 2 * HOUR,
+				entries: [
+					{ key: "status", value: "open" },
+					{ key: "note", value: "beta" },
+				],
+			},
+			{ name: "notes", extension: null, size: null, updatedAt: DAY + 48 * HOUR, entries: [{ key: "status", value: "done" }] },
+		];
+		const ids = await insert_children(
+			children.map((child) => ({
+				name: child.name,
+				kind: "file" as const,
+				updatedAt: child.updatedAt,
+				lowercaseExtension: child.extension ?? undefined,
+				contentByteSize: child.size ?? undefined,
+			})),
+		);
+		await set_metadata(ids.map((id, index) => [id, children[index]!.entries]));
+		const names = (list: typeof children) => list.map((child) => child.name);
+		// Fillers with the same time sort by name, so each F row comes before its Q row.
+		const fillersByTime = fillerF
+			.map((filler, index) => [filler.name, fillerQ[index]!.name])
+			.reverse()
+			.flat();
 
-	test("a readable match after candidate 50 is eventually returned", async () => {
-		const { db, asOwner, parentId, insert_child } = await seed_folder_table();
-		for (let index = 0; index < 50; index++) {
-			await insert_child({ name: `entry-${String(index).padStart(2, "0")}.md`, kind: "file", updatedAt: 1 });
-		}
-		await insert_child({ name: "task.md", kind: "file", updatedAt: 1 });
-		const read = (cursor: string | null) =>
-			asOwner.query(api.files_nodes.list_tree_children_sorted, {
-				membershipId: db.membershipId,
-				parentId,
+		const cases: Array<{ filter: files_table_Filter; namePrefix?: string; expected: string[] }> = [
+			{ filter: { kind: "name", field: "name", op: "starts_with", value: "task-f" }, expected: names(fillerF) },
+			{
+				filter: { kind: "extension", field: "extension", op: "is", value: "MD" },
+				expected: ["task-a.md", "task-m.md", "task-z.md"],
+			},
+			{
+				filter: { kind: "extension", field: "extension", op: "is", value: "md" },
+				namePrefix: "task-m",
+				expected: ["task-m.md"],
+			},
+			{ filter: { kind: "extension", field: "extension", op: "missing" }, expected: ["notes"] },
+			{ filter: { kind: "size", field: "size", op: "is", value: 20 }, expected: ["task-m.md"] },
+			{ filter: { kind: "size", field: "size", op: "is", value: 20 }, namePrefix: "task-z", expected: [] },
+			{
+				filter: { kind: "size", field: "size", op: "missing" },
+				expected: ["notes", ...names(fillerF), ...names(fillerQ)],
+			},
+			{ filter: { kind: "size", field: "size", op: "at_least", value: 25 }, expected: ["task-z.md", "task-a.md"] },
+			{ filter: { kind: "size", field: "size", op: "at_most", value: 25 }, expected: ["task-m.md", "task-z.md"] },
+			{
+				filter: { kind: "date", field: "updated", op: "on", start: DAY, end: DAY + 24 * HOUR },
+				expected: ["task-m.md", "task-z.md", "task-a.md"],
+			},
+			{
+				filter: { kind: "date", field: "updated", op: "before", start: DAY, end: DAY + 24 * HOUR },
+				expected: fillersByTime,
+			},
+			{
+				filter: { kind: "date", field: "updated", op: "after", start: DAY, end: DAY + 24 * HOUR },
+				expected: ["notes"],
+			},
+			// Every child was created after the first day of 1970, in insert order.
+			{ filter: { kind: "date", field: "created", op: "after", start: 0, end: 24 * HOUR }, expected: names(children) },
+			{
+				filter: { kind: "text", field: "metadata.status", op: "is", value: "OPEN" },
+				expected: ["task-a.md", "task-m.md", "task-z.md"],
+			},
+			{
+				filter: { kind: "text", field: "metadata.status", op: "is", value: "open" },
+				namePrefix: "task-z",
+				expected: ["task-z.md"],
+			},
+			{
+				filter: { kind: "text", field: "metadata.note", op: "starts_with", value: "alp" },
+				expected: ["task-a.md", "task-m.md"],
+			},
+			{
+				filter: { kind: "text", field: "metadata.note", op: "present" },
+				expected: ["task-a.md", "task-m.md", "task-z.md"],
+			},
+		];
+		// The point check gives the same answer for a sample of rows.
+		const sample = ["task-a.md", "task-m.md", "task-z.md", "notes", fillerF[0]!.name].map((name) => ({
+			name,
+			id: ids[children.findIndex((child) => child.name === name)]!,
+		}));
+		for (const { filter, namePrefix = null, expected } of cases) {
+			const field = files_table_filter_order_field(filter);
+			expect(await read_table({ field, direction: "asc" }, { filter, namePrefix, numItems: 7 })).toEqual(expected);
+			expect(await read_table({ field, direction: "desc" }, { filter, namePrefix, numItems: 7 })).toEqual(
+				[...expected].reverse(),
+			);
+			// A page reads its own rows (a field doc and a node for a metadata row) and about 8 fixed
+			// docs. A scan that fills the page would read the 75 rows between two matches.
+			const cost = await read_page_cost({
 				kind: "file",
-				sort: [{ field: "name", direction: "asc" }],
-				filter: { kind: "name", field: "name", op: "contains", value: "task" },
-				workLimit: 50,
-				segment: "value",
-				paginationOpts: { numItems: 50, cursor },
+				sort: { field, direction: "asc" },
+				filter,
+				namePrefix,
+				paginationOpts: { numItems: 7, cursor: null },
 			});
-		const first = await read(null);
-		expect(first.page).toEqual([]);
-		expect(first.isDone).toBe(false);
-		expect(first.scannedCount).toBe(50);
-		expect(first.workCount).toBe(50);
-		expect(first.scanBoundary).toEqual({
-			parts: [[files_sort_text_key("entry-49.md"), "entry-49.md"]],
-			nameKey: [files_sort_text_key("entry-49.md"), "entry-49.md"],
-		});
-		expect(first.continueCursor).not.toBe("");
-		const second = await read(first.continueCursor);
-		expect(second.page.map((row) => row.name)).toEqual(["task.md"]);
-		expect(second.isDone).toBe(true);
-		expect(second.scannedCount).toBe(1);
-	});
-
-	test("keeps each primary index order and all four segments while filtered", async () => {
-		const { t, insert_child, read_table } = await seed_folder_table();
-		for (const [name, kind, extension, size, status] of [
-			["row-folder", "folder", undefined, undefined, "z"],
-			["row2.md", "file", "md", 20, "a"],
-			["row10", "file", undefined, undefined, null],
-		] as const) {
-			const nodeId = await insert_child({
-				name,
-				kind,
-				lowercaseExtension: extension,
-				contentByteSize: size,
-				updatedAt: size ?? 1,
-			});
-			if (status !== null)
-				await t.run(async (ctx) => {
-					const fileNode = (await ctx.db.get("files_nodes", nodeId))!;
-					await files_metadata_db_write_entries(ctx, { fileNode, entries: [{ key: "status", value: status }] });
-				});
-		}
-		const filter = { kind: "name", field: "name", op: "contains", value: "row" } as const;
-		for (const field of ["name", "created", "updated", "extension", "size", "metadata.status", "frontmatter.absent"]) {
-			for (const direction of ["asc", "desc"] as const) {
-				expect(await read_table({ field, direction }, filter)).toEqual(await read_table({ field, direction }));
+			expect(cost.documents).toBeLessThanOrEqual(2 * cost.rows + 10);
+			for (const { name, id } of sample) {
+				expect(
+					await asOwner.query(api.files_nodes.get_table_filter_match, {
+						membershipId: db.membershipId,
+						parentId,
+						target: { kind: "saved", id },
+						filter,
+						namePrefix,
+					}),
+				).toEqual({ matches: expected.includes(name) });
 			}
 		}
 	});
 
-	test("native pages use zero work and missing walks count completed raw nodes", async () => {
-		const { t, db, asOwner, parentId, insert_child } = await seed_folder_table();
-		const a = await insert_child({ name: "a.md", kind: "file", updatedAt: 1 });
-		await insert_child({ name: "b.md", kind: "file", updatedAt: 1 });
-		await t.run(async (ctx) => {
-			await files_metadata_db_write_entries(ctx, {
-				fileNode: (await ctx.db.get("files_nodes", a))!,
-				entries: [{ key: "status", value: "ready" }],
-			});
-		});
-		const base = {
-			membershipId: db.membershipId,
-			parentId,
-			kind: "file" as const,
-			filter: null,
-			paginationOpts: { numItems: 1, cursor: null },
-		};
-		const native = await asOwner.query(api.files_nodes.list_tree_children_sorted, {
-			...base,
-			sort: [{ field: "name", direction: "asc" }],
-			segment: "value",
-			workLimit: 1000,
-		});
-		expect(native).toMatchObject({
-			scannedCount: 1,
-			workCount: 0,
-			scanBoundary: { parts: [["a.md", "a.md"]], nameKey: ["a.md", "a.md"] },
-			sortLimit: null,
-			workPaused: false,
-		});
-		const missing = await asOwner.query(api.files_nodes.list_tree_children_sorted, {
-			...base,
-			sort: [{ field: "metadata.status", direction: "desc" }],
-			segment: "missing",
-			workLimit: 2,
-		});
-		expect(missing).toMatchObject({
-			page: [],
-			isDone: false,
-			scannedCount: 1,
-			workCount: 2,
-			scanBoundary: { parts: [null], nameKey: ["a.md", "a.md"] },
-		});
-		const next = await asOwner.query(api.files_nodes.list_tree_children_sorted, {
-			...base,
-			sort: [{ field: "metadata.status", direction: "desc" }],
-			segment: "missing",
-			workLimit: 2,
-			paginationOpts: { numItems: 1, cursor: missing.continueCursor },
-		});
-		expect(next.page.map((row) => row.name)).toEqual(["b.md"]);
-	});
-
-	test("a filtered descending page pins its exact range", async () => {
-		const { db, asOwner, parentId, insert_child } = await seed_folder_table();
-		for (const [name, updatedAt] of [
-			["task-1.md", 10],
-			["other-1.md", 15],
-			["task-2.md", 20],
-			["other-2.md", 25],
-			["task-3.md", 30],
-			["other-3.md", 35],
-			["task-4.md", 40],
-			["task-5.md", 50],
-		] as const) {
-			await insert_child({ name, kind: "file", updatedAt });
-		}
-		const read = (paginationOpts: { numItems: number; cursor: string | null; endCursor?: string }, workLimit = 50) =>
-			asOwner.query(api.files_nodes.list_tree_children_sorted, {
-				membershipId: db.membershipId,
-				parentId,
-				kind: "file",
-				sort: [{ field: "updated", direction: "desc" }],
-				filter: { kind: "name", field: "name", op: "contains", value: "task" },
-				workLimit,
-				segment: "value",
-				paginationOpts,
-			});
-		const names = (result: { page: Array<{ name: string }> }) => result.page.map((row) => row.name);
-
-		const first = await read({ numItems: 2, cursor: null });
-		const second = await read({ numItems: 2, cursor: first.continueCursor });
-		expect([names(first), names(second)]).toEqual([
-			["task-5.md", "task-4.md"],
-			["task-3.md", "task-2.md"],
-		]);
-		await insert_child({ name: "task-6.md", kind: "file", updatedAt: 27 });
-		const pinnedFirst = await read({ numItems: 2, cursor: null, endCursor: first.continueCursor });
-		const pinnedSecond = await read({ numItems: 2, cursor: first.continueCursor, endCursor: second.continueCursor });
-		expect(names(pinnedFirst)).toEqual(["task-5.md", "task-4.md"]);
-		expect(pinnedFirst.continueCursor).toBe(first.continueCursor);
-		expect(names(pinnedSecond)).toEqual(["task-3.md", "task-6.md", "task-2.md"]);
-		expect(pinnedSecond.continueCursor).toBe(second.continueCursor);
-		const tail = await read({ numItems: 2, cursor: second.continueCursor });
-		expect(names(tail)).toEqual(["task-1.md"]);
-		expect(tail.isDone).toBe(true);
-
-		// A page that scanned only a non-matching row still has an end, and its pinned range reaches it.
-		const empty = await read({ numItems: 2, cursor: first.continueCursor }, 1);
-		expect(empty.page).toEqual([]);
-		expect(await read({ numItems: 2, cursor: first.continueCursor, endCursor: empty.continueCursor })).toMatchObject({
-			page: [],
-			continueCursor: empty.continueCursor,
-			isDone: false,
-		});
-	});
-
-	test("binds the exact filter and sort to a checked full cursor suffix", async () => {
-		const { db, asOwner, parentId, insert_child } = await seed_folder_table();
-		const firstId = await insert_child({ name: "task-a.md", kind: "file", updatedAt: 1 });
-		await insert_child({ name: "task-b.md", kind: "file", updatedAt: 1 });
-		const base = {
-			membershipId: db.membershipId,
-			parentId,
-			kind: "file" as const,
-			sort: [{ field: "created", direction: "asc" as const }],
-			filter: { kind: "name", field: "name", op: "contains", value: "task" } as const,
-			segment: "value" as const,
-			workLimit: 1,
-		};
-		const first = await asOwner.query(api.files_nodes.list_tree_children_sorted, {
-			...base,
-			paginationOpts: { numItems: 1, cursor: null },
-		});
-		expect(JSON.parse(first.continueCursor)).toMatchObject({ after: [first.page[0]!._creationTime, firstId] });
-		const next = await asOwner.query(api.files_nodes.list_tree_children_sorted, {
-			...base,
-			workLimit: 50,
-			paginationOpts: { numItems: 1, cursor: first.continueCursor },
-		});
-		expect(next.page.map((row) => row.name)).toEqual(["task-b.md"]);
-		for (const changed of [
-			{ filter: { ...base.filter, value: "TASK" } },
-			{ sort: [{ field: "created", direction: "desc" as const }] },
-			{ kind: "folder" as const },
-			{ parentId: "root" as const },
-		])
-			await expect(
-				asOwner.query(api.files_nodes.list_tree_children_sorted, {
-					...base,
-					...changed,
-					paginationOpts: { numItems: 1, cursor: first.continueCursor },
-				}),
-			).rejects.toThrow("InvalidCursor");
-		for (const cursor of [
-			"not-json",
-			JSON.stringify({ scope: JSON.parse(first.continueCursor).scope, after: ["bad", firstId] }),
-		])
-			await expect(
-				asOwner.query(api.files_nodes.list_tree_children_sorted, {
-					...base,
-					paginationOpts: { numItems: 1, cursor },
-				}),
-			).rejects.toThrow("InvalidCursor");
-		// file.created has no missing segment, so this request is refused before the cursor is read.
-		expect(
-			await asOwner.query(api.files_nodes.list_tree_children_sorted, {
-				...base,
-				segment: "missing",
-				paginationOpts: { numItems: 1, cursor: first.continueCursor },
-			}),
-		).toEqual({
-			page: [],
-			isDone: true,
-			continueCursor: "",
-			scanBoundary: null,
-			scannedCount: 0,
-			workCount: 0,
-			sortLimit: null,
-			workPaused: false,
-		});
-	});
-
-	test("fails clearly when a missing proof cannot complete its first candidate", async () => {
-		const { db, asOwner, parentId, insert_child } = await seed_folder_table();
-		await insert_child({ name: "task.md", kind: "file", updatedAt: 1 });
-		await expect(
-			asOwner.query(api.files_nodes.list_tree_children_sorted, {
-				membershipId: db.membershipId,
-				parentId,
-				kind: "file",
-				sort: [{ field: "metadata.status", direction: "asc" }],
-				filter: { kind: "name", field: "name", op: "contains", value: "task" },
-				workLimit: 1,
-				segment: "missing",
-				paginationOpts: { numItems: 50, cursor: null },
-			}),
-		).rejects.toThrow("Table filter exceeded its work limit.");
-	});
-
-	test("continues after a supported long raw Name suffix", async () => {
-		const { db, asOwner, parentId, insert_child } = await seed_folder_table({ transactionLimits: true });
-		const name = `${"a".repeat(180_000)}.md`;
-		await insert_child({ name, kind: "file", updatedAt: 1 });
-		await insert_child({ name: "b.md", kind: "file", updatedAt: 1 });
-		const read = (cursor: string | null) =>
-			asOwner.query(api.files_nodes.list_tree_children_sorted, {
-				membershipId: db.membershipId,
-				parentId,
-				kind: "file",
-				sort: [{ field: "name", direction: "asc" }],
-				filter: { kind: "name", field: "name", op: "contains", value: ".md" },
-				workLimit: 50,
-				segment: "value",
-				paginationOpts: { numItems: 1, cursor },
-			});
-		const first = await read(null);
-		expect(first.page.map((row) => row.name)).toEqual([name]);
-		const second = await read(first.continueCursor);
-		expect(second.page.map((row) => row.name)).toEqual(["b.md"]);
-	});
-
-	test("missing proofs reject a stale restricted field witness before using its position", async () => {
-		const { t, db, asOwner, parentId, insert_child } = await seed_folder_table();
-		const hiddenId = await insert_child({ name: "a-hidden.md", kind: "file", updatedAt: 1 });
-		await insert_child({ name: "task.md", kind: "file", updatedAt: 1 });
-		await t.run(async (ctx) =>
-			files_metadata_db_write_entries(ctx, {
-				fileNode: (await ctx.db.get("files_nodes", hiddenId))!,
-				entries: [{ key: "status", value: "secret" }],
-			}),
-		);
-		expect(
-			(await asOwner.mutation(api.files_sharing.restrict_node, { membershipId: db.membershipId, nodeId: hiddenId }))
-				._nay,
-		).toBeUndefined();
-		await t.run(async (ctx) => {
-			const fieldDoc = await ctx.db
-				.query("files_metadata_docs")
-				.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
-					q
-						.eq("organizationId", db.organizationId)
-						.eq("workspaceId", db.workspaceId)
-						.eq("sourceKind", "committed")
-						.eq("fileNodeId", hiddenId)
-						.eq("fieldPath", "metadata.status"),
-				)
-				.filter((q) => q.eq(q.field("docKind"), "field"))
-				.first();
-			if (!fieldDoc) throw new Error("Expected a field witness");
-			await ctx.db.patch("files_metadata_docs", fieldDoc._id, { isRestrictedScopeRoot: false });
-		});
-		await expect(
-			asOwner.query(api.files_nodes.list_tree_children_sorted, {
-				membershipId: db.membershipId,
-				parentId,
-				kind: "file",
-				sort: [{ field: "metadata.status", direction: "asc" }],
-				filter: { kind: "name", field: "name", op: "contains", value: "task" },
-				workLimit: 50,
-				segment: "missing",
-				paginationOpts: { numItems: 50, cursor: null },
-			}),
-		).rejects.toThrow("Stale restricted scope root flag in the folder table");
-	});
-
-	test("joined metadata bytes stop before the next incomplete row", async () => {
-		const { t, db, asOwner, parentId, insert_child } = await seed_folder_table({ transactionLimits: true });
-		const names = Array.from({ length: 8 }, (_, index) => `large-${index}.md`);
-		for (const name of names) {
-			const nodeId = await insert_child({ name, kind: "file", updatedAt: 1 });
-			await t.run((ctx) =>
-				files_metadata_db_insert_committed(ctx, {
-					organizationId: db.organizationId,
-					workspaceId: db.workspaceId,
-					nodeId,
-					markdownContent: `---\nvalue: ${"x".repeat(800_000)}\n---\n`,
-				}),
-			);
-		}
-		const read = (cursor: string | null) =>
-			asOwner.query(api.files_nodes.list_tree_children_sorted, {
-				membershipId: db.membershipId,
-				parentId,
-				kind: "file",
-				sort: [{ field: "name", direction: "asc" }],
-				filter: { kind: "text", field: "frontmatter.value", op: "present" },
-				workLimit: 50,
-				segment: "value",
-				paginationOpts: { numItems: 50, cursor },
-			});
-		const first = await read(null);
-		expect(first.page.length).toBeLessThan(names.length);
-		expect(first.page.length).toBeGreaterThan(0);
-		expect(first.scannedCount).toBe(first.page.length);
-		expect(first.workCount).toBeGreaterThan(first.scannedCount);
-		expect(first.scanBoundary).toEqual(first.page.at(-1)!.sortKey);
-		const rows = first.page.map((row) => row.name);
-		let previous = first;
-		for (let index = 0; index < 8 && !previous.isDone; index++) {
-			const next = await read(previous.continueCursor);
-			rows.push(...next.page.map((row) => row.name));
-			previous = next;
-		}
-		expect(previous.isDone).toBe(true);
-		expect(rows).toEqual(names);
-	});
-
-	test("whole-query call headroom leaves a continuing prefix before the hard limit", async () => {
-		const { t, db, asOwner, parentId, insert_child } = await seed_folder_table({
-			transactionLimits: { databaseQueries: 100 },
-		});
-		for (let index = 0; index < 50; index++) {
-			const nodeId = await insert_child({ name: `row-${index}.md`, kind: "file", updatedAt: 1 });
-			await t.run(async (ctx) =>
-				files_metadata_db_write_entries(ctx, {
-					fileNode: (await ctx.db.get("files_nodes", nodeId))!,
-					entries: [{ key: "status", value: "ready" }],
-				}),
-			);
-		}
-		const first = await asOwner.query(api.files_nodes.list_tree_children_sorted, {
-			membershipId: db.membershipId,
-			parentId,
-			kind: "file",
-			sort: [{ field: "name", direction: "asc" }],
-			filter: { kind: "text", field: "metadata.status", op: "present" },
-			workLimit: 50,
-			segment: "value",
-			paginationOpts: { numItems: 50, cursor: null },
-		});
-		expect(first.page.length).toBeGreaterThan(0);
-		expect(first.scannedCount).toBeLessThan(50);
-		expect(first.isDone).toBe(false);
-	});
-
-	test("rejects invalid filter fields, values, bounds, and page limits before scanning", async () => {
+	test("rejects invalid filters, a sort that is not the filter's order, a bad name prefix, and bad page limits", async () => {
 		const { db, asOwner, parentId } = await seed_folder_table();
-		const filters: files_table_Filter[] = [
-			{ kind: "name", field: "name", op: "contains", value: "" },
-			{ kind: "text", field: "name", op: "missing" },
-			{ kind: "text", field: "metadata.bad key", op: "present" },
-			{ kind: "size", field: "size", op: "is", value: 0.5 },
-			{ kind: "size", field: "size", op: "is", value: Number.POSITIVE_INFINITY },
-			{ kind: "date", field: "created", op: "on", start: 1, end: 0 },
-			{ kind: "date", field: "updated", op: "on", start: 0, end: 26 * 60 * 60 * 1000 },
+		const cases: Array<{ filter: files_table_Filter | null; sort?: string; namePrefix?: string; numItems?: number }> = [
+			{ filter: { kind: "name", field: "name", op: "starts_with", value: "" } },
+			{ filter: { kind: "name", field: "name", op: "starts_with", value: "file1" } },
+			{ filter: { kind: "text", field: "name", op: "present" } },
+			{ filter: { kind: "text", field: "metadata.bad key", op: "present" } },
+			{ filter: { kind: "size", field: "size", op: "is", value: 0.5 } },
+			{ filter: { kind: "size", field: "size", op: "is", value: Number.POSITIVE_INFINITY } },
+			{ filter: { kind: "date", field: "created", op: "on", start: 1, end: 0 }, sort: "created" },
+			{ filter: { kind: "date", field: "updated", op: "on", start: 0, end: 26 * 60 * 60 * 1000 }, sort: "updated" },
+			// The filter fixes the order.
+			{ filter: { kind: "size", field: "size", op: "at_least", value: 1 } },
+			{ filter: { kind: "extension", field: "extension", op: "is", value: "md" }, sort: "size" },
+			{ filter: { kind: "text", field: "metadata.status", op: "present" } },
+			// `name starts with` joins only an "is" filter, and follows the name filter rules.
+			{ filter: null, namePrefix: "a" },
+			{ filter: { kind: "name", field: "name", op: "starts_with", value: "a" }, namePrefix: "b" },
+			{ filter: { kind: "size", field: "size", op: "at_least", value: 1 }, sort: "size", namePrefix: "a" },
+			{ filter: { kind: "extension", field: "extension", op: "is", value: "md" }, namePrefix: "file1" },
+			{ filter: { kind: "extension", field: "extension", op: "is", value: "md" }, namePrefix: "" },
+			{ filter: null, numItems: 0 },
+			{ filter: null, numItems: 1.5 },
 		];
-		const base = {
-			membershipId: db.membershipId,
-			parentId,
-			kind: "file" as const,
-			sort: [{ field: "name", direction: "asc" as const }],
-			segment: "value" as const,
-			paginationOpts: { numItems: 50, cursor: null },
-		};
-		for (const filter of filters)
+		for (const { filter, sort = "name", namePrefix = null, numItems = 50 } of cases)
 			await expect(
-				asOwner.query(api.files_nodes.list_tree_children_sorted, { ...base, filter, workLimit: 50 }),
-			).rejects.toThrow("Invalid table filter or page limit.");
-		for (const workLimit of [0, 1001, 1.5])
-			await expect(
-				asOwner.query(api.files_nodes.list_tree_children_sorted, { ...base, filter: null, workLimit }),
+				asOwner.query(api.files_nodes.list_tree_children_sorted, {
+					membershipId: db.membershipId,
+					parentId,
+					kind: "file",
+					sort: [{ field: sort, direction: "asc" }],
+					filter,
+					namePrefix,
+					restricted: false,
+					segment: "value",
+					paginationOpts: { numItems, cursor: null },
+				}),
 			).rejects.toThrow("Invalid table filter or page limit.");
 	});
 });
@@ -14984,39 +14662,19 @@ describe("get_table_filter_match", () => {
 		const match = (args: {
 			target: files_PendingTarget;
 			filter: files_table_Filter;
+			namePrefix?: string | null;
 			folderId?: Id<"files_nodes"> | "root";
 		}) => {
-			const { folderId = parentId, filter, target } = args;
+			const { folderId = parentId, filter, target, namePrefix = null } = args;
 
 			return asOwner.query(api.files_nodes.get_table_filter_match, {
 				membershipId: db.membershipId,
 				parentId: folderId,
 				target,
 				filter,
+				namePrefix,
 			});
 		};
-		const private_folder = (entries: files_metadata_Entry[] = []) =>
-			t.run(async (ctx) => {
-				const created = await files_pending_nodes_db_create(ctx, {
-					...owner,
-					parent: { kind: "saved", id: parentId },
-					name: "draft",
-					kind: "folder",
-				});
-				if (created._nay) throw new Error(created._nay.message);
-				await ctx.db.patch("files_pending_updates", created._yay.pendingUpdateId, {
-					createIntent: { kind: "folder", metadata: entries },
-				});
-				await files_metadata_db_replace_pending(ctx, {
-					...owner,
-					target: { kind: "private", id: created._yay.privateNodeId },
-					pendingUpdateId: created._yay.pendingUpdateId,
-					proposalRevision: 1,
-					path: "/table/draft",
-					createMetadata: entries,
-				});
-				return { ...created._yay, target: { kind: "private" as const, id: created._yay.privateNodeId } };
-			});
 		const add_member = async (role: "viewer" | null = "viewer") => {
 			const member = await t.run(async (ctx) => {
 				const userId = await ctx.db.insert("users", { clerkUserId: "clerk_filter_viewer" });
@@ -15032,11 +14690,11 @@ describe("get_table_filter_match", () => {
 			});
 			return { ...member, as: t.withIdentity({ issuer: "https://clerk.test", external_id: member.userId }) };
 		};
-		return { ...seeded, owner, match, private_folder, add_member };
+		return { ...seeded, owner, match, add_member };
 	}
 
 	test("uses one plain scalar for arrays and preserves empty, zero, and false", async () => {
-		const { t, db, asOwner, parentId, insert_child, match } = await seed_filter_match();
+		const { t, db, insert_child, match, read_page } = await seed_filter_match();
 		const nodeId = await insert_child({ name: "scalars.md", kind: "file", updatedAt: 1 });
 		await t.run((ctx) =>
 			files_metadata_db_insert_committed(ctx, {
@@ -15053,96 +14711,21 @@ describe("get_table_filter_match", () => {
 			[{ kind: "text", field: "frontmatter.empty", op: "present" }, true],
 			[{ kind: "text", field: "frontmatter.zero", op: "is", value: "0" }, true],
 			[{ kind: "text", field: "frontmatter.no", op: "is", value: "false" }, true],
-			[{ kind: "text", field: "frontmatter.emptyList", op: "missing" }, true],
-			[{ kind: "text", field: "frontmatter.map", op: "missing" }, true],
-			[{ kind: "text", field: "frontmatter.absent", op: "missing" }, true],
+			[{ kind: "text", field: "frontmatter.emptyList", op: "present" }, false],
+			[{ kind: "text", field: "frontmatter.map", op: "present" }, false],
+			[{ kind: "text", field: "frontmatter.absent", op: "present" }, false],
 			[{ kind: "text", field: "frontmatter.date", op: "is", value: "2026-09-29" }, true],
 		];
 		for (const [filter, matches] of cases) {
-			expect(await match({ target: { kind: "saved", id: nodeId }, filter })).toEqual({ matches, preparing: false });
-			const page = await asOwner.query(api.files_nodes.list_tree_children_sorted, {
-				membershipId: db.membershipId,
-				parentId,
+			expect(await match({ target: { kind: "saved", id: nodeId }, filter })).toEqual({ matches });
+			const page = await read_page({
 				kind: "file",
-				sort: [{ field: "name", direction: "asc" }],
+				sort: { field: files_table_filter_order_field(filter), direction: "asc" },
 				filter,
-				workLimit: 50,
-				segment: "value",
 				paginationOpts: { numItems: 50, cursor: null },
 			});
 			expect(page.page.map((row) => row._id)).toEqual(matches ? [nodeId] : []);
-			expect(page.scannedCount).toBe(1);
 		}
-	});
-
-	test("reads the current private revision and refuses another owner", async () => {
-		const { t, owner, match, private_folder, add_member, parentId } = await seed_filter_match();
-		const draft = await private_folder([{ key: "status", value: "old" }]);
-		const filter = { kind: "text", field: "metadata.status", op: "is", value: "old" } as const;
-		expect(await match({ target: draft.target, filter })).toEqual({ matches: true, preparing: false });
-		const member = await add_member();
-		expect(
-			await member.as.query(api.files_nodes.get_table_filter_match, {
-				membershipId: member.membershipId,
-				parentId,
-				target: draft.target,
-				filter,
-			}),
-		).toBeNull();
-		await t.run((ctx) =>
-			ctx.db.patch("files_pending_updates", draft.pendingUpdateId, {
-				revision: 2,
-				createIntent: { kind: "folder", metadata: [{ key: "status", value: "new" }] },
-			}),
-		);
-		await expect(match({ target: draft.target, filter })).rejects.toThrow("metadataDoc source is mismatched");
-		await t.run((ctx) =>
-			files_metadata_db_replace_pending(ctx, {
-				...owner,
-				target: draft.target,
-				pendingUpdateId: draft.pendingUpdateId,
-				proposalRevision: 2,
-				path: "/table/draft",
-				createMetadata: [{ key: "status", value: "new" }],
-			}),
-		);
-		expect(await match({ target: draft.target, filter })).toEqual({ matches: false, preparing: false });
-		expect(await match({ target: draft.target, filter: { ...filter, value: "new" } })).toEqual({
-			matches: true,
-			preparing: false,
-		});
-	});
-
-	test("reports missing intent and missing new text base as preparing only for metadata", async () => {
-		const { t, owner, match, parentId } = await seed_filter_match();
-		const created = await t.run((ctx) =>
-			files_pending_nodes_db_create(ctx, {
-				...owner,
-				parent: { kind: "saved", id: parentId },
-				name: "task.md",
-				kind: "file",
-			}),
-		);
-		if (created._nay) throw new Error(created._nay.message);
-		const target = { kind: "private" as const, id: created._yay.privateNodeId };
-		const filter = { kind: "text", field: "metadata.absent", op: "missing" } as const;
-		expect(await match({ target, filter })).toEqual({ matches: false, preparing: true });
-		expect(await match({ target, filter: { kind: "name", field: "name", op: "contains", value: "task" } })).toEqual({
-			matches: true,
-			preparing: false,
-		});
-		await t.run((ctx) =>
-			ctx.db.patch("files_pending_updates", created._yay.pendingUpdateId, {
-				createIntent: {
-					kind: "text",
-					contentType: "text/markdown",
-					textKind: "rich_text",
-					collaborationEnabled: true,
-					metadata: [],
-				},
-			}),
-		);
-		expect(await match({ target, filter })).toEqual({ matches: false, preparing: true });
 	});
 
 	test("checks current grants and returns the same refusal for hidden and missing targets", async () => {
@@ -15157,7 +14740,8 @@ describe("get_table_filter_match", () => {
 			membershipId: member.membershipId,
 			parentId,
 			target: { kind: "saved" as const, id: nodeId },
-			filter: { kind: "name", field: "name", op: "contains", value: "secret" } as const,
+			filter: { kind: "name", field: "name", op: "starts_with", value: "secret" } as const,
+			namePrefix: null,
 		};
 		expect(await member.as.query(api.files_nodes.get_table_filter_match, args)).toBeNull();
 		expect(
@@ -15170,10 +14754,7 @@ describe("get_table_filter_match", () => {
 				})
 			)._nay,
 		).toBeUndefined();
-		expect(await member.as.query(api.files_nodes.get_table_filter_match, args)).toEqual({
-			matches: true,
-			preparing: false,
-		});
+		expect(await member.as.query(api.files_nodes.get_table_filter_match, args)).toEqual({ matches: true });
 		expect(
 			(
 				await asOwner.mutation(api.files_sharing.remove_node_share_grant, {
@@ -15193,9 +14774,61 @@ describe("get_table_filter_match", () => {
 		).toBeNull();
 	});
 
-	test("uses the visible renamed name and rejects its old parent", async () => {
-		const { t, owner, parentId, insert_child, match, db, asOwner } = await seed_filter_match();
-		const nodeId = await insert_child({ name: "old.md", kind: "file", updatedAt: 1 });
+	test("both point checks give a member null for a restricted child, a child of another folder, an archived child, or a draft", async () => {
+		const { t, db, owner, parentId, insert_child, add_member } = await seed_filter_match();
+		const openId = await insert_child({ name: "open.md", kind: "file", updatedAt: 1 });
+		const restrictedId = await insert_child({ name: "secret.md", kind: "file", updatedAt: 1, restricted: true });
+		const archivedId = await insert_child({ name: "archived.md", kind: "file", updatedAt: 1 });
+		await t.run((ctx) => ctx.db.patch("files_nodes", archivedId, { archiveOperationId: "archive-1" }));
+		const other = await t.mutation(internal.files_nodes.create_folder_node_by_path, { ...owner, path: "/other" });
+		if (other._nay) throw new Error(other._nay.message);
+		const draft = await t.run((ctx) =>
+			files_pending_nodes_db_create(ctx, {
+				...owner,
+				parent: { kind: "saved", id: parentId },
+				name: "draft.md",
+				kind: "file",
+			}),
+		);
+		if (draft._nay) throw new Error(draft._nay.message);
+		const member = await add_member();
+		const check = async (
+			as: typeof member.as,
+			membershipId: Id<"organizations_workspaces_users">,
+			target: files_PendingTarget,
+			folderId: Id<"files_nodes"> = parentId,
+		) => {
+			const filterMatch = await as.query(api.files_nodes.get_table_filter_match, {
+				membershipId,
+				parentId: folderId,
+				target,
+				filter: { kind: "extension", field: "extension", op: "missing" },
+				namePrefix: null,
+			});
+			const sortKey = await as.query(api.files_nodes.get_table_sort_key, {
+				membershipId,
+				parentId: folderId,
+				target,
+				sort: [{ field: "name", direction: "asc" }],
+			});
+			// Both doors refuse the same targets.
+			expect(filterMatch === null).toBe(sortKey === null);
+			return filterMatch !== null;
+		};
+
+		expect(await check(member.as, member.membershipId, { kind: "saved", id: openId })).toBe(true);
+		expect(await check(member.as, member.membershipId, { kind: "saved", id: restrictedId })).toBe(false);
+		expect(await check(member.as, member.membershipId, { kind: "saved", id: openId }, other._yay.nodeId)).toBe(false);
+		expect(await check(member.as, member.membershipId, { kind: "saved", id: archivedId })).toBe(false);
+		// The owner reads the restricted child, but the table is saved-only, so a draft gets null even for them.
+		const asOwner = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		expect(await check(asOwner, db.membershipId, { kind: "saved", id: restrictedId })).toBe(true);
+		expect(await check(asOwner, db.membershipId, { kind: "private", id: draft._yay.privateNodeId })).toBe(false);
+	});
+
+	test("uses the saved name and parent, not a draft move", async () => {
+		const { t, owner, insert_child, match, read_page } = await seed_filter_match();
+		const nodeId = await insert_child({ name: "old.md", kind: "file", updatedAt: 1, lowercaseExtension: "md" });
 		const destination = await t.mutation(internal.files_nodes.create_folder_node_by_path, {
 			...owner,
 			path: "/destination",
@@ -15205,63 +14838,41 @@ describe("get_table_filter_match", () => {
 			...owner,
 			nodeId,
 			destParent: { kind: "saved", id: destination._yay.nodeId },
-			destName: "task.MD",
+			destName: "task.txt",
 		});
 		const target = { kind: "saved" as const, id: nodeId };
-		const filter = { kind: "name", field: "name", op: "contains", value: "task" } as const;
-		expect(await match({ target, filter })).toBeNull();
-		expect(await match({ target, filter, folderId: destination._yay.nodeId })).toEqual({
-			matches: true,
-			preparing: false,
-		});
+		const filter = { kind: "name", field: "name", op: "starts_with", value: "old" } as const;
+		expect(await match({ target, filter })).toEqual({ matches: true });
+		expect(await match({ target, filter, folderId: destination._yay.nodeId })).toBeNull();
 		expect(
 			await match({
 				target,
 				filter: { kind: "extension", field: "extension", op: "is", value: "MD" },
-				folderId: destination._yay.nodeId,
+				namePrefix: "ol",
 			}),
-		).toEqual({ matches: true, preparing: false });
+		).toEqual({ matches: true });
 		expect(
 			await match({
 				target,
-				filter: { kind: "extension", field: "extension", op: "is", value: ".md" },
-				folderId: destination._yay.nodeId,
+				filter: { kind: "extension", field: "extension", op: "is", value: "md" },
+				namePrefix: "task",
 			}),
-		).toEqual({ matches: false, preparing: false });
-		expect(
-			await match({
-				target,
-				filter: { kind: "extension", field: "extension", op: "missing" },
-				folderId: destination._yay.nodeId,
-			}),
-		).toEqual({ matches: false, preparing: false });
-		const page = await asOwner.query(api.files_nodes.list_tree_children_sorted, {
-			membershipId: db.membershipId,
-			parentId,
+		).toEqual({ matches: false });
+		const page = await read_page({
 			kind: "file",
-			sort: [{ field: "name", direction: "asc" }],
-			filter: { kind: "name", field: "name", op: "contains", value: "old" },
-			workLimit: 50,
-			segment: "value",
+			sort: { field: "name", direction: "asc" },
+			filter,
 			paginationOpts: { numItems: 50, cursor: null },
 		});
-		expect(page.page).toEqual([]);
-		expect(page.scannedCount).toBe(1);
-	});
-
-	test("budget exhaustion is an error, never a false or null match", async () => {
-		const { insert_child, match } = await seed_filter_match({ transactionLimits: { bytesRead: 800_000 } });
-		const nodeId = await insert_child({ name: "task.md", kind: "file", updatedAt: 1 });
+		expect(page.page.map((row) => row._id)).toEqual([nodeId]);
+		await expect(match({ target, filter, namePrefix: "o" })).rejects.toThrow("Invalid table filter.");
 		await expect(
-			match({
-				target: { kind: "saved", id: nodeId },
-				filter: { kind: "name", field: "name", op: "contains", value: "task" },
-			}),
-		).rejects.toThrow("Table filter exceeded its work limit.");
+			match({ target, filter: { kind: "extension", field: "extension", op: "is", value: "md" }, namePrefix: "a1" }),
+		).rejects.toThrow("Invalid table filter.");
 	});
 
 	test("saved pending frontmatter keeps the committed filter value", async () => {
-		const { t, owner, db, asOwner, parentId, match } = await seed_filter_match();
+		const { t, owner, db, match, read_page } = await seed_filter_match();
 		await t.run((ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
 		const nodeId = await test_create_saved_text_file(t, {
 			membershipId: db.membershipId,
@@ -15278,57 +14889,19 @@ describe("get_table_filter_match", () => {
 			const filter = { kind: "text", field: "frontmatter.status", op: "is", value } as const;
 			expect(await match({ target: { kind: "saved", id: nodeId }, filter })).toEqual({
 				matches: value === "committed",
-				preparing: false,
 			});
-			const page = await asOwner.query(api.files_nodes.list_tree_children_sorted, {
-				membershipId: db.membershipId,
-				parentId,
+			const page = await read_page({
 				kind: "file",
-				sort: [{ field: "frontmatter.status", direction: "asc" }],
+				sort: { field: "name", direction: "asc" },
 				filter,
-				workLimit: 50,
-				segment: "value",
 				paginationOpts: { numItems: 50, cursor: null },
 			});
 			expect(page.page.map((row) => row._id)).toEqual(value === "committed" ? [nodeId] : []);
 		}
 	});
 
-	test("a prepared private text uses its first current primitive", async () => {
-		const { t, owner, match } = await seed_filter_match();
-		const created = await t.mutation(internal.files_nodes.create_private_node_by_path, {
-			...owner,
-			path: "/table/ready.md",
-			kind: "file",
-		});
-		if (created._nay) throw new Error(created._nay.message);
-		const { target, pendingUpdateId, operationBatchId } = created._yay;
-		if (!pendingUpdateId || !operationBatchId) throw new Error("Expected a private text batch");
-		for (const role of ["staged", "unstaged"] as const) {
-			const staged = await t.mutation(internal.files_pending_updates.stage_file_pending_update_text_input_internal, {
-				...owner,
-				operationBatchId,
-				role,
-				text: "---\nlist: [9, 2]\n---\nbody",
-			});
-			if (staged._nay) throw new Error(staged._nay.message);
-		}
-		const ready = await t.action(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
-			...owner,
-			target,
-			pendingUpdateId,
-			operationBatchId,
-		});
-		if (ready._nay) throw new Error(ready._nay.message);
-		for (const value of ["9", "2"])
-			expect(await match({ target, filter: { kind: "text", field: "frontmatter.list", op: "is", value } })).toEqual({
-				matches: value === "9",
-				preparing: false,
-			});
-	});
-
-	test("hidden children cannot change a member's filtered page or counters", async () => {
-		const { t, db, asOwner, parentId, insert_child, add_member } = await seed_filter_match();
+	test("hidden children cannot change a member's filtered page", async () => {
+		const { t, db, asOwner, insert_child, add_member, read_page } = await seed_filter_match();
 		const publicId = await insert_child({ name: "task.md", kind: "file", updatedAt: 1 });
 		await t.run(async (ctx) =>
 			files_metadata_db_write_entries(ctx, {
@@ -15337,18 +14910,17 @@ describe("get_table_filter_match", () => {
 			}),
 		);
 		const member = await add_member();
-		const read = (segment: "value" | "missing") =>
-			member.as.query(api.files_nodes.list_tree_children_sorted, {
+		const read = () =>
+			read_page({
+				as: member.as,
 				membershipId: member.membershipId,
-				parentId,
 				kind: "file",
-				sort: [{ field: "metadata.status", direction: "asc" }],
-				filter: { kind: "name", field: "name", op: "contains", value: "task" },
-				workLimit: 50,
-				segment,
+				sort: { field: "name", direction: "asc" },
+				filter: { kind: "text", field: "metadata.status", op: "is", value: "ready" },
 				paginationOpts: { numItems: 50, cursor: null },
 			});
-		const before = [await read("value"), await read("missing")];
+		const before = await read();
+		expect(before.page.map((row) => row.name)).toEqual(["task.md"]);
 		const hiddenId = await insert_child({ name: "a-hidden-task.md", kind: "file", updatedAt: 1 });
 		await t.run(async (ctx) =>
 			files_metadata_db_write_entries(ctx, {
@@ -15360,7 +14932,7 @@ describe("get_table_filter_match", () => {
 			(await asOwner.mutation(api.files_sharing.restrict_node, { membershipId: db.membershipId, nodeId: hiddenId }))
 				._nay,
 		).toBeUndefined();
-		expect([await read("value"), await read("missing")]).toEqual(before);
+		expect(await read()).toEqual(before);
 	});
 
 	test("refuses foreign membership, foreign targets, inactive membership, and missing auth", async () => {
@@ -15380,7 +14952,8 @@ describe("get_table_filter_match", () => {
 			membershipId: db.membershipId,
 			parentId,
 			target: { kind: "saved" as const, id: nodeId },
-			filter: { kind: "name", field: "name", op: "contains", value: "task" } as const,
+			filter: { kind: "name", field: "name", op: "starts_with", value: "task" } as const,
+			namePrefix: null,
 		};
 		expect(
 			await asOwner.query(api.files_nodes.get_table_filter_match, { ...args, membershipId: foreign.membershipId }),
@@ -15415,7 +14988,8 @@ describe("table filter caller", () => {
 						kind: "file",
 						sort: [{ field: "name", direction: "asc" }],
 						filter: null,
-						workLimit: 1000,
+						namePrefix: null,
+						restricted: false,
 						segment: "value",
 						paginationOpts: { numItems: 50, cursor: null },
 					}),
@@ -15425,7 +14999,8 @@ describe("table filter caller", () => {
 						membershipId: db.membershipId,
 						parentId: "root",
 						target: { kind: "saved", id: parentId },
-						filter: { kind: "name", field: "name", op: "contains", value: "table" },
+						filter: { kind: "name", field: "name", op: "starts_with", value: "table" },
+						namePrefix: null,
 					}),
 				).rejects.toThrow("Unauthenticated");
 			}
@@ -15448,7 +15023,8 @@ describe("table filter caller", () => {
 					kind: "file",
 					sort: [{ field: "name", direction: "asc" }],
 					filter: null,
-					workLimit: 1000,
+					namePrefix: null,
+					restricted: false,
 					segment: "value",
 					paginationOpts: { numItems: 50, cursor: null },
 				}),
@@ -15458,609 +15034,18 @@ describe("table filter caller", () => {
 					membershipId: db.membershipId,
 					parentId: "root",
 					target: { kind: "saved", id: parentId },
-					filter: { kind: "name", field: "name", op: "contains", value: "table" },
+					filter: { kind: "name", field: "name", op: "starts_with", value: "table" },
+					namePrefix: null,
 				}),
 			).rejects.toThrow("Unauthenticated");
 		},
 	);
 });
 
-describe("list_tree_children_sorted multi", () => {
-	async function seed_multi(options: Parameters<typeof test_convex>[0] = {}) {
-		const seeded = await seed_folder_table(options);
-		const add = async (args: {
-			name: string;
-			updatedAt: number;
-			size?: number | undefined;
-			status?: string;
-			kind?: "file" | "folder";
-		}) => {
-			const { size = undefined, status, kind = "file", updatedAt, name } = args;
-
-			const nodeId = await seeded.insert_child({ name, kind, updatedAt, contentByteSize: size });
-			if (status !== undefined && kind === "folder")
-				await seeded.t.run(async (ctx) =>
-					files_metadata_db_write_entries(ctx, {
-						fileNode: (await ctx.db.get("files_nodes", nodeId))!,
-						entries: [{ key: "status", value: status }],
-					}),
-				);
-			else if (status !== undefined)
-				await seeded.t.run((ctx) =>
-					files_metadata_db_insert_committed(ctx, {
-						organizationId: seeded.db.organizationId,
-						workspaceId: seeded.db.workspaceId,
-						nodeId,
-						markdownContent: `---\nstatus: ${status}\n---\n`,
-					}),
-				);
-			return nodeId;
-		};
-		const read = (args: {
-			sort: files_sort_Sort;
-			cursor?: string | null;
-			options?: {
-				kind?: "file" | "folder";
-				segment?: "value" | "missing";
-				workLimit?: number;
-				filter?: files_table_Filter | null;
-			};
-		}) => {
-			const { cursor = null, options = {}, sort } = args;
-
-			return seeded.asOwner.query(api.files_nodes.list_tree_children_sorted, {
-				membershipId: seeded.db.membershipId,
-				parentId: seeded.parentId,
-				kind: options.kind ?? "file",
-				sort,
-				filter: options.filter ?? null,
-				workLimit: options.workLimit ?? 1000,
-				segment: options.segment ?? "value",
-				paginationOpts: { numItems: 1, cursor },
-			});
-		};
-		const walk = async (sort: files_sort_Sort, options: Parameters<typeof read>[0]["options"] = {}) => {
-			const pages: Array<Awaited<ReturnType<typeof read>>> = [];
-			let cursor: string | null = null;
-			for (let index = 0; index < 20; index++) {
-				const result = await read({ sort, cursor, options });
-				pages.push(result);
-				expect(result.sortLimit).toBeNull();
-				expect(result.workPaused).toBe(false);
-				if (result.isDone) return pages;
-				expect(result.continueCursor).not.toBe(cursor);
-				cursor = result.continueCursor;
-			}
-			throw new Error("Expected multi-sort to finish");
-		};
-		return { ...seeded, add, read, walk };
-	}
-
-	test("candidate 51 can sort first after a whole group is proved", async () => {
-		const { add, read, walk } = await seed_multi();
-		for (let index = 0; index < 61; index++)
-			await add({ name: `entry-${String(index).padStart(2, "0")}.md`, updatedAt: 1, size: 61 - index });
-		const sort: files_sort_Sort = [
-			{ field: "updated", direction: "asc" },
-			{ field: "size", direction: "asc" },
-		];
-		const first = await read({ sort });
-		expect(first.page[0]?.name).toBe("entry-60.md");
-		expect(first.scannedCount).toBe(50);
-		expect(first.workCount).toBeGreaterThan(61);
-		const pages = await walk(sort);
-		expect(pages.flatMap((page) => page.page.map((row) => row.name))).toEqual(
-			Array.from({ length: 61 }, (_, index) => `entry-${String(60 - index).padStart(2, "0")}.md`),
-		);
-	});
-
-	test("primary and Name directions stay independent across large indexed groups", async () => {
-		const { add, walk } = await seed_multi();
-		for (const status of ["a", "b"])
-			for (let index = 0; index < 110; index++)
-				await add({ name: `${status}-${String(index).padStart(3, "0")}.md`, updatedAt: 1, size: undefined, status });
-		for (const primaryDirection of ["asc", "desc"] as const)
-			for (const nameDirection of ["asc", "desc"] as const) {
-				const sort: files_sort_Sort = [
-					{ field: "frontmatter.status", direction: primaryDirection },
-					{ field: "name", direction: nameDirection },
-					{ field: "frontmatter.unread", direction: "desc" },
-				];
-				const pages = await walk(sort);
-				const expected = (primaryDirection === "asc" ? ["a", "b"] : ["b", "a"]).flatMap((status) =>
-					Array.from(
-						{ length: 110 },
-						(_, index) => `${status}-${String(nameDirection === "asc" ? index : 109 - index).padStart(3, "0")}.md`,
-					),
-				);
-				expect(pages.flatMap((page) => page.page.map((row) => row.name))).toEqual(expected);
-				expect(pages[0]?.scannedCount).toBe(50);
-			}
-	});
-
-	test("three clauses keep each direction and put missing secondary values last", async () => {
-		const { add, read } = await seed_multi();
-		for (const [name, updatedAt, size, status] of [
-			["a.md", 1, 3, "open"],
-			["b.md", 1, 2, "open"],
-			["c.md", 1, 1, "closed"],
-			["d.md", 1, undefined, undefined],
-			["e.md", 2, 2, "open"],
-			["f.md", 2, 3, "open"],
-			["g.md", 2, undefined, "closed"],
-		] as const)
-			await add({ name, updatedAt, size, status });
-		for (const primary of ["asc", "desc"] as const)
-			for (const secondary of ["asc", "desc"] as const)
-				for (const third of ["asc", "desc"] as const) {
-					const result = await read({
-						sort: [
-							{ field: "updated", direction: primary },
-							{ field: "frontmatter.status", direction: secondary },
-							{ field: "size", direction: third },
-						],
-					});
-					const open1 = third === "asc" ? ["b.md", "a.md"] : ["a.md", "b.md"];
-					const open2 = third === "asc" ? ["e.md", "f.md"] : ["f.md", "e.md"];
-					const first = secondary === "asc" ? ["c.md", ...open1, "d.md"] : [...open1, "c.md", "d.md"];
-					const second = secondary === "asc" ? ["g.md", ...open2] : [...open2, "g.md"];
-					expect(result.page.map((row) => row.name)).toEqual(
-						primary === "asc" ? [...first, ...second] : [...second, ...first],
-					);
-				}
-	});
-
-	test("resumes the next page of a sort with more than three clauses", async () => {
-		const { add, walk } = await seed_multi();
-		for (let index = 0; index < 55; index++)
-			await add({ name: `entry-${String(index).padStart(2, "0")}.md`, updatedAt: index });
-		for (const sort of [
-			[
-				{ field: "updated", direction: "asc" },
-				{ field: "size", direction: "asc" },
-				{ field: "frontmatter.status", direction: "asc" },
-				{ field: "name", direction: "asc" },
-			],
-			[
-				{ field: "updated", direction: "asc" },
-				{ field: "size", direction: "asc" },
-				{ field: "frontmatter.a", direction: "asc" },
-				{ field: "frontmatter.b", direction: "asc" },
-				{ field: "frontmatter.c", direction: "asc" },
-				{ field: "metadata.d", direction: "asc" },
-				{ field: "extension", direction: "asc" },
-				{ field: "name", direction: "asc" },
-			],
-		] satisfies files_sort_Sort[]) {
-			const pages = await walk(sort);
-			expect(pages.length).toBeGreaterThan(1);
-			expect(pages.flatMap((page) => page.page.map((row) => row.name))).toEqual(
-				Array.from({ length: 55 }, (_, index) => `entry-${String(index).padStart(2, "0")}.md`),
-			);
-		}
-	});
-
-	test("throws InvalidCursor for a cursor that does not match the request", async () => {
-		const { add, read } = await seed_multi();
-		for (let index = 0; index < 55; index++)
-			await add({ name: `entry-${String(index).padStart(2, "0")}.md`, updatedAt: index });
-		const sort: files_sort_Sort = [
-			{ field: "updated", direction: "asc" },
-			{ field: "size", direction: "asc" },
-		];
-		const first = await read({ sort });
-		expect(first.isDone).toBe(false);
-		const cursor = JSON.parse(first.continueCursor);
-		for (const args of [
-			{
-				sort: [sort[0]!, { field: "size", direction: "desc" }] satisfies files_sort_Sort,
-				cursor: first.continueCursor,
-			},
-			{ sort, cursor: "not-json" },
-			{ sort, cursor: JSON.stringify({ ...cursor, key: { ...cursor.key, parts: [...cursor.key.parts, null] } }) },
-			{ sort, cursor: JSON.stringify({ ...cursor, group: "not-a-number" }) },
-		])
-			await expect(read(args)).rejects.toThrow("InvalidCursor");
-	});
-
-	test("file.extension keeps raw extension order instead of encoded number order", async () => {
-		const { insert_child, read } = await seed_multi();
-		await insert_child({ name: "two.2", kind: "file", updatedAt: 1, lowercaseExtension: "2" });
-		await insert_child({ name: "ten.10", kind: "file", updatedAt: 1, lowercaseExtension: "10" });
-		for (const direction of ["asc", "desc"] as const) {
-			const result = await read({
-				sort: [
-					{ field: "extension", direction },
-					{ field: "name", direction: "asc" },
-				],
-			});
-			expect(result.page.map((row) => row.name)).toEqual(
-				direction === "asc" ? ["ten.10", "two.2"] : ["two.2", "ten.10"],
-			);
-			expect(result.page[0]?.sortKey.parts[0]).toEqual([direction === "asc" ? "10" : "2"]);
-		}
-	});
-
-	test("packs 50 unique Created groups in one response", async () => {
-		const { add, read } = await seed_multi();
-		for (let index = 0; index < 50; index++)
-			await add({
-				name: `created-${String(index).padStart(2, "0")}.md`,
-				updatedAt: index,
-				size: undefined,
-				status: "open",
-			});
-		const result = await read({
-			sort: [
-				{ field: "created", direction: "asc" },
-				{ field: "frontmatter.status", direction: "asc" },
-			],
-		});
-		expect(result.page).toHaveLength(50);
-		expect(result.scannedCount).toBe(50);
-		expect(result.workCount).toBeLessThan(1000);
-		expect(result.sortLimit).toBeNull();
-	});
-
-	test("packs short indexed Name ranges to 50 candidates under one budget", async () => {
-		const { add, read } = await seed_multi();
-		for (let index = 0; index < 70; index++)
-			await add({ name: `updated-${String(index).padStart(2, "0")}.md`, updatedAt: index });
-		const sort: files_sort_Sort = [
-			{ field: "updated", direction: "desc" },
-			{ field: "name", direction: "asc" },
-		];
-		const first = await read({ sort });
-		expect(first.page).toHaveLength(50);
-		expect(first.page[0]?.name).toBe("updated-69.md");
-		expect(first.workCount).toBeGreaterThan(50);
-		const second = await read({ sort, cursor: first.continueCursor });
-		expect(second.page).toHaveLength(20);
-		expect([...first.page, ...second.page].map((row) => row.name)).toEqual(
-			Array.from({ length: 70 }, (_, index) => `updated-${String(69 - index).padStart(2, "0")}.md`),
-		);
-	});
-
-	test("small groups stay whole and a zero-match prefix still advances safely", async () => {
-		const { add, read } = await seed_multi();
-		for (let index = 0; index < 51; index++)
-			await add({ name: `entry-${String(index).padStart(2, "0")}.md`, updatedAt: index < 24 ? 1 : 2, size: index });
-		const sort: files_sort_Sort = [
-			{ field: "updated", direction: "asc" },
-			{ field: "size", direction: "desc" },
-		];
-		const options = { filter: { kind: "name", field: "name", op: "contains", value: "absent" } as const };
-		const first = await read({ sort, cursor: null, options });
-		expect(first.page).toEqual([]);
-		expect(first.scannedCount).toBe(24);
-		expect(first.isDone).toBe(false);
-		expect(first.scanBoundary?.nameKey[1]).toBe("entry-00.md");
-		const second = await read({ sort, cursor: first.continueCursor, options });
-		expect(second.scannedCount).toBe(27);
-		expect(second.page).toEqual([]);
-	});
-
-	test("a cumulative work stop keeps the completed prefix and resumes before the unproved group", async () => {
-		const { add, read } = await seed_multi();
-		await add({ name: "prefix.md", updatedAt: 0, size: 0 });
-		for (let index = 0; index < 10; index++) await add({ name: `group-${index}.md`, updatedAt: 1, size: index });
-		const sort: files_sort_Sort = [
-			{ field: "updated", direction: "asc" },
-			{ field: "size", direction: "desc" },
-		];
-		const first = await read({ sort, cursor: null, options: { workLimit: 8 } });
-		expect(first.page.map((row) => row.name)).toEqual(["prefix.md"]);
-		expect(first).toMatchObject({ scannedCount: 1, workCount: 8, sortLimit: null, workPaused: false, isDone: false });
-		expect(JSON.parse(first.continueCursor)).toMatchObject({ group: 0, groupDone: true });
-		const second = await read({ sort, cursor: first.continueCursor });
-		expect(second.page.map((row) => row.name)).toEqual(
-			Array.from({ length: 10 }, (_, index) => `group-${9 - index}.md`),
-		);
-	});
-
-	test("cumulative byte limits keep a safe prefix and the next fresh page can finish", async () => {
-		const { add, read } = await seed_multi({ transactionLimits: true });
-		for (let index = 0; index < 5; index++)
-			await add({
-				name: `large-${index}.md`,
-				updatedAt: index < 3 ? index : 3,
-				size: undefined,
-				status: "x".repeat(800_000),
-			});
-		const sort: files_sort_Sort = [
-			{ field: "updated", direction: "asc" },
-			{ field: "frontmatter.status", direction: "asc" },
-		];
-		const first = await read({ sort });
-		expect(first.page.map((row) => row.name)).toEqual(["large-0.md", "large-1.md", "large-2.md"]);
-		expect(first).toMatchObject({ isDone: false, sortLimit: null, workPaused: false });
-		const second = await read({ sort, cursor: first.continueCursor });
-		expect(second.page.map((row) => row.name)).toEqual(["large-3.md", "large-4.md"]);
-		expect(second.isDone).toBe(true);
-	});
-
-	test("whole-query call limits stop proof after a prefix without skipping the next group", async () => {
-		const { add, read } = await seed_multi({ transactionLimits: { databaseQueries: 50 } });
-		await add({ name: "prefix.md", updatedAt: 0, size: 0 });
-		for (let index = 0; index < 20; index++)
-			await add({ name: `group-${String(index).padStart(2, "0")}.md`, updatedAt: 1, size: index });
-		const sort: files_sort_Sort = [
-			{ field: "updated", direction: "asc" },
-			{ field: "size", direction: "asc" },
-		];
-		const first = await read({ sort });
-		expect(first.page.map((row) => row.name)).toEqual(["prefix.md"]);
-		expect(first).toMatchObject({ isDone: false, sortLimit: null, workPaused: false });
-		const second = await read({ sort, cursor: first.continueCursor });
-		expect(second.sortLimit).toBeNull();
-		expect(second.page.map((row) => row.name)).toEqual(
-			Array.from({ length: 20 }, (_, index) => `group-${String(index).padStart(2, "0")}.md`),
-		);
-		expect(second.isDone).toBe(true);
-	});
-
-	test("a fresh full allowance reports a byte limit for one unproved group", async () => {
-		const { add, read } = await seed_multi({ transactionLimits: true });
-		for (let index = 0; index < 5; index++)
-			await add({ name: `large-${index}.md`, updatedAt: 1, size: undefined, status: "x".repeat(800_000) });
-		const result = await read({
-			sort: [
-				{ field: "updated", direction: "asc" },
-				{ field: "frontmatter.status", direction: "asc" },
-			],
-		});
-		expect(result).toMatchObject({
-			page: [],
-			scannedCount: 0,
-			isDone: false,
-			continueCursor: "",
-			scanBoundary: null,
-			sortLimit: { reason: "bytes" },
-			workPaused: false,
-		});
-	});
-
-	test("a fresh full allowance reports a call limit before publishing a small group", async () => {
-		const { add, read } = await seed_multi({ transactionLimits: { databaseQueries: 50 } });
-		for (let index = 0; index < 50; index++)
-			await add({ name: `group-${String(index).padStart(2, "0")}.md`, updatedAt: 1, size: index });
-		const result = await read({
-			sort: [
-				{ field: "updated", direction: "asc" },
-				{ field: "size", direction: "asc" },
-			],
-		});
-		expect(result).toMatchObject({
-			page: [],
-			scannedCount: 0,
-			isDone: false,
-			continueCursor: "",
-			scanBoundary: null,
-			sortLimit: { reason: "calls" },
-			workPaused: false,
-		});
-	});
-
-	test("a small allowance pauses without exposing a partly proved group", async () => {
-		const { add, read } = await seed_multi();
-		for (let index = 0; index < 20; index++) await add({ name: `group-${index}.md`, updatedAt: 1, size: index });
-		const sort: files_sort_Sort = [
-			{ field: "updated", direction: "asc" },
-			{ field: "size", direction: "asc" },
-		];
-		const paused = await read({ sort, cursor: null, options: { workLimit: 5 } });
-		expect(paused).toMatchObject({
-			page: [],
-			scannedCount: 0,
-			workCount: 5,
-			continueCursor: "",
-			scanBoundary: null,
-			sortLimit: null,
-			workPaused: true,
-			isDone: false,
-		});
-		expect((await read({ sort })).page).toHaveLength(20);
-	});
-
-	test("candidate 201 proves a true group limit while completed prefix rows remain", async () => {
-		const { add, read } = await seed_multi();
-		await add({ name: "prefix.md", updatedAt: 0, size: 0 });
-		for (let index = 0; index < 201; index++)
-			await add({ name: `group-${String(index).padStart(3, "0")}.md`, updatedAt: 1, size: index });
-		const result = await read({
-			sort: [
-				{ field: "updated", direction: "asc" },
-				{ field: "size", direction: "asc" },
-			],
-		});
-		expect(result.page.map((row) => row.name)).toEqual(["prefix.md"]);
-		expect(result).toMatchObject({
-			scannedCount: 1,
-			sortLimit: { reason: "group_rows" },
-			workPaused: false,
-			isDone: false,
-		});
-		expect(result.scanBoundary?.nameKey[1]).toBe("prefix.md");
-	});
-
-	test("a 200-row arbitrary group stays supported and splits by its full ordered key", async () => {
-		const { add, walk } = await seed_multi();
-		for (let index = 0; index < 200; index++)
-			await add({ name: `group-${String(index).padStart(3, "0")}.md`, updatedAt: 1, size: 199 - index });
-		const pages = await walk([
-			{ field: "updated", direction: "desc" },
-			{ field: "size", direction: "asc" },
-		]);
-		expect(pages.flatMap((page) => page.page.map((row) => row.name))).toEqual(
-			Array.from({ length: 200 }, (_, index) => `group-${String(199 - index).padStart(3, "0")}.md`),
-		);
-	});
-
-	test("folder file.extension and file.size keep original null parts while execution uses file.updated and file.name", async () => {
-		const { add, read, walk } = await seed_multi();
-		for (let index = 0; index < 250; index++)
-			await add({
-				name: `folder-${String(index).padStart(3, "0")}`,
-				updatedAt: 1,
-				size: undefined,
-				status: undefined,
-				kind: "folder",
-			});
-		for (const field of ["extension", "size"]) {
-			const sort: files_sort_Sort = [
-				{ field, direction: "desc" },
-				{ field: "updated", direction: "desc" },
-			];
-			expect((await read({ sort, cursor: null, options: { kind: "folder" } })).page).toEqual([]);
-			const pages = await walk(sort, { kind: "folder", segment: "missing" });
-			expect(pages.flatMap((page) => page.page.map((row) => row.name))).toEqual(
-				Array.from({ length: 250 }, (_, index) => `folder-${String(index).padStart(3, "0")}`),
-			);
-			expect(pages[0]?.page[0]?.sortKey).toEqual({ parts: [null, [1]], nameKey: ["folder-010", "folder-000"] });
-		}
-		const noFields = await walk(
-			[
-				{ field: "extension", direction: "desc" },
-				{ field: "size", direction: "desc" },
-			],
-			{ kind: "folder", segment: "missing" },
-		);
-		expect(noFields.flatMap((page) => page.page)).toHaveLength(250);
-		expect(noFields[0]?.page[0]?.sortKey.parts).toEqual([null, null]);
-	});
-
-	test("effective folder metadata phases keep the original segment and key positions", async () => {
-		const { add, walk } = await seed_multi();
-		await add({ name: "a", updatedAt: 1, size: undefined, status: "open", kind: "folder" });
-		await add({ name: "b", updatedAt: 2, size: undefined, status: undefined, kind: "folder" });
-		await add({ name: "c", updatedAt: 1, size: undefined, status: "closed", kind: "folder" });
-		const pages = await walk(
-			[
-				{ field: "extension", direction: "desc" },
-				{ field: "metadata.status", direction: "desc" },
-			],
-			{ kind: "folder", segment: "missing" },
-		);
-		expect(pages.flatMap((page) => page.page.map((row) => [row.name, row.sortKey.parts]))).toEqual([
-			["a", [null, ["open"]]],
-			["c", [null, ["closed"]]],
-			["b", [null, null]],
-		]);
-	});
-
-	test("an arbitrary missing metadata group is fully proved before secondary ordering", async () => {
-		const { add, read } = await seed_multi();
-		for (let index = 0; index < 8; index++)
-			await add({
-				name: `missing-${index}.md`,
-				updatedAt: 1,
-				size: 8 - index,
-				status: index === 0 ? "open" : undefined,
-			});
-		const result = await read({
-			sort: [
-				{ field: "frontmatter.status", direction: "desc" },
-				{ field: "size", direction: "asc" },
-			],
-			cursor: null,
-			options: { segment: "missing" },
-		});
-		expect(result.page.map((row) => row.name)).toEqual(
-			Array.from({ length: 7 }, (_, index) => `missing-${7 - index}.md`),
-		);
-		expect(result.page[0]?.sortKey.parts).toEqual([null, [1]]);
-		expect(result.isDone).toBe(true);
-	});
-
-	test("hidden restricted rows never enter an ordinary group or its overflow cap", async () => {
-		const { t, db, asOwner, add, read } = await seed_multi();
-		const kept = await add({ name: "kept.md", updatedAt: 1, size: 1 });
-		for (let index = 0; index < 201; index++) {
-			const nodeId = await add({ name: `hidden-${index}.md`, updatedAt: 1, size: index });
-			await t.run((ctx) =>
-				ctx.db.patch("files_nodes", nodeId, { isRestrictedScopeRoot: true, restrictedScopeNodeId: nodeId }),
-			);
-		}
-		const result = await read({
-			sort: [
-				{ field: "updated", direction: "asc" },
-				{ field: "size", direction: "desc" },
-			],
-		});
-		expect(result.page.map((row) => row._id)).toEqual([kept]);
-		expect(result).toMatchObject({ scannedCount: 1, sortLimit: null, isDone: true });
-		const invalid = await asOwner.query(api.files_nodes.list_tree_children_sorted, {
-			membershipId: db.membershipId,
-			parentId: "root",
-			kind: "file",
-			sort: [],
-			filter: null,
-			workLimit: 1000,
-			segment: "value",
-			paginationOpts: { numItems: 50, cursor: null },
-		});
-		expect(invalid).toMatchObject({ page: [], isDone: true, scannedCount: 0, sortLimit: null, workPaused: false });
-	});
-
-	test("missing metadata Name desc advances rejected positions without filter or secondary reads", async () => {
-		const { t, db, add, read } = await seed_multi({ transactionLimits: { databaseQueries: 100 } });
-		for (let index = 0; index < 51; index++)
-			await add({
-				name: `entry-${String(index).padStart(2, "0")}.md`,
-				updatedAt: 1,
-				size: undefined,
-				status: index === 0 ? undefined : "open",
-			});
-		// A large irrelevant filter value would spend the page budget if rejected nodes read it.
-		const lastId = await t.run(
-			async (ctx) =>
-				(await ctx.db
-					.query("files_nodes")
-					.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
-						q
-							.eq("organizationId", db.organizationId)
-							.eq("workspaceId", db.workspaceId)
-							.eq("path", "/table/entry-50.md"),
-					)
-					.unique())!._id,
-		);
-		await t.run((ctx) =>
-			files_metadata_db_insert_committed(ctx, {
-				organizationId: db.organizationId,
-				workspaceId: db.workspaceId,
-				nodeId: lastId,
-				markdownContent: `---\nstatus: open\nlarge: ${"x".repeat(800_000)}\n---\n`,
-			}),
-		);
-		const sort: files_sort_Sort = [
-			{ field: "frontmatter.status", direction: "asc" },
-			{ field: "name", direction: "desc" },
-			{ field: "frontmatter.unread", direction: "asc" },
-		];
-		const options = {
-			segment: "missing" as const,
-			filter: { kind: "text", field: "frontmatter.large", op: "missing" } as const,
-		};
-		const first = await read({ sort, cursor: null, options });
-		expect(first).toMatchObject({ page: [], scannedCount: 50, sortLimit: null, workPaused: false, isDone: false });
-		expect(first.scanBoundary).toEqual({
-			parts: [null, ["entry-011.md", "entry-01.md"], null],
-			nameKey: ["entry-011.md", "entry-01.md"],
-		});
-		const second = await read({ sort, cursor: first.continueCursor, options });
-		expect(second.page.map((row) => row.name)).toEqual(["entry-00.md"]);
-		expect(second.isDone).toBe(true);
-	});
-});
-
 describe("get_table_sort_key", () => {
 	async function seed_key(options: Parameters<typeof test_convex>[0] = {}) {
 		const seeded = await seed_folder_table(options);
-		const key = (args: {
-			target: files_PendingTarget;
-			sort: files_sort_Sort;
-			parentId?: Id<"files_nodes"> | "root";
-		}) => {
+		const key = (args: { target: files_PendingTarget; sort: files_sort_Sort; parentId?: Id<"files_nodes"> | "root" }) => {
 			const { parentId = seeded.parentId, sort, target } = args;
 
 			return seeded.asOwner.query(api.files_nodes.get_table_sort_key, {
@@ -16070,39 +15055,18 @@ describe("get_table_sort_key", () => {
 				sort,
 			});
 		};
-		const draft = (entries: files_metadata_Entry[] = [], ready = true) =>
-			seeded.t.run(async (ctx) => {
-				const created = await files_pending_nodes_db_create(ctx, {
-					organizationId: seeded.db.organizationId,
-					workspaceId: seeded.db.workspaceId,
-					userId: seeded.db.userId,
-					parent: { kind: "saved", id: seeded.parentId },
-					name: "draft",
-					kind: "folder",
-				});
-				if (created._nay) throw new Error(created._nay.message);
-				if (ready)
-					await ctx.db.patch("files_pending_updates", created._yay.pendingUpdateId, {
-						createIntent: { kind: "folder", metadata: entries },
-					});
-				await files_metadata_db_replace_pending(ctx, {
-					organizationId: seeded.db.organizationId,
-					workspaceId: seeded.db.workspaceId,
-					userId: seeded.db.userId,
-					target: { kind: "private", id: created._yay.privateNodeId },
-					pendingUpdateId: created._yay.pendingUpdateId,
-					proposalRevision: 1,
-					path: "/table/draft",
-					createMetadata: entries,
-				});
-				return created._yay;
-			});
-		return { ...seeded, key, draft };
+		return { ...seeded, key };
 	}
 
-	test("a full key uses fresh built-in facts and committed metadata in one read", async () => {
-		const { t, db, asOwner, parentId, insert_child, key } = await seed_key();
-		const nodeId = await insert_child({ name: "before.md", kind: "file", updatedAt: 1, contentByteSize: 2 });
+	test("a key uses fresh built-in facts, committed metadata, and the saved name", async () => {
+		const { t, db, parentId, insert_child, key } = await seed_key();
+		const nodeId = await insert_child({
+			name: "before.md",
+			kind: "file",
+			updatedAt: 1,
+			lowercaseExtension: "md",
+			contentByteSize: 2,
+		});
 		await t.run((ctx) =>
 			files_metadata_db_insert_committed(ctx, {
 				organizationId: db.organizationId,
@@ -16111,6 +15075,7 @@ describe("get_table_sort_key", () => {
 				markdownContent: "---\nstatus: open\n---\n",
 			}),
 		);
+		// A draft rename does not change the saved row's key.
 		await t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
@@ -16119,72 +15084,32 @@ describe("get_table_sort_key", () => {
 			destParent: { kind: "saved", id: parentId },
 			destName: "after.txt",
 		});
-		const enumerated = await asOwner.query(api.files_nodes.list_tree_children_sort_side_rows, {
-			membershipId: db.membershipId,
-			parentId,
-		});
-		expect(enumerated?.rows[0]).not.toHaveProperty("sortKey");
-		expect(enumerated?.rows[0]).not.toHaveProperty("segment");
 		await t.run((ctx) => ctx.db.patch("files_nodes", nodeId, { updatedAt: 9, contentByteSize: 8 }));
-		const result = await key({
-			target: { kind: "saved", id: nodeId },
-			sort: [
-				{ field: "frontmatter.status", direction: "desc" },
-				{ field: "updated", direction: "asc" },
-				{ field: "size", direction: "desc" },
-			],
+		const target = { kind: "saved" as const, id: nodeId };
+		const nameKey = ["before.md", "before.md"];
+		for (const [field, part] of [
+			["frontmatter.status", ["open", ...nameKey]],
+			["updated", [9, ...nameKey]],
+			["size", [8, ...nameKey]],
+			["extension", ["md", ...nameKey]],
+			["name", nameKey],
+			["frontmatter.absent", null],
+		] as const) {
+			expect(await key({ target, sort: [{ field, direction: "desc" }] })).toEqual({ parts: [part], nameKey });
+		}
+		const createdAt = await t.run(async (ctx) => (await ctx.db.get("files_nodes", nodeId))!._creationTime);
+		expect(await key({ target, sort: [{ field: "created", direction: "asc" }] })).toEqual({
+			parts: [[createdAt]],
+			nameKey,
 		});
-		expect(result).toEqual({ parts: [["open"], [9], [8]], nameKey: ["after.txt", "after.txt"] });
-		expect(
-			await key({
-				target: { kind: "saved", id: nodeId },
-				sort: [
-					{ field: "extension", direction: "asc" },
-					{ field: "frontmatter.status", direction: "desc" },
-				],
-			}),
-		).toEqual({ parts: [["txt"], ["open"]], nameKey: ["after.txt", "after.txt"] });
 	});
 
-	test("private keys use the first current primitive and preparation uses null metadata parts", async () => {
-		const { t, key, draft } = await seed_key();
-		const created = await draft([
-			{ key: "zero", value: 0 },
-			{ key: "no", value: false },
-			{ key: "empty", value: "" },
-		]);
-		const target = { kind: "private" as const, id: created.privateNodeId };
-		const sort: files_sort_Sort = [
-			{ field: "metadata.zero", direction: "asc" },
-			{ field: "metadata.no", direction: "asc" },
-			{ field: "metadata.empty", direction: "asc" },
-		];
-		expect(await key({ target, sort })).toEqual({ parts: [["010"], ["false"], [""]], nameKey: ["draft", "draft"] });
-		await t.run((ctx) => ctx.db.patch("files_pending_updates", created.pendingUpdateId, { createIntent: undefined }));
-		expect(await key({ target, sort })).toEqual({ parts: [null, null, null], nameKey: ["draft", "draft"] });
-	});
-
-	test("a stale private revision is a loud error rather than a missing key", async () => {
-		const { t, key, draft } = await seed_key();
-		const created = await draft([{ key: "status", value: "open" }]);
-		await t.run((ctx) => ctx.db.patch("files_pending_updates", created.pendingUpdateId, { revision: 2 }));
-		await expect(
-			key({
-				target: { kind: "private", id: created.privateNodeId },
-				sort: [{ field: "metadata.status", direction: "asc" }],
-			}),
-		).rejects.toThrow("metadataDoc source is mismatched");
-	});
-
-	test("access and visible parent are checked again after enumeration", async () => {
-		const { t, db, asOwner, parentId, insert_child, key, draft } = await seed_key();
+	test("access and the saved parent are checked again on every key", async () => {
+		const { t, db, asOwner, parentId, insert_child, key } = await seed_key();
 		const nodeId = await insert_child({ name: "saved.md", kind: "file", updatedAt: 1 });
 		const other = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx, { organizationName: "key-other" }));
 		const asOther = t.withIdentity({ issuer: "https://clerk.test", external_id: other.userId });
-		const sort: files_sort_Sort = [
-			{ field: "metadata.status", direction: "asc" },
-			{ field: "updated", direction: "asc" },
-		];
+		const sort: files_sort_Sort = [{ field: "metadata.status", direction: "asc" }];
 		expect(
 			await asOther.query(api.files_nodes.get_table_sort_key, {
 				membershipId: other.membershipId,
@@ -16193,29 +15118,36 @@ describe("get_table_sort_key", () => {
 				sort,
 			}),
 		).toBeNull();
-		const created = await draft([{ key: "status", value: "open" }]);
-		expect(
-			await asOther.query(api.files_nodes.get_table_sort_key, {
-				membershipId: other.membershipId,
-				parentId: "root",
-				target: { kind: "private", id: created.privateNodeId },
-				sort,
+		const draft = await t.run((ctx) =>
+			files_pending_nodes_db_create(ctx, {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId: db.userId,
+				parent: { kind: "saved", id: parentId },
+				name: "draft",
+				kind: "folder",
 			}),
-		).toBeNull();
+		);
+		if (draft._nay) throw new Error(draft._nay.message);
+		expect(await key({ target: { kind: "private", id: draft._yay.privateNodeId }, sort })).toBeNull();
 		expect(await key({ target: { kind: "saved", id: nodeId }, sort, parentId: "root" })).toBeNull();
+		// A draft delete does not hide the saved row from the table.
 		await t.mutation(internal.files_pending_updates.upsert_file_pending_archive_in_db, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId: db.userId,
 			target: { kind: "saved", id: nodeId },
 		});
-		expect(await key({ target: { kind: "saved", id: nodeId }, sort })).toBeNull();
+		expect(await key({ target: { kind: "saved", id: nodeId }, sort })).toEqual({
+			parts: [null],
+			nameKey: ["saved.md", "saved.md"],
+		});
 		await t.run((ctx) => ctx.db.patch("organizations_workspaces_users", db.membershipId, { active: false }));
 		expect(
 			await asOwner.query(api.files_nodes.get_table_sort_key, {
 				membershipId: db.membershipId,
 				parentId,
-				target: { kind: "private", id: created.privateNodeId },
+				target: { kind: "saved", id: nodeId },
 				sort,
 			}),
 		).toBeNull();
@@ -16268,10 +15200,7 @@ describe("get_table_sort_key", () => {
 			membershipId: member.membershipId,
 			parentId,
 			target: { kind: "saved" as const, id: nodeId },
-			sort: [
-				{ field: "metadata.status", direction: "asc" as const },
-				{ field: "updated", direction: "asc" as const },
-			],
+			sort: [{ field: "metadata.status", direction: "asc" as const }],
 		};
 		expect(await asMember.query(api.files_nodes.get_table_sort_key, args)).not.toBeNull();
 		await t.run(async (ctx) => {
@@ -16291,14 +15220,6 @@ describe("get_table_sort_key", () => {
 			await ctx.db.delete("access_control_permission_grants", grant!._id);
 		});
 		expect(await asMember.query(api.files_nodes.get_table_sort_key, args)).toBeNull();
-	});
-
-	test("whole-query exhaustion is an error rather than refusal or missing metadata", async () => {
-		const { insert_child, key } = await seed_key({ transactionLimits: { bytesRead: 800_000 } });
-		const nodeId = await insert_child({ name: "saved.md", kind: "file", updatedAt: 1 });
-		await expect(
-			key({ target: { kind: "saved", id: nodeId }, sort: [{ field: "metadata.status", direction: "asc" }] }),
-		).rejects.toThrow("Table sort exceeded its work limit.");
 	});
 
 	test.each([true, false])(
@@ -16330,26 +15251,6 @@ describe("list_tree_children_sort_side_rows", () => {
 	async function seed_side_rows() {
 		const seeded = await seed_folder_table();
 		const { t, db, asOwner, parentId } = seeded;
-
-		const insert_root_file = (name: string, contentByteSize: number | null) =>
-			t.run(async (ctx) =>
-				ctx.db.insert("files_nodes", {
-					...test_mocks.files.base(),
-					organizationId: db.organizationId,
-					workspaceId: db.workspaceId,
-					createdBy: db.userId,
-					updatedBy: db.userId,
-					parentId: "root",
-					name,
-					sortName: files_sort_text_key(name),
-					kind: "file",
-					path: `/${name}`,
-					treePath: `/${name}`,
-					pathDepth: 1,
-					lowercaseExtension: "md",
-					contentByteSize,
-				}),
-			);
 
 		/**
 		 * Add a member of the workspace. A member with no role reads only what is shared with them.
@@ -16385,21 +15286,17 @@ describe("list_tree_children_sort_side_rows", () => {
 			).toEqual({ _yay: null });
 		};
 
-		const move = async (args: {
-			userId: Id<"users">;
-			nodeId: Id<"files_nodes">;
-			destParent: files_PendingParent;
-			destName: string;
-		}) => {
-			const moved = await t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
-				organizationId: db.organizationId,
-				workspaceId: db.workspaceId,
-				userId: args.userId,
-				target: { kind: "saved", id: args.nodeId },
-				destParent: args.destParent,
-				destName: args.destName,
-			});
-			expect(moved._nay).toBeUndefined();
+		const share = async (nodeId: Id<"files_nodes">, userId: Id<"users">) => {
+			expect(
+				(
+					await asOwner.mutation(api.files_sharing.set_node_share_grant, {
+						membershipId: db.membershipId,
+						nodeId,
+						principal: { kind: "user", userId },
+						level: "read",
+					})
+				)._nay,
+			).toBeUndefined();
 		};
 
 		/**
@@ -16457,10 +15354,13 @@ describe("list_tree_children_sort_side_rows", () => {
 				}
 			});
 
+		/**
+		 * The side rows with the key and segment the browser gives each one.
+		 */
 		const side_rows = (args: {
 			as: typeof asOwner;
 			membershipId: Id<"organizations_workspaces_users">;
-			sort: { field: string; direction: "asc" | "desc" };
+			sort: files_sort_Clause;
 			parentId?: Id<"files_nodes"> | "root";
 		}) =>
 			args.as
@@ -16500,11 +15400,11 @@ describe("list_tree_children_sort_side_rows", () => {
 					return { ...result, rows };
 				});
 
-		return { ...seeded, insert_root_file, add_member, restrict, move, insert_shared, grant_read, side_rows };
+		return { ...seeded, add_member, restrict, share, insert_shared, grant_read, side_rows };
 	}
 
-	test("returns readable restricted children with their sort keys, and nothing a member cannot read", async () => {
-		const { db, asOwner, insert_child, add_member, restrict, side_rows } = await seed_side_rows();
+	test("gives a member the restricted children shared with them, with their sort keys, and the owner none", async () => {
+		const { db, asOwner, insert_child, add_member, restrict, share, side_rows } = await seed_side_rows();
 		await insert_child({ name: "open.md", kind: "file", updatedAt: 1, lowercaseExtension: "md" });
 		const sharedId = await insert_child({ name: "shared", kind: "folder", updatedAt: 2 });
 		const secretId = await insert_child({
@@ -16514,21 +15414,29 @@ describe("list_tree_children_sort_side_rows", () => {
 			lowercaseExtension: "md",
 			contentByteSize: 7,
 		});
+		const hiddenId = await insert_child({ name: "hidden.md", kind: "file", updatedAt: 4, lowercaseExtension: "md" });
 		const saved = await asOwner.mutation(api.files_metadata.set_entries, {
 			membershipId: db.membershipId,
 			fileNodeId: secretId,
 			metadataYaml: "status: Open\n",
 		});
 		expect(saved._nay).toBeUndefined();
-		await restrict(sharedId);
-		await restrict(secretId);
+		for (const nodeId of [sharedId, secretId, hiddenId]) await restrict(nodeId);
 
-		const byType = await side_rows({
-			as: asOwner,
-			membershipId: db.membershipId,
-			sort: { field: "extension", direction: "asc" },
-		});
-		expect(byType).toEqual({ rows: expect.any(Array), nameClaims: [], tooManyShared: false, tooManyPending: false });
+		// The owner reads the restricted streams of the sorted pages instead.
+		expect(
+			await side_rows({ as: asOwner, membershipId: db.membershipId, sort: { field: "name", direction: "asc" } }),
+		).toEqual({ rows: [], tooManyShared: false });
+
+		const member = await add_member("clerk_side_rows_member", "member");
+		const read_as_member = (sort: files_sort_Clause) =>
+			side_rows({ as: member.as, membershipId: member.membershipId, sort });
+		expect(await read_as_member({ field: "name", direction: "asc" })).toEqual({ rows: [], tooManyShared: false });
+
+		await share(secretId, member.userId);
+		await share(sharedId, member.userId);
+		const byType = await read_as_member({ field: "extension", direction: "asc" });
+		expect(byType).toEqual({ rows: expect.any(Array), tooManyShared: false });
 		expect(
 			byType?.rows.map((row) => ({
 				name: row.name,
@@ -16554,37 +15462,49 @@ describe("list_tree_children_sort_side_rows", () => {
 			},
 		]);
 
-		const byStatus = await side_rows({
-			as: asOwner,
-			membershipId: db.membershipId,
-			sort: { field: "metadata.status", direction: "desc" },
-		});
+		const byStatus = await read_as_member({ field: "metadata.status", direction: "desc" });
 		expect(byStatus?.rows.map((row) => [row.name, row.segment, row.sortKey.parts[0] ?? row.sortKey.nameKey])).toEqual([
 			["secret.md", "value", ["open", "secret.md", "secret.md"]],
 			["shared", "missing", ["shared", "shared"]],
 		]);
+	});
 
-		const member = await add_member("clerk_side_rows_member", "member");
-		expect(
-			await side_rows({ as: member.as, membershipId: member.membershipId, sort: { field: "name", direction: "asc" } }),
-		).toEqual({ rows: [], nameClaims: [], tooManyShared: false, tooManyPending: false });
+	test("a member's drafts and draft moves add no side rows", async () => {
+		const { t, db, parentId, insert_child, add_member, restrict, share, side_rows } = await seed_side_rows();
+		const secretId = await insert_child({ name: "secret.md", kind: "file", updatedAt: 1 });
+		await restrict(secretId);
+		const elsewhere = await t.mutation(internal.files_nodes.create_folder_node_by_path, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			path: "/elsewhere",
+		});
+		if (elsewhere._nay) throw new Error(elsewhere._nay.message);
+		const member = await add_member("clerk_side_rows_drafts", "member");
+		await share(secretId, member.userId);
+		const memberScope = { organizationId: db.organizationId, workspaceId: db.workspaceId, userId: member.userId };
+		await propose_move_for_test(t, {
+			...memberScope,
+			nodeId: elsewhere._yay.nodeId,
+			destParent: { kind: "saved", id: parentId },
+			destName: "moved-in",
+		});
+		await t.run(async (ctx) => {
+			const draft = await files_pending_nodes_db_create(ctx, {
+				...memberScope,
+				parent: { kind: "saved", id: parentId },
+				name: "draft.md",
+				kind: "file",
+			});
+			if (draft._nay) throw new Error(draft._nay.message);
+		});
 
-		expect(
-			(
-				await asOwner.mutation(api.files_sharing.set_node_share_grant, {
-					membershipId: db.membershipId,
-					nodeId: secretId,
-					principal: { kind: "user", userId: member.userId },
-					level: "read",
-				})
-			)._nay,
-		).toBeUndefined();
-		const shared = await side_rows({
+		const rows = await side_rows({
 			as: member.as,
 			membershipId: member.membershipId,
 			sort: { field: "name", direction: "asc" },
 		});
-		expect(shared?.rows.map((row) => row.name)).toEqual(["secret.md"]);
+		expect(rows?.rows.map((row) => [row.target.kind, row.name])).toEqual([["saved", "secret.md"]]);
 	});
 
 	test("gives a member with no workspace role the root children shared with them", async () => {
@@ -16617,234 +15537,16 @@ describe("list_tree_children_sort_side_rows", () => {
 				kind: "folder",
 				sort: [{ field: "name", direction: "asc" }],
 				filter: null,
-				workLimit: 1000,
+				namePrefix: null,
+				restricted: false,
 				segment: "value",
 				paginationOpts: { numItems: 10, cursor: null },
 			}),
-		).toEqual({
-			page: [],
-			isDone: true,
-			continueCursor: "",
-			scanBoundary: null,
-			scannedCount: 0,
-			workCount: 0,
-			sortLimit: null,
-			workPaused: false,
-		});
+		).toEqual({ page: [], isDone: true, continueCursor: "" });
 	});
 
-	test("returns this user's drafts and moves into the folder once, by their new names, and their name claims", async () => {
-		const { t, db, asOwner, parentId, insert_child, insert_root_file, move, side_rows } = await seed_side_rows();
-		await insert_child({ name: "claimed.md", kind: "file", updatedAt: 1, lowercaseExtension: "md" });
-		const renamedId = await insert_child({ name: "renamed.md", kind: "file", updatedAt: 2, lowercaseExtension: "md" });
-		const outsideId = await insert_root_file("outside.md", 5);
-		await move({
-			userId: db.userId,
-			nodeId: outsideId,
-			destParent: { kind: "saved", id: parentId },
-			destName: "moved-in.md",
-		});
-		await move({
-			userId: db.userId,
-			nodeId: renamedId,
-			destParent: { kind: "saved", id: parentId },
-			destName: "renamed-2.md",
-		});
-
-		const draftIds = await t.run(async (ctx) => {
-			const draft = await files_pending_nodes_db_create(ctx, {
-				organizationId: db.organizationId,
-				workspaceId: db.workspaceId,
-				userId: db.userId,
-				parent: { kind: "saved", id: parentId },
-				name: "draft.md",
-				kind: "file",
-			});
-			if (draft._nay) throw new Error(draft._nay.message);
-			const assetId = await ctx.db.insert("files_r2_assets", {
-				organizationId: db.organizationId,
-				workspaceId: db.workspaceId,
-				createdBy: db.userId,
-				kind: "content_snapshot",
-				r2Bucket: "test",
-				size: 42,
-				updatedAt: Date.now(),
-			});
-			const metadata = [{ key: "status", value: "new" }];
-			await ctx.db.patch("files_pending_updates", draft._yay.pendingUpdateId, {
-				createIntent: { kind: "stored", assetId, size: 42, contentType: "text/markdown", metadata },
-			});
-			const pendingUpdate = await ctx.db.get("files_pending_updates", draft._yay.pendingUpdateId);
-			await files_metadata_db_replace_pending(ctx, {
-				organizationId: db.organizationId,
-				workspaceId: db.workspaceId,
-				userId: db.userId,
-				target: { kind: "private", id: draft._yay.privateNodeId },
-				pendingUpdateId: draft._yay.pendingUpdateId,
-				proposalRevision: pendingUpdate!.revision,
-				path: "/table/draft.md",
-				createMetadata: metadata,
-			});
-
-			// A draft that is still being written, over the name of a saved file.
-			const claim = await files_pending_nodes_db_create(ctx, {
-				organizationId: db.organizationId,
-				workspaceId: db.workspaceId,
-				userId: db.userId,
-				parent: { kind: "saved", id: parentId },
-				name: "claimed.md",
-				kind: "file",
-			});
-			if (claim._nay) throw new Error(claim._nay.message);
-			return { draftId: draft._yay.privateNodeId, claimId: claim._yay.privateNodeId };
-		});
-
-		const bySize = await side_rows({
-			as: asOwner,
-			membershipId: db.membershipId,
-			sort: { field: "size", direction: "asc" },
-		});
-		const byName = await side_rows({
-			as: asOwner,
-			membershipId: db.membershipId,
-			sort: { field: "name", direction: "asc" },
-		});
-		const draftCreatedAt = await t.run(
-			async (ctx) => (await ctx.db.get("files_pending_nodes", draftIds.draftId))!._creationTime,
-		);
-		expect(byName?.rows.find((row) => row.name === "draft.md")).toMatchObject({
-			createdAt: draftCreatedAt,
-			contentByteSize: 42,
-		});
-		expect(byName?.rows.find((row) => row.name === "claimed.md")?.contentByteSize).toBeNull();
-		expect(bySize?.nameClaims.sort()).toEqual(["claimed.md", "draft.md", "moved-in.md", "renamed-2.md"]);
-		expect(
-			bySize?.rows
-				.map((row) => ({
-					name: row.name,
-					target: row.target,
-					treeRowName: row.treeRow?.name ?? null,
-					preparing: row.preparing,
-					segment: row.segment,
-					sortKey: row.sortKey.parts[0] ?? row.sortKey.nameKey,
-				}))
-				.sort((left, right) => left.name.localeCompare(right.name)),
-		).toEqual([
-			{
-				name: "claimed.md",
-				target: { kind: "private", id: draftIds.claimId },
-				treeRowName: null,
-				preparing: true,
-				segment: "missing",
-				sortKey: ["claimed.md", "claimed.md"],
-			},
-			{
-				name: "draft.md",
-				target: { kind: "private", id: draftIds.draftId },
-				treeRowName: null,
-				preparing: false,
-				segment: "value",
-				sortKey: [42, "draft.md", "draft.md"],
-			},
-			{
-				name: "moved-in.md",
-				target: { kind: "saved", id: outsideId },
-				treeRowName: "outside.md",
-				preparing: false,
-				segment: "value",
-				sortKey: [5, "moved-in.md", "moved-in.md"],
-			},
-			{
-				name: "renamed-2.md",
-				target: { kind: "saved", id: renamedId },
-				treeRowName: "renamed.md",
-				preparing: false,
-				segment: "missing",
-				sortKey: ["renamed-012.md", "renamed-2.md"],
-			},
-		]);
-
-		const byStatus = await side_rows({
-			as: asOwner,
-			membershipId: db.membershipId,
-			sort: { field: "metadata.status", direction: "asc" },
-		});
-		expect(byStatus?.rows.find((row) => row.name === "draft.md")).toMatchObject({
-			segment: "value",
-			sortKey: { parts: [["new", "draft.md", "draft.md"]], nameKey: ["draft.md", "draft.md"] },
-		});
-	});
-
-	test("applies the hide rules to restricted children", async () => {
-		const { t, db, asOwner, parentId, insert_child, restrict, move, side_rows } = await seed_side_rows();
-		const ids = new Map<string, Id<"files_nodes">>();
-		for (const name of ["gone.md", "away.md", "renamed.md", "claimed.md", "kept.md"]) {
-			const nodeId = await insert_child({ name, kind: "file", updatedAt: 1, lowercaseExtension: "md" });
-			await restrict(nodeId);
-			ids.set(name, nodeId);
-		}
-		expect(
-			(
-				await t.mutation(internal.files_pending_updates.upsert_file_pending_archive_in_db, {
-					organizationId: db.organizationId,
-					workspaceId: db.workspaceId,
-					userId: db.userId,
-					target: { kind: "saved", id: ids.get("gone.md")! },
-				})
-			)._nay,
-		).toBeUndefined();
-		await move({ userId: db.userId, nodeId: ids.get("away.md")!, destParent: { kind: "root" }, destName: "away.md" });
-		await move({
-			userId: db.userId,
-			nodeId: ids.get("renamed.md")!,
-			destParent: { kind: "saved", id: parentId },
-			destName: "renamed-2.md",
-		});
-		await t.run(async (ctx) => {
-			const claim = await files_pending_nodes_db_create(ctx, {
-				organizationId: db.organizationId,
-				workspaceId: db.workspaceId,
-				userId: db.userId,
-				parent: { kind: "saved", id: parentId },
-				name: "claimed.md",
-				kind: "file",
-			});
-			if (claim._nay) throw new Error(claim._nay.message);
-		});
-
-		const result = await side_rows({
-			as: asOwner,
-			membershipId: db.membershipId,
-			sort: { field: "name", direction: "asc" },
-		});
-		expect(result?.rows.map((row) => `${row.target.kind}:${row.name}`).sort()).toEqual([
-			"private:claimed.md",
-			"saved:kept.md",
-			"saved:renamed-2.md",
-		]);
-	});
-
-	test("leaves out a moved file the user can no longer read, but keeps its name claim", async () => {
-		const { parentId, insert_root_file, add_member, restrict, move, side_rows } = await seed_side_rows();
-		const member = await add_member("clerk_side_rows_revoked", "member");
-		const outsideId = await insert_root_file("outside.md", null);
-		await move({
-			userId: member.userId,
-			nodeId: outsideId,
-			destParent: { kind: "saved", id: parentId },
-			destName: "in.md",
-		});
-		const read = () =>
-			side_rows({ as: member.as, membershipId: member.membershipId, sort: { field: "name", direction: "asc" } });
-
-		expect((await read())?.rows.map((row) => row.name)).toEqual(["in.md"]);
-
-		await restrict(outsideId);
-		expect(await read()).toEqual({ rows: [], nameClaims: ["in.md"], tooManyShared: false, tooManyPending: false });
-	});
-
-	test("says when a folder has more restricted children or pending changes than it sorts", async () => {
-		const { t, db, asOwner, parentId, add_member, insert_shared, side_rows } = await seed_side_rows();
+	test("a member's answer depends only on the children they can read", async () => {
+		const { db, asOwner, add_member, insert_shared, side_rows } = await seed_side_rows();
 		const [userSharedId, roleSharedId] = await insert_shared({ from: 0, to: 200 });
 		const member = await add_member("clerk_side_rows_cap", "member");
 		for (const [nodeId, principal] of [
@@ -16859,8 +15561,6 @@ describe("list_tree_children_sort_side_rows", () => {
 			});
 			expect(granted._nay).toBeUndefined();
 		}
-		const read = () =>
-			side_rows({ as: asOwner, membershipId: db.membershipId, sort: { field: "name", direction: "asc" } });
 		const read_as_member = () =>
 			side_rows({ as: member.as, membershipId: member.membershipId, sort: { field: "name", direction: "asc" } });
 
@@ -16868,31 +15568,9 @@ describe("list_tree_children_sort_side_rows", () => {
 		expect(memberRows?.rows.map((row) => row.name).sort()).toEqual(["shared-0", "shared-1"]);
 		expect(memberRows).toMatchObject({ tooManyShared: false });
 
-		// Over the cap the owner still gets the first 200. A member's rows come from their own grants,
-		// so a child hidden from them changes nothing in their answer.
+		// A child hidden from them changes nothing in their answer.
 		await insert_shared({ from: 200, to: 201 });
-		const shared = await read();
-		expect(shared?.rows).toHaveLength(200);
-		expect(shared).toMatchObject({ tooManyShared: true, tooManyPending: false });
 		expect(await read_as_member()).toEqual(memberRows);
-
-		await t.run(async (ctx) => {
-			for (let index = 0; index < 201; index++) {
-				const draft = await files_pending_nodes_db_create(ctx, {
-					organizationId: db.organizationId,
-					workspaceId: db.workspaceId,
-					userId: db.userId,
-					parent: { kind: "saved", id: parentId },
-					name: `draft-${index}.md`,
-					kind: "file",
-				});
-				if (draft._nay) throw new Error(draft._nay.message);
-			}
-		});
-		const pending = await read();
-		expect(pending?.rows).toHaveLength(400);
-		expect(pending).toMatchObject({ tooManyShared: true, tooManyPending: true });
-		expect(pending?.nameClaims).toHaveLength(200);
 	});
 
 	test("gives a member the first 200 of their shared children here, counting only the ones they can read", async () => {
@@ -16925,7 +15603,7 @@ describe("list_tree_children_sort_side_rows", () => {
 		expect(atCap?.rows).toHaveLength(200);
 		expect(atCap).toMatchObject({ tooManyShared: false });
 
-		// Past the cap the member gets the first 200 by name, like the owner.
+		// Past the cap the member gets the first 200 by name.
 		await grant_read(member.userId, sharedIds.slice(201));
 		const pastCap = await read_as_member();
 		expect(pastCap).toMatchObject({ tooManyShared: true });
@@ -16934,7 +15612,7 @@ describe("list_tree_children_sort_side_rows", () => {
 		);
 	});
 
-	test("scans the folder for a member whose grant list is cut off, and gives none over the cap", async () => {
+	test("gives a member whose grant list is cut off no rows, and says so", async () => {
 		const { add_member, insert_shared, grant_read, side_rows } = await seed_side_rows();
 		const [sharedId] = await insert_shared({ from: 0, to: 1 });
 		const elsewhereIds = await insert_shared({ from: 0, to: 501, parent: "root" });
@@ -16942,16 +15620,13 @@ describe("list_tree_children_sort_side_rows", () => {
 		const read_as_member = () =>
 			side_rows({ as: member.as, membershipId: member.membershipId, sort: { field: "name", direction: "asc" } });
 
-		// 500 grants is the most one list reads, so this list is cut off and `shared-0` may be past the
-		// cut. The folder has only one restricted child, so the scan still finds it.
-		await grant_read(member.userId, [sharedId!, ...elsewhereIds]);
-		const scanned = await read_as_member();
-		expect(scanned?.rows.map((row) => row.name)).toEqual(["shared-0"]);
-		expect(scanned).toMatchObject({ tooManyShared: false });
+		await grant_read(member.userId, [sharedId!]);
+		expect((await read_as_member())?.rows.map((row) => row.name)).toEqual(["shared-0"]);
 
-		// Over the cap the scan would stop at a position among rows hidden from the member, so none show.
-		await insert_shared({ from: 1, to: 201 });
-		expect(await read_as_member()).toEqual({ rows: [], nameClaims: [], tooManyShared: true, tooManyPending: false });
+		// 500 grants is the most one list reads, so this list is cut off and `shared-0` may be past the
+		// cut. Rows from a cut list could depend on hidden rows, so none show.
+		await grant_read(member.userId, elsewhereIds);
+		expect(await read_as_member()).toEqual({ rows: [], tooManyShared: true });
 	});
 
 	test("refuses a folder the caller cannot read", async () => {
@@ -16965,17 +15640,141 @@ describe("list_tree_children_sort_side_rows", () => {
 	});
 
 	test("gives no side rows, not a refusal, for an archived folder the caller can read", async () => {
-		const { t, db, asOwner, parentId, side_rows } = await seed_side_rows();
-		await t.run(async (ctx) => ctx.db.patch("files_nodes", parentId, { archiveOperationId: "archive-1" }));
+		const { t, parentId, insert_child, add_member, restrict, share, side_rows } = await seed_side_rows();
+		const secretId = await insert_child({ name: "secret.md", kind: "file", updatedAt: 1 });
+		await restrict(secretId);
+		const member = await add_member("clerk_side_rows_archived", "member");
+		await share(secretId, member.userId);
+		const read_as_member = () =>
+			side_rows({ as: member.as, membershipId: member.membershipId, sort: { field: "name", direction: "asc" } });
+		expect((await read_as_member())?.rows.map((row) => row.name)).toEqual(["secret.md"]);
 
-		expect(
-			await side_rows({ as: asOwner, membershipId: db.membershipId, sort: { field: "name", direction: "asc" } }),
-		).toEqual({
-			rows: [],
-			nameClaims: [],
-			tooManyShared: false,
-			tooManyPending: false,
+		// Archiving a folder archives its children too.
+		await t.run(async (ctx) => {
+			await ctx.db.patch("files_nodes", parentId, { archiveOperationId: "archive-1" });
+			await ctx.db.patch("files_nodes", secretId, { archiveOperationId: "archive-1" });
 		});
+		expect(await read_as_member()).toEqual({ rows: [], tooManyShared: false });
+	});
+});
+
+describe("get_visible_target_by_path", () => {
+	async function seed_paths() {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asOwner = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const owner = { organizationId: db.organizationId, workspaceId: db.workspaceId, userId: db.userId };
+		const folder = async (path: string) => {
+			const created = await t.mutation(internal.files_nodes.create_folder_node_by_path, { ...owner, path });
+			if (created._nay) throw new Error(created._nay.message);
+			return created._yay.nodeId;
+		};
+		const file = (parentId: Id<"files_nodes">, parentPath: string, name: string) =>
+			t.run((ctx) =>
+				ctx.db.insert("files_nodes", {
+					...test_mocks.files.base(),
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					createdBy: db.userId,
+					updatedBy: db.userId,
+					parentId,
+					name,
+					sortName: files_sort_text_key(name),
+					kind: "file",
+					path: `${parentPath}/${name}`,
+					treePath: `${parentPath}/${name}`,
+					pathDepth: 2,
+					lowercaseExtension: "md",
+				}),
+			);
+		const by_path = (path: string, as = asOwner, membershipId = db.membershipId) =>
+			as.query(api.files_nodes.get_visible_target_by_path, { membershipId, path });
+		return { t, db, asOwner, owner, folder, file, by_path };
+	}
+
+	test("opens the saved row first, then the caller's drafts", async () => {
+		const { t, owner, folder, file, by_path } = await seed_paths();
+		const a = await folder("/a");
+		const b = await folder("/b");
+		const x = await file(a, "/a", "x.md");
+		const y = await file(a, "/a", "y.md");
+		const saved = (id: Id<"files_nodes">) => ({ target: { kind: "saved", id }, kind: "file" });
+
+		// After a draft move of /a/x.md to /b/, both paths open the saved file: the old one as saved,
+		// the new one through the draft.
+		await propose_move_for_test(t, { ...owner, nodeId: x, destParent: { kind: "saved", id: b }, destName: "x.md" });
+		expect(await by_path("/a/x.md")).toEqual(saved(x));
+		expect(await by_path("/b/x.md")).toEqual(saved(x));
+
+		// A private draft opens by its path.
+		const draft = await t.mutation(internal.files_nodes.create_private_node_by_path, {
+			...owner,
+			path: "/b/draft.md",
+			kind: "file",
+		});
+		if (draft._nay) throw new Error(draft._nay.message);
+		expect(await by_path("/b/draft.md")).toEqual({ target: draft._yay.target, kind: "file" });
+
+		// A saved file with a draft delete still opens, so its page can show the pending notice.
+		expect(
+			(
+				await t.mutation(internal.files_pending_updates.upsert_file_pending_archive_in_db, {
+					...owner,
+					target: { kind: "saved", id: y },
+				})
+			)._nay,
+		).toBeUndefined();
+		expect(await by_path("/a/y.md")).toEqual(saved(y));
+		expect(await by_path("/a/none.md")).toBeNull();
+	});
+
+	test("a restricted path is null for a member, and the member's own draft at that path opens for them", async () => {
+		const { t, db, asOwner, folder, file, by_path } = await seed_paths();
+		const a = await folder("/a");
+		const secretId = await file(a, "/a", "secret.md");
+		expect(
+			await asOwner.mutation(api.files_sharing.restrict_node, { membershipId: db.membershipId, nodeId: secretId }),
+		).toEqual({ _yay: null });
+		const member = await t.run(async (ctx) => {
+			const userId = await ctx.db.insert("users", { clerkUserId: "clerk_path_member" });
+			const membershipId = await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId,
+				active: true,
+				updatedAt: Date.now(),
+			});
+			await access_control_db_ensure_role_assignment(ctx, {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId,
+				role: "member",
+				now: Date.now(),
+			});
+			return { userId, membershipId };
+		});
+		const asMember = t.withIdentity({ issuer: "https://clerk.test", external_id: member.userId });
+
+		expect(await by_path("/a/secret.md")).toEqual({ target: { kind: "saved", id: secretId }, kind: "file" });
+		expect(await by_path("/a/secret.md", asMember, member.membershipId)).toBeNull();
+
+		const draft = await t.run((ctx) =>
+			files_pending_nodes_db_create(ctx, {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId: member.userId,
+				parent: { kind: "saved", id: a },
+				name: "secret.md",
+				kind: "file",
+			}),
+		);
+		if (draft._nay) throw new Error(draft._nay.message);
+		expect(await by_path("/a/secret.md", asMember, member.membershipId)).toEqual({
+			target: { kind: "private", id: draft._yay.privateNodeId },
+			kind: "file",
+		});
+		// The owner still opens the saved row.
+		expect(await by_path("/a/secret.md")).toEqual({ target: { kind: "saved", id: secretId }, kind: "file" });
 	});
 });
 

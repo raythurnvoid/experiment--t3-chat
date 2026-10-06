@@ -768,96 +768,77 @@ resolve the reader with `files_nodes_db_get_tree_reader` and filter every row wi
   sidebar ignores that flag, so a member with more than 500 grants in one list can miss shared roots
   without any sign in the UI.
 - `list_tree_children_sorted` (the sorted Files table) uses the same folder gate, and a grant-only
-  member gets nothing for the root. It reads only rows with `isRestrictedScopeRoot: false`. Such a
-  row shares its folder's restricted scope, so every row in that index range is readable by anybody
-  who can read the folder. That is why no row is filtered after paging, and a hidden row never takes
-  a page slot or shows its sort value. Rows with `isRestrictedScopeRoot: true` come from
-  `list_tree_children_sort_side_rows`, which checks each one with the visible reader (read access
-  plus the pending hide rules) and caps them at 200. A grant-only member's root rows come from these
-  side rows.
-  - A local table filter scans that same readable ordinary range. It never scans hidden nodes and
-    then drops them for access. Custom cursors bind the exact membership, folder, kind, segment,
-    sort, and filter. They carry the full index suffix, including Created time/id ties.
-  - Every page returns `scanBoundary`, `scannedCount`, and `workCount`. Native unfiltered pages
-    count raw rows before pending hides and use `workCount: 0`. Custom pages advance only after a
-    whole candidate is checked. Rejected readable candidates still advance the boundary.
-    Refusals return an empty, done page with a null boundary and zero counts.
-  - A sort has one to eight ordered clauses (`files_sort_MAX_CLAUSES`). Multi-sort proves only readable ordinary groups.
-    It uses the primary index and a Name range when that index supports the next clause. Other
-    groups are limited to 200 candidates, with a 201st probe. Hidden restricted children never
-    affect that proof, its cap, cursor, bytes, or work count. Complete groups pack up to 50
-    processed candidates. A cumulative budget stop keeps only the completed prefix.
-    `sortLimit` reports a real group limit. `workPaused` reports a smaller request allowance that
-    cannot prove the next group. Every result carries both fields, including native and refused pages.
-  - With one clause, filtered walks spend at most 50 candidate/proof visits per query. Custom walks
-    check whole-query bytes and calls with a 4 MiB budget and a 1,000-call budget. They reserve
-    1 MiB and 16 calls before another read. The metadata-missing walk keeps both Name streams. Each new field witness is
-    joined to its current ordinary node before its position is used. Stale scope fields throw.
-    A stopped join keeps the last completed cursor. With one clause, no first progress throws a
-    work error.
-  - `get_table_filter_match({ membershipId, parentId, target, filter })` checks one side target
-    again. It resolves current access, private ownership, visible parent, and metadata readiness.
-    It returns `{ matches, preparing }`, or null for refusal or a target no longer visible here.
-    Missing auth throws. Read exhaustion throws; it never means false, null, or an absent scalar.
-    The side-row list keeps its full unfiltered name claims and both cap flags.
-  - Side enumeration has no sort argument and reads no metadata keys. Built-in keys use its
-    authorized facts locally. `get_table_sort_key({ membershipId, parentId, target, sort })`
-    independently checks current auth, access, visible parent, private owner, and proposal revision.
-    It returns one full fresh row key. All built-in and metadata parts come from the same read.
-    Private metadata still preparing has null sort parts. Refusal is null; byte/call or visible
-    reader exhaustion throws. A refused key cannot revive a held row or remove its current name claim.
-  - The owner reads every row, so the owner scans the folder's restricted children by name and gets
-    the first 200.
+  member gets nothing for the root. It reads saved rows only (see the `files-explorer-tree` skill,
+  "Saved-only lists"). Each stream is one kind and either the open or the restricted children:
+  - The open stream reads only rows with `isRestrictedScopeRoot: false`. Such a row shares its
+    folder's restricted scope, so every row in that index range is readable by anybody who can read
+    the folder. That is why no row is filtered after paging, and a hidden row never takes a page
+    slot or shows its sort value. This holds for members only; service accounts check each node, so
+    do not reuse this query for them. The rule is exact only outside scope and move jobs. While a job
+    runs, a child moved out of a restricted folder can still carry the old scope, and the open
+    stream already shows it. This only shows the node early to readers who get access when the job
+    ends.
+  - The restricted twin reads the rows with `isRestrictedScopeRoot: true`. Only the owner gets rows,
+    because the owner can read every node; everybody else gets an empty, done page.
+  - Every returned row must match its stream: the reader's organization and workspace, right
+    parent, active, and both `isRestrictedScopeRoot` and `restrictedScopeNodeId === _id` equal to
+    the stream's `restricted`.
+    A mismatch throws `should_never_happen`, because a stale flag would show a hidden row.
+  - A filter and a sort only pick the index range inside the same stream, so hidden restricted
+    children never change a page, its cursor, or its length.
+- `list_tree_children_sort_side_rows` gives a member the restricted children shared with them, as
+  saved rows, until shared items get their own sorted streams. It reads no drafts. A grant-only
+  member's root rows come from these side rows. The owner gets an empty list, because the
+  restricted twins hold those rows.
   - A non-owner can read a restricted scope root only through a user or role `content.read` grant
     on it. So a member's candidates come from `db_list_granted_restricted_scope_nodes`, the same
-    grant lists `list_tree_shared_roots` reads, kept when their parent is this folder. Scanning the
-    folder instead would not scale: a folder of one private folder per person has thousands of
-    restricted children, and each visible-reader check costs about 9 to 14 `db.get` and `db.query`
-    calls. Convex allows 4,096 such calls per query.
+    grant lists `list_tree_shared_roots` reads, kept when they are active children of this folder.
+    Scanning the folder instead would not scale: a folder of one private folder per person has
+    thousands of restricted children.
   - A member's cut-off must never depend on a row hidden from them. Otherwise the cut would move
     when a hidden row is added and leak that it exists. A grant doc can outlive the access, for
     example a plugin-tagged grant whose membership ended. So the query walks the candidates in name
-    order through the visible reader, skips the ones it refuses, and stops when a 201st row would
-    show. The member gets the first 200 readable rows, with `tooManyShared` when there are more.
+    order, checks each one with saved reads (`db_get_readable_tree_node`: same tenant, then the
+    readable filter), skips the ones it refuses, and stops when a 201st row would show. The member
+    gets the first 200 readable rows, with `tooManyShared` when there are more.
   - When a grant list passes `TREE_SHARED_ROOTS_MAX_GRANTS` (500), some candidates are missing. Then
-    the query scans the folder like the owner path: up to 200 restricted children are all checked,
-    and over 200 the member gets none of them, with `tooManyShared`. That answer depends on the
-    folder's count of all restricted children, like before this change. No name or order leaks, but
-    a member who can add restricted children there can add them one by one and learn that count.
+    the member gets no side rows and `tooManyShared: true`. The answer never depends on the hidden
+    restricted children of the folder.
   - Known limit: loading the grant lists costs one `db.get` per grant. Only the user's own list can
     reach 500. A role list holds at most 50 nodes, because `set_node_share_grant` puts a role on at
     most 50 share lists in the organization, and it is the only writer of role grants. So the lists
-    cost about 500 plus 50 per role. The walk costs about 9 to 14 calls per candidate
-    (a review estimate, not measured). The visible reader's own 4096-read budget counts only part of
-    that, so the query can throw at Convex's 4,096-call limit before `exhausted` is set. 200 shown
-    rows alone stay under it. It needs extra checks in the same folder: a member with 200 shared rows
-    plus about 100 stale grants there, or 200 shared rows plus many pending changes there.
-- A folder that the caller can read but that the Files view hides (archived, or hidden by the
-  caller's own pending delete or move) gets empty side rows, not a refusal, so the table shows no
-  error there.
+    cost about 500 plus 50 per role, plus a few reads per checked candidate.
+  - The list has no sort, filter, or metadata argument. `get_table_sort_key({ membershipId,
+    parentId, target, sort })` and `get_table_filter_match({ membershipId, parentId, target, filter,
+    namePrefix })` check one side target again. They take a saved target (a private one gets null),
+    load the node, check organization, workspace, active state, and `parentId === args.parentId`,
+    then `access_control_db_authorize_membership(..., { permission: "content.read", fileNode })`.
+    Any failure returns null, the same for a missing and a hidden node. A prior side row never
+    grants access.
+- A folder that the caller can read but that is archived gets empty pages and empty side rows, not
+  a refusal, so the table shows no error there.
 - `isRestrictedScopeRoot` on `files_nodes` is a stored copy of `restrictedScopeNodeId === _id`, and
   committed metadata field docs carry the same copy. `files_nodes_db_set_restricted_scope` writes
-  both whenever a node is restricted or unrestricted. `list_tree_children_sorted` throws
-  `should_never_happen` when a returned row is a restricted root, because a stale `false` would
-  show a hidden row. The side rows need no such guard: they check every row with the visible reader.
+  both whenever a node is restricted or unrestricted. `list_tree_children_sorted` and
+  `list_folder_fields` throw `should_never_happen` when a row's flag does not match the range it
+  came from. The side rows need no such guard: they check every row.
 - `files_metadata.list_folder_fields` checks active membership and folder `content.read` before
   listing direct-child committed keys. The root needs workspace read; a grant-only member gets an
-  empty, done ordinary catalog there. A readable folder hidden by archive or the caller's pending
-  move or delete also gets an empty, done page. Missing or denied folders return null.
-  The parent-first index contains only active ordinary field docs. It seeks after each distinct key,
-  so hidden restricted children cannot change the catalog's fields, page length, or cursor.
-  Each witness node must still have the same tenant and parent, be active, and have neither a
-  restricted-root flag nor itself as `restrictedScopeNodeId`. A mismatch throws an invariant error.
-- `files_metadata.list_node_fields` and `get_field_values` resolve one target through the visible
-  reader on every call. A prior side row never grants access. Missing access returns null, including
-  after a grant is revoked. Private targets also require the caller to own the node and current
-  proposal. Every private metadata witness must match the current proposal id and revision, tenant,
-  target, and owner. Stale docs throw instead of becoming key names, values, or a false missing cell.
-  Preparing private targets expose no keys or values. Their source token binds the proposal and
-  revision, so the client cannot keep old pages after a source change. These queries keep whole-query
-  byte and call budgets, and throw when no field can finish. They do not scan hidden child partitions
-  to decide a catalog cap. Columns are personal browser preferences; choosing a key does not publish
-  its name as shared folder settings.
+  empty, done ordinary catalog there. A readable archived folder also gets an empty, done page.
+  Missing or denied folders return null. It reads committed docs only, never pending docs.
+  The parent-first index has the restricted-root flag. Other callers read only the ordinary range,
+  so hidden restricted children cannot change the catalog's fields, page length, or cursor. The
+  owner walks the ordinary and the restricted range together and takes the smaller next key.
+  Each witness node must still have the same tenant and parent, be active, and have a flag that
+  matches its range. A mismatch throws an invariant error.
+- `files_metadata.list_node_fields` and `get_field_values` check the node on every call: they load
+  the saved node, check tenant and active state, then `access_control_db_authorize_membership(...,
+  { fileNode })` with `content.read`. A private target or a refusal returns null, including after a
+  grant is revoked. A prior side row never grants access. They read committed docs only; a doc of
+  another node or tenant throws instead of becoming a key name or a value. These queries keep
+  whole-query byte and call budgets, and throw when no field can finish. They do not scan hidden
+  child partitions to decide a catalog cap. Columns are personal browser preferences; choosing a
+  key does not publish its name as shared folder settings.
 - `files_folder_sorts.get_folder_sort` returns null unless the caller can `content.read` the folder
   (or the workspace, at the root). A grant-only member at the root gets Name, A to Z with
   `canSave: false`, not the saved root sort: a saved metadata sort would name a key they may not see. `canSave` and `set_folder_sort` need what a metadata write needs:

@@ -59,6 +59,7 @@ import {
 	MyMenuItemContent,
 	MyMenuItemContentIcon,
 	MyMenuItemContentPrimary,
+	MyMenuItemContentSecondary,
 	MyMenuItemsGroup,
 	MyMenuItemsGroupText,
 	MyMenuPopover,
@@ -148,7 +149,6 @@ import {
 	Home,
 	Link2,
 	ListFilter,
-	ListPlus,
 	Lock,
 	LockKeyhole,
 	PanelLeftOpen,
@@ -179,13 +179,14 @@ import {
 } from "../../../../shared/files-folder-table-query.ts";
 import {
 	files_sort_DEFAULT,
+	files_sort_field_is_built_in,
 	files_sort_field_is_valid,
-	files_sort_MAX_CLAUSES,
 	type files_sort_Clause,
 	type files_sort_Sort,
 } from "../../../../shared/files-sort.ts";
 import {
 	files_table_DEFAULT_COLUMNS,
+	files_table_filter_order_field,
 	files_table_MAX_COLUMNS,
 	files_table_updated_by_text,
 	type files_table_Filter,
@@ -2673,8 +2674,6 @@ function get_folder_columns(columns: readonly string[]) {
 type FileNodeViewFolderFieldChain = {
 	cursors: Array<string | null>;
 	pageCount: number;
-	sourceToken: string | null;
-	waitForSource: boolean;
 };
 
 function get_folder_target_key(target: files_PendingTarget) {
@@ -2702,8 +2701,6 @@ function useFolderColumnCatalog(args: {
 			chain: (pages.scope === scope ? pages.chains[source.key] : undefined) ?? {
 				cursors: [null],
 				pageCount: 1,
-				sourceToken: null,
-				waitForSource: false,
 			},
 		}));
 	}, [args.open, pages, scope, targetsText]);
@@ -2749,16 +2746,6 @@ function useFolderColumnCatalog(args: {
 					chain = { ...chain, cursors: chain.cursors.slice(0, index + 1) };
 					break;
 				}
-				const token = "sourceToken" in response ? response.sourceToken : "committed";
-				if (index === 0 && chain.waitForSource && token !== chain.sourceToken) break;
-				if (index > 0 && token !== chain.sourceToken) {
-					// A later subscription can see a new proposal before page 1 catches up.
-					sourceFields = [];
-					chain = { ...chain, cursors: [null], sourceToken: token, waitForSource: true };
-					break;
-				}
-				const sourceChanged = index === 0 && chain.sourceToken !== null && token !== chain.sourceToken;
-				chain = { ...chain, sourceToken: token, waitForSource: false };
 				sourceFields.push(...response.fields);
 				if (response.isDone) {
 					status = "done";
@@ -2769,11 +2756,6 @@ function useFolderColumnCatalog(args: {
 				if (nextCursor === null || nextCursor === cursor) {
 					status = "failed";
 					sourceFields = [];
-					break;
-				}
-				if (sourceChanged) {
-					chain = { ...chain, cursors: [null] };
-					status = chain.pageCount === 1 ? "more" : "loading";
 					break;
 				}
 				if (index + 1 >= chain.pageCount) {
@@ -2821,7 +2803,7 @@ function useFolderColumnCatalog(args: {
 			chains: Object.fromEntries(
 				Object.entries(progress.chains).map(([key, chain]) => [
 					key,
-					failed.includes(key) ? { ...chain, cursors: [null], sourceToken: null, waitForSource: false } : chain,
+					failed.includes(key) ? { ...chain, cursors: [null] } : chain,
 				]),
 			),
 		});
@@ -2841,7 +2823,7 @@ function useFolderColumnCatalog(args: {
 }
 
 type FileNodeViewFolderColumnValues = {
-	state: "loading" | "ready" | "failed" | "refused" | "preparing";
+	state: "loading" | "ready" | "failed" | "refused";
 	values: Record<string, string | number | boolean | null>;
 };
 
@@ -2864,8 +2846,6 @@ function useFolderColumnValues(args: {
 			chain: (pages.scope === scope ? pages.chains[get_folder_target_key(target)] : undefined) ?? {
 				cursors: [null],
 				pageCount: 1,
-				sourceToken: null,
-				waitForSource: false,
 			},
 		}));
 	}, [fieldsText, pages, scope, targetsText]);
@@ -2903,20 +2883,6 @@ function useFolderColumnValues(args: {
 					chain = { ...chain, cursors: chain.cursors.slice(0, index + 1) };
 					break;
 				}
-				if (index === 0 && chain.waitForSource && response.sourceToken !== chain.sourceToken) break;
-				if (index > 0 && response.sourceToken !== chain.sourceToken) {
-					values = {};
-					chain = { ...chain, cursors: [null], sourceToken: response.sourceToken, waitForSource: true };
-					break;
-				}
-				const sourceChanged = index === 0 && chain.sourceToken !== null && response.sourceToken !== chain.sourceToken;
-				chain = { ...chain, sourceToken: response.sourceToken, waitForSource: false };
-				if (response.preparing) {
-					state = "preparing";
-					values = {};
-					chain = { ...chain, cursors: [null] };
-					break;
-				}
 				for (const value of response.values) values[value.field] = value.value;
 				if (response.isDone) {
 					state = "ready";
@@ -2931,10 +2897,6 @@ function useFolderColumnValues(args: {
 				) {
 					state = "failed";
 					values = {};
-					break;
-				}
-				if (sourceChanged) {
-					chain = { ...chain, cursors: [null] };
 					break;
 				}
 				if (response.afterField !== chain.cursors[index + 1]) {
@@ -2963,7 +2925,7 @@ function useFolderColumnValues(args: {
 			scope,
 			chains: {
 				...(current.scope === scope ? current.chains : {}),
-				[key]: { cursors: [null], pageCount: 1, sourceToken: null, waitForSource: false },
+				[key]: { cursors: [null], pageCount: 1 },
 			},
 		}));
 	});
@@ -3039,13 +3001,27 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 	// so a viewer can sort without changing the folder for others.
 	const parsedQuery = files_folder_table_query_parse(committedQuery);
 	const urlSort = files_folder_table_query_to_sort(parsedQuery);
-	const sort = urlSort ?? folderSort?.sort ?? null;
 	const filter = files_folder_table_query_to_filter(parsedQuery.filter, get_folder_filter_day_bounds);
-	const sortedChildren = useFilesSortedChildren({ membershipId, folderId: folderItemId, sort, filter });
+	const namePrefix = filter === null ? null : (parsedQuery.namePrefix?.value ?? null);
+	// A filter picks the index, and the index fixes the order. The direction comes from the URL sort
+	// token when it names that field, else A to Z. So a filter never changes the saved sort, and
+	// removing the filter brings the saved sort back.
+	const filterOrderField = filter === null ? null : files_table_filter_order_field(filter);
+	const sort: files_sort_Sort | null =
+		filterOrderField !== null
+			? [
+					{
+						field: filterOrderField,
+						direction: urlSort?.[0]?.field === filterOrderField ? urlSort[0].direction : "asc",
+					},
+				]
+			: (urlSort ?? folderSort?.sort ?? null);
+	const sortedChildren = useFilesSortedChildren({ membershipId, folderId: folderItemId, sort, filter, namePrefix });
 	const isFolderFailed = folderSort === null || sortedChildren.isFolderRefused;
 	const isShowingHeldRows =
 		sortedChildren.rows !== undefined &&
 		(JSON.stringify(sortedChildren.rowsFilter) !== JSON.stringify(filter) ||
+			sortedChildren.rowsNamePrefix !== namePrefix ||
 			JSON.stringify(sortedChildren.rowsSort) !== JSON.stringify(sort));
 	// A table row can be on a page the tree store has not loaded, so the move checks read both lists.
 	const savedNodesList = [
@@ -3151,13 +3127,8 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 	});
 
 	const handleShowMoreClick = useFn(() => {
-		if (isShowingHeldRows || sortedChildren.refreshing) return;
+		if (isShowingHeldRows) return;
 		setShowAllItems(true);
-		if (filter !== null || (sort?.length ?? 0) > 1) {
-			if (!showAllItems) sortedChildren.requestMatches(Math.max(50, childItems.length));
-			else if (hiddenChildItemsCount === 0) sortedChildren.requestMatches(childItems.length + 50);
-			return;
-		}
 		// Every loaded row is already on screen, so ask the server for the next page.
 		if (hiddenChildItemsCount === 0) {
 			sortedChildren.loadMore();
@@ -3189,10 +3160,6 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 		// A new filter or sort starts the table again from the first rows.
 		if (change.committedQuery !== undefined) setShowAllItems(false);
 		onQueryChange(change);
-	});
-	const handleReloadTable = useFn(() => {
-		setShowAllItems(false);
-		sortedChildren.reload();
 	});
 	const handleActiveTargetsChange = useFn((keys: string[]) => setActiveTargets({ scope: folderScope, keys }));
 
@@ -3240,8 +3207,6 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 
 	const handleShowLessClick = useFn(() => {
 		setShowAllItems(false);
-		if (filter !== null || (sort?.length ?? 0) > 1)
-			sortedChildren.requestMatches(FILE_NODE_VIEW_FOLDER_INITIAL_VISIBLE_ITEMS_COUNT);
 	});
 
 	const handleCreateReadmeClick = useFn(() => {
@@ -3387,25 +3352,21 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 					viewQuery={viewQuery}
 					filter={filter}
 					rowsFilter={sortedChildren.rowsFilter}
+					namePrefix={namePrefix}
+					rowsNamePrefix={sortedChildren.rowsNamePrefix}
 					isShowingHeldRows={isShowingHeldRows}
 					isFilterFailed={sortedChildren.isFailed}
-					filterSearching={sortedChildren.searching}
-					filterPaused={sortedChildren.paused}
-					filterPreparing={sortedChildren.preparing}
-					filterRefreshing={sortedChildren.refreshing}
-					filterRecovery={sortedChildren.filterRecovery}
-					sortLimit={sortedChildren.sortLimit}
 					columnCatalog={columnCatalog}
 					columnValues={columnValues.values}
 					activeValueTargetCount={valueTargets.length}
 					valueQueryCount={columnValues.queryCount}
 					sort={sort ?? files_sort_DEFAULT}
 					rowsSort={sortedChildren.rowsSort}
-					canSaveSort={folderSort?.canSave === true && urlSort !== null}
+					// A filter fixes the order, so the URL sort is not the order on screen. So Save sort shows only when no filter is on.
+					canSaveSort={folderSort?.canSave === true && urlSort !== null && filter === null}
 					isSavingSort={isSavingSort}
 					isSortBusy={sortedChildren.isBusy}
 					tooManyShared={sortedChildren.tooManyShared}
-					tooManyPending={sortedChildren.tooManyPending}
 					organizationName={organizationName}
 					workspaceName={workspaceName}
 					pendingActionNodeIds={pendingActionNodeIds}
@@ -3418,8 +3379,6 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 					onColumnsOpenChange={handleColumnsOpenChange}
 					onQueryChange={handleQueryChange}
 					onBarActiveChange={handleBarActiveChange}
-					onContinueSearch={sortedChildren.continueSearch}
-					onReloadTable={handleReloadTable}
 					onRetryFilter={sortedChildren.retry}
 					onSortChange={handleSortChange}
 					onSaveSort={handleSaveSort}
@@ -3898,7 +3857,7 @@ const FileNodeViewFolderExplorerColumnCells = memo(function FileNodeViewFolderEx
 						? row.name.slice(dotIndex + 1).toLowerCase()
 						: null;
 			} else {
-				state = row.preparing ? "preparing" : (columnValues?.state ?? "deferred");
+				state = columnValues?.state ?? "deferred";
 				if ((state === "ready" || state === "loading") && columnValues && Object.hasOwn(columnValues.values, field)) {
 					value = columnValues.values[field] ?? null;
 					state = "ready";
@@ -3909,15 +3868,13 @@ const FileNodeViewFolderExplorerColumnCells = memo(function FileNodeViewFolderEx
 					? "Loads when row is visible"
 					: state === "loading"
 						? "Loading…"
-						: state === "preparing"
-							? "Preparing"
-							: state === "failed"
-								? "Could not load"
-								: state === "refused"
-									? "Unavailable"
-									: value === null
-										? "—"
-										: String(value);
+						: state === "failed"
+							? "Could not load"
+							: state === "refused"
+								? "Unavailable"
+								: value === null
+									? "—"
+									: String(value);
 			return (
 				<MyGridTableCell
 					key={field}
@@ -4256,73 +4213,6 @@ const FileNodeViewFolderExplorerRow = memo(function FileNodeViewFolderExplorerRo
 		</MyGridTableRow>
 	);
 });
-
-const FileNodeViewFolderExplorerPrivateRow = memo(function FileNodeViewFolderExplorerPrivateRow(props: {
-	row: FileNodeViewFolderRow;
-	columnCells: ReactNode;
-	organizationName: string;
-	workspaceName: string;
-	onRegisterRow: (key: string, element: HTMLElement) => () => void;
-	onRetryValues?: () => void;
-}) {
-	const { row, columnCells, organizationName, workspaceName, onRegisterRow, onRetryValues } = props;
-	const rowRef = useRef<HTMLDivElement | null>(null);
-	const targetKey = get_folder_target_key(row.target);
-	useLayoutEffect(() => {
-		if (rowRef.current) return onRegisterRow(targetKey, rowRef.current);
-	}, [onRegisterRow, targetKey]);
-	return (
-		<MyGridTableRow
-			ref={rowRef}
-			className={"FileNodeViewFolderExplorer-row" satisfies FileNodeViewFolderExplorerRow_ClassNames}
-		>
-			<MyGridTableCell
-				data-column-field="name"
-				className={cn(
-					"FileNodeViewFolderExplorer-cell" satisfies FileNodeViewFolderExplorerRow_ClassNames,
-					"FileNodeViewFolderExplorer-cell-name" satisfies FileNodeViewFolderExplorerRow_ClassNames,
-				)}
-			>
-				<Link
-					aria-label={`Open ${row.name}`}
-					className={"FileNodeViewFolderExplorer-row-action" satisfies FileNodeViewFolderExplorerRow_ClassNames}
-					to="/w/$organizationName/$workspaceName/files"
-					params={{ organizationName, workspaceName }}
-					search={(prev) => ({
-						...prev,
-						filter: undefined,
-						view_q: undefined,
-						nodeId: row.target.kind === "saved" ? row.target.id : undefined,
-						pendingNodeId: row.target.kind === "private" ? row.target.id : undefined,
-						view: undefined,
-						fileView: undefined,
-					})}
-				/>
-				<MyIcon className={"FileNodeViewFolderExplorer-icon" satisfies FileNodeViewFolderExplorerRow_ClassNames}>
-					{row.kind === "folder" ? <Folder /> : <FileText />}
-				</MyIcon>
-				<span className={"FileNodeViewFolderExplorer-link" satisfies FileNodeViewFolderExplorerRow_ClassNames}>
-					{row.name}
-				</span>
-			</MyGridTableCell>
-			{columnCells}
-			<MyGridTableCell
-				data-column-field="actions"
-				className={cn(
-					"FileNodeViewFolderExplorer-cell" satisfies FileNodeViewFolderExplorerRow_ClassNames,
-					"FileNodeViewFolderExplorer-cell-actions" satisfies FileNodeViewFolderExplorerRow_ClassNames,
-				)}
-			>
-				{row.preparing ? "Preparing…" : "Added"}
-				{onRetryValues && (
-					<MyButton variant="outline" onClick={onRetryValues}>
-						Retry values
-					</MyButton>
-				)}
-			</MyGridTableCell>
-		</MyGridTableRow>
-	);
-});
 // #endregion folder explorer row
 
 // #region folder explorer columns
@@ -4507,10 +4397,10 @@ function get_folder_filter_day_bounds(day: string) {
 }
 
 /**
- * The filter in words, for the note that names the filter of the rows on screen. A date shows the
- * local day the filter was made for.
+ * The filter and its name prefix in words, for the note that names the filter of the rows on screen. A
+ * date shows the local day the filter was made for.
  */
-function get_folder_filter_label(filter: files_table_Filter | null) {
+function get_folder_filter_label(filter: files_table_Filter | null, namePrefix: string | null) {
 	if (filter === null) return "No filter";
 	const value =
 		filter.kind === "date"
@@ -4518,7 +4408,8 @@ function get_folder_filter_label(filter: files_table_Filter | null) {
 			: "value" in filter
 				? String(filter.value)
 				: "";
-	return `${files_folder_table_query_field_text(filter.field)} ${filter.op.replace("_", " ")}${value ? ` ${value}` : ""}`;
+	const label = `${files_folder_table_query_field_text(filter.field)} ${filter.op.replace("_", " ")}${value ? ` ${value}` : ""}`;
+	return namePrefix === null ? label : `${files_folder_table_query_field_text("name")} starts with ${namePrefix} and ${label}`;
 }
 // #endregion folder explorer filter
 
@@ -4553,15 +4444,19 @@ type FileNodeViewFolderExplorerColumnMenu_ClassNames = "FileNodeViewFolderExplor
 
 const FileNodeViewFolderExplorerColumnMenu = memo(function FileNodeViewFolderExplorerColumnMenu(props: {
 	field: string;
-	sort: files_sort_Sort;
+	/**
+	 * Why this column cannot sort now, or null when it can. A filter fixes the order.
+	 */
+	sortDisabledReason: string | null;
 	onSortChange: (sort: files_sort_Sort) => void;
 	onFilterField: (field: string) => void;
 	onHide: (field: string) => void;
 }) {
-	const { field, sort, onSortChange, onFilterField, onHide } = props;
+	const { field, sortDisabledReason, onSortChange, onFilterField, onHide } = props;
 	const label = files_folder_table_query_field_text(field);
 	// Some columns, such as file.updated_by, have no sort or filter. They only offer Hide column.
 	const isSortable = files_sort_field_is_valid(field);
+	const reasonId = `FileNodeViewFolderExplorerColumnMenu-${useId()}-reason`;
 
 	return (
 		<MyMenu placement="bottom-start">
@@ -4585,7 +4480,17 @@ const FileNodeViewFolderExplorerColumnMenu = memo(function FileNodeViewFolderExp
 						<MyMenuItemsGroup>
 							<MyMenuItemsGroupText>Sort</MyMenuItemsGroupText>
 							{(["asc", "desc"] as const).map((direction) => (
-								<MyMenuItem key={direction} hideOnClick onClick={() => onSortChange([{ field, direction }])}>
+								<MyMenuItem
+									key={direction}
+									// The keys still reach a disabled item, so a keyboard user can read the reason.
+									disabled={sortDisabledReason !== null}
+									accessibleWhenDisabled
+									// The name is the direction only. The reason is the description, so it is read once.
+									aria-label={get_folder_sort_direction_label({ field, direction })}
+									aria-describedby={sortDisabledReason !== null ? `${reasonId}-${direction}` : undefined}
+									hideOnClick
+									onClick={() => onSortChange([{ field, direction }])}
+								>
 									<MyMenuItemContent>
 										<MyMenuItemContentIcon>
 											{direction === "asc" ? <ArrowUpNarrowWide /> : <ArrowDownWideNarrow />}
@@ -4593,21 +4498,14 @@ const FileNodeViewFolderExplorerColumnMenu = memo(function FileNodeViewFolderExp
 										<MyMenuItemContentPrimary>
 											{get_folder_sort_direction_label({ field, direction })}
 										</MyMenuItemContentPrimary>
+										{sortDisabledReason !== null && (
+											<MyMenuItemContentSecondary id={`${reasonId}-${direction}`}>
+												{sortDisabledReason}
+											</MyMenuItemContentSecondary>
+										)}
 									</MyMenuItemContent>
 								</MyMenuItem>
 							))}
-							<MyMenuItem
-								disabled={sort.length >= files_sort_MAX_CLAUSES || sort.some((clause) => clause.field === field)}
-								hideOnClick
-								onClick={() => onSortChange([...sort, { field, direction: get_folder_sort_first_direction(field) }])}
-							>
-								<MyMenuItemContent>
-									<MyMenuItemContentIcon>
-										<ListPlus />
-									</MyMenuItemContentIcon>
-									<MyMenuItemContentPrimary>Add to sort</MyMenuItemContentPrimary>
-								</MyMenuItemContent>
-							</MyMenuItem>
 						</MyMenuItemsGroup>
 					)}
 					<MyMenuItemsGroup separator={isSortable}>
@@ -4691,20 +4589,21 @@ type FileNodeViewFolderExplorer_Props = {
 	 * The filter of the shown rows, including held rows while a new filter loads.
 	 */
 	rowsFilter: files_table_Filter | null;
+	/**
+	 * The `file.name:starts_with` value that joins the filter.
+	 */
+	namePrefix: string | null;
+	/**
+	 * The name prefix of the shown rows, including held rows while a new prefix loads.
+	 */
+	rowsNamePrefix: string | null;
 	isShowingHeldRows: boolean;
 	isFilterFailed: boolean;
-	filterSearching: boolean;
-	filterPaused: boolean;
-	filterPreparing: boolean;
-	filterRefreshing: boolean;
-	filterRecovery: "retry" | "reload" | null;
-	sortLimit: ReturnType<typeof useFilesSortedChildren>["sortLimit"];
 	columnCatalog: FileNodeViewFolderCatalog;
 	columnValues: Record<string, FileNodeViewFolderColumnValues>;
 	activeValueTargetCount: number;
 	valueQueryCount: number;
 	tooManyShared: boolean;
-	tooManyPending: boolean;
 	organizationName: string;
 	workspaceName: string;
 	pendingActionNodeIds: ReadonlySet<string>;
@@ -4726,8 +4625,6 @@ type FileNodeViewFolderExplorer_Props = {
 	onColumnsOpenChange: (open: boolean) => void;
 	onQueryChange: FileNodeViewFolderFilterBar_Props["onChange"];
 	onBarActiveChange: FileNodeViewFolderFilterBar_Props["onActiveChange"];
-	onContinueSearch: () => void;
-	onReloadTable: () => void;
 	onRetryFilter: () => void;
 	onSortChange: (sort: files_sort_Sort) => void;
 	onSaveSort: () => void;
@@ -4754,20 +4651,15 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 		viewQuery,
 		filter,
 		rowsFilter,
+		namePrefix,
+		rowsNamePrefix,
 		isShowingHeldRows,
 		isFilterFailed,
-		filterSearching,
-		filterPaused,
-		filterPreparing,
-		filterRefreshing,
-		filterRecovery,
-		sortLimit,
 		columnCatalog,
 		columnValues,
 		activeValueTargetCount,
 		valueQueryCount,
 		tooManyShared,
-		tooManyPending,
 		organizationName,
 		workspaceName,
 		pendingActionNodeIds,
@@ -4780,8 +4672,6 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 		onColumnsOpenChange,
 		onQueryChange,
 		onBarActiveChange,
-		onContinueSearch,
-		onReloadTable,
 		onRetryFilter,
 		onSortChange,
 		onSaveSort,
@@ -4794,52 +4684,42 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 	const hasFilter = filter !== null || rowsFilter !== null;
 	const displayedSort = rowsSort ?? sort;
 	const isApplyingSort = rowsSort === null || JSON.stringify(sort) !== JSON.stringify(rowsSort);
-	const sortState =
-		sortLimit !== null
-			? "limited"
-			: isFilterFailed || filterRecovery !== null
-				? "failed"
-				: filterRefreshing
-					? "refreshing"
-					: isApplyingSort
-						? "applying"
-						: "ready";
-	const filterState =
-		isFilterFailed || filterRecovery !== null
-			? "failed"
-			: filterRefreshing
-				? "refreshing"
-				: isShowingHeldRows
-					? "applying"
-					: filterPaused
-						? "paused"
-						: filterSearching
-							? "searching"
-							: isSortBusy && hasFilter
-								? "applying"
-								: "ready";
+	const sortState = isFilterFailed ? "failed" : isApplyingSort ? "applying" : "ready";
+	const filterState = isFilterFailed
+		? "failed"
+		: isShowingHeldRows || (isSortBusy && hasFilter)
+			? "applying"
+			: "ready";
 	const emptyMessage =
-		visibleChildItems.length > 0 ||
-		sortLimit !== null ||
-		filterPaused ||
-		filterSearching ||
-		filterState === "failed" ||
-		filterState === "refreshing" ||
-		filterState === "applying"
+		visibleChildItems.length > 0 || filterState === "failed" || filterState === "applying"
 			? null
-			: hasFilter
-				? filterPreparing
-					? "No matches in ready rows"
-					: tooManyShared || tooManyPending
+			: !isDone
+				? isSortBusy
+					? "Loading folder contents…"
+					: // A stream has more pages, but the loaded ones hold no row to show yet.
+						"No matches loaded yet. Show more to keep looking."
+				: hasFilter
+					? tooManyShared
 						? "No matches in the rows checked"
-						: isDone
-							? "No rows match this filter"
-							: "Searching this folder…"
-				: tooManyShared || tooManyPending
-					? null
-					: isDone
-						? "This folder is empty"
-						: "Loading folder contents…";
+						: "No rows match this filter"
+					: tooManyShared
+						? null
+						: files_sort_field_is_built_in(displayedSort[0]!.field)
+							? "This folder is empty"
+							: // A metadata sort hides the rows without its key, so the folder can still have rows.
+								`No rows have ${displayedSort[0]!.field}`;
+	// A filter picks the index, and the index fixes the order. Other columns cannot sort while it is on.
+	const filterOrderField = filter === null ? null : files_table_filter_order_field(filter);
+	const sortField = sort[0]!.field;
+	// A metadata sort hides the rows without its key.
+	const metadataKey = files_sort_field_is_built_in(sortField) ? null : sortField;
+	const sortNoteId = `FileNodeViewFolderExplorer-${useId()}-sort-note`;
+	const filterKey = JSON.stringify(filter);
+	// The last disabled header the user pressed, for the status message. `count` grows on each press,
+	// so the same message is new again and a screen reader reads it again.
+	const [sortBlocked, setSortBlocked] = useState<{ field: string; filterKey: string; count: number } | null>(null);
+	// A new filter makes the old message wrong, so it goes away.
+	if (sortBlocked !== null && sortBlocked.filterKey !== filterKey) setSortBlocked(null);
 	const [tableElement, setTableElement] = useState<HTMLDivElement | null>(null);
 	const [scrollRoot, setScrollRoot] = useState<HTMLElement | null>(null);
 	const rowElements = useRef(new Map<string, HTMLElement>());
@@ -4924,11 +4804,16 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 	useLayoutEffect(() => updateActiveTargets(), [rowsText, updateActiveTargets]);
 
 	const handleColumnSortClick = (field: string) => {
+		// A disabled header stays focusable, so a click or Enter can say why it does not sort.
+		if (filterOrderField !== null && field !== filterOrderField) {
+			setSortBlocked((current) => ({ field, filterKey, count: (current?.count ?? 0) + 1 }));
+			return;
+		}
 		onSortChange([
 			{
 				field,
 				direction:
-					sort.length === 1 && sort[0]!.field === field
+					sortField === field
 						? sort[0]!.direction === "asc"
 							? "desc"
 							: "asc"
@@ -4980,34 +4865,12 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 			</div>
 			{/* A sort change alone shows no notice. The header already shows the new sort, and the busy table
 			    keeps the old rows until the new ones arrive. */}
-			{((isShowingHeldRows && JSON.stringify(rowsFilter) !== JSON.stringify(filter)) ||
-				filterRefreshing ||
-				filterRecovery === "reload" ||
-				sortLimit !== null) && (
-				<p className={"FileNodeViewFolderExplorer-notice" satisfies FileNodeViewFolderExplorer_ClassNames}>
-					Showing: {get_folder_filter_label(rowsFilter)}. Sort: {get_folder_sort_label(displayedSort)}.
-				</p>
-			)}
-			{sortLimit !== null && (
-				<div className={"FileNodeViewFolderExplorer-actions" satisfies FileNodeViewFolderExplorer_ClassNames}>
-					<p
-						role="alert"
-						className={"FileNodeViewFolderExplorer-notice" satisfies FileNodeViewFolderExplorer_ClassNames}
-					>
-						These sort fields need too much work for this group. Use file.name next, or use one sort field.{" "}
-						{sortLimit.reason === "group_rows"
-							? "This group has more than 200 candidates."
-							: sortLimit.reason === "scan_work"
-								? "The scan cap was reached."
-								: sortLimit.reason === "bytes"
-									? "The byte limit was reached."
-									: "The DB-call limit was reached."}
+			{isShowingHeldRows &&
+				(JSON.stringify(rowsFilter) !== JSON.stringify(filter) || rowsNamePrefix !== namePrefix) && (
+					<p className={"FileNodeViewFolderExplorer-notice" satisfies FileNodeViewFolderExplorer_ClassNames}>
+						Showing: {get_folder_filter_label(rowsFilter, rowsNamePrefix)}. Sort: {get_folder_sort_label(displayedSort)}.
 					</p>
-					<MyButton variant="outline" onClick={() => onSortChange(files_sort_DEFAULT.map((clause) => ({ ...clause })))}>
-						Reset to file.name
-					</MyButton>
-				</div>
-			)}
+				)}
 			{filterState === "applying" && hasFilter && (
 				<p
 					role="status"
@@ -5016,51 +4879,13 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 					Applying filter…
 				</p>
 			)}
-			{filterState === "refreshing" && (
-				<p
-					role="status"
-					className={"FileNodeViewFolderExplorer-notice" satisfies FileNodeViewFolderExplorer_ClassNames}
-				>
-					Refreshing rows…
-				</p>
-			)}
-			{filterState === "searching" && (
-				<p
-					role="status"
-					className={"FileNodeViewFolderExplorer-notice" satisfies FileNodeViewFolderExplorer_ClassNames}
-				>
-					Searching this folder…
-				</p>
-			)}
-			{filterState === "paused" && (
-				<div className={"FileNodeViewFolderExplorer-actions" satisfies FileNodeViewFolderExplorer_ClassNames}>
-					<p role="status">Search paused. Keep searching to check more rows.</p>
-					<MyButton variant="outline" onClick={onContinueSearch}>
-						Keep searching
-					</MyButton>
-				</div>
-			)}
 			{filterState === "failed" && (
 				<div className={"FileNodeViewFolderExplorer-actions" satisfies FileNodeViewFolderExplorer_ClassNames}>
-					<p role="alert">
-						{filterRecovery === "reload"
-							? "Rows could not be refreshed."
-							: hasFilter
-								? "Filter could not be applied"
-								: "Folder contents could not be loaded."}
-					</p>
-					<MyButton variant="outline" onClick={filterRecovery === "reload" ? onReloadTable : onRetryFilter}>
-						{filterRecovery === "reload" ? "Reload table" : "Retry"}
+					<p role="alert">{hasFilter ? "Filter could not be applied" : "Folder contents could not be loaded."}</p>
+					<MyButton variant="outline" onClick={onRetryFilter}>
+						Retry
 					</MyButton>
 				</div>
-			)}
-			{filterPreparing && (
-				<p
-					role="status"
-					className={"FileNodeViewFolderExplorer-notice" satisfies FileNodeViewFolderExplorer_ClassNames}
-				>
-					Some drafts are preparing
-				</p>
 			)}
 			{tooManyShared && (
 				<p
@@ -5070,19 +4895,42 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 					Too many shared items here to sort. Some are not shown.
 				</p>
 			)}
-			{tooManyPending && (
+			{/* Steady states are static text, not live regions. */}
+			{filterOrderField !== null && (
 				<p
-					role="status"
+					id={sortNoteId}
 					className={"FileNodeViewFolderExplorer-notice" satisfies FileNodeViewFolderExplorer_ClassNames}
 				>
-					Too many pending changes here. Review them in the Pending panel.
+					Sorted by {files_folder_table_query_field_text(filterOrderField)} because of the filter
 				</p>
 			)}
+			{filter === null && metadataKey !== null && (
+				<p className={"FileNodeViewFolderExplorer-notice" satisfies FileNodeViewFolderExplorer_ClassNames}>
+					Rows without {metadataKey} are hidden.
+				</p>
+			)}
+			{/* Always mounted: a screen reader may miss a live region that appears with its text. */}
+			<p
+				role="status"
+				className={
+					sortBlocked !== null
+						? ("FileNodeViewFolderExplorer-notice" satisfies FileNodeViewFolderExplorer_ClassNames)
+						: undefined
+				}
+			>
+				{sortBlocked !== null && (
+					// A new key puts in a new text node, so the same message is read again.
+					<span key={sortBlocked.count}>
+						Remove the filter to sort by {files_folder_table_query_field_text(sortBlocked.field)}
+					</span>
+				)}
+			</p>
 			<div className={"FileNodeViewFolderExplorer-table-scroll" satisfies FileNodeViewFolderExplorer_ClassNames}>
 				<MyGridTable
 					ref={setTableElement}
 					aria-label="Folder contents"
-					aria-busy={isSortBusy && !filterPaused && !isFilterFailed && filterRecovery === null && sortLimit === null}
+					aria-describedby={filterOrderField !== null ? sortNoteId : undefined}
+					aria-busy={isSortBusy && !isFilterFailed}
 					className={"FileNodeViewFolderExplorer-table" satisfies FileNodeViewFolderExplorer_ClassNames}
 					style={{ gridTemplateColumns: gridColumns }}
 					data-sort-fields={JSON.stringify(displayedSort)}
@@ -5097,18 +4945,20 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 						>
 							{columns.map((field) => {
 								// The header shows the sort the user asked for right away, even while the old rows stay.
-								const priority = sort.findIndex((clause) => clause.field === field);
-								const clause = sort[priority];
+								const direction = sortField === field ? sort[0]!.direction : null;
+								const sortDisabledReason =
+									filterOrderField !== null && field !== filterOrderField
+										? `Remove the filter to sort by ${files_folder_table_query_field_text(field)}`
+										: null;
 								return (
 									<MyGridTableColumnHeader
 										key={field}
 										data-column-field={field}
-										data-sort-priority={clause ? priority + 1 : undefined}
-										data-sort-direction={clause?.direction}
+										data-sort-direction={direction ?? undefined}
 										className={
 											"FileNodeViewFolderExplorer-column-header" satisfies FileNodeViewFolderExplorer_ClassNames
 										}
-										aria-sort={priority === 0 ? (clause!.direction === "asc" ? "ascending" : "descending") : undefined}
+										aria-sort={direction === null ? undefined : direction === "asc" ? "ascending" : "descending"}
 									>
 										{files_sort_field_is_valid(field) ? (
 											<button
@@ -5116,18 +4966,19 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 												className={
 													"FileNodeViewFolderExplorer-sort-button" satisfies FileNodeViewFolderExplorer_ClassNames
 												}
+												aria-disabled={sortDisabledReason !== null || undefined}
+												// The visible note says why. No hidden text per header (AGENTS.md, "Automation first").
+												aria-describedby={sortDisabledReason !== null ? sortNoteId : undefined}
 												onClick={() => handleColumnSortClick(field)}
 											>
 												{files_folder_table_query_field_text(field)}
-												{clause && (
+												{direction !== null && (
 													<span
 														className={
 															"FileNodeViewFolderExplorer-sort-indicator" satisfies FileNodeViewFolderExplorer_ClassNames
 														}
 													>
-														{/* The order number only matters when more than one column sorts. */}
-														{sort.length > 1 && `${priority + 1} `}
-														{clause.direction === "asc" ? "↑" : "↓"}
+														{direction === "asc" ? "↑" : "↓"}
 													</span>
 												)}
 											</button>
@@ -5136,7 +4987,7 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 										)}
 										<FileNodeViewFolderExplorerColumnMenu
 											field={field}
-											sort={sort}
+											sortDisabledReason={sortDisabledReason}
 											onSortChange={onSortChange}
 											onFilterField={handleFilterField}
 											onHide={handleHideColumn}
@@ -5164,18 +5015,6 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 							);
 							const retryValues = values?.state === "failed" ? () => onRetryValues(key) : undefined;
 							const child = row.treeRow;
-							if (!child)
-								return (
-									<FileNodeViewFolderExplorerPrivateRow
-										key={key}
-										row={row}
-										columnCells={columnCells}
-										organizationName={organizationName}
-										workspaceName={workspaceName}
-										onRegisterRow={registerRow}
-										onRetryValues={retryValues}
-									/>
-								);
 							return (
 								<FileNodeViewFolderExplorerRow
 									key={key}
@@ -5210,7 +5049,7 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 				<MyButton
 					className={"FileNodeViewFolderExplorer-show-more" satisfies FileNodeViewFolderExplorer_ClassNames}
 					variant="ghost"
-					disabled={isShowingHeldRows || filterRefreshing || filterRecovery === "reload" || sortLimit !== null}
+					disabled={isShowingHeldRows}
 					onClick={onShowMoreClick}
 				>
 					Show more

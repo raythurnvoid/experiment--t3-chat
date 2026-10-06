@@ -15,7 +15,6 @@ import {
 	files_folder_table_query_with_sort,
 	type files_folder_table_query_FilterToken,
 } from "./files-folder-table-query.ts";
-import { files_sort_MAX_CLAUSES } from "./files-sort.ts";
 import { files_table_filter_is_valid } from "./files-table.ts";
 
 // A fixed day span, so the tests do not depend on the time zone.
@@ -33,11 +32,11 @@ function parse_filter(raw: string) {
 
 describe("files_folder_table_query_parse_token", () => {
 	test("reads a filter token with and without a value", () => {
-		expect(parse_filter("file.name:contains:report")).toEqual({
+		expect(parse_filter("file.name:starts_with:report")).toEqual({
 			kind: "filter",
-			raw: "file.name:contains:report",
+			raw: "file.name:starts_with:report",
 			field: "name",
-			op: "contains",
+			op: "starts_with",
 			value: "report",
 		});
 		expect(parse_filter("metadata.status:present")).toMatchObject({ field: "metadata.status", value: null });
@@ -56,9 +55,9 @@ describe("files_folder_table_query_parse_token", () => {
 
 	test("keeps a colon in the value, and reads a quoted value", () => {
 		expect(parse_filter("metadata.id:is:a:b:c").value).toBe("a:b:c");
-		expect(parse_filter('file.name:contains:"my report"').value).toBe("my report");
+		expect(parse_filter('file.name:starts_with:"my report"').value).toBe("my report");
 		expect(parse_filter('metadata.note:is:"say \\"hi\\""').value).toBe('say "hi"');
-		expect(files_folder_table_query_parse_token('file.name:contains:"a"b').problem).toBe(
+		expect(files_folder_table_query_parse_token('file.name:starts_with:"a"b').problem).toBe(
 			"Nothing can follow the closing quote",
 		);
 	});
@@ -77,24 +76,34 @@ describe("files_folder_table_query_parse_token", () => {
 		const problems = (raw: string) => files_folder_table_query_parse_token(raw).problem;
 
 		expect(problems("report")).toBe(
-			"Type a filter like file.name:contains:report, or a sort like sort_by:file.updated:desc",
+			"Type a filter like file.name:starts_with:report, or a sort like sort_by:file.updated:desc",
 		);
-		expect(problems("!file.name:contains:x")).toBe("Not is not available in the folder table");
+		expect(problems("!file.name:starts_with:x")).toBe("Not is not available in the folder table");
 		expect(problems("status:is:open")).toBe("Start the field with file., metadata. or frontmatter.");
 		expect(problems("file.path:is:x")).toBe(
 			"Unknown file field. Use file.name, file.updated, file.created, file.extension, file.size",
 		);
-		expect(problems("metadata.a:b:is:x")).toBe("Use one of is, starts_with, present, missing");
-		expect(problems("file.name:is:x")).toBe("Use one of contains, starts_with");
-		expect(problems("file.name:contains")).toBe("contains needs a value, like contains:value");
+		expect(problems("metadata.a:b:is:x")).toBe("Use one of is, starts_with, present");
+		expect(problems("metadata.a:missing")).toBe("Use one of is, starts_with, present");
+		expect(problems("file.name:is:x")).toBe("Use one of starts_with");
+		expect(problems("file.name:contains:x")).toBe("Use one of starts_with");
+		expect(problems("file.name:starts_with")).toBe("starts_with needs a value, like starts_with:value");
 		expect(problems("metadata.status:present:x")).toBe("present takes no value");
 		expect(problems("file.size:is:1KB")).toBe("Enter a whole number of bytes, zero or more");
 		expect(problems("file.size:is:-1")).toBe("Enter a whole number of bytes, zero or more");
 		expect(problems("file.updated:on:2026-02-31")).toBe("Enter a valid calendar day like 2026-09-04");
 		expect(problems("file.updated:on:yesterday")).toBe("Enter a valid calendar day like 2026-09-04");
-		expect(problems("file.name:contains:")).toBe("Enter 1 to 1,024 characters");
-		expect(problems('file.name:contains:6"')).toBe('Put the value in quotes to use a " in it');
-		expect(problems('file.name:contains:"6\\""')).toBeNull();
+		expect(problems("file.name:starts_with:")).toBe("Enter 1 to 1,024 characters");
+		// The sort key writes a number with its length first, so the prefix cannot end in a digit.
+		expect(problems("file.name:starts_with:file1")).toBe(
+			"'Starts with' cannot end with a number here. Remove the last digits, or use 'is'.",
+		);
+		expect(problems("metadata.version:starts_with:v2")).toBe(
+			"'Starts with' cannot end with a number here. Remove the last digits, or use 'is'.",
+		);
+		expect(problems("metadata.version:is:2")).toBeNull();
+		expect(problems('file.name:starts_with:6"')).toBe('Put the value in quotes to use a " in it');
+		expect(problems('file.name:starts_with:"6\\""')).toBeNull();
 		expect(problems("sort_by:file.name")).toBe("Write sort_by:<field>:asc or sort_by:<field>:desc");
 		expect(problems("sort_by:file.name:up")).toBe("A sort direction is asc or desc");
 		expect(problems("sort_by:name:asc")).toBe("Start the field with file., metadata. or frontmatter.");
@@ -109,37 +118,77 @@ describe("files_folder_table_query_parse_token", () => {
 });
 
 describe("files_folder_table_query_parse", () => {
-	test("keeps one filter and the sorts in order, and lists what it drops", () => {
+	const PAIR_PROBLEM = "Use one filter, or 'name starts with' plus one 'is' filter.";
+
+	test("keeps one filter and one sort, and lists what it drops", () => {
 		const parsed = files_folder_table_query_parse(
-			"file.name:contains:report sort_by:file.updated:desc free file.size:is:1 sort_by:file.name:asc sort_by:file.updated:asc",
+			"file.size:at_least:1 sort_by:file.size:desc free file.extension:is:md sort_by:file.size:asc",
 		);
 
-		expect(parsed.filter?.raw).toBe("file.name:contains:report");
-		expect(parsed.sorts.map((sort) => sort.raw)).toEqual(["sort_by:file.updated:desc", "sort_by:file.name:asc"]);
-		expect(parsed.rejected.map((token) => token.raw)).toEqual(["free", "file.size:is:1", "sort_by:file.updated:asc"]);
-		expect(parsed.rejected.map((token) => token.problem)).toEqual([
-			"Type a filter like file.name:contains:report, or a sort like sort_by:file.updated:desc",
-			"The folder table can use one filter at a time",
-			"Each sort field can be used once",
+		expect(parsed.filter?.raw).toBe("file.size:at_least:1");
+		expect(parsed.namePrefix).toBeNull();
+		expect(parsed.sorts.map((sort) => sort.raw)).toEqual(["sort_by:file.size:desc"]);
+		expect(parsed.rejected).toEqual([
+			{
+				raw: "free",
+				problem: "Type a filter like file.name:starts_with:report, or a sort like sort_by:file.updated:desc",
+			},
+			{ raw: "file.extension:is:md", problem: PAIR_PROBLEM },
+			{ raw: "sort_by:file.size:asc", problem: "The folder table sorts by one field" },
 		]);
 	});
 
-	test("keeps the first sorts up to the limit and drops the rest", () => {
-		const tokens = Array.from({ length: files_sort_MAX_CLAUSES + 2 }, (_, index) => `sort_by:metadata.k${index}:asc`);
-		const parsed = files_folder_table_query_parse(tokens.join(" "));
+	test.each(["file.name:starts_with:rep file.extension:is:md", "file.extension:is:md file.name:starts_with:rep"])(
+		"keeps 'name starts with' plus one 'is' filter in either order: %s",
+		(query) => {
+			const parsed = files_folder_table_query_parse(query);
 
-		expect(parsed.sorts).toHaveLength(files_sort_MAX_CLAUSES);
-		expect(parsed.rejected.map((token) => token.raw)).toEqual(tokens.slice(files_sort_MAX_CLAUSES));
-		expect(parsed.rejected[0]!.problem).toBe(`Use at most ${files_sort_MAX_CLAUSES} sorts`);
+			expect(parsed.filter?.raw).toBe("file.extension:is:md");
+			expect(parsed.namePrefix?.raw).toBe("file.name:starts_with:rep");
+			expect(parsed.rejected).toEqual([]);
+			expect(files_folder_table_query_clean(query)).toBe(query);
+		},
+	);
+
+	test.each([
+		["file.name:starts_with:rep", "file.size:at_least:1"],
+		["file.name:starts_with:rep", "metadata.status:present"],
+		["file.name:starts_with:rep", "file.updated:on:2026-09-04"],
+		["file.name:starts_with:rep", "file.name:starts_with:other"],
+		["file.extension:is:md", "file.size:is:1"],
+		["file.extension:is:md file.name:starts_with:rep", "metadata.status:is:open"],
+	])("refuses other filter pairs: %s + %s", (kept, refused) => {
+		expect(files_folder_table_query_parse(`${kept} ${refused}`).rejected).toEqual([
+			{ raw: refused, problem: PAIR_PROBLEM },
+		]);
+	});
+
+	test("a filter fixes the sort field, and filters win over sorts", () => {
+		const problems = (query: string) =>
+			files_folder_table_query_parse(query).rejected.map((token) => `${token.raw}: ${token.problem}`);
+
+		expect(problems("sort_by:file.name:asc file.updated:on:2026-09-04")).toEqual([
+			"sort_by:file.name:asc: Remove the filter to sort by file.name",
+		]);
+		expect(problems("file.updated:on:2026-09-04 sort_by:file.updated:desc")).toEqual([]);
+		expect(problems("file.size:at_most:5 sort_by:file.size:desc")).toEqual([]);
+		expect(problems("file.size:is:5 sort_by:file.size:desc")).toEqual([
+			"sort_by:file.size:desc: Remove the filter to sort by file.size",
+		]);
+		expect(problems("metadata.status:starts_with:op sort_by:metadata.status:asc")).toEqual([]);
+		expect(problems("metadata.status:is:open sort_by:file.name:desc")).toEqual([]);
+		expect(problems("metadata.status:present sort_by:metadata.other:desc")).toEqual([
+			"sort_by:metadata.other:desc: Remove the filter to sort by metadata.other",
+		]);
 	});
 
 	test("closes an open quote in the last token", () => {
-		const parsed = files_folder_table_query_parse('file.name:contains:"my rep');
-		expect(parsed.filter).toMatchObject({ raw: 'file.name:contains:"my rep"', value: "my rep" });
+		const parsed = files_folder_table_query_parse('file.name:starts_with:"my rep');
+		expect(parsed.filter).toMatchObject({ raw: 'file.name:starts_with:"my rep"', value: "my rep" });
 		// A bare quote inside a value is not closed. It stays as typed and is refused.
-		expect(files_folder_table_query_close_open_quote('file.name:contains:6"')).toBe('file.name:contains:6"');
-		expect(files_folder_table_query_parse('file.name:contains:6"').rejected.map((token) => token.raw)).toEqual([
-			'file.name:contains:6"',
+		expect(files_folder_table_query_close_open_quote('file.name:starts_with:6"')).toBe('file.name:starts_with:6"');
+		expect(files_folder_table_query_parse('file.name:starts_with:6"').rejected.map((token) => token.raw)).toEqual([
+			'file.name:starts_with:6"',
 		]);
 	});
 });
@@ -150,7 +199,7 @@ describe("files_folder_table_query_clean", () => {
 			files_folder_table_query_clean(
 				"  sort_by:file.size:desc   nonsense metadata.a:is:1 metadata.b:is:2 sort_by:file.size:asc !x:y  sort_by:file.name:asc ",
 			),
-		).toBe("sort_by:file.size:desc metadata.a:is:1 sort_by:file.name:asc");
+		).toBe("metadata.a:is:1 sort_by:file.name:asc");
 		expect(files_folder_table_query_clean("")).toBe("");
 		expect(files_folder_table_query_clean("   ")).toBe("");
 	});
@@ -158,10 +207,11 @@ describe("files_folder_table_query_clean", () => {
 	test("cleaning a clean query changes nothing", () => {
 		for (const query of [
 			"",
-			"file.name:contains:report sort_by:file.updated:desc",
-			'metadata.note:is:"a b" sort_by:metadata.plugin-name:asc',
+			"file.name:starts_with:report sort_by:file.name:desc",
+			'metadata.note:is:"a b" sort_by:file.name:asc',
 			"junk sort_by:file.name:up metadata.x:is:1 metadata.y:is:2",
-			'file.name:contains:"open',
+			'file.name:starts_with:"open',
+			"file.name:starts_with:rep file.extension:is:md sort_by:file.name:desc",
 		]) {
 			const once = files_folder_table_query_clean(query);
 			expect(files_folder_table_query_clean(once)).toBe(once);
@@ -172,15 +222,18 @@ describe("files_folder_table_query_clean", () => {
 
 describe("files_folder_table_query_get_add_problem", () => {
 	test("says why a token cannot join the query, and nothing when it can", () => {
-		const query = "file.name:contains:x sort_by:file.updated:desc";
+		const query = "file.extension:is:md sort_by:file.name:desc";
 
 		expect(files_folder_table_query_get_add_problem(query, "file.size:is:1")).toBe(
-			"The folder table can use one filter at a time",
+			"Use one filter, or 'name starts with' plus one 'is' filter.",
 		);
+		expect(files_folder_table_query_get_add_problem(query, "file.name:starts_with:a")).toBeNull();
 		expect(files_folder_table_query_get_add_problem(query, "sort_by:file.updated:asc")).toBe(
-			"Each sort field can be used once",
+			"Remove the filter to sort by file.updated",
 		);
-		expect(files_folder_table_query_get_add_problem(query, "sort_by:file.size:asc")).toBeNull();
+		expect(files_folder_table_query_get_add_problem(query, "sort_by:file.name:asc")).toBe(
+			"The folder table sorts by one field",
+		);
 		expect(files_folder_table_query_get_add_problem("", "file.size:is:1")).toBeNull();
 		expect(files_folder_table_query_get_add_problem("", "oops")).not.toBeNull();
 		expect(
@@ -190,43 +243,46 @@ describe("files_folder_table_query_get_add_problem", () => {
 });
 
 describe("files_folder_table_query_with_filter and with_sort", () => {
-	test("replace one part and keep the other", () => {
-		const query = "file.name:contains:a sort_by:file.size:desc";
+	test("replace one part and keep the other when the filter allows it", () => {
+		const query = "file.name:starts_with:a sort_by:file.name:desc";
 
 		expect(files_folder_table_query_with_filter(query, "file.extension:is:md")).toBe(
-			"file.extension:is:md sort_by:file.size:desc",
+			"file.extension:is:md sort_by:file.name:desc",
 		);
-		expect(files_folder_table_query_with_filter(query, null)).toBe("sort_by:file.size:desc");
+		// A range filter orders by its own field, so the name sort goes.
+		expect(files_folder_table_query_with_filter(query, "file.size:at_least:1")).toBe("file.size:at_least:1");
+		expect(files_folder_table_query_with_filter(query, null)).toBe("sort_by:file.name:desc");
 
+		expect(files_folder_table_query_with_sort(query, [{ field: "name", direction: "asc" }])).toBe(
+			"file.name:starts_with:a sort_by:file.name:asc",
+		);
+		expect(files_folder_table_query_with_sort(query, [{ field: "size", direction: "asc" }])).toBe(
+			"file.name:starts_with:a",
+		);
+		expect(files_folder_table_query_with_sort(query, [])).toBe("file.name:starts_with:a");
 		expect(
-			files_folder_table_query_with_sort(query, [
+			files_folder_table_query_with_sort("file.extension:is:md file.name:starts_with:a", [
+				{ field: "name", direction: "desc" },
+			]),
+		).toBe("file.extension:is:md file.name:starts_with:a sort_by:file.name:desc");
+		// Only the first clause is kept.
+		expect(
+			files_folder_table_query_with_sort("", [
 				{ field: "extension", direction: "asc" },
 				{ field: "metadata.status", direction: "desc" },
 			]),
-		).toBe("file.name:contains:a sort_by:file.extension:asc sort_by:metadata.status:desc");
-		expect(files_folder_table_query_with_sort(query, [])).toBe("file.name:contains:a");
-		// Only the first clauses up to the limit are kept.
-		const manyClauses = Array.from({ length: files_sort_MAX_CLAUSES + 1 }, (_, index) => ({
-			field: `metadata.k${index}`,
-			direction: "asc" as const,
-		}));
-		expect(files_folder_table_query_parse(files_folder_table_query_with_sort("", manyClauses)).sorts).toHaveLength(
-			files_sort_MAX_CLAUSES,
-		);
+		).toBe("sort_by:file.extension:asc");
 	});
 });
 
 describe("files_folder_table_query_to_sort", () => {
-	test("is null with no sort token, and the clauses otherwise", () => {
-		expect(files_folder_table_query_to_sort(files_folder_table_query_parse("file.name:contains:a"))).toBeNull();
+	test("is null with no sort token, and the one clause otherwise", () => {
+		expect(files_folder_table_query_to_sort(files_folder_table_query_parse("file.name:starts_with:a"))).toBeNull();
 		expect(
 			files_folder_table_query_to_sort(
 				files_folder_table_query_parse("sort_by:file.extension:asc sort_by:file.name:desc"),
 			),
-		).toEqual([
-			{ field: "extension", direction: "asc" },
-			{ field: "name", direction: "desc" },
-		]);
+		).toEqual([{ field: "extension", direction: "asc" }]);
 	});
 });
 
@@ -247,8 +303,8 @@ describe("files_folder_table_query_to_filter", () => {
 			["file.size:at_least:1024", { kind: "size", field: "size", op: "at_least", value: 1024 }],
 			["file.size:missing", { kind: "size", field: "size", op: "missing" }],
 			["metadata.status:is:open", { kind: "text", field: "metadata.status", op: "is", value: "open" }],
+			["metadata.status:starts_with:op", { kind: "text", field: "metadata.status", op: "starts_with", value: "op" }],
 			["frontmatter.due:present", { kind: "text", field: "frontmatter.due", op: "present" }],
-			["metadata.status:missing", { kind: "text", field: "metadata.status", op: "missing" }],
 		];
 
 		for (const [raw, expected] of cases) {
@@ -268,11 +324,11 @@ describe("files_folder_table_query_operations", () => {
 	test("allows each field only the operations the table can run", () => {
 		const ops = (field: string) => files_folder_table_query_operations(field).map((operation) => operation.op);
 
-		expect(ops("name")).toEqual(["contains", "starts_with"]);
+		expect(ops("name")).toEqual(["starts_with"]);
 		expect(ops("extension")).toEqual(["is", "missing"]);
 		expect(ops("updated")).toEqual(["on", "before", "after"]);
 		expect(ops("size")).toEqual(["is", "at_least", "at_most", "missing"]);
-		expect(ops("metadata.x")).toEqual(["is", "starts_with", "present", "missing"]);
+		expect(ops("metadata.x")).toEqual(["is", "starts_with", "present"]);
 	});
 });
 

@@ -47,13 +47,13 @@ import {
 	files_folder_table_query_parse_token,
 	files_folder_table_query_serialize,
 	files_folder_table_query_with_filter,
+	type files_folder_table_query_Operation,
 	type files_folder_table_query_Token,
 } from "../../../../shared/files-folder-table-query.ts";
 import {
 	files_search_query_split_tokens,
 	files_search_query_typing_token,
 } from "../../../../shared/files-search-query.ts";
-import { files_sort_MAX_CLAUSES } from "../../../../shared/files-sort.ts";
 
 // #region folder filter bar chip
 type FileNodeViewFolderFilterBarChip_ClassNames =
@@ -188,6 +188,17 @@ function get_typing_stage(token: string) {
 }
 
 /**
+ * Whether a filter on this field with this operation can join the committed query. The parser decides,
+ * so the bar never keeps its own copy of the pairing rules. The sample value only has to be valid.
+ */
+function can_add_filter(committedQuery: string, fieldText: string, operation: files_folder_table_query_Operation) {
+	const field = files_folder_table_query_parse_field(fieldText).field;
+	const value = field === "size" ? "0" : field === "updated" || field === "created" ? "2000-01-01" : "a";
+	const raw = `${fieldText}:${operation.op}${operation.needsValue ? `:${value}` : ""}`;
+	return files_folder_table_query_get_add_problem(committedQuery, raw) === null;
+}
+
+/**
  * Decide what a commit does with these tokens. A token joins the query when it is valid and fits
  * the one-filter and sort limits. Space only reports a token that is whole but does not fit.
  * Enter also reports a token that is not valid yet.
@@ -271,24 +282,37 @@ export const FileNodeViewFolderFilterBar = memo(function FileNodeViewFolderFilte
 	const typedLower = stage.typed.toLowerCase();
 	const typedValueDebounced = useDebounce(stage.kind === "value" ? stage.typed : "", 150);
 
-	const canAddFilter = parsed.filter === null;
-	const canAddSort = parsed.sorts.length < files_sort_MAX_CLAUSES;
+	const canAddSort = parsed.sorts.length === 0;
 
 	// A field the user can sort by or filter by: the file details, then the folder fields.
-	const fieldRows = [
+	const allFieldRows = [
 		...files_folder_table_query_FILE_FIELDS.map((name) => ({
 			field: `file.${name}`,
 			hint: FileNodeViewFolderFilterBar_FILE_FIELD_HINTS[name],
 		})),
 		...fields.map((field) => ({ field, hint: field.startsWith("metadata.") ? "metadata" : "frontmatter" })),
-	].filter((row) => row.field.toLowerCase().includes(typedLower));
+	];
+	const fieldRows = allFieldRows.filter((row) => row.field.toLowerCase().includes(typedLower));
 
-	const keyRows = stage.kind === "key" && canAddFilter ? fieldRows : [];
+	// The table runs one filter, or `file.name:starts_with` plus one "is" filter. A field shows when one
+	// of its operations can still join.
+	const canAddFilterOn = (fieldText: string) => {
+		const field = files_folder_table_query_parse_field(fieldText).field;
+		return (
+			field !== null &&
+			files_folder_table_query_operations(field).some((operation) =>
+				can_add_filter(committedQuery, fieldText, operation),
+			)
+		);
+	};
+	const keyRows = stage.kind === "key" ? fieldRows.filter((row) => canAddFilterOn(row.field)) : [];
+	const canAddFilter = stage.kind !== "key" || allFieldRows.some((row) => canAddFilterOn(row.field));
 	const showSortKey = stage.kind === "key" && canAddSort && "sort_by".includes(typedLower);
+	// While a filter is on, only the filter's order field can sort.
 	const sortFieldRows =
 		stage.kind === "sort_field"
 			? fieldRows.filter(
-					(row) => !parsed.sorts.some((sort) => files_folder_table_query_field_text(sort.field) === row.field),
+					(row) => files_folder_table_query_get_add_problem(committedQuery, `sort_by:${row.field}:asc`) === null,
 				)
 			: [];
 	const sortDirectionRows =
@@ -302,7 +326,10 @@ export const FileNodeViewFolderFilterBar = memo(function FileNodeViewFolderFilte
 		const field = files_folder_table_query_parse_field(stage.field).field;
 		return field === null
 			? []
-			: files_folder_table_query_operations(field).filter((operation) => operation.op.startsWith(typedLower));
+			: files_folder_table_query_operations(field).filter(
+					(operation) =>
+						operation.op.startsWith(typedLower) && can_add_filter(committedQuery, stage.field, operation),
+				);
 	})();
 
 	// Only the folder fields have values to suggest. File details have no value list. The template
@@ -782,10 +809,7 @@ export const FileNodeViewFolderFilterBar = memo(function FileNodeViewFolderFilte
 						{fieldsState === "loading" ? <p role="status">Loading fields…</p> : null}
 						{fieldsState === "failed" ? <p role="status">Fields could not be loaded</p> : null}
 						{stage.kind === "key" && !canAddFilter ? (
-							<p>The table uses one filter at a time. Remove the filter to add another.</p>
-						) : null}
-						{stage.kind === "key" && !canAddSort ? (
-							<p>The table sorts by up to {files_sort_MAX_CLAUSES} fields.</p>
+							<p>Use one filter, or 'name starts with' plus one 'is' filter.</p>
 						) : null}
 					</div>
 				</MyComboboxPopoverScrollableArea>
