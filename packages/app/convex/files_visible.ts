@@ -1,4 +1,4 @@
-import { paginationOptsValidator, type RegisteredQuery } from "convex/server";
+import { paginationOptsValidator, paginationResultValidator, type RegisteredQuery } from "convex/server";
 import { compareValues, v, type Infer } from "convex/values";
 import { doc } from "convex-helpers/validators";
 import { Result } from "common/errors-as-values-utils.ts";
@@ -27,6 +27,13 @@ import type { files_PendingTarget, files_PendingParent, files_VisibleEntry } fro
 import { organizations_is_global_organization_id } from "../shared/organizations.ts";
 import { path_name_of } from "../shared/paths.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
+
+// The page cap and the split guard of `list_private_folder_children`. The worst row is a saved node
+// moved into the folder that is its own restricted scope: it reads the node and runs a fresh access
+// check. For a member whose read comes from their second role, with an old plugin grant too, that is
+// 10 index ranges (measured in the cost test under `list_private_folder_children`). floor(3,000 / 10)
+// is 300. Keep 250 for a margin.
+const PRIVATE_FOLDER_PAGE_MAX_ITEMS = 250;
 
 const listing_args = {
 	folderPath: v.string(),
@@ -808,5 +815,112 @@ export const list = query({
 			visibilityUserId: userAuth.id,
 			overlayUserId: userAuth.id,
 		});
+	},
+});
+
+/**
+ * The children of one of the caller's draft (private) folders, for the draft folder view: one page
+ * of the caller's `files_pending_places` in this folder, in raw name order with folders mixed in.
+ * Rows are private nodes and saved nodes the caller's drafts move here.
+ *
+ * Each row checks access on its `accessNodeId`. A row the caller cannot read any more is left out,
+ * so a page can be short.
+ */
+export const list_private_folder_children = query({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		folderId: v.id("files_pending_nodes"),
+		paginationOpts: paginationOptsValidator,
+	},
+	returns: paginationResultValidator(
+		v.object({
+			target: files_pending_target_validator,
+			name: v.string(),
+			kind: doc(app_convex_schema, "files_pending_places").fields.kind,
+			preparing: v.boolean(),
+		}),
+	),
+	handler: async (ctx, args) => {
+		const refused = { page: [], isDone: true, continueCursor: "" };
+
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) throw convex_error({ message: "Unauthenticated" });
+		const membership = await organizations_db_get_membership(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) return refused;
+
+		const folder = await ctx.db.get("files_pending_nodes", args.folderId);
+		if (
+			!folder ||
+			folder.userId !== userAuth.id ||
+			folder.organizationId !== membership.organizationId ||
+			folder.workspaceId !== membership.workspaceId ||
+			folder.state !== "active" ||
+			folder.kind !== "folder"
+		)
+			return refused;
+
+		const reader = await files_visible_db_create_reader(ctx, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			userId: userAuth.id,
+		});
+		if (!reader.active) return refused;
+
+		const result = await ctx.db
+			.query("files_pending_places")
+			.withIndex("by_org_ws_user_visible_parent_name", (q) =>
+				q
+					.eq("organizationId", membership.organizationId)
+					.eq("workspaceId", membership.workspaceId)
+					.eq("userId", userAuth.id)
+					.eq("isVisible", true)
+					.eq("parent.kind", "private")
+					.eq("parent.id", args.folderId),
+			)
+			.paginate({
+				...args.paginationOpts,
+				numItems: Math.min(args.paginationOpts.numItems, PRIVATE_FOLDER_PAGE_MAX_ITEMS),
+			});
+
+		// Split before any per-row read, like `tree_page_needs_split` in `files_nodes.ts`: a reactive
+		// rerun has no row cap, so a page can grow far past `numItems`.
+		if (result.splitCursor && (result.page.length > PRIVATE_FOLDER_PAGE_MAX_ITEMS || result.pageStatus)) {
+			return {
+				page: [],
+				isDone: result.isDone,
+				continueCursor: result.continueCursor,
+				splitCursor: result.splitCursor,
+				pageStatus: "SplitRequired" as const,
+			};
+		}
+
+		const rows = await Promise.all(
+			result.page.map(async (place) => {
+				// A null `accessNodeId` is a private node at the root: the workspace scope decides. An archived
+				// access node hides the row, like the old reader: the overlay jobs that fix the place can
+				// lag after an archive.
+				const accessNode = place.accessNodeId ? await ctx.db.get("files_nodes", place.accessNodeId) : null;
+				if (
+					(place.accessNodeId !== null && (!accessNode || accessNode.archiveOperationId !== null)) ||
+					!(await reader.canRead(accessNode))
+				)
+					return null;
+
+				const proposal =
+					place.target.kind === "private" ? await ctx.db.get("files_pending_updates", place.pendingUpdateId) : null;
+				const intent = proposal?.createIntent;
+				return {
+					target: place.target,
+					name: place.name,
+					kind: place.kind,
+					// Same rule as `to_item` in `db_list`.
+					preparing: place.target.kind === "private" && (!intent || (intent.kind === "text" && !proposal?.content)),
+				};
+			}),
+		);
+		return { ...result, page: rows.filter((row) => row !== null) };
 	},
 });

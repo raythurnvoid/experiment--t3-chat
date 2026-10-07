@@ -8112,6 +8112,62 @@ export const get_folder_readme = query({
 	},
 });
 
+/**
+ * Whether the caller has a draft that adds, moves or removes items in this saved folder. The folder
+ * table shows saved rows only, so it uses this to point to the Pending tab. A draft that only
+ * changes content makes no place and no hide, so it gives no hint.
+ */
+export const has_drafts_in_folder = query({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		folderId: doc(app_convex_schema, "files_nodes").fields.parentId,
+	},
+	returns: v.boolean(),
+	handler: async (ctx, args) => {
+		const reader = await files_nodes_db_get_tree_reader(ctx, { membershipId: args.membershipId });
+		if (!reader) {
+			return false;
+		}
+		const { userAuth, membership } = reader;
+
+		// Use the same folder gate as `list_tree_children`, so a hidden folder answers like a missing one.
+		if (args.folderId !== files_ROOT_ID && !(await db_get_readable_tree_node(ctx, { reader, nodeId: args.folderId }))) {
+			return false;
+		}
+
+		// A draft that adds or moves an item here has a visible place in this folder.
+		const place = await ctx.db
+			.query("files_pending_places")
+			.withIndex("by_org_ws_user_visible_parent_name", (q) => {
+				const visible = q
+					.eq("organizationId", membership.organizationId)
+					.eq("workspaceId", membership.workspaceId)
+					.eq("userId", userAuth.id)
+					.eq("isVisible", true);
+				return args.folderId === files_ROOT_ID
+					? visible.eq("parent.kind", "root")
+					: visible.eq("parent.kind", "saved").eq("parent.id", args.folderId);
+			})
+			.first();
+		if (place) {
+			return true;
+		}
+
+		// A draft that moves, renames or deletes a saved item here has a hide in this folder.
+		const hide = await ctx.db
+			.query("files_pending_hides")
+			.withIndex("by_org_ws_user_parent_name", (q) =>
+				q
+					.eq("organizationId", membership.organizationId)
+					.eq("workspaceId", membership.workspaceId)
+					.eq("userId", userAuth.id)
+					.eq("parentId", args.folderId),
+			)
+			.first();
+		return hide !== null;
+	},
+});
+
 async function db_list_children(
 	ctx: QueryCtx,
 	args: {

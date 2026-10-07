@@ -4,6 +4,7 @@ import { AppAuthProvider } from "@/components/app-auth.tsx";
 import { AppHotkeysProvider } from "@/components/app-hotkeys.tsx";
 import { FileEditorSidebar } from "@/components/files/file-editor/file-editor-sidebar/file-editor-sidebar.tsx";
 import { FileEditorPresence } from "@/components/files/file-editor/file-editor-presence.tsx";
+import { FILE_EDITOR_SIDEBAR_TAB_ID_PENDING } from "@/components/files/file-editor/file-editor-sidebar/file-editor-sidebar-pending-strip.tsx";
 import {
 	FileEditor,
 	FileEditorPendingUpdatesFloating,
@@ -82,7 +83,7 @@ import { MySkeleton } from "@/components/my-skeleton.tsx";
 import { MySpinner } from "@/components/my-spinner.tsx";
 import { PluginsUiFrame, type PluginsUiFrame_Props } from "@/components/plugins-ui-frame.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
-import { useFilesSortedChildren, useFilesVisibleEntries } from "@/hooks/files-search-hooks.ts";
+import { useFilesSortedChildren } from "@/hooks/files-search-hooks.ts";
 import { useFileNodeActivities } from "@/lib/activities.ts";
 import { app_convex, app_convex_api, type app_convex_Doc, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
@@ -116,7 +117,7 @@ import {
 	type files_VisibleTreeNode,
 	type files_YjsRootKind,
 } from "@/lib/files.ts";
-import { useAppLocalStorageStateValue } from "@/lib/storage.ts";
+import { app_local_storage_set_value, useAppLocalStorageStateValue } from "@/lib/storage.ts";
 import { global_custom_event_dispatch, useGlobalCustomEvent } from "@/lib/global-event.tsx";
 import { APP_FONT_FAMILY } from "@/lib/ui.tsx";
 import { url_path_file_by_node_id } from "@/lib/urls.ts";
@@ -125,7 +126,7 @@ import { combine } from "@atlaskit/pragmatic-drag-and-drop/combine";
 import { draggable, dropTargetForElements } from "@atlaskit/pragmatic-drag-and-drop/element/adapter";
 import { measureNaturalWidth, prepareWithSegments } from "@chenglou/pretext";
 import { Link } from "@tanstack/react-router";
-import { useConvex, useQueries, useQuery } from "convex/react";
+import { useConvex, usePaginatedQuery as useConvexPaginatedQuery, useQueries, useQuery } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
 import { usePaginatedQuery } from "convex-helpers/react";
 import {
@@ -1798,45 +1799,66 @@ const FileNodeViewPrivateActions = memo(function FileNodeViewPrivateActions(prop
 	);
 });
 
+const FILE_NODE_VIEW_PRIVATE_FOLDER_PAGE_SIZE = 50;
+
 const FileNodeViewPrivateFolder = memo(function FileNodeViewPrivateFolder(props: {
-	folderPath: string;
+	folderId: app_convex_Id<"files_pending_nodes">;
 	onNavigateTarget: (target: files_PendingTarget) => void;
 }) {
-	const { folderPath, onNavigateTarget } = props;
+	const { folderId, onNavigateTarget } = props;
 	const { membershipId } = AppTenantProvider.useContext();
-	const { entries: children, isFailed } = useFilesVisibleEntries({ membershipId, folderPath, mode: "children" });
+	const children = useConvexPaginatedQuery(
+		app_convex_api.files_visible.list_private_folder_children,
+		{ membershipId, folderId },
+		{ initialNumItems: FILE_NODE_VIEW_PRIVATE_FOLDER_PAGE_SIZE },
+	);
 
-	return isFailed ? (
-		<p role="alert">This folder could not be loaded.</p>
-	) : children === undefined ? (
+	return children.status === "LoadingFirstPage" ? (
 		<p role="status">Loading folder…</p>
-	) : children.length === 0 ? (
+	) : children.results.length === 0 && children.status === "Exhausted" ? (
 		<p>This folder is empty.</p>
 	) : (
-		<MyGridTable
-			aria-label="Folder contents"
-			className={"FileNodeViewPrivate-table" satisfies FileNodeViewPrivate_ClassNames}
-		>
-			<MyGridTableBody>
-				{children.map((entry) => (
-					<MyGridTableRow key={`${entry.target.kind}:${entry.target.id}`}>
-						<MyGridTableCell>
-							<MyButton
-								variant="ghost"
-								className={"FileNodeViewPrivate-name" satisfies FileNodeViewPrivate_ClassNames}
-								onClick={() => onNavigateTarget(entry.target)}
-							>
-								<MyButtonIcon aria-hidden>{entry.kind === "folder" ? <Folder /> : <FileText />}</MyButtonIcon>
-								{entry.name}
-							</MyButton>
-						</MyGridTableCell>
-						<MyGridTableCell>
-							{entry.preparing ? "Preparing…" : entry.target.kind === "private" ? "Added" : ""}
-						</MyGridTableCell>
-					</MyGridTableRow>
-				))}
-			</MyGridTableBody>
-		</MyGridTable>
+		<>
+			{children.results.length > 0 ? (
+				<MyGridTable
+					aria-label="Folder contents"
+					className={"FileNodeViewPrivate-table" satisfies FileNodeViewPrivate_ClassNames}
+				>
+					<MyGridTableBody>
+						{children.results.map((entry) => (
+							<MyGridTableRow key={`${entry.target.kind}:${entry.target.id}`}>
+								<MyGridTableCell>
+									<MyButton
+										variant="ghost"
+										className={"FileNodeViewPrivate-name" satisfies FileNodeViewPrivate_ClassNames}
+										onClick={() => onNavigateTarget(entry.target)}
+									>
+										<MyButtonIcon aria-hidden>{entry.kind === "folder" ? <Folder /> : <FileText />}</MyButtonIcon>
+										{entry.name}
+									</MyButton>
+								</MyGridTableCell>
+								<MyGridTableCell>
+									{entry.preparing ? "Preparing…" : entry.target.kind === "private" ? "Added" : ""}
+								</MyGridTableCell>
+							</MyGridTableRow>
+						))}
+					</MyGridTableBody>
+				</MyGridTable>
+			) : (
+				// The server leaves out rows the user cannot read any more, so a page can be empty while more
+				// pages exist.
+				<p role="status">No matches loaded yet. Show more to keep looking.</p>
+			)}
+			{(children.status === "CanLoadMore" || children.status === "LoadingMore") && (
+				<MyButton
+					variant="ghost"
+					disabled={children.status === "LoadingMore"}
+					onClick={() => children.loadMore(FILE_NODE_VIEW_PRIVATE_FOLDER_PAGE_SIZE)}
+				>
+					Show more
+				</MyButton>
+			)}
+		</>
 	);
 });
 
@@ -2188,7 +2210,7 @@ const FileNodeViewPrivateContent = memo(function FileNodeViewPrivateContent(prop
 						view.recovery ? (
 							<p>Open child drafts from Pending changes.</p>
 						) : (
-							<FileNodeViewPrivateFolder folderPath={entry.path} onNavigateTarget={onNavigateTarget} />
+							<FileNodeViewPrivateFolder folderId={entry.node._id} onNavigateTarget={onNavigateTarget} />
 						)
 					) : intent?.kind === "stored" ? (
 						<FileNodeViewPrivateStoredFile key={entry.pendingUpdate.revision} entry={entry} intent={intent} />
@@ -3033,6 +3055,7 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 		),
 	];
 	const folderReadme = useQuery(app_convex_api.files_nodes.get_folder_readme, { membershipId, folderId: folderItemId });
+	const hasDrafts = useQuery(app_convex_api.files_nodes.has_drafts_in_folder, { membershipId, folderId: folderItemId });
 
 	const canWriteFolder = useQuery(app_convex_api.files_nodes.get_current_user_file_write_permission, {
 		membershipId,
@@ -3368,6 +3391,7 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 					isSavingSort={isSavingSort}
 					isSortBusy={sortedChildren.isBusy}
 					hiddenSharedKey={sortedChildren.hiddenSharedKey}
+					hasDrafts={hasDrafts === true}
 					organizationName={organizationName}
 					workspaceName={workspaceName}
 					pendingActionNodeIds={pendingActionNodeIds}
@@ -4608,6 +4632,11 @@ type FileNodeViewFolderExplorer_Props = {
 	 * The metadata key whose sort or filter hides the member's shared rows in this folder, or null.
 	 */
 	hiddenSharedKey: string | null;
+	/**
+	 * True when the user's own drafts add, move or remove items in this folder. The table shows saved
+	 * rows only, so a note points to the Pending tab.
+	 */
+	hasDrafts: boolean;
 	organizationName: string;
 	workspaceName: string;
 	pendingActionNodeIds: ReadonlySet<string>;
@@ -4664,6 +4693,7 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 		activeValueTargetCount,
 		valueQueryCount,
 		hiddenSharedKey,
+		hasDrafts,
 		organizationName,
 		workspaceName,
 		pendingActionNodeIds,
@@ -4827,6 +4857,11 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 	const handleHideColumn = useFn((field: string) => {
 		onColumnsChange(columns.filter((column) => column !== field));
 	});
+	// Open the Pending tab the same way the pending strip's Review button does.
+	const handleOpenPendingClick = useFn(() => {
+		app_local_storage_set_value("app_state::files_last_tab", FILE_EDITOR_SIDEBAR_TAB_ID_PENDING);
+		document.getElementById(FILE_EDITOR_SIDEBAR_TAB_ID_PENDING)?.focus();
+	});
 	const gridColumns = [
 		...columns.map((field) => (field === "name" ? "minmax(12rem, 1fr)" : "minmax(8rem, 15rem)")),
 		"max-content",
@@ -4906,6 +4941,14 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 				<p className={"FileNodeViewFolderExplorer-notice" satisfies FileNodeViewFolderExplorer_ClassNames}>
 					Items shared with you are not shown while sorting or filtering by {hiddenSharedKey}.
 				</p>
+			)}
+			{hasDrafts && (
+				<div className={"FileNodeViewFolderExplorer-actions" satisfies FileNodeViewFolderExplorer_ClassNames}>
+					<p>Your drafts add, move or remove items in this folder. Review them in the Pending changes tab.</p>
+					<MyButton variant="outline" onClick={handleOpenPendingClick}>
+						Open Pending changes
+					</MyButton>
+				</div>
 			)}
 			{/* Always mounted: a screen reader may miss a live region that appears with its text. */}
 			<p

@@ -2,8 +2,10 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import type { FunctionReturnType } from "convex/server";
 import type { Id } from "./_generated/dataModel.js";
-import { test_convex, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
+import { test_convex, test_mocks, test_mocks_fill_db_with, test_run_with_flush } from "./setup.test.ts";
 import { files_visible_db_create_reader, type files_visible_internal_list_Result } from "./files_visible.ts";
+import { access_control_db_ensure_role_assignment } from "./access_control.ts";
+import type { files_PendingParent } from "../shared/files.ts";
 
 beforeEach(() => vi.useFakeTimers());
 afterEach(() => vi.useRealTimers());
@@ -20,13 +22,14 @@ async function create_private(args: {
 	path: string;
 	kind?: "file" | "folder";
 	threadId?: Id<"ai_chat_threads">;
+	userId?: Id<"users">;
 }) {
-	const { f, kind = "folder", threadId, path } = args;
+	const { f, kind = "folder", threadId, path, userId = f.db.userId } = args;
 
 	const created = await f.t.mutation(internal.files_nodes.create_private_node_by_path, {
 		organizationId: f.db.organizationId,
 		workspaceId: f.db.workspaceId,
-		userId: f.db.userId,
+		userId,
 		path,
 		kind,
 		...(threadId ? { threadId } : {}),
@@ -43,6 +46,68 @@ async function create_saved(f: Awaited<ReturnType<typeof fixture>>, path: string
 	});
 	if (created._nay) throw new Error(created._nay.message);
 	return { kind: "saved" as const, id: created._yay.nodeId };
+}
+
+/**
+ * A member of the fixture's workspace, with the workspace role `admin` and the organization role
+ * `member`, like the admin of the tree access fixture in `files_nodes.test.ts`.
+ */
+async function add_member(f: Awaited<ReturnType<typeof fixture>>) {
+	const member = await f.t.run(async (ctx) => {
+		const now = Date.now();
+		const organization = await ctx.db.get("organizations", f.db.organizationId);
+		if (!organization?.defaultWorkspaceId) throw new Error("Expected the organization default workspace");
+		const userId = await ctx.db.insert("users", { clerkUserId: null });
+		const membershipId = await ctx.db.insert("organizations_workspaces_users", {
+			organizationId: f.db.organizationId,
+			workspaceId: f.db.workspaceId,
+			userId,
+			active: true,
+			updatedAt: now,
+		});
+		await access_control_db_ensure_role_assignment(ctx, {
+			organizationId: f.db.organizationId,
+			workspaceId: f.db.workspaceId,
+			userId,
+			role: "admin",
+			now,
+		});
+		await access_control_db_ensure_role_assignment(ctx, {
+			organizationId: f.db.organizationId,
+			workspaceId: organization.defaultWorkspaceId,
+			userId,
+			role: "member",
+			now,
+		});
+		await ctx.db.insert("organizations_membership_lifetimes", {
+			organizationId: f.db.organizationId,
+			workspaceId: f.db.workspaceId,
+			userId,
+			membershipId,
+			lifetime: 2,
+			active: true,
+		});
+		return { userId, membershipId };
+	});
+	return { ...member, as: f.t.withIdentity({ issuer: "https://clerk.test", external_id: member.userId }) };
+}
+
+async function move_draft(args: {
+	f: Awaited<ReturnType<typeof fixture>>;
+	userId: Id<"users">;
+	target: { kind: "saved"; id: Id<"files_nodes"> };
+	destParent: files_PendingParent;
+	destName: string;
+}) {
+	const moved = await args.f.t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
+		organizationId: args.f.db.organizationId,
+		workspaceId: args.f.db.workspaceId,
+		userId: args.userId,
+		target: args.target,
+		destParent: args.destParent,
+		destName: args.destName,
+	});
+	if (moved._nay) throw new Error(moved._nay.message);
 }
 
 describe("list", () => {
@@ -420,6 +485,331 @@ describe("list", () => {
 			cursor: first._yay.continueCursor,
 		});
 		expect(other._nay?.message).toBe("Listing changed. Start again.");
+	});
+});
+
+describe("list_private_folder_children", () => {
+	const REFUSED = { page: [], isDone: true, continueCursor: "" };
+
+	function private_id(target: { kind: "private" | "saved"; id: string }) {
+		if (target.kind !== "private") throw new Error("Expected a private target");
+		return target.id as Id<"files_pending_nodes">;
+	}
+
+	async function list_pages(args: {
+		as: Awaited<ReturnType<typeof fixture>>["asUser"];
+		membershipId: Id<"organizations_workspaces_users">;
+		folderId: Id<"files_pending_nodes">;
+	}) {
+		const pages: FunctionReturnType<typeof api.files_visible.list_private_folder_children>[] = [];
+		let cursor: string | null = null;
+		do {
+			const page: FunctionReturnType<typeof api.files_visible.list_private_folder_children> = await args.as.query(
+				api.files_visible.list_private_folder_children,
+				{ membershipId: args.membershipId, folderId: args.folderId, paginationOpts: { numItems: 50, cursor } },
+			);
+			pages.push(page);
+			cursor = page.isDone ? null : page.continueCursor;
+		} while (cursor !== null && pages.length < 20);
+		return pages;
+	}
+
+	test("pages drafts and moved-in saved nodes in name order, with folders mixed in", async () => {
+		const f = await fixture();
+		const box = private_id((await create_private({ f, path: "/box" })).target);
+		const names: string[] = [];
+		for (let index = 0; index < 120; index++) {
+			const name = `item-${String(index).padStart(3, "0")}`;
+			// Every third child is a folder, so folders and files mix in name order.
+			await create_private({ f, path: `/box/${name}`, kind: index % 3 === 0 ? "folder" : "file" });
+			names.push(name);
+		}
+		for (const [index, destName] of ["item-010b", "item-055b", "zz-moved"].entries()) {
+			const saved = await create_saved(f, `source-${index}`);
+			await move_draft({ f, userId: f.db.userId, target: saved, destParent: { kind: "private", id: box }, destName });
+			names.push(destName);
+		}
+
+		const pages = await list_pages({ as: f.asUser, membershipId: f.db.membershipId, folderId: box });
+		expect(pages.map((page) => page.page.length)).toEqual([50, 50, 23]);
+		const rows = pages.flatMap((page) => page.page);
+		expect(rows.map((row) => row.name)).toEqual(names.toSorted());
+		expect(rows.find((row) => row.name === "item-003")).toMatchObject({ kind: "folder", preparing: false });
+		// A text file created with no content yet is still preparing.
+		expect(rows.find((row) => row.name === "item-004")).toMatchObject({ kind: "file", preparing: true });
+		expect(rows.find((row) => row.name === "zz-moved")).toMatchObject({
+			target: { kind: "saved" },
+			kind: "folder",
+			preparing: false,
+		});
+	});
+
+	test("another user's folder and a discarded folder give an empty, done page", async () => {
+		const f = await fixture();
+		const kept = private_id((await create_private({ f, path: "/kept" })).target);
+		await create_private({ f, path: "/kept/child.md", kind: "file" });
+		const gone = await create_private({ f, path: "/gone" });
+		if (!gone.pendingUpdateId) throw new Error("Expected the folder proposal");
+		expect(
+			(
+				await f.asUser.mutation(api.files_pending_updates.discard_file_pending_update, {
+					membershipId: f.db.membershipId,
+					target: gone.target,
+					pendingUpdateId: gone.pendingUpdateId,
+					reviewedRevision: 1,
+				})
+			)._nay,
+		).toBeUndefined();
+		const member = await add_member(f);
+		await create_private({ f, path: "/kept", userId: member.userId });
+
+		const read = (as: typeof f.asUser, membershipId: typeof f.db.membershipId, folderId: Id<"files_pending_nodes">) =>
+			as.query(api.files_visible.list_private_folder_children, {
+				membershipId,
+				folderId,
+				paginationOpts: { numItems: 50, cursor: null },
+			});
+		expect(await read(member.as, member.membershipId, kept)).toEqual(REFUSED);
+		expect(await read(f.asUser, f.db.membershipId, private_id(gone.target))).toEqual(REFUSED);
+		// The owner still reads the kept folder, so the answers above are refusals, not an empty folder.
+		expect((await read(f.asUser, f.db.membershipId, kept)).page.map((row) => row.name)).toEqual(["child.md"]);
+	});
+
+	test("leaves out a moved-in saved node once the user cannot read it", async () => {
+		const f = await fixture();
+		const member = await add_member(f);
+		const folder = private_id((await create_private({ f, path: "/mine", userId: member.userId })).target);
+		await create_private({ f, path: "/mine/draft", userId: member.userId });
+		const saved = await create_saved(f, "plans");
+		await move_draft({
+			f,
+			userId: member.userId,
+			target: saved,
+			destParent: { kind: "private", id: folder },
+			destName: "moved",
+		});
+
+		const names = async () =>
+			(await list_pages({ as: member.as, membershipId: member.membershipId, folderId: folder }))
+				.flatMap((page) => page.page)
+				.map((row) => row.name);
+		expect(await names()).toEqual(["draft", "moved"]);
+
+		expect(
+			await f.asUser.mutation(api.files_sharing.restrict_node, { membershipId: f.db.membershipId, nodeId: saved.id }),
+		).toEqual({ _yay: null });
+		expect(await names()).toEqual(["draft"]);
+	});
+
+	test("leaves out a draft child once the user cannot read its saved ancestor", async () => {
+		const f = await fixture();
+		const member = await add_member(f);
+		const plans = await create_saved(f, "plans");
+		const box = private_id((await create_private({ f, path: "/plans/box", userId: member.userId })).target);
+		await create_private({ f, path: "/plans/box/note.md", kind: "file", userId: member.userId });
+
+		const names = async () =>
+			(await list_pages({ as: member.as, membershipId: member.membershipId, folderId: box }))
+				.flatMap((page) => page.page)
+				.map((row) => row.name);
+		expect(await names()).toEqual(["note.md"]);
+
+		expect(
+			await f.asUser.mutation(api.files_sharing.restrict_node, { membershipId: f.db.membershipId, nodeId: plans.id }),
+		).toEqual({ _yay: null });
+		expect(await names()).toEqual([]);
+	});
+
+	test("leaves out a moved-in saved node that is archived before the overlay jobs run", async () => {
+		const f = await fixture();
+		const box = private_id((await create_private({ f, path: "/box" })).target);
+		const saved = await create_saved(f, "plans");
+		await move_draft({ f, userId: f.db.userId, target: saved, destParent: { kind: "private", id: box }, destName: "moved" });
+		const names = async () =>
+			(await list_pages({ as: f.asUser, membershipId: f.db.membershipId, folderId: box }))
+				.flatMap((page) => page.page)
+				.map((row) => row.name);
+		expect(await names()).toEqual(["moved"]);
+
+		// A raw write skips the flush, so the place still says visible, like the window before the jobs run.
+		await f.t.run((ctx) => ctx.db.patch("files_nodes", saved.id, { archiveOperationId: "archive-1" }));
+		expect(await names()).toEqual([]);
+	});
+
+	// Guard = floor(3,000 index ranges / index ranges read by the worst row). The worst row is a saved
+	// node moved into the folder that is its own restricted scope, so each row runs a fresh access
+	// check. The member reads it through their second role and also has an old plugin grant on it: the
+	// check reads that grant, then the live membership lifetime, then the roles.
+	test("the page guard fits the measured reads of the worst row", async () => {
+		const f = await fixture();
+		const member = await add_member(f);
+		const folder = private_id((await create_private({ f, path: "/mine", userId: member.userId })).target);
+		for (let index = 0; index < 6; index++) {
+			const saved = await create_saved(f, `restricted-${index}`);
+			expect(
+				await f.asUser.mutation(api.files_sharing.restrict_node, { membershipId: f.db.membershipId, nodeId: saved.id }),
+			).toEqual({ _yay: null });
+			await f.t.run(async (ctx) => {
+				const now = Date.now();
+				// The member's draft move needs write access too.
+				for (const [principal, permission] of [
+					[{ principalKind: "role" as const, role: "member" as const }, "content.read"],
+					[{ principalKind: "role" as const, role: "member" as const }, "content.write"],
+					[
+						{ principalKind: "user" as const, userId: member.userId, externalPluginMembershipLifetime: 1 },
+						"content.read",
+					],
+				] as const) {
+					await ctx.db.insert("access_control_permission_grants", {
+						organizationId: f.db.organizationId,
+						workspaceId: f.db.workspaceId,
+						resourceKind: "file",
+						resourceId: String(saved.id),
+						...principal,
+						permission,
+						createdAt: now,
+						updatedAt: now,
+					});
+				}
+			});
+			await move_draft({
+				f,
+				userId: member.userId,
+				target: saved,
+				destParent: { kind: "private", id: folder },
+				destName: `a-${index}`,
+			});
+		}
+
+		const read_cost = (numItems: number) =>
+			member.as.run(async (ctx) => {
+				const before = await ctx.meta.getTransactionMetrics();
+				const result = await ctx.runQuery(api.files_visible.list_private_folder_children, {
+					membershipId: member.membershipId,
+					folderId: folder,
+					paginationOpts: { numItems, cursor: null },
+				});
+				const after = await ctx.meta.getTransactionMetrics();
+				return { rows: result.page.length, ranges: after.databaseQueries.used - before.databaseQueries.used };
+			});
+
+		// The page cost minus the cost of a one-row page is what the other rows read.
+		const one = await read_cost(1);
+		const six = await read_cost(6);
+		expect([one.rows, six.rows]).toEqual([1, 6]);
+		const perRow = (six.ranges - one.ranges) / 5;
+		expect(perRow).toBeGreaterThan(0);
+		expect(250).toBeLessThanOrEqual(Math.floor(3000 / perRow));
+	});
+
+	// convex-test gives a split cursor to a page that reads more than `numItems` + 1 rows. A page pinned
+	// by an end cursor reads every row up to that cursor, like a reactive rerun after many creates.
+	test("a page whose end cursor holds more than 250 rows asks for a split", async () => {
+		const f = await fixture();
+		const box = private_id((await create_private({ f, path: "/box" })).target);
+		for (let index = 0; index < 260; index++) {
+			await create_private({ f, path: `/box/n-${String(index).padStart(3, "0")}.md`, kind: "file" });
+		}
+		const read = (paginationOpts: { numItems: number; cursor: string | null; endCursor?: string }) =>
+			f.asUser.query(api.files_visible.list_private_folder_children, {
+				membershipId: f.db.membershipId,
+				folderId: box,
+				paginationOpts,
+			});
+
+		const first = await read({ numItems: 200, cursor: null });
+		const endCursor = (await read({ numItems: 55, cursor: first.continueCursor })).continueCursor;
+		expect(await read({ numItems: 200, cursor: null, endCursor })).toEqual({
+			page: [],
+			isDone: false,
+			continueCursor: endCursor,
+			splitCursor: expect.any(String),
+			pageStatus: "SplitRequired",
+		});
+		// A pinned page under the guard gives its rows.
+		expect((await read({ numItems: 250, cursor: null, endCursor: first.continueCursor })).page).toHaveLength(200);
+	});
+});
+
+describe("has_drafts_in_folder", () => {
+	test("says whether the caller's drafts add, move or remove items in a saved folder", async () => {
+		const f = await fixture();
+		const has_drafts = (folderId: Id<"files_nodes"> | "root", as = f.asUser, membershipId = f.db.membershipId) =>
+			as.query(api.files_nodes.has_drafts_in_folder, { membershipId, folderId });
+		const archive_draft = async (target: { kind: "saved"; id: Id<"files_nodes"> }) => {
+			const archived = await f.t.mutation(internal.files_pending_updates.upsert_file_pending_archive_in_db, {
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				userId: f.db.userId,
+				target,
+			});
+			if (archived._nay) throw new Error(archived._nay.message);
+		};
+
+		const created = await create_saved(f, "created");
+		await create_private({ f, path: "/created/draft.md", kind: "file" });
+		const movedIn = await create_saved(f, "moved-in");
+		await move_draft({
+			f,
+			userId: f.db.userId,
+			target: await create_saved(f, "source/outside"),
+			destParent: movedIn,
+			destName: "in",
+		});
+		const movedOut = await create_saved(f, "moved-out");
+		await move_draft({
+			f,
+			userId: f.db.userId,
+			target: await create_saved(f, "moved-out/child"),
+			destParent: created,
+			destName: "child",
+		});
+		const deleted = await create_saved(f, "deleted");
+		await archive_draft(await create_saved(f, "deleted/child"));
+
+		// A draft with no move and no delete, like a draft that only changes content, makes no place and
+		// no hide. The real content flow needs R2, so the draft is written directly and the flush runs on it.
+		const edited = await create_saved(f, "edited");
+		const editedChild = await create_saved(f, "edited/child");
+		await test_run_with_flush(f.t, async (ctx) => {
+			const now = Date.now();
+			await ctx.db.insert("files_pending_updates", {
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				userId: f.db.userId,
+				target: editedChild,
+				revision: 1,
+				size: 0,
+				updatedAt: now,
+				expiresAt: now + 4 * 60 * 60 * 1000,
+			});
+		});
+
+		const empty = await create_saved(f, "empty");
+		for (const [folder, expected] of [
+			[created.id, true],
+			[movedIn.id, true],
+			[movedOut.id, true],
+			[deleted.id, true],
+			[edited.id, false],
+			[empty.id, false],
+			["root", false],
+		] as const) {
+			expect([folder, await has_drafts(folder)]).toEqual([folder, expected]);
+		}
+
+		// The root works like any folder.
+		await create_private({ f, path: "/root-draft.md", kind: "file" });
+		expect(await has_drafts("root")).toBe(true);
+
+		// A member who cannot read the folder gets false, even with a draft there.
+		const member = await add_member(f);
+		await create_private({ f, path: "/created/member-draft.md", kind: "file", userId: member.userId });
+		expect(await has_drafts(created.id, member.as, member.membershipId)).toBe(true);
+		expect(
+			await f.asUser.mutation(api.files_sharing.restrict_node, { membershipId: f.db.membershipId, nodeId: created.id }),
+		).toEqual({ _yay: null });
+		expect(await has_drafts(created.id, member.as, member.membershipId)).toBe(false);
 	});
 });
 

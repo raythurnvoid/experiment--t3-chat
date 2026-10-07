@@ -276,6 +276,8 @@ Tree-item components:
   `list_tree_shared_roots`) follow this rule now. The search box and the global search palette
   still include the owner's drafts until they move to saved-only reads (see "Search" and "Global
   Search").
+- One exception: the folder table's draft hint (`files_nodes.has_drafts_in_folder`) asks whether
+  the user has a place or a hide in the folder. It lists no draft (see "Table UI").
 - Code that keeps a list saved-only says so in a short comment that points here, like
   `// Saved rows only: UI lists never show drafts.` in `list_tree_children_sorted`.
 
@@ -283,8 +285,8 @@ Tree-item components:
 
 The home and saved-folder table (`FileNodeViewFolder`) is sorted and paged on the server, and it
 shows saved rows only (see "Saved-only lists"). A private folder (`FileNodeViewPrivateFolder`, the
-draft folder view) still lists its children through `useFilesVisibleEntries` in `"children"` mode,
-in raw name order. The agent's `ls` and `find` also keep raw name order.
+draft folder view) lists its children in raw name order (see "Draft folder view"). The agent's `ls`
+and `find` also keep raw name order.
 
 ### Sort rules
 
@@ -529,6 +531,14 @@ in raw name order. The agent's `ls` and `find` also keep raw name order.
 - Every table row is a saved row: row actions use the real saved document and its current
   permission data. Private folders (the draft folder view) use tagged children and owner review
   actions.
+- Draft hint: when `files_nodes.has_drafts_in_folder` is true, the table shows the static text
+  "Your drafts add, move or remove items in this folder. Review them in the Pending changes tab." and an
+  "Open Pending changes" button. The button selects the Pending tab the same way as the pending
+  strip's Review button. The query reads only the caller's own drafts: one `.first()` on their
+  visible places in this folder (`parent` saved, or root) and one on their hides here. A draft that
+  only changes content makes neither, so it shows no hint. It uses the folder gate of
+  `get_folder_readme` and answers false when the caller cannot read the folder. A draft that moves
+  or deletes the folder itself gives no hint here, because its place and hide sit in the parent.
 
 ### Table filter and sort bar
 
@@ -587,6 +597,26 @@ in raw name order. The agent's `ls` and `find` also keep raw name order.
 - Known limit: "starts with" uses the sort key, so a few letters that change at the end of a word
   (Greek final sigma) can miss rows.
 - A filter pages like the plain table: five rows first, then Show more and Show less.
+
+### Draft folder view
+
+- `files_visible.list_private_folder_children` pages one stream: the caller's `files_pending_places`
+  with `isVisible: true` and `parent` = this private folder, on `by_org_ws_user_visible_parent_name`.
+  So rows come in raw name order with folders mixed in: the folder's private children and the saved
+  nodes the caller's drafts move here.
+- It answers an empty, done page for a folder that is not the caller's own active private folder in
+  this workspace, and for an inactive member.
+- Each row checks access on its `accessNodeId` with the reader's `canRead` (cached per scope; null is
+  the workspace scope). A row whose access node is gone, archived or not readable is left out, so a
+  page can be short or empty. The archive check covers the few seconds before the overlay jobs fix
+  the place.
+- Page guard 250 (`PRIVATE_FOLDER_PAGE_MAX_ITEMS`, also the page size cap): the worst row (a moved-in
+  saved node that is its own restricted scope, read by a member through their second role with an
+  old plugin grant) reads 10 index ranges, floor(3,000 / 10) = 300, and 250 keeps a margin. A page
+  over the guard, or a page Convex marked, returns `SplitRequired` before any row read.
+- The view uses `usePaginatedQuery` from `convex/react` with pages of 50, and a Show more button
+  while more pages exist (disabled while a page loads). An empty page with more pages says "No
+  matches loaded yet. Show more to keep looking."
 
 ## File Cut, Copy, And Paste
 

@@ -26,7 +26,7 @@ import type { app_convex_Id } from "@/lib/app-convex-client.ts";
 import type { AppElementId } from "@/lib/dom-utils.ts";
 import type { files_VisibleEntry } from "@/lib/files.ts";
 import type { useFilesSortedChildren } from "@/hooks/files-search-hooks.ts";
-import { app_local_storage_set_value } from "@/lib/storage.ts";
+import { app_local_storage_get_value, app_local_storage_set_value } from "@/lib/storage.ts";
 import { global_custom_event_dispatch, global_custom_event_listen } from "@/lib/global-event.tsx";
 
 const {
@@ -389,6 +389,8 @@ let pendingListStatus: "CanLoadMore" | "LoadingMore" | "Exhausted";
 let sharedRows: (typeof NODE)[];
 // What `has_tree_children_shared` answers.
 let hasShared: boolean | null;
+// What `has_drafts_in_folder` answers.
+let hasDrafts: boolean;
 let folderSort: unknown;
 let privateView:
 	| {
@@ -442,6 +444,7 @@ beforeEach(() => {
 	pendingChildren = [];
 	sharedRows = [];
 	hasShared = false;
+	hasDrafts = false;
 	folderSort = { sort: [{ field: "name", direction: "asc" }], canSave: true };
 	browserSession = null;
 	anagraphic = null;
@@ -576,28 +579,10 @@ beforeEach(() => {
 					isDone: true,
 				};
 			}
-			case "files_visible:list":
-				return {
-					_yay: {
-						items:
-							pendingChildren.length > 0
-								? pendingChildren
-								: (treeNodes ?? [])
-										.filter((item) => item.parentId === node._id && item.archiveOperationId === null)
-										.map((item) => ({
-											target: { kind: "saved", id: item._id },
-											name: item.name,
-											kind: item.kind,
-											path: item.path,
-											updatedAt: item.updatedAt,
-											updatedBy: "user_1",
-											contentType: item.contentType,
-											preparing: false,
-										})),
-						isDone: true,
-						continueCursor: null,
-					},
-				};
+			case "files_visible:list_private_folder_children":
+				return pendingChildren;
+			case "files_nodes:has_drafts_in_folder":
+				return hasDrafts;
 			case "files_transfer:list_current":
 				return [];
 			case "files_transfer:get":
@@ -1281,22 +1266,14 @@ describe("FileNodeView private targets", () => {
 			{
 				target: { kind: "private", id: PRIVATE_ENTRY.node._id },
 				name: PRIVATE_ENTRY.node.name,
-				path: PRIVATE_ENTRY.path,
 				kind: "file",
 				preparing: true,
-				updatedAt: 1,
-				updatedBy: "user_1",
-				contentType: "text/html",
 			},
 			{
 				target: { kind: "saved", id: NODE._id },
 				name: NODE.name,
-				path: NODE.path,
 				kind: "file",
 				preparing: false,
-				updatedAt: 1,
-				updatedBy: "user_1",
-				contentType: "text/html",
 			},
 		];
 		const { otherNavigations } = renderFileView({ pendingNodeId: PRIVATE_ENTRY.node._id });
@@ -1308,6 +1285,37 @@ describe("FileNodeView private targets", () => {
 		);
 		fireEvent.click(screen.getByRole("button", { name: "page.html" }));
 		expect(otherNavigations).toHaveBeenLastCalledWith({ nodeId: NODE._id, view: undefined, q: undefined }, undefined);
+	});
+
+	test("a draft folder with an empty page and more pages says so and loads 50 more", async () => {
+		privateView = {
+			...privateView!,
+			entry: {
+				...PRIVATE_ENTRY,
+				node: { ...PRIVATE_ENTRY.node, kind: "folder", name: "Draft folder" },
+				pendingUpdate: {
+					...PRIVATE_ENTRY.pendingUpdate,
+					content: undefined,
+					createIntent: { kind: "folder", metadata: [] },
+				},
+			},
+		};
+		const query = queryMock.getMockImplementation()!;
+		queryMock.mockImplementation((reference: never, args: unknown) =>
+			getFunctionName(reference) === "files_visible:list_private_folder_children"
+				? { results: [], status: "CanLoadMore" }
+				: query(reference, args),
+		);
+		renderFileView({ pendingNodeId: PRIVATE_ENTRY.node._id });
+
+		// The server leaves out rows the user cannot read, so the first page can be empty.
+		expect(await screen.findByText("No matches loaded yet. Show more to keep looking.")).toBeTruthy();
+		expect(queryMock).toHaveBeenCalledWith(expect.anything(), {
+			membershipId: "membership_1",
+			folderId: PRIVATE_ENTRY.node._id,
+		});
+		fireEvent.click(screen.getByRole("button", { name: "Show more" }));
+		expect(loadMorePendingMock).toHaveBeenCalledWith(50);
 	});
 
 	test("the media preview signs only the captured private asset", async () => {
@@ -1708,6 +1716,26 @@ describe("FileNodeView folder clipboard", () => {
 		expect(screen.getByRole("link", { name: "Open page.html, ready to move" })).toBeTruthy();
 		expect(screen.queryByRole("button", { name: "Clear file clipboard" })).toBeNull();
 		expect(mutationMock).not.toHaveBeenCalled();
+	});
+});
+
+describe("FileNodeView folder draft hint", () => {
+	test("points to the Pending tab only while the user's drafts change this folder", async () => {
+		node = { ...NODE, _id: "folder_1", name: "Docs", path: "/Docs", kind: "folder" };
+		treeNodes = [node, { ...NODE, parentId: node._id }];
+		renderFileView({ nodeId: node._id });
+		expect(await screen.findByRole("link", { name: "Open page.html" })).toBeTruthy();
+		expect(screen.queryByRole("button", { name: "Open Pending changes" })).toBeNull();
+
+		hasDrafts = true;
+		pushQueryChanges();
+		expect(
+			screen.getByText("Your drafts add, move or remove items in this folder. Review them in the Pending changes tab."),
+		).toBeTruthy();
+		fireEvent.click(screen.getByRole("button", { name: "Open Pending changes" }));
+		expect(app_local_storage_get_value("app_state::files_last_tab")).toBe(
+			"app_file_editor_sidebar_tabs_pending" satisfies AppElementId,
+		);
 	});
 });
 
