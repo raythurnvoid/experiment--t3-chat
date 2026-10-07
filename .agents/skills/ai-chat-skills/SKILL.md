@@ -36,7 +36,7 @@ Skills, resources, and instructions use the same current-user pending view as or
 - Another user's pending moves and content do not change the current user's view.
 - New reads recheck normal file access. Missing and restricted sources are unavailable.
 
-Discovery takes `{ source }`, using `ai_chat_workspaces_source_validator`. One backend query resolves the trusted pair and checks the source chat creator, captured membership lifetime, active membership, and `content.read`. It uses the shared visible-file reader to list `/.agents/skills` at exactly two levels. This includes saved and private files at their current owner paths, including files renamed to `SKILL.md`. Restricted and Preparing files are omitted. The scan alternates roots within one total limit of twenty pages of fifty items. A scan or entry limit produces an incomplete warning. A second root never doubles the limits.
+Discovery takes `{ source }`, using `ai_chat_workspaces_source_validator`. One backend query resolves the trusted pair and checks the source chat creator, captured membership lifetime, active membership, and `content.read`. It lists the child folders of `/.agents/skills` with the agent merge helper (`files_pending_overlay_list`), then reads one exact `<folder>/SKILL.md` path per folder with one shared reader per root. Files inside a skill folder cost nothing. This includes saved and private files at their current owner paths, including files renamed to `SKILL.md` and folders moved in by a draft. Restricted and Preparing files are omitted. The scan alternates roots within one total limit of four pages of fifty folders. A scan, reader, read budget, or entry limit produces an incomplete warning. A second root never doubles the limits.
 
 Guidance reads use the normal visible-file, chunk, and bounded-content doors. They carry the captured `agentSource` as well as the resolved file workspace. They recheck source authority and target file access, including after awaited content reads. Removal and re-invitation do not revive a context captured under the old membership lifetime.
 
@@ -83,7 +83,7 @@ Caps are UTF-8 bytes unless stated otherwise. Scan, catalog, per-turn instructio
 | Item | Limit |
 | --- | --- |
 | Skill catalog | 100 entries and 32 KiB serialized metadata |
-| Visible catalog scan | 20 pages of at most 50 files |
+| Visible catalog scan | 4 pages of at most 50 skill folders, one `SKILL.md` read each |
 | Skill frontmatter | 8 KiB, plus bounded fence/BOM read space |
 | Supported complete skill or normal full read | 64 KiB |
 | One automatically loaded `AGENTS.md` | 32 KiB |

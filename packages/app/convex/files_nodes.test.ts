@@ -1785,6 +1785,43 @@ describe("paginated bash listing queries", () => {
 		expect(markdownChildren.isDone).toBe(true);
 	});
 
+	test("reads the root only, the root and its children, or the whole subtree, and refuses other depths", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => {
+			const owner = await test_mocks_fill_db_with.membership(ctx);
+			const docsId = await insert_tree_node({ ctx, owner, parentId: files_ROOT_ID, path: "/docs", kind: "folder" });
+			const nestedId = await insert_tree_node({ ctx, owner, parentId: docsId, path: "/docs/a", kind: "folder" });
+			await insert_tree_node({ ctx, owner, parentId: nestedId, path: "/docs/a/deep.md", kind: "file" });
+			await insert_tree_node({ ctx, owner, parentId: docsId, path: "/docs/z.md", kind: "file" });
+			return owner;
+		});
+		const list = async (depth: { minDepth?: number; maxDepth?: number; maximumRowsRead?: number }) =>
+			(
+				await t.query(internal.files_nodes.list_subtree, {
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					visibilityUserId: db.userId,
+					folderPath: "/docs",
+					numItems: 10,
+					cursor: null,
+					...depth,
+				})
+			).page.map((item) => item.path);
+
+		expect(await list({ maxDepth: 0 })).toEqual(["/docs"]);
+		expect(await list({ maxDepth: 1 })).toEqual(["/docs", "/docs/a", "/docs/z.md"]);
+		expect(await list({ minDepth: 1, maxDepth: 1 })).toEqual(["/docs/a", "/docs/z.md"]);
+		expect(await list({})).toEqual(["/docs", "/docs/a", "/docs/a/deep.md", "/docs/z.md"]);
+		// `minDepth: 1` starts the subtree range after the root row.
+		expect(await list({ minDepth: 1 })).toEqual(["/docs/a", "/docs/a/deep.md", "/docs/z.md"]);
+		// The public files/list scan cap keeps its old scope: direct children read whole pages, and a
+		// subtree listing with `minDepth` stops at the cap.
+		expect(await list({ minDepth: 1, maxDepth: 1, maximumRowsRead: 1 })).toEqual(["/docs/a", "/docs/z.md"]);
+		expect(await list({ minDepth: 1, maximumRowsRead: 1 })).toEqual(["/docs/a"]);
+		await expect(list({ maxDepth: 2 })).rejects.toThrow("list_subtree takes minDepth 0 or 1");
+		await expect(list({ minDepth: 2 })).rejects.toThrow("list_subtree takes minDepth 0 or 1");
+	});
+
 	test("paginates extension-filtered recursive descendants through the extension index", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => seed_paginated_bash_listing_fixture(ctx));

@@ -1,7 +1,10 @@
 import { compareValues, type Value } from "convex/values";
 import { describe, expect, test } from "vitest";
+import { api, internal } from "../convex/_generated/api.js";
+import type { Id } from "../convex/_generated/dataModel";
+import type { ActionCtx } from "../convex/_generated/server.js";
 import { test_convex, test_mocks, test_mocks_fill_db_with } from "../convex/setup.test.ts";
-import { files_pending_overlay_window_ranges } from "./files-pending-overlay.ts";
+import { files_pending_overlay_list, files_pending_overlay_window_ranges } from "./files-pending-overlay.ts";
 
 type Row = Record<string, Value>;
 type Range = ReturnType<typeof files_pending_overlay_window_ranges>[number];
@@ -154,5 +157,358 @@ describe("files_pending_overlay_window_ranges", () => {
 			[200, 2],
 			[300, 1],
 		]);
+	});
+});
+
+describe("files_pending_overlay_list", () => {
+	async function fixture() {
+		const t = test_convex();
+		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		// The helper runs in actions; here each stream query runs on its own, like `ctx.runQuery`.
+		const ctx = { runQuery: t.query } as unknown as Pick<ActionCtx, "runQuery">;
+		const saved = async (path: string) => {
+			const created = await asUser.mutation(api.files_nodes.create_folder_node, {
+				membershipId: db.membershipId,
+				parentId: "root",
+				path,
+			});
+			if (created._nay) throw new Error(created._nay.message);
+			return created._yay.nodeId;
+		};
+		const move = async (args: {
+			userId: Id<"users">;
+			nodeId: Id<"files_nodes">;
+			destId: Id<"files_nodes">;
+			destName: string;
+		}) => {
+			const moved = await t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId: args.userId,
+				target: { kind: "saved", id: args.nodeId },
+				destParent: { kind: "saved", id: args.destId },
+				destName: args.destName,
+			});
+			if (moved._nay) throw new Error(moved._nay.message);
+		};
+		const list = (args: {
+			userId?: Id<"users">;
+			folderPath: string;
+			mode: "children" | "subtree";
+			kind?: "file" | "folder";
+			numItems: number;
+			cursor: string | null;
+			requireComplete?: boolean;
+		}) => {
+			const { userId = db.userId, ...rest } = args;
+			return files_pending_overlay_list(ctx, {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				visibilityUserId: userId,
+				overlayUserId: userId,
+				order: "asc",
+				...rest,
+			});
+		};
+		/**
+		 * Every page of a listing, with the cursor of the first page.
+		 */
+		const list_all = async (args: Omit<Parameters<typeof list>[0], "cursor">) => {
+			const paths: string[] = [];
+			let cursor: string | null = null;
+			let firstCursor: string | null = null;
+			for (let page = 0; page < 50; page++) {
+				const result: Awaited<ReturnType<typeof list>> = await list({ ...args, cursor });
+				if (result._nay) throw new Error(result._nay.message);
+				paths.push(...result._yay.items.map((item) => item.path));
+				firstCursor ??= result._yay.continueCursor;
+				if (result._yay.isDone) break;
+				cursor = result._yay.continueCursor;
+			}
+			return { paths, firstCursor };
+		};
+		return { t, db, asUser, saved, move, list, list_all };
+	}
+
+	test("pages saved rows, drafts and moved-in folders one row at a time, and refuses another listing's cursor", async () => {
+		const f = await fixture();
+		const src = await f.saved("src");
+		await f.saved("src/a");
+		await f.saved("src/c");
+		await f.saved("other");
+		const outside = await f.saved("outside");
+		await f.saved("outside/x");
+		const created = await f.t.mutation(internal.files_nodes.create_private_node_by_path, {
+			organizationId: f.db.organizationId,
+			workspaceId: f.db.workspaceId,
+			userId: f.db.userId,
+			path: "/src/b",
+			kind: "folder",
+		});
+		if (created._nay) throw new Error(created._nay.message);
+		await f.move({ userId: f.db.userId, nodeId: outside, destId: src, destName: "d" });
+
+		const children = await f.list_all({ folderPath: "/src", mode: "children", numItems: 1 });
+		expect(children.paths).toEqual(["/src/a", "/src/b", "/src/c", "/src/d"]);
+		// The moved-in folder brings its saved child in through its own stream.
+		const subtree = await f.list_all({ folderPath: "/src", mode: "subtree", numItems: 1 });
+		expect(subtree.paths).toEqual(["/src/a", "/src/b", "/src/c", "/src/d", "/src/d/x"]);
+
+		// A cursor works only for the listing that made it. The same folder in another mode has the same
+		// root, so only the scope check refuses it.
+		expect(await f.list({ folderPath: "/src", mode: "subtree", numItems: 1, cursor: children.firstCursor })).toEqual({
+			_nay: { message: "Listing changed. Start again." },
+		});
+		expect(await f.list({ folderPath: "/other", mode: "children", numItems: 1, cursor: children.firstCursor })).toEqual(
+			{ _nay: { message: "Listing changed. Start again." } },
+		);
+		expect(await f.list({ folderPath: "/src", mode: "children", numItems: 1, cursor: "not json" })).toEqual({
+			_nay: { message: "Invalid listing cursor" },
+		});
+	});
+
+	test("does not show a row again when rows are added before the last shown row", async () => {
+		const f = await fixture();
+		await f.saved("d");
+		for (const name of ["b1", "b2", "b3", "b4"]) await f.saved(`d/${name}`);
+		// A draft first, so the page stops inside the saved stream's page.
+		const created = await f.t.mutation(internal.files_nodes.create_private_node_by_path, {
+			organizationId: f.db.organizationId,
+			workspaceId: f.db.workspaceId,
+			userId: f.db.userId,
+			path: "/d/a0",
+			kind: "folder",
+		});
+		if (created._nay) throw new Error(created._nay.message);
+		const first = await f.list({ folderPath: "/d", mode: "children", numItems: 3, cursor: null });
+		if (first._nay) throw new Error(first._nay.message);
+		expect(first._yay.items.map((item) => item.path)).toEqual(["/d/a0", "/d/b1", "/d/b2"]);
+
+		// Two new rows before `/d/b2` make the saved stream's next read end before its last shown row.
+		await f.saved("d/b1a");
+		await f.saved("d/b1b");
+		const second = await f.list({ folderPath: "/d", mode: "children", numItems: 3, cursor: first._yay.continueCursor });
+		if (second._nay) throw new Error(second._nay.message);
+		expect(second._yay.items.map((item) => item.path)).toEqual(["/d/b3", "/d/b4"]);
+	});
+
+	test("still shows rows when the transaction is over the read budget after the first stream call", async () => {
+		const f = await fixture();
+		await f.saved("d");
+		for (const name of ["b1", "b2", "b3"]) await f.saved(`d/${name}`);
+		const metric = (used: number) => ({ used, remaining: 0 });
+		const over = {
+			bytesRead: metric(0),
+			documentsRead: metric(0),
+			databaseQueries: metric(5_000),
+			documentsWritten: metric(0),
+			bytesWritten: metric(0),
+			functionsScheduled: metric(0),
+			scheduledFunctionArgsBytes: metric(0),
+		};
+		// Like a mutation that already used its read budget before the listing.
+		const ctx = { runQuery: f.t.query, meta: { getTransactionMetrics: async () => over } } as unknown as Pick<
+			ActionCtx,
+			"runQuery"
+		>;
+		const paths: string[] = [];
+		let cursor: string | null = null;
+		for (let page = 0; page < 10; page++) {
+			const result: Awaited<ReturnType<typeof files_pending_overlay_list>> = await files_pending_overlay_list(ctx, {
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				visibilityUserId: f.db.userId,
+				overlayUserId: f.db.userId,
+				order: "asc",
+				folderPath: "/d",
+				mode: "children",
+				numItems: 3,
+				cursor,
+			});
+			if (result._nay) throw new Error(result._nay.message);
+			paths.push(...result._yay.items.map((item) => item.path));
+			if (result._yay.isDone) break;
+			cursor = result._yay.continueCursor;
+		}
+		expect(paths).toEqual(["/d/b1", "/d/b2", "/d/b3"]);
+	});
+
+	test("reads each row's hide on its own when a filter skips more hidden rows than the page holds", async () => {
+		const f = await fixture();
+		const d = await f.saved("d");
+		await f.saved("d/a");
+		const m = await f.saved("d/m");
+		await f.saved("d/z");
+		await f.t.run(async (ctx) => {
+			const owner = { organizationId: f.db.organizationId, workspaceId: f.db.workspaceId, userId: f.db.userId };
+			const hide = { ...owner, parentId: d, updatedAt: 1, nodeCreationTime: 1 };
+			await ctx.db.insert("files_pending_hides", {
+				...hide,
+				savedNodeId: m,
+				kind: "folder",
+				name: "m",
+				lowercaseExtension: null,
+				treePath: "/d/m/",
+			});
+			// Hidden files between `a` and `z`: the folder filter skips them, but the name window holds them.
+			const fileId = await ctx.db.insert("files_nodes", {
+				...test_mocks.files.base(),
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				createdBy: f.db.userId,
+				updatedBy: f.db.userId,
+			});
+			for (const name of ["b1.md", "b2.md", "b3.md", "b4.md"])
+				await ctx.db.insert("files_pending_hides", {
+					...hide,
+					savedNodeId: fileId,
+					kind: "file",
+					name,
+					lowercaseExtension: "md",
+					treePath: `/d/${name}`,
+				});
+		});
+		const listed = await f.list_all({ folderPath: "/d", mode: "children", kind: "folder", numItems: 10 });
+		expect(listed.paths).toEqual(["/d/a", "/d/z"]);
+	});
+
+	test("hides the rows under a folder the user hid, from the page's folders or the first row's ancestors", async () => {
+		const f = await fixture();
+		const s = await f.saved("s");
+		const a = await f.saved("s/a");
+		await f.saved("s/a/x");
+		await f.saved("s/a/y");
+		await f.saved("s/b");
+		await f.t.run((ctx) =>
+			ctx.db.insert("files_pending_hides", {
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				userId: f.db.userId,
+				savedNodeId: a,
+				parentId: s,
+				kind: "folder",
+				name: "a",
+				updatedAt: 1,
+				lowercaseExtension: null,
+				nodeCreationTime: 1,
+				treePath: "/s/a/",
+			}),
+		);
+		// One page holds the hidden folder and its rows.
+		expect((await f.list_all({ folderPath: "/s", mode: "subtree", numItems: 10 })).paths).toEqual(["/s/b"]);
+		// Small pages: the second stream page starts inside the hidden folder, so the first row's
+		// ancestors find it, and the stream restarts after it.
+		expect((await f.list_all({ folderPath: "/s", mode: "subtree", numItems: 1 })).paths).toEqual(["/s/b"]);
+	});
+
+	test("decides rows only up to the last hidden folder it read when a page holds more than 1,000", async () => {
+		const f = await fixture();
+		const s = await f.saved("s");
+		await f.t.run(async (ctx) => {
+			const owner = { organizationId: f.db.organizationId, workspaceId: f.db.workspaceId };
+			for (let index = 0; index <= 1_000; index++) {
+				const name = `h${String(index).padStart(4, "0")}`;
+				const savedNodeId = await ctx.db.insert("files_nodes", {
+					...test_mocks.files.base(),
+					...owner,
+					createdBy: f.db.userId,
+					updatedBy: f.db.userId,
+					parentId: s,
+					name,
+					path: `/s/${name}`,
+					treePath: `/s/${name}/`,
+					pathDepth: 2,
+				});
+				await ctx.db.insert("files_pending_hides", {
+					...owner,
+					userId: f.db.userId,
+					savedNodeId,
+					parentId: s,
+					kind: "folder",
+					name,
+					updatedAt: 1,
+					lowercaseExtension: null,
+					nodeCreationTime: 1,
+					treePath: `/s/${name}/`,
+				});
+			}
+		});
+		// The 1,001st hidden folder holds a row. The first call reads 1,000 hidden folders, so it must
+		// stop before that folder and let the next call read it.
+		await f.saved("s/h1000/c");
+		await f.saved("s/zz");
+		expect((await f.list_all({ folderPath: "/s", mode: "subtree", numItems: 1_100 })).paths).toEqual(["/s/zz"]);
+	});
+
+	test("drops a moved-in place the user can no longer read, and refuses it in a complete listing", async () => {
+		const f = await fixture();
+		const other = await f.t.run((ctx) => test_mocks_fill_db_with.membership(ctx, { organizationName: "other" }));
+		expect(
+			await f.asUser.mutation(api.organizations.invite_user_to_organization_workspace, {
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				userIdToAdd: other.userId,
+			}),
+		).toEqual({ _yay: null });
+		const dest = await f.saved("dest");
+		const secret = await f.saved("src/secret");
+		await f.move({ userId: other.userId, nodeId: secret, destId: dest, destName: "secret" });
+		const args = { userId: other.userId, folderPath: "/dest", mode: "children" as const, numItems: 10 };
+		expect((await f.list_all(args)).paths).toEqual(["/dest/secret"]);
+
+		// The place row checks access on its node, so a restrict hides the draft move too.
+		expect(
+			await f.asUser.mutation(api.files_sharing.restrict_node, { membershipId: f.db.membershipId, nodeId: secret }),
+		).toEqual({ _yay: null });
+		expect((await f.list_all(args)).paths).toEqual([]);
+		expect(await f.list({ ...args, cursor: null, requireComplete: true })).toEqual({
+			_nay: { message: "Permission denied" },
+		});
+	});
+
+	test("keeps the cursor small with ten open streams", async () => {
+		const f = await fixture();
+		const dest = await f.saved("dest");
+		// m1 to m10 each hold a saved folder `z`, which sorts after the next moved-in folder, so every
+		// nested stream stays open until the listing comes back up the chain.
+		const ids: Id<"files_nodes">[] = [];
+		for (let index = 1; index <= 10; index++) {
+			ids.push(await f.saved(`m${index}`));
+			await f.saved(`m${index}/z`);
+		}
+		for (const [index, nodeId] of ids.entries())
+			await f.move({
+				userId: f.db.userId,
+				nodeId,
+				destId: index === 0 ? dest : ids[index - 1]!,
+				destName: `m${index + 1}`,
+			});
+
+		const chain = Array.from({ length: 10 }, (_, index) =>
+			Array.from({ length: index + 1 }, (_, level) => `/m${level + 1}`).join(""),
+		);
+		// Each moved-in folder opens a stream that must be read before the next row, so the first call
+		// stops after its 8 read rounds with a short page and a cursor.
+		const first = await f.list({ folderPath: "/dest", mode: "subtree", numItems: 10, cursor: null });
+		if (first._nay) throw new Error(first._nay.message);
+		expect(first._yay.items.map((item) => item.path)).toEqual(chain.slice(0, 8).map((path) => `/dest${path}`));
+		const second = await f.list({
+			folderPath: "/dest",
+			mode: "subtree",
+			numItems: 2,
+			cursor: first._yay.continueCursor,
+		});
+		if (second._nay) throw new Error(second._nay.message);
+		expect(second._yay.items.map((item) => item.path)).toEqual(chain.slice(8).map((path) => `/dest${path}`));
+		// Measured: 10 open streams make a 2,238 byte cursor. Transfer discovery stores 2 at most.
+		const cursor = second._yay.continueCursor!;
+		expect(JSON.parse(cursor).streams.length).toBeGreaterThanOrEqual(10);
+		expect(cursor.length).toBeLessThan(8_192);
+
+		const rest = await f.list({ folderPath: "/dest", mode: "subtree", numItems: 50, cursor });
+		if (rest._nay) throw new Error(rest._nay.message);
+		expect(rest._yay.items.map((item) => item.path)).toEqual(chain.toReversed().map((path) => `/dest${path}/z`));
+		expect(rest._yay.isDone).toBe(true);
 	});
 });

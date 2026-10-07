@@ -623,17 +623,17 @@ describe("RouteApiKeys", () => {
 		expect(node).toContain("result.isDone");
 	});
 
-	test("quick-start samples select any editable text file instead of filtering .md", () => {
+	test("quick-start samples list Markdown files by extension", () => {
 		renderRoute();
 
 		const curl = screen.getByLabelText("curl API example").textContent ?? "";
 		const node = screen.getByLabelText("Node.js API example").textContent ?? "";
-		// The list filter covers every editable text content type, not only Markdown.
-		expect(curl).toContain("contentTypePrefixes");
-		expect(curl).not.toContain('"extension":"md"');
-		expect(node).toContain("contentTypePrefixes");
-		expect(node).not.toContain('extension: "md"');
-		expect(node).toContain("No editable text files found");
-		expect(node).not.toContain("No Markdown files found");
+		// files/list keeps `contentTypePrefixes` only until the plugins send `extension` instead, so the
+		// samples use `extension`.
+		expect(curl).toContain('"extension":"md"');
+		expect(curl).not.toContain("contentTypePrefixes");
+		expect(node).toContain('extension: "md"');
+		expect(node).not.toContain("contentTypePrefixes");
+		expect(node).toContain("No Markdown files found");
 	});
 });

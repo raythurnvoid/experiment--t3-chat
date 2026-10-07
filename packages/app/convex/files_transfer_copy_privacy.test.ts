@@ -226,6 +226,28 @@ describe("cross-workspace Copy privacy", () => {
 		);
 	});
 
+	test("refuses an agent Copy of a folder with a child the actor cannot read", async () => {
+		const f = await fixture("current");
+		const created: Id<"files_nodes">[] = [];
+		for (const path of ["/folder", "/folder/open", "/folder/secret-name"]) {
+			const folder = await f.asOwner.mutation(api.files_nodes.create_folder_node, {
+				membershipId: f.owner.membershipId,
+				parentId: "root",
+				path,
+			});
+			if (folder._nay) throw new Error(folder._nay.message);
+			created.push(folder._yay.nodeId);
+		}
+		expect(
+			await f.asOwner.mutation(api.files_sharing.restrict_node, {
+				membershipId: f.owner.membershipId,
+				nodeId: created[2]!,
+			}),
+		).toEqual({ _yay: null });
+		// Draft-view discovery reads a complete folder, so a hidden child stops the Copy.
+		await expect(copy(f, [{ kind: "saved", id: created[0]! }])).rejects.toThrow("Permission denied");
+	});
+
 	test("account finalization removes transfer history and keeps the saved team copy", async () => {
 		const f = await fixture();
 		const sourceId = await test_create_saved_text_file(f.t, {

@@ -1,5 +1,10 @@
-import { paginationOptsValidator, paginationResultValidator, type RegisteredQuery } from "convex/server";
-import { compareValues, v, type Infer } from "convex/values";
+import {
+	paginationOptsValidator,
+	paginationResultValidator,
+	type PaginationResult,
+	type RegisteredQuery,
+} from "convex/server";
+import { compareValues, v, type Infer, type Value } from "convex/values";
 import { doc } from "convex-helpers/validators";
 import { Result } from "common/errors-as-values-utils.ts";
 import { z } from "zod";
@@ -21,9 +26,23 @@ import {
 import { organizations_db_get_membership } from "./organizations.ts";
 import { files_db_get_visible_node_by_path } from "../server/files.ts";
 import { files_visible_resolve_db_create } from "../server/files-visible-resolve.ts";
+import {
+	files_pending_overlay_LIST_STREAM_MAX_PAGE,
+	files_pending_overlay_list_over_budget,
+	files_pending_overlay_window_ranges,
+} from "../server/files-pending-overlay.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
-import { server_convex_get_user_fallback_to_anonymous, server_path_normalize } from "../server/server-utils.ts";
-import type { files_PendingTarget, files_PendingParent, files_VisibleEntry } from "../shared/files.ts";
+import {
+	path_tree_prefix_upper_bound,
+	server_convex_get_user_fallback_to_anonymous,
+	server_path_normalize,
+} from "../server/server-utils.ts";
+import {
+	files_derive_tree_path_for_file_node,
+	type files_PendingTarget,
+	type files_PendingParent,
+	type files_VisibleEntry,
+} from "../shared/files.ts";
 import { organizations_is_global_organization_id } from "../shared/organizations.ts";
 import { path_name_of } from "../shared/paths.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
@@ -35,6 +54,13 @@ import { should_never_happen } from "../shared/shared-utils.ts";
 // is 300. Keep 250 for a margin.
 const PRIVATE_FOLDER_PAGE_MAX_ITEMS = 250;
 
+// Outside the owner's overlay, the read filter of an agent stream checks access on this many rows at
+// a time.
+const STREAM_ACCESS_CHUNK = 25;
+
+// The hidden folders one subtree stream call reads under the listing folder.
+const STREAM_HIDDEN_FOLDERS_MAX = 1_000;
+
 const listing_args = {
 	folderPath: v.string(),
 	mode: v.union(v.literal("children"), v.literal("subtree"), v.literal("recent")),
@@ -43,7 +69,6 @@ const listing_args = {
 	order: v.optional(v.union(v.literal("asc"), v.literal("desc"))),
 	kind: v.optional(doc(app_convex_schema, "files_nodes").fields.kind),
 	lowercaseExtension: v.optional(v.string()),
-	contentTypePrefixes: v.optional(v.array(v.string())),
 	minDepth: v.optional(v.number()),
 	maxDepth: v.optional(v.number()),
 	pathQuery: v.optional(v.string()),
@@ -122,64 +147,68 @@ export async function files_visible_db_create_reader(
 		return parents;
 	}
 
+	/**
+	 * The one visible child of `parent` at `path` (the parent's path plus the child's name).
+	 */
+	async function find_child(parent: files_PendingParent, path: string) {
+		const name = path_name_of(path);
+		const candidates = new Map<string, files_PendingTarget>();
+		if (parent.kind !== "private") {
+			const parentId = parent.kind === "root" ? "root" : parent.id;
+			const saved = await core.read(() =>
+				ctx.db
+					.query("files_nodes")
+					.withIndex("by_organization_workspace_parent_archiveOperation_name", (q) =>
+						q
+							.eq("organizationId", args.organizationId)
+							.eq("workspaceId", args.workspaceId)
+							.eq("parentId", parentId)
+							.eq("archiveOperationId", null)
+							.eq("name", name),
+					)
+					.first(),
+			);
+			if (saved) candidates.set(saved._id, { kind: "saved", id: saved._id });
+		}
+
+		for (const alias of await parent_aliases(parent)) {
+			const privateNode = await core.read(() =>
+				ctx.db
+					.query("files_pending_nodes")
+					.withIndex("by_organization_workspace_user_parent_state_name", (q) =>
+						q
+							.eq("organizationId", args.organizationId)
+							.eq("workspaceId", args.workspaceId)
+							.eq("userId", args.userId)
+							.eq("parent.kind", alias.kind)
+							.eq("parent.id", alias.kind === "root" ? undefined : alias.id)
+							.eq("state", "active")
+							.eq("name", name),
+					)
+					.first(),
+			);
+			if (privateNode) candidates.set(privateNode._id, { kind: "private", id: privateNode._id });
+			const move = await core.findSavedMove(alias, name);
+			if (move) candidates.set(move.target.id, move.target);
+		}
+
+		let current: Awaited<ReturnType<typeof core.resolve>> = null;
+		for (const target of candidates.values()) {
+			const result = await core.resolve(target);
+			if (result?.entry.path !== path) continue;
+			if (current) return null;
+			current = result;
+		}
+		return current;
+	}
+
 	async function find_path(path: string) {
 		const segments = server_path_normalize(path).split("/").filter(Boolean);
 		let parent: files_PendingParent = { kind: "root" };
 		let current: Awaited<ReturnType<typeof core.resolve>> = null;
 
 		for (let index = 0; index < segments.length; index++) {
-			const name = segments[index]!;
-
-			const candidates = new Map<string, files_PendingTarget>();
-			if (parent.kind !== "private") {
-				const parentId = parent.kind === "root" ? "root" : parent.id;
-				const saved = await core.read(() =>
-					ctx.db
-						.query("files_nodes")
-						.withIndex("by_organization_workspace_parent_archiveOperation_name", (q) =>
-							q
-								.eq("organizationId", args.organizationId)
-								.eq("workspaceId", args.workspaceId)
-								.eq("parentId", parentId)
-								.eq("archiveOperationId", null)
-								.eq("name", name),
-						)
-						.first(),
-				);
-				if (saved) candidates.set(saved._id, { kind: "saved", id: saved._id });
-			}
-
-			for (const alias of await parent_aliases(parent)) {
-				const privateNode = await core.read(() =>
-					ctx.db
-						.query("files_pending_nodes")
-						.withIndex("by_organization_workspace_user_parent_state_name", (q) =>
-							q
-								.eq("organizationId", args.organizationId)
-								.eq("workspaceId", args.workspaceId)
-								.eq("userId", args.userId)
-								.eq("parent.kind", alias.kind)
-								.eq("parent.id", alias.kind === "root" ? undefined : alias.id)
-								.eq("state", "active")
-								.eq("name", name),
-						)
-						.first(),
-				);
-				if (privateNode) candidates.set(privateNode._id, { kind: "private", id: privateNode._id });
-				const move = await core.findSavedMove(alias, name);
-				if (move) candidates.set(move.target.id, move.target);
-			}
-
-			current = null;
-			const expectedPath = `/${segments.slice(0, index + 1).join("/")}`;
-
-			for (const target of candidates.values()) {
-				const result = await core.resolve(target);
-				if (result?.entry.path !== expectedPath) continue;
-				if (current) return null;
-				current = result;
-			}
-
+			current = await find_child(parent, `/${segments.slice(0, index + 1).join("/")}`);
 			if (!current || (index < segments.length - 1 && current.entry.node.kind !== "folder")) return null;
 			parent =
 				current.entry.kind === "saved"
@@ -198,6 +227,7 @@ export async function files_visible_db_create_reader(
 		read: core.read,
 		resolve: core.resolve,
 		findPath: find_path,
+		findChild: find_child,
 		parentAliases: parent_aliases,
 		canRead: can_read,
 		async resolveTarget(target: files_PendingTarget) {
@@ -211,6 +241,17 @@ export async function files_visible_db_create_reader(
 			return result && (await can_read(result.accessNode)) ? result.entry : null;
 		},
 	};
+}
+
+/**
+ * Whether a private node is still preparing: it has no create intent yet, or it is a text file whose
+ * content is not sealed yet.
+ */
+export function files_visible_is_preparing(
+	update: Pick<Doc<"files_pending_updates">, "createIntent" | "content"> | null | undefined,
+) {
+	const intent = update?.createIntent;
+	return !intent || (intent.kind === "text" && !update?.content);
 }
 
 const entry_validator = v.object({
@@ -298,7 +339,6 @@ async function db_list(ctx: QueryCtx, args: Infer<typeof internal_listing_args>)
 		args.orderBy,
 		args.kind,
 		args.lowercaseExtension,
-		args.contentTypePrefixes,
 		args.minDepth,
 		args.maxDepth,
 		args.pathQuery,
@@ -381,7 +421,7 @@ async function db_list(ctx: QueryCtx, args: Infer<typeof internal_listing_args>)
 					: intent && intent.kind !== "folder"
 						? intent.contentType
 						: null,
-			preparing: entry.kind === "private" && (!intent || (intent.kind === "text" && !entry.pendingUpdate.content)),
+			preparing: entry.kind === "private" && files_visible_is_preparing(entry.pendingUpdate),
 		};
 	};
 
@@ -394,11 +434,6 @@ async function db_list(ctx: QueryCtx, args: Infer<typeof internal_listing_args>)
 		if (
 			args.lowercaseExtension !== undefined &&
 			(entry.kind !== "file" || entry.name.split(".").slice(1).at(-1)?.toLowerCase() !== args.lowercaseExtension)
-		)
-			return false;
-		if (
-			args.contentTypePrefixes !== undefined &&
-			!args.contentTypePrefixes.some((prefix) => entry.contentType?.startsWith(prefix))
 		)
 			return false;
 		return args.pathQuery === undefined || entry.path.toLowerCase().includes(args.pathQuery.toLowerCase());
@@ -775,6 +810,1060 @@ export type files_visible_internal_list_Result =
 		? Awaited<ReturnValue>
 		: never;
 
+// Agent streams: each query reads one index stream of an agent listing. `files_pending_overlay_list`
+// merges them into one page.
+
+/**
+ * Where a stream goes on. `rangeStart` starts a new index range (a subtree stream restarts after a
+ * hidden folder), `cursor` is the Convex cursor inside that range, and `lastKey` is the index key of
+ * the last decided row: the next call reads the same page again and skips the rows up to it.
+ */
+const stream_position_validator = v.object({
+	rangeStart: v.union(v.string(), v.null()),
+	cursor: v.union(v.string(), v.null()),
+	lastKey: v.union(v.array(v.any()), v.null()),
+});
+
+type StreamPosition = Infer<typeof stream_position_validator>;
+
+const moved_in_validator = v.object({ savedNodeId: v.id("files_nodes"), ownerTreePath: v.string() });
+
+const stream_args = v.object({
+	agentSource: v.optional(ai_chat_workspaces_source_validator),
+	organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
+	workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
+	visibilityUserId: v.id("users"),
+	serviceAccountId: v.optional(v.id("access_control_service_accounts")),
+	overlayUserId: v.optional(v.id("users")),
+	// Transfer discovery must refuse an incomplete folder instead of hiding unreadable children.
+	requireComplete: v.optional(v.boolean()),
+	folderPath: v.string(),
+	numItems: v.number(),
+	position: stream_position_validator,
+});
+
+const stream_filter_args = {
+	kind: v.optional(doc(app_convex_schema, "files_nodes").fields.kind),
+	lowercaseExtension: v.optional(v.string()),
+};
+
+const stream_row_validator = v.object({
+	/**
+	 * The merge key: the name, the update time, or the owner's tree path.
+	 */
+	key: v.array(v.any()),
+	/**
+	 * Null for a moved-in folder row that only opens a nested stream.
+	 */
+	item: v.union(entry_validator, v.null()),
+	movedIn: v.optional(moved_in_validator),
+	/**
+	 * Where the stream goes on when the merge stops after this row.
+	 */
+	position: stream_position_validator,
+});
+
+const stream_result = v_result({
+	_yay: v.object({
+		/**
+		 * The listing root this call resolved. The merge refuses a cursor whose root changed.
+		 */
+		root: v.union(files_pending_parent_validator, v.null()),
+		rows: v.array(stream_row_validator),
+		/**
+		 * The merge key of the last decided row. Rows up to it are decided.
+		 */
+		frontier: v.union(v.array(v.any()), v.null()),
+		position: stream_position_validator,
+		done: v.boolean(),
+		decided: v.number(),
+		/**
+		 * True when the call stopped on the read budget. The merge then keeps the page size.
+		 */
+		overBudget: v.boolean(),
+	}),
+});
+
+type StreamDecision = { item: Infer<typeof entry_validator> | null; movedIn?: Infer<typeof moved_in_validator> };
+
+function stream_done(root: files_PendingParent | null) {
+	return Result({
+		_yay: {
+			root,
+			rows: [],
+			frontier: null,
+			position: { rangeStart: null, cursor: null, lastKey: null },
+			done: true,
+			decided: 0,
+			overBudget: false,
+		},
+	});
+}
+
+/**
+ * The one gate of every agent stream: `files_db_authorize_file_read`, then under `ownerScope` the
+ * owner's reader with an active membership. Hides and places are read only under `ownerScope`;
+ * outside it a stream reads saved rows with the read filter. Transfer discovery has no
+ * `agentSource`, so the gate does not rely on it.
+ *
+ * Also resolves the listing root. Returns null when the caller may not read here or the root is not
+ * a folder.
+ */
+async function db_stream_open(ctx: QueryCtx, args: Infer<typeof stream_args> & { readLimit?: number }) {
+	const authorized = await files_db_authorize_file_read(ctx, { ...args, userId: args.visibilityUserId });
+	if (authorized._nay) return Result({ _yay: null });
+
+	const organizationId = args.organizationId;
+	const fileScope = files_db_resolve_scope(ctx, args.workspaceId);
+	// The owner's overlay in a workspace. `tenant` is set only then, with the reader.
+	const ownerScope =
+		args.overlayUserId === args.visibilityUserId &&
+		args.serviceAccountId === undefined &&
+		!organizations_is_global_organization_id(organizationId) &&
+		fileScope.kind === "workspace";
+	const tenant = ownerScope ? { organizationId, workspaceId: fileScope.workspaceId } : null;
+	const reader = tenant
+		? await files_visible_db_create_reader(ctx, {
+				...tenant,
+				userId: args.visibilityUserId,
+				readLimit: args.readLimit,
+			})
+		: null;
+	if (reader && !reader.active) return Result({ _yay: null });
+
+	const folderPath = server_path_normalize(args.folderPath);
+	let root: { parent: files_PendingParent; savedNode: Doc<"files_nodes"> | null; path: string };
+	if (folderPath === "/") root = { parent: { kind: "root" }, savedNode: null, path: "/" };
+	else if (reader) {
+		const entry = (await reader.findPath(folderPath))?.entry;
+		if (reader.exhausted) return Result({ _nay: { message: "Listing is too broad. Narrow the folder or filters." } });
+		if (entry?.node.kind !== "folder") return Result({ _yay: null });
+		root =
+			entry.kind === "saved"
+				? { parent: { kind: "saved", id: entry.node._id }, savedNode: entry.node, path: entry.path }
+				: { parent: { kind: "private", id: entry.node._id }, savedNode: null, path: entry.path };
+	} else {
+		const node = await files_db_get_visible_node_by_path(ctx, { ...args, path: folderPath });
+		if (node?.kind !== "folder") return Result({ _yay: null });
+		root = { parent: { kind: "saved", id: node._id }, savedNode: node, path: node.path };
+	}
+
+	return Result({
+		_yay: { reader, tenant, root, treePath: files_derive_tree_path_for_file_node(root.path, "folder") },
+	});
+}
+
+function stream_page_size(numItems: number) {
+	return Math.max(1, Math.min(files_pending_overlay_LIST_STREAM_MAX_PAGE, Math.floor(numItems)));
+}
+
+/**
+ * The page rows after `lastKey`: the call reads its page again and skips rows it already decided.
+ * `key` is every index field after the equal ones, then `_creationTime` and `_id`.
+ */
+function stream_rows_after<T>(args: {
+	page: T[];
+	lastKey: Value[] | null;
+	order: "asc" | "desc";
+	indexKey: (row: T) => Value[];
+}) {
+	const { lastKey } = args;
+	if (lastKey === null) return args.page;
+	return args.page.filter((row) => compareValues(args.indexKey(row), lastKey) * (args.order === "asc" ? 1 : -1) > 0);
+}
+
+/**
+ * Decide stream rows one by one under the listing read budget, and say where the stream goes on.
+ * Always decides at least one row, so every call makes progress.
+ *
+ * `decide` returns the row to show, null to drop it, "denied" when access drops it, or "stop" when
+ * the reader ran out before this row.
+ */
+async function db_stream_decide<T>(
+	ctx: QueryCtx,
+	args: {
+		root: files_PendingParent;
+		requireComplete: boolean | undefined;
+		order: "asc" | "desc";
+		position: StreamPosition;
+		page: PaginationResult<T>;
+		/**
+		 * The page rows after `lastKey`, maybe cut short of the page end.
+		 */
+		rows: T[];
+		cut: boolean;
+		indexKey: (row: T) => Value[];
+		mergeKey: (row: T) => Value[];
+		decide: (row: T) => Promise<StreamDecision | null | "denied" | "stop">;
+		/**
+		 * Subtree streams: where a new range starts after a row under a hidden folder.
+		 */
+		restartAfter?: (row: T) => string | null;
+	},
+) {
+	const rows: Infer<typeof stream_row_validator>[] = [];
+	let last: T | null = null;
+	let decided = 0;
+	let restart: string | null = null;
+	let overBudget = false;
+
+	for (const row of args.rows) {
+		if (decided > 0 && files_pending_overlay_list_over_budget(await ctx.meta.getTransactionMetrics())) {
+			overBudget = true;
+			break;
+		}
+		const decision = await args.decide(row);
+		if (decision === "stop") {
+			if (decided === 0) return Result({ _nay: { message: "Listing is too broad. Narrow the folder or filters." } });
+			overBudget = true;
+			break;
+		}
+		if (decision === "denied" && args.requireComplete) return Result({ _nay: { message: "Permission denied" } });
+		decided++;
+		last = row;
+		if (decision === null || decision === "denied") restart = args.restartAfter?.(row) ?? null;
+		else {
+			restart = null;
+			rows.push({
+				key: args.mergeKey(row),
+				...decision,
+				position: { ...args.position, lastKey: args.indexKey(row) },
+			});
+		}
+	}
+
+	const complete = decided === args.rows.length && !args.cut;
+	const done = complete && args.page.isDone;
+	const position: StreamPosition =
+		!done && restart !== null
+			? { rangeStart: restart, cursor: null, lastKey: null }
+			: complete
+				? {
+						rangeStart: args.position.rangeStart,
+						cursor: args.page.continueCursor,
+						// Rows added before `lastKey`, or a smaller page, can end the page before `lastKey`.
+						// Keep it, so the next page still skips the rows already shown.
+						lastKey: args.rows.length === 0 ? args.position.lastKey : null,
+					}
+				: { ...args.position, lastKey: args.indexKey(last!) };
+	const frontierRow = last ?? args.page.page.at(-1) ?? null;
+
+	return Result({
+		_yay: {
+			root: args.root,
+			rows,
+			frontier: frontierRow === null ? null : args.mergeKey(frontierRow),
+			position,
+			done,
+			decided,
+			overBudget,
+		},
+	});
+}
+
+/**
+ * Whether the user's hides remove a saved row of the page, from one window of hides with keys from
+ * `first` to `last` on `index`. The window holds one hide per hidden row of the page, plus hides of
+ * rows the stream skips: the user's own drafts, and rows a kind or extension filter skips when the
+ * index has no such field.
+ *
+ * The window reads at most `limit` hides. Past it, each row reads its own hide when it is decided, so
+ * a filter that skips many hidden rows cannot make this read unbounded.
+ */
+async function db_stream_hide_window(
+	ctx: QueryCtx,
+	args: {
+		index:
+			| "by_org_ws_user_parent_name"
+			| "by_org_ws_user_parent_updatedAt"
+			| "by_org_ws_user_treePath"
+			| "by_org_ws_user_kind_treePath"
+			| "by_org_ws_user_kind_ext_treePath";
+		eq: Array<[field: string, value: Value]>;
+		fields: string[];
+		first: Value[];
+		last: Value[];
+		order: "asc" | "desc";
+		userId: Id<"users">;
+		limit: number;
+	},
+) {
+	const hidden = new Set<Id<"files_nodes">>();
+	for (const range of files_pending_overlay_window_ranges(args)) {
+		const hides = await ctx.db
+			.query("files_pending_hides")
+			.withIndex(args.index, (q) => {
+				// The window helper names the fields, so the typed range builder cannot check them.
+				let builder: any = q;
+				for (const [field, value] of [...args.eq, ...range.eq]) builder = builder.eq(field, value);
+				if (range.lower)
+					builder = range.lower.inclusive
+						? builder.gte(range.lower.field, range.lower.value)
+						: builder.gt(range.lower.field, range.lower.value);
+				if (range.upper)
+					builder = range.upper.inclusive
+						? builder.lte(range.upper.field, range.upper.value)
+						: builder.lt(range.upper.field, range.upper.value);
+				return builder;
+			})
+			.take(args.limit + 1 - hidden.size);
+		if (hidden.size + hides.length > args.limit)
+			return async (savedNodeId: Id<"files_nodes">) =>
+				(await ctx.db
+					.query("files_pending_hides")
+					.withIndex("by_savedNode_user", (q) => q.eq("savedNodeId", savedNodeId).eq("userId", args.userId))
+					.unique()) !== null;
+		for (const hide of hides) hidden.add(hide.savedNodeId);
+	}
+	return async (savedNodeId: Id<"files_nodes">) => hidden.has(savedNodeId);
+}
+
+/**
+ * Access for saved stream rows: the owner's reader per row, or outside the overlay the read filter
+ * on chunks of rows.
+ */
+function db_stream_saved_access(
+	ctx: QueryCtx,
+	args: Infer<typeof stream_args>,
+	reader: Awaited<ReturnType<typeof files_visible_db_create_reader>> | null,
+	rows: Doc<"files_nodes">[],
+) {
+	if (reader) return (node: Doc<"files_nodes">) => reader.canRead(node);
+	const readable = new Map<Id<"files_nodes">, boolean>();
+	return async (node: Doc<"files_nodes">) => {
+		if (!readable.has(node._id)) {
+			const start = rows.indexOf(node);
+			const chunk = rows.slice(start, start + STREAM_ACCESS_CHUNK);
+			const kept = await access_control_db_filter_readable_file_nodes(ctx, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				userId: args.visibilityUserId,
+				serviceAccountId: args.serviceAccountId,
+				nodes: chunk,
+			});
+			for (const chunkNode of chunk) readable.set(chunkNode._id, kept.includes(chunkNode));
+		}
+		return readable.get(node._id)!;
+	};
+}
+
+/**
+ * A saved row as an entry. Under the overlay a pending replacement gives the content type, as in
+ * `to_item` (one point read per row).
+ */
+async function db_stream_saved_item(
+	ctx: QueryCtx,
+	args: { node: Doc<"files_nodes">; path: string; overlayUserId: Id<"users"> | null },
+): Promise<StreamDecision> {
+	const { node, path, overlayUserId } = args;
+	const proposal = overlayUserId
+		? await ctx.db
+				.query("files_pending_updates")
+				.withIndex("by_user_target", (q) =>
+					q.eq("userId", overlayUserId).eq("target.kind", "saved").eq("target.id", node._id),
+				)
+				.unique()
+		: null;
+	return {
+		item: {
+			target: { kind: "saved", id: node._id },
+			path,
+			name: path_name_of(path),
+			kind: node.kind,
+			updatedAt: node.updatedAt,
+			updatedBy: node.updatedBy,
+			contentType: proposal?.pendingReplacement?.contentType ?? node.contentType,
+			preparing: false,
+		},
+	};
+}
+
+/**
+ * A place row as an entry. Every place checks access on its `accessNodeId`, like
+ * `list_private_folder_children`; the proposal gives the content type and `preparing`.
+ */
+async function db_stream_place_item(
+	ctx: QueryCtx,
+	reader: Awaited<ReturnType<typeof files_visible_db_create_reader>>,
+	place: Doc<"files_pending_places">,
+): Promise<StreamDecision | null | "denied"> {
+	// A null `accessNodeId` is a private node at the root. An archived access node hides the row:
+	// the overlay jobs that fix the place can lag after an archive.
+	const accessNode = place.accessNodeId ? await ctx.db.get("files_nodes", place.accessNodeId) : null;
+	if (place.accessNodeId !== null && (!accessNode || accessNode.archiveOperationId !== null)) return null;
+	if (!(await reader.canRead(accessNode))) return "denied";
+
+	const proposal = await ctx.db.get("files_pending_updates", place.pendingUpdateId);
+	const path = place.kind === "folder" ? place.ownerTreePath.slice(0, -1) : place.ownerTreePath;
+	if (place.target.kind === "saved") {
+		// For a moved saved node the access node is the node itself.
+		if (!accessNode) return null;
+		return {
+			item: {
+				target: place.target,
+				path,
+				name: place.name,
+				kind: place.kind,
+				updatedAt: place.updatedAt,
+				updatedBy: accessNode.updatedBy,
+				contentType: proposal?.pendingReplacement?.contentType ?? accessNode.contentType,
+				preparing: false,
+			},
+			...(place.kind === "folder"
+				? { movedIn: { savedNodeId: place.target.id, ownerTreePath: place.ownerTreePath } }
+				: {}),
+		};
+	}
+	const intent = proposal?.createIntent;
+	return {
+		item: {
+			target: place.target,
+			path,
+			name: place.name,
+			kind: place.kind,
+			updatedAt: place.updatedAt,
+			updatedBy: place.userId,
+			contentType: intent && intent.kind !== "folder" ? intent.contentType : null,
+			preparing: files_visible_is_preparing(proposal),
+		},
+	};
+}
+
+/**
+ * The user's visible places under one folder of the user's tree, with the stream filter on the index.
+ */
+function db_stream_places_under(
+	ctx: QueryCtx,
+	args: {
+		tenant: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces"> };
+		visibilityUserId: Id<"users">;
+		treePath: string;
+		kind?: Doc<"files_pending_places">["kind"];
+		lowercaseExtension?: string;
+	},
+) {
+	const upper = path_tree_prefix_upper_bound(args.treePath);
+	const places = ctx.db.query("files_pending_places");
+	return args.lowercaseExtension !== undefined
+		? places.withIndex("by_org_ws_user_visible_kind_ext_ownerTreePath", (q) =>
+				q
+					.eq("organizationId", args.tenant.organizationId)
+					.eq("workspaceId", args.tenant.workspaceId)
+					.eq("userId", args.visibilityUserId)
+					.eq("isVisible", true)
+					.eq("kind", "file")
+					.eq("lowercaseExtension", args.lowercaseExtension!)
+					.gt("ownerTreePath", args.treePath)
+					.lt("ownerTreePath", upper),
+			)
+		: args.kind !== undefined
+			? places.withIndex("by_org_ws_user_visible_kind_ownerTreePath", (q) =>
+					q
+						.eq("organizationId", args.tenant.organizationId)
+						.eq("workspaceId", args.tenant.workspaceId)
+						.eq("userId", args.visibilityUserId)
+						.eq("isVisible", true)
+						.eq("kind", args.kind!)
+						.gt("ownerTreePath", args.treePath)
+						.lt("ownerTreePath", upper),
+				)
+			: places.withIndex("by_org_ws_user_visible_ownerTreePath", (q) =>
+					q
+						.eq("organizationId", args.tenant.organizationId)
+						.eq("workspaceId", args.tenant.workspaceId)
+						.eq("userId", args.visibilityUserId)
+						.eq("isVisible", true)
+						.gt("ownerTreePath", args.treePath)
+						.lt("ownerTreePath", upper),
+				);
+}
+
+/**
+ * Saved children of the listing folder, in name or update order. The user's hides in the page come
+ * from one exact window.
+ */
+export const internal_list_children_saved = internalQuery({
+	args: {
+		...stream_args.fields,
+		...stream_filter_args,
+		orderBy: v.union(v.literal("name"), v.literal("updatedAt")),
+		order: v.union(v.literal("asc"), v.literal("desc")),
+	},
+	returns: stream_result,
+	handler: async (ctx, args) => {
+		const opened = await db_stream_open(ctx, args);
+		if (opened._nay) return opened;
+		if (!opened._yay) return stream_done(null);
+		const { reader, root } = opened._yay;
+		if (root.parent.kind === "private") return stream_done(root.parent);
+
+		const parentId = root.parent.kind === "saved" ? root.parent.id : "root";
+		const byTime = args.orderBy === "updatedAt";
+		const nodes = ctx.db.query("files_nodes");
+		const query = byTime
+			? nodes.withIndex("by_organization_workspace_parent_archiveOperation_updatedAt", (q) =>
+					q
+						.eq("organizationId", args.organizationId)
+						.eq("workspaceId", args.workspaceId)
+						.eq("parentId", parentId)
+						.eq("archiveOperationId", null),
+				)
+			: args.lowercaseExtension !== undefined
+				? nodes.withIndex("by_org_ws_parent_archive_kind_ext_name", (q) =>
+						q
+							.eq("organizationId", args.organizationId)
+							.eq("workspaceId", args.workspaceId)
+							.eq("parentId", parentId)
+							.eq("archiveOperationId", null)
+							.eq("kind", "file")
+							.eq("lowercaseExtension", args.lowercaseExtension!),
+					)
+				: args.kind !== undefined
+					? nodes.withIndex("by_organization_workspace_parent_archiveOperation_kind_name", (q) =>
+							q
+								.eq("organizationId", args.organizationId)
+								.eq("workspaceId", args.workspaceId)
+								.eq("parentId", parentId)
+								.eq("archiveOperationId", null)
+								.eq("kind", args.kind!),
+						)
+					: nodes.withIndex("by_organization_workspace_parent_archiveOperation_name", (q) =>
+							q
+								.eq("organizationId", args.organizationId)
+								.eq("workspaceId", args.workspaceId)
+								.eq("parentId", parentId)
+								.eq("archiveOperationId", null),
+						);
+		const page = await query
+			.order(args.order)
+			.paginate({ cursor: args.position.cursor, numItems: stream_page_size(args.numItems) });
+
+		const indexKey = (node: Doc<"files_nodes">) =>
+			byTime ? [node.updatedAt, node._creationTime, node._id] : [node.name, node._creationTime, node._id];
+		const rows = stream_rows_after({ page: page.page, lastKey: args.position.lastKey, order: args.order, indexKey });
+		const is_hidden =
+			reader && rows.length > 0
+				? await db_stream_hide_window(ctx, {
+						index: byTime ? "by_org_ws_user_parent_updatedAt" : "by_org_ws_user_parent_name",
+						eq: [
+							["organizationId", args.organizationId],
+							["workspaceId", args.workspaceId],
+							["userId", args.visibilityUserId],
+							["parentId", parentId],
+						],
+						fields: byTime ? ["updatedAt", "nodeCreationTime"] : ["name"],
+						first: byTime ? [rows[0]!.updatedAt, rows[0]!._creationTime] : [rows[0]!.name],
+						last: byTime ? [rows.at(-1)!.updatedAt, rows.at(-1)!._creationTime] : [rows.at(-1)!.name],
+						order: args.order,
+						userId: args.visibilityUserId,
+						limit: rows.length,
+					})
+				: null;
+		const can_read = db_stream_saved_access(ctx, args, reader, rows);
+		const parentPath = root.path === "/" ? "" : root.path;
+
+		return await db_stream_decide(ctx, {
+			root: root.parent,
+			requireComplete: args.requireComplete,
+			order: args.order,
+			position: args.position,
+			page,
+			rows,
+			cut: false,
+			indexKey,
+			mergeKey: (node) => (byTime ? [node.updatedAt] : [node.name]),
+			decide: async (node) => {
+				if (is_hidden && (await is_hidden(node._id))) return null;
+				if (!(await can_read(node))) return "denied";
+				return await db_stream_saved_item(ctx, {
+					node,
+					path: `${parentPath}/${node.name}`,
+					overlayUserId: reader ? args.visibilityUserId : null,
+				});
+			},
+		});
+	},
+});
+
+export type files_visible_stream_Result =
+	typeof internal_list_children_saved extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
+/**
+ * The user's places in the listing folder, in name or update order. The index has no kind, so a
+ * filter drops rows here; they are the user's own drafts.
+ */
+export const internal_list_children_places = internalQuery({
+	args: {
+		...stream_args.fields,
+		...stream_filter_args,
+		orderBy: v.union(v.literal("name"), v.literal("updatedAt")),
+		order: v.union(v.literal("asc"), v.literal("desc")),
+	},
+	returns: stream_result,
+	handler: async (ctx, args) => {
+		const opened = await db_stream_open(ctx, args);
+		if (opened._nay) return opened;
+		if (!opened._yay) return stream_done(null);
+		const { reader, tenant, root } = opened._yay;
+		if (!reader || !tenant) return stream_done(root.parent);
+
+		const parent = root.parent;
+		const byTime = args.orderBy === "updatedAt";
+		const page = await ctx.db
+			.query("files_pending_places")
+			.withIndex(byTime ? "by_org_ws_user_visible_parent_updatedAt" : "by_org_ws_user_visible_parent_name", (q) =>
+				q
+					.eq("organizationId", tenant.organizationId)
+					.eq("workspaceId", tenant.workspaceId)
+					.eq("userId", args.visibilityUserId)
+					.eq("isVisible", true)
+					.eq("parent.kind", parent.kind)
+					.eq("parent.id", parent.kind === "root" ? undefined : parent.id),
+			)
+			.order(args.order)
+			.paginate({ cursor: args.position.cursor, numItems: stream_page_size(args.numItems) });
+
+		const indexKey = (place: Doc<"files_pending_places">) =>
+			byTime ? [place.updatedAt, place._creationTime, place._id] : [place.name, place._creationTime, place._id];
+		return await db_stream_decide(ctx, {
+			root: root.parent,
+			requireComplete: args.requireComplete,
+			order: args.order,
+			position: args.position,
+			page,
+			rows: stream_rows_after({ page: page.page, lastKey: args.position.lastKey, order: args.order, indexKey }),
+			cut: false,
+			indexKey,
+			mergeKey: (place) => (byTime ? [place.updatedAt] : [place.name]),
+			decide: async (place) => {
+				if (
+					(args.kind !== undefined && place.kind !== args.kind) ||
+					(args.lowercaseExtension !== undefined &&
+						(place.kind !== "file" || place.lowercaseExtension !== args.lowercaseExtension))
+				)
+					return null;
+				const decision = await db_stream_place_item(ctx, reader, place);
+				// A children listing does not walk into moved-in folders.
+				return decision && decision !== "denied" ? { item: decision.item } : decision;
+			},
+		});
+	},
+});
+
+/**
+ * Saved rows under the listing folder in tree path order, or with `movedIn` under one saved folder
+ * the user moved under the listing folder (the moved-in folder), with its saved path rewritten to the
+ * user's path. Asc only with the overlay; desc is for saved-only listings (no hides).
+ */
+export const internal_list_subtree_saved = internalQuery({
+	args: {
+		...stream_args.fields,
+		...stream_filter_args,
+		order: v.union(v.literal("asc"), v.literal("desc")),
+		movedIn: v.optional(moved_in_validator),
+	},
+	returns: stream_result,
+	handler: async (ctx, args) => {
+		const opened = await db_stream_open(ctx, args);
+		if (opened._nay) return opened;
+		if (!opened._yay) return stream_done(null);
+		const { reader, tenant, root } = opened._yay;
+		if (reader && args.order === "desc") {
+			const message = "Subtree streams with drafts read in path order only";
+			const data = { folderPath: args.folderPath };
+			console.error(message, data);
+			throw should_never_happen(message, data);
+		}
+
+		// `savedTreePath` is the range in saved space, `ownerTreePath` the same folder in the user's paths.
+		let savedTreePath: string;
+		let ownerTreePath: string;
+		if (args.movedIn) {
+			if (!reader) return stream_done(root.parent);
+			const movedIn = args.movedIn;
+			// Check the moved-in folder's place every call: another chat of the user can change it between
+			// calls.
+			const place = await ctx.db
+				.query("files_pending_places")
+				.withIndex("by_target_user", (q) =>
+					q.eq("target.kind", "saved").eq("target.id", movedIn.savedNodeId).eq("userId", args.visibilityUserId),
+				)
+				.unique();
+			const node = await ctx.db.get("files_nodes", movedIn.savedNodeId);
+			if (
+				!place?.isVisible ||
+				place.organizationId !== args.organizationId ||
+				place.workspaceId !== args.workspaceId ||
+				place.ownerTreePath !== movedIn.ownerTreePath ||
+				!place.ownerTreePath.startsWith(opened._yay.treePath) ||
+				node?.kind !== "folder" ||
+				node.archiveOperationId !== null
+			)
+				return stream_done(root.parent);
+			savedTreePath = node.treePath;
+			ownerTreePath = place.ownerTreePath;
+		} else {
+			if (root.parent.kind === "private") return stream_done(root.parent);
+			savedTreePath = root.savedNode?.treePath ?? "/";
+			ownerTreePath = opened._yay.treePath;
+		}
+
+		// Clamp `rangeStart` into the range after `savedTreePath`. `lastKey` only skips rows of this range, so it
+		// needs no clamp.
+		const upper = path_tree_prefix_upper_bound(savedTreePath);
+		const rangeStart = args.position.rangeStart;
+		if (rangeStart !== null && compareValues(rangeStart, upper) >= 0) return stream_done(root.parent);
+		const start = rangeStart !== null && compareValues(rangeStart, savedTreePath) > 0 ? rangeStart : null;
+
+		const nodes = ctx.db.query("files_nodes");
+		const query =
+			args.lowercaseExtension !== undefined
+				? nodes.withIndex("by_organization_workspace_archive_kind_lowercaseExtension_tree", (q) => {
+						const eq = q
+							.eq("organizationId", args.organizationId)
+							.eq("workspaceId", args.workspaceId)
+							.eq("archiveOperationId", null)
+							.eq("kind", "file")
+							.eq("lowercaseExtension", args.lowercaseExtension!);
+						return (start === null ? eq.gt("treePath", savedTreePath) : eq.gte("treePath", start)).lt(
+							"treePath",
+							upper,
+						);
+					})
+				: args.kind !== undefined
+					? nodes.withIndex("by_organization_workspace_archiveOperation_kind_treePath", (q) => {
+							const eq = q
+								.eq("organizationId", args.organizationId)
+								.eq("workspaceId", args.workspaceId)
+								.eq("archiveOperationId", null)
+								.eq("kind", args.kind!);
+							return (start === null ? eq.gt("treePath", savedTreePath) : eq.gte("treePath", start)).lt(
+								"treePath",
+								upper,
+							);
+						})
+					: nodes.withIndex("by_organization_workspace_archiveOperation_treePath", (q) => {
+							const eq = q
+								.eq("organizationId", args.organizationId)
+								.eq("workspaceId", args.workspaceId)
+								.eq("archiveOperationId", null);
+							return (start === null ? eq.gt("treePath", savedTreePath) : eq.gte("treePath", start)).lt(
+								"treePath",
+								upper,
+							);
+						});
+		const page = await query
+			.order(args.order)
+			.paginate({ cursor: args.position.cursor, numItems: stream_page_size(args.numItems) });
+
+		const indexKey = (node: Doc<"files_nodes">) => [node.treePath, node._creationTime, node._id];
+		let rows = stream_rows_after({ page: page.page, lastKey: args.position.lastKey, order: args.order, indexKey });
+		let cut = false;
+
+		// Saved rows the user's drafts remove: hides of the rows, and rows under a hidden folder.
+		let is_hidden: ((savedNodeId: Id<"files_nodes">) => Promise<boolean>) | null = null;
+		const hiddenFolders = new Set<string>();
+		if (reader && tenant && rows.length > 0) {
+			const first = rows[0]!.treePath;
+			const last = rows.at(-1)!.treePath;
+
+			// Hidden folders inside the page, at most 1,000. When the read is full, decide rows
+			// only up to the last folder read.
+			const folders = await ctx.db
+				.query("files_pending_hides")
+				.withIndex("by_org_ws_user_kind_treePath", (q) =>
+					q
+						.eq("organizationId", tenant.organizationId)
+						.eq("workspaceId", tenant.workspaceId)
+						.eq("userId", args.visibilityUserId)
+						.eq("kind", "folder")
+						.gte("treePath", first)
+						.lte("treePath", last),
+				)
+				.take(STREAM_HIDDEN_FOLDERS_MAX);
+			for (const folder of folders) hiddenFolders.add(folder.treePath);
+			if (folders.length === STREAM_HIDDEN_FOLDERS_MAX) {
+				const end = folders.at(-1)!.treePath;
+				const kept = rows.filter((row) => compareValues(row.treePath, end) <= 0);
+				cut = kept.length < rows.length;
+				rows = kept;
+			}
+
+			// A hidden folder that starts before the page and holds a page row also holds the first row,
+			// so check only the first row's ancestors inside the range. The moved-in folder itself and the
+			// folders above the listing folder are outside it, so a moved-in root never hides its own rows.
+			for (
+				let index = first.indexOf("/", savedTreePath.length);
+				index !== -1 && index < first.length - 1;
+				index = first.indexOf("/", index + 1)
+			) {
+				const ancestor = first.slice(0, index + 1);
+				const hide = await ctx.db
+					.query("files_pending_hides")
+					.withIndex("by_org_ws_user_kind_treePath", (q) =>
+						q
+							.eq("organizationId", tenant.organizationId)
+							.eq("workspaceId", tenant.workspaceId)
+							.eq("userId", args.visibilityUserId)
+							.eq("kind", "folder")
+							.eq("treePath", ancestor),
+					)
+					.first();
+				if (hide) hiddenFolders.add(ancestor);
+			}
+
+			// The hide window on the hide index that matches the filter.
+			const filter: Array<[string, Value]> =
+				args.lowercaseExtension !== undefined
+					? [
+							["kind", "file"],
+							["lowercaseExtension", args.lowercaseExtension],
+						]
+					: args.kind !== undefined
+						? [["kind", args.kind]]
+						: [];
+			is_hidden = await db_stream_hide_window(ctx, {
+				index:
+					args.lowercaseExtension !== undefined
+						? "by_org_ws_user_kind_ext_treePath"
+						: args.kind !== undefined
+							? "by_org_ws_user_kind_treePath"
+							: "by_org_ws_user_treePath",
+				eq: [
+					["organizationId", args.organizationId],
+					["workspaceId", args.workspaceId],
+					["userId", args.visibilityUserId],
+					...filter,
+				],
+				fields: ["treePath"],
+				first: [first],
+				last: [rows.at(-1)!.treePath],
+				order: "asc",
+				userId: args.visibilityUserId,
+				limit: rows.length,
+			});
+		}
+
+		// The outermost hidden folder that holds this row, if any.
+		const hidden_folder_of = (treePath: string) => {
+			for (
+				let index = treePath.indexOf("/", savedTreePath.length);
+				index !== -1 && index < treePath.length - 1;
+				index = treePath.indexOf("/", index + 1)
+			) {
+				if (hiddenFolders.has(treePath.slice(0, index + 1))) return treePath.slice(0, index + 1);
+			}
+			return null;
+		};
+		const owner_tree_path = (node: Doc<"files_nodes">) => ownerTreePath + node.treePath.slice(savedTreePath.length);
+		const can_read = db_stream_saved_access(ctx, args, reader, rows);
+
+		return await db_stream_decide(ctx, {
+			root: root.parent,
+			requireComplete: args.requireComplete,
+			order: args.order,
+			position: args.position,
+			page,
+			rows,
+			cut,
+			indexKey,
+			mergeKey: (node) => [owner_tree_path(node)],
+			decide: async (node) => {
+				if (hidden_folder_of(node.treePath) !== null || (is_hidden && (await is_hidden(node._id)))) return null;
+				if (!(await can_read(node))) return "denied";
+				const treePath = owner_tree_path(node);
+				return await db_stream_saved_item(ctx, {
+					node,
+					path: node.kind === "folder" ? treePath.slice(0, -1) : treePath,
+					overlayUserId: reader ? args.visibilityUserId : null,
+				});
+			},
+			restartAfter: (node) => {
+				const folder = hidden_folder_of(node.treePath);
+				return folder === null ? null : path_tree_prefix_upper_bound(folder);
+			},
+		});
+	},
+});
+
+/**
+ * The user's places under the listing folder in the user's tree path order. A moved-in saved folder
+ * also opens a nested saved stream.
+ */
+export const internal_list_subtree_places = internalQuery({
+	args: { ...stream_args.fields, ...stream_filter_args },
+	returns: stream_result,
+	handler: async (ctx, args) => {
+		const opened = await db_stream_open(ctx, args);
+		if (opened._nay) return opened;
+		if (!opened._yay) return stream_done(null);
+		const { reader, tenant, root, treePath } = opened._yay;
+		if (!reader || !tenant) return stream_done(root.parent);
+
+		const page = await db_stream_places_under(ctx, { ...args, tenant, treePath }).paginate({
+			cursor: args.position.cursor,
+			numItems: stream_page_size(args.numItems),
+		});
+		const indexKey = (place: Doc<"files_pending_places">) => [place.ownerTreePath, place._creationTime, place._id];
+		return await db_stream_decide(ctx, {
+			root: root.parent,
+			requireComplete: args.requireComplete,
+			order: "asc",
+			position: args.position,
+			page,
+			rows: stream_rows_after({ page: page.page, lastKey: args.position.lastKey, order: "asc", indexKey }),
+			cut: false,
+			indexKey,
+			mergeKey: (place) => [place.ownerTreePath],
+			decide: (place) => db_stream_place_item(ctx, reader, place),
+		});
+	},
+});
+
+/**
+ * Saved folders the user moved under the listing folder, for a filtered subtree whose rows leave
+ * folders out (`-type f`, `--extension`). Each row only opens a nested saved stream; the user's
+ * private folders hold places only.
+ */
+export const internal_list_subtree_moved_in_folders = internalQuery({
+	args: stream_args.fields,
+	returns: stream_result,
+	handler: async (ctx, args) => {
+		const opened = await db_stream_open(ctx, args);
+		if (opened._nay) return opened;
+		if (!opened._yay) return stream_done(null);
+		const { reader, tenant, root, treePath } = opened._yay;
+		if (!reader || !tenant) return stream_done(root.parent);
+
+		const page = await db_stream_places_under(ctx, { ...args, tenant, treePath, kind: "folder" }).paginate({
+			cursor: args.position.cursor,
+			numItems: stream_page_size(args.numItems),
+		});
+		const indexKey = (place: Doc<"files_pending_places">) => [place.ownerTreePath, place._creationTime, place._id];
+		return await db_stream_decide(ctx, {
+			root: root.parent,
+			requireComplete: args.requireComplete,
+			order: "asc",
+			position: args.position,
+			page,
+			rows: stream_rows_after({ page: page.page, lastKey: args.position.lastKey, order: "asc", indexKey }),
+			cut: false,
+			indexKey,
+			mergeKey: (place) => [place.ownerTreePath],
+			// The nested stream checks access on every row it shows.
+			decide: async (place) =>
+				place.target.kind === "saved"
+					? { item: null, movedIn: { savedNodeId: place.target.id, ownerTreePath: place.ownerTreePath } }
+					: null,
+		});
+	},
+});
+
+/**
+ * Saved rows of the whole workspace by update time, for `ls -t` with no path. Each row reads the
+ * user's hide (one point read), then the user's reader for hidden ancestors and the path (cached per
+ * folder).
+ */
+export const internal_list_recent_saved = internalQuery({
+	args: { ...stream_args.fields, order: v.union(v.literal("asc"), v.literal("desc")) },
+	returns: stream_result,
+	handler: async (ctx, args) => {
+		// Leave the reader most of the listing read budget; it stops a call before it runs out.
+		const opened = await db_stream_open(ctx, { ...args, folderPath: "/", readLimit: 2_000 });
+		if (opened._nay) return opened;
+		if (!opened._yay) return stream_done(null);
+		const { reader, root } = opened._yay;
+
+		const page = await ctx.db
+			.query("files_nodes")
+			.withIndex("by_organization_workspace_archiveOperation_updatedAt", (q) =>
+				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("archiveOperationId", null),
+			)
+			.order(args.order)
+			.paginate({ cursor: args.position.cursor, numItems: stream_page_size(args.numItems) });
+		const indexKey = (node: Doc<"files_nodes">) => [node.updatedAt, node._creationTime, node._id];
+		const rows = stream_rows_after({ page: page.page, lastKey: args.position.lastKey, order: args.order, indexKey });
+		const can_read = db_stream_saved_access(ctx, args, null, rows);
+
+		return await db_stream_decide(ctx, {
+			root: root.parent,
+			requireComplete: args.requireComplete,
+			order: args.order,
+			position: args.position,
+			page,
+			rows,
+			cut: false,
+			indexKey,
+			mergeKey: (node) => [node.updatedAt],
+			decide: async (node) => {
+				if (!reader) {
+					if (!(await can_read(node))) return "denied";
+					return await db_stream_saved_item(ctx, { node, path: node.path, overlayUserId: null });
+				}
+				const hide = await ctx.db
+					.query("files_pending_hides")
+					.withIndex("by_savedNode_user", (q) => q.eq("savedNodeId", node._id).eq("userId", args.visibilityUserId))
+					.unique();
+				if (hide) return null;
+				const resolved = await reader.resolve({ kind: "saved", id: node._id });
+				if (reader.exhausted) return "stop";
+				if (resolved?.entry.kind !== "saved") return null;
+				if (!(await reader.canRead(resolved.accessNode))) return "denied";
+				return await db_stream_saved_item(ctx, {
+					node,
+					path: resolved.entry.path,
+					overlayUserId: args.visibilityUserId,
+				});
+			},
+		});
+	},
+});
+
+/**
+ * The user's places of the whole workspace by update time, for `ls -t` with no path.
+ */
+export const internal_list_recent_places = internalQuery({
+	args: { ...stream_args.fields, order: v.union(v.literal("asc"), v.literal("desc")) },
+	returns: stream_result,
+	handler: async (ctx, args) => {
+		const opened = await db_stream_open(ctx, { ...args, folderPath: "/" });
+		if (opened._nay) return opened;
+		if (!opened._yay) return stream_done(null);
+		const { reader, tenant, root } = opened._yay;
+		if (!reader || !tenant) return stream_done(root.parent);
+
+		const page = await ctx.db
+			.query("files_pending_places")
+			.withIndex("by_org_ws_user_visible_updatedAt", (q) =>
+				q
+					.eq("organizationId", tenant.organizationId)
+					.eq("workspaceId", tenant.workspaceId)
+					.eq("userId", args.visibilityUserId)
+					.eq("isVisible", true),
+			)
+			.order(args.order)
+			.paginate({ cursor: args.position.cursor, numItems: stream_page_size(args.numItems) });
+		const indexKey = (place: Doc<"files_pending_places">) => [place.updatedAt, place._creationTime, place._id];
+		return await db_stream_decide(ctx, {
+			root: root.parent,
+			requireComplete: args.requireComplete,
+			order: args.order,
+			position: args.position,
+			page,
+			rows: stream_rows_after({ page: page.page, lastKey: args.position.lastKey, order: args.order, indexKey }),
+			cut: false,
+			indexKey,
+			mergeKey: (place) => [place.updatedAt],
+			decide: async (place) => {
+				const decision = await db_stream_place_item(ctx, reader, place);
+				return decision && decision !== "denied" ? { item: decision.item } : decision;
+			},
+		});
+	},
+});
+
 export const get_path = query({
 	args: { membershipId: v.id("organizations_workspaces_users"), target: files_pending_target_validator },
 	returns: v.union(v.string(), v.null()),
@@ -911,13 +2000,11 @@ export const list_private_folder_children = query({
 
 				const proposal =
 					place.target.kind === "private" ? await ctx.db.get("files_pending_updates", place.pendingUpdateId) : null;
-				const intent = proposal?.createIntent;
 				return {
 					target: place.target,
 					name: place.name,
 					kind: place.kind,
-					// Same rule as `to_item` in `db_list`.
-					preparing: place.target.kind === "private" && (!intent || (intent.kind === "text" && !proposal?.content)),
+					preparing: place.target.kind === "private" && files_visible_is_preparing(proposal),
 				};
 			}),
 		);

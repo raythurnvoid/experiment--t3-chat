@@ -6,6 +6,7 @@ import { test_convex, test_mocks, test_mocks_fill_db_with, test_run_with_flush }
 import { files_visible_db_create_reader, type files_visible_internal_list_Result } from "./files_visible.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import type { files_PendingParent } from "../shared/files.ts";
+import { files_sort_text_key } from "../shared/files-sort.ts";
 
 beforeEach(() => vi.useFakeTimers());
 afterEach(() => vi.useRealTimers());
@@ -1165,5 +1166,75 @@ describe("get_pending_move_occupant", () => {
 
 		await create_saved(f, "box/open");
 		expect(await occupant({ f, path: "/box" })).toEqual({ nodeId: box.id, hasActiveChild: true });
+	});
+});
+
+describe("internal_list_children_saved", () => {
+	test("a service account stream stops at the read budget and goes on from its position", async () => {
+		const f = await fixture();
+		const created = await f.asUser.mutation(api.access_control.create_service_account, {
+			membershipId: f.db.membershipId,
+			name: "Lister",
+		});
+		if (created._nay) throw new Error(created._nay.message);
+		const { serviceAccountId } = created._yay;
+		const grant = await f.asUser.mutation(api.access_control.set_service_account_grant, {
+			membershipId: f.db.membershipId,
+			serviceAccountId,
+			resource: { kind: "workspace" },
+			level: "read",
+		});
+		if (grant._nay) throw new Error(grant._nay.message);
+		const big = await create_saved(f, "big");
+		const names = Array.from({ length: 1_100 }, (_, index) => `f-${String(index).padStart(4, "0")}.md`);
+		await f.t.run(async (ctx) => {
+			for (const name of names)
+				await ctx.db.insert("files_nodes", {
+					...test_mocks.files.base(),
+					organizationId: f.db.organizationId,
+					workspaceId: f.db.workspaceId,
+					createdBy: f.db.userId,
+					updatedBy: f.db.userId,
+					parentId: big.id,
+					name,
+					sortName: files_sort_text_key(name),
+					kind: "file",
+					path: `/big/${name}`,
+					treePath: `/big/${name}`,
+					pathDepth: 2,
+					lowercaseExtension: "md",
+				});
+		});
+
+		// Outside the owner's overlay every open row costs its own access check, so 1,050 rows do
+		// not fit the 3,000 range budget of one call. Measured: 976 rows, then the other 74 of that
+		// page (read again and skipped up to `lastKey`), then the last 50.
+		let position: { rangeStart: string | null; cursor: string | null; lastKey: unknown[] | null } = {
+			rangeStart: null,
+			cursor: null,
+			lastKey: null,
+		};
+		const decided: number[] = [];
+		const seen: string[] = [];
+		for (let call = 0; call < 10; call++) {
+			const result = await f.t.query(internal.files_visible.internal_list_children_saved, {
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				visibilityUserId: f.db.userId,
+				serviceAccountId,
+				folderPath: "/big",
+				orderBy: "name",
+				order: "asc",
+				numItems: 1_050,
+				position,
+			});
+			if (result._nay) throw new Error(result._nay.message);
+			decided.push(result._yay.decided);
+			seen.push(...result._yay.rows.map((row) => row.item!.name));
+			position = result._yay.position;
+			if (result._yay.done) break;
+		}
+		expect(decided[0]).toBeLessThan(1_050);
+		expect(seen).toEqual(names);
 	});
 });

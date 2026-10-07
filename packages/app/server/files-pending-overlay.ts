@@ -13,11 +13,15 @@
 // Leaf module: import only `convex/_generated`, `shared/`, `common/` and other leaf modules (see
 // `server/files-visible-resolve.ts`).
 
-import { compareValues, type Value } from "convex/values";
-import type { WithoutSystemFields } from "convex/server";
+import { compareValues, type Infer, type Value } from "convex/values";
+import { Result } from "common/errors-as-values-utils.ts";
+import { z } from "zod";
+import type { TransactionMetrics, WithoutSystemFields } from "convex/server";
 import { internal } from "../convex/_generated/api.js";
 import type { Doc, Id, TableNames } from "../convex/_generated/dataModel.js";
-import type { MutationCtx, QueryCtx } from "../convex/_generated/server.js";
+import type { ActionCtx, MutationCtx, QueryCtx } from "../convex/_generated/server.js";
+import type { files_visible_stream_Result } from "../convex/files_visible.ts";
+import type { ai_chat_workspaces_source_validator } from "../convex/schema.ts";
 import {
 	files_derive_tree_path_for_file_node,
 	files_lowercase_extension,
@@ -130,6 +134,32 @@ const JOB_LIST_ITEMS = 1000;
  * reader needs for one target (256 levels, about 6 reads each).
  */
 const JOB_READER_MARGIN = 256;
+
+/**
+ * The read rounds of one agent listing call. Each round reads every stream that blocks the merge. A
+ * call that runs out of rounds returns a short page with a cursor.
+ */
+const LIST_MAX_ROUNDS = 8;
+
+/**
+ * A stream page that kept less than half its rows doubles, up to the listing's page size plus this
+ * many rows.
+ */
+const LIST_PAGE_GROWTH = 1_000;
+
+/**
+ * The largest stream page: the largest Bash page (200 rows, `bash_clamp_listing_page_limit`) plus the
+ * growth.
+ */
+export const files_pending_overlay_LIST_STREAM_MAX_PAGE = 200 + LIST_PAGE_GROWTH;
+
+/**
+ * The read budget of agent listings in one transaction. A stream call stops deciding rows past it,
+ * and the merge starts no more stream calls past it once its cursor moved. The room left under the
+ * Convex limits (4,096 ranges, 32,000 documents, 16 MiB) covers the stream calls that run over
+ * before that: each one's page, fixed reads and one row. Usually that is one call.
+ */
+const LIST_BUDGET = { ranges: 3_000, documents: 24_000, bytes: 12 * 1024 * 1024 };
 
 type SourceFields = Record<string, any>;
 
@@ -1677,14 +1707,303 @@ export function files_pending_overlay_window_ranges(args: {
 }
 
 /**
- * Where an agent stream goes on between calls. `cursor` is the Convex cursor of the page the
- * next call reads again; rows at or before `lastKey` (at or after, for `desc`) are already decided.
- * `rangeStart` starts a new range after a hidden folder.
+ * Whether a transaction used the read budget of agent listings.
  */
-export type files_pending_overlay_StreamCursor = {
-	rangeStart: string | null;
-	cursor: string | null;
-	lastKey: Value[] | null;
-};
+export function files_pending_overlay_list_over_budget(metrics: TransactionMetrics) {
+	return (
+		metrics.databaseQueries.used > LIST_BUDGET.ranges ||
+		metrics.documentsRead.used > LIST_BUDGET.documents ||
+		metrics.bytesRead.used > LIST_BUDGET.bytes
+	);
+}
+
+const list_cursor_schema = z.object({
+	scope: z.string(),
+	root: z.string(),
+	streams: z
+		.array(
+			z.object({
+				kind: z.enum(["saved", "places", "moved_in", "nested"]),
+				movedIn: z.object({ savedNodeId: z.string(), ownerTreePath: z.string() }).nullable(),
+				numItems: z.number().int().positive(),
+				position: z.object({
+					rangeStart: z.string().nullable(),
+					cursor: z.string().nullable(),
+					lastKey: z.array(z.any()).nullable(),
+				}),
+			}),
+		)
+		.max(256),
+});
+
+/**
+ * One page of an agent listing: the children of a folder, the subtree under it (path order), or the
+ * whole workspace by update time (`ls -t` with no path).
+ *
+ * Merges the saved stream, the user's place stream and, in a subtree, one saved stream per folder the
+ * user moved in by a draft. A row shows only when every open stream has read past its key; ties go by
+ * stream order. Used by `ls`, `find`, `tree`, the skills catalog and transfer discovery, so it takes
+ * any ctx that can run a query.
+ *
+ * Nested queries share the caller's transaction. When the caller is a query or a mutation, the merge
+ * starts no stream call past the read budget and returns a short page with a cursor instead.
+ */
+export async function files_pending_overlay_list(
+	ctx: Pick<ActionCtx, "runQuery"> & { meta?: ActionCtx["meta"] | QueryCtx["meta"] },
+	args: {
+		agentSource?: Infer<typeof ai_chat_workspaces_source_validator>;
+		organizationId: Doc<"files_nodes">["organizationId"];
+		workspaceId: Doc<"files_nodes">["workspaceId"];
+		visibilityUserId: Id<"users">;
+		serviceAccountId?: Id<"access_control_service_accounts">;
+		overlayUserId?: Id<"users">;
+		requireComplete?: boolean;
+		folderPath: string;
+		mode: "children" | "subtree" | "recent";
+		/**
+		 * Children only. Recent listings are always by update time.
+		 */
+		orderBy?: "name" | "updatedAt";
+		order: "asc" | "desc";
+		kind?: "file" | "folder";
+		lowercaseExtension?: string;
+		numItems: number;
+		cursor: string | null;
+	},
+) {
+	const { order } = args;
+	const overlay = args.overlayUserId === args.visibilityUserId && args.serviceAccountId === undefined;
+	// A descending subtree would meet a moved-in folder after its own rows, so only saved-only reads
+	// may use it (mount listings).
+	if (args.mode === "subtree" && order === "desc" && overlay)
+		throw should_never_happen("Agent subtree listings with drafts read in path order only", {
+			folderPath: args.folderPath,
+		});
+
+	const streamArgs = {
+		agentSource: args.agentSource,
+		organizationId: args.organizationId,
+		workspaceId: args.workspaceId,
+		visibilityUserId: args.visibilityUserId,
+		serviceAccountId: args.serviceAccountId,
+		overlayUserId: args.overlayUserId,
+		requireComplete: args.requireComplete,
+		folderPath: args.folderPath,
+	};
+	const filter = {
+		...(args.kind === undefined ? {} : { kind: args.kind }),
+		...(args.lowercaseExtension === undefined ? {} : { lowercaseExtension: args.lowercaseExtension }),
+	};
+	const scope = JSON.stringify([
+		args.organizationId,
+		args.workspaceId,
+		args.visibilityUserId,
+		args.serviceAccountId,
+		args.overlayUserId,
+		args.folderPath,
+		args.mode,
+		args.orderBy,
+		order,
+		args.kind,
+		args.lowercaseExtension,
+		args.requireComplete,
+	]);
+	const pageSize = Math.max(1, Math.floor(args.numItems));
+
+	type CursorStream = z.infer<typeof list_cursor_schema>["streams"][number];
+	type Row = NonNullable<files_visible_stream_Result["_yay"]>["rows"][number];
+	type Stream = CursorStream & {
+		/**
+		 * False once nothing is left after `buffer`.
+		 */
+		open: boolean;
+		buffer: Row[];
+		frontier: Value[] | null;
+		after: { position: CursorStream["position"]; done: boolean };
+	};
+
+	const start = { rangeStart: null, cursor: null, lastKey: null };
+	let root: string | null = null;
+	let cursorStreams: CursorStream[];
+	if (args.cursor === null) {
+		cursorStreams = [
+			{ kind: "saved", movedIn: null, numItems: pageSize, position: start },
+			...(overlay ? [{ kind: "places" as const, movedIn: null, numItems: pageSize, position: start }] : []),
+			// A filter that leaves folders out does not meet moved-in folders in the place stream.
+			...(overlay && args.mode === "subtree" && (args.kind === "file" || args.lowercaseExtension !== undefined)
+				? [{ kind: "moved_in" as const, movedIn: null, numItems: pageSize, position: start }]
+				: []),
+		];
+	} else {
+		let raw: unknown;
+		try {
+			raw = JSON.parse(args.cursor);
+		} catch {
+			return Result({ _nay: { message: "Invalid listing cursor" } });
+		}
+		const parsed = list_cursor_schema.safeParse(raw);
+		if (!parsed.success || parsed.data.scope !== scope)
+			return Result({ _nay: { message: "Listing changed. Start again." } });
+		root = parsed.data.root;
+		cursorStreams = parsed.data.streams;
+	}
+	const streams: Stream[] = cursorStreams.map((stream) => ({
+		...stream,
+		open: true,
+		buffer: [],
+		frontier: null,
+		after: { position: stream.position, done: false },
+	}));
+
+	const run = (stream: Stream) => {
+		const common = { ...streamArgs, numItems: stream.numItems, position: stream.position };
+		const orderBy = args.orderBy ?? "name";
+		const query =
+			args.mode === "recent"
+				? stream.kind === "saved"
+					? ctx.runQuery(internal.files_visible.internal_list_recent_saved, { ...common, order })
+					: ctx.runQuery(internal.files_visible.internal_list_recent_places, { ...common, order })
+				: args.mode === "children"
+					? stream.kind === "saved"
+						? ctx.runQuery(internal.files_visible.internal_list_children_saved, {
+								...common,
+								...filter,
+								orderBy,
+								order,
+							})
+						: ctx.runQuery(internal.files_visible.internal_list_children_places, {
+								...common,
+								...filter,
+								orderBy,
+								order,
+							})
+					: stream.kind === "places"
+						? ctx.runQuery(internal.files_visible.internal_list_subtree_places, { ...common, ...filter })
+						: stream.kind === "moved_in"
+							? ctx.runQuery(internal.files_visible.internal_list_subtree_moved_in_folders, common)
+							: ctx.runQuery(internal.files_visible.internal_list_subtree_saved, {
+									...common,
+									...filter,
+									order,
+									...(stream.movedIn
+										? {
+												movedIn: {
+													savedNodeId: stream.movedIn.savedNodeId as Id<"files_nodes">,
+													ownerTreePath: stream.movedIn.ownerTreePath,
+												},
+											}
+										: {}),
+								});
+		return query as Promise<files_visible_stream_Result>;
+	};
+
+	const sign = order === "asc" ? 1 : -1;
+	const compare = (a: Value[], b: Value[]) => sign * compareValues(a, b);
+
+	const items: NonNullable<Row["item"]>[] = [];
+	const seen = new Set<string>();
+	let rounds = 0;
+	let progressed = false;
+	let overBudget = false;
+	while (items.length < pageSize && !overBudget) {
+		// The next row: the smallest buffered key, ties by stream order.
+		let next: { stream: Stream; rank: number } | null = null;
+		for (const [rank, stream] of streams.entries()) {
+			const head = stream.buffer[0];
+			if (head && (!next || compare(head.key, next.stream.buffer[0]!.key) < 0)) next = { stream, rank };
+		}
+		// A stream with nothing buffered blocks the next row until it has read past that row's key.
+		const blocking = streams.filter((stream, rank) => {
+			if (!stream.open || stream.buffer.length > 0) return false;
+			if (!next || stream.frontier === null) return true;
+			const comparison = compare(stream.frontier, next.stream.buffer[0]!.key);
+			return comparison < 0 || (comparison === 0 && rank < next.rank);
+		});
+
+		if (blocking.length > 0) {
+			if (rounds === LIST_MAX_ROUNDS) break;
+			rounds++;
+			// One stream at a time: transfer discovery calls this from a mutation, and Convex does not
+			// promise that nested `runQuery` calls may run in parallel there.
+			for (const stream of blocking) {
+				// Only after the cursor moved, so every page makes progress: buffered rows of one stream
+				// do not move it while another stream still blocks them. Actions have no transaction metrics.
+				if (progressed && ctx.meta && "getTransactionMetrics" in ctx.meta) {
+					overBudget = files_pending_overlay_list_over_budget(await ctx.meta.getTransactionMetrics());
+					if (overBudget) break;
+				}
+				const result = await run(stream);
+				if (result._nay) return result;
+				const rootKey = JSON.stringify(result._yay.root);
+				if (root !== null && rootKey !== root) return Result({ _nay: { message: "Listing changed. Start again." } });
+				root = rootKey;
+
+				const { rows, decided } = result._yay;
+				stream.buffer = [...rows];
+				stream.frontier = result._yay.frontier;
+				stream.after = { position: result._yay.position, done: result._yay.done };
+				if (rows.length === 0) {
+					stream.position = result._yay.position;
+					stream.open = !result._yay.done;
+					progressed = true;
+				}
+				// Double the page after a call that kept less than half its rows. A call that stopped on the
+				// read budget keeps its page, because a bigger page would stop again.
+				if (!result._yay.overBudget)
+					stream.numItems =
+						rows.length * 2 < decided ? Math.min(stream.numItems * 2, pageSize + LIST_PAGE_GROWTH) : pageSize;
+			}
+			continue;
+		}
+		if (!next) break;
+
+		const { stream } = next;
+		const row = stream.buffer.shift()!;
+		progressed = true;
+		if (stream.buffer.length > 0) stream.position = row.position;
+		else {
+			stream.position = stream.after.position;
+			stream.open = !stream.after.done;
+		}
+		if (row.movedIn && !streams.some((other) => other.movedIn?.savedNodeId === row.movedIn!.savedNodeId)) {
+			streams.push({
+				kind: "nested",
+				movedIn: row.movedIn,
+				numItems: pageSize,
+				position: start,
+				open: true,
+				buffer: [],
+				frontier: null,
+				after: { position: start, done: false },
+			});
+		}
+		// Two calls read different snapshots, so a moved row can come from two streams.
+		if (row.item && !seen.has(row.item.target.id)) {
+			seen.add(row.item.target.id);
+			items.push(row.item);
+		}
+	}
+
+	const left = streams.filter((stream) => stream.open);
+	return Result({
+		_yay: {
+			items,
+			continueCursor:
+				left.length === 0
+					? null
+					: JSON.stringify({
+							scope,
+							root: root ?? "null",
+							streams: left.map((stream) => ({
+								kind: stream.kind,
+								movedIn: stream.movedIn,
+								numItems: stream.numItems,
+								position: stream.position,
+							})),
+						} satisfies z.infer<typeof list_cursor_schema>),
+			isDone: left.length === 0,
+		},
+	});
+}
 
 // #endregion reads

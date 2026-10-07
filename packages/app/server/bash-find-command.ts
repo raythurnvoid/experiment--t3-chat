@@ -32,8 +32,10 @@ import {
 	bash_COMMAND_EXIT_USAGE,
 	bash_NON_NEGATIVE_INTEGER_REGEX,
 	type bash_DbFilesRoots,
+	type bash_ExternalSourceMount,
 } from "./bash-utils.ts";
 import { bash_command_build_builtin_delegation_args, bash_delegate_builtin_command } from "./bash-delegate.ts";
+import { files_pending_overlay_list } from "./files-pending-overlay.ts";
 
 const EXTENSION_TOKEN_REGEX = /^[a-z0-9][a-z0-9_-]*$/iu;
 const SIMPLE_PATH_WORD_GLOB_REGEX = /^\*+([a-z0-9][a-z0-9_-]*)\*+$/iu;
@@ -99,7 +101,7 @@ function parse_simple_path_word_glob(pattern: string) {
 	}
 
 	// Treat `readme*.md` as the plain path word `readme`. The command still
-	// rejects the glob; this only lets the stderr print the indexed retry.
+	// rejects the glob; this only lets the stderr print the retry hint.
 	const prefixExtensionGlobMatch = trimmed.match(SIMPLE_PATH_WORD_PREFIX_EXTENSION_GLOB_REGEX);
 	if (prefixExtensionGlobMatch) {
 		return prefixExtensionGlobMatch[1].toLowerCase();
@@ -111,7 +113,7 @@ function parse_simple_path_word_glob(pattern: string) {
 }
 
 /**
- * App-file `-name`/`-iname` are indexed app-file path word searches, not exact glob
+ * App-file `-name`/`-iname` are app-file path word searches, not exact glob
  * filters. Strip a simple literal extension so `README.md` searches for the
  * filename word instead of mostly matching every Markdown file by `md`.
  */
@@ -130,7 +132,7 @@ function normalize_name_path_query(value: string | undefined) {
 /**
  * Build the agent-facing `Try:` line for path word search recovery.
  *
- * This points the model at the indexed `find --path-query` form when it used a
+ * This points the model at the `find --path-query` form when it used a
  * glob or regex-shaped path query that the app shell cannot run directly.
  */
 function build_path_query_retry_hint(
@@ -398,7 +400,7 @@ function parse_args(args: string[]) {
 		return Result({
 			_nay: {
 				message:
-					"find: -name/-iname use indexed app-file path word search for app files, not glob patterns. Try `find <dir> -type f --extension md --limit 20` for simple extension searches, or use words like `readme`.",
+					"find: -name/-iname use app-file path word search for app files, not glob patterns. Try `find <dir> -type f --extension md --limit 20` for simple extension searches, or use words like `readme`.",
 				...(simplePathWordGlob == null
 					? {}
 					: {
@@ -421,7 +423,7 @@ function parse_args(args: string[]) {
 		return Result({
 			_nay: {
 				message:
-					"find: --path-query uses indexed app-file path word search, not regex/glob patterns. Use plain tokens like `readme`.",
+					"find: --path-query uses app-file path word search, not regex/glob patterns. Use plain tokens like `readme`.",
 				...(simplePathWordGlob == null
 					? {}
 					: {
@@ -487,6 +489,37 @@ function prefix_to_shell_path(args: { commandCtx: CommandContext; dbFilesRoots: 
 		return Result({ _yay: { shellPath: bash_resolve_path(commandCtx.cwd, prefix) } });
 	}
 	return Result({ _yay: { shellPath: bash_normalize_path(prefix) } });
+}
+
+/**
+ * Map `-mindepth/-maxdepth` to the depth shapes of one listing whose root row sits at depth `shift`
+ * (0 for an app folder, 1 for a plugin under `/.plugins`, 1 or 2 for a mount under `/.mounts`): the
+ * root row only, the root row and its direct children, or the whole subtree. Each shape is one index
+ * range; other depths would need a scan, so they are refused with a hint.
+ *
+ * `_yay` is null when no row of this listing is at those depths.
+ */
+function map_find_depth(args: { minDepth: number | null; maxDepth: number | null; shift: number }) {
+	const { minDepth, maxDepth, shift } = args;
+	if ((maxDepth !== null && maxDepth > shift + 1) || (minDepth !== null && minDepth > shift + 1)) {
+		return Result({
+			_nay: {
+				message:
+					`find: -maxdepth/-mindepth here support only the folder itself (-maxdepth ${shift}), ` +
+					`its direct children (-maxdepth ${shift + 1}), or the whole subtree (no -maxdepth). ` +
+					`-mindepth ${shift + 1} leaves the folder itself out.`,
+			},
+		});
+	}
+	if ((maxDepth !== null && maxDepth < shift) || (minDepth ?? 0) > (maxDepth ?? Infinity)) {
+		return Result({ _yay: null });
+	}
+	return Result({
+		_yay: {
+			...(minDepth === shift + 1 ? { minDepth: 1 } : {}),
+			...(maxDepth === null ? {} : { maxDepth: maxDepth - shift }),
+		},
+	});
 }
 
 function build_continuation(args: {
@@ -650,9 +683,22 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 
 			// Depth predicates are relative to `/.plugins`; each plugin's version root renders
 			// as the depth-1 entry `/.plugins/<pluginName>/`, so per-plugin depths shift by 1.
-			const perPluginMinDepth =
-				parsed._yay.minDepth == null || parsed._yay.minDepth <= 1 ? null : parsed._yay.minDepth - 1;
-			const perPluginMaxDepth = parsed._yay.maxDepth == null ? null : parsed._yay.maxDepth - 1;
+			const perPluginDepth = map_find_depth({
+				minDepth: parsed._yay.minDepth,
+				maxDepth: parsed._yay.maxDepth,
+				shift: 1,
+			});
+			if (perPluginDepth._nay) {
+				return {
+					stdout: "",
+					stderr: `${perPluginDepth._nay.message}\nUsage: find [PATH] [--prefix PREFIX] [-maxdepth N] [-mindepth N] [-type f|d] [-name QUERY|-iname QUERY|--path-query QUERY|--extension EXT] [--limit N] [--cursor CURSOR]\n`,
+					exitCode: bash_COMMAND_EXIT_USAGE,
+				};
+			}
+			if (perPluginDepth._yay === null) {
+				return { stdout: "0 matches.\n", stderr: "", exitCode: 0 };
+			}
+			const depth = perPluginDepth._yay;
 
 			const fanOut = await bash_plugins_fan_out_paginate({
 				command: "find",
@@ -699,8 +745,7 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 								: parsed._yay.type === "d"
 									? { kind: "folder" as const }
 									: {}),
-						...(perPluginMinDepth == null ? {} : { minDepth: perPluginMinDepth }),
-						...(perPluginMaxDepth == null ? {} : { maxDepth: perPluginMaxDepth }),
+						...depth,
 					})) as files_nodes_list_subtree_Result;
 					return {
 						items: pageResult.page.map((item) => ({
@@ -794,6 +839,24 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 				};
 			}
 
+			// A mount's root row is at depth 1 in a group or for a mount with no group, else at depth 2.
+			const mount_depth = (mount: bash_ExternalSourceMount) =>
+				map_find_depth({
+					minDepth: parsed._yay.minDepth,
+					maxDepth: parsed._yay.maxDepth,
+					shift: pathResolution.kind === "external_mount_group" || mount.mountName == null ? 1 : 2,
+				});
+			const refusedDepth = [...dbFilesRoots.externalMounts.mounts.values()]
+				.map(mount_depth)
+				.find((depth) => depth._nay);
+			if (refusedDepth?._nay) {
+				return {
+					stdout: "",
+					stderr: `${refusedDepth._nay.message}\nUsage: find [PATH] [--prefix PREFIX] [-maxdepth N] [-mindepth N] [-type f|d] [-name QUERY|-iname QUERY|--path-query QUERY|--extension EXT] [--limit N] [--cursor CURSOR]\n`,
+					exitCode: bash_COMMAND_EXIT_USAGE,
+				};
+			}
+
 			let mountsCursor: string | null = null;
 			if (parsed._yay.cursor != null) {
 				const resolvedCursor = await bash_cursor_id_resolve(ctx, parsed._yay.cursor);
@@ -822,14 +885,8 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 				cursor: mountsCursor,
 				limit: bash_clamp_listing_page_limit(parsed._yay.limit),
 				runPage: async (pageArgs) => {
-					const depthShift = pathResolution.kind === "external_mount_group" || pageArgs.mount.mountName == null ? 1 : 2;
-					if (parsed._yay.maxDepth != null && parsed._yay.maxDepth < depthShift)
-						return { items: [], continueCursor: "", isDone: true };
-					const perMountMinDepth =
-						parsed._yay.minDepth == null || parsed._yay.minDepth <= depthShift
-							? null
-							: parsed._yay.minDepth - depthShift;
-					const perMountMaxDepth = parsed._yay.maxDepth == null ? null : parsed._yay.maxDepth - depthShift;
+					const depth = mount_depth(pageArgs.mount)._yay;
+					if (!depth) return { items: [], continueCursor: "", isDone: true };
 					if (pathQuery != null) {
 						const pageResult = (await ctx.runQuery(internal.files_nodes.search_paths, {
 							agentSource: pageArgs.mount.fs.ctxData.agentSource,
@@ -875,8 +932,7 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 								: parsed._yay.type === "d"
 									? { kind: "folder" as const }
 									: {}),
-						...(perMountMinDepth == null ? {} : { minDepth: perMountMinDepth }),
-						...(perMountMaxDepth == null ? {} : { maxDepth: perMountMaxDepth }),
+						...depth,
 					})) as files_nodes_list_subtree_Result;
 					return {
 						items: pageResult.page.map((item) => ({
@@ -1001,7 +1057,7 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 					stdout: "",
 					stderr:
 						"find: --prefix cannot be combined with path word search for app files.\n" +
-						"Use `find --prefix PREFIX` for indexed descendant path discovery, or `find -name QUERY` for indexed app-file path word search.\n",
+						"Use `find --prefix PREFIX` for indexed descendant path discovery, or `find -name QUERY` for app-file path word search.\n",
 					exitCode: bash_COMMAND_EXIT_USAGE,
 				};
 			}
@@ -1041,13 +1097,14 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			}
 			const prefixFolderPath = prefixResolution.dbFilesPath ?? prefixResult._yay.shellPath;
 
-			const result = (await ctx.runQuery(internal.files_visible.internal_list, {
+			const result = await files_pending_overlay_list(ctx, {
 				agentSource: prefixResolution.ctxData.agentSource,
 				organizationId: prefixResolution.ctxData.organizationId,
 				workspaceId: prefixResolution.ctxData.workspaceId,
 				visibilityUserId: prefixResolution.ctxData.userId,
 				folderPath: prefixFolderPath,
 				mode: "subtree",
+				order: "asc",
 				overlayUserId: prefixResolution.fs.overlayUserId,
 				numItems: bash_clamp_listing_page_limit(parsed._yay.limit),
 				cursor,
@@ -1056,7 +1113,7 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 					: parsed._yay.type === "d"
 						? { kind: "folder" as const }
 						: {}),
-			})) as files_visible_internal_list_Result;
+			});
 
 			if (result._nay)
 				return { stdout: "", stderr: `find: ${result._nay.message}\n`, exitCode: bash_COMMAND_EXIT_FAILURE };
@@ -1084,7 +1141,7 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			};
 		}
 
-		// App-file find does not expand shell globs; indexed path search flags handle search.
+		// App-file find does not expand shell globs; path search flags handle search.
 		if (target.inputPath != null && bash_GLOB_METACHARACTER_REGEX.test(target.inputPath)) {
 			return {
 				stdout: "",
@@ -1162,14 +1219,25 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			};
 		}
 
-		const result = (await ctx.runQuery(internal.files_visible.internal_list, {
+		// Path word search keeps its own depth rules above. Other app reads take the depth shapes of
+		// `map_find_depth`: the folder only, its children, or its whole subtree.
+		const depth =
+			pathQuery == null
+				? map_find_depth({ minDepth: parsed._yay.minDepth, maxDepth: parsed._yay.maxDepth, shift: 0 })
+				: null;
+		if (depth?._nay)
+			return {
+				stdout: "",
+				stderr: `${depth._nay.message}\nUsage: find [PATH] [--prefix PREFIX] [-maxdepth N] [-mindepth N] [-type f|d] [-name QUERY|-iname QUERY|--path-query QUERY|--extension EXT] [--limit N] [--cursor CURSOR]\n`,
+				exitCode: bash_COMMAND_EXIT_USAGE,
+			};
+		const listArgs = {
 			agentSource: pathResolution.ctxData.agentSource,
 			organizationId: pathResolution.ctxData.organizationId,
 			workspaceId: pathResolution.ctxData.workspaceId,
 			visibilityUserId: pathResolution.ctxData.userId,
 			overlayUserId: pathResolution.fs.overlayUserId,
 			folderPath: target.dbFilesPath,
-			mode: parsed._yay.maxDepth === 1 ? "children" : "subtree",
 			numItems: bash_clamp_listing_page_limit(parsed._yay.limit),
 			cursor,
 			...(parsed._yay.type === "f" || parsed._yay.extension != null
@@ -1178,10 +1246,23 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 					? { kind: "folder" as const }
 					: {}),
 			...(parsed._yay.extension == null ? {} : { lowercaseExtension: parsed._yay.extension }),
-			...(parsed._yay.minDepth == null ? {} : { minDepth: parsed._yay.minDepth }),
-			...(parsed._yay.maxDepth == null ? {} : { maxDepth: parsed._yay.maxDepth }),
-			...(pathQuery == null ? {} : { pathQuery }),
-		})) as files_visible_internal_list_Result;
+		};
+		const result =
+			pathQuery != null
+				? ((await ctx.runQuery(internal.files_visible.internal_list, {
+						...listArgs,
+						mode: parsed._yay.maxDepth === 1 ? "children" : "subtree",
+						...(parsed._yay.minDepth == null ? {} : { minDepth: parsed._yay.minDepth }),
+						...(parsed._yay.maxDepth == null ? {} : { maxDepth: parsed._yay.maxDepth }),
+						pathQuery,
+					})) as files_visible_internal_list_Result)
+				: !depth?._yay || depth._yay.maxDepth === 0
+					? Result({ _yay: { items: [], continueCursor: null, isDone: true } })
+					: await files_pending_overlay_list(ctx, {
+							...listArgs,
+							mode: depth._yay.maxDepth === 1 ? "children" : "subtree",
+							order: "asc",
+						});
 		if (result._nay)
 			return { stdout: "", stderr: `find: ${result._nay.message}\n`, exitCode: bash_COMMAND_EXIT_FAILURE };
 		const lines = result._yay.items.map(
@@ -1194,7 +1275,9 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			parsed._yay.type !== "f" &&
 			parsed._yay.extension == null &&
 			(parsed._yay.minDepth == null || parsed._yay.minDepth === 0) &&
-			(pathQuery == null || (parsed._yay.maxDepth !== 1 && entry.path.toLowerCase().includes(pathQuery.toLowerCase())))
+			(pathQuery == null
+				? depth?._yay != null
+				: parsed._yay.maxDepth !== 1 && entry.path.toLowerCase().includes(pathQuery.toLowerCase()))
 		) {
 			lines.unshift(`${pathResolution.renderShellPath(entry.path)}/`);
 		}

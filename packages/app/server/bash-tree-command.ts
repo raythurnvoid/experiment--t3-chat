@@ -2,7 +2,6 @@ import { defineCommand, type Command } from "just-bash/browser";
 import { internal } from "../convex/_generated/api.js";
 import type { ActionCtx } from "../convex/_generated/server.js";
 import type { files_nodes_list_subtree_Result } from "../convex/files_nodes.ts";
-import type { files_visible_internal_list_Result } from "../convex/files_visible.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import {
 	bash_APP_MOUNT_PATH,
@@ -27,6 +26,7 @@ import {
 	type bash_DbFilesRoots,
 } from "./bash-utils.ts";
 import { bash_command_build_builtin_delegation_args, bash_delegate_builtin_command } from "./bash-delegate.ts";
+import { files_pending_overlay_list } from "./files-pending-overlay.ts";
 
 const BUILTIN_OPTIONS_WITH_VALUES = new Set(["-L", "-P", "-I", "--filelimit", "-o"]);
 
@@ -438,7 +438,7 @@ export function bash_tree_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 		}
 
 		// The shared list returns descendants only. The first line below prints the requested root.
-		const result = (await ctx.runQuery(internal.files_visible.internal_list, {
+		const result = await files_pending_overlay_list(ctx, {
 			agentSource: target.pathResolution.ctxData.agentSource,
 			organizationId: target.pathResolution.ctxData.organizationId,
 			workspaceId: target.pathResolution.ctxData.workspaceId,
@@ -446,9 +446,10 @@ export function bash_tree_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			overlayUserId: target.pathResolution.fs.overlayUserId,
 			folderPath: rootDbFilesPath,
 			mode: "subtree",
+			order: "asc",
 			numItems: bash_clamp_listing_page_limit(parsed._yay.limit),
 			cursor,
-		})) as files_visible_internal_list_Result;
+		});
 		if (result._nay)
 			return { stdout: "", stderr: `tree: ${result._nay.message}\n`, exitCode: bash_COMMAND_EXIT_FAILURE };
 

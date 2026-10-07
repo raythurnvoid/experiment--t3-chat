@@ -225,7 +225,7 @@ curl --fail-with-body --silent --show-error \\
   --request POST "$T3_API_ORIGIN/api/v1/files/list" \\
   --header "Authorization: Bearer $T3_API_KEY" \\
   --header "Content-Type: application/json" \\
-  --data '{"path":"/","recursive":true,"kind":"file","contentTypePrefixes":["text/","application/json","application/yaml"],"limit":100}'
+  --data '{"path":"/","recursive":true,"kind":"file","extension":"md","limit":100}'
 
 curl --fail-with-body --silent --show-error \\
   --request POST "$T3_API_ORIGIN/api/v1/files/read" \\
@@ -251,24 +251,24 @@ async function post(path, body) {
 }
 
 let cursor = null;
-let firstTextFilePath;
+let firstMarkdownFilePath;
 do {
   const result = await post("/api/v1/files/list", {
     path: "/",
     cursor,
     recursive: true,
     kind: "file",
-    // Editable text files: Markdown, plain text, and structured text like JSON or YAML.
-    contentTypePrefixes: ["text/", "application/json", "application/yaml"],
+    // One file extension per call.
+    extension: "md",
     limit: 100,
   });
-  firstTextFilePath ??= result.items[0]?.path;
+  firstMarkdownFilePath ??= result.items[0]?.path;
   cursor = result.cursor;
   if (result.isDone) break;
 } while (true);
 
-if (!firstTextFilePath) throw new Error("No editable text files found");
-const file = await post("/api/v1/files/read", { path: firstTextFilePath });
+if (!firstMarkdownFilePath) throw new Error("No Markdown files found");
+const file = await post("/api/v1/files/read", { path: firstMarkdownFilePath });
 console.log(file.content);`;
 
 	return (

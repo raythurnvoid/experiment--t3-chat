@@ -41,8 +41,8 @@ afterEach(() => {
 	vi.unstubAllGlobals();
 });
 
-async function fixture(personal = false) {
-	const t = test_convex();
+async function fixture(personal = false, transactionLimits = false) {
+	const t = test_convex({ transactionLimits });
 	const db = await t.run((ctx) =>
 		test_mocks_fill_db_with.membership(
 			ctx,
@@ -235,8 +235,9 @@ describe("discover_sources", () => {
 		expect((await f.t.query(internal.ai_chat_context.discover_sources, other))._nay?.name).toBe("unavailable");
 	});
 
-	test("uses one twenty-page scan budget across both roots", async () => {
+	test("reads one SKILL.md path per skill folder, and caps the folders across both roots", async () => {
 		const f = await fixture();
+		const folderIds: Id<"files_nodes">[] = [];
 		for (const workspace of ["current", "personal"] as const) {
 			const nodeId = await f.create({
 				path: "/.agents/skills/example/noise-0000.md",
@@ -246,6 +247,7 @@ describe("discover_sources", () => {
 			// Clone a valid file header: discovery reads paths, not these noise files' content.
 			await f.t.run(async (ctx) => {
 				const node = (await ctx.db.get("files_nodes", nodeId))!;
+				folderIds.push(node.parentId as Id<"files_nodes">);
 				const { _id, _creationTime, ...fields } = node;
 				for (let index = 1; index < 550; index++) {
 					const name = `noise-${String(index).padStart(4, "0")}.md`;
@@ -259,9 +261,26 @@ describe("discover_sources", () => {
 				workspace,
 			});
 		}
+		// Files inside a skill folder cost nothing: each folder costs one exact path read.
 		const found = await f.t.query(internal.ai_chat_context.discover_sources, f.scope);
-		expect(found._yay?.skills).toEqual([]);
-		expect(found._yay?.warning).toContain("incomplete");
+		expect(found._yay?.skills).toEqual([
+			{ workspace: "current", path: "/.agents/skills/z-late/SKILL.md" },
+			{ workspace: "personal", path: "/.agents/skills/z-late/SKILL.md" },
+		]);
+		expect(found._yay?.warning).toBeUndefined();
+
+		// 4 pages of 50 folders: 200 more folders in the current root leave the catalog incomplete.
+		await f.t.run(async (ctx) => {
+			const { _id, _creationTime, ...fields } = (await ctx.db.get("files_nodes", folderIds[0]!))!;
+			for (let index = 0; index < 200; index++) {
+				const name = `folder-${String(index).padStart(4, "0")}`;
+				const path = `/.agents/skills/${name}`;
+				await ctx.db.insert("files_nodes", { ...fields, name, path, treePath: `${path}/` });
+			}
+		});
+		const capped = await f.t.query(internal.ai_chat_context.discover_sources, f.scope);
+		expect(capped._yay?.skills).toEqual([{ workspace: "personal", path: "/.agents/skills/z-late/SKILL.md" }]);
+		expect(capped._yay?.warning).toContain("incomplete");
 	}, 120_000);
 
 	test("discovers exact skill paths without scanning nested instructions or resources", async () => {
@@ -356,6 +375,31 @@ describe("discover_sources", () => {
 		expect(found._yay?.skills).toEqual([{ workspace: "current", path: "/.agents/skills/example/SKILL.md" }]);
 		expect(JSON.stringify(found)).not.toContain("secret");
 	});
+
+	test("stops on the read budget over a huge hidden catalog instead of failing", async () => {
+		const f = await fixture(false, true);
+		const secret = await f.create({ path: "/.agents/skills/secret/SKILL.md", textContent: "PRIVATE" });
+		const second = await f.member(true);
+		const folderId = await f.t.run(async (ctx) => {
+			const parentId = (await ctx.db.get("files_nodes", secret))!.parentId as Id<"files_nodes">;
+			await ctx.db.patch("files_nodes", parentId, { restrictedScopeNodeId: parentId });
+			return parentId;
+		});
+		// Folders the member cannot read, in batches that fit one transaction.
+		for (let batch = 0; batch < 10; batch++) {
+			await f.t.run(async (ctx) => {
+				const { _id, _creationTime, ...fields } = (await ctx.db.get("files_nodes", folderId))!;
+				for (let index = batch * 3_000; index < (batch + 1) * 3_000; index++) {
+					const name = `hidden-${String(index).padStart(5, "0")}`;
+					const path = `/.agents/skills/${name}`;
+					await ctx.db.insert("files_nodes", { ...fields, name, path, treePath: `${path}/` });
+				}
+			});
+		}
+		const found = await f.t.query(internal.ai_chat_context.discover_sources, second);
+		expect(found._yay?.skills).toEqual([]);
+		expect(found._yay?.warning).toContain("incomplete");
+	}, 300_000);
 
 	test("reports one bounded catalog when more than 100 readable skills exist across both roots", async () => {
 		// Saving 101 fixture files through the full publish flow needs more time during the full suite.

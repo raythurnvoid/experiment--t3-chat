@@ -8359,19 +8359,52 @@ export const list_subtree = internalQuery({
 		const normalizedPath = server_path_normalize(args.folderPath);
 		const lowerBound = files_derive_tree_path_for_file_node(normalizedPath, "folder");
 		const upperBound = path_tree_prefix_upper_bound(lowerBound);
-		const baseDepth = files_path_depth(normalizedPath);
 
-		// Direct children use the parent indexes. A depth filter on the subtree range would read every
-		// item under the folder to find the few at depth 1.
-		const directChildren = args.minDepth === 1 && args.maxDepth === 1;
-		const minAbsoluteDepth = args.minDepth == null || directChildren ? null : baseDepth + args.minDepth;
-		const maxAbsoluteDepth = args.maxDepth == null || directChildren ? null : baseDepth + args.maxDepth;
+		// Depth has three shapes, each one index range: the root row only (`maxDepth: 0`), the root row
+		// plus direct children (`maxDepth: 1`, parent index), or the whole subtree. `minDepth: 1`
+		// leaves the root row out. A depth filter on the subtree range would read every row under the
+		// folder to find the few at one depth, so other depths are refused. Bash callers map their
+		// depths with `map_find_depth` in `server/bash-find-command.ts`.
+		const minDepth = args.minDepth ?? 0;
+		if (
+			(minDepth !== 0 && minDepth !== 1) ||
+			(args.maxDepth !== undefined && args.maxDepth !== 0 && args.maxDepth !== 1) ||
+			minDepth > (args.maxDepth ?? 1)
+		)
+			throw convex_error({
+				message: "list_subtree takes minDepth 0 or 1, and maxDepth 0, 1 or none (the whole subtree).",
+			});
+		const directChildren = args.maxDepth !== undefined;
+		const withRoot = minDepth === 0;
 
-		let parentId: Doc<"files_nodes">["parentId"] = files_ROOT_ID;
+		let rootNode: Doc<"files_nodes"> | null = null;
 		if (directChildren && normalizedPath !== "/") {
-			const folder = await files_db_get_visible_node_by_path(ctx, { ...args, path: normalizedPath });
-			if (folder?.kind !== "folder") return { page: [], continueCursor: args.cursor ?? "", isDone: true };
-			parentId = folder._id;
+			rootNode = await files_db_get_visible_node_by_path(ctx, { ...args, path: normalizedPath });
+			if (rootNode?.kind !== "folder") return { page: [], continueCursor: args.cursor ?? "", isDone: true };
+		}
+		const parentId = rootNode?._id ?? files_ROOT_ID;
+		// The root row only when it matches the filter. The workspace root has no row.
+		const rootRow =
+			withRoot && rootNode !== null && (kind === undefined || kind === "folder") && lowercaseExtension === undefined
+				? rootNode
+				: null;
+		const filter_readable = async (nodes: Doc<"files_nodes">[]) =>
+			scope.kind === "volume"
+				? nodes
+				: await access_control_db_filter_readable_file_nodes(ctx, {
+						organizationId: args.organizationId,
+						workspaceId: args.workspaceId,
+						userId: args.visibilityUserId,
+						serviceAccountId: args.serviceAccountId,
+						nodes,
+					});
+
+		if (args.maxDepth === 0) {
+			return {
+				page: rootRow && args.cursor === null ? await filter_readable([rootRow]) : [],
+				continueCursor: "",
+				isDone: true,
+			};
 		}
 
 		const query = directChildren
@@ -8413,44 +8446,52 @@ export const list_subtree = internalQuery({
 			: lowercaseExtension != null
 				? ctx.db
 						.query("files_nodes")
-						.withIndex("by_organization_workspace_archive_kind_lowercaseExtension_tree", (q) =>
-							q
+						.withIndex("by_organization_workspace_archive_kind_lowercaseExtension_tree", (q) => {
+							const eq = q
 								.eq("organizationId", args.organizationId)
 								.eq("workspaceId", args.workspaceId)
 								.eq("archiveOperationId", null)
 								.eq("kind", "file")
-								.eq("lowercaseExtension", lowercaseExtension)
-								.gte("treePath", lowerBound)
-								.lt("treePath", upperBound),
-						)
+								.eq("lowercaseExtension", lowercaseExtension);
+							return (withRoot ? eq.gte("treePath", lowerBound) : eq.gt("treePath", lowerBound)).lt(
+								"treePath",
+								upperBound,
+							);
+						})
 						.order(args.order ?? "asc")
 				: kind == null
 					? ctx.db
 							.query("files_nodes")
-							.withIndex("by_organization_workspace_archiveOperation_treePath", (q) =>
-								q
+							.withIndex("by_organization_workspace_archiveOperation_treePath", (q) => {
+								const eq = q
 									.eq("organizationId", args.organizationId)
 									.eq("workspaceId", args.workspaceId)
-									.eq("archiveOperationId", null)
-									.gte("treePath", lowerBound)
-									.lt("treePath", upperBound),
-							)
+									.eq("archiveOperationId", null);
+								return (withRoot ? eq.gte("treePath", lowerBound) : eq.gt("treePath", lowerBound)).lt(
+									"treePath",
+									upperBound,
+								);
+							})
 							.order(args.order ?? "asc")
 					: ctx.db
 							.query("files_nodes")
-							.withIndex("by_organization_workspace_archiveOperation_kind_treePath", (q) =>
-								q
+							.withIndex("by_organization_workspace_archiveOperation_kind_treePath", (q) => {
+								const eq = q
 									.eq("organizationId", args.organizationId)
 									.eq("workspaceId", args.workspaceId)
 									.eq("archiveOperationId", null)
-									.eq("kind", kind)
-									.gte("treePath", lowerBound)
-									.lt("treePath", upperBound),
-							)
+									.eq("kind", kind);
+								return (withRoot ? eq.gte("treePath", lowerBound) : eq.gt("treePath", lowerBound)).lt(
+									"treePath",
+									upperBound,
+								);
+							})
 							.order(args.order ?? "asc");
 
 		let filteredQuery = query;
 		const contentTypePrefixes = args.contentTypePrefixes;
+		// Kept for the public files/list `contentTypePrefixes` and `scanLimit` until the plugins send
+		// `extension` instead.
 		if (contentTypePrefixes != null) {
 			// Use string ranges because Convex filters have no startsWith. The pagination scan cap below
 			// still bounds sparse matches.
@@ -8465,20 +8506,16 @@ export const list_subtree = internalQuery({
 			);
 		}
 
-		if (minAbsoluteDepth != null && maxAbsoluteDepth != null) {
-			filteredQuery = filteredQuery.filter((q) =>
-				q.and(q.gte(q.field("pathDepth"), minAbsoluteDepth), q.lte(q.field("pathDepth"), maxAbsoluteDepth)),
-			);
-		} else if (minAbsoluteDepth != null) {
-			filteredQuery = filteredQuery.filter((q) => q.gte(q.field("pathDepth"), minAbsoluteDepth));
-		} else if (maxAbsoluteDepth != null) {
-			filteredQuery = filteredQuery.filter((q) => q.lte(q.field("pathDepth"), maxAbsoluteDepth));
-		}
-
+		// The first page of direct children starts with the root row (the last page, in desc order). With
+		// `numItems` 1 that page holds the root row and one child: a page of only the root row would need
+		// a cursor for the start of the children, and Convex has no such cursor.
+		const rootFirst = directChildren && rootRow !== null && args.cursor === null && args.order !== "desc";
 		const result = await filteredQuery.paginate({
 			cursor: args.cursor,
-			numItems: args.numItems,
-			...(contentTypePrefixes == null && minAbsoluteDepth == null && maxAbsoluteDepth == null
+			numItems: rootFirst ? Math.max(1, args.numItems - 1) : args.numItems,
+			// The scan cap applies to content type filters and to subtree listings with `minDepth` (the
+			// public `files/list` always sends it). Other depth shapes read whole pages.
+			...(contentTypePrefixes == null && (directChildren || args.minDepth === undefined)
 				? {}
 				: {
 						maximumRowsRead: Math.min(
@@ -8487,22 +8524,16 @@ export const list_subtree = internalQuery({
 						),
 					}),
 		});
+		const rootLast = directChildren && rootRow !== null && result.isDone && args.order === "desc";
+		const nodes = [
+			...(rootFirst && rootRow ? [rootRow] : []),
+			...result.page,
+			...(rootLast && rootRow ? [rootRow] : []),
+		];
 
 		// A bounded query filter or the access check can make a page shorter. The cursor still walks
 		// the whole subtree; only the page size varies.
-		return {
-			...result,
-			page:
-				scope.kind === "volume"
-					? result.page
-					: await access_control_db_filter_readable_file_nodes(ctx, {
-							organizationId: args.organizationId,
-							workspaceId: args.workspaceId,
-							userId: args.visibilityUserId,
-							serviceAccountId: args.serviceAccountId,
-							nodes: result.page,
-						}),
-		};
+		return { ...result, page: await filter_readable(nodes) };
 	},
 });
 

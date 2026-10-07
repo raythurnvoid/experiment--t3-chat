@@ -46,7 +46,8 @@ import {
 	files_nodes_db_require_copiable_write_policy,
 	files_nodes_db_get_content_version,
 } from "./files_nodes.ts";
-import { files_visible_db_create_reader, type files_visible_internal_list_Result } from "./files_visible.ts";
+import { files_visible_db_create_reader } from "./files_visible.ts";
+import { files_pending_overlay_list } from "../server/files-pending-overlay.ts";
 import {
 	files_pending_nodes_db_create,
 	files_pending_nodes_db_discard,
@@ -2831,7 +2832,8 @@ async function db_discover(ctx: MutationCtx, run: Doc<"files_transfer_runs">) {
 		let continueCursor: string | null;
 
 		if (run.sourceView === "draft") {
-			const listed = (await ctx.runQuery(internal.files_visible.internal_list, {
+			// The merged cursor of the saved and place streams goes into `discoveryCursor`.
+			const listed = await files_pending_overlay_list(ctx, {
 				organizationId: sourceScope.organizationId,
 				workspaceId: sourceScope.workspaceId,
 				visibilityUserId: run.userId,
@@ -2839,9 +2841,10 @@ async function db_discover(ctx: MutationCtx, run: Doc<"files_transfer_runs">) {
 				requireComplete: true,
 				folderPath: source.path,
 				mode: "children",
+				order: "asc",
 				cursor: item.discoveryCursor,
 				numItems: DISCOVERY_PAGE_SIZE,
-			})) as files_visible_internal_list_Result;
+			});
 			if (listed._nay) {
 				await db_stop_run({ ctx, run, errorMessage: listed._nay.message });
 				return;

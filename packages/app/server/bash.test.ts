@@ -18,7 +18,7 @@ import { files_db_yjs_push_update, files_nodes_db_create_node_recursively_at_pat
 import { db_insert_file_text_content, files_nodes_db_insert_file_content_docs } from "../convex/files_nodes_content.ts";
 import { files_PENDING_REPLACEMENT_BASE_CHANGED_MESSAGE } from "../convex/files_pending_updates.ts";
 import { r2, r2_confirmed_object_delete, r2_server_side_copy } from "../convex/r2_client.ts";
-import { test_convex, test_mocks, test_mocks_fill_db_with } from "../convex/setup.test.ts";
+import { test_convex, test_mocks, test_mocks_fill_db_with, test_run_with_flush } from "../convex/setup.test.ts";
 import { ai_chat_DEFAULT_MODEL_ID, type ai_chat_ModelId } from "../shared/ai-chat.ts";
 import { delay } from "../shared/async-utils.ts";
 import { files_yjs_doc_create_from_text } from "../shared/files-tiptap.ts";
@@ -1549,7 +1549,7 @@ describe("bash_run_command", () => {
 		expect(blinded.metadata.exitCode).toBe(0);
 		expect(blinded.stdout).toBe("");
 		expect(blinded.stderr).toContain("find exited 2 and its stderr was discarded");
-		expect(blinded.stderr).toContain("-name/-iname use indexed app-file path word search");
+		expect(blinded.stderr).toContain("-name/-iname use app-file path word search");
 		expect(blinded.stderr).toContain("or use words like `readme`");
 	});
 
@@ -1574,10 +1574,10 @@ describe("bash_run_command", () => {
 		const merged = await run({ command: `find ${test_db_files_mount} -type f -iname 'readme*' 2>&1 || true` });
 
 		expect(plain.metadata.exitCode).toBe(2);
-		expect(plain.stderr).toContain("-name/-iname use indexed app-file path word search");
+		expect(plain.stderr).toContain("-name/-iname use app-file path word search");
 		expect(plain.stderr).not.toContain("its stderr was discarded");
 		// `2>&1` keeps the guidance, just on stdout, so it must not be printed a second time.
-		expect(merged.stdout).toContain("-name/-iname use indexed app-file path word search");
+		expect(merged.stdout).toContain("-name/-iname use app-file path word search");
 		expect(merged.stderr).not.toContain("its stderr was discarded");
 	});
 
@@ -1959,7 +1959,7 @@ describe("bash_run_command", () => {
 				expect.objectContaining({
 					folderPath: "/docs",
 					numItems: 1,
-					cursor: null,
+					position: { rangeStart: null, cursor: null, lastKey: null },
 				}),
 			]),
 		);
@@ -1986,12 +1986,12 @@ describe("bash_run_command", () => {
 				expect.objectContaining({
 					folderPath: "/docs",
 					numItems: 10,
-					cursor: null,
+					position: { rangeStart: null, cursor: null, lastKey: null },
 				}),
 				expect.objectContaining({
 					folderPath: "/docs/nested",
 					numItems: 10,
-					cursor: null,
+					position: { rangeStart: null, cursor: null, lastKey: null },
 				}),
 			]),
 		);
@@ -2056,11 +2056,13 @@ describe("bash_run_command", () => {
 			ttl: 24 * 60 * 60 * 1000,
 		});
 		expect(runQuery).toHaveBeenCalledWith(internal.value_store.get, { id: cursorId });
+		// The stored cursor holds each stream's position; the saved stream goes on from its own.
+		const saved = (JSON.parse(rawCursor) as { streams: { kind: string; position: unknown }[] }).streams.find(
+			(stream) => stream.kind === "saved",
+		);
 		expect(runQuery).toHaveBeenCalledWith(
-			expect.anything(),
-			expect.objectContaining({
-				cursor: rawCursor,
-			}),
+			internal.files_visible.internal_list_children_saved,
+			expect.objectContaining({ folderPath: "/docs", position: saved!.position }),
 		);
 	});
 
@@ -2280,8 +2282,8 @@ describe("bash_run_command", () => {
 		// Each line is "<ISO timestamp>\t<shell path>"; assert the recency formatting + a known path.
 		expect(newest.stdout).toMatch(/\dT\d.*Z\t\/home\/cloud-usr\/w\/personal\/home\/docs\/readme\.md/u);
 		const recencyCalls = runQuery.mock.calls
-			.map((call) => call[1])
-			.filter((a) => "numItems" in a && a.mode === "recent" && a.orderBy === "updatedAt");
+			.filter(([ref]) => function_name_of(ref) === "files_visible:internal_list_recent_saved")
+			.map((call) => call[1]);
 		expect(recencyCalls.some((a) => a.order === "desc")).toBe(true);
 		expect(recencyCalls.some((a) => a.order === "asc")).toBe(true);
 		expect(oldest.metadata.exitCode).toBe(0);
@@ -2294,9 +2296,13 @@ describe("bash_run_command", () => {
 		);
 		expect(recursiveScoped.metadata.exitCode).toBe(2);
 		expect(recursiveScoped.stderr).toContain("ls -t -R is not supported");
+		// A draft folder move would reach a reverse subtree after its own rows, so app paths refuse it.
+		const recursiveReverse = await run({ command: `ls -Rr ${test_db_files_mount}/docs` });
+		expect(recursiveReverse.metadata.exitCode).toBe(2);
+		expect(recursiveReverse.stderr).toContain("ls -R -r is not supported for app file paths");
 		expect(workspacePaged.stdout).toContain("Next page: ls -t --limit 1 --cursor");
 		expect(runQuery).toHaveBeenCalledWith(
-			internal.files_visible.internal_list,
+			internal.files_visible.internal_list_children_saved,
 			expect.objectContaining({
 				folderPath: "/docs",
 				orderBy: "updatedAt",
@@ -2379,17 +2385,15 @@ describe("bash_run_command", () => {
 		expect(result.stdout).toContain(`${test_db_files_mount}/docs/readme.md`);
 		expect(result.stdout).toContain(`${test_db_files_mount}/docs/tutorial.md`);
 		expect(result.stdout).not.toContain(`${test_db_files_mount}/docs/nested/deep.md`);
-		const paginatedCalls = runQuery.mock.calls.map((call) => call[1]).filter((args) => "numItems" in args);
-		expect(paginatedCalls).toEqual(
-			expect.arrayContaining([
-				expect.objectContaining({
-					folderPath: "/docs",
-					numItems: 10,
-					cursor: null,
-					kind: "file",
-					maxDepth: 1,
-				}),
-			]),
+		// -maxdepth 1 reads the folder's children.
+		expect(runQuery).toHaveBeenCalledWith(
+			internal.files_visible.internal_list_children_saved,
+			expect.objectContaining({
+				folderPath: "/docs",
+				numItems: 10,
+				position: { rangeStart: null, cursor: null, lastKey: null },
+				kind: "file",
+			}),
 		);
 	});
 
@@ -2486,13 +2490,24 @@ describe("bash_run_command", () => {
 	test("supports find -mindepth and accepts -print as a no-op", async () => {
 		const { run } = await create_bash_runner();
 
+		const self = await run({ command: `find ${test_db_files_mount}/docs -maxdepth 0 --limit 50` });
+		const below = await run({ command: `find ${test_db_files_mount}/docs -mindepth 1 --limit 50` });
 		const deepOnly = await run({ command: `find ${test_db_files_mount}/docs -mindepth 2 --limit 50` });
+		const twoLevels = await run({ command: `find ${test_db_files_mount}/docs -maxdepth 2 --limit 50` });
 		const directOnly = await run({ command: `find ${test_db_files_mount}/docs -mindepth 1 -maxdepth 1 --limit 50` });
 		const printed = await run({ command: `find ${test_db_files_mount}/docs -maxdepth 1 -print --limit 50` });
 
-		expect(deepOnly.metadata.exitCode).toBe(0);
-		expect(deepOnly.stdout).toContain(`${test_db_files_mount}/docs/nested/deep.md`);
-		expect(deepOnly.stdout).not.toContain(`${test_db_files_mount}/docs/readme.md`);
+		// App folders take three depth shapes: the folder, its children, or its whole subtree.
+		expect(self.stdout.trim()).toBe(`${test_db_files_mount}/docs/`);
+		expect(below.metadata.exitCode).toBe(0);
+		expect(below.stdout).not.toContain(`${test_db_files_mount}/docs/\n`);
+		expect(below.stdout).toContain(`${test_db_files_mount}/docs/nested/deep.md`);
+		for (const refused of [deepOnly, twoLevels]) {
+			expect(refused.metadata.exitCode).toBe(2);
+			expect(refused.stderr).toContain(
+				"support only the folder itself (-maxdepth 0), its direct children (-maxdepth 1), or the whole subtree",
+			);
+		}
 		expect(directOnly.metadata.exitCode).toBe(0);
 		expect(directOnly.stdout).toContain(`${test_db_files_mount}/docs/readme.md`);
 		expect(directOnly.stdout).toContain(`${test_db_files_mount}/docs/nested/`);
@@ -2587,7 +2602,7 @@ describe("bash_run_command", () => {
 		expect(complexGlobName.stderr).toContain("not glob patterns");
 		expect(complexGlobName.stderr).toContain("Try `find <dir> -type f --extension md");
 		expect(pathQueryGlob.metadata.exitCode).toBe(2);
-		expect(pathQueryGlob.stderr).toContain("--path-query uses indexed app-file path word search");
+		expect(pathQueryGlob.stderr).toContain("--path-query uses app-file path word search");
 		expect(pathQueryGlob.stderr).toContain(`Try: find ${test_db_files_mount} --path-query readme --limit 10`);
 		expect(combinedPathQueryExtension.metadata.exitCode).toBe(2);
 		expect(combinedPathQueryExtension.stderr).toContain(
@@ -3965,7 +3980,10 @@ describe("bash_run_command", () => {
 
 	test("uses prefix find and renders app tree pages", async () => {
 		const { run } = await create_bash_runner();
-		const scopedRunner = await create_bash_runner({ initialCwd: `${test_db_files_mount}/docs` });
+		const scopedRunner = await create_bash_runner({
+			initialCwd: `${test_db_files_mount}/docs`,
+			extraFiles: [{ path: "/docs/nested/more.md", content: "more\n" }],
+		});
 
 		const prefixResult = await run({ command: "find --prefix /docs --limit 20 -type f" });
 		const relativePrefixResult = await scopedRunner.run({ command: "find --prefix nested --limit 1" });
@@ -8486,8 +8504,9 @@ describe("bash_run_command", () => {
 
 		await runner.run({ command: `mv ${test_db_files_mount}/docs/tutorial.md ${test_db_files_mount}/docs/claimed.md` });
 
-		// A committed node appears at the claimed path after the proposal.
-		await runner.t.run((ctx) =>
+		// A committed node appears at the claimed path after the proposal. The overlay job then writes
+		// the proposer's claim hide of it, so seed through the overlay wrapper and run the job.
+		await test_run_with_flush(runner.t, (ctx) =>
 			seed_organization_node({
 				ctx,
 				scope: {
@@ -8499,6 +8518,7 @@ describe("bash_run_command", () => {
 				seedIndex: 99,
 			}),
 		);
+		await drain_scheduled_continuations(runner);
 
 		// The mover appears exactly once; the newcomer stays hidden from the proposer.
 		const list = await runner.run({ command: `ls ${test_db_files_mount}/docs` });
@@ -13189,6 +13209,14 @@ describe("bash_run_command", () => {
 			const groupOne = await f.runner.run({ command: "find /.mounts/research -maxdepth 1 --limit 20" });
 			expect(groupOne.stdout).toContain("/.mounts/research/repo/");
 			expect(groupOne.stdout).not.toContain("notes.md");
+			// A mount reads its root, its root and children, or its whole subtree; deeper limits are refused.
+			const groupTwo = await f.runner.run({ command: "find /.mounts/research -maxdepth 2 --limit 20" });
+			expect(groupTwo.stdout).toContain("/.mounts/research/repo/notes.md");
+			expect(groupTwo.stdout).toContain("/.mounts/research/repo/records/");
+			expect(groupTwo.stdout).not.toContain("sample");
+			const groupThree = await f.runner.run({ command: "find /.mounts/research -maxdepth 3 --limit 20" });
+			expect(groupThree.metadata.exitCode).toBe(2);
+			expect(groupThree.stderr).toContain("its direct children (-maxdepth 2), or the whole subtree");
 			const folders = await f.runner.run({ command: "find /.mounts -type d --limit 20" });
 			expect(folders.stdout).toContain("/.mounts/research/");
 			expect(folders.stdout).toContain("/.mounts/research/repo/records/sample/");
@@ -14392,6 +14420,17 @@ describe("bash_run_command", () => {
 			expect(top.stdout).toContain("/.plugins/alpha-notes/");
 			expect(top.stdout).toContain("/.plugins/media/");
 			expect(top.stdout).not.toContain("README.md");
+			// Each plugin reads its root, its root and children, or its whole subtree.
+			const twoLevels = await runner.run({ command: "find /.plugins -maxdepth 2 --limit 20" });
+			expect(twoLevels.stdout).toContain("/.plugins/alpha-notes/README.md");
+			expect(twoLevels.stdout).toContain("/.plugins/media/dist/");
+			expect(twoLevels.stdout).not.toContain("backend");
+			const childrenOnly = await runner.run({ command: "find /.plugins -mindepth 2 -maxdepth 2 --limit 20" });
+			expect(childrenOnly.stdout.split("\n")).not.toContain("/.plugins/media/");
+			expect(childrenOnly.stdout).toContain("/.plugins/media/dist/");
+			const tooDeep = await runner.run({ command: "find /.plugins -maxdepth 3 --limit 20" });
+			expect(tooDeep.metadata.exitCode).toBe(2);
+			expect(tooDeep.stderr).toContain("the folder itself (-maxdepth 1), its direct children (-maxdepth 2)");
 
 			const searched = await runner.run({ command: "search --path /.plugins Glomtelemetry" });
 			expect(searched.metadata.exitCode).toBe(0);

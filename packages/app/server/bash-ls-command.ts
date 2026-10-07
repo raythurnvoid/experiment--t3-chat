@@ -1,7 +1,6 @@
 import { defineCommand, type Command } from "just-bash/browser";
 import { internal } from "../convex/_generated/api.js";
 import type { ActionCtx } from "../convex/_generated/server.js";
-import type { files_visible_internal_list_Result } from "../convex/files_visible.ts";
 import type { files_nodes_list_subtree_Result } from "../convex/files_nodes.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import {
@@ -26,6 +25,7 @@ import {
 	type bash_DbFilesRoots,
 } from "./bash-utils.ts";
 import { bash_command_build_builtin_delegation_args, bash_delegate_builtin_command } from "./bash-delegate.ts";
+import { files_pending_overlay_list } from "./files-pending-overlay.ts";
 
 const PATH_OPERAND_MAX = 20;
 const BUILTIN_OPTIONS_WITH_VALUES = new Set<string>();
@@ -317,7 +317,7 @@ export function bash_ls_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 		// "what changed recently?" without first discovering every folder. Only for a workspace cwd —
 		// inside a mount there is no workspace-wide view, so it falls to the per-target mount listing below.
 		if (parsed._yay.time && parsed._yay.paths.length === 0 && targets[0]?.pathResolution.kind === "app") {
-			const result = (await ctx.runQuery(internal.files_visible.internal_list, {
+			const result = await files_pending_overlay_list(ctx, {
 				agentSource: targets[0].pathResolution.ctxData.agentSource,
 				organizationId: targets[0].pathResolution.ctxData.organizationId,
 				workspaceId: targets[0].pathResolution.ctxData.workspaceId,
@@ -327,9 +327,8 @@ export function bash_ls_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 				mode: "recent",
 				numItems: bash_clamp_listing_page_limit(parsed._yay.limit),
 				cursor,
-				orderBy: "updatedAt",
 				order: parsed._yay.reverse ? "asc" : "desc",
-			})) as files_visible_internal_list_Result;
+			});
 			if (result._nay)
 				return { stdout: "", stderr: `ls: ${result._nay.message}\n`, exitCode: bash_COMMAND_EXIT_FAILURE };
 			const lines = result._yay.items.map(
@@ -358,6 +357,23 @@ export function bash_ls_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 				stderr:
 					"ls -t -R is not supported for app file paths.\n" +
 					"Use `ls -t` for workspace-wide recency, `ls -t <dir>` for immediate children, or `find <dir>` for recursive path discovery.\n",
+				exitCode: bash_COMMAND_EXIT_USAGE,
+			};
+		}
+
+		// A subtree with drafts reads in path order only: in reverse order a folder the user moved in
+		// would come after its own rows. Saved-only mount listings can read it in reverse.
+		if (
+			parsed._yay.recursive &&
+			parsed._yay.reverse &&
+			!parsed._yay.directory &&
+			targets.some((target) => target.dbFilesPath != null && target.pathResolution.fs.overlayUserId !== undefined)
+		) {
+			return {
+				stdout: "",
+				stderr:
+					"ls -R -r is not supported for app file paths.\n" +
+					"Use `ls -R <dir>` for the subtree in path order, or `ls -r <dir>` for one folder in reverse order.\n",
 				exitCode: bash_COMMAND_EXIT_USAGE,
 			};
 		}
@@ -569,7 +585,7 @@ export function bash_ls_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 					}),
 				);
 			} else {
-				const result = (await ctx.runQuery(internal.files_visible.internal_list, {
+				const result = await files_pending_overlay_list(ctx, {
 					agentSource: target.pathResolution.ctxData.agentSource,
 					organizationId: target.pathResolution.ctxData.organizationId,
 					workspaceId: target.pathResolution.ctxData.workspaceId,
@@ -581,7 +597,7 @@ export function bash_ls_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 					cursor,
 					orderBy: parsed._yay.time ? "updatedAt" : "name",
 					order: parsed._yay.time ? (parsed._yay.reverse ? "asc" : "desc") : parsed._yay.reverse ? "desc" : "asc",
-				})) as files_visible_internal_list_Result;
+				});
 
 				if (result._nay) {
 					stderr += `ls: ${result._nay.message}\n`;
