@@ -50,11 +50,6 @@ const { FILE, NODES } = vi.hoisted(() => {
 	return { FILE: file, NODES: [...folders, file] };
 });
 
-vi.mock("convex-helpers/react", async (importOriginal) => ({
-	...(await importOriginal<typeof import("convex-helpers/react")>()),
-	usePaginatedQuery: () => ({ results: [], status: "Exhausted", loadMore: () => {} }),
-}));
-
 vi.mock("convex/react", async (importOriginal) => {
 	const { getFunctionName } = await import("convex/server");
 	const answer = (reference: never) => {
@@ -63,7 +58,6 @@ vi.mock("convex/react", async (importOriginal) => {
 				return NODES;
 			case "files_nodes:get_file_node_for_membership":
 				return FILE;
-			case "files_pending_updates:list_files_pending_updates":
 			case "files_transfer:list_current":
 			case "plugins_ui:list_file_views":
 				return [];

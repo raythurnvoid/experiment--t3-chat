@@ -128,7 +128,6 @@ import { measureNaturalWidth, prepareWithSegments } from "@chenglou/pretext";
 import { Link } from "@tanstack/react-router";
 import { useConvex, usePaginatedQuery as useConvexPaginatedQuery, useQueries, useQuery } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
-import { usePaginatedQuery } from "convex-helpers/react";
 import {
 	Archive,
 	ArrowDownWideNarrow,
@@ -5672,15 +5671,14 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 		});
 	});
 
-	// The list query pages a convex-helpers stream. Only the convex-helpers hook pins where each
-	// loaded page ends, so a proposal added or removed later cannot skip or repeat a row.
+	// Every pending change, newest first. The rows hold stored fields only.
 	const {
 		results: allPendingUpdatesResult,
 		status: pendingListStatus,
 		loadMore: loadMorePendingUpdates,
-	} = usePaginatedQuery(
+	} = useConvexPaginatedQuery(
 		app_convex_api.files_pending_updates.list_files_pending_updates,
-		{ membershipId },
+		{ membershipId, listKey: "all" },
 		{ initialNumItems: 20 },
 	);
 	const savedEditorPendingUpdate = useQuery(
@@ -5873,11 +5871,10 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 	});
 
 	// The pager/floating bar reviews diffs, so count only content-bearing rows; pure moves are
-	// reviewed in the Pending panel only.
-	const pendingUpdates = allPendingUpdatesResult.flatMap((view) =>
-		view.kind === "entry" && view.readiness === "ready" && files_pending_update_has_content(view.entry.pendingUpdate)
-			? [view.entry.pendingUpdate]
-			: [],
+	// reviewed in the Pending panel only. The list rows check no access, so the count can include a
+	// draft the user can no longer read.
+	const pendingUpdates = allPendingUpdatesResult.flatMap((row) =>
+		row.hasReadyContent ? [{ _id: row.pendingUpdateId, target: row.target }] : [],
 	);
 	const currentPendingUpdate =
 		editorPendingUpdate && !editorPendingUpdate.preparation && files_pending_update_has_content(editorPendingUpdate)

@@ -315,6 +315,9 @@ const reviewed_item_validator = v.object({
 	pendingUpdateId: v.id("files_pending_updates"),
 	reviewedRevision: v.number(),
 	selectedContentStateId: v.union(v.id("files_pending_update_yjs_states"), v.null()),
+	// Discard only: remove this private folder only when it holds nothing else. Discard all sends a
+	// shown draft's parent folders like this, because the list does not show every draft inside them.
+	onlyIfEmpty: v.optional(v.literal(true)),
 });
 
 // These paths are internal planning facts. Public history returns IDs and safe status only.
@@ -781,7 +784,8 @@ export const append_items = mutation({
 					return (
 						item.pendingUpdateId !== reviewed.pendingUpdateId ||
 						item.reviewedRevision !== reviewed.reviewedRevision ||
-						item.selectedContentStateId !== reviewed.selectedContentStateId
+						item.selectedContentStateId !== reviewed.selectedContentStateId ||
+						item.onlyIfEmpty !== reviewed.onlyIfEmpty
 					);
 				})
 			)
@@ -2037,7 +2041,12 @@ async function build_review_dependencies(args: {
 				const parentProposal = selected[index]!.context.proposal;
 				const ready = proposal.createIntent && (proposal.createIntent.kind !== "text" || proposal.content);
 				const crossChat = proposal.threadIds?.some((id) => !parentProposal.threadIds?.includes(id));
-				if (indexById.has(proposal._id) || proposal.target.kind === "saved" || ready || crossChat) indices.add(index);
+				// A folder sent with `onlyIfEmpty` stays when it still holds this draft (see `commit_unit`).
+				if (
+					indexById.has(proposal._id) ||
+					(!selected[index]!.item.onlyIfEmpty && (proposal.target.kind === "saved" || ready || crossChat))
+				)
+					indices.add(index);
 			}
 		}
 		return indices;
@@ -2405,29 +2414,37 @@ export const plan = internalAction({
 
 				for (let offset = 0; offset < units.length; offset += SELECTION_PAGE_SIZE) {
 					const page = units.slice(offset, offset + SELECTION_PAGE_SIZE).map((unit) => {
+						// A folder sent with `onlyIfEmpty` never removes what is under it, so it covers nothing.
 						const privateTargets = new Set(
 							unit
-								.filter(({ context }) => context.proposal.target.kind === "private")
+								.filter(({ item, context }) => context.proposal.target.kind === "private" && !item.onlyIfEmpty)
 								.map(({ context }) => context.proposal.target.id),
 						);
 						const privateDiscardRoots =
 							run!.kind === "discard"
-								? unit.flatMap(({ item, context }) => {
-										if (
-											context.proposal.target.kind !== "private" ||
-											!context.privateVersion ||
-											context.privateAncestorIds.some((id) => privateTargets.has(id))
-										)
-											return [];
-										return [
-											{
-												privateNodeId: context.proposal.target.id,
-												...context.privateVersion,
-												pendingUpdateId: item.pendingUpdateId,
-												reviewedRevision: item.reviewedRevision,
-											},
-										];
-									})
+								? unit
+										.flatMap(({ item, context }) => {
+											if (
+												context.proposal.target.kind !== "private" ||
+												!context.privateVersion ||
+												context.privateAncestorIds.some((id) => privateTargets.has(id))
+											)
+												return [];
+											return [
+												{
+													privateNodeId: context.proposal.target.id,
+													...context.privateVersion,
+													pendingUpdateId: item.pendingUpdateId,
+													reviewedRevision: item.reviewedRevision,
+													...(item.onlyIfEmpty ? { onlyIfEmpty: true as const } : {}),
+													depth: context.privateAncestorIds.length,
+												},
+											];
+										})
+										// `onlyIfEmpty` folders go last, deepest first, so each one is checked after
+										// everything inside it was removed.
+										.sort((a, b) => Number(!!a.onlyIfEmpty) - Number(!!b.onlyIfEmpty) || b.depth - a.depth)
+										.map(({ depth: _depth, ...root }) => root)
 								: [];
 						return {
 							order: unit[0]!.item.order,
@@ -3304,6 +3321,13 @@ export const commit_unit = internalMutation({
 		}
 
 		if (run.kind === "discard") {
+			// Saved proposals go first, so a move into an only-if-empty folder that this unit also
+			// discards does not keep that folder.
+			for (const { proposal } of selected) {
+				if (proposal.target.kind !== "saved") refuse_unit("needs_review", "This draft needs a new review.");
+				await files_pending_updates_db_discard_saved(ctx, proposal);
+			}
+
 			for (const root of unit.privateDiscardRoots) {
 				const node = await ctx.db.get("files_pending_nodes", root.privateNodeId);
 				const proposal = await ctx.db.get("files_pending_updates", root.pendingUpdateId);
@@ -3321,13 +3345,30 @@ export const commit_unit = internalMutation({
 					proposal.target.id !== node._id
 				)
 					refuse_unit("needs_review", "A reviewed draft changed. Review it again.");
+				if (root.onlyIfEmpty) {
+					// Keep the folder while it holds a draft or a move into it, for example another chat's.
+					const child = await ctx.db
+						.query("files_pending_nodes")
+						.withIndex("by_organization_workspace_user_parent_state_name", (q) =>
+							q
+								.eq("organizationId", node.organizationId)
+								.eq("workspaceId", node.workspaceId)
+								.eq("userId", node.userId)
+								.eq("parent.kind", "private")
+								.eq("parent.id", node._id)
+								.eq("state", "active"),
+						)
+						.first();
+					const movedIn = await ctx.db
+						.query("files_pending_updates")
+						.withIndex("by_pendingMove_destParent", (q) =>
+							q.eq("pendingMove.destParent.kind", "private").eq("pendingMove.destParent.id", node._id),
+						)
+						.first();
+					if (child || movedIn) continue;
+				}
 				await files_pending_nodes_db_fence_discard({ ctx, node });
 				await files_pending_nodes_db_start_cleanup(ctx, node);
-			}
-
-			for (const { proposal } of selected) {
-				if (proposal.target.kind !== "saved") refuse_unit("needs_review", "This draft needs a new review.");
-				await files_pending_updates_db_discard_saved(ctx, proposal);
 			}
 		} else {
 			const moves = selected.filter(

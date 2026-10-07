@@ -58,11 +58,6 @@ const {
 		vi.fn<(props: Parameters<typeof useFilesSortedChildren>[0]) => ReturnType<typeof useFilesSortedChildren>>(),
 }));
 
-// The pending list uses the convex-helpers hook. Serve it from the same mock as every other list.
-vi.mock("convex-helpers/react", async () => ({
-	usePaginatedQuery: (await import("convex/react")).usePaginatedQuery,
-}));
-
 // Most tests use the real hook. Filter state tests control its result and actions.
 vi.mock("@/hooks/files-search-hooks.ts", async (importOriginal) => {
 	const hooks = await importOriginal<typeof import("@/hooks/files-search-hooks.ts")>();
@@ -383,6 +378,15 @@ let treeNodes: (typeof NODE)[] | undefined;
 let unloadedTreeNodes: (typeof NODE)[];
 let plugins: (typeof PLUGIN)[] | undefined;
 let pendingUpdates: unknown[];
+type PendingViewFixture =
+	| { kind: "restricted"; target: { kind: string; id: string }; pendingUpdateId: string; revision: number }
+	| {
+			kind: "entry";
+			readiness: "ready" | "preparing";
+			entry: {
+				pendingUpdate: { _id: string; target: { kind: string; id: string }; revision: number; content?: unknown };
+			};
+	  };
 let savedPendingUpdate: unknown;
 let pendingListStatus: "CanLoadMore" | "LoadingMore" | "Exhausted";
 // Restricted children shared with this member, on their own share stream.
@@ -487,8 +491,30 @@ beforeEach(() => {
 			}
 			case "files_nodes:get_file_node_for_membership":
 				return nodeQueryStatus === "loading" ? undefined : nodeQueryStatus === "missing" ? null : node;
+			// Tests write owner views. The list returns only the stored fields of each row, and each row
+			// loads its view with `get_file_pending_target`.
 			case "files_pending_updates:list_files_pending_updates":
-				return pendingUpdates;
+				return (pendingUpdates as PendingViewFixture[]).map((view) =>
+					view.kind === "restricted"
+						? {
+								target: view.target,
+								pendingUpdateId: view.pendingUpdateId,
+								revision: view.revision,
+								hasReadyContent: false,
+							}
+						: {
+								target: view.entry.pendingUpdate.target,
+								pendingUpdateId: view.entry.pendingUpdate._id,
+								revision: view.entry.pendingUpdate.revision,
+								hasReadyContent: view.readiness === "ready" && view.entry.pendingUpdate.content !== undefined,
+							},
+				);
+			case "files_pending_updates:list_files_pending_sources":
+				return pendingUpdates.length > 0 ? ["own"] : [];
+			case "files_pending_updates:get_files_pending_updates_summary":
+				return { count: pendingUpdates.length, truncated: false };
+			case "files_pending_updates:get_pending_move_occupant":
+				return null;
 			case "files_pending_updates:get_file_pending_update": {
 				if (savedPendingUpdate !== undefined) return savedPendingUpdate;
 				const target = (args as { target: { kind: string; id: string } }).target;
@@ -505,8 +531,15 @@ beforeEach(() => {
 					)?.entry.pendingUpdate ?? null
 				);
 			}
-			case "files_pending_updates:get_file_pending_target":
-				return privateView;
+			case "files_pending_updates:get_file_pending_target": {
+				// A Pending row's view, or else the open draft's view.
+				const target = (args as { target: { kind: string; id: string } }).target;
+				const view = (pendingUpdates as PendingViewFixture[]).find((view) => {
+					const viewTarget = view.kind === "restricted" ? view.target : view.entry.pendingUpdate.target;
+					return viewTarget.kind === target.kind && viewTarget.id === target.id;
+				});
+				return view ? (view.kind === "restricted" ? null : view) : privateView;
+			}
 			case "files_visible:get_path":
 				return node.path;
 			case "files_folder_sorts:get_folder_sort":

@@ -52,20 +52,30 @@ async function start_review(args: {
 	f: Awaited<ReturnType<typeof fixture>>;
 	kind: "accept" | "discard";
 	proposals: Doc<"files_pending_updates">[];
+	/** Parent folders that Discard removes only when nothing else is left inside. */
+	onlyIfEmpty?: Doc<"files_pending_updates">[];
 	plan?: boolean;
 }) {
-	const { f, kind, proposals, plan = true } = args;
+	const { f, kind, proposals, onlyIfEmpty = [], plan = true } = args;
 
 	const started = await f.asUser.mutation(api.files_pending_update_runs.start, {
 		membershipId: f.db.membershipId,
 		requestId: crypto.randomUUID(),
 		kind,
-		expectedItemCount: proposals.length,
-		items: proposals.map((proposal) => ({
-			pendingUpdateId: proposal._id,
-			reviewedRevision: proposal.revision,
-			selectedContentStateId: kind === "accept" ? (proposal.content?.unstagedStateId ?? null) : null,
-		})),
+		expectedItemCount: onlyIfEmpty.length + proposals.length,
+		items: [
+			...onlyIfEmpty.map((proposal) => ({
+				pendingUpdateId: proposal._id,
+				reviewedRevision: proposal.revision,
+				selectedContentStateId: null,
+				onlyIfEmpty: true as const,
+			})),
+			...proposals.map((proposal) => ({
+				pendingUpdateId: proposal._id,
+				reviewedRevision: proposal.revision,
+				selectedContentStateId: kind === "accept" ? (proposal.content?.unstagedStateId ?? null) : null,
+			})),
+		],
 	});
 	if (started._nay) throw new Error(started._nay.message);
 	const sealed = await f.asUser.mutation(api.files_pending_update_runs.seal, {
@@ -709,6 +719,90 @@ describe("review jobs", () => {
 			{ state: "active" },
 		]);
 	});
+
+	// Discard all sends the hidden parent folders of the shown drafts this way. The list may not show
+	// every draft inside, for example another chat's.
+	test("removes only-if-empty parent folders that end up empty, deepest first", async () => {
+		const f = await fixture();
+		const outer = await private_folder(f, "/f");
+		const inner = await private_folder(f, "/f/g");
+		const shown = await private_folder(f, "/f/g/x");
+		// /k keeps its other draft, so only its empty inner folder goes.
+		const keptOuter = await private_folder(f, "/k");
+		const keptInner = await private_folder(f, "/k/g");
+		const keptShown = await private_folder(f, "/k/g/x");
+		await private_folder(f, "/k/other");
+		const { runId } = await start_review({
+			f,
+			kind: "discard",
+			proposals: [shown, keptShown],
+			onlyIfEmpty: [outer, inner, keptOuter, keptInner],
+		});
+		expect((await finish_review(f, runId))?.activity.status).toBe("succeeded");
+		const nodes = await f.t.run((ctx) => ctx.db.query("files_pending_nodes").collect());
+		expect(nodes.map((node) => [node.name, node.state])).toEqual([
+			["f", "discarded"],
+			["g", "discarded"],
+			["x", "discarded"],
+			["k", "active"],
+			["g", "discarded"],
+			["x", "discarded"],
+			["other", "active"],
+		]);
+	});
+
+	test("keeps an only-if-empty parent folder that still holds another draft", async () => {
+		const f = await fixture();
+		const folder = await private_folder(f, "/qa");
+		const shown = await private_folder(f, "/qa/x");
+		await private_folder(f, "/qa/other-chat");
+		const { runId } = await start_review({ f, kind: "discard", proposals: [shown], onlyIfEmpty: [folder] });
+		expect((await finish_review(f, runId))?.activity.status).toBe("succeeded");
+		const nodes = await f.t.run((ctx) => ctx.db.query("files_pending_nodes").collect());
+		expect(Object.fromEntries(nodes.map((node) => [node.name, node.state]))).toEqual({
+			qa: "active",
+			x: "discarded",
+			"other-chat": "active",
+		});
+	});
+
+	test.each([
+		{ discardMove: false, folderState: "active" },
+		{ discardMove: true, folderState: "discarded" },
+	])(
+		"keeps an only-if-empty parent folder with a move into it unless that move is discarded too (discardMove: $discardMove)",
+		async ({ discardMove, folderState }) => {
+			const f = await fixture();
+			const folder = await private_folder(f, "/qa");
+			const shown = await private_folder(f, "/qa/x");
+			const savedId = await saved_folder(f, "saved");
+			const moved = await f.t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
+				...f.scope,
+				target: { kind: "saved", id: savedId },
+				destParent: folder.target,
+				destName: "saved",
+			});
+			expect(moved._nay).toBeUndefined();
+			const move = await f.t.run((ctx) =>
+				ctx.db
+					.query("files_pending_updates")
+					.filter((q) => q.eq(q.field("target.id"), savedId))
+					.first(),
+			);
+			const { runId } = await start_review({
+				f,
+				kind: "discard",
+				proposals: discardMove ? [move!, shown] : [shown],
+				onlyIfEmpty: [folder],
+			});
+			expect((await finish_review(f, runId))?.activity.status).toBe("succeeded");
+			const nodes = await f.t.run((ctx) => ctx.db.query("files_pending_nodes").collect());
+			expect(Object.fromEntries(nodes.map((node) => [node.name, node.state]))).toEqual({
+				qa: folderState,
+				x: "discarded",
+			});
+		},
+	);
 
 	test("counts the whole approved Discard at the root fence and keeps cleanup running after Stop", async () => {
 		const f = await fixture();

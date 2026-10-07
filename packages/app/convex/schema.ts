@@ -1839,6 +1839,8 @@ const app_convex_schema = defineSchema({
 		pendingUpdateId: v.id("files_pending_updates"),
 		reviewedRevision: v.number(),
 		selectedContentStateId: v.union(v.id("files_pending_update_yjs_states"), v.null()),
+		/** Discard only: remove this private folder only when it holds nothing else. */
+		onlyIfEmpty: v.optional(v.literal(true)),
 		planKind: v.union(v.literal("copy"), v.literal("atomic"), v.null()),
 		privateVersion: v.union(v.object({ creationGeneration: v.number(), structuralRevision: v.number() }), v.null()),
 		mediaDependencySet: v.union(
@@ -1892,6 +1894,8 @@ const app_convex_schema = defineSchema({
 				structuralRevision: v.number(),
 				pendingUpdateId: v.id("files_pending_updates"),
 				reviewedRevision: v.number(),
+				/** Skip this folder when it still holds a draft or a move into it. */
+				onlyIfEmpty: v.optional(v.literal(true)),
 			}),
 		),
 	})

@@ -92,6 +92,17 @@ async function add_member(f: Awaited<ReturnType<typeof fixture>>) {
 	return { ...member, as: f.t.withIdentity({ issuer: "https://clerk.test", external_id: member.userId }) };
 }
 
+async function create_thread(f: Awaited<ReturnType<typeof fixture>>, clientGeneratedId: string) {
+	const thread = await f.asUser.mutation(api.ai_chat.thread_create, {
+		membershipId: f.db.membershipId,
+		clientGeneratedId,
+		title: clientGeneratedId,
+		lastMessageAt: undefined,
+	});
+	if (thread._nay) throw new Error(thread._nay.message);
+	return thread._yay.threadId;
+}
+
 async function move_draft(args: {
 	f: Awaited<ReturnType<typeof fixture>>;
 	userId: Id<"users">;
@@ -848,74 +859,95 @@ describe("files_visible_db_create_reader", () => {
 });
 
 describe("list_files_pending_updates", () => {
-	test("fills a chat-filtered page and excludes a discarded draft from its count", async () => {
+	function list(
+		f: Awaited<ReturnType<typeof fixture>>,
+		listKey: string,
+		paginationOpts: { numItems: number; cursor: string | null; endCursor?: string },
+	) {
+		return f.asUser.query(api.files_pending_updates.list_files_pending_updates, {
+			membershipId: f.db.membershipId,
+			listKey,
+			paginationOpts,
+		});
+	}
+
+	// Each row's path comes from its own view query, like the Pending tab loads it.
+	async function list_paths(f: Awaited<ReturnType<typeof fixture>>, listKey: string) {
+		const paths: string[] = [];
+		let cursor: string | null = null;
+		do {
+			const page: FunctionReturnType<typeof api.files_pending_updates.list_files_pending_updates> = await list(
+				f,
+				listKey,
+				{ numItems: 20, cursor },
+			);
+			for (const row of page.page) {
+				const view = await f.asUser.query(api.files_pending_updates.get_file_pending_target, {
+					membershipId: f.db.membershipId,
+					target: row.target,
+				});
+				paths.push(view?.entry.path ?? "restricted");
+			}
+			cursor = page.isDone ? null : page.continueCursor;
+		} while (cursor !== null);
+		return paths;
+	}
+
+	function summary(f: Awaited<ReturnType<typeof fixture>>, listKey?: string) {
+		return f.asUser.query(api.files_pending_updates.get_files_pending_updates_summary, {
+			membershipId: f.db.membershipId,
+			...(listKey ? { listKey } : {}),
+		});
+	}
+
+	// Copies of one proposal's "all" list row. The list and the summary read only these rows first.
+	async function add_list_rows(f: Awaited<ReturnType<typeof fixture>>, count: number) {
+		await f.t.run(async (ctx) => {
+			const row = await ctx.db
+				.query("files_pending_list_rows")
+				.withIndex("by_user", (q) => q.eq("userId", f.db.userId))
+				.filter((q) => q.eq(q.field("listKey"), "all"))
+				.first();
+			if (!row) throw new Error("Expected a list row");
+			const { _id, _creationTime, ...fields } = row;
+			for (let index = 0; index < count; index++) {
+				await ctx.db.insert("files_pending_list_rows", { ...fields, updatedAt: index });
+			}
+		});
+	}
+
+	test("lists the newest change first, at most 5 rows per page", async () => {
 		const f = await fixture();
-		for (let index = 0; index < 7; index++) await create_private({ f, path: `/review-${index}` });
-		const queryArgs = { membershipId: f.db.membershipId, paginationOpts: { numItems: 20, cursor: null } };
-		const first = await f.asUser.query(api.files_pending_updates.list_files_pending_updates, queryArgs);
+		for (let index = 0; index < 7; index++) {
+			await create_private({ f, path: `/review-${index}.md`, kind: "file" });
+			vi.advanceTimersByTime(1000);
+		}
+
+		const first = await list(f, "all", { numItems: 20, cursor: null });
 		expect(first.page).toHaveLength(5);
 		expect(first.isDone).toBe(false);
-		const second = await f.asUser.query(api.files_pending_updates.list_files_pending_updates, {
-			...queryArgs,
-			paginationOpts: { numItems: 20, cursor: first.continueCursor },
+		expect(await list_paths(f, "all")).toEqual([6, 5, 4, 3, 2, 1, 0].map((index) => `/review-${index}.md`));
+	});
+
+	test("lists one source by list key, and a bad key gives an empty done page", async () => {
+		const f = await fixture();
+		const chat = await create_thread(f, "pending-chat");
+		await create_private({ f, path: "/own.md", kind: "file" });
+		vi.advanceTimersByTime(1000);
+		await create_private({ f, path: "/chat.md", kind: "file", threadId: chat });
+
+		expect(await list_paths(f, "all")).toEqual(["/chat.md", "/own.md"]);
+		expect(await list_paths(f, "own")).toEqual(["/own.md"]);
+		expect(await list_paths(f, chat)).toEqual(["/chat.md"]);
+		expect(await list(f, "not-a-key", { numItems: 5, cursor: null })).toEqual({
+			page: [],
+			isDone: true,
+			continueCursor: "",
 		});
-		expect(second.page).toHaveLength(2);
-		expect(second.isDone).toBe(true);
-		const chosen = second.page[0];
-		if (chosen?.kind !== "entry" || chosen.entry.kind !== "private") throw new Error("Expected a private review entry");
-		const thread = await f.asUser.mutation(api.ai_chat.thread_create, {
-			membershipId: f.db.membershipId,
-			clientGeneratedId: "pending-list-thread",
-			title: "Review",
-			lastMessageAt: undefined,
-		});
-		if (thread._nay) throw new Error(thread._nay.message);
-		const moved = await f.t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
-			organizationId: f.db.organizationId,
-			workspaceId: f.db.workspaceId,
-			userId: f.db.userId,
-			target: chosen.entry.pendingUpdate.target,
-			destParent: { kind: "root" },
-			destName: "chat-review",
-			threadId: thread._yay.threadId,
-		});
-		expect(moved._nay).toBeUndefined();
-		// The chat's only proposal sits after five proposals without a chat. The first page still holds it.
-		const chatPage = await f.asUser.query(api.files_pending_updates.list_files_pending_updates, {
-			...queryArgs,
-			threadId: thread._yay.threadId,
-		});
-		expect(chatPage.page).toMatchObject([{ kind: "entry", entry: { path: "/chat-review" } }]);
-		expect(chatPage.isDone).toBe(true);
-		expect(
-			await f.asUser.query(api.files_pending_updates.get_files_pending_updates_summary, {
-				membershipId: f.db.membershipId,
-				threadId: thread._yay.threadId,
-			}),
-		).toEqual({ count: 1, truncated: false });
-		expect(
-			await f.asUser.query(api.files_pending_updates.get_files_pending_updates_summary, {
-				membershipId: f.db.membershipId,
-				threadId: "optimistic-thread",
-			}),
-		).toEqual({ count: 0, truncated: false });
-		const ready = chatPage.page[0];
-		if (ready?.kind !== "entry" || ready.entry.kind !== "private") throw new Error("Expected a private review entry");
-		expect(
-			(
-				await f.asUser.mutation(api.files_pending_updates.discard_file_pending_update, {
-					membershipId: f.db.membershipId,
-					target: ready.entry.pendingUpdate.target,
-					pendingUpdateId: ready.entry.pendingUpdate._id,
-					reviewedRevision: ready.entry.pendingUpdate.revision,
-				})
-			)._nay,
-		).toBeUndefined();
-		expect(
-			await f.asUser.query(api.files_pending_updates.get_files_pending_updates_summary, {
-				membershipId: f.db.membershipId,
-			}),
-		).toEqual({ count: 6, truncated: false });
+		expect(await summary(f)).toEqual({ count: 2, truncated: false });
+		expect(await summary(f, "own")).toEqual({ count: 1, truncated: false });
+		expect(await summary(f, chat)).toEqual({ count: 1, truncated: false });
+		expect(await summary(f, "optimistic-thread")).toEqual({ count: 0, truncated: false });
 	});
 
 	test("skips a folder draft that holds a draft before paging and in the count", async () => {
@@ -925,169 +957,213 @@ describe("list_files_pending_updates", () => {
 
 		// One row per page. Every page that is not the last one must hold a row, so a hidden
 		// folder never uses a slot.
-		const paths: string[] = [];
 		let cursor: string | null = null;
 		do {
-			const page: FunctionReturnType<typeof api.files_pending_updates.list_files_pending_updates> =
-				await f.asUser.query(api.files_pending_updates.list_files_pending_updates, {
-					membershipId: f.db.membershipId,
-					paginationOpts: { numItems: 1, cursor },
-				});
+			const page: FunctionReturnType<typeof api.files_pending_updates.list_files_pending_updates> = await list(
+				f,
+				"all",
+				{ numItems: 1, cursor },
+			);
 			if (!page.isDone) expect(page.page).toHaveLength(1);
-			for (const view of page.page) {
-				if (view.kind === "entry") paths.push(view.entry.path);
-			}
 			cursor = page.isDone ? null : page.continueCursor;
 		} while (cursor !== null);
-		expect(paths.toSorted()).toEqual(["/a/b", "/qa/page.md"]);
-		expect(
-			await f.asUser.query(api.files_pending_updates.get_files_pending_updates_summary, {
-				membershipId: f.db.membershipId,
-			}),
-		).toEqual({ count: 2, truncated: false });
+		expect((await list_paths(f, "all")).toSorted()).toEqual(["/a/b", "/qa/page.md"]);
+		expect(await summary(f)).toEqual({ count: 2, truncated: false });
 
 		// Discarding the only file inside brings the empty folder back as its own change.
-		const all = await f.asUser.query(api.files_pending_updates.list_files_pending_updates, {
-			membershipId: f.db.membershipId,
-			paginationOpts: { numItems: 20, cursor: null },
-		});
-		const file = all.page.find((view) => view.kind === "entry" && view.entry.path === "/qa/page.md");
-		if (file?.kind !== "entry" || !file.entry.pendingUpdate) throw new Error("Expected the file draft");
+		const rows = (await list(f, "all", { numItems: 5, cursor: null })).page;
+		const paths = await list_paths(f, "all");
+		const file = rows[paths.indexOf("/qa/page.md")];
+		if (!file) throw new Error("Expected the file draft");
 		expect(
 			(
 				await f.asUser.mutation(api.files_pending_updates.discard_file_pending_update, {
 					membershipId: f.db.membershipId,
-					target: file.entry.pendingUpdate.target,
-					pendingUpdateId: file.entry.pendingUpdate._id,
-					reviewedRevision: file.entry.pendingUpdate.revision,
+					target: file.target,
+					pendingUpdateId: file.pendingUpdateId,
+					reviewedRevision: file.revision,
 				})
 			)._nay,
 		).toBeUndefined();
-		const after = await f.asUser.query(api.files_pending_updates.list_files_pending_updates, {
-			membershipId: f.db.membershipId,
-			paginationOpts: { numItems: 20, cursor: null },
-		});
-		expect(after.page.flatMap((view) => (view.kind === "entry" ? [view.entry.path] : [])).toSorted()).toEqual([
-			"/a/b",
-			"/qa",
-		]);
-		expect(
-			await f.asUser.query(api.files_pending_updates.get_files_pending_updates_summary, {
-				membershipId: f.db.membershipId,
-			}),
-		).toEqual({ count: 2, truncated: false });
+		expect((await list_paths(f, "all")).toSorted()).toEqual(["/a/b", "/qa"]);
+		expect(await summary(f)).toEqual({ count: 2, truncated: false });
 	});
 
 	test("hides a folder from one chat that holds a draft from another chat in every count", async () => {
 		const f = await fixture();
-		const [chatA, chatB] = await Promise.all(
-			["pending-chat-a", "pending-chat-b"].map(async (clientGeneratedId) => {
-				const thread = await f.asUser.mutation(api.ai_chat.thread_create, {
-					membershipId: f.db.membershipId,
-					clientGeneratedId,
-					title: clientGeneratedId,
-					lastMessageAt: undefined,
-				});
-				if (thread._nay) throw new Error(thread._nay.message);
-				return thread._yay.threadId;
-			}),
-		);
+		const chatA = await create_thread(f, "pending-chat-a");
+		const chatB = await create_thread(f, "pending-chat-b");
 		await create_private({ f, path: "/reports", kind: "folder", threadId: chatA });
 		await create_private({ f, path: "/reports/june.md", kind: "file", threadId: chatB });
 
-		const count = (threadId?: Id<"ai_chat_threads">) =>
-			f.asUser.query(api.files_pending_updates.get_files_pending_updates_summary, {
-				membershipId: f.db.membershipId,
-				...(threadId ? { threadId } : {}),
-			});
-		expect(await count(chatA)).toEqual({ count: 0, truncated: false });
-		expect(await count(chatB)).toEqual({ count: 1, truncated: false });
-		expect(await count()).toEqual({ count: 1, truncated: false });
+		expect(await summary(f, chatA)).toEqual({ count: 0, truncated: false });
+		expect(await summary(f, chatB)).toEqual({ count: 1, truncated: false });
+		expect(await summary(f)).toEqual({ count: 1, truncated: false });
 
-		// The list skips the folder, so its row must name the folder's chat for Discard all.
-		const list = await f.asUser.query(api.files_pending_updates.list_files_pending_updates, {
-			membershipId: f.db.membershipId,
-			threadId: chatB,
-			paginationOpts: { numItems: 5, cursor: null },
-		});
-		expect(list.page).toMatchObject([
-			{ kind: "entry", entry: { path: "/reports/june.md" }, requiredParents: [{ threadIds: [chatA] }] },
-		]);
+		// The list skips the folder, so the draft's view names it as a parent to save with it.
+		const [row] = (await list(f, chatB, { numItems: 5, cursor: null })).page;
+		expect(
+			await f.asUser.query(api.files_pending_updates.get_file_pending_target, {
+				membershipId: f.db.membershipId,
+				target: row!.target,
+			}),
+		).toMatchObject({ entry: { path: "/reports/june.md" }, requiredParents: [{ path: "/reports" }] });
 	});
 
-	test("fills the first page when a deep private folder chain comes first", async () => {
+	test("counts up to 500 changes and says 500+ past that", async () => {
 		const f = await fixture();
-		await create_private({ f, path: "/deep/a/b/c/d/e/note.md", kind: "file" });
+		await create_private({ f, path: "/one.md", kind: "file" });
+		await add_list_rows(f, 499);
+		expect(await summary(f)).toEqual({ count: 500, truncated: false });
+		await add_list_rows(f, 1);
+		expect(await summary(f)).toEqual({ count: 500, truncated: true });
+	});
 
-		const page = await f.asUser.query(api.files_pending_updates.list_files_pending_updates, {
-			membershipId: f.db.membershipId,
-			paginationOpts: { numItems: 1, cursor: null },
+	// One page reads its list rows and each row's stored proposal only. A row's path and access load
+	// in its own `get_file_pending_target` query, so a deep draft costs a page no more than a shallow
+	// one. This is the "1 range per row" in the guard of `list_files_pending_updates`.
+	test("a page costs 1 range more per row, at any draft depth", async () => {
+		const f = await fixture();
+		const cost = () =>
+			f.asUser.run(async (ctx) => {
+				const before = await ctx.meta.getTransactionMetrics();
+				await ctx.runQuery(api.files_pending_updates.list_files_pending_updates, {
+					membershipId: f.db.membershipId,
+					listKey: "all",
+					paginationOpts: { numItems: 5, cursor: null },
+				});
+				const after = await ctx.meta.getTransactionMetrics();
+				return after.databaseQueries.used - before.databaseQueries.used;
+			});
+
+		await create_private({ f, path: "/shallow.md", kind: "file" });
+		const one = await cost();
+		await create_private({ f, path: `/${Array.from({ length: 30 }, () => "d").join("/")}/deep.md`, kind: "file" });
+		const two = await cost();
+		await create_private({ f, path: "/other.md", kind: "file" });
+		const three = await cost();
+		expect([two - one, three - two]).toEqual([1, 1]);
+	});
+
+	// convex-test gives a split cursor to a page that reads more than `numItems` + 1 rows. A page pinned
+	// by an end cursor reads every row up to that cursor, like a reactive rerun after many changes.
+	test("a page whose end cursor holds more than 3,000 rows asks for a split", async () => {
+		const f = await fixture();
+		await create_private({ f, path: "/one.md", kind: "file" });
+		await add_list_rows(f, 3001);
+		// The same index and order as the list query, so its cursors fit the list query.
+		const end_cursor = (numItems: number) =>
+			f.t.run(
+				async (ctx) =>
+					(
+						await ctx.db
+							.query("files_pending_list_rows")
+							.withIndex("by_org_ws_user_listKey_updatedAt", (q) =>
+								q
+									.eq("organizationId", f.db.organizationId)
+									.eq("workspaceId", f.db.workspaceId)
+									.eq("userId", f.db.userId)
+									.eq("listKey", "all"),
+							)
+							.order("desc")
+							.paginate({ numItems, cursor: null })
+					).continueCursor,
+			);
+
+		const endCursor = await end_cursor(3001);
+		expect(await list(f, "all", { numItems: 5, cursor: null, endCursor })).toEqual({
+			page: [],
+			isDone: false,
+			continueCursor: endCursor,
+			splitCursor: expect.any(String),
+			pageStatus: "SplitRequired",
 		});
-		expect(page.page).toMatchObject([{ kind: "entry", entry: { path: "/deep/a/b/c/d/e/note.md" } }]);
+		// A pinned page under the guard gives its rows.
+		expect((await list(f, "all", { numItems: 5, cursor: null, endCursor: await end_cursor(5) })).page).toHaveLength(5);
 	});
 
 	test("keeps a page's end at the given endCursor", async () => {
-		// The `convex-helpers/react` hook sends `endCursor` to keep a loaded page's end fixed.
+		// The convex/react hook sends `endCursor` when it splits a page, to keep the page's end fixed.
 		const f = await fixture();
 		await create_private({ f, path: "/one.md", kind: "file" });
 		await create_private({ f, path: "/two.md", kind: "file" });
 		await create_private({ f, path: "/three.md", kind: "file" });
 
-		const list = (paginationOpts: { numItems: number; cursor: string | null; endCursor?: string }) =>
-			f.asUser.query(api.files_pending_updates.list_files_pending_updates, {
-				membershipId: f.db.membershipId,
-				paginationOpts,
-			});
-		const first = await list({ numItems: 1, cursor: null });
-		const second = await list({ numItems: 1, cursor: first.continueCursor });
+		const first = await list(f, "all", { numItems: 1, cursor: null });
+		const second = await list(f, "all", { numItems: 1, cursor: first.continueCursor });
 
 		// An end cursor wins over `numItems`, so the page holds both rows.
-		const pinned = await list({ numItems: 1, cursor: null, endCursor: second.continueCursor });
+		const pinned = await list(f, "all", { numItems: 1, cursor: null, endCursor: second.continueCursor });
 		expect(pinned.page).toHaveLength(2);
 		expect(pinned.continueCursor).toBe(second.continueCursor);
 		expect(pinned.isDone).toBe(false);
 	});
+});
 
-	test("reads a page with an endCursor to its end past the 100-row read limit", async () => {
-		// If the page stopped early, the client would split it at the early stop and never load the rest.
+describe("list_files_pending_sources", () => {
+	test("pages the sources newest first, 20 at a time, without All changes", async () => {
 		const f = await fixture();
-		const [chatA, chatB] = await Promise.all(
-			["pending-chat-a", "pending-chat-b"].map(async (clientGeneratedId) => {
-				const thread = await f.asUser.mutation(api.ai_chat.thread_create, {
-					membershipId: f.db.membershipId,
-					clientGeneratedId,
-					title: clientGeneratedId,
-					lastMessageAt: undefined,
-				});
-				if (thread._nay) throw new Error(thread._nay.message);
-				return thread._yay.threadId;
-			}),
-		);
-		await create_private({ f, path: "/first.md", kind: "file", threadId: chatB });
-		for (let index = 0; index < 101; index++)
-			await create_private({ f, path: `/other-${index}.md`, kind: "file", threadId: chatA });
-		await create_private({ f, path: "/last.md", kind: "file", threadId: chatB });
+		await create_private({ f, path: "/own.md", kind: "file" });
+		const threadIds: Id<"ai_chat_threads">[] = [];
+		for (let index = 0; index < 21; index++) {
+			// Thread writes allow 12 per minute.
+			vi.advanceTimersByTime(10_000);
+			const threadId = await create_thread(f, `pending-source-${index}`);
+			threadIds.push(threadId);
+			await create_private({ f, path: `/chat-${index}.md`, kind: "file", threadId });
+		}
 
-		const list = (paginationOpts: { numItems: number; cursor: string | null; endCursor?: string }) =>
-			f.asUser.query(api.files_pending_updates.list_files_pending_updates, {
+		const read = (cursor: string | null) =>
+			f.asUser.query(api.files_pending_updates.list_files_pending_sources, {
 				membershipId: f.db.membershipId,
-				threadId: chatB,
-				paginationOpts,
+				paginationOpts: { numItems: 20, cursor },
 			});
+		const first = await read(null);
+		expect(first.isDone).toBe(false);
+		const second = await read(first.continueCursor);
+		expect(second.isDone).toBe(true);
+		expect([...first.page, ...second.page]).toEqual([...threadIds.toReversed(), "own"]);
+	});
+});
 
-		// Without an end cursor, the read limit ends a page early. Walk to the page that holds `/last.md`.
-		let page = await list({ numItems: 1, cursor: null });
-		expect(page.page).toMatchObject([{ kind: "entry", entry: { path: "/first.md" } }]);
-		do {
-			page = await list({ numItems: 1, cursor: page.continueCursor });
-		} while (page.page.length === 0 && !page.isDone);
-		expect(page.page).toMatchObject([{ kind: "entry", entry: { path: "/last.md" } }]);
+describe("get_pending_move_occupant", () => {
+	function occupant(args: {
+		f: Awaited<ReturnType<typeof fixture>>;
+		as?: Awaited<ReturnType<typeof fixture>>["asUser"];
+		membershipId?: Id<"organizations_workspaces_users">;
+		path: string;
+		nodeId?: string;
+	}) {
+		const { f, as = f.asUser, membershipId = f.db.membershipId, path, nodeId = "moving-node" } = args;
+		return as.query(api.files_pending_updates.get_pending_move_occupant, { membershipId, nodeId, path });
+	}
 
-		const pinned = await list({ numItems: 1, cursor: null, endCursor: page.continueCursor });
-		expect(pinned.page).toMatchObject([
-			{ kind: "entry", entry: { path: "/first.md" } },
-			{ kind: "entry", entry: { path: "/last.md" } },
-		]);
-		expect(pinned.continueCursor).toBe(page.continueCursor);
+	test("returns a readable occupant, and not a hidden one or the moving node itself", async () => {
+		const f = await fixture();
+		const member = await add_member(f);
+		const taken = await create_saved(f, "taken");
+		const asMember = { f, as: member.as, membershipId: member.membershipId, path: "/taken" };
+
+		expect(await occupant(asMember)).toEqual({ nodeId: taken.id, hasActiveChild: false });
+		expect(await occupant({ f, path: "/taken", nodeId: taken.id })).toBeNull();
+		expect(
+			await f.asUser.mutation(api.files_sharing.restrict_node, { membershipId: f.db.membershipId, nodeId: taken.id }),
+		).toEqual({ _yay: null });
+		expect(await occupant(asMember)).toBeNull();
+		expect(await occupant({ f, path: "/taken" })).toEqual({ nodeId: taken.id, hasActiveChild: false });
+	});
+
+	test("counts a folder whose only child is a restricted root as empty", async () => {
+		const f = await fixture();
+		const box = await create_saved(f, "box");
+		const secret = await create_saved(f, "box/secret");
+		expect(
+			await f.asUser.mutation(api.files_sharing.restrict_node, { membershipId: f.db.membershipId, nodeId: secret.id }),
+		).toEqual({ _yay: null });
+		// The restricted child may be hidden from the caller, so it never counts.
+		expect(await occupant({ f, path: "/box" })).toEqual({ nodeId: box.id, hasActiveChild: false });
+
+		await create_saved(f, "box/open");
+		expect(await occupant({ f, path: "/box" })).toEqual({ nodeId: box.id, hasActiveChild: true });
 	});
 });

@@ -753,17 +753,15 @@ async function db_place_parent(
 }
 
 /**
- * Decide whether the Pending list draws this proposal as its own row. The list query and every
- * pending count use this one check, so they always agree.
+ * Decide whether the Pending list draws this proposal as its own row. The flush writes the list rows
+ * from this check, and the list query and every pending count read those rows.
  */
 export async function files_pending_overlay_db_pending_update_is_listed(args: {
 	ctx: Pick<QueryCtx, "db">;
 	pendingUpdate: Doc<"files_pending_updates">;
-	threadId: Id<"ai_chat_threads"> | undefined;
 }) {
-	const { ctx, pendingUpdate, threadId } = args;
+	const { ctx, pendingUpdate } = args;
 
-	if (threadId !== undefined && !pendingUpdate.threadIds?.includes(threadId)) return false;
 	if (pendingUpdate.target.kind === "saved") return true;
 	const privateNodeId = pendingUpdate.target.id;
 
@@ -894,8 +892,7 @@ export async function files_pending_overlay_db_compute_target(
 	if (reader.exhausted) throw should_never_happen("Overlay reader ran out of reads", { ...scope, target });
 
 	const listed =
-		pendingUpdate !== null &&
-		(await files_pending_overlay_db_pending_update_is_listed({ ctx: { db }, pendingUpdate, threadId: undefined }));
+		pendingUpdate !== null && (await files_pending_overlay_db_pending_update_is_listed({ ctx: { db }, pendingUpdate }));
 	const listKeys: Array<Doc<"files_pending_list_rows">["listKey"]> = !listed
 		? []
 		: pendingUpdate.threadIds?.length

@@ -2,7 +2,7 @@ import { RateLimiter } from "@convex-dev/rate-limiter";
 import { Workpool } from "@convex-dev/workpool";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
-import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
+import { test_convex, test_mocks_fill_db_with, test_run_with_flush } from "./setup.test.ts";
 import { files_pending_nodes_db_create } from "./files_pending_nodes.ts";
 
 beforeEach(() => {
@@ -124,13 +124,20 @@ describe("pending source summaries", () => {
 			).toMatchObject({ activity: { status: "succeeded" } });
 			const before = await f.asUser.query(api.files_pending_updates.list_files_pending_updates, {
 				membershipId: f.home.membershipId,
+				listKey: "all",
 				paginationOpts: { cursor: null, numItems: 5 },
 			});
 			const row = before.page[0];
-			if (row?.kind !== "entry" || !row.entry.pendingUpdate) throw new Error("Expected ready destination copy");
-			const proposal = row.entry.pendingUpdate;
+			const view =
+				row &&
+				(await f.asUser.query(api.files_pending_updates.get_file_pending_target, {
+					membershipId: f.home.membershipId,
+					target: row.target,
+				}));
+			if (!view?.entry.pendingUpdate) throw new Error("Expected ready destination copy");
+			const proposal = view.entry.pendingUpdate;
 			expect(proposal.copiedFrom?.path).toBe("/private-source-name");
-			expect(row.copyDestination).toEqual({ personal: true, replacement: false, folderPath: "/" });
+			expect(view.copyDestination).toEqual({ personal: true, replacement: false, folderPath: "/" });
 			if (change === "leave") {
 				expect(
 					await f.asUser.mutation(api.organizations.remove_user_from_organization, {
@@ -161,6 +168,7 @@ describe("pending source summaries", () => {
 			const pending = await f.asUser.query(api.files_pending_updates.get_file_pending_update, args);
 			const page = await f.asUser.query(api.files_pending_updates.list_files_pending_updates, {
 				membershipId: f.home.membershipId,
+				listKey: "all",
 				paginationOpts: { cursor: null, numItems: 5 },
 			});
 			expect(detail?.entry.pendingUpdate?.copiedFrom).toBeUndefined();
@@ -241,15 +249,17 @@ describe("pending source summaries", () => {
 		).toMatchObject({ activity: { status: "succeeded" } });
 		const page = await f.asUser.query(api.files_pending_updates.list_files_pending_updates, {
 			membershipId: f.current.membershipId,
+			listKey: "all",
 			paginationOpts: { cursor: null, numItems: 5 },
 		});
 		const row = page.page[0];
-		if (row?.kind !== "entry" || !row.entry.pendingUpdate) throw new Error("Expected destination Copy");
-		expect(row.copyDestination).toEqual({ personal: false, replacement: false, folderPath: "/shared-destination" });
-		const args = { membershipId: f.current.membershipId, target: row.entry.pendingUpdate.target };
-		expect((await f.asUser.query(api.files_pending_updates.get_file_pending_target, args))?.copyDestination).toEqual(
-			row.copyDestination,
-		);
+		if (!row) throw new Error("Expected destination Copy");
+		const args = { membershipId: f.current.membershipId, target: row.target };
+		expect((await f.asUser.query(api.files_pending_updates.get_file_pending_target, args))?.copyDestination).toEqual({
+			personal: false,
+			replacement: false,
+			folderPath: "/shared-destination",
+		});
 		expect(
 			await f.asOwner.query(api.files_pending_updates.get_file_pending_target, {
 				...args,
@@ -326,13 +336,11 @@ describe("pending source summaries", () => {
 			expect(await f.counts()).toEqual([]);
 			const page = await f.asUser.query(api.files_pending_updates.list_files_pending_updates, {
 				membershipId: f.home.membershipId,
+				listKey: "all",
 				paginationOpts: { cursor: null, numItems: 20 },
 			});
 			expect(page.page).toHaveLength(1);
-			expect(page.page[0]).toMatchObject({
-				kind: "entry",
-				entry: { path: "/kept", pendingUpdate: { threadIds: [f.threadId] } },
-			});
+			expect(page.page[0]).toMatchObject({ target: draft.target, threadIds: [f.threadId] });
 			const proposal = await f.t.run((ctx) => ctx.db.get("files_pending_updates", draft.pendingUpdateId!));
 			expect(
 				await f.asUser.mutation(api.files_pending_updates.discard_file_pending_update, {
@@ -438,7 +446,8 @@ describe("chat pending destination counts", () => {
 
 	test("caps each destination scan and marks an incomplete count", async () => {
 		const f = await fixture();
-		await f.t.run(async (ctx) => {
+		// The flush writes the list rows that the counts read.
+		await test_run_with_flush(f.t, async (ctx) => {
 			for (let index = 0; index < 501; index++) {
 				const result = await files_pending_nodes_db_create(ctx, {
 					organizationId: f.current.organizationId,

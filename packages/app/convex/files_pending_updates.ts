@@ -18,7 +18,6 @@ import {
 } from "convex/server";
 import { v, type Infer } from "convex/values";
 import { doc } from "convex-helpers/validators";
-import { stream } from "convex-helpers/server/stream";
 import type { app_convex_Doc } from "../src/lib/app-convex-client.ts";
 import { path_join, server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
@@ -61,7 +60,6 @@ import {
 } from "./files_pending_nodes.ts";
 import { files_pending_holds_db_check_expiry } from "./files_pending_holds.ts";
 import { files_visible_db_create_reader } from "./files_visible.ts";
-import { files_pending_overlay_db_pending_update_is_listed } from "../server/files-pending-overlay.ts";
 import { files_db_resolve_scope } from "./files_scopes.ts";
 import { files_share_links_create_cleanup_state, type files_share_links_CleanupState } from "./files_share_links_db.ts";
 import { path_extract_segments_from } from "../shared/paths.ts";
@@ -88,11 +86,13 @@ import {
 	access_control_db_authorize_membership,
 	access_control_db_authorize_node,
 	access_control_db_can_act_on_file_node,
+	access_control_db_filter_readable_file_nodes,
 } from "./access_control.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import {
 	files_db_expire_pending_update_operation_batch,
 	files_db_get_pending_update,
+	files_db_get_visible_node_by_path,
 	files_db_insert_pending_update,
 	files_db_patch_pending_update,
 	files_db_delete_pending_update,
@@ -138,6 +138,7 @@ import {
 	files_normalize_name,
 	files_normalize_text_document_input,
 	files_PENDING_UPDATE_STALE_BASE_MESSAGE,
+	files_PENDING_PATH_TOO_DEEP_MESSAGE,
 	files_pending_update_content_is_stale,
 	files_pending_update_content_of,
 	type files_PendingTarget,
@@ -257,6 +258,17 @@ const PENDING_STATE_MAX_PAGES_PER_STATE = 5;
 
 /** One batch phase (input or output) holds at most this many page bytes across its three states. */
 const PENDING_STATE_MAX_PHASE_TOTAL_BYTES = 12 * 1024 * 1024;
+
+/** The page cap of `list_files_pending_updates`. */
+const PENDING_LIST_PAGE_MAX_ITEMS = 5;
+
+/**
+ * The split guard of `list_files_pending_updates`. A row reads only its stored proposal, never its
+ * path or access, so it costs 1 range at any depth (measured in `files_visible.test.ts`; the page
+ * itself costs 2 more). With a 3,000-range budget: floor(3,000 / 1) = 3,000 rows. The page cap
+ * keeps a first load far below it. A reactive rerun has no cap, so the guard is for those.
+ */
+const PENDING_LIST_PAGE_GUARD = 3000;
 
 /**
  * Reconstruct the latest live file state in action memory, reading only through the frozen
@@ -6905,7 +6917,7 @@ async function db_get_pending_target_view(
 
 	if (target.kind === "private") {
 		const resolved = await reader.resolve(target);
-		if (reader.exhausted) throw convex_error({ message: "Pending path lookup exceeded its read limit." });
+		if (reader.exhausted) throw convex_error({ message: files_PENDING_PATH_TOO_DEEP_MESSAGE });
 		if (!resolved) {
 			const data = await db_get_private_pending_target(ctx, {
 				membership,
@@ -6972,33 +6984,49 @@ async function db_get_pending_target_view(
 			entry.pendingUpdate.createIntent !== undefined &&
 			(entry.pendingUpdate.createIntent.kind !== "text" || entry.pendingUpdate.content?.base.kind === "new");
 		const canEdit = !writable._nay && !policy?._nay;
-		const ancestry = await files_pending_nodes_db_get_ancestry(ctx, { ...scope, privateNodeId: entry.node._id });
-		if (ancestry._nay) return null;
+		// The draft folders above this draft, nearest first. The reader resolved this chain already, so
+		// this walk reads only a saved folder's publish receipt.
+		const parents = [];
+		let parent = entry.node.parent;
+		while (parent.kind === "private") {
+			const parentEntry = (await reader.resolve(parent))?.entry;
+			if (parentEntry?.kind !== "private") break;
+			parents.push(parentEntry);
+			parent = parentEntry.node.parent;
+		}
+		const parentId = parent.kind === "private" ? parent.id : null;
+		const receipt = parentId
+			? await reader.read(() =>
+					ctx.db
+						.query("files_pending_node_publish_receipts")
+						.withIndex("by_privateNode", (q) => q.eq("privateNodeId", parentId))
+						.unique(),
+				)
+			: null;
+		const savedParentId = parent.kind === "saved" ? parent.id : (receipt?.savedNodeId ?? null);
+		const savedParentEntry = savedParentId ? (await reader.resolve({ kind: "saved", id: savedParentId }))?.entry : null;
+		if (reader.exhausted) throw convex_error({ message: files_PENDING_PATH_TOO_DEEP_MESSAGE });
+		const savedParent = savedParentEntry?.kind === "saved" ? savedParentEntry.node : null;
 		const canSave =
 			canEdit ||
 			(!writable._nay &&
-				ancestry._yay.savedParent !== null &&
+				savedParent !== null &&
 				(await files_pending_nodes_db_can_save_to_copied_parent(ctx, {
 					membership,
-					node: ancestry._yay.ancestors.at(-1) ?? entry.node,
-					savedParent: ancestry._yay.savedParent,
+					node: parents.at(-1)?.node ?? entry.node,
+					savedParent,
 				})));
 		const requiredParents = [];
 		let parentsReady = true;
 		// Review only the folders this file needs, in publish order. Siblings stay pending.
-		for (const parent of ancestry._yay.ancestors.toReversed()) {
-			const parentEntry = await reader.resolveTarget({ kind: "private", id: parent._id });
+		for (const parentEntry of parents.toReversed()) {
 			// A parent that is still preparing, or is no longer a folder draft, blocks the whole save.
-			if (
-				parentEntry?.kind !== "private" ||
-				parentEntry.pendingUpdate.preparation ||
-				parentEntry.pendingUpdate.createIntent?.kind !== "folder"
-			) {
+			if (parentEntry.pendingUpdate.preparation || parentEntry.pendingUpdate.createIntent?.kind !== "folder") {
 				parentsReady = false;
 				break;
 			}
 			requiredParents.push({
-				target: { kind: "private" as const, id: parent._id },
+				target: { kind: "private" as const, id: parentEntry.node._id },
 				path: parentEntry.path,
 				pendingUpdateId: parentEntry.pendingUpdate._id,
 				reviewedRevision: parentEntry.pendingUpdate.revision,
@@ -7012,11 +7040,11 @@ async function db_get_pending_target_view(
 			readiness: ready ? ("ready" as const) : ("preparing" as const),
 			canEdit,
 			// Save this draft alone only when every parent folder above it is already saved.
-			canAccept: ready && canSave && ancestry._yay.ancestors.length === 0,
+			canAccept: ready && canSave && parents.length === 0,
 			// Otherwise the user can save it together with the draft folders listed below.
 			canAcceptWithParents: ready && canSave && parentsReady,
 			requiredParents,
-			savedParentId: ancestry._yay.savedParent?._id ?? null,
+			savedParentId: savedParent?._id ?? null,
 		};
 	}
 
@@ -7047,7 +7075,7 @@ async function db_get_pending_target_view(
 		destination?.kind === "private" ? await ctx.db.get("files_pending_nodes", destination.id) : null;
 
 	const visibleEntry = await reader.resolveTarget(target);
-	if (reader.exhausted) throw convex_error({ message: "Pending path lookup exceeded its read limit." });
+	if (reader.exhausted) throw convex_error({ message: files_PENDING_PATH_TOO_DEEP_MESSAGE });
 
 	return {
 		kind: "entry" as const,
@@ -7165,6 +7193,10 @@ export const get_file_pending_target = query({
 			workspaceId: membership.workspaceId,
 			userId: userAuth.id,
 		};
+		// The Pending tab loads each row's view with its own query, so this budget is per row. The worst
+		// row measured costs 1,285 ranges in all: an archived draft 255 folders deep. The reader stops at
+		// 2,048 reads, which leaves about 2,000 of Convex's 4,096 ranges for reads outside it. A row past
+		// the limit throws, and the Pending tab shows a short message on that row only.
 		const reader = await files_visible_db_create_reader(ctx, { ...scope, readLimit: 2048 });
 		// An old private link keeps working after Save. Null means the file is gone.
 		const readTarget = await files_pending_nodes_db_resolve_read_target(ctx, { ...scope, target });
@@ -7191,6 +7223,65 @@ type get_file_pending_target_Result =
 	typeof get_file_pending_target extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
 		: never;
+
+/**
+ * The readable active node at a saved move's destination path, which Accept would replace. Only
+ * the Pending row caption uses it, so the file view does not pay for it. Accept checks the real
+ * occupancy again.
+ */
+export const get_pending_move_occupant = query({
+	args: { membershipId: v.id("organizations_workspaces_users"), nodeId: v.string(), path: v.string() },
+	returns: v.union(v.object({ nodeId: v.id("files_nodes"), hasActiveChild: v.boolean() }), v.null()),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) throw convex_error({ message: "Unauthenticated" });
+		const membership = await organizations_db_get_membership(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) return null;
+
+		const node = await files_db_get_visible_node_by_path(ctx, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			path: args.path,
+		});
+		if (!node || node._id === args.nodeId) return null;
+		const scope = {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			userId: userAuth.id,
+		};
+		const workspaceRead = await access_control_db_authorize_membership(ctx, {
+			userAuth,
+			membership,
+			permission: "content.read",
+		});
+		const [readable] = await access_control_db_filter_readable_file_nodes(ctx, {
+			...scope,
+			nodes: [node],
+			hasWorkspaceRead: !workspaceRead._nay,
+		});
+		if (!readable) return null;
+
+		// A restricted root child may be hidden from this user, so it does not count.
+		const child =
+			readable.kind === "folder"
+				? await ctx.db
+						.query("files_nodes")
+						.withIndex("by_org_ws_parent_archive_restricted_kind", (q) =>
+							q
+								.eq("organizationId", scope.organizationId)
+								.eq("workspaceId", scope.workspaceId)
+								.eq("parentId", readable._id)
+								.eq("archiveOperationId", null)
+								.eq("isRestrictedScopeRoot", false),
+						)
+						.first()
+				: null;
+		return { nodeId: readable._id, hasActiveChild: child !== null };
+	},
+});
 
 export const get_private_pending_target_internal = internalQuery({
 	args: {
@@ -7352,23 +7443,33 @@ export const get_file_pending_update_internal = internalQuery({
 	},
 });
 
+/**
+ * List keys: `"all"`, `"own"` (no chat touched the change) or a chat id.
+ */
+function db_normalize_pending_list_key(ctx: QueryCtx, listKey: string) {
+	return listKey === "all" || listKey === "own" ? listKey : ctx.db.normalizeId("ai_chat_threads", listKey);
+}
+
+/**
+ * One page of the Pending tab, newest change first. A row has only stored fields. Resolving a path
+ * and checking access can cost about 1,300 reads for a draft 255 folders deep, so 5 rows would not
+ * fit in one query. Each shown row loads its own view with `get_file_pending_target` instead.
+ */
 export const list_files_pending_updates = query({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
-		threadId: v.optional(v.string()),
+		listKey: v.string(),
 		paginationOpts: paginationOptsValidator,
 	},
 	returns: paginationResultValidator(
-		v.union(
-			pending_target_view_validator,
-			v.object({
-				kind: v.literal("restricted"),
-				target: files_pending_target_validator,
-				pendingUpdateId: v.id("files_pending_updates"),
-				revision: v.number(),
-				threadIds: v.optional(v.array(v.id("ai_chat_threads"))),
-			}),
-		),
+		v.object({
+			target: files_pending_target_validator,
+			pendingUpdateId: v.id("files_pending_updates"),
+			revision: v.number(),
+			threadIds: v.optional(v.array(v.id("ai_chat_threads"))),
+			// Ready content to review, for the editor's review pager. Same rule as the view's `readiness`.
+			hasReadyContent: v.boolean(),
+		}),
 	),
 	handler: async (ctx, args) => {
 		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
@@ -7384,60 +7485,87 @@ export const list_files_pending_updates = query({
 			return { page: [], isDone: true, continueCursor: "" };
 		}
 
-		const threadId = args.threadId === undefined ? undefined : ctx.db.normalizeId("ai_chat_threads", args.threadId);
-		if (threadId === null) return { page: [], isDone: true, continueCursor: "" };
+		const listKey = db_normalize_pending_list_key(ctx, args.listKey);
+		if (listKey === null) return { page: [], isDone: true, continueCursor: "" };
 
-		const scope = {
-			organizationId: membership.organizationId,
-			workspaceId: membership.workspaceId,
-			userId: userAuth.id,
-		};
-
-		// Skip unlisted proposals before paging, so a page is filled with rows the list draws. After
-		// `.paginate()`, a hidden folder or another chat's proposal would still use one of the 5
-		// slots, and a page could come back short or even empty. `maximumRowsRead` limits the scan
-		// when many proposals in a row are skipped. The page then ends early, and the client asks
-		// for the rest.
-		// Do not limit a page that has an `endCursor`. That page must reach its end. If it stopped
-		// early, the client would split it at the early stop, and the rows after that stop would
-		// never load.
-		const page = await stream(ctx.db, app_convex_schema)
-			.query("files_pending_updates")
-			.withIndex("by_organization_workspace_user_target", (q) =>
-				q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId).eq("userId", scope.userId),
+		// The overlay flush keeps one list row per listed proposal and list key.
+		const result = await ctx.db
+			.query("files_pending_list_rows")
+			.withIndex("by_org_ws_user_listKey_updatedAt", (q) =>
+				q
+					.eq("organizationId", membership.organizationId)
+					.eq("workspaceId", membership.workspaceId)
+					.eq("userId", userAuth.id)
+					.eq("listKey", listKey),
 			)
-			.filterWith(
-				async (pendingUpdate) =>
-					await files_pending_overlay_db_pending_update_is_listed({ ctx, pendingUpdate, threadId }),
-			)
+			.order("desc")
 			.paginate({
 				...args.paginationOpts,
-				numItems: Math.min(5, args.paginationOpts.numItems),
-				maximumRowsRead: args.paginationOpts.endCursor ? undefined : 100,
+				numItems: Math.min(args.paginationOpts.numItems, PENDING_LIST_PAGE_MAX_ITEMS),
 			});
 
-		// A page can contain unrelated deep paths. Keep its combined ancestor reads bounded too.
-		const reader = await files_visible_db_create_reader(ctx, { ...scope, readLimit: 8192 });
+		// Split before any per-row read, like `tree_page_needs_split` in `files_nodes.ts`: a reactive
+		// rerun has no row cap, and a new change always lands on the first page.
+		if (result.splitCursor && (result.page.length > PENDING_LIST_PAGE_GUARD || result.pageStatus)) {
+			return {
+				page: [],
+				isDone: result.isDone,
+				continueCursor: result.continueCursor,
+				splitCursor: result.splitCursor,
+				pageStatus: "SplitRequired" as const,
+			};
+		}
 
-		const views = [];
-		for (const pendingUpdate of page.page) {
-			const view = await db_get_pending_target_view(ctx, { membership, target: pendingUpdate.target, reader });
-			if (view) {
-				views.push(await db_get_public_pending_target_view(ctx, view));
-				continue;
-			}
-
-			// Keep only the owner's review identity after access is removed.
-			views.push({
-				kind: "restricted" as const,
-				target: pendingUpdate.target,
+		const rows = [];
+		for (const row of result.page) {
+			const pendingUpdate = await ctx.db.get("files_pending_updates", row.pendingUpdateId);
+			if (!pendingUpdate) continue;
+			const { target, preparation, createIntent, content } = pendingUpdate;
+			rows.push({
+				target,
 				pendingUpdateId: pendingUpdate._id,
 				revision: pendingUpdate.revision,
 				...(pendingUpdate.threadIds ? { threadIds: pendingUpdate.threadIds } : {}),
+				hasReadyContent:
+					content !== undefined &&
+					(target.kind === "saved" ||
+						(!preparation &&
+							createIntent !== undefined &&
+							(createIntent.kind !== "text" || content.base.kind === "new"))),
 			});
 		}
 
-		return { ...page, page: views };
+		return { ...result, page: rows };
+	},
+});
+
+/**
+ * The Pending tab's source dropdown: the list keys that have changes, newest change first. `"all"`
+ * is left out, because the dropdown always shows it.
+ */
+export const list_files_pending_sources = query({
+	args: { membershipId: v.id("organizations_workspaces_users"), paginationOpts: paginationOptsValidator },
+	returns: paginationResultValidator(doc(app_convex_schema, "files_pending_list_keys").fields.listKey),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) throw convex_error({ message: "Unauthenticated" });
+		const membership = await organizations_db_get_membership(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) return { page: [], isDone: true, continueCursor: "" };
+
+		const result = await ctx.db
+			.query("files_pending_list_keys")
+			.withIndex("by_org_ws_user_lastUpdatedAt", (q) =>
+				q
+					.eq("organizationId", membership.organizationId)
+					.eq("workspaceId", membership.workspaceId)
+					.eq("userId", userAuth.id),
+			)
+			.order("desc")
+			.paginate(args.paginationOpts);
+		return { ...result, page: result.page.flatMap((key) => (key.listKey === "all" ? [] : [key.listKey])) };
 	},
 });
 
@@ -7510,28 +7638,26 @@ export const get_pending_source_summary = query({
 async function db_get_files_pending_updates_summary(args: {
 	ctx: QueryCtx;
 	membership: app_convex_Doc<"organizations_workspaces_users">;
-	threadId?: Id<"ai_chat_threads">;
+	listKey: app_convex_Doc<"files_pending_list_rows">["listKey"];
 }) {
-	const { ctx, membership, threadId } = args;
+	const { ctx, membership, listKey } = args;
 
-	const pendingUpdates = await ctx.db
-		.query("files_pending_updates")
-		.withIndex("by_organization_workspace_user_target", (q) =>
+	const rows = await ctx.db
+		.query("files_pending_list_rows")
+		.withIndex("by_org_ws_user_listKey_updatedAt", (q) =>
 			q
 				.eq("organizationId", membership.organizationId)
 				.eq("workspaceId", membership.workspaceId)
-				.eq("userId", membership.userId),
+				.eq("userId", membership.userId)
+				.eq("listKey", listKey),
 		)
 		.take(501);
-	let count = 0;
-	for (const pendingUpdate of pendingUpdates.slice(0, 500)) {
-		if (await files_pending_overlay_db_pending_update_is_listed({ ctx, pendingUpdate, threadId })) count++;
-	}
-	return { count, truncated: pendingUpdates.length > 500 };
+	return { count: Math.min(rows.length, 500), truncated: rows.length > 500 };
 }
 
 export const get_files_pending_updates_summary = query({
-	args: { membershipId: v.id("organizations_workspaces_users"), threadId: v.optional(v.string()) },
+	// No `listKey` means `"all"`.
+	args: { membershipId: v.id("organizations_workspaces_users"), listKey: v.optional(v.string()) },
 	returns: v.object({ count: v.number(), truncated: v.boolean() }),
 	handler: async (ctx, args) => {
 		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
@@ -7541,9 +7667,9 @@ export const get_files_pending_updates_summary = query({
 			membershipId: args.membershipId,
 		});
 		if (!membership) return { count: 0, truncated: false };
-		const threadId = args.threadId === undefined ? undefined : ctx.db.normalizeId("ai_chat_threads", args.threadId);
-		if (threadId === null) return { count: 0, truncated: false };
-		return await db_get_files_pending_updates_summary({ ctx, membership, threadId });
+		const listKey = db_normalize_pending_list_key(ctx, args.listKey ?? "all");
+		if (listKey === null) return { count: 0, truncated: false };
+		return await db_get_files_pending_updates_summary({ ctx, membership, listKey });
 	},
 });
 
@@ -7625,7 +7751,7 @@ export const get_chat_pending_updates_summary = query({
 				workspace: root.workspace,
 				organizationName: access._yay.organization.name,
 				workspaceName: workspace.name,
-				...(await db_get_files_pending_updates_summary({ ctx, membership: root.membership, threadId })),
+				...(await db_get_files_pending_updates_summary({ ctx, membership: root.membership, listKey: threadId })),
 			});
 		}
 		return summaries;

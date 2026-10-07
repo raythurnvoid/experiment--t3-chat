@@ -8018,6 +8018,7 @@ describe("file sharing", () => {
 		const [listedAfterLowering, canWriteAfterLowering] = await Promise.all([
 			fixture.asMember.query(api.files_pending_updates.list_files_pending_updates, {
 				membershipId: fixture.memberMembershipId,
+				listKey: "all",
 				paginationOpts: { cursor: null, numItems: 20 },
 			}),
 			fixture.asMember.query(api.files_nodes.get_current_user_file_write_permission, {
@@ -8025,10 +8026,9 @@ describe("file sharing", () => {
 				nodeId,
 			}),
 		]);
-		expect(listedAfterLowering.page).toMatchObject([{ kind: "entry", entry: { pendingUpdate: { _id: draftId } } }]);
+		expect(listedAfterLowering.page).toMatchObject([{ pendingUpdateId: draftId }]);
 		const listedProposal = listedAfterLowering.page[0];
-		if (!listedProposal || listedProposal.kind !== "entry" || !listedProposal.entry.pendingUpdate)
-			throw new Error("Expected the readable proposal");
+		if (!listedProposal) throw new Error("Expected the readable proposal");
 		expect(canWriteAfterLowering).toBe(false);
 
 		await access_control_test_reset_write_rate_limit(t, fixture.memberId);
@@ -8036,7 +8036,7 @@ describe("file sharing", () => {
 			membershipId: fixture.memberMembershipId,
 			target: { kind: "saved", id: nodeId },
 			pendingUpdateId: draftId,
-			reviewedRevision: listedProposal.entry.pendingUpdate.revision,
+			reviewedRevision: listedProposal.revision,
 		});
 		expect(discarded._nay).toBeUndefined();
 

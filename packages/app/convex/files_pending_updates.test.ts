@@ -2667,6 +2667,7 @@ describe("private pending text", () => {
 		expect(
 			await asOther.query(api.files_pending_updates.list_files_pending_updates, {
 				membershipId: other.membershipId,
+				listKey: "all",
 				paginationOpts: { numItems: 5, cursor: null },
 			}),
 		).toMatchObject({ page: [], isDone: true });
@@ -2693,14 +2694,16 @@ describe("private pending text", () => {
 				cursor: null,
 			}),
 		).toMatchObject({ _yay: { items: [] } });
+		// The row's own view is null above, so the Pending tab shows it as restricted.
 		expect(
 			(
 				await asUser.query(api.files_pending_updates.list_files_pending_updates, {
 					membershipId,
+					listKey: "all",
 					paginationOpts: { numItems: 5, cursor: null },
 				})
 			).page,
-		).toEqual([{ kind: "restricted", target, pendingUpdateId, revision: proposal.revision }]);
+		).toMatchObject([{ target, pendingUpdateId, revision: proposal.revision }]);
 		expect(
 			(
 				await asUser.action(api.files_pending_updates.save_file_pending_update, {
@@ -3558,14 +3561,10 @@ describe("archived-parent draft recovery", () => {
 		});
 		const page = await asUser.query(api.files_pending_updates.list_files_pending_updates, {
 			membershipId,
+			listKey: "all",
 			paginationOpts: { cursor: null, numItems: 5 },
 		});
-		expect(page.page).toContainEqual(
-			expect.objectContaining({
-				kind: "entry",
-				recovery: expect.objectContaining({ savedParentId: f.parentId }),
-			}),
-		);
+		expect(page.page).toContainEqual(expect.objectContaining({ pendingUpdateId }));
 		expect(
 			await asUser.query(api.files_pending_updates.get_file_pending_update, { membershipId, target }),
 		).toMatchObject({ _id: pendingUpdateId, content: proposal.content });
@@ -3788,9 +3787,11 @@ describe("archived-parent draft recovery", () => {
 		).toBeNull();
 		const rows = await f.asUser.query(api.files_pending_updates.list_files_pending_updates, {
 			membershipId,
+			listKey: "all",
 			paginationOpts: { cursor: null, numItems: 5 },
 		});
-		expect(rows.page).toMatchObject([{ kind: "restricted", target }]);
+		// The row's own view is null above, so the Pending tab shows it as restricted.
+		expect(rows.page).toMatchObject([{ target }]);
 		expect(JSON.stringify(rows)).not.toContain("retained");
 		expect(
 			await f.asOwner.mutation(api.files_sharing.unrestrict_node, {

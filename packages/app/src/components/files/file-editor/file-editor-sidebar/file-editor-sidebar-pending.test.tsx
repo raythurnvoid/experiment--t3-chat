@@ -42,23 +42,35 @@ const {
 }));
 
 // Network boundary: the real hooks talk to a live Convex client; tests feed query data directly.
-vi.mock("convex-helpers/react", () => ({
-	usePaginatedQuery: (...args: unknown[]) => {
-		const result = useQueryMock(...args);
+// `useQueryMock` returns each test's proposals for "list_files_pending_updates". The list, the
+// sources, the summary and each row's view are built from them, like the server builds them.
+vi.mock("convex/react", () => ({
+	useQuery: (query: unknown, args: unknown) => {
+		// The summary counts the test's proposals, like the list.
+		const isSummary = query === "get_files_pending_updates_summary";
+		const result = useQueryMock(isSummary ? "list_files_pending_updates" : query, args);
+		return isSummary ? makeSummaryFixture(result, (args as { listKey: string }).listKey) : result;
+	},
+	usePaginatedQuery: (query: unknown, args: { listKey?: string }) => {
+		const updates: app_convex_Doc<"files_pending_updates">[] | undefined = useQueryMock(
+			"list_files_pending_updates",
+			args,
+		);
 		return {
-			results: makeOwnerViewFixtures(result) ?? [],
-			status: result === undefined ? "LoadingFirstPage" : pagination.status,
+			results:
+				(query === "list_files_pending_sources"
+					? makeSourceKeyFixtures(updates)
+					: makeListRowFixtures(updates, args.listKey!)) ?? [],
+			status:
+				updates === undefined
+					? "LoadingFirstPage"
+					: query === "list_files_pending_sources"
+						? "Exhausted"
+						: pagination.status,
 			loadMore: loadMoreMock,
 		};
 	},
-}));
-
-vi.mock("convex/react", () => ({
-	useQuery: (...args: unknown[]) => {
-		const result = useQueryMock(...args);
-		return args[0] === "list_files_pending_updates" ? makeOwnerViewFixtures(result) : result;
-	},
-	useQueries: (queries: Record<string, { query: unknown }>) => useQueriesMock(queries),
+	useQueries: (queries: Record<string, { query: unknown; args: Record<string, string> }>) => useQueriesFixture(queries),
 	useConvex: () => ({ action: actionMock, mutation: mutationMock, query: queryMock }),
 }));
 
@@ -95,11 +107,6 @@ vi.mock("@/lib/app-activities-context.tsx", async () => {
 	};
 });
 
-// Feed the complete tree separately from the pending-update queries.
-vi.mock("@/lib/files-tree-context.tsx", () => ({
-	FilesTreeProvider: { useFullList: () => treeNodesMock() },
-}));
-
 // Spy target: tests assert on toast.error and toast.warning calls.
 vi.mock("sonner", () => ({
 	toast: { error: vi.fn(), warning: vi.fn() },
@@ -124,6 +131,9 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 			create_private_pending_download_url: "create_private_pending_download_url",
 			get_file_pending_target: "get_file_pending_target",
 			list_files_pending_updates: "list_files_pending_updates",
+			list_files_pending_sources: "list_files_pending_sources",
+			get_files_pending_updates_summary: "get_files_pending_updates_summary",
+			get_pending_move_occupant: "get_pending_move_occupant",
 			get_file_pending_update: "get_file_pending_update",
 			discard_file_pending_content: "discard_file_pending_content",
 			discard_file_pending_update: "discard_file_pending_update",
@@ -136,6 +146,7 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 		},
 		files_nodes: {
 			list_tree: "list_tree",
+			get_file_node_for_membership: "get_file_node_for_membership",
 			get_current_user_file_write_permission: "get_current_user_file_write_permission",
 		},
 		r2: {
@@ -211,7 +222,10 @@ import { FileEditorSidebarPending } from "./file-editor-sidebar-pending.tsx";
 import { FilesPendingReviewModal } from "@/components/files/files-pending-review.tsx";
 import { encodeStateAsUpdate } from "yjs";
 import { files_yjs_doc_create_from_text } from "../../../../../shared/files-tiptap.ts";
-import { files_PENDING_UPDATE_STALE_BASE_MESSAGE } from "../../../../../shared/files.ts";
+import {
+	files_PENDING_PATH_TOO_DEEP_MESSAGE,
+	files_PENDING_UPDATE_STALE_BASE_MESSAGE,
+} from "../../../../../shared/files.ts";
 import { files_u8_to_array_buffer } from "@/lib/files.ts";
 
 /**
@@ -221,6 +235,12 @@ import { files_u8_to_array_buffer } from "@/lib/files.ts";
 const pendingStateBytesByStateId = new Map<string, ArrayBuffer>();
 const blockedTargetIds = new Set<string>();
 const unreadableTargetIds = new Set<string>();
+// Rows whose own view query throws its read-limit error.
+const tooDeepPendingUpdateIds = new Set<string>();
+// The proposals of the loaded list rows, by id, so each row's view query can find its proposal.
+const listedUpdatesById = new Map<string, app_convex_Doc<"files_pending_updates">>();
+// Set by a test to return a summary the fixtures cannot build cheaply, like "500+".
+const summary: { override?: { count: number; truncated: boolean } } = {};
 // The server never lists a folder draft that holds a draft. Tests pass only the draft inside and
 // name the folder here, like the server's `requiredParents`.
 const requiredParentsById = new Map<
@@ -340,67 +360,116 @@ function makePendingUpdate(args: {
 
 const privatePathsById = new Map<string, string>();
 
-// Build the server's owner view from each test's file and proposal fixtures.
-function makeOwnerViewFixtures(updates: app_convex_Doc<"files_pending_updates">[] | undefined) {
-	return updates?.map((pendingUpdate) => {
-		const nodes: app_convex_Doc<"files_nodes">[] = treeNodesMock() ?? [];
-		const canAccept = !blockedTargetIds.has(pendingUpdate.target.id) && !pendingUpdate.preparation;
-		if (unreadableTargetIds.has(pendingUpdate.target.id))
+// The list keys a proposal is listed under, like the overlay flush writes them.
+function listKeysOf(pendingUpdate: app_convex_Doc<"files_pending_updates">) {
+	return ["all", ...(pendingUpdate.threadIds?.length ? pendingUpdate.threadIds : ["own"])];
+}
+
+// `list_files_pending_updates`: stored fields only, in the fixture order (newest first).
+function makeListRowFixtures(updates: app_convex_Doc<"files_pending_updates">[] | undefined, listKey: string) {
+	return updates
+		?.filter((pendingUpdate) => listKeysOf(pendingUpdate).includes(listKey))
+		.map((pendingUpdate) => {
+			listedUpdatesById.set(pendingUpdate._id, pendingUpdate);
 			return {
-				kind: "restricted",
 				target: pendingUpdate.target,
 				pendingUpdateId: pendingUpdate._id,
 				revision: pendingUpdate.revision,
-				threadIds: pendingUpdate.threadIds,
+				...(pendingUpdate.threadIds ? { threadIds: pendingUpdate.threadIds } : {}),
+				hasReadyContent: true,
 			};
-		if (pendingUpdate.target.kind === "private") {
-			const path = privatePathsById.get(pendingUpdate.target.id)!;
-			return {
-				kind: "entry",
-				entry: {
-					kind: "private",
-					node: {
-						_id: pendingUpdate.target.id,
-						name: path.split("/").pop(),
-						kind: pendingUpdate.createIntent?.kind === "folder" ? "folder" : "file",
-						parent: { kind: "root" },
-						userId: "user_1",
-						creationGeneration: 1,
-					},
-					pendingUpdate,
-					path,
-				},
-				readiness: pendingUpdate.preparation ? "preparing" : "ready",
-				canEdit: canAccept,
-				// A draft inside a folder that is itself a proposal cannot be accepted on its own. It can only
-				// be saved together with that folder, which is what canAcceptWithParents means.
-				canAccept: canAccept && !requiredParentsById.has(pendingUpdate.target.id),
-				canAcceptWithParents: canAccept,
-				requiredParents: requiredParentsById.get(pendingUpdate.target.id) ?? [],
-			};
-		}
-		const node = nodes.find((node) => node._id === pendingUpdate.target.id);
-		if (!node)
-			return {
-				kind: "restricted",
-				target: pendingUpdate.target,
-				pendingUpdateId: pendingUpdate._id,
-				revision: pendingUpdate.revision,
-				threadIds: pendingUpdate.threadIds,
-			};
-		const move = pendingUpdate.pendingMove;
-		const parent = move?.destParent;
-		const parentPath = parent?.kind === "saved" ? nodes.find((node) => node._id === parent.id)?.path : "";
+		});
+}
+
+// `list_files_pending_sources`: the list keys with changes, newest first, without "all".
+function makeSourceKeyFixtures(updates: app_convex_Doc<"files_pending_updates">[] | undefined) {
+	return updates && [...new Set(updates.flatMap((pendingUpdate) => listKeysOf(pendingUpdate).slice(1)))];
+}
+
+function makeSummaryFixture(updates: app_convex_Doc<"files_pending_updates">[] | undefined, listKey: string) {
+	return updates && (summary.override ?? { count: makeListRowFixtures(updates, listKey)!.length, truncated: false });
+}
+
+// Each row's view, the move occupants and the nodes come from the fixtures. Chat titles come from
+// `useQueriesMock`.
+function useQueriesFixture(queries: Record<string, { query: unknown; args: Record<string, string> }>) {
+	const threads: Record<string, unknown> = useQueriesMock(queries) ?? {};
+	const nodes: app_convex_Doc<"files_nodes">[] | undefined = treeNodesMock();
+	return Object.fromEntries(
+		Object.entries(queries).map(([key, { query, args }]) => {
+			if (query === "get_file_pending_target") {
+				return [
+					key,
+					tooDeepPendingUpdateIds.has(key)
+						? new Error(files_PENDING_PATH_TOO_DEEP_MESSAGE)
+						: makeOwnerViewFixture(listedUpdatesById.get(key)!),
+				];
+			}
+			if (query === "get_pending_move_occupant") {
+				const occupant = nodes?.find((node) => node.path === args.path && node._id !== args.nodeId);
+				return [
+					key,
+					nodes &&
+						(occupant
+							? { nodeId: occupant._id, hasActiveChild: nodes.some((node) => node.parentId === occupant._id) }
+							: null),
+				];
+			}
+			if (query === "get_file_node_for_membership") {
+				return [key, nodes && (nodes.find((node) => node._id === args.fileNodeId) ?? null)];
+			}
+			return [key, threads[key]];
+		}),
+	);
+}
+
+// Build the server's owner view from each test's file and proposal fixtures. Null is a row this
+// user cannot read.
+function makeOwnerViewFixture(pendingUpdate: app_convex_Doc<"files_pending_updates">) {
+	const nodes: app_convex_Doc<"files_nodes">[] = treeNodesMock() ?? [];
+	const canAccept = !blockedTargetIds.has(pendingUpdate.target.id) && !pendingUpdate.preparation;
+	if (unreadableTargetIds.has(pendingUpdate.target.id)) return null;
+	if (pendingUpdate.target.kind === "private") {
+		const path = privatePathsById.get(pendingUpdate.target.id)!;
 		return {
-			kind: "entry",
-			entry: { kind: "saved", node, pendingUpdate, path: move ? `${parentPath}/${move.destName}` : node.path },
-			readiness: "ready",
+			entry: {
+				kind: "private",
+				node: {
+					_id: pendingUpdate.target.id,
+					name: path.split("/").pop(),
+					kind: pendingUpdate.createIntent?.kind === "folder" ? "folder" : "file",
+					parent: { kind: "root" },
+					userId: "user_1",
+					creationGeneration: 1,
+				},
+				pendingUpdate,
+				path,
+			},
+			readiness: pendingUpdate.preparation ? "preparing" : "ready",
 			canEdit: canAccept,
-			canAccept,
+			// A draft inside a folder that is itself a proposal cannot be accepted on its own. It can only
+			// be saved together with that folder, which is what canAcceptWithParents means.
+			canAccept: canAccept && !requiredParentsById.has(pendingUpdate.target.id),
 			canAcceptWithParents: canAccept,
-			requiredParents: [],
+			requiredParents: requiredParentsById.get(pendingUpdate.target.id) ?? [],
+			savedParentId: null,
 		};
-	});
+	}
+	const node = nodes.find((node) => node._id === pendingUpdate.target.id);
+	if (!node) return null;
+	const move = pendingUpdate.pendingMove;
+	const parent = move?.destParent;
+	const parentPath = parent?.kind === "saved" ? nodes.find((node) => node._id === parent.id)?.path : "";
+	return {
+		entry: { kind: "saved", node, pendingUpdate, path: move ? `${parentPath}/${move.destName}` : node.path },
+		readiness: "ready",
+		// Like the server: the user can write the file.
+		canEdit: canAccept && (node as unknown as { canWrite: boolean }).canWrite,
+		canAccept,
+		canAcceptWithParents: canAccept,
+		requiredParents: [],
+		savedParentId: null,
+	};
 }
 
 function makeThread(args: { id: string; title: string | null; archived?: boolean; lastMessageAt?: number }) {
@@ -470,6 +539,9 @@ beforeEach(() => {
 	blockedTargetIds.clear();
 	requiredParentsById.clear();
 	unreadableTargetIds.clear();
+	tooDeepPendingUpdateIds.clear();
+	listedUpdatesById.clear();
+	summary.override = undefined;
 	privatePathsById.clear();
 	tenantContextMock.mockReturnValue({
 		membershipId: MEMBERSHIP_ID,
@@ -719,54 +791,14 @@ describe("FileEditorSidebarPending", () => {
 				expect(startReviewMock).toHaveBeenLastCalledWith({
 					kind: "discard",
 					items: [
-						{ pendingUpdateId: "pu_folder", reviewedRevision: 3, selectedContentStateId: null },
+						{ pendingUpdateId: "pu_folder", reviewedRevision: 3, selectedContentStateId: null, onlyIfEmpty: true },
 						{ pendingUpdateId: "pu_note", reviewedRevision: 1, selectedContentStateId: null },
 					],
 				}),
 			);
 		});
 
-		test("Discard all under a chat sends its own folder when no loaded draft needs it", async () => {
-			requiredParentsById.set("private_x", [
-				{
-					target: { kind: "private", id: "private_folder" },
-					path: "/qa",
-					pendingUpdateId: "pu_folder",
-					reviewedRevision: 3,
-					threadIds: ["thread_a"],
-				},
-			]);
-			treeNodesMock.mockReturnValue(undefined);
-			useQueryMock.mockReturnValue([
-				makePendingUpdate({
-					id: "pu_x",
-					fileNodeId: "private_x",
-					privatePath: "/qa/x.md",
-					staged: "",
-					unstaged: "x",
-					threadIds: ["thread_a"],
-				}),
-			]);
-			useQueriesMock.mockReturnValue({
-				thread_a: makeThread({ id: "thread_a", title: "First chat", lastMessageAt: 10 }),
-			});
-			render(<FileEditorSidebarPending />);
-
-			fireEvent.click(screen.getByRole("combobox"));
-			fireEvent.click(screen.getByRole("option", { name: /^First chat/ }));
-			fireEvent.click(screen.getByRole("button", { name: "Discard all shown pending changes" }));
-			await waitFor(() =>
-				expect(startReviewMock).toHaveBeenLastCalledWith({
-					kind: "discard",
-					items: [
-						{ pendingUpdateId: "pu_folder", reviewedRevision: 3, selectedContentStateId: null },
-						{ pendingUpdateId: "pu_x", reviewedRevision: 1, selectedContentStateId: null },
-					],
-				}),
-			);
-		});
-
-		test("bulk actions under a chat never touch a hidden folder that holds another chat's draft", async () => {
+		test("bulk Discard under a chat sends the hidden folder only if empty, so another chat's draft keeps it", async () => {
 			const folderParent = {
 				target: { kind: "private" as const, id: "private_folder" },
 				path: "/qa",
@@ -805,15 +837,19 @@ describe("FileEditorSidebarPending", () => {
 				fireEvent.click(screen.getByRole("option", { name }));
 			};
 
-			// The folder and x.md belong to the first chat, but note.md in the same folder belongs to
-			// the second one. So discarding x.md must keep the folder, and saving x.md saves it.
+			// The folder and x.md belong to the first chat, but note.md in the same folder belongs to the
+			// second one. The list does not show note.md here, so the folder goes with `onlyIfEmpty`: the
+			// server keeps it while note.md is inside. Saving x.md saves the folder.
 			selectSource(/^First chat/);
 			expect(screen.getByRole("combobox", { name: "Pending changes source: First chat, 1 change" })).toBeTruthy();
 			fireEvent.click(screen.getByRole("button", { name: "Discard all shown pending changes" }));
 			await waitFor(() =>
 				expect(startReviewMock).toHaveBeenLastCalledWith({
 					kind: "discard",
-					items: [{ pendingUpdateId: "pu_x", reviewedRevision: 1, selectedContentStateId: null }],
+					items: [
+						{ pendingUpdateId: "pu_folder", reviewedRevision: 3, selectedContentStateId: null, onlyIfEmpty: true },
+						{ pendingUpdateId: "pu_x", reviewedRevision: 1, selectedContentStateId: null },
+					],
 				}),
 			);
 			fireEvent.click(screen.getByRole("button", { name: "Accept all shown pending changes" }));
@@ -837,6 +873,95 @@ describe("FileEditorSidebarPending", () => {
 						{ pendingUpdateId: "pu_folder", reviewedRevision: 3, selectedContentStateId: null },
 						{ pendingUpdateId: "pu_note", reviewedRevision: 1, selectedContentStateId: "pu_note_unstaged" },
 					],
+				}),
+			);
+		});
+
+		test("Discard all under a chat sends every hidden parent folder only if empty", async () => {
+			requiredParentsById.set("private_x", [
+				{
+					target: { kind: "private", id: "private_f" },
+					path: "/f",
+					pendingUpdateId: "pu_f",
+					reviewedRevision: 1,
+					threadIds: ["thread_a"],
+				},
+				{
+					target: { kind: "private", id: "private_g" },
+					path: "/f/g",
+					pendingUpdateId: "pu_g",
+					reviewedRevision: 1,
+					threadIds: ["thread_a"],
+				},
+			]);
+			treeNodesMock.mockReturnValue(undefined);
+			useQueryMock.mockReturnValue([
+				makePendingUpdate({
+					id: "pu_x",
+					fileNodeId: "private_x",
+					privatePath: "/f/g/x.md",
+					staged: "",
+					unstaged: "x",
+					threadIds: ["thread_a"],
+				}),
+			]);
+			useQueriesMock.mockReturnValue({
+				thread_a: makeThread({ id: "thread_a", title: "First chat", lastMessageAt: 10 }),
+				thread_b: makeThread({ id: "thread_b", title: "Second chat", lastMessageAt: 20 }),
+			});
+			render(<FileEditorSidebarPending />);
+
+			// The server removes g, then /f, each only when nothing else is left inside.
+			fireEvent.click(screen.getByRole("combobox"));
+			fireEvent.click(screen.getByRole("option", { name: /^First chat/ }));
+			fireEvent.click(screen.getByRole("button", { name: "Discard all shown pending changes" }));
+			await waitFor(() =>
+				expect(startReviewMock).toHaveBeenLastCalledWith({
+					kind: "discard",
+					items: [
+						{ pendingUpdateId: "pu_f", reviewedRevision: 1, selectedContentStateId: null, onlyIfEmpty: true },
+						{ pendingUpdateId: "pu_g", reviewedRevision: 1, selectedContentStateId: null, onlyIfEmpty: true },
+						{ pendingUpdateId: "pu_x", reviewedRevision: 1, selectedContentStateId: null },
+					],
+				}),
+			);
+		});
+
+		test("Discard all under a chat keeps a hidden folder that another chat made", async () => {
+			requiredParentsById.set("private_x", [
+				{
+					target: { kind: "private", id: "private_f" },
+					path: "/f",
+					pendingUpdateId: "pu_f",
+					reviewedRevision: 1,
+					threadIds: ["thread_b"],
+				},
+			]);
+			treeNodesMock.mockReturnValue(undefined);
+			useQueryMock.mockReturnValue([
+				makePendingUpdate({
+					id: "pu_x",
+					fileNodeId: "private_x",
+					privatePath: "/f/x.md",
+					staged: "",
+					unstaged: "x",
+					threadIds: ["thread_a"],
+				}),
+			]);
+			useQueriesMock.mockReturnValue({
+				thread_a: makeThread({ id: "thread_a", title: "First chat", lastMessageAt: 10 }),
+				thread_b: makeThread({ id: "thread_b", title: "Second chat", lastMessageAt: 20 }),
+			});
+			render(<FileEditorSidebarPending />);
+
+			// The second chat made /f. Sent with `onlyIfEmpty`, it would go once x.md is gone.
+			fireEvent.click(screen.getByRole("combobox"));
+			fireEvent.click(screen.getByRole("option", { name: /^First chat/ }));
+			fireEvent.click(screen.getByRole("button", { name: "Discard all shown pending changes" }));
+			await waitFor(() =>
+				expect(startReviewMock).toHaveBeenLastCalledWith({
+					kind: "discard",
+					items: [{ pendingUpdateId: "pu_x", reviewedRevision: 1, selectedContentStateId: null }],
 				}),
 			);
 		});
@@ -1340,7 +1465,7 @@ describe("FileEditorSidebarPending", () => {
 		expect(mutationMock).not.toHaveBeenCalled();
 		expect(screen.getByRole("status").textContent).toBe("Started discarding 2 pending changes");
 	});
-	test("renders items sorted by path with full path visible", () => {
+	test("renders items in the server's newest-first order with full path visible", () => {
 		useQueryMock.mockReturnValue([
 			makePendingUpdate({ id: "pu_z", fileNodeId: "node_z", staged: "s", unstaged: "u" }),
 			makePendingUpdate({ id: "pu_a", fileNodeId: "node_a", staged: "s", unstaged: "u" }),
@@ -1355,7 +1480,38 @@ describe("FileEditorSidebarPending", () => {
 		const paths = Array.from(container.querySelectorAll(".FileEditorSidebarPending-item-path-text")).map(
 			(element) => element.textContent,
 		);
-		expect(paths).toEqual(["alpha/intro.md", "zebra/notes.md"]);
+		expect(paths).toEqual(["zebra/notes.md", "alpha/intro.md"]);
+	});
+
+	test("shows a short message on a row too deep to load, and keeps the other rows working", () => {
+		useQueryMock.mockReturnValue([
+			makePendingUpdate({ id: "pu_deep", fileNodeId: "node_deep", staged: "s", unstaged: "u" }),
+			makePendingUpdate({ id: "pu_a", fileNodeId: "node_a", staged: "s", unstaged: "u" }),
+		]);
+		treeNodesMock.mockReturnValue([
+			makeNode({ id: "node_deep", path: "/deep.md" }),
+			makeNode({ id: "node_a", path: "/a.md" }),
+		]);
+		tooDeepPendingUpdateIds.add("pu_deep");
+
+		render(<FileEditorSidebarPending />);
+
+		expect(screen.getByText("This change is too deep to load here. Open it from its folder.")).toBeTruthy();
+		expect(screen.getByRole("button", { name: "Accept changes to /a.md" }).hasAttribute("disabled")).toBe(false);
+		// Accept all needs every shown row's details.
+		expect(screen.getByRole("button", { name: "Accept all shown pending changes" }).hasAttribute("disabled")).toBe(
+			true,
+		);
+	});
+
+	test("shows 500+ when the source has more than 500 changes", () => {
+		useQueryMock.mockReturnValue([makePendingUpdate({ id: "pu_a", fileNodeId: "node_a", staged: "s", unstaged: "u" })]);
+		treeNodesMock.mockReturnValue([makeNode({ id: "node_a", path: "/a.md" })]);
+		summary.override = { count: 500, truncated: true };
+
+		render(<FileEditorSidebarPending />);
+
+		expect(screen.getByRole("combobox", { name: "Pending changes source: All changes, 500+ changes" })).toBeTruthy();
 	});
 
 	test("filters user and shared agent changes by source", () => {
@@ -1405,7 +1561,7 @@ describe("FileEditorSidebarPending", () => {
 			);
 
 		expect(screen.getByRole("combobox", { name: "Pending changes source: All changes, 4 changes" })).toBeTruthy();
-		expect(visiblePaths()).toEqual(["/a.md", "/b.md", "/shared.md", "/user.md"]);
+		expect(visiblePaths()).toEqual(["/user.md", "/shared.md", "/a.md", "/b.md"]);
 		expect(useQueriesMock).toHaveBeenCalledWith({
 			thread_a: { query: "get_pending_source_summary", args: { membershipId: MEMBERSHIP_ID, threadId: "thread_a" } },
 			thread_b: { query: "get_pending_source_summary", args: { membershipId: MEMBERSHIP_ID, threadId: "thread_b" } },
@@ -1414,17 +1570,17 @@ describe("FileEditorSidebarPending", () => {
 		fireEvent.click(screen.getByRole("combobox"));
 		expect(
 			screen.getAllByRole("option").map((option) => option.querySelector(".MySelectItemContentPrimary")?.textContent),
-		).toEqual(["All changes", "Your edits", "Second chat", "First chat"]);
+		).toEqual(["All changes", "Your edits", "First chat", "Second chat"]);
 		expect(screen.getByRole("option", { name: /^Second chat Archived/ })).toBeTruthy();
 		fireEvent.click(screen.getByRole("option", { name: /^Your edits/ }));
 		expect(screen.getByRole("combobox", { name: "Pending changes source: Your edits, 1 change" })).toBeTruthy();
 		expect(visiblePaths()).toEqual(["/user.md"]);
 
 		selectSource(/^First chat/);
-		expect(visiblePaths()).toEqual(["/a.md", "/shared.md"]);
+		expect(visiblePaths()).toEqual(["/shared.md", "/a.md"]);
 
 		selectSource(/^Second chat/);
-		expect(visiblePaths()).toEqual(["/b.md", "/shared.md"]);
+		expect(visiblePaths()).toEqual(["/shared.md", "/b.md"]);
 	});
 
 	test("shows loading, unavailable, and untitled chat source labels", () => {
@@ -1482,13 +1638,13 @@ describe("FileEditorSidebarPending", () => {
 		render(<FileEditorSidebarPending />);
 		fireEvent.click(screen.getByRole("combobox"));
 
-		expect(screen.getByRole("option", { name: /^Loading chat… Agent chat 1$/ })).toBeTruthy();
-		expect(
-			screen.getAllByRole("option", { name: /^Unavailable chat This chat is no longer available 1$/ }),
-		).toHaveLength(2);
+		expect(screen.getByRole("option", { name: /^Loading chat… Agent chat$/ })).toBeTruthy();
+		expect(screen.getAllByRole("option", { name: /^Unavailable chat This chat is no longer available$/ })).toHaveLength(
+			2,
+		);
 		expect(screen.getByRole("option", { name: /^New Chat Last message/ })).toBeTruthy();
 		expect(
-			screen.getByRole("option", { name: /^Your edits Changes you made in the editor, not from a chat 1$/ }),
+			screen.getByRole("option", { name: /^Your edits Changes you made in the editor, not from a chat$/ }),
 		).toBeTruthy();
 	});
 
@@ -2679,6 +2835,34 @@ describe("FileEditorSidebarPending", () => {
 		expect(upsertPendingMock).not.toHaveBeenCalled();
 		expect(actionMock).not.toHaveBeenCalled();
 		expect(mutationMock).not.toHaveBeenCalled();
+	});
+	test.each([
+		{ blocker: "nothing", nodes: {}, disabled: false },
+		{ blocker: "a read-only destination folder", nodes: { node_docs: { canWrite: false } }, disabled: true },
+		{ blocker: "an unreadable destination folder", nodes: { node_docs: null }, disabled: true },
+		{ blocker: "a read-only replaced file", nodes: { node_b: { canWrite: false } }, disabled: true },
+		{ blocker: "a read-only source folder", nodes: { node_src: { canWrite: false } }, disabled: true },
+	])("move Accept is blocked by $blocker", ({ nodes, disabled }) => {
+		useQueryMock.mockReturnValue([
+			makePendingUpdate({
+				id: "pu_move",
+				fileNodeId: "node_a",
+				pendingMove: { destParentId: "node_docs", destName: "b.md", fromPath: "/src/a.md" },
+			}),
+		]);
+		const overrides: Record<string, { canWrite: boolean } | null | undefined> = nodes;
+		treeNodesMock.mockReturnValue(
+			[
+				{ id: "node_src", path: "/src", kind: "folder" as const },
+				{ id: "node_a", path: "/src/a.md", parentId: "node_src" },
+				{ id: "node_docs", path: "/docs", kind: "folder" as const },
+				{ id: "node_b", path: "/docs/b.md", parentId: "node_docs" },
+			].flatMap((node) => (overrides[node.id] === null ? [] : [makeNode({ ...node, ...overrides[node.id] })])),
+		);
+
+		render(<FileEditorSidebarPending />);
+
+		expect(screen.getByText("Accept").closest("button")?.hasAttribute("disabled")).toBe(disabled);
 	});
 	test("a mixed review refusal leaves its move and content untouched", async () => {
 		useQueryMock.mockReturnValue([

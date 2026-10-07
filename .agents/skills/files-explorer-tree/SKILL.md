@@ -134,7 +134,7 @@ Tree-item components:
     (`undefined` until the root's pages answer), `statusByFolderId` (`loading`, `more`, `done`),
     `hoistedIds`, `loadMore(folderId)`, and `sharedRoots` (the "Shared with you" group below).
   - `useFullList(enabled)` loads the whole workspace through `files_nodes.list_tree`. Only search,
-    AI chat mentions, the media picker, and a Pending panel with entry changes use it. It subscribes
+    AI chat mentions, and the media picker use it. It subscribes
     only while an enabled caller is mounted, and it keeps the last complete result during a page split.
 - Each open folder loads its subfolders and its files at once, each kind from 5 streams of 200 rows,
   like the folder table: the open stream (`list_tree_children`, `restricted: false`), the owner's

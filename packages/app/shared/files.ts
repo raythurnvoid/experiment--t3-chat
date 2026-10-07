@@ -696,6 +696,12 @@ export const files_REPLACE_FILE_CONTENT_STALE_MESSAGE =
 export const files_PENDING_UPDATE_STALE_BASE_MESSAGE =
 	"This file changed. Open Review to update the proposal, or discard it.";
 
+/**
+ * A pending row's own view stops when its path is too deep for the read limit. The Pending changes
+ * panel matches this message to show a "too deep" row instead of a generic error.
+ */
+export const files_PENDING_PATH_TOO_DEEP_MESSAGE = "Pending path lookup exceeded its read limit.";
+
 export function files_create_tree_items_list_from_nodes(nodes: files_VisibleTreeNode[]) {
 	return [files_SYNTHETIC_ROOT_FOLDER, ...nodes];
 }

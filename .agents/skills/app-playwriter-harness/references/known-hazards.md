@@ -2551,9 +2551,10 @@ assuming the data is missing.
 ## `list_files_pending_updates` never returns more than five rows
 
 `files_pending_updates.list_files_pending_updates` clamps the page size itself:
-`numItems: Math.min(5, args.paginationOpts.numItems)` in its `paginate` call.
+`numItems: Math.min(args.paginationOpts.numItems, PENDING_LIST_PAGE_MAX_ITEMS)` (5) in its `paginate` call.
 Asking for 50 or 100 still gives you 5. Nothing in the result says it was clamped. A page can also
-hold fewer rows with `isDone: false` when it read 100 proposals first, so always follow the cursor.
+hold fewer rows with `isDone: false` (a row whose proposal just went away is skipped, and a split
+page is empty), so always follow the cursor.
 
 This is dangerous for Accept-all and Discard-all runners, because a review run refuses a partial
 selection. Building the item list from one page selects 5 of, say, 10 proposals, and the run ends
@@ -2566,6 +2567,7 @@ let cursor = null;
 for (let i = 0; i < 40; i++) {
 	const page = await app_convex.query(app_convex_api.files_pending_updates.list_files_pending_updates, {
 		membershipId,
+		listKey: "all", // or "own", or a chat id
 		paginationOpts: { numItems: 5, cursor },
 	});
 	rows.push(...(page?.page ?? []));
@@ -2574,10 +2576,10 @@ for (let i = 0; i < 40; i++) {
 }
 ```
 
-Two more shapes to handle in that loop. A row with `kind: "restricted"` has **no** `entry`, so read
-ids as `row.entry?.pendingUpdate?._id ?? row.pendingUpdateId`. And a review run takes at most 100
-items in `start`; send the rest with `files_pending_update_runs.append_items({membershipId, runId,
-offset, items})` before `seal`. A ready-made runner lives in the task folder as `qa-discard-all.js`;
+Two more things to handle in that loop. A row has only stored fields, so read ids as
+`row.pendingUpdateId` and `row.revision`; its path comes from `get_file_pending_target`. And a
+review run takes at most 100 items in `start`; send the rest with
+`files_pending_update_runs.append_items({membershipId, runId, offset, items})` before `seal`. A ready-made runner lives in the task folder as `qa-discard-all.js`;
 the recipe is in `files.md`.
 
 ## `activities.list_page` requires `section`
@@ -2668,12 +2670,12 @@ sibling queries do not), and it does **not** resume the stopped run — it creat
 own `Retry remaining files` activity, while the old run keeps its `canceled` counters forever. Read
 `list_current` after a retry, not the old run id.
 
-## A `restricted` pending row is transient, not stuck
+## A `Draft unavailable` pending row is transient, not stuck
 
-`list_files_pending_updates` returns `kind: "restricted"` when the visible-files reader cannot
-resolve a pending update's target (`convex/files_pending_updates.ts:6962`). That happens routinely
+A list row's `get_file_pending_target` returns null (the Pending tab shows `Draft unavailable`) when
+the visible-files reader cannot resolve the row's target. That happens routinely
 while a transfer is creating or cleaning up its private nodes, so a cleanup runner can see several
-of them. They carry no `entry`, and a discard run built only from them ends `failed` with
+of them. A discard run built only from them ends `failed` with
 `Some changes still need review.` — which reads like a stuck list. Wait a minute and re-list; they
 resolve themselves. Use `get_files_pending_updates_summary({membershipId})` for a cheap, honest
 count instead of trusting one paging pass taken while a transfer is in flight.
