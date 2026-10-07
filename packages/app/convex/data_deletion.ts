@@ -68,6 +68,13 @@ const WORKSPACE_CONTENT_PURGE_BATCH_SIZE = 100;
 const PENDING_PAYLOAD_PURGE_BATCH_SIZE = 8;
 
 /**
+ * File grants the owner's account deletion deletes in its own transaction, across all owned
+ * organizations together. Each one also costs a share row read and delete in the flush, so huge
+ * organizations cannot delete them all at once. The queued organization purges delete the rest.
+ */
+const OWNER_ACCOUNT_DELETION_FILE_GRANT_BATCH_SIZE = 1000;
+
+/**
  * Delete chat reads at most this many live-work docs per wait check.
  */
 const DELETE_CHAT_WAIT_BATCH_SIZE = 20;
@@ -1484,6 +1491,18 @@ async function db_purge_organization_workspace_content_batch(
 	if (privateIdentityCount > 0) return { done: false, deletedCount: privateIdentityCount };
 	const overlayDocCount = await db_drain_pending_overlay_docs_batch(ctx, args);
 	if (overlayDocCount > 0) return { done: false, deletedCount: overlayDocCount };
+	// The flush deleted the share rows with their grants and nodes above. This last pass deletes the
+	// rest, for example rows a dashboard edit left behind.
+	const shareRows = await ctx.db
+		.query("files_share_rows")
+		.withIndex("by_org_ws_principal_archive_sortName_name", (q) =>
+			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
+		)
+		.take(batchSize);
+	if (shareRows.length > 0) {
+		await Promise.all(shareRows.map((doc) => ctx.db.delete("files_share_rows", doc._id)));
+		return { done: false, deletedCount: shareRows.length };
+	}
 	const releasedPrivateCount = await files_private_storage_db_release_purged_resources(ctx, args);
 	if (releasedPrivateCount > 0) return { done: false, deletedCount: releasedPrivateCount };
 	const pendingReviewVersions = await ctx.db
@@ -1841,15 +1860,17 @@ async function db_queue_organization_deletion_for_owner_account_deletion(
 		organizationOwnerUserId: Id<"users">;
 		organization: Doc<"organizations">;
 		now: number;
+		fileGrantBudget: number;
 	},
 ) {
 	// Do the immediate organization cleanup in parallel:
 	// - create or reuse the organization-scope queue doc;
-	// - remove role and permission docs so the organization is no longer usable;
+	// - remove role docs and permission docs (file grants only up to the budget) so the organization
+	//   is no longer usable;
 	// - remove workspace memberships and keep the affected user ids for default
 	//   tenant checks below.
 	let workspaceFenced = false;
-	const [, assignments, fileGrantsChanged, roles, userIdsPerWorkspace] = await Promise.all([
+	const [, assignments, fileGrants, roles, userIdsPerWorkspace] = await Promise.all([
 		data_deletion_db_request(ctx, {
 			userId: args.organizationOwnerUserId,
 			organizationId: args.organization._id,
@@ -1860,6 +1881,9 @@ async function db_queue_organization_deletion_for_owner_account_deletion(
 			.withIndex("by_organization_workspace_user", (q) => q.eq("organizationId", args.organization._id))
 			.collect()
 			.then((docs) => Promise.all(docs.map((doc) => ctx.db.delete("access_control_role_assignments", doc._id)))),
+		// Delete every grant now, except file grants past the budget: the flush deletes the share row of
+		// each file grant. Public and service account grants go first, since they need no membership.
+		// A user or role grant left behind waits for the queued purge.
 		ctx.db
 			.query("access_control_permission_grants")
 			.withIndex("by_organization_workspace_resource_user_permission", (q) =>
@@ -1867,8 +1891,17 @@ async function db_queue_organization_deletion_for_owner_account_deletion(
 			)
 			.collect()
 			.then(async (docs) => {
-				await Promise.all(docs.map((doc) => ctx.db.delete("access_control_permission_grants", doc._id)));
-				return docs.some((grant) => grant.resourceKind === "file" && grant.principalKind !== "service_account");
+				const fileGrants = docs
+					.filter((grant) => grant.resourceKind === "file")
+					.sort(
+						(a, b) =>
+							Number(a.principalKind === "user" || a.principalKind === "role") -
+							Number(b.principalKind === "user" || b.principalKind === "role"),
+					)
+					.slice(0, args.fileGrantBudget);
+				const deleted = [...docs.filter((grant) => grant.resourceKind !== "file"), ...fileGrants];
+				await Promise.all(deleted.map((doc) => ctx.db.delete("access_control_permission_grants", doc._id)));
+				return fileGrants;
 			}),
 		ctx.db
 			.query("access_control_roles")
@@ -1913,7 +1946,7 @@ async function db_queue_organization_deletion_for_owner_account_deletion(
 	if (
 		workspaceFenced ||
 		assignments.length > 0 ||
-		fileGrantsChanged ||
+		fileGrants.some((grant) => grant.principalKind !== "service_account") ||
 		roles.length > 0 ||
 		userIdsPerWorkspace.some((ids) => ids.length > 0)
 	) {
@@ -1949,6 +1982,8 @@ async function db_queue_organization_deletion_for_owner_account_deletion(
 			now: args.now,
 		});
 	}
+
+	return fileGrants.length;
 }
 
 /**
@@ -3186,13 +3221,16 @@ export const init_user_deletion = internalMutation({
 			.withIndex("by_ownerUser", (q) => q.eq("ownerUserId", args.userId))
 			.collect();
 
+		// All owned organizations share one file grant budget, because they all run in this transaction.
+		let fileGrantBudget = OWNER_ACCOUNT_DELETION_FILE_GRANT_BATCH_SIZE;
 		for (const organization of ownedOrganizations.filter((organization) => !organization.default)) {
 			// This removes access immediately and leaves organization content for the
 			// organization-scope purge worker.
-			await db_queue_organization_deletion_for_owner_account_deletion(ctx, {
+			fileGrantBudget -= await db_queue_organization_deletion_for_owner_account_deletion(ctx, {
 				organizationOwnerUserId: user._id,
 				organization,
 				now,
+				fileGrantBudget,
 			});
 		}
 

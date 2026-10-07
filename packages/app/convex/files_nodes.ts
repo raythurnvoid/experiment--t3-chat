@@ -22,7 +22,7 @@ import {
 	path_tree_prefix_upper_bound,
 	string_prefix_upper_bound,
 } from "../server/server-utils.ts";
-import { compareValues, v, type Infer } from "convex/values";
+import { v, type Infer } from "convex/values";
 import {
 	date_get_week_start_timestamp,
 	date_get_day_start_timestamp,
@@ -56,8 +56,6 @@ import {
 import { files_yjs_COMPACTION_RETRY_MESSAGE, files_yjs_scan_client_update } from "../shared/files-yjs.ts";
 import { files_metadata_apply_set_and_remove, type files_metadata_Entry } from "../shared/files-metadata.ts";
 import {
-	files_sort_field_is_built_in,
-	files_sort_key_of,
 	files_sort_is_valid,
 	files_sort_text_key,
 	type files_sort_Key,
@@ -65,9 +63,9 @@ import {
 } from "../shared/files-sort.ts";
 import {
 	files_table_filter_is_valid,
-	files_table_filter_matches,
 	files_table_filter_order_field,
 	files_table_filter_takes_name_prefix,
+	files_table_metadata_field,
 } from "../shared/files-table.ts";
 import { path_name_of } from "../shared/paths.ts";
 import { Result, Result_all } from "common/errors-as-values-utils.ts";
@@ -129,12 +127,7 @@ import {
 	files_WRITE_POLICY_INVALID_WRITERS_MESSAGE,
 	type files_VisibleEntry,
 } from "../shared/files.ts";
-import {
-	files_metadata_db_get_table_field,
-	files_metadata_db_get_table_node,
-	files_metadata_db_patch_file_scope,
-	files_metadata_db_write_entries,
-} from "./files_metadata.ts";
+import { files_metadata_db_patch_file_scope, files_metadata_db_write_entries } from "./files_metadata.ts";
 import { files_archive_runs_db_start, files_archive_runs_STEP_MAX_NODES } from "./files_archive_runs.ts";
 import { files_subtree_ops_db_start_rebuild, files_subtree_ops_STEP_MAX_NODES } from "./files_subtree_ops.ts";
 import { public_api_service_uploads_db_get_target_by_asset } from "./public_api_service_uploads.ts";
@@ -145,6 +138,8 @@ import {
 	files_pending_nodes_db_resolve_saved_parent,
 } from "./files_pending_nodes.ts";
 import { quotas_db_ensure } from "./quotas.ts";
+import { organizations_membership_lifetimes_db_get } from "./organizations_membership_lifetimes.ts";
+import { files_share_rows_NODE_FIELDS, files_share_rows_principal_key } from "../server/files-share-rows.ts";
 import { quotas } from "../shared/quotas.ts";
 import {
 	r2,
@@ -176,15 +171,14 @@ const MAX_MOVE_DOCUMENT_COUNT = 2000;
 const MAX_MOVE_BYTES = 4 * 1024 * 1024;
 
 const TREE_CHILDREN_MAX_ITEMS = 200;
-
-/**
- * The most restricted children shared with a member that one folder table sorts. The table says so
- * when a folder has more.
- */
-const TREE_CHILDREN_SIDE_ROWS_MAX_ITEMS = 200;
+// The page cap and the split guard of the share pages. Each share row is its own scope, so each one
+// reads its node and checks its access. The worst row is shared with the member's second role and
+// also has an old plugin grant to the member, so the check also reads that grant and the live
+// membership lifetime: 16 index ranges (measured in the cost test under `list_tree_children_shared`),
+// floor(3,000 / 16) = 187.
+const TREE_SHARE_PAGE_MAX_ITEMS = 187;
 
 const TREE_ANCESTORS_MAX_DEPTH = 64;
-const TREE_SHARED_ROOTS_MAX_GRANTS = 500;
 
 function files_path_depth(path: string) {
 	return path === "/" ? 0 : path_extract_segments_from(path).length;
@@ -5577,6 +5571,16 @@ export async function files_nodes_db_preflight_move(
 			patch,
 		});
 
+		// The flush rewrites each share row of a restricted root it moves. The share caps bound the rows
+		// of one node (about 100).
+		if (node.restrictedScopeNodeId === node._id) {
+			for await (const row of ctx.db.query("files_share_rows").withIndex("by_node", (q) => q.eq("nodeId", node._id))) {
+				if (!fits_move_read_budget(readBudget, row) || !fitsWriteBudget(row)) {
+					return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
+				}
+			}
+		}
+
 		const { path, treePath } = fields;
 		const nextArchiveOperationId = archived ? archiveOperationId! : (node.archiveOperationId ?? undefined);
 
@@ -6672,83 +6676,6 @@ async function db_get_readable_tree_node(
 }
 
 /**
- * The restricted scope nodes of the reader's workspace that the reader's `content.read` grants name:
- * their own grants and the grants of their workspace role and organization role. A non-owner can
- * read a restricted scope node only through one of these grants. The owner holds no grants.
- *
- * Each grant list stops at `TREE_SHARED_ROOTS_MAX_GRANTS`, and `truncated` says that one list had
- * more. A grant doc alone does not prove read access, so callers still check every node.
- */
-async function db_list_granted_restricted_scope_nodes(
-	ctx: QueryCtx,
-	args: {
-		reader: {
-			userAuth: { id: Id<"users"> };
-			membership: Doc<"organizations_workspaces_users">;
-			defaultWorkspaceId: Id<"organizations_workspaces">;
-		};
-	},
-) {
-	const { userAuth, membership, defaultWorkspaceId } = args.reader;
-
-	// Grants sit only on restricted scope nodes. Read the member's own grants and the grants of both
-	// roles that apply here: the workspace role and the organization role.
-	const roleRefs = await access_control_db_resolve_role_refs(ctx, {
-		organizationId: membership.organizationId,
-		workspaceId: membership.workspaceId,
-		defaultWorkspaceId,
-		userId: userAuth.id,
-	});
-	const grantLists = await Promise.all([
-		ctx.db
-			.query("access_control_permission_grants")
-			.withIndex("by_user_org_workspace_kind_principal_permission_resource", (q) =>
-				q
-					.eq("userId", userAuth.id)
-					.eq("organizationId", membership.organizationId)
-					.eq("workspaceId", membership.workspaceId)
-					.eq("resourceKind", "file")
-					.eq("principalKind", "user")
-					.eq("permission", "content.read"),
-			)
-			.take(TREE_SHARED_ROOTS_MAX_GRANTS + 1),
-		...roleRefs.map((role) =>
-			ctx.db
-				.query("access_control_permission_grants")
-				.withIndex("by_organization_role_workspace_resource", (q) =>
-					q
-						.eq("organizationId", membership.organizationId)
-						.eq("principalKind", "role")
-						.eq("role", role)
-						.eq("workspaceId", membership.workspaceId)
-						.eq("resourceKind", "file"),
-				)
-				.filter((q) => q.eq(q.field("permission"), "content.read"))
-				.take(TREE_SHARED_ROOTS_MAX_GRANTS + 1),
-		),
-	]);
-
-	const scopeNodeIds = new Set(
-		grantLists
-			.flatMap((grants) => grants.slice(0, TREE_SHARED_ROOTS_MAX_GRANTS))
-			.map((grant) => ctx.db.normalizeId("files_nodes", grant.resourceId))
-			.filter((nodeId) => nodeId !== null),
-	);
-	const scopeNodes = (await Promise.all([...scopeNodeIds].map((nodeId) => ctx.db.get("files_nodes", nodeId)))).filter(
-		(fileNode): fileNode is Doc<"files_nodes"> =>
-			fileNode !== null &&
-			fileNode.organizationId === membership.organizationId &&
-			fileNode.workspaceId === membership.workspaceId &&
-			fileNode.restrictedScopeNodeId === fileNode._id,
-	);
-
-	return {
-		scopeNodes,
-		truncated: grantLists.some((grants) => grants.length > TREE_SHARED_ROOTS_MAX_GRANTS),
-	};
-}
-
-/**
  * Build the public tree rows for nodes the caller may read.
  * Filter the nodes with `access_control_db_filter_readable_file_nodes` first.
  */
@@ -6806,6 +6733,200 @@ async function db_get_tree_rows(
 	);
 }
 
+/**
+ * Whether a page must be split before its per-row reads. A page with more rows than its guard, or a
+ * page the server already marked, returns no rows and asks the client to split it
+ * (`tree_page_split_required`). Check it before any other read: a reactive rerun has no row cap, so
+ * a page can grow far past `numItems`. Only a page with a `splitCursor` can be split, so a page
+ * without one is read as it is. Convex sends `SplitRequired` with a `splitCursor`.
+ * Each guard is floor(3,000 index ranges / index ranges read by the worst row) or lower.
+ */
+function tree_page_needs_split(result: PaginationResult<unknown>, guard: number) {
+	return !!result.splitCursor && (result.page.length > guard || !!result.pageStatus);
+}
+
+function tree_page_split_required(result: PaginationResult<unknown>) {
+	return {
+		page: [],
+		isDone: result.isDone,
+		continueCursor: result.continueCursor,
+		splitCursor: result.splitCursor,
+		pageStatus: "SplitRequired" as const,
+	};
+}
+
+/**
+ * Fail loudly when a stream row is not what its index range promised. The open streams check no
+ * row's access, so a row of another workspace, or a row whose copied scope fields are out of step
+ * with the node, must never show.
+ */
+function check_tree_stream_row(
+	node: Doc<"files_nodes">,
+	args: {
+		membership: Doc<"organizations_workspaces_users">;
+		parentId: Doc<"files_nodes">["parentId"];
+		archived: boolean;
+		restricted: boolean;
+	},
+) {
+	if (
+		node.organizationId !== args.membership.organizationId ||
+		node.workspaceId !== args.membership.workspaceId ||
+		node.parentId !== args.parentId ||
+		(node.archiveOperationId !== null) !== args.archived ||
+		node.isRestrictedScopeRoot !== args.restricted ||
+		(node.restrictedScopeNodeId === node._id) !== args.restricted
+	) {
+		const errorMessage = "files_nodes tree stream row scope is mismatched";
+		const errorData = { nodeId: node._id, parentId: args.parentId };
+		console.error(errorMessage, errorData);
+		throw should_never_happen(errorMessage, errorData);
+	}
+}
+
+/**
+ * Check the sort, filter, name prefix and segment of one folder table stream, and say how to read
+ * it. Returns null when the stream has no rows: an invalid sort, or a `missing` segment that this
+ * order does not have. Throws on an invalid filter or page limit.
+ */
+function get_table_read_args(args: {
+	kind: Doc<"files_nodes">["kind"];
+	sort: Infer<typeof files_sort_validator>;
+	filter: Infer<typeof files_table_filter_validator> | null;
+	namePrefix: string | null;
+	segment: "value" | "missing";
+	paginationOpts: { numItems: number };
+}) {
+	if (!files_sort_is_valid(args.sort)) {
+		return null;
+	}
+	const sort = args.sort[0]!;
+	const filter = args.filter;
+	if (
+		!Number.isInteger(args.paginationOpts.numItems) ||
+		args.paginationOpts.numItems < 1 ||
+		(filter !== null &&
+			(!files_table_filter_is_valid(filter) || sort.field !== files_table_filter_order_field(filter))) ||
+		(args.namePrefix !== null &&
+			(filter === null ||
+				!files_table_filter_takes_name_prefix(filter) ||
+				!files_table_filter_is_valid({ kind: "name", field: "name", op: "starts_with", value: args.namePrefix })))
+	)
+		throw convex_error({ message: "Invalid table filter or page limit." });
+
+	// Only an extension or size sort with no filter keeps the rows with no value in a `missing`
+	// segment. Folders have no size, so the size sort reads them by name in the `value` segment. A
+	// metadata sort hides the rows with no value.
+	if (
+		args.segment === "missing" &&
+		(filter !== null ||
+			(sort.field !== "extension" && sort.field !== "size") ||
+			(sort.field === "size" && args.kind === "folder"))
+	) {
+		return null;
+	}
+
+	// `name starts with` is one range on the stored name key. The upper bound is null only for an
+	// empty key (a prefix of only accent marks), and that prefix matches every name.
+	const namePrefixText = filter?.kind === "name" ? filter.value : args.namePrefix;
+	const namePrefixStart = namePrefixText === null ? null : files_sort_text_key(namePrefixText);
+	const namePrefix =
+		namePrefixStart === null ? null : { start: namePrefixStart, end: string_prefix_upper_bound(namePrefixStart) };
+
+	return { sort, filter, namePrefix, metadataField: files_table_metadata_field({ sort, filter }) };
+}
+
+/**
+ * The `principalKey`s of the share rows a member reads, by `principalIndex`: 0 is the member, 1 and
+ * 2 are their workspace role and organization role (`access_control_db_resolve_role_refs`). A role
+ * they do not have has no key.
+ */
+async function db_get_share_principal_keys(
+	ctx: QueryCtx,
+	reader: {
+		userAuth: { id: Id<"users"> };
+		membership: Doc<"organizations_workspaces_users">;
+		defaultWorkspaceId: Id<"organizations_workspaces">;
+	},
+) {
+	const roleRefs = await access_control_db_resolve_role_refs(ctx, {
+		organizationId: reader.membership.organizationId,
+		workspaceId: reader.membership.workspaceId,
+		defaultWorkspaceId: reader.defaultWorkspaceId,
+		userId: reader.userAuth.id,
+	});
+	return [
+		files_share_rows_principal_key("user", reader.userAuth.id),
+		...roleRefs.map((role) => files_share_rows_principal_key("role", role)),
+	];
+}
+
+/**
+ * The tree rows of one page of share rows. A share row is a copy, so each row keeps a full access
+ * check: its node must be a restricted root of the reader's workspace and readable by the reader.
+ * Its copied fields must match the node, so the node is still where the index range read it: under
+ * the read's folder, and active or archived, as the read asks. A row of a plugin grant must also
+ * carry the member's live membership lifetime: after a re-invite the old grant reads nothing, even
+ * while another grant keeps the node readable. Rows that fail are dropped, so a page can be short.
+ */
+async function db_get_share_tree_rows(
+	ctx: QueryCtx,
+	args: {
+		reader: {
+			userAuth: { id: Id<"users"> };
+			membership: Doc<"organizations_workspaces_users">;
+			hasWorkspaceRead: boolean;
+		};
+		shareRows: Doc<"files_share_rows">[];
+	},
+) {
+	const { userAuth, membership, hasWorkspaceRead } = args.reader;
+	const liveLifetime = args.shareRows.some((shareRow) => shareRow.externalPluginMembershipLifetime !== null)
+		? await organizations_membership_lifetimes_db_get(ctx, { workspaceId: membership.workspaceId, userId: userAuth.id })
+		: null;
+
+	const pairs = (
+		await Promise.all(
+			args.shareRows.map(async (shareRow) => ({ shareRow, node: await ctx.db.get("files_nodes", shareRow.nodeId) })),
+		)
+	).filter((pair): pair is { shareRow: Doc<"files_share_rows">; node: Doc<"files_nodes"> } => {
+		const { shareRow, node } = pair;
+		if (node === null) {
+			return false;
+		}
+		// The overlay flush keeps the copy in step with the node. A copy out of step is a bug, and its
+		// row would show in the wrong folder, segment or order.
+		if (
+			shareRow.nodeCreationTime !== node._creationTime ||
+			files_share_rows_NODE_FIELDS.some((field) => shareRow[field] !== (node[field] ?? null))
+		) {
+			console.error("files_share_rows copy is mismatched", { shareRowId: shareRow._id, nodeId: node._id });
+			return false;
+		}
+		return (
+			node.organizationId === membership.organizationId &&
+			node.workspaceId === membership.workspaceId &&
+			node.restrictedScopeNodeId === node._id &&
+			(shareRow.externalPluginMembershipLifetime === null ||
+				(liveLifetime?.active === true && liveLifetime.lifetime === shareRow.externalPluginMembershipLifetime))
+		);
+	});
+	const readableIds = new Set(
+		(
+			await access_control_db_filter_readable_file_nodes(ctx, {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				userId: userAuth.id,
+				nodes: pairs.map((pair) => pair.node),
+				hasWorkspaceRead,
+			})
+		).map((node) => node._id),
+	);
+	const kept = pairs.filter((pair) => readableIds.has(pair.node._id));
+	const treeRows = await db_get_tree_rows(ctx, { userAuth, membership, fileNodes: kept.map((pair) => pair.node) });
+	return kept.map((pair, index) => ({ shareRow: pair.shareRow, treeRow: treeRows[index]! }));
+}
+
 export const list_tree = query({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
@@ -6861,8 +6982,15 @@ export const list_tree = query({
 /**
  * One page of the children of one folder, of one kind. The Files tree loads each open folder with it.
  *
- * The index sorts `"file"` before `"folder"`, and one query can run only one `paginate()`. So the
- * client pages the folders of a folder first, then its files, each by name in byte order.
+ * Saved rows only: UI lists never show drafts. Drafts show in the Pending tab and to the agent
+ * (files-explorer-tree skill, "Saved-only lists").
+ *
+ * Like the folder table, each kind has an open stream and a restricted twin. The open stream reads
+ * the children that are not their own restricted root. When the caller may read the folder, every
+ * such child is readable, so no row is dropped after paging. Only the owner reads the restricted
+ * twin. A member gets the restricted children shared with them from `list_tree_children_shared`.
+ * The client merges the streams. Active rows come in the folder table's name order `(sortName,
+ * name)`, archived rows in `(archiveOperationId, sortName, name)` order.
  */
 export const list_tree_children = query({
 	args: {
@@ -6870,6 +6998,10 @@ export const list_tree_children = query({
 		parentId: doc(app_convex_schema, "files_nodes").fields.parentId,
 		kind: doc(app_convex_schema, "files_nodes").fields.kind,
 		archived: v.boolean(),
+		/**
+		 * Read the children that are their own restricted root. Only the owner gets rows.
+		 */
+		restricted: v.boolean(),
 		paginationOpts: paginationOptsValidator,
 	},
 	returns: paginationResultValidator(
@@ -6891,12 +7023,17 @@ export const list_tree_children = query({
 		if (!reader) {
 			return refused;
 		}
-		const { userAuth, membership, hasWorkspaceRead } = reader;
+		const { userAuth, membership } = reader;
+
+		// Only the owner reads the restricted twin. Refuse before the folder read, so it costs nothing.
+		if (args.restricted && !reader.isOwner) {
+			return refused;
+		}
 
 		// A grant-only member reads no open node, and they get their root rows from
 		// `list_tree_shared_roots` instead.
 		if (args.parentId === files_ROOT_ID) {
-			if (!hasWorkspaceRead) {
+			if (!reader.hasWorkspaceRead) {
 				return refused;
 			}
 		} else if (!(await db_get_readable_tree_node(ctx, { reader, nodeId: args.parentId }))) {
@@ -6910,37 +7047,47 @@ export const list_tree_children = query({
 		const result = args.archived
 			? await ctx.db
 					.query("files_nodes")
-					.withIndex("by_organization_workspace_parent_kind_archiveOperation_name", (q) =>
+					.withIndex("by_org_ws_parent_kind_restricted_archive_sortName_name", (q) =>
 						q
 							.eq("organizationId", membership.organizationId)
 							.eq("workspaceId", membership.workspaceId)
 							.eq("parentId", args.parentId)
 							.eq("kind", args.kind)
+							.eq("isRestrictedScopeRoot", args.restricted)
 							.gt("archiveOperationId", null),
 					)
 					.paginate(paginationOpts)
 			: await ctx.db
 					.query("files_nodes")
-					.withIndex("by_organization_workspace_parent_archiveOperation_kind_name", (q) =>
+					.withIndex("by_org_ws_parent_archive_restricted_kind_sortName_name", (q) =>
 						q
 							.eq("organizationId", membership.organizationId)
 							.eq("workspaceId", membership.workspaceId)
 							.eq("parentId", args.parentId)
 							.eq("archiveOperationId", null)
+							.eq("isRestrictedScopeRoot", args.restricted)
 							.eq("kind", args.kind),
 					)
 					.paginate(paginationOpts);
 
-		const fileNodes = await access_control_db_filter_readable_file_nodes(ctx, {
-			organizationId: membership.organizationId,
-			workspaceId: membership.workspaceId,
-			userId: userAuth.id,
-			nodes: result.page,
-			hasWorkspaceRead,
-		});
+		// An open row needs no read: the open children of a folder share one access scope, and the tree
+		// rows check each scope once. An owner restricted row is its own scope, so it checks access:
+		// 2 reads (the user and the organization; the owner reads no grant), floor(3,000 / 2) = 1,500,
+		// and the guard is 1,000, like the folder table.
+		if (args.restricted && tree_page_needs_split(result, 1000)) {
+			return tree_page_split_required(result);
+		}
+		for (const node of result.page) {
+			check_tree_stream_row(node, {
+				membership,
+				parentId: args.parentId,
+				archived: args.archived,
+				restricted: args.restricted,
+			});
+		}
 
-		const page = await db_get_tree_rows(ctx, { userAuth, membership, fileNodes });
-		// A page can be empty after access checks or a split. Only isDone ends the folder.
+		const page = await db_get_tree_rows(ctx, { userAuth, membership, fileNodes: result.page });
+		// A page can be empty after a split. Only isDone ends the folder.
 		return { ...result, page };
 	},
 });
@@ -6956,7 +7103,7 @@ export const list_tree_children = query({
  * The open stream reads the children that are not their own restricted root. When the caller may
  * read the folder, every such child is readable. So no row is dropped for access after paging, and a
  * hidden child can never shorten a page. Only the owner reads the restricted stream. A member gets
- * the restricted children shared with them from `list_tree_children_sort_side_rows`.
+ * the restricted children shared with them from `list_tree_children_shared`.
  * This is true for members only; service accounts check each node, so do not reuse this for them.
  */
 export const list_tree_children_sorted = query({
@@ -7013,7 +7160,8 @@ export const list_tree_children_sorted = query({
 		}
 		const { userAuth, membership } = reader;
 
-		// A grant-only member reads no open node. The side rows give them their shared root children.
+		// A grant-only member reads no open node. `list_tree_children_shared` gives them their shared root
+		// children.
 		if (args.parentId === files_ROOT_ID) {
 			if (!reader.hasWorkspaceRead) {
 				return refused;
@@ -7022,37 +7170,14 @@ export const list_tree_children_sorted = query({
 			return refused;
 		}
 
-		if (!files_sort_is_valid(args.sort)) {
+		const table = get_table_read_args(args);
+		if (!table) {
 			return refused;
 		}
-		const sort = args.sort[0]!;
-		const filter = args.filter;
-		if (
-			!Number.isInteger(args.paginationOpts.numItems) ||
-			args.paginationOpts.numItems < 1 ||
-			(filter !== null &&
-				(!files_table_filter_is_valid(filter) || sort.field !== files_table_filter_order_field(filter))) ||
-			(args.namePrefix !== null &&
-				(filter === null ||
-					!files_table_filter_takes_name_prefix(filter) ||
-					!files_table_filter_is_valid({ kind: "name", field: "name", op: "starts_with", value: args.namePrefix })))
-		)
-			throw convex_error({ message: "Invalid table filter or page limit." });
+		const { sort, filter, namePrefix, metadataField } = table;
 
 		// Only the owner reads the restricted twin of each stream.
 		if (args.restricted && !reader.isOwner) {
-			return refused;
-		}
-
-		// Only an extension or size sort with no filter keeps the rows with no value in a `missing`
-		// segment. Folders have no size, so the size sort reads them by name in the `value` segment. A
-		// metadata sort hides the rows with no value.
-		if (
-			args.segment === "missing" &&
-			(filter !== null ||
-				(sort.field !== "extension" && sort.field !== "size") ||
-				(sort.field === "size" && args.kind === "folder"))
-		) {
 			return refused;
 		}
 
@@ -7062,48 +7187,17 @@ export const list_tree_children_sorted = query({
 		};
 		const direction = sort.direction;
 
-		// `name starts with` is one range on the stored name key. The upper bound is null only for an
-		// empty key (a prefix of only accent marks), and that prefix matches every name.
-		const namePrefixText = filter?.kind === "name" ? filter.value : args.namePrefix;
-		const namePrefixStart = namePrefixText === null ? null : files_sort_text_key(namePrefixText);
-		const namePrefix =
-			namePrefixStart === null ? null : { start: namePrefixStart, end: string_prefix_upper_bound(namePrefixStart) };
-
-		// A page with more rows than its guard, or a page the server already marked, returns no rows and
-		// asks the client to split it. Return before any other read: a reactive rerun has no row cap, so
-		// a page can grow far past `numItems`. Only a page with a `splitCursor` can be split, so a page
-		// without one is read as it is. Convex sends `SplitRequired` with a `splitCursor`.
-		// Each guard is floor(3,000 index ranges / index ranges read by the worst row) or lower.
-		const needs_split = (result: PaginationResult<unknown>, guard: number) =>
-			!!result.splitCursor && (result.page.length > guard || !!result.pageStatus);
-		const split_required = (result: PaginationResult<unknown>) => ({
-			page: [],
-			isDone: result.isDone,
-			continueCursor: result.continueCursor,
-			splitCursor: result.splitCursor,
-			pageStatus: "SplitRequired" as const,
-		});
-
 		const table_page = async (
 			result: PaginationResult<unknown>,
 			rows: Array<{ node: Doc<"files_nodes">; sortKey: files_sort_Key | null }>,
 		) => {
-			// The open stream checks no row's access, so a row of another workspace, or a row whose copied
-			// scope fields are out of step with the node, must fail loudly, not show.
 			for (const { node } of rows) {
-				if (
-					node.organizationId !== membership.organizationId ||
-					node.workspaceId !== membership.workspaceId ||
-					node.parentId !== args.parentId ||
-					node.archiveOperationId !== null ||
-					node.isRestrictedScopeRoot !== args.restricted ||
-					(node.restrictedScopeNodeId === node._id) !== args.restricted
-				) {
-					const errorMessage = "files_nodes table row scope is mismatched";
-					const errorData = { nodeId: node._id, parentId: args.parentId };
-					console.error(errorMessage, errorData);
-					throw should_never_happen(errorMessage, errorData);
-				}
+				check_tree_stream_row(node, {
+					membership,
+					parentId: args.parentId,
+					archived: false,
+					restricted: args.restricted,
+				});
 			}
 			const treeRows = await db_get_tree_rows(ctx, { userAuth, membership, fileNodes: rows.map((row) => row.node) });
 			return {
@@ -7115,15 +7209,6 @@ export const list_tree_children_sorted = query({
 				}),
 			};
 		};
-
-		const metadataField =
-			filter !== null
-				? filter.kind === "text"
-					? filter.field
-					: null
-				: files_sort_field_is_built_in(sort.field)
-					? null
-					: sort.field;
 
 		// A metadata or frontmatter key: its committed field docs carry the node's sort fields.
 		if (metadataField !== null) {
@@ -7163,8 +7248,8 @@ export const list_tree_children_sorted = query({
 			// guard is 1,800 so the node bytes stay small too. An owner restricted row is its own scope,
 			// so it also checks access: 2 reads (the user and the organization; the owner reads no grant).
 			// That is 3 reads, floor(3,000 / 3) = 1,000, and the guard is 700.
-			if (needs_split(result, args.restricted ? 700 : 1800)) {
-				return split_required(result);
+			if (tree_page_needs_split(result, args.restricted ? 700 : 1800)) {
+				return tree_page_split_required(result);
 			}
 
 			const rows = await Promise.all(
@@ -7402,8 +7487,8 @@ export const list_tree_children_sorted = query({
 		// rows check each scope once. An owner restricted row is its own scope, so it checks access:
 		// 2 reads (the user and the organization; the owner reads no grant), floor(3,000 / 2) = 1,500,
 		// and the guard is 1,000.
-		if (args.restricted && needs_split(stream.result, 1000)) {
-			return split_required(stream.result);
+		if (args.restricted && tree_page_needs_split(stream.result, 1000)) {
+			return tree_page_split_required(stream.result);
 		}
 
 		return await table_page(
@@ -7414,203 +7499,404 @@ export const list_tree_children_sorted = query({
 });
 
 /**
- * The restricted children of one folder that a member may read, for the folder table. A member reads
- * no restricted stream of `list_tree_children_sorted`, so the table merges these saved rows into its
- * sorted pages. The owner reads the restricted streams and gets no rows here.
+ * One page of one share stream of one folder's children: the restricted children shared with a
+ * member, for the folder table and the Files tree. It takes the args of `list_tree_children_sorted`
+ * and reads the same order from the share rows (`files_share_rows`), so the client merges it with
+ * the open stream.
+ *
+ * A share row is one copy per share (one grant to a user or a role), not one per member who can
+ * read the node. A share to a role stays one row however many members hold the role, and a role
+ * change writes nothing. So a member reads up to 3 streams per kind and segment, by
+ * `principalIndex` (`db_get_share_principal_keys`), and the client drops a node it already has.
+ *
+ * The owner reads every restricted child in the restricted twin, so the owner gets an empty page.
+ * Metadata sorts and filters have no share copy, so they get an empty page too: the folder table
+ * tells members that shared items are not shown then (`has_tree_children_shared`). The archived
+ * sidebar reads the name order only.
  */
-export const list_tree_children_sort_side_rows = query({
+export const list_tree_children_shared = query({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
 		parentId: doc(app_convex_schema, "files_nodes").fields.parentId,
+		kind: doc(app_convex_schema, "files_nodes").fields.kind,
+		archived: v.boolean(),
+		/**
+		 * 0 reads the member's own shares, 1 and 2 the shares of their roles.
+		 */
+		principalIndex: v.union(v.literal(0), v.literal(1), v.literal(2)),
+		sort: files_sort_validator,
+		filter: v.union(files_table_filter_validator, v.null()),
+		namePrefix: v.union(v.string(), v.null()),
+		segment: v.union(v.literal("value"), v.literal("missing")),
+		paginationOpts: paginationOptsValidator,
 	},
-	returns: v.union(
-		v.null(),
+	returns: paginationResultValidator(
 		v.object({
-			rows: v.array(
-				v.object({
-					target: files_pending_target_validator,
-					name: v.string(),
-					kind: doc(app_convex_schema, "files_nodes").fields.kind,
-					createdAt: v.number(),
-					updatedAt: v.number(),
-					contentByteSize: v.union(v.number(), v.null()),
-					updatedBy: v.id("users"),
-					contentType: doc(app_convex_schema, "files_nodes").fields.contentType,
-					treeRow: v.union(
-						v.null(),
-						v.object({
-							...files_node_public_doc_fields,
-							// These four fields cannot contain reserved `GLOBAL` or `SYSTEM` values in the visible tree.
-							organizationId: v.id("organizations"),
-							workspaceId: v.id("organizations_workspaces"),
-							createdBy: v.id("users"),
-							updatedBy: v.id("users"),
-						}),
-					),
-				}),
-			),
+			...files_node_public_doc_fields,
+			// These four fields cannot contain reserved `GLOBAL` or `SYSTEM` values in the visible tree.
+			organizationId: v.id("organizations"),
+			workspaceId: v.id("organizations_workspaces"),
+			createdBy: v.id("users"),
+			updatedBy: v.id("users"),
 			/**
-			 * The table cannot sort every restricted child the caller may see here, so some are not shown.
-			 * The caller gets the first 200 by name. A member whose grant list was cut off gets none.
+			 * The row's index key in the table order. Compare it with `files_sort_compare`.
 			 */
-			tooManyShared: v.boolean(),
+			sortKey: files_sort_row_key_validator,
 		}),
 	),
+	handler: async (
+		ctx,
+		args,
+	): Promise<
+		PaginationResult<Awaited<ReturnType<typeof db_get_tree_rows>>[number] & { sortKey: files_sort_RowKey }>
+	> => {
+		// Saved rows only: UI lists never show drafts. Drafts show in the Pending tab and to the agent
+		// (files-explorer-tree skill, "Saved-only lists").
+
+		// Every refusal gives this one answer, like `list_tree_children`.
+		const refused = { page: [], isDone: true, continueCursor: "" };
+
+		const reader = await files_nodes_db_get_tree_reader(ctx, { membershipId: args.membershipId });
+		if (!reader) {
+			return refused;
+		}
+		const { membership } = reader;
+
+		// Do the refusals that need no folder read first, so they cost nothing.
+		const table = get_table_read_args(args);
+		if (
+			!table ||
+			reader.isOwner ||
+			table.metadataField !== null ||
+			(args.archived && (table.sort.field !== "name" || table.filter !== null || table.namePrefix !== null))
+		) {
+			return refused;
+		}
+		const { sort, filter, namePrefix } = table;
+
+		// The server builds the key from the caller only, never from the client.
+		const principalKey = (await db_get_share_principal_keys(ctx, reader))[args.principalIndex];
+		if (!principalKey) {
+			return refused;
+		}
+
+		// At the root a grant-only member still gets the shares there, because the open streams give
+		// them nothing.
+		if (args.parentId !== files_ROOT_ID && !(await db_get_readable_tree_node(ctx, { reader, nodeId: args.parentId }))) {
+			return refused;
+		}
+
+		const paginationOpts = {
+			...args.paginationOpts,
+			numItems: Math.min(args.paginationOpts.numItems, TREE_SHARE_PAGE_MAX_ITEMS),
+		};
+		const direction = sort.direction;
+
+		const by_name = (row: Doc<"files_share_rows">): files_sort_Key => [row.sortName, row.name];
+		const stream = await (async (/* iife */): Promise<{
+			result: PaginationResult<Doc<"files_share_rows">>;
+			sortKey: (row: Doc<"files_share_rows">) => files_sort_Key | null;
+		}> => {
+			// The archived sidebar: archived rows in `(archiveOperationId, sortName, name)` order.
+			if (args.archived) {
+				return {
+					result: await ctx.db
+						.query("files_share_rows")
+						.withIndex("by_org_ws_principal_parent_kind_archive_sortName_name", (q) =>
+							q
+								.eq("organizationId", membership.organizationId)
+								.eq("workspaceId", membership.workspaceId)
+								.eq("principalKey", principalKey)
+								.eq("parentId", args.parentId)
+								.eq("kind", args.kind)
+								.gt("archiveOperationId", null),
+						)
+						.order(direction)
+						.paginate(paginationOpts),
+					sortKey: (row) => [row.archiveOperationId, row.sortName, row.name],
+				};
+			}
+
+			// The share row copies the node's `_creationTime`, so this order follows the node.
+			if (filter === null ? sort.field === "created" : filter.kind === "date" && filter.field === "created") {
+				const day = filter?.kind === "date" ? filter : null;
+				return {
+					result: await ctx.db
+						.query("files_share_rows")
+						.withIndex("by_org_ws_principal_parent_kind_archive_nodeCreationTime", (q) => {
+							const children = q
+								.eq("organizationId", membership.organizationId)
+								.eq("workspaceId", membership.workspaceId)
+								.eq("principalKey", principalKey)
+								.eq("parentId", args.parentId)
+								.eq("kind", args.kind)
+								.eq("archiveOperationId", null);
+							return day === null
+								? children
+								: day.op === "before"
+									? children.lt("nodeCreationTime", day.start)
+									: day.op === "after"
+										? children.gte("nodeCreationTime", day.end)
+										: children.gte("nodeCreationTime", day.start).lt("nodeCreationTime", day.end);
+						})
+						.order(direction)
+						.paginate(paginationOpts),
+					sortKey: (row) => [row.nodeCreationTime],
+				};
+			}
+
+			if (filter === null ? sort.field === "updated" : filter.kind === "date") {
+				const day = filter?.kind === "date" ? filter : null;
+				return {
+					result: await ctx.db
+						.query("files_share_rows")
+						.withIndex("by_org_ws_principal_parent_kind_archive_updatedAt_sortName_name", (q) => {
+							const children = q
+								.eq("organizationId", membership.organizationId)
+								.eq("workspaceId", membership.workspaceId)
+								.eq("principalKey", principalKey)
+								.eq("parentId", args.parentId)
+								.eq("kind", args.kind)
+								.eq("archiveOperationId", null);
+							return day === null
+								? children
+								: day.op === "before"
+									? children.lt("updatedAt", day.start)
+									: day.op === "after"
+										? children.gte("updatedAt", day.end)
+										: children.gte("updatedAt", day.start).lt("updatedAt", day.end);
+						})
+						.order(direction)
+						.paginate(paginationOpts),
+					sortKey: (row) => [row.updatedAt, row.sortName, row.name],
+				};
+			}
+
+			// An "is" or "missing" filter reads one value. Its rows are in name order, so the name prefix
+			// is one more range.
+			if (filter?.kind === "extension") {
+				const extension = filter.op === "is" ? filter.value.toLowerCase() : null;
+				return {
+					result: await ctx.db
+						.query("files_share_rows")
+						.withIndex("by_org_ws_principal_parent_kind_archive_ext_sortName_name", (q) => {
+							const value = q
+								.eq("organizationId", membership.organizationId)
+								.eq("workspaceId", membership.workspaceId)
+								.eq("principalKey", principalKey)
+								.eq("parentId", args.parentId)
+								.eq("kind", args.kind)
+								.eq("archiveOperationId", null)
+								.eq("lowercaseExtension", extension);
+							if (!namePrefix) return value;
+							const fromName = value.gte("sortName", namePrefix.start);
+							return namePrefix.end === null ? fromName : fromName.lt("sortName", namePrefix.end);
+						})
+						.order(direction)
+						.paginate(paginationOpts),
+					sortKey: by_name,
+				};
+			}
+
+			if (filter?.kind === "size" && (filter.op === "is" || filter.op === "missing")) {
+				const size = filter.op === "is" ? filter.value : null;
+				return {
+					result: await ctx.db
+						.query("files_share_rows")
+						.withIndex("by_org_ws_principal_parent_kind_archive_size_sortName_name", (q) => {
+							const value = q
+								.eq("organizationId", membership.organizationId)
+								.eq("workspaceId", membership.workspaceId)
+								.eq("principalKey", principalKey)
+								.eq("parentId", args.parentId)
+								.eq("kind", args.kind)
+								.eq("archiveOperationId", null)
+								.eq("contentByteSize", size);
+							if (!namePrefix) return value;
+							const fromName = value.gte("sortName", namePrefix.start);
+							return namePrefix.end === null ? fromName : fromName.lt("sortName", namePrefix.end);
+						})
+						.order(direction)
+						.paginate(paginationOpts),
+					sortKey: by_name,
+				};
+			}
+
+			// A size range orders by size. `at_most` leaves out the rows with no size.
+			if (filter?.kind === "size") {
+				const bound = filter.value;
+				return {
+					result: await ctx.db
+						.query("files_share_rows")
+						.withIndex("by_org_ws_principal_parent_kind_archive_size_sortName_name", (q) => {
+							const children = q
+								.eq("organizationId", membership.organizationId)
+								.eq("workspaceId", membership.workspaceId)
+								.eq("principalKey", principalKey)
+								.eq("parentId", args.parentId)
+								.eq("kind", args.kind)
+								.eq("archiveOperationId", null);
+							return filter.op === "at_least"
+								? children.gte("contentByteSize", bound)
+								: children.gt("contentByteSize", null).lte("contentByteSize", bound);
+						})
+						.order(direction)
+						.paginate(paginationOpts),
+					sortKey: (row) => [row.contentByteSize, row.sortName, row.name],
+				};
+			}
+
+			// Null means no extension or no known size. With no filter, those rows are the `missing`
+			// segment, by name.
+			const missing = args.segment === "missing";
+			if (filter === null && sort.field === "extension") {
+				return {
+					result: await ctx.db
+						.query("files_share_rows")
+						.withIndex("by_org_ws_principal_parent_kind_archive_ext_sortName_name", (q) => {
+							const children = q
+								.eq("organizationId", membership.organizationId)
+								.eq("workspaceId", membership.workspaceId)
+								.eq("principalKey", principalKey)
+								.eq("parentId", args.parentId)
+								.eq("kind", args.kind)
+								.eq("archiveOperationId", null);
+							return missing ? children.eq("lowercaseExtension", null) : children.gt("lowercaseExtension", null);
+						})
+						.order(missing ? "asc" : direction)
+						.paginate(paginationOpts),
+					sortKey: (row) => (missing ? null : [row.lowercaseExtension, row.sortName, row.name]),
+				};
+			}
+
+			if (filter === null && sort.field === "size" && args.kind === "file") {
+				return {
+					result: await ctx.db
+						.query("files_share_rows")
+						.withIndex("by_org_ws_principal_parent_kind_archive_size_sortName_name", (q) => {
+							const children = q
+								.eq("organizationId", membership.organizationId)
+								.eq("workspaceId", membership.workspaceId)
+								.eq("principalKey", principalKey)
+								.eq("parentId", args.parentId)
+								.eq("kind", args.kind)
+								.eq("archiveOperationId", null);
+							return missing ? children.eq("contentByteSize", null) : children.gt("contentByteSize", null);
+						})
+						.order(missing ? "asc" : direction)
+						.paginate(paginationOpts),
+					sortKey: (row) => (missing ? null : [row.contentByteSize, row.sortName, row.name]),
+				};
+			}
+
+			// The name order: no filter with a name sort, a `name starts with` filter, and folders in a size
+			// sort (they have no size, so their key is null).
+			return {
+				result: await ctx.db
+					.query("files_share_rows")
+					.withIndex("by_org_ws_principal_parent_kind_archive_sortName_name", (q) => {
+						const children = q
+							.eq("organizationId", membership.organizationId)
+							.eq("workspaceId", membership.workspaceId)
+							.eq("principalKey", principalKey)
+							.eq("parentId", args.parentId)
+							.eq("kind", args.kind)
+							.eq("archiveOperationId", null);
+						if (!namePrefix) return children;
+						const fromName = children.gte("sortName", namePrefix.start);
+						return namePrefix.end === null ? fromName : fromName.lt("sortName", namePrefix.end);
+					})
+					.order(sort.field === "name" ? direction : "asc")
+					.paginate(paginationOpts),
+				sortKey: (row) => (sort.field === "name" ? by_name(row) : null),
+			};
+		})();
+
+		// Each share row reads its node and checks its access (`TREE_SHARE_PAGE_MAX_ITEMS`).
+		if (tree_page_needs_split(stream.result, TREE_SHARE_PAGE_MAX_ITEMS)) {
+			return tree_page_split_required(stream.result);
+		}
+
+		const rows = await db_get_share_tree_rows(ctx, { reader, shareRows: stream.result.page });
+		return {
+			...stream.result,
+			page: rows.map(({ shareRow, treeRow }) => {
+				// The key comes from the share row, the index key of this page, so the merge sees what the
+				// index sorted.
+				const sortKey: files_sort_RowKey = {
+					parts: [stream.sortKey(shareRow)],
+					nameKey: [shareRow.sortName, shareRow.name],
+				};
+				return { ...treeRow, sortKey };
+			}),
+		};
+	},
+});
+
+/**
+ * Whether the caller has a share in this folder, active or archived, as the read asks, for the
+ * folder table: during a metadata sort or filter it tells members that shared items are not shown.
+ * Null when the caller cannot read the folder, which the table shows as a refused folder. The owner
+ * gets false.
+ */
+export const has_tree_children_shared = query({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		parentId: doc(app_convex_schema, "files_nodes").fields.parentId,
+		archived: v.boolean(),
+	},
+	returns: v.union(v.boolean(), v.null()),
 	handler: async (ctx, args) => {
 		const reader = await files_nodes_db_get_tree_reader(ctx, { membershipId: args.membershipId });
 		if (!reader) {
 			return null;
 		}
-		const { userAuth, membership } = reader;
-
-		// Check the folder like `list_tree_children_sorted`. At the root a grant-only member still gets
-		// the restricted children shared with them, because the sorted pages give them nothing there.
+		// The same gate as `list_tree_children_shared`. The owner check comes after it, because the
+		// owner's false is not a refusal: the table reads null as a refused folder.
 		if (args.parentId !== files_ROOT_ID && !(await db_get_readable_tree_node(ctx, { reader, nodeId: args.parentId }))) {
 			return null;
 		}
-
 		if (reader.isOwner) {
-			return { rows: [], tooManyShared: false };
+			return false;
 		}
 
-		// A member whose grant list was cut off may miss candidates, so show them none. The hidden rows
-		// share the name order, so a cut-off after the first 200 would move when a hidden row is added
-		// and leak that it exists.
-		const granted = await db_list_granted_restricted_scope_nodes(ctx, { reader });
-		if (granted.truncated) {
-			return { rows: [], tooManyShared: true };
-		}
-
-		// A member reads a restricted child only through a grant on it, so walk the candidates from the
-		// member's own grants in name order. A candidate they cannot read is skipped, such as a plugin
-		// grant whose membership ended. So the first 200 shown rows never depend on a row hidden from the
-		// member. The walk stops when a 201st row would show, so a folder with thousands of private
-		// folders costs about 200 checks.
-		const candidates = granted.scopeNodes
-			.filter((fileNode) => fileNode.parentId === args.parentId && fileNode.archiveOperationId === null)
-			.sort((left, right) => compareValues([left.sortName, left.name], [right.sortName, right.name]));
-		const nodes: Doc<"files_nodes">[] = [];
-		let tooManyShared = false;
-		for (const candidate of candidates) {
-			const node = await db_get_readable_tree_node(ctx, { reader, nodeId: candidate._id });
-			if (!node) {
-				continue;
+		// One `.first()` per principal and kind. The answer only picks a note that names no item, so it
+		// reads no node and checks no access. A plugin grant row with an old membership lifetime reads
+		// nothing, like in `db_get_share_tree_rows`. Such rows live only while a drain deletes them, and
+		// reading past one would be a scan, so the answer can be a short false "no" then.
+		let liveLifetime: Awaited<ReturnType<typeof organizations_membership_lifetimes_db_get>> | undefined;
+		for (const principalKey of await db_get_share_principal_keys(ctx, reader)) {
+			for (const kind of ["folder", "file"] as const) {
+				const shareRow = await ctx.db
+					.query("files_share_rows")
+					.withIndex("by_org_ws_principal_parent_kind_archive_sortName_name", (q) => {
+						const children = q
+							.eq("organizationId", reader.membership.organizationId)
+							.eq("workspaceId", reader.membership.workspaceId)
+							.eq("principalKey", principalKey)
+							.eq("parentId", args.parentId)
+							.eq("kind", kind);
+						return args.archived ? children.gt("archiveOperationId", null) : children.eq("archiveOperationId", null);
+					})
+					.first();
+				if (!shareRow) {
+					continue;
+				}
+				if (shareRow.externalPluginMembershipLifetime === null) {
+					return true;
+				}
+				if (liveLifetime === undefined) {
+					liveLifetime = await organizations_membership_lifetimes_db_get(ctx, {
+						workspaceId: reader.membership.workspaceId,
+						userId: reader.userAuth.id,
+					});
+				}
+				if (liveLifetime?.active === true && liveLifetime.lifetime === shareRow.externalPluginMembershipLifetime) {
+					return true;
+				}
 			}
-			if (nodes.length === TREE_CHILDREN_SIDE_ROWS_MAX_ITEMS) {
-				tooManyShared = true;
-				break;
-			}
-			nodes.push(node);
 		}
-
-		const treeRows = await db_get_tree_rows(ctx, { userAuth, membership, fileNodes: nodes });
-		return {
-			rows: treeRows.map((treeRow, index) => {
-				const node = nodes[index]!;
-				return {
-					target: { kind: "saved" as const, id: node._id },
-					name: node.name,
-					kind: node.kind,
-					createdAt: node._creationTime,
-					updatedAt: node.updatedAt,
-					contentByteSize: node.kind === "folder" ? null : node.contentByteSize,
-					// The tree row refuses the reserved SYSTEM author, so its `updatedBy` is a user.
-					updatedBy: treeRow.updatedBy,
-					contentType: node.contentType,
-					treeRow,
-				};
-			}),
-			tooManyShared,
-		};
-	},
-});
-
-/**
- * One fresh sort key for a readable saved child of this folder. All parts come from this same read.
- * The table is saved-only, so a private draft gets null.
- */
-export const get_table_sort_key = query({
-	args: {
-		membershipId: v.id("organizations_workspaces_users"),
-		parentId: doc(app_convex_schema, "files_nodes").fields.parentId,
-		target: files_pending_target_validator,
-		sort: files_sort_validator,
-	},
-	returns: v.union(files_sort_row_key_validator, v.null()),
-	handler: async (ctx, args): Promise<files_sort_RowKey | null> => {
-		const reader = await files_nodes_db_get_tree_reader(ctx, { membershipId: args.membershipId });
-		if (!reader || !files_sort_is_valid(args.sort)) return null;
-		const node = await files_metadata_db_get_table_node(ctx, { ...reader, target: args.target });
-		if (!node || node.parentId !== args.parentId) return null;
-
-		const clause = args.sort[0]!;
-		const metadataParts = new Map<string, string | null>();
-		if (!files_sort_field_is_built_in(clause.field)) {
-			const fieldDoc = await files_metadata_db_get_table_field(ctx, { fileNode: node, field: clause.field });
-			metadataParts.set(clause.field, fieldDoc?.sortValue ?? null);
-		}
-		return files_sort_key_of({
-			sort: args.sort,
-			facts: {
-				kind: node.kind,
-				name: node.name,
-				createdAt: node._creationTime,
-				updatedAt: node.updatedAt,
-				extension: node.lowercaseExtension,
-				contentByteSize: node.contentByteSize,
-			},
-			metadataParts,
-		});
-	},
-});
-
-/**
- * Whether a readable saved child of this folder matches the table filter and the name prefix. The
- * table is saved-only, so a private draft gets null.
- */
-export const get_table_filter_match = query({
-	args: {
-		membershipId: v.id("organizations_workspaces_users"),
-		parentId: doc(app_convex_schema, "files_nodes").fields.parentId,
-		target: files_pending_target_validator,
-		filter: files_table_filter_validator,
-		/**
-		 * `name starts with` next to an "is" filter, or null. See `list_tree_children_sorted`.
-		 */
-		namePrefix: v.union(v.string(), v.null()),
-	},
-	returns: v.union(v.object({ matches: v.boolean() }), v.null()),
-	handler: async (ctx, args) => {
-		const reader = await files_nodes_db_get_tree_reader(ctx, { membershipId: args.membershipId });
-		if (!reader) return null;
-		const namePrefixFilter =
-			args.namePrefix === null ? null : ({ kind: "name", field: "name", op: "starts_with", value: args.namePrefix } as const);
-		if (
-			!files_table_filter_is_valid(args.filter) ||
-			(namePrefixFilter !== null &&
-				(!files_table_filter_takes_name_prefix(args.filter) || !files_table_filter_is_valid(namePrefixFilter)))
-		)
-			throw convex_error({ message: "Invalid table filter." });
-		const node = await files_metadata_db_get_table_node(ctx, { ...reader, target: args.target });
-		if (!node || node.parentId !== args.parentId) return null;
-
-		const fieldDoc =
-			args.filter.kind === "text"
-				? await files_metadata_db_get_table_field(ctx, { fileNode: node, field: args.filter.field })
-				: null;
-		const scalar = fieldDoc?.sortDisplayValue ?? null;
-		const facts = {
-			name: node.name,
-			createdAt: node._creationTime,
-			updatedAt: node.updatedAt,
-			extension: node.lowercaseExtension,
-			contentByteSize: node.kind === "folder" ? null : node.contentByteSize,
-		};
-		return {
-			matches:
-				files_table_filter_matches({ filter: args.filter, facts, scalar }) &&
-				(namePrefixFilter === null || files_table_filter_matches({ filter: namePrefixFilter, facts })),
-		};
+		return false;
 	},
 });
 
@@ -7692,85 +7978,67 @@ export const get_tree_ancestors = query({
 });
 
 /**
- * Restricted folders and files the caller may read while the folder above them is hidden.
+ * The "Shared with you" group of the Files tree: every share of the caller, one page of one
+ * principal (see `list_tree_children_shared`). The client merges the 3 principal streams and drops
+ * a node it already has.
  *
- * The tree shows these at the root, so a member can reach what was shared with them. A root child
- * is listed here only when the caller has no workspace-wide read, because otherwise the root page
- * of `list_tree_children` already has it. The owner reads everything, so the owner gets nothing.
+ * Saved rows only. A share inside a folder the member can open shows here and in its folder. The
+ * owner reads everything, so the owner gets nothing. Active rows come in `(sortName, name)` order,
+ * archived rows in `(archiveOperationId, sortName, name)` order.
  */
 export const list_tree_shared_roots = query({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
 		archived: v.boolean(),
+		/**
+		 * 0 reads the member's own shares, 1 and 2 the shares of their roles.
+		 */
+		principalIndex: v.union(v.literal(0), v.literal(1), v.literal(2)),
+		paginationOpts: paginationOptsValidator,
 	},
-	returns: v.object({
-		rows: v.array(
-			v.object({
-				...files_node_public_doc_fields,
-				// These four fields cannot contain reserved `GLOBAL` or `SYSTEM` values in the visible tree.
-				organizationId: v.id("organizations"),
-				workspaceId: v.id("organizations_workspaces"),
-				createdBy: v.id("users"),
-				updatedBy: v.id("users"),
-			}),
-		),
-		truncated: v.boolean(),
-	}),
+	returns: paginationResultValidator(
+		v.object({
+			...files_node_public_doc_fields,
+			// These four fields cannot contain reserved `GLOBAL` or `SYSTEM` values in the visible tree.
+			organizationId: v.id("organizations"),
+			workspaceId: v.id("organizations_workspaces"),
+			createdBy: v.id("users"),
+			updatedBy: v.id("users"),
+		}),
+	),
 	handler: async (ctx, args) => {
+		const refused = { page: [], isDone: true, continueCursor: "" };
+
 		const reader = await files_nodes_db_get_tree_reader(ctx, { membershipId: args.membershipId });
 		if (!reader || reader.isOwner) {
-			return { rows: [], truncated: false };
+			return refused;
 		}
-		const { userAuth, membership, hasWorkspaceRead } = reader;
+		const principalKey = (await db_get_share_principal_keys(ctx, reader))[args.principalIndex];
+		if (!principalKey) {
+			return refused;
+		}
 
-		const granted = await db_list_granted_restricted_scope_nodes(ctx, { reader });
-		if (granted.truncated) {
-			console.warn("Shared tree roots reached the grant limit", {
-				membershipId: membership._id,
-				limit: TREE_SHARED_ROOTS_MAX_GRANTS,
+		const result = await ctx.db
+			.query("files_share_rows")
+			.withIndex("by_org_ws_principal_archive_sortName_name", (q) => {
+				const shares = q
+					.eq("organizationId", reader.membership.organizationId)
+					.eq("workspaceId", reader.membership.workspaceId)
+					.eq("principalKey", principalKey);
+				return args.archived ? shares.gt("archiveOperationId", null) : shares.eq("archiveOperationId", null);
+			})
+			.paginate({
+				...args.paginationOpts,
+				numItems: Math.min(args.paginationOpts.numItems, TREE_SHARE_PAGE_MAX_ITEMS),
 			});
+
+		// The same per-row reads as a share stream of `list_tree_children_shared`, so the same guard.
+		if (tree_page_needs_split(result, TREE_SHARE_PAGE_MAX_ITEMS)) {
+			return tree_page_split_required(result);
 		}
 
-		const scopeNodes = granted.scopeNodes.filter(
-			(fileNode) => (fileNode.archiveOperationId !== null) === args.archived,
-		);
-
-		// A grant doc alone does not prove read access. The filter also checks plugin membership
-		// lifetimes and dead scopes, so every candidate goes through it again.
-		const readableScopeNodes = await access_control_db_filter_readable_file_nodes(ctx, {
-			organizationId: membership.organizationId,
-			workspaceId: membership.workspaceId,
-			userId: userAuth.id,
-			nodes: scopeNodes,
-			hasWorkspaceRead,
-		});
-
-		const parents = await Promise.all(
-			readableScopeNodes.map(async (fileNode) =>
-				fileNode.parentId === files_ROOT_ID ? null : await ctx.db.get("files_nodes", fileNode.parentId),
-			),
-		);
-		const readableParentIds = new Set(
-			(
-				await access_control_db_filter_readable_file_nodes(ctx, {
-					organizationId: membership.organizationId,
-					workspaceId: membership.workspaceId,
-					userId: userAuth.id,
-					nodes: parents.filter((parent) => parent !== null),
-					hasWorkspaceRead,
-				})
-			).map((parent) => parent._id),
-		);
-
-		// Keep a node only when the tree cannot reach it through its parent.
-		const sharedRoots = readableScopeNodes.filter((fileNode) =>
-			fileNode.parentId === files_ROOT_ID ? !hasWorkspaceRead : !readableParentIds.has(fileNode.parentId),
-		);
-
-		return {
-			rows: await db_get_tree_rows(ctx, { userAuth, membership, fileNodes: sharedRoots }),
-			truncated: granted.truncated,
-		};
+		const rows = await db_get_share_tree_rows(ctx, { reader, shareRows: result.page });
+		return { ...result, page: rows.map((row) => row.treeRow) };
 	},
 });
 

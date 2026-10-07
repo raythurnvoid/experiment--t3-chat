@@ -2049,6 +2049,108 @@ describe("backfill_files_pending_overlay", () => {
 	});
 });
 
+describe("backfill_files_share_rows", () => {
+	test("writes the share rows of grants saved before them, deletes a wrong row, and a rerun writes nothing new", async () => {
+		const t = test_convex();
+		component.register(t);
+		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const scope = { organizationId: db.organizationId, workspaceId: db.workspaceId };
+		// Written without the flush, like grants saved before share rows existed.
+		await t.run(async (ctx) => {
+			const insert_folder = async (name: string, restricted: boolean) => {
+				const nodeId = await ctx.db.insert("files_nodes", {
+					...test_mocks.files.base(),
+					...scope,
+					createdBy: db.userId,
+					updatedBy: db.userId,
+					parentId: "root",
+					name,
+					sortName: files_sort_text_key(name),
+					kind: "folder",
+					path: `/${name}`,
+					treePath: `/${name}/`,
+					pathDepth: 1,
+				});
+				if (restricted)
+					await ctx.db.patch("files_nodes", nodeId, { restrictedScopeNodeId: nodeId, isRestrictedScopeRoot: true });
+				return nodeId;
+			};
+			const shared = await insert_folder("shared", true);
+			const open = await insert_folder("open", false);
+			const grant = async (
+				nodeId: Id<"files_nodes">,
+				principal: { principalKind: "user"; userId: Id<"users"> } | { principalKind: "role"; role: "member" },
+				permission: "content.read" | "content.write",
+			) =>
+				await ctx.db.insert("access_control_permission_grants", {
+					...scope,
+					resourceKind: "file",
+					resourceId: String(nodeId),
+					...principal,
+					permission,
+					createdAt: Date.now(),
+					updatedAt: Date.now(),
+				});
+			await grant(shared, { principalKind: "user", userId: db.userId }, "content.read");
+			await grant(shared, { principalKind: "user", userId: db.userId }, "content.write");
+			await grant(shared, { principalKind: "role", role: "member" }, "content.read");
+			// A grant on a folder that is not restricted has no row. This one has a wrong row.
+			const openGrantId = await grant(open, { principalKind: "user", userId: db.userId }, "content.read");
+			await ctx.db.insert("files_share_rows", {
+				...scope,
+				principalKey: `user:${db.userId}`,
+				grantId: openGrantId,
+				nodeId: open,
+				parentId: "root",
+				kind: "folder",
+				archiveOperationId: null,
+				sortName: files_sort_text_key("open"),
+				name: "open",
+				updatedAt: 0,
+				lowercaseExtension: null,
+				contentByteSize: null,
+				nodeCreationTime: 0,
+				externalPluginMembershipLifetime: null,
+			});
+		});
+
+		const check_share_rows = async () => {
+			const differences: string[] = [];
+			let cursor: string | null = null;
+			do {
+				const page: { differences: string[]; cursor: string | null } = await t.query(
+					internal.files_pending_overlay.check_share_rows,
+					{ ...scope, cursor },
+				);
+				differences.push(...page.differences);
+				cursor = page.cursor;
+			} while (cursor);
+			return differences;
+		};
+		const read_rows = () => t.run((ctx) => ctx.db.query("files_share_rows").collect());
+		// Two missing rows, and the wrong row seen from its grant and from itself.
+		expect(await check_share_rows()).toHaveLength(4);
+
+		// Two grants per batch, so the backfill resumes from its cursor.
+		const backfill = () =>
+			t.run((ctx) =>
+				runToCompletion(ctx, components.migrations, internal.migrations.backfill_files_share_rows, {
+					cursor: null,
+					batchSize: 2,
+				}),
+			);
+		await backfill();
+		expect(await check_share_rows()).toEqual([]);
+		const filled = await read_rows();
+		expect(filled.map((row) => row.principalKey).sort()).toEqual(["role:member", `user:${db.userId}`]);
+		expect(filled.map((row) => row.name)).toEqual(["shared", "shared"]);
+
+		// A rerun writes nothing new: the same rows, with the same ids.
+		await backfill();
+		expect(await read_rows()).toEqual(filled);
+	});
+});
+
 describe("backfill_plugins_versions_endpoints_and_collections", () => {
 	test("patches legacy rows with the manifest-omitted defaults and leaves declared rows alone", async () => {
 		const t = test_convex();

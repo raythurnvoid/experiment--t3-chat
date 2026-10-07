@@ -10,14 +10,8 @@ import {
 	files_search_query_parse,
 	files_search_query_to_plans,
 } from "../../shared/files-search-query.ts";
-import {
-	files_sort_compare,
-	files_sort_field_is_built_in,
-	files_sort_key_of,
-	type files_sort_RowKey,
-	type files_sort_Sort,
-} from "../../shared/files-sort.ts";
-import type { files_table_Filter } from "../../shared/files-table.ts";
+import { files_sort_compare, type files_sort_RowKey, type files_sort_Sort } from "../../shared/files-sort.ts";
+import { files_table_metadata_field, type files_table_Filter } from "../../shared/files-table.ts";
 
 /**
  * Page `files_visible.list` 50 entries at a time, and return the entries only when the listing is done.
@@ -106,9 +100,19 @@ export function useFilesVisibleEntries(args: {
 
 const FILES_SORTED_CHILDREN_PAGE_SIZE = 100;
 
-type FilesSortedChildrenRow = NonNullable<
-	FunctionReturnType<typeof app_convex_api.files_nodes.list_tree_children_sort_side_rows>
->["rows"][number] & { sortKey: files_sort_RowKey; segment: "value" | "missing" };
+type FilesSortedChildrenRow = {
+	target: { kind: "saved"; id: app_convex_Id<"files_nodes"> };
+	name: string;
+	kind: app_convex_Doc<"files_nodes">["kind"];
+	createdAt: number;
+	updatedAt: number;
+	contentByteSize: number | null;
+	updatedBy: app_convex_Id<"users">;
+	contentType: app_convex_Doc<"files_nodes">["contentType"];
+	treeRow: FunctionReturnType<typeof app_convex_api.files_nodes.list_tree_children_sorted>["page"][number];
+	sortKey: files_sort_RowKey;
+	segment: "value" | "missing";
+};
 
 /**
  * The state of one stream. `inactive` is a stream that has not started, so it is not loading.
@@ -126,14 +130,19 @@ type FilesSortedChildrenStream = {
  * done has loaded strictly past it. Otherwise the next page of that stream could still hold a row
  * that sorts before it. Rows with the same key keep the stream order: a stream's index is its rank.
  *
+ * With `key`, rows with the same key show once, in the first place. A node shared to the member and
+ * to their role is in two streams, and a node can be in two streams for a moment, for example right
+ * after it became restricted.
+ *
  * Returns the rows to show, and the index of the stream that holds the merge back: the stream that
  * is not done and whose loaded rows end first. Its next page lets more rows show.
  */
-function merge_sorted_streams<Row>(args: {
+export function files_merge_sorted_streams<Row>(args: {
 	streams: Array<{ rows: Row[]; isDone: boolean }>;
 	compare: (a: Row, b: Row) => number;
+	key?: (row: Row) => string;
 }) {
-	const { streams, compare } = args;
+	const { streams, compare, key } = args;
 
 	type RankedRow = { row: Row; rank: number };
 	const compareRanked = (a: RankedRow, b: RankedRow) => compare(a.row, b.row) || a.rank - b.rank;
@@ -153,6 +162,15 @@ function merge_sorted_streams<Row>(args: {
 		)
 		.sort(compareRanked)
 		.map((entry) => entry.row);
+	const seenKeys = new Set<string>();
+	const shownRows = key
+		? rows.filter((row) => {
+				const rowKey = key(row);
+				if (seenKeys.has(rowKey)) return false;
+				seenKeys.add(rowKey);
+				return true;
+			})
+		: rows;
 
 	// A stream with no loaded rows holds back every other row.
 	const blocking = openStreams.reduce<(typeof openStreams)[number] | null>(
@@ -163,7 +181,7 @@ function merge_sorted_streams<Row>(args: {
 		null,
 	);
 
-	return { rows, blockingRank: blocking?.rank ?? null };
+	return { rows: shownRows, blockingRank: blocking?.rank ?? null };
 }
 
 type useFilesSortedChildren_Props = {
@@ -180,7 +198,78 @@ type useFilesSortedChildren_Props = {
 	 * The `file.name:starts_with` value that joins an "is" filter, or null.
 	 */
 	namePrefix: string | null;
+	/**
+	 * Whether the reader owns the organization, or null while that loads. Once known, the streams
+	 * that cannot have rows for this reader are not read.
+	 */
+	isOwner: boolean | null;
 };
+
+/**
+ * The streams of one kind and one segment of the folder table: the open rows, the owner's
+ * restricted rows (empty for everyone else), then the restricted children shared with a member,
+ * one stream per principal (empty for the owner). A metadata sort or filter has no shared rows
+ * (`metadataKey`).
+ */
+function useFilesSortedChildrenSegment(
+	props: useFilesSortedChildren_Props & {
+		kind: app_convex_Doc<"files_nodes">["kind"];
+		segment: FilesSortedChildrenRow["segment"];
+		active: boolean;
+		metadataKey: string | null;
+	},
+): FilesSortedChildrenStream[] {
+	const { membershipId, folderId, sort, filter, namePrefix, kind, segment, active, isOwner } = props;
+	// Skip the streams that cannot have rows. Only the owner reads the restricted twin, and only a
+	// member reads shares, which have no metadata copy. The server refuses them all the same.
+	const skipsTwin = isOwner === false;
+	const skipsShares = props.metadataKey !== null || isOwner === true;
+	const sortedArgs = (restricted: boolean) =>
+		!active || sort === null || (restricted && skipsTwin)
+			? ("skip" as const)
+			: { membershipId, parentId: folderId, kind, sort, filter, namePrefix, restricted, segment };
+	const sharedArgs = (principalIndex: 0 | 1 | 2) =>
+		!active || sort === null || skipsShares
+			? ("skip" as const)
+			: { membershipId, parentId: folderId, kind, archived: false, principalIndex, sort, filter, namePrefix, segment };
+	const options = { initialNumItems: FILES_SORTED_CHILDREN_PAGE_SIZE };
+
+	const open = usePaginatedQuery(app_convex_api.files_nodes.list_tree_children_sorted, sortedArgs(false), options);
+	const restricted = usePaginatedQuery(app_convex_api.files_nodes.list_tree_children_sorted, sortedArgs(true), options);
+	const shared0 = usePaginatedQuery(app_convex_api.files_nodes.list_tree_children_shared, sharedArgs(0), options);
+	const shared1 = usePaginatedQuery(app_convex_api.files_nodes.list_tree_children_shared, sharedArgs(1), options);
+	const shared2 = usePaginatedQuery(app_convex_api.files_nodes.list_tree_children_shared, sharedArgs(2), options);
+
+	return [open, restricted, shared0, shared1, shared2].map((result, index) => ({
+		rows: result.results.map((row): FilesSortedChildrenRow => ({
+			target: { kind: "saved", id: row._id },
+			name: row.name,
+			kind: row.kind,
+			createdAt: row._creationTime,
+			updatedAt: row.updatedAt,
+			contentByteSize: row.contentByteSize,
+			updatedBy: row.updatedBy,
+			contentType: row.contentType,
+			treeRow: row,
+			segment,
+			sortKey: row.sortKey,
+		})),
+		// A skipped `usePaginatedQuery` reports `LoadingFirstPage` forever, so a stream that has not
+		// started must count as inactive, not as loading. A stream skipped because it cannot have rows
+		// is done.
+		status:
+			(index === 1 && skipsTwin) || (index >= 2 && skipsShares)
+				? "done"
+				: !active
+					? "inactive"
+					: result.status === "Exhausted"
+						? "done"
+						: result.status === "CanLoadMore"
+							? "more"
+							: "loading",
+		loadMore: () => result.loadMore(FILES_SORTED_CHILDREN_PAGE_SIZE),
+	}));
+}
 
 /**
  * The saved children of one folder for the folder table, in the order of `sort`. Folders come
@@ -189,8 +278,8 @@ type useFilesSortedChildren_Props = {
  *
  * Each kind reads a value segment and, for file.extension and file.size with no filter, a missing
  * segment with the rows that have no value. A missing segment starts only after its value segment is
- * done. Each segment merges these streams: the open rows, the owner's restricted rows (empty for
- * everyone else), and the restricted children shared with a member (the side rows).
+ * done. Each segment merges the streams of `useFilesSortedChildrenSegment`, and a node that two
+ * streams hold (shared to the member and to their role) shows once.
  *
  * While a page or a new sort loads, `rows` keeps the last settled rows and `isBusy` is true. `sort:
  * null` waits.
@@ -198,7 +287,7 @@ type useFilesSortedChildren_Props = {
 export function useFilesSortedChildren(props: useFilesSortedChildren_Props) {
 	const { membershipId, folderId, sort, filter, namePrefix } = props;
 	const field = sort?.[0]?.field ?? null;
-	const isMetadata = field !== null && !files_sort_field_is_built_in(field);
+	const metadataKey = files_table_metadata_field({ sort: sort?.[0] ?? null, filter });
 	// No folder has a file.extension. A file.size sort keeps folders in the value segment, by name. A
 	// metadata sort has no missing segment: rows without the key are hidden.
 	const hasFolderMissing = filter === null && field === "extension";
@@ -212,178 +301,61 @@ export function useFilesSortedChildren(props: useFilesSortedChildren_Props) {
 	const [wanted, setWanted] = useState({ sortScope, count: FILES_SORTED_CHILDREN_PAGE_SIZE });
 	const wantedCount = wanted.sortScope === sortScope ? wanted.count : FILES_SORTED_CHILDREN_PAGE_SIZE;
 
-	const streamArgs = (
-		kind: app_convex_Doc<"files_nodes">["kind"],
-		segment: FilesSortedChildrenRow["segment"],
-		restricted: boolean,
-	) =>
-		sort === null
-			? ("skip" as const)
-			: { membershipId, parentId: folderId, kind, sort, filter, namePrefix, restricted, segment };
-
 	// Load the first folders page and the first files page together, like the Files tree, so a normal
-	// folder needs one round trip. The restricted streams answer an empty, done page to everyone
-	// except the owner.
-	const folderOpen = usePaginatedQuery(
-		app_convex_api.files_nodes.list_tree_children_sorted,
-		streamArgs("folder", "value", false),
-		{ initialNumItems: FILES_SORTED_CHILDREN_PAGE_SIZE },
-	);
-	const folderRestricted = usePaginatedQuery(
-		app_convex_api.files_nodes.list_tree_children_sorted,
-		streamArgs("folder", "value", true),
-		{ initialNumItems: FILES_SORTED_CHILDREN_PAGE_SIZE },
-	);
-	const fileOpen = usePaginatedQuery(
-		app_convex_api.files_nodes.list_tree_children_sorted,
-		streamArgs("file", "value", false),
-		{ initialNumItems: FILES_SORTED_CHILDREN_PAGE_SIZE },
-	);
-	const fileRestricted = usePaginatedQuery(
-		app_convex_api.files_nodes.list_tree_children_sorted,
-		streamArgs("file", "value", true),
-		{ initialNumItems: FILES_SORTED_CHILDREN_PAGE_SIZE },
-	);
-	const folderMissingOpen = usePaginatedQuery(
-		app_convex_api.files_nodes.list_tree_children_sorted,
-		hasFolderMissing && started.folder ? streamArgs("folder", "missing", false) : "skip",
-		{ initialNumItems: FILES_SORTED_CHILDREN_PAGE_SIZE },
-	);
-	const folderMissingRestricted = usePaginatedQuery(
-		app_convex_api.files_nodes.list_tree_children_sorted,
-		hasFolderMissing && started.folder ? streamArgs("folder", "missing", true) : "skip",
-		{ initialNumItems: FILES_SORTED_CHILDREN_PAGE_SIZE },
-	);
-	const fileMissingOpen = usePaginatedQuery(
-		app_convex_api.files_nodes.list_tree_children_sorted,
-		hasFileMissing && started.file ? streamArgs("file", "missing", false) : "skip",
-		{ initialNumItems: FILES_SORTED_CHILDREN_PAGE_SIZE },
-	);
-	const fileMissingRestricted = usePaginatedQuery(
-		app_convex_api.files_nodes.list_tree_children_sorted,
-		hasFileMissing && started.file ? streamArgs("file", "missing", true) : "skip",
-		{ initialNumItems: FILES_SORTED_CHILDREN_PAGE_SIZE },
-	);
-	// The side rows are the restricted children shared with a member. The owner gets none: the
-	// restricted streams above hold them.
-	const sideScope = JSON.stringify([membershipId, folderId, sort !== null]);
-	const sideRequests = useMemo(() => {
-		const [membershipId, folderId, hasSort] = JSON.parse(sideScope) as [
-			typeof props.membershipId,
-			typeof props.folderId,
-			boolean,
-		];
-		return Object.fromEntries(
-			!hasSort || retrying
-				? []
-				: [
-						[
-							"side",
-							{
-								query: app_convex_api.files_nodes.list_tree_children_sort_side_rows,
-								args: { membershipId, parentId: folderId },
-							},
-						],
-					],
-		);
-	}, [sideScope, retrying]);
-	const sideResponse:
-		| FunctionReturnType<typeof app_convex_api.files_nodes.list_tree_children_sort_side_rows>
-		| Error
-		| undefined = useQueries(sideRequests).side;
-	const sideRows = sideResponse instanceof Error ? undefined : sideResponse;
-	const sideTargetsText = JSON.stringify(sideRows?.rows.map((row) => row.target) ?? []);
-	const sideKeyScope = JSON.stringify([membershipId, folderId, sort]);
-	const sideKeyRequests = useMemo(() => {
-		const [membershipId, folderId, sort] = JSON.parse(sideKeyScope) as [
-			typeof props.membershipId,
-			typeof props.folderId,
-			typeof props.sort,
-		];
-		// A built-in key comes from the row's own facts. A metadata key needs a read.
-		if (sort === null || retrying || files_sort_field_is_built_in(sort[0]!.field)) return {};
-		const targets = JSON.parse(sideTargetsText) as FilesSortedChildrenRow["target"][];
-		return Object.fromEntries(
-			targets.map((target) => [
-				`${target.kind}:${target.id}`,
-				{
-					query: app_convex_api.files_nodes.get_table_sort_key,
-					args: { membershipId, parentId: folderId, target, sort },
-				},
-			]),
-		);
-	}, [sideKeyScope, sideTargetsText, retrying]);
-	const sideKeyResponses = useQueries(sideKeyRequests);
-	const sideKeyResults = Object.keys(sideKeyRequests).map(
-		(key) => sideKeyResponses[key] as files_sort_RowKey | null | Error | undefined,
-	);
-	const sideKeysReady =
-		sideRows !== undefined && sideKeyResults.every((result) => result !== undefined && !(result instanceof Error));
-	const sideKeysFailed = sideKeyResults.some((result) => result instanceof Error);
-	const keyedSideRows: FilesSortedChildrenRow[] = (sideRows?.rows ?? []).flatMap((row) => {
-		if (sort === null) return [];
-		const key = `${row.target.kind}:${row.target.id}`;
-		const dot = row.name.lastIndexOf(".");
-		const sortKey =
-			key in sideKeyRequests
-				? (sideKeyResponses[key] as files_sort_RowKey | null | Error | undefined)
-				: files_sort_key_of({
-						sort,
-						facts: {
-							...row,
-							extension: dot > 0 && dot < row.name.length - 1 ? row.name.slice(dot + 1).toLowerCase() : null,
-						},
-						metadataParts: new Map(),
-					});
-		if (sortKey == null || sortKey instanceof Error) return [];
-		// A metadata sort hides the rows without its key, like the streams do.
-		if (isMetadata && sortKey.parts[0] === null) return [];
-		const segment = row.kind === "folder" && field === "size" ? "value" : sortKey.parts[0] === null ? "missing" : "value";
-		return [{ ...row, sortKey, segment }];
+	// folder needs one round trip.
+	const folderValue = useFilesSortedChildrenSegment({
+		...props,
+		kind: "folder",
+		segment: "value",
+		active: sort !== null,
+		metadataKey,
 	});
-	const sideMatchScope = JSON.stringify([membershipId, folderId, filter, namePrefix, sort !== null]);
-	const sideMatchRequests = useMemo(() => {
-		const [membershipId, folderId, filter, namePrefix, hasSort] = JSON.parse(sideMatchScope) as [
-			typeof props.membershipId,
-			typeof props.folderId,
-			typeof props.filter,
-			typeof props.namePrefix,
-			boolean,
-		];
-		if (filter === null || !hasSort || retrying) return {};
-		const targets = JSON.parse(sideTargetsText) as FilesSortedChildrenRow["target"][];
-		return Object.fromEntries(
-			targets.map((target) => [
-				`${target.kind}:${target.id}`,
-				{
-					query: app_convex_api.files_nodes.get_table_filter_match,
-					args: { membershipId, parentId: folderId, target, filter, namePrefix },
-				},
-			]),
-		);
-	}, [sideMatchScope, sideTargetsText, retrying]);
-	const sideMatchResponses = useQueries(sideMatchRequests);
-	const sideMatchResults = Object.keys(sideMatchRequests).map(
-		(key) =>
-			sideMatchResponses[key] as
-				| FunctionReturnType<typeof app_convex_api.files_nodes.get_table_filter_match>
-				| Error
-				| undefined,
+	const fileValue = useFilesSortedChildrenSegment({
+		...props,
+		kind: "file",
+		segment: "value",
+		active: sort !== null,
+		metadataKey,
+	});
+	const folderMissing = useFilesSortedChildrenSegment({
+		...props,
+		kind: "folder",
+		segment: "missing",
+		active: hasFolderMissing && started.folder,
+		metadataKey,
+	});
+	const fileMissing = useFilesSortedChildrenSegment({
+		...props,
+		kind: "file",
+		segment: "missing",
+		active: hasFileMissing && started.file,
+		metadataKey,
+	});
+
+	// Null when this user cannot read the folder. True when the member has an active share here, so a
+	// metadata sort or filter says that shared items are not shown.
+	const hasSharedRequests = useMemo(
+		(): Parameters<typeof useQueries>[0] =>
+			retrying
+				? {}
+				: {
+						hasShared: {
+							query: app_convex_api.files_nodes.has_tree_children_shared,
+							args: { membershipId, parentId: folderId, archived: false },
+						},
+					},
+		[membershipId, folderId, retrying],
 	);
-	const sideMatchesReady =
-		sideRows !== undefined && sideMatchResults.every((result) => result !== undefined && !(result instanceof Error));
-	const sideMatchesFailed =
-		sideResponse instanceof Error || sideKeysFailed || sideMatchResults.some((result) => result instanceof Error);
-	const refusedSideKeys = new Set([
-		...Object.keys(sideMatchRequests).filter((key) => sideMatchResponses[key] === null),
-		...Object.keys(sideKeyRequests).filter((key) => sideKeyResponses[key] === null),
-	]);
+	const hasShared: boolean | null | Error | undefined = useQueries(hasSharedRequests).hasShared;
 
 	// Keep a missing segment started once its value segment was exhausted. A page split briefly turns the
 	// value segment back to loading, and stopping the missing segment then would throw its pages away.
-	const folderValuesDone = folderOpen.status === "Exhausted" && folderRestricted.status === "Exhausted";
-	const fileValuesDone = fileOpen.status === "Exhausted" && fileRestricted.status === "Exhausted";
-	if ((hasFolderMissing && !started.folder && folderValuesDone) || (hasFileMissing && !started.file && fileValuesDone)) {
+	const folderValuesDone = sort !== null && folderValue.every((stream) => stream.status === "done");
+	const fileValuesDone = sort !== null && fileValue.every((stream) => stream.status === "done");
+	if (
+		(hasFolderMissing && !started.folder && folderValuesDone) ||
+		(hasFileMissing && !started.file && fileValuesDone)
+	) {
 		setStartedMissing({
 			sortScope,
 			folder: started.folder || folderValuesDone,
@@ -391,125 +363,33 @@ export function useFilesSortedChildren(props: useFilesSortedChildren_Props) {
 		});
 	}
 
-	// The side rows win over a main row of the same node while the two queries catch up with each other.
-	const sideKeys = new Set(sideRows?.rows.map((row) => `${row.target.kind}:${row.target.id}`));
-	// A skipped `usePaginatedQuery` reports `LoadingFirstPage` forever, so a stream that has not started
-	// must count as inactive, not as loading.
-	const streamOf = (
-		result: typeof folderOpen,
-		segment: FilesSortedChildrenRow["segment"],
-		active: boolean,
-	): FilesSortedChildrenStream => ({
-		rows: result.results
-			.filter((row) => !sideKeys.has(`saved:${row._id}`))
-			.map(
-				(row): FilesSortedChildrenRow => ({
-					target: { kind: "saved", id: row._id },
-					name: row.name,
-					kind: row.kind,
-					createdAt: row._creationTime,
-					updatedAt: row.updatedAt,
-					contentByteSize: row.contentByteSize,
-					updatedBy: row.updatedBy,
-					contentType: row.contentType,
-					treeRow: row,
-					segment,
-					sortKey: row.sortKey,
-				}),
-			),
-		status: !active
-			? "inactive"
-			: result.status === "Exhausted"
-				? "done"
-				: result.status === "CanLoadMore"
-					? "more"
-					: "loading",
-		loadMore: () => result.loadMore(FILES_SORTED_CHILDREN_PAGE_SIZE),
-	});
-	const sideStreamOf = (
-		kind: app_convex_Doc<"files_nodes">["kind"],
-		segment: FilesSortedChildrenRow["segment"],
-	): FilesSortedChildrenStream => ({
-		rows: keyedSideRows.filter((row) => {
-			const key = `${row.target.kind}:${row.target.id}`;
-			const match: FunctionReturnType<typeof app_convex_api.files_nodes.get_table_filter_match> | Error | undefined =
-				sideMatchResponses[key];
-			return (
-				!refusedSideKeys.has(key) &&
-				row.kind === kind &&
-				row.segment === segment &&
-				(filter === null || (match != null && !(match instanceof Error) && match.matches))
-			);
-		}),
-		// The side rows come in one complete list, so they never hold the merge back.
-		status: "done",
-		loadMore: () => {},
-	});
-
-	// Display order. Each segment merges the open stream, the owner's restricted stream and the side rows.
-	const segments: Array<{ streams: FilesSortedChildrenStream[] }> = [
-		{
-			streams: [
-				streamOf(folderOpen, "value", sort !== null),
-				streamOf(folderRestricted, "value", sort !== null),
-				sideStreamOf("folder", "value"),
-			],
-		},
+	// Display order: folders, then files, each value segment before its missing segment.
+	const segments = [
+		folderValue,
+		...(hasFolderMissing ? [folderMissing] : []),
+		fileValue,
+		...(hasFileMissing ? [fileMissing] : []),
 	];
-	if (hasFolderMissing) {
-		segments.push({
-			streams: [
-				streamOf(folderMissingOpen, "missing", started.folder),
-				streamOf(folderMissingRestricted, "missing", started.folder),
-				sideStreamOf("folder", "missing"),
-			],
-		});
-	}
-	segments.push({
-		streams: [
-			streamOf(fileOpen, "value", sort !== null),
-			streamOf(fileRestricted, "value", sort !== null),
-			sideStreamOf("file", "value"),
-		],
-	});
-	if (hasFileMissing) {
-		segments.push({
-			streams: [
-				streamOf(fileMissingOpen, "missing", started.file),
-				streamOf(fileMissingRestricted, "missing", started.file),
-				sideStreamOf("file", "missing"),
-			],
-		});
-	}
 
 	// Show a segment only once every segment before it is done. Otherwise the next page of an earlier
 	// segment would push the later rows down.
-	const openSegmentIndex = segments.findIndex((segment) => segment.streams.some((stream) => stream.status !== "done"));
+	const openSegmentIndex = segments.findIndex((streams) => streams.some((stream) => stream.status !== "done"));
 	const shownSegments = openSegmentIndex === -1 ? segments : segments.slice(0, openSegmentIndex + 1);
-	const merges = shownSegments.map((segment) => {
-		const merge = merge_sorted_streams({
-			streams: segment.streams.map((stream) => ({ rows: stream.rows, isDone: stream.status === "done" })),
+	const merges = shownSegments.map((streams) => {
+		const merge = files_merge_sorted_streams({
+			streams: streams.map((stream) => ({ rows: stream.rows, isDone: stream.status === "done" })),
 			compare: (a, b) => files_sort_compare({ a: a.sortKey, b: b.sortKey, sort: sort! }),
+			key: (row) => `${row.target.kind}:${row.target.id}`,
 		});
-		return { rows: merge.rows, blocking: merge.blockingRank === null ? null : segment.streams[merge.blockingRank]! };
+		return { rows: merge.rows, blocking: merge.blockingRank === null ? null : streams[merge.blockingRank]! };
 	});
-	// A node can be in two streams for a moment, for example right after it became restricted.
-	const mergedKeys = new Set<string>();
-	const mergedRows = merges
-		.flatMap((merge) => merge.rows)
-		.filter((row) => {
-			const key = `${row.target.kind}:${row.target.id}`;
-			if (mergedKeys.has(key)) return false;
-			mergedKeys.add(key);
-			return true;
-		});
+	const mergedRows = merges.flatMap((merge) => merge.rows);
 	const blockingStream = merges.at(-1)?.blocking ?? null;
 	const isSettled =
 		sort !== null &&
-		sideMatchesReady &&
-		sideKeysReady &&
-		!sideMatchesFailed &&
-		segments.every((segment) => segment.streams.every((stream) => stream.status !== "loading"));
+		hasShared !== undefined &&
+		!(hasShared instanceof Error) &&
+		segments.every((streams) => streams.every((stream) => stream.status !== "loading"));
 
 	// Load the next page of the stream that holds the merge back, until the table has the rows it wants.
 	useEffect(() => {
@@ -524,7 +404,7 @@ export function useFilesSortedChildren(props: useFilesSortedChildren_Props) {
 	// the rows and the sort, not by array identity, so storing them cannot loop the render. Compare the
 	// whole rows, so a renamed or updated row is not shown stale while the next page loads.
 	const folderScope = JSON.stringify([membershipId, folderId]);
-	const heldKey = JSON.stringify([sortScope, mergedRows, [...sideKeys]]);
+	const heldKey = JSON.stringify([sortScope, mergedRows]);
 	const [heldRows, setHeldRows] = useState<{
 		folderScope: string;
 		key: string;
@@ -532,23 +412,10 @@ export function useFilesSortedChildren(props: useFilesSortedChildren_Props) {
 		filter: files_table_Filter | null;
 		namePrefix: string | null;
 		rows: FilesSortedChildrenRow[];
-		sideKeys: string[];
 	} | null>(null);
 	const shownHeldRows = heldRows?.folderScope === folderScope ? heldRows : null;
-	const heldRowsToShow = shownHeldRows?.rows.filter((row) => {
-		const key = `${row.target.kind}:${row.target.id}`;
-		return (
-			sideRows !== null &&
-			!refusedSideKeys.has(key) &&
-			!(sideRows !== undefined && shownHeldRows.sideKeys.includes(key) && !sideKeys.has(key)) &&
-			!(row.target.kind === "saved" && !shownHeldRows.sideKeys.includes(key) && sideKeys.has(key))
-		);
-	});
 	if (isSettled && heldRows?.key !== heldKey) {
-		setHeldRows({ folderScope, key: heldKey, sort, filter, namePrefix, rows: mergedRows, sideKeys: [...sideKeys] });
-	} else if (shownHeldRows && heldRowsToShow && heldRowsToShow.length !== shownHeldRows.rows.length) {
-		// Keep known removals through Retry's query reset. A settled result can restore the row later.
-		setHeldRows({ ...shownHeldRows, key: "", rows: heldRowsToShow });
+		setHeldRows({ folderScope, key: heldKey, sort, filter, namePrefix, rows: mergedRows });
 	}
 
 	// Show more asks for one more page of rows. The effect above loads them.
@@ -558,23 +425,23 @@ export function useFilesSortedChildren(props: useFilesSortedChildren_Props) {
 	const retry = useFn(() => {
 		setRetrying(true);
 	});
-	const isFailed = sideRows === null || sideMatchesFailed;
-	const isDone = isSettled && segments.every((segment) => segment.streams.every((stream) => stream.status === "done"));
-	const rows = sideRows === null ? undefined : isSettled ? mergedRows : heldRowsToShow;
+	const isFailed = hasShared === null || hasShared instanceof Error;
+	const isDone = isSettled && segments.every((streams) => streams.every((stream) => stream.status === "done"));
+	const rows = hasShared === null ? undefined : isSettled ? mergedRows : shownHeldRows?.rows;
 
 	return {
 		rows,
-		sideTargets: sideRows?.rows.map((row) => row.target) ?? [],
 		// Held rows keep their old sort keys, header arrows and table sort attributes.
 		rowsSort: isSettled ? sort : (shownHeldRows?.sort ?? null),
 		rowsFilter: isSettled ? filter : (shownHeldRows?.filter ?? null),
 		rowsNamePrefix: isSettled ? namePrefix : (shownHeldRows?.namePrefix ?? null),
 		isBusy: !isFailed && !isSettled,
 		isDone,
-		// Side rows are null when this user cannot read the folder.
+		// The `has_tree_children_shared` query answers null when this user cannot read the folder.
 		isFailed,
-		isFolderRefused: sideRows === null,
-		tooManyShared: sideRows?.tooManyShared ?? false,
+		isFolderRefused: hasShared === null,
+		// The metadata key whose sort or filter hides the member's shared rows here, or null.
+		hiddenSharedKey: hasShared === true ? metadataKey : null,
 		loadMore,
 		retry,
 	};

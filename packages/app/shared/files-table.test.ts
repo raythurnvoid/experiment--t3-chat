@@ -7,6 +7,7 @@ import {
 	files_table_filter_matches,
 	files_table_filter_order_field,
 	files_table_filter_takes_name_prefix,
+	files_table_metadata_field,
 	files_table_starts_with_ends_in_digit,
 	files_table_updated_by_text,
 	type files_table_Filter,
@@ -105,6 +106,24 @@ describe("files_table_filter_order_field", () => {
 describe("files_table_filter_takes_name_prefix", () => {
 	test.each(FILTER_ORDERS)("%j (order %s) takes a name prefix: %s", (filter, _field, takesNamePrefix) => {
 		expect(files_table_filter_takes_name_prefix(filter)).toBe(takesNamePrefix);
+	});
+});
+
+describe("files_table_metadata_field", () => {
+	test("a text filter reads its field, any other filter reads none, whatever the sort", () => {
+		const sort = { field: "metadata.owner" };
+		expect(
+			files_table_metadata_field({ sort, filter: { kind: "text", field: "metadata.status", op: "present" } }),
+		).toBe("metadata.status");
+		expect(
+			files_table_metadata_field({ sort, filter: { kind: "name", field: "name", op: "starts_with", value: "a" } }),
+		).toBeNull();
+	});
+
+	test("with no filter, a metadata sort reads its field and a built-in sort reads none", () => {
+		expect(files_table_metadata_field({ sort: { field: "metadata.owner" }, filter: null })).toBe("metadata.owner");
+		expect(files_table_metadata_field({ sort: { field: "size" }, filter: null })).toBeNull();
+		expect(files_table_metadata_field({ sort: null, filter: null })).toBeNull();
 	});
 });
 

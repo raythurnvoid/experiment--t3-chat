@@ -8,7 +8,7 @@ import {
 } from "@tanstack/react-router";
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import type { FunctionReference } from "convex/server";
+import { getFunctionName, type FunctionReference } from "convex/server";
 
 import { FilesSidebar } from "./files-sidebar.tsx";
 import { FilesClipboardProvider } from "./files-clipboard.tsx";
@@ -16,10 +16,20 @@ import { files_ROOT_ID, files_SYNTHETIC_ROOT_FOLDER, type files_VisibleTreeNode 
 import { app_convex, app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { AppActivitiesProvider } from "@/lib/app-activities-context.tsx";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
+import { files_tree_stream_args } from "@/lib/files-tree-context.tsx";
 import { global_custom_event_dispatch } from "@/lib/global-event.tsx";
 
-const { treeState, tenantState, linkState, createNode } = vi.hoisted(() => ({
-	treeState: { nodes: [] as files_VisibleTreeNode[], listeners: new Set<() => void>() },
+const { treeState, tenantState, linkState, createNode, queryCalls } = vi.hoisted(() => ({
+	// `sharedRoots` holds the rows of the "Shared with you" group, `sharedRootsStatus` its pager status.
+	// `sharedListeners` re-render the group after a change.
+	treeState: {
+		nodes: [] as files_VisibleTreeNode[],
+		sharedRoots: [] as files_VisibleTreeNode[],
+		sharedRootsStatus: "done" as "loading" | "more" | "done",
+		loadMoreShared: vi.fn(),
+		listeners: new Set<() => void>(),
+		sharedListeners: new Set<() => void>(),
+	},
 	// The mocked tenant hook subscribes here. Like a real membership change, a notify re-renders
 	// every component that called it. A parent rerender alone does not, because the React Compiler
 	// keeps its output when props are unchanged.
@@ -32,6 +42,8 @@ const { treeState, tenantState, linkState, createNode } = vi.hoisted(() => ({
 		listeners: new Set<() => void>(),
 	},
 	createNode: vi.fn(),
+	// Every query a component read, by function name and args, so a test can see which node a dialog reads.
+	queryCalls: [] as Array<[string, unknown]>,
 }));
 
 function set_links(links: unknown) {
@@ -61,6 +73,13 @@ vi.mock("convex/react", async (importOriginal) => {
 		useQuery: (query: FunctionReference<"query">, args: unknown) => {
 			const links = useSyncExternalStore(subscribeLinks, () => linkState.links);
 			if (args === "skip") return undefined;
+			queryCalls.push([getFunctionName(query), args]);
+			// The share and properties dialogs stay loading.
+			if (
+				getFunctionName(query) === "files_sharing:get_node_share_state" ||
+				getFunctionName(query) === "files_nodes:get_file_node_for_membership"
+			)
+				return undefined;
 			if (getFunctionName(query) === "files_transfer:get") return null;
 			if (getFunctionName(query) === "files_share_links:list_workspace_links") return links;
 			return getFunctionName(query) === "access_control:get_current_user_workspace_permission" ? true : [];
@@ -101,8 +120,9 @@ vi.mock("@/lib/app-tenant-context.tsx", async () => {
 	};
 });
 
-vi.mock("@/lib/files-tree-context.tsx", async () => {
+vi.mock("@/lib/files-tree-context.tsx", async (importOriginal) => {
 	const { useEffect, useMemo, useState } = await import("react");
+	const { files_tree_stream_args } = await importOriginal<typeof import("@/lib/files-tree-context.tsx")>();
 
 	// State and an effect, like the real Convex query hook. An update sent outside `act` then
 	// renders on React's normal schedule, together with other pending state updates.
@@ -119,16 +139,33 @@ vi.mock("@/lib/files-tree-context.tsx", async () => {
 		return nodes;
 	}
 
+	function useSharedRoots() {
+		const [sharedRoots, setSharedRoots] = useState(() => ({
+			rows: treeState.sharedRoots,
+			status: treeState.sharedRootsStatus,
+		}));
+		useEffect(() => {
+			const listener = () => setSharedRoots({ rows: treeState.sharedRoots, status: treeState.sharedRootsStatus });
+			treeState.sharedListeners.add(listener);
+			return () => {
+				treeState.sharedListeners.delete(listener);
+			};
+		}, []);
+		return sharedRoots;
+	}
+
 	return {
+		files_tree_stream_args,
 		FilesTreeProvider: {
 			useFullList: function useFullList(enabled: boolean) {
 				const nodes = useTreeNodes();
 				return enabled ? nodes : undefined;
 			},
-			// Serve every fixture row as loaded. A row whose parent is not in the fixture was shared on its
-			// own, like a row of `list_tree_shared_roots`, so the store would show it at the top.
+			// Serve every fixture row as loaded. A row whose parent is not in the fixture is pinned under a
+			// hidden folder, so the store would show it at the top.
 			useFolders: function useFolders() {
 				const nodes = useTreeNodes();
+				const sharedRoots = useSharedRoots();
 				return useMemo(() => {
 					const nodeIds = new Set(nodes?.map((node) => node._id));
 					return {
@@ -138,8 +175,9 @@ vi.mock("@/lib/files-tree-context.tsx", async () => {
 							nodes?.filter((node) => node.parentId !== "root" && !nodeIds.has(node.parentId)).map((node) => node._id),
 						),
 						loadMore: () => {},
+						sharedRoots: { ...sharedRoots, loadMore: treeState.loadMoreShared },
 					};
-				}, [nodes]);
+				}, [nodes, sharedRoots]);
 			},
 		},
 	};
@@ -149,8 +187,12 @@ vi.mock("@/lib/activities.ts", () => ({ useFileNodeActivities: () => [] }));
 
 beforeEach(() => {
 	createNode.mockReset();
+	queryCalls.length = 0;
 	tenantState.membershipId = "membership";
 	set_links([]);
+	treeState.sharedRoots = [];
+	treeState.sharedRootsStatus = "done";
+	treeState.loadMoreShared.mockReset();
 	treeState.nodes = ["alpha", "bravo", "charlie", "delta"].map((name) => ({
 		...files_SYNTHETIC_ROOT_FOLDER,
 		_id: name as app_convex_Id<"files_nodes">,
@@ -175,6 +217,7 @@ afterEach(() => {
 	cleanup();
 	vi.restoreAllMocks();
 	treeState.listeners.clear();
+	treeState.sharedListeners.clear();
 	tenantState.listeners.clear();
 	linkState.listeners.clear();
 });
@@ -226,6 +269,311 @@ describe("FilesSidebar", () => {
 				params: { organizationName: "organization", workspaceName: "workspace", _splat: "/private/Brand New.md" },
 			}),
 		);
+	});
+
+	test("shows a member's shares in their own group, apart from the tree rows, and opens one", async () => {
+		const [alpha, bravo] = treeState.nodes;
+		treeState.sharedRoots = [
+			// `bravo` also shows in the tree, so the group row needs its own id.
+			bravo!,
+			{
+				...alpha!,
+				_id: "secret" as app_convex_Id<"files_nodes">,
+				name: "secret",
+				parentId: "hidden" as app_convex_Id<"files_nodes">,
+				archiveOperationId: "archive-1",
+			},
+		];
+		const onPrimaryAction = vi.fn();
+		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
+		const view = render(<CreateSidebar router={router} selectedNodeId="bravo" onPrimaryAction={onPrimaryAction} />);
+		await view.findByRole("treeitem", { name: "bravo" });
+
+		const group = view.getByRole("region", { name: "Shared with you" });
+		const rows = within(group).getAllByRole("button");
+		expect(rows.map((row) => row.getAttribute("data-shared-row-id"))).toEqual(["shared:bravo", "shared:secret"]);
+		expect(rows[0]!.getAttribute("aria-current")).toBe("page");
+		// Named like a tree row, so the "Archived" text does not run into the name.
+		expect(rows.map((row) => row.getAttribute("aria-label"))).toEqual([
+			"bravo restricted",
+			"secret restricted archived",
+		]);
+		expect(view.getAllByRole("treeitem", { name: "bravo" })).toHaveLength(1);
+		fireEvent.click(rows[1]!);
+		expect(onPrimaryAction).toHaveBeenCalledWith("secret", "folder");
+
+		// Search lists every match itself, so the group hides.
+		fireEvent.change(view.getByRole("combobox"), { target: { value: "alp" } });
+		await waitFor(() => expect(view.queryByRole("region", { name: "Shared with you" })).toBeNull());
+	});
+
+	function share(name: string) {
+		return {
+			...treeState.nodes[0]!,
+			_id: name as app_convex_Id<"files_nodes">,
+			name,
+			path: `/hidden/${name}`,
+			parentId: "hidden" as app_convex_Id<"files_nodes">,
+		};
+	}
+
+	function set_shared_roots(rows: files_VisibleTreeNode[], status: typeof treeState.sharedRootsStatus) {
+		act(() => {
+			treeState.sharedRoots = rows;
+			treeState.sharedRootsStatus = status;
+			for (const listener of treeState.sharedListeners) listener();
+		});
+	}
+
+	test("Show more in the Shared with you group keeps focus while more remain, then moves it to the first new row", async () => {
+		treeState.sharedRoots = [share("s1")];
+		treeState.sharedRootsStatus = "more";
+		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
+		const view = render(<CreateSidebar router={router} selectedNodeId="alpha" />);
+		const group = await view.findByRole("region", { name: "Shared with you" });
+		const showMore = within(group).getByRole("button", { name: "Show more" });
+
+		showMore.focus();
+		fireEvent.click(showMore);
+		expect(treeState.loadMoreShared).toHaveBeenCalledTimes(1);
+		set_shared_roots([share("s1"), share("s2")], "more");
+		expect(document.activeElement).toBe(showMore);
+
+		fireEvent.click(showMore);
+		set_shared_roots([share("s1"), share("s2"), share("s3")], "done");
+		await waitFor(() => expect(document.activeElement?.getAttribute("data-shared-row-id")).toBe("shared:s3"));
+		expect(within(group).queryByRole("button", { name: "Show more" })).toBeNull();
+	});
+
+	test("Show more leaves focus alone when the user moved it out of the group", async () => {
+		treeState.sharedRoots = [share("s1")];
+		treeState.sharedRootsStatus = "more";
+		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
+		const view = render(<CreateSidebar router={router} selectedNodeId="alpha" />);
+		const group = await view.findByRole("region", { name: "Shared with you" });
+		const showMore = within(group).getByRole("button", { name: "Show more" });
+
+		showMore.focus();
+		fireEvent.click(showMore);
+		const search = view.getByRole("combobox");
+		act(() => search.focus());
+		set_shared_roots([share("s1"), share("s2")], "done");
+		await waitFor(() => expect(within(group).getAllByRole("button")).toHaveLength(2));
+		expect(document.activeElement).toBe(search);
+	});
+
+	test("Show more focuses the first new active row when archived shares show below", async () => {
+		const archivedShare = { ...share("a1"), archiveOperationId: "archive-1" };
+		treeState.sharedRoots = [share("s1"), archivedShare];
+		treeState.sharedRootsStatus = "more";
+		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
+		const view = render(<CreateSidebar router={router} selectedNodeId="alpha" />);
+		const group = await view.findByRole("region", { name: "Shared with you" });
+		const showMore = within(group).getByRole("button", { name: "Show more" });
+
+		showMore.focus();
+		fireEvent.click(showMore);
+		// The provider lists the active shares first, so the new active row comes before the archived one.
+		set_shared_roots([share("s1"), share("s2"), archivedShare], "done");
+		await waitFor(() => expect(document.activeElement?.getAttribute("data-shared-row-id")).toBe("shared:s2"));
+	});
+
+	test("shows the Shared with you group with only Show more while its loaded pages hold no row", async () => {
+		treeState.sharedRootsStatus = "more";
+		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
+		const view = render(<CreateSidebar router={router} selectedNodeId="alpha" />);
+		const group = await view.findByRole("region", { name: "Shared with you" });
+
+		expect(
+			within(group)
+				.getAllByRole("button")
+				.map((button) => button.textContent),
+		).toEqual(["Show more"]);
+	});
+
+	test("a grant-only member with shares sees no No files yet. under the group", async () => {
+		treeState.nodes = [];
+		treeState.sharedRoots = [share("s1")];
+		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
+		const view = render(<CreateSidebar router={router} selectedNodeId="s1" />);
+		await view.findByRole("region", { name: "Shared with you" });
+		expect(view.queryByText("No files yet.")).toBeNull();
+
+		set_shared_roots([], "done");
+		expect(await view.findByText("No files yet.")).toBeTruthy();
+	});
+
+	test("the rename optimistic update reaches the restricted twin, the share streams and the Shared with you group", async () => {
+		createNode.mockReturnValue(new Promise(() => {}));
+		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
+		const view = render(<CreateSidebar router={router} selectedNodeId="alpha" />);
+		await view.findByRole("treeitem", { name: "bravo" });
+		fireEvent.click(view.getByRole("button", { name: "More actions for bravo" }));
+		fireEvent.click(await view.findByRole("menuitem", { name: "Rename" }));
+		const input = await view.findByRole("textbox", { name: "Rename bravo" });
+		fireEvent.change(input, { target: { value: "renamed" } });
+		fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
+		await waitFor(() =>
+			expect(createNode).toHaveBeenCalledWith(
+				app_convex_api.files_nodes.rename_node,
+				expect.anything(),
+				expect.anything(),
+			),
+		);
+
+		// One cached page per stream that can hold the row, under the exact args the tree reads.
+		const bravo = treeState.nodes[1]!;
+		const page = { page: [bravo], isDone: true, continueCursor: "" };
+		const paginationOpts = { numItems: 200, cursor: null };
+		const streamArgs = files_tree_stream_args({
+			membershipId: "membership" as app_convex_Id<"organizations_workspaces_users">,
+			folderId: "root",
+			kind: "folder",
+			archived: false,
+		});
+		const cached = [
+			[app_convex_api.files_nodes.list_tree_children, { ...streamArgs.children(true), paginationOpts }],
+			...([0, 1, 2] as const).flatMap((principalIndex) => [
+				[
+					app_convex_api.files_nodes.list_tree_children_shared,
+					{ ...streamArgs.shared(principalIndex), paginationOpts },
+				],
+				[
+					app_convex_api.files_nodes.list_tree_shared_roots,
+					{ membershipId: "membership", archived: false, principalIndex, paginationOpts },
+				],
+			]),
+		] as Array<[FunctionReference<"query">, Record<string, unknown>]>;
+		const written: Array<[string, string]> = [];
+		const localStore = {
+			getAllQueries: (query: FunctionReference<"query">) =>
+				cached
+					.filter(([cachedQuery]) => getFunctionName(cachedQuery) === getFunctionName(query))
+					.map(([, args]) => ({ args, value: page })),
+			setQuery: (query: FunctionReference<"query">, args: Record<string, unknown>, value: typeof page) =>
+				written.push([
+					`${getFunctionName(query)}:${String(args.principalIndex ?? args.restricted)}`,
+					value.page[0]!.name,
+				]),
+			getQuery: () => undefined,
+		};
+		const options = createNode.mock.calls[0]![2] as { optimisticUpdate: (store: typeof localStore) => void };
+		options.optimisticUpdate(localStore);
+
+		expect(written.sort()).toEqual(
+			[
+				"files_nodes:list_tree_children:true",
+				...[0, 1, 2].flatMap((index) => [
+					`files_nodes:list_tree_children_shared:${index}`,
+					`files_nodes:list_tree_shared_roots:${index}`,
+				]),
+			]
+				.map((key): [string, string] => [key, "renamed"])
+				.sort(),
+		);
+	});
+
+	test("a Shared with you row has the tree row menu, which archives that row only", async () => {
+		treeState.sharedRoots = [share("secret")];
+		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
+		const view = render(<CreateSidebar router={router} selectedNodeId="alpha" />);
+		const group = await view.findByRole("region", { name: "Shared with you" });
+
+		fireEvent.contextMenu(within(group).getByRole("button", { name: "secret restricted" }));
+		for (const name of ["Copy path", "Copy link", "Copy node id", "Share", "Properties"]) {
+			expect((await view.findByRole("menuitem", { name })).matches("[aria-disabled='true']")).toBe(false);
+		}
+		expect(view.getByRole("menuitem", { name: "Rename" }).getAttribute("aria-disabled")).toBe("true");
+		fireEvent.click(view.getByRole("menuitem", { name: "Archive" }));
+		expect(await view.findByRole("dialog", { name: "Archive “secret”?" })).toBeTruthy();
+	});
+
+	test("a Shared with you row opens its menu from the keyboard, and Paste, Share and Properties act on the shared folder", async () => {
+		treeState.sharedRoots = [share("secret")];
+		createNode.mockResolvedValue({ _yay: { runId: "run" } });
+		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
+		const view = render(<CreateSidebar router={router} selectedNodeId="alpha" />);
+		const group = await view.findByRole("region", { name: "Shared with you" });
+		const row = within(group).getByRole("button", { name: "secret restricted" });
+		fireEvent.click(view.getByRole("button", { name: "More actions for bravo" }));
+		fireEvent.click(await view.findByRole("menuitem", { name: /^Copy$/ }));
+		await waitFor(() => expect(view.queryByRole("menu")).toBeNull());
+
+		// Paste goes into the shared folder.
+		act(() => row.focus());
+		fireEvent.keyDown(row, { key: "F10", shiftKey: true });
+		fireEvent.click(await view.findByRole("menuitem", { name: "Paste" }));
+		expect(createNode.mock.calls[0]![1]).toMatchObject({
+			kind: "copy",
+			sourceIds: ["bravo"],
+			targetParentId: "secret",
+		});
+		await act(async () => {
+			await createNode.mock.results[0]!.value;
+		});
+
+		// Share and Properties read the node id, not the group row's DOM id.
+		act(() => row.focus());
+		fireEvent.keyDown(row, { key: "ContextMenu" });
+		fireEvent.click(await view.findByRole("menuitem", { name: "Share" }));
+		const shareDialog = await view.findByRole("dialog");
+		expect(queryCalls).toContainEqual([
+			"files_sharing:get_node_share_state",
+			{ membershipId: "membership", nodeId: "secret" },
+		]);
+		fireEvent.click(within(shareDialog).getByRole("button", { name: "Close" }));
+		await waitFor(() => expect(view.queryByRole("dialog")).toBeNull());
+
+		fireEvent.keyDown(row, { key: "ContextMenu" });
+		fireEvent.click(await view.findByRole("menuitem", { name: "Properties" }));
+		await view.findByRole("dialog");
+		expect(queryCalls).toContainEqual([
+			"files_nodes:get_file_node_for_membership",
+			{ membershipId: "membership", fileNodeId: "secret" },
+		]);
+	});
+
+	test.each([
+		["Share", "Close"],
+		["Archive", "Cancel"],
+	])("closing %s with %s from a Shared with you row focuses that row, not its tree row", async (action, close) => {
+		// `bravo` also shows in the tree.
+		treeState.sharedRoots = [treeState.nodes[1]!];
+		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
+		const view = render(<CreateSidebar router={router} selectedNodeId="alpha" />);
+		const group = await view.findByRole("region", { name: "Shared with you" });
+		const row = within(group).getByRole("button", { name: "bravo restricted" });
+
+		act(() => row.focus());
+		fireEvent.keyDown(row, { key: "ContextMenu" });
+		fireEvent.click(await view.findByRole("menuitem", { name: action }));
+		fireEvent.click(within(await view.findByRole("dialog")).getByRole("button", { name: close }));
+		await waitFor(() => expect(view.queryByRole("dialog")).toBeNull());
+		// The tree would focus its row from a timer, so wait past it.
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		expect(document.activeElement).toBe(row);
+	});
+
+	test("a confirmed archive of a Shared with you row moves focus to the next group row", async () => {
+		treeState.sharedRoots = [share("s1"), share("s2"), share("s3")];
+		vi.spyOn(app_convex, "mutation").mockImplementation(async () => {
+			await Promise.resolve();
+			treeState.sharedRoots = [share("s1"), share("s3")];
+			for (const listener of treeState.sharedListeners) listener();
+			return { _yay: null };
+		});
+		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
+		const view = render(<CreateSidebar router={router} selectedNodeId="alpha" />);
+		const group = await view.findByRole("region", { name: "Shared with you" });
+
+		fireEvent.contextMenu(within(group).getByRole("button", { name: "s2 restricted" }));
+		fireEvent.click(await view.findByRole("menuitem", { name: "Archive" }));
+		const dialog = await view.findByRole("dialog", { name: "Archive “s2”?" });
+		fireEvent.click(within(dialog).getByRole("button", { name: "Archive" }));
+		await waitFor(() => expect(within(group).queryByRole("button", { name: "s2 restricted" })).toBeNull());
+		// s2 has no tree row, so the tree's first row must not take focus.
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		expect(document.activeElement).toBe(within(group).getByRole("button", { name: "s3 restricted" }));
 	});
 
 	test("copies the tree selection and keeps its source IDs after navigation", async () => {

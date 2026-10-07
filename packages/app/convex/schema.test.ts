@@ -20,6 +20,7 @@ describe("app_convex_schema", () => {
 		);
 
 		expect(names).toContain("files_pending_places.search_name");
+		expect(names).toContain("files_share_rows.by_org_ws_principal_parent_kind_archive_updatedAt_sortName_name");
 		expect(names.filter((name) => name.split(".")[1]!.length > 64)).toEqual([]);
 	});
 });

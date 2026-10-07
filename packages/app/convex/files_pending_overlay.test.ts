@@ -1,14 +1,16 @@
 // Each flow writes drafts and saved changes through the real mutations, runs the overlay jobs, then
 // compares the stored derived docs with `check_user` and checks the window bound (every hide matches
-// one active saved node with the same copied facts).
+// one active saved node with the same copied facts). The share row flows compare the share rows with
+// `check_share_rows`.
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { api, internal } from "./_generated/api.js";
+import { api, components, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { files_nodes_db_hard_delete_node } from "./files_nodes.ts";
 import { files_visible_db_create_reader } from "./files_visible.ts";
+import { quotas_db_ensure } from "./quotas.ts";
 import {
 	test_convex,
 	test_mocks,
@@ -345,6 +347,56 @@ async function fixture() {
 		await expect_window_bound(t);
 	};
 
+	/**
+	 * Run one of U's mutations, then the jobs. Fake timers never refill the rate limits, so reset them
+	 * first.
+	 */
+	const as_u = async (run: () => Promise<{ _nay?: { message: string } }>) => {
+		await t.run(async (ctx) => {
+			for (const name of ["files_sharing_write", "files_tree_write", "organizations_write"])
+				await ctx.runMutation(components.rate_limiter.lib.resetRateLimit, { name, key: u.userId });
+		});
+		const result = await run();
+		if (result._nay) throw new Error(result._nay.message);
+		await settle();
+	};
+
+	const restrict = (node: Doc<"files_nodes">) =>
+		as_u(() => asU.mutation(api.files_sharing.restrict_node, { membershipId: db.membershipId, nodeId: node._id }));
+
+	const share = (
+		node: Doc<"files_nodes">,
+		principal: { kind: "user"; userId: Id<"users"> } | { kind: "role"; role: "member" },
+		level: "read" | "manage",
+	) =>
+		as_u(() =>
+			asU.mutation(api.files_sharing.set_node_share_grant, {
+				membershipId: db.membershipId,
+				nodeId: node._id,
+				principal,
+				level,
+			}),
+		);
+
+	/**
+	 * Run the jobs, then check that every grant of the workspace has the share row it should have, and
+	 * every row has its grant.
+	 */
+	const expect_share_rows_true = async (workspaceId = u.workspaceId) => {
+		await settle();
+		const differences: string[] = [];
+		let cursor: string | null = null;
+		do {
+			const page: { differences: string[]; cursor: string | null } = await t.query(
+				internal.files_pending_overlay.check_share_rows,
+				{ organizationId: u.organizationId, workspaceId, cursor },
+			);
+			differences.push(...page.differences);
+			cursor = page.cursor;
+		} while (cursor);
+		expect(differences).toEqual([]);
+	};
+
 	return {
 		t,
 		db,
@@ -368,6 +420,10 @@ async function fixture() {
 		settle,
 		overlay,
 		expect_overlay_true,
+		as_u,
+		restrict,
+		share,
+		expect_share_rows_true,
 	};
 }
 
@@ -402,6 +458,47 @@ function proposal_doc(
 
 const target = (node: Doc<"files_nodes">): files_PendingTarget => ({ kind: "saved", id: node._id });
 const parent = (node: Doc<"files_nodes">): files_PendingParent => ({ kind: "saved", id: node._id });
+
+type Fixture = Awaited<ReturnType<typeof fixture>>;
+
+/**
+ * A node's share rows by principal. Each row must copy the live node.
+ */
+async function share_rows(f: Fixture, nodeId: Id<"files_nodes">) {
+	const { node, rows } = await f.t.run(async (ctx) => ({
+		node: await ctx.db.get("files_nodes", nodeId),
+		rows: await ctx.db
+			.query("files_share_rows")
+			.withIndex("by_node", (q) => q.eq("nodeId", nodeId))
+			.collect(),
+	}));
+	for (const row of rows)
+		expect({
+			parentId: row.parentId,
+			kind: row.kind,
+			archiveOperationId: row.archiveOperationId,
+			sortName: row.sortName,
+			name: row.name,
+			updatedAt: row.updatedAt,
+			lowercaseExtension: row.lowercaseExtension,
+			contentByteSize: row.contentByteSize,
+			nodeCreationTime: row.nodeCreationTime,
+		}).toEqual({
+			parentId: node?.parentId,
+			kind: node?.kind,
+			archiveOperationId: node?.archiveOperationId,
+			sortName: node?.sortName,
+			name: node?.name,
+			updatedAt: node?.updatedAt,
+			lowercaseExtension: node?.lowercaseExtension ?? null,
+			contentByteSize: node?.contentByteSize ?? null,
+			nodeCreationTime: node?._creationTime,
+		});
+	return rows.toSorted((a, b) => (a.principalKey < b.principalKey ? -1 : 1));
+}
+
+const share_keys = async (f: Fixture, nodeId: Id<"files_nodes">) =>
+	(await share_rows(f, nodeId)).map((row) => row.principalKey);
 
 describe("files_pending_overlay flush", () => {
 	test("private file and folder, then a private move and rename", async () => {
@@ -1724,4 +1821,305 @@ describe("files_pending_overlay jobs", () => {
 		expect(documentsRead).toBeLessThan(3_000);
 		await f.expect_overlay_true();
 	}, 120_000);
+});
+
+describe("files_share_rows", () => {
+	test("share dialog writes keep one row per shared user or role", async () => {
+		const f = await fixture();
+		const s = await f.saved(null, "s", "folder");
+		await f.restrict(s);
+		// The owner holds no grant, so the new restricted folder has no row.
+		expect(await share_keys(f, s._id)).toEqual([]);
+
+		await f.share(s, { kind: "user", userId: f.v.userId }, "read");
+		expect(await share_keys(f, s._id)).toEqual([`user:${f.v.userId}`]);
+		// "manage" adds more grants, but only the read grant has a row.
+		await f.share(s, { kind: "user", userId: f.v.userId }, "manage");
+		expect(await share_keys(f, s._id)).toEqual([`user:${f.v.userId}`]);
+		// A role share is one row, not one row per member.
+		await f.share(s, { kind: "role", role: "member" }, "read");
+		expect(await share_keys(f, s._id)).toEqual(["role:member", `user:${f.v.userId}`]);
+
+		await f.as_u(() =>
+			f.asU.mutation(api.files_sharing.remove_node_share_grant, {
+				membershipId: f.db.membershipId,
+				nodeId: s._id,
+				principal: { kind: "user", userId: f.v.userId },
+			}),
+		);
+		expect(await share_keys(f, s._id)).toEqual(["role:member"]);
+		await f.expect_share_rows_true();
+	});
+
+	test("rows follow a rename, move, archive and restore of the shared folder and of its parent", async () => {
+		const f = await fixture();
+		const a = await f.saved(null, "a", "folder");
+		const s = await f.saved(a, "s", "folder");
+		const b = await f.saved(null, "b", "folder");
+		await f.restrict(s);
+		await f.share(s, { kind: "user", userId: f.v.userId }, "read");
+		const membershipId = f.db.membershipId;
+
+		await f.as_u(() => f.asU.mutation(api.files_nodes.rename_node, { membershipId, nodeId: s._id, path: "t" }));
+		expect(await share_rows(f, s._id)).toMatchObject([{ name: "t", parentId: a._id }]);
+		await f.as_u(() => f.asU.mutation(api.files_nodes.rename_node, { membershipId, nodeId: a._id, path: "a2" }));
+		expect(await share_rows(f, s._id)).toMatchObject([{ name: "t", parentId: a._id }]);
+		await f.as_u(() =>
+			f.asU.mutation(api.files_nodes.move_nodes, { membershipId, itemIds: [s._id], targetParentId: b._id }),
+		);
+		expect(await share_rows(f, s._id)).toMatchObject([{ name: "t", parentId: b._id }]);
+		await f.expect_share_rows_true();
+
+		// Archiving the parent archives the shared folder too. Archived rows stay.
+		await f.as_u(() => f.asU.mutation(api.files_nodes.archive_nodes, { membershipId, nodeIds: [b._id] }));
+		expect((await share_rows(f, s._id))[0]?.archiveOperationId).not.toBe(null);
+		await f.as_u(() => f.asU.mutation(api.files_nodes.unarchive_nodes, { membershipId, nodeIds: [b._id] }));
+		expect(await share_rows(f, s._id)).toMatchObject([{ archiveOperationId: null }]);
+		await f.as_u(() => f.asU.mutation(api.files_nodes.archive_nodes, { membershipId, nodeIds: [s._id] }));
+		expect((await share_rows(f, s._id))[0]?.archiveOperationId).not.toBe(null);
+		await f.as_u(() => f.asU.mutation(api.files_nodes.unarchive_nodes, { membershipId, nodeIds: [s._id] }));
+		expect(await share_rows(f, s._id)).toMatchObject([{ archiveOperationId: null }]);
+		await f.expect_share_rows_true();
+	});
+
+	test("rows live only while their node is a restricted root", async () => {
+		const f = await fixture();
+		const s = await f.saved(null, "s", "folder");
+		await f.restrict(s);
+		await f.share(s, { kind: "user", userId: f.v.userId }, "read");
+		await f.share(s, { kind: "role", role: "member" }, "read");
+
+		// A node write alone ends and brings back the rows, while the grants stay.
+		await test_run_with_flush(f.t, (ctx) =>
+			ctx.db.patch("files_nodes", s._id, { restrictedScopeNodeId: null, isRestrictedScopeRoot: false }),
+		);
+		expect(await share_keys(f, s._id)).toEqual([]);
+		await f.expect_share_rows_true();
+		await test_run_with_flush(f.t, (ctx) =>
+			ctx.db.patch("files_nodes", s._id, { restrictedScopeNodeId: s._id, isRestrictedScopeRoot: true }),
+		);
+		expect(await share_keys(f, s._id)).toEqual(["role:member", `user:${f.v.userId}`]);
+
+		await f.as_u(() =>
+			f.asU.mutation(api.files_sharing.unrestrict_node, { membershipId: f.db.membershipId, nodeId: s._id }),
+		);
+		expect(await share_keys(f, s._id)).toEqual([]);
+		await f.expect_share_rows_true();
+	});
+
+	test("a hard deleted shared file leaves no row", async () => {
+		const f = await fixture();
+		const x = await f.saved(null, "x.md");
+		await f.restrict(x);
+		await f.share(x, { kind: "user", userId: f.v.userId }, "read");
+		expect(await share_rows(f, x._id)).toMatchObject([{ kind: "file", lowercaseExtension: "md" }]);
+
+		await test_run_with_flush(f.t, (ctx) => files_nodes_db_hard_delete_node(ctx, { ...f.u, nodeId: x._id }));
+		expect(await share_keys(f, x._id)).toEqual([]);
+		await f.expect_share_rows_true();
+	});
+
+	test("removing a member from the organization removes the member's rows", async () => {
+		const f = await fixture();
+		const s = await f.saved(null, "s", "folder");
+		await f.restrict(s);
+		await f.share(s, { kind: "user", userId: f.v.userId }, "read");
+		await f.share(s, { kind: "role", role: "member" }, "read");
+
+		// The fixture inserts V's membership directly. Removal also needs V's credential quota.
+		await f.t.run((ctx) => quotas_db_ensure(ctx, { quotaName: "active_api_credentials", ...f.v, now: Date.now() }));
+		await f.as_u(() =>
+			f.asU.mutation(api.organizations.remove_user_from_organization, {
+				organizationId: f.u.organizationId,
+				userIdToRemove: f.v.userId,
+			}),
+		);
+		expect(await share_keys(f, s._id)).toEqual(["role:member"]);
+		await f.expect_share_rows_true();
+	});
+
+	test("a grant of another workspace on the node gets no row, also after the node changes", async () => {
+		const f = await fixture();
+		const s = await f.saved(null, "s", "folder");
+		await f.restrict(s);
+		const secondWorkspaceId = await f.t.run((ctx) =>
+			ctx.db.insert("organizations_workspaces", {
+				organizationId: f.u.organizationId,
+				name: "second",
+				description: "",
+				default: false,
+				pluginInstallAccess: "owner",
+				updatedAt: Date.now(),
+			}),
+		);
+		await test_run_with_flush(f.t, (ctx) =>
+			ctx.db.insert("access_control_permission_grants", {
+				organizationId: f.u.organizationId,
+				workspaceId: secondWorkspaceId,
+				resourceKind: "file",
+				resourceId: String(s._id),
+				principalKind: "user",
+				userId: f.v.userId,
+				permission: "content.read",
+				createdAt: Date.now(),
+				updatedAt: Date.now(),
+			}),
+		);
+		expect(await share_keys(f, s._id)).toEqual([]);
+
+		await f.as_u(() =>
+			f.asU.mutation(api.files_nodes.rename_node, { membershipId: f.db.membershipId, nodeId: s._id, path: "t" }),
+		);
+		expect(await share_keys(f, s._id)).toEqual([]);
+		await f.expect_share_rows_true();
+		await f.expect_share_rows_true(secondWorkspaceId);
+	});
+
+	test("service account and public grants on a shared folder get no row", async () => {
+		const f = await fixture();
+		const s = await f.saved(null, "s", "folder");
+		await f.restrict(s);
+		await f.share(s, { kind: "user", userId: f.v.userId }, "read");
+		await test_run_with_flush(f.t, async (ctx) => {
+			const serviceAccountId = await ctx.db.insert("access_control_service_accounts", {
+				organizationId: f.u.organizationId,
+				workspaceId: f.u.workspaceId,
+				name: "bot",
+				createdBy: f.u.userId,
+				createdAt: Date.now(),
+				updatedAt: Date.now(),
+				revokedAt: null,
+			});
+			for (const principal of [
+				{ principalKind: "service_account" as const, serviceAccountId },
+				{ principalKind: "public" as const },
+			])
+				await ctx.db.insert("access_control_permission_grants", {
+					organizationId: f.u.organizationId,
+					workspaceId: f.u.workspaceId,
+					resourceKind: "file",
+					resourceId: String(s._id),
+					...principal,
+					permission: "content.read",
+					createdAt: Date.now(),
+					updatedAt: Date.now(),
+				});
+		});
+		expect(await share_keys(f, s._id)).toEqual([`user:${f.v.userId}`]);
+
+		// A node write reads every `content.read` grant of the node again.
+		await f.as_u(() =>
+			f.asU.mutation(api.files_nodes.rename_node, { membershipId: f.db.membershipId, nodeId: s._id, path: "t" }),
+		);
+		expect(await share_keys(f, s._id)).toEqual([`user:${f.v.userId}`]);
+		await f.expect_share_rows_true();
+	});
+
+	test("a grant write that is not a file grant marks nothing", async () => {
+		const f = await fixture();
+		const s = await f.saved(null, "s", "folder");
+		const grant = (resourceKind: "workspace" | "plugin_scope" | "file", resourceId: string) => ({
+			organizationId: f.u.organizationId,
+			workspaceId: f.u.workspaceId,
+			resourceKind,
+			resourceId,
+			principalKind: "user" as const,
+			userId: f.v.userId,
+			permission: "content.read" as const,
+			createdAt: Date.now(),
+			updatedAt: Date.now(),
+		});
+		const flush_ranges = async (write: (ctx: MutationCtx) => Promise<unknown>) =>
+			await test_run_with_flush(f.t, async (ctx) => {
+				await write(ctx);
+				const before = await ctx.meta.getTransactionMetrics();
+				await files_pending_overlay_db_flush(ctx);
+				return (await ctx.meta.getTransactionMetrics()).databaseQueries.used - before.databaseQueries.used;
+			});
+
+		expect(
+			await flush_ranges(async (ctx) => {
+				const workspaceGrantId = await ctx.db.insert(
+					"access_control_permission_grants",
+					grant("workspace", f.u.workspaceId),
+				);
+				const scopeGrantId = await ctx.db.insert(
+					"access_control_permission_grants",
+					grant("plugin_scope", "plugin:scope"),
+				);
+				await ctx.db.patch("access_control_permission_grants", workspaceGrantId, { updatedAt: Date.now() + 1 });
+				await ctx.db.delete("access_control_permission_grants", scopeGrantId);
+			}),
+		).toBe(0);
+		// A file grant write still syncs its row.
+		expect(
+			await flush_ranges((ctx) => ctx.db.insert("access_control_permission_grants", grant("file", String(s._id)))),
+		).toBeGreaterThan(0);
+		expect(await f.t.run((ctx) => ctx.db.query("files_share_rows").collect())).toEqual([]);
+		await f.expect_share_rows_true();
+	});
+
+	test("a size patch and a content save of a shared file update its rows", async () => {
+		const f = await fixture();
+		const x = await f.saved(null, "x.md");
+		await f.restrict(x);
+		await f.share(x, { kind: "user", userId: f.v.userId }, "read");
+
+		// A materialization patches the size alone. A content save also patches `updatedAt`.
+		await test_run_with_flush(f.t, (ctx) => ctx.db.patch("files_nodes", x._id, { contentByteSize: 42 }));
+		expect(await share_rows(f, x._id)).toMatchObject([{ contentByteSize: 42 }]);
+		const savedAt = Date.now() + 1000;
+		await test_run_with_flush(f.t, (ctx) =>
+			ctx.db.patch("files_nodes", x._id, { contentByteSize: 99, updatedBy: f.u.userId, updatedAt: savedAt }),
+		);
+		expect(await share_rows(f, x._id)).toMatchObject([{ contentByteSize: 99, updatedAt: savedAt }]);
+		await f.expect_share_rows_true();
+	});
+
+	test("a shared folder keeps its rows when its parent is restricted and when it moves into another restricted folder", async () => {
+		const f = await fixture();
+		const a = await f.saved(null, "a", "folder");
+		const s = await f.saved(a, "s", "folder");
+		const r = await f.saved(null, "r", "folder");
+		await f.restrict(s);
+		await f.share(s, { kind: "user", userId: f.v.userId }, "read");
+		await f.restrict(r);
+		await f.share(r, { kind: "role", role: "member" }, "read");
+
+		await f.restrict(a);
+		expect(await share_keys(f, s._id)).toEqual([`user:${f.v.userId}`]);
+		await f.as_u(() =>
+			f.asU.mutation(api.files_nodes.move_nodes, {
+				membershipId: f.db.membershipId,
+				itemIds: [s._id],
+				targetParentId: r._id,
+			}),
+		);
+		expect(await share_rows(f, s._id)).toMatchObject([{ principalKey: `user:${f.v.userId}`, parentId: r._id }]);
+		expect(await share_keys(f, r._id)).toEqual(["role:member"]);
+		await f.expect_share_rows_true();
+	});
+
+	test("a node write that changes only its workspace drops its rows", async () => {
+		const f = await fixture();
+		const s = await f.saved(null, "s", "folder");
+		await f.restrict(s);
+		await f.share(s, { kind: "user", userId: f.v.userId }, "read");
+		const secondWorkspaceId = await f.t.run((ctx) =>
+			ctx.db.insert("organizations_workspaces", {
+				organizationId: f.u.organizationId,
+				name: "second",
+				description: "",
+				default: false,
+				pluginInstallAccess: "owner",
+				updatedAt: Date.now(),
+			}),
+		);
+
+		// No app code moves a node to another workspace. The rows must still never copy such a node.
+		await test_run_with_flush(f.t, (ctx) => ctx.db.patch("files_nodes", s._id, { workspaceId: secondWorkspaceId }));
+		expect(await share_keys(f, s._id)).toEqual([]);
+		await f.expect_share_rows_true();
+		await f.expect_share_rows_true(secondWorkspaceId);
+	});
 });

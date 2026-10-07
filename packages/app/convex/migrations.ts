@@ -26,6 +26,7 @@ import { files_share_links_create_cleanup_state } from "./files_share_links_db.t
 import { files_db_resolve_scope } from "./files_scopes.ts";
 import { files_updated_by_db_sync_node } from "./files_updated_by.ts";
 import { files_pending_overlay_db_mark_target } from "../server/files-pending-overlay.ts";
+import { files_share_rows_db_sync_grant } from "../server/files-share-rows.ts";
 
 // The schema lets a migration read through an index with `customRange`.
 const app_migrations = new Migrations(components.migrations, {
@@ -590,6 +591,21 @@ export const backfill_files_pending_overlay = app_migrations.define({
 			target: pendingUpdate.target,
 			pendingUpdateId: pendingUpdate._id,
 		});
+	},
+});
+
+/**
+ * Write the share row of each file `content.read` grant to a user or a role, for grants saved before
+ * share rows existed. Rows are diffed, so a rerun writes nothing new. Member reads switch to share rows
+ * only after this ends and `files_pending_overlay.check_share_rows` reports no difference.
+ */
+export const backfill_files_share_rows = app_migrations.define({
+	table: "access_control_permission_grants",
+	// A file grant reads itself, its node and its row: 3 index ranges. 20 grants stay far below every
+	// Convex limit.
+	batchSize: 20,
+	migrateOne: async (ctx, grant) => {
+		if (grant.resourceKind === "file") await files_share_rows_db_sync_grant(ctx.db, grant._id);
 	},
 });
 
@@ -1717,6 +1733,7 @@ export const run_trim_files_folder_sorts_to_first_clause = app_migrations.runner
 export const run_backfill_files_pending_overlay = app_migrations.runner(
 	internal.migrations.backfill_files_pending_overlay,
 );
+export const run_backfill_files_share_rows = app_migrations.runner(internal.migrations.backfill_files_share_rows);
 export const run_backfill_files_plain_text_chunk_scope = app_migrations.runner(
 	internal.migrations.backfill_files_plain_text_chunk_scope,
 );

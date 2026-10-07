@@ -215,7 +215,7 @@ membership id, lifetime and API scopes in `runAs`.
 System role permissions live in code. File shares use one doc per permission per principal, with
 the **restricted scope node** as `resourceId`. Plugin setup uses the exact workspace; plugin
 management uses the exact installation. Nothing writes a `public` grant, and the share validator
-has no `public` arm.
+has no `public` arm. A file share also has a share row (see "Share rows" under "File sharing").
 
 The declarative access bindings (`plugins_file_access_bindings` in `plugins_data.ts`) are the
 host-maintained file-grant mirror: a plugin binds one of its owned nodes to one of its private scopes
@@ -740,10 +740,9 @@ product decision, so record the answer here before changing the behaviour. An en
 
 ## Files tree reads
 
-The sidebar loads the tree one open folder at a time through four `files_nodes` queries. All of them
-resolve the reader with `files_nodes_db_get_tree_reader` and filter every row with
-`access_control_db_filter_readable_file_nodes`, so they never show more than `list_tree` does.
-`files_share_links.list_workspace_links` resolves its reader with the same helper.
+The sidebar loads the tree one open folder at a time through the `files_nodes` queries below. All of
+them resolve the reader with `files_nodes_db_get_tree_reader` and never show more than `list_tree`
+does. `files_share_links.list_workspace_links` resolves its reader with the same helper.
 
 - `files_nodes_db_get_tree_reader` requires a live `users` doc before reading membership. Missing auth or a
   missing user throws `Unauthenticated`. An anonymous user with `deletedAt` does too, even when
@@ -751,22 +750,20 @@ resolve the reader with `files_nodes_db_get_tree_reader` and filter every row wi
   It returns `null` for an inactive or foreign membership and for every refusal
   except "Permission denied". "Permission denied" means the member has no workspace-wide read, so the
   queries continue in grant-only mode and show only what was shared with them.
-- `list_tree_children` pages one kind of child of one folder. A missing, foreign, or hidden parent
-  gets the same empty, done page as any other refusal, so the answer does not tell the caller that a
-  hidden folder exists. A grant-only member gets nothing for the root: their root rows come from
-  `list_tree_shared_roots`.
+- `list_tree_children` pages one kind of child of one folder, with the same open stream and owner
+  restricted twin as `list_tree_children_sorted` below. A missing, foreign, or hidden parent gets the
+  same empty, done page as any other refusal, so the answer does not tell the caller that a hidden
+  folder exists. A grant-only member gets nothing for the root: their root rows come from
+  `list_tree_children_shared` and `list_tree_shared_roots`.
 - `get_tree_ancestors` takes a raw id string, so a bad `?nodeId=` returns `null` instead of an argument
   error. It walks up from the node and stops at the first folder the caller cannot read, because the
   tree cannot show a row under a hidden folder. This hides no names: every tree row carries its
   `path`, `parentId`, and `restrictedScopeNodeId`, the same as `list_tree` rows, so a shared node's
   path still names the hidden folders above it.
-- `list_tree_shared_roots` returns restricted scope nodes the member can read while the folder above
-  them is hidden. It reads the member's own `content.read` grants and the grants of their workspace
-  and organization roles, capped at `TREE_SHARED_ROOTS_MAX_GRANTS` per list, and checks every
-  candidate again with the readable filter. The owner gets nothing, because the owner reads the whole
-  tree. Known limit: past the cap the query logs a warning and returns `truncated: true`, but the
-  sidebar ignores that flag, so a member with more than 500 grants in one list can miss shared roots
-  without any sign in the UI.
+- `list_tree_shared_roots` pages every share of the member for the "Shared with you" group, one
+  principal at a time (see "Share rows" under "File sharing"). It has no cap: it reads the share
+  rows with one index range per page and checks each row like `list_tree_children_shared`. The owner
+  gets nothing, because the owner reads the whole tree.
 - `list_tree_children_sorted` (the sorted Files table) uses the same folder gate, and a grant-only
   member gets nothing for the root. It reads saved rows only (see the `files-explorer-tree` skill,
   "Saved-only lists"). Each stream is one kind and either the open or the restricted children:
@@ -786,42 +783,35 @@ resolve the reader with `files_nodes_db_get_tree_reader` and filter every row wi
     A mismatch throws `should_never_happen`, because a stale flag would show a hidden row.
   - A filter and a sort only pick the index range inside the same stream, so hidden restricted
     children never change a page, its cursor, or its length.
-- `list_tree_children_sort_side_rows` gives a member the restricted children shared with them, as
-  saved rows, until shared items get their own sorted streams. It reads no drafts. A grant-only
-  member's root rows come from these side rows. The owner gets an empty list, because the
-  restricted twins hold those rows.
+- `list_tree_children_shared` gives a member the restricted children shared with them, one share
+  stream per principal, for the tree and the table. It reads no drafts. The owner gets an empty,
+  done page, because the restricted twins hold those rows.
   - A non-owner can read a restricted scope root only through a user or role `content.read` grant
-    on it. So a member's candidates come from `db_list_granted_restricted_scope_nodes`, the same
-    grant lists `list_tree_shared_roots` reads, kept when they are active children of this folder.
-    Scanning the folder instead would not scale: a folder of one private folder per person has
-    thousands of restricted children.
-  - A member's cut-off must never depend on a row hidden from them. Otherwise the cut would move
-    when a hidden row is added and leak that it exists. A grant doc can outlive the access, for
-    example a plugin-tagged grant whose membership ended. So the query walks the candidates in name
-    order, checks each one with saved reads (`db_get_readable_tree_node`: same tenant, then the
-    readable filter), skips the ones it refuses, and stops when a 201st row would show. The member
-    gets the first 200 readable rows, with `tooManyShared` when there are more.
-  - When a grant list passes `TREE_SHARED_ROOTS_MAX_GRANTS` (500), some candidates are missing. Then
-    the member gets no side rows and `tooManyShared: true`. The answer never depends on the hidden
-    restricted children of the folder.
-  - Known limit: loading the grant lists costs one `db.get` per grant. Only the user's own list can
-    reach 500. A role list holds at most 50 nodes, because `set_node_share_grant` puts a role on at
-    most 50 share lists in the organization, and it is the only writer of role grants. So the lists
-    cost about 500 plus 50 per role, plus a few reads per checked candidate.
-  - The list has no sort, filter, or metadata argument. `get_table_sort_key({ membershipId,
-    parentId, target, sort })` and `get_table_filter_match({ membershipId, parentId, target, filter,
-    namePrefix })` check one side target again. They take a saved target (a private one gets null),
-    load the node, check organization, workspace, active state, and `parentId === args.parentId`,
-    then `access_control_db_authorize_membership(..., { permission: "content.read", fileNode })`.
-    Any failure returns null, the same for a missing and a hidden node. A prior side row never
-    grants access.
-- A folder that the caller can read but that is archived gets empty pages and empty side rows, not
-  a refusal, so the table shows no error there.
+    on it, so the share rows hold every candidate. Scanning the folder instead would not scale: a
+    folder of one private folder per person has thousands of restricted children.
+  - The server builds the `principalKey` from the caller (`principalIndex` 0 is the user, 1 and 2
+    their roles from `access_control_db_resolve_role_refs`), never from the client. A role the
+    member does not have gets an empty, done page.
+  - A member's page must never depend on a row hidden from them. Otherwise a cut would move when a
+    hidden row is added and leak that it exists. The stream reads only the member's share rows, so
+    hidden restricted children never change a page, its cursor, or its length.
+  - A share row is a copy, and a grant can outlive the access, for example a plugin grant whose
+    membership ended. So each row is checked again: its node must be a restricted root of the
+    reader's organization and workspace, still under this parent, active or archived as the read
+    asks, and readable. A plugin grant's row must also carry the member's live membership
+    lifetime, so after a re-invite the old grant reads nothing, even while another grant keeps the
+    node readable. A row
+    that fails is dropped, so a page can be short.
+  - Share rows copy no metadata, so a metadata sort or filter gets an empty, done page.
+    `has_tree_children_shared` tells the table that the member has shares there, so it can say they
+    are not shown.
+- A folder that the caller can read but that is archived gets empty pages, not a refusal, so the
+  table shows no error there.
 - `isRestrictedScopeRoot` on `files_nodes` is a stored copy of `restrictedScopeNodeId === _id`, and
   committed metadata field docs carry the same copy. `files_nodes_db_set_restricted_scope` writes
   both whenever a node is restricted or unrestricted. `list_tree_children_sorted` and
   `list_folder_fields` throw `should_never_happen` when a row's flag does not match the range it
-  came from. The side rows need no such guard: they check every row.
+  came from. The share streams need no such guard: they check every row.
 - `files_metadata.list_folder_fields` checks active membership and folder `content.read` before
   listing direct-child committed keys. The root needs workspace read; a grant-only member gets an
   empty, done ordinary catalog there. A readable archived folder also gets an empty, done page.
@@ -834,7 +824,7 @@ resolve the reader with `files_nodes_db_get_tree_reader` and filter every row wi
 - `files_metadata.list_node_fields` and `get_field_values` check the node on every call: they load
   the saved node, check tenant and active state, then `access_control_db_authorize_membership(...,
   { fileNode })` with `content.read`. A private target or a refusal returns null, including after a
-  grant is revoked. A prior side row never grants access. They read committed docs only; a doc of
+  grant is revoked. A prior shared row never grants access. They read committed docs only; a doc of
   another node or tenant throws instead of becoming a key name or a value. These queries keep
   whole-query byte and call budgets, and throw when no field can finish. They do not scan hidden
   child partitions to decide a catalog cap. Columns are personal browser preferences; choosing a
@@ -908,6 +898,33 @@ Five rules that look like details and are not:
   reaches somebody who can act on it — share with the people instead — rather than an inviter who
   can fix nothing. Changing a level the role already has on a node writes no new share and is not
   counted.
+
+### Share rows
+
+`files_share_rows` holds one row per share, so a member's shared items can be paged with indexes like
+the folder table. Code: `packages/app/server/files-share-rows.ts`.
+
+- A share is a file `content.read` grant to a user or a role. Its row lives while the grant lives and
+  its node is a restricted scope root in the grant's organization and workspace, active or archived.
+  Service account and public grants have no row.
+- `principalKey` is `user:<userId>` or `role:<role>`. A role share is one row, not one row per member.
+- A row copies the node's list fields (parent, kind, archive, names, `updatedAt`, extension, size,
+  creation time) and the grant's `externalPluginMembershipLifetime` (`null` when missing).
+- Nothing writes rows by hand. The pending overlay flush keeps them true in the writer's transaction
+  (grants are one of its source tables): a file grant insert, patch or delete syncs that grant's row,
+  and a write to a node that is or was a restricted root syncs the node's rows. A move, rename or
+  archive of an ancestor changes no copied field.
+- A node sync reads the node's `content.read` grants in the node's own workspace with one range
+  (`by_resource_permission`). The share caps (`MAX_FILE_SHARE_PRINCIPALS`, 50 people and roles, in
+  `files_sharing.ts`, and `MAX_READERS`, 50 plugin readers, in `plugins_external_files.ts`) bound it
+  to about 100 rows.
+- A move counts the rows of each restricted root it moves in its read and write budgets, so a big move
+  answers `move_too_large` instead of a Convex limit error. 38 restricted folders with 50 shares each
+  fit in one move; 39 do not.
+- After a dashboard edit or `convex import`, run `files_pending_overlay:check_share_rows`
+  (organization, workspace, `cursor: null`; call again with the returned cursor until it is null).
+  `migrations:run_backfill_files_share_rows` writes the rows of every file grant again.
+- Data deletion: see `../data-deletion/SKILL.md`.
 
 ## Public file links
 

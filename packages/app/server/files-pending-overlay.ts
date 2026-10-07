@@ -8,6 +8,7 @@
 // Every mutation captures its writes to the source tables with `files_pending_overlay_db_wrap`
 // and flushes once at the end (`convex/functions.ts`). The flush recomputes derived docs from the
 // source tables and the owner's reader. Derived docs only tell it what to recompute, never facts.
+// The same flush keeps the share rows true (`server/files-share-rows.ts`).
 //
 // Leaf module: import only `convex/_generated`, `shared/`, `common/` and other leaf modules (see
 // `server/files-visible-resolve.ts`).
@@ -25,11 +26,18 @@ import {
 } from "../shared/files.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import { convex_error } from "./convex-utils.ts";
+import {
+	files_share_rows_db_sync_grant,
+	files_share_rows_db_sync_node,
+	files_share_rows_node_changed,
+	files_share_rows_NODE_FIELDS,
+} from "./files-share-rows.ts";
 import { files_visible_resolve_db_create } from "./files-visible-resolve.ts";
 import { path_tree_prefix_upper_bound } from "./server-utils.ts";
 
 /**
- * Tables the flush recomputes from. A write to one of them marks derived docs dirty.
+ * Tables the flush recomputes from. A write to one of them marks derived docs dirty. A grant write
+ * marks something only for a file grant, which has a share row.
  */
 const SOURCE_TABLES = new Set<string>([
 	"files_nodes",
@@ -37,6 +45,7 @@ const SOURCE_TABLES = new Set<string>([
 	"files_pending_nodes",
 	"files_pending_node_publish_receipts",
 	"files_metadata_docs",
+	"access_control_permission_grants",
 ]);
 
 /**
@@ -49,13 +58,16 @@ export const files_pending_overlay_DERIVED_TABLES = new Set<string>([
 	"files_pending_list_rows",
 	"files_pending_list_keys",
 	"files_pending_overlay_jobs",
+	"files_share_rows",
 ]);
 
 /**
  * The fields the flush reads from a source doc it saw before. The caches keep only these.
  */
 const SOURCE_FIELDS: Record<string, string[]> = {
-	files_nodes: ["organizationId", "workspaceId", "parentId", "name", "kind", "treePath", "archiveOperationId"],
+	files_nodes: ["organizationId", "workspaceId", "treePath", "restrictedScopeNodeId", ...files_share_rows_NODE_FIELDS],
+	// Only a file grant's write marks its share row, so the kind is all the flush needs.
+	access_control_permission_grants: ["resourceKind"],
 	files_pending_updates: ["organizationId", "workspaceId", "userId", "target"],
 	files_pending_nodes: ["organizationId", "workspaceId", "userId", "parent", "name", "state"],
 	files_pending_node_publish_receipts: ["organizationId", "workspaceId", "userId", "privateNodeId", "savedNodeId"],
@@ -216,6 +228,10 @@ type State = {
 	 * Saved nodes whose committed metadata changed.
 	 */
 	committedMetadataNodeIds: Set<Id<"files_nodes">>;
+	/**
+	 * Written file grants. The flush syncs their share rows.
+	 */
+	grantIds: Set<Id<"access_control_permission_grants">>;
 	ownerPathRequests: OwnerPathRequest[];
 	/**
 	 * Places whose fields the place fields job syncs, with their workspace.
@@ -339,6 +355,7 @@ function new_state(): State {
 		unknownProposalIds: new Set(),
 		unknownMetadataIds: new Set(),
 		committedMetadataNodeIds: new Set(),
+		grantIds: new Set(),
 		ownerPathRequests: [],
 		placeFieldIds: new Map(),
 		scheduledJobs: new Set(),
@@ -606,6 +623,8 @@ export function files_pending_overlay_db_wrap(ctx: MutationCtx) {
 						if (table === "files_nodes") {
 							if (!state.savedOld.has(id as Id<"files_nodes">))
 								state.savedOld.set(id as Id<"files_nodes">, Promise.resolve(null));
+						} else if (table === "access_control_permission_grants") {
+							if (next.resourceKind === "file") state.grantIds.add(id as Id<"access_control_permission_grants">);
 						} else mark_source_write(state, table, id, null, next);
 					}
 					return id;
@@ -642,6 +661,23 @@ export function files_pending_overlay_db_wrap(ctx: MutationCtx) {
 						if (property === "delete") state.lastKnown.delete(id);
 						else if (property === "replace") state.lastKnown.set(id, pick_source_fields(table, value!));
 						else if (known) state.lastKnown.set(id, pick_source_fields(table, { ...known, ...value }));
+						return;
+					}
+
+					// Most grant writers query the grant first, so its kind is known and a grant that is not
+					// a file grant costs no read here.
+					if (table === "access_control_permission_grants") {
+						const old = await read_old(table, id);
+						await Reflect.apply(write, target, args);
+						const known = state.lastKnown.get(id) ?? old;
+						const next =
+							property === "delete"
+								? null
+								: pick_source_fields(table, property === "replace" ? value! : { ...known, ...value });
+						if (next) state.lastKnown.set(id, next);
+						else state.lastKnown.delete(id);
+						if (old?.resourceKind === "file" || next?.resourceKind === "file")
+							state.grantIds.add(id as Id<"access_control_permission_grants">);
 						return;
 					}
 
@@ -1278,6 +1314,11 @@ async function db_flush_saved_node(flush: Flush, nodeId: Id<"files_nodes">, old:
 			if (Object.keys(patch).length > 0) await ctx.db.patch("files_pending_places", place._id, patch);
 		}
 
+	// Only a node that is or was a restricted scope root has share rows. An ancestor's move, rename or
+	// archive changes no copied field: an archive or restore writes the node itself too.
+	if (files_share_rows_node_changed(nodeId, old, node))
+		await files_share_rows_db_sync_node(ctx.db, { ...scope, nodeId, node });
+
 	const changed =
 		!old ||
 		!node ||
@@ -1473,12 +1514,14 @@ export async function files_pending_overlay_db_flush(ctx: MutationCtx) {
 		const unknownProposalIds = state.unknownProposalIds;
 		const unknownMetadataIds = state.unknownMetadataIds;
 		const committedMetadataNodeIds = state.committedMetadataNodeIds;
+		const grantIds = state.grantIds;
 		if (
 			savedOld.size +
 				targets.size +
 				unknownProposalIds.size +
 				unknownMetadataIds.size +
-				committedMetadataNodeIds.size ===
+				committedMetadataNodeIds.size +
+				grantIds.size ===
 			0
 		)
 			break;
@@ -1488,6 +1531,9 @@ export async function files_pending_overlay_db_flush(ctx: MutationCtx) {
 		state.unknownProposalIds = new Set();
 		state.unknownMetadataIds = new Set();
 		state.committedMetadataNodeIds = new Set();
+		state.grantIds = new Set();
+
+		for (const grantId of grantIds) await files_share_rows_db_sync_grant(ctx.db, grantId);
 
 		// Owners of written docs the wrapper did not know.
 		for (const id of unknownProposalIds) {

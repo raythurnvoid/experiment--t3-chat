@@ -6,6 +6,7 @@
 //
 // `check_user` and `repair_user` walk one user's proposals and derived docs, so orphan docs are
 // found too. QA runs `check_user` after each phase, and `repair_user` fixes what it reports.
+// `check_share_rows` does the same check for one workspace's share rows.
 
 import { compareValues, v } from "convex/values";
 import { internal } from "./_generated/api.js";
@@ -21,6 +22,7 @@ import {
 	files_pending_overlay_db_set_own_job,
 	files_pending_overlay_db_sync_list_key,
 } from "../server/files-pending-overlay.ts";
+import { files_share_rows_db_compute_for_grant } from "../server/files-share-rows.ts";
 import { path_tree_prefix_upper_bound } from "../server/server-utils.ts";
 import type { files_PendingTarget } from "../shared/files.ts";
 
@@ -63,6 +65,13 @@ const RECOVERY_SLOW_MS = 60 * 60 * 1000;
 const WALK_PAGE_SIZE = 4;
 
 const WALK_PHASES = ["proposals", "hides", "places", "list_rows", "list_keys", "place_fields", "jobs"] as const;
+
+/**
+ * Docs per page of `check_share_rows`. Checking one doc reads about 3 docs.
+ */
+const SHARE_CHECK_PAGE_SIZE = 100;
+
+const SHARE_CHECK_PHASES = ["grants", "share_rows"] as const;
 
 const job_kind_validator = v.union(
 	v.literal("saved_node"),
@@ -793,6 +802,69 @@ export const repair_user = internalMutation({
 
 		if (cursor) await ctx.scheduler.runAfter(0, internal.files_pending_overlay.repair_user, { ...args, cursor });
 		return null;
+	},
+});
+
+/**
+ * Compare one page of a workspace's share rows with what the flush would write, and return the
+ * differences. It walks the workspace's file grants first (a missing or wrong row), then its share
+ * rows (a row with no share behind it). Call again with the returned cursor until it is null.
+ */
+export const check_share_rows = internalQuery({
+	args: {
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		cursor: v.union(v.string(), v.null()),
+	},
+	returns: v.object({ differences: v.array(v.string()), cursor: v.union(v.string(), v.null()) }),
+	handler: async (ctx, args) => {
+		const position = args.cursor
+			? (JSON.parse(args.cursor) as { phase: number; page: string | null })
+			: { phase: 0, page: null };
+		const phase = SHARE_CHECK_PHASES[position.phase]!;
+		const paginationOpts = { cursor: position.page, numItems: SHARE_CHECK_PAGE_SIZE };
+		const differences: string[] = [];
+
+		let result: { isDone: boolean; continueCursor: string };
+		if (phase === "grants") {
+			const grants = await ctx.db
+				.query("access_control_permission_grants")
+				.withIndex("by_resource_permission", (q) =>
+					q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("resourceKind", "file"),
+				)
+				.paginate(paginationOpts);
+			for (const grant of grants.page) {
+				const desired = await files_share_rows_db_compute_for_grant(ctx.db, grant);
+				const rows = await ctx.db
+					.query("files_share_rows")
+					.withIndex("by_grant", (q) => q.eq("grantId", grant._id))
+					.collect();
+				const stored = rows.map(stable_json).join();
+				const expected = desired ? stable_json(desired) : "";
+				if (stored !== expected)
+					differences.push(`share rows of grant ${grant._id}: stored [${stored}], expected [${expected}]`);
+			}
+			result = grants;
+		} else {
+			const rows = await ctx.db
+				.query("files_share_rows")
+				.withIndex("by_org_ws_principal_archive_sortName_name", (q) =>
+					q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId),
+				)
+				.paginate(paginationOpts);
+			for (const row of rows.page) {
+				const grant = await ctx.db.get("access_control_permission_grants", row.grantId);
+				const desired = await files_share_rows_db_compute_for_grant(ctx.db, grant);
+				if (stable_json(row) !== stable_json(desired))
+					differences.push(`share row ${row._id}: stored ${stable_json(row)}, expected ${stable_json(desired)}`);
+			}
+			result = rows;
+		}
+
+		const next = result.isDone
+			? { phase: position.phase + 1, page: null }
+			: { ...position, page: result.continueCursor };
+		return { differences, cursor: next.phase < SHARE_CHECK_PHASES.length ? JSON.stringify(next) : null };
 	},
 });
 

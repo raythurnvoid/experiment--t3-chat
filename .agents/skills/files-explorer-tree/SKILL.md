@@ -131,15 +131,23 @@ Tree-item components:
   attached hooks:
   - `useFolders({ folderIds, archived, pinnedNodeIds })` loads the root and each listed folder. The
     sidebar passes its expanded folders; the folder view passes the open folder. It returns `rows`
-    (`undefined` until the root page and the shared roots answer), `statusByFolderId` (`loading`,
-    `more`, `done`), `hoistedIds`, and `loadMore(folderId)`.
+    (`undefined` until the root's pages answer), `statusByFolderId` (`loading`, `more`, `done`),
+    `hoistedIds`, `loadMore(folderId)`, and `sharedRoots` (the "Shared with you" group below).
   - `useFullList(enabled)` loads the whole workspace through `files_nodes.list_tree`. Only search,
     AI chat mentions, the media picker, and a Pending panel with entry changes use it. It subscribes
     only while an enabled caller is mounted, and it keeps the last complete result during a page split.
-- Each open folder runs two `list_tree_children` pagers of 200 rows at once: one for subfolders and
-  one for files. `loadMore` asks for the next subfolders page first, then files. A pager reports rows
-  only when both pagers are settled, because a split page drops its rows for a moment. The provider
-  keeps the old rows until then.
+- Each open folder loads its subfolders and its files at once, each kind from 5 streams of 200 rows,
+  like the folder table: the open stream (`list_tree_children`, `restricted: false`), the owner's
+  restricted twin (`restricted: true`), and a member's 3 share streams (`list_tree_children_shared`
+  in file.name A to Z order, `principalIndex` 0 to 2). A stream that is not for the reader answers an
+  empty, done page. Once `organizations.list` says whether the reader owns the workspace
+  (`FilesTreeProvider.useIsOwner`), the client skips the twin for a member and the share streams for
+  the owner. `files_tree_stream_args` builds the args of all 5, so the sidebar's rename optimistic
+  update matches them exactly. `files_merge_sorted_streams` merges each kind in the server order,
+  and a node shared to a member and to their role shows once. `loadMore` loads the stream
+  that holds the merge back, subfolders first. A pager reports rows only when every stream is
+  settled, because a split page drops its rows for a moment. The provider keeps the old rows until
+  then.
 - The sidebar asks for the next page when the last loaded child of a `more` folder is rendered. The
   effect runs again after every settled page, because a page can add no row below that last child:
   the last subfolders page adds rows above the files, and an access-filtered page can be empty.
@@ -147,13 +155,37 @@ Tree-item components:
   `get_tree_ancestors`, which returns the node and its readable folders from the top down. Those rows
   show before their folder's page reaches them. When the top readable folder is not at the root,
   its row is hoisted to the root level.
-- `list_tree_shared_roots` returns restricted folders and files that were shared with a member whose
-  folder above them is hidden. They are hoisted to the root level. The owner gets none.
+- The "Shared with you" group (`FilesSidebarSharedGroup`) sits above the tree and lists every share
+  of a member: `list_tree_shared_roots`, 3 paginated streams by `principalIndex`, pages of 50, with a
+  Show more button. A share inside a folder the member can open shows there too. The group is outside
+  the tree (headless-tree needs one row per node id), so its rows carry `data-shared-row-id="shared:<id>"`
+  and a click opens the node. The owner and a member with no shares see no group. It hides during a
+  search, which lists every match itself. Archived shares join it, after the active ones, while
+  archived items show.
+  - Its own pager: `FilesTreeSharedRootsPager` reports into its own results map in the provider, not
+    into the folder results, so a group update does not rebuild the tree rows. Once the role is known,
+    the owner reads no group stream (the owner has no shares).
+  - Row menu: the tree row menu, opened by right click, the ContextMenu key or Shift+F10. It acts on
+    that row only, with the real node id: Copy path, Copy link, Copy node id, Share, Properties,
+    Archive or Restore, Copy, and Paste into a shared folder. Rename, create, Cut, and expand or
+    collapse the subtree are disabled. Archive and Paste need `canWrite`, and Copy and Paste need an
+    active share. A row does not expand inline (its children would need tree ids that clash with the tree's
+    own rows). Opening it reveals it in the tree.
+  - Focus: after Share or an Archive Cancel opened from a group row, focus goes back to that group row,
+    not to the share's tree row. After a confirmed Archive, focus goes to the next group row, then the
+    row before it, then Show more. When the group is gone, the tree picks a row. Show more keeps focus
+    while more pages remain. Once the last page loads, focus moves to the first new row by id (a new
+    active row sits before the old archived rows), but only when focus is still in the group or on the
+    page body.
+  - A member with no tree rows sees "No files yet." only when the group is done and empty too.
 - Every folder has a chevron, because an unopened folder's children are unknown. An open empty folder
   shows "No files inside"; a loading one shows "Loading…" and sets `aria-busy` on its row.
-- Children sort folders first, then by name in raw byte order (`sort_children`), the same order as
-  the `by_organization_workspace_parent_archiveOperation_kind_name` index. So `B` sorts before `a`.
-  This keeps loaded pages in place while later pages arrive.
+- Children sort folders first, then by `(sortName, name)` (`sort_children`), the folder table's
+  file.name A to Z order and the order of the tree indexes: active rows on
+  `by_org_ws_parent_archive_restricted_kind_sortName_name`, archived rows on
+  `by_org_ws_parent_kind_restricted_archive_sortName_name`. So `file2` sorts before `file10`, case
+  and accents are ignored, and the raw name breaks ties. This keeps loaded pages in place while later
+  pages arrive.
 - Show archived items runs extra archived pagers for each open folder. The menu shows no archived
   count, because counting would need the whole tree.
 - `FileNodeView` uses the matching loaded tree node while `get_file_node_for_membership` is loading.
@@ -240,8 +272,9 @@ Tree-item components:
   extra reads for each draft, so only the agent pays it.
 - So a saved row with a draft move, rename, or delete on it looks normal in the folder table, and a
   draft create does not show there.
-- The folder table follows this rule now. The search box and the global search palette still
-  include the owner's drafts until they move to saved-only reads (see "Search" and "Global
+- The folder table and the sidebar (`list_tree_children`, `list_tree_children_shared`,
+  `list_tree_shared_roots`) follow this rule now. The search box and the global search palette
+  still include the owner's drafts until they move to saved-only reads (see "Search" and "Global
   Search").
 - Code that keeps a list saved-only says so in a short comment that points here, like
   `// Saved rows only: UI lists never show drafts.` in `list_tree_children_sorted`.
@@ -311,7 +344,8 @@ in raw name order. The agent's `ls` and `find` also keep raw name order.
 - A reader (`canSave: false`) gets the same bar and header clicks, but no Save button. The sort lives
   only in their URL. A different folder starts without it. Who may save is in the `access-control`
   skill.
-- The sidebar still lists children in name order (`list_tree_children`). Its order is separate from the table.
+- The sidebar always lists children in file.name A to Z order (`list_tree_children`). Its order is
+  separate from the table's sort.
 
 ### Data path
 
@@ -330,7 +364,7 @@ in raw name order. The agent's `ls` and `find` also keep raw name order.
     row is readable. No row is dropped after paging, and a hidden row never takes a page slot.
   - The restricted twin (`restricted: true`) reads the children that are their own restricted root.
     Only the owner gets rows; everybody else gets an empty, done page. A member gets the restricted
-    children shared with them from the side rows below.
+    children shared with them from the share streams below.
   - Every row must match its stream: the reader's organization and workspace, right parent, active,
     and both `isRestrictedScopeRoot` and `restrictedScopeNodeId === _id` equal to `restricted`. A
     metadata row's field doc must also copy the node's `sortName`, `name` and kind. A mismatch
@@ -360,46 +394,63 @@ in raw name order. The agent's `ls` and `find` also keep raw name order.
     metadata row reads 3: 1,000, guard 700. A test measures each with
     `ctx.meta.getTransactionMetrics()`. The open built-in stream reads nothing per row (its rows
     share one access scope), so it has no guard.
-- `files_nodes.list_tree_children_sort_side_rows` returns the restricted children shared with a
-  member, as saved rows with `createdAt`, `contentByteSize` and `treeRow`. It stays until shared
-  items get their own sorted streams. It reads no drafts.
-  - It returns null when the caller cannot read the folder. The owner gets an empty list: the
-    restricted twins hold those rows.
-  - A member's candidates come from their own `content.read` grants and their roles' grants
-    (`db_list_granted_restricted_scope_nodes`, like `list_tree_shared_roots`), kept when they are
-    active children of this folder. The query walks them in name order, checks each one with saved
-    reads (`db_get_readable_tree_node`), skips the ones the member cannot read, and stops at 200
-    rows with `tooManyShared`. When one grant list passes 500, the member gets no rows and
-    `tooManyShared: true`. The `access-control` skill explains why.
-  - The list has no sort, filter, or metadata argument. Two point checks fill in the rest:
-    `get_table_sort_key` (metadata sorts only; built-in keys come from the row facts in the
-    browser) and `get_table_filter_match` (with a filter; it also applies `namePrefix`). Both take a
-    saved target and return null for a private one. They load the node, check organization,
-    workspace, active state and `parentId`, then `access_control_db_authorize_membership` with
-    `content.read`. Any failure returns null. `get_table_sort_key` reads `sort[0]` only.
+- `files_nodes.list_tree_children_shared` pages one share stream: the restricted children shared
+  with a member, read from the share rows (`files_share_rows`, the `access-control` skill explains
+  them). It takes the args of `list_tree_children_sorted` without `restricted`, plus `archived` and
+  `principalIndex`: 0 reads the member's own shares, 1 and 2 the shares of their workspace role and
+  organization role. The server builds the `principalKey` from the caller, never from the client.
+  - A share row is one copy per share, not per member, so a role share is one row for every member
+    with the role. Each built-in sort and non-metadata filter has a share index with the same field
+    order as its folder table index, so a share stream returns the same `sortKey` and the client
+    merges it like the restricted twin. file.created uses the node's creation time
+    (`nodeCreationTime`), not the share's.
+  - It refuses (an empty, done page) the owner (the restricted twin has those rows), a missing role,
+    a folder the caller cannot read (the root is allowed, so a grant-only member gets their root
+    shares), and any metadata sort or filter: share rows copy no metadata. An archived read takes
+    only file.name A to Z with no filter, for the tree.
+  - Each row is a copy, so each one is checked again: its node must be a restricted root of the
+    reader's workspace, still under this parent, active or archived as the read asks, and
+    readable. A plugin grant's row must also carry the member's live membership lifetime, so an old
+    grant reads nothing after a re-invite. A row that fails is dropped, so a page can be short.
+  - The row's copied node fields must still match the node. A copy out of step is a bug: the row
+    is dropped and logged.
+  - Page guard 187 (`TREE_SHARE_PAGE_MAX_ITEMS`, also the page size cap): the worst row (shared
+    with the member's second role, with an old plugin grant) reads 16 index ranges,
+    floor(3,000 / 16) = 187. `list_tree_shared_roots` uses the same guard.
+  - Refusals that need no folder read come before the folder check, so they cost nothing.
+  - Rollout: grants saved before share rows existed have no row. On a deployment with share grants,
+    run `migrations:run_backfill_files_share_rows` right after the push, then
+    `files_pending_overlay:check_share_rows` until it reports no difference. Until the backfill
+    ends, members do not see their shared restricted items in the tree, the table or "Shared with
+    you".
+- `files_nodes.has_tree_children_shared` says whether the member has a share in this folder, in the
+  `archived` state it asks for: one `.first()` per principal and kind. A plugin grant's row counts
+  only with the member's live membership lifetime. Only the first row per principal and kind is
+  checked, so a stale first row can give a short false "no". It returns null when the caller cannot
+  read the folder and false for the owner. The table uses it for the refused state and for the
+  note below.
 - `useFilesSortedChildren` in `packages/app/src/hooks/files-search-hooks.ts` merges it all:
-  - Per kind and segment there are three streams: the open stream, the owner's restricted twin
-    (empty and done for everybody else), and the side rows of that kind and segment. Each
-    paginated stream uses `usePaginatedQuery` from `convex/react`, with pages of 100.
-  - `merge_sorted_streams` merges the streams of one segment. A row shows only when every other
+  - Per kind and segment there are five streams: the open stream, the owner's restricted twin
+    (empty and done for everybody else), and the member's 3 share streams. Each stream uses
+    `usePaginatedQuery` from `convex/react`, with pages of 100. A metadata sort or filter (a text
+    filter's field, else a metadata sort's field, from `files_table_metadata_field`) skips the
+    share streams. Once the role is known, the owner skips the share streams and a member skips the
+    twin.
+  - `files_merge_sorted_streams` merges the streams of one segment. A row shows only when every other
     stream that is not done has loaded strictly past it (`files_sort_compare`, then the stream
     order). Otherwise that stream's next page could still hold a row that sorts before it. The
-    stream whose loaded rows end first loads next. The side rows come in one complete list, so
-    they never hold the merge back.
+    stream whose loaded rows end first loads next.
   - Segments show in order folders/value, folders/missing, files/value, files/missing. A later
     segment shows only after every earlier one is done, so the next folder page never pushes
     files down. A missing segment starts once both value streams of its kind are done, and stays
     started for that sort.
   - The hook loads pages until it has the rows the table wants. `loadMore()` asks for 100 more.
-  - Side row keys: built-in keys come from the row facts at once. A metadata sort asks
-    `get_table_sort_key` for each side row; a side row without the key is hidden, like stream
-    rows. With a filter, a side row shows only after `get_table_filter_match` says it matches. A
-    null answer removes the row. A node that is in two streams for a moment (for example right
-    after it became restricted) shows once.
+  - A node in two streams (shared to the member and to their role, or for a moment right after it
+    became restricted) shows once.
   - While a new sort or a page loads, the last settled rows stay, with `aria-busy="true"` on the
     table. `rowsSort` and `rowsFilter` keep the sort and filter of the shown rows; the header
-    arrows already show the requested sort. A side-row refusal removes a held row at once.
-    `sideTargets` lists the side rows for field discovery.
+    arrows already show the requested sort. `hiddenSharedKey` is the metadata key when the member has shares here and a
+    metadata sort or filter hides them.
   - No draft enters the table: no private rows.
 
 ### Table UI
@@ -415,8 +466,8 @@ in raw name order. The agent's `ls` and `find` also keep raw name order.
   everyone" (writers, only while the URL has a sort), then the Columns icon button.
 - The Columns popover uses visible labels and native checkboxes, grouped as Built-in and
   Metadata. Its catalog covers the saved direct children: `list_folder_fields` (the open children,
-  and for the owner the restricted children too) plus `list_node_fields` for each side row of a
-  member. Search checks loaded keys. Show more fields requests another page from unfinished
+  and for the owner the restricted children too). A member's shared rows add no fields: a metadata
+  sort or filter hides them, so their fields could not be used. Search checks loaded keys. Show more fields requests another page from unfinished
   sources. An absent selected key stays removable.
 - Column choices use `app_state::files_folder_columns::scope::${membershipId}` in browser storage.
   Each folder id, or `root`, has its own list. Keep at most 100 recent folder choices per membership.
@@ -440,12 +491,11 @@ in raw name order. The agent's `ls` and `find` also keep raw name order.
 - Metadata display keeps at most 100 active targets and 700 value page descriptors. One observer
   uses the editor scroll box with a 400px vertical margin. Focused rows come first, then visible
   rows, then nearby rows. Scrolling and resizing update that order. Offscreen payloads are dropped.
-  This bound covers cell display only; side catalog and sort queries use the full supported side set.
+  This bound covers cell display only; field discovery reads every loaded shared row.
 - An empty readable folder keeps its toolbar and header. "This folder is empty" shows only after
   every stream is done without an error. With a filter, an empty done table says "No rows match
-  this filter" ("No matches in the rows checked" when some shared items are not shown). While a
-  stream has more pages but no row to show yet: "No matches loaded yet. Show more to keep
-  looking." Wide tables scroll horizontally inside the table region.
+  this filter". While a stream has more pages but no row to show yet: "No matches loaded yet. Show
+  more to keep looking." Wide tables scroll horizontally inside the table region.
 - The table carries `data-sort-fields` for the sort of the shown rows (`rowsSort`, held while a new
   sort loads). Headers follow the requested sort at once: the sorted header carries
   `data-sort-direction`, the arrow, and `aria-sort` for the new sort before its rows arrive. A sort
@@ -458,9 +508,9 @@ in raw name order. The agent's `ls` and `find` also keep raw name order.
   `aria-describedby`. The header buttons of other columns have `aria-disabled="true"` and point to
   that text, but stay focusable: a click or Enter does not sort and shows "Remove the filter to
   sort by <column>" (`role="status"`).
-- A metadata sort with no filter shows the static text "Rows without <key> are hidden." There is
-  no text yet about members' shared items: until shared items get their own streams, a member's
-  shared rows still show in metadata sorts and filters when they have the key.
+- A metadata sort with no filter shows the static text "Rows without <key> are hidden." When a
+  member has shares in the folder (`hiddenSharedKey`), a metadata sort or filter also shows "Items
+  shared with you are not shown while sorting or filtering by <key>."
 - A sortable header is one `<button>` stretched over the whole cell with a `::after` overlay, so a
   click anywhere in the cell sorts and the focus ring wraps the cell. The column options button sits
   on top at the right edge and opens its menu without sorting. Only sortable headers get the hover
@@ -470,9 +520,8 @@ in raw name order. The agent's `ls` and `find` also keep raw name order.
   Every column except file.name offers Hide column. While a filter is on, the Sort items of other
   columns stay in the menu, disabled with `aria-disabled` but reachable by keyboard, and show the
   reason "Remove the filter to sort by <column>".
-- Cap notice: "Too many shared items here to sort. Some are not shown."
-- A failed stream or side query shows "Filter could not be applied" (or "Folder contents could not
-  be loaded." with no filter) and Retry, which resets the side queries.
+- A failed stream or `has_tree_children_shared` shows "Filter could not be applied" (or "Folder
+  contents could not be loaded." with no filter) and Retry, which subscribes that query again.
 - The table first shows 5 rows. Show more shows the rest of the loaded rows; when every loaded row
   is shown and the folder is not done, it asks for 100 more. Show less goes back to 5. The table's
   README comes from `files_nodes.get_folder_readme`, not from the loaded rows.

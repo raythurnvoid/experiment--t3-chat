@@ -104,6 +104,62 @@
 	}
 	/* #endregion top section */
 
+	/* #region shared group */
+	.FilesSidebarSharedGroup {
+		flex-shrink: 0;
+		/* A long list scrolls on its own, so the tree below keeps its room. */
+		max-height: 40%;
+		overflow: hidden auto;
+
+		padding: 8px;
+
+		border-bottom: 1px solid var(--color-fg-02);
+	}
+
+	.FilesSidebarSharedGroup-title {
+		margin: 0 8px 4px;
+
+		font-weight: 500;
+		font-size: 0.75rem;
+		color: var(--color-fg-07);
+	}
+
+	.FilesSidebarSharedGroup-list {
+		margin: 0;
+		padding: 0;
+		list-style: none;
+	}
+
+	.FilesSidebarSharedGroup-row {
+		width: 100%;
+		justify-content: flex-start;
+		gap: 6px;
+
+		&[aria-current="page"] {
+			background: linear-gradient(var(--color-base-1-06), var(--color-base-1-05));
+		}
+	}
+
+	.FilesSidebarSharedGroup-row-name {
+		flex: 1;
+		min-width: 0;
+
+		text-align: start;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		overflow: hidden;
+	}
+
+	.FilesSidebarSharedGroup-row-archived {
+		font-size: 0.75rem;
+		color: var(--color-fg-07);
+	}
+
+	.FilesSidebarSharedGroup-more {
+		width: 100%;
+	}
+	/* #endregion shared group */
+
 	/* #region upload conflict modal */
 	.FilesSidebarUploadConflictModal {
 		width: min(500px, calc(100vw - 32px));

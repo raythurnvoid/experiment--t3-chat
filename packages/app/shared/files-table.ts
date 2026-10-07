@@ -87,6 +87,19 @@ export function files_table_filter_order_field(filter: { field: string; op: stri
 }
 
 /**
+ * The metadata key the table reads, or null: a text filter's field, else a metadata sort's field.
+ * An "is" text filter reads the name order, so the sort alone does not say it.
+ */
+export function files_table_metadata_field(args: {
+	sort: { field: string } | null;
+	filter: files_table_Filter | null;
+}) {
+	const { sort, filter } = args;
+	if (filter !== null) return filter.kind === "text" ? filter.field : null;
+	return sort !== null && !files_sort_field_is_built_in(sort.field) ? sort.field : null;
+}
+
+/**
  * True when `name starts with` can join this filter. Only an "is" filter can: its index keeps the
  * name right after the value, so the name prefix is one more range on the same index.
  */

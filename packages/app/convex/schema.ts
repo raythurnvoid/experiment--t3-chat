@@ -2723,6 +2723,107 @@ const app_convex_schema = defineSchema({
 		.index("by_user", ["userId"]),
 
 	/**
+	 * One doc per share: a file `content.read` grant to a user or a role, while its node is a restricted
+	 * scope root in the grant's workspace, active or archived. The other fields copy the node, so each
+	 * index mirrors a folder table sort index for one principal. A role share is one doc, not one per
+	 * member, so a role membership change writes nothing.
+	 *
+	 * Derived docs: only the overlay flush (`server/files-share-rows.ts`), its backfill and data
+	 * deletion write them.
+	 */
+	files_share_rows: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		/**
+		 * `"user:<userId>"` or `"role:<role ref>"`, so one index serves both principals.
+		 */
+		principalKey: v.string(),
+		grantId: v.id("access_control_permission_grants"),
+		nodeId: v.id("files_nodes"),
+		parentId: v.union(v.id("files_nodes"), v.literal("root")),
+		kind: v.union(v.literal("folder"), v.literal("file")),
+		archiveOperationId: v.union(v.string(), v.null()),
+		sortName: v.string(),
+		name: v.string(),
+		updatedAt: v.number(),
+		lowercaseExtension: v.union(v.string(), v.null()),
+		contentByteSize: v.union(v.number(), v.null()),
+		/**
+		 * The node's `_creationTime`, so the created sort follows the node, not the share.
+		 */
+		nodeCreationTime: v.number(),
+		/**
+		 * The grant's `externalPluginMembershipLifetime`, or null when unset.
+		 */
+		externalPluginMembershipLifetime: v.union(v.number(), v.null()),
+	})
+		// `archiveOperationId` comes after `kind`, so an archived view reads `.gt(null)` as its last
+		// bounded field. The fields after it copy the saved folder table sort indexes.
+		.index("by_org_ws_principal_parent_kind_archive_sortName_name", [
+			"organizationId",
+			"workspaceId",
+			"principalKey",
+			"parentId",
+			"kind",
+			"archiveOperationId",
+			"sortName",
+			"name",
+		])
+		.index("by_org_ws_principal_parent_kind_archive_nodeCreationTime", [
+			"organizationId",
+			"workspaceId",
+			"principalKey",
+			"parentId",
+			"kind",
+			"archiveOperationId",
+			"nodeCreationTime",
+		])
+		.index("by_org_ws_principal_parent_kind_archive_updatedAt_sortName_name", [
+			"organizationId",
+			"workspaceId",
+			"principalKey",
+			"parentId",
+			"kind",
+			"archiveOperationId",
+			"updatedAt",
+			"sortName",
+			"name",
+		])
+		.index("by_org_ws_principal_parent_kind_archive_ext_sortName_name", [
+			"organizationId",
+			"workspaceId",
+			"principalKey",
+			"parentId",
+			"kind",
+			"archiveOperationId",
+			"lowercaseExtension",
+			"sortName",
+			"name",
+		])
+		.index("by_org_ws_principal_parent_kind_archive_size_sortName_name", [
+			"organizationId",
+			"workspaceId",
+			"principalKey",
+			"parentId",
+			"kind",
+			"archiveOperationId",
+			"contentByteSize",
+			"sortName",
+			"name",
+		])
+		// The sidebar's "Shared with you" list: every share of one principal.
+		.index("by_org_ws_principal_archive_sortName_name", [
+			"organizationId",
+			"workspaceId",
+			"principalKey",
+			"archiveOperationId",
+			"sortName",
+			"name",
+		])
+		.index("by_node", ["nodeId"])
+		.index("by_grant", ["grantId"]),
+
+	/**
 	 * Indexed metadata docs for a file. Field docs support existence search for presence-only
 	 * metadata. Value docs support string, number, boolean, and maybe_date search. Arrays insert one
 	 * value doc for each primitive item. Date-like strings also insert a maybe_date companion whose
@@ -3025,14 +3126,17 @@ const app_convex_schema = defineSchema({
 			"kind",
 			"name",
 		])
-		// The archived view pages one kind of one folder's archived children. `kind` sits before
-		// `archiveOperationId`, so the archived range never reads the other kind.
-		.index("by_organization_workspace_parent_kind_archiveOperation_name", [
+		// The archived sidebar pages one kind of one folder's archived children, the readable ones
+		// (`isRestrictedScopeRoot: false`) or the restricted ones, in the folder table name order.
+		// `kind` sits before `archiveOperationId`, so the archived range never reads the other kind.
+		.index("by_org_ws_parent_kind_restricted_archive_sortName_name", [
 			"organizationId",
 			"workspaceId",
 			"parentId",
 			"kind",
+			"isRestrictedScopeRoot",
 			"archiveOperationId",
+			"sortName",
 			"name",
 		])
 		// The public files list pages one folder's direct files with one extension.

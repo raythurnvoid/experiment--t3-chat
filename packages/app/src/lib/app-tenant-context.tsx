@@ -26,7 +26,7 @@ const AppTenantProvider = Object.assign(
 
 		return (
 			<AppTenantContext.Provider value={{ membershipId, organizationId, organizationName, workspaceId, workspaceName }}>
-				<FilesTreeProvider key={membershipId} membershipId={membershipId}>
+				<FilesTreeProvider key={membershipId} membershipId={membershipId} workspaceId={workspaceId}>
 					<AppActivitiesProvider key={membershipId} membershipId={membershipId}>
 						<FilesClipboardProvider key={membershipId} membershipId={membershipId}>
 							<AppChannelsProvider key={membershipId} membershipId={membershipId}>

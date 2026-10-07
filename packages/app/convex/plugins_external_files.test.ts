@@ -2755,6 +2755,79 @@ describe("external file readers", () => {
 		).toBeDefined();
 	});
 
+	test("share rows copy the readers' membership lifetime until a manual share takes over", async () => {
+		const { t, fixture, credentials, owner, root } = await setup();
+		const readers = await t.run(async (ctx) => {
+			const readers: { userId: Id<"users">; membershipLifetime: number }[] = [];
+			for (let index = 0; index < 2; index++) {
+				const userId = await ctx.db.insert("users", { clerkUserId: `row-reader-${index}` });
+				const membershipId = await ctx.db.insert("organizations_workspaces_users", {
+					organizationId: fixture.organizationId,
+					workspaceId: fixture.workspaceId,
+					userId,
+					active: true,
+				});
+				await ctx.db.insert("organizations_membership_lifetimes", {
+					organizationId: fixture.organizationId,
+					workspaceId: fixture.workspaceId,
+					userId,
+					membershipId,
+					lifetime: 1,
+					active: true,
+				});
+				readers.push({ userId, membershipLifetime: 1 });
+			}
+			return readers;
+		});
+		const privateScope = await t.mutation(internal.plugins_external_files.ensure_writer, {
+			...credentials,
+			path: `${ROOT}/private/rows`,
+			readOnly: true,
+			readers,
+			resourceKey: "rows",
+			rootNodeId: root.rootNodeId,
+		});
+		if (privateScope._nay) throw new Error(privateScope._nay.message);
+		const nodeId = privateScope._yay.folderNodeId;
+		const rows = async () =>
+			(
+				await t.run((ctx) =>
+					ctx.db
+						.query("files_share_rows")
+						.withIndex("by_node", (q) => q.eq("nodeId", nodeId))
+						.collect(),
+				)
+			)
+				.map((row) => ({ principalKey: row.principalKey, lifetime: row.externalPluginMembershipLifetime }))
+				.sort((a, b) => (a.principalKey < b.principalKey ? -1 : 1));
+		const keys = readers.map((reader) => `user:${reader.userId}`).sort();
+		expect(await rows()).toEqual(keys.map((principalKey) => ({ principalKey, lifetime: 1 })));
+
+		// A manual share detaches the folder: the grants lose their lifetime, and so do the rows.
+		expect(
+			(
+				await owner.mutation(api.files_sharing.set_node_share_grant, {
+					membershipId: fixture.membershipId,
+					nodeId,
+					principal: { kind: "user", userId: readers[0]!.userId },
+					level: "write",
+				})
+			)._nay,
+		).toBeUndefined();
+		expect(await rows()).toEqual(keys.map((principalKey) => ({ principalKey, lifetime: null })));
+		const differences: string[] = [];
+		let cursor: string | null = null;
+		do {
+			const page: { differences: string[]; cursor: string | null } = await t.query(
+				internal.files_pending_overlay.check_share_rows,
+				{ organizationId: fixture.organizationId, workspaceId: fixture.workspaceId, cursor },
+			);
+			differences.push(...page.differences);
+			cursor = page.cursor;
+		} while (cursor);
+		expect(differences).toEqual([]);
+	});
+
 	test("workspace content purge drains external file and grant receipt docs", async () => {
 		const { t, fixture, credentials, root, owner } = await setup();
 		const privateScope = await t.mutation(internal.plugins_external_files.ensure_writer, {

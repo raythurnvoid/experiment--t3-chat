@@ -318,9 +318,9 @@ the `files-explorer-tree` skill, "Saved-only lists").
   (`isRestrictedScopeRoot: true`) together: each step reads the next key of both and takes the
   smaller one in index order (`compareValues`, not JS `<`, which compares UTF-16 units), so a key
   in both shows once. Other callers read the open range only; a member's
-  shared restricted children add their keys through `list_node_fields`. The real node must still
-  belong to that folder, be active, and have a scope flag that matches the range it came from. A
-  stale scope flag throws instead of publishing a hidden key.
+  shared restricted children add no keys, because a metadata sort or filter hides them. The real
+  node must still belong to that folder, be active, and have a scope flag that matches the range it
+  came from. A stale scope flag throws instead of publishing a hidden key.
 - `list_node_fields({ membershipId, target, cursor })` returns
   `{ fields, continueCursor, isDone }`. It seeks distinct committed field paths of one saved node,
   so a 400-item list costs one key candidate. The cursor belongs to the membership and target.
@@ -372,29 +372,18 @@ A metadata filter reads only committed field docs, through the same index as a m
 There is no metadata `missing` filter: finding the rows without a key would need a scan. Pending
 edits never change a filter result.
 
-Side rows (a member's shared restricted children) use the separate
-`files_nodes.get_table_filter_match` query. It takes a saved target (a private one gets null),
-loads the node with the same `files_metadata_db_get_table_node`, and then checks the parent. A
-prior cell value is not proof of a match. It reads the committed `sortDisplayValue` and applies
-`files_table_filter_matches`, plus the name prefix. It returns `{ matches }`, or null for a
-refusal.
+A member's shared restricted children come from share rows, which copy no metadata. So a metadata
+filter or sort does not show them; the table says so (see the `files-explorer-tree` skill).
 
 # Folder Table Sort Keys
 
 A sort has one clause (`files_sort_MAX_CLAUSES` is 1). A metadata clause uses the committed field
 doc's encoded `sortValue`. Pending edits on saved nodes do not replace it. A metadata sort shows
-only the rows that have the key: its stream reads the field docs with a value, and a side row with
-a null key is hidden.
+only the rows that have the key: its stream reads the field docs with a value.
 
 The row key is `{ parts, nameKey }` from `shared/files-sort.ts`, with one part: the index suffix
 (`[sortValue, sortName, name]` for a metadata key). A null part sorts last in either direction,
 by name A to Z.
-
-`files_nodes.get_table_sort_key({ membershipId, parentId, target, sort })` returns a fresh key for
-one side row, or null. It reads `sort[0]` only, takes a saved target (a private one gets null),
-and checks the node like `get_table_filter_match`. All parts come from the same read. It returns
-sort keys without metadata display values. The side-row list itself has no metadata reads or sort
-argument.
 
 # Search Box
 

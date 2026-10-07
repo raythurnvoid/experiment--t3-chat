@@ -9,6 +9,7 @@ import React, {
 	useContext,
 	useDeferredValue,
 	useEffect,
+	useId,
 	useImperativeHandle,
 	useLayoutEffect,
 	useMemo,
@@ -130,7 +131,7 @@ import {
 import { useFileNodeActivities } from "@/lib/activities.ts";
 import { AppActivitiesProvider } from "@/lib/app-activities-context.tsx";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
-import { FilesTreeProvider } from "@/lib/files-tree-context.tsx";
+import { FilesTreeProvider, files_tree_stream_args } from "@/lib/files-tree-context.tsx";
 import { cn, copy_to_clipboard, forward_ref, should_never_happen, sx } from "@/lib/utils.ts";
 import { path_extract_segments_from } from "@/lib/paths.ts";
 import { app_convex_api, type app_convex_Doc, type app_convex_Id } from "@/lib/app-convex-client.ts";
@@ -171,6 +172,7 @@ import {
 import { format_relative_time } from "@/lib/date.ts";
 import { objects_equal_shallow } from "@/lib/object.ts";
 import { files_search_query_parse } from "../../../shared/files-search-query.ts";
+import { files_sort_text_key } from "../../../shared/files-sort.ts";
 import { async_all_settled_with_limit } from "@/lib/async.ts";
 import { files_prepare_image_upload_file } from "@/lib/files-image-compression.ts";
 
@@ -3936,6 +3938,267 @@ const FilesSidebarImportConflictModal = memo(function FilesSidebarImportConflict
 });
 // #endregion import conflict modal
 
+// #region shared group
+type FilesSidebarSharedGroup_ClassNames =
+	| "FilesSidebarSharedGroup"
+	| "FilesSidebarSharedGroup-title"
+	| "FilesSidebarSharedGroup-list"
+	| "FilesSidebarSharedGroup-row"
+	| "FilesSidebarSharedGroup-row-name"
+	| "FilesSidebarSharedGroup-row-archived"
+	| "FilesSidebarSharedGroup-more";
+
+type FilesSidebarSharedGroup_CustomAttributes = {
+	/**
+	 * `shared:<nodeId>`, so a share that also shows in its folder has its own row id.
+	 */
+	"data-shared-row-id": string;
+};
+
+type FilesSidebarSharedGroup_Row = Pick<
+	files_VisibleTreeNode,
+	"_id" | "kind" | "name" | "path" | "archiveOperationId" | "canWrite" | "writeBlockedReason" | "writePolicyState"
+>;
+
+type FilesSidebarSharedGroupRow_Props = {
+	row: FilesSidebarSharedGroup_Row;
+	isCurrent: boolean;
+	menusPortalHost: HTMLElement | null;
+	onOpen: (nodeId: string, kind: string) => void;
+	onShare: (nodeId: string) => void;
+	onProperties: (nodeId: app_convex_Id<"files_nodes">, returnFocusElement: HTMLElement | null) => void;
+	onArchive: (row: FilesSidebarSharedGroup_Row, rowElement: HTMLElement | null) => void;
+	onUnarchive: (nodeId: string) => void;
+};
+
+/**
+ * One share in the "Shared with you" group, with the tree row's menu. The menu acts on this row
+ * only: the row is not part of the tree selection. It has no rename, create or subtree actions, and
+ * it does not expand: its children would need tree ids that clash with the tree's own rows. Opening
+ * the share reveals it in the tree instead.
+ */
+const FilesSidebarSharedGroupRow = memo(function FilesSidebarSharedGroupRow(props: FilesSidebarSharedGroupRow_Props) {
+	const { row, isCurrent, menusPortalHost, onOpen, onShare, onProperties, onArchive, onUnarchive } = props;
+	const { organizationName, workspaceName } = AppTenantProvider.useContext();
+	const buttonRef = useRef<HTMLButtonElement | null>(null);
+	const isArchived = row.archiveOperationId !== null;
+
+	// Built like the tree row label. Every share is a restricted root.
+	const readOnlyLabels = files_get_read_only_row_labels({
+		canWrite: row.canWrite,
+		writeBlockedReason: row.writeBlockedReason,
+		writePolicyState: row.writePolicyState,
+	});
+	const label = `${row.name} restricted${readOnlyLabels ? `, ${readOnlyLabels.description}` : ""}${isArchived ? " archived" : ""}`;
+
+	const handleOpenClick = useFn(() => {
+		onOpen(row._id, row.kind);
+	});
+
+	const handleCopyClick = useFn<FilesSidebarTreeItemMenuPopover_Props["onCopy"]>(() => {
+		copy_to_clipboard({ text: row.path }).catch((error) => {
+			console.error("[FilesSidebarSharedGroupRow.handleCopyClick] Failed to copy path", { error, nodeId: row._id });
+		});
+	});
+
+	const handleCopyLinkClick = useFn<FilesSidebarTreeItemMenuPopover_Props["onCopyLink"]>(() => {
+		const link = `${window.location.origin}${url_path_file_by_node_id({ organizationName, workspaceName, nodeId: row._id })}`;
+		copy_to_clipboard({ text: link }).catch((error) => {
+			console.error("[FilesSidebarSharedGroupRow.handleCopyLinkClick] Failed to copy link", { error, nodeId: row._id });
+		});
+	});
+
+	const handleCopyNodeIdClick = useFn<FilesSidebarTreeItemMenuPopover_Props["onCopyNodeId"]>(() => {
+		copy_to_clipboard({ text: row._id }).catch((error) => {
+			console.error("[FilesSidebarSharedGroupRow.handleCopyNodeIdClick] Failed to copy node id", {
+				error,
+				nodeId: row._id,
+			});
+		});
+	});
+
+	const handleShareClick = useFn<FilesSidebarTreeItemMenuPopover_Props["onShare"]>(() => {
+		onShare(row._id);
+	});
+
+	const handlePropertiesClick = useFn<FilesSidebarTreeItemMenuPopover_Props["onProperties"]>(() => {
+		onProperties(row._id, buttonRef.current);
+	});
+
+	const handleArchiveClick = useFn<FilesSidebarTreeItemMenuPopover_Props["onArchive"]>(() => {
+		onArchive(row, buttonRef.current);
+	});
+
+	const handleUnarchiveClick = useFn<FilesSidebarTreeItemMenuPopover_Props["onUnarchive"]>(() => {
+		onUnarchive(row._id);
+	});
+
+	const handleNoAction = useFn(() => {});
+
+	return (
+		<li>
+			<MyContextMenu>
+				<MyContextMenuTrigger>
+					<MyButton
+						ref={buttonRef}
+						type="button"
+						variant="ghost-highlightable"
+						className={"FilesSidebarSharedGroup-row" satisfies FilesSidebarSharedGroup_ClassNames}
+						aria-label={label}
+						aria-current={isCurrent ? "page" : undefined}
+						{...({ "data-shared-row-id": `shared:${row._id}` } satisfies FilesSidebarSharedGroup_CustomAttributes)}
+						onClick={handleOpenClick}
+					>
+						<FilesSidebarTreeItemIcon kind={row.kind} isRestricted />
+						<span className={"FilesSidebarSharedGroup-row-name" satisfies FilesSidebarSharedGroup_ClassNames}>
+							{row.name}
+						</span>
+						{isArchived && (
+							<span className={"FilesSidebarSharedGroup-row-archived" satisfies FilesSidebarSharedGroup_ClassNames}>
+								Archived
+							</span>
+						)}
+					</MyButton>
+				</MyContextMenuTrigger>
+				<FilesSidebarTreeItemMenuPopover
+					kind={row.kind}
+					label={label}
+					archiveOperationId={row.archiveOperationId}
+					canCreate={false}
+					canRename={false}
+					canShare
+					// The parent is hidden, so the server checks the rest.
+					canArchive={row.canWrite}
+					canExpandSubtree={false}
+					canCollapseSubtree={false}
+					expandedFolderActionsVisible={false}
+					menusPortalHost={menusPortalHost}
+					clipboardSlot={
+						<FilesClipboardMenuItems
+							sourceIds={[row._id]}
+							// Moving a share needs write access on its hidden parent.
+							canCut={false}
+							canCopy={!isArchived}
+							targetParentId={row.kind === "folder" ? row._id : null}
+							targetName={row.kind === "folder" ? row.name : null}
+							canPaste={!isArchived && row.canWrite}
+						/>
+					}
+					onCreateFile={handleNoAction}
+					onCreateFolder={handleNoAction}
+					onCopy={handleCopyClick}
+					onCopyLink={handleCopyLinkClick}
+					onCopyNodeId={handleCopyNodeIdClick}
+					onRename={handleNoAction}
+					onShare={handleShareClick}
+					onProperties={handlePropertiesClick}
+					onExpandSubtree={handleNoAction}
+					onCollapseSubtree={handleNoAction}
+					onArchive={handleArchiveClick}
+					onUnarchive={handleUnarchiveClick}
+				/>
+			</MyContextMenu>
+		</li>
+	);
+});
+
+type FilesSidebarSharedGroup_Props = {
+	rows: FilesSidebarSharedGroup_Row[];
+	status: "loading" | "more" | "done";
+	selectedNodeId: string | null;
+	onOpen: FilesSidebarSharedGroupRow_Props["onOpen"];
+	onLoadMore: () => void;
+	onShare: FilesSidebarSharedGroupRow_Props["onShare"];
+	onProperties: FilesSidebarSharedGroupRow_Props["onProperties"];
+	onArchive: FilesSidebarSharedGroupRow_Props["onArchive"];
+	onUnarchive: FilesSidebarSharedGroupRow_Props["onUnarchive"];
+};
+
+/**
+ * The "Shared with you" group above the tree: every share of a member, with its own pager. It sits
+ * outside the tree, so its rows never mix with the tree's node ids. A row opens the shared node.
+ */
+const FilesSidebarSharedGroup = memo(function FilesSidebarSharedGroup(props: FilesSidebarSharedGroup_Props) {
+	const { rows, status, selectedNodeId, onOpen, onLoadMore, onShare, onProperties, onArchive, onUnarchive } = props;
+	const titleId = useId();
+	const sectionRef = useRef<HTMLElement | null>(null);
+	const [menusPortalHost, setMenusPortalHost] = useState<HTMLElement | null>(null);
+	// The row ids when Show more was clicked, until its page has loaded.
+	const [loadMoreFromIds, setLoadMoreFromIds] = useState<Set<string> | null>(null);
+
+	useEffect(() => {
+		// Wait while the next page loads. The provider keeps the old rows and the "more" status until then.
+		if (loadMoreFromIds === null || (status === "more" && rows.length <= loadMoreFromIds.size)) {
+			return;
+		}
+		setLoadMoreFromIds(null);
+		// While more pages remain, focus stays on Show more. Once it is gone, move focus to the first new row.
+		// Leave focus alone when the user has moved it out of the group while the page loaded.
+		const activeElement = document.activeElement;
+		if (status === "more" || (activeElement !== document.body && !sectionRef.current?.contains(activeElement))) {
+			return;
+		}
+		// While archived items show, the active rows come first, so a new active row sits before the old
+		// archived rows. Find the first new row by id, not by position.
+		const firstNewRow = rows.find((row) => !loadMoreFromIds.has(row._id)) ?? rows.at(-1);
+		if (firstNewRow) {
+			sectionRef.current?.querySelector<HTMLElement>(`[data-shared-row-id="shared:${firstNewRow._id}"]`)?.focus();
+		}
+	}, [loadMoreFromIds, rows, status]);
+
+	const handleLoadMoreClick = useFn(() => {
+		setLoadMoreFromIds(new Set(rows.map((row) => row._id)));
+		onLoadMore();
+	});
+
+	// The owner and members with no shares see no group.
+	if (rows.length === 0 && status !== "more") {
+		return null;
+	}
+
+	return (
+		<section
+			ref={sectionRef}
+			aria-labelledby={titleId}
+			className={cn(
+				"FilesSidebarSharedGroup" satisfies FilesSidebarSharedGroup_ClassNames,
+				"app-scrollable" satisfies AppClassName,
+			)}
+		>
+			<h2 id={titleId} className={"FilesSidebarSharedGroup-title" satisfies FilesSidebarSharedGroup_ClassNames}>
+				Shared with you
+			</h2>
+			<ul className={"FilesSidebarSharedGroup-list" satisfies FilesSidebarSharedGroup_ClassNames}>
+				{rows.map((row) => (
+					<FilesSidebarSharedGroupRow
+						key={`shared:${row._id}`}
+						row={row}
+						isCurrent={row._id === selectedNodeId}
+						menusPortalHost={menusPortalHost}
+						onOpen={onOpen}
+						onShare={onShare}
+						onProperties={onProperties}
+						onArchive={onArchive}
+						onUnarchive={onUnarchive}
+					/>
+				))}
+			</ul>
+			{status === "more" && (
+				<MyButton
+					type="button"
+					variant="ghost"
+					className={"FilesSidebarSharedGroup-more" satisfies FilesSidebarSharedGroup_ClassNames}
+					onClick={handleLoadMoreClick}
+				>
+					Show more
+				</MyButton>
+			)}
+			<div ref={setMenusPortalHost} />
+		</section>
+	);
+});
+// #endregion shared group
+
 // #region root
 function has_file_node_drop(dataTransfer: DataTransfer) {
 	return Array.from(dataTransfer.types).includes(files_FILE_NODE_DRAG_DATA_TRANSFER_TYPE);
@@ -4108,6 +4371,14 @@ function get_uploaded_file_rename_validation(args: {
 }
 
 function sort_children(args: { children: string[]; itemById: Map<string, files_TreeItem> }) {
+	// Use the server's index order `(sortName, name)`, the folder table's name order, so numbers sort in
+	// number order. A big folder loads page by page, so a later page then adds rows at the end and never
+	// moves the rows above them. Build each key once, not once per compare.
+	const nameKeys = new Map<string, string[]>();
+	for (const id of args.children) {
+		const name = args.itemById.get(id)?.name || "";
+		nameKeys.set(id, [files_sort_text_key(name), name]);
+	}
 	return [...args.children].sort((a, b) => {
 		const itemA = args.itemById.get(a);
 		const itemB = args.itemById.get(b);
@@ -4119,10 +4390,9 @@ function sort_children(args: { children: string[]; itemById: Map<string, files_T
 			return itemA.kind === "folder" ? -1 : 1;
 		}
 
-		// Use the server's index order, which compares names byte by byte. A big folder loads page by page,
-		// so a later page then adds rows at the end and never moves the rows above them. Do not use `<`:
-		// it compares UTF-16 code units and disagrees with the server for some emoji names.
-		return compareValues(itemA.name || "", itemB.name || "");
+		// `compareValues` compares strings byte by byte like the index. Do not use `<`: it compares
+		// UTF-16 code units and disagrees with the server for some emoji names.
+		return compareValues(nameKeys.get(a)!, nameKeys.get(b)!);
 	});
 }
 
@@ -4406,10 +4676,16 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	const [renameErrorByNodeId, setRenameErrorByNodeId] = useState<Map<string, string>>(new Map());
 	/** The node whose share dialog is open, or `null` when it is closed. */
 	const [shareNodeId, setShareNodeId] = useState<app_convex_Id<"files_nodes"> | null>(null);
+	/** Whether the share dialog was opened from the "Shared with you" group. */
+	const isShareFromGroupRef = useRef(false);
 	/** The nodes whose archive dialog is open, or `null` when it is closed. */
 	const [archiveNodes, setArchiveNodes] = useState<FilesArchiveModal_Node[] | null>(null);
+	/** The "Shared with you" row the archive dialog was opened from, or `null` for a tree row. */
+	const archiveGroupRowRef = useRef<HTMLElement | null>(null);
 	/** Set by `handleArchived`. The effect that focuses the row after the dialog closes clears it. */
 	const focusRowAfterArchiveRef = useRef(false);
+	/** Set by `handleArchived` for an archive from the "Shared with you" group. The same effect clears it. */
+	const focusGroupElementAfterArchiveRef = useRef<HTMLElement | null>(null);
 	const [propertiesNodeId, setPropertiesNodeId] = useState<app_convex_Id<"files_nodes"> | null>(null);
 	const propertiesReturnFocusRef = useRef<HTMLElement | null>(null);
 	const isImportingFiles = useFilesImportStore((state) => state.phase !== "idle");
@@ -5374,18 +5650,38 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 										updatedAt: renamedItem.updatedAt,
 									}
 								: node;
-						// The row is in its folder's pages, and also in the full list while a search is active.
-						optimisticallyUpdateValueInPaginatedQuery(
-							localStore,
-							app_convex_api.files_nodes.list_tree_children,
-							{
-								membershipId,
-								parentId: renamedItem.parentId,
-								kind: renamedItem.kind,
-								archived: renamedItem.archiveOperationId !== null,
-							},
-							renameNode,
-						);
+						// The row is in its folder's pages, and also in the full list while a search is active. A
+						// restricted row is in the owner's restricted twin, or in the member's share streams and
+						// their "Shared with you" group. The tree sorts the new name with `sort_children`, the
+						// server's order.
+						const streamArgs = files_tree_stream_args({
+							membershipId,
+							folderId: renamedItem.parentId,
+							kind: renamedItem.kind,
+							archived: renamedItem.archiveOperationId !== null,
+						});
+						for (const restricted of [false, true]) {
+							optimisticallyUpdateValueInPaginatedQuery(
+								localStore,
+								app_convex_api.files_nodes.list_tree_children,
+								streamArgs.children(restricted),
+								renameNode,
+							);
+						}
+						for (const principalIndex of [0, 1, 2] as const) {
+							optimisticallyUpdateValueInPaginatedQuery(
+								localStore,
+								app_convex_api.files_nodes.list_tree_children_shared,
+								streamArgs.shared(principalIndex),
+								renameNode,
+							);
+							optimisticallyUpdateValueInPaginatedQuery(
+								localStore,
+								app_convex_api.files_nodes.list_tree_shared_roots,
+								{ membershipId, archived: renamedItem.archiveOperationId !== null, principalIndex },
+								renameNode,
+							);
+						}
 						optimisticallyUpdateValueInPaginatedQuery(
 							localStore,
 							app_convex_api.files_nodes.list_tree,
@@ -5839,7 +6135,11 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		return result;
 	})();
 
-	const showEmptyState = treeItemsList !== undefined && visibleFileIds.size <= 1;
+	// A grant-only member has no tree rows, but the "Shared with you" group above can list their shares.
+	const showEmptyState =
+		treeItemsList !== undefined &&
+		visibleFileIds.size <= 1 &&
+		(isSearchActive || (treeFolders.sharedRoots.status === "done" && treeFolders.sharedRoots.rows.length === 0));
 
 	const startRename = useFn((itemId: string) => {
 		const item = tree().getItemInstance(itemId);
@@ -6063,16 +6363,29 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	// Sharing is always about one node, unlike copy or archive, which act on the whole selection: a
 	// share list belongs to a single file or folder, so there is nothing to apply to the others.
 	const handleShare = useFn<FilesSidebarTree_Props["onShare"]>((nodeId) => {
+		isShareFromGroupRef.current = false;
+		setShareNodeId(nodeId as app_convex_Id<"files_nodes">);
+	});
+
+	const handleSharedGroupShare = useFn<FilesSidebarSharedGroup_Props["onShare"]>((nodeId) => {
+		isShareFromGroupRef.current = true;
 		setShareNodeId(nodeId as app_convex_Id<"files_nodes">);
 	});
 
 	const handleShareModalClose = useFn(() => {
-		if (shareNodeId) {
+		// The menu gave focus back to the group row before the dialog opened, so the dialog gives it back
+		// there on close. Focusing the share's tree row from the tree's timer would take it away.
+		if (!isShareFromGroupRef.current && shareNodeId && treeItems?.itemById.has(shareNodeId)) {
 			tree().getItemInstance(shareNodeId).setFocused();
 			tree().updateDomFocus();
 		}
 		setShareNodeId(null);
 	});
+
+	// A share in the "Shared with you" group may have no tree row.
+	const propertiesNode =
+		treeNodesList?.find((node) => node._id === propertiesNodeId) ??
+		treeFolders.sharedRoots.rows.find((node) => node._id === propertiesNodeId);
 
 	const handleProperties = useFn<FilesSidebarTree_Props["onProperties"]>((nodeId, returnFocusElement) => {
 		propertiesReturnFocusRef.current = returnFocusElement;
@@ -6080,7 +6393,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	});
 
 	const handlePropertiesModalClose = useFn(() => {
-		if (propertiesNodeId) {
+		if (propertiesNodeId && treeItems?.itemById.has(propertiesNodeId)) {
 			tree().getItemInstance(propertiesNodeId).setFocused();
 		}
 		setPropertiesNodeId(null);
@@ -6171,15 +6484,23 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			// lists it on its Activity, so one read-only row does not stop a big selection.
 			nodes.push({ _id: item._id, name: item.name, kind: item.kind });
 		}
+		archiveGroupRowRef.current = null;
 		setArchiveNodes(nodes);
+	});
+
+	// A row of the "Shared with you" group is not in the tree selection, so it archives itself only.
+	const handleSharedGroupArchive = useFn<FilesSidebarSharedGroup_Props["onArchive"]>((row, rowElement) => {
+		archiveGroupRowRef.current = rowElement;
+		setArchiveNodes([{ _id: row._id, name: row.name, kind: row.kind }]);
 	});
 
 	const handleArchiveModalClose = useFn(() => {
 		// The menu item that opened the dialog is gone, so put focus back on the row through the tree,
 		// the way the share dialog does. The first id is enough: a cancelled multi-select archive
-		// leaves the selection as it was.
+		// leaves the selection as it was. A "Shared with you" row gets focus back from the dialog itself,
+		// like after the share dialog.
 		const firstNodeId = archiveNodes?.[0]?._id;
-		if (firstNodeId) {
+		if (!archiveGroupRowRef.current && firstNodeId && treeItems?.itemById.has(firstNodeId)) {
 			tree().getItemInstance(firstNodeId).setFocused();
 			tree().updateDomFocus();
 		}
@@ -6192,6 +6513,35 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		if (archiveNodes && archiveNodes.length > 1) {
 			tree().setSelectedItems([]);
 		}
+		if (selectedNodeId && nodeIds.some((archivedNodeId) => archivedNodeId === selectedNodeId)) {
+			onArchive(selectedNodeId);
+		}
+
+		// An archive from the "Shared with you" group keeps focus in the group: the next row, the row
+		// before it when it was last, or Show more. The archived row is still in the group here, like in
+		// the tree below. With nothing left, the group hides and focus goes to the tree.
+		const groupRow = archiveGroupRowRef.current;
+		const groupRows = Array.from(
+			groupRow
+				?.closest("ul")
+				?.querySelectorAll<HTMLElement>(
+					`[${"data-shared-row-id" satisfies keyof FilesSidebarSharedGroup_CustomAttributes}]`,
+				) ?? [],
+		);
+		const groupRowIndex = groupRow ? groupRows.indexOf(groupRow) : -1;
+		focusGroupElementAfterArchiveRef.current =
+			groupRows[groupRowIndex + 1] ??
+			groupRows[groupRowIndex - 1] ??
+			groupRow
+				?.closest("section")
+				?.querySelector<HTMLElement>(
+					`.${"FilesSidebarSharedGroup-more" satisfies FilesSidebarSharedGroup_ClassNames}`,
+				) ??
+			null;
+		if (focusGroupElementAfterArchiveRef.current) {
+			return;
+		}
+
 		// The archived rows are still in the tree here: Convex resolves the mutation in the same task
 		// that delivers the tree update, and React renders that update later. Keep keyboard focus in
 		// the tree: focus the first row after the archived rows, or the last row before them.
@@ -6212,9 +6562,6 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			// The sidebar is inert while the dialog is open, so the row cannot take DOM focus here. The
 			// effect below moves it after the dialog has closed.
 			focusRowAfterArchiveRef.current = true;
-		}
-		if (selectedNodeId && nodeIds.some((archivedNodeId) => archivedNodeId === selectedNodeId)) {
-			onArchive(selectedNodeId);
 		}
 	});
 
@@ -6542,13 +6889,16 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		currentTree.getItemInstance(nextFocusedItemId).setFocused();
 	}, [visibleFileIds, selectedNodeId, treeItems]);
 
-	// Move DOM focus to the row picked by `handleArchived` once the archive dialog has closed. The
-	// commit that closes the dialog removes the inert state and runs the dialog's own focus return,
-	// which goes to the button that opened it. This effect runs after that commit, so
-	// `updateDomFocus` lands on the row. The cancel path needs none of this: it runs inside a click
+	// Move DOM focus to the tree row or the group element picked by `handleArchived` once the archive
+	// dialog has closed. The commit that closes the dialog removes the inert state and runs the
+	// dialog's own focus return, which goes to the button that opened it. This effect runs after that
+	// commit, so the focus lands on the row. The cancel path needs none of this: it runs inside a click
 	// or key event, and React closes the dialog before its timer fires.
 	useEffect(() => {
-		if (archiveNodes !== null || !focusRowAfterArchiveRef.current) return;
+		if (archiveNodes !== null) return;
+		focusGroupElementAfterArchiveRef.current?.focus();
+		focusGroupElementAfterArchiveRef.current = null;
+		if (!focusRowAfterArchiveRef.current) return;
 		focusRowAfterArchiveRef.current = false;
 		tree().updateDomFocus();
 	}, [archiveNodes]);
@@ -6678,6 +7028,21 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 				onImportFolderClick={handleImportFolderClick}
 			/>
 
+			{/* Search reads the full list, where a share with a hidden parent already shows at the top. */}
+			{!isSearchActive && (
+				<FilesSidebarSharedGroup
+					rows={treeFolders.sharedRoots.rows}
+					status={treeFolders.sharedRoots.status}
+					selectedNodeId={selectedNodeId}
+					onOpen={onPrimaryAction}
+					onLoadMore={treeFolders.sharedRoots.loadMore}
+					onShare={handleSharedGroupShare}
+					onProperties={handleProperties}
+					onArchive={handleSharedGroupArchive}
+					onUnarchive={handleUnarchive}
+				/>
+			)}
+
 			<div
 				ref={treeScrollElementRef}
 				className={cn(
@@ -6727,8 +7092,8 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			<FilesArchiveModal nodes={archiveNodes} onClose={handleArchiveModalClose} onArchived={handleArchived} />
 			<FilesPropertiesModal
 				nodeId={propertiesNodeId}
-				nodeName={treeNodesList?.find((node) => node._id === propertiesNodeId)?.name ?? "file"}
-				nodeKind={treeNodesList?.find((node) => node._id === propertiesNodeId)?.kind ?? "file"}
+				nodeName={propertiesNode?.name ?? "file"}
+				nodeKind={propertiesNode?.kind ?? "file"}
 				returnFocusRef={propertiesReturnFocusRef}
 				onClose={handlePropertiesModalClose}
 			/>
@@ -8492,6 +8857,19 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					itemById,
 				}),
 			);
+		});
+
+		test("uses the server's (sortName, name) order: numbers by value, no case or accents, then the raw name", () => {
+			const items = ["éb", "b", "a10", "Ea", "B", "a9"].map((name) =>
+				test_node({ id: `folder_${name}`, parentId: files_ROOT_ID, kind: "folder", name }),
+			);
+
+			expect(
+				sort_children({
+					children: items.map((item) => item._id),
+					itemById: new Map<string, files_TreeItem>(items.map((item) => [item._id, item])),
+				}).map((id) => id.slice("folder_".length)),
+			).toEqual(["a9", "a10", "B", "b", "Ea", "éb"]);
 		});
 	});
 

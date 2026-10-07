@@ -160,6 +160,51 @@ async function data_deletion_test_seed_page(
 	} as const;
 }
 
+/**
+ * A restricted folder shared with each reader (`content.read`), written with the flush so its share
+ * rows exist.
+ */
+async function data_deletion_test_seed_shared_folder(
+	t: ReturnType<typeof test_convex>,
+	args: {
+		userId: Id<"users">;
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		readerIds: Id<"users">[];
+	},
+) {
+	return await test_run_with_flush(t, async (ctx) => {
+		const nodeId = await ctx.db.insert("files_nodes", {
+			...test_mocks.files.base(),
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			createdBy: args.userId,
+			updatedBy: args.userId,
+			parentId: files_ROOT_ID,
+			name: "shared",
+			sortName: files_sort_text_key("shared"),
+			kind: "folder",
+			path: "/shared",
+			treePath: "/shared/",
+			pathDepth: 1,
+		});
+		await ctx.db.patch("files_nodes", nodeId, { restrictedScopeNodeId: nodeId, isRestrictedScopeRoot: true });
+		for (const readerId of args.readerIds)
+			await ctx.db.insert("access_control_permission_grants", {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				resourceKind: "file",
+				resourceId: String(nodeId),
+				principalKind: "user",
+				userId: readerId,
+				permission: "content.read",
+				createdAt: Date.now(),
+				updatedAt: Date.now(),
+			});
+		return nodeId;
+	});
+}
+
 async function data_deletion_test_seed_private_chat(
 	ctx: MutationCtx,
 	args: {
@@ -2017,6 +2062,174 @@ describe("init_user_deletion", () => {
 		expect(restoredWorkspace?._id).not.toBe(collaborator.defaultWorkspaceId);
 		expect(restoredWorkspace?.pluginInstallAccess).toBe("owner");
 	});
+
+	test("deletes every owned organization grant but file grants past one batch, and leaves those and their share rows to the purge", async () => {
+		const t = test_convex();
+		const owner = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-owned-share-rows",
+				displayName: "Owned Share Rows",
+			}),
+		);
+		const organization = await t.run(async (ctx) => {
+			const created = await organizations_db_create(ctx, {
+				userId: owner.userId,
+				name: "owned-share-rows",
+				description: "",
+				now: Date.now(),
+				default: false,
+			});
+			if (created._nay) {
+				throw new Error(created._nay.message);
+			}
+			return created._yay;
+		});
+		const readerIds = await t.run(async (ctx) => {
+			const ids: Id<"users">[] = [];
+			for (let index = 0; index < 1050; index += 1) ids.push(await ctx.db.insert("users", { clerkUserId: null }));
+			return ids;
+		});
+		const nodeId = await data_deletion_test_seed_shared_folder(t, {
+			userId: owner.userId,
+			organizationId: organization.organizationId,
+			workspaceId: organization.defaultWorkspaceId,
+			readerIds,
+		});
+		// A public file grant and a workspace grant need no membership, so they must go at once.
+		await test_run_with_flush(t, async (ctx) => {
+			const grant = {
+				organizationId: organization.organizationId,
+				workspaceId: organization.defaultWorkspaceId,
+				permission: "content.read",
+				createdAt: Date.now(),
+				updatedAt: Date.now(),
+			} as const;
+			await ctx.db.insert("access_control_permission_grants", {
+				...grant,
+				resourceKind: "file",
+				resourceId: String(nodeId),
+				principalKind: "public",
+			});
+			await ctx.db.insert("access_control_permission_grants", {
+				...grant,
+				resourceKind: "workspace",
+				resourceId: String(organization.defaultWorkspaceId),
+				principalKind: "user",
+				userId: readerIds[0],
+			});
+		});
+		const read = () =>
+			t.run(async (ctx) => {
+				const grants = await ctx.db
+					.query("access_control_permission_grants")
+					.withIndex("by_organization_workspace_resource_user_permission", (q) =>
+						q.eq("organizationId", organization.organizationId),
+					)
+					.collect();
+				return {
+					otherGrantCount: grants.filter((grant) => grant.resourceKind !== "file" || grant.principalKind !== "user")
+						.length,
+					grantIds: grants
+						.filter((grant) => grant.resourceKind === "file" && grant.principalKind === "user")
+						.map((grant) => grant._id)
+						.sort(),
+					rowGrantIds: (await ctx.db.query("files_share_rows").collect())
+						.filter((row) => row.organizationId === organization.organizationId)
+						.map((row) => row.grantId)
+						.sort(),
+				};
+			});
+		const beforeInit = await read();
+		expect(beforeInit.otherGrantCount).toBe(2);
+		expect(beforeInit.rowGrantIds).toHaveLength(1050);
+
+		await t.run((ctx) =>
+			ctx.runMutation(internal.data_deletion.init_user_deletion, {
+				userId: owner.userId,
+				nowTs: 42_004,
+			}),
+		);
+		// The public and workspace grants and 999 user file grants went, with their rows. The other 51
+		// user grants stay true for the purge.
+		const afterInit = await read();
+		expect(afterInit.otherGrantCount).toBe(0);
+		expect(afterInit.grantIds).toHaveLength(51);
+		expect(afterInit.rowGrantIds).toEqual(afterInit.grantIds);
+
+		const organizationRequest = await t.run((ctx) =>
+			ctx.db
+				.query("data_deletion_requests")
+				.withIndex("by_organization_scope", (q) =>
+					q.eq("organizationId", organization.organizationId).eq("scope", "organization"),
+				)
+				.unique(),
+		);
+		await data_deletion_test_process_organization_request_until_done(t, { requestId: organizationRequest!._id });
+		expect(await read()).toEqual({ otherGrantCount: 0, grantIds: [], rowGrantIds: [] });
+	});
+
+	test("shares one file grant batch across all owned organizations, within the Convex limits", async () => {
+		const t = test_convex({ transactionLimits: true });
+		const owner = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-owned-share-rows-limits",
+				displayName: "Owned Share Rows Limits",
+			}),
+		);
+		// Two owned organizations, each with a folder shared with 1,050 users.
+		const organizationIds: Id<"organizations">[] = [];
+		for (const name of ["owned-share-rows-a", "owned-share-rows-b"]) {
+			const organization = await t.run(async (ctx) => {
+				const created = await organizations_db_create(ctx, {
+					userId: owner.userId,
+					name,
+					description: "",
+					now: Date.now(),
+					default: false,
+				});
+				if (created._nay) {
+					throw new Error(created._nay.message);
+				}
+				return created._yay;
+			});
+			const readerIds = await t.run(async (ctx) => {
+				const ids: Id<"users">[] = [];
+				for (let index = 0; index < 1050; index += 1) ids.push(await ctx.db.insert("users", { clerkUserId: null }));
+				return ids;
+			});
+			await data_deletion_test_seed_shared_folder(t, {
+				userId: owner.userId,
+				organizationId: organization.organizationId,
+				workspaceId: organization.defaultWorkspaceId,
+				readerIds,
+			});
+			organizationIds.push(organization.organizationId);
+		}
+
+		const ranges = await t.run(async (ctx) => {
+			const before = await ctx.meta.getTransactionMetrics();
+			await ctx.runMutation(internal.data_deletion.init_user_deletion, { userId: owner.userId, nowTs: 42_005 });
+			const after = await ctx.meta.getTransactionMetrics();
+			return after.databaseQueries.used - before.databaseQueries.used;
+		});
+		console.info("init_user_deletion, 2 organizations x 1,050 file grants", { ranges });
+
+		// One batch of 1,000 file grants went in total. The other 1,100 stay true with their share rows.
+		const after = await t.run(async (ctx) => ({
+			user: await ctx.db.get("users", owner.userId),
+			grantIds: (await ctx.db.query("access_control_permission_grants").collect())
+				.filter((grant) => organizationIds.includes(grant.organizationId) && grant.resourceKind === "file")
+				.map((grant) => grant._id)
+				.sort(),
+			rowGrantIds: (await ctx.db.query("files_share_rows").collect())
+				.filter((row) => organizationIds.includes(row.organizationId))
+				.map((row) => row.grantId)
+				.sort(),
+		}));
+		expect(after.user?.deletedAt).toBe(42_005);
+		expect(after.grantIds).toHaveLength(1100);
+		expect(after.rowGrantIds).toEqual(after.grantIds);
+	}, 120_000);
 });
 
 describe("creator-owned private chat deletion", () => {
@@ -3579,6 +3792,52 @@ describe("process_user_deletion_request", () => {
 		expect(after.sharedExtraWorkspace?._id).toBe(sharedOrganization.extraWorkspaceId);
 		expect(after.sharedExtraPages).toHaveLength(1);
 		expect(after.memberships).toHaveLength(0);
+	});
+
+	test("a deleted user's share rows go with the user's grants", async () => {
+		const t = test_convex();
+		const owner = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-share-rows-owner",
+				displayName: "Share Rows Owner",
+			}),
+		);
+		const deletedUser = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-share-rows-deleted",
+				displayName: "Share Rows Deleted",
+			}),
+		);
+		await data_deletion_test_seed_shared_folder(t, {
+			userId: owner.userId,
+			organizationId: owner.defaultOrganizationId,
+			workspaceId: owner.defaultWorkspaceId,
+			readerIds: [owner.userId, deletedUser.userId],
+		});
+
+		const requestId = await t.run((ctx) =>
+			ctx.runMutation(internal.data_deletion.init_user_deletion, {
+				userId: deletedUser.userId,
+				nowTs: 10_002,
+			}),
+		);
+		if (!requestId) {
+			throw new Error("Expected a queued user deletion request");
+		}
+		const request = await t.run((ctx) => ctx.db.get("data_deletion_requests", requestId));
+		for (let pass = 0; ; pass += 1) {
+			if (pass === 100) throw new Error("User deletion did not finish");
+			const result = await t.run((ctx) =>
+				ctx.runMutation(internal.data_deletion.process_user_deletion_request, {
+					requestId,
+					_test_now: request!.eligibleAt + 1,
+				}),
+			);
+			if (result.done) break;
+		}
+
+		const rows = await t.run((ctx) => ctx.db.query("files_share_rows").collect());
+		expect(rows.map((row) => row.principalKey)).toEqual([`user:${owner.userId}`]);
 	});
 });
 
@@ -5977,6 +6236,63 @@ describe("process_workspace_deletion_request", () => {
 		// No scheduled function runs here, so the overlay jobs the purge's own writes start stay queued.
 		await data_deletion_test_process_workspace_request_until_done(t, { requestId });
 		expect(await count_overlay_docs()).toBe(0);
+	});
+
+	test("deletes the share rows, also a row whose grant and node are gone", async () => {
+		const t = test_convex();
+		const user = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-delete-share-rows-workspace",
+				displayName: "Share Rows Workspace",
+			}),
+		);
+		const scope = {
+			organizationId: user.defaultOrganizationId,
+			workspaceId: user.defaultWorkspaceId,
+			userId: user.userId,
+		};
+		const nodeId = await data_deletion_test_seed_shared_folder(t, { ...scope, readerIds: [user.userId] });
+		// A stray row, like one a dashboard edit leaves behind: no flush ever reaches it again.
+		await t.run(async (ctx) => {
+			const { _id, _creationTime, ...row } = (await ctx.db
+				.query("files_share_rows")
+				.withIndex("by_node", (q) => q.eq("nodeId", nodeId))
+				.unique())!;
+			const grantId = await ctx.db.insert("access_control_permission_grants", {
+				organizationId: scope.organizationId,
+				workspaceId: scope.workspaceId,
+				resourceKind: "file",
+				resourceId: "gone",
+				principalKind: "user",
+				userId: user.userId,
+				permission: "content.read",
+				createdAt: Date.now(),
+				updatedAt: Date.now(),
+			});
+			await ctx.db.delete("access_control_permission_grants", grantId);
+			const goneNodeId = await ctx.db.insert("files_nodes", {
+				...test_mocks.files.base(),
+				organizationId: scope.organizationId,
+				workspaceId: scope.workspaceId,
+				createdBy: user.userId,
+				updatedBy: user.userId,
+			});
+			await ctx.db.delete("files_nodes", goneNodeId);
+			await ctx.db.insert("files_share_rows", { ...row, grantId, nodeId: goneNodeId });
+		});
+		const count_rows = () =>
+			t.run(
+				async (ctx) =>
+					(await ctx.db.query("files_share_rows").collect()).filter((row) => row.workspaceId === scope.workspaceId)
+						.length,
+			);
+		expect(await count_rows()).toBe(2);
+
+		const requestId = await t.run((ctx) =>
+			data_deletion_db_request(ctx, { ...scope, scope: "workspace", eligibleAt: 0 }),
+		);
+		await data_deletion_test_process_workspace_request_until_done(t, { requestId });
+		expect(await count_rows()).toBe(0);
 	});
 });
 

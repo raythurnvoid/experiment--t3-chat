@@ -2680,30 +2680,30 @@ function get_folder_target_key(target: files_PendingTarget) {
 	return `${target.kind}:${target.id}`;
 }
 
+/**
+ * The metadata fields the Columns menu offers: the folder's field list only (the open rows, and the
+ * restricted rows for the owner). A member's shared rows add no fields: members cannot sort or
+ * filter shared items by metadata, and reading each shared row's fields would make one subscription
+ * per row with no bound.
+ */
 function useFolderColumnCatalog(args: {
 	membershipId: app_convex_Id<"organizations_workspaces_users">;
 	folderId: app_convex_Doc<"files_nodes">["parentId"];
-	targets: files_PendingTarget[];
 	open: boolean;
 }) {
 	const scope = JSON.stringify([args.membershipId, args.folderId]);
-	const targetsText = JSON.stringify(args.targets);
 	const [pages, setPages] = useState({ scope, chains: {} as Record<string, FileNodeViewFolderFieldChain> });
 	const [retrying, setRetrying] = useState<string[]>([]);
 	const sources = useMemo(() => {
 		if (!args.open) return [];
-		const targets = JSON.parse(targetsText) as files_PendingTarget[];
-		return [
-			{ key: "folder", target: null },
-			...targets.map((target) => ({ key: get_folder_target_key(target), target })),
-		].map((source) => ({
+		return [{ key: "folder" }].map((source) => ({
 			...source,
 			chain: (pages.scope === scope ? pages.chains[source.key] : undefined) ?? {
 				cursors: [null],
 				pageCount: 1,
 			},
 		}));
-	}, [args.open, pages, scope, targetsText]);
+	}, [args.open, pages, scope]);
 
 	// Keep query objects stable. Convex re-subscribes when their identity changes.
 	const queries = useMemo(() => {
@@ -2711,15 +2711,10 @@ function useFolderColumnCatalog(args: {
 		for (const source of sources) {
 			if (retrying.includes(source.key)) continue;
 			for (const [index, cursor] of source.chain.cursors.entries()) {
-				result[`${source.key}:${index}`] = source.target
-					? {
-							query: app_convex_api.files_metadata.list_node_fields,
-							args: { membershipId: args.membershipId, target: source.target, cursor },
-						}
-					: {
-							query: app_convex_api.files_metadata.list_folder_fields,
-							args: { membershipId: args.membershipId, parentId: args.folderId, afterField: cursor },
-						};
+				result[`${source.key}:${index}`] = {
+					query: app_convex_api.files_metadata.list_folder_fields,
+					args: { membershipId: args.membershipId, parentId: args.folderId, afterField: cursor },
+				};
 			}
 		}
 		return result;
@@ -2736,12 +2731,11 @@ function useFolderColumnCatalog(args: {
 			for (const [index, cursor] of chain.cursors.entries()) {
 				const response:
 					| FunctionReturnType<typeof app_convex_api.files_metadata.list_folder_fields>
-					| FunctionReturnType<typeof app_convex_api.files_metadata.list_node_fields>
 					| Error
 					| undefined = responses[`${source.key}:${index}`];
 				if (response === undefined) break;
 				if (response instanceof Error || response === null) {
-					status = response === null && source.target ? "done" : "failed";
+					status = "failed";
 					sourceFields = [];
 					chain = { ...chain, cursors: chain.cursors.slice(0, index + 1) };
 					break;
@@ -2752,7 +2746,7 @@ function useFolderColumnCatalog(args: {
 					chain = { ...chain, cursors: chain.cursors.slice(0, index + 1) };
 					break;
 				}
-				const nextCursor = "afterField" in response ? response.afterField : response.continueCursor;
+				const nextCursor = response.afterField;
 				if (nextCursor === null || nextCursor === cursor) {
 					status = "failed";
 					sourceFields = [];
@@ -3016,7 +3010,15 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 					},
 				]
 			: (urlSort ?? folderSort?.sort ?? null);
-	const sortedChildren = useFilesSortedChildren({ membershipId, folderId: folderItemId, sort, filter, namePrefix });
+	const isOwner = FilesTreeProvider.useIsOwner();
+	const sortedChildren = useFilesSortedChildren({
+		membershipId,
+		folderId: folderItemId,
+		sort,
+		filter,
+		namePrefix,
+		isOwner,
+	});
 	const isFolderFailed = folderSort === null || sortedChildren.isFolderRefused;
 	const isShowingHeldRows =
 		sortedChildren.rows !== undefined &&
@@ -3090,7 +3092,6 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 	const columnCatalog = useFolderColumnCatalog({
 		membershipId,
 		folderId: folderItemId,
-		targets: sortedChildren.sideTargets,
 		open:
 			!isFolderFailed &&
 			fieldCatalogRequests.scope === folderScope &&
@@ -3366,7 +3367,7 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 					canSaveSort={folderSort?.canSave === true && urlSort !== null && filter === null}
 					isSavingSort={isSavingSort}
 					isSortBusy={sortedChildren.isBusy}
-					tooManyShared={sortedChildren.tooManyShared}
+					hiddenSharedKey={sortedChildren.hiddenSharedKey}
 					organizationName={organizationName}
 					workspaceName={workspaceName}
 					pendingActionNodeIds={pendingActionNodeIds}
@@ -4603,7 +4604,10 @@ type FileNodeViewFolderExplorer_Props = {
 	columnValues: Record<string, FileNodeViewFolderColumnValues>;
 	activeValueTargetCount: number;
 	valueQueryCount: number;
-	tooManyShared: boolean;
+	/**
+	 * The metadata key whose sort or filter hides the member's shared rows in this folder, or null.
+	 */
+	hiddenSharedKey: string | null;
 	organizationName: string;
 	workspaceName: string;
 	pendingActionNodeIds: ReadonlySet<string>;
@@ -4659,7 +4663,7 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 		columnValues,
 		activeValueTargetCount,
 		valueQueryCount,
-		tooManyShared,
+		hiddenSharedKey,
 		organizationName,
 		workspaceName,
 		pendingActionNodeIds,
@@ -4699,15 +4703,11 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 					: // A stream has more pages, but the loaded ones hold no row to show yet.
 						"No matches loaded yet. Show more to keep looking."
 				: hasFilter
-					? tooManyShared
-						? "No matches in the rows checked"
-						: "No rows match this filter"
-					: tooManyShared
-						? null
-						: files_sort_field_is_built_in(displayedSort[0]!.field)
-							? "This folder is empty"
-							: // A metadata sort hides the rows without its key, so the folder can still have rows.
-								`No rows have ${displayedSort[0]!.field}`;
+					? "No rows match this filter"
+					: files_sort_field_is_built_in(displayedSort[0]!.field)
+						? "This folder is empty"
+						: // A metadata sort hides the rows without its key, so the folder can still have rows.
+							`No rows have ${displayedSort[0]!.field}`;
 	// A filter picks the index, and the index fixes the order. Other columns cannot sort while it is on.
 	const filterOrderField = filter === null ? null : files_table_filter_order_field(filter);
 	const sortField = sort[0]!.field;
@@ -4887,14 +4887,6 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 					</MyButton>
 				</div>
 			)}
-			{tooManyShared && (
-				<p
-					role="status"
-					className={"FileNodeViewFolderExplorer-notice" satisfies FileNodeViewFolderExplorer_ClassNames}
-				>
-					Too many shared items here to sort. Some are not shown.
-				</p>
-			)}
 			{/* Steady states are static text, not live regions. */}
 			{filterOrderField !== null && (
 				<p
@@ -4907,6 +4899,12 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 			{filter === null && metadataKey !== null && (
 				<p className={"FileNodeViewFolderExplorer-notice" satisfies FileNodeViewFolderExplorer_ClassNames}>
 					Rows without {metadataKey} are hidden.
+				</p>
+			)}
+			{/* Shared items have no copy for metadata keys, so a member sees why they are missing. */}
+			{hiddenSharedKey !== null && (
+				<p className={"FileNodeViewFolderExplorer-notice" satisfies FileNodeViewFolderExplorer_ClassNames}>
+					Items shared with you are not shown while sorting or filtering by {hiddenSharedKey}.
 				</p>
 			)}
 			{/* Always mounted: a screen reader may miss a live region that appears with its text. */}

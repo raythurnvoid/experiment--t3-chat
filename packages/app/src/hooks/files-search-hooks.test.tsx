@@ -1,10 +1,8 @@
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { getFunctionName, type FunctionReference, type FunctionReturnType } from "convex/server";
-import type { Id } from "../../convex/_generated/dataModel";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { app_convex_api, app_convex_Id } from "@/lib/app-convex-client.ts";
 import {
-	files_sort_key_of,
 	files_sort_text_key,
 	type files_sort_Key,
 	type files_sort_RowKey,
@@ -16,8 +14,7 @@ import { useFilesSearchServerFilters, useFilesSortedChildren, useFilesVisibleEnt
 type VisibleResult = FunctionReturnType<typeof app_convex_api.files_visible.list>;
 type SortedPage = FunctionReturnType<typeof app_convex_api.files_nodes.list_tree_children_sorted>;
 type SortedRow = SortedPage["page"][number];
-type SideRows = FunctionReturnType<typeof app_convex_api.files_nodes.list_tree_children_sort_side_rows>;
-type SideRow = NonNullable<SideRows>["rows"][number];
+type HasShared = FunctionReturnType<typeof app_convex_api.files_nodes.has_tree_children_shared>;
 type SearchNodes = FunctionReturnType<typeof app_convex_api.files_metadata.search_nodes>;
 type WorkspaceLinks = FunctionReturnType<typeof app_convex_api.files_share_links.list_workspace_links>;
 
@@ -26,24 +23,20 @@ type WorkspaceLinks = FunctionReturnType<typeof app_convex_api.files_share_links
 // `loadingFields` keeps every query of a sort loading. `loadingKeys` keeps one stream loading.
 // `pages` gives a stream fixed server pages instead of `rows`. `splitting` keeps a stream past its first
 // page in "LoadingMore", like a page that answered SplitRequired. `loadMoreCalls` counts each stream's calls.
+// `hasShared` answers `has_tree_children_shared`, and `hasSharedByScope` answers it for one folder scope.
 // `search` answers the search box queries: `undefined` is loading.
-const { cursorsSeen, paginatedArgsSeen, keysSeen, matchesSeen, enumsSeen, sorted, search } = vi.hoisted(() => ({
+const { cursorsSeen, paginatedArgsSeen, sorted, search } = vi.hoisted(() => ({
 	cursorsSeen: [] as string[],
 	paginatedArgsSeen: [] as SortedArgs[],
-	keysSeen: [] as Array<Record<string, unknown>>,
-	matchesSeen: [] as Array<Record<string, unknown>>,
-	enumsSeen: [] as Array<Record<string, unknown>>,
 	sorted: {
 		rows: new Map<string, SortedRow[]>(),
-		sideRows: undefined as SideRows | undefined,
+		hasShared: false as HasShared | Error | undefined,
 		loadingFields: new Set<string>(),
 		loadingKeys: new Set<string>(),
 		pages: new Map<string, SortedRow[][]>(),
 		splitting: new Set<string>(),
 		loadMoreCalls: new Map<string, number>(),
-		sideScopes: new Map<string, SideRows | Error | undefined>(),
-		matches: new Map<string, { matches: boolean } | Error | null | undefined>(),
-		keys: new Map<string, files_sort_RowKey | Error | null | undefined>(),
+		hasSharedByScope: new Map<string, HasShared | Error | undefined>(),
 		revision: 0,
 		listeners: new Set<() => void>(),
 	},
@@ -66,12 +59,15 @@ const ENTRIES = Array.from({ length: 120 }, (_, index) => ({
 	preparing: false,
 }));
 
+// The args of a `list_tree_children_sorted` stream (`restricted`) or of a `list_tree_children_shared`
+// stream (`principalIndex`).
 type SortedArgs = {
 	membershipId: app_convex_Id<"organizations_workspaces_users">;
 	parentId: app_convex_Id<"files_nodes"> | "root";
 	kind: "file" | "folder";
 	segment: "value" | "missing";
-	restricted: boolean;
+	restricted?: boolean;
+	principalIndex?: 0 | 1 | 2;
 	sort: files_sort_Sort;
 	filter: files_table_Filter | null;
 	namePrefix: string | null;
@@ -83,7 +79,8 @@ const sorted_key = (args: SortedArgs) =>
 		args.parentId,
 		args.kind,
 		args.segment,
-		args.restricted,
+		args.restricted ?? null,
+		args.principalIndex ?? null,
 		args.sort,
 		args.filter,
 		args.namePrefix,
@@ -94,6 +91,7 @@ const sorted_fixture_key = (args: {
 	field: string;
 	direction: "asc" | "desc";
 	restricted?: boolean;
+	principalIndex?: 0 | 1 | 2;
 	folderId?: typeof FOLDER_ID;
 	filter?: files_table_Filter | null;
 	namePrefix?: string | null;
@@ -104,6 +102,7 @@ const sorted_fixture_key = (args: {
 		kind,
 		segment,
 		restricted = false,
+		principalIndex,
 		folderId = FOLDER_ID,
 		filter = null,
 		namePrefix = null,
@@ -114,7 +113,7 @@ const sorted_fixture_key = (args: {
 		parentId: folderId,
 		kind,
 		segment,
-		restricted,
+		...(principalIndex === undefined ? { restricted } : { principalIndex }),
 		sort: [{ field, direction }],
 		filter,
 		namePrefix,
@@ -123,17 +122,6 @@ const sorted_fixture_key = (args: {
 const notify_sorted = () => {
 	sorted.revision++;
 	for (const listener of sorted.listeners) listener();
-};
-const match_key = (args: {
-	filter: files_table_Filter;
-	target: SideRow["target"];
-	namePrefix?: string | null;
-	membershipId?: Id<"organizations_workspaces_users">;
-	parentId?: Id<"files_nodes">;
-}) => {
-	const { filter, target, namePrefix = null, membershipId = MEMBERSHIP_ID, parentId = FOLDER_ID } = args;
-
-	return JSON.stringify([membershipId, parentId, target, filter, namePrefix]);
 };
 
 // Answer each query at once from the fixtures.
@@ -158,50 +146,11 @@ vi.mock("convex/react", async (importOriginal) => {
 								search.linkRequests.push(request.args);
 								return [key, search.links];
 							}
-							if (getFunctionName(request.query) === "files_nodes:list_tree_children_sort_side_rows") {
-								const args = request.args as {
-									membershipId: typeof MEMBERSHIP_ID;
-									parentId: typeof FOLDER_ID;
-								};
-								const scope = JSON.stringify([args.membershipId, args.parentId]);
-								enumsSeen.push(request.args);
-								return [key, sorted.sideScopes.has(scope) ? sorted.sideScopes.get(scope) : sorted.sideRows];
-							}
-							if (getFunctionName(request.query) === "files_nodes:get_table_sort_key") {
-								if (!keysSeen.some((args) => JSON.stringify(args) === JSON.stringify(request.args)))
-									keysSeen.push(request.args);
+							if (getFunctionName(request.query) === "files_nodes:has_tree_children_shared") {
+								const scope = JSON.stringify([request.args.membershipId, request.args.parentId]);
 								return [
 									key,
-									sorted.keys.get(
-										JSON.stringify([
-											request.args.membershipId,
-											request.args.parentId,
-											request.args.target,
-											request.args.sort,
-										]),
-									),
-								];
-							}
-							if (getFunctionName(request.query) === "files_nodes:get_table_filter_match") {
-								const args = request.args as {
-									membershipId: typeof MEMBERSHIP_ID;
-									parentId: typeof FOLDER_ID;
-									target: SideRow["target"];
-									filter: files_table_Filter;
-									namePrefix: string | null;
-								};
-								matchesSeen.push(request.args);
-								return [
-									key,
-									sorted.matches.get(
-										match_key({
-											filter: args.filter,
-											target: args.target,
-											namePrefix: args.namePrefix,
-											membershipId: args.membershipId,
-											parentId: args.parentId,
-										}),
-									),
+									sorted.hasSharedByScope.has(scope) ? sorted.hasSharedByScope.get(scope) : sorted.hasShared,
 								];
 							}
 
@@ -304,20 +253,6 @@ const saved_row = (args: { kind: "file" | "folder"; name: string; part?: files_s
 	} as SortedRow;
 };
 
-// A restricted child shared with this member.
-const side_row = (name: string, kind: "file" | "folder" = "file"): SideRow =>
-	({
-		target: { kind: "saved", id: `shared_${name}` as app_convex_Id<"files_nodes"> },
-		name,
-		kind,
-		createdAt: 1,
-		updatedAt: 1,
-		contentByteSize: kind === "file" ? 7 : null,
-		updatedBy: "user_1" as app_convex_Id<"users">,
-		contentType: kind === "file" ? "text/markdown" : null,
-		treeRow: { _id: `shared_${name}` },
-	}) as SideRow;
-
 const file_names = (count: number, prefix = "file") =>
 	Array.from({ length: count }, (_, index) => `${prefix}-${String(index).padStart(3, "0")}.md`);
 
@@ -325,18 +260,13 @@ beforeEach(() => {
 	cursorsSeen.length = 0;
 	paginatedArgsSeen.length = 0;
 	sorted.rows.clear();
-	sorted.sideRows = { rows: [], tooManyShared: false } as SideRows;
+	sorted.hasShared = false;
 	sorted.loadingFields.clear();
 	sorted.loadingKeys.clear();
 	sorted.pages.clear();
 	sorted.splitting.clear();
 	sorted.loadMoreCalls.clear();
-	sorted.sideScopes.clear();
-	sorted.matches.clear();
-	sorted.keys.clear();
-	keysSeen.length = 0;
-	matchesSeen.length = 0;
-	enumsSeen.length = 0;
+	sorted.hasSharedByScope.clear();
 	search.nodes = undefined;
 	search.links = undefined;
 	search.linkRequests.length = 0;
@@ -367,6 +297,7 @@ describe("useFilesSortedChildren", () => {
 					sort: props.sort,
 					filter: null,
 					namePrefix: null,
+					isOwner: null,
 				}),
 			{ initialProps: { sort } },
 		);
@@ -378,7 +309,7 @@ describe("useFilesSortedChildren", () => {
 				sort: files_sort_Sort;
 				filter: files_table_Filter | null;
 				namePrefix: string | null;
-			}) => useFilesSortedChildren(props),
+			}) => useFilesSortedChildren({ ...props, isOwner: null }),
 			{
 				initialProps: {
 					membershipId: MEMBERSHIP_ID,
@@ -398,9 +329,12 @@ describe("useFilesSortedChildren", () => {
 			sorted_fixture_key({ kind: "file", segment: "value", field: "name", direction: "asc" }),
 			file_names(150).map((name) => saved_row({ kind: "file", name })),
 		);
-		sorted.sideRows = { rows: [side_row("file-005b.md"), side_row("zz.md")], tooManyShared: false } as SideRows;
+		const shared = [saved_row({ kind: "file", name: "file-005b.md" }), saved_row({ kind: "file", name: "zz.md" })];
+		sorted.rows.set(
+			sorted_fixture_key({ kind: "file", segment: "value", field: "name", direction: "asc", principalIndex: 0 }),
+			shared,
+		);
 		const { result } = render_sorted(NAME_ASC);
-		expect(result.current.sideTargets).toEqual(sorted.sideRows!.rows.map((row) => row.target));
 
 		const firstPage = file_names(100);
 		firstPage.splice(firstPage.indexOf("file-005.md") + 1, 0, "file-005b.md");
@@ -441,6 +375,7 @@ describe("useFilesSortedChildren", () => {
 				sort: NAME_ASC,
 				filter: null,
 				namePrefix: null,
+				isOwner: null,
 			});
 			if (children.rows) shown.push(children.rows.map((row) => row.name));
 			return children;
@@ -482,6 +417,7 @@ describe("useFilesSortedChildren", () => {
 				sort,
 				filter: null,
 				namePrefix: null,
+				isOwner: null,
 			});
 			if (children.rows) shown.push(children.rows.map((row) => row.name));
 			return children;
@@ -494,6 +430,116 @@ describe("useFilesSortedChildren", () => {
 		expect(result.current.rows?.map((row) => row.name)).toEqual(all);
 		expect(result.current.isDone).toBe(true);
 		for (const names of shown) expect(names).toEqual(all.slice(0, names.length));
+	});
+
+	test("merges a member's share streams by page and shows a node shared to them and to their role once", () => {
+		const open = file_names(150, "b");
+		const shared = [...file_names(75, "a"), ...file_names(75, "c")];
+		sorted.rows.set(
+			sorted_fixture_key({ kind: "file", segment: "value", field: "name", direction: "asc" }),
+			open.map((name) => saved_row({ kind: "file", name })),
+		);
+		sorted.rows.set(
+			sorted_fixture_key({ kind: "file", segment: "value", field: "name", direction: "asc", principalIndex: 0 }),
+			shared.map((name) => saved_row({ kind: "file", name })),
+		);
+		// The role shares the first 10 nodes too: the same nodes, in a second stream.
+		sorted.rows.set(
+			sorted_fixture_key({ kind: "file", segment: "value", field: "name", direction: "asc", principalIndex: 1 }),
+			shared.slice(0, 10).map((name) => saved_row({ kind: "file", name })),
+		);
+		const all = [...open, ...shared].sort();
+		const shown: string[][] = [];
+		const { result } = renderHook(() => {
+			const children = useFilesSortedChildren({
+				membershipId: MEMBERSHIP_ID,
+				folderId: FOLDER_ID,
+				sort: NAME_ASC,
+				filter: null,
+				namePrefix: null,
+				isOwner: null,
+			});
+			if (children.rows) shown.push(children.rows.map((row) => row.name));
+			return children;
+		});
+
+		// The first pages end at b-099 and at c-024. The rows past b-099 must wait for the next open page.
+		expect(result.current.rows?.map((row) => row.name)).toEqual(all.slice(0, 175));
+		act(() => result.current.loadMore());
+		expect(result.current.rows?.map((row) => row.name)).toEqual(all);
+		expect(result.current.isDone).toBe(true);
+		for (const names of shown) expect(names).toEqual(all.slice(0, names.length));
+		// Every share stream reads the table's sort.
+		expect(
+			new Set(paginatedArgsSeen.filter((args) => args.principalIndex !== undefined).map((args) => args.principalIndex)),
+		).toEqual(new Set([0, 1, 2]));
+	});
+
+	test("reads a member's share streams in the missing segment of an extension sort", () => {
+		const sort: files_sort_Sort = [{ field: "extension", direction: "asc" }];
+		const fixture = (kind: "file" | "folder", segment: "value" | "missing", principalIndex?: 0) =>
+			sorted_fixture_key({ kind, segment, field: "extension", direction: "asc", principalIndex });
+		sorted.rows.set(fixture("folder", "missing"), [saved_row({ kind: "folder", name: "docs", part: null })]);
+		sorted.rows.set(fixture("folder", "missing", 0), [saved_row({ kind: "folder", name: "beta", part: null })]);
+		sorted.rows.set(fixture("file", "value"), [saved_row({ kind: "file", name: "a.md", part: ["md", "a.md"] })]);
+		sorted.rows.set(fixture("file", "value", 0), [saved_row({ kind: "file", name: "b.txt", part: ["txt", "b.txt"] })]);
+		sorted.rows.set(fixture("file", "missing"), [saved_row({ kind: "file", name: "c", part: null })]);
+		sorted.rows.set(fixture("file", "missing", 0), [saved_row({ kind: "file", name: "a-plain", part: null })]);
+		const { result } = render_sorted(sort);
+
+		// Folders have no extension, so they all sit in the missing segment, by name.
+		expect(result.current.rows?.map((row) => row.name)).toEqual(["beta", "docs", "a.md", "b.txt", "a-plain", "c"]);
+		expect(result.current.isDone).toBe(true);
+		expect(
+			paginatedArgsSeen.some((args) => args.kind === "file" && args.segment === "missing" && args.principalIndex === 0),
+		).toBe(true);
+	});
+
+	test("merges a member's share stream in a desc sort", () => {
+		const sort: files_sort_Sort = [{ field: "name", direction: "desc" }];
+		sorted.rows.set(
+			sorted_fixture_key({ kind: "file", segment: "value", field: "name", direction: "desc" }),
+			["d.md", "b.md"].map((name) => saved_row({ kind: "file", name })),
+		);
+		sorted.rows.set(
+			sorted_fixture_key({ kind: "file", segment: "value", field: "name", direction: "desc", principalIndex: 0 }),
+			["e.md", "c.md", "a.md"].map((name) => saved_row({ kind: "file", name })),
+		);
+		const { result } = render_sorted(sort);
+
+		expect(result.current.rows?.map((row) => row.name)).toEqual(["e.md", "d.md", "c.md", "b.md", "a.md"]);
+		expect(result.current.isDone).toBe(true);
+	});
+
+	test("once the role is known, reads no share stream for the owner and no restricted twin for a member", () => {
+		const fixture = (args: { restricted?: boolean; principalIndex?: 0 }) =>
+			sorted_fixture_key({ kind: "file", segment: "value", field: "name", direction: "asc", ...args });
+		sorted.rows.set(fixture({}), [saved_row({ kind: "file", name: "b.md" })]);
+		sorted.rows.set(fixture({ restricted: true }), [saved_row({ kind: "file", name: "a.md" })]);
+		sorted.rows.set(fixture({ principalIndex: 0 }), [saved_row({ kind: "file", name: "c.md" })]);
+		const render_as = (isOwner: boolean) =>
+			renderHook(() =>
+				useFilesSortedChildren({
+					membershipId: MEMBERSHIP_ID,
+					folderId: FOLDER_ID,
+					sort: NAME_ASC,
+					filter: null,
+					namePrefix: null,
+					isOwner,
+				}),
+			);
+
+		const owner = render_as(true);
+		expect(owner.result.current.rows?.map((row) => row.name)).toEqual(["a.md", "b.md"]);
+		expect(owner.result.current.isDone).toBe(true);
+		expect(paginatedArgsSeen.some((args) => args.principalIndex !== undefined)).toBe(false);
+		cleanup();
+
+		paginatedArgsSeen.length = 0;
+		const member = render_as(false);
+		expect(member.result.current.rows?.map((row) => row.name)).toEqual(["b.md", "c.md"]);
+		expect(member.result.current.isDone).toBe(true);
+		expect(paginatedArgsSeen.some((args) => args.restricted === true)).toBe(false);
 	});
 
 	test("keeps loading a stream whose pages are empty but not done, and still fills the page", () => {
@@ -570,7 +616,10 @@ describe("useFilesSortedChildren", () => {
 		sorted.rows.set(sorted_fixture_key({ kind: "file", segment: "value", field: "size", direction: "desc" }), [
 			saved_row({ kind: "file", name: "big.md", part: [9, "big.md"] }),
 		]);
-		sorted.sideRows = { rows: [side_row("b", "folder")], tooManyShared: false } as SideRows;
+		sorted.rows.set(
+			sorted_fixture_key({ kind: "folder", segment: "value", field: "size", direction: "desc", principalIndex: 0 }),
+			[saved_row({ kind: "folder", name: "b", part: null })],
+		);
 		const { result } = render_sorted([{ field: "size", direction: "desc" }]);
 
 		expect(result.current.rows?.map((row) => row.name)).toEqual(["a", "b", "c", "big.md"]);
@@ -639,44 +688,52 @@ describe("useFilesSortedChildren", () => {
 		expect(result.current).toMatchObject({ rows: undefined, isBusy: true, isDone: false });
 	});
 
-	test("reads no missing segment for a metadata sort and hides shared rows without the key", () => {
+	test("a metadata sort reads no missing segment and no share stream, and names the key that hides the shares", () => {
 		const sort: files_sort_Sort = [{ field: "metadata.status", direction: "asc" }];
 		sorted.rows.set(
 			sorted_fixture_key({ kind: "file", segment: "value", field: "metadata.status", direction: "asc" }),
 			[saved_row({ kind: "file", name: "a.md", part: ["open", "a.md"] })],
 		);
-		const withKey = side_row("b.md");
-		const withoutKey = side_row("c.md");
-		sorted.sideRows = { rows: [withKey, withoutKey], tooManyShared: false } as SideRows;
-		for (const [draft, value] of [
-			[withKey, "open"],
-			[withoutKey, null],
-		] as const)
-			sorted.keys.set(
-				JSON.stringify([MEMBERSHIP_ID, FOLDER_ID, draft.target, sort]),
-				files_sort_key_of({
-					sort,
-					facts: { ...draft, extension: "md" },
-					metadataParts: new Map([["metadata.status", value]]),
-				}),
-			);
+		sorted.hasShared = true;
 		const { result } = render_sorted(sort);
 
-		expect(result.current.rows?.map((row) => row.name)).toEqual(["a.md", "b.md"]);
-		expect(result.current.isDone).toBe(true);
+		expect(result.current.rows?.map((row) => row.name)).toEqual(["a.md"]);
+		expect(result.current).toMatchObject({ isDone: true, hiddenSharedKey: "metadata.status" });
 		expect(paginatedArgsSeen.some((args) => args.segment === "missing")).toBe(false);
+		expect(paginatedArgsSeen.some((args) => args.principalIndex !== undefined)).toBe(false);
 	});
 
-	test("fails when the side rows refuse the folder", () => {
-		sorted.sideRows = null;
+	test("a metadata is filter reads the name order but no share stream, and names its key", () => {
+		const filter: files_table_Filter = { kind: "text", field: "metadata.status", op: "is", value: "open" };
+		sorted.hasShared = true;
+		const { result } = render_filtered(NAME_ASC, filter);
+
+		expect(result.current).toMatchObject({ isDone: true, hiddenSharedKey: "metadata.status" });
+		expect(paginatedArgsSeen.length).toBeGreaterThan(0);
+		expect(paginatedArgsSeen.some((args) => args.principalIndex !== undefined)).toBe(false);
+	});
+
+	test("names no hidden key when the member has no share here or the sort is built in", () => {
+		sorted.hasShared = false;
+		const metadata = render_sorted([{ field: "metadata.status", direction: "asc" }]);
+		expect(metadata.result.current.hiddenSharedKey).toBeNull();
+		cleanup();
+
+		sorted.hasShared = true;
+		const byName = render_sorted(NAME_ASC);
+		expect(byName.result.current.hiddenSharedKey).toBeNull();
+	});
+
+	test("fails when has_tree_children_shared refuses the folder", () => {
+		sorted.hasShared = null;
 		const { result } = render_sorted(NAME_ASC);
 
-		expect(result.current.isFailed).toBe(true);
+		expect(result.current).toMatchObject({ rows: undefined, isFailed: true, isFolderRefused: true });
 	});
 
-	test("Retry drops a failed side query before subscribing again", () => {
+	test("Retry drops a failed has_tree_children_shared query before subscribing again", () => {
 		const scope = JSON.stringify([MEMBERSHIP_ID, FOLDER_ID]);
-		sorted.sideScopes.set(scope, new Error("side rows failed"));
+		sorted.hasSharedByScope.set(scope, new Error("has_tree_children_shared failed"));
 		const renders: Array<{ isBusy: boolean; isFailed: boolean }> = [];
 		const { result } = renderHook(() => {
 			const children = useFilesSortedChildren({
@@ -685,6 +742,7 @@ describe("useFilesSortedChildren", () => {
 				sort: NAME_ASC,
 				filter: null,
 				namePrefix: null,
+				isOwner: null,
 			});
 			renders.push({ isBusy: children.isBusy, isFailed: children.isFailed });
 			return children;
@@ -694,30 +752,38 @@ describe("useFilesSortedChildren", () => {
 		act(() => result.current.retry());
 		expect(renders).toContainEqual({ isBusy: true, isFailed: false });
 		act(() => {
-			sorted.sideScopes.delete(scope);
+			sorted.hasSharedByScope.delete(scope);
 			notify_sorted();
 		});
 		expect(result.current).toMatchObject({ isFailed: false, isDone: true });
 	});
 
-	test("a filter reads value segments with the name prefix and checks shared rows with it too", () => {
+	test("a filter reads value segments with the name prefix, the share streams too", () => {
 		const filter: files_table_Filter = { kind: "extension", field: "extension", op: "is", value: "md" };
 		sorted.rows.set(
 			sorted_fixture_key({ kind: "file", segment: "value", field: "name", direction: "asc", filter, namePrefix: "re" }),
 			[saved_row({ kind: "file", name: "report.md" })],
 		);
-		const matching = side_row("readme.md");
-		const other = side_row("recipe.md");
-		sorted.sideRows = { rows: [matching, other], tooManyShared: false } as SideRows;
-		sorted.matches.set(match_key({ filter, target: matching.target, namePrefix: "re" }), { matches: true });
-		sorted.matches.set(match_key({ filter, target: other.target, namePrefix: "re" }), { matches: false });
+		sorted.rows.set(
+			sorted_fixture_key({
+				kind: "file",
+				segment: "value",
+				field: "name",
+				direction: "asc",
+				filter,
+				namePrefix: "re",
+				principalIndex: 0,
+			}),
+			[saved_row({ kind: "file", name: "readme.md" })],
+		);
 		const { result } = render_filtered(NAME_ASC, filter, "re");
 
 		expect(result.current.rows?.map((row) => row.name)).toEqual(["readme.md", "report.md"]);
 		expect(result.current.isDone).toBe(true);
 		expect(paginatedArgsSeen.every((args) => args.segment === "value" && args.namePrefix === "re")).toBe(true);
-		expect(new Set(paginatedArgsSeen.map((args) => args.restricted))).toEqual(new Set([false, true]));
-		expect(matchesSeen.every((args) => args.namePrefix === "re")).toBe(true);
+		expect(new Set(paginatedArgsSeen.map((args) => args.restricted ?? args.principalIndex))).toEqual(
+			new Set([false, true, 0, 1, 2]),
+		);
 	});
 
 	test("holds the old filter label while applying and clears rows on a folder or membership change", () => {
@@ -763,65 +829,6 @@ describe("useFilesSortedChildren", () => {
 		// The filter and the sort did not change, so only the prefix tells the table these rows are held.
 		expect(result.current).toMatchObject({ rowsFilter: filter, rowsSort: NAME_ASC, rowsNamePrefix: "re", isBusy: true });
 		expect(result.current.rows?.map((row) => row.name)).toEqual(["report.md"]);
-	});
-
-	test("prunes a refused shared row from held rows", () => {
-		const shared = side_row("a-match.md");
-		sorted.sideRows = { rows: [shared], tooManyShared: false } as SideRows;
-		sorted.matches.set(match_key({ filter: NAME_FILTER, target: shared.target }), { matches: true });
-		const pageKey = sorted_fixture_key({
-			kind: "file",
-			segment: "value",
-			field: "name",
-			direction: "asc",
-			filter: NAME_FILTER,
-		});
-		sorted.rows.set(
-			pageKey,
-			file_names(4, "match").map((name) => saved_row({ kind: "file", name })),
-		);
-		const { result } = render_filtered();
-		expect(result.current.rows).toHaveLength(5);
-		act(() => {
-			sorted.loadingKeys.add(pageKey);
-			sorted.matches.set(match_key({ filter: NAME_FILTER, target: shared.target }), null);
-			notify_sorted();
-		});
-		expect(result.current.isBusy).toBe(true);
-		expect(result.current.rows?.some((row) => row.target.id === shared.target.id)).toBe(false);
-		expect(result.current.sideTargets).toEqual([shared.target]);
-	});
-
-	test("asks one key for every metadata shared row and waits for the last one", () => {
-		const sort: files_sort_Sort = [{ field: "metadata.status", direction: "desc" }];
-		const shared = file_names(40).map((name) => side_row(name));
-		sorted.sideRows = { rows: shared, tooManyShared: false } as SideRows;
-		for (const [index, row] of shared.slice(0, -1).entries())
-			sorted.keys.set(
-				JSON.stringify([MEMBERSHIP_ID, FOLDER_ID, row.target, sort]),
-				files_sort_key_of({
-					sort,
-					facts: { ...row, extension: "md" },
-					metadataParts: new Map([["metadata.status", String(100 + index)]]),
-				}),
-			);
-		const { result } = render_sorted(sort);
-		expect(keysSeen).toHaveLength(40);
-		expect(result.current.rows).toBeUndefined();
-		const last = shared.at(-1)!;
-		act(() => {
-			sorted.keys.set(
-				JSON.stringify([MEMBERSHIP_ID, FOLDER_ID, last.target, sort]),
-				files_sort_key_of({
-					sort,
-					facts: { ...last, extension: "md" },
-					metadataParts: new Map([["metadata.status", "999"]]),
-				}),
-			);
-			notify_sorted();
-		});
-		expect(result.current.isBusy).toBe(false);
-		expect(result.current.rows?.map((row) => row.name)).toEqual([...file_names(40)].reverse());
 	});
 });
 

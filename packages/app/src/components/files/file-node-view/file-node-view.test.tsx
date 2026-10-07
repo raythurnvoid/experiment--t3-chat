@@ -171,6 +171,8 @@ vi.mock("@/lib/files-tree-context.tsx", async () => {
 					loadMore: () => {},
 				};
 			},
+			// Unknown, so the folder table reads every stream.
+			useIsOwner: () => null,
 			useFullList: (enabled: boolean) =>
 				useQuery(
 					api.files_nodes.list_tree,
@@ -383,7 +385,10 @@ let plugins: (typeof PLUGIN)[] | undefined;
 let pendingUpdates: unknown[];
 let savedPendingUpdate: unknown;
 let pendingListStatus: "CanLoadMore" | "LoadingMore" | "Exhausted";
-let sideRows: unknown;
+// Restricted children shared with this member, on their own share stream.
+let sharedRows: (typeof NODE)[];
+// What `has_tree_children_shared` answers.
+let hasShared: boolean | null;
 let folderSort: unknown;
 let privateView:
 	| {
@@ -435,7 +440,8 @@ beforeEach(() => {
 		savedParentId: null,
 	};
 	pendingChildren = [];
-	sideRows = undefined;
+	sharedRows = [];
+	hasShared = false;
 	folderSort = { sort: [{ field: "name", direction: "asc" }], canSave: true };
 	browserSession = null;
 	anagraphic = null;
@@ -502,19 +508,24 @@ beforeEach(() => {
 				return node.path;
 			case "files_folder_sorts:get_folder_sort":
 				return folderSort;
-			case "files_nodes:list_tree_children_sorted": {
-				// Serve a whole segment at once. The hook's paging has its own tests. No row here is restricted.
-				const { parentId, kind, segment, sort, filter, restricted } = args as {
+			case "files_nodes:list_tree_children_sorted":
+			case "files_nodes:list_tree_children_shared": {
+				// Serve a whole segment at once. The hook's paging has its own tests. The tree rows are open, and
+				// `sharedRows` come on the member's own share stream.
+				const { parentId, kind, segment, sort, filter, restricted, principalIndex } = args as {
 					parentId: string;
 					kind: string;
 					segment: string;
 					sort: files_sort_Sort;
 					filter: files_table_Filter | null;
-					restricted: boolean;
+					restricted?: boolean;
+					principalIndex?: number;
 				};
-				return segment === "missing" || restricted
+				const source =
+					principalIndex === undefined ? (restricted ? [] : (treeNodes ?? [])) : principalIndex === 0 ? sharedRows : [];
+				return segment === "missing"
 					? []
-					: (treeNodes ?? [])
+					: source
 							.filter((item) => item.parentId === parentId && item.kind === kind && item.archiveOperationId === null)
 							.filter((item) => {
 								if (filter === null) return true;
@@ -551,16 +562,12 @@ beforeEach(() => {
 							}))
 							.sort((a, b) => files_sort_compare({ a: a.sortKey, b: b.sortKey, sort }));
 			}
-			case "files_nodes:get_table_filter_match":
-				return { matches: true };
-			case "files_nodes:get_table_sort_key":
-				return null;
+			case "files_nodes:has_tree_children_shared":
+				return hasShared;
 			case "files_metadata:list_search_fields":
 				return [{ fieldPath: "metadata.status", valueKinds: ["string"] }];
 			case "files_metadata:list_folder_fields":
 				return { fields: ["metadata.status"], afterField: "metadata.status", isDone: true };
-			case "files_metadata:list_node_fields":
-				return { fields: [], continueCursor: "", isDone: true };
 			case "files_metadata:get_field_values": {
 				const { fields } = args as { fields: string[] };
 				return {
@@ -569,8 +576,6 @@ beforeEach(() => {
 					isDone: true,
 				};
 			}
-			case "files_nodes:list_tree_children_sort_side_rows":
-				return sideRows ?? { rows: [], tooManyShared: false };
 			case "files_visible:list":
 				return {
 					_yay: {
@@ -1596,19 +1601,14 @@ describe("FileNodeView folder clipboard", () => {
 			parentId: node._id,
 		}));
 		treeNodes = [node, ...children];
-		// Restricted children shared with this member. They come in one complete list.
-		const sharedRow = (name: string) => ({
-			target: { kind: "saved", id: name },
+		// Restricted children shared with this member. Their stream is done after one page.
+		sharedRows = ["bb.html", "z.html"].map((name) => ({
+			...NODE,
+			_id: name,
 			name,
-			kind: "file",
-			updatedAt: 1,
-			createdAt: 1,
-			updatedBy: "user_1",
-			contentType: "text/html",
-			contentByteSize: 52,
-			treeRow: { ...NODE, _id: name, name, path: `/Docs/${name}`, parentId: node._id },
-		});
-		sideRows = { rows: [sharedRow("bb.html"), sharedRow("z.html")], tooManyShared: false };
+			path: `/Docs/${name}`,
+			parentId: node._id,
+		}));
 		let secondPageReady = false;
 		const query = queryMock.getMockImplementation()!;
 		queryMock.mockImplementation((reference: never, args: { kind?: string; restricted?: boolean }) => {
@@ -1938,13 +1938,34 @@ describe("FileNodeView folder sort", () => {
 		).toContain("html");
 	});
 
-	test("says when some shared items are not sorted", async () => {
+	test("tells a member with shares here that a metadata sort does not show them", async () => {
 		node = { ...NODE, _id: "folder_1", name: "Docs", path: "/Docs", kind: "folder" };
 		treeNodes = [node, { ...NODE, _id: "a.html", name: "a.html", path: "/Docs/a.html", parentId: node._id }];
-		sideRows = { rows: [], tooManyShared: true };
+		sharedRows = [{ ...NODE, _id: "shared.html", name: "shared.html", path: "/Docs/shared.html", parentId: node._id }];
+		hasShared = true;
+		folderSort = { sort: [{ field: "metadata.status", direction: "asc" }], canSave: false };
 		renderFileView({ nodeId: node._id });
 
-		expect(await screen.findByText("Too many shared items here to sort. Some are not shown.")).toBeTruthy();
+		expect(
+			await screen.findByText("Items shared with you are not shown while sorting or filtering by metadata.status."),
+		).toBeTruthy();
+		expect(screen.getByRole("link", { name: "Open a.html" })).toBeTruthy();
+		expect(screen.queryByRole("link", { name: "Open shared.html" })).toBeNull();
+	});
+
+	test("the Columns menu reads the folder field list only, never the fields of a shared row", async () => {
+		node = { ...NODE, _id: "folder_1", name: "Docs", path: "/Docs", kind: "folder" };
+		treeNodes = [node, { ...NODE, _id: "a.html", name: "a.html", path: "/Docs/a.html", parentId: node._id }];
+		sharedRows = [{ ...NODE, _id: "shared.html", name: "shared.html", path: "/Docs/shared.html", parentId: node._id }];
+		renderFileView({ nodeId: node._id });
+		expect(await screen.findByRole("link", { name: "Open shared.html" })).toBeTruthy();
+
+		fireEvent.click(screen.getByRole("button", { name: "Columns" }));
+		const chooser = await screen.findByRole("dialog", { name: "Columns" });
+		expect(await within(chooser).findByRole("checkbox", { name: "metadata.status" })).toBeTruthy();
+		expect(
+			queryMock.mock.calls.some(([reference]) => getFunctionName(reference) === "files_metadata:list_node_fields"),
+		).toBe(false);
 	});
 });
 
@@ -1984,7 +2005,6 @@ describe("FileNodeView folder sort states", () => {
 		retry.mockReset();
 		sortedChildrenMock.mockImplementation((props) => ({
 			rows,
-			sideTargets: [],
 			rowsSort: props.sort,
 			rowsFilter: props.filter,
 			rowsNamePrefix: props.namePrefix,
@@ -1992,7 +2012,7 @@ describe("FileNodeView folder sort states", () => {
 			isDone: true,
 			isFailed: false,
 			isFolderRefused: false,
-			tooManyShared: false,
+			hiddenSharedKey: null,
 			loadMore: loadMorePendingMock,
 			retry,
 			...result,
@@ -2479,7 +2499,6 @@ describe("FileNodeView folder filter", () => {
 				props.filter === null
 					? rows
 					: (rowsByScope.get(JSON.stringify([props.membershipId, props.folderId, props.sort, props.filter])) ?? []),
-			sideTargets: [],
 			rowsSort: props.sort,
 			rowsFilter: props.filter,
 			rowsNamePrefix: props.namePrefix,
@@ -2487,7 +2506,7 @@ describe("FileNodeView folder filter", () => {
 			isDone: true,
 			isFailed: false,
 			isFolderRefused: false,
-			tooManyShared: false,
+			hiddenSharedKey: null,
 			loadMore: loadMorePendingMock,
 			retry,
 			...result,
@@ -2800,11 +2819,6 @@ describe("FileNodeView folder filter", () => {
 			overrides: { isDone: false, isBusy: false },
 			message: "No matches loaded yet. Show more to keep looking.",
 		},
-		{
-			name: "shared cap",
-			overrides: { isDone: true, tooManyShared: true },
-			message: "No matches in the rows checked",
-		},
 	])("shows the honest zero-row state for $name and keeps the toolbar", async ({ overrides, message }) => {
 		result = { rows: [], ...overrides };
 		renderFileView({ nodeId: node._id, filter: "file.name:starts_with:absent" });
@@ -2870,33 +2884,23 @@ describe("FileNodeView folder filter", () => {
 		expect(screen.queryByRole("button", { name: "Clear filter and sort" })).toBeNull();
 	});
 
-	test("keeps a matching shared row and hides a nonmatching one, through the real hook", async () => {
+	test("a metadata filter shows no shared row and says why, through the real hook", async () => {
 		sortedChildrenMock.mockReset();
-		sideRows = {
-			rows: ["a-shared.html", "b-shared.html"].map((name) => ({
-				target: { kind: "saved", id: name },
-				name,
-				kind: "file",
-				createdAt: 1,
-				updatedAt: 1,
-				contentByteSize: 0,
-				updatedBy: "user_1",
-				contentType: "text/html",
-				treeRow: { ...NODE, _id: name, name, path: `/Docs/${name}`, parentId: node._id },
-			})),
-			tooManyShared: false,
-		};
-		const query = queryMock.getMockImplementation()!;
-		queryMock.mockImplementation((reference, args) =>
-			getFunctionName(reference) === "files_nodes:get_table_filter_match"
-				? { matches: args.target.id === "a-shared.html" }
-				: query(reference, args),
-		);
+		sharedRows = [
+			{ ...NODE, _id: "a-shared.html", name: "a-shared.html", path: "/Docs/a-shared.html", parentId: node._id },
+		];
+		hasShared = true;
 		renderFileView({ nodeId: node._id, filter: "metadata.status:is:Open" });
-		await screen.findByRole("link", { name: "Open a-shared.html" });
-		expect(screen.queryByRole("link", { name: "Open b-shared.html" })).toBeNull();
-		expect(screen.getByRole("link", { name: "Open file-1.html" })).toBeTruthy();
-		// Until Phase S a member keeps the matching shared rows, so no text says they are hidden.
+		await screen.findByRole("link", { name: "Open file-1.html" });
+		expect(screen.queryByRole("link", { name: "Open a-shared.html" })).toBeNull();
+		expect(
+			screen.getByText("Items shared with you are not shown while sorting or filtering by metadata.status."),
+		).toBeTruthy();
+
+		// A name filter reads the share stream, so the shared row shows and the note goes.
+		cleanup();
+		renderFileView({ nodeId: node._id, filter: "file.name:starts_with:a" });
+		expect(await screen.findByRole("link", { name: "Open a-shared.html" })).toBeTruthy();
 		expect(screen.queryByText(/^Items shared with you/)).toBeNull();
 	});
 });

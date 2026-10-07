@@ -22,6 +22,7 @@ import {
 } from "./setup.test.ts";
 import { files_ROOT_ID } from "../server/files.ts";
 import { files_pending_overlay_db_flush } from "../server/files-pending-overlay.ts";
+import { access_control_FILE_SHARE_LEVELS } from "../shared/access-control.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 
 beforeEach(() => vi.useFakeTimers());
@@ -287,6 +288,72 @@ describe("move_nodes", () => {
 		expect(cost.bytesWritten, "bytesWritten").toBeLessThan(16 * 1024 * 1024 * 0.75);
 		expect(cost.functionsScheduled, "functionsScheduled").toBeLessThan(1000 * 0.75);
 	}, 120_000);
+
+	// The flush rewrites the share rows of each restricted folder a move takes, so the move counts them
+	// in its read and write budgets (MAX_MOVE_DOCUMENT_COUNT, 2,000 docs each). A folder with 50 shares
+	// costs 51 docs of each, and the read budget fills first: 38 folders fit and 39 answer
+	// `move_too_large`. At 38 the move uses about 26% of the Convex read limit.
+	test.each([
+		{ rootCount: 38, allowed: true },
+		{ rootCount: 39, allowed: false },
+	])(
+		"moves $rootCount restricted folders with 50 shares each",
+		async ({ rootCount, allowed }) => {
+			const t = test_convex({ transactionLimits: true });
+			const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+			const asOwner = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+			const seeded = await t.run(async (ctx) => {
+				const archive = await insert_saved_node(ctx, db, { parent: null, name: "archive", kind: "folder" });
+				const readerIds: Id<"users">[] = [];
+				for (let index = 0; index < 50; index++)
+					readerIds.push(await ctx.db.insert("users", { clerkUserId: `clerk_reader_${index}` }));
+				const roots: Doc<"files_nodes">[] = [];
+				for (let index = 0; index < rootCount; index++) {
+					const root = await insert_saved_node(ctx, db, { parent: null, name: `shared-${index}`, kind: "folder" });
+					await ctx.db.patch("files_nodes", root._id, { restrictedScopeNodeId: root._id, isRestrictedScopeRoot: true });
+					roots.push(root);
+				}
+				return { archive, readerIds, roots };
+			});
+			// One flush per folder keeps each seed transaction under the limits. Each reader gets the three
+			// grants of a "manage" share. Only the read grant has a row.
+			for (const root of seeded.roots)
+				await test_run_with_flush(t, async (ctx) => {
+					for (const userId of seeded.readerIds)
+						for (const permission of access_control_FILE_SHARE_LEVELS.manage.permissions)
+							await ctx.db.insert("access_control_permission_grants", {
+								organizationId: db.organizationId,
+								workspaceId: db.workspaceId,
+								resourceKind: "file",
+								resourceId: String(root._id),
+								principalKind: "user",
+								userId,
+								permission,
+								createdAt: Date.now(),
+								updatedAt: Date.now(),
+							});
+				});
+
+			const { result, cost } = await asOwner.run(async (ctx) => {
+				const before = await ctx.meta.getTransactionMetrics();
+				const result = await ctx.runMutation(api.files_nodes.move_nodes, {
+					membershipId: db.membershipId,
+					itemIds: seeded.roots.map((root) => root._id),
+					targetParentId: seeded.archive._id,
+				});
+				return { result, cost: transaction_cost(before, await ctx.meta.getTransactionMetrics()) };
+			});
+			console.info(`move_nodes, ${rootCount} restricted folders with 50 shares each`, cost);
+
+			if (allowed) expect(result).toEqual({ _yay: null });
+			else expect(result._nay?.name).toBe("move_too_large");
+			const rows = await t.run((ctx) => ctx.db.query("files_share_rows").collect());
+			expect(rows).toHaveLength(rootCount * 50);
+			expect(rows.every((row) => row.parentId === (allowed ? seeded.archive._id : files_ROOT_ID))).toBe(true);
+			expect_under_convex_limits(cost);
+		},
+		120_000,
+	);
 });
 
 describe("commit_unit", () => {
@@ -535,5 +602,70 @@ describe("hard delete", () => {
 		const few = await hard_delete_cost(5);
 		const many = await hard_delete_cost(20);
 		expect(many.databaseQueries).toBe(few.databaseQueries);
+	}, 120_000);
+});
+
+describe("content save", () => {
+	// A content save patches the file node, so the flush rewrites every share row of a shared file
+	// that is a restricted root. The share caps allow 50 shares on one node (MAX_FILE_SHARE_PRINCIPALS
+	// in files_sharing.ts, MAX_READERS in plugins_external_files.ts). This measures twice that: 50
+	// users and 50 roles, each with the three grants of a "manage" share.
+	test("saves a shared file with 100 shares", async () => {
+		const t = test_convex({ transactionLimits: true });
+		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const file = await t.run(async (ctx) => {
+			const file = await insert_saved_node(ctx, db, { parent: null, name: "shared.md", kind: "file" });
+			await ctx.db.patch("files_nodes", file._id, { restrictedScopeNodeId: file._id, isRestrictedScopeRoot: true });
+			return file;
+		});
+		await test_run_with_flush(t, async (ctx) => {
+			const principals: Array<
+				{ principalKind: "user"; userId: Id<"users"> } | { principalKind: "role"; role: Id<"access_control_roles"> }
+			> = [];
+			for (let index = 0; index < 50; index++) {
+				const userId = await ctx.db.insert("users", { clerkUserId: `clerk_reader_${index}` });
+				const role = await ctx.db.insert("access_control_roles", {
+					organizationId: db.organizationId,
+					name: `Readers ${index}`,
+					normalizedName: `readers ${index}`,
+					description: "",
+					permissions: ["content.read"],
+					createdBy: db.userId,
+					createdAt: Date.now(),
+					updatedAt: Date.now(),
+				});
+				principals.push({ principalKind: "user", userId }, { principalKind: "role", role });
+			}
+			for (const principal of principals)
+				for (const permission of access_control_FILE_SHARE_LEVELS.manage.permissions)
+					await ctx.db.insert("access_control_permission_grants", {
+						organizationId: db.organizationId,
+						workspaceId: db.workspaceId,
+						resourceKind: "file",
+						resourceId: String(file._id),
+						...principal,
+						permission,
+						createdAt: Date.now(),
+						updatedAt: Date.now(),
+					});
+		});
+
+		const cost = await test_run_with_flush(t, async (ctx) => {
+			const before = await ctx.meta.getTransactionMetrics();
+			// The node fields a content save patches in files_nodes_content.ts, without the new asset.
+			await ctx.db.patch("files_nodes", file._id, {
+				contentByteSize: 2048,
+				updatedBy: db.userId,
+				updatedAt: Date.now() + 1000,
+			});
+			await files_pending_overlay_db_flush(ctx);
+			return transaction_cost(before, await ctx.meta.getTransactionMetrics());
+		});
+		console.info("content save, a shared file with 100 shares", cost);
+
+		const rows = await t.run((ctx) => ctx.db.query("files_share_rows").collect());
+		expect(rows).toHaveLength(100);
+		expect(rows.every((row) => row.contentByteSize === 2048)).toBe(true);
+		expect_under_convex_limits(cost);
 	}, 120_000);
 });
