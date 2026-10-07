@@ -1,5 +1,5 @@
 (() => {
-	const VERSION = "0.6.6";
+	const VERSION = "0.6.7";
 	const SKILL_DIR = ".agents/skills/app-playwriter-harness";
 	/** Somewhere harmless to move the pointer from, so the next move has a non-zero screen delta. */
 	const HOVERCARD_PARK_POINT = { x: 900, y: 500 };
@@ -23,7 +23,9 @@
 			);
 		}
 
-		return [pinned, state.page, page].find((candidate) => candidate && !candidate.isClosed?.()) || page;
+		const activePage = [pinned, state.page].find((candidate) => candidate && !candidate.isClosed?.());
+		if (!activePage) throw new Error("Bind an open tab first");
+		return activePage;
 	}
 
 	async function tabs() {

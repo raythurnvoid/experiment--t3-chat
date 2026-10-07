@@ -119,6 +119,9 @@ the same producer with private proposals. `files_pending_updates.ts` and
   in the publication transaction. Cleanup deletes mapping docs in pages and never owns their assets.
   Capture and Save proofs pin the exact text, set generation, proposal or attempt, and organization,
   workspace, and owner-proposal validation versions. A changed version invalidates the proof.
+  Copy retries validation and final publication together, with at most three attempts. Another
+  copy can change that version after the last validation page, even with no media embeds.
+  Each retry keeps the captured bytes and mappings. Lost access still refuses publication.
   Final publication still checks direct access. Do not remove a validation writer without checking
   both paged proof consumers.
 - Stored files get new R2 assets through server-side object copy. Never share asset ownership.

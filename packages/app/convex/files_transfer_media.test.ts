@@ -1,9 +1,11 @@
 import { R2 } from "@convex-dev/r2";
 import { Workpool } from "@convex-dev/workpool";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { getFunctionName } from "convex/server";
 import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
-import { test_convex, test_create_saved_text_file, test_mocks_fill_db_with } from "./setup.test.ts";
+import { test_convex, test_create_saved_text_file, test_mocks_fill_db_with, test_spy_handler } from "./setup.test.ts";
+import { copy_transfer_file } from "./files_nodes_content.ts";
 import { files_transfer_db_prepare_copy_item } from "./files_transfer.ts";
 import { files_transfer_media_db_map_refs } from "./files_transfer_media.ts";
 import { r2_server_side_copy, r2_create_asset_key } from "./r2_client.ts";
@@ -884,6 +886,51 @@ describe("copy_transfer_file media", () => {
 			state: "copying",
 			outputTarget: null,
 		});
+	});
+
+	test.each([false, true])("rechecks media after a stale publication proof (access revoked: %s)", async (revoked) => {
+		const f = await fixture();
+		const mediaBefore = await f.t.run((ctx) => ctx.db.get("files_nodes", f.media.target.id as Id<"files_nodes">));
+		let publicationCalls = 0;
+		test_spy_handler(copy_transfer_file, async (handler, ctx, args) => {
+			const runMutation = ctx.runMutation.bind(ctx);
+			vi.spyOn(ctx, "runMutation").mockImplementation(async (...mutationArgs) => {
+				const reference = mutationArgs[0];
+				if (
+					getFunctionName(reference) === "files_nodes_content:finalize_transfer_file_copy" &&
+					++publicationCalls === 1
+				) {
+					const changed = revoked
+						? await f.asOwner.mutation(api.files_sharing.restrict_node, {
+								membershipId: f.owner.membershipId,
+								nodeId: f.media.target.id as Id<"files_nodes">,
+							})
+						: await f.asUser.mutation(api.files_nodes.create_folder_node, {
+								membershipId: f.destination.membershipId,
+								parentId: "root",
+								path: "/unrelated-folder",
+							});
+					expect(changed).toHaveProperty("_yay");
+				}
+				return await runMutation(reference, mutationArgs[1], mutationArgs[2]);
+			});
+			return await handler(ctx, args);
+		});
+		await f.t.action(internal.files_nodes_content.copy_transfer_file, {
+			itemId: f.document._id,
+			attempt: f.document.attempt,
+		});
+		const item = await f.t.run((ctx) => ctx.db.get("files_transfer_items", f.document._id));
+		if (revoked) {
+			expect(publicationCalls).toBe(1);
+			expect(item).toMatchObject({ state: "failed", outputTarget: null });
+		} else {
+			expect(publicationCalls).toBe(2);
+			expect(item).toMatchObject({ state: "completed", errorMessage: null, outputTarget: { kind: "private" } });
+			expect(await f.t.run((ctx) => ctx.db.get("files_nodes", f.media.target.id as Id<"files_nodes">))).toEqual(
+				mediaBefore,
+			);
+		}
 	});
 
 	test.each(["source", "destination"] as const)(

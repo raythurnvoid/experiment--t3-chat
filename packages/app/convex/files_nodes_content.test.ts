@@ -1,6 +1,7 @@
 import { R2 } from "@convex-dev/r2";
 import { Workpool } from "@convex-dev/workpool";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { getFunctionName } from "convex/server";
 import { applyUpdate, Doc as YjsDoc, encodeStateAsUpdate, encodeStateVector } from "yjs";
 import { api, components, internal } from "./_generated/api.js";
 import {
@@ -8,6 +9,7 @@ import {
 	test_create_saved_text_file,
 	test_get_file_yjs_pointers,
 	test_mocks_fill_db_with,
+	test_spy_handler,
 } from "./setup.test.ts";
 import {
 	r2_create_asset_key,
@@ -24,7 +26,7 @@ import {
 import { files_yjs_doc_get_text } from "../shared/files-tiptap.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { files_nodes_db_hard_delete_node } from "./files_nodes.ts";
-import { files_nodes_content_db_publish_private_node } from "./files_nodes_content.ts";
+import { copy_transfer_file, files_nodes_content_db_publish_private_node } from "./files_nodes_content.ts";
 import { quotas_db_ensure } from "./quotas.ts";
 import { files_share_links_create_cleanup_state } from "./files_share_links_db.ts";
 import { files_media_validation_db_capture_versions } from "./files_media_validation.ts";
@@ -709,6 +711,151 @@ describe("private text publication", () => {
 });
 
 describe("copy_transfer_file", () => {
+	test("publishes both copies when another worker changes the media clock after validation", async () => {
+		vi.useFakeTimers();
+		const fixture = await create_file_fixture("rich_text", "First file\n");
+		const { t, db, asUser, nodeId } = fixture;
+		const secondId = await test_create_saved_text_file(t, {
+			membershipId: db.membershipId,
+			path: "/second.md",
+			textContent: "Second file\n",
+		});
+		const folder = await asUser.mutation(api.files_nodes.create_folder_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			path: "/copies",
+		});
+		if (folder._nay) throw new Error(folder._nay.message);
+		const started = await asUser.mutation(api.files_transfer.start, {
+			membershipId: db.membershipId,
+			requestId: "parallel-copy",
+			kind: "copy",
+			expectedSourceCount: 2,
+			sourceIds: [nodeId, secondId],
+			targetParentId: folder._yay.nodeId,
+		});
+		if (started._nay) throw new Error(started._nay.message);
+		expect(
+			await asUser.mutation(api.files_transfer.seal, {
+				membershipId: db.membershipId,
+				runId: started._yay.runId,
+			}),
+		).toEqual({ _yay: null });
+		let items: Doc<"files_transfer_items">[] = [];
+		for (let step = 0; step < 20; step++) {
+			await t.mutation(internal.files_transfer.advance, { runId: started._yay.runId });
+			items = await t.run((ctx) =>
+				ctx.db
+					.query("files_transfer_items")
+					.withIndex("by_run_order", (q) => q.eq("runId", started._yay.runId))
+					.collect(),
+			);
+			if (items.length === 2 && items.every((item) => item.workId)) break;
+		}
+		expect(items.map((item) => item.state)).toEqual(["copying", "copying"]);
+		const sources = await t.run(async (ctx) =>
+			Promise.all([nodeId, secondId].map((id) => ctx.db.get("files_nodes", id))),
+		);
+		let releaseValidation!: () => void;
+		const bothValidated = new Promise<void>((resolve) => {
+			releaseValidation = resolve;
+		});
+		let validationCalls = 0;
+		let publicationCalls = 0;
+		// Hold the first two finished pages outside their transactions. Both proofs then pin the
+		// same clock, and the first publication makes the other worker's proof stale.
+		test_spy_handler(copy_transfer_file, async (handler, ctx, args) => {
+			const runMutation = ctx.runMutation.bind(ctx);
+			vi.spyOn(ctx, "runMutation").mockImplementation(async (...mutationArgs) => {
+				const reference = mutationArgs[0];
+				const result = await runMutation(reference, mutationArgs[1], mutationArgs[2]);
+				if (getFunctionName(reference) === "files_nodes_content:validate_transfer_file_media") {
+					validationCalls += 1;
+					if (validationCalls === 2) releaseValidation();
+					if (validationCalls <= 2) await bothValidated;
+				}
+				if (getFunctionName(reference) === "files_nodes_content:finalize_transfer_file_copy") publicationCalls += 1;
+				return result;
+			});
+			return await handler(ctx, args);
+		});
+		await Promise.all(
+			items.map((item) =>
+				t.action(internal.files_nodes_content.copy_transfer_file, {
+					itemId: item._id,
+					attempt: item.attempt,
+				}),
+			),
+		);
+		for (const [index, item] of items.entries()) {
+			const completed = await t.run((ctx) => ctx.db.get("files_transfer_items", item._id));
+			expect(completed).toMatchObject({ state: "completed", errorMessage: null });
+			const saved = await t.run((ctx) => ctx.db.get("files_nodes", saved_copy_id(completed)));
+			expect(objects.get(r2_create_asset_key({ ...db, assetId: saved!.assetId! }))).toBe(
+				index === 0 ? "First file\n" : "Second file\n",
+			);
+		}
+		expect(validationCalls).toBe(3);
+		expect(publicationCalls).toBe(3);
+		expect(
+			await t.run(async (ctx) => Promise.all([nodeId, secondId].map((id) => ctx.db.get("files_nodes", id)))),
+		).toEqual(sources);
+	});
+
+	test("fails and retires the capture when the media clock changes before every publication", async () => {
+		vi.useFakeTimers();
+		const fixture = await create_file_fixture("rich_text");
+		const { t, db, asUser, nodeId } = fixture;
+		const copy = await create_transfer_copy_item(fixture);
+		const source = await t.run((ctx) => ctx.db.get("files_nodes", nodeId));
+		let publicationCalls = 0;
+		const assetIds: Id<"files_r2_assets">[] = [];
+		const setIds: Id<"files_media_dependency_sets">[] = [];
+		test_spy_handler(copy_transfer_file, async (handler, ctx, args) => {
+			const runMutation = ctx.runMutation.bind(ctx);
+			vi.spyOn(ctx, "runMutation").mockImplementation(async (...mutationArgs) => {
+				const reference = mutationArgs[0];
+				if (getFunctionName(reference) === "files_nodes_content:finalize_transfer_file_copy") {
+					publicationCalls += 1;
+					if (publicationCalls === 1) {
+						const item = await t.run((ctx) => ctx.db.get("files_transfer_items", copy.itemId));
+						assetIds.push(item!.capture!.artifact!.contentAssetId, item!.capture!.artifact!.yjsSnapshotAssetId!);
+						setIds.push(item!.capture!.mediaDependencySetId!);
+					}
+					expect(
+						await asUser.mutation(api.files_nodes.create_folder_node, {
+							membershipId: db.membershipId,
+							parentId: files_ROOT_ID,
+							path: "/clock-change-" + publicationCalls,
+						}),
+					).toHaveProperty("_yay");
+				}
+				return await runMutation(reference, mutationArgs[1], mutationArgs[2]);
+			});
+			return await handler(ctx, args);
+		});
+		await t.action(internal.files_nodes_content.copy_transfer_file, { itemId: copy.itemId, attempt: 1 });
+		expect(publicationCalls).toBe(3);
+		const item = await t.run((ctx) => ctx.db.get("files_transfer_items", copy.itemId));
+		expect(item).toMatchObject({
+			state: "failed",
+			outputTarget: null,
+			errorMessage: "Media access kept changing during validation. Try again.",
+			stagedAssetIds: [],
+		});
+		expect(item!.capture!.artifact).toBeNull();
+		const jobs = await t.run((ctx) => ctx.db.query("files_r2_object_deletion_jobs").collect());
+		for (const assetId of assetIds) {
+			expect(await t.run((ctx) => ctx.db.get("files_r2_assets", assetId))).toBeNull();
+			const job = jobs.find((job) => job.r2Key === r2_create_asset_key({ ...fixture.scope, assetId }));
+			expect(job?.putMayArriveUntil).toBeGreaterThan(Date.now());
+		}
+		expect(await t.run((ctx) => ctx.db.get("files_media_dependency_sets", setIds[0]!))).toMatchObject({
+			owner: { kind: "cleanup" },
+		});
+		expect(await t.run((ctx) => ctx.db.get("files_nodes", nodeId))).toEqual(source);
+	});
+
 	test.each(["saved", "private"] as const)(
 		"creates a private copy from a %s draft with unstaged edits",
 		async (kind) => {

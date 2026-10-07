@@ -3850,9 +3850,11 @@ export const copy_transfer_file = internalAction({
 				}
 			}
 
-			if (rootKind === "rich_text") {
-				let validated = false;
-				for (let proofAttempt = 0; proofAttempt < 3 && !validated; proofAttempt++) {
+			// Another copy can advance the media clock after the last validation page. Retry the
+			// proof and publication together, keeping the captured content and media mappings.
+			for (let proofAttempt = 0; proofAttempt < (rootKind === "rich_text" ? 3 : 1); proofAttempt++) {
+				if (rootKind === "rich_text") {
+					let validated = false;
 					let offset = 0;
 					while (true) {
 						const page = (await ctx.runMutation(internal.files_nodes_content.validate_transfer_file_media, {
@@ -3871,19 +3873,27 @@ export const copy_transfer_file = internalAction({
 						}
 						offset = page._yay.offset;
 					}
+					if (!validated) continue;
 				}
-				if (!validated) return await fail("Media access kept changing during validation. Try again.");
-			}
-			const finalized = (await ctx.runMutation(internal.files_nodes_content.finalize_transfer_file_copy, {
-				...claim,
-				...assets,
-				text,
-				backupAssetId,
-				replacementYjsSnapshotAssetId,
-			})) as finalize_transfer_file_copy_Result;
-			if (finalized._nay) return await fail(finalized._nay.message);
+				const finalized = (await ctx.runMutation(internal.files_nodes_content.finalize_transfer_file_copy, {
+					...claim,
+					...assets,
+					text,
+					backupAssetId,
+					replacementYjsSnapshotAssetId,
+				})) as finalize_transfer_file_copy_Result;
+				if (finalized._nay) {
+					if (
+						rootKind === "rich_text" &&
+						finalized._nay.message === "Media access changed during validation. Try again."
+					)
+						continue;
+					return await fail(finalized._nay.message);
+				}
 
-			return null;
+				return null;
+			}
+			return await fail("Media access kept changing during validation. Try again.");
 		} catch (error) {
 			const data: unknown = error instanceof ConvexError ? error.data : null;
 			if (data !== null && typeof data === "object" && "cause" in data) {
