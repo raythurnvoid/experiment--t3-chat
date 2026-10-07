@@ -4133,9 +4133,14 @@ const FilesSidebarSharedGroup = memo(function FilesSidebarSharedGroup(props: Fil
 		}
 		setLoadMoreFromIds(null);
 		// While more pages remain, focus stays on Show more. Once it is gone, move focus to the first new row.
-		// Leave focus alone when the user has moved it out of the group while the page loaded.
+		// Leave focus alone when the user has moved it out of the group, or into a row menu (its portal
+		// host sits inside the group), while the page loaded.
 		const activeElement = document.activeElement;
-		if (status === "more" || (activeElement !== document.body && !sectionRef.current?.contains(activeElement))) {
+		if (
+			status === "more" ||
+			menusPortalHost?.contains(activeElement) ||
+			(activeElement !== document.body && !sectionRef.current?.contains(activeElement))
+		) {
 			return;
 		}
 		// While archived items show, the active rows come first, so a new active row sits before the old
@@ -4144,7 +4149,7 @@ const FilesSidebarSharedGroup = memo(function FilesSidebarSharedGroup(props: Fil
 		if (firstNewRow) {
 			sectionRef.current?.querySelector<HTMLElement>(`[data-shared-row-id="shared:${firstNewRow._id}"]`)?.focus();
 		}
-	}, [loadMoreFromIds, rows, status]);
+	}, [loadMoreFromIds, menusPortalHost, rows, status]);
 
 	const handleLoadMoreClick = useFn(() => {
 		setLoadMoreFromIds(new Set(rows.map((row) => row._id)));
@@ -6520,7 +6525,14 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		// An archive from the "Shared with you" group keeps focus in the group: the next row, the row
 		// before it when it was last, or Show more. The archived row is still in the group here, like in
 		// the tree below. With nothing left, the group hides and focus goes to the tree.
-		const groupRow = archiveGroupRowRef.current;
+		// The group can re-render before the mutation resolves, so find the row again by id when the
+		// saved element is detached.
+		const groupRow =
+			archiveGroupRowRef.current && !archiveGroupRowRef.current.isConnected && archiveNodes?.[0]
+				? document.querySelector<HTMLElement>(
+						`[${"data-shared-row-id" satisfies keyof FilesSidebarSharedGroup_CustomAttributes}="shared:${archiveNodes[0]._id}"]`,
+					)
+				: archiveGroupRowRef.current;
 		const groupRows = Array.from(
 			groupRow
 				?.closest("ul")

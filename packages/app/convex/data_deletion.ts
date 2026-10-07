@@ -1883,7 +1883,8 @@ async function db_queue_organization_deletion_for_owner_account_deletion(
 			.then((docs) => Promise.all(docs.map((doc) => ctx.db.delete("access_control_role_assignments", doc._id)))),
 		// Delete every grant now, except file grants past the budget: the flush deletes the share row of
 		// each file grant. Public and service account grants go first, since they need no membership.
-		// A user or role grant left behind waits for the queued purge.
+		// The order is per organization only. A grant left behind gives no access (see the
+		// data-deletion skill) and waits for the queued purge.
 		ctx.db
 			.query("access_control_permission_grants")
 			.withIndex("by_organization_workspace_resource_user_permission", (q) =>

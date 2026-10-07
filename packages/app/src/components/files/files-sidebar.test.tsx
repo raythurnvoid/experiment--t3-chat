@@ -362,6 +362,27 @@ describe("FilesSidebar", () => {
 		expect(document.activeElement).toBe(search);
 	});
 
+	test("Show more leaves focus in a row menu the user opened while the page loaded", async () => {
+		treeState.sharedRoots = [share("s1")];
+		treeState.sharedRootsStatus = "more";
+		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
+		const view = render(<CreateSidebar router={router} selectedNodeId="alpha" />);
+		const group = await view.findByRole("region", { name: "Shared with you" });
+		const showMore = within(group).getByRole("button", { name: "Show more" });
+
+		showMore.focus();
+		fireEvent.click(showMore);
+		const row = within(group).getByRole("button", { name: "s1 restricted" });
+		act(() => row.focus());
+		fireEvent.keyDown(row, { key: "F10", shiftKey: true });
+		const menu = await view.findByRole("menu");
+		await waitFor(() => expect(menu.contains(document.activeElement)).toBe(true));
+		set_shared_roots([share("s1"), share("s2")], "done");
+		await waitFor(() => expect(within(group).getAllByRole("button")).toHaveLength(2));
+		expect(view.queryByRole("menu")).toBe(menu);
+		expect(menu.contains(document.activeElement)).toBe(true);
+	});
+
 	test("Show more focuses the first new active row when archived shares show below", async () => {
 		const archivedShare = { ...share("a1"), archiveOperationId: "archive-1" };
 		treeState.sharedRoots = [share("s1"), archivedShare];
@@ -574,6 +595,34 @@ describe("FilesSidebar", () => {
 		// s2 has no tree row, so the tree's first row must not take focus.
 		await new Promise((resolve) => setTimeout(resolve, 50));
 		expect(document.activeElement).toBe(within(group).getByRole("button", { name: "s3 restricted" }));
+	});
+
+	test("a confirmed archive of a Shared with you row finds the row again when the group remounted", async () => {
+		treeState.sharedRoots = [share("s1"), share("s2"), share("s3")];
+		vi.spyOn(app_convex, "mutation").mockImplementation(async () => {
+			// The group hides and comes back before the archive resolves, so its rows are new elements.
+			for (const rows of [[], [share("s1"), share("s2"), share("s3")]]) {
+				treeState.sharedRoots = rows;
+				for (const listener of treeState.sharedListeners) listener();
+				await new Promise((resolve) => setTimeout(resolve, 0));
+			}
+			return { _yay: null };
+		});
+		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
+		const view = render(<CreateSidebar router={router} selectedNodeId="alpha" />);
+		const group = await view.findByRole("region", { name: "Shared with you" });
+
+		fireEvent.contextMenu(within(group).getByRole("button", { name: "s2 restricted" }));
+		fireEvent.click(await view.findByRole("menuitem", { name: "Archive" }));
+		const dialog = await view.findByRole("dialog", { name: "Archive “s2”?" });
+		fireEvent.click(within(dialog).getByRole("button", { name: "Archive" }));
+		await waitFor(() => expect(view.queryByRole("dialog")).toBeNull());
+		set_shared_roots([share("s1"), share("s3")], "done");
+		// Wait past the tree's focus timer.
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		const remountedGroup = view.getByRole("region", { name: "Shared with you" });
+		expect(remountedGroup).not.toBe(group);
+		expect(document.activeElement).toBe(within(remountedGroup).getByRole("button", { name: "s3 restricted" }));
 	});
 
 	test("copies the tree selection and keeps its source IDs after navigation", async () => {
