@@ -14,6 +14,20 @@ ConvexError<{ message: string; cause?: Cause; data?: Data }> {
 }
 
 /**
+ * The error `usePaginatedQuery` reads as "start again from the first page". A text search page has no
+ * split cursor and can grow on a rerun, so a text search query throws this when its page is larger
+ * than it can check, before any per-row read. Relevance order has no stable position, so a restart
+ * loses nothing.
+ */
+export function convex_invalid_cursor_error(message: string) {
+	return new ConvexError({
+		message: `InvalidCursor: ${message}`,
+		isConvexSystemError: true,
+		paginationError: "InvalidCursor",
+	});
+}
+
+/**
  * Build a Convex validator for the app's `Result(...)` contract.
  *
  * Always provide the `_yay` validator because every Result-returning Convex

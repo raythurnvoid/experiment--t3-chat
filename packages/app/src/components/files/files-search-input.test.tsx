@@ -62,6 +62,17 @@ describe("FilesSearchInput", () => {
 		await waitFor(() => expect(onChange).toHaveBeenLastCalledWith(""));
 	});
 
+	test("a committed filter shows its problem as soon as words are typed next to it", () => {
+		render(<FilesSearchInput {...props} initialQuery="metadata.status:open" />);
+		const input = screen.getByRole("combobox");
+		const problem = "Search for words or one filter, not both. You can add a folder.";
+		expect(screen.queryByText(problem)).toBeNull();
+		fireEvent.change(input, { target: { value: "notes" } });
+		expect(screen.getByText(problem, { selector: ".FilesSearchInput-error" })).toBeTruthy();
+		fireEvent.change(input, { target: { value: "" } });
+		expect(screen.queryByText(problem)).toBeNull();
+	});
+
 	describe.each(["sidebar", "palette"] as const)("%s suggestions", (variant) => {
 		test("opens on entry, respects Escape while typing, and reopens with Ctrl+Space", async () => {
 			const onChange = vi.fn();
@@ -85,10 +96,10 @@ describe("FilesSearchInput", () => {
 			expect(await screen.findByRole("option", { name: "file.path" })).toBeTruthy();
 			expect(input.value).toBe("notes draft");
 			expect(input.selectionStart).toBe(2);
-			fireEvent.click(screen.getByRole("option", { name: "file.kind" }));
-			expect(input.value).toBe("notes draft file.kind:");
-			fireEvent.click(await screen.findByRole("option", { name: "folder" }));
-			expect(await screen.findByRole("button", { name: "Remove filter file.kind:folder" })).toBeTruthy();
+			fireEvent.click(screen.getByRole("option", { name: "file.link" }));
+			expect(input.value).toBe("notes draft file.link:");
+			fireEvent.click(await screen.findByRole("option", { name: "public" }));
+			expect(await screen.findByRole("button", { name: "Remove filter file.link:public" })).toBeTruthy();
 			expect(input.value).toBe("notes draft ");
 			await waitFor(() => expect(input.getAttribute("aria-expanded")).toBe("false"));
 			fireEvent.click(screen.getByRole("button", { name: "Add search filter" }));
@@ -104,25 +115,6 @@ describe("FilesSearchInput", () => {
 			fireEvent.click(await screen.findByRole("option", { name: "public" }));
 			const remove = await screen.findByRole("button", { name: "Remove filter file.link:public" });
 			expect(remove.closest(".FilesSearchInputFilterChip")?.textContent).toContain("file.link public");
-		});
-
-		test("suggests the tree extensions for file.extension and reads a typed dot", async () => {
-			const treeItemsList = [
-				{ kind: "file", path: "/a.md", lowercaseExtension: "md" },
-				{ kind: "file", path: "/b.txt", lowercaseExtension: "txt" },
-				{ kind: "folder", path: "/docs", lowercaseExtension: null },
-			] as unknown as FilesSearchInput_Props["treeItemsList"];
-			render(<FilesSearchInput {...props} variant={variant} treeItemsList={treeItemsList} />);
-			const input = screen.getByRole<HTMLInputElement>("combobox");
-			act(() => input.focus());
-			fireEvent.click(await screen.findByRole("option", { name: "file.extension" }));
-			expect(input.value).toBe("file.extension:");
-			expect(await screen.findByRole("option", { name: "md" })).toBeTruthy();
-			expect(screen.getByRole("option", { name: "txt" })).toBeTruthy();
-			expect(screen.getByText("Values for file.extension")).toBeTruthy();
-			fireEvent.change(input, { target: { value: "file.extension:.m" } });
-			await waitFor(() => expect(screen.queryByRole("option", { name: "txt" })).toBeNull());
-			expect(screen.getByRole("option", { name: "md" })).toBeTruthy();
 		});
 
 		test("reopens on a new visit but keeps dismissal when returning from chips or results", async () => {
@@ -162,15 +154,15 @@ describe("FilesSearchInput", () => {
 			await screen.findByRole("option", { name: "file.path" });
 			fireEvent.keyDown(input, { key: "Escape" });
 			await waitFor(() => expect(input.getAttribute("aria-expanded")).toBe("false"));
-			fireEvent.change(input, { target: { value: "file.kind:folder" } });
+			fireEvent.change(input, { target: { value: "file.link:public" } });
 			fireEvent.keyDown(input, { key: " ", ctrlKey: true, isComposing: true });
 			expect(input.getAttribute("aria-expanded")).toBe("false");
 			fireEvent.keyDown(input, { key: " ", ctrlKey: true, keyCode: 229 });
 			expect(input.getAttribute("aria-expanded")).toBe("false");
 			fireEvent.keyDown(input, { key: " ", ctrlKey: true });
-			expect(await screen.findByRole("option", { name: "folder" })).toBeTruthy();
-			expect(input.value).toBe("file.kind:folder");
-			expect(screen.queryByRole("button", { name: "Remove filter file.kind:folder" })).toBeNull();
+			expect(await screen.findByRole("option", { name: "public" })).toBeTruthy();
+			expect(input.value).toBe("file.link:public");
+			expect(screen.queryByRole("button", { name: "Remove filter file.link:public" })).toBeNull();
 		});
 	});
 });

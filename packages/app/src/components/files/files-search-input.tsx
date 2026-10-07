@@ -137,7 +137,7 @@ export type FilesSearchInput_Props = {
 	inputRef?: React.RefObject<HTMLInputElement | null>;
 	resultsRef?: React.RefObject<HTMLElement | null>;
 	onNavigateResults?: () => void;
-	treeItemsList: Pick<files_TreeItem, "kind" | "path" | "lowercaseExtension">[] | undefined;
+	treeItemsList: Pick<files_TreeItem, "kind" | "path">[] | undefined;
 	isSearchLoading: boolean;
 	isSearchFailed: boolean;
 	/**
@@ -278,21 +278,19 @@ export const FilesSearchInput = memo(function FilesSearchInput(props: FilesSearc
 			return [];
 		}
 
-		// A typed path or extension is read the way the filter will read it, so `tasks` still lists
-		// `/tasks` and `.md` still lists `md`.
+		// A typed path is read the way the filter will read it, so `tasks` still lists `/tasks`.
 		const typedFileValue =
 			typingFilter.key.namespace !== "file" || typedValue.length === 0
 				? typedValue
 				: typingFilter.key.name === "path"
 					? files_search_query_folder_path(typedValue)
-					: typingFilter.key.name === "extension"
-						? typedValue.replace(/^\./u, "")
-						: typedValue;
+					: typedValue;
 		const typedValueLower = typedFileValue.toLowerCase();
 		const rows: Array<{ value: string; label: string }> = [];
 		const push = (value: string, label = value) => {
 			// A metadata value matches exact case, on the server and here, so a row never shows for a
-			// prefix the server will not confirm. File values ignore case like their filters. A folder
+			// prefix the server will not confirm. File values ignore case here, and a row writes the
+			// stored value, so a picked path has the exact case the filter needs. A folder
 			// is listed when its path contains the typed text, without the leading slash the filter
 			// adds, so `tasks` lists `/projects/tasks` and `arch` lists `/tasks-archive`.
 			const matchesTyped =
@@ -307,21 +305,8 @@ export const FilesSearchInput = memo(function FilesSearchInput(props: FilesSearc
 		};
 
 		if (typingFilter.key.namespace === "file") {
-			if (typingFilter.key.name === "kind") {
-				push("file");
-				push("folder");
-			} else if (typingFilter.key.name === "link") {
+			if (typingFilter.key.name === "link") {
 				push("public");
-			} else if (typingFilter.key.name === "extension") {
-				const extensions = new Set<string>();
-				for (const item of treeItemsList ?? []) {
-					if (item.lowercaseExtension !== null) {
-						extensions.add(item.lowercaseExtension);
-					}
-				}
-				for (const extension of [...extensions].sort()) {
-					push(extension);
-				}
 			} else if (typingFilter.key.name === "path") {
 				const folderPaths = (treeItemsList ?? [])
 					.filter((item) => item.kind === "folder" && item.path !== "/")
@@ -374,14 +359,17 @@ export const FilesSearchInput = memo(function FilesSearchInput(props: FilesSearc
 				? ""
 				: `${searchMatchCount} ${searchMatchCount === 1 ? "match" : "matches"}`;
 	const statusText = [announcement, matchStatus].filter((part) => part.length > 0).join(". ");
-	const filterProblem = filters.find((filter) => filter.problem !== null)?.problem;
+	// Check the chips against the whole query, so typing words next to a filter shows its problem at
+	// once. The query lists the chips first, so the first parsed filters are the chips.
+	const chipFilters = files_search_query_parse(searchQuery).filters.slice(0, filters.length);
+	const filterProblem = chipFilters.find((filter) => filter.problem !== null)?.problem;
 
 	const commitFilters = (committed: files_search_query_Filter[], remainingText: string) => {
-		// Parse the chips as one query, the way the URL `q` is read back, so the filter cap counts
-		// the chips already committed and the chip past the cap shows as one that cannot run.
+		// Parse the chips and the text left as one query, the way the URL `q` is read back, so a
+		// chip that cannot join the chips already committed or the words shows its problem.
 		const nextFilters = files_search_query_parse(
-			files_search_query_serialize({ filters: [...filters, ...committed], text: "" }),
-		).filters;
+			files_search_query_serialize({ filters: [...filters, ...committed], text: remainingText }),
+		).filters.slice(0, filters.length + committed.length);
 		const added = nextFilters.slice(filters.length);
 		setFilters(nextFilters);
 		setIsSuggestionsOpen(false);
@@ -401,9 +389,7 @@ export const FilesSearchInput = memo(function FilesSearchInput(props: FilesSearc
 			return;
 		}
 
-		// Re-parse the chips left, so a chip past the filter cap can run once there is room.
-		const remaining = filters.filter((_, filterIndex) => filterIndex !== index);
-		setFilters(files_search_query_parse(files_search_query_serialize({ filters: remaining, text: "" })).filters);
+		setFilters(filters.filter((_, filterIndex) => filterIndex !== index));
 		setAnnouncement(`Removed filter ${removed.raw}`);
 	};
 
@@ -565,7 +551,7 @@ export const FilesSearchInput = memo(function FilesSearchInput(props: FilesSearc
 						className={cn("FilesSearchInput-filters" satisfies FilesSearchInput_ClassNames)}
 						onFocusExit={handleFiltersFocusExit}
 					>
-						{filters.map((filter, index) => (
+						{chipFilters.map((filter, index) => (
 							<li key={`${index}:${filter.raw}`}>
 								<FilesSearchInputFilterChip filter={filter} onRemove={() => removeFilter(index)} />
 							</li>
@@ -587,10 +573,10 @@ export const FilesSearchInput = memo(function FilesSearchInput(props: FilesSearc
 							ref={inputRef}
 							aria-label={
 								variant === "palette"
-									? "Search files by name, contents, or key:value filters"
-									: "Search files by name, path, or key:value filters"
+									? "Search files by name, contents, or one key:value filter"
+									: "Search files by name, path, or one key:value filter"
 							}
-							placeholder={variant === "palette" ? "Search names, contents, or add a filter" : "Search files"}
+							placeholder={variant === "palette" ? "Search names and contents, or add one filter" : "Search files"}
 							autoFocus={variant === "palette"}
 							showOnChange={false}
 							showOnClick={false}
@@ -728,6 +714,13 @@ export const FilesSearchInput = memo(function FilesSearchInput(props: FilesSearc
 						<details>
 							<summary>Filter syntax</summary>
 							<dl>
+								{/* The sidebar searches names only, so only the palette says it finds contents. */}
+								{variant === "palette" ? (
+									<>
+										<dt>Words</dt>
+										<dd>Finds names and contents with these words.</dd>
+									</>
+								) : null}
 								<dt>Exact value</dt>
 								<dd>metadata.status:open</dd>
 								<dt>Any value</dt>
@@ -736,8 +729,6 @@ export const FilesSearchInput = memo(function FilesSearchInput(props: FilesSearc
 								<dd>metadata.title:Rec*</dd>
 								<dt>Number or date</dt>
 								<dd>metadata.priority:&gt;=2</dd>
-								<dt>Exclude</dt>
-								<dd>!metadata.status:done</dd>
 								<dt>Spaces in values</dt>
 								<dd>metadata.key:"two words"</dd>
 								<dt>Folder</dt>

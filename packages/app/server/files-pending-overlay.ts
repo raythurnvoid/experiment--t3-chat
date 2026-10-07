@@ -23,7 +23,11 @@ import type { ActionCtx, MutationCtx, QueryCtx } from "../convex/_generated/serv
 import type { files_visible_stream_Result } from "../convex/files_visible.ts";
 import type { ai_chat_workspaces_source_validator } from "../convex/schema.ts";
 import {
+	files_ANCESTOR_FIELD_COUNT,
+	files_ancestor_fields,
+	files_ancestor_ids,
 	files_derive_tree_path_for_file_node,
+	files_is_ancestor_field,
 	files_lowercase_extension,
 	type files_PendingParent,
 	type files_PendingTarget,
@@ -675,11 +679,12 @@ export function files_pending_overlay_db_wrap(ctx: MutationCtx) {
 					if (!SOURCE_TABLES.has(table)) return await Reflect.apply(write, target, args);
 
 					if (table === "files_nodes") {
-						const ancestorFields = Object.keys(value ?? {}).filter((field) => /^ancestor\d+$/.test(field));
+						const ancestorFields = Object.keys(value ?? {}).filter(files_is_ancestor_field);
 						if (property === "patch" && ancestorFields.length > 0) {
 							if (ancestorFields.length !== Object.keys(value!).length)
 								throw should_never_happen("A files_nodes patch mixes ancestor fields with other fields", { id });
-							// Ancestor copies change no derived doc.
+							// Ancestor copies change no derived doc. The caches keep no ancestor field, so they
+							// stay true too.
 							return await Reflect.apply(write, target, args);
 						}
 						const nodeId = id as Id<"files_nodes">;
@@ -1289,12 +1294,65 @@ async function db_schedule_job(flush: Flush, scope: Omit<Scope, "userId">, input
 }
 
 /**
+ * The ancestor ids a child of `parentId` stores: the parent's ancestors plus the parent, top-level
+ * folder first, at most 12. `known` holds ancestors already computed in this round; any other parent
+ * is read, and its stored ancestors are right because parents are written first. Null when the
+ * parent is gone.
+ */
+export async function files_pending_overlay_db_child_ancestors(
+	db: QueryCtx["db"],
+	parentId: Doc<"files_nodes">["parentId"],
+	known?: Map<Id<"files_nodes">, Id<"files_nodes">[]>,
+) {
+	if (parentId === "root") return [];
+	let parentAncestors = known?.get(parentId);
+	if (!parentAncestors) {
+		const parent = await db.get("files_nodes", parentId);
+		if (!parent) return null;
+		parentAncestors = files_ancestor_ids(parent);
+		known?.set(parentId, parentAncestors);
+	}
+	// A node deeper than 12 folders keeps the top 12.
+	return [...parentAncestors, parentId].slice(0, files_ANCESTOR_FIELD_COUNT);
+}
+
+/**
+ * Write `ancestor1..12` of the saved nodes of this round that were inserted or whose parent or
+ * `treePath` changed. Parents go first (shorter `treePath`), so a child copies its parent's new
+ * ancestors. The patch writes ancestor fields only, so the wrapper marks nothing.
+ */
+async function db_flush_ancestors(
+	flush: Flush,
+	nodes: Array<{ node: Doc<"files_nodes"> | null; old: SourceFields | null }>,
+) {
+	const { ctx } = flush;
+	const known = new Map<Id<"files_nodes">, Id<"files_nodes">[]>();
+	const moved = nodes
+		.flatMap(({ node, old }) =>
+			node && (!old || old.parentId !== node.parentId || old.treePath !== node.treePath) ? [node] : [],
+		)
+		.sort((a, b) => a.treePath.length - b.treePath.length);
+	for (const node of moved) {
+		const ancestors = await files_pending_overlay_db_child_ancestors(ctx.db, node.parentId, known);
+		// The parent was hard deleted in this transaction: the node goes with it.
+		if (!ancestors) continue;
+		known.set(node._id, ancestors);
+		const patch = changed_fields(node, files_ancestor_fields(ancestors));
+		if (Object.keys(patch).length > 0) await ctx.db.patch("files_nodes", node._id, patch);
+	}
+}
+
+/**
  * The saved node inline part: no reader, so its cost does not grow with the number of users.
  * Hide copies must match the saved node in this transaction (the window bound).
  */
-async function db_flush_saved_node(flush: Flush, nodeId: Id<"files_nodes">, old: SourceFields | null) {
+async function db_flush_saved_node(
+	flush: Flush,
+	nodeId: Id<"files_nodes">,
+	old: SourceFields | null,
+	node: Doc<"files_nodes"> | null,
+) {
 	const { ctx } = flush;
-	const node = await ctx.db.get("files_nodes", nodeId);
 	const doc = node ?? old;
 	if (!doc) return;
 	// Global and plugin volume workspaces have no drafts.
@@ -1578,7 +1636,11 @@ export async function files_pending_overlay_db_flush(ctx: MutationCtx) {
 		for (const id of state.committedMetadataNodeIds) committedMetadataNodeIds.add(id);
 		state.committedMetadataNodeIds.clear();
 
-		for (const [nodeId, old] of savedOld) await db_flush_saved_node(flush, nodeId, await old);
+		const savedNodes = [];
+		for (const [nodeId, old] of savedOld)
+			savedNodes.push({ nodeId, old: await old, node: await ctx.db.get("files_nodes", nodeId) });
+		await db_flush_ancestors(flush, savedNodes);
+		for (const { nodeId, old, node } of savedNodes) await db_flush_saved_node(flush, nodeId, old, node);
 
 		// Fields of a moved saved node follow its committed metadata.
 		for (const nodeId of committedMetadataNodeIds) {

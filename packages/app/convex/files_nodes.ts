@@ -115,6 +115,7 @@ import { files_stored_uploads_db_admit } from "./files_stored_uploads.ts";
 import { rate_limiter_check_by_key, rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import {
 	files_derive_tree_path_for_file_node,
+	files_is_ancestor_field,
 	files_lowercase_extension,
 	files_normalize_file_rename_name,
 	files_default_text_shape_for_name,
@@ -6432,7 +6433,7 @@ const files_node_public_doc_fields = {
 		.contentFrontmatterTooLargeIndexDocumentCount,
 	restrictedScopeNodeId: doc(app_convex_schema, "files_nodes").fields.restrictedScopeNodeId,
 	// Leave writePolicy and newChildWritePolicy out. They name accounts a reader may not see.
-	// Leave sortName and isRestrictedScopeRoot out too. Only the server indexes read them.
+	// Leave sortName, isRestrictedScopeRoot and ancestor1..12 out too. Only the server indexes read them.
 	archiveOperationId: doc(app_convex_schema, "files_nodes").fields.archiveOperationId,
 	createdBy: doc(app_convex_schema, "files_nodes").fields.createdBy,
 	updatedBy: doc(app_convex_schema, "files_nodes").fields.updatedBy,
@@ -6454,8 +6455,12 @@ function get_public_node_fields(fileNode: Doc<"files_nodes">, writeBlockedReason
 		newChildWritePolicy: _newChildWritePolicy,
 		sortName: _sortName,
 		isRestrictedScopeRoot: _isRestrictedScopeRoot,
-		...rest
+		...fields
 	} = fileNode;
+	// Leave `ancestor1..12` out too. Only the name search index reads them.
+	const rest = Object.fromEntries(
+		Object.entries(fields).filter(([field]) => !files_is_ancestor_field(field)),
+	) as typeof fields;
 
 	// Keep these values as exact literals so they match the return validator.
 	const writePolicyState =

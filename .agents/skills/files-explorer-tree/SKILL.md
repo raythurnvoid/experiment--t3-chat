@@ -747,7 +747,10 @@ Backend rules, limits, billing, cleanup, and Activity privacy are in
   queue takes the row with the highest number first, so the job goes into the folders of a page before it goes back
   for the next page, and the queue stays small. It rewrites each child's `path`, `treePath`,
   `pathDepth`, and `restrictedScopeNodeId` from its live parent, with the child's search chunks and
-  metadata docs. A child that is its own restricted folder keeps its own scope. The job is done only
+  metadata docs. A child that is its own restricted folder keeps its own scope. Its
+  `ancestor1..12` follow without job code: the mutation wrapper's flush rewrites them for every
+  node whose parent or `treePath` changed (see "Pending Overlay" in
+  `../files-agent-pending-updates/SKILL.md`). The job is done only
   after one full pass from the roots writes nothing. A step ends after it writes 75 items or nears a
   transaction limit. The children of the page it did not reach wait on the queue row (`pending`), and
   the next step takes them first. A normal page never splits items with the same name and creation

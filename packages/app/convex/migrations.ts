@@ -25,7 +25,11 @@ import {
 import { files_share_links_create_cleanup_state } from "./files_share_links_db.ts";
 import { files_db_resolve_scope } from "./files_scopes.ts";
 import { files_updated_by_db_sync_node } from "./files_updated_by.ts";
-import { files_pending_overlay_db_mark_target } from "../server/files-pending-overlay.ts";
+import {
+	files_pending_overlay_db_child_ancestors,
+	files_pending_overlay_db_mark_target,
+} from "../server/files-pending-overlay.ts";
+import { files_ancestor_fields, files_ancestor_ids } from "../shared/files.ts";
 import { files_share_rows_db_sync_grant } from "../server/files-share-rows.ts";
 
 // The schema lets a migration read through an index with `customRange`.
@@ -606,6 +610,25 @@ export const backfill_files_share_rows = app_migrations.define({
 	batchSize: 20,
 	migrateOne: async (ctx, grant) => {
 		if (grant.resourceKind === "file") await files_share_rows_db_sync_grant(ctx.db, grant._id);
+	},
+});
+
+/**
+ * Fill `ancestor1..12` of every saved node from its parent, for nodes saved before the flush wrote
+ * them. It walks each workspace in `treePath` order, and a parent's `treePath` is a prefix of its
+ * children's, so a parent is always done before its children. A node moved under a parent the walk
+ * has not reached yet sorts after the cursor and is done when the walk gets there. Unchanged nodes
+ * are not written, so a rerun writes nothing. Scoped name search may start only after this ends and
+ * `files_pending_overlay.check_ancestors` reports no difference.
+ */
+export const backfill_files_nodes_ancestors = app_migrations.define({
+	table: "files_nodes",
+	customRange: (query) => query.withIndex("by_organization_workspace_treePath"),
+	migrateOne: async (ctx, fileNode) => {
+		// Read the parent again: this batch may have just written it.
+		const ancestors = await files_pending_overlay_db_child_ancestors(ctx.db, fileNode.parentId);
+		if (!ancestors || files_ancestor_ids(fileNode).join() === ancestors.join()) return;
+		await ctx.db.patch("files_nodes", fileNode._id, files_ancestor_fields(ancestors));
 	},
 });
 
@@ -1734,6 +1757,9 @@ export const run_backfill_files_pending_overlay = app_migrations.runner(
 	internal.migrations.backfill_files_pending_overlay,
 );
 export const run_backfill_files_share_rows = app_migrations.runner(internal.migrations.backfill_files_share_rows);
+export const run_backfill_files_nodes_ancestors = app_migrations.runner(
+	internal.migrations.backfill_files_nodes_ancestors,
+);
 export const run_backfill_files_plain_text_chunk_scope = app_migrations.runner(
 	internal.migrations.backfill_files_plain_text_chunk_scope,
 );

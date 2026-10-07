@@ -1,9 +1,7 @@
 import { describe, expect, test } from "vitest";
 import {
-	files_search_query_file_updated_matches,
 	files_search_query_folder_path,
 	files_search_query_format_value,
-	files_search_query_MAX_FILTERS,
 	files_search_query_parse,
 	files_search_query_parse_field,
 	files_search_query_quote,
@@ -21,6 +19,8 @@ function parse_one(query: string): files_search_query_Filter {
 	return parsed.filters[0]!;
 }
 
+const ONE_CLAUSE_PROBLEM = "Search for words or one filter, not both. You can add a folder.";
+
 describe("files_search_query_parse", () => {
 	test("splits filters from free text and keeps the raw token", () => {
 		const parsed = files_search_query_parse("  recall metadata.status:open  bot ");
@@ -33,7 +33,7 @@ describe("files_search_query_parse", () => {
 				negated: false,
 				key: { namespace: "metadata", name: "status" },
 				match: { op: "eq", value: "open", quoted: false },
-				problem: null,
+				problem: ONE_CLAUSE_PROBLEM,
 			},
 		]);
 	});
@@ -104,16 +104,40 @@ describe("files_search_query_parse", () => {
 		expect(withChip.text).toBe("https://localhost:5173/w/personal/home/files?nodeId=abc");
 	});
 
-	test("caps the number of filters and keeps the extra ones as problems", () => {
-		const tokens = Array.from({ length: files_search_query_MAX_FILTERS + 1 }, (_, index) => `metadata.k${index}:v`);
-		const parsed = files_search_query_parse(tokens.join(" "));
+	test("keeps one clause and one folder, and refuses every other chip and a NOT", () => {
+		const problems = (query: string) => files_search_query_parse(query).filters.map((filter) => filter.problem);
 
-		expect(parsed.filters).toHaveLength(files_search_query_MAX_FILTERS + 1);
-		expect(parsed.filters[files_search_query_MAX_FILTERS - 1]!.problem).toBeNull();
-		expect(parsed.filters[files_search_query_MAX_FILTERS]!.problem).toBe(
-			`At most ${files_search_query_MAX_FILTERS} filters in one search`,
-		);
-		expect(files_search_query_to_plans(parsed.filters[files_search_query_MAX_FILTERS]!)).toEqual([]);
+		expect(problems("metadata.a:1 file.path:/tasks")).toEqual([null, null]);
+		expect(problems("file.path:/tasks notes")).toEqual([null]);
+		expect(problems("file.link:public")).toEqual([null]);
+		expect(problems("metadata.a:1 metadata.b:2")).toEqual([null, ONE_CLAUSE_PROBLEM]);
+		expect(problems("notes file.link:public")).toEqual([ONE_CLAUSE_PROBLEM]);
+		expect(problems("file.path:/a file.path:/b")).toEqual([null, ONE_CLAUSE_PROBLEM]);
+		expect(problems("!metadata.status:done")).toEqual([ONE_CLAUSE_PROBLEM]);
+		expect(problems("metadata.status:!done")).toEqual([ONE_CLAUSE_PROBLEM]);
+		// A chip with its own problem does not take the clause, so the next chip still can.
+		expect(problems("metadata.a: metadata.b:2")).toEqual([
+			"Filter needs a value right after the colon. Use * for any value",
+			null,
+		]);
+		// A refused chip runs nothing.
+		expect(files_search_query_to_plans(files_search_query_parse("metadata.a:1 metadata.b:2").filters[1]!)).toEqual([]);
+	});
+
+	test("refuses a range or a prefix inside a folder, and a folder too deep to search", () => {
+		const problems = (query: string) => files_search_query_parse(query).filters.map((filter) => filter.problem);
+		const folderRangeProblem = "A folder works with names, key:value and key:*. Remove the folder to search ranges.";
+		const tooDeepProblem = "This folder is too deep to search inside. Search a folder higher up.";
+		const twelveLevels = `/${Array.from({ length: 12 }, (_, index) => `f${index}`).join("/")}`;
+
+		expect(problems("file.path:/tasks metadata.priority:>2")).toEqual([null, folderRangeProblem]);
+		expect(problems("metadata.title:Rec* file.path:/tasks")).toEqual([folderRangeProblem, null]);
+		expect(problems("metadata.priority:>2")).toEqual([null]);
+		expect(problems(`file.path:${twelveLevels} notes`)).toEqual([null]);
+		expect(problems(`file.path:${twelveLevels}/f12 notes`)).toEqual([tooDeepProblem]);
+		expect(problems(`file.path:${twelveLevels}/f12/ metadata.a:*`)).toEqual([tooDeepProblem, null]);
+		// A folder alone is an exact path, so its depth does not matter.
+		expect(problems(`file.path:${twelveLevels}/f12`)).toEqual([null]);
 	});
 
 	test("reports why a filter cannot run and still keeps it", () => {
@@ -132,43 +156,12 @@ describe("files_search_query_parse", () => {
 			"Ranges take the number or the date without quotes, like metadata.priority:>2",
 		);
 		expect(parse_one("metadata.due:>2026-09-04").problem).toBeNull();
-		expect(parse_one("file.size:3").problem).toBe(
-			"Unknown file field. Use file.path, file.name, file.extension, file.kind, file.updated, file.link",
-		);
+		expect(parse_one("file.size:3").problem).toBe("Unknown file field. Use file.path, file.link");
 		// The old spelling file.ext is not a field any more.
 		expect(parse_one("file.ext:md").problem).toContain("Unknown file field");
-		// The key problem comes before the value problem, and the cap before both.
-		expect(parse_one("file.size:").problem).toBe(
-			"Unknown file field. Use file.path, file.name, file.extension, file.kind, file.updated, file.link",
-		);
-		const capped = files_search_query_parse(
-			[
-				...Array.from({ length: files_search_query_MAX_FILTERS }, (_, index) => `metadata.k${index}:v`),
-				"file.size:",
-			].join(" "),
-		);
-		expect(capped.filters[files_search_query_MAX_FILTERS]!.problem).toBe(
-			`At most ${files_search_query_MAX_FILTERS} filters in one search`,
-		);
-		expect(parse_one("file.name:*.md").problem).toBe(
-			"file.name finds names that contain the value. Put * only at the end",
-		);
-		expect(parse_one("file.extension:*.md").problem).toBe(
-			"file.extension takes an extension like md. Put * only at the end",
-		);
-		expect(parse_one("file.kind:image").problem).toBe("file.kind is file or folder");
-		expect(parse_one("file.name:>2").problem).toBe("file.name does not support ranges");
+		// The key problem comes before the value problem.
+		expect(parse_one("file.size:").problem).toBe("Unknown file field. Use file.path, file.link");
 		expect(parse_one("file.path:tasks*").problem).toBe("file.path takes a folder path, without *");
-		expect(parse_one("file.updated:>2026").problem).toBe(
-			"file.updated needs a day like file.updated:2026-09-04 or a range like file.updated:>2026-09-01",
-		);
-		expect(parse_one("file.updated:2026-09").problem).toBe(
-			"file.updated needs a day like file.updated:2026-09-04 or a range like file.updated:>2026-09-01",
-		);
-		// The file message wins over the generic range hint, whose advice to quote would not help.
-		expect(parse_one("file.updated:>abc").problem).toBe(
-			"file.updated needs a day like file.updated:2026-09-04 or a range like file.updated:>2026-09-01",
-		);
 		expect(parse_one("file.path:*").problem).toBe("file.path needs a value");
 		expect(parse_one("frontmatter.a..b:x").problem).toBe(
 			"Frontmatter keys use letters, digits, _ and -, joined by dots",
@@ -177,8 +170,6 @@ describe("files_search_query_parse", () => {
 		expect(parse_one("metadata..b:x").problem).toBe("Metadata keys use letters, digits, _ and -");
 		expect(parse_one('metadata.status:"open"x').problem).toBe("Nothing can follow the closing quote");
 		expect(parse_one("metadata.assignee:'Denys").problem).toBe('Use double quotes, like metadata.status:"in progress"');
-		expect(parse_one("metadata.status:!done").problem).toBe("Put ! before the key, like !metadata.status:done");
-		expect(parse_one("metadata.status:!=done").problem).toBe("Put ! before the key, like !metadata.status:done");
 		expect(parse_one("metadata.priority:=2").problem).toBe(
 			"Drop the =. A plain value is an exact match, like metadata.priority:2",
 		);
@@ -187,20 +178,18 @@ describe("files_search_query_parse", () => {
 			"Put the number or the date right after >=, like metadata.priority:>=2",
 		);
 		// A file field explains its own empty value, instead of "use *" that the field then refuses.
-		expect(parse_one("file.kind:").problem).toBe("file.kind needs a value");
 		expect(parse_one("file.path:").problem).toBe("file.path needs a value");
-		// A prefix is refused even when it is a whole kind name: the matcher compares whole kinds.
-		expect(parse_one("file.kind:file*").problem).toBe("file.kind is file or folder");
-		expect(parse_one("file.extension:m*").problem).toBeNull();
-		expect(parse_one("file.updated:2026-02-31").problem).toBe(
-			"file.updated needs a day like file.updated:2026-09-04 or a range like file.updated:>2026-09-01",
-		);
 	});
 
-	test("file.kind ignores case, and file.updated takes a day or a date range", () => {
-		expect(parse_one("file.kind:Folder").problem).toBeNull();
-		expect(parse_one("file.updated:2026-09-04").problem).toBeNull();
-		expect(parse_one("file.updated:>2026-09-04T10:00").problem).toBeNull();
+	test("refuses the file chips search no longer runs, before any value problem", () => {
+		expect(parse_one("file.name:readme").problem).toBe("Type the name as plain text.");
+		expect(parse_one("file.extension:*.md").problem).toBe(
+			"file.extension is not supported in search. Use the folder table filters.",
+		);
+		expect(parse_one("file.kind:").problem).toBe("file.kind is not supported in search. Use the folder table filters.");
+		expect(parse_one("file.updated:>abc").problem).toBe(
+			"file.updated is not supported in search. Use the folder table filters.",
+		);
 	});
 
 	test("file.link takes only public, in any case", () => {
@@ -338,79 +327,6 @@ describe("files_search_query_field_path_is_valid", () => {
 		expect(files_search_query_field_path_is_valid("metadata.a.b")).toBe(false);
 		expect(files_search_query_field_path_is_valid("status")).toBe(false);
 		expect(files_search_query_field_path_is_valid("frontmatter.")).toBe(false);
-	});
-});
-
-describe("files_search_query_file_updated_matches", () => {
-	const match = (query: string) => parse_one(query).match;
-	// The tree shows local dates, so a day literal is a local day.
-	const day = new Date(2026, 8, 4).getTime();
-	const nextDay = new Date(2026, 8, 5).getTime();
-
-	test("the tests run in a zone where local time differs from UTC", () => {
-		// `vitest.config.ts` pins `TZ` to Europe/London. On a UTC machine `new Date(2026, 8, 4)` is
-		// `Date.UTC(2026, 8, 4)`, so a matcher that read the literal as UTC would pass every test here.
-		expect(new Date(2026, 8, 4).getTimezoneOffset()).toBe(-60);
-	});
-
-	test("a day literal means that whole local day", () => {
-		expect(files_search_query_file_updated_matches(match("file.updated:2026-09-04"), day)).toBe(true);
-		expect(files_search_query_file_updated_matches(match("file.updated:2026-09-04"), nextDay - 1)).toBe(true);
-		expect(files_search_query_file_updated_matches(match("file.updated:2026-09-04"), nextDay)).toBe(false);
-		expect(files_search_query_file_updated_matches(match("file.updated:2026-09-04"), day - 1)).toBe(false);
-	});
-
-	test("a range keeps a full timestamp as it is and widens a day literal to the whole local day", () => {
-		const noonUtc = Date.UTC(2026, 8, 4, 12);
-		expect(files_search_query_file_updated_matches(match("file.updated:>2026-09-04T12:00:00Z"), noonUtc)).toBe(false);
-		expect(files_search_query_file_updated_matches(match("file.updated:>=2026-09-04T12:00:00Z"), noonUtc)).toBe(true);
-		expect(files_search_query_file_updated_matches(match("file.updated:<2026-09-04T12:00:00Z"), noonUtc)).toBe(false);
-		expect(files_search_query_file_updated_matches(match("file.updated:<2026-09-04T12:00:00Z"), noonUtc - 1)).toBe(
-			true,
-		);
-		expect(files_search_query_file_updated_matches(match("file.updated:<=2026-09-04T12:00:00Z"), noonUtc)).toBe(true);
-		expect(files_search_query_file_updated_matches(match("file.updated:<=2026-09-04"), nextDay - 1)).toBe(true);
-		expect(files_search_query_file_updated_matches(match("file.updated:<=2026-09-04"), nextDay)).toBe(false);
-		expect(files_search_query_file_updated_matches(match("file.updated:>2026-09-04"), nextDay - 1)).toBe(false);
-		expect(files_search_query_file_updated_matches(match("file.updated:>2026-09-04"), nextDay)).toBe(true);
-		expect(files_search_query_file_updated_matches(match("file.updated:>=2026-09-04"), day)).toBe(true);
-		expect(files_search_query_file_updated_matches(match("file.updated:>=2026-09-04"), day - 1)).toBe(false);
-		expect(files_search_query_file_updated_matches(match("file.updated:<2026-09-04"), day)).toBe(false);
-		expect(files_search_query_file_updated_matches(match("file.updated:<2026-09-04"), day - 1)).toBe(true);
-	});
-
-	test("a time with no zone is local, like the day literal", () => {
-		const halfPastMidnight = new Date(2026, 8, 4, 0, 30).getTime();
-		expect(files_search_query_file_updated_matches(match("file.updated:>=2026-09-04T00:00"), halfPastMidnight)).toBe(
-			true,
-		);
-		expect(files_search_query_file_updated_matches(match("file.updated:>=2026-09-04T00:00"), day - 1)).toBe(false);
-		expect(files_search_query_file_updated_matches(match("file.updated:<2026-09-04T00:30"), halfPastMidnight)).toBe(
-			false,
-		);
-		expect(
-			files_search_query_file_updated_matches(match("file.updated:<=2026-09-04T00:30:00.000"), halfPastMidnight),
-		).toBe(true);
-	});
-
-	test("a day literal on a daylight-saving day keeps its 25 hours", () => {
-		// London leaves summer time on 2026-10-25, so that local day is 25 hours long.
-		const longDay = new Date(2026, 9, 25).getTime();
-		const dayAfter = new Date(2026, 9, 26).getTime();
-		expect(dayAfter - longDay).toBe(25 * 60 * 60 * 1000);
-		expect(files_search_query_file_updated_matches(match("file.updated:2026-10-25"), dayAfter - 1)).toBe(true);
-		expect(files_search_query_file_updated_matches(match("file.updated:<=2026-10-25"), dayAfter - 1)).toBe(true);
-		expect(files_search_query_file_updated_matches(match("file.updated:>2026-10-25"), dayAfter - 1)).toBe(false);
-		expect(files_search_query_file_updated_matches(match("file.updated:>2026-10-25"), dayAfter)).toBe(true);
-	});
-
-	test("never matches a shape the parser refuses", () => {
-		expect(files_search_query_file_updated_matches(match("file.updated:*"), 1)).toBe(false);
-		expect(files_search_query_file_updated_matches(match("file.updated:2026-09"), 1)).toBe(false);
-		// `new Date(2026, 1, 31)` would roll over to March 3, so the timestamp sits inside that day.
-		expect(
-			files_search_query_file_updated_matches(match("file.updated:2026-02-31"), new Date(2026, 2, 3, 12).getTime()),
-		).toBe(false);
 	});
 });
 
@@ -601,12 +517,6 @@ describe("files_search_query_to_plans", () => {
 			{ op: "eq", fieldPath: "frontmatter.due", value: "2026-09-04T10:00Z" },
 		]);
 		expect(files_search_query_to_plans(parse_one("metadata.due:2026-09-04T10:00Z"))).toHaveLength(2);
-	});
-
-	test("a negated filter asks the same plans as the positive one", () => {
-		expect(files_search_query_to_plans(parse_one("!metadata.status:open"))).toEqual(
-			files_search_query_to_plans(parse_one("metadata.status:open")),
-		);
 	});
 
 	test("builds exists, prefix and range plans", () => {

@@ -1,7 +1,7 @@
 // Each flow writes drafts and saved changes through the real mutations, runs the overlay jobs, then
 // compares the stored derived docs with `check_user` and checks the window bound (every hide matches
 // one active saved node with the same copied facts). The share row flows compare the share rows with
-// `check_share_rows`.
+// `check_share_rows`, and the ancestor flows the saved nodes' ancestors with `check_ancestors`.
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, components, internal } from "./_generated/api.js";
@@ -25,7 +25,7 @@ import {
 	files_pending_overlay_db_set_acting_user,
 } from "../server/files-pending-overlay.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
-import type { files_PendingParent, files_PendingTarget } from "../shared/files.ts";
+import { files_ancestor_ids, type files_PendingParent, type files_PendingTarget } from "../shared/files.ts";
 
 beforeEach(() => vi.useFakeTimers());
 afterEach(() => {
@@ -2121,5 +2121,127 @@ describe("files_share_rows", () => {
 		expect(await share_keys(f, s._id)).toEqual([]);
 		await f.expect_share_rows_true();
 		await f.expect_share_rows_true(secondWorkspaceId);
+	});
+});
+
+describe("files_nodes ancestors", () => {
+	/**
+	 * The active node at a path, with its stored ancestor ids.
+	 */
+	const node_at = async (f: Fixture, path: string) => {
+		const node = await f.t.run((ctx) =>
+			ctx.db
+				.query("files_nodes")
+				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+					q.eq("organizationId", f.u.organizationId).eq("workspaceId", f.u.workspaceId).eq("path", path),
+				)
+				.first(),
+		);
+		if (!node) throw new Error(`Expected a node at ${path}`);
+		return { ...node, ancestors: files_ancestor_ids(node) };
+	};
+
+	/**
+	 * Run the jobs, then check that every node copies its parent's ancestors plus the parent.
+	 */
+	const expect_ancestors_true = async (f: Fixture) => {
+		await f.settle();
+		const differences: string[] = [];
+		let cursor: string | null = null;
+		do {
+			const page: { differences: string[]; cursor: string | null } = await f.t.query(
+				internal.files_pending_overlay.check_ancestors,
+				{ cursor },
+			);
+			differences.push(...page.differences);
+			cursor = page.cursor;
+		} while (cursor);
+		expect(differences).toEqual([]);
+	};
+
+	test("inserts, a rename, a move and a nested move keep every node's ancestors", async () => {
+		const f = await fixture();
+		const membershipId = f.db.membershipId;
+		// Each mutation inserts a folder and the folders inside it in one round.
+		const created = await f.t.mutation(internal.files_nodes.create_folder_node_by_path, { ...f.u, path: "/a/b/c" });
+		if (created._nay) throw new Error(created._nay.message);
+		await f.as_u(() =>
+			f.asU.mutation(api.files_nodes_create.create_folder_node, { membershipId, parentId: files_ROOT_ID, path: "d/e" }),
+		);
+		const a = await node_at(f, "/a");
+		const b = await node_at(f, "/a/b");
+		const d = await node_at(f, "/d");
+		expect(a.ancestors).toEqual([]);
+		expect((await node_at(f, "/a/b/c")).ancestors).toEqual([a._id, b._id]);
+		expect((await node_at(f, "/d/e")).ancestors).toEqual([d._id]);
+		await expect_ancestors_true(f);
+
+		// A rename changes paths, not ancestors.
+		await f.as_u(() => f.asU.mutation(api.files_nodes.rename_node, { membershipId, nodeId: a._id, path: "a2" }));
+		expect((await node_at(f, "/a2/b/c")).ancestors).toEqual([a._id, b._id]);
+
+		// `b` moves into `/d/e`, and its child follows it in the move's subtree step.
+		const e = await node_at(f, "/d/e");
+		await f.as_u(() =>
+			f.asU.mutation(api.files_nodes.move_nodes, { membershipId, itemIds: [b._id], targetParentId: e._id }),
+		);
+		expect((await node_at(f, "/d/e/b")).ancestors).toEqual([d._id, e._id]);
+		expect((await node_at(f, "/d/e/b/c")).ancestors).toEqual([d._id, e._id, b._id]);
+
+		// A nested move: `d` with everything inside moves into `/a2`.
+		await f.as_u(() =>
+			f.asU.mutation(api.files_nodes.move_nodes, { membershipId, itemIds: [d._id], targetParentId: a._id }),
+		);
+		expect((await node_at(f, "/a2/d")).ancestors).toEqual([a._id]);
+		expect((await node_at(f, "/a2/d/e/b/c")).ancestors).toEqual([a._id, d._id, e._id, b._id]);
+		await expect_ancestors_true(f);
+	});
+
+	test("a restore under a new parent and an accepted draft move keep every node's ancestors", async () => {
+		const f = await fixture();
+		const membershipId = f.db.membershipId;
+		const a = await f.saved(null, "a", "folder");
+		const b = await f.saved(a, "b", "folder");
+		const x = await f.saved(b, "x.md");
+		const z = await f.saved(null, "z", "folder");
+		expect((await node_at(f, "/a/b/x.md")).ancestors).toEqual([a._id, b._id]);
+
+		// `b` comes back while its folder stays archived by another operation, so it lands at the root.
+		await f.as_u(() => f.asU.mutation(api.files_nodes.archive_nodes, { membershipId, nodeIds: [b._id] }));
+		await f.as_u(() => f.asU.mutation(api.files_nodes.archive_nodes, { membershipId, nodeIds: [a._id] }));
+		await f.as_u(() => f.asU.mutation(api.files_nodes.unarchive_nodes, { membershipId, nodeIds: [b._id] }));
+		expect((await node_at(f, "/b")).ancestors).toEqual([]);
+		expect((await node_at(f, "/b/x.md")).ancestors).toEqual([b._id]);
+		await expect_ancestors_true(f);
+
+		// The Accept writes the move inside its counted unit.
+		await f.draft_move(target(b), parent(z), "b");
+		await f.review("accept", [await f.proposal_of(target(b))]);
+		expect((await node_at(f, "/z/b")).ancestors).toEqual([z._id]);
+		expect((await node_at(f, "/z/b/x.md")).ancestors).toEqual([z._id, b._id]);
+		expect(x._id).toBe((await node_at(f, "/z/b/x.md"))._id);
+		await expect_ancestors_true(f);
+	});
+
+	test("a node more than 12 folders deep keeps the top 12", async () => {
+		const f = await fixture();
+		const folders: Doc<"files_nodes">[] = [];
+		for (let depth = 1; depth <= 14; depth++)
+			folders.push(await f.saved(folders.at(-1) ?? null, `f${depth}`, "folder"));
+		const deep = await f.saved(folders.at(-1)!, "deep.md");
+		const top12 = folders.slice(0, 12).map((folder) => folder._id);
+		expect((await node_at(f, deep.path)).ancestors).toEqual(top12);
+		expect((await node_at(f, folders[12]!.path)).ancestors).toEqual(top12);
+		expect((await node_at(f, folders[11]!.path)).ancestors).toEqual(top12.slice(0, 11));
+		await expect_ancestors_true(f);
+	});
+
+	test("a files_nodes patch that mixes ancestor fields with other fields throws", async () => {
+		const f = await fixture();
+		const a = await f.saved(null, "a", "folder");
+		const x = await f.saved(a, "x.md");
+		await expect(
+			test_run_with_flush(f.t, (ctx) => ctx.db.patch("files_nodes", x._id, { ancestor1: a._id, name: "y.md" })),
+		).rejects.toThrow("A files_nodes patch mixes ancestor fields with other fields");
 	});
 });

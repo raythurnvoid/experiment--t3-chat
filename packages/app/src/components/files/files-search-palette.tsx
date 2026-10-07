@@ -186,7 +186,7 @@ const FilesSearchPaletteContent = memo(function FilesSearchPaletteContent(props:
 					: textQuery.mode === "private"
 						? item.target.kind === "private" && item.target.id === textQuery.value
 						: textQuery.mode === "path"
-							? item.path.toLowerCase().includes(textQuery.value)
+							? item.path.includes(textQuery.value)
 							: item.name.toLowerCase().includes(textQuery.value);
 
 		if (matchesText)

@@ -6,18 +6,18 @@
 // - `metadata.status:open` equality. `metadata.status:*` the key exists. `metadata.title:Recall*`
 //   string prefix, and `metadata.title:"Recall the"*` for a prefix with spaces.
 // - `metadata.priority:>2`, `frontmatter.due:<=2026-09-30` ranges on numbers or ISO dates.
-// - `!metadata.status:done` negation. `metadata.assignee:"Denys Voloshyn"` quotes a value with spaces.
-// - `file.path:/tasks`, `file.name:x`, `file.extension:md`, `file.kind:folder`, `file.updated:>DATE`
-//   filter on file fields. `frontmatter.x` and `metadata.x` name one metadata kind.
+// - `metadata.assignee:"Denys Voloshyn"` quotes a value with spaces.
+// - `file.path:/tasks` is a folder, or an exact path when nothing else is searched.
+//   `frontmatter.x` and `metadata.x` name one metadata kind.
 // - `file.link:public` lists the files that have a public link. It takes no other value.
 //
 // Every key starts with its namespace: `file.`, `frontmatter.` or `metadata.`. A token like
 // `status:open` has no namespace, so it is free text. A key holds no colon, so it never needs quotes.
 // The folder table bar reads the same field names (`files-folder-table-query.ts`).
 //
-// A query holds at most `files_search_query_MAX_FILTERS` filters. The search box runs one server
-// query per filter, so a pasted link with thousands of `key:value` tokens must not open thousands
-// of subscriptions. Filters past the cap keep a `problem` and run nothing.
+// A search is one thing plus an optional folder: the free text or one filter, and one `file.path`.
+// The server answers one clause at a time, so every other chip gets a `problem` and runs nothing.
+// So do a negated chip (`!metadata.status:done`) and the `file.*` chips the box no longer runs.
 import {
 	files_metadata_FIELD_SEGMENT_REGEX,
 	files_metadata_FRONTMATTER_FIELD_PREFIX,
@@ -27,15 +27,13 @@ import {
 	type files_metadata_SearchPlan,
 } from "./files-metadata.ts";
 
-export const files_search_query_MAX_FILTERS = 20;
-
 /**
  * Longest qualified field path (`metadata.<key>`, `frontmatter.<path>`) the search and sort doors
  * accept.
  */
 export const files_search_query_FIELD_PATH_MAX_LENGTH = 160;
 
-export const files_search_query_FILE_FIELDS = ["path", "name", "extension", "kind", "updated", "link"] as const;
+export const files_search_query_FILE_FIELDS = ["path", "link"] as const;
 
 export type files_search_query_Key = {
 	namespace: "file" | "frontmatter" | "metadata";
@@ -98,11 +96,19 @@ const BOOLEAN_LITERALS = new Map([
 	["FALSE", false],
 ]);
 const DATE_ONLY_LITERAL_REGEX = /^\d{4}-\d{2}-\d{2}$/u;
-// A date with a time and no zone, like `2026-09-04T10:00`. `files_metadata_parse_maybe_date`
-// reads it as UTC. `file.updated` reads it as local time.
-const LOCAL_TIME_LITERAL_REGEX = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?$/u;
-const MAX_FILTERS_PROBLEM = `At most ${files_search_query_MAX_FILTERS} filters in one search`;
 const FILE_FIELD_PREFIX = "file.";
+// The search box no longer runs these chips. The folder table bar still filters on these fields.
+const REMOVED_FILE_FIELD_PROBLEMS = new Map([
+	["name", "Type the name as plain text."],
+	["extension", "file.extension is not supported in search. Use the folder table filters."],
+	["kind", "file.kind is not supported in search. Use the folder table filters."],
+	["updated", "file.updated is not supported in search. Use the folder table filters."],
+]);
+const ONE_CLAUSE_PROBLEM = "Search for words or one filter, not both. You can add a folder.";
+const FOLDER_RANGE_PROBLEM = "A folder works with names, key:value and key:*. Remove the folder to search ranges.";
+const FOLDER_TOO_DEEP_PROBLEM = "This folder is too deep to search inside. Search a folder higher up.";
+// The server can search inside a folder only up to this many levels below the root.
+const FOLDER_SEARCH_MAX_DEPTH = 12;
 const RANGE_COMPARATORS = [
 	["gte", ">="],
 	["lte", "<="],
@@ -302,7 +308,7 @@ function parse_value(value: string): { match: FilterMatch; problem: string | nul
 
 	// Single quotes are not quotes here, so `assignee:'Denys Voloshyn'` would end at the space and
 	// search for `'Denys` with no warning. A `!` or `=` on the value side is a habit from other
-	// search boxes: negation goes before the key, and a plain value is already an exact match.
+	// search boxes: search has no NOT, and a plain value is already an exact match.
 	if (value.startsWith("'")) {
 		return {
 			match: { op: "eq", value, quoted: false },
@@ -312,7 +318,7 @@ function parse_value(value: string): { match: FilterMatch; problem: string | nul
 	if (value.startsWith("!")) {
 		return {
 			match: { op: "eq", value, quoted: false },
-			problem: "Put ! before the key, like !metadata.status:done",
+			problem: ONE_CLAUSE_PROBLEM,
 		};
 	}
 	if (value.startsWith("=")) {
@@ -351,50 +357,14 @@ function parse_value(value: string): { match: FilterMatch; problem: string | nul
 }
 
 /**
- * The local start and end of a day literal such as `2026-09-04`, or null for any other value. The
- * end is the next day's start, so a daylight-saving change does not shorten or stretch the day.
- */
-function local_day_bounds(value: string) {
-	if (!DATE_ONLY_LITERAL_REGEX.test(value) || files_metadata_parse_maybe_date(value) === null) {
-		return null;
-	}
-	const [year, month, day] = value.split("-").map(Number) as [number, number, number];
-	return { start: new Date(year, month - 1, day).getTime(), end: new Date(year, month - 1, day + 1).getTime() };
-}
-
-/**
- * File fields have their own rules: a path is a folder, a kind is one of two words, a link is
- * `public`, and the updated time is a day or a range.
+ * File fields have their own rules: a path is a folder and a link is `public`.
  */
 function file_field_problem(name: string, match: FilterMatch) {
-	// Elsewhere a range bound can be a number or a date. An updated time is always a date, so
-	// `file.updated:>2026` does not pass as a number, and `file.updated:>abc` gets this message
-	// instead of the generic range hint.
-	if (name === "updated") {
-		if (match.op === "eq" && local_day_bounds(match.value) !== null) {
-			return null;
-		}
-		if (match.op === "range" && files_metadata_parse_maybe_date(match.value) !== null) {
-			return null;
-		}
-		return "file.updated needs a day like file.updated:2026-09-04 or a range like file.updated:>2026-09-01";
-	}
 	if (match.op === "range") {
 		return `file.${name} does not support ranges`;
 	}
 	if (match.op === "exists" || match.value.length === 0) {
 		return `file.${name} needs a value`;
-	}
-	// Users type `*.md` out of a glob habit. A leading `*` is searched as a literal star and finds
-	// nothing.
-	if (name === "name" && match.value.startsWith("*")) {
-		return "file.name finds names that contain the value. Put * only at the end";
-	}
-	if (name === "extension" && match.value.startsWith("*")) {
-		return "file.extension takes an extension like md. Put * only at the end";
-	}
-	if (name === "kind" && (match.op === "prefix" || !["file", "folder"].includes(match.value.toLowerCase()))) {
-		return "file.kind is file or folder";
 	}
 	if (name === "path" && match.op === "prefix") {
 		return "file.path takes a folder path, without *";
@@ -431,10 +401,10 @@ export function files_search_query_parse(query: string): ParsedQuery {
 		// `split_key_value` only returns a key with a namespace, so the field always parses.
 		const parsedKey = files_search_query_parse_field(keyValue.key, files_search_query_FILE_FIELDS)!;
 		const parsedValue = parse_value(keyValue.value);
-		// A file field explains its own value first, so `file.kind:` does not say "use *" while
-		// `file.kind:*` says "needs a value".
+		// A removed chip says so before "Unknown file field". A file field explains its own value
+		// next, so `file.path:` does not say "use *" while `file.path:*` says "needs a value".
 		const problem =
-			(filters.length >= files_search_query_MAX_FILTERS ? MAX_FILTERS_PROBLEM : null) ??
+			(parsedKey.key.namespace === "file" ? REMOVED_FILE_FIELD_PROBLEMS.get(parsedKey.key.name) : null) ??
 			parsedKey.problem ??
 			(parsedKey.key.namespace === "file" ? file_field_problem(parsedKey.key.name, parsedValue.match) : null) ??
 			parsedValue.problem;
@@ -446,6 +416,43 @@ export function files_search_query_parse(query: string): ParsedQuery {
 			match: parsedValue.match,
 			problem,
 		});
+	}
+
+	// Keep one clause (the free text or the first filter) and one folder. A chip that already has
+	// its own problem does not take a place.
+	let hasClause = textTokens.length > 0;
+	let folder: files_search_query_Filter | null = null;
+	for (const filter of filters) {
+		if (filter.problem !== null) {
+			continue;
+		}
+		const isFolder = filter.key.namespace === "file" && filter.key.name === "path";
+		if (filter.negated || (isFolder ? folder !== null : hasClause)) {
+			filter.problem = ONE_CLAUSE_PROBLEM;
+		} else if (isFolder) {
+			folder = filter;
+		} else {
+			hasClause = true;
+		}
+	}
+
+	// A folder alone is an exact path. With a clause it scopes the search, and the server can
+	// scope only words, `key:value` and `key:*`, and only so many levels deep.
+	if (folder !== null && hasClause) {
+		// A folder chip without a problem is always an `eq` match. The check narrows the type.
+		const folderPath = folder.match.op === "eq" ? files_search_query_folder_path(folder.match.value) : "/";
+		if (folderPath.split("/").filter((part) => part.length > 0).length > FOLDER_SEARCH_MAX_DEPTH) {
+			folder.problem = FOLDER_TOO_DEEP_PROBLEM;
+		}
+		for (const filter of filters) {
+			if (
+				filter.problem === null &&
+				filter.key.namespace !== "file" &&
+				(filter.match.op === "prefix" || filter.match.op === "range")
+			) {
+				filter.problem = FOLDER_RANGE_PROBLEM;
+			}
+		}
 	}
 
 	return { filters, text: textTokens.join(" "), openQuote };
@@ -522,74 +529,6 @@ function range_bound(
 	}
 
 	return { comparator: match.comparator, bound: timestamp };
-}
-
-/**
- * The instant a time literal with no zone, like `2026-09-04T00:00`, means in the user's time zone.
- * Null for a date-only literal, a time with a zone, or anything else. The UTC parse checks the
- * calendar and the fraction, and its parts are then read back as local wall-clock time.
- */
-function local_time_bound(value: string) {
-	if (!LOCAL_TIME_LITERAL_REGEX.test(value)) {
-		return null;
-	}
-	const utcTimestamp = files_metadata_parse_maybe_date(value);
-	if (utcTimestamp === null) {
-		return null;
-	}
-	const utc = new Date(utcTimestamp);
-	return new Date(
-		utc.getUTCFullYear(),
-		utc.getUTCMonth(),
-		utc.getUTCDate(),
-		utc.getUTCHours(),
-		utc.getUTCMinutes(),
-		utc.getUTCSeconds(),
-		utc.getUTCMilliseconds(),
-	).getTime();
-}
-
-/**
- * Match `file.updated` on the client. The tree shows local dates, so a day literal means that whole
- * day in the user's time zone, on either side of a range too, and a time with no zone is local as
- * well. A time with a zone is taken as it is. Any other shape never matches, because
- * `file_field_problem` refuses it.
- */
-export function files_search_query_file_updated_matches(match: FilterMatch, updatedAt: number) {
-	if (match.op === "eq") {
-		const day = local_day_bounds(match.value);
-		return day !== null && updatedAt >= day.start && updatedAt < day.end;
-	}
-	if (match.op !== "range") {
-		return false;
-	}
-	const day = local_day_bounds(match.value);
-	if (day !== null) {
-		switch (match.comparator) {
-			case "gt":
-				return updatedAt >= day.end;
-			case "gte":
-				return updatedAt >= day.start;
-			case "lt":
-				return updatedAt < day.start;
-			case "lte":
-				return updatedAt < day.end;
-		}
-	}
-	const bound = local_time_bound(match.value) ?? range_bound(match)?.bound ?? null;
-	if (bound === null) {
-		return false;
-	}
-	switch (match.comparator) {
-		case "gt":
-			return updatedAt > bound;
-		case "gte":
-			return updatedAt >= bound;
-		case "lt":
-			return updatedAt < bound;
-		case "lte":
-			return updatedAt <= bound;
-	}
 }
 
 /**

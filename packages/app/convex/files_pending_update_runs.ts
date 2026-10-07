@@ -61,7 +61,11 @@ import { path_join, server_convex_get_user_fallback_to_anonymous } from "../serv
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
-import { files_MAX_TEXT_CONTENT_BYTES, files_MAX_YJS_RECONSTRUCTED_STATE_BYTES } from "../shared/files.ts";
+import {
+	files_is_ancestor_field,
+	files_MAX_TEXT_CONTENT_BYTES,
+	files_MAX_YJS_RECONSTRUCTED_STATE_BYTES,
+} from "../shared/files.ts";
 import { files_yjs_doc_create_from_array_buffer_update } from "../shared/files-yjs.ts";
 import { files_headless_tiptap_editor_create, files_yjs_doc_get_text } from "../shared/files-tiptap.ts";
 import { files_media_parse_src } from "../shared/files-media.ts";
@@ -233,10 +237,16 @@ function db_with_unit_budget(ctx: MutationCtx) {
 				return new Proxy(method, {
 					async apply(fn, receiver, args: unknown[]) {
 						let value = args.at(-1) as Value;
-						// The overlay flush read a derived doc just before it writes it, so count no read.
+						// The overlay flush read a derived doc, or the saved node of an ancestor-only patch,
+						// just before it writes it, so count no read.
 						if (
 							(property === "patch" || property === "delete") &&
-							!files_pending_overlay_DERIVED_TABLES.has(args[0] as string)
+							!files_pending_overlay_DERIVED_TABLES.has(args[0] as string) &&
+							!(
+								property === "patch" &&
+								args[0] === "files_nodes" &&
+								Object.keys(value as Record<string, Value>).every(files_is_ancestor_field)
+							)
 						) {
 							ranges++;
 							check();

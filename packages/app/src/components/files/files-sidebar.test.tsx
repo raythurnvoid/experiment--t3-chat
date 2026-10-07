@@ -1420,28 +1420,4 @@ describe("FilesSidebar", () => {
 		fireEvent.keyDown(searchInput, { key: "Enter", code: "Enter" });
 		expect(handlePrimaryAction).toHaveBeenCalledWith("bravo", "file");
 	});
-
-	test("!file.link:public shows nothing while the link list failed, then every file without a link", async () => {
-		treeState.nodes = treeState.nodes.map((node) =>
-			node._id === "bravo" || node._id === "charlie" ? { ...node, kind: "file" } : node,
-		);
-		set_links(null);
-		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
-		const view = render(<CreateSidebar router={router} selectedNodeId="delta" />);
-		await view.findByRole("treeitem", { name: "charlie" });
-
-		const searchInput = view.getByRole("combobox");
-		act(() => searchInput.focus());
-		fireEvent.change(searchInput, { target: { value: "!file.link:public" } });
-		// A failed answer is unknown, so the negated chip must not turn it into a match.
-		await waitFor(() => expect(view.queryAllByRole("treeitem")).toHaveLength(0), { timeout: 5_000 });
-
-		act(() => set_links([]));
-		await waitFor(() => expect(view.queryByRole("treeitem", { name: "charlie" })).not.toBeNull(), { timeout: 5_000 });
-		act(() => set_links([link("charlie")]));
-		await waitFor(() => expect(view.queryByRole("treeitem", { name: "charlie, public link" })).toBeNull(), {
-			timeout: 5_000,
-		});
-		expect(view.queryByRole("treeitem", { name: "bravo" })).not.toBeNull();
-	});
 });

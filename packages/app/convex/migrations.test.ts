@@ -9,6 +9,7 @@ import type { Id } from "./_generated/dataModel.js";
 import { test_convex, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
 import { files_updated_by_db_sync_node } from "./files_updated_by.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
+import { files_ancestor_ids } from "../shared/files.ts";
 import {
 	organizations_GLOBAL_ORGANIZATION_ID,
 	organizations_GLOBAL_PLUGINS_WORKSPACE_ID,
@@ -2148,6 +2149,88 @@ describe("backfill_files_share_rows", () => {
 		// A rerun writes nothing new: the same rows, with the same ids.
 		await backfill();
 		expect(await read_rows()).toEqual(filled);
+	});
+});
+
+describe("backfill_files_nodes_ancestors", () => {
+	test("fills the ancestors of nodes saved before them, parents first, and a rerun writes nothing", async () => {
+		const t = test_convex();
+		component.register(t);
+		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const scope = { organizationId: db.organizationId, workspaceId: db.workspaceId };
+		// Written without the flush, like nodes saved before ancestors existed.
+		const ids = await t.run(async (ctx) => {
+			const insert_node = async (parentId: Id<"files_nodes"> | "root", path: string, kind: "file" | "folder") => {
+				const name = path.split("/").at(-1)!;
+				return await ctx.db.insert("files_nodes", {
+					...test_mocks.files.base(),
+					...scope,
+					createdBy: db.userId,
+					updatedBy: db.userId,
+					parentId,
+					name,
+					sortName: files_sort_text_key(name),
+					kind,
+					path,
+					treePath: kind === "folder" ? `${path}/` : path,
+					pathDepth: path.split("/").length - 1,
+				});
+			};
+			// `/g/p/x/f.md`, saved child first: `x` and `f.md` exist before `g` and `p`, then move under them.
+			// A walk in table order would copy the ancestors of `p` before they are filled.
+			const x = await insert_node("root", "/x", "folder");
+			const f = await insert_node(x, "/x/f.md", "file");
+			const g = await insert_node("root", "/g", "folder");
+			const p = await insert_node(g, "/g/p", "folder");
+			await ctx.db.patch("files_nodes", x, { parentId: p, path: "/g/p/x", treePath: "/g/p/x/", pathDepth: 3 });
+			await ctx.db.patch("files_nodes", f, { path: "/g/p/x/f.md", treePath: "/g/p/x/f.md", pathDepth: 4 });
+			// 14 folders deep, then a file.
+			const chain: Id<"files_nodes">[] = [];
+			let path = "";
+			for (let depth = 1; depth <= 14; depth++) {
+				path = `${path}/d${depth}`;
+				chain.push(await insert_node(chain.at(-1) ?? "root", path, "folder"));
+			}
+			const deep = await insert_node(chain.at(-1)!, `${path}/deep.md`, "file");
+			return { x, f, g, p, chain, deep };
+		});
+
+		const check_ancestors = async () => {
+			const differences: string[] = [];
+			let cursor: string | null = null;
+			do {
+				const page: { differences: string[]; cursor: string | null } = await t.query(
+					internal.files_pending_overlay.check_ancestors,
+					{ cursor },
+				);
+				differences.push(...page.differences);
+				cursor = page.cursor;
+			} while (cursor);
+			return differences;
+		};
+		const read_nodes = () => t.run((ctx) => ctx.db.query("files_nodes").collect());
+		// Every node but the root-level `g` and `d1` reports.
+		expect(await check_ancestors()).toHaveLength(17);
+
+		// Two nodes per batch, so the backfill resumes from its cursor.
+		const backfill = () =>
+			t.run((ctx) =>
+				runToCompletion(ctx, components.migrations, internal.migrations.backfill_files_nodes_ancestors, {
+					cursor: null,
+					batchSize: 2,
+				}),
+			);
+		await backfill();
+		expect(await check_ancestors()).toEqual([]);
+		const filled = await read_nodes();
+		const ancestors_of = (id: Id<"files_nodes">) => files_ancestor_ids(filled.find((node) => node._id === id)!);
+		expect(ancestors_of(ids.g)).toEqual([]);
+		expect(ancestors_of(ids.f)).toEqual([ids.g, ids.p, ids.x]);
+		expect(ancestors_of(ids.deep)).toEqual(ids.chain.slice(0, 12));
+
+		// A rerun writes nothing new.
+		await backfill();
+		expect(await read_nodes()).toEqual(filled);
 	});
 });
 

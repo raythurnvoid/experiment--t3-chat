@@ -6,7 +6,8 @@
 //
 // `check_user` and `repair_user` walk one user's proposals and derived docs, so orphan docs are
 // found too. QA runs `check_user` after each phase, and `repair_user` fixes what it reports.
-// `check_share_rows` does the same check for one workspace's share rows.
+// `check_share_rows` does the same check for one workspace's share rows, and `check_ancestors`
+// for the saved nodes' `ancestor1..12`.
 
 import { compareValues, v } from "convex/values";
 import { internal } from "./_generated/api.js";
@@ -15,6 +16,7 @@ import { internalQuery, type MutationCtx, type QueryCtx } from "./_generated/ser
 import { internalMutation } from "./functions.ts";
 import { files_subtree_ops_db_is_near_limits } from "./files_subtree_ops.ts";
 import {
+	files_pending_overlay_db_child_ancestors,
 	files_pending_overlay_db_compute_target,
 	files_pending_overlay_db_create_reader,
 	files_pending_overlay_db_flush,
@@ -24,7 +26,7 @@ import {
 } from "../server/files-pending-overlay.ts";
 import { files_share_rows_db_compute_for_grant } from "../server/files-share-rows.ts";
 import { path_tree_prefix_upper_bound } from "../server/server-utils.ts";
-import type { files_PendingTarget } from "../shared/files.ts";
+import { files_ancestor_ids, type files_PendingTarget } from "../shared/files.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
 // Does NOT work for http actions (see http.ts). No mutable module-level state allowed here.
@@ -72,6 +74,12 @@ const WALK_PHASES = ["proposals", "hides", "places", "list_rows", "list_keys", "
 const SHARE_CHECK_PAGE_SIZE = 100;
 
 const SHARE_CHECK_PHASES = ["grants", "share_rows"] as const;
+
+/**
+ * Nodes per page of `check_ancestors`. Checking one node reads its parent: 2,000 small docs per page,
+ * so a walk over every node of a deployment takes few calls.
+ */
+const ANCESTOR_CHECK_PAGE_SIZE = 1000;
 
 const job_kind_validator = v.union(
 	v.literal("saved_node"),
@@ -865,6 +873,31 @@ export const check_share_rows = internalQuery({
 			? { phase: position.phase + 1, page: null }
 			: { ...position, page: result.continueCursor };
 		return { differences, cursor: next.phase < SHARE_CHECK_PHASES.length ? JSON.stringify(next) : null };
+	},
+});
+
+/**
+ * Compare one page of saved nodes' `ancestor1..12` with their parent's, in every workspace, and
+ * return the nodes that differ. A node is right when it copies its parent's ancestors plus the
+ * parent, so a walk with no difference proves every chain. Call again with the returned cursor until
+ * it is null.
+ */
+export const check_ancestors = internalQuery({
+	args: { cursor: v.union(v.string(), v.null()) },
+	returns: v.object({ differences: v.array(v.string()), cursor: v.union(v.string(), v.null()) }),
+	handler: async (ctx, args) => {
+		const nodes = await ctx.db
+			.query("files_nodes")
+			.paginate({ cursor: args.cursor, numItems: ANCESTOR_CHECK_PAGE_SIZE });
+		const differences: string[] = [];
+		for (const node of nodes.page) {
+			const stored = files_ancestor_ids(node);
+			const expected = await files_pending_overlay_db_child_ancestors(ctx.db, node.parentId);
+			// A node whose parent is gone has no expected chain.
+			if (expected && stored.join() !== expected.join())
+				differences.push(`ancestors of ${node._id}: stored [${stored.join()}], expected [${expected.join()}]`);
+		}
+		return { differences, cursor: nodes.isDone ? null : nodes.continueCursor };
 	},
 });
 

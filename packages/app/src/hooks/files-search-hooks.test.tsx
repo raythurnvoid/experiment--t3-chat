@@ -841,16 +841,11 @@ describe("useFilesSearchServerFilters", () => {
 		createdAt: 1,
 	};
 
-	test("answers every file.link chip from one workspace link list", () => {
+	test("answers a file.link chip from the workspace link list", () => {
 		search.links = [LINK];
-		const { result } = render_search("file.link:public !file.link:PUBLIC");
+		const { result } = render_search("file.link:PUBLIC");
 
-		expect(result.current.searchServerTargetKeys).toEqual(
-			new Map([
-				["file.link:public", new Set(["saved:node_1"])],
-				["!file.link:PUBLIC", new Set(["saved:node_1"])],
-			]),
-		);
+		expect(result.current.searchServerTargetKeys).toEqual(new Map([["file.link:PUBLIC", new Set(["saved:node_1"])]]));
 		expect(result.current.isSearchLoading).toBe(false);
 		expect(result.current.isSearchFailed).toBe(false);
 		expect(search.linkRequests.at(-1)).toEqual({ membershipId: MEMBERSHIP_ID });
@@ -865,12 +860,9 @@ describe("useFilesSearchServerFilters", () => {
 		expect(result.current.isSearchLoading).toBe(false);
 	});
 
-	test("waits for the link list and for metadata chips together", () => {
-		search.nodes = { targets: [], truncated: false };
-		const { result, rerender } = render_search("metadata.status:open file.link:public");
+	test("waits for the link list, and an empty list is a real answer", () => {
+		const { result, rerender } = render_search("file.link:public");
 
-		// The metadata chip answered, but the link list is still loading.
-		expect(result.current.searchServerTargetKeys.has("metadata.status:open")).toBe(true);
 		expect(result.current.searchServerTargetKeys.has("file.link:public")).toBe(false);
 		expect(result.current.isSearchLoading).toBe(true);
 
@@ -885,8 +877,8 @@ describe("useFilesSearchServerFilters", () => {
 
 	test("treats a refused or failed link list as unknown, not as empty", () => {
 		search.links = null;
-		const refused = render_search("!file.link:public");
-		expect(refused.result.current.searchServerTargetKeys.get("!file.link:public")).toBeNull();
+		const refused = render_search("file.link:public");
+		expect(refused.result.current.searchServerTargetKeys.get("file.link:public")).toBeNull();
 		expect(refused.result.current.isSearchLoading).toBe(false);
 		expect(refused.result.current.isSearchFailed).toBe(true);
 		cleanup();

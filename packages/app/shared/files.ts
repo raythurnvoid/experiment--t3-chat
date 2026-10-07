@@ -719,6 +719,40 @@ export function files_derive_tree_path_for_file_node(path: string, kind: app_con
 	return kind === "folder" && path !== "/" ? `${path}/` : path;
 }
 
+/**
+ * How many folders above a saved node it keeps in `ancestor1` to `ancestor12`.
+ */
+export const files_ANCESTOR_FIELD_COUNT = 12;
+
+type files_AncestorField = Extract<keyof app_convex_Doc<"files_nodes">, `ancestor${number}`>;
+
+export function files_is_ancestor_field(field: string) {
+	return /^ancestor\d+$/.test(field);
+}
+
+/**
+ * A saved node's stored ancestor ids, top-level folder first.
+ */
+export function files_ancestor_ids(node: Pick<app_convex_Doc<"files_nodes">, files_AncestorField>) {
+	const ids: app_convex_Id<"files_nodes">[] = [];
+	for (let index = 1; index <= files_ANCESTOR_FIELD_COUNT; index++) {
+		const id = node[`ancestor${index}` as files_AncestorField];
+		if (id) ids.push(id);
+	}
+	return ids;
+}
+
+/**
+ * Every ancestor field for these ids, top-level folder first. Fields past the last id are
+ * `undefined`, so a patch clears them.
+ */
+export function files_ancestor_fields(ids: app_convex_Id<"files_nodes">[]) {
+	const fields = {} as Record<files_AncestorField, app_convex_Id<"files_nodes"> | undefined>;
+	for (let index = 1; index <= files_ANCESTOR_FIELD_COUNT; index++)
+		fields[`ancestor${index}` as files_AncestorField] = ids[index - 1];
+	return fields;
+}
+
 export function files_create_room_id(args: { organizationId: string; workspaceId: string; nodeId: string }) {
 	const { organizationId, workspaceId, nodeId } = args;
 

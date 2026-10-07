@@ -151,7 +151,7 @@ describe("FilesSearchPalette", () => {
 		contentResults.set("node_0", { results: [content_match(0)], truncated: false });
 		contentResults.set("node_9000", { results: [content_match(9000)], truncated: false });
 
-		await open_search("file.kind:file budget");
+		await open_search("file.path:/ budget");
 
 		await waitFor(() => expect(contentArgsSeen.current).toHaveLength(10), { timeout: SEARCH_TIMEOUT });
 		expect(contentArgsSeen.current.every((args) => args.targets!.length <= 1000)).toBe(true);
@@ -166,7 +166,7 @@ describe("FilesSearchPalette", () => {
 		contentResults.set("node_0", { results: [content_match(0)], truncated: false });
 		contentResults.set("node_9000", undefined);
 
-		await open_search("file.kind:file budget");
+		await open_search("file.path:/ budget");
 
 		await waitFor(() => expect(contentArgsSeen.current).toHaveLength(10), { timeout: SEARCH_TIMEOUT });
 		expect(screen.getByRole("list", { name: "Search results" }).getAttribute("aria-busy")).toBe("true");
@@ -184,7 +184,7 @@ describe("FilesSearchPalette", () => {
 		contentResults.set("node_1000", undefined);
 		contentResults.set("node_9000", new Error("Search failed"));
 
-		await open_search("file.kind:file budget");
+		await open_search("file.path:/ budget");
 
 		expect(
 			await screen.findByText("Search failed. Try changing your query.", {}, { timeout: SEARCH_TIMEOUT }),
@@ -202,7 +202,7 @@ describe("FilesSearchPalette", () => {
 	});
 
 	test("sends no content query when filters match no files", async () => {
-		await open_search("file.kind:folder budget");
+		await open_search("file.path:/missing budget");
 
 		expect(await screen.findByText("No matching files", {}, { timeout: SEARCH_TIMEOUT })).toBeTruthy();
 		expect(contentArgsSeen.current).toEqual([]);
@@ -210,7 +210,7 @@ describe("FilesSearchPalette", () => {
 
 	test("waits for the final owner page before treating filters as complete", async () => {
 		visibleResults.set("9000", undefined);
-		await open_search("file.kind:file budget");
+		await open_search("file.path:/ budget");
 		await waitFor(() => expect(visibleCursorsSeen.has("9000")).toBe(true), { timeout: SEARCH_TIMEOUT });
 		expect(screen.getByRole("list", { name: "Search results" }).getAttribute("aria-busy")).toBe("true");
 		expect(contentArgsSeen.current).toEqual([]);
@@ -262,12 +262,12 @@ describe("FilesSearchPalette", () => {
 			results: [{ ...content_match(1), target, path: "/draft.txt" }],
 			truncated: false,
 		});
-		await open_search("file.kind:file budget");
+		await open_search("file.path:/ budget");
 		expect(await screen.findByText("draft.txt")).toBeTruthy();
 		expect(contentArgsSeen.current).toEqual([{ membershipId: "membership_1", query: "budget", targets: [target] }]);
 	});
 
-	test("does not show a negated metadata result when its query is truncated", async () => {
+	test("does not show a metadata result when its query is truncated", async () => {
 		visibleEntriesMock.mockReturnValue([
 			{
 				target: { kind: "private", id: "private_1" },
@@ -280,8 +280,8 @@ describe("FilesSearchPalette", () => {
 				preparing: false,
 			},
 		]);
-		metadataResults.set("!metadata.status:open", { targets: [], truncated: true });
-		await open_search("!metadata.status:open");
+		metadataResults.set("metadata.status:open", { targets: [], truncated: true });
+		await open_search("metadata.status:open");
 		expect(await screen.findByText("Search failed. Try changing your query.")).toBeTruthy();
 		expect(screen.queryByRole("button", { name: /Draft/ })).toBeNull();
 		expect(contentArgsSeen.current).toEqual([]);
@@ -333,9 +333,9 @@ describe("FilesSearchPalette", () => {
 		});
 	});
 
-	test("does not show a negated file.link result when the link list failed", async () => {
+	test("does not show a file.link result when the link list failed", async () => {
 		linksResult.current = new Error("failed");
-		await open_search("!file.link:public");
+		await open_search("file.link:public");
 		expect(
 			await screen.findByText("Search failed. Try changing your query.", {}, { timeout: SEARCH_TIMEOUT }),
 		).toBeTruthy();

@@ -4504,12 +4504,12 @@ function get_search_matches(args: {
 
 			isExactMatch = true;
 		} else if (textQuery?.mode === "path") {
-			const itemPath = item.path.toLowerCase();
-			if (!itemPath.includes(textQuery.value)) {
+			// Paths are exact-case.
+			if (!item.path.includes(textQuery.value)) {
 				continue;
 			}
 
-			isExactMatch = itemPath === textQuery.value;
+			isExactMatch = item.path === textQuery.value;
 		} else if (textQuery && !item.name.toLowerCase().includes(textQuery.value)) {
 			continue;
 		}
@@ -8886,12 +8886,13 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 	});
 
 	describe("detect_search_query_mode", () => {
-		test("treats a plain word as a name query", () => {
-			expect(detect_search_query_mode("  API.md ")).toEqual({ mode: "name", value: "api.md" });
+		test("treats plain words as a name query and drops a trailing extension from each", () => {
+			expect(detect_search_query_mode("  API.md ")).toEqual({ mode: "name", value: "api" });
+			expect(detect_search_query_mode("README.md v1.2.0 .env")).toEqual({ mode: "name", value: "readme v1.2 .env" });
 		});
 
-		test("treats anything with a slash as a path query", () => {
-			expect(detect_search_query_mode("/Docs/api.md")).toEqual({ mode: "path", value: "/docs/api.md" });
+		test("treats anything with a slash as a path query and keeps its case", () => {
+			expect(detect_search_query_mode("/Docs/api.md")).toEqual({ mode: "path", value: "/Docs/api.md" });
 			expect(detect_search_query_mode("docs/api")).toEqual({ mode: "path", value: "docs/api" });
 		});
 
@@ -8921,7 +8922,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		test("unwraps a pasted path link and decodes its segments", () => {
 			expect(detect_search_query_mode("https://app.test/w/acme/main/files/Docs/api%20notes.md")).toEqual({
 				mode: "path",
-				value: "/docs/api notes.md",
+				value: "/Docs/api notes.md",
 			});
 		});
 
@@ -8949,24 +8950,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 	});
 
 	describe("search_filter_matches_item", () => {
-		const matches = (query: string, item: files_TreeItem) =>
-			search_filter_matches_item({
-				filter: files_search_query_parse(query).filters[0]!,
-				item,
-				targetKey: `saved:${item._id}`,
-				serverTargetKeys: new Map(),
-			});
-
-		test("file.extension never matches a folder, even one with a dot in its name", () => {
-			const folder = test_node({ id: "release", parentId: files_ROOT_ID, kind: "folder", name: "v1.2" });
-			const file = test_node({ id: "release_notes", parentId: files_ROOT_ID, kind: "file", name: "v1.2" });
-			expect(matches("file.extension:2", folder)).toBe(false);
-			expect(matches("file.extension:2*", folder)).toBe(false);
-			expect(matches("file.extension:2", file)).toBe(true);
-			expect(matches("file.extension:2*", file)).toBe(true);
-		});
-
-		test("file.link reads the link list, and an unknown answer stays unknown under negation", () => {
+		test("file.link reads the link list, and an unknown answer stays unknown", () => {
 			const file = test_node({ id: "public_file", parentId: files_ROOT_ID, kind: "file", name: "a.md" });
 			const folder = test_node({ id: "docs", parentId: files_ROOT_ID, kind: "folder", name: "docs" });
 			// `undefined` is a list that has not answered yet, and `null` is a failed one.
@@ -8991,10 +8975,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(link_matches({ query: "file.link:Public", item: file, answer: links })).toBe(true);
 			expect(link_matches({ query: "file.link:public", item: folder, answer: links })).toBe(false);
 			expect(link_matches({ query: "file.link:public", item: file, answer: new Set() })).toBe(false);
-			expect(link_matches({ query: "!file.link:public", item: folder, answer: links })).toBe(true);
-			expect(link_matches({ query: "!file.link:public", item: file, answer: links })).toBe(false);
-			expect(link_matches({ query: "!file.link:public", item: file, answer: null })).toBeNull();
-			expect(link_matches({ query: "!file.link:public", item: file, answer: undefined })).toBeNull();
+			expect(link_matches({ query: "file.link:public", item: file, answer: null })).toBeNull();
+			expect(link_matches({ query: "file.link:public", item: file, answer: undefined })).toBeNull();
 		});
 	});
 
@@ -9007,8 +8989,6 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			kind: "file",
 			name: "raw-media.md",
 			path: "/tasks/raw-media.md",
-			// The one node with a real update time, so `file.updated` can be told from `_creationTime`.
-			updatedAt: new Date(2026, 8, 4, 12).getTime(),
 		});
 		const doneTask = test_node({
 			id: "done_task",
@@ -9063,83 +9043,33 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			};
 		};
 
-		test("scopes by folder path and file fields, keeping the ancestors", () => {
-			expect(search("file.path:/tasks file.extension:md")).toEqual({
+		test("scopes the words to a folder, keeping the ancestors", () => {
+			expect(search("file.path:/tasks raw")).toEqual({
 				visible: [files_ROOT_ID, "task", "tasks"].sort(),
 				topMatchId: "task",
 				matchCount: 1,
 			});
 			// The folder itself is inside its own scope.
 			expect(search("file.path:/tasks-archive").matchCount).toBe(2);
-			expect(search("file.kind:folder tasks").matchCount).toBe(2);
-			// Only `task` was updated in 2026. Folders have an updated time too.
-			expect(search("file.updated:>2026-01-01").matchCount).toBe(1);
-			expect(search("file.updated:<2026-01-01").matchCount).toBe(6);
 		});
 
-		test("a folder path scopes the same with or without its slashes, in any case", () => {
+		test("a folder path scopes the same with or without its slashes, in its exact case", () => {
 			expect(search("file.path:/tasks").matchCount).toBe(3);
 			expect(search("file.path:/tasks/").matchCount).toBe(3);
 			expect(search("file.path:tasks").matchCount).toBe(3);
 			expect(search("file.path:tasks/").matchCount).toBe(3);
-			expect(search("file.path:/Tasks").matchCount).toBe(3);
+			expect(search("file.path:/Tasks").matchCount).toBe(0);
 			expect(search("file.path:/").matchCount).toBe(7);
 		});
 
-		test("file.updated takes a day, or a range that includes the whole day on its side", () => {
-			// Every fixture node was updated 1 ms after the epoch, the root at 0, except `task`, updated
-			// at noon on 2026-09-04. The day is local, like the dates the tree shows, so the test reads
-			// the epoch day from the clock too.
-			const local_day = (timestamp: number) => {
-				const date = new Date(timestamp);
-				const month = String(date.getMonth() + 1).padStart(2, "0");
-				return `${date.getFullYear()}-${month}-${String(date.getDate()).padStart(2, "0")}`;
-			};
-			const updatedDay = local_day(1);
-			const nextDay = local_day(1 + 24 * 60 * 60 * 1000);
-			expect(search(`file.updated:${updatedDay}`).matchCount).toBe(6);
-			expect(search(`file.updated:${nextDay}`).matchCount).toBe(0);
-			expect(search(`file.updated:>=${updatedDay}`).matchCount).toBe(7);
-			expect(search(`file.updated:>${updatedDay}`).matchCount).toBe(1);
-			expect(search(`file.updated:<=${updatedDay}`).matchCount).toBe(6);
-			expect(search(`file.updated:<${updatedDay}`).matchCount).toBe(0);
-			// `task` is the only node updated that day; its `_creationTime` is still 0.
-			expect(search("file.updated:2026-09-04").matchCount).toBe(1);
-			expect(search("file.updated:2026-09-05").matchCount).toBe(0);
-		});
-
-		test("quotes in the free text only group words, and file.extension takes a dot or a prefix", () => {
+		test("quotes in the free text only group words", () => {
 			expect(search('"raw-media"').matchCount).toBe(1);
 			expect(search('""').matchCount).toBe(0);
-			expect(search("file.extension:.md").matchCount).toBe(2);
-			expect(search("file.extension:t*").matchCount).toBe(2);
-			// A whole extension matches the end of the name, so a two-part one works. A prefix
-			// matches the last part only.
-			expect(search("file.extension:tar.gz").matchCount).toBe(1);
-			expect(search("file.extension:.tar.gz").matchCount).toBe(1);
-			expect(search("file.extension:gz").matchCount).toBe(1);
-			expect(search("file.extension:tar*").matchCount).toBe(0);
-			// A middle part is neither the end of the name nor the start of the last part.
-			expect(search("file.extension:tar").matchCount).toBe(0);
-			expect(search("file.extension:z*").matchCount).toBe(0);
 		});
 
-		test("a negated file filter keeps the other nodes, and file.kind ignores case", () => {
-			expect(search("!file.path:/tasks").matchCount).toBe(4);
-			expect(search("!file.kind:folder").matchCount).toBe(5);
-			expect(search("file.kind:Folder").matchCount).toBe(2);
-		});
-
-		test("file.name and file.extension ignore case, and a name prefix is a prefix", () => {
-			expect(search("file.name:RAW").matchCount).toBe(1);
-			expect(search("file.name:raw*").matchCount).toBe(1);
-			expect(search("file.name:media*").matchCount).toBe(0);
-			expect(search("file.extension:.MD").matchCount).toBe(2);
-		});
-
-		test("Enter opens the folder the text names exactly, or the one file left under a metadata filter", () => {
+		test("Enter opens the folder the text names exactly, in its exact case", () => {
 			expect(search("/tasks").topMatchId).toBe("tasks");
-			expect(search("/tasks metadata.status:open", new Map([["metadata.status:open", new Set(["task"])]])).topMatchId).toBe("task");
+			expect(search("/Tasks").matchCount).toBe(0);
 		});
 
 		test("a pasted link with a node id names that one node", () => {
@@ -9151,22 +9081,14 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(search("http://localhost:5173/w/acme/main/files?nodeId=missing").matchCount).toBe(0);
 		});
 
-		test("a metadata filter matches the node ids its query returned, and negation keeps other files and folders", () => {
-			// `FilesSidebar` keys the results by the raw token, so a negated chip has its own entry.
-			const serverTargetKeys = new Map<string, Set<string>>([
-				["metadata.status:open", new Set(["task"])],
-				["!metadata.status:open", new Set(["task"])],
-			]);
+		test("a metadata filter matches the node ids its query returned", () => {
+			// `FilesSidebar` keys the results by the raw token.
+			const serverTargetKeys = new Map<string, Set<string>>([["metadata.status:open", new Set(["task"])]]);
 
 			expect(search("metadata.status:open", serverTargetKeys)).toEqual({
 				visible: [files_ROOT_ID, "task", "tasks"].sort(),
 				topMatchId: "task",
 				matchCount: 1,
-			});
-			expect(search("!metadata.status:open", serverTargetKeys)).toEqual({
-				visible: [files_ROOT_ID, "tasks", "archive", "old_task", "note", "backup"].sort(),
-				topMatchId: null,
-				matchCount: 5,
 			});
 		});
 
@@ -9180,32 +9102,29 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			});
 		});
 
-		test("a metadata filter with no result yet matches nothing, even when negated", () => {
+		test("a metadata filter with no result yet matches nothing", () => {
 			expect(search("metadata.status:open")).toEqual({ visible: [], topMatchId: null, matchCount: 0 });
-			expect(search("!metadata.status:open")).toEqual({ visible: [], topMatchId: null, matchCount: 0 });
 		});
 
-		test("a metadata filter whose query failed matches nothing, even when negated", () => {
+		test("a metadata filter whose query failed matches nothing", () => {
 			expect(search("metadata.status:open", new Map([["metadata.status:open", null]]))).toEqual({
 				visible: [],
 				topMatchId: null,
 				matchCount: 0,
 			});
-			expect(search("!metadata.status:open", new Map([["!metadata.status:open", null]]))).toEqual({
-				visible: [],
-				topMatchId: null,
-				matchCount: 0,
-			});
 		});
 
-		test("an archived file never matches a metadata filter, not even a negated one", () => {
-			// The archived file has no search docs, so the server never returns it for `metadata.status:open`
-			// and a negated chip must not show it either. Without a metadata filter it matches.
-			expect(search("!metadata.status:open", new Map([["!metadata.status:open", new Set(["task"])]])).visible).not.toContain("done_task");
+		test("an archived file never matches a metadata filter", () => {
+			// Even when the server answer holds the archived file, it is not shown. Without a metadata
+			// filter it matches.
+			expect(
+				search("metadata.status:open", new Map([["metadata.status:open", new Set(["done_task"])]])).visible,
+			).not.toContain("done_task");
 			expect(search("file.path:/tasks done").visible).toContain("done_task");
 		});
 
-		test.each(["metadata.status:open", "!metadata.status:open"])("an archived folder never matches %s", (searchQuery) => {
+		test("an archived folder never matches a metadata filter", () => {
+			const searchQuery = "metadata.status:open";
 			const archivedFolder = { ...doneTask, kind: "folder" as const };
 			const result = get_search_matches({
 				treeItems: {
@@ -9214,9 +9133,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					itemById: new Map(treeItems.itemById).set(archivedFolder._id, archivedFolder),
 				},
 				searchQuery,
-				serverTargetKeys: new Map([
-					[searchQuery, new Set(searchQuery === "metadata.status:open" ? [`saved:${archivedFolder._id}`] : ["saved:task"])],
-				]),
+				serverTargetKeys: new Map([[searchQuery, new Set([`saved:${archivedFolder._id}`])]]),
 			});
 			expect(result.visibleFileIds.has(archivedFolder._id)).toBe(false);
 		});

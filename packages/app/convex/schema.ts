@@ -2907,6 +2907,50 @@ const app_convex_schema = defineSchema({
 			"booleanValue",
 			"treePath",
 		])
+		// Saved-only metadata search: committed docs with one key, then by value, then in path order, so
+		// a folder scope is one `treePath` range. Committed docs have no `userId`.
+		.index("by_org_ws_source_archive_docKind_field_tree", [
+			"organizationId",
+			"workspaceId",
+			"sourceKind",
+			"archiveOperationId",
+			"docKind",
+			"fieldPath",
+			"treePath",
+		])
+		.index("by_org_ws_source_archive_docKind_field_string_tree", [
+			"organizationId",
+			"workspaceId",
+			"sourceKind",
+			"archiveOperationId",
+			"docKind",
+			"fieldPath",
+			"valueKind",
+			"stringValue",
+			"treePath",
+		])
+		.index("by_org_ws_source_archive_docKind_field_number_tree", [
+			"organizationId",
+			"workspaceId",
+			"sourceKind",
+			"archiveOperationId",
+			"docKind",
+			"fieldPath",
+			"valueKind",
+			"numberValue",
+			"treePath",
+		])
+		.index("by_org_ws_source_archive_docKind_field_boolean_tree", [
+			"organizationId",
+			"workspaceId",
+			"sourceKind",
+			"archiveOperationId",
+			"docKind",
+			"fieldPath",
+			"valueKind",
+			"booleanValue",
+			"treePath",
+		])
 		// Distinct fields on direct children, split by `isRestrictedScopeRoot`. Committed field docs only.
 		.index("by_org_ws_source_archive_docKind_parent_restricted_field", [
 			"organizationId",
@@ -2956,6 +3000,27 @@ const app_convex_schema = defineSchema({
 		 * "root" for root items, otherwise the parent folder id.
 		 */
 		parentId: v.union(v.id("files_nodes"), v.literal("root")),
+		/**
+		 * The folders above this node, top-level folder first: `ancestor1` is the folder at the
+		 * workspace root, `ancestor2` the folder inside it, and so on down to the parent. So a node is
+		 * under folder G exactly when `ancestor<G.pathDepth>` is G: one equality filter in `search_name`.
+		 * Root items have none. A node more than 12 folders deep keeps the top 12 only, so a folder
+		 * deeper than 12 levels cannot scope a search.
+		 *
+		 * Only the overlay flush (`server/files-pending-overlay.ts`) and its backfill write them.
+		 */
+		ancestor1: v.optional(v.id("files_nodes")),
+		ancestor2: v.optional(v.id("files_nodes")),
+		ancestor3: v.optional(v.id("files_nodes")),
+		ancestor4: v.optional(v.id("files_nodes")),
+		ancestor5: v.optional(v.id("files_nodes")),
+		ancestor6: v.optional(v.id("files_nodes")),
+		ancestor7: v.optional(v.id("files_nodes")),
+		ancestor8: v.optional(v.id("files_nodes")),
+		ancestor9: v.optional(v.id("files_nodes")),
+		ancestor10: v.optional(v.id("files_nodes")),
+		ancestor11: v.optional(v.id("files_nodes")),
+		ancestor12: v.optional(v.id("files_nodes")),
 		kind: v.union(v.literal("folder"), v.literal("file")),
 		name: v.string(),
 		/**
@@ -3265,6 +3330,29 @@ const app_convex_schema = defineSchema({
 		.searchIndex("search_path", {
 			searchField: "path",
 			filterFields: ["organizationId", "workspaceId", "archiveOperationId", "kind", "parentId"],
+		})
+		// Name search, scoped to a folder by one `ancestor<depth>` equality. 16 filter fields, the Convex
+		// limit.
+		.searchIndex("search_name", {
+			searchField: "name",
+			filterFields: [
+				"organizationId",
+				"workspaceId",
+				"archiveOperationId",
+				"kind",
+				"ancestor1",
+				"ancestor2",
+				"ancestor3",
+				"ancestor4",
+				"ancestor5",
+				"ancestor6",
+				"ancestor7",
+				"ancestor8",
+				"ancestor9",
+				"ancestor10",
+				"ancestor11",
+				"ancestor12",
+			],
 		}),
 
 	/**
@@ -3441,9 +3529,11 @@ const app_convex_schema = defineSchema({
 			v.object({ ...files_pending_index_fields, ...files_plain_text_chunk_fields }),
 		),
 	)
+		// `sourceKind` and `userId` let a search read committed chunks only, or one user's pending chunks
+		// only. Committed chunks have no `userId`.
 		.searchIndex("search_by_plainTextChunk", {
 			searchField: "plainTextChunk",
-			filterFields: ["organizationId", "workspaceId", "archiveOperationId"],
+			filterFields: ["organizationId", "workspaceId", "archiveOperationId", "sourceKind", "userId"],
 		})
 		.index("by_organization_workspace_source_fileNode_yjsSequence_chunkIndex", [
 			"organizationId",
