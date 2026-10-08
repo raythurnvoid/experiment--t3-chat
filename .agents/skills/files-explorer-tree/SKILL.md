@@ -339,12 +339,8 @@ and `find` also keep raw name order.
   `set_folder_sort` refuses more or fewer than one clause with "Sort by one field." and a field
   that cannot be sorted with "This field cannot be sorted." The stored field for file.extension is
   `extension`.
-- Older sort docs can still hold up to eight clauses. `get_folder_sort` reads only the first clause
-  (`sort.slice(0, 1)`), and `files_sort_validator` still accepts the old docs. The migration
-  `trim_files_folder_sorts_to_first_clause` in `convex/migrations.ts` (runner
-  `run_trim_files_folder_sorts_to_first_clause`) cuts each doc to its first clause. It deletes no
-  doc: a doc left with file.name, A to Z shows the same as no doc. After it ran on every deployment,
-  make `get_folder_sort` strict again and delete the migration.
+- `get_folder_sort` reads the saved sort as it is and throws "Invalid saved sort." on a doc with
+  more than one clause. Only `set_folder_sort` writes these docs, and it refuses more than one.
 - A filter never writes the saved sort. Removing the filter brings the saved sort back.
 - The table waits for the saved sort before it loads rows, so it never loads by name and then sorts
   again.
@@ -430,11 +426,6 @@ and `find` also keep raw name order.
     with the member's second role, with an old plugin grant) reads 16 index ranges,
     floor(3,000 / 16) = 187. `list_tree_shared_roots` uses the same guard.
   - Refusals that need no folder read come before the folder check, so they cost nothing.
-  - Rollout: grants saved before share rows existed have no row. On a deployment with share grants,
-    run `migrations:run_backfill_files_share_rows` right after the push, then
-    `files_pending_overlay:check_share_rows` until it reports no difference. Until the backfill
-    ends, members do not see their shared restricted items in the tree, the table or "Shared with
-    you".
 - `files_nodes.has_tree_children_shared` says whether the member has a share in this folder, in the
   `archived` state it asks for: one `.first()` per principal and kind. A plugin grant's row counts
   only with the member's live membership lifetime. Only the first row per principal and kind is

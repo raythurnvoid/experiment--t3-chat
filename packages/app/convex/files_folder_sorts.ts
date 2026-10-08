@@ -149,9 +149,7 @@ export const get_folder_sort = query({
 			db_authorize_sort_write(ctx, { userAuth, membership, folder: folder._yay }),
 		]);
 
-		// The table sorts by one field. Older docs can hold more clauses until the
-		// `trim_files_folder_sorts_to_first_clause` migration runs, so read only the first one.
-		const sort = sortDoc?.sort.slice(0, 1) ?? files_sort_DEFAULT;
+		const sort = sortDoc?.sort ?? files_sort_DEFAULT;
 		if (!files_sort_is_valid(sort)) {
 			throw convex_error({ message: "Invalid saved sort." });
 		}

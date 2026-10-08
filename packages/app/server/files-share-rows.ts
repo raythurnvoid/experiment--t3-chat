@@ -82,8 +82,8 @@ function share_row_of(node: Doc<"files_nodes">, grant: Doc<"access_control_permi
 }
 
 /**
- * What the share row of one grant should be, from the grant and its node only. The flush, the
- * backfill and `check_share_rows` all use it.
+ * What the share row of one grant should be, from the grant and its node only. The flush and
+ * `check_share_rows` both use it.
  */
 export async function files_share_rows_db_compute_for_grant(
 	db: QueryCtx["db"],

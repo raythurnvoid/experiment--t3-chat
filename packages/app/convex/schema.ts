@@ -2750,7 +2750,7 @@ const app_convex_schema = defineSchema({
 	 * member, so a role membership change writes nothing.
 	 *
 	 * Derived docs: only the overlay flush (`server/files-pending-overlay.ts`, with the helpers in
-	 * `server/files-share-rows.ts`), its backfill and data deletion write them.
+	 * `server/files-share-rows.ts`) and data deletion write them.
 	 */
 	files_share_rows: defineTable({
 		organizationId: v.id("organizations"),
@@ -2983,10 +2983,11 @@ const app_convex_schema = defineSchema({
 		 * The folders above this node, top-level folder first: `ancestor1` is the folder at the
 		 * workspace root, `ancestor2` the folder inside it, and so on down to the parent. So a node is
 		 * under folder G exactly when `ancestor<G.pathDepth>` is G: one equality filter in `search_name`.
-		 * Root items have none. A node more than 12 folders deep keeps the top 12 only, so a folder
-		 * deeper than 12 levels cannot scope a search.
+		 * Root items have none. The fields are optional on purpose: a missing `ancestor<N>` means
+		 * the node has no folder at depth N. A node more than 12 folders deep keeps the top 12 only, so a
+		 * folder deeper than 12 levels cannot scope a search.
 		 *
-		 * Only the overlay flush (`server/files-pending-overlay.ts`) and its backfill write them.
+		 * Only the overlay flush (`server/files-pending-overlay.ts`) writes them.
 		 */
 		ancestor1: v.optional(v.id("files_nodes")),
 		ancestor2: v.optional(v.id("files_nodes")),

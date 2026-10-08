@@ -276,30 +276,6 @@ describe("get_folder_sort", () => {
 		).toEqual({ sort: [{ field: "name", direction: "asc" }], canSave: false });
 	});
 
-	test("reads an older saved sort with two clauses as its first clause", async () => {
-		const { t, scope, asOwner } = await fixture();
-		await t.run((ctx) =>
-			ctx.db.insert("files_folder_sorts", {
-				organizationId: scope.organizationId,
-				workspaceId: scope.workspaceId,
-				folderId: files_ROOT_ID,
-				sort: [
-					{ field: "updated", direction: "desc" },
-					{ field: "name", direction: "asc" },
-				],
-				updatedBy: scope.userId,
-				updatedAt: Date.now(),
-			}),
-		);
-
-		expect(
-			await asOwner.query(api.files_folder_sorts.get_folder_sort, {
-				membershipId: scope.membershipId,
-				folderId: files_ROOT_ID,
-			}),
-		).toEqual({ sort: [{ field: "updated", direction: "desc" }], canSave: true });
-	});
-
 	test("throws without a signed-in user", async () => {
 		const { t, scope } = await fixture();
 		await expect(

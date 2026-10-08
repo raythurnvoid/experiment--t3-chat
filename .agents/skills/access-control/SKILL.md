@@ -929,7 +929,8 @@ the folder table. Code: `packages/app/server/files-share-rows.ts`.
   fit in one move; 39 do not.
 - After a dashboard edit or `convex import`, run `files_pending_overlay:check_share_rows`
   (organization, workspace, `cursor: null`; call again with the returned cursor until it is null).
-  `migrations:run_backfill_files_share_rows` writes the rows of every file grant again.
+  There is no repair door. To fix drift, write a one-time mutation that calls
+  `files_share_rows_db_sync_grant` (`server/files-share-rows.ts`) for each reported grant.
 - Data deletion: see `../data-deletion/SKILL.md`.
 
 ## Public file links
