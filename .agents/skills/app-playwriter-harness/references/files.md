@@ -290,6 +290,8 @@ same `target`, `pendingUpdateId`, and `reviewedRevision`. Verified 2026-09-23.
 
 ## High-Value Recipes
 
+- Full action timing checklist and replay rules: [files-profiling.md](files-profiling.md).
+
 ### Folder Jobs: Move, Archive, Restore, Restrict, Copy Queue
 
 A move, archive, restore, restrict, or copy of a big folder runs as a `files_subtree_ops` job (see
@@ -298,7 +300,7 @@ one step. In `qa-browser/home` the catalog folders `copy-2` (104 items), `copy-3
 `copy-4` (416 items) are big enough. Verified 2026-09-27.
 
 - Drive the action from the tree row menus: Cut or Copy on one row, then `Paste` on the target row.
-  Use `Paste into root folder` from the sidebar `More options` menu for the root. A one-source paste
+  For root Paste, focus the Files tree container and press Control+V. A one-source paste
   opens no dialog. A headless scratch Chrome opens a small window that hides the sidebar `More
   options` button, so call `page.setViewportSize({ width: 1500, height: 950 })` first. Keep the click
   and the Activity sampling in separate calls. If one call times out while it samples, the paste has
@@ -785,7 +787,7 @@ run reused `/qa-sort-0924` and `/qa-sort-0924-r` without new files, metadata, mo
   `workCount`, `scannedCount` and actual request allowances in receipts. Created/rank packed 50 file
   candidates in one response; a revealed table may also include folders. Hidden sort fields add no
   displayed-value queries. Metadata after file.name needs no sort-key queries. Side enumeration returns
-  facts without sort args or inline keys; `get_table_sort_key` returns a full `RowKey` or null.
+  facts without sort args or inline keys.
   file.extension/file.size positions stay null for folders.
   Metadata missing pages come from the convex-helpers hook. After the first Show more, the loaded
   page's descriptor has `paginationOpts.endCursor` and the next page starts from that cursor. Dev
@@ -1342,11 +1344,10 @@ One dialog holding the file's facts, its write policy, and the flat key-value ma
   directions every time. Use the keyboard for the confirm button. Read the state from
   `.FilesPropertiesModalCollaboration-description`, not from the tick: the Metadata section repeats
   the same "read-only" and "no permission" sentences, so `getByText` finds several matches.
-- Scope policy controls to `.FilesPropertiesModalWritePolicy`. The radios are `Editable`,
-  `Read-only`, and `Selected writer`. There is no `Inherit` radio. Click the visible label. Unlock
-  with `Editable` + `Save policy`. For a selected writer, choose `Writer type` (`Person` or
-  `Service account`), then the matching picker. Only active accounts appear in the account picker.
-  Nothing is saved until `Save policy` is clicked. Folders also have a New items default.
+- Scope policy controls to `.FilesPropertiesModalWritePolicy`. The choices are `Everyone with access`,
+  `No one (read-only)`, and `Custom`. Click the visible label. Unlock with `Everyone with access` and the footer
+  `Save`. Custom opens `Add writers` or `Manage writers`. The footer Save writes changed protection
+  and metadata together. It stays open after success. Folders also have a rule for items inside.
 - Read `files_nodes.get_node_write_policy_management_state({ membershipId, nodeId })` through a fresh
   `ConvexHttpClient`. Check `localPolicy`, `canWrite`, and `canManage`.
   After a native click, wait for the saved UI state before readback; the click can finish before its
@@ -1429,16 +1430,15 @@ One dialog holding the file's facts, its write policy, and the flat key-value ma
 - Monaco inside this dialog hoists nothing, unlike the file editors. Its suggest and hover widgets
   clip at the editor box on purpose — see the layering note in `known-hazards.md`. Do not "fix" a
   clipped widget by pointing `overflowWidgetsDomNode` at `#app_monaco_hoisting_container`.
-- On a read-only file, or without write permission, the button carries `aria-disabled` and
-  `MyButton-state-disabled` instead of the `disabled` property, and the status line above it says
-  why. Read `aria-disabled` there, not `disabled`.
-- `Save metadata` stays disabled until the draft differs from the stored map, so a `setValue` with
+- The Properties footer `Save` uses the native `disabled` property. Read that property or use
+  `isEnabled()` before pressing it. The status line explains a refused metadata write.
+- The footer `Save` stays disabled until a section differs from its saved state, so a `setValue` with
   the same text leaves the button disabled — that is correct, not a broken run.
 - The status line is one element: `role="status"` for `Metadata saved`, `role="alert"` for a
   refusal or a conflict. Read it by role, not by text position.
 - A refusal to check: `owner:\n  name: nested\n` is refused in the dialog before any mutation runs,
   so the network stays quiet.
-- Closing throws an unsaved draft away. The footer shows `Unsaved metadata will be lost.` while a
+- Closing throws an unsaved draft away. The footer shows `Unsaved changes will be lost.` while a
   draft is dirty; there is no confirm step.
 - Read the stored map back from Convex instead of trusting the dialog:
   `app_convex.query(app_convex_api.files_metadata.get_entries, { membershipId, fileNodeId })` from
@@ -1840,9 +1840,9 @@ is usually the second row, not the first — check each one's `_creationTime` ag
 
 ### Listing And Draining Pending Rows From A Runner
 
-`files_pending_updates.list_files_pending_updates` requires `paginationOpts`. Each row is
-`{kind, canAccept, canEdit, readiness, entry}` with the useful fields one level down in
-`entry.path`, `entry.node` and `entry.pendingUpdate` — there is no `row._id` or `row.path`.
+`files_pending_updates.list_files_pending_updates` requires `listKey` (`"all"`, `"own"` or a chat id)
+and `paginationOpts`. Each row has only stored fields: `{target, pendingUpdateId, revision, threadIds?,
+hasReadyContent}`. There is no path; read it with `get_file_pending_target({membershipId, target})`.
 
 Draining every row for a clean fixture needs **more than one pass**. A folder draft that still holds
 a draft is not listed at all, so it shows up only after its children are discarded. A page holds at
@@ -1856,6 +1856,7 @@ for (let pass = 0; pass < 5; pass++) {
 	for (;;) {
 		const page = await m.app_convex.query(m.app_convex_api.files_pending_updates.list_files_pending_updates, {
 			membershipId,
+			listKey: "all",
 			paginationOpts: { cursor, numItems: 5 },
 		});
 		rows.push(...page.page);
@@ -1864,12 +1865,11 @@ for (let pass = 0; pass < 5; pass++) {
 	}
 	if (rows.length === 0) break;
 	for (const r of rows) {
-		const pu = r.entry.pendingUpdate;
 		await m.app_convex.mutation(m.app_convex_api.files_pending_updates.discard_file_pending_update, {
 			membershipId,
-			target: pu.target,
-			pendingUpdateId: pu._id,
-			reviewedRevision: pu.revision,
+			target: r.target,
+			pendingUpdateId: r.pendingUpdateId,
+			reviewedRevision: r.revision,
 		});
 	}
 }
