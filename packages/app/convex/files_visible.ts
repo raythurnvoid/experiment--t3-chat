@@ -1453,7 +1453,20 @@ export const internal_list_children_saved = internalQuery({
 			indexKey,
 			mergeKey: (node) => (byTime ? [node.updatedAt] : [node.name]),
 			decide: async (node) => {
-				if (is_hidden && (await is_hidden(node._id))) return null;
+				if (is_hidden && (await is_hidden(node._id))) {
+					if (!args.requireComplete || !reader) return null;
+					// A draft move into a folder the user can no longer read drops the place too, so a full
+					// listing would miss the node. Refuse instead.
+					const place = await ctx.db
+						.query("files_pending_places")
+						.withIndex("by_target_user", (q) =>
+							q.eq("target.kind", "saved").eq("target.id", node._id).eq("userId", args.visibilityUserId),
+						)
+						.unique();
+					return place && (await db_place_destinations_readable(ctx, reader, place)) === false
+						? "denied_destination"
+						: null;
+				}
 				if (!(await can_read(node))) return "denied";
 				return await db_stream_saved_item(ctx, {
 					node,

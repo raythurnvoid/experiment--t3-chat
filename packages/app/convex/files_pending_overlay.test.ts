@@ -1194,6 +1194,43 @@ describe("files_pending_overlay flush", () => {
 		});
 	});
 
+	test("a full listing refuses a saved node whose draft moves it into a folder the member can no longer read", async () => {
+		const f = await fixture();
+		const docs = await f.saved(null, "docs", "folder");
+		const team = await f.saved(null, "team", "folder");
+		const notes = await f.saved(docs, "notes.md");
+		await f.saved(docs, "readme.md");
+		await f.draft_move(target(notes), parent(team), "notes.md", f.v);
+		// `cp -r /docs` lists every child. The moved file is not one of them.
+		const list_docs = () =>
+			files_pending_overlay_list({ runQuery: f.t.query } as unknown as Pick<ActionCtx, "runQuery">, {
+				organizationId: f.v.organizationId,
+				workspaceId: f.v.workspaceId,
+				visibilityUserId: f.v.userId,
+				overlayUserId: f.v.userId,
+				requireComplete: true,
+				folderPath: "/docs",
+				mode: "children",
+				order: "asc",
+				cursor: null,
+				numItems: 50,
+			});
+		expect((await list_docs())._yay?.items.map((item) => item.path)).toEqual(["/docs/readme.md"]);
+
+		// The owner restricts /team. notes.md now shows at its saved place, /docs/notes.md, but its hide and
+		// its dropped place would leave it out of the copy, so the listing refuses.
+		await f.restrict(team);
+		expect(
+			await f.asV.query(api.files_visible.get_path, { membershipId: f.vMember.membershipId, target: target(notes) }),
+		).toBe("/docs/notes.md");
+		expect(await list_docs()).toEqual({
+			_nay: {
+				message:
+					"A draft move here, or of a folder above it, goes into a folder you can no longer open. Discard that move and try again.",
+			},
+		});
+	});
+
 	test("a draft move into a saved draft folder the member can no longer read cannot be accepted", async () => {
 		const f = await fixture();
 		const team = await f.saved(null, "team", "folder");
