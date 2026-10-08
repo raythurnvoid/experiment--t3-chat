@@ -126,7 +126,13 @@ Use the Clerk fixture recipe when the signed-in account has no organization quot
 - Sent uploads have `data-upload-id`, Download and Save to Files. Check a real image's loaded
   dimensions and a video's ready state. Do not print signed URLs. For a real download, wait for
   `download`, check its name and failure, and hash only that newly downloaded fixture.
-- Save to Files uses the named dialog, `Find folder`, `Destination folder`, and `Save file`.
+- Save to Files uses the named dialog, `combobox "Find folder"` and `listbox "Folders"`. A folder
+  option opens it; the `Save here` option saves into the open folder (at first, the root). In a
+  folder the user cannot write, `Save here` has `aria-disabled` and says
+  `You cannot add files to this folder`.
+- Attach an existing file opens `Attach a file` with `combobox "Find file"` and `listbox "Files"`.
+  One file option attaches it and closes the dialog. A file that cannot be attached has
+  `aria-disabled` and says `This file cannot be attached`.
   Test a writable folder, the workspace root, and a name conflict. A conflict must keep the old
   file. The copy has a separate asset and ordinary Files upload charge.
 - Use two users to check private and file access loss. Confirm both missing upload DOM and a

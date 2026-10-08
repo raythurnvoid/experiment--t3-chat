@@ -57,7 +57,8 @@ vi.mock("@/hooks/ai-chat-controller.tsx", () => ({
 }));
 vi.mock("@/lib/app-convex-client.ts", async () => {
 	const { api } = await import("../../../convex/_generated/api.js");
-	return { app_convex_api: api, app_convex: { action: mocks.action } };
+	// The file picker reads `app_convex_is_id_like` to read typed text. No test types a node id.
+	return { app_convex_api: api, app_convex: { action: mocks.action }, app_convex_is_id_like: () => false };
 });
 vi.mock("convex/react", async () => {
 	const { useSyncExternalStore } = await import("react");
@@ -90,6 +91,9 @@ vi.mock("convex/react", async () => {
 					return null;
 			}
 		},
+		// The file picker browses the root from the tree mock below. Its name search finds nothing.
+		usePaginatedQuery: () => ({ results: [], status: "Exhausted", loadMore: () => {} }),
+		useQueries: () => ({}),
 	};
 });
 vi.mock("@/lib/files-browser-stream.ts", () => ({
@@ -104,7 +108,12 @@ vi.mock("@/lib/files-browser-stream.ts", () => ({
 	},
 }));
 vi.mock("@/lib/files-tree-context.tsx", () => ({
-	FilesTreeProvider: { useFullList: (enabled: boolean) => (enabled ? mocks.treeNodes : undefined) },
+	FilesTreeProvider: {
+		usePickerFolder: (args: { folderId: string | null }) => ({
+			children: { rows: args.folderId === "root" ? mocks.treeNodes : [], status: "done", loadMore: () => {} },
+			shared: null,
+		}),
+	},
 }));
 vi.mock("sonner", () => ({
 	toast: { success: mocks.toastSuccess, error: mocks.toastError },
@@ -651,11 +660,11 @@ describe("WebBrowserSavedData", () => {
 });
 
 describe("WebBrowser downloads and file choosers", () => {
+	// The workspace root, folders first, as the picker reads it.
 	const TREE_NODES = [
-		{ _id: "node_a", kind: "file", name: "report.pdf", path: "/docs/report.pdf", archiveOperationId: null },
-		{ _id: "node_b", kind: "file", name: "photo.png", path: "/photo.png", archiveOperationId: null },
-		{ _id: "node_folder", kind: "folder", name: "docs", path: "/docs", archiveOperationId: null },
-		{ _id: "node_old", kind: "file", name: "old.txt", path: "/old.txt", archiveOperationId: "archive_1" },
+		{ _id: "node_folder", kind: "folder", name: "docs", path: "/docs", contentType: null },
+		{ _id: "node_a", kind: "file", name: "report.pdf", path: "/report.pdf", contentType: "application/pdf" },
+		{ _id: "node_b", kind: "file", name: "photo.png", path: "/photo.png", contentType: "image/png" },
 	];
 
 	// Answer each door by name. Other actions (the viewer grant) keep a working reply.
@@ -831,11 +840,16 @@ describe("WebBrowser downloads and file choosers", () => {
 		const dialog = await openChooser({ control: "human", multiple: false });
 
 		expect(within(dialog).getByText("Accepted types: image/*, .pdf.")).toBeTruthy();
+		expect(
+			screen.queryAllByRole("option", { hidden: true }),
+			"the closed list mounts no picker, so it reads no folder",
+		).toEqual([]);
 		fireEvent.click(within(dialog).getByRole("combobox", { name: "Choose from Files" }));
-		// Only live files are offered: no folder and no archived file.
+		// The picker opens at the root. A folder row opens the folder, and a file row picks the file.
 		expect(screen.getAllByRole("option").map((option) => option.textContent)).toEqual([
-			"report.pdf/docs/report.pdf",
-			"photo.png/photo.png",
+			"docs",
+			"report.pdf",
+			"photo.png",
 		]);
 		fireEvent.click(screen.getByRole("option", { name: /report\.pdf/ }));
 		fireEvent.click(within(dialog).getByRole("button", { name: "Give to the page" }));

@@ -227,10 +227,12 @@ Five items sit next to the Youtube item in
 - `Image` / `Video` — `editor.commands.filesMediaPickUpload(kind)` opens a hidden
   accept-scoped file input; picked files run the upload flow above at the caret.
 - `Embed file` — `editor.commands.filesMediaEmbedExisting()` opens a caret-anchored
-  `MySearchSelect` picker listing workspace nodes whose `contentType` starts with `image/` or
-  `video/` (data: `FilesTreeProvider.useFullList`, the whole-workspace `files_nodes.list_tree`
-  subscription. It loads only while the picker is open). Picking inserts the
-  `bonobo-file://` reference with the file name as alt — no upload, no byte copy.
+  `MySearchSelect` picker with the shared `FilesNodePicker` body
+  (`components/files/files-node-picker.tsx`). It browses one folder at a time, or searches names
+  with `files_nodes.search_saved`, in pages of 50 with "Show more". It lists active, saved rows
+  only. Files whose `contentType` does not start with `image/` or `video/` show disabled with the
+  reason "Not an image or video", because the name search cannot leave them out. Folders open.
+  Picking inserts the `bonobo-file://` reference with the file name as alt — no upload, no byte copy.
 - `Image from URL` / `Video from URL` — `prompt()` like the Youtube item, http(s)-only,
   insert an external embed. Kind is chosen by the item, never sniffed from the url.
 

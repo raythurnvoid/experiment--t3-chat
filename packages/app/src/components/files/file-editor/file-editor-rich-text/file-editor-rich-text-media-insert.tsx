@@ -10,15 +10,17 @@ import { Extension } from "@tiptap/core";
 import type { Editor } from "@tiptap/react";
 import {
 	MySearchSelect,
-	MySearchSelectItem,
-	MySearchSelectList,
 	MySearchSelectPopover,
 	MySearchSelectPopoverContent,
 	MySearchSelectPopoverScrollableArea,
 	MySearchSelectSearch,
 	type MySearchSelect_Props,
 } from "@/components/my-search-select.tsx";
-import { FilesTreeProvider } from "@/lib/files-tree-context.tsx";
+import {
+	FilesNodePicker,
+	type FilesNodePicker_Pickable,
+	type FilesNodePicker_Row,
+} from "@/components/files/files-node-picker.tsx";
 import { files_media_build_file_src } from "../../../../../shared/files-media.ts";
 import { cn } from "@/lib/utils.ts";
 import { useFn } from "@/hooks/utils-hooks.ts";
@@ -73,12 +75,7 @@ export const file_editor_rich_text_MediaInsertExtension = Extension.create<{
 });
 
 // #region embed picker
-export type FileEditorRichTextMediaEmbedPicker_ClassNames =
-	| "FileEditorRichTextMediaEmbedPicker"
-	| "FileEditorRichTextMediaEmbedPicker-empty"
-	| "FileEditorRichTextMediaEmbedPicker-item"
-	| "FileEditorRichTextMediaEmbedPicker-item-name"
-	| "FileEditorRichTextMediaEmbedPicker-item-path";
+export type FileEditorRichTextMediaEmbedPicker_ClassNames = "FileEditorRichTextMediaEmbedPicker";
 
 type FileEditorRichTextMediaEmbedPicker_Props = {
 	editor: Editor;
@@ -88,8 +85,17 @@ type FileEditorRichTextMediaEmbedPicker_Props = {
 };
 
 /**
- * A caret-anchored picker listing the workspace's image and video files.
- * It loads the full workspace list from the tree provider while it is open.
+ * Only images and videos can be embedded. Other files show disabled, because the name search
+ * cannot leave them out.
+ */
+function media_row_pickable(row: FilesNodePicker_Row): FilesNodePicker_Pickable {
+	return row.contentType?.startsWith("image/") || row.contentType?.startsWith("video/")
+		? { ok: true }
+		: { ok: false, reason: "Not an image or video" };
+}
+
+/**
+ * A caret-anchored picker that embeds an image or video file of the workspace.
  */
 export const FileEditorRichTextMediaEmbedPicker = memo(function FileEditorRichTextMediaEmbedPicker(
 	props: FileEditorRichTextMediaEmbedPicker_Props,
@@ -98,44 +104,28 @@ export const FileEditorRichTextMediaEmbedPicker = memo(function FileEditorRichTe
 
 	const [searchText, setSearchText] = useState("");
 
-	const treeNodes = FilesTreeProvider.useFullList(true);
-	const mediaNodes = (treeNodes ?? []).filter(
-		(node) =>
-			node.kind === "file" &&
-			(node.contentType?.startsWith("image/") === true || node.contentType?.startsWith("video/") === true),
-	);
-	const normalizedSearchText = searchText.trim().toLowerCase();
-	const shownNodes = normalizedSearchText
-		? mediaNodes.filter((node) => node.path.toLowerCase().includes(normalizedSearchText))
-		: mediaNodes;
-
 	const handleSetOpen: MySearchSelect_Props["setOpen"] = (open) => {
 		if (!open) {
 			onClose();
 		}
 	};
 
-	const handleSetValue = useFn<NonNullable<MySearchSelect_Props["setValue"]>>((value) => {
-		const node = mediaNodes.find((mediaNode) => mediaNode._id === value);
-		if (!node) {
-			return;
-		}
-
+	const handlePick = useFn((row: FilesNodePicker_Row) => {
 		// The document stores the node reference; the node view signs a url while rendering.
 		editor
 			.chain()
 			.focus()
 			.insertContent(
-				node.contentType?.startsWith("video/")
-					? { type: "video", attrs: { src: files_media_build_file_src(node._id) } }
-					: { type: "image", attrs: { src: files_media_build_file_src(node._id), alt: node.name } },
+				row.contentType?.startsWith("video/")
+					? { type: "video", attrs: { src: files_media_build_file_src(row.nodeId) } }
+					: { type: "image", attrs: { src: files_media_build_file_src(row.nodeId), alt: row.name } },
 			)
 			.run();
 		onClose();
 	});
 
 	return (
-		<MySearchSelect open setOpen={handleSetOpen} setValue={handleSetValue}>
+		<MySearchSelect open setOpen={handleSetOpen}>
 			<MySearchSelectPopover
 				className={cn("FileEditorRichTextMediaEmbedPicker" satisfies FileEditorRichTextMediaEmbedPicker_ClassNames)}
 				aria-label="Embed a workspace file"
@@ -144,50 +134,20 @@ export const FileEditorRichTextMediaEmbedPicker = memo(function FileEditorRichTe
 				<MySearchSelectPopoverScrollableArea>
 					<MySearchSelectPopoverContent>
 						<MySearchSelectSearch
-							placeholder="Search images and videos..."
-							aria-label="Search images and videos"
+							placeholder="Search files..."
+							aria-label="Search files"
+							value={searchText}
 							onChange={(event) => setSearchText(event.currentTarget.value)}
 						/>
-						{shownNodes.length === 0 ? (
-							<div
-								className={cn(
-									"FileEditorRichTextMediaEmbedPicker-empty" satisfies FileEditorRichTextMediaEmbedPicker_ClassNames,
-								)}
-							>
-								{treeNodes === undefined
-									? "Loading files…"
-									: mediaNodes.length === 0
-										? "No images or videos in this workspace"
-										: "No results"}
-							</div>
-						) : (
-							<MySearchSelectList>
-								{shownNodes.map((node) => (
-									<MySearchSelectItem
-										key={node._id}
-										value={node._id}
-										className={cn(
-											"FileEditorRichTextMediaEmbedPicker-item" satisfies FileEditorRichTextMediaEmbedPicker_ClassNames,
-										)}
-									>
-										<span
-											className={cn(
-												"FileEditorRichTextMediaEmbedPicker-item-name" satisfies FileEditorRichTextMediaEmbedPicker_ClassNames,
-											)}
-										>
-											{node.name}
-										</span>
-										<span
-											className={cn(
-												"FileEditorRichTextMediaEmbedPicker-item-path" satisfies FileEditorRichTextMediaEmbedPicker_ClassNames,
-											)}
-										>
-											{node.path}
-										</span>
-									</MySearchSelectItem>
-								))}
-							</MySearchSelectList>
-						)}
+						<FilesNodePicker
+							variant="select"
+							query={searchText}
+							select="file"
+							folderRow={null}
+							getPickable={media_row_pickable}
+							onPick={handlePick}
+							clearQuery={() => setSearchText("")}
+						/>
 					</MySearchSelectPopoverContent>
 				</MySearchSelectPopoverScrollableArea>
 			</MySearchSelectPopover>

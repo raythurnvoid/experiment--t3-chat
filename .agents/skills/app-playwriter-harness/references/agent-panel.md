@@ -213,9 +213,10 @@ Image ingest is async (decode + canvas re-encode). Wait for `[aria-label="Image 
 
 Typing `@` in any AI chat composer (thread, message edit, file-editor agent sidebar) opens a file/folder picker. Verified 2026-08-02:
 
-- Popup: `[role=listbox][aria-label="Files and folders"]`, rows are `[role=option]`, capped at 50. It portals to the hoisting container, so locate it at document scope, not inside the composer.
+- Popup: `[role=listbox][aria-label="Files and folders"]`, rows are `[role=option]`, 50 per page with a "Show more" row. It portals to the hoisting container, so locate it at document scope, not inside the composer.
+- Empty text shows one folder. Clicking a folder row (or Enter on it) opens it instead of inserting a chip; the opened folder's first row "Mention this folder" inserts the folder chip, and the "Folder path" breadcrumb goes back. Typed text with a `/` searches names in the folder before the last `/` (`@/docs/api`). Not checked live yet.
 - The `@` must start a word: an `@` typed directly after a letter (`doc@`) never opens the popup. Probes that retype a query after a previous one must add a leading space first.
-- Enter or row click inserts a chip (`.AiChatComposerFileMention`) without sending; folders serialize with a trailing slash. The message serializes chips to `@/path/to/file.md` text.
+- Enter or a click on a file row (or on "Mention this folder") inserts a chip (`.AiChatComposerFileMention`) without sending; folders serialize with a trailing slash. The message serializes chips to `@/path/to/file.md` text.
 - Escape closes only the popup. The mention renderer calls `stopPropagation()` on that Escape, so it never reaches the form's close handler or the chat-level Escape branch — a message edit stays open. The next Escape (popup closed) closes the edit/queue surface as usual.
 - `fill()` bypasses the suggestion plugin (it replaces content without typing). Use `keyboard.type("@doc")` to open the popup.
 

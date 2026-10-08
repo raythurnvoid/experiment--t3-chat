@@ -29,10 +29,4 @@
 		padding: 8px;
 		color: var(--color-fg-08);
 	}
-	.ChannelsComposerMentionList-path {
-		display: block;
-		color: var(--color-fg-08);
-		font-size: 0.8125rem;
-		overflow-wrap: anywhere;
-	}
 }

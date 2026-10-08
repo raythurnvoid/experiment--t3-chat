@@ -1,0 +1,93 @@
+@layer components {
+	/* #region item content */
+	.FilesNodePickerItemContent {
+		display: flex;
+		flex-grow: 1;
+		align-items: center;
+		gap: 8px;
+		min-width: 0;
+	}
+
+	.FilesNodePickerItemContent-icon {
+		display: flex;
+		flex-shrink: 0;
+
+		color: var(--color-fg-08);
+
+		& > svg {
+			width: 16px;
+			height: 16px;
+		}
+	}
+
+	.FilesNodePickerItemContent-text {
+		display: grid;
+		min-width: 0;
+	}
+
+	.FilesNodePickerItemContent-name {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.FilesNodePickerItemContent-detail {
+		color: var(--color-fg-08);
+
+		font-size: 0.9375rem;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.FilesNodePickerItemContent-hint {
+		flex-shrink: 0;
+		margin-inline-start: auto;
+
+		color: var(--color-fg-08);
+
+		font-size: 0.9375rem;
+	}
+	/* #endregion item content */
+
+	/* #region picker */
+	.FilesNodePicker-breadcrumb {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 2px;
+
+		padding: 4px 8px;
+	}
+
+	.FilesNodePicker-group-label {
+		padding: 6px 12px 2px;
+
+		color: var(--color-fg-08);
+
+		font-size: 0.9375rem;
+		font-weight: 600;
+	}
+
+	.FilesNodePicker-status {
+		padding: 6px 12px;
+
+		color: var(--color-fg-08);
+
+		font-size: 0.9375rem;
+	}
+
+	.FilesNodePicker-announcement {
+		margin: 0;
+		padding: 0 12px 6px;
+
+		color: var(--color-fg-08);
+
+		font-size: 0.9375rem;
+
+		&:empty {
+			padding: 0;
+		}
+	}
+	/* #endregion picker */
+}

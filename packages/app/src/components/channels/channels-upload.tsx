@@ -1,10 +1,9 @@
 import "./channels-upload.css";
-import { memo, useEffect, useId, useState } from "react";
-import { useQuery } from "convex/react";
+import { memo, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { MyButton } from "@/components/my-button.tsx";
 import { MyInput, MyInputArea, MyInputBackground, MyInputBox, MyInputControl } from "@/components/my-input.tsx";
-import { MyRadioButton, MyRadioButtonLabel } from "@/components/my-radio-button.tsx";
+import { FilesNodePicker, type FilesNodePicker_Ref } from "@/components/files/files-node-picker.tsx";
 import {
 	MyModal,
 	MyModalCloseTrigger,
@@ -16,12 +15,11 @@ import {
 } from "@/components/my-modal.tsx";
 import { app_convex, app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
-import { FilesTreeProvider } from "@/lib/files-tree-context.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
 import {
 	files_is_inline_media_content_type,
 	files_normalize_upload_file_name,
-	files_ROOT_ID,
+	type files_ROOT_ID,
 } from "../../../shared/files.ts";
 import type { ChannelsMessage } from "./channels-message-window.ts";
 
@@ -45,26 +43,9 @@ export const ChannelsUpload = memo(function ChannelsUpload(props: {
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState("");
 	const [open, setOpen] = useState(false);
-	const [parentId, setParentId] = useState<app_convex_Id<"files_nodes"> | typeof files_ROOT_ID>(files_ROOT_ID);
 	const [folderFilter, setFolderFilter] = useState("");
-	const [folderPage, setFolderPage] = useState(0);
-	const groupName = useId();
-	const files = FilesTreeProvider.useFullList(open);
-	const folders = files?.filter(
-		(file) =>
-			file.kind === "folder" &&
-			file.archiveOperationId === null &&
-			file.canWrite &&
-			file.path.toLowerCase().includes(folderFilter.toLowerCase()),
-	);
-	const rootWrite = useQuery(
-		app_convex_api.files_nodes.get_current_user_file_write_permission,
-		open ? { membershipId, nodeId: files_ROOT_ID } : "skip",
-	);
-	const canSave =
-		parentId === files_ROOT_ID
-			? rootWrite === true
-			: files?.some((file) => file._id === parentId && file.canWrite && file.archiveOperationId === null);
+	const [folderInput, setFolderInput] = useState<HTMLInputElement | null>(null);
+	const pickerRef = useRef<FilesNodePicker_Ref>(null);
 
 	useEffect(() => {
 		let cancelled = false;
@@ -122,8 +103,8 @@ export const ChannelsUpload = memo(function ChannelsUpload(props: {
 			})
 			.finally(() => setBusy(false));
 	});
-	const save = useFn(async () => {
-		if (busy || !canSave) return;
+	const save = useFn(async (parentId: app_convex_Id<"files_nodes"> | typeof files_ROOT_ID) => {
+		if (busy) return;
 		setBusy(true);
 		setError("");
 		await (async () => {
@@ -220,63 +201,46 @@ export const ChannelsUpload = memo(function ChannelsUpload(props: {
 						<MyInput>
 							<MyInputBackground />
 							<MyInputArea>
+								{/* A combobox: focus stays here, and the picker sets aria-controls and aria-activedescendant. */}
 								<MyInputControl
+									ref={setFolderInput}
 									type="search"
+									role="combobox"
 									aria-label="Find folder"
+									aria-autocomplete="list"
+									aria-expanded={open}
 									placeholder="Folder name or path…"
 									value={folderFilter}
-									onChange={(event) => {
-										setFolderFilter(event.target.value);
-										setFolderPage(0);
+									onChange={(event) => setFolderFilter(event.target.value)}
+									onKeyDown={(event) => {
+										if (pickerRef.current?.onKeyDown(event.nativeEvent)) event.preventDefault();
 									}}
 								/>
 							</MyInputArea>
 							<MyInputBox />
 						</MyInput>
-						<div
-							className={"ChannelsUpload-folders" satisfies ChannelsUpload_ClassNames}
-							role="group"
-							aria-label="Destination folder"
-						>
-							<MyRadioButton
-								name={groupName}
-								checked={parentId === files_ROOT_ID}
-								disabled={busy || rootWrite !== true}
-								onChange={() => setParentId(files_ROOT_ID)}
-							>
-								<MyRadioButtonLabel>Workspace root /</MyRadioButtonLabel>
-							</MyRadioButton>
-							{folders?.slice(folderPage * 50, (folderPage + 1) * 50).map((folder) => (
-								<MyRadioButton
-									key={folder._id}
-									name={groupName}
-									checked={parentId === folder._id}
-									disabled={busy}
-									onChange={() => setParentId(folder._id)}
-								>
-									<MyRadioButtonLabel>{folder.path}</MyRadioButtonLabel>
-								</MyRadioButton>
-							))}
-						</div>
-						{files === undefined && <p>Loading folders…</p>}
-						{folderPage > 0 && (
-							<MyButton disabled={busy} onClick={() => setFolderPage((page) => page - 1)}>
-								Previous folders
-							</MyButton>
+						{/* The closed dialog stays mounted, so mount the picker only while it is open. */}
+						{open && folderInput && (
+							<div className={"ChannelsUpload-folders" satisfies ChannelsUpload_ClassNames}>
+								<FilesNodePicker
+									ref={pickerRef}
+									variant="listbox"
+									aria-label="Folders"
+									ownerElement={folderInput}
+									query={folderFilter}
+									select="folder"
+									folderRow={{ label: "Save here", onPick: (folder) => void save(folder.nodeId) }}
+									clearQuery={() => setFolderFilter("")}
+								/>
+							</div>
 						)}
-						{folders && folders.length > (folderPage + 1) * 50 && (
-							<MyButton disabled={busy} onClick={() => setFolderPage((page) => page + 1)}>
-								Next folders
-							</MyButton>
-						)}
+						{/* Keep the live region mounted, so a new text in it is read out. */}
+						<p role="status">{busy ? "Saving…" : ""}</p>
 						{error && <p role="alert">{error}</p>}
 					</MyModalScrollableArea>
 					<MyModalFooter>
 						<MyButton disabled={busy} onClick={() => setOpen(false)}>
 							Cancel
-						</MyButton>
-						<MyButton disabled={busy || !canSave} onClick={() => void save()}>
-							{busy ? "Saving…" : "Save file"}
 						</MyButton>
 					</MyModalFooter>
 				</MyModalPopover>

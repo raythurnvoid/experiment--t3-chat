@@ -11096,6 +11096,8 @@ export const search_saved = query({
 				kind: doc(app_convex_schema, "files_nodes").fields.kind,
 				nodeId: v.id("files_nodes"),
 				path: doc(app_convex_schema, "files_nodes").fields.path,
+				// The media picker shows files that are not images or videos as disabled.
+				contentType: doc(app_convex_schema, "files_nodes").fields.contentType,
 				// Content rows only: the first matching chunk of the file on this page.
 				textChunk: v.optional(v.string()),
 				lineStart: v.optional(v.number()),
@@ -11147,7 +11149,12 @@ export const search_saved = query({
 				hasWorkspaceRead: reader.hasWorkspaceRead,
 				nodes: [...byId.values()],
 			});
-			return readable.map((node) => ({ kind: node.kind, nodeId: node._id, path: node.path }));
+			return readable.map((node) => ({
+				kind: node.kind,
+				nodeId: node._id,
+				path: node.path,
+				contentType: node.contentType,
+			}));
 		};
 
 		if (clause.kind === "path") {

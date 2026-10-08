@@ -127,13 +127,15 @@ Enter still sends from lists and code blocks; Shift+Enter adds a line. Link addr
 https or mailto. The link form sits outside the message form and stops its submit event, so Apply
 link and Enter in its field cannot send the message. Files comments share these tools.
 
-The `@` popup includes people and saved files or folders, excluding archived nodes and private
-drafts. Messages and Files Comments use this same popup and composer.
+The `@` popup lists matching people first (at most 50), then saved files or folders from the
+shared `FilesNodePicker`, excluding archived nodes and private drafts. It browses one folder at a
+time or searches names in pages of 50; an open folder offers "Mention this folder". People show
+only at the root while the text has no `/`. The `#` popup lists channels. Messages and Files Comments use
+this same popup and composer.
 
-Current scale gaps: the file popup and workspace attachment picker load and filter the readable
-tree in the browser. Browse channels filters only its loaded pages by name. These do not meet
-the no-scan rule in AGENTS.md. Replace them with paginated indexed search before extending their
-search behavior. A browser result cap does not fix either problem.
+Current scale gap: Browse channels filters only its loaded pages by name. This does not meet the
+no-scan rule in AGENTS.md. Replace it with paginated indexed search before extending its search
+behavior. A browser result cap does not fix it.
 
 Both human and AI composers use `components/file-quotes/file-quote-extension.tsx` and `FileQuote`.
 Private local drafts keep encoded quote markers; human sends replace them with neutral quote
@@ -236,7 +238,12 @@ release uploads with an immediate cleanup deadline. Discard and stale-anchor cle
 The existing R2 cleanup removes both docs and queues exact-key deletion. Deletion gives no refund.
 
 The shared composer owns existing Files attachments, the Attach files menu, paste and drop.
-Attach files offers Upload from computer and Attach from workspace. Text, quote/edit context,
+Attach files offers Upload from computer and Attach from workspace. Attach from workspace uses
+`FilesNodePicker`; one pick attaches one file and closes the dialog. A file that
+`get_attachable_files` refuses (unreadable, or its upload has not finished) shows disabled with
+"This file cannot be attached"; send checks again. Each file chip reads its name by id with
+`files_nodes.get_file_node_for_membership`; it says "Loading…" until the answer arrives and
+"File unavailable" for a file that is unreadable or archived. Text, quote/edit context,
 attachments and a visible Send button share one input box. The editor scrolls when it grows.
 File Comments use this same composer and thread pane, with Back to comments.
 Each local upload shows its name, progress, Ready or its error, and Remove. Failed uploads have
@@ -252,7 +259,9 @@ The shared upload renderer previews allowed images and videos up to 20 MiB. Refr
 URLs before their 15-minute expiry. Lost access removes the upload from the shaped message and
 unmounts its preview. Larger files and unsafe media types still offer Download and Save to Files.
 Save to Files downloads the bytes and uses the ordinary create-only Files upload door with
-`onConflict: fail`. The new copy follows Files write rules, storage limits and its own charge.
+`onConflict: fail`. Its folder picker opens folders, and "Save here" saves into the open folder or
+the root. "Save here" is disabled with "You cannot add files to this folder" when
+`get_current_user_file_write_permission` refuses that folder; the upload door checks again. The new copy follows Files write rules, storage limits and its own charge.
 This copy uses browser memory for the downloaded blob.
 
 # Cleanup and checks

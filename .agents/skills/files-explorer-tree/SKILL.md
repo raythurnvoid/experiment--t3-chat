@@ -127,15 +127,29 @@ Tree-item components:
 - The sidebar loads only open folders. A workspace can hold tens of thousands of nodes, and the old
   whole-tree load took seconds before the first row showed. Keep the first rows within a few hundred
   milliseconds: never make the default sidebar wait for the whole tree again.
-- `FilesTreeProvider` (`lib/files-tree-context.tsx`), mounted once inside `AppTenantProvider`, has two
+- `FilesTreeProvider` (`lib/files-tree-context.tsx`), mounted once inside `AppTenantProvider`, has these
   attached hooks:
   - `useFolders({ folderIds, archived, pinnedNodeIds })` loads the root and each listed folder. The
     sidebar passes its expanded folders; the folder view passes the open folder. It returns `rows`
     (`undefined` until the root's pages answer), `statusByFolderId` (`loading`, `more`, `done`),
     `hoistedIds`, `loadMore(folderId)`, and `sharedRoots` (the "Shared with you" group below).
-  - `useFullList(enabled)` loads the whole workspace through `files_nodes.list_tree`. Only mentions
-    and pickers use it (AI chat and channel mentions, the media and file pickers). Search does not. It subscribes
-    only while an enabled caller is mounted, and it keeps the last complete result during a page split.
+  - `usePickerFolder({ membershipId, folderId, withFiles, pageSize })` loads one folder for
+    `FilesNodePicker` (`components/files/files-node-picker.tsx`) with the same streams, folders
+    first, then files. At the root, a reader who is not the owner also gets the "Shared with you"
+    streams as `shared`. Each list returns `rows`, `status` (`loading`, `more`, `done`), and `loadMore`.
+    Every file picker uses `FilesNodePicker`: the AI chat `@` mention, the rich text media picker,
+    the Channels `@` mention, Attach from workspace, Save to Files, and the web file chooser.
+    Its options: `select: "folder"` lists folders only, and `folderRow` adds a pick row for the open
+    folder (or the root). With `select: "folder"`, that row is disabled with "You cannot add files to
+    this folder" when `get_current_user_file_write_permission` refuses the open folder (one query,
+    never one per row). `pickableFilesQuery` asks a batch query, at most 50 ids per call, which shown files
+    can be picked and disables the rest with its reason. `leadingRows` (people in Channels) show
+    before the files at the root or in a whole-workspace search. Text with no `/` searches the open
+    folder, or the whole workspace at the root. A disabled row stays reachable by keyboard, and Enter
+    on it announces the reason; opening a folder announces "Opened <path>".
+  - `useFullList(enabled)` loads the whole workspace through `files_nodes.list_tree`. No picker uses
+    it now; only its own tests do. Do not add callers. It subscribes only while an enabled caller is
+    mounted, and it keeps the last complete result during a page split.
 - Each open folder loads its subfolders and its files at once, each kind from 5 streams of 200 rows,
   like the folder table: the open stream (`list_tree_children`, `restricted: false`), the owner's
   restricted twin (`restricted: true`), and a member's 3 share streams (`list_tree_children_shared`

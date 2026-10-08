@@ -5772,10 +5772,9 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 										updatedAt: renamedItem.updatedAt,
 									}
 								: node;
-						// The row is in its folder's pages, and also in the full list while a search is active. A
-						// restricted row is in the owner's restricted twin, or in the member's share streams and
-						// their "Shared with you" group. The tree sorts the new name with `sort_children`, the
-						// server's order.
+						// The row is in its folder's pages. A restricted row is in the owner's restricted twin, or
+						// in the member's share streams and their "Shared with you" group. The tree sorts the new
+						// name with `sort_children`, the server's order.
 						const streamArgs = files_tree_stream_args({
 							membershipId,
 							folderId: renamedItem.parentId,
@@ -5804,14 +5803,6 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 								renameNode,
 							);
 						}
-						optimisticallyUpdateValueInPaginatedQuery(
-							localStore,
-							app_convex_api.files_nodes.list_tree,
-							{
-								membershipId,
-							},
-							renameNode,
-						);
 					},
 				},
 			)

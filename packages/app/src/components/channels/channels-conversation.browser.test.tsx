@@ -39,7 +39,6 @@ vi.mock("@/lib/app-tenant-context.tsx", () => ({
 		}),
 	},
 }));
-vi.mock("@/lib/files-tree-context.tsx", () => ({ FilesTreeProvider: { useFullList: () => undefined } }));
 vi.mock("./channels-people.ts", () => ({ useChannelsDirectName: () => "Ana", useChannelsMentionPeople: () => [] }));
 vi.mock("./channels-message-window.ts", () => ({
 	useChannelsMessageWindow: (props: { target: { rootMessageId?: string } }) => {

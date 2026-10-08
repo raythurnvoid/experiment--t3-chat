@@ -1,5 +1,5 @@
 import "@/app.css";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { createRef } from "react";
 import { userEvent } from "vitest/browser";
@@ -10,16 +10,47 @@ import { app_convex, type app_convex_Id } from "@/lib/app-convex-client.ts";
 
 const mocks = vi.hoisted(() => ({
 	readable: true,
-	file: { _id: "file-1", name: "notes.md", path: "/notes.md", kind: "file", archiveOperationId: null },
+	attachable: true,
+	// What the file chip read answers: the file, `undefined` while it loads, or an archived copy.
+	chipFile: "file" as "file" | "loading" | "archived",
+	file: {
+		_id: "file-1",
+		name: "notes.md",
+		path: "/notes.md",
+		kind: "file",
+		contentType: "text/markdown",
+		archiveOperationId: null,
+	},
 }));
 vi.mock(import("convex/react"), async (importOriginal) => ({
 	...(await importOriginal()),
+	// The file chips read one file. The picker's folder lookups stay empty.
 	useQuery: (_query: unknown, args?: unknown) =>
-		args && typeof args === "object" && "fileNodeIds" in args
-			? [mocks.file._id]
-			: args === "skip" || !mocks.readable
-				? null
-				: mocks.file,
+		args === "skip" || !mocks.readable || (typeof args === "object" && args !== null && "path" in args)
+			? null
+			: mocks.chipFile === "loading"
+				? undefined
+				: mocks.chipFile === "archived"
+					? { ...mocks.file, archiveOperationId: "archive" }
+					: mocks.file,
+	// A name search finds the file when the text starts one of its words.
+	usePaginatedQuery: (_query: unknown, args: unknown) => ({
+		results:
+			typeof args === "object" &&
+			args !== null &&
+			"clause" in args &&
+			mocks.file.name.startsWith((args.clause as { text: string }).text)
+				? [{ kind: "file", nodeId: mocks.file._id, path: mocks.file.path, contentType: mocks.file.contentType }]
+				: [],
+		status: "Exhausted",
+		isLoading: false,
+		loadMore: () => {},
+	}),
+	// The attach picker asks which shown files can be attached.
+	useQueries: (queries: Record<string, { args: Record<string, unknown> }>) =>
+		Object.fromEntries(
+			Object.entries(queries).map(([key, { args }]) => [key, mocks.attachable ? args.fileNodeIds : []]),
+		),
 }));
 vi.mock("@/lib/app-tenant-context.tsx", () => ({
 	AppTenantProvider: {
@@ -27,12 +58,20 @@ vi.mock("@/lib/app-tenant-context.tsx", () => ({
 	},
 }));
 vi.mock("@/lib/files-tree-context.tsx", () => ({
-	FilesTreeProvider: { useFullList: (enabled: boolean) => (enabled ? [mocks.file] : undefined) },
+	FilesTreeProvider: {
+		// The root holds the one file.
+		usePickerFolder: (args: { folderId: string | null }) => ({
+			children: { rows: args.folderId === "root" ? [mocks.file] : [], status: "done", loadMore: () => {} },
+			shared: null,
+		}),
+	},
 }));
 
 afterEach(() => {
 	cleanup();
 	mocks.readable = true;
+	mocks.attachable = true;
+	mocks.chipFile = "file";
 	vi.restoreAllMocks();
 	vi.unstubAllGlobals();
 });
@@ -281,6 +320,80 @@ describe("ChannelsComposer", () => {
 		expect(ref.current?.isEmpty()).toBe(true);
 	});
 
+	test("Attach from workspace attaches the picked file and its chip reads the name by id", async () => {
+		const ref = createRef<ChannelsComposerControl_Ref>();
+		render(
+			<ChannelsComposer
+				controlRef={ref}
+				ariaLabel="Attach message"
+				attachmentTarget={{ kind: "channel", channelId: "channel" as app_convex_Id<"channels"> }}
+				submitTooltip="Send"
+				submitDisabled={false}
+			/>,
+		);
+		await userEvent.click(screen.getByRole("button", { name: "Attach files" }));
+		await userEvent.click(await screen.findByRole("menuitem", { name: "Attach from workspace" }));
+		await userEvent.click(await screen.findByRole("option", { name: "notes.md" }));
+
+		await waitFor(() => expect(screen.queryByRole("dialog", { name: "Attach a file" })).toBeNull());
+		expect(ref.current?.getAttachments()).toEqual([{ kind: "file", fileNodeId: "file-1" }]);
+		expect(screen.getByText("notes.md", { selector: ".ChannelsComposerAttachments-name" })).toBeTruthy();
+		expect(screen.getByRole("button", { name: "Remove notes.md" })).toBeTruthy();
+	});
+
+	test("an attached file chip says Loading while it loads, and an archived file is unavailable", async () => {
+		const attach = async () => {
+			render(
+				<ChannelsComposer
+					controlRef={null}
+					ariaLabel="Attach message"
+					attachmentTarget={{ kind: "channel", channelId: "channel" as app_convex_Id<"channels"> }}
+					submitTooltip="Send"
+					submitDisabled={false}
+				/>,
+			);
+			await userEvent.click(screen.getByRole("button", { name: "Attach files" }));
+			await userEvent.click(await screen.findByRole("menuitem", { name: "Attach from workspace" }));
+			await userEvent.click(await screen.findByRole("option", { name: "notes.md" }));
+			await waitFor(() => expect(screen.queryByRole("dialog", { name: "Attach a file" })).toBeNull());
+			return document.querySelector(".ChannelsComposerAttachments-name")?.textContent;
+		};
+
+		mocks.chipFile = "loading";
+		expect(await attach(), "a loading chip is not unavailable").toBe("Loading…");
+		cleanup();
+		mocks.chipFile = "archived";
+		expect(await attach(), "an archived file cannot be sent").toBe("File unavailable");
+	});
+
+	test("a file that cannot be attached is reachable by keyboard and announces its reason", async () => {
+		mocks.attachable = false;
+		const ref = createRef<ChannelsComposerControl_Ref>();
+		render(
+			<ChannelsComposer
+				controlRef={ref}
+				ariaLabel="Attach message"
+				attachmentTarget={{ kind: "channel", channelId: "channel" as app_convex_Id<"channels"> }}
+				submitTooltip="Send"
+				submitDisabled={false}
+			/>,
+		);
+		await userEvent.click(screen.getByRole("button", { name: "Attach files" }));
+		await userEvent.click(await screen.findByRole("menuitem", { name: "Attach from workspace" }));
+		const option = await screen.findByRole("option", { name: "notes.md" });
+		await waitFor(() => expect(option.getAttribute("aria-disabled")).toBe("true"));
+		expect(document.getElementById(option.getAttribute("aria-describedby")!)?.textContent).toBe(
+			"This file cannot be attached",
+		);
+
+		const search = screen.getByRole("combobox", { name: "Find file" });
+		await userEvent.click(search);
+		expect(search.getAttribute("aria-activedescendant"), "the keyboard reaches the disabled row").toBe(option.id);
+		await userEvent.keyboard("{Enter}");
+		await waitFor(() => expect(screen.getByRole("status").textContent).toBe("This file cannot be attached"));
+		expect(ref.current?.getAttachments()).toEqual([]);
+	});
+
 	test("mention Enter chooses a person before sending and stores a neutral position", async () => {
 		const ref = createRef<ChannelsComposerControl_Ref>();
 		const onEnter = vi.fn();
@@ -388,7 +501,7 @@ describe("ChannelsComposer", () => {
 		);
 		await userEvent.click(await screen.findByLabelText("File mention"));
 		await userEvent.keyboard("@notes");
-		await screen.findByRole("option", { name: "notes.md /notes.md" });
+		await screen.findByRole("option", { name: /^notes\.md/ });
 		await userEvent.keyboard("{Enter}");
 		expect(ref.current?.getFileMentionIds()).toEqual(["file-1"]);
 		expect(ref.current?.getMarkdownContent()).toContain('[@ id="file:0"]');
@@ -426,13 +539,35 @@ describe("ChannelsComposer", () => {
 		await userEvent.keyboard("@An");
 		await screen.findByRole("option", { name: "Ana" });
 		await userEvent.keyboard("{Enter} @notes");
-		await screen.findByRole("option", { name: "notes.md /notes.md" });
+		await screen.findByRole("option", { name: /^notes\.md/ });
 		await userEvent.keyboard("{Enter}");
 		expect(onEnter).not.toHaveBeenCalled();
 		expect(ref.current?.getMentionUserIds()).toEqual(["person-1"]);
 		expect(ref.current?.getFileMentionIds()).toEqual(["file-1"]);
 		expect(ref.current?.getMarkdownContent()).toContain('[@ id="user:0"]');
 		expect(ref.current?.getMarkdownContent()).toContain('[@ id="file:0"]');
+	});
+
+	test("the mention list shows people before files", async () => {
+		render(
+			<ChannelsComposer
+				controlRef={null}
+				ariaLabel="Ordered mentions"
+				mentionItems={[{ kind: "user", id: "person-1", label: "Nora" }]}
+				submitTooltip="Send"
+				submitDisabled
+			/>,
+		);
+		await userEvent.click(await screen.findByLabelText("Ordered mentions"));
+		await userEvent.keyboard("@no");
+		const listbox = await screen.findByRole("listbox", { name: "People and files" });
+		await waitFor(() =>
+			expect(
+				within(listbox)
+					.getAllByRole("option")
+					.map((option) => option.textContent),
+			).toEqual(["Nora", "notes.md/"]),
+		);
 	});
 
 	test("quotes survive restore in order and expose only numbered body markers", async () => {

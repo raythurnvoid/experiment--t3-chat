@@ -1,30 +1,28 @@
-// The composer's "@" file mention: a suggestion popup over the workspace file
-// tree plus an inline chip node. The chip serializes to plain text as
+// The composer's "@" file mention: a suggestion popup over the shared file
+// picker plus an inline chip node. The chip serializes to plain text as
 // `@<path>` (file) or `@<path>/` (folder), so the sent message stays one plain
 // string and the agent's path-based tools can resolve the mention.
 
 import "./ai-chat-composer-file-mention.css";
 
 import type { MouseEvent, Ref } from "react";
-import { memo, useEffect, useId, useImperativeHandle, useState } from "react";
+import { memo, useImperativeHandle, useRef } from "react";
 import { computePosition, flip, offset, shift } from "@floating-ui/dom";
 import { PluginKey } from "@tiptap/pm/state";
-import { mergeAttributes, type Editor } from "@tiptap/core";
+import { mergeAttributes, type Editor, type Range } from "@tiptap/core";
 import { posToDOMRect, ReactRenderer } from "@tiptap/react";
 import Mention from "@tiptap/extension-mention";
 import { exitSuggestion, type SuggestionKeyDownProps } from "@tiptap/suggestion";
-import { FileText, Folder } from "lucide-react";
 
+import {
+	FilesNodePicker,
+	type FilesNodePicker_Folder,
+	type FilesNodePicker_Ref,
+	type FilesNodePicker_Row,
+} from "@/components/files/files-node-picker.tsx";
 import type { MyFloatingSurface_ClassNames } from "@/components/my-floating-surface.tsx";
 import type { MyPopoverContent_ClassNames } from "@/components/my-popover.tsx";
-import type {
-	MyMenuItem_ClassNames,
-	MyMenuItemContentPrimary_ClassNames,
-	MyMenuItemContentSecondary_ClassNames,
-} from "@/components/my-menu.tsx";
 import { cn } from "@/lib/utils.ts";
-import { FilesTreeProvider } from "@/lib/files-tree-context.tsx";
-import type { app_convex_Doc } from "@/lib/app-convex-client.ts";
 import type { AppClassName, AppElementId } from "@/lib/dom-utils.ts";
 
 /**
@@ -32,45 +30,6 @@ import type { AppClassName, AppElementId } from "@/lib/dom-utils.ts";
  * handlers read it to yield Enter/Escape/Arrow keys while the popup is open.
  */
 export const ai_chat_composer_file_mention_PLUGIN_KEY = new PluginKey("aiChatComposerFileMention");
-
-/** The fields of a `files_nodes` doc the mention popup uses. */
-type FileMentionItem = Pick<app_convex_Doc<"files_nodes">, "name" | "path" | "kind" | "archiveOperationId">;
-
-/** Longest list the popup renders. The workspace tree can be much larger. */
-const FILE_MENTION_MAX_ITEMS = 50;
-
-/**
- * Pick the nodes the popup lists for a query. A query containing `/` matches
- * the path, anything else matches the name, both case-insensitive, like the
- * files sidebar search. Archived nodes are excluded like the sidebar's
- * default view. Tree order is kept.
- */
-function filter_mention_items<Item extends FileMentionItem>(nodes: readonly Item[], query: string) {
-	const value = query.trim().toLowerCase();
-	const matchesPath = value.includes("/");
-
-	const items: Item[] = [];
-	for (const node of nodes) {
-		if (node.archiveOperationId !== null) {
-			continue;
-		}
-
-		// Match folders in path mode by their serialized token (`/docs/`), so
-		// typing a folder token back finds the folder itself, not only its
-		// children.
-		const candidate = matchesPath ? (node.kind === "folder" ? `${node.path}/` : node.path) : node.name;
-		if (value && !candidate.toLowerCase().includes(value)) {
-			continue;
-		}
-
-		items.push(node);
-		if (items.length >= FILE_MENTION_MAX_ITEMS) {
-			break;
-		}
-	}
-
-	return items;
-}
 
 /**
  * Position the popup under the caret with a floating-ui virtual element, like
@@ -173,6 +132,7 @@ export function ai_chat_composer_file_mention_create_extension(options: ai_chat_
 							props: {
 								editor: props.editor,
 								query: props.query,
+								range: props.range,
 								command: props.command,
 							} satisfies AiChatComposerFileMentionList_Props,
 							editor: props.editor,
@@ -201,6 +161,7 @@ export function ai_chat_composer_file_mention_create_extension(options: ai_chat_
 
 						component.updateProps({
 							query: props.query,
+							range: props.range,
 							command: props.command,
 						} satisfies Partial<AiChatComposerFileMentionList_Props>);
 
@@ -233,14 +194,7 @@ export function ai_chat_composer_file_mention_create_extension(options: ai_chat_
 // #endregion chip
 
 // #region list
-type AiChatComposerFileMentionList_ClassNames =
-	| "AiChatComposerFileMentionList"
-	| "AiChatComposerFileMentionList-status"
-	| "AiChatComposerFileMentionList-item"
-	| "AiChatComposerFileMentionList-item-icon"
-	| "AiChatComposerFileMentionList-item-content"
-	| "AiChatComposerFileMentionList-item-name"
-	| "AiChatComposerFileMentionList-item-path";
+type AiChatComposerFileMentionList_ClassNames = "AiChatComposerFileMentionList";
 
 type AiChatComposerFileMentionList_Ref = {
 	onKeyDown: (props: SuggestionKeyDownProps) => boolean;
@@ -250,6 +204,10 @@ type AiChatComposerFileMentionList_Props = {
 	ref?: Ref<AiChatComposerFileMentionList_Ref>;
 	editor: Editor;
 	query: string;
+	/**
+	 * The "@" and the typed query in the document.
+	 */
+	range: Range;
 	command: (attrs: { id: string; label: string }) => void;
 };
 
@@ -258,95 +216,40 @@ type AiChatComposerFileMentionList_Props = {
 const AiChatComposerFileMentionList = memo(function AiChatComposerFileMentionList(
 	props: AiChatComposerFileMentionList_Props,
 ) {
-	const { ref, editor, query, command } = props;
+	const { ref, editor, query, range, command } = props;
 
-	const listboxId = `AiChatComposerFileMentionList-${useId()}`;
+	const pickerRef = useRef<FilesNodePicker_Ref>(null);
 
-	const treeNodes = FilesTreeProvider.useFullList(true);
-	const items = treeNodes && filter_mention_items(treeNodes, query);
+	const handlePick = (row: FilesNodePicker_Row) => {
+		command({ id: row.path, label: row.name });
+	};
 
-	// The stored highlight belongs to the query it was set for; a new query
-	// starts back at the top row without needing a sync effect.
-	const [highlight, setHighlight] = useState({ query, index: 0 });
-	const selectedIndex = highlight.query === query ? highlight.index : 0;
-	const activeIndex = items && items.length > 0 ? Math.min(selectedIndex, items.length - 1) : 0;
-	const activeOptionId = items && items.length > 0 ? `${listboxId}-option-${activeIndex}` : null;
-
-	const selectItem = (item: FileMentionItem) => {
+	const handlePickFolder = (folder: FilesNodePicker_Folder) => {
 		// Folder tokens carry a trailing slash so the model can tell folders
 		// from files without another lookup.
-		command({ id: item.kind === "folder" ? `${item.path}/` : item.path, label: item.name });
+		command({ id: `${folder.path}/`, label: folder.name });
+	};
+
+	const clearQuery = () => {
+		// Keep the "@", so the suggestion stays open on the opened folder.
+		editor.commands.deleteRange({ from: range.from + 1, to: range.to });
 	};
 
 	const handleRootMouseDown = (event: MouseEvent<HTMLDivElement>) => {
-		// Keep DOM focus in the editor for every popup click.
+		// Keep DOM focus in the editor for every popup click. The picker keeps it for its rows, and this
+		// root also covers its own padding and scrollbar.
 		event.preventDefault();
 	};
 
-	useImperativeHandle(
-		ref,
-		() => ({
-			onKeyDown: ({ event }: SuggestionKeyDownProps) => {
-				// Let the IME commit composed text; the plugin forwards keys while
-				// composition is active.
-				if (event.isComposing) {
-					return false;
-				}
-
-				if (event.key === "ArrowUp" || event.key === "ArrowDown") {
-					if (items && items.length > 0) {
-						const direction = event.key === "ArrowUp" ? -1 : 1;
-						setHighlight({ query, index: (activeIndex + direction + items.length) % items.length });
-					}
-					return true;
-				}
-
-				if (event.key === "Enter") {
-					const item = items?.[activeIndex];
-					if (item) {
-						selectItem(item);
-					}
-					// Swallow Enter even with no rows: the composer yields while the
-					// popup is open, and letting ProseMirror split the paragraph would
-					// break the one-paragraph message invariant.
-					return true;
-				}
-
-				return false;
-			},
-		}),
-		[items, activeIndex, query, command],
-	);
-
-	// The editor keeps DOM focus. Expose the popup to assistive tech through
-	// the textbox: aria-controls names the listbox and aria-activedescendant
-	// tracks the highlighted row.
-	useEffect(() => {
-		const editorDom = editor.view.dom;
-		editorDom.setAttribute("aria-controls", listboxId);
-		if (activeOptionId) {
-			editorDom.setAttribute("aria-activedescendant", activeOptionId);
-		} else {
-			editorDom.removeAttribute("aria-activedescendant");
-		}
-
-		return () => {
-			editorDom.removeAttribute("aria-controls");
-			editorDom.removeAttribute("aria-activedescendant");
-		};
-	}, [editor, listboxId, activeOptionId]);
-
-	useEffect(() => {
-		if (activeOptionId) {
-			document.getElementById(activeOptionId)?.scrollIntoView({ block: "nearest" });
-		}
-	}, [activeOptionId]);
+	useImperativeHandle(ref, () => ({
+		// The picker leaves IME keys alone and swallows Enter even with no rows:
+		// the composer yields while the popup is open, and letting ProseMirror
+		// split the paragraph would break the one-paragraph message invariant.
+		onKeyDown: ({ event }: SuggestionKeyDownProps) => pickerRef.current?.onKeyDown(event) ?? event.key === "Enter",
+	}));
 
 	return (
 		<div
-			id={listboxId}
-			role="listbox"
-			aria-label="Files and folders"
 			className={cn(
 				"AiChatComposerFileMentionList" satisfies AiChatComposerFileMentionList_ClassNames,
 				"app-scrollable" satisfies AppClassName,
@@ -355,110 +258,18 @@ const AiChatComposerFileMentionList = memo(function AiChatComposerFileMentionLis
 			)}
 			onMouseDown={handleRootMouseDown}
 		>
-			{!items ? (
-				<div className={"AiChatComposerFileMentionList-status" satisfies AiChatComposerFileMentionList_ClassNames}>
-					Loading…
-				</div>
-			) : items.length === 0 ? (
-				<div className={"AiChatComposerFileMentionList-status" satisfies AiChatComposerFileMentionList_ClassNames}>
-					No results
-				</div>
-			) : (
-				items.map((item, index) => {
-					const parentPath = item.path.slice(0, item.path.lastIndexOf("/") + 1);
-					return (
-						<div
-							key={item.path}
-							id={`${listboxId}-option-${index}`}
-							role="option"
-							aria-selected={index === activeIndex}
-							className={cn(
-								"AiChatComposerFileMentionList-item" satisfies AiChatComposerFileMentionList_ClassNames,
-								"MyMenuItem" satisfies MyMenuItem_ClassNames,
-							)}
-							onClick={() => selectItem(item)}
-						>
-							<div
-								className={"AiChatComposerFileMentionList-item-icon" satisfies AiChatComposerFileMentionList_ClassNames}
-							>
-								{item.kind === "folder" ? <Folder /> : <FileText />}
-							</div>
-							<div
-								className={
-									"AiChatComposerFileMentionList-item-content" satisfies AiChatComposerFileMentionList_ClassNames
-								}
-							>
-								<span
-									className={cn(
-										"AiChatComposerFileMentionList-item-name" satisfies AiChatComposerFileMentionList_ClassNames,
-										"MyMenuItemContentPrimary" satisfies MyMenuItemContentPrimary_ClassNames,
-									)}
-								>
-									{item.name}
-								</span>
-								<span
-									className={cn(
-										"AiChatComposerFileMentionList-item-path" satisfies AiChatComposerFileMentionList_ClassNames,
-										"MyMenuItemContentSecondary" satisfies MyMenuItemContentSecondary_ClassNames,
-									)}
-								>
-									{parentPath}
-								</span>
-							</div>
-						</div>
-					);
-				})
-			)}
+			<FilesNodePicker
+				ref={pickerRef}
+				variant="listbox"
+				aria-label="Files and folders"
+				ownerElement={editor.view.dom}
+				query={query}
+				select="any"
+				folderRow={{ label: "Mention this folder", onPick: handlePickFolder }}
+				onPick={handlePick}
+				clearQuery={clearQuery}
+			/>
 		</div>
 	);
 });
 // #endregion list
-
-// #region tests
-if (process.env.NODE_ENV === "test" && import.meta.vitest) {
-	const { describe, expect, test } = import.meta.vitest;
-
-	const nodes = [
-		{ name: "docs", path: "/docs", kind: "folder" as const, archiveOperationId: null },
-		{ name: "api.md", path: "/docs/api.md", kind: "file" as const, archiveOperationId: null },
-		{ name: "notes.md", path: "/notes.md", kind: "file" as const, archiveOperationId: null },
-	];
-
-	describe("filter_mention_items", () => {
-		test("matches names case-insensitively when the query has no slash", () => {
-			expect(filter_mention_items(nodes, "API").map((item) => item.path)).toEqual(["/docs/api.md"]);
-		});
-
-		test("matches paths when the query contains a slash, including the folder's own token", () => {
-			expect(filter_mention_items(nodes, "docs/").map((item) => item.path)).toEqual(["/docs", "/docs/api.md"]);
-		});
-
-		test("returns everything in tree order for an empty query", () => {
-			expect(filter_mention_items(nodes, "").map((item) => item.path)).toEqual(["/docs", "/docs/api.md", "/notes.md"]);
-		});
-
-		test("excludes archived nodes", () => {
-			const withArchived = [
-				...nodes,
-				{
-					name: "old.md",
-					path: "/old.md",
-					kind: "file" as const,
-					archiveOperationId: "archive-1" as app_convex_Doc<"files_nodes">["archiveOperationId"],
-				},
-			];
-			expect(filter_mention_items(withArchived, "old")).toEqual([]);
-		});
-
-		test("caps the result list", () => {
-			const many = Array.from({ length: 80 }, (_, index) => ({
-				name: `file-${index}.md`,
-				path: `/file-${index}.md`,
-				kind: "file" as const,
-				archiveOperationId: null,
-			}));
-			expect(filter_mention_items(many, "file").length).toBe(50);
-		});
-	});
-}
-// #endregion tests

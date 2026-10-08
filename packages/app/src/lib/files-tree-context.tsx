@@ -117,6 +117,26 @@ function merge_tree_streams(streams: Array<UsePaginatedQueryResult<FilesTreeRow>
 	return { rows: merge.rows, blocking: merge.blockingRank === null ? null : streams[merge.blockingRank]! };
 }
 
+/**
+ * One list of a picker: the merged rows of its segments, in order. A segment shows only once the
+ * segments before it are done, so a later page of folders cannot push the files down. Show more
+ * loads the stream that holds the last shown segment back.
+ */
+function picker_list(segments: Array<Array<UsePaginatedQueryResult<FilesTreeRow>>>, pageSize: number) {
+	const openIndex = segments.findIndex((streams) => streams.some((stream) => stream.status !== "Exhausted"));
+	const merges = (openIndex === -1 ? segments : segments.slice(0, openIndex + 1)).map(merge_tree_streams);
+	const blocking = merges.at(-1)?.blocking ?? null;
+	return {
+		rows: merges.flatMap((merge) => merge.rows),
+		status: segments.some((streams) => streams.some((stream) => stream.status === "LoadingFirstPage"))
+			? ("loading" as const)
+			: openIndex === -1
+				? ("done" as const)
+				: ("more" as const),
+		loadMore: () => blocking?.loadMore(pageSize),
+	};
+}
+
 const FilesTreeContext = createContext<{
 	nodes: FilesTreeRow[] | undefined;
 	registerConsumer: () => () => void;
@@ -143,17 +163,23 @@ type FilesTreeFolderPager_Props = {
  * The streams of one kind of one folder: the open children, the owner's restricted children, and
  * the restricted children shared with a member, one stream per principal. Each stream answers an
  * empty, done page to the readers it is not for. Once the role is known, those streams are not read.
+ * With `enabled` false, no stream is read.
  */
 function useFilesTreeKindStreams(
-	args: Parameters<typeof files_tree_stream_args>[0] & { isOwner: FilesTreeFolderPager_Props["isOwner"] },
+	args: Parameters<typeof files_tree_stream_args>[0] & {
+		isOwner: FilesTreeFolderPager_Props["isOwner"];
+		pageSize: number;
+		enabled: boolean;
+	},
 ) {
-	const { isOwner } = args;
+	const { isOwner, pageSize, enabled } = args;
 	const streamArgs = files_tree_stream_args(args);
-	const options = { initialNumItems: FILES_TREE_PAGE_SIZE };
-	const twinArgs = isOwner === false ? ("skip" as const) : streamArgs.children(true);
+	const options = { initialNumItems: pageSize };
+	const openArgs = enabled ? streamArgs.children(false) : ("skip" as const);
+	const twinArgs = !enabled || isOwner === false ? ("skip" as const) : streamArgs.children(true);
 	const sharedArgs = (principalIndex: 0 | 1 | 2) =>
-		isOwner === true ? ("skip" as const) : streamArgs.shared(principalIndex);
-	const open = usePaginatedQuery(app_convex_api.files_nodes.list_tree_children, streamArgs.children(false), options);
+		!enabled || isOwner === true ? ("skip" as const) : streamArgs.shared(principalIndex);
+	const open = usePaginatedQuery(app_convex_api.files_nodes.list_tree_children, openArgs, options);
 	const twin = usePaginatedQuery(app_convex_api.files_nodes.list_tree_children, twinArgs, options);
 	const shared0 = usePaginatedQuery(app_convex_api.files_nodes.list_tree_children_shared, sharedArgs(0), options);
 	const shared1 = usePaginatedQuery(app_convex_api.files_nodes.list_tree_children_shared, sharedArgs(1), options);
@@ -168,10 +194,11 @@ function useFilesTreeKindStreams(
 const FilesTreeFolderPager = memo(function FilesTreeFolderPager(props: FilesTreeFolderPager_Props) {
 	const { membershipId, folderKey, folderId, archived, isOwner, onResult } = props;
 
-	const folders = useFilesTreeKindStreams({ membershipId, folderId, kind: "folder", archived, isOwner });
+	const streamArgs = { membershipId, folderId, archived, isOwner, pageSize: FILES_TREE_PAGE_SIZE, enabled: true };
+	const folders = useFilesTreeKindStreams({ ...streamArgs, kind: "folder" });
 	// Load the first files page together with the first folders page, so an open folder needs one round
 	// trip. The tree sorts folders first, so a later folders page only adds rows above the files.
-	const files = useFilesTreeKindStreams({ membershipId, folderId, kind: "file", archived, isOwner });
+	const files = useFilesTreeKindStreams({ ...streamArgs, kind: "file" });
 
 	useEffect(() => {
 		// While a page loads, `results` can miss rows: a page split drops the old page before its two halves
@@ -197,30 +224,21 @@ const FilesTreeFolderPager = memo(function FilesTreeFolderPager(props: FilesTree
 });
 
 /**
- * The streams of the "Shared with you" group, one per principal.
+ * The streams of the "Shared with you" group, one per principal. With `enabled` false, no stream is read.
  */
 function useFilesTreeSharedRootStreams(args: {
 	membershipId: app_convex_Id<"organizations_workspaces_users">;
 	archived: boolean;
+	enabled: boolean;
 }) {
-	const { membershipId, archived } = args;
+	const { membershipId, archived, enabled } = args;
 	const options = { initialNumItems: FILES_TREE_SHARED_ROOTS_PAGE_SIZE };
+	const sharedArgs = (principalIndex: 0 | 1 | 2) =>
+		enabled ? { membershipId, archived, principalIndex } : ("skip" as const);
 	return [
-		usePaginatedQuery(
-			app_convex_api.files_nodes.list_tree_shared_roots,
-			{ membershipId, archived, principalIndex: 0 },
-			options,
-		),
-		usePaginatedQuery(
-			app_convex_api.files_nodes.list_tree_shared_roots,
-			{ membershipId, archived, principalIndex: 1 },
-			options,
-		),
-		usePaginatedQuery(
-			app_convex_api.files_nodes.list_tree_shared_roots,
-			{ membershipId, archived, principalIndex: 2 },
-			options,
-		),
+		usePaginatedQuery(app_convex_api.files_nodes.list_tree_shared_roots, sharedArgs(0), options),
+		usePaginatedQuery(app_convex_api.files_nodes.list_tree_shared_roots, sharedArgs(1), options),
+		usePaginatedQuery(app_convex_api.files_nodes.list_tree_shared_roots, sharedArgs(2), options),
 	];
 }
 
@@ -237,7 +255,7 @@ type FilesTreeSharedRootsPager_Props = {
 const FilesTreeSharedRootsPager = memo(function FilesTreeSharedRootsPager(props: FilesTreeSharedRootsPager_Props) {
 	const { membershipId, folderKey, archived, onResult } = props;
 
-	const streams = useFilesTreeSharedRootStreams({ membershipId, archived });
+	const streams = useFilesTreeSharedRootStreams({ membershipId, archived, enabled: true });
 
 	useEffect(() => {
 		// Report only settled results, like the folder pager: a page split drops the old page before its
@@ -292,8 +310,8 @@ const FilesTreeProvider = Object.assign(
 	}) {
 		const { membershipId, workspaceId, children } = props;
 
-		// The full list is only for features that still need every node, like search. It loads only while
-		// one of them is mounted.
+		// Nothing reads the full list now, so it never loads. It loads only while a `useFullList` caller is
+		// mounted.
 		const [consumerCount, setConsumerCount] = useState(0);
 		const registerConsumer = useCallback(() => {
 			setConsumerCount((count) => count + 1);
@@ -566,6 +584,47 @@ const FilesTreeProvider = Object.assign(
 				throw new Error("FilesTreeProvider.useIsOwner must be used within FilesTreeProvider");
 			}
 			return value.isOwner;
+		},
+
+		/**
+		 * One folder's saved children for a picker, folders first, in the tree's order. It reads the
+		 * tree's streams with the picker's page size, not through the shared pagers, so a picker's pages
+		 * do not grow the sidebar's folders. `withFiles: false` reads the folder streams only, and
+		 * `folderId: null` reads nothing.
+		 *
+		 * `shared` is every share of a member at the root, like the "Shared with you" group, and null
+		 * elsewhere. A member without workspace read gets no root rows, so they see only that group.
+		 */
+		usePickerFolder: function usePickerFolder(args: {
+			membershipId: app_convex_Id<"organizations_workspaces_users">;
+			folderId: FilesTreeFolderId | null;
+			withFiles: boolean;
+			pageSize: number;
+		}) {
+			const { membershipId, folderId, withFiles, pageSize } = args;
+			const value = use(FilesTreeContext);
+			if (!value) {
+				throw new Error("FilesTreeProvider.usePickerFolder must be used within FilesTreeProvider");
+			}
+			const { isOwner } = value;
+
+			const streamArgs = {
+				membershipId,
+				folderId: folderId ?? files_ROOT_ID,
+				archived: false,
+				isOwner,
+				pageSize,
+			};
+			const folders = useFilesTreeKindStreams({ ...streamArgs, kind: "folder", enabled: folderId !== null });
+			const files = useFilesTreeKindStreams({ ...streamArgs, kind: "file", enabled: folderId !== null && withFiles });
+			// The owner reads everything, so the owner has no shares to read.
+			const hasShared = folderId === files_ROOT_ID && isOwner !== true;
+			const shared = useFilesTreeSharedRootStreams({ membershipId, archived: false, enabled: hasShared });
+
+			return {
+				children: picker_list(withFiles ? [folders, files] : [folders], pageSize),
+				shared: hasShared ? picker_list([shared], pageSize) : null,
+			};
 		},
 	},
 );

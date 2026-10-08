@@ -6,8 +6,12 @@ import { Paperclip } from "lucide-react";
 import { MyIconButton } from "@/components/my-icon-button.tsx";
 import { MyMenu, MyMenuItem, MyMenuPopover, MyMenuTrigger } from "@/components/my-menu.tsx";
 import { MyButton } from "@/components/my-button.tsx";
-import { MyCheckboxButton } from "@/components/my-checkbox-button.tsx";
 import { MyInput, MyInputArea, MyInputBackground, MyInputBox, MyInputControl } from "@/components/my-input.tsx";
+import {
+	FilesNodePicker,
+	type FilesNodePicker_Ref,
+	type FilesNodePicker_Row,
+} from "@/components/files/files-node-picker.tsx";
 import {
 	MyModal,
 	MyModalCloseTrigger,
@@ -25,7 +29,6 @@ import {
 	type app_convex_Id,
 } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
-import { FilesTreeProvider } from "@/lib/files-tree-context.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
 
 export type ChannelsComposerAttachmentTarget = app_convex_FunctionArgs<
@@ -66,6 +69,33 @@ type ChannelsComposerAttachments_ClassNames =
 	| "ChannelsComposerAttachments-tools";
 type ChannelsComposerAttachments_CustomAttributes = { "data-upload-state": "uploading" | "ready" | "failed" };
 
+/**
+ * The name and Remove button of an attached workspace file. It reads the one file with the access
+ * check, so a file the user can no longer read shows as unavailable.
+ */
+const ChannelsComposerAttachmentsFile = memo(function ChannelsComposerAttachmentsFile(props: {
+	fileNodeId: app_convex_Id<"files_nodes">;
+	disabled: boolean;
+	onRemove: () => void;
+}) {
+	const { fileNodeId, disabled, onRemove } = props;
+	const { membershipId } = AppTenantProvider.useContext();
+	const file = useQuery(app_convex_api.files_nodes.get_file_node_for_membership, { membershipId, fileNodeId });
+	// An archived file cannot be sent, like a file mention.
+	const name = file && file.archiveOperationId === null ? file.name : null;
+
+	return (
+		<>
+			<span className={"ChannelsComposerAttachments-name" satisfies ChannelsComposerAttachments_ClassNames}>
+				{file === undefined ? "Loading…" : (name ?? "File unavailable")}
+			</span>
+			<MyButton disabled={disabled} aria-label={`Remove ${name ?? "file"}`} onClick={onRemove}>
+				Remove
+			</MyButton>
+		</>
+	);
+});
+
 export const ChannelsComposerAttachments = memo(function ChannelsComposerAttachments(props: {
 	ref: Ref<ChannelsComposerAttachments_Ref>;
 	target: ChannelsComposerAttachmentTarget;
@@ -81,19 +111,8 @@ export const ChannelsComposerAttachments = memo(function ChannelsComposerAttachm
 	const input = useRef<HTMLInputElement>(null);
 	const [picker, setPicker] = useState(false);
 	const [fileFilter, setFileFilter] = useState("");
-	const [filePage, setFilePage] = useState(0);
-	const files = FilesTreeProvider.useFullList(picker || items.some((item) => item.kind === "file"));
-	const matchingFiles = files?.filter(
-		(file) =>
-			file.kind === "file" &&
-			file.archiveOperationId === null &&
-			file.path.toLowerCase().includes(fileFilter.toLowerCase()),
-	);
-	const fileChoices = matchingFiles?.slice(filePage * 50, (filePage + 1) * 50);
-	const attachableFiles = useQuery(
-		app_convex_api.channels_messages.get_attachable_files,
-		picker && fileChoices ? { membershipId, fileNodeIds: fileChoices.map((file) => file._id) } : "skip",
-	);
+	const [fileInput, setFileInput] = useState<HTMLInputElement | null>(null);
+	const pickerRef = useRef<FilesNodePicker_Ref>(null);
 	const change = useFn((next: Attachment[]) => {
 		itemsRef.current = next;
 		setItems(next);
@@ -184,6 +203,24 @@ export const ChannelsComposerAttachments = memo(function ChannelsComposerAttachm
 		for (const request of requests.current.values()) request.abort();
 		change([]);
 	});
+	const attachFile = useFn((row: FilesNodePicker_Row) => {
+		if (disabled) return;
+		// One pick attaches one file and closes the picker, so the new chip shows at once.
+		if (!itemsRef.current.some((item) => item.kind === "file" && item.fileNodeId === row.nodeId)) {
+			change([...itemsRef.current, { kind: "file", fileNodeId: row.nodeId }]);
+		}
+		setPicker(false);
+	});
+	const remove = useFn((item: Attachment) => {
+		if (item.kind === "upload") requests.current.get(item.id)?.abort();
+		change(
+			itemsRef.current.filter((value) =>
+				item.kind === "file"
+					? value.kind !== "file" || value.fileNodeId !== item.fileNodeId
+					: value.kind !== "upload" || value.id !== item.id,
+			),
+		);
+	});
 	useImperativeHandle(ref, () => ({
 		getAttachments: () =>
 			itemsRef.current.flatMap<
@@ -228,45 +265,40 @@ export const ChannelsComposerAttachments = memo(function ChannelsComposerAttachm
 								? ({ "data-upload-state": item.state } satisfies ChannelsComposerAttachments_CustomAttributes)
 								: {})}
 						>
-							<span className={"ChannelsComposerAttachments-name" satisfies ChannelsComposerAttachments_ClassNames}>
-								{item.kind === "file"
-									? (files?.find((file) => file._id === item.fileNodeId)?.name ?? "File unavailable")
-									: item.file.name}
-							</span>
-							{item.kind === "upload" && (
-								<span className={"ChannelsComposerAttachments-status" satisfies ChannelsComposerAttachments_ClassNames}>
-									{item.state === "uploading"
-										? `Uploading ${item.progress}%`
-										: item.state === "ready"
-											? "Ready"
-											: item.error}
-								</span>
-							)}
-							{item.kind === "upload" && item.state === "failed" && (
-								<MyButton
+							{item.kind === "file" ? (
+								<ChannelsComposerAttachmentsFile
+									fileNodeId={item.fileNodeId}
 									disabled={disabled}
-									aria-label={`Retry ${item.file.name}`}
-									onClick={() => void upload(item.id)}
-								>
-									Retry
-								</MyButton>
+									onRemove={() => remove(item)}
+								/>
+							) : (
+								<>
+									<span className={"ChannelsComposerAttachments-name" satisfies ChannelsComposerAttachments_ClassNames}>
+										{item.file.name}
+									</span>
+									<span
+										className={"ChannelsComposerAttachments-status" satisfies ChannelsComposerAttachments_ClassNames}
+									>
+										{item.state === "uploading"
+											? `Uploading ${item.progress}%`
+											: item.state === "ready"
+												? "Ready"
+												: item.error}
+									</span>
+									{item.state === "failed" && (
+										<MyButton
+											disabled={disabled}
+											aria-label={`Retry ${item.file.name}`}
+											onClick={() => void upload(item.id)}
+										>
+											Retry
+										</MyButton>
+									)}
+									<MyButton disabled={disabled} aria-label={`Remove ${item.file.name}`} onClick={() => remove(item)}>
+										Remove
+									</MyButton>
+								</>
 							)}
-							<MyButton
-								disabled={disabled}
-								aria-label={`Remove ${item.kind === "file" ? (files?.find((file) => file._id === item.fileNodeId)?.name ?? "file") : item.file.name}`}
-								onClick={() => {
-									if (item.kind === "upload") requests.current.get(item.id)?.abort();
-									change(
-										itemsRef.current.filter((value) =>
-											item.kind === "file"
-												? value.kind !== "file" || value.fileNodeId !== item.fileNodeId
-												: value.kind !== "upload" || value.id !== item.id,
-										),
-									);
-								}}
-							>
-								Remove
-							</MyButton>
 						</div>
 					))}
 				</div>
@@ -307,53 +339,46 @@ export const ChannelsComposerAttachments = memo(function ChannelsComposerAttachm
 						<MyInput>
 							<MyInputBackground />
 							<MyInputArea>
+								{/* A combobox: focus stays here, and the picker sets aria-controls and aria-activedescendant. */}
 								<MyInputControl
+									ref={setFileInput}
 									type="search"
+									role="combobox"
 									aria-label="Find file"
+									aria-autocomplete="list"
+									aria-expanded={picker}
 									value={fileFilter}
 									placeholder="File name or path…"
-									onChange={(event) => {
-										setFileFilter(event.target.value);
-										setFilePage(0);
+									onChange={(event) => setFileFilter(event.target.value)}
+									onKeyDown={(event) => {
+										if (pickerRef.current?.onKeyDown(event.nativeEvent)) event.preventDefault();
 									}}
 								/>
 							</MyInputArea>
 							<MyInputBox />
 						</MyInput>
-						{fileChoices === undefined || attachableFiles === undefined ? (
-							<p>Loading files…</p>
-						) : (
-							fileChoices
-								.filter((file) => attachableFiles.includes(file._id))
-								.map((file) => {
-									const checked = items.some((item) => item.kind === "file" && item.fileNodeId === file._id);
-									return (
-										<MyCheckboxButton
-											key={file._id}
-											variant="outline"
-											checked={checked}
-											disabled={disabled || (!checked && items.length >= 20)}
-											onCheckedChange={(selected) =>
-												change(
-													selected
-														? [...itemsRef.current, { kind: "file", fileNodeId: file._id }]
-														: itemsRef.current.filter((item) => item.kind !== "file" || item.fileNodeId !== file._id),
-												)
-											}
-										>
-											{file.path}
-										</MyCheckboxButton>
-									);
-								})
-						)}
-						{fileChoices?.length === 0 && <p>No files found</p>}
-						{filePage > 0 && <MyButton onClick={() => setFilePage((page) => page - 1)}>Previous files</MyButton>}
-						{matchingFiles && matchingFiles.length > (filePage + 1) * 50 && (
-							<MyButton onClick={() => setFilePage((page) => page + 1)}>Next files</MyButton>
+						{/* The closed dialog stays mounted, so mount the picker only while it is open. */}
+						{picker && fileInput && (
+							<FilesNodePicker
+								ref={pickerRef}
+								variant="listbox"
+								aria-label="Files"
+								ownerElement={fileInput}
+								query={fileFilter}
+								select="file"
+								folderRow={null}
+								// An upload whose bytes are not stored yet cannot be attached. The send checks it again.
+								pickableFilesQuery={{
+									query: app_convex_api.channels_messages.get_attachable_files,
+									reason: "This file cannot be attached",
+								}}
+								onPick={attachFile}
+								clearQuery={() => setFileFilter("")}
+							/>
 						)}
 					</MyModalScrollableArea>
 					<MyModalFooter>
-						<MyButton onClick={() => setPicker(false)}>Done</MyButton>
+						<MyButton onClick={() => setPicker(false)}>Cancel</MyButton>
 					</MyModalFooter>
 				</MyModalPopover>
 			</MyModal>

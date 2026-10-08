@@ -1,6 +1,7 @@
 import type { ReactElement, ReactNode } from "react";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { getFunctionName, type FunctionReference } from "convex/server";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import { AiChatComposer, type AiChatComposer_Props } from "./ai-chat-composer.tsx";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
@@ -16,27 +17,18 @@ vi.mock("@/lib/app-channels-context.tsx", () => ({
 	AppChannelsProvider: (props: { children: ReactNode }) => props.children,
 }));
 
-// The mention popup reads the workspace tree through a Convex subscription;
-// serve a small fixed tree instead of a live client. Tests can override the
-// mock per test (for example to render the loading state).
-const { mentionTreeNodes, treeNodesMock } = vi.hoisted(() => {
-	const mentionTreeNodes = [
-		{ name: "docs", path: "/docs", kind: "folder", archiveOperationId: null },
-		{ name: "api.md", path: "/docs/api.md", kind: "file", archiveOperationId: null },
-	];
-	return {
-		mentionTreeNodes,
-		treeNodesMock: vi.fn((_query: unknown, _args: unknown, _options: unknown): typeof mentionTreeNodes | undefined => {
-			return mentionTreeNodes;
-		}),
-	};
-});
+// The mention popup reads folder pages and name searches through Convex
+// subscriptions; serve a small fixed tree instead of a live client. Tests can
+// override the mock per test (for example to render the loading state).
+const { treeNodesMock } = vi.hoisted(() => ({
+	treeNodesMock: vi.fn<(query: unknown, args: Record<string, unknown>, options: unknown) => unknown[] | undefined>(),
+}));
 
 vi.mock("convex/react", async (importOriginal) => {
 	const original = await importOriginal<typeof import("convex/react")>();
 	return {
 		...original,
-		usePaginatedQuery: (query: unknown, args: unknown, options: unknown) => {
+		usePaginatedQuery: (query: unknown, args: Record<string, unknown> | "skip", options: unknown) => {
 			const nodes = args === "skip" ? undefined : treeNodesMock(query, args, options);
 			return {
 				results: nodes ?? [],
@@ -44,10 +36,34 @@ vi.mock("convex/react", async (importOriginal) => {
 				loadMore: vi.fn(),
 			};
 		},
-		// Only the mention popup reads the tree here, so the folder-by-folder queries stay skipped.
-		useQuery: () => undefined,
+		// Only the popup's folder lookup answers. The other queries stay loading.
+		useQuery: (query: FunctionReference<"query">, args: Record<string, unknown> | "skip") =>
+			args !== "skip" &&
+			getFunctionName(query) === getFunctionName(app_convex_api.files_nodes.get_authorized_by_path) &&
+			args.path === "/docs"
+				? { nodeId: "docs", name: "docs", kind: "folder", assetId: null }
+				: undefined,
+		// The popup asks no file checks.
+		useQueries: () => ({}),
 	};
 });
+
+// The root holds the "docs" folder and "notes.md", and "docs" holds "api.md".
+const mentionTreeNodes = [
+	{ _id: "docs", parentId: "root", name: "docs", path: "/docs", kind: "folder", contentType: null },
+	{ _id: "notes", parentId: "root", name: "notes.md", path: "/notes.md", kind: "file", contentType: "text/markdown" },
+	{ _id: "api", parentId: "docs", name: "api.md", path: "/docs/api.md", kind: "file", contentType: "text/markdown" },
+];
+
+/**
+ * Only the open stream of a folder has rows. The restricted, shared and search streams are empty.
+ */
+function mention_pages(query: unknown, args: Record<string, unknown>) {
+	return getFunctionName(query as FunctionReference<"query">) ===
+		getFunctionName(app_convex_api.files_nodes.list_tree_children) && args.restricted === false
+		? mentionTreeNodes.filter((node) => node.parentId === args.parentId && node.kind === args.kind)
+		: [];
+}
 
 // jsdom does not implement scrollIntoView; the popup calls it on the active row.
 Element.prototype.scrollIntoView = vi.fn();
@@ -122,11 +138,14 @@ describe("AiChatComposer", () => {
 		expect(onSubmit).toHaveBeenCalledWith(`Keep this ${file_quotes_serialize_draft(quote)} `, []);
 	});
 
+	beforeEach(() => {
+		treeNodesMock.mockImplementation(mention_pages);
+	});
+
 	afterEach(() => {
 		cleanup();
-		// Drop per-test overrides (like the loading state) and restore the tree.
+		// Drop per-test overrides (like the loading state).
 		treeNodesMock.mockReset();
-		treeNodesMock.mockImplementation(() => mentionTreeNodes);
 	});
 
 	test("names the composer textbox and configuration comboboxes", () => {
@@ -654,8 +673,9 @@ describe("AiChatComposer", () => {
 			},
 		});
 
-		// The popup lists the workspace tree; ArrowDown moves the highlight from
-		// the folder row to the file row, Enter picks it without submitting.
+		// The popup lists the root folder, one page of 50; ArrowDown moves the
+		// highlight from the folder row to the file row, Enter picks it without
+		// submitting.
 		const listbox = await screen.findByRole("listbox", { name: "Files and folders" });
 
 		// The editor keeps DOM focus, so the popup is exposed through the
@@ -667,9 +687,9 @@ describe("AiChatComposer", () => {
 		});
 		const [, fileOption] = screen.getAllByRole("option");
 		expect(treeNodesMock).toHaveBeenCalledWith(
-			app_convex_api.files_nodes.list_tree,
-			{ membershipId: "membership-1" },
-			{ initialNumItems: 500 },
+			app_convex_api.files_nodes.list_tree_children,
+			{ membershipId: "membership-1", parentId: "root", kind: "file", archived: false, restricted: false },
+			{ initialNumItems: 50 },
 		);
 
 		fireEvent.keyDown(textbox, { key: "ArrowDown" });
@@ -686,11 +706,11 @@ describe("AiChatComposer", () => {
 		});
 		expect(textbox.getAttribute("aria-controls")).toBeNull();
 		expect(textbox.getAttribute("aria-activedescendant")).toBeNull();
-		expect(textbox.querySelector(".AiChatComposerFileMention")?.textContent).toBe("@api.md");
+		expect(textbox.querySelector(".AiChatComposerFileMention")?.textContent).toBe("@notes.md");
 
 		// The next Enter submits; the chip serializes to the full path token.
 		fireEvent.keyDown(textbox, { key: "Enter", code: "Enter" });
-		expect(onSubmit).toHaveBeenCalledWith("@/docs/api.md ", []);
+		expect(onSubmit).toHaveBeenCalledWith("@/notes.md ", []);
 	});
 
 	test("closes only the mention popup on Escape, keeping the composer open", async () => {
@@ -741,7 +761,7 @@ describe("AiChatComposer", () => {
 		expect(outerKeyDown).toHaveBeenCalledOnce();
 	});
 
-	test("inserts a folder mention with a trailing slash on row click", async () => {
+	test("opens a folder on row click and mentions it with a trailing slash", async () => {
 		const onSubmit = vi.fn<AiChatComposer_Props["onSubmit"]>(() => true);
 		render_with_tenant(
 			<AiChatComposer
@@ -772,6 +792,13 @@ describe("AiChatComposer", () => {
 		expect(folderOption).not.toBeUndefined();
 		fireEvent.mouseDown(folderOption!);
 		fireEvent.click(folderOption!);
+
+		// The folder opens. Its first row mentions the folder itself.
+		const mentionFolderOption = await screen.findByRole("option", { name: "Mention this folder" });
+		expect(screen.getByRole("option", { name: "api.md" })).not.toBeNull();
+		expect(textbox.querySelector(".AiChatComposerFileMention")).toBeNull();
+		fireEvent.mouseDown(mentionFolderOption);
+		fireEvent.click(mentionFolderOption);
 
 		await waitFor(() => {
 			expect(screen.queryByRole("listbox", { name: "Files and folders" })).toBeNull();
@@ -885,7 +912,7 @@ describe("AiChatComposer", () => {
 				types: ["text/plain"],
 			},
 		});
-		await screen.findByText("No results");
+		await screen.findByText("No files match");
 
 		// Letting ProseMirror handle Enter here would split the paragraph and
 		// break the one-paragraph message invariant.

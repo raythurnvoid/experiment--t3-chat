@@ -21,39 +21,5 @@
 		overflow-y: auto;
 		max-width: 380px;
 	}
-
-	.AiChatComposerFileMentionList-status {
-		padding: 6px 12px;
-		color: var(--color-fg-02);
-	}
-
-	.AiChatComposerFileMentionList-item-icon {
-		display: flex;
-		align-items: center;
-
-		color: var(--color-fg-05);
-
-		& > svg {
-			width: 16px;
-			height: 16px;
-		}
-	}
-
-	.AiChatComposerFileMentionList-item-content {
-		display: grid;
-		min-width: 0;
-	}
-
-	.AiChatComposerFileMentionList-item-name {
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-
-	.AiChatComposerFileMentionList-item-path {
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
 	/* #endregion list */
 }

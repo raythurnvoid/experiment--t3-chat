@@ -13,8 +13,6 @@ import {
 } from "@/components/my-modal.tsx";
 import {
 	MySearchSelect,
-	MySearchSelectItem,
-	MySearchSelectList,
 	MySearchSelectPopover,
 	MySearchSelectPopoverContent,
 	MySearchSelectPopoverScrollableArea,
@@ -22,11 +20,11 @@ import {
 	MySearchSelectTrigger,
 	type MySearchSelect_Props,
 } from "@/components/my-search-select.tsx";
+import { FilesNodePicker, type FilesNodePicker_Row } from "@/components/files/files-node-picker.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
 import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import type { files_browser_StreamWebMessage } from "@/lib/files-browser-stream.ts";
-import { FilesTreeProvider } from "@/lib/files-tree-context.tsx";
 import { useConvex } from "convex/react";
 import { FolderOpen, Upload } from "lucide-react";
 import { memo, useRef, useState, type ChangeEvent } from "react";
@@ -77,10 +75,6 @@ type WebBrowserFileChooser_ClassNames =
 	| "WebBrowserFileChooser-list"
 	| "WebBrowserFileChooser-row"
 	| "WebBrowserFileChooser-picker"
-	| "WebBrowserFileChooser-picker-empty"
-	| "WebBrowserFileChooser-picker-item"
-	| "WebBrowserFileChooser-picker-item-name"
-	| "WebBrowserFileChooser-picker-item-path"
 	| "WebBrowserFileChooser-error";
 
 type WebBrowserFileChooser_Props = {
@@ -134,14 +128,6 @@ export const WebBrowserFileChooser = memo(function WebBrowserFileChooser(props: 
 	// dropped socket, so a new control generation alone means this chooser is gone for good.
 	const [openedControlGen] = useState(controlGen);
 
-	// Load the whole workspace list only while the picker is open.
-	const treeNodes = FilesTreeProvider.useFullList(pickerOpen);
-	const fileNodes = (treeNodes ?? []).filter((node) => node.kind === "file" && node.archiveOperationId === null);
-	const normalizedSearchText = searchText.trim().toLowerCase();
-	const shownNodes = normalizedSearchText
-		? fileNodes.filter((node) => node.path.toLowerCase().includes(normalizedSearchText))
-		: fileNodes;
-
 	const host = web_browser_file_chooser_host(chooser.origin);
 	const acceptTypes = chooser.accept
 		.split(",")
@@ -165,12 +151,8 @@ export const WebBrowserFileChooser = memo(function WebBrowserFileChooser(props: 
 		}
 	});
 
-	const handlePick = useFn<NonNullable<MySearchSelect_Props["setValue"]>>((value) => {
-		const node = fileNodes.find((fileNode) => fileNode._id === value);
-		if (!node) {
-			return;
-		}
-		const picked = { _id: node._id, name: node.name, path: node.path };
+	const handlePick = useFn((row: FilesNodePicker_Row) => {
+		const picked = { _id: row.nodeId, name: row.name, path: row.path };
 		// A page that takes one file gets the last pick. A page that takes several keeps each new pick.
 		setChosen((current) =>
 			!chooser.multiple
@@ -301,7 +283,7 @@ export const WebBrowserFileChooser = memo(function WebBrowserFileChooser(props: 
 						<div className={"WebBrowserFileChooser-actions" satisfies WebBrowserFileChooser_ClassNames}>
 							{/* The value stays "": each pick adds a file to the list, so no option is ever shown
 							    as the chosen one. */}
-							<MySearchSelect open={pickerOpen} setOpen={handlePickerOpenChange} value="" setValue={handlePick}>
+							<MySearchSelect open={pickerOpen} setOpen={handlePickerOpenChange} value="">
 								{/* Closed-trigger typeahead would attach a file without opening the list. */}
 								<MySearchSelectTrigger aria-label="Choose from Files" disabled={blocked || full} typeahead={false}>
 									<MyButton type="button" variant="outline">
@@ -320,43 +302,19 @@ export const WebBrowserFileChooser = memo(function WebBrowserFileChooser(props: 
 											<MySearchSelectSearch
 												placeholder="Search files..."
 												aria-label="Search files"
+												value={searchText}
 												onChange={(event) => setSearchText(event.currentTarget.value)}
 											/>
-											{shownNodes.length === 0 ? (
-												<div
-													className={"WebBrowserFileChooser-picker-empty" satisfies WebBrowserFileChooser_ClassNames}
-												>
-													{treeNodes === undefined
-														? "Loading files…"
-														: fileNodes.length === 0
-															? "No files in this workspace"
-															: "No results"}
-												</div>
-											) : (
-												<MySearchSelectList>
-													{shownNodes.map((node) => (
-														<MySearchSelectItem
-															key={node._id}
-															value={node._id}
-															className={"WebBrowserFileChooser-picker-item" satisfies WebBrowserFileChooser_ClassNames}
-														>
-															<span
-																className={
-																	"WebBrowserFileChooser-picker-item-name" satisfies WebBrowserFileChooser_ClassNames
-																}
-															>
-																{node.name}
-															</span>
-															<span
-																className={
-																	"WebBrowserFileChooser-picker-item-path" satisfies WebBrowserFileChooser_ClassNames
-																}
-															>
-																{node.path}
-															</span>
-														</MySearchSelectItem>
-													))}
-												</MySearchSelectList>
+											{/* The closed list stays mounted, so mount the picker only while it is open. */}
+											{pickerOpen && (
+												<FilesNodePicker
+													variant="select"
+													query={searchText}
+													select="file"
+													folderRow={null}
+													onPick={handlePick}
+													clearQuery={() => setSearchText("")}
+												/>
 											)}
 										</MySearchSelectPopoverContent>
 									</MySearchSelectPopoverScrollableArea>

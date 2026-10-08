@@ -1,25 +1,46 @@
 import "@/app.css";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { getFunctionName, type FunctionReference } from "convex/server";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { userEvent } from "vitest/browser";
 import { app_convex, app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { ChannelsUpload } from "./channels-upload.tsx";
 
-const mocks = vi.hoisted(() => ({ rootWrite: true }));
+const mocks = vi.hoisted(() => ({
+	rootWrite: true,
+	// The root holds two folders. The user can add files to "copies" but not to "locked".
+	folders: [
+		{ _id: "folder", name: "copies", path: "/copies", kind: "folder", contentType: null },
+		{ _id: "readonly", name: "locked", path: "/locked", kind: "folder", contentType: null },
+	],
+}));
 vi.mock("@/lib/app-tenant-context.tsx", () => ({
 	AppTenantProvider: { useContext: () => ({ membershipId: "member" }) },
 }));
 vi.mock("@/lib/files-tree-context.tsx", () => ({
 	FilesTreeProvider: {
-		useFullList: () => [
-			{ _id: "folder", kind: "folder", path: "/copies", archiveOperationId: null, canWrite: true },
-			{ _id: "readonly", kind: "folder", path: "/locked", archiveOperationId: null, canWrite: false },
-		],
+		usePickerFolder: (args: { folderId: string | null }) => ({
+			children: { rows: args.folderId === "root" ? mocks.folders : [], status: "done", loadMore: () => {} },
+			shared: null,
+		}),
 	},
 }));
 vi.mock("convex/react", async (importOriginal) => ({
 	...(await importOriginal<typeof import("convex/react")>()),
-	useQuery: (_query: unknown, args: unknown) => (args === "skip" ? undefined : mocks.rootWrite),
+	useQuery: (query: FunctionReference<"query">, args: Record<string, unknown> | "skip") => {
+		if (args === "skip") return undefined;
+		const name = getFunctionName(query);
+		if (name === getFunctionName(app_convex_api.files_nodes.get_authorized_by_path)) {
+			const folder = mocks.folders.find((row) => row.path === args.path);
+			return folder ? { nodeId: folder._id, name: folder.name, kind: "folder", assetId: null } : null;
+		}
+		if (name === getFunctionName(app_convex_api.files_nodes.get_current_user_file_write_permission)) {
+			return args.nodeId === "root" ? mocks.rootWrite : args.nodeId === "folder";
+		}
+		return undefined;
+	},
+	usePaginatedQuery: () => ({ results: [], status: "Exhausted", loadMore: () => {} }),
+	useQueries: () => ({}),
 }));
 
 const upload = {
@@ -81,9 +102,9 @@ describe("ChannelsUpload", () => {
 			.mockResolvedValueOnce(new Response(null, { status: 200 }));
 		render(<ChannelsUpload upload={upload} />);
 		await userEvent.click(screen.getByRole("button", { name: "Save to Files" }));
-		await userEvent.click(screen.getByText("/copies", { exact: true }));
-		expect(screen.queryByRole("radio", { name: "/locked" })).toBeNull();
-		await userEvent.click(screen.getByRole("button", { name: "Save file" }));
+		await userEvent.click(await screen.findByRole("option", { name: "copies" }));
+		await within(screen.getByRole("navigation", { name: "Folder path" })).findByRole("button", { name: "copies" });
+		await userEvent.click(screen.getByRole("option", { name: "Save here" }));
 		await waitFor(() =>
 			expect(create).toHaveBeenCalledWith(
 				app_convex_api.files_nodes.create_upload_node,
@@ -109,20 +130,49 @@ describe("ChannelsUpload", () => {
 		const fetchFile = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(new Blob(["hello"])));
 		render(<ChannelsUpload upload={upload} />);
 		await userEvent.click(screen.getByRole("button", { name: "Save to Files" }));
-		await userEvent.click(screen.getByRole("button", { name: "Save file" }));
+		await userEvent.click(await screen.findByRole("option", { name: "Save here" }));
 		await screen.findByRole("alert");
 		expect(fetchFile, "a refused destination must not receive a PUT").toHaveBeenCalledOnce();
 	});
 
-	test("root write refusal blocks save while writable folder choices remain", async () => {
+	test("Save here is disabled in a folder the user cannot write, reachable by keyboard, and says why", async () => {
 		mocks.rootWrite = false;
 		const create = vi.spyOn(app_convex, "mutation");
 		render(<ChannelsUpload upload={upload} />);
 		await userEvent.click(screen.getByRole("button", { name: "Save to Files" }));
-		expect((screen.getByRole("radio", { name: "Workspace root /" }) as HTMLInputElement).disabled).toBe(true);
-		expect((screen.getByRole("button", { name: "Save file" }) as HTMLButtonElement).disabled).toBe(true);
+		const saveHere = await screen.findByRole("option", { name: "Save here" });
+		expect(saveHere.getAttribute("aria-disabled")).toBe("true");
+		expect(document.getElementById(saveHere.getAttribute("aria-describedby")!)?.textContent).toBe(
+			"You cannot add files to this folder",
+		);
+
+		const search = screen.getByRole("combobox", { name: "Find folder" });
+		await userEvent.click(search);
+		expect(search.getAttribute("aria-activedescendant"), "the keyboard reaches the disabled row").toBe(saveHere.id);
+		await userEvent.keyboard("{Enter}");
+		await waitFor(() =>
+			expect(screen.getAllByRole("status").map((status) => status.textContent)).toContain(
+				"You cannot add files to this folder",
+			),
+		);
 		expect(create).not.toHaveBeenCalled();
-		await userEvent.click(screen.getByText("/copies", { exact: true }));
-		expect((screen.getByRole("button", { name: "Save file" }) as HTMLButtonElement).disabled).toBe(false);
+
+		// A folder the user cannot write still opens, so its subfolders stay reachable.
+		await userEvent.click(screen.getByRole("option", { name: "locked" }));
+		await waitFor(() =>
+			expect(screen.getByRole("option", { name: "Save here" }).getAttribute("aria-disabled")).toBe("true"),
+		);
+
+		// Enter on the root of the path opens the root, and the focus stays on that button.
+		const rootCrumb = within(screen.getByRole("navigation", { name: "Folder path" })).getByRole("button", {
+			name: "/",
+		});
+		await userEvent.keyboard("{Tab}");
+		expect(document.activeElement).toBe(rootCrumb);
+		await userEvent.keyboard("{Enter}");
+		await waitFor(() =>
+			expect(screen.getAllByRole("status").map((status) => status.textContent)).toContain("Opened /"),
+		);
+		expect(document.activeElement, "the root crumb keeps the focus").toBe(rootCrumb);
 	});
 });

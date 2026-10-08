@@ -39,9 +39,6 @@ vi.mock("convex/react", async (importOriginal) => ({
 	useMutation: (name: string) => ({ send, confirm, discard })[name],
 	useQuery: () => undefined,
 }));
-vi.mock("@/lib/files-tree-context.tsx", () => ({
-	FilesTreeProvider: { useFullList: () => [] },
-}));
 
 import { FileEditorRichTextToolsComment } from "./file-editor-rich-text-tools-comment.tsx";
 
