@@ -10,7 +10,7 @@ import { files_media_validation_db_advance_version } from "./files_media_validat
 import { files_nodes_db_create_node_recursively_at_path } from "./files_nodes.ts";
 import { files_nodes_db_insert_file_content_docs } from "./files_nodes_content.ts";
 import { r2 } from "./r2_client.ts";
-import { test_convex, test_create_saved_text_file, test_mocks_fill_db_with } from "./setup.test.ts";
+import { test_convex, test_create_saved_text_file, test_meta_search, test_mocks_fill_db_with } from "./setup.test.ts";
 
 const volume_text = "# unfinished [markdown\nZorptelemetry marker.\nUnicode: café 🐒\nLast line without newline";
 
@@ -324,11 +324,9 @@ async function read_volume(
 			cursor: null,
 		}),
 		metadata: await f.t.query(internal.files_metadata.get_by_path, { ...args, path: f.path }),
-		metadataSearch: await f.t.query(internal.files_metadata.search, {
+		metadataSearch: await test_meta_search(f.t, {
 			...args,
 			plan: { op: "eq", fieldPath: "metadata.status", value: "published" },
-			numItems: 10,
-			cursor: null,
 		}),
 		head: await f.t.action(internal.files_nodes_content.read_file_line_range, {
 			...args,
@@ -643,11 +641,9 @@ describe("volume tenant API isolation", () => {
 			}),
 		).toMatchObject({ items: [] });
 		expect(
-			await f.t.query(internal.files_metadata.search, {
+			await test_meta_search(f.t, {
 				...args,
 				plan: { op: "eq", fieldPath: "metadata.status", value: "published" },
-				numItems: 10,
-				cursor: null,
 			}),
 		).toMatchObject({ items: [] });
 		for (const path of [f.path, "/.mounts/sources/repo/notes.md"]) {

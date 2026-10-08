@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import { files_metadata_db_write_entries } from "./files_metadata.ts";
 import { db_insert_file_text_content } from "./files_nodes_content.ts";
-import { test_convex, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
+import { test_convex, test_meta_search, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
 
 beforeEach(() => vi.useFakeTimers());
@@ -225,24 +225,17 @@ describe("search volume metadata", () => {
 		const args = {
 			...f.readArgs,
 			plan: { op: "eq" as const, fieldPath: "metadata.source", value: "plugin-volume" },
-			numItems: 10,
-			cursor: null,
 		};
-		expect((await f.t.query(internal.files_metadata.search, args)).items).toMatchObject([
+		expect((await test_meta_search(f.t, args)).items).toMatchObject([
 			{
 				target: { kind: "saved", id: f.nodeId },
 				path: "/note.md",
-				sourceKind: "committed",
-				fieldPath: "metadata.source",
-				stringValue: "plugin-volume",
+				match: { sourceKind: "committed", fieldPath: "metadata.source", stringValue: "plugin-volume" },
 			},
 		]);
-		expect(await f.t.query(internal.files_metadata.search, { ...args, agentSource: undefined })).toEqual({
-			items: [],
-			continueCursor: "",
-			isDone: true,
-		});
+		const refused = { items: [], continueCursor: null, isDone: true };
+		expect(await test_meta_search(f.t, { ...args, agentSource: undefined })).toEqual(refused);
 		await f.t.run((ctx) => ctx.db.patch("plugins_volumes", f.volumeId, { deleteRequestedAt: Date.now() }));
-		expect(await f.t.query(internal.files_metadata.search, args)).toEqual({ items: [], continueCursor: "", isDone: true });
+		expect(await test_meta_search(f.t, args)).toEqual(refused);
 	});
 });

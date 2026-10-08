@@ -661,8 +661,10 @@ export const internal_page = internalQuery({
 							.eq("userId", args.visibilityUserId)
 							.eq("target.kind", "private"),
 					)
-				: ctx.db.query("files_pending_updates").withIndex("by_user_pendingMove_destParent_destName", (q) =>
+				: ctx.db.query("files_pending_updates").withIndex("by_org_ws_user_pendingMove_destParent_destName", (q) =>
 						q
+							.eq("organizationId", tenantScope.organizationId)
+							.eq("workspaceId", tenantScope.workspaceId)
 							.eq("userId", args.visibilityUserId)
 							.eq("pendingMove.destParent.kind", parent.kind)
 							.eq("pendingMove.destParent.id", parent.kind === "root" ? undefined : parent.id),
@@ -2568,27 +2570,6 @@ export const get_path = query({
 		const entry = await reader.resolveTarget(args.target);
 		if (reader.exhausted) throw convex_error({ message: "This path needs too many reads. Use a shorter folder path." });
 		return entry?.path ?? null;
-	},
-});
-
-export const list = query({
-	args: { ...listing_args, membershipId: v.id("organizations_workspaces_users") },
-	returns: listing_result,
-	handler: async (ctx, args) => {
-		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!userAuth) throw convex_error({ message: "Unauthenticated" });
-		const membership = await organizations_db_get_membership(ctx, {
-			userId: userAuth.id,
-			membershipId: args.membershipId,
-		});
-		if (!membership) return Result({ _yay: { items: [], continueCursor: null, isDone: true } });
-		return await db_list(ctx, {
-			...args,
-			organizationId: membership.organizationId,
-			workspaceId: membership.workspaceId,
-			visibilityUserId: userAuth.id,
-			overlayUserId: userAuth.id,
-		});
 	},
 });
 

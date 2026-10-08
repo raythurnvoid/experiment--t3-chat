@@ -172,6 +172,40 @@ function access_control_test_read_membership_id(
 }
 
 /**
+ * The ids of one folder's active children that the Files tree shows the caller. Read every stream
+ * of the tree, one page each: the open stream, the owner's restricted twin, and a member's 3 share
+ * streams.
+ */
+async function access_control_test_read_tree_child_ids(
+	as: ReturnType<typeof access_control_test_identity>,
+	args: {
+		membershipId: Id<"organizations_workspaces_users">;
+		parentId: Id<"files_nodes"> | typeof files_ROOT_ID;
+	},
+) {
+	const stream = { ...args, archived: false, paginationOpts: { numItems: 50, cursor: null } };
+	const pages = await Promise.all(
+		(["folder", "file"] as const).flatMap((kind) => [
+			...[false, true].map((restricted) =>
+				as.query(api.files_nodes.list_tree_children, { ...stream, kind, restricted }),
+			),
+			...([0, 1, 2] as const).map((principalIndex) =>
+				as.query(api.files_nodes.list_tree_children_shared, {
+					...stream,
+					kind,
+					principalIndex,
+					sort: [{ field: "name", direction: "asc" }],
+					filter: null,
+					namePrefix: null,
+					segment: "value",
+				}),
+			),
+		]),
+	);
+	return pages.flatMap((result) => result.page.map((fileNode) => fileNode._id));
+}
+
+/**
  * An organization plus the two membership ids and the two identities the enforcement tests need.
  *
  * `member` starts as a normal member. The tests that need a viewer lower the role themselves, so one
@@ -1767,11 +1801,8 @@ describe("enforcement", () => {
 		});
 		expect(demoted._nay).toBeUndefined();
 
-		const [{ page: tree }, created, renamed, archived, node] = await Promise.all([
-			asViewer.query(api.files_nodes.list_tree, {
-				membershipId: viewerMembershipId,
-				paginationOpts: { numItems: 500, cursor: null },
-			}),
+		const [tree, created, renamed, archived, node] = await Promise.all([
+			access_control_test_read_tree_child_ids(asViewer, { membershipId: viewerMembershipId, parentId: files_ROOT_ID }),
 			asViewer.mutation(api.files_nodes.create_folder_node, {
 				membershipId: viewerMembershipId,
 				parentId: files_ROOT_ID,
@@ -1793,7 +1824,7 @@ describe("enforcement", () => {
 		]);
 
 		// Reading works...
-		expect(tree.some((fileNode) => fileNode._id === folder._yay!.nodeId)).toBe(true);
+		expect(tree).toContain(folder._yay!.nodeId);
 		expect(node?._id).toBe(folder._yay!.nodeId);
 		// ...and every write is refused.
 		expect(created._nay?.message).toBe("Permission denied");
@@ -1850,11 +1881,8 @@ describe("enforcement", () => {
 		expect(assigned._nay).toBeUndefined();
 
 		const asMember = access_control_test_identity(t, memberId);
-		const [{ page: tree }, node] = await Promise.all([
-			asMember.query(api.files_nodes.list_tree, {
-				membershipId: memberMembershipId,
-				paginationOpts: { numItems: 500, cursor: null },
-			}),
+		const [tree, node] = await Promise.all([
+			access_control_test_read_tree_child_ids(asMember, { membershipId: memberMembershipId, parentId: files_ROOT_ID }),
 			asMember.query(api.files_nodes.get_file_node_for_membership, {
 				membershipId: memberMembershipId,
 				fileNodeId: String(folder._yay!.nodeId),
@@ -1880,10 +1908,10 @@ describe("enforcement", () => {
 		expect(folder._nay).toBeUndefined();
 
 		const commentFileId = await access_control_test_seed_comment_file(t, fixture, folder._yay!.nodeId);
-		const [{ page: tree }, thread, comment] = await Promise.all([
-			fixture.asMember.query(api.files_nodes.list_tree, {
+		const [tree, thread, comment] = await Promise.all([
+			access_control_test_read_tree_child_ids(fixture.asMember, {
 				membershipId: fixture.memberMembershipId,
-				paginationOpts: { numItems: 500, cursor: null },
+				parentId: files_ROOT_ID,
 			}),
 			fixture.asMember.mutation(api.ai_chat.thread_create, {
 				membershipId: fixture.memberMembershipId,
@@ -6042,34 +6070,34 @@ describe("file sharing", () => {
 		});
 		const { folderId, childId } = await seed_restricted_folder({ t, fixture, name: "private" });
 
-		const [{ page: memberTree }, memberFolder, memberChild, { page: ownerTree }] = await Promise.all([
-			fixture.asMember.query(api.files_nodes.list_tree, {
-				membershipId: fixture.memberMembershipId,
-				paginationOpts: { numItems: 500, cursor: null },
-			}),
-			fixture.asMember.query(api.files_nodes.get_file_node_for_membership, {
-				membershipId: fixture.memberMembershipId,
-				fileNodeId: String(folderId),
-			}),
-			// The child holds no grant of its own. It is hidden because the folder above it is restricted,
-			// which is what the cascade writes into `restrictedScopeNodeId`.
-			fixture.asMember.query(api.files_nodes.get_file_node_for_membership, {
-				membershipId: fixture.memberMembershipId,
-				fileNodeId: String(childId),
-			}),
-			fixture.asOwner.query(api.files_nodes.list_tree, {
-				membershipId: fixture.ownerMembershipId,
-				paginationOpts: { numItems: 500, cursor: null },
-			}),
-		]);
+		const member = { membershipId: fixture.memberMembershipId };
+		const owner = { membershipId: fixture.ownerMembershipId };
+		const [memberRoot, memberFolderChildren, memberFolder, memberChild, ownerRoot, ownerFolderChildren] =
+			await Promise.all([
+				access_control_test_read_tree_child_ids(fixture.asMember, { ...member, parentId: files_ROOT_ID }),
+				access_control_test_read_tree_child_ids(fixture.asMember, { ...member, parentId: folderId }),
+				fixture.asMember.query(api.files_nodes.get_file_node_for_membership, {
+					membershipId: fixture.memberMembershipId,
+					fileNodeId: String(folderId),
+				}),
+				// The child holds no grant of its own. It is hidden because the folder above it is restricted,
+				// which is what the cascade writes into `restrictedScopeNodeId`. `memberChild` being null checks
+				// this. `memberFolderChildren` is empty only because the list refuses the hidden folder.
+				fixture.asMember.query(api.files_nodes.get_file_node_for_membership, {
+					membershipId: fixture.memberMembershipId,
+					fileNodeId: String(childId),
+				}),
+				access_control_test_read_tree_child_ids(fixture.asOwner, { ...owner, parentId: files_ROOT_ID }),
+				access_control_test_read_tree_child_ids(fixture.asOwner, { ...owner, parentId: folderId }),
+			]);
 
-		expect(memberTree.some((fileNode) => fileNode._id === folderId)).toBe(false);
-		expect(memberTree.some((fileNode) => fileNode._id === childId)).toBe(false);
+		expect(memberRoot).not.toContain(folderId);
+		expect(memberFolderChildren).not.toContain(childId);
 		expect(memberFolder).toBeNull();
 		expect(memberChild).toBeNull();
 		// The owner keeps it without holding any grant.
-		expect(ownerTree.some((fileNode) => fileNode._id === folderId)).toBe(true);
-		expect(ownerTree.some((fileNode) => fileNode._id === childId)).toBe(true);
+		expect(ownerRoot).toContain(folderId);
+		expect(ownerFolderChildren).toContain(childId);
 	});
 
 	test("a grant lets a viewer work inside a restricted folder", async () => {
@@ -6094,10 +6122,10 @@ describe("file sharing", () => {
 		await access_control_test_demote_to_viewer(fixture);
 		await access_control_test_reset_write_rate_limit(t, fixture.memberId);
 
-		const [{ page: tree }, renamed, rootWrite, folderWrite] = await Promise.all([
-			fixture.asMember.query(api.files_nodes.list_tree, {
+		const [tree, renamed, rootWrite, folderWrite] = await Promise.all([
+			access_control_test_read_tree_child_ids(fixture.asMember, {
 				membershipId: fixture.memberMembershipId,
-				paginationOpts: { numItems: 500, cursor: null },
+				parentId: files_ROOT_ID,
 			}),
 			fixture.asMember.mutation(api.files_nodes.rename_node, {
 				membershipId: fixture.memberMembershipId,
@@ -6116,7 +6144,7 @@ describe("file sharing", () => {
 			}),
 		]);
 
-		expect(tree.some((fileNode) => fileNode._id === folderId)).toBe(true);
+		expect(tree).toContain(folderId);
 		expect(renamed._nay).toBeUndefined();
 		expect(rootWrite).toBe(false);
 		expect(folderWrite).toBe(true);
@@ -6199,21 +6227,14 @@ describe("file sharing", () => {
 		expect(granted._nay).toBeUndefined();
 
 		// The member does not match the grant yet, so the folder is still hidden from them.
-		const { page: beforeRole } = await fixture.asMember.query(api.files_nodes.list_tree, {
-			membershipId: fixture.memberMembershipId,
-			paginationOpts: { numItems: 500, cursor: null },
-		});
-		expect(beforeRole.some((fileNode) => fileNode._id === folderId)).toBe(false);
+		const memberRoot = { membershipId: fixture.memberMembershipId, parentId: files_ROOT_ID };
+		expect(await access_control_test_read_tree_child_ids(fixture.asMember, memberRoot)).not.toContain(folderId);
 
 		// Lowering them to `viewer` takes workspace power away and, at the same time, matches the grant.
 		// So the folder appears exactly because of the share list, not because of the role's own rights.
 		await access_control_test_demote_to_viewer(fixture);
 
-		const { page: afterRole } = await fixture.asMember.query(api.files_nodes.list_tree, {
-			membershipId: fixture.memberMembershipId,
-			paginationOpts: { numItems: 500, cursor: null },
-		});
-		expect(afterRole.some((fileNode) => fileNode._id === folderId)).toBe(true);
+		expect(await access_control_test_read_tree_child_ids(fixture.asMember, memberRoot)).toContain(folderId);
 	});
 
 	test("handing out a role does not hand out the files shared with it", async () => {
@@ -6279,15 +6300,14 @@ describe("file sharing", () => {
 		});
 		expect(assignerAssigned._nay).toBeUndefined();
 
-		const { page: beforeAssign } = await access_control_test_identity(t, eveId).query(api.files_nodes.list_tree, {
-			membershipId: await access_control_test_read_membership_id(t, {
-				organizationId: fixture.organizationId,
-				workspaceId: fixture.defaultWorkspaceId,
-				userId: eveId,
-			}),
-			paginationOpts: { numItems: 500, cursor: null },
+		const eveMembershipId = await access_control_test_read_membership_id(t, {
+			organizationId: fixture.organizationId,
+			workspaceId: fixture.defaultWorkspaceId,
+			userId: eveId,
 		});
-		expect(beforeAssign.some((fileNode) => fileNode._id === folderId)).toBe(false);
+		const eveRoot = { membershipId: eveMembershipId, parentId: files_ROOT_ID };
+		const asEve = access_control_test_identity(t, eveId);
+		expect(await access_control_test_read_tree_child_ids(asEve, eveRoot)).not.toContain(folderId);
 
 		await access_control_test_reset_write_rate_limit(t, fixture.memberId);
 
@@ -6300,16 +6320,7 @@ describe("file sharing", () => {
 		});
 		expect(escalated._nay?.message).toContain("shared on a file");
 
-		const eveMembershipId = await access_control_test_read_membership_id(t, {
-			organizationId: fixture.organizationId,
-			workspaceId: fixture.defaultWorkspaceId,
-			userId: eveId,
-		});
-		const { page: afterAssign } = await access_control_test_identity(t, eveId).query(api.files_nodes.list_tree, {
-			membershipId: eveMembershipId,
-			paginationOpts: { numItems: 500, cursor: null },
-		});
-		expect(afterAssign.some((fileNode) => fileNode._id === folderId)).toBe(false);
+		expect(await access_control_test_read_tree_child_ids(asEve, eveRoot)).not.toContain(folderId);
 
 		// The same caller, once the folder is shared with them, may hand the role out — and doing so
 		// really does open the folder for Eve.
@@ -6335,14 +6346,7 @@ describe("file sharing", () => {
 		});
 		expect(byGrantHolder._nay).toBeUndefined();
 
-		const { page: afterGrantHolderAssign } = await access_control_test_identity(t, eveId).query(
-			api.files_nodes.list_tree,
-			{
-				membershipId: eveMembershipId,
-				paginationOpts: { numItems: 500, cursor: null },
-			},
-		);
-		expect(afterGrantHolderAssign.some((fileNode) => fileNode._id === folderId)).toBe(true);
+		expect(await access_control_test_read_tree_child_ids(asEve, eveRoot)).toContain(folderId);
 	});
 
 	test("deleting a role does not hand out the files shared with the role it falls back to", async () => {
@@ -7357,11 +7361,10 @@ describe("file sharing", () => {
 		});
 		expect(shared._nay).toBeUndefined();
 
-		const { page: before } = await fixture.asMember.query(api.files_nodes.list_tree, {
-			membershipId: memberSideMembershipId,
-			paginationOpts: { numItems: 500, cursor: null },
-		});
-		expect(before.some((fileNode) => fileNode._id === folder._yay!.nodeId)).toBe(false);
+		const memberSideRoot = { membershipId: memberSideMembershipId, parentId: files_ROOT_ID };
+		expect(await access_control_test_read_tree_child_ids(fixture.asMember, memberSideRoot)).not.toContain(
+			folder._yay!.nodeId,
+		);
 
 		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
 		const assigned = await fixture.asOwner.mutation(api.access_control.set_user_role, {
@@ -7373,11 +7376,9 @@ describe("file sharing", () => {
 		expect(assigned._nay).toBeUndefined();
 
 		// The assignment really did open the folder, which is why refusing it as "adds nothing" was wrong.
-		const { page: after } = await fixture.asMember.query(api.files_nodes.list_tree, {
-			membershipId: memberSideMembershipId,
-			paginationOpts: { numItems: 500, cursor: null },
-		});
-		expect(after.some((fileNode) => fileNode._id === folder._yay!.nodeId)).toBe(true);
+		expect(await access_control_test_read_tree_child_ids(fixture.asMember, memberSideRoot)).toContain(
+			folder._yay!.nodeId,
+		);
 
 		// The rule still bites for a role that carries no file, so this is not a check that stopped working.
 		const uselessRole = await fixture.asOwner.mutation(api.access_control.create_role, {
@@ -8085,10 +8086,10 @@ describe("file sharing", () => {
 
 		const { folderId } = await seed_restricted_folder({ t, fixture, name: "owner-only" });
 
-		const [{ page: tree }, shareState, unrestricted] = await Promise.all([
-			fixture.asMember.query(api.files_nodes.list_tree, {
+		const [tree, shareState, unrestricted] = await Promise.all([
+			access_control_test_read_tree_child_ids(fixture.asMember, {
 				membershipId: fixture.memberMembershipId,
-				paginationOpts: { numItems: 500, cursor: null },
+				parentId: files_ROOT_ID,
 			}),
 			fixture.asMember.query(api.files_sharing.get_node_share_state, {
 				membershipId: fixture.memberMembershipId,
@@ -8100,7 +8101,7 @@ describe("file sharing", () => {
 			}),
 		]);
 
-		expect(tree.some((fileNode) => fileNode._id === folderId)).toBe(false);
+		expect(tree).not.toContain(folderId);
 		expect(shareState).toBeNull();
 		expect(unrestricted._nay?.message).toBe("Permission denied");
 	});
@@ -8372,11 +8373,10 @@ describe("file sharing", () => {
 		});
 		expect(unrestricted._nay).toBeUndefined();
 
-		const [{ page: tree }, state, grantCount] = await Promise.all([
-			fixture.asMember.query(api.files_nodes.list_tree, {
-				membershipId: fixture.memberMembershipId,
-				paginationOpts: { numItems: 500, cursor: null },
-			}),
+		const member = { membershipId: fixture.memberMembershipId };
+		const [rootChildren, folderChildren, state, grantCount] = await Promise.all([
+			access_control_test_read_tree_child_ids(fixture.asMember, { ...member, parentId: files_ROOT_ID }),
+			access_control_test_read_tree_child_ids(fixture.asMember, { ...member, parentId: folderId }),
 			fixture.asOwner.query(api.files_sharing.get_node_share_state, {
 				membershipId: fixture.ownerMembershipId,
 				nodeId: childId,
@@ -8384,9 +8384,10 @@ describe("file sharing", () => {
 			t.run(async (ctx) => (await ctx.db.query("access_control_permission_grants").collect()).length),
 		]);
 
-		// The member is back to reading it through their role, and the cascade cleared the child too.
-		expect(tree.some((fileNode) => fileNode._id === folderId)).toBe(true);
-		expect(tree.some((fileNode) => fileNode._id === childId)).toBe(true);
+		// The member is back to reading it through their role. `state?.scope` being null shows that the
+		// cascade cleared the child too. The child list alone does not show it.
+		expect(rootChildren).toContain(folderId);
+		expect(folderChildren).toContain(childId);
 		expect(state?.scope).toBeNull();
 		// Leaving the grants behind would silently bring them back the next time somebody restricts it.
 		expect(grantCount).toBe(0);
@@ -10441,14 +10442,16 @@ describe("file sharing", () => {
 		});
 		expect(assigned._nay).toBeUndefined();
 
-		const { page: tree } = await fixture.asMember.query(api.files_nodes.list_tree, {
-			membershipId: fixture.memberMembershipId,
-			paginationOpts: { numItems: 500, cursor: null },
+		const member = { membershipId: fixture.memberMembershipId };
+		const rootIds = await access_control_test_read_tree_child_ids(fixture.asMember, {
+			...member,
+			parentId: files_ROOT_ID,
 		});
-		const treeIds = tree.map((fileNode) => fileNode._id);
-		expect(treeIds).toContain(folderId);
-		expect(treeIds).toContain(childId);
-		expect(treeIds).not.toContain(open._yay!.nodeId);
+		expect(rootIds).toContain(folderId);
+		expect(rootIds).not.toContain(open._yay!.nodeId);
+		expect(
+			await access_control_test_read_tree_child_ids(fixture.asMember, { ...member, parentId: folderId }),
+		).toContain(childId);
 	});
 
 	test("an upload refused for a folder on the way writes nothing", async () => {

@@ -9,6 +9,7 @@ import {
 	test_convex,
 	test_create_saved_text_file,
 	test_get_file_yjs_pointers,
+	test_meta_search,
 	test_mocks_fill_db_with,
 } from "./setup.test.ts";
 import type { MutationCtx } from "./_generated/server.js";
@@ -1312,6 +1313,28 @@ async function reviewed_pending_for_test(
 	};
 }
 
+/**
+ * The first 10 root children that the member's agent sees, with the member's drafts.
+ */
+async function list_root_for_test(
+	t: ReturnType<typeof test_convex>,
+	args: { membershipId: Id<"organizations_workspaces_users"> },
+) {
+	const membership = await t.run((ctx) => ctx.db.get("organizations_workspaces_users", args.membershipId));
+	if (!membership) throw new Error("Expected a test membership");
+	return await files_pending_overlay_list({ runQuery: t.query } as unknown as Pick<ActionCtx, "runQuery">, {
+		organizationId: membership.organizationId,
+		workspaceId: membership.workspaceId,
+		visibilityUserId: membership.userId,
+		overlayUserId: membership.userId,
+		folderPath: "/",
+		mode: "children",
+		order: "asc",
+		numItems: 10,
+		cursor: null,
+	});
+}
+
 async function read_pending_review_state_for_test(t: ReturnType<typeof test_convex>) {
 	return await t.run(async (ctx) => ({
 		nodes: await ctx.db.query("files_nodes").collect(),
@@ -1861,13 +1884,7 @@ describe("private pending text", () => {
 			expect(
 				await asUser.query(api.files_pending_updates.get_file_pending_target, { membershipId, target: sourceTarget }),
 			).toMatchObject({ entry: { path: "/destination.txt" } });
-			const visible = await asUser.query(api.files_visible.list, {
-				membershipId,
-				folderPath: "/",
-				mode: "children",
-				numItems: 10,
-				cursor: null,
-			});
+			const visible = await list_root_for_test(t, { membershipId });
 			expect(visible._yay?.items.map(({ target, path }) => ({ target, path }))).toEqual([
 				{ target: sourceTarget, path: "/destination.txt" },
 			]);
@@ -1975,13 +1992,7 @@ describe("private pending text", () => {
 			}
 			expect(await t.run((ctx) => ctx.db.get("files_nodes", occupantId))).toEqual(savedBefore);
 			expect(await t.run((ctx) => read_committed_text({ ctx, ...draft, nodeId: occupantId }))).toBe("destination\n");
-			const visible = await asUser.query(api.files_visible.list, {
-				membershipId,
-				folderPath: "/",
-				mode: "children",
-				numItems: 10,
-				cursor: null,
-			});
+			const visible = await list_root_for_test(t, { membershipId });
 			expect(visible._yay?.items.find((item) => item.path === "/destination.txt")?.target).toEqual({
 				kind: "saved",
 				id: occupantId,
@@ -2182,13 +2193,7 @@ describe("private pending text", () => {
 			(await run_agent_move_for_test(source, { target: saved._yay.target, destName: "destination.txt", threadId }))
 				.activity.status,
 		).toBe("succeeded");
-		const visible = await asUser.query(api.files_visible.list, {
-			membershipId: membership._id,
-			folderPath: "/",
-			mode: "children",
-			numItems: 10,
-			cursor: null,
-		});
+		const visible = await list_root_for_test(t, { membershipId: membership._id });
 		expect(visible._yay?.items.map(({ target, path }) => ({ target, path }))).toEqual([
 			{ target: { kind: "saved", id: otherId }, path: "/destination.txt" },
 		]);
@@ -2277,13 +2282,7 @@ describe("private pending text", () => {
 			expect(await t.run((ctx) => ctx.db.get("files_pending_updates", occupant.pendingUpdateId))).toEqual(
 				occupantProposal,
 			);
-			const visible = await asUser.query(api.files_visible.list, {
-				membershipId,
-				folderPath: "/",
-				mode: "children",
-				numItems: 10,
-				cursor: null,
-			});
+			const visible = await list_root_for_test(t, { membershipId });
 			expect(visible._yay?.items.map(({ target, path }) => ({ target, path }))).toEqual([
 				{ target: sourceTarget, path: "/destination.txt" },
 			]);
@@ -2687,15 +2686,7 @@ describe("private pending text", () => {
 			await ctx.db.patch("organizations", draft.organizationId, { ownerUserId: other.userId });
 		});
 		expect(await asUser.query(api.files_pending_updates.get_file_pending_target, { membershipId, target })).toBeNull();
-		expect(
-			await asUser.query(api.files_visible.list, {
-				membershipId,
-				folderPath: "/",
-				mode: "children",
-				numItems: 5,
-				cursor: null,
-			}),
-		).toMatchObject({ _yay: { items: [] } });
+		expect(await list_root_for_test(t, { membershipId })).toMatchObject({ _yay: { items: [] } });
 		// The row's own view is null above, so the Pending tab shows it as restricted.
 		expect(
 			(
@@ -2764,15 +2755,9 @@ describe("private pending text", () => {
 			readiness: "preparing",
 			canAccept: false,
 		});
-		expect(
-			await asUser.query(api.files_visible.list, {
-				membershipId,
-				folderPath: "/",
-				mode: "children",
-				numItems: 5,
-				cursor: null,
-			}),
-		).toMatchObject({ _yay: { items: [{ target: { kind: "private" }, path: "/draft.txt", preparing: true }] } });
+		expect(await list_root_for_test(t, { membershipId })).toMatchObject({
+			_yay: { items: [{ target: { kind: "private" }, path: "/draft.txt", preparing: true }] },
+		});
 		const batch = await asUser.mutation(api.files_pending_updates.create_file_pending_update_operation_batch, {
 			membershipId,
 			target,
@@ -10083,23 +10068,15 @@ describe("overlay reads on a file with collaboration off", () => {
 		if (upserted._nay) {
 			throw new Error(upserted._nay.message);
 		}
-		// The agent's `meta search` merge, with each stream query run on its own.
-		const search_title = async (value: string) => {
-			const result = await files_pending_overlay_list({ runQuery: t.query } as unknown as Pick<ActionCtx, "runQuery">, {
-				organizationId: seeded.organizationId,
-				workspaceId: seeded.workspaceId,
-				visibilityUserId: seeded.userId,
-				overlayUserId: seeded.userId,
-				folderPath: "/",
-				mode: "metadata",
-				plan: { op: "eq", fieldPath: "frontmatter.title", value },
-				order: "asc",
-				numItems: 20,
-				cursor: null,
-			});
-			if (result._nay) throw new Error(result._nay.message);
-			return result._yay.items.map((item) => item.path);
-		};
+		const search_title = async (value: string) =>
+			(
+				await test_meta_search(t, {
+					organizationId: seeded.organizationId,
+					workspaceId: seeded.workspaceId,
+					userId: seeded.userId,
+					plan: { op: "eq", fieldPath: "frontmatter.title", value },
+				})
+			).items.map((item) => item.path);
 
 		expect(await search_title("proposal")).toContain(path);
 		expect(await search_title("committed")).not.toContain(path);

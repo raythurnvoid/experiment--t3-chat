@@ -4,7 +4,7 @@ import type { FunctionReturnType } from "convex/server";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
-import { test_convex, test_create_saved_text_file, test_mocks_fill_db_with } from "./setup.test.ts";
+import { test_convex, test_create_saved_text_file, test_meta_search, test_mocks_fill_db_with } from "./setup.test.ts";
 import { files_ROOT_ID } from "../shared/files.ts";
 
 const text = "Private notebook\nSecond line\n";
@@ -288,15 +288,11 @@ function read_cases(f: Awaited<ReturnType<typeof fixture>>, agentSource?: typeof
 			allowed: expect.objectContaining({ target, fields: ["metadata.topic"] }),
 			refused: null,
 		},
-		metadata_search: {
+		meta_search: {
 			read: () =>
-				f.t.query(internal.files_metadata.search, {
-					...scope,
-					plan: { op: "eq", fieldPath: "metadata.topic", value: "notebook" },
-					...page,
-				}),
+				test_meta_search(f.t, { ...scope, plan: { op: "eq", fieldPath: "metadata.topic", value: "notebook" } }),
 			allowed: expect.objectContaining({ items: [expect.objectContaining({ target, path })] }),
-			refused: empty,
+			refused: { items: [], continueCursor: null, isDone: true },
 		},
 	};
 }
@@ -323,7 +319,7 @@ const doors = [
 	"read_file_tail_lines",
 	"read_file_content_stats",
 	"metadata_get_by_path",
-	"metadata_search",
+	"meta_search",
 ] as const;
 
 describe("agent file read source", () => {
@@ -386,7 +382,7 @@ describe("agent file read source", () => {
 			const restricted = read_cases(destination, f.agentSource)[door];
 			const result = await restricted.read();
 			if (door === "list_subtree") expect(result, door).toMatchObject({ page: [], isDone: true });
-			else if (door === "search_paths" || door === "text_search_files" || door === "metadata_search")
+			else if (door === "search_paths" || door === "text_search_files" || door === "meta_search")
 				expect(result, door).toMatchObject({ items: [], isDone: true });
 			else expect(result, door).toEqual(restricted.refused);
 		}

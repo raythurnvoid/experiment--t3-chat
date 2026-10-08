@@ -647,10 +647,10 @@ Check a design against these questions before you build it:
 
 - Which index serves each filter and each sort order? A sort needs an index whose fields after the equality prefix are the sort fields.
 - A table can hold 32 indexes, and an index 16 fields. A filter or sort the user can combine freely cannot get one index per combination. Cut the scope, or use a search engine.
-- Where do drafts come from? Saved rows from an index plus drafts read some other way give wrong order or missing rows. `files_metadata.search` removed its folder range for this reason: a file the user moved in a draft keeps its old saved path in the index.
+- Where do drafts come from? Saved rows from an index plus drafts read some other way give wrong order or missing rows. A file the user moved in a draft keeps its old saved path in the index. So the agent's metadata search (`files_pending_overlay_list` in `server/files-pending-overlay.ts`, metadata mode) reads a folder range only with one more saved stream per folder the user's drafts moved in, and merges it with the user's place stream.
 - Does the search index fit? `withSearchIndex` matches whole words and word starts, orders by relevance, and returns at most 1,024 results. It cannot serve "contains", a sort, or a range.
 
-Some older reads still scan: `files_visible` time order and its subtree filters, and the search box, which loads every node into the browser. Do not copy them as patterns. The folder table reads one index range per stream: a filter picks the index, and the index fixes the order, so the table has one sort and no "contains" or metadata `missing` filter.
+Some older reads still scan: `files_visible` time order and its subtree filters. Do not copy them as patterns. The search box no longer loads every node into the browser: it pages `files_nodes.search_saved`, one index range or one text search per call. The folder table reads one index range per stream: a filter picks the index, and the index fixes the order, so the table has one sort and no "contains" or metadata `missing` filter.
 
 ## Pagination: `.filter()` semantics, short pages, and empty pages
 

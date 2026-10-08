@@ -181,8 +181,8 @@ Before the first attempt at a new interaction type (upload, download, screenshot
 - `.ProseMirror` matches three elements on `/files`: the file editor, the AI chat composer, and the comment composer. Scope to `.FileEditorRichText-editor-content` or a strict-mode violation ends the run.
 - **A sidebar row's `aria-label` carries its state, so a remembered name goes stale the moment the row changes.** Restricting a folder through `Share` renames the row to `<name> restricted`, archiving adds ` archived`, and they stack in that order (`qa-closed-0802 restricted archived`). Every derived label follows: `More actions for <name> restricted archived`, `Expand folder <name> restricted`. A locator built from the name you created the node with then matches nothing, and `locator.click()` burns the whole CLI timeout looking for it. Resolve the row by `data-file-id`, read its **live** `aria-label` in the same call, and build `More actions for <label>` from that. Verified 2026-08-02.
 - `New file` and `New folder` each match **two** buttons on `/files` — the sidebar header (`.FilesSidebarTopSection-actions-icon-button`) and the main-view `toolbar[name="File actions"]` — so `getByRole("button", { name: "New folder", exact: true })` is a strict-mode violation, not a missing control. They also behave differently (sidebar creates immediately at root, toolbar opens a modal for the current folder). Scope with `getByRole("complementary", { name: "Files" })`.
-- The row's inline `Add file to <folder>` button creates a committed `new-file.md` inside that folder immediately, but it does **not** enter rename mode (`document.activeElement` stays `BODY`) and it does **not** expand the folder, so no new treeitem appears and a probe that waits for one reports a silent failure. Confirm the child through `list_tree`, then rename it with `F2` on the row located by `data-file-id`.
-- `files_nodes.list_tree` includes archived nodes. A replaced file can leave an archived twin at the same path. Resolve active fixtures with `!node.archiveOperationId`, then keep the active node id. Cleanup readback must use the same filter before reporting files left behind.
+- The row's inline `Add file to <folder>` button creates a committed `new-file.md` inside that folder immediately, but it does **not** enter rename mode (`document.activeElement` stays `BODY`) and it does **not** expand the folder, so no new treeitem appears and a probe that waits for one reports a silent failure. Confirm the child with `files_nodes.list_tree_children({ membershipId, parentId: <folderId>, kind: "file", archived: false, restricted: false, paginationOpts })`, then rename it with `F2` on the row located by `data-file-id`.
+- A replaced file can leave an archived twin at the same path. `files_nodes.list_tree_children` returns it only with `archived: true`, but a walk that reads archived pages too (the tree walk in `snippets.md`) gets both. Resolve active fixtures with `node.archiveOperationId === null`, then keep the active node id. Cleanup readback must use the same filter before reporting files left behind.
 - `More actions for <name>` matches BOTH the sidebar tree row button and the folder-explorer child-row button, and their menus differ (the folder-view file menu is Cut/Copy/Paste/Archive, and Archive there opens the confirm dialog; the sidebar file menu has Copy path/Rename/Run &lt;plugin&gt;/Archive). Scope with `state.page.getByRole("tree").first().getByRole("button", ...)` for the sidebar one. Sidebar rows only exist for expanded ancestors — expand via the chevron `button[aria-label="Expand folder <name>"]` / `Collapse folder <name>` (locatable and working, but the click routinely times out at `performing click action` while still landing — verify `aria-expanded` instead of trusting the click result; verified 2026-08-12), or via the folder's sidebar menu item `Expand subtree` (row clicks select without expanding). A chevron click can leave that trigger's focus ring painted, and its tip open while focus stays there; `document.activeElement.blur()` plus a pointer move clears both before a screenshot. A plain `locator.click()` on the sidebar row `More actions` button opens its menu. With the old Ariakit menu that click hung (2026-09-05); with the native menu it works (verified 2026-09-25).
 - The folder-explorer row's `More actions` menu items take a plain `locator.click()`: `Archive` opens its confirm dialog (verified 2026-09-25 with the native menu; with the old Ariakit menu every click timed out). To archive without the UI, go through the page-context authenticated Convex client instead (`const { app_convex, app_convex_api } = await import("/src/lib/app-convex-client.ts")`, then `app_convex.mutation(app_convex_api.files_nodes.archive_nodes, { membershipId, nodeIds })`). The exports are `app_convex` and `app_convex_api` — there is no `app_convex_client` export, and importing `/convex/_generated/api.js` directly is unnecessary (verified 2026-08-02). This runs as the signed-in user, so it is a legitimate user-path mutation, not a bypass. Verified 2026-08-01.
 - On the Plugins page, installs go through the catalog consent flow (there is no GitHub import form). Manage an installed plugin's secrets on its detail page through `.RoutePluginsPluginSecrets` and the `Manage secrets` dialog. Catalog cards are links and do not contain secret forms.
@@ -778,7 +778,7 @@ that record what you want to prove (`plugins_event_runs` and `plugins_event_run_
 work, the domain table for everything else) — or run the function directly with `convex run` and read
 its returned value and its inline `[CONVEX …] [ERROR]` output, which the CLI does print.
 
-## The Files sidebar tree reads back empty in the DOM — use `files_nodes:list_tree`
+## The Files sidebar tree reads back empty in the DOM — read the tree queries instead
 
 `.FilesSidebarTreeItem` rows exist in the DOM but their `textContent` and `innerText` both come back
 as `""`, and only the currently-open file's row is present at all, so a DOM scan of the sidebar reports
@@ -786,17 +786,13 @@ an almost-empty tree on a workspace that has dozens of files (observed 2026-09-0
 `qa-browser/home`, which really held `/chitchat` with nine descendants). A `[data-file-id]` sweep has
 the same problem: it answered with two id-only entries.
 
-Read the visible tree through the app's own query instead. It is the exact surface a visibility check
-wants, because it returns what THIS membership may see:
+Read the visible tree through the app's own queries instead. They are the exact surface a visibility
+check wants, because they return what THIS membership may see. No query returns the whole tree: walk
+it folder by folder with "Walk The Files Tree From Page Context" in `snippets.md`. Get the
+`membershipId` from `organizations:get_membership_by_organization_workspace_name({ organizationName,
+workspaceName })` (its `_id`).
 
-```js
-const mem = await q("organizations:get_membership_by_organization_workspace_name", { organizationName, workspaceName });
-// list_tree is paged: follow continueCursor until isDone (see files.md).
-const tree = await q("files_nodes:list_tree", { membershipId: mem.value._id, paginationOpts: { numItems: 500, cursor: null } });
-tree.value.page.map((n) => n.path).sort();
-```
-
-For a restriction check, run it once per identity and compare the two path lists. That is far more
+For a restriction check, run the walk once per identity and compare the two path lists. That is far more
 reliable than expanding folders in the sidebar, and it is not fooled by the `Show more` cap.
 
 ## A flat `sheet.cssRules` scan misses everything inside `@layer`, so "no rule matches" is a false negative
@@ -965,8 +961,8 @@ browser is still up, since a dead scratch browser and a wrong flag fail the same
 - Agent `New chat` creates a client-only `ai_thread-*` tab before Convex persists the real thread. If cleanup removes that optimistic tab too early, sends land in an older chat or the tab appears to vanish. If reload restores it, verify the tab still has an optimistic session and the first `/api/chat` request uses `clientGeneratedThreadId`.
 - **A selected-but-not-open sidebar chat id can bounce back to the old thread, and the writer is a peer app tab.** All `/files` tabs share the `app_state::file_editor_sidebar_*::scope::<membershipId>` keys. When `selected_tab` was written before `open_tabs` gained the new id, a peer tab rendered between the two storage events, saw a selected id missing from its stale `open_tabs`, fell back to its own controller selection, and its storage-sync effect wrote the OLD id back — which this tab then applied (fixed 2026-09-12: `open_tabs` is now published before `selected_tab` in `file-editor-sidebar-agent.tsx`, verified with six consecutive `New chat` clicks). The debugging lesson generalizes: wrapping `localStorage.setItem` only sees writes made IN this tab. A cross-tab `storage` event mutates this tab's storage cache without any local `setItem`, so instrument `window.addEventListener("storage", e => ...)` (filter on `e.key`) alongside the `setItem` wrapper, and check `state.page.context().pages()` for sibling `/files` tabs before blaming in-tab React scheduling.
 - `nodeId=root` is the synthetic root folder, not a stored file node. Its editor renders and accepts a comment, but never use it for a reload-persistence check — a fixture created there cannot be re-resolved after a load. Always create a real file first and assert on its own `nodeId`.
-- Before blaming the editor for "my content disappeared", read the app logs for `[CONVEX Q(files_nodes:list_tree)] ... ReturnsValidationError`. A broken returns validator in `files_nodes.ts` empties the tree and makes every reload fall back to `nodeId=root`, which looks exactly like a collaboration/persistence regression but is a backend validator problem.
-- The cause side of that error was fixed 2026-07-26 (commit `1b3c46e6`): `list_tree` now spreads `doc(app_convex_schema, "files_nodes").fields`, so new schema fields flow through automatically. The lesson stays: a returns-validation error in any query the route depends on empties the UI or crashes it into `Something went wrong`, `Technical details` renders empty, and tests do not catch it when they never call the query — read the error from `page.on("console")`/`pageerror`, attaching the listeners and then reloading, because logs from before the listeners are gone.
+- Before blaming the editor for "my content disappeared", read the app logs for `[CONVEX Q(files_nodes:list_tree_children)] ... ReturnsValidationError`. A broken returns validator in `files_nodes.ts` empties the tree and makes every reload fall back to `nodeId=root`, which looks exactly like a collaboration/persistence regression but is a backend validator problem.
+- The cause side of that error was fixed 2026-07-26 (commit `1b3c46e6`): `list_tree` (removed since) then spread `doc(app_convex_schema, "files_nodes").fields`, so new schema fields flowed through automatically. Today the tree queries list their fields in `files_node_public_doc_fields` (`files_nodes.ts`), so a new `files_nodes` field that is not added there or left out in `get_public_node_fields` fails every tree page the same way. The lesson stays: a returns-validation error in any query the route depends on empties the UI or crashes it into `Something went wrong`, `Technical details` renders empty, and tests do not catch it when they never call the query — read the error from `page.on("console")`/`pageerror`, attaching the listeners and then reloading, because logs from before the listeners are gone.
 - `convex dev --once` can report `Convex functions ready!` while the deployment still serves the previous validator for a function. Before concluding the client is at fault, dump the deployed contract with `vp env exec pnpm exec convex function-spec` (from `packages/app`) and check the field is in the function you expect; pushing again fixed it in one observed run.
 - Renaming a field breaks the next push, not the current one: schema validation rejects existing documents that still carry the old field (`Object contains extra field …`). Clearing them needs a push, and the push is what is blocked. Break the cycle by temporarily widening the schema (`oldField: v.optional(v.any())`) together with a throwaway `internalMutation` that patches the field to `undefined`, push, run it, then revert both and push again.
 - Reload-persistence checks used to be unreliable while anonymous auth churned: one run produced four distinct `app::auth::anonymous_token_user_id` values across four page loads, each a fresh empty tenant. Fixed 2026-07-26, see the anonymous-rotation note below. Still prefer client-side view switches (`.MyButtonGroupItem-button` filtered by `Rich`/`Markdown`/`Diff`, or `Code`/`Diff` on a plain-text node) over `goto`, which costs a load every time.
@@ -1228,8 +1224,8 @@ does not create `/<folder>/target-b.md`. It creates the missing folder chain und
 file lands at `/<folder>/<folder>/target-b.md`. Nothing fails, so a later bash `cp` onto the path you
 meant creates a new file (`pending copy created … — review in Files`, Pending row `Added`) instead of a
 replacement, and every readback on the id you hold answers for the nested file. Pass only the name
-(`path: "/target-b.md"`) and read the created node's `path` back from `files_nodes:list_tree` before you
-build on it.
+(`path: "/target-b.md"`) and read the created node's `path` back with
+`files_nodes:get_file_node_for_membership({ membershipId, fileNodeId })` before you build on it.
 
 `files_nodes.rename_node` reads `path` the same way, relative to the node's parent. On 2026-09-30 a
 rename of `/g4-media/shapes.png` with `path: "/g4-media/qa-hidden-shapes.png"` created the folder
@@ -2215,19 +2211,6 @@ await page.keyboard.press("Enter");
 This is a harness artifact, not an app bug. Do not report it as one, and do not scroll the page to
 move the button out from under the toolbar: the header is sticky, so it does not move.
 
-## `files_visible:list` returns `_yay.items`, not `page`
-
-The door answers with the `Result` shape, so a paginated readback is at `body._yay.items` with
-`body._yay.continueCursor` and `body._yay.isDone`. Reading `body.page` silently yields `[]`, which
-looks exactly like an empty folder and will make you believe a transfer wrote nothing:
-
-```js
-const body = response.body?.value ?? response.body;
-const items = body?._yay?.items ?? [];
-```
-
-Check `isDone` before concluding a folder is complete. The page size is clamped server-side to 50, so `numItems: 100` still returns 50 items with a `continueCursor` — a 60-child folder reads back as 50 and looks like 10 lost nodes. Page until `isDone`.
-
 ## Transfer conflict choices are `fieldset` / `legend`, so `getByRole("radiogroup")` finds nothing
 
 Each conflicting item in `.FilesTransferRunModal`, and each "Apply to remaining ..." block, is a
@@ -2797,8 +2780,9 @@ of a 300 px tall row menu reports "blocked by DIV" until it is scrolled into vie
 ## `files_nodes_content.create_text_node` costs about one second each
 
 Four calls fit in one 5 s runner; five do not. Create fixtures in batches of at most four per call,
-and look the ids up again with `list_tree` (paged, `numItems` up to 1000) when a batch timed out
-after the server had already created the files.
+and look the ids up again when a batch timed out after the server had already created the files:
+`files_nodes:get_visible_target_by_path({ membershipId, path })` for one file, or the parent
+folder's pages of `files_nodes:list_tree_children` (`numItems` up to 200) for many.
 
 ## An Ariakit modal has `aria-labelledby`, not `aria-label`, so a `[aria-label^=...]` selector never matches
 

@@ -1147,7 +1147,7 @@ stayed on `0.7.5` in the 0.18.0 round, so the probes moved to the frames that di
 - **Dev host**: the **Video Player file view**. Open the video node directly
   (`/w/personal/home/files?nodeId=<id>`), then click the `Video player` tab — the frame does not
   mount until you do (see `file-node-view.md`). Find a video node without hunting the tree:
-  `files_nodes:list_tree` from page context, filtered on `contentType.startsWith("video/")`.
+  "Walk The Files Tree From Page Context" in `snippets.md`, filtered on `contentType.startsWith("video/")`.
 - **Pages host, as `qa.perm.owner`**: that account owns no workspace with a 0.18.0 plugin. Install
   **Gallery** into `qa-browser/home` from the catalog, run the probes on
   `/w/qa-browser/home/plugins/gallery/pages/gallery`, then uninstall it. A page needs no fixture

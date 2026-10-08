@@ -122,7 +122,7 @@ async function move_draft(args: {
 	if (moved._nay) throw new Error(moved._nay.message);
 }
 
-describe("list", () => {
+describe("internal_list", () => {
 	test("complete traversal refuses a hidden child on a later page while ordinary lists stay filtered", async () => {
 		const owner = await fixture();
 		const { t, db } = owner;
@@ -246,6 +246,49 @@ describe("list", () => {
 		expect(JSON.stringify(result)).not.toContain("foreign-private");
 	});
 
+	test("lists the user's draft move to the root under its new name, but not one from another workspace", async () => {
+		const f = await fixture();
+		await create_saved(f, "source");
+		const moved = await create_saved(f, "source/old-name");
+		await move_draft({ f, userId: f.db.userId, target: moved, destParent: { kind: "root" }, destName: "new-name" });
+
+		// The same user also owns the organization's default workspace. A root move there must stay there.
+		const otherDb = await f.t.run(async (ctx) => {
+			const organization = await ctx.db.get("organizations", f.db.organizationId);
+			if (!organization?.defaultWorkspaceId) throw new Error("Expected the organization default workspace");
+			const workspaceId = organization.defaultWorkspaceId;
+			const membership = await ctx.db
+				.query("organizations_workspaces_users")
+				.withIndex("by_workspace_user_active", (q) => q.eq("workspaceId", workspaceId).eq("userId", f.db.userId))
+				.first();
+			if (!membership) throw new Error("Expected a membership in the default workspace");
+			return { ...f.db, workspaceId, membershipId: membership._id };
+		});
+		const other = { ...f, db: otherDb };
+		await create_saved(other, "elsewhere");
+		const otherMoved = await create_saved(other, "elsewhere/other-old");
+		await move_draft({
+			f: other,
+			userId: f.db.userId,
+			target: otherMoved,
+			destParent: { kind: "root" },
+			destName: "other-new",
+		});
+
+		const result = await f.t.query(internal.files_visible.internal_list, {
+			organizationId: f.db.organizationId,
+			workspaceId: f.db.workspaceId,
+			visibilityUserId: f.db.userId,
+			overlayUserId: f.db.userId,
+			folderPath: "/",
+			mode: "children",
+			numItems: 10,
+			cursor: null,
+		});
+		expect(result._yay?.items.map((item) => item.path)).toEqual(["/new-name", "/source"]);
+		expect(result._yay?.isDone).toBe(true);
+	});
+
 	test("continues after empty filtered pages without losing later matches", async () => {
 		const f = await fixture();
 		for (let index = 0; index < 110; index++) {
@@ -258,8 +301,11 @@ describe("list", () => {
 		let done = false;
 		let emptyPages = 0;
 		for (let page = 0; page < 20 && !done; page++) {
-			const result: files_visible_internal_list_Result = await f.asUser.query(api.files_visible.list, {
-				membershipId: f.db.membershipId,
+			const result: files_visible_internal_list_Result = await f.t.query(internal.files_visible.internal_list, {
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				visibilityUserId: f.db.userId,
+				overlayUserId: f.db.userId,
 				folderPath: "/",
 				mode: "children",
 				numItems: 50,
@@ -280,217 +326,26 @@ describe("list", () => {
 		).toBe("/zzz-match");
 	});
 
-	test("merges saved, renamed, and private children in name order across pages", async () => {
-		const f = await fixture();
-		await create_saved(f, "a");
-		await create_saved(f, "c");
-		const renamed = await create_saved(f, "z");
-		await create_private({ f, path: "/b" });
-		const moved = await f.t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
-			organizationId: f.db.organizationId,
-			workspaceId: f.db.workspaceId,
-			userId: f.db.userId,
-			target: renamed,
-			destParent: { kind: "root" },
-			destName: "aa",
-		});
-		expect(moved._nay).toBeUndefined();
-		const paths: string[] = [];
-		let cursor: string | null = null;
-		let done = false;
-		for (let page = 0; page < 10 && !done; page++) {
-			const result: files_visible_internal_list_Result = await f.asUser.query(api.files_visible.list, {
-				membershipId: f.db.membershipId,
-				folderPath: "/",
-				mode: "children",
-				numItems: 1,
-				cursor,
-			});
-			if (result._nay) throw new Error(result._nay.message);
-			expect(result._yay.items.length).toBeLessThanOrEqual(1);
-			paths.push(...result._yay.items.map((item) => item.path));
-			cursor = result._yay.continueCursor;
-			done = result._yay.isDone;
-		}
-		expect(done).toBe(true);
-		expect(paths).toEqual(["/a", "/aa", "/b", "/c"]);
-	});
-
-	test("children and subtree mode list in raw name order across pages, with drafts and moves", async () => {
-		const f = await fixture();
-		const box = await create_saved(f, "box");
-		for (const name of ["Zeta", "b", "n"]) await create_saved(f, `box/${name}`);
-		const elsewhere = await create_saved(f, "elsewhere");
-
-		// Insert saved files directly. The listing reads only the node fields.
-		const insert_file = (parentId: typeof box.id | "root", path: string) =>
-			f.t.run(async (ctx) => {
-				const name = path.slice(path.lastIndexOf("/") + 1);
-				return {
-					kind: "saved" as const,
-					id: await ctx.db.insert("files_nodes", {
-						...test_mocks.files.base(),
-						organizationId: f.db.organizationId,
-						workspaceId: f.db.workspaceId,
-						createdBy: f.db.userId,
-						updatedBy: f.db.userId,
-						parentId,
-						name,
-						kind: "file",
-						path,
-						treePath: path,
-						pathDepth: path.split("/").length - 1,
-						lowercaseExtension: "txt",
-						contentType: "text/plain",
-					}),
-				};
-			});
-		for (const name of ["a.txt", "file-10.txt", "file-9.txt", "z.txt"]) await insert_file(box.id, `/box/${name}`);
-		const renamed = await insert_file(box.id, "/box/q.txt");
-		const outside = await insert_file("root", "/outside.txt");
-
-		await create_private({ f, path: "/box/c-draft" });
-		await create_private({ f, path: "/box/b-draft.txt", kind: "file" });
-		for (const [target, destName] of [
-			[renamed, "m.txt"],
-			[outside, "0-moved.txt"],
-			[elsewhere, "x-moved"],
-		] as const) {
-			const moved = await f.t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
-				organizationId: f.db.organizationId,
-				workspaceId: f.db.workspaceId,
-				userId: f.db.userId,
-				target,
-				destParent: box,
-				destName,
-			});
-			expect(moved._nay).toBeUndefined();
-		}
-
-		const list_all = async (args: { mode: "children" | "subtree"; numItems: number }) => {
-			const names: string[] = [];
-			let cursor: string | null = null;
-			let done = false;
-			for (let page = 0; page < 30 && !done; page++) {
-				const result: files_visible_internal_list_Result = await f.asUser.query(api.files_visible.list, {
-					membershipId: f.db.membershipId,
-					folderPath: "/box",
-					cursor,
-					...args,
-				});
-				if (result._nay) throw new Error(result._nay.message);
-				expect(result._yay.items.length).toBeLessThanOrEqual(args.numItems);
-				names.push(...result._yay.items.map((item) => item.name));
-				cursor = result._yay.continueCursor;
-				done = result._yay.isDone;
-			}
-			expect(done).toBe(true);
-			return names;
-		};
-
-		// Raw order puts digits and capitals before lowercase, and "file-10" before "file-9".
-		const names = [
-			"0-moved.txt",
-			"Zeta",
-			"a.txt",
-			"b",
-			"b-draft.txt",
-			"c-draft",
-			"file-10.txt",
-			"file-9.txt",
-			"m.txt",
-			"n",
-			"x-moved",
-			"z.txt",
-		];
-		// Each page size moves the page boundary, so a skipped or repeated entry changes the list.
-		for (const numItems of [1, 2, 3, 50]) {
-			expect(await list_all({ mode: "children", numItems })).toEqual(names);
-		}
-		expect(await list_all({ mode: "subtree", numItems: 50 })).toEqual(names);
-	});
-
-	test("walks private folders and moved-in saved folders once", async () => {
-		const f = await fixture();
-		const parent = await create_private({ f, path: "/draft/nested" });
-		await create_private({ f, path: "/draft/nested/preparing.txt", kind: "file" });
-		const source = await create_saved(f, "source/child");
-		const sourceParent = await f.asUser.query(api.files_nodes.get_visible_target_by_path, {
-			membershipId: f.db.membershipId,
-			path: "/source",
-		});
-		if (!sourceParent) throw new Error("Expected the saved source folder");
-		const moved = await f.t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
-			organizationId: f.db.organizationId,
-			workspaceId: f.db.workspaceId,
-			userId: f.db.userId,
-			target: sourceParent.target,
-			destParent: parent.target,
-			destName: "moved",
-		});
-		expect(moved._nay).toBeUndefined();
-		const result = await f.asUser.query(api.files_visible.list, {
-			membershipId: f.db.membershipId,
-			folderPath: "/draft",
-			mode: "subtree",
-			numItems: 20,
-			cursor: null,
-		});
-		if (result._nay) throw new Error(result._nay.message);
-		expect(result._yay.isDone).toBe(true);
-		expect(result._yay.items.map((item) => item.path)).toEqual([
-			"/draft/nested",
-			"/draft/nested/moved",
-			"/draft/nested/moved/child",
-			"/draft/nested/preparing.txt",
-		]);
-		expect(result._yay.items.find((item) => item.target.id === source.id)?.path).toBe("/draft/nested/moved/child");
-		expect(result._yay.items.at(-1)).toMatchObject({ target: { kind: "private" }, preparing: true });
-	});
-
-	test("keeps private children reachable after their parent is saved", async () => {
-		const f = await fixture();
-		const parent = await create_private({ f, path: "/draft" });
-		const child = await create_private({ f, path: "/draft/child" });
-		if (!parent.pendingUpdateId) throw new Error("Expected the parent proposal");
-		const saved = await f.asUser.action(api.files_pending_updates.save_file_pending_update, {
-			membershipId: f.db.membershipId,
-			target: parent.target,
-			pendingUpdateId: parent.pendingUpdateId,
-			reviewedRevision: 1,
-		});
-		if (saved._nay) throw new Error(saved._nay.message);
-		const result = await f.asUser.query(api.files_visible.list, {
-			membershipId: f.db.membershipId,
-			folderPath: "/draft",
-			mode: "children",
-			numItems: 20,
-			cursor: null,
-		});
-		if (result._nay) throw new Error(result._nay.message);
-		expect(result._yay.items).toMatchObject([{ target: child.target, path: "/draft/child", preparing: false }]);
-		expect(
-			await f.asUser.query(api.files_nodes.get_visible_target_by_path, {
-				membershipId: f.db.membershipId,
-				path: "/draft/child",
-			}),
-		).toEqual({ target: child.target, kind: "folder" });
-	});
-
 	test("rejects a cursor from a different folder", async () => {
 		const f = await fixture();
 		await create_private({ f, path: "/a/first" });
 		await create_private({ f, path: "/b/second" });
-		const first = await f.asUser.query(api.files_visible.list, {
-			membershipId: f.db.membershipId,
+		const scope = {
+			organizationId: f.db.organizationId,
+			workspaceId: f.db.workspaceId,
+			visibilityUserId: f.db.userId,
+			overlayUserId: f.db.userId,
+		};
+		const first = await f.t.query(internal.files_visible.internal_list, {
+			...scope,
 			folderPath: "/",
 			mode: "children",
 			numItems: 1,
 			cursor: null,
 		});
 		if (first._nay) throw new Error(first._nay.message);
-		const other = await f.asUser.query(api.files_visible.list, {
-			membershipId: f.db.membershipId,
+		const other = await f.t.query(internal.files_visible.internal_list, {
+			...scope,
 			folderPath: "/a",
 			mode: "children",
 			numItems: 1,

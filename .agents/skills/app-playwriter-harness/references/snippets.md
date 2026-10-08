@@ -703,7 +703,7 @@ the `membershipId` nearly every Files door wants. `kind` is `"query"` or `"mutat
 
 Read the door's real validator before guessing its args. HTTP `200` with
 `body.status === "error"` and an `ArgumentValidationError` prints the whole `v.object({...})`, which
-is faster than reading the source: that is how `files_visible:list` turned out to need
+is faster than reading the source: that is how `files_visible:list` (a door since removed) turned out to need
 `membershipId`, `folderPath`, `mode` and `numItems`, not the `organizationName`/`parentPath` pair
 that reads naturally. A door that answers `{ status: "success", value: { _nay: ... } }` executed fine
 and returned a Result refusal — that is the app's answer, not a transport failure.
@@ -737,6 +737,96 @@ probe returns the marked string; remove it and the original comes back. Poll for
 than sleeping a fixed time — `while <probe prints marker>; do sleep 5; done` — because the watcher
 push is not instant and a single re-run right after the edit usually still shows the old message.
 Verified 2026-09-14.
+
+## Walk The Files Tree From Page Context
+
+No query returns the whole tree. The sidebar loads one folder at a time, and so does this walk. It
+reads the same streams as the sidebar (`files_tree_stream_args` in `src/lib/files-tree-context.tsx`):
+for each folder and each kind, the open children, the owner's restricted children
+(`restricted: true`), and a member's 3 share streams. Each stream answers an empty, done page to
+the reader it is not for, so the walk works for the owner and for a member. A member with no
+workspace read gets no root rows from the open stream, so the walk also reads
+`list_tree_shared_roots` when it starts at the root.
+
+Rows are saved nodes only, never drafts. Each row has `_id`, `kind`, `name`, `path`, `parentId`,
+`archiveOperationId`, `restrictedScopeNodeId`, `contentType`, `canWrite`, `writeBlockedReason`, and
+`writePolicyState`. Pass `archived: [false, true]` to get archived nodes too. Each folder costs about
+10 calls, so start at the smallest folder that holds your fixture. A big walk takes longer than 5 s,
+so start it in one call and read it in later calls:
+
+```js
+// Call 1: start the walk and park it on `window`. It returns at once.
+await state.page.evaluate(
+	({ membershipId, startId, archived }) => {
+		window.__qaTreeWalk = (async () => {
+			const { app_convex, app_convex_api: api } = await import("/src/lib/app-convex-client.ts");
+			// Read every page of one stream. Only `isDone` ends it: a page can be empty.
+			const readAll = async (query, args) => {
+				const rows = [];
+				let cursor = null;
+				for (;;) {
+					const res = await app_convex.query(query, { ...args, paginationOpts: { numItems: 100, cursor } });
+					// The server sent no rows for this page. Read the same cursor with a smaller numItems.
+					if (res.pageStatus === "SplitRequired") throw new Error("SplitRequired: use a smaller numItems");
+					rows.push(...res.page);
+					if (res.isDone) return rows;
+					cursor = res.continueCursor;
+				}
+			};
+			const byId = new Map();
+			const folders = [startId];
+			const add = (rows) => {
+				for (const row of rows) {
+					// A member can get one node from two streams.
+					if (byId.has(row._id)) continue;
+					byId.set(row._id, row);
+					if (row.kind === "folder") folders.push(row._id);
+				}
+			};
+			if (startId === "root") {
+				for (const a of archived) {
+					for (const principalIndex of [0, 1, 2]) {
+						add(await readAll(api.files_nodes.list_tree_shared_roots, { membershipId, archived: a, principalIndex }));
+					}
+				}
+			}
+			while (folders.length > 0) {
+				const parentId = folders.shift();
+				for (const kind of ["folder", "file"]) {
+					for (const a of archived) {
+						const args = { membershipId, parentId, kind, archived: a };
+						const shared = { ...args, sort: [{ field: "name", direction: "asc" }], filter: null, namePrefix: null, segment: "value" };
+						const pages = await Promise.all([
+							readAll(api.files_nodes.list_tree_children, { ...args, restricted: false }),
+							readAll(api.files_nodes.list_tree_children, { ...args, restricted: true }),
+							...[0, 1, 2].map((principalIndex) =>
+								readAll(api.files_nodes.list_tree_children_shared, { ...shared, principalIndex }),
+							),
+						]);
+						add(pages.flat());
+					}
+				}
+			}
+			return [...byId.values()];
+		})();
+	},
+	{ membershipId: "<membershipId>", startId: "root", archived: [false] },
+);
+
+// Call 2 (and later): wait up to 4 s. `null` means the walk is still running.
+await state.page.evaluate(async () => {
+	const nodes = await Promise.race([window.__qaTreeWalk, new Promise((resolve) => setTimeout(() => resolve(null), 4000))]);
+	return nodes && nodes.map((node) => node.path).sort();
+});
+```
+
+`startId` is `"root"` or a folder id. For one node, skip the walk:
+`files_nodes.get_file_node_for_membership({ membershipId, fileNodeId })` returns the same row fields
+(`null` when the caller cannot read it), and `files_nodes.get_visible_target_by_path({ membershipId,
+path })` returns `{ target: { kind, id }, kind }` for the active saved node at a path, or for your
+own draft there. To list drafts, use the Pending tab door
+`files_pending_updates.list_files_pending_updates` (see `file-node-view.md`, "Reading the pending
+rows from the page") or the agent's `ls` and `find`.
 
 ## Prove A Cross-Origin Iframe Permissions-Policy Grant Without The Host App
 

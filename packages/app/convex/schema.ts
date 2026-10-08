@@ -2204,12 +2204,6 @@ const app_convex_schema = defineSchema({
 		.index("by_organization_workspace_user_expiresAt", ["organizationId", "workspaceId", "userId", "expiresAt"])
 		.index("by_user_target", ["userId", "target.kind", "target.id"])
 		.index("by_target", ["target.kind", "target.id"])
-		.index("by_user_pendingMove_destParent_destName", [
-			"userId",
-			"pendingMove.destParent.kind",
-			"pendingMove.destParent.id",
-			"pendingMove.destName",
-		])
 		// A root parent has no id, so the workspace must come first to keep root claims in one workspace.
 		.index("by_org_ws_user_pendingMove_destParent_destName", [
 			"organizationId",
@@ -2892,44 +2886,6 @@ const app_convex_schema = defineSchema({
 			"fieldPath",
 		])
 		.index("by_pendingUpdate_fieldPath", ["pendingUpdateId", "fieldPath"])
-		.index("by_org_workspace_archive_docKind_fieldPath_tree", [
-			"organizationId",
-			"workspaceId",
-			"archiveOperationId",
-			"docKind",
-			"fieldPath",
-			"treePath",
-		])
-		.index("by_org_workspace_archive_docKind_fieldPath_string_tree", [
-			"organizationId",
-			"workspaceId",
-			"archiveOperationId",
-			"docKind",
-			"fieldPath",
-			"valueKind",
-			"stringValue",
-			"treePath",
-		])
-		.index("by_org_workspace_archive_docKind_fieldPath_number_tree", [
-			"organizationId",
-			"workspaceId",
-			"archiveOperationId",
-			"docKind",
-			"fieldPath",
-			"valueKind",
-			"numberValue",
-			"treePath",
-		])
-		.index("by_org_workspace_archive_docKind_fieldPath_boolean_tree", [
-			"organizationId",
-			"workspaceId",
-			"archiveOperationId",
-			"docKind",
-			"fieldPath",
-			"valueKind",
-			"booleanValue",
-			"treePath",
-		])
 		// Saved-only metadata search: committed docs with one key, then by value, then in path order, so
 		// a folder scope is one `treePath` range. Committed docs have no `userId`.
 		.index("by_org_ws_source_archive_docKind_field_tree", [

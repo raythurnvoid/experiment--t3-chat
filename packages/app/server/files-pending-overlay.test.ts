@@ -196,6 +196,17 @@ describe("files_pending_overlay_list", () => {
 			});
 			if (moved._nay) throw new Error(moved._nay.message);
 		};
+		const draft = async (path: string, kind: "file" | "folder") => {
+			const created = await t.mutation(internal.files_nodes.create_private_node_by_path, {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId: db.userId,
+				path,
+				kind,
+			});
+			if (created._nay) throw new Error(created._nay.message);
+			return created._yay;
+		};
 		const list = (args: {
 			userId?: Id<"users">;
 			folderPath: string;
@@ -232,7 +243,7 @@ describe("files_pending_overlay_list", () => {
 			}
 			return { paths, firstCursor };
 		};
-		return { t, db, asUser, saved, move, list, list_all };
+		return { t, db, asUser, saved, move, draft, list, list_all };
 	}
 
 	test("pages saved rows, drafts and moved-in folders one row at a time, and refuses another listing's cursor", async () => {
@@ -243,14 +254,7 @@ describe("files_pending_overlay_list", () => {
 		await f.saved("other");
 		const outside = await f.saved("outside");
 		await f.saved("outside/x");
-		const created = await f.t.mutation(internal.files_nodes.create_private_node_by_path, {
-			organizationId: f.db.organizationId,
-			workspaceId: f.db.workspaceId,
-			userId: f.db.userId,
-			path: "/src/b",
-			kind: "folder",
-		});
-		if (created._nay) throw new Error(created._nay.message);
+		await f.draft("/src/b", "folder");
 		await f.move({ userId: f.db.userId, nodeId: outside, destId: src, destName: "d" });
 
 		const children = await f.list_all({ folderPath: "/src", mode: "children", numItems: 1 });
@@ -272,19 +276,130 @@ describe("files_pending_overlay_list", () => {
 		});
 	});
 
+	test("lists children in raw name order across pages, with drafts and moves", async () => {
+		const f = await fixture();
+		const box = await f.saved("box");
+		for (const name of ["Zeta", "b", "n"]) await f.saved(`box/${name}`);
+		const elsewhere = await f.saved("elsewhere");
+
+		// Insert saved files directly. The listing reads only the node fields.
+		const insert_file = (parentId: Id<"files_nodes"> | "root", path: string) =>
+			f.t.run(async (ctx) => {
+				const name = path.slice(path.lastIndexOf("/") + 1);
+				return await ctx.db.insert("files_nodes", {
+					...test_mocks.files.base(),
+					organizationId: f.db.organizationId,
+					workspaceId: f.db.workspaceId,
+					createdBy: f.db.userId,
+					updatedBy: f.db.userId,
+					parentId,
+					name,
+					kind: "file",
+					path,
+					treePath: path,
+					pathDepth: path.split("/").length - 1,
+					lowercaseExtension: "txt",
+					contentType: "text/plain",
+				});
+			});
+		for (const name of ["a.txt", "file-10.txt", "file-9.txt", "z.txt"]) await insert_file(box, `/box/${name}`);
+		const renamed = await insert_file(box, "/box/q.txt");
+		const outside = await insert_file("root", "/outside.txt");
+
+		for (const [path, kind] of [
+			["/box/c-draft", "folder"],
+			["/box/b-draft.txt", "file"],
+		] as const) {
+			await f.draft(path, kind);
+		}
+		for (const [nodeId, destName] of [
+			[renamed, "m.txt"],
+			[outside, "0-moved.txt"],
+			[elsewhere, "x-moved"],
+		] as const) {
+			await f.move({ userId: f.db.userId, nodeId, destId: box, destName });
+		}
+
+		// Raw order puts digits and capitals before lowercase, and "file-10" before "file-9".
+		const paths = [
+			"0-moved.txt",
+			"Zeta",
+			"a.txt",
+			"b",
+			"b-draft.txt",
+			"c-draft",
+			"file-10.txt",
+			"file-9.txt",
+			"m.txt",
+			"n",
+			"x-moved",
+			"z.txt",
+		].map((name) => `/box/${name}`);
+		// Each page size moves the page boundary, so a skipped or repeated entry changes the list.
+		for (const numItems of [1, 2, 3, 50]) {
+			expect((await f.list_all({ folderPath: "/box", mode: "children", numItems })).paths).toEqual(paths);
+		}
+	});
+
+	test("walks a private folder and a saved folder moved into it once", async () => {
+		const f = await fixture();
+		const parent = await f.draft("/draft/nested", "folder");
+		await f.draft("/draft/nested/preparing.txt", "file");
+		const source = await f.saved("source");
+		const child = await f.saved("source/child");
+		const moved = await f.t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
+			organizationId: f.db.organizationId,
+			workspaceId: f.db.workspaceId,
+			userId: f.db.userId,
+			target: { kind: "saved", id: source },
+			destParent: parent.target,
+			destName: "moved",
+		});
+		if (moved._nay) throw new Error(moved._nay.message);
+
+		const result = await f.list({ folderPath: "/draft", mode: "subtree", numItems: 20, cursor: null });
+		if (result._nay) throw new Error(result._nay.message);
+		expect(result._yay.isDone).toBe(true);
+		expect(result._yay.items.map((item) => item.path)).toEqual([
+			"/draft/nested",
+			"/draft/nested/moved",
+			"/draft/nested/moved/child",
+			"/draft/nested/preparing.txt",
+		]);
+		expect(result._yay.items.find((item) => item.target.id === child)?.path).toBe("/draft/nested/moved/child");
+		expect(result._yay.items.at(-1)).toMatchObject({ target: { kind: "private" }, preparing: true });
+	});
+
+	test("keeps private children listed after their parent is saved", async () => {
+		const f = await fixture();
+		const parent = await f.draft("/draft", "folder");
+		const child = await f.draft("/draft/child", "folder");
+		if (!parent.pendingUpdateId) throw new Error("Expected the parent proposal");
+		const saved = await f.asUser.action(api.files_pending_updates.save_file_pending_update, {
+			membershipId: f.db.membershipId,
+			target: parent.target,
+			pendingUpdateId: parent.pendingUpdateId,
+			reviewedRevision: 1,
+		});
+		if (saved._nay) throw new Error(saved._nay.message);
+
+		const result = await f.list({ folderPath: "/draft", mode: "children", numItems: 20, cursor: null });
+		if (result._nay) throw new Error(result._nay.message);
+		expect(result._yay.items).toMatchObject([{ target: child.target, path: "/draft/child", preparing: false }]);
+		expect(
+			await f.asUser.query(api.files_nodes.get_visible_target_by_path, {
+				membershipId: f.db.membershipId,
+				path: "/draft/child",
+			}),
+		).toEqual({ target: child.target, kind: "folder" });
+	});
+
 	test("does not show a row again when rows are added before the last shown row", async () => {
 		const f = await fixture();
 		await f.saved("d");
 		for (const name of ["b1", "b2", "b3", "b4"]) await f.saved(`d/${name}`);
 		// A draft first, so the page stops inside the saved stream's page.
-		const created = await f.t.mutation(internal.files_nodes.create_private_node_by_path, {
-			organizationId: f.db.organizationId,
-			workspaceId: f.db.workspaceId,
-			userId: f.db.userId,
-			path: "/d/a0",
-			kind: "folder",
-		});
-		if (created._nay) throw new Error(created._nay.message);
+		await f.draft("/d/a0", "folder");
 		const first = await f.list({ folderPath: "/d", mode: "children", numItems: 3, cursor: null });
 		if (first._nay) throw new Error(first._nay.message);
 		expect(first._yay.items.map((item) => item.path)).toEqual(["/d/a0", "/d/b1", "/d/b2"]);

@@ -679,8 +679,8 @@ product decision, so record the answer here before changing the behaviour. An en
   drops rows the caller cannot read after the search reads its page. So a member who calls it with a
   small page size and gets an empty page with `isDone: false` learns that some hidden file matches a
   name word, a content word, or a metadata value. They never learn which file, its path, or its text.
-  This is accepted, like the same signal from `list_tree`: a full answer would need access filters
-  inside the search index.
+  This is accepted: a full answer would need access filters inside the search index. The tree pages
+  do not give this signal (see "Files tree reads").
 
 # Endpoints
 
@@ -747,8 +747,8 @@ product decision, so record the answer here before changing the behaviour. An en
 ## Files tree reads
 
 The sidebar loads the tree one open folder at a time through the `files_nodes` queries below. All of
-them resolve the reader with `files_nodes_db_get_tree_reader` and never show more than `list_tree`
-does. `files_share_links.list_workspace_links` resolves its reader with the same helper.
+them resolve the reader with `files_nodes_db_get_tree_reader` and never show a node the caller cannot
+`content.read`. `files_share_links.list_workspace_links` resolves its reader with the same helper.
 
 - `files_nodes_db_get_tree_reader` requires a live `users` doc before reading membership. Missing auth or a
   missing user throws `Unauthenticated`. An anonymous user with `deletedAt` does too, even when
@@ -764,7 +764,7 @@ does. `files_share_links.list_workspace_links` resolves its reader with the same
 - `get_tree_ancestors` takes a raw id string, so a bad `?nodeId=` returns `null` instead of an argument
   error. It walks up from the node and stops at the first folder the caller cannot read, because the
   tree cannot show a row under a hidden folder. This hides no names: every tree row carries its
-  `path`, `parentId`, and `restrictedScopeNodeId`, the same as `list_tree` rows, so a shared node's
+  `path`, `parentId`, and `restrictedScopeNodeId`, the same as `list_tree_children` rows, so a shared node's
   path still names the hidden folders above it.
 - `list_tree_shared_roots` pages every share of the member for the "Shared with you" group, one
   principal at a time (see "Share rows" under "File sharing"). It has no cap: it reads the share
@@ -848,10 +848,10 @@ does. `files_share_links.list_workspace_links` resolves its reader with the same
   50 active files per case variant of the prefix `rea`, so a folder with 50+ names like `reaction-*.md`
   before `README.md` shows no README in the Files table.
 - Every folder row shows a chevron, even an empty one. A chevron only on folders with children would
-  tell a reader that a folder holds files they cannot see. Paging is not that tight: the filter runs
-  after the index page, so a caller who pages with `numItems: 1` gets empty pages with
-  `isDone: false` for hidden children and can count them. `list_tree` pages the same way, so this is
-  not new.
+  tell a reader that a folder holds files they cannot see. The tree pages keep this: a hidden child
+  never takes a page slot (see `list_tree_children` above), so paging with `numItems: 1` cannot
+  count hidden children. The search box pages can still give that signal (see the decided note on
+  `files_nodes.search_saved`).
 
 ## File sharing
 
@@ -1306,7 +1306,8 @@ Be explicit about this when planning work; do not assume the subsystem is comple
   is 6× the single-file create oracle and sustained is 2×. The companion query
   `files_nodes.get_upload_conflicts` cannot be rate-limited (queries cannot charge the limiter), so
   it filters by per-node `content.read` and answers "no conflict" for anything the caller cannot
-  read — it must never reveal more than `list_tree` does. The other skip reason, `"path_blocked"`,
+  read — it must never reveal more than the tree pages (`list_tree_children` and the share streams)
+  do. The other skip reason, `"path_blocked"`,
   says what kind of node blocks the path, so the mutation only answers it when the caller can
   `content.read` the blocking node; a hidden folder at the target and a hidden file at an ancestor
   both fall back to `"conflict"`.

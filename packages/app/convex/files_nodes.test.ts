@@ -50,6 +50,7 @@ import {
 	test_create_saved_text_file,
 	test_get_file_yjs_pointers,
 	test_mocks,
+	test_meta_search,
 	test_mocks_fill_db_with,
 	test_run_with_flush,
 } from "./setup.test.ts";
@@ -457,104 +458,6 @@ async function seed_paginated_bash_listing_fixture(ctx: MutationCtx) {
 	return { ...membership, docsFolderId };
 }
 
-describe("list_tree", () => {
-	test("returns active and archived nodes across pages in treePath order", async () => {
-		const t = test_convex();
-		const db = await t.run(async (ctx) => seed_paginated_bash_listing_fixture(ctx));
-		const asUser = t.withIdentity({
-			issuer: "https://clerk.test",
-			external_id: db.userId,
-			name: "Test User",
-		});
-
-		const firstPage = await asUser.query(api.files_nodes.list_tree, {
-			membershipId: db.membershipId,
-			paginationOpts: { numItems: 3, cursor: null },
-		});
-		const secondPage = await asUser.query(api.files_nodes.list_tree, {
-			membershipId: db.membershipId,
-			paginationOpts: { numItems: 3, cursor: firstPage.continueCursor },
-		});
-		const thirdPage = await asUser.query(api.files_nodes.list_tree, {
-			membershipId: db.membershipId,
-			paginationOpts: { numItems: 3, cursor: secondPage.continueCursor },
-		});
-		const treeNodesList = [...firstPage.page, ...secondPage.page, ...thirdPage.page];
-		expect(firstPage.isDone).toBe(false);
-		expect(secondPage.isDone).toBe(false);
-		expect(thirdPage.isDone).toBe(true);
-		expect(firstPage.page).toHaveLength(3);
-		expect(secondPage.page).toHaveLength(3);
-
-		expect(treeNodesList.map((item) => item.path)).toEqual([
-			"/docs-archive",
-			"/docs-archive/outside.md",
-			"/docs",
-			"/docs/a.md",
-			"/docs/b.md",
-			"/docs/nested",
-			"/docs/nested/c.md",
-			"/docs/z-archived.md",
-		]);
-		expect(treeNodesList.map((item) => item.archiveOperationId)).toContain("archive-operation-test");
-	});
-
-	test("caps large page requests and continues without losing nodes", async () => {
-		const t = test_convex();
-		const db = await t.run(async (ctx) => {
-			const membership = await test_mocks_fill_db_with.membership(ctx);
-			await Promise.all(
-				Array.from({ length: 501 }, (_, index) => {
-					const name = `file-${String(index).padStart(4, "0")}.md`;
-					return ctx.db.insert("files_nodes", {
-						...test_mocks.files.base(),
-						organizationId: membership.organizationId,
-						workspaceId: membership.workspaceId,
-						createdBy: membership.userId,
-						updatedBy: membership.userId,
-						name,
-						path: `/${name}`,
-						treePath: `/${name}`,
-					});
-				}),
-			);
-			return membership;
-		});
-		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
-		const firstPage = await asUser.query(api.files_nodes.list_tree, {
-			membershipId: db.membershipId,
-			paginationOpts: { numItems: 40_000, cursor: null },
-		});
-		const secondPage = await asUser.query(api.files_nodes.list_tree, {
-			membershipId: db.membershipId,
-			paginationOpts: { numItems: 40_000, cursor: firstPage.continueCursor },
-		});
-
-		expect(firstPage.page).toHaveLength(500);
-		expect(firstPage.isDone).toBe(false);
-		expect(secondPage.page).toHaveLength(1);
-		expect(secondPage.isDone).toBe(true);
-		expect(new Set([...firstPage.page, ...secondPage.page].map((node) => node._id)).size).toBe(501);
-	});
-
-	test("refuses missing auth and ends a different user's membership with an empty page", async () => {
-		const t = test_convex();
-		const db = await t.run(async (ctx) => seed_paginated_bash_listing_fixture(ctx));
-		const other = await t.run(async (ctx) =>
-			test_mocks_fill_db_with.membership(ctx, { organizationName: "other-organization" }),
-		);
-		const args = { membershipId: db.membershipId, paginationOpts: { numItems: 3, cursor: null } };
-		await expect(t.query(api.files_nodes.list_tree, args)).rejects.toThrow("Unauthenticated");
-
-		const asOther = t.withIdentity({ issuer: "https://clerk.test", external_id: other.userId });
-		expect(await asOther.query(api.files_nodes.list_tree, args)).toEqual({
-			page: [],
-			isDone: true,
-			continueCursor: "",
-		});
-	});
-});
-
 /**
  * Insert one node for the tree query tests. `scope: "self"` makes the node its own restricted scope.
  */
@@ -849,7 +752,7 @@ describe("list_tree_children", () => {
 		expect(activeFolders.page.map((row) => row._id)).toEqual([f.nodes.openSubId]);
 		expect(archivedFiles.page.map((row) => row._id)).toEqual([f.nodes.archivedFileId]);
 		expect(archivedFolders.page.map((row) => row._id)).toEqual([f.nodes.archivedFolderId]);
-		// Rows carry the same public fields as `list_tree`.
+		// A row carries the computed write fields, not the raw `writePolicy` field.
 		expect(activeFiles.page[0]).toMatchObject({ canWrite: true, writeBlockedReason: null, writePolicyState: "none" });
 		expect("writePolicy" in activeFiles.page[0]).toBe(false);
 	});
@@ -2372,9 +2275,13 @@ test("generated sibling file is visible in the tree query", async () => {
 		return { sourceNodeId, markdownNodeId };
 	});
 
-	const { page: treeNodesList } = await asUser.query(api.files_nodes.list_tree, {
+	const { page: treeNodesList } = await asUser.query(api.files_nodes.list_tree_children, {
 		membershipId: db.membershipId,
-		paginationOpts: { numItems: 500, cursor: null },
+		parentId: files_ROOT_ID,
+		kind: "file",
+		archived: false,
+		restricted: false,
+		paginationOpts: { numItems: 50, cursor: null },
 	});
 
 	const treeNodeIds = treeNodesList.map((fileNode) => fileNode._id);
@@ -12540,15 +12447,13 @@ test("metadata search indexes committed frontmatter values and scopes by path", 
 		markdown: ["---", "from: alice@example.com", "amount: 300", "sentAt: 2026-06-01", "---", "Outside"].join("\n"),
 	});
 
-	const search = (plan: files_metadata_SearchPlan, pathPrefix?: string) =>
-		asUser.query(internal.files_metadata.search, {
+	const search = (plan: files_metadata_SearchPlan, folderPath?: string) =>
+		test_meta_search(t, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId: db.userId,
 			plan,
-			pathPrefix,
-			numItems: 20,
-			cursor: null,
+			folderPath,
 		});
 
 	const fromAlice = await search({ op: "eq", fieldPath: "frontmatter.from", value: "alice@example.com" });
@@ -12691,17 +12596,15 @@ test("metadata search uses current-user pending frontmatter and hides stale comm
 	});
 
 	const searchAs = (userId: Id<"users">, value: string) =>
-		asUser.query(internal.files_metadata.search, {
+		test_meta_search(t, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId,
 			plan: { op: "eq", fieldPath: "frontmatter.from", value },
-			numItems: 20,
-			cursor: null,
 		});
 
 	const pendingHit = await searchAs(db.userId, "pending@example.com");
-	expect(pendingHit.items).toMatchObject([{ path, sourceKind: "pending" }]);
+	expect(pendingHit.items).toMatchObject([{ path, match: { sourceKind: "pending" } }]);
 
 	const pendingMetadata = await asUser.query(internal.files_metadata.get_by_path, {
 		organizationId: db.organizationId,
@@ -12726,7 +12629,7 @@ test("metadata search uses current-user pending frontmatter and hides stale comm
 	expect(staleCommittedMiss.items).toEqual([]);
 
 	const otherUserCommittedHit = await searchAs(otherUserId, "committed@example.com");
-	expect(otherUserCommittedHit.items).toMatchObject([{ path, sourceKind: "committed" }]);
+	expect(otherUserCommittedHit.items).toMatchObject([{ path, match: { sourceKind: "committed" } }]);
 
 	const otherUserPendingMiss = await searchAs(otherUserId, "pending@example.com");
 	expect(otherUserPendingMiss.items).toEqual([]);
@@ -12734,7 +12637,7 @@ test("metadata search uses current-user pending frontmatter and hides stale comm
 	// Include both committed and pending dates in the window. One pending doc then proves the
 	// overlay hides the committed doc instead of excluding it by range.
 	const dateRangeAs = (userId: Id<"users">) =>
-		asUser.query(internal.files_metadata.search, {
+		test_meta_search(t, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId,
@@ -12745,15 +12648,13 @@ test("metadata search uses current-user pending frontmatter and hides stale comm
 				gte: Date.UTC(2026, 5, 1),
 				lt: Date.UTC(2026, 7, 1),
 			},
-			numItems: 20,
-			cursor: null,
 		});
 
 	const pendingDateHit = await dateRangeAs(db.userId);
-	expect(pendingDateHit.items).toMatchObject([{ path, sourceKind: "pending" }]);
+	expect(pendingDateHit.items).toMatchObject([{ path, match: { sourceKind: "pending" } }]);
 
 	const otherUserDateHit = await dateRangeAs(otherUserId);
-	expect(otherUserDateHit.items).toMatchObject([{ path, sourceKind: "committed" }]);
+	expect(otherUserDateHit.items).toMatchObject([{ path, match: { sourceKind: "committed" } }]);
 });
 
 test("a pure-move row keeps committed metadata visible", async () => {
@@ -12778,30 +12679,36 @@ test("a pure-move row keeps committed metadata visible", async () => {
 	});
 
 	// A pure move row (mv without edits) carries no content and must not mask metadata.
-	const moved = await t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
-		organizationId: db.organizationId,
-		workspaceId: db.workspaceId,
-		userId: db.userId,
-		target: { kind: "saved", id: nodeId },
-		destParent: { kind: "root" },
-		destName: "meta-moved.md",
-	});
-	if (moved._nay) throw new Error(moved._nay.message);
+	// Fake timers let the test run the overlay job that writes the moved file's place fields.
+	vi.useFakeTimers();
+	try {
+		const moved = await t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			target: { kind: "saved", id: nodeId },
+			destParent: { kind: "root" },
+			destName: "meta-moved.md",
+		});
+		if (moved._nay) throw new Error(moved._nay.message);
+		vi.advanceTimersByTime(1);
+		await t.finishInProgressScheduledFunctions();
+	} finally {
+		vi.useRealTimers();
+	}
 
 	const search = () =>
-		asUser.query(internal.files_metadata.search, {
+		test_meta_search(t, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId: db.userId,
 			plan: { op: "eq", fieldPath: "frontmatter.from", value: "committed@example.com" },
-			numItems: 20,
-			cursor: null,
 		});
 
 	// Search still surfaces the file's committed metadata docs.
 	const committedHit = await search();
 	expect(committedHit.items).toMatchObject([
-		{ path: "/meta-moved.md", target: { kind: "saved", id: nodeId }, sourceKind: "committed" },
+		{ path: "/meta-moved.md", target: { kind: "saved", id: nodeId }, match: { sourceKind: "committed" } },
 	]);
 
 	// The get path resolves the visible destination and reports committed metadata.
@@ -12903,15 +12810,13 @@ test("metadata search updates indexed scope when files are renamed and moved", a
 		}),
 	);
 
-	const search = (pathPrefix?: string) =>
-		asUser.query(internal.files_metadata.search, {
+	const search = (folderPath?: string) =>
+		test_meta_search(t, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId: db.userId,
 			plan: { op: "eq", fieldPath: "frontmatter.scope", value: "metadata-scope-value" },
-			pathPrefix,
-			numItems: 10,
-			cursor: null,
+			folderPath,
 		});
 
 	expect((await search()).items.map((item) => item.path)).toEqual(["/metadata-scope/source.md"]);
@@ -12956,13 +12861,11 @@ test("metadata search updates indexed scope when files are archived and unarchiv
 	});
 
 	const search = () =>
-		asUser.query(internal.files_metadata.search, {
+		test_meta_search(t, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId: db.userId,
 			plan: { op: "eq", fieldPath: "frontmatter.scope", value: "metadata-archive-value" },
-			numItems: 10,
-			cursor: null,
 		});
 
 	expect((await search()).items.map((item) => item.path)).toEqual(["/metadata-archive/source.md"]);
@@ -13029,15 +12932,13 @@ test("file metadata is searchable next to frontmatter and survives a content sav
 		{ key: "released-on", value: "2026-08-18" },
 	]);
 
-	const search = (plan: files_metadata_SearchPlan, pathPrefix?: string) =>
-		asUser.query(internal.files_metadata.search, {
+	const search = (plan: files_metadata_SearchPlan, folderPath?: string) =>
+		test_meta_search(t, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId: db.userId,
 			plan,
-			pathPrefix,
-			numItems: 10,
-			cursor: null,
+			folderPath,
 		});
 
 	// The same key name on both sources stays two separate fields.
@@ -13170,13 +13071,11 @@ test("file metadata stays visible while a pending content edit hides committed f
 	if (pending._nay) throw new Error(pending._nay.message);
 
 	const search = (plan: files_metadata_SearchPlan) =>
-		asUser.query(internal.files_metadata.search, {
+		test_meta_search(t, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId: db.userId,
 			plan,
-			numItems: 10,
-			cursor: null,
 		});
 
 	// The pending edit replaces what the file's own frontmatter says.
@@ -13352,13 +13251,11 @@ test("update_entries_by_path lets the agent set and remove keys on an uploaded f
 
 	expect(
 		(
-			await asUser.query(internal.files_metadata.search, {
+			await test_meta_search(t, {
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
 				userId: db.userId,
 				plan: { op: "eq", fieldPath: "metadata.status", value: "signed" },
-				numItems: 10,
-				cursor: null,
 			})
 		).items,
 	).toMatchObject([{ path, target: { kind: "saved", id: nodeId } }]);
@@ -13554,13 +13451,11 @@ describe("folder metadata", () => {
 		});
 		if (destination._nay) throw new Error(destination._nay.message);
 
-		const search = (pathPrefix?: string) =>
-			t.query(internal.files_metadata.search, {
+		const search = (folderPath?: string) =>
+			test_meta_search(t, {
 				...scope,
 				plan: { op: "eq", fieldPath: "metadata.folder-key", value: "shared" },
-				pathPrefix,
-				numItems: 10,
-				cursor: null,
+				folderPath,
 			});
 
 		const assertScope = async (paths: string[], archived: boolean) => {
@@ -15936,11 +15831,15 @@ describe("search box doors", () => {
 		});
 		if (written._nay) throw new Error(written._nay.message);
 
-		const { page: tree } = await asOwner.query(api.files_nodes.list_tree, {
+		const { page: rootFolders } = await asOwner.query(api.files_nodes.list_tree_children, {
 			membershipId: db.membershipId,
-			paginationOpts: { numItems: 500, cursor: null },
+			parentId: files_ROOT_ID,
+			kind: "folder",
+			archived: false,
+			restricted: false,
+			paginationOpts: { numItems: 50, cursor: null },
 		});
-		const tasksFolderId = tree.find((fileNode) => fileNode.path === "/tasks")!._id;
+		const tasksFolderId = rootFolders.find((fileNode) => fileNode.path === "/tasks")!._id;
 
 		return { db, asOwner, openTaskId, fixedTaskId, archivedTaskId, tasksFolderId };
 	}
@@ -16441,11 +16340,15 @@ describe("search box doors", () => {
 	test("archiving a folder drops its keys and values from the catalog", async () => {
 		const t = test_convex();
 		const seeded = await seed_search_box_fixture(t);
-		const { page: tree } = await seeded.asOwner.query(api.files_nodes.list_tree, {
+		const { page: rootFolders } = await seeded.asOwner.query(api.files_nodes.list_tree_children, {
 			membershipId: seeded.db.membershipId,
-			paginationOpts: { numItems: 500, cursor: null },
+			parentId: files_ROOT_ID,
+			kind: "folder",
+			archived: false,
+			restricted: false,
+			paginationOpts: { numItems: 50, cursor: null },
 		});
-		const archiveFolderId = tree.find((fileNode) => fileNode.path === "/tasks-archive")!._id;
+		const archiveFolderId = rootFolders.find((fileNode) => fileNode.path === "/tasks-archive")!._id;
 		const keys = () =>
 			seeded.asOwner
 				.query(api.files_metadata.list_search_fields, { membershipId: seeded.db.membershipId })
@@ -17178,13 +17081,11 @@ describe("create-time metadata", () => {
 		// The map is searchable straight away, without anybody opening the file.
 		expect(
 			(
-				await asUser.query(internal.files_metadata.search, {
+				await test_meta_search(t, {
 					organizationId: db.organizationId,
 					workspaceId: db.workspaceId,
 					userId: db.userId,
 					plan: { op: "eq", fieldPath: "metadata.source", value: "upload" },
-					numItems: 10,
-					cursor: null,
 				})
 			).items,
 		).toMatchObject([{ path: "/quarterly-report.pdf", target: { kind: "saved", id: upload._yay.nodeId } }]);
@@ -22244,12 +22145,26 @@ describe("selected file writers", () => {
 			}),
 		).toBe(false);
 
-		const { page: tree } = await asMember.query(api.files_nodes.list_tree, {
-			membershipId: member.membershipId,
-			paginationOpts: { numItems: 500, cursor: null },
+		const [{ page: outerFolders }, { page: innerFolders }] = await Promise.all(
+			[outerId, innerId].map((parentId) =>
+				asMember.query(api.files_nodes.list_tree_children, {
+					membershipId: member.membershipId,
+					parentId,
+					kind: "folder",
+					archived: false,
+					restricted: false,
+					paginationOpts: { numItems: 50, cursor: null },
+				}),
+			),
+		);
+		expect(outerFolders.find((node) => node._id === innerId)).toMatchObject({
+			canWrite: true,
+			writePolicyState: "none",
 		});
-		expect(tree.find((node) => node._id === innerId)).toMatchObject({ canWrite: true, writePolicyState: "none" });
-		expect(tree.find((node) => node._id === deepId)).toMatchObject({ canWrite: true, writePolicyState: "writer" });
+		expect(innerFolders.find((node) => node._id === deepId)).toMatchObject({
+			canWrite: true,
+			writePolicyState: "writer",
+		});
 	});
 
 	test("direct account reach cannot match a parent rule during creation", async () => {
@@ -24362,10 +24277,11 @@ describe("files_nodes public read-only view", () => {
 		}
 
 		// The nested folder becomes a restricted scope and the second member gets a direct grant
-		// on it. File sharing does not write these grants yet, so the test inserts the docs.
-		const member = await t.run(async (ctx) => {
+		// on it. The test inserts the docs, and the flush writes the grant's share row.
+		const member = await test_run_with_flush(t, async (ctx) => {
 			await ctx.db.patch("files_nodes", inner._yay.nodeId, {
 				restrictedScopeNodeId: inner._yay.nodeId,
+				isRestrictedScopeRoot: true,
 			});
 			await ctx.db.patch("files_nodes", file._yay.nodeId, {
 				restrictedScopeNodeId: inner._yay.nodeId,
@@ -24413,14 +24329,39 @@ describe("files_nodes public read-only view", () => {
 		};
 	}
 
-	test("list_tree reports no local lock on children of a hidden locked parent", async () => {
+	test("list_tree_children and list_tree_shared_roots report no local lock on children of a hidden locked parent", async () => {
 		const t = test_convex();
 		const f = await seed_hidden_lock_root(t);
+		const list_children = (args: {
+			as: typeof f.asOwner;
+			membershipId: Id<"organizations_workspaces_users">;
+			parentId: Id<"files_nodes"> | typeof files_ROOT_ID;
+			kind: "folder" | "file";
+			restricted: boolean;
+		}) =>
+			args.as.query(api.files_nodes.list_tree_children, {
+				membershipId: args.membershipId,
+				parentId: args.parentId,
+				kind: args.kind,
+				archived: false,
+				restricted: args.restricted,
+				paginationOpts: { numItems: 50, cursor: null },
+			});
 
-		const { page: memberTree } = await f.asMember.query(api.files_nodes.list_tree, {
-			membershipId: f.memberMembershipId,
-			paginationOpts: { numItems: 500, cursor: null },
-		});
+		// The member gets the granted folder from their shares and its file from that folder. The root
+		// lists nothing for them.
+		const member = { as: f.asMember, membershipId: f.memberMembershipId, restricted: false };
+		const [{ page: memberRoot }, { page: memberShares }, { page: memberFiles }] = await Promise.all([
+			list_children({ ...member, parentId: files_ROOT_ID, kind: "folder" }),
+			f.asMember.query(api.files_nodes.list_tree_shared_roots, {
+				membershipId: f.memberMembershipId,
+				archived: false,
+				principalIndex: 0,
+				paginationOpts: { numItems: 50, cursor: null },
+			}),
+			list_children({ ...member, parentId: f.innerId, kind: "file" }),
+		]);
+		const memberTree = [...memberRoot, ...memberShares, ...memberFiles];
 		// Only the granted scope is listed; the outer lock root itself never appears.
 		expect(memberTree.map((node) => node.path).sort()).toEqual(["/outer/inner", "/outer/inner/secret.md"]);
 		for (const node of memberTree) {
@@ -24431,47 +24372,18 @@ describe("files_nodes public read-only view", () => {
 			expect("writePolicy" in node).toBe(false);
 		}
 
-		const { page: ownerTree } = await f.asOwner.query(api.files_nodes.list_tree, {
-			membershipId: f.db.membershipId,
-			paginationOpts: { numItems: 500, cursor: null },
-		});
-		const outerRow = ownerTree.find((node) => node._id === f.outerId);
-		const innerRow = ownerTree.find((node) => node._id === f.innerId);
+		const owner = { as: f.asOwner, membershipId: f.db.membershipId, kind: "folder" as const };
+		const [{ page: ownerRoot }, { page: ownerOuter }] = await Promise.all([
+			list_children({ ...owner, parentId: files_ROOT_ID, restricted: false }),
+			// The inner folder is its own restricted root, so the owner reads it in the restricted twin.
+			list_children({ ...owner, parentId: f.outerId, restricted: true }),
+		]);
+		const outerRow = ownerRoot.find((node) => node._id === f.outerId);
+		const innerRow = ownerOuter.find((node) => node._id === f.innerId);
 		expect(outerRow).toMatchObject({
 			writePolicyState: "read_only",
 		});
 		expect(innerRow).toMatchObject({
-			writePolicyState: "none",
-		});
-	});
-
-	test("list_tree keeps paging past a hidden node", async () => {
-		const t = test_convex();
-		const f = await seed_hidden_lock_root(t);
-		const hiddenPage = await f.asMember.query(api.files_nodes.list_tree, {
-			membershipId: f.memberMembershipId,
-			paginationOpts: { numItems: 1, cursor: null },
-		});
-		expect(hiddenPage.page).toEqual([]);
-		expect(hiddenPage.isDone).toBe(false);
-		const memberPage = await f.asMember.query(api.files_nodes.list_tree, {
-			membershipId: f.memberMembershipId,
-			paginationOpts: { numItems: 1, cursor: hiddenPage.continueCursor },
-		});
-		expect(memberPage.page).toHaveLength(1);
-		expect(memberPage.page[0]).toMatchObject({ _id: f.innerId, writePolicyState: "none" });
-
-		const sourcePage = await f.asOwner.query(api.files_nodes.list_tree, {
-			membershipId: f.db.membershipId,
-			paginationOpts: { numItems: 1, cursor: null },
-		});
-		const ownerPage = await f.asOwner.query(api.files_nodes.list_tree, {
-			membershipId: f.db.membershipId,
-			paginationOpts: { numItems: 1, cursor: sourcePage.continueCursor },
-		});
-		expect(ownerPage.page).toHaveLength(1);
-		expect(ownerPage.page[0]).toMatchObject({
-			_id: f.innerId,
 			writePolicyState: "none",
 		});
 	});
@@ -24592,12 +24504,17 @@ describe("member controls on plugin-labeled nodes", () => {
 			path: "/labeled/child/leaf",
 		});
 		if (created._nay) throw new Error(created._nay.message);
-		const { page: tree } = await asOwner.query(api.files_nodes.list_tree, {
-			membershipId: db.membershipId,
-			paginationOpts: { numItems: 500, cursor: null },
-		});
-		const folderId = tree.find((node) => node.path === "/labeled")!._id;
-		const childId = tree.find((node) => node.path === "/labeled/child")!._id;
+		const list_folders = (parentId: Id<"files_nodes"> | typeof files_ROOT_ID) =>
+			asOwner.query(api.files_nodes.list_tree_children, {
+				membershipId: db.membershipId,
+				parentId,
+				kind: "folder",
+				archived: false,
+				restricted: false,
+				paginationOpts: { numItems: 50, cursor: null },
+			});
+		const folderId = (await list_folders(files_ROOT_ID)).page.find((node) => node.path === "/labeled")!._id;
+		const childId = (await list_folders(folderId)).page.find((node) => node.path === "/labeled/child")!._id;
 		const leafId = created._yay.nodeId;
 		expect(
 			await asOwner.mutation(api.files_metadata.set_entries, {

@@ -146,7 +146,7 @@ vi.mock("@/lib/files-tree-context.tsx", async () => {
 		FilesTreeProvider: {
 			useFolders: (request: { pinnedNodeIds: string[] }) => {
 				const membershipId = tenantContextMock().membershipId;
-				// The query mock answers this read with every tree row as plain rows, not one folder page.
+				// The query mock ignores these args and answers with every tree row as a plain array, not one folder page.
 				const rows = useQuery(api.files_nodes.list_tree_children, {
 					membershipId,
 					parentId: "root",

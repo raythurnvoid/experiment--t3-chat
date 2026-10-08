@@ -6,8 +6,12 @@ import { faker } from "@faker-js/faker";
 import { make } from "../src/lib/utils.ts";
 import type { DataModel, Doc, Id, TableNames } from "./_generated/dataModel";
 import { files_ROOT_ID } from "../server/files.ts";
-import { files_pending_overlay_db_flush, files_pending_overlay_db_wrap } from "../server/files-pending-overlay.ts";
-import type { MutationCtx } from "./_generated/server";
+import {
+	files_pending_overlay_db_flush,
+	files_pending_overlay_db_wrap,
+	files_pending_overlay_list,
+} from "../server/files-pending-overlay.ts";
+import type { ActionCtx, MutationCtx } from "./_generated/server";
 import polar_test from "@convex-dev/polar/test";
 import presence_test from "@convex-dev/presence/test";
 import workpool_test from "@convex-dev/workpool/test";
@@ -22,6 +26,7 @@ import { quotas_db_ensure } from "./quotas.ts";
 import { api, components, internal } from "./_generated/api.js";
 import { billing_PRODUCTS } from "../shared/billing.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
+import type { files_metadata_SearchPlan } from "../shared/files-metadata.ts";
 
 // #region helpers
 
@@ -215,6 +220,35 @@ export async function test_create_saved_text_file(
 		if (kind === "file") return saved._yay.target.id;
 	}
 	throw new Error("Expected a test file path");
+}
+
+/**
+ * One page of the agent's `meta search` as `userId`, with the user's drafts: the metadata mode of
+ * `files_pending_overlay_list`. Each stream query runs on its own, like in the action.
+ */
+export async function test_meta_search(
+	t: ReturnType<typeof test_convex>,
+	args: Pick<Parameters<typeof files_pending_overlay_list>[1], "agentSource" | "organizationId" | "workspaceId"> & {
+		userId: Id<"users">;
+		plan: files_metadata_SearchPlan;
+		folderPath?: string;
+	},
+) {
+	const result = await files_pending_overlay_list({ runQuery: t.query } as unknown as Pick<ActionCtx, "runQuery">, {
+		agentSource: args.agentSource,
+		organizationId: args.organizationId,
+		workspaceId: args.workspaceId,
+		visibilityUserId: args.userId,
+		overlayUserId: args.userId,
+		folderPath: args.folderPath ?? "/",
+		mode: "metadata",
+		plan: args.plan,
+		order: "asc",
+		numItems: 20,
+		cursor: null,
+	});
+	if (result._nay) throw new Error(result._nay.message);
+	return result._yay;
 }
 
 // #endregion

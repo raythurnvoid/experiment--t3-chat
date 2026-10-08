@@ -283,10 +283,10 @@ Diff view with a pending proposal (since 2026-09-06, `FileEditorDiff` in its col
 - The pending row of a stale proposal shows the caption `Review to update`, its link name ends with `, review to update`, and its Accept button stays enabled with the refusal message in `title`.
 - Bulk Accept skips stale content and explains that it needs Review.
 - Save keeps `Save staged changes` disabled until the view's doc query shows the save, which can land about a second after the action result, so assert on the toast and the exit rather than a fixed delay.
-- `mv -f <src> <dst>` onto a file with collaboration off is a replace proposal, not a content one: the row caption is `Replaced`, its buttons are `Accept move of <src> to <dst>` / `Discard move of <src> to <dst>` (not `Accept changes to`), and Accept moves the source node onto the path with its own asset and archives the old node under the same id, so resolve the id again from `list_tree` afterwards.
+- `mv -f <src> <dst>` onto a file with collaboration off is a replace proposal, not a content one: the row caption is `Replaced`, its buttons are `Accept move of <src> to <dst>` / `Discard move of <src> to <dst>` (not `Accept changes to`), and Accept moves the source node onto the path with its own asset and archives the old node under the same id, so resolve the id again afterwards with `files_nodes.get_visible_target_by_path({ membershipId, path })` (`target.id`).
 - Collaboration changes use the preservation and preparation flow below.
 - The `.FileEditorDiff-stale` status line is always rendered, so assert its text, not its presence.
-- `list_files_pending_updates` rows hold the node under `fileNodeId`.
+- `list_files_pending_updates` rows hold the node under `target` (`{ kind: "saved" | "private", id }`), next to `pendingUpdateId` and `revision`.
 - To move between files without a reload (the chooser in `FileEditorInner` keeps state across nodes, which only an in-app move can exercise), navigate from page context: `const { app_router } = await import("/src/lib/app-router.ts"); await app_router().navigate({ to: "/w/$organizationName/$workspaceName/files", params: { organizationName: "personal", workspaceName: "home" }, search: (prev) => ({ ...prev, nodeId, view: "diff_editor" }) })`.
 - Every such move between diff views logs `[pageerror] no diff result available`; that is Monaco's own (see `collab-yjs-comments-regression.md`), not an app fault.
 
@@ -396,8 +396,9 @@ Use edit_file only." — and the panel then shows "N pending file change(s) from
 for this. A file the agent edited usually has collaboration on, and that door answers
 `{ _nay: { message: "Not found" } }` for it, which reads like a missing file rather than a wrong door.
 Open the node instead and read its editor: `?nodeId=<id>` then `.ProseMirror` `textContent` (rich
-text) or `.monaco-editor .view-lines` (plain text). The id is at `item.target.id` in a
-`files_visible:list` row, not `item._id`. Wait with `waitForSelector(".ProseMirror")`, not a fixed
+text) or `.monaco-editor .view-lines` (plain text). Get the id from its path with
+`files_nodes.get_visible_target_by_path({ membershipId, path })`: it is `target.id`, and
+`target.kind` is `"saved"`. Wait with `waitForSelector(".ProseMirror")`, not a fixed
 `waitForTimeout` — nine seconds after the navigation the node was still null, and it resolved on a
 later read.
 
@@ -546,23 +547,27 @@ other's proposal. Both of these refuse with
 
 ### Reading the pending rows from the page
 
-`files_pending_updates:list_files_pending_updates` returns review rows, not raw documents. The
-document sits at `entry.pendingUpdate` and the saved node at `entry.node`:
+`files_pending_updates:list_files_pending_updates({ membershipId, listKey: "all", paginationOpts })`
+returns short rows: `{ target, pendingUpdateId, revision, threadIds, hasReadyContent }`. `listKey` is
+`"all"`, `"own"`, or a chat id. Load each row's view with
+`files_pending_updates:get_file_pending_target({ membershipId, target: row.target })`. The view holds
+the document at `entry.pendingUpdate` and the saved or private node at `entry.node`:
 
 ```js
-const page = res.body.value?.page ?? [];
-page.map((row) => ({
-	path: row.entry?.path,              // projected path, moves and archives applied
-	readiness: row.readiness,
-	canAccept: row.canAccept,
-	puId: row.entry?.pendingUpdate?._id,
-	revision: row.entry?.pendingUpdate?.revision,
-	move: row.entry?.pendingUpdate?.pendingMove ?? null,
-	archive: row.entry?.pendingUpdate?.pendingArchive ?? null,
-	threadIds: row.entry?.pendingUpdate?.threadIds ?? null,
-}));
+const view = res.body.value; // one get_file_pending_target answer, or null
+({
+	path: view?.entry.path, // projected path, moves and archives applied
+	readiness: view?.readiness,
+	canAccept: view?.canAccept,
+	puId: view?.entry.pendingUpdate?._id,
+	revision: view?.entry.pendingUpdate?.revision,
+	move: view?.entry.pendingUpdate?.pendingMove ?? null,
+	archive: view?.entry.pendingUpdate?.pendingArchive ?? null,
+	threadIds: view?.entry.pendingUpdate?.threadIds ?? null,
+});
 ```
 
-`row.entry.path` is the projected path and `row.entry.node.path` is where the saved node still is.
-A pending move shows the new path in `files_visible:list` too, so a tree readback alone cannot tell
-an applied move from a proposed one. Check that the pending list is empty before believing it.
+`entry.path` is the projected path and `entry.node.path` is where the saved node still is. The
+agent's `ls` shows a pending move at its new path too, so an `ls` readback alone cannot tell an
+applied move from a proposed one. The tree rows are saved only and keep the old path until Accept.
+Check that the pending list is empty before believing it.

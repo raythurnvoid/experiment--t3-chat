@@ -3704,7 +3704,7 @@ export const create_upload_nodes = mutation({
 				}
 				// "path_blocked" says a file sits on this path. Report it only when the caller can
 				// read that node; otherwise the reason would reveal the kind of a hidden node, which
-				// the conflict pre-check and `list_tree` both hide.
+				// the conflict pre-check and the tree (`list_tree_children`) both hide.
 				if (intermediate.kind !== "folder") {
 					itemSkipReason = (await access_control_db_can_act_on_file_node(ctx, {
 						organizationId: membership.organizationId,
@@ -3900,9 +3900,9 @@ export const create_upload_nodes = mutation({
  *
  * A batch query for one UI is normally avoided, but a pre-check for up to 1,000 paths cannot
  * be 1,000 single queries; `data_import.verify_metadata` is the same shape. Queries cannot
- * charge the rate limiter, so this must never reveal more than `list_tree` does: a node the
- * caller cannot read is reported as no conflict, and the (rate-limited) import mutation later
- * reports it as a generic skip.
+ * charge the rate limiter, so this must never reveal more than the tree (`list_tree_children`)
+ * does: a node the caller cannot read is reported as no conflict, and the (rate-limited) import
+ * mutation later reports it as a generic skip.
  */
 export const get_upload_conflicts = query({
 	args: {
@@ -6955,58 +6955,6 @@ async function db_get_share_tree_rows(
 	return kept.map((pair, index) => ({ shareRow: pair.shareRow, treeRow: treeRows[index]! }));
 }
 
-export const list_tree = query({
-	args: {
-		membershipId: v.id("organizations_workspaces_users"),
-		paginationOpts: paginationOptsValidator,
-	},
-	returns: paginationResultValidator(
-		v.object({
-			...files_node_public_doc_fields,
-			// These four fields cannot contain reserved `GLOBAL` or `SYSTEM` values in the visible tree.
-			organizationId: v.id("organizations"),
-			workspaceId: v.id("organizations_workspaces"),
-			createdBy: v.id("users"),
-			updatedBy: v.id("users"),
-		}),
-	),
-	handler: async (ctx, args) => {
-		const reader = await files_nodes_db_get_tree_reader(ctx, { membershipId: args.membershipId });
-		if (!reader) {
-			return { page: [], isDone: true, continueCursor: args.paginationOpts.cursor ?? "" };
-		}
-		const { userAuth, membership, hasWorkspaceRead } = reader;
-
-		const result = await ctx.db
-			.query("files_nodes")
-			.withIndex("by_organization_workspace_treePath", (q) =>
-				q.eq("organizationId", membership.organizationId).eq("workspaceId", membership.workspaceId),
-			)
-			.order("asc")
-			.paginate({
-				...args.paginationOpts,
-				numItems: Math.min(args.paginationOpts.numItems, 500),
-				maximumRowsRead: 1000,
-				maximumBytesRead: 4 * 1024 * 1024,
-			});
-
-		// The tree is the widest leak in the app: it carries the name and the path of every node in the
-		// workspace. Without this filter a restricted file would still be listed for everybody, and the
-		// name of a file is often the whole secret.
-		const fileNodes = await access_control_db_filter_readable_file_nodes(ctx, {
-			organizationId: membership.organizationId,
-			workspaceId: membership.workspaceId,
-			userId: userAuth.id,
-			nodes: result.page,
-			hasWorkspaceRead,
-		});
-
-		const page = await db_get_tree_rows(ctx, { userAuth, membership, fileNodes });
-		// A page can be empty after access checks. Only isDone ends the tree walk.
-		return { ...result, page };
-	},
-});
-
 /**
  * One page of the children of one folder, of one kind. The Files tree loads each open folder with it.
  *
@@ -7934,7 +7882,7 @@ export const has_tree_children_shared = query({
  * `ancestors` go from the top readable folder down to the node's parent. The walk stops at the
  * first folder the caller cannot read, because the tree cannot show a row under a folder it cannot
  * show. So the node's rows hang from the root. Every row still carries its `path` and `parentId`,
- * like `list_tree` rows, so the names of the hidden folders above it are not secret.
+ * like `list_tree_children` rows, so the names of the hidden folders above it are not secret.
  */
 export const get_tree_ancestors = query({
 	args: {

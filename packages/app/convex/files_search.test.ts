@@ -1,8 +1,9 @@
+import type { FunctionReturnType } from "convex/server";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel";
 import { db_insert_file_text_content } from "./files_nodes_content.ts";
-import { test_convex, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
+import { test_convex, test_meta_search, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
 import { files_ancestor_fields } from "../shared/files.ts";
 
 beforeEach(() => vi.useFakeTimers());
@@ -57,6 +58,15 @@ async function fixture(ready = true) {
 	return { t, db, asUser, target, pendingUpdateId };
 }
 
+/**
+ * Run the overlay jobs that draft writes scheduled. They write the place fields that `meta search`
+ * reads for drafts. Move the clock only a little, so the drafts do not expire.
+ */
+async function run_overlay_jobs(t: ReturnType<typeof test_convex>) {
+	vi.advanceTimersByTime(1);
+	await t.finishInProgressScheduledFunctions();
+}
+
 describe("private search", () => {
 	test("the agent finds ready content, frontmatter, and captured metadata through private targets", async () => {
 		const f = await fixture();
@@ -70,16 +80,12 @@ describe("private search", () => {
 			cursor: null,
 		});
 		expect(content.items).toMatchObject([{ target: f.target, path: "/draft/note.md" }]);
+		await run_overlay_jobs(f.t);
 		for (const [fieldPath, value] of [
 			["frontmatter.status", "draft"],
 			["metadata.source", "captured"],
 		]) {
-			const metadata = await f.t.query(internal.files_metadata.search, {
-				...scope,
-				plan: { op: "eq", fieldPath, value },
-				numItems: 20,
-				cursor: null,
-			});
+			const metadata = await test_meta_search(f.t, { ...scope, plan: { op: "eq", fieldPath, value } });
 			expect(metadata.items).toMatchObject([{ target: f.target, path: "/draft/note.md" }]);
 			// The search box is saved-only: no suggestion and no row from a draft.
 			expect(
@@ -162,14 +168,13 @@ describe("private search", () => {
 			});
 		expect((await search()).items).toMatchObject([{ target: f.target, path: "/renamed/note.md" }]);
 		expect((await search(f.db.userId, "/draft")).items).toEqual([]);
-		const metadata = await f.t.query(internal.files_metadata.search, {
+		await run_overlay_jobs(f.t);
+		const metadata = await test_meta_search(f.t, {
 			organizationId: f.db.organizationId,
 			workspaceId: f.db.workspaceId,
 			userId: f.db.userId,
 			plan: { op: "eq", fieldPath: "metadata.source", value: "captured" },
-			pathPrefix: "/renamed",
-			numItems: 20,
-			cursor: null,
+			folderPath: "/renamed",
 		});
 		expect(metadata.items).toMatchObject([{ target: f.target, path: "/renamed/note.md" }]);
 		const other = await f.t.run((ctx) => test_mocks_fill_db_with.membership(ctx, { organizationName: "other" }));
@@ -192,14 +197,13 @@ describe("private search", () => {
 			if (updated._nay) throw new Error(updated._nay.message);
 		}
 		const plan = { op: "eq" as const, fieldPath: "metadata.scope", value: "selected" };
-		const internalResult = await f.t.query(internal.files_metadata.search, {
+		await run_overlay_jobs(f.t);
+		const internalResult = await test_meta_search(f.t, {
 			organizationId: f.db.organizationId,
 			workspaceId: f.db.workspaceId,
 			userId: f.db.userId,
 			plan,
-			pathPrefix: "/draft",
-			numItems: 20,
-			cursor: null,
+			folderPath: "/draft",
 		});
 		expect(internalResult.items.map((item) => item.path).sort()).toEqual(["/draft", "/draft/note.md"]);
 	});
@@ -224,12 +228,7 @@ describe("private search", () => {
 			cursor: null,
 		});
 		expect(content.items).toEqual([]);
-		const metadata = await f.t.query(internal.files_metadata.search, {
-			...scope,
-			plan: { op: "exists", fieldPath: "metadata.source" },
-			numItems: 20,
-			cursor: null,
-		});
+		const metadata = await test_meta_search(f.t, { ...scope, plan: { op: "exists", fieldPath: "metadata.source" } });
 		expect(metadata.items).toEqual([]);
 		const preparing = await fixture(false);
 		expect(
@@ -256,40 +255,70 @@ describe("saved search during an archive", () => {
 		const scope = { organizationId: db.organizationId, workspaceId: db.workspaceId, userId: db.userId };
 		const created = await t.mutation(internal.files_nodes.create_folder_node_by_path, {
 			...scope,
-			path: "/docs/inner",
+			path: "/docs",
 		});
 		if (created._nay) throw new Error(created._nay.message);
-		const innerId = created._yay.nodeId;
-		const updated = await t.mutation(internal.files_metadata.update_entries_by_path, {
-			...scope,
-			path: "/docs/inner",
-			set: [{ key: "status", value: "catchup" }],
-			remove: [],
+		const docsId = created._yay.nodeId;
+		const innerId = await t.run(async (ctx) => {
+			const nodeId = await ctx.db.insert("files_nodes", {
+				...test_mocks.files.base(),
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				createdBy: db.userId,
+				updatedBy: db.userId,
+				parentId: docsId,
+				name: "inner.md",
+				kind: "file",
+				path: "/docs/inner.md",
+				treePath: "/docs/inner.md",
+				pathDepth: 2,
+				lowercaseExtension: "md",
+				contentType: "text/markdown;charset=utf-8",
+				textKind: "rich_text",
+				collaborationEnabled: false,
+				...files_ancestor_fields([docsId]),
+			});
+			const committed = await db_insert_file_text_content(ctx, {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				nodeId,
+				path: "/docs/inner.md",
+				rootKind: "rich_text",
+				textContent: "catchup here\n",
+			});
+			if (committed._nay) throw new Error(committed._nay.message);
+			return nodeId;
 		});
-		if (updated._nay) throw new Error(updated._nay.message);
-		const search = async () =>
-			(
-				await t.query(internal.files_metadata.search, {
-					...scope,
-					plan: { op: "eq", fieldPath: "metadata.status", value: "catchup" },
-					numItems: 20,
-					cursor: null,
-				})
-			).items.map((item) => item.target);
+		// The owner reader of the agent's content search keeps a hit under a stamped folder until the hit
+		// itself is stamped. Its first page reads the owner's draft chunks, and the next page reads the
+		// saved chunks, so read every page.
+		const search = async () => {
+			const targets: FunctionReturnType<typeof internal.files_nodes.text_search_files>["items"][number]["target"][] =
+				[];
+			let cursor: string | null = null;
+			for (let page = 0; page < 3; page++) {
+				const result: FunctionReturnType<typeof internal.files_nodes.text_search_files> = await t.query(
+					internal.files_nodes.text_search_files,
+					{ ...scope, hasWorkspaceRead: true, query: "catchup", numItems: 20, cursor },
+				);
+				targets.push(...result.items.map((item) => item.target));
+				if (result.isDone) break;
+				cursor = result.continueCursor;
+			}
+			return targets;
+		};
 		expect(await search()).toEqual([{ kind: "saved", id: innerId }]);
 
 		// The archive job stamped the folder but has not reached the item inside yet.
-		const docsId = (await t.run((ctx) => ctx.db.get("files_nodes", innerId)))!.parentId;
-		if (docsId === "root") throw new Error("Expected a parent folder");
 		await t.run((ctx) => ctx.db.patch("files_nodes", docsId, { archiveOperationId: "archive-1" }));
 		expect(await search()).toEqual([{ kind: "saved", id: innerId }]);
 
 		// The job stamps the item and its index docs. Now search drops it.
 		await t.run(async (ctx) => {
 			await ctx.db.patch("files_nodes", innerId, { archiveOperationId: "archive-1" });
-			for (const doc of await ctx.db.query("files_metadata_docs").collect()) {
-				if (doc.sourceKind === "committed" && doc.fileNodeId === innerId) {
-					await ctx.db.patch("files_metadata_docs", doc._id, { archiveOperationId: "archive-1" });
+			for (const chunk of await ctx.db.query("files_plain_text_chunks").collect()) {
+				if (chunk.sourceKind === "committed" && chunk.fileNodeId === innerId) {
+					await ctx.db.patch("files_plain_text_chunks", chunk._id, { archiveOperationId: "archive-1" });
 				}
 			}
 		});
