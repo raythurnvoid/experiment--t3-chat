@@ -897,6 +897,10 @@ export async function files_pending_overlay_db_compute_target(
 						: null,
 				isVisible: !pathless && own !== null && !own.hidden && !destination.hidden,
 				accessNodeId: node._id,
+				// The destination, then the moves its own path goes through.
+				destinationAccessNodeIds: destination
+					? [...(destination.accessNode ? [destination.accessNode._id] : []), ...destination.destinationAccessNodeIds]
+					: [],
 			};
 		}
 	} else {
@@ -925,6 +929,8 @@ export async function files_pending_overlay_db_compute_target(
 					node.kind === "folder" && own ? files_derive_tree_path_for_file_node(own.entry.path, "folder") : null,
 				isVisible: parent !== null && own !== null && !own.hidden,
 				accessNodeId: parent?.accessNode?._id ?? null,
+				// A private node inside a moved saved folder goes through that move.
+				destinationAccessNodeIds: parent?.destinationAccessNodeIds ?? [],
 			};
 		}
 	}
@@ -1103,7 +1109,8 @@ async function db_recompute_target(flush: Flush, mark: TargetMark) {
 		place.ownerTreePath !== next.ownerTreePath ||
 		place.childTreePath !== next.childTreePath ||
 		place.isVisible !== next.isVisible ||
-		place.accessNodeId !== next.accessNodeId;
+		place.accessNodeId !== next.accessNodeId ||
+		!same_value(place.destinationAccessNodeIds, next.destinationAccessNodeIds);
 	if (place && !next) {
 		await ctx.db.delete("files_pending_places", place._id);
 		state.placeFieldIds.set(place._id, scope);

@@ -2477,7 +2477,8 @@ const app_convex_schema = defineSchema({
 	 * the owner does not see the node there (`isVisible` false).
 	 *
 	 * Derived docs: only the overlay flush, its jobs and data deletion write them. Every read of a
-	 * place checks access on `accessNodeId`.
+	 * place checks access on `accessNodeId`, and every read that shows its path also on each of
+	 * `destinationAccessNodeIds`.
 	 */
 	files_pending_places: defineTable({
 		organizationId: v.id("organizations"),
@@ -2516,6 +2517,14 @@ const app_convex_schema = defineSchema({
 		 * itself, or the nearest saved ancestor of a private node. Null for a private node at the root.
 		 */
 		accessNodeId: v.union(v.id("files_nodes"), v.null()),
+		/**
+		 * The saved nodes whose access decides the draft moves that `ownerTreePath` goes through, the
+		 * nearest first: a move into a saved folder adds that folder, and a move into a private folder its
+		 * nearest saved ancestor. A move into the root, or a private folder at the root, adds none.
+		 * Usually empty or one id. When the owner cannot read one of them any more, the
+		 * place is not shown, so its path never names a folder the owner cannot read.
+		 */
+		destinationAccessNodeIds: v.array(v.id("files_nodes")),
 		/**
 		 * Bumped each time the flush schedules the place fields job for this place.
 		 */

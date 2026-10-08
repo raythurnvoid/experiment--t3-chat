@@ -107,7 +107,9 @@ export async function files_visible_db_create_reader(
 		reviewedArchiveIds?: ReadonlySet<Id<"files_pending_updates">>;
 	},
 ) {
-	const core = files_visible_resolve_db_create(ctx.db, args);
+	// A draft move into a folder the user can no longer read resolves at its saved place, so a path
+	// never names that folder.
+	const core = files_visible_resolve_db_create(ctx.db, { ...args, canReadDestination: can_read });
 
 	const membership = await core.read(() =>
 		ctx.db
@@ -1223,8 +1225,29 @@ async function db_stream_saved_item(
 }
 
 /**
+ * Whether the user may still read every move destination a place's path goes through. The place
+ * stores them, but access can change after it was written. If the user cannot read one, listings
+ * leave the place out, so its path never names that folder.
+ *
+ * Null when a destination is gone or archived: the overlay jobs that fix the place can lag.
+ */
+async function db_place_destinations_readable(
+	ctx: QueryCtx,
+	reader: Awaited<ReturnType<typeof files_visible_db_create_reader>>,
+	place: Doc<"files_pending_places">,
+) {
+	for (const nodeId of place.destinationAccessNodeIds) {
+		const node = await ctx.db.get("files_nodes", nodeId);
+		if (!node || node.archiveOperationId !== null) return null;
+		if (!(await reader.canRead(node))) return false;
+	}
+	return true;
+}
+
+/**
  * A place row as an entry. Every place checks access on its `accessNodeId`, like
- * `list_private_folder_children`; the proposal gives the content type and `preparing`.
+ * `list_private_folder_children`, and on its destinations, since the row shows its path; the
+ * proposal gives the content type and `preparing`.
  */
 async function db_stream_place_item(
 	ctx: QueryCtx,
@@ -1236,6 +1259,9 @@ async function db_stream_place_item(
 	const accessNode = place.accessNodeId ? await ctx.db.get("files_nodes", place.accessNodeId) : null;
 	if (place.accessNodeId !== null && (!accessNode || accessNode.archiveOperationId !== null)) return null;
 	if (!(await reader.canRead(accessNode))) return "denied";
+	const destinationsReadable = await db_place_destinations_readable(ctx, reader, place);
+	if (destinationsReadable === null) return null;
+	if (!destinationsReadable) return "denied";
 
 	const proposal = await ctx.db.get("files_pending_updates", place.pendingUpdateId);
 	const path = place.kind === "folder" ? place.ownerTreePath.slice(0, -1) : place.ownerTreePath;
@@ -1543,7 +1569,9 @@ export const internal_list_subtree_saved = internalQuery({
 				place.ownerTreePath !== movedIn.ownerTreePath ||
 				!place.ownerTreePath.startsWith(opened._yay.treePath) ||
 				node?.kind !== "folder" ||
-				node.archiveOperationId !== null
+				node.archiveOperationId !== null ||
+				// The rows below are checked on their own, but their paths would name the destination.
+				(await db_place_destinations_readable(ctx, reader, place)) !== true
 			)
 				return stream_done(root.parent);
 			savedTreePath = node.treePath;
@@ -1803,9 +1831,11 @@ export const internal_list_subtree_moved_in_folders = internalQuery({
 			cut: false,
 			indexKey,
 			mergeKey: (place) => [place.ownerTreePath],
-			// The nested stream checks access on every row it shows.
+			// The nested stream checks access on every row it shows. A folder whose destination the user
+			// cannot read opens none: its rows would all be dropped, so the stream would only scan.
 			decide: async (place) => {
 				if (place.target.kind !== "saved") return null;
+				if ((await db_place_destinations_readable(ctx, reader, place)) !== true) return null;
 				if (args.outsideOnly && root.savedNode) {
 					const node = await ctx.db.get("files_nodes", place.target.id);
 					if (node?.treePath.startsWith(root.savedNode.treePath)) return null;
