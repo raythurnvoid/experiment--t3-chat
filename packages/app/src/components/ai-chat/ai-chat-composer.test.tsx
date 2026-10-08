@@ -912,7 +912,7 @@ describe("AiChatComposer", () => {
 				types: ["text/plain"],
 			},
 		});
-		await screen.findByText("No files match");
+		await screen.findByText("No matching files");
 
 		// Letting ProseMirror handle Enter here would split the paragraph and
 		// break the one-paragraph message invariant.

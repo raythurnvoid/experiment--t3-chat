@@ -178,7 +178,7 @@ const files_content_materialization_workpool = new Workpool(components.files_con
 
 // Measured with the pending overlay flush: 186 selected items fit the 4,096 index ranges
 // in `files_pending_overlay_limits.test.ts`, so the cap keeps a 25% margin.
-const MAX_MOVE_NODE_COUNT = 139;
+export const files_nodes_MAX_MOVE_NODE_COUNT = 139;
 // The subtree write check before an archive or a Replace uses this limit too.
 const MAX_MOVE_DOCUMENT_COUNT = 2000;
 const MAX_MOVE_BYTES = 4 * 1024 * 1024;
@@ -190,6 +190,18 @@ const TREE_CHILDREN_MAX_ITEMS = 200;
 // membership lifetime: 16 index ranges (measured in the cost test under `list_tree_children_shared`),
 // floor(3,000 / 16) = 187.
 const TREE_SHARE_PAGE_MAX_ITEMS = 187;
+// The split guard of an owner's restricted rows in the tree and the folder table. An open row needs
+// no read: the open children of a folder share one access scope, and the rows check each scope once.
+// An owner restricted row is its own scope, so it checks access: 2 reads (the user and the
+// organization; the owner reads no grant), floor(3,000 / 2) = 1,500, and the guard is 1,000.
+const TREE_RESTRICTED_SPLIT_GUARD = 1000;
+// The split guards of the folder table's metadata sort. An open row reads its node with one `get`:
+// 1 read, so floor(3,000 / 1) = 3,000, and the guard is 1,800 so the node bytes stay small too. An
+// owner restricted row is its own scope, so it also checks access: 2 reads (the user and the
+// organization; the owner reads no grant). That is 3 reads, floor(3,000 / 3) = 1,000, and the guard
+// is 700.
+const TREE_METADATA_SPLIT_GUARD = 1800;
+const TREE_METADATA_RESTRICTED_SPLIT_GUARD = 700;
 
 const TREE_ANCESTORS_MAX_DEPTH = 64;
 
@@ -200,7 +212,7 @@ const SEARCH_SAVED_MAX_ITEMS = 100;
 // `get` and checks access once per restricted scope. The worst row is its own restricted scope,
 // read by a member: the node, the scope node, the user grant, 2 role assignments and 2 role
 // grants, 7 reads, so floor(3,000 / 7) = 428, and the guard is 400.
-const SEARCH_SAVED_PAGE_GUARD = 400;
+const SEARCH_SAVED_SPLIT_GUARD = 400;
 const SEARCH_SAVED_TEXT_MAX_LENGTH = 200;
 const SEARCH_SAVED_PATH_MAX_LENGTH = 1024;
 
@@ -4419,7 +4431,7 @@ export async function files_nodes_db_apply_pending_move(
 	for (const firstParentId of [node.parentId, parentId]) {
 		let ancestorId = firstParentId;
 		while (ancestorId !== files_ROOT_ID && !checkedAncestors.has(ancestorId)) {
-			if (checkedAncestors.size === MAX_MOVE_NODE_COUNT) {
+			if (checkedAncestors.size === files_nodes_MAX_MOVE_NODE_COUNT) {
 				return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
 			}
 			checkedAncestors.add(ancestorId);
@@ -4787,7 +4799,7 @@ export async function files_nodes_db_preflight_move(
 	},
 ) {
 	const { userAuth, membership, writer } = args;
-	if (args.intents.length + (args.privateReplacements?.length ?? 0) > MAX_MOVE_NODE_COUNT) {
+	if (args.intents.length + (args.privateReplacements?.length ?? 0) > files_nodes_MAX_MOVE_NODE_COUNT) {
 		return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
 	}
 
@@ -4908,7 +4920,7 @@ export async function files_nodes_db_preflight_move(
 			return Result({ _nay: { message: "The destination name is not valid." } });
 		}
 
-		if ((intent.destination.missingParentNames?.length ?? 0) > MAX_MOVE_NODE_COUNT) {
+		if ((intent.destination.missingParentNames?.length ?? 0) > files_nodes_MAX_MOVE_NODE_COUNT) {
 			return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
 		}
 		for (const segment of intent.destination.missingParentNames ?? []) {
@@ -5076,7 +5088,7 @@ export async function files_nodes_db_preflight_move(
 						});
 				}
 
-				if (plannedFolders.size >= MAX_MOVE_NODE_COUNT) {
+				if (plannedFolders.size >= files_nodes_MAX_MOVE_NODE_COUNT) {
 					return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
 				}
 
@@ -5585,7 +5597,7 @@ export async function files_nodes_db_preflight_move(
 		)
 			continue;
 
-		if (nodePatches.length + plannedFolders.size >= MAX_MOVE_NODE_COUNT || !fitsWriteBudget({ ...node, ...patch })) {
+		if (nodePatches.length + plannedFolders.size >= files_nodes_MAX_MOVE_NODE_COUNT || !fitsWriteBudget({ ...node, ...patch })) {
 			return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
 		}
 
@@ -5836,7 +5848,7 @@ export async function files_nodes_db_move_nodes(
 		expectedTargetPath?: string;
 	},
 ) {
-	if (args.items.length > MAX_MOVE_NODE_COUNT) {
+	if (args.items.length > files_nodes_MAX_MOVE_NODE_COUNT) {
 		return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
 	}
 
@@ -7046,11 +7058,7 @@ export const list_tree_children = query({
 					)
 					.paginate(paginationOpts);
 
-		// An open row needs no read: the open children of a folder share one access scope, and the tree
-		// rows check each scope once. An owner restricted row is its own scope, so it checks access:
-		// 2 reads (the user and the organization; the owner reads no grant), floor(3,000 / 2) = 1,500,
-		// and the guard is 1,000, like the folder table.
-		if (args.restricted && tree_page_needs_split(result, 1000)) {
+		if (args.restricted && tree_page_needs_split(result, TREE_RESTRICTED_SPLIT_GUARD)) {
 			return tree_page_split_required(result);
 		}
 		for (const node of result.page) {
@@ -7220,11 +7228,12 @@ export const list_tree_children_sorted = query({
 				.order(direction)
 				.paginate({ ...paginationOpts, maximumBytesRead: 4 * 1024 * 1024 });
 
-			// An open row reads its node with one `get`: 1 read, so floor(3,000 / 1) = 3,000, and the
-			// guard is 1,800 so the node bytes stay small too. An owner restricted row is its own scope,
-			// so it also checks access: 2 reads (the user and the organization; the owner reads no grant).
-			// That is 3 reads, floor(3,000 / 3) = 1,000, and the guard is 700.
-			if (tree_page_needs_split(result, args.restricted ? 700 : 1800)) {
+			if (
+				tree_page_needs_split(
+					result,
+					args.restricted ? TREE_METADATA_RESTRICTED_SPLIT_GUARD : TREE_METADATA_SPLIT_GUARD,
+				)
+			) {
 				return tree_page_split_required(result);
 			}
 
@@ -7459,11 +7468,7 @@ export const list_tree_children_sorted = query({
 			};
 		})();
 
-		// An open row needs no read: the open children of a folder share one access scope, and the tree
-		// rows check each scope once. An owner restricted row is its own scope, so it checks access:
-		// 2 reads (the user and the organization; the owner reads no grant), floor(3,000 / 2) = 1,500,
-		// and the guard is 1,000.
-		if (args.restricted && tree_page_needs_split(stream.result, 1000)) {
+		if (args.restricted && tree_page_needs_split(stream.result, TREE_RESTRICTED_SPLIT_GUARD)) {
 			return tree_page_split_required(stream.result);
 		}
 
@@ -11054,7 +11059,7 @@ export const search_saved = query({
 				kind: v.literal("problem"),
 				message: v.union(
 					v.literal("Folder not found"),
-					v.literal("This folder is too deep to search inside. Search a folder higher up."),
+					v.literal("This folder is too deep to search inside. Search a folder higher up"),
 				),
 			}),
 		),
@@ -11146,7 +11151,7 @@ export const search_saved = query({
 					page: [
 						{
 							kind: "problem" as const,
-							message: "This folder is too deep to search inside. Search a folder higher up." as const,
+							message: "This folder is too deep to search inside. Search a folder higher up" as const,
 						},
 					],
 				};
@@ -11232,7 +11237,7 @@ export const search_saved = query({
 				plan,
 				treePathPrefix: folderTreePath,
 			}).paginate(paginationOpts);
-			if (tree_page_needs_split(result, SEARCH_SAVED_PAGE_GUARD)) {
+			if (tree_page_needs_split(result, SEARCH_SAVED_SPLIT_GUARD)) {
 				return tree_page_split_required(result);
 			}
 			return {
@@ -11255,7 +11260,7 @@ export const search_saved = query({
 				q.eq("organizationId", membership.organizationId).eq("workspaceId", membership.workspaceId),
 			)
 			.paginate(paginationOpts);
-		if (tree_page_needs_split(result, SEARCH_SAVED_PAGE_GUARD)) {
+		if (tree_page_needs_split(result, SEARCH_SAVED_SPLIT_GUARD)) {
 			return tree_page_split_required(result);
 		}
 		const nodes = await Promise.all(result.page.map((link) => ctx.db.get("files_nodes", link.nodeId)));

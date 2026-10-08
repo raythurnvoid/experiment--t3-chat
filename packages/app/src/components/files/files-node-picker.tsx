@@ -403,7 +403,9 @@ export const FilesNodePicker = memo(function FilesNodePicker(props: FilesNodePic
 			: search.status === "LoadingFirstPage"
 				? "Loading…"
 				: search.status === "Exhausted" && searchRows.length === 0
-					? "No files match"
+					? select === "folder"
+						? "No matching folders"
+						: "No matching files"
 					: null;
 	} else if (folderId === null) {
 		statusText = folder === undefined ? "Loading…" : "Folder not found";
@@ -457,7 +459,9 @@ export const FilesNodePicker = memo(function FilesNodePicker(props: FilesNodePic
 				: lists.some((list) => list.status === "loading")
 					? "Loading…"
 					: lists.every((list) => list.status === "done")
-						? "This folder is empty"
+						? select === "folder"
+							? "No folders inside"
+							: "This folder is empty"
 						: null;
 	}
 	const items = sections.flatMap((section) => section.items);

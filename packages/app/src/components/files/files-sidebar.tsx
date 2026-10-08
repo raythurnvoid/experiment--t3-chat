@@ -4126,7 +4126,11 @@ const FilesSidebarSharedGroup = memo(function FilesSidebarSharedGroup(props: Fil
 		// archived rows. Find the first new row by id, not by position.
 		const firstNewRow = rows.find((row) => !loadMoreFromIds.has(row._id)) ?? rows.at(-1);
 		if (firstNewRow) {
-			sectionRef.current?.querySelector<HTMLElement>(`[data-shared-row-id="shared:${firstNewRow._id}"]`)?.focus();
+			sectionRef.current
+				?.querySelector<HTMLElement>(
+					`[${"data-shared-row-id" satisfies keyof FilesSidebarSharedGroup_CustomAttributes}="shared:${firstNewRow._id}"]`,
+				)
+				?.focus();
 		}
 	}, [loadMoreFromIds, menusPortalHost, rows, status]);
 

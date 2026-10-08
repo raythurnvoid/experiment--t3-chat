@@ -218,7 +218,7 @@ function parse_value(op: files_folder_table_query_Operation, field: string, text
 		return { value: null, problem: `Enter 1 to ${VALUE_MAX_LENGTH.toLocaleString("en-US")} characters` };
 	}
 	if (op.op === "starts_with" && files_table_starts_with_ends_in_digit(value)) {
-		return { value: null, problem: "'Starts with' cannot end with a number here. Remove the last digits, or use 'is'." };
+		return { value: null, problem: "'Starts with' cannot end with a number here. Remove the last digits, or use 'is'" };
 	}
 
 	return { value, problem: null };
@@ -356,7 +356,7 @@ function get_conflict_problem(
 			parsed.namePrefix === null &&
 			((token.field === "name" && files_table_filter_takes_name_prefix(parsed.filter)) ||
 				(parsed.filter.field === "name" && files_table_filter_takes_name_prefix(token)));
-		return canPair ? null : "Use one filter, or 'name starts with' plus one 'is' filter.";
+		return canPair ? null : "Use one filter, or 'name starts with' plus one 'is' filter";
 	}
 	if (parsed.filter !== null && token.field !== files_table_filter_order_field(parsed.filter)) {
 		return `Remove the filter to sort by ${files_folder_table_query_field_text(token.field)}`;

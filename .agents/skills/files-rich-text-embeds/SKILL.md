@@ -231,7 +231,7 @@ Five items sit next to the Youtube item in
   (`components/files/files-node-picker.tsx`). It browses one folder at a time, or searches names
   with `files_nodes.search_saved`, in pages of 50 with "Show more". It lists active, saved rows
   only. Files whose `contentType` does not start with `image/` or `video/` show disabled with the
-  reason "Not an image or video", because the name search cannot leave them out. Folders open.
+  reason "This file is not an image or video", because the name search cannot leave them out. Folders open.
   Picking inserts the `bonobo-file://` reference with the file name as alt — no upload, no byte copy.
 - `Image from URL` / `Video from URL` — `prompt()` like the Youtube item, http(s)-only,
   insert an external embed. Kind is chosen by the item, never sniffed from the url.

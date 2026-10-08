@@ -65,7 +65,7 @@ Use this file as a quick testing map for `/files`. Keep it short and selector-or
 - Sidebar selected rows: `.FilesSidebarTreeItem[data-file-id][aria-selected="true"]`. The attribute sits on the row wrapper itself; `FilesSidebarTreeItemPrimaryAction` never carries it (the row strips it before passing props down).
 - Sidebar row primary action: `.FilesSidebarTreeItemPrimaryAction`.
 - Sidebar row more action: `.FilesSidebarTreeItemMoreAction`.
-- Sidebar search input: `#app_files_sidebar_search input` (combobox named `Search files by name, path, or key:value filters`); filter chips `.FilesSearchInputFilterChip`; suggestions `.FilesSearchInput-popover [role=option]`; sr-only status `.FilesSidebarTopSection [role=status]`. Recipes under "Sidebar Search Box" below.
+- Sidebar search input: `#app_files_sidebar_search input` (combobox named `Search files by name, path, or one key:value filter`); filter chips `.FilesSearchInputFilterChip`; suggestions `.FilesSearchInput-popover [role=option]`; sr-only status `.FilesSidebarTopSection [role=status]`. Recipes under "Sidebar Search Box" below.
 - Locked row accessible name: `getByRole("treeitem", { name: "<name>, Read-only" })` when the lock is on that node. A parent lock does not mark a child `read-only from /path`. A writable folder with locked children can say it contains read-only items. `/meetings` after a Council meeting upload is that last shape. Expand it with `getByRole("button", { name: "Expand folder <name>, contains read-only items" })`. The visible title is an input, so `.FilesSidebarTreeItemTitle` with `hasText: /^name$/` does not match (verified 2026-08-26; row suffix recased 2026-09-18).
 - Sidebar context menu: `[data-files-sidebar-tree-context][role="menu"]`. The row menu renders in `.FilesSidebarTree-menus`, right after the tree and outside `role="tree"`. See the `MyMenu` entry in `known-hazards.md`.
 - Archive from any menu (sidebar row, toolbar Archive selected, folder explorer row, breadcrumb) opens `getByRole("dialog", { name: /^Archive / })`; confirm with its `Archive` button, cancel with `Cancel`. When every item is refused, the refusal is a `role=alert` inside the dialog and the dialog stays open. When some items are refused and the others are archived, the dialog closes with a warning toast `Some items could not be archived. See Activity.`, and the refused items stay in the tree. From page context, match `.FilesArchiveModal:not([hidden])` and read `.MyModalHeading` (the dialog has `aria-labelledby`, no `aria-label`). After a sidebar confirm, `document.activeElement` is the next tree row (or the previous one when the archived row was last); it lands about 100 ms after the dialog has closed, after a brief stop on the button that opened the dialog, so poll for it instead of reading it the moment the dialog hides. Multi-select archive: hold Control and click each row's `.FilesSidebarTreeItemPrimaryAction` (a Control-click on the open file's row removes it from the selection), then the sidebar header `More options` menu item `Archive N selected items` opens `Archive N items?` with the names, one per line, in the read-only `textbox` named `Items to archive` (read its `textContent`); after the confirm only the open file's row is selected again. Cancel keeps a multi-selection: the sidebar's click-outside selection reset is off while the dialog is open. Archive with the mutation directly (see "Sidebar Create Then Rename By Id") when the dialog is not what you test.
@@ -75,19 +75,20 @@ Use this file as a quick testing map for `/files`. Keep it short and selector-or
 - Folder table drop target state: `.FileNodeViewFolderExplorer-row-drop-target`.
 - Folder table dragging state: `.FileNodeViewFolderExplorer-row-dragging`.
 - Folder table sort state: `getByRole("table", { name: "Folder contents" })` carries
-  `data-sort-fields`, a JSON list of `{ field, direction }` pairs in displayed order, and `aria-busy`.
-  `.FileNodeViewFolderExplorer` carries `data-sort-state`: `applying`, `refreshing`, `ready`, `failed`
-  or `limited`. Read both the state and real status text before checking settled rows.
-- Sorted headers carry `data-sort-priority` (starting at 1) and `data-sort-direction` (`asc` / `desc`).
-  Only the first field has `aria-sort`. A visible field's header button applies a one-field sort.
-  The header text shows the order number only when two or more fields sort (`file.name 1 ↑`); one field
-  shows only the arrow (`file.name ↑`). Read `data-sort-priority`, not the text, for the order.
+  `data-sort-fields`, a JSON list with the one `{ field, direction }` pair of the shown rows, and
+  `aria-busy`. The table sorts by one field (`files_sort_MAX_CLAUSES` is 1).
+  `.FileNodeViewFolderExplorer` carries `data-sort-state`: `applying`, `ready` or `failed`. Read both
+  the state and real status text before checking settled rows.
+- The sorted header carries `data-sort-direction` (`asc` / `desc`) and `aria-sort`, and its text ends
+  with an arrow (`file.name ↑`). A visible field's header button sorts by that field; a second click
+  flips the direction. While a filter is on, the other headers are `aria-disabled` and a click says
+  `Remove the filter to sort by <field>`.
 - Column header menu: each header has an icon button named `Column options for <label>`. Its menu has
-  a `Sort` group (`A to Z` / `Z to A`, or the field's own direction words, both replace the whole
-  sort), `Add to sort` (appends the field; disabled at 8 fields or when already sorted), `Filter by
-  <label>` (puts `file.<field>:` or the metadata key in the table bar), and `Hide column` (disabled for
-  file.name). Columns that cannot sort, such as `file.updated_by`, show only `Hide column`. Every header, chooser row, sort label and chip shows the field name (`file.name`, `file.extension`, `metadata.<key>`), never a second label. Add to sort writes
-  `sort_by:` tokens into the URL. It saves nothing.
+  a `Sort` group (`A to Z` / `Z to A`, or the field's own direction words; each replaces the sort),
+  `Filter by <label>` (puts `file.<field>:` or the metadata key in the table bar), and `Hide column`
+  (disabled for file.name). Columns that cannot sort, such as `file.updated_by`, show only `Hide column`.
+  Every header, chooser row, sort label and chip shows the field name (`file.name`, `file.extension`,
+  `metadata.<key>`), never a second label. A sort writes a `sort_by:` token into the URL. It saves nothing.
 - Folder table bar: the combobox `Filter and sort this folder` (inside the group `Table filter and
   sort`) holds the typed text. Chips are the committed tokens. The menu is `Table filter and sort
   suggestions`. See "Folder Table Filter And Sort Bar".
@@ -101,9 +102,9 @@ Use this file as a quick testing map for `/files`. Keep it short and selector-or
 - The table is a `div` grid, not a `<table>`. In page context use `[role=table][aria-label="Folder contents"]`,
   rows `.FileNodeViewFolderExplorer-row[role=row]`, and headers `[role=columnheader]`. `querySelector("table")`
   answers null.
-- The table starts with **5** rows. First `Show more` requests at least 50 matches and reveals all loaded
-  rows; it can show more than 50 when both kinds are loaded. Later clicks request 50 beyond the loaded count.
-  Five rows on a fresh load is the preview, not a short server page.
+- The table starts with **5** rows. Each stream first loads up to 100 rows (`useFilesSortedChildren`).
+  The first `Show more` reveals all loaded rows. Once every loaded row shows, `Show more` asks for 100
+  rows beyond the shown count. Five rows on a fresh load is the preview, not a short server page.
 
 ### Large And Virtual Trees
 
@@ -729,18 +730,20 @@ downloadThroughput: -1, uploadThroughput: -1 }`. This affects only the owned QA 
 ### Folder Table Filter And Sort Bar
 
 Verified 2026-10-01 as `qa.perm.owner` on `/qa-browser/home:/qa-sort-0924` (restored from the archive
-for the run, archived again after). The bar replaced the old Sort and Filter popovers. The notes under
-"Folder Table Sort" and "Folder Table Filter" about the popover controls are history. Their notes about
-rows, limits, held labels and work allowance still hold.
+for the run, archived again after). The bar replaced the old Sort and Filter popovers. The table
+runs one filter (or `file.name:starts_with` plus one "is" filter) and one sort. The filter picks the
+index, and the index fixes the order (`files_table_filter_order_field`).
 
-- **State is in the URL.** `filter` holds the committed tokens (`file.name:contains:j
-  sort_by:file.size:desc`). `view_q` holds the text still typed (debounced 300 ms). Read
-  `decodeURIComponent(page.url())` after each step. A messy `filter` is cleaned on load to one filter
-  and at most 8 sorts, and the address bar is rewritten.
+- **State is in the URL.** `filter` holds the committed tokens (`file.name:starts_with:j
+  sort_by:file.name:desc`). `view_q` holds the text still typed (debounced 300 ms). Read
+  `decodeURIComponent(page.url())` after each step. A messy `filter` is cleaned on load
+  (`files_folder_table_query_clean`): bad tokens, a second filter, a second sort and a sort the filter
+  does not allow are dropped, and the address bar is rewritten.
 - **Controls.** Type a token and press Enter (or Space) to commit it. `Control+Space` or the button
   `Add filter or sort` opens the menu. Backspace on empty text focuses the last chip. `Clear filter and
   sort` removes every token. A refused token stays in the input and `role="alert"` says why (for
-  example one filter at a time, at most 8 sorts). Chips carry `Remove <token>` buttons.
+  example `Use one filter, or 'name starts with' plus one 'is' filter.`, `The folder table sorts by one
+  field`, or `Remove the filter to sort by <field>`). Chips carry `Remove <token>` buttons.
 - **Menu rows.** Typing `sort` lists `sort_by` and any metadata key named `sort_by`. After `sort_by:`
   pick a field, then a direction. After `file.name:` the operations show; for `metadata.*` and
   `frontmatter.*` the values come from `list_search_values`. Wait about 300 ms after typing before
@@ -771,46 +774,32 @@ first. Check membership, grants and archive state; then back up the exact fixtur
 and personal preference entries. Restore only approved roots through normal Files doors. The checked
 run reused `/qa-sort-0924` and `/qa-sort-0924-r` without new files, metadata, moves or grants.
 
-- **Saved and local.** A sort from a header, the column menu or the bar is `sort_by:` tokens in the URL and
+- **Saved and local.** A sort from a header, the column menu or the bar is one `sort_by:` token in the URL and
   writes nothing. The writer sees `Save sort for everyone` while the URL has a sort; the reader never
   does. Count `files_folder_sorts:set_folder_sort` mutations before actions: they stay zero until Save.
-  After Save, check both users' full saved list. Compare fields and directions in order, not JSON
+  After Save, check both users' saved sort. Compare the field and the direction, not JSON
   property order. Require fresh `canSave: false` on a real read-only dataset; `/people` may return
   true despite the QA policy.
-- **Order and labels.** Read `data-sort-fields`, ordered row ids and sorted header priority/direction.
-  Only the primary header has `aria-sort`. During an uncached change, held rows keep their full old
-  `data-sort-fields` array while the headers already show the requested list. A sort change alone shows no notice.
-  Check all four file.extension/metadata.rank direction pairs against an order derived independently from
-  bounded fixture facts. Also check file.extension/file.size/rank with folders and file.created/rank with unique times.
-  The checked fixture has tied file.updated values, so file.updated cannot prove its direction there.
-- **Actual query work.** Inspect active `list_tree_children_sorted` descriptors and settled responses
-  with `watchQuery(...).localQueryResult()`; do not add subscriptions just to count them. Each forward
-  action gives new custom scans at most 1,000 work in total. Check each response against its request
-  allowance. Count retained-page refreshes separately. Preserve `sortLimit`, `workPaused`,
-  `workCount`, `scannedCount` and actual request allowances in receipts. Created/rank packed 50 file
-  candidates in one response; a revealed table may also include folders. Hidden sort fields add no
-  displayed-value queries. Metadata after file.name needs no sort-key queries. Side enumeration returns
-  facts without sort args or inline keys.
-  file.extension/file.size positions stay null for folders.
-  Metadata missing pages come from the convex-helpers hook. After the first Show more, the loaded
-  page's descriptor has `paginationOpts.endCursor` and the next page starts from that cursor. Dev
-  StrictMode can leave duplicate subscriptions with the same args, so group descriptors by exact
-  args first. `useFilesSortedChildren` removes duplicate row ids before render, so check raw page
-  responses: pages share no ids, each pinned page ends with `continueCursor === endCursor`, and the
-  pages put together in order equal the loaded rows.
-- **Filter and preview.** Combine a file.name filter with the full sort list. Check preview five, Show more,
-  Show less and exact ordered ids. First Show more requests at least 50 and reveals all loaded rows;
-  later requests add 50 to the loaded count. Show less returns to five without a new scan.
-- **Limit coverage.** A bounded authenticated read of `list_tree_children_sorted` on `/people` with
-  metadata.source/Updated returned `group_rows`, zero candidates and 202 work. It changed no UI or
-  saved sort. Native limit/recovery UI stayed unverified because `canSave` was true. Registered tests
-  cover the limit message, immediate limit `Reset to file.name`, private/two-metadata groups, byte/call/work
-  caps, hidden claims and permission loss. Do not create or change large fixtures just to repeat them.
-- **Named source proof.** Pin a two-field reader-local array and its exact rows. file.name as the second
-  field must have priority 2 and no `aria-sort`. Name the assertion `secondary_header_priority` before
-  changing source. On a coordinated temporary first-clause-only header lookup, prove the served module
-  and require that assertion to fail. Restore the exact source, reload only the owned tab, apply the
-  same local array and run the unchanged assertion green. A shell/auth setup failure is not the red.
+- **Order and labels.** Read `data-sort-fields`, ordered row ids and the sorted header's direction.
+  During an uncached change, held rows keep their old `data-sort-fields` while the header already
+  shows the requested sort. A sort change alone shows no notice. Check both directions of
+  file.extension and metadata.rank against an order derived independently from bounded fixture facts.
+  Also check file.extension and file.size with folders, and file.created with unique times. The checked
+  fixture has tied file.updated values, so file.updated cannot prove its direction there. A metadata
+  sort hides the rows without the key and says `Rows without <key> are hidden.`
+- **Actual query work.** Each kind (folders, then files) reads up to 5 streams, each one `.paginate()`
+  over one index range: the open stream and the owner's restricted stream of
+  `list_tree_children_sorted`, and up to 3 share streams of `list_tree_children_shared` (members only,
+  none for a metadata sort or filter). `useFilesSortedChildren` merges them by `sortKey`. Inspect active
+  descriptors and settled responses with `watchQuery(...).localQueryResult()`; do not add subscriptions
+  just to count them. A file.extension or file.size sort with no filter also reads a `missing` segment,
+  only after the value segment is done. A page too big for its per-row reads comes back empty with
+  `pageStatus: "SplitRequired"` (the split guard), and the hook splits it. Dev StrictMode can leave
+  duplicate subscriptions with the same args, so group descriptors by exact args first.
+  `useFilesSortedChildren` shows a node held by two streams once, so check raw page responses too.
+- **Filter and preview.** Combine a file.name filter with its sort. Check preview five, Show more, Show
+  less and exact ordered ids. The first Show more reveals all loaded rows; once all show, Show more asks
+  for 100 more. Show less returns to five with no new query.
 - **Cleanup.** Reset both approved fixtures to file.name through normal controls and require no saved-sort
   docs. Archive their roots again and compare all child ids, parents, paths, archive flags and raw
   grants with the backup. Restore only touched personal entries and viewport/sidebar settings. Detach
@@ -890,51 +879,48 @@ column choices need to change. Do not write file metadata or shared sorts for th
 
 ### Folder Table Filter
 
-> Superseded for the controls on 2026-10-01: the Filter popover is gone. Use the bar above. The notes on
-> rows, work limits, held labels and recovery still apply.
+> Superseded for the controls on 2026-10-01: the Filter popover is gone. Use the bar above. Each filter
+> is one index range now, so there is no scan, work limit or paused state.
 
 Verified 2026-09-29 on a read-only `/people` folder. Use its current bounded field catalog and readable
 scalar sample. Do not assume a Status field exists. No new fixture is needed for the normal flow.
 
-- **Native fields.** Compare shown rows with their actual cached row facts. file.name folds case and accents.
-  file.extension submits lowercase and keeps a typed dot literal. `Has no value` for file.extension or file.size includes folders
-  and shows no value input. file.size compares whole byte counts. Date uses local midnight and the next calendar
-  day. Test On, Before and After. In Europe/London, the 2026
-  spring and fall change days have 23 and 25 hours. No matching timestamp is needed to check those bounds.
-- **Hidden metadata.** Pick a qualified field that exists now. Is and Starts with use its plain scalar;
-  Has value and Has no value need no input. Lists use the first plain value. Leave that field hidden as a
+- **Native fields.** Compare shown rows with their actual cached row facts. file.name offers only
+  `starts_with`, which folds case and accents. file.extension submits lowercase and keeps a typed dot
+  literal. `missing` for file.extension or file.size includes folders and takes no value. file.size
+  compares whole byte counts. A date uses local midnight and the next calendar day. Test `on`, `before`
+  and `after`. In Europe/London, the 2026 spring and fall change days have 23 and 25 hours. No matching
+  timestamp is needed to check those bounds.
+- **Hidden metadata.** Pick a qualified field that exists now. `is` and `starts_with` use its plain
+  scalar; `present` needs no value. Lists use the first plain value. Leave that field hidden as a
   column. Check at most a few shown targets with independent `get_field_values` reads. After those reads
   settle, require zero displayed-value subscriptions and unchanged columns. Count real active descriptors
   as in the Columns recipe. A hidden filter must not add displayed-value queries.
-- **State and work.** The explorer has `data-filter-state`: `applying`, `searching`, `refreshing`, `ready`,
-  `paused` or `failed`. It is absent on a normal unfiltered table. The `Clear filter and sort` icon button
-  in the bar clears the filter and the sort.
-  Read the real empty and status text. Empty non-final pages must keep searching, with a cursor boundary.
-  A paused prefix cannot say `No rows match this filter`. Read settled page results through
-  `watchQuery(...).localQueryResult()` without adding a subscription. Check each `workCount` against its
-  request's `workLimit`. A new filter and each forward action get at most 1,000 work. Retained pages span several
-  actions after Keep searching or Show more; do not call their total one action's cost.
-- **Preview and reset.** A new filter shows five matches. First Show more requests at least 50 and reveals all
-  loaded rows; later Show more requests 50 beyond the loaded count. Show less returns to five and must
-  add no scan. From a paused prefix, Keep
-  searching must keep settled pages and continue their cursors with one new work allowance. The verified
-  zero-match run kept 21 pages, added 20 pages and 1,000 work, then paused again. A browser reload clears
-  the local filter and restores five rows. The `Reload table` recovery button keeps the filter and resets
-  the scan to five matches. Folder and membership changes clear the filter; use unit coverage for a
-  membership switch when live QA must keep the current sign-in.
+- **State.** The explorer has `data-filter-state`: `applying`, `ready` or `failed`. It is absent on a
+  normal unfiltered table. The `Clear filter and sort` icon button in the bar clears the filter and the
+  sort. Read the real empty and status text: `Applying filter…` while it loads, `No rows match this
+  filter` once every stream is done, and `No matches loaded yet. Show more to keep looking.` while a
+  stream has more pages but the loaded ones hold no row to show. Read settled page results through
+  `watchQuery(...).localQueryResult()` without adding a subscription.
+- **Preview and reset.** A new filter shows five matches. The first Show more reveals all loaded rows;
+  once all show, Show more asks for 100 more. Show less returns to five with no new query. A failed
+  load shows `Filter could not be applied` and a `Retry` button, which keeps the filter. Folder and
+  membership changes clear the filter; use unit coverage for a membership switch when live QA must
+  keep the current sign-in.
 - **Held label.** During a new uncached filter, old rows keep their old filter and sort label in `Showing:`.
   Commit a 1,024-character Name value first. A passive MutationObserver can capture that real old notice
   during the next commit. Require that it was seen and that `scrollWidth <= clientWidth + 1` with
   `overflow-wrap:anywhere`. A missed transient is a setup limit, not a pass. Do not insert fake notices.
-- **Named source proof.** Choose a readable target beyond the first 50 ordinary Name rows. Commit its Name
-  value and first assert that exact target appears. Name this check `server_filter_beyond_first_page`.
-  Then require matching rows, an empty non-final page, checked boundaries and bounded work. For the red
-  proof, coordinate a switch only in `files-search-hooks.ts`: main query args in `filteredRequests` pass
-  `filter:null` instead of the chosen filter. Reload the owned tab and fetch its exact loaded hook URL.
-  Prove the switch is served and the active main query uses null. The same target assertion must fail
-  after the prefix settles. Restore the full source hash, prove the fresh module and rerun green.
-- **Limits and cleanup.** Keep private name claims, preparing values, access changes, refresh rebuilds,
-  side caps and intrinsic byte/call limits in registered tests unless existing data supplies a live case.
+- **Named source proof.** Choose a readable target beyond the first 100 ordinary name rows. Commit a
+  `file.name:starts_with:` value for it and first assert that exact target appears. Name this check
+  `server_filter_beyond_first_page`. Then require every shown row to match. For the red proof,
+  coordinate a switch only in `files-search-hooks.ts`: `sortedArgs` in `useFilesSortedChildrenSegment`
+  passes `filter: null` instead of the chosen filter. Reload the owned tab and fetch its exact loaded
+  hook URL. Prove the switch is served and the active `list_tree_children_sorted` query uses null. The
+  same target assertion must fail after the table settles. Restore the full source hash, prove the
+  fresh module and rerun green.
+- **Limits and cleanup.** Keep access changes and split pages in registered tests unless existing
+  data supplies a live case.
   Do not write files, metadata, grants or shared sorts to manufacture it. Clear and reload after QA.
   Restore only column entries changed by QA; if none changed, verify the backed-up entries instead.
   Preserve unrelated preferences. Require original sort/columns, five rows, zero value targets/pages and
@@ -1253,23 +1239,25 @@ Use this after changing chat send, stop, branch, pending-message, or parent-id l
 Selectors and a proven flow for the sidebar search box with metadata filters (verified 2026-09-05).
 
 - `Add search filter` opens the suggestions and focuses the input. Pick the `metadata.status` option, then `open`; check that the chip appears and `.FilesSearchInput-summary` shows the match count. `Clear search` clears both text and chips, removes `q` after the debounce, and returns focus to the input.
-- Check wrapping by temporarily setting `.FilesSearchInput` to `width: 240px` through `locator.evaluate`. Add three filters and confirm they wrap without horizontal overflow. Restore the inline width afterward. The chip area stops growing at 96px and scrolls vertically for long queries; keyboard arrows still reach every remove button.
+- Check wrapping by temporarily setting `.FilesSearchInput` to `width: 240px` through `locator.evaluate`. Add three filters (the extra ones become invalid chips under the one-clause rule; that is fine here) and confirm they wrap without horizontal overflow. Restore the inline width afterward. The chip area stops growing at 96px and scrolls vertically for long queries; keyboard arrows still reach every remove button.
 - Invalid filters show a visible reason in `.FilesSearchInput-error`. The existing sr-only status still announces changes. The filter popover is a dialog named `Search filters`; its `Filter syntax` disclosure must open by keyboard and keep the examples reachable in short viewports.
 
-- Input: `#app_files_sidebar_search input` (role `combobox`, name `Search files by name, path, or key:value filters`). Focus it with `page.mouse.move(400, 400)` then `input.focus()`. After a keyboard chip removal the focused remove button's tooltip can sit over the input, and `locator.click()` then fails with `subtree intercepts pointer events`.
-- Chips: `.FilesSearchInputFilterChip` (label in `.MyChipLabel`, remove button named `Remove filter <raw>`). An invalid one adds `.FilesSearchInputFilterChip-invalid`, and its remove button's `aria-describedby` carries the reason. The chip row is a list named `Search filters`. Labels show a key and value, such as `Path /tasks`; raw tokens stay in the hover title and remove-button name.
+- Input: `#app_files_sidebar_search input` (role `combobox`, name `Search files by name, path, or one key:value filter`). Focus it with `page.mouse.move(400, 400)` then `input.focus()`. After a keyboard chip removal the focused remove button's tooltip can sit over the input, and `locator.click()` then fails with `subtree intercepts pointer events`.
+- Chips: `.FilesSearchInputFilterChip` (label in `.MyChipLabel`, remove button named `Remove filter <raw>`). An invalid one adds `.FilesSearchInputFilterChip-invalid`, and its remove button's `aria-describedby` carries the reason. The chip row is a list named `Search filters`. Labels show the full key and the value, such as `file.path /tasks`; raw tokens stay in the hover title and remove-button name.
 - Suggestions: `.FilesSearchInput-popover [role=option]` grouped under `Properties`, `File details`, and `Values for <key>`; the listbox is named `Search suggestions`; the short hint and expandable `Filter syntax` section sit outside it. Key rows read like `priority number`; their hover title includes the metadata kind.
-- Status: `.FilesSidebarTopSection [role=status]` (sr-only) reads `Added filter metadata.status:open. 4 matches`, `Searching…`, `Search failed`, or `Filter x cannot run. <reason>`. The tree empty state `.FilesSidebarTree-empty-state` shows `Searching…` while a metadata answer is pending, `The search failed. Change a filter to try again.` when a chip's query threw, and `No files match your search.` when it is empty. The doors answer bad input with their empty shape, so the failed state needs a working-tree throw in the metadata branch of `files_nodes.search_saved` to see it.
+- Status: `.FilesSidebarTopSection [role=status]` (sr-only) reads `Added filter metadata.status:open. 4 matches`, `Searching…`, or `Filter x cannot run. <reason>`.
+- Results: while a search is active, the tree is replaced by a flat list, the `section` named `Search results` (`.FilesSidebarSearchResults`). Each row is a button with `data-search-row-id="<nodeId>"` and the `aria-label` `<name> in <folder>` (`/` for a root item). `.FilesSidebarSearchResults-state` shows `Searching…` while the first page loads, `No files match your search.` when it is empty, `Fix or remove the invalid filter to search.` for an invalid chip, or the server's problem (`Folder not found`, or the too-deep folder text). There is no "Search failed" state: a query that throws throws in render. `Show more` loads the next 50.
+- One clause plus an optional folder: free text or one filter, and one `file.path`. A second filter or a negated chip becomes an invalid chip with `Search for words or one filter, not both. You can add a folder.`. `file.name:x` is an invalid chip with `Type the name as plain text.`. `file.path:/tasks` alone is an exact path query: it lists the `/tasks` folder itself, not its children. Add free text or one filter next to it to search inside the folder.
 - An open quote commits as a closed chip: `metadata.assignee:"Denys` + Enter makes the chip `metadata.assignee:"Denys"`, and a chip typed after it stays separate. `"raw-media"` as free text stays in the box and in `?q=` with its quotes, and matches the name without them.
-- Type `metadata.status:open` and press `Enter` to commit a chip; the debounced `q` param follows in ~300 ms. Read the results as the `aria-label` of each `[role=treeitem]` that ends with `.md`, about 1 s after the commit.
-- After typing a file name into sidebar search, press Escape to close suggestions **before** clicking a row. A click while the suggestion popover is open can commit a `metadata.due:` filter (`?q=…+metadata.due%3A`) and empty the tree. Clear that with Control+A, Backspace in the search input (verified 2026-09-18).
+- Type `metadata.status:open` and press `Enter` to commit a chip; the debounced `q` param follows in ~300 ms. Read the results as the `aria-label` of each `[data-search-row-id]` row, about 1 s after the commit.
+- After typing a file name into sidebar search, press Escape to close suggestions **before** clicking a row. A click while the suggestion popover is open can commit a `metadata.due:` filter (`?q=…+metadata.due%3A`) and empty the results. Clear that with Control+A, Backspace in the search input (verified 2026-09-18).
 - Clear every chip from the keyboard: focus the empty input, `Backspace` (focuses the last chip's remove button), `Enter`, repeat until `.FilesSearchInputFilterChip` counts 0. Escape closes suggestions and keeps text and chips. Use Clear search to clear everything.
 - Space commits only the complete filters in the text, and only with the caret at the end. `metadata.priority:>high metadata.status:open` plus Space leaves `metadata.priority:>high ` in the input and makes one `metadata.status:open` chip; Enter commits the broken one as an invalid chip. With the caret in the middle, Space just types a space (`input.setSelectionRange(n, n)` before `keyboard.press("Space")`).
-- Enter inside the 300 ms debounce: remove the last chip with `.FilesSearchInputFilterChip button` `.last().click()`, `focus()` the input, press Enter at once. With a metadata chip in the query the status reads "Still searching. Press Enter again when the results are in" and `?nodeId=` stays; with only `file.*` chips and text the match opens right away (`?nodeId=` becomes the file id). The `/tasks` folder in the dev workspace holds the fixture files (`/tasks-archive` holds one): scope to `/tasks` and read the first `aria-label` ending in `.md`. The folder rows are capped and sorted, so `file.path:/` never reaches `/tasks`; type `file.path:/tasks` to list the two.
+- Enter inside the 300 ms debounce: remove the last chip with `.FilesSearchInputFilterChip button` `.last().click()`, `focus()` the input, press Enter at once. While the input is ahead of the search or the first page loads, the status reads "Still searching. Press Enter again when the results are in" and `?nodeId=` stays. Once the list is done, Enter opens the only row, or the node an exact path names (`?nodeId=` becomes its id). A typed path with no chips opens through the path route at once. The `/tasks` folder in the dev workspace holds the fixture files (`/tasks-archive` holds one): search inside it with `file.path:/tasks metadata.status:open` and read the row labels.
 - IME guard: a key pressed while a composition is active commits nothing. Drive it over CDP through the harness global `getCDPSession({ page })` (never `page.context().newCDPSession`, see known-hazards): `Input.imeSetComposition({ text: "こん", selectionStart: 2, selectionEnd: 2 })` shows the composing text in the input, then a keyCode-229 key (`Input.dispatchKeyEvent({ type: "keyDown", key: "Process", code: "Space", windowsVirtualKeyCode: 229, nativeVirtualKeyCode: 229 })` plus its `keyUp`) for Space and for Enter leaves 0 chips and the text unchanged. Chrome has no `Input.imeCommitComposition`; `Input.insertText` ends a composition. Positive control: End + Space outside the composition commits the chip (verified 2026-09-05).
 - Page-context doors for a positive control or a second identity, with `m = await import("/src/lib/app-convex-client.ts")` and `q = await import("/shared/files-search-query.ts")`: `m.app_convex.query(m.app_convex_api.files_nodes.search_saved, { membershipId, clause: { kind: "metadata", plan: q.files_search_query_to_plans(q.files_search_query_parse("metadata.status:open").filters[0])[0] }, folderPath: "/tasks", paginationOpts: { numItems: 50, cursor: null } })` (rows `{ kind, nodeId, path, contentType }`; a filter with two plans is two calls; follow `continueCursor` until `isDone`), `files_metadata.list_search_fields({ membershipId })`, and `files_metadata.list_search_values({ membershipId, fieldPath: "metadata.assignee", prefix: "" })`.
 - Metadata fixture without the Properties modal: `files_metadata.set_entries({ membershipId, fileNodeId, metadataYaml: "status: open\n" })` from page context, the same door the modal calls.
-- Working-tree proof: put `if (args.clause.kind === "metadata") return { page: [], isDone: true, continueCursor: "" };` at the top of the `search_saved` handler, poll the page-context door until it answers 0 (the Convex watcher pushes in ~10 s), check that `metadata.status:open` shows `No files match your search.` while `file.name:x` and free text still match, remove the line, and poll until the door answers again. Read `git status --short` after.
+- Working-tree proof: put `if (args.clause.kind === "metadata") return { page: [], isDone: true, continueCursor: "" };` at the top of the `search_saved` handler, poll the page-context door until it answers 0 (the Convex watcher pushes in ~10 s), check that `metadata.status:open` shows `No files match your search.` while free text still matches, remove the line, and poll until the door answers again. Read `git status --short` after.
 - Restricted-folder check needs a second identity (`second-user-fixtures.md`). The owner creates `tasks/public-task.md` and `private/secret-task.md` with the same `status` key, restricts `private`, and sees both files and both values. The member must see only the public file in the tree, in `search_saved`, in the `Values` suggestions, and in the key catalog.
 
 ### Global Search Palette
@@ -1277,12 +1265,12 @@ Selectors and a proven flow for the sidebar search box with metadata filters (ve
 - Open the header button named `Search files (Ctrl+Shift+F)` with focus + Enter, or use `Control+Shift+F`. The dialog is `.FilesSearchPalette`, named `Search files`.
 - The shared suggestion popover has `MyFloatingSurface`. Check alternative base colors and a scrollbar flush with the inner right border in both searches. With `inspectElement`, pass `computedStyles: [{ name: "surface", properties: ["backgroundImage", "borderColor", "padding"] }]`; plain property strings give empty style results. Option rows are not included in the quick accessibility screen's control count, so check their labels, keyboard focus, and target size separately.
 - After `Control+K`, wait for a field option or the sidebar input's `aria-expanded="true"` before typing. The shortcut focuses and selects the input on the next animation frame; typing sooner can race that selection.
-- The combobox is named `Search files by name, contents, or key:value filters`. Fields appear as soon as the modal opens. Both searches use the same menu rules: Escape dismisses it without changing text or chips; typing and Space keep it closed; `Control+Space` and Add search filter reopen it. Check that Ctrl+Space keeps the text and caret position, including inside a word. Choosing a field after ordinary text appends a filter; choosing its value commits a chip and closes the menu.
-- Fill `file.path:/tasks metadata.status:open metadata.priority:>=2`, then Enter. Check three chips above the input and matching paths. Add a content word and check snippets.
-- Results are buttons in the list named `Search results`. Read `.FilesSearchPalette-item-path` and `-item-snippet`. After dismissing suggestions, ArrowDown from the input focuses the first result; ArrowUp there returns to the input with suggestions still closed. Enter opens a row and preserves the sidebar's `q`.
+- The combobox is named `Search files by name, contents, or one key:value filter`. Fields appear as soon as the modal opens. Both searches use the same menu rules: Escape dismisses it without changing text or chips; typing and Space keep it closed; `Control+Space` and Add search filter reopen it. Check that Ctrl+Space keeps the text and caret position, including inside a word. Choosing a field after ordinary text appends a filter; choosing its value commits a chip and closes the menu.
+- Fill `file.path:/tasks metadata.status:open`, then Enter. Check two chips above the input and matching paths in the one list, `Matches`. Then clear the search and type a plain word with no folder: check the `Names` and `Contents` lists and the snippets. Contents do not work with a folder: with a `file.path` chip, `Contents` shows `Contents search does not work inside a folder. Remove the folder to search contents.`
+- Results are buttons in the list named `Search results`. Read `.FilesSearchPaletteGroup-item-path` and `.FilesSearchPaletteGroup-item-snippet`. After dismissing suggestions, ArrowDown from the input focuses the first result; ArrowUp there returns to the input with suggestions still closed. Enter opens a row and preserves the sidebar's `q`.
 - “Use filters in sidebar” applies only chips. Test with another sidebar query already present. Verify the mounted sidebar updates its chips, count, and URL. Back/forward must restore the query.
 - Escape closes filter suggestions before the modal. A second Escape closes the modal and resets its query. The leave animation takes about 500ms. Repeat the menu checks in the sidebar through `Control+K`; returning from chips keeps dismissal, while entering from outside search shows fields again. Ctrl+Space during IME composition must do nothing.
-- The content door accepts `membershipId`, `query`, and optional `nodeIds` from structured matches. File scope applies before the content page limit. Tenant and file permissions still apply.
+- Both lists read `files_nodes.search_saved({ membershipId, clause, folderPath?, paginationOpts })`. Names send `{ kind: "name", text }` with the folder; contents send `{ kind: "content", text }` with no folder. A `content` clause with a folder gets an empty page. Rows are saved, active nodes the caller may read; a content row adds `textChunk` and `lineStart`.
 - Check narrow width and short height: chips scroll vertically after 96px (less in a short viewport), the input stays visible, and results scroll inside the modal. At 390 × 320 with 12 chips, the chip area is 64px and a result row remains visible.
 
 ### Rich Text Image And Video Embeds
@@ -1745,13 +1733,17 @@ runs, and clicking it repeatedly changes nothing. For test cleanup, go through t
 instead and page until the list is empty:
 
 ```js
-const rows = /* page files_pending_updates.list_files_pending_updates with paginationOpts */;
+const rows = /* page files_pending_updates.list_files_pending_updates with listKey and paginationOpts */;
 for (const row of rows) {
-	const pu = row.entry.pendingUpdate;
-	const door = row.entry.kind === "private"
+	const door = row.target.kind === "private"
 		? api.files_pending_updates.discard_file_pending_structural
 		: api.files_pending_updates.discard_file_pending_update;
-	await convex.mutation(door, { membershipId, target: pu.target, pendingUpdateId: pu._id, reviewedRevision: pu.revision });
+	await convex.mutation(door, {
+		membershipId,
+		target: row.target,
+		pendingUpdateId: row.pendingUpdateId,
+		reviewedRevision: row.revision,
+	});
 }
 ```
 
@@ -1760,8 +1752,8 @@ Discarding a private node the page is currently viewing navigates the route, whi
 
 Two things make that loop wrong if you write it from memory. The list door caps its page at five
 rows no matter what `numItems` says, so you must follow `continueCursor` until `isDone` — see
-`known-hazards.md`. And a `kind: "restricted"` row carries no `entry`, so read
-`row.entry?.pendingUpdate?._id ?? row.pendingUpdateId`.
+`known-hazards.md`. And a row has only stored fields, `{ target, pendingUpdateId, revision,
+threadIds?, hasReadyContent }`: there is no `entry` and no path.
 
 One review run clears everything in a single pass and is faster than the per-row loop. Collect
 every row first, then `files_pending_update_runs.start({membershipId, requestId, kind: "discard",
@@ -1915,14 +1907,15 @@ permission refusals still use `disabled`.
 
 Pending starts with one page. Press `Load more pending changes` before counting all rows. The file
 view has its own `Load more` button for the same list, so match the name exactly. A server page holds up to 5 rows, and the tab badge already counts them all. A
-hidden folder draft is skipped before paging, so it uses no slot. A page is short only when it is
-the last one, or when it read 100 proposals first (then `isDone` is still false). Until every page
-is loaded, the source picker counts only the loaded rows, and a chat shows in the picker only after
-one of its rows is loaded. The UI never sends `threadId`: it pages the whole list and filters by chat
-in the browser. So only hidden folder drafts can make a UI page stop early. Switching to another
-sidebar tab and back remounts the list on one page again. A mouse click on `Load more` can wait
-forever for the button to be "stable"; focus it and press Enter. The button hides while a page
-loads, so a loop that presses it must wait several seconds before it decides the list is done. To
+hidden folder draft is skipped before paging, so it uses no slot. The server reads only the list
+key of the selected source (`listKey`: `"all"`, `"own"` or a chat id), so every row on a page
+belongs to that source. A page is short when it is the last one, when a row's proposal just went
+away, or when the page is split (`SplitRequired` from the split guard; `isDone` is still false). The
+source picker reads `list_files_pending_sources` 20 chats at a time, newest change first, and its
+`Load more chats` option loads the next 20. Switching to another sidebar tab and back remounts the
+list on one page again. A mouse click on `Load more` can wait forever for the button to be
+"stable"; focus it and press Enter. The button reads `Loading more…` while a page loads, so a loop
+that presses it must wait several seconds before it decides the list is done. To
 clean up a QA run, select its chat in `Pending changes source`, load every page, and check the
 shown paths before using Discard all. Do not discard unrelated pending work.
 

@@ -91,7 +91,7 @@ type FileEditorRichTextMediaEmbedPicker_Props = {
 function media_row_pickable(row: FilesNodePicker_Row): FilesNodePicker_Pickable {
 	return row.contentType?.startsWith("image/") || row.contentType?.startsWith("video/")
 		? { ok: true }
-		: { ok: false, reason: "Not an image or video" };
+		: { ok: false, reason: "This file is not an image or video" };
 }
 
 /**

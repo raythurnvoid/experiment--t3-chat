@@ -2426,8 +2426,8 @@ const app_convex_schema = defineSchema({
 		.index("by_expiresAt", ["expiresAt"]),
 
 	/**
-	 * Saved nodes that one user's drafts remove from their saved place: moved or renamed away to a
-	 * destination that resolves, deleted in a draft, or name taken by a draft (a claim).
+	 * Saved nodes that one user's drafts remove from their saved parent and name: moved or renamed away
+	 * to a destination that resolves, deleted in a draft, or name taken by a draft (a claim).
 	 *
 	 * Derived docs: only the overlay flush, its jobs and data deletion write them. One doc per (user,
 	 * saved node) while the saved node is active and a cause holds. The other fields copy the saved
@@ -2577,7 +2577,7 @@ const app_convex_schema = defineSchema({
 		}),
 
 	/**
-	 * Metadata of places, so agent metadata search shows drafts at their new place. One doc per
+	 * Metadata of places, so agent metadata search shows drafts at their new path. One doc per
 	 * metadata doc the owner sees for a place. The other fields copy the place; a read drops a doc
 	 * whose copy no longer matches its place.
 	 *
@@ -2749,8 +2749,8 @@ const app_convex_schema = defineSchema({
 	 * index mirrors a folder table sort index for one principal. A role share is one doc, not one per
 	 * member, so a role membership change writes nothing.
 	 *
-	 * Derived docs: only the overlay flush (`server/files-share-rows.ts`), its backfill and data
-	 * deletion write them.
+	 * Derived docs: only the overlay flush (`server/files-pending-overlay.ts`, with the helpers in
+	 * `server/files-share-rows.ts`), its backfill and data deletion write them.
 	 */
 	files_share_rows: defineTable({
 		organizationId: v.id("organizations"),
@@ -3164,8 +3164,8 @@ const app_convex_schema = defineSchema({
 			"archiveOperationId",
 			"name",
 		])
-		// The Files tree and folder table page one folder at a time with this index: folders first, then files,
-		// each by name. `"file"` sorts before `"folder"`, so a reader pages one kind at a time.
+		// One kind of one folder's active children, by name. `get_folder_readme` reads the folder's files.
+		// `list_subtree` and `internal_list_children_saved` (`files_visible.ts`) page one kind at a time.
 		.index("by_organization_workspace_parent_archiveOperation_kind_name", [
 			"organizationId",
 			"workspaceId",

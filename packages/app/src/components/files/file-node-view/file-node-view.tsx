@@ -126,7 +126,7 @@ import { combine } from "@atlaskit/pragmatic-drag-and-drop/combine";
 import { draggable, dropTargetForElements } from "@atlaskit/pragmatic-drag-and-drop/element/adapter";
 import { measureNaturalWidth, prepareWithSegments } from "@chenglou/pretext";
 import { Link } from "@tanstack/react-router";
-import { useConvex, usePaginatedQuery as useConvexPaginatedQuery, useQueries, useQuery } from "convex/react";
+import { useConvex, usePaginatedQuery, useQueries, useQuery } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
 import {
 	Archive,
@@ -1806,7 +1806,7 @@ const FileNodeViewPrivateFolder = memo(function FileNodeViewPrivateFolder(props:
 }) {
 	const { folderId, onNavigateTarget } = props;
 	const { membershipId } = AppTenantProvider.useContext();
-	const children = useConvexPaginatedQuery(
+	const children = usePaginatedQuery(
 		app_convex_api.files_visible.list_private_folder_children,
 		{ membershipId, folderId },
 		{ initialNumItems: FILE_NODE_VIEW_PRIVATE_FOLDER_PAGE_SIZE },
@@ -1846,13 +1846,20 @@ const FileNodeViewPrivateFolder = memo(function FileNodeViewPrivateFolder(props:
 			) : (
 				// The server leaves out rows the user cannot read any more, so a page can be empty while more
 				// pages exist.
-				<p role="status">No matches loaded yet. Show more to keep looking.</p>
+				<p role="status">No items on the loaded pages. Show more to keep looking.</p>
 			)}
 			{(children.status === "CanLoadMore" || children.status === "LoadingMore") && (
 				<MyButton
 					variant="ghost"
-					disabled={children.status === "LoadingMore"}
-					onClick={() => children.loadMore(FILE_NODE_VIEW_PRIVATE_FOLDER_PAGE_SIZE)}
+					// `aria-disabled`, not `disabled`, so focus stays on Show more while its page loads.
+					aria-busy={children.status === "LoadingMore"}
+					aria-disabled={children.status === "LoadingMore"}
+					onClick={() => {
+						if (children.status === "LoadingMore") {
+							return;
+						}
+						children.loadMore(FILE_NODE_VIEW_PRIVATE_FOLDER_PAGE_SIZE);
+					}}
 				>
 					Show more
 				</MyButton>
@@ -3047,10 +3054,12 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 			sortedChildren.rowsNamePrefix !== namePrefix ||
 			JSON.stringify(sortedChildren.rowsSort) !== JSON.stringify(sort));
 	// A table row can be on a page the tree store has not loaded, so the move checks read both lists.
+	// A set keeps this linear: both lists can hold thousands of rows.
+	const treeNodeIds = new Set(fileNodesList?.map((node) => node._id));
 	const savedNodesList = [
 		...(fileNodesList ?? []),
 		...(sortedChildren.rows ?? []).flatMap((row) =>
-			row.treeRow && !fileNodesList?.some((node) => node._id === row.treeRow?._id) ? [row.treeRow] : [],
+			row.treeRow && !treeNodeIds.has(row.treeRow._id) ? [row.treeRow] : [],
 		),
 	];
 	const folderReadme = useQuery(app_convex_api.files_nodes.get_folder_readme, { membershipId, folderId: folderItemId });
@@ -4730,7 +4739,9 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 				? isSortBusy
 					? "Loading folder contents…"
 					: // A stream has more pages, but the loaded ones hold no row to show yet.
-						"No matches loaded yet. Show more to keep looking."
+						hasFilter
+						? "No matches loaded yet. Show more to keep looking."
+						: "No items on the loaded pages. Show more to keep looking."
 				: hasFilter
 					? "No rows match this filter"
 					: files_sort_field_is_built_in(displayedSort[0]!.field)
@@ -4932,13 +4943,13 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 			)}
 			{filter === null && metadataKey !== null && (
 				<p className={"FileNodeViewFolderExplorer-notice" satisfies FileNodeViewFolderExplorer_ClassNames}>
-					Rows without {metadataKey} are hidden.
+					Rows without {metadataKey} are hidden
 				</p>
 			)}
 			{/* Shared items have no copy for metadata keys, so a member sees why they are missing. */}
 			{hiddenSharedKey !== null && (
 				<p className={"FileNodeViewFolderExplorer-notice" satisfies FileNodeViewFolderExplorer_ClassNames}>
-					Items shared with you are not shown while sorting or filtering by {hiddenSharedKey}.
+					Items shared with you are not shown while sorting or filtering by {hiddenSharedKey}
 				</p>
 			)}
 			{hasDrafts && (
@@ -5676,7 +5687,7 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 		results: allPendingUpdatesResult,
 		status: pendingListStatus,
 		loadMore: loadMorePendingUpdates,
-	} = useConvexPaginatedQuery(
+	} = usePaginatedQuery(
 		app_convex_api.files_pending_updates.list_files_pending_updates,
 		{ membershipId, listKey: "all" },
 		{ initialNumItems: 20 },

@@ -478,9 +478,10 @@ async function db_search_sample_is_readable(args: {
 }
 
 /**
- * The index range of one plan over saved (committed), active docs, for the search box. A folder is
- * the last range of the `exists` and `eq` plans: `treePathPrefix` is the folder's stored `treePath`,
- * which ends with `/`. `prefix` and `range` put their range on the value, so they take no folder.
+ * The index range of one plan over saved (committed), active docs, for the search box
+ * (`files_nodes.search_saved`) and the agent's metadata stream (`files_visible.internal_search_metadata_saved`).
+ * A folder is the last range of the `exists` and `eq` plans: `treePathPrefix` is the folder's stored
+ * `treePath`, which ends with `/`. `prefix` and `range` put their range on the value, so they take no folder.
  */
 export function files_metadata_db_query_saved_plan(
 	ctx: QueryCtx,

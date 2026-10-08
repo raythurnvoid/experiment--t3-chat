@@ -1558,7 +1558,7 @@ describe("bash_run_command", () => {
 		expect(blinded.metadata.exitCode).toBe(0);
 		expect(blinded.stdout).toBe("");
 		expect(blinded.stderr).toContain("find exited 2 and its stderr was discarded");
-		expect(blinded.stderr).toContain("-name/-iname use app-file path word search");
+		expect(blinded.stderr).toContain("-name/-iname use name search for app files");
 		expect(blinded.stderr).toContain("or use words like `readme`");
 	});
 
@@ -1583,10 +1583,10 @@ describe("bash_run_command", () => {
 		const merged = await run({ command: `find ${test_db_files_mount} -type f -iname 'readme*' 2>&1 || true` });
 
 		expect(plain.metadata.exitCode).toBe(2);
-		expect(plain.stderr).toContain("-name/-iname use app-file path word search");
+		expect(plain.stderr).toContain("-name/-iname use name search for app files");
 		expect(plain.stderr).not.toContain("its stderr was discarded");
 		// `2>&1` keeps the guidance, just on stdout, so it must not be printed a second time.
-		expect(merged.stdout).toContain("-name/-iname use app-file path word search");
+		expect(merged.stdout).toContain("-name/-iname use name search for app files");
 		expect(merged.stderr).not.toContain("its stderr was discarded");
 	});
 
@@ -2465,11 +2465,11 @@ describe("bash_run_command", () => {
 		// App files search names only, and the name index has no parent filter.
 		expect(explicitResult.metadata.exitCode).toBe(2);
 		expect(explicitResult.stderr).toBe(
-			"find: --path-query is not supported for app files; use find <folder> -name <word>\n",
+			"find: --path-query is not supported for app files; use find <folder> -name QUERY\n",
 		);
 		expect(scopedResult.metadata.exitCode).toBe(2);
 		expect(scopedResult.stderr).toBe(
-			"find: -maxdepth 1 -name is not supported for app files; use find <folder> -name <word> for the whole folder, or ls <folder>\n",
+			"find: -maxdepth 1 -name is not supported for app files; use find <folder> -name QUERY for the whole folder, or ls <folder>\n",
 		);
 		// A folder scope searches the full subtree and leaves out the rest.
 		expect(subtreeResult.metadata.exitCode).toBe(0);
@@ -2610,7 +2610,7 @@ describe("bash_run_command", () => {
 		expect(complexGlobName.stderr).toContain("not glob patterns");
 		expect(complexGlobName.stderr).toContain("Try `find <dir> -type f --extension md");
 		expect(pathQueryGlob.metadata.exitCode).toBe(2);
-		expect(pathQueryGlob.stderr).toContain("--path-query uses app-file path word search");
+		expect(pathQueryGlob.stderr).toContain("--path-query uses path word search for /.plugins and /.mounts");
 		expect(pathQueryGlob.stderr).toContain(`Try: find ${test_db_files_mount} -name readme --limit 10`);
 		expect(combinedPathQueryExtension.metadata.exitCode).toBe(2);
 		expect(combinedPathQueryExtension.stderr).toContain("--path-query is not supported for app files");
@@ -3717,7 +3717,7 @@ describe("bash_run_command", () => {
 
 		expect(result.metadata.exitCode).toBe(0);
 		expect(result.stdout).toContain("No content matches found");
-		expect(result.stdout).toContain("find -name WORD");
+		expect(result.stdout).toContain("find -name QUERY");
 		expect(result.stdout).toContain("meta search");
 		expect(runAction).not.toHaveBeenCalled();
 	});

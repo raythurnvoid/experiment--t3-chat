@@ -357,6 +357,7 @@ async function db_continue_job(
 	const scheduledFunctionId = await ctx.scheduler.runAt(now, internal.files_pending_overlay.run_job, {
 		kind: job.kind,
 		key: job.key,
+		nextAttemptAt: now,
 	});
 	await ctx.db.patch("files_pending_overlay_jobs", job._id, { ...patch, nextAttemptAt: now, scheduledFunctionId });
 }
@@ -366,15 +367,30 @@ async function db_continue_job(
  * the next run. The last run deletes the task doc.
  */
 export const run_job = internalMutation({
-	args: { kind: job_kind_validator, key: v.string() },
+	args: {
+		kind: job_kind_validator,
+		key: v.string(),
+		/**
+		 * The job's `nextAttemptAt` when this run was scheduled. Missing only in runs scheduled before
+		 * this arg existed.
+		 */
+		nextAttemptAt: v.optional(v.number()),
+	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
 		const job = await ctx.db
 			.query("files_pending_overlay_jobs")
 			.withIndex("by_kind_key", (q) => q.eq("kind", args.kind).eq("key", args.key))
 			.unique();
-		// A purge deleted the task, or a newer run now owns it.
-		if (!job || job.nextAttemptAt > Date.now()) return null;
+		// A purge deleted the task, or a newer run now owns it. A write that schedules a new run can
+		// conflict with this one while it runs; Convex then runs this one again on the new doc, and the
+		// check stops it, so only the new run goes on.
+		if (
+			!job ||
+			job.nextAttemptAt > Date.now() ||
+			(args.nextAttemptAt !== undefined && args.nextAttemptAt !== job.nextAttemptAt)
+		)
+			return null;
 		if (!(await ctx.db.get("organizations_workspaces", job.workspaceId))) {
 			await ctx.db.delete("files_pending_overlay_jobs", job._id);
 			return null;
@@ -497,12 +513,13 @@ export const recover_jobs = internalMutation({
 			}
 			const runAt = attempts > RECOVERY_MAX_ATTEMPTS ? now + RECOVERY_SLOW_MS : now;
 			// Cancel only a function that has not started. A running one conflicts with this write, so
-			// Convex runs it again on the new doc; a second run is safe because all writes are diffed.
+			// Convex runs it again on the new doc, where `run_job` sees the new `nextAttemptAt` and stops.
 			if ((await ctx.db.system.get("_scheduled_functions", job.scheduledFunctionId))?.state.kind === "pending")
 				await ctx.scheduler.cancel(job.scheduledFunctionId);
 			const scheduledFunctionId = await ctx.scheduler.runAt(runAt, internal.files_pending_overlay.run_job, {
 				kind: job.kind,
 				key: job.key,
+				nextAttemptAt: runAt,
 			});
 			await ctx.db.patch("files_pending_overlay_jobs", job._id, {
 				attempts,

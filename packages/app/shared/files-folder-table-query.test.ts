@@ -96,10 +96,10 @@ describe("files_folder_table_query_parse_token", () => {
 		expect(problems("file.name:starts_with:")).toBe("Enter 1 to 1,024 characters");
 		// The sort key writes a number with its length first, so the prefix cannot end in a digit.
 		expect(problems("file.name:starts_with:file1")).toBe(
-			"'Starts with' cannot end with a number here. Remove the last digits, or use 'is'.",
+			"'Starts with' cannot end with a number here. Remove the last digits, or use 'is'",
 		);
 		expect(problems("metadata.version:starts_with:v2")).toBe(
-			"'Starts with' cannot end with a number here. Remove the last digits, or use 'is'.",
+			"'Starts with' cannot end with a number here. Remove the last digits, or use 'is'",
 		);
 		expect(problems("metadata.version:is:2")).toBeNull();
 		expect(problems('file.name:starts_with:6"')).toBe('Put the value in quotes to use a " in it');
@@ -118,7 +118,7 @@ describe("files_folder_table_query_parse_token", () => {
 });
 
 describe("files_folder_table_query_parse", () => {
-	const PAIR_PROBLEM = "Use one filter, or 'name starts with' plus one 'is' filter.";
+	const PAIR_PROBLEM = "Use one filter, or 'name starts with' plus one 'is' filter";
 
 	test("keeps one filter and one sort, and lists what it drops", () => {
 		const parsed = files_folder_table_query_parse(
@@ -225,7 +225,7 @@ describe("files_folder_table_query_get_add_problem", () => {
 		const query = "file.extension:is:md sort_by:file.name:desc";
 
 		expect(files_folder_table_query_get_add_problem(query, "file.size:is:1")).toBe(
-			"Use one filter, or 'name starts with' plus one 'is' filter.",
+			"Use one filter, or 'name starts with' plus one 'is' filter",
 		);
 		expect(files_folder_table_query_get_add_problem(query, "file.name:starts_with:a")).toBeNull();
 		expect(files_folder_table_query_get_add_problem(query, "sort_by:file.updated:asc")).toBe(

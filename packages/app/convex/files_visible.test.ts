@@ -351,7 +351,9 @@ describe("internal_list", () => {
 			numItems: 1,
 			cursor: first._yay.continueCursor,
 		});
-		expect(other._nay?.message).toBe("Listing changed. Start again.");
+		expect(other._nay?.message).toBe(
+			"cursor does not match this listing; rerun the original command to get a fresh Next page cursor.",
+		);
 	});
 });
 

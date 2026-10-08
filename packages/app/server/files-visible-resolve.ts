@@ -64,8 +64,8 @@ export function files_visible_resolve_db_create(
 	}
 
 	/**
-	 * Whether the owner's draft takes the saved place of this node: an active private node with the
-	 * same parent and name, or a draft move of another active saved node onto it.
+	 * Whether the owner's draft takes the saved parent and name of this node: an active private node
+	 * with the same parent and name, or a draft move of another active saved node onto it.
 	 */
 	async function is_claimed(node: Doc<"files_nodes">) {
 		const parentTarget: files_PendingParent =

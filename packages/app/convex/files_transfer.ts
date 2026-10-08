@@ -45,6 +45,7 @@ import {
 	files_nodes_db_require_user_writable_or_matching_policy,
 	files_nodes_db_require_copiable_write_policy,
 	files_nodes_db_get_content_version,
+	files_nodes_MAX_MOVE_NODE_COUNT,
 } from "./files_nodes.ts";
 import { files_visible_db_create_reader } from "./files_visible.ts";
 import { files_pending_overlay_list } from "../server/files-pending-overlay.ts";
@@ -1535,6 +1536,10 @@ async function db_start(
 	const { membership } = args;
 	const sourceCount = args.expectedSourceCount ?? args.sources.length;
 	if (!args.requestId || args.requestId.length > 128) return Result({ _nay: { message: "Invalid request ID" } });
+	// The apply step moves every source in one `move_nodes` call, so refuse a move it would refuse
+	// before any work starts.
+	if (args.kind === "move" && args.sources.length > files_nodes_MAX_MOVE_NODE_COUNT)
+		return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
 	if (
 		!Number.isSafeInteger(sourceCount) ||
 		sourceCount < 1 ||

@@ -1813,7 +1813,7 @@ describe("FileEditorSidebarPending", () => {
 		expect(upsertPendingMock).not.toHaveBeenCalled();
 		expect(actionMock).not.toHaveBeenCalled();
 		expect(mutationMock).not.toHaveBeenCalled();
-		expect(screen.getByRole("status").textContent).toBe("Started discarding 1 pending changes");
+		expect(screen.getByRole("status").textContent).toBe("Started discarding 1 pending change");
 	});
 	test("sends only the shown folder and lets the server check hidden dependencies", async () => {
 		useQueryMock.mockReturnValue([

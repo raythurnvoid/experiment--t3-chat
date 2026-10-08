@@ -4707,7 +4707,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(agentSurface).toContain("ls -R lists a paginated subtree as full app shell paths");
 			expect(agentSurface).toContain("when the user asks for tree-shaped output, use tree, not ls -R");
 			expect(agentSurface).toContain(
-				"Use find <folder> -name WORD for app-file name search: it matches name words and word starts, not globs and not path parts",
+				"Use find <folder> -name QUERY for app-file name search: it matches name words and word starts, not globs and not path parts",
 			);
 			expect(agentSurface).toContain("App files refuse --path-query and -maxdepth 1 -name");
 			expect(agentSurface).toContain(

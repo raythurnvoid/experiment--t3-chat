@@ -822,7 +822,7 @@ describe("ai_chat_tool_create_bash", () => {
 		expect(tool).toEqual(
 			expect.objectContaining({
 				description: expect.stringContaining(
-					"Use find <folder> -name WORD for app-file name search: it matches name words and word starts",
+					"Use find <folder> -name QUERY for app-file name search: it matches name words and word starts",
 				),
 			}),
 		);
@@ -841,7 +841,7 @@ describe("ai_chat_tool_create_bash", () => {
 		expect(tool).toEqual(
 			expect.objectContaining({
 				description: expect.stringContaining(
-					"App files refuse --path-query and -maxdepth 1 -name: use find <folder> -name WORD for the whole folder, or ls <folder>.",
+					"App files refuse --path-query and -maxdepth 1 -name: use find <folder> -name QUERY for the whole folder, or ls <folder>.",
 				),
 			}),
 		);

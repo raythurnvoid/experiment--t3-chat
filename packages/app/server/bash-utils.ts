@@ -2152,7 +2152,8 @@ export function bash_shell_arg_quote(arg: string) {
 /**
  * Printed when a content or name search ended on the 1,024 rows Convex text search returns at most.
  */
-export const bash_SEARCH_TOP_MATCHES_NOTE = "Searched the top 1,024 matches of the workspace.";
+export const bash_SEARCH_TOP_MATCHES_NOTE =
+	"Only the top 1,024 matches were searched. Add more words to narrow the search.";
 
 /**
  * One page of agent content search, for `search`, recursive `grep` and `textgrep`.

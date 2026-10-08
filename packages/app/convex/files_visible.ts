@@ -400,10 +400,17 @@ async function db_list(ctx: QueryCtx, args: Infer<typeof internal_listing_args>)
 		try {
 			raw = JSON.parse(args.cursor);
 		} catch {
-			return Result({ _nay: { message: "Invalid listing cursor" } });
+			return Result({
+				_nay: { message: "cursor is invalid; rerun the original command to get a fresh Next page cursor." },
+			});
 		}
 		const parsed = z.object({ scope: z.literal(scope), frames: z.array(frameSchema).min(1).max(256) }).safeParse(raw);
-		if (!parsed.success) return Result({ _nay: { message: "Listing changed. Start again." } });
+		if (!parsed.success)
+			return Result({
+				_nay: {
+					message: "cursor does not match this listing; rerun the original command to get a fresh Next page cursor.",
+				},
+			});
 		frames = parsed.data.frames;
 	} else frames = [await create_frame(rootTarget, folderPath)];
 
@@ -2006,7 +2013,7 @@ export const internal_search_name_saved = internalQuery({
 		// Rows under the listing folder in saved space come from the main search, not a moved-in one.
 		const listingFolder = args.movedIn ? root.savedNode : null;
 		const under = args.movedIn ? args.movedIn.ownerTreePath : opened._yay.treePath;
-		// In a moved-in folder, a row must sit at its saved place inside that folder. A row under a
+		// In a moved-in folder, a row must sit at its saved path inside that folder. A row under a
 		// folder the user moved or renamed again comes from that folder's own search.
 		const movedFolder = args.movedIn ? scope : null;
 		const can_read = db_stream_saved_access(ctx, args, reader, page.page);
@@ -2350,9 +2357,15 @@ export const internal_search_metadata_saved = internalQuery({
 		// Rows under the listing folder in saved space come from the main stream, not a moved-in one.
 		const listingFolder = args.movedIn ? root.savedNode : null;
 		const under = args.movedIn ? args.movedIn.ownerTreePath : opened._yay.treePath;
-		// In a moved-in folder, a row must sit at its saved place inside that folder. A row under a
+		// In a moved-in folder, a row must sit at its saved path inside that folder. A row under a
 		// folder the user moved or renamed again comes from that folder's own stream.
 		const movedFolder = args.movedIn ? rangeFolder : null;
+		// `exists` and `eq` merge by the user's path, like the place stream and `ls -R`. A moved-in folder
+		// keyed by its saved path sorts outside the listing, so its stream would stay open to the end
+		// and many of them would overflow the cursor.
+		const savedTreePath = rangeFolder?.treePath ?? "/";
+		const mergeKey = (doc: Doc<"files_metadata_docs">) =>
+			byTree ? metadata_index_key(plan, doc, under + doc.treePath.slice(savedTreePath.length)) : indexKey(doc);
 		return await db_stream_decide(ctx, {
 			root: root.parent,
 			requireComplete: args.requireComplete,
@@ -2362,7 +2375,7 @@ export const internal_search_metadata_saved = internalQuery({
 			rows: stream_rows_after({ page: page.page, lastKey: args.position.lastKey, order: "asc", indexKey }),
 			cut: false,
 			indexKey,
-			mergeKey: indexKey,
+			mergeKey,
 			decide: async (doc) => {
 				if (doc.sourceKind !== "committed") return null;
 				const node = await ctx.db.get("files_nodes", doc.fileNodeId);

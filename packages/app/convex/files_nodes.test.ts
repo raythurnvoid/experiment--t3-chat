@@ -16936,7 +16936,7 @@ describe("search box doors", () => {
 
 		expect(await search(twelve)).toEqual(new Set([deepId]));
 		expect(await search(`/${levels.join("/")}`)).toEqual(
-			new Set(["This folder is too deep to search inside. Search a folder higher up."]),
+			new Set(["This folder is too deep to search inside. Search a folder higher up"]),
 		);
 	});
 

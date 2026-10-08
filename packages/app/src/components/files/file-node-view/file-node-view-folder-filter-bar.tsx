@@ -809,7 +809,7 @@ export const FileNodeViewFolderFilterBar = memo(function FileNodeViewFolderFilte
 						{fieldsState === "loading" ? <p role="status">Loading fields…</p> : null}
 						{fieldsState === "failed" ? <p role="status">Fields could not be loaded</p> : null}
 						{stage.kind === "key" && !canAddFilter ? (
-							<p>Use one filter, or 'name starts with' plus one 'is' filter.</p>
+							<p>Use one filter, or 'name starts with' plus one 'is' filter</p>
 						) : null}
 					</div>
 				</MyComboboxPopoverScrollableArea>

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
+import { files_nodes_MAX_MOVE_NODE_COUNT } from "./files_nodes.ts";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 
@@ -130,6 +131,24 @@ describe("Copy selection pages", () => {
 		).toMatchObject({ _nay: { name: "invalid_selection" } });
 		expect(await f.t.run((ctx) => ctx.db.query("files_transfer_selection_items").collect())).toHaveLength(1);
 	});
+
+	test("refuses a move of more sources than one move can apply, before any work starts", async () => {
+		const paths = Array.from({ length: files_nodes_MAX_MOVE_NODE_COUNT + 1 }, (_, index) => `/source-${index}`);
+		const f = await fixture(["/target", ...paths]);
+		const sourceIds = paths.map((path) => f.folders.get(path)!);
+		const move = (count: number) =>
+			f.asUser.mutation(api.files_transfer.start, {
+				membershipId: f.scope.membershipId,
+				requestId: `move-${count}`,
+				kind: "move",
+				sourceIds: sourceIds.slice(0, count),
+				targetParentId: f.folders.get("/target")!,
+			});
+
+		expect(await move(sourceIds.length)).toMatchObject({ _nay: { name: "move_too_large" } });
+		expect(await f.t.run((ctx) => ctx.db.query("files_transfer_runs").collect())).toEqual([]);
+		expect(await move(files_nodes_MAX_MOVE_NODE_COUNT)).toMatchObject({ _yay: { runId: expect.any(String) } });
+	}, 60_000);
 
 	test("plans every root after 200 sources and keeps originals unchanged", async () => {
 		const paths = Array.from({ length: 201 }, (_, index) => `/source-${index}`);

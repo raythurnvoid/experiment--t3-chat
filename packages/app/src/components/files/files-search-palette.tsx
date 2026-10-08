@@ -342,7 +342,7 @@ const FilesSearchPaletteContent = memo(function FilesSearchPaletteContent(props:
 					{!isActive || isDebouncing || !isSearching ? (
 						<div className={cn("FilesSearchPalette-state" satisfies FilesSearchPalette_ClassNames)} role="status">
 							{!isActive ? (
-								"Search file names and contents, or choose a filter."
+								"Search file names and contents, or add one filter."
 							) : isDebouncing ? (
 								<MySpinner />
 							) : hasInvalidFilter ? (

@@ -74,7 +74,7 @@ describe("FilesSearchInput", () => {
 	test("a committed filter shows its problem as soon as words are typed next to it", () => {
 		render(<FilesSearchInput {...props} initialQuery="metadata.status:open" />);
 		const input = screen.getByRole("combobox");
-		const problem = "Search for words or one filter, not both. You can add a folder.";
+		const problem = "Search for words or one filter, not both. You can also add a folder, like file.path:/tasks";
 		expect(screen.queryByText(problem)).toBeNull();
 		fireEvent.change(input, { target: { value: "notes" } });
 		expect(screen.getByText(problem, { selector: ".FilesSearchInput-error" })).toBeTruthy();

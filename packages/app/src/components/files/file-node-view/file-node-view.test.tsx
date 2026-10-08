@@ -1339,7 +1339,7 @@ describe("FileNodeView private targets", () => {
 		renderFileView({ pendingNodeId: PRIVATE_ENTRY.node._id });
 
 		// The server leaves out rows the user cannot read, so the first page can be empty.
-		expect(await screen.findByText("No matches loaded yet. Show more to keep looking.")).toBeTruthy();
+		expect(await screen.findByText("No items on the loaded pages. Show more to keep looking.")).toBeTruthy();
 		expect(queryMock).toHaveBeenCalledWith(expect.anything(), {
 			membershipId: "membership_1",
 			folderId: PRIVATE_ENTRY.node._id,
@@ -2005,7 +2005,7 @@ describe("FileNodeView folder sort", () => {
 		renderFileView({ nodeId: node._id });
 
 		expect(
-			await screen.findByText("Items shared with you are not shown while sorting or filtering by metadata.status."),
+			await screen.findByText("Items shared with you are not shown while sorting or filtering by metadata.status"),
 		).toBeTruthy();
 		expect(screen.getByRole("link", { name: "Open a.html" })).toBeTruthy();
 		expect(screen.queryByRole("link", { name: "Open shared.html" })).toBeNull();
@@ -2098,7 +2098,7 @@ describe("FileNodeView folder sort states", () => {
 		expect(table.getAttribute("data-sort-fields")).toBe(JSON.stringify(sort));
 		expect(table.querySelector('[data-column-field="metadata.status"]')).toBeNull();
 		expect(table.querySelector("[aria-sort]")).toBeNull();
-		expect(screen.getByText("Rows without metadata.status are hidden.")).toBeTruthy();
+		expect(screen.getByText("Rows without metadata.status are hidden")).toBeTruthy();
 		expect(
 			queryMock.mock.calls.filter(([reference]) => getFunctionName(reference) === "files_metadata:get_field_values"),
 		).toHaveLength(0);
@@ -2718,7 +2718,9 @@ describe("FileNodeView folder filter", () => {
 
 		fireEvent.change(input, { target: { value: "file.name:starts_with:xyz" } });
 		fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
-		expect(screen.getByRole("alert").textContent).toContain("Use one filter, or 'name starts with' plus one 'is' filter.");
+		expect(screen.getByRole("alert").textContent).toContain(
+			"Use one filter, or 'name starts with' plus one 'is' filter",
+		);
 		expect(input).toHaveProperty("value", "file.name:starts_with:xyz");
 	});
 
@@ -2759,7 +2761,7 @@ describe("FileNodeView folder filter", () => {
 			/>,
 		);
 		expect(screen.queryByRole("group", { name: "Filter by" })).toBeNull();
-		expect(screen.getByText("Use one filter, or 'name starts with' plus one 'is' filter.")).toBeTruthy();
+		expect(screen.getByText("Use one filter, or 'name starts with' plus one 'is' filter")).toBeTruthy();
 	});
 
 	test("typing writes view_q after the debounce, and the column menu starts a new filter", async () => {
@@ -2952,7 +2954,7 @@ describe("FileNodeView folder filter", () => {
 		await screen.findByRole("link", { name: "Open file-1.html" });
 		expect(screen.queryByRole("link", { name: "Open a-shared.html" })).toBeNull();
 		expect(
-			screen.getByText("Items shared with you are not shown while sorting or filtering by metadata.status."),
+			screen.getByText("Items shared with you are not shown while sorting or filtering by metadata.status"),
 		).toBeTruthy();
 
 		// A name filter reads the share stream, so the shared row shows and the note goes.

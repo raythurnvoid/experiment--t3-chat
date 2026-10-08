@@ -294,7 +294,7 @@ Rules:
 - Caps do not fix a scan. `maximumRowsRead`, `take(1001)`, read budgets, `truncated` flags, and "too broad" errors turn a slow read into wrong or missing results. Do not ship them as a stopgap.
 - A scan is fine only when a limit enforced on write bounds the range (for example a per-role share limit), when the range is one small owned record (one file's version history), or in a background job no user waits on. Write that bound in a comment next to the read.
 - Prove it with a test. Put more non-matching rows inside the range than one page or read limit, and assert that the first page is full and correct. The test must fail on the scan version.
-- UI lists (the folder table, the sidebar, the search box, the pickers) show saved files only. Only the agent's bash tools, the Pending tab and the draft views read a user's drafts. The folder table, the search box and the search palette follow this rule. See "Saved-only lists" in the `files-explorer-tree` skill.
+- UI lists (the folder table, the sidebar tree, the search box and the search palette, the pickers) show saved files only. Only the agent's bash tools, the Pending tab and the draft views read a user's drafts. See "Saved-only lists" in the `files-explorer-tree` skill.
 
 The Convex guidelines explain the query mechanics: [.agents/skills/convex/references/additional-guidelines.md](.agents/skills/convex/references/additional-guidelines.md).
 

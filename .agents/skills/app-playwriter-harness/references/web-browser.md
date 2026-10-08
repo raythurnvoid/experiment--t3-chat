@@ -386,8 +386,9 @@ File chooser dialog (`.WebBrowserFileChooser`, a MyModal `role=dialog`):
 
 - `Choose from Files` is `role=combobox`, not a button. Its popover
   (`.WebBrowserFileChooser-picker`, `aria-label="Choose a file from Files"`) opens with focus in
-  `Search files`. It shows the root folder first; a folder option opens it. Type a name to search
-  the whole workspace, or `folder/name` to search one folder. Enter picks the active file and the list shows
+  `Search files`. It shows the root folder first; a folder option opens it. Text with no `/`
+  searches the open folder, and the whole workspace only at the root. Type `folder/name` to search
+  one folder. Enter picks the active file and the list shows
   `Remove <name>` plus `Give to the page`.
 - Do not press `From your computer` from Playwriter: it opens the real OS file dialog. Call
   `setInputFiles` on `.WebBrowserFileChooser input[type=file]` (hidden) with an absolute Windows

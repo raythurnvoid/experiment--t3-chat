@@ -99,14 +99,15 @@ const DATE_ONLY_LITERAL_REGEX = /^\d{4}-\d{2}-\d{2}$/u;
 const FILE_FIELD_PREFIX = "file.";
 // The search box no longer runs these chips. The folder table bar still filters on these fields.
 const REMOVED_FILE_FIELD_PROBLEMS = new Map([
-	["name", "Type the name as plain text."],
-	["extension", "file.extension is not supported in search. Use the folder table filters."],
-	["kind", "file.kind is not supported in search. Use the folder table filters."],
-	["updated", "file.updated is not supported in search. Use the folder table filters."],
+	["name", "Type the name as plain text"],
+	["extension", "file.extension is not supported in search. Use the folder table filters"],
+	["kind", "file.kind is not supported in search. Use the folder table filters"],
+	["updated", "file.updated is not supported in search. Use the folder table filters"],
 ]);
-const ONE_CLAUSE_PROBLEM = "Search for words or one filter, not both. You can add a folder.";
-const FOLDER_RANGE_PROBLEM = "A folder works with names, key:value and key:*. Remove the folder to search ranges.";
-const FOLDER_TOO_DEEP_PROBLEM = "This folder is too deep to search inside. Search a folder higher up.";
+const ONE_CLAUSE_PROBLEM = "Search for words or one filter, not both. You can also add a folder, like file.path:/tasks";
+const FOLDER_RANGE_PROBLEM =
+	"A folder works with words, exact values and any value. Remove the folder to compare numbers or dates";
+const FOLDER_TOO_DEEP_PROBLEM = "This folder is too deep to search inside. Search a folder higher up";
 // The server can search inside a folder only up to this many levels below the root.
 const FOLDER_SEARCH_MAX_DEPTH = 12;
 const RANGE_COMPARATORS = [
@@ -369,8 +370,7 @@ function file_field_problem(name: string, match: FilterMatch) {
 	if (name === "path" && match.op === "prefix") {
 		return "file.path takes a folder path, without *";
 	}
-	// The Files tree knows only one link state, so `public` is the only value. Case does not matter,
-	// like `file.kind`.
+	// The Files tree knows only one link state, so `public` is the only value. Case does not matter.
 	if (name === "link" && (match.op === "prefix" || match.value.toLowerCase() !== "public")) {
 		return "file.link takes public, like file.link:public";
 	}

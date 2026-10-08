@@ -268,7 +268,7 @@ const PENDING_LIST_PAGE_MAX_ITEMS = 5;
  * itself costs 2 more). With a 3,000-range budget: floor(3,000 / 1) = 3,000 rows. The page cap
  * keeps a first load far below it. A reactive rerun has no cap, so the guard is for those.
  */
-const PENDING_LIST_PAGE_GUARD = 3000;
+const PENDING_LIST_SPLIT_GUARD = 3000;
 
 /**
  * Reconstruct the latest live file state in action memory, reading only through the frozen
@@ -7513,7 +7513,7 @@ export const list_files_pending_updates = query({
 
 		// Split before any per-row read, like `tree_page_needs_split` in `files_nodes.ts`: a reactive
 		// rerun has no row cap, and a new change always lands on the first page.
-		if (result.splitCursor && (result.page.length > PENDING_LIST_PAGE_GUARD || result.pageStatus)) {
+		if (result.splitCursor && (result.page.length > PENDING_LIST_SPLIT_GUARD || result.pageStatus)) {
 			return {
 				page: [],
 				isDone: result.isDone,

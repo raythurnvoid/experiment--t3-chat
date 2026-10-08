@@ -401,7 +401,7 @@ function parse_args(args: string[]) {
 		return Result({
 			_nay: {
 				message:
-					"find: -name/-iname use app-file path word search for app files, not glob patterns. Try `find <dir> -type f --extension md --limit 20` for simple extension searches, or use words like `readme`.",
+					"find: -name/-iname use name search for app files, not glob patterns. Try `find <dir> -type f --extension md --limit 20` for simple extension searches, or use words like `readme`.",
 				...(simplePathWordGlob == null
 					? {}
 					: {
@@ -424,7 +424,7 @@ function parse_args(args: string[]) {
 		return Result({
 			_nay: {
 				message:
-					"find: --path-query uses app-file path word search, not regex/glob patterns. Use plain tokens like `readme`.",
+					"find: --path-query uses path word search for /.plugins and /.mounts, not regex/glob patterns. Use plain tokens like `readme`.",
 				...(simplePathWordGlob == null
 					? {}
 					: {
@@ -1053,13 +1053,13 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 				};
 			}
 
-			// Prefix scans and path word search use different query shapes.
+			// Prefix scans and name search use different query shapes.
 			if (pathQuery != null) {
 				return {
 					stdout: "",
 					stderr:
-						"find: --prefix cannot be combined with path word search for app files.\n" +
-						"Use `find --prefix PREFIX` for indexed descendant path discovery, or `find -name QUERY` for app-file path word search.\n",
+						"find: --prefix cannot be combined with name search for app files.\n" +
+						"Use `find --prefix PREFIX` for indexed descendant path discovery, or `find <folder> -name QUERY` for app-file name search.\n",
 					exitCode: bash_COMMAND_EXIT_USAGE,
 				};
 			}
@@ -1181,7 +1181,7 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			if (parsed._yay.pathQuery != null && !pathScan)
 				return {
 					stdout: "",
-					stderr: "find: --path-query is not supported for app files; use find <folder> -name <word>\n",
+					stderr: "find: --path-query is not supported for app files; use find <folder> -name QUERY\n",
 					exitCode: bash_COMMAND_EXIT_USAGE,
 				};
 
@@ -1210,7 +1210,7 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 				return {
 					stdout: "",
 					stderr:
-						"find: -maxdepth 1 -name is not supported for app files; use find <folder> -name <word> for the whole folder, or ls <folder>\n",
+						"find: -maxdepth 1 -name is not supported for app files; use find <folder> -name QUERY for the whole folder, or ls <folder>\n",
 					exitCode: bash_COMMAND_EXIT_USAGE,
 				};
 

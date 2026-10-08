@@ -8,7 +8,8 @@
 // Every mutation captures its writes to the source tables with `files_pending_overlay_db_wrap`
 // and flushes once at the end (`convex/functions.ts`). The flush recomputes derived docs from the
 // source tables and the owner's reader. Derived docs only tell it what to recompute, never facts.
-// The same flush keeps the share rows true (`server/files-share-rows.ts`).
+// The same flush also keeps two other copies in sync: the share docs in `files_share_rows`
+// (`server/files-share-rows.ts`) and the `ancestor1..12` fields of saved `files_nodes`.
 //
 // Leaf module: import only `convex/_generated`, `shared/`, `common/` and other leaf modules (see
 // `server/files-visible-resolve.ts`).
@@ -232,7 +233,10 @@ type OwnJob = {
 	rerun: boolean;
 };
 
-type State = {
+/**
+ * What one wrapped mutation records for its flush: the source fields it saw and what to recompute.
+ */
+type FlushMarks = {
 	/**
 	 * The last known source fields of each source doc, for the whole mutation.
 	 */
@@ -295,9 +299,9 @@ type State = {
 	ownJob: OwnJob | null;
 };
 
-const STATE = Symbol("files_pending_overlay");
+const FLUSH_MARKS = Symbol("files_pending_overlay");
 
-type WrappedCtx = { [STATE]?: State };
+type WrappedCtx = { [FLUSH_MARKS]?: FlushMarks };
 
 function pick_source_fields(table: string, doc: SourceFields) {
 	const fields: SourceFields = {};
@@ -379,7 +383,7 @@ async function db_sync_doc<T extends "files_pending_hides" | "files_pending_list
 
 // #region capture
 
-function new_state(): State {
+function new_state(): FlushMarks {
 	return {
 		lastKnown: new Map(),
 		savedOld: new Map(),
@@ -403,7 +407,7 @@ function new_state(): State {
 }
 
 function mark_target(
-	state: State,
+	state: FlushMarks,
 	args: Scope & {
 		target: files_PendingTarget;
 		pendingUpdateId?: Id<"files_pending_updates">;
@@ -439,7 +443,7 @@ function mark_target(
  * Send one target's recompute to its owner's targets job instead of this transaction.
  */
 function defer_target(
-	state: State,
+	state: FlushMarks,
 	mark: Pick<TargetMark, keyof Scope | "target" | "pendingUpdateIds" | "fieldsChanged">,
 ) {
 	const key = scope_key(mark);
@@ -459,7 +463,7 @@ function defer_target(
  * Send this mutation's owner path work to jobs only (the accept unit).
  */
 export function files_pending_overlay_db_skip_inline_owner_paths(ctx: MutationCtx) {
-	const state = (ctx as WrappedCtx)[STATE];
+	const state = (ctx as WrappedCtx)[FLUSH_MARKS];
 	if (state) state.inlineOwnerPaths = false;
 }
 
@@ -468,7 +472,7 @@ export function files_pending_overlay_db_skip_inline_owner_paths(ctx: MutationCt
  * while other users' changes go to jobs.
  */
 export function files_pending_overlay_db_set_acting_user(ctx: MutationCtx, userId: Id<"users">) {
-	const state = (ctx as WrappedCtx)[STATE];
+	const state = (ctx as WrappedCtx)[FLUSH_MARKS];
 	if (state) state.actingUserId = userId;
 }
 
@@ -478,7 +482,7 @@ export function files_pending_overlay_db_set_acting_user(ctx: MutationCtx, userI
  */
 export function files_pending_overlay_db_set_own_job(ctx: MutationCtx, job: Doc<"files_pending_overlay_jobs">) {
 	const own: OwnJob = { doc: job, phase: 0, lastPath: null, rerun: false };
-	const state = (ctx as WrappedCtx)[STATE];
+	const state = (ctx as WrappedCtx)[FLUSH_MARKS];
 	if (state) state.ownJob = own;
 	return own;
 }
@@ -491,7 +495,7 @@ export function files_pending_overlay_db_mark_target(
 	ctx: MutationCtx,
 	args: Scope & { target: files_PendingTarget; pendingUpdateId?: Id<"files_pending_updates">; fieldsChanged?: boolean },
 ) {
-	const state = (ctx as WrappedCtx)[STATE];
+	const state = (ctx as WrappedCtx)[FLUSH_MARKS];
 	if (!state) throw should_never_happen("Overlay mark outside the mutation wrapper", { target: args.target });
 	mark_target(state, { ...args, inline: false });
 }
@@ -501,7 +505,7 @@ export function files_pending_overlay_db_mark_target(
  * the write (null for an insert) and `next` the doc after (null for a delete).
  */
 function mark_source_write(
-	state: State,
+	state: FlushMarks,
 	table: string,
 	id: string,
 	old: SourceFields | null,
@@ -560,7 +564,7 @@ function mark_source_write(
 	else state.committedMetadataNodeIds.add(doc.fileNodeId);
 }
 
-function wrap_query<T extends object>(state: State, table: string, source: T): T {
+function wrap_query<T extends object>(state: FlushMarks, table: string, source: T): T {
 	return new Proxy(source, {
 		get(target, property) {
 			const method = Reflect.get(target, property) as unknown;
@@ -750,7 +754,7 @@ export function files_pending_overlay_db_wrap(ctx: MutationCtx) {
 		},
 	});
 
-	return { db, [STATE]: state };
+	return { db, [FLUSH_MARKS]: state };
 }
 
 // #endregion capture
@@ -940,7 +944,7 @@ export async function files_pending_overlay_db_compute_target(
 
 type Flush = {
 	ctx: MutationCtx;
-	state: State;
+	state: FlushMarks;
 	/**
 	 * List keys whose list docs changed in this round.
 	 */
@@ -1162,7 +1166,7 @@ async function db_recompute_target(flush: Flush, mark: TargetMark) {
 			prefixes.add(place.ownerTreePath);
 			if (place.childTreePath) prefixes.add(place.childTreePath);
 		}
-		// A saved folder with no place before: its children build on its saved place.
+		// A saved folder with no place before: its children build on its saved path.
 		else if (desired.savedNode) {
 			const node = desired.savedNode;
 			const parent = await reader.resolveParent(
@@ -1264,12 +1268,13 @@ async function db_schedule_job(flush: Flush, scope: Omit<Scope, "userId">, input
 	const now = Date.now();
 	if (job)
 		// Cancel only a function that has not started. A running one conflicts with this write, so
-		// Convex runs it again on the new doc; a second run is safe because all writes are diffed.
+		// Convex runs it again on the new doc, where `run_job` sees the new `nextAttemptAt` and stops.
 		if ((await ctx.db.system.get("_scheduled_functions", job.scheduledFunctionId))?.state.kind === "pending")
 			await ctx.scheduler.cancel(job.scheduledFunctionId);
 	const scheduledFunctionId = await ctx.scheduler.runAfter(0, internal.files_pending_overlay.run_job, {
 		kind: input.kind,
 		key,
+		nextAttemptAt: now,
 	});
 	if (!job) {
 		await ctx.db.insert("files_pending_overlay_jobs", {
@@ -1586,7 +1591,7 @@ async function db_flush_owner_paths(flush: Flush, requests: OwnerPathRequest[]) 
  * It never calls `.paginate()` (one per function, and jobs page) and never the near-limit check.
  */
 export async function files_pending_overlay_db_flush(ctx: MutationCtx) {
-	const state = (ctx as WrappedCtx)[STATE];
+	const state = (ctx as WrappedCtx)[FLUSH_MARKS];
 	if (!state) return;
 	// A job writes derived docs only, so its readers stay true across its flushes. Other
 	// mutations write source docs between flushes, so their readers and walks start again.
@@ -1930,11 +1935,17 @@ export async function files_pending_overlay_list(
 		try {
 			raw = JSON.parse(args.cursor);
 		} catch {
-			return Result({ _nay: { message: "Invalid listing cursor" } });
+			return Result({
+				_nay: { message: "cursor is invalid; rerun the original command to get a fresh Next page cursor." },
+			});
 		}
 		const parsed = list_cursor_schema.safeParse(raw);
 		if (!parsed.success || parsed.data.scope !== scope)
-			return Result({ _nay: { message: "Listing changed. Start again." } });
+			return Result({
+				_nay: {
+					message: "cursor does not match this listing; rerun the original command to get a fresh Next page cursor.",
+				},
+			});
 		root = parsed.data.root;
 		cursorStreams = parsed.data.streams;
 	}
@@ -2036,7 +2047,10 @@ export async function files_pending_overlay_list(
 				const result = await run(stream);
 				if (result._nay) return result;
 				const rootKey = JSON.stringify(result._yay.root);
-				if (root !== null && rootKey !== root) return Result({ _nay: { message: "Listing changed. Start again." } });
+				if (root !== null && rootKey !== root)
+					return Result({
+						_nay: { message: "the folder changed since the last page; rerun the original command without --cursor." },
+					});
 				root = rootKey;
 
 				const { rows, decided } = result._yay;
@@ -2196,11 +2210,17 @@ export async function files_pending_overlay_search_name(
 		try {
 			raw = JSON.parse(args.cursor);
 		} catch {
-			return Result({ _nay: { message: "Invalid search cursor" } });
+			return Result({
+				_nay: { message: "cursor is invalid; rerun the original command to get a fresh Next page cursor." },
+			});
 		}
 		const parsed = search_name_cursor_schema.safeParse(raw);
 		if (!parsed.success || parsed.data.scope !== scope)
-			return Result({ _nay: { message: "Search changed. Start again." } });
+			return Result({
+				_nay: {
+					message: "cursor does not match this search; rerun the original command to get a fresh Next page cursor.",
+				},
+			});
 		streams = parsed.data.streams;
 	}
 
@@ -2275,8 +2295,8 @@ export async function files_pending_overlay_search_name(
 			if (stream.read >= files_TEXT_SEARCH_MAX_RESULTS)
 				notes.add(
 					stream.kind === "places"
-						? "Searched your top 1,024 matching drafts."
-						: "Searched the top 1,024 matches of the workspace.",
+						? "Only your top 1,024 matching pending proposals were searched. Add more words to narrow the search."
+						: "Only the top 1,024 matches were searched. Add more words to narrow the search.",
 				);
 		}
 	}

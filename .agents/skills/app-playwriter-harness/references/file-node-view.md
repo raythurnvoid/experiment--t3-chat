@@ -414,7 +414,7 @@ render cannot pass for a settled proposal.
 Use disposable files and a unique run id. Keep each browser action in its own observe-act-observe step and read the new page logs after every action.
 
 1. Start with at least one threadless pending file, one file touched by chat A, one file touched by chat B, and one file touched by both chats. Reuse the same file from chat B after chat A so the stored pending doc gains both thread ids; do not expect separate per-chat diffs.
-2. Open the Pending changes tab and assert that `All changes` shows every pending doc once. Open the source selector and record each option's count.
+2. Open the Pending changes tab and assert that `All changes` shows every pending doc once. The options show no count. Select each source in turn and record the trigger's count (`.FileEditorSidebarPendingSourceSelect-count`, also in the trigger's name `Pending changes source: <label>, N changes`; `500+` past 500).
 3. Select `Your edits`. Assert that only docs with an empty or unset `threadIds` field remain and that bulk actions are enabled only when this view has rows.
 4. Select chat A, then chat B. Assert that the shared file appears in both views with identical path, caption, and preview. Also assert that each chat-only file appears only in its own view.
 5. In a disposable source with at least two rows, accept or discard one per-row action. Assert that the count and list react without changing the selected source while that chat still contributes.

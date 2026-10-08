@@ -382,7 +382,7 @@ export function bash_search_command_create(ctx: ActionCtx, dbFilesRoots: bash_Db
 			`pass one distinctive word or a few plain terms that should appear in the document body. ` +
 			`The text index splits on whitespace/punctuation, ignores case, relevance-ranks matches, and prefix-matches the final term. ` +
 			`It is implemented with db full-text search, but it is not path/name/glob/regex search; ` +
-			`use find -name WORD to find files by name words. ` +
+			`use find -name QUERY to find files by name words. ` +
 			`YAML frontmatter and the metadata stored next to a file are indexed separately from body text, so their fields and values will not match here; ` +
 			`use meta search (e.g. exists/eq) over frontmatter.* or metadata.* to find files by a field or value. ` +
 			`Retry with shorter distinctive content terms if needed.`;

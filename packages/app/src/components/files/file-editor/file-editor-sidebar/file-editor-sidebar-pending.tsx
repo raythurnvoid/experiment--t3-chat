@@ -1694,7 +1694,11 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 				})),
 			],
 		})
-			.then(() => announceActionSuccess(`Started accepting ${acceptRows.length} pending changes`))
+			.then(() =>
+				announceActionSuccess(
+					`Started accepting ${acceptRows.length} pending ${acceptRows.length === 1 ? "change" : "changes"}`,
+				),
+			)
 			.catch((error: unknown) => {
 				toast.error(error instanceof Error ? error.message : "Failed to start review");
 			})
@@ -1742,7 +1746,11 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 				})),
 			],
 		})
-			.then(() => announceActionSuccess(`Started discarding ${listRows.length} pending changes`))
+			.then(() =>
+				announceActionSuccess(
+					`Started discarding ${listRows.length} pending ${listRows.length === 1 ? "change" : "changes"}`,
+				),
+			)
 			.catch((error: unknown) => {
 				toast.error(error instanceof Error ? error.message : "Failed to start review");
 			})

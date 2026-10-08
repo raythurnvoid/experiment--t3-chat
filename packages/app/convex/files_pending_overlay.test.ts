@@ -1557,6 +1557,48 @@ describe("files_pending_overlay jobs", () => {
 		await f.expect_overlay_true();
 	});
 
+	test("a run scheduled for an older nextAttemptAt does nothing, so one job never runs two chains", async () => {
+		const f = await fixture();
+		const x = await f.saved(null, "x.md");
+		await f.settle();
+		const nextAttemptAt = Date.now();
+		const jobId = await f.t.run(async (ctx) =>
+			ctx.db.insert("files_pending_overlay_jobs", {
+				organizationId: f.u.organizationId,
+				workspaceId: f.u.workspaceId,
+				kind: "saved_node",
+				savedNodeId: x._id,
+				key: x._id,
+				cursor: null,
+				nextAttemptAt,
+				scheduledFunctionId: await ctx.scheduler.runAfter(60 * 60 * 1000, internal.files_pending_overlay.run_job, {
+					kind: "saved_node",
+					key: x._id,
+					nextAttemptAt,
+				}),
+				attempts: 0,
+			}),
+		);
+		const read_state = () =>
+			f.t.run(async (ctx) => ({
+				job: await ctx.db.get("files_pending_overlay_jobs", jobId),
+				scheduled: (await ctx.db.system.query("_scheduled_functions").collect()).length,
+			}));
+		const before = await read_state();
+
+		// A run retried after a newer write rescheduled the job: it must not work or schedule a next run.
+		await f.t.mutation(internal.files_pending_overlay.run_job, {
+			kind: "saved_node",
+			key: x._id,
+			nextAttemptAt: nextAttemptAt - 1,
+		});
+		expect(await read_state()).toEqual(before);
+
+		await f.t.mutation(internal.files_pending_overlay.run_job, { kind: "saved_node", key: x._id, nextAttemptAt });
+		// The run it was scheduled for does work.
+		expect(await read_state()).not.toEqual(before);
+	});
+
 	test("a job asked again in the middle of its pass ends the pass, then walks once more", async () => {
 		const f = await fixture();
 		const a = await f.saved(null, "a", "folder");

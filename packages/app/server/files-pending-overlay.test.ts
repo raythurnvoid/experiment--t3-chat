@@ -3,7 +3,7 @@ import { describe, expect, test } from "vitest";
 import { api, internal } from "../convex/_generated/api.js";
 import type { Id } from "../convex/_generated/dataModel";
 import type { ActionCtx } from "../convex/_generated/server.js";
-import { test_convex, test_mocks, test_mocks_fill_db_with } from "../convex/setup.test.ts";
+import { test_convex, test_meta_search, test_mocks, test_mocks_fill_db_with } from "../convex/setup.test.ts";
 import {
 	files_pending_overlay_list,
 	files_pending_overlay_search_name,
@@ -266,14 +266,47 @@ describe("files_pending_overlay_list", () => {
 		// A cursor works only for the listing that made it. The same folder in another mode has the same
 		// root, so only the scope check refuses it.
 		expect(await f.list({ folderPath: "/src", mode: "subtree", numItems: 1, cursor: children.firstCursor })).toEqual({
-			_nay: { message: "Listing changed. Start again." },
+			_nay: {
+				message: "cursor does not match this listing; rerun the original command to get a fresh Next page cursor.",
+			},
 		});
 		expect(await f.list({ folderPath: "/other", mode: "children", numItems: 1, cursor: children.firstCursor })).toEqual(
-			{ _nay: { message: "Listing changed. Start again." } },
+			{
+				_nay: {
+					message: "cursor does not match this listing; rerun the original command to get a fresh Next page cursor.",
+				},
+			},
 		);
 		expect(await f.list({ folderPath: "/src", mode: "children", numItems: 1, cursor: "not json" })).toEqual({
-			_nay: { message: "Invalid listing cursor" },
+			_nay: { message: "cursor is invalid; rerun the original command to get a fresh Next page cursor." },
 		});
+	});
+
+	test("meta search sorts a moved-in folder's rows by the user's path", async () => {
+		const f = await fixture();
+		const box = await f.saved("box");
+		const b = await f.saved("box/b");
+		// Saved after "box", so the saved path would sort this folder's rows after the whole listing.
+		const outside = await f.saved("zz");
+		const inner = await f.saved("zz/a");
+		for (const fileNodeId of [b, inner]) {
+			const set = await f.asUser.mutation(api.files_metadata.set_entries, {
+				membershipId: f.db.membershipId,
+				fileNodeId,
+				metadataYaml: "tag: x\n",
+			});
+			expect(set).toEqual({ _yay: null });
+		}
+		await f.move({ userId: f.db.userId, nodeId: outside, destId: box, destName: "a-moved" });
+
+		const result = await test_meta_search(f.t, {
+			organizationId: f.db.organizationId,
+			workspaceId: f.db.workspaceId,
+			userId: f.db.userId,
+			plan: { op: "exists", fieldPath: "metadata.tag" },
+			folderPath: "/box",
+		});
+		expect(result.items.map((item) => item.path)).toEqual(["/box/a-moved/a", "/box/b"]);
 	});
 
 	test("lists children in raw name order across pages, with drafts and moves", async () => {

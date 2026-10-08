@@ -19,7 +19,7 @@ function parse_one(query: string): files_search_query_Filter {
 	return parsed.filters[0]!;
 }
 
-const ONE_CLAUSE_PROBLEM = "Search for words or one filter, not both. You can add a folder.";
+const ONE_CLAUSE_PROBLEM = "Search for words or one filter, not both. You can also add a folder, like file.path:/tasks";
 
 describe("files_search_query_parse", () => {
 	test("splits filters from free text and keeps the raw token", () => {
@@ -126,8 +126,9 @@ describe("files_search_query_parse", () => {
 
 	test("refuses a range or a prefix inside a folder, and a folder too deep to search", () => {
 		const problems = (query: string) => files_search_query_parse(query).filters.map((filter) => filter.problem);
-		const folderRangeProblem = "A folder works with names, key:value and key:*. Remove the folder to search ranges.";
-		const tooDeepProblem = "This folder is too deep to search inside. Search a folder higher up.";
+		const folderRangeProblem =
+			"A folder works with words, exact values and any value. Remove the folder to compare numbers or dates";
+		const tooDeepProblem = "This folder is too deep to search inside. Search a folder higher up";
 		const twelveLevels = `/${Array.from({ length: 12 }, (_, index) => `f${index}`).join("/")}`;
 
 		expect(problems("file.path:/tasks metadata.priority:>2")).toEqual([null, folderRangeProblem]);
@@ -185,13 +186,13 @@ describe("files_search_query_parse", () => {
 	});
 
 	test("refuses the file chips search no longer runs, before any value problem", () => {
-		expect(parse_one("file.name:readme").problem).toBe("Type the name as plain text.");
+		expect(parse_one("file.name:readme").problem).toBe("Type the name as plain text");
 		expect(parse_one("file.extension:*.md").problem).toBe(
-			"file.extension is not supported in search. Use the folder table filters.",
+			"file.extension is not supported in search. Use the folder table filters",
 		);
-		expect(parse_one("file.kind:").problem).toBe("file.kind is not supported in search. Use the folder table filters.");
+		expect(parse_one("file.kind:").problem).toBe("file.kind is not supported in search. Use the folder table filters");
 		expect(parse_one("file.updated:>abc").problem).toBe(
-			"file.updated is not supported in search. Use the folder table filters.",
+			"file.updated is not supported in search. Use the folder table filters",
 		);
 	});
 

@@ -148,7 +148,7 @@ describe("FileEditorRichTextMediaEmbedPicker", () => {
 		const textOption = await screen.findByRole("option", { name: "notes.txt" });
 		expect(textOption.getAttribute("aria-disabled")).toBe("true");
 		expect(document.getElementById(textOption.getAttribute("aria-describedby")!)?.textContent).toBe(
-			"Not an image or video",
+			"This file is not an image or video",
 		);
 		const search = screen.getByRole("combobox", { name: "Search files" });
 		fireEvent.keyDown(search, { key: "ArrowDown" });
@@ -156,7 +156,7 @@ describe("FileEditorRichTextMediaEmbedPicker", () => {
 		expect(search.getAttribute("aria-activedescendant"), "the arrow keys reach a disabled row").toBe(textOption.id);
 		fireEvent.keyDown(search, { key: "Enter" });
 		expect(insertContent, "a disabled row inserts nothing").not.toHaveBeenCalled();
-		expect(screen.getByRole("status").textContent).toBe("Not an image or video");
+		expect(screen.getByRole("status").textContent).toBe("This file is not an image or video");
 
 		const imageOption = screen.getByRole("option", { name: /cover\.png/ });
 		expect(imageOption.getAttribute("aria-disabled")).toBeNull();
