@@ -146,9 +146,13 @@ vi.mock("@/lib/files-tree-context.tsx", async () => {
 		FilesTreeProvider: {
 			useFolders: (request: { pinnedNodeIds: string[] }) => {
 				const membershipId = tenantContextMock().membershipId;
-				// The query mock answers this list with plain rows, not pages.
-				const rows = useQuery(api.files_nodes.list_tree, {
+				// The query mock answers this read with every tree row as plain rows, not one folder page.
+				const rows = useQuery(api.files_nodes.list_tree_children, {
 					membershipId,
+					parentId: "root",
+					kind: "folder",
+					archived: false,
+					restricted: false,
 					paginationOpts: { numItems: 500, cursor: null },
 				}) as unknown as Array<{ _id: string }> | undefined;
 				// Like the store, add the pinned node and its ancestors. The file view pins at most one node.
@@ -168,13 +172,6 @@ vi.mock("@/lib/files-tree-context.tsx", async () => {
 			},
 			// Unknown, so the folder table reads every stream.
 			useIsOwner: () => null,
-			useFullList: (enabled: boolean) =>
-				useQuery(
-					api.files_nodes.list_tree,
-					enabled
-						? { membershipId: tenantContextMock().membershipId, paginationOpts: { numItems: 500, cursor: null } }
-						: "skip",
-				),
 		},
 	};
 });
@@ -464,7 +461,7 @@ beforeEach(() => {
 	queryMock.mockImplementation((reference: never, args: unknown) => {
 		if (args === "skip") return undefined;
 		switch (getFunctionName(reference)) {
-			case "files_nodes:list_tree":
+			case "files_nodes:list_tree_children":
 				return treeNodes ?? [node];
 			case "files_nodes:get_tree_ancestors": {
 				const nodes = [...(treeNodes ?? [node]), ...unloadedTreeNodes];

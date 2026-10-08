@@ -145,7 +145,6 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 			accept_file_pending_replacement: "accept_file_pending_replacement",
 		},
 		files_nodes: {
-			list_tree: "list_tree",
 			get_file_node_for_membership: "get_file_node_for_membership",
 			get_current_user_file_write_permission: "get_current_user_file_write_permission",
 		},

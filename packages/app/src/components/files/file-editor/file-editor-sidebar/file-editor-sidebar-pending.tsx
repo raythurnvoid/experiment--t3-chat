@@ -1989,7 +1989,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		kind?: "file" | "folder";
 		parentId?: string;
 		/**
-		 * A text file with collaboration off, like `list_tree` returns it, with the asset `asset_<id>`.
+		 * A text file with collaboration off, like `list_tree_children` returns it, with the asset `asset_<id>`.
 		 */
 		nonCollaborative?: boolean;
 		textKind?: "rich_text" | "plain_text";

@@ -1,6 +1,6 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { ConvexProvider, ConvexReactClient } from "convex/react";
-import { getFunctionName, type PaginationResult } from "convex/server";
+import { getFunctionName } from "convex/server";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
@@ -14,9 +14,6 @@ vi.mock("@/components/files/files-clipboard.tsx", () => ({
 vi.mock("@/lib/app-channels-context.tsx", () => ({
 	AppChannelsProvider: (props: { children: ReactNode }) => props.children,
 }));
-
-type TestRow = { _id: string; parentId: string; name: string; archiveOperationId: string | null };
-type TestPage = PaginationResult<TestRow | { name: string }>;
 
 const results = new Map<string, unknown>();
 const listeners = new Map<string, Set<() => void>>();
@@ -32,14 +29,6 @@ function watch_key(name: string, args: Record<string, unknown>) {
 	};
 	const sorted = Object.fromEntries(Object.entries(rest).sort(([a], [b]) => a.localeCompare(b)));
 	return JSON.stringify({ name, ...sorted, cursor: paginationOpts?.cursor, endCursor: paginationOpts?.endCursor });
-}
-
-function page_key(args: { membershipId: string; cursor: string | null; endCursor?: string | null }) {
-	const { cursor, endCursor, membershipId } = args;
-	return watch_key(getFunctionName(app_convex_api.files_nodes.list_tree), {
-		membershipId,
-		paginationOpts: { cursor, endCursor },
-	});
 }
 
 const EMPTY_PAGE = { page: [], isDone: true, continueCursor: "" };
@@ -113,33 +102,8 @@ function receive(key: string, result: unknown) {
 	});
 }
 
-function receive_page(args: {
-	membershipId: string;
-	cursor: string | null;
-	result: TestPage;
-	endCursor?: string | null;
-}) {
-	const { membershipId, cursor, result, endCursor } = args;
-
-	receive(page_key({ membershipId, cursor, endCursor }), result);
-}
-
 function row(id: string, parentId = "root") {
 	return { _id: id, parentId, name: id, archiveOperationId: null };
-}
-
-function TreeConsumer(props: { label: string }) {
-	const nodes = FilesTreeProvider.useFullList(true);
-	return (
-		<>
-			<output aria-label={props.label}>
-				{nodes === undefined ? "Loading files" : nodes.map((node) => node.name).join(",")}
-			</output>
-			{nodes?.some((node) => node.name === "README.md") && (
-				<textarea aria-label={`${props.label} draft`} defaultValue="Saved README" />
-			)}
-		</>
-	);
 }
 
 function FoldersConsumer(props: { folderIds: string[]; archived?: boolean; pinnedNodeIds?: string[] }) {
@@ -174,7 +138,7 @@ function FoldersConsumer(props: { folderIds: string[]; archived?: boolean; pinne
 	);
 }
 
-function TestWorkspace(props: { membershipId: string; showTree?: boolean; children?: ReactNode }) {
+function TestWorkspace(props: { membershipId: string; children?: ReactNode }) {
 	return (
 		<ConvexProvider client={client}>
 			<AppTenantProvider
@@ -184,12 +148,6 @@ function TestWorkspace(props: { membershipId: string; showTree?: boolean; childr
 				organizationId={"organization_1" as app_convex_Id<"organizations">}
 				organizationName="team"
 			>
-				{props.showTree !== false && (
-					<>
-						<TreeConsumer label="Mentions" />
-						<TreeConsumer label="Search" />
-					</>
-				)}
 				{props.children}
 			</AppTenantProvider>
 		</ConvexProvider>
@@ -223,166 +181,14 @@ afterEach(async () => {
 	vi.restoreAllMocks();
 });
 
-describe("FilesTreeProvider.useFullList", () => {
-	test("does not subscribe on other workspace screens and stops when all tree consumers close", () => {
-		const view = render(<TestWorkspace membershipId="membership_1" showTree={false} />);
-		expect(listeners.size).toBe(0);
-
-		view.rerender(<TestWorkspace membershipId="membership_1" />);
-		expect(listeners.get(page_key({ membershipId: "membership_1", cursor: null }))?.size).toBe(1);
-		receive_page({
-			membershipId: "membership_1",
-			cursor: null,
-			result: { page: [{ name: "a.md" }], isDone: true, continueCursor: "a" },
-		});
-		expect(screen.getByLabelText("Mentions").textContent).toBe("a.md");
-
-		view.rerender(<TestWorkspace membershipId="membership_1" showTree={false} />);
-		expect(listeners.get(page_key({ membershipId: "membership_1", cursor: null }))?.size).toBe(0);
-		results.clear();
-		view.rerender(<TestWorkspace membershipId="membership_1" />);
-		receive_page({
-			membershipId: "membership_1",
-			cursor: null,
-			result: { page: [{ name: "new.md" }], isDone: false, continueCursor: "new" },
-		});
-		expect(screen.getByLabelText("Mentions").textContent).toBe("Loading files");
-	});
-
-	test("shares one tree walk and keeps loading through short and empty pages", () => {
-		render(<TestWorkspace membershipId="membership_1" />);
-		expect(screen.getByLabelText("Mentions").textContent).toBe("Loading files");
-		expect(listeners.get(page_key({ membershipId: "membership_1", cursor: null }))?.size).toBe(1);
-
-		receive_page({
-			membershipId: "membership_1",
-			cursor: null,
-			result: { page: [{ name: "a.md" }], isDone: false, continueCursor: "a" },
-		});
-		expect(screen.getByLabelText("Mentions").textContent).toBe("Loading files");
-		expect(listeners.get(page_key({ membershipId: "membership_1", cursor: "a" }))?.size).toBe(1);
-
-		receive_page({
-			membershipId: "membership_1",
-			cursor: "a",
-			result: { page: [], isDone: false, continueCursor: "b" },
-		});
-		expect(screen.getByLabelText("Search").textContent).toBe("Loading files");
-		expect(listeners.get(page_key({ membershipId: "membership_1", cursor: "b" }))?.size).toBe(1);
-
-		receive_page({
-			membershipId: "membership_1",
-			cursor: "b",
-			result: { page: [{ name: "c.md" }], isDone: true, continueCursor: "c" },
-		});
-		expect(screen.getByLabelText("Mentions").textContent).toBe("a.md,c.md");
-		expect(screen.getByLabelText("Search").textContent).toBe("a.md,c.md");
-
-		// A changed permission removes a node from its existing subscribed page.
-		receive_page({
-			membershipId: "membership_1",
-			cursor: null,
-			result: { page: [], isDone: false, continueCursor: "a" },
-		});
-		expect(screen.getByLabelText("Mentions").textContent).toBe("c.md");
-		expect(screen.getByLabelText("Search").textContent).toBe("c.md");
-	});
-
-	test("does not expose the previous workspace while another membership loads", () => {
-		const view = render(<TestWorkspace membershipId="membership_1" />);
-		receive_page({
-			membershipId: "membership_1",
-			cursor: null,
-			result: { page: [{ name: "old.md" }], isDone: true, continueCursor: "old" },
-		});
-		expect(screen.getByLabelText("Mentions").textContent).toBe("old.md");
-
-		view.rerender(<TestWorkspace membershipId="membership_2" />);
-		expect(screen.getByLabelText("Mentions").textContent).toBe("Loading files");
-		expect(listeners.get(page_key({ membershipId: "membership_1", cursor: null }))?.size).toBe(0);
-		receive_page({
-			membershipId: "membership_1",
-			cursor: null,
-			result: { page: [{ name: "late.md" }], isDone: true, continueCursor: "late" },
-		});
-		expect(screen.getByLabelText("Mentions").textContent).toBe("Loading files");
-
-		receive_page({
-			membershipId: "membership_2",
-			cursor: null,
-			result: { page: [{ name: "new.md" }], isDone: true, continueCursor: "new" },
-		});
-		expect(screen.getByLabelText("Mentions").textContent).toBe("new.md");
-		expect(screen.getByLabelText("Search").textContent).toBe("new.md");
-	});
-
-	test("keeps the complete list and an open draft mounted until both replacement pages arrive", () => {
-		render(<TestWorkspace membershipId="membership_1" />);
-		receive_page({
-			membershipId: "membership_1",
-			cursor: null,
-			result: {
-				page: [{ name: "a.md" }, { name: "README.md" }],
-				isDone: true,
-				continueCursor: "b",
-			},
-		});
-		const editor = screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Mentions draft" });
-		fireEvent.change(editor, { target: { value: "Unsaved README" } });
-		expect(screen.getByLabelText("Mentions").textContent).toBe("a.md,README.md");
-
-		receive_page({
-			membershipId: "membership_1",
-			cursor: null,
-			result: {
-				page: [{ name: "a.md" }],
-				isDone: true,
-				continueCursor: "b",
-				pageStatus: "SplitRequired",
-				splitCursor: "a",
-			},
-		});
-		expect(screen.getByLabelText("Mentions").textContent).toBe("a.md,README.md");
-		expect(screen.getByRole("textbox", { name: "Mentions draft" })).toBe(editor);
-
-		receive_page({
-			membershipId: "membership_1",
-			cursor: null,
-			result: { page: [{ name: "a.md" }], isDone: false, continueCursor: "a" },
-			endCursor: "a",
-		});
-		expect(screen.getByLabelText("Mentions").textContent).toBe("a.md,README.md");
-		receive_page({
-			membershipId: "membership_1",
-			cursor: "a",
-			result: { page: [{ name: "README.md" }], isDone: true, continueCursor: "b" },
-			endCursor: "b",
-		});
-		expect(screen.getByLabelText("Mentions").textContent).toBe("a.md,README.md");
-		expect(screen.getByLabelText("Search").textContent).toBe("a.md,README.md");
-		expect(screen.getByRole("textbox", { name: "Mentions draft" })).toBe(editor);
-		expect(editor.value).toBe("Unsaved README");
-
-		receive_page({
-			membershipId: "membership_1",
-			cursor: "a",
-			result: { page: [], isDone: true, continueCursor: "b" },
-			endCursor: "b",
-		});
-		expect(screen.queryByRole("textbox", { name: "Mentions draft" })).toBeNull();
-		expect(screen.getByLabelText("Mentions").textContent).toBe("a.md");
-	});
-});
-
 describe("FilesTreeProvider.useFolders", () => {
-	test("loads the root folders and files together, and never the full list", () => {
+	test("loads the root folders and files together", () => {
 		render(
-			<TestWorkspace membershipId="membership_1" showTree={false}>
+			<TestWorkspace membershipId="membership_1">
 				<FoldersConsumer folderIds={[]} />
 			</TestWorkspace>,
 		);
 		expect(screen.getByLabelText("Rows").textContent).toBe("Loading files");
-		expect(listeners.has(page_key({ membershipId: "membership_1", cursor: null }))).toBe(false);
 		expect(listeners.get(children_key({ parentId: "root", kind: "folder", cursor: null }))?.size).toBe(1);
 		expect(listeners.get(children_key({ parentId: "root", kind: "file", cursor: null }))?.size).toBe(1);
 
@@ -406,7 +212,7 @@ describe("FilesTreeProvider.useFolders", () => {
 
 	test("pages an open folder on demand and closes its pagers when it closes", () => {
 		const view = render(
-			<TestWorkspace membershipId="membership_1" showTree={false}>
+			<TestWorkspace membershipId="membership_1">
 				<FoldersConsumer folderIds={["people"]} />
 			</TestWorkspace>,
 		);
@@ -449,7 +255,7 @@ describe("FilesTreeProvider.useFolders", () => {
 		expect(screen.getByLabelText("Status").textContent).toBe("root:done,people:done");
 
 		view.rerender(
-			<TestWorkspace membershipId="membership_1" showTree={false}>
+			<TestWorkspace membershipId="membership_1">
 				<FoldersConsumer folderIds={[]} />
 			</TestWorkspace>,
 		);
@@ -459,7 +265,7 @@ describe("FilesTreeProvider.useFolders", () => {
 
 	test("keeps a folder's rows while Convex splits one of its pages", () => {
 		render(
-			<TestWorkspace membershipId="membership_1" showTree={false}>
+			<TestWorkspace membershipId="membership_1">
 				<FoldersConsumer folderIds={[]} />
 			</TestWorkspace>,
 		);
@@ -488,7 +294,7 @@ describe("FilesTreeProvider.useFolders", () => {
 
 	test("merges a folder's open and share streams in name order and shows a node shared twice once", () => {
 		render(
-			<TestWorkspace membershipId="membership_1" showTree={false}>
+			<TestWorkspace membershipId="membership_1">
 				<FoldersConsumer folderIds={[]} />
 			</TestWorkspace>,
 		);
@@ -516,7 +322,7 @@ describe("FilesTreeProvider.useFolders", () => {
 
 	test("lists every share in the Shared with you group once, and hoists pinned ancestors", () => {
 		render(
-			<TestWorkspace membershipId="membership_1" showTree={false}>
+			<TestWorkspace membershipId="membership_1">
 				<FoldersConsumer folderIds={[]} pinnedNodeIds={["deep.md"]} />
 			</TestWorkspace>,
 		);
@@ -559,7 +365,7 @@ describe("FilesTreeProvider.useFolders", () => {
 
 	test("holds back the rows a stream that is not done could still precede, and loads that stream", () => {
 		render(
-			<TestWorkspace membershipId="membership_1" showTree={false}>
+			<TestWorkspace membershipId="membership_1">
 				<FoldersConsumer folderIds={["root"]} />
 			</TestWorkspace>,
 		);
@@ -594,7 +400,7 @@ describe("FilesTreeProvider.useFolders", () => {
 
 	test("merges archived rows by archive operation, then by name", () => {
 		render(
-			<TestWorkspace membershipId="membership_1" showTree={false}>
+			<TestWorkspace membershipId="membership_1">
 				<FoldersConsumer folderIds={[]} archived />
 			</TestWorkspace>,
 		);
@@ -626,7 +432,7 @@ describe("FilesTreeProvider.useFolders", () => {
 
 	test("keeps the Shared with you rows while Convex splits one of their pages", () => {
 		render(
-			<TestWorkspace membershipId="membership_1" showTree={false}>
+			<TestWorkspace membershipId="membership_1">
 				<FoldersConsumer folderIds={[]} />
 			</TestWorkspace>,
 		);
@@ -656,7 +462,7 @@ describe("FilesTreeProvider.useFolders", () => {
 			return <output aria-label="Shared">{folders.sharedRoots.rows.map((node) => node._id).join(",")}</output>;
 		}
 		render(
-			<TestWorkspace membershipId="membership_1" showTree={false}>
+			<TestWorkspace membershipId="membership_1">
 				<RowsConsumer />
 			</TestWorkspace>,
 		);
@@ -683,7 +489,7 @@ describe("FilesTreeProvider.useFolders", () => {
 	test("once the role is known, reads no share stream for the owner and no restricted twin for a member", () => {
 		const organizations_key = watch_key(getFunctionName(app_convex_api.organizations.list), {});
 		const view = render(
-			<TestWorkspace membershipId="membership_1" showTree={false}>
+			<TestWorkspace membershipId="membership_1">
 				<FoldersConsumer folderIds={[]} />
 			</TestWorkspace>,
 		);
@@ -722,7 +528,7 @@ describe("FilesTreeProvider.useFolders", () => {
 
 		receive(organizations_key, { workspaceIdsPermissionsDict: { workspace_1: ["content.read"] } });
 		view.rerender(
-			<TestWorkspace membershipId="membership_1" showTree={false}>
+			<TestWorkspace membershipId="membership_1">
 				<FoldersConsumer folderIds={[]} />
 			</TestWorkspace>,
 		);
@@ -737,7 +543,7 @@ describe("FilesTreeProvider.useFolders", () => {
 
 	test("adds the archived pagers only while archived rows are shown", () => {
 		const view = render(
-			<TestWorkspace membershipId="membership_1" showTree={false}>
+			<TestWorkspace membershipId="membership_1">
 				<FoldersConsumer folderIds={[]} />
 			</TestWorkspace>,
 		);
@@ -745,7 +551,7 @@ describe("FilesTreeProvider.useFolders", () => {
 		expect(listeners.has(shared_roots_key({ principalIndex: 0, archived: true }))).toBe(false);
 
 		view.rerender(
-			<TestWorkspace membershipId="membership_1" showTree={false}>
+			<TestWorkspace membershipId="membership_1">
 				<FoldersConsumer folderIds={[]} archived />
 			</TestWorkspace>,
 		);

@@ -7,7 +7,7 @@ import { files_ROOT_ID } from "@/lib/files.ts";
 import { files_merge_sorted_streams } from "@/hooks/files-search-hooks.ts";
 import { files_sort_text_key } from "../../shared/files-sort.ts";
 
-type FilesTreeRow = FunctionReturnType<typeof app_convex_api.files_nodes.list_tree>["page"][number];
+type FilesTreeRow = FunctionReturnType<typeof app_convex_api.files_nodes.list_tree_children>["page"][number];
 
 type FilesTreeFolderId = app_convex_Id<"files_nodes"> | typeof files_ROOT_ID;
 
@@ -138,8 +138,6 @@ function picker_list(segments: Array<Array<UsePaginatedQueryResult<FilesTreeRow>
 }
 
 const FilesTreeContext = createContext<{
-	nodes: FilesTreeRow[] | undefined;
-	registerConsumer: () => () => void;
 	folderResults: Map<string, FilesTreeFolderResult>;
 	pinResults: Map<string, FilesTreePinResult>;
 	sharedRoots: { active: FilesTreeFolderResult; archived: FilesTreeFolderResult };
@@ -310,31 +308,6 @@ const FilesTreeProvider = Object.assign(
 	}) {
 		const { membershipId, workspaceId, children } = props;
 
-		// Nothing reads the full list now, so it never loads. It loads only while a `useFullList` caller is
-		// mounted.
-		const [consumerCount, setConsumerCount] = useState(0);
-		const registerConsumer = useCallback(() => {
-			setConsumerCount((count) => count + 1);
-			return () => setConsumerCount((count) => count - 1);
-		}, []);
-		// Each paginated hook gets its own session. Share this one across every tree consumer.
-		const { results, status, loadMore } = usePaginatedQuery(
-			app_convex_api.files_nodes.list_tree,
-			consumerCount > 0 ? { membershipId } : "skip",
-			{ initialNumItems: 500 },
-		);
-		const [completeTree, setCompleteTree] = useState<{
-			membershipId: typeof membershipId;
-			nodes: typeof results;
-		} | null>(null);
-		const clearCompleteTree = consumerCount === 0 || completeTree?.membershipId !== membershipId;
-
-		if (status === "Exhausted" && completeTree?.nodes !== results) {
-			setCompleteTree({ membershipId, nodes: results });
-		} else if (clearCompleteTree && completeTree !== null) {
-			setCompleteTree(null);
-		}
-
 		// Load folder by folder. Every consumer registers the folders it shows. One pager serves each folder.
 		const [folderRequests, setFolderRequests] = useState<Map<string, FilesTreeFoldersRequest>>(new Map());
 		const registerFolders = useCallback((ownerId: string, request: FilesTreeFoldersRequest) => {
@@ -403,22 +376,9 @@ const FilesTreeProvider = Object.assign(
 				? { rows: [], status: "done", loadMore: () => {} }
 				: (sharedRootResults.get(shared_roots_key(archived)) ?? { rows: [], status: "loading", loadMore: () => {} });
 
-		useEffect(() => {
-			if (status === "CanLoadMore") {
-				loadMore(500);
-			} else if (status === "LoadingFirstPage") {
-				// A split briefly reports this status in a discarded render. Clear only after it settles.
-				setCompleteTree(null);
-			}
-		}, [status, loadMore]);
-
-		// Keep the last complete query result while Convex replaces a split page.
-		const nodes = status === "Exhausted" ? results : clearCompleteTree ? undefined : completeTree?.nodes;
 		return (
 			<FilesTreeContext.Provider
 				value={{
-					nodes,
-					registerConsumer,
 					folderResults,
 					pinResults,
 					sharedRoots: { active: get_shared_roots(false), archived: get_shared_roots(true) },
@@ -461,19 +421,6 @@ const FilesTreeProvider = Object.assign(
 		);
 	}),
 	{
-		/**
-		 * Every node of the workspace. This loads the whole workspace, so use it only while a feature
-		 * really needs every node. Pass `false` to stop loading when the feature is idle.
-		 */
-		useFullList: function useFullList(enabled: boolean) {
-			const value = use(FilesTreeContext);
-			if (!value) {
-				throw new Error("FilesTreeProvider.useFullList must be used within FilesTreeProvider");
-			}
-			useEffect(() => (enabled ? value.registerConsumer() : undefined), [enabled, value.registerConsumer]);
-			return enabled ? value.nodes : undefined;
-		},
-
 		/**
 		 * The rows of the root and of the given open folders, plus the pinned nodes with their ancestors.
 		 * `rows` is `undefined` until the root's first page arrives.

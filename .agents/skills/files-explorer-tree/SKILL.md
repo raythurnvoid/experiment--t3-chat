@@ -147,9 +147,6 @@ Tree-item components:
     before the files at the root or in a whole-workspace search. Text with no `/` searches the open
     folder, or the whole workspace at the root. A disabled row stays reachable by keyboard, and Enter
     on it announces the reason; opening a folder announces "Opened <path>".
-  - `useFullList(enabled)` loads the whole workspace through `files_nodes.list_tree`. No picker uses
-    it now; only its own tests do. Do not add callers. It subscribes only while an enabled caller is
-    mounted, and it keeps the last complete result during a page split.
 - Each open folder loads its subfolders and its files at once, each kind from 5 streams of 200 rows,
   like the folder table: the open stream (`list_tree_children`, `restricted: false`), the owner's
   restricted twin (`restricted: true`), and a member's 3 share streams (`list_tree_children_shared`
@@ -806,7 +803,7 @@ Backend rules, limits, billing, cleanup, and Activity privacy are in
 
 ## Read-Only Files And Folders
 
-- Tree rows (`list_tree`, `list_tree_children`, and the other tree queries) carry `canWrite`,
+- Tree rows (`list_tree_children` and the other tree queries) carry `canWrite`,
   `writeBlockedReason` (`null`, `permission`, or `read_only`), and `writePolicyState` (`none`,
   `read_only`, or `writer`). They never carry raw `writePolicy` or `newChildWritePolicy`. When the
   loaded rows change, derive one set of loaded ancestors that contain protected descendants, so
@@ -978,7 +975,7 @@ Do not call `parent.getChildren()` for this check in each row: it loads every si
 # Verification Checklist
 
 - Tree updates come from `files_nodes.list_tree_children` pages of the open folders, plus pinned
-  rows and shared roots. The default sidebar sends no `list_tree`.
+  rows and shared roots. No query loads the whole workspace.
 - The sidebar search shows a flat list with each row's folder, and the tree comes back with its expanded folders when the search closes.
 - Search matches a name word, a path, a node id, and a pasted app link. Enter opens the exact match, or the only match of a finished search.
 - `metadata.status:open`, `metadata.priority:>2`, and `file.path:/tasks metadata.status:open` list the files and folders whose own metadata matches, and `/tasks-archive` stays out of `file.path:/tasks`.

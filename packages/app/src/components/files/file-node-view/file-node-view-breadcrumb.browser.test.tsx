@@ -54,8 +54,6 @@ vi.mock("convex/react", async (importOriginal) => {
 	const { getFunctionName } = await import("convex/server");
 	const answer = (reference: never) => {
 		switch (getFunctionName(reference)) {
-			case "files_nodes:list_tree":
-				return NODES;
 			case "files_nodes:get_file_node_for_membership":
 				return FILE;
 			case "files_transfer:list_current":
