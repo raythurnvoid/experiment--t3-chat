@@ -40,7 +40,7 @@ Installed plugin source trees live in `GLOBAL`/`PLUGINS`. Plugin-owned Mounts be
 | `m572b1a4snqa1en3qqp1gfwwnn8cjxya` | `qa.perm.admin` | Personal org only. |
 | `m57f7hajv2kgw3rxfnv9z4bagh8ckq06` | `qa.perm.member` | Owns `qa-tmp-share`, member of `chitchat-qa`. |
 | `m572qhnpq7xw34askfcy6w97h18ck1f8` | `qa.perm.viewer` | `member` role in `qa-browser`. |
-| `m570f2kgg8jq3qka7snprkpeks8cme94` | Extra `+clerk_test` account (2026-08-17) | Member of `chitchat-qa`. Not in `clerk-test-accounts.md`. |
+| `m570f2kgg8jq3qka7snprkpeks8cme94` | `ray-test-1+clerk_test@gmail.com` (2026-08-17) | Member of `chitchat-qa`, with credits. The second user for agent chat checks (see `clerk-test-accounts.md`). |
 | `m5754ckhv5yrt02vjf1dt2v4hd8cjsy4` | `import-qa-member` | Listed in `clerk-test-accounts.md`, but no `users` doc had this id on 2026-09-24. |
 | 6 anonymous members | Old second-user runs | 2 in `qa-browser`, 4 in `chitchat-qa`. Their tokens are gone, so nobody can sign in as them. |
 | 113 other anonymous users | Old headless runs | Each has only its own personal org. Not useful for tests. |
