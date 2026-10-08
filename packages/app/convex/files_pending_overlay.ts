@@ -384,7 +384,8 @@ export const run_job = internalMutation({
 			.unique();
 		// A purge deleted the task, or a newer run now owns it. A write that schedules a new run can
 		// conflict with this one while it runs; Convex then runs this one again on the new doc, and the
-		// check stops it, so only the new run goes on.
+		// check stops it, so only the new run goes on. Two schedules in the same millisecond look the
+		// same; then both runs go on, which is safe because all writes are diffed.
 		if (
 			!job ||
 			job.nextAttemptAt > Date.now() ||

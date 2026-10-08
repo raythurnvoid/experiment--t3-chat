@@ -1536,8 +1536,9 @@ async function db_start(
 	const { membership } = args;
 	const sourceCount = args.expectedSourceCount ?? args.sources.length;
 	if (!args.requestId || args.requestId.length > 128) return Result({ _nay: { message: "Invalid request ID" } });
-	// The apply step moves every source in one `move_nodes` call, so refuse a move it would refuse
-	// before any work starts.
+	// A saved move applies every source in one `move_nodes` call, so refuse a move it would refuse
+	// before any work starts. An agent move hits another limit first: the draft reader below runs out of
+	// reads before 139 sources, even for folders at the root.
 	if (args.kind === "move" && args.sources.length > files_nodes_MAX_MOVE_NODE_COUNT)
 		return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
 	if (
