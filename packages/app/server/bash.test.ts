@@ -25,6 +25,8 @@ import { files_yjs_doc_create_from_text } from "../shared/files-tiptap.ts";
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
 import {
 	type files_PendingTarget,
+	files_ancestor_fields,
+	files_ancestor_ids,
 	files_ROOT_ID,
 	files_guess_content_type_from_name,
 	files_u8_to_array_buffer,
@@ -37,6 +39,7 @@ import {
 import { bash_run_command, bash_run_job } from "./bash.ts";
 import {
 	bash_COMMAND_EXIT_CANNOT_EXECUTE,
+	bash_COMMAND_EXIT_FAILURE,
 	bash_COMMAND_EXIT_NOT_FOUND,
 	bash_COMMAND_EXIT_USAGE,
 	bash_DbFilesFs,
@@ -202,7 +205,10 @@ describe("bash_run_command", () => {
 
 		const segments = path.split("/").filter(Boolean);
 		let parentId: Id<"files_nodes"> | typeof files_ROOT_ID = files_ROOT_ID;
+		// Saved nodes keep their ancestor ids for scoped name search.
+		const ancestors: Id<"files_nodes">[] = [];
 		for (let depth = 1; depth <= segments.length; depth++) {
+			if (parentId !== files_ROOT_ID) ancestors.push(parentId);
 			const ancestorPath = `/${segments.slice(0, depth).join("/")}`;
 			const existing = await ctx.db
 				.query("files_nodes")
@@ -230,6 +236,7 @@ describe("bash_run_command", () => {
 				path: ancestorPath,
 				treePath: `${ancestorPath}/`,
 				pathDepth: depth,
+				...files_ancestor_fields(ancestors),
 				updatedAt,
 			});
 		}
@@ -264,6 +271,7 @@ describe("bash_run_command", () => {
 		const seedContentType =
 			spec.contentType ?? files_guess_content_type_from_name(name) ?? "text/markdown;charset=utf-8";
 		const seedRootKind = files_yjs_root_kind_of_content_type(seedContentType) ?? "rich_text";
+		const parent = parentId === files_ROOT_ID ? null : await ctx.db.get("files_nodes", parentId);
 		const fileId = await ctx.db.insert("files_nodes", {
 			...test_mocks.files.base(),
 			organizationId: scope.organizationId,
@@ -276,6 +284,7 @@ describe("bash_run_command", () => {
 			path: spec.path,
 			treePath: spec.path,
 			pathDepth: segments.length,
+			...files_ancestor_fields(parent ? [...files_ancestor_ids(parent), parent._id] : []),
 			lowercaseExtension: dotIndex <= 0 || dotIndex === name.length - 1 ? null : name.slice(dotIndex + 1).toLowerCase(),
 			contentType: seedContentType,
 			textKind: spec.withoutYjsState ? null : seedRootKind,
@@ -2414,7 +2423,7 @@ describe("bash_run_command", () => {
 		expect(runQuery.mock.calls.some(([ref]) => function_name_of(ref) === "files_nodes:list_subtree")).toBe(false);
 	});
 
-	test("supports indexed app-file find path word search", async () => {
+	test("supports app-file find name word search", async () => {
 		// convex-test's search index splits document words on whitespace only, so the word
 		// query can only land on a path segment that follows a space in the file name.
 		const wordSearchPath = "/docs/word readme.md";
@@ -2438,52 +2447,51 @@ describe("bash_run_command", () => {
 			command: `find ${test_db_files_mount}/docs -type f -name 'word readme.md' --limit 10`,
 		});
 		const scopedSelfResult = await run({
-			command: `find '${test_db_files_mount}/docs/scope word' --path-query word --limit 10`,
+			command: `find '${test_db_files_mount}/docs/scope word' -name child --limit 10`,
 		});
 		const scopedMindepthResult = await run({
-			command: `find '${test_db_files_mount}/docs/scope word' -mindepth 1 --path-query word --limit 10`,
+			command: `find '${test_db_files_mount}/docs/scope word' -mindepth 1 -name child --limit 10`,
+		});
+		const scopedRootResult = await run({
+			command: `find '${test_db_files_mount}/docs/scope word' -name scope --limit 10`,
+		});
+		const scopedRootMindepthResult = await run({
+			command: `find '${test_db_files_mount}/docs/scope word' -mindepth 1 -name scope --limit 10`,
 		});
 
 		expect(nameResult.metadata.exitCode).toBe(0);
 		expect(nameResult.stdout).toContain(`${test_db_files_mount}${wordSearchPath}`);
 		expect(nameResult.stdout).toContain(`${test_db_files_mount}${outsideWordSearchPath}`);
-		expect(explicitResult.metadata.exitCode).toBe(0);
-		expect(explicitResult.stdout).toContain(`${test_db_files_mount}${wordSearchPath}`);
-		expect(scopedResult.metadata.exitCode).toBe(0);
-		expect(scopedResult.stdout).toContain(`${test_db_files_mount}${wordSearchPath}`);
-		// Without -maxdepth, a folder scope searches the full subtree and filters out the rest.
+		// App files search names only, and the name index has no parent filter.
+		expect(explicitResult.metadata.exitCode).toBe(2);
+		expect(explicitResult.stderr).toBe(
+			"find: --path-query is not supported for app files; use find <folder> -name <word>\n",
+		);
+		expect(scopedResult.metadata.exitCode).toBe(2);
+		expect(scopedResult.stderr).toBe(
+			"find: -maxdepth 1 -name is not supported for app files; use find <folder> -name <word> for the whole folder, or ls <folder>\n",
+		);
+		// A folder scope searches the full subtree and leaves out the rest.
 		expect(subtreeResult.metadata.exitCode).toBe(0);
 		expect(subtreeResult.stdout).toContain(`${test_db_files_mount}${wordSearchPath}`);
 		expect(subtreeResult.stdout).not.toContain(`${test_db_files_mount}${outsideWordSearchPath}`);
 		expect(dottedNameResult.metadata.exitCode).toBe(0);
 		expect(dottedNameResult.stdout).toContain(`${test_db_files_mount}${wordSearchPath}`);
 		expect(dottedNameResult.stdout).not.toContain(`${test_db_files_mount}/docs/nested/deep.md`);
-		expect(scopedSelfResult.metadata.exitCode).toBe(0);
-		expect(scopedSelfResult.stdout.trim().split("\n")).toContain(`${test_db_files_mount}/docs/scope word/`);
-		expect(scopedMindepthResult.metadata.exitCode).toBe(0);
-		expect(scopedMindepthResult.stdout.trim().split("\n")).not.toContain(`${test_db_files_mount}/docs/scope word/`);
-		expect(scopedMindepthResult.stdout.trim().split("\n")).toContain(`${test_db_files_mount}/docs/scope word/child.md`);
+		for (const result of [scopedSelfResult, scopedMindepthResult]) {
+			expect(result.metadata.exitCode).toBe(0);
+			expect(result.stdout).toBe(`${test_db_files_mount}/docs/scope word/child.md\n`);
+		}
+		// Like GNU find, the start folder prints when its own name matches, unless -mindepth 1.
+		expect(scopedRootResult.stdout).toBe(`${test_db_files_mount}/docs/scope word/\n`);
+		expect(scopedRootMindepthResult.stdout).toBe("0 matches.\n");
 		expect(runQuery).toHaveBeenCalledWith(
-			internal.files_visible.internal_list,
-			expect.objectContaining({
-				pathQuery: "readme",
-			}),
+			internal.files_visible.internal_search_name_saved,
+			expect.objectContaining({ query: "readme", folderPath: "/" }),
 		);
 		expect(runQuery).toHaveBeenCalledWith(
-			internal.files_visible.internal_list,
-			expect.objectContaining({
-				folderPath: "/docs",
-				mode: "children",
-				kind: "file",
-			}),
-		);
-		expect(runQuery).toHaveBeenCalledWith(
-			internal.files_visible.internal_list,
-			expect.objectContaining({
-				pathQuery: "readme",
-				folderPath: "/docs",
-				mode: "subtree",
-			}),
+			internal.files_visible.internal_search_name_places,
+			expect.objectContaining({ query: "readme", folderPath: "/docs" }),
 		);
 	});
 
@@ -2590,34 +2598,27 @@ describe("bash_run_command", () => {
 		});
 
 		expect(scopedDepth.metadata.exitCode).toBe(2);
-		expect(scopedDepth.stderr).toContain("full subtree (omit -maxdepth) or immediate children with -maxdepth 1");
-		expect(scopedDepth.stderr).toContain(`Try: find ${test_db_files_mount}/docs --path-query readme --limit 10`);
+		expect(scopedDepth.stderr).toContain("name search reads the whole folder; omit -maxdepth.");
+		expect(scopedDepth.stderr).toContain(`Try: find ${test_db_files_mount}/docs -name readme --limit 10`);
 		expect(tokenGlobName.metadata.exitCode).toBe(2);
-		expect(tokenGlobName.stderr).toContain(`Try: find ${test_db_files_mount} -type f --path-query readme --limit 10`);
+		expect(tokenGlobName.stderr).toContain(`Try: find ${test_db_files_mount} -type f -name readme --limit 10`);
 		expect(prefixExtensionGlobName.metadata.exitCode).toBe(2);
 		expect(prefixExtensionGlobName.stderr).toContain(
-			`Try: find ${test_db_files_mount}/docs -type f --path-query readme --limit 10`,
+			`Try: find ${test_db_files_mount}/docs -type f -name readme --limit 10`,
 		);
 		expect(complexGlobName.metadata.exitCode).toBe(2);
 		expect(complexGlobName.stderr).toContain("not glob patterns");
 		expect(complexGlobName.stderr).toContain("Try `find <dir> -type f --extension md");
 		expect(pathQueryGlob.metadata.exitCode).toBe(2);
 		expect(pathQueryGlob.stderr).toContain("--path-query uses app-file path word search");
-		expect(pathQueryGlob.stderr).toContain(`Try: find ${test_db_files_mount} --path-query readme --limit 10`);
+		expect(pathQueryGlob.stderr).toContain(`Try: find ${test_db_files_mount} -name readme --limit 10`);
 		expect(combinedPathQueryExtension.metadata.exitCode).toBe(2);
-		expect(combinedPathQueryExtension.stderr).toContain(
-			`Try: find ${test_db_files_mount}/docs -type f --path-query readme --limit 10`,
-		);
-		expect(combinedPathQueryExtension.stderr).toContain(
-			`For extension-only search, use: find ${test_db_files_mount}/docs -type f --extension md --limit 10`,
-		);
+		expect(combinedPathQueryExtension.stderr).toContain("--path-query is not supported for app files");
 		expect(recursivePathQuery.metadata.exitCode).toBe(2);
-		expect(recursivePathQuery.stderr).toContain(
-			`Try: find ${test_db_files_mount} -type f --path-query readme --limit 10`,
-		);
+		expect(recursivePathQuery.stderr).toContain("--path-query is not supported for app files");
 		expect(regexPathPredicate.metadata.exitCode).toBe(2);
 		expect(regexPathPredicate.stderr).toContain(
-			`Try: find ${test_db_files_mount}/docs -type f --path-query readme --limit 10`,
+			`Try: find ${test_db_files_mount}/docs -type f -name readme --limit 10`,
 		);
 	});
 
@@ -2648,8 +2649,8 @@ describe("bash_run_command", () => {
 		expect(result.stderr).toContain("Usage: find");
 		expect(regexResult.metadata.exitCode).toBe(2);
 		expect(regexResult.stderr).toContain("unsupported predicate -regextype");
-		expect(regexResult.stderr).toContain("--path-query with plain path words");
-		expect(regexResult.stderr).toContain(`Try: find ${test_db_files_mount}/docs --path-query readme --limit 10`);
+		expect(regexResult.stderr).toContain("use -name with plain name words");
+		expect(regexResult.stderr).toContain(`Try: find ${test_db_files_mount}/docs -name readme --limit 10`);
 		expect(regexResult.stderr).not.toContain("supports one path only");
 		expect(nativeJustBashResult.stderr).not.toContain("/home/cloud-usr/w");
 		const paginatedCalls = runQuery.mock.calls.map((call) => call[1]).filter((args) => "numItems" in args);
@@ -3523,7 +3524,9 @@ describe("bash_run_command", () => {
 		expect(paths.stderr).toBe("");
 		expect(
 			runQuery.mock.calls.some(
-				([ref, args]) => function_name_of(ref) === "files_metadata:search" && (args as { plan?: unknown }).plan != null,
+				([ref, args]) =>
+					function_name_of(ref) === "files_visible:internal_search_metadata_saved" &&
+					(args as { plan?: unknown }).plan != null,
 			),
 		).toBe(true);
 
@@ -3581,7 +3584,8 @@ describe("bash_run_command", () => {
 		expect(
 			runQuery.mock.calls.some(
 				([ref, args]) =>
-					function_name_of(ref) === "files_metadata:search" && (args as { pathPrefix?: string }).pathPrefix === "/docs",
+					function_name_of(ref) === "files_visible:internal_search_metadata_saved" &&
+					(args as { folderPath?: string }).folderPath === "/docs",
 			),
 		).toBe(true);
 
@@ -3596,6 +3600,65 @@ describe("bash_run_command", () => {
 
 		expect(invalid.metadata.exitCode).toBe(2);
 		expect(invalid.stderr).toContain("must be qualified");
+	});
+
+	test("meta search with a folder keeps rows under it and finds a folder moved into it", async () => {
+		const topic = "---\ntopic: atlas\n---\n# Topic\n";
+		const runner = await create_bash_runner({
+			extraFiles: [
+				{ path: "/docs/meta-in.md", content: topic },
+				{ path: "/reports/meta-out.md", content: topic },
+				{ path: "/outside/inner/meta-moved.md", content: topic },
+			],
+		});
+		const moved = await runner.run({
+			command: `mv ${test_db_files_mount}/outside/inner ${test_db_files_mount}/docs/inner`,
+		});
+		expect(moved.metadata.exitCode).toBe(0);
+
+		// `eq` reads the folder's own rows, then the rows under the folder moved into it.
+		const eq = await runner.run({
+			command: `meta search --path ${test_db_files_mount}/docs --where '{"eq":["frontmatter.topic","atlas"]}'`,
+		});
+		expect(eq.stderr).toBe("");
+		expect(eq.stdout.split("\n").filter(Boolean).sort()).toEqual([
+			`${test_db_files_mount}/docs/inner/meta-moved.md`,
+			`${test_db_files_mount}/docs/meta-in.md`,
+		]);
+
+		// `prefix` reads the whole workspace and drops the rows outside the folder.
+		const prefix = await runner.run({
+			command: `meta search --path ${test_db_files_mount}/docs --where '{"prefix":["frontmatter.topic","at"]}'`,
+		});
+		expect(prefix.stderr).toBe("");
+		expect(prefix.stdout.split("\n").filter(Boolean).sort()).toEqual([
+			`${test_db_files_mount}/docs/inner/meta-moved.md`,
+			`${test_db_files_mount}/docs/meta-in.md`,
+		]);
+	});
+
+	test("meta search shows a row once when a folder inside a moved-in folder is renamed", async () => {
+		const runner = await create_bash_runner({
+			extraFiles: [{ path: "/outside/g/k/meta-target.md", content: "---\ntopic: atlas\n---\n# Topic\n" }],
+		});
+		for (const command of [
+			`mv ${test_db_files_mount}/outside/g ${test_db_files_mount}/docs/g`,
+			`mv ${test_db_files_mount}/docs/g/k ${test_db_files_mount}/docs/g/k2`,
+		])
+			expect((await runner.run({ command })).metadata.exitCode).toBe(0);
+
+		// One row per page: the dedupe inside one call cannot hide a row that two streams return.
+		const paths: string[] = [];
+		let command: string | null =
+			`meta search --path ${test_db_files_mount}/docs --where '{"eq":["frontmatter.topic","atlas"]}' --limit 1`;
+		for (let page = 0; command !== null && page < 10; page++) {
+			const result = await runner.run({ command });
+			expect(result.metadata.exitCode).toBe(0);
+			paths.push(...result.stdout.split("\n").filter(Boolean));
+			// meta search prints its Next page command on stderr.
+			command = result.stderr.startsWith("Next page: ") ? result.stderr.trim().slice("Next page: ".length) : null;
+		}
+		expect(paths).toEqual([`${test_db_files_mount}/docs/g/k2/meta-target.md`]);
 	});
 
 	test("reads and searches a folder map written by the metadata tool", async () => {
@@ -3654,7 +3717,7 @@ describe("bash_run_command", () => {
 
 		expect(result.metadata.exitCode).toBe(0);
 		expect(result.stdout).toContain("No content matches found");
-		expect(result.stdout).toContain("find --path-query QUERY");
+		expect(result.stdout).toContain("find -name WORD");
 		expect(result.stdout).toContain("meta search");
 		expect(runAction).not.toHaveBeenCalled();
 	});
@@ -8674,16 +8737,118 @@ describe("bash_run_command", () => {
 			command: `mv '${test_db_files_mount}/docs/word lesson.md' '${test_db_files_mount}/docs/word guide.md'`,
 		});
 
-		// The NEW name finds the moved file at its visible path (overlay injection).
-		const byNewName = await runner.run({ command: "find -name guide --limit 10" });
+		// The NEW name finds the moved file at its visible path, from the place search. convex-test
+		// splits names on whitespace only, so the query is the start of `word-guide.md`.
+		const byNewName = await runner.run({ command: "find -name word --limit 10" });
 		expect(byNewName.metadata.exitCode).toBe(0);
 		expect(byNewName.stdout).toContain(`${test_db_files_mount}/docs/word-guide.md`);
+		expect(byNewName.stdout).not.toContain("word lesson.md");
 
 		// The old name no longer matches: the committed-index hit projects to the new
 		// name and fails the re-check.
 		const byOldName = await runner.run({ command: "find -name lesson --limit 10" });
 		expect(byOldName.metadata.exitCode).toBe(0);
 		expect(byOldName.stdout.trim()).toBe("0 matches.");
+	});
+
+	test("find -name refuses a folder deeper than the saved ancestor fields", async () => {
+		const deep = Array.from({ length: 13 }, (_, index) => `d${index + 1}`).join("/");
+		const runner = await create_bash_runner({ extraFiles: [{ path: `/${deep}`, kind: "folder" }] });
+
+		const result = await runner.run({ command: `find ${test_db_files_mount}/${deep} -name x` });
+		expect(result.metadata.exitCode).toBe(bash_COMMAND_EXIT_FAILURE);
+		expect(result.stderr).toBe("find: This folder is too deep to search inside. Search a folder higher up.\n");
+
+		// One level up still searches.
+		const parent = deep.slice(0, deep.lastIndexOf("/"));
+		const ok = await runner.run({ command: `find ${test_db_files_mount}/${parent} -name d13` });
+		expect(ok.metadata.exitCode).toBe(0);
+		expect(ok.stdout).toContain(`${test_db_files_mount}/${deep}/`);
+	});
+
+	test("find -name finds files inside a folder moved into the search folder", async () => {
+		const runner = await create_bash_runner({
+			extraFiles: [{ path: "/outside/inner/movedin.md", content: "moved in\n" }],
+		});
+		const moved = await runner.run({
+			command: `mv ${test_db_files_mount}/outside/inner ${test_db_files_mount}/docs/inner`,
+		});
+		expect(moved.metadata.exitCode).toBe(0);
+
+		// The saved file is still under /outside, so only the nested search of the moved-in folder
+		// finds it.
+		const found = await runner.run({ command: `find ${test_db_files_mount}/docs -name movedin` });
+		expect(found.metadata.exitCode).toBe(0);
+		expect(found.stdout).toContain(`${test_db_files_mount}/docs/inner/movedin.md`);
+		expect(found.stdout).not.toContain("/outside/");
+		expect(
+			runner.runQuery.mock.calls.some(
+				([ref, args]) =>
+					function_name_of(ref) === "files_visible:internal_search_name_saved" &&
+					(args as { movedIn?: unknown }).movedIn != null,
+			),
+		).toBe(true);
+	});
+
+	test("find -name shows a row once when a folder inside a moved-in folder is renamed", async () => {
+		const runner = await create_bash_runner({
+			extraFiles: [{ path: "/outside/g/k/target.md", content: "target\n" }],
+		});
+		for (const command of [
+			`mv ${test_db_files_mount}/outside/g ${test_db_files_mount}/docs/g`,
+			`mv ${test_db_files_mount}/docs/g/k ${test_db_files_mount}/docs/g/k2`,
+		])
+			expect((await runner.run({ command })).metadata.exitCode).toBe(0);
+
+		// One row per page: the dedupe inside one call cannot hide a row that two searches return.
+		const paths: string[] = [];
+		let command: string | null = `find ${test_db_files_mount}/docs -name target --limit 1`;
+		for (let page = 0; command !== null && page < 10; page++) {
+			const result = await runner.run({ command });
+			expect(result.metadata.exitCode).toBe(0);
+			const lines = result.stdout.trim().split("\n");
+			paths.push(...lines.filter((line) => line.startsWith(test_db_files_mount)));
+			command = lines.find((line) => line.startsWith("Next page: "))?.slice("Next page: ".length) ?? null;
+		}
+		expect(paths).toEqual([`${test_db_files_mount}/docs/g/k2/target.md`]);
+	});
+
+	test("find -name opens no search for a folder moved inside the search folder", async () => {
+		const deep = Array.from({ length: 12 }, (_, index) => `a${index + 1}`).join("/");
+		const runner = await create_bash_runner({
+			extraFiles: [{ path: `/docs/${deep}/deep/found.md`, content: "found\n" }],
+		});
+		const moved = await runner.run({
+			command: `mv ${test_db_files_mount}/docs/${deep}/deep ${test_db_files_mount}/docs/deep`,
+		});
+		expect(moved.metadata.exitCode).toBe(0);
+
+		// The saved folder is 14 levels deep, too deep for its own search, but it is still under /docs,
+		// so the main search finds its rows and no note is needed.
+		const found = await runner.run({ command: `find ${test_db_files_mount}/docs -name found` });
+		expect(found.metadata.exitCode).toBe(0);
+		expect(found.stdout).toBe(`${test_db_files_mount}/docs/deep/found.md\n`);
+		expect(
+			runner.runQuery.mock.calls.some(
+				([ref, args]) =>
+					function_name_of(ref) === "files_visible:internal_search_name_saved" &&
+					(args as { movedIn?: unknown }).movedIn != null,
+			),
+		).toBe(false);
+	});
+
+	test("find -name finds the agent's new draft only under its folder", async () => {
+		const runner = await create_bash_runner();
+		const written = await runner.run({ command: `printf 'draft\\n' > ${test_db_files_mount}/docs/draftnote.md` });
+		expect(written.metadata.exitCode).toBe(0);
+
+		const inDocs = await runner.run({ command: `find ${test_db_files_mount}/docs -name draftnote` });
+		expect(inDocs.metadata.exitCode).toBe(0);
+		expect(inDocs.stdout).toContain(`${test_db_files_mount}/docs/draftnote.md`);
+
+		const inReports = await runner.run({ command: `find ${test_db_files_mount}/reports -name draftnote` });
+		expect(inReports.metadata.exitCode).toBe(0);
+		expect(inReports.stdout.trim()).toBe("0 matches.");
 	});
 
 	test("reports visible paths for search and recursive grep over pending moves", async () => {
@@ -8805,10 +8970,10 @@ describe("bash_run_command", () => {
 		expect(folderScoped.stdout).toContain(`${test_db_files_mount}/reports/nested/deep.md`);
 	});
 
-	test("keeps the search continuation when the overlay empties a page", async () => {
+	test("reads on past a search page the overlay empties", async () => {
 		// The file moved outside the scope is seeded first so the limit-1 first page holds only its
 		// committed chunk, which the overlay drops from the /docs scope; the visible
-		// match lives on the next page.
+		// match lives on the next page, which the same call reads.
 		const runner = await create_bash_runner({
 			extraFiles: [
 				{ path: "/docs/paged-moved.md", content: "dropscope alpha\n" },
@@ -8823,17 +8988,8 @@ describe("bash_run_command", () => {
 		const firstPage = await runner.run({ command: `search --path ${test_db_files_mount}/docs --limit 1 dropscope` });
 
 		expect(firstPage.metadata.exitCode).toBe(0);
-		// The underlying result has another page, so an emptied page must keep the
-		// continuation reachable instead of reading like a finished search.
-		expect(firstPage.stdout).toMatch(/Next page: search --path \S+ --limit 1 --cursor \S+ dropscope/u);
-
-		const continuation = firstPage.stdout.match(/Next page: (search .+)/u)?.[1];
-		if (continuation == null) {
-			throw new Error("expected a search continuation in the emptied first page stdout");
-		}
-		const secondPage = await runner.run({ command: continuation });
-		expect(secondPage.metadata.exitCode).toBe(0);
-		expect(secondPage.stdout).toContain(`${test_db_files_mount}/docs/paged-kept.md`);
+		expect(firstPage.stdout).toContain(`${test_db_files_mount}/docs/paged-kept.md`);
+		expect(firstPage.stdout).not.toContain("paged-moved.md");
 	});
 
 	test("chained commands in one bash call see the proposal made by an earlier mv", async () => {
@@ -14517,6 +14673,15 @@ describe("bash_run_command", () => {
 			expect(found.metadata.exitCode).toBe(0);
 			expect(found.stdout).toContain("/.plugins/media/README.md");
 			expect(found.stdout).toContain("/.plugins/media/dist/backend/worker.js");
+
+			// Name search reads the plugin tree's saved ancestor fields.
+			const byName = await runner.run({ command: "find /.plugins/media -name worker" });
+			expect(byName.stdout).toBe("/.plugins/media/dist/backend/worker.js\n");
+			// App files refuse these two; one plugin keeps its path word scan.
+			const byPath = await runner.run({ command: "find /.plugins/media --path-query backend" });
+			expect(byPath.stdout).toBe("/.plugins/media/dist/backend/\n/.plugins/media/dist/backend/worker.js\n");
+			const children = await runner.run({ command: "find /.plugins/media/dist -maxdepth 1 -name backend" });
+			expect(children.stdout).toBe("/.plugins/media/dist/backend/\n");
 		});
 
 		test("cd into a plugin mount persists across invocations", async () => {

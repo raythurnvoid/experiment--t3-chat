@@ -35,7 +35,7 @@ import {
 	type bash_ExternalSourceMount,
 } from "./bash-utils.ts";
 import { bash_command_build_builtin_delegation_args, bash_delegate_builtin_command } from "./bash-delegate.ts";
-import { files_pending_overlay_list } from "./files-pending-overlay.ts";
+import { files_pending_overlay_list, files_pending_overlay_search_name } from "./files-pending-overlay.ts";
 
 const EXTENSION_TOKEN_REGEX = /^[a-z0-9][a-z0-9_-]*$/iu;
 const SIMPLE_PATH_WORD_GLOB_REGEX = /^\*+([a-z0-9][a-z0-9_-]*)\*+$/iu;
@@ -113,9 +113,10 @@ function parse_simple_path_word_glob(pattern: string) {
 }
 
 /**
- * App-file `-name`/`-iname` are app-file path word searches, not exact glob
- * filters. Strip a simple literal extension so `README.md` searches for the
- * filename word instead of mostly matching every Markdown file by `md`.
+ * App-file `-name` searches name words and word starts, not globs and not path
+ * parts. `-iname` is the same, since text search ignores case. Strip a simple
+ * literal extension so `README.md` searches for the name word `readme`
+ * instead of mostly matching every Markdown file by `md`.
  */
 function normalize_name_path_query(value: string | undefined) {
 	if (value == null) {
@@ -130,23 +131,21 @@ function normalize_name_path_query(value: string | undefined) {
 }
 
 /**
- * Build the agent-facing `Try:` line for path word search recovery.
+ * Build the agent-facing `Try:` line for name word search recovery.
  *
- * This points the model at the `find --path-query` form when it used a
- * glob or regex-shaped path query that the app shell cannot run directly.
+ * This points the model at the `find -name` form when it used a glob or
+ * regex-shaped query that the app shell cannot run directly. It never adds
+ * `-maxdepth`, because app files refuse `-maxdepth 1 -name`.
  */
-function build_path_query_retry_hint(
+function build_name_search_retry_hint(
 	absoluteShellPath: string,
-	args: { query: string; type?: string; maxDepth?: number; limit: number },
+	args: { query: string; type?: string; limit: number },
 ) {
 	const parts = ["Try:", "find", bash_shell_arg_quote(absoluteShellPath)];
-	if (args.maxDepth != null) {
-		parts.push("-maxdepth", String(args.maxDepth));
-	}
 	if (args.type != null) {
 		parts.push("-type", args.type);
 	}
-	parts.push("--path-query", bash_shell_arg_quote(args.query), "--limit", String(args.limit));
+	parts.push("-name", bash_shell_arg_quote(args.query), "--limit", String(args.limit));
 	return parts.join(" ");
 }
 
@@ -374,7 +373,9 @@ function parse_args(args: string[]) {
 		iname = undefined;
 	}
 
-	// In app-file find, -name, -iname, and --path-query use the same case-insensitive db word search.
+	// -name and -iname are the same word search. App files and one plugin or mount match name words;
+	// the /.plugins and /.mounts roots match path words. Inside one plugin or mount, --path-query and
+	// -maxdepth 1 -name scan paths instead; app files refuse both.
 	const normalizedNamePathQuery = normalize_name_path_query(name);
 	const normalizedInamePathQuery = normalize_name_path_query(iname);
 	const pathQueries = [normalizedNamePathQuery, normalizedInamePathQuery, pathQuery].filter(
@@ -574,7 +575,7 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			const tryLine =
 				tryPathQuery == null
 					? ""
-					: `${build_path_query_retry_hint(
+					: `${build_name_search_retry_hint(
 							bash_resolve_path(commandCtx.cwd, tryPathQuery.path ?? "."),
 							tryPathQuery,
 						)}\n`;
@@ -583,7 +584,7 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 				stderr:
 					`${parsed._nay.message}\n` +
 					tryLine +
-					"Usage: find [PATH] [--prefix PREFIX] [-maxdepth N] [-mindepth N] [-type f|d] [-name QUERY|-iname QUERY|--path-query QUERY|--extension EXT] [--limit N] [--cursor CURSOR]\n",
+					"Usage: find [PATH] [--prefix PREFIX] [-maxdepth N] [-mindepth N] [-type f|d] [-name QUERY|-iname QUERY|--extension EXT|--path-query QUERY (/.plugins and /.mounts only)] [--limit N] [--cursor CURSOR]\n",
 				exitCode: bash_COMMAND_EXIT_USAGE,
 			};
 		}
@@ -595,7 +596,7 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 				stderr:
 					"find: --next-page is not supported\n" +
 					"Copy the exact `Next page: find ... --limit N --cursor ...` command from the previous find output.\n" +
-					"Usage: find [PATH] [--prefix PREFIX] [-maxdepth N] [-mindepth N] [-type f|d] [-name QUERY|-iname QUERY|--path-query QUERY|--extension EXT] [--limit N] [--cursor CURSOR]\n",
+					"Usage: find [PATH] [--prefix PREFIX] [-maxdepth N] [-mindepth N] [-type f|d] [-name QUERY|-iname QUERY|--extension EXT|--path-query QUERY (/.plugins and /.mounts only)] [--limit N] [--cursor CURSOR]\n",
 				exitCode: bash_COMMAND_EXIT_USAGE,
 			};
 		}
@@ -634,7 +635,7 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 					stderr:
 						`find: unsupported predicate ${parsed._yay.unsupportedDbFilesPredicate} for db-files paths under ${bash_APP_MOUNT_PATH} or /.mounts\n` +
 						"GNU find extensions like -printf, -mtime, -newer, -exec, -ok, and -delete are not available there; omit them and use -name QUERY, --path-query QUERY, -type f|d, -maxdepth N, or -mindepth N instead.\n" +
-						"Usage: find [PATH] [--prefix PREFIX] [-maxdepth N] [-mindepth N] [-type f|d] [-name QUERY|-iname QUERY|--path-query QUERY|--extension EXT] [--limit N] [--cursor CURSOR]\n",
+						"Usage: find [PATH] [--prefix PREFIX] [-maxdepth N] [-mindepth N] [-type f|d] [-name QUERY|-iname QUERY|--extension EXT|--path-query QUERY (/.plugins and /.mounts only)] [--limit N] [--cursor CURSOR]\n",
 					exitCode: bash_COMMAND_EXIT_USAGE,
 				};
 			}
@@ -691,7 +692,7 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			if (perPluginDepth._nay) {
 				return {
 					stdout: "",
-					stderr: `${perPluginDepth._nay.message}\nUsage: find [PATH] [--prefix PREFIX] [-maxdepth N] [-mindepth N] [-type f|d] [-name QUERY|-iname QUERY|--path-query QUERY|--extension EXT] [--limit N] [--cursor CURSOR]\n`,
+					stderr: `${perPluginDepth._nay.message}\nUsage: find [PATH] [--prefix PREFIX] [-maxdepth N] [-mindepth N] [-type f|d] [-name QUERY|-iname QUERY|--extension EXT|--path-query QUERY (/.plugins and /.mounts only)] [--limit N] [--cursor CURSOR]\n`,
 					exitCode: bash_COMMAND_EXIT_USAGE,
 				};
 			}
@@ -808,7 +809,7 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 					stderr:
 						`find: unsupported predicate ${parsed._yay.unsupportedDbFilesPredicate} for db-files paths under ${bash_APP_MOUNT_PATH} or /.mounts\n` +
 						"GNU find extensions like -printf, -mtime, -newer, -exec, -ok, and -delete are not available there; omit them and use -name QUERY, --path-query QUERY, -type f|d, -maxdepth N, or -mindepth N instead.\n" +
-						"Usage: find [PATH] [--prefix PREFIX] [-maxdepth N] [-mindepth N] [-type f|d] [-name QUERY|-iname QUERY|--path-query QUERY|--extension EXT] [--limit N] [--cursor CURSOR]\n",
+						"Usage: find [PATH] [--prefix PREFIX] [-maxdepth N] [-mindepth N] [-type f|d] [-name QUERY|-iname QUERY|--extension EXT|--path-query QUERY (/.plugins and /.mounts only)] [--limit N] [--cursor CURSOR]\n",
 					exitCode: bash_COMMAND_EXIT_USAGE,
 				};
 			}
@@ -852,7 +853,7 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			if (refusedDepth?._nay) {
 				return {
 					stdout: "",
-					stderr: `${refusedDepth._nay.message}\nUsage: find [PATH] [--prefix PREFIX] [-maxdepth N] [-mindepth N] [-type f|d] [-name QUERY|-iname QUERY|--path-query QUERY|--extension EXT] [--limit N] [--cursor CURSOR]\n`,
+					stderr: `${refusedDepth._nay.message}\nUsage: find [PATH] [--prefix PREFIX] [-maxdepth N] [-mindepth N] [-type f|d] [-name QUERY|-iname QUERY|--extension EXT|--path-query QUERY (/.plugins and /.mounts only)] [--limit N] [--cursor CURSOR]\n`,
 					exitCode: bash_COMMAND_EXIT_USAGE,
 				};
 			}
@@ -998,13 +999,13 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 				parsed._yay.unsupportedDbFilesPredicate === "-regex" ||
 				parsed._yay.unsupportedDbFilesPredicate === "-iregex" ||
 				parsed._yay.unsupportedDbFilesPredicate === "-regextype"
-					? "Regex path predicates are not available for app files; use --path-query with plain path words such as `readme`.\n"
+					? "Regex path predicates are not available for app files; use -name with plain name words such as `readme`.\n"
 					: "";
 
 			const regexPathQueryRetry =
 				parsed._yay.unsupportedRegexPathQuery == null || parsed._yay.prefix != null
 					? ""
-					: `${build_path_query_retry_hint(target.absoluteShellPath, {
+					: `${build_name_search_retry_hint(target.absoluteShellPath, {
 							query: parsed._yay.unsupportedRegexPathQuery,
 							...(parsed._yay.type == null ? {} : { type: parsed._yay.type }),
 							limit: parsed._yay.limit,
@@ -1016,8 +1017,9 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 					`find: unsupported predicate ${parsed._yay.unsupportedDbFilesPredicate} for db-files paths under ${bash_APP_MOUNT_PATH} or /.mounts\n` +
 					regexPredicateHint +
 					regexPathQueryRetry +
-					"GNU find extensions like -printf, -mtime, -newer, -exec, -ok, and -delete are not available there; omit them and use -name QUERY, --path-query QUERY, -type f|d, -maxdepth N, or -mindepth N instead.\n" +
-					"Usage: find [PATH] [--prefix PREFIX] [-maxdepth N] [-mindepth N] [-type f|d] [-name QUERY|-iname QUERY|--path-query QUERY|--extension EXT] [--limit N] [--cursor CURSOR]\n",
+					// App files refuse --path-query, so only plugins and mounts suggest it.
+					`GNU find extensions like -printf, -mtime, -newer, -exec, -ok, and -delete are not available there; omit them and use -name QUERY, ${pathResolution.kind === "app" ? "" : "--path-query QUERY, "}-type f|d, -maxdepth N, or -mindepth N instead.\n` +
+					"Usage: find [PATH] [--prefix PREFIX] [-maxdepth N] [-mindepth N] [-type f|d] [-name QUERY|-iname QUERY|--extension EXT|--path-query QUERY (/.plugins and /.mounts only)] [--limit N] [--cursor CURSOR]\n",
 				exitCode: bash_COMMAND_EXIT_USAGE,
 			};
 		}
@@ -1168,8 +1170,22 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			};
 		}
 
+		// Inside one plugin or mount, `--path-query` and `-maxdepth 1 -name` keep the path word scan: those
+		// trees are small and have no drafts.
+		const pathScan =
+			pathQuery != null &&
+			pathResolution.kind !== "app" &&
+			(parsed._yay.pathQuery != null || parsed._yay.maxDepth === 1);
 		if (pathQuery != null) {
-			const retryHint = build_path_query_retry_hint(target.absoluteShellPath, {
+			// App files search names only, so a path search would need a scan.
+			if (parsed._yay.pathQuery != null && !pathScan)
+				return {
+					stdout: "",
+					stderr: "find: --path-query is not supported for app files; use find <folder> -name <word>\n",
+					exitCode: bash_COMMAND_EXIT_USAGE,
+				};
+
+			const retryHint = build_name_search_retry_hint(target.absoluteShellPath, {
 				query: pathQuery,
 				...(parsed._yay.type == null ? {} : { type: parsed._yay.type }),
 				limit: parsed._yay.limit,
@@ -1178,28 +1194,37 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			if (parsed._yay.extension != null)
 				return {
 					stdout: "",
-					stderr: `find: path word search cannot be combined with --extension for app files.\n${retryHint}\nFor extension-only search, use: find ${bash_shell_arg_quote(target.absoluteShellPath)} -type f --extension ${bash_shell_arg_quote(parsed._yay.extension)} --limit ${parsed._yay.limit}\n`,
+					stderr: `find: name search cannot be combined with --extension for app files.\n${retryHint}\nFor extension-only search, use: find ${bash_shell_arg_quote(target.absoluteShellPath)} -type f --extension ${bash_shell_arg_quote(parsed._yay.extension)} --limit ${parsed._yay.limit}\n`,
 					exitCode: bash_COMMAND_EXIT_USAGE,
 				};
 
 			if (entry?.kind === "file")
 				return {
 					stdout: "",
-					stderr: "find: path word search can target the workspace root or an immediate folder.\n",
+					stderr: "find: name search can target the workspace root or a folder.\n",
+					exitCode: bash_COMMAND_EXIT_USAGE,
+				};
+
+			// The name search index has no parent filter, so direct children would need a check per row.
+			if (parsed._yay.maxDepth === 1 && !pathScan)
+				return {
+					stdout: "",
+					stderr:
+						"find: -maxdepth 1 -name is not supported for app files; use find <folder> -name <word> for the whole folder, or ls <folder>\n",
 					exitCode: bash_COMMAND_EXIT_USAGE,
 				};
 
 			if (parsed._yay.maxDepth != null && parsed._yay.maxDepth !== 1)
 				return {
 					stdout: "",
-					stderr: `find: scoped path word search supports the full subtree (omit -maxdepth) or immediate children with -maxdepth 1.\n${retryHint}\n`,
+					stderr: `find: name search reads the whole folder; omit -maxdepth.\n${retryHint}\n`,
 					exitCode: bash_COMMAND_EXIT_USAGE,
 				};
 
 			if (parsed._yay.minDepth != null && parsed._yay.minDepth !== 1)
 				return {
 					stdout: "",
-					stderr: `find: scoped path word search supports -mindepth 1 only; deeper mindepth values are not supported.\n${retryHint}\n`,
+					stderr: `find: name search supports -mindepth 1 only; deeper mindepth values are not supported.\n${retryHint}\n`,
 					exitCode: bash_COMMAND_EXIT_USAGE,
 				};
 		}
@@ -1219,7 +1244,7 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			};
 		}
 
-		// Path word search keeps its own depth rules above. Other app reads take the depth shapes of
+		// Name search keeps its own depth rules above. Other app reads take the depth shapes of
 		// `map_find_depth`: the folder only, its children, or its whole subtree.
 		const depth =
 			pathQuery == null
@@ -1228,7 +1253,7 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 		if (depth?._nay)
 			return {
 				stdout: "",
-				stderr: `${depth._nay.message}\nUsage: find [PATH] [--prefix PREFIX] [-maxdepth N] [-mindepth N] [-type f|d] [-name QUERY|-iname QUERY|--path-query QUERY|--extension EXT] [--limit N] [--cursor CURSOR]\n`,
+				stderr: `${depth._nay.message}\nUsage: find [PATH] [--prefix PREFIX] [-maxdepth N] [-mindepth N] [-type f|d] [-name QUERY|-iname QUERY|--extension EXT|--path-query QUERY (/.plugins and /.mounts only)] [--limit N] [--cursor CURSOR]\n`,
 				exitCode: bash_COMMAND_EXIT_USAGE,
 			};
 		const listArgs = {
@@ -1247,8 +1272,15 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 					: {}),
 			...(parsed._yay.extension == null ? {} : { lowercaseExtension: parsed._yay.extension }),
 		};
+		// Name word search on saved rows, then a second search on the user's drafts. With a folder, each
+		// draft is checked to be under it.
+		const searched =
+			pathQuery != null && !pathScan
+				? await files_pending_overlay_search_name(ctx, { ...listArgs, query: pathQuery })
+				: null;
 		const result =
-			pathQuery != null
+			searched ??
+			(pathScan
 				? ((await ctx.runQuery(internal.files_visible.internal_list, {
 						...listArgs,
 						mode: parsed._yay.maxDepth === 1 ? "children" : "subtree",
@@ -1262,13 +1294,16 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 							...listArgs,
 							mode: depth._yay.maxDepth === 1 ? "children" : "subtree",
 							order: "asc",
-						});
+						}));
 		if (result._nay)
 			return { stdout: "", stderr: `find: ${result._nay.message}\n`, exitCode: bash_COMMAND_EXIT_FAILURE };
 		const lines = result._yay.items.map(
 			(item) => `${pathResolution.renderShellPath(item.path)}${item.kind === "folder" ? "/" : ""}`,
 		);
-		// find includes the starting folder at depth zero. The shared list returns its descendants.
+		// find includes the starting folder at depth zero. The shared list returns its descendants. A
+		// search prints it when it matches too: by path for the scan, and for name search when every
+		// query word starts a word of its name.
+		const nameWords = entry?.name.toLowerCase().split(/[^\p{L}\p{N}]+/u) ?? [];
 		if (
 			cursor == null &&
 			entry?.kind === "folder" &&
@@ -1277,12 +1312,21 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			(parsed._yay.minDepth == null || parsed._yay.minDepth === 0) &&
 			(pathQuery == null
 				? depth?._yay != null
-				: parsed._yay.maxDepth !== 1 && entry.path.toLowerCase().includes(pathQuery.toLowerCase()))
+				: pathScan
+					? parsed._yay.maxDepth !== 1 && entry.path.toLowerCase().includes(pathQuery.toLowerCase())
+					: pathQuery
+							.toLowerCase()
+							.split(/[^\p{L}\p{N}]+/u)
+							.filter(Boolean)
+							.every((word) => nameWords.some((nameWord) => nameWord.startsWith(word))))
 		) {
 			lines.unshift(`${pathResolution.renderShellPath(entry.path)}/`);
 		}
+		// Name search gaps: moved-in folders too deep to search, or a search that hit 1,024 rows.
+		const notes = searched?._yay?.notes ?? [];
 		if (!result._yay.isDone && result._yay.continueCursor != null) {
 			lines.push(
+				...notes,
 				"",
 				build_continuation({
 					parsed: parsed._yay,
@@ -1291,7 +1335,10 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 					cursor: await bash_cursor_id_create(ctx, result._yay.continueCursor),
 				}),
 			);
-		} else if (lines.length === 0) lines.push("0 matches.");
+		} else {
+			if (lines.length === 0) lines.push("0 matches.");
+			lines.push(...notes);
+		}
 		return { stdout: `${lines.join("\n")}\n`, stderr: "", exitCode: 0 };
 	});
 }

@@ -1,7 +1,7 @@
 import { Workpool } from "@convex-dev/workpool";
 import { R2 } from "@convex-dev/r2";
 import { RateLimiter } from "@convex-dev/rate-limiter";
-import type { FunctionReturnType } from "convex/server";
+import type { FunctionArgs, FunctionReturnType } from "convex/server";
 import { MockLanguageModelV3 } from "ai/test";
 import { afterEach, beforeEach, describe, expect, test as baseTest, vi, type MockInstance } from "vitest";
 import {
@@ -10100,7 +10100,7 @@ describe("non-collaborative files", () => {
 		expect(available).toMatchObject({ content: markdown });
 
 		// Workspace search reads committed chunks without requiring Yjs.
-		const search = await t.query(internal.files_nodes.text_search_files, {
+		const search = await text_search_files_all_pages(t, {
 			...readScope,
 			userId: db.userId,
 			hasWorkspaceRead: true,
@@ -12186,6 +12186,24 @@ describe("search_paths", () => {
 	});
 });
 
+/** Content search reads the caller's pending chunks, then the committed ones, so read every page. */
+async function text_search_files_all_pages(
+	t: Pick<ReturnType<typeof test_convex>, "query">,
+	args: FunctionArgs<typeof internal.files_nodes.text_search_files>,
+) {
+	const items: FunctionReturnType<typeof internal.files_nodes.text_search_files>["items"] = [];
+	let cursor = args.cursor;
+	for (;;) {
+		const page: FunctionReturnType<typeof internal.files_nodes.text_search_files> = await t.query(
+			internal.files_nodes.text_search_files,
+			{ ...args, cursor },
+		);
+		items.push(...page.items);
+		if (page.isDone) return { items, isDone: true };
+		cursor = page.continueCursor;
+	}
+}
+
 describe("text_search_files", () => {
 	test.each(["😀", "\uffff"])("includes a %s descendant and excludes a sibling prefix", async (suffix) => {
 		const t = test_convex();
@@ -12216,7 +12234,7 @@ describe("text_search_files", () => {
 		expect(moved._nay).toBeUndefined();
 		await test_materialize_markdown_file({ t, asUser, db, path: "/scope-other/outside.md", markdown: "prefixneedle" });
 		for (const pathPrefix of [undefined, "/scope"]) {
-			const result = await asUser.query(internal.files_nodes.text_search_files, {
+			const result = await text_search_files_all_pages(asUser, {
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
 				userId: db.userId,
@@ -12255,7 +12273,7 @@ test("text_search_files scopes to a path prefix without sibling-prefix leakage a
 	const search = (args: { pathPrefix: string | undefined; numItems: number; cursor?: string | null }) => {
 		const { cursor = null, numItems, pathPrefix } = args;
 
-		return asUser.query(internal.files_nodes.text_search_files, {
+		return text_search_files_all_pages(asUser, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId: db.userId,
@@ -12271,19 +12289,28 @@ test("text_search_files scopes to a path prefix without sibling-prefix leakage a
 	const all = await search({ pathPrefix: undefined, numItems: 50 });
 	expect(new Set(all.items.map((i) => i.path))).toEqual(new Set(["/scope/inside.md", "/scope-other/collide.md"]));
 
-	const firstUnscopedPage = await search({ pathPrefix: undefined, numItems: 1 });
-	expect(firstUnscopedPage.items).toHaveLength(1);
-	expect(firstUnscopedPage.isDone).toBe(false);
-	expect(firstUnscopedPage.continueCursor).not.toBe("");
-	const secondUnscopedPage = await search({
-		pathPrefix: undefined,
-		numItems: 50,
-		cursor: firstUnscopedPage.continueCursor,
-	});
-	expect(secondUnscopedPage.isDone).toBe(true);
-	expect(new Set([...firstUnscopedPage.items, ...secondUnscopedPage.items].map((i) => i.path))).toEqual(
-		new Set(["/scope/inside.md", "/scope-other/collide.md"]),
-	);
+	// Pages of one row: each page holds at most one, and the cursor reads on to the rest.
+	const pagedPaths: string[] = [];
+	let cursor: string | null = null;
+	for (let guard = 0; guard < 10; guard++) {
+		const page: FunctionReturnType<typeof internal.files_nodes.text_search_files> = await asUser.query(
+			internal.files_nodes.text_search_files,
+			{
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId: db.userId,
+				hasWorkspaceRead: true,
+				query: "scopeneedle",
+				numItems: 1,
+				cursor,
+			},
+		);
+		expect(page.items.length).toBeLessThanOrEqual(1);
+		pagedPaths.push(...page.items.map((i) => i.path));
+		if (page.isDone) break;
+		cursor = page.continueCursor;
+	}
+	expect(new Set(pagedPaths)).toEqual(new Set(["/scope/inside.md", "/scope-other/collide.md"]));
 
 	// Scoped to /scope: only the file under /scope, NOT the sibling-prefix /scope-other file.
 	const scoped = await search({ pathPrefix: "/scope", numItems: 50 });
@@ -12329,7 +12356,7 @@ test("text_search_files searches pending unstaged content instead of stale commi
 	});
 
 	const search = (query: string) =>
-		asUser.query(internal.files_nodes.text_search_files, {
+		text_search_files_all_pages(asUser, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId: db.userId,
@@ -12447,7 +12474,7 @@ test("text_search_files searches pending unstaged content instead of stale commi
 	expect(staleCommittedSearch.items.map((item) => item.path)).not.toContain(path);
 	expect(staleCommittedSearch.isDone).toBe(true);
 
-	const otherUserCommittedSearch = await asUser.query(internal.files_nodes.text_search_files, {
+	const otherUserCommittedSearch = await text_search_files_all_pages(asUser, {
 		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
 		userId: otherUserId,
@@ -13739,27 +13766,19 @@ describe("folder metadata", () => {
 			expect(docs).toHaveLength(2);
 			for (const doc of docs) expect(doc).toMatchObject({ path, treePath: path + "/", sourceKind: "committed" });
 		}
-		const plans: files_metadata_SearchPlan[] = [{ op: "exists", fieldPath: "metadata.status" }];
-		expect(
-			(
-				await asOwner.query(api.files_metadata.search_nodes, {
-					membershipId: db.membershipId,
-					plans,
-					pathPrefix: "/folder-metadata",
-				})
-			).targets,
-		).toEqual([]);
-		expect(
+		const search = async (folderPath: string) =>
 			new Set(
 				(
-					await asOwner.query(api.files_metadata.search_nodes, {
+					await asOwner.query(api.files_nodes.search_saved, {
 						membershipId: db.membershipId,
-						plans,
-						pathPrefix: "/pending-folder",
+						clause: { kind: "metadata", plan: { op: "exists", fieldPath: "metadata.status" } },
+						folderPath,
+						paginationOpts: { numItems: 50, cursor: null },
 					})
-				).targets.map((target) => target.id),
-			),
-		).toEqual(new Set([folderId, nestedId]));
+				).page.map((row) => (row.kind === "problem" ? row.message : row.nodeId)),
+			);
+		expect(await search("/folder-metadata")).toEqual(new Set(["Folder not found"]));
+		expect(await search("/pending-folder")).toEqual(new Set([folderId, nestedId]));
 	});
 });
 
@@ -15963,13 +15982,11 @@ describe("search box doors", () => {
 		{ op: "eq", fieldPath: "metadata.status", value: "open" },
 	];
 
-	test("search_nodes unites metadata kinds and value kinds and scopes by folder path", async () => {
+	test("search_saved unites metadata kinds and value kinds and scopes by folder path", async () => {
 		const t = test_convex();
 		const seeded = await seed_search_box_fixture(t);
-		const search = (plans: files_metadata_SearchPlan[], pathPrefix?: string) =>
-			seeded.asOwner
-				.query(api.files_metadata.search_nodes, { membershipId: seeded.db.membershipId, plans, pathPrefix })
-				.then((found) => new Set(found.targets.map((target) => target.id)));
+		const search = (plans: files_metadata_SearchPlan[], folderPath?: string) =>
+			search_saved_plans({ asWho: seeded.asOwner, membershipId: seeded.db.membershipId, plans, folderPath });
 
 		// `status:open` from either metadata kind: the open task, the fixed task through its map, the archive.
 		expect(await search(statusOpenPlans)).toEqual(
@@ -15977,7 +15994,6 @@ describe("search box doors", () => {
 		);
 		// `file.path:/tasks` stops at the folder: `/tasks-archive` shares the prefix but not the path.
 		expect(await search(statusOpenPlans, "/tasks")).toEqual(new Set([seeded.openTaskId, seeded.fixedTaskId]));
-		expect(await search(statusOpenPlans, "/tasks/")).toEqual(new Set([seeded.openTaskId, seeded.fixedTaskId]));
 
 		// `priority:3` asks the number and the text. Only the number exists.
 		expect(
@@ -16042,70 +16058,22 @@ describe("search box doors", () => {
 		);
 
 		// Input the app never sends gets the empty answer, not an error.
-		expect(await search([])).toEqual(new Set());
-		expect(await search(Array.from({ length: 5 }, () => statusOpenPlans[0]!))).toEqual(new Set());
 		expect(await search([{ op: "exists", fieldPath: "frontmatter.a..b" }])).toEqual(new Set());
 		expect(await search([{ op: "exists", fieldPath: "status" }])).toEqual(new Set());
 		expect(await search([{ op: "exists", fieldPath: `frontmatter.${"a".repeat(160)}` }])).toEqual(new Set());
-		expect(await search(statusOpenPlans, "tasks")).toEqual(new Set());
-		expect(await search(statusOpenPlans, `/${"a".repeat(1024)}`)).toEqual(new Set());
+		expect(await search(statusOpenPlans, "tasks")).toEqual(new Set(["Folder not found"]));
+		expect(await search(statusOpenPlans, `/${"a".repeat(1024)}`)).toEqual(new Set(["Folder not found"]));
 
 		// Somebody else's membership answers nothing.
 		const other = await t.run(async (ctx) =>
 			test_mocks_fill_db_with.membership(ctx, { organizationName: "other-org" }),
 		);
-		const otherMembership = await seeded.asOwner.query(api.files_metadata.search_nodes, {
-			membershipId: other.membershipId,
-			plans: statusOpenPlans,
-		});
-		expect(otherMembership).toEqual({ targets: [], truncated: false });
+		expect(
+			await search_saved_plans({ asWho: seeded.asOwner, membershipId: other.membershipId, plans: statusOpenPlans }),
+		).toEqual(new Set());
 	});
 
-	test("search_nodes applies the pending overlay to frontmatter plans only", async () => {
-		const t = test_convex();
-		const seeded = await seed_search_box_fixture(t);
-		const search = (plans: files_metadata_SearchPlan[]) =>
-			seeded.asOwner
-				.query(api.files_metadata.search_nodes, { membershipId: seeded.db.membershipId, plans })
-				.then((found) => new Set(found.targets.map((target) => target.id)));
-
-		const pending = await upsert_pending_update_internal_for_test(t, {
-			organizationId: seeded.db.organizationId,
-			workspaceId: seeded.db.workspaceId,
-			userId: seeded.db.userId,
-			nodeId: seeded.openTaskId,
-			unstagedMarkdown: ["---", "status: triaging", "priority: 3", "---", "Body"].join("\n"),
-		});
-		if (pending._nay) throw new Error(pending._nay.message);
-
-		// The open task now says "triaging" in the owner's draft, so its stale committed "open" is
-		// hidden. The fixed task still matches through its metadata map, which no draft can change.
-		expect(await search(statusOpenPlans)).toEqual(new Set([seeded.fixedTaskId, seeded.archivedTaskId]));
-		expect(await search([{ op: "eq", fieldPath: "frontmatter.status", value: "triaging" }])).toEqual(
-			new Set([seeded.openTaskId]),
-		);
-		expect(await search([{ op: "eq", fieldPath: "metadata.status", value: "open" }])).toEqual(
-			new Set([seeded.fixedTaskId]),
-		);
-
-		// A draft on the fixed task changes its frontmatter only: the map still says "open".
-		const fixedPending = await upsert_pending_update_internal_for_test(t, {
-			organizationId: seeded.db.organizationId,
-			workspaceId: seeded.db.workspaceId,
-			userId: seeded.db.userId,
-			nodeId: seeded.fixedTaskId,
-			unstagedMarkdown: ["---", "status: triaging", "---", "Body"].join("\n"),
-		});
-		if (fixedPending._nay) throw new Error(fixedPending._nay.message);
-		expect(await search([{ op: "eq", fieldPath: "metadata.status", value: "open" }])).toEqual(
-			new Set([seeded.fixedTaskId]),
-		);
-		// Both kinds in one call: the frontmatter plan's overlay must not hide the map doc next to it.
-		expect(await search(statusOpenPlans)).toEqual(new Set([seeded.fixedTaskId, seeded.archivedTaskId]));
-		expect(await search([{ op: "eq", fieldPath: "frontmatter.status", value: "fixed" }])).toEqual(new Set());
-	});
-
-	test("search_nodes keeps a folder scope closed at its own path, whatever the characters", async () => {
+	test("search_saved keeps a folder scope closed at its own path, whatever the characters", async () => {
 		const t = test_convex();
 		const seeded = await seed_search_box_fixture(t);
 		// The scope bound must sort after every path under the folder, including characters above
@@ -16130,30 +16098,30 @@ describe("search box doors", () => {
 			targetParentId: folder._yay.nodeId,
 		});
 		expect(moved._nay).toBeUndefined();
-		const search = (plans: files_metadata_SearchPlan[], pathPrefix: string) =>
-			seeded.asOwner
-				.query(api.files_metadata.search_nodes, { membershipId: seeded.db.membershipId, plans, pathPrefix })
-				.then((found) => new Set(found.targets.map((target) => target.id)));
+		const search = (plans: files_metadata_SearchPlan[], folderPath: string) =>
+			search_saved_plans({ asWho: seeded.asOwner, membershipId: seeded.db.membershipId, plans, folderPath });
 
 		expect(await search(statusOpenPlans, "/tasks")).toEqual(
 			new Set([seeded.openTaskId, seeded.fixedTaskId, emojiTaskId]),
 		);
 		expect(await search(statusOpenPlans, "/tasks/😀 media")).toEqual(new Set([emojiTaskId]));
-		expect(await search([{ op: "prefix", fieldPath: "frontmatter.status", value: "op" }], "/tasks/😀 media")).toEqual(
+		expect(await search([{ op: "exists", fieldPath: "frontmatter.status" }], "/tasks/😀 media")).toEqual(
 			new Set([emojiTaskId]),
 		);
 	});
 
-	test("search_nodes answers a prefix value of any length", async () => {
+	test("search_saved answers a prefix value of any length", async () => {
 		const t = test_convex();
 		const seeded = await seed_search_box_fixture(t);
 		// The upper bound of the scan is built from the value. A spread of that many code points
 		// into `String.fromCodePoint` would throw a RangeError instead of the empty answer.
-		const found = await seeded.asOwner.query(api.files_metadata.search_nodes, {
-			membershipId: seeded.db.membershipId,
-			plans: [{ op: "prefix", fieldPath: "frontmatter.title", value: "a".repeat(300_000) }],
-		});
-		expect(found.targets).toEqual([]);
+		expect(
+			await search_saved_plans({
+				asWho: seeded.asOwner,
+				membershipId: seeded.db.membershipId,
+				plans: [{ op: "prefix", fieldPath: "frontmatter.title", value: "a".repeat(300_000) }],
+			}),
+		).toEqual(new Set());
 	});
 
 	test("every door answers somebody else's membership with its empty shape", async () => {
@@ -16162,11 +16130,12 @@ describe("search box doors", () => {
 		const member = await seed_grant_only_member({ t, db: seeded.db, suffix: "other" });
 
 		expect(
-			await seeded.asOwner.query(api.files_metadata.search_nodes, {
+			await seeded.asOwner.query(api.files_nodes.search_saved, {
 				membershipId: member.membershipId,
-				plans: statusOpenPlans,
+				clause: { kind: "metadata", plan: statusOpenPlans[0]! },
+				paginationOpts: { numItems: 50, cursor: null },
 			}),
-		).toEqual({ targets: [], truncated: false });
+		).toEqual({ page: [], isDone: true, continueCursor: "" });
 		expect(
 			await seeded.asOwner.query(api.files_metadata.list_search_fields, { membershipId: member.membershipId }),
 		).toEqual([]);
@@ -16179,7 +16148,7 @@ describe("search box doors", () => {
 		).toEqual([]);
 	});
 
-	test("search_nodes hides a restricted folder from a member until they are given it", async () => {
+	test("search_saved hides a restricted folder from a member until they are given it", async () => {
 		const t = test_convex();
 		const seeded = await seed_search_box_fixture(t);
 		const member = await seed_grant_only_member({ t, db: seeded.db, suffix: "search" });
@@ -16192,9 +16161,7 @@ describe("search box doors", () => {
 		if (restricted._nay) throw new Error(restricted._nay.message);
 
 		const searchAsMember = () =>
-			member.asMember
-				.query(api.files_metadata.search_nodes, { membershipId: member.membershipId, plans: statusOpenPlans })
-				.then((found) => new Set(found.targets.map((target) => target.id)));
+			search_saved_plans({ asWho: member.asMember, membershipId: member.membershipId, plans: statusOpenPlans });
 
 		// No role and no grant: the open archive file must not leak through a default
 		// workspace-wide read, and the restricted folder is not theirs either.
@@ -16211,13 +16178,13 @@ describe("search box doors", () => {
 
 		expect(await searchAsMember()).toEqual(new Set([seeded.openTaskId, seeded.fixedTaskId]));
 
-		const ownerFound = await seeded.asOwner.query(api.files_metadata.search_nodes, {
-			membershipId: seeded.db.membershipId,
-			plans: statusOpenPlans,
-		});
-		expect(new Set(ownerFound.targets.map((target) => target.id))).toEqual(
-			new Set([seeded.openTaskId, seeded.fixedTaskId, seeded.archivedTaskId]),
-		);
+		expect(
+			await search_saved_plans({
+				asWho: seeded.asOwner,
+				membershipId: seeded.db.membershipId,
+				plans: statusOpenPlans,
+			}),
+		).toEqual(new Set([seeded.openTaskId, seeded.fixedTaskId, seeded.archivedTaskId]));
 	});
 
 	test("folder maps follow read and write grants in every metadata door", async () => {
@@ -16254,8 +16221,7 @@ describe("search box doors", () => {
 				overlayUserId: member.userId,
 				path: "/tasks",
 			});
-		const search = () =>
-			member.asMember.query(api.files_metadata.search_nodes, { membershipId: member.membershipId, plans });
+		const search = () => search_saved_plans({ asWho: member.asMember, membershipId: member.membershipId, plans });
 		const fields = () =>
 			member.asMember.query(api.files_metadata.list_search_fields, { membershipId: member.membershipId });
 		const values = () =>
@@ -16281,7 +16247,7 @@ describe("search box doors", () => {
 			});
 		expect(await entries()).toEqual([]);
 		expect(await byPath()).toBeNull();
-		expect((await search()).targets).toEqual([]);
+		expect(await search()).toEqual(new Set());
 		expect(await fields()).toEqual([]);
 		expect(await values()).toEqual([]);
 		expect((await set())._nay).toBeDefined();
@@ -16303,7 +16269,7 @@ describe("search box doors", () => {
 			target: { kind: "saved", id: seeded.tasksFolderId },
 			fields: ["metadata.folder-secret"],
 		});
-		expect((await search()).targets).toEqual([{ kind: "saved", id: seeded.tasksFolderId }]);
+		expect(await search()).toEqual(new Set([seeded.tasksFolderId]));
 		expect(await fields()).toContainEqual({ fieldPath: "metadata.folder-secret", valueKinds: ["string"] });
 		expect(await values()).toEqual(["visible-with-grant"]);
 		expect((await set())._nay).toBeDefined();
@@ -16346,7 +16312,8 @@ describe("search box doors", () => {
 			{ fieldPath: "metadata.status", valueKinds: ["string"] },
 		]);
 
-		// A key that only exists in the owner's draft shows up for the owner.
+		// Suggestions are saved-only: a key that only exists in the owner's draft is not suggested, not
+		// even to the owner.
 		const pending = await upsert_pending_update_internal_for_test(t, {
 			organizationId: seeded.db.organizationId,
 			workspaceId: seeded.db.workspaceId,
@@ -16358,7 +16325,8 @@ describe("search box doors", () => {
 		const ownerFieldsWithDraft = await seeded.asOwner.query(api.files_metadata.list_search_fields, {
 			membershipId: seeded.db.membershipId,
 		});
-		expect(ownerFieldsWithDraft.map((field) => field.fieldPath)).toContain("frontmatter.draft-key");
+		expect(ownerFieldsWithDraft.map((field) => field.fieldPath)).not.toContain("frontmatter.draft-key");
+		expect(ownerFieldsWithDraft.map((field) => field.fieldPath)).toContain("frontmatter.regression");
 
 		// A member who was given `/tasks` sees its keys, not the archive's `legacy` and not the
 		// owner's draft key.
@@ -16390,6 +16358,84 @@ describe("search box doors", () => {
 		expect(memberKeys).toContain("metadata.status");
 		expect(memberKeys).not.toContain("frontmatter.legacy");
 		expect(memberKeys).not.toContain("frontmatter.draft-key");
+	});
+
+	test("list_search_fields stops early on many hidden keys instead of running out of reads", async () => {
+		const t = test_convex({ transactionLimits: true });
+		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asOwner = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const openId = await test_create_saved_text_file(t, { membershipId: db.membershipId, path: "/pub/open.md" });
+		await reset_file_write_rate_limits(t, db.userId);
+		const secretId = await test_create_saved_text_file(t, { membershipId: db.membershipId, path: "/hr/secret.md" });
+		for (const [fileNodeId, metadataYaml] of [
+			[openId, "a-open: v"],
+			[secretId, "k0: v"],
+		] as const) {
+			await reset_file_write_rate_limits(t, db.userId);
+			const written = await asOwner.mutation(api.files_metadata.set_entries, {
+				membershipId: db.membershipId,
+				fileNodeId,
+				metadataYaml,
+			});
+			if (written._nay) throw new Error(written._nay.message);
+		}
+		const secret = (await t.run((ctx) => ctx.db.get("files_nodes", secretId)))!;
+		const restricted = await asOwner.mutation(api.files_sharing.restrict_node, {
+			membershipId: db.membershipId,
+			nodeId: secret.parentId as Id<"files_nodes">,
+		});
+		if (restricted._nay) throw new Error(restricted._nay.message);
+
+		// 400 more files in the restricted folder, each with its own key, copied from the first one.
+		await t.run(async (ctx) => {
+			const docs = (await ctx.db.query("files_metadata_docs").collect()).flatMap((doc) =>
+				doc.sourceKind === "committed" && doc.fileNodeId === secretId && doc.fieldPath === "metadata.k0" ? [doc] : [],
+			);
+			// Read the node again: the restrict changed it.
+			const { _id, _creationTime, ...nodeFields } = (await ctx.db.get("files_nodes", secretId))!;
+			for (let index = 1; index <= 400; index++) {
+				const path = `/hr/secret-${index}.md`;
+				const cloneId = await ctx.db.insert("files_nodes", {
+					...nodeFields,
+					name: `secret-${index}.md`,
+					path,
+					treePath: path,
+				});
+				for (const { _id: _docId, _creationTime: _docCreationTime, ...docFields } of docs)
+					await ctx.db.insert("files_metadata_docs", {
+						...docFields,
+						fileNodeId: cloneId,
+						fieldPath: `metadata.k${index}`,
+						path,
+						treePath: path,
+					});
+			}
+		});
+
+		const member = await t.run(async (ctx) => {
+			const userId = await ctx.db.insert("users", { clerkUserId: "clerk_search_box_hidden_keys" });
+			const membershipId = await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId,
+				active: true,
+				updatedAt: Date.now(),
+			});
+			await access_control_db_ensure_role_assignment(ctx, {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId,
+				role: "member",
+				now: Date.now(),
+			});
+			return { userId, membershipId };
+		});
+		const asMember = t.withIdentity({ issuer: "https://clerk.test", external_id: member.userId });
+
+		// Each hidden key costs access checks. The walk stops on the read budget and returns the keys it
+		// found so far.
+		const fields = await asMember.query(api.files_metadata.list_search_fields, { membershipId: member.membershipId });
+		expect(fields.map((field) => field.fieldPath)).toEqual(["metadata.a-open"]);
 	});
 
 	test("archiving a folder drops its keys and values from the catalog", async () => {
@@ -16424,11 +16470,13 @@ describe("search box doors", () => {
 		expect(await keys()).not.toContain("frontmatter.legacy");
 		expect(await keys()).toContain("frontmatter.status");
 		expect(await legacyValues()).toEqual([]);
-		const found = await seeded.asOwner.query(api.files_metadata.search_nodes, {
-			membershipId: seeded.db.membershipId,
-			plans: statusOpenPlans,
-		});
-		expect(new Set(found.targets.map((target) => target.id))).toEqual(new Set([seeded.openTaskId, seeded.fixedTaskId]));
+		expect(
+			await search_saved_plans({
+				asWho: seeded.asOwner,
+				membershipId: seeded.db.membershipId,
+				plans: statusOpenPlans,
+			}),
+		).toEqual(new Set([seeded.openTaskId, seeded.fixedTaskId]));
 	});
 
 	test("the doors refuse a field or a prefix over the cap, with data a scan would answer", async () => {
@@ -16473,12 +16521,11 @@ describe("search box doors", () => {
 			.query(api.files_metadata.list_search_fields, { membershipId: seeded.db.membershipId })
 			.then((fields) => fields.map((field) => field.fieldPath));
 		const nodeIds = (fieldPath: string) =>
-			seeded.asOwner
-				.query(api.files_metadata.search_nodes, {
-					membershipId: seeded.db.membershipId,
-					plans: [{ op: "exists", fieldPath }],
-				})
-				.then((found) => found.targets.map((target) => target.id));
+			search_saved_plans({
+				asWho: seeded.asOwner,
+				membershipId: seeded.db.membershipId,
+				plans: [{ op: "exists", fieldPath }],
+			}).then((found) => [...found]);
 		const values = (fieldPath: string, prefix: string) =>
 			seeded.asOwner.query(api.files_metadata.list_search_values, {
 				membershipId: seeded.db.membershipId,
@@ -16496,8 +16543,6 @@ describe("search box doors", () => {
 		}
 		expect(await values("frontmatter.status", "o".repeat(200))).toEqual(["o".repeat(201)]);
 		expect(await values("frontmatter.status", "o".repeat(201))).toEqual([]);
-		// A path scope that does not start with `/`, or is over its cap, is refused too. Every stored
-		// tree path starts with `/`, so on real data that refusal and a scan give the same empty answer.
 	});
 
 	test("list_search_values lists distinct readable values that start with the prefix", async () => {
@@ -16629,66 +16674,7 @@ describe("search box doors", () => {
 		expect(fields).toHaveLength(200);
 	});
 
-	test("search_nodes cuts the candidates at a few hundred restricted folders", async () => {
-		const t = test_convex();
-		const seeded = await seed_search_box_fixture(t);
-		// 300 files, each one its own restricted folder root, all `status: capped`. The owner may read
-		// every one, but the readable-nodes filter pays per restricted folder, so the answer stops
-		// at the cap. Ten more files sit in the first file's folder and sort after the cut: the cap
-		// counts folders, not files, so they are all found.
-		await t.run(async (ctx) => {
-			const insertCappedFile = async (name: string, restrictedScopeNodeId: Id<"files_nodes"> | null) => {
-				const nodeId = await ctx.db.insert("files_nodes", {
-					...test_mocks.files.base(),
-					organizationId: seeded.db.organizationId,
-					workspaceId: seeded.db.workspaceId,
-					createdBy: seeded.db.userId,
-					updatedBy: seeded.db.userId,
-					parentId: files_ROOT_ID,
-					name,
-					kind: "file",
-					path: `/${name}`,
-					treePath: `/${name}`,
-					pathDepth: 1,
-					lowercaseExtension: "md",
-					updatedAt: 1,
-					contentType: "text/markdown;charset=utf-8",
-				});
-				await ctx.db.patch("files_nodes", nodeId, { restrictedScopeNodeId: restrictedScopeNodeId ?? nodeId });
-				await ctx.db.insert("files_metadata_docs", {
-					organizationId: seeded.db.organizationId,
-					workspaceId: seeded.db.workspaceId,
-					fileNodeId: nodeId,
-					sourceKind: "committed",
-					path: `/${name}`,
-					treePath: `/${name}`,
-					fieldPath: "frontmatter.status",
-					docKind: "value",
-					valueKind: "string",
-					stringValue: "capped",
-				});
-				return nodeId;
-			};
-
-			const firstScopeNodeId = await insertCappedFile("scope-000.md", null);
-			for (let index = 1; index < 300; index += 1) {
-				await insertCappedFile(`scope-${String(index).padStart(3, "0")}.md`, null);
-			}
-			for (let index = 0; index < 10; index += 1) {
-				await insertCappedFile(`z-shared-${String(index).padStart(3, "0")}.md`, firstScopeNodeId);
-			}
-		});
-
-		const found = await seeded.asOwner.query(api.files_metadata.search_nodes, {
-			membershipId: seeded.db.membershipId,
-			plans: [{ op: "eq", fieldPath: "frontmatter.status", value: "capped" }],
-		});
-		expect(found.truncated).toBe(true);
-		expect(found.targets.length).toBeGreaterThan(0);
-		expect(found.targets.length).toBeLessThan(310);
-	});
-
-	test("search_nodes hides another user's draft and keeps the committed value for them", async () => {
+	test("search_saved finds the saved value, never a draft, for the member and the author", async () => {
 		const t = test_convex();
 		const seeded = await seed_search_box_fixture(t);
 		const member = await seed_grant_only_member({ t, db: seeded.db, suffix: "draft" });
@@ -16719,9 +16705,7 @@ describe("search box doors", () => {
 		if (pending._nay) throw new Error(pending._nay.message);
 
 		const searchAsMember = (plans: files_metadata_SearchPlan[]) =>
-			member.asMember
-				.query(api.files_metadata.search_nodes, { membershipId: member.membershipId, plans })
-				.then((found) => new Set(found.targets.map((target) => target.id)));
+			search_saved_plans({ asWho: member.asMember, membershipId: member.membershipId, plans });
 		expect(await searchAsMember([{ op: "eq", fieldPath: "frontmatter.status", value: "triaging" }])).toEqual(new Set());
 		expect(await searchAsMember(statusOpenPlans)).toEqual(new Set([seeded.openTaskId, seeded.fixedTaskId]));
 		expect(
@@ -16732,14 +16716,14 @@ describe("search box doors", () => {
 			}),
 		).toEqual([]);
 
-		// The author sees the draft instead of the stale committed value.
-		const ownerOpen = await seeded.asOwner.query(api.files_metadata.search_nodes, {
-			membershipId: seeded.db.membershipId,
-			plans: statusOpenPlans,
-		});
-		expect(new Set(ownerOpen.targets.map((target) => target.id))).toEqual(
-			new Set([seeded.fixedTaskId, seeded.archivedTaskId]),
-		);
+		// The search box is saved-only, so the author finds the saved value too.
+		expect(
+			await search_saved_plans({
+				asWho: seeded.asOwner,
+				membershipId: seeded.db.membershipId,
+				plans: statusOpenPlans,
+			}),
+		).toEqual(new Set([seeded.openTaskId, seeded.fixedTaskId, seeded.archivedTaskId]));
 	});
 
 	test("a prefix finds a value whose next character is an emoji, like the catalog lists it", async () => {
@@ -16755,14 +16739,14 @@ describe("search box doors", () => {
 			markdown: ["---", "status: op😀", "---", "Body"].join("\n"),
 		});
 
-		const found = await seeded.asOwner.query(api.files_metadata.search_nodes, {
-			membershipId: seeded.db.membershipId,
-			plans: [{ op: "prefix", fieldPath: "frontmatter.status", value: "op" }],
-		});
 		// The archive's task is `open` too.
-		expect(new Set(found.targets.map((target) => target.id))).toEqual(
-			new Set([seeded.openTaskId, seeded.archivedTaskId, emojiTaskId]),
-		);
+		expect(
+			await search_saved_plans({
+				asWho: seeded.asOwner,
+				membershipId: seeded.db.membershipId,
+				plans: [{ op: "prefix", fieldPath: "frontmatter.status", value: "op" }],
+			}),
+		).toEqual(new Set([seeded.openTaskId, seeded.archivedTaskId, emojiTaskId]));
 		expect(
 			await seeded.asOwner.query(api.files_metadata.list_search_values, {
 				membershipId: seeded.db.membershipId,
@@ -16793,9 +16777,7 @@ describe("search box doors", () => {
 		if (restricted._nay) throw new Error(restricted._nay.message);
 
 		const search = () =>
-			member.asMember
-				.query(api.files_metadata.search_nodes, { membershipId: member.membershipId, plans: statusOpenPlans })
-				.then((found) => new Set(found.targets.map((target) => target.id)));
+			search_saved_plans({ asWho: member.asMember, membershipId: member.membershipId, plans: statusOpenPlans });
 		const keys = () =>
 			member.asMember
 				.query(api.files_metadata.list_search_fields, { membershipId: member.membershipId })
@@ -16830,7 +16812,7 @@ describe("search box doors", () => {
 		expect(await keys()).toContain("metadata.status");
 	});
 
-	test("list_search_values hides a committed value replaced by the owner's draft", async () => {
+	test("list_search_values keeps the saved value while the owner has a draft", async () => {
 		const t = test_convex();
 		const seeded = await seed_search_box_fixture(t);
 		const statusValues = (prefix: string) =>
@@ -16840,7 +16822,7 @@ describe("search box doors", () => {
 				prefix,
 			});
 
-		// Suggestions and search both read the owner's current draft.
+		// Suggestions and search rows are saved-only.
 		const pending = await upsert_pending_update_internal_for_test(t, {
 			organizationId: seeded.db.organizationId,
 			workspaceId: seeded.db.workspaceId,
@@ -16850,13 +16832,300 @@ describe("search box doors", () => {
 		});
 		if (pending._nay) throw new Error(pending._nay.message);
 
-		expect(await statusValues("f")).toEqual([]);
-		expect(await statusValues("t")).toEqual(["triaging"]);
-		const found = await seeded.asOwner.query(api.files_metadata.search_nodes, {
-			membershipId: seeded.db.membershipId,
-			plans: [{ op: "eq", fieldPath: "frontmatter.status", value: "fixed" }],
+		expect(await statusValues("f")).toEqual(["fixed"]);
+		expect(await statusValues("t")).toEqual([]);
+		expect(
+			await search_saved_plans({
+				asWho: seeded.asOwner,
+				membershipId: seeded.db.membershipId,
+				plans: [{ op: "eq", fieldPath: "frontmatter.status", value: "fixed" }],
+			}),
+		).toEqual(new Set([seeded.fixedTaskId]));
+	});
+
+	/**
+	 * One first page of `search_saved`, as node ids, or the problem message.
+	 */
+	async function search_saved_page(args: {
+		asWho: ReturnType<ReturnType<typeof test_convex>["withIdentity"]>;
+		membershipId: Id<"organizations_workspaces_users">;
+		clause: FunctionArgs<typeof api.files_nodes.search_saved>["clause"];
+		folderPath?: string;
+	}) {
+		const result = await args.asWho.query(api.files_nodes.search_saved, {
+			membershipId: args.membershipId,
+			clause: args.clause,
+			folderPath: args.folderPath,
+			paginationOpts: { numItems: 50, cursor: null },
 		});
-		expect(found.targets).toEqual([]);
+		return new Set(result.page.map((row) => (row.kind === "problem" ? row.message : row.nodeId)));
+	}
+
+	/**
+	 * `search_saved_page` for each plan of one chip, as one set: a chip with two plans is two calls.
+	 */
+	async function search_saved_plans(args: {
+		asWho: ReturnType<ReturnType<typeof test_convex>["withIdentity"]>;
+		membershipId: Id<"organizations_workspaces_users">;
+		plans: files_metadata_SearchPlan[];
+		folderPath?: string;
+	}) {
+		const pages = await Promise.all(
+			args.plans.map((plan) => search_saved_page({ ...args, clause: { kind: "metadata", plan } })),
+		);
+		return new Set(pages.flatMap((page) => [...page]));
+	}
+
+	test("search_saved reads metadata eq and exists inside a folder, prefix and range without one", async () => {
+		const t = test_convex();
+		const seeded = await seed_search_box_fixture(t);
+		const search = (plan: files_metadata_SearchPlan, folderPath?: string) =>
+			search_saved_page({
+				asWho: seeded.asOwner,
+				membershipId: seeded.db.membershipId,
+				clause: { kind: "metadata", plan },
+				folderPath,
+			});
+		const statusOpen = { op: "eq", fieldPath: "frontmatter.status", value: "open" } as const;
+
+		expect(await search(statusOpen)).toEqual(new Set([seeded.openTaskId, seeded.archivedTaskId]));
+		// `/tasks-archive` shares the prefix of `/tasks` but is not inside it.
+		expect(await search(statusOpen, "/tasks")).toEqual(new Set([seeded.openTaskId]));
+		expect(await search(statusOpen, "/tasks-archive")).toEqual(new Set([seeded.archivedTaskId]));
+		expect(await search({ op: "eq", fieldPath: "frontmatter.priority", value: 3 }, "/tasks")).toEqual(
+			new Set([seeded.openTaskId]),
+		);
+		expect(await search({ op: "exists", fieldPath: "frontmatter.legacy" }, "/tasks")).toEqual(new Set());
+		expect(await search({ op: "exists", fieldPath: "frontmatter.legacy" }, "/tasks-archive")).toEqual(
+			new Set([seeded.archivedTaskId]),
+		);
+		expect(await search({ op: "exists", fieldPath: "metadata.slack-message-id" })).toEqual(
+			new Set([seeded.fixedTaskId]),
+		);
+
+		expect(await search({ op: "prefix", fieldPath: "frontmatter.status", value: "op" })).toEqual(
+			new Set([seeded.openTaskId, seeded.archivedTaskId]),
+		);
+		expect(await search({ op: "range", fieldPath: "frontmatter.priority", valueKind: "number", gte: 2 })).toEqual(
+			new Set([seeded.openTaskId, seeded.fixedTaskId]),
+		);
+		// The box refuses `prefix` and `range` with a folder, so the door answers them with nothing.
+		expect(await search({ op: "prefix", fieldPath: "frontmatter.status", value: "op" }, "/tasks")).toEqual(new Set());
+		expect(
+			await search({ op: "range", fieldPath: "frontmatter.priority", valueKind: "number", gte: 2 }, "/tasks"),
+		).toEqual(new Set());
+		expect(await search({ op: "exists", fieldPath: "frontmatter.a..b" })).toEqual(new Set());
+
+		// A draft value is never found, and the saved value still is.
+		const pending = await upsert_pending_update_internal_for_test(t, {
+			organizationId: seeded.db.organizationId,
+			workspaceId: seeded.db.workspaceId,
+			userId: seeded.db.userId,
+			nodeId: seeded.openTaskId,
+			unstagedMarkdown: ["---", "status: triaging", "---", "Body draftword"].join("\n"),
+		});
+		if (pending._nay) throw new Error(pending._nay.message);
+		expect(await search({ op: "eq", fieldPath: "frontmatter.status", value: "triaging" })).toEqual(new Set());
+		expect(await search(statusOpen, "/tasks")).toEqual(new Set([seeded.openTaskId]));
+		expect(
+			await search_saved_page({
+				asWho: seeded.asOwner,
+				membershipId: seeded.db.membershipId,
+				clause: { kind: "content", text: "draftword" },
+			}),
+		).toEqual(new Set());
+	});
+
+	test("search_saved scopes names by the folder's stored ancestors", async () => {
+		const t = test_convex();
+		const seeded = await seed_search_box_fixture(t);
+		const reportId = await test_create_saved_text_file(t, {
+			membershipId: seeded.db.membershipId,
+			path: "/tasks/weekly-report.md",
+		});
+		const notesId = await test_create_saved_text_file(t, {
+			membershipId: seeded.db.membershipId,
+			path: "/tasks/inner/weekly-notes.md",
+		});
+		const oldId = await test_create_saved_text_file(t, {
+			membershipId: seeded.db.membershipId,
+			path: "/tasks-archive/weekly-old.md",
+		});
+		const rootId = await test_create_saved_text_file(t, {
+			membershipId: seeded.db.membershipId,
+			path: "/weekly-root.md",
+		});
+		// A draft the owner has not saved yet.
+		const draft = await t.mutation(internal.files_nodes.create_private_node_by_path, {
+			organizationId: seeded.db.organizationId,
+			workspaceId: seeded.db.workspaceId,
+			userId: seeded.db.userId,
+			path: "/tasks/weekly-draft.md",
+			kind: "file",
+		});
+		if (draft._nay) throw new Error(draft._nay.message);
+		const search = (text: string, folderPath?: string) =>
+			search_saved_page({
+				asWho: seeded.asOwner,
+				membershipId: seeded.db.membershipId,
+				clause: { kind: "name", text },
+				folderPath,
+			});
+
+		expect(await search("weekly")).toEqual(new Set([reportId, notesId, oldId, rootId]));
+		expect(await search("weekly", "/tasks")).toEqual(new Set([reportId, notesId]));
+		expect(await search("weekly", "/tasks/inner")).toEqual(new Set([notesId]));
+		expect(await search("weekly", "/tasks-archive")).toEqual(new Set([oldId]));
+		expect(await search("weekly", "/")).toEqual(new Set([reportId, notesId, oldId, rootId]));
+		const innerFolders = await search_saved_page({
+			asWho: seeded.asOwner,
+			membershipId: seeded.db.membershipId,
+			clause: { kind: "name", text: "inner", nodeKind: "folder" },
+		});
+		expect(innerFolders.size).toBe(1);
+		expect(
+			await search_saved_page({
+				asWho: seeded.asOwner,
+				membershipId: seeded.db.membershipId,
+				clause: { kind: "name", text: "inner", nodeKind: "file" },
+			}),
+		).toEqual(new Set());
+
+		// The folder must be a saved, active folder at exactly that path.
+		for (const folderPath of ["/missing", "/Tasks", "/tasks/weekly-report.md", "tasks"]) {
+			expect(await search("weekly", folderPath)).toEqual(new Set(["Folder not found"]));
+		}
+		// Contents have no folder scope in the box.
+		expect(
+			await search_saved_page({
+				asWho: seeded.asOwner,
+				membershipId: seeded.db.membershipId,
+				clause: { kind: "content", text: "Body" },
+				folderPath: "/tasks",
+			}),
+		).toEqual(new Set());
+	});
+
+	test("search_saved refuses a folder deeper than 12 levels", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const levels = Array.from({ length: 13 }, (_, index) => `l${index + 1}`);
+		const created = await t.mutation(internal.files_nodes.create_folder_node_by_path, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			path: `/${levels.join("/")}`,
+		});
+		if (created._nay) throw new Error(created._nay.message);
+		const twelve = `/${levels.slice(0, 12).join("/")}`;
+		const deepId = await test_create_saved_text_file(t, {
+			membershipId: db.membershipId,
+			path: `${twelve}/deep-note.md`,
+		});
+		const search = (folderPath: string) =>
+			search_saved_page({
+				asWho: asUser,
+				membershipId: db.membershipId,
+				clause: { kind: "name", text: "deep" },
+				folderPath,
+			});
+
+		expect(await search(twelve)).toEqual(new Set([deepId]));
+		expect(await search(`/${levels.join("/")}`)).toEqual(
+			new Set(["This folder is too deep to search inside. Search a folder higher up."]),
+		);
+	});
+
+	test("search_saved hides restricted rows and folders from a member", async () => {
+		const t = test_convex();
+		const seeded = await seed_search_box_fixture(t);
+		const member = await seed_grant_only_member({ t, db: seeded.db, suffix: "saved" });
+		await t.run(async (ctx) =>
+			access_control_db_ensure_role_assignment(ctx, {
+				organizationId: seeded.db.organizationId,
+				workspaceId: seeded.db.workspaceId,
+				userId: member.userId,
+				role: "member",
+				now: Date.now(),
+			}),
+		);
+		await reset_file_write_rate_limits(t, seeded.db.userId);
+		const restricted = await seeded.asOwner.mutation(api.files_sharing.restrict_node, {
+			membershipId: seeded.db.membershipId,
+			nodeId: seeded.tasksFolderId,
+		});
+		if (restricted._nay) throw new Error(restricted._nay.message);
+		const search = (
+			who: "owner" | "member",
+			clause: FunctionArgs<typeof api.files_nodes.search_saved>["clause"],
+			folderPath?: string,
+		) =>
+			search_saved_page({
+				asWho: who === "owner" ? seeded.asOwner : member.asMember,
+				membershipId: who === "owner" ? seeded.db.membershipId : member.membershipId,
+				clause,
+				folderPath,
+			});
+		const statusOpen = {
+			kind: "metadata",
+			plan: { op: "eq", fieldPath: "frontmatter.status", value: "open" },
+		} as const;
+		const allTasks = new Set([seeded.openTaskId, seeded.fixedTaskId, seeded.archivedTaskId]);
+
+		// Every task name starts with the year, so it is a word start of each one.
+		expect(await search("owner", { kind: "name", text: "2026" })).toEqual(allTasks);
+		expect(await search("member", { kind: "name", text: "2026" })).toEqual(new Set([seeded.archivedTaskId]));
+		expect(await search("owner", { kind: "content", text: "Body" })).toEqual(allTasks);
+		expect(await search("member", { kind: "content", text: "Body" })).toEqual(new Set([seeded.archivedTaskId]));
+		expect(await search("member", statusOpen)).toEqual(new Set([seeded.archivedTaskId]));
+		expect(await search("owner", statusOpen, "/tasks")).toEqual(new Set([seeded.openTaskId]));
+		// An unreadable folder answers like a missing one.
+		expect(await search("member", statusOpen, "/tasks")).toEqual(new Set(["Folder not found"]));
+		expect(await search("member", { kind: "name", text: "2026" }, "/tasks")).toEqual(new Set(["Folder not found"]));
+
+		// An exact path or a node id finds one readable, active row. Paths keep their case.
+		const openTaskPath = "/tasks/2026-09-04-raw-media.md";
+		expect(await search("owner", { kind: "path", path: openTaskPath })).toEqual(new Set([seeded.openTaskId]));
+		expect(await search("owner", { kind: "path", path: seeded.openTaskId })).toEqual(new Set([seeded.openTaskId]));
+		expect(await search("owner", { kind: "path", path: "/Tasks/2026-09-04-raw-media.md" })).toEqual(new Set());
+		expect(await search("owner", { kind: "path", path: "/tasks" })).toEqual(new Set([seeded.tasksFolderId]));
+		expect(await search("member", { kind: "path", path: openTaskPath })).toEqual(new Set());
+		expect(await search("member", { kind: "path", path: seeded.openTaskId })).toEqual(new Set());
+		expect(await search("member", { kind: "path", path: "/tasks-archive/2026-07-01-old.md" })).toEqual(
+			new Set([seeded.archivedTaskId]),
+		);
+
+		// Public links, inside a folder too. A member never sees the restricted file's link.
+		await t.run(async (ctx) => {
+			for (const nodeId of [seeded.openTaskId, seeded.archivedTaskId]) {
+				await ctx.db.insert("files_share_links", {
+					organizationId: seeded.db.organizationId,
+					workspaceId: seeded.db.workspaceId,
+					nodeId,
+					token: `token-${nodeId}`,
+					restrictedScopeNodeId: null,
+					ancestorNodeIds: [],
+					createdBy: seeded.db.userId,
+					createdAt: Date.now(),
+				});
+			}
+		});
+		expect(await search("owner", { kind: "link" })).toEqual(new Set([seeded.openTaskId, seeded.archivedTaskId]));
+		expect(await search("owner", { kind: "link" }, "/tasks")).toEqual(new Set([seeded.openTaskId]));
+		expect(await search("member", { kind: "link" })).toEqual(new Set([seeded.archivedTaskId]));
+
+		// An archived row is gone.
+		await reset_file_write_rate_limits(t, seeded.db.userId);
+		const archived = await seeded.asOwner.mutation(api.files_nodes.archive_nodes, {
+			membershipId: seeded.db.membershipId,
+			nodeIds: [seeded.archivedTaskId],
+		});
+		if (archived._nay) throw new Error(archived._nay.message);
+		expect(await search("owner", { kind: "path", path: seeded.archivedTaskId })).toEqual(new Set());
+		expect(await search("owner", { kind: "name", text: "2026" })).toEqual(
+			new Set([seeded.openTaskId, seeded.fixedTaskId]),
+		);
 	});
 });
 
@@ -17061,7 +17330,7 @@ test("text_search_files scopes pending hits to a path prefix without sibling-pre
 	}
 
 	const search = (pathPrefix: string | undefined) =>
-		asUser.query(internal.files_nodes.text_search_files, {
+		text_search_files_all_pages(asUser, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId: db.userId,
@@ -17111,7 +17380,7 @@ test("text_search_files drops pending hits for archived files", async () => {
 	if (pending._nay) throw new Error(pending._nay.message);
 
 	const search = () =>
-		asUser.query(internal.files_nodes.text_search_files, {
+		text_search_files_all_pages(asUser, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId: db.userId,
@@ -17207,7 +17476,7 @@ test("text_search_files updates unified search scope when files are renamed and 
 	if (pendingMove._nay) throw new Error(pendingMove._nay.message);
 
 	const search = (query: string, pathPrefix?: string) =>
-		asUser.query(internal.files_nodes.text_search_files, {
+		text_search_files_all_pages(asUser, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId: db.userId,
@@ -17259,7 +17528,7 @@ test("text_search_files updates unified committed search scope when files are ar
 	});
 
 	const search = (query: string) =>
-		asUser.query(internal.files_nodes.text_search_files, {
+		text_search_files_all_pages(asUser, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId: db.userId,
@@ -17387,7 +17656,7 @@ test("text_search_files paginates unified pending and committed chunks with the 
 	});
 });
 
-test("search_content groups readable matches per file for the calling member", async () => {
+test("search_saved finds each saved file once by its content, with its best chunk", async () => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 	await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
@@ -17400,7 +17669,7 @@ test("search_content groups readable matches per file for the calling member", a
 	test_setup_r2_capture();
 
 	// The second file is long enough to split into two committed chunks with the needle in both,
-	// so the per-file grouping has something to count.
+	// so the one-row-per-file rule has something to merge.
 	const filler = "lorem ipsum dolor sit amet ".repeat(60);
 	const singleChunkNodeId = await test_materialize_markdown_file({
 		t,
@@ -17417,38 +17686,24 @@ test("search_content groups readable matches per file for the calling member", a
 		markdown: `# Double\n\nFirst palneedle here.\n\n${filler}\n\nSecond palneedle here.`,
 	});
 
-	const found = await asUser.query(api.files_nodes.search_content, {
-		membershipId: db.membershipId,
-		query: "palneedle",
-	});
-	const resultsByPath = new Map(found.results.map((result) => [result.path, result]));
-	expect([...resultsByPath.keys()].sort()).toEqual(["/palette-double.md", "/palette-single.md"]);
-	expect(resultsByPath.get("/palette-single.md")).toMatchObject({
-		target: { kind: "saved", id: singleChunkNodeId },
-		matchCount: 1,
-	});
-	expect(resultsByPath.get("/palette-double.md")).toMatchObject({
-		target: { kind: "saved", id: doubleChunkNodeId },
-		matchCount: 2,
-	});
-	expect(resultsByPath.get("/palette-single.md")!.textChunk).toContain("palneedle");
+	const search = async (text: string) =>
+		(
+			await asUser.query(api.files_nodes.search_saved, {
+				membershipId: db.membershipId,
+				clause: { kind: "content", text },
+				paginationOpts: { numItems: 50, cursor: null },
+			})
+		).page;
+	const found = await search("palneedle");
+	expect(found).toHaveLength(2);
+	const resultsByPath = new Map(found.map((row) => [row.kind === "problem" ? row.message : row.path, row]));
+	expect(resultsByPath.get("/palette-single.md")).toMatchObject({ nodeId: singleChunkNodeId });
+	expect(resultsByPath.get("/palette-double.md")).toMatchObject({ nodeId: doubleChunkNodeId });
+	expect(resultsByPath.get("/palette-single.md")).toMatchObject({ textChunk: expect.stringContaining("palneedle") });
 
-	const scoped = await asUser.query(api.files_nodes.search_content, {
-		membershipId: db.membershipId,
-		query: "palneedle",
-		targets: [{ kind: "saved", id: doubleChunkNodeId }],
-	});
-	expect(scoped.results.map((result) => result.target)).toEqual([{ kind: "saved", id: doubleChunkNodeId }]);
-	expect(scoped.results[0]?.matchCount).toBe(2);
-	const emptyScope = await asUser.query(api.files_nodes.search_content, {
-		membershipId: db.membershipId,
-		query: "palneedle",
-		targets: [],
-	});
-	expect(emptyScope.results).toEqual([]);
-
-	// A full page contains only the selected file, even when other files match the text.
-	const scopedPage = await asUser.query(internal.files_nodes.text_search_files, {
+	// The agent's text search: a full page contains only the selected file, even when other files
+	// match the text.
+	const scopedPage = await text_search_files_all_pages(asUser, {
 		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
 		userId: db.userId,
@@ -17463,22 +17718,18 @@ test("search_content groups readable matches per file for the calling member", a
 		{ kind: "saved", id: doubleChunkNodeId },
 	]);
 
-	// Bounds: a 1-character query (after trim) and an over-200-character query return empty
-	// without touching the search index.
-	const tooShort = await asUser.query(api.files_nodes.search_content, {
-		membershipId: db.membershipId,
-		query: " p ",
-	});
-	expect(tooShort.results).toEqual([]);
-	const tooLong = await asUser.query(api.files_nodes.search_content, {
-		membershipId: db.membershipId,
-		query: `palneedle ${"x".repeat(200)}`,
-	});
-	expect(tooLong.results).toEqual([]);
+	// Bounds: a blank query and an over-200-character query return empty without touching the
+	// search index.
+	expect(await search("  ")).toEqual([]);
+	expect(await search(`palneedle ${"x".repeat(200)}`)).toEqual([]);
 
 	// No identity is the only hard refusal.
 	await expect(
-		t.query(api.files_nodes.search_content, { membershipId: db.membershipId, query: "palneedle" }),
+		t.query(api.files_nodes.search_saved, {
+			membershipId: db.membershipId,
+			clause: { kind: "content", text: "palneedle" },
+			paginationOpts: { numItems: 50, cursor: null },
+		}),
 	).rejects.toThrow(/Unauthenticated/);
 });
 

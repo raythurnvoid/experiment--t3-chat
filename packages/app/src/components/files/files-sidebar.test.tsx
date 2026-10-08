@@ -19,7 +19,7 @@ import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { files_tree_stream_args } from "@/lib/files-tree-context.tsx";
 import { global_custom_event_dispatch } from "@/lib/global-event.tsx";
 
-const { treeState, tenantState, linkState, createNode, queryCalls } = vi.hoisted(() => ({
+const { treeState, tenantState, linkState, savedState, createNode, queryCalls } = vi.hoisted(() => ({
 	// `sharedRoots` holds the rows of the "Shared with you" group, `sharedRootsStatus` its pager status.
 	// `sharedListeners` re-render the group after a change.
 	treeState: {
@@ -34,11 +34,16 @@ const { treeState, tenantState, linkState, createNode, queryCalls } = vi.hoisted
 	// every component that called it. A parent rerender alone does not, because the React Compiler
 	// keeps its output when props are unchanged.
 	tenantState: { membershipId: "membership", listeners: new Set<() => void>() },
-	// The workspace list of public links. `undefined` is loading, `null` is refused. `results` is what
-	// the search chips read through `useQueries`; it is a new object only when the list changes.
+	// The workspace list of public links. `undefined` is loading, `null` is refused.
 	linkState: {
 		links: [] as unknown,
-		results: { links: [] } as Record<string, unknown>,
+		listeners: new Set<() => void>(),
+	},
+	// The `search_saved` answers by clause. `undefined` keeps the first page loading, and a clause with
+	// no answer is empty and done. `revision` changes with every answer, to re-render the search.
+	savedState: {
+		answers: new Map<string, { rows: unknown[]; isDone: boolean } | undefined>(),
+		revision: 0,
 		listeners: new Set<() => void>(),
 	},
 	createNode: vi.fn(),
@@ -48,8 +53,17 @@ const { treeState, tenantState, linkState, createNode, queryCalls } = vi.hoisted
 
 function set_links(links: unknown) {
 	linkState.links = links;
-	linkState.results = { links };
 	for (const listener of linkState.listeners) listener();
+}
+
+function set_saved(clause: unknown, answer: { rows: unknown[]; isDone: boolean } | undefined) {
+	savedState.answers.set(JSON.stringify(clause), answer);
+	savedState.revision++;
+	for (const listener of savedState.listeners) listener();
+}
+
+function saved_row(path: string, kind: "file" | "folder" = "file") {
+	return { kind, nodeId: path.slice(path.lastIndexOf("/") + 1), path };
 }
 
 function link(nodeId: string) {
@@ -65,6 +79,12 @@ vi.mock("convex/react", async (importOriginal) => {
 		linkState.listeners.add(listener);
 		return () => {
 			linkState.listeners.delete(listener);
+		};
+	};
+	const subscribeSaved = (listener: () => void) => {
+		savedState.listeners.add(listener);
+		return () => {
+			savedState.listeners.delete(listener);
 		};
 	};
 	return {
@@ -84,11 +104,25 @@ vi.mock("convex/react", async (importOriginal) => {
 			if (getFunctionName(query) === "files_share_links:list_workspace_links") return links;
 			return getFunctionName(query) === "access_control:get_current_user_workspace_permission" ? true : [];
 		},
-		useQueries: (queries: Record<string, unknown>) => {
-			const linkResults = useSyncExternalStore(subscribeLinks, () => linkState.results);
-			return "links" in queries ? linkResults : queryResults;
+		useQueries: () => queryResults,
+		usePaginatedQuery: (query: FunctionReference<"query">, args: { clause?: unknown } | "skip") => {
+			useSyncExternalStore(subscribeSaved, () => savedState.revision);
+			if (args === "skip") return { results: [], status: "LoadingFirstPage", isLoading: true, loadMore: () => {} };
+			if (getFunctionName(query) === "files_nodes:search_saved") {
+				const key = JSON.stringify(args.clause);
+				const answer = savedState.answers.has(key) ? savedState.answers.get(key) : { rows: [], isDone: true };
+				if (answer === undefined) {
+					return { results: [], status: "LoadingFirstPage", isLoading: true, loadMore: () => {} };
+				}
+				return {
+					results: answer.rows,
+					status: answer.isDone ? "Exhausted" : "CanLoadMore",
+					isLoading: false,
+					loadMore: () => {},
+				};
+			}
+			return { results: [], status: "Exhausted", isLoading: false, loadMore: () => {} };
 		},
-		usePaginatedQuery: () => ({ results: [], status: "Exhausted", isLoading: false, loadMore: () => {} }),
 	};
 });
 
@@ -157,10 +191,6 @@ vi.mock("@/lib/files-tree-context.tsx", async (importOriginal) => {
 	return {
 		files_tree_stream_args,
 		FilesTreeProvider: {
-			useFullList: function useFullList(enabled: boolean) {
-				const nodes = useTreeNodes();
-				return enabled ? nodes : undefined;
-			},
 			// Serve every fixture row as loaded. A row whose parent is not in the fixture is pinned under a
 			// hidden folder, so the store would show it at the top.
 			useFolders: function useFolders() {
@@ -190,6 +220,7 @@ beforeEach(() => {
 	queryCalls.length = 0;
 	tenantState.membershipId = "membership";
 	set_links([]);
+	savedState.answers.clear();
 	treeState.sharedRoots = [];
 	treeState.sharedRootsStatus = "done";
 	treeState.loadMoreShared.mockReset();
@@ -220,6 +251,7 @@ afterEach(() => {
 	treeState.sharedListeners.clear();
 	tenantState.listeners.clear();
 	linkState.listeners.clear();
+	savedState.listeners.clear();
 });
 
 describe("FilesSidebar", () => {
@@ -1046,25 +1078,6 @@ describe("FilesSidebar", () => {
 				() => expect(view.getByRole("treeitem", { name: "echo" }).hasAttribute("data-focused")).toBe(true),
 				{ timeout: 5_000 },
 			);
-			const searchInput = view.getByRole("combobox");
-			act(() => searchInput.focus());
-			fireEvent.change(searchInput, { target: { value: "bravo" } });
-			await waitFor(
-				() => {
-					expect(view.queryAllByRole("treeitem")).toHaveLength(1);
-					expect(view.getByRole("treeitem", { name: "bravo" }).hasAttribute("data-focused")).toBe(true);
-				},
-				{ timeout: 5_000 },
-			);
-			fireEvent.click(view.getByRole("button", { name: "Clear search" }));
-			await waitFor(
-				() => {
-					expect(view.queryAllByRole("treeitem")).toHaveLength(5);
-					expect(view.getByRole("treeitem", { name: "bravo" }).hasAttribute("data-focused")).toBe(true);
-				},
-				{ timeout: 5_000 },
-			);
-
 			view.rerender(<TestSidebar selectedNodeId="delta" />);
 			await waitFor(
 				() => expect(view.getByRole("treeitem", { name: "delta" }).hasAttribute("data-focused")).toBe(true),
@@ -1078,14 +1091,6 @@ describe("FilesSidebar", () => {
 				() => {
 					expect(view.queryByRole("treeitem", { name: "delta" })).toBeNull();
 					expect(view.getByRole("treeitem", { name: "alpha" }).hasAttribute("data-focused")).toBe(true);
-				},
-				{ timeout: 5_000 },
-			);
-			fireEvent.change(searchInput, { target: { value: "charlie" } });
-			await waitFor(
-				() => {
-					expect(view.queryAllByRole("treeitem")).toHaveLength(1);
-					expect(view.getByRole("treeitem", { name: "charlie" }).hasAttribute("data-focused")).toBe(true);
 				},
 				{ timeout: 5_000 },
 			);
@@ -1313,10 +1318,12 @@ describe("FilesSidebar", () => {
 		const alpha = await view.findByRole("treeitem", { name: "alpha" });
 		expect(alpha.getAttribute("aria-expanded")).toBe("false");
 
+		set_saved({ kind: "name", text: "charlie" }, { rows: [saved_row("/charlie", "folder")], isDone: true });
 		const searchInput = view.getByRole("combobox");
 		act(() => searchInput.focus());
 		fireEvent.change(searchInput, { target: { value: "charlie" } });
-		await waitFor(() => expect(view.queryAllByRole("treeitem")).toHaveLength(1), { timeout: 5_000 });
+		await view.findByRole("button", { name: "charlie in /" }, { timeout: 5_000 });
+		expect(view.queryAllByRole("treeitem")).toHaveLength(0);
 
 		act(() =>
 			global_custom_event_dispatch("files::reveal_node", {
@@ -1381,7 +1388,7 @@ describe("FilesSidebar", () => {
 		expect(view.getByRole("treeitem", { name: "bravo" }).hasAttribute("data-file-public-link")).toBe(false);
 	});
 
-	test("file.link:public finds a public file in a closed folder, and Enter waits for the link list", async () => {
+	test("file.link:public lists a public file with its folder, and Enter waits for the list", async () => {
 		treeState.nodes = treeState.nodes.map((node) =>
 			node._id === "bravo"
 				? {
@@ -1396,28 +1403,106 @@ describe("FilesSidebar", () => {
 					? { ...node, kind: "file" }
 					: node,
 		);
-		set_links(undefined);
+		set_saved({ kind: "link" }, undefined);
 		const handlePrimaryAction = vi.fn();
 		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
 		const view = render(<CreateSidebar router={router} selectedNodeId="delta" onPrimaryAction={handlePrimaryAction} />);
 		expect((await view.findByRole("treeitem", { name: "alpha" })).getAttribute("aria-expanded")).toBe("false");
 
-		// Enter right away cannot open anything while the link list is loading. The first Enter turns the
-		// typed filter into a chip, and the second one has to wait.
+		// The first Enter turns the typed filter into a chip. Enter cannot open anything while the list
+		// loads its first page.
 		const searchInput = view.getByRole("combobox");
 		act(() => searchInput.focus());
 		fireEvent.change(searchInput, { target: { value: "file.link:public" } });
 		fireEvent.keyDown(searchInput, { key: "Enter", code: "Enter" });
+		const results = await view.findByRole("region", { name: "Search results" }, { timeout: 5_000 });
+		await within(results).findByText("Searching…");
+		expect(view.queryByText(/Still searching/)).toBeNull();
 		fireEvent.keyDown(searchInput, { key: "Enter", code: "Enter" });
 		expect(handlePrimaryAction).not.toHaveBeenCalled();
 		expect(view.getByText(/Still searching/)).toBeTruthy();
 
-		act(() => set_links([link("bravo")]));
-		await waitFor(() => expect(view.queryByRole("treeitem", { name: "bravo, public link" })).not.toBeNull(), {
-			timeout: 5_000,
-		});
-		expect(view.queryByRole("treeitem", { name: "charlie" })).toBeNull();
+		act(() => set_saved({ kind: "link" }, { rows: [saved_row("/alpha/bravo")], isDone: true }));
+		const row = await within(results).findByRole("button", { name: "bravo in /alpha" });
+		expect(row.textContent).toBe("bravo/alpha");
+		expect(view.getAllByText("1 match").length).toBeGreaterThan(0);
+		// One finished match opens with Enter.
 		fireEvent.keyDown(searchInput, { key: "Enter", code: "Enter" });
 		expect(handlePrimaryAction).toHaveBeenCalledWith("bravo", "file");
+		fireEvent.click(row);
+		expect(handlePrimaryAction).toHaveBeenCalledTimes(2);
+	});
+
+	test("Enter right after typing waits for the search of the typed text", async () => {
+		set_saved({ kind: "name", text: "bravo" }, { rows: [saved_row("/bravo", "folder")], isDone: true });
+		const handlePrimaryAction = vi.fn();
+		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
+		const view = render(<CreateSidebar router={router} selectedNodeId="delta" onPrimaryAction={handlePrimaryAction} />);
+		await view.findByRole("treeitem", { name: "alpha" });
+
+		const searchInput = view.getByRole("combobox");
+		fireEvent.change(searchInput, { target: { value: "bravo" } });
+		fireEvent.keyDown(searchInput, { key: "Enter", code: "Enter" });
+		expect(handlePrimaryAction).not.toHaveBeenCalled();
+		expect(view.getByText(/Still searching/)).toBeTruthy();
+
+		await view.findByRole("button", { name: "bravo in /" }, { timeout: 5_000 });
+		fireEvent.keyDown(searchInput, { key: "Enter", code: "Enter" });
+		expect(handlePrimaryAction).toHaveBeenCalledWith("bravo", "folder");
+	});
+
+	test("the search list counts its loaded matches and keeps the row menu", async () => {
+		set_saved(
+			{ kind: "name", text: "notes" },
+			{ rows: [saved_row("/a/notes.md"), saved_row("/b/notes-2.md")], isDone: false },
+		);
+		const handlePrimaryAction = vi.fn();
+		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
+		const view = render(<CreateSidebar router={router} selectedNodeId="delta" onPrimaryAction={handlePrimaryAction} />);
+		await view.findByRole("treeitem", { name: "alpha" });
+
+		const searchInput = view.getByRole("combobox");
+		fireEvent.change(searchInput, { target: { value: "notes" } });
+		const results = await view.findByRole("region", { name: "Search results" }, { timeout: 5_000 });
+		// The status line and its screen reader copy both read the count.
+		expect((await view.findAllByText("2+ matches")).length).toBeGreaterThan(0);
+		expect(within(results).getByRole("button", { name: "Show more" })).toBeTruthy();
+		// More pages can load, so Enter opens nothing.
+		fireEvent.keyDown(searchInput, { key: "Enter", code: "Enter" });
+		expect(handlePrimaryAction).not.toHaveBeenCalled();
+
+		fireEvent.contextMenu(within(results).getByRole("button", { name: "notes-2.md in /b" }));
+		expect(await view.findByRole("menuitem", { name: "Properties" })).toBeTruthy();
+		expect(view.getByRole("menuitem", { name: "Rename" }).getAttribute("aria-disabled")).toBe("true");
+	});
+
+	test("while archived items show, the search says it lists active items only", async () => {
+		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
+		const view = render(<CreateSidebar router={router} selectedNodeId="delta" />);
+		await view.findByRole("treeitem", { name: "alpha" });
+		fireEvent.click(view.getByRole("button", { name: "More options" }));
+		fireEvent.click(await view.findByRole("menuitemcheckbox", { name: "Show archived items" }));
+
+		fireEvent.change(view.getByRole("combobox"), { target: { value: "notes" } });
+		const results = await view.findByRole("region", { name: "Search results" }, { timeout: 5_000 });
+		expect(within(results).getByText("Search shows active items only.")).toBeTruthy();
+		expect(within(results).getByText("No files match your search.")).toBeTruthy();
+	});
+
+	test("a date in a folder says it matches only the same text", async () => {
+		set_saved(
+			{ kind: "metadata", plan: { op: "eq", fieldPath: "metadata.due", value: "2026-09-04" } },
+			{ rows: [saved_row("/docs/a.md")], isDone: true },
+		);
+		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
+		const view = render(<CreateSidebar router={router} selectedNodeId="delta" />);
+		await view.findByRole("treeitem", { name: "alpha" });
+
+		const searchInput = view.getByRole("combobox");
+		fireEvent.change(searchInput, { target: { value: "file.path:/docs metadata.due:2026-09-04" } });
+		fireEvent.keyDown(searchInput, { key: "Enter", code: "Enter" });
+		const results = await view.findByRole("region", { name: "Search results" }, { timeout: 5_000 });
+		expect(await within(results).findByRole("button", { name: "a.md in /docs" })).toBeTruthy();
+		expect(within(results).getByText("In a folder, a date matches only values written the same way.")).toBeTruthy();
 	});
 });

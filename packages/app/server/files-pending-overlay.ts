@@ -2,8 +2,8 @@
 // draft views can page them with indexes. Only the flush below, its jobs
 // (`convex/files_pending_overlay.ts`) and data deletion write them.
 //
-// Saved rows only: UI lists never show drafts. Drafts show in the Pending tab, the draft folder
-// view and to the agent (files-explorer-tree skill, "Saved-only lists").
+// The UI lists and the search box are saved-only. Only the agent's bash tools, the Pending tab and
+// the draft folder view read the user's drafts (files-explorer-tree skill, "Saved-only lists").
 //
 // Every mutation captures its writes to the source tables with `files_pending_overlay_db_wrap`
 // and flushes once at the end (`convex/functions.ts`). The flush recomputes derived docs from the
@@ -20,8 +20,8 @@ import type { TransactionMetrics, WithoutSystemFields } from "convex/server";
 import { internal } from "../convex/_generated/api.js";
 import type { Doc, Id, TableNames } from "../convex/_generated/dataModel.js";
 import type { ActionCtx, MutationCtx, QueryCtx } from "../convex/_generated/server.js";
-import type { files_visible_stream_Result } from "../convex/files_visible.ts";
-import type { ai_chat_workspaces_source_validator } from "../convex/schema.ts";
+import type { files_visible_search_name_Result, files_visible_stream_Result } from "../convex/files_visible.ts";
+import type { ai_chat_workspaces_source_validator, files_metadata_search_plan_validator } from "../convex/schema.ts";
 import {
 	files_ANCESTOR_FIELD_COUNT,
 	files_ancestor_fields,
@@ -29,6 +29,7 @@ import {
 	files_derive_tree_path_for_file_node,
 	files_is_ancestor_field,
 	files_lowercase_extension,
+	files_TEXT_SEARCH_MAX_RESULTS,
 	type files_PendingParent,
 	type files_PendingTarget,
 } from "../shared/files.ts";
@@ -41,7 +42,7 @@ import {
 	files_share_rows_NODE_FIELDS,
 } from "./files-share-rows.ts";
 import { files_visible_resolve_db_create } from "./files-visible-resolve.ts";
-import { path_tree_prefix_upper_bound } from "./server-utils.ts";
+import { path_tree_prefix_upper_bound, server_path_normalize } from "./server-utils.ts";
 
 /**
  * Tables the flush recomputes from. A write to one of them marks derived docs dirty. A grant write
@@ -1785,7 +1786,7 @@ const list_cursor_schema = z.object({
 	streams: z
 		.array(
 			z.object({
-				kind: z.enum(["saved", "places", "moved_in", "nested"]),
+				kind: z.enum(["saved", "places", "moved_in", "nested", "pending"]),
 				movedIn: z.object({ savedNodeId: z.string(), ownerTreePath: z.string() }).nullable(),
 				numItems: z.number().int().positive(),
 				position: z.object({
@@ -1799,13 +1800,23 @@ const list_cursor_schema = z.object({
 });
 
 /**
- * One page of an agent listing: the children of a folder, the subtree under it (path order), or the
- * whole workspace by update time (`ls -t` with no path).
+ * The `movedIn` arg of a nested stream's query. Other streams pass none.
+ */
+function moved_in_args(movedIn: { savedNodeId: string; ownerTreePath: string } | null) {
+	return movedIn
+		? { movedIn: { savedNodeId: movedIn.savedNodeId as Id<"files_nodes">, ownerTreePath: movedIn.ownerTreePath } }
+		: {};
+}
+
+/**
+ * One page of an agent listing: the children of a folder, the subtree under it (path order), the
+ * whole workspace by update time (`ls -t` with no path), or the metadata rows one `meta search` plan
+ * matches under it.
  *
  * Merges the saved stream, the user's place stream and, in a subtree, one saved stream per folder the
  * user moved in by a draft. A row shows only when every open stream has read past its key; ties go by
- * stream order. Used by `ls`, `find`, `tree`, the skills catalog and transfer discovery, so it takes
- * any ctx that can run a query.
+ * stream order. Used by `ls`, `find`, `tree`, `meta search`, the skills catalog and transfer
+ * discovery, so it takes any ctx that can run a query.
  *
  * Nested queries share the caller's transaction. When the caller is a query or a mutation, the merge
  * starts no stream call past the read budget and returns a short page with a cursor instead.
@@ -1821,11 +1832,15 @@ export async function files_pending_overlay_list(
 		overlayUserId?: Id<"users">;
 		requireComplete?: boolean;
 		folderPath: string;
-		mode: "children" | "subtree" | "recent";
+		mode: "children" | "subtree" | "recent" | "metadata";
 		/**
 		 * Children only. Recent listings are always by update time.
 		 */
 		orderBy?: "name" | "updatedAt";
+		/**
+		 * Metadata only.
+		 */
+		plan?: Infer<typeof files_metadata_search_plan_validator>;
 		order: "asc" | "desc";
 		kind?: "file" | "folder";
 		lowercaseExtension?: string;
@@ -1869,8 +1884,12 @@ export async function files_pending_overlay_list(
 		args.kind,
 		args.lowercaseExtension,
 		args.requireComplete,
+		args.plan,
 	]);
 	const pageSize = Math.max(1, Math.floor(args.numItems));
+	const plan = args.plan;
+	if (args.mode === "metadata" && !plan)
+		throw should_never_happen("Metadata listings need a plan", { folderPath: args.folderPath });
 
 	type CursorStream = z.infer<typeof list_cursor_schema>["streams"][number];
 	type Row = NonNullable<files_visible_stream_Result["_yay"]>["rows"][number];
@@ -1891,9 +1910,19 @@ export async function files_pending_overlay_list(
 		cursorStreams = [
 			{ kind: "saved", movedIn: null, numItems: pageSize, position: start },
 			...(overlay ? [{ kind: "places" as const, movedIn: null, numItems: pageSize, position: start }] : []),
-			// A filter that leaves folders out does not meet moved-in folders in the place stream.
-			...(overlay && args.mode === "subtree" && (args.kind === "file" || args.lowercaseExtension !== undefined)
+			// A filter that leaves folders out does not meet moved-in folders in the place stream. Metadata
+			// `exists` and `eq` read the folder's range, so they need them too; with no folder, and for
+			// `prefix` and `range`, the saved stream reads the whole workspace and meets their rows.
+			...(overlay &&
+			((args.mode === "subtree" && (args.kind === "file" || args.lowercaseExtension !== undefined)) ||
+				(args.mode === "metadata" &&
+					(plan?.op === "exists" || plan?.op === "eq") &&
+					server_path_normalize(args.folderPath) !== "/"))
 				? [{ kind: "moved_in" as const, movedIn: null, numItems: pageSize, position: start }]
+				: []),
+			// The frontmatter of the user's text drafts of saved files.
+			...(overlay && args.mode === "metadata"
+				? [{ kind: "pending" as const, movedIn: null, numItems: pageSize, position: start }]
 				: []),
 		];
 	} else {
@@ -1920,6 +1949,22 @@ export async function files_pending_overlay_list(
 	const run = (stream: Stream) => {
 		const common = { ...streamArgs, numItems: stream.numItems, position: stream.position };
 		const orderBy = args.orderBy ?? "name";
+		const movedIn = moved_in_args(stream.movedIn);
+		if (args.mode === "metadata") {
+			const metadataArgs = { ...common, plan: plan! };
+			return (
+				stream.kind === "places"
+					? ctx.runQuery(internal.files_visible.internal_search_metadata_places, metadataArgs)
+					: stream.kind === "pending"
+						? ctx.runQuery(internal.files_visible.internal_search_metadata_pending, metadataArgs)
+						: stream.kind === "moved_in"
+							? ctx.runQuery(internal.files_visible.internal_list_subtree_moved_in_folders, {
+									...common,
+									outsideOnly: true,
+								})
+							: ctx.runQuery(internal.files_visible.internal_search_metadata_saved, { ...metadataArgs, ...movedIn })
+			) as Promise<files_visible_stream_Result>;
+		}
 		const query =
 			args.mode === "recent"
 				? stream.kind === "saved"
@@ -1947,14 +1992,7 @@ export async function files_pending_overlay_list(
 									...common,
 									...filter,
 									order,
-									...(stream.movedIn
-										? {
-												movedIn: {
-													savedNodeId: stream.movedIn.savedNodeId as Id<"files_nodes">,
-													ownerTreePath: stream.movedIn.ownerTreePath,
-												},
-											}
-										: {}),
+									...movedIn,
 								});
 		return query as Promise<files_visible_stream_Result>;
 	};
@@ -1962,7 +2000,8 @@ export async function files_pending_overlay_list(
 	const sign = order === "asc" ? 1 : -1;
 	const compare = (a: Value[], b: Value[]) => sign * compareValues(a, b);
 
-	const items: NonNullable<Row["item"]>[] = [];
+	// A metadata row also says which value it matched.
+	const items: Array<NonNullable<Row["item"]> & { match?: Row["match"] }> = [];
 	const seen = new Set<string>();
 	let rounds = 0;
 	let progressed = false;
@@ -2042,7 +2081,7 @@ export async function files_pending_overlay_list(
 		// Two calls read different snapshots, so a moved row can come from two streams.
 		if (row.item && !seen.has(row.item.target.id)) {
 			seen.add(row.item.target.id);
-			items.push(row.item);
+			items.push(row.match ? { ...row.item, match: row.match } : row.item);
 		}
 	}
 
@@ -2064,6 +2103,193 @@ export async function files_pending_overlay_list(
 							})),
 						} satisfies z.infer<typeof list_cursor_schema>),
 			isDone: left.length === 0,
+		},
+	});
+}
+
+/**
+ * The query calls of one `find -name` page. A call that runs out returns a short page with a cursor.
+ */
+const SEARCH_NAME_MAX_CALLS = 40;
+
+/**
+ * The moved-in folder searches one `find -name` page opens. The rest wait in the cursor.
+ */
+const SEARCH_NAME_MAX_NESTED = 20;
+
+const search_name_cursor_schema = z.object({
+	scope: z.string(),
+	streams: z
+		.array(
+			z.object({
+				kind: z.enum(["saved", "moved_in", "nested", "places"]),
+				movedIn: z.object({ savedNodeId: z.string(), ownerTreePath: z.string() }).nullable(),
+				/**
+				 * The search cursor, or for `moved_in` the JSON of its key-skip position.
+				 */
+				cursor: z.string().nullable(),
+				/**
+				 * The search rows read so far, to tell when the search hit 1,024.
+				 */
+				read: z.number().int().nonnegative(),
+			}),
+		)
+		.max(64),
+});
+
+/**
+ * One page of `find -name`: name word search on the saved rows, then with a folder one search per
+ * saved folder the user moved into it by a draft (at most 20 per page), then the user's places.
+ * The streams run one after the other, since search results have no order to merge by.
+ *
+ * Returns the gap notes the page found: a moved-in folder too deep to search, or a search that hit
+ * the 1,024 rows Convex returns at most.
+ */
+export async function files_pending_overlay_search_name(
+	ctx: Pick<ActionCtx, "runQuery">,
+	args: {
+		agentSource?: Infer<typeof ai_chat_workspaces_source_validator>;
+		organizationId: Doc<"files_nodes">["organizationId"];
+		workspaceId: Doc<"files_nodes">["workspaceId"];
+		visibilityUserId: Id<"users">;
+		overlayUserId?: Id<"users">;
+		folderPath: string;
+		query: string;
+		kind?: "file" | "folder";
+		numItems: number;
+		cursor: string | null;
+	},
+) {
+	const overlay = args.overlayUserId === args.visibilityUserId;
+	const streamArgs = {
+		agentSource: args.agentSource,
+		organizationId: args.organizationId,
+		workspaceId: args.workspaceId,
+		visibilityUserId: args.visibilityUserId,
+		overlayUserId: args.overlayUserId,
+		folderPath: args.folderPath,
+	};
+	const scope = JSON.stringify([
+		args.organizationId,
+		args.workspaceId,
+		args.visibilityUserId,
+		args.overlayUserId,
+		args.folderPath,
+		args.query,
+		args.kind,
+	]);
+	const pageSize = Math.max(1, Math.floor(args.numItems));
+
+	type CursorStream = z.infer<typeof search_name_cursor_schema>["streams"][number];
+	let streams: CursorStream[];
+	if (args.cursor === null) {
+		streams = [
+			{ kind: "saved", movedIn: null, cursor: null, read: 0 },
+			// Without a folder the saved search already finds rows under moved folders.
+			...(overlay && server_path_normalize(args.folderPath) !== "/"
+				? [{ kind: "moved_in" as const, movedIn: null, cursor: null, read: 0 }]
+				: []),
+			...(overlay ? [{ kind: "places" as const, movedIn: null, cursor: null, read: 0 }] : []),
+		];
+	} else {
+		let raw: unknown;
+		try {
+			raw = JSON.parse(args.cursor);
+		} catch {
+			return Result({ _nay: { message: "Invalid search cursor" } });
+		}
+		const parsed = search_name_cursor_schema.safeParse(raw);
+		if (!parsed.success || parsed.data.scope !== scope)
+			return Result({ _nay: { message: "Search changed. Start again." } });
+		streams = parsed.data.streams;
+	}
+
+	const items: NonNullable<files_visible_search_name_Result["_yay"]>["items"] = [];
+	const seen = new Set<string>();
+	const notes = new Set<string>();
+	let calls = 0;
+	let nested = 0;
+	// The page size of the current stream. It halves when a page runs out of reads.
+	let numItems = Math.min(100, pageSize);
+	while (items.length < pageSize && streams.length > 0 && calls < SEARCH_NAME_MAX_CALLS) {
+		const stream = streams[0]!;
+		calls++;
+
+		if (stream.kind === "moved_in") {
+			if (nested === SEARCH_NAME_MAX_NESTED) break;
+			const result = (await ctx.runQuery(internal.files_visible.internal_list_subtree_moved_in_folders, {
+				...streamArgs,
+				outsideOnly: true,
+				numItems: SEARCH_NAME_MAX_NESTED - nested,
+				position:
+					stream.cursor === null ? { rangeStart: null, cursor: null, lastKey: null } : JSON.parse(stream.cursor),
+			})) as files_visible_stream_Result;
+			if (result._nay) return result;
+			if (result._yay.done) streams.shift();
+			else stream.cursor = JSON.stringify(result._yay.position);
+			// Each moved-in folder opens its search before the rest of the folders.
+			const opened: CursorStream[] = result._yay.rows.flatMap((row) =>
+				row.movedIn ? [{ kind: "nested" as const, movedIn: row.movedIn, cursor: null, read: 0 }] : [],
+			);
+			nested += opened.length;
+			streams.unshift(...opened);
+			continue;
+		}
+
+		const requested = Math.min(numItems, pageSize - items.length);
+		const searchArgs = {
+			...streamArgs,
+			query: args.query,
+			...(args.kind === undefined ? {} : { kind: args.kind }),
+			numItems: requested,
+			cursor: stream.cursor,
+		};
+		const result = (
+			stream.kind === "places"
+				? await ctx.runQuery(internal.files_visible.internal_search_name_places, searchArgs)
+				: await ctx.runQuery(internal.files_visible.internal_search_name_saved, {
+						...searchArgs,
+						...moved_in_args(stream.movedIn),
+					})
+		) as files_visible_search_name_Result;
+		if (result._nay) return result;
+		if (result._yay.retrySmaller) {
+			if (requested === 1)
+				throw should_never_happen("One name search row needs more reads than a query has", { query: args.query });
+			numItems = Math.floor(requested / 2);
+			continue;
+		}
+
+		stream.cursor = result._yay.continueCursor;
+		stream.read += result._yay.scanned;
+		if (result._yay.tooDeep) notes.add("Some moved folders are too deep to search inside. Use find <folder> -type f.");
+		// Two calls read different snapshots, so a moved row can come from two searches.
+		for (const item of result._yay.items) {
+			if (seen.has(item.target.id)) continue;
+			seen.add(item.target.id);
+			items.push(item);
+		}
+		if (result._yay.isDone) {
+			streams.shift();
+			numItems = Math.min(100, pageSize);
+			if (stream.read >= files_TEXT_SEARCH_MAX_RESULTS)
+				notes.add(
+					stream.kind === "places"
+						? "Searched your top 1,024 matching drafts."
+						: "Searched the top 1,024 matches of the workspace.",
+				);
+		}
+	}
+
+	return Result({
+		_yay: {
+			items,
+			continueCursor:
+				streams.length === 0
+					? null
+					: JSON.stringify({ scope, streams } satisfies z.infer<typeof search_name_cursor_schema>),
+			isDone: streams.length === 0,
+			notes: [...notes],
 		},
 	});
 }

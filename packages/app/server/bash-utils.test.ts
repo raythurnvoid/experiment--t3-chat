@@ -14,6 +14,7 @@ import {
 	bash_read_only_mount_error,
 	bash_parse_cp_mv_operands,
 	bash_text_head,
+	bash_text_search_files,
 	bash_text_well_formed,
 	bash_value_well_formed,
 	bash_DbFilesFs,
@@ -430,5 +431,49 @@ describe("bash_value_well_formed", () => {
 		// key would only change the error text, and these two keys would become one.
 		const value = { "a\ud83c": 1, "a\udf89": 2 };
 		expect(Object.keys(bash_value_well_formed(value))).toEqual(["a\ud83c", "a\udf89"]);
+	});
+});
+
+describe("bash_text_search_files", () => {
+	const search_args = {
+		organizationId: "organization_1" as Id<"organizations">,
+		workspaceId: "workspace_1" as Id<"organizations_workspaces">,
+		userId: "user_1" as Id<"users">,
+		hasWorkspaceRead: true,
+		query: "needle",
+		numItems: 8,
+		cursor: null,
+	};
+	// Like a query that runs out of reads on a page of more than `fits` rows.
+	const fake_ctx = (fits: number) => {
+		const runQuery = vi.fn(async (_ref: unknown, args: { numItems: number; cursor: string | null }) =>
+			args.numItems > fits
+				? { items: [], continueCursor: "", isDone: false, retrySmaller: true, searchedTop: false }
+				: {
+						items: [{ path: "/a.md" }, { path: "/b.md" }].slice(0, args.numItems),
+						continueCursor: "",
+						isDone: true,
+						retrySmaller: false,
+						searchedTop: false,
+					},
+		);
+		return { ctx: { runQuery } as unknown as Pick<ActionCtx, "runQuery">, runQuery };
+	};
+
+	test("reads the same cursor again with half the rows when a page runs out of reads", async () => {
+		const { ctx, runQuery } = fake_ctx(2);
+		const result = await bash_text_search_files(ctx, search_args);
+		expect(runQuery.mock.calls.map(([, args]) => [args.numItems, args.cursor])).toEqual([
+			[8, null],
+			[4, null],
+			[2, null],
+		]);
+		expect(result.items.map((item) => item.path)).toEqual(["/a.md", "/b.md"]);
+	});
+
+	test("throws when one row alone needs more reads than a query has", async () => {
+		const { ctx, runQuery } = fake_ctx(0);
+		await expect(bash_text_search_files(ctx, search_args)).rejects.toThrow("One content search row");
+		expect(runQuery.mock.calls.map(([, args]) => args.numItems)).toEqual([8, 4, 2, 1]);
 	});
 });

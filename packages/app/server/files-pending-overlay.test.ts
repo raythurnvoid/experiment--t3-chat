@@ -4,7 +4,11 @@ import { api, internal } from "../convex/_generated/api.js";
 import type { Id } from "../convex/_generated/dataModel";
 import type { ActionCtx } from "../convex/_generated/server.js";
 import { test_convex, test_mocks, test_mocks_fill_db_with } from "../convex/setup.test.ts";
-import { files_pending_overlay_list, files_pending_overlay_window_ranges } from "./files-pending-overlay.ts";
+import {
+	files_pending_overlay_list,
+	files_pending_overlay_search_name,
+	files_pending_overlay_window_ranges,
+} from "./files-pending-overlay.ts";
 
 type Row = Record<string, Value>;
 type Range = ReturnType<typeof files_pending_overlay_window_ranges>[number];
@@ -510,5 +514,116 @@ describe("files_pending_overlay_list", () => {
 		if (rest._nay) throw new Error(rest._nay.message);
 		expect(rest._yay.items.map((item) => item.path)).toEqual(chain.toReversed().map((path) => `/dest${path}/z`));
 		expect(rest._yay.isDone).toBe(true);
+	});
+});
+
+describe("files_pending_overlay_search_name", () => {
+	async function fixture() {
+		const t = test_convex();
+		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const saved = async (path: string) => {
+			const created = await asUser.mutation(api.files_nodes.create_folder_node, {
+				membershipId: db.membershipId,
+				parentId: "root",
+				path,
+			});
+			if (created._nay) throw new Error(created._nay.message);
+			return created._yay.nodeId;
+		};
+		return { t, db, asUser, saved };
+	}
+
+	test("name search drops a member's draft in a folder they can no longer read", async () => {
+		const f = await fixture();
+		const other = await f.t.run((ctx) => test_mocks_fill_db_with.membership(ctx, { organizationName: "other" }));
+		expect(
+			await f.asUser.mutation(api.organizations.invite_user_to_organization_workspace, {
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				userIdToAdd: other.userId,
+			}),
+		).toEqual({ _yay: null });
+		const secret = await f.saved("secret");
+		const created = await f.t.mutation(internal.files_nodes.create_private_node_by_path, {
+			organizationId: f.db.organizationId,
+			workspaceId: f.db.workspaceId,
+			userId: other.userId,
+			path: "/secret/draftnote",
+			kind: "folder",
+		});
+		if (created._nay) throw new Error(created._nay.message);
+		const search_paths = async () => {
+			const result = await files_pending_overlay_search_name(
+				{ runQuery: f.t.query } as unknown as Pick<ActionCtx, "runQuery">,
+				{
+					organizationId: f.db.organizationId,
+					workspaceId: f.db.workspaceId,
+					visibilityUserId: other.userId,
+					overlayUserId: other.userId,
+					folderPath: "/",
+					query: "draftnote",
+					numItems: 10,
+					cursor: null,
+				},
+			);
+			if (result._nay) throw new Error(result._nay.message);
+			return result._yay.items.map((item) => item.path);
+		};
+		expect(await search_paths()).toEqual(["/secret/draftnote"]);
+
+		// The draft's place checks access on its folder per row.
+		expect(
+			await f.asUser.mutation(api.files_sharing.restrict_node, { membershipId: f.db.membershipId, nodeId: secret }),
+		).toEqual({ _yay: null });
+		expect(await search_paths()).toEqual([]);
+	});
+
+	test("shows a row once when a folder inside a moved-in folder is moved away and back", async () => {
+		const f = await fixture();
+		const dest = await f.saved("dest");
+		await f.saved("outside");
+		const g = await f.saved("outside/g");
+		const k = await f.saved("outside/g/k");
+		await f.saved("outside/g/k/target");
+		const move = async (nodeId: Id<"files_nodes">, destId: Id<"files_nodes">, destName: string) => {
+			const moved = await f.t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				userId: f.db.userId,
+				target: { kind: "saved", id: nodeId },
+				destParent: { kind: "saved", id: destId },
+				destName,
+			});
+			if (moved._nay) throw new Error(moved._nay.message);
+			return moved._yay;
+		};
+		await move(g, dest, "g");
+		await move(k, g, "k2");
+		// Back to its saved parent and name: the move is cancelled, though `/dest/g/k` is not its saved path.
+		expect((await move(k, g, "k")).cancelledExistingMove).toBe(true);
+
+		const paths: string[] = [];
+		let cursor: string | null = null;
+		for (let page = 0; page < 10; page++) {
+			const result: Awaited<ReturnType<typeof files_pending_overlay_search_name>> = await files_pending_overlay_search_name(
+				{ runQuery: f.t.query } as unknown as Pick<ActionCtx, "runQuery">,
+				{
+					organizationId: f.db.organizationId,
+					workspaceId: f.db.workspaceId,
+					visibilityUserId: f.db.userId,
+					overlayUserId: f.db.userId,
+					folderPath: "/dest",
+					query: "target",
+					numItems: 1,
+					cursor,
+				},
+			);
+			if (result._nay) throw new Error(result._nay.message);
+			paths.push(...result._yay.items.map((item) => item.path));
+			if (result._yay.isDone) break;
+			cursor = result._yay.continueCursor;
+		}
+		expect(paths).toEqual(["/dest/g/k/target"]);
 	});
 });

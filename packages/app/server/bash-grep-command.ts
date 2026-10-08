@@ -1,10 +1,7 @@
 import { defineCommand, type Command } from "just-bash/browser";
 import { internal } from "../convex/_generated/api.js";
 import type { ActionCtx } from "../convex/_generated/server.js";
-import type {
-	files_nodes_match_text_file_lines_Result,
-	files_nodes_text_search_files_Result,
-} from "../convex/files_nodes.ts";
+import type { files_nodes_match_text_file_lines_Result } from "../convex/files_nodes.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import {
 	bash_create_glob_syntax_unsupported_message,
@@ -20,9 +17,11 @@ import {
 	bash_search_command_exact_query_summary,
 	bash_shell_arg_quote,
 	bash_resolve_db_files_shell_path,
+	bash_text_search_files,
 	bash_COMMAND_EXIT_FAILURE,
 	bash_COMMAND_EXIT_USAGE,
 	bash_NON_NEGATIVE_INTEGER_REGEX,
+	bash_SEARCH_TOP_MATCHES_NOTE,
 	bash_TERMINAL_LINE_ENDING_REGEX,
 	type bash_DbFilesRoots,
 } from "./bash-utils.ts";
@@ -750,7 +749,7 @@ export function bash_grep_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 				}
 
 				const recursivePattern = parsed._yay.pattern;
-				const res = (await ctx.runQuery(internal.files_nodes.text_search_files, {
+				const res = await bash_text_search_files(ctx, {
 					agentSource: pathResolution.ctxData.agentSource,
 					organizationId: pathResolution.ctxData.organizationId,
 					workspaceId: pathResolution.ctxData.workspaceId,
@@ -761,7 +760,7 @@ export function bash_grep_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 					numItems: 20,
 					cursor: null,
 					pathPrefix: target.dbFilesPath,
-				})) as files_nodes_text_search_files_Result;
+				});
 
 				const allItems = res.items;
 
@@ -791,6 +790,7 @@ export function bash_grep_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 								`No content matches found under ${scopePath}.`,
 								`grep -R over app folders uses indexed full-text search, not exact recursive regex grep.`,
 							];
+				if (res.searchedTop) blocks.push(bash_SEARCH_TOP_MATCHES_NOTE);
 
 				if (!res.isDone) {
 					const cursorId = await bash_cursor_id_create(ctx, res.continueCursor);

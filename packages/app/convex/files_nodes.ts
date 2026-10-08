@@ -75,6 +75,7 @@ import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
 import app_convex_schema, {
 	ai_chat_workspaces_source_validator,
 	files_content_version_validator,
+	files_metadata_search_plan_validator,
 	files_pending_target_validator,
 	files_sort_row_key_validator,
 	files_sort_validator,
@@ -89,7 +90,7 @@ import type { files_PendingTarget } from "../shared/files.ts";
 import { components, internal } from "./_generated/api.js";
 import { doc } from "convex-helpers/validators";
 import { billing_event } from "../server/billing.ts";
-import { convex_error, v_result } from "../server/convex-utils.ts";
+import { convex_error, convex_invalid_cursor_error, v_result } from "../server/convex-utils.ts";
 import { organizations_db_get_membership } from "./organizations.ts";
 import { ai_chat_workspaces_db_authorize_file_scope } from "./ai_chat_workspaces.ts";
 import { files_db_resolve_scope } from "./files_scopes.ts";
@@ -114,6 +115,7 @@ import { billing_db_check_credits, billing_pick_billed_user_id, billing_ingest_e
 import { files_stored_uploads_db_admit } from "./files_stored_uploads.ts";
 import { rate_limiter_check_by_key, rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import {
+	files_ANCESTOR_FIELD_COUNT,
 	files_derive_tree_path_for_file_node,
 	files_is_ancestor_field,
 	files_lowercase_extension,
@@ -125,10 +127,19 @@ import {
 	files_normalize_special_node_path,
 	files_normalize_upload_file_name,
 	files_pending_update_content_is_stale,
+	files_TEXT_SEARCH_MAX_RESULTS,
 	files_WRITE_POLICY_INVALID_WRITERS_MESSAGE,
 	type files_VisibleEntry,
 } from "../shared/files.ts";
-import { files_metadata_db_patch_file_scope, files_metadata_db_write_entries } from "./files_metadata.ts";
+import {
+	files_metadata_db_patch_file_scope,
+	files_metadata_db_query_saved_plan,
+	files_metadata_db_write_entries,
+} from "./files_metadata.ts";
+import {
+	files_search_query_field_path_is_valid,
+	files_search_query_FIELD_PATH_MAX_LENGTH,
+} from "../shared/files-search-query.ts";
 import { files_archive_runs_db_start, files_archive_runs_STEP_MAX_NODES } from "./files_archive_runs.ts";
 import { files_subtree_ops_db_start_rebuild, files_subtree_ops_STEP_MAX_NODES } from "./files_subtree_ops.ts";
 import { public_api_service_uploads_db_get_target_by_asset } from "./public_api_service_uploads.ts";
@@ -141,6 +152,7 @@ import {
 import { quotas_db_ensure } from "./quotas.ts";
 import { organizations_membership_lifetimes_db_get } from "./organizations_membership_lifetimes.ts";
 import { files_share_rows_NODE_FIELDS, files_share_rows_principal_key } from "../server/files-share-rows.ts";
+import { files_pending_overlay_list_over_budget } from "../server/files-pending-overlay.ts";
 import { quotas } from "../shared/quotas.ts";
 import {
 	r2,
@@ -180,6 +192,17 @@ const TREE_CHILDREN_MAX_ITEMS = 200;
 const TREE_SHARE_PAGE_MAX_ITEMS = 187;
 
 const TREE_ANCESTORS_MAX_DEPTH = 64;
+
+// A search box page holds at most this many rows. A text search page has no split cursor and can
+// grow on a rerun, so a bigger one restarts from the first page before any per-row read.
+const SEARCH_SAVED_MAX_ITEMS = 100;
+// The split guard of the search box's metadata and link pages. Each row reads its node with one
+// `get` and checks access once per restricted scope. The worst row is its own restricted scope,
+// read by a member: the node, the scope node, the user grant, 2 role assignments and 2 role
+// grants, 7 reads, so floor(3,000 / 7) = 428, and the guard is 400.
+const SEARCH_SAVED_PAGE_GUARD = 400;
+const SEARCH_SAVED_TEXT_MAX_LENGTH = 200;
+const SEARCH_SAVED_PATH_MAX_LENGTH = 1024;
 
 function files_path_depth(path: string) {
 	return path === "/" ? 0 : path_extract_segments_from(path).length;
@@ -10821,17 +10844,20 @@ function db_text_search_filtered_query(
 		userId: Id<"users">;
 		query: string;
 		targets?: files_PendingTarget[];
+		sourceKind: "pending" | "committed";
 	},
 ) {
-	let searchQuery = ctx.db
-		.query("files_plain_text_chunks")
-		.withSearchIndex("search_by_plainTextChunk", (q) =>
-			q
-				.search("plainTextChunk", args.query)
-				.eq("organizationId", args.organizationId)
-				.eq("workspaceId", args.workspaceId)
-				.eq("archiveOperationId", undefined),
-		);
+	let searchQuery = ctx.db.query("files_plain_text_chunks").withSearchIndex("search_by_plainTextChunk", (q) => {
+		const base = q
+			.search("plainTextChunk", args.query)
+			.eq("organizationId", args.organizationId)
+			.eq("workspaceId", args.workspaceId)
+			.eq("archiveOperationId", undefined);
+		// Committed chunks have no `userId`. Pending chunks are only the caller's own.
+		return args.sourceKind === "committed"
+			? base.eq("sourceKind", "committed")
+			: base.eq("sourceKind", "pending").eq("userId", args.userId);
+	});
 	if (args.targets !== undefined) {
 		const targets = args.targets;
 		searchQuery = searchQuery.filter((q) =>
@@ -10846,13 +10872,29 @@ function db_text_search_filtered_query(
 		);
 	}
 	// Current paths, proposal revisions, and access are checked on the bounded page below.
-	searchQuery = searchQuery.filter((q) =>
-		q.or(
-			q.eq(q.field("sourceKind"), "committed"),
-			q.and(q.eq(q.field("sourceKind"), "pending"), q.eq(q.field("userId"), args.userId)),
-		),
-	);
 	return searchQuery;
+}
+
+/**
+ * Where a content search goes on. The caller's pending chunks and the committed chunks are two
+ * searches, because one Convex function can run only one paginated read. `read` counts the chunk docs
+ * the current search returned so far.
+ */
+type TextSearchPosition = { sourceKind: "pending" | "committed"; cursor: string | null; read: number };
+
+function text_search_parse_cursor(cursor: string): TextSearchPosition | null {
+	let raw: unknown;
+	try {
+		raw = JSON.parse(cursor);
+	} catch {
+		return null;
+	}
+	if (typeof raw !== "object" || raw === null) return null;
+	const { sourceKind, cursor: innerCursor, read } = raw as Record<string, unknown>;
+	if (sourceKind !== "pending" && sourceKind !== "committed") return null;
+	if (innerCursor !== null && typeof innerCursor !== "string") return null;
+	if (typeof read !== "number") return null;
+	return { sourceKind, cursor: innerCursor, read };
 }
 
 const text_search_args = {
@@ -10901,6 +10943,15 @@ export const text_search_files = internalQuery({
 		),
 		continueCursor: v.string(),
 		isDone: v.boolean(),
+		/**
+		 * The page ran out of reads. Nothing was returned: read the same cursor again with fewer rows.
+		 */
+		retrySmaller: v.boolean(),
+		/**
+		 * The committed search ended on the 1,024 rows Convex returns at most, so it may have missed
+		 * matches.
+		 */
+		searchedTop: v.boolean(),
 	}),
 	handler: async (
 		ctx,
@@ -10921,18 +10972,40 @@ export const text_search_files = internalQuery({
 		}>;
 		continueCursor: string;
 		isDone: boolean;
+		retrySmaller: boolean;
+		searchedTop: boolean;
 	}> => {
-		if (args.agentSource && files_db_resolve_scope(ctx, args.workspaceId).kind !== "volume") {
+		const empty = {
+			items: [],
+			continueCursor: args.cursor ?? "",
+			isDone: true,
+			retrySmaller: false,
+			searchedTop: false,
+		};
+		const scope = files_db_resolve_scope(ctx, args.workspaceId);
+		if (args.agentSource && scope.kind !== "volume") {
 			const authorized = await ai_chat_workspaces_db_authorize_file_scope(ctx, {
 				...args,
 				agentSource: args.agentSource,
 			});
-			if (authorized._nay) return { items: [], continueCursor: args.cursor ?? "", isDone: true };
+			if (authorized._nay) return empty;
 		}
 		const reader = await files_search_db_create_reader(ctx, args);
-		if (!reader.active) return { items: [], continueCursor: args.cursor ?? "", isDone: true };
-		const result = await db_text_search_filtered_query(ctx, args).paginate({
-			cursor: args.cursor,
+		if (!reader.active) return empty;
+
+		// Only the owner's overlay reads pending chunks, like the reader. Read them first: they are
+		// few, and the committed search then fills the rest.
+		const ownerPending =
+			args.serviceAccountId === undefined &&
+			!organizations_is_global_organization_id(args.organizationId) &&
+			scope.kind === "workspace";
+		const position =
+			args.cursor === null
+				? { sourceKind: ownerPending ? ("pending" as const) : ("committed" as const), cursor: null, read: 0 }
+				: text_search_parse_cursor(args.cursor);
+		if (!position) throw convex_error({ message: "Invalid search cursor" });
+		const result = await db_text_search_filtered_query(ctx, { ...args, sourceKind: position.sourceKind }).paginate({
+			cursor: position.cursor,
 			numItems: Math.max(1, Math.min(100, args.numItems)),
 		});
 
@@ -10941,7 +11014,11 @@ export const text_search_files = internalQuery({
 		const pathPrefix = rawPrefix && rawPrefix !== "/" ? `/${rawPrefix.replace(/^\/+|\/+$/gu, "")}/` : null;
 		for (const searchChunk of result.page) {
 			const entry = await reader.resolveDocument(searchChunk);
-			if (reader.exhausted) throw convex_error({ message: "Search is too broad. Narrow the path or filters." });
+			// A search page cannot stop part way, because its cursor covers the whole page. So the action
+			// reads the same cursor again with fewer rows.
+			if (reader.exhausted || files_pending_overlay_list_over_budget(await ctx.meta.getTransactionMetrics()))
+				return { ...empty, isDone: false, retrySmaller: true };
+			// The folder is checked per row, on the top 1,024 matches of the workspace.
 			if (!entry || (pathPrefix && !entry.path.startsWith(pathPrefix))) continue;
 			items.push({
 				...entry,
@@ -10957,10 +11034,18 @@ export const text_search_files = internalQuery({
 			});
 		}
 
+		const read = position.read + result.page.length;
+		const next: TextSearchPosition | null = !result.isDone
+			? { ...position, cursor: result.continueCursor, read }
+			: position.sourceKind === "pending"
+				? { sourceKind: "committed", cursor: null, read: 0 }
+				: null;
 		return {
 			items,
-			continueCursor: result.continueCursor,
-			isDone: result.isDone,
+			continueCursor: next ? JSON.stringify(next) : "",
+			isDone: next === null,
+			retrySmaller: false,
+			searchedTop: next === null && read >= files_TEXT_SEARCH_MAX_RESULTS,
 		};
 	},
 });
@@ -10970,105 +11055,261 @@ export type files_nodes_text_search_files_Result =
 		? Awaited<ReturnValue>
 		: never;
 
-export const search_content = query({
+/**
+ * The search box door: one clause plus an optional folder, one page of matching rows. Every read is
+ * one index range or one text search. The client merges and dedupes pages by `nodeId`.
+ *
+ * A problem comes back as the only row of a done page, because `usePaginatedQuery` shows rows only.
+ * Input the app never sends gets an empty, done page.
+ */
+export const search_saved = query({
 	args: {
-		// The workspace is the membership's own workspace, on purpose. Caller-supplied
-		// organization/workspace ids would let a member of one workspace search another workspace in
-		// the same organization, because the search index's only tenant boundary is the ids it is
-		// given while the permission checks answer for the membership's workspace.
 		membershipId: v.id("organizations_workspaces_users"),
-		query: v.string(),
-		targets: v.optional(v.array(files_pending_target_validator)),
-	},
-	returns: v.object({
-		truncated: v.boolean(),
-		results: v.array(
+		clause: v.union(
+			// Whole words and word starts of the name. `nodeKind` lists only files or only folders.
 			v.object({
-				target: files_pending_target_validator,
-				path: v.string(),
-				textChunk: v.string(),
-				lineStart: v.number(),
-				matchCount: v.number(),
+				kind: v.literal("name"),
+				text: v.string(),
+				nodeKind: v.optional(doc(app_convex_schema, "files_nodes").fields.kind),
+			}),
+			v.object({ kind: v.literal("content"), text: v.string() }),
+			// One plan of `files_search_query_to_plans`. A chip with two plans is two calls.
+			v.object({
+				kind: v.literal("metadata"),
+				plan: files_metadata_search_plan_validator,
+			}),
+			// An exact path, with its case, or a saved node id.
+			v.object({ kind: v.literal("path"), path: v.string() }),
+			// `file.link:public`: the files with a public link.
+			v.object({ kind: v.literal("link") }),
+		),
+		/**
+		 * The exact path of the folder to search inside. Names, metadata `eq` and `exists`, and links
+		 * take one.
+		 */
+		folderPath: v.optional(v.string()),
+		paginationOpts: paginationOptsValidator,
+	},
+	returns: paginationResultValidator(
+		v.union(
+			v.object({
+				kind: doc(app_convex_schema, "files_nodes").fields.kind,
+				nodeId: v.id("files_nodes"),
+				path: doc(app_convex_schema, "files_nodes").fields.path,
+				// Content rows only: the first matching chunk of the file on this page.
+				textChunk: v.optional(v.string()),
+				lineStart: v.optional(v.number()),
+			}),
+			v.object({
+				kind: v.literal("problem"),
+				message: v.union(
+					v.literal("Folder not found"),
+					v.literal("This folder is too deep to search inside. Search a folder higher up."),
+				),
 			}),
 		),
-	}),
+	),
 	handler: async (ctx, args) => {
-		const [userAuth, membership] = await Promise.all([
-			server_convex_get_user_fallback_to_anonymous(ctx),
-			ctx.db.get("organizations_workspaces_users", args.membershipId),
-		]);
-		if (!userAuth) {
-			throw convex_error({ message: "Unauthenticated" });
-		}
-		if (!membership || membership.userId !== userAuth.id || membership.active === false) {
-			return { results: [], truncated: false };
-		}
+		// Saved rows only: UI lists never show drafts. Drafts show in the Pending tab, in the draft
+		// folder view and to the agent (files-explorer-tree skill, "Saved-only lists").
 
-		// Below 2 characters every search is noise; above 200 the query is not something a person
-		// typed into the palette. Both return empty instead of erroring so the palette just shows
-		// its idle/no-results state.
-		const trimmedQuery = args.query.trim();
-		if (trimmedQuery.length < 2 || trimmedQuery.length > 200 || args.targets?.length === 0) {
-			return { results: [], truncated: false };
+		const refused = { page: [], isDone: true, continueCursor: "" };
+
+		const reader = await files_nodes_db_get_tree_reader(ctx, { membershipId: args.membershipId });
+		if (!reader) {
+			return refused;
 		}
+		const { userAuth, membership } = reader;
+		const clause = args.clause;
+		const paginationOpts = {
+			...args.paginationOpts,
+			numItems: Math.min(args.paginationOpts.numItems, SEARCH_SAVED_MAX_ITEMS),
+		};
 
-		// A failed check does not end the query here. Somebody whose role gives no workspace-wide
-		// read can still have been given one folder, and finding matches in that folder is the whole
-		// point of sharing. The internal query is told what the check said and keeps only what they
-		// were given.
-		const authorized = await access_control_db_authorize_membership(ctx, {
-			userAuth,
-			membership,
-			permission: "content.read",
-		});
-
-		// The internal query filters restricted files AFTER filling a page, so one page can come back
-		// empty for a grant-only user even when their shared folder matches. Fetch a few more pages
-		// until enough distinct files are collected; the budget keeps one call bounded.
-		const resultsByTarget = new Map<
-			string,
-			{ target: files_PendingTarget; path: string; textChunk: string; lineStart: number; matchCount: number }
-		>();
-		let cursor: string | null = null;
-		let truncated = false;
-		for (let pageIndex = 0; pageIndex < 3; pageIndex++) {
-			const page = (await ctx.runQuery(internal.files_nodes.text_search_files, {
+		/**
+		 * Keep the active nodes of the membership's workspace that the caller may read, once each.
+		 */
+		const readable_rows = async (nodes: Array<Doc<"files_nodes"> | null>) => {
+			const byId = new Map<Id<"files_nodes">, Doc<"files_nodes">>();
+			for (const node of nodes) {
+				if (
+					node?.archiveOperationId === null &&
+					node.organizationId === membership.organizationId &&
+					node.workspaceId === membership.workspaceId
+				) {
+					byId.set(node._id, node);
+				}
+			}
+			const readable = await access_control_db_filter_readable_file_nodes(ctx, {
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
 				userId: userAuth.id,
-				hasWorkspaceRead: !authorized._nay,
-				query: trimmedQuery,
-				targets: args.targets,
-				numItems: 32,
-				cursor,
-			})) as files_nodes_text_search_files_Result;
-			truncated = !page.isDone;
+				hasWorkspaceRead: reader.hasWorkspaceRead,
+				nodes: [...byId.values()],
+			});
+			return readable.map((node) => ({ kind: node.kind, nodeId: node._id, path: node.path }));
+		};
 
-			for (const item of page.items) {
-				const key = `${item.target.kind}:${item.target.id}`;
-				const existing = resultsByTarget.get(key);
-				// The first chunk of a file wins (search relevance order); later chunks only bump the
-				// count, which is a count over the fetched pages, not a total for the file.
-				if (existing) {
-					existing.matchCount += 1;
-				} else {
-					resultsByTarget.set(key, {
-						target: item.target,
-						path: item.path,
-						textChunk: item.textChunk,
-						lineStart: item.lineStart,
-						matchCount: 1,
-					});
-				}
+		if (clause.kind === "path") {
+			if (args.folderPath !== undefined || clause.path.length > SEARCH_SAVED_PATH_MAX_LENGTH) {
+				return refused;
 			}
-
-			if (page.isDone || resultsByTarget.size >= 10) {
-				break;
-			}
-			cursor = page.continueCursor;
+			// A pasted link holds the node id.
+			const nodeId = clause.path.startsWith("/")
+				? (
+						await files_db_get_visible_node_by_path(ctx, {
+							organizationId: membership.organizationId,
+							workspaceId: membership.workspaceId,
+							path: clause.path,
+						})
+					)?._id
+				: ctx.db.normalizeId("files_nodes", clause.path);
+			return { ...refused, page: await readable_rows([nodeId ? await ctx.db.get("files_nodes", nodeId) : null]) };
 		}
 
-		return { results: [...resultsByTarget.values()], truncated };
+		// The folder comes from its saved row, never from the typed text: its stored ancestors and
+		// tree path scope the read. A missing, unreadable or archived folder answers the same.
+		let folder: Doc<"files_nodes"> | null = null;
+		if (args.folderPath !== undefined && args.folderPath !== "/") {
+			const folderNode =
+				args.folderPath.startsWith("/") && args.folderPath.length <= SEARCH_SAVED_PATH_MAX_LENGTH
+					? await files_db_get_visible_node_by_path(ctx, {
+							organizationId: membership.organizationId,
+							workspaceId: membership.workspaceId,
+							path: args.folderPath,
+						})
+					: null;
+			folder =
+				folderNode?.kind === "folder" ? await db_get_readable_tree_node(ctx, { reader, nodeId: folderNode._id }) : null;
+			if (!folder) {
+				return { ...refused, page: [{ kind: "problem" as const, message: "Folder not found" as const }] };
+			}
+			// A node keeps only its top 12 ancestors, so a deeper folder cannot scope a name search.
+			if (folder.pathDepth > files_ANCESTOR_FIELD_COUNT) {
+				return {
+					...refused,
+					page: [
+						{
+							kind: "problem" as const,
+							message: "This folder is too deep to search inside. Search a folder higher up." as const,
+						},
+					],
+				};
+			}
+		}
+		const folderId = folder?._id ?? null;
+		const folderTreePath = folder?.treePath ?? null;
+
+		if (clause.kind === "name" || clause.kind === "content") {
+			const text = clause.text.trim();
+			// Contents have no folder scope in the search box.
+			if (text.length === 0 || text.length > SEARCH_SAVED_TEXT_MAX_LENGTH || (clause.kind === "content" && folder)) {
+				return refused;
+			}
+
+			if (clause.kind === "name") {
+				const nodeKind = clause.nodeKind;
+				// A node is under the folder exactly when its ancestor at the folder's depth is the folder.
+				const ancestorField = `ancestor${folder?.pathDepth ?? 1}` as Extract<
+					keyof Doc<"files_nodes">,
+					`ancestor${number}`
+				>;
+				const result = await ctx.db
+					.query("files_nodes")
+					.withSearchIndex("search_name", (q) => {
+						const active = q
+							.search("name", text)
+							.eq("organizationId", membership.organizationId)
+							.eq("workspaceId", membership.workspaceId)
+							.eq("archiveOperationId", null);
+						const kinded = nodeKind ? active.eq("kind", nodeKind) : active;
+						return folderId ? kinded.eq(ancestorField, folderId) : kinded;
+					})
+					.paginate(paginationOpts);
+				if (result.page.length > SEARCH_SAVED_MAX_ITEMS) {
+					throw convex_invalid_cursor_error("The search page grew past its cap");
+				}
+				return { ...result, page: await readable_rows(result.page) };
+			}
+
+			// Committed chunks only: drafts never count toward the top matches.
+			const result = await ctx.db
+				.query("files_plain_text_chunks")
+				.withSearchIndex("search_by_plainTextChunk", (q) =>
+					q
+						.search("plainTextChunk", text)
+						.eq("organizationId", membership.organizationId)
+						.eq("workspaceId", membership.workspaceId)
+						.eq("archiveOperationId", undefined)
+						.eq("sourceKind", "committed"),
+				)
+				.paginate(paginationOpts);
+			if (result.page.length > SEARCH_SAVED_MAX_ITEMS) {
+				throw convex_invalid_cursor_error("The search page grew past its cap");
+			}
+			const chunks = result.page.flatMap((chunk) => (chunk.sourceKind === "committed" ? [chunk] : []));
+			const rows = await readable_rows(
+				await Promise.all(chunks.map((chunk) => ctx.db.get("files_nodes", chunk.fileNodeId))),
+			);
+			return {
+				...result,
+				page: rows.map((row) => {
+					// Chunks come in relevance order, so the first chunk of a file is its best one.
+					const chunk = chunks.find((searchChunk) => searchChunk.fileNodeId === row.nodeId)!;
+					return { ...row, textChunk: chunk.textChunk, lineStart: chunk.lineStart };
+				}),
+			};
+		}
+
+		if (clause.kind === "metadata") {
+			const plan = clause.plan;
+			// A folder scopes `eq` and `exists` only: `prefix` and `range` put their range on the value.
+			if (
+				plan.fieldPath.length > files_search_query_FIELD_PATH_MAX_LENGTH ||
+				!files_search_query_field_path_is_valid(plan.fieldPath) ||
+				(folder && (plan.op === "prefix" || plan.op === "range"))
+			) {
+				return refused;
+			}
+			const result = await files_metadata_db_query_saved_plan(ctx, {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				plan,
+				treePathPrefix: folderTreePath,
+			}).paginate(paginationOpts);
+			if (tree_page_needs_split(result, SEARCH_SAVED_PAGE_GUARD)) {
+				return tree_page_split_required(result);
+			}
+			return {
+				...result,
+				page: await readable_rows(
+					await Promise.all(
+						result.page.map(async (metadataDoc) =>
+							metadataDoc.sourceKind === "committed" ? await ctx.db.get("files_nodes", metadataDoc.fileNodeId) : null,
+						),
+					),
+				),
+			};
+		}
+
+		// `set_node_share_link` keeps at most 500 links in a workspace, so a folder can drop rows of a
+		// page here instead of in an index range.
+		const result = await ctx.db
+			.query("files_share_links")
+			.withIndex("by_organization_workspace_node", (q) =>
+				q.eq("organizationId", membership.organizationId).eq("workspaceId", membership.workspaceId),
+			)
+			.paginate(paginationOpts);
+		if (tree_page_needs_split(result, SEARCH_SAVED_PAGE_GUARD)) {
+			return tree_page_split_required(result);
+		}
+		const nodes = await Promise.all(result.page.map((link) => ctx.db.get("files_nodes", link.nodeId)));
+		return {
+			...result,
+			page: await readable_rows(
+				nodes.filter((node) => folderTreePath === null || node?.treePath.startsWith(folderTreePath)),
+			),
+		};
 	},
 });
 

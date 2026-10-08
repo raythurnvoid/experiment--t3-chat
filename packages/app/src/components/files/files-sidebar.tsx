@@ -1,7 +1,7 @@
 import "./files-sidebar.css";
 import { FilesSearchInput, type FilesSearchInput_Props } from "./files-search-input.tsx";
-import { useFilesSearchServerFilters } from "@/hooks/files-search-hooks.ts";
-import { detect_search_query_mode, search_filter_matches_item, search_path_filter } from "@/lib/files-search.ts";
+import { useFilesSearchSaved, type FilesSearchSavedRow } from "@/hooks/files-search-hooks.ts";
+import { detect_search_query_mode, search_free_text, search_path_filter } from "@/lib/files-search.ts";
 import React, {
 	createContext,
 	memo,
@@ -133,7 +133,7 @@ import { AppActivitiesProvider } from "@/lib/app-activities-context.tsx";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { FilesTreeProvider, files_tree_stream_args } from "@/lib/files-tree-context.tsx";
 import { cn, copy_to_clipboard, forward_ref, should_never_happen, sx } from "@/lib/utils.ts";
-import { path_extract_segments_from } from "@/lib/paths.ts";
+import { path_extract_segments_from, path_name_of } from "@/lib/paths.ts";
 import { app_convex_api, type app_convex_Doc, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { url_parse_file_link, url_path_file_by_node_id } from "@/lib/urls.ts";
 import { dom_clear_text_selection, type AppClassName, type AppElementId } from "@/lib/dom-utils.ts";
@@ -1900,7 +1900,6 @@ type FilesSidebarTreeItem_Props = {
 	trackActiveFileIds: Set<string>;
 	selectedNodeId: string | null;
 	isSelected: boolean;
-	isSearchActive: boolean;
 	isDropZoneIncluded: boolean;
 	pendingActionNodeIds: Set<string>;
 	renameError: string | undefined;
@@ -2077,7 +2076,6 @@ const FilesSidebarTreeRow = memo(
 			updatedByDisplayName,
 			trackActiveFileIds,
 			isSelected,
-			isSearchActive,
 			isDropZoneIncluded,
 			renameError,
 			isTreeDragging,
@@ -2139,7 +2137,7 @@ const FilesSidebarTreeRow = memo(
 			onMenuOpenChange(itemId, isOpen);
 		});
 
-		const shouldRenderPlaceholder = !isSearchActive && itemData.kind === "folder" && !hasChildren && isExpanded;
+		const shouldRenderPlaceholder = itemData.kind === "folder" && !hasChildren && isExpanded;
 
 		const wrapperElementRef = useRef<HTMLDivElement | null>(null);
 		const handleWrapperRef = useFn((element: HTMLDivElement | null) => {
@@ -2776,9 +2774,6 @@ type FilesSidebarTree_Props = {
 	virtualizerRef: RefObject<Virtualizer<HTMLDivElement, HTMLDivElement> | null>;
 	isTreeLoading: boolean;
 	showEmptyState: boolean;
-	isSearchActive: boolean;
-	isSearchLoading: boolean;
-	isSearchFailed: boolean;
 	displayNameByUserId: Map<string, string>;
 	trackActiveFileIds: Set<string>;
 	selectedNodeId: string | null;
@@ -2797,8 +2792,8 @@ type FilesSidebarTree_Props = {
 	 * only a hint.
 	 */
 	publicLinkNodeIds: ReadonlySet<string>;
-	/** How far each open folder has loaded, or `null` while a search shows the full list. */
-	folderStatusById: ReadonlyMap<string, "loading" | "more" | "done"> | null;
+	/** How far each open folder has loaded. */
+	folderStatusById: ReadonlyMap<string, "loading" | "more" | "done">;
 	onLoadMore: (folderId: string) => void;
 	onCreateNode: (parentNodeId: string, kind: files_TreeItem["kind"]) => void;
 	onStartRename: (itemId: string) => void;
@@ -2824,9 +2819,6 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 		virtualizerRef,
 		isTreeLoading,
 		showEmptyState,
-		isSearchActive,
-		isSearchLoading,
-		isSearchFailed,
 		displayNameByUserId,
 		trackActiveFileIds,
 		selectedNodeId,
@@ -2907,13 +2899,10 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 					kind: itemData.kind,
 					depth: item.getItemMeta().level,
 					hasPlaceholderRow:
-						!isSearchActive &&
-						itemData.kind === "folder" &&
-						item.isExpanded() &&
-						item.getTree().retrieveChildrenIds(itemId).length === 0,
+						itemData.kind === "folder" && item.isExpanded() && item.getTree().retrieveChildrenIds(itemId).length === 0,
 				} satisfies DropZoneRow;
 			}),
-		[renderedTreeItems, isSearchActive],
+		[renderedTreeItems],
 	);
 
 	// A changed row model must refresh the known heights, including offscreen placeholders.
@@ -3100,19 +3089,19 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 	// Access checks can leave a page empty. Then an open folder with more pages has no row to render, so
 	// its own row asks instead, and an empty tree asks for the root.
 	const loadMoreKey = [
-		...(renderedTreeItems.length === 0 && folderStatusById?.get(files_ROOT_ID) === "more" ? [files_ROOT_ID] : []),
+		...(renderedTreeItems.length === 0 && folderStatusById.get(files_ROOT_ID) === "more" ? [files_ROOT_ID] : []),
 		...virtualizer.getVirtualItems().flatMap((virtualItem) => {
 			const item = renderedTreeItems[virtualItem.index];
 			const itemId = item.getId();
 			const parentId = item.getParent()?.getId();
 			const itemMeta = item.getItemMeta();
 			return [
-				...(item.isExpanded() && item.getChildren().length === 0 && folderStatusById?.get(itemId) === "more"
+				...(item.isExpanded() && item.getChildren().length === 0 && folderStatusById.get(itemId) === "more"
 					? [itemId]
 					: []),
 				...(parentId !== undefined &&
 				itemMeta.posInSet === itemMeta.setSize - 1 &&
-				folderStatusById?.get(parentId) === "more"
+				folderStatusById.get(parentId) === "more"
 					? [parentId]
 					: []),
 			];
@@ -3157,13 +3146,7 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 					<>
 						{showEmptyState ? (
 							<div className={cn("FilesSidebarTree-empty-state" satisfies FilesSidebarTree_ClassNames)}>
-								{isSearchLoading
-									? "Searching…"
-									: isSearchFailed
-										? "The search failed. Change a filter to try again."
-										: isSearchActive
-											? "No files match your search."
-											: "No files yet."}
+								No files yet.
 							</div>
 						) : null}
 						{virtualizer.getVirtualItems().map((virtualItem) => {
@@ -3186,7 +3169,6 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 										selectedNodeId={selectedNodeId}
 										isSelected={selectedNodeIds.has(itemId)}
 										isDropZoneIncluded={dropZoneItemIds.has(itemId)}
-										isSearchActive={isSearchActive}
 										pendingActionNodeIds={pendingActionNodeIds}
 										renameError={renameErrorByNodeId.get(itemId)}
 										isTreeDragging={isTreeDragging}
@@ -3201,8 +3183,8 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 										hasPublicLink={publicLinkNodeIds.has(itemId)}
 										isFolderLoading={
 											item.isExpanded() &&
-											(folderStatusById?.get(itemId) === "loading" ||
-												(folderStatusById?.get(itemId) === "more" && item.getChildren().length === 0))
+											(folderStatusById.get(itemId) === "loading" ||
+												(folderStatusById.get(itemId) === "more" && item.getChildren().length === 0))
 										}
 										onCreateNode={onCreateNode}
 										onStartRename={onStartRename}
@@ -3454,12 +3436,11 @@ type FilesSidebarTopSection_Props = {
 	canWriteRoot: boolean;
 	canWriteUploadTarget: boolean;
 	canArchiveSelection: boolean;
-	treeItemsList: files_TreeItem[] | undefined;
 	showArchived: boolean;
 	initialSearchQuery: string;
 	isSearchLoading: boolean;
-	isSearchFailed: boolean;
 	searchMatchCount: number | null;
+	hasMoreMatches: boolean;
 	onClose: () => void;
 	onSearchQueryChange: (searchQuery: string) => void;
 	onSearchSubmit: (searchQuery: string) => boolean;
@@ -3485,12 +3466,11 @@ const FilesSidebarTopSection = memo(function FilesSidebarTopSection(props: Files
 		canWriteRoot,
 		canWriteUploadTarget,
 		canArchiveSelection,
-		treeItemsList,
 		showArchived,
 		initialSearchQuery,
 		isSearchLoading,
-		isSearchFailed,
 		searchMatchCount,
+		hasMoreMatches,
 		onClose,
 		onSearchQueryChange,
 		onSearchSubmit,
@@ -3512,10 +3492,9 @@ const FilesSidebarTopSection = memo(function FilesSidebarTopSection(props: Files
 			<FilesSearchInput
 				id={"app_files_sidebar_search" satisfies AppElementId}
 				initialQuery={initialSearchQuery}
-				treeItemsList={treeItemsList}
 				isSearchLoading={isSearchLoading}
-				isSearchFailed={isSearchFailed}
 				searchMatchCount={searchMatchCount}
+				hasMoreMatches={hasMoreMatches}
 				onSearchQueryChange={onSearchQueryChange}
 				onSubmit={onSearchSubmit}
 			/>
@@ -4204,6 +4183,288 @@ const FilesSidebarSharedGroup = memo(function FilesSidebarSharedGroup(props: Fil
 });
 // #endregion shared group
 
+// #region search results
+type FilesSidebarSearchResults_ClassNames =
+	| "FilesSidebarSearchResults"
+	| "FilesSidebarSearchResults-state"
+	| "FilesSidebarSearchResults-list"
+	| "FilesSidebarSearchResults-row"
+	| "FilesSidebarSearchResults-row-text"
+	| "FilesSidebarSearchResults-row-name"
+	| "FilesSidebarSearchResults-row-path"
+	| "FilesSidebarSearchResults-more";
+
+type FilesSidebarSearchResults_CustomAttributes = {
+	"data-search-row-id": string;
+};
+
+type FilesSidebarSearchResultsRow_Props = {
+	row: FilesSearchSavedRow;
+	isCurrent: boolean;
+	/**
+	 * Whether the user may write in the workspace. The row has no write state of its own, so the
+	 * server checks the row when the action runs.
+	 */
+	canWrite: boolean;
+	menusPortalHost: HTMLElement | null;
+	onOpen: (nodeId: string, kind: string) => void;
+	onShare: (nodeId: string) => void;
+	onProperties: (nodeId: app_convex_Id<"files_nodes">, returnFocusElement: HTMLElement | null) => void;
+	onArchive: (row: FilesSearchSavedRow, rowElement: HTMLElement | null) => void;
+};
+
+/**
+ * One search match, with the tree row's menu. Like a "Shared with you" row, the menu acts on this row
+ * only, and the row has no rename, create, drag or subtree actions, because it is not a tree row.
+ */
+const FilesSidebarSearchResultsRow = memo(function FilesSidebarSearchResultsRow(
+	props: FilesSidebarSearchResultsRow_Props,
+) {
+	const { row, isCurrent, canWrite, menusPortalHost, onOpen, onShare, onProperties, onArchive } = props;
+	const { organizationName, workspaceName } = AppTenantProvider.useContext();
+	const buttonRef = useRef<HTMLButtonElement | null>(null);
+	const name = path_name_of(row.path);
+	const parentPath = row.path.slice(0, row.path.lastIndexOf("/")) || "/";
+
+	const handleOpenClick = useFn(() => {
+		onOpen(row.nodeId, row.kind);
+	});
+
+	const handleCopyClick = useFn<FilesSidebarTreeItemMenuPopover_Props["onCopy"]>(() => {
+		copy_to_clipboard({ text: row.path }).catch((error) => {
+			console.error("[FilesSidebarSearchResultsRow.handleCopyClick] Failed to copy path", {
+				error,
+				nodeId: row.nodeId,
+			});
+		});
+	});
+
+	const handleCopyLinkClick = useFn<FilesSidebarTreeItemMenuPopover_Props["onCopyLink"]>(() => {
+		const link = `${window.location.origin}${url_path_file_by_node_id({ organizationName, workspaceName, nodeId: row.nodeId })}`;
+		copy_to_clipboard({ text: link }).catch((error) => {
+			console.error("[FilesSidebarSearchResultsRow.handleCopyLinkClick] Failed to copy link", {
+				error,
+				nodeId: row.nodeId,
+			});
+		});
+	});
+
+	const handleCopyNodeIdClick = useFn<FilesSidebarTreeItemMenuPopover_Props["onCopyNodeId"]>(() => {
+		copy_to_clipboard({ text: row.nodeId }).catch((error) => {
+			console.error("[FilesSidebarSearchResultsRow.handleCopyNodeIdClick] Failed to copy node id", {
+				error,
+				nodeId: row.nodeId,
+			});
+		});
+	});
+
+	const handleShareClick = useFn<FilesSidebarTreeItemMenuPopover_Props["onShare"]>(() => {
+		onShare(row.nodeId);
+	});
+
+	const handlePropertiesClick = useFn<FilesSidebarTreeItemMenuPopover_Props["onProperties"]>(() => {
+		onProperties(row.nodeId, buttonRef.current);
+	});
+
+	const handleArchiveClick = useFn<FilesSidebarTreeItemMenuPopover_Props["onArchive"]>(() => {
+		onArchive(row, buttonRef.current);
+	});
+
+	const handleNoAction = useFn(() => {});
+
+	return (
+		<li>
+			<MyContextMenu>
+				<MyContextMenuTrigger>
+					<MyButton
+						ref={buttonRef}
+						type="button"
+						variant="ghost-highlightable"
+						className={"FilesSidebarSearchResults-row" satisfies FilesSidebarSearchResults_ClassNames}
+						aria-label={`${name} in ${parentPath}`}
+						aria-current={isCurrent ? "page" : undefined}
+						{...({ "data-search-row-id": row.nodeId } satisfies FilesSidebarSearchResults_CustomAttributes)}
+						onClick={handleOpenClick}
+					>
+						<FilesSidebarTreeItemIcon kind={row.kind} />
+						<span className={"FilesSidebarSearchResults-row-text" satisfies FilesSidebarSearchResults_ClassNames}>
+							<span className={"FilesSidebarSearchResults-row-name" satisfies FilesSidebarSearchResults_ClassNames}>
+								{name}
+							</span>
+							<span className={"FilesSidebarSearchResults-row-path" satisfies FilesSidebarSearchResults_ClassNames}>
+								{parentPath}
+							</span>
+						</span>
+					</MyButton>
+				</MyContextMenuTrigger>
+				<FilesSidebarTreeItemMenuPopover
+					kind={row.kind}
+					label={name}
+					archiveOperationId={null}
+					canCreate={false}
+					canRename={false}
+					canShare
+					canArchive={canWrite}
+					canExpandSubtree={false}
+					canCollapseSubtree={false}
+					expandedFolderActionsVisible={false}
+					menusPortalHost={menusPortalHost}
+					clipboardSlot={
+						<FilesClipboardMenuItems
+							sourceIds={[row.nodeId]}
+							canCut={canWrite}
+							canCopy
+							targetParentId={row.kind === "folder" ? row.nodeId : null}
+							targetName={row.kind === "folder" ? name : null}
+							canPaste={canWrite}
+						/>
+					}
+					onCreateFile={handleNoAction}
+					onCreateFolder={handleNoAction}
+					onCopy={handleCopyClick}
+					onCopyLink={handleCopyLinkClick}
+					onCopyNodeId={handleCopyNodeIdClick}
+					onRename={handleNoAction}
+					onShare={handleShareClick}
+					onProperties={handlePropertiesClick}
+					onExpandSubtree={handleNoAction}
+					onCollapseSubtree={handleNoAction}
+					onArchive={handleArchiveClick}
+					onUnarchive={handleNoAction}
+				/>
+			</MyContextMenu>
+		</li>
+	);
+});
+
+type FilesSidebarSearchResults_Props = {
+	search: ReturnType<typeof useFilesSearchSaved>;
+	showArchived: boolean;
+	selectedNodeId: string | null;
+	canWrite: boolean;
+	onOpen: FilesSidebarSearchResultsRow_Props["onOpen"];
+	onShare: FilesSidebarSearchResultsRow_Props["onShare"];
+	onProperties: FilesSidebarSearchResultsRow_Props["onProperties"];
+	onArchive: FilesSidebarSearchResultsRow_Props["onArchive"];
+};
+
+/**
+ * The sidebar search: a flat list of saved matches, each with the folder that holds it, in place of
+ * the tree. Opening a match selects it, and the tree reveals it once the search closes.
+ */
+const FilesSidebarSearchResults = memo(function FilesSidebarSearchResults(props: FilesSidebarSearchResults_Props) {
+	const { search, showArchived, selectedNodeId, canWrite, onOpen, onShare, onProperties, onArchive } = props;
+	const list = search.names;
+	const sectionRef = useRef<HTMLElement | null>(null);
+	const [menusPortalHost, setMenusPortalHost] = useState<HTMLElement | null>(null);
+	// The row ids when Show more was clicked, until its page has loaded.
+	const [loadMoreFromIds, setLoadMoreFromIds] = useState<Set<string> | null>(null);
+
+	// The same focus rules as Show more in the "Shared with you" group.
+	useEffect(() => {
+		if (loadMoreFromIds === null || (list.status === "more" && list.rows.length <= loadMoreFromIds.size)) {
+			return;
+		}
+		setLoadMoreFromIds(null);
+		const activeElement = document.activeElement;
+		if (
+			list.status === "more" ||
+			menusPortalHost?.contains(activeElement) ||
+			(activeElement !== document.body && !sectionRef.current?.contains(activeElement))
+		) {
+			return;
+		}
+		const firstNewRow = list.rows.find((row) => !loadMoreFromIds.has(row.nodeId)) ?? list.rows.at(-1);
+		if (firstNewRow) {
+			sectionRef.current
+				?.querySelector<HTMLElement>(
+					`[${"data-search-row-id" satisfies keyof FilesSidebarSearchResults_CustomAttributes}="${firstNewRow.nodeId}"]`,
+				)
+				?.focus();
+		}
+	}, [list, loadMoreFromIds, menusPortalHost]);
+
+	const handleLoadMoreClick = useFn(() => {
+		if (list.isLoadingMore) {
+			return;
+		}
+		setLoadMoreFromIds(new Set(list.rows.map((row) => row.nodeId)));
+		list.loadMore();
+	});
+
+	const statusText =
+		search.mode === "invalid"
+			? "Fix or remove the invalid filter to search."
+			: search.mode === "draft"
+				? "This is a link to a draft. Press Enter to open it."
+				: list.status === "loading"
+					? "Searching…"
+					: list.problem !== null
+						? list.problem
+						: list.rows.length === 0 && list.status === "done"
+							? "No files match your search."
+							: null;
+
+	return (
+		<section
+			ref={sectionRef}
+			aria-label="Search results"
+			className={"FilesSidebarSearchResults" satisfies FilesSidebarSearchResults_ClassNames}
+		>
+			{/* Search reads the active rows only, so say so while the tree shows archived rows. */}
+			{showArchived ? (
+				<p className={"FilesSidebarSearchResults-state" satisfies FilesSidebarSearchResults_ClassNames}>
+					Search shows active items only.
+				</p>
+			) : null}
+			{statusText !== null ? (
+				<p className={"FilesSidebarSearchResults-state" satisfies FilesSidebarSearchResults_ClassNames}>{statusText}</p>
+			) : (
+				<ul className={"FilesSidebarSearchResults-list" satisfies FilesSidebarSearchResults_ClassNames}>
+					{list.rows.map((row) => (
+						<FilesSidebarSearchResultsRow
+							key={row.nodeId}
+							row={row}
+							isCurrent={row.nodeId === selectedNodeId}
+							canWrite={canWrite}
+							menusPortalHost={menusPortalHost}
+							onOpen={onOpen}
+							onShare={onShare}
+							onProperties={onProperties}
+							onArchive={onArchive}
+						/>
+					))}
+				</ul>
+			)}
+			{statusText === null && list.isTopMatches ? (
+				<p className={"FilesSidebarSearchResults-state" satisfies FilesSidebarSearchResults_ClassNames}>
+					Showing the top 1,024 matches. Add more words to narrow the search.
+				</p>
+			) : null}
+			{search.isFolderDate && list.status !== "loading" && list.problem === null ? (
+				<p className={"FilesSidebarSearchResults-state" satisfies FilesSidebarSearchResults_ClassNames}>
+					In a folder, a date matches only values written the same way.
+				</p>
+			) : null}
+			{search.mode === "search" && list.status === "more" ? (
+				<MyButton
+					type="button"
+					variant="ghost"
+					className={"FilesSidebarSearchResults-more" satisfies FilesSidebarSearchResults_ClassNames}
+					// `aria-disabled`, not `disabled`, so focus stays on Show more while its page loads.
+					aria-busy={list.isLoadingMore}
+					aria-disabled={list.isLoadingMore}
+					onClick={handleLoadMoreClick}
+				>
+					Show more
+				</MyButton>
+			) : null}
+			<div ref={setMenusPortalHost} />
+		</section>
+	);
+});
+// #endregion search results
+
 // #region root
 function has_file_node_drop(dataTransfer: DataTransfer) {
 	return Array.from(dataTransfer.types).includes(files_FILE_NODE_DRAG_DATA_TRANSFER_TYPE);
@@ -4448,127 +4709,6 @@ function get_tree_items_list_after_optimistic_rename(args: {
 }
 
 /**
- * Match a search query against the tree.
- *
- * The free text matches by its shape (see `detect_search_query_mode`). A `file.*` filter matches a
- * tree field. A metadata filter and a `file.link` filter match the target keys the server returned,
- * looked up by the filter's raw token in `serverTargetKeys`. A filter with no entry yet matches
- * nothing, and the tree says "Searching…" until every entry is there. Files and folders match their
- * own metadata.
- * Archived nodes and synthetic folders cannot be direct metadata matches.
- *
- * `visibleFileIds` keeps every match plus its ancestor chain so results render as a pruned tree.
- * `topMatchId` is the node Enter opens: the one whose path matched exactly, or the only node
- * that matched at all. `matchCount` counts the direct matches without the root.
- *
- * This runs on the deferred query for rendering and again on the live input value when the user
- * presses Enter, so a paste followed straight away by Enter cannot act on the previous query.
- */
-function get_search_matches(args: {
-	treeItems: TreeItems;
-	searchQuery: string;
-	serverTargetKeys: ReadonlyMap<string, ReadonlySet<string> | null>;
-}) {
-	const parsed = files_search_query_parse(args.searchQuery);
-	const filters = parsed.filters;
-	if (filters.some((filter) => filter.problem !== null)) {
-		return { visibleFileIds: new Set<string>(), topMatchId: null, matchCount: 0 };
-	}
-	const hasMetadataFilter = filters.some((filter) => filter.key.namespace !== "file");
-	// Quotes in the free text only group words. A text of quotes alone asks for nothing.
-	const text = parsed.text.replace(/"/gu, "").trim();
-	const textQuery = text.length > 0 ? detect_search_query_mode(text) : null;
-	if (textQuery?.mode === "private") {
-		return { visibleFileIds: new Set<string>(), topMatchId: null, matchCount: 0 };
-	}
-	if (filters.length === 0 && textQuery === null) {
-		return { visibleFileIds: new Set<string>(), topMatchId: null, matchCount: 0 };
-	}
-
-	const visibleFileIds = new Set<string>();
-	const directMatchIds: string[] = [];
-	let exactMatchId: string | null = null;
-
-	for (const item of args.treeItems.list ?? []) {
-		if (!args.treeItems.itemById.has(item._id)) {
-			continue;
-		}
-
-		// Match the field the free text's shape asked for. Only path and id queries can name one
-		// exact node, so only they can set the exact match.
-		let isExactMatch = false;
-		if (textQuery?.mode === "node") {
-			if (item._id !== textQuery.value) {
-				continue;
-			}
-
-			isExactMatch = true;
-		} else if (textQuery?.mode === "path") {
-			// Paths are exact-case.
-			if (!item.path.includes(textQuery.value)) {
-				continue;
-			}
-
-			isExactMatch = item.path === textQuery.value;
-		} else if (textQuery && !item.name.toLowerCase().includes(textQuery.value)) {
-			continue;
-		}
-
-		// Archived nodes and synthetic folders never match metadata, even under a negated filter.
-		if (hasMetadataFilter && (!files_is_node(item) || item.archiveOperationId !== null)) {
-			continue;
-		}
-
-		if (
-			!filters.every(
-				(filter) =>
-					search_filter_matches_item({
-						filter,
-						item,
-						targetKey: `saved:${item._id}`,
-						serverTargetKeys: args.serverTargetKeys,
-					}) === true,
-			)
-		) {
-			continue;
-		}
-
-		if (isExactMatch) {
-			exactMatchId = item._id;
-		}
-		visibleFileIds.add(item._id);
-		directMatchIds.push(item._id);
-
-		// If we are at the root, skip the ancestors step
-		if (item._id === files_ROOT_ID) {
-			continue;
-		}
-
-		// Add all ancestors of a matching item to the visible items set
-		let currentParentId = item.parentId;
-		while (currentParentId) {
-			const parentItem = args.treeItems.itemById.get(currentParentId);
-			if (!parentItem || visibleFileIds.has(currentParentId)) {
-				break;
-			}
-
-			visibleFileIds.add(currentParentId);
-			if (parentItem._id === files_ROOT_ID) {
-				break;
-			}
-
-			currentParentId = parentItem.parentId;
-		}
-	}
-
-	return {
-		visibleFileIds,
-		topMatchId: exactMatchId ?? (directMatchIds.length === 1 ? (directMatchIds[0] ?? null) : null),
-		matchCount: directMatchIds.filter((id) => id !== files_ROOT_ID).length,
-	};
-}
-
-/**
  * The ids of the folders above `nodeId`, nearest first, ending with the root.
  */
 function get_tree_ancestor_ids(treeItems: Pick<TreeItems, "itemById">, nodeId: string) {
@@ -4636,33 +4776,26 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 
 	// Load only the root and the open folders. The whole workspace can hold many thousands of nodes.
 	const treeFolders = FilesTreeProvider.useFolders({
-		// Search expands every folder above a match and reads the full list instead, so page no folder then.
 		// Expanded items are always tree rows, so every id except the root is a node id.
-		folderIds: isSearchActive
-			? []
-			: (expandedItems.filter((itemId) => itemId !== files_ROOT_ID) as app_convex_Id<"files_nodes">[]),
+		folderIds: expandedItems.filter((itemId) => itemId !== files_ROOT_ID) as app_convex_Id<"files_nodes">[],
 		archived: showArchived,
+		// The open node is pinned, so a node opened from the search shows in the tree once the search
+		// closes, with the folders above it.
 		pinnedNodeIds: [
 			...(selectedNodeId && selectedNodeId !== files_ROOT_ID ? [selectedNodeId] : []),
 			...(revealRequest ? [revealRequest.nodeId] : []),
 			...keptNodeIds,
 		],
 	});
-	// Search still matches in the browser, so it needs every node. Load the full list only while a search is active.
-	const fullTreeNodesList = FilesTreeProvider.useFullList(isSearchActive);
-	const treeNodesList = isSearchActive ? fullTreeNodesList : treeFolders.rows;
+	const treeNodesList = treeFolders.rows;
 	const treeItemsList = useMemo(
 		() => (treeNodesList ? files_create_tree_items_list_from_nodes(treeNodesList) : undefined),
 		[treeNodesList],
 	);
-	// The full list has every parent, so a row with a missing parent there was shared on its own.
-	const hoistedTreeItemIds = isSearchActive ? null : treeFolders.hoistedIds;
+	const hoistedTreeItemIds = treeFolders.hoistedIds;
 
-	const { searchServerTargetKeys, isSearchLoading, isSearchFailed } = useFilesSearchServerFilters({
-		membershipId,
-		searchQuery: searchQueryDeferred,
-		treeItemsList,
-	});
+	// The search lists saved matches in a flat list in place of the tree. It never reads the tree.
+	const search = useFilesSearchSaved({ membershipId, searchQuery: searchQueryDeferred, withContents: false });
 
 	const [isCreatingFile, setIsCreatingFile] = useState(false);
 	const createRequestRef = useRef<{
@@ -4681,15 +4814,15 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	const [renameErrorByNodeId, setRenameErrorByNodeId] = useState<Map<string, string>>(new Map());
 	/** The node whose share dialog is open, or `null` when it is closed. */
 	const [shareNodeId, setShareNodeId] = useState<app_convex_Id<"files_nodes"> | null>(null);
-	/** Whether the share dialog was opened from the "Shared with you" group. */
+	/** Whether the share dialog was opened from the "Shared with you" group or the search list. */
 	const isShareFromGroupRef = useRef(false);
 	/** The nodes whose archive dialog is open, or `null` when it is closed. */
 	const [archiveNodes, setArchiveNodes] = useState<FilesArchiveModal_Node[] | null>(null);
-	/** The "Shared with you" row the archive dialog was opened from, or `null` for a tree row. */
+	/** The "Shared with you" or search row the archive dialog was opened from, or `null` for a tree row. */
 	const archiveGroupRowRef = useRef<HTMLElement | null>(null);
 	/** Set by `handleArchived`. The effect that focuses the row after the dialog closes clears it. */
 	const focusRowAfterArchiveRef = useRef(false);
-	/** Set by `handleArchived` for an archive from the "Shared with you" group. The same effect clears it. */
+	/** Set by `handleArchived` for an archive from the "Shared with you" group or the search list. The same effect clears it. */
 	const focusGroupElementAfterArchiveRef = useRef<HTMLElement | null>(null);
 	const [propertiesNodeId, setPropertiesNodeId] = useState<app_convex_Id<"files_nodes"> | null>(null);
 	const propertiesReturnFocusRef = useRef<HTMLElement | null>(null);
@@ -4703,7 +4836,6 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	const treeScrollElementRef = useRef<HTMLDivElement | null>(null);
 	const treeVirtualizerRef = useRef<Virtualizer<HTMLDivElement, HTMLDivElement> | null>(null);
 
-	const expandedItemsBeforeSearchRef = useRef<Set<string> | null>(null);
 	const selectedFilePathAutoExpandedKeyRef = useRef<string | null>(null);
 	const lastFocusedSelectedNodeIdRef = useRef<string | null | undefined>(undefined);
 
@@ -4715,7 +4847,6 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		membershipId,
 		permission: "content.write",
 	});
-	// The `file.link` search chip reads the same query, so Convex shares one subscription.
 	const workspaceLinks = useQuery(app_convex_api.files_share_links.list_workspace_links, { membershipId });
 	const publicLinkNodeIds = new Set<string>(workspaceLinks?.map((link) => link.nodeId));
 	// Keep manual `useMemo` in this group. Convex `useQueries` re-subscribes with a
@@ -4883,7 +5014,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			// a row waits for its parent. Only the rows the store marks as hoisted go to the top.
 			let parentId = item.parentId;
 			if (!shownItemIds.has(parentId)) {
-				if (hoistedTreeItemIds && !hoistedTreeItemIds.has(item._id)) {
+				if (!hoistedTreeItemIds.has(item._id)) {
 					continue;
 				}
 				parentId = files_ROOT_ID;
@@ -4954,21 +5085,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		return topLevelItems.difference(new Set(expandedItems)).size > 0;
 	})();
 
-	/**
-	 * Filtered item ids from the search query, plus the match count the search box reads out.
-	 */
-	const searchMatches = useMemo(
-		() =>
-			treeItems && isSearchActive
-				? get_search_matches({
-						treeItems,
-						searchQuery: searchQueryDeferred,
-						serverTargetKeys: searchServerTargetKeys,
-					})
-				: null,
-		[treeItems, isSearchActive, searchQueryDeferred, searchServerTargetKeys],
-	);
-	const visibleFileIds = searchMatches?.visibleFileIds ?? treeItems?.itemsIds ?? new Set<string>();
+	const visibleFileIds = treeItems?.itemsIds ?? new Set<string>();
 
 	const hasSelectedFileInTree = Boolean(selectedNodeId && visibleFileIds.has(selectedNodeId));
 
@@ -5940,13 +6057,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	const dataLoader = {
 		getItem: (itemId: string) =>
 			treeItems?.itemById.get(itemId) ?? treeItems?.itemById.get(files_ROOT_ID) ?? files_SYNTHETIC_ROOT_FOLDER,
-		getChildren: (itemId: string) => {
-			const children = treeItems?.sortedItemsIdsByParentId.get(itemId) ?? [];
-			if (!isSearchActive) {
-				return children;
-			}
-			return children.filter((childId) => visibleFileIds.has(childId));
-		},
+		getChildren: (itemId: string) => treeItems?.sortedItemsIdsByParentId.get(itemId) ?? [],
 	} satisfies TreeConfig<files_TreeItem>["dataLoader"];
 
 	const tree = useTree<files_TreeItem>({
@@ -6144,7 +6255,8 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	const showEmptyState =
 		treeItemsList !== undefined &&
 		visibleFileIds.size <= 1 &&
-		(isSearchActive || (treeFolders.sharedRoots.status === "done" && treeFolders.sharedRoots.rows.length === 0));
+		treeFolders.sharedRoots.status === "done" &&
+		treeFolders.sharedRoots.rows.length === 0;
 
 	const startRename = useFn((itemId: string) => {
 		const item = tree().getItemInstance(itemId);
@@ -6387,10 +6499,14 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		setShareNodeId(null);
 	});
 
-	// A share in the "Shared with you" group may have no tree row.
+	// A share in the "Shared with you" group or a search match may have no tree row.
+	const propertiesSearchRow = search.names.rows.find((row) => row.nodeId === propertiesNodeId);
 	const propertiesNode =
 		treeNodesList?.find((node) => node._id === propertiesNodeId) ??
-		treeFolders.sharedRoots.rows.find((node) => node._id === propertiesNodeId);
+		treeFolders.sharedRoots.rows.find((node) => node._id === propertiesNodeId) ??
+		(propertiesSearchRow
+			? { name: path_name_of(propertiesSearchRow.path), kind: propertiesSearchRow.kind }
+			: undefined);
 
 	const handleProperties = useFn<FilesSidebarTree_Props["onProperties"]>((nodeId, returnFocusElement) => {
 		propertiesReturnFocusRef.current = returnFocusElement;
@@ -6426,50 +6542,29 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			}).catch((error) => console.error("[FilesSidebar.handleSearchSubmit] Failed to open path", { error }));
 			return true;
 		}
-		if (!treeItems || searchQuery.trim().length === 0) {
+		// A typed path opens through the path route, which also finds the user's drafts. It needs no
+		// search result, so it acts on the live text at once, even right after a paste.
+		const liveQuery = files_search_query_parse(searchQuery);
+		const liveText = search_free_text(liveQuery.text);
+		const liveTextQuery = liveText.length > 0 ? detect_search_query_mode(liveText) : null;
+		if (liveQuery.filters.length === 0 && liveTextQuery?.mode === "path") {
+			navigate({
+				to: "/w/$organizationName/$workspaceName/files/$",
+				params: { organizationName, workspaceName, _splat: liveTextQuery.value },
+			}).catch((error) => console.error("[FilesSidebar.handleSearchSubmit] Failed to open path", { error }));
 			return true;
 		}
 
-		// Match on the value the input holds right now. `searchMatches` lags behind it by the
-		// debounce plus the deferred render, so Enter right after a paste would use the old query.
-		// The server results (metadata and `file.link`) belong to the deferred query, so a chip without a
-		// result yet cannot be matched. Say so instead of opening a wrong node.
-		const liveFilters = files_search_query_parse(searchQuery).filters;
-		const liveServerFilters = liveFilters.filter(
-			(filter) => filter.problem === null && (filter.key.namespace !== "file" || filter.key.name === "link"),
-		);
-		// A query with no server chip needs only the tree, so it never waits.
-		if (liveServerFilters.length > 0) {
-			if (isSearchLoading || liveServerFilters.some((filter) => !searchServerTargetKeys.has(filter.raw))) {
-				return false;
-			}
-			// The metadata results were fetched inside the folder of the `file.path` chip the deferred
-			// query had. Right after that chip is removed or changed, the results still belong to the
-			// old folder, so Enter must wait for the new ones instead of opening a node from that folder.
-			// The link list is for the whole workspace, so a `file.link` chip alone does not wait here.
-			if (
-				liveServerFilters.some((filter) => filter.key.namespace !== "file") &&
-				search_path_filter(liveFilters)?.raw !==
-					search_path_filter(files_search_query_parse(searchQueryDeferred).filters)?.raw
-			) {
-				return false;
-			}
+		// The results belong to the deferred query, which lags behind the input by the debounce plus the
+		// deferred render. Say so instead of opening a node of the previous query.
+		if (searchQuery !== searchQueryDeferred || search.names.status === "loading") {
+			return false;
 		}
-
-		const topMatchId = get_search_matches({
-			treeItems,
-			searchQuery,
-			serverTargetKeys: searchServerTargetKeys,
-		}).topMatchId;
-		const topMatchItem = topMatchId ? treeItems.itemById.get(topMatchId) : undefined;
-		if (topMatchId && topMatchItem) {
-			onPrimaryAction(topMatchId, topMatchItem.kind);
-		} else if (liveFilters.length === 0 && searchQuery.trim().startsWith("/")) {
-			// Private paths are outside the saved tree. The path route resolves the owner's current view.
-			navigate({
-				to: "/w/$organizationName/$workspaceName/files/$",
-				params: { organizationName, workspaceName, _splat: searchQuery.trim() },
-			}).catch((error) => console.error("[FilesSidebar.handleSearchSubmit] Failed to open path", { error }));
+		// Enter opens the node an exact path or id names, or the only match of a finished search.
+		const rows = search.names.rows;
+		const match = search.isExact || (search.names.status === "done" && rows.length === 1) ? rows[0] : undefined;
+		if (match) {
+			onPrimaryAction(match.nodeId, match.kind);
 		}
 		return true;
 	});
@@ -6499,6 +6594,12 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		setArchiveNodes([{ _id: row._id, name: row.name, kind: row.kind }]);
 	});
 
+	// A search match is not in the tree selection either, so it archives itself only.
+	const handleSearchResultArchive = useFn<FilesSidebarSearchResults_Props["onArchive"]>((row, rowElement) => {
+		archiveGroupRowRef.current = rowElement;
+		setArchiveNodes([{ _id: row.nodeId, name: path_name_of(row.path), kind: row.kind }]);
+	});
+
 	const handleArchiveModalClose = useFn(() => {
 		// The menu item that opened the dialog is gone, so put focus back on the row through the tree,
 		// the way the share dialog does. The first id is enough: a cancelled multi-select archive
@@ -6526,19 +6627,22 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		// before it when it was last, or Show more. The archived row is still in the group here, like in
 		// the tree below. With nothing left, the group hides and focus goes to the tree.
 		// The group can re-render before the mutation resolves, so find the row again by id when the
-		// saved element is detached.
+		// saved element is detached. A row of the search list works the same way, with its own attribute.
+		const isSearchRow =
+			archiveGroupRowRef.current?.hasAttribute(
+				"data-search-row-id" satisfies keyof FilesSidebarSearchResults_CustomAttributes,
+			) ?? false;
+		const groupRowAttribute = isSearchRow
+			? ("data-search-row-id" satisfies keyof FilesSidebarSearchResults_CustomAttributes)
+			: ("data-shared-row-id" satisfies keyof FilesSidebarSharedGroup_CustomAttributes);
 		const groupRow =
 			archiveGroupRowRef.current && !archiveGroupRowRef.current.isConnected && archiveNodes?.[0]
 				? document.querySelector<HTMLElement>(
-						`[${"data-shared-row-id" satisfies keyof FilesSidebarSharedGroup_CustomAttributes}="shared:${archiveNodes[0]._id}"]`,
+						`[${groupRowAttribute}="${isSearchRow ? "" : "shared:"}${archiveNodes[0]._id}"]`,
 					)
 				: archiveGroupRowRef.current;
 		const groupRows = Array.from(
-			groupRow
-				?.closest("ul")
-				?.querySelectorAll<HTMLElement>(
-					`[${"data-shared-row-id" satisfies keyof FilesSidebarSharedGroup_CustomAttributes}]`,
-				) ?? [],
+			groupRow?.closest("ul")?.querySelectorAll<HTMLElement>(`[${groupRowAttribute}]`) ?? [],
 		);
 		const groupRowIndex = groupRow ? groupRows.indexOf(groupRow) : -1;
 		focusGroupElementAfterArchiveRef.current =
@@ -6547,7 +6651,11 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			groupRow
 				?.closest("section")
 				?.querySelector<HTMLElement>(
-					`.${"FilesSidebarSharedGroup-more" satisfies FilesSidebarSharedGroup_ClassNames}`,
+					`.${
+						isSearchRow
+							? ("FilesSidebarSearchResults-more" satisfies FilesSidebarSearchResults_ClassNames)
+							: ("FilesSidebarSharedGroup-more" satisfies FilesSidebarSharedGroup_ClassNames)
+					}`,
 				) ??
 			null;
 		if (focusGroupElementAfterArchiveRef.current) {
@@ -6771,44 +6879,14 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		tree().rebuildTree();
 	}, [expandedItems, visibleFileIds]);
 
-	// Auto-expand search matches and the current page path.
+	// Auto-expand the current page path.
 	useLayoutEffect(() => {
 		if (!treeItems) {
 			return;
 		}
 
 		const currentExpandedItems = new Set(expandedItems);
-		let nextExpandedItemsSet = new Set(currentExpandedItems);
-
-		// When search closes, restore whatever expansion state existed before entering search mode.
-		if (!isSearchActive) {
-			const expandedItemsBeforeSearch = expandedItemsBeforeSearchRef.current;
-			if (expandedItemsBeforeSearch) {
-				nextExpandedItemsSet = new Set(expandedItemsBeforeSearch);
-				expandedItemsBeforeSearchRef.current = null;
-			}
-		}
-		// When search opens, snapshot current expansion once, then force-expand ancestors of visible items.
-		else {
-			if (!expandedItemsBeforeSearchRef.current) {
-				expandedItemsBeforeSearchRef.current = new Set(currentExpandedItems);
-			}
-
-			nextExpandedItemsSet = new Set<string>([files_ROOT_ID]);
-			for (const nodeId of visibleFileIds) {
-				const childrenIds = treeItems.itemsIdsByParentId.get(nodeId);
-				if (!childrenIds) {
-					continue;
-				}
-
-				for (const childId of childrenIds) {
-					if (visibleFileIds.has(childId)) {
-						nextExpandedItemsSet.add(nodeId);
-						break;
-					}
-				}
-			}
-		}
+		const nextExpandedItemsSet = new Set(currentExpandedItems);
 
 		// Build a stable selected-file path key so each selected path auto-expands once, even after nested create/rename moves.
 		const selectedFilePathAutoExpanded = ((/* iife */) => {
@@ -6840,7 +6918,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		if (currentExpandedItems.symmetricDifference(nextExpandedItemsSet).size > 0) {
 			setExpandedItems([...nextExpandedItemsSet]);
 		}
-	}, [expandedItems, hasSelectedFileInTree, selectedNodeId, setExpandedItems, treeItems, visibleFileIds]);
+	}, [expandedItems, hasSelectedFileInTree, selectedNodeId, setExpandedItems, treeItems]);
 
 	useLayoutEffect(() => {
 		return () => {
@@ -6921,14 +6999,6 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		// Expand every folder above the row. The auto-expand effect runs once per selected path, so
 		// it does nothing for a folder the user collapsed by hand.
 		const ancestorIds = get_tree_ancestor_ids(treeItems, event.detail.nodeId);
-		// While a search is active, the auto-expand effect rebuilds the expanded set from the matches,
-		// and it restores the snapshot taken before the search once the search closes. Put the folders
-		// in that snapshot too, so the row is still visible after the file view clears the search.
-		if (expandedItemsBeforeSearchRef.current) {
-			for (const ancestorId of ancestorIds) {
-				expandedItemsBeforeSearchRef.current.add(ancestorId);
-			}
-		}
 		setExpandedItems((currentExpandedItems) => {
 			const nextExpandedItemsSet = new Set(currentExpandedItems);
 			for (const ancestorId of ancestorIds) {
@@ -6944,7 +7014,8 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	// Finish a reveal once its row is in the tree. State, not a ref: when the row is already visible
 	// and expanded nothing else changes, and a ref alone would never re-run this effect.
 	useLayoutEffect(() => {
-		if (!revealRequest || !visibleFileIds.has(revealRequest.nodeId)) return;
+		// The search list hides the tree, so the reveal waits until the search closes.
+		if (!revealRequest || isSearchActive || !visibleFileIds.has(revealRequest.nodeId)) return;
 		const currentTree = tree();
 		// Hidden rows have index -1 until the expanded set reaches the tree.
 		if (currentTree.getItemInstance(revealRequest.nodeId).getItemMeta().index < 0) return;
@@ -6953,7 +7024,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		currentTree.getItemInstance(revealRequest.nodeId).setFocused();
 		currentTree.updateDomFocus();
 		setRevealRequest(null);
-	}, [revealRequest, visibleFileIds, expandedItems]);
+	}, [revealRequest, isSearchActive, visibleFileIds, expandedItems]);
 
 	// Keep the URL-owned selected node as the single selected tree row; root/home means no tree row is selected.
 	useLayoutEffect(() => {
@@ -7020,12 +7091,11 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 				canWriteRoot={canWriteRoot}
 				canWriteUploadTarget={canWriteUploadTarget}
 				canArchiveSelection={canArchiveSelection}
-				treeItemsList={treeItemsList}
 				showArchived={showArchived}
 				initialSearchQuery={searchQuery}
-				isSearchLoading={isSearchLoading}
-				isSearchFailed={isSearchFailed}
-				searchMatchCount={searchMatches?.matchCount ?? null}
+				isSearchLoading={search.mode === "search" && search.names.status === "loading"}
+				searchMatchCount={search.mode === "search" ? search.names.rows.length : null}
+				hasMoreMatches={search.mode === "search" && search.names.status === "more"}
 				onClose={onClose}
 				onSearchQueryChange={handleSearchQueryChange}
 				onSearchSubmit={handleSearchSubmit}
@@ -7040,7 +7110,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 				onImportFolderClick={handleImportFolderClick}
 			/>
 
-			{/* Search reads the full list, where a share with a hidden parent already shows at the top. */}
+			{/* The search list finds shares too, so the group hides with the tree. */}
 			{!isSearchActive && (
 				<FilesSidebarSharedGroup
 					rows={treeFolders.sharedRoots.rows}
@@ -7062,42 +7132,52 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 					"app-scrollable" satisfies AppClassName,
 				)}
 			>
-				<FilesSidebarTree
-					tree={tree}
-					scrollElementRef={treeScrollElementRef}
-					virtualizerRef={treeVirtualizerRef}
-					isTreeLoading={treeItemsList === undefined}
-					showEmptyState={showEmptyState}
-					isSearchActive={isSearchActive}
-					isSearchLoading={isSearchLoading}
-					isSearchFailed={isSearchFailed}
-					displayNameByUserId={displayNameByUserId}
-					trackActiveFileIds={trackActiveFileIds}
-					selectedNodeId={selectedNodeId}
-					selectedNodeIds={selectedNodeIds}
-					dialogNodeId={propertiesNodeId ?? shareNodeId}
-					isBusy={isBusy}
-					isUploadingFile={isUploadingFile}
-					pendingActionNodeIds={pendingActionNodeIds}
-					renameErrorByNodeId={renameErrorByNodeId}
-					canWriteItem={canWriteItem}
-					canUnarchiveItem={canUnarchiveItem}
-					canWriteRoot={canWriteRoot}
-					protectedDescendantIds={protectedDescendantIds}
-					publicLinkNodeIds={publicLinkNodeIds}
-					folderStatusById={isSearchActive ? null : treeFolders.statusByFolderId}
-					onLoadMore={handleLoadMore}
-					onCreateNode={handleCreateNodeClick}
-					onStartRename={handleStartRename}
-					onRenameErrorClear={clearRenameError}
-					onCopy={handleCopy}
-					onCopyLink={handleCopyLink}
-					onCopyNodeId={handleCopyNodeId}
-					onShare={handleShare}
-					onProperties={handleProperties}
-					onArchive={handleArchive}
-					onUnarchive={handleUnarchive}
-				/>
+				{isSearchActive ? (
+					<FilesSidebarSearchResults
+						search={search}
+						showArchived={showArchived}
+						selectedNodeId={selectedNodeId}
+						canWrite={workspaceWritePermission === true}
+						onOpen={onPrimaryAction}
+						onShare={handleSharedGroupShare}
+						onProperties={handleProperties}
+						onArchive={handleSearchResultArchive}
+					/>
+				) : (
+					<FilesSidebarTree
+						tree={tree}
+						scrollElementRef={treeScrollElementRef}
+						virtualizerRef={treeVirtualizerRef}
+						isTreeLoading={treeItemsList === undefined}
+						showEmptyState={showEmptyState}
+						displayNameByUserId={displayNameByUserId}
+						trackActiveFileIds={trackActiveFileIds}
+						selectedNodeId={selectedNodeId}
+						selectedNodeIds={selectedNodeIds}
+						dialogNodeId={propertiesNodeId ?? shareNodeId}
+						isBusy={isBusy}
+						isUploadingFile={isUploadingFile}
+						pendingActionNodeIds={pendingActionNodeIds}
+						renameErrorByNodeId={renameErrorByNodeId}
+						canWriteItem={canWriteItem}
+						canUnarchiveItem={canUnarchiveItem}
+						canWriteRoot={canWriteRoot}
+						protectedDescendantIds={protectedDescendantIds}
+						publicLinkNodeIds={publicLinkNodeIds}
+						folderStatusById={treeFolders.statusByFolderId}
+						onLoadMore={handleLoadMore}
+						onCreateNode={handleCreateNodeClick}
+						onStartRename={handleStartRename}
+						onRenameErrorClear={clearRenameError}
+						onCopy={handleCopy}
+						onCopyLink={handleCopyLink}
+						onCopyNodeId={handleCopyNodeId}
+						onShare={handleShare}
+						onProperties={handleProperties}
+						onArchive={handleArchive}
+						onUnarchive={handleUnarchive}
+					/>
+				)}
 			</div>
 
 			<FilesShareModal nodeId={shareNodeId} onClose={handleShareModalClose} />
@@ -8028,10 +8108,10 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const handleTreeStateChange = vi.fn();
 			const handleAction = vi.fn();
 			const handleLoadMore = vi.fn();
+			const noFolderStatus = new Map<string, "loading" | "more" | "done">();
 
 			function TestTree(props: {
 				folderStatusById?: FilesSidebarTree_Props["folderStatusById"];
-				isSearchActive?: boolean;
 				selectedNodeId?: string;
 				dialogNodeId?: string;
 				canWrite?: boolean;
@@ -8078,9 +8158,6 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 										virtualizerRef={virtualizerRef}
 										isTreeLoading={false}
 										showEmptyState={false}
-										isSearchActive={props.isSearchActive ?? false}
-										isSearchLoading={false}
-										isSearchFailed={false}
 										displayNameByUserId={new Map()}
 										trackActiveFileIds={new Set()}
 										selectedNodeId={props.selectedNodeId ?? null}
@@ -8095,7 +8172,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 										canWriteRoot={props.canWrite ?? true}
 										protectedDescendantIds={new Set()}
 										publicLinkNodeIds={props.publicLinkNodeIds ?? new Set()}
-										folderStatusById={props.folderStatusById ?? null}
+										folderStatusById={props.folderStatusById ?? noFolderStatus}
 										onLoadMore={handleLoadMore}
 										onCreateNode={handleAction}
 										onStartRename={handleAction}
@@ -8187,10 +8264,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				act(() => virtualizerRef.current?.scrollToIndex(2_000));
 				await waitFor(() => expect(view.getByRole("treeitem", { name: "child-2000" })).toBeTruthy());
 				expect(document.activeElement?.getAttribute("data-file-id")).toBe("child-4999");
-				view.rerender(<TestTree isSearchActive dialogNodeId="child-3000" />);
-				expect(virtualizerRef.current?.getTotalSize()).toBe(225_004);
+				view.rerender(<TestTree dialogNodeId="child-3000" />);
 				expect(view.getByRole("treeitem", { name: "child-3000" })).toBeTruthy();
-				view.rerender(<TestTree isSearchActive />);
+				view.rerender(<TestTree />);
 				expect(view.queryByRole("treeitem", { name: "child-3000" })).toBeNull();
 
 				act(() => treeRef.current?.getItemInstance("child-2000").startRenaming());
@@ -8886,9 +8962,11 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 	});
 
 	describe("detect_search_query_mode", () => {
-		test("treats plain words as a name query and drops a trailing extension from each", () => {
+		test("treats plain words as a name query and drops a trailing extension of the whole query", () => {
 			expect(detect_search_query_mode("  API.md ")).toEqual({ mode: "name", value: "api" });
-			expect(detect_search_query_mode("README.md v1.2.0 .env")).toEqual({ mode: "name", value: "readme v1.2 .env" });
+			expect(detect_search_query_mode("v1.2.0 Notes.md")).toEqual({ mode: "name", value: "v1.2.0 notes" });
+			expect(detect_search_query_mode("node 18.2 setup")).toEqual({ mode: "name", value: "node 18.2 setup" });
+			expect(detect_search_query_mode("local .env")).toEqual({ mode: "name", value: "local .env" });
 		});
 
 		test("treats anything with a slash as a path query and keeps its case", () => {
@@ -8946,204 +9024,6 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				value: "/a",
 			});
 			expect(search_path_filter(filters("file.path:/tasks/"))).toEqual({ raw: "file.path:/tasks/", value: "/tasks/" });
-		});
-	});
-
-	describe("search_filter_matches_item", () => {
-		test("file.link reads the link list, and an unknown answer stays unknown", () => {
-			const file = test_node({ id: "public_file", parentId: files_ROOT_ID, kind: "file", name: "a.md" });
-			const folder = test_node({ id: "docs", parentId: files_ROOT_ID, kind: "folder", name: "docs" });
-			// `undefined` is a list that has not answered yet, and `null` is a failed one.
-			const link_matches = (args: {
-				query: string;
-				item: files_TreeItem;
-				answer: Set<string> | null | undefined;
-			}) =>
-				{
-				const { query, item, answer } = args;
-
-				return search_filter_matches_item({
-					filter: files_search_query_parse(query).filters[0]!,
-					item,
-					targetKey: `saved:${item._id}`,
-					serverTargetKeys: answer === undefined ? new Map() : new Map([[query, answer]]),
-				});
-			};
-			const links = new Set(["saved:public_file"]);
-
-			expect(link_matches({ query: "file.link:public", item: file, answer: links })).toBe(true);
-			expect(link_matches({ query: "file.link:Public", item: file, answer: links })).toBe(true);
-			expect(link_matches({ query: "file.link:public", item: folder, answer: links })).toBe(false);
-			expect(link_matches({ query: "file.link:public", item: file, answer: new Set() })).toBe(false);
-			expect(link_matches({ query: "file.link:public", item: file, answer: null })).toBeNull();
-			expect(link_matches({ query: "file.link:public", item: file, answer: undefined })).toBeNull();
-		});
-	});
-
-	describe("get_search_matches", () => {
-		const root = files_SYNTHETIC_ROOT_FOLDER;
-		const tasks = test_node({ id: "tasks", parentId: files_ROOT_ID, kind: "folder", name: "tasks" });
-		const task = test_node({
-			id: "task",
-			parentId: "tasks",
-			kind: "file",
-			name: "raw-media.md",
-			path: "/tasks/raw-media.md",
-		});
-		const doneTask = test_node({
-			id: "done_task",
-			parentId: "tasks",
-			kind: "file",
-			name: "done.txt",
-			path: "/tasks/done.txt",
-			archiveOperationId: "archive-operation",
-		});
-		const archive = test_node({ id: "archive", parentId: files_ROOT_ID, kind: "folder", name: "tasks-archive" });
-		const oldTask = test_node({
-			id: "old_task",
-			parentId: "archive",
-			kind: "file",
-			name: "old.md",
-			path: "/tasks-archive/old.md",
-		});
-		const note = test_node({ id: "note", parentId: files_ROOT_ID, kind: "file", name: "notes.txt" });
-		const backup = test_node({ id: "backup", parentId: files_ROOT_ID, kind: "file", name: "backup.tar.gz" });
-		const list = [root, tasks, task, doneTask, archive, oldTask, note, backup];
-		const treeItems = {
-			list,
-			itemsIds: new Set<string>(list.map((item) => item._id)),
-			itemsIdsByParentId: new Map<string, Set<string>>([
-				[files_ROOT_ID, new Set<string>([tasks._id, archive._id, note._id, backup._id])],
-				[tasks._id, new Set<string>([task._id, doneTask._id])],
-				[archive._id, new Set<string>([oldTask._id])],
-			]),
-			sortedItemsIdsByParentId: new Map<string, string[]>([
-				[files_ROOT_ID, [tasks._id, archive._id, note._id, backup._id]],
-				[tasks._id, [task._id, doneTask._id]],
-				[archive._id, [oldTask._id]],
-			]),
-			itemById: new Map<string, files_TreeItem>(list.map((item) => [item._id, item])),
-		} satisfies TreeItems;
-
-		const search = (searchQuery: string, serverTargetKeys = new Map<string, Set<string> | null>()) => {
-			const result = get_search_matches({
-				treeItems,
-				searchQuery,
-				serverTargetKeys: new Map(
-					[...serverTargetKeys].map(([raw, ids]) => [
-						raw,
-						ids === null ? null : new Set([...ids].map((id) => `saved:${id}`)),
-					]),
-				),
-			});
-			return {
-				visible: [...result.visibleFileIds].sort(),
-				topMatchId: result.topMatchId,
-				matchCount: result.matchCount,
-			};
-		};
-
-		test("scopes the words to a folder, keeping the ancestors", () => {
-			expect(search("file.path:/tasks raw")).toEqual({
-				visible: [files_ROOT_ID, "task", "tasks"].sort(),
-				topMatchId: "task",
-				matchCount: 1,
-			});
-			// The folder itself is inside its own scope.
-			expect(search("file.path:/tasks-archive").matchCount).toBe(2);
-		});
-
-		test("a folder path scopes the same with or without its slashes, in its exact case", () => {
-			expect(search("file.path:/tasks").matchCount).toBe(3);
-			expect(search("file.path:/tasks/").matchCount).toBe(3);
-			expect(search("file.path:tasks").matchCount).toBe(3);
-			expect(search("file.path:tasks/").matchCount).toBe(3);
-			expect(search("file.path:/Tasks").matchCount).toBe(0);
-			expect(search("file.path:/").matchCount).toBe(7);
-		});
-
-		test("quotes in the free text only group words", () => {
-			expect(search('"raw-media"').matchCount).toBe(1);
-			expect(search('""').matchCount).toBe(0);
-		});
-
-		test("Enter opens the folder the text names exactly, in its exact case", () => {
-			expect(search("/tasks").topMatchId).toBe("tasks");
-			expect(search("/Tasks").matchCount).toBe(0);
-		});
-
-		test("a pasted link with a node id names that one node", () => {
-			expect(search("http://localhost:5173/w/acme/main/files?nodeId=task")).toEqual({
-				visible: [files_ROOT_ID, "task", "tasks"].sort(),
-				topMatchId: "task",
-				matchCount: 1,
-			});
-			expect(search("http://localhost:5173/w/acme/main/files?nodeId=missing").matchCount).toBe(0);
-		});
-
-		test("a metadata filter matches the node ids its query returned", () => {
-			// `FilesSidebar` keys the results by the raw token.
-			const serverTargetKeys = new Map<string, Set<string>>([["metadata.status:open", new Set(["task"])]]);
-
-			expect(search("metadata.status:open", serverTargetKeys)).toEqual({
-				visible: [files_ROOT_ID, "task", "tasks"].sort(),
-				topMatchId: "task",
-				matchCount: 1,
-			});
-		});
-
-		test("a folder can be the only metadata match and open on Enter", () => {
-			expect(
-				search("metadata.plugin-name:chitchat", new Map([["metadata.plugin-name:chitchat", new Set(["tasks"])]])),
-			).toEqual({
-				visible: [files_ROOT_ID, "tasks"].sort(),
-				topMatchId: "tasks",
-				matchCount: 1,
-			});
-		});
-
-		test("a metadata filter with no result yet matches nothing", () => {
-			expect(search("metadata.status:open")).toEqual({ visible: [], topMatchId: null, matchCount: 0 });
-		});
-
-		test("a metadata filter whose query failed matches nothing", () => {
-			expect(search("metadata.status:open", new Map([["metadata.status:open", null]]))).toEqual({
-				visible: [],
-				topMatchId: null,
-				matchCount: 0,
-			});
-		});
-
-		test("an archived file never matches a metadata filter", () => {
-			// Even when the server answer holds the archived file, it is not shown. Without a metadata
-			// filter it matches.
-			expect(
-				search("metadata.status:open", new Map([["metadata.status:open", new Set(["done_task"])]])).visible,
-			).not.toContain("done_task");
-			expect(search("file.path:/tasks done").visible).toContain("done_task");
-		});
-
-		test("an archived folder never matches a metadata filter", () => {
-			const searchQuery = "metadata.status:open";
-			const archivedFolder = { ...doneTask, kind: "folder" as const };
-			const result = get_search_matches({
-				treeItems: {
-					...treeItems,
-					list: list.map((item) => (item._id === archivedFolder._id ? archivedFolder : item)),
-					itemById: new Map(treeItems.itemById).set(archivedFolder._id, archivedFolder),
-				},
-				searchQuery,
-				serverTargetKeys: new Map([[searchQuery, new Set([`saved:${archivedFolder._id}`])]]),
-			});
-			expect(result.visibleFileIds.has(archivedFolder._id)).toBe(false);
-		});
-
-		test("an invalid filter blocks results until it is fixed or removed", () => {
-			expect(search("metadata.priority:>high notes")).toEqual({
-				visible: [],
-				topMatchId: null,
-				matchCount: 0,
-			});
 		});
 	});
 

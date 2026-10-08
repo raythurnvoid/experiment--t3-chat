@@ -4,7 +4,7 @@ import { MyLink } from "@/components/my-link.tsx";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { files_ROOT_ID, files_editor_view_values } from "@/lib/files.ts";
-import { path_extract_segments_from } from "@/lib/paths.ts";
+import { path_extract_segments_from, path_name_of } from "@/lib/paths.ts";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { zodValidator } from "@tanstack/zod-adapter";
 import { useQuery } from "convex/react";
@@ -27,6 +27,8 @@ const RouteFilesPathNotFound = memo(function RouteFilesPathNotFound(props: Route
 	const { path } = props;
 
 	const { organizationName, workspaceName } = AppTenantProvider.useContext();
+	// The search finds names, not a missing path, so search the last name of the path.
+	const name = path_name_of(path);
 
 	return (
 		<div className={"RouteFilesPathNotFound" satisfies RouteFilesPathNotFound_ClassNames}>
@@ -37,14 +39,16 @@ const RouteFilesPathNotFound = memo(function RouteFilesPathNotFound(props: Route
 			</p>
 			<code className={"RouteFilesPathNotFound-path" satisfies RouteFilesPathNotFound_ClassNames}>{path}</code>
 			<div className={"RouteFilesPathNotFound-actions" satisfies RouteFilesPathNotFound_ClassNames}>
-				<MyLink
-					variant="button-outline"
-					to="/w/$organizationName/$workspaceName/files"
-					params={{ organizationName, workspaceName }}
-					search={{ nodeId: files_ROOT_ID, q: path }}
-				>
-					Search for this path
-				</MyLink>
+				{name.length > 0 ? (
+					<MyLink
+						variant="button-outline"
+						to="/w/$organizationName/$workspaceName/files"
+						params={{ organizationName, workspaceName }}
+						search={{ nodeId: files_ROOT_ID, q: name }}
+					>
+						Search for {name}
+					</MyLink>
+				) : null}
 				<MyLink
 					variant="button-ghost-highlightable"
 					to="/w/$organizationName/$workspaceName/files"

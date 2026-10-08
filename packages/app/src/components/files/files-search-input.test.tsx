@@ -6,8 +6,18 @@ import { FilesSearchInput, type FilesSearchInput_Props } from "./files-search-in
 vi.mock("convex/react", async (importOriginal) => ({
 	...(await importOriginal<typeof import("convex/react")>()),
 	useConvex: () => ({ query: async () => [] }),
-	useQueries: () => ({}),
+	useQueries: (queries: Record<string, { args: { clause?: { text: string } } }>) =>
+		queries.folders ? { folders: test_folder_page(queries.folders.args.clause!.text) } : {},
 }));
+
+/** The saved folders a `file.path` value completes from. */
+const test_folder_page = (text: string) => ({
+	page: ["/Projects/tasks", "/archive", "/tasks"]
+		.filter((path) => path.toLowerCase().includes(text.toLowerCase()))
+		.map((path) => ({ kind: "folder", nodeId: `id${path}`, path })),
+	isDone: true,
+	continueCursor: "",
+});
 
 vi.mock("@/lib/app-tenant-context.tsx", () => ({
 	AppTenantProvider: { useContext: () => ({ membershipId: "test-membership" }) },
@@ -15,10 +25,9 @@ vi.mock("@/lib/app-tenant-context.tsx", () => ({
 
 const props: FilesSearchInput_Props = {
 	initialQuery: "",
-	treeItemsList: [],
 	isSearchLoading: false,
-	isSearchFailed: false,
 	searchMatchCount: null,
+	hasMoreMatches: false,
 	onSearchQueryChange: () => {},
 	onSubmit: () => true,
 };
@@ -115,6 +124,16 @@ describe("FilesSearchInput", () => {
 			fireEvent.click(await screen.findByRole("option", { name: "public" }));
 			const remove = await screen.findByRole("button", { name: "Remove filter file.link:public" });
 			expect(remove.closest(".FilesSearchInputFilterChip")?.textContent).toContain("file.link public");
+		});
+
+		test("completes a file.path value from the saved folders the search finds", async () => {
+			render(<FilesSearchInput {...props} variant={variant} />);
+			const input = screen.getByRole<HTMLInputElement>("combobox");
+			act(() => input.focus());
+			fireEvent.change(input, { target: { value: "file.path:tas" } });
+			expect(await screen.findByRole("option", { name: "/Projects/tasks" })).toBeTruthy();
+			expect(screen.getByRole("option", { name: "/tasks" })).toBeTruthy();
+			expect(screen.queryByRole("option", { name: "/archive" })).toBeNull();
 		});
 
 		test("reopens on a new visit but keeps dismissal when returning from chips or results", async () => {

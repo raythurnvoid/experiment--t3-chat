@@ -1,5 +1,5 @@
-import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
-import { getFunctionName, type FunctionReference, type FunctionReturnType } from "convex/server";
+import { act, cleanup, renderHook } from "@testing-library/react";
+import { getFunctionName, type FunctionArgs, type FunctionReference, type FunctionReturnType } from "convex/server";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { app_convex_api, app_convex_Id } from "@/lib/app-convex-client.ts";
 import {
@@ -9,14 +9,13 @@ import {
 	type files_sort_Sort,
 } from "../../shared/files-sort.ts";
 import type { files_table_Filter } from "../../shared/files-table.ts";
-import { useFilesSearchServerFilters, useFilesSortedChildren, useFilesVisibleEntries } from "./files-search-hooks.ts";
+import { useFilesSearchSaved, useFilesSortedChildren } from "./files-search-hooks.ts";
 
-type VisibleResult = FunctionReturnType<typeof app_convex_api.files_visible.list>;
 type SortedPage = FunctionReturnType<typeof app_convex_api.files_nodes.list_tree_children_sorted>;
 type SortedRow = SortedPage["page"][number];
 type HasShared = FunctionReturnType<typeof app_convex_api.files_nodes.has_tree_children_shared>;
-type SearchNodes = FunctionReturnType<typeof app_convex_api.files_metadata.search_nodes>;
-type WorkspaceLinks = FunctionReturnType<typeof app_convex_api.files_share_links.list_workspace_links>;
+type SavedArgs = FunctionArgs<typeof app_convex_api.files_nodes.search_saved>;
+type SavedRow = FunctionReturnType<typeof app_convex_api.files_nodes.search_saved>["page"][number];
 
 // `sorted.rows` holds every row of each stream, keyed by its full folder, sort and stream scope.
 // `paginatedArgsSeen` records the args of every active paginated query.
@@ -24,9 +23,9 @@ type WorkspaceLinks = FunctionReturnType<typeof app_convex_api.files_share_links
 // `pages` gives a stream fixed server pages instead of `rows`. `splitting` keeps a stream past its first
 // page in "LoadingMore", like a page that answered SplitRequired. `loadMoreCalls` counts each stream's calls.
 // `hasShared` answers `has_tree_children_shared`, and `hasSharedByScope` answers it for one folder scope.
-// `search` answers the search box queries: `undefined` is loading.
-const { cursorsSeen, paginatedArgsSeen, sorted, search } = vi.hoisted(() => ({
-	cursorsSeen: [] as string[],
+// `saved` answers `search_saved` by clause: `argsSeen` records its args, and a clause with no
+// answer is empty and done.
+const { paginatedArgsSeen, sorted, saved } = vi.hoisted(() => ({
 	paginatedArgsSeen: [] as SortedArgs[],
 	sorted: {
 		rows: new Map<string, SortedRow[]>(),
@@ -40,23 +39,13 @@ const { cursorsSeen, paginatedArgsSeen, sorted, search } = vi.hoisted(() => ({
 		revision: 0,
 		listeners: new Set<() => void>(),
 	},
-	search: {
-		nodes: undefined as SearchNodes | Error | undefined,
-		links: undefined as WorkspaceLinks | Error | undefined,
-		linkRequests: [] as Array<Record<string, unknown>>,
+	saved: {
+		argsSeen: [] as SavedArgs[],
+		answers: new Map<
+			string,
+			{ results: SavedRow[]; status: "LoadingFirstPage" | "LoadingMore" | "CanLoadMore" | "Exhausted" }
+		>(),
 	},
-}));
-
-// 120 entries give two full pages of 50 and a last page of 20.
-const ENTRIES = Array.from({ length: 120 }, (_, index) => ({
-	target: { kind: "saved" as const, id: `node_${index}` as app_convex_Id<"files_nodes"> },
-	name: `file-${index}.md`,
-	path: `/folder/file-${index}.md`,
-	kind: "file" as const,
-	updatedAt: 1,
-	updatedBy: "user_1" as app_convex_Id<"users">,
-	contentType: "text/markdown",
-	preparing: false,
 }));
 
 // The args of a `list_tree_children_sorted` stream (`restricted`) or of a `list_tree_children_shared`
@@ -139,47 +128,32 @@ vi.mock("convex/react", async (importOriginal) => {
 				() =>
 					Object.fromEntries(
 						Object.entries(queries).map(([key, request]) => {
-							if (getFunctionName(request.query) === "files_metadata:search_nodes") {
-								return [key, search.nodes];
-							}
-							if (getFunctionName(request.query) === "files_share_links:list_workspace_links") {
-								search.linkRequests.push(request.args);
-								return [key, search.links];
-							}
-							if (getFunctionName(request.query) === "files_nodes:has_tree_children_shared") {
-								const scope = JSON.stringify([request.args.membershipId, request.args.parentId]);
-								return [
-									key,
-									sorted.hasSharedByScope.has(scope) ? sorted.hasSharedByScope.get(scope) : sorted.hasShared,
-								];
-							}
-
-							const cursor = String(request.args.cursor ?? "0");
-							if (!cursorsSeen.includes(cursor)) cursorsSeen.push(cursor);
-							const start = Number(cursor);
-							const end = start + Number(request.args.numItems);
-							const result: VisibleResult = {
-								_yay: {
-									items: ENTRIES.slice(start, end),
-									continueCursor: end < ENTRIES.length ? String(end) : null,
-									isDone: end >= ENTRIES.length,
-								},
-							};
-							return [key, result];
+							// Only `has_tree_children_shared` goes through `useQueries` here.
+							const scope = JSON.stringify([request.args.membershipId, request.args.parentId]);
+							return [key, sorted.hasSharedByScope.has(scope) ? sorted.hasSharedByScope.get(scope) : sorted.hasShared];
 						}),
 					),
 				[queries, revision],
 			);
 		},
 		usePaginatedQuery: (
-			_query: FunctionReference<"query">,
+			query: FunctionReference<"query">,
 			args: SortedArgs | "skip",
 			options: { initialNumItems: number },
 		) => {
 			useSyncExternalStore(subscribe, () => sorted.revision);
+			const isSaved = getFunctionName(query) === "files_nodes:search_saved";
 			const key = args === "skip" ? "skip" : sorted_key(args);
-			if (args !== "skip") paginatedArgsSeen.push(args);
+			if (args !== "skip" && !isSaved) paginatedArgsSeen.push(args);
 			const [loaded, setLoaded] = useState({ key, numItems: options.initialNumItems, pageCount: 1 });
+			if (args !== "skip" && isSaved) {
+				const savedArgs = args as unknown as SavedArgs;
+				saved.argsSeen.push(savedArgs);
+				return {
+					...(saved.answers.get(JSON.stringify(savedArgs.clause)) ?? { results: [], status: "Exhausted" }),
+					loadMore: () => {},
+				};
+			}
 			const numItems = loaded.key === key ? loaded.numItems : options.initialNumItems;
 			const pageCount = loaded.key === key ? loaded.pageCount : 1;
 			if (args === "skip" || sorted.loadingFields.has(args.sort[0].field) || sorted.loadingKeys.has(key)) {
@@ -257,7 +231,6 @@ const file_names = (count: number, prefix = "file") =>
 	Array.from({ length: count }, (_, index) => `${prefix}-${String(index).padStart(3, "0")}.md`);
 
 beforeEach(() => {
-	cursorsSeen.length = 0;
 	paginatedArgsSeen.length = 0;
 	sorted.rows.clear();
 	sorted.hasShared = false;
@@ -267,25 +240,13 @@ beforeEach(() => {
 	sorted.splitting.clear();
 	sorted.loadMoreCalls.clear();
 	sorted.hasSharedByScope.clear();
-	search.nodes = undefined;
-	search.links = undefined;
-	search.linkRequests.length = 0;
+	saved.argsSeen.length = 0;
+	saved.answers.clear();
 });
 
 afterEach(() => {
 	cleanup();
 });
-
-describe("useFilesVisibleEntries", () => {
-	test("returns entries only after every page is loaded", async () => {
-		const { result } = renderHook(() => useFilesVisibleEntries({ membershipId: MEMBERSHIP_ID, folderPath: "/folder", mode: "children" }));
-
-		expect(result.current.entries).toBeUndefined();
-		await waitFor(() => expect(result.current.entries).toEqual(ENTRIES));
-		expect(cursorsSeen).toEqual(["0", "50", "100"]);
-	});
-});
-
 
 describe("useFilesSortedChildren", () => {
 	const render_sorted = (sort: files_sort_Sort | null) =>
@@ -832,60 +793,147 @@ describe("useFilesSortedChildren", () => {
 	});
 });
 
-describe("useFilesSearchServerFilters", () => {
-	const render_search = (query: string) =>
-		renderHook(() => useFilesSearchServerFilters({ membershipId: MEMBERSHIP_ID, searchQuery: query, treeItemsList: undefined }));
-	const LINK = {
-		nodeId: "node_1" as app_convex_Id<"files_nodes">,
-		createdBy: "user_1" as app_convex_Id<"users">,
-		createdAt: 1,
-	};
+describe("useFilesSearchSaved", () => {
+	const render_search = (searchQuery: string, withContents = true) =>
+		renderHook(() => useFilesSearchSaved({ membershipId: MEMBERSHIP_ID, searchQuery, withContents }));
+	const saved_match = (path: string, extra: Record<string, unknown> = {}) =>
+		({ kind: "file", nodeId: `node_${path}`, path, ...extra }) as SavedRow;
 
-	test("answers a file.link chip from the workspace link list", () => {
-		search.links = [LINK];
-		const { result } = render_search("file.link:PUBLIC");
+	test("plain text asks for names and contents in two lists", () => {
+		saved.answers.set(JSON.stringify({ kind: "name", text: "readme" }), {
+			results: [saved_match("/a/readme.md")],
+			status: "CanLoadMore",
+		});
+		saved.answers.set(JSON.stringify({ kind: "content", text: "README.md" }), {
+			results: [
+				saved_match("/b/notes.md", { textChunk: "see README.md", lineStart: 3 }),
+				saved_match("/b/notes.md", { textChunk: "README.md again", lineStart: 9 }),
+			],
+			status: "Exhausted",
+		});
+		const { result } = render_search("README.md");
 
-		expect(result.current.searchServerTargetKeys).toEqual(new Map([["file.link:PUBLIC", new Set(["saved:node_1"])]]));
-		expect(result.current.isSearchLoading).toBe(false);
-		expect(result.current.isSearchFailed).toBe(false);
-		expect(search.linkRequests.at(-1)).toEqual({ membershipId: MEMBERSHIP_ID });
+		expect(saved.argsSeen.map((args) => args.clause)).toEqual([
+			{ kind: "name", text: "readme" },
+			{ kind: "content", text: "README.md" },
+		]);
+		expect(result.current).toMatchObject({ mode: "search", isExact: false });
+		expect(result.current.names).toMatchObject({
+			rows: [{ path: "/a/readme.md" }],
+			status: "more",
+			isLoadingMore: false,
+			problem: null,
+		});
+		// A file shows once in the contents list, with its first chunk.
+		expect(result.current.contents).toMatchObject({
+			rows: [{ path: "/b/notes.md", lineStart: 3 }],
+			status: "done",
+		});
 	});
 
-	test("asks for no link list without a valid file.link chip", () => {
-		search.links = [LINK];
-		const { result } = render_search("file.link:pub* file.kind:file notes");
+	test("a folder scopes names, blocks contents, and shows the folder problem", () => {
+		saved.answers.set(JSON.stringify({ kind: "name", text: "plan" }), {
+			results: [{ kind: "problem", message: "Folder not found" }],
+			status: "Exhausted",
+		});
+		const { result } = render_search("file.path:/docs plan");
 
-		expect(search.linkRequests).toEqual([]);
-		expect(result.current.searchServerTargetKeys.size).toBe(0);
-		expect(result.current.isSearchLoading).toBe(false);
+		expect(saved.argsSeen).toEqual([
+			{ membershipId: MEMBERSHIP_ID, clause: { kind: "name", text: "plan" }, folderPath: "/docs" },
+		]);
+		expect(result.current.contents).toBe("folder");
+		expect(result.current.names).toMatchObject({ rows: [], status: "done", problem: "Folder not found" });
+		// The sidebar asks for no contents list.
+		expect(render_search("plan", false).result.current.contents).toBeNull();
 	});
 
-	test("waits for the link list, and an empty list is a real answer", () => {
-		const { result, rerender } = render_search("file.link:public");
+	test("a path or id asks for that node with no folder", () => {
+		const { result } = render_search("file.path:/docs /Notes/a.md");
 
-		expect(result.current.searchServerTargetKeys.has("file.link:public")).toBe(false);
-		expect(result.current.isSearchLoading).toBe(true);
-
-		// An empty list is a real answer: no file has a public link.
-		search.links = [];
-		act(() => notify_sorted());
-		rerender();
-		expect(result.current.searchServerTargetKeys.get("file.link:public")).toEqual(new Set());
-		expect(result.current.isSearchLoading).toBe(false);
-		expect(result.current.isSearchFailed).toBe(false);
+		expect(saved.argsSeen).toEqual([{ membershipId: MEMBERSHIP_ID, clause: { kind: "path", path: "/Notes/a.md" } }]);
+		expect(result.current.isExact).toBe(true);
+		expect(result.current.contents).toBeNull();
 	});
 
-	test("treats a refused or failed link list as unknown, not as empty", () => {
-		search.links = null;
-		const refused = render_search("file.link:public");
-		expect(refused.result.current.searchServerTargetKeys.get("file.link:public")).toBeNull();
-		expect(refused.result.current.isSearchLoading).toBe(false);
-		expect(refused.result.current.isSearchFailed).toBe(true);
-		cleanup();
+	test("a metadata chip merges its plans into one list", () => {
+		const { result } = render_search("file.path:/docs metadata.count:3");
 
-		search.links = new Error("failed");
-		const failed = render_search("file.link:public");
-		expect(failed.result.current.searchServerTargetKeys.get("file.link:public")).toBeNull();
-		expect(failed.result.current.isSearchFailed).toBe(true);
+		expect(saved.argsSeen.map((args) => [args.clause.kind, args.folderPath])).toEqual([
+			["metadata", "/docs"],
+			["metadata", "/docs"],
+		]);
+		expect(result.current.contents).toBeNull();
+		expect(result.current.names.status).toBe("done");
+	});
+
+	test("a draft link and an invalid filter ask for nothing", () => {
+		expect(render_search("http://localhost/w/org/ws/files?pendingNodeId=draft_1").result.current).toMatchObject({
+			mode: "draft",
+		});
+		expect(render_search("metadata.:x").result.current.mode).toBe("invalid");
+		expect(saved.argsSeen).toEqual([]);
+	});
+
+	test("a finished list at the index limit says it shows the top matches", () => {
+		saved.answers.set(JSON.stringify({ kind: "name", text: "log" }), {
+			results: Array.from({ length: 1024 }, (_, index) => saved_match(`/logs/log-${index}.txt`)),
+			status: "Exhausted",
+		});
+
+		expect(render_search("log").result.current.names.isTopMatches).toBe(true);
+	});
+
+	test("a metadata list has no index limit, so it never says it shows the top matches", () => {
+		saved.answers.set(
+			JSON.stringify({ kind: "metadata", plan: { op: "eq", fieldPath: "metadata.status", value: "open" } }),
+			{
+				results: Array.from({ length: 1024 }, (_, index) => saved_match(`/tasks/task-${index}.md`)),
+				status: "Exhausted",
+			},
+		);
+
+		expect(render_search("metadata.status:open").result.current.names).toMatchObject({
+			status: "done",
+			isTopMatches: false,
+		});
+	});
+
+	test("a list says when its next page is loading", () => {
+		saved.answers.set(JSON.stringify({ kind: "name", text: "plan" }), {
+			results: [saved_match("/plan.md")],
+			status: "LoadingMore",
+		});
+
+		expect(render_search("plan").result.current.names).toMatchObject({ status: "more", isLoadingMore: true });
+	});
+
+	test("a date in a folder asks for the typed text only and says so", () => {
+		const { result } = render_search("file.path:/docs metadata.due:2026-09-04");
+
+		// A folder cannot scope the range plan that finds dates stored with a time.
+		expect(saved.argsSeen.map((args) => [args.clause, args.folderPath])).toEqual([
+			[{ kind: "metadata", plan: { op: "eq", fieldPath: "metadata.due", value: "2026-09-04" } }, "/docs"],
+		]);
+		expect(result.current.isFolderDate).toBe(true);
+
+		saved.argsSeen.length = 0;
+		expect(render_search("metadata.due:2026-09-04").result.current.isFolderDate).toBe(false);
+		expect(saved.argsSeen.map((args) => args.clause.kind === "metadata" && args.clause.plan.op)).toEqual([
+			"eq",
+			"range",
+		]);
+	});
+
+	test("the root folder scopes nothing, so a range and a date run in full", () => {
+		const range = render_search("file.path:/ metadata.priority:>2").result.current;
+		const date = render_search("file.path:/ metadata.due:2026-09-04").result.current;
+
+		expect(range.mode).toBe("search");
+		expect(date.isFolderDate).toBe(false);
+		expect(saved.argsSeen.map((args) => args.clause.kind === "metadata" && args.clause.plan.op)).toEqual([
+			"range",
+			"eq",
+			"range",
+		]);
 	});
 });

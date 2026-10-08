@@ -1,7 +1,7 @@
 import { defineCommand, type Command } from "just-bash/browser";
 import { internal } from "../convex/_generated/api.js";
 import type { ActionCtx } from "../convex/_generated/server.js";
-import type { files_metadata_get_by_path_Result, files_metadata_search_Result } from "../convex/files_metadata.ts";
+import type { files_metadata_get_by_path_Result } from "../convex/files_metadata.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import {
 	files_metadata_FIELD_SEGMENT_REGEX,
@@ -22,6 +22,7 @@ import {
 	bash_COMMAND_EXIT_USAGE,
 	type bash_DbFilesRoots,
 } from "./bash-utils.ts";
+import { files_pending_overlay_list } from "./files-pending-overlay.ts";
 
 const SUPPORTED_METADATA_KINDS = new Set(["frontmatter", "metadata"]);
 
@@ -419,7 +420,12 @@ function build_search_continuation(args: {
 	return parts.join(" ");
 }
 
-function search_result_value(result: files_metadata_search_Result["items"][number]) {
+function search_result_value(result: {
+	valueKind: "none" | "string" | "number" | "boolean" | "maybe_date";
+	stringValue?: string;
+	numberValue?: number;
+	booleanValue?: boolean;
+}) {
 	switch (result.valueKind) {
 		case "string":
 			return result.stringValue;
@@ -640,22 +646,33 @@ export function bash_meta_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 
 		// Scope the metadata scan to the classified folder; the workspace/mount root maps to the whole tree.
 		const path = scope.dbFilesPath != null && scope.dbFilesPath !== "/" ? scope.dbFilesPath : undefined;
-		const result = (await ctx.runQuery(internal.files_metadata.search, {
+		// Saved rows show their committed metadata; the user's drafts come from their draft metadata.
+		// `prefix` and `range` read the whole workspace and drop rows outside the folder, so a page can
+		// be short.
+		const listed = await files_pending_overlay_list(ctx, {
 			agentSource: scope.ctxData.agentSource,
 			organizationId: scope.ctxData.organizationId,
 			workspaceId: scope.ctxData.workspaceId,
-			userId: scope.ctxData.userId,
+			visibilityUserId: scope.ctxData.userId,
+			overlayUserId: scope.fs.overlayUserId,
+			folderPath: path ?? "/",
+			mode: "metadata",
 			plan: parsed._yay.plan,
+			order: "asc",
 			numItems: parsed._yay.limit,
 			cursor,
-			pathPrefix: path,
-		})) as files_metadata_search_Result;
+		});
+		if (listed._nay) {
+			return { stdout: "", stderr: `meta search: ${listed._nay.message}\n`, exitCode: bash_COMMAND_EXIT_FAILURE };
+		}
+		const result = listed._yay;
 
 		// An item can match through multiple metadata values; command output lists each path once.
 		const dedupedItems = [
 			...new Map(result.items.map((item) => [`${item.target.kind}:${item.target.id}`, item])).values(),
-		];
-		const nextCursor = result.isDone ? null : await bash_cursor_id_create(ctx, result.continueCursor);
+		].flatMap((item) => (item.match ? [{ ...item, ...item.match }] : []));
+		const nextCursor =
+			result.isDone || result.continueCursor == null ? null : await bash_cursor_id_create(ctx, result.continueCursor);
 		if (parsed._yay.format === "json") {
 			return {
 				stdout: `${JSON.stringify(

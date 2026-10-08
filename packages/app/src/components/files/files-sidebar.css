@@ -160,6 +160,65 @@
 	}
 	/* #endregion shared group */
 
+	/* #region search results */
+	.FilesSidebarSearchResults {
+		padding: 8px;
+	}
+
+	.FilesSidebarSearchResults-state {
+		margin: 0;
+		padding: 8px;
+
+		font-size: 0.875rem;
+		color: var(--color-fg-08);
+	}
+
+	.FilesSidebarSearchResults-list {
+		margin: 0;
+		padding: 0;
+		list-style: none;
+	}
+
+	.FilesSidebarSearchResults-row {
+		width: 100%;
+		height: auto;
+		min-height: 36px;
+		justify-content: flex-start;
+		gap: 6px;
+
+		&[aria-current="page"] {
+			background: linear-gradient(var(--color-base-1-06), var(--color-base-1-05));
+		}
+	}
+
+	.FilesSidebarSearchResults-row-text {
+		flex: 1;
+		min-width: 0;
+
+		display: flex;
+		flex-direction: column;
+
+		text-align: start;
+	}
+
+	.FilesSidebarSearchResults-row-name,
+	.FilesSidebarSearchResults-row-path {
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		overflow: hidden;
+	}
+
+	.FilesSidebarSearchResults-row-path {
+		font-size: 0.75rem;
+		/* fg-07 at this size fails AA on the row highlight, like the palette path. */
+		color: var(--color-fg-08);
+	}
+
+	.FilesSidebarSearchResults-more {
+		width: 100%;
+	}
+	/* #endregion search results */
+
 	/* #region upload conflict modal */
 	.FilesSidebarUploadConflictModal {
 		width: min(500px, calc(100vw - 32px));

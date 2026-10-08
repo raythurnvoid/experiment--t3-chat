@@ -1,41 +1,23 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { FunctionArgs, FunctionReference, FunctionReturnType } from "convex/server";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { AppHotkeysProvider } from "@/components/app-hotkeys.tsx";
-import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
+import type { app_convex_api } from "@/lib/app-convex-client.ts";
 import { FilesSearchPalette } from "./files-search-palette.tsx";
 
-type ContentArgs = FunctionArgs<typeof app_convex_api.files_nodes.search_content>;
-type ContentResult = FunctionReturnType<typeof app_convex_api.files_nodes.search_content>;
-type VisibleResult = FunctionReturnType<typeof app_convex_api.files_visible.list>;
-type MetadataResult = FunctionReturnType<typeof app_convex_api.files_metadata.search_nodes>;
-type LinksResult = FunctionReturnType<typeof app_convex_api.files_share_links.list_workspace_links>;
+type SavedArgs = FunctionArgs<typeof app_convex_api.files_nodes.search_saved>;
+type SavedRow = FunctionReturnType<typeof app_convex_api.files_nodes.search_saved>["page"][number];
 
-// The 9,001-file fixture loads 181 owner pages before content search can start.
-const SEARCH_TIMEOUT = 15_000;
-
-const {
-	visibleEntriesMock,
-	visibleCursorsSeen,
-	contentArgsSeen,
-	contentResults,
-	visibleResults,
-	metadataResults,
-	linksResult,
-	queryPushListeners,
-	navigateMock,
-} = vi.hoisted(() => ({
-	visibleEntriesMock: vi.fn(),
-	visibleCursorsSeen: new Set<string>(),
-	contentArgsSeen: { current: [] as ContentArgs[] },
-	contentResults: new Map<string, ContentResult | Error | undefined>(),
-	visibleResults: new Map<string, VisibleResult | Error | undefined>(),
-	metadataResults: new Map<string, MetadataResult | Error | undefined>(),
-	// The workspace list of public links. `undefined` is loading.
-	linksResult: { current: [] as LinksResult | Error | undefined },
+// `savedPages` answers `search_saved` by its clause and folder: each entry is one server page, and
+// `undefined` keeps the first page loading. A query with no entry is empty and done.
+const { savedArgsSeen, savedPages, queryPushListeners, navigateMock } = vi.hoisted(() => ({
+	savedArgsSeen: [] as SavedArgs[],
+	savedPages: new Map<string, SavedRow[][] | undefined>(),
 	queryPushListeners: new Set<() => void>(),
 	navigateMock: vi.fn().mockResolvedValue(undefined),
 }));
+
+const saved_key = (clause: SavedArgs["clause"], folderPath?: string) => JSON.stringify([clause, folderPath ?? null]);
 
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => navigateMock }));
 vi.mock("@/lib/app-tenant-context.tsx", () => ({
@@ -47,11 +29,12 @@ vi.mock("@/lib/app-tenant-context.tsx", () => ({
 // Keep the real palette, filters, and loading UI. Replace only the query boundary.
 vi.mock("convex/react", async (importOriginal) => {
 	const { useEffect, useState } = await import("react");
-	const { getFunctionName } = await import("convex/server");
 	return {
 		...(await importOriginal<typeof import("convex/react")>()),
 		useConvex: () => ({ query: async () => [] }),
-		useQueries: (queries: Record<string, { query: FunctionReference<"query">; args: Record<string, unknown> }>) => {
+		// Only the input's suggestions use `useQueries` here. They stay empty.
+		useQueries: (queries: Record<string, unknown>) => Object.fromEntries(Object.keys(queries).map((key) => [key, []])),
+		usePaginatedQuery: (_query: FunctionReference<"query">, args: SavedArgs | "skip") => {
 			const [, forceRender] = useState(0);
 			useEffect(() => {
 				const listener = () => forceRender((count) => count + 1);
@@ -60,56 +43,29 @@ vi.mock("convex/react", async (importOriginal) => {
 					queryPushListeners.delete(listener);
 				};
 			}, []);
-			const contentQueries = Object.entries(queries).filter(
-				([, request]) => getFunctionName(request.query) === "files_nodes:search_content",
-			);
-			if (contentQueries.length > 0) {
-				contentArgsSeen.current = contentQueries.map(([, request]) => request.args as ContentArgs);
+			const key = args === "skip" ? "skip" : saved_key(args.clause, args.folderPath);
+			const [loaded, setLoaded] = useState({ key, pageCount: 1 });
+			const pageCount = loaded.key === key ? loaded.pageCount : 1;
+			if (args === "skip") {
+				return { results: [], status: "LoadingFirstPage", isLoading: true, loadMore: () => {} };
 			}
-			return Object.fromEntries(
-				Object.entries(queries).map(([key, request]) => {
-					const name = getFunctionName(request.query);
-					if (name === "files_visible:list") {
-						const cursor = String(request.args.cursor ?? "0");
-						visibleCursorsSeen.add(cursor);
-						if (visibleResults.has(cursor)) return [key, visibleResults.get(cursor)];
-						const entries: NonNullable<VisibleResult["_yay"]>["items"] = visibleEntriesMock();
-						const start = Number(cursor);
-						const end = start + Number(request.args.numItems);
-						return [
-							key,
-							{
-								_yay: {
-									items: entries.slice(start, end),
-									continueCursor: end < entries.length ? String(end) : null,
-									isDone: end >= entries.length,
-								},
-							},
-						];
-					}
-					if (name === "files_metadata:search_nodes")
-						return [key, metadataResults.get(key) ?? { targets: [], truncated: false }];
-					if (name === "files_share_links:list_workspace_links") return [key, linksResult.current];
-					if (name !== "files_nodes:search_content") return [key, []];
-					const args = request.args as ContentArgs;
-					if ((args.targets?.length ?? 0) > 8192) return [key, new Error("ArrayTooLong")];
-					const firstId = args.targets?.[0]?.id ?? "unfiltered";
-					return [key, contentResults.has(firstId) ? contentResults.get(firstId) : { results: [], truncated: false }];
-				}),
-			);
+			savedArgsSeen.push(args);
+			const pages = savedPages.has(key) ? savedPages.get(key) : [[]];
+			if (pages === undefined) {
+				return { results: [], status: "LoadingFirstPage", isLoading: true, loadMore: () => {} };
+			}
+			return {
+				results: pages.slice(0, pageCount).flat(),
+				status: pageCount >= pages.length ? "Exhausted" : "CanLoadMore",
+				isLoading: false,
+				loadMore: () => setLoaded({ key, pageCount: pageCount + 1 }),
+			};
 		},
 	};
 });
 
-function content_match(index: number) {
-	return {
-		target: { kind: "saved" as const, id: `node_${index}` as app_convex_Id<"files_nodes"> },
-		path: `/file-${index}.md`,
-		textChunk: "Budget details are ready.",
-		lineStart: 1,
-		matchCount: 1,
-	};
-}
+const saved_row = (path: string, extra: Partial<{ textChunk: string; lineStart: number }> = {}) =>
+	({ kind: "file", nodeId: `node${path}`, path, ...extra }) as SavedRow;
 
 async function open_search(query: string) {
 	render(
@@ -122,223 +78,189 @@ async function open_search(query: string) {
 }
 
 beforeEach(() => {
-	contentArgsSeen.current = [];
-	contentResults.clear();
-	visibleResults.clear();
-	visibleCursorsSeen.clear();
-	metadataResults.clear();
-	linksResult.current = [];
+	savedArgsSeen.length = 0;
+	savedPages.clear();
 	queryPushListeners.clear();
 	navigateMock.mockClear();
-	visibleEntriesMock.mockReset().mockReturnValue(
-		Array.from({ length: 9001 }, (_, index) => ({
-			target: { kind: "saved", id: `node_${index}` },
-			name: `file-${index}.md`,
-			path: `/file-${index}.md`,
-			kind: "file",
-			updatedAt: 1,
-			updatedBy: "user_1",
-			contentType: "text/markdown",
-			preparing: false,
-		})),
-	);
 });
 
 afterEach(cleanup);
 
 describe("FilesSearchPalette", () => {
-	test("searches every filtered candidate in bounded groups and includes the final group", async () => {
-		contentResults.set("node_0", { results: [content_match(0)], truncated: false });
-		contentResults.set("node_9000", { results: [content_match(9000)], truncated: false });
-
-		await open_search("file.path:/ budget");
-
-		await waitFor(() => expect(contentArgsSeen.current).toHaveLength(10), { timeout: SEARCH_TIMEOUT });
-		expect(contentArgsSeen.current.every((args) => args.targets!.length <= 1000)).toBe(true);
-		expect(contentArgsSeen.current.flatMap((args) => args.targets)).toEqual(
-			Array.from({ length: 9001 }, (_, index) => ({ kind: "saved", id: `node_${index}` })),
-		);
-		expect(await screen.findByText("file-0.md")).toBeTruthy();
-		expect(await screen.findByText("file-9000.md")).toBeTruthy();
-	});
-
-	test("waits for the final group before showing results", async () => {
-		contentResults.set("node_0", { results: [content_match(0)], truncated: false });
-		contentResults.set("node_9000", undefined);
-
-		await open_search("file.path:/ budget");
-
-		await waitFor(() => expect(contentArgsSeen.current).toHaveLength(10), { timeout: SEARCH_TIMEOUT });
-		expect(screen.getByRole("list", { name: "Search results" }).getAttribute("aria-busy")).toBe("true");
-		expect(screen.queryByText("file-0.md")).toBeNull();
-		act(() => {
-			contentResults.set("node_9000", { results: [content_match(9000)], truncated: false });
-			queryPushListeners.forEach((listener) => listener());
-		});
-		expect(await screen.findByText("file-0.md")).toBeTruthy();
-		expect(await screen.findByText("file-9000.md")).toBeTruthy();
-	});
-
-	test("shows a failed final group instead of partial results", async () => {
-		contentResults.set("node_0", { results: [content_match(0)], truncated: false });
-		contentResults.set("node_1000", undefined);
-		contentResults.set("node_9000", new Error("Search failed"));
-
-		await open_search("file.path:/ budget");
-
-		expect(
-			await screen.findByText("Search failed. Try changing your query.", {}, { timeout: SEARCH_TIMEOUT }),
-		).toBeTruthy();
-		expect(screen.queryByText("file-0.md")).toBeNull();
-	});
-
-	test("keeps unfiltered text searches as one query", async () => {
-		contentResults.set("unfiltered", { results: [content_match(9000)], truncated: false });
-
+	test("plain text shows a Names list and a Contents list, each with its count", async () => {
+		savedPages.set(saved_key({ kind: "name", text: "budget" }), [
+			[saved_row("/a/budget.md"), saved_row("/b/budget-2026.md")],
+			[saved_row("/c/budget-old.md")],
+		]);
+		savedPages.set(saved_key({ kind: "content", text: "budget" }), [
+			[saved_row("/notes.md", { textChunk: "The budget is ready.", lineStart: 4 })],
+		]);
 		await open_search("budget");
 
-		expect(await screen.findByText("file-9000.md", {}, { timeout: SEARCH_TIMEOUT })).toBeTruthy();
-		expect(contentArgsSeen.current).toEqual([{ membershipId: "membership_1", query: "budget" }]);
+		const names = await screen.findByRole("group", { name: "Names" });
+		const contents = screen.getByRole("group", { name: "Contents" });
+		expect(within(names).getByText("2+ matches")).toBeTruthy();
+		expect(within(names).getByRole("button", { name: /budget\.md/ })).toBeTruthy();
+		expect(within(contents).getByText("1 match")).toBeTruthy();
+		expect(within(contents).getByText("The budget is ready.")).toBeTruthy();
+		expect(screen.getByText("More matches may be available · Add more words to narrow the search")).toBeTruthy();
+
+		// Show more loads the next page. When it is the last one, focus moves to the first new row.
+		const showMore = within(names).getByRole("button", { name: "Show more" });
+		act(() => showMore.focus());
+		fireEvent.click(showMore);
+		await waitFor(() => expect(within(names).getByText("3 matches")).toBeTruthy());
+		expect(within(names).queryByRole("button", { name: "Show more" })).toBeNull();
+		expect(document.activeElement).toBe(within(names).getByRole("button", { name: /budget-old\.md/ }));
+		expect(screen.getByText("↑ ↓ Navigate · Enter Open · Esc Close")).toBeTruthy();
 	});
 
-	test("sends no content query when filters match no files", async () => {
-		await open_search("file.path:/missing budget");
-
-		expect(await screen.findByText("No matching files", {}, { timeout: SEARCH_TIMEOUT })).toBeTruthy();
-		expect(contentArgsSeen.current).toEqual([]);
-	});
-
-	test("waits for the final owner page before treating filters as complete", async () => {
-		visibleResults.set("9000", undefined);
-		await open_search("file.path:/ budget");
-		await waitFor(() => expect(visibleCursorsSeen.has("9000")).toBe(true), { timeout: SEARCH_TIMEOUT });
-		expect(screen.getByRole("list", { name: "Search results" }).getAttribute("aria-busy")).toBe("true");
-		expect(contentArgsSeen.current).toEqual([]);
-		act(() => {
-			visibleResults.delete("9000");
-			queryPushListeners.forEach((listener) => listener());
-		});
-		await waitFor(() => expect(contentArgsSeen.current).toHaveLength(10), { timeout: SEARCH_TIMEOUT });
-		expect(contentArgsSeen.current.at(-1)?.targets).toEqual([{ kind: "saved", id: "node_9000" }]);
-	});
-
-	test("opens a private name match with its private target", async () => {
-		visibleEntriesMock.mockReturnValue([
-			{
-				target: { kind: "private", id: "private_1" },
-				name: "Draft folder",
-				path: "/Draft folder",
-				kind: "folder",
-				updatedAt: 1,
-				updatedBy: "user_1",
-				contentType: null,
-				preparing: false,
-			},
+	test("counts a file that matches by name and by contents once", async () => {
+		savedPages.set(saved_key({ kind: "name", text: "budget" }), [
+			[saved_row("/a/budget.md"), saved_row("/b/budget.md")],
 		]);
-		await open_search("Draft");
-		fireEvent.click(await screen.findByRole("button", { name: /Draft folder/ }));
-		const call = navigateMock.mock.calls.at(-1)?.[0];
-		expect(call.search({ nodeId: "old_saved", q: "keep-filter" })).toEqual({
-			pendingNodeId: "private_1",
-			q: "keep-filter",
+		savedPages.set(saved_key({ kind: "content", text: "budget" }), [
+			[saved_row("/a/budget.md", { textChunk: "budget" }), saved_row("/notes.md", { textChunk: "budget" })],
+		]);
+		await open_search("budget");
+		await screen.findByRole("group", { name: "Names" });
+
+		// The status shows in the input and to screen readers.
+		expect(screen.getAllByText("3 matches").length).toBeGreaterThan(0);
+	});
+
+	test("Enter opens the first Names row", async () => {
+		savedPages.set(saved_key({ kind: "name", text: "budget" }), [
+			[saved_row("/a/budget.md"), saved_row("/b/budget.md")],
+		]);
+		savedPages.set(saved_key({ kind: "content", text: "budget" }), [[saved_row("/notes.md", { textChunk: "budget" })]]);
+		await open_search("budget");
+		await screen.findByRole("button", { name: /\/a\/budget\.md/ });
+
+		fireEvent.keyDown(screen.getByRole("combobox"), { key: "Enter" });
+		expect(navigateMock.mock.calls.at(-1)?.[0].search({ q: "budget" })).toEqual({
+			q: "budget",
+			nodeId: "node/a/budget.md",
 		});
 	});
 
-	test("searches private content with a tagged filter candidate", async () => {
-		const target = { kind: "private" as const, id: "private_1" as app_convex_Id<"files_pending_nodes"> };
-		visibleEntriesMock.mockReturnValue([
-			{
-				target,
-				name: "draft.txt",
-				path: "/draft.txt",
-				kind: "file",
-				updatedAt: 1,
-				updatedBy: "user_1",
-				contentType: "text/plain",
-				preparing: false,
-			},
-		]);
-		contentResults.set("private_1", {
-			results: [{ ...content_match(1), target, path: "/draft.txt" }],
-			truncated: false,
-		});
-		await open_search("file.path:/ budget");
-		expect(await screen.findByText("draft.txt")).toBeTruthy();
-		expect(contentArgsSeen.current).toEqual([{ membershipId: "membership_1", query: "budget", targets: [target] }]);
+	test("with a folder, names search inside it and Contents says why it is empty", async () => {
+		savedPages.set(saved_key({ kind: "name", text: "plan" }, "/docs"), [[saved_row("/docs/plan.md")]]);
+		await open_search("file.path:/docs plan");
+
+		const contents = await screen.findByRole("group", { name: "Contents" });
+		expect(
+			within(contents).getByText(
+				"Contents search does not work inside a folder. Remove the folder to search contents.",
+			),
+		).toBeTruthy();
+		expect(within(screen.getByRole("group", { name: "Names" })).getByRole("button", { name: /plan\.md/ })).toBeTruthy();
+		expect(savedArgsSeen.some((args) => args.clause.kind === "content")).toBe(false);
 	});
 
-	test("does not show a metadata result when its query is truncated", async () => {
-		visibleEntriesMock.mockReturnValue([
-			{
-				target: { kind: "private", id: "private_1" },
-				name: "Draft",
-				path: "/Draft",
-				kind: "folder",
-				updatedAt: 1,
-				updatedBy: "user_1",
-				contentType: null,
-				preparing: false,
-			},
+	test("shows the problem the search answered for its list", async () => {
+		savedPages.set(saved_key({ kind: "name", text: "plan" }, "/missing"), [
+			[{ kind: "problem", message: "Folder not found" }],
 		]);
-		metadataResults.set("metadata.status:open", { targets: [], truncated: true });
+		await open_search("file.path:/missing plan");
+
+		const names = await screen.findByRole("group", { name: "Names" });
+		expect(await within(names).findByText("Folder not found")).toBeTruthy();
+		expect(within(names).queryByText(/match/)).toBeNull();
+	});
+
+	test("a pasted draft link says how to open it, and Enter opens the draft", async () => {
+		await open_search("http://localhost/w/team/home/files?pendingNodeId=draft_1");
+
+		expect(await screen.findByText("This is a link to a draft. Press Enter to open it.")).toBeTruthy();
+		expect(savedArgsSeen).toEqual([]);
+		fireEvent.keyDown(screen.getByRole("combobox"), { key: "Enter" });
+		expect(navigateMock.mock.calls.at(-1)?.[0].search({ q: "old" })).toEqual({ q: "old", pendingNodeId: "draft_1" });
+	});
+
+	test("an exact path shows its one row", async () => {
+		savedPages.set(saved_key({ kind: "path", path: "/docs/plan.md" }), [[saved_row("/docs/plan.md")]]);
+		await open_search("/docs/plan.md");
+
+		const matches = await screen.findByRole("group", { name: "Matches" });
+		expect(within(matches).getByText("1 match")).toBeTruthy();
+		expect(screen.queryByRole("group", { name: "Contents" })).toBeNull();
+	});
+
+	test("Enter right after pasting a path or a draft link opens it at once, and a node id link waits", async () => {
+		await open_search("/docs/plan.md");
+		fireEvent.keyDown(screen.getByRole("combobox"), { key: "Enter" });
+		expect(navigateMock.mock.calls.at(-1)?.[0]).toMatchObject({
+			to: "/w/$organizationName/$workspaceName/files/$",
+			params: { _splat: "/docs/plan.md" },
+		});
+		cleanup();
+
+		await open_search("http://localhost/w/team/home/files?pendingNodeId=draft_1");
+		fireEvent.keyDown(screen.getByRole("combobox"), { key: "Enter" });
+		expect(navigateMock.mock.calls.at(-1)?.[0].search({})).toEqual({ q: undefined, pendingNodeId: "draft_1" });
+		cleanup();
+
+		// The node may be in another workspace, so Enter waits for the search, which checks it.
+		await open_search("http://localhost/w/team/home/files?nodeId=node_1");
+		fireEvent.keyDown(screen.getByRole("combobox"), { key: "Enter" });
+		expect(navigateMock).toHaveBeenCalledTimes(2);
+		expect(screen.getByText(/Still searching/)).toBeTruthy();
+	});
+
+	test("a metadata filter shows one list and keeps Use filters in sidebar", async () => {
+		const filterRows = [saved_row("/tasks/a.md")];
+		savedPages.set(saved_key({ kind: "metadata", plan: { op: "eq", fieldPath: "metadata.status", value: "open" } }), [
+			filterRows,
+		]);
 		await open_search("metadata.status:open");
-		expect(await screen.findByText("Search failed. Try changing your query.")).toBeTruthy();
-		expect(screen.queryByRole("button", { name: /Draft/ })).toBeNull();
-		expect(contentArgsSeen.current).toEqual([]);
+		// The first Enter turns the typed filter into a chip.
+		fireEvent.keyDown(screen.getByRole("combobox"), { key: "Enter" });
+
+		const matches = await screen.findByRole("group", { name: "Matches" });
+		expect(await within(matches).findByRole("button", { name: /a\.md/ })).toBeTruthy();
+		expect(screen.getByRole("button", { name: "Use filters in sidebar" })).toBeTruthy();
 	});
 
-	// The palette runs outside the Files route too, for example from Chat, so it loads the link list
-	// itself.
-	test("file.link:public lists public files and waits for the link list before Enter", async () => {
-		visibleEntriesMock.mockReturnValue(
-			["public.md", "other.md"].map((name, index) => ({
-				target: { kind: "saved", id: `node_${index}` },
-				name,
-				path: `/deep/folder/${name}`,
-				kind: "file",
-				updatedAt: 1,
-				updatedBy: "user_1",
-				contentType: "text/markdown",
-				preparing: false,
-			})),
+	test("a date in a folder says it matches only the same text", async () => {
+		savedPages.set(
+			saved_key({ kind: "metadata", plan: { op: "eq", fieldPath: "metadata.due", value: "2026-09-04" } }, "/docs"),
+			[[saved_row("/docs/a.md")]],
 		);
-		linksResult.current = undefined;
-		await open_search("file.link:public");
-		const input = screen.getByRole("combobox");
-		await waitFor(() =>
-			expect(screen.getByRole("list", { name: "Search results" }).getAttribute("aria-busy")).toBe("true"),
-		);
-		// The first Enter turns the typed filter into a chip. The second one has to wait.
-		fireEvent.keyDown(input, { key: "Enter" });
-		fireEvent.keyDown(input, { key: "Enter" });
+		await open_search("file.path:/docs metadata.due:2026-09-04");
+		fireEvent.keyDown(screen.getByRole("combobox"), { key: "Enter" });
+
+		const matches = await screen.findByRole("group", { name: "Matches" });
+		expect(await within(matches).findByRole("button", { name: /a.md/ })).toBeTruthy();
+		expect(within(matches).getByText("In a folder, a date matches only values written the same way.")).toBeTruthy();
+	});
+
+	test("a finished list at the index limit says it shows the top matches", async () => {
+		savedPages.set(saved_key({ kind: "name", text: "log" }), [
+			Array.from({ length: 1024 }, (_, index) => saved_row(`/logs/log-${index}.txt`)),
+		]);
+		await open_search("log");
+
+		const names = await screen.findByRole("group", { name: "Names" });
+		expect(within(names).getByText("1024 matches")).toBeTruthy();
+		expect(within(names).getByText("Showing the top 1,024 matches. Add more words to narrow the search.")).toBeTruthy();
+	});
+
+	test("waits for the names before Enter opens a row", async () => {
+		savedPages.set(saved_key({ kind: "name", text: "budget" }), undefined);
+		await open_search("budget");
+		const names = await screen.findByRole("group", { name: "Names" });
+		expect(names.getAttribute("aria-busy")).toBe("true");
+
+		fireEvent.keyDown(screen.getByRole("combobox"), { key: "Enter" });
 		expect(navigateMock).not.toHaveBeenCalled();
 		expect(screen.getByText(/Still searching/)).toBeTruthy();
-
 		act(() => {
-			linksResult.current = [
-				{
-					nodeId: "node_0" as app_convex_Id<"files_nodes">,
-					createdBy: "user_1" as app_convex_Id<"users">,
-					createdAt: 1,
-				},
-			];
+			savedPages.set(saved_key({ kind: "name", text: "budget" }), [[saved_row("/budget.md")]]);
 			queryPushListeners.forEach((listener) => listener());
 		});
-		expect(await screen.findByRole("button", { name: /public\.md/ })).toBeTruthy();
-		expect(screen.queryByRole("button", { name: /other\.md/ })).toBeNull();
-		fireEvent.keyDown(input, { key: "Enter" });
-		expect(navigateMock.mock.calls.at(-1)?.[0].search({ q: "file.link:public" })).toEqual({
-			q: "file.link:public",
-			nodeId: "node_0",
-		});
-	});
-
-	test("does not show a file.link result when the link list failed", async () => {
-		linksResult.current = new Error("failed");
-		await open_search("file.link:public");
-		expect(
-			await screen.findByText("Search failed. Try changing your query.", {}, { timeout: SEARCH_TIMEOUT }),
-		).toBeTruthy();
-		expect(screen.queryByRole("button", { name: /file-0\.md/ })).toBeNull();
+		await within(names).findByRole("button", { name: /budget\.md/ });
+		fireEvent.keyDown(screen.getByRole("combobox"), { key: "Enter" });
+		expect(navigateMock).toHaveBeenCalledTimes(1);
 	});
 });

@@ -9,6 +9,7 @@ import { internalMutation, mutation } from "./functions.ts";
 import app_convex_schema, {
 	files_pending_target_validator,
 	files_metadata_entries_validator,
+	files_metadata_search_plan_validator,
 	ai_chat_workspaces_source_validator,
 } from "./schema.ts";
 import { ai_chat_workspaces_db_authorize_file_scope } from "./ai_chat_workspaces.ts";
@@ -32,6 +33,7 @@ import {
 	string_prefix_upper_bound,
 } from "../server/server-utils.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
+import { files_pending_overlay_list_over_budget } from "../server/files-pending-overlay.ts";
 import {
 	files_metadata_FRONTMATTER_FIELD_PREFIX,
 	files_metadata_frontmatter_exceeds_index_caps,
@@ -608,29 +610,6 @@ function search_query(
 	);
 }
 
-/**
- * One search plan, as `files_metadata_SearchPlan` in `shared/files-metadata.ts`. The agent's
- * `search` and the search box's `search_nodes` accept the same shape.
- */
-const search_plan_validator = v.union(
-	v.object({ op: v.literal("exists"), fieldPath: v.string() }),
-	v.object({
-		op: v.literal("eq"),
-		fieldPath: v.string(),
-		value: v.union(v.string(), v.number(), v.boolean()),
-	}),
-	v.object({ op: v.literal("prefix"), fieldPath: v.string(), value: v.string() }),
-	v.object({
-		op: v.literal("range"),
-		fieldPath: v.string(),
-		valueKind: v.union(v.literal("number"), v.literal("maybe_date")),
-		gte: v.optional(v.number()),
-		gt: v.optional(v.number()),
-		lte: v.optional(v.number()),
-		lt: v.optional(v.number()),
-	}),
-);
-
 export const search = internalQuery({
 	args: {
 		agentSource: v.optional(ai_chat_workspaces_source_validator),
@@ -639,7 +618,7 @@ export const search = internalQuery({
 		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
 		userId: v.id("users"),
 		serviceAccountId: v.optional(v.id("access_control_service_accounts")),
-		plan: search_plan_validator,
+		plan: files_metadata_search_plan_validator,
 		pathPrefix: v.optional(v.string()),
 		numItems: v.number(),
 		cursor: paginationOptsValidator.fields.cursor,
@@ -709,13 +688,6 @@ export type files_metadata_search_Result =
 // #region search box
 
 /**
- * Raw index caps and the shared owner reader bound each filter query.
- */
-const SEARCH_NODES_MAX_PLANS = 4;
-const SEARCH_NODES_DOCS_PER_PLAN = 1000;
-const SEARCH_PATH_PREFIX_MAX_LENGTH = 1024;
-
-/**
  * Catalog caps. A key, kind, or value is listed only when one of its first few docs in index
  * order sits on a file the caller can read. A member who was given one folder deep inside a big
  * restricted tree can miss a key that way. Typing the key still works.
@@ -776,91 +748,179 @@ async function db_get_search_caller(ctx: QueryCtx, args: { membershipId: Id<"org
 }
 
 /**
- * Keep one owner reader across keys and values. Count catalog range reads separately.
+ * Keep one saved-only reader across keys and values. Count catalog range reads separately.
  */
 type SearchSampleCache = {
 	reader: Awaited<ReturnType<typeof files_search_db_create_reader>>;
 	reads: number;
+	/**
+	 * Set once the query used the read budget of agent listings. The samples' access checks read
+	 * more than `reads` counts, so the walk checks what the query really read and stops early.
+	 */
+	overBudget: boolean;
 };
 
 /**
- * A suggestion must belong to a current readable file or draft.
+ * A suggestion must belong to a current readable saved file.
  */
 async function db_search_sample_is_readable(args: {
+	ctx: QueryCtx;
 	docs: Doc<"files_metadata_docs">[];
 	mut_cache: SearchSampleCache;
 }) {
 	for (const metadataDoc of args.docs) {
-		if (args.mut_cache.reader.exhausted) return false;
+		args.mut_cache.overBudget ||= files_pending_overlay_list_over_budget(await args.ctx.meta.getTransactionMetrics());
+		if (args.mut_cache.overBudget || args.mut_cache.reader.exhausted) return false;
 		if (await args.mut_cache.reader.resolveDocument(metadataDoc)) return true;
 	}
 	return false;
 }
 
 /**
- * The search box's door: the files one filter matches, as ids. The box owns the AND across
- * filters, the negation, and the `file.*` fields, because it already holds every readable node.
+ * The index range of one plan over saved (committed), active docs, for the search box. A folder is
+ * the last range of the `exists` and `eq` plans: `treePathPrefix` is the folder's stored `treePath`,
+ * which ends with `/`. `prefix` and `range` put their range on the value, so they take no folder.
  */
-export const search_nodes = query({
+export function files_metadata_db_query_saved_plan(
+	ctx: QueryCtx,
 	args: {
-		membershipId: v.id("organizations_workspaces_users"),
-		plans: v.array(search_plan_validator),
-		pathPrefix: v.optional(v.string()),
+		organizationId: Doc<"files_metadata_docs">["organizationId"];
+		workspaceId: Doc<"files_metadata_docs">["workspaceId"];
+		plan: files_metadata_SearchPlan;
+		treePathPrefix: string | null;
 	},
-	returns: v.object({ targets: v.array(files_pending_target_validator), truncated: v.boolean() }),
-	handler: async (ctx, args) => {
-		const caller = await db_get_search_caller(ctx, { membershipId: args.membershipId });
-		if (!caller) {
-			return { targets: [], truncated: false };
-		}
+) {
+	const { plan, treePathPrefix } = args;
+	switch (plan.op) {
+		case "exists":
+			return ctx.db.query("files_metadata_docs").withIndex("by_org_ws_source_archive_docKind_field_tree", (q) => {
+				const base = q
+					.eq("organizationId", args.organizationId)
+					.eq("workspaceId", args.workspaceId)
+					.eq("sourceKind", "committed")
+					.eq("archiveOperationId", undefined)
+					.eq("docKind", "field")
+					.eq("fieldPath", plan.fieldPath);
+				return treePathPrefix === null
+					? base
+					: base.gte("treePath", treePathPrefix).lt("treePath", path_tree_prefix_upper_bound(treePathPrefix));
+			});
 
-		// One filter is at most four plans over keys the shared grammar accepts, inside a folder
-		// path. Anything else did not come from the app and gets the empty answer, not an error.
-		if (
-			args.plans.length === 0 ||
-			args.plans.length > SEARCH_NODES_MAX_PLANS ||
-			args.plans.some((plan) => !search_field_path_is_valid(plan.fieldPath)) ||
-			(args.pathPrefix !== undefined &&
-				(!args.pathPrefix.startsWith("/") || args.pathPrefix.length > SEARCH_PATH_PREFIX_MAX_LENGTH))
-		) {
-			return { targets: [], truncated: false };
-		}
-
-		const { organizationId, workspaceId } = caller.membership;
-		const userId = caller.userAuth.id;
-
-		const treePathPrefix = args.pathPrefix === undefined ? undefined : tree_path_from_path(args.pathPrefix);
-		const reader = await files_search_db_create_reader(ctx, {
-			organizationId,
-			workspaceId,
-			userId,
-			hasWorkspaceRead: caller.hasWorkspaceRead,
-		});
-		const targets = new Map<string, files_PendingTarget>();
-		let truncated = false;
-		for (const plan of args.plans) {
-			const metadataDocs = await search_index_query(ctx, { organizationId, workspaceId, plan }).take(
-				SEARCH_NODES_DOCS_PER_PLAN + 1,
-			);
-			if (metadataDocs.length > SEARCH_NODES_DOCS_PER_PLAN) truncated = true;
-			for (const metadataDoc of metadataDocs.slice(0, SEARCH_NODES_DOCS_PER_PLAN)) {
-				const entry = await reader.resolveDocument(metadataDoc);
-				if (reader.exhausted) {
-					truncated = true;
-					break;
-				}
-				if (entry && (!treePathPrefix || tree_path_from_path(entry.path).startsWith(treePathPrefix)))
-					targets.set(`${entry.target.kind}:${entry.target.id}`, entry.target);
+		case "eq":
+			if (typeof plan.value === "string") {
+				const value = plan.value;
+				return ctx.db
+					.query("files_metadata_docs")
+					.withIndex("by_org_ws_source_archive_docKind_field_string_tree", (q) => {
+						const base = q
+							.eq("organizationId", args.organizationId)
+							.eq("workspaceId", args.workspaceId)
+							.eq("sourceKind", "committed")
+							.eq("archiveOperationId", undefined)
+							.eq("docKind", "value")
+							.eq("fieldPath", plan.fieldPath)
+							.eq("valueKind", "string")
+							.eq("stringValue", value);
+						return treePathPrefix === null
+							? base
+							: base.gte("treePath", treePathPrefix).lt("treePath", path_tree_prefix_upper_bound(treePathPrefix));
+					});
 			}
-			if (reader.exhausted) break;
-		}
-		return { targets: [...targets.values()], truncated };
-	},
-});
+
+			if (typeof plan.value === "number") {
+				const value = plan.value;
+				return ctx.db
+					.query("files_metadata_docs")
+					.withIndex("by_org_ws_source_archive_docKind_field_number_tree", (q) => {
+						const base = q
+							.eq("organizationId", args.organizationId)
+							.eq("workspaceId", args.workspaceId)
+							.eq("sourceKind", "committed")
+							.eq("archiveOperationId", undefined)
+							.eq("docKind", "value")
+							.eq("fieldPath", plan.fieldPath)
+							.eq("valueKind", "number")
+							.eq("numberValue", value);
+						return treePathPrefix === null
+							? base
+							: base.gte("treePath", treePathPrefix).lt("treePath", path_tree_prefix_upper_bound(treePathPrefix));
+					});
+			}
+
+			{
+				const value = plan.value;
+				return ctx.db
+					.query("files_metadata_docs")
+					.withIndex("by_org_ws_source_archive_docKind_field_boolean_tree", (q) => {
+						const base = q
+							.eq("organizationId", args.organizationId)
+							.eq("workspaceId", args.workspaceId)
+							.eq("sourceKind", "committed")
+							.eq("archiveOperationId", undefined)
+							.eq("docKind", "value")
+							.eq("fieldPath", plan.fieldPath)
+							.eq("valueKind", "boolean")
+							.eq("booleanValue", value);
+						return treePathPrefix === null
+							? base
+							: base.gte("treePath", treePathPrefix).lt("treePath", path_tree_prefix_upper_bound(treePathPrefix));
+					});
+			}
+
+		case "prefix":
+			return ctx.db
+				.query("files_metadata_docs")
+				.withIndex("by_org_ws_source_archive_docKind_field_string_tree", (q) => {
+					const base = q
+						.eq("organizationId", args.organizationId)
+						.eq("workspaceId", args.workspaceId)
+						.eq("sourceKind", "committed")
+						.eq("archiveOperationId", undefined)
+						.eq("docKind", "value")
+						.eq("fieldPath", plan.fieldPath)
+						.eq("valueKind", "string")
+						.gte("stringValue", plan.value);
+					const upperBound = string_prefix_upper_bound(plan.value);
+					return upperBound === null ? base : base.lt("stringValue", upperBound);
+				});
+
+		case "range":
+			// maybe_date docs keep their epoch milliseconds in numberValue, apart by valueKind.
+			return ctx.db
+				.query("files_metadata_docs")
+				.withIndex("by_org_ws_source_archive_docKind_field_number_tree", (q) => {
+					const base = q
+						.eq("organizationId", args.organizationId)
+						.eq("workspaceId", args.workspaceId)
+						.eq("sourceKind", "committed")
+						.eq("archiveOperationId", undefined)
+						.eq("docKind", "value")
+						.eq("fieldPath", plan.fieldPath)
+						.eq("valueKind", plan.valueKind);
+					if (plan.gte != null) {
+						const lower = base.gte("numberValue", plan.gte);
+						if (plan.lte != null) return lower.lte("numberValue", plan.lte);
+						if (plan.lt != null) return lower.lt("numberValue", plan.lt);
+						return lower;
+					}
+					if (plan.gt != null) {
+						const lower = base.gt("numberValue", plan.gt);
+						if (plan.lte != null) return lower.lte("numberValue", plan.lte);
+						if (plan.lt != null) return lower.lt("numberValue", plan.lt);
+						return lower;
+					}
+					if (plan.lte != null) return base.lte("numberValue", plan.lte);
+					if (plan.lt != null) return base.lt("numberValue", plan.lt);
+					return base;
+				});
+	}
+}
 
 /**
  * The qualified fields the search box suggests as keys, with the value kinds each one holds
  * somewhere the caller can read. They come back in index order, which is alphabetical.
+ *
+ * Saved docs only, like the search box rows: a key that exists only in a draft is not suggested.
  */
 export const list_search_fields = query({
 	args: {
@@ -881,15 +941,16 @@ export const list_search_fields = query({
 		}
 
 		const { organizationId, workspaceId } = caller.membership;
-		const userId = caller.userAuth.id;
 		const mut_cache: SearchSampleCache = {
 			reader: await files_search_db_create_reader(ctx, {
 				organizationId,
 				workspaceId,
-				userId,
+				userId: caller.userAuth.id,
 				hasWorkspaceRead: caller.hasWorkspaceRead,
+				savedOnly: true,
 			}),
 			reads: 0,
+			overBudget: false,
 		};
 		const fields: Array<{ fieldPath: string; valueKinds: Array<(typeof SEARCH_VALUE_KINDS)[number]> }> = [];
 		let lastFieldPath = "";
@@ -900,15 +961,17 @@ export const list_search_fields = query({
 		while (
 			fields.length < SEARCH_FIELDS_MAX_FIELDS &&
 			mut_cache.reads < SEARCH_FIELDS_READ_BUDGET &&
-			!mut_cache.reader.exhausted
+			!mut_cache.reader.exhausted &&
+			!mut_cache.overBudget
 		) {
 			const after = lastFieldPath;
 			const nextFieldDoc = await ctx.db
 				.query("files_metadata_docs")
-				.withIndex("by_org_workspace_archive_docKind_fieldPath_tree", (q) =>
+				.withIndex("by_org_ws_source_archive_docKind_field_tree", (q) =>
 					q
 						.eq("organizationId", organizationId)
 						.eq("workspaceId", workspaceId)
+						.eq("sourceKind", "committed")
 						.eq("archiveOperationId", undefined)
 						.eq("docKind", "field")
 						.gt("fieldPath", after),
@@ -925,44 +988,41 @@ export const list_search_fields = query({
 				continue;
 			}
 
-			// The samples are read raw, so one index read is one read. Another user's draft among them
-			// is dropped here instead of by a query filter, which would read on past the cap.
-			const fieldDocs = (
-				await ctx.db
-					.query("files_metadata_docs")
-					.withIndex("by_org_workspace_archive_docKind_fieldPath_tree", (q) =>
-						q
-							.eq("organizationId", organizationId)
-							.eq("workspaceId", workspaceId)
-							.eq("archiveOperationId", undefined)
-							.eq("docKind", "field")
-							.eq("fieldPath", fieldPath),
-					)
-					.take(SEARCH_CATALOG_SAMPLE_DOCS)
-			).filter((metadataDoc) => metadataDoc.sourceKind === "committed" || metadataDoc.userId === userId);
+			// The samples are read raw, so one index read is one read.
+			const fieldDocs = await ctx.db
+				.query("files_metadata_docs")
+				.withIndex("by_org_ws_source_archive_docKind_field_tree", (q) =>
+					q
+						.eq("organizationId", organizationId)
+						.eq("workspaceId", workspaceId)
+						.eq("sourceKind", "committed")
+						.eq("archiveOperationId", undefined)
+						.eq("docKind", "field")
+						.eq("fieldPath", fieldPath),
+				)
+				.take(SEARCH_CATALOG_SAMPLE_DOCS);
 			mut_cache.reads += 1;
-			let readable = await db_search_sample_is_readable({ docs: fieldDocs, mut_cache });
+			let readable = await db_search_sample_is_readable({ ctx, docs: fieldDocs, mut_cache });
 
 			// Every value index has `valueKind` right after the key, so the string index serves all
 			// four kinds. A kind is listed only when the caller can read a file that holds it.
 			const valueKinds: Array<(typeof SEARCH_VALUE_KINDS)[number]> = [];
 			for (const valueKind of SEARCH_VALUE_KINDS) {
-				const valueDocs = (
-					await ctx.db
-						.query("files_metadata_docs")
-						.withIndex("by_org_workspace_archive_docKind_fieldPath_string_tree", (q) =>
-							q
-								.eq("organizationId", organizationId)
-								.eq("workspaceId", workspaceId)
-								.eq("archiveOperationId", undefined)
-								.eq("docKind", "value")
-								.eq("fieldPath", fieldPath)
-								.eq("valueKind", valueKind),
-						)
-						.take(SEARCH_CATALOG_SAMPLE_DOCS)
-				).filter((metadataDoc) => metadataDoc.sourceKind === "committed" || metadataDoc.userId === userId);
+				const valueDocs = await ctx.db
+					.query("files_metadata_docs")
+					.withIndex("by_org_ws_source_archive_docKind_field_string_tree", (q) =>
+						q
+							.eq("organizationId", organizationId)
+							.eq("workspaceId", workspaceId)
+							.eq("sourceKind", "committed")
+							.eq("archiveOperationId", undefined)
+							.eq("docKind", "value")
+							.eq("fieldPath", fieldPath)
+							.eq("valueKind", valueKind),
+					)
+					.take(SEARCH_CATALOG_SAMPLE_DOCS);
 				mut_cache.reads += 1;
-				if (valueDocs.length > 0 && (await db_search_sample_is_readable({ docs: valueDocs, mut_cache }))) {
+				if (valueDocs.length > 0 && (await db_search_sample_is_readable({ ctx, docs: valueDocs, mut_cache }))) {
 					valueKinds.push(valueKind);
 					readable = true;
 				}
@@ -979,6 +1039,7 @@ export const list_search_fields = query({
 
 /**
  * The string values of one key that start with `prefix`, for the search box's value suggestions.
+ * Saved docs only, like `list_search_fields`.
  */
 export const list_search_values = query({
 	args: {
@@ -997,15 +1058,16 @@ export const list_search_values = query({
 		}
 
 		const { organizationId, workspaceId } = caller.membership;
-		const userId = caller.userAuth.id;
 		const mut_cache: SearchSampleCache = {
 			reader: await files_search_db_create_reader(ctx, {
 				organizationId,
 				workspaceId,
-				userId,
+				userId: caller.userAuth.id,
 				hasWorkspaceRead: caller.hasWorkspaceRead,
+				savedOnly: true,
 			}),
 			reads: 0,
+			overBudget: false,
 		};
 		const values: string[] = [];
 		let lastValue: string | null = null;
@@ -1016,16 +1078,18 @@ export const list_search_values = query({
 		while (
 			values.length < SEARCH_VALUES_MAX_VALUES &&
 			mut_cache.reads < SEARCH_VALUES_READ_BUDGET &&
-			!mut_cache.reader.exhausted
+			!mut_cache.reader.exhausted &&
+			!mut_cache.overBudget
 		) {
 			const lowerBound: { gte: string } | { gt: string } =
 				lastValue === null ? { gte: args.prefix } : { gt: lastValue };
 			const nextValueDoc = await ctx.db
 				.query("files_metadata_docs")
-				.withIndex("by_org_workspace_archive_docKind_fieldPath_string_tree", (q) => {
+				.withIndex("by_org_ws_source_archive_docKind_field_string_tree", (q) => {
 					const base = q
 						.eq("organizationId", organizationId)
 						.eq("workspaceId", workspaceId)
+						.eq("sourceKind", "committed")
 						.eq("archiveOperationId", undefined)
 						.eq("docKind", "value")
 						.eq("fieldPath", args.fieldPath)
@@ -1046,23 +1110,22 @@ export const list_search_values = query({
 			lastValue = value;
 
 			// Read raw for the same reason as in `list_search_fields`: one index read is one read.
-			const valueDocs = (
-				await ctx.db
-					.query("files_metadata_docs")
-					.withIndex("by_org_workspace_archive_docKind_fieldPath_string_tree", (q) =>
-						q
-							.eq("organizationId", organizationId)
-							.eq("workspaceId", workspaceId)
-							.eq("archiveOperationId", undefined)
-							.eq("docKind", "value")
-							.eq("fieldPath", args.fieldPath)
-							.eq("valueKind", "string")
-							.eq("stringValue", value),
-					)
-					.take(SEARCH_CATALOG_SAMPLE_DOCS)
-			).filter((metadataDoc) => metadataDoc.sourceKind === "committed" || metadataDoc.userId === userId);
+			const valueDocs = await ctx.db
+				.query("files_metadata_docs")
+				.withIndex("by_org_ws_source_archive_docKind_field_string_tree", (q) =>
+					q
+						.eq("organizationId", organizationId)
+						.eq("workspaceId", workspaceId)
+						.eq("sourceKind", "committed")
+						.eq("archiveOperationId", undefined)
+						.eq("docKind", "value")
+						.eq("fieldPath", args.fieldPath)
+						.eq("valueKind", "string")
+						.eq("stringValue", value),
+				)
+				.take(SEARCH_CATALOG_SAMPLE_DOCS);
 			mut_cache.reads += 1;
-			if (await db_search_sample_is_readable({ docs: valueDocs, mut_cache })) {
+			if (await db_search_sample_is_readable({ ctx, docs: valueDocs, mut_cache })) {
 				values.push(value);
 			}
 		}

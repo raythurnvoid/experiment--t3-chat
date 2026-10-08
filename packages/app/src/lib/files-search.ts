@@ -1,8 +1,7 @@
 import { app_convex_is_id_like } from "@/lib/app-convex-client.ts";
 import { path_is_path_like } from "@/lib/paths.ts";
 import { url_parse_file_link } from "@/lib/urls.ts";
-import type { files_TreeItem } from "@/lib/files.ts";
-import { files_search_query_folder_path, type files_search_query_Filter } from "../../shared/files-search-query.ts";
+import type { files_search_query_Filter } from "../../shared/files-search-query.ts";
 
 type SearchMode = "name" | "path" | "node" | "private";
 
@@ -23,7 +22,7 @@ export function detect_search_query_mode(rawQuery: string): { mode: SearchMode; 
 		return "nodeId" in link ? { mode: "node", value: link.nodeId } : { mode: "path", value: link.path };
 	}
 
-	// The tree lookup in `get_search_matches` confirms an id guess.
+	// The search door confirms an id guess: a string that is no node id finds nothing.
 	if (app_convex_is_id_like(query)) {
 		return { mode: "node", value: query };
 	}
@@ -32,51 +31,28 @@ export function detect_search_query_mode(rawQuery: string): { mode: SearchMode; 
 		return { mode: "path", value: query };
 	}
 
-	// Drop a trailing extension from each word, so `README.md` searches the word `readme`, not every
-	// `md` file. A leading dot stays, so `.env` is kept. The agent's `find -name` does the same in
-	// `normalize_name_path_query` (`server/bash-find-command.ts`).
-	const words = query
-		.toLowerCase()
-		.split(/\s+/u)
-		.map((word) => {
-			const dotIndex = word.lastIndexOf(".");
-			return dotIndex > 0 ? word.slice(0, dotIndex) : word;
-		});
-	return { mode: "name", value: words.join(" ") };
+	// Drop a trailing extension of the whole query, so `README.md` searches the word `readme`, not
+	// every `md` file. Dots inside earlier words stay, so `v1.2.0 notes` is kept. A leading dot of the
+	// last word stays too, so `.env` is kept. The agent's `find -name` (`normalize_name_path_query` in
+	// `server/bash-find-command.ts`) cuts at the last dot of the whole text instead, so
+	// `v1.2.0 notes` becomes `v1.2` there.
+	const name = query.toLowerCase();
+	const lastWordIndex = name.search(/\S+$/u);
+	const dotIndex = name.lastIndexOf(".");
+	return { mode: "name", value: dotIndex > lastWordIndex ? name.slice(0, dotIndex) : name };
 }
 
 /**
- * One valid filter against one tree item. `null` means the answer is not known: a metadata or
- * `file.link` filter whose server query has not answered, or whose query failed. The parser refuses
- * a negated filter, so the callers never pass one.
+ * The free text of a parsed query, as the search reads it. Quotes in the free text only group
+ * words, so a text of quotes alone is empty.
  */
-export function search_filter_matches_item(args: {
-	filter: files_search_query_Filter;
-	item: Pick<files_TreeItem, "path">;
-	targetKey: string;
-	serverTargetKeys: ReadonlyMap<string, ReadonlySet<string> | null>;
-}): boolean | null {
-	const { filter, item } = args;
-
-	// The server answers `file.link` too, with the workspace list of public links, under the chip's raw
-	// token like a metadata chip.
-	if (filter.key.namespace !== "file" || filter.key.name === "link") {
-		const targetKeys = args.serverTargetKeys.get(filter.raw);
-		return targetKeys ? targetKeys.has(args.targetKey) : null;
-	}
-
-	// `file.path` is the only other chip the parser keeps. Paths are exact-case.
-	if (filter.match.op !== "eq") {
-		return false;
-	}
-	const folderPath = files_search_query_folder_path(filter.match.value);
-	return folderPath === "/" || item.path === folderPath || item.path.startsWith(`${folderPath}/`);
+export function search_free_text(text: string) {
+	return text.replace(/"/gu, "").trim();
 }
 
 /**
- * The `file.path` chip that scopes the server queries to one folder, or null. `raw` is what
- * `handleSearchSubmit` compares between the live and the deferred query. `value` is the typed
- * folder that `searchPathPrefix` turns into the server scope.
+ * The `file.path` chip that scopes the search to one folder, or null. `value` is the typed folder
+ * that `files_search_query_folder_path` turns into the exact folder path.
  */
 export function search_path_filter(filters: files_search_query_Filter[]) {
 	for (const filter of filters) {

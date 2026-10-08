@@ -133,6 +133,9 @@ describe("files_search_query_parse", () => {
 		expect(problems("file.path:/tasks metadata.priority:>2")).toEqual([null, folderRangeProblem]);
 		expect(problems("metadata.title:Rec* file.path:/tasks")).toEqual([folderRangeProblem, null]);
 		expect(problems("metadata.priority:>2")).toEqual([null]);
+		// The root folder scopes nothing, so a range or a prefix still runs.
+		expect(problems("file.path:/ metadata.priority:>2")).toEqual([null, null]);
+		expect(problems("file.path:// metadata.title:Rec*")).toEqual([null, null]);
 		expect(problems(`file.path:${twelveLevels} notes`)).toEqual([null]);
 		expect(problems(`file.path:${twelveLevels}/f12 notes`)).toEqual([tooDeepProblem]);
 		expect(problems(`file.path:${twelveLevels}/f12/ metadata.a:*`)).toEqual([tooDeepProblem, null]);

@@ -449,6 +449,29 @@ export const files_metadata_entries_validator = v.array(
 );
 
 /**
+ * One metadata search plan, as `files_metadata_SearchPlan` in `shared/files-metadata.ts`. The agent's
+ * `meta search` and the search box accept the same shape.
+ */
+export const files_metadata_search_plan_validator = v.union(
+	v.object({ op: v.literal("exists"), fieldPath: v.string() }),
+	v.object({
+		op: v.literal("eq"),
+		fieldPath: v.string(),
+		value: v.union(v.string(), v.number(), v.boolean()),
+	}),
+	v.object({ op: v.literal("prefix"), fieldPath: v.string(), value: v.string() }),
+	v.object({
+		op: v.literal("range"),
+		fieldPath: v.string(),
+		valueKind: v.union(v.literal("number"), v.literal("maybe_date")),
+		gte: v.optional(v.number()),
+		gt: v.optional(v.number()),
+		lte: v.optional(v.number()),
+		lt: v.optional(v.number()),
+	}),
+);
+
+/**
  * The ordered saved clauses. Check fields, duplicates and count with `files_sort_is_valid`.
  */
 export const files_sort_validator = v.array(

@@ -1,7 +1,5 @@
 import { defineCommand, type Command } from "just-bash/browser";
-import { internal } from "../convex/_generated/api.js";
 import type { ActionCtx } from "../convex/_generated/server.js";
-import type { files_nodes_text_search_files_Result } from "../convex/files_nodes.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import { files_chunk_BITMASK_FLAGS, files_chunk_has_bitmask_flag } from "./files-markdown-chunking-mastra.ts";
 import {
@@ -23,8 +21,10 @@ import {
 	bash_search_command_exact_query_note,
 	bash_search_command_exact_query_summary,
 	bash_resolve_db_files_shell_path,
+	bash_text_search_files,
 	bash_COMMAND_EXIT_FAILURE,
 	bash_COMMAND_EXIT_USAGE,
+	bash_SEARCH_TOP_MATCHES_NOTE,
 	type bash_DbFilesRoots,
 } from "./bash-utils.ts";
 
@@ -252,7 +252,7 @@ export function bash_search_command_create(ctx: ActionCtx, dbFilesRoots: bash_Db
 				? "/"
 				: path;
 
-		let res: files_nodes_text_search_files_Result;
+		let res: Awaited<ReturnType<typeof bash_text_search_files>>;
 
 		if (scope.kind === "external_mounts_root" || scope.kind === "external_mount_group") {
 			// Each leaf keeps the copy pinned for this Bash call.
@@ -263,7 +263,7 @@ export function bash_search_command_create(ctx: ActionCtx, dbFilesRoots: bash_Db
 				cursor,
 				limit: bash_clamp_listing_page_limit(parsed._yay.limit),
 				runPage: async (pageArgs) => {
-					const pageResult = (await ctx.runQuery(internal.files_nodes.text_search_files, {
+					const pageResult = await bash_text_search_files(ctx, {
 						agentSource: pageArgs.mount.fs.ctxData.agentSource,
 						organizationId: pageArgs.mount.fs.ctxData.organizationId,
 						workspaceId: pageArgs.mount.fs.ctxData.workspaceId,
@@ -274,7 +274,7 @@ export function bash_search_command_create(ctx: ActionCtx, dbFilesRoots: bash_Db
 						numItems: pageArgs.numItems,
 						cursor: pageArgs.innerCursor,
 						pathPrefix: pageArgs.mount.fs.dbFilesRootPath,
-					})) as files_nodes_text_search_files_Result;
+					});
 					return {
 						items: pageResult.items.map((item) => ({
 							...item,
@@ -302,6 +302,7 @@ export function bash_search_command_create(ctx: ActionCtx, dbFilesRoots: bash_Db
 				items: fanOut._yay.items,
 				continueCursor: fanOut._yay.continueCursor ?? "",
 				isDone: fanOut._yay.isDone,
+				searchedTop: false,
 			};
 		} else if (scope.kind === "plugins_root") {
 			// One text search per installed plugin, each scoped to its version-keyed tree.
@@ -311,7 +312,7 @@ export function bash_search_command_create(ctx: ActionCtx, dbFilesRoots: bash_Db
 				cursor,
 				limit: bash_clamp_listing_page_limit(parsed._yay.limit),
 				runPage: async (pageArgs) => {
-					const pageResult = (await ctx.runQuery(internal.files_nodes.text_search_files, {
+					const pageResult = await bash_text_search_files(ctx, {
 						organizationId: pageArgs.mount.fs.ctxData.organizationId,
 						workspaceId: pageArgs.mount.fs.ctxData.workspaceId,
 						userId: pageArgs.mount.fs.ctxData.userId,
@@ -322,7 +323,7 @@ export function bash_search_command_create(ctx: ActionCtx, dbFilesRoots: bash_Db
 						numItems: pageArgs.numItems,
 						cursor: pageArgs.innerCursor,
 						pathPrefix: pageArgs.mount.fs.dbFilesRootPath,
-					})) as files_nodes_text_search_files_Result;
+					});
 					return {
 						items: pageResult.items.map((item) => ({
 							...item,
@@ -346,9 +347,10 @@ export function bash_search_command_create(ctx: ActionCtx, dbFilesRoots: bash_Db
 				items: fanOut._yay.items,
 				continueCursor: fanOut._yay.continueCursor ?? "",
 				isDone: fanOut._yay.isDone,
+				searchedTop: false,
 			};
 		} else {
-			res = (await ctx.runQuery(internal.files_nodes.text_search_files, {
+			res = await bash_text_search_files(ctx, {
 				agentSource: scope.ctxData.agentSource,
 				organizationId: scope.ctxData.organizationId,
 				workspaceId: scope.ctxData.workspaceId,
@@ -359,7 +361,7 @@ export function bash_search_command_create(ctx: ActionCtx, dbFilesRoots: bash_Db
 				numItems: bash_clamp_listing_page_limit(parsed._yay.limit),
 				cursor,
 				pathPrefix: path,
-			})) as files_nodes_text_search_files_Result;
+			});
 		}
 
 		const exactQueryFilter = bash_search_command_exact_query_filter(parsed._yay.query);
@@ -380,7 +382,7 @@ export function bash_search_command_create(ctx: ActionCtx, dbFilesRoots: bash_Db
 			`pass one distinctive word or a few plain terms that should appear in the document body. ` +
 			`The text index splits on whitespace/punctuation, ignores case, relevance-ranks matches, and prefix-matches the final term. ` +
 			`It is implemented with db full-text search, but it is not path/name/glob/regex search; ` +
-			`use find -name QUERY or find --path-query QUERY for path/name discovery. ` +
+			`use find -name WORD to find files by name words. ` +
 			`YAML frontmatter and the metadata stored next to a file are indexed separately from body text, so their fields and values will not match here; ` +
 			`use meta search (e.g. exists/eq) over frontmatter.* or metadata.* to find files by a field or value. ` +
 			`Retry with shorter distinctive content terms if needed.`;
@@ -456,13 +458,15 @@ export function bash_search_command_create(ctx: ActionCtx, dbFilesRoots: bash_Db
 					exactQueryFilter,
 					searchResult.items.map((item) => item.textChunk),
 				)}`,
+				// The search ended on the most rows Convex text search returns, so it may have missed matches.
+				...(res.searchedTop ? [bash_SEARCH_TOP_MATCHES_NOTE] : []),
 			];
 			blocks.push(...continuationBlocks);
 			blocks.push("", ...outputBlocks);
 			output = blocks.join("\n");
 		} else if (continuationBlocks.length) {
 			output = [`No matches on this page${scopeNote}; more pages remain.`, ...continuationBlocks].join("\n");
-		}
+		} else if (res.searchedTop) output = `${output}\n${bash_SEARCH_TOP_MATCHES_NOTE}`;
 
 		return {
 			stdout: `${output}\n`,

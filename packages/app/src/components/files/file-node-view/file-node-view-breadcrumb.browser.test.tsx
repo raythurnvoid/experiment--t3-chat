@@ -63,8 +63,6 @@ vi.mock("convex/react", async (importOriginal) => {
 				return [];
 			case "files_visible:get_path":
 				return FILE.path;
-			case "files_visible:list":
-				return { _yay: { items: [], isDone: true, continueCursor: null } };
 			case "files_pending_updates:get_file_pending_update":
 			case "files_pending_updates:get_file_pending_target":
 			case "files_nodes:get_folder_readme":

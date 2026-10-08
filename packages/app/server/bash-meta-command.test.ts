@@ -21,14 +21,20 @@ const ctxData = {
 };
 
 function create_command_runner() {
-	// One generic response covers both queries `meta search` makes: the pending path
-	// overlay read (empty = no pending moves) and the metadata search page.
+	// One generic response covers the queries `meta search` makes: the pending path overlay read
+	// (empty = no pending moves) and the metadata streams (empty and done).
 	const runQuery = vi.fn(async (_ref: unknown, _args: unknown) => ({
 		pendingUpdates: [],
 		referencedNodes: [],
-		items: [],
-		continueCursor: "",
-		isDone: true,
+		_yay: {
+			root: null,
+			rows: [],
+			frontier: null,
+			position: { rangeStart: null, cursor: null, lastKey: null },
+			done: true,
+			decided: 0,
+			overBudget: false,
+		},
 	}));
 	const ctx = {
 		runQuery,
@@ -142,7 +148,7 @@ describe("bash_meta_command_create", () => {
 
 			expect(result.exitCode).toBe(0);
 			expect(result.stderr).toBe("");
-			// The overlay read runs first, so the metadata search is the last query.
+			// The overlay read runs first, so a metadata stream is the last query.
 			expect(runQuery.mock.calls.at(-1)?.[1]).toMatchObject({ plan: item.plan });
 		}
 	});

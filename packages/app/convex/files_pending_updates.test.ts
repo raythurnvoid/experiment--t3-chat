@@ -2,8 +2,9 @@ import { R2 } from "@convex-dev/r2";
 import { RateLimiter } from "@convex-dev/rate-limiter";
 import { Workpool } from "@convex-dev/workpool";
 import { afterEach, beforeEach, describe, expect, test as baseTest, vi, type MockInstance } from "vitest";
-import { getFunctionName } from "convex/server";
+import { getFunctionName, type FunctionReturnType } from "convex/server";
 import { api, internal } from "./_generated/api.js";
+import type { ActionCtx } from "./_generated/server.js";
 import {
 	test_convex,
 	test_create_saved_text_file,
@@ -35,6 +36,7 @@ import { files_share_links_create_cleanup_state } from "./files_share_links_db.t
 
 const test = baseTest;
 import { billing_event } from "../server/billing.ts";
+import { files_pending_overlay_list } from "../server/files-pending-overlay.ts";
 import { r2_confirmed_object_delete, r2_create_asset_key } from "./r2_client.ts";
 import {
 	files_db_load_pending_update_yjs_state_bytes,
@@ -9938,16 +9940,20 @@ describe("overlay reads on a file with collaboration off", () => {
 		expect(state.pendingUpdateId).toBe(row._id);
 
 		// Workspace search reads the proposal's pending chunks instead of the committed ones.
+		// Pending chunks and committed chunks are two queries, so read every page.
 		const search = async (query: string) => {
-			const result = await t.query(internal.files_nodes.text_search_files, {
-				...readScope,
-				userId: seeded.userId,
-				hasWorkspaceRead: true,
-				query,
-				numItems: 10,
-				cursor: null,
-			});
-			return result.items.map((item) => item.path);
+			const paths: string[] = [];
+			let cursor: string | null = null;
+			for (let page = 0; page < 10; page++) {
+				const result: FunctionReturnType<typeof internal.files_nodes.text_search_files> = await t.query(
+					internal.files_nodes.text_search_files,
+					{ ...readScope, userId: seeded.userId, hasWorkspaceRead: true, query, numItems: 10, cursor },
+				);
+				paths.push(...result.items.map((item) => item.path));
+				if (result.isDone) break;
+				cursor = result.continueCursor;
+			}
+			return paths;
 		};
 		expect(await search("proposal")).toContain(path);
 		expect(await search("committed")).not.toContain(path);
@@ -10016,16 +10022,20 @@ describe("overlay reads on a file with collaboration off", () => {
 		expect(state.pendingUpdateId).toBe(row._id);
 		expect(state.materializationState).toBeNull();
 
+		// Pending chunks and committed chunks are two queries, so read every page.
 		const search = async (query: string) => {
-			const result = await t.query(internal.files_nodes.text_search_files, {
-				...readScope,
-				userId: seeded.userId,
-				hasWorkspaceRead: true,
-				query,
-				numItems: 10,
-				cursor: null,
-			});
-			return result.items.map((item) => item.path);
+			const paths: string[] = [];
+			let cursor: string | null = null;
+			for (let page = 0; page < 10; page++) {
+				const result: FunctionReturnType<typeof internal.files_nodes.text_search_files> = await t.query(
+					internal.files_nodes.text_search_files,
+					{ ...readScope, userId: seeded.userId, hasWorkspaceRead: true, query, numItems: 10, cursor },
+				);
+				paths.push(...result.items.map((item) => item.path));
+				if (result.isDone) break;
+				cursor = result.continueCursor;
+			}
+			return paths;
 		};
 		expect(await search("saved")).toContain(path);
 		expect(await search("proposal")).not.toContain(path);
@@ -10073,16 +10083,22 @@ describe("overlay reads on a file with collaboration off", () => {
 		if (upserted._nay) {
 			throw new Error(upserted._nay.message);
 		}
+		// The agent's `meta search` merge, with each stream query run on its own.
 		const search_title = async (value: string) => {
-			const result = await t.query(internal.files_metadata.search, {
+			const result = await files_pending_overlay_list({ runQuery: t.query } as unknown as Pick<ActionCtx, "runQuery">, {
 				organizationId: seeded.organizationId,
 				workspaceId: seeded.workspaceId,
-				userId: seeded.userId,
+				visibilityUserId: seeded.userId,
+				overlayUserId: seeded.userId,
+				folderPath: "/",
+				mode: "metadata",
 				plan: { op: "eq", fieldPath: "frontmatter.title", value },
+				order: "asc",
 				numItems: 20,
 				cursor: null,
 			});
-			return result.items.map((item) => item.path);
+			if (result._nay) throw new Error(result._nay.message);
+			return result._yay.items.map((item) => item.path);
 		};
 
 		expect(await search_title("proposal")).toContain(path);
@@ -10093,7 +10109,7 @@ describe("overlay reads on a file with collaboration off", () => {
 		expect(await search_title("proposal")).not.toContain(path);
 	});
 
-	test("the sidebar search and the by-path metadata door follow the same stale rule", async () => {
+	test("the sidebar search reads the saved title while the by-path metadata door reads the proposal", async () => {
 		const t = test_convex();
 		const path = "/off-overlay-frontmatter-doors.md";
 		const seeded = await t.run((ctx) =>
@@ -10115,12 +10131,14 @@ describe("overlay reads on a file with collaboration off", () => {
 			external_id: seeded.userId,
 			name: "Test User",
 		});
-		const search_nodes_title = async (value: string) => {
-			const found = await asUser.query(api.files_metadata.search_nodes, {
+		// The search box is saved-only: it never finds a proposal.
+		const search_saved_title = async (value: string) => {
+			const found = await asUser.query(api.files_nodes.search_saved, {
 				membershipId: seeded.membershipId,
-				plans: [{ op: "eq", fieldPath: "frontmatter.title", value }],
+				clause: { kind: "metadata", plan: { op: "eq", fieldPath: "frontmatter.title", value } },
+				paginationOpts: { numItems: 50, cursor: null },
 			});
-			return found.targets.map((target) => target.id);
+			return found.page.map((row) => (row.kind === "problem" ? row.message : row.nodeId));
 		};
 		const title_by_path = async () => {
 			const found = await t.query(internal.files_metadata.get_by_path, {
@@ -10132,13 +10150,13 @@ describe("overlay reads on a file with collaboration off", () => {
 			return found?.values.find((value) => value.fieldPath === "frontmatter.title")?.stringValue;
 		};
 
-		expect(await search_nodes_title("proposal")).toEqual([seeded.nodeId]);
-		expect(await search_nodes_title("committed")).toEqual([]);
+		expect(await search_saved_title("proposal")).toEqual([]);
+		expect(await search_saved_title("committed")).toEqual([seeded.nodeId]);
 		expect(await title_by_path()).toBe("proposal");
 
 		await save_as_member({ t, seeded, text: "---\ntitle: saved\n---\n\n# Body\n" });
-		expect(await search_nodes_title("saved")).toEqual([seeded.nodeId]);
-		expect(await search_nodes_title("proposal")).toEqual([]);
+		expect(await search_saved_title("saved")).toEqual([seeded.nodeId]);
+		expect(await search_saved_title("proposal")).toEqual([]);
 		expect(await title_by_path()).toBe("saved");
 	});
 });

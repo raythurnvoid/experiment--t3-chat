@@ -14,6 +14,7 @@ import { internalQuery, query, type QueryCtx, type MutationCtx } from "./_genera
 import app_convex_schema, {
 	files_pending_target_validator,
 	files_pending_parent_validator,
+	files_metadata_search_plan_validator,
 	ai_chat_workspaces_source_validator,
 } from "./schema.ts";
 import { ai_chat_workspaces_db_authorize_file_scope } from "./ai_chat_workspaces.ts";
@@ -24,6 +25,7 @@ import {
 	access_control_db_filter_readable_file_nodes,
 } from "./access_control.ts";
 import { organizations_db_get_membership } from "./organizations.ts";
+import { files_metadata_db_query_saved_plan } from "./files_metadata.ts";
 import { files_db_get_visible_node_by_path } from "../server/files.ts";
 import { files_visible_resolve_db_create } from "../server/files-visible-resolve.ts";
 import {
@@ -36,9 +38,13 @@ import {
 	path_tree_prefix_upper_bound,
 	server_convex_get_user_fallback_to_anonymous,
 	server_path_normalize,
+	string_prefix_upper_bound,
 } from "../server/server-utils.ts";
 import {
+	files_ANCESTOR_FIELD_COUNT,
 	files_derive_tree_path_for_file_node,
+	files_pending_update_content_is_stale,
+	files_pending_update_has_pending_chunks,
 	type files_PendingTarget,
 	type files_PendingParent,
 	type files_VisibleEntry,
@@ -842,10 +848,34 @@ const stream_args = v.object({
 	position: stream_position_validator,
 });
 
+/**
+ * The stream args without the page: name search streams page with a plain search cursor.
+ */
+type StreamOpenArgs = Omit<Infer<typeof stream_args>, "numItems" | "position">;
+
 const stream_filter_args = {
 	kind: v.optional(doc(app_convex_schema, "files_nodes").fields.kind),
 	lowercaseExtension: v.optional(v.string()),
 };
+
+/**
+ * The metadata value a `meta search` row matched.
+ */
+const metadata_match_validator = v.object({
+	fieldPath: v.string(),
+	metadataKind: v.string(),
+	sourceKind: v.union(v.literal("committed"), v.literal("pending")),
+	valueKind: v.union(
+		v.literal("none"),
+		v.literal("string"),
+		v.literal("number"),
+		v.literal("boolean"),
+		v.literal("maybe_date"),
+	),
+	stringValue: v.optional(v.string()),
+	numberValue: v.optional(v.number()),
+	booleanValue: v.optional(v.boolean()),
+});
 
 const stream_row_validator = v.object({
 	/**
@@ -857,6 +887,7 @@ const stream_row_validator = v.object({
 	 */
 	item: v.union(entry_validator, v.null()),
 	movedIn: v.optional(moved_in_validator),
+	match: v.optional(metadata_match_validator),
 	/**
 	 * Where the stream goes on when the merge stops after this row.
 	 */
@@ -884,7 +915,11 @@ const stream_result = v_result({
 	}),
 });
 
-type StreamDecision = { item: Infer<typeof entry_validator> | null; movedIn?: Infer<typeof moved_in_validator> };
+type StreamDecision = {
+	item: Infer<typeof entry_validator> | null;
+	movedIn?: Infer<typeof moved_in_validator>;
+	match?: Infer<typeof metadata_match_validator>;
+};
 
 function stream_done(root: files_PendingParent | null) {
 	return Result({
@@ -909,7 +944,7 @@ function stream_done(root: files_PendingParent | null) {
  * Also resolves the listing root. Returns null when the caller may not read here or the root is not
  * a folder.
  */
-async function db_stream_open(ctx: QueryCtx, args: Infer<typeof stream_args> & { readLimit?: number }) {
+async function db_stream_open(ctx: QueryCtx, args: StreamOpenArgs & { readLimit?: number }) {
 	const authorized = await files_db_authorize_file_read(ctx, { ...args, userId: args.visibilityUserId });
 	if (authorized._nay) return Result({ _yay: null });
 
@@ -1124,7 +1159,7 @@ async function db_stream_hide_window(
  */
 function db_stream_saved_access(
 	ctx: QueryCtx,
-	args: Infer<typeof stream_args>,
+	args: StreamOpenArgs,
 	reader: Awaited<ReturnType<typeof files_visible_db_create_reader>> | null,
 	rows: Doc<"files_nodes">[],
 ) {
@@ -1728,7 +1763,14 @@ export const internal_list_subtree_places = internalQuery({
  * private folders hold places only.
  */
 export const internal_list_subtree_moved_in_folders = internalQuery({
-	args: stream_args.fields,
+	args: {
+		...stream_args.fields,
+		/**
+		 * Skip folders whose saved node is already under the listing folder. Name and metadata
+		 * searches read those rows in their main stream, so a nested stream would keep none of them.
+		 */
+		outsideOnly: v.optional(v.boolean()),
+	},
 	returns: stream_result,
 	handler: async (ctx, args) => {
 		const opened = await db_stream_open(ctx, args);
@@ -1753,10 +1795,14 @@ export const internal_list_subtree_moved_in_folders = internalQuery({
 			indexKey,
 			mergeKey: (place) => [place.ownerTreePath],
 			// The nested stream checks access on every row it shows.
-			decide: async (place) =>
-				place.target.kind === "saved"
-					? { item: null, movedIn: { savedNodeId: place.target.id, ownerTreePath: place.ownerTreePath } }
-					: null,
+			decide: async (place) => {
+				if (place.target.kind !== "saved") return null;
+				if (args.outsideOnly && root.savedNode) {
+					const node = await ctx.db.get("files_nodes", place.target.id);
+					if (node?.treePath.startsWith(root.savedNode.treePath)) return null;
+				}
+				return { item: null, movedIn: { savedNodeId: place.target.id, ownerTreePath: place.ownerTreePath } };
+			},
 		});
 	},
 });
@@ -1859,6 +1905,645 @@ export const internal_list_recent_places = internalQuery({
 			decide: async (place) => {
 				const decision = await db_stream_place_item(ctx, reader, place);
 				return decision && decision !== "denied" ? { item: decision.item } : decision;
+			},
+		});
+	},
+});
+
+// Name search streams for `find -name`. Text search returns rows in relevance order with no key to
+// stop at inside a page, so a page that runs out of reads returns `retrySmaller` and the merge asks
+// again with half the page.
+
+const search_name_args = {
+	...stream_args.omit("numItems", "position").fields,
+	query: v.string(),
+	kind: stream_filter_args.kind,
+	numItems: v.number(),
+	cursor: v.union(v.string(), v.null()),
+};
+
+const search_name_result = v_result({
+	_yay: v.object({
+		items: v.array(entry_validator),
+		continueCursor: v.string(),
+		isDone: v.boolean(),
+		/**
+		 * The search rows of this page before drops. The merge adds them up to tell when a search hit
+		 * the 1,024 rows Convex returns at most.
+		 */
+		scanned: v.number(),
+		retrySmaller: v.boolean(),
+		/**
+		 * A moved-in folder too deep for the `ancestor<depth>` filter.
+		 */
+		tooDeep: v.boolean(),
+	}),
+});
+
+const search_name_done = {
+	items: [] as Infer<typeof entry_validator>[],
+	continueCursor: "",
+	isDone: true,
+	scanned: 0,
+	retrySmaller: false,
+	tooDeep: false,
+};
+
+/**
+ * Name search reads at most 100 rows per page, as content search does.
+ */
+function search_name_page_size(numItems: number) {
+	return Math.max(1, Math.min(100, Math.floor(numItems)));
+}
+
+/**
+ * Saved nodes whose name matches. With a folder, the `ancestor<depth>` filter keeps nodes under it;
+ * with `movedIn`, nodes under one saved folder the user moved into the folder by a draft.
+ *
+ * Under the overlay every row reads the user's hide and resolves the user's path with the reader,
+ * like `ls -t` with no path; a draft can move a row out of the folder, so the path is checked too.
+ */
+export const internal_search_name_saved = internalQuery({
+	args: { ...search_name_args, movedIn: v.optional(moved_in_validator) },
+	returns: search_name_result,
+	handler: async (ctx, args) => {
+		// Leave the reader most of the read budget, like `ls -t` with no path.
+		const opened = await db_stream_open(ctx, { ...args, readLimit: 2_000 });
+		if (opened._nay) return opened;
+		if (!opened._yay) return Result({ _yay: search_name_done });
+		const { reader, root } = opened._yay;
+
+		// The saved folder whose `ancestor<depth>` filter scopes the search.
+		let scope = root.savedNode;
+		if (args.movedIn) {
+			if (!reader) return Result({ _yay: search_name_done });
+			scope = await ctx.db.get("files_nodes", args.movedIn.savedNodeId);
+			if (scope?.kind !== "folder" || scope.archiveOperationId !== null) return Result({ _yay: search_name_done });
+		} else if (root.parent.kind === "private") return Result({ _yay: search_name_done });
+		// A node keeps only its top 12 ancestors, so a deeper folder cannot scope a name search.
+		if (scope && scope.pathDepth > files_ANCESTOR_FIELD_COUNT) {
+			if (args.movedIn) return Result({ _yay: { ...search_name_done, tooDeep: true } });
+			return Result({ _nay: { message: "This folder is too deep to search inside. Search a folder higher up." } });
+		}
+
+		type AncestorField = Extract<keyof Doc<"files_nodes">, `ancestor${number}`>;
+		const page = await ctx.db
+			.query("files_nodes")
+			.withSearchIndex("search_name", (q) => {
+				const active = q
+					.search("name", args.query)
+					.eq("organizationId", args.organizationId)
+					.eq("workspaceId", args.workspaceId)
+					.eq("archiveOperationId", null);
+				const kinded = args.kind ? active.eq("kind", args.kind) : active;
+				// A node is under the folder exactly when its ancestor at the folder's depth is the folder.
+				return scope ? kinded.eq(`ancestor${scope.pathDepth}` as AncestorField, scope._id) : kinded;
+			})
+			.paginate({ cursor: args.cursor, numItems: search_name_page_size(args.numItems) });
+
+		// Rows under the listing folder in saved space come from the main search, not a moved-in one.
+		const listingFolder = args.movedIn ? root.savedNode : null;
+		const under = args.movedIn ? args.movedIn.ownerTreePath : opened._yay.treePath;
+		// In a moved-in folder, a row must sit at its saved place inside that folder. A row under a
+		// folder the user moved or renamed again comes from that folder's own search.
+		const movedFolder = args.movedIn ? scope : null;
+		const can_read = db_stream_saved_access(ctx, args, reader, page.page);
+		const retry = Result({ _yay: { ...search_name_done, isDone: false, retrySmaller: true } });
+		const items: Infer<typeof entry_validator>[] = [];
+		for (const [index, node] of page.page.entries()) {
+			if (index > 0 && files_pending_overlay_list_over_budget(await ctx.meta.getTransactionMetrics())) return retry;
+			if (!reader) {
+				if (!(await can_read(node))) continue;
+				const decision = await db_stream_saved_item(ctx, { node, path: node.path, overlayUserId: null });
+				items.push(decision.item!);
+				continue;
+			}
+			if (listingFolder && node[`ancestor${listingFolder.pathDepth}` as AncestorField] === listingFolder._id) continue;
+			const hide = await ctx.db
+				.query("files_pending_hides")
+				.withIndex("by_savedNode_user", (q) => q.eq("savedNodeId", node._id).eq("userId", args.visibilityUserId))
+				.unique();
+			if (hide) continue;
+			const resolved = await reader.resolve({ kind: "saved", id: node._id });
+			if (reader.exhausted) return retry;
+			if (resolved?.entry.kind !== "saved" || !resolved.entry.path.startsWith(under)) continue;
+			if (movedFolder && resolved.entry.path !== under + node.path.slice(movedFolder.treePath.length)) continue;
+			if (!(await reader.canRead(resolved.accessNode))) continue;
+			const decision = await db_stream_saved_item(ctx, {
+				node,
+				path: resolved.entry.path,
+				overlayUserId: args.visibilityUserId,
+			});
+			items.push(decision.item!);
+		}
+
+		return Result({
+			_yay: {
+				items,
+				continueCursor: page.continueCursor,
+				isDone: page.isDone,
+				scanned: page.page.length,
+				retrySmaller: false,
+				tooDeep: false,
+			},
+		});
+	},
+});
+
+/**
+ * The user's places whose name matches. The places search has no folder filter, so a folder is
+ * checked per row, on the user's top 1,024 matching places.
+ */
+export const internal_search_name_places = internalQuery({
+	args: search_name_args,
+	returns: search_name_result,
+	handler: async (ctx, args) => {
+		const opened = await db_stream_open(ctx, args);
+		if (opened._nay) return opened;
+		if (!opened._yay) return Result({ _yay: search_name_done });
+		const { reader, tenant, treePath } = opened._yay;
+		if (!reader || !tenant) return Result({ _yay: search_name_done });
+
+		const page = await ctx.db
+			.query("files_pending_places")
+			.withSearchIndex("search_name", (q) => {
+				const visible = q
+					.search("name", args.query)
+					.eq("organizationId", tenant.organizationId)
+					.eq("workspaceId", tenant.workspaceId)
+					.eq("userId", args.visibilityUserId)
+					.eq("isVisible", true);
+				return args.kind ? visible.eq("kind", args.kind) : visible;
+			})
+			.paginate({ cursor: args.cursor, numItems: search_name_page_size(args.numItems) });
+
+		const items: Infer<typeof entry_validator>[] = [];
+		for (const [index, place] of page.page.entries()) {
+			if (index > 0 && files_pending_overlay_list_over_budget(await ctx.meta.getTransactionMetrics()))
+				return Result({ _yay: { ...search_name_done, isDone: false, retrySmaller: true } });
+			if (!place.ownerTreePath.startsWith(treePath) || place.ownerTreePath === treePath) continue;
+			const decision = await db_stream_place_item(ctx, reader, place);
+			if (decision && decision !== "denied" && decision.item) items.push(decision.item);
+		}
+
+		return Result({
+			_yay: {
+				items,
+				continueCursor: page.continueCursor,
+				isDone: page.isDone,
+				scanned: page.page.length,
+				retrySmaller: false,
+				tooDeep: false,
+			},
+		});
+	},
+});
+
+export type files_visible_search_name_Result =
+	typeof internal_search_name_saved extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
+// `meta search` streams. `exists` and `eq` read the folder's range of a value index; `prefix` and
+// `range` read a value range of the whole workspace, and a row outside the folder is dropped.
+
+function metadata_match(
+	doc: Pick<
+		Doc<"files_pending_place_fields">,
+		"docKind" | "fieldPath" | "valueKind" | "stringValue" | "numberValue" | "booleanValue"
+	>,
+	sourceKind: "committed" | "pending",
+): Infer<typeof metadata_match_validator> {
+	const base = {
+		fieldPath: doc.fieldPath,
+		metadataKind: doc.fieldPath.slice(0, doc.fieldPath.indexOf(".")),
+		sourceKind,
+	};
+	if (doc.docKind === "field") return { ...base, valueKind: "none" };
+	switch (doc.valueKind) {
+		case "string":
+			return { ...base, valueKind: "string", stringValue: doc.stringValue };
+		case "boolean":
+			return { ...base, valueKind: "boolean", booleanValue: doc.booleanValue };
+		case "number":
+		case "maybe_date":
+			return { ...base, valueKind: doc.valueKind, numberValue: doc.numberValue };
+		default:
+			throw should_never_happen("metadataDoc.valueKind is not set", { fieldPath: doc.fieldPath });
+	}
+}
+
+/**
+ * Whether one metadata doc matches a plan, for docs read by proposal instead of by a plan's index.
+ */
+function metadata_plan_matches(
+	plan: Infer<typeof files_metadata_search_plan_validator>,
+	doc: Pick<Doc<"files_metadata_docs">, "docKind" | "valueKind" | "stringValue" | "numberValue" | "booleanValue">,
+) {
+	switch (plan.op) {
+		case "exists":
+			return doc.docKind === "field";
+		case "eq":
+			return (
+				doc.docKind === "value" &&
+				(typeof plan.value === "string"
+					? doc.valueKind === "string" && doc.stringValue === plan.value
+					: typeof plan.value === "number"
+						? doc.valueKind === "number" && doc.numberValue === plan.value
+						: doc.valueKind === "boolean" && doc.booleanValue === plan.value)
+			);
+		case "prefix":
+			return doc.docKind === "value" && doc.valueKind === "string" && (doc.stringValue ?? "").startsWith(plan.value);
+		case "range": {
+			if (doc.docKind !== "value" || doc.valueKind !== plan.valueKind || doc.numberValue === undefined) return false;
+			const value = doc.numberValue;
+			return (
+				(plan.gte == null || value >= plan.gte) &&
+				(plan.gt == null || value > plan.gt) &&
+				(plan.lte == null || value <= plan.lte) &&
+				(plan.lt == null || value < plan.lt)
+			);
+		}
+	}
+}
+
+/**
+ * Whether the user's draft of a saved file has current text. The file's frontmatter then comes from
+ * the draft, not from the saved text, as in `files_search_db_create_reader`.
+ */
+function metadata_pending_text_is_current(proposal: Doc<"files_pending_updates"> | null, node: Doc<"files_nodes">) {
+	return (
+		proposal !== null &&
+		!proposal.preparation &&
+		files_pending_update_has_pending_chunks(proposal) &&
+		!files_pending_update_content_is_stale(proposal, node)
+	);
+}
+
+/**
+ * The index key of a metadata row after the equal fields, then `_creationTime` and `_id`.
+ */
+function metadata_index_key(
+	plan: Infer<typeof files_metadata_search_plan_validator>,
+	row: { stringValue?: string; numberValue?: number; _creationTime: number; _id: string },
+	treePath: string,
+): Value[] {
+	if (plan.op === "prefix") return [row.stringValue!, treePath, row._creationTime, row._id];
+	if (plan.op === "range") return [row.numberValue!, treePath, row._creationTime, row._id];
+	return [treePath, row._creationTime, row._id];
+}
+
+/**
+ * The user's place fields of one plan, under `treePath` when it is set.
+ */
+function db_stream_place_fields(
+	ctx: QueryCtx,
+	args: {
+		tenant: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces"> };
+		visibilityUserId: Id<"users">;
+		plan: Infer<typeof files_metadata_search_plan_validator>;
+		treePath: string | null;
+	},
+) {
+	const { plan, treePath } = args;
+	const fields = ctx.db.query("files_pending_place_fields");
+	const upper = treePath === null ? null : path_tree_prefix_upper_bound(treePath);
+	switch (plan.op) {
+		case "exists":
+			return fields.withIndex("by_org_ws_user_visible_docKind_field_tree", (q) => {
+				const base = q
+					.eq("organizationId", args.tenant.organizationId)
+					.eq("workspaceId", args.tenant.workspaceId)
+					.eq("userId", args.visibilityUserId)
+					.eq("isVisible", true)
+					.eq("docKind", "field")
+					.eq("fieldPath", plan.fieldPath);
+				return treePath === null ? base : base.gte("ownerTreePath", treePath).lt("ownerTreePath", upper!);
+			});
+
+		case "eq": {
+			const value = plan.value;
+			if (typeof value === "string")
+				return fields.withIndex("by_org_ws_user_visible_docKind_field_string_tree", (q) => {
+					const base = q
+						.eq("organizationId", args.tenant.organizationId)
+						.eq("workspaceId", args.tenant.workspaceId)
+						.eq("userId", args.visibilityUserId)
+						.eq("isVisible", true)
+						.eq("docKind", "value")
+						.eq("fieldPath", plan.fieldPath)
+						.eq("valueKind", "string")
+						.eq("stringValue", value);
+					return treePath === null ? base : base.gte("ownerTreePath", treePath).lt("ownerTreePath", upper!);
+				});
+			if (typeof value === "number")
+				return fields.withIndex("by_org_ws_user_visible_docKind_field_number_tree", (q) => {
+					const base = q
+						.eq("organizationId", args.tenant.organizationId)
+						.eq("workspaceId", args.tenant.workspaceId)
+						.eq("userId", args.visibilityUserId)
+						.eq("isVisible", true)
+						.eq("docKind", "value")
+						.eq("fieldPath", plan.fieldPath)
+						.eq("valueKind", "number")
+						.eq("numberValue", value);
+					return treePath === null ? base : base.gte("ownerTreePath", treePath).lt("ownerTreePath", upper!);
+				});
+			return fields.withIndex("by_org_ws_user_visible_docKind_field_boolean_tree", (q) => {
+				const base = q
+					.eq("organizationId", args.tenant.organizationId)
+					.eq("workspaceId", args.tenant.workspaceId)
+					.eq("userId", args.visibilityUserId)
+					.eq("isVisible", true)
+					.eq("docKind", "value")
+					.eq("fieldPath", plan.fieldPath)
+					.eq("valueKind", "boolean")
+					.eq("booleanValue", value);
+				return treePath === null ? base : base.gte("ownerTreePath", treePath).lt("ownerTreePath", upper!);
+			});
+		}
+
+		case "prefix":
+			return fields.withIndex("by_org_ws_user_visible_docKind_field_string_tree", (q) => {
+				const base = q
+					.eq("organizationId", args.tenant.organizationId)
+					.eq("workspaceId", args.tenant.workspaceId)
+					.eq("userId", args.visibilityUserId)
+					.eq("isVisible", true)
+					.eq("docKind", "value")
+					.eq("fieldPath", plan.fieldPath)
+					.eq("valueKind", "string")
+					.gte("stringValue", plan.value);
+				const upperBound = string_prefix_upper_bound(plan.value);
+				return upperBound === null ? base : base.lt("stringValue", upperBound);
+			});
+
+		case "range":
+			// maybe_date docs keep their epoch milliseconds in numberValue, apart by valueKind.
+			return fields.withIndex("by_org_ws_user_visible_docKind_field_number_tree", (q) => {
+				const base = q
+					.eq("organizationId", args.tenant.organizationId)
+					.eq("workspaceId", args.tenant.workspaceId)
+					.eq("userId", args.visibilityUserId)
+					.eq("isVisible", true)
+					.eq("docKind", "value")
+					.eq("fieldPath", plan.fieldPath)
+					.eq("valueKind", plan.valueKind);
+				if (plan.gte != null) {
+					const lower = base.gte("numberValue", plan.gte);
+					if (plan.lte != null) return lower.lte("numberValue", plan.lte);
+					if (plan.lt != null) return lower.lt("numberValue", plan.lt);
+					return lower;
+				}
+				if (plan.gt != null) {
+					const lower = base.gt("numberValue", plan.gt);
+					if (plan.lte != null) return lower.lte("numberValue", plan.lte);
+					if (plan.lt != null) return lower.lt("numberValue", plan.lt);
+					return lower;
+				}
+				if (plan.lte != null) return base.lte("numberValue", plan.lte);
+				if (plan.lt != null) return base.lt("numberValue", plan.lt);
+				return base;
+			});
+	}
+}
+
+/**
+ * Committed metadata rows of saved nodes, or with `movedIn` the rows under one saved folder the user
+ * moved into the listing folder by a draft (`exists` and `eq` only: `prefix` and `range` read the
+ * whole workspace, so they already meet those rows).
+ *
+ * Under the overlay every row reads the user's hide and resolves the user's path with the reader,
+ * like `ls -t` with no path. A saved row shows its committed metadata, also while the user has a
+ * content edit on it; drafts come from place fields.
+ */
+export const internal_search_metadata_saved = internalQuery({
+	args: { ...stream_args.fields, plan: files_metadata_search_plan_validator, movedIn: v.optional(moved_in_validator) },
+	returns: stream_result,
+	handler: async (ctx, args) => {
+		// Leave the reader most of the read budget, like `ls -t` with no path.
+		const opened = await db_stream_open(ctx, { ...args, readLimit: 2_000 });
+		if (opened._nay) return opened;
+		if (!opened._yay) return stream_done(null);
+		const { reader, root } = opened._yay;
+		const { plan } = args;
+		const byTree = plan.op === "exists" || plan.op === "eq";
+
+		// The saved folder whose range `exists` and `eq` read.
+		let rangeFolder = root.savedNode;
+		if (args.movedIn) {
+			if (!reader || !byTree) return stream_done(root.parent);
+			rangeFolder = await ctx.db.get("files_nodes", args.movedIn.savedNodeId);
+			if (rangeFolder?.kind !== "folder" || rangeFolder.archiveOperationId !== null) return stream_done(root.parent);
+		} else if (byTree && root.parent.kind === "private") return stream_done(root.parent);
+
+		const page = await files_metadata_db_query_saved_plan(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			plan,
+			treePathPrefix: byTree ? (rangeFolder?.treePath ?? null) : null,
+		}).paginate({ cursor: args.position.cursor, numItems: stream_page_size(args.numItems) });
+
+		const indexKey = (doc: Doc<"files_metadata_docs">) => metadata_index_key(plan, doc, doc.treePath);
+		// Rows under the listing folder in saved space come from the main stream, not a moved-in one.
+		const listingFolder = args.movedIn ? root.savedNode : null;
+		const under = args.movedIn ? args.movedIn.ownerTreePath : opened._yay.treePath;
+		// In a moved-in folder, a row must sit at its saved place inside that folder. A row under a
+		// folder the user moved or renamed again comes from that folder's own stream.
+		const movedFolder = args.movedIn ? rangeFolder : null;
+		return await db_stream_decide(ctx, {
+			root: root.parent,
+			requireComplete: args.requireComplete,
+			order: "asc",
+			position: args.position,
+			page,
+			rows: stream_rows_after({ page: page.page, lastKey: args.position.lastKey, order: "asc", indexKey }),
+			cut: false,
+			indexKey,
+			mergeKey: indexKey,
+			decide: async (doc) => {
+				if (doc.sourceKind !== "committed") return null;
+				const node = await ctx.db.get("files_nodes", doc.fileNodeId);
+				if (!node || node.archiveOperationId !== null) return null;
+				const match = metadata_match(doc, "committed");
+				if (!reader) {
+					if (!`${node.path}/`.startsWith(under)) return null;
+					const readable = await access_control_db_filter_readable_file_nodes(ctx, {
+						organizationId: args.organizationId,
+						workspaceId: args.workspaceId,
+						userId: args.visibilityUserId,
+						serviceAccountId: args.serviceAccountId,
+						nodes: [node],
+					});
+					if (readable.length === 0) return "denied";
+					return { ...(await db_stream_saved_item(ctx, { node, path: node.path, overlayUserId: null })), match };
+				}
+				if (listingFolder && doc.treePath.startsWith(listingFolder.treePath)) return null;
+				const hide = await ctx.db
+					.query("files_pending_hides")
+					.withIndex("by_savedNode_user", (q) => q.eq("savedNodeId", node._id).eq("userId", args.visibilityUserId))
+					.unique();
+				if (hide) return null;
+				const resolved = await reader.resolve({ kind: "saved", id: node._id });
+				if (reader.exhausted) return "stop";
+				// A draft can move a row out of the folder.
+				if (resolved?.entry.kind !== "saved" || !`${resolved.entry.path}/`.startsWith(under)) return null;
+				if (movedFolder && `${resolved.entry.path}/` !== under + `${node.path}/`.slice(movedFolder.treePath.length))
+					return null;
+				if (!(await reader.canRead(resolved.accessNode))) return "denied";
+				if (doc.fieldPath.startsWith("frontmatter.")) {
+					const proposal = await ctx.db
+						.query("files_pending_updates")
+						.withIndex("by_user_target", (q) =>
+							q.eq("userId", args.visibilityUserId).eq("target.kind", "saved").eq("target.id", node._id),
+						)
+						.unique();
+					// The pending stream shows the frontmatter of the user's text draft instead.
+					if (metadata_pending_text_is_current(proposal, node)) return null;
+				}
+				const decision = await db_stream_saved_item(ctx, {
+					node,
+					path: resolved.entry.path,
+					overlayUserId: args.visibilityUserId,
+				});
+				return { ...decision, match };
+			},
+		});
+	},
+});
+
+/**
+ * Frontmatter of the user's text drafts of saved files. Frontmatter follows the text, so while a
+ * draft's text is current its pending docs stand in for the committed ones. Reads the user's
+ * proposals on saved files, so its cost is the user's own drafts; the folder is checked per row.
+ * Pending `metadata.*` docs belong to private drafts only, which place fields cover.
+ */
+export const internal_search_metadata_pending = internalQuery({
+	args: { ...stream_args.fields, plan: files_metadata_search_plan_validator },
+	returns: stream_result,
+	handler: async (ctx, args) => {
+		// Leave the reader most of the read budget, like `ls -t` with no path.
+		const opened = await db_stream_open(ctx, { ...args, readLimit: 2_000 });
+		if (opened._nay) return opened;
+		if (!opened._yay) return stream_done(null);
+		const { reader, tenant, root, treePath } = opened._yay;
+		const { plan } = args;
+		if (!reader || !tenant || !plan.fieldPath.startsWith("frontmatter.")) return stream_done(root.parent);
+
+		const page = await ctx.db
+			.query("files_pending_updates")
+			.withIndex("by_user_target", (q) => q.eq("userId", args.visibilityUserId).eq("target.kind", "saved"))
+			.paginate({ cursor: args.position.cursor, numItems: stream_page_size(args.numItems) });
+		const indexKey = (proposal: Doc<"files_pending_updates">) => [
+			proposal.target.id,
+			proposal._creationTime,
+			proposal._id,
+		];
+		return await db_stream_decide(ctx, {
+			root: root.parent,
+			requireComplete: args.requireComplete,
+			order: "asc",
+			position: args.position,
+			page,
+			rows: stream_rows_after({ page: page.page, lastKey: args.position.lastKey, order: "asc", indexKey }),
+			cut: false,
+			indexKey,
+			mergeKey: indexKey,
+			decide: async (proposal) => {
+				if (
+					proposal.target.kind !== "saved" ||
+					proposal.organizationId !== tenant.organizationId ||
+					proposal.workspaceId !== tenant.workspaceId
+				)
+					return null;
+				const node = await ctx.db.get("files_nodes", proposal.target.id);
+				if (!node || node.archiveOperationId !== null || !metadata_pending_text_is_current(proposal, node)) return null;
+				const docs = await ctx.db
+					.query("files_metadata_docs")
+					.withIndex("by_pendingUpdate_fieldPath", (q) =>
+						q.eq("pendingUpdateId", proposal._id).eq("fieldPath", plan.fieldPath),
+					)
+					.collect();
+				const doc = docs.find(
+					(pending) =>
+						pending.sourceKind === "pending" &&
+						pending.proposalRevision === proposal.revision &&
+						metadata_plan_matches(plan, pending),
+				);
+				if (!doc) return null;
+				const resolved = await reader.resolve({ kind: "saved", id: node._id });
+				if (reader.exhausted) return "stop";
+				if (resolved?.entry.kind !== "saved" || !`${resolved.entry.path}/`.startsWith(treePath)) return null;
+				if (!(await reader.canRead(resolved.accessNode))) return "denied";
+				const decision = await db_stream_saved_item(ctx, {
+					node,
+					path: resolved.entry.path,
+					overlayUserId: args.visibilityUserId,
+				});
+				return { ...decision, match: metadata_match(doc, "pending") };
+			},
+		});
+	},
+});
+
+/**
+ * The user's place fields: metadata of drafts at their place. A field doc copies its place, and the
+ * place fields job can lag, so a copy that no longer matches its place (or its `fieldsVersion`) is
+ * dropped. Access is checked on every row, like other place streams.
+ */
+export const internal_search_metadata_places = internalQuery({
+	args: { ...stream_args.fields, plan: files_metadata_search_plan_validator },
+	returns: stream_result,
+	handler: async (ctx, args) => {
+		const opened = await db_stream_open(ctx, args);
+		if (opened._nay) return opened;
+		if (!opened._yay) return stream_done(null);
+		const { reader, tenant, root, treePath } = opened._yay;
+		if (!reader || !tenant) return stream_done(root.parent);
+		const { plan } = args;
+		const byTree = plan.op === "exists" || plan.op === "eq";
+
+		const page = await db_stream_place_fields(ctx, {
+			tenant,
+			visibilityUserId: args.visibilityUserId,
+			plan,
+			treePath: byTree ? treePath : null,
+		}).paginate({ cursor: args.position.cursor, numItems: stream_page_size(args.numItems) });
+
+		const indexKey = (field: Doc<"files_pending_place_fields">) => metadata_index_key(plan, field, field.ownerTreePath);
+		return await db_stream_decide(ctx, {
+			root: root.parent,
+			requireComplete: args.requireComplete,
+			order: "asc",
+			position: args.position,
+			page,
+			rows: stream_rows_after({ page: page.page, lastKey: args.position.lastKey, order: "asc", indexKey }),
+			cut: false,
+			indexKey,
+			mergeKey: indexKey,
+			decide: async (field) => {
+				if (!field.ownerTreePath.startsWith(treePath)) return null;
+				const place = await ctx.db.get("files_pending_places", field.placeId);
+				if (
+					!place?.isVisible ||
+					place.fieldsVersion !== field.fieldsVersion ||
+					place.ownerTreePath !== field.ownerTreePath ||
+					place.accessNodeId !== field.accessNodeId
+				)
+					return null;
+				const decision = await db_stream_place_item(ctx, reader, place);
+				if (!decision || decision === "denied") return decision;
+				// A moved saved file's fields copy its committed docs. Its frontmatter comes from the
+				// pending stream while the user's text draft is current.
+				if (place.target.kind === "saved" && field.fieldPath.startsWith("frontmatter.")) {
+					const node = await ctx.db.get("files_nodes", place.target.id);
+					const proposal = await ctx.db.get("files_pending_updates", place.pendingUpdateId);
+					if (node && metadata_pending_text_is_current(proposal, node)) return null;
+				}
+				return {
+					item: decision.item,
+					match: metadata_match(field, place.target.kind === "saved" ? "committed" : "pending"),
+				};
 			},
 		});
 	},

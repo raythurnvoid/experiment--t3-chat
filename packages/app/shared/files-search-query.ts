@@ -437,10 +437,11 @@ export function files_search_query_parse(query: string): ParsedQuery {
 	}
 
 	// A folder alone is an exact path. With a clause it scopes the search, and the server can
-	// scope only words, `key:value` and `key:*`, and only so many levels deep.
-	if (folder !== null && hasClause) {
-		// A folder chip without a problem is always an `eq` match. The check narrows the type.
-		const folderPath = folder.match.op === "eq" ? files_search_query_folder_path(folder.match.value) : "/";
+	// scope only words, `key:value` and `key:*`, and only so many levels deep. The root folder scopes
+	// nothing, so it has none of these limits.
+	// A folder chip without a problem is always an `eq` match. The check narrows the type.
+	const folderPath = folder?.match.op === "eq" ? files_search_query_folder_path(folder.match.value) : "/";
+	if (folder !== null && hasClause && folderPath !== "/") {
 		if (folderPath.split("/").filter((part) => part.length > 0).length > FOLDER_SEARCH_MAX_DEPTH) {
 			folder.problem = FOLDER_TOO_DEEP_PROBLEM;
 		}

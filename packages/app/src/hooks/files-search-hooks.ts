@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
-import { usePaginatedQuery, useQueries } from "convex/react";
-import type { FunctionReturnType } from "convex/server";
+import { usePaginatedQuery, useQueries, type UsePaginatedQueryResult } from "convex/react";
+import type { FunctionArgs, FunctionReturnType } from "convex/server";
 import { useFn } from "./utils-hooks.ts";
 import { app_convex_api, type app_convex_Doc, type app_convex_Id } from "@/lib/app-convex-client.ts";
-import type { files_TreeItem } from "@/lib/files.ts";
-import { search_path_filter } from "@/lib/files-search.ts";
+import { detect_search_query_mode, search_free_text, search_path_filter } from "@/lib/files-search.ts";
+import { files_TEXT_SEARCH_MAX_RESULTS } from "../../shared/files.ts";
 import {
 	files_search_query_folder_path,
 	files_search_query_parse,
@@ -13,89 +13,170 @@ import {
 import { files_sort_compare, type files_sort_RowKey, type files_sort_Sort } from "../../shared/files-sort.ts";
 import { files_table_metadata_field, type files_table_Filter } from "../../shared/files-table.ts";
 
+const FILES_SEARCH_SAVED_PAGE_SIZE = 50;
+
+type FilesSearchSavedResult = FunctionReturnType<typeof app_convex_api.files_nodes.search_saved>["page"][number];
+
+// The inferred return type merges the row shapes of the handler branches and drops the optional
+// content fields, so they are added back here. Only content rows have them.
+export type FilesSearchSavedRow = Exclude<FilesSearchSavedResult, { kind: "problem" }> & {
+	textChunk?: string;
+	lineStart?: number;
+};
+
 /**
- * Page `files_visible.list` 50 entries at a time, and return the entries only when the listing is done.
+ * One search list: its rows once each by node id, how far it loaded, and the problem the server
+ * answered instead of rows (a folder that is missing or too deep), or null.
  */
-export function useFilesVisibleEntries(args: {
-	membershipId: app_convex_Id<"organizations_workspaces_users">;
-	folderPath: string | null | undefined;
-	mode: "subtree" | "children";
-}) {
-	const { membershipId, folderPath, mode } = args;
+export type FilesSearchSavedList = {
+	rows: FilesSearchSavedRow[];
+	status: "loading" | "more" | "done";
+	/**
+	 * The next page is loading after Show more.
+	 */
+	isLoadingMore: boolean;
+	problem: string | null;
+	/**
+	 * A text search list (names or contents) is done at the most matches the search index returns, so
+	 * more matches may exist. Other lists have no such cap and are never at it.
+	 */
+	isTopMatches: boolean;
+	loadMore: () => void;
+};
 
-	const scope = JSON.stringify([membershipId, folderPath, mode]);
-	const [pages, setPages] = useState({ scope, cursors: [null] as Array<string | null> });
-	const cursors = useMemo(() => (pages.scope === scope ? pages.cursors : [null]), [scope, pages]);
-
-	const queries = useMemo(
-		() =>
-			typeof folderPath !== "string"
-				? {}
-				: Object.fromEntries(
-						cursors.map((cursor, index) => [
-							index,
-							{
-								query: app_convex_api.files_visible.list,
-								args: {
-									membershipId,
-									folderPath,
-									mode,
-									numItems: 50,
-									cursor,
-								},
-							},
-						]),
-					),
-		[cursors, folderPath, membershipId, mode],
-	);
-
-	const responses = useQueries(queries);
-
-	const progress = useMemo(() => {
-		type Page = FunctionReturnType<typeof app_convex_api.files_visible.list>;
-		const entries: Array<NonNullable<Page["_yay"]>["items"][number]> = [];
-		let nextCursors: Array<string | null> | null = null;
-		let complete = folderPath === null;
-		let failed = false;
-
-		for (let index = 0; index < cursors.length; index++) {
-			const response: Page | Error | undefined = responses[index];
-			if (response === undefined) break;
-			if (response instanceof Error || response._nay) {
-				failed = true;
-				break;
-			}
-
-			entries.push(...response._yay.items);
-			if (response._yay.isDone) {
-				complete = true;
-				if (index + 1 < cursors.length) nextCursors = cursors.slice(0, index + 1);
-				break;
-			}
-
-			const cursor = response._yay.continueCursor;
-			if (cursor === null) {
-				failed = true;
-				break;
-			}
-			if (cursor !== cursors[index + 1]) {
-				nextCursors = [...cursors.slice(0, index + 1), cursor];
-				break;
+/**
+ * Merge the pages of one or two queries into one list. `isTextSearch` is set for a names or contents
+ * list, which the search index caps.
+ */
+function merge_search_lists(results: Array<UsePaginatedQueryResult<FilesSearchSavedResult>>, isTextSearch: boolean) {
+	const rows: FilesSearchSavedRow[] = [];
+	const seenNodeIds = new Set<string>();
+	let problem: string | null = null;
+	for (const result of results) {
+		for (const row of result.results) {
+			if (row.kind === "problem") {
+				problem = row.message;
+			} else if (!seenNodeIds.has(row.nodeId)) {
+				seenNodeIds.add(row.nodeId);
+				rows.push(row);
 			}
 		}
+	}
 
-		return { entries: complete && !failed ? entries : undefined, nextCursors, complete, failed };
-	}, [cursors, folderPath, responses]);
+	const status = results.some((result) => result.status === "LoadingFirstPage")
+		? "loading"
+		: results.some((result) => result.status !== "Exhausted")
+			? "more"
+			: "done";
 
-	// Keep all loaded pages subscribed. If an earlier cursor changes, discard its old suffix.
-	useEffect(() => {
-		if (pages.scope === scope && !progress.nextCursors) return;
-		// Cached pages can resolve all at once. Yield between pages so the input stays responsive.
-		const timer = setTimeout(() => setPages({ scope, cursors: progress.nextCursors ?? cursors }), 0);
-		return () => clearTimeout(timer);
-	}, [cursors, scope, pages.scope, progress.nextCursors]);
+	return {
+		rows,
+		status,
+		isLoadingMore: results.some((result) => result.status === "LoadingMore"),
+		problem,
+		// This can miss the cap: the server drops rows the reader cannot see, and the contents list
+		// keeps one row per file for many matching chunks.
+		isTopMatches: isTextSearch && status === "done" && rows.length >= files_TEXT_SEARCH_MAX_RESULTS,
+		loadMore: () => {
+			for (const result of results) {
+				if (result.status === "CanLoadMore") result.loadMore(FILES_SEARCH_SAVED_PAGE_SIZE);
+			}
+		},
+	} satisfies FilesSearchSavedList;
+}
 
-	return { entries: progress.entries, isFailed: progress.failed };
+/**
+ * Run a search box query on `files_nodes.search_saved`: saved and active rows only, 50 per page.
+ *
+ * The query is one clause plus an optional folder (`files_search_query_parse`). The free text keeps
+ * its shape rules (`detect_search_query_mode`): a path or a node id asks for that one node, a pasted
+ * draft link asks for nothing (`mode: "draft"`), and other text searches name words.
+ *
+ * `names` is the name list, or the only list of a path, a metadata chip or `file.link:public`. A
+ * metadata chip can make two plans, so its list merges two queries. `contents` is the contents list
+ * of plain text when `withContents` is set, "folder" when a folder chip blocks it, and null otherwise.
+ */
+export function useFilesSearchSaved(args: {
+	membershipId: app_convex_Id<"organizations_workspaces_users">;
+	searchQuery: string;
+	withContents: boolean;
+}) {
+	const { membershipId, searchQuery, withContents } = args;
+
+	type SearchArgs = Omit<FunctionArgs<typeof app_convex_api.files_nodes.search_saved>, "paginationOpts">;
+
+	const parsed = files_search_query_parse(searchQuery);
+	const isInvalid = parsed.filters.some((filter) => filter.problem !== null);
+	const pathFilter = search_path_filter(parsed.filters);
+	const folderPath = pathFilter === null ? undefined : files_search_query_folder_path(pathFilter.value);
+	// The root folder scopes nothing.
+	const hasFolder = folderPath !== undefined && folderPath !== "/";
+	// The parser keeps at most one chip next to the folder.
+	const clauseFilter = parsed.filters.find(
+		(filter) => filter.problem === null && !(filter.key.namespace === "file" && filter.key.name === "path"),
+	);
+	const text = search_free_text(parsed.text);
+	const textQuery = isInvalid || text.length === 0 ? null : detect_search_query_mode(text);
+	const isText = textQuery?.mode === "name";
+
+	let first: SearchArgs | null = null;
+	let second: SearchArgs | null = null;
+	let isFolderDate = false;
+	if (isInvalid || textQuery?.mode === "private") {
+		// Nothing to search.
+	} else if (textQuery?.mode === "node" || textQuery?.mode === "path") {
+		// An exact path or id is exact anywhere, so it takes no folder.
+		const path = textQuery.mode === "path" ? files_search_query_folder_path(textQuery.value) : textQuery.value;
+		first = { membershipId, clause: { kind: "path", path } };
+	} else if (textQuery) {
+		first = { membershipId, clause: { kind: "name", text: textQuery.value }, folderPath };
+		second = withContents && !hasFolder ? { membershipId, clause: { kind: "content", text } } : null;
+	} else if (clauseFilter?.key.namespace === "file") {
+		first = { membershipId, clause: { kind: "link" }, folderPath };
+	} else if (clauseFilter) {
+		const [firstPlan, secondPlan] = files_search_query_to_plans(clauseFilter);
+		// A folder cannot scope a range, so a date `eq` in a folder asks for the typed text only.
+		isFolderDate = hasFolder && secondPlan?.op === "range";
+		first = firstPlan ? { membershipId, clause: { kind: "metadata", plan: firstPlan }, folderPath } : null;
+		second =
+			secondPlan && !isFolderDate ? { membershipId, clause: { kind: "metadata", plan: secondPlan }, folderPath } : null;
+	} else if (folderPath !== undefined) {
+		// A folder alone is an exact path.
+		first = { membershipId, clause: { kind: "path", path: folderPath } };
+	}
+
+	const options = { initialNumItems: FILES_SEARCH_SAVED_PAGE_SIZE };
+	const firstResult = usePaginatedQuery(app_convex_api.files_nodes.search_saved, first ?? "skip", options);
+	const secondResult = usePaginatedQuery(app_convex_api.files_nodes.search_saved, second ?? "skip", options);
+
+	return {
+		mode:
+			searchQuery.trim().length === 0
+				? ("idle" as const)
+				: isInvalid
+					? ("invalid" as const)
+					: textQuery?.mode === "private"
+						? ("draft" as const)
+						: ("search" as const),
+		/**
+		 * The query names one node: Enter opens the match.
+		 */
+		isExact: first?.clause.kind === "path",
+		/**
+		 * A date chip inside a folder: it matches only values stored with the same text.
+		 */
+		isFolderDate,
+		names: merge_search_lists(
+			first === null ? [] : [firstResult, ...(second === null || isText ? [] : [secondResult])],
+			isText,
+		),
+		contents:
+			isText && withContents
+				? hasFolder
+					? ("folder" as const)
+					: merge_search_lists(second === null ? [] : [secondResult], true)
+				: null,
+	};
 }
 
 const FILES_SORTED_CHILDREN_PAGE_SIZE = 100;
@@ -445,113 +526,4 @@ export function useFilesSortedChildren(props: useFilesSortedChildren_Props) {
 		loadMore,
 		retry,
 	};
-}
-
-export function useFilesSearchServerFilters(args: {
-	membershipId: app_convex_Id<"organizations_workspaces_users">;
-	searchQuery: string;
-	treeItemsList: Pick<files_TreeItem, "kind" | "path">[] | undefined;
-}) {
-	const { membershipId, searchQuery, treeItemsList } = args;
-
-	// A positive `file.path` filter bounds the metadata queries below to its folder. The tree
-	// filter ignores case, so the folder sent is the stored path of the node the typed path names. A
-	// path that names a file has nothing under it, so it sends no folder, and the tree filter keeps
-	// that file by its own path.
-	const searchPathPrefix = ((/* iife */) => {
-		const pathFilter = search_path_filter(files_search_query_parse(searchQuery).filters);
-		if (pathFilter === null) {
-			return undefined;
-		}
-		const folderPath = files_search_query_folder_path(pathFilter.value);
-		const node = treeItemsList?.find((item) => item.path.toLowerCase() === folderPath.toLowerCase());
-		if (node === undefined) {
-			return folderPath;
-		}
-		return node.kind === "file" ? undefined : node.path;
-	})();
-
-	// A metadata filter runs on the server, one subscription per chip, keyed by the chip's raw
-	// token. The tree filtering below waits for every one of them before it shows results.
-	//
-	// Keep manual `useMemo` here. Convex `useQueries` re-subscribes with a render-phase setState
-	// whenever the queries object identity changes, so an inline object loops the render until
-	// React throws. Build the object once per query string.
-	const searchNodeQueries = useMemo(() => {
-		const parsed = files_search_query_parse(searchQuery);
-		return Object.fromEntries(
-			parsed.filters
-				.filter((filter) => filter.problem === null && filter.key.namespace !== "file")
-				.map((filter) => [
-					filter.raw,
-					{
-						query: app_convex_api.files_metadata.search_nodes,
-						args: {
-							membershipId,
-							plans: files_search_query_to_plans(filter),
-							...(searchPathPrefix === undefined ? {} : { pathPrefix: searchPathPrefix }),
-						},
-					},
-				]),
-		);
-	}, [membershipId, searchQuery, searchPathPrefix]);
-	const searchNodeResults = useQueries(searchNodeQueries);
-	// Every valid `file.link` chip reads one workspace list of public links, so it is loaded once.
-	// It is workspace-wide, so a `file.path` chip does not change it. Keep manual `useMemo` for the
-	// same reason as above.
-	const searchLinkRequest = useMemo(() => {
-		const raws = files_search_query_parse(searchQuery)
-			.filters.filter(
-				(filter) => filter.problem === null && filter.key.namespace === "file" && filter.key.name === "link",
-			)
-			.map((filter) => filter.raw);
-		return {
-			raws,
-			queries: Object.fromEntries(
-				raws.length === 0
-					? []
-					: [["links", { query: app_convex_api.files_share_links.list_workspace_links, args: { membershipId } }]],
-			),
-		};
-	}, [membershipId, searchQuery]);
-	const searchLinkResults = useQueries(searchLinkRequest.queries);
-	// The tree rebuild effect below keys on the identity of `visibleFileIds`, so the matches and
-	// this map must keep their identity until a result changes.
-	const searchServerTargetKeys = useMemo(() => {
-		const targetKeysByRaw = new Map<string, Set<string> | null>();
-		for (const raw of Object.keys(searchNodeQueries)) {
-			const result: FunctionReturnType<typeof app_convex_api.files_metadata.search_nodes> | Error | undefined =
-				searchNodeResults[raw];
-			// The door throws only for a missing session, which the route already handles. A failed
-			// query is an unknown answer, not an empty one: a negated chip must not show every file
-			// because its query threw. It ends the "Searching…" state, so `null` counts as answered.
-			if (result instanceof Error || result?.truncated) {
-				targetKeysByRaw.set(raw, null);
-			} else if (result !== undefined) {
-				targetKeysByRaw.set(raw, new Set(result.targets.map((target) => `${target.kind}:${target.id}`)));
-			}
-		}
-
-		// The list holds only saved files. `null` means the membership was refused, so the answer is
-		// unknown like a failed query, not an empty list.
-		const linkResult:
-			| FunctionReturnType<typeof app_convex_api.files_share_links.list_workspace_links>
-			| Error
-			| undefined = searchLinkResults.links;
-		for (const raw of searchLinkRequest.raws) {
-			if (linkResult instanceof Error || linkResult === null) {
-				targetKeysByRaw.set(raw, null);
-			} else if (linkResult !== undefined) {
-				targetKeysByRaw.set(raw, new Set(linkResult.map((link) => `saved:${link.nodeId}`)));
-			}
-		}
-
-		return targetKeysByRaw;
-	}, [searchNodeQueries, searchNodeResults, searchLinkRequest, searchLinkResults]);
-	const isSearchLoading = [...Object.keys(searchNodeQueries), ...searchLinkRequest.raws].some(
-		(raw) => !searchServerTargetKeys.has(raw),
-	);
-	const isSearchFailed = [...searchServerTargetKeys.values()].some((targetKeys) => targetKeys === null);
-
-	return { searchServerTargetKeys, isSearchLoading, isSearchFailed };
 }

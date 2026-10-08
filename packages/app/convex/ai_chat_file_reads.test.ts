@@ -1,5 +1,6 @@
 import { R2 } from "@convex-dev/r2";
 import { Workpool } from "@convex-dev/workpool";
+import type { FunctionReturnType } from "convex/server";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
@@ -212,15 +213,22 @@ function read_cases(f: Awaited<ReturnType<typeof fixture>>, agentSource?: typeof
 			refused: null,
 		},
 		text_search_files: {
-			read: () =>
-				f.t.query(internal.files_nodes.text_search_files, {
-					...scope,
-					hasWorkspaceRead: true,
-					query: "notebook",
-					...page,
-				}),
-			allowed: expect.objectContaining({ items: [expect.objectContaining({ target, path })] }),
-			refused: empty,
+			// Pending and committed chunks are two searches, so read to the last page.
+			read: async () => {
+				const items = [];
+				let cursor: string | null = null;
+				for (;;) {
+					const result: FunctionReturnType<typeof internal.files_nodes.text_search_files> = await f.t.query(
+						internal.files_nodes.text_search_files,
+						{ ...scope, hasWorkspaceRead: true, query: "notebook", numItems: 20, cursor },
+					);
+					items.push(...result.items);
+					if (result.isDone) return { items, isDone: true };
+					cursor = result.continueCursor;
+				}
+			},
+			allowed: { items: [expect.objectContaining({ target, path })], isDone: true },
+			refused: { items: [], isDone: true },
 		},
 		internal_list: {
 			read: () =>

@@ -544,7 +544,7 @@ describe("ai_chat_tool_create_bash", () => {
 		expect(tool).toEqual(
 			expect.objectContaining({
 				description: expect.stringContaining(
-					"When reporting Bash results, treat app-only flags such as --limit, --cursor, --path-query, and --extension as supported app Bash syntax",
+					"When reporting Bash results, treat app-only flags such as --limit, --cursor, and --extension as supported app Bash syntax",
 				),
 			}),
 		);
@@ -809,9 +809,7 @@ describe("ai_chat_tool_create_bash", () => {
 		);
 		expect(tool).toEqual(
 			expect.objectContaining({
-				description: expect.stringContaining(
-					"run search --path <folder> X or search X; do not substitute find --path-query.",
-				),
+				description: expect.stringContaining("run search --path <folder> X or search X; do not substitute find -name."),
 			}),
 		);
 		expect(tool).toEqual(
@@ -824,13 +822,13 @@ describe("ai_chat_tool_create_bash", () => {
 		expect(tool).toEqual(
 			expect.objectContaining({
 				description: expect.stringContaining(
-					"Use find -name QUERY or find --path-query QUERY only for indexed app-file path/name word search",
+					"Use find <folder> -name WORD for app-file name search: it matches name words and word starts",
 				),
 			}),
 		);
 		expect(tool).toEqual(
 			expect.objectContaining({
-				description: expect.stringContaining("find -name is case-insensitive like -iname"),
+				description: expect.stringContaining("-iname is the same as -name"),
 			}),
 		);
 		expect(tool).toEqual(
@@ -843,7 +841,7 @@ describe("ai_chat_tool_create_bash", () => {
 		expect(tool).toEqual(
 			expect.objectContaining({
 				description: expect.stringContaining(
-					'Prefer --path-query QUERY for natural "path/name contains QUERY" requests',
+					"App files refuse --path-query and -maxdepth 1 -name: use find <folder> -name WORD for the whole folder, or ls <folder>.",
 				),
 			}),
 		);

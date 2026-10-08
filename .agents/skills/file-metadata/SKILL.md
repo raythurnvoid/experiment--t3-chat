@@ -1,6 +1,6 @@
 ---
 name: file-metadata
-description: Spec for the flat key-value metadata stored next to a file or folder — the `metadata.*` half of `files_metadata_docs`, the YAML edit format, the two write doors (`files_metadata.set_entries` for the Properties modal and `update_entries_by_path` for the agent), the key grammar and caps, how it sits beside Markdown frontmatter in `meta search`, and the sidebar search box language (`packages/app/shared/files-search-query.ts`) with its three doors (`search_nodes`, `list_search_fields`, `list_search_values`). Use when changing `packages/app/shared/files-metadata.ts`, `packages/app/shared/files-search-query.ts`, the metadata or search box regions of `packages/app/convex/files_metadata.ts`, the Properties modal in `packages/app/src/components/files/files-properties-modal.tsx`, the `set_file_metadata` agent tool in `packages/app/server/server-ai-tools.ts`, or `meta search` / `meta get` in `packages/app/server/bash-meta-command.ts`.
+description: Spec for the flat key-value metadata stored next to a file or folder — the `metadata.*` half of `files_metadata_docs`, the YAML edit format, the two write doors (`files_metadata.set_entries` for the Properties modal and `update_entries_by_path` for the agent), the key grammar and caps, how it sits beside Markdown frontmatter in `meta search`, and the sidebar search box language (`packages/app/shared/files-search-query.ts`) with its doors (the saved-only `files_nodes.search_saved`, `list_search_fields`, `list_search_values`). Use when changing `packages/app/shared/files-metadata.ts`, `packages/app/shared/files-search-query.ts`, the metadata or search box regions of `packages/app/convex/files_metadata.ts`, the Properties modal in `packages/app/src/components/files/files-properties-modal.tsx`, the `set_file_metadata` agent tool in `packages/app/server/server-ai-tools.ts`, or `meta search` / `meta get` in `packages/app/server/bash-meta-command.ts`.
 ---
 
 # Mental Model
@@ -413,26 +413,15 @@ the value `public`, in any case, so `file.link:Public` works. A prefix (`file.li
 value gets `file.link takes public, like file.link:public`. `file.link:*` and an empty value get
 `file.link needs a value`, and a range gets `file.link does not support ranges`.
 
-`useFilesSearchServerFilters` loads `files_share_links.list_workspace_links({ membershipId })` once for
-all valid `file.link` chips. It is one list for the whole workspace, so a `file.path` chip does not
-change it. The hook stores the answer in `searchServerTargetKeys` under the chip's `raw`, like a
-metadata chip, as a set of `saved:<nodeId>` keys. `search_filter_matches_item` reads it the same way.
-
-- No answer yet: the chip has no entry, so it is still loading (`isSearchLoading`).
-- A thrown query or a `null` answer (a refused membership): the entry is `null`. The answer is
-  unknown, and `isSearchFailed` is true.
-- An empty list: an empty set, so no file matches.
-
-Negation works like a metadata chip: `!file.link:public` flips a known answer only. With a loaded
-list it shows every visible item without a link, folders too. While the list loads or after it
-fails, the answer stays unknown, so a negated chip never shows every file. The list names only files
-the caller may read, and it never holds the token. A member with no workspace-wide `content.read`
-still gets the linked files shared with them. Sidebar Enter waits for the link list the same way it
-waits for metadata answers. The `file.path` freshness wait covers metadata chips only, because the
-link list is workspace-wide. `FilesSearchInput` names the chip "Link" and suggests `public` after
-`file.link:`, even before the tree loads. The global search palette uses the same hook, so the filter
-also works outside the Files route. The Files tree reads the same query for its public link mark, so
-Convex keeps one subscription (see the `files-explorer-tree` skill).
+`useFilesSearchSaved` sends a `file.link:public` chip to `files_nodes.search_saved` as the `link`
+clause. It pages the workspace's `files_share_links` (at most 500 per workspace) and returns only
+saved, active files the caller may read, never the token. A `file.path` chip scopes it to that
+folder. A member with no workspace-wide `content.read` still gets the linked files shared with them.
+Negation (`!file.link:public`) is not supported: the search box takes one clause, and a NOT gets
+"Search for words or one filter, not both. You can add a folder." `FilesSearchInput` names the chip
+"Link" and suggests `public` after `file.link:`. The Files tree reads
+`files_share_links.list_workspace_links` for its public link mark (see the `files-explorer-tree`
+skill).
 
 Value spellings follow YAML, so a value the frontmatter parser stored as a number or a boolean can
 be typed the same way: `.5`, `1e3`, `0x10`, and `True` ask for the number or the boolean too. A
@@ -485,24 +474,24 @@ field names and the tokenizer from `files-search-query.ts` and adds `sort_by:`. 
 URL cleaner live in `shared/files-folder-table-query.ts`; the `files-explorer-tree` skill describes
 the bar under "Table filter and sort bar".
 
-The doors sit in the search box region of `convex/files_metadata.ts`. Each answers its empty shape
-for a membership that is not the caller's.
+The doors sit in the search box region of `convex/files_metadata.ts`, except `search_saved`. Each
+answers its empty shape for a membership that is not the caller's.
 
-- `search_nodes({ membershipId, plans, pathPrefix? })` → `{ targets, truncated }`. Targets carry
-  `kind: saved | private` and `id`. One filter runs per call; the UI ANDs the answers by target
-  key. `pathPrefix` checks each result's current visible path under the folder, so `/tasks-archive`
-  is outside `/tasks/` and a moved draft appears only at its current path. String prefix plans use
-  `string_prefix_upper_bound`, which includes non-BMP text such as `op😀`.
-- `files_search_db_create_reader` shares owner, ancestor, and permission reads across indexed
-  results. It checks active membership, private ownership, current proposal id and revision,
-  readiness, and read access. Ready private drafts use captured metadata and pending frontmatter.
-  Saved metadata stays current beside pending text; ready pending frontmatter replaces committed
-  frontmatter. Other owners, old proposal revisions, preparing drafts, and hidden destinations
-  never produce a result.
-- Each plan reads at most `SEARCH_NODES_DOCS_PER_PLAN` candidates plus one to detect the cap.
-  The owner reader has its own work limit. Either limit sets `truncated`. UI metadata filters treat
-  that as an unknown answer and ask the user to narrow the search. Never negate a partial answer
-  and show the missing files as matches.
+- `files_nodes.search_saved({ membershipId, clause, folderPath?, paginationOpts })` is the
+  saved-only door (`convex/files_nodes.ts`). The box shows no drafts, not even the caller's own.
+  A `metadata` clause carries one plan of `files_search_query_to_plans`, so a chip with two plans
+  is two paginated calls. It reads `files_metadata_db_query_saved_plan`: the committed-only indexes
+  `by_org_ws_source_archive_docKind_field_*` with `sourceKind = "committed"`. With a folder only
+  `eq` and `exists` run, as a `treePath` range of the folder's stored `treePath`; `prefix` and
+  `range` with a folder get an empty page. Each row reads its node with one `get`, then one batch
+  read check. The page guard is 400 (comment at `SEARCH_SAVED_PAGE_GUARD`). String prefix plans
+  use `string_prefix_upper_bound`, which includes non-BMP text such as `op😀`.
+- `files_search_db_create_reader` serves the agent's `search` and, with `savedOnly: true`, the two
+  catalogs. It shares owner, ancestor, and permission reads across indexed results. It checks
+  active membership, private ownership, current proposal id and revision, readiness, and read
+  access. Ready private drafts use captured metadata and pending frontmatter. Saved metadata stays
+  current beside pending text; ready pending frontmatter replaces committed frontmatter. Other
+  owners, old proposal revisions, preparing drafts, and hidden destinations never produce a result.
 - `list_search_fields({ membershipId })` → `[{ fieldPath, valueKinds }]`, the key catalog for
   the suggestions, in index order. A stored field the other doors refuse (longer than
   `SEARCH_FIELD_PATH_MAX_LENGTH`; frontmatter has no cap on a key path) is skipped, so the
@@ -510,22 +499,22 @@ for a membership that is not the caller's.
 - `list_search_values({ membershipId, fieldPath, prefix })` → the string values of one key that
   start with `prefix`, in exact case: `d` does not list `Denys`. The sidebar filters its rows by
   the same rule.
-- The two catalog doors name a key or value only when one of the first
-  `SEARCH_CATALOG_SAMPLE_DOCS` docs passes the same current owner reader
-  (`db_search_sample_is_readable`). Old committed frontmatter hidden by a draft is not suggested.
+- The two catalog doors are saved-only, like `search_saved`. They walk the committed-only indexes
+  and name a key or value only when one of the first `SEARCH_CATALOG_SAMPLE_DOCS` docs passes the
+  reader made with `savedOnly: true` (`db_search_sample_is_readable`): no owner overlay, the plain
+  read check with the caller's `hasWorkspaceRead`. A key or value that exists only in a draft is
+  not suggested, and a saved value stays suggested while the owner has a draft that changes it.
   `SearchSampleCache` reuses the reader across samples. A readable match beyond the sample limit
   can still be missed; typing the key remains valid.
-- The caps (`SEARCH_NODES_*`, `SEARCH_FIELDS_*`, `SEARCH_VALUES_*`) bound the reads, not the answer.
-  A workspace with more matching docs than one plan reads gets a partial answer, and `file.path:`
-  narrows the scan. The catalog budgets (`SEARCH_FIELDS_READ_BUDGET`, `SEARCH_VALUES_READ_BUDGET`)
-  count index reads, not docs: Convex allows 4096 `db.get` and `db.query` calls per query, and a
-  shared owner reader separately bounds node, ancestor, and permission work. The walk stops early
-  instead of throwing.
+- The caps (`SEARCH_FIELDS_*`, `SEARCH_VALUES_*`) bound the reads, not the answer. The catalog
+  budgets (`SEARCH_FIELDS_READ_BUDGET`, `SEARCH_VALUES_READ_BUDGET`) count index reads, not docs:
+  Convex allows 4096 `db.get` and `db.query` calls per query, and a shared owner reader separately
+  bounds node, ancestor, and permission work. The walk stops early instead of throwing.
 - A member whose role has no workspace-wide `content.read` still finds files in folders shared with
   them: `db_get_search_caller` passes `hasWorkspaceRead` to the readable-nodes filter instead of
   refusing. The other way round holds too: a member whose role reads the workspace sees nothing
   from a restricted folder in any door until it is shared with them.
-- Archiving a file removes it from every door: `search_nodes` and both catalogs read
+- Archiving a file removes it from every door: `search_saved` and both catalogs read
   `archiveOperationId: undefined` docs only, so an archived file's keys and values disappear with
   it, and the sidebar skips archived files once a metadata chip is present, negated or not.
 

@@ -17,6 +17,7 @@ import type {
 	RmOptions,
 } from "just-bash/browser";
 import type { Infer } from "convex/values";
+import type { FunctionArgs } from "convex/server";
 import { internal } from "../convex/_generated/api.js";
 import type { Doc, Id } from "../convex/_generated/dataModel";
 import type { ActionCtx } from "../convex/_generated/server.js";
@@ -25,6 +26,7 @@ import type {
 	files_nodes_create_private_node_by_path_Result,
 	files_nodes_get_visible_entry_by_path_Result,
 	files_nodes_read_file_content_from_chunks_Result,
+	files_nodes_text_search_files_Result,
 } from "../convex/files_nodes.ts";
 import type { files_nodes_get_file_last_available_text_content_by_path_Result } from "../convex/files_nodes_content.ts";
 import type { prepare_file_pending_update_for_agent_Result } from "../convex/files_pending_updates.ts";
@@ -2148,6 +2150,49 @@ export function bash_shell_arg_quote(arg: string) {
 }
 
 /**
+ * Printed when a content or name search ended on the 1,024 rows Convex text search returns at most.
+ */
+export const bash_SEARCH_TOP_MATCHES_NOTE = "Searched the top 1,024 matches of the workspace.";
+
+/**
+ * One page of agent content search, for `search`, recursive `grep` and `textgrep`.
+ *
+ * The query reads the caller's pending chunks first, then the committed chunks. So a page goes on
+ * into the next query while it has room. When a query runs out of reads on its page, read the same
+ * cursor again with half the rows, down to one row. One row that does not fit is a bug.
+ */
+export async function bash_text_search_files(
+	ctx: Pick<ActionCtx, "runQuery">,
+	args: FunctionArgs<typeof internal.files_nodes.text_search_files>,
+) {
+	const items: files_nodes_text_search_files_Result["items"] = [];
+	let numItems = math_clamp({ value: Math.floor(args.numItems), min: 1, max: 100 });
+	let cursor = args.cursor;
+	let isDone = false;
+	let searchedTop = false;
+	for (let pages = 0; pages < 4 && items.length < args.numItems && !isDone;) {
+		const requested = Math.min(numItems, args.numItems - items.length);
+		const page = (await ctx.runQuery(internal.files_nodes.text_search_files, {
+			...args,
+			numItems: requested,
+			cursor,
+		})) as files_nodes_text_search_files_Result;
+		if (page.retrySmaller) {
+			if (requested === 1)
+				throw should_never_happen("One content search row needs more reads than a query has", { query: args.query });
+			numItems = Math.floor(requested / 2);
+			continue;
+		}
+		pages++;
+		items.push(...page.items);
+		cursor = page.continueCursor;
+		isDone = page.isDone;
+		searchedTop ||= page.searchedTop;
+	}
+	return { items, continueCursor: cursor ?? "", isDone, searchedTop };
+}
+
+/**
  * Build the copied `Next page:` command for search-backed output.
  *
  * `search`, recursive `grep`, and `textgrep` all page through the same Convex
@@ -2285,8 +2330,7 @@ export function bash_create_glob_syntax_unsupported_message(command: string, pat
 	return (
 		`${command}: app file glob patterns are not supported: ${path}\n` +
 		`Use an exact path, or use find with a predicate:\n` +
-		`  find -name readme            # indexed app-file path word search\n` +
-		`  find --path-query readme     # explicit indexed app-file path word search\n`
+		`  find -name readme            # app-file name word search\n`
 	);
 }
 

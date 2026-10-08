@@ -35,7 +35,6 @@ import {
 import { useDebounce, useFn } from "@/hooks/utils-hooks.ts";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
-import type { files_TreeItem } from "@/lib/files.ts";
 import { cn } from "@/lib/utils.ts";
 import { files_metadata_FRONTMATTER_FIELD_PREFIX, type files_metadata_Value } from "../../../shared/files-metadata.ts";
 import {
@@ -137,13 +136,15 @@ export type FilesSearchInput_Props = {
 	inputRef?: React.RefObject<HTMLInputElement | null>;
 	resultsRef?: React.RefObject<HTMLElement | null>;
 	onNavigateResults?: () => void;
-	treeItemsList: Pick<files_TreeItem, "kind" | "path">[] | undefined;
 	isSearchLoading: boolean;
-	isSearchFailed: boolean;
 	/**
-	 * Direct matches of the current query, or null while no search is active.
+	 * Matches loaded for the current query, or null while no search is active.
 	 */
 	searchMatchCount: number | null;
+	/**
+	 * More pages of matches can load, so the count reads "50+ matches".
+	 */
+	hasMoreMatches: boolean;
 	onSearchQueryChange: (searchQuery: string) => void;
 	/**
 	 * Open the node the query identifies. Returns false while the metadata results are not in
@@ -174,10 +175,9 @@ export const FilesSearchInput = memo(function FilesSearchInput(props: FilesSearc
 		id,
 		variant = "sidebar",
 		onNavigateResults,
-		treeItemsList,
 		isSearchLoading,
-		isSearchFailed,
 		searchMatchCount,
+		hasMoreMatches,
 		onSearchQueryChange,
 		onSubmit,
 	} = props;
@@ -245,7 +245,7 @@ export const FilesSearchInput = memo(function FilesSearchInput(props: FilesSearc
 		? files_search_query_FILE_FIELDS.map((field) => `file.${field}`)
 		: matchingFileFields;
 
-	// A range value (`>2`) has nothing to complete. A `file.*` key completes from the tree below.
+	// A range value (`>2`) has nothing to complete. A `file.*` key completes from its own query below.
 	// The fields are joined into one string so the memo below depends on plain strings only. The
 	// template literal makes the React Compiler see a plain string. With a bare `.join()` result
 	// the compiler cannot preserve the manual `useMemo` below and the
@@ -272,6 +272,37 @@ export const FilesSearchInput = memo(function FilesSearchInput(props: FilesSearc
 		[membershipId, valueQueryFields, typedValueDebounced],
 	);
 	const valueResults = useQueries(valueQueries);
+
+	// A `file.path` value completes from the saved folders the user can read, found by the words of
+	// the last part of the typed path. The rows below keep the folders whose path holds the whole text.
+	const folderQueryText =
+		isFocused && typingFilter?.key.namespace === "file" && typingFilter.key.name === "path"
+			? (typedValueDebounced.split("/").findLast((part) => part.length > 0) ?? "")
+			: "";
+	// Keep manual `useMemo` for the same reason as `valueQueries` above.
+	const folderQueries = useMemo(
+		() =>
+			Object.fromEntries(
+				folderQueryText === ""
+					? []
+					: [
+							[
+								"folders",
+								{
+									query: app_convex_api.files_nodes.search_saved,
+									args: {
+										membershipId,
+										clause: { kind: "name", text: folderQueryText, nodeKind: "folder" },
+										paginationOpts: { numItems: FilesSearchInput_SUGGESTIONS_MAX_ROWS, cursor: null },
+									},
+								},
+							],
+						],
+			),
+		[membershipId, folderQueryText],
+	);
+	const folderResult: FunctionReturnType<typeof app_convex_api.files_nodes.search_saved> | Error | undefined =
+		useQueries(folderQueries).folders;
 
 	const valueRows = ((/* iife */) => {
 		if (typingFilter === null || typingFilter.match.op === "range") {
@@ -307,11 +338,8 @@ export const FilesSearchInput = memo(function FilesSearchInput(props: FilesSearc
 		if (typingFilter.key.namespace === "file") {
 			if (typingFilter.key.name === "link") {
 				push("public");
-			} else if (typingFilter.key.name === "path") {
-				const folderPaths = (treeItemsList ?? [])
-					.filter((item) => item.kind === "folder" && item.path !== "/")
-					.map((item) => item.path)
-					.sort();
+			} else if (typingFilter.key.name === "path" && folderResult && !(folderResult instanceof Error)) {
+				const folderPaths = folderResult.page.flatMap((row) => (row.kind === "folder" ? [row.path] : [])).sort();
 				for (const path of folderPaths) {
 					push(path);
 				}
@@ -353,11 +381,9 @@ export const FilesSearchInput = memo(function FilesSearchInput(props: FilesSearc
 
 	const matchStatus = isSearchLoading
 		? "Searching…"
-		: isSearchFailed
-			? "Search failed"
-			: searchMatchCount === null
-				? ""
-				: `${searchMatchCount} ${searchMatchCount === 1 ? "match" : "matches"}`;
+		: searchMatchCount === null
+			? ""
+			: `${searchMatchCount}${hasMoreMatches ? "+" : ""} ${searchMatchCount === 1 && !hasMoreMatches ? "match" : "matches"}`;
 	const statusText = [announcement, matchStatus].filter((part) => part.length > 0).join(". ");
 	// Check the chips against the whole query, so typing words next to a filter shows its problem at
 	// once. The query lists the chips first, so the first parsed filters are the chips.

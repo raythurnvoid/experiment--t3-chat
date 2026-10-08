@@ -4687,7 +4687,14 @@ export const upsert_file_pending_move_in_db = internalMutation({
 			if (!parent.canEdit) return Result({ _nay: { name: "read_only", message: "Destination folder is read-only" } });
 			destParentPath = parent.entry.path;
 		}
-		if (destParentPath != null && path_join(destParentPath, args.destName) === sourceNode.path) {
+		// Its saved parent and name count too: under a folder the user moved, the path differs from the
+		// saved path, and a move kept there would change nothing but show the node in two searches.
+		const backToSavedSpot =
+			args.destName === sourceNode.name &&
+			(args.destParent.kind === "root"
+				? sourceNode.parentId === files_ROOT_ID
+				: args.destParent.kind === "saved" && args.destParent.id === sourceNode.parentId);
+		if (backToSavedSpot || (destParentPath != null && path_join(destParentPath, args.destName) === sourceNode.path)) {
 			const pendingUpdateToCancel = await files_db_get_pending_update(ctx, {
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,

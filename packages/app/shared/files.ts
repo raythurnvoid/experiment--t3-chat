@@ -720,6 +720,11 @@ export function files_derive_tree_path_for_file_node(path: string, kind: app_con
 }
 
 /**
+ * Convex text search returns at most this many rows for one search, over all its pages.
+ */
+export const files_TEXT_SEARCH_MAX_RESULTS = 1024;
+
+/**
  * How many folders above a saved node it keeps in `ancestor1` to `ancestor12`.
  */
 export const files_ANCESTOR_FIELD_COUNT = 12;

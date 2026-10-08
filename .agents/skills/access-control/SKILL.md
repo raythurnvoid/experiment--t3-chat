@@ -675,6 +675,12 @@ product decision, so record the answer here before changing the behaviour. An en
   token happens to be scoped. `upsert_mount` is an internal mutation reached by `convex run`, so no
   user can trigger it and this is not a user-reachable hole. Whether to refuse a `private` repo
   outright is undecided.
+- **Decided: the search box pages can tell that hidden files match.** `files_nodes.search_saved`
+  drops rows the caller cannot read after the search reads its page. So a member who calls it with a
+  small page size and gets an empty page with `isDone: false` learns that some hidden file matches a
+  name word, a content word, or a metadata value. They never learn which file, its path, or its text.
+  This is accepted, like the same signal from `list_tree`: a full answer would need access filters
+  inside the search index.
 
 # Endpoints
 

@@ -4655,7 +4655,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				"When retrying a /tmp command option, prefer doing related scratch work in one call when convenient",
 			);
 			expect(agentSurface).toContain(
-				"When reporting Bash results, treat app-only flags such as --limit, --cursor, --path-query, and --extension as supported app Bash syntax",
+				"When reporting Bash results, treat app-only flags such as --limit, --cursor, and --extension as supported app Bash syntax",
 			);
 			expect(agentSurface).toContain(
 				"Printed Next page commands use short cursor ids without an @ prefix; run the exact printed command to continue.",
@@ -4693,7 +4693,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(agentSurface).toContain(
 				'If the user says "search for the X file", "find the X file", "file named X", or "path/name contains X", use find.',
 			);
-			expect(agentSurface).toContain("run search --path <folder> X or search X; do not substitute find --path-query.");
+			expect(agentSurface).toContain("run search --path <folder> X or search X; do not substitute find -name.");
 			expect(agentSurface).toContain(
 				"For search --path and meta search --path, the same app-root path rule applies: pass /home/cloud-usr/w/personal/home/folder or relative folder, never raw /folder.",
 			);
@@ -4707,9 +4707,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(agentSurface).toContain("ls -R lists a paginated subtree as full app shell paths");
 			expect(agentSurface).toContain("when the user asks for tree-shaped output, use tree, not ls -R");
 			expect(agentSurface).toContain(
-				"Use find -name QUERY or find --path-query QUERY only for indexed app-file path/name word search",
+				"Use find <folder> -name WORD for app-file name search: it matches name words and word starts, not globs and not path parts",
 			);
-			expect(agentSurface).toContain('Prefer --path-query QUERY for natural "path/name contains QUERY" requests');
+			expect(agentSurface).toContain("App files refuse --path-query and -maxdepth 1 -name");
 			expect(agentSurface).toContain(
 				"For regex path requests against app files, say regex is unsupported and use token search when a plain token is obvious",
 			);

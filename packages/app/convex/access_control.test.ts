@@ -5809,6 +5809,20 @@ describe("file sharing", () => {
 		});
 	}
 
+	/** The paths of the first `search_saved` content page. */
+	async function search_saved_content_paths(args: {
+		asWho: ReturnType<TestConvex["withIdentity"]>;
+		membershipId: Id<"organizations_workspaces_users">;
+		text: string;
+	}) {
+		const result = await args.asWho.query(api.files_nodes.search_saved, {
+			membershipId: args.membershipId,
+			clause: { kind: "content", text: args.text },
+			paginationOpts: { numItems: 50, cursor: null },
+		});
+		return result.page.map((row) => (row.kind === "problem" ? row.message : row.path));
+	}
+
 	test("a path-like rename cannot write into a folder the caller has no say over", async () => {
 		const t = test_convex();
 		const fixture = await access_control_test_seed_enforcement_fixture(t, {
@@ -8602,7 +8616,7 @@ describe("file sharing", () => {
 		expect(memberPlainTextMatch).toBeNull();
 	});
 
-	test("search_content stays inside the membership's own workspace", async () => {
+	test("search_saved stays inside the membership's own workspace", async () => {
 		const t = test_convex();
 		const fixture = await access_control_test_seed_enforcement_fixture(t, {
 			name: "search-tenant-org",
@@ -8633,34 +8647,39 @@ describe("file sharing", () => {
 			workspaceId: otherWorkspaceId,
 			userId: fixture.ownerId,
 		});
-		const insideOther = await fixture.asOwner.query(api.files_nodes.search_content, {
-			membershipId: otherMembershipId,
-			query: "tenantleakneedle",
-		});
-		expect(insideOther.results.map((result) => result.path)).toEqual(["/other-only.md"]);
+		expect(
+			await search_saved_content_paths({
+				asWho: fixture.asOwner,
+				membershipId: otherMembershipId,
+				text: "tenantleakneedle",
+			}),
+		).toEqual(["/other-only.md"]);
 
 		// The default-workspace membership must not surface it: the searched workspace comes from
 		// the membership doc, not from anything the caller can point at.
-		const fromDefaultWorkspace = await fixture.asOwner.query(api.files_nodes.search_content, {
-			membershipId: fixture.ownerMembershipId,
-			query: "tenantleakneedle",
-			targets: insideOther.results.map((result) => result.target),
-		});
-		expect(fromDefaultWorkspace.results).toEqual([]);
+		expect(
+			await search_saved_content_paths({
+				asWho: fixture.asOwner,
+				membershipId: fixture.ownerMembershipId,
+				text: "tenantleakneedle",
+			}),
+		).toEqual([]);
 
 		// An outsider from another organization gets nothing out of a foreign membership id.
 		const outsider = await access_control_test_seed_enforcement_fixture(t, {
 			name: "search-outsider-org",
 			suffix: "search-outsider",
 		});
-		const forged = await outsider.asOwner.query(api.files_nodes.search_content, {
-			membershipId: otherMembershipId,
-			query: "tenantleakneedle",
-		});
-		expect(forged.results).toEqual([]);
+		expect(
+			await search_saved_content_paths({
+				asWho: outsider.asOwner,
+				membershipId: otherMembershipId,
+				text: "tenantleakneedle",
+			}),
+		).toEqual([]);
 	});
 
-	test("search_content hides restricted files and scopes a grant-only member to their grant", async () => {
+	test("search_saved hides restricted files and scopes a grant-only member to their grant", async () => {
 		const t = test_convex();
 		const fixture = await access_control_test_seed_enforcement_fixture(t, {
 			name: "search-grant-org",
@@ -8684,22 +8703,17 @@ describe("file sharing", () => {
 			restrictedScopeNodeId: folderId,
 		});
 
+		const search = (who: "owner" | "member") =>
+			search_saved_content_paths({
+				asWho: who === "owner" ? fixture.asOwner : fixture.asMember,
+				membershipId: who === "owner" ? fixture.ownerMembershipId : fixture.memberMembershipId,
+				text: "grantsearchneedle",
+			});
 		// The owner reads everything.
-		const ownerFound = await fixture.asOwner.query(api.files_nodes.search_content, {
-			membershipId: fixture.ownerMembershipId,
-			query: "grantsearchneedle",
-		});
-		expect(new Set(ownerFound.results.map((result) => result.path))).toEqual(
-			new Set(["/open-notes.md", "/closed/secret-notes.md"]),
-		);
+		expect(new Set(await search("owner"))).toEqual(new Set(["/open-notes.md", "/closed/secret-notes.md"]));
 
 		// A member with workspace read but no grant: the restricted file and its snippet stay absent.
-		const memberFound = await fixture.asMember.query(api.files_nodes.search_content, {
-			membershipId: fixture.memberMembershipId,
-			query: "grantsearchneedle",
-			targets: ownerFound.results.map((result) => result.target),
-		});
-		expect(memberFound.results.map((result) => result.path)).toEqual(["/open-notes.md"]);
+		expect(await search("member")).toEqual(["/open-notes.md"]);
 
 		// Grant the member the closed folder, then drop their role to one with no workspace read:
 		// the grant keeps working and the open file disappears, because only the grant is left.
@@ -8712,24 +8726,15 @@ describe("file sharing", () => {
 		expect(granted._nay).toBeUndefined();
 		await demote_to_guest_role(fixture);
 
-		const grantOnlyFound = await fixture.asMember.query(api.files_nodes.search_content, {
-			membershipId: fixture.memberMembershipId,
-			query: "grantsearchneedle",
-			targets: ownerFound.results.map((result) => result.target),
-		});
-		expect(grantOnlyFound.results.map((result) => result.path)).toEqual(["/closed/secret-notes.md"]);
+		expect(await search("member")).toEqual(["/closed/secret-notes.md"]);
 
-		// Deactivating the membership must refuse the whole search. Only the wrapper's own
+		// Deactivating the membership must refuse the whole search. Only the door's own
 		// active check does that: the deeper authorize helper would just degrade the call to
 		// grant-only reads, and this member's grant would keep leaking the restricted file.
 		await t.run(async (ctx) => {
 			await ctx.db.patch("organizations_workspaces_users", fixture.memberMembershipId, { active: false });
 		});
-		const deactivatedFound = await fixture.asMember.query(api.files_nodes.search_content, {
-			membershipId: fixture.memberMembershipId,
-			query: "grantsearchneedle",
-		});
-		expect(deactivatedFound.results).toEqual([]);
+		expect(await search("member")).toEqual([]);
 	});
 
 	test("archiving a folder does not sweep up a restricted folder inside it", async () => {
