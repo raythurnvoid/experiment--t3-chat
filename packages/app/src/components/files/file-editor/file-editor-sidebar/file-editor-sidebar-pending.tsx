@@ -105,6 +105,7 @@ type FileEditorSidebarPendingRow = {
 	privateEntry: Extract<files_VisibleEntry, { kind: "private" }> | null;
 	/** The saved node behind this row. Null for private drafts. */
 	savedNode: app_convex_Doc<"files_nodes"> | null;
+	/** Unset for a move into a folder the user can no longer read: the path would not be the destination. */
 	moveDestinationPath: string | undefined;
 	/**
 	 * Id of the active node that accepting this move will replace (soft-archive, like `mv -f`):
@@ -202,7 +203,7 @@ function build_pending_rows(
 		let replacedNodeId: app_convex_Id<"files_nodes"> | undefined;
 		let sizeOnlyReplacedNodeId: app_convex_Id<"files_nodes"> | undefined;
 		if (pendingMove) {
-			moveDestinationPath = entry.path;
+			moveDestinationPath = view.moveDestinationUnreadable ? undefined : entry.path;
 
 			// Accepting replaces (soft-archives) whichever node occupies the destination path at
 			// that moment, so the caption only trusts live path occupancy — a declared `mv -f`
@@ -989,9 +990,13 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 	const actionLabel =
 		kind === "delete"
 			? `delete of ${path}`
-			: (kind === "move" || kind === "content_and_move") && moveDestinationPath != null
-				? `move of ${path} to ${moveDestinationPath}`
+			: kind === "move" || kind === "content_and_move"
+				? moveDestinationPath != null
+					? `move of ${path} to ${moveDestinationPath}`
+					: `move of ${path}`
 				: `changes to ${path}`;
+	// A move into a folder the user can no longer read has no destination path to show.
+	const movedCaption = moveDestinationPath != null ? "Moved" : "Moved to a folder you can't open";
 	// Accept saves the pending parent folders too. The caption does not name them, like for any new
 	// file. Only the tooltip and the accessible name list the folders.
 	const parentsLabel =
@@ -1066,8 +1071,10 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 		(kind === "delete" && !canPreviewDeleteDiff)
 	) {
 		const moveLabel =
-			kind === "move" && moveDestinationPath != null
-				? `${path} → ${moveDestinationPath}`
+			kind === "move"
+				? moveDestinationPath != null
+					? `${path} → ${moveDestinationPath}`
+					: `${path}, moved to a folder you can't open`
 				: kind === "added"
 					? path + parentsLabel
 					: path;
@@ -1116,7 +1123,7 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 									? "Deleted"
 									: replacedNodeId != null
 										? "Replaced"
-										: "Moved"}
+										: movedCaption}
 						</span>
 					</MyLink>
 					<span className={cn("FileEditorSidebarPending-item-actions" satisfies FileEditorSidebarPending_ClassNames)}>
@@ -1163,7 +1170,7 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 				: replacedNodeId != null
 					? "Replaced"
 					: kind === "content_and_move"
-						? `${isAddedFile ? "Added" : "Modified"} · Moved`
+						? `${isAddedFile ? "Added" : "Modified"} · ${movedCaption}`
 						: isAddedFile
 							? "Added file"
 							: kind === "copy" || kind === "replacement"
@@ -1174,8 +1181,10 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 	// still opens the diff. Delete rows always show only their own path. The stale suffix gives
 	// assistive tech the caption's meaning.
 	const rowLabel =
-		(kind === "move" || kind === "content_and_move") && moveDestinationPath != null
-			? `${path} → ${moveDestinationPath}`
+		kind === "move" || kind === "content_and_move"
+			? moveDestinationPath != null
+				? `${path} → ${moveDestinationPath}`
+				: `${path}, moved to a folder you can't open`
 			: path;
 	const rowAccessibleLabel =
 		(isStale ? `${rowLabel}, review to update` : rowLabel) + (isArchived ? ", archived" : "") + parentsLabel;
@@ -1541,13 +1550,18 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 		return view && !(view instanceof Error) ? [view] : [];
 	});
 
-	// A saved move needs the node at its destination for the "Replaced" caption. Build the key from
+	// A saved move needs the node at its destination for the "Replaced" caption. A move into a folder
+	// the user can no longer read has no destination to check. Build the key from
 	// the query results, not `loadedViews`: React Compiler cannot keep a memo whose key comes from an
 	// array that is passed on to `build_pending_rows`.
 	const occupantsKey = JSON.stringify(
 		listRows.flatMap((row) => {
 			const view = viewResults[row.pendingUpdateId];
-			return view && !(view instanceof Error) && view.entry.kind === "saved" && view.entry.pendingUpdate?.pendingMove
+			return view &&
+				!(view instanceof Error) &&
+				view.entry.kind === "saved" &&
+				view.entry.pendingUpdate?.pendingMove &&
+				!view.moveDestinationUnreadable
 				? [[row.pendingUpdateId, view.entry.node._id, view.entry.path]]
 				: [];
 		}),
@@ -2072,6 +2086,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 							canEdit: true,
 							canAccept: true,
 							canAcceptWithParents: true,
+							moveDestinationUnreadable: false,
 							requiredParents: [],
 							savedParentId: null,
 						},
@@ -2084,6 +2099,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 						canEdit: true,
 						canAccept: true,
 						canAcceptWithParents: true,
+						moveDestinationUnreadable: false,
 						requiredParents: [],
 						savedParentId: null,
 						occupant,
@@ -2123,6 +2139,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 						canEdit: true,
 						canAccept: true,
 						canAcceptWithParents: true,
+						moveDestinationUnreadable: false,
 						requiredParents: [],
 						savedParentId: null,
 					},
@@ -2132,6 +2149,33 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 			expect(rows).toHaveLength(1);
 			expect(rows[0]?.path).toBe("/owned.md");
+		});
+
+		test("shows no destination path for a move into a folder the user can no longer read", () => {
+			const pendingUpdate = makePendingUpdate({
+				id: "pu_hidden",
+				fileNodeId: "node_hidden",
+				pendingMove: { destParentId: "node_secret", destName: "notes.md", fromPath: "/notes.md" },
+			});
+			const node = makeNode({ id: "node_hidden", path: "/notes.md" });
+			const rows = build_pending_rows(
+				[
+					{
+						// The server shows the entry at its saved place.
+						entry: { kind: "saved", node, pendingUpdate, path: "/notes.md" },
+						readiness: "ready",
+						canEdit: true,
+						canAccept: false,
+						canAcceptWithParents: false,
+						moveDestinationUnreadable: true,
+						requiredParents: [],
+						savedParentId: null,
+					},
+				],
+				new Map(),
+			);
+
+			expect(rows.map((row) => [row.kind, row.moveDestinationPath])).toEqual([["move", undefined]]);
 		});
 
 		test("does not mark a saved folder as replaced while a private draft chain sits inside it", () => {
@@ -2156,6 +2200,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				canEdit: true,
 				canAccept: true,
 				canAcceptWithParents: true,
+				moveDestinationUnreadable: false,
 				requiredParents: [],
 				savedParentId: null,
 				occupant: { nodeId: "node_target" as app_convex_Id<"files_nodes">, hasActiveChild: false },
@@ -2176,6 +2221,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				canEdit: true,
 				canAccept: false,
 				canAcceptWithParents: true,
+				moveDestinationUnreadable: false,
 				requiredParents: [
 					{
 						target: { kind: "private", id: "private_new" as app_convex_Id<"files_pending_nodes"> },
