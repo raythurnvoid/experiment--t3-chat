@@ -95,7 +95,7 @@ function levenshtein(a: string, b: string): number {
 }
 
 /**
- * Inspired by `vendor/opencode/packages/opencode/src/tool/edit.ts` (SimpleReplacer)
+ * Inspired by `references-submodules/opencode/packages/opencode/src/tool/edit.ts` (SimpleReplacer)
  *
  * This replacer matches the exact literal oldString as-is,
  * ensuring byte-for-byte precision and highly predictable diffs in the simplest case.
@@ -113,7 +113,7 @@ function* ai_chat_tool_edit_file_replacer_simple(_content: string, find: string)
 }
 
 /**
- * Inspired by `vendor/opencode/packages/opencode/src/tool/edit.ts` (LineTrimmedReplacer)
+ * Inspired by `references-submodules/opencode/packages/opencode/src/tool/edit.ts` (LineTrimmedReplacer)
  *
  * This replacer compares multi-line content by trimming each line before matching,
  * making it resilient to incidental leading/trailing spaces while preserving the original block.
@@ -156,7 +156,7 @@ function* ai_chat_tool_edit_file_replacer_line_trimmed(
 }
 
 /**
- * Inspired by `vendor/opencode/packages/opencode/src/tool/edit.ts` (BlockAnchorReplacer)
+ * Inspired by `references-submodules/opencode/packages/opencode/src/tool/edit.ts` (BlockAnchorReplacer)
  *
  * This replacer anchors on the first and last trimmed lines of the block,
  * then checks middle-line similarity, allowing matches even when the interior has drifted.
@@ -272,7 +272,7 @@ function* ai_chat_tool_edit_file_replacer_block_anchor(
 }
 
 /**
- * Inspired by `vendor/opencode/packages/opencode/src/tool/edit.ts` (WhitespaceNormalizedReplacer)
+ * Inspired by `references-submodules/opencode/packages/opencode/src/tool/edit.ts` (WhitespaceNormalizedReplacer)
  *
  * This replacer collapses whitespace for comparison so that spacing differences
  * do not prevent a match, while still yielding the original text for replacement.
@@ -322,7 +322,7 @@ function* ai_chat_tool_edit_file_replacer_whitespace_normalized(
 }
 
 /**
- * Inspired by `vendor/opencode/packages/opencode/src/tool/edit.ts` (IndentationFlexibleReplacer)
+ * Inspired by `references-submodules/opencode/packages/opencode/src/tool/edit.ts` (IndentationFlexibleReplacer)
  *
  * This replacer removes common indentation before comparison to handle blocks
  * that have been re-indented, matching the original block regardless of leading spaces.
@@ -360,7 +360,7 @@ function* ai_chat_tool_edit_file_replacer_indentation_flexible(
 }
 
 /**
- * Inspired by `vendor/opencode/packages/opencode/src/tool/edit.ts` (EscapeNormalizedReplacer)
+ * Inspired by `references-submodules/opencode/packages/opencode/src/tool/edit.ts` (EscapeNormalizedReplacer)
  *
  * This replacer unescapes sequences like \n and \t when matching,
  * making it possible to locate content embedded inside string literals or escaped contexts.
@@ -418,7 +418,7 @@ function* ai_chat_tool_edit_file_replacer_escape_normalized(
 }
 
 /**
- * Inspired by `vendor/opencode/packages/opencode/src/tool/edit.ts` (TrimmedBoundaryReplacer)
+ * Inspired by `references-submodules/opencode/packages/opencode/src/tool/edit.ts` (TrimmedBoundaryReplacer)
  *
  * This replacer trims only the outer boundary of the target text before matching,
  * making it resilient when the copied block includes extra leading or trailing blank space.
@@ -449,7 +449,7 @@ function* ai_chat_tool_edit_file_replacer_trimmed_boundary(
 }
 
 /**
- * Inspired by `vendor/opencode/packages/opencode/src/tool/edit.ts` (ContextAwareReplacer)
+ * Inspired by `references-submodules/opencode/packages/opencode/src/tool/edit.ts` (ContextAwareReplacer)
  *
  * This replacer uses the first and last lines as anchors and accepts a candidate block
  * when the middle lines still resemble the requested block closely enough.
