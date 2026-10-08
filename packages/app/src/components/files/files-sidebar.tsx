@@ -2792,9 +2792,16 @@ type FilesSidebarTree_Props = {
 	 * only a hint.
 	 */
 	publicLinkNodeIds: ReadonlySet<string>;
-	/** How far each open folder has loaded. */
+	/**
+	 * How far each open folder has loaded. An open folder that is missing has not started to load.
+	 */
 	folderStatusById: ReadonlyMap<string, "loading" | "more" | "done">;
 	onLoadMore: (folderId: string) => void;
+	/**
+	 * The open folders the rendered rows need: each rendered open folder and every folder above a
+	 * rendered row. It never holds the root.
+	 */
+	onShowFolders: (folderIds: string[]) => void;
 	onCreateNode: (parentNodeId: string, kind: files_TreeItem["kind"]) => void;
 	onStartRename: (itemId: string) => void;
 	onRenameErrorClear: (itemId: string) => void;
@@ -2835,6 +2842,7 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 		publicLinkNodeIds,
 		folderStatusById,
 		onLoadMore,
+		onShowFolders,
 		onCreateNode,
 		onStartRename,
 		onRenameErrorClear,
@@ -3116,6 +3124,26 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 		}
 	}, [loadMoreKey, folderStatusById, onLoadMore]);
 
+	// Each open folder loads through several live queries. "Expand subtree" can open thousands of loaded
+	// folders at once, so report only the open folders the rendered rows need, and only those load.
+	// A rendered row also needs every folder above it. A pinned row (the open node) can show before the
+	// folders above it load, and those folders must load to show its siblings.
+	const shownFolderKey = [
+		...new Set(
+			virtualizer.getVirtualItems().flatMap((virtualItem) => {
+				const item = renderedTreeItems[virtualItem.index];
+				const folderIds = item.isExpanded() ? [item.getId()] : [];
+				for (let parent = item.getParent(); parent && parent.getId() !== files_ROOT_ID; parent = parent.getParent()) {
+					folderIds.push(parent.getId());
+				}
+				return folderIds;
+			}),
+		),
+	].join(",");
+	useEffect(() => {
+		onShowFolders(shownFolderKey ? shownFolderKey.split(",") : []);
+	}, [shownFolderKey, onShowFolders]);
+
 	return (
 		<FilesSidebarTreeBusyContext.Provider value={isBusy}>
 			<div
@@ -3183,7 +3211,8 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 										hasPublicLink={publicLinkNodeIds.has(itemId)}
 										isFolderLoading={
 											item.isExpanded() &&
-											(folderStatusById.get(itemId) === "loading" ||
+											// A folder with no status starts to load once this row reports it.
+											((folderStatusById.get(itemId) ?? "loading") === "loading" ||
 												(folderStatusById.get(itemId) === "more" && item.getChildren().length === 0))
 										}
 										onCreateNode={onCreateNode}
@@ -4777,11 +4806,18 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	 * the open node is pinned already.
 	 */
 	const [keptNodeIds, setKeptNodeIds] = useState<string[]>([]);
+	/**
+	 * Open folders whose rows the tree has rendered since they opened (see `FilesSidebarTree_Props.onShowFolders`).
+	 * Only these folders load, so opening thousands of folders at once loads only the ones on screen.
+	 * A folder keeps loading after it scrolls away. Dropping its rows would move every row below it,
+	 * and the rows on screen would jump when the folder is above them.
+	 */
+	const [shownFolderIds, setShownFolderIds] = useState<ReadonlySet<string>>(new Set());
 
 	// Load only the root and the open folders. The whole workspace can hold many thousands of nodes.
 	const treeFolders = FilesTreeProvider.useFolders({
-		// Expanded items are always tree rows, so every id except the root is a node id.
-		folderIds: expandedItems.filter((itemId) => itemId !== files_ROOT_ID) as app_convex_Id<"files_nodes">[],
+		// Expanded items are always tree rows, and the shown folders never hold the root, so every id is a node id.
+		folderIds: expandedItems.filter((itemId) => shownFolderIds.has(itemId)) as app_convex_Id<"files_nodes">[],
 		archived: showArchived,
 		// The open node is pinned, so a node opened from the search shows in the tree once the search
 		// closes, with the folders above it.
@@ -6352,6 +6388,15 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		treeFolders.loadMore(folderId as app_convex_Id<"files_nodes"> | typeof files_ROOT_ID);
 	});
 
+	const handleShowFolders = useFn<FilesSidebarTree_Props["onShowFolders"]>((folderIds) => {
+		setShownFolderIds((current) => {
+			// Forget the folders that closed, so a folder opened again waits for its row again.
+			const expandedItemIds = new Set(expandedItems);
+			const next = new Set([...current, ...folderIds].filter((folderId) => expandedItemIds.has(folderId)));
+			return next.symmetricDifference(current).size > 0 ? next : current;
+		});
+	});
+
 	const handleCreateNodeClick = useFn<FilesSidebarTree_Props["onCreateNode"]>((parentNodeId, kind) => {
 		if (!treeItems) {
 			console.error(should_never_happen("[FilesSidebar.handleCreateNodeClick] missing deps", { treeItems }));
@@ -7161,6 +7206,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 						publicLinkNodeIds={publicLinkNodeIds}
 						folderStatusById={treeFolders.statusByFolderId}
 						onLoadMore={handleLoadMore}
+						onShowFolders={handleShowFolders}
 						onCreateNode={handleCreateNodeClick}
 						onStartRename={handleStartRename}
 						onRenameErrorClear={clearRenameError}
@@ -8169,6 +8215,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 										publicLinkNodeIds={props.publicLinkNodeIds ?? new Set()}
 										folderStatusById={props.folderStatusById ?? noFolderStatus}
 										onLoadMore={handleLoadMore}
+										onShowFolders={handleAction}
 										onCreateNode={handleAction}
 										onStartRename={handleAction}
 										onRenameErrorClear={handleAction}

@@ -27,6 +27,8 @@ const { treeState, tenantState, linkState, savedState, createNode, queryCalls } 
 		sharedRoots: [] as files_VisibleTreeNode[],
 		sharedRootsStatus: "done" as "loading" | "more" | "done",
 		loadMoreShared: vi.fn(),
+		// The open folders of the last `useFolders` call. The real provider mounts one pager for each.
+		requestedFolderIds: [] as string[],
 		listeners: new Set<() => void>(),
 		sharedListeners: new Set<() => void>(),
 	},
@@ -193,7 +195,8 @@ vi.mock("@/lib/files-tree-context.tsx", async (importOriginal) => {
 		FilesTreeProvider: {
 			// Serve every fixture row as loaded. A row whose parent is not in the fixture is pinned under a
 			// hidden folder, so the store would show it at the top.
-			useFolders: function useFolders() {
+			useFolders: function useFolders(request: { folderIds: string[] }) {
+				treeState.requestedFolderIds = request.folderIds;
 				const nodes = useTreeNodes();
 				const sharedRoots = useSharedRoots();
 				return useMemo(() => {
@@ -224,6 +227,7 @@ beforeEach(() => {
 	treeState.sharedRoots = [];
 	treeState.sharedRootsStatus = "done";
 	treeState.loadMoreShared.mockReset();
+	treeState.requestedFolderIds = [];
 	treeState.nodes = ["alpha", "bravo", "charlie", "delta"].map((name) => ({
 		...files_SYNTHETIC_ROOT_FOLDER,
 		_id: name as app_convex_Id<"files_nodes">,
@@ -1137,6 +1141,40 @@ describe("FilesSidebar", () => {
 		await waitFor(() => expect(document.activeElement).toBe(bravo), { timeout: 5_000 });
 		expect(bravo.tabIndex).toBe(0);
 		expect(bravo.hasAttribute("data-focused")).toBe(true);
+	});
+
+	test("Expand root folders loads only the open folders on screen, and the others once their rows scroll into view", async () => {
+		treeState.nodes = Array.from({ length: 500 }, (_, index) => ({
+			...treeState.nodes[0],
+			_id: `folder-${index}` as app_convex_Id<"files_nodes">,
+			path: `/folder-${index}`,
+			treePath: `/folder-${index}/`,
+			name: `folder-${index}`,
+		}));
+		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
+		const view = render(<CreateSidebar router={router} selectedNodeId="folder-0" />);
+		await view.findByRole("treeitem", { name: "folder-0" });
+
+		fireEvent.click(view.getByRole("button", { name: "Expand root folders" }));
+		await waitFor(() => expect(treeState.requestedFolderIds).toContain("folder-0"));
+		// Every folder is open, but only the rendered rows load. Loading all 500 would mount 500 pagers.
+		expect(treeState.requestedFolderIds.length).toBeGreaterThan(1);
+		expect(treeState.requestedFolderIds.length).toBeLessThan(30);
+		expect(treeState.requestedFolderIds).not.toContain("folder-400");
+
+		// An open folder row is 90 px: its row and its placeholder row.
+		const content = view.container.querySelector(".FilesSidebar-content")!;
+		vi.spyOn(content, "scrollHeight", "get").mockReturnValue(500 * 90);
+		act(() => {
+			content.scrollTop = 400 * 90;
+			content.dispatchEvent(new Event("scroll"));
+		});
+		const folder400 = await view.findByRole("treeitem", { name: "folder-400" });
+		expect(folder400.getAttribute("aria-expanded")).toBe("true");
+		await waitFor(() => expect(treeState.requestedFolderIds).toContain("folder-400"));
+		// A folder that scrolled away keeps loading, so the rows above the screen do not change height.
+		expect(treeState.requestedFolderIds).toContain("folder-0");
+		expect(treeState.requestedFolderIds.length).toBeLessThan(60);
 	});
 
 	test("a confirmed row-menu archive moves focus to the next row", async () => {
