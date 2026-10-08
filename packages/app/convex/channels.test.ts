@@ -1176,6 +1176,7 @@ describe("message shaping", () => {
 			for (const changes of [
 				{ body: '[@ id="file:0"]', fileMentionIds: [fileNodeId] },
 				{ body: '[file-quote id="0"]', fileQuotes: [{ fileNodeId, text: "Selected text" }] },
+				{ attachments: [{ kind: "file" as const, fileNodeId }] },
 			]) {
 				const result = await send(f, f.member, { kind: "channel", channelId }, changes);
 				expect(result._nay?.message).toBe("File unavailable");
@@ -1218,40 +1219,51 @@ describe("message shaping", () => {
 		expect(await f.t.run((ctx) => ctx.db.query("channels_messages").collect())).toEqual([]);
 	});
 
-	test("unreadable attachments expose no raw id, filename, or path", async () => {
+	test("unreadable and archived attachments expose no raw id, filename, or path", async () => {
 		const f = await fixture();
 		const channelId = await create(f, "public");
-		const fileNodeId = await f.t.run((ctx) =>
-			ctx.db.insert("files_nodes", {
-				...test_mocks.files.base(),
-				organizationId: f.organizationId,
-				workspaceId: f.workspaceId,
-				kind: "file",
-				name: "hidden-report.md",
-				path: "/hidden-report.md",
-				treePath: "/hidden-report.md",
-				textKind: "rich_text",
-				createdBy: f.member.userId,
-				updatedBy: f.member.userId,
-			}),
-		);
+		const [hiddenId, archivedId] = await f.t.run(async (ctx) => {
+			const ids: Id<"files_nodes">[] = [];
+			for (const name of ["hidden-report.md", "archived-report.md"])
+				ids.push(
+					await ctx.db.insert("files_nodes", {
+						...test_mocks.files.base(),
+						organizationId: f.organizationId,
+						workspaceId: f.workspaceId,
+						kind: "file",
+						name,
+						path: `/${name}`,
+						treePath: `/${name}`,
+						textKind: "rich_text",
+						createdBy: f.member.userId,
+						updatedBy: f.member.userId,
+					}),
+				);
+			return ids;
+		});
 		const sent = await send(
 			f,
 			f.member,
 			{ kind: "channel", channelId },
-			{ attachments: [{ kind: "file", fileNodeId }] },
+			{
+				attachments: [
+					{ kind: "file", fileNodeId: hiddenId! },
+					{ kind: "file", fileNodeId: archivedId! },
+				],
+			},
 		);
 		expect(sent._nay).toBeUndefined();
-		await f.t.run((ctx) =>
-			ctx.db.patch("files_nodes", fileNodeId, { restrictedScopeNodeId: fileNodeId, isRestrictedScopeRoot: true }),
-		);
+		await f.t.run(async (ctx) => {
+			await ctx.db.patch("files_nodes", hiddenId!, { restrictedScopeNodeId: hiddenId!, isRestrictedScopeRoot: true });
+			await ctx.db.patch("files_nodes", archivedId!, { archiveOperationId: archivedId! });
+		});
 		const message = await f.as(f.other).query(api.channels_messages.get_message, {
 			membershipId: f.other.membershipId,
 			messageId: sent._yay!.messageId,
 		});
-		expect(message?.attachments).toEqual([{ kind: "unavailable" }]);
-		expect(JSON.stringify(message)).not.toContain(fileNodeId);
-		expect(JSON.stringify(message)).not.toContain("hidden-report.md");
+		expect(message?.attachments).toEqual([{ kind: "unavailable" }, { kind: "unavailable" }]);
+		for (const hidden of [hiddenId!, archivedId!, "hidden-report.md", "archived-report.md"])
+			expect(JSON.stringify(message)).not.toContain(hidden);
 	});
 });
 

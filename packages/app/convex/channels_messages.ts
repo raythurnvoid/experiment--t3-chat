@@ -632,7 +632,8 @@ export const send_message = mutation({
 				nodeId: attachment.fileNodeId,
 				permission: "content.read",
 			});
-			if (read._nay || read._yay.fileNode.kind !== "file") return Result({ _nay: { message: "File unavailable" } });
+			if (read._nay || read._yay.fileNode.kind !== "file" || read._yay.fileNode.archiveOperationId !== null)
+				return Result({ _nay: { message: "File unavailable" } });
 			const asset = read._yay.fileNode.assetId ? await ctx.db.get("files_r2_assets", read._yay.fileNode.assetId) : null;
 			if (asset?.kind === "upload" && !asset.r2Key)
 				return Result({
@@ -868,7 +869,7 @@ async function shape_message(
 			permission: "content.read",
 		});
 		attachments.push(
-			read._nay
+			read._nay || read._yay.fileNode.archiveOperationId !== null
 				? { kind: "unavailable" }
 				: {
 						kind: "file",
