@@ -776,7 +776,7 @@ export async function files_pending_update_runs_db_start(
 		plannedItemCount: 0,
 		planEpoch: 0,
 		graphPlanId: null,
-		plan: { phase: "classify", cursor: null, itemId: null, dependencyCursor: null, atomicItemCount: 0 },
+		plan: { phase: "classify", cursor: null, atomicItemCount: 0 },
 		reviewVersion: await db_get_review_version(ctx, scope),
 		revalidateRemaining: false,
 		fence: 0,

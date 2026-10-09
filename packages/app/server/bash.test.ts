@@ -4740,7 +4740,7 @@ describe("bash_run_command", () => {
 				result: { kind: "failed", error: "worker crashed" },
 			});
 			const saved = await job_row(runner, 1);
-			if (saved.job.copy?.phase !== "admitting" || !saved.job.copy.input)
+			if (saved.job.copy?.phase !== "admitting")
 				throw new Error("Expected saved input reservation");
 			const input = saved.job.copy.input;
 			vi.setSystemTime(input.putMayArriveUntil + 1);
@@ -4815,7 +4815,7 @@ describe("bash_run_command", () => {
 				result: { kind: "failed", error: "worker crashed" },
 			});
 			const waiting = await run_job(runner, 1);
-			if (waiting.job.copy?.phase !== "admitting" || !waiting.job.copy.input)
+			if (waiting.job.copy?.phase !== "admitting")
 				throw new Error("Expected reserved input");
 			const input = waiting.job.copy.input;
 			expect(input.ready).toBe(false);
@@ -5081,7 +5081,7 @@ describe("bash_run_command", () => {
 			const scope = { membershipId: first.membershipId, threadId: first.threadId, runId: first.job.copy.runId };
 			expect(first.job.workerGeneration).toBe(1);
 			expect(first.job.copy.sourcesCount, "the first worker leaves source resolution unfinished").toBe(3200);
-			expect(first.job.copy.input?.cursor).toBeLessThan(first.job.copy.input!.sourceByteCount);
+			expect(first.job.copy.input.cursor).toBeLessThan(first.job.copy.input.sourceByteCount);
 			expect(await runner.t.query(internal.files_transfer.get_for_agent, scope)).toMatchObject({
 				step: "uploading",
 				selection: { expectedCount: 3401, count: 3200 },

@@ -1612,21 +1612,19 @@ const app_convex_schema = defineSchema({
 							conflictPolicy: files_transfer_conflict_policy_validator,
 							expectedArgCount: v.number(),
 							expectedSourceCount: v.number(),
-							// New jobs keep expanded input before resolving source IDs. Saved page jobs remain valid.
-							input: v.optional(
-								v.object({
-									r2Key: v.string(),
-									sha256: v.string(),
-									byteCount: v.number(),
-									sourceByteCount: v.number(),
-									putMayArriveUntil: v.number(),
-									recursive: v.boolean(),
-									ready: v.boolean(),
-									cursor: v.number(),
-									startedAt: v.number(),
-									lastSourceHash: v.union(v.string(), v.null()),
-								}),
-							),
+							// Save expanded input before resolving source IDs.
+							input: v.object({
+								r2Key: v.string(),
+								sha256: v.string(),
+								byteCount: v.number(),
+								sourceByteCount: v.number(),
+								putMayArriveUntil: v.number(),
+								recursive: v.boolean(),
+								ready: v.boolean(),
+								cursor: v.number(),
+								startedAt: v.number(),
+								lastSourceHash: v.union(v.string(), v.null()),
+							}),
 							pageCount: v.number(),
 							argsCount: v.number(),
 							sourcesCount: v.number(),
@@ -1687,7 +1685,6 @@ const app_convex_schema = defineSchema({
 		invocationId: v.id("ai_chat_bash_invocations"),
 		commandNumber: v.number(),
 		page: v.number(),
-		args: v.array(v.string()),
 		sources: v.array(files_pending_target_validator),
 	}).index("by_invocation_command_page", ["invocationId", "commandNumber", "page"]),
 
@@ -2931,17 +2928,8 @@ const app_convex_schema = defineSchema({
 		planEpoch: v.number(),
 		graphPlanId: v.union(v.id("files_pending_update_plans"), v.null()),
 		plan: v.object({
-			phase: v.union(
-				v.literal("classify"),
-				v.literal("blocking"),
-				v.literal("atomic"),
-				v.literal("copy_units"),
-				v.literal("dependencies"),
-				v.literal("ready"),
-			),
+			phase: v.union(v.literal("classify"), v.literal("blocking"), v.literal("atomic"), v.literal("ready")),
 			cursor: v.union(v.string(), v.null()),
-			itemId: v.union(v.id("files_pending_update_run_items"), v.null()),
-			dependencyCursor: v.union(v.string(), v.null()),
 			atomicItemCount: v.number(),
 		}),
 		reviewVersion: v.number(),
@@ -2976,7 +2964,7 @@ const app_convex_schema = defineSchema({
 		selectedContentStateId: v.union(v.id("files_pending_update_yjs_states"), v.null()),
 		/** Discard only: remove this private folder only when it holds nothing else. */
 		onlyIfEmpty: v.optional(v.literal(true)),
-		planKind: v.union(v.literal("copy"), v.literal("atomic"), v.null()),
+		planKind: v.union(v.literal("atomic"), v.null()),
 		privateVersion: v.union(v.object({ creationGeneration: v.number(), structuralRevision: v.number() }), v.null()),
 		mediaDependencySet: v.union(
 			v.object({ setId: v.id("files_media_dependency_sets"), generation: v.number() }),
@@ -3000,7 +2988,7 @@ const app_convex_schema = defineSchema({
 	files_pending_update_run_units: defineTable({
 		runId: v.id("files_pending_update_runs"),
 		order: v.number(),
-		kind: v.union(v.literal("copy"), v.literal("atomic"), v.literal("cohort")),
+		kind: v.union(v.literal("atomic"), v.literal("cohort")),
 		planEpoch: v.number(),
 		cohortId: v.union(v.id("files_move_cohorts"), v.null()),
 		publicationRecorded: v.boolean(),

@@ -122,9 +122,6 @@ Private lifetime and cleanup (`packages/app/convex/files_pending_nodes.ts`):
 
 Bulk review (`packages/app/convex/files_pending_update_runs.ts`):
 
-The stored job change needs a later [migration](move-jobs-migration.md). The user chose to keep
-all data and stop unfinished jobs. This implementation does not run that migration.
-
 - One review lane runs per user/workspace, separate from transfer admission. A different busy request returns the active run and Activity IDs. Preparation uses the same two-worker Workpool component as transfers. Each unit keeps its Workpool ID so Stop and retries cancel queued work after fencing publication.
 - The run stores reviewed proposal IDs, revisions, source placement and selected content state IDs
   in pages of 100. Accept has no total selection cap. Bulk Discard still accepts at most 10,000 changes.
@@ -132,7 +129,9 @@ all data and stop unfinished jobs. This implementation does not run that migrati
   Header preparation checks the parent's saved BEFORE path, even when that parent moves in the
   same group. An outside parent move needs a new review.
 - `files_pending_update_plan_producer.ts` builds the Accept graph in native indexed pages.
-  It uses the frozen review input, exact path facts, private parents, moved parents, replacements
+  Accept units use `cohort`. Discard units use `atomic`. Only Discard uses the run's small
+  `plan` state. It has no Copy phase or per-item dependency cursor.
+  The Accept producer uses the frozen review input, exact path facts, private parents, moved parents, replacements
   and prepared media links. A changed proposal needs a new review. An unselected affected proposal
   is reported, never added to the selection. Connected cycles form one publication group.
   Independent groups run in dependency order. No group must fit in one Convex transaction.

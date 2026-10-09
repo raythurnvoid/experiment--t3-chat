@@ -67,6 +67,10 @@ Migration Progress:
 
 Check actions that started before the switch. Their later queries can read the new code and stored shape. Keep those reads valid, and reject stale final writes when old fields could choose the wrong mode or content. Retaining old keys alone is not enough if new writers leave their values stale. After the switch, wait for the old actions to finish before stripping fields they use; the normal [Convex action limit](https://docs.convex.dev/functions/actions#limits) is ten minutes. This wait does not replace the stale-write checks needed during that window.
 
+Also check the queues that store old calls. Workpool has its own queues and delayed callbacks.
+The app's `_scheduled_functions` query does not cover component schedulers. Drain or stop calls
+whose format will change. Keep queued work whose format is still valid.
+
 ## Phase C: Tighten
 
 1. Verify the strip migration completed.

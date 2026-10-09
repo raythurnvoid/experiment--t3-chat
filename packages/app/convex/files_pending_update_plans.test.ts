@@ -409,6 +409,12 @@ describe("paged review graph", () => {
 		const f = await independent_review(17, true);
 		const ready = await finish_plan(f, f.plan);
 		expect(ready).toMatchObject({ producerPhase: "sealed", itemCount: 17, unitCount: 17, assignedItemCount: 17 });
+		const run = await f.t.run((ctx) => ctx.db.get("files_pending_update_runs", f.runId));
+		expect(run?.plan, "new Accept stores no retired planner fields").toEqual({
+			phase: "classify",
+			cursor: null,
+			atomicItemCount: 0,
+		});
 		const components = await read_components(f);
 		const units = await f.t.run((ctx) =>
 			Promise.all(components.map((component) => ctx.db.get("files_pending_update_run_units", component.unitId))),
