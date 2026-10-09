@@ -525,22 +525,8 @@ README is already an editor, so an editor selector alone does not prove the new 
 require a different editor element with the initial text. Match the exact created row id in a
 virtual tree. Keep Playwriter command time out of the results.
 
-The temporary comparison action is `files_nodes_create:create_text_node`. To compare real sidebar
-clicks, replace only that outgoing action path in an owned test tab, then restore the tab's
-WebSocket send function. Check the actual path and response in CDP frames. Alternate the current
-and split actions with the same starting view. Exclude runs with HMR or server restarts. The
-normal sidebar still uses the current action.
-
-The temporary action saves its fixed Welcome document through
-`files_nodes_create_finalize:finalize_text_node_creation`. That final transaction has no editor
-or Markdown chunker imports. General text and mount/import creation still use the current
-content module. Keep query cache hits separate from new server executions when comparing them.
-
-The temporary folder mutation is `files_nodes_create:create_folder_node`. Its control is
-`files_nodes:create_folder_node`. The same owned-tab rewrite works for its outgoing Mutation.
 Use the sidebar selector `.FilesSidebarTopSection-actions-icon-button[aria-label="New folder"]`
-when both the sidebar and root view have that button. Match the returned node id and enabled
-rename input. Restore the send function after the check.
+when both the sidebar and root view have that button.
 
 For module comparisons, run at least five calls per variant through the signed-in app client.
 Match CDP requests to backend execution logs and exclude cached queries. Report the first

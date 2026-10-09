@@ -186,7 +186,7 @@ describe("files_updated_by_docs sync", () => {
 	test("the member folder door gives every folder it creates a doc", async () => {
 		const { t, db, asOwner, read_doc } = await fixture({ displayName: "Door User" });
 
-		const created = await asOwner.mutation(api.files_nodes_create.create_folder_node, {
+		const created = await asOwner.mutation(api.files_nodes.create_folder_node, {
 			membershipId: db.membershipId,
 			parentId: files_ROOT_ID,
 			path: "/outer/inner",
@@ -203,7 +203,7 @@ describe("files_updated_by_docs sync", () => {
 	test("the member file door gives the new file a doc", async () => {
 		const { db, asOwner, read_doc } = await fixture({ displayName: "Door User" });
 
-		const created = await asOwner.action(api.files_nodes_create.create_text_node, {
+		const created = await asOwner.action(api.files_nodes_content.create_text_node, {
 			membershipId: db.membershipId,
 			parentId: files_ROOT_ID,
 			path: "/notes.md",

@@ -632,10 +632,7 @@ afterEach(() => {
 });
 
 describe("r2 asset content", () => {
-	test.each([
-		["current", api.files_nodes_content.create_text_node],
-		["split", api.files_nodes_create.create_text_node],
-	])("%s action creates Markdown nodes with Yjs and version snapshot assets", async (_name, createTextNode) => {
+	test("create_text_node creates Markdown nodes with Yjs and version snapshot assets", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 		const asUser = t.withIdentity({
@@ -644,7 +641,7 @@ describe("r2 asset content", () => {
 			name: "Test User",
 		});
 
-		const created = await asUser.action(createTextNode, {
+		const created = await asUser.action(api.files_nodes_content.create_text_node, {
 			membershipId: db.membershipId,
 			parentId: files_ROOT_ID,
 			path: "README.md",
@@ -3203,33 +3200,6 @@ describe("cleanup_expired_unfinalized_assets", () => {
 		expect(await t.run(async (ctx) => ctx.db.get("files_r2_assets", assetId))).toBeNull();
 		expect(deleteObjectSpy).toHaveBeenCalledWith(expect.anything(), key);
 		expect(await get_deletion_job_by_key(t, key)).toBeNull();
-	});
-
-	test("insert_file_creation_assets keeps both assets unpublished with a cleanup deadline", async () => {
-		const t = test_convex();
-		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
-		const assets = await t.mutation(internal.r2_client.insert_file_creation_assets, {
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			userId: db.userId,
-			yjsSnapshotSize: 128,
-			versionSnapshotSize: 64,
-		});
-		const [yjsAsset, versionAsset] = await t.run(async (ctx) =>
-			Promise.all([
-				ctx.db.get("files_r2_assets", assets.yjsSnapshotAssetId),
-				ctx.db.get("files_r2_assets", assets.versionSnapshotAssetId),
-			]),
-		);
-		expect(yjsAsset).toMatchObject({ kind: "yjs_snapshot", size: 128, createdBy: db.userId });
-		expect(versionAsset).toMatchObject({ kind: "content_snapshot", size: 64, createdBy: db.userId });
-		for (const asset of [yjsAsset, versionAsset]) {
-			expect(asset?.organizationId).toBe(db.organizationId);
-			expect(asset?.workspaceId).toBe(db.workspaceId);
-			expect(asset?.r2Bucket).toBe(r2.config.bucket);
-			expect(asset?.r2Key).toBeUndefined();
-			expect(asset?.unfinalizedExpiresAt).toBe(asset!.updatedAt + 24 * 60 * 60 * 1000);
-		}
 	});
 
 	test("insert_asset sets the deadline and the r2Key patch clears it", async () => {

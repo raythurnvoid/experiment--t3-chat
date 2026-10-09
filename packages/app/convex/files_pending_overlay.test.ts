@@ -2448,7 +2448,7 @@ describe("files_nodes ancestors", () => {
 		const created = await f.t.mutation(internal.files_nodes.create_folder_node_by_path, { ...f.u, path: "/a/b/c" });
 		if (created._nay) throw new Error(created._nay.message);
 		await f.as_u(() =>
-			f.asU.mutation(api.files_nodes_create.create_folder_node, { membershipId, parentId: files_ROOT_ID, path: "d/e" }),
+			f.asU.mutation(api.files_nodes.create_folder_node, { membershipId, parentId: files_ROOT_ID, path: "d/e" }),
 		);
 		const a = await node_at(f, "/a");
 		const b = await node_at(f, "/a/b");

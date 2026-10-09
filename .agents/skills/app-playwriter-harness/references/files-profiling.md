@@ -201,10 +201,9 @@ Track a created ID before timing or content checks can fail. Failure cleanup mus
 fixture metadata and archive only this run's new IDs. Save each raw sample once. Mark restoration
 only after its checks pass, and join a batch restoration receipt to exact sample IDs.
 
-Keep native creation timing separate from direct API comparisons. The native sidebar may still use
-`files_nodes_content:create_text_node` and `files_nodes:create_folder_node`. The candidate module is
-`files_nodes_create`; its file path also changes asset allocation and the final transaction. A direct
-comparison measures that full implementation, not module load alone. Keep normal cached queries
+Keep native creation timing separate from direct API comparisons. The native sidebar uses
+`files_nodes_content:create_text_node` and `files_nodes:create_folder_node`. A direct comparison of a
+candidate module measures its full implementation, not module load alone. Keep normal cached queries
 separate. Alternate variant order and check stored text, parsed Yjs text, snapshots and asset state.
 
 To pin deployed code without a push, compare deployment module hashes with a local debug bundle.

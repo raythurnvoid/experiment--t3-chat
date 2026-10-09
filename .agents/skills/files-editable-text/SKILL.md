@@ -285,34 +285,15 @@ Editable create publishes the node, Yjs pointers, both live asset references, an
 
 These six Convex functions serve both rich Markdown and plain-text files. Their generic names match that shared role:
 
-- `create_text_node` (`files_nodes_content.ts`, used by the sidebar)
+- `create_text_node` (`files_nodes_content.ts`, the only public one)
 - `get_file_text_content_db_state_by_path` (`files_nodes_content.ts`)
 - `get_file_last_available_text_content_by_path` (`files_nodes_content.ts`)
 - `finalize_text_file_node_from_r2_assets` (`r2.ts`)
 - `finalize_uploaded_text_file` (`r2.ts`)
 - `match_text_file_lines` (`files_nodes.ts`)
 
-`files_nodes_create.create_text_node` is a temporary timing comparison. It keeps the same args,
-auth, rate limit, reusable preflight queries, and failure cleanup. It allocates both unpublished
-assets in one `r2_client.insert_file_creation_assets` mutation, with the usual 24-hour cleanup
-deadline. Its final transaction is `files_nodes_create_finalize.finalize_text_node_creation`.
-That module has no editor, Markdown chunker, tree handler, or upload handler imports. It saves
-the node, chunks, stats, Yjs pointers, published assets, and first version together. It checks
-current membership, path access, writer rules, and conflicts again after the uploads.
-
-This finalizer only creates the fixed `files_INITIAL_CONTENT` Welcome document. The action
-prepares its plain text before uploading. A parity test checks that the template still needs
-one whole Markdown chunk and no frontmatter. General text and mount/import creation keep
-`files_nodes_content.create_file_node`. Both use the database helpers in `files_nodes_create_db`.
-The sidebar still calls `files_nodes_content.create_text_node`.
-
-The same temporary module also exposes `files_nodes_create.create_folder_node`. It copies the
-ordinary public folder path, including access checks, writer rules, inherited defaults, media
-versions, and updated-by rows. It shares the ordinary path walk in `files_nodes_create_db` with
-the Welcome finalizer, without importing the tree handler module.
-`experimental_reuseContext` lets folder mutations reuse the loaded module; file actions still
-load it for each call. The sidebar still calls `files_nodes.create_folder_node`. Keep the
-temporary copy and its parity tests aligned with that door while the comparison exists.
+General text and mount/import creation use `files_nodes_content.create_file_node`. It shares the
+database helpers in `files_nodes_create_db` with content publication.
 
 Exact content uses `files_text_chunks.textChunk` for both document shapes. Search rows link to those chunks through `files_plain_text_chunks.textChunkId`.
 
