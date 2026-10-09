@@ -130,7 +130,7 @@ async function db_authorize_run(
 		!actor ||
 		actor.deletedAt !== undefined ||
 		!membership ||
-		membership.pendingOrganizationRemoval === true ||
+		membership.pendingOrganizationRemoval ||
 		!organization
 	)
 		return failure({ status: 401, message: "Unauthenticated", errorCode: "unauthenticated" });

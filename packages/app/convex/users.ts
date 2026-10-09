@@ -734,7 +734,7 @@ export const resolve_user = internalMutation({
 			// Organization removal uses its own marker and drain. Do not restore those memberships or
 			// recreate their roles while that separate cleanup still owns them.
 			const reactivatedMemberships = memberships.filter(
-				(membership) => membership.active === false && membership.pendingOrganizationRemoval !== true,
+				(membership) => membership.active === false && !membership.pendingOrganizationRemoval,
 			);
 
 			await Promise.all([

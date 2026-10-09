@@ -3616,7 +3616,7 @@ export const advance = internalMutation({
 				...(sourceEntry.kind === "saved"
 					? {
 							writePolicy: sourceEntry.node.writePolicy,
-							newChildWritePolicy: sourceEntry.node.newChildWritePolicy ?? null,
+							newChildWritePolicy: sourceEntry.node.newChildWritePolicy,
 							trustPolicySource: true as const,
 						}
 					: {}),

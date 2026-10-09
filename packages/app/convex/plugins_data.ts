@@ -1153,7 +1153,7 @@ async function db_credit_member_for_delete(
 		targetUsageId: args.document.chargedToMemberUsageId ?? null,
 		addedBytes: -args.document.byteSize,
 		addedSlots: args.keepSlot ? 0 : -1,
-		addedMachineBytes: -(args.document.machineBytes ?? 0),
+		addedMachineBytes: -args.document.machineBytes,
 		addedCollections: [],
 	});
 }

@@ -1002,7 +1002,7 @@ export const invite_user_to_organization_workspace = mutation({
 			)
 			.collect();
 		const pendingRemovalMembership = pendingRemovalMemberships.find(
-			(membership) => membership.pendingOrganizationRemoval === true,
+			(membership) => membership.pendingOrganizationRemoval,
 		);
 		if (pendingRemovalMembership) {
 			// Restart the bounded drain when an earlier one-shot continuation was lost.
@@ -1309,7 +1309,7 @@ export const continue_remove_user_from_organization = internalMutation({
 				q.eq("userId", args.userId).eq("organizationId", args.organizationId),
 			)
 			.collect();
-		const pendingMemberships = memberships.filter((membership) => membership.pendingOrganizationRemoval === true);
+		const pendingMemberships = memberships.filter((membership) => membership.pendingOrganizationRemoval);
 		if (pendingMemberships.length === 0) {
 			return null;
 		}
@@ -1414,7 +1414,7 @@ export const remove_user_from_organization = mutation({
 		]);
 		const isPendingSelfRemoval =
 			userAuth.id === args.userIdToRemove &&
-			memberships.some((membership) => membership.pendingOrganizationRemoval === true);
+			memberships.some((membership) => membership.pendingOrganizationRemoval);
 		if (!currentHomeMembership && !isPendingSelfRemoval) {
 			return Result({ _nay: { message: "Not found" } });
 		}
@@ -1449,7 +1449,7 @@ export const remove_user_from_organization = mutation({
 
 		const now = Date.now();
 
-		if (memberships.some((membership) => membership.pendingOrganizationRemoval === true)) {
+		if (memberships.some((membership) => membership.pendingOrganizationRemoval)) {
 			// A prior call already consumed credentials, quotas, and sessions. Restart only the durable
 			// grant drain so a retry stays idempotent.
 			await ctx.scheduler.runAfter(0, internal.organizations.continue_remove_user_from_organization, {

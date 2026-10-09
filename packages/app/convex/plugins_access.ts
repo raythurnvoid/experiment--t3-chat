@@ -61,7 +61,7 @@ export async function plugins_access_db_authorize_membership(
 	const user = await ctx.db.get("users", args.userId);
 	if (!user || user.deletedAt !== undefined) return Result({ _nay: { message: "Unauthenticated" } });
 	const membership = await organizations_db_get_membership(ctx, args);
-	if (!membership || membership.pendingOrganizationRemoval === true)
+	if (!membership || membership.pendingOrganizationRemoval)
 		return Result({ _nay: { message: "Unauthorized" } });
 	const [organization, workspace, installation] = await Promise.all([
 		ctx.db.get("organizations", membership.organizationId),

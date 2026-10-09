@@ -1442,9 +1442,9 @@ export async function files_nodes_db_get_write_policy_management_state(
 	const inScope = await db_is_within_write_scope(ctx, { ...permissionArgs, target: { kind: "node", node } });
 
 	// Return only the writers the caller may see, plus how many were hidden or revoked.
-	async function visible_policy(policy: Doc<"files_nodes">["writePolicy"] | Doc<"files_nodes">["newChildWritePolicy"]) {
+	async function visible_policy(policy: Doc<"files_nodes">["writePolicy"]) {
 		if (policy?.mode !== "writer") {
-			return policy ?? null;
+			return policy;
 		}
 
 		const writers = await Promise.all(
@@ -1467,7 +1467,7 @@ export async function files_nodes_db_get_write_policy_management_state(
 		canWrite: writeBlockedReason === null,
 		writeBlockedReason,
 		localPolicy: await visible_policy(node.writePolicy),
-		localDefault: node.kind === "folder" ? await visible_policy(node.newChildWritePolicy ?? null) : null,
+		localDefault: node.kind === "folder" ? await visible_policy(node.newChildWritePolicy) : null,
 	};
 }
 
@@ -1574,7 +1574,7 @@ export const get_folder_new_child_write_policy_state = query({
 			return null;
 		}
 
-		const newChildWritePolicy = authorized._yay.fileNode.newChildWritePolicy ?? null;
+		const newChildWritePolicy = authorized._yay.fileNode.newChildWritePolicy;
 		return newChildWritePolicy === null ? "none" : newChildWritePolicy.mode;
 	},
 });
@@ -1642,7 +1642,7 @@ export async function files_nodes_db_set_new_child_write_policy(
 		return allowed;
 	}
 
-	if (JSON.stringify(args.node.newChildWritePolicy ?? null) === JSON.stringify(args.newChildWritePolicy)) {
+	if (JSON.stringify(args.node.newChildWritePolicy) === JSON.stringify(args.newChildWritePolicy)) {
 		return Result({ _yay: null });
 	}
 

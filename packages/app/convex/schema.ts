@@ -3117,9 +3117,9 @@ const app_convex_schema = defineSchema({
 		writePolicy: files_nodes_write_policy_validator,
 		/**
 		 * Starting protection copied once to brand-new files and subfolders.
-		 * Only folders use it; files store null. Absent on docs written before the local model.
+		 * Only folders use it; files store null.
 		 */
-		newChildWritePolicy: v.optional(files_nodes_write_policy_validator),
+		newChildWritePolicy: files_nodes_write_policy_validator,
 		// Lifecycle and authorship
 		/**
 		 * Archive operation UUID, or null for an active node.
@@ -5338,15 +5338,14 @@ const app_convex_schema = defineSchema({
 		updatedAt: v.number(),
 		/**
 		 * The member whose per-member share holds this document's bytes and slot. Absent means the
-		 * document is charged to the installation only, which is what every row written before the
-		 * per-member ceilings existed looks like. A frame door or an API key charges its writer; a
+		 * document is charged to the installation only. A frame door or an API key charges its writer; a
 		 * plugin backend charges nobody. The field moves with the document: a frame patch by another
 		 * member credits the old member and charges the new one. The generation id below decides which
 		 * exact counter row receives that credit after a member leaves and later rejoins.
 		 */
 		chargedTo: v.optional(v.id("users")),
 		/**
-		 * Exact member counter generation that owns this document's share. Absent legacy docs are uncharged.
+		 * Exact member counter generation that owns this document's share. Set exactly when `chargedTo` is set.
 		 */
 		chargedToMemberUsageId: v.optional(v.id("plugins_data_member_usage")),
 		/**
@@ -5355,9 +5354,9 @@ const app_convex_schema = defineSchema({
 		 * API key — sets it to 0, because the member composed the value that is now stored. The
 		 * per-member ceiling then compares `usedBytes - machineBytes`, so a backend cannot fill a
 		 * member's share and lock them out, and a member cannot launder their own bytes by asking the
-		 * backend to touch their keys. Absent means zero.
+		 * backend to touch their keys.
 		 */
-		machineBytes: v.optional(v.number()),
+		machineBytes: v.number(),
 		/**
 		 * The private scope this document belongs to, or absent when it is visible to the whole
 		 * workspace.
@@ -5490,10 +5489,6 @@ const app_convex_schema = defineSchema({
 		workspaceId: v.id("organizations_workspaces"),
 		installationId: v.id("plugins_workspace_installations"),
 		userId: v.id("users"),
-		/**
-		 * Present on rows whose documents point back to this exact counter generation.
-		 */
-		generation: v.optional(v.literal("document_bound")),
 		/**
 		 * Sum of `plugins_data.byteSize` for the documents charged to this member.
 		 */
@@ -7076,9 +7071,9 @@ const app_convex_schema = defineSchema({
 		active: v.boolean(),
 		/**
 		 * `true` while organization removal drains this member's direct grants. Account recovery must
-		 * not reactivate this membership. Optional while older stored memberships have no marker.
+		 * not reactivate this membership.
 		 */
-		pendingOrganizationRemoval: v.optional(v.boolean()),
+		pendingOrganizationRemoval: v.boolean(),
 	})
 		.index("by_workspace_user_active", ["workspaceId", "userId", "active"])
 		.index("by_user_organization_workspace_active", ["userId", "organizationId", "workspaceId", "active"])

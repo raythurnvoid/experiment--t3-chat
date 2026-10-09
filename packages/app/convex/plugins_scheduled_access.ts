@@ -64,7 +64,7 @@ export async function plugins_scheduled_access_db_validate_grant(
 	const membership = await ctx.db.get("organizations_workspaces_users", grant.runAs.membershipId);
 	if (
 		!membership?.active ||
-		membership.pendingOrganizationRemoval === true ||
+		membership.pendingOrganizationRemoval ||
 		membership.userId !== userId ||
 		membership.organizationId !== organization._id ||
 		membership.workspaceId !== workspace._id
@@ -183,7 +183,7 @@ export async function plugins_scheduled_access_db_validate_consent(
 	if (!user || user.deletedAt !== undefined) return Result({ _nay: { message: "Unauthenticated" } });
 	if (
 		!membership.active ||
-		membership.pendingOrganizationRemoval === true ||
+		membership.pendingOrganizationRemoval ||
 		!organization?.defaultWorkspaceId ||
 		!workspace ||
 		workspace.organizationId !== organization._id ||
